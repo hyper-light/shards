@@ -116,8 +116,8 @@ fn push_manifest(
             return Err(missing(&blob.digest));
         }
     }
-    // The config and the layers together, as containerd dispatches a manifest's children
-    // under one limiter; the layers' fates are what is told.
+    // The config and the layers together, under one limiter (containerd v2.4.1 dispatches
+    // a manifest's children so); the layers' fates are what is told.
     let blobs: Vec<&Descriptor> = std::iter::once(&manifest.config)
         .chain(&manifest.layers)
         .collect();

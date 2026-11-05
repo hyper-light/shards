@@ -76,16 +76,18 @@ pub enum VcpuStart {
     Boot(Option<Entry>),
     Restore {
         state: hv::VcpuState,
+        /// The CPU the snapshot's guest found, which each vCPU is given where its host's
+        /// differs and covers it (D176 part 6).
+        cpu_id: Vec<(u16, u64)>,
         /// vCPU 0's part.
         first: Option<First>,
     },
 }
 
-/// vCPU 0's part of a restore: the CPU the snapshot was taken on, and the working set it
-/// prefetches as it sets up (HVF's: KVM's prefetches as the machine finishes, [`finish`]).
+/// vCPU 0's part of a restore: the working set it prefetches as it sets up (HVF's: KVM's
+/// prefetches as the machine finishes, [`finish`]).
 #[derive(Debug)]
 pub struct First {
-    cpu_id: Vec<(u16, u64)>,
     working_set: Vec<hv::Touch>,
 }
 
@@ -157,16 +159,15 @@ pub fn split(start: Start, vcpus: usize) -> Result<(Vec<VcpuStart>, Option<Remai
             };
             #[cfg(not(hv = "kvm"))]
             let working_set = r.working_set;
-            let mut first = Some(First {
-                cpu_id: r.cpu_id,
-                working_set,
-            });
+            let mut first = Some(First { working_set });
+            let cpu_id = r.cpu_id;
             let starts = r
                 .vcpus
                 .into_iter()
                 .take(vcpus)
                 .map(|state| VcpuStart::Restore {
                     state,
+                    cpu_id: cpu_id.clone(),
                     first: first.take(),
                 })
                 .collect();
@@ -573,7 +574,7 @@ fn assemble(
     // A PCI bus's MSIs (D154): to the GIC's ITS where the backend has one (KVM's), which
     // translates each by the ID of the function that wrote it, so that they are isolated
     // as a guest's VFIO needs; else to the backend's own GICv2m frame.
-    let msi = (!pci.test.is_empty() || !pci.vfio.is_empty()).then_some(if hv::ITS {
+    let msi = pci.any().then_some(if hv::ITS {
         boot::Msi::Its {
             base: layout::GIC_ITS,
             size: layout::GIC_ITS_SIZE,
@@ -644,7 +645,7 @@ fn assemble(
         .chain(swap_device)
         .chain(iommu_device)
         .collect();
-    let devices = super::virtio_devices(
+    let (devices, disk_sizes) = super::virtio_devices(
         config,
         &regions,
         layer.as_ref(),
@@ -687,6 +688,7 @@ fn assemble(
     bus.insert(layout::UART, 0x1000, serial.clone())?;
     bus.insert(layout::RTC, 0x1000, Arc::new(Pl031::default()))?;
     let control = Arc::new(Control::default());
+    control.on_disks(disk_sizes);
     if let Some(window) = swap {
         control.on_swap(window);
     }
@@ -726,6 +728,15 @@ fn assemble(
         iommu: iommu.clone(),
     };
     let pci = super::pci_bus(&mut bus, layout::PCI_ECAM, mem32, mem64, pci, config, machine)?.map(|routed| {
+        if let Some(hotplug) = routed.hotplug {
+            control.on_plugs(crate::devices::control::Plugs {
+                hotplug,
+                io: hosts.io,
+                unpinnable: super::unpinnable(config),
+                #[cfg(target_os = "linux")]
+                vfio: vm.vfio_host(),
+            });
+        }
         boot::PciBridge {
             ecam: (layout::PCI_ECAM, crate::devices::pci::ECAM_SIZE),
             mem32,
@@ -827,6 +838,8 @@ pub fn build(cfg: &Config) -> Result<Machine, String> {
             super::Pci {
                 test: &cfg.pci_test,
                 vfio: &cfg.vfio,
+                slots: cfg.pci_slots,
+                slots_iommu: cfg.pci_slots_iommu,
             },
         )?;
         a.vmgenid.write_new_id()?;
@@ -1017,14 +1030,18 @@ pub fn restore(
         snap,
         plug_at(ram),
     )?);
-    // A machine with a PCI bus saves no snapshot, so a restored one has none.
+    // A machine with functions on its PCI bus saves no snapshot, so a restored one has
+    // none; it has the slots its snapshot's had, empty, as every snapshot's are (D214).
     let a = assemble(
         &memory,
         &snap.config,
         console,
         hosts,
         snap.config.gpu,
-        super::Pci::default(),
+        super::Pci {
+            slots: snap.config.pci_slots,
+            ..super::Pci::default()
+        },
     )?;
     super::replug(&memory, snap, memory_file, &a.vm)?;
     let guest: Vec<(u64, u64)> = memory
@@ -1140,15 +1157,26 @@ pub fn setup_vcpu(vm: &hv::Vm, index: usize, start: VcpuStart) -> Result<(hv::Vc
                 vcpu.boot(entry).map_err(e)?;
             }
         }
-        VcpuStart::Restore { state, first } => {
+        VcpuStart::Restore { state, cpu_id, first } => {
             let mut prefetched = created;
-            if let Some(First { cpu_id, working_set }) = first {
-                let here = vcpu.cpu_id().map_err(e)?;
-                if here != cpu_id {
-                    return Err(format!(
-                        "this CPU is not the one the snapshot was taken on: {here:x?} vs {cpu_id:x?}"
-                    ));
-                }
+            // Another CPU than the snapshot's (D176 part 6): one that has every feature its
+            // guest found is told the guest's CPU, which the guest goes on believing; one
+            // short of any is refused, naming what it lacks.
+            let here = vcpu.cpu_id().map_err(e)?;
+            // By the registers both name: a snapshot of a build that read fewer is of the
+            // registers it read.
+            let differs = cpu_id.iter().any(|&(r, v)| {
+                here.iter()
+                    .find(|(h, _)| *h == r)
+                    .is_none_or(|&(_, now)| now != v)
+            });
+            if differs {
+                aarch64::cpu::covers(&here, &cpu_id)?;
+                vcpu.set_cpu_id(&cpu_id).map_err(|err| {
+                    format!("this CPU is not the snapshot's, and is not told its guest's: {err}")
+                })?;
+            }
+            if let Some(First { working_set }) = first {
                 // Before the state: the prefetch runs on this vCPU. A failure is the VM's,
                 // since its translations may outlive a loop that stopped short. KVM's
                 // waits for the machine's finish ([`split`]).

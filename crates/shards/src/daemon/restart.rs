@@ -92,7 +92,7 @@ impl<D: Disk> Daemon<D> {
 
     /// Container `id`'s wait to restart is up: started again, as a detached `shards start`
     /// starts it, unless a stop, kill, removal or the daemon's own stop came first; then
-    /// it is stopped, as dockerd sets it once its restart is cancelled.
+    /// it is stopped, so that a cancelled restart leaves it as its stop asked (D27).
     pub(super) fn restart_due<'s, 'e>(&'s self, threads: &'s Threads<'s, 'e>, id: &str) {
         let cancelled = lock(&self.restarts).get(id).is_some_and(|m| m.cancelled);
         let waiting = lock(&self.containers)

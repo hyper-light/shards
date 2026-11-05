@@ -418,14 +418,15 @@ fn a_joiner_takes_volumes_as_a_container_does() {
     );
     assert_eq!(ran.status, Some(0), "{ran}");
     let host = host_file_mode();
+    // The host's files are the joiner's user's, its image's app (D38).
     assert!(
         ran.stdout
-            .contains(&format!("/data/a file {host} 0:0 4\n= host\n")),
+            .contains(&format!("/data/a file {host} 1000:1000 4\n= host\n")),
         "{ran}"
     );
     assert!(
         ran.stdout
-            .contains(&format!("/etc/one file {host} 0:0 5\n= alone\n")),
+            .contains(&format!("/etc/one file {host} 1000:1000 5\n= alone\n")),
         "{ran}"
     );
     for mount in [
@@ -2027,7 +2028,10 @@ fn a_volumes_large_files_go_through_its_dax_window() {
     // size the guest's file system asked of the share's server afresh as it looked (its
     // stderr), and the byte past that size read again two seconds on, opened afresh: three
     // times on CI's windows-2022 (793abaeb, 1415ad8f, d3d996b7) the guest saw 9 MiB, and at
-    // d3d996b7 read the new byte 2 s on.
+    // d3d996b7 read the new byte 2 s on. At b5113c13 (41959673660) the server, asked
+    // afresh, said the new size, and the guest's jiffies had gone 0.56 s across the mapper's
+    // 1.235 s sleep: its attributes were still valid by the clock FUSE times them by, which
+    // the mapper now waits out too.
     if mapped.stdout != format!("map2m /v/mapped {}\n", (9 << 20) + 1) {
         let host = std::fs::metadata(dir.join("mapped")).map(|m| m.len());
         std::thread::sleep(Duration::from_secs(2));
@@ -2339,8 +2343,9 @@ fn a_microvms_devices_reach_the_pages_of_the_files_it_maps() {
 /// are charged there from their first page; a second run under the slice is made in that
 /// scope, and a run without one, its template's pool warm, in none of the slice; `inspect`
 /// says it; a joiner names its provider's or none; and the scope goes with the daemon. A
-/// path, which names no slice, is refused, as it is elsewhere than Linux, where a group
-/// shards keeps is named (D183's slice 3, which its groups' tests hold).
+/// path names a cgroup delegated to the user (slice 2, the next test's), refused where none
+/// is, as it is elsewhere than Linux, where a group shards keeps is named (D183's slice 3,
+/// which its groups' tests hold).
 #[test]
 fn a_microvm_is_made_under_the_slice_its_cgroup_parent_names() {
     let Some((home, image)) = home("containers-parent") else {
@@ -2370,7 +2375,8 @@ fn placed_under_slices(home: &Path, image: &str, path: &Run) {
     use std::io::Write as _;
     let shards = |args: &[&str]| shards_in(home, args);
     let slice = format!("shardstest{}.slice", std::process::id());
-    assert!(path.stderr.contains("NAME.slice"), "{path}");
+    // A path names a delegated cgroup (slice 2, the next test's): none is at /agents.
+    assert!(path.stderr.contains("no cgroup is there"), "{path}");
     // The user's systemd manager, on its bus: CI's Linux runners have one, and must find it
     // (SHARDS_REQUIRE_USER_MANAGER).
     let bus = std::env::var_os("XDG_RUNTIME_DIR")
@@ -2549,6 +2555,254 @@ fn placed_under_slices(home: &Path, image: &str, path: &Run) {
     let _ = std::process::Command::new("systemctl")
         .args(["--user", "stop", &slice])
         .status();
+}
+
+/// `--cgroup-parent /PATH` (D183, slice 2): where no user's manager places a process, a
+/// microVM's processes are made in a cgroup delegated to the user, named by its path, by a
+/// spawner the daemon moved once into a leaf of its own there, `shards-PID-N`, and are
+/// charged there from their first page; a second run under it is made in the same leaf, a
+/// run without one in the daemon's own cgroup; `inspect` says it; a path with no cgroup,
+/// and one not delegated, are refused before anything starts; and the leaf goes with the
+/// daemon, as no manager collects it. The delegation an administrator would give is a
+/// scope of the user's manager's with `Delegate=yes`, laid out as a delegated tree is (the
+/// daemon in a leaf of its own, `daemon`, the parent `agents` beside it, the memory
+/// controller enabled for both: cgroup-v2.rst, "No Internal Process Constraint"), and the
+/// daemon, started inside it, is given no bus of the manager's (`XDG_RUNTIME_DIR` a
+/// directory with none in it). A holder process keeps the scope, so that what removes the
+/// leaf is the daemon, not the manager collecting it.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_microvm_is_made_in_the_delegated_cgroup_its_cgroup_parent_names() {
+    use std::io::{Read as _, Write as _};
+    if cannot_run_vms() {
+        return;
+    }
+    let delegating = Command::new("systemd-run")
+        .args(["--user", "--scope", "--quiet", "true"])
+        .status();
+    if !delegating.as_ref().is_ok_and(|s| s.success()) {
+        assert!(
+            !std::env::var_os("SHARDS_REQUIRE_USER_MANAGER").is_some_and(|v| v == "1"),
+            "no user's systemd manager to delegate a cgroup with: {delegating:?}"
+        );
+        let _ = writeln!(
+            std::io::stderr(),
+            "SKIP: no user's systemd manager to delegate a cgroup with"
+        );
+        return;
+    }
+    let (image, _) = served();
+    let home = TempDir::new("containers-delegated");
+    let no_bus = TempDir::new("nobus");
+    let unit = format!("shardstest-delegated-{}", std::process::id());
+    /// Stops the delegating scope, its holder with it, however the test ends.
+    struct Scope(String);
+    impl Drop for Scope {
+        fn drop(&mut self) {
+            let _ = Command::new("systemctl")
+                .args(["--user", "stop", &format!("{}.scope", self.0)])
+                .status();
+        }
+    }
+    let _scope = Scope(unit.clone());
+    // No process but the script's shell is ever in the scope's own cgroup: its cgroup is
+    // read with the shell's builtins, and the test makes its leaves. A child the shell made
+    // there and waited for still holds it populated until the child's last context switch
+    // (Linux 6.19's d245698d727a, "cgroup: Defer task cgroup unlink until after the task is
+    // done switching out"), and a cgroup populated takes no controller in its
+    // `cgroup.subtree_control` (kernel/cgroup/cgroup.c, cgroup_vet_subtree_control_enable's
+    // EBUSY), where 7.0's rmdir waits such a child out (1b164b876c36): CI's ubuntu-24.04 at
+    // b5113c13 (41959673660, kernel 7.0.0-1017-azure) refused the write so, `mkdir` just
+    // waited for, and dash said "echo: I/O error".
+    let script = r#"set -e
+while IFS= read -r line; do
+case $line in 0::*) cg=/sys/fs/cgroup${line#0::} ;; esac
+done </proc/self/cgroup
+echo "$cg"
+read -r made
+echo $$ > "$cg/daemon/cgroup.procs"
+echo +memory > "$cg/cgroup.subtree_control"
+sleep 3600 </dev/null >/dev/null 2>&1 &
+export XDG_RUNTIME_DIR="$1"
+unset DBUS_SESSION_BUS_ADDRESS
+shift
+exec "$@" </dev/null
+"#;
+    // From a file: systemd-run expands `$` in its command's arguments as a unit's
+    // ExecStart= is (systemd.service(5), "Command lines"; systemd-run(1),
+    // --expand-environment), where the script's are the shell's.
+    let delegate = no_bus.join("delegate.sh");
+    std::fs::write(&delegate, script).unwrap();
+    let mut started = Command::new("systemd-run");
+    started
+        .args([
+            "--user",
+            "--scope",
+            "--quiet",
+            "-p",
+            "Delegate=yes",
+            "--unit",
+            &unit,
+            "--",
+        ])
+        .arg("sh")
+        .arg(&delegate)
+        .arg(no_bus.as_os_str())
+        .arg(common::shards())
+        .args(["pull", "-q", &image])
+        .env("SHARDS_HOME", home.as_os_str())
+        .env("SHARDS_KERNEL", kernel())
+        .env("SHARDS_INIT", guest_init())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    common::as_tests_run(&mut started);
+    let mut child = started.spawn().unwrap();
+    let mut out = BufReader::new(child.stdout.take().unwrap());
+    let mut said = String::new();
+    out.read_line(&mut said).unwrap();
+    let delegated = std::path::PathBuf::from(said.trim_end());
+    if !delegated.starts_with("/sys/fs/cgroup/") {
+        let ended = child.wait_with_output().unwrap();
+        panic!("{said}{}", String::from_utf8_lossy(&ended.stderr));
+    }
+    for leaf in ["daemon", "agents"] {
+        std::fs::create_dir(delegated.join(leaf)).unwrap();
+    }
+    child.stdin.take().unwrap().write_all(b"\n").unwrap();
+    out.read_to_string(&mut said).unwrap();
+    let pulled = child.wait_with_output().unwrap();
+    assert!(
+        pulled.status.success(),
+        "{said}{}",
+        String::from_utf8_lossy(&pulled.stderr)
+    );
+    let path_of = |dir: &Path| format!("/{}", dir.strip_prefix("/sys/fs/cgroup").unwrap().display());
+    let agents = path_of(&delegated.join("agents"));
+    let shards = |args: &[&str]| shards_in(&home, args);
+    // The daemon, started in the delegated tree, with no bus of a manager's.
+    let daemon: u32 = std::fs::read_to_string(home.join("daemon.pid"))
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    let cgroup_of = |pid: u32| -> String {
+        let text = std::fs::read_to_string(format!("/proc/{pid}/cgroup")).unwrap();
+        text.lines()
+            .find_map(|l| l.strip_prefix("0::"))
+            .unwrap()
+            .to_string()
+    };
+    assert_eq!(cgroup_of(daemon), path_of(&delegated.join("daemon")));
+    let environ = std::fs::read(format!("/proc/{daemon}/environ")).unwrap();
+    let runtime = format!("XDG_RUNTIME_DIR={}", no_bus.display());
+    assert!(
+        environ.split(|b| *b == 0).any(|v| v == runtime.as_bytes()),
+        "the daemon's environment has no {runtime}"
+    );
+    // Refused before anything starts: a path with no cgroup, and one not delegated.
+    let none = run_in(
+        &home,
+        &image,
+        &["--rm", "--cgroup-parent", &format!("{agents}/none")],
+        &["exit", "0"],
+    );
+    assert!(
+        none.status != Some(0) && none.stderr.contains("no cgroup is there"),
+        "{none}"
+    );
+    let root = run_in(&home, &image, &["--rm", "--cgroup-parent", "/"], &["exit", "0"]);
+    assert!(
+        root.status != Some(0) && root.stderr.contains("not delegated to you"),
+        "{root}"
+    );
+    let placed = run_in(
+        &home,
+        &image,
+        &["-d", "--name", "placed", "--cgroup-parent", &agents],
+        &["sleep"],
+    );
+    assert_eq!(placed.status, Some(0), "{placed}");
+    let pid_of = |name: &str| -> u32 {
+        let pid = shards(&["inspect", "-f", "{{.State.Pid}}", name]);
+        pid.stdout.trim().parse().unwrap_or_else(|_| panic!("{pid}"))
+    };
+    let vm = pid_of("placed");
+    let leaf = cgroup_of(vm);
+    assert!(leaf.starts_with(&format!("{agents}/shards-{daemon}-")), "{leaf}");
+    let leaf_dir = Path::new("/sys/fs/cgroup").join(leaf.trim_start_matches('/'));
+    // In it: the VM process, its network process, and the spawner that made them, alone.
+    let procs = std::fs::read_to_string(leaf_dir.join("cgroup.procs")).unwrap();
+    let mut names: Vec<String> = procs
+        .lines()
+        .map(|p| {
+            std::fs::read_to_string(format!("/proc/{p}/comm"))
+                .unwrap_or_default()
+                .trim()
+                .to_string()
+        })
+        .collect();
+    names.sort();
+    assert_eq!(names, ["shards", "shards-net", "shards-vm"], "{procs}");
+    // Charged there from its first page: all the VM process's own memory is the parent's
+    // (read until the parent's statistics have caught up, as the slice's test reads them).
+    let own = || {
+        std::fs::read_to_string(format!("/proc/{vm}/status"))
+            .unwrap()
+            .lines()
+            .find_map(|l| l.strip_prefix("RssAnon:"))
+            .and_then(|v| v.trim().strip_suffix("kB"))
+            .and_then(|v| v.trim().parse::<u64>().ok())
+            .unwrap()
+    };
+    let agents_dir = delegated.join("agents");
+    let anon = || {
+        std::fs::read_to_string(agents_dir.join("memory.stat"))
+            .unwrap()
+            .lines()
+            .find_map(|l| l.strip_prefix("anon "))
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap()
+    };
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let (mut own_kib, mut charged) = (own(), anon());
+    while charged < own_kib << 10 && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(100));
+        own_kib = own();
+        charged = anon();
+    }
+    assert!(
+        own_kib > 0 && charged >= own_kib << 10,
+        "the VM's own {own_kib} KiB, the parent's {charged} bytes"
+    );
+    // A second run under it: made in the same leaf, the spawner moved once.
+    let second = run_in(
+        &home,
+        &image,
+        &["-d", "--name", "second", "--cgroup-parent", &agents],
+        &["sleep"],
+    );
+    assert_eq!(second.status, Some(0), "{second}");
+    assert_eq!(cgroup_of(pid_of("second")), leaf);
+    // A run without one: in the daemon's own cgroup.
+    let free = run_in(&home, &image, &["-d", "--name", "free"], &["sleep"]);
+    assert_eq!(free.status, Some(0), "{free}");
+    assert_eq!(cgroup_of(pid_of("free")), cgroup_of(daemon));
+    let inspected = shards(&["inspect", "-f", "{{.HostConfig.CgroupParent}}", "placed"]);
+    assert_eq!(inspected.stdout, format!("{agents}\n"), "{inspected}");
+    // The leaf goes with the daemon, which removes it once its processes have ended.
+    let stopped = shards(&["stop", "daemon"]);
+    assert_eq!(stopped.status, Some(0), "{stopped}");
+    let deadline = Instant::now() + TIMEOUT;
+    while leaf_dir.exists() {
+        assert!(
+            Instant::now() < deadline,
+            "{} outlived the daemon",
+            leaf_dir.display()
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(agents_dir.exists(), "the parent is its user's, not shards'");
 }
 
 /// A microVM held to a budget short of what it holds gives back what it holds cold of its
@@ -2748,6 +3002,14 @@ fn a_microvm_held_to_a_budget_gives_back_what_it_holds_cold() {
         set(&(current() + (1 << 30)).to_string());
         let counted = first(counting, &["held within its budget", "budget is short by"]);
         let held = mib_after(&counted, "MiB, holds ");
+        // A budget set anew is said, room or not: its host's give-back between a budget's
+        // word and the next left its microVM within the next with nothing to give back,
+        // and nothing said it (CI 41344493548).
+        let wider = ((current() >> 20) + 1536) << 20;
+        let anew = said().len();
+        set(&wider.to_string());
+        let word = first(anew, &["held within its budget", "budget is short by"]);
+        assert!(word.contains(&format!("budget, {} MiB", wider >> 20)), "{word}");
         // What its guest's kernel counts of the read as its budget comes, said if nothing is
         // given back: a give-back takes inactive file pages alone, and CI's x86_64 Linux at
         // 05e9cc57 (41273348014) gave back none, short by 42 MiB, its daemon having asked no
@@ -3059,6 +3321,78 @@ fn a_groups_cpu_held_each_second() {
     for mut run in runs {
         let _ = exit(&mut run);
     }
+}
+
+/// A group shards keeps on Windows (D183, slice 3): every process of a microVM under it is
+/// made in the group's job, its VM process and its network process, as a slice's scope holds
+/// both on Linux, and the group's `cgroup.procs`, which the daemon writes from the job
+/// (JobObjectBasicProcessIdList), lists them, and no process of a run under no group.
+#[test]
+fn a_groups_microvm_is_made_in_its_job_its_network_process_too() {
+    if !cfg!(windows) {
+        return;
+    }
+    let Some((home, image)) = home("containers-group-procs") else {
+        return;
+    };
+    let shards = |args: &[&str]| shards_in(&home, args);
+    let placed = run_in(
+        &home,
+        &image,
+        &["-d", "--name", "jobbed", "--cgroup-parent", "jobbed"],
+        &["sleep"],
+    );
+    assert_eq!(placed.status, Some(0), "{placed}");
+    let free = run_in(&home, &image, &["-d", "--name", "free"], &["sleep"]);
+    assert_eq!(free.status, Some(0), "{free}");
+    let pid_of = |name: &str| -> u32 {
+        let pid = shards(&["inspect", "-f", "{{.State.Pid}}", name]);
+        pid.stdout.trim().parse().unwrap_or_else(|_| panic!("{pid}"))
+    };
+    let (vm, other) = (pid_of("jobbed"), pid_of("free"));
+    // Each process's image, as Windows' own tasklist names it.
+    let image_of = |pid: u32| -> String {
+        let out = Command::new("tasklist")
+            .args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"])
+            .output()
+            .unwrap();
+        let text = String::from_utf8_lossy(&out.stdout).into_owned();
+        text.lines()
+            .find_map(|l| {
+                l.strip_prefix('"')
+                    .and_then(|l| l.split_once('"'))
+                    .map(|(n, _)| n.to_string())
+            })
+            .unwrap_or_default()
+    };
+    // Written each pressure window while the group has a microVM: read until it lists both.
+    let file = home.join("groups").join("jobbed").join("cgroup.procs");
+    let deadline = Instant::now() + TIMEOUT;
+    let (procs, names) = loop {
+        let procs: Vec<u32> = std::fs::read_to_string(&file)
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|l| l.trim().parse().ok())
+            .collect();
+        let mut names: Vec<String> = procs.iter().map(|p| image_of(*p)).collect();
+        names.sort();
+        if (procs.contains(&vm) && names == ["shards-net.exe", "shards-vm.exe"]) || Instant::now() >= deadline
+        {
+            break (procs, names);
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    };
+    assert!(
+        procs.contains(&vm),
+        "the VM process {vm} not in {procs:?} ({names:?})"
+    );
+    assert_eq!(names, ["shards-net.exe", "shards-vm.exe"], "{procs:?}");
+    assert!(
+        !procs.contains(&other),
+        "a run under no group, {other}, in {procs:?}"
+    );
+    stop_run(&home, "jobbed");
+    stop_run(&home, "free");
 }
 
 /// A group shards keeps on Windows (D183, slice 3, PM M359): its microVMs' VM processes made
@@ -5568,6 +5902,134 @@ fn a_stopped_microvms_layer_stays_in_its_file() {
     assert_eq!(shards(&["rm", "-f", "kept", "killed"]).status, Some(0));
 }
 
+/// A stopped container's next run goes on over the file its layer was kept in (D190), where
+/// the layer holds past what packing it costs less below (`layers::OVER_FROM`, 5 MiB): the
+/// file goes under its microVM's layer device as it is, its root the image over it, and
+/// stays the container's, the same file, with what each run wrote; the microVM's own layer
+/// goes. One that holds little is packed and put back, in another file. What a run's guest
+/// wrote and freed is given back to the host's disk once its microVM has gone.
+#[test]
+fn a_stopped_microvms_next_run_goes_on_over_its_kept_file() {
+    use shards_ext4::read::Volume;
+    let Some((home, image)) = home("containers-over") else {
+        return;
+    };
+    let shards = |args: &[&str]| shards_in(&home, args);
+    let big = 32u64 << 20;
+    // Each run writes a file, 8 MiB it keeps and 32 MiB it removes, and makes a directory: a
+    // later run finds it made.
+    let first = run_in(
+        &home,
+        &image,
+        &["--name", "over", "-u", "0"],
+        &[
+            "fs",
+            "write:/kept=one",
+            &format!("fill:{}:/held", 8 << 20),
+            &format!("fill:{big}:/big"),
+            "sync",
+            "rm:/big",
+            "mkdir:/made",
+        ],
+    );
+    assert_eq!(first.status, Some(0), "{first}");
+    let id = shards(&["inspect", "-f", "{{.Id}}", "over"])
+        .stdout
+        .trim()
+        .to_string();
+    let dir = home.join("containers").join(&id);
+    let settled = || {
+        let deadline = Instant::now() + TIMEOUT;
+        while !(dir.join("layer.ext4").exists() && !dir.join("layer.new").exists()) {
+            assert!(Instant::now() < deadline, "no layer kept in {}", dir.display());
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    };
+    // What its guest wrote and freed, given back as each run's layer was kept.
+    let given = || -> Vec<u64> {
+        let log = std::fs::read_to_string(home.join("daemon.log")).unwrap_or_default();
+        log.lines()
+            .filter_map(|l| l.split(&format!("container {id}: gave back ")).nth(1))
+            .filter_map(|l| l.split(' ').next()?.parse().ok())
+            .collect()
+    };
+    settled();
+    let kept = dir.join("layer.ext4");
+    let same = common::file_identity(&kept);
+    for n in 1..=3 {
+        let deadline = Instant::now() + TIMEOUT;
+        while given().len() < n {
+            assert!(
+                Instant::now() < deadline,
+                "run {n}: nothing given back: {:?}",
+                given()
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(
+            given().iter().all(|&g| g >= big),
+            "{:?} bytes given back of {big} freed",
+            given()
+        );
+        let v = Volume::open(std::fs::File::open(&kept).unwrap()).unwrap();
+        assert!(v.lookup(b"/upper/kept").unwrap().is_some() && v.lookup(b"/upper/made").unwrap().is_some());
+        assert!(v.lookup(b"/upper/big").unwrap().is_none());
+        drop(v);
+        if n == 3 {
+            break;
+        }
+        // Its next run, over its file: what the one before made, there.
+        let again = shards(&["start", "-a", "over"]);
+        assert_eq!(again.status, Some(1), "run {n}: {again}");
+        assert!(
+            again.stderr.contains("mkdir:/made: File exists"),
+            "run {n}: {again}"
+        );
+        settled();
+        assert_eq!(
+            common::file_identity(&kept),
+            same,
+            "run {n}: the container's own file, not another in its place"
+        );
+    }
+    // One that holds little packed and put back: its file another once it stops again.
+    let small = run_in(
+        &home,
+        &image,
+        &["--name", "small", "-u", "0"],
+        &["fs", "write:/kept=one"],
+    );
+    assert_eq!(small.status, Some(0), "{small}");
+    let id = shards(&["inspect", "-f", "{{.Id}}", "small"])
+        .stdout
+        .trim()
+        .to_string();
+    let small_dir = home.join("containers").join(&id);
+    let small_settled = || {
+        let deadline = Instant::now() + TIMEOUT;
+        while !(small_dir.join("layer.ext4").exists() && !small_dir.join("layer.new").exists()) {
+            assert!(
+                Instant::now() < deadline,
+                "no layer kept in {}",
+                small_dir.display()
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    };
+    small_settled();
+    let before = common::file_identity(&small_dir.join("layer.ext4"));
+    let again = shards(&["start", "-a", "small"]);
+    assert_eq!(again.status, Some(0), "{again}");
+    small_settled();
+    assert_ne!(common::file_identity(&small_dir.join("layer.ext4")), before);
+    // Nothing of the microVMs' own layers left once they have gone.
+    let layers: Vec<_> = std::fs::read_dir(home.join("layers"))
+        .map(|d| d.flatten().map(|e| e.path()).collect())
+        .unwrap_or_default();
+    assert!(layers.is_empty(), "{layers:?}");
+    assert_eq!(shards(&["rm", "-f", "over", "small"]).status, Some(0));
+}
+
 #[test]
 fn start_runs_a_stopped_microvm_again_over_its_own_files() {
     let Some((home, image)) = home("containers-start") else {
@@ -7887,8 +8349,8 @@ fn a_logs_history_is_what_its_user_set() {
     assert_eq!(stopped.status, Some(0), "{stopped}");
 }
 
-/// A container's log keeps only its newest output: at most SHARDS_LOG_MAX_FILE segments of
-/// SHARDS_LOG_MAX_SIZE bytes, as Docker's `local` driver keeps `max-file` of `max-size`.
+/// A run's log keeps only its newest output: at most SHARDS_LOG_MAX_FILE segments of
+/// SHARDS_LOG_MAX_SIZE bytes, its history as its user sets it (D161, D186).
 /// `logs` shows what is kept, `--tail` its last lines, and a follower gets every byte once
 /// as segments come and go under it (audit A12).
 #[test]
@@ -8155,9 +8617,9 @@ fn a_refused_datagram_is_said_refused_at_once() {
     assert!(waited < 2000, "{waited} ms: {ran}");
 }
 
-/// `--network none`: a loopback alone, as dockerd's `none` gives a container. The run
-/// reaches nothing, and its own name is on the loopback, not a bridge's address; it still
-/// has the host's resolvers, as dockerd's does.
+/// `--network none`: a microVM with a loopback alone (D46). The run reaches nothing, and
+/// its own name is on the loopback, not a bridge's address; its resolv.conf still names the
+/// host's resolvers, which it cannot reach (D46).
 #[test]
 fn a_run_on_network_none_reaches_nothing() {
     let Some((home, image)) = home("containers-none") else {
@@ -9003,10 +9465,10 @@ fn stop_sends_a_containers_own_stop_signal() {
     assert_eq!(shards_in(&home, &["ps", "-aq"]).stdout.lines().count(), 2);
 }
 
-/// `exec` runs a command in a running container as `docker exec` does: from the run's
+/// `exec` runs a command in a running microVM (D27): from the run's
 /// environment, user and working directory, which `-e`, `-u` and `-w` change; on its own
-/// stdio, `-i` its stdin, `-t` a terminal of its own; with its own status; refused in
-/// dockerd's words for what the daemon refuses, and in runc's for what cannot start.
+/// stdio, `-i` its stdin, `-t` a terminal of its own; with its own status; refused in the
+/// words scripts match, a command that cannot start in Go's errno texts (D27).
 #[test]
 fn exec_runs_commands_in_a_running_microvm() {
     use std::io::Write as _;
@@ -9059,7 +9521,7 @@ fn exec_runs_commands_in_a_running_microvm() {
     for line in ["uid 0\n", "cwd /\n", "env X=2\n", "env FROMRUN=1\n"] {
         assert!(changed.stdout.contains(line), "{line:?}\n{changed}");
     }
-    // Laid over the container's environment whole, as dockerd lays it: a variable of its
+    // Laid over the run's environment whole (D27): a variable of its
     // name replaced, and one given without a value (none here to take it from) unset.
     let over = exec(&["-e", "FROMRUN=2", "ex", "/bin/testguest", "report"]);
     assert_eq!(over.status, Some(0), "{over}");
@@ -9277,12 +9739,12 @@ fn listeners_of(port: u16) -> String {
         .unwrap_or_default()
 }
 
-/// `-p`: a microVM's ports published on the host as dockerd publishes them. Each
-/// connection reaches the guest from the bridge's gateway, as through dockerd's userland
-/// proxy, and carries what either side sends whole; `ps` and `port` list the bindings as
-/// docker's do; a host port taken is refused in dockerd's words, a container's as its
-/// allocator's, another program's as its bind's; and a run's ports are free again as soon
-/// as it has ended.
+/// `-p`: a microVM's ports published on the host, by host listeners in its network
+/// process (D31). Each connection reaches the guest from the bridge's gateway, and carries
+/// what either side sends whole; `ps` and `port` list the bindings in the columns scripts
+/// read; a host port taken is refused in the words scripts match, one a microVM holds as
+/// held by it, another program's as its bind's (D31); and a run's ports are free again as
+/// soon as it has ended.
 #[test]
 fn published_ports_reach_the_guest() {
     use std::io::{Read as _, Write as _};
@@ -9457,8 +9919,8 @@ fn published_ports_reach_the_guest() {
         ),
         "{late}"
     );
-    // And at one address of the family a running container holds the port at every
-    // address of: refused as dockerd's allocator refuses it, where BSD's SO_REUSEADDR
+    // And at one address of the family a running microVM holds the port at every
+    // address of: refused, the port already the microVM's (D31), where BSD's SO_REUSEADDR
     // would have let the bind in (review 2.7).
     let narrow = run_in(
         &home,
@@ -9702,7 +10164,7 @@ fn children_of(parent: u32) -> Vec<(u32, String)> {
     }
 }
 
-/// `-p PORT/udp`: datagrams reach the guest as dockerd's proxy carries them: each host
+/// `-p PORT/udp`: datagrams reach the guest through the network process (D31): each host
 /// peer from a gateway port of its own, its answers back to that peer from the address
 /// it asked; `port` and `ps` list the port as UDP. The guest answers until it is sent
 /// `bye`: the published port is one of the host's ephemeral ports, which a datagram meant
@@ -9870,8 +10332,8 @@ fn images_lists_what_was_pulled() {
         "{refused}"
     );
     let short = id.strip_prefix("sha256:").and_then(|hex| hex.get(..12)).unwrap();
-    // What is here of it, as dockerd counts it: its manifests' blobs, not the index's; and
-    // its root filesystem.
+    // What is here of it, as `system df` counts it (D27): its manifests' blobs, not the
+    // index's; and its root filesystem.
     let dir_bytes = |dir: &Path| -> u64 {
         std::fs::read_dir(dir)
             .unwrap()
@@ -9883,7 +10345,7 @@ fn images_lists_what_was_pulled() {
         .unwrap()
         .map(|v| dir_bytes(&v.unwrap().path()))
         .sum();
-    // A pull keeps our platform's attestation, as dockerd does, and collections keep it:
+    // A pull keeps our platform's attestation (D22), and collections keep it:
     // the index, our manifest, config and layer, the attestation's manifest, config and
     // statement.
     let blobs = home.join("images/blobs/sha256");
@@ -10011,12 +10473,11 @@ fn images_lists_what_was_pulled() {
     );
 }
 
-/// `shards tag SOURCE TARGET` as `docker tag` names an image again: by name or by a prefix
-/// of its ID, TARGET with `latest` if it names no tag; refused in the Docker client's and
-/// dockerd's words where it cannot.
-/// A name moved to another image leaves the image it named, when that was its last name,
-/// as dockerd leaves it: listed by `images -a` as `<untagged>`, and found by its ID
-/// (measured, Docker 29.3.1).
+/// `shards tag SOURCE TARGET` names an image again: by name or by a prefix of its ID,
+/// TARGET with `latest` if it names no tag; refused in the words scripts match where it
+/// cannot (D27). A name moved to another image leaves the image it named, when that was its
+/// last name, kept for what still names it by ID: listed by `images -a` as `<untagged>`,
+/// and found by its ID (measured, Docker 29.3.1).
 #[test]
 fn an_image_whose_last_name_moves_stays_dangling() {
     let Some((home, image)) = home("containers-dangling") else {
@@ -10195,8 +10656,8 @@ fn rmi_removes_images() {
     });
 }
 
-/// `shards image inspect` as dockerd's containerd store answers `docker image inspect`
-/// (byte for byte against real images: scripts/images/compare-inspect): each image's
+/// `shards image inspect`, each document in the answer shape scripts parse (D27; byte for
+/// byte against real images: scripts/images/compare-inspect): each image's
 /// document in the API's order, its config as Go encodes it, its descriptor what its
 /// reference resolved to, its pull's repository; one array for all, and what was not found
 /// said after.
@@ -10646,7 +11107,7 @@ fn load_reads_archives() {
         (Some(0), format!("Loaded image: {image}\n").as_str(), ""),
         "{loaded}"
     );
-    // Unpacked as it was loaded, as dockerd unpacks: its root filesystem is here.
+    // Unpacked as it was loaded, ready to run (D47): its root filesystem is here.
     let rootfs = |home: &Path| -> usize {
         std::fs::read_dir(home.join("images/rootfs"))
             .into_iter()
@@ -10762,7 +11223,7 @@ fn load_reads_archives() {
     assert_eq!(ran.status, Some(6), "{ran}");
     // A layer the archive holds once, another directory's layer.tar a symlink to it, as
     // Docker's older save writes a layer it has written already: `../abc/layer.tar`,
-    // joined to its directory and cleaned, as containerd's importer resolves it.
+    // joined to its directory and cleaned, never leaving the archive (D41).
     let mut linked = common::tar(&[
         ("cfg.json", 0o644, 0, Some(config.as_slice())),
         ("abc", 0o755, 0, None),
@@ -10834,7 +11295,7 @@ fn load_reads_archives() {
         ),
         "{ran}"
     );
-    // Its manifest as containerd writes one for it, byte for byte: its ID is that.
+    // Its manifest made from the archive byte for byte, so that its ID is the same.
     let manifest = format!(
         r#"{{"schemaVersion":2,"mediaType":"application/vnd.docker.distribution.manifest.v2+json","config":{{"mediaType":"application/vnd.docker.container.image.v1+json","digest":"{}","size":{}}},"layers":[{{"mediaType":"application/vnd.docker.image.rootfs.diff.tar","digest":"{}","size":{}}}]}}"#,
         sha256_digest(config),
@@ -10851,7 +11312,7 @@ fn load_reads_archives() {
     );
     assert!(doc[0].get("Identity").is_none(), "no pull, no identity");
     // A layer already here compressed, pulled as gzip: the legacy archive's copy of it,
-    // uncompressed, is that gzip blob, as containerd finds it by its uncompressed digest.
+    // uncompressed, is that gzip blob, found by its uncompressed digest (D41).
     let (_, gz_blobs) = common::test_image_with(Some(b"gzipped"));
     let (gz_config, raw_layer) = (&gz_blobs[0], &gz_blobs[1]);
     let mut gzip = Command::new("gzip")
@@ -11155,8 +11616,8 @@ fn a_run_interrupted_as_it_pulls_ends_at_once() {
     assert_eq!(shards_in(&home, &["images", "-q"]).stdout, "");
 }
 
-/// A push goes with the credentials of the client that asks for it, as the Docker CLI
-/// sends its own with each request: not those of the client that started the daemon.
+/// A push goes with the credentials of the client that asks for it, sent with each
+/// request (D23): not those of the client that started the daemon.
 #[test]
 fn a_push_goes_with_its_clients_credentials() {
     if cannot_run_vms() {
@@ -11219,8 +11680,8 @@ fn a_push_goes_with_its_clients_credentials() {
     let all = shards(&some, &["push", "-a", &format!("127.0.0.1:{port}/team/app")]);
     assert_eq!(all.status, Some(0), "{all}");
     assert!(challenged() - before <= 2, "{:?}", repos.lock().unwrap().log);
-    // Tag 1 named the same manifest already: asked for with a HEAD, and not put again,
-    // as containerd's pusher leaves it.
+    // Tag 1 named the same manifest already: asked for with a HEAD, and not put again:
+    // nothing is sent that the registry holds.
     let puts = repos
         .lock()
         .unwrap()
@@ -11390,7 +11851,7 @@ fn run_mounts_binds_volumes_and_tmpfs() {
     std::fs::write(shared.join("a"), "host").unwrap();
     let file = home.join("one");
     std::fs::write(&file, "alone").unwrap();
-    // A link to it, bound as the file it leads to on the host, as Docker's bind takes it.
+    // A link to it, bound as the file it leads to on the host (D38).
     let link = home.join("link");
     #[cfg(unix)]
     std::os::unix::fs::symlink(&file, &link).unwrap();
@@ -11427,8 +11888,10 @@ fn run_mounts_binds_volumes_and_tmpfs() {
         ("/etc/one", "5\n= alone"),
         ("/etc/linked", "5\n= alone"),
     ] {
+        // The host's files, which hold no owner, are the run's user's: the image's, app.
         assert!(
-            ran.stdout.contains(&format!("{path} file {host} 0:0 {said}\n")),
+            ran.stdout
+                .contains(&format!("{path} file {host} 1000:1000 {said}\n")),
             "{path}: {ran}"
         );
     }
@@ -11442,32 +11905,34 @@ fn run_mounts_binds_volumes_and_tmpfs() {
         assert!(ran.stdout.contains(mount), "{mount}: {ran}");
     }
     // Written in the guest, there on the host, owned as the guest made it; read-only
-    // where asked; the file alone, nothing else of its directory.
-    let wrote = run_in(
-        &home,
-        &image,
-        &["--rm", "-v", &bind, "-v", &ro, "-u", "1000:1000"],
-        &["fs", "mkdir:/data/d", "write:/data/d/b=guest"],
-    );
-    assert_eq!(
-        wrote.status,
-        Some(1),
-        "a directory root owns refuses user 1000: {wrote}"
-    );
-    // The image's user is `app`; root makes the directory.
+    // where asked; the file alone, nothing else of its directory. Root makes the
+    // directory, recorded root's though the run's user is the host's files' owner.
     let wrote = run_in(
         &home,
         &image,
         &["--rm", "-u", "0", "-v", &bind],
-        &[
-            "fs",
-            "mkdir:/data/d",
-            "write:/data/d/b=guest",
-            "chmod:1777:/data/d",
-        ],
+        &["fs", "mkdir:/data/d", "write:/data/d/b=guest"],
     );
     assert_eq!(wrote.status, Some(0), "{wrote}");
     assert_eq!(std::fs::read_to_string(shared.join("d/b")).unwrap(), "guest");
+    let refused = run_in(
+        &home,
+        &image,
+        &["--rm", "-v", &bind, "-v", &ro, "-u", "1000:1000"],
+        &["fs", "write:/data/d/c=user"],
+    );
+    assert_eq!(
+        refused.status,
+        Some(1),
+        "a directory root owns refuses user 1000: {refused}"
+    );
+    let opened = run_in(
+        &home,
+        &image,
+        &["--rm", "-u", "0", "-v", &bind],
+        &["fs", "chmod:1777:/data/d"],
+    );
+    assert_eq!(opened.status, Some(0), "{opened}");
     let user = run_in(
         &home,
         &image,
@@ -11609,6 +12074,121 @@ fn a_fresh_volume_where_its_image_has_nothing_is_its_runs_users() {
     );
 }
 
+/// A bind's files the host made, which hold no owner, are the run's own user's in its
+/// microVM (D38): its `--user`, else its image's `USER`, so that an unprivileged run writes
+/// the directory it was given, as uid 1000 here. What the guest makes there is recorded as
+/// its maker's, root's too, and stays so for a run of another user; permissions are still
+/// checked: a run of user 2000 sees the host's files as its, and writes no directory user
+/// 1000 made 0755. A root run sees the host's files as root's.
+#[test]
+fn a_binds_host_files_are_its_runs_users() {
+    let Some((home, image)) = home("containers-bind-owner") else {
+        return;
+    };
+    let given = home.join("given");
+    std::fs::create_dir(&given).unwrap();
+    std::fs::write(given.join("readme"), "host").unwrap();
+    let bind = format!("{}:/work", given.display());
+    let ro = format!("{}:/ro:ro", given.display());
+    let one = format!("{}:/etc/readme:ro", given.join("readme").display());
+    let host = host_file_mode();
+    // User 1000 by --user: the folder and its files are its own, and it writes there.
+    let wrote = run_in(
+        &home,
+        &image,
+        &["--rm", "-u", "1000:1000", "-v", &bind],
+        &[
+            "fs",
+            "mkdir:/work/out",
+            "write:/work/out/r=done",
+            "write:/work/top=t",
+        ],
+    );
+    assert_eq!(wrote.status, Some(0), "{wrote}");
+    assert_eq!(std::fs::read_to_string(given.join("out/r")).unwrap(), "done");
+    // The image's USER (app, 1000:1000) by default; a read-only bind and a file bound alone
+    // alike.
+    let seen = run_in(
+        &home,
+        &image,
+        &["--rm", "-v", &bind, "-v", &ro, "-v", &one],
+        &[
+            "stat",
+            "/work",
+            "/work/readme",
+            "/ro/readme",
+            "/etc/readme",
+            "/work/out/r",
+        ],
+    );
+    assert_eq!(seen.status, Some(0), "{seen}");
+    for want in [
+        format!("/work/readme file {host} 1000:1000 4\n"),
+        format!("/ro/readme file {host} 1000:1000 4\n"),
+        format!("/etc/readme file {host} 1000:1000 4\n"),
+        "/work/out/r file 644 1000:1000 4\n".into(),
+    ] {
+        assert!(seen.stdout.contains(&want), "{want:?}: {seen}");
+    }
+    assert!(
+        seen.stdout
+            .lines()
+            .any(|l| l.starts_with("/work dir ") && l.contains(" 1000:1000 ")),
+        "{seen}"
+    );
+    // Root's files recorded as root's, though the host's are the run's user's.
+    let rooted = run_in(
+        &home,
+        &image,
+        &["--rm", "-u", "0", "-v", &bind],
+        &["fs", "mkdir:/work/root-made", "write:/work/root-file=r"],
+    );
+    assert_eq!(rooted.status, Some(0), "{rooted}");
+    // Another user: the host's files its, the others' as they were made, and the
+    // directories it does not own refuse it.
+    let other = run_in(
+        &home,
+        &image,
+        &["--rm", "-u", "2000:2000", "-v", &bind],
+        &["stat", "/work/readme", "/work/out/r", "/work/root-file"],
+    );
+    assert_eq!(other.status, Some(0), "{other}");
+    for want in [
+        format!("/work/readme file {host} 2000:2000 4\n"),
+        "/work/out/r file 644 1000:1000 4\n".into(),
+        "/work/root-file file 644 0:0 1\n".into(),
+    ] {
+        assert!(other.stdout.contains(&want), "{want:?}: {other}");
+    }
+    let mine = run_in(
+        &home,
+        &image,
+        &["--rm", "-u", "2000:2000", "-v", &bind],
+        &["fs", "write:/work/mine=2"],
+    );
+    assert_eq!(mine.status, Some(0), "the folder it was given: {mine}");
+    for refused in ["write:/work/out/x=2", "write:/work/root-made/x=2"] {
+        let ran = run_in(
+            &home,
+            &image,
+            &["--rm", "-u", "2000:2000", "-v", &bind],
+            &["fs", refused],
+        );
+        assert_eq!(ran.status, Some(1), "{refused}: {ran}");
+    }
+    // A root run: root's.
+    let root = run_in(
+        &home,
+        &image,
+        &["--rm", "-u", "0", "-v", &bind],
+        &["stat", "/work/readme"],
+    );
+    assert!(
+        root.stdout.contains(&format!("/work/readme file {host} 0:0 4\n")),
+        "{root}"
+    );
+}
+
 #[test]
 fn volume_commands_keep_volumes() {
     let Some((home, image)) = home("containers-volume-commands") else {
@@ -11724,7 +12304,7 @@ fn volume_commands_keep_volumes() {
     assert!(host.join("h").exists(), "a bound directory outlives its volume");
 }
 
-/// `--restart`, as dockerd's restart manager keeps it: `on-failure:N` restarts a failing
+/// `--restart` (D39): `on-failure:N` restarts a failing
 /// command N times; `always` until stopped, a stop ending it for good; as the daemon
 /// starts again, `unless-stopped` and `always` start again what its stop ended, and not
 /// what was stopped by hand.
@@ -12233,7 +12813,7 @@ fn import_makes_images_of_tarballs() {
     let engine = shards_vmm::platform::UnixListener::bind(&socket.0).unwrap();
     let (sent, served) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
-        use std::io::{BufRead as _, Read as _, Write as _};
+        use std::io::{Read as _, Write as _};
         // Asked first whether it holds the microVM, which it does not.
         let (mut stream, mut reader, request) = loop {
             let (mut stream, _) = engine.accept().unwrap();
@@ -12330,7 +12910,7 @@ fn import_makes_images_of_tarballs() {
     for (args, said) in [
         (
             &["import", "nope.tar"][..],
-            // Go's words for the error each OS gives (syscall's Errno), as docker/cli's are.
+            // Go's words for the error each OS gives (syscall's Errno), the CLI's (D41).
             if cfg!(windows) {
                 "open nope.tar: The system cannot find the file specified.\n"
             } else {
@@ -12409,12 +12989,12 @@ fn inspecting_a_run_as_it_ends_never_deadlocks() {
     });
 }
 
-/// `--security-opt` (D42), as Docker's: the default profile's filter on the workload and
+/// `--security-opt` (D42): the default profile's filter on the workload and
 /// its execs, none for `unconfined` or a privileged container (but one it names; here
 /// `builtin` too, which dockerd fails to read), a profile's file read by the CLI and
 /// kept in SecurityOpt, `no-new-privileges`, `systempaths=unconfined` leaving the paths
-/// unmasked, and refusals in dockerd's words: of an option as the container is made, of
-/// a profile as it starts, the container kept, created, with State.Error.
+/// unmasked, and refusals in the words scripts match (D42): of an option as the microVM is
+/// made, of a profile as it starts, the microVM kept, created, with State.Error.
 #[test]
 fn security_opt_confines_the_workload() {
     let Some((home, image)) = home("containers-security-opt") else {
@@ -12532,6 +13112,7 @@ fn security_opt_confines_the_workload() {
         "exit",
         "0",
     ]);
+    // Made, its profile read only as it starts (D42).
     assert_eq!(made.status, Some(0), "made as dockerd makes it: {made}");
     let started = shards(&["start", "bad"]);
     assert_eq!(started.status, Some(1), "{started}");
@@ -12590,7 +13171,7 @@ fn workloads_start_with_high_file_and_process_limits() {
     assert_eq!(shards_in(&home, &["rm", "-f", "limited"]).status, Some(0));
 }
 
-/// `stats` reads each running container's guest as dockerd reads a container's cgroup:
+/// `stats` reads each running microVM's guest, its workload's cgroup (D43):
 /// its CPU over the second between two samples, memory less inactive file pages against
 /// its limit, its processes, and its interfaces' and block devices' bytes, laid out as
 /// docker/cli lays them out, `--format` included; a stopped one's zeros under `-a`.
@@ -12649,6 +13230,29 @@ fn stats_read_each_microvms_guest() {
     ]);
     assert!(all.stdout.lines().any(|l| l == "idle 0.00% 0B / 0B 0"), "{all}");
     assert_eq!(shards(&["rm", "-f", "busy", "idle", "asleep"]).status, Some(0));
+}
+
+/// Off Linux a run naming a host's PCI function, by VFIO's nodes or (on Windows) as
+/// Discrete Device Assignment names one, is refused as it starts with its host's own
+/// limit, in dockerd's words for a device it cannot give (D154; PM M401, M402, M403).
+#[cfg(not(target_os = "linux"))]
+#[test]
+fn a_run_given_a_hosts_pci_function_is_refused_with_its_hosts_limit() {
+    let Some((home, image)) = home("containers-passthrough") else {
+        return;
+    };
+    let limit = shards_vmm::vm::passthrough_refused();
+    let mut named = vec!["/dev/vfio/1", "/dev/vfio/devices/vfio0"];
+    if cfg!(windows) {
+        named.push("PCIROOT(0)#PCI(0202)#PCI(0000):/dev/x");
+    }
+    for device in named {
+        let host = device.split(':').next().unwrap_or_default();
+        let r = run_in(&home, &image, &["--rm", "--device", device], &["exit", "0"]);
+        assert_ne!(r.status, Some(0), "{device}: {r}");
+        let said = format!("error gathering device information while adding custom device {host:?}: {limit}");
+        assert!(r.stderr.contains(&said), "{device}: {r}");
+    }
 }
 
 /// D44: a container reaches Docker's devices and those it is given, as dockerd and runc
@@ -12785,7 +13389,7 @@ fn devices_are_given_and_confined() {
             .contains("CDI device injection failed: unresolvable CDI devices vendor.com/gpu=0"),
         "{r}"
     );
-    // What inspect says of them, as Docker's does.
+    // What inspect says of them, in the HostConfig fields scripts read (D44).
     let fields = "{{json .HostConfig.Devices}} {{json .HostConfig.DeviceCgroupRules}} {{json .HostConfig.DeviceRequests}}";
     let made = shards(&[
         "create",
@@ -12955,9 +13559,9 @@ fn block_io_limits_hold() {
 }
 
 /// `shards attach`, as `docker attach` attaches (probed on Docker Engine 29.3.1): to a
-/// running container's command, its stdin where the container reads one, its output from
-/// now, until the command ends, whose status is the client's; refused as docker/cli
-/// refuses it. Its stdin's end leaves a detached container's open and its output still
+/// running microVM's command, its stdin where the command reads one, its output from now,
+/// until the command ends, whose status is the client's; refused in the words scripts
+/// match (D45). Its stdin's end leaves a detached container's open and its output still
 /// coming, where Docker's attach ends with its stdin and loses what follows.
 #[test]
 fn attach_joins_a_running_microvm() {
@@ -13123,7 +13727,7 @@ fn microvms_on_an_ipv6_network_reach_one_another() {
         "lan6",
     ]);
     assert_eq!(members.stdout, "srv6 fd78::50/64\n", "{members}");
-    // An address taken is refused in dockerd's words.
+    // An address taken is refused, in the words scripts match (D99).
     let r = run_in(
         &home,
         &image,
@@ -13141,12 +13745,11 @@ fn microvms_on_an_ipv6_network_reach_one_another() {
     assert_eq!(shards(&["network", "rm", "lan6"]).stdout, "lan6\n");
 }
 
-/// A network's options are what its microVMs do: one made with `enable_icc` false keeps
-/// its members from one another, their names still answered, as dockerd's bridge keeps
-/// them; its ports published with no address are bound at its `host_binding_ipv4` alone,
-/// and reached there; an MTU is kept as given, its members keeping their devices'; a
-/// routed one publishes no port; and each option is read as dockerd reads it. The default
-/// network says what it does.
+/// A network's options are what its microVMs do: one made with `enable_icc` false keeps its
+/// members from one another, their names still answered (D46); its ports published with no
+/// address are bound at its `host_binding_ipv4` alone, and reached there; an MTU is kept as
+/// given, its members keeping their devices'; a routed one publishes no port; and each
+/// option is read with its meaning (D46). The default network says what it does.
 #[test]
 fn a_networks_options_are_what_its_microvms_do() {
     let Some((home, image)) = home("containers-netopts") else {
@@ -13478,9 +14081,9 @@ fn microvms_on_a_network_reach_one_another_by_name() {
 
 /// An image's config as Docker 29.3.1 reads it (shards_image::config, held to Go by its
 /// testdata/image-config.json): a key matches its field exactly or else folded, the last of
-/// those that match winning, so `"User":"root","user":"app"` runs as app, as Docker runs it.
-/// One Go reads into no DockerOCIImage loads, as Docker loads it, and its run, create, tag
-/// and inspect are refused in Docker's words; its history is read as Docker's history reads
+/// those that match winning, so `"User":"root","user":"app"` runs as app (D112).
+/// One Go reads into no DockerOCIImage loads, and its run, create, tag and inspect are
+/// refused in the words scripts match (D112); its history is read as Docker's history reads
 /// its own part of it (each answer measured from Docker 29.3.1, its name ours).
 #[test]
 fn image_configs_run_key_by_key() {
@@ -13522,7 +14125,7 @@ fn image_configs_run_key_by_key() {
     assert_eq!(made.status, Some(0), "{made}");
     let user = shards(&["inspect", "--format", "{{.Config.User}}", "folded-c"]);
     assert_eq!((user.status, user.stdout.as_str()), (Some(0), "app\n"), "{user}");
-    // A config with no time Go reads lists at Go's zero time, as moby's summary has it,
+    // A config with no time Go reads lists at Go's zero time (D112),
     // which the CLI says was made at no time since (its CreatedAt is in the local zone).
     let listed = shards(&["images", "--format", "{{.CreatedSince}}|", "folded"]);
     assert_eq!(
@@ -14561,6 +15164,81 @@ fn a_workload_past_its_cgroup_is_held_to_its_cpus_by_its_host() {
     let _ = exit(&mut free);
 }
 
+/// On Linux a run's vCPUs and its hold's governor run at the fair scheduler's shortest
+/// slice, at their weight as before (D191, PM M440): on a host whose CPUs are busy each
+/// takes its CPU as it wakes. Every vCPU thread of a `--cpus 1` run's VM process, and its
+/// governor, as sched_getattr(2) reads them: SCHED_OTHER at the nice value of the
+/// processes that started it (this test's), and 100 µs where the
+/// host's kernel takes a thread's slice (6.12 and later). A VM process whose seccomp filter
+/// refused the call would have ended at its first vCPU.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_microvms_vcpus_and_governor_wake_at_the_shortest_slice() {
+    let Some((home, image)) = home("containers-slice") else {
+        return;
+    };
+    let shards = |args: &[&str]| shards_in(&home, args);
+    let mut sliced = start(&home, &image, &["--name", "sliced", "--cpus", "1"], &["sleep"]);
+    let pid: u32 = shards(&["inspect", "-f", "{{.State.Pid}}", "sliced"])
+        .stdout
+        .trim()
+        .parse()
+        .unwrap();
+    let release = std::fs::read_to_string("/proc/sys/kernel/osrelease").unwrap();
+    let mut numbers = release
+        .split(|c: char| !c.is_ascii_digit())
+        .map(|n| n.parse::<u32>().unwrap_or(0));
+    let takes_slices = (numbers.next().unwrap_or(0), numbers.next().unwrap_or(0)) >= (6, 12);
+    let host = std::thread::available_parallelism().unwrap().get();
+    // Each thread named vcpuN or hold: its policy, nice and slice. The governor starts as
+    // the run's limit comes, so it is looked for until it is there (on a host of one CPU
+    // a run of one is not held, and has none).
+    let threads = || {
+        let mut seen = Vec::new();
+        for task in std::fs::read_dir(format!("/proc/{pid}/task")).unwrap() {
+            let task = task.unwrap();
+            let Ok(name) = std::fs::read_to_string(task.path().join("comm")) else {
+                continue;
+            };
+            let name = name.trim().to_string();
+            if !(name.starts_with("vcpu") || name == "hold") {
+                continue;
+            }
+            let tid: libc::pid_t = task.file_name().to_str().unwrap().parse().unwrap();
+            // SAFETY: an all-zero sched_attr is a valid value for the kernel to fill.
+            let mut attr: libc::sched_attr = unsafe { std::mem::zeroed() };
+            let size = std::mem::size_of::<libc::sched_attr>() as u32;
+            // SAFETY: thread `tid`'s attributes, into `attr`, which has `size` bytes.
+            if unsafe { libc::syscall(libc::SYS_sched_getattr, tid, &mut attr as *mut _, size, 0) } == 0 {
+                seen.push((name, attr.sched_policy, attr.sched_nice, attr.sched_runtime));
+            }
+        }
+        seen.sort();
+        seen
+    };
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut seen = threads();
+    while host > 1 && !seen.iter().any(|t| t.0 == "hold") && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+        seen = threads();
+    }
+    let vcpus = seen.iter().filter(|t| t.0.starts_with("vcpu")).count();
+    assert_eq!(vcpus, host, "{seen:?}");
+    assert_eq!(seen.iter().any(|t| t.0 == "hold"), host > 1, "{seen:?}");
+    let slice = if takes_slices { 100_000 } else { 0 };
+    // SAFETY: getpriority(2) of this process.
+    let own = unsafe { libc::getpriority(libc::PRIO_PROCESS, 0) };
+    for (name, policy, nice, runtime) in &seen {
+        assert_eq!(
+            (*policy, *nice, *runtime),
+            (libc::SCHED_OTHER as u32, own, slice),
+            "{name} on Linux {release}: {seen:?}"
+        );
+    }
+    assert_eq!(shards(&["rm", "-f", "sliced"]).status, Some(0));
+    let _ = exit(&mut sliced);
+}
+
 /// A run's busy vCPUs are never depressed by XNU's real-time fail-safe (D4, PM M317):
 /// with two threads of its guest busy for five seconds, no vCPU thread of its VM process
 /// is at priority 0 at any look, and the busy ones go to timeshare while they run. Without
@@ -15220,7 +15898,7 @@ fn a_run_attaches_the_streams_it_asks_for() {
         "made",
     ]);
     assert_eq!(shown.stdout, "false true false\n", "{shown}");
-    // Without `-a`, stdout and stderr, as docker/cli's create keeps them.
+    // Without `-a`, stdout and stderr (D160).
     let plain = shards(&["create", "--pull", "never", "--name", "plain", &image]);
     assert_eq!(plain.status, Some(0), "{plain}");
     let shown = shards(&[
@@ -15234,8 +15912,8 @@ fn a_run_attaches_the_streams_it_asks_for() {
 
 /// A run's log compressed and queued as its options say (D162). Its rotated segments are
 /// compressed, seekably, unless its driver is json-file, which compresses them only when
-/// asked (as Docker's does, though Docker refuses json-file's `compress` without a
-/// `max-size`). `logs` reads them back whole and from their middle (`--tail`). A
+/// asked (D162; shards takes json-file's `compress` without a `max-size` too, where
+/// Docker refuses it). `logs` reads them back whole and from their middle (`--tail`). A
 /// non-blocking log never holds up its run: what it keeps and what it drops add up to the
 /// run's output, and `logs` says what it dropped. Its refusals are in shards' words.
 #[test]
@@ -15921,9 +16599,9 @@ fn gelf_messages(datagrams: &[Vec<u8>]) -> Vec<serde_json::Value> {
 }
 
 /// A run's log sent to a GELF server (D164), from shards' store by the daemon as syslog's
-/// is (D163): over UDP gzipped, as Docker's is unless told, and uncompressed in chunks;
-/// over TCP, each message followed by a NUL. Each message is GELF 1.1 with the container's
-/// own fields and the attributes asked for, as Docker's gelf driver sends it, stamped with
+/// is (D163): over UDP gzipped unless told, and uncompressed in chunks; over TCP, each
+/// message followed by a NUL. Each message is GELF 1.1 with the run's own fields and the
+/// attributes asked for, the fields GELF servers read of Docker's (D164), stamped with
 /// when its output came, to the millisecond.
 #[test]
 fn a_runs_log_is_sent_to_gelf_as_its_options_say() {
@@ -16450,7 +17128,8 @@ fn a_runs_log_is_sent_to_journald_as_its_options_say() {
         ordinals.sort();
         assert_eq!(ordinals, ["1", "2"]);
 
-        // A line of 40,000 bytes in parts of 16 KiB, as moby's copier cuts it.
+        // A line of 40,000 bytes in parts of 16 KiB, the size receivers that join parts
+        // expect.
         journald("parts", &[], &["wide", "40000"]);
         let parts: Vec<_> = (0..3).map(|_| journal_entry(&journal).0).collect();
         let partial = field(&parts[0], "CONTAINER_PARTIAL_ID");
@@ -16519,7 +17198,7 @@ struct HecRequest {
 /// indexed. Each connection on a thread of its own, as a driver keeps its own; each
 /// request sent on `seen`.
 fn hec(listener: std::net::TcpListener, seen: std::sync::mpsc::Sender<HecRequest>) {
-    use std::io::{BufRead as _, Read as _, Write as _};
+    use std::io::{Read as _, Write as _};
     let posted = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     std::thread::spawn(move || {
         for conn in listener.incoming() {
@@ -16768,7 +17447,7 @@ struct CloudWatchRequest {
 /// put to a stream there. Each connection on a thread of its own, as a client keeps its
 /// own; each request sent on `seen`.
 fn cloudwatch(listener: std::net::TcpListener, seen: std::sync::mpsc::Sender<CloudWatchRequest>) {
-    use std::io::{BufRead as _, Read as _, Write as _};
+    use std::io::{Read as _, Write as _};
     type Made = (
         std::collections::BTreeSet<String>,
         std::collections::BTreeSet<(String, String)>,
@@ -17189,7 +17868,7 @@ struct GoogleRequest {
 /// GCE's metadata server, its project, its instance and its default account's token. Each
 /// connection on a thread of its own; each request sent on `seen`.
 fn google(listener: std::net::TcpListener, seen: std::sync::mpsc::Sender<GoogleRequest>) {
-    use std::io::{BufRead as _, Read as _, Write as _};
+    use std::io::{Read as _, Write as _};
     std::thread::spawn(move || {
         for conn in listener.incoming() {
             let Ok(conn) = conn else {

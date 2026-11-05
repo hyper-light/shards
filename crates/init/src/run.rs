@@ -201,7 +201,7 @@ pub fn main(device: &str, template: bool) -> ! {
     // the relay finishes the connection while the workload runs.
     let signals = dial(run::SIGNAL_PORT, false).ok();
     let started = standby.and_then(|standby| {
-        let spec = receive(&conn)?;
+        let (spec, standby) = receive(&conn, standby)?;
         // What processes the run's members start and end (D123), listened to before any
         // starts; none of a visit to a stopped container's files, which runs nothing.
         let procs = (spec.builtin != run::builtin::HOLD)
@@ -787,6 +787,7 @@ fn sort_setup(entries: &[Vec<u8>], into: &mut Inherited) -> Result<Sorted, Failu
             crate::dnsrelay::start(gateway).map_err(setup_failed)?;
         } else if entry.starts_with(b"address=")
             || entry.starts_with(b"address6=")
+            || entry.starts_with(b"uplink6=")
             || entry == b"confine-eth0"
             || entry == b"init"
             || entry == b"pid=host"
@@ -1008,13 +1009,28 @@ pub fn workload_headroom() -> u64 {
 /// shared, so that what init mounts later reaches the workload's mount namespace.
 fn cgroups() -> Result<(), Failure> {
     let (nosuid, noexec, nodev) = (libc::MS_NOSUID, libc::MS_NOEXEC, libc::MS_NODEV);
-    mount(
+    // favordynmods (Linux 6.0, Documentation/admin-guide/cgroup-v2.rst): a process moving
+    // into a cgroup takes the hierarchy's threadgroup lock for writing, which waits for an
+    // RCU grace period unless the lock is held in its slow mode (kernel/cgroup/cgroup.c,
+    // cgroup_attach_lock; kernel/rcu/sync.c), as favordynmods holds it; there each fork and
+    // exit pays a full barrier more (kernel/locking/percpu-rwsem.c, __percpu_down_read_trylock).
+    // A standby born after the snapshot, as one going on over a stopped container's layer
+    // is (over.rs), moved itself into the workload's cgroup in 10 to 40 ms on a 32-vCPU
+    // guest, and in 0.3 to 0.9 favored (PM M443), as an exec's standby moves itself into
+    // its workload's. A kernel without it refuses the option, and the hierarchy is mounted
+    // without it.
+    let flags = nosuid | noexec | nodev;
+    if mount(
         "cgroup2",
         "/sys/fs/cgroup",
         "cgroup2",
-        nosuid | noexec | nodev,
-        "nsdelegate",
-    )?;
+        flags,
+        "nsdelegate,favordynmods",
+    )
+    .is_err()
+    {
+        mount("cgroup2", "/sys/fs/cgroup", "cgroup2", flags, "nsdelegate")?;
+    }
     // One at a time: a controller the kernel lacks stays off, and a limit of it then
     // fails where it is asked for. The root's, and the run's below it (D148).
     let enable = |dir: &str| {
@@ -1832,7 +1848,7 @@ fn set_hostname(name: &[u8], domain: &[u8], extra: &[Vec<u8>]) -> Result<(), Fai
     }
     // Its IPv6 address after its IPv4 one, on a network with IPv6 (D99), each line the
     // same names, as makeHostsRecs writes one per address of the container's.
-    let own6 = crate::net::current6().map(|(addr, _, _)| addr.to_string());
+    let own6 = crate::net::named6().map(|(addr, _, _)| addr.to_string());
     for addr in [
         own.as_deref().map(str::as_bytes).or(Some(OWN_ADDRESS)),
         own6.as_deref().map(str::as_bytes),
@@ -2033,18 +2049,33 @@ fn shutdown_and_wait(conn: &File) -> io::Result<()> {
 }
 
 /// The workload the host sends; first, if it sends one, the container's writable layer
-/// from before, put over the root (layer.rs).
-fn receive(conn: &File) -> Result<Spec, Failure> {
+/// from before, put over the root (layer.rs), or kept in its file and gone on over in the
+/// template's layer's place (over.rs, D190), `standby` born again over it: the standby to
+/// start the workload.
+fn receive(conn: &File, standby: Standby) -> Result<(Spec, Standby), Failure> {
     let mut r = conn;
     let mut h = [0u8; run::HEADER];
     r.read_exact(&mut h)
         .map_err(|e| setup_failed(format!("reading the workload: {e}")))?;
-    if let Some((kind::LAYER, first)) = run::parse_header(h) {
-        crate::layer::apply(conn, first)
-            .map_err(|e| setup_failed(format!("putting back the container's files: {e}")))?;
-        r.read_exact(&mut h)
-            .map_err(|e| setup_failed(format!("reading the workload: {e}")))?;
-    }
+    let standby = match run::parse_header(h) {
+        Some((kind::LAYER, first)) => {
+            crate::layer::apply(conn, first)
+                .map_err(|e| setup_failed(format!("putting back the container's files: {e}")))?;
+            r.read_exact(&mut h)
+                .map_err(|e| setup_failed(format!("reading the workload: {e}")))?;
+            standby
+        }
+        Some((kind::OVER, 0)) => {
+            // Its own mount namespace's copy of the root holds the template's layer too.
+            standby.end();
+            crate::over::go_over()
+                .map_err(|e| setup_failed(format!("going on over the container's layer: {e}")))?;
+            r.read_exact(&mut h)
+                .map_err(|e| setup_failed(format!("reading the workload: {e}")))?;
+            Standby::fork(Born::Own)?
+        }
+        _ => standby,
+    };
     let len = match run::parse_header(h) {
         Some((kind::SPEC, len)) => len,
         _ => return Err(setup_failed("the host sent no workload")),
@@ -2052,7 +2083,8 @@ fn receive(conn: &File) -> Result<Spec, Failure> {
     let mut payload = vec![0u8; len as usize];
     r.read_exact(&mut payload)
         .map_err(|e| setup_failed(format!("reading the workload: {e}")))?;
-    Spec::decode(&payload).ok_or_else(|| setup_failed("malformed workload"))
+    let spec = Spec::decode(&payload).ok_or_else(|| setup_failed("malformed workload"))?;
+    Ok((spec, standby))
 }
 
 fn pipe() -> Result<(OwnedFd, OwnedFd), Failure> {
@@ -2282,6 +2314,18 @@ impl Standby {
             std::fs::read("/etc/group").ok(),
         );
         Standby::forked(born, users)
+    }
+
+    /// Ends it, killed with its reaper and waited for: nothing of it, its mount namespace
+    /// included, is left once this returns.
+    fn end(self) {
+        for pid in [Some(self.pid), self.reaper].into_iter().flatten() {
+            // SAFETY: kill(2) and waitpid(2) of init's own child, not yet waited for.
+            unsafe {
+                libc::kill(pid, libc::SIGKILL);
+                libc::waitpid(pid, std::ptr::null_mut(), 0);
+            }
+        }
     }
 
     /// Its place taken by a standby born as `born`, with the user database it read: it
@@ -2528,6 +2572,15 @@ impl Standby {
                 .and_then(crate::net::parse6)
                 .ok_or_else(|| setup_failed("a malformed address6 entry"))?;
             crate::net::address6(to).map_err(|e| setup_failed(format!("eth0's IPv6 address: {e}")))?;
+        }
+        // Else its agents' IPv6 past the microVM, on a network without IPv6 (D99): before
+        // eth0's confinement, which takes IPv6's family where eth0 has it, and the domains.
+        else if let Some(to) = spec.setup.iter().find_map(|e| e.strip_prefix(b"uplink6=")) {
+            let to = std::str::from_utf8(to)
+                .ok()
+                .and_then(crate::net::parse6)
+                .ok_or_else(|| setup_failed("a malformed uplink6 entry"))?;
+            crate::net::uplink6(to).map_err(|e| setup_failed(format!("eth0's IPv6 address: {e}")))?;
         }
         // The image's Agentfile, for a run that starts its domains (the daemon sends their
         // filter, D59), read now that eth0 has its address and before the command starts,
@@ -3249,6 +3302,12 @@ fn builtin(
     let networked = networked.or_else(|| {
         (kind == run::builtin::LISTENS).then(|| crate::members::listening(joiner.unwrap_or(workload)))
     });
+    // The workload's device filter widened to the nodes of the host's functions plugged
+    // into its microVM (D214): init's own state, as the filter it keeps, done here.
+    let networked = networked.or_else(|| {
+        (kind == run::builtin::DEVICE && joiner.is_none() && args.first().is_some_and(|a| a == b"allow"))
+            .then(|| crate::devices::allow(args.get(1..).unwrap_or_default(), WORKLOAD_CGROUP))
+    });
     // What reads the host's stdin: unpacking an archive.
     let input = if kind == run::builtin::EXTRACT {
         Some(pipe()?)
@@ -3396,6 +3455,9 @@ fn builtin(
                 .and_then(|room| crate::plug::hold_within(RUN_CGROUP, room))
                 .and_then(|held| held.map_or(Ok(()), |held| write!(out, "{held}"))),
             run::builtin::FREEZE => freeze(&cgroup, args.first().is_some_and(|a| a == b"1")),
+            // A device plugged in or let go of, or a disk grown, in the workload's mounts
+            // (D214).
+            run::builtin::DEVICE => crate::hotplug::device(args, workload, &mut out),
             run::builtin::SIZE => match &layers {
                 Some((_, upper)) => Some(format!("/proc/self/fd/{}", upper.as_raw_fd())),
                 None => crate::changes::upper(),
@@ -3898,6 +3960,7 @@ fn joiner_takes(setup: &[Vec<u8>]) -> Result<(), Failure> {
         } else if entry.starts_with(b"dns=")
             || entry.starts_with(b"address=")
             || entry.starts_with(b"address6=")
+            || entry.starts_with(b"uplink6=")
             || entry.starts_with(b"endpoint-sysctl=")
             || entry.starts_with(b"mac=")
             || entry.starts_with(b"link-local=")

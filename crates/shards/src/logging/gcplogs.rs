@@ -128,8 +128,8 @@ pub struct From {
 }
 
 impl From {
-    /// A run's: its instance's, where there is one; its details, as moby's containerInfo
-    /// holds them (its name as given, `/` first; `created` always; `command` where
+    /// A run's: its instance's, where there is one; its details, in containerInfo's shape
+    /// (D169) (its name as given, `/` first; `created` always; `command` where
     /// `gcp-log-cmd` says; its attributes as `metadata`).
     pub fn new(
         config: &Config,
@@ -286,7 +286,7 @@ mod tests {
         }
     }
 
-    /// An entry holds the run's details as moby's dockerLogEntry does, its line as
+    /// An entry holds the run's details in dockerLogEntry's shape (D169), its line as
     /// `message`, its time to the nanosecond, its stream as a label; written as Go writes
     /// it, `<`, `>` and `&` escaped.
     #[test]

@@ -13,7 +13,7 @@
 //!
 //! The bytes go to a file as they arrive, hashed on the way, never held whole, within the
 //! limits an image pull holds to (audit A10). Every source of a build is fetched at once,
-//! as BuildKit's solver fetches them, each on a thread of its own.
+//! each on a thread of its own: a build waits on its slowest source, not their sum.
 
 use std::cell::Cell;
 use std::fs::File;

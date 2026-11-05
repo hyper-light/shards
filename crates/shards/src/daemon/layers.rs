@@ -37,6 +37,9 @@ pub(super) struct LayerFile {
     path: PathBuf,
     /// The snapshot generation whose layer it is a clone of, for a restore of it.
     of: Option<String>,
+    /// A container's own, kept where it is ([`in_place`](Self::in_place)): never removed
+    /// here.
+    in_place: bool,
 }
 
 /// What of `from` holds data, copied into a new sparse file at `to` of its length: a
@@ -57,7 +60,11 @@ impl LayerFile {
         create(&path)
             .and_then(|f| shards_vmm::platform::sparse(&f))
             .map_err(|e| format!("{}: {e}", path.display()))?;
-        Ok(LayerFile { path, of: None })
+        Ok(LayerFile {
+            path,
+            of: None,
+            in_place: false,
+        })
     }
 
     /// The file a restore of the snapshot generation at `generation` is given for its
@@ -78,6 +85,7 @@ impl LayerFile {
                     let layer = LayerFile {
                         path,
                         of: Some(name.to_string()),
+                        in_place: false,
                     };
                     // Its user's alone, as every layer's file is.
                     #[cfg(unix)]
@@ -98,6 +106,7 @@ impl LayerFile {
                         return Ok(LayerFile {
                             path,
                             of: Some(name.to_string()),
+                            in_place: false,
                         });
                     }
                     Err(e) => {
@@ -131,7 +140,11 @@ impl LayerFile {
     pub(super) fn made(home: &Path, holds: u64) -> Result<LayerFile, String> {
         let bytes = size(holds)?;
         let path = fresh(home)?;
-        let layer = LayerFile { path, of: None };
+        let layer = LayerFile {
+            path,
+            of: None,
+            in_place: false,
+        };
         let at = |e: &dyn std::fmt::Display| format!("{}: {e}", layer.path.display());
         let mut file = create(&layer.path).map_err(|e| at(&e))?;
         // Sparse, as a Unix file system makes a file a length set leaves unwritten: the
@@ -168,10 +181,23 @@ impl LayerFile {
         &self.path
     }
 
+    /// A container's layer kept at `path` (D190) as a microVM's own, the file its run's
+    /// microVM took under its layer device as it started: where it stays, never removed
+    /// as its handle goes.
+    pub(super) fn in_place(path: PathBuf) -> LayerFile {
+        LayerFile {
+            path,
+            of: None,
+            in_place: true,
+        }
+    }
+
     /// Keeps the file as `at`, a container's, in place of what was there: no longer the
-    /// handle's to remove.
+    /// handle's to remove. One kept there already stays.
     pub(super) fn keep_at(mut self, at: &Path) -> std::io::Result<()> {
-        std::fs::rename(&self.path, at)?;
+        if !(self.in_place && self.path == at) {
+            std::fs::rename(&self.path, at)?;
+        }
         self.path = PathBuf::new();
         Ok(())
     }
@@ -179,8 +205,8 @@ impl LayerFile {
 
 impl Drop for LayerFile {
     fn drop(&mut self) {
-        // None, once kept.
-        if !self.path.as_os_str().is_empty() {
+        // None, once kept, or a container's own.
+        if !self.path.as_os_str().is_empty() && !self.in_place {
             let _ = std::fs::remove_file(&self.path);
         }
     }
@@ -217,6 +243,133 @@ pub(super) fn open_kept(at: &Path) -> Result<std::fs::File, String> {
         ));
     }
     Ok(file)
+}
+
+/// What a kept layer holds past which its container's next run goes on over its file rather
+/// than having it packed and put back (D190, PM M443): packing costs a restart as the layer
+/// holds more, going over about the same whatever it holds (its guest's let-go of the
+/// template's layer and mount of the container's). Where the two cost the same, as
+/// measured ([`CROSSOVER_BASIS`]), to the MiB.
+pub(super) const OVER_FROM: u64 = 5 << 20;
+
+/// PM M443's restarts, `start -a` of a container that wrote that many bytes, n = 20 a side
+/// interleaved, ms at p50: packed and put back, then gone over (Fedora, Btrfs). Packing was
+/// quicker up to 4 MiB and going over from 8; they cross where the two lines between those
+/// meet.
+#[cfg(test)]
+const CROSSOVER_BASIS: [(u64, f64, f64); 7] = [
+    (0, 52.55, 63.14),
+    (1 << 20, 70.37, 75.47),
+    (2 << 20, 76.38, 90.44),
+    (4 << 20, 95.90, 100.92),
+    (8 << 20, 135.68, 122.06),
+    (16 << 20, 259.86, 189.81),
+    (32 << 20, 396.48, 286.21),
+];
+
+/// The bytes the layer kept in `file`, `len` bytes long, holds past what an empty one of its
+/// size holds of metadata alone: its blocks in use, as its groups' counts say
+/// ([`Volume::free_blocks`]), less a fresh file system's ([`shards_ext4::Made::free_blocks`],
+/// made once a size in memory, nothing written). None where its blocks are not counted so.
+pub(super) fn held(file: &std::fs::File, len: u64) -> Result<Option<u64>, String> {
+    let volume = Volume::open(file).map_err(|e| e.to_string())?;
+    let (Some(free), Some(fresh)) = (volume.free_blocks(), fresh_free(len)?) else {
+        return Ok(None);
+    };
+    Ok(Some(
+        fresh.saturating_sub(free).saturating_mul(volume.block_size()),
+    ))
+}
+
+/// The blocks a file system of `len` bytes as [`LayerFile::made`] makes holds free, each
+/// size's counted once, by a format whose writes go nowhere.
+fn fresh_free(len: u64) -> Result<Option<u64>, String> {
+    static FRESH: std::sync::Mutex<Vec<(u64, u64)>> = std::sync::Mutex::new(Vec::new());
+    let mut fresh = FRESH.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(&(_, free)) = fresh.iter().find(|(l, _)| *l == len) {
+        return Ok(Some(free));
+    }
+    struct Nowhere;
+    impl shards_ext4::Sink for Nowhere {
+        fn write_at(&mut self, _: u64, _: &[u8]) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let options = shards_ext4::Options {
+        bytes: len,
+        uuid: [0; 16],
+        hash_seed: [0; 16],
+        time: 0,
+    };
+    let made = shards_ext4::format(&mut Nowhere, &options).map_err(|e| e.to_string())?;
+    fresh.push((len, made.free_blocks));
+    Ok(Some(made.free_blocks))
+}
+
+/// Gives the host's disk back what the writable layer kept at `at` holds of blocks its
+/// guest freed (D190), its microVM gone: pmem takes no discard (drivers/nvdimm/pmem.c), so
+/// a layer's file only grew while its guest wrote, deletes and all. Of the blocks its block
+/// bitmaps say are free ([`Volume::free_runs`]), those its file holds data in
+/// ([`platform::data_ranges`](shards_vmm::platform::data_ranges)) are deallocated
+/// ([`platform::deallocate`](shards_vmm::platform::deallocate)), and read as zeros after,
+/// as a free block's bytes are never read. Returns the bytes given back; none of a layer
+/// whose journal holds what its guest had yet to write in place (its microVM killed),
+/// whose bitmaps may not say yet what the journal allocated: replayed as it is next read
+/// ([`open_kept`]), given back as it is next kept.
+pub(super) fn give_back(at: &Path) -> Result<Option<u64>, String> {
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(at)
+        .map_err(|e| format!("{}: {e}", at.display()))?;
+    if journal::needs_replay(&file).map_err(|e| e.to_string())? {
+        return Ok(None);
+    }
+    let volume = Volume::open(&file).map_err(|e| e.to_string())?;
+    let block = volume.block_size();
+    let free = volume.free_runs().map_err(|e| e.to_string())?;
+    let len = file
+        .metadata()
+        .map_err(|e| format!("{}: {e}", at.display()))?
+        .len();
+    let data = shards_vmm::platform::data_ranges(&file, len).map_err(|e| format!("{}: {e}", at.display()))?;
+    let unit = shards_vmm::platform::deallocation_unit(at).map_err(|e| format!("{}: {e}", at.display()))?;
+    let mut given = 0u64;
+    for (from, n) in overlaps(&free, block, unit, &data) {
+        shards_vmm::platform::deallocate(&file, from, n).map_err(|e| format!("{}: {e}", at.display()))?;
+        given = given.saturating_add(n);
+    }
+    Ok(Some(given))
+}
+
+/// The byte ranges `(offset, len)` both in `free`, runs of blocks of `block` bytes, and in
+/// `data`, byte ranges: each list in order, neither overlapping itself. Of each free run only
+/// the whole `unit`s it holds, what the host's file system gives back whole
+/// ([`platform::deallocation_unit`](shards_vmm::platform::deallocation_unit)): a part of one
+/// would be zeroed and stay on its disk, and be found as data again.
+fn overlaps(free: &[(u64, u64)], block: u64, unit: u64, data: &[(u64, u64)]) -> Vec<(u64, u64)> {
+    let mut out = Vec::new();
+    let unit = unit.max(1);
+    let (mut f, mut d) = (free.iter().peekable(), data.iter().peekable());
+    while let (Some(&&(fb, fn_)), Some(&&(dat, dlen))) = (f.peek(), d.peek()) {
+        let fa = fb.saturating_mul(block).next_multiple_of(unit);
+        let fz = fb.saturating_add(fn_).saturating_mul(block) / unit * unit;
+        if fa >= fz {
+            f.next();
+            continue;
+        }
+        let dz = dat.saturating_add(dlen);
+        let (from, to) = (fa.max(dat), fz.min(dz));
+        if from < to {
+            out.push((from, to - from));
+        }
+        if fz <= dz {
+            f.next();
+        } else {
+            d.next();
+        }
+    }
+    out
 }
 
 /// Writes the writable layer kept in `file` (D190) to `out` as an OCI layer: its overlay's
@@ -453,6 +606,133 @@ mod tests {
             "{on_disk} of {} bytes on disk",
             meta.len()
         );
+    }
+
+    /// What a layer's guest wrote and freed is given back to the host's disk once kept:
+    /// the free blocks its file holds data in read as zeros after, take none of its disk,
+    /// and the file system reads as it did; what is in use stays. On every host: Linux's and
+    /// macOS's holes punched, a sparse NTFS file's clusters zeroed away (FSCTL_SET_ZERO_DATA).
+    #[test]
+    fn a_kept_layers_freed_blocks_go_back_to_its_disk() {
+        let home = shards_testdir::TempDir::new("layers-give").unwrap();
+        let made = LayerFile::made(&home, 256 << 20).unwrap();
+        let at = home.join("kept.ext4");
+        made.keep_at(&at).unwrap();
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&at)
+            .unwrap();
+        let free = Volume::open(&file).unwrap().free_runs().unwrap();
+        // 16 MiB of a free run, written as a guest's deleted file left it: at a MiB, so
+        // that NTFS's sparse units (64 KiB) hold it whole.
+        let &(first, n) = free.iter().find(|r| r.1 >= 8192).unwrap();
+        let (offset, len) = (((first + 1024) * 4096).next_multiple_of(1 << 20), 16u64 << 20);
+        assert!(offset + len <= (first + n) * 4096);
+        shards_vmm::platform::write_all_at(&file, &vec![0x5Au8; len as usize], offset).unwrap();
+        file.sync_all().unwrap();
+        let on_disk = || crate::os::on_disk(&at, &file.metadata().unwrap());
+        let before = on_disk();
+        let used = std::fs::read(&at).unwrap();
+        let given = give_back(&at).unwrap().unwrap();
+        assert!(given >= len, "{given} bytes given back");
+        file.sync_all().unwrap();
+        let after = on_disk();
+        assert!(after + len <= before, "{before} bytes on disk, then {after}");
+        let now = std::fs::read(&at).unwrap();
+        assert!(
+            now[offset as usize..(offset + len) as usize]
+                .iter()
+                .all(|&b| b == 0)
+        );
+        // Every block in use as it was: the volume reads as it did.
+        for (i, (a, b)) in used.chunks(4096).zip(now.chunks(4096)).enumerate() {
+            let block = i as u64;
+            if !free.iter().any(|&(f, n)| (f..f + n).contains(&block)) {
+                assert_eq!(a, b, "block {block}, in use");
+            }
+        }
+        let v = Volume::open(std::fs::File::open(&at).unwrap()).unwrap();
+        assert!(v.lookup(b"/lost+found").unwrap().is_some());
+        assert_eq!(give_back(&at).unwrap(), Some(0));
+        // Free runs of blocks against data ranges of bytes: what both hold alone.
+        assert_eq!(
+            overlaps(
+                &[(0, 2), (4, 4)],
+                4096,
+                4096,
+                &[(4096, 8192), (20480, 4096), (65536, 10)]
+            ),
+            vec![(4096, 4096), (20480, 4096)]
+        );
+        // Of a free run, the whole units it holds alone: NTFS's 64 KiB (FSCTL_SET_ZERO_DATA
+        // zeroes a part of one, which stays allocated), none of a run inside one.
+        assert_eq!(
+            overlaps(&[(2, 30), (40, 8)], 4096, 64 << 10, &[(0, 256 << 10)]),
+            vec![(64 << 10, 64 << 10)]
+        );
+    }
+
+    /// A restart goes over its kept file from where the measured restarts cross: below the
+    /// first size whose restart went over quicker, past the last whose packing was quicker,
+    /// within a MiB of where the two lines between them meet (PM M443).
+    #[test]
+    fn a_restart_goes_over_from_where_packing_costs_more() {
+        let first_over = CROSSOVER_BASIS
+            .iter()
+            .position(|&(_, pack, over)| over < pack)
+            .unwrap();
+        assert!(
+            CROSSOVER_BASIS[first_over..]
+                .iter()
+                .all(|&(_, pack, over)| over < pack)
+        );
+        let (b, pb, ob) = CROSSOVER_BASIS[first_over - 1];
+        let (a, pa, oa) = CROSSOVER_BASIS[first_over];
+        let (db, da) = (ob - pb, pa - oa);
+        let crossing = b as f64 + (a - b) as f64 * db / (db + da);
+        assert!(
+            (OVER_FROM as f64 - crossing).abs() <= f64::from(1u32 << 20),
+            "{crossing}"
+        );
+        assert!(b < OVER_FROM && OVER_FROM < a);
+    }
+
+    /// A layer made empty holds nothing past what any of its size holds; one whose blocks a
+    /// guest took holds them.
+    #[test]
+    fn what_a_layer_holds_is_its_blocks_past_an_empty_ones() {
+        let home = shards_testdir::TempDir::new("layers-held").unwrap();
+        let made = LayerFile::made(&home, 256 << 20).unwrap();
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(made.path())
+            .unwrap();
+        let len = file.metadata().unwrap().len();
+        assert_eq!(held(&file, len).unwrap(), Some(0));
+        // 3 blocks of the first group taken, as its descriptor counts them: its free count
+        // less 3, its checksum made again.
+        let mut sb = [0u8; 1024];
+        shards_vmm::platform::read_exact_at(&file, &mut sb, 1024).unwrap();
+        let desc = usize::from(u16::from_le_bytes([sb[0xFE], sb[0xFF]]));
+        let mut d = vec![0u8; desc];
+        shards_vmm::platform::read_exact_at(&file, &mut d, 4096).unwrap();
+        let free = u16::from_le_bytes([d[0xC], d[0xD]]) - 3;
+        d[0xC..0xE].copy_from_slice(&free.to_le_bytes());
+        let incompat = u32::from_le_bytes(sb[0x60..0x64].try_into().unwrap());
+        let seed = if incompat & 0x2000 != 0 {
+            u32::from_le_bytes(sb[0x270..0x274].try_into().unwrap())
+        } else {
+            shards_ext4::crc32c(!0, &sb[0x68..0x78])
+        };
+        let mut c = shards_ext4::crc32c(seed, &0u32.to_le_bytes());
+        c = shards_ext4::crc32c(c, &d[..0x1E]);
+        c = shards_ext4::crc32c(c, &[0, 0]);
+        c = shards_ext4::crc32c(c, &d[0x20..]);
+        d[0x1E..0x20].copy_from_slice(&((c & 0xFFFF) as u16).to_le_bytes());
+        shards_vmm::platform::write_all_at(&file, &d, 4096).unwrap();
+        assert_eq!(held(&file, len).unwrap(), Some(3 * 4096));
     }
 
     /// A restore's file is a clone of its generation's layer, said to be that generation's,

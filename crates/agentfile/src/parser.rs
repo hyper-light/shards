@@ -70,7 +70,7 @@ pub struct Parsed {
     pub dialect: Dialect,
 }
 
-/// What a file is read as: a Dockerfile, as BuildKit reads it, or an Agentfile, a
+/// What a file is read as: a Dockerfile, as dockerfile/1.27.1 reads it, or an Agentfile, a
 /// Dockerfile with shards' directives for agents (docs/architecture/AGENTFILE_ARCH.md §4,
 /// architecture.md D35). A Dockerfile's `AGENT` is an unknown instruction, as BuildKit's.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -93,11 +93,11 @@ pub struct Warning {
     pub line: usize,
 }
 
-/// A parse error, with the lines it concerns, as BuildKit's `LocationError` has them.
+/// A parse error, with the lines it concerns, as BuildKit's carry them (parser/errors.go).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Error {
     pub message: Vec<u8>,
-    /// Ranges of lines, each `(start, end)`, in lists, as BuildKit nests them.
+    /// Ranges of lines, each `(start, end)`, in lists, nested as parser/errors.go nests them.
     pub location: Vec<Vec<(usize, usize)>>,
 }
 
@@ -127,7 +127,7 @@ fn located(message: Vec<u8>, start: usize, end: usize) -> Error {
 }
 
 impl Node {
-    /// The parse tree as BuildKit's `Dump` writes it, for comparison with BuildKit.
+    /// The parse tree as BuildKit's `Dump` writes it (parser/parser.go), for the oracle.
     pub fn dump(&self) -> Vec<u8> {
         let mut out = go::to_lower(&self.value);
         if !self.flags.is_empty() {
@@ -164,7 +164,7 @@ impl Node {
     }
 }
 
-/// The parse tree of a whole file, as BuildKit dumps its root.
+/// The parse tree of a whole file, as parser/parser.go's `Dump` writes its root.
 pub fn dump(instructions: &[Node]) -> Vec<u8> {
     let mut out = Vec::new();
     for c in instructions {
@@ -178,7 +178,7 @@ pub fn dump(instructions: &[Node]) -> Vec<u8> {
 /// What a line's arguments parse to, and whether they were JSON.
 type Args = (Vec<Node>, bool);
 
-/// Parser directives (`# escape=`, `# syntax=`, `# check=`), as BuildKit's
+/// Parser directives (`# escape=`, `# syntax=`, `# check=`), as parser/directives.go's
 /// `DirectiveParser` takes them: only before anything else, each once.
 #[derive(Debug)]
 struct Directives {

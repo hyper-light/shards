@@ -16676,6 +16676,116 @@ revision before comparing a changed API/implementation.
   says the budget short ("its microVM's budget is short by"), then "VM ... ended before its
   command did", and not who ended it.
 
+### M401. Whether Windows 11's hypervisor gives a partition a host's PCI function (D154)
+
+- **Question.** M356 read Microsoft's word that Discrete Device Assignment is Windows Server's
+  alone, and tried nothing. Does Windows 11's hypervisor give a WHP partition a host's
+  function, and where it does not, where does it stop, and in what words?
+- **Method.** docs/research/measurements/whp-passthrough: `probe.ps1`, read-only, and
+  `assign.ps1`, which dismounts a function DDA's own way (Disable-PnpDevice,
+  Dismount-VMHostAssignableDevice), allocates it as a virtual PCI resource by its dismounted
+  instance ID (WHvAllocateVpciResource), asks for it as a partition's device each way WHP
+  offers, then gives it a Hyper-V VM of its own (Add-VMAssignableDevice, Start-VM), and
+  mounts it back whatever happens. jupiter (ASUS ROG Flow Z13 GZ302EA, AMD Ryzen AI Max+
+  395, 32 CPUs, Windows 11 Pro 26200.9711, Hyper-V on, its boot entry's hypervisor settings
+  as installed: hypervisorlaunchtype Auto, no hypervisoriommupolicy), from kiln's elevated
+  runner, 2026-11-01; and the probes the scripts were made from, 2026-10-29, three dismounts
+  in all. Its function to spare: the SD card reader (Genesys Logic GL9755, a PCIe endpoint
+  alone behind its root port, ACS upstream, no reserved memory, no card in it); its other
+  USB controllers carry the keyboard, touchpad, Bluetooth and cameras, and its Wi-Fi is its
+  network. Output: whp-passthrough/jupiter.txt.
+- **Found.**
+  - WHP's features (WHvCapabilityCodeFeatures): 0x2FF, VirtualPciDeviceSupport 1,
+    IommuSupport 0. An empty virtual PCI resource is allocated (S_OK). Hyper-V says the host
+    supports I/O virtualization (Get-VMHost: IovSupport True, no reasons), and Windows its
+    DMA protection (Device Guard's available property 3).
+  - DDA's own first step works: the reader disabled in 0.60 s, dismounted in 1.22 s, its
+    instance ID then `PCIP\VEN_17A0&DEV_9755&SUBSYS_202F1043&REV_01\4&632F499&0&0012`, and
+    allocated by it (S_OK).
+  - No partition is given it. AllowDeviceAssignment set before setup: 0x80070032
+    (ERROR_NOT_SUPPORTED), with SeparateSecurityDomain set too the same; after setup:
+    0x80070057 (E_INVALIDARG); read back, 0. A device physically backed by the resource:
+    0x80070032, the property set or not. One not physically backed is made (S_OK) and reaches
+    nothing of the function: its hardware IDs, its probed BARs, its power state and every
+    register of its configuration space read fail with 0x8007139F (ERROR_INVALID_STATE).
+  - Hyper-V's own Discrete Device Assignment takes the function into a VM's settings
+    (Add-VMAssignableDevice) and refuses the VM as it starts: "Virtual Pci Express Port:
+    Failed to Power on with Error 'A hypervisor feature is not available to the user.'
+    (0xC035001E)", HV_STATUS_FEATURE_UNAVAILABLE.
+  - Mounted back in 0.47 s and enabled in 0.67 s, the reader OK after each of the four runs.
+- **Boot-policy follow-up, 2026-11-03.** One experiment after explicit approval for two
+  reboots of jupiter. `boot-policy.ps1` copied the original loader, enabled
+  `hypervisoriommupolicy` only on that copy, selected it once, then returned to the
+  unchanged original default and removed the copy. Native parse and source-hash checks
+  passed, and all five actions exited 0. The enabled entry booted at 21:39:40.500 UTC;
+  WHP still reported features 0x2FF, IommuSupport 0, and AllowDeviceAssignment
+  0x80070032. The original entry booted again at 21:45:34.500 UTC, with its absent
+  policy and the same WHP refusal. Its full loader and boot-manager listings matched
+  the saved baseline; the temporary GUID was absent. BitLocker protection and Secure
+  Boot stayed on; the reader stayed attached and healthy. No physical function was
+  detached, and no passthrough E2E is claimed. Output, hashes and machine-readable
+  state: whp-passthrough/jupiter-boot-policy.txt and jupiter-boot-policy.json.
+- **Consequence (D154).** Windows 11 Pro's hypervisor assigns no device to any partition,
+  WHP's or Hyper-V's own, on hardware with an IOMMU and a function DDA dismounts: the limit
+  is the hypervisor's, which Microsoft's support statement matches (M356). A Windows host's
+  refusal is therefore its hypervisor's own answer, asked as a function is
+  (`hv::device_assignment_refused`: VirtualPciDeviceSupport, then AllowDeviceAssignment set
+  on a partition of its own, never set up and mapping nothing, so that a process's one
+  mapped partition, M345, is not disturbed): on jupiter, "its hypervisor assigns no device to
+  a partition: WHvSetPartitionProperty(AllowDeviceAssignment) failed: HRESULT 0x80070032
+  (The request is not supported. (os error 50)), and says it has no IOMMU support".
+
+### M402. Whether CI's Windows runners' hypervisors give a partition a host's PCI function (D154)
+
+- **Question.** CI's Windows Server runners are the only Windows Server hosts here, the edition
+  Microsoft supports Discrete Device Assignment on. Do their hypervisors give a partition a
+  function?
+- **Method.** whp-passthrough/probe.ps1 on GitHub's windows-2022, windows-2025 and
+  windows-11-arm (whp-passthrough.yml, CI run 41363714971 at 9ff73a16, 2026-11-01). Output:
+  whp-passthrough/ci.txt.
+- **Found.**
+
+  | runner | Windows | WHP features | AllowDeviceAssignment | Hyper-V's word |
+  |---|---|---|---|---|
+  | windows-2022 | Server 2022 Datacenter 20348.5761 | 0x2FF: virtual PCI 1, IOMMU 0 | 0x80070032 | IovSupport False: no ACS at any root port, PCI Express not Windows' to control, no chipset support for I/O virtualization |
+  | windows-2025 | Server 2025 Datacenter 26100.33650 | 0x2FF: virtual PCI 1, IOMMU 0 | 0x80070032 | the same three |
+  | windows-11-arm | 11 Enterprise 26200.9711 (Cobalt 100) | 0xAD9: virtual PCI 1, IOMMU 0 | no partition: WHvCreatePartition 0xC0351000 | IovSupport False: the Virtualization Infrastructure Driver is not running, and the same two |
+
+  Their only PCI functions are Azure's: a Mellanox ConnectX virtual adapter (and on
+  windows-11-arm an NVMe controller), each a VMBus virtual PCI device, not one of the host's
+  own bus. An empty resource is allocated on both x86_64 runners (S_OK) and not on
+  windows-11-arm (0x80070003), whose WHP runs no hypervisor, as M172 found.
+- **Consequence (D154).** No Windows host here passes a function through: Windows 11 Pro
+  refuses on hardware with an IOMMU (M401); Windows Server, the edition Microsoft supports
+  Discrete Device Assignment on, needs server-class hardware that grants Windows the PCIe
+  fabric's control and ACS at its root complex, forcing a function's traffic through the
+  IOMMU (Microsoft Learn, "Deploy devices by using Discrete Device Assignment", 2025-02-19),
+  which Azure's VMs do not give it, as Hyper-V's reasons say; and windows-11-arm has no
+  hypervisor. Each refusal is the
+  host's own answer (`vm::passthrough_refused`). The refusal tests cover this path; they
+  are not a passthrough E2E. Windows Server DDA implementation and a successful E2E on an
+  assignable physical function remain outstanding for step 13.
+
+### M403. What Hypervisor.framework's API gives a VM of a host's devices (D154)
+
+- **Question.** M356 read Apple's documentation and forums. What does the API itself
+  declare?
+- **Method.** The function declarations of Hypervisor.framework's headers in the macOS 26.4
+  SDK (Command Line Tools 26.4.1; this Mac at macOS 26.4.1, 25E253), arm64's and x86's, every
+  `hv_*(` named; and Virtualization.framework's device classes in the same SDK. 2026-11-01.
+  Reproducible inventory and header hashes: whp-passthrough/macos-api.py and macos-api.txt.
+- **Found.** 162 functions: 68 of vCPUs (`hv_vcpu_*`), 45 of VMs (`hv_vm_*`: memory mapped,
+  unmapped and protected in a VM or its address spaces, its EL2 and IPA configuration, x86's
+  PIC, IOAPIC and local APIC and their MSIs, port I/O notifiers), 35 of arm64's GIC
+  (`hv_gic_*`), 10 of VMX, and `hv_vcpus_exit`, `hv_tsc_clock`,
+  `hv_sme_config_get_max_svl_bytes` and `hv_capability`. None takes a device, and no header
+  names a PCI function, an IOMMU, DMA or an assignment (its one match of "pci", VMX's
+  INVPCID). Virtualization.framework's devices are ones it emulates; of USB, its
+  controllers, mass storage, keyboards and pointing devices, and no passthrough class (M356's
+  `VZUSBPassthroughDeviceConfiguration`, of WWDC26, is in no SDK on this Mac).
+- **Consequence (D154).** macOS's refusal stays Apple's limit, as the API itself has it: a VM
+  maps the process's memory and runs its vCPUs, and is given no device.
+
 ### M411. An open of a name being removed on NTFS, refused as access denied
 
 - **Question.** containers.rs `a_logs_history_is_what_its_user_set` failed once on jupiter
@@ -16841,7 +16951,26 @@ revision before comparing a changed API/implementation.
     64.2 and 53.8 ms, of which the written pages' took 25.3 and 21.5: 50 to 58 µs a page read
     and 70 to 78 written.
   - Against 1b4cc6be's on the same CPU, about the same. On CI's runners, VMs whose WHP runs
-    nested (M308), a populate's cost is its pages', not its calls'.
+    nested (M308), a populate's cost is its pages', not its calls'. (Its pages' were the
+    disk's: each restore read its working set from the disk, its memory file sparse and
+    mapped by no process between restores, M421; held, the populate took 4.53 ms at p50.)
+- **Found, on jupiter** (AMD Ryzen AI Max+ 395, Windows 11 Pro 10.0.26200.9711; binaries
+  built by windows-binaries.yml at jupiter's paths, as kiln's headroom guard holds its
+  builds, M418; no sample frozen across, the guard's budget 0.07 to 0.52 cores; the host's
+  CPUs 36 to 52% busy with its own load at 271f399b, 12 to 28% at ebff6cc6, where the held
+  and unheld runs ran one after the other, M421), with it against without, p50 / p90 / p99
+  / max, ms:
+  - 271f399b, nothing held, two runs (991 to 1,014 pages, 321 to 342 written): cold_restore
+    86.6 / 229.2 / 695.3 / 897.5 against 135.3 / 329.8 / 900.8 / 1005.7, and 82.9 / 123.7 /
+    821.3 / 945.4 against 132.7 / 171.9 / 240.2 / 328.6; cold_spawn_exit 175.9 / 357.7 /
+    883.4 / 1034.3 against 319.0 / 698.2 / 1400.5 / 2013.4, and 167.2 / 214.5 / 1037.5 /
+    1085.0 against 301.5 / 338.4 / 470.8 / 505.1; the populate 65.8 and 66.2 at p50, up to
+    928: the disk's (M421).
+  - ebff6cc6, the snapshot held as the daemon holds a template (1,051 pages, 386 written):
+    cold_restore 15.1 / 16.4 / 17.0 / 17.2 against 17.5 / 21.0 / 22.4 / 23.0;
+    cold_spawn_exit 69.4 / 75.4 / 83.5 / 152.8 against 91.6 / 101.3 / 121.8 / 137.3;
+    warm_request 2.49 / 2.52 / 2.54 / 2.69 against 6.79 / 10.51 / 10.58 / 10.63; the
+    populate 2.64 / 3.03 / 3.46 / 3.60 over 558 runs, the written pages' 1.70 of it.
 - **Decided.** A Windows restore records its working set and maps it ahead by default, as
   Linux's and macOS's do: a cold restore 1.5 times as fast, its start to exit twice as fast,
   a warm one 8 to 15 times as fast, for 54 to 64 ms more of cold setup on CI. It maps ahead in
@@ -17070,3 +17199,740 @@ revision before comparing a changed API/implementation.
   its other steps' slowest (13.0); on Windows, whose runs now say how long the slowest take,
   the tests' step 122 (90.9 slowest, windows-2025's) where it had 120, and the job 144, those
   122 and a third above its other steps' slowest (16.1), where it had 150.
+- **Found, the first run under them** (271f399b, CI 41329747161): x86_64 Linux's tests' step
+  took 41.8 minutes, past the 41 it had, and windows-2025's 74.6 and windows-2022's 44.9;
+  every job passed. A third above 41.8 is still 56.
+
+### M421. A sparse file's pages, dropped from Windows' cache once no process maps them (D196, D25)
+
+- **Question.** jupiter's restore bench (M415's arms, n=100, 1 vCPU, 256 MiB, at 271f399b)
+  restored at 82.9 to 86.6 ms at p50 with the working set mapped ahead and 132.7 to 135.3
+  without it, where M345 had 69.8 without: its populate took 65.8 to 66.2 ms at p50 for 991
+  to 1,014 pages, and up to 928 ms, where jupiter's own populate of 512 pages written
+  took 3.68 ms (M415). The host read 11,000 to 20,000 pages a second from its disk for most
+  of the 103 s the second run took, in 800 to 1,350 reads a second (2,185 to 8,264 pages for
+  a few seconds of it), and about 10 before and after it (`\Memory\Pages Input/sec`,
+  `\Memory\Page Reads/sec`): a restore's pages came from the disk, not the cache. Why
+  does a restore's memory file not stay cached, from one restore to the next?
+- **Method.** On jupiter (AMD Ryzen AI Max+ 395, Windows 11 Pro 10.0.26200.9711),
+  2026-11-01, `docs/research/measurements/windows-mapped-cache/run.sh`: a 256 MiB file
+  written past the cache (write.ps1: FILE_FLAG_NO_BUFFERING), dense, then sparse with its
+  first half a hole (`fsutil sparse setrange`, FSCTL_SET_ZERO_DATA); 1,000 random pages of
+  its data, and of its hole, touched through a copy-on-write view (touch.ps1), as a WHP
+  restore maps its memory file (vmm `platform::map_file_views`), by three processes one
+  after another: with nothing holding the file, with another process holding it open (as
+  `snapshot::hold` held a template's files), holding a read-only view of it, and holding a
+  view whose pages it had read (hold.ps1). And a real snapshot's memory file (the resume
+  guest's, 256 MiB, sparse in 21 allocated ranges), touched so before and after each of five
+  `shards restore`s of it, each restore's populate as it logs it.
+- **Found** (ms for 1,000 pages, each process's):
+
+  | file, pages | nothing held | handle held | view held | view held, read |
+  |---|---|---|---|---|
+  | dense, data | 263.1, 1.8, 2.2 | 192.8, 1.9, 2.2 | 199.3, 2.2, 1.9 | 2.2, 1.6, 1.8 |
+  | sparse, data | 384.0, 573.1, 412.1 | 247.9, 213.6, 199.6 | 236.8, 1.9, 2.1 | 1.6, 1.6, 1.6 |
+  | sparse, hole | 12.8, 14.2, 15.0 | 12.7, 14.6, 11.4 | 13.5, 2.0, 1.4 | 1.6, 1.6, 1.7 |
+
+  - A dense file's pages stay cached once the process that mapped them ends: the first
+    process read them from the disk, the next found them in 1.8 to 2.2 ms. A sparse file's
+    are dropped, its data's and its hole's alike, held open by another process or not:
+    each process read its data from the disk again. A view of it mapped anywhere keeps
+    them, read by its holder or not.
+  - The snapshot's memory file: 52.6 to 78.6 ms for its 1,000 pages before and after each
+    restore, never cached; each restore's populate 65.1 to 86.8 ms for its 1,000 working-set
+    pages (529 runs), its 326 written ones' 26.3 to 40.3 (192 runs): 65 to 87 µs a page on
+    jupiter, whose WHP runs on the hardware, where M415 put CI's 50 to 78 down to its WHP's
+    running nested (M308).
+- **Found, the restore bench held** (ebff6cc6's Rust, n=100 each arm, 1 vCPU, 256 MiB, ms,
+  p50 / p99; `--held yes`, the snapshot held from its first restore on, as the daemon holds
+  a template, against `--held no`):
+  - jupiter (2026-11-01 18:58 UTC, one run after the other, the host's CPUs 12 to 28% busy,
+    working sets of 1,051 and 1,119 pages): a cold restore
+    with the working set 15.1 / 17.0 held against 59.0 / 74.3 not, without it 17.5 / 22.4
+    against 108.9 / 152.2; a cold start to exit 69.4 / 83.5 against 114.1 / 129.1; the
+    populate 2.64 / 3.46 against 44.6 / 60.7, 2.5 µs a page, M415's single calls' 2.6 a
+    page read and 7.2 written. The
+    host read 2,341 pages a second from its disk on average as the held run ran, 25,014 as
+    the other did.
+  - CI's windows-2025 (whp-restore 41337030127 at 757013d, AMD EPYC 9V45, Windows Server
+    10.0.26100.33650, 969 and 967 pages): a cold restore with the working set 20.4 / 23.1
+    held against 40.6 / 45.5, without it 36.0 / 52.9 against 62.7 / 70.9; the populate 4.53
+    / 4.87 against 30.3 / 34.5.
+  - A warm request (release to the guest's marker) took 2.49 / 2.54 held and 2.86 / 2.95
+    not on jupiter, 9.13 / 9.20 and 2.68 / 2.74 on CI; at 271f399b, unheld, jupiter's two
+    runs took 5.20 / 6.86 and 0.27 / 0.62: runs of one build 0.27 to 9.13 apart at p50,
+    held or not. KVM's differ so too, run to run: 0.66, 0.67, 0.78, 2.52 and 2.54 at p50 in
+    CI's restore bench of five runs (41229596566 to 41321132233, n=30, AMD EPYC 7763). What
+    a guest runs between its release and its marker is not yet measured.
+- **Decided.** A generation held between restores keeps a view of its memory mapped on
+  Windows (`platform::keep_cached`, read-only, of the whole file, never read; in
+  `snapshot::Held`, which the daemon keeps of each template it restores, D25), and the
+  memory file stays sparse, taking the disk its guest used (M345). The restore bench holds
+  its snapshot so, as the daemon holds a template; `--held no` holds none, as a lone
+  `shards restore` finds it.
+
+### M422. What a GPU's VM process needs on Intel's GPUs and on a musl host (D208)
+
+- **Question.** M382 found what NVIDIA's and AMD's drivers reach of a Linux host from the
+  GPU's VM process, with glibc. Does Mesa's Intel driver reach more, and does a GPU's VM
+  process built against musl, as a musl host's must be (D208), run under the same
+  confinement?
+- **Method.** fedora (Intel Core i9-14900HX, its UHD Graphics, Raptor Lake-S, at
+  /dev/dri/renderD128, and an RTX 4070 Laptop GPU on nouveau, which no Vulkan driver took;
+  Fedora 44, Linux 6.19.10), 2026-11-03, p/venus. tests/gpu.rs, glibc's build with Fedora's
+  Mesa 26.0.3 and Vulkan loader 1.4.341; musl's, built and run in the rust:1.98.1-alpine
+  image CI's musl jobs use (Alpine 3.24.2, musl 1.2.6, Mesa 26.1.6's Intel driver and
+  Vulkan loader added), given the host's /dev/kvm, /dev/dri and /dev/udmabuf, as uid 1000.
+  Round by round, each refusal the filter logged allowed in the next; one glibc round under
+  M382's refusals.patch, which logs every refusal and goes on.
+- **Results.**
+  - glibc: (1) sysinfo (99) refused in the VM process's main thread before its guest was
+    ready: glibc's `sysconf(_SC_PHYS_PAGES)`, which Mesa's `os_get_total_physical_memory`
+    asks as the Intel driver sizes its heap. (2) ioctl 0x40187542, udmabuf's
+    UDMABUF_CREATE, on /dev/udmabuf. (3) Under refusals.patch: none; the test passed.
+  - musl: (1) membarrier (324) MEMBARRIER_CMD_REGISTER_PRIVATE_EXPEDITED, in the main
+    thread, before the guest was ready. (2) ioctl 0xffffffffc0086202 on a dma-buf,
+    DMA_BUF_IOCTL_EXPORT_SYNC_FILE sign-extended (musl's `ioctl` takes an `int` request),
+    as the guest's vulkaninfo ran. (3) Logged by the kernel's audit, not the filter (the
+    thread blocks SIGSYS, which the kernel then delivers by its default action, ending the
+    process): sched_setscheduler (144) and setpriority (141) in the thread `vkr-ring-1`,
+    Venus's ring thread, whose setpriority is its guest's ask (virglrenderer's
+    vkr_ring.c) and whose sched_setscheduler is Mesa's pthread_setschedparam(SCHED_BATCH)
+    of a queue thread it starts (u_queue.c); glibc's build, its next round, refused the
+    same (`seccomp refused syscall 144 in thread vkr-ring-1, arguments 0x2b9db3 0x3`:
+    SCHED_BATCH), which its rounds before had not reached. (4) pwritev2 (328) in the thread
+    `snapshot`, as the GPU's template was saved: musl 1.2.6's pwrite(3), pwritev2 of one
+    buffer with RWF_NOAPPEND (musl's src/unistd/pwrite.c; 1.2.5's is pwrite64, as the
+    static helpers', built with Rust's own musl, make it in CI's musl jobs' snapshot
+    tests). (5) None: 3 runs of 3 passed, 23 to 24 s; glibc's at the
+    same commit passed too (4 runs of 4 across the last two).
+  - The link: Fedora's gcc 16.2.1 (no `--enable-default-pie`) compiled the render server's
+    objects without -fPIE, and rust-lld refused their R_X86_64_64 and R_X86_64_32S
+    relocations in the GPU's VM process, a position-independent executable; with meson's
+    `b_pie` they link.
+- **Reading.** Beyond M382's: sysinfo; UDMABUF_CREATE; a dma-buf's sync-file export (and
+  its import, its pair in linux/dma-buf.h); a thread's priority and policy, which both
+  callers go on past when refused, so refused with EPERM as sched_setaffinity is (M384);
+  for musl's build, membarrier's two private expedited commands and pwritev2 with
+  RWF_NOAPPEND alone. Nothing more is opened than M382's paths and musl's loader's search
+  path. Through the GPU's VM process the guest found three GPUs on glibc's build (Intel's
+  through ANV, the RTX 4070 through NVK, and llvmpipe), which the host's own vulkaninfo,
+  run in its session, listed two of (ANV, llvmpipe).
+
+### M426. What a build's collection of its cache costs, by the records it reads (D212)
+
+- **Question.** A build's collection ran at most once a minute in a home, BuildKit's
+  controller's throttle, taken with dockerd's policy (D114), never measured. What does a
+  collection cost the build it ends, and so may every build that grows the cache pay it?
+- **Method.** `docs/research/measurements/build-gc` (`build::gc::tests::a_collections_cost_by_records`):
+  a store of its own with 100, 1,000 and 10,000 build cache records of 1 MiB, collected 101
+  times each by D212's default policy (two rules, each reading every record) where nothing
+  is past its bounds, each collection timed whole. On kiln-a094a12d (Fedora 44, Linux
+  6.19.10, x86_64, 32 CPUs, 62 GiB), the store on btrfs on NVMe, test-release, the tree of
+  de2b1cf5 with D212's policy, 2026-11-03, beside CI jobs and other agents' builds: load
+  average 42.5 as it started, 657.5 (5 minutes) as it ended.
+- **Found** (µs a collection, n=101 each):
+
+  | records | p50 | p90 | p99 | max |
+  |---:|---:|---:|---:|---:|
+  | 100 | 1,323 | 2,156 | 5,571 | 9,299 |
+  | 1,000 | 15,203 | 46,922 | 74,978 | 78,402 |
+  | 10,000 | 85,749 | 152,390 | 172,083 | 187,720 |
+
+  - A collection's cost grows with the records it reads, 9 to 15 µs a record at p50 here:
+    a store of thousands of records costs a build tens of milliseconds to collect, which
+    a build answered whole from the cache would pay for nothing. dockerd's policy read
+    them four times, a rule each.
+- **So** (D212): a build collects where it grew the cache, the only way the cache passes
+  its bounds, and not on a timer; a build answered from the cache collects nothing.
+
+### M430. Devices plugged into a running microVM: what each step costs, and what a bus of slots costs a boot (D214)
+
+- **Question.** What does a disk plugged into a running microVM cost, from the host's call to
+  its guest's first read of it, and its unplug, from the guest's remove to the host's? And
+  what does a PCI bus of empty slots, which a machine must have to be plugged into, cost its
+  boot?
+- **Method.** `docs/research/measurements/pci-hotplug/run.sh`, tests/hotplug.rs: the test
+  guest (`shards_test=pci-plug`, 512 MiB, 1 vCPU) booted in the test's process with four
+  slots and a disk; a 4 MiB disk plugged (`Handle::plug_disk`, timed by the host), the
+  guest told on its console, then timed by itself: `/sys/bus/pci/rescan` (rescan), and from
+  its start to the first MiB read from the disk's block device (first read); it writes its
+  second MiB, the host's unplug is refused while its driver has it, the guest writes the
+  function's `remove` (timed), and the host unplugs it (timed); ROUNDS times. Then BOOTS
+  boots each with four slots and with no PCI bus, alternated, each timed from its vCPUs'
+  release to its PID 1's INIT_STARTED marker. Each sample set as n, p50, p90, p99 and max,
+  nearest rank.
+- **Found.**
+  - KVM, x86_64 (kiln-a094a12d: Intel Core i9-14900HX, 32 CPUs, Fedora 44, Linux
+    6.19.10; guest Linux 6.18.48, HZ 250), f4d29ba7, a quiet host (load 4.7), n 100:
+    host plug p50 5 µs (p90 7, p99 18, max 31); guest rescan p50 6.7 ms (p90 7.3, p99
+    9.9, max 12.1); rescan to first read p50 7.8 ms (p90 8.4, p99 11.6, max 13.3); guest
+    remove p50 29.1 ms (p90 33.0, p99 36.1, max 36.3); host unplug p50 5 µs (p90 9, p99 10,
+    max 15). A share plugged, its rescan to its first synced write through virtiofs: 15.4
+    ms (n 1). Boot to init, n 40 each: with four slots p50 61.9 ms (p90 74.3, p99 110.9),
+    with no bus p50 58.3 ms (p90 68.7, p99 187.6): a bus of slots costs a boot some 3.6 ms
+    at p50 there, which is why a machine has one only where asked for (`--pci-slots`).
+    Again at 0eece65b (load 1.9), n 100 and 40: plug p50 6 µs (p99 22, max 1,027: one
+    plug of a hundred took a millisecond, not yet split), rescan 6.6 ms, first read 7.6
+    ms, remove 29.2 ms, unplug 5 µs at p50; boots 60.3 ms with slots, 56.1 without (p90
+    67.7 and 58.6): a bus of slots costs 4 ms. A first run on a busy host (load 34, n 30
+    and 15): plug 10 µs, rescan 6.1 ms, first read 7.4 ms, remove 31.9 ms, unplug 4 µs at
+    p50; boots 97.2 and 95.6 ms, within their spread.
+  - Hypervisor.framework, arm64 (an Apple M5 Max, 18 CPUs, macOS 26.4.1; same guest),
+    3edf11d3, through macos-sched/launchd-run.sh, load 8 to 9, n 100: host plug p50 11 µs
+    (p90 15, p99 29, max 391); guest rescan p50 2.4 ms (p90 2.9, p99 3.1, max 3.2); rescan
+    to first read p50 3.1 ms (p90 3.8, p99 4.0, max 4.1); guest remove p50 7.8 ms (p90 8.1,
+    p99 8.3, max 8.3); host unplug p50 4 µs (p90 5, p99 36, max 42). Share: 11.4 ms (n 1).
+    Boot to init, n 40 each: with four slots p50 18.90 ms (p90 19.15, p99 27.39), with no
+    bus 18.88 (p90 19.24, p99 20.60): no cost measured at p50, where x86_64's ACPI-described
+    bus costs 4 ms.
+  - **Through the CLI** (`cli.py`, a detached busybox run restored from its template,
+    the client's wall clock, n 30, Mac at load 11, fd56a4eb test-release): `plug disk`
+    p50 20.9 ms (p90 27.9, p99 29.9, max 29.9), `unplug disk` 62.5 ms (p90 91.4, p99
+    98.7, max 98.7), `plug volume` 13.9 ms (p90 15.4, p99 16.7, max 16.7), `unplug
+    volume` 7.3 ms (p90 9.1, p99 9.5, max 9.5): each a client's request, the VM's step
+    and init's built-in, an exec of the guest's; a disk's unplug unmounts its ext4 first,
+    whose parts are not split yet. On KVM x86_64 (kiln-a094a12d, load 7.8): `plug disk`
+    36.4 ms (p90 53.2, p99 61.6, max 61.6), `unplug disk` 82.6 ms (p90 99.7, p99 107.3,
+    max 107.3), `plug volume` 9.1 ms (p90 14.3, p99 31.0, max 31.0), `unplug volume` 4.4
+    ms (p90 6.9, p99 8.1, max 8.1).
+  - **What the slots cost a run** (`slots-ab.sh`, build-ab/ab.py: one build, two homes,
+    SHARDS_PCI_SLOTS 0 and 4, each restoring its own template, n 100 paired, Mac at load
+    11): the run's wall clock p50 13.47 ms without, 14.13 with, paired median +0.46 ms,
+    95% [−0.23, +1.02]; the command's time in the guest, request to status, 2.79 against
+    3.11 ms, paired +0.26 ms, 95% [+0.08, +0.44]: a cost measured in the guest, of a
+    quarter of a millisecond, not yet split, and none measured of the run's wall clock. On
+    KVM x86_64 (load 7.2 to 18): wall 22.91 against 22.37 ms, paired −0.54 ms, 95%
+    [−2.22, +1.27]; command 4.30 against 4.15 ms, paired −0.16 ms, [−0.52, +0.18]: none
+    measured.
+  - The host's sides are microseconds; the guest's rescan and its remove are the cost: a
+    probe of the virtio function and its disk, and a remove of 29 ms whose parts are not
+    measured yet.
+
+### M440. A start on a contended host: a microVM's vCPUs wake behind its host's busy threads' slices (D191)
+
+- **Question.** D191's slice 1 gives a run's microVM every CPU of its host, and on 4 CPUs
+  that 4 busy loops hold a `--cpus 1` run started 22 ms later at p50 than before it (M292:
+  17.9 against 39.7 ms), where idle it started 2 to 3 ms later (M288). M292 found the time in
+  the guest's start of the run, growing with its vCPUs' count at the same contention, and in
+  three steps (`cpu.max`'s static key, the first write to its layer, init's wake at the
+  exec), each a hand-off from one vCPU to another: an IPI, or a task woken on another CPU.
+  Neither holding the key on, nor init on one CPU, nor keeping the guest's work on the
+  run's CPUs gave the start its time back. What does a vCPU woken by another wait for?
+- **The host's scheduler.** A woken vCPU thread is runnable on a host CPU that a busy loop
+  runs on. Linux's fair scheduler (EEVDF, Linux 6.6 on) lets a woken thread preempt the
+  running one only once that one has run to its slice's end or its fair share
+  (RUN_TO_PARITY, kernel/sched/features.h), every thread's slice `base_slice_ns`, 2.8 ms on a
+  host of 8 CPUs or more (0.7 ms times 1 + ilog2 of up to 8 CPUs, kernel/sched/fair.c
+  `get_update_sysctl_factor`; sched_getattr(2) reports 2,800,000 ns on this host): each
+  hand-off may wait up to 2.8 ms for its vCPU to run, where a microVM of one vCPU hands off
+  nothing. Since Linux 6.12 a thread may ask for a slice of its own, 100 µs to 100 ms
+  (sched_setattr(2), SCHED_OTHER with `sched_runtime`, fair.c `__setparam_fair`), and a woken
+  thread of a shorter slice than the running one's cancels its protection and preempts it
+  (PREEMPT_SHORT, `check_preempt_wakeup_fair`): its share of the CPU is its weight's as
+  before (EEVDF's lag; what it may run ahead after a sleep is bounded by the longest slice
+  beside it plus a tick, `entity_lag`), only when it runs changes. No privilege is needed;
+  a lower nice value or a real-time policy needs CAP_SYS_NICE.
+- **Method.** Fedora 44, Linux 6.19.10-300.fc44 (M258's Intel Core i9-14900HX, 32 CPUs),
+  other agents' builds, tests and CI running throughout (its load given with each case),
+  2026-11-03; release builds; `docs/research/measurements/cpu-elastic/phases.py` under
+  `taskset -c 0-3` (4 CPUs; a microVM of 4 vCPUs; 0-15, 16 P-cores, where said),
+  `run --rm --cpus 1 alpine true` unless said, 20 rounds of 5 starts after a warmup, the
+  two arms alternating each round, n 100 a side. First from outside one build (de2b1cf5): `slice.py` gives the vCPU threads (and the
+  hold's governor) of one home's VM processes a slice of their own as they appear, the
+  other home's left; then this change (its vCPUs, device workers and governor at 100 µs,
+  `platform::run_promptly`) against de2b1cf5, and both against 1468f07d, the build before
+  slice 1 that M292 compared. Each pair its own run, so only a row's two sides compare.
+- **Results** (ms, p50 (p90); `start` the request to the command executing, `command` its
+  run, `wall` the client's, as phases.py takes them):
+
+  | case (host's load) | arms | wall | start | command |
+  |---|---|---|---|---|
+  | 4 busy loops: vCPUs and governor at 100 µs, from outside (13.7 → 16.6) | de2b1cf5, the same sliced | 47.87 (80.11) → 38.42 (66.45) | 15.79 (36.16) → **8.21 (17.05)** | 5.82 (15.93) → 1.88 (7.42) |
+  | 4 busy loops: every VM process thread at 100 µs (11.3 → 13.8) | | 43.18 (68.06) → 35.75 (51.07) | 17.86 (40.54) → 8.58 (13.02) | 5.48 (11.57) → 1.84 (5.18) |
+  | 4 busy loops: vCPUs and governor at 500 µs (13.8 → 15.9) | | 42.32 (75.25) → 33.91 (50.38) | 20.08 (43.49) → 9.92 (18.30) | 4.65 (11.55) → 2.18 (5.86) |
+  | 4 busy loops, no `--cpus`: every thread at 100 µs (16.3 → 17.8) | | 39.71 (61.64) → 33.83 (48.61) | 13.46 (28.84) → 7.14 (12.23) | 5.85 (12.15) → 1.79 (3.68) |
+  | idle: vCPUs and governor at 100 µs (15.9 → 16.3) | | 13.40 (20.26) → 13.49 (18.81) | 3.03 (6.01) → 3.11 (5.67) | 0.55 (2.02) → 0.50 (1.75) |
+  | 4 busy loops (21.9 → 22.7) | de2b1cf5 → this change | 46.64 (74.05) → **37.66 (53.87)** | 20.82 (45.16) → **9.24 (15.05)** | 5.34 (11.84) → 2.02 (5.57) |
+  | 4 busy loops, no `--cpus` (22.1 → 22.2) | | 44.28 (66.07) → 39.81 (51.76) | 14.00 (29.42) → 7.00 (13.15) | 7.18 (14.89) → 2.26 (5.31) |
+  | idle (22.7 → 22.1) | | 13.73 (23.80) → 14.93 (24.59) | 3.12 (7.62) → 3.29 (6.46) | 0.51 (1.33) → 0.65 (1.54) |
+  | 4 busy loops (40.4 → 38.8) | 1468f07d → de2b1cf5 | 45.54 (79.21) → **52.52 (89.00)** | 14.30 (41.52) → 21.61 (47.49) | 0.39 (5.68) → 7.26 (13.81) |
+  | idle (38.8 → 42.0) | | 19.13 (30.98) → 13.32 (23.76) | 8.86 (21.62) → 3.33 (8.21) | 0.45 (1.33) → 0.63 (2.15) |
+  | 4 busy loops (47.0 → 41.2) | 1468f07d → this change | 48.37 (100.15) → **40.11 (60.50)** | 15.29 (59.81) → 9.30 (17.93) | 0.48 (6.08) → 2.14 (5.07) |
+  | idle (41.2 → 40.4) | | 19.22 (29.09) → 14.53 (21.95) | 8.29 (15.52) → 3.48 (6.47) | 0.41 (1.00) → 0.61 (1.86) |
+  | idle, n 200 (20.0 → 21.9) | de2b1cf5 → this change and M441's | 14.63 (26.33) → 14.61 (27.07) | 3.18 (8.40) → 3.18 (6.08) | 0.56 (1.69) → 0.53 (1.38) |
+  | 16 CPUs, 16 busy loops (21.9 → 25.3) | | 46.45 (62.00) → **32.37 (50.70)** | 24.71 (32.05) → **7.90 (12.26)** | 3.81 (8.52) → 1.73 (5.17) |
+  | 16 CPUs idle (25.3 → 33.5) | | 7.75 (11.88) → 8.10 (13.48) | 2.42 (3.65) → 2.46 (3.99) | 0.46 (0.61) → 0.43 (0.62) |
+
+  p99 and max, the contended pairs: de2b1cf5 → this change, wall 123.89 → 98.55 (both
+  max: n 100), start 68.89 → 28.94; 1468f07d → this change, wall 227.95 → 125.22, start
+  209.99 → 22.49.
+- **Reading.** The vCPUs' slice takes half of a contended start back: the guest's part of
+  it 9.2 ms where 20.8, its tail (p90) a third, the command's run 2.0 where 5.3; the wall
+  9 ms. Slicing every thread of the VM process gains no more than its vCPUs' (and the
+  governor's) alone, and 500 µs about what 100 µs does. Against the build before slice 1,
+  de2b1cf5 starts 7.0 ms later on the contended host and 5.8 ms sooner idle (what came
+  since, M297's readahead among it, is in both): a 12.8 ms swing that contention costs it.
+  With the slice, a start is 8.3 ms sooner than 1468f07d's contended and 4.7 sooner idle:
+  contention costs slice 1's start no more than idleness does, the 22 ms of M292 gone. The
+  command's run is still 1.7 ms longer than in a microVM of one vCPU when contended (2.14
+  against 0.48), its exit seen on another vCPU than init's; idle, 0.2. On 16 CPUs that 16
+  busy loops hold, the start's guest part is a third of what it was (7.90 against 24.71).
+  Idle, it costs nothing seen: the start alike at n 200 on 4 CPUs (3.18 both) and on 16
+  (2.42, 2.46), the wall within its spread.
+- **Consequence.** D191: on Linux a VM process's vCPU threads, its device workers and its
+  hold's governor take the 100 µs slice as they start (`platform::run_promptly`, through
+  `prioritize_vcpu_thread`, which on macOS gives them the real-time policy, M8, M10, a
+  woken one preempting any timeshare thread already), their nice value kept; the VM process's seccomp filter allows sched_getattr(2)
+  and sched_setattr(2) of the calling thread alone. Tested: platform's
+  `a_prompt_thread_has_the_shortest_slice_at_its_own_weight` (a thread at nice 5 keeps it
+  and has the slice; one of SCHED_BATCH is left as it was), and on real microVMs
+  containers.rs `a_microvms_vcpus_and_governor_wake_at_the_shortest_slice` (every vCPU
+  thread and the governor of a `--cpus 1` run's VM process, as sched_getattr(2) reads them
+  from the test). Windows' vCPUs are left as they are: unmeasured there, jupiter's runs
+  held to a few thousandths of a core by its headroom guard. Harness:
+  `cpu-elastic/phases.py`, `slice.py`.
+
+### M441. The hold's cost to a memory-heavy run on a contended host (D191)
+
+- **Question.** With the host's hold on a run's vCPUs (D191 slice 2), M292's contended
+  host filled 684 and 2484 MiB 9 and 16% more slowly (n 8, its load rising). Is that so
+  when repeated, and why?
+- **Method.** M440's host and day. `cpu-elastic/memory.py` under `taskset -c 0-3`, rounds
+  alternating its two arms, `--raw`: a start, then 684 MiB written to a tmpfs at `-m 700m`
+  and 2484 at `-m 2500m`, each `--cpus 1`. First de2b1cf5 against the same with no hold
+  (`hold-off.patch`). Then what the hold does in each run: `hold-stats.patch` (on
+  de2b1cf5) logs, as each governor ends, its periods, how many it held and for how long,
+  the CPU time its vCPUs used, and how late it woke at each period's end;
+  `hold-stats2.patch`, on this change, the same, and how long past its period's end each
+  held vCPU went on.
+- **Repeated** (4 busy loops, n 16, the host's load 13.0 → 35.2; ms, p50 (p90) max):
+
+  | case | de2b1cf5 | no hold |
+  |---|---|---|
+  | fill 684 MiB | 754.3 (887.0) 1043.6 | 718.0 (816.1) 817.7 |
+  | fill 2484 MiB | 7639.0 (8727.2) 9270.7 | 6889.7 (10099.4) 10518.1 |
+
+  The 2484 MiB fill took 3.7 s in the first round and 8 to 10 in the last, as the host's
+  load rose; round by round, the held arm was the quicker in 9 of 16. No difference stands
+  out of the host's drift, as M292 found of its own (1458 against 680 ms, one build).
+- **What the hold does there** (de2b1cf5 with hold-stats.patch; every governed run, starts
+  and fills, n about 50 a side):
+
+  | host (load) | arm | runs held | holds | held, all runs (vCPUs' CPU time) | governor late, max |
+  |---|---|---|---|---|---|
+  | 4 busy loops (5.5 → 16.8) | de2b1cf5 | 7 of 51 | 13 | 130.8 ms (49.3 s used) | 4.8 ms |
+  | | this change | 8 of 50 | 9 | 44.8 ms (40.7 s used) | 2.0 ms; vCPUs on at most 3.2 ms past their period (n 36) |
+  | 2 busy loops (33.5 → 26.0) | de2b1cf5 | 18 of 27 | 67 | 240.7 ms (21.6 s used) | 2.8 ms |
+  | | this change | 16 of 26 | 62 | 284.7 ms (17.6 s used) | 1.7 ms; vCPUs at most 1.2 ms past (n 247) |
+  | 32 busy loops, 8 a CPU (28.2 → 42.2; n 4 rounds) | de2b1cf5 | 1 of 15 | 1 | 3.8 ms (55.3 s used) | 56.1 ms |
+  | | this change | 3 of 15 | 5 | 48.5 ms (58.2 s used) | 52.7 ms; vCPUs at most 0.9 ms past (n 15) |
+  | 4 busy loops, the host overloaded (42 → 94, about 1,000 between) | de2b1cf5 | 13 of 51 | 422 | **334.1 s** (231.3 s used) | **57.4 s** |
+  | | its vCPUs and governor at 100 µs (slice.py) | 11 of 51 | 35 | 1.4 s (171.6 s used) | 6.0 ms |
+
+  Fills (p50 (p90)): 4 busy loops, 684 MiB 714.9 (852.5) and 702.9 (798.2), 2484 MiB
+  1921.5 (7595.3) and 1837.9 (4990.4); 2 busy loops, 463.7 (547.2) and 462.1 (560.5),
+  2116.8 (2580.4) and 2108.1 (2257.2).
+- **Reading.** On a contended host the hold seldom holds: its vCPUs are given less than
+  the run's one CPU there, 0.65 to 0.7 of one a period, and the share is spent in a period
+  of one run in four or five, a hold then of a few milliseconds to a period's end. Where
+  two CPUs are free it holds more often, 1.0 to 1.5 ms a period on average, about 1% of
+  the fill, as a microVM of one CPU would be held by having one. Its cost is not the
+  holding but its end: a held vCPU waited for the governor to wake at the period's end and
+  let it go, and a governor that wakes late holds the run as late. On the host overloaded
+  (its load near 1,000 while other work ran away), one 2484 MiB fill was held 333.0 s of
+  the 624.6 it took, 381 holds, its governor 6.8 ms late at p50, 520 ms at p90 and 57.4 s
+  at most; the arm whose vCPUs and governor ran at the 100 µs slice, in the same minutes,
+  was held 1.4 s in all, its governor never more than 6.0 ms late.
+  Where 8 busy loops share each CPU the vCPUs are given a sixth of the share and the hold
+  all but never holds; the governor, at the 100 µs slice or not, then wakes up to 53 to 56
+  ms late, and the vCPUs it held went on at most 0.9 ms past their period by themselves.
+- **Consequence.** D191: a held vCPU goes on as its period ends by itself
+  (`Hold::set_held` takes the period's end, `Hold::wait` waits no longer), so a governor
+  that wakes late can no longer hold a run past its period; what its vCPUs ran meanwhile
+  it counts as it wakes, and it comes off the next period as an overrun did before. The
+  governor runs at the vCPUs' 100 µs slice on Linux (M440). The hold's cost to a fill on
+  a contended host is then the holding itself, which a microVM of the run's CPUs alone
+  would pay by having no more: 1 to 1.5% of a fill's time where two CPUs were free, 0.1
+  to 0.2% where none were. Tested: hold's
+  `a_held_vcpu_goes_on_at_its_periods_end_without_its_governor` (held to a period's end
+  100 ms off with no governor, a vCPU waits 100 ms and no more than its host's wake), and
+  its tests of a share, a group and a pause as before. Harness: `cpu-elastic/memory.py`,
+  `hold-off.patch`, `hold-stats.patch`, `hold-stats2.patch`.
+
+### M442. Builders' give-back under a real budget, against the same builds with none (D188's builders, D133, D75)
+
+- **Question.** The builder give-back plan's step 4: a build held to a user scope whose
+  `MemoryHigh` is short of what it holds at its peak, its builder giving back what it holds
+  cold of its files and unplugging what it holds past twice its use, against the same
+  build with no budget, rounds interleaved: what does its builder give back and unplug,
+  how soon after its word does it answer, and is the held build slower beyond its rounds'
+  spread (its fastest held round slower than its slowest free one)? On the Mac, where no
+  unprivileged process may raise the system's pressure, what a give-back costs and returns
+  when the build is told every 2 s that its host is short.
+- **Method.** `docs/research/measurements/builder-pressure/measure.py SHARDS OUT` over
+  builder-cold's three builds (rust: `cargo install ripgrep` with its registry and target
+  as cache mounts; npm: `npm ci`; apt: `apt-get install build-essential python3 ...` with
+  apt's caches as cache mounts), each built by a release build of the tree with
+  builder-cold's `cold.patch` (the builder's own samples) and this harness's `give.patch`
+  (each answer and how long after its word it came). A round 0 of free builds alone fills
+  the caches and pulls the bases; then 5 rounds, each build free and held, the held arm
+  after the free one in odd rounds and before it in even ones, each build's step run again
+  each round (`ROUND`), each after a sync(2) so that none starts under the one before's
+  writeback. Linux: each build in `systemd-run --user --scope -p MemorySwapMax=0`; held,
+  `-p MemoryHigh=` the most, each second of every free arm so far, of what its scope holds
+  that its host may take back from its processes alone as the build counts it
+  (`daemon::budget`'s `Holding::held`: anonymous, shared, kernel and socket memory, the
+  file pages its processes map wherever charged, their `Pss_File`, and `lru_buffer`), less
+  what its builder held cold of its files then (its last `inactive_file`): the least that
+  holds the build where its builder gives back all it holds cold. macOS: held, the build is
+  told through `SHARDS_BUILD_PRESSURE` every 2 s that its host is short (launchd job,
+  `builder-pressure/mac.sh`, as a user's program runs). `tables.py` gives each build's time,
+  each step's (`#N DONE`), the give-backs' answers, what they freed and asked to unplug,
+  what the guest then held plugged less, and the rule. Hosts: Fedora 44, i9-14900HX, 32
+  CPUs, 64 GiB, NVMe, shared with other agents' work (`fedora.sh`); CI's ubuntu-24.04
+  runners, 4 vCPUs and 16 GiB, Ubuntu 24.04.5, kernel 7.0.0-1017-azure, on AMD EPYC 7763
+  and 9V45 and Intel Xeon 8573C and 6975P-C (`builder-pressure.yml`, four at once); an M3 Ultra Mac Studio, macOS 26.4, 96 GiB. Results under
+  `builder-pressure/results/`.
+- **Found on the way, each fixed before the numbers below.**
+  - *A builder held within a room its host had long since given back* (D188's builders):
+    a guest holds its build within what it was last told past what the build used then,
+    and what its host gets back of it outside the build (blocks it unplugs, free pages
+    reported after its answer) the build's growth never shows. On Fedora an apt build was
+    told 44 MiB of room as its builder's unplug of 128 MiB was under way and held within it
+    for 200 s while its budget had 140 MiB to spare: 219 s against 31.5 s free (b25d2d05).
+    The build now looks at its room each pressure window while a budget holds it, tells it
+    again where it changed and gives a word of pressure where it is short
+    (`build::give::again`); no held build has been held so since.
+  - *A budget short of the build's own count.* Budgeted from its anonymous memory less
+    what its builder held cold (ac3e9325, run 41292692058), a build had no room for its
+    kernel's memory nor the files its processes map, and crawled, rust 406 to 913 s
+    against 9 to 10 s, whatever its builder gave back. Budgeted from memory.stat's
+    `file_mapped` alone, it left out the files its processes map that are charged
+    elsewhere (its base's root filesystem on the builder's pmem device, the VM process's
+    text: about 100 MiB), which the build's own count of its room holds, and its builder
+    was held at what it used, asked to give back each window, for 246 to 622 s of a 10 s
+    build once on each runner (573e4bf8, run 41738284986). The budget is now the build's
+    own count.
+  - *A held arm under the free arm's writeback.* After a free arm, 700 MiB of its pages
+    were still going out as the held arm unpacked its base (CI, 573e4bf8); each build now
+    starts after a sync.
+  - *A build's base decompressed at each build* (D75). Each build decompressed its base's
+    layers into `ingest/` to read their archives' headers, rust:1-slim's 850 MiB written
+    whole and removed, which a budget's host wrote out at its disk's pace: a held build's
+    `FROM` took 4.6 to 6.3 s at p50 on the runners against 1.8 to 2.6 free, 2.7 to 3.0
+    against 1.7 to 1.9 on Fedora (0e24be3e, d1da3382). The archives are now kept as the
+    layers' uncompressed blobs and read from there (`Store::unpack_layers`): `FROM` 0.0 to
+    0.1 s in either arm, and a free rust build 3.0 s at p50 against 4.7 (Fedora,
+    2d168658).
+  - *Free pages reported at each room told.* Each hold flushed page reporting, now told
+    each window, handing its host what the build's steps had just freed and would touch
+    again; a hold now flushes only where it took something (`plug::reclaimed`).
+- **Results** (s, n, p50, p90, p99, max of the rounds past the caches'; the rule: the
+  held arm's fastest round against the free arm's slowest).
+
+  | host | build | free | held | held slower beyond the spread |
+  |---|---|---|---|---|
+  | Fedora | rust | 5, 3.0, 9.2, 9.2, 9.2 | 5, 3.2, 8.9, 8.9, 8.9 | no |
+  | Fedora | npm | 5, 4.3, 4.6, 4.6, 4.6 | 5, 5.1, 15.5, 15.5, 15.5 | by 0.1 s |
+  | Fedora | apt | 5, 17.5, 126.8, 126.8, 126.8 | 5, 19.1, 61.4, 61.4, 61.4 | no |
+  | CI EPYC 7763 | rust | 5, 4.9, 5.0, 5.0, 5.0 | 5, 5.4, 5.7, 5.7, 5.7 | no |
+  | CI EPYC 7763 | npm | 5, 9.2, 9.3, 9.3, 9.3 | 5, 10.1, 10.2, 10.2, 10.2 | by 0.8 s |
+  | CI EPYC 7763 | apt | 5, 36.1, 36.4, 36.4, 36.4 | 5, 39.6, 40.3, 40.3, 40.3 | by 2.5 s |
+  | CI EPYC 9V45 | rust | 5, 6.5, 7.1, 7.1, 7.1 | 5, 8.1, 8.6, 8.6, 8.6 | no |
+  | CI EPYC 9V45 | npm | 5, 7.5, 7.7, 7.7, 7.7 | 5, 8.0, 9.1, 9.1, 9.1 | no |
+  | CI EPYC 9V45 | apt | 5, 31.8, 31.9, 31.9, 31.9 | 5, 36.6, 37.3, 37.3, 37.3 | by 3.3 s |
+  | CI Xeon 8573C | rust | 5, 7.5, 7.7, 7.7, 7.7 | 5, 8.4, 9.3, 9.3, 9.3 | by 0.4 s |
+  | CI Xeon 8573C | npm | 5, 9.4, 9.6, 9.6, 9.6 | 5, 12.6, 18.0, 18.0, 18.0 | by 0.7 s |
+  | CI Xeon 8573C | apt | 5, 33.3, 33.8, 33.8, 33.8 | 5, 50.6, 54.0, 54.0, 54.0 | by 16.0 s |
+  | M3 Ultra | rust | 5, 4.7, 5.1, 5.1, 5.1 | 5, 4.4, 5.4, 5.4, 5.4 | no |
+  | M3 Ultra | npm | 5, 4.5, 5.2, 5.2, 5.2 | 5, 4.6, 4.7, 4.7, 4.7 | no |
+  | M3 Ultra | apt | 5, 14.5, 14.9, 14.9, 14.9 | 5, 14.9, 24.3, 24.3, 24.3 | no |
+
+  Fedora and CI at 2d168658 (CI run 41766390762), the Mac at 0e24be3e (the same give-back;
+  it differs in the base's unpack and the hold's report). The fourth runner, a Xeon 6975P-C,
+  ended its run in round 2 as its volume came within 5 GiB of full (the kept base layers'
+  1.3 GiB among it): 1 or 2 rounds each, held slower in each. Fedora was shared with other
+  agents' builds (load 10 to 90): its apt free arm's 126.8 s and its held arms' 15.5 and
+  61.4 s are rounds under that load.
+
+  What the builders gave back, held:
+
+  | host | build | answered in (ms) | freed a build (MiB) | unplugged at an answer (MiB) | budget short of the free arm's peak (MiB) |
+  |---|---|---|---|---|---|
+  | Fedora | rust | 8, 1, 6, 6, 6 | 5, 2.9, 33.9, 33.9, 33.9 | 6, 0, 0, 0, 0 | 5, 2.7, 45.6, 45.6, 45.6 |
+  | Fedora | npm | 11, 3, 12, 30, 30 | 5, 21.8, 22.5, 22.5, 22.5 | 9, 0, 128, 128, 128 | 5, -1.1, 26.3, 26.3, 26.3 |
+  | Fedora | apt | 20, 4, 32, 372, 372 | 5, 82.2, 83.5, 83.5, 83.5 | 20, 0, 384, 492, 492 | 5, -51.3, 59.9, 59.9, 59.9 |
+  | CI EPYC 7763 | rust | 7, 1, 4, 4, 4 | 5, 2.9, 34.0, 34.0, 34.0 | 2, 0, 0, 0, 0 | 5, 2.8, 3.0, 3.0, 3.0 |
+  | CI EPYC 7763 | npm | 7, 11, 14, 14, 14 | 5, 21.8, 22.9, 22.9, 22.9 | 7, 128, 256, 256, 256 | 5, 19.0, 22.7, 22.7, 22.7 |
+  | CI EPYC 7763 | apt | 5, 8, 11, 11, 11 | 5, 90.8, 101.0, 101.0, 101.0 | 5, 128, 256, 256, 256 | 5, -12.2, 57.5, 57.5, 57.5 |
+  | CI EPYC 9V45 | rust | 18, 2, 4, 5, 5 | 5, 34.1, 34.2, 34.2, 34.2 | 13, 0, 0, 0, 0 | 5, 2.8, 4.2, 4.2, 4.2 |
+  | CI EPYC 9V45 | npm | 9, 8, 12, 12, 12 | 5, 20.4, 23.5, 23.5, 23.5 | 8, 128, 256, 256, 256 | 5, 12.7, 23.1, 23.1, 23.1 |
+  | CI EPYC 9V45 | apt | 7, 7, 430, 430, 430 | 5, 68.8, 288.2, 288.2, 288.2 | 7, 128, 128, 128, 128 | 5, 69.6, 82.9, 82.9, 82.9 |
+  | CI Xeon 8573C | rust | 16, 2, 6, 106, 106 | 5, 33.9, 34.2, 34.2, 34.2 | 12, 0, 0, 0, 0 | 5, -3.0, 2.8, 2.8, 2.8 |
+  | CI Xeon 8573C | npm | 12, 2, 11, 25, 25 | 5, 0.4, 4.7, 4.7, 4.7 | 11, 128, 128, 128, 128 | 5, 18.9, 27.4, 27.4, 27.4 |
+  | CI Xeon 8573C | apt | 6, 6, 383, 383, 383 | 5, 84.9, 134.5, 134.5, 134.5 | 6, 0, 128, 128, 128 | 5, -3.9, 66.5, 66.5, 66.5 |
+  | M3 Ultra | rust | 5, 4, 14, 14, 14 | 5, 2.8, 3.1, 3.1, 3.1 | 1, 0, 0, 0, 0 | - |
+  | M3 Ultra | npm | 5, 2, 11, 11, 11 | 5, 24.1, 24.6, 24.6, 24.6 | 2, 128, 128, 128, 128 | - |
+  | M3 Ultra | apt | 40, 2, 17, 27, 27 | 5, 70.4, 89.0, 89.0, 89.0 | 35, 0, 640, 1152, 1152 | - |
+
+  "Unplugged" is what the guest held plugged less a second after an answer than before it
+  (its own samples). Each step's time, free against held, is in `tables.py`'s output
+  (`results/*.tables.txt`).
+- **Reading.** A give-back costs its build nothing measurable: its answers came within 6 to 11 ms at
+  p50 on every host, 430 ms at most, and on the Mac, where nothing but the build's own word
+  presses its builder, every build held took no longer than free beyond the spread, as did
+  Fedora's rust and apt builds and two of CI's runners' rust builds and one's npm build.
+  What a held build still pays on CI's runners is its host-side writes, not its builder: a
+  step's time held against free is longer where the build writes to its host's disk, an
+  apt build's `RUN` (its apt caches on the join disk) 2 to 9 s at p50 and its export (the
+  new image's root filesystem) 1 to 6 s, an npm build's `RUN` (npm's cache) 0.7 to 2.3 s,
+  while an apt build's guest was held within 300 MiB of room its build never filled; the scope's `memory.current` sat at
+  its budget with 20 to 170 MiB dirty, and the memory controller holds a cgroup's dirty
+  pages to its share of what its budget leaves (mm/page-writeback.c, `balance_dirty_pages`
+  over the cgroup's own domain), which a build with no budget, on a 16 GiB host, left to
+  the writeback after it ended. On Fedora's NVMe the same steps cost 0.1 to 1.3 s more. npm's
+  and rust's builders hold 3 to 25 MiB cold, under their builds' own spread of what they
+  hold (npm 732 to 847 MiB from round to round on Fedora), so their budgets were at most a
+  few MiB short of their peaks, and a budget taken from too few free arms was short of a
+  later round's by more than its builder could give back: npm 114 and 80 s on Fedora at
+  d1da3382, before every free arm's peak so far set it.
+- **Consequence.** Builders give back at their build's word on every host, told their room again each
+  window; a build's base is decompressed once (D75); D133 and D188 say so. The plan's rule
+  holds on the Mac and on Fedora but for npm by 0.1 s, and on CI's runners for rust on two
+  and npm on one: what is left there is the build's own writes under its budget's dirty
+  limit, which no give-back can take, and the root filesystem an image's export writes
+  whole, 850 MiB for rust:1-slim's 7 MiB addition, which a root filesystem made of
+  its base's and its own layers would not.
+- **Since (D188, built; awaiting the coordinator's measurement on CI's runners and
+  Fedora).** One correction to the reading above: an export's root filesystem is made
+  durable before it is named (`Partial::commit`'s fsync), so a free arm paid its disk too,
+  only at memory's pace before its sync; what is flushed after a free build ends is its
+  steps' changes, kept in a staging file the build reads and removes. Two changes, both
+  from the kernel's source (mm/page-writeback.c and mm/memcontrol.c at v7.0, CI's
+  kernel's): a build its budget holds hands its own writes (its steps' changes, its layers,
+  its image's root filesystem) to a writer its user's manager places outside the budget
+  (`shards build-writer`, build/outside.rs), whose cgroup `balance_dirty_pages` throttles
+  them against, as it throttles every writer against its own (`wb_get_create_current`,
+  `mdtc_calc_avail`); and an export over a base whose root filesystem the store's file
+  system clones writes only what the build added past the clone's blocks
+  (`shards_erofs::write_over`), which on CI's ext4 is not made, the image written whole.
+  The builder's own writes to its caches' ranges (an apt build's lists and archives, npm's
+  cache) stay under the budget, its VM process's. To measure: this harness, unchanged, at
+  the commit that has them, on CI (`builder-pressure.yml`) and Fedora (`fedora.sh`).
+
+### M443. A restart over the kept layer file itself, and what the guest freed given back (D190)
+
+- **Question.** D190's slices 7 and 8: a stopped container's `start` goes on over the file
+  its layer was kept in, where its files were packed on the host and put back into the
+  warm microVM's own layer; and what its guest freed is given back to the host's disk once
+  its microVM has gone, where its file only grew. What does each cost, against before?
+- **Method.** 2026-11-03, on the Linux runner kiln-a094a12d (32 CPUs, 62 GiB, Fedora
+  44, Linux 6.19.10-300.fc44, KVM, the home on Btrfs; shared with other agents' builds and
+  tests: load 3 to 50 as these ran), release builds of de2b1cf5 (OLD: packs and puts back)
+  and of this slice (NEW), each with a home of its own, interleaved:
+  - `docs/research/measurements/layer-kept/ab.py OLD NEW --runs 20` (M278's harness): a
+    container writes 0, 4 MiB or 64 MiB into its root and ends (`run`), then `start -a`
+    runs it again over its files, `diff` and `commit`; n = 20 after a round not counted.
+  - `docs/research/measurements/layer-give-back/measure.py OLD NEW --runs 20`: a
+    container writes 0, 64 MiB or 1 GiB, syncs, removes it and ends; its layer file's bytes
+    on the disk (st_blocks) once kept, and NEW's daemon's word of what it gave back and in
+    how long.
+  - For diagnosis only (not kept, `p/d190-exp`): the guest's go-over timed step by step
+    (each step's end written into the layer and read with debugfs), and the host's every
+    layer flush and swap timed in the VM's log; 41 restarts of one container, and 12 of
+    containers each restarted once.
+- **Found.**
+  - What the guest freed, given back (n = 20 a side, MiB of the layer's file on the disk
+    once kept, p50 / p90 / p99 / max; NEW's give-back, its bytes and its time):
+
+    | written and removed | OLD on disk | NEW on disk | NEW gave back | NEW's give-back, ms |
+    |---|---|---|---|---|
+    | 0 | 0.31 / 0.31 / 0.31 / 0.31 | 0.31 / 0.31 / 0.31 / 0.31 | 4 KiB at most | 0.64 / 1.61 / 3.92 / 3.92 |
+    | 64 MiB | 64.35 / 64.35 / 64.35 / 64.35 | 0.36 / 0.36 / 0.36 / 0.36 | 64.00 MiB | 11.10 / 15.20 / 15.31 / 15.31 |
+    | 1 GiB | 1,024.53 / 1,024.56 / 1,024.56 / 1,024.56 | 0.56 / 0.56 / 0.56 / 0.56 | 1,024.01 MiB | 160.24 / 225.71 / 303.81 / 303.81 |
+
+  - The restart, the first build as it first went over (65a8c890: the template's layer
+    unmounted whole, each of its flushes the host's), `start -a` ms p50 / p90 / p99 / max,
+    OLD against NEW: 0 B 50.72 / 61.72 / 76.80 / 76.80 against 102.19 / 131.18 / 133.15 /
+    133.15; 4 MiB 100.62 / 140.12 / 151.48 against 140.26 / 198.24 / 291.13; 64 MiB 750.82 /
+    1,806.15 / 2,503.76 against 666.63 / 1,284.43 / 1,656.54.
+  - Where its guest spent the time (diagnosis build): letting go of the template's layer,
+    its unmount, 21 to 38 ms of a 30 to 54 ms go-over (n = 10), its flushes there 2.2 to
+    11.2 ms each, the host's fdatasync of a file the run was about to drop. Shut down first
+    (EXT4_IOC_SHUTDOWN, NOLOGFLUSH), its flushes answered at once while a file is readied
+    to replace it, the go-over's steps, ms, n = 41 restarts of one container (p50 / p90 /
+    p99 / max): the standby ended 0.61 / 0.86 / 1.91 / 1.91; a tmpfs every process's root
+    2.25 / 2.65 / 2.92 / 2.92; the template's layer shut down 1.59 / 2.25 / 2.39 / 2.39; the
+    old root's mounts moved 0.22 / 0.27 / 0.58 / 0.58; it and the layer detached and let go
+    of 2.14 / 2.75 / 3.26 / 3.26; the device claimed exclusively 0.01 / 0.03 / 0.15 / 0.15;
+    the file put under it (the host's swap, 0.05 to 0.2 of it) 0.15 / 0.22 / 0.29 / 0.29;
+    the container's file system mounted, one host fdatasync in it, 4.09 / 4.49 / 6.13 /
+    6.13; its root and the mounts onto it 1.81 / 4.38 / 4.67 / 4.67; the standby forked
+    again 0.45 / 0.63 / 0.93 / 0.93; in all 13.46 / 16.91 / 18.28 / 18.28. In the 12
+    containers each restarted once, the guest started the command 25 to 45 ms after the
+    request where OLD's started it 2.5 to 6.0 ms after (`SHARDS_TIMING`'s markers), its
+    go-over 11 to 20 of it.
+  - The restart so (42a2ea62), OLD against NEW, ms p50 (p90, p99 = max):
+
+    | size | `start` OLD | `start` NEW | `diff` OLD | `diff` NEW |
+    |---|---|---|---|---|
+    | 0 | 83.80 (95.18, 96.04) | 128.35 (159.99, 276.45) | 86.54 (93.41, 101.48) | 57.06 (68.41, 76.19) |
+    | 4 MiB | 123.89 (146.02, 158.03) | 160.71 (180.98, 191.49) | 101.39 (119.21, 131.54) | 82.49 (95.15, 96.19) |
+    | 64 MiB | 589.97 (651.85, 682.66) | 516.49 (551.89, 594.91) | 337.46 (425.24, 463.58) | 266.31 (321.88, 322.75) |
+
+    `run` and `commit` the same within their spread at every size (`run` 0 B 32.33 against
+    27.57, 64 MiB 357.11 against 355.45).
+  - The standby born again (diagnosis build, n = 8 containers each restarted once): from
+    its fork to its first step past moving itself into the workload's cgroup, 10.2 to
+    40.2 ms, where the template's standby had moved before its snapshot; its whole start
+    (`Standby::start`, the command exec'd) 15.0 to 44.1. With cgroup2 mounted
+    `favordynmods`, 0.27 to 0.93 and 4.0 to 8.3.
+  - As committed (5b2fd573: shut down, flushes answered, the mapping read at random until
+    the command runs, `favordynmods`), OLD against NEW, ms p50 (p90, p99 = max), n = 20:
+
+    | size | `start` OLD | `start` NEW | `diff` OLD | `diff` NEW | `run` OLD | `run` NEW |
+    |---|---|---|---|---|---|---|
+    | 0 | 61.77 (79.68, 79.89) | 79.33 (90.67, 100.23) | 67.38 (83.09, 85.02) | 45.61 (53.71, 56.63) | 25.14 (30.18, 51.52) | 24.96 (32.36, 32.92) |
+    | 4 MiB | 93.55 (109.32, 111.86) | 96.86 (114.75, 131.15) | 76.02 (91.80, 106.79) | 54.67 (70.65, 73.73) | 50.94 (60.72, 69.59) | 52.85 (67.05, 69.78) |
+    | 64 MiB | 546.43 (584.95, 590.45) | 464.71 (484.72, 497.41) | 314.90 (338.15, 341.62) | 233.50 (255.64, 273.49) | 347.13 (356.06, 358.86) | 349.71 (372.70, 383.55) |
+
+    `commit` the same at every size (0 B 24.63 against 23.66, 64 MiB 129.90 against
+    128.80). Host kiln-a094a12d, Linux 6.19.10-300.fc44, load 4 to 18 as it ran.
+  - Where packing and going over cross (5b2fd573, going over at every size, against
+    de2b1cf5; `ab.py --sizes 0,1048576,2097152,4194304,8388608,16777216,33554432`, n = 20
+    a side, interleaved), `start -a` ms p50 (p90, p99 = max):
+
+    | written | packed (OLD) | gone over (NEW) | NEW less OLD at p50 |
+    |---|---|---|---|
+    | 0 | 52.55 (189.68, 200.23) | 63.14 (81.30, 89.83) | +10.59 |
+    | 1 MiB | 70.37 (92.91, 280.08) | 75.47 (148.04, 272.18) | +5.10 |
+    | 2 MiB | 76.38 (90.93, 261.56) | 90.44 (100.20, 101.46) | +14.06 |
+    | 4 MiB | 95.90 (120.42, 127.77) | 100.92 (116.58, 120.73) | +5.02 |
+    | 8 MiB | 135.68 (331.54, 360.86) | 122.06 (150.17, 175.20) | -13.62 |
+    | 16 MiB | 259.86 (303.49, 492.14) | 189.81 (260.00, 269.90) | -70.05 |
+    | 32 MiB | 396.48 (546.18, 584.65) | 286.21 (443.36, 455.74) | -110.27 |
+
+    Packing is quicker through 4 MiB, going over from 8 MiB on; the lines between 4 and 8
+    MiB meet at 5.08 MiB. What a written file takes of the layer is its bytes and a few
+    blocks of metadata (its extents, its directory), past what an empty layer of the size
+    holds (`layers::held`).
+  - Chosen per restart (894c2c67: packed below 5 MiB held, gone over from there), against
+    de2b1cf5, n = 20 a side, interleaved, ms p50 (p90, p99 = max):
+
+    | size | `start` OLD | `start` NEW | `diff` OLD | `diff` NEW | `run` OLD | `run` NEW | `commit` OLD | `commit` NEW |
+    |---|---|---|---|---|---|---|---|---|
+    | 0 | 53.63 (59.42, 67.19) | 55.66 (63.04, 64.28) | 54.66 (62.31, 62.47) | 55.65 (63.33, 64.74) | 23.04 (30.91, 32.42) | 20.46 (25.94, 30.13) | 24.37 (32.81, 33.42) | 23.60 (31.48, 122.02) |
+    | 4 MiB | 97.37 (118.61, 121.45) | 95.98 (123.12, 126.78) | 79.87 (92.17, 92.23) | 78.85 (94.61, 111.07) | 50.29 (73.03, 75.25) | 52.63 (76.49, 83.84) | 38.09 (43.20, 45.02) | 35.83 (43.14, 45.51) |
+    | 64 MiB | 576.05 (769.50, 899.66) | 482.05 (502.95, 503.19) | 329.95 (490.96, 1,397.01) | 238.30 (259.90, 374.09) | 361.50 (420.18, 675.33) | 362.38 (381.37, 386.50) | 129.19 (144.70, 151.63) | 131.84 (155.76, 158.15) |
+
+    Load 6 to 19 as it ran. At 0 B and 4 MiB both builds pack: `start` within the spread of
+    each other (0 B +2.03 ms at p50, -2.91 at p99); at 64 MiB going over is 16% quicker at
+    p50 and 44% at p99. A rerun at 0 B, n = 40, came as the host's load rose past 25 to 49
+    and is not kept.
+- **Reading.**
+  - A layer's file holds every block its guest ever wrote until its microVM has gone; its
+    bitmaps then say what is free, and giving that back costs the host's punch alone, about
+    a sixth of a millisecond a MiB on Btrfs, after the run's client has heard it ended.
+  - A restart over the kept file costs what letting go of the template's layer, mounting
+    the container's and rooting every process in it cost, about 13 ms of the guest's, and
+    no more as the layer grows; packing and putting back grew with what the layer holds.
+    At 0 B packing an empty layer was quicker by 17.6 ms at p50; at 4 MiB they are alike;
+    at 64 MiB going over is 82 ms quicker. Its first build was slower at every small size
+    for three costs that were not the layer's mount: the template's layer's unmount, whose
+    writes were each a host fdatasync of a file about to be dropped; a fresh standby's
+    move into its cgroup, an RCU grace period; and none of these is the restart's to pay.
+  - The rest of the go-over is the mount of the container's file system (4.1 ms at p50,
+    one host fdatasync of the superblock's write in it, which a journal commit after would
+    not make up for: ext4 wipes a journal whose superblock does not say it needs recovery,
+    fs/ext4/super.c ext4_load_journal),
+    the two root moves (2.3 and 1.8 ms) and the template layer's detach (2.1 ms).
+- **Consequence.** D190's slices 7 and 8 as built: the daemon gives a restart the kept file
+  where its length is the run's layer's and it holds 5 MiB or more (`layers::OVER_FROM`,
+  held to the crossing table by `a_restart_goes_over_from_where_packing_costs_more`; below
+  it the layer is packed and put back as before), the VM readies it and swaps it in place of the
+  template's as the guest asks (`control::LAYER_SWAP`), answering that layer's flushes at
+  once meanwhile, and init shuts the template's layer down, lets go of it, mounts the
+  container's and roots every process there (init `over.rs`); cgroup2 is mounted
+  `favordynmods` where the kernel has it; and the daemon gives back what a kept layer's
+  bitmaps say is free as it keeps it (`layers::give_back`).
+
+### M460. The CPU identity Hypervisor.framework lets a VMM tell its guest, and microVMs moved between homes (D176 part 6)
+
+- **Question.** A snapshot restored on another Mac meets another CPU: which of the ID
+  registers a guest reads does Hypervisor.framework say, and let a VMM set, so that a guest
+  restored there is told the CPU it booted on? And does a microVM moved to another home, its
+  files, volume and image going with it, go on there with nothing of it lost?
+- **Method.** The vmm's HVF test (`vcpu_and_gic_state_round_trip`, at 02a85638, a probe of
+  `hv_vcpu_get_sys_reg` and `hv_vcpu_set_sys_reg`, each register read, its low field set
+  to 0 and read back, and set back) on adalundhe-macbook-pro (Apple M5 Max, macOS 26.5.2),
+  2026-11-03; then the same test asserting it of every register a snapshot keeps (`ID_REGS`,
+  `set_cpu_id`). `sysctl hw.optional.arm` on the M5 Max (adas-macbook-pro-2, macOS 26.4.1)
+  and an M4 Max (adas-mac-studio, macOS 26.2). tests/moved.rs on kiln-a094a12d (Intel Core
+  i9-14900HX, Fedora 44, Linux 6.19.10, KVM), two homes, the one's daemon listening on
+  loopback and the other joined to it as a context, at e430d400. On CI's runners,
+  `.github/workflows/migrate-e2e.yml` (when asked): docs/research/measurements/migrate/two-hosts.sh
+  `local`, 30 saved moves and 30 live of alpine:3.20 counting, then all of tests/moved.rs, on
+  an ubuntu-24.04 runner (x86_64, KVM) and on a macOS arm64 runner where it offers
+  Hypervisor.framework (GitHub's macos-15 does not: `kern.hv_support` absent); n, p50, p90,
+  p99 and max of each move's time and the time it ran nowhere in each job's summary, its
+  results file and logs its artifact; and between two runners over a tailnet where the
+  repository has one (D176 part 6).
+- **Found.**
+  - Said and set, read back as set: MIDR_EL1, MPIDR_EL1, ID_AA64PFR0_EL1, PFR1, ZFR0, SMFR0,
+    DFR0, DFR1, ISAR0, ISAR1, MMFR0, MMFR1, MMFR2. Not said (`HV_BAD_ARGUMENT`,
+    0xfae94003): ID_AA64ISAR2_EL1, ISAR3, PFR2, MMFR3, MMFR4, REVIDR_EL1, AFR0 and AFR1.
+  - The M5 Max has, of the features its OS names, FEAT_CSSC, FEAT_EBF16, FEAT_HBC, the MTE
+    family, FEAT_SME2p1, FEAT_SME_B16B16, FEAT_SME_F16F16 and FEAT_SVE_B16B16 where the M4
+    Max has not; none the other way. EBF16 is ISAR1's BF16 level, which a VMM sets; CSSC
+    and HBC are ISAR2's, which it cannot.
+  - Moved between the homes, cold: a counter appending to a file it holds open in its
+    volume, from the volume's directory, appends on there, every count once, in order;
+    a counter of an image no registry holds (saved here, loaded there) counts on there,
+    its log with it, each count once; one whose name another microVM has there is
+    refused there and goes on here. All three on real microVMs, 4 of 4 runs.
+- **Reading.** A guest restored on another Mac can be told its own CPU in every register a
+  snapshot keeps; ISAR2 alone is the framework's to show, and an M4 shows a guest no CSSC
+  or HBC that one booted on an M5 may have used.
+- **Consequence.** `ID_REGS` grows by ZFR0 and SMFR0, every register the framework says; a
+  restore on a CPU whose fields cover the snapshot's is told the snapshot's (D176 part 6);
+  and a move checks the features of the two machines' CPUs as their OSes name them,
+  refusing one to a machine lacking any its guest may have used (an M5's microVM to an M4).
+  Mutation-checked: a moved share keyed as saved (`restores_moved` off), the restored
+  guest's share server refuses its volume ("not the directory it was saved with") and the
+  move fails, the microVM going on where it was.
+
+### M461. The time a microVM moved live runs nowhere (D176 part 7)
+
+- **Question.** Moved live by pre-copy, how long does a microVM run nowhere, from its last
+  save asked to its restore on the other machine said done, and what takes it?
+- **Method.** tests/moved.rs `live_move_downtime` (`SHARDS_MOVES=30`), at e430d400, on
+  kiln-a094a12d (Intel Core i9-14900HX, Fedora 44, Linux 6.19.10, KVM with
+  KVM_CAP_DIRTY_LOG_RING_ACQ_REL), 2026-11-03: 30 microVMs of the test image, one at a time,
+  each counting every 20 ms, moved live from one home to another joined to it as a context
+  over loopback QUIC (D180); each move's steps as `SHARDS_MOVE_TIMES` says them, the
+  downtime by the moving machine's clock. On CI's runners, `.github/workflows/migrate-e2e.yml`
+  measures it as M460 says, its live series the time each of 30 moves ran nowhere.
+- **Found** (µs unless said; n 30):
+
+  | | p50 | p90 | p99 | max |
+  |---|---|---|---|---|
+  | downtime | 114,245 | 126,128 | 140,427 | 140,427 |
+  | its last save | 18,598 | 27,577 | 33,324 | 33,324 |
+  | its last stream (directory, delta files, laid over there) | 44,439 | 51,478 | 67,512 | 67,512 |
+  | round 0 | 402,682 | 445,937 | 2,135,329 | 2,135,329 |
+  | round 0's bytes | 73,535,488 | 74,645,504 | 74,854,400 | 74,854,400 |
+  | round 1's bytes | 1,175,552 | 1,241,088 | 190,210,048 | 190,210,048 |
+  | the pause round 0 takes to find the layer's and swap's data | 252 | 295 | 318 | 318 |
+
+  29 of 30 moves took two rounds, the second under 8 MiB; one took three. The rest of the
+  downtime, 51 ms at p50, is the stream's tail and the restore there.
+  - Mutation-checked with `scribble`, a guest stamping 64 MiB page by page and checking
+    every page after each sweep: with KVM's rings' pages not noted (`Dirty::collect`), or no
+    device's writes noted (`GuestMemory::device_wrote`), the test failed both times, a
+    `shards` command of it not ending in 120 s, where with both it passed every time.
+- **Reading.** What the guest wrote last is a megabyte; the time it runs nowhere is the last
+  save (its heads written whole, its generation committed), the stream of its directory
+  and the restore, not its memory.
+- **Consequence.** The downtime D176 part 7 says; what is left to cut is in the last stream
+  and the restore.

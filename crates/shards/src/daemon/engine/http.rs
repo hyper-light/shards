@@ -1,4 +1,5 @@
-//! The engine's half of HTTP/1.1, as dockerd's Go server writes it: an answer whole, a
+//! The engine's half of HTTP/1.1 (RFC 9112), as the Engine API's clients read it (D170):
+//! an answer whole, a
 //! stream of output in chunks as it comes, a connection taken over for a stream of its
 //! own (`101 UPGRADED`), and the frames of Docker's multiplexed stream.
 
@@ -196,9 +197,9 @@ pub(super) fn frame(stream: u8, bytes: &[u8]) -> Vec<u8> {
     out
 }
 
-/// Takes `conn` over for a stream of its own, as dockerd's hijack does: `101 UPGRADED`
-/// where the client asked to upgrade, multiplexed where `multiplexed` from API 1.42; else
-/// `200 OK` and a raw stream.
+/// Takes `conn` over for a stream of its own, as clients that attach expect (D170): `101
+/// UPGRADED` where the client asked to upgrade, multiplexed where `multiplexed` from API
+/// 1.42; else `200 OK` and a raw stream.
 pub(super) fn hijack(mut conn: &UnixStream, head: &Head, version: &str, multiplexed: bool) -> io::Result<()> {
     let out = if head.get("Upgrade").is_some() {
         let kind = if multiplexed && super::at_least(version, "1.42") {

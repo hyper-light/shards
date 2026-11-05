@@ -1,0 +1,477 @@
+2026-11-03 UTC, PM M401: approved two-reboot IOMMU boot-policy experiment.
+Host: jupiter, Windows 11 Pro 26200.9711, AMD Ryzen AI Max+ 395.
+Output normalized to LF; trailing whitespace removed. No recovery keys/protectors recorded.
+All five boot-policy.ps1 actions (Prepare, BootProbe, Inspect, Return, Verify) exited 0.
+After Verify, bcdedit /enum all /v confirmed the recorded temporary GUID absent.
+No physical device was detached; this is an API refusal measurement, not a shards hardware E2E.
+
+HARNESS SHA256
+5cea1d24bda00f5d5f4cf6c63959cb27c9bae2978b5477e0daca85945f794a01  boot-policy.ps1
+6047576baa722f0c9edb7d7060d014fdd3822327ccabc901c722eac1eb36d2ea  probe.ps1
+0001a86ce9d6c8386b9a7a9da51891cfda37045190bd88dd6e8537f8d24390bb  assign.ps1
+
+EXPERIMENT LOG
+[2026-11-03T21:38:16.9524748Z] ACTION Prepare
+[2026-11-03T21:38:17.2252874Z] bcdedit /enum {current} /v -> 0
+
+Windows Boot Loader
+-------------------
+identifier              {dffce7cc-f00e-11f0-9721-831b2d8db458}
+device                  partition=C:
+path                    \Windows\system32\winload.efi
+description             Windows 11
+locale                  en-US
+inherit                 {6efb52bf-1766-41db-a6b3-0ee5eff72bd7}
+recoverysequence        {a5cbb19d-f006-11f0-a53d-502e911a8b83}
+displaymessageoverride  Recovery
+recoveryenabled         Yes
+isolatedcontext         Yes
+allowedinmemorysettings 0x15000075
+osdevice                partition=C:
+systemroot              \Windows
+resumeobject            {dffce7cb-f00e-11f0-9721-831b2d8db458}
+nx                      OptIn
+bootmenupolicy          Standard
+hypervisorlaunchtype    Auto
+[2026-11-03T21:38:17.2542636Z] bcdedit /enum {bootmgr} /v -> 0
+
+Windows Boot Manager
+--------------------
+identifier              {9dea862c-5cdd-4e70-acc1-f32b344d4795}
+device                  partition=\Device\HarddiskVolume1
+path                    \EFI\Microsoft\Boot\bootmgfw.efi
+description             Windows Boot Manager
+locale                  en-US
+inherit                 {7ea2e1ac-2e61-4728-aaa3-896d9d0a9f0e}
+isolatedcontext         Yes
+default                 {dffce7cc-f00e-11f0-9721-831b2d8db458}
+resumeobject            {dffce7cb-f00e-11f0-9721-831b2d8db458}
+displayorder            {dffce7cc-f00e-11f0-9721-831b2d8db458}
+toolsdisplayorder       {b2721d73-1db4-4c62-bf78-c548a880142d}
+timeout                 30
+[2026-11-03T21:38:17.7830625Z] {"Utc":"2026-11-03T21:38:17.7200494Z","HostName":"JUPITER","Os":"Microsoft Windows 11 Pro","BootTime":"2026-11-01T07:20:46.3699320Z","Current":"{dffce7cc-f00e-11f0-9721-831b2d8db458}","Default":"{dffce7cc-f00e-11f0-9721-831b2d8db458}","DisplayOrder":"{dffce7cc-f00e-11f0-9721-831b2d8db458}","BootSequence":null,"IommuPolicy":null,"BitLockerProtection":1,"BitLockerVolume":1,"SecureBoot":true,"ReaderStatus":"OK","CurrentText":"\r\nWindows Boot Loader\r\n-------------------\r\nidentifier              {dffce7cc-f00e-11f0-9721-831b2d8db458}\r\ndevice                  partition=C:\r\npath                    \\Windows\\system32\\winload.efi\r\ndescription             Windows 11\r\nlocale                  en-US\r\ninherit                 {6efb52bf-1766-41db-a6b3-0ee5eff72bd7}\r\nrecoverysequence        {a5cbb19d-f006-11f0-a53d-502e911a8b83}\r\ndisplaymessageoverride  Recovery\r\nrecoveryenabled         Yes\r\nisolatedcontext         Yes\r\nallowedinmemorysettings 0x15000075\r\nosdevice                partition=C:\r\nsystemroot              \\Windows\r\nresumeobject            {dffce7cb-f00e-11f0-9721-831b2d8db458}\r\nnx                      OptIn\r\nbootmenupolicy          Standard\r\nhypervisorlaunchtype    Auto","ManagerText":"\r\nWindows Boot Manager\r\n--------------------\r\nidentifier              {9dea862c-5cdd-4e70-acc1-f32b344d4795}\r\ndevice                  partition=\\Device\\HarddiskVolume1\r\npath                    \\EFI\\Microsoft\\Boot\\bootmgfw.efi\r\ndescription             Windows Boot Manager\r\nlocale                  en-US\r\ninherit                 {7ea2e1ac-2e61-4728-aaa3-896d9d0a9f0e}\r\nisolatedcontext         Yes\r\ndefault                 {dffce7cc-f00e-11f0-9721-831b2d8db458}\r\nresumeobject            {dffce7cb-f00e-11f0-9721-831b2d8db458}\r\ndisplayorder            {dffce7cc-f00e-11f0-9721-831b2d8db458}\r\ntoolsdisplayorder       {b2721d73-1db4-4c62-bf78-c548a880142d}\r\ntimeout                 30"}
+[2026-11-03T21:38:18.1891599Z] Active VMs:
+[2026-11-03T21:38:18.1921643Z] Build/VM/test processes:
+[2026-11-03T21:38:18.1962128Z] FVE policy key present: False
+[2026-11-03T21:38:18.2706184Z] bcdedit /export C:\Users\corph\g121-p13-boot-20261103\bcd-before.bak -> 0
+The operation completed successfully.
+[2026-11-03T21:38:18.2915994Z] bcdedit /copy {current} /d shards DDA probe 20261103-213818 -> 0
+The entry was successfully copied to {5db7ed20-c375-11f1-a54d-502e911a8b83}.
+[2026-11-03T21:38:18.3154304Z] bcdedit /set {5db7ed20-c375-11f1-a54d-502e911a8b83} hypervisoriommupolicy enable -> 0
+The operation completed successfully.
+[2026-11-03T21:38:18.3275312Z] bcdedit /displayorder {5db7ed20-c375-11f1-a54d-502e911a8b83} /remove -> 0
+The operation completed successfully.
+[2026-11-03T21:38:18.3395652Z] bcdedit /bootsequence {5db7ed20-c375-11f1-a54d-502e911a8b83} -> 0
+The operation completed successfully.
+[2026-11-03T21:38:18.3674898Z] bcdedit /enum {5db7ed20-c375-11f1-a54d-502e911a8b83} /v -> 0
+
+Windows Boot Loader
+-------------------
+identifier              {5db7ed20-c375-11f1-a54d-502e911a8b83}
+device                  partition=C:
+path                    \Windows\system32\winload.efi
+description             shards DDA probe 20261103-213818
+locale                  en-US
+inherit                 {6efb52bf-1766-41db-a6b3-0ee5eff72bd7}
+recoverysequence        {a5cbb19d-f006-11f0-a53d-502e911a8b83}
+displaymessageoverride  Recovery
+recoveryenabled         Yes
+isolatedcontext         Yes
+allowedinmemorysettings 0x15000075
+osdevice                partition=C:
+systemroot              \Windows
+resumeobject            {dffce7cb-f00e-11f0-9721-831b2d8db458}
+nx                      OptIn
+bootmenupolicy          Standard
+hypervisorlaunchtype    Auto
+hypervisoriommupolicy   Enable
+[2026-11-03T21:38:18.5416751Z] bcdedit /enum {current} /v -> 0
+
+Windows Boot Loader
+-------------------
+identifier              {dffce7cc-f00e-11f0-9721-831b2d8db458}
+device                  partition=C:
+path                    \Windows\system32\winload.efi
+description             Windows 11
+locale                  en-US
+inherit                 {6efb52bf-1766-41db-a6b3-0ee5eff72bd7}
+recoverysequence        {a5cbb19d-f006-11f0-a53d-502e911a8b83}
+displaymessageoverride  Recovery
+recoveryenabled         Yes
+isolatedcontext         Yes
+allowedinmemorysettings 0x15000075
+osdevice                partition=C:
+systemroot              \Windows
+resumeobject            {dffce7cb-f00e-11f0-9721-831b2d8db458}
+nx                      OptIn
+bootmenupolicy          Standard
+hypervisorlaunchtype    Auto
+[2026-11-03T21:38:18.5679086Z] bcdedit /enum {bootmgr} /v -> 0
+
+Windows Boot Manager
+--------------------
+identifier              {9dea862c-5cdd-4e70-acc1-f32b344d4795}
+device                  partition=\Device\HarddiskVolume1
+path                    \EFI\Microsoft\Boot\bootmgfw.efi
+description             Windows Boot Manager
+locale                  en-US
+inherit                 {7ea2e1ac-2e61-4728-aaa3-896d9d0a9f0e}
+isolatedcontext         Yes
+default                 {dffce7cc-f00e-11f0-9721-831b2d8db458}
+resumeobject            {dffce7cb-f00e-11f0-9721-831b2d8db458}
+displayorder            {dffce7cc-f00e-11f0-9721-831b2d8db458}
+bootsequence            {5db7ed20-c375-11f1-a54d-502e911a8b83}
+toolsdisplayorder       {b2721d73-1db4-4c62-bf78-c548a880142d}
+timeout                 30
+[2026-11-03T21:38:18.7601203Z] {"Utc":"2026-11-03T21:38:18.7591171Z","HostName":"JUPITER","Os":"Microsoft Windows 11 Pro","BootTime":"2026-11-01T07:20:46.3699320Z","Current":"{dffce7cc-f00e-11f0-9721-831b2d8db458}","Default":"{dffce7cc-f00e-11f0-9721-831b2d8db458}","DisplayOrder":"{dffce7cc-f00e-11f0-9721-831b2d8db458}","BootSequence":"{5db7ed20-c375-11f1-a54d-502e911a8b83}","IommuPolicy":null,"BitLockerProtection":1,"BitLockerVolume":1,"SecureBoot":true,"ReaderStatus":"OK","CurrentText":"\r\nWindows Boot Loader\r\n-------------------\r\nidentifier              {dffce7cc-f00e-11f0-9721-831b2d8db458}\r\ndevice                  partition=C:\r\npath                    \\Windows\\system32\\winload.efi\r\ndescription             Windows 11\r\nlocale                  en-US\r\ninherit                 {6efb52bf-1766-41db-a6b3-0ee5eff72bd7}\r\nrecoverysequence        {a5cbb19d-f006-11f0-a53d-502e911a8b83}\r\ndisplaymessageoverride  Recovery\r\nrecoveryenabled         Yes\r\nisolatedcontext         Yes\r\nallowedinmemorysettings 0x15000075\r\nosdevice                partition=C:\r\nsystemroot              \\Windows\r\nresumeobject            {dffce7cb-f00e-11f0-9721-831b2d8db458}\r\nnx                      OptIn\r\nbootmenupolicy          Standard\r\nhypervisorlaunchtype    Auto","ManagerText":"\r\nWindows Boot Manager\r\n--------------------\r\nidentifier              {9dea862c-5cdd-4e70-acc1-f32b344d4795}\r\ndevice                  partition=\\Device\\HarddiskVolume1\r\npath                    \\EFI\\Microsoft\\Boot\\bootmgfw.efi\r\ndescription             Windows Boot Manager\r\nlocale                  en-US\r\ninherit                 {7ea2e1ac-2e61-4728-aaa3-896d9d0a9f0e}\r\nisolatedcontext         Yes\r\ndefault                 {dffce7cc-f00e-11f0-9721-831b2d8db458}\r\nresumeobject            {dffce7cb-f00e-11f0-9721-831b2d8db458}\r\ndisplayorder            {dffce7cc-f00e-11f0-9721-831b2d8db458}\r\nbootsequence            {5db7ed20-c375-11f1-a54d-502e911a8b83}\r\ntoolsdisplayorder       {b2721d73-1db4-4c62-bf78-c548a880142d}\r\ntimeout                 30"}
+[2026-11-03T21:38:18.7652878Z] PREPARED {5db7ed20-c375-11f1-a54d-502e911a8b83}
+[2026-11-03T21:38:51.3860889Z] ACTION BootProbe
+[2026-11-03T21:38:51.6859087Z] bcdedit /enum {current} /v -> 0
+
+Windows Boot Loader
+-------------------
+identifier              {dffce7cc-f00e-11f0-9721-831b2d8db458}
+device                  partition=C:
+path                    \Windows\system32\winload.efi
+description             Windows 11
+locale                  en-US
+inherit                 {6efb52bf-1766-41db-a6b3-0ee5eff72bd7}
+recoverysequence        {a5cbb19d-f006-11f0-a53d-502e911a8b83}
+displaymessageoverride  Recovery
+recoveryenabled         Yes
+isolatedcontext         Yes
+allowedinmemorysettings 0x15000075
+osdevice                partition=C:
+systemroot              \Windows
+resumeobject            {dffce7cb-f00e-11f0-9721-831b2d8db458}
+nx                      OptIn
+bootmenupolicy          Standard
+hypervisorlaunchtype    Auto
+[2026-11-03T21:38:51.7137803Z] bcdedit /enum {bootmgr} /v -> 0
+
+Windows Boot Manager
+--------------------
+identifier              {9dea862c-5cdd-4e70-acc1-f32b344d4795}
+device                  partition=\Device\HarddiskVolume1
+path                    \EFI\Microsoft\Boot\bootmgfw.efi
+description             Windows Boot Manager
+locale                  en-US
+inherit                 {7ea2e1ac-2e61-4728-aaa3-896d9d0a9f0e}
+isolatedcontext         Yes
+default                 {dffce7cc-f00e-11f0-9721-831b2d8db458}
+resumeobject            {dffce7cb-f00e-11f0-9721-831b2d8db458}
+displayorder            {dffce7cc-f00e-11f0-9721-831b2d8db458}
+bootsequence            {5db7ed20-c375-11f1-a54d-502e911a8b83}
+toolsdisplayorder       {b2721d73-1db4-4c62-bf78-c548a880142d}
+timeout                 30
+[2026-11-03T21:38:52.1766952Z] {"Utc":"2026-11-03T21:38:52.1316706Z","HostName":"JUPITER","Os":"Microsoft Windows 11 Pro","BootTime":"2026-11-01T07:20:46.3699320Z","Current":"{dffce7cc-f00e-11f0-9721-831b2d8db458}","Default":"{dffce7cc-f00e-11f0-9721-831b2d8db458}","DisplayOrder":"{dffce7cc-f00e-11f0-9721-831b2d8db458}","BootSequence":"{5db7ed20-c375-11f1-a54d-502e911a8b83}","IommuPolicy":null,"BitLockerProtection":1,"BitLockerVolume":1,"SecureBoot":true,"ReaderStatus":"OK","CurrentText":"\r\nWindows Boot Loader\r\n-------------------\r\nidentifier              {dffce7cc-f00e-11f0-9721-831b2d8db458}\r\ndevice                  partition=C:\r\npath                    \\Windows\\system32\\winload.efi\r\ndescription             Windows 11\r\nlocale                  en-US\r\ninherit                 {6efb52bf-1766-41db-a6b3-0ee5eff72bd7}\r\nrecoverysequence        {a5cbb19d-f006-11f0-a53d-502e911a8b83}\r\ndisplaymessageoverride  Recovery\r\nrecoveryenabled         Yes\r\nisolatedcontext         Yes\r\nallowedinmemorysettings 0x15000075\r\nosdevice                partition=C:\r\nsystemroot              \\Windows\r\nresumeobject            {dffce7cb-f00e-11f0-9721-831b2d8db458}\r\nnx                      OptIn\r\nbootmenupolicy          Standard\r\nhypervisorlaunchtype    Auto","ManagerText":"\r\nWindows Boot Manager\r\n--------------------\r\nidentifier              {9dea862c-5cdd-4e70-acc1-f32b344d4795}\r\ndevice                  partition=\\Device\\HarddiskVolume1\r\npath                    \\EFI\\Microsoft\\Boot\\bootmgfw.efi\r\ndescription             Windows Boot Manager\r\nlocale                  en-US\r\ninherit                 {7ea2e1ac-2e61-4728-aaa3-896d9d0a9f0e}\r\nisolatedcontext         Yes\r\ndefault                 {dffce7cc-f00e-11f0-9721-831b2d8db458}\r\nresumeobject            {dffce7cb-f00e-11f0-9721-831b2d8db458}\r\ndisplayorder            {dffce7cc-f00e-11f0-9721-831b2d8db458}\r\nbootsequence            {5db7ed20-c375-11f1-a54d-502e911a8b83}\r\ntoolsdisplayorder       {b2721d73-1db4-4c62-bf78-c548a880142d}\r\ntimeout                 30"}
+[2026-11-03T21:38:52.5822222Z] Active VMs:
+[2026-11-03T21:38:52.5822222Z] Build/VM/test processes:
+[2026-11-03T21:38:52.5948607Z] Scheduling the approved reboot in 20 seconds
+[2026-11-03T21:42:28.5784791Z] ACTION Inspect
+[2026-11-03T21:42:29.0416178Z] bcdedit /enum {current} /v -> 0
+
+Windows Boot Loader
+-------------------
+identifier              {5db7ed20-c375-11f1-a54d-502e911a8b83}
+device                  partition=C:
+path                    \Windows\system32\winload.efi
+description             shards DDA probe 20261103-213818
+locale                  en-US
+inherit                 {6efb52bf-1766-41db-a6b3-0ee5eff72bd7}
+recoverysequence        {a5cbb19d-f006-11f0-a53d-502e911a8b83}
+displaymessageoverride  Recovery
+recoveryenabled         Yes
+isolatedcontext         Yes
+allowedinmemorysettings 0x15000075
+osdevice                partition=C:
+systemroot              \Windows
+resumeobject            {dffce7cb-f00e-11f0-9721-831b2d8db458}
+nx                      OptIn
+bootmenupolicy          Standard
+hypervisorlaunchtype    Auto
+hypervisoriommupolicy   Enable
+[2026-11-03T21:42:29.0641283Z] bcdedit /enum {bootmgr} /v -> 0
+
+Windows Boot Manager
+--------------------
+identifier              {9dea862c-5cdd-4e70-acc1-f32b344d4795}
+device                  partition=\Device\HarddiskVolume1
+path                    \EFI\Microsoft\Boot\bootmgfw.efi
+description             Windows Boot Manager
+locale                  en-US
+inherit                 {7ea2e1ac-2e61-4728-aaa3-896d9d0a9f0e}
+isolatedcontext         Yes
+default                 {dffce7cc-f00e-11f0-9721-831b2d8db458}
+resumeobject            {dffce7cb-f00e-11f0-9721-831b2d8db458}
+displayorder            {dffce7cc-f00e-11f0-9721-831b2d8db458}
+toolsdisplayorder       {b2721d73-1db4-4c62-bf78-c548a880142d}
+timeout                 30
+[2026-11-03T21:42:29.7994579Z] {"Utc":"2026-11-03T21:42:29.6989755Z","HostName":"JUPITER","Os":"Microsoft Windows 11 Pro","BootTime":"2026-11-03T21:39:40.5000000Z","Current":"{5db7ed20-c375-11f1-a54d-502e911a8b83}","Default":"{dffce7cc-f00e-11f0-9721-831b2d8db458}","DisplayOrder":"{dffce7cc-f00e-11f0-9721-831b2d8db458}","BootSequence":null,"IommuPolicy":"Enable","BitLockerProtection":1,"BitLockerVolume":1,"SecureBoot":true,"ReaderStatus":"OK","CurrentText":"\r\nWindows Boot Loader\r\n-------------------\r\nidentifier              {5db7ed20-c375-11f1-a54d-502e911a8b83}\r\ndevice                  partition=C:\r\npath                    \\Windows\\system32\\winload.efi\r\ndescription             shards DDA probe 20261103-213818\r\nlocale                  en-US\r\ninherit                 {6efb52bf-1766-41db-a6b3-0ee5eff72bd7}\r\nrecoverysequence        {a5cbb19d-f006-11f0-a53d-502e911a8b83}\r\ndisplaymessageoverride  Recovery\r\nrecoveryenabled         Yes\r\nisolatedcontext         Yes\r\nallowedinmemorysettings 0x15000075\r\nosdevice                partition=C:\r\nsystemroot              \\Windows\r\nresumeobject            {dffce7cb-f00e-11f0-9721-831b2d8db458}\r\nnx                      OptIn\r\nbootmenupolicy          Standard\r\nhypervisorlaunchtype    Auto\r\nhypervisoriommupolicy   Enable","ManagerText":"\r\nWindows Boot Manager\r\n--------------------\r\nidentifier              {9dea862c-5cdd-4e70-acc1-f32b344d4795}\r\ndevice                  partition=\\Device\\HarddiskVolume1\r\npath                    \\EFI\\Microsoft\\Boot\\bootmgfw.efi\r\ndescription             Windows Boot Manager\r\nlocale                  en-US\r\ninherit                 {7ea2e1ac-2e61-4728-aaa3-896d9d0a9f0e}\r\nisolatedcontext         Yes\r\ndefault                 {dffce7cc-f00e-11f0-9721-831b2d8db458}\r\nresumeobject            {dffce7cb-f00e-11f0-9721-831b2d8db458}\r\ndisplayorder            {dffce7cc-f00e-11f0-9721-831b2d8db458}\r\ntoolsdisplayorder       {b2721d73-1db4-4c62-bf78-c548a880142d}\r\ntimeout                 30"}
+[2026-11-03T21:42:29.8150429Z] PROBE BOOT VERIFIED; run probe.ps1 and, only if assignment is accepted, the spare-reader probe
+[2026-11-03T21:44:37.9524086Z] ACTION Return
+[2026-11-03T21:44:38.1472541Z] bcdedit /enum {current} /v -> 0
+
+Windows Boot Loader
+-------------------
+identifier              {5db7ed20-c375-11f1-a54d-502e911a8b83}
+device                  partition=C:
+path                    \Windows\system32\winload.efi
+description             shards DDA probe 20261103-213818
+locale                  en-US
+inherit                 {6efb52bf-1766-41db-a6b3-0ee5eff72bd7}
+recoverysequence        {a5cbb19d-f006-11f0-a53d-502e911a8b83}
+displaymessageoverride  Recovery
+recoveryenabled         Yes
+isolatedcontext         Yes
+allowedinmemorysettings 0x15000075
+osdevice                partition=C:
+systemroot              \Windows
+resumeobject            {dffce7cb-f00e-11f0-9721-831b2d8db458}
+nx                      OptIn
+bootmenupolicy          Standard
+hypervisorlaunchtype    Auto
+hypervisoriommupolicy   Enable
+[2026-11-03T21:44:38.1752620Z] bcdedit /enum {bootmgr} /v -> 0
+
+Windows Boot Manager
+--------------------
+identifier              {9dea862c-5cdd-4e70-acc1-f32b344d4795}
+device                  partition=\Device\HarddiskVolume1
+path                    \EFI\Microsoft\Boot\bootmgfw.efi
+description             Windows Boot Manager
+locale                  en-US
+inherit                 {7ea2e1ac-2e61-4728-aaa3-896d9d0a9f0e}
+isolatedcontext         Yes
+default                 {dffce7cc-f00e-11f0-9721-831b2d8db458}
+resumeobject            {dffce7cb-f00e-11f0-9721-831b2d8db458}
+displayorder            {dffce7cc-f00e-11f0-9721-831b2d8db458}
+toolsdisplayorder       {b2721d73-1db4-4c62-bf78-c548a880142d}
+timeout                 30
+[2026-11-03T21:44:38.6274250Z] {"Utc":"2026-11-03T21:44:38.5830210Z","HostName":"JUPITER","Os":"Microsoft Windows 11 Pro","BootTime":"2026-11-03T21:39:40.5000000Z","Current":"{5db7ed20-c375-11f1-a54d-502e911a8b83}","Default":"{dffce7cc-f00e-11f0-9721-831b2d8db458}","DisplayOrder":"{dffce7cc-f00e-11f0-9721-831b2d8db458}","BootSequence":null,"IommuPolicy":"Enable","BitLockerProtection":1,"BitLockerVolume":1,"SecureBoot":true,"ReaderStatus":"OK","CurrentText":"\r\nWindows Boot Loader\r\n-------------------\r\nidentifier              {5db7ed20-c375-11f1-a54d-502e911a8b83}\r\ndevice                  partition=C:\r\npath                    \\Windows\\system32\\winload.efi\r\ndescription             shards DDA probe 20261103-213818\r\nlocale                  en-US\r\ninherit                 {6efb52bf-1766-41db-a6b3-0ee5eff72bd7}\r\nrecoverysequence        {a5cbb19d-f006-11f0-a53d-502e911a8b83}\r\ndisplaymessageoverride  Recovery\r\nrecoveryenabled         Yes\r\nisolatedcontext         Yes\r\nallowedinmemorysettings 0x15000075\r\nosdevice                partition=C:\r\nsystemroot              \\Windows\r\nresumeobject            {dffce7cb-f00e-11f0-9721-831b2d8db458}\r\nnx                      OptIn\r\nbootmenupolicy          Standard\r\nhypervisorlaunchtype    Auto\r\nhypervisoriommupolicy   Enable","ManagerText":"\r\nWindows Boot Manager\r\n--------------------\r\nidentifier              {9dea862c-5cdd-4e70-acc1-f32b344d4795}\r\ndevice                  partition=\\Device\\HarddiskVolume1\r\npath                    \\EFI\\Microsoft\\Boot\\bootmgfw.efi\r\ndescription             Windows Boot Manager\r\nlocale                  en-US\r\ninherit                 {7ea2e1ac-2e61-4728-aaa3-896d9d0a9f0e}\r\nisolatedcontext         Yes\r\ndefault                 {dffce7cc-f00e-11f0-9721-831b2d8db458}\r\nresumeobject            {dffce7cb-f00e-11f0-9721-831b2d8db458}\r\ndisplayorder            {dffce7cc-f00e-11f0-9721-831b2d8db458}\r\ntoolsdisplayorder       {b2721d73-1db4-4c62-bf78-c548a880142d}\r\ntimeout                 30"}
+[2026-11-03T21:44:38.8232183Z] Active VMs:
+[2026-11-03T21:44:38.8232183Z] Build/VM/test processes:
+[2026-11-03T21:44:38.8371149Z] Scheduling the approved reboot in 20 seconds
+[2026-11-03T21:49:01.5963328Z] ACTION Verify
+[2026-11-03T21:49:02.0259969Z] bcdedit /enum {current} /v -> 0
+
+Windows Boot Loader
+-------------------
+identifier              {dffce7cc-f00e-11f0-9721-831b2d8db458}
+device                  partition=C:
+path                    \Windows\system32\winload.efi
+description             Windows 11
+locale                  en-US
+inherit                 {6efb52bf-1766-41db-a6b3-0ee5eff72bd7}
+recoverysequence        {a5cbb19d-f006-11f0-a53d-502e911a8b83}
+displaymessageoverride  Recovery
+recoveryenabled         Yes
+isolatedcontext         Yes
+allowedinmemorysettings 0x15000075
+osdevice                partition=C:
+systemroot              \Windows
+resumeobject            {dffce7cb-f00e-11f0-9721-831b2d8db458}
+nx                      OptIn
+bootmenupolicy          Standard
+hypervisorlaunchtype    Auto
+[2026-11-03T21:49:02.0555597Z] bcdedit /enum {bootmgr} /v -> 0
+
+Windows Boot Manager
+--------------------
+identifier              {9dea862c-5cdd-4e70-acc1-f32b344d4795}
+device                  partition=\Device\HarddiskVolume1
+path                    \EFI\Microsoft\Boot\bootmgfw.efi
+description             Windows Boot Manager
+locale                  en-US
+inherit                 {7ea2e1ac-2e61-4728-aaa3-896d9d0a9f0e}
+isolatedcontext         Yes
+default                 {dffce7cc-f00e-11f0-9721-831b2d8db458}
+resumeobject            {dffce7cb-f00e-11f0-9721-831b2d8db458}
+displayorder            {dffce7cc-f00e-11f0-9721-831b2d8db458}
+toolsdisplayorder       {b2721d73-1db4-4c62-bf78-c548a880142d}
+timeout                 30
+[2026-11-03T21:49:02.7603797Z] {"Utc":"2026-11-03T21:49:02.6709420Z","HostName":"JUPITER","Os":"Microsoft Windows 11 Pro","BootTime":"2026-11-03T21:45:34.5000000Z","Current":"{dffce7cc-f00e-11f0-9721-831b2d8db458}","Default":"{dffce7cc-f00e-11f0-9721-831b2d8db458}","DisplayOrder":"{dffce7cc-f00e-11f0-9721-831b2d8db458}","BootSequence":null,"IommuPolicy":null,"BitLockerProtection":1,"BitLockerVolume":1,"SecureBoot":true,"ReaderStatus":"OK","CurrentText":"\r\nWindows Boot Loader\r\n-------------------\r\nidentifier              {dffce7cc-f00e-11f0-9721-831b2d8db458}\r\ndevice                  partition=C:\r\npath                    \\Windows\\system32\\winload.efi\r\ndescription             Windows 11\r\nlocale                  en-US\r\ninherit                 {6efb52bf-1766-41db-a6b3-0ee5eff72bd7}\r\nrecoverysequence        {a5cbb19d-f006-11f0-a53d-502e911a8b83}\r\ndisplaymessageoverride  Recovery\r\nrecoveryenabled         Yes\r\nisolatedcontext         Yes\r\nallowedinmemorysettings 0x15000075\r\nosdevice                partition=C:\r\nsystemroot              \\Windows\r\nresumeobject            {dffce7cb-f00e-11f0-9721-831b2d8db458}\r\nnx                      OptIn\r\nbootmenupolicy          Standard\r\nhypervisorlaunchtype    Auto","ManagerText":"\r\nWindows Boot Manager\r\n--------------------\r\nidentifier              {9dea862c-5cdd-4e70-acc1-f32b344d4795}\r\ndevice                  partition=\\Device\\HarddiskVolume1\r\npath                    \\EFI\\Microsoft\\Boot\\bootmgfw.efi\r\ndescription             Windows Boot Manager\r\nlocale                  en-US\r\ninherit                 {7ea2e1ac-2e61-4728-aaa3-896d9d0a9f0e}\r\nisolatedcontext         Yes\r\ndefault                 {dffce7cc-f00e-11f0-9721-831b2d8db458}\r\nresumeobject            {dffce7cb-f00e-11f0-9721-831b2d8db458}\r\ndisplayorder            {dffce7cc-f00e-11f0-9721-831b2d8db458}\r\ntoolsdisplayorder       {b2721d73-1db4-4c62-bf78-c548a880142d}\r\ntimeout                 30"}
+[2026-11-03T21:49:02.7972661Z] bcdedit /enum {5db7ed20-c375-11f1-a54d-502e911a8b83} /v -> 0
+
+Windows Boot Loader
+-------------------
+identifier              {5db7ed20-c375-11f1-a54d-502e911a8b83}
+device                  partition=C:
+path                    \Windows\system32\winload.efi
+description             shards DDA probe 20261103-213818
+locale                  en-US
+inherit                 {6efb52bf-1766-41db-a6b3-0ee5eff72bd7}
+recoverysequence        {a5cbb19d-f006-11f0-a53d-502e911a8b83}
+displaymessageoverride  Recovery
+recoveryenabled         Yes
+isolatedcontext         Yes
+allowedinmemorysettings 0x15000075
+osdevice                partition=C:
+systemroot              \Windows
+resumeobject            {dffce7cb-f00e-11f0-9721-831b2d8db458}
+nx                      OptIn
+bootmenupolicy          Standard
+hypervisorlaunchtype    Auto
+hypervisoriommupolicy   Enable
+[2026-11-03T21:49:02.8610330Z] bcdedit /delete {5db7ed20-c375-11f1-a54d-502e911a8b83} /cleanup -> 0
+The operation completed successfully.
+[2026-11-03T21:49:02.9307823Z] bcdedit /enum {current} /v -> 0
+
+Windows Boot Loader
+-------------------
+identifier              {dffce7cc-f00e-11f0-9721-831b2d8db458}
+device                  partition=C:
+path                    \Windows\system32\winload.efi
+description             Windows 11
+locale                  en-US
+inherit                 {6efb52bf-1766-41db-a6b3-0ee5eff72bd7}
+recoverysequence        {a5cbb19d-f006-11f0-a53d-502e911a8b83}
+displaymessageoverride  Recovery
+recoveryenabled         Yes
+isolatedcontext         Yes
+allowedinmemorysettings 0x15000075
+osdevice                partition=C:
+systemroot              \Windows
+resumeobject            {dffce7cb-f00e-11f0-9721-831b2d8db458}
+nx                      OptIn
+bootmenupolicy          Standard
+hypervisorlaunchtype    Auto
+[2026-11-03T21:49:02.9444938Z] bcdedit /enum {bootmgr} /v -> 0
+
+Windows Boot Manager
+--------------------
+identifier              {9dea862c-5cdd-4e70-acc1-f32b344d4795}
+device                  partition=\Device\HarddiskVolume1
+path                    \EFI\Microsoft\Boot\bootmgfw.efi
+description             Windows Boot Manager
+locale                  en-US
+inherit                 {7ea2e1ac-2e61-4728-aaa3-896d9d0a9f0e}
+isolatedcontext         Yes
+default                 {dffce7cc-f00e-11f0-9721-831b2d8db458}
+resumeobject            {dffce7cb-f00e-11f0-9721-831b2d8db458}
+displayorder            {dffce7cc-f00e-11f0-9721-831b2d8db458}
+toolsdisplayorder       {b2721d73-1db4-4c62-bf78-c548a880142d}
+timeout                 30
+[2026-11-03T21:49:03.1241239Z] {"Utc":"2026-11-03T21:49:03.1226162Z","HostName":"JUPITER","Os":"Microsoft Windows 11 Pro","BootTime":"2026-11-03T21:45:34.5000000Z","Current":"{dffce7cc-f00e-11f0-9721-831b2d8db458}","Default":"{dffce7cc-f00e-11f0-9721-831b2d8db458}","DisplayOrder":"{dffce7cc-f00e-11f0-9721-831b2d8db458}","BootSequence":null,"IommuPolicy":null,"BitLockerProtection":1,"BitLockerVolume":1,"SecureBoot":true,"ReaderStatus":"OK","CurrentText":"\r\nWindows Boot Loader\r\n-------------------\r\nidentifier              {dffce7cc-f00e-11f0-9721-831b2d8db458}\r\ndevice                  partition=C:\r\npath                    \\Windows\\system32\\winload.efi\r\ndescription             Windows 11\r\nlocale                  en-US\r\ninherit                 {6efb52bf-1766-41db-a6b3-0ee5eff72bd7}\r\nrecoverysequence        {a5cbb19d-f006-11f0-a53d-502e911a8b83}\r\ndisplaymessageoverride  Recovery\r\nrecoveryenabled         Yes\r\nisolatedcontext         Yes\r\nallowedinmemorysettings 0x15000075\r\nosdevice                partition=C:\r\nsystemroot              \\Windows\r\nresumeobject            {dffce7cb-f00e-11f0-9721-831b2d8db458}\r\nnx                      OptIn\r\nbootmenupolicy          Standard\r\nhypervisorlaunchtype    Auto","ManagerText":"\r\nWindows Boot Manager\r\n--------------------\r\nidentifier              {9dea862c-5cdd-4e70-acc1-f32b344d4795}\r\ndevice                  partition=\\Device\\HarddiskVolume1\r\npath                    \\EFI\\Microsoft\\Boot\\bootmgfw.efi\r\ndescription             Windows Boot Manager\r\nlocale                  en-US\r\ninherit                 {7ea2e1ac-2e61-4728-aaa3-896d9d0a9f0e}\r\nisolatedcontext         Yes\r\ndefault                 {dffce7cc-f00e-11f0-9721-831b2d8db458}\r\nresumeobject            {dffce7cb-f00e-11f0-9721-831b2d8db458}\r\ndisplayorder            {dffce7cc-f00e-11f0-9721-831b2d8db458}\r\ntoolsdisplayorder       {b2721d73-1db4-4c62-bf78-c548a880142d}\r\ntimeout                 30"}
+[2026-11-03T21:49:03.1341766Z] RESTORED: original loader and boot manager match baseline; reader, BitLocker and Secure Boot healthy
+
+ENABLED-POLICY WHP PROBE
+== os
+Microsoft Windows 11 Pro, build 26200.9711, EditionID Professional, ProductType 1
+AMD RYZEN AI MAX+ 395 w/ Radeon 8060S
+== WHP
+WHvCapabilityCodeFeatures: hr=0x00000000 value=0x2FF VirtualPciDeviceSupport=1 IommuSupport=0
+WHvCapabilityCodeExtendedVmExits: hr=0x00000000 value=0x7FFF RetargetUnknownVpciDevice=1
+WHvAllocateVpciResource(an empty resource): hr=0x00000000
+WHvCreatePartition: hr=0x00000000
+WHvSetPartitionProperty(AllowDeviceAssignment = TRUE): hr=0x80070032
+== Hyper-V
+IovSupport: True
+
+== boot entry's hypervisor settings
+
+hypervisorlaunchtype    Auto
+hypervisoriommupolicy   Enable
+== device guard
+AvailableSecurityProperties: 1,2,3,4,5,7; SecurityServicesRunning: 2,3,4
+== PCI functions (survey-dda.ps1's checks: BIOS-reserved memory, ACS upstream, the device's type)
+AMD PCI [System]: PCIe endpoint, reserved memory False, ACS upstream 3, PCIROOT(0)#PCI(0802)#PCI(0000)
+PCI standard host CPU bridge [System]: no PCI type, reserved memory , ACS upstream , PCIROOT(0)#PCI(1806)
+MediaTek Wi-Fi 7 MT7925 Wireless LAN Card [Net]: PCIe endpoint, reserved memory False, ACS upstream 3, PCIROOT(0)#PCI(0203)#PCI(0000)
+PCI standard ISA bridge [System]: conventional PCI, reserved memory False, ACS upstream , PCIROOT(0)#PCI(1403)
+PCI standard host CPU bridge [System]: no PCI type, reserved memory , ACS upstream , PCIROOT(0)#PCI(0000)
+Genesys Logic PCIE card reader device [MTD]: PCIe endpoint, reserved memory False, ACS upstream 3, PCIROOT(0)#PCI(0202)#PCI(0000)
+AMD USB 3.10 eXtensible Host Controller - 1.20 (Microsoft) [USB]: PCIe endpoint, reserved memory False, ACS upstream 3, PCIROOT(0)#PCI(0803)#PCI(0003)
+PCI standard host CPU bridge [System]: no PCI type, reserved memory , ACS upstream , PCIROOT(0)#PCI(1803)
+PCI Express Root Port [System]: root port, reserved memory False, ACS upstream 3, PCIROOT(0)#PCI(0101)
+PCI Express Root Port [System]: root port, reserved memory False, ACS upstream 3, PCIROOT(0)#PCI(0102)
+AMD SMBUS [System]: conventional PCI, reserved memory False, ACS upstream , PCIROOT(0)#PCI(1400)
+PCI standard host CPU bridge [System]: no PCI type, reserved memory , ACS upstream , PCIROOT(0)#PCI(0100)
+PCI standard host CPU bridge [System]: no PCI type, reserved memory , ACS upstream , PCIROOT(0)#PCI(0200)
+PCI standard host CPU bridge [System]: no PCI type, reserved memory , ACS upstream , PCIROOT(0)#PCI(0300)
+PCI standard host CPU bridge [System]: no PCI type, reserved memory , ACS upstream , PCIROOT(0)#PCI(0800)
+High Definition Audio Controller [System]: PCIe legacy endpoint, reserved memory False, ACS upstream 3, PCIROOT(0)#PCI(0801)#PCI(0001)
+AMD Radeon(TM) 8060S Graphics [Display]: PCIe legacy endpoint, reserved memory False, ACS upstream 3, PCIROOT(0)#PCI(0801)#PCI(0000)
+NPU Compute Accelerator Device [ComputeAccelerator]: PCIe endpoint, reserved memory False, ACS upstream 3, PCIROOT(0)#PCI(0802)#PCI(0001)
+AMD PSP 11.0 Device [SecurityDevices]: PCIe endpoint, reserved memory False, ACS upstream 3, PCIROOT(0)#PCI(0801)#PCI(0002)
+AMD USB 3.10 eXtensible Host Controller - 1.20 (Microsoft) [USB]: PCIe endpoint, reserved memory False, ACS upstream 3, PCIROOT(0)#PCI(0803)#PCI(0000)
+PCI standard host CPU bridge [System]: no PCI type, reserved memory , ACS upstream , PCIROOT(0)#PCI(1805)
+PCI standard host CPU bridge [System]: no PCI type, reserved memory , ACS upstream , PCIROOT(0)#PCI(1801)
+PCI standard host CPU bridge [System]: no PCI type, reserved memory , ACS upstream , PCIROOT(0)#PCI(1802)
+PCI Express Root Port [System]: root port, reserved memory False, ACS upstream 3, PCIROOT(0)#PCI(0202)
+PCI Express Root Port [System]: root port, reserved memory False, ACS upstream 3, PCIROOT(0)#PCI(0203)
+PCI Express Root Port [System]: root port, reserved memory False, ACS upstream 3, PCIROOT(0)#PCI(0205)
+AMD USB 3.10 eXtensible Host Controller - 1.20 (Microsoft) [USB]: PCIe endpoint, reserved memory False, ACS upstream 3, PCIROOT(0)#PCI(0803)#PCI(0004)
+PCI Express Root Port [System]: root port, reserved memory False, ACS upstream 3, PCIROOT(0)#PCI(0801)
+PCI Express Root Port [System]: root port, reserved memory False, ACS upstream 3, PCIROOT(0)#PCI(0802)
+PCI Express Root Port [System]: root port, reserved memory False, ACS upstream 3, PCIROOT(0)#PCI(0803)
+High Definition Audio Controller [System]: PCIe endpoint, reserved memory False, ACS upstream 3, PCIROOT(0)#PCI(0801)#PCI(0006)
+PCI standard host CPU bridge [System]: no PCI type, reserved memory , ACS upstream , PCIROOT(0)#PCI(1807)
+AMD USB 3.10 eXtensible Host Controller - 1.20 (Microsoft) [USB]: PCIe endpoint, reserved memory False, ACS upstream 3, PCIROOT(0)#PCI(0801)#PCI(0004)
+USB4(TM) Host Router (Microsoft) [USB]: PCIe endpoint, reserved memory False, ACS upstream 3, PCIROOT(0)#PCI(0803)#PCI(0005)
+AMD Sensor Fusion Hub [System]: PCIe endpoint, reserved memory False, ACS upstream 3, PCIROOT(0)#PCI(0801)#PCI(0007)
+USB4(TM) Host Router (Microsoft) [USB]: PCIe endpoint, reserved memory False, ACS upstream 3, PCIROOT(0)#PCI(0803)#PCI(0006)
+PCI standard host CPU bridge [System]: no PCI type, reserved memory , ACS upstream , PCIROOT(0)#PCI(1804)
+AMD Audio CoProcessor [System]: PCIe endpoint, reserved memory False, ACS upstream 3, PCIROOT(0)#PCI(0801)#PCI(0005)
+PCI standard host CPU bridge [System]: no PCI type, reserved memory , ACS upstream , PCIROOT(0)#PCI(1800)
+Standard NVM Express Controller [SCSIAdapter]: PCIe endpoint, reserved memory False, ACS upstream 3, PCIROOT(0)#PCI(0205)#PCI(0000)
+
+RESTORED-POLICY WHP PROBE
+== os
+Microsoft Windows 11 Pro, build 26200.9711, EditionID Professional, ProductType 1
+AMD RYZEN AI MAX+ 395 w/ Radeon 8060S
+== WHP
+WHvCapabilityCodeFeatures: hr=0x00000000 value=0x2FF VirtualPciDeviceSupport=1 IommuSupport=0
+WHvCapabilityCodeExtendedVmExits: hr=0x00000000 value=0x7FFF RetargetUnknownVpciDevice=1
+WHvAllocateVpciResource(an empty resource): hr=0x00000000
+WHvCreatePartition: hr=0x00000000
+WHvSetPartitionProperty(AllowDeviceAssignment = TRUE): hr=0x80070032
+== Hyper-V
+IovSupport: True
+
+== boot entry's hypervisor settings
+
+hypervisorlaunchtype    Auto
+== device guard
+AvailableSecurityProperties: 1,2,3,4,5,7; SecurityServicesRunning: 2,3,4
+== PCI functions (survey-dda.ps1's checks: BIOS-reserved memory, ACS upstream, the device's type)
+AMD PCI [System]: PCIe endpoint, reserved memory False, ACS upstream 3, PCIROOT(0)#PCI(0802)#PCI(0000)
+PCI standard host CPU bridge [System]: no PCI type, reserved memory , ACS upstream , PCIROOT(0)#PCI(1806)
+MediaTek Wi-Fi 7 MT7925 Wireless LAN Card [Net]: PCIe endpoint, reserved memory False, ACS upstream 3, PCIROOT(0)#PCI(0203)#PCI(0000)
+PCI standard ISA bridge [System]: conventional PCI, reserved memory False, ACS upstream , PCIROOT(0)#PCI(1403)
+PCI standard host CPU bridge [System]: no PCI type, reserved memory , ACS upstream , PCIROOT(0)#PCI(0000)
+Genesys Logic PCIE card reader device [MTD]: PCIe endpoint, reserved memory False, ACS upstream 3, PCIROOT(0)#PCI(0202)#PCI(0000)
+AMD USB 3.10 eXtensible Host Controller - 1.20 (Microsoft) [USB]: PCIe endpoint, reserved memory False, ACS upstream 3, PCIROOT(0)#PCI(0803)#PCI(0003)
+PCI standard host CPU bridge [System]: no PCI type, reserved memory , ACS upstream , PCIROOT(0)#PCI(1803)
+PCI Express Root Port [System]: root port, reserved memory False, ACS upstream 3, PCIROOT(0)#PCI(0101)
+PCI Express Root Port [System]: root port, reserved memory False, ACS upstream 3, PCIROOT(0)#PCI(0102)
+AMD SMBUS [System]: conventional PCI, reserved memory False, ACS upstream , PCIROOT(0)#PCI(1400)
+PCI standard host CPU bridge [System]: no PCI type, reserved memory , ACS upstream , PCIROOT(0)#PCI(0100)
+PCI standard host CPU bridge [System]: no PCI type, reserved memory , ACS upstream , PCIROOT(0)#PCI(0200)
+PCI standard host CPU bridge [System]: no PCI type, reserved memory , ACS upstream , PCIROOT(0)#PCI(0300)
+PCI standard host CPU bridge [System]: no PCI type, reserved memory , ACS upstream , PCIROOT(0)#PCI(0800)
+High Definition Audio Controller [System]: PCIe legacy endpoint, reserved memory False, ACS upstream 3, PCIROOT(0)#PCI(0801)#PCI(0001)
+AMD Radeon(TM) 8060S Graphics [Display]: PCIe legacy endpoint, reserved memory False, ACS upstream 3, PCIROOT(0)#PCI(0801)#PCI(0000)
+NPU Compute Accelerator Device [ComputeAccelerator]: PCIe endpoint, reserved memory False, ACS upstream 3, PCIROOT(0)#PCI(0802)#PCI(0001)
+AMD PSP 11.0 Device [SecurityDevices]: PCIe endpoint, reserved memory False, ACS upstream 3, PCIROOT(0)#PCI(0801)#PCI(0002)
+AMD USB 3.10 eXtensible Host Controller - 1.20 (Microsoft) [USB]: PCIe endpoint, reserved memory False, ACS upstream 3, PCIROOT(0)#PCI(0803)#PCI(0000)
+PCI standard host CPU bridge [System]: no PCI type, reserved memory , ACS upstream , PCIROOT(0)#PCI(1805)
+PCI standard host CPU bridge [System]: no PCI type, reserved memory , ACS upstream , PCIROOT(0)#PCI(1801)
+PCI standard host CPU bridge [System]: no PCI type, reserved memory , ACS upstream , PCIROOT(0)#PCI(1802)
+PCI Express Root Port [System]: root port, reserved memory False, ACS upstream 3, PCIROOT(0)#PCI(0202)
+PCI Express Root Port [System]: root port, reserved memory False, ACS upstream 3, PCIROOT(0)#PCI(0203)
+PCI Express Root Port [System]: root port, reserved memory False, ACS upstream 3, PCIROOT(0)#PCI(0205)
+AMD USB 3.10 eXtensible Host Controller - 1.20 (Microsoft) [USB]: PCIe endpoint, reserved memory False, ACS upstream 3, PCIROOT(0)#PCI(0803)#PCI(0004)
+PCI Express Root Port [System]: root port, reserved memory False, ACS upstream 3, PCIROOT(0)#PCI(0801)
+PCI Express Root Port [System]: root port, reserved memory False, ACS upstream 3, PCIROOT(0)#PCI(0802)
+PCI Express Root Port [System]: root port, reserved memory False, ACS upstream 3, PCIROOT(0)#PCI(0803)
+High Definition Audio Controller [System]: PCIe endpoint, reserved memory False, ACS upstream 3, PCIROOT(0)#PCI(0801)#PCI(0006)
+PCI standard host CPU bridge [System]: no PCI type, reserved memory , ACS upstream , PCIROOT(0)#PCI(1807)
+AMD USB 3.10 eXtensible Host Controller - 1.20 (Microsoft) [USB]: PCIe endpoint, reserved memory False, ACS upstream 3, PCIROOT(0)#PCI(0801)#PCI(0004)
+USB4(TM) Host Router (Microsoft) [USB]: PCIe endpoint, reserved memory False, ACS upstream 3, PCIROOT(0)#PCI(0803)#PCI(0005)
+AMD Sensor Fusion Hub [System]: PCIe endpoint, reserved memory False, ACS upstream 3, PCIROOT(0)#PCI(0801)#PCI(0007)
+USB4(TM) Host Router (Microsoft) [USB]: PCIe endpoint, reserved memory False, ACS upstream 3, PCIROOT(0)#PCI(0803)#PCI(0006)
+PCI standard host CPU bridge [System]: no PCI type, reserved memory , ACS upstream , PCIROOT(0)#PCI(1804)
+AMD Audio CoProcessor [System]: PCIe endpoint, reserved memory False, ACS upstream 3, PCIROOT(0)#PCI(0801)#PCI(0005)
+PCI standard host CPU bridge [System]: no PCI type, reserved memory , ACS upstream , PCIROOT(0)#PCI(1800)
+Standard NVM Express Controller [SCSIAdapter]: PCIe endpoint, reserved memory False, ACS upstream 3, PCIROOT(0)#PCI(0205)#PCI(0000)

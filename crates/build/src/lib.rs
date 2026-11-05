@@ -18,7 +18,7 @@ pub mod sync;
 pub mod upper;
 pub mod vfs;
 
-/// Why a file operation failed, worded as BuildKit words it.
+/// Why a file operation failed, worded as BuildKit words it (held by tests/oracle.rs).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Error(pub String);
 

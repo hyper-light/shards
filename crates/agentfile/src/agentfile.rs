@@ -163,7 +163,7 @@ pub struct Connect {
     pub both_ways: bool,
     pub to: Vec<Vec<u8>>,
     pub on: Vec<Vec<u8>>,
-    /// `--port`: each a port or range as Docker writes one (`8080`, `53/udp`,
+    /// `--port`: each a port or range as an `EXPOSE` writes one (`8080`, `53/udp`,
     /// `8000-8010/tcp`), TCP where none is said.
     pub ports: Vec<Vec<u8>>,
 }
@@ -248,7 +248,7 @@ pub enum Directive {
 }
 
 /// What an `AGENT`, `HARNESS` or `MCP` `FROM` names (§12.2), told apart as written: a Git
-/// URL (as BuildKit's git contexts read one), an http(s) URL, a path from the build
+/// URL (as git.rs reads a build context's), an http(s) URL, a path from the build
 /// context (`.`, `./`, `../` or `/` first), or else an OCI reference.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Source {
@@ -849,7 +849,7 @@ impl Declared {
 struct Seen {
     domains: std::collections::BTreeMap<Vec<u8>, (Declared, usize)>,
     networks: std::collections::BTreeMap<Vec<u8>, (Vec<Vec<u8>>, usize)>,
-    /// Where its `VOLUME`s mount, rooted as Docker roots them, and on which line.
+    /// Where its `VOLUME`s mount, rooted as a Dockerfile's mean them (D109), and on which line.
     mounts: std::collections::BTreeMap<Vec<u8>, usize>,
 }
 
@@ -1118,7 +1118,7 @@ pub const HARNESSES_ANNOTATION: &[u8] = b"vnd.osi.agentfile.harnesses";
 /// its own by its microVM's switch.
 pub const EGRESS_LABEL: &[u8] = b"vnd.osi.agentfile.egress";
 
-/// A port as Docker writes one (`443`, `53/udp`, `8000-8010/tcp`): its protocol's IP
+/// A port as an `EXPOSE` writes one (`443`, `53/udp`, `8000-8010/tcp`): its protocol's IP
 /// number (6 TCP, 17 UDP, TCP where none is said) and its range's ends.
 pub fn port_range(s: &[u8]) -> Option<(u8, u16, u16)> {
     let s = std::str::from_utf8(s).ok()?;
@@ -1212,14 +1212,26 @@ pub fn dns(directives: &[Directive]) -> bool {
     })
 }
 
+/// Whether an Agentfile's agents have IPv6 (D99): a network that says `--ipv6`, which a
+/// `CONNECT` joins, gives its members IPv6 addresses. Where they are granted anything past
+/// the microVM too, its run gives eth0 an IPv6 address for their flows, on a network
+/// without IPv6 of its own (D99 part four).
+pub fn ipv6(directives: &[Directive]) -> bool {
+    directives.iter().any(|d| {
+        matches!(d, Directive::Network(n) if n.ipv6 == Some(true)
+            && directives.iter().any(|c| matches!(c, Directive::Connect(c) if c.on.contains(&n.name))))
+    })
+}
+
 /// The label of an Agentfile's remote MCP servers (§4.4, §9.6), each `host:port`,
 /// comma-separated: its microVM's network process lets a flow to that port reach only the
 /// addresses the host resolves to (or the address it is), for the agents granted it.
 pub const MCP_LABEL: &[u8] = b"vnd.osi.agentfile.mcp";
 
 /// A remote MCP server's host and port, from its URL: the port written, or else its
-/// scheme's own (443 for `https`, 80 for `http`; §4.4, decided 2026-10-02). None for a
-/// source that is no http(s) URL, or one with no host.
+/// scheme's own (443 for `https`, 80 for `http`; §4.4, decided 2026-10-02). An IPv6
+/// address is written in brackets (RFC 3986 §3.2.2, IP-literal), and kept in them. None
+/// for a source that is no http(s) URL, or one with no host.
 pub fn mcp_endpoint(url: &[u8]) -> Option<(Vec<u8>, u16)> {
     let (rest, default) = match url.strip_prefix(b"https://") {
         Some(r) => (r, 443),
@@ -1227,16 +1239,25 @@ pub fn mcp_endpoint(url: &[u8]) -> Option<(Vec<u8>, u16)> {
     };
     let authority = rest.split(|&b| b == b'/' || b == b'?' || b == b'#').next()?;
     let hostport = authority.rsplit(|&b| b == b'@').next()?;
-    let (host, port) = match hostport.iter().rposition(|&b| b == b':') {
+    // Past an IP-literal's closing bracket, whose address holds colons of its own.
+    let after = match hostport.first() {
+        Some(b'[') => hostport.iter().position(|&b| b == b']')? + 1,
+        _ => 0,
+    };
+    let (host, port) = match hostport.get(after..)?.iter().rposition(|&b| b == b':') {
         Some(i) => {
-            let port = std::str::from_utf8(hostport.get(i + 1..)?)
+            let port = std::str::from_utf8(hostport.get(after + i + 1..)?)
                 .ok()?
                 .parse::<u16>()
                 .ok()?;
-            (hostport.get(..i)?, port)
+            (hostport.get(..after + i)?, port)
         }
         None => (hostport, default),
     };
+    // Nothing but a port after an IP-literal.
+    if after > 0 && host.len() != after {
+        return None;
+    }
     (!host.is_empty() && port > 0).then(|| (host.to_ascii_lowercase(), port))
 }
 
@@ -1262,7 +1283,7 @@ pub fn remote_mcp(directives: &[Directive]) -> Vec<Vec<u8>> {
 pub const EGRESS_DECLARED_LABEL: &[u8] = b"vnd.osi.agentfile.egress-declared";
 
 /// The ports an Agentfile declares `EXPOSE ... AS egress` and nowhere both ways or for
-/// ingress, as Docker writes them, each once.
+/// ingress, as an `EXPOSE` writes them, each once.
 pub fn egress_declared(directives: &[Directive]) -> Vec<Vec<u8>> {
     let mut out: Vec<Vec<u8>> = Vec::new();
     let inward: Vec<Vec<u8>> = directives
@@ -1660,7 +1681,7 @@ pub fn ingress(directives: &[Directive]) -> Result<Vec<Receiver>, Vec<u8>> {
 
 /// The ports an Agentfile lets some domain open flows to past its microVM: of each network
 /// a `CONNECT` joins, those it lets cross both boundaries outward ([`boundary`]), each
-/// once, as Docker writes them.
+/// once, as an `EXPOSE` writes them.
 pub fn egress(directives: &[Directive]) -> Vec<Vec<u8>> {
     let mut nets: Vec<&[u8]> = Vec::new();
     for d in directives {

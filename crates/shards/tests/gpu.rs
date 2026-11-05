@@ -122,6 +122,10 @@ fn the_gpu_renders_through_venus_in_runs_and_build_steps() {
         ran.stdout
     );
     assert!(ran.stdout.contains("Virtio-GPU Venus ("), "{}", ran.stdout);
+    // The GPUs the guest found, for the record of the host it ran on.
+    for line in ran.stdout.lines().filter(|l| l.contains("deviceName")) {
+        println!("{}", line.trim());
+    }
 
     // A step given the render node by a CDI device has a builder with the GPU (D145).
     let cdi = TempDir::new("gpu-cdi");

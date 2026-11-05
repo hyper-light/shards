@@ -91,6 +91,10 @@ pub struct Asked<'a> {
     /// The container's writable layer from before, to put back before the command runs
     /// (D37); and where its layer goes once it stops.
     pub layer_in: Option<fs::File>,
+    /// Its microVM's layer device has the container's layer kept in its file readied for
+    /// it (D190): the guest is told to go on over it ([`kind::OVER`]) in a put-back layer's
+    /// place.
+    pub layer_over: bool,
     pub layer_out: Option<fs::File>,
     /// Told how the command ended, before its layer is saved: a run's client waits for
     /// nothing it does not need.
@@ -516,6 +520,7 @@ pub fn serve(
         log,
         started,
         layer_in,
+        layer_over,
         layer_out,
         told,
         saved,
@@ -531,6 +536,7 @@ pub fn serve(
             log: None,
             started: None,
             layer_in: None,
+            layer_over: false,
             layer_out: None,
             told: None,
             saved: None,
@@ -570,6 +576,8 @@ pub fn serve(
     if !resuming {
         if let Some(layer) = layer_in {
             send_layer(&mut conn, layer).map_err(|e| format!("sending the container's files: {e}"))?;
+        } else if layer_over {
+            send(&mut conn, kind::OVER, &[]).map_err(|e| format!("sending the container's layer: {e}"))?;
         }
         send(&mut conn, kind::SPEC, &spec.encode()).map_err(|e| format!("sending the command: {e}"))?;
     }
@@ -710,7 +718,7 @@ fn end_guest(conn: &UnixStream) {
 
 /// Copies the guest's frames to shards' stdout and stderr until the exit status, and to
 /// `log` if the container's output is kept. Why a command never ran is not its output,
-/// and stays out of the log, as dockerd keeps a failed start out of `docker logs`.
+/// and stays out of the log: `logs` holds what the command wrote.
 fn relay(
     conn: &mut io::BufReader<shards_ipc::Polled<&UnixStream>>,
     timing: &Timing,
@@ -1870,8 +1878,8 @@ fn lock_attached() -> std::sync::MutexGuard<'static, Vec<Attacher>> {
     ATTACHED.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// The workload's output to each client attached, as dockerd's attach streams it: as it
-/// comes, waited for as the run's own client is. One that has gone is let go.
+/// The workload's output to each client attached, as it comes, waited for as the run's own
+/// client is. One that has gone is let go.
 fn fan_out(payload: &[u8], stderr: bool) {
     lock_attached().retain_mut(|a| {
         let to = if stderr { &mut a.err } else { &mut a.out };
@@ -1953,12 +1961,12 @@ pub fn attach(to: &'static ToGuest, req: AttachRequest) -> Result<(), String> {
 }
 
 /// Forwards the signals shards receives to the workload, through `to`, even those shards
-/// was started ignoring, as the Docker CLI does (shards_ipc::take_forwarded). It blocks
-/// them in the calling thread, which every thread started later inherits, so call it
-/// before the VM starts: then only the forwarder's `sigwait` receives them. A signal that
-/// would end shards, arriving before the workload runs, ends shards as it would have,
-/// unless it was ignored. With `reads_terminal`, the terminal's job control applies to
-/// shards (shards_ipc::forwarded).
+/// was started ignoring: a run a script started in the background still passes them on
+/// (shards_ipc::take_forwarded). It blocks them in the calling thread, which every thread
+/// started later inherits, so call it before the VM starts: then only the forwarder's
+/// `sigwait` receives them. A signal that would end shards, arriving before the workload
+/// runs, ends shards as it would have, unless it was ignored. With `reads_terminal`, the
+/// terminal's job control applies to shards (shards_ipc::forwarded).
 #[cfg(unix)]
 pub fn forward_signals(to: &'static ToGuest, reads_terminal: bool) -> Result<(), String> {
     let (set, ignored) =
@@ -1995,7 +2003,7 @@ pub fn forward_signals(to: &'static ToGuest, reads_terminal: bool) -> Result<(),
 }
 
 /// [`forward_signals`] on Windows, which sends a console process no signal but its
-/// console's events, taken as Go's os/signal takes them, as the Docker CLI's are: Ctrl+C
+/// console's events, taken as Go's os/signal takes them: Ctrl+C
 /// and Ctrl+Break as SIGINT; the console's close, a logoff and a shutdown as SIGTERM. One
 /// that comes before the workload runs goes on to the default handler, which ends shards,
 /// as Unix's signal would.

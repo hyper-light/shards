@@ -1,6 +1,6 @@
 //! An Agentfile's directives as the parser reads them (docs/architecture/AGENTFILE_ARCH.md
 //! §4 and §12): each form the spec gives, each refused with its reason, and a Dockerfile
-//! that reads none of them, as BuildKit reads none.
+//! that reads none of them: to BuildKit they are unknown instructions.
 #![allow(clippy::unwrap_used, clippy::panic)]
 
 use shards_agentfile::agentfile::{
@@ -342,7 +342,7 @@ fn volumes_take_a_name_options_and_whom_they_are_for() {
     ));
 }
 
-/// A Dockerfile reads none of it, as BuildKit reads none: its words are unknown
+/// A Dockerfile reads none of it, its meaning BuildKit's: its words are unknown
 /// instructions, and `VOLUME`'s options unknown flags.
 #[test]
 fn a_dockerfile_reads_no_agentfile_directive() {
@@ -910,6 +910,38 @@ fn egress_declared_ports_are_named_for_the_run() {
     assert_eq!(got, ["443", "9000-9010/udp"]);
 }
 
+/// An Agentfile's agents have IPv6 where a network that says `--ipv6` is one a `CONNECT`
+/// joins (D99): a network declared alone gives no one an address.
+#[test]
+fn agents_have_ipv6_where_a_joined_network_says_so() {
+    use shards_agentfile::instructions::Kind;
+    let of = |text: &str| -> bool {
+        let parsed = parser::parse_as(text.as_bytes(), Dialect::Agentfile).unwrap();
+        let ins = instructions::parse(&parsed, &Linter::default()).unwrap();
+        let directives: Vec<_> = ins
+            .stages
+            .last()
+            .unwrap()
+            .commands
+            .iter()
+            .filter_map(|c| match &c.kind {
+                Kind::Agentfile(d) => Some(d.clone()),
+                _ => None,
+            })
+            .collect();
+        shards_agentfile::agentfile::ipv6(&directives)
+    };
+    assert!(of(
+        "FROM alpine\nAGENT a FROM ./a\nNETWORK --ipv6 six\nCONNECT a WITH a ON six\n"
+    ));
+    assert!(!of(
+        "FROM alpine\nAGENT a FROM ./a\nNETWORK --ipv6 six\nNETWORK four\nCONNECT a WITH a ON four\n"
+    ));
+    assert!(!of(
+        "FROM alpine\nAGENT a FROM ./a\nNETWORK four\nCONNECT a WITH a ON four\n"
+    ));
+}
+
 /// A remote MCP server's host and port, as its URL says or its scheme's own (§4.4).
 #[test]
 fn a_remote_mcp_servers_endpoint_is_its_urls() {
@@ -924,12 +956,23 @@ fn a_remote_mcp_servers_endpoint_is_its_urls() {
         e("https://user:pw@10.0.0.7:8443/x?y#z"),
         Some(("10.0.0.7".into(), 8443))
     );
+    // An IPv6 address, in its brackets (RFC 3986 §3.2.2), with its port or its scheme's.
+    assert_eq!(
+        e("http://[2001:DB8::7]:8080/sse"),
+        Some(("[2001:db8::7]".into(), 8080))
+    );
+    assert_eq!(
+        e("https://[2001:db8::7]/sse"),
+        Some(("[2001:db8::7]".into(), 443))
+    );
     for none in [
         "./files",
         "git@github.com:org/x.git",
         "https://",
         "https://h:0/",
         "https://h:99999/",
+        "https://[2001:db8::7/",
+        "https://[2001:db8::7]x:443/",
     ] {
         assert_eq!(e(none), None, "{none}");
     }

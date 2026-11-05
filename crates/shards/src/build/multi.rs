@@ -2,7 +2,7 @@
 //! `--platform`'s and its exporter writes one image of them: each platform built by the
 //! build itself ([`super::run`]), as one of several (its steps named with its platform),
 //! into a layout of its own, its local outputs in a directory of its platform's name; then
-//! the index of their manifests and attestations (platforms first, as Docker's), which the
+//! the index of their manifests and attestations (platforms first, as measured in D77), which the
 //! image's names resolve to, its ID, what it pushes and what its OCI outputs hold.
 
 use std::cell::{Cell, RefCell};
@@ -34,19 +34,19 @@ pub(super) struct Sub {
     /// Whether it is the first platform's, which says what the builds share.
     pub first: bool,
     /// What base images resolved to, by name and platform: one resolve of each for the
-    /// builds of them all, as BuildKit's (one vertex for an identifier and platform).
+    /// builds of them all (D77: one vertex for an identifier and platform).
     pub answered: super::Answered,
     /// The bases those resolved, by what the planner names them (`Bases::resolved`).
     pub bases: BTreeMap<String, super::Base>,
-    /// SOURCE_DATE_EPOCH's time from each source: one resolve for the builds of them all,
-    /// as BuildKit's frontend's at once (`Bases::epochs`).
+    /// SOURCE_DATE_EPOCH's time from each source: one resolve for the builds of them all, so
+    /// that every platform's image has one time (`Bases::epochs`).
     pub epochs: super::Epochs,
     /// The build cache's records the platform's build used, and its image's layers: what
     /// `--cache-to` exports of the builds of them all (D87).
     pub keys: Vec<String>,
     pub image_layers: std::collections::BTreeSet<String>,
     /// The number of the policies' step, which the platforms' builds log under: one step,
-    /// as buildx's one policy logger.
+    /// which buildx shows as one (its one policy logger).
     pub policy_step: usize,
 }
 
@@ -71,7 +71,7 @@ fn tar_part(stage: &Path, output: usize, p: &Platform) -> PathBuf {
     stage.join(format!("tar-{output}-{}.tar", dir_name(p)))
 }
 
-/// A tar output of several platforms, as BuildKit's tar exporter writes one (its file
+/// A tar output of several platforms (D86), as BuildKit's tar exporter writes one (its file
 /// system split by platform): for each platform, in name order, a directory of its name
 /// (0755, owner 0, time 0), then each entry of its own tar within it, hardlinks' targets
 /// too, each header written as Go's archive/tar writes a new one (D86).

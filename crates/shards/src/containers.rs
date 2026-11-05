@@ -63,13 +63,17 @@ pub struct Container {
     #[serde(default)]
     pub stop_timeout: Option<i64>,
     /// Its ports while it runs: each published at a host address and port, or exposed
-    /// alone (no address, public port 0), as dockerd lists them.
+    /// alone (no address, public port 0), as `inspect` and listings report them.
     #[serde(default)]
     pub ports: Vec<PortRecord>,
     /// Its image's ID, what its reference resolved to as it was made (`images` counts
     /// the containers of each); none in a record from before shards kept it.
     #[serde(default)]
     pub image_id: Option<String>,
+    /// The manifest of its image it was made from: the platform its microVM runs, one of
+    /// a multi-platform image's (D179); none in a record from before shards kept it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_manifest: Option<String>,
     /// Its labels: its image's, and its run's over them (Config.Labels); none in a
     /// record from before shards kept them.
     #[serde(default)]
@@ -95,6 +99,10 @@ pub struct Container {
     /// and what keeps `--rm` from removing it, snapshots and all, as it stops.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub saved: Option<String>,
+    /// Moved here from another machine (D176 part 6), its volumes copies of those its
+    /// snapshot was saved with, which its restore takes by their paths; until it runs here.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub moved: bool,
     /// The microVM whose own engine made it (D181), by which that engine alone reaches it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub engine_made: Option<EngineMade>,
@@ -176,9 +184,9 @@ pub struct PortRecord {
 
 pub use crate::spec::now;
 
-/// A new container ID: 32 random bytes in hex, as moby's `stringid.GenerateRandomID`
-/// makes them, drawn again while the first 12 digits are all decimal: the short ID names
-/// the container's host, and a hostname must not look like a number
+/// A new container ID: 32 random bytes in hex, the form clients parse
+/// (`stringid.GenerateRandomID`), drawn again while the first 12 digits are all decimal:
+/// the short ID names the container's host, and a hostname must not look like a number
 /// (moby daemon/internal/stringid/stringid.go).
 pub fn new_id() -> io::Result<String> {
     loop {
@@ -521,6 +529,24 @@ impl Registry {
     /// [`admit`](Self::admit)).
     pub fn reserve(&mut self, c: Container) {
         self.arriving.insert(c.id.clone(), c);
+    }
+
+    /// Puts `c` in sight, a microVM moved here from another machine whose directory is in
+    /// place already (D176 part 6): refused where its ID or its name is another's. Its record
+    /// is behind until it is written.
+    pub fn adopt(&mut self, c: Container) -> Result<(), String> {
+        if self.by_id.contains_key(&c.id)
+            || self.arriving.contains_key(&c.id)
+            || self.leaving.contains_key(&c.id)
+        {
+            return Err(format!("a microVM with {}'s ID is here already", c.name));
+        }
+        if self.name_taken(&c.name).is_some() {
+            return Err(format!("a microVM named {} is here already", c.name));
+        }
+        self.behind.insert(c.id.clone());
+        self.see(c);
+        Ok(())
     }
 
     /// Whether any container is reserved, its record not yet written.
@@ -883,6 +909,7 @@ mod tests {
             stop_timeout: None,
             ports: Vec::new(),
             image_id: None,
+            image_manifest: None,
             labels: Default::default(),
             annotations: Default::default(),
             oom_killed: false,
@@ -890,6 +917,7 @@ mod tests {
             restart: Default::default(),
             size_rw: None,
             saved: None,
+            moved: false,
             engine_made: None,
             engine_images: Vec::new(),
             engine_networks: Vec::new(),

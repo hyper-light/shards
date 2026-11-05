@@ -114,6 +114,7 @@ mod barrier;
 pub mod group;
 #[cfg(any(hv, test))]
 mod hold;
+pub mod live;
 #[cfg(hv)]
 mod runtime;
 #[cfg(hv)]
@@ -764,7 +765,7 @@ fn virtio_devices(
     hosts: Hosts<'_>,
     last: Vec<Box<dyn crate::devices::virtio::VirtioDevice>>,
     max: u64,
-) -> Result<Vec<Box<dyn crate::devices::virtio::VirtioDevice>>, String> {
+) -> Result<Devices, String> {
     let slots = config.disks.len()
         + usize::from(config.join)
         + regions.len()
@@ -778,11 +779,12 @@ fn virtio_devices(
         return Err(format!("at most {max} virtio devices are supported"));
     }
     let mut devices: Vec<Box<dyn crate::devices::virtio::VirtioDevice>> = Vec::with_capacity(slots);
+    let mut sizes = Vec::with_capacity(config.disks.len());
     for (i, (path, read_only)) in config.disks.iter().enumerate() {
-        devices.push(Box::new(
-            crate::devices::virtio::block::Block::open(path, *read_only, &format!("shards-disk{i}"))?
-                .with_limit(hosts.io),
-        ));
+        let disk = crate::devices::virtio::block::Block::open(path, *read_only, &format!("shards-disk{i}"))?
+            .with_limit(hosts.io);
+        sizes.extend(disk.size());
+        devices.push(Box::new(disk));
     }
     // Its join disk, the virtio-blk device after its disks, which init finds by its
     // serial (D119).
@@ -852,8 +854,16 @@ fn virtio_devices(
         ));
     }
     devices.extend(last);
-    Ok(devices)
+    Ok((devices, sizes))
 }
+
+/// A machine's virtio devices in its guest's probe order, and its file disks' sizes, which
+/// grow as it runs (D214).
+#[cfg(hv)]
+type Devices = (
+    Vec<Box<dyn crate::devices::virtio::VirtioDevice>>,
+    Vec<crate::devices::virtio::block::DiskSize>,
+);
 
 /// A GPU's renderer, and the length of the window its blobs are mapped into: what the
 /// host's GPUs say they have of memory the host can map, which Venus tells the guest, the
@@ -1050,6 +1060,7 @@ fn machine_config(cfg: &Config) -> Result<crate::snapshot::MachineConfig, String
         share_window_mib: cfg.share_window_mib,
         // Its file system's length, once its layer is open (`boot_layer`).
         layer_mib: 0,
+        pci_slots: cfg.pci_slots,
     })
 }
 
@@ -1153,6 +1164,28 @@ pub struct Config {
     /// what the guest maps for it alone, pinned as it is mapped, which guest memory keeps
     /// from being given back meanwhile ([`crate::memory::GuestMemory::pin`]).
     pub vfio: Vec<Vfio>,
+    /// Slots of its PCI bus kept free for devices plugged into it as it runs (D214): disks,
+    /// shared directories and, on Linux, host functions, each found by its guest as its
+    /// init rescans the bus. 0 for none; with any, the machine has a PCI bus.
+    pub pci_slots: u8,
+    /// Its slots behind its own IOMMU (virtio-iommu, D214), each slot's requester ID one
+    /// its firmware names from boot and the IOMMU translates while a function is plugged
+    /// there: what a host's function plugged in as it runs needs for its guest's VFIO to
+    /// give it to a process, as one it boots with behind the IOMMU does (D154). Its guest's
+    /// kernel needs VIRTIO_IOMMU, as the `kvm` kernel has, else it defers the probe of
+    /// every function plugged in. Its snapshot is refused, as its IOMMU's state is no
+    /// snapshot's.
+    pub pci_slots_iommu: bool,
+}
+
+/// A device plugged into a running machine (D214): its place on bus 0 (`devfn`, device <<
+/// 3 | function), its guest's name for it there, which its init rescans the bus to find and
+/// writes `remove` of to let it go, and, for a disk, what grows it.
+#[derive(Debug, Clone)]
+pub struct Plugged {
+    pub devfn: u8,
+    pub address: String,
+    pub size: Option<crate::devices::virtio::block::DiskSize>,
 }
 
 /// A host PCI function a VM is given (D154): its name as the host has it (`0000:01:00.0`)
@@ -1179,18 +1212,38 @@ pub struct Vfio {
     pub cdev: Option<PathBuf>,
 }
 
-/// Why this host passes no PCI function through to a microVM (D154, PM M356): VFIO, Linux's,
-/// is how a host gives a process one, its DMA translated by the host's IOMMU. macOS has no
-/// such path: Hypervisor.framework assigns no device to a VM, and a function reaches a
-/// process only through a DriverKit driver Apple has entitled to it. Windows gives a
-/// partition one only once its administrator has dismounted it from the host (Discrete
-/// Device Assignment), which Microsoft supports on Windows Server alone.
+/// A host's function as another process opened it for a VM process to plug in (D214),
+/// which, confined, opens no device of its own: VFIO's container (`/dev/vfio/vfio`) and
+/// the function's group (`/dev/vfio/N`), or, where the function is taken by its device
+/// node ([`Vfio::cdev`]), iommufd (`/dev/iommu`) and that node.
+#[cfg(target_os = "linux")]
+#[derive(Debug)]
+pub struct VfioFiles {
+    pub first: std::os::fd::OwnedFd,
+    pub second: std::os::fd::OwnedFd,
+}
+
+/// Why this host passes no PCI function through to a microVM (D154): VFIO, Linux's, is how a
+/// host gives a process one, its DMA translated by the host's IOMMU. On macOS,
+/// Hypervisor.framework's API assigns no device to a VM (PM M403). Windows gives
+/// a partition one only where its hypervisor assigns devices, as it answers when asked
+/// (`hv::device_assignment_refused`): Windows 11's refuses (PM M401), CI's Windows Server
+/// runners' too (PM M402).
 #[cfg(not(target_os = "linux"))]
-pub const NO_PASSTHROUGH: &str = if cfg!(target_os = "macos") {
-    "this host passes no PCI function through to a microVM: macOS's Hypervisor.framework assigns no device to a VM, and a function reaches a process only through a DriverKit driver Apple entitles to it (D154)"
-} else {
-    "this host passes no PCI function through to a microVM: Windows gives a partition one only once its administrator dismounts it from the host (Discrete Device Assignment), which Microsoft supports on Windows Server alone (D154)"
-};
+pub fn passthrough_refused() -> String {
+    #[cfg(target_os = "macos")]
+    let why = String::from("macOS's Hypervisor.framework assigns no device to a VM (D154)");
+    #[cfg(hv = "whp")]
+    let why = match crate::hv::device_assignment_refused() {
+        Some(said) => format!(
+            "{said}; Microsoft supports Discrete Device Assignment, a function dismounted from its host and assigned to a VM, on Windows Server, on server-class hardware that gives Windows the PCIe fabric's control and whose root complex has Access Control Services, its traffic forced through the IOMMU (D154)"
+        ),
+        None => "its hypervisor allows a partition device assignment, which shards does not use yet: no Windows host it is tested on allows one (D154)".into(),
+    };
+    #[cfg(not(any(target_os = "macos", hv = "whp")))]
+    let why = check_host().err().unwrap_or_default();
+    format!("this host passes no PCI function through to a microVM: {why}")
+}
 
 impl Vfio {
     /// The host's function `name`, by the VFIO group it is in: it must be bound to
@@ -1211,7 +1264,7 @@ impl Vfio {
             })
         }
         #[cfg(not(target_os = "linux"))]
-        Err(format!("{name}: {NO_PASSTHROUGH}"))
+        Err(format!("{name}: {}", passthrough_refused()))
     }
 
     /// The host's function whose VFIO device node is `cdev` (`/dev/vfio/devices/vfioN`),
@@ -1235,7 +1288,7 @@ impl Vfio {
             })
         }
         #[cfg(not(target_os = "linux"))]
-        Err(format!("{}: {NO_PASSTHROUGH}", cdev.display()))
+        Err(format!("{}: {}", cdev.display(), passthrough_refused()))
     }
 }
 
@@ -1246,10 +1299,30 @@ pub(crate) struct Pci<'a> {
     /// The test functions' places, `(device, function)`.
     pub test: &'a [(u8, u8)],
     pub vfio: &'a [Vfio],
+    /// Its slots kept for functions plugged in as it runs (D214).
+    pub slots: u8,
+    /// Whether its slots sit behind its IOMMU ([`Config::pci_slots_iommu`]).
+    pub slots_iommu: bool,
 }
 
 #[cfg(hv)]
 impl Pci<'_> {
+    /// Whether the machine has a PCI bus: functions to put on it, or slots to plug into.
+    pub fn any(&self) -> bool {
+        !self.test.is_empty() || !self.vfio.is_empty() || self.slots > 0
+    }
+
+    /// The devices of bus 0 its slots are, after its other functions' (D214): as many as
+    /// it asks for, or fewer where the bus has no room for them.
+    pub fn slot_devices(&self) -> Vec<u8> {
+        let first = vfio_places(self.vfio, self.test)
+            .into_iter()
+            .flatten()
+            .map(|(device, _)| device.saturating_add(1))
+            .fold(after_tests(self.test), u8::max);
+        (first..32).take(usize::from(self.slots)).collect()
+    }
+
     /// What its functions' 64-bit BARs take of the machine's 64-bit window, placed as the
     /// bus places them, the test function's and then each passed-through function's in
     /// order, each at a multiple of its size: the window's length, and the alignment of its
@@ -1294,6 +1367,8 @@ pub(crate) trait PciInterrupts {
 #[derive(Debug, Default)]
 pub(crate) struct PciBus {
     pub intx: Vec<(u8, u8)>,
+    /// What plugs functions into it as it runs, where it has slots for them (D214).
+    pub hotplug: Option<Arc<crate::devices::pci::hotplug::Hotplug>>,
 }
 
 /// What a machine gives its PCI bus: its VM, and its guest memory, which its functions
@@ -1449,10 +1524,12 @@ pub fn guest_address((device, function): (u8, u8)) -> String {
 }
 
 /// The IOMMU of the machine's PCI functions (virtio-iommu, D154), where any sits behind
-/// it: the test function, whose DMA the VMM translates, and each function passed through
-/// behind it ([`Vfio::iommu`]), whose group's container follows its endpoint. Its
-/// translation of their requester IDs, with the MSI window `msi`, its first and last
-/// address, where the machine has one; the device; and the requester IDs.
+/// it: the test function, whose DMA the VMM translates, each function passed through
+/// behind it ([`Vfio::iommu`]), whose group's container follows its endpoint, and its
+/// hot-plug slots where they sit behind it ([`Pci::slots_iommu`], D214), each translated
+/// while a function is plugged there. Its translation of their requester IDs, with the
+/// MSI window `msi`, its first and last address, where the machine has one; the device;
+/// and the requester IDs, which the machine's firmware names.
 #[cfg(hv)]
 fn iommu_of(
     pci: Pci<'_>,
@@ -1470,21 +1547,33 @@ fn iommu_of(
         .zip(places)
         .filter(|(f, _)| f.iommu)
         .filter_map(|(_, place)| place);
-    let endpoints: Vec<u32> = pci
+    let slots: Vec<u32> = match pci.slots_iommu {
+        true => pci
+            .slot_devices()
+            .into_iter()
+            .map(|d| u32::from(d) << 3)
+            .collect(),
+        false => Vec::new(),
+    };
+    let mut endpoints: Vec<u32> = pci
         .test
         .iter()
         .copied()
         .chain(behind)
         .map(|(device, function)| u32::from(device) << 3 | u32::from(function))
         .collect();
+    let functions = endpoints.clone();
+    endpoints.extend(&slots);
     if endpoints.is_empty() {
         return None;
     }
     // Bypassing from the start where the test function is behind it, whose tests take a
-    // guest without the driver; blocked where only functions passed through are, whose
-    // guest needs the driver to give them to a process anyway.
+    // guest without the driver; blocked where only functions passed through, or slots for
+    // them, are, whose guest needs the driver to give them to a process anyway.
     let translation = Arc::new(std::sync::Mutex::new(
-        iommu::Translation::new(endpoints.clone(), msi).bypassing(!pci.test.is_empty()),
+        iommu::Translation::new(functions, msi)
+            .bypassing(!pci.test.is_empty())
+            .with_slots(&slots),
     ));
     let device =
         Box::new(iommu::Iommu::new(translation.clone())) as Box<dyn crate::devices::virtio::VirtioDevice>;
@@ -1509,9 +1598,14 @@ fn pci_bus(
 ) -> Result<Option<PciBus>, String> {
     use crate::devices::pci;
     let irqs = machine.irqs;
-    if pci.test.is_empty() && pci.vfio.is_empty() {
+    if !pci.any() {
         return Ok(None);
     }
+    // With slots to plug into, the BARs placed now go in the 32-bit window's own bus, which
+    // plugged functions' BARs share wherever their guest places them (D214); else on the
+    // machine's.
+    let mut placed = crate::devices::MmioBus::default();
+    let bars = if pci.slots > 0 { &mut placed } else { &mut *bus };
     let mut routed = PciBus::default();
     let mut window = BarWindow::of(mem32)?;
     let mut window64 = mem64.map(BarWindow::of).transpose()?;
@@ -1544,10 +1638,10 @@ fn pci_bus(
             memory: machine.memory.clone(),
             iommu: machine.iommu.clone().map(|t| (t, u32::from(devfn))),
         };
-        let (edu, bars) = pci::edu::Edu::of(places, lines, Some(dma), role)?;
-        bus.insert(places.registers, pci::edu::BAR_SIZE, bars.registers)?;
-        bus.insert(places.msix, pci::edu::MSIX_BAR_SIZE, bars.msix)?;
-        bus.insert(places.scratch, pci::edu::SCRATCH_BAR_SIZE, bars.scratch)?;
+        let (edu, bars_of) = pci::edu::Edu::of(places, lines, Some(dma), role)?;
+        bars.insert(places.registers, pci::edu::BAR_SIZE, bars_of.registers)?;
+        bars.insert(places.msix, pci::edu::MSIX_BAR_SIZE, bars_of.msix)?;
+        bars.insert(places.scratch, pci::edu::SCRATCH_BAR_SIZE, bars_of.scratch)?;
         functions.push((devfn, edu));
     }
     if !pci.vfio.is_empty() {
@@ -1557,7 +1651,7 @@ fn pci_bus(
             return Err("a VM given a host's PCI device outside its own IOMMU has no memory to plug and no balloon: the device's DMA reaches all of guest RAM through mappings the host holds pinned (D154)".into());
         }
         functions.extend(passed_through(
-            bus,
+            bars,
             [
                 &mut window,
                 window64.as_mut().unwrap_or(&mut BarWindow::default()),
@@ -1568,8 +1662,65 @@ fn pci_bus(
             &mut routed,
         )?);
     }
-    bus.insert(ecam, pci::ECAM_SIZE, Arc::new(pci::Ecam::new(functions)))?;
+    let space = Arc::new(pci::Ecam::new(functions));
+    if pci.slots > 0 {
+        let irqs =
+            irqs.ok_or("a PCI bus with hot-plug slots needs MSIs, which this machine routes none of")?;
+        // Behind its IOMMU where its maker asks (D214).
+        let iommu = match pci.slots_iommu {
+            true => Some(
+                machine
+                    .iommu
+                    .clone()
+                    .ok_or("hot-plug slots behind its IOMMU, where the machine has none")?,
+            ),
+            false => None,
+        };
+        let slots = pci
+            .slot_devices()
+            .into_iter()
+            .map(|device| pci::hotplug::Slot {
+                devfn: device << 3,
+                msi: irqs.msi(u32::from(device) << 3),
+                #[cfg(target_os = "linux")]
+                route: irqs.route(u32::from(device) << 3),
+                iommu: iommu.clone(),
+            })
+            .collect::<Vec<_>>();
+        if slots.len() < usize::from(pci.slots) {
+            return Err(format!(
+                "{} hot-plug slots: bus 0 has room for {} after its other functions",
+                pci.slots,
+                slots.len()
+            ));
+        }
+        // The BARs in the 32-bit window are its own; the rest, 64-bit ones, the machine's.
+        let (base, len) = mem32;
+        let mut fixed = crate::devices::MmioBus::default();
+        for (at, size, device) in placed.into_devices() {
+            if at >= base && at.saturating_add(size) <= base + len {
+                fixed.insert(at, size, device)?;
+            } else {
+                bus.insert(at, size, device)?;
+            }
+        }
+        let window = Arc::new(pci::hotplug::Window::new(base, fixed));
+        bus.insert(base, len, window.clone())?;
+        routed.hotplug = Some(Arc::new(pci::hotplug::Hotplug::new(space.clone(), window, slots)));
+    }
+    bus.insert(ecam, pci::ECAM_SIZE, space)?;
     Ok(Some(routed))
+}
+
+/// Why `config`'s machine may not be given a host's function outside its IOMMU, where it
+/// may not: the function's DMA reaches all of its RAM through mappings the host holds
+/// pinned, which memory to plug would outgrow and a balloon would take from under it
+/// (D154).
+#[cfg(hv)]
+fn unpinnable(config: &crate::snapshot::MachineConfig) -> Option<String> {
+    (config.hotplug_mib > 0 || config.reporting).then(|| {
+        "a microVM with memory to plug or a balloon is given no host's PCI device: the device's DMA reaches all of guest RAM through mappings the host holds pinned (D154)".to_string()
+    })
 }
 
 /// What is left of a PCI memory window, BARs taken from its start.
@@ -1791,7 +1942,7 @@ fn passed_through(
     _machine: &PciMachine<'_>,
     _routed: &mut PciBus,
 ) -> Result<Vec<crate::devices::pci::Function>, String> {
-    Err(NO_PASSTHROUGH.into())
+    Err(passthrough_refused())
 }
 
 /// KVM as the host of the functions VFIO passes through (D154): its VFIO device told of
@@ -1800,6 +1951,26 @@ fn passed_through(
 impl crate::devices::pci::vfio::Host for crate::hv::Vm {
     fn add_file(&self, file: std::os::fd::RawFd) -> Result<(), String> {
         self.add_vfio_file(file).map_err(|e| e.to_string())
+    }
+
+    fn remove_file(&self, file: std::os::fd::RawFd) -> Result<(), String> {
+        self.vfio_host().remove_file(file).map_err(|e| e.to_string())
+    }
+
+    fn slots(&self, count: u32) -> Box<dyn crate::devices::pci::vfio::BarSlots> {
+        Box::new(self.device_slots(count))
+    }
+}
+
+/// KVM as the host of a function plugged in as the machine runs (D214).
+#[cfg(all(hv, target_os = "linux"))]
+impl crate::devices::pci::vfio::Host for crate::hv::VfioHost {
+    fn add_file(&self, file: std::os::fd::RawFd) -> Result<(), String> {
+        crate::hv::VfioHost::add_file(self, file).map_err(|e| e.to_string())
+    }
+
+    fn remove_file(&self, file: std::os::fd::RawFd) -> Result<(), String> {
+        crate::hv::VfioHost::remove_file(self, file).map_err(|e| e.to_string())
     }
 
     fn slots(&self, count: u32) -> Box<dyn crate::devices::pci::vfio::BarSlots> {
@@ -1881,6 +2052,8 @@ impl Config {
             layer: None,
             pci_test: Vec::new(),
             vfio: Vec::new(),
+            pci_slots: 0,
+            pci_slots_iommu: false,
         }
     }
 }
@@ -1956,6 +2129,19 @@ pub struct Save {
     /// Where its DAX windows' heads go (D189), where it has windows.
     pub window_heads: Option<std::fs::File>,
     pub then: AfterSnapshot,
+    /// The last of a live move (D176 part 7): its memory, writable layer and swap written
+    /// only where its guest and devices wrote since the move's last round
+    /// ([`Handle::precopy`]), which stops watching for them.
+    pub delta: bool,
+}
+
+/// What a live move's rounds sent ([`Handle::precopy`]): each round's pages and bytes, and
+/// how long it took, in µs; and how long its first round held the machine paused, to find
+/// what its writable layer and swap hold.
+#[derive(Debug, Clone, Default)]
+pub struct Precopied {
+    pub rounds: Vec<(u64, u64, u128)>,
+    pub paused_us: u128,
 }
 
 /// What the VM does once its snapshot is written.
@@ -1963,6 +2149,10 @@ pub struct Save {
 pub enum AfterSnapshot {
     Resume,
     Stop,
+    /// Neither, yet: its vCPUs parked and devices quiet until its [`Saved`] stops it, as it
+    /// drops, or [`Saved::resume`]s it. A live move's last save holds its microVM so until
+    /// the other machine has taken it (D176 part 7).
+    Hold,
 }
 
 #[derive(Debug, Clone)]
@@ -2273,6 +2463,7 @@ mod tests {
             swap_mib: 0,
             share_window_mib: 0,
             layer_mib: 0,
+            pci_slots: 0,
         }
     }
 
@@ -2472,13 +2663,16 @@ mod tests {
         assert_eq!(e, "at most 5 virtio devices are supported");
         let ids: Vec<u32> = virtio_devices(&config, &regions, None, &[], None, hosts, plugging(), 6)
             .unwrap()
+            .0
             .iter()
             .map(|d| d.device_id())
             .collect();
         assert_eq!(ids, [2, 2, 27, 19, 1, mem::DEVICE_ID]);
-        let devices = virtio_devices(&config, &regions, None, &[], None, hosts, Vec::new(), 5).unwrap();
+        let (devices, sizes) =
+            virtio_devices(&config, &regions, None, &[], None, hosts, Vec::new(), 5).unwrap();
         let ids: Vec<u32> = devices.iter().map(|d| d.device_id()).collect();
         assert_eq!(ids, [2, 2, 27, 19, 1]);
+        assert_eq!(sizes.len(), 2, "each file disk's size");
         let mut mac = [0u8; 6];
         devices[4].read_config(0, &mut mac);
         assert_eq!(
@@ -2731,6 +2925,55 @@ mod tests {
         assert_eq!(guest_address((3, 1)), "0000:00:03.1");
     }
 
+    /// Slots behind the IOMMU (D214): their requester IDs, after the bus's other
+    /// functions, are endpoints its firmware names beside the functions behind it, each
+    /// vacant until a function is plugged there; slots outside it are none of its, and a
+    /// machine of slots alone has no IOMMU but where they sit behind one.
+    #[test]
+    fn slots_behind_the_iommu_are_its_endpoints_from_boot() {
+        let behind = [Vfio {
+            name: "0000:01:00.0".into(),
+            group: PathBuf::from("/dev/vfio/7"),
+            noiommu: false,
+            bars64: Vec::new(),
+            iommu: true,
+            cdev: None,
+        }];
+        let pci = Pci {
+            vfio: &behind,
+            slots: 2,
+            slots_iommu: true,
+            ..Pci::default()
+        };
+        assert_eq!(pci.slot_devices(), [2, 3], "after the function's device");
+        let (translation, _, endpoints) = iommu_of(pci, None).unwrap();
+        assert_eq!(endpoints, [1 << 3, 2 << 3, 3 << 3]);
+        let t = translation.lock().unwrap();
+        assert!(t.translates(1 << 3));
+        assert!(!t.translates(2 << 3) && !t.translates(3 << 3), "vacant");
+        drop(t);
+        let outside = Pci {
+            slots_iommu: false,
+            ..pci
+        };
+        assert_eq!(iommu_of(outside, None).unwrap().2, [1 << 3]);
+        let alone = Pci {
+            slots: 4,
+            ..Pci::default()
+        };
+        assert!(iommu_of(alone, None).is_none());
+        let alone_behind = Pci {
+            slots_iommu: true,
+            ..alone
+        };
+        assert_eq!(
+            iommu_of(alone_behind, None).unwrap().2,
+            [1 << 3, 2 << 3, 3 << 3, 4 << 3]
+        );
+        let full = Pci { slots: 40, ..alone };
+        assert_eq!(full.slot_devices().len(), 31, "no room past device 31");
+    }
+
     /// Functions are given a machine once each, and a group's functions one way: all
     /// through the group or all by their device nodes, all behind the guest's IOMMU or all
     /// outside it.
@@ -2822,23 +3065,38 @@ mod tests {
         }
     }
 
-    /// Off Linux a host's PCI function is refused by name, with the OS's own limit: macOS's
-    /// Hypervisor.framework assigns no device, and Windows assigns one through Discrete Device
-    /// Assignment on Windows Server alone (D154, PM M356).
+    /// Off Linux a host's PCI function is refused by name, with the host's own limit (D154):
+    /// macOS's Hypervisor.framework assigns no device (PM M356, M403); on Windows, what its
+    /// hypervisor answers as a partition is allowed device assignment, which Windows 11's
+    /// and CI's Windows Server runners' refuse (PM M401, M402). Printed: what this host said.
     #[cfg(not(target_os = "linux"))]
     #[test]
     fn a_hosts_pci_function_is_refused_with_its_oss_own_limit() {
+        #[cfg(hv = "whp")]
+        assert!(
+            crate::hv::device_assignment_refused().is_some(),
+            "this host permits PCI device assignment: step 13 needs a passthrough implementation and a successful real hardware E2E here; an implementation refusal is not an OS limit"
+        );
+        let limit = passthrough_refused();
+        eprintln!("{limit}");
         for refused in [
             Vfio::of("0000:01:00.0").unwrap_err(),
             Vfio::of_cdev(std::path::Path::new("/dev/vfio/devices/vfio0")).unwrap_err(),
         ] {
-            assert!(refused.ends_with(NO_PASSTHROUGH), "{refused}");
-            let limit = if cfg!(target_os = "macos") {
-                "Hypervisor.framework assigns no device"
-            } else {
-                "Discrete Device Assignment"
-            };
-            assert!(refused.contains(limit), "{refused}");
+            assert!(refused.ends_with(&limit), "{refused}");
         }
+        let said: &[&str] = if cfg!(target_os = "macos") {
+            &["Hypervisor.framework assigns no device"]
+        } else if cfg!(hv = "whp") {
+            &[
+                "WHvSetPartitionProperty(AllowDeviceAssignment) failed: HRESULT",
+                "VirtualPciDeviceSupport 0",
+                "the Windows Hypervisor Platform is not on this host",
+                "asking the Windows Hypervisor Platform",
+            ]
+        } else {
+            &["no hypervisor backend for this host"]
+        };
+        assert!(said.iter().any(|s| limit.contains(s)), "{limit}");
     }
 }

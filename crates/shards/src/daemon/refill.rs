@@ -143,6 +143,21 @@ impl<D: Disk> Daemon<D> {
                 ));
                 return None;
             }
+            // A file put at its root filesystem's name since its template was keyed
+            // (`pull --no-cache`) holds other bytes than the template saw: no restore is
+            // given it, and its claims find the template broken, and boot.
+            let stamp = pool.stamp.get_or_insert_with(|| {
+                crate::run::Origin::read(dir).and_then(|o| o.stamp().map(str::to_string))
+            });
+            let current = pool.rootfs.as_deref().and_then(shards_image::store::rootfs_stamp);
+            if stamp.is_none() || *stamp != current {
+                log(format!(
+                    "{}: its root filesystem was replaced; no warm VM restores it",
+                    dir.display()
+                ));
+                pool.failures = MAX_FAILURES;
+                return None;
+            }
             let now = Instant::now();
             pool.demand.begin(now);
             let for_runs = pool.waiting.saturating_sub(pool.starting);

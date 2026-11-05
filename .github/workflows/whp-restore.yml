@@ -2,9 +2,10 @@ name: whp restore
 
 # What a Windows restore's working set buys it (D196, the platform parity audit's row 11):
 # the restore benchmark (crates/shards/benches/restore.rs) on windows-2025, each restore
-# with the working set the first restore recorded mapped ahead and without it, interleaved.
-# windows-2022's WHP restores no snapshot (PM M345). Runs when the workflow changes, or
-# when asked.
+# with the working set the first restore recorded mapped ahead and without it, interleaved;
+# its snapshot held, as the daemon holds a template's files, which keeps its memory cached,
+# and then held by none, as a lone `shards restore` finds it (PM M421). windows-2022's WHP
+# restores no snapshot (PM M345). Runs when the workflow changes, or when asked.
 on:
   push:
     paths:
@@ -61,5 +62,7 @@ jobs:
           RUNS: ${{ github.event.inputs.runs || '100' }}
           MEMORY: ${{ github.event.inputs.memory || '256' }}
         run: |
-          cargo bench --locked --target x86_64-pc-windows-msvc -p shards --bench restore -- \
-            --runs "$RUNS" --memory "$MEMORY" --working-set both
+          for held in yes no; do
+            cargo bench --locked --target x86_64-pc-windows-msvc -p shards --bench restore -- \
+              --runs "$RUNS" --memory "$MEMORY" --working-set both --held "$held"
+          done

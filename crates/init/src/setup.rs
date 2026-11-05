@@ -3,7 +3,7 @@
 //! rootfs_linux.go, after specconv's parseMountOptions), its rlimits (setupRlimits), the
 //! root read-only (`readonly`), done by the standby in its own mount namespace; and its
 //! sysctls (internal/sys WriteSysctls), done by init through a `/proc/sys` it opened
-//! before `/proc/sys` was made read-only, as runc writes through an unmasked procfs.
+//! before `/proc/sys` was made read-only, so that the workload's own view stays read-only.
 
 use std::ffi::CString;
 use std::io;
@@ -48,6 +48,12 @@ const EXT4_SUPER_MAGIC: u64 = 0xEF53;
 pub fn keep_rw() -> io::Result<()> {
     let _ = RW.set(open_kept(c"/rw", libc::O_PATH | libc::O_DIRECTORY)?);
     Ok(())
+}
+
+/// The descriptor [`keep_rw`] kept, where it did: one whose number stays as a stopped
+/// container's layer takes the template's place (D190, over.rs).
+pub fn rw_fd() -> Option<std::os::fd::RawFd> {
+    RW.get().map(std::os::fd::AsRawFd::as_raw_fd)
 }
 
 /// Sizes the run's writable layer, `text` bytes (`--storage-opt size=`, D156): its tmpfs
@@ -132,7 +138,8 @@ fn errno_words(e: &io::Error) -> String {
     shards_cmdline::go::linux_error(e.raw_os_error().unwrap_or(libc::EIO))
 }
 
-/// Sets sysctl `key` to `value`, in runc's words when it cannot.
+/// Sets sysctl `key` to `value`; a failure in the words scripts read of a start's
+/// (internal/sys WriteSysctls).
 pub fn write_sysctl(key: &str, value: &str) -> Result<(), String> {
     let path = key.replace('.', "/");
     let shown = format!("/proc/sys/{path}");
@@ -313,8 +320,8 @@ pub fn endpoint_sysctl(ifname: &str, kv: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// A tmpfs's options as runc's parseMountOptions reads them: mount flags, propagation
-/// flags, and the rest as the filesystem's data.
+/// A tmpfs's options as `--tmpfs` takes them (specconv parseMountOptions): mount flags,
+/// propagation flags, and the rest as the filesystem's data.
 pub struct MountOptions {
     pub flags: libc::c_ulong,
     pub propagation: Vec<libc::c_ulong>,
@@ -465,7 +472,7 @@ fn c(s: &str) -> Option<CString> {
     CString::new(s).ok()
 }
 
-/// Makes `path` and its parents, as runc's MkdirAllInRoot makes a mount's destination.
+/// Makes `path` and its parents: a mount's destination (MkdirAllInRoot).
 fn mkdir_all(path: &str) -> io::Result<()> {
     use std::os::unix::fs::DirBuilderExt as _;
     std::fs::DirBuilder::new()
@@ -615,10 +622,13 @@ fn one_name(name: &str) -> bool {
     !name.is_empty() && !name.contains('/') && name != "." && name != ".."
 }
 
-/// `entry`, a `volume=` or `join-volume=` entry that copies the image's files into a fresh
-/// volume (`copy`), told the run's user and group, `uid` and `gid`: where the image has
-/// nothing at its mount point, the fresh volume's top is theirs (D38, PM M249), as root's
-/// shuts a run of another user out of the volume it was given. Any other entry as it is.
+/// `entry`, a `volume=` or `join-volume=` entry, told the run's user and group, `uid` and
+/// `gid` (`owner=UID:GID`): its share's server gives them each file the host made, which
+/// holds no owner of the guest's ([`name_owner`]; D38), so that a run of an unprivileged
+/// user writes the directory it was given; and where the entry copies the image's files
+/// (`copy`) and the image has nothing at its mount point, the fresh volume's top is theirs
+/// (PM M249), as root's shuts a run of another user out of the volume it was given. An
+/// entry told already, and any other entry, as it is.
 pub fn with_owner(entry: Vec<u8>, uid: libc::uid_t, gid: libc::gid_t) -> Vec<u8> {
     let Ok(text) = std::str::from_utf8(&entry) else {
         return entry;
@@ -633,28 +643,69 @@ pub fn with_owner(entry: Vec<u8>, uid: libc::uid_t, gid: libc::gid_t) -> Vec<u8>
     let [which, dest, flags, name] = parts.as_slice() else {
         return entry;
     };
-    let given: Vec<&str> = flags.split(',').collect();
-    if !given.contains(&"copy") || given.iter().any(|f| f.starts_with("owner=")) {
+    if owner_of(flags).is_some() {
         return entry;
     }
-    format!("{kind}{which}\0{dest}\0{flags},owner={uid}:{gid}\0{name}").into_bytes()
+    let sep = if flags.is_empty() { "" } else { "," };
+    format!("{kind}{which}\0{dest}\0{flags}{sep}owner={uid}:{gid}\0{name}").into_bytes()
+}
+
+/// The owner FLAGS name (`owner=UID:GID`): none where they name none, an error where it is
+/// not two numbers.
+fn owner_of(flags: &str) -> Option<io::Result<(libc::uid_t, libc::gid_t)>> {
+    let owner = flags.split(',').find_map(|f| f.strip_prefix("owner="))?;
+    Some(
+        owner
+            .split_once(':')
+            .and_then(|(uid, gid)| Some((uid.parse().ok()?, gid.parse().ok()?)))
+            .ok_or_else(|| io::Error::from_raw_os_error(libc::EINVAL)),
+    )
 }
 
 /// A fresh volume's top, at `top`, given the owner its FLAGS name (`owner=UID:GID`), if
 /// they name one.
 fn own_top(top: &std::path::Path, flags: &str) -> io::Result<()> {
-    let Some((uid, gid)) = flags
-        .split(',')
-        .find_map(|f| f.strip_prefix("owner="))
-        .and_then(|o| o.split_once(':'))
-    else {
+    let Some(owner) = owner_of(flags) else {
         return Ok(());
     };
-    let (uid, gid) = match (uid.parse(), gid.parse()) {
-        (Ok(uid), Ok(gid)) => (uid, gid),
-        _ => return Err(io::Error::from_raw_os_error(libc::EINVAL)),
-    };
+    let (uid, gid) = owner?;
     std::os::unix::fs::lchown(top, Some(uid), Some(gid))
+}
+
+/// Tells the server of the share whose root, or join share volume, is at `root` the owner
+/// FLAGS name (`owner=UID:GID`, [`with_owner`]) of the files the host made there (D38),
+/// through the attribute only the guest's root may set ([`shards_abi::SHARE_OWNER_XATTR`]),
+/// at once as the share is mounted, before anything there is looked at, as the guest's
+/// kernel trusts what it was told of a file for a second. The mount is to be writable, as
+/// the kernel sets no attribute on a read-only one: it is made read-only after. A share
+/// another server serves (`--slates-fs-fd`) may refuse it, and keeps its files' owners as
+/// it keeps them.
+pub fn name_owner(root: &str, flags: &str) -> io::Result<()> {
+    let Some(owner) = owner_of(flags) else {
+        return Ok(());
+    };
+    let (uid, gid) = owner?;
+    name_owner_as(root, uid, gid);
+    Ok(())
+}
+
+/// [`name_owner`] of `uid` and `gid`.
+pub fn name_owner_as(root: &str, uid: libc::uid_t, gid: libc::gid_t) {
+    let (Some(path), Some(name)) = (c(root), c(shards_abi::SHARE_OWNER_XATTR)) else {
+        return;
+    };
+    let value = format!("{uid}:{gid}");
+    // SAFETY: setxattr(2) of NUL-terminated strings and a value that outlive the call. A
+    // server that refuses it leaves the host's files root's, as they were before it.
+    let _ = unsafe {
+        libc::setxattr(
+            path.as_ptr(),
+            name.as_ptr(),
+            value.as_ptr().cast(),
+            value.len(),
+            0,
+        )
+    };
 }
 
 /// mount(2) of `src` at `dst`; a volume's (`dax`) with `dax=inode`, so that its server says
@@ -722,7 +773,9 @@ fn volume(spec: &str) -> io::Result<()> {
     match file {
         Some(name) => {
             std::fs::create_dir_all(&staging)?;
-            mount(tag, &staging, Some("virtiofs"), base)?;
+            // Writable to be told its owner; the file is bound with `base`.
+            mount(tag, &staging, Some("virtiofs"), 0)?;
+            name_owner(&staging, flags)?;
             if let Some(parent) = std::path::Path::new(dest).parent() {
                 mkdir_all(&parent.to_string_lossy())?;
             }
@@ -741,6 +794,7 @@ fn volume(spec: &str) -> io::Result<()> {
             mkdir_all(dest)?;
             std::fs::create_dir_all(&staging)?;
             mount(tag, &staging, Some("virtiofs"), 0)?;
+            name_owner(&staging, flags)?;
             let empty = std::fs::read_dir(&staging)?.next().is_none();
             if empty {
                 copy_tree(std::path::Path::new(dest), std::path::Path::new(&staging))?;
@@ -756,7 +810,12 @@ fn volume(spec: &str) -> io::Result<()> {
         }
         None => {
             mkdir_all(dest)?;
-            mount(tag, dest, Some("virtiofs"), base)?;
+            // Writable to be told its owner, then as `base` says.
+            mount(tag, dest, Some("virtiofs"), 0)?;
+            name_owner(dest, flags)?;
+            if base != 0 {
+                mount("", dest, None, libc::MS_BIND | libc::MS_REMOUNT | base)?;
+            }
         }
     }
     Ok(())
@@ -793,6 +852,7 @@ fn join_volume(spec: &str) -> io::Result<()> {
     mount(tag, &staging, Some("virtiofs"), 0)?;
     let bound = (|| {
         let dir = format!("{staging}/{volume}");
+        name_owner(&dir, flags)?;
         let source = if name.is_empty() {
             let image_has = std::fs::symlink_metadata(dest).is_ok();
             mkdir_all(dest)?;
@@ -1127,10 +1187,11 @@ pub fn failed(entry: &[u8], errno: i32) -> String {
 mod tests {
     use super::*;
 
-    /// Each volume that takes the image's files is told the run's owner, once; a volume
-    /// told not to copy, and every other entry, is left as it is.
+    /// Each volume is told the run's owner, once: its share's server gives them the host's
+    /// files, and one that takes the image's files where the image has none gives them its
+    /// top; every other entry is left as it is.
     #[test]
-    fn a_copied_volume_is_told_its_runs_owner() {
+    fn a_volume_is_told_its_runs_owner() {
         let told = |e: &[u8]| String::from_utf8(with_owner(e.to_vec(), 1000, 1001)).unwrap();
         assert_eq!(
             told(b"volume=v1\0/data\0copy\0"),
@@ -1140,13 +1201,25 @@ mod tests {
             told(b"join-volume=abc\0/data\0ro,copy\0"),
             "join-volume=abc\0/data\0ro,copy,owner=1000:1001\0"
         );
+        assert_eq!(
+            told(b"volume=v1\0/data\0ro\0"),
+            "volume=v1\0/data\0ro,owner=1000:1001\0"
+        );
+        assert_eq!(
+            told(b"volume=shards1\0/etc/x.conf\0\0x.conf"),
+            "volume=shards1\0/etc/x.conf\0owner=1000:1001\0x.conf"
+        );
         for kept in [
-            "volume=v1\0/data\0ro\0",
             "volume=v1\0/data\0copy,owner=0:0\0",
             "hostname=x",
             "volume=broken",
         ] {
             assert_eq!(told(kept.as_bytes()), kept);
+        }
+        assert_eq!(owner_of("ro,owner=5:6").unwrap().unwrap(), (5, 6));
+        assert!(owner_of("ro").is_none());
+        for bad in ["owner=5", "owner=a:6", "owner=5:"] {
+            assert!(owner_of(bad).unwrap().is_err(), "{bad}");
         }
     }
 }

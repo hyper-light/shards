@@ -1,4 +1,4 @@
-//! Matching paths as BuildKit matches them, on Linux:
+//! Matching paths as a Dockerfile's patterns mean them, on Linux:
 //! - `filepath_match`: Go 1.26's `path/filepath.Match`, which COPY's wildcards use;
 //! - `PatternMatcher`: moby/patternmatcher v0.6.1, which `.dockerignore`, `COPY
 //!   --exclude` and `--parents` use. It turns each pattern into a Go regular expression,

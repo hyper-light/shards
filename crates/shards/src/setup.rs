@@ -238,8 +238,8 @@ pub fn seccomp(
 /// which have no AppArmor (`seccomp-mounts=`, shards_seccomp::MOUNTS): mount(2), and past
 /// docker-default the new mount API and pivot_root (D121). So a container given SYS_ADMIN
 /// mounts nothing of its microVM's, its shares among them. None for a privileged container
-/// or `apparmor=unconfined`, as Docker's has none, nor without the capability: the kernel
-/// refuses every mount then, and a filter would change only mount(2)'s errno (AppArmor's
+/// or `apparmor=unconfined`, which ask for no confinement, nor without the capability: the
+/// kernel refuses every mount then, and a filter would change only mount(2)'s errno (AppArmor's
 /// EACCES for the kernel's EPERM) while putting one on a container `seccomp=unconfined`
 /// asked to have none.
 pub fn mounts(
@@ -528,9 +528,9 @@ pub(crate) fn merge_tmpfs_options(options: &[&str]) -> Result<Vec<String>, Strin
 /// size, before anything is mounted, so that what the run mounts at or under /dev/shm (a
 /// volume, a tmpfs) goes over it, as a container's mounts go over its default /dev/shm,
 /// and is never resized nor unmounted with it; each tmpfs and mount point, the shallowest
-/// first as moby sorts mounts, with moby's default options before the run's; the
-/// ulimits, the last of each by name; the sysctls, the last of each; and the root
-/// read-only last, after everything is mounted on it.
+/// first, so that a deeper one lands on it, with the tmpfs defaults (MergeTmpfsOptions)
+/// before the run's; the ulimits, the last of each by name; the sysctls, the last of each;
+/// and the root read-only last, after everything is mounted on it.
 pub fn setup(
     run: &Run,
     points: &[(String, Vec<u8>)],
@@ -667,8 +667,8 @@ pub(crate) fn storage_size(run: &Run) -> Result<Option<u64>, String> {
 
 /// `--security-opt`'s setup entries, after the rest: the paths left unmasked, the cgroup
 /// writable, no new privileges and the seccomp filter, which its execs take too (init
-/// installs the filter last, as runc does). Made as the container starts, so that a
-/// profile it cannot load fails its start and not its making, as dockerd's does.
+/// installs the filter last, so that none of its own setup is filtered). Made as the
+/// container starts: a profile it cannot load fails its start, not its making (D41).
 pub fn security_setup(
     run: &Run,
     kernel: shards_seccomp::Kernel,
@@ -966,7 +966,8 @@ mod tests {
             ..Run::default()
         };
         assert!(entries(&privileged).is_empty());
-        // `seccomp=unconfined` leaves AppArmor's rule, as Docker's leaves its profile.
+        // `seccomp=unconfined` leaves AppArmor's rule: it asks for no seccomp filter, not
+        // for AppArmor's mounts (D121).
         let no_seccomp = Run {
             security_opt: vec!["seccomp=unconfined".into()],
             ..admin.clone()

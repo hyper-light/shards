@@ -110,6 +110,12 @@ impl Host for Machine {
             super::log(format!("client {client}: copy step {}", shown.join(" ")));
             return self.copy_step(args);
         }
+        // `shards move vm`'s steps, this machine the one moved to (D176 part 6).
+        if args.first().map(String::as_str) == Some(shards_ipc::MOVE_STEP) {
+            let step = args.get(1).map_or("", String::as_str);
+            super::log(format!("client {client}: move step {step}"));
+            return self.copy_step(args);
+        }
         if args.first().map(String::as_str) == Some(crate::context::ENGINE_STEP) {
             return self.engine_step();
         }
@@ -117,6 +123,23 @@ impl Host for Machine {
             let shown: Vec<String> = args.iter().skip(1).map(|a| a.replace('\0', "")).collect();
             super::log(format!("client {client}: context step {}", shown.join(" ")));
             return self.sync_step(client, args, request.env, request.terminal);
+        }
+        // A step of a policy command the client evaluates, this machine its builder: run as
+        // a command of its own, with the logins the client sent, the step named by a
+        // variable the client's command line cannot set.
+        if args.first().map(String::as_str) == Some(crate::build::policy_command::POLICY_STEP) {
+            use crate::build::policy_command::STEP_VAR;
+            let step = args.get(1).cloned().unwrap_or_default();
+            let shown: Vec<&str> = args.iter().skip(1).map(String::as_str).collect();
+            super::log(format!("client {client}: policy step {}", shown.join(" ")));
+            let mut env = self.command_env(request.env);
+            env.push((STEP_VAR.to_string(), OsString::from(step)));
+            let words: Vec<String> = ["buildx", "policy"]
+                .into_iter()
+                .map(String::from)
+                .chain(args.into_iter().skip(2))
+                .collect();
+            return command(&self.exe, &words, &env, None, None, None);
         }
         if args.first().map(String::as_str) == Some(crate::agent::SIGN_STEP) {
             let shown: Vec<&str> = args.iter().skip(1).map(String::as_str).collect();
@@ -502,11 +525,13 @@ impl Machine {
         if let Ok(cache) = crate::helpers::cache() {
             env.push(("SHARDS_CACHE".to_string(), cache.into_os_string()));
         }
-        // The client's own paths are its step's to say (`sync_step`), no command's.
+        // The client's own paths are its step's to say (`sync_step`), no command's; and a
+        // policy command's step this daemon's to name (`start`).
         env.extend(
             given
                 .into_iter()
                 .filter(|(k, _)| k != crate::synced::SHOWN_AS)
+                .filter(|(k, _)| !k.eq_ignore_ascii_case(crate::build::policy_command::STEP_VAR))
                 .filter_map(|(k, v)| String::from_utf8(v).ok().map(|v| (k, OsString::from(v)))),
         );
         env
@@ -922,9 +947,10 @@ impl Machine {
             .name("copy-step".into())
             .spawn(move || {
                 let (code, out, err) = {
+                    // A copy's archive, or a move's stream (D176 part 6), its way.
                     let fds: Vec<crate::cli::Stream<'_>> = match args.get(1).map(String::as_str) {
-                        Some("archive") => vec![crate::cli::Stream::To(out_w.as_fd())],
-                        Some("extract") => vec![crate::cli::Stream::From(in_r.as_fd())],
+                        Some("archive" | "export") => vec![crate::cli::Stream::To(out_w.as_fd())],
+                        Some("extract" | "import") => vec![crate::cli::Stream::From(in_r.as_fd())],
                         _ => Vec::new(),
                     };
                     ask_self(args, identity, &fds).unwrap_or_else(|e| (1, Vec::new(), e.into_bytes()))

@@ -118,10 +118,18 @@ Reviewed feature by feature, each D-entry's design against what it took from Doc
     xterm where it has not.
   - A download that stops without progress fails after three (containerd's
     `httpReadSeeker`'s count): open, to derive from what a stalling server costs.
-  - Splunk's batch of 1,000 events (moby's default): open, to derive from what a batch costs
-    the daemon and the collector.
-  - A log's non-blocking queue of 1,000,000 bytes where `max-buffer-size` gives none (moby's
-    ring logger's): open, to derive from what a run's output costs the host to hold.
+  - Splunk's batch of 1,000 events. Kept, decided (2026-11-03): it is the documented
+    meaning of `SPLUNK_LOGGING_DRIVER_POST_MESSAGES_BATCH_SIZE` unset (docker/docs
+    content/manuals/engine/logging/drivers/splunk.md), the knob a collector's operator
+    sizes posts by, and it bounds only a backlog's posts: the shipper posts whatever it
+    holds as soon as it has caught up with its log (D167), where moby's waits for its 5 s
+    tick, so no event waits for a batch to fill.
+  - A log's non-blocking queue of 1,000,000 bytes where `max-buffer-size` gives none. Kept,
+    decided (2026-11-03): it is the input's meaning, not a figure of Docker's machinery: a
+    run that asks for `mode=non-blocking` and names no buffer asks for the one the option
+    is documented to mean unsaid ("The default is `1m` meaning 1 MB (1 million bytes)",
+    docker/docs content/manuals/engine/logging/configure.md), and a run that wants another
+    names it.
   - A long line cut into parts of 16 KiB for the drivers that send a log away (moby's copier's
     size): open. It is what receivers that join Docker's parts expect, so it stays until a
     receiver-led size is measured.
@@ -139,11 +147,13 @@ Reviewed feature by feature, each D-entry's design against what it took from Doc
   - A daemon's shutdown ends a VM whose command outlives its stop timeout by 5 s (dockerd's
     `ShutdownTimeout` grace): open, to derive from how long a guest takes to say a killed
     command's end, measured.
-  - The build cache's other rules are still dockerd's, open: the temporary share of the
-    reserve (e·π·φ %, 512 MB at least) that what is easiest to make again may take, the
-    ages at which records go (two days for those, 60 for any), and 2 GB reserved where the
-    disk cannot be read. Each to derive from what remaking a record of each kind costs a
-    microVM build, measured.
+  - The build cache's other rules were still dockerd's: the temporary share of the
+    reserve (e·π·φ %, 512 MB at least) that what is easiest to make again might take, the
+    ages at which records went (two days for those, 60 for any), and 2 GB reserved where
+    the disk cannot be read. Done (D212): what the rules protect is the disk, which the
+    user's shares already bound, so no record goes for its age (a cache mount unused for
+    two days went whatever room the disk had, and its next build fetched it all again);
+    where the disk's size cannot be read, only sizes the user set bound the cache.
   - (Decided by the user, 2026-10-18, and built, D186: a log keeps at most 1 GiB of its
     run's newest output by default, where it kept Docker's `local` driver's 5 segments of
     20 MiB, and the user sets it with `shards configure disk --log-history`.)
@@ -174,10 +184,19 @@ Reviewed feature by feature, each D-entry's design against what it took from Doc
       long a guest takes to say a killed command's end, with the shutdown's 5 s above.
     - A microVM paused: its cgroup waited for 10 s to say it is frozen, runc's `waitFrozen`.
       To derive from how long a freeze takes a busy microVM, measured.
-    - A builder's cache mount whose records are all held: its taker looks again every
-      100 ms, BuildKit's mount.go, a timer where the lock's release could wake it.
-    - A builder's cache collected: at most once a minute, BuildKit's controller. To derive
-      from what a collection costs, measured.
+    - A builder's cache mount whose records are all held: its taker looked again every
+      100 ms, BuildKit's mount.go, a timer where the lock's release could wake it. Done
+      (2026-11-03): a `locked` taker waits on the held record's lock, and is woken as its
+      step lets go of it (crates/image store/mounts.rs `take_mount`), on every host's
+      flock(2) or LockFileEx alike; no timer.
+    - A builder's cache collected: at most once a minute, BuildKit's controller. Done
+      (D212, PM M426): a collection reads every record, 1.3 ms for 100 and 86 ms for
+      10,000 at p50 on a loaded host, so a build collects where it grew the cache, the only
+      way the cache passes its bounds, one collection at a time in a home, and a build
+      answered from the cache collects nothing; no timer.
+    - A build's SSH agent on Windows: its pipe waited for 2 s, go-winio's default, which
+      BuildKit's call leaves unset (build/ssh.rs; found 2026-11-03). To derive from how
+      long an agent's pipe takes to come free, measured.
 - The rest: open, D-entry by D-entry.
 
 ## Fixing order
@@ -202,6 +221,8 @@ Each step is gated and committed; this file's counts are re-run as they land.
 | 2026-10-16, first | 6 | 1,939 | 1,862 | 397 | 42 | 178 |
 | 2026-10-16, after steps 1 to 4 | 0 | 1,878 | 1,680 | 388 | 36 | 176 |
 | 2026-10-17, help, networks, engine | 0 | 1,898 (1,119) | 1,685 | 388 | 36 | 176 |
+| 2026-11-03, before step 6's sweep (de2b1cf5) | 2 | 1,807 (688) | 1,944 | 400 | 42 | 189 |
+| 2026-11-03, every unbacked line resolved | 0 | 1,268 (0) | 1,876 | 400 | 42 | 189 |
 
 Reviewed by hand (2026-10-17), the design's unbacked lines to line 5,800: nearly every one
 says what shards matches for compatibility, its evidence a few lines off (a log driver's
@@ -209,6 +230,16 @@ wire format, a registry's answer, a tar header, an exit status), and stays. Rewo
 shards' own design was said as Docker's: a run (D27), the volumes' and shares' headings,
 and the stale component box and phase 4 that called the microVM's own engine pending, the
 text that misled me into telling the user shards had none.
+
+Swept (2026-11-03), every unbacked line, file by file across the tree (688 at de2b1cf5,
+two test names among the `names` kind's): each said shards' own behaviour as Docker's,
+dockerd's, BuildKit's, runc's or containerd's, and now says what shards does and why,
+microVM where it meant one; or it stated a compatibility contract (an answer shape, a
+wire format, words scripts match, a Dockerfile's meaning held to BuildKit), and now cites
+what it is held to: the D-entry, the pinned source and version, the oracle or recording,
+the RFC or the measurement. Citations were checked against the pinned upstream sources.
+The `framing` lines left each have such evidence beside them; the `container` and
+`grammar` counts are the next sweep's.
 
 `unbacked` (2026-10-17): framing with no evidence beside it. The rest of `framing` cites
 what an input or output is held to (a version, a source file, a measurement), as the

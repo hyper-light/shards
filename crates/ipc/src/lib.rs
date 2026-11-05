@@ -69,7 +69,40 @@ pub fn log(home: &Path) -> PathBuf {
 /// the daemon one at a time (cli/cp.rs, daemon/commands.rs).
 pub const COPY_STEP: &str = "\u{0}cp";
 
+/// The first word of `shards move vm`'s steps, which no command line has: what its client
+/// asks this machine's daemon and the other machine's one at a time (D176 part 6, cli/moves.rs,
+/// daemon/moves.rs).
+pub const MOVE_STEP: &str = "\u{0}mv";
+
 /// Message kinds between the daemon, warm VMs and clients.
+/// [`kind::DEVICE`]'s steps (D214), each a byte after the request's number.
+pub mod device {
+    /// A disk plugged in: a flags byte ([`READ_ONLY`]) and its serial; its file a
+    /// descriptor. Answers its place on the PCI bus (`devfn`, decimal) and its guest's
+    /// address of it, a space between.
+    pub const DISK: u8 = 1;
+    /// A shared directory plugged in: its virtio-fs tag; the connection to its server a
+    /// descriptor. Answers as [`DISK`] does.
+    pub const SHARE: u8 = 2;
+    /// The device at a place (`devfn`, a byte) taken off the bus, once its guest let it go.
+    pub const UNPLUG: u8 = 3;
+    /// The disk at a place (`devfn`, a byte) grown to its file's length, its driver told.
+    /// Answers its size in bytes, decimal.
+    pub const GROW: u8 = 4;
+    /// [`DISK`]'s flag of a disk its guest may not write.
+    pub const READ_ONLY: u8 = 1;
+    /// A host's PCI function plugged in behind the microVM's IOMMU (Linux; D214): a flags
+    /// byte ([`BY_NODE`]), then its host's name (`0000:01:00.0`), a NUL, and its group's
+    /// node (`/dev/vfio/N`), or with [`BY_NODE`] its own VFIO device node
+    /// (`/dev/vfio/devices/vfioN`); as descriptors, opened by the daemon, VFIO's container
+    /// (`/dev/vfio/vfio`) and the group's node, or iommufd (`/dev/iommu`) and the device's
+    /// node. Answers as [`DISK`] does.
+    pub const FUNCTION: u8 = 5;
+    /// [`FUNCTION`]'s flag of a function taken by its own VFIO device node, through
+    /// iommufd, not its group's.
+    pub const BY_NODE: u8 = 1;
+}
+
 pub mod kind {
     /// Warm VM → daemon: the guest is connected and waiting for its command.
     pub const READY: u8 = 1;
@@ -276,7 +309,7 @@ pub mod kind {
     /// is told: its ports of the host's let go (`shards_abi::run::HostBind::owner`, a
     /// big-endian u32); answered with the same kind and owner once the daemon's copies and
     /// the network process's are closed, so that the host may bind them again once the
-    /// end is told, as dockerd's may.
+    /// end is told.
     pub const HOST_RELEASE: u8 = 52;
     /// A builder → its VM process (`--attach`, D134): a file for the VM's join disk, its
     /// one descriptor, the guest to read it alone (payload 0) or to write it too (1).
@@ -406,6 +439,29 @@ pub mod kind {
     /// that process goes, which on Windows came 95 ms after a run's end on jupiter and past
     /// 2 s on CI's runners (PM M380): the next program to bind one has it.
     pub const PORTS_FREE: u8 = 79;
+    /// Daemon → a running run's VM: a device plugged into its microVM, let go of, or a disk
+    /// grown (D214): a number its answer ([`DEVICED`]) names (8, big-endian), then a step
+    /// ([`device`]) and what it takes. With [`device::DISK`] the disk's file, with
+    /// [`device::SHARE`] the connection to its share's server, and with
+    /// [`device::FUNCTION`] a host's function's VFIO files, as descriptors.
+    pub const DEVICE: u8 = 80;
+    /// A run's VM → its daemon: [`DEVICE`]'s answer, by its number (8, big-endian), then 0
+    /// and what the step answers, or 1 and why it failed.
+    pub const DEVICED: u8 = 81;
+    /// Daemon → a VM, on its link (D176 part 7): copy the running microVM's memory, writable
+    /// layer and run's swap for a live move, round after round, into the one descriptor it
+    /// brings, as its guest runs on (`shards_vmm::vm::live`): the most rounds (4,
+    /// big-endian), then the bytes a round may send and be the last (8). Answered with
+    /// `PRECOPIED`; its guest's writes watched from then on, for a `SAVE` with
+    /// [`SAVE_DELTA`](super::SAVE_DELTA).
+    pub const PRECOPY: u8 = 82;
+    /// A VM → its daemon: the rounds `PRECOPY` asked for are sent, each its pages, its bytes
+    /// and its µs, as text, a line each, after a line of the µs its first round held the
+    /// machine paused; or why not, after a NUL.
+    pub const PRECOPIED: u8 = 83;
+    /// Daemon → a VM its live move's last save holds (D176 part 7): taken by the other
+    /// machine (1), which stops it as saved, or not (0), which lets it go on.
+    pub const MOVED: u8 = 84;
 
     /// Whether a network process's control message of `kind` hands it sockets: published
     /// ports' (`PUBLISH`, `NET_PUBLISHED`) and a peer's link (`NET_PEER`). Beside the
@@ -418,6 +474,9 @@ pub mod kind {
 
 /// A `SAVE` flag: the microVM goes on running once saved, rather than stopping.
 pub const SAVE_LEAVE_RUNNING: u8 = 1;
+/// A `SAVE` flag: the last of a live move (D176 part 7), its memory, writable layer and
+/// swap written only where its guest wrote since its last round (`PRECOPY`).
+pub const SAVE_DELTA: u8 = 2;
 
 /// The status of a run its save stopped (D176), as a shell says of a job it stopped, 128
 /// plus SIGTSTP's number on Linux (20): not ended, but stopped where it is, to be resumed.
@@ -553,7 +612,7 @@ impl Attach {
 pub struct Command {
     pub argv: Vec<String>,
     /// The client's [`REGISTRY_ENV`]: a registry it reaches is reached with its
-    /// credentials and certificates, as the Docker CLI sends its own with each request.
+    /// credentials and certificates, the client's own, sent with each request (D23).
     pub registry_env: Vec<String>,
     /// The client's locale is East Asian, where the Docker CLI counts ambiguous-width
     /// characters as two columns (shards_cmdline::width::east_asian).
@@ -732,7 +791,7 @@ pub struct Run {
     pub quiet: bool,
     /// `--platform`, as given (or DOCKER_DEFAULT_PLATFORM): the image's to run.
     pub platform: String,
-    /// The resource flags, as docker/cli sends them.
+    /// The resource flags, as docker/cli v29.8.1 sends them.
     pub resources: Resources,
     /// `--read-only`.
     pub read_only: bool,
@@ -744,7 +803,7 @@ pub struct Run {
     pub ulimits: Vec<String>,
     /// `--sysctl`, each `KEY=VALUE`.
     pub sysctls: Vec<String>,
-    /// `--cap-add` and `--cap-drop`, as docker/cli sends them (EffectiveCapAddCapDrop):
+    /// `--cap-add` and `--cap-drop`, as docker/cli v29.8.1 sends them (EffectiveCapAddCapDrop):
     /// `CAP_` names or `ALL`, each once, sorted, an added one not dropped.
     pub cap_add: Vec<String>,
     pub cap_drop: Vec<String>,
@@ -754,7 +813,7 @@ pub struct Run {
     pub oom_score_adj: i64,
     /// `--privileged`.
     pub privileged: bool,
-    /// `--security-opt`, as docker/cli sends them (HostConfig.SecurityOpt): a seccomp
+    /// `--security-opt`, as docker/cli v29.8.1 sends them (HostConfig.SecurityOpt): a seccomp
     /// profile's file read in, `seccomp=` and its JSON compacted; `systempaths=` taken out.
     pub security_opt: Vec<String>,
     /// `--security-opt systempaths=unconfined`: no paths masked or made read-only
@@ -771,7 +830,7 @@ pub struct Run {
     pub volumes_from: Vec<String>,
     /// `--volume-driver`.
     pub volume_driver: String,
-    /// `--restart`, as docker/cli sends it (ParseRestartPolicy): the policy's name, empty
+    /// `--restart`, as docker/cli v29.8.1 sends it (ParseRestartPolicy): the policy's name, empty
     /// where `--restart ""` gave none, and its most retries.
     pub restart_policy: (String, i64),
     /// `--init` where given (HostConfig.Init, a `*bool`): with true, a reaper, docker-init's
@@ -780,7 +839,7 @@ pub struct Run {
     /// `--pid` (HostConfig.PidMode): empty for a PID namespace of the command's own,
     /// `host` for the microVM's own (D115).
     pub pid: String,
-    /// `--device`s, as docker/cli parses them (HostConfig.Devices): each
+    /// `--device`s, as docker/cli v29.8.1 parses them (HostConfig.Devices): each
     /// `PATH_ON_HOST:PATH_IN_CONTAINER:PERMISSIONS`, the host being the VM.
     pub devices: Vec<String>,
     /// `--device-cgroup-rule`s (HostConfig.DeviceCgroupRules).
@@ -971,7 +1030,7 @@ impl DeviceRequest {
     }
 }
 
-/// `run`'s resource flags as docker/cli sends them (container.Resources): memory in
+/// `run`'s resource flags as docker/cli v29.8.1 sends them (container.Resources): memory in
 /// bytes, CPUs in billionths, the rest as given; zero, empty or `None` where not given.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Resources {
@@ -1663,7 +1722,7 @@ impl Run {
 /// What a registry is reached by (shards_registry's credentials, certs and proxy): the
 /// Docker CLI's config, credential helpers on `PATH`, the homes of `certs.d`, and the
 /// proxies Go's net/http takes from the environment; and the local engine a made microVM
-/// is published to, as the Docker CLI finds it (`DOCKER_HOST`, `DOCKER_CONTEXT`), or none
+/// is published to, as docker/cli v29.8.1 finds it (`DOCKER_HOST`, `DOCKER_CONTEXT`), or none
 /// (`SHARDS_LOCAL_STORE=none`).
 pub const REGISTRY_ENV: [&str; 18] = [
     "SHARDS_AUTH_CONFIG",
@@ -1802,7 +1861,9 @@ pub const RUN_DETACHED: u8 = 8;
 /// (`kind::UNPUBLISH`).
 pub const RUN_PUBLISHED: u8 = 16;
 /// A `kind::RUN` flag: a stopped container's writable layer comes with the run, read
-/// from a descriptor after the log's, to put back before the command runs (D37).
+/// from a descriptor after the log's, to put back before the command runs (D37); or, where
+/// its head says so ([`RunHead::layer_over`]), the file the layer was kept in (D190), to go
+/// under the microVM's layer device.
 pub const RUN_LAYER_IN: u8 = 32;
 /// A `kind::RUN` flag: the container stays once it stops, and its writable layer goes to
 /// a descriptor after those, told by `kind::LAYER_SAVED` once whole.
@@ -1817,8 +1878,9 @@ pub const RUN_SWAP: u8 = 128;
 /// (each segment's most bytes, how many segments it keeps), its log's first segment, the
 /// most memory its guest may plug in bytes (D148), its log's queue (D162): none where
 /// the run's output is kept as it comes, else the most bytes queued for its log; its I/O
-/// limits (D178); the CPUs its microVM is held to (D191); and whether a group's CPU
-/// budget holds it too (D183).
+/// limits (D178); the CPUs its microVM is held to (D191); whether a group's CPU budget
+/// holds it too (D183); and whether its stopped container's layer comes as the file it was
+/// kept in (D190).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct RunHead {
     pub flags: u8,
@@ -1837,6 +1899,10 @@ pub struct RunHead {
     /// Its microVM is held by its group's CPU budget too (D183, slice 3): the budget's
     /// file comes after its swap among the request's files.
     pub group: bool,
+    /// Its container's writable layer from before ([`RUN_LAYER_IN`]) comes as the file it
+    /// was kept in (D190), which goes under its microVM's layer device, its root then over
+    /// it (`run::kind::OVER`), rather than as an archive to put back.
+    pub layer_over: bool,
 }
 
 /// The big-endian u64 `rest` begins with, `rest` then past it.
@@ -1848,9 +1914,9 @@ fn take_u64(rest: &mut &[u8]) -> Option<u64> {
 
 impl RunHead {
     /// Its length: the flags, four big-endian u64s, the queue's mode (0 blocking, 1
-    /// non-blocking), the queue's, the I/O limits' two, the CPUs held to, then whether a
-    /// group's budget holds it (0 or 1).
-    pub const LEN: usize = 1 + 4 * 8 + 1 + 8 + 2 * 8 + 8 + 1;
+    /// non-blocking), the queue's, the I/O limits' two, the CPUs held to, whether a
+    /// group's budget holds it (0 or 1), then whether its layer comes as its file (0 or 1).
+    pub const LEN: usize = 1 + 4 * 8 + 1 + 8 + 2 * 8 + 8 + 1 + 1;
 
     pub fn encode_into(&self, out: &mut Vec<u8>) {
         out.push(self.flags);
@@ -1863,6 +1929,7 @@ impl RunHead {
         out.extend(self.io_requests.to_be_bytes());
         out.extend(self.cpus.to_be_bytes());
         out.push(u8::from(self.group));
+        out.push(u8::from(self.layer_over));
     }
 
     /// The head `payload` begins with, and what follows it; why not, where it holds none.
@@ -1889,6 +1956,12 @@ impl RunHead {
             1 => true,
             g => return Err(format!("a request whose group's mark is {g}")),
         };
+        let (&over, rest) = rest.split_first().ok_or(SHORT)?;
+        let layer_over = match over {
+            0 => false,
+            1 => true,
+            o => return Err(format!("a request whose layer's mark is {o}")),
+        };
         let head = RunHead {
             flags,
             log_size,
@@ -1900,6 +1973,7 @@ impl RunHead {
             io_requests,
             cpus,
             group,
+            layer_over,
         };
         Ok((head, rest))
     }
@@ -2243,6 +2317,7 @@ mod tests {
                 io_requests: 100,
                 cpus: 2,
                 group: queue.is_some(),
+                layer_over: queue.is_none(),
             };
             let mut bytes = Vec::new();
             head.encode_into(&mut bytes);
@@ -2260,10 +2335,17 @@ mod tests {
         );
         let mut bytes = Vec::new();
         RunHead::default().encode_into(&mut bytes);
-        bytes[RunHead::LEN - 1] = 2;
+        bytes[RunHead::LEN - 2] = 2;
         assert_eq!(
             RunHead::decode(&bytes),
             Err("a request whose group's mark is 2".to_string())
+        );
+        let mut bytes = Vec::new();
+        RunHead::default().encode_into(&mut bytes);
+        bytes[RunHead::LEN - 1] = 2;
+        assert_eq!(
+            RunHead::decode(&bytes),
+            Err("a request whose layer's mark is 2".to_string())
         );
     }
 

@@ -88,7 +88,7 @@ fn images_run_from_a_registry() {
         "the stored image served the second run"
     );
 
-    // Named by the digest its tag resolved to, as dockerd's store finds one pulled by its
+    // Named by the digest its tag resolved to, the store keeping that digest beside its
     // tag: the stored image, whether the run may pull or not, nothing fetched.
     let digests = run_shards_env(
         &["image"],
@@ -1149,4 +1149,325 @@ fn actions_on_an_image_not_here_convert_it_first() {
         shown(&listed)
     );
     let _ = shards(&["stop", "daemon"]);
+}
+
+/// The names and contents of a plain tar's regular files, in order.
+fn tar_files(bytes: &[u8]) -> Vec<(String, Vec<u8>)> {
+    let mut files = Vec::new();
+    let mut at = 0;
+    while at + 512 <= bytes.len() && bytes[at] != 0 {
+        let header = &bytes[at..at + 512];
+        let name = String::from_utf8_lossy(&header[..100])
+            .trim_end_matches('\0')
+            .to_string();
+        let size_field = String::from_utf8_lossy(&header[124..136]);
+        let size =
+            usize::from_str_radix(size_field.trim_matches(|c: char| c == '\0' || c == ' '), 8).unwrap();
+        let body = &bytes[at + 512..at + 512 + size];
+        if header[156] == b'0' || header[156] == 0 {
+            files.push((name, body.to_vec()));
+        }
+        at += 512 + size.div_ceil(512) * 512;
+    }
+    files
+}
+
+/// One platform's microVM of a multi-platform image, chosen wherever a command names it
+/// (`--platform`, D179), on real microVMs: an image of this host's CPU (the test guest)
+/// and of the other 64-bit CPU (a program of that CPU's that prints its name), with an
+/// attestation of the other's, pulled for both from a registry that takes pushes too.
+/// Inspection and history read the platform named; a run of the other platform runs it
+/// under its emulator; a save of it alone is that platform's microVM alone, and a push of
+/// it pushes its manifest alone; a removal of it, refused while a microVM made of it
+/// stays, takes it and its attestation alone, the image's name then naming this host's,
+/// which runs natively still; a load of the other platform alone from an archive of both
+/// keeps that one alone, which a run then runs emulated. A platform the image has not is
+/// refused by each, in the words a script reads.
+#[test]
+fn one_platforms_microvm_of_an_image_is_chosen_wherever_a_command_names_it() {
+    if cannot_run_vms() {
+        eprintln!("SKIP: this host cannot run VMs");
+        return;
+    }
+    let (ours, other) = if cfg!(target_arch = "aarch64") {
+        ("arm64", "amd64")
+    } else {
+        ("amd64", "arm64")
+    };
+    let (ours_platform, other_platform) = (format!("linux/{ours}"), format!("linux/{other}"));
+    // This host's platform: the test image. The other's: its CPU's program, and its history.
+    let (our_manifest, our_blobs) = test_image();
+    let program = common::printing_program(other, b"other-cpu\n");
+    let passwd = b"root:x:0:0:root:/root:/bin/sh\n";
+    let other_layer = common::tar(&[
+        ("bin", 0o755, 0, None),
+        ("bin/other", 0o755, 0, Some(&program[..])),
+        ("etc", 0o755, 0, None),
+        ("etc/passwd", 0o644, 0, Some(&passwd[..])),
+        ("tmp", 0o1777, 0, None),
+    ]);
+    let other_config = format!(
+        r#"{{"architecture":"{other}","os":"linux","config":{{"Entrypoint":["/bin/other"]}},"history":[{{"created_by":"the other CPU's step"}}],"rootfs":{{"type":"layers","diff_ids":["{}"]}}}}"#,
+        sha256_digest(&other_layer)
+    )
+    .into_bytes();
+    let other_manifest = format!(
+        r#"{{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{{"mediaType":"application/vnd.oci.image.config.v1+json","digest":"{}","size":{}}},"layers":[{{"mediaType":"application/vnd.oci.image.layer.v1.tar","digest":"{}","size":{}}}]}}"#,
+        sha256_digest(&other_config),
+        other_config.len(),
+        sha256_digest(&other_layer),
+        other_layer.len()
+    )
+    .into_bytes();
+    let statement = br#"{"_type":"https://in-toto.io/Statement/v0.1"}"#.to_vec();
+    let att_config = b"{}".to_vec();
+    let attestation = format!(
+        r#"{{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{{"mediaType":"application/vnd.oci.image.config.v1+json","digest":"{}","size":{}}},"layers":[{{"mediaType":"application/vnd.in-toto+json","digest":"{}","size":{}}}]}}"#,
+        sha256_digest(&att_config),
+        att_config.len(),
+        sha256_digest(&statement),
+        statement.len()
+    )
+    .into_bytes();
+    let (our_digest, other_digest) = (sha256_digest(&our_manifest), sha256_digest(&other_manifest));
+    let index = format!(
+        r#"{{"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[{{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"{our_digest}","size":{},"platform":{{"architecture":"{ours}","os":"linux"}}}},{{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"{other_digest}","size":{},"platform":{{"architecture":"{other}","os":"linux"}}}},{{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"{}","size":{},"annotations":{{"vnd.docker.reference.digest":"{other_digest}","vnd.docker.reference.type":"attestation-manifest"}},"platform":{{"architecture":"unknown","os":"unknown"}}}}]}}"#,
+        our_manifest.len(),
+        other_manifest.len(),
+        sha256_digest(&attestation),
+        attestation.len()
+    )
+    .into_bytes();
+    let (port, repos) = common::writable_registry();
+    {
+        let mut repos = repos.lock().unwrap();
+        let oci_manifest = "application/vnd.oci.image.manifest.v1+json".to_string();
+        let manifests = repos.manifests.entry("test/multi".into()).or_default();
+        let index_kind = "application/vnd.oci.image.index.v1+json".to_string();
+        manifests.insert("v1".into(), (index_kind.clone(), index.clone()));
+        manifests.insert(sha256_digest(&index), (index_kind, index.clone()));
+        for m in [&our_manifest, &other_manifest, &attestation] {
+            manifests.insert(sha256_digest(m), (oci_manifest.clone(), m.clone()));
+        }
+        let blobs = repos.blobs.entry("test/multi".into()).or_default();
+        for b in our_blobs
+            .iter()
+            .chain([&other_config, &other_layer, &att_config, &statement])
+        {
+            blobs.insert(sha256_digest(b), b.clone());
+        }
+    }
+    let home = TempDir::new("one-platform-home");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let shown = |r: &common::Run| format!("--- stdout\n{}\n--- stderr\n{}", r.stdout, r.stderr);
+    let image = format!("127.0.0.1:{port}/test/multi:v1");
+    let absent = |r: &common::Run, platform: &str| {
+        r.stderr.contains(&format!(
+            "image with reference {image} was found but does not provide the specified platform ({platform})"
+        ))
+    };
+    for platform in [None, Some(other_platform.as_str())] {
+        let mut args = vec!["pull", "-q"];
+        args.extend(platform.iter().flat_map(|p| ["--platform", p]));
+        args.push(&image);
+        let pulled = shards(&args);
+        assert_eq!(pulled.status, Some(0), "{}", shown(&pulled));
+    }
+    // Inspection: each platform's config, and its manifest as the descriptor; the ID the
+    // image's.
+    let id = |platform: &str| {
+        let r = shards(&[
+            "image",
+            "inspect",
+            "--platform",
+            platform,
+            "-f",
+            "{{.Id}} {{.Architecture}}\n{{json .Descriptor}}",
+            &image,
+        ]);
+        assert_eq!(r.status, Some(0), "{}", shown(&r));
+        let (facts, descriptor) = r.stdout.trim().split_once('\n').unwrap();
+        let descriptor: serde_json::Value = serde_json::from_str(descriptor).unwrap();
+        format!(
+            "{facts} {} {}",
+            descriptor["digest"].as_str().unwrap_or_default(),
+            descriptor["platform"]["architecture"]
+                .as_str()
+                .unwrap_or_default()
+        )
+    };
+    let index_id = sha256_digest(&index);
+    assert_eq!(
+        id(&ours_platform),
+        format!("{index_id} {ours} {our_digest} {ours}")
+    );
+    assert_eq!(
+        id(&other_platform),
+        format!("{index_id} {other} {other_digest} {other}")
+    );
+    let none = shards(&["image", "inspect", "--platform", "linux/s390x", &image]);
+    assert_eq!(none.status, Some(1), "{}", shown(&none));
+    assert!(absent(&none, "linux/s390x"), "{}", shown(&none));
+    // History: the platform named's.
+    let history = |platform: &str| {
+        let r = shards(&[
+            "history",
+            "--platform",
+            platform,
+            "--no-trunc",
+            "--format",
+            "{{.CreatedBy}}",
+            &image,
+        ]);
+        assert_eq!(r.status, Some(0), "{}", shown(&r));
+        r.stdout.trim().to_string()
+    };
+    assert_eq!(history(&other_platform), "the other CPU's step");
+    assert_eq!(history(&ours_platform), "");
+    // A run of each: the other's under its emulator, this host's natively.
+    let emulated = shards(&["run", "--rm", "--platform", &other_platform, &image]);
+    assert_eq!(emulated.status, Some(0), "{}", shown(&emulated));
+    assert_eq!(emulated.stdout, "other-cpu\n", "{}", shown(&emulated));
+    let native = shards(&["run", "--rm", &image, "exit", "7"]);
+    assert_eq!(native.status, Some(7), "{}", shown(&native));
+    // A save of the other platform alone: its microVM alone, named by its manifest.
+    let saves = TempDir::new("one-platform-saves");
+    let (one, both) = (saves.join("one.tar"), saves.join("both.tar"));
+    let saved = shards(&[
+        "save",
+        "--platform",
+        &other_platform,
+        "-o",
+        one.to_str().unwrap(),
+        &image,
+    ]);
+    assert_eq!(saved.status, Some(0), "{}", shown(&saved));
+    let files = tar_files(&std::fs::read(&one).unwrap());
+    let blob = |b: &[u8]| format!("blobs/sha256/{}", sha256_digest(b).trim_start_matches("sha256:"));
+    let names: Vec<&str> = files.iter().map(|(n, _)| n.as_str()).collect();
+    for b in [
+        &other_manifest,
+        &other_config,
+        &other_layer,
+        &attestation,
+        &statement,
+    ] {
+        assert!(names.contains(&blob(b).as_str()), "{names:?}");
+    }
+    for b in [&our_manifest, &index, &our_blobs[1]] {
+        assert!(!names.contains(&blob(b).as_str()), "{names:?}");
+    }
+    let saved_index: serde_json::Value =
+        serde_json::from_slice(&files.iter().find(|(n, _)| n == "index.json").unwrap().1).unwrap();
+    let entries = saved_index["manifests"].as_array().unwrap();
+    assert_eq!(entries.len(), 1, "{saved_index}");
+    assert_eq!(entries[0]["digest"], other_digest.as_str(), "{saved_index}");
+    assert_eq!(entries[0]["platform"]["architecture"], other, "{saved_index}");
+    let refused = shards(&[
+        "save",
+        "--platform",
+        "linux/s390x",
+        "-o",
+        one.to_str().unwrap(),
+        &image,
+    ]);
+    assert_eq!(refused.status, Some(1), "{}", shown(&refused));
+    assert!(absent(&refused, "linux/s390x"), "{}", shown(&refused));
+    let saved = shards(&["save", "-o", both.to_str().unwrap(), &image]);
+    assert_eq!(saved.status, Some(0), "{}", shown(&saved));
+    // A push of the other platform: its manifest alone, under the tag.
+    let pushed_as = format!("127.0.0.1:{port}/test/pushed:v1");
+    let tagged = shards(&["tag", &image, &pushed_as]);
+    assert_eq!(tagged.status, Some(0), "{}", shown(&tagged));
+    let pushed = shards(&["push", "--platform", &other_platform, &pushed_as]);
+    assert_eq!(pushed.status, Some(0), "{}", shown(&pushed));
+    assert!(
+        pushed.stdout.contains(&format!(
+            "v1: digest: {other_digest} size: {}",
+            other_manifest.len()
+        )),
+        "{}",
+        shown(&pushed)
+    );
+    {
+        let repos = repos.lock().unwrap();
+        assert_eq!(repos.manifests["test/pushed"]["v1"].1, other_manifest);
+        let blobs = &repos.blobs["test/pushed"];
+        assert!(blobs.contains_key(&sha256_digest(&other_layer)));
+        assert!(
+            !blobs.contains_key(&sha256_digest(&our_blobs[1])),
+            "this host's layer stays"
+        );
+    }
+    let untagged = shards(&["rmi", &pushed_as]);
+    assert_eq!(untagged.status, Some(0), "{}", shown(&untagged));
+    // A removal of the other platform: refused while a microVM made of it stays.
+    let created = shards(&[
+        "create",
+        "--name",
+        "of-other",
+        "--platform",
+        &other_platform,
+        &image,
+    ]);
+    assert_eq!(created.status, Some(0), "{}", shown(&created));
+    let held = shards(&["rmi", "--platform", &other_platform, &image]);
+    assert_eq!(held.status, Some(1), "{}", shown(&held));
+    assert!(
+        held.stderr.contains(&format!(
+            "cannot remove image {image}'s {other_platform}: microVM"
+        )) && held.stderr.contains("was made of it: -f removes it anyway"),
+        "{}",
+        shown(&held)
+    );
+    let removed = shards(&["rm", "of-other"]);
+    assert_eq!(removed.status, Some(0), "{}", shown(&removed));
+    let taken = shards(&["rmi", "--platform", &other_platform, &image]);
+    assert_eq!(taken.status, Some(0), "{}", shown(&taken));
+    assert_eq!(
+        taken.stdout,
+        format!("Deleted: {other_digest}\n"),
+        "{}",
+        shown(&taken)
+    );
+    let gone = shards(&["image", "inspect", "--platform", &other_platform, &image]);
+    assert!(absent(&gone, &other_platform), "{}", shown(&gone));
+    assert_eq!(
+        id(&ours_platform),
+        format!("{index_id} {ours} {our_digest} {ours}")
+    );
+    let native = shards(&["run", "--rm", "--pull", "never", &image, "exit", "7"]);
+    assert_eq!(native.status, Some(7), "{}", shown(&native));
+    let again = shards(&["rmi", "--platform", &other_platform, &image]);
+    assert_eq!(again.status, Some(1), "{}", shown(&again));
+    assert!(absent(&again, &other_platform), "{}", shown(&again));
+    // A load of the other platform alone, from the archive of both: that one alone here,
+    // which a run then runs emulated.
+    let removed = shards(&["rmi", &image]);
+    assert_eq!(removed.status, Some(0), "{}", shown(&removed));
+    let refused = shards(&["load", "--platform", "linux/s390x", "-i", both.to_str().unwrap()]);
+    assert_eq!(refused.status, Some(1), "{}", shown(&refused));
+    assert!(absent(&refused, "linux/s390x"), "{}", shown(&refused));
+    let loaded = shards(&[
+        "load",
+        "--platform",
+        &other_platform,
+        "-i",
+        both.to_str().unwrap(),
+    ]);
+    assert_eq!(loaded.status, Some(0), "{}", shown(&loaded));
+    assert_eq!(
+        id(&other_platform),
+        format!("{index_id} {other} {other_digest} {other}")
+    );
+    let mine = shards(&["image", "inspect", "--platform", &ours_platform, &image]);
+    assert!(absent(&mine, &ours_platform), "{}", shown(&mine));
+    let emulated = shards(&["run", "--rm", "--pull", "never", &image]);
+    assert_eq!(emulated.status, Some(0), "{}", shown(&emulated));
+    assert_eq!(emulated.stdout, "other-cpu\n", "{}", shown(&emulated));
 }

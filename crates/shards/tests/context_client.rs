@@ -322,11 +322,12 @@ fn a_command_whose_output_nobody_reads_is_hung_up_there() {
     assert_eq!(said, "", "nothing said of a reader gone");
 }
 
-/// `save -o`'s file is the client's, as Docker's CLI writes its own: the command there
-/// writes the archive to its stdout, and the client keeps it in its file once the command's
-/// exit says it is whole. A command that fails, a signal that ends it and a connection lost
-/// leave the file as it was, and nothing beside it, where Docker's atomic writer renames
-/// what it has into place unless a write failed (moby/sys atomicwriter, Close).
+/// `save -o`'s file is the client's, on the machine its user typed it on (D180 part 3a):
+/// the command there writes the archive to its stdout, and the client keeps it in its file
+/// once the command's exit says it is whole. A command that fails, a signal that ends it
+/// and a connection lost leave the file as it was, and nothing beside it, where Docker's
+/// atomic writer renames what it has into place unless a write failed (moby/sys
+/// atomicwriter, Close).
 #[test]
 fn a_file_the_command_writes_is_the_clients_whole_or_not_at_all() {
     let laptop = TempDir::new("cc-save");
@@ -481,8 +482,8 @@ fn a_client_ended_before_its_machine_answers_leaves_no_file() {
     assert!(names(&files).is_empty(), "{:?}", names(&files));
 }
 
-/// `load -i FILE` and `import FILE` read the client's file, as Docker's CLI reads its own:
-/// the command there reads its stdin, which is the file, and a file not here is refused
+/// `load -i FILE` and `import FILE` read the client's file, on its own machine (D180 part
+/// 3a): the command there reads its stdin, which is the file, and a file not here is refused
 /// here, nothing sent.
 #[test]
 fn a_file_the_command_reads_is_the_clients() {

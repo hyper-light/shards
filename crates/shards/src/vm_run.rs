@@ -18,7 +18,7 @@ use shards_vmm::vm::{
 use crate::spec::Options;
 use crate::terminal::RawTerminal;
 
-const RUN_USAGE: &str = "usage: shards run vm --kernel PATH [--initrd PATH | --init PATH] [--cmdline STR] [--cpus N] [--memory MIB] [--memory-max MIB] [--disk PATH[:ro]]... [--pmem PATH]... [--layer PATH] [--vsock PATH] [--nested] [--gpu] [--reporting] [--pci-test | --pci-tests SS.F,...] [--vfio NAME|NODE]... [--vfio-iommu NAME|NODE]... [--no-console] [--snapshot-dir DIR [--snapshot-then stop|resume]]
+const RUN_USAGE: &str = "usage: shards run vm --kernel PATH [--initrd PATH | --init PATH] [--cmdline STR] [--cpus N] [--memory MIB] [--memory-max MIB] [--disk PATH[:ro]]... [--pmem PATH]... [--layer PATH] [--vsock PATH] [--nested] [--gpu] [--reporting] [--pci-test | --pci-tests SS.F,...] [--pci-slots N [--pci-slots-iommu]] [--vfio NAME|NODE]... [--vfio-iommu NAME|NODE]... [--no-console] [--snapshot-dir DIR [--snapshot-then stop|resume]]
        shards run vm --kernel PATH --init SHARDS-INIT --rootfs IMAGE [OPTIONS] [WORKLOAD OPTIONS] -- COMMAND [ARG...]
        shards run vm --kernel PATH --init SHARDS-INIT --rootfs IMAGE --snapshot-dir DIR [OPTIONS]
   --pmem: a read-only virtio-pmem device backed by PATH: /dev/pmem0, pmem1, ... in order.
@@ -53,6 +53,14 @@ const RUN_USAGE: &str = "usage: shards run vm --kernel PATH [--initrd PATH | --i
   --pci-tests: test functions at each of these places on bus 0, as 01.0,02.0,02.1: a
                device of several a multi-function device, its function 0 alone with an
                INTx pin, and each device given its function 0.
+  --pci-slots: N places on its PCI bus kept free for disks, shared directories and host
+               functions plugged into it as it runs, which its guest finds as its init
+               rescans the bus. A snapshot keeps them, empty.
+  --pci-slots-iommu: the slots behind the guest's own IOMMU (virtio-iommu), each
+                     translated while a function is plugged there: what a host's
+                     function plugged in as it runs needs for the guest's own VFIO to
+                     give it to a process. The guest's kernel needs VIRTIO_IOMMU. Not
+                     with --snapshot-dir.
   --vfio: the host's PCI function NAME (as 0000:01:00.0), passed through to the guest
           on its PCI bus: on Linux, bound to vfio-pci, as every other function in its
           IOMMU group must be. Or its VFIO device node (/dev/vfio/devices/vfioN), taken
@@ -430,6 +438,13 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
             "--gpu" => cfg.gpu = true,
             "--pci-test" => cfg.pci_test = vec![(vm::TEST_DEVICE, 0)],
             "--pci-tests" => cfg.pci_test = pci_tests(&text(value("--pci-tests")?)?)?,
+            // Slots of its PCI bus kept for devices plugged into it as it runs (D214).
+            "--pci-slots" => {
+                cfg.pci_slots = text(value("--pci-slots")?)?
+                    .parse()
+                    .map_err(|e| format!("--pci-slots: {e}"))?
+            }
+            "--pci-slots-iommu" => cfg.pci_slots_iommu = true,
             "--vfio" => cfg.vfio.push(vfio(&text(value("--vfio")?)?)?),
             "--vfio-iommu" => cfg.vfio.push(vm::Vfio {
                 iommu: true,
@@ -459,6 +474,17 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
         }
         if cfg.vfio.iter().any(|f| !f.iommu) && (memory_max.is_some() || cfg.reporting) {
             return Err("--vfio with --memory-max or --reporting: the device's DMA reaches all of guest RAM through mappings the host holds pinned, which neither may take away; behind the guest's IOMMU (--vfio-iommu) it reaches what the guest maps alone".into());
+        }
+    }
+    if cfg.pci_slots_iommu {
+        if cfg.pci_slots == 0 {
+            return Err("--pci-slots-iommu without --pci-slots: no slots to put behind the IOMMU".into());
+        }
+        if common.snapshot_dir.is_some() {
+            return Err(
+                "--pci-slots-iommu with --snapshot-dir: a machine's IOMMU's domains are not snapshotted"
+                    .into(),
+            );
         }
     }
     if cfg.nested && common.snapshot_dir.is_some() {
@@ -668,6 +694,14 @@ pub fn save(save: vm::Save) -> Result<vm::Saved, String> {
     RUNNING.get().ok_or("the microVM has not started")?.save(save)
 }
 
+/// Copies this VM's memory for a live move into `out` (D176 part 7, `PRECOPY`).
+pub fn precopy(out: std::fs::File, most: u32, enough: u64) -> Result<vm::Precopied, String> {
+    RUNNING
+        .get()
+        .ok_or("the microVM has not started")?
+        .precopy(out, most, enough)
+}
+
 /// Sets the most memory this VM's guest may plug past what it booted with, its run's
 /// limit updated (`PLUG`, D148).
 pub fn set_plug_most(bytes: u64) -> Result<(), String> {
@@ -675,6 +709,112 @@ pub fn set_plug_most(bytes: u64) -> Result<(), String> {
         .get()
         .ok_or("the microVM has not started")?
         .set_plug_most(bytes)
+}
+
+/// The disks plugged into this VM as it runs (D214), by their place on its PCI bus: what
+/// grows each.
+static PLUGGED_DISKS: std::sync::Mutex<Vec<(u8, shards_vmm::devices::virtio::block::DiskSize)>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// What its daemon asks of this VM's devices (`DEVICE`, D214): `payload` the step and what
+/// it takes, `fds` its file or its share's connection. The answer's text, or why not.
+pub fn device(payload: &[u8], fds: Vec<shards_ipc::fd::OwnedFd>) -> Result<String, String> {
+    use shards_ipc::device;
+    let handle = RUNNING.get().ok_or("the microVM has not started")?;
+    let (&step, rest) = payload.split_first().ok_or("a device step of nothing")?;
+    let placed = |p: &vm::Plugged| format!("{} {}", p.devfn, p.address);
+    let disks = || {
+        PLUGGED_DISKS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    };
+    match step {
+        device::DISK => {
+            let (&flags, serial) = rest.split_first().ok_or("a disk of no flags")?;
+            let file = fds.into_iter().next().ok_or("a disk of no file")?;
+            let serial = std::str::from_utf8(serial).map_err(|_| "a serial that is not UTF-8")?;
+            let plugged =
+                handle.plug_disk(std::fs::File::from(file), flags & device::READ_ONLY != 0, serial)?;
+            if let Some(size) = &plugged.size {
+                disks().push((plugged.devfn, size.clone()));
+            }
+            Ok(placed(&plugged))
+        }
+        device::SHARE => {
+            let tag = std::str::from_utf8(rest).map_err(|_| "a tag that is not UTF-8")?;
+            let conn = fds.into_iter().next().ok_or("a share of no server")?;
+            // On Windows its stream itself, a duplex pipe whose other end its share
+            // process holds (D197), as a run's shares are given.
+            #[cfg(unix)]
+            let stream = std::os::unix::net::UnixStream::from(conn);
+            #[cfg(windows)]
+            let stream = shards_vmm::platform::PipeStream::from_handle(conn)
+                .map_err(|e| format!("its share's stream: {e}"))?;
+            let slot: shards_vmm::devices::virtio::fs::Share = std::sync::Arc::default();
+            slot.attach(stream)?;
+            Ok(placed(&handle.plug_share(tag, slot)?))
+        }
+        device::UNPLUG => {
+            let &devfn = rest.first().ok_or("an unplug of no place")?;
+            handle.unplug(devfn)?;
+            disks().retain(|(d, _)| *d != devfn);
+            Ok(String::new())
+        }
+        device::FUNCTION => function(handle, rest, fds).map(|p| placed(&p)),
+        device::GROW => {
+            let &devfn = rest.first().ok_or("a growth of no place")?;
+            let size = disks()
+                .iter()
+                .find(|(d, _)| *d == devfn)
+                .map(|(_, s)| s.clone())
+                .ok_or("no disk is plugged there")?;
+            Ok(size.grow()?.to_string())
+        }
+        other => Err(format!(
+            "device step {other}, which this VM process does not take"
+        )),
+    }
+}
+
+/// A host's function plugged into this VM behind its IOMMU (`device::FUNCTION`, D214),
+/// opened by its daemon, as a confined VM process opens no device: `step` its flags and
+/// its host's name and group's node, `fds` VFIO's container and its group, or iommufd and
+/// its device node. Once one is, the VM holds a host's device, which its run's client
+/// waits to be free ([`crate::warm::HOST_DEVICES`]).
+#[cfg(target_os = "linux")]
+fn function(
+    handle: &vm::Handle,
+    step: &[u8],
+    fds: Vec<shards_ipc::fd::OwnedFd>,
+) -> Result<vm::Plugged, String> {
+    let (&flags, names) = step.split_first().ok_or("a function of no flags")?;
+    let names = std::str::from_utf8(names).map_err(|_| "a function's name that is not UTF-8")?;
+    let (name, node) = names.split_once('\0').ok_or("a function of no group")?;
+    let mut fds = fds.into_iter();
+    let (Some(first), Some(second), None) = (fds.next(), fds.next(), fds.next()) else {
+        return Err("a function without its two files".into());
+    };
+    let by_node = flags & shards_ipc::device::BY_NODE != 0;
+    let f = vm::Vfio {
+        name: name.to_string(),
+        group: PathBuf::from(if by_node { "" } else { node }),
+        noiommu: false,
+        bars64: Vec::new(),
+        iommu: true,
+        cdev: by_node.then(|| PathBuf::from(node)),
+    };
+    let plugged = handle.plug_vfio_files(&f, vm::VfioFiles { first, second })?;
+    crate::warm::HOST_DEVICES.store(true, std::sync::atomic::Ordering::Relaxed);
+    Ok(plugged)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn function(
+    _handle: &vm::Handle,
+    _step: &[u8],
+    _fds: Vec<shards_ipc::fd::OwnedFd>,
+) -> Result<vm::Plugged, String> {
+    Err(vm::passthrough_refused())
 }
 
 /// Holds this VM's vCPUs together to `cpus` CPUs' time of the host's, its run's CPU
@@ -1337,6 +1477,7 @@ fn serve_workload(
                                 log: None,
                                 started: Some(&started),
                                 layer_in: None,
+                                layer_over: false,
                                 layer_out: None,
                                 told: None,
                                 saved: None,
@@ -1471,6 +1612,20 @@ fn serve_workload(
                             // command starts.
                             // A run restored from a save of it maps back a copy of the swap its
                             // save kept, which its guest swaps to already (D176).
+                            // Its container's layer kept in its file (D190), readied to go
+                            // under its layer device before its guest hears of the run, which
+                            // lets go of its template's layer and asks for it
+                            // (`run::kind::OVER`).
+                            let (layer_in, layer_over) = match request.layer_in {
+                                Some(file) if request.layer_over => {
+                                    stopper
+                                        .stage_layer(file)
+                                        .map_err(|e| format!("its writable layer: {e}"))
+                                        .inspect_err(|e| report(e))?;
+                                    (None, true)
+                                }
+                                layer_in => (layer_in, false),
+                            };
                             let mut spec = request.spec;
                             match request.swap {
                                 Some(file) if resumed => stopper
@@ -1521,7 +1676,8 @@ fn serve_workload(
                                 detached: request.detached,
                                 log: request.log,
                                 started: Some(&started),
-                                layer_in: request.layer_in,
+                                layer_in,
+                                layer_over,
                                 layer_out: request.layer_out,
                                 told: Some(&finish),
                                 saved: Some(&saved),
@@ -2367,7 +2523,7 @@ fn granted(paths: &crate::confine::Paths) -> Result<(), String> {
         return Err("a directory of sockets cannot be granted to a confined VM process".into());
     }
     if !paths.devices.is_empty() {
-        return Err(vm::NO_PASSTHROUGH.into());
+        return Err(vm::passthrough_refused());
     }
     let wanted: Vec<crate::grant::Wanted> = paths
         .read

@@ -97,7 +97,7 @@ pub fn driver(run: &Run) -> &str {
     }
 }
 
-/// `--log-opt`'s, as docker/cli makes them a map (opts.ConvertKVStringsToMap): `KEY=VALUE`,
+/// `--log-opt`'s, a map as the CLI reads them (opts.ConvertKVStringsToMap, D161): `KEY=VALUE`,
 /// or `KEY` alone for an empty value; the last of a key's.
 pub fn options(run: &Run) -> BTreeMap<String, String> {
     run.log_opts
@@ -338,7 +338,8 @@ pub struct Details {
 }
 
 impl Details {
-    /// Its entrypoint and its arguments, as moby's logger.Info.Command joins them.
+    /// Its entrypoint and its arguments, joined as drivers' `command` fields carry them
+    /// (logger.Info.Command, D161).
     pub fn command(&self) -> String {
         std::iter::once(self.entrypoint.as_str())
             .chain(self.args.iter().map(String::as_str))
@@ -377,8 +378,8 @@ pub struct Info<'a> {
 }
 
 /// The attributes `logs --details` shows before each of `run`'s lines, sorted by name as
-/// Go's encoding of a map sorts them: [`extra`]'s, and its tag (`tag`), as moby's
-/// json-file keeps them (loggerutils.ParseLogTag).
+/// Go's encoding of a map sorts them: [`extra`]'s, and its tag (`tag`), as scripts read
+/// them (loggerutils.ParseLogTag, D161).
 pub fn attributes(run: &Run, info: &Info<'_>) -> Result<BTreeMap<String, String>, String> {
     let opts = options(run);
     let mut extra = extra(run, info)?;
@@ -392,8 +393,9 @@ pub fn attributes(run: &Run, info: &Info<'_>) -> Result<BTreeMap<String, String>
 }
 
 /// The attributes a driver that sends `run`'s log elsewhere sends with each line: its
-/// labels' (`labels`, `labels-regex`) and its environment's (`env`, `env-regex`), as moby's
-/// logger.Info.ExtraAttributes picks them; its tag is each driver's own field.
+/// labels' (`labels`, `labels-regex`) and its environment's (`env`, `env-regex`), picked as
+/// receivers expect them (logger.Info.ExtraAttributes, D161); its tag is each driver's own
+/// field.
 pub fn extra(run: &Run, info: &Info<'_>) -> Result<BTreeMap<String, String>, String> {
     let opts = options(run);
     let mut extra = BTreeMap::new();
@@ -557,7 +559,7 @@ mod tests {
     #[test]
     fn a_runs_log_is_kept_as_its_options_say() {
         let kept = |driver: &str, opts: &[&str]| kept(&run(driver, opts), DEFAULT);
-        // Compressed once rotated but where json-file is asked for, as Docker's is.
+        // Compressed once rotated, unless json-file is asked for (D162).
         assert_eq!(kept("", &[]), Ok(Some(kept_as(20 << 20, 5, true, None))));
         assert_eq!(kept("none", &[]), Ok(None));
         // Decimal units, as go-units' FromHumanSize reads them.

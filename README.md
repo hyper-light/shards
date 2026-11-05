@@ -91,8 +91,8 @@ are inside it; it writes them to your cache directory the first time it needs th
 - **macOS**: 15 or later, on Apple silicon.
 - **Linux**: x86_64 or arm64, with access to `/dev/kvm` (usually the `kvm` group). Add
   `--target x86_64-unknown-linux-musl` (or `aarch64-unknown-linux-musl`) for a static binary.
-- **Windows**: x86_64, with the Windows Hypervisor Platform, boots microVMs directly
-  (`shards run vm --kernel`); images and the daemon are not there yet.
+- **Windows**: x86_64, with the Windows Hypervisor Platform turned on. On arm64 Windows,
+  shards runs no microVMs yet.
 
 ## Quickstart
 
@@ -134,6 +134,9 @@ $ export DOCKER_HOST="unix://${XDG_DATA_HOME:-$HOME/.local/share}/shards/engine.
 $ docker run --rm alpine echo hello
 hello
 ```
+
+On Windows it is a named pipe only your user can open, named afresh by each daemon:
+`shards list contexts` shows it as `DOCKER_HOST` takes it (`npipe:////./pipe/...`).
 
 It is there while shards' daemon runs, which any `shards` command starts. The daemon stays
 while a program keeps a connection open or asks something, and stops after
@@ -194,7 +197,15 @@ shows what they use. Each microVM's memory, its network's process included, is c
 there from its first page, warm starts too, and only the first run under a slice asks
 systemd for anything. It works from an ssh login as from a desktop session, with nothing to
 set up. A container that shares another's network runs in that one's microVM, so it names
-that one's slice or none. A path in place of a slice is refused.
+that one's slice or none.
+
+Where no systemd manager of yours runs (a container, or a host on OpenRC, runit or s6) but
+a cgroup has been delegated to you, name it by its path, as `/proc/self/cgroup` shows one:
+`shards run vm --cgroup-parent /agents IMAGE`. Its microVMs are made in a cgroup of
+their own inside it, counted there from their first page, and held to whatever limits you
+write to `/sys/fs/cgroup/agents`. shards' daemon must be running inside the same delegated
+tree, as the kernel lets you move your processes only within it; a path you may not use is
+refused with why before anything starts.
 
 On macOS, which has no such group, `shards run vm --cgroup-parent agents IMAGE` puts a
 microVM in a group shards keeps for you, a folder of its home, `groups/agents`, with the
@@ -202,6 +213,11 @@ files a Linux cgroup has. Write `4G` to its `memory.high` and its microVMs are h
 together: past it, each gives back what it holds cold. Past its `memory.max`, with nothing
 more to give back, the one that holds the most is stopped, as a cgroup's out-of-memory
 killer stops one, and `inspect` says so. `memory.current` shows what they hold.
+
+On Windows the same folder's microVMs run in one job object of the group's, whose memory
+limit is its `memory.max`: together they never commit past it. On both, `cpu.max` (a quota
+and its period in microseconds, as a cgroup's) holds the group's microVMs to that much CPU
+together.
 
 ### Boot a kernel yourself
 
@@ -279,20 +295,28 @@ A running microVM made from an image is saved whole with `shards save vm NAME`: 
 every process, terminal and open file in it, as they are. `shards restore vm NAME` resumes
 it where it was, at the same address on its network.
 
+`shards move vm NAME CONTEXT` moves a running microVM to the machine a context reaches,
+saved here and resumed there where it was, its image, files and volumes with it; with
+`--live` it keeps running while its memory is copied, and stops only for the last pass.
+
 > [!NOTE]
-> Snapshots work on macOS and on x86_64 Linux.
+> Snapshots work on macOS, on x86_64 and arm64 Linux, and on x86_64 Windows. Live moves
+> work on macOS and x86_64 Linux.
 
 ## Where things stand
 
-| | Today (2026-10-16) |
+| | Today (2026-11-04) |
 |---|---|
-| MicroVMs on Apple silicon Macs, and on x86_64 and arm64 Linux | Work: booted directly and made from images; on macOS and x86_64 Linux, repeated runs are served from warm copies |
-| MicroVMs on x86_64 Windows | Booted directly (`shards run vm --kernel`); images and the daemon not yet |
-| Snapshots, and saving a running microVM whole | macOS and x86_64 Linux |
+| MicroVMs on Apple silicon Macs, x86_64 and arm64 Linux, and x86_64 Windows | Work: booted directly and made from images, repeated runs served from warm copies |
+| MicroVMs on arm64 Windows | Not yet: no hypervisor backend |
+| Snapshots, and saving a running microVM whole | Every host above |
+| Moving a running microVM to another machine | Saved and resumed there, on every host; live on macOS and x86_64 Linux |
+| Disks, folders and volumes plugged into a running microVM, disks grown | macOS and Linux; a host's PCI device plugged in on Linux, tested nested with a test device |
 | Images, Dockerfiles and Agentfiles | Pulled, pushed and built, every `RUN` step in a microVM of the build's own, for other CPUs too under emulation |
 | Many agents in one microVM, each in its own domain | Works, from an Agentfile: each agent's own processes, files, networks and devices, and nothing it isn't granted |
-| Networks, volumes and devices | Work: a microVM reaches only what you give it, networks deny by default |
-| GPUs | macOS, Linux and Windows (x86_64): your machine's GPU, for Vulkan in the microVM (`--gpus all`), tested on Apple's, NVIDIA's and AMD's. Linux also passes a host's PCI device through to a microVM (VFIO), tested with a test device |
+| Networks, volumes and devices | Work: a microVM reaches only what you give it, networks deny by default, over IPv4 and IPv6 |
+| GPUs | macOS, Linux (glibc and musl) and Windows (x86_64): your machine's GPU, for Vulkan in the microVM (`--gpus all`), tested on Apple's, NVIDIA's, AMD's and Intel's |
+| PCI passthrough | Linux passes a host's function through with VFIO, tested with a test device. macOS's Hypervisor.framework provides no device assignment API. The Windows hosts tested here refuse device assignment and shards reports their answers; DDA on a Windows Server host that permits it remains unimplemented and needs a real hardware E2E (D154) |
 | `docker` command lines, Compose and the Docker Engine API | Work, through shards' Engine API file |
 | Running shards' commands on another machine | Works: `shards create context`, over QUIC |
 
@@ -313,11 +337,15 @@ Every command is an action and what it acts on: `shards ACTION THING [ARG...]`.
 | `shards exec vm NAME COMMAND` | Run a command in a running microVM |
 | `shards stop vm NAME` · `shards kill vm NAME` | Stop a microVM: its stop signal, then SIGKILL once its grace is up; or kill it |
 | `shards pause vm NAME` · `shards unpause vm NAME` | Freeze a microVM where it is, every vCPU and device, at no CPU; let it run on |
+| `shards plug disk NAME FILE:PATH[:ro] [--size SIZE]` · `shards plug volume NAME SOURCE:PATH[:ro]` · `shards unplug disk\|volume NAME PATH` | Plug a disk, a folder of yours or a volume into a running microVM, mounted at `PATH`; `--size` makes `FILE` an empty ext4 disk where it isn't there. Unplug it once nothing there uses it |
+| `shards grow disk NAME PATH SIZE` | Grow a plugged disk, and its file system, as the microVM runs |
+| `shards plug function NAME FUNCTION` · `shards unplug function NAME FUNCTION` | On Linux, give a running microVM's program one of your PCI devices (`0000:01:00.0`, bound to `vfio-pci`), through its IOMMU; the microVM is started with `--device /dev/vfio/vfio` |
+| `shards move vm NAME CONTEXT` | Move a running microVM to the machine a context reaches, and resume it there where it was; `--live` keeps it running while it moves |
 | `shards save vm NAME [SNAPSHOT]` | Save a running microVM whole, its memory, processes and devices as they are, then stop it (or `--leave-running`). Its volumes come with it |
 | `shards restore vm NAME [SNAPSHOT]` | Resume a saved microVM exactly where it was, from its newest snapshot unless you name one |
 | `shards list vm` · `shards list image` · `shards list volume` | List microVMs, images or volumes |
 | `shards list snapshots NAME` · `shards remove snapshot NAME SNAPSHOT...` | List a microVM's snapshots, newest first, with when each was saved and the disk it takes; remove them |
-| `shards inspect vm NAME` · `shards inspect image NAME` | What a microVM runs, or an image's documents |
+| `shards inspect vm NAME` · `shards inspect image NAME` | What a microVM runs, or an image's documents, `--platform`'s for an image of several |
 | `shards inspect disk` · `shards inspect system` · `shards inspect guest` | What shards takes on disk; what it is, holds and runs on; the kernel and shards-init runs boot |
 | `shards read logs NAME` · `shards watch logs NAME` | What a microVM's command printed; what it prints, as it prints it |
 | `shards read processes NAME` · `shards watch processes NAME` | The processes a microVM's agents started and ended, each whole, as the kernel saw them; as they come |
@@ -328,13 +356,13 @@ Every command is an action and what it acts on: `shards ACTION THING [ARG...]`.
 | `shards rename vm NAME NEW_NAME` | Name a microVM again |
 | `shards remove vm NAME` · `shards prune vm` | Remove a microVM, and its snapshots with it; remove every stopped one |
 | `shards create volume [NAME]` · `shards remove volume NAME` · `shards prune volume` | Make a volume microVMs mount; remove one no microVM mounts; remove those no microVM mounts |
-| `shards pull image NAME` · `shards push image NAME` | Download an image and make it a microVM, for this machine's CPU or `--platform`'s; upload one. Every layer is checked against its digests before it is kept |
+| `shards pull image NAME` · `shards push image NAME` | Download an image and make it a microVM, for this machine's CPU or `--platform`'s; upload one, or `--platform`'s microVM of it alone. Every layer is checked against its digests before it is kept |
 | `shards build image PATH` | Build an image from the Dockerfile or Agentfile in `PATH`, its `RUN` steps in a microVM of the build's own. `--platform linux/amd64,linux/arm64` builds for both, a step for another CPU under that CPU's emulator inside the build's microVM |
 | `shards build agent DIR` · `shards push agent NAME` · `shards sign agent NAME` | Build an agent (or a harness or an MCP server) as an OCI artifact, push it, and sign it with your key or your identity |
-| `shards read history IMAGE` · `shards tag image SOURCE TARGET` | How an image's layers were made; name an image again |
-| `shards save image NAME` · `shards load image` · `shards export vm NAME` | Images to a tar archive and back; a microVM's files as a tar archive |
+| `shards read history IMAGE` · `shards tag image SOURCE TARGET` | How an image's layers were made, `--platform`'s for an image of several; name an image again |
+| `shards save image NAME` · `shards load image` · `shards export vm NAME` | Images to a tar archive and back, every platform of each or `--platform`'s alone; a microVM's files as a tar archive |
 | `shards commit vm NAME [IMAGE]` | Make an image of what a microVM changed |
-| `shards remove image NAME` · `shards prune image` | Remove an image with its stopped microVMs; remove unused images |
+| `shards remove image NAME` · `shards prune image` | Remove an image with its stopped microVMs, or `--platform`'s microVM of it alone, freeing the disk it took; remove unused images |
 | `shards login registry [SERVER]` · `shards logout registry [SERVER]` | Log in to a registry, or forget a login: kept where `docker login` keeps one, so both find it |
 | `shards search image TERM` | Find images on Docker Hub, on quay.io (`quay.io/TERM`), or in any registry's catalog (`HOST/TERM`); on a terminal, whether each runs on this machine, and what its first pull downloads |
 | `shards run daemon` · `shards stop daemon` | The daemon that serves runs from warm microVMs, which the first run starts; end it and its runs. It keeps up to `SHARDS_POOL` microVMs ready for each image you run (default 2), and none once the image has gone unused for `SHARDS_POOL_KEEP` seconds (default 600) |
@@ -443,6 +471,7 @@ The design and the evidence behind each decision are in
 |---|---|
 | [Architecture](docs/design/architecture.md) | The design, each decision with its evidence, and the plan |
 | [Benchmarks](docs/benchmarks.md) | Every measurement, with its command, machine and revision |
+| [Release notes](docs/releases/) | What each release brings |
 | [Research](docs/research/) | The papers, specifications and measurements behind the design |
 | [Brand](docs/assets/brand/README.md) | The logo |
 

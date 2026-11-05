@@ -843,7 +843,7 @@ impl Stream {
     }
 
     /// A client of the pipe `name` (`\\.\pipe\...`), as Docker's clients reach their engine's
-    /// ([`Listener`]): its bytes alone, no handle either way. Where each of its instances is
+    /// (D195, [`Listener`]): its bytes alone, no handle either way. Where each of its instances is
     /// taken, it waits for one to be free, as a Unix socket's connect waits out a listener's
     /// full backlog: WaitNamedPipe ends as one is, and as the last goes (PM M348).
     pub fn connect(name: &str) -> io::Result<Stream> {
@@ -2182,7 +2182,7 @@ mod tests {
     }
 
     /// Each side of a listener's client ends its writes as Docker's clients and engine do
-    /// on a pipe (go-winio's `CloseWrite`), and its peer reads that end, and only that,
+    /// on a pipe (D195, go-winio's `CloseWrite`), and its peer reads that end, and only that,
     /// past what came before it, every read after it the end too, while it still writes,
     /// its answer read whole on the other side: a client's end of stdin, an attach's end of
     /// output. A client connects while every instance is taken, once one is free.

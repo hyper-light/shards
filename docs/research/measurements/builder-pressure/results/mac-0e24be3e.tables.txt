@@ -1,0 +1,56 @@
+== /Users/adalundhe/builder-pressure/run/out.txt
+host Adas-Mac-Studio.local; macOS 26.4; kernel 25.4.0; arm64; Apple M3 Ultra; shards 0e24be3e; memory 98304 MiB; cpus 32
+builds rust,npm,apt; rounds 5; home /Users/adalundhe/builder-pressure/home; bases each Dockerfiles own
+-- apt free: rounds past the caches' 5, failed 0
+   build time        n 5 p50 14.5 p90 14.9 p99 14.9 max 14.9 s
+-- apt held: rounds past the caches' 5, failed 0
+   build time        n 5 p50 14.9 p90 24.3 p99 24.3 max 24.3 s
+   answers           40, unanswered 0
+   answered in       n 40 p50 2 p90 17 p99 27 max 27 ms
+   freed an answer   n 40 p50 0.2 p90 26.3 p99 39.3 max 39.3 MiB
+   unplug asked      n 40 p50 0.0 p90 640.0 p99 1408.0 max 1408.0 MiB
+   unplug done       n 35 p50 0.0 p90 640.0 p99 1152.0 max 1152.0 MiB
+   freed a build     n 5 p50 70.4 p90 89.0 p99 89.0 max 89.0 MiB
+   step #1   free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s
+   step #2   free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s
+   step #3   free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s
+   step #4   free n 5 p50 0.2 p90 0.2 p99 0.2 max 0.2 s; held n 5 p50 0.2 p90 0.2 p99 0.2 max 0.2 s
+   step #5   free n 5 p50 0.2 p90 0.2 p99 0.2 max 0.2 s; held n 5 p50 0.2 p90 0.2 p99 0.2 max 0.2 s
+   step #6   free n 5 p50 7.5 p90 7.9 p99 7.9 max 7.9 s; held n 5 p50 7.9 p90 17.3 p99 17.3 max 17.3 s
+   step #7   free n 5 p50 0.2 p90 0.2 p99 0.2 max 0.2 s; held n 5 p50 0.2 p90 0.2 p99 0.2 max 0.2 s
+   rule: held slower than free beyond the rounds' spread: no (held's fastest 14.6 s, free's slowest 14.9 s)
+-- npm free: rounds past the caches' 5, failed 0
+   build time        n 5 p50 4.5 p90 5.2 p99 5.2 max 5.2 s
+-- npm held: rounds past the caches' 5, failed 0
+   build time        n 5 p50 4.6 p90 4.7 p99 4.7 max 4.7 s
+   answers           5, unanswered 0
+   answered in       n 5 p50 2 p90 11 p99 11 max 11 ms
+   freed an answer   n 5 p50 24.1 p90 24.6 p99 24.6 max 24.6 MiB
+   unplug asked      n 5 p50 128.0 p90 128.0 p99 128.0 max 128.0 MiB
+   unplug done       n 2 p50 128.0 p90 128.0 p99 128.0 max 128.0 MiB
+   freed a build     n 5 p50 24.1 p90 24.6 p99 24.6 max 24.6 MiB
+   step #1   free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s
+   step #2   free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s
+   step #3   free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s
+   step #4   free n 5 p50 0.3 p90 0.3 p99 0.3 max 0.3 s; held n 5 p50 0.3 p90 0.3 p99 0.3 max 0.3 s
+   step #6   free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s
+   step #8   free n 5 p50 2.1 p90 2.7 p99 2.7 max 2.7 s; held n 5 p50 2.1 p90 2.2 p99 2.2 max 2.2 s
+   step #9   free n 5 p50 0.1 p90 0.1 p99 0.1 max 0.1 s; held n 5 p50 0.1 p90 0.1 p99 0.1 max 0.1 s
+   rule: held slower than free beyond the rounds' spread: no (held's fastest 4.5 s, free's slowest 5.2 s)
+-- rust free: rounds past the caches' 5, failed 0
+   build time        n 5 p50 4.7 p90 5.1 p99 5.1 max 5.1 s
+-- rust held: rounds past the caches' 5, failed 0
+   build time        n 5 p50 4.4 p90 5.4 p99 5.4 max 5.4 s
+   answers           5, unanswered 0
+   answered in       n 5 p50 4 p90 14 p99 14 max 14 ms
+   freed an answer   n 5 p50 2.8 p90 3.1 p99 3.1 max 3.1 MiB
+   unplug asked      n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 MiB
+   unplug done       n 1 p50 0.0 p90 0.0 p99 0.0 max 0.0 MiB
+   freed a build     n 5 p50 2.8 p90 3.1 p99 3.1 max 3.1 MiB
+   step #1   free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s
+   step #2   free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s
+   step #3   free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s
+   step #4   free n 5 p50 1.4 p90 1.4 p99 1.4 max 1.4 s; held n 5 p50 1.4 p90 1.4 p99 1.4 max 1.4 s
+   step #5   free n 5 p50 2.7 p90 3.1 p99 3.1 max 3.1 s; held n 5 p50 2.4 p90 3.3 p99 3.3 max 3.3 s
+   step #6   free n 5 p50 0.2 p90 0.2 p99 0.2 max 0.2 s; held n 5 p50 0.2 p90 0.2 p99 0.2 max 0.2 s
+   rule: held slower than free beyond the rounds' spread: no (held's fastest 4.0 s, free's slowest 5.1 s)

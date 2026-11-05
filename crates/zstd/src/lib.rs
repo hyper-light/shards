@@ -181,7 +181,8 @@ impl<W: Write> Write for Writer<W> {
     }
 }
 
-/// `input` compressed as BuildKit's writer compresses a layer: written whole and closed.
+/// `input` compressed as BuildKit v0.28.1's writer compresses a layer (util/compression/zstd.go):
+/// written whole and closed.
 pub fn compress(level: Option<i32>, input: &[u8]) -> io::Result<Vec<u8>> {
     let mut w = Writer::new(Vec::new(), level);
     w.write_all(input)?;

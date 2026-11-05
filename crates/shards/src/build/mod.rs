@@ -50,7 +50,9 @@ pub(crate) mod http;
 mod live;
 pub(crate) mod multi;
 mod output;
-mod policy;
+#[cfg(target_os = "linux")]
+pub(crate) mod outside;
+pub(crate) mod policy;
 pub(crate) use policy::gitobject;
 pub(crate) mod policy_command;
 mod provenance;
@@ -2764,6 +2766,10 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
     let store = crate::pull::store(&home)?;
     let _lease = store.lease().map_err(|e| e.to_string())?;
     let limits = crate::pull::limits()?;
+    // Held to a budget, the build's own writes go outside it, its disk's pace not theirs
+    // (D188, PM M442).
+    #[cfg(target_os = "linux")]
+    outside::begin();
     let mut exec = exec::Exec::new(&store, &limits);
     // stdin's Dockerfile has an empty directory as its context, as buildx gives it one (D91).
     let context = if empty_context {

@@ -41,7 +41,8 @@ impl<D: Disk> Daemon<D> {
     /// `GET /system/df`: `shards inspect disk`, the kinds the query's `type`s name, all
     /// without one. Each kind's usage (API 1.52's ImageUsage, ContainerUsage, VolumeUsage
     /// and BuildCacheUsage), and, unless `verbose`, the fields clients before 1.52 read
-    /// (LayersSize, Images, Containers, Volumes, BuildCache), as dockerd answers both;
+    /// (LayersSize, Images, Containers, Volumes, BuildCache), so that clients of either
+    /// version read theirs (D170);
     /// and `TemplateUsage`, shards' own: its microVMs' templates, their count and size.
     pub(super) fn engine_df(&self, call: &Call<'_>) -> Answer {
         let types: Vec<&str> = call.all("type").collect();

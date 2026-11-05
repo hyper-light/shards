@@ -241,6 +241,9 @@ pub struct Device {
     /// What it is had through, held open as long as it is (vfio.rst): its group and their
     /// container, or iommufd.
     _holds: Vec<Arc<OwnedFd>>,
+    /// The file its hypervisor was told of ([`Host::add_file`]): its group's, or its own
+    /// where opened by its node.
+    told: RawFd,
 }
 
 /// VFIO's container of a VM's passed-through functions (vfio.rst, "VFIO Usage
@@ -259,8 +262,16 @@ pub struct Container {
 
 impl Container {
     pub fn open(noiommu: bool) -> Result<Container, String> {
+        let fd = open(Path::new("/dev/vfio/vfio")).map_err(|e| format!("VFIO's /dev/vfio/vfio: {e}"))?;
+        Container::of_file(fd, noiommu, true)
+    }
+
+    /// The container whose descriptor is `fd`, `/dev/vfio/vfio` opened by another process,
+    /// as a confined VM process is handed one (D214); with guest RAM mapped for its first
+    /// group's DMA where `maps_ram`, else following a function's endpoint
+    /// ([`Container::followed`]).
+    pub fn of_file(fd: OwnedFd, noiommu: bool, maps_ram: bool) -> Result<Container, String> {
         let err = |what: &str, e: io::Error| format!("VFIO's {what}: {e}");
-        let fd = open(Path::new("/dev/vfio/vfio")).map_err(|e| err("/dev/vfio/vfio", e))?;
         // SAFETY: VFIO_GET_API_VERSION takes no argument.
         let version = unsafe { ioctl(&fd, VFIO_GET_API_VERSION, 0) }.map_err(|e| err("version", e))?;
         if version != VFIO_API_VERSION {
@@ -282,7 +293,7 @@ impl Container {
             fd: Arc::new(fd),
             noiommu,
             groups: Vec::new(),
-            maps_ram: true,
+            maps_ram,
         })
     }
 
@@ -318,22 +329,31 @@ impl Container {
 
     /// The group at `path`, set in this container and told of to `host`'s hypervisor: the
     /// first sets its IOMMU and maps guest RAM, `memory`, for their DMA; a group set
-    /// already is the same.
-    fn group(&mut self, path: &Path, memory: &GuestMemory, host: &dyn Host) -> Result<Arc<OwnedFd>, String> {
+    /// already is the same. Opened here, or `given`, opened by another process.
+    fn group(
+        &mut self,
+        path: &Path,
+        given: Option<OwnedFd>,
+        memory: &GuestMemory,
+        host: &dyn Host,
+    ) -> Result<Arc<OwnedFd>, String> {
         if let Some((_, fd)) = self.groups.iter().find(|(p, _)| p == path) {
             return Ok(fd.clone());
         }
         let err = |what: &str, e: io::Error| format!("{}: {what}: {e}", path.display());
-        let group = open(path).map_err(|e| {
-            // VFIO opens a group for one process at a time (group.c, vfio_group_fops_open).
-            let hint = match e.raw_os_error() {
-                Some(libc::EBUSY) => {
-                    ": another process has it open, or a device of it through iommufd, as VFIO lets one at a time"
-                }
-                _ => "",
-            };
-            format!("{}: opening it: {e}{hint}", path.display())
-        })?;
+        let group = match given {
+            Some(fd) => fd,
+            None => open(path).map_err(|e| {
+                // VFIO opens a group for one process at a time (group.c, vfio_group_fops_open).
+                let hint = match e.raw_os_error() {
+                    Some(libc::EBUSY) => {
+                        ": another process has it open, or a device of it through iommufd, as VFIO lets one at a time"
+                    }
+                    _ => "",
+                };
+                format!("{}: opening it: {e}{hint}", path.display())
+            })?,
+        };
         host.add_file(group.as_raw_fd())
             .map_err(|e| format!("{}: {e}", path.display()))?;
         let mut status = GroupStatus {
@@ -496,7 +516,13 @@ pub struct Iommufd {
 impl Iommufd {
     pub fn open() -> Result<Iommufd, String> {
         let fd = open(Path::new("/dev/iommu")).map_err(|e| format!("/dev/iommu: {e}"))?;
-        Ok(Iommufd { fd: Arc::new(fd) })
+        Ok(Iommufd::of_file(fd))
+    }
+
+    /// iommufd by its descriptor `fd`, `/dev/iommu` opened by another process, as a
+    /// confined VM process is handed it (D214).
+    pub fn of_file(fd: OwnedFd) -> Iommufd {
+        Iommufd { fd: Arc::new(fd) }
     }
 
     /// A new I/O address space, mapping nothing (IOMMU_IOAS_ALLOC).
@@ -858,9 +884,22 @@ impl Device {
         memory: &GuestMemory,
         host: &dyn Host,
     ) -> Result<Device, String> {
+        Device::open_with(name, group, None, container, memory, host)
+    }
+
+    /// [`Device::open`], its group's node opened here, or `given`, opened by another
+    /// process (D214).
+    pub fn open_with(
+        name: &str,
+        group: &Path,
+        given: Option<OwnedFd>,
+        container: &mut Container,
+        memory: &GuestMemory,
+        host: &dyn Host,
+    ) -> Result<Device, String> {
         let err = |what: &str, e: io::Error| format!("{name}: {what}: {e}");
         let group = container
-            .group(group, memory, host)
+            .group(group, given, memory, host)
             .map_err(|e| format!("{name}: {e}"))?;
         let cname = CString::new(name).map_err(|_| format!("{name}: a NUL in its name"))?;
         // SAFETY: VFIO_GROUP_GET_DEVICE_FD reads a NUL-terminated device name.
@@ -868,15 +907,31 @@ impl Device {
             .map_err(|e| err("its device", e))?;
         // SAFETY: the descriptor the ioctl just returned, ours alone.
         let file = File::from(unsafe { OwnedFd::from_raw_fd(fd) });
-        Device::of_file(name, file, vec![group, container.fd.clone()])
+        let told = group.as_raw_fd();
+        Device::of_file(name, file, vec![group, container.fd.clone()], Some(told))
     }
 
     /// The host's function `name` by its device node `cdev` (vfio.rst, "VFIO Device
     /// cdev"): told of to `host`'s hypervisor, bound to iommufd and attached to `ioas`,
     /// where its DMA's mappings are made; reset where it can be.
     pub fn open_cdev(name: &str, cdev: &Path, ioas: &Ioas, host: &dyn Host) -> Result<Device, String> {
+        Device::open_cdev_with(name, cdev, None, ioas, host)
+    }
+
+    /// [`Device::open_cdev`], its node opened here, or `given`, opened by another process
+    /// (D214).
+    pub fn open_cdev_with(
+        name: &str,
+        cdev: &Path,
+        given: Option<OwnedFd>,
+        ioas: &Ioas,
+        host: &dyn Host,
+    ) -> Result<Device, String> {
         let err = |what: &str, e: io::Error| format!("{name}: {} {what}: {e}", cdev.display());
-        let fd = open(cdev).map_err(|e| err("opening it", e))?;
+        let fd = match given {
+            Some(fd) => fd,
+            None => open(cdev).map_err(|e| err("opening it", e))?,
+        };
         // Before it is bound, as a driver that needs the VM finds it then (vfio.rst).
         host.add_file(fd.as_raw_fd())
             .map_err(|e| format!("{name}: {}: {e}", cdev.display()))?;
@@ -913,11 +968,17 @@ impl Device {
         // `vfio_device_attach_iommufd_pt`.
         unsafe { ioctl(&fd, VFIO_DEVICE_ATTACH_IOMMUFD_PT, (&raw mut attach) as usize) }
             .map_err(|e| err("attaching it to its I/O address space", e))?;
-        Device::of_file(name, File::from(fd), vec![ioas.fd.clone()])
+        Device::of_file(name, File::from(fd), vec![ioas.fd.clone()], None)
     }
 
-    /// The function `name` whose device descriptor is `file`, had through `holds`.
-    fn of_file(name: &str, file: File, holds: Vec<Arc<OwnedFd>>) -> Result<Device, String> {
+    /// The function `name` whose device descriptor is `file`, had through `holds`, its
+    /// hypervisor told of `told`, or of `file` where none.
+    fn of_file(
+        name: &str,
+        file: File,
+        holds: Vec<Arc<OwnedFd>>,
+        told: Option<RawFd>,
+    ) -> Result<Device, String> {
         let err = |what: &str, e: io::Error| format!("{name}: {what}: {e}");
         let mut info = DeviceInfo {
             argsz: size_of::<DeviceInfo>() as u32,
@@ -948,11 +1009,13 @@ impl Device {
             // SAFETY: VFIO_DEVICE_RESET takes no argument.
             unsafe { ioctl(&file, VFIO_DEVICE_RESET, 0) }.map_err(|e| err("resetting it", e))?;
         }
+        let told = told.unwrap_or_else(|| file.as_raw_fd());
         Ok(Device {
             name: name.to_string(),
             file,
             regions,
             _holds: holds,
+            told,
         })
     }
 
@@ -1277,6 +1340,8 @@ pub trait Host {
     /// Tells the hypervisor of VFIO's file `file`, a group's, before any device of it is
     /// opened, or a device's opened by its node, before it is bound.
     fn add_file(&self, file: RawFd) -> Result<(), String>;
+    /// Has the hypervisor forget VFIO's file `file`: a function unplugged (D214).
+    fn remove_file(&self, file: RawFd) -> Result<(), String>;
     /// `count` memory slots, of one function's own.
     fn slots(&self, count: u32) -> Box<dyn BarSlots>;
 }
@@ -1318,7 +1383,9 @@ impl Drop for Mapping {
 #[derive(Debug)]
 struct Window {
     host: usize,
-    gpa: u64,
+    /// Its BAR, and where in it the window starts: in the guest at the BAR's place then.
+    bar: usize,
+    offset: u64,
     len: usize,
 }
 
@@ -1461,12 +1528,16 @@ pub struct VfioFunction {
     /// mapped while its memory decoding is on (`mapped`), in `_mappings` of its regions.
     windows: Vec<Window>,
     slots: Option<Box<dyn BarSlots>>,
-    mapped: Mutex<bool>,
+    /// Each window's, whether it is in the guest now.
+    mapped: Mutex<Vec<bool>>,
     _mappings: Vec<Mapping>,
     /// Bits of its configuration the guest reads as the VMM puts them, not as the device
     /// has them: each a register's offset (a multiple of 4), the bits it reads, and the
     /// mask of those bits.
     overlays: Vec<(u16, u32, u32)>,
+    /// Whether its memory decoding is on, as the guest last wrote its command register: a
+    /// plugged function's BARs are reached then alone (D214).
+    decoding: std::sync::atomic::AtomicBool,
 }
 
 /// The header type's bit 7 in the register at 0x0c: a multi-function device's function
@@ -1491,8 +1562,41 @@ impl VfioFunction {
         host: &dyn Host,
         together: bool,
     ) -> Result<VfioFunction, String> {
+        VfioFunction::made(device, bars, route, send, host, together, false)
+    }
+
+    /// `device` plugged into a running machine (D214): its BARs where its guest places
+    /// them, from `bars`' sizes; its interrupts as [`VfioFunction::new`]'s; a function of
+    /// its own on its device.
+    pub fn plugged(
+        device: Device,
+        bars: Vec<Bar>,
+        route: Option<Arc<dyn Route>>,
+        send: Option<Arc<dyn Msi>>,
+        host: &dyn Host,
+    ) -> Result<VfioFunction, String> {
+        let unplaced = bars.into_iter().map(|bar| Bar { addr: 0, ..bar }).collect();
+        VfioFunction::made(device, unplaced, route, send, host, false, true)
+    }
+
+    /// The file its hypervisor was told of, which it forgets as the function is unplugged.
+    pub fn told(&self) -> RawFd {
+        self.device.told
+    }
+
+    fn made(
+        device: Device,
+        bars: Vec<Bar>,
+        route: Option<Arc<dyn Route>>,
+        send: Option<Arc<dyn Msi>>,
+        host: &dyn Host,
+        together: bool,
+        movable: bool,
+    ) -> Result<VfioFunction, String> {
         let routed = route.is_some() && send.is_some();
-        let pin = if routed && device.signals(IRQ_INTX) {
+        // A plugged function's slot has no INTx line its machine's firmware tables route
+        // (D214): its MSIs alone.
+        let pin = if routed && !movable && device.signals(IRQ_INTX) {
             device.config(reg::INTERRUPT_PIN, 1) as u8
         } else {
             0
@@ -1532,7 +1636,8 @@ impl VfioFunction {
             for (offset, len) in windows_of(bar.index, mapping.len as u64, msix, page) {
                 windows.push(Window {
                     host: mapping.host + offset as usize,
-                    gpa: bar.addr + offset,
+                    bar: bar.index,
+                    offset,
                     len: len as usize,
                 });
             }
@@ -1555,6 +1660,7 @@ impl VfioFunction {
                 msix,
             },
         )?;
+        let kept = if movable { kept.movable() } else { kept };
         let mut caps: Vec<(u16, u16)> = msi.map(|(cap, len)| (cap.at, len)).into_iter().collect();
         caps.extend(msix.map(|cap| (cap.at, reg::MSIX_LEN)));
         // As the guest must see one host group's functions, which nothing keeps from each
@@ -1583,9 +1689,10 @@ impl VfioFunction {
             }),
             windows,
             slots,
-            mapped: Mutex::new(false),
+            mapped: Mutex::new(Vec::new()),
             _mappings: mappings,
             overlays,
+            decoding: std::sync::atomic::AtomicBool::new(false),
         })
     }
 
@@ -1599,23 +1706,33 @@ impl VfioFunction {
             return;
         };
         let mut mapped = self.mapped.lock().unwrap_or_else(PoisonError::into_inner);
-        if *mapped == on {
-            return;
-        }
+        mapped.resize(self.windows.len(), false);
         let mut done = 0;
-        for (i, window) in (0u32..).zip(&self.windows) {
+        for ((i, window), in_guest) in (0u32..).zip(&self.windows).zip(mapped.iter_mut()) {
+            if *in_guest == on {
+                continue;
+            }
+            // Where its BAR is now: where the guest placed a plugged function's, none of it
+            // in the guest before it does (D214).
+            let at = self.kept.bar_addr(window.bar).unwrap_or(0);
+            if on && at == 0 {
+                continue;
+            }
+            let gpa = at + window.offset;
             let result = if on {
                 // SAFETY: the window lies in one of `_mappings`, which outlive the VM.
-                unsafe { slots.map(i, window.host as *mut u8, window.gpa, window.len) }
+                unsafe { slots.map(i, window.host as *mut u8, gpa, window.len) }
             } else {
                 slots.unmap(i)
             };
             match result {
-                Ok(()) => done += 1,
-                Err(e) => crate::warn!("{}: a BAR's window at {:#x}: {e}", self.device.name, window.gpa),
+                Ok(()) => {
+                    *in_guest = on;
+                    done += 1;
+                }
+                Err(e) => crate::warn!("{}: a BAR's window at {gpa:#x}: {e}", self.device.name),
             }
         }
-        *mapped = on;
         crate::debug!(
             "{}: BAR windows {} the guest: {done}",
             self.device.name,
@@ -1950,18 +2067,140 @@ impl PciFunction for VfioFunction {
                 self.map_windows(false);
             }
             self.device.write(CONFIG_REGION as usize, u64::from(offset), data);
+            if let Some(on) = decoding {
+                self.decoding.store(on, std::sync::atomic::Ordering::Release);
+            }
             if decoding == Some(true) {
                 self.map_windows(true);
             }
             return;
         }
+        // A plugged function's BAR moved by its guest: its windows follow it.
+        let moving = (reg::BAR0..reg::BAR0 + 24).contains(&offset)
+            && self.decoding.load(std::sync::atomic::Ordering::Acquire);
+        if moving {
+            self.map_windows(false);
+        }
         self.kept.write(offset, data);
+        if moving {
+            self.map_windows(true);
+        }
         if self
             .caps
             .iter()
             .any(|&(at, len)| (at..at + len).contains(&offset))
         {
             self.sync(&mut self.irqs());
+        }
+    }
+}
+
+/// A function passed through as its machine runs (D214), reached where its guest placed
+/// its BARs.
+impl super::hotplug::Plugged for VfioFunction {
+    fn claims(&self, addr: u64, len: u64) -> Option<(usize, u64)> {
+        if !self.decoding.load(std::sync::atomic::Ordering::Acquire) {
+            return None;
+        }
+        self.kept.bars().iter().find_map(|bar| {
+            let base = self.kept.bar_addr(bar.index).filter(|&b| b != 0)?;
+            let offset = addr.checked_sub(base)?;
+            (offset.checked_add(len)? <= bar.size).then_some((bar.index, offset))
+        })
+    }
+
+    fn bar_read(&self, bar: usize, offset: u64, data: &mut [u8]) {
+        VfioFunction::bar_read(self, bar, offset, data);
+    }
+
+    fn bar_write(&self, bar: usize, offset: u64, data: &[u8]) {
+        VfioFunction::bar_write(self, bar, offset, data);
+    }
+
+    /// Driven while its bus mastering is on, which Linux's pci_disable_device turns off as
+    /// its driver lets it go (drivers/pci/pci.c, do_pci_disable_device).
+    fn held(&self) -> Option<String> {
+        let command = self.device.config(reg::COMMAND, 2) as u16;
+        (command & reg::COMMAND_MASTER != 0).then(|| {
+            format!(
+                "{}: its guest's driver still drives it (bus mastering on): its guest lets it go first (`remove` in sysfs)",
+                self.device.name
+            )
+        })
+    }
+
+    fn pause(&self) {}
+
+    fn resume(&self) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn unplugged(&self) {
+        self.map_windows(false);
+    }
+}
+
+/// A function passed through as its machine runs (D214), and its hypervisor, which forgets
+/// its file as it is unplugged.
+pub struct PluggedFunction<H: Host + Send + Sync> {
+    function: VfioFunction,
+    host: H,
+}
+
+impl<H: Host + Send + Sync> std::fmt::Debug for PluggedFunction<H> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PluggedFunction")
+            .field("function", &self.function.device.name)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<H: Host + Send + Sync> PluggedFunction<H> {
+    pub fn new(function: VfioFunction, host: H) -> PluggedFunction<H> {
+        PluggedFunction { function, host }
+    }
+}
+
+impl<H: Host + Send + Sync> PciFunction for PluggedFunction<H> {
+    fn config_read(&self, offset: u16, data: &mut [u8]) {
+        self.function.config_read(offset, data);
+    }
+
+    fn config_write(&self, offset: u16, data: &[u8]) {
+        self.function.config_write(offset, data);
+    }
+}
+
+impl<H: Host + Send + Sync> super::hotplug::Plugged for PluggedFunction<H> {
+    fn claims(&self, addr: u64, len: u64) -> Option<(usize, u64)> {
+        super::hotplug::Plugged::claims(&self.function, addr, len)
+    }
+
+    fn bar_read(&self, bar: usize, offset: u64, data: &mut [u8]) {
+        super::hotplug::Plugged::bar_read(&self.function, bar, offset, data);
+    }
+
+    fn bar_write(&self, bar: usize, offset: u64, data: &[u8]) {
+        super::hotplug::Plugged::bar_write(&self.function, bar, offset, data);
+    }
+
+    fn held(&self) -> Option<String> {
+        super::hotplug::Plugged::held(&self.function)
+    }
+
+    fn pause(&self) {}
+
+    fn resume(&self) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn unplugged(&self) {
+        super::hotplug::Plugged::unplugged(&self.function);
+        if let Err(e) = self.host.remove_file(self.function.told()) {
+            crate::warn!(
+                "{}: its hypervisor holds it still: {e}",
+                self.function.device.name
+            );
         }
     }
 }

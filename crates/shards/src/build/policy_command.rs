@@ -1,8 +1,12 @@
 //! `shards buildx policy`: buildx v0.37.1's policy commands (commands/policy, D108): the
 //! group, which says its commands; `eval`, a policy's decision for one source, or the
-//! source's input (`--print`); and `test`, a policy's tests. Each runs here, its sources'
-//! metadata resolved as a build resolves them, unseen, as buildx's resolver shows no
-//! progress; the builder's platform is this host's (`host_platform`).
+//! source's input (`--print`); and `test`, a policy's tests. Each runs here, of this
+//! host's files, against a builder ([`Builder`]): its sources' metadata resolved as the
+//! builder's builds resolve them, unseen (buildx's resolver shows no progress there), and
+//! the builder's platform. The builder is this host (`host_platform`), or through a context the
+//! machine it reaches (D180), as buildx evaluates a policy against a remote builder: the
+//! policy, its tests and their files this client's, the builder's answers the machine's,
+//! asked of it by the steps [`step`] serves there.
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -21,8 +25,39 @@ const GROUP: &str = "shards buildx policy";
 const EVAL: &str = "shards buildx policy eval";
 const TEST: &str = "shards buildx policy test";
 
-/// `shards buildx policy ARGS…`.
+/// The builder a policy command asks what it cannot know of its own: its platform, a
+/// source's metadata as its builds resolve it, and an HTTP source a policy's function reads.
+pub(crate) trait Builder {
+    fn platform(&self) -> Result<Platform, String>;
+
+    /// `f` given a resolver of sources' metadata, the builder's.
+    fn resolving(&self, f: &dyn Fn(&dyn policy::Resolve) -> Result<(), String>) -> Result<(), String>;
+
+    /// The content of `url`, asked for with `accept`; the error as the read of the solved
+    /// source words it.
+    fn fetch(&self, url: &str, accept: Option<&str>) -> Result<Vec<u8>, String>;
+}
+
+/// What marks a request's step of a policy command run through a context to the machine's
+/// daemon (D180): no command line's word, as no command line can hold NUL. The daemon runs
+/// it as a command of its own (`buildx policy`), the step named by [`STEP_VAR`], so that the
+/// client's logins reach the registries it asks of as a command's do.
+pub(crate) const POLICY_STEP: &str = "\u{0}policy";
+
+/// The variable that names the step the machine's daemon runs ([`step`]).
+pub(crate) const STEP_VAR: &str = "SHARDS_POLICY_STEP";
+
+/// `shards buildx policy ARGS…`, this host the builder; or the step of a client's that
+/// the machine's daemon runs ([`STEP_VAR`]).
 pub fn command(args: impl Iterator<Item = OsString>) -> ExitCode {
+    if let Some(name) = std::env::var_os(STEP_VAR) {
+        return step(&name.to_string_lossy(), args);
+    }
+    command_with(args, &Here)
+}
+
+/// `shards buildx policy ARGS…`, asking `builder`.
+pub(crate) fn command_with(args: impl Iterator<Item = OsString>, builder: &dyn Builder) -> ExitCode {
     let mut argv = Vec::new();
     for a in args {
         match a.into_string() {
@@ -32,14 +67,14 @@ pub fn command(args: impl Iterator<Item = OsString>) -> ExitCode {
     }
     match argv.split_first() {
         Some((sub, rest)) if sub == "eval" => match read(&POLICY_EVAL, EVAL, rest) {
-            Ok(parsed) => match eval(&parsed) {
+            Ok(parsed) => match eval(&parsed, builder) {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(e) => error(&e),
             },
             Err(code) => code,
         },
         Some((sub, rest)) if sub == "test" => match read(&POLICY_TEST, TEST, rest) {
-            Ok(parsed) => test(&parsed),
+            Ok(parsed) => test(&parsed, builder),
             Err(code) => code,
         },
         // A group runs nothing: asked anything it can read, it says its commands.
@@ -92,18 +127,18 @@ fn error(e: &str) -> ExitCode {
     ExitCode::FAILURE
 }
 
-/// logrus as buildx's main formats it: the level, then the message.
+/// logrus as buildx v0.37.1's main formats it: the level, then the message.
 fn log(level: &str, text: &str) {
     let _ = writeln!(std::io::stderr(), "{level}: {text}");
 }
 
 /// runEval.
-fn eval(parsed: &Parsed) -> Result<(), String> {
+fn eval(parsed: &Parsed, builder: &dyn Builder) -> Result<(), String> {
     let arg = parsed.args.first().map(String::as_str).unwrap_or_default();
     let source = parse_source(arg)?;
     let platform = match parsed.string("platform") {
-        "" => host_platform(),
-        p => platform::parse(p.as_bytes(), &host_platform())
+        "" => builder.platform()?,
+        p => platform::parse(p.as_bytes(), &builder.platform()?)
             .map(|p| platform::normalize(&p))
             .map_err(|e| {
                 format!(
@@ -113,7 +148,7 @@ fn eval(parsed: &Parsed) -> Result<(), String> {
                 )
             })?,
     };
-    with_resolver(&|resolver| {
+    builder.resolving(&|resolver| {
         if parsed.bool("print") {
             let fields = parsed.many("fields");
             let (json, invalid, unresolved) = policy::print_input(&source, &platform, fields, resolver)?;
@@ -126,7 +161,7 @@ fn eval(parsed: &Parsed) -> Result<(), String> {
             let _ = writeln!(std::io::stdout(), "{json}");
             return Ok(());
         }
-        decide(parsed, &source, &platform, resolver)
+        decide(parsed, &source, &platform, resolver, builder)
     })
 }
 
@@ -137,6 +172,7 @@ fn decide(
     source: &policy::Source,
     platform: &Platform,
     resolver: &dyn policy::Resolve,
+    builder: &dyn Builder,
 ) -> Result<(), String> {
     let filename = parsed.string("file");
     if filename.is_empty() {
@@ -179,7 +215,7 @@ fn decide(
     else {
         return Err("policy returned no decision".into());
     };
-    let log = Said { debug };
+    let log = Said { debug, builder };
     let mut meta = policy::Meta::default();
     let mut attempts = 5;
     loop {
@@ -274,12 +310,13 @@ fn parse_source(input: &str) -> Result<policy::Source, String> {
 }
 
 /// Where `eval`'s policy logs: logrus at debug level, shown with `--debug`; the sources
-/// its functions read fetched with no step to show.
-struct Said {
+/// its functions read fetched by the builder with no step to show.
+struct Said<'b> {
     debug: bool,
+    builder: &'b dyn Builder,
 }
 
-impl policy::Log for Said {
+impl policy::Log for Said<'_> {
     fn line(&self, text: &str) {
         if self.debug {
             log("DEBUG", text);
@@ -287,6 +324,23 @@ impl policy::Log for Said {
     }
 
     fn fetch(&self, _name: &str, url: &str, accept: Option<&str>) -> Result<Vec<u8>, String> {
+        self.builder.fetch(url, accept)
+    }
+}
+
+/// This host, the builder.
+struct Here;
+
+impl Builder for Here {
+    fn platform(&self) -> Result<Platform, String> {
+        Ok(host_platform())
+    }
+
+    fn resolving(&self, f: &dyn Fn(&dyn policy::Resolve) -> Result<(), String>) -> Result<(), String> {
+        with_resolver(f)
+    }
+
+    fn fetch(&self, url: &str, accept: Option<&str>) -> Result<Vec<u8>, String> {
         let home = shards_ipc::home()?;
         let store = crate::pull::store(&home)?;
         let limits = crate::pull::limits()?;
@@ -308,7 +362,10 @@ fn with_resolver(f: &dyn Fn(&dyn policy::Resolve) -> Result<(), String>) -> Resu
     let progress = RefCell::new(Progress::quiet());
     let secrets = BTreeMap::new();
     let agents = super::Agents::new();
-    let said = Said { debug: false };
+    let said = Said {
+        debug: false,
+        builder: &Here,
+    };
     let bases = Bases {
         home: &home,
         store: &store,
@@ -334,7 +391,7 @@ fn with_resolver(f: &dyn Fn(&dyn policy::Resolve) -> Result<(), String>) -> Resu
 /// runTest: the tests under the path, every name read in the working directory; an image
 /// input's metadata resolved as a build resolves a source's, unseen. A failed test ends
 /// the run with status 1 and nothing more (cobrautil.ExitCodeError).
-fn test(parsed: &Parsed) -> ExitCode {
+fn test(parsed: &Parsed, builder: &dyn Builder) -> ExitCode {
     let path = parsed.args.first().map(String::as_str).unwrap_or_default();
     let root = match std::env::current_dir() {
         Ok(d) => d,
@@ -346,8 +403,16 @@ fn test(parsed: &Parsed) -> ExitCode {
         root,
     };
     let status = std::cell::Cell::new(0);
-    let ran = with_resolver(&|resolver| {
-        let summary = policy::tester::run_policy_tests(path, &opts, Some(&Builder { resolver }))?;
+    let platform = match builder.platform() {
+        Ok(p) => p,
+        Err(e) => return error(&e),
+    };
+    let ran = builder.resolving(&|resolver| {
+        let provider = Provider {
+            platform: &platform,
+            resolver,
+        };
+        let summary = policy::tester::run_policy_tests(path, &opts, Some(&provider))?;
         status.set(policy::tester::report(&summary, &mut std::io::stdout()));
         Ok(())
     });
@@ -357,18 +422,70 @@ fn test(parsed: &Parsed) -> ExitCode {
     }
 }
 
-/// `policy test`'s TestOptionsProvider: the builder's platform, this host's, and a
-/// source's metadata as a build resolves it.
-struct Builder<'r> {
+/// `policy test`'s TestOptionsProvider: the builder's platform, and a source's metadata as
+/// its builds resolve it.
+struct Provider<'r> {
+    platform: &'r Platform,
     resolver: &'r dyn policy::Resolve,
 }
 
-impl policy::tester::TestProvider for Builder<'_> {
+impl policy::tester::TestProvider for Provider<'_> {
     fn platform(&self) -> Result<Platform, String> {
-        Ok(host_platform())
+        Ok(self.platform.clone())
     }
 
     fn resolve(&self, source: &policy::Source, req: &policy::MetaRequest) -> Result<policy::Meta, String> {
         self.resolver.resolve(source, req)
+    }
+}
+
+/// The most of a request a step reads: a source, its attributes and what is asked of it,
+/// a signature's hash suffix among them, come to a few KiB.
+const ASK_MOST: u64 = 1 << 20;
+
+/// A step of a client's policy command (D180), this host its builder, as the machine's
+/// daemon runs it: `platform`, this host's; `resolve`, a source's metadata, the source and
+/// what is asked of it read from stdin ([`policy::wire`]), resolved as a build here
+/// resolves it, with the logins its client sent; `fetch URL ACCEPT`, an HTTP source's
+/// content. Each answer on stdout; an error said on stderr alone, status 1, which the
+/// client takes as the builder's error.
+fn step(name: &str, args: impl Iterator<Item = OsString>) -> ExitCode {
+    let args: Vec<String> = args.map(|a| a.to_string_lossy().into_owned()).collect();
+    let answered = match name {
+        "platform" => policy::wire::platform(&host_platform()),
+        "resolve" => {
+            let mut asked = Vec::new();
+            match std::io::stdin().take(ASK_MOST).read_to_end(&mut asked) {
+                Ok(_) => policy::wire::read_ask(&asked).and_then(|(source, request)| {
+                    let known = RefCell::new(Vec::new());
+                    with_resolver(&|resolver| {
+                        let meta = resolver.resolve(&source, &request)?;
+                        *known.borrow_mut() = policy::wire::known(&meta)?;
+                        Ok(())
+                    })
+                    .map(|()| known.into_inner())
+                }),
+                Err(e) => Err(format!("reading the request: {e}")),
+            }
+        }
+        "fetch" => {
+            let url = args.first().map(String::as_str).unwrap_or_default();
+            let accept = args.get(1).map(String::as_str).filter(|a| !a.is_empty());
+            Here.fetch(url, accept)
+        }
+        other => Err(format!("{other:?}: no step of a policy command")),
+    };
+    match answered {
+        Ok(bytes) => match std::io::stdout().write_all(&bytes) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                let _ = write!(std::io::stderr(), "writing the answer: {e}");
+                ExitCode::FAILURE
+            }
+        },
+        Err(e) => {
+            let _ = write!(std::io::stderr(), "{e}");
+            ExitCode::FAILURE
+        }
     }
 }

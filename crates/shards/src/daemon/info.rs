@@ -150,8 +150,8 @@ fn formatted(format: &str, f: &Facts, reply: &Reply<'_>) -> u8 {
     }
 }
 
-/// The info as docker/cli's dockerInfo holds it: the server's (system.Info), then the
-/// client's.
+/// The info as `--format` templates read it (docker/cli cli/command/system/info.go
+/// dockerInfo): the server's (system.Info), then the client's.
 fn value(f: &Facts) -> shards_template::Value {
     use shards_template::{Kind, Value};
     let s = |v: &str| Value::String(v.to_owned());
@@ -396,7 +396,7 @@ pub(super) fn server(f: &Facts, name: &'static str) -> shards_template::Struct {
         .field("Warnings", Value::NilList(Kind::String))
 }
 
-/// The descriptors this process has open, as dockerd counts its own (NFd).
+/// The descriptors this process has open, info's `NFd`: the daemon's own count.
 fn open_descriptors() -> usize {
     let dir = if cfg!(target_os = "linux") {
         "/proc/self/fd"
@@ -511,7 +511,7 @@ fn kernel_version(kernel: &Path) -> Option<String> {
 }
 
 /// The host's operating system: macOS's product name and version, or os-release's
-/// PRETTY_NAME, as dockerd names its own (operatingsystem.GetOperatingSystem).
+/// PRETTY_NAME (os-release(5)), the host's own name for itself.
 fn os_name() -> Option<String> {
     #[cfg(target_os = "macos")]
     {

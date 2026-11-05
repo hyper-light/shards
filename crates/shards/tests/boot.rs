@@ -471,7 +471,8 @@ fn cli_reports_usage_and_rejects_unknown_commands() {
         unknown.stderr.contains("unknown command: shards frobnicate"),
         "{unknown}"
     );
-    // Piped, as docker/cli lays its version out; the server is this shards too.
+    // Piped, laid out as the scripts that read `version` parse it (cli/version.rs); the
+    // server is this shards too.
     let version = run_shards(&["version"], &none, TIMEOUT);
     assert!(version.stdout.starts_with("Client:\n Version:"), "{version}");
     assert!(
@@ -839,6 +840,30 @@ fn a_nested_guest_runs_vms_of_its_own() {
     }
 }
 
+/// Off Linux a host's PCI function asked of a VM by name is refused before the VM starts,
+/// with its host's own limit (D154): macOS's Hypervisor.framework assigns no device (PM
+/// M403); on Windows its hypervisor answers whether it assigns one, by a function's VFIO
+/// name or as Discrete Device Assignment names it, and Windows 11's and CI's Windows Server
+/// runners' refuse (PM M401, M402).
+#[cfg(not(target_os = "linux"))]
+#[test]
+fn a_hosts_pci_function_is_refused_where_its_os_passes_none() {
+    if cannot_run_vms() {
+        return;
+    }
+    let limit = shards_vmm::vm::passthrough_refused();
+    let k = kernel().to_str().unwrap();
+    let mut named = vec!["0000:01:00.0", "/dev/vfio/devices/vfio0"];
+    if cfg!(windows) {
+        named.push("PCIROOT(0)#PCI(0202)#PCI(0000)");
+    }
+    for name in named {
+        let r = vm_run(&["--kernel", k, "--vfio", name], TIMEOUT);
+        assert_ne!(r.status, Some(0), "{name}: {r}");
+        assert!(r.stderr.contains(&format!("{name}: {limit}")), "{name}: {r}");
+    }
+}
+
 /// A run given a host's VFIO group (`shards run --device /dev/vfio/N`, D154), on a host
 /// that has one to give: a nested guest given test functions, a device of one and a
 /// device of two (as a GPU with its audio function), runs shards as a Linux host does.
@@ -949,23 +974,33 @@ fn snapshot_tests_pass_on_a_kvm_host_of_this_architecture() {
     };
     let dir = common::TempDir::new("l1-e2e");
     let read = |p: &std::path::Path| std::fs::read(p).unwrap();
+    // SHARDS_L1_PCI_TESTS gives the guest test functions at those places (`--pci-tests`),
+    // which its tests may pass through to guests of their own (tests/hotplug.rs): its
+    // VFIO told it may take them, whose MSIs its GICv2m frame does not isolate (D154).
+    let pci_tests = std::env::var("SHARDS_L1_PCI_TESTS").ok();
     let outer = |initrd: &std::path::Path, cpus: &str, memory: &str, cmdline: &str, timeout| {
-        vm_run(
-            &[
-                "--kernel",
-                nested.to_str().unwrap(),
-                "--initrd",
-                initrd.to_str().unwrap(),
-                "--nested",
-                "--cpus",
-                cpus,
-                "--memory",
-                memory,
-                "--cmdline",
-                &format!("console=ttyS0 panic=-1 {cmdline}"),
-            ],
-            timeout,
-        )
+        let unsafe_msis = match &pci_tests {
+            Some(_) => " vfio_iommu_type1.allow_unsafe_interrupts=1",
+            None => "",
+        };
+        let cmdline = format!("console=ttyS0 panic=-1 {cmdline}{unsafe_msis}");
+        let mut args = vec![
+            "--kernel",
+            nested.to_str().unwrap(),
+            "--initrd",
+            initrd.to_str().unwrap(),
+            "--nested",
+            "--cpus",
+            cpus,
+            "--memory",
+            memory,
+            "--cmdline",
+            &cmdline,
+        ];
+        if let Some(places) = &pci_tests {
+            args.extend(["--pci-tests", places.as_str()]);
+        }
+        vm_run(&args, timeout)
     };
     // Whether this host gives a guest EL2, before the tests are built for one.
     let probe = dir.join("probe.cpio");
@@ -1060,11 +1095,16 @@ fn snapshot_tests_pass_on_a_kvm_host_of_this_architecture() {
             }
         }
     };
+    // With test functions to pass through, the `kvm` kernel too, VFIO and virtio-iommu's,
+    // which a run booted to take a host's function plugged in boots (tests/plug.rs, D214):
+    // the one this guest boots itself.
+    let functions_kernel = pci_tests.as_ref().map(|_| nested);
     for file in built
         .files
         .iter()
         .map(std::path::PathBuf::as_path)
         .chain([kernel()])
+        .chain(functions_kernel)
     {
         place(&mut cpio, file, Some(&read(file)));
     }
@@ -1089,6 +1129,9 @@ fn snapshot_tests_pass_on_a_kvm_host_of_this_architecture() {
     }
     if let Ok(bytes) = std::env::var("SHARDS_TEST_LOG_SHOWN") {
         env.push_str(&format!("SHARDS_TEST_LOG_SHOWN={bytes}\n"));
+    }
+    if let Some(k) = functions_kernel {
+        env.push_str(&format!("SHARDS_TEST_NESTED_KERNEL={}\n", k.display()));
     }
     cpio.file("e2e/run", 0o644, run.as_bytes())
         .file("e2e/env", 0o644, env.as_bytes());

@@ -88,6 +88,20 @@ impl Hasher {
     }
 }
 
+/// Whether this process has grown the build cache: put a record, or kept a cache mount's
+/// content. The cache passes its bounds only as it grows, so a build that grew none has
+/// no collection to run (D212).
+static CACHE_GREW: AtomicBool = AtomicBool::new(false);
+
+/// Whether this process has grown the build cache ([`CACHE_GREW`]).
+pub fn cache_grew() -> bool {
+    CACHE_GREW.load(Ordering::Relaxed)
+}
+
+fn grew() {
+    CACHE_GREW.store(true, Ordering::Relaxed);
+}
+
 /// A file whose lock (flock(2), LockFileEx on Windows) goes as it drops: unlocked, then
 /// closed. A lock is its open file's, which a program another thread starts meanwhile
 /// shares until its exec closes it: closed alone, the lock outlasts its drop that long
@@ -177,7 +191,9 @@ pub const DANGLING: &str = "moby-dangling@";
 /// A file being written under `ingest/`, removed unless committed.
 struct Partial {
     path: PathBuf,
-    file: Option<BufWriter<File>>,
+    /// Written as the process's writes go (`crate::through`): by a writer of its own
+    /// outside the budget a build is held to, where one is set (D188).
+    file: Option<BufWriter<crate::through::Through>>,
 }
 
 impl Partial {
@@ -197,10 +213,28 @@ impl Partial {
                 Err(e) => return Err(e.into()),
             }
         };
-        Ok(Partial {
+        Ok(Partial::of(path, file))
+    }
+
+    fn of(path: PathBuf, file: File) -> Partial {
+        Partial {
             path,
-            file: Some(BufWriter::with_capacity(CHUNK, file)),
-        })
+            file: Some(BufWriter::with_capacity(CHUNK, crate::through::Through(file))),
+        }
+    }
+
+    /// A name in `dir` no file has yet, as [`Partial::create`] names one, for a file another
+    /// makes there (a clone).
+    fn unused(dir: &Path) -> Result<PathBuf, Error> {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        for _ in 0..10_000 {
+            let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let path = dir.join(format!("{}-clone-{n}", std::process::id()));
+            if fs::symlink_metadata(&path).is_err() {
+                return Ok(path);
+            }
+        }
+        bad(format!("{}: no unused name", dir.display()))
     }
 
     /// Flushes and syncs the file, then moves it to the content-addressed name `to`, so a
@@ -216,7 +250,7 @@ impl Partial {
         let moved = f
             .into_inner()
             .map_err(|e| Error(e.to_string()))
-            .and_then(|file| Ok(sync_durable(&file)?))
+            .and_then(|file| Ok(sync_durable(&file.0)?))
             .and_then(|()| Ok(fs::rename(&self.path, to)?));
         if moved.is_err() {
             let _ = fs::remove_file(&self.path);
@@ -230,6 +264,45 @@ impl Partial {
 }
 
 impl Partial {
+    /// [`Partial::commit`], for a root filesystem built again (`pull --no-cache`), where a
+    /// file at `to` may hold other bytes than it should: one that holds the same bytes is
+    /// kept, as `commit` keeps it, and whatever was made of it holds still; one that holds
+    /// others is replaced, by rename, whoever holds it open keeping its own. Returns whether
+    /// the file was put at `to`.
+    ///
+    /// A replacement is given a later modification time than the file it replaces, set
+    /// before it is made durable, so that [`rootfs_stamp`] tells them apart: what is keyed
+    /// by a root filesystem's name keeps its bytes by that too (run.rs `template`).
+    fn commit_again(mut self, to: &Path) -> Result<bool, Error> {
+        let Some(f) = self.file.take() else {
+            return Ok(false);
+        };
+        let placed = f.into_inner().map_err(|e| Error(e.to_string())).and_then(|file| {
+            let before = match fs::metadata(to) {
+                Ok(before) => Some(before),
+                Err(e) if e.kind() == io::ErrorKind::NotFound => None,
+                Err(e) => return Err(e.into()),
+            };
+            if let Some(before) = before {
+                if same_bytes(&self.path, to)? {
+                    return Ok(false);
+                }
+                // Two seconds: past the coarsest file times a store may be on (FAT's).
+                let was = before.modified()?;
+                if file.0.metadata()?.modified()? <= was {
+                    file.0.set_modified(was + std::time::Duration::from_secs(2))?;
+                }
+            }
+            sync_durable(&file.0)?;
+            fs::rename(&self.path, to)?;
+            Ok(true)
+        });
+        if !matches!(placed, Ok(true)) {
+            let _ = fs::remove_file(&self.path);
+        }
+        placed
+    }
+
     /// Flushes and syncs the file, then moves it to `to`, replacing what is there.
     fn replace(mut self, to: &Path) -> Result<(), Error> {
         let Some(f) = self.file.take() else {
@@ -238,7 +311,7 @@ impl Partial {
         let moved = f
             .into_inner()
             .map_err(|e| Error(e.to_string()))
-            .and_then(|file| Ok(sync_durable(&file)?))
+            .and_then(|file| Ok(sync_durable(&file.0)?))
             .and_then(|()| Ok(fs::rename(&self.path, to)?));
         if moved.is_err() {
             let _ = fs::remove_file(&self.path);
@@ -374,6 +447,15 @@ pub struct ImageManifest {
     pub available: bool,
     pub content: u64,
     pub unpacked: u64,
+}
+
+/// Whether an index's entry is an attestation's manifest (BuildKit's provenance and SBOMs),
+/// which no microVM runs.
+fn is_attestation(desc: &Descriptor) -> bool {
+    desc.annotations
+        .get("vnd.docker.reference.type")
+        .map(String::as_str)
+        == Some("attestation-manifest")
 }
 
 /// A platform as containerd's platforms.Format writes it (D74).
@@ -1513,6 +1595,7 @@ impl Store {
     /// it is there (they are its roots, as a reference's are).
     pub fn cache_put(&self, key: &str, blobs: &[Digest], size: u64, body: &str) -> Result<(), Error> {
         let now = unix_now();
+        grew();
         self.write_cache(
             key,
             &CacheRecord {
@@ -1846,6 +1929,7 @@ impl Store {
                         if let Ok(path) = diff_ids
                             .map_err(|e| Error(e.to_string()))
                             .and_then(|d| self.rootfs_path(&d))
+                            && let Some(path) = self.kept_at(&path)
                         {
                             listed.unpacked = fs::metadata(path).map_or(0, |m| m.len());
                         }
@@ -1904,6 +1988,198 @@ impl Store {
         Some((desc, index))
     }
 
+    /// Whether the manifest `desc` describes is here whole: itself, its config and each of
+    /// its layers, as a microVM of its platform needs them.
+    pub fn whole(&self, desc: &Descriptor) -> bool {
+        let Ok(Held::Whole(bytes)) = self.held(desc, oci::MAX_MANIFEST) else {
+            return false;
+        };
+        let Ok(oci::Document::Manifest(m)) = oci::parse_document(&bytes, &desc.media_type) else {
+            return false;
+        };
+        std::iter::once(&m.config)
+            .chain(&m.layers)
+            .all(|part| part.digest().is_ok_and(|d| self.has(&d)))
+    }
+
+    /// The platform the manifest `desc` describes is for: its descriptor's label, else its
+    /// config's, where that is here.
+    fn platform_of(&self, desc: &Descriptor) -> Option<oci::Platform> {
+        if let Some(p) = &desc.platform {
+            return Some(p.clone());
+        }
+        let Ok(Held::Whole(bytes)) = self.held(desc, oci::MAX_MANIFEST) else {
+            return None;
+        };
+        let Ok(oci::Document::Manifest(m)) = oci::parse_document(&bytes, &desc.media_type) else {
+            return None;
+        };
+        let Ok(Held::Whole(config)) = self.held(m.image_config(), oci::MAX_CONFIG) else {
+            return None;
+        };
+        let config = oci::parse_config(&config).ok()?;
+        Some(oci::Platform {
+            architecture: config.architecture,
+            os: config.os,
+            variant: config.variant,
+            os_features: Vec::new(),
+        })
+    }
+
+    /// The manifest of image `named` for `target` that is here whole (D179): of its index,
+    /// the first entry for it, attestations passed over; or its lone manifest, where that is
+    /// for it. None where the image has no such platform here: one platform's microVM of a
+    /// multi-platform image, as a command that names a platform takes it.
+    pub fn manifest_for(&self, named: &Named, target: &crate::platform::Target) -> Option<Descriptor> {
+        let candidates = match self.index(&named.id) {
+            Some((_, index)) => index.manifests,
+            None => vec![named.manifest.clone()],
+        };
+        self.first_for(candidates, target)
+    }
+
+    /// [`manifest_for`](Self::manifest_for) of what a reference resolved to, `resolved`:
+    /// an index, or a lone manifest.
+    pub fn manifest_of(&self, resolved: &Descriptor, target: &crate::platform::Target) -> Option<Descriptor> {
+        let candidates = match resolved.digest().ok().and_then(|d| self.index(&d)) {
+            Some((_, index)) => index.manifests,
+            None => vec![resolved.clone()],
+        };
+        self.first_for(candidates, target)
+    }
+
+    /// Of `candidates`, the first for `target` here whole, attestations passed over.
+    fn first_for(&self, candidates: Vec<Descriptor>, target: &crate::platform::Target) -> Option<Descriptor> {
+        let wanted = std::slice::from_ref(target);
+        candidates.into_iter().filter(|d| !is_attestation(d)).find(|d| {
+            self.platform_of(d)
+                .is_some_and(|p| crate::platform::runs(&p, wanted))
+                && self.whole(d)
+        })
+    }
+
+    /// The image `named` names, read as its platform `manifest`'s ([`manifest_for`]): its
+    /// config, size and layers that platform's.
+    ///
+    /// [`manifest_for`]: Self::manifest_for
+    pub fn image_as(&self, named: &Named, manifest: &Descriptor) -> Result<Image, Error> {
+        self.image(&Named {
+            manifest: manifest.clone(),
+            ..named.clone()
+        })
+    }
+
+    /// Each manifest here whole that an image's record holds, and the first reference (in
+    /// name order) that holds it: its record's manifest, and each entry here of the index
+    /// it resolved to. Images resolved to `except` are left out.
+    pub fn manifests_held(&self, except: Option<&Digest>) -> Result<HashMap<String, String>, Error> {
+        let mut held: HashMap<String, String> = HashMap::new();
+        let mut records = Vec::new();
+        for entry in fs::read_dir(self.root.join(format!("refs/v{REFS_VERSION}")))? {
+            let Ok(bytes) = fs::read(entry?.path()) else {
+                continue;
+            };
+            if let Ok(tag) = serde_json::from_slice::<Tag>(&bytes) {
+                records.push(tag);
+            }
+        }
+        records.sort_by(|a, b| a.reference.cmp(&b.reference));
+        for tag in records {
+            let id = tag
+                .resolved
+                .clone()
+                .unwrap_or_else(|| tag.manifest.digest.clone());
+            if except.is_some_and(|e| e.to_string() == id) {
+                continue;
+            }
+            let mut listed = vec![tag.manifest.clone()];
+            if let Some((_, index)) = Digest::parse(&id).ok().and_then(|d| self.index(&d)) {
+                listed.extend(index.manifests);
+            }
+            for desc in listed {
+                if !held.contains_key(&desc.digest) && self.whole(&desc) {
+                    held.insert(desc.digest.clone(), tag.reference.clone());
+                }
+            }
+        }
+        Ok(held)
+    }
+
+    /// Takes the platforms whose manifests are `manifests` from image `id`, an index (D179):
+    /// each manifest, and the attestations of it, goes from the store, so that what only
+    /// they held (their configs, layers and root filesystems, and the microVM templates made
+    /// of them) goes with the next collection; the index stays, listing them as not here, as
+    /// a pull of some of its platforms leaves it. A record of the image that names one of
+    /// them comes to name the best of its platforms left here for this host's microVMs, or,
+    /// with none left, the index itself, as a load names one with none of this host's. The
+    /// records are written before anything goes, so that no crash leaves one naming what is
+    /// gone. The caller has checked that no other image holds them ([`manifests_held`]).
+    ///
+    /// [`manifests_held`]: Self::manifests_held
+    pub fn remove_platforms(&self, id: &Digest, manifests: &[Digest]) -> Result<(), Error> {
+        // Records are written through `ingest/`, which a collection empties.
+        let _lease = self.lease()?;
+        let Some((index_desc, index)) = self.index(id) else {
+            return bad(format!(
+                "{id}: an image of one platform has no platform to take from it"
+            ));
+        };
+        let named: Vec<String> = manifests.iter().map(Digest::to_string).collect();
+        let gone: Vec<&Descriptor> = index
+            .manifests
+            .iter()
+            .filter(|d| {
+                named.contains(&d.digest)
+                    || (is_attestation(d)
+                        && d.annotations
+                            .get("vnd.docker.reference.digest")
+                            .is_some_and(|of| named.contains(of)))
+            })
+            .collect();
+        let left = oci::Index {
+            manifests: index
+                .manifests
+                .iter()
+                .filter(|d| !is_attestation(d) && !gone.iter().any(|g| g.digest == d.digest) && self.whole(d))
+                .cloned()
+                .collect(),
+            ..index.clone()
+        };
+        let next = crate::platform::select(&left, &crate::platform::pullable())
+            .or(left.manifests.first())
+            .cloned()
+            .unwrap_or(index_desc);
+        for entry in fs::read_dir(self.root.join(format!("refs/v{REFS_VERSION}")))? {
+            let Ok(bytes) = fs::read(entry?.path()) else {
+                continue;
+            };
+            let Ok(mut tag) = serde_json::from_slice::<Tag>(&bytes) else {
+                continue;
+            };
+            if tag.resolved.as_deref() == Some(id.to_string().as_str())
+                && gone.iter().any(|g| g.digest == tag.manifest.digest)
+            {
+                tag.manifest = next.clone();
+                self.write_record(&tag)?;
+            }
+        }
+        let mut dirs = Vec::new();
+        for desc in gone {
+            let digest = desc.digest()?;
+            match fs::remove_file(self.blob_path(&digest)) {
+                Ok(()) => dirs.push(self.root.join("blobs").join(digest.algorithm().name())),
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e.into()),
+            }
+        }
+        dirs.sort();
+        dirs.dedup();
+        for dir in &dirs {
+            sync_dir(dir)?;
+        }
+        Ok(())
+    }
+
     fn tag_record(&self, reference: &str) -> Result<Option<Tag>, Error> {
         let bytes = match fs::read(self.tag_path(reference)) {
             Ok(bytes) => bytes,
@@ -1931,6 +2207,37 @@ impl Store {
             chain.algorithm().name(),
             chain.hex()
         )))
+    }
+
+    /// The root filesystem kept for the layers whose stacked one goes at `stacked`
+    /// ([`Store::rootfs_path`]): that one, else the one written over a base's that their
+    /// record names ([`Store::rootfs_written_over`]), where it is.
+    ///
+    /// A name never comes to hold other bytes than it was first given (templates are keyed
+    /// by it, run.rs `template`, and mapped by block): the stacked one's are its layers'
+    /// alone, stacked as they always stack; one over a base's is named by its own digest,
+    /// so one laid out otherwise, over another base or the same base again, has a name of
+    /// its own.
+    fn kept_at(&self, stacked: &Path) -> Option<PathBuf> {
+        if stacked.is_file() {
+            return Some(stacked.to_path_buf());
+        }
+        self.over_named(stacked)
+    }
+
+    /// The image written over a base's for the layers whose stacked one goes at `stacked`,
+    /// as the record beside it (`.over`) names it, where that is a file: a name the store
+    /// made, in its own directory, never a path.
+    fn over_named(&self, stacked: &Path) -> Option<PathBuf> {
+        let name = fs::read_to_string(stacked.with_extension("over")).ok()?;
+        let stem = stacked.file_stem()?.to_str()?;
+        let ours = name
+            .strip_prefix(stem)
+            .and_then(|n| n.strip_prefix(".over-"))
+            .and_then(|n| n.strip_suffix(".erofs"))
+            .is_some_and(|hex| hex.len() == 64 && hex.bytes().all(|b| b.is_ascii_hexdigit()));
+        let path = stacked.with_file_name(name);
+        (ours && path.is_file()).then_some(path)
     }
 
     /// A hold on the store's content for as long as it is kept, by whoever writes content
@@ -2003,6 +2310,10 @@ impl Store {
                 // What wrote an image goes with it.
                 if path.extension().is_some_and(|e| e == "from") && !rootfs.contains(&path.with_extension(""))
                 {
+                    let _ = fs::remove_file(&path);
+                }
+                // And the record naming one written over a base's, where that goes.
+                if path.extension().is_some_and(|e| e == "over") && !rootfs.contains(&path) {
                     let _ = fs::remove_file(&path);
                 }
             }
@@ -2135,6 +2446,14 @@ impl Store {
             .map_err(|e| Error(e.to_string()))
             .and_then(|d| self.rootfs_path(&d))
         {
+            // The one its runs are given (`kept_at`), and the record naming it where it was
+            // written over a base's: another of its layers' goes, its templates with it.
+            if !path.is_file()
+                && let Some(over) = self.over_named(&path)
+            {
+                rootfs.insert(path.with_extension("over"));
+                rootfs.insert(over);
+            }
             rootfs.insert(path);
         }
         Ok(())
@@ -2210,7 +2529,7 @@ impl Store {
     ) -> Result<T, Error> {
         let room = Room::new(&self.root.join("ingest"), limits)?;
         let bytes = AtomicU64::new(0);
-        let tar = self.unpack(layer, &bytes, limits, &room)?;
+        let tar = self.unpack(layer, &bytes, limits, &room, false)?;
         let mut file = File::open(tar.path())?;
         f(&mut file)
     }
@@ -2219,8 +2538,33 @@ impl Store {
     /// media type says whether the compression is sniffed (`oci::layer_compression`). The
     /// whole decompressed stream, bytes after the tar's end included, must match the
     /// DiffID, as containerd's applier checks it (`core/diff/apply/apply.go`), and must
-    /// not pass `max` bytes.
-    fn unpack(&self, layer: &Layer, bytes: &AtomicU64, limits: &Limits, room: &Room) -> Result<Tar, Error> {
+    /// not pass `max` bytes. Where `keep`, the checked archive is kept as the layer's
+    /// uncompressed blob, named by its DiffID, as a layer a build made and compressed keeps
+    /// one ([`Store::keep_manifest`]), and read from there by every unpack after, its
+    /// bytes counted against `max` and not hashed again, as a root filesystem's are not: a
+    /// build's base decompressed into `ingest/` at each build wrote its whole size again
+    /// (rust:1-slim's 850 MiB), which under a budget its host wrote out at its disk's pace
+    /// (PM M442).
+    fn unpack(
+        &self,
+        layer: &Layer,
+        bytes: &AtomicU64,
+        limits: &Limits,
+        room: &Room,
+        keep: bool,
+    ) -> Result<Tar, Error> {
+        let kept = self.blob_path(&layer.diff_id);
+        if keep && layer.diff_id != layer.blob && kept.is_file() {
+            let n = fs::metadata(&kept)?.len();
+            let written = bytes.fetch_add(n, Ordering::AcqRel).saturating_add(n);
+            if written > limits.bytes {
+                return bad(format!(
+                    "the image decompresses to more than {} bytes (SHARDS_MAX_IMAGE_BYTES)",
+                    limits.bytes
+                ));
+            }
+            return Ok(Tar::Blob(kept));
+        }
         let how = oci::layer_compression(&layer.media_type)?;
         let blob = self.blob_path(&layer.blob);
         let mut file = File::open(&blob)?;
@@ -2273,6 +2617,10 @@ impl Store {
         }
         check(sink.hasher)?;
         partial.flush()?;
+        if keep {
+            partial.commit(&kept)?;
+            return Ok(Tar::Blob(kept));
+        }
         Ok(Tar::Temp(partial))
     }
 
@@ -2302,7 +2650,7 @@ impl Store {
     pub fn unpack_layers(&self, layers: &[Layer], limits: &Limits) -> Result<Vec<Unpacked>, Error> {
         let room = Room::new(&self.root.join("ingest"), limits)?;
         let mut out = Vec::with_capacity(layers.len());
-        self.unpack_in_order(layers, limits, &room, &|_| Ok(()), |_, tar| {
+        self.unpack_in_order_keeping(layers, limits, &room, &|_| Ok(()), true, |_, tar| {
             out.push(Unpacked(tar));
             Ok(())
         })?;
@@ -2323,6 +2671,20 @@ impl Store {
         limits: &Limits,
         room: &Room,
         ready: &(dyn Fn(usize) -> Result<(), Error> + Sync),
+        each: impl FnMut(usize, Tar) -> Result<(), Error>,
+    ) -> Result<(), Error> {
+        self.unpack_in_order_keeping(layers, limits, room, ready, false, each)
+    }
+
+    /// [`Store::unpack_in_order`], each layer's archive kept as its uncompressed blob where
+    /// `keep` ([`Store::unpack`]).
+    fn unpack_in_order_keeping(
+        &self,
+        layers: &[Layer],
+        limits: &Limits,
+        room: &Room,
+        ready: &(dyn Fn(usize) -> Result<(), Error> + Sync),
+        keep: bool,
         mut each: impl FnMut(usize, Tar) -> Result<(), Error>,
     ) -> Result<(), Error> {
         let workers = std::thread::available_parallelism()
@@ -2343,7 +2705,7 @@ impl Store {
                         while !stop.load(Ordering::Acquire) {
                             let i = next.fetch_add(1, Ordering::AcqRel);
                             let Some(layer) = layers.get(i) else { break };
-                            let r = ready(i).and_then(|()| self.unpack(layer, bytes, limits, room));
+                            let r = ready(i).and_then(|()| self.unpack(layer, bytes, limits, room, keep));
                             if r.is_err() {
                                 stop.store(true, Ordering::Release);
                             }
@@ -2416,8 +2778,11 @@ impl Store {
         self.rootfs_built(layers, limits, ready, false)
     }
 
-    /// [`Store::rootfs_as_ready`], built again whether or not it is here, and put in the
-    /// old one's place whole: `pull --no-cache`.
+    /// [`Store::rootfs_as_ready`], built again whether or not it is here: `pull --no-cache`.
+    /// A file at its name that holds other bytes than the layers stack to (a producer's
+    /// whose rules proved wrong, say, or a file changed on disk) is replaced whole, by
+    /// rename, with a later modification time ([`rootfs_stamp`]), and named by no producer
+    /// then; one that holds the same bytes is kept, with what names its producer.
     pub fn rootfs_again_as_ready(
         &self,
         layers: &[Layer],
@@ -2436,12 +2801,15 @@ impl Store {
     ) -> Result<PathBuf, Error> {
         let diff_ids: Vec<Digest> = layers.iter().map(|l| l.diff_id.clone()).collect();
         let from = from_path(&self.rootfs_path(&diff_ids)?);
-        self.rootfs_by(layers, limits, again, |room, ingest| {
-            // Stacked from the layers: nothing else wrote it, whatever was named before.
-            match fs::remove_file(&from) {
-                Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e.into()),
-                _ => {}
-            }
+        // Stacked from the layers: nothing else wrote it, whatever was named before. Unnamed
+        // once it is in place, so that a crash between leaves the producer named of a file
+        // it never wrote, which its disowning would only build again, never one it wrote
+        // named by nothing.
+        let placed = || match fs::remove_file(&from) {
+            Err(e) if e.kind() != io::ErrorKind::NotFound => Err(e.into()),
+            _ => Ok(()),
+        };
+        self.rootfs_by(layers, limits, again, placed, |room, ingest| {
             let (mut entries, mut metadata) = (0u64, 0u64);
             let mut tree = layer::root();
             let mut tars = Vec::with_capacity(layers.len());
@@ -2514,47 +2882,190 @@ impl Store {
     ) -> Result<PathBuf, Error> {
         let diff_ids: Vec<Digest> = layers.iter().map(|l| l.diff_id.clone()).collect();
         let from = from_path(&self.rootfs_path(&diff_ids)?);
-        self.rootfs_by(layers, limits, false, |room, ingest| {
-            let mut marker = Partial::create(ingest)?;
-            marker.write_all(producer.as_bytes())?;
-            marker.replace(&from)?;
-            let mut partial = Partial::create(ingest)?;
-            write(&mut Checked {
-                out: &mut partial,
-                room,
-            })?;
-            Ok(partial)
-        })
+        self.rootfs_by(
+            layers,
+            limits,
+            false,
+            || Ok(()),
+            |room, ingest| {
+                let mut marker = Partial::create(ingest)?;
+                marker.write_all(producer.as_bytes())?;
+                marker.replace(&from)?;
+                let mut partial = Partial::create(ingest)?;
+                write(&mut Checked {
+                    out: &mut partial,
+                    room,
+                })?;
+                Ok(partial)
+            },
+        )
     }
 
-    /// The root filesystem of `layers` where it is kept, made by `make` unless it is
-    /// there, while this process holds the store's lock on building them: `make` writes
-    /// it into a file under `ingest`, within `room`.
+    /// The root filesystem kept for the layers with `diff_ids`, where it is ([`Store::kept_at`]):
+    /// none where it was never built, or was of another version.
+    pub fn rootfs_kept(&self, diff_ids: &[Digest]) -> Option<PathBuf> {
+        let path = self.rootfs_path(diff_ids).ok()?;
+        self.kept_at(&path)
+    }
+
+    /// [`Store::rootfs_written`] over `below`, a root filesystem of `below_len` bytes kept
+    /// for a run of `layers` from the first ([`Store::rootfs_kept`]): the image starts as a
+    /// clone of it, which `clone` makes at the path it is given, sharing its blocks (APFS's
+    /// clonefile, Btrfs's and XFS's FICLONE), or says it cannot; `write` writes what follows
+    /// `below`'s blocks (shards_erofs::write_over) and returns the image's first block, put
+    /// in place of `below`'s. So only what the layers past `below` add is written (PM M442:
+    /// rust:1-slim's whole 850 MiB root filesystem written again for a build's 7 MiB).
+    /// `Ok(None)` where no clone is made, nothing written: the image is to be written whole.
+    ///
+    /// Its tree is its layers' (shards_erofs::write_over), its bytes laid out otherwise than
+    /// stacking lays them, and otherwise again over another base. So it is not put where the
+    /// stacked one goes, whose bytes a template keyed by its name expects of it whenever it is
+    /// stacked again (run.rs `template`; a collection that ended before its templates did,
+    /// say): it is named by the SHA-256 of its base's name, length and of what is written
+    /// over it, which make its bytes (a base's name keeps its bytes, by this rule and
+    /// stacking's), `<ChainID>.over-<hex>.erofs`, and a record beside the stacked one's
+    /// place (`<ChainID>.over`) names it ([`Store::kept_at`]).
+    #[allow(clippy::too_many_arguments)]
+    pub fn rootfs_written_over(
+        &self,
+        layers: &[Layer],
+        limits: &Limits,
+        producer: &str,
+        below: &Path,
+        below_len: u64,
+        clone: impl FnOnce(&Path) -> io::Result<bool>,
+        write: impl FnOnce(&mut dyn Write) -> Result<Vec<u8>, Error>,
+    ) -> Result<Option<PathBuf>, Error> {
+        let diff_ids: Vec<Digest> = layers.iter().map(|l| l.diff_id.clone()).collect();
+        let stacked = self.rootfs_path(&diff_ids)?;
+        if let Some(kept) = self.kept_at(&stacked) {
+            return Ok(Some(kept));
+        }
+        if below_len == 0 || !below_len.is_multiple_of(crate::erofs::BLOCK) {
+            return Ok(None);
+        }
+        let below_name = below
+            .file_name()
+            .and_then(|n| n.to_str())
+            .ok_or_else(|| Error(format!("{}: not a root filesystem's name", below.display())))?;
+        let stem = stacked
+            .file_stem()
+            .and_then(|n| n.to_str())
+            .ok_or_else(|| Error("a root filesystem with no name".into()))?
+            .to_string();
+        let at = Partial::unused(&self.root.join("ingest"))?;
+        if !clone(&at)? {
+            return Ok(None);
+        }
+        let opened = File::options()
+            .read(true)
+            .write(true)
+            .open(&at)
+            .and_then(|f| Ok((f.metadata()?.len(), f)));
+        let (len, file) = match opened {
+            Ok(opened) => opened,
+            Err(e) => {
+                let _ = fs::remove_file(&at);
+                return Err(e.into());
+            }
+        };
+        // Removed as it drops, unless it is committed.
+        let mut cloned = Partial::of(at, file);
+        if len != below_len {
+            return bad(format!("a clone of {below_len} bytes came to {len}"));
+        }
+        let building = self.building()?;
+        building.lock()?;
+        if let Some(kept) = self.kept_at(&stacked) {
+            return Ok(Some(kept));
+        }
+        let ingest = self.root.join("ingest");
+        let room = Room::new(&ingest, limits)?;
+        let gone = || Error("the clone's file is gone".into());
+        cloned
+            .file
+            .as_mut()
+            .ok_or_else(gone)?
+            .seek(io::SeekFrom::Start(below_len))?;
+        let mut hasher = Sha256::new();
+        hasher.update(format!("over {below_name} {below_len}\n").as_bytes());
+        let head = write(&mut Hashed {
+            out: Checked {
+                out: &mut cloned,
+                room: &room,
+            },
+            hasher: &mut hasher,
+        })?;
+        if head.len() as u64 != crate::erofs::BLOCK {
+            return bad("an image's first block of another size");
+        }
+        hasher.update(&head);
+        let f = cloned.file.as_mut().ok_or_else(gone)?;
+        f.seek(io::SeekFrom::Start(0))?;
+        f.write_all(&head)?;
+        f.flush()?;
+        let hex: String = hasher.finalize().iter().map(|b| format!("{b:02x}")).collect();
+        let name = format!("{stem}.over-{hex}.erofs");
+        let path = stacked.with_file_name(&name);
+        // Named before it is in place, so that a crash never leaves it unnamed
+        // ([`Store::rootfs_written`]); found once its record names it.
+        let mut marker = Partial::create(&ingest)?;
+        marker.write_all(producer.as_bytes())?;
+        marker.replace(&from_path(&path))?;
+        cloned.commit(&path)?;
+        let mut record = Partial::create(&ingest)?;
+        record.write_all(name.as_bytes())?;
+        record.replace(&stacked.with_extension("over"))?;
+        drop(building);
+        Ok(Some(path))
+    }
+
+    /// The lock one build of a root filesystem holds at a time in a store, whichever
+    /// process builds it.
+    fn building(&self) -> Result<File, Error> {
+        Ok(File::options()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(self.root.join(format!("rootfs/v{ROOTFS_VERSION}/.building")))?)
+    }
+
+    /// The root filesystem of `layers` where it is kept ([`Store::kept_at`]), made by
+    /// `make` unless it is there, or `again`, while this process holds the store's lock on
+    /// building them: `make` writes it into a file under `ingest`, within `room`, for the
+    /// place of the one stacked of them, and `placed` follows once it is put there, under
+    /// the lock still. Made `again`, it is put there as [`Partial::commit_again`] puts it.
     fn rootfs_by(
         &self,
         layers: &[Layer],
         limits: &Limits,
         again: bool,
+        placed: impl FnOnce() -> Result<(), Error>,
         make: impl FnOnce(&Room, &Path) -> Result<Partial, Error>,
     ) -> Result<PathBuf, Error> {
         let diff_ids: Vec<Digest> = layers.iter().map(|l| l.diff_id.clone()).collect();
         let path = self.rootfs_path(&diff_ids)?;
-        if path.is_file() && !again {
-            return Ok(path);
+        if !again && let Some(kept) = self.kept_at(&path) {
+            return Ok(kept);
         }
-        let building = File::options()
-            .create(true)
-            .truncate(false)
-            .write(true)
-            .open(self.root.join(format!("rootfs/v{ROOTFS_VERSION}/.building")))?;
+        let building = self.building()?;
         building.lock()?;
-        if path.is_file() && !again {
-            return Ok(path);
+        if !again && let Some(kept) = self.kept_at(&path) {
+            return Ok(kept);
         }
         let ingest = self.root.join("ingest");
         let room = Room::new(&ingest, limits)?;
         let partial = make(&room, &ingest)?;
-        partial.commit(&path)?;
+        let put = if again {
+            partial.commit_again(&path)?
+        } else {
+            // Nothing is there: it was looked for under the lock.
+            partial.commit(&path)?;
+            true
+        };
+        if put {
+            placed()?;
+        }
         drop(building);
         Ok(path)
     }
@@ -2660,6 +3171,25 @@ impl Write for Checked<'_> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         self.room.wrote(buf.len())?;
         self.out.write(buf)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.out.flush()
+    }
+}
+
+/// What is written through `out`, hashed as it goes: the bytes an image over another's
+/// writes past that one's, which name it ([`Store::rootfs_written_over`]).
+struct Hashed<'a> {
+    out: Checked<'a>,
+    hasher: &'a mut Sha256,
+}
+
+impl Write for Hashed<'_> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let n = self.out.write(buf)?;
+        self.hasher.update(buf.get(..n).unwrap_or_default());
+        Ok(n)
     }
 
     fn flush(&mut self) -> io::Result<()> {
@@ -2803,6 +3333,48 @@ impl<R: BufRead> Read for Zstd<R> {
 /// reads them.
 pub fn gunzip<R: BufRead>(src: R) -> impl Read {
     flate2::bufread::MultiGzDecoder::new(src)
+}
+
+/// Whether the files at `a` and `b` hold the same bytes.
+fn same_bytes(a: &Path, b: &Path) -> io::Result<bool> {
+    let (mut a, mut b) = (File::open(a)?, File::open(b)?);
+    if a.metadata()?.len() != b.metadata()?.len() {
+        return Ok(false);
+    }
+    let (mut x, mut y) = (Vec::with_capacity(CHUNK), Vec::with_capacity(CHUNK));
+    loop {
+        x.clear();
+        y.clear();
+        let n = (&mut a).take(CHUNK as u64).read_to_end(&mut x)?;
+        (&mut b).take(CHUNK as u64).read_to_end(&mut y)?;
+        if x != y {
+            return Ok(false);
+        }
+        if n == 0 {
+            return Ok(true);
+        }
+    }
+}
+
+/// What tells the root filesystem at `rootfs` from another put at its name since: its
+/// length and modification time; none where no file is there. A name keeps its bytes, but
+/// for one `pull --no-cache` finds holding others than its layers stack to, which it
+/// replaces with a later modification time ([`Store::rootfs_again_as_ready`]): what is
+/// made of a root filesystem and keyed by its name, a template (run.rs `template`), is
+/// keyed by this too, and so apart from what was made of the file it replaced.
+pub fn rootfs_stamp(rootfs: &Path) -> Option<String> {
+    let meta = fs::metadata(rootfs).ok().filter(fs::Metadata::is_file)?;
+    let modified = meta.modified().ok()?;
+    let (sign, since) = match modified.duration_since(std::time::UNIX_EPOCH) {
+        Ok(since) => ("", since),
+        Err(e) => ("-", e.duration()),
+    };
+    Some(format!(
+        "{} {sign}{}.{:09}",
+        meta.len(),
+        since.as_secs(),
+        since.subsec_nanos()
+    ))
 }
 
 /// Where what wrote the root filesystem at `rootfs` is named.
@@ -3087,6 +3659,157 @@ mod tests {
         fs::remove_file(store.blob_path(&sha256(&layer))).unwrap();
         let images = store.images().unwrap();
         assert!(!images.iter().find(|i| i.id == new_digest).unwrap().manifests[0].available);
+    }
+
+    /// One platform of a multi-platform image is found, read and taken away alone (D179):
+    /// found where it is here whole, read with its own config, held by another image that
+    /// names it too, and taken away with its attestation, the records that named it naming
+    /// the platform left, then the index; what it alone held goes with the collection.
+    #[test]
+    fn one_platform_of_an_image_is_found_read_and_taken_away_alone() {
+        let root = temp("platforms");
+        let store = Store::open(&root).unwrap();
+        let put = |blob: &[u8]| {
+            let d = sha256(blob);
+            store.ingest(&d, blob.len() as u64, &mut &blob[..]).unwrap();
+            d
+        };
+        let platform = |arch: &str| {
+            crate::platform::normalize(&oci::Platform {
+                architecture: arch.into(),
+                os: "linux".into(),
+                ..oci::Platform::default()
+            })
+        };
+        // Each platform's own layer, config and manifest.
+        let mut made = Vec::new();
+        for arch in ["arm64", "amd64"] {
+            let layer = format!("{arch} layer").into_bytes();
+            let config = format!(
+                r#"{{"architecture":"{arch}","os":"linux","rootfs":{{"type":"layers","diff_ids":["{}"]}}}}"#,
+                sha256(&layer)
+            )
+            .into_bytes();
+            let manifest = format!(
+                r#"{{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{{"mediaType":"application/vnd.oci.image.config.v1+json","digest":"{}","size":{}}},"layers":[{{"mediaType":"application/vnd.oci.image.layer.v1.tar","digest":"{}","size":{}}}]}}"#,
+                sha256(&config),
+                config.len(),
+                sha256(&layer),
+                layer.len()
+            )
+            .into_bytes();
+            let (layer_d, config_d, manifest_d) = (put(&layer), put(&config), put(&manifest));
+            made.push((arch, layer_d, config_d, manifest_d, manifest.len()));
+        }
+        // amd64's attestation, a manifest of its own.
+        let statement = b"statement".to_vec();
+        let statement_d = put(&statement);
+        let attestation = format!(
+            r#"{{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{{"mediaType":"application/vnd.oci.image.config.v1+json","digest":"{statement_d}","size":{}}},"layers":[]}}"#,
+            statement.len()
+        )
+        .into_bytes();
+        let attestation_d = put(&attestation);
+        let entry = |(arch, _, _, d, len): &(&str, Digest, Digest, Digest, usize)| {
+            format!(
+                r#"{{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"{d}","size":{len},"platform":{{"architecture":"{arch}","os":"linux"}}}}"#
+            )
+        };
+        let (arm, amd) = (&made[0], &made[1]);
+        let index = format!(
+            r#"{{"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[{},{},{{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"{attestation_d}","size":{},"annotations":{{"vnd.docker.reference.digest":"{}","vnd.docker.reference.type":"attestation-manifest"}},"platform":{{"architecture":"unknown","os":"unknown"}}}}]}}"#,
+            entry(arm),
+            entry(amd),
+            attestation.len(),
+            amd.3
+        )
+        .into_bytes();
+        let index_d = put(&index);
+        let named_by = |manifest: &(&str, Digest, Digest, Digest, usize)| Descriptor {
+            platform: Some(oci::Platform {
+                architecture: manifest.0.into(),
+                os: "linux".into(),
+                ..oci::Platform::default()
+            }),
+            ..described(&manifest.3, manifest.4)
+        };
+        // The record names the platform this host's microVMs run best.
+        let best = if crate::platform::pullable()
+            .iter()
+            .position(|t| *t == platform("arm64"))
+            < crate::platform::pullable()
+                .iter()
+                .position(|t| *t == platform("amd64"))
+        {
+            (arm, amd)
+        } else {
+            (amd, arm)
+        };
+        store
+            .tag("docker.io/library/a:1", &named_by(best.0), &index_d, &[])
+            .unwrap();
+        let named = || {
+            store
+                .named()
+                .unwrap()
+                .into_iter()
+                .find(|n| n.id == index_d)
+                .unwrap()
+        };
+        for m in [arm, amd] {
+            let found = store.manifest_for(&named(), &platform(m.0)).unwrap();
+            assert_eq!(found.digest, m.3.to_string());
+            let image = store.image_as(&named(), &found).unwrap();
+            assert_eq!(
+                (image.id.clone(), image.manifest.clone()),
+                (index_d.clone(), m.3.clone())
+            );
+            let config = String::from_utf8(image.config.unwrap()).unwrap();
+            assert!(config.contains(&format!("\"{}\"", m.0)), "{config}");
+        }
+        assert_eq!(store.manifest_for(&named(), &platform("riscv64")), None);
+        // Another image that is amd64's manifest alone holds it.
+        assert!(store.manifests_held(Some(&index_d)).unwrap().is_empty());
+        store
+            .tag("docker.io/library/b:1", &named_by(amd), &amd.3, &[])
+            .unwrap();
+        assert_eq!(
+            store
+                .manifests_held(Some(&index_d))
+                .unwrap()
+                .get(&amd.3.to_string()),
+            Some(&"docker.io/library/b:1".to_string())
+        );
+        store.untag("docker.io/library/b:1").unwrap();
+        // The platform the record names goes: the record names the other.
+        store
+            .remove_platforms(&index_d, std::slice::from_ref(&best.0.3))
+            .unwrap();
+        assert_eq!(store.manifest_for(&named(), &platform(best.0.0)), None);
+        assert_eq!(named().manifest.digest, best.1.3.to_string());
+        let (_, whole) = store.collect().unwrap();
+        drop(whole);
+        for d in [&best.0.1, &best.0.2, &best.0.3] {
+            assert!(!store.has(d), "{d} went with it");
+        }
+        for d in [&best.1.1, &best.1.2, &best.1.3, &index_d] {
+            assert!(store.has(d), "{d} stays");
+        }
+        // amd64's attestation goes with it, whichever goes first.
+        assert_eq!(store.has(&attestation_d), best.0.0 != "amd64");
+        // The last platform goes: the record names the index itself.
+        store
+            .remove_platforms(&index_d, std::slice::from_ref(&best.1.3))
+            .unwrap();
+        assert_eq!(named().manifest.digest, index_d.to_string());
+        assert!(!store.has(&attestation_d));
+        assert!(
+            store
+                .images()
+                .unwrap()
+                .iter()
+                .all(|i| i.manifests.iter().all(|m| !m.available))
+        );
     }
 
     /// A record whose descriptor nothing can be held by, its size not its blob's,
@@ -3821,6 +4544,71 @@ mod tests {
         (tars, layers)
     }
 
+    /// A build's base layers, unpacked, are kept as their uncompressed blobs, named by
+    /// their DiffIDs, and read from there by every unpack after: none decompressed into
+    /// `ingest/` again, their bytes still counted against the image's limit; a collection
+    /// keeps them while an image names their layers, and takes them with it (PM M442).
+    #[test]
+    fn a_builds_base_layers_are_decompressed_once() {
+        let root = temp("kept");
+        let store = Store::open(&root).unwrap();
+        let (tars, layers) = uneven_layers(&store, 3);
+        let limits = Limits::none();
+        let unpacked = store.unpack_layers(&layers, &limits).unwrap();
+        for (i, l) in layers.iter().enumerate() {
+            let kept = store.blob_path(&l.diff_id);
+            assert_eq!(fs::read(&kept).unwrap(), tars[i], "layer {i} kept whole");
+            assert_eq!(unpacked[i].0.path(), kept.as_path());
+        }
+        drop(unpacked);
+        assert_eq!(fs::read_dir(root.join("ingest")).unwrap().count(), 0);
+        // Read from there: its blob gone, the kept archive is what an unpack gives.
+        for l in &layers {
+            fs::remove_file(store.blob_path(&l.blob)).unwrap();
+        }
+        let again = store.unpack_layers(&layers, &limits).unwrap();
+        for (i, u) in again.iter().enumerate() {
+            assert_eq!(fs::read(u.0.path()).unwrap(), tars[i]);
+        }
+        drop(again);
+        // Counted against the image's limit as an unpack counts it.
+        let total: u64 = tars.iter().map(|t| t.len() as u64).sum();
+        let tight = Limits {
+            bytes: total - 1,
+            ..Limits::none()
+        };
+        let e = store.unpack_layers(&layers, &tight).unwrap_err();
+        assert!(e.0.contains("SHARDS_MAX_IMAGE_BYTES"), "{e}");
+        // A root filesystem's unpack keeps nothing.
+        let other = tar_of(b"other", b"other");
+        let layer = stored_layer(&store, &other);
+        store.rootfs(std::slice::from_ref(&layer), &limits).unwrap();
+        assert!(!store.blob_path(&layer.diff_id).exists());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// What a collection makes of a kept archive: kept while a reference's image names its
+    /// layer, collected once none does.
+    #[test]
+    fn a_kept_base_layer_goes_with_its_image() {
+        let root = temp("kept-gc");
+        let store = Store::open(&root).unwrap();
+        let a = tar_of(b"a", b"a");
+        tagged(&store, "base:v1", &[&a]);
+        let layer = stored_layer(&store, &a);
+        store
+            .unpack_layers(std::slice::from_ref(&layer), &Limits::none())
+            .unwrap();
+        let kept = store.blob_path(&layer.diff_id);
+        assert!(kept.is_file());
+        drop(store.collect().unwrap());
+        assert!(kept.is_file(), "its image named");
+        store.untag("base:v1").unwrap();
+        drop(store.collect().unwrap());
+        assert!(!kept.exists(), "no image names it");
+        let _ = fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn layers_unpacked_together_are_applied_in_order_and_fail_as_one_by_one() {
         let root = temp("in-order");
@@ -3906,7 +4694,7 @@ mod tests {
             ..Limits::none()
         };
         let room = Room::new(&store.root.join("ingest"), &limits)?;
-        store.unpack(layer, &AtomicU64::new(0), &limits, &room)
+        store.unpack(layer, &AtomicU64::new(0), &limits, &room, false)
     }
 
     /// Stores `tar`, gzipped, as a layer.
@@ -4329,6 +5117,273 @@ mod tests {
         fs::write(from_path(&stacked), b"snapshot 1").unwrap();
         store.collect().unwrap();
         assert!(!from_path(&stacked).exists(), "named with no image, and kept");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// `pull --no-cache` puts the bytes its layers stack to at their root filesystem's name
+    /// where a file there holds others (a producer's whose rules proved wrong, here): by
+    /// rename, so that a reader holding the old file keeps it whole, with a later
+    /// modification time even where the old one's is ahead of the clock, so that what is
+    /// keyed by the name and its stamp (run.rs `template`) is keyed apart, and named by no
+    /// producer then. Nothing is left in `ingest/`.
+    #[test]
+    fn building_again_replaces_a_root_filesystem_of_other_bytes() {
+        let root = temp("again-other");
+        let store = Store::open(&root).unwrap();
+        let tar = Writer::default()
+            .member(Member {
+                name: b"f",
+                data: b"x",
+                ..Member::default()
+            })
+            .finish();
+        let layer = stored_layer(&store, &tar);
+        let layers = std::slice::from_ref(&layer);
+        let stacked = store.rootfs(layers, &Limits::none()).unwrap();
+        let stacked_bytes = fs::read(&stacked).unwrap();
+        fs::remove_file(&stacked).unwrap();
+        let wrong = vec![0x5a; stacked_bytes.len()];
+        let written = store
+            .rootfs_written(layers, &Limits::none(), "snapshot 1", |out| {
+                out.write_all(&wrong)?;
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(written, stacked);
+        // Its time ahead of the clock: a replacement written now would otherwise be older.
+        let ahead = std::time::SystemTime::now() + std::time::Duration::from_secs(3600);
+        File::options()
+            .write(true)
+            .open(&written)
+            .unwrap()
+            .set_modified(ahead)
+            .unwrap();
+        let before = rootfs_stamp(&written).unwrap();
+        #[cfg(unix)]
+        let mut held = File::open(&written).unwrap();
+
+        let again = store
+            .rootfs_again_as_ready(layers, &Limits::none(), &|_| Ok(()))
+            .unwrap();
+        assert_eq!(again, stacked);
+        assert_eq!(fs::read(&again).unwrap(), stacked_bytes, "not replaced");
+        assert_eq!(
+            store.rootfs_producer(&again),
+            None,
+            "named as the producer's still"
+        );
+        let after = rootfs_stamp(&again).unwrap();
+        assert_ne!(after, before, "stamped as the file it replaced");
+        assert!(fs::metadata(&again).unwrap().modified().unwrap() > ahead);
+        #[cfg(unix)]
+        {
+            let mut old = Vec::new();
+            held.read_to_end(&mut old).unwrap();
+            assert_eq!(old, wrong, "written over in place");
+        }
+        assert_eq!(fs::read_dir(root.join("ingest")).unwrap().count(), 0);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// `pull --no-cache` keeps a root filesystem that holds the bytes its layers stack to,
+    /// the same file, so that what was made of it holds still, and what names its producer
+    /// with it; and builds one where none is.
+    #[test]
+    fn building_again_keeps_a_root_filesystem_of_the_same_bytes() {
+        let root = temp("again-same");
+        let store = Store::open(&root).unwrap();
+        let tar = Writer::default()
+            .member(Member {
+                name: b"f",
+                data: b"x",
+                ..Member::default()
+            })
+            .finish();
+        let layer = stored_layer(&store, &tar);
+        let layers = std::slice::from_ref(&layer);
+        let stacked = store.rootfs(layers, &Limits::none()).unwrap();
+        let stacked_bytes = fs::read(&stacked).unwrap();
+        fs::remove_file(&stacked).unwrap();
+        let written = store
+            .rootfs_written(layers, &Limits::none(), "snapshot 1", |out| {
+                out.write_all(&stacked_bytes)?;
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(written, stacked);
+        let before = rootfs_stamp(&written).unwrap();
+        #[cfg(unix)]
+        let ino = {
+            use std::os::unix::fs::MetadataExt as _;
+            fs::metadata(&written).unwrap().ino()
+        };
+        let again = store
+            .rootfs_again_as_ready(layers, &Limits::none(), &|_| Ok(()))
+            .unwrap();
+        assert_eq!(again, written);
+        assert_eq!(rootfs_stamp(&again).unwrap(), before, "replaced");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt as _;
+            assert_eq!(fs::metadata(&again).unwrap().ino(), ino, "replaced");
+        }
+        assert_eq!(store.rootfs_producer(&again).as_deref(), Some("snapshot 1"));
+        assert_eq!(fs::read_dir(root.join("ingest")).unwrap().count(), 0);
+
+        fs::remove_file(&again).unwrap();
+        let built = store
+            .rootfs_again_as_ready(layers, &Limits::none(), &|_| Ok(()))
+            .unwrap();
+        assert_eq!(built, written);
+        assert!(rootfs_stamp(&built).is_some());
+        assert_eq!(
+            store.rootfs_producer(&built),
+            None,
+            "stacked, so named by nothing"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// An image written over its base's root filesystem starts with that one's bytes, a
+    /// clone of it, its first block the new superblock; past them only what the layers above
+    /// add, its file the base's own read where the base has it; and where no clone is made,
+    /// nothing is written, for the image to be written whole.
+    #[test]
+    fn an_image_over_its_base_writes_only_what_its_layers_add() {
+        let root = temp("over");
+        let store = Store::open(&root).unwrap();
+        let big = vec![7u8; 3 << 20];
+        let base_tar = Writer::default()
+            .member(Member {
+                name: b"big",
+                data: &big,
+                ..Member::default()
+            })
+            .finish();
+        let added_tar = Writer::default()
+            .member(Member {
+                name: b"added",
+                data: b"new",
+                ..Member::default()
+            })
+            .finish();
+        let base_layer = stored_layer(&store, &base_tar);
+        let added_layer = stored_layer(&store, &added_tar);
+        let below = store
+            .rootfs(std::slice::from_ref(&base_layer), &Limits::none())
+            .unwrap();
+        assert_eq!(
+            store.rootfs_kept(std::slice::from_ref(&base_layer.diff_id)),
+            Some(below.clone())
+        );
+        let below_bytes = fs::read(&below).unwrap();
+        let back = erofs::read_tree(&mut io::Cursor::new(&below_bytes), 0).unwrap();
+        let Some(erofs::Node {
+            kind: erofs::Kind::File { data, size },
+            ..
+        }) = back.child(erofs::Tree::ROOT, b"big").and_then(|id| back.node(id))
+        else {
+            panic!("no big file below");
+        };
+        let (held_at, held_size) = (data.offset, *size);
+        let layers = [base_layer.clone(), added_layer.clone()];
+        let tree_of = || {
+            let mut tree = layer::root();
+            layer::apply(&mut tree, 0, io::Cursor::new(&base_tar), &mut |_| Ok(())).unwrap();
+            layer::apply(&mut tree, 1, io::Cursor::new(&added_tar), &mut |_| Ok(())).unwrap();
+            tree
+        };
+        let none = store
+            .rootfs_written_over(
+                &layers,
+                &Limits::none(),
+                "over",
+                &below,
+                below_bytes.len() as u64,
+                |_| Ok(false),
+                |_| panic!("nothing to write with no clone"),
+            )
+            .unwrap();
+        assert_eq!(none, None);
+        let written = store
+            .rootfs_written_over(
+                &layers,
+                &Limits::none(),
+                "over",
+                &below,
+                below_bytes.len() as u64,
+                |dst| fs::copy(&below, dst).map(|_| true),
+                |out| {
+                    let tree = tree_of();
+                    let big = tree.child(erofs::Tree::ROOT, b"big").unwrap();
+                    let held = std::collections::HashMap::from([(
+                        big,
+                        ((held_at / erofs::BLOCK) as u32, held_size),
+                    )]);
+                    let over = erofs::Over {
+                        blocks: below_bytes.len() as u64 / erofs::BLOCK,
+                        held: &held,
+                    };
+                    let mut archives = layer::Archives(vec![
+                        io::Cursor::new(base_tar.clone()),
+                        io::Cursor::new(added_tar.clone()),
+                    ]);
+                    let (_, head) = erofs::write_over(&tree, &mut archives, out, [0; 16], &over)?;
+                    Ok(head)
+                },
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(store.rootfs_producer(&written).as_deref(), Some("over"));
+        let image = fs::read(&written).unwrap();
+        assert_eq!(
+            &image[erofs::BLOCK as usize..below_bytes.len()],
+            &below_bytes[erofs::BLOCK as usize..]
+        );
+        assert!(
+            image.len() - below_bytes.len() < (1 << 20),
+            "the base's 3 MiB written again: {} bytes past it",
+            image.len() - below_bytes.len()
+        );
+        for (name, want) in [(&b"big"[..], &big[..]), (b"added", b"new")] {
+            match erofs::read_file(&mut io::Cursor::new(&image), name, u64::MAX).unwrap() {
+                erofs::Found::File(bytes) => assert_eq!(bytes, want),
+                _ => panic!("no file {}", String::from_utf8_lossy(name)),
+            }
+        }
+        // Named apart from the place of the one stacked of its layers, by its own digest,
+        // and found by their record: stacked again, those go elsewhere, so a template keyed
+        // by either name never finds other bytes under it.
+        let ids = [base_layer.diff_id.clone(), added_layer.diff_id.clone()];
+        let stacked_at = store.rootfs_path(&ids).unwrap();
+        assert_ne!(written, stacked_at);
+        let name = written.file_name().unwrap().to_str().unwrap().to_string();
+        assert!(
+            name.starts_with(&format!(
+                "{}.over-",
+                stacked_at.file_stem().unwrap().to_str().unwrap()
+            )),
+            "{name}"
+        );
+        assert_eq!(store.rootfs_kept(&ids), Some(written.clone()));
+        assert_eq!(store.rootfs(&layers, &Limits::none()).unwrap(), written);
+        assert!(!stacked_at.exists(), "stacked though one was kept");
+        let record = stacked_at.with_extension("over");
+        fs::write(&record, "../elsewhere.erofs").unwrap();
+        assert_eq!(
+            store.rootfs_kept(&ids),
+            None,
+            "a record naming a path is followed"
+        );
+        fs::write(&record, &name).unwrap();
+        fs::remove_file(&written).unwrap();
+        let stacked = store.rootfs(&layers, &Limits::none()).unwrap();
+        assert_eq!(stacked, stacked_at);
+        // No reference holds them: each goes, the record and what named its image too.
+        store.collect().unwrap();
+        for left in [&stacked, &record, &from_path(&written)] {
+            assert!(!left.exists(), "{} kept", left.display());
+        }
         let _ = fs::remove_dir_all(&root);
     }
 

@@ -13,12 +13,13 @@ use shards_cmdline::width;
 
 use super::filters::Filters;
 
-/// A manifest of an image, as dockerd's containerd store lists it.
+/// A manifest of an image, in the shape `image ls --tree` and inspect answer (D170).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct Manifest {
     pub id: String,
     pub kind: Kind,
-    /// `os/arch[/variant]`, as containerd's platforms.Format writes it.
+    /// `os/arch[/variant]`, the OCI platform's name users see (CLAUDE.md; containerd
+    /// platforms.go Format).
     pub platform: String,
     pub available: bool,
     pub content: i64,
@@ -32,7 +33,7 @@ pub(super) enum Kind {
     Attestation,
 }
 
-/// An image as dockerd lists it.
+/// An image as `image ls` and `GET /images/json` answer it (D170).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct Summary {
     pub id: String,
@@ -339,8 +340,8 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                 let Ok(r) = Reference::parse_normalized(name) else {
                     continue;
                 };
-                // Every name is one of its RepoTags, by digest too, as dockerd lists them
-                // (tagsByDigest); the table shows only those with a tag.
+                // Every name is one of its RepoTags, by digest too, the list clients parse
+                // (D170, moby's tagsByDigest); the table shows only those with a tag.
                 tags.push(r.familiar());
                 let mut bare = r;
                 bare.tag = None;
@@ -372,7 +373,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                 containers,
             });
         }
-        // Newest first, as dockerd lists them (byCreated, reversed).
+        // Newest first, the order scripts that take the first line rely on (D170).
         images.sort_by_key(|i| std::cmp::Reverse(i.created));
         Ok(images)
     }
@@ -744,6 +745,18 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
         env: &[String],
         reply: &super::commands::Reply<'_>,
     ) -> u8 {
+        // `--platform`: of each image, those platforms' microVMs alone (D179).
+        let mut targets = Vec::new();
+        for given in parsed.many("platform") {
+            match asked_platform(given) {
+                Ok(Some(t)) if !targets.contains(&t) => targets.push(t),
+                Ok(_) => {}
+                Err(e) => {
+                    reply.err(&format!("shards: {e}"));
+                    return 1;
+                }
+            }
+        }
         // For a client on a colour terminal: what each name did, and what deleting frees.
         let mut sheet = shards_ipc::Sheet::new("rmi");
         let sizes: Vec<(String, u64)> = if styled {
@@ -779,6 +792,43 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
         let mut errors: Vec<super::rmi::Refused> = Vec::new();
         let with_vms = parsed.bool("vms");
         for given in &parsed.args {
+            if !targets.is_empty() {
+                let taken = match &store {
+                    None => Err(super::rmi::Refused {
+                        said: format!("shards: {}", not_found(given)),
+                        not_found: true,
+                    }),
+                    Some(s) => self.rmi_platforms_of(s, given, &targets, force),
+                };
+                match taken {
+                    // An image of one platform, which is all of it: removed as a whole.
+                    Ok(None) => {}
+                    Ok(Some(taken)) => {
+                        for (manifest, freed) in taken {
+                            self.image_event(&manifest, &manifest, "delete");
+                            if styled {
+                                sheet.record(&[
+                                    ("given", given.clone()),
+                                    ("deleted", truncate_id(&manifest).to_string()),
+                                    ("freed", freed.to_string()),
+                                ]);
+                            } else {
+                                reply.out(&format!("Deleted: {manifest}"));
+                            }
+                        }
+                        self.collect_soon();
+                        continue;
+                    }
+                    Err(e) => {
+                        if styled {
+                            let said = e.said.strip_prefix("shards: ").unwrap_or(&e.said).to_string();
+                            sheet.record(&[("given", given.clone()), ("error", said)]);
+                        }
+                        errors.push(e);
+                        continue;
+                    }
+                }
+            }
             // `--vms`: the stopped microVMs made from it go first, so that it can; a
             // running one keeps it, and is named.
             if with_vms && let Some(s) = &store {
@@ -870,6 +920,86 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
 }
 
 impl<D: crate::containers::Disk> super::Daemon<D> {
+    /// What `shards rmi --platform P... IMAGE` takes of the image `given` names (D179): the
+    /// microVMs of the platforms `targets` names, and nothing else of it. Its other
+    /// platforms stay, and its names; a name that named a platform taken comes to name the
+    /// best left for this host's microVMs, or the image's index, with none left, which a
+    /// run pulls again. What it alone held, its root filesystem and the templates of its
+    /// microVMs among it, goes with the next collection. Each platform's manifest taken,
+    /// and the bytes it held; none for an image of one platform, which is all of it, for
+    /// `rmi` to remove whole. Refused, the image left as it was: a platform not here, one
+    /// another image holds too, and one a microVM made of it holds
+    /// ([`super::rmi::check_platforms`]).
+    fn rmi_platforms_of(
+        &self,
+        store: &shards_image::store::Store,
+        given: &str,
+        targets: &[shards_image::platform::Target],
+        force: bool,
+    ) -> Result<Option<Vec<(String, u64)>>, super::rmi::Refused> {
+        use super::rmi::Refused;
+        let missing = |said: String| Refused {
+            said,
+            not_found: true,
+        };
+        let refused = |said: String| Refused {
+            said,
+            not_found: false,
+        };
+        let images = store.named().map_err(|e| refused(format!("shards: {e}")))?;
+        let named = resolve(&images, given).map_err(|e| missing(format!("shards: {e}")))?;
+        // Each platform's manifest, as found for it here.
+        let mut taken: Vec<(String, String)> = Vec::new();
+        for target in targets {
+            let manifest = platform_manifest(store, named, given, target)
+                .map_err(|e| missing(format!("shards: {e}")))?;
+            if !taken.iter().any(|(m, _)| *m == manifest.digest) {
+                taken.push((
+                    manifest.digest.clone(),
+                    shards_image::platform::format_all(target),
+                ));
+            }
+        }
+        if store.index(&named.id).is_none() {
+            return Ok(None);
+        }
+        let users = super::rmi::users(super::lock(&self.containers).all());
+        super::rmi::check_platforms(&named.id, given, &named.manifest.digest, &taken, &users, force)?;
+        let held = store
+            .manifests_held(Some(&named.id))
+            .map_err(|e| refused(format!("shards: {e}")))?;
+        if let Some((platform, holder)) = taken.iter().find_map(|(m, p)| held.get(m).map(|h| (p, h))) {
+            let holder = shards_image::reference::Reference::parse_normalized(holder)
+                .map_or_else(|_| holder.clone(), |r| r.familiar());
+            return Err(refused(format!(
+                "shards: cannot remove image {given}'s {platform}: image {holder} is made of it too, and would lose it"
+            )));
+        }
+        // What each frees, read before it goes.
+        let image = store.image(named).map_err(|e| refused(format!("shards: {e}")))?;
+        let digests = taken
+            .iter()
+            .map(|(m, _)| shards_image::reference::Digest::parse(m))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| refused(format!("shards: {e}")))?;
+        store
+            .remove_platforms(&named.id, &digests)
+            .map_err(|e| refused(format!("shards: {e}")))?;
+        Ok(Some(
+            taken
+                .into_iter()
+                .map(|(m, _)| {
+                    let freed = image
+                        .manifests
+                        .iter()
+                        .find(|i| i.digest.to_string() == m)
+                        .map_or(0, |i| i.content.saturating_add(i.unpacked));
+                    (m, freed)
+                })
+                .collect(),
+        ))
+    }
+
     /// Removes the stopped microVMs made from the image `given` names, and returns their
     /// names: what `remove image` takes with the image.
     fn remove_stopped_of(&self, store: &shards_image::store::Store, given: &str) -> Vec<String> {
@@ -933,9 +1063,14 @@ pub(super) struct Step {
 impl<D: crate::containers::Disk> super::Daemon<D> {
     /// The history of the image `given` names, as dockerd's containerd store reads it
     /// (daemon/containerd/image_history.go): its config's history, newest first, each
-    /// layer's size from our platform's manifest; its names those of its references but a
-    /// dangling one, as each is said. Or why not, its words without `shards: `.
-    pub(super) fn history_of(&self, given: &str) -> Result<History, String> {
+    /// layer's size from the manifest of `platform` where one is asked (D179), else our
+    /// platform's; its names those of its references but a dangling one, as each is said.
+    /// Or why not, its words without `shards: `.
+    pub(super) fn history_of(
+        &self,
+        given: &str,
+        platform: Option<&shards_image::platform::Target>,
+    ) -> Result<History, String> {
         let (image, tags) = self.store().and_then(|store| {
             let store = store.ok_or_else(|| not_found(given))?;
             let images = store.named().map_err(|e| e.to_string())?;
@@ -947,7 +1082,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                 .filter_map(|r| shards_image::reference::Reference::parse_normalized(r).ok())
                 .map(|r| r.familiar())
                 .collect();
-            Ok((store.image(named).map_err(|e| e.to_string())?, tags))
+            Ok((image_for(&store, named, given, platform)?, tags))
         })?;
         // Its config as dockerd's history reads it (image_history.go): its rootfs and
         // history alone, read as Go reads them, failing as that fails; the rest unread.
@@ -1005,7 +1140,9 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
         reply: &super::commands::Reply<'_>,
     ) -> u8 {
         let given = parsed.args.first().map(String::as_str).unwrap_or_default();
-        let History { id: full, steps, .. } = match self.history_of(given) {
+        let History { id: full, steps, .. } = match asked_platform(parsed.string("platform"))
+            .and_then(|platform| self.history_of(given, platform.as_ref()))
+        {
             Ok(h) => h,
             Err(e) => {
                 reply.err(&format!("shards: {e}"));
@@ -1616,7 +1753,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
         }
         // `system prune` alone: the build cache, all of it, as `docker system prune` removes
         // all that no build is using; what an image shares stays until the image goes.
-        // Pruning microVMs or images leaves it, as docker's container and image prunes do.
+        // Pruning microVMs or images leaves it: a build's cache is pruned on its own (D65).
         let mut removed_cache: Vec<String> = Vec::new();
         if images
             && containers
@@ -1742,6 +1879,45 @@ pub(crate) fn not_found(given: &str) -> String {
         Ok(AnyReference::Digest(d)) => format!("No such image: {d}"),
         Ok(AnyReference::Named(r)) => format!("No such image: {}", r.tag_name_only().familiar()),
         Err(_) => format!("No such image: {given}"),
+    }
+}
+
+/// The platform a command names (`--platform`, `os[/arch[/variant]]`), normalized: one
+/// platform's microVM of a multi-platform image (D179). None where it names none.
+pub(crate) fn asked_platform(given: &str) -> Result<Option<shards_image::platform::Target>, String> {
+    if given.is_empty() {
+        return Ok(None);
+    }
+    Ok(crate::pull::targets(given)?.into_iter().next())
+}
+
+/// The manifest of image `named`, asked for as `given`, for platform `target` here whole,
+/// or why not, in the words a script reads where an image lacks a platform asked for.
+pub(crate) fn platform_manifest(
+    store: &shards_image::store::Store,
+    named: &shards_image::store::Named,
+    given: &str,
+    target: &shards_image::platform::Target,
+) -> Result<shards_image::oci::Descriptor, String> {
+    store
+        .manifest_for(named, target)
+        .ok_or_else(|| shards_registry::pull::not_for_platform(given, target).to_string())
+}
+
+/// The image `named` names, read as `platform`'s where one is asked, else as its record
+/// names it.
+pub(crate) fn image_for(
+    store: &shards_image::store::Store,
+    named: &shards_image::store::Named,
+    given: &str,
+    platform: Option<&shards_image::platform::Target>,
+) -> Result<shards_image::store::Image, String> {
+    match platform {
+        None => store.image(named).map_err(|e| e.to_string()),
+        Some(target) => {
+            let manifest = platform_manifest(store, named, given, target)?;
+            store.image_as(named, &manifest).map_err(|e| e.to_string())
+        }
     }
 }
 
@@ -2296,8 +2472,8 @@ mod tests {
     }
 
     /// A manifest is in use while a container runs it, and a run uses the image's
-    /// manifest for our platform: not every manifest here, as dockerd matches each
-    /// container's ImageManifest.
+    /// manifest for our platform: not every manifest here, so that the others can go
+    /// while it runs.
     #[test]
     fn the_manifest_runs_use_is_the_one_in_use() {
         let manifest = |hex: char, attestation: bool| shards_image::store::ImageManifest {
@@ -2317,7 +2493,8 @@ mod tests {
         assert!(manifests(&img, 0).iter().all(|m| !m.in_use));
     }
 
-    /// Images are found as dockerd's containerd store finds them: by digest or ID, by a
+    /// Images are found by every reference clients give (D170, moby's containerd image
+    /// service): by digest or ID, by a
     /// name with a digest only in its repository, by name with `latest` as its tag, and
     /// by an ID's prefix of 4 or more hex digits, refused where it is not one image's.
     #[test]

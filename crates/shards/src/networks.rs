@@ -40,8 +40,8 @@ pub struct Pool6 {
     pub aux: BTreeMap<String, String>,
 }
 
-/// A network, as dockerd's network.Inspect says one, less its members, which its runs
-/// hold.
+/// A network, in the shape `inspect` answers (network.Inspect, D46), less its members,
+/// which its runs hold.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Network {
     pub name: String,
@@ -138,7 +138,7 @@ impl Network {
     }
 
     /// Whether its members reach one another: unless it was made with `enable_icc` false,
-    /// as dockerd's bridge keeps a network's containers from one another.
+    /// which asks for less reach (D46).
     pub fn icc(&self) -> bool {
         self.options
             .get(ICC)
@@ -311,7 +311,7 @@ pub fn allocate(pool: &Pool, members: &[Ipv4Addr]) -> Option<Ipv4Addr> {
     lowest_free(span(pool), &in_use(pool, members))
 }
 
-/// An IPv6 prefix as dockerd keeps one, `ADDR/BITS`, its address masked.
+/// An IPv6 prefix as `inspect` reports one, `ADDR/BITS`, its address masked (D99).
 pub fn prefix6(s: &str) -> Option<(Ipv6Addr, u8)> {
     let (addr, bits) = s.split_once('/')?;
     let addr: Ipv6Addr = addr.parse().ok()?;
@@ -368,7 +368,7 @@ pub fn counts(pool: &Pool, members: &[Ipv4Addr]) -> (u64, u64) {
 /// A network's IPv4 pool as it is created: the subnet asked for, or the lowest of
 /// dockerd's pools that overlaps none of `taken` (`--subnet 0.0.0.0/BITS` asks for one
 /// that long); its range, gateway and auxiliary addresses checked as libnetwork checks
-/// them. dockerd's words when it fails.
+/// them. The words scripts match when it fails (D46).
 pub fn new_pool(
     asked: Option<Prefix>,
     ip_range: Option<Prefix>,
@@ -549,7 +549,7 @@ mod tests {
             ),
             (1, 0)
         );
-        // Refusals, in dockerd's words.
+        // Refusals, in the words scripts match (D46).
         assert_eq!(
             new_pool(Some(p("172.19.0.0/16")), None, None, &none, &[p("172.19.0.0/16")]).unwrap_err(),
             "invalid pool request: Pool overlaps with other one on this address space"

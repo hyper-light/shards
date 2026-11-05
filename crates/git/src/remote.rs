@@ -120,7 +120,7 @@ impl<T: Transport> Remote<T> {
     }
 
     /// The pack of every ref's history, whole, as BuildKit's `git fetch --tags origin`
-    /// takes a repository whose server will not send a commit by its name alone.
+    /// takes (D48) a repository whose server will not send a commit by its name alone.
     pub fn fetch_whole(&self, limits: Limits) -> Result<Pack, String> {
         let mut wants: Vec<Oid> = Vec::new();
         for r in self.refs()? {

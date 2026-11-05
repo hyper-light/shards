@@ -126,8 +126,8 @@ pub fn rewrite(args: &[String]) -> Option<Vec<String>> {
         // An image goes with the stopped microVMs made from it.
         ("remove" | "rm" | "delete" | "rmi", Thing::Image) => &["rmi", "--vms"],
         // An image not yet a microVM is made one first, as anything but its removal
-        // asked of it does (`--convert`); Docker's own order, `image inspect`, answers
-        // as Docker's does.
+        // asked of it does (`--convert`); Docker's own order, `image inspect`, keeps the
+        // answer its scripts parse.
         ("inspect", Thing::Image) => &["image", "inspect", "--convert"],
         ("inspect", Thing::Disk) => &["system", "df"],
         ("prune", Thing::Vm | Thing::Container) => &["container", "prune"],
@@ -195,6 +195,8 @@ pub fn rewrite(args: &[String]) -> Option<Vec<String>> {
         // A running microVM saved whole, to restore later (D176): shards' own, as Docker's
         // `checkpoint create` is its own command.
         ("save", Thing::Vm | Thing::Container) => &["save", "vm"],
+        // A microVM moved to another machine whole, through its context (D176 part 6).
+        ("move", Thing::Vm | Thing::Container) => &["move", "vm"],
         (action @ ("push" | "tag" | "save"), _) if !thing_first => {
             let mut out = once(action, &[]);
             out.push("--convert".into());
@@ -235,6 +237,12 @@ pub static ACTIONS: &[(&str, &str, &str, &str)] = &[
         "Make a microVM without starting it, a volume, an Agentfile of an image, or a context",
     ),
     ("run", "exec", "vm", "Run a command in a running microVM"),
+    (
+        "run",
+        "move",
+        "vm",
+        "Move a microVM to another machine, as it runs",
+    ),
     ("run", "restart", "vm", "Stop microVMs, and start them again"),
     ("run", "restore", "vm", "Resume a microVM from a snapshot"),
     (
@@ -288,12 +296,24 @@ pub static ACTIONS: &[(&str, &str, &str, &str)] = &[
     ("manage", "copy", "vm", "Copy files into or out of a microVM"),
     (
         "manage",
+        "grow",
+        "disk",
+        "Grow a disk plugged into a running microVM, and its file system, as it runs",
+    ),
+    (
+        "manage",
         "invite",
         "client",
         "Let another machine run shards here, by an invitation it joins with",
     ),
     ("manage", "kill", "vm", "Kill microVMs"),
     ("manage", "pause", "vm", "Freeze microVMs where they are"),
+    (
+        "manage",
+        "plug",
+        "disk | volume | function",
+        "Plug a disk, a directory or a host's PCI function into a running microVM",
+    ),
     (
         "manage",
         "prune",
@@ -315,6 +335,12 @@ pub static ACTIONS: &[(&str, &str, &str, &str)] = &[
     ),
     ("manage", "tag", "image", "Name an image again"),
     ("manage", "unpause", "vm", "Let frozen microVMs run on"),
+    (
+        "manage",
+        "unplug",
+        "disk | volume | function",
+        "Unplug a disk, a directory or a host's PCI function from a running microVM",
+    ),
     (
         "manage",
         "use",
@@ -401,6 +427,12 @@ pub static USES: &[(&str, &str, &str, &str)] = &[
         "restore",
         "vm NAME [SNAPSHOT]",
         "Resume a stopped microVM where it was saved, from its newest snapshot unless SNAPSHOT names one",
+    ),
+    (
+        "run",
+        "move",
+        "vm NAME CONTEXT",
+        "Move a microVM to the machine a context reaches: saved whole here, its files, volumes and image sent, and resumed there where it was",
     ),
     (
         "run",
@@ -560,6 +592,42 @@ pub static USES: &[(&str, &str, &str, &str)] = &[
         "Copy files out of a microVM, or into one",
     ),
     ("manage", "kill", "vm NAME", "Kill microVMs"),
+    (
+        "manage",
+        "plug",
+        "disk NAME FILE:PATH[:ro] [--size SIZE]",
+        "Plug a disk into a running microVM, its file system mounted at PATH; with --size, FILE made an empty ext4 file system where it is not there",
+    ),
+    (
+        "manage",
+        "plug",
+        "function NAME FUNCTION",
+        "Plug a host's PCI function (as 0000:01:00.0, bound to vfio-pci) into a running microVM started with --device /dev/vfio/vfio, its workload given its VFIO group (Linux)",
+    ),
+    (
+        "manage",
+        "plug",
+        "volume NAME SOURCE:PATH[:ro]",
+        "Plug a host directory or a volume into a running microVM, mounted at PATH",
+    ),
+    (
+        "manage",
+        "unplug",
+        "disk | volume NAME PATH",
+        "Unmount what is plugged in at PATH, and unplug it, refused while anything there is in use",
+    ),
+    (
+        "manage",
+        "unplug",
+        "function NAME FUNCTION",
+        "Unplug a host's PCI function, refused while anything in the microVM holds it open",
+    ),
+    (
+        "manage",
+        "grow",
+        "disk NAME PATH SIZE",
+        "Grow the disk plugged in at PATH to SIZE, and its ext4 file system, as the microVM runs",
+    ),
     (
         "manage",
         "pause",
@@ -724,7 +792,7 @@ pub fn ours(text: &str) -> String {
         .replace("Container", "MicroVM")
 }
 
-/// What an option does, said as shards does it, where Docker's words for it (`docker`'s),
+/// What an option does, said as shards does it, where the Docker CLI's text (`docker`'s),
 /// made shards' ([`ours`]), would still say what shards does otherwise: a device is its
 /// microVM's, not the host's (D152); an annotation is kept with its microVM, which no OCI
 /// runtime is given; isolation and the runtime are its VM's (D155); privileges and the OOM
@@ -888,6 +956,9 @@ mod tests {
             Some("save vm web first --leave-running")
         );
         assert_eq!(said("save container web").as_deref(), Some("save vm web"));
+        // A microVM moved to another machine (D176 part 6).
+        assert_eq!(said("move vm web lab").as_deref(), Some("move vm web lab"));
+        assert_eq!(said("move microvm web lab").as_deref(), Some("move vm web lab"));
         assert_eq!(said("pull image alpine").as_deref(), Some("pull alpine"));
         assert_eq!(
             said("run vm --kernel k --cpus 2").as_deref(),
@@ -1005,7 +1076,7 @@ mod tests {
         assert_eq!(form("list nothing"), None);
     }
 
-    /// An option Docker's words would misstate for a microVM is said as shards does it;
+    /// An option the Docker CLI's text would misstate for a microVM is said as shards does it;
     /// others are left to [`ours`].
     #[test]
     fn options_are_said_as_microvms_do_them() {

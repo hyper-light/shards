@@ -45,12 +45,26 @@ pub(super) struct Budget {
 }
 
 impl Budget {
-    /// The least of its memory budgets, `high` and `max`: what its microVMs' room is of.
+    /// The least of its memory budgets, `high` and `max`.
     pub fn memory(&self) -> Option<u64> {
         match (self.high, self.max) {
             (Some(h), Some(m)) => Some(h.min(m)),
             (h, m) => h.or(m),
         }
+    }
+
+    /// What its microVMs' room is of: on macOS the least of its memory budgets, as nothing
+    /// but the daemon holds them to `memory.max` there; on Windows `memory.high` alone, as
+    /// D183 has it, as the group's job holds them to `memory.max` itself, refusing what
+    /// would pass it (PM M359), and a guest refused memory runs on what it has, its own OOM
+    /// killer ending what passes it. Told a room under `memory.max` there too, a run past
+    /// it was held at that room by its guest's `memory.high` (init's `hold_within`), which
+    /// slows and ends nothing, while the daemon's stop past `memory.max` never came: its VM
+    /// processes' private working sets, within what they commit, never pass the job's limit.
+    /// `a_groups_job_holds_its_microvms_to_its_memory_max`'s run of 2 GiB under 1 GiB so
+    /// ended 69 s after its workload began, past its test's 60 s (CI 42046987905).
+    pub fn room_of(&self) -> Option<u64> {
+        if cfg!(windows) { self.high } else { self.memory() }
     }
 }
 
@@ -410,7 +424,25 @@ impl<D: Disk> Daemon<D> {
         let sum = |held: &[(usize, u64)]| held.iter().fold(0u64, |s, (_, b)| s.saturating_add(*b));
         let current = sum(&held);
         let _ = std::fs::write(dir.join("memory.current"), format!("{current}\n"));
-        let Some(limit) = budget.memory() else {
+        // Its processes, a line each, as a cgroup's `cgroup.procs` lists its own: on Windows
+        // its job's, every process of its microVMs; on macOS, which has no group of
+        // processes, its microVMs' VM processes, whose footprints it holds.
+        #[cfg(windows)]
+        let procs = lock(&self.groups.jobs)
+            .get(name)
+            .map(|(job, _)| job.processes())
+            .transpose()
+            .unwrap_or_else(|e| {
+                log(format!("group {name}: its job's processes: {e}"));
+                None
+            });
+        #[cfg(target_os = "macos")]
+        let procs = Some(members.iter().map(|m| m.pid).collect::<Vec<_>>());
+        if let Some(procs) = procs {
+            let listed: String = procs.iter().map(|p| format!("{p}\n")).collect();
+            let _ = std::fs::write(dir.join("cgroup.procs"), listed);
+        }
+        let Some(limit) = budget.room_of() else {
             return;
         };
         let signed = |b: u64| i64::try_from(b).unwrap_or(i64::MAX);
@@ -581,9 +613,16 @@ mod tests {
         assert_eq!(made(&home, "agents").unwrap(), dir);
         let held = budget(&dir).unwrap();
         assert_eq!(
-            (held.high, held.max, held.memory()),
-            (Some(1 << 30), None, Some(1 << 30))
+            (held.high, held.max, held.memory(), held.room_of()),
+            (Some(1 << 30), None, Some(1 << 30), Some(1 << 30))
         );
+        // Under `memory.max` alone, its microVMs' room is of it where the daemon alone
+        // holds them to it, and of nothing on Windows, whose job holds them to it.
+        std::fs::write(dir.join("memory.high"), "max\n").unwrap();
+        std::fs::write(dir.join("memory.max"), "1G\n").unwrap();
+        let held = budget(&dir).unwrap();
+        assert_eq!(held.memory(), Some(1 << 30));
+        assert_eq!(held.room_of(), if cfg!(windows) { None } else { Some(1 << 30) });
         assert!(made(&home, "../out").is_err());
         std::fs::write(dir.join("memory.max"), "lots\n").unwrap();
         assert!(budget(&dir).unwrap_err().contains("memory.max"));

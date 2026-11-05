@@ -55,7 +55,7 @@ pub fn wait_readable(
 }
 
 /// Makes `dir`, and its missing parents, readable by this user alone (0700). An existing
-/// `dir` is made 0700 too, as containerd makes its root.
+/// `dir` is made 0700 too, so that no other user reads what it holds, whoever made it.
 pub fn create_private_dir(dir: &std::path::Path) -> io::Result<()> {
     use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
     std::fs::DirBuilder::new()
@@ -1071,6 +1071,61 @@ pub unsafe fn clean_dcache(ptr: *const u8, len: usize) {
     let _ = (ptr, len);
 }
 
+/// The slice a thread that must run as it wakes asks of Linux's fair scheduler: the least
+/// it grants (100 µs, kernel/sched/fair.c `__setparam_fair`), where every other thread's is
+/// `base_slice_ns`, 2.8 ms on a host of 8 CPUs or more (0.7 ms times 1 + ilog2 of up to 8
+/// CPUs, `get_update_sysctl_factor`; Linux 6.18).
+#[cfg(target_os = "linux")]
+pub(super) const PROMPT_SLICE_NS: u64 = 100_000;
+
+/// Gives the calling thread [`PROMPT_SLICE_NS`] as its slice under EEVDF (sched_setattr(2),
+/// SCHED_OTHER with `sched_runtime`; Linux 6.12 and later, Documentation/scheduler/
+/// sched-eevdf.rst), keeping its nice value, so that as it wakes it takes its CPU at once
+/// from a thread of a longer slice (PREEMPT_SHORT, kernel/sched/fair.c
+/// `check_preempt_wakeup_fair`), which would otherwise run to its slice's end first
+/// (RUN_TO_PARITY). Its share of the CPU is its weight's as before, only when it gets it
+/// changes, and what it may run ahead after a sleep is still bounded by the longest slice
+/// beside it (`entity_lag`; PM M440). A thread of a policy its user chose (SCHED_BATCH,
+/// SCHED_IDLE, real-time) is left as it is; an older kernel takes the slice and leaves the
+/// thread as it was.
+#[cfg(target_os = "linux")]
+pub(super) fn run_promptly() -> io::Result<()> {
+    // Miri, which checks the memory model of the threads that call this, runs no scheduler.
+    if cfg!(miri) {
+        return Ok(());
+    }
+    let size = u32::try_from(std::mem::size_of::<libc::sched_attr>())
+        .map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
+    // SAFETY: an all-zero sched_attr is a valid value for the kernel to fill.
+    let mut attr: libc::sched_attr = unsafe { std::mem::zeroed() };
+    // SAFETY: sched_getattr(2) of the calling thread (0) writes at most `size` bytes into
+    // `attr`, which has them.
+    let got = unsafe {
+        libc::syscall(
+            libc::SYS_sched_getattr,
+            0,
+            &mut attr as *mut libc::sched_attr,
+            size,
+            0,
+        )
+    };
+    if got != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if attr.sched_policy != libc::SCHED_OTHER as u32 {
+        return Ok(());
+    }
+    attr.size = size;
+    attr.sched_flags = 0;
+    attr.sched_runtime = PROMPT_SLICE_NS;
+    // SAFETY: sched_setattr(2) of the calling thread reads `attr.size` bytes from `attr`.
+    let set = unsafe { libc::syscall(libc::SYS_sched_setattr, 0, &attr as *const libc::sched_attr, 0) };
+    if set != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
 /// Fills `buf` from the kernel CSPRNG, blocking only until it is first seeded.
 #[cfg(target_os = "linux")]
 pub fn fill_random(buf: &mut [u8]) -> io::Result<()> {
@@ -1392,6 +1447,19 @@ pub fn sparse(_file: &File) -> io::Result<()> {
     Ok(())
 }
 
+/// What keeps a file's pages in the host's cache once the processes that map them end
+/// ([`keep_cached`]): nothing here.
+#[derive(Debug)]
+pub struct Cached;
+
+/// Keeps the pages processes map of `file` in the host's cache once they end: nothing to
+/// do, as Linux's page cache keeps a file's pages once no process maps them, and macOS's
+/// while its vnode is held, the file held open (PM M315), where Windows drops a sparse
+/// file's (windows.rs must map it).
+pub fn keep_cached(_file: &File) -> io::Result<Cached> {
+    Ok(Cached)
+}
+
 /// Makes completed writes durable on stable storage. On macOS `fsync` does not flush the
 /// drive's write cache; `F_FULLFSYNC` does (fsync(2), fcntl(2)). A filesystem without
 /// `F_FULLFSYNC` gets `fsync` instead, as SQLite falls back (`full_fsync`, os_unix.c):
@@ -1442,6 +1510,52 @@ pub fn punch_hole(file: &File, offset: u64, len: u64) -> io::Result<()> {
     #[cfg(not(target_os = "macos"))]
     let _ = (file, offset, len);
     Ok(())
+}
+
+/// Gives back the file system's blocks under `len` bytes of `file` from `offset`, on every
+/// host, which read as zeros after and take none of its disk: Linux's
+/// fallocate(FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE), which Btrfs, ext4, XFS and tmpfs
+/// serve, and macOS's F_PUNCHHOLE ([`punch_hole`]). Whole blocks of the file system's are
+/// given back, a part of one at either end zeroed instead (fallocate(2)); APFS takes whole
+/// 4 KiB blocks alone. What a run's writable layer's guest freed (D190), once its microVM
+/// has gone.
+pub fn deallocate(file: &File, offset: u64, len: u64) -> io::Result<()> {
+    #[cfg(target_os = "linux")]
+    if len > 0 {
+        // SAFETY: fallocate(2) on an owned, open descriptor.
+        let rc = unsafe {
+            libc::fallocate(
+                file.as_raw_fd(),
+                libc::FALLOC_FL_PUNCH_HOLE | libc::FALLOC_FL_KEEP_SIZE,
+                file_offset(offset)?,
+                file_offset(len)?,
+            )
+        };
+        if rc != 0 {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    punch_hole(file, offset, len)?;
+    Ok(())
+}
+
+/// The bytes [`deallocate`] gives back whole of the file system holding `path`, at offsets
+/// that are multiples of it: its block (statvfs(3)'s f_frsize), of which a part at either
+/// end of a range is zeroed instead (fallocate(2)).
+pub fn deallocation_unit(path: &std::path::Path) -> io::Result<u64> {
+    use std::os::unix::ffi::OsStrExt;
+    let path = std::ffi::CString::new(path.as_os_str().as_bytes())
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "a path with NUL"))?;
+    // SAFETY: statvfs is plain data, for which all zeroes is a value.
+    let mut st: libc::statvfs = unsafe { std::mem::zeroed() };
+    // SAFETY: statvfs(3) with a NUL-terminated path, into a local it fills.
+    if unsafe { libc::statvfs(path.as_ptr(), &mut st) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    #[allow(clippy::unnecessary_cast, clippy::useless_conversion)]
+    let frsize = u64::from(st.f_frsize);
+    Ok(frsize.max(1))
 }
 
 /// The names in the directory `dir` holds open, but for `.` and `..`, wherever it has gone
@@ -2683,6 +2797,62 @@ mod usage_tests {
             assert!(spun >= wall / 10, "{spun} ns of CPU in {wall} ns");
         });
     }
+
+    /// A thread made to run promptly has the fair scheduler's shortest slice where its
+    /// kernel takes one (Linux 6.12 and later), at its own nice value and policy; a thread
+    /// of another policy its user chose is left as it is.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_prompt_thread_has_the_shortest_slice_at_its_own_weight() {
+        fn attr() -> libc::sched_attr {
+            // SAFETY: an all-zero sched_attr is a valid value for the kernel to fill.
+            let mut attr: libc::sched_attr = unsafe { std::mem::zeroed() };
+            let size = std::mem::size_of::<libc::sched_attr>();
+            // SAFETY: the calling thread's attributes, into `attr`, which has `size` bytes.
+            let got =
+                unsafe { libc::syscall(libc::SYS_sched_getattr, 0, &mut attr as *mut _, size as u32, 0) };
+            assert_eq!(got, 0, "{}", io::Error::last_os_error());
+            attr
+        }
+        let release = std::fs::read_to_string("/proc/sys/kernel/osrelease").unwrap();
+        let mut numbers = release
+            .split(|c: char| !c.is_ascii_digit())
+            .map(|n| n.parse::<u32>().unwrap_or(0));
+        let version = (numbers.next().unwrap_or(0), numbers.next().unwrap_or(0));
+        let takes_slices = version >= (6, 12);
+        std::thread::spawn(move || {
+            // A weight of its own first, which an unprivileged thread may take.
+            // SAFETY: gettid(2) has no preconditions.
+            let tid = unsafe { libc::gettid() };
+            // SAFETY: setpriority(2) of the calling thread, by its ID.
+            let set = unsafe { libc::setpriority(libc::PRIO_PROCESS, tid as libc::id_t, 5) };
+            assert_eq!(set, 0);
+            run_promptly().unwrap();
+            let prompt = attr();
+            assert_eq!(prompt.sched_policy, libc::SCHED_OTHER as u32);
+            assert_eq!(prompt.sched_nice, 5);
+            if takes_slices {
+                assert_eq!(prompt.sched_runtime, PROMPT_SLICE_NS, "Linux {release}");
+            }
+        })
+        .join()
+        .unwrap();
+        std::thread::spawn(|| {
+            let mut batch = attr();
+            batch.sched_policy = libc::SCHED_BATCH as u32;
+            batch.sched_runtime = 0;
+            // SAFETY: sched_setattr(2) of the calling thread from `batch`.
+            let set = unsafe { libc::syscall(libc::SYS_sched_setattr, 0, &batch as *const _, 0) };
+            assert_eq!(set, 0);
+            run_promptly().unwrap();
+            // Its slice the kernel's default, which 6.12 and later report.
+            let left = attr();
+            assert_eq!(left.sched_policy, libc::SCHED_BATCH as u32);
+            assert_ne!(left.sched_runtime, PROMPT_SLICE_NS);
+        })
+        .join()
+        .unwrap();
+    }
 }
 
 #[cfg(all(test, target_os = "macos"))]
@@ -2757,6 +2927,45 @@ mod holes_tests {
         unsafe { unmap_file_shared(mapped, len) };
         assert_eq!(hidden == [(0, len as u64)], MAPPED_HIDES_HOLES, "{hidden:?}");
         assert_eq!(data_ranges(&file, len as u64).unwrap(), alone);
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod deallocate_tests {
+    use super::*;
+    use std::os::unix::fs::MetadataExt as _;
+
+    /// What is given back reads as zeros and takes none of the file's disk, the rest as it
+    /// was, the file as long.
+    #[test]
+    fn what_is_given_back_reads_as_zeros_and_takes_no_disk() {
+        let dir = shards_testdir::TempDir::new("deallocate").unwrap();
+        let path = dir.join("f");
+        let mib = 1u64 << 20;
+        std::fs::write(&path, vec![0xA5u8; (8 * mib) as usize]).unwrap();
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap();
+        file.sync_all().unwrap();
+        let before = file.metadata().unwrap().blocks() * 512;
+        deallocate(&file, 2 * mib, 4 * mib).unwrap();
+        deallocate(&file, 0, 0).unwrap();
+        file.sync_all().unwrap();
+        let meta = file.metadata().unwrap();
+        assert_eq!(meta.len(), 8 * mib);
+        let after = meta.blocks() * 512;
+        assert!(after + 4 * mib <= before, "{before} bytes on disk, then {after}");
+        let bytes = std::fs::read(&path).unwrap();
+        assert!(bytes[..(2 * mib) as usize].iter().all(|&b| b == 0xA5));
+        assert!(
+            bytes[(2 * mib) as usize..(6 * mib) as usize]
+                .iter()
+                .all(|&b| b == 0)
+        );
+        assert!(bytes[(6 * mib) as usize..].iter().all(|&b| b == 0xA5));
     }
 }
 

@@ -226,7 +226,7 @@ impl Asked {
 
     /// Its answer, waited for: the credentials it has for its key, none where it has none
     /// (`docker login` asks for some then), or why it gave none. Its errors went to our
-    /// stderr, as Docker's do.
+    /// stderr, where its user sees them.
     pub fn answer(self) -> Result<Credentials, Error> {
         let (failed, out) = self.talk?.finish()?;
         let text = String::from_utf8_lossy(&out);
@@ -477,7 +477,7 @@ fn run_helper(
 /// (PM M158). Started for a cancel, it leads a process group of its own, which the cancel
 /// ends whole, a script's children with it, which hold its output open (D184); otherwise
 /// it stays in its caller's, where a terminal's Ctrl-C reaches it and its prompts reach the
-/// terminal. How it failed is said as Go's os.ProcessState says it, as Docker does: an exit
+/// terminal. How it failed is said as Go's os.ProcessState says it, the words its scripts know: an exit
 /// status (128 and its number, for a signal that ended it).
 #[cfg(unix)]
 struct Talk {
@@ -854,7 +854,7 @@ pub fn erase(server: &str, env: Env<'_>) -> Result<(bool, Vec<String>), Error> {
 /// Rewrites the config at `path` with `change` made to its `auths`, every other key as it
 /// was: written whole beside it and renamed over it, so that a reader never finds half of
 /// one; a new one, and its directory, the user's alone. A config that is a link (a
-/// dotfiles manager's) is written where it leads, the link kept, as docker/cli's Save
+/// dotfiles manager's) is written where it leads, the link kept, as docker/cli v29.8.1's Save
 /// writes it (EvalSymlinks); staged beside its target, so that the rename stays on one
 /// file system, where docker/cli stages it beside the link.
 fn rewrite(
@@ -1105,7 +1105,7 @@ mod tests {
         assert!(warnings[0].starts_with("Failed to create credential store from SHARDS_AUTH_CONFIG"));
     }
 
-    /// A helper that answers without reading its input, as Docker's client allows.
+    /// A helper that answers without reading its input, which docker-credential-helpers allow.
     #[cfg(unix)]
     #[test]
     fn a_helper_that_does_not_read_its_input_is_heard() {
@@ -1378,7 +1378,7 @@ esac
         assert_eq!(names(&home), ["config.json"]);
     }
 
-    /// A login kept by the config's credential helper, as docker/cli's native store keeps
+    /// A login kept by the config's credential helper, as docker/cli v29.8.1's native store keeps
     /// one: its `store` given the server, user and secret (an identity token as `<token>`),
     /// the config's entry for it holding nothing secret; and `erase` given the key.
     #[cfg(unix)]

@@ -393,7 +393,7 @@ fn is_file_path(source: &str) -> bool {
 }
 
 /// Go's filepath.Clean, of a path on this host: its separators the host's (`\` on
-/// Windows), `.` dropped and `..` taken back where it can be, as docker/cli's
+/// Windows), `.` dropped and `..` taken back where it can be, as docker/cli v29.8.1's
 /// `filepath.Abs` leaves a bind mount's relative source.
 pub fn host_clean(p: &std::path::Path) -> String {
     use std::path::Component;

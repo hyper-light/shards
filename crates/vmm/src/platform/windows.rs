@@ -14,8 +14,8 @@ use windows_sys::Win32::System::IO::OVERLAPPED;
 use windows_sys::Win32::System::Memory::{
     CreateFileMappingW, FlushViewOfFile, MEM_COMMIT, MEM_DECOMMIT, MEM_PRESERVE_PLACEHOLDER, MEM_RELEASE,
     MEM_REPLACE_PLACEHOLDER, MEM_RESERVE, MEM_RESERVE_PLACEHOLDER, MEMORY_MAPPED_VIEW_ADDRESS,
-    MapViewOfFile3, PAGE_NOACCESS, PAGE_READONLY, PAGE_READWRITE, PAGE_WRITECOPY, UnmapViewOfFile2,
-    VirtualAlloc, VirtualAlloc2, VirtualFree, VirtualProtect,
+    MapViewOfFile3, PAGE_NOACCESS, PAGE_READONLY, PAGE_READWRITE, PAGE_WRITECOPY, UnmapViewOfFile,
+    UnmapViewOfFile2, VirtualAlloc, VirtualAlloc2, VirtualFree, VirtualProtect,
 };
 use windows_sys::Win32::System::SystemInformation::{GetSystemInfo, SYSTEM_INFO};
 use windows_sys::Win32::System::Threading::GetCurrentProcess;
@@ -447,8 +447,42 @@ pub unsafe fn unmap_file_padded(ptr: NonNull<u8>, viewed: usize, len: usize) {
 
 /// The first `len` bytes of `file`, opened for writing, mapped shared and writable: a
 /// read-write section of the file and a view of it, whose writes are the file's through
-/// the cache (a run's swap, D159). `len` is page-aligned and within the file.
+/// the cache (a run's swap, D159). The view replaces a placeholder of its length
+/// (VirtualAlloc2, MEM_RESERVE_PLACEHOLDER; MapViewOfFile3, MEM_REPLACE_PLACEHOLDER), so that
+/// another file's view may take its place at its address, the range held meanwhile
+/// ([`map_file_shared_at`]). `len` is page-aligned and within the file.
 pub fn map_file_shared(file: &File, len: usize) -> io::Result<NonNull<u8>> {
+    // SAFETY: the pseudo-handle of this process, which needs no closing.
+    let process = unsafe { GetCurrentProcess() };
+    // SAFETY: a fresh placeholder, which only this function references.
+    let base = unsafe {
+        VirtualAlloc2(
+            process,
+            std::ptr::null(),
+            len,
+            MEM_RESERVE | MEM_RESERVE_PLACEHOLDER,
+            PAGE_NOACCESS,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    let base = NonNull::new(base.cast::<u8>()).ok_or_else(io::Error::last_os_error)?;
+    // SAFETY: the placeholder just made, of `len` bytes, which nothing references.
+    if let Err(e) = unsafe { view_shared(file, len, base) } {
+        // SAFETY: the placeholder, which the view did not replace.
+        unsafe { VirtualFree(base.as_ptr().cast(), 0, MEM_RELEASE) };
+        return Err(e);
+    }
+    Ok(base)
+}
+
+/// A read-write view of `file`'s first `len` bytes in place of the placeholder at `at`, of
+/// `len` bytes: MapViewOfFile3's MEM_REPLACE_PLACEHOLDER, whose address and size must be the
+/// placeholder's exactly. Where it fails, the placeholder stays.
+///
+/// # Safety
+/// `at..at + len` is a placeholder of this process's that nothing references.
+unsafe fn view_shared(file: &File, len: usize, at: NonNull<u8>) -> io::Result<()> {
     // SAFETY: a read-write section of the whole file, closed once its view holds it.
     let section = unsafe {
         CreateFileMappingW(
@@ -463,15 +497,16 @@ pub fn map_file_shared(file: &File, len: usize) -> io::Result<NonNull<u8>> {
     if section.is_null() {
         return Err(io::Error::last_os_error());
     }
-    // SAFETY: a fresh view of the section, which only the caller references.
+    // SAFETY: the view replaces the caller's placeholder, at its base and of its size,
+    // within the section.
     let view = unsafe {
         MapViewOfFile3(
             section,
             GetCurrentProcess(),
-            std::ptr::null(),
+            at.as_ptr().cast(),
             0,
             len,
-            0,
+            MEM_REPLACE_PLACEHOLDER,
             PAGE_READWRITE,
             std::ptr::null_mut(),
             0,
@@ -483,7 +518,31 @@ pub fn map_file_shared(file: &File, len: usize) -> io::Result<NonNull<u8>> {
     if let Some(e) = failed {
         return Err(e);
     }
-    NonNull::new(view.Value.cast::<u8>()).ok_or_else(|| io::Error::other("MapViewOfFile3 returned NULL"))
+    if view.Value != at.as_ptr().cast() {
+        // SAFETY: the view just made elsewhere, which nothing references.
+        unsafe { UnmapViewOfFile2(GetCurrentProcess(), view, 0) };
+        return Err(io::Error::other("MapViewOfFile3 placed the view elsewhere"));
+    }
+    Ok(())
+}
+
+/// Whether a view of a file begins at `at`: committed memory of a mapped section there,
+/// as VirtualQuery describes it, where a placeholder is reserved alone.
+fn view_at(at: NonNull<u8>) -> bool {
+    use windows_sys::Win32::System::Memory::{MEM_MAPPED, MEMORY_BASIC_INFORMATION, VirtualQuery};
+    let mut info = MEMORY_BASIC_INFORMATION::default();
+    // SAFETY: a query of this process's own address, into a value of its own size.
+    let queried = unsafe {
+        VirtualQuery(
+            at.as_ptr().cast_const().cast(),
+            &raw mut info,
+            size_of::<MEMORY_BASIC_INFORMATION>(),
+        )
+    };
+    queried != 0
+        && info.State == MEM_COMMIT
+        && info.Type == MEM_MAPPED
+        && info.AllocationBase == at.as_ptr().cast()
 }
 
 /// Writes what was written through `ptr..ptr + len`, a view [`map_file_shared`] made, to
@@ -516,13 +575,38 @@ pub unsafe fn sync_mapped(file: &File, ptr: NonNull<u8>, len: usize) -> io::Resu
 /// ([`data_ranges`]).
 pub const MAPPED_HIDES_HOLES: bool = false;
 
-/// Maps a view of `file` at `at` again (unix.rs): never asked, as no mapping hides a
-/// file's holes here ([`MAPPED_HIDES_HOLES`]).
+/// Maps `len` bytes of `file`, opened for writing, shared and writable at `at`, in place of
+/// the view [`map_file_shared`] (or this) placed there, as unix.rs's `mmap(MAP_FIXED)` does: a
+/// container's kept layer under its microVM's layer device where its template's was (D190).
+/// The view there is unmapped back to its placeholder (UnmapViewOfFile2,
+/// MEM_PRESERVE_PLACEHOLDER), which holds the range so that no other thread's allocation
+/// takes it, and the file's view replaces the placeholder (MapViewOfFile3,
+/// MEM_REPLACE_PLACEHOLDER). What was written through the view unmapped stays its file's,
+/// whose section holds the pages until they are written. Where the new view cannot be
+/// placed, the placeholder stays, and another call places one there (its own file's again).
 ///
 /// # Safety
-/// None: this never touches memory.
-pub unsafe fn map_file_shared_at(_file: &File, _len: usize, _at: NonNull<u8>) -> io::Result<()> {
-    Err(io::ErrorKind::Unsupported.into())
+/// `at..at+len` must be a mapping [`map_file_shared`] made of `len` bytes, or the
+/// placeholder a failed call left of it, that nothing references meanwhile and no
+/// hypervisor maps.
+pub unsafe fn map_file_shared_at(file: &File, len: usize, at: NonNull<u8>) -> io::Result<()> {
+    if view_at(at) {
+        // SAFETY: the caller's view, which nothing references, back to its placeholder.
+        let unmapped = unsafe {
+            UnmapViewOfFile2(
+                GetCurrentProcess(),
+                MEMORY_MAPPED_VIEW_ADDRESS {
+                    Value: at.as_ptr().cast(),
+                },
+                MEM_PRESERVE_PLACEHOLDER,
+            )
+        };
+        if unmapped == 0 {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    // SAFETY: the placeholder of `len` bytes at `at`, which nothing references.
+    unsafe { view_shared(file, len, at) }
 }
 
 /// The ranges of `file`'s first `len` bytes that hold data ([`allocated_ranges`]): as its
@@ -595,21 +679,27 @@ pub fn allocated_ranges(file: &File, len: u64) -> io::Result<Vec<(u64, u64)>> {
     Ok(ranges)
 }
 
-/// Unmaps what [`map_file_shared`] mapped.
+/// Unmaps what [`map_file_shared`] mapped, the range freed with it: its view, or the
+/// placeholder a failed [`map_file_shared_at`] left in its place.
 ///
 /// # Safety
 /// `ptr` and `len` are a mapping's from [`map_file_shared`], which nothing uses any more:
 /// no hypervisor maps it.
 pub unsafe fn unmap_file_shared(ptr: NonNull<u8>, _len: usize) {
-    // SAFETY: forwarded caller contract.
+    // SAFETY: forwarded caller contract; a view that replaced a placeholder is unmapped
+    // whole, the range with it, and a placeholder is freed whole, given its base and size 0.
     unsafe {
-        UnmapViewOfFile2(
-            GetCurrentProcess(),
-            MEMORY_MAPPED_VIEW_ADDRESS {
-                Value: ptr.as_ptr().cast(),
-            },
-            0,
-        );
+        if view_at(ptr) {
+            UnmapViewOfFile2(
+                GetCurrentProcess(),
+                MEMORY_MAPPED_VIEW_ADDRESS {
+                    Value: ptr.as_ptr().cast(),
+                },
+                0,
+            );
+        } else {
+            VirtualFree(ptr.as_ptr().cast(), 0, MEM_RELEASE);
+        }
     }
 }
 
@@ -1167,6 +1257,58 @@ pub fn sparse(file: &File) -> io::Result<()> {
     Ok(())
 }
 
+/// A view of a file held mapped, read-only ([`keep_cached`]), until it drops.
+#[derive(Debug)]
+pub struct Cached {
+    view: *mut core::ffi::c_void,
+}
+
+// SAFETY: the view is the process's, mapped once and unmapped once, by whichever thread
+// drops it; nothing reads through it.
+unsafe impl Send for Cached {}
+// SAFETY: as above: a shared `Cached` offers nothing.
+unsafe impl Sync for Cached {}
+
+impl Drop for Cached {
+    fn drop(&mut self) {
+        // SAFETY: the view `keep_cached` mapped, unmapped here alone.
+        unsafe { UnmapViewOfFile(MEMORY_MAPPED_VIEW_ADDRESS { Value: self.view }) };
+    }
+}
+
+/// Keeps the pages processes map of `file` in the host's cache once they end: a read-only
+/// view of the whole of it, held mapped and never read. Windows drops a sparse file's pages
+/// from its cache once no process maps them, whoever holds the file open, where a dense
+/// file's stay: a restore's memory file is sparse ([`sparse`]), and each restore read its
+/// working set back from the disk. 1,000 random pages of a sparse file's data took 200 to
+/// 573 ms each time, and 1.6 to 2.1 with a view of it held (PM M421).
+pub fn keep_cached(file: &File) -> io::Result<Cached> {
+    use windows_sys::Win32::System::Memory::{FILE_MAP_READ, MapViewOfFile};
+    // SAFETY: a read-only section of the whole file, closed once its view holds it.
+    let section = unsafe {
+        CreateFileMappingW(
+            file.as_raw_handle(),
+            std::ptr::null(),
+            PAGE_READONLY,
+            0,
+            0,
+            std::ptr::null(),
+        )
+    };
+    if section.is_null() {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: a fresh view of the whole section, which only the `Cached` returned holds.
+    let view = unsafe { MapViewOfFile(section, FILE_MAP_READ, 0, 0, 0) };
+    let failed = view.Value.is_null().then(io::Error::last_os_error);
+    // SAFETY: the section handle, which the view (if any) keeps alive by itself.
+    unsafe { CloseHandle(section) };
+    match failed {
+        Some(e) => Err(e),
+        None => Ok(Cached { view: view.Value }),
+    }
+}
+
 /// Flushes file data and metadata to stable storage.
 pub fn sync_durable(file: &File) -> io::Result<()> {
     // SAFETY: flushing an owned, open handle.
@@ -1254,23 +1396,29 @@ impl ThreadClock {
 
     /// The CPU time its thread has used, in nanoseconds.
     pub fn read(&self) -> io::Result<u64> {
-        use windows_sys::Win32::Foundation::FILETIME;
-        use windows_sys::Win32::System::Threading::GetThreadTimes;
-        let zero = || FILETIME {
-            dwLowDateTime: 0,
-            dwHighDateTime: 0,
-        };
-        let (mut created, mut exited, mut kernel, mut user) = (zero(), zero(), zero(), zero());
-        // SAFETY: a handle this value owns, and four times to write.
-        if unsafe { GetThreadTimes(self.0, &mut created, &mut exited, &mut kernel, &mut user) } == 0 {
-            return Err(io::Error::last_os_error());
-        }
-        // In 100 ns units.
-        let ns = |t: FILETIME| {
-            ((u64::from(t.dwHighDateTime) << 32) | u64::from(t.dwLowDateTime)).saturating_mul(100)
-        };
-        Ok(ns(kernel).saturating_add(ns(user)))
+        thread_time(self.0)
     }
+}
+
+/// The CPU time the thread `handle` names has used, in nanoseconds: its kernel and user
+/// times (GetThreadTimes), which Windows counts by its clock's ticks. `handle` is a thread
+/// handle its caller holds open with THREAD_QUERY_LIMITED_INFORMATION or more.
+pub(super) fn thread_time(handle: windows_sys::Win32::Foundation::HANDLE) -> io::Result<u64> {
+    use windows_sys::Win32::Foundation::FILETIME;
+    use windows_sys::Win32::System::Threading::GetThreadTimes;
+    let zero = || FILETIME {
+        dwLowDateTime: 0,
+        dwHighDateTime: 0,
+    };
+    let (mut created, mut exited, mut kernel, mut user) = (zero(), zero(), zero(), zero());
+    // SAFETY: a handle the caller holds open, and four times to write.
+    if unsafe { GetThreadTimes(handle, &mut created, &mut exited, &mut kernel, &mut user) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // In 100 ns units.
+    let ns =
+        |t: FILETIME| ((u64::from(t.dwHighDateTime) << 32) | u64::from(t.dwLowDateTime)).saturating_mul(100);
+    Ok(ns(kernel).saturating_add(ns(user)))
 }
 
 impl Drop for ThreadClock {
@@ -1556,5 +1704,132 @@ pub mod pipe_stream {
         let (server, mut vm) = pair(true);
         drop(server);
         assert!(vm.write_all(b"anyone").is_err());
+    }
+}
+
+#[cfg(test)]
+mod cached {
+    use std::io::Write as _;
+
+    use windows_sys::Win32::System::Memory::{
+        MEM_FREE, MEM_MAPPED, MEMORY_BASIC_INFORMATION, PAGE_READONLY, VirtualQuery,
+    };
+
+    /// The region of this process's memory at `at`.
+    fn region(at: *const core::ffi::c_void) -> MEMORY_BASIC_INFORMATION {
+        let mut info = MEMORY_BASIC_INFORMATION::default();
+        // SAFETY: VirtualQuery writes at most the size given into `info`.
+        let got = unsafe { VirtualQuery(at, &raw mut info, std::mem::size_of::<MEMORY_BASIC_INFORMATION>()) };
+        assert_ne!(got, 0, "{}", std::io::Error::last_os_error());
+        info
+    }
+
+    /// A file kept cached is a view of the whole of it, read-only, mapped until it drops: a
+    /// sparse file opened only for reading, as a held generation's memory is (PM M421).
+    #[test]
+    fn a_file_kept_cached_is_a_view_of_all_of_it_until_it_drops() {
+        let page = super::page_size().unwrap();
+        let dir = shards_testdir::TempDir::new("cached").unwrap();
+        let path = dir.join("memory");
+        let mut file = std::fs::File::create_new(&path).unwrap();
+        super::sparse(&file).unwrap();
+        file.write_all(&vec![7u8; page]).unwrap();
+        file.set_len(4 * page as u64).unwrap();
+        drop(file);
+        let file = std::fs::File::open(&path).unwrap();
+        let cached = super::keep_cached(&file).unwrap();
+        let at = cached.view.cast_const();
+        let info = region(at);
+        assert_eq!(
+            (info.Type, info.Protect, info.RegionSize),
+            (MEM_MAPPED, PAGE_READONLY, 4 * page)
+        );
+        drop(cached);
+        assert_eq!(region(at).State, MEM_FREE, "the view goes as it drops");
+    }
+}
+
+#[cfg(test)]
+mod shared {
+    use std::fs::File;
+
+    use windows_sys::Win32::System::Memory::{
+        MEM_FREE, MEM_MAPPED, MEM_RESERVE, MEMORY_BASIC_INFORMATION, VirtualQuery,
+    };
+
+    /// The region of this process's memory at `at`.
+    fn region(at: *const u8) -> MEMORY_BASIC_INFORMATION {
+        let mut info = MEMORY_BASIC_INFORMATION::default();
+        // SAFETY: VirtualQuery writes at most the size given into `info`.
+        let got = unsafe { VirtualQuery(at.cast(), &raw mut info, size_of::<MEMORY_BASIC_INFORMATION>()) };
+        assert_ne!(got, 0, "{}", std::io::Error::last_os_error());
+        info
+    }
+
+    fn file(dir: &std::path::Path, name: &str, len: usize) -> File {
+        let f = File::options()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(dir.join(name))
+            .unwrap();
+        f.set_len(len as u64).unwrap();
+        f
+    }
+
+    /// A file's view goes in place of another's at its address, as a container's kept layer
+    /// goes under its microVM's layer device where its template's was (D190): what the view
+    /// holds is the new file's both ways, and what was written through the view before stays
+    /// its own file's. One that cannot be placed (an empty file, which has no section) leaves
+    /// the range held, a placeholder, where a view is placed again; unmapped, the range is
+    /// freed, a placeholder left alone too.
+    #[test]
+    fn a_view_goes_in_place_of_another_at_its_address() {
+        let page = super::page_size().unwrap();
+        let len = 16 * page;
+        let dir = shards_testdir::TempDir::new("shared-at").unwrap();
+        let first = file(&dir, "first", len);
+        let second = file(&dir, "second", len);
+        crate::platform::write_all_at(&second, &vec![0x22u8; page], page as u64).unwrap();
+        let empty = file(&dir, "empty", 0);
+        let at = super::map_file_shared(&first, len).unwrap();
+        let p = at.as_ptr();
+        assert_eq!((region(p).Type, region(p).RegionSize), (MEM_MAPPED, len));
+        // SAFETY: within the view, which only this test references.
+        unsafe { p.write_bytes(0x11, page) };
+        // SAFETY: the view `map_file_shared` made, which nothing else references.
+        unsafe { super::map_file_shared_at(&second, len, at) }.unwrap();
+        assert_eq!((region(p).Type, region(p).RegionSize), (MEM_MAPPED, len));
+        // SAFETY: within the view now at `at`.
+        unsafe {
+            assert_eq!((*p, *p.add(page)), (0, 0x22));
+            p.add(2 * page).write_bytes(0x33, page);
+        }
+        // SAFETY: the view at `at`, still mapped.
+        unsafe { super::flush_shared(at, len) }.unwrap();
+        let read = |name: &str| std::fs::read(dir.join(name)).unwrap();
+        assert!(read("first")[..page].iter().all(|&b| b == 0x11));
+        assert!(read("first")[page..].iter().all(|&b| b == 0));
+        assert!(read("second")[2 * page..3 * page].iter().all(|&b| b == 0x33));
+        // SAFETY: as above.
+        assert!(unsafe { super::map_file_shared_at(&empty, len, at) }.is_err());
+        assert_eq!(region(p).State, MEM_RESERVE, "the range held, a placeholder");
+        // SAFETY: the placeholder the failed call left.
+        unsafe { super::map_file_shared_at(&second, len, at) }.unwrap();
+        // SAFETY: within the view now at `at`.
+        assert_eq!(unsafe { *p.add(2 * page) }, 0x33);
+        // SAFETY: the view, which nothing references any more.
+        unsafe { super::unmap_file_shared(at, len) };
+        assert_eq!(region(p).State, MEM_FREE);
+        let at = super::map_file_shared(&first, len).unwrap();
+        // SAFETY: as above.
+        assert!(unsafe { super::map_file_shared_at(&empty, len, at) }.is_err());
+        // SAFETY: the placeholder, which nothing references.
+        unsafe { super::unmap_file_shared(at, len) };
+        assert_eq!(
+            region(at.as_ptr()).State,
+            MEM_FREE,
+            "a placeholder left alone, freed"
+        );
     }
 }

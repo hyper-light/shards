@@ -105,8 +105,6 @@ fn the_agentignore_is_read_before_the_dockerignore() {
     );
 }
 
-/// The root filesystem a build wrote of `reference`'s image from its last snapshot is the
-/// one the store stacks of its layers (shards_build::stack), byte for byte.
 /// Which way a build's export went, from the line SHARDS_TIMING (which the tests set) has
 /// it print: "snapshot",
 /// or "layers: " and why.
@@ -146,13 +144,76 @@ fn assert_rootfs_is_its_layers(home: &std::path::Path, reference: &str) {
         })
         .collect();
     let path = store.rootfs(&layers, &Limits::none()).unwrap();
+    let over = store.rootfs_producer(&path).as_deref() == Some(shards_build::stack::PRODUCER_OVER);
     let built = std::fs::read(&path).unwrap();
     std::fs::remove_file(&path).unwrap();
-    let stacked = std::fs::read(store.rootfs(&layers, &Limits::none()).unwrap()).unwrap();
-    assert!(
-        built == stacked,
-        "{reference}: the build's root filesystem is not its layers'"
-    );
+    let stacked_at = store.rootfs(&layers, &Limits::none()).unwrap();
+    let stacked = std::fs::read(&stacked_at).unwrap();
+    if over {
+        // Written over its base's root filesystem where the store's file system clones
+        // (APFS, Btrfs, XFS; D188): its tree is its layers', laid out otherwise, and under a
+        // name of its own, which stacking never gives other bytes.
+        assert_ne!(
+            path, stacked_at,
+            "{reference}: over its base's, at the stacked one's name"
+        );
+        assert_same_tree(reference, &built, &stacked);
+    } else {
+        assert!(
+            built == stacked,
+            "{reference}: the build's root filesystem is not its layers'"
+        );
+    }
+}
+
+/// The EROFS images `a` and `b` hold the same tree as a guest reads it: each path, its kind,
+/// mode, owners, times and xattrs, a link's target, a device's numbers, which paths are one
+/// file (hard links), and each file's bytes, read where each image has them.
+fn assert_same_tree(reference: &str, a: &[u8], b: &[u8]) {
+    use shards_image::erofs::{Kind, NodeId, Tree, read_tree};
+    use std::collections::HashMap;
+    let ta = read_tree(&mut std::io::Cursor::new(a), 0).unwrap();
+    let tb = read_tree(&mut std::io::Cursor::new(b), 0).unwrap();
+    let data = |image: &[u8], offset: u64, size: u64| -> Vec<u8> {
+        let at = usize::try_from(offset).unwrap();
+        image[at..at + usize::try_from(size).unwrap()].to_vec()
+    };
+    // Each node's first path, in each image: a path of another node in one is of another
+    // in the other too.
+    let (mut first_a, mut first_b) = (HashMap::<NodeId, String>::new(), HashMap::<NodeId, String>::new());
+    let mut todo = vec![(String::from("/"), Tree::ROOT, Tree::ROOT)];
+    let mut seen = 0usize;
+    while let Some((path, na, nb)) = todo.pop() {
+        seen += 1;
+        let (x, y) = (ta.node(na).unwrap(), tb.node(nb).unwrap());
+        assert_eq!(x.meta, y.meta, "{reference}: {path}'s metadata");
+        let fa = first_a.entry(na).or_insert_with(|| path.clone()).clone();
+        let fb = first_b.entry(nb).or_insert_with(|| path.clone()).clone();
+        assert_eq!(
+            fa, fb,
+            "{reference}: {path} is another file's link in one image alone"
+        );
+        match (&x.kind, &y.kind) {
+            (Kind::Dir(_), Kind::Dir(_)) => {
+                let (ea, eb) = (ta.entries(na), tb.entries(nb));
+                let names = |e: &[(&[u8], NodeId)]| e.iter().map(|(n, _)| n.to_vec()).collect::<Vec<_>>();
+                assert_eq!(names(&ea[..]), names(&eb[..]), "{reference}: {path}'s entries");
+                for ((name, ida), (_, idb)) in ea.iter().zip(&eb) {
+                    let name = String::from_utf8_lossy(name);
+                    todo.push((format!("{}/{name}", path.trim_end_matches('/')), *ida, *idb));
+                }
+            }
+            (Kind::File { size: sa, data: da }, Kind::File { size: sb, data: db }) => {
+                assert_eq!(sa, sb, "{reference}: {path}'s size");
+                assert!(
+                    data(a, da.offset, *sa) == data(b, db.offset, *sb),
+                    "{reference}: {path}'s bytes"
+                );
+            }
+            (kind_a, kind_b) => assert_eq!(kind_a, kind_b, "{reference}: {path}'s kind"),
+        }
+    }
+    assert!(seen > 1, "{reference}: an empty tree");
 }
 
 #[test]
@@ -5756,13 +5817,20 @@ fn run_caches_are_kept_across_builds() {
         &format!("RUN {c} [\"/bin/testguest\", \"fs\", \"write:/c/one=1\"]\n"),
         &[],
     );
-    // The build's collection ran once it was done; the next, within a minute, runs none.
+    // The build grew the cache, and its collection ran once it was done; the same build
+    // again, answered whole from the cache, grows nothing and runs none (D212).
     let collected = || {
         std::fs::metadata(home.join("buildcache-gc"))
             .and_then(|m| m.modified())
             .unwrap()
     };
     let first_collection = collected();
+    let again = ok(
+        &format!("RUN {c} [\"/bin/testguest\", \"fs\", \"write:/c/one=1\"]\n"),
+        &[],
+    );
+    assert!(again.contains("CACHED"), "{again}");
+    assert_eq!(collected(), first_collection);
     // What a cache holds is in no layer: the next step, without it, finds none of it.
     let unlayered = build(
         &format!(
@@ -5787,7 +5855,8 @@ fn run_caches_are_kept_across_builds() {
     );
     assert!(seen.contains("/c/one file 644 0:0 1\n"), "{seen}");
     assert!(seen.contains("/c/two file 644 0:0 1\n"), "{seen}");
-    assert_eq!(collected(), first_collection);
+    // Builds that ran steps grew the cache, and collected it.
+    assert_ne!(collected(), first_collection);
     // One id, two targets of one step: one directory; another step's by that id.
     let twice = ok(
         "RUN --mount=type=cache,target=/x,id=both --mount=type=cache,target=/y,id=both,ro [\"/bin/testguest\", \"fs\", \"write:/x/f=3\", \"print:/y/f\"]\n",
@@ -6255,10 +6324,11 @@ fn run_caches_are_shared_among_concurrent_builds() {
 }
 
 /// `buildx du` (and `builder du`) lists the build cache's records as buildx does
-/// (crates/cmdline/tests/buildx-du.json): a step's `regular` record and a cache mount's `exec.cachemount` one, the records `system df`
-/// lists and `builder prune` removes; its table, `--verbose`, `json` and templates, sorted
-/// by size; a filter leaves the totals out; a cache a running step holds is in use, sized
-/// 0B, as BuildKit's DiskUsage sizes a mutable record that is changing.
+/// (crates/cmdline/tests/buildx-du.json): a step's `regular` record and a cache mount's
+/// `exec.cachemount` one, the records `system df` lists and `builder prune` removes; its
+/// table, `--verbose`, `json` and templates, sorted by size; a filter leaves the totals
+/// out; a cache a running step holds is in use, sized 0B, its size still changing (D114,
+/// held to crates/cmdline/tests/buildx-du.json).
 #[test]
 fn build_cache_usage_lists_every_record() {
     if cannot_run_vms() {
@@ -7173,7 +7243,7 @@ fn run_steps_take_the_builds_hosts_shm_and_limits() {
     assert!(log.lines().any(|l| l.ends_with(" 100663296")), "{log}");
     assert!(log.lines().any(|l| l.ends_with(" 50000 100000")), "{log}");
 
-    // Past its memory, the step is ended, as runc's container would be.
+    // Past its memory, the step is ended: `-m` is its microVM's limit, swap none.
     let hungry = context(
         "build-limits-hungry",
         &format!("FROM {image}\nUSER root\nRUN [\"/bin/testguest\", \"alloc\", \"256\"]\n"),
@@ -7438,9 +7508,9 @@ fn squash_makes_a_builds_layers_one() {
     assert_eq!(with_layer(&config), 1, "{config}");
 }
 
-/// `shards builder prune` (D65), as buildx's prune: a record no filter keeps goes, said in
-/// buildx's table, and the steps run again; `until` keeps what was used since; a record
-/// whose layer an image holds stays unless `--all`; the totals as buildx says them.
+/// `shards builder prune` (D65): a record no filter keeps goes, said in the table buildx
+/// users read, and the steps run again; `until` keeps what was used since; a record whose
+/// layer an image holds stays unless `--all`; the totals said as D65 records buildx's.
 #[test]
 fn builder_prune_removes_the_build_cache() {
     if cannot_run_vms() {
@@ -7884,9 +7954,9 @@ fn run_steps_reach_the_clients_ssh_agent() {
         .unwrap();
     assert!(String::from_utf8_lossy(&listed.stdout).contains("shards-test-key"));
 
-    // The key file itself, served by the client as BuildKit's keyring serves it: the
-    // step sees the key (its comment dropped, as x/crypto drops it) and has it sign, and
-    // is refused what a read-only agent refuses.
+    // The key file itself, served from the client's own keyring (D68): the step sees the
+    // key (its comment dropped, as x/crypto drops it) and has it sign, and is refused what
+    // a read-only agent refuses.
     let from_file = shards(&[
         "build",
         "--progress=plain",
@@ -7942,8 +8012,8 @@ fn run_steps_reach_the_clients_ssh_agent() {
         mixed.stderr
     );
 
-    // Without --ssh, an optional mount (BuildKit's default) is left out, and a required
-    // one refused in BuildKit's words.
+    // Without --ssh, an optional mount (a Dockerfile's default, D51) is left out, and a
+    // required one refused, its error the text BuildKit users match (D51).
     let required = context(
         "build-ssh-required-ctx",
         &format!(
@@ -8312,10 +8382,10 @@ fn umask() -> u32 {
     0o777 & !(std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777)
 }
 
-/// `--build-context` gives a build named contexts as buildx and BuildKit do: a directory
+/// `--build-context` gives a build named contexts (D53): a directory
 /// a `COPY --from` reads (its own .dockerignore heeded), an image a `FROM` names in place
 /// of the one it says, and a stage replaced whole by a directory; a missing directory is
-/// refused in buildx's words.
+/// refused, its error buildx v0.37.1's.
 #[test]
 fn named_contexts_stand_in_for_what_they_name() {
     if cannot_run_vms() {
@@ -8393,11 +8463,10 @@ fn named_contexts_stand_in_for_what_they_name() {
     );
 }
 
-/// An `oci-layout://` context is the image an OCI layout holds, as buildx serves one to
-/// BuildKit: found by its tag (`latest` when none is given) in the layout's index, its
-/// blobs checked and taken into the store, and built on as a base; the layout's only
-/// entry taken for a tag it lacks, as buildx takes it; a directory with no index refused
-/// in buildx's words.
+/// An `oci-layout://` context is the image an OCI layout holds (D53): found by its tag
+/// (`latest` when none is given) in the layout's index, its blobs checked and taken into
+/// the store, and built on as a base; the layout's only entry taken for a tag it lacks, as
+/// buildx v0.37.1 takes it; a directory with no index refused, its error buildx v0.37.1's.
 #[test]
 fn oci_layout_contexts_are_the_images_they_hold() {
     if cannot_run_vms() {
@@ -8447,7 +8516,7 @@ fn oci_layout_contexts_are_the_images_they_hold() {
     assert_eq!(std::fs::read(root.join("more")).unwrap(), b"on top\n");
     assert!(root.join("bin/testguest").exists());
 
-    // A tag the index lacks: its one entry, as buildx's resolveDigest falls back to it.
+    // A tag the index lacks: its one entry, as D53 reads the layout (buildx v0.37.1).
     let single = shards(&[
         "build",
         "--build-context",
@@ -9596,9 +9665,13 @@ fn agents_reach_by_ipv6_only_what_connect_grants() {
     }
 }
 
-/// Agents reach past their microVM by IPv6 what their networks grant (D99), where the
-/// microVM's own network has IPv6: through the switch's uplink and init's namespace, under
-/// eth0's IPv6 address, the granted port alone, as by IPv4 (D59).
+/// Agents reach past their microVM by IPv6 what their grants name (D99), on any network
+/// their microVM is on: one with IPv6, where eth0 has its address there; the default bridge
+/// and a network without IPv6, where eth0 takes an IPv6 address for the agents alone. Through
+/// the switch's uplink and init's namespace, under eth0's IPv6 address: the port both
+/// boundaries grant and not one only the network grants, as by IPv4 (D59); a remote MCP
+/// server whose name has an IPv6 address alone (AAAA), once its name is resolved and not
+/// before; and one whose URL is an IPv6 address. The run's own command reaches none of it.
 #[test]
 fn agents_reach_past_the_microvm_by_ipv6_what_their_networks_grant() {
     if cannot_run_vms() {
@@ -9616,13 +9689,48 @@ fn agents_reach_past_the_microvm_by_ipv6_what_their_networks_grant() {
             return;
         }
     };
+    // And its IPv4 address, where the host's resolver for the microVM listens.
+    let Ok(std::net::SocketAddr::V4(host4)) = std::net::UdpSocket::bind("0.0.0.0:0")
+        .and_then(|s| s.connect("192.0.2.1:9").map(|()| s))
+        .and_then(|s| s.local_addr())
+    else {
+        eprintln!("SKIP: this host has no IPv4 route for the microVM's resolver");
+        return;
+    };
     let serve = || {
         let server = std::net::TcpListener::bind("[::]:0").unwrap();
         let port = server.local_addr().unwrap().port();
         std::thread::spawn(move || for _ in server.incoming() {});
         port
     };
-    let (granted, other) = (serve(), serve());
+    let (granted, other, mcp, literal) = (serve(), serve(), serve(), serve());
+    // The host's resolver: mcp6.example is this host at its IPv6 address alone (AAAA), and
+    // has no IPv4 address.
+    let resolver = std::net::UdpSocket::bind("0.0.0.0:0").unwrap();
+    let resolver_at = format!("{}:{}", host4.ip(), resolver.local_addr().unwrap().port());
+    std::thread::spawn(move || {
+        let mut buf = [0u8; 512];
+        while let Ok((n, from)) = common::recv_from(&resolver, &mut buf) {
+            let q = &buf[..n];
+            let mut at = 12;
+            let mut name = Vec::new();
+            while at < q.len() && q[at] != 0 {
+                let len = usize::from(q[at]);
+                name.push(String::from_utf8_lossy(&q[at + 1..at + 1 + len]).to_lowercase());
+                at += 1 + len;
+            }
+            let qtype = u16::from_be_bytes([q[at + 1], q[at + 2]]);
+            let count = u8::from(name.join(".") == "mcp6.example" && qtype == 28);
+            let mut r = q[..2].to_vec();
+            r.extend_from_slice(&[0x81, 0x80, 0, 1, 0, count, 0, 0, 0, 0]);
+            r.extend_from_slice(&q[12..at + 5]);
+            if count == 1 {
+                r.extend_from_slice(&[0xc0, 0x0c, 0, 28, 0, 1, 0, 0, 0, 60, 0, 16]);
+                r.extend_from_slice(&host.octets());
+            }
+            let _ = resolver.send_to(&r, from);
+        }
+    });
     let (image, _) = served();
     let (port, _repos) = common::writable_registry();
     let home = TempDir::new("egress6-home");
@@ -9630,12 +9738,14 @@ fn agents_reach_past_the_microvm_by_ipv6_what_their_networks_grant() {
         ("SHARDS_HOME", home.as_os_str()),
         ("SHARDS_KERNEL", kernel().as_os_str()),
         ("SHARDS_INIT", guest_init().as_os_str()),
+        ("SHARDS_DNS", std::ffi::OsStr::new(&resolver_at)),
     ];
     let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
     let to = |p: u16| format!("[{host}]:{p}");
     let dir = TempDir::new("egress6-agent-a");
     std::fs::create_dir_all(dir.join("bin")).unwrap();
     std::fs::copy(common::test_guest(), dir.join("bin/testguest")).unwrap();
+    let mcp_name = format!("mcp6.example:{mcp}");
     let command: Vec<String> = [
         "bin/testguest",
         "confined",
@@ -9643,6 +9753,14 @@ fn agents_reach_past_the_microvm_by_ipv6_what_their_networks_grant() {
         &to(granted),
         "unreach",
         &to(other),
+        // The MCP server's address before its name is resolved: refused, as none of it is
+        // known yet.
+        "unreach",
+        &to(mcp),
+        "reach",
+        &mcp_name,
+        "reach",
+        &to(literal),
     ]
     .iter()
     .map(|a| format!("{a:?}"))
@@ -9663,7 +9781,9 @@ fn agents_reach_past_the_microvm_by_ipv6_what_their_networks_grant() {
         format!(
             "FROM {image}\nAGENT a FROM {tag}\n\
              NETWORK --ipv6 --egress={granted} --egress={other} out\nEXPOSE {granted} AS egress FOR out\n\
-             CONNECT a WITH a ON out\n"
+             CONNECT a WITH a ON out\n\
+             MCP web FROM http://mcp6.example:{mcp}/sse FOR a\n\
+             MCP lit FROM http://[{host}]:{literal}/sse FOR a\n"
         ),
     )
     .unwrap();
@@ -9671,34 +9791,61 @@ fn agents_reach_past_the_microvm_by_ipv6_what_their_networks_grant() {
     assert_eq!(built.status, Some(0), "{}", built.stderr);
     let made = shards(&["network", "create", "--ipv6", "--subnet", "fd7a::/64", "six"]);
     assert_eq!(made.status, Some(0), "{}", made.stderr);
-    let ran = common::run_awaiting(
-        &env,
-        &[
+    let made = shards(&["network", "create", "four"]);
+    assert_eq!(made.status, Some(0), "{}", made.stderr);
+    for network in ["six", "bridge", "four"] {
+        let name = format!("aw-egress6-{network}");
+        let ran = common::run_awaiting(
+            &env,
+            &[
+                "run",
+                "--rm",
+                "--name",
+                &name,
+                "--network",
+                network,
+                "egress6:1",
+                "await",
+                "confined-ready",
+                "1",
+            ],
+            &name,
+            ("confined-ready", 1),
+            TIMEOUT,
+        );
+        assert_eq!(ran.status, Some(0), "{network}: {}{}", ran.stdout, ran.stderr);
+        for want in [
+            format!("[agent a] confined reach {}: ok", to(granted)),
+            // A port its network grants, but not the microVM's boundary: dropped.
+            format!("[agent a] confined unreach {}: timeout", to(other)),
+            // Refused by its network process, as by IPv4.
+            format!("[agent a] confined unreach {}: errno 111", to(mcp)),
+            format!("[agent a] confined reach {mcp_name}: ok"),
+            format!("[agent a] confined reach {}: ok", to(literal)),
+        ] {
+            assert!(
+                ran.stderr.lines().any(|l| l == want),
+                "{network}: no {want:?} in:\n{}",
+                ran.stderr
+            );
+        }
+        // The run's own command, from its first instruction: kept to eth0's subnet, of
+        // IPv6 too, its datagram to a port the agents are granted refused by the guest's
+        // own stack (EPERM), not sent.
+        let first = shards(&[
             "run",
             "--rm",
-            "--name",
-            "aw-egress6",
             "--network",
-            "six",
+            network,
             "egress6:1",
-            "await",
-            "confined-ready",
-            "1",
-        ],
-        "aw-egress6",
-        ("confined-ready", 1),
-        TIMEOUT,
-    );
-    assert_eq!(ran.status, Some(0), "{}{}", ran.stdout, ran.stderr);
-    for want in [
-        format!("[agent a] confined reach {}: ok", to(granted)),
-        // A port its network grants, but not the microVM's boundary: dropped.
-        format!("[agent a] confined unreach {}: timeout", to(other)),
-    ] {
+            "udp",
+            &to(granted),
+        ]);
         assert!(
-            ran.stderr.lines().any(|l| l == want),
-            "no {want:?} in:\n{}",
-            ran.stderr
+            first.stdout.contains("udp error Operation not permitted"),
+            "{network}: {}{}",
+            first.stdout,
+            first.stderr
         );
     }
 }
@@ -12918,8 +13065,8 @@ fn a_step_for_another_cpu_runs_under_its_emulator() {
             built.stderr
         );
     }
-    // A base of another CPU's lone manifest, with no platform asked: taken, as BuildKit
-    // takes one, warned of in its words, its step under its CPU's emulator, and the image
+    // A base of another CPU's lone manifest, with no platform asked: taken (D179), warned
+    // of in BuildKit v0.28.1's words, its step under its CPU's emulator, and the image
     // its base's CPU's (measured: Docker 29.3.1's BuildKit v0.28.1 on linux/arm64).
     let lone = if cfg!(target_arch = "aarch64") {
         "alpine@sha256:3e9b4b680bfc9fb5269227cffbd6d42be39fbf7c0b908123913864aa4447e764"
@@ -13916,7 +14063,7 @@ fn policies_hold_over_remote_contexts() {
         assert_eq!(solve, solve_want, "{name}: {log:#?}");
     }
 
-    // Names that are not files of the context, in buildx's words.
+    // Names that are not files of the context, refused as D101 records buildx's errors.
     for (name, said) in [
         (
             "policies/missing.rego",
@@ -13955,11 +14102,11 @@ fn policies_hold_over_remote_contexts() {
     assert_eq!(near.status, Some(1), "{}", near.stderr);
 }
 
-/// A policy's own error ends a build in the policy's words alone, as BuildKit's gRPC keeps
-/// the status buildx's callback answered with over all that wraps it, and the policies'
-/// step ends done, as buildx fails it for a denial only. An OCI layout given as a named
-/// context is asked of as itself, which buildx builds no input for: refused, never taken
-/// for the registry's image its stand-in name names (D128, measured: PM M186).
+/// A policy's own error ends a build in the policy's words alone, nothing wrapped round it
+/// (D128), and the policies' step ends done, a denial alone failing it (D128). An OCI
+/// layout given as a named context is asked of as itself, which buildx builds no input for:
+/// refused, never taken for the registry's image its stand-in name names (D128, measured:
+/// PM M186).
 #[test]
 fn a_policys_own_error_ends_the_build() {
     let (image, _) = served();
@@ -14167,7 +14314,7 @@ fn builds_heed_their_policies() {
         ]
     );
 
-    // Refused pinned, as BuildKit loads the definition: no Dockerfile lines.
+    // Refused pinned, before any step is solved: no Dockerfile lines to cite (D108).
     let deny_pinned = "package docker\n\ndefault allow := false\n\nallow if input.local\n\nallow if {\n  input.image\n  not input.image.isCanonical\n}\n\ndeny_msg contains \"pinned images are refused\" if input.image.isCanonical\n\ndecision := {\"allow\": allow, \"deny_msg\": deny_msg}\n";
     let ctx = with_policy(
         "policy-deny-pinned",
@@ -14239,8 +14386,8 @@ fn builds_heed_their_policies() {
     );
 
     // What a decision needs and the input lacks, resolved from the image and asked again;
-    // its print printed twice, as buildx's are, by the partial evaluation that the
-    // provenance and signatures still unknown call for, and by the decision's.
+    // its print printed twice (D98), by the partial evaluation that the provenance and
+    // signatures still unknown call for, and by the decision's.
     let unknown = "package docker\n\ndefault allow := false\n\nallow if input.local\n\nallow if {\n  input.image.checksum != \"\"\n  print(\"checksum\", input.image.checksum, input.image.workingDir)\n}\n\ndecision := {\"allow\": allow}\n";
     let ctx = with_policy("policy-unknown", &format!("FROM {image}\n"), unknown);
     let ok = build(&ctx, &[]);
@@ -14267,7 +14414,7 @@ fn builds_heed_their_policies() {
 
     // --policy: a file of the working directory beside the Dockerfile's own, then a file
     // not there, a policy turned off, the policies before one reset, and policies OPA
-    // refuses, each in buildx's words.
+    // refuses, each refused as D101 records buildx's errors.
     let ctx = with_policy("policy-flags", "FROM scratch\nCOPY Dockerfile /x\n", allow);
     let cwd = TempDir::new("policy-flags-cwd");
     std::fs::write(
@@ -14354,7 +14501,7 @@ fn builds_heed_their_policies() {
         refused.stderr
     );
 
-    // --debug: the input each check is given, as buildx logs it.
+    // --debug: the input each check is given, logged as D101 records buildx's.
     let ctx = with_policy("policy-debug", "FROM scratch\nCOPY Dockerfile /x\n", allow);
     let debug = build(&ctx, &["--debug", "--build-arg", "A=1"]);
     assert_eq!(debug.status, Some(0), "{}", debug.stderr);
@@ -14560,8 +14707,8 @@ fn policies_verify_git_and_http_signatures() {
     );
     assert_eq!(
         decisions(&built.stderr, &http_src),
-        // Its digest is known from the first check, as BuildKit fetches the source for
-        // it; the signature's digest is not, and asks for no field of the input.
+        // Its digest is known from the first check, the source fetched for it (D102);
+        // the signature's digest is not, and asks for no field of the input.
         [
             format!("policy decision for source {http_src}: resolve missing fields []"),
             format!("policy decision for source {http_src}: ALLOW"),
@@ -14929,8 +15076,8 @@ fn policies_check_the_frontend_and_the_default_policy() {
         false,
     );
     assert_eq!(out.status, Some(0), "{}", out.stderr);
-    // The frontend's checks in buildx's order, then each platform's: BuildKit checks the
-    // platforms' at once, so in any order.
+    // The frontend's checks first, in the order D107 records, then each platform's,
+    // checked at once, so in any order.
     let mut multi = want("syntax-multi.txt");
     assert_eq!(checks.get(..8), multi.get(..8), "{}", out.stderr);
     let mut rest = checks.get(8..).unwrap_or_default().to_vec();
@@ -14967,7 +15114,8 @@ fn policies_check_the_frontend_and_the_default_policy() {
 
 /// `shards buildx policy eval` (D108), each answer as buildx v0.37.1's in shards-dind:
 /// a source's input printed, its fields resolved and the rest summarized; a policy's
-/// decision, its refusals in buildx's words; and the sources and flags buildx refuses.
+/// decision, its refusals in the words D108 records; and the sources and flags buildx
+/// refuses.
 #[test]
 fn policy_eval_answers() {
     let home = TempDir::new("policy-eval-home");
@@ -15461,9 +15609,9 @@ fn harnesses_message_their_attached_agents() {
     }
 }
 
-/// An Agentfile's volumes at run (AGENTFILE_ARCH.md §4.5, §12 answers 8 and 9; D111):
+/// An Agentfile's volumes at run (AGENTFILE_ARCH.md §4.5, §12 answers 8 and 9; D109):
 /// `VOLUME data /data FOR a` is the named volume `data`, a's alone, filled from the image
-/// as Docker fills a volume, owned as `--chown` says, kept from run to run; b sees the
+/// where it is empty (D38), owned as `--chown` says, kept from run to run; b sees the
 /// image's `/data` there, never the volume, and the run's own root none of it.
 /// `VOLUME shared /shared`, with no `FOR`, is every agent's and the run's own.
 /// `VOLUME --chown=b --chmod=700 /scratch FOR b` is an anonymous volume, b's, as owned and
@@ -15547,7 +15695,7 @@ fn agentfile_volumes_reach_whom_they_are_for() {
     let has = |all: &str, want: &str| assert!(all.lines().any(|l| l == want), "no {want:?} in\n{all}");
     let first = run();
     for want in [
-        // Filled from the image, as Docker fills a volume where it is empty.
+        // Filled from the image, as every volume is where it is empty (D38).
         "[agent a] confined cat /data/seed: seeded".to_string(),
         "[agent a] confined cat /data/x: errno 2".into(),
         "[agent a] confined write /data/x: ok".into(),
@@ -15559,7 +15707,8 @@ fn agentfile_volumes_reach_whom_they_are_for() {
         "[agent b] confined write /data/b: errno 30".into(),
         "[agent b] confined write /scratch/s: ok".into(),
         format!("[agent b] confined owner /scratch: {b}:{b} 700"),
-        // Mounted where the image's symlink leads, as runc mounts it, the symlink kept.
+        // Mounted where the image's symlink leads, resolved within its root, the symlink
+        // kept.
         "[agent a] confined cat /var/run/marker: image-run".into(),
         "[agent a] confined write /var/run/agentvol/w: ok".into(),
         format!("[agent a] confined owner /run/agentvol: {a}:{a} 755"),
@@ -15639,12 +15788,21 @@ fn agentfile_volumes_reach_whom_they_are_for() {
     let before = shown(&std::fs::metadata(&*host).unwrap());
     let bound = run_with(&["-v", &format!("{}:/scratch", host.display())]);
     assert_eq!(shown(&std::fs::metadata(&*host).unwrap()), before, "{bound}");
+    // The host's files there, which hold no owner, are b's, whom alone it is given (D38):
+    // b writes the directory it was given.
     assert!(
         bound
             .lines()
-            .any(|l| l.starts_with("[agent b] confined owner /scratch: ")),
+            .any(|l| l == format!("[agent b] confined owner /scratch: {b}:{b} 755")),
         "{bound}"
     );
+    assert!(
+        bound
+            .lines()
+            .any(|l| l == "[agent b] confined write /scratch/s: ok"),
+        "{bound}"
+    );
+    assert_eq!(std::fs::read(host.join("s")).unwrap(), b"x", "{bound}");
     assert!(
         !bound.contains(&format!("confined owner /scratch: {b}:{b} 700")),
         "{bound}"

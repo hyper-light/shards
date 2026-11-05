@@ -9,10 +9,13 @@
 //! Ownership is Docker Desktop's (measured: Docker Desktop 4.66.1's virtiofs, 2026-10-05):
 //! the host cannot give a rootless process's files another owner, so a file's guest owner is
 //! kept in its `com.docker.grpcfuse.ownership` extended attribute, as `{"UID":U,"GID":G,
-//! "mode":M}` with the mode's octal digits, and a file without one is root's. A directory
-//! Docker Desktop shared reads the same here. Unlike Docker Desktop's, a file a non-root
-//! process makes is that process's, and the guest kernel checks permissions
-//! (`default_permissions`) as on any Linux filesystem.
+//! "mode":M}` with the mode's octal digits. A directory Docker Desktop shared reads the
+//! same here. Unlike Docker Desktop's, a file a non-root process makes is that process's,
+//! and the guest kernel checks permissions (`default_permissions`) as on any Linux
+//! filesystem. A file without one, which the host made, is the run's own user's, whom init
+//! names as it mounts the share ([`shards_abi::SHARE_OWNER_XATTR`]; D38), so that a run of
+//! an unprivileged user writes the directory it was given; root's until it does. Once it
+//! has, every file the guest makes is recorded, root's too.
 
 use std::collections::{BTreeMap, HashMap};
 use std::ffi::{CStr, CString};
@@ -31,6 +34,10 @@ mod calls;
 #[path = "server_windows.rs"]
 mod calls;
 use calls::*;
+
+/// A share's files as its guest sees them, for a move to another machine (D176 part 6).
+#[path = "server_guest.rs"]
+pub mod guest;
 
 const ROOT: u64 = 1;
 /// How long the guest may trust what it was told of a name or its attributes: virtiofsd's
@@ -148,6 +155,8 @@ struct Volume {
     fd: host::Owned,
     read_only: bool,
     only: Option<CString>,
+    /// The owner its files the host made are given ([`State::owner`]).
+    owner: Option<(u32, u32)>,
 }
 
 /// A file or directory the guest opened: its node, and a file's host flags, less those
@@ -194,6 +203,11 @@ struct State {
     /// Each node by its volume and what it is (its device and inode): one directory shared
     /// as two volumes, read-only and not, is two nodes, never one whose volume is either's.
     by_key: HashMap<(u64, u64, u64), u64>,
+    /// The uid and gid the guest is told own each file that holds no owner of the guest's
+    /// (one the host made): the run's user, as init sets it on the share's root
+    /// ([`shards_abi::SHARE_OWNER_XATTR`]); none, root, until it does. A join share's
+    /// volumes each have their own ([`Volume::owner`]).
+    owner: Option<(u32, u32)>,
     /// A join share's (D119): its volumes, by their nodes, and their nodes by their names.
     joined: bool,
     volumes: HashMap<u64, Volume>,
@@ -229,6 +243,9 @@ struct State {
     /// The budgets over the share process's cgroups, which its host's copy of what the guest
     /// reads is dropped past (D188): none for a server that keeps every copy.
     headroom: Option<super::headroom::Headroom>,
+    /// Its directory is a copy of the one its guest's tables were saved with, made on another
+    /// machine (D176 part 6): a restore takes each node as the file at its path here.
+    moved: bool,
 }
 
 /// The descriptors of the directories the guest named and of the files and directories it
@@ -469,6 +486,59 @@ fn key(st: &Stat) -> (u64, u64) {
     (st.dev, st.ino)
 }
 
+/// Each node of `nodes`, a share's saved tables, keyed as the file its path reaches under
+/// `root` now (D176 part 6): its microVM moved to another machine with a copy of its
+/// directory, whose files are the ones saved by their paths, never by their inodes. A node
+/// of a join share's volume is left as it was, as is one no path reaches, a removed file
+/// its guest holds, which its pin serves, or one that is stale as it would be anywhere.
+fn rekey(root: host::Raw, nodes: &mut HashMap<u64, Node>) -> Result<(), String> {
+    let root_key = key(&stat_fd(root).map_err(|e| format!("the shared directory: errno {e}"))?);
+    let mut keys = Vec::with_capacity(nodes.len());
+    for (&id, node) in nodes.iter() {
+        if id == ROOT {
+            keys.push((id, root_key));
+            continue;
+        }
+        if node.volume != NO_VOLUME {
+            continue;
+        }
+        // Its names from the root down, each node's parent's; a chain longer than the
+        // tables is a loop, which no directory has.
+        let mut names = Vec::new();
+        let mut at = id;
+        while at != ROOT {
+            let n = nodes
+                .get(&at)
+                .ok_or("a share's saved tables name a node they do not hold")?;
+            names.push(n.name.clone());
+            at = n.parent;
+            if names.len() > nodes.len() {
+                return Err("a share's saved tables hold a loop".into());
+            }
+        }
+        names.reverse();
+        let Some((last, dirs)) = names.split_last() else {
+            continue;
+        };
+        let parent = match dirs {
+            [] => None,
+            dirs => match open_beneath(root, dirs) {
+                Ok(dir) => Some(dir),
+                Err(_) => continue,
+            },
+        };
+        if let Ok(st) = stat_at(parent.as_ref().map_or(root, |d| d.raw()), last) {
+            keys.push((id, key(&st)));
+        }
+    }
+    for (id, k) in keys {
+        if let Some(n) = nodes.get_mut(&id) {
+            n.key = k;
+        }
+    }
+    Ok(())
+}
+
 fn is_dir(st: &Stat) -> bool {
     mode_of(st) & S_IFMT == S_IFDIR
 }
@@ -639,6 +709,7 @@ impl Server {
                 root,
                 nodes,
                 by_key,
+                owner: None,
                 joined: false,
                 volumes: HashMap::new(),
                 named: HashMap::new(),
@@ -653,6 +724,7 @@ impl Server {
                 budget,
                 ghosts: None,
                 headroom: None,
+                moved: false,
             }),
         })
     }
@@ -710,6 +782,7 @@ impl Server {
                 fd: dir,
                 read_only,
                 only,
+                owner: None,
             },
         );
         s.named.insert(name, id);
@@ -821,6 +894,12 @@ impl Server {
             w.u32(*access as u32);
             w.bytes(bytes);
         });
+        // The owner of the files the host made, which init set as it mounted the share:
+        // last, as tables saved before it was kept end before it.
+        w.bool(s.owner.is_some());
+        let (uid, gid) = s.owner.unwrap_or_default();
+        w.u32(uid);
+        w.u32(gid);
         Ok(w.into_bytes())
     }
 
@@ -828,6 +907,13 @@ impl Server {
     /// from a save (D176), each removed as soon as it is made.
     pub fn keep_ghosts_in(&self, dir: host::Owned) {
         self.state.lock().unwrap_or_else(PoisonError::into_inner).ghosts = Some(dir);
+    }
+
+    /// Takes the tables a restore gives it as those of a copy of its directory made on
+    /// another machine, its microVM moved there (D176 part 6): each node the file at its
+    /// path here, whatever its device and inode were where it was saved.
+    pub fn restores_moved(&self) {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner).moved = true;
     }
 
     /// Drops its host's copy of what the guest reads once keeping it would leave the budgets
@@ -912,6 +998,13 @@ impl Server {
                 Ok((node, access, r.bytes(MAX_TABLES)?))
             })
             .map_err(bad)?;
+        let owner = if r.is_empty() {
+            None
+        } else {
+            let set = r.bool().map_err(bad)?;
+            let (uid, gid) = (r.u32().map_err(bad)?, r.u32().map_err(bad)?);
+            set.then_some((uid, gid))
+        };
         r.finish().map_err(bad)?;
         let mut s = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         if s.joined != joined {
@@ -923,15 +1016,21 @@ impl Server {
         let now = s.nodes.get(&ROOT).map(|n| n.key).ok_or("the share has no root")?;
         let mut nodes: HashMap<u64, Node> = nodes.into_iter().collect();
         let root = nodes.get(&ROOT).ok_or("a share's saved tables have no root")?;
-        if root.key.1 != now.1 {
-            return Err(
-                "its volume is not the directory it was saved with: every file the microVM holds of it would be stale"
-                    .into(),
-            );
-        }
-        for n in nodes.values_mut() {
-            if n.key.0 == saved_dev {
-                n.key.0 = now.0;
+        if s.moved {
+            // A copy made on another machine: no device or inode of the one saved says
+            // anything here, and each node is what its path reaches now.
+            rekey(s.root.raw(), &mut nodes)?;
+        } else {
+            if root.key.1 != now.1 {
+                return Err(
+                    "its volume is not the directory it was saved with: every file the microVM holds of it would be stale"
+                        .into(),
+                );
+            }
+            for n in nodes.values_mut() {
+                if n.key.0 == saved_dev {
+                    n.key.0 = now.0;
+                }
             }
         }
         let known = |id: &u64| nodes.contains_key(id);
@@ -968,6 +1067,7 @@ impl Server {
         s.opened = opened.into_iter().collect();
         s.fds = Fds::default();
         s.pins = pins;
+        s.owner = owner;
         Ok(())
     }
 
@@ -1088,6 +1188,11 @@ impl Server {
             op::INTERRUPT => {
                 *out = r.0;
                 return false;
+            }
+            // Init's word of whose the host's files are, before any confinement: a share's
+            // root, or a file bound alone's directory, takes nothing else.
+            op::SETXATTR if owner_control(body).is_some() => {
+                set_default_owner(&mut state, nodeid, caller, body)
             }
             _ => match self.confined(&state, opcode, nodeid, body) {
                 Ok(()) => self.dispatch(&mut state, opcode, nodeid, caller, body, &mut r),
@@ -1686,7 +1791,8 @@ impl Server {
     /// The node made as `name` in `parent` by `caller`: its owner kept where it is not
     /// root, or where `parent` passes its group on (setgid); then looked up.
     /// Says of node `name`, just made in `parent` by `caller`, what the guest sees of it:
-    /// its owner, kept where it is not root's; and what `kept` says of it that the host
+    /// its owner, kept where it is not root's or init has named the owner of the host's
+    /// files ([`set_owner_of`]); and what `kept` says of it that the host
     /// file does not, its mode where the host's differs, its kind where the host made a
     /// regular file in its place.
     fn made(
@@ -1735,7 +1841,10 @@ impl Server {
             kind: kept.kind,
             rdev: kept.rdev,
         };
-        let recorded = if owner == Owner::default() {
+        // Unrecorded, a file is root's only until init sets whose the host's files are:
+        // once it has, each the guest makes is recorded, so that it stays its maker's
+        // whoever a later run's user is.
+        let recorded = if owner == Owner::default() && set_owner_of(s, parent).is_none() {
             Ok(())
         } else {
             open_meta(dir, name, None)
@@ -1950,6 +2059,62 @@ fn node_fd_to_change(s: &mut State, nodeid: u64) -> Result<NodeFd, Errno> {
     node_fd(s, nodeid).map_err(|e| if e == ENODATA { EPERM } else { e })
 }
 
+/// A SETXATTR's value where it names [`shards_abi::SHARE_OWNER_XATTR`]: none for any other
+/// attribute.
+fn owner_control(body: &[u8]) -> Option<&[u8]> {
+    let mut a = Args(body);
+    let size = a.u32().ok()?;
+    let _flags = a.u32().ok()?;
+    let name = a.cstr().ok()?;
+    if name.to_bytes() != shards_abi::SHARE_OWNER_XATTR.as_bytes() {
+        return None;
+    }
+    a.rest().get(..usize::try_from(size).ok()?)
+}
+
+/// Init's word, `UID:GID`, of whose the files are that hold no owner of the guest's (D38):
+/// the share's, set on its root; a join share's volume's, set on the volume's own. Taken
+/// of the guest's root alone (its kernel lets no other set a `trusted.` attribute, and its
+/// request says root), of a read-only share too, and kept on no file. Any other node's is
+/// refused (EINVAL), so that no file holds an attribute of that name.
+fn set_default_owner(s: &mut State, nodeid: u64, caller: (u32, u32), body: &[u8]) -> Result<(), Errno> {
+    let value = owner_control(body).ok_or(EINVAL)?;
+    if caller.0 != 0 {
+        return Err(EPERM);
+    }
+    let text = std::str::from_utf8(value).map_err(|_| EINVAL)?;
+    let (uid, gid) = text.trim_end_matches('\0').split_once(':').ok_or(EINVAL)?;
+    let owner = (uid.parse().map_err(|_| EINVAL)?, gid.parse().map_err(|_| EINVAL)?);
+    if s.joined {
+        let volume = s.volumes.get_mut(&nodeid).ok_or(EINVAL)?;
+        volume.owner = Some(owner);
+    } else if nodeid == ROOT {
+        s.owner = Some(owner);
+    } else {
+        return Err(EINVAL);
+    }
+    Ok(())
+}
+
+/// The owner set for the files of node `nodeid`'s share, or its volume in a join share,
+/// that hold none of the guest's ([`State::owner`]): none where none was set, root's.
+fn set_owner_of(s: &State, nodeid: u64) -> Option<(u32, u32)> {
+    if s.joined {
+        return s.volumes.get(&volume_of(s, nodeid)).and_then(|v| v.owner);
+    }
+    s.owner
+}
+
+/// The owner the guest is told of a file of node `nodeid`'s share that holds none of its.
+fn unrecorded_owner(s: &State, nodeid: u64) -> Owner {
+    let (uid, gid) = set_owner_of(s, nodeid).unwrap_or_default();
+    Owner {
+        uid,
+        gid,
+        ..Owner::default()
+    }
+}
+
 fn node_has_owner(s: &mut State, nodeid: u64) -> bool {
     node_fd(s, nodeid)
         .ok()
@@ -1957,17 +2122,24 @@ fn node_has_owner(s: &mut State, nodeid: u64) -> bool {
         .is_some()
 }
 
-/// The guest's owner of a node: its attribute's, or root. `st`, the node's own stat where
-/// the caller has just taken it.
+/// The guest's owner of a node: its attribute's; else the owner init set for the files
+/// the host made ([`unrecorded_owner`]), root where it set none. A host's device node,
+/// which holds no attribute here, stays root's: the guest's kernel opens a device node
+/// itself, its own device of that number, which the run's user is not to reach where the
+/// host's node lets its owner (a shared `/dev`). `st`, the node's own stat where the caller
+/// has just taken it.
 fn node_owner(s: &mut State, nodeid: u64, st: Option<&Stat>) -> Result<Owner, Errno> {
-    let Ok(fd) = node_fd_known(s, nodeid, st.map(|st| mode_of(st) & S_IFMT)) else {
-        return Ok(Owner::default());
+    let unrecorded = unrecorded_owner(s, nodeid);
+    let fd = match node_fd_known(s, nodeid, st.map(|st| mode_of(st) & S_IFMT)) {
+        Ok(fd) => fd,
+        Err(ENODATA) => return Ok(Owner::default()),
+        Err(_) => return Ok(unrecorded),
     };
     Ok(fget_xattr(fd.raw(), &owner_xattr()?)
         .ok()
         .flatten()
         .and_then(|v| Owner::parse(&v))
-        .unwrap_or_default())
+        .unwrap_or(unrecorded))
 }
 
 /// Directory node `nodeid`'s descriptor: the root's; one held; or one opened again along
@@ -3019,6 +3191,18 @@ mod tests {
             "another directory's"
         );
         assert!(elsewhere.restore(&tables[..tables.len() - 1]).is_err());
+        // A copy of the directory, made on another machine its microVM moved to (D176 part
+        // 6): each node is the file at its path there, its open handle read on, and a name
+        // looked up again the node it was.
+        let copy = shards_testdir::TempDir::new("fs-moved").unwrap();
+        std::fs::create_dir(copy.join("d")).unwrap();
+        std::fs::write(copy.join("d/f"), "kept bytes").unwrap();
+        let moved = Server::new(root_of(&copy), false, None).unwrap();
+        moved.restores_moved();
+        moved.restore(&tables).unwrap();
+        assert_eq!(read(&moved), (0, b"kept bytes".to_vec()));
+        assert_eq!(id(answer(&moved, &req(op::LOOKUP, d, 0, &name("f")))), f);
+        assert_eq!(id(answer(&moved, &req(op::LOOKUP, ROOT, 0, &name("d")))), d);
         // A file the guest holds open after removing its last name no path reaches: its
         // bytes go with the tables, and a restored server holds them in a file of its own,
         // made in its private directory and removed there at once.
@@ -3276,6 +3460,169 @@ mod tests {
         // FORGET takes no reply.
         assert!(s.handle(&req(op::FORGET, node, 0, &1u64.to_le_bytes())).is_none());
         let _ = std::fs::remove_dir_all(&path);
+    }
+
+    /// A SETXATTR of init's owner word ([`shards_abi::SHARE_OWNER_XATTR`]).
+    fn owner_word(value: &str) -> Vec<u8> {
+        let mut b = Vec::new();
+        b.extend_from_slice(&u32::try_from(value.len()).unwrap().to_le_bytes());
+        b.extend_from_slice(&0u32.to_le_bytes());
+        b.extend(name(shards_abi::SHARE_OWNER_XATTR));
+        b.extend_from_slice(value.as_bytes());
+        b
+    }
+
+    /// A LOOKUP's node and the uid and gid it tells.
+    fn owned(s: &Server, parent: u64, n: &str) -> (u64, u32, u32) {
+        let (e, entry) = answer(s, &req(op::LOOKUP, parent, 0, &name(n)));
+        assert_eq!(e, 0, "{n}");
+        let at = |i: usize| u32::from_le_bytes(entry[40 + i..40 + i + 4].try_into().unwrap());
+        (
+            u64::from_le_bytes(entry[0..8].try_into().unwrap()),
+            at(68),
+            at(72),
+        )
+    }
+
+    /// A bind's files the host made (no owner recorded) are the owner init names as it
+    /// mounts the share (D38): root's until then; named by the guest's root alone, at the
+    /// share's root alone, as `UID:GID`; of a read-only share and a file bound alone too;
+    /// kept through a snapshot. A file the guest makes is recorded once it is named, root's
+    /// too, so that it stays its maker's; a recorded owner stays; a host device node stays
+    /// root's.
+    #[test]
+    fn the_hosts_files_are_the_owner_init_names() {
+        let (path, s) = dir();
+        std::fs::write(path.join("host.txt"), "hi").unwrap();
+        std::fs::create_dir(path.join("sub")).unwrap();
+        std::fs::write(path.join("sub").join("deep"), "d").unwrap();
+        assert_eq!(owned(&s, ROOT, "host.txt").1, 0);
+        // Made by root before it is named: unrecorded, as before.
+        let mkdir = |n: &str| {
+            [0o755u32.to_le_bytes(), 0o022u32.to_le_bytes()]
+                .concat()
+                .into_iter()
+                .chain(name(n))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(answer(&s, &req(op::MKDIR, ROOT, 0, &mkdir("early"))).0, 0);
+        // Only root names it, at the root, in its form.
+        assert_eq!(
+            answer(&s, &req(op::SETXATTR, ROOT, 1000, &owner_word("1000:1001"))).0,
+            -EPERM
+        );
+        let (sub, _, _) = owned(&s, ROOT, "sub");
+        assert_eq!(
+            answer(&s, &req(op::SETXATTR, sub, 0, &owner_word("1000:1001"))).0,
+            -EINVAL
+        );
+        for bad in ["1000", "a:b", "1000:", ":1", "1000:1001:1", "-1:0"] {
+            assert_eq!(
+                answer(&s, &req(op::SETXATTR, ROOT, 0, &owner_word(bad))).0,
+                -EINVAL,
+                "{bad}"
+            );
+        }
+        assert_eq!(owned(&s, ROOT, "host.txt").1, 0);
+        assert_eq!(
+            answer(&s, &req(op::SETXATTR, ROOT, 0, &owner_word("1000:1001"))).0,
+            0
+        );
+        // The host's files, the root and the files made before, the named owner's.
+        let (_, uid, gid) = owned(&s, ROOT, "host.txt");
+        assert_eq!((uid, gid), (1000, 1001));
+        assert_eq!(owned(&s, sub, "deep").1, 1000);
+        assert_eq!(owned(&s, ROOT, "early").1, 1000);
+        let (e, attr) = answer(&s, &req(op::GETATTR, ROOT, 1000, &[0u8; 16]));
+        assert_eq!(e, 0);
+        let at = |i: usize| u32::from_le_bytes(attr[16 + i..16 + i + 4].try_into().unwrap());
+        assert_eq!((at(68), at(72)), (1000, 1001));
+        // Kept on no file: the guest reads no attribute of that name.
+        let mut get = 64u32.to_le_bytes().to_vec();
+        get.extend_from_slice(&0u32.to_le_bytes());
+        get.extend(name(shards_abi::SHARE_OWNER_XATTR));
+        assert_eq!(answer(&s, &req(op::GETXATTR, ROOT, 0, &get)).0, -ENODATA);
+        // Made by root now: recorded root's. Made by 1000: theirs. A recorded owner stays.
+        assert_eq!(answer(&s, &req(op::MKDIR, ROOT, 0, &mkdir("byroot"))).0, 0);
+        assert_eq!(owned(&s, ROOT, "byroot").1, 0);
+        assert_eq!(answer(&s, &req(op::MKDIR, ROOT, 1000, &mkdir("byuser"))).0, 0);
+        assert_eq!(owned(&s, ROOT, "byuser").1, 1000);
+        assert_eq!(
+            answer(&s, &req(op::SETXATTR, ROOT, 0, &owner_word("2000:2000"))).0,
+            0
+        );
+        assert_eq!(owned(&s, ROOT, "byroot").1, 0);
+        assert_eq!(owned(&s, ROOT, "byuser").1, 1000);
+        assert_eq!(owned(&s, ROOT, "host.txt").1, 2000);
+        // A snapshot keeps it.
+        let saved = s.save().unwrap();
+        let restored = Server::new(root_of(&path), false, None).unwrap();
+        restored.restore(&saved).unwrap();
+        assert_eq!(owned(&restored, ROOT, "host.txt").1, 2000);
+        // Tables saved before it was kept: root's.
+        let old = Server::new(root_of(&path), false, None).unwrap();
+        old.restore(&saved[..saved.len() - 9]).unwrap();
+        assert_eq!(owned(&old, ROOT, "host.txt").1, 0);
+        // A read-only share, and a file bound alone, take it.
+        let ro = Server::new(root_of(&path), true, None).unwrap();
+        assert_eq!(
+            answer(&ro, &req(op::SETXATTR, ROOT, 0, &owner_word("1000:1000"))).0,
+            0
+        );
+        assert_eq!(owned(&ro, ROOT, "host.txt").1, 1000);
+        let one = Server::new(root_of(&path), false, Some(CString::new("host.txt").unwrap())).unwrap();
+        assert_eq!(
+            answer(&one, &req(op::SETXATTR, ROOT, 0, &owner_word("1000:1000"))).0,
+            0
+        );
+        assert_eq!(owned(&one, ROOT, "host.txt").1, 1000);
+        // A host device node stays root's.
+        #[cfg(unix)]
+        {
+            let devs = Server::new(root_of(std::path::Path::new("/dev")), true, None).unwrap();
+            assert_eq!(
+                answer(&devs, &req(op::SETXATTR, ROOT, 0, &owner_word("1000:1000"))).0,
+                0
+            );
+            assert_eq!(owned(&devs, ROOT, "null").1, 0);
+        }
+    }
+
+    /// A join share's volumes each take their own owner of the host's files (D38): set on
+    /// the volume's node, never the share's root.
+    #[test]
+    fn a_join_shares_volumes_each_have_their_owner() {
+        let (root, _) = dir();
+        let (a, _) = dir();
+        let (b, _) = dir();
+        std::fs::write(a.join("x"), "x").unwrap();
+        std::fs::write(b.join("y"), "y").unwrap();
+        let c = |n: &str| CString::new(n).unwrap();
+        let s = Server::joined(root_of(&root), 64).unwrap();
+        s.add(c("a"), root_of(&a), false, None).unwrap();
+        s.add(c("b"), root_of(&b), true, None).unwrap();
+        let (va, _, _) = owned(&s, ROOT, "a");
+        let (vb, _, _) = owned(&s, ROOT, "b");
+        assert_eq!(
+            answer(&s, &req(op::SETXATTR, ROOT, 0, &owner_word("1000:1000"))).0,
+            -EINVAL
+        );
+        assert_eq!(
+            answer(&s, &req(op::SETXATTR, va, 0, &owner_word("200000:200000"))).0,
+            0
+        );
+        assert_eq!(
+            answer(&s, &req(op::SETXATTR, vb, 0, &owner_word("200001:200001"))).0,
+            0
+        );
+        let (x, _, _) = owned(&s, va, "x");
+        assert_eq!(
+            answer(&s, &req(op::SETXATTR, x, 0, &owner_word("1:1"))).0,
+            -EINVAL
+        );
+        assert_eq!(owned(&s, va, "x").1, 200_000);
+        assert_eq!(owned(&s, vb, "y").1, 200_001);
+        assert_eq!(owned(&s, ROOT, "a").1, 200_000);
     }
 
     /// struct fuse_setattr_in: `valid` and `mode`, everything else zero.
@@ -4927,6 +5274,107 @@ mod tests {
             assert_eq!(write(&s, f, fh, 0, b"x"), 0);
             release(&s, f, fh);
         }
+    }
+
+    /// A LOOKUP's node, and the mode, uid, gid and device number it tells.
+    fn seen(s: &Server, parent: u64, n: &str) -> (u64, [u32; 4]) {
+        let (e, entry) = answer(s, &req(op::LOOKUP, parent, 0, &name(n)));
+        assert_eq!(e, 0, "{n}");
+        let at = |i: usize| u32::from_le_bytes(entry[40 + i..40 + i + 4].try_into().unwrap());
+        (
+            u64::from_le_bytes(entry[0..8].try_into().unwrap()),
+            [at(60), at(68), at(72), at(76)],
+        )
+    }
+
+    /// The tree at `from` copied to `to` as a move carries it (moves.rs): each entry by its
+    /// guest's name, read as its guest sees it ([`guest::read`]), made there by its kind and
+    /// given what it was ([`guest::set`]), a directory once all it holds is in it.
+    fn moved(from: &std::path::Path, to: &std::path::Path) {
+        for entry in std::fs::read_dir(from).unwrap() {
+            let entry = entry.unwrap();
+            let named = guest::name(&entry.file_name()).unwrap();
+            let there = to.join(guest::host_name(&named).unwrap());
+            let meta = guest::read(&entry.path()).unwrap();
+            match meta.mode & guest::S_IFMT {
+                guest::S_IFDIR => {
+                    guest::make_dir(&there).unwrap();
+                    moved(&entry.path(), &there);
+                }
+                guest::S_IFREG => std::fs::write(&there, std::fs::read(entry.path()).unwrap()).unwrap(),
+                guest::S_IFLNK => {
+                    guest::make_link(&there, &guest::read_link(&entry.path()).unwrap()).unwrap()
+                }
+                _ => guest::make_node(&there, &meta).unwrap(),
+            }
+            guest::set(&there, &meta).unwrap();
+        }
+    }
+
+    /// A share's files copied to another tree as their guest saw them show a guest there
+    /// what they showed it here (D176 part 6), whichever host: a directory's, a file's and a
+    /// device node's kind, mode, owner and group, a device's number, a symlink's target, a
+    /// name no Windows name holds, a mode of 0, and an extended attribute; and a file the host
+    /// made, which holds no owner, its share's default owner's there too.
+    #[test]
+    fn a_guests_files_show_it_the_same_copied_as_they_move() {
+        let (from, s) = dir();
+        std::fs::write(from.join("host.txt"), "h").unwrap();
+        assert_eq!(
+            answer(&s, &req(op::SETXATTR, ROOT, 0, &owner_word("1000:1001"))).0,
+            0
+        );
+        let fields = |v: [u32; 4]| v.iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<u8>>();
+        let mut mkdir = [0o750u32.to_le_bytes(), 0u32.to_le_bytes()].concat();
+        mkdir.extend(name("d"));
+        assert_eq!(answer(&s, &req(op::MKDIR, ROOT, 1234, &mkdir)).0, 0);
+        let (d, _) = seen(&s, ROOT, "d");
+        for (n, mode, rdev, uid) in [
+            ("f", S_IFREG | 0o640, 0, 1234),
+            ("a:b", S_IFREG | 0o600, 0, 1234),
+            ("zero", S_IFREG, 0, 0),
+            ("null", S_IFCHR | 0o620, (1 << 8) | 3, 0),
+        ] {
+            let mut mknod = fields([mode, rdev, 0, 0]);
+            mknod.extend(name(n));
+            assert_eq!(answer(&s, &req(op::MKNOD, d, uid, &mknod)).0, 0, "{n}");
+        }
+        let mut link = name("l");
+        link.extend(name("f"));
+        assert_eq!(answer(&s, &req(op::SYMLINK, d, 0, &link)).0, 0);
+        let (f, _) = seen(&s, d, "f");
+        let mut set = 1u32.to_le_bytes().to_vec();
+        set.extend_from_slice(&0u32.to_le_bytes());
+        set.extend(name("user.k"));
+        set.push(b'v');
+        assert_eq!(answer(&s, &req(op::SETXATTR, f, 1234, &set)).0, 0);
+
+        let to = shards_testdir::TempDir::new("fs-moved").unwrap();
+        moved(&from, &to);
+        let t = Server::new(root_of(&to), false, None).unwrap();
+        assert_eq!(
+            answer(&t, &req(op::SETXATTR, ROOT, 0, &owner_word("1000:1001"))).0,
+            0
+        );
+        assert_eq!(seen(&t, ROOT, "host.txt").1, seen(&s, ROOT, "host.txt").1);
+        assert_eq!(seen(&t, ROOT, "host.txt").1[1..3], [1000, 1001]);
+        let (td, there) = seen(&t, ROOT, "d");
+        assert_eq!(there, seen(&s, ROOT, "d").1);
+        assert_eq!(there[..3], [S_IFDIR | 0o750, 1234, 1234]);
+        for n in ["f", "a:b", "zero", "null", "l"] {
+            assert_eq!(seen(&t, td, n).1, seen(&s, d, n).1, "{n}");
+        }
+        assert_eq!(seen(&t, td, "f").1[..3], [S_IFREG | 0o640, 1234, 1234]);
+        assert_eq!(seen(&t, td, "zero").1[0], S_IFREG);
+        let null = seen(&t, td, "null").1;
+        assert_eq!((null[0] & S_IFMT, null[3]), (S_IFCHR, (1 << 8) | 3));
+        let (tf, _) = seen(&t, td, "f");
+        let mut get = 64u32.to_le_bytes().to_vec();
+        get.extend_from_slice(&0u32.to_le_bytes());
+        get.extend(name("user.k"));
+        assert_eq!(answer(&t, &req(op::GETXATTR, tf, 0, &get)), (0, b"v".to_vec()));
+        let (tl, _) = seen(&t, td, "l");
+        assert_eq!(answer(&t, &req(op::READLINK, tl, 0, &[])), (0, b"f".to_vec()));
     }
 
     #[test]

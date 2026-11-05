@@ -401,7 +401,7 @@ pub fn format_all(p: &Platform) -> Vec<u8> {
 mod tests {
     use super::*;
 
-    /// Specifiers parse, normalize and format as containerd's do.
+    /// Specifiers parse, normalize and format as containerd's v1.0.0-rc.4 do.
     #[test]
     fn platform_specifiers_parse() {
         let build = Platform::new("linux", "arm64");

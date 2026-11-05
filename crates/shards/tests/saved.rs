@@ -1244,9 +1244,9 @@ fn a_saved_microvm_on_a_network_is_restored_at_its_address() {
     assert_eq!(shards(&["rm", "-f", "taker"]).status, Some(0));
 }
 
-/// Docker's words for it, as an experimental dockerd serves them: `checkpoint create`,
-/// `ls` and `rm`, and `start --checkpoint`, a microVM's snapshots by another name, each
-/// answered as docker/cli and dockerd answer.
+/// The `checkpoint` command lines scripts already have: `checkpoint create`, `ls` and
+/// `rm`, and `start --checkpoint`, a microVM's snapshots by another name (D176), each
+/// answered in the shape and words those scripts read (the docker-cli oracle).
 #[test]
 fn checkpoint_command_lines_save_list_and_restore_microvms() {
     let Some((home, image)) = home("checkpoints") else {
@@ -1271,7 +1271,7 @@ fn checkpoint_command_lines_save_list_and_restore_microvms() {
     let n = counts(&log()).len() as u64;
     let listed = shards(&["checkpoint", "ls", "cp"]);
     assert_eq!(listed.stdout, "CHECKPOINT NAME\nfirst\n", "{listed}");
-    // Restored by name, saying nothing, as docker/cli says nothing of it.
+    // Restored by name, saying nothing: a script reads its status alone (D176).
     let started = shards(&["start", "--checkpoint", "first", "cp"]);
     assert_eq!(
         (started.status, started.stdout.as_str()),
@@ -1289,7 +1289,7 @@ fn checkpoint_command_lines_save_list_and_restore_microvms() {
         "shards: cannot checkpoint container cp: checkpoint with name second already exists for container cp\n"
     );
     // A name that would leave its microVM's snapshots is no name, refused before anything
-    // is looked up, as dockerd refuses it.
+    // is looked up: no path outside them is ever touched (D176).
     let bad = shards(&["checkpoint", "create", "cp", "../x"]);
     assert_eq!(bad.status, Some(1), "{bad}");
     assert_eq!(

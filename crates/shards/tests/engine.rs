@@ -116,7 +116,7 @@ struct Api {
 }
 
 /// A connection to the engine of `home`'s daemon: its socket, or on Windows the named pipe
-/// its `engine.pipe` names, as Docker's clients reach their engine there.
+/// its `engine.pipe` names, the transport Engine API clients dial there (D170).
 fn connect(home: &Path) -> UnixStream {
     #[cfg(unix)]
     return UnixStream::connect(home.join("engine.sock")).unwrap();
@@ -487,7 +487,8 @@ fn microvms_are_watched_and_managed() {
     let paused = api.call("GET", "/containers/live/json", None).json();
     assert_eq!(paused["State"]["Paused"], json!(true), "{paused}");
     assert_eq!(api.call("POST", "/containers/live/pause", None).status, 409);
-    // Not started, nor answered as started already, as dockerd answers it.
+    // Not started, nor answered as started already: a paused microVM is running, its
+    // answer the status clients read (D170).
     let start = api.call("POST", "/containers/live/start", None);
     assert_eq!(
         (start.status, start.json()["message"].clone()),
@@ -554,7 +555,7 @@ fn microvms_are_watched_and_managed() {
     let pruned = pruned.json();
     assert_eq!(pruned["ContainersDeleted"], json!([id]), "{pruned}");
     assert!(pruned["SpaceReclaimed"].as_u64().is_some(), "{pruned}");
-    // The prune said as an event too, with what it reclaimed, as dockerd says it.
+    // The prune said as an event too, with what it reclaimed (D187).
     let until = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
@@ -967,7 +968,7 @@ fn a_container_is_made_started_waited_for_logged_and_removed() {
     assert_eq!(removed.status, 204, "{}", removed.text());
     let gone = api.call("GET", &format!("/containers/{id}/json"), None);
     assert_eq!(gone.status, 404, "{}", gone.text());
-    // Its events carry its labels, as dockerd's do: what a client that follows its own
+    // Its events carry its labels (D187): what a client that follows its own
     // filters them by (Compose follows its project's).
     let until = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1441,8 +1442,8 @@ fn images_are_listed_inspected_and_pulled() {
         !messages.is_empty() && messages.iter().all(|m| m.get("error").is_none()),
         "{messages:?}"
     );
-    // One that fails before it says anything is answered by its status, as dockerd answers
-    // one whose stream it has not flushed, which clients read as an error of the call.
+    // One that fails before it says anything is answered by its status, which clients
+    // read as an error of the call (D170).
     let failed = api.call("POST", "/images/create?fromImage=127.0.0.1:1/none&tag=x", None);
     assert_eq!(failed.status, 500, "{}", failed.text());
     // A tag the registry has not: not found, as clients read a pull of nothing.
@@ -1556,8 +1557,21 @@ fn images_are_tagged_traced_removed_and_pruned() {
         "/images/shp/hist:1/history?platform=%7B%22os%22%3A%22linux%22%7D",
         None,
     );
-    assert_eq!(platform.status, 400, "{}", platform.text());
-    assert!(platform.text().contains("--platform"), "{}", platform.text());
+    // One platform's history (D179): this image's only platform is Linux's, and its
+    // history is the image's; a platform it lacks is not found.
+    assert_eq!(platform.status, 200, "{}", platform.text());
+    assert_eq!(platform.json(), steps, "{}", platform.text());
+    let lacking = api.call(
+        "GET",
+        "/images/shp/hist:1/history?platform=%7B%22os%22%3A%22windows%22%7D",
+        None,
+    );
+    assert_eq!(lacking.status, 404, "{}", lacking.text());
+    assert!(
+        lacking.text().contains("does not provide the specified platform"),
+        "{}",
+        lacking.text()
+    );
     // A run of it, which a template is made of where this host saves them.
     let made = api.call(
         "POST",
@@ -1775,7 +1789,7 @@ fn images_are_pushed_saved_loaded_and_imported() {
             "{query}"
         );
     }
-    // A tag not here: said after the repository, as dockerd says it.
+    // A tag not here: said after the repository, the order clients read (D170).
     let missing = api.call("POST", &format!("/images/{repo}/push?tag=nope"), None);
     assert_eq!(missing.status, 200, "{}", missing.text());
     assert!(

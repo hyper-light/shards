@@ -1408,10 +1408,9 @@ pub fn start(
             continue;
         }
         let fail = |why: String| format!("the volume at {}: {why}", sh.dest);
-        // Where it lies in the image, as runc finds a mount point in a container's root
-        // (securejoin): the image's symlinks on the way followed in it, `..` never above
-        // it, so that a domain mounts it where the run's root would, and keeps the
-        // image's own symlinks (`/var/run`).
+        // Where it lies in the image, resolved in it (securejoin): the image's symlinks on
+        // the way followed in it, `..` never above it, so that a domain mounts it where the
+        // run's root would, and keeps the image's own symlinks (`/var/run`).
         let real = built
             .resolve(sh.dest.as_bytes(), false)
             .map_err(|e| fail(e.to_string()))
@@ -1436,7 +1435,8 @@ pub fn start(
         let at = format!("{rw}/volumes/{k}");
         std::fs::create_dir_all(&at).map_err(|e| fail(e.to_string()))?;
         let (tag, target) = (cstr_of(&sh.tag)?, cstr_of(&at)?);
-        let flags = libc::MS_NOSUID | libc::MS_NODEV | if sh.ro { libc::MS_RDONLY } else { 0 };
+        let flags = libc::MS_NOSUID | libc::MS_NODEV;
+        // Writable to be told whose the host's files are, then read-only where it is.
         // SAFETY: mount(2) of NUL-terminated strings.
         if unsafe {
             libc::mount(
@@ -1450,6 +1450,39 @@ pub fn start(
         {
             return Err(fail(io::Error::last_os_error().to_string()));
         }
+        // A volume given one agent or harness alone, as a `VOLUME … FOR` scopes it, or the
+        // run's own root does not mount: the files the host made there are its (D38), as a
+        // run's are its user's, a bind standing in for its volume too. The domains start
+        // once the run's own volumes are mounted, so this is said after the run's root
+        // said its user's. One no `VOLUME` scopes, the run's own too, stays the run's
+        // user's; one several domains share that the run's root does not mount, root's.
+        let scoped = domains
+            .iter()
+            .any(|d| d.volumes.iter().any(|r| r.path == sh.dest));
+        if (scoped || !sh.main)
+            && let [only] = domains
+                .iter()
+                .filter(|d| given_volume(d, &sh.dest))
+                .collect::<Vec<_>>()
+                .as_slice()
+        {
+            crate::setup::name_owner_as(&at, only.id, only.id);
+        }
+        if sh.ro {
+            // SAFETY: mount(2) of NUL-terminated strings: its flags changed, read-only.
+            let remounted = unsafe {
+                libc::mount(
+                    c"".as_ptr(),
+                    target.as_ptr(),
+                    std::ptr::null(),
+                    libc::MS_BIND | libc::MS_REMOUNT | flags | libc::MS_RDONLY,
+                    std::ptr::null(),
+                )
+            };
+            if remounted != 0 {
+                return Err(fail(io::Error::last_os_error().to_string()));
+            }
+        }
         let empty = || -> Result<bool, String> {
             Ok(std::fs::read_dir(&at)
                 .map_err(|e| fail(e.to_string()))?
@@ -1457,9 +1490,9 @@ pub fn start(
                 .is_none())
         };
         if !sh.main && sh.copy && !sh.ro && empty()? {
-            // The image's directory there, found in the image as Docker finds a volume's
-            // mount point in the container's root (FollowSymlinkInScope): no symlink of
-            // the image leads the fill out of it, to init's root or another's volume.
+            // The image's directory there, found in the image (FollowSymlinkInScope): no
+            // symlink of the image leads the fill out of it, to init's root or another's
+            // volume.
             match built.open_at(real.as_bytes(), libc::O_PATH | libc::O_DIRECTORY) {
                 Ok(dir) => {
                     // `/.` past the descriptor: the directory's own owner and mode.

@@ -401,7 +401,7 @@ fn modes(dir: &Path, which: &[&str]) -> Option<Modes> {
     })
 }
 
-/// The settings raw mode changes, as moby/term's Windows raw mode makes them: line input,
+/// The settings raw mode changes (cli/terminal.rs, SetConsoleMode): line input,
 /// echo, and the screen's return at each newline (DISABLE_NEWLINE_AUTO_RETURN unset).
 pub fn cooked(m: &Modes) -> (bool, bool, bool) {
     use windows_sys::Win32::System::Console::{

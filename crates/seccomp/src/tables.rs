@@ -253,7 +253,7 @@ pub mod resolvers {
         rows().iter().find(|r| r.name == name).and_then(|r| r.pnr)
     }
 
-    /// `arch->syscall_resolve_name`: as runc's GetSyscallFromName(ByArch) reads a name.
+    /// `arch->syscall_resolve_name`: as runc v1.3.4's GetSyscallFromName(ByArch) reads a name.
     pub fn resolve_name(abi: Abi, name: &str) -> i32 {
         match abi {
             // abi_syscall_resolve_name_munge: x86's multiplexed calls are their pseudo

@@ -51,14 +51,14 @@ const fn own(name: &'static str, about: &'static str) -> Entry {
     }
 }
 
-/// `build`'s line as docker/cli's root lists it, which is the CLI's, not buildx's.
+/// `build`'s line as docker/cli v29.8.1's root lists it, the CLI's, not buildx's.
 const BUILD: Entry = Entry {
     name: "build",
     about: "Build an image from a Dockerfile",
     command: Some(&commands::BUILD),
 };
 
-/// The root's groups, in docker/cli's order.
+/// The root's groups, in docker/cli v29.8.1's order.
 pub static TOP: &[Group] = &[
     Group {
         heading: "Common Commands",
@@ -225,7 +225,7 @@ fn listed(text: &mut String, entries: &[Entry]) {
     }
 }
 
-/// `shards --help`, as docker/cli's root writes its own.
+/// `shards --help`, as docker/cli v29.8.1's root writes its own.
 pub fn top() -> String {
     let mut text = format!("Usage:  shards COMMAND\n\n{ABOUT}\n");
     for group in TOP {
@@ -236,7 +236,7 @@ pub fn top() -> String {
     text
 }
 
-/// `shards NAME --help` of a management command, as docker/cli writes one.
+/// `shards NAME --help` of a management command, as docker/cli v29.8.1 writes one.
 pub fn management_help(name: &str) -> Option<String> {
     let (about, entries) = management(name)?;
     let mut text = format!("Usage:  shards {name} COMMAND\n\n{about}\n\nCommands:\n");
@@ -248,12 +248,12 @@ pub fn management_help(name: &str) -> Option<String> {
     Some(text)
 }
 
-/// A command the root does not have, as docker/cli refuses one (exit status 1).
+/// A command the root does not have, as docker/cli v29.8.1 refuses one (exit status 1).
 pub fn unknown(words: &str) -> String {
     format!("shards: unknown command: shards {words}\n\nRun 'shards --help' for more information")
 }
 
-/// A command a management command does not have, as docker/cli refuses one.
+/// A command a management command does not have, as docker/cli v29.8.1 refuses one.
 pub fn unknown_in(name: &str, word: &str) -> String {
     format!(
         "shards: unknown command: shards {name} {word}\n\nUsage:  shards {name}\n\nRun 'shards {name} --help' for more information"

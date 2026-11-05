@@ -1022,7 +1022,7 @@ fn definition_v(def: &shards_agentfile::llb::Definition) -> Value {
         order.push(i);
     }
     visit(root.op, def, &mut seen, &mut order);
-    // Each op's bytes as BuildKit marshals them, its local source's unique ID as "*" and
+    // Each op's bytes as dockerfile/1.27.1 marshals them, its local source's unique ID as "*" and
     // its inputs named by their own ops so marshalled, as the oracle records them.
     let mut digests: std::collections::BTreeMap<usize, Vec<u8>> = std::collections::BTreeMap::new();
     let mut out: Vec<Value> = Vec::new();
@@ -1073,7 +1073,7 @@ fn options_of(file: &str) -> shards_agentfile::plan::Options {
             })
             .unwrap_or_default()
     };
-    // The frontend's own options, as buildx sends them: read by dockerui's parsers.
+    // The frontend's own options, as buildx v0.37.1 sends them: read by dockerui's parsers.
     let frontend_map: std::collections::BTreeMap<String, String> = opts_v["frontend"]
         .as_object()
         .map(|o| {
@@ -1340,7 +1340,7 @@ fn subrequests_match_their_recorded_answers() {
                     want["outline"].as_str().unwrap_or("<none>"),
                     want["outline_text"].as_str().unwrap_or("<none>"),
                 );
-                // What matches but for ties is checked as BuildKit's own answer.
+                // What matches but for ties is taken for the recorded answer.
                 let json = if same_but_ties(&unquoted(&json), &unquoted(want_json)) {
                     want_json.to_string()
                 } else {
@@ -1691,7 +1691,7 @@ fn ignore_files_are_read() {
 
 /// A chain of stages each reading the next, none of them the target, longer than the
 /// stack of a test's thread held when the cycle check recursed (10,000 overflowed 2 MiB):
-/// planned, as BuildKit plans it, and a cycle through it still found.
+/// planned, as dockerfile/1.27.1 plans it, and a cycle through it still found.
 #[test]
 fn a_long_chain_of_stages_plans() {
     const STAGES: usize = 20_000;

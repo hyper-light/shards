@@ -1,7 +1,7 @@
 //! Contexts (D180), end to end on this machine: a home whose daemon listens on loopback invites
 //! another, which joins by the invitation's file and then runs commands there whole, chosen by
 //! `--context`, `SHARDS_CONTEXT` or `use context`: what they print and their exit status cross,
-//! a microVM's run among them. What a context does not carry is refused here; the invitation
+//! a microVM's run among them; a policy command runs here, the machine its builder. The invitation
 //! enrolls one client; a client removed runs nothing more; and the machine's log says each
 //! command its clients ran. And a terminal crosses as tests/tty.rs has one here: the client's
 //! terminal raw while the command's own reads it, sized and resized, ^C and the detach keys
@@ -361,10 +361,10 @@ fn a_clients_command_has_the_clients_environment_not_the_owners() {
 }
 
 /// The archives a client saves, exports, loads and imports through a context are its own
-/// files, as Docker's CLI writes and reads its own: an image saved there is written here,
-/// in the client's directory, and loads there from here again; a microVM's files exported
-/// there are written here, and import there from here as an image; an image's Agentfile is
-/// written here. A save that fails leaves nothing here.
+/// files, on the machine its user typed them on (D180 part 3a): an image saved there is
+/// written here, in the client's directory, and loads there from here again; a microVM's
+/// files exported there are written here, and import there from here as an image; an
+/// image's Agentfile is written here. A save that fails leaves nothing here.
 #[test]
 fn a_clients_archives_are_its_own_files() {
     let Some((machine, _listening, laptop, image)) = joined("ctx-files") else {
@@ -422,7 +422,7 @@ fn a_clients_archives_are_its_own_files() {
     assert_ne!(failed.status, Some(0), "{failed}");
     assert_eq!(names(), ["Agentfile", "files.tar", "image.tar"]);
     // From a terminal: the archive is the file's, not the command's terminal's there, which
-    // a save refuses to write to, as Docker's does.
+    // a save refuses to write to: an archive would garble the terminal (D180 part 3a).
     let tty = here.join("tty.tar");
     let mut term = Terminal::run(
         &laptop,
@@ -584,7 +584,8 @@ fn a_build_through_a_context_is_of_the_clients_context_kept_in_step() {
         !copy.join("context/ignored").exists(),
         "an ignored file kept there"
     );
-    // A build arg named alone takes this client's value, as buildx takes it where it runs.
+    // A build arg named alone takes this client's value, from the environment its user
+    // ran the build in (D180).
     std::fs::write(
         app.join("Dockerfile"),
         format!("FROM {image}\nARG MSG\nLABEL msg=$MSG\n"),
@@ -698,7 +699,7 @@ fn a_contexts_engine_is_its_machines() {
         }
     };
     served(&engine);
-    // On Windows, once served, the endpoint names its pipe, as Docker's clients write one.
+    // On Windows, once served, the endpoint names its pipe, as `npipe://` (D180 part 3k).
     #[cfg(windows)]
     {
         let _ = doc;
@@ -893,8 +894,8 @@ fn a_contexts_engine_is_its_machines() {
 /// part 3b): driven here, as this machine's CLI drives one (cli/cp.rs), each step asked of
 /// the machine's daemon. A directory here goes into a microVM there and comes back as it was,
 /// relative paths the client's; a file into a directory there is said with its sizes; an
-/// archive goes to stdout; a file not there is said in Docker's words; and nothing is
-/// written where the command runs.
+/// archive goes to stdout; a file not there is said in the words scripts match; and nothing
+/// is written where the command runs.
 #[test]
 fn a_microvms_files_are_copied_to_and_from_the_client() {
     let Some((machine, _listening, laptop, image)) = joined("ctx-copy") else {
@@ -957,10 +958,157 @@ fn a_microvms_files_are_copied_to_and_from_the_client() {
     assert_eq!(removed.status, Some(0), "{removed}");
 }
 
-/// A client's logins are its own, as Docker's CLI keeps its own: a registry the client logged
-/// in to is reached there with the client's credentials, sent with the command; the machine
-/// owner's reach nothing for a client, logged in there as they are; and a login and a
-/// logout through the context are kept here, the owner's store untouched. Each command's
+/// A policy command through a context (D180) runs here, of the client's files, the machine
+/// its builder, as buildx evaluates a policy against a remote builder: `buildx policy eval`
+/// and `test` read the client's policy, tests and paths; a source's metadata is resolved
+/// there, as the machine's builds resolve it, with the client's login for its registry
+/// alone; and each answer is what the machine says of the same files itself.
+#[test]
+fn a_policy_through_a_context_is_the_clients_its_builder_the_machine() {
+    use base64::Engine as _;
+    let Some((machine, _listening, laptop, image)) = joined("ctx-pol") else {
+        return;
+    };
+    let empty = |home: &Path| {
+        let dir = home.join("path");
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    };
+    let (owners, owners_path) = (machine.join("docker"), empty(&machine));
+    let on_machine = [
+        ("SHARDS_HOME", machine.as_os_str()),
+        ("DOCKER_CONFIG", owners.as_os_str()),
+        ("PATH", owners_path.as_os_str()),
+    ];
+    let (laptops, laptops_path) = (laptop.join("docker"), empty(&laptop));
+    let on_laptop = [
+        ("SHARDS_HOME", laptop.as_os_str()),
+        ("DOCKER_CONFIG", laptops.as_os_str()),
+        ("PATH", laptops_path.as_os_str()),
+    ];
+    // The client's policies, in a directory of its own, which the machine's commands do not
+    // run in.
+    let dir = laptop.join("pol");
+    let write = |sub: &str, name: &str, text: &str| {
+        std::fs::create_dir_all(dir.join(sub)).unwrap();
+        std::fs::write(dir.join(sub).join(name), text).unwrap();
+    };
+    let policy = |sub: &str, args: &[&str], env: &[(&str, &std::ffi::OsStr)], context: bool| {
+        let mut argv = if context {
+            vec!["--context", "gpu"]
+        } else {
+            Vec::new()
+        };
+        argv.extend(["buildx", "policy"]);
+        argv.extend_from_slice(args);
+        let out = run_shards_env_in(&dir.join(sub), &[], &argv, env, TIMEOUT);
+        (out.status, out.stdout, out.stderr)
+    };
+    std::fs::create_dir_all(&dir).unwrap();
+    // A source's input, its checksum resolved there: what the machine prints of it itself.
+    let source = format!("docker-image://{image}");
+    let print = ["eval", "--print", "--fields", "image.checksum", source.as_str()];
+    let printed = policy("", &print, &on_laptop, true);
+    assert_eq!(printed.0, Some(0), "{printed:?}");
+    assert_eq!(printed, policy("", &print, &on_machine, false));
+    let input: serde_json::Value = serde_json::from_str(&printed.1).unwrap();
+    let checksum = input["image"]["checksum"].as_str().unwrap().to_string();
+    assert!(checksum.starts_with("sha256:"), "{input}");
+    // A policy of the client's file, deciding on what the machine resolved.
+    let allowing = |digest: &str| {
+        format!(
+            "package docker\n\ndefault allow := false\n\nallow if input.image.checksum == \"{digest}\"\n\ndeny_msg contains \"not this image\" if not allow\n\ndecision := {{\"allow\": allow, \"deny_msg\": deny_msg}}\n"
+        )
+    };
+    write("allow", "Dockerfile.rego", &allowing(&checksum));
+    write("deny", "Dockerfile.rego", &allowing("sha256:00"));
+    assert_eq!(
+        policy("allow", &["eval", source.as_str()], &on_laptop, true),
+        (Some(0), String::new(), String::new())
+    );
+    assert_eq!(
+        policy("deny", &["eval", source.as_str()], &on_laptop, true),
+        (
+            Some(1),
+            String::new(),
+            "ERROR: policy denied: not this image\n".into()
+        )
+    );
+    // A local path is the client's: its context here.
+    assert_eq!(
+        policy("allow", &["eval", "--print", "."], &on_laptop, true),
+        (
+            Some(0),
+            "{\n  \"local\": {\n    \"name\": \"context\"\n  }\n}\n".into(),
+            String::new()
+        )
+    );
+    // The client's tests, an image's input resolved there, as the machine runs them itself.
+    write(
+        "allow",
+        "policy_test.rego",
+        &format!(
+            "package docker\n\ntest_image if allow with input as {{\"image\": {{\"ref\": \"{image}\"}}}}\n"
+        ),
+    );
+    // buildx fails a test whose input its policy's questions completed, printing that
+    // input (TestResult's), here the machine's checksum, config and platform among it.
+    let tested = policy("allow", &["test", "."], &on_laptop, true);
+    assert_eq!((tested.0, tested.2.as_str()), (Some(1), ""), "{tested:?}");
+    assert!(
+        tested.1.starts_with("test_image: FAIL (allow=true)\ninput:\n"),
+        "{tested:?}"
+    );
+    assert!(
+        tested.1.contains(&format!("\"checksum\": \"{checksum}\"")),
+        "{tested:?}"
+    );
+    assert_eq!(tested, policy("allow", &["test", "."], &on_machine, false));
+
+    // A registry that wants a login: the owner's, logged in on the machine, reaches nothing
+    // for the client, which reaches it once logged in itself, through the context.
+    let basic = format!(
+        "Basic {}",
+        base64::engine::general_purpose::STANDARD.encode("pusher:secret")
+    );
+    let (port, _repos) = common::writable_registry_requiring(Some(basic));
+    let registry = format!("127.0.0.1:{port}");
+    let target = format!("{registry}/team/app:1");
+    let login = ["-u", "pusher", "-p", "secret", registry.as_str()];
+    let owner_in = run_shards_env(&["login"], &login, &on_machine, TIMEOUT);
+    assert_eq!(owner_in.status, Some(0), "{owner_in}");
+    let tagged = run_shards_env(&["tag"], &[image.as_str(), target.as_str()], &on_machine, TIMEOUT);
+    assert_eq!(tagged.status, Some(0), "{tagged}");
+    let pushed = run_shards_env(&["push"], &[target.as_str()], &on_machine, TIMEOUT);
+    assert_eq!(pushed.status, Some(0), "{pushed}");
+    // Its name gone from the machine's store, which would answer for it, as a build there
+    // finds an image it holds: the registry alone knows it.
+    let untagged = run_shards_env(&["rmi"], &[target.as_str()], &on_machine, TIMEOUT);
+    assert_eq!(untagged.status, Some(0), "{untagged}");
+    let behind = format!("docker-image://{target}");
+    let print = ["eval", "--print", "--fields", "image.checksum", behind.as_str()];
+    let refused = policy("", &print, &on_laptop, true);
+    assert_eq!(refused.0, Some(1), "{refused:?}");
+    assert!(refused.2.starts_with("ERROR: "), "{refused:?}");
+    let client_in = run_shards_env(&["--context", "gpu", "login"], &login, &on_laptop, TIMEOUT);
+    assert_eq!(client_in.status, Some(0), "{client_in}");
+    let printed = policy("", &print, &on_laptop, true);
+    assert_eq!(printed.0, Some(0), "{printed:?}");
+    assert!(printed.1.contains("\"checksum\": \"sha256:"), "{printed:?}");
+
+    // Evaluated here: the machine was asked its steps alone, never to run the commands, and
+    // none of the client's paths.
+    let log = std::fs::read_to_string(machine.join("daemon.log")).unwrap();
+    assert!(log.contains("client laptop: policy step platform"), "{log}");
+    assert!(log.contains("client laptop: policy step resolve"), "{log}");
+    assert!(!log.contains("client laptop: shards buildx policy"), "{log}");
+    assert!(!log.contains(dir.to_str().unwrap()), "{log}");
+}
+
+/// A client's logins are its own, kept on its machine (D180 part 1): a registry the client
+/// logged in to is reached there with the client's credentials, sent with the command; the
+/// machine owner's reach nothing for a client, logged in there as they are; and a login and
+/// a logout through the context are kept here, the owner's store untouched. Each command's
 /// `PATH` is an empty directory and its docker config its own, so that no login reaches
 /// this host's keychain.
 #[test]
@@ -1450,8 +1598,7 @@ fn a_context_runs_commands_on_its_machine_whole() {
     assert_eq!(ps.status, Some(0), "{ps}");
     assert!(ps.stdout.starts_with("CONTAINER ID"), "{ps}");
 
-    // What a context does not carry yet: refused here, nothing run there. And `-it` with no
-    // terminal here is refused there, in the words a run here would say.
+    // `-it` with no terminal here is refused there, in the words a run here would say.
     let terminal = run_shards_env(&["run"], &["-it", image.as_str()], &on_laptop, TIMEOUT);
     assert_eq!(terminal.status, Some(1), "{terminal}");
     assert!(
@@ -1459,14 +1606,6 @@ fn a_context_runs_commands_on_its_machine_whole() {
             .stderr
             .contains("-it: stdin is not a terminal, so it cannot be the command's"),
         "{terminal}"
-    );
-    let policy = run_shards_env(&["buildx", "policy", "eval"], &["alpine"], &on_laptop, TIMEOUT);
-    assert_eq!(policy.status, Some(125), "{policy}");
-    assert!(
-        policy
-            .stderr
-            .contains("buildx policy eval over a context reads this machine's files"),
-        "{policy}"
     );
     // A build of a context with no build file is the build's to refuse, in its words.
     let empty = laptop.join("empty");
@@ -2244,8 +2383,8 @@ fn tree_of(root: &Path) -> Vec<String> {
     out
 }
 
-/// `--cidfile` through a context is the client's file, as Docker's CLI keeps its own: made
-/// here before the microVM is, named as here (a relative name of this client's working
+/// `--cidfile` through a context is the client's file, on its own machine (D180 part 3j):
+/// made here before the microVM is, named as here (a relative name of this client's working
 /// directory), the ID written as soon as the machine has made it, refused where a file is
 /// there already, and left by no run that was never made; the run records the client's
 /// path.

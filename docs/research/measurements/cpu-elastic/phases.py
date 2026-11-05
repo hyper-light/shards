@@ -32,16 +32,30 @@ way) is passed over: its step is the next one's. `keys.patch` holds the CFS band
 static key on from the template (PM M292).
 
 With --load N, N busy loops run throughout, on the CPUs this runs on (run it under
-`taskset`: its runs inherit them).
+`taskset`, or give --affinity: its runs inherit them).
+
+On Windows (D191's Windows candidate, winslice.py), the same: the busy loops are Python's,
+--affinity MASK (hex, a bit a logical CPU) holds this process and so its runs, their
+daemons, VM processes and loops to those CPUs (SetProcessAffinityMask: "Process affinity is
+inherited by any child process"), and the load printed is the processor queue's length
+(\\System\\Processor Queue Length) at the start and the end, with the hypervisor's
+scheduler type, as its launch event (ID 2) gives it: 4 the root scheduler, which Windows
+clients use, where the root's NT scheduler runs guests' virtual processors as its threads,
+3 the core scheduler of Windows Server (Microsoft, Manage Hyper-V hypervisor scheduler
+types). OLD and NEW are shards.exe; a home's VM processes are the shards-vm.exe processes
+its daemon (HOME\\daemon.pid) starts.
 
     phases.py OLD NEW --homes OLD_HOME,NEW_HOME --revs OLD_REV,NEW_REV [--rounds N]
               [--starts N] [--warmup N] [--load N] [--image IMAGE] [--cpus N]
+              [--affinity MASK]
 
 Each home's daemon is stopped and its templates removed first and last (as ab.py does).
 Prints n, p50, p90, p99 and max of each, ms (percentiles as ab.py takes them), with host,
 OS, kernel, CPUs, load and revisions. Each build's `shards` runs with an empty
 DOCKER_CONFIG."""
-import argparse, json, os, platform, shutil, subprocess, sys, tempfile, time
+import argparse, json, os, platform, re, shutil, subprocess, sys, tempfile, time
+
+WINDOWS = os.name == "nt"
 
 p = argparse.ArgumentParser()
 p.add_argument("old")
@@ -54,7 +68,55 @@ p.add_argument("--warmup", type=int, default=1)
 p.add_argument("--load", type=int, default=0)
 p.add_argument("--image", default="alpine")
 p.add_argument("--cpus", default="1", help="each run's --cpus; 0 for none")
+p.add_argument("--affinity", help="hex mask of the CPUs this and its runs are held to")
 a = p.parse_args()
+
+if WINDOWS:
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+    kernel32.SetProcessAffinityMask.argtypes = [wintypes.HANDLE, ctypes.c_size_t]
+    kernel32.GetProcessAffinityMask.argtypes = [wintypes.HANDLE, ctypes.POINTER(ctypes.c_size_t),
+                                                ctypes.POINTER(ctypes.c_size_t)]
+if a.affinity:
+    mask = int(a.affinity, 16)
+    if WINDOWS:
+        if not kernel32.SetProcessAffinityMask(kernel32.GetCurrentProcess(), mask):
+            sys.exit(f"SetProcessAffinityMask {a.affinity}: error {ctypes.get_last_error()}")
+    else:
+        os.sched_setaffinity(0, {c for c in range(mask.bit_length()) if mask >> c & 1})
+
+
+def own_cpus():
+    if WINDOWS:
+        process, system = ctypes.c_size_t(), ctypes.c_size_t()
+        if kernel32.GetProcessAffinityMask(kernel32.GetCurrentProcess(), ctypes.byref(process),
+                                           ctypes.byref(system)):
+            return bin(process.value).count("1")
+        return os.cpu_count()
+    return len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else os.cpu_count()
+
+
+def powershell(command):
+    try:
+        done = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", command],
+                              capture_output=True, text=True, timeout=60)
+        return done.stdout.strip() or "?"
+    except (OSError, subprocess.TimeoutExpired):
+        return "?"
+
+
+def load():
+    """The host's load: its load average on Unix, its processor queue's length on Windows."""
+    if WINDOWS:
+        q = powershell(r"(Get-Counter '\System\Processor Queue Length').CounterSamples[0].CookedValue")
+        try:
+            return float(q)
+        except ValueError:
+            return float("nan")
+    return os.getloadavg()[0]
 
 work = tempfile.mkdtemp(prefix="cpu-phases-")
 config = os.path.join(work, "docker-config")
@@ -132,8 +194,9 @@ def first(path, key):
 
 
 reset()
-loops = [subprocess.Popen(["sh", "-c", "while :; do :; done"]) for _ in range(a.load)]
-load0 = os.getloadavg()
+spin = [sys.executable, "-c", "while True: pass"] if WINDOWS else ["sh", "-c", "while :; do :; done"]
+loops = [subprocess.Popen(spin) for _ in range(a.load)]
+load0 = load()
 got = {b: {k: [] for k in PHASES + [f"m{m}" for m in STEPS]} for b in builds}
 errors = []
 try:
@@ -156,10 +219,19 @@ finally:
     reset()
     shutil.rmtree(work, ignore_errors=True)
 
-cpus = len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else os.cpu_count()
-print(f"host: {platform.node()}, {first('/proc/cpuinfo', 'model name')}; "
-      f"{first('/etc/os-release', 'PRETTY_NAME=')}, kernel {platform.release()}; {cpus} CPUs this ran on; "
-      f"{a.load} busy loops; load {load0[0]:.2f} at the start, {os.getloadavg()[0]:.2f} at the end")
+cpus = own_cpus()
+if WINDOWS:
+    launch = powershell('(Get-WinEvent -FilterHashTable @{ProviderName="Microsoft-Windows-Hyper-V-Hypervisor"; '
+                        'ID=2} -MaxEvents 1).Message')
+    kind = re.search(r"0x[0-9a-fA-F]+", launch)
+    print(f"host: {platform.node()}, {powershell('(Get-CimInstance Win32_Processor)[0].Name')}; "
+          f"{platform.platform()}; hypervisor scheduler type {kind.group(0) if kind else '?'}; "
+          f"{cpus} CPUs this ran on; {a.load} busy loops; processor queue {load0:.0f} at the start, "
+          f"{load():.0f} at the end")
+else:
+    print(f"host: {platform.node()}, {first('/proc/cpuinfo', 'model name')}; "
+          f"{first('/etc/os-release', 'PRETTY_NAME=')}, kernel {platform.release()}; {cpus} CPUs this ran on; "
+          f"{a.load} busy loops; load {load0:.2f} at the start, {load():.2f} at the end")
 print(f"old {builds['old'][2]}, new {builds['new'][2]}; image {a.image}, --cpus {a.cpus}; {a.rounds} rounds of "
       f"{a.starts} starts after {a.warmup} warmup, alternating")
 print(f"{'phase':9} {'build':5} {'n':>4} {'p50':>8} {'p90':>8} {'p99':>8} {'max':>8}  ms")

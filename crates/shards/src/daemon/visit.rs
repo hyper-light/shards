@@ -149,7 +149,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
             let opened = crate::volumes::open(&points, first, &crate::volumes::Store::new(&self.home))?;
             prepared.spec.setup = crate::setup::setup(&stored, &opened.mounts, None, None)?;
             crate::spec::fits(&prepared.spec)?;
-            let link = self.start_shares(threads, id, &opened.dirs, &prepared.parent)?;
+            let link = self.start_shares(threads, id, &opened.dirs, &prepared.parent, false)?;
             prepared.shares = u32::try_from(opened.dirs.len()).map_err(|_| "too many shares")?;
             link
         } else {
@@ -212,6 +212,8 @@ impl<D: crate::containers::Disk> Daemon<D> {
             // Nor CPUs to hold, nor a group's.
             cpus: 0,
             group: false,
+            // A visit's layer, where it has one, is put back as its archive.
+            layer_over: false,
         }
         .encode_into(&mut payload);
         prepared.spec.encode_into(&mut payload);
@@ -231,6 +233,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
                 named: None,
                 restarted: false,
                 layer_pending: writes,
+                layer_over: None,
                 log_files: kept.files,
                 log_compress: false,
                 visit: true,

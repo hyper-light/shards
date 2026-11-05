@@ -98,7 +98,9 @@ const MAGIC: [u8; 8] = *b"SHRDSNAP";
 ///     (D189).
 /// 27: and the runs of its memory file's RAM that hold data, which a restore maps from the
 ///     file, the rest zeros (D151).
-const VERSION: u32 = 27;
+/// 28: and its PCI bus's slots for devices plugged in as it runs, 0 for none (D214): a
+///     template's machine has them empty, its restored runs' to plug into.
+const VERSION: u32 = 28;
 /// The oldest format this build reads too where the machine has no DAX windows: for such
 /// a machine each since says what this one says, but for 27's runs of data, which a state
 /// before it holds none of (its restore maps its RAM from the file whole), so that a
@@ -106,6 +108,8 @@ const VERSION: u32 = 27;
 const VERSION_WITHOUT_WINDOWS: u32 = 24;
 /// The first format whose state says which runs of its RAM hold data.
 const VERSION_WITH_DATA: u32 = 27;
+/// The first format whose state says how many PCI slots its machine has (D214).
+const VERSION_WITH_SLOTS: u32 = 28;
 /// The snapshot format this build writes and reads: what a snapshot kept for reuse is
 /// keyed by.
 pub const FORMAT: u32 = VERSION;
@@ -175,6 +179,9 @@ pub struct MachineConfig {
     /// virtio-pmem device after the pmem files, its head and file system kept beside the
     /// snapshot, and a restore's own copy of the file system mapped there.
     pub layer_mib: u64,
+    /// Its PCI bus's slots for devices plugged in as it runs (D214), 0 for none: empty in
+    /// every snapshot, as a machine with a device plugged in saves none.
+    pub pci_slots: u8,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -215,11 +222,15 @@ pub struct Pinned {
 /// holds open gives up its vnode, and the pages its host had cached of it with them, to the
 /// next file its host looks at once the host's vnode table is full; a Mac's of 128 GiB held
 /// 263,168, recycling thousands a second, and a restore then read its whole working set
-/// back from the disk a page at a time, and its guest its programs (PM M315).
+/// back from the disk a page at a time, and its guest its programs (PM M315). And its
+/// memory kept cached (`platform::keep_cached`): Windows drops a sparse file's pages once
+/// no process maps them, held open or not, and each restore there read its working set
+/// back from the disk (PM M421).
 #[derive(Debug)]
 pub struct Held {
     generation: String,
     _files: Vec<File>,
+    _cached: platform::Cached,
 }
 
 impl Held {
@@ -245,10 +256,13 @@ pub fn hold(dir: &Path) -> Result<Held, String> {
             files.push(File::open(path).map_err(|e| format!("{}: {e}", path.display()))?);
         }
     }
+    let cached = platform::keep_cached(&pinned.memory)
+        .map_err(|e| format!("{}: {e}", pinned.path.join(MEMORY).display()))?;
     files.push(pinned.memory);
     Ok(Held {
         generation: pinned.name,
         _files: files,
+        _cached: cached,
     })
 }
 
@@ -487,6 +501,9 @@ fn encode_as(
         w.u64(*gpa);
         w.u64(*len);
     });
+    if version >= VERSION_WITH_SLOTS {
+        w.u8(s.config.pci_slots);
+    }
     if version >= VERSION_WITH_DATA {
         w.bool(s.data.is_some());
         w.seq(s.data.as_deref().unwrap_or_default(), |w, (at, len)| {
@@ -582,6 +599,7 @@ fn decode(bytes: &[u8]) -> codec::Result<Decoded> {
     let layer_mib = r.u64()?;
     // At most a run for every other block of the most a guest may plug.
     let plugged = r.seq(MAX_PLUGGED_RUNS, 16, |r| Ok((r.u64()?, r.u64()?)))?;
+    let pci_slots = if version >= VERSION_WITH_SLOTS { r.u8()? } else { 0 };
     let data = if version >= VERSION_WITH_DATA {
         let said = r.bool()?;
         let runs = r.seq(MAX_DATA_RUNS, 16, |r| Ok((r.u64()?, r.u64()?)))?;
@@ -611,6 +629,7 @@ fn decode(bytes: &[u8]) -> codec::Result<Decoded> {
                 swap_mib,
                 share_window_mib,
                 layer_mib,
+                pci_slots,
             },
             plugged,
             data,
@@ -963,6 +982,93 @@ pub fn fill(
         name,
     )?;
     write_whole(state_file, &state).map_err(|e| format!("its state: {e}"))
+}
+
+/// The snapshot in `dir`, moved to another machine (D176 part 6), made to restore against
+/// that machine's files: each file it names, disks then pmem, named again as `to` says, and
+/// taken as the file that is there now, its identity that file's. The files are its
+/// mover's to have checked, byte for byte, as the ones it was taken with (a home's files
+/// named by their content, an image's root filesystem by its ChainID): no identity of
+/// another machine's file says anything of one here. A file `to` gives no name for refuses
+/// it, and the state is left as it was. Its new state is written beside the old one,
+/// synced, and renamed over it.
+pub fn relocate(dir: &Path, to: &dyn Fn(&Path) -> Option<PathBuf>) -> Result<(), String> {
+    let generation = generation(dir)?;
+    let at = |e: &dyn std::fmt::Display| format!("{}: {e}", generation.join(STATE).display());
+    let name = generation
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| at(&"a generation with no name"))?
+        .to_string();
+    let bytes = platform::read_beneath(dir, &[name.as_str(), STATE], MAX_STATE)
+        .map_err(|e| at(&e))?
+        .ok_or_else(|| at(&"gone"))?;
+    let decoded = decode(&bytes).map_err(|e| at(&e))?;
+    if decoded.generation != name {
+        return Err(at(&format!("the state of generation {}", decoded.generation)));
+    }
+    let mut snap = decoded.snapshot;
+    let moved = |path: &Path| {
+        to(path).ok_or_else(|| format!("{}: no file here to restore it against", path.display()))
+    };
+    for (path, _) in &mut snap.config.disks {
+        *path = moved(path)?;
+    }
+    for path in &mut snap.config.pmem {
+        *path = moved(path)?;
+    }
+    let state = state_of(&snap, &name)?;
+    let staged = generation.join(".state.moved");
+    let _ = fs::remove_file(&staged);
+    let file = create_unsynced(&staged, |mut f| f.write_all(&state)).map_err(|e| at(&e))?;
+    platform::sync_durable(&file).map_err(|e| at(&e))?;
+    drop(file);
+    fs::rename(&staged, generation.join(STATE)).map_err(|e| at(&e))?;
+    platform::sync_dir(&generation).map_err(|e| at(&e))
+}
+
+/// [`fill`] for the last of a live move (D176 part 7): of its memory, the pages of `pages`
+/// alone, those written since the move's last round, which the other machine lays over
+/// what the rounds sent ([`GuestMemory::save_pages`]); its state saying no runs of data,
+/// as its memory file here holds only those pages: a restore maps it whole.
+pub fn fill_pages(
+    name: &str,
+    snap: &Snapshot,
+    memory: &GuestMemory,
+    pages: &crate::vm::live::Pages,
+    memory_file: &File,
+    state_file: &File,
+) -> Result<(), String> {
+    if !is_generation(name) {
+        return Err(format!("{name:?} names no generation"));
+    }
+    let state = state_of(snap, name)?;
+    memory
+        .save_pages(memory_file, pages)
+        .map_err(|e| format!("its memory: {e}"))?;
+    write_whole(state_file, &state).map_err(|e| format!("its state: {e}"))
+}
+
+/// How the memory file of the snapshot in `dir` is laid out, its state read whole and none
+/// of its files looked at: its RAM's bytes, which come first, then the memory plugged, run
+/// by run, each its address and length (D176). What a live move's other machine lays the
+/// memory its rounds sent into (part 7).
+pub fn layout(dir: &Path) -> Result<(u64, Vec<(u64, u64)>), String> {
+    let generation = generation(dir)?;
+    let name = generation
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| format!("{}: a generation with no name", generation.display()))?
+        .to_string();
+    let at = |e: &dyn std::fmt::Display| format!("{}: {e}", generation.join(STATE).display());
+    let bytes = platform::read_beneath(dir, &[name.as_str(), STATE], MAX_STATE)
+        .map_err(|e| at(&e))?
+        .ok_or_else(|| at(&"gone"))?;
+    let decoded = decode(&bytes).map_err(|e| at(&e))?;
+    Ok((
+        decoded.snapshot.config.memory_mib.saturating_mul(1 << 20),
+        decoded.snapshot.plugged,
+    ))
 }
 
 /// The state file of `snap` for generation `name`, with its backing files' identities as
@@ -1473,6 +1579,7 @@ mod tests {
                 swap_mib: 0,
                 share_window_mib: 0,
                 layer_mib: 0,
+                pci_slots: 0,
             },
             plugged: Vec::new(),
             data: None,

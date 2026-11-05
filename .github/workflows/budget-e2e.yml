@@ -1,6 +1,6 @@
 name: budget E2E
 
-# An E2E test of crates/shards/tests, by default the FUSE budget E2E (tests/daemon.rs
+# An E2E test of crates/shards/tests, by default the FUSE budget E2E (tests/budget.rs
 # a_microvm_held_to_a_budget_reads_through_fuse_within_twice_its_time_without_one, D188),
 # run on eight ubuntu-24.04 runners at once, each runner's CPU as it lands, as many times in
 # a row as asked: whether a test passes run after run across runner CPUs, and whether a
@@ -17,7 +17,7 @@ on:
     inputs:
       test:
         description: its test binary (cargo test --test), bin:PACKAGE:BINARY for a binary's own tests, lib:PACKAGE for a library's own, lib-windows:PACKAGE for a library's own on Windows (the name all for the package's every test), or windows:BINARY for a test binary of crates/shards on each Windows runner (windows:bin, the binary's own tests)
-        default: daemon
+        default: budget
       name:
         description: its exact name; all, the whole binary; on Windows, ignored:NAME runs the ignored test NAME, a measurement
         default: a_microvm_held_to_a_budget_reads_through_fuse_within_twice_its_time_without_one
@@ -69,7 +69,7 @@ jobs:
           SHARDS_REQUIRE_VMS: "1"
           SHARDS_REQUIRE_USER_MANAGER: "1"
           # A push runs the default, as a dispatch with nothing asked does.
-          TEST: ${{ github.event.inputs.test || 'daemon' }}
+          TEST: ${{ github.event.inputs.test || 'budget' }}
           NAME: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.name || 'a_microvm_held_to_a_budget_reads_through_fuse_within_twice_its_time_without_one' }}
           TIMES: ${{ github.event.inputs.times || '1' }}
         run: |

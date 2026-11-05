@@ -18,7 +18,7 @@ use crate::width::ellipsis;
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Container {
     pub id: String,
-    /// With their leading `/`, as dockerd lists them.
+    /// With their leading `/`, as the Engine API lists them (D170).
     pub names: Vec<String>,
     pub image: String,
     pub image_id: String,

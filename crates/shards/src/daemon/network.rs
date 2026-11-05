@@ -40,8 +40,8 @@ pub type UserSubnets<'a> = &'a dyn Fn(&str) -> Option<Vec<(IpAddr, u8)>>;
 pub enum Start {
     Attach(Net),
     /// `--network container:NAME`: the network of the container NAME names, as given; which
-    /// container that is, and whether it runs, is seen as the run starts, as dockerd sees it
-    /// (getNetworkedContainer).
+    /// microVM that is, and whether it runs, is seen as the run starts, so that a provider
+    /// made or started later is found (D119).
     Join(String),
     Fails(String),
 }
@@ -528,9 +528,9 @@ mod tests {
         );
     }
 
-    /// A container network mode, checked as dockerd checks it as the container is made
-    /// (validateNetContainerMode), in its order and words: each conflict alone, then two,
-    /// of which the first in dockerd's order is said.
+    /// A joiner's network mode, checked as its record is made, in the order and words
+    /// scripts match (D119, moby's validateNetContainerMode): each conflict alone, then
+    /// two, of which the first in that order is said.
     #[test]
     fn a_joiners_network_mode_is_checked() {
         let joined = || run(&["container:web"]);
@@ -573,7 +573,7 @@ mod tests {
                 "--use-api-socket: a run joining another's microVM has no engine of its own: that microVM's is its own command's, which --use-api-socket on that run gives it"
             )
         );
-        // dns before exposing, as dockerd checks them.
+        // dns before exposing, the order scripts match (D119).
         let mut r = joined();
         r.expose = vec!["80".into()];
         r.dns = vec!["1.1.1.1".into()];
@@ -583,12 +583,13 @@ mod tests {
         );
         assert_eq!(check(&joined()), Ok(Start::Join("web".into())));
         // Started again, its names its provider's as its first start stored them: nothing
-        // of what it was created by is checked again, as dockerd checks none.
+        // of what it was created by is checked again: it passed at its making (D119).
         let mut again = joined();
         again.hostname = Some("web-host".into());
         again.again = Some("id".into());
         assert_eq!(check(&again), Ok(Start::Join("web".into())));
-        // One that is not there fails as it starts, the container made, in dockerd's words.
+        // One that is not there fails as it starts, its record made, in the words scripts
+        // match (D119).
         assert_eq!(
             check(&run(&["container:nope"])),
             Ok(Start::Fails(
@@ -689,8 +690,8 @@ mod tests {
         );
     }
 
-    /// An interface's sysctl given as a container's own is refused as moby's create route
-    /// refuses it, on any network of the container's own, `none` too, for eth0 and any
+    /// An interface's sysctl given as a microVM's own is refused in the words scripts match
+    /// (PM M171), on any network of the microVM's own, `none` too, for eth0 and any
     /// other; on `host`, or another's network, it is not; other sysctls pass (PM M171). An
     /// endpoint's sysctls are its network's, none on `none`.
     #[test]
@@ -729,8 +730,8 @@ mod tests {
         }
         let opt = "com.docker.network.endpoint.sysctls=net.ipv4.conf.IFNAME.log_martians=1,net.ipv4.conf.ifname.accept_redirects=0";
         let given = run(&[&format!("name=bridge,\"driver-opt={opt}\"")]);
-        // Lower case, as docker/cli hands driver options on (moby: "the CLI converts to
-        // lower case").
+        // Lower case, as docker/cli hands driver options on (opts/network.go
+        // parseDriverOpt; moby: "the CLI converts to lower case").
         assert_eq!(
             crate::setup::endpoint_sysctls(&given),
             [

@@ -15,6 +15,7 @@ pub mod save;
 pub mod store;
 mod tables;
 pub mod tar;
+pub mod through;
 
 /// Why an image could not be read or built: one error with its EROFS writer's.
 pub use shards_erofs::Error;

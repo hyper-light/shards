@@ -270,7 +270,7 @@ pub struct VmConfig {
 #[derive(Debug)]
 pub struct Vm {
     fd: Arc<sys::VmFd>,
-    pub(super) slots: Slots,
+    pub(super) slots: Arc<Slots>,
     mmap_size: usize,
     mpidrs: Vec<u64>,
     el2: bool,
@@ -281,7 +281,7 @@ pub struct Vm {
     /// Its ITS, where the machine has one.
     its: OnceLock<sys::DeviceFd>,
     /// KVM's VFIO device, made as the first VFIO file is added ([`Vm::add_vfio_file`]).
-    pub(super) vfio: OnceLock<sys::DeviceFd>,
+    pub(super) vfio: Arc<OnceLock<sys::DeviceFd>>,
     /// Each vCPU, by index, as it is made, not kept by the VM: what a restore reaches from
     /// the thread that finishes the machine, while the vCPUs' own threads wait (the
     /// prefetch, [`Vm::prefetch`]).
@@ -329,7 +329,7 @@ impl Vm {
             *first |= features;
         }
         Ok(Vm {
-            slots: Slots::new(fd.clone()),
+            slots: Arc::new(Slots::new(kvm, fd.clone())),
             fd,
             mmap_size: kvm.vcpu_mmap_size().map_err(call("KVM_GET_VCPU_MMAP_SIZE"))?,
             mpidrs: config.mpidrs,
@@ -337,7 +337,7 @@ impl Vm {
             init,
             gic: OnceLock::new(),
             its: OnceLock::new(),
-            vfio: OnceLock::new(),
+            vfio: Arc::new(OnceLock::new()),
             vcpus: Mutex::new(Vec::new()),
         })
     }
@@ -437,11 +437,13 @@ impl Vm {
         }
         lock(&self.vcpus).push(fd.weak());
         let thread = super::this_thread();
+        self.slots.dirty.add_vcpu(&fd)?;
         Ok(Vcpu {
             kicker: Kicker {
                 run: fd.run.clone(),
                 thread: thread.clone(),
             },
+            dirty: self.slots.dirty.clone(),
             fd,
             thread,
         })
@@ -449,30 +451,62 @@ impl Vm {
 
     /// The GIC's state, its registers as KVM gives them (`gic`): every vCPU must be out of
     /// the guest and out of every other call of KVM's, as KVM takes them all to read it
-    /// (arm-vgic-v3.rst: EBUSY). A machine with an ITS saves none: its tables are in guest
-    /// memory and its state the ITS's own.
+    /// (arm-vgic-v3.rst: EBUSY). Where the machine has an ITS, a PCI bus's (D154, D214),
+    /// its LPIs' pending state and the ITS's tables are written to guest memory first, as
+    /// a snapshot then saves them with it, and its registers kept beside the GIC's.
     pub fn save_gic(&self) -> Result<Vec<u8>> {
-        if self.its.get().is_some() {
-            return Err(Error::Guest(
-                "a machine with an ITS is not snapshotted: its translation tables are the ITS's".into(),
-            ));
-        }
         let gic = self
             .gic
             .get()
             .ok_or_else(|| Error::Guest("the VM has no GIC".into()))?;
-        gic::save(gic, &self.mpidrs)
+        let its = match self.its.get() {
+            Some(its) => {
+                gic.control(sys::VGIC_GRP_CTRL, sys::VGIC_SAVE_PENDING_TABLES)
+                    .map_err(|e| Error::Guest(format!("the GIC's LPIs' pending tables: {e}")))?;
+                Some(gic::its_save(its)?)
+            }
+            None => None,
+        };
+        let regs = gic::save(gic, &self.mpidrs, its.is_some())?;
+        let mut w = crate::snapshot::codec::Writer::default();
+        w.bytes(&regs);
+        w.bool(its.is_some());
+        w.bytes(its.as_deref().unwrap_or_default());
+        Ok(w.into_bytes())
     }
 
     /// Restores [`save_gic`](Self::save_gic)'s state into this VM's GIC, initialized once
     /// every vCPU exists ([`Vm::vcpus_created`]), before any runs the guest, with every vCPU
-    /// out of every call of KVM's.
+    /// out of every call of KVM's: its ITS's after its redistributors', as
+    /// arm-vgic-its.rst's restore sequence has it. A state of an ITS restores only into a
+    /// machine with one, and the other way round.
     pub fn restore_gic(&self, state: &[u8]) -> Result<()> {
         let gic = self
             .gic
             .get()
             .ok_or_else(|| Error::Guest("the VM has no GIC".into()))?;
-        gic::restore(gic, state)
+        let mut r = crate::snapshot::codec::Reader::new(state);
+        let decoded = (|| {
+            let regs = r.bytes(usize::MAX)?.to_vec();
+            let has_its = r.bool()?;
+            let its = r.bytes(usize::MAX)?.to_vec();
+            r.finish()?;
+            Ok((regs, has_its.then_some(its)))
+        })();
+        let (regs, its) = decoded.map_err(|crate::snapshot::codec::DecodeError(e)| {
+            Error::Guest(format!("the snapshot's GIC: {e}"))
+        })?;
+        gic::restore(gic, &regs)?;
+        match (its, self.its.get()) {
+            (Some(state), Some(its)) => gic::its_restore(its, &state),
+            (None, None) => Ok(()),
+            (Some(_), None) => Err(Error::Guest(
+                "the snapshot's GIC has an ITS; this machine's has none".into(),
+            )),
+            (None, Some(_)) => Err(Error::Guest(
+                "this machine's GIC has an ITS; the snapshot's has none".into(),
+            )),
+        }
     }
 
     /// Runs the prefetch program on vCPU 0 over `pages` (`prefetch`), `memory` saying of
@@ -532,6 +566,9 @@ pub struct Vcpu {
     kicker: Kicker,
     /// Cleared on drop, so no kick can signal a thread that no longer runs this vCPU.
     pub(super) thread: Arc<Mutex<Option<Thread>>>,
+    /// Its VM's watch of the guest's writes, which empties its dirty ring as it fills
+    /// (D176 part 7).
+    dirty: Arc<super::Dirty>,
 }
 
 impl Vcpu {
@@ -553,7 +590,7 @@ impl Vcpu {
 
     /// Runs the guest until it powers off, resets, or a kick arrives.
     pub fn run(&mut self, io: &dyn Io) -> Result<Exit> {
-        super::run(&mut self.fd, io)
+        super::run(&mut self.fd, io, &self.dirty)
     }
 
     /// The CPU identity the guest sees: ID registers by encoding.
@@ -565,6 +602,25 @@ impl Vcpu {
                 Ok((r, value))
             })
             .collect()
+    }
+
+    /// Tells the guest the CPU `id` describes, each ID register set and read back (KVM takes
+    /// its writable fields, api.rst 4.68, "Writable ID registers"): a guest resumed on another
+    /// CPU than its snapshot's goes on with the one it found (D176 part 6).
+    pub fn set_cpu_id(&mut self, id: &[(u16, u64)]) -> Result<()> {
+        for &(r, v) in id {
+            self.fd
+                .set_reg(sys::sysreg(r), v)
+                .map_err(call("KVM_SET_ONE_REG"))?;
+            let now = self.fd.get_reg(sys::sysreg(r)).map_err(call("KVM_GET_ONE_REG"))?;
+            if now != v {
+                return Err(Error::Guest(format!(
+                    "{} stays {now:#x} where its guest's is {v:#x}",
+                    crate::arch::aarch64::cpu::name(r)
+                )));
+            }
+        }
+        Ok(())
     }
 
     /// Captures the vCPU's state (`state`). Call on the owning thread, with the vCPU out of

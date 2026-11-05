@@ -27,6 +27,8 @@ mod frames;
 #[cfg(target_os = "linux")]
 mod hostbind;
 #[cfg(target_os = "linux")]
+mod hotplug;
+#[cfg(target_os = "linux")]
 mod inroot;
 #[cfg(target_os = "linux")]
 mod join;
@@ -46,6 +48,8 @@ mod net;
 mod netplan;
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 mod orders;
+#[cfg(target_os = "linux")]
+mod over;
 #[cfg(target_os = "linux")]
 mod plug;
 #[cfg(target_os = "linux")]

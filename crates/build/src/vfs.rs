@@ -11,8 +11,9 @@
 //!   writing a file's data stamps the file's.
 //! - New entries are owned by root, BuildKit's daemon, or take the group of a set-group-ID
 //!   directory, and new directories inherit its set-group-ID bit (inode_init_owner).
-//!   The mode asked for loses the umask, 022 as dockerd sets it; mkdir drops the set-ID
-//!   bits; symlinks are 0777.
+//!   The mode asked for loses the umask, 022 (moby docker-v29.3.1
+//!   daemon/command/daemon_unix.go `setDefaultUmask`); mkdir drops the set-ID bits;
+//!   symlinks are 0777.
 //! - chown on anything but a directory clears set-user-ID, set-group-ID when the group
 //!   may execute, and file capabilities, even when the owner stays (chown_common).
 //! - Extended attributes go only where Linux takes them: `user.*` on files and
@@ -29,7 +30,7 @@ use shards_image::erofs::{DataRef, Dir, EntryId, Kind, Meta, Node, NodeId, Tree}
 const MAX_LINKS: u32 = 40;
 /// NAME_MAX.
 const NAME_MAX: usize = 255;
-/// The umask dockerd runs BuildKit with (cmd/dockerd setDefaultUmask).
+/// The umask dockerd runs BuildKit with (daemon/command/daemon_unix.go setDefaultUmask).
 pub const UMASK: u32 = 0o022;
 pub const S_ISUID: u32 = 0o4000;
 pub const S_ISGID: u32 = 0o2000;

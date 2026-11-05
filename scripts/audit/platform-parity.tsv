@@ -68,15 +68,16 @@ crates/vmm/src/platform/pressure.rs	fn arm	crates/vmm/src/platform/pressure.rs	i
 crates/vmm/src/platform/pressure.rs	fn average	crates/vmm/src/platform/pressure.rs	const REPEAT [macos,windows]	Linux's ten-second average, read where no trigger arms; macOS' and Windows' notifications said again every two seconds
 crates/vmm/src/platform/pressure.rs	mod dispatch	crates/vmm/src/platform/pressure.rs	fn arm [linux]	the host's memory pressure heard (D188): macOS' dispatch source, Linux's PSI trigger
 crates/vmm/src/platform/pressure.rs	mod dispatch	crates/vmm/src/platform/pressure.rs	impl MemoryPressure [windows]	Windows' low memory notification
-crates/vmm/src/vm/aarch64.rs	fn route	crates/vmm/src/vm/mod.rs	const NO_PASSTHROUGH	a host's PCI function passed through (D154): Linux's VFIO and its irqfds; macOS and Windows refuse it with their OS's own limit (PM M356)
-crates/vmm/src/vm/aarch64.rs	struct IrqfdRoute	crates/vmm/src/vm/mod.rs	const NO_PASSTHROUGH	as route
-crates/vmm/src/vm/aarch64.rs	impl crate	crates/vmm/src/vm/mod.rs	const NO_PASSTHROUGH	IrqfdRoute's Route: as route
-crates/vmm/src/vm/x86_64.rs	fn route	crates/vmm/src/vm/mod.rs	const NO_PASSTHROUGH	as aarch64.rs's route
-crates/vmm/src/vm/x86_64.rs	struct IrqfdRoute	crates/vmm/src/vm/mod.rs	const NO_PASSTHROUGH	as route
-crates/vmm/src/vm/x86_64.rs	impl crate	crates/vmm/src/vm/mod.rs	const NO_PASSTHROUGH	as route
-crates/vmm/src/vm/mod.rs	fn route	crates/vmm/src/vm/mod.rs	const NO_PASSTHROUGH	as route
-crates/vmm/src/vm/mod.rs	const NO_PASSTHROUGH	crates/vmm/src/devices/pci/mod.rs	mod vfio [linux]	the refusal of macOS and Windows, with their OS's own limit (D154, PM M356); Linux's VFIO
-crates/vmm/src/devices/pci/mod.rs	mod vfio	crates/vmm/src/vm/mod.rs	const NO_PASSTHROUGH	Linux's VFIO; macOS' and Windows' refusal, with their OS's own limit (D154, PM M356)
+crates/vmm/src/vm/aarch64.rs	fn route	crates/vmm/src/vm/mod.rs	fn passthrough_refused [macos]	Linux's VFIO; macOS's refusal names its API limit (D154, M403). Windows hosts that permit DDA still need an implementation and real hardware E2E; a refusal there is not a twin
+crates/vmm/src/vm/aarch64.rs	struct IrqfdRoute	crates/vmm/src/vm/mod.rs	fn passthrough_refused [macos]	as route
+crates/vmm/src/vm/aarch64.rs	impl crate	crates/vmm/src/vm/mod.rs	fn passthrough_refused [macos]	Linux's VFIO; macOS's refusal names its API limit (D154, M403). Windows hosts that permit DDA still need an implementation and real hardware E2E; a refusal there is not a twin
+crates/vmm/src/vm/x86_64.rs	fn route	crates/vmm/src/vm/mod.rs	fn passthrough_refused [macos]	as aarch64.rs's route
+crates/vmm/src/vm/x86_64.rs	struct IrqfdRoute	crates/vmm/src/vm/mod.rs	fn passthrough_refused [macos]	as route
+crates/vmm/src/vm/x86_64.rs	impl crate	crates/vmm/src/vm/mod.rs	fn passthrough_refused [macos]	as route
+crates/vmm/src/vm/mod.rs	fn route	crates/vmm/src/vm/mod.rs	fn passthrough_refused [macos]	as route
+crates/vmm/src/vm/mod.rs	fn passthrough_refused	crates/vmm/src/devices/pci/mod.rs	mod vfio [linux]	the refusal of macOS and Windows, with each host's own limit, Windows' as its hypervisor answers (D154, PM M356, M401-M403); Linux's VFIO
+crates/shards/src/run.rs	fn names_a_function	-	none: linux	a run's device that names a host's PCI function, refused off Linux with the host's own limit (D154); Linux passes it through, the run given its VFIO group (vfio_groups)
+crates/vmm/src/devices/pci/mod.rs	mod vfio	crates/vmm/src/vm/mod.rs	fn passthrough_refused [macos]	Linux's VFIO; macOS's refusal names its API limit (D154, M403). Windows hosts that permit DDA still need an implementation and real hardware E2E; a refusal there is not a twin
 crates/vmm/src/devices/virtio/vsock/mod.rs	fn iovecs	crates/vmm/src/devices/virtio/vsock/mod.rs	fn runs	a packet's spans as a socket writes them: iovecs on Unix, (pointer, length) runs on Windows
 crates/vmm/src/devices/virtio/vsock/mod.rs	fn runs	crates/vmm/src/devices/virtio/vsock/mod.rs	fn iovecs	as iovecs
 crates/vmm/src/devices/virtio/vsock/mod.rs	fn nonblocking_pipe	crates/vmm/src/devices/virtio/vsock/mod.rs	struct Waker	the worker's waker: a self-pipe on Unix, a WSA event on Windows
@@ -379,6 +380,11 @@ crates/vmm/src/devices/virtio/gpu/virgl.rs	fn open	crates/vmm/src/devices/virtio
 crates/vmm/src/devices/virtio/gpu/virgl.rs	impl Vulkan	crates/vmm/src/devices/virtio/gpu/virgl.rs	fn open	as fn open
 crates/shards/src/confine.rs	const GPU_IOCTL_TYPES	-	none: macos	the GPU's VM process is signed with every VM process's App Sandbox entitlements and no other (build.rs, resources/vm.entitlements), the sandbox giving it Metal as any sandboxed app's (D144)
 crates/shards/src/confine.rs	const GPU_SYSCALLS	-	none: macos	as GPU_IOCTL_TYPES
+crates/shards/src/confine.rs	const UDMABUF_CREATE	-	none: macos	as GPU_IOCTL_TYPES
+crates/shards/src/confine.rs	const DMA_BUF_IOCTL_EXPORT_SYNC_FILE	-	none: macos	as GPU_IOCTL_TYPES
+crates/shards/src/confine.rs	const DMA_BUF_IOCTL_IMPORT_SYNC_FILE	-	none: macos	as GPU_IOCTL_TYPES
+crates/shards/src/confine.rs	const MEMBARRIER_CMD_PRIVATE_EXPEDITED	-	none: macos	as GPU_IOCTL_TYPES
+crates/shards/src/confine.rs	const MEMBARRIER_CMD_REGISTER_PRIVATE_EXPEDITED	-	none: macos	as GPU_IOCTL_TYPES
 crates/shards/src/confine.rs	fn gpu_paths	-	none: macos	as GPU_IOCTL_TYPES
 crates/shards/src/confine.rs	fn library_paths	-	none: macos	as GPU_IOCTL_TYPES
 crates/shards/src/daemon.rs	mod groups	-	none: linux	the groups shards keeps for --cgroup-parent where a host has no cgroups its user's own tools make and cap (D183, slice 3); on Linux a run's processes are born in a slice of the user's service manager, whose cgroup the kernel holds to its budgets (D183, slice 1)
@@ -422,7 +428,10 @@ crates/vmm/src/platform/mod.rs	mod windows_files	crates/vmm/src/platform/mod.rs	
 crates/vmm/src/platform/mod.rs	mod windows_process	crates/vmm/src/platform/mod.rs	mod unix	a process's memory, descriptors and limits: unix.rs's on Unix
 crates/vmm/src/platform/mod.rs	mod windows_watch	crates/vmm/src/platform/mod.rs	mod unix	FileWatch: unix.rs's inotify and kqueue on Unix
 crates/vmm/src/platform/mod.rs	type RawSocket	crates/vmm/src/platform/mod.rs	use shards_afunix [windows]	a socket as the vsock device's poller names it: a descriptor on Unix, shards_afunix's SOCKET on Windows
-crates/vmm/src/platform/mod.rs	mod macos_thread	-	none: linux,windows	the vCPU threads' real-time policy and its governor, measured on macOS alone (PM M8, M10, M317); other hosts run vCPUs as they are until a policy is measured there (prioritize_vcpu_thread), Windows' governor thread at TIME_CRITICAL (PM M294)
+crates/vmm/src/platform/mod.rs	mod macos_thread	crates/vmm/src/platform/unix.rs	fn run_promptly	the policy a vCPU thread wakes at: macOS's real-time policy and its governor (PM M8, M10, M317); Linux's fair scheduler's shortest slice (D191, PM M440). Windows' candidate is windows_thread's (below)
+crates/vmm/src/platform/mod.rs	mod macos_thread	crates/vmm/src/platform/mod.rs	mod windows_thread	the policy a vCPU thread wakes at, Windows': a candidate pending its measurement on a contended host (D191), THREAD_PRIORITY_ABOVE_NORMAL and its governor, which moves a thread that uses more than half of its CPU back to normal
+crates/vmm/src/platform/mod.rs	mod windows_thread	crates/vmm/src/platform/mod.rs	mod macos_thread	as macos_thread's: Windows' candidate wake priority and its governor (D191), macOS's real-time policy and its governor (PM M8, M10, M317)
+crates/vmm/src/platform/mod.rs	mod windows_thread	crates/vmm/src/platform/unix.rs	fn run_promptly	as macos_thread's: Linux's fair scheduler's shortest slice (D191, PM M440)
 crates/vmm/src/devices/virtio/fs/mod.rs	fn descriptor_for	-	none: linux,macos	a DAX window's file asked of its share's server and given across processes: on Unix its descriptor in the answer (SCM_RIGHTS, descriptor_on's); on Windows, where a stream carries no handle (PM M340), the asking process named, the handle duplicated into it and its value told (PM M343), which the asker checks names a section or a file (made_of)
 crates/vmm/src/devices/virtio/fs/mod.rs	const TYPE_RECORD_WORDS	-	none: linux,macos	a DAX window's file asked of its share's server and given across processes: on Unix its descriptor in the answer (SCM_RIGHTS, descriptor_on's); on Windows, where a stream carries no handle (PM M340), the asking process named, the handle duplicated into it and its value told (PM M343), which the asker checks names a section or a file (made_of)
 crates/vmm/src/devices/virtio/fs/mod.rs	enum Made	-	none: linux,macos	a DAX window's file asked of its share's server and given across processes: on Unix its descriptor in the answer (SCM_RIGHTS, descriptor_on's); on Windows, where a stream carries no handle (PM M340), the asking process named, the handle duplicated into it and its value told (PM M343), which the asker checks names a section or a file (made_of)
@@ -436,5 +445,21 @@ crates/vmm/src/devices/virtio/fs/server_unix.rs	impl Drop	-	none: linux,windows	
 crates/vmm/src/devices/virtio/fs/server_unix.rs	impl Send	-	none: linux,windows	macOS' DIR pointer said Send, used by one thread at a time under the server's lock; Linux's descriptor and Windows' handle are Send
 crates/shards/src/confine.rs	const GPU_IOCTL_TYPES	crates/ipc/src/windows.rs	struct Station [windows]	what a GPU's VM process is given beyond a VM process's, for its host's driver: on Linux the drivers' ioctls, syscalls and files past seccomp and Landlock (D201, PM M382); on Windows Win32k's calls and a window station and desktop of its own, granted to its AppContainer, which are all its driver needs to come up there (D202, PM M385)
 crates/shards/src/confine.rs	const GPU_SYSCALLS	crates/ipc/src/windows.rs	struct Station [windows]	as GPU_IOCTL_TYPES
+crates/shards/src/confine.rs	const UDMABUF_CREATE	crates/ipc/src/windows.rs	struct Station [windows]	as GPU_IOCTL_TYPES
+crates/shards/src/confine.rs	const DMA_BUF_IOCTL_EXPORT_SYNC_FILE	crates/ipc/src/windows.rs	struct Station [windows]	as GPU_IOCTL_TYPES
+crates/shards/src/confine.rs	const DMA_BUF_IOCTL_IMPORT_SYNC_FILE	crates/ipc/src/windows.rs	struct Station [windows]	as GPU_IOCTL_TYPES
+crates/shards/src/confine.rs	const MEMBARRIER_CMD_PRIVATE_EXPEDITED	crates/ipc/src/windows.rs	struct Station [windows]	as GPU_IOCTL_TYPES
+crates/shards/src/confine.rs	const MEMBARRIER_CMD_REGISTER_PRIVATE_EXPEDITED	crates/ipc/src/windows.rs	struct Station [windows]	as GPU_IOCTL_TYPES
 crates/shards/src/confine.rs	fn gpu_paths	crates/ipc/src/windows.rs	struct Station [windows]	as GPU_IOCTL_TYPES
 crates/shards/src/confine.rs	fn library_paths	crates/ipc/src/windows.rs	struct Station [windows]	as GPU_IOCTL_TYPES
+crates/shards/src/daemon/parents.rs	fn place_delegated	-	none: macos,windows	a spawner moved into a leaf of a cgroup delegated to the user, where no manager of its places one (D183, slice 2): macOS and Windows have no cgroups, their groups the ones shards keeps (slice 3)
+crates/shards/src/daemon/parents.rs	mod delegated	-	none: macos,windows	cgroups delegated to the user, found, checked and their leaves removed (D183, slice 2): macOS and Windows have no cgroups, their groups the ones shards keeps (slice 3)
+crates/vmm/src/vm/mod.rs	struct VfioFiles	crates/vmm/src/vm/mod.rs	fn passthrough_refused [macos]	Linux's VFIO plugged into a running microVM (D214); macOS's refusal names its API limit (D154, M403). Windows hosts that permit DDA still need an implementation and real hardware E2E; a refusal there is not a twin
+crates/vmm/src/vm/runtime.rs	fn plug_vfio	crates/vmm/src/vm/mod.rs	fn passthrough_refused [macos]	Linux's VFIO plugged into a running microVM (D214); macOS's refusal names its API limit (D154, M403). Windows hosts that permit DDA still need an implementation and real hardware E2E; a refusal there is not a twin
+crates/vmm/src/vm/runtime.rs	fn plug_vfio_files	crates/vmm/src/vm/mod.rs	fn passthrough_refused [macos]	as plug_vfio
+crates/vmm/src/vm/runtime.rs	fn plug_vfio_with	crates/vmm/src/vm/mod.rs	fn passthrough_refused [macos]	as plug_vfio
+crates/vmm/src/platform/unix.rs	fn run_promptly	crates/vmm/src/platform/macos_thread.rs	fn make_current_realtime [macos]	a vCPU thread's wake policy: Linux's fair scheduler's shortest slice (D191, PM M440), macOS's real-time policy (PM M8, M10); Windows' candidate is windows_thread.rs's (below)
+crates/vmm/src/platform/unix.rs	fn run_promptly	crates/vmm/src/platform/windows_thread.rs	fn raise_current [windows]	a vCPU thread's wake policy on Windows: THREAD_PRIORITY_ABOVE_NORMAL while it uses no more than half of its CPU, a candidate pending its measurement on a contended host (D191)
+crates/vmm/src/platform/unix.rs	const PROMPT_SLICE_NS	crates/vmm/src/platform/macos_thread.rs	fn make_current_realtime [macos]	as run_promptly
+crates/vmm/src/platform/unix.rs	const PROMPT_SLICE_NS	crates/vmm/src/platform/windows_thread.rs	fn raise_current [windows]	a vCPU thread's wake policy on Windows: THREAD_PRIORITY_ABOVE_NORMAL while it uses no more than half of its CPU, a candidate pending its measurement on a contended host (D191)
+crates/shards/src/build/mod.rs	mod outside	-	none: macos,windows	a budgeted build's own writes handed to a writer outside its budget (D188, PM M442), as Linux's memory controller throttles a cgroup's dirty pages to its own share of what its budget leaves (mm/page-writeback.c balance_dirty_pages over the writer's memcg domain, mm/memcontrol.c mem_cgroup_wb_stats). macOS's budgets are groups shards keeps, the VM processes' footprints summed (D183 slice 3), which no kernel charges a page cache to; Windows' are a job's memory limit, the commit its processes may make (JOB_OBJECT_LIMIT_JOB_MEMORY, Microsoft Learn JOBOBJECT_EXTENDED_LIMIT_INFORMATION), which a file's dirty cache pages are not, the cache manager's dirty threshold being the system's

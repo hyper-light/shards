@@ -409,7 +409,7 @@ pub fn attestations(
     Ok(files)
 }
 
-/// A local output's attestations written beside its files, as BuildKit's local exporter
+/// A local output's attestations written beside its files, as BuildKit v0.28.1's local exporter
 /// writes them: mode 0600, their time the build's SOURCE_DATE_EPOCH where it has one, else
 /// now (measured, Docker 29.3.1).
 pub fn local_attestations(
@@ -436,7 +436,7 @@ pub fn local_attestations(
     Ok(())
 }
 
-/// `fs` with a tar output's attestations at its root, as BuildKit's tar exporter adds them
+/// `fs` with a tar output's attestations at its root, as BuildKit v0.28.1's tar exporter adds them
 /// to what it writes: mode 0600, owner 0, their time now (the tar's SOURCE_DATE_EPOCH
 /// applies to them as to every entry).
 pub fn with_attestations(
@@ -551,7 +551,7 @@ fn blob_name(d: &Digest) -> String {
 }
 
 /// The manifest an output names, and its media type: the store's, or with `docker` the
-/// same in Docker's media types (a blob of its own).
+/// same in the `vnd.docker` media types (a blob of its own).
 fn manifest_for(made: &Made<'_>, docker: bool) -> (Vec<u8>, &'static str) {
     if docker {
         (

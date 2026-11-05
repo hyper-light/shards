@@ -101,7 +101,7 @@ pub struct Material {
 }
 
 /// What BuildKit captures of a build for its provenance (`provenance.Capture`): the
-/// frontend's options as buildx sent them, its sources, the locals it read, and the
+/// frontend's options buildx sent, its sources, the locals it read, and the
 /// secrets and SSH agents its steps mounted.
 #[derive(Debug, Clone, Default)]
 pub struct Capture {
@@ -224,7 +224,7 @@ fn escape(s: &str, keep: &[u8]) -> String {
 pub type Mounts = (Vec<(String, bool)>, Vec<(String, bool)>, bool);
 
 /// The secrets and SSH agents the build's steps mount, and whether any step has the
-/// network, as BuildKit captures them (captureProvenance, Capture.AddSecret and AddSSH:
+/// network, as BuildKit v0.28.1 captures them (captureProvenance, Capture.AddSecret and AddSSH:
 /// one optional only where every mount of it is, each list sorted by ID); a Git source's
 /// credentials and SSH agent too (GitIdentifier.Capture), each optional.
 pub fn capture_mounts(def: &shards_agentfile::llb::Definition) -> Mounts {
@@ -561,7 +561,7 @@ fn builder_metadata(max: Option<&Max>, proxy: Option<&[ProxyIncomplete]>) -> Jso
         }
     }
     // The build's proxy (NetworkMetadata): its mode, and what was no material, sorted by
-    // vertex, URI, method and reason as BuildKit's capture sorts them.
+    // vertex, URI, method and reason as BuildKit v0.28.1's capture sorts them.
     if let Some(incomplete) = proxy {
         let mut network = vec![("mode", Json::s("proxy"))];
         if !incomplete.is_empty() {
@@ -588,7 +588,7 @@ fn builder_metadata(max: Option<&Max>, proxy: Option<&[ProxyIncomplete]>) -> Jso
     Json::obj(f)
 }
 
-/// Each op's digest as BuildKit's solver knows its vertex (llbsolver loadLLB's
+/// Each op's digest as BuildKit's solver knows its vertex (llbsolver/vertex.go loadLLB's
 /// `recomputeDigests`): its marshalled bytes, its inputs' own digests in them, and under
 /// the build's proxy (D110) an exec op with the network marked so
 /// (`\0buildkit.proxy-network.v0` after its bytes), which every op after it then shows.
@@ -960,7 +960,7 @@ pub fn steps(def: &shards_agentfile::llb::Definition) -> Steps {
     out
 }
 
-/// `json.Marshal` of a Go map's keys: every object's fields in key order, as BuildKit's
+/// `json.Marshal` of a Go map's keys: every object's fields in key order, as BuildKit v0.28.1's
 /// internal parameters are written (their MarshalJSON goes through a map).
 pub fn sorted(j: Json) -> Json {
     match j {
@@ -1646,8 +1646,8 @@ mod tests {
     }
 
     /// The same build's provenance, as the proxy's capture makes it: its materials, its
-    /// network metadata (the step's requests that are no material, sorted as BuildKit
-    /// sorts them), its dependencies incomplete and the build not hermetic.
+    /// network metadata (the step's requests that are no material, sorted by vertex, URI,
+    /// method and reason), its dependencies incomplete and the build not hermetic.
     #[test]
     fn a_proxied_builds_provenance_records_its_requests() {
         let want: serde_json::Value =

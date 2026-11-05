@@ -23,14 +23,12 @@ use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-#[cfg(unix)]
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use common::{
-    TempDir, alive, cannot_pool, cannot_run_vms, guest_init, interrupt, interruptible, kernel, kill_now,
-    registry_of, rootfs_dir, run_shards_env, run_shards_env_in, served, served_variant, shards, test_image,
-    test_image_with,
+    TempDir, alive, cannot_pool, cannot_run_vms, commands_with, guest_init, home_with, interrupt,
+    interruptible, kernel, kill_now, processes_with, registry_of, rootfs_dir, run_shards_env,
+    run_shards_env_in, served, served_variant, shards, test_image, test_image_with,
 };
 
 const TIMEOUT: Duration = Duration::from_secs(60);
@@ -119,54 +117,6 @@ fn wait(child: &mut Child) -> Option<i32> {
         }
         std::thread::sleep(Duration::from_millis(5));
     }
-}
-
-/// The pids of the processes whose command line mentions `needle`.
-fn processes_with(needle: &str) -> Vec<u32> {
-    commands_with(needle).into_iter().map(|(pid, _)| pid).collect()
-}
-
-/// The processes whose command line mentions `needle`, and the command lines: from /proc
-/// on Linux, whose `ps` may be busybox's, which takes no `-o args`; from `ps` elsewhere;
-/// on Windows from its own table of processes (CIM's Win32_Process).
-fn commands_with(needle: &str) -> Vec<(u32, String)> {
-    if cfg!(windows) {
-        let listed =
-            r#"Get-CimInstance Win32_Process | ForEach-Object { "$($_.ProcessId) $($_.CommandLine)" }"#;
-        let out = Command::new("powershell")
-            .args(["-NoProfile", "-NonInteractive", "-Command", listed])
-            .output()
-            .unwrap();
-        return String::from_utf8_lossy(&out.stdout)
-            .lines()
-            .filter(|l| l.contains(needle))
-            .filter_map(|l| {
-                let (pid, args) = l.trim_start().split_once(' ')?;
-                Some((pid.parse().ok()?, args.to_string()))
-            })
-            .collect();
-    }
-    if cfg!(target_os = "linux") {
-        return std::fs::read_dir("/proc")
-            .unwrap()
-            .filter_map(|e| {
-                let e = e.ok()?;
-                let pid: u32 = e.file_name().to_str()?.parse().ok()?;
-                let cmdline = std::fs::read(e.path().join("cmdline")).ok()?;
-                let args = String::from_utf8_lossy(&cmdline).replace('\0', " ");
-                args.contains(needle).then_some((pid, args))
-            })
-            .collect();
-    }
-    let out = Command::new("ps").args(["-axo", "pid=,args="]).output().unwrap();
-    String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .filter(|l| l.contains(needle))
-        .filter_map(|l| {
-            let (pid, args) = l.trim_start().split_once(' ')?;
-            Some((pid.parse().ok()?, args.to_string()))
-        })
-        .collect()
 }
 
 /// Waits until `check` holds, as long as a run is given ([`TIMEOUT`]): a loaded 4-CPU
@@ -663,10 +613,69 @@ fn errors_reach_the_client() {
     assert_eq!(not_found.status, Some(127), "{}", not_found.stderr);
 }
 
-/// `stop` ends the runs in progress as dockerd ends its containers when it shuts down:
-/// SIGTERM to the command, whose client gets its status. The pool's waiting VMs end too.
-/// The run is under --init, so that its command, which does not handle SIGTERM, is not
-/// PID 1, which would not hear it and would be killed at the stop timeout instead (D115).
+/// A stopped container's next run, served by a microVM its image's template restored, goes
+/// on over the file its layer was kept in (D190): the template's own layer let go of, the
+/// container's file under the device, what its run before made there, and the file the
+/// container's still, the same one, once it stops again.
+#[test]
+fn a_restored_microvm_goes_on_over_a_stopped_containers_kept_file() {
+    if cannot_run_vms() || cannot_pool() {
+        return;
+    }
+    let (image, _) = served();
+    let home = home("daemon-over", &image);
+    let env = [("SHARDS_HOME", home.as_os_str())];
+    let first = run_shards_env(
+        &["run"],
+        &[
+            "--pull",
+            "never",
+            "--name",
+            "over",
+            "-u",
+            "0",
+            &image,
+            "fs",
+            "write:/kept=one",
+            // Past what packing it costs less below (`layers::OVER_FROM`).
+            "fill:8388608:/held",
+            "mkdir:/made",
+        ],
+        &env,
+        TIMEOUT,
+    );
+    assert_eq!(first.status, Some(0), "{}", first.stderr);
+    let id = run_shards_env(&["inspect"], &["-f", "{{.Id}}", "over"], &env, TIMEOUT);
+    let dir = home.join("containers").join(id.stdout.trim());
+    let kept = dir.join("layer.ext4");
+    let settled = || {
+        eventually("no layer kept", || {
+            kept.exists() && !dir.join("layer.new").exists()
+        })
+    };
+    settled();
+    let same = common::file_identity(&kept);
+    for n in 0..2 {
+        let again = run_shards_env(&["start"], &["-a", "over"], &env, TIMEOUT);
+        assert_eq!(again.status, Some(1), "run {n}: {}", again.stderr);
+        assert!(
+            again.stderr.contains("mkdir:/made: File exists"),
+            "run {n}: {}",
+            again.stderr
+        );
+        settled();
+        assert_eq!(
+            common::file_identity(&kept),
+            same,
+            "run {n}: another file in its place"
+        );
+    }
+}
+
+/// `stop` ends the runs in progress as it shuts down (D26): SIGTERM to the command, whose
+/// client gets its status. The pool's waiting VMs end too. The run is under --init, so that
+/// its command, which does not handle SIGTERM, is not PID 1, which would not hear it and
+/// would be killed at the stop timeout instead (D115).
 #[test]
 fn stop_ends_runs_and_waiting_vms() {
     if cannot_run_vms() {
@@ -698,8 +707,8 @@ fn stop_ends_runs_and_waiting_vms() {
     });
 }
 
-/// `daemon stop` stops each run as dockerd stops each container as it shuts down: with
-/// its own stop signal, and SIGKILL once its own stop timeout is up.
+/// `daemon stop` stops each run as `stop vm` would (D26): with its own stop signal, and
+/// SIGKILL once its own stop timeout is up.
 #[test]
 fn a_stop_gives_each_run_its_own_signal_and_time() {
     if cannot_run_vms() {
@@ -2127,21 +2136,6 @@ fn a_stop_cancels_the_downloads_of_runs_being_prepared() {
     assert!(said.contains("the daemon is shutting down"), "{said}");
 }
 
-/// A home with the guest recorded, whose daemon starts with `settings`.
-fn home_with(name: &str) -> TempDir {
-    let home = TempDir::new(name);
-    let args = [
-        "use".as_ref(),
-        "--kernel".as_ref(),
-        kernel().as_os_str(),
-        "--init".as_ref(),
-        guest_init().as_os_str(),
-    ];
-    let recorded = run_shards_env(&["guest"], &args, &[("SHARDS_HOME", home.as_os_str())], TIMEOUT);
-    assert_eq!(recorded.status, Some(0), "{}", recorded.stderr);
-    home
-}
-
 /// A slice stopped under its microVMs takes no run after it with it (D183, D26): stopping
 /// it, as its user may, or its manager does of its own accord (systemd-oomd's
 /// `ManagedOOMMemoryPressure=kill`), ends the spawner the daemon placed there and the warm
@@ -2169,7 +2163,7 @@ fn runs_under_a_slice_start_after_it_was_stopped() {
         return;
     }
     let (image, _) = served();
-    let home = home_with("daemon-slice-stopped");
+    let home = home_with("daemon-slice-stopped", TIMEOUT);
     let env: [(&str, &OsStr); 1] = [("SHARDS_HOME", home.as_os_str())];
     let slice = format!("shardsstopped{}.slice", std::process::id());
     /// The slice stopped, however the test ends.
@@ -2240,503 +2234,6 @@ fn runs_under_a_slice_start_after_it_was_stopped() {
     assert_eq!(stopped.status, Some(0), "{stopped}");
 }
 
-/// A microVM held to a budget reads through FUSE within twice the time one held to none
-/// takes (D188): under a slice of the user's manager whose `MemoryHigh` its idle microVMs
-/// leave 128 MiB of, with no swap, runs restored from its template read a gigabyte of a
-/// volume through FUSE (no DAX window), each held within the room the budget leaves it, so
-/// that its own kernel drops its page cache. Its guest's page cache had filled the slice,
-/// and its host took back the only memory it could, the guest's own RAM, its template's
-/// file pages: 400 to 600 s a read on CI's AMD runners, 3 to 5 s with none (PM M308, M309).
-/// A budget set as a run goes holds it too; and one short of what a run alone in the
-/// slice holds holds it within the least room a run goes on in, which reads as fast.
-// Linux's: FUSE's shares and budgets on Windows come with the parity plan's steps 6 and 7.
-#[cfg(unix)]
-#[test]
-fn a_microvm_held_to_a_budget_reads_through_fuse_within_twice_its_time_without_one() {
-    if !cfg!(target_os = "linux") || cannot_run_vms() || cannot_pool() {
-        return;
-    }
-    let bus = std::env::var_os("XDG_RUNTIME_DIR")
-        .map(std::path::PathBuf::from)
-        // SAFETY: getuid(2) takes nothing and cannot fail.
-        .unwrap_or_else(|| std::path::PathBuf::from(format!("/run/user/{}", unsafe { libc::getuid() })))
-        .join("bus");
-    if !bus.exists() {
-        assert!(
-            !std::env::var_os("SHARDS_REQUIRE_USER_MANAGER").is_some_and(|v| v == "1"),
-            "no user's systemd manager's bus at {}",
-            bus.display()
-        );
-        eprintln!("SKIP: no user's systemd manager here: {} is not", bus.display());
-        return;
-    }
-    let (image, _) = served();
-    let home = home_with("daemon-budget-fuse");
-    let vol = TempDir::new("budget-fuse-vol");
-    std::fs::File::create(vol.join("big"))
-        .unwrap()
-        .set_len(1 << 30)
-        .unwrap();
-    let env: [(&str, &OsStr); 2] = [
-        ("SHARDS_HOME", home.as_os_str()),
-        ("SHARDS_SHARE_WINDOW_MIB", "0".as_ref()),
-    ];
-    let slice = format!("shardsbudget{}.slice", std::process::id());
-    /// The slice's budget taken off and the slice stopped, however the test ends.
-    struct Stopped<'a>(&'a str);
-    impl Drop for Stopped<'_> {
-        fn drop(&mut self) {
-            for verb in ["revert", "stop"] {
-                let _ = Command::new("systemctl").args(["--user", verb, self.0]).status();
-            }
-        }
-    }
-    let _stopped = Stopped(&slice);
-    let said = || std::fs::read_to_string(home.join("daemon.log")).unwrap_or_default();
-    let cgroup = PathBuf::from(format!(
-        "/sys/fs/cgroup/user.slice/user-{uid}.slice/user@{uid}.service/{slice}",
-        // SAFETY: getuid(2) takes nothing and cannot fail.
-        uid = unsafe { libc::getuid() }
-    ));
-    // What the slice holds but its page cache no process maps, which its kernel takes back
-    // first: the files' own, the host's of the volume's reads among it.
-    let slice_holds = || -> u64 {
-        let current: u64 = std::fs::read_to_string(cgroup.join("memory.current"))
-            .unwrap()
-            .trim()
-            .parse()
-            .unwrap();
-        let stat = std::fs::read_to_string(cgroup.join("memory.stat")).unwrap();
-        let of = |key: &str| -> u64 {
-            stat.lines()
-                .find_map(|l| l.strip_prefix(key)?.strip_prefix(' ')?.trim().parse().ok())
-                .unwrap_or(0)
-        };
-        current.saturating_sub(
-            of("file")
-                .saturating_sub(of("file_mapped"))
-                .saturating_sub(of("shmem")),
-        )
-    };
-    let budget = |high: &str| {
-        let set = Command::new("systemctl")
-            .args(["--user", "set-property", "--runtime", &slice])
-            .arg(format!("MemoryHigh={high}"))
-            .arg("MemorySwapMax=0")
-            .output()
-            .unwrap();
-        assert!(set.status.success(), "{}", String::from_utf8_lossy(&set.stderr));
-    };
-    let mount = format!("{}:/vol", vol.display());
-    // Each read's milliseconds, as the test guest says them.
-    let took = |what: &str, out: &str| -> u64 {
-        out.lines()
-            .find_map(|l| {
-                l.strip_prefix("read /vol/big 1073741824 in ")?
-                    .strip_suffix(" ms")
-            })
-            .and_then(|ms| ms.parse().ok())
-            .unwrap_or_else(|| panic!("{what}: no whole read in {out:?}\nthe daemon's log:\n{}", said()))
-    };
-    let read = |what: &str| -> u64 {
-        let run = run_shards_env(
-            &["run"],
-            &[
-                "--rm",
-                "--cgroup-parent",
-                &slice,
-                "-v",
-                &mount,
-                &image,
-                "read",
-                "/vol/big",
-            ],
-            &env,
-            Duration::from_secs(600),
-        );
-        assert_eq!(
-            run.status,
-            Some(0),
-            "{what}: {run}\nthe daemon's log:\n{}",
-            said()
-        );
-        took(what, &run.stdout)
-    };
-    // The image's template saved under the slice, and its pool warm there.
-    let first = run_shards_env(
-        &["run"],
-        &[
-            "--rm",
-            "--cgroup-parent",
-            &slice,
-            "-v",
-            &mount,
-            &image,
-            "exit",
-            "0",
-        ],
-        &env,
-        TIMEOUT,
-    );
-    assert_eq!(first.status, Some(0), "{first}\nthe daemon's log:\n{}", said());
-    let templates = home.join("templates").to_string_lossy().into_owned();
-    let deadline = Instant::now() + TIMEOUT;
-    while !processes_with(&templates).into_iter().any(|pid| {
-        std::fs::read_to_string(format!("/proc/{pid}/cgroup"))
-            .is_ok_and(|c| c.contains(&format!("/{slice}/")))
-    }) {
-        assert!(
-            Instant::now() < deadline,
-            "no warm VM in {slice}\nthe daemon's log:\n{}",
-            said()
-        );
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    let median = |mut xs: Vec<u64>| {
-        xs.sort_unstable();
-        xs[xs.len() / 2]
-    };
-    let unbudgeted = median((0..3).map(|_| read("a read under no budget")).collect());
-    // A budget its idle microVMs leave 128 MiB of: short of the gigabyte a read caches in
-    // its guest, as one takes with none.
-    let held = slice_holds() + (128 << 20);
-    budget(&held.to_string());
-    let budgeted: Vec<u64> = (0..3).map(|_| read("a read under the budget")).collect();
-    assert!(
-        median(budgeted.clone()) <= 2 * unbudgeted,
-        "reads under a budget of {} MiB took {budgeted:?} ms, under none {unbudgeted} ms\nthe daemon's log:\n{}",
-        held >> 20,
-        said()
-    );
-    // Held, as its first word said: within its budget's room, or within the least room a
-    // run goes on in where its read had filled that room before the word came, which comes
-    // once its run has begun (budget E2E 40193342168: short by 1 to 56 MiB at each read's
-    // first word, its reads within bounds, PM M333).
-    assert!(
-        said().contains("held within its budget") || said().contains("its microVM's budget is short by"),
-        "no microVM said to be held within its budget\nthe daemon's log:\n{}",
-        said()
-    );
-    // A run begun under no budget, held to one set as it goes.
-    budget("infinity");
-    let started = run_shards_env(
-        &["run"],
-        &[
-            "-d",
-            "--name",
-            "held",
-            "--cgroup-parent",
-            &slice,
-            "-v",
-            &mount,
-            &image,
-            "sleep",
-        ],
-        &env,
-        TIMEOUT,
-    );
-    assert_eq!(
-        started.status,
-        Some(0),
-        "{started}\nthe daemon's log:\n{}",
-        said()
-    );
-    budget(&held.to_string());
-    // Three reads, each in the run begun under no budget, their median held to the bound
-    // as each phase's is: one read alone, beside the whole suite on a CI runner, once took
-    // 2.09 times (CI 40088873246).
-    let late: Vec<u64> = (0..3)
-        .map(|_| {
-            let exec = run_shards_env(
-                &["exec"],
-                &["held", "/bin/testguest", "read", "/vol/big"],
-                &env,
-                Duration::from_secs(600),
-            );
-            assert_eq!(exec.status, Some(0), "{exec}\nthe daemon's log:\n{}", said());
-            took("a read under a budget set as its run went", &exec.stdout)
-        })
-        .collect();
-    assert!(
-        median(late.clone()) <= 2 * unbudgeted,
-        "reads under a budget set as their run went took {late:?} ms, under none {unbudgeted} ms\nthe daemon's log:\n{}",
-        said()
-    );
-    // Its VM process, which `rm -f` leaves ending once its run has: until it has, the
-    // slice still holds its guest's page cache of the read, as its own memory.
-    let pid = run_shards_env(&["inspect"], &["-f", "{{.State.Pid}}", "held"], &env, TIMEOUT);
-    let pid: u32 = pid.stdout.trim().parse().unwrap_or_else(|_| panic!("{pid}"));
-    // Its state and start (proc_pid_stat(5) fields 3 and 22), past its name's parentheses.
-    let stat_of_pid = || {
-        std::fs::read_to_string(format!("/proc/{pid}/stat"))
-            .ok()
-            .and_then(|s| {
-                let fields: Vec<String> = s
-                    .rsplit_once(')')?
-                    .1
-                    .split_whitespace()
-                    .map(str::to_string)
-                    .collect();
-                Some((fields.first()?.clone(), fields.get(19)?.clone()))
-            })
-    };
-    let (_, started) = stat_of_pid().unwrap_or_else(|| panic!("held's VM process {pid} is not running"));
-    let _ = run_shards_env(&["rm"], &["-f", "held"], &env, TIMEOUT);
-    let deadline = Instant::now() + TIMEOUT;
-    while let Some((state, start)) = stat_of_pid()
-        && !matches!(state.as_str(), "Z" | "X")
-        && start == started
-    {
-        assert!(
-            Instant::now() < deadline,
-            "held's VM process {pid} still runs\nthe daemon's log:\n{}",
-            said()
-        );
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    // A run held within the least room a run goes on in for its whole reads, not at what it
-    // uses, which stalled a read of 1 MiB blocks at 140 KB/s (PM M309): a run of its own
-    // alone in the slice, its daemon keeping no warm microVM there (a budget short of the
-    // slice ended them for room, and the room came back: no run of 9452af32's CI was held
-    // short, PM M314), its guest's way to the share warmed by a small file's read. Then a
-    // budget short of what the slice holds and the inactive page cache its kernel keeps
-    // beside the files it maps (memory.stat's `file_mapped`, as many as the mapped under a
-    // GiB of them, mm/vmscan.c `inactive_is_low`), by a mebibyte, as the daemon counts a
-    // budget's room (daemon/budget.rs), read once the slice's statistics have caught up
-    // with its counter, which a microVM just ended leaves them behind (they counted 1.1 GB
-    // of one a second after it ended, PM M309): no more anonymous and file memory than it
-    // holds.
-    let _ = run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT);
-    let pool_of_none: [(&str, &OsStr); 3] = [env[0], env[1], ("SHARDS_POOL", "0".as_ref())];
-    budget("infinity");
-    std::fs::write(vol.join("small"), vec![1u8; 1 << 20]).unwrap();
-    let started = run_shards_env(
-        &["run"],
-        &[
-            "-d",
-            "--name",
-            "short",
-            "--cgroup-parent",
-            &slice,
-            "-v",
-            &mount,
-            &image,
-            "sleep",
-        ],
-        &pool_of_none,
-        TIMEOUT,
-    );
-    assert_eq!(
-        started.status,
-        Some(0),
-        "{started}\nthe daemon's log:\n{}",
-        said()
-    );
-    let warmed = run_shards_env(
-        &["exec"],
-        &["short", "/bin/testguest", "read", "/vol/small"],
-        &pool_of_none,
-        TIMEOUT,
-    );
-    assert_eq!(warmed.status, Some(0), "{warmed}\nthe daemon's log:\n{}", said());
-    let stat_of = |stat: &str, key: &str| -> u64 {
-        stat.lines()
-            .find_map(|l| l.strip_prefix(key)?.strip_prefix(' ')?.trim().parse().ok())
-            .unwrap_or(0)
-    };
-    let short_now = || {
-        let deadline = Instant::now() + TIMEOUT;
-        let (current, stat) = loop {
-            let current: u64 = std::fs::read_to_string(cgroup.join("memory.current"))
-                .unwrap()
-                .trim()
-                .parse()
-                .unwrap();
-            let stat = std::fs::read_to_string(cgroup.join("memory.stat")).unwrap();
-            if stat_of(&stat, "anon") + stat_of(&stat, "file") <= current {
-                break (current, stat);
-            }
-            assert!(
-                Instant::now() < deadline,
-                "{slice}'s statistics still count more than it holds ({current} bytes):\n{stat}"
-            );
-            std::thread::sleep(Duration::from_millis(100));
-        };
-        let mapped = stat_of(&stat, "file_mapped");
-        let unmapped = stat_of(&stat, "file")
-            .saturating_sub(mapped)
-            .saturating_sub(stat_of(&stat, "shmem"));
-        let gb = (mapped * 2) >> 30;
-        let ratio = if gb == 0 { 1 } else { (gb * 10).isqrt() };
-        (current.saturating_sub(unmapped) + mapped / ratio).saturating_sub(1 << 20)
-    };
-    let id = started.stdout.trim().to_string();
-    let held_least = || {
-        said()
-            .lines()
-            .any(|l| l.contains(&format!("container {id}:")) && l.contains("the least room a run goes on in"))
-    };
-    // Set again from the slice as it is then, while the daemon finds room under it: the
-    // kernel takes back more of the slice as its budget falls than its statistics said it
-    // keeps beside what its processes map, and the daemon counts the room the slice has
-    // after (22 MiB under 229 MiB in budget E2E 40148135044's h, 1 of 608 runs). A budget
-    // that leaves none is said at once.
-    let (mut asked, mut short): (Vec<u64>, u64) = (Vec::new(), 0);
-    let deadline = Instant::now() + TIMEOUT;
-    while !held_least() {
-        assert!(
-            Instant::now() < deadline,
-            "no microVM said to be held within the least room a run goes on in, under budgets of {asked:?} MiB\nthe daemon's log:\n{}",
-            said()
-        );
-        short = short_now();
-        budget(&short.to_string());
-        asked.push(short >> 20);
-        let set = Instant::now();
-        while !held_least() && set.elapsed() < Duration::from_secs(3) {
-            std::thread::sleep(Duration::from_millis(20));
-        }
-    }
-    let held_short: Vec<u64> = (0..3)
-        .map(|_| {
-            let exec = watching(&cgroup, "a read held within the least room", || {
-                run_shards_env(
-                    &["exec"],
-                    &["short", "/bin/testguest", "read", "/vol/big"],
-                    &pool_of_none,
-                    Duration::from_secs(600),
-                )
-            });
-            assert_eq!(exec.status, Some(0), "{exec}\nthe daemon's log:\n{}", said());
-            took("a read held within the least room", &exec.stdout)
-        })
-        .collect();
-    assert!(
-        median(held_short.clone()) <= 2 * unbudgeted,
-        "reads under a budget of {} MiB, held within the least room, took {held_short:?} ms, under none {unbudgeted} ms\nthe daemon's log:\n{}",
-        short >> 20,
-        said()
-    );
-    let _ = run_shards_env(&["rm"], &["-f", "short"], &pool_of_none, TIMEOUT);
-    // Each phase's reads, for a run's record (.github/workflows/budget-e2e.yml).
-    eprintln!(
-        "reads in ms: under none {unbudgeted} (the median); under {} MiB {budgeted:?}; under it set as its run went {late:?}; held within the least room under {} MiB {held_short:?}",
-        held >> 20,
-        short >> 20
-    );
-    let stopped = run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT);
-    assert_eq!(stopped.status, Some(0), "{stopped}");
-}
-
-/// Runs `f`, and while it runs past a minute, every 30 s, says on stderr what the slice
-/// `cgroup` and the processes in it are doing ([`slice_state`]): a read held short takes
-/// seconds, and one that stalls (40079524601's (d): 600 s, its guest answering nothing)
-/// leaves in CI's log where its time went.
-#[cfg(unix)]
-fn watching<T>(cgroup: &Path, what: &str, f: impl FnOnce() -> T) -> T {
-    /// Set as `f` returns or unwinds, which ends the watch.
-    struct Done<'a>(&'a AtomicBool);
-    impl Drop for Done<'_> {
-        fn drop(&mut self) {
-            self.0.store(true, Ordering::Release);
-        }
-    }
-    let done = AtomicBool::new(false);
-    std::thread::scope(|s| {
-        s.spawn(|| {
-            let start = Instant::now();
-            let mut next = Duration::from_secs(60);
-            while !done.load(Ordering::Acquire) {
-                if start.elapsed() >= next {
-                    let _ = writeln!(
-                        std::io::stderr(),
-                        "{what}, {} s in: {}",
-                        start.elapsed().as_secs(),
-                        slice_state(cgroup)
-                    );
-                    next += Duration::from_secs(30);
-                }
-                std::thread::sleep(Duration::from_millis(200));
-            }
-        });
-        let _done = Done(&done);
-        f()
-    })
-}
-
-/// The slice's memory, its events and pressure, and for each process in its tree its
-/// memory and each thread's state and wait channel (/proc/PID/task/TID/wchan).
-#[cfg(unix)]
-fn slice_state(cgroup: &Path) -> String {
-    let read = |p: &Path| std::fs::read_to_string(p).unwrap_or_default();
-    let stat = read(&cgroup.join("memory.stat"));
-    let keys = [
-        "anon",
-        "file",
-        "file_mapped",
-        "shmem",
-        "pgscan",
-        "pgsteal",
-        "pgmajfault",
-        "workingset_refault_file",
-    ];
-    let picked: Vec<&str> = keys
-        .iter()
-        .filter_map(|k| stat.lines().find(|l| l.split_whitespace().next() == Some(k)))
-        .collect();
-    let mut out = format!(
-        "current {} high {}; {}; events {}; pressure {}",
-        read(&cgroup.join("memory.current")).trim(),
-        read(&cgroup.join("memory.high")).trim(),
-        picked.join(", "),
-        read(&cgroup.join("memory.events"))
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" "),
-        read(&cgroup.join("memory.pressure")).lines().next().unwrap_or("")
-    );
-    let mut dirs = vec![cgroup.to_path_buf()];
-    while let Some(dir) = dirs.pop() {
-        for pid in read(&dir.join("cgroup.procs")).lines() {
-            let proc = PathBuf::from(format!("/proc/{pid}"));
-            let status = read(&proc.join("status"));
-            let field = |k: &str| {
-                status
-                    .lines()
-                    .find_map(|l| l.strip_prefix(k))
-                    .map_or(String::new(), |v| {
-                        v.split_whitespace().collect::<Vec<_>>().join(" ")
-                    })
-            };
-            out += &format!(
-                "\n  {pid} {} RssAnon {} RssFile {}:",
-                read(&proc.join("comm")).trim(),
-                field("RssAnon:"),
-                field("RssFile:")
-            );
-            let Ok(tasks) = std::fs::read_dir(proc.join("task")) else {
-                continue;
-            };
-            for task in tasks.flatten() {
-                let t = task.path();
-                let state = read(&t.join("stat"))
-                    .rsplit_once(')')
-                    .and_then(|(_, rest)| rest.split_whitespace().next().map(str::to_owned))
-                    .unwrap_or_default();
-                out += &format!(
-                    " {}/{state}/{}",
-                    read(&t.join("comm")).trim(),
-                    read(&t.join("wchan")).trim()
-                );
-            }
-        }
-        if let Ok(children) = std::fs::read_dir(&dir) {
-            dirs.extend(children.flatten().map(|c| c.path()).filter(|p| p.is_dir()));
-        }
-    }
-    out
-}
-
 /// A pool of 0 keeps no VM warm, and every run restores its own: the second run of an
 /// image, from its template, is served at once, not after the 60 s a pool that never
 /// fills would take (audit A14, whose reproduction this is).
@@ -2746,7 +2243,7 @@ fn a_pool_of_none_serves_every_run() {
         return;
     }
     let (image, _) = served();
-    let home = home_with("daemon-pool-none");
+    let home = home_with("daemon-pool-none", TIMEOUT);
     // Each run's timing line (SHARDS_TIMING): where a slow one's time went, said if it is.
     let env: [(&str, &OsStr); 3] = [
         ("SHARDS_HOME", home.as_os_str()),
@@ -2878,7 +2375,7 @@ fn warm_vms_are_bounded_across_templates() {
     }
     let (first, _) = served();
     let second = served_variant(b"second");
-    let home = home_with("daemon-warm-max");
+    let home = home_with("daemon-warm-max", TIMEOUT);
     let env: [(&str, &OsStr); 3] = [
         ("SHARDS_HOME", home.as_os_str()),
         ("SHARDS_POOL", "1".as_ref()),
@@ -2954,7 +2451,7 @@ fn warm_vms_are_given_their_templates_root_filesystem() {
         return;
     }
     let (image, _) = served();
-    let home = home_with("daemon-backing");
+    let home = home_with("daemon-backing", TIMEOUT);
     let env: [(&str, &OsStr); 2] = [("SHARDS_HOME", home.as_os_str()), ("SHARDS_POOL", "2".as_ref())];
     let run = run_shards_env(&["run"], &[image.as_str(), "exit", "0"], &env, TIMEOUT);
     assert_eq!(run.status, Some(0), "{}", run.stderr);
@@ -2989,7 +2486,7 @@ fn pools_keep_what_their_runs_need_while_they_come() {
         return;
     }
     let (image, _) = served();
-    let home = home_with("daemon-demand");
+    let home = home_with("daemon-demand", TIMEOUT);
     // The keep-alive outlasts the spacing of runs well apart below, which a loaded host
     // stretches.
     const KEEP: Duration = Duration::from_secs(15);
@@ -3147,9 +2644,9 @@ fn a_collection_waits_for_the_stores_lease() {
 }
 
 /// What no reference needs is collected (audit A13). `shards pull` moving a tag to another
-/// image leaves the old one dangling, as dockerd leaves it; once `rmi` removes it, the
-/// daemon removes its blobs, root filesystem and template, ending its warm VMs, and keeps
-/// the new one's, which runs from a template of its own.
+/// image leaves the old one dangling, kept for what may still name it by ID; once `rmi`
+/// removes it, the daemon removes its blobs, root filesystem and template, ending its warm
+/// VMs, and keeps the new one's, which runs from a template of its own.
 #[test]
 fn what_a_moved_tag_named_is_collected() {
     if cannot_run_vms() || cannot_pool() {
@@ -3157,7 +2654,7 @@ fn what_a_moved_tag_named_is_collected() {
     }
     let (port, _, serving) = registry_of(std::sync::Arc::new(std::sync::Mutex::new(test_image())));
     let image = format!("127.0.0.1:{port}/test/image:v1");
-    let home = home_with("daemon-collect");
+    let home = home_with("daemon-collect", TIMEOUT);
     let env = [("SHARDS_HOME", home.as_os_str())];
     let run = || {
         let run = run_shards_env(&["run"], &["--rm", image.as_str(), "exit", "0"], &env, TIMEOUT);

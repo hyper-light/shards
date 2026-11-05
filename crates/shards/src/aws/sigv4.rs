@@ -43,7 +43,7 @@ pub enum Rule {
     /// Every header but those of [`IGNORED`]: a request the SDK sends.
     Ignored,
     /// Those of [`SIGNED`] and every `x-amz-*`, its payload's hash `x-amz-content-sha256`:
-    /// S3's, as BuildKit's client signs them.
+    /// S3's (D88).
     Required,
 }
 

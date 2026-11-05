@@ -14,6 +14,7 @@ pub mod limit;
 pub mod mem;
 pub mod mmio;
 pub mod net;
+pub mod pci;
 pub mod pmem;
 pub mod queue;
 pub mod vsock;
@@ -57,6 +58,9 @@ pub struct DeviceInterrupt {
     /// resets, as the transport says the driver's faults.
     said_failure: AtomicBool,
     line: Arc<dyn Interrupt>,
+    /// Where a configuration change is signalled, where not on `line`: virtio over PCI's
+    /// configuration vector (virtio 1.3 §4.1.4.3, `config_msix_vector`).
+    config_line: Option<Arc<dyn Interrupt>>,
 }
 
 impl std::fmt::Debug for DeviceInterrupt {
@@ -74,6 +78,16 @@ impl DeviceInterrupt {
             failed: AtomicBool::new(false),
             said_failure: AtomicBool::new(false),
             line,
+            config_line: None,
+        }
+    }
+
+    /// An interrupt whose used buffers raise `line` and whose configuration changes raise
+    /// `config`: the two vectors of a device on PCI with MSI-X (virtio 1.3 §4.1.5.1.2).
+    pub fn with_config_line(line: Arc<dyn Interrupt>, config: Arc<dyn Interrupt>) -> DeviceInterrupt {
+        DeviceInterrupt {
+            config_line: Some(config),
+            ..DeviceInterrupt::new(line)
         }
     }
 
@@ -85,7 +99,7 @@ impl DeviceInterrupt {
 
     pub fn config_change(&self) {
         self.status.fetch_or(INT_CONFIG_CHANGE, Ordering::AcqRel);
-        self.line.set_level(true);
+        self.config_line.as_ref().unwrap_or(&self.line).set_level(true);
     }
 
     /// Stops the device from being used until the driver resets it (§2.1.2). True for the

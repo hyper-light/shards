@@ -180,6 +180,59 @@ pub fn check_host() -> std::result::Result<(), String> {
     features().map(drop)
 }
 
+/// WHV_CAPABILITY_FEATURES' VirtualPciDeviceSupport and IommuSupport (WinHvPlatformDefs.h).
+const VIRTUAL_PCI_DEVICES: u64 = 1 << 7;
+const IOMMU_SUPPORT: u64 = 1 << 8;
+
+/// Why this host's hypervisor gives no partition a host's PCI function, in its own words;
+/// none where it would (D154, PM M401, M402). A function reaches a partition as a virtual PCI
+/// device WHP makes of it once its administrator has dismounted it from the host
+/// (WHvAllocateVpciResource, then WHvCreateVpciDevice, physically backed), in a partition
+/// allowed device assignment (WHvPartitionPropertyCodeAllowDeviceAssignment): asked of a
+/// partition of its own, never set up and given no memory, which a hypervisor that assigns
+/// none refuses as it is set, as Windows 11 Pro's does (M401).
+pub fn device_assignment_refused() -> Option<String> {
+    if !ffi::loaded() {
+        return Some("the Windows Hypervisor Platform is not on this host".into());
+    }
+    let asked = |e: Error| Some(format!("asking the Windows Hypervisor Platform: {e}"));
+    let features = match capability(WHvCapabilityCodeFeatures) {
+        // SAFETY: the union member the code fills.
+        Ok(cap) => unsafe { cap.Features.AsUINT64 },
+        Err(e) => return asked(e),
+    };
+    if features & VIRTUAL_PCI_DEVICES == 0 {
+        return Some(
+            "its Windows Hypervisor Platform makes no virtual PCI device of a host's (WHvCapabilityCodeFeatures: VirtualPciDeviceSupport 0)"
+                .into(),
+        );
+    }
+    let mut handle: WHV_PARTITION_HANDLE = 0;
+    // SAFETY: a handle for the call to fill.
+    if let Err(e) = check("WHvCreatePartition", unsafe {
+        WHvCreatePartition(&raw mut handle)
+    }) {
+        return asked(e);
+    }
+    let partition = Partition(handle, Mutex::new(Vec::new()));
+    let allowed: windows_sys::core::BOOL = 1;
+    let refused = partition
+        .set(
+            WHvPartitionPropertyCodeAllowDeviceAssignment,
+            &allowed,
+            "WHvSetPartitionProperty(AllowDeviceAssignment)",
+        )
+        .err()?;
+    let iommu = if features & IOMMU_SUPPORT == 0 {
+        ", and says it has no IOMMU support (WHvCapabilityCodeFeatures: IommuSupport 0)"
+    } else {
+        ""
+    };
+    Some(format!(
+        "its hypervisor assigns no device to a partition: {refused}{iommu}"
+    ))
+}
+
 /// Whether this Windows sets a vCPU's state back as a restore does (state.rs
 /// `restore_state`): vCPU 0's local APIC page, of a partition of one set up as every VM's
 /// is, read and set back, once a process and only when asked, so that no VM's start pays
@@ -817,6 +870,23 @@ fn forbid_dynamic_code() -> Result<()> {
         });
     }
     Ok(())
+}
+
+impl Vm {
+    /// A live move watches its guest's writes (D176 part 7), which WHP's dirty page
+    /// tracking would (WHvQueryGpaRangeDirtyBitmap) and shards does not ask yet.
+    pub fn watch_writes(&self) -> Result<()> {
+        Err(Error::Guest(
+            "this host's microVMs move only saved, not live: WHP's dirty page tracking is not asked yet"
+                .into(),
+        ))
+    }
+
+    pub fn written(&self) -> Result<Vec<u64>> {
+        Ok(Vec::new())
+    }
+
+    pub fn unwatch_writes(&self) {}
 }
 
 impl Vm {

@@ -182,7 +182,8 @@ const SIGNALS: [(&str, i64); 34] = [
 const RTMIN: i64 = 34;
 const RTMAX: i64 = 64;
 
-/// A signal as dockerd reads it (moby/sys/signal ParseSignal): a number other than 0, or a
+/// A signal as clients name it, read as moby/sys/signal's signal.go ParseSignal reads it
+/// (the meaning `kill -s` and `--stop-signal` scripts give it): a number other than 0, or a
 /// name in any case, with or without `SIG`; `RTMIN+n` and `RTMAX-n` for n up to 15 and 14.
 pub(super) fn parse_signal(given: &str) -> Result<i64, String> {
     let invalid = || format!("{given} is no signal: give its name (TERM, SIGKILL, RTMIN+3) or its number");
@@ -404,7 +405,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
             Err(e) => return refuse(&e),
         };
         self.await_start(&id);
-        // A restarting container is not running, as dockerd's is between its runs.
+        // A restarting microVM is not running: between its runs it has no command to attach.
         if self.is_restarting(&id) {
             return refuse("cannot attach to a restarting container, wait until it is running");
         }
@@ -475,6 +476,12 @@ impl<D: crate::containers::Disk> Daemon<D> {
             && first == COPY_STEP
         {
             return self.copy_step(rest, asker, reply);
+        }
+        // `shards move vm`'s steps (D176 part 6, cli/moves.rs).
+        if let Some((first, rest)) = argv.split_first()
+            && first == shards_ipc::MOVE_STEP
+        {
+            return self.move_step(rest, asker, reply);
         }
         let words: Vec<&str> = argv.iter().map(String::as_str).collect();
         let Some((command, path, named)) = commands::find(&words) else {
@@ -586,9 +593,9 @@ impl<D: crate::containers::Disk> Daemon<D> {
         } else if std::ptr::eq(command, &CONTAINER_INSPECT) {
             self.container_inspect(&parsed, asker.styled(), reply, parsed.bool("convert"))
         } else if std::ptr::eq(command, &SAVE) {
-            self.save(&parsed.args, asker, reply)
+            self.save(&parsed.args, parsed.many("platform"), asker, reply)
         } else if std::ptr::eq(command, &LOAD) {
-            self.load(asker, reply)
+            self.load(parsed.many("platform"), asker, reply)
         } else if std::ptr::eq(command, &PULL) {
             self.pull(&parsed, asker, reply)
         } else if std::ptr::eq(command, &PUSH) {
@@ -992,8 +999,8 @@ impl<D: crate::containers::Disk> Daemon<D> {
     /// microVM takes of the host, measured from its VM process each second: CPU as the
     /// share of one CPU its process had over the second, memory as its resident size
     /// against the microVM's. Streamed until the client goes, or once with `--no-stream`.
-    /// What only the guest knows (network and block I/O, PIDs) is `--`, as docker/cli
-    /// shows what it lacks.
+    /// What only the guest knows (network and block I/O, PIDs) is `--`, the mark the
+    /// stats table reads as missing (docker/cli cli/command/container/formatter_stats.go).
     fn stats(&self, parsed: &Parsed, asker: &Asker, reply: &Reply<'_>) -> u8 {
         let all = parsed.bool("all");
         let trunc = !parsed.bool("no-trunc");
@@ -1105,9 +1112,9 @@ impl<D: crate::containers::Disk> Daemon<D> {
         };
         // The first sample is a baseline: CPU is measured over the second after it. With
         // `--no-stream`, a running one whose baseline was not taken is sampled once more a
-        // second later, the sample just taken its baseline, as dockerd answers a one-off
-        // request with two samples, to fill its CPU's sample before (moby 3f38b15
-        // daemon/stats.go, ContainerStats): then each row is measured, or, its last sample
+        // second later, the sample just taken its baseline, so that a one-off row is
+        // measured as a streamed one is (moby 3f38b15 daemon/stats.go answers a one-off
+        // request with two samples too): then each row is measured, or, its last sample
         // not taken, unmeasured ("--").
         let mut resampled = false;
         sample();
@@ -1149,7 +1156,8 @@ impl<D: crate::containers::Disk> Daemon<D> {
                     clock: &clock,
                 };
                 let mut text = String::new();
-                // On a terminal each table replaces the last, as docker/cli clears it.
+                // On a terminal each table replaces the last, the screen cleared and homed
+                // (ECMA-48 ED and CUP), so that the live view stays in place.
                 if asker.terminal && !parsed.bool("no-stream") {
                     text.push_str("\x1b[2J\x1b[H");
                 }
@@ -1481,7 +1489,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
                 .map(|c| (c.created, c.name.clone()))
                 .collect();
             if runs.is_empty() {
-                // Neither: it fails as a name, in dockerd's words.
+                // Neither: it fails as a name, in the words scripts match (`no_such`).
                 out.push(arg.clone());
                 continue;
             }
@@ -1511,8 +1519,8 @@ impl<D: crate::containers::Disk> Daemon<D> {
                 Err("invalid container name or ID: value is empty".into()),
             );
         }
-        // A container exists from its creation, as dockerd's does: one whose record is
-        // still being written is waited for, not missed.
+        // A microVM exists from its creation: one whose record is still being written is
+        // waited for, not missed (seen 2026-10-02 under the parallel suite).
         while registry.arriving_as(reference) {
             registry = self
                 .arrived
@@ -1638,8 +1646,8 @@ impl<D: crate::containers::Disk> Daemon<D> {
     }
 
     /// `shards pause` and `unpause` (moby daemon/pause.go, unpause.go): each running
-    /// container's whole microVM frozen where it is, every vCPU held out of its guest by
-    /// its VMM, as dockerd freezes a container's cgroup, on every hypervisor alike (WHP's
+    /// microVM frozen whole where it is, every vCPU held out of its guest by its VMM,
+    /// which needs no cgroup and holds on every hypervisor alike (WHP's
     /// host stops a process no documented way); or let go on. A frozen microVM runs none
     /// of its guest, keeps its memory, and hears what it is sent once it goes on, its VM
     /// answering its daemon throughout. Answers as the CLI does (pause.go): each name done,
@@ -2007,8 +2015,8 @@ impl<D: crate::containers::Disk> Daemon<D> {
     }
 
     /// `shards wait`: for each container in turn, its exit code once it stops. Found and
-    /// waited for under one hold of the records, as dockerd holds a container's state
-    /// once it has found it: an end in between, of a `--rm` container above all, is not
+    /// waited for under one hold of the records, so that the state found is the state
+    /// waited on: an end in between, of a `--rm` container above all, is not
     /// missed.
     fn wait(&self, references: &[String], client: u64, reply: &Reply<'_>) -> u8 {
         // Its client waits long: it shuts no other out (review 7.9).
@@ -2040,9 +2048,8 @@ impl<D: crate::containers::Disk> Daemon<D> {
     /// still running first, and says nothing of those not there. The CLI trims `/` from
     /// both ends of each argument (docker/cli rm.go; moby daemon/delete.go). A container
     /// whose run no VM has yet been committed to has not started: it goes, and its run
-    /// never starts, as dockerd removes a created container. One whose run is being handed
-    /// over is removed once it is known whether it started, as dockerd's removal waits
-    /// for a start under way (moby daemon/start.go holds the container's lock throughout).
+    /// never starts. One whose run is being handed over is removed once it is known
+    /// whether it started, so that no VM goes on running a removed microVM's command.
     fn rm(&self, parsed: &Parsed, styled: bool, reply: &Reply<'_>) -> u8 {
         let force = parsed.bool("force");
         let volumes = parsed.bool("volumes");
@@ -2056,7 +2063,8 @@ impl<D: crate::containers::Disk> Daemon<D> {
                 if reference.is_empty() {
                     return Step::Now(Err("container name cannot be empty".into()));
                 }
-                // Then as the CLI's client sends it (`resolve`), dockerd's words name it.
+                // Then trimmed as the CLI's client sends it (`resolve`, moby client utils.go
+                // trimID), which names it in its refusals.
                 let reference = reference.trim().to_string();
                 let id = match self.resolve(&reference) {
                     Ok(id) => id,
@@ -2170,7 +2178,8 @@ impl<D: crate::containers::Disk> Daemon<D> {
             styled,
             &args,
             &|reference| {
-                // As the Docker CLI's client sends it (`resolve`), dockerd's words name it.
+                // Trimmed as the CLI's client sends it (`resolve`, moby client utils.go
+                // trimID), which names it in its refusals.
                 let reference = reference.trim();
                 let id = match self.resolve(reference) {
                     Ok(id) => id,
@@ -2288,7 +2297,8 @@ impl<D: crate::containers::Disk> Daemon<D> {
             styled,
             &args,
             &|reference| {
-                // As the Docker CLI's client sends it (`resolve`), dockerd's words name it.
+                // Trimmed as the CLI's client sends it (`resolve`, moby client utils.go
+                // trimID), which names it in its refusals.
                 let reference = reference.trim();
                 let cannot = |why: &str| format!("shards: cannot kill {reference}: {why}");
                 let linux = if signal.is_empty() {
@@ -3083,7 +3093,8 @@ struct Listed {
     ports: String,
 }
 
-/// A port as dockerd lists a running container's: published at a host address and port,
+/// A port of a running microVM, in the shape `ps` and `port` answer (moby docker-v29.3.1
+/// api/types/container/port.go `Port`): published at a host address and port,
 /// or exposed alone (no address, public port 0).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct PortSummary {
@@ -3414,9 +3425,9 @@ pub(super) fn status(
     }
 }
 
-/// `rows` aligned as the Docker CLI's tabwriter aligns them (padding 3, spaces; docker/cli
-/// cli/command/formatter/tabwriter): each column but the last is as wide as its widest
-/// cell plus 3, and at least `min` (the CLI's is 10), in go-runewidth's columns.
+/// `rows` aligned as piped tables are read (padding 3, spaces; docker/cli
+/// cli/command/formatter/tabwriter/tabwriter.go): each column but the last is as wide as
+/// its widest cell plus 3, and at least `min` (the CLI's is 10), in go-runewidth's columns.
 pub(super) fn tabulate_with<R: AsRef<[String]>>(rows: &[R], min: usize, east_asian: bool) -> Vec<String> {
     let cell_width = |cell: &str| width::string_width(cell, east_asian);
     let mut widths: Vec<usize> = Vec::new();
@@ -3664,8 +3675,8 @@ pub(super) fn wait_readable(
 struct Shown {
     stamps: bool,
     details: bool,
-    /// The attributes `--details` shows, as dockerd writes them before a line (its log
-    /// stream's attrsByteSlice): sorted by name, each `NAME=VALUE` query-escaped, joined
+    /// The attributes `--details` shows before a line, in the form scripts read (D161, moby's
+    /// attrsByteSlice): sorted by name, each `NAME=VALUE` query-escaped, joined
     /// by commas (D161).
     attributes: Vec<u8>,
 }

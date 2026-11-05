@@ -146,7 +146,7 @@ impl<D: Disk> Daemon<D> {
         if is_image_archive(&store.blob_path(&raw)) {
             let loaded = std::fs::File::open(store.blob_path(&raw))
                 .map_err(|e| e.to_string())
-                .and_then(|file| self.load_archive(&store, file));
+                .and_then(|file| self.load_archive(&store, file, &[]));
             self.collect_soon();
             let loaded = match loaded {
                 Ok(l) => l,
@@ -210,8 +210,8 @@ impl<D: Disk> Daemon<D> {
     }
 
     /// Stored blob `raw` as the image's one layer, and its config and manifest, recorded
-    /// under `named` or as a dangling image: its ID (the manifest's digest, as dockerd's
-    /// with containerd's store), and its manifest's descriptor.
+    /// under `named` or as a dangling image: its ID (the manifest's digest, as every image of
+    /// the store is named, D170), and its manifest's descriptor.
     fn import_layer(
         &self,
         store: &shards_image::store::Store,
@@ -228,8 +228,8 @@ impl<D: Disk> Daemon<D> {
         head.truncate(got);
         let kind = detect(&head);
         let (layer, size, media) = match kind {
-            // Kept as they came, as dockerd keeps them; a plain tar too, where dockerd
-            // spends a gzip on it.
+            // Kept as they came, no time spent recompressing; a plain tar too, where
+            // dockerd spends a gzip on it.
             Compression::Gzip | Compression::Zstd | Compression::None => {
                 let size = std::fs::metadata(store.blob_path(raw))
                     .map_err(|e| e.to_string())?

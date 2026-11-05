@@ -714,7 +714,7 @@ impl Registry {
         Ok(out)
     }
 
-    /// The devices a step's requests come to, granted as BuildKit's `ValidateEntitlements`
+    /// The devices a step's requests come to, granted as BuildKit v0.28.1's `ValidateEntitlements`
     /// grants them: `--allow device` every one; `--allow device=NAME` that one,
     /// `device=NAME,alias=A` NAME where the step asks for A; else those auto-allowed.
     pub fn grant(
@@ -860,7 +860,7 @@ mod tests {
 
     const GPU: &str = "cdiVersion: \"0.6.0\"\nkind: vendor.com/gpu\nannotations:\n  org.mobyproject.buildkit.device.class: gpu\ncontainerEdits:\n  env: [SPEC=1]\ndevices:\n  - name: \"0\"\n    containerEdits:\n      env: [GPU=0]\n      deviceNodes: [{path: /dev/fuse}]\n  - name: \"1\"\n    containerEdits:\n      env: [GPU=1]\n";
 
-    /// Names resolve as BuildKit's CDI manager resolves them, and grants as its
+    /// Names resolve as BuildKit v0.28.1's CDI manager resolves them, and grants as its
     /// `ValidateEntitlements` grants them, in its words.
     #[test]
     fn cdi_devices_resolve_and_are_granted() {

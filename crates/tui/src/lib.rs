@@ -11,7 +11,7 @@
 //!   travelling each rim.
 //! - `bar`: hairline progress bars, their leading cell lit by how far into it they are.
 //! - `rate`: throughput, smoothed, with its recent history as a sparkline.
-//! - `text`: eyebrows in spaced capitals, sizes, rates and times as Docker prints them.
+//! - `text`: eyebrows in spaced capitals; sizes (decimal, three figures), rates, times.
 //! - `layout`: rows that fit their width by changing shape, not by being cut.
 //! - `frame`: drawing a frame over the last, in place, whatever the terminal's width did.
 //! - `panel`: errors, in a hairline panel.

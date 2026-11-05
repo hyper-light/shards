@@ -2,12 +2,12 @@
 //! every path is resolved by the kernel inside the root (openat2(2) `RESOLVE_IN_ROOT`,
 //! Linux 5.6), so that no symlink, planted by an earlier step or by the step itself, leads
 //! the builder past it. runc resolves a container's paths so for the same reason
-//! (CVE-2019-19921, CVE-2021-30465: filepath-securejoin, then openat2), as BuildKit
-//! resolves a step's working directory and its mounts' sources (fs.RootPath).
+//! (CVE-2019-19921, CVE-2021-30465: filepath-securejoin, then openat2), and BuildKit a
+//! step's working directory and its mounts' sources (fs.RootPath).
 //!
 //! A path resolved here is used through its descriptor: created relative to its resolved
 //! parent (`mkdirat`, `openat`, `mknodat`, `symlinkat`, `unlinkat`), and mounted on through
-//! `/proc/self/fd/N`, as runc mounts on its targets.
+//! `/proc/self/fd/N`, so that no path is resolved again between the two (CVE-2021-30465).
 
 use std::ffi::CString;
 use std::io;
@@ -37,7 +37,8 @@ pub fn path(fd: &OwnedFd) -> PathBuf {
     PathBuf::from(format!("/proc/self/fd/{}", fd.as_raw_fd()))
 }
 
-/// What Go's syscall error says of an errno, as runc's messages carry it.
+/// What Go's syscall error says of an errno (syscall.Errno.Error), the text a failure ends
+/// with.
 fn go_text(e: &io::Error) -> String {
     e.raw_os_error()
         .map_or_else(|| e.to_string(), shards_cmdline::go::linux_error)
@@ -117,9 +118,8 @@ impl Root {
     }
 
     /// The directory at `path`, made with each missing parent as Go's `os.MkdirAll` makes
-    /// them (`mode`, then each owned `owner` if given), as runc and BuildKit make a
-    /// working directory or a mount point; its errors are Go's, `mkdir /a: not a
-    /// directory`.
+    /// them (`mode`, then each owned `owner` if given), for a working directory or a mount
+    /// point; its errors are Go's, `mkdir /a: not a directory`.
     pub fn mkdir_all(&self, path: &[u8], mode: u32, owner: Option<(u32, u32)>) -> io::Result<OwnedFd> {
         // A directory there is the answer, and anything else there an error at once.
         if let Ok(fd) = self.open_at(path, libc::O_PATH) {
@@ -165,7 +165,7 @@ impl Root {
     }
 
     /// What is at `path`, or a new empty file of `mode` there, its parents made: a bind
-    /// mount's target, as runc makes one for a file (createIfNotExists).
+    /// mount's target, a file where its source is one (createIfNotExists).
     pub fn file(&self, path: &[u8], mode: u32) -> io::Result<OwnedFd> {
         if let Ok(fd) = self.open_at(path, libc::O_PATH) {
             return Ok(fd);
@@ -188,11 +188,11 @@ impl Root {
         self.open_at(path, libc::O_PATH)
     }
 
-    /// The path of the root that `path` names, as BuildKit's fs.RootPath and runc's
-    /// securejoin find it: each symlink followed in the root (an absolute one from it, a
-    /// relative one from where it is, `..` never above it), and from the first name not
-    /// there, the rest as it is written. A working directory or a mount point is made
-    /// there. A file where a directory is needed ends the walk as a name not there
+    /// The path of the root that `path` names, resolved as fs.RootPath and
+    /// filepath-securejoin resolve one: each symlink followed in the root (an absolute one
+    /// from it, a relative one from where it is, `..` never above it), and from the first
+    /// name not there, the rest as it is written. A working directory or a mount point is
+    /// made there. A file where a directory is needed ends the walk as a name not there
     /// (securejoin's IsNotExist), unless `strict`: then it is an error, as fs.RootPath
     /// lstats each name.
     pub fn resolve(&self, path: &[u8], strict: bool) -> io::Result<Vec<u8>> {

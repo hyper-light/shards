@@ -1,0 +1,108 @@
+D154 / step 13: refusal-path validation (not a passthrough E2E)
+
+Base commit: 9ff73a164b8a9ae521f89cbb80da508042ad8861; tested Rust revisions are identified below.
+Compiler: Rust 1.98.1.
+
+All eight workspace lint targets passed, with the GPU checks scripts/lint adds:
+  aarch64-apple-darwin, x86_64-apple-darwin,
+  x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu,
+  x86_64-pc-windows-msvc, aarch64-pc-windows-msvc,
+  x86_64-unknown-linux-musl, aarch64-unknown-linux-musl.
+The first invocation was stopped during arm64 Linux; that target and the remaining
+Windows and musl targets were completed by a second invocation. No lint error remained.
+
+macOS arm64, macOS 26.4.1 (25E253), 2026-11-01:
+  PASS VMM: vm::tests::a_hosts_pci_function_is_refused_with_its_oss_own_limit
+  PASS binary unit: run::tests::a_hosts_function_is_named_by_vfios_nodes_and_on_windows_as_dda_names_it
+  PASS boot integration: a_hosts_pci_function_is_refused_where_its_os_passes_none
+  PASS containers integration: a_run_given_a_hosts_pci_function_is_refused_with_its_hosts_limit
+
+jupiter amd64, Windows 11 Pro 26200.9711, 2026-11-02 UTC:
+  PASS VMM: vm::tests::a_hosts_pci_function_is_refused_with_its_oss_own_limit
+  PASS binary unit: run::tests::a_hosts_function_is_named_by_vfios_nodes_and_on_windows_as_dda_names_it
+  PASS boot integration: a_hosts_pci_function_is_refused_where_its_os_passes_none
+  PASS containers integration: a_run_given_a_hosts_pci_function_is_refused_with_its_hosts_limit
+  kiln run r4 exited 0; its selected output and source hashes are in jupiter-tests.txt.
+  SHARDS_REQUIRE_VMS=1 is set for that run, so a VM availability skip fails.
+
+Host API evidence: jupiter.txt; ci.txt from GitHub Actions 41363714971.
+Updated assignment harness: parsed on jupiter without executing it or touching devices.
+macos-api.py reproduces the SDK inventory and header hashes in macos-api.txt.
+
+The refusal tests do not exercise an assigned guest device, DMA, or its interrupts.
+Windows Server DDA implementation and a successful real hardware E2E remain open.
+platform-parity.py intentionally reports eight Windows PCI items without a twin.
+Signing was initially blocked because the kiln runtime did not provide KILN_HARNESS_SOCK;
+the approved 2026-11-03 repair and verification are recorded below.
+
+SHA-256 of the Rust source tested:
+aa9b7481bba24d42ab4a7cea34cbb376a3dbc3dffbe286c68aed6c5ff96cbbe4  crates/shards/src/run.rs
+9dd6283db4d54728ddf5376947f41f8c4d0e33c5bd108410815bc431bb7227f2  crates/shards/src/vm_run.rs
+5c1b8cfe75470dfaf744fd1a081a9e01aa08e5e74926a9c00b393025510280ad  crates/shards/tests/boot.rs
+d867b4a61fb54b852368bda5fc5e0827430def53da3637f99317a9b5199b5355  crates/shards/tests/containers.rs
+eca46c266bc66d057997567674a95d19f3ceb280b0e81f16e47b6b7ae3f06bff  crates/vmm/src/hv/whp/mod.rs
+814d3af5878759e8fbaf28ee806053c194f9cac525faa615f54bd4c3c42d3082  crates/vmm/src/vm/mod.rs
+
+2026-11-02 UTC follow-up: require a refusal from the OS
+
+The VMM test now fails when WHP accepts AllowDeviceAssignment. The former accepted
+answer, "its hypervisor allows a partition device assignment", described the missing
+implementation and cannot satisfy the OS-refusal criterion.
+
+PASS on jupiter, native Windows 11 Pro: kiln run r3 exited 0. The host still answers
+AllowDeviceAssignment 0x80070032, IommuSupport 0. Its source hash and raw output are
+appended to jupiter-tests.txt. No function was disabled or dismounted for this test.
+PASS on macOS arm64: the VMM test prints the narrowed Hypervisor.framework API limit.
+The macOS-only error and its comment no longer claim that all PCI access requires
+DriverKit; the measured limit is the lack of a device assignment API in HVF (M403).
+
+VMM all-target clippy: both macOS and both GNU Linux targets passed with the new
+capability gate; both Windows and both musl Linux targets then passed at the source
+hash below. The first Windows attempt was sandboxed at cargo-xwin's SDK cache; the
+four remaining targets passed after cache access was permitted.
+
+The first final macOS CLI run failed its required VM availability check inside the
+sandbox, which hid kern.hv_support. Outside the sandbox, kern.hv_support is 1.
+Both CLI refusal tests then passed with host access and SHARDS_REQUIRE_VMS=1:
+  PASS a_hosts_pci_function_is_refused_where_its_os_passes_none: 1 passed, 8.56 s.
+  PASS a_run_given_a_hosts_pci_function_is_refused_with_its_hosts_limit: 1 passed, 23.44 s.
+Both Mac VMM all-target clippy checks then passed at the final source hash below.
+The host run exited 0 (log: /tmp/g121-p13/mac-refusal-host.txt). All eight VMM lint
+targets have passed with the capability gate; the macOS-only message change was
+covered by these final Mac tests and both Mac lint targets.
+The VMM test script began before the final rustfmt-only change; its printed source
+hash was c39bda95ab910c0fd4ac416869397a37123036961a4c687e5b747bbce6c7a4f8.
+Final VMM source SHA-256:
+fc6f4db9ee11bc2aec85d6bdc9524b13e047c7a859032cbcf62e0f6521b63072  crates/vmm/src/vm/mod.rs
+
+The parity audit still reports exactly eight missing Windows PCI counterparts.
+A DDA-capable Windows Server host, implementation and real hardware E2E remain
+outstanding. No such host is connected. Kiln temporarily lost its server connection;
+after reconnection the peer update was delivered and the completed native Windows
+test's reserved target C:\Users\corph\g121-ef-target was removed. The SD card reader
+still reports Status OK. The signing socket was absent at this follow-up.
+
+2026-11-03 UTC: approved boot-policy experiment and signing recovery
+
+PowerShell parser and uploaded source SHA-256 checks passed on native jupiter.
+boot-policy.ps1 Prepare, BootProbe, Inspect, Return and Verify each exited 0.
+The enabled probe boot at 21:39:40.500 UTC retained IommuSupport=0 and refused
+AllowDeviceAssignment with 0x80070032. The original entry booted again at
+21:45:34.500 UTC. Its loader and boot-manager listings matched baseline exactly,
+the temporary GUID was deleted and confirmed absent, and BitLocker/Secure Boot
+stayed on. The reader stayed attached and healthy. The restored-policy WHP probe
+returned the same refusal. Raw output and state: jupiter-boot-policy.txt/json.
+This is not a positive passthrough hardware E2E; step 13 and PCI row 9 remain open.
+
+The owner-approved Mac runner reload used a persistent private short runtime.
+A temporary own-agent signed commit has a raw gpgsig, a valid detached CMS
+signature, and certificate URI naming agent 01a1879ae6db7119aead0d032628da4d,
+epoch 0, on adas-macbook-pro-2.local. The supported kiln-agent helper worked with
+normal host access; sandbox IPC was denied. This resumed Codex environment still
+needs explicit Git signing settings. Published baseline 9ff73a16 is preserved.
+
+All six final Rust source hashes remain unchanged from the completed checks.
+Publication process updated by the person on 2026-11-03: push win-passthrough
+normally before integration, with no per-branch full lint or wait for gpu. The
+coordinator merges it with win-pools and the twelve parallel branches, then runs
+one combined eight-target lint, CI and real-VM pass.

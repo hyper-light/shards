@@ -145,7 +145,7 @@ impl Unsaved {
             Unsaved::Exists(name) => format!(
                 "cannot checkpoint container {reference}: checkpoint with name {name} already exists for container {reference}"
             ),
-            // Its task's CreateCheckpoint failing, as dockerd says it.
+            // Its task's CreateCheckpoint failing, in the words scripts match (D176).
             Unsaved::Joined => format!(
                 "Cannot checkpoint container {reference}: it runs in another container's microVM: checkpoint that one"
             ),
@@ -156,7 +156,7 @@ impl Unsaved {
         }
     }
 
-    /// The Engine API's status for it, as dockerd's errdefs give it.
+    /// The Engine API's status for it, the one clients branch on (D170, moby's errdefs).
     pub(super) fn status(&self) -> u16 {
         match self {
             Unsaved::Unknown(_) => 404,
@@ -570,8 +570,8 @@ impl<D: Disk> Daemon<D> {
         }
     }
 
-    /// Container `reference`'s snapshot `asked` removed, as dockerd's CheckpointDelete
-    /// removes a checkpoint: why not, in its words, with the Engine API's status.
+    /// MicroVM `reference`'s snapshot `asked` removed (D176): why not, in the words scripts
+    /// match, with the Engine API's status.
     pub(super) fn remove_checkpoint(&self, reference: &str, asked: &str) -> Result<(), (u16, String)> {
         if !valid(asked) {
             return Err((400, invalid_checkpoint(asked)));
@@ -630,6 +630,19 @@ impl<D: Disk> Daemon<D> {
         reference: &str,
         asked: Option<&str>,
         leave_running: bool,
+    ) -> Result<(String, String), Unsaved> {
+        self.save_snapshot_as(reference, asked, leave_running, false)
+    }
+
+    /// [`save_snapshot`](Self::save_snapshot), the last of a live move where `delta`
+    /// (D176 part 7): its memory, layer and swap only where its guest wrote since the move's
+    /// last round.
+    pub(super) fn save_snapshot_as(
+        &self,
+        reference: &str,
+        asked: Option<&str>,
+        leave_running: bool,
+        delta: bool,
     ) -> Result<(String, String), Unsaved> {
         // A name no snapshot may have is refused before anything is looked up, as dockerd
         // refuses a checkpoint's (moby daemon/checkpoint.go, CheckpointCreate).
@@ -703,7 +716,7 @@ impl<D: Disk> Daemon<D> {
         let at = dir.join(&name);
         // With room for the run's swap, which a run without one leaves empty.
         let saved = shards_vmm::snapshot::prepare(&at, true).and_then(|mut staged| {
-            self.ask_save(&id, &staged, &name, &tokens, leave_running)?;
+            self.ask_save(&id, &staged, &name, &tokens, leave_running, delta)?;
             staged.add(RESUME, &record)?;
             staged.commit()
         });
@@ -740,6 +753,7 @@ impl<D: Disk> Daemon<D> {
         snapshot: &str,
         tokens: &[u8],
         leave_running: bool,
+        delta: bool,
     ) -> Result<(), String> {
         let (inbox, socket) = match lock(&self.runs).get(id) {
             Some(RunState::Tracked(t)) => (t.inbox.clone(), t.socket.clone()),
@@ -767,7 +781,7 @@ impl<D: Disk> Daemon<D> {
             shards_ipc::SAVE_LEAVE_RUNNING
         } else {
             0
-        };
+        } | if delta { shards_ipc::SAVE_DELTA } else { 0 };
         let mut payload = vec![flags];
         payload.extend_from_slice(tokens);
         for (i, name) in [staged.name(), snapshot, &microvm].into_iter().enumerate() {
@@ -858,7 +872,7 @@ mod tests {
             (failing.map_err(|e| e.kind()), tried),
             (Err(std::io::ErrorKind::PermissionDenied), 1)
         );
-        // A name refused is quoted as Go quotes it, as dockerd's refusal does.
+        // A name refused is quoted as Go's %q quotes it, the refusal scripts match (D176).
         assert_eq!(
             invalid_checkpoint("a\x1bb"),
             "invalid checkpoint ID \"a\\x1bb\", only [a-zA-Z0-9][a-zA-Z0-9_.-] are allowed"

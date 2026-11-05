@@ -71,14 +71,15 @@ pub(super) fn unserved(method: &str, target: &str) -> Answer {
     )
 }
 
-/// A container a scope cannot see, said as dockerd says one that is not there.
+/// A microVM a scope cannot see, said as one that is not there, so that a scope's client
+/// learns nothing of what lies outside it (D181).
 fn no_such(given: &str) -> Answer {
     Answer::error(404, format!("No such container: {given}"))
 }
 
 /// A bind of `point`'s, a path of its microVM's own command's files (D181), as init takes
 /// one (`SRC\0DST\0FLAGS`: `ro` or `rw`, `create` for a source `-v` makes where it is
-/// missing, as dockerd makes a host's): none for a mount that is no bind; why not for a
+/// missing, the meaning `-v` gives it): none for a mount that is no bind; why not for a
 /// propagation that would reach the command's own mounts, which a copy of them in the
 /// container's namespace shares nothing with.
 fn own_bind(point: &crate::volumes::MountPoint) -> Option<Result<String, String>> {
@@ -143,8 +144,8 @@ fn of_scope<'a>(all: impl Iterator<Item = &'a Container>, provider: &str) -> Vec
     .collect()
 }
 
-/// `given`, as a scope's client names a container, among `scoped`, as dockerd resolves a
-/// reference: its whole ID, its name, then a prefix of its ID that no other has.
+/// `given`, as a scope's client names a microVM, among `scoped`, by the references
+/// clients give (D181): its whole ID, its name, then a prefix of its ID no other has.
 pub(super) fn resolve<'a>(scoped: &'a [Container], given: &str) -> Option<&'a Container> {
     let given = given.trim();
     let name = given.strip_prefix('/').unwrap_or(given);
@@ -467,7 +468,7 @@ impl<D: Disk> Daemon<D> {
             ("DELETE", ["volumes", name]) => self.scoped_volume_remove(name, call, scope),
             ("GET", ["images", "json"]) => self.scoped_images(call, scope),
             ("GET", ["images", name @ .., "json"]) if !name.is_empty() => {
-                self.scoped_image(threads, &name.join("/"), scope)
+                self.scoped_image(threads, &name.join("/"), call, scope)
             }
             (_, ["containers", given, rest @ ..]) => {
                 self.settle();
@@ -709,13 +710,19 @@ impl<D: Disk> Daemon<D> {
     }
 
     /// `GET /images/{name}/json` of a microVM's own engine: one of its own images.
-    fn scoped_image<'s, 'e>(&'s self, threads: &'s Threads<'s, 'e>, name: &str, scope: &Scope) -> Answer {
+    fn scoped_image<'s, 'e>(
+        &'s self,
+        threads: &'s Threads<'s, 'e>,
+        name: &str,
+        call: &Call<'_>,
+        scope: &Scope,
+    ) -> Answer {
         let ours = lock(&self.containers)
             .get(&scope.provider)
             .map(images_of)
             .unwrap_or_default();
         match self.image_id_of(threads, name) {
-            Some(id) if ours.contains(&id) => self.engine_image_inspect(name),
+            Some(id) if ours.contains(&id) => self.engine_image_inspect(name, call),
             _ => Answer::error(404, format!("No such image: {name}")),
         }
     }
@@ -737,7 +744,7 @@ impl<D: Disk> Daemon<D> {
             .filter(|l| *l > 0)
             .and_then(|l| usize::try_from(l).ok());
         let mut argv: Vec<String> = Vec::new();
-        // `-n` lists stopped ones too, as dockerd's limit does.
+        // `-n` lists stopped ones too: the last N made, whatever their state (D181).
         if call.flag("all") || limit.is_some() {
             argv.push("--all".into());
         }
@@ -794,6 +801,7 @@ mod tests {
             stop_timeout: None,
             ports: Vec::new(),
             image_id: None,
+            image_manifest: None,
             labels: Default::default(),
             annotations: Default::default(),
             oom_killed: false,
@@ -801,6 +809,7 @@ mod tests {
             restart: Default::default(),
             size_rw: None,
             saved: None,
+            moved: false,
             engine_made: of.map(|(of, name)| crate::containers::EngineMade {
                 of: of.into(),
                 name: name.into(),
@@ -812,7 +821,7 @@ mod tests {
     }
 
     /// A scope sees what its engine made alone, by the names it gave them, and resolves
-    /// them as dockerd resolves a reference; another microVM's, and the host's own, are
+    /// them by the references clients give (D181); another microVM's, and the host's own, are
     /// not there for it.
     #[test]
     fn a_scope_sees_its_own_containers_by_their_names_there() {
@@ -878,8 +887,8 @@ mod tests {
             ..Run::default()
         };
         assert_eq!(refused_why(&mut run, &scoped), None);
-        // Binds name its microVM's own files: `-v`'s made where missing, as dockerd makes a
-        // host's, `--mount`'s not.
+        // Binds name its microVM's own files: `-v`'s made where missing, the meaning `-v`
+        // gives a source, `--mount`'s not (D181).
         let mut bound = Run {
             binds: vec!["/work:/src:ro".into()],
             mounts: vec!["type=bind,source=/w,target=/x".into()],

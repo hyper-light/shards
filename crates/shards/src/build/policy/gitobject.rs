@@ -1,5 +1,5 @@
 //! Git commit and tag objects as BuildKit's gitobject package reads them
-//! (util/gitutil/gitobject): headers, message, the signature and what it signs, the
+//! (v0.28.1 util/gitutil/gitobject): headers, message, the signature and what it signs, the
 //! object's checksum, and its commit or tag with their actors.
 
 use std::collections::BTreeMap;

@@ -621,8 +621,9 @@ pub fn parse_timestamp(value: &str, now: i128, offset: i64) -> Result<i128, Stri
     }
 }
 
-/// A Unix timestamp as dockerd reads `since` and `until` (ParseUnixTimestamp): seconds,
-/// and perhaps a fraction of up to 20 digits, of which 9 count. `None` for an empty one.
+/// A Unix timestamp as dockerd reads `since` and `until` (ParseUnixTimestamp, moby
+/// daemon/internal/timestamp/timestamp.go): seconds, and perhaps a fraction of up to 20
+/// digits, of which 9 count. `None` for an empty one.
 pub fn parse_unix_timestamp(value: &str) -> Result<Option<i128>, String> {
     if value.is_empty() {
         return Ok(None);

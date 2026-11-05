@@ -120,7 +120,7 @@ pub fn config(opts: &BTreeMap<String, String>) -> Result<Config, String> {
 }
 
 /// What every message of a run carries besides its line: this host's name, and the
-/// container's own fields, as moby's gelf driver makes them once (gelf.New):
+/// container's own fields, made once, as GELF receivers read them (gelf.New, D164):
 /// `_container_id`, `_container_name`, `_image_id`, `_image_name`, `_command`, `_tag`,
 /// `_created`, then the attributes asked for, each named with a `_` before it, written as
 /// Go's encoding/json writes a map: sorted by name.

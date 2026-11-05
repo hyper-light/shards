@@ -39,8 +39,7 @@ struct ArchiveManifest {
     layers: Vec<String>,
 }
 
-/// An image the archive names, as containerd's Import makes it: a name and what it
-/// resolved to.
+/// An image the archive names (D100): a name and what it resolved to.
 struct Named {
     name: String,
     target: Descriptor,
@@ -106,8 +105,9 @@ fn import(store: &Store, input: &mut dyn Read) -> Result<(oci::Index, Vec<Digest
         let name = String::from_utf8_lossy(&entry.path).into_owned();
         match entry.kind {
             shards_image::tar::Type::Symlink => {
-                // path.Join(path.Dir(name), link), as containerd's importer resolves one:
-                // cleaned, so that a legacy archive's `../<id>/layer.tar` names its blob.
+                // path.Join(path.Dir(name), link), the link's meaning in the archives
+                // `save` writes (D100): cleaned, so that a legacy archive's
+                // `../<id>/layer.tar` names its blob.
                 let dir = name.rsplit_once('/').map_or("", |(d, _)| d);
                 let joined = shards_agentfile::go::join(&[dir.as_bytes(), &entry.link]);
                 symlinks.push((name, String::from_utf8_lossy(&joined).into_owned()));
@@ -190,8 +190,8 @@ fn import(store: &Store, input: &mut dyn Read) -> Result<(oci::Index, Vec<Digest
                 .ok_or_else(|| format!("failed to resolve layers: layer {l:?} not found"))?;
             let (digest, size) = compressed.get(digest).unwrap_or(&(digest.clone(), *size)).clone();
             let (digest, size) = (&digest, &size);
-            // resolveLayers: its media type, as containerd's DecompressStream tells it from
-            // the first ten bytes.
+            // resolveLayers: its media type, told from its first ten bytes, the magic numbers
+            // of gzip (RFC 1952), zstd (RFC 8878), bzip2 or xz.
             let mut head = Vec::with_capacity(10);
             std::fs::File::open(store.blob_path(digest))
                 .and_then(|f| f.take(10).read_to_end(&mut head))
@@ -332,7 +332,8 @@ fn named(index: &oci::Index) -> Vec<Named> {
 /// itself if it is a manifest for it, as its descriptor labels it or else its config says,
 /// as an unpack checks it; or the best its index offers for it of what the archive holds,
 /// as an index may list platforms it was saved without. An image for another platform
-/// is loaded, not unpacked, and nothing is said of it, as dockerd says nothing.
+/// is loaded, not unpacked, and nothing is said of it: it is kept for a push or a run
+/// that names its platform (D179).
 fn ours(store: &Store, target: &Descriptor) -> Option<Descriptor> {
     let targets = shards_image::platform::guest();
     let held = |d: &Descriptor, limit: u64| match store.held(d, limit) {
@@ -365,6 +366,49 @@ fn ours(store: &Store, target: &Descriptor) -> Option<Descriptor> {
     }
 }
 
+/// Of the images an archive held, `images`, the platforms `platforms` names alone (D179):
+/// each one's manifest found, of its index or its lone manifest, else the refusal a script
+/// reads, before anything goes; then each index's other platforms taken from the store,
+/// but those an image here held before the archive came, `held_before`.
+fn keep_platforms(
+    store: &Store,
+    images: &[Named],
+    platforms: &[shards_image::platform::Target],
+    held_before: &std::collections::HashMap<String, String>,
+) -> Result<(), String> {
+    let mut drops: Vec<(Digest, Vec<Digest>)> = Vec::new();
+    for image in images {
+        let shown = Reference::parse_normalized(&image.name)
+            .map_or_else(|_| image.target.digest.clone(), |r| r.familiar());
+        let mut kept = Vec::new();
+        for target in platforms {
+            let found = store
+                .manifest_of(&image.target, target)
+                .ok_or_else(|| shards_registry::pull::not_for_platform(&shown, target).to_string())?;
+            kept.push(found.digest);
+        }
+        let id = image.target.digest().map_err(|e| e.to_string())?;
+        let Some((_, index)) = store.index(&id) else {
+            continue;
+        };
+        let attestation = |d: &Descriptor| d.annotations.contains_key("vnd.docker.reference.digest");
+        let dropped: Vec<Digest> = index
+            .manifests
+            .iter()
+            .filter(|d| !attestation(d) && !kept.contains(&d.digest) && !held_before.contains_key(&d.digest))
+            .filter_map(|d| d.digest().ok())
+            .filter(|d| store.has(d))
+            .collect();
+        if !dropped.is_empty() && !drops.iter().any(|(i, _)| *i == id) {
+            drops.push((id, dropped));
+        }
+    }
+    for (id, dropped) in drops {
+        store.remove_platforms(&id, &dropped).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 /// The repository a name was pulled from, as the archive's annotations say
 /// (`containerd.io/distribution.source.<registry>`): the first.
 fn source(target: &Descriptor) -> Option<String> {
@@ -377,12 +421,26 @@ fn source(target: &Descriptor) -> Option<String> {
 
 impl<D: crate::containers::Disk> super::Daemon<D> {
     /// `shards load` (docker/cli runLoad; moby LoadImage): the archive the client sent,
-    /// read as it comes, each image it holds recorded and unpacked, said as it is.
-    pub(super) fn load(&self, asker: &super::commands::Asker, reply: &super::commands::Reply<'_>) -> u8 {
+    /// read as it comes, each image it holds recorded and unpacked, said as it is; of each,
+    /// with `--platform`, the microVMs of those platforms alone (D179).
+    pub(super) fn load(
+        &self,
+        platforms: &[String],
+        asker: &super::commands::Asker,
+        reply: &super::commands::Reply<'_>,
+    ) -> u8 {
         let refuse = |said: &str| {
             reply.err(said);
             1
         };
+        let mut targets = Vec::new();
+        for given in platforms {
+            match super::images::asked_platform(given) {
+                Ok(Some(t)) if !targets.contains(&t) => targets.push(t),
+                Ok(_) => {}
+                Err(e) => return refuse(&format!("shards: {e}")),
+            }
+        }
         let Some(input) = asker.files.first() else {
             return refuse("shards: load: the client sent nothing to read");
         };
@@ -399,7 +457,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
             Ok(fd) => std::fs::File::from(fd),
             Err(e) => return refuse(&e.to_string()),
         };
-        let loaded = match self.load_archive(&store, file) {
+        let loaded = match self.load_archive(&store, file, &targets) {
             Ok(loaded) => loaded,
             Err(e) => return refuse(&e),
         };
@@ -420,19 +478,35 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
     }
 
     /// The images of archive `file` (a `docker save` archive or an OCI image layout, as
-    /// tar, plain or compressed), stored, named, and each made a microVM, as containerd's
-    /// importer and then shards' unpack do: what each is said as, and how its unpack went.
-    /// The caller holds the store's lease.
-    pub(super) fn load_archive(&self, store: &Store, file: std::fs::File) -> Result<Vec<Loaded>, String> {
+    /// tar, plain or compressed), stored, named, and each made a microVM by shards' unpack
+    /// (D100): what each is said as, and how its unpack went.
+    /// Where `platforms` names some, each image's microVMs of those alone (D179): each must
+    /// be in the archive, or nothing is named; the archive's other platforms are not kept,
+    /// but for what an image here held before it came. The caller holds the store's lease.
+    pub(super) fn load_archive(
+        &self,
+        store: &Store,
+        file: std::fs::File,
+        platforms: &[shards_image::platform::Target],
+    ) -> Result<Vec<Loaded>, String> {
+        // What images here hold before the archive comes: that stays, whatever is asked.
+        let held_before = match platforms {
+            [] => Default::default(),
+            _ => store.manifests_held(None).map_err(|e| e.to_string())?,
+        };
         // DecompressStream: plain, bzip2, gzip, xz or zstd, as its first bytes say.
         let imported = shards_build::archive::decompressed(file, 1 << 20)
             .map_err(|e| format!("failed to decompress input tar archive: {e}"))
             .and_then(|mut input| import(store, &mut input));
         // What it ingested before failing goes with the next collection.
         let (index, contents) = imported.inspect_err(|_| self.collect_soon())?;
+        let images = named(&index);
+        if !platforms.is_empty() {
+            keep_platforms(store, &images, platforms, &held_before).inspect_err(|_| self.collect_soon())?;
+        }
         let limits = shards_image::store::Limits::none();
         let mut loaded = Vec::new();
-        for image in named(&index) {
+        for image in images {
             let ours = ours(store, &image.target);
             let resolved = image.target.digest().map_err(|e| e.to_string())?;
             store

@@ -22,6 +22,23 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use sha2::Digest as _;
 use shards_image::erofs::{self, DataRef, Dir, Kind, Meta, Node, NodeId, Source, Tree};
 
+/// Which file is at `path`: its device and inode on Unix, its volume's serial number and
+/// its index on that volume on Windows (`platform::file_id`), so that a test tells the same
+/// file from another put in its place.
+pub fn file_identity(path: &Path) -> (u64, u64) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt as _;
+        let meta = std::fs::metadata(path).unwrap();
+        (meta.dev(), meta.ino())
+    }
+    #[cfg(windows)]
+    {
+        let file = shards_vmm::platform::open_for_metadata(path).unwrap();
+        shards_vmm::platform::file_id(&file).unwrap()
+    }
+}
+
 /// A datagram from `socket`, a signal's interruption (EINTR) waited out: `recv_from`
 /// returns it where `read_exact` would not.
 pub fn recv_from(socket: &std::net::UdpSocket, buf: &mut [u8]) -> io::Result<(usize, std::net::SocketAddr)> {
@@ -63,6 +80,69 @@ pub fn program(path: &Path, text: &str) {
         .unwrap();
     writer.stdin.take().unwrap().write_all(text.as_bytes()).unwrap();
     assert!(writer.wait().unwrap().success(), "{} not written", path.display());
+}
+
+/// A home whose guest is the test kernel and init, recorded before its daemon starts.
+pub fn home_with(name: &str, timeout: Duration) -> TempDir {
+    let home = TempDir::new(name);
+    let args = [
+        "use".as_ref(),
+        "--kernel".as_ref(),
+        kernel().as_os_str(),
+        "--init".as_ref(),
+        guest_init().as_os_str(),
+    ];
+    let recorded = run_shards_env(&["guest"], &args, &[("SHARDS_HOME", home.as_os_str())], timeout);
+    assert_eq!(recorded.status, Some(0), "{}", recorded.stderr);
+    home
+}
+
+/// The pids of the processes whose command line mentions `needle`.
+pub fn processes_with(needle: &str) -> Vec<u32> {
+    commands_with(needle).into_iter().map(|(pid, _)| pid).collect()
+}
+
+/// The processes whose command line mentions `needle`, and the command lines: from /proc
+/// on Linux, whose `ps` may be busybox's, which takes no `-o args`; from `ps` elsewhere;
+/// on Windows from its own table of processes (CIM's Win32_Process).
+pub fn commands_with(needle: &str) -> Vec<(u32, String)> {
+    if cfg!(windows) {
+        let listed =
+            r#"Get-CimInstance Win32_Process | ForEach-Object { "$($_.ProcessId) $($_.CommandLine)" }"#;
+        let out = Command::new("powershell")
+            .args(["-NoProfile", "-NonInteractive", "-Command", listed])
+            .output()
+            .unwrap();
+        return String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter(|l| l.contains(needle))
+            .filter_map(|l| {
+                let (pid, args) = l.trim_start().split_once(' ')?;
+                Some((pid.parse().ok()?, args.to_string()))
+            })
+            .collect();
+    }
+    if cfg!(target_os = "linux") {
+        return std::fs::read_dir("/proc")
+            .unwrap()
+            .filter_map(|e| {
+                let e = e.ok()?;
+                let pid: u32 = e.file_name().to_str()?.parse().ok()?;
+                let cmdline = std::fs::read(e.path().join("cmdline")).ok()?;
+                let args = String::from_utf8_lossy(&cmdline).replace('\0', " ");
+                args.contains(needle).then_some((pid, args))
+            })
+            .collect();
+    }
+    let out = Command::new("ps").args(["-axo", "pid=,args="]).output().unwrap();
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter(|l| l.contains(needle))
+        .filter_map(|l| {
+            let (pid, args) = l.trim_start().split_once(' ')?;
+            Some((pid.parse().ok()?, args.to_string()))
+        })
+        .collect()
 }
 
 pub fn workspace() -> PathBuf {
@@ -612,9 +692,8 @@ pub fn as_tests_run(cmd: &mut Command) -> &mut Command {
 
 /// The tests' own docker config, which every command is given unless a test gives its
 /// own: no test, nor any daemon one starts, reads this host's docker config or its
-/// credential helpers. Its `auths` name a host no test reaches, so that, as docker/cli has
-/// it, no platform helper is looked for either (DetectDefaultStore: a config that holds
-/// credentials keeps them itself).
+/// credential helpers. Its `auths` name a host no test reaches, so that no platform helper
+/// is looked for either (D184: a config that holds credentials keeps them itself).
 pub fn docker_config() -> &'static Path {
     static CONFIG: OnceLock<TempDir> = OnceLock::new();
     CONFIG.get_or_init(|| {
@@ -1730,6 +1809,14 @@ pub fn stacks_of(pids: &[(&str, u32)], home: Option<&Path>) -> String {
             "\n--- ps -a in its home\n{}",
             said_by(&mut ps, Duration::from_secs(20))
         ));
+        // What its daemon said last, of its runs and their groups' budgets: a run held or
+        // stopped says why there alone.
+        let log = std::fs::read(home.join("daemon.log")).unwrap_or_default();
+        let tail = &log[log.len().saturating_sub(16 << 10)..];
+        said.push_str(&format!(
+            "\n--- the end of its daemon.log\n{}",
+            String::from_utf8_lossy(tail)
+        ));
     }
     #[cfg(windows)]
     {
@@ -2376,7 +2463,7 @@ pub fn image_archive(name: &str) -> Vec<u8> {
 
 /// The test image behind an index, as multi-platform images are served: its manifest
 /// for this host's platform, one for another architecture that is never fetched, and an
-/// attestation for ours, as BuildKit writes one. Returns the index and its blobs, the
+/// attestation for ours, as D72's builds write one. Returns the index and its blobs, the
 /// manifests among them: the image's config, layer and manifest first, then the
 /// attestation's manifest, config and statement, then the other platform's attestation.
 pub fn test_index() -> (Vec<u8>, Vec<Vec<u8>>) {
@@ -2385,7 +2472,7 @@ pub fn test_index() -> (Vec<u8>, Vec<Vec<u8>>) {
         "aarch64" => ("arm64", "amd64"),
         _ => ("amd64", "arm64"),
     };
-    // An attestation as BuildKit writes one: an empty config, and an in-toto statement.
+    // An attestation as D72's builds write one: an empty config, and an in-toto statement.
     let (att_config, statement) = (
         b"{}".to_vec(),
         br#"{"_type":"https://in-toto.io/Statement/v0.1"}"#.to_vec(),
@@ -2430,10 +2517,60 @@ pub fn served_variant(variant: &[u8]) -> String {
 /// undefined instruction (x86-64's `ud2`, AArch64's `udf #0`): it dies of SIGILL, a fault,
 /// natively or emulated alike. One ELF64 program header loads the file whole.
 pub fn crashing_program(arch: &str) -> Vec<u8> {
-    let (machine, code): (u16, &[u8]) = match arch {
-        "amd64" => (0x3e, &[0x0f, 0x0b]),
-        "arm64" => (0xb7, &[0, 0, 0, 0]),
+    let code: &[u8] = match arch {
+        "amd64" => &[0x0f, 0x0b],
+        "arm64" => &[0, 0, 0, 0],
         other => panic!("no crashing program for {other}"),
+    };
+    elf_program(arch, code)
+}
+
+/// A static program for `arch` (`amd64` or `arm64`) that writes `text` to its stdout and
+/// exits 0, with Linux's own system calls alone: what an image of that CPU runs, natively
+/// or emulated.
+pub fn printing_program(arch: &str, text: &[u8]) -> Vec<u8> {
+    let len = u32::try_from(text.len()).unwrap();
+    let mut code = Vec::new();
+    match arch {
+        "amd64" => {
+            // write(1, msg, len); exit(0). `msg` follows the code, 16 bytes past the
+            // `lea`'s end.
+            code.extend_from_slice(&[0xb8, 1, 0, 0, 0, 0xbf, 1, 0, 0, 0, 0x48, 0x8d, 0x35]);
+            code.extend_from_slice(&16u32.to_le_bytes());
+            code.push(0xba);
+            code.extend_from_slice(&len.to_le_bytes());
+            code.extend_from_slice(&[0x0f, 0x05, 0xb8, 60, 0, 0, 0, 0x31, 0xff, 0x0f, 0x05]);
+        }
+        "arm64" => {
+            assert!(len < 1 << 16, "a short text");
+            // mov x0, #1; adr x1, msg (28 bytes on); mov x2, #len; mov x8, #64 (write);
+            // svc #0; mov x0, #0; mov x8, #93 (exit); svc #0.
+            for word in [
+                0xd280_0020u32,
+                0x1000_00e1,
+                0xd280_0002 | (len << 5),
+                0xd280_0808,
+                0xd400_0001,
+                0xd280_0000,
+                0xd280_0ba8,
+                0xd400_0001,
+            ] {
+                code.extend_from_slice(&word.to_le_bytes());
+            }
+        }
+        other => panic!("no printing program for {other}"),
+    }
+    code.extend_from_slice(text);
+    elf_program(arch, &code)
+}
+
+/// A static ELF64 program for `arch` whose entry is `code`: one program header loads the
+/// file whole.
+fn elf_program(arch: &str, code: &[u8]) -> Vec<u8> {
+    let machine: u16 = match arch {
+        "amd64" => 0x3e,
+        "arm64" => 0xb7,
+        other => panic!("no program for {other}"),
     };
     let base: u64 = 0x40_0000;
     let entry: u64 = 0x78;

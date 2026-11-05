@@ -57,6 +57,14 @@ pub fn keep(lower: &str, upper: &str) -> io::Result<()> {
     Ok(())
 }
 
+/// The descriptor of the writable layer [`keep`] kept, where it did: one whose number stays
+/// as a stopped container's layer takes the template's place (D190, over.rs).
+pub fn upper_fd() -> Option<std::os::fd::RawFd> {
+    LAYERS
+        .get()
+        .map(|(_, upper)| std::os::fd::AsRawFd::as_raw_fd(upper))
+}
+
 /// The image's layers kept by [`keep`]: the root as the image made it, before the run
 /// wrote to it.
 pub fn lower() -> Option<std::os::fd::BorrowedFd<'static>> {

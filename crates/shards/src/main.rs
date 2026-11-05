@@ -1,5 +1,6 @@
 //! `shards`: one binary for every command. The command line (cli/) reads `run`, the
-//! container and image commands as the Docker CLI reads them and asks the daemon for
+//! container and image commands with the Docker CLI's meaning (cmdline's commands.rs) and
+//! asks the daemon for
 //! them; everything else is this file's [`shardsd`]: the daemon itself (which this binary
 //! becomes when it starts one), builds, the guest. Each microVM runs in a VM process of
 //! its own (src/bin/shards-vm), which the daemon starts.
@@ -88,6 +89,9 @@ pub(crate) fn shardsd(args: Vec<std::ffi::OsString>) -> ExitCode {
         // the writer of a restore's working set (`shards restore` on Linux): not for people to run.
         #[cfg(target_os = "linux")]
         Some("working-set") => working_set::keeper(),
+        // a budgeted build's writer, outside its budget (D188): not for people to run.
+        #[cfg(target_os = "linux")]
+        Some("build-writer") => build::outside::serve(),
         // a run's share process (D38), which the daemon starts: not for people to run.
         Some("share") => share::share(args),
         // the daemon's spawner (shards_ipc::start_spawner, PM M158): not for people to run.

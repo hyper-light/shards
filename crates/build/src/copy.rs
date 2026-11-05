@@ -5,7 +5,7 @@
 //! never asks to always replace what is in the way, so that option is left out.
 //!
 //! Each function follows its Go counterpart call for call over [`Fs`], with one snapshot
-//! to read from and one to write to, as BuildKit mounts a COPY's source and destination.
+//! to read from and one to write to: a COPY's source and destination.
 //! What Go's `defer` does at a function's end, success or not, is done there too.
 
 use std::collections::HashMap;
@@ -129,7 +129,7 @@ fn is_not_exist(e: &PathError) -> bool {
     e.errno == Errno::NoEnt
 }
 
-/// What a copy is asked to do: fsutil's CopyInfo, as BuildKit's docopy fills it.
+/// What a copy is asked to do: fsutil's CopyInfo, as BuildKit's backend.go `docopy` fills it.
 #[derive(Debug, Clone)]
 pub struct CopyInfo {
     pub chown: Chown,

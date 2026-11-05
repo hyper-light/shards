@@ -6,12 +6,12 @@
 //! the pool refills. A run with no template yet boots a VM that saves one on the way, and
 //! a run with its own kernel and init boots every time.
 //!
-//! Once a warm VM has taken a run, it serves the client directly, and tells the daemon
-//! how the command ended. The daemon follows each run to that end, and can signal its
-//! command meanwhile. It exits after SHARDS_DAEMON_IDLE seconds (default 900) without a
-//! run or a run in progress. `shards daemon stop`, and a client of another build, first
-//! end the runs in progress, as dockerd ends its containers when it shuts down; the next
-//! daemon takes the home once this one has gone.
+//! Once a warm VM has taken a run, it serves the client directly, and tells the daemon how
+//! the command ended. The daemon follows each run to that end, and can signal its command
+//! meanwhile. It exits after SHARDS_DAEMON_IDLE seconds (default 900) without a run or a
+//! run in progress. `shards daemon stop`, and a client of another build, first end the runs
+//! in progress, so that no run outlives the daemon that follows it (D27); the next daemon
+//! takes the home once this one has gone.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::{OsStr, OsString};
@@ -44,6 +44,7 @@ mod commit;
 #[cfg(target_os = "linux")]
 mod cuts;
 mod demand;
+mod devices;
 mod engine;
 /// The Engine API's socket in the home (D170), relative to it: what Docker's clients reach;
 /// on Windows the file that names its named pipe.
@@ -67,6 +68,7 @@ mod inspect_doc;
 mod layers;
 mod load;
 mod logs;
+mod moves;
 mod network;
 mod networks;
 mod packed;
@@ -124,6 +126,15 @@ const PUBLISH_PATIENCE: Duration = Duration::from_secs(1);
 /// A template whose warm VMs fail this many times in a row is removed and saved again.
 const MAX_FAILURES: u32 = 3;
 const DEFAULT_POOL: usize = 2;
+
+/// The PCI slots each run's microVM has for devices plugged into it (D214): four, or what
+/// SHARDS_PCI_SLOTS says, 0 for none.
+fn pci_slots() -> u8 {
+    std::env::var("SHARDS_PCI_SLOTS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(4)
+}
 /// Warm VMs kept ahead of runs, all pools together, unless `SHARDS_WARM_MAX` says (audit
 /// A13): a warm VM's own memory is 3.4 MiB, the rest of its RSS its template's pages it
 /// shares, so the default holds about 55 MiB (PM M49).
@@ -450,8 +461,8 @@ impl Wake {
 #[cfg(unix)]
 type ApiListener = UnixListener;
 
-/// The Engine API's listener on Windows: a named pipe, as Docker's clients reach their
-/// engine there (npipe), each client an instance of its own and this user's alone
+/// The Engine API's listener on Windows: a named pipe, the transport its clients dial
+/// there (npipe, D170), each client an instance of its own and this user's alone
 /// (shards_ipc::Listener).
 #[cfg(windows)]
 type ApiListener = shards_ipc::Listener;
@@ -488,9 +499,9 @@ fn accept_api(api: &ApiListener) -> io::Result<UnixStream> {
 
 /// A listener at `path` that a client finds listening once it finds the name, not blocking:
 /// bound beside it and renamed there once it listens, where a client that found the name
-/// between bind(2) and listen(2) was refused (ECONNREFUSED), as Docker's clients, which do
-/// not ask again, would be as the daemon starts. The rename replaces what was there, in one
-/// step.
+/// between bind(2) and listen(2) was refused (ECONNREFUSED), and the Engine API's clients
+/// do not ask again (D170), so would fail as the daemon starts. The rename replaces what
+/// was there, in one step.
 #[cfg(unix)]
 fn listening_at(path: &Path) -> std::io::Result<UnixListener> {
     let name = path.file_name().unwrap_or_default().to_string_lossy();
@@ -587,6 +598,10 @@ struct Pool {
     /// run that made it: the one file a restore of it may be given (`--backing`), whatever
     /// the template's state, which a VM process wrote, names.
     rootfs: Option<PathBuf>,
+    /// What told that root filesystem apart as its template was keyed (run.rs `template`),
+    /// once known: from the run that keyed it, else its template's record. A file put at
+    /// its name since (`pull --no-cache`) is given to none of its restores.
+    stamp: Option<Option<String>>,
     /// Whether its template was saved with the in-VM server's device (D60), once read:
     /// its restores are given the daemon's own, as its cold boots are.
     server: Option<bool>,
@@ -712,6 +727,9 @@ struct Keep<'a> {
     restarted: bool,
     /// Its VM saves its writable layer as it stops (`RUN_LAYER_OUT`).
     layer_pending: bool,
+    /// Where its container's layer was kept, which goes under its microVM's layer device as
+    /// it starts (D190): its VM's layer from then on, which stays where it is.
+    layer_over: Option<PathBuf>,
     /// How many segments its log keeps (D161): its own, else the daemon's.
     log_files: u64,
     /// Its log's rotated segments are compressed (D162).
@@ -862,9 +880,15 @@ struct Inbox {
     provider: Option<Arc<Mutex<Inbox>>>,
     /// A save its VM was asked for and has yet to answer (D176).
     saving: Option<snapshots::Saving>,
+    /// A live move's rounds its VM was asked for and has yet to answer (D176 part 7): what
+    /// they sent, as its VM says it, or why not.
+    precopying: Option<mpsc::Sender<Result<String, String>>>,
     /// The pauses and resumes its VM was asked for (`PAUSE`) and has yet to answer, each
     /// by its number.
     pausing: Vec<(u64, mpsc::Sender<Result<(), String>>)>,
+    /// The device steps its VM was asked for (`DEVICE`, D214) and has yet to answer, each
+    /// by its number.
+    devices: Vec<(u64, mpsc::Sender<Result<String, String>>)>,
     /// The snapshot it was saved as, where the save stops it: its end is the save's.
     saved_as: Option<String>,
     /// Its microVM's own engine (D181): the connections its VM hands over are its
@@ -954,9 +978,10 @@ impl Waiter {
 
 /// The pool `key`, of a template saved from `rootfs`, which it keeps as the VM saving the
 /// template recorded it: resolved, links and all (vmm platform::input_path).
-fn pool_of<'s>(state: &'s mut State, key: &PoolKey, rootfs: &Path) -> &'s mut Pool {
+fn pool_of<'s>(state: &'s mut State, key: &PoolKey, rootfs: &Path, stamp: Option<&str>) -> &'s mut Pool {
     let pool = state.pools.entry(key.clone()).or_default();
     pool.rootfs.get_or_insert_with(|| resolved(rootfs));
+    pool.stamp.get_or_insert_with(|| stamp.map(str::to_string));
     pool
 }
 
@@ -1102,7 +1127,8 @@ struct Daemon<D: Disk = Real> {
     next_waiter: AtomicU64,
     /// Numbers each exec handed to a VM (`kind::EXEC_RUN`).
     next_exec: AtomicU64,
-    /// Each running container's health, if it has a check: in memory, as dockerd keeps it.
+    /// Each running microVM's health, if it has a check: in memory, as its checks run in
+    /// this daemon and end with it.
     health: Mutex<HashMap<String, health::State>>,
     /// The host addresses runs publish, from their binding until the network process
     /// that took them has gone, and told as each goes.
@@ -1128,6 +1154,9 @@ struct Daemon<D: Disk = Real> {
     /// The containers `shards pause` froze: their VM processes stopped (SIGSTOP), until
     /// `unpause`, or a stop or kill, lets them go on.
     paused: Mutex<HashSet<String>>,
+    /// What is plugged into each running microVM (D214), by container ID, then by the path
+    /// its workload has it at.
+    plugged: Mutex<devices::PluggedMap>,
     /// Each running microVM's join share process (D119), by the ID of the container whose
     /// run it is: the daemon's connection to it, on which each joiner's link to it goes.
     /// Made as the first container joining that microVM's network brings volumes.
@@ -1533,8 +1562,9 @@ fn settings() -> Result<Settings, String> {
     })
 }
 
-/// Docker's default bridge, elected as the daemon starts and kept for its life, as dockerd
-/// keeps the one it makes as it starts (shards_net::bridge::elected_here); what it is, in the log.
+/// The default network's bridge, elected as the daemon starts and kept for its life, so
+/// that every run it serves has one subnet (D31, shards_net::bridge::elected_here); what
+/// it is, in the log.
 fn elect_bridge() -> Option<shards_net::bridge::Bridge> {
     let bridge = shards_net::bridge::elected_here(&mut |note| log(note));
     match &bridge {
@@ -1906,6 +1936,7 @@ impl<D: Disk> Daemon<D> {
             ports_freed: Condvar::new(),
             removing: Mutex::default(),
             paused: Mutex::default(),
+            plugged: Mutex::default(),
             join_shares: Mutex::default(),
             shared_by: Mutex::default(),
             joiner_links: Mutex::default(),
@@ -2329,7 +2360,7 @@ impl<D: Disk> Daemon<D> {
                 };
                 // The client's descriptors are closed by now: its run goes on in the VM.
                 if let Some((id, inbox)) = handed {
-                    // Its health checks, as dockerd's monitor runs them.
+                    // Its health checks, run by this daemon (health.rs).
                     self.watch_health(threads, &id);
                     self.follow(threads, id, inbox);
                 }
@@ -2454,6 +2485,9 @@ impl<D: Disk> Daemon<D> {
         self.await_removals();
         self.await_recorded();
         self.await_made();
+        // Each parent's spawner ended, and the leaves made in delegated cgroups removed
+        // once empty (D183, slice 2).
+        self.parents.close();
         log("exiting");
         // A home being removed is removed whole, once nothing more is written in it: what
         // this daemon made in it as the removal went kept it before (rmdir(2): ENOTEMPTY),
@@ -2567,7 +2601,10 @@ impl<D: Disk> Daemon<D> {
                 };
                 // A stopped container's files are read in a VM booted over them (visit.rs).
                 let visit = self.visit_for(threads, &command.argv);
-                let status = self.command(&command.argv, &asker, &commands::Reply(conn));
+                let status = match self.device_command(threads, &command.argv, &commands::Reply(conn)) {
+                    Some(status) => status,
+                    None => self.command(&command.argv, &asker, &commands::Reply(conn)),
+                };
                 if let Some(id) = visit {
                     self.end_visit(&id);
                 }
@@ -2727,8 +2764,8 @@ impl<D: Disk> Daemon<D> {
             refused(&e);
             return None;
         }
-        // Its networks as dockerd checks them before it makes the container; what fails
-        // as it starts fails once the container is made.
+        // Its networks checked before its record is made, so that a refused run leaves
+        // none (D46); what fails as it starts fails once the record is made.
         // Connected to one user network from the default bridge: on it alone (D46).
         if let Some(only) = self.connected_network(&run) {
             run.network.clone_from(&only);
@@ -2873,12 +2910,12 @@ impl<D: Disk> Daemon<D> {
                 self.make_spare();
             }
         };
-        // A joiner of a container on the host's network is on it too (D124), as dockerd's
-        // is, in the host's network namespace.
+        // A joiner of a microVM on the host's network is on it too (D124), in the host's
+        // network namespace.
         let joins_host = matches!(&start, network::Start::Join(name) if self.joins_hosts_network(name));
-        // A joiner's names are its provider's, as dockerd gives a joiner the other's
-        // (initializeNetworking): its hostname and domain name; but one its microVM's
-        // engine made on that engine's network has a namespace and names of its own (D181).
+        // A joiner's names are its provider's, as it shares the provider's network (D119):
+        // its hostname and domain name; but one its microVM's engine made on that engine's
+        // network has a namespace and names of its own (D181).
         if let network::Start::Join(name) = &start
             && run.engine_net.is_empty()
             && let Some((hostname, domainname)) = self.names_of(name)
@@ -2924,10 +2961,10 @@ impl<D: Disk> Daemon<D> {
                 return None;
             }
         };
-        // The host's resolvers as dockerd gives a container them, on its bridge or on
-        // none (the legacy transform, neither with IPv6), read as the run starts; with
-        // them the command still within a frame (review 1.y), as spec.rs measured it
-        // without.
+        // The host's resolvers, made over for its bridge or for none (moby docker-v29.3.1
+        // libnetwork/resolvconf's legacy transform, neither with IPv6), read as the run
+        // starts; with them the command still within a frame (review 1.y), as spec.rs
+        // measured it without.
         // A joiner's: an Agentfile's agents are not yet taken by a container joining
         // another's network (D119), as the guest refuses them.
         if let network::Start::Join(_) = &start
@@ -2989,8 +3026,8 @@ impl<D: Disk> Daemon<D> {
             return None;
         }
         // Its published ports, bound now so that its record lists them; a binding that
-        // fails, fails the start once the container is made, as dockerd's does. On none,
-        // dockerd publishes nothing, and says nothing of it.
+        // fails, fails the start once its record is made, so that `ps -a` shows what was
+        // asked (D27). On `none` there is no interface to publish to: nothing is.
         let (bindings, alone) = publish::wanted(&run, &prepared.exposed);
         // A port its image's Agentfile declares `AS egress`: a destination, not a listener,
         // so none is published (AGENTFILE_ARCH.md §12 answer 6).
@@ -3063,10 +3100,11 @@ impl<D: Disk> Daemon<D> {
         };
         // Its own MAC where it has an interface of its own (D46, PM M173): given
         // (`--mac-address`, its endpoint's `mac-address`), which its VM takes as the run
-        // comes; else made for it, as dockerd makes each endpoint's, so that no two runs of
+        // comes; else made for it, so that no two runs of
         // one template share its MAC: its VM's own, made with the VM, which the VM's guest
         // took before the run came (D31, E1). One that is not a MAC is refused before the
-        // container is made, as dockerd refuses it (validateEndpointSettings).
+        // record is made, in the words clients match (moby docker-v29.3.1
+        // validateEndpointSettings).
         let run_mac: Option<Vec<u8>> = match start {
             network::Start::Attach(network::Net::Bridge | network::Net::User) => {
                 match crate::setup::own_endpoint(&run)
@@ -3167,10 +3205,9 @@ impl<D: Disk> Daemon<D> {
         // is written while a VM is found for it.
         let made = match &again {
             // Its record stays, with the ports it has now. A restart by its policy keeps
-            // its last exit code until it runs (`run_started`), as dockerd's SetRunning
-            // clears it with Restarting, so that it shows `Restarting (N)` meanwhile; one
-            // asked for (`start`) has none from here, so that a `wait` asked after it waits
-            // for this run's, as `docker start` returns once its container runs.
+            // its last exit code until it runs (`run_started`), so that it shows
+            // `Restarting (N)` meanwhile; one asked for (`start`) has none from here, so that
+            // a `wait` asked after it waits for this run's, which the start returns before.
             Some(_) => {
                 let by_policy = lock(&self.restarting_now).contains(&id);
                 let mut registry = lock(&self.containers);
@@ -3376,6 +3413,27 @@ impl<D: Disk> Daemon<D> {
                     let bits = if a.is_ipv4() { 16 } else { 64 };
                     format!("link-local={a}/{bits}").into_bytes()
                 }));
+                // Its agents' flows past the microVM by IPv6 (D99), on a network that gives
+                // eth0 no IPv6 of its own: eth0's IPv6 address for them, the one the host's
+                // network takes (the home's ULA /48's last /64, which no network is given),
+                // named in none of the run's files. Its command is kept to eth0's subnet as
+                // ever (`confine-eth0`), of IPv6 too, and its network process holds the
+                // agents' grants.
+                if matches!(
+                    start,
+                    network::Start::Attach(network::Net::Bridge | network::Net::User)
+                ) && prepared
+                    .agentfile
+                    .as_ref()
+                    .is_some_and(crate::agentfile::Agentfile::egress6)
+                    && !network_setup.iter().any(|e| e.starts_with(b"address6="))
+                {
+                    let (guest6, gateway6) = self.host_ipv6();
+                    prepared
+                        .spec
+                        .setup
+                        .push(format!("uplink6={guest6}/64,{gateway6}").into_bytes());
+                }
                 // On the host's network (D124): the host's hosts file, and eth0's IPv6, by
                 // which what it sends past its loopback is the host's.
                 if start == network::Start::Attach(network::Net::Host) {
@@ -3505,7 +3563,9 @@ impl<D: Disk> Daemon<D> {
                     return Ok(None);
                 }
                 crate::spec::fits(&prepared.spec)?;
-                let link = self.start_shares(threads, &id, &opened.dirs, &prepared.parent)?;
+                // Copies of the volumes a microVM moved here was saved with (D176 part 6).
+                let moved = lock(&self.containers).made(&id).is_some_and(|c| c.moved);
+                let link = self.start_shares(threads, &id, &opened.dirs, &prepared.parent, moved)?;
                 prepared.shares = u32::try_from(opened.dirs.len()).map_err(|_| "too many shares")?;
                 Ok(link)
             });
@@ -3589,8 +3649,23 @@ impl<D: Disk> Daemon<D> {
                 }
             }
         };
-        // What it changed before, to put back (D37); a resumed one's is in its memory.
-        let layer_in = match again.as_ref().filter(|_| resuming.is_none()) {
+        // What it changed before (D37); a resumed one's is in its memory. Its layer kept in
+        // its file goes under its microVM's layer device as it is, where the microVM's is of
+        // its length (D190); else it is put back.
+        let over = match again.as_ref().filter(|_| resuming.is_none() && !joining) {
+            Some(_) => match self.layer_over(&id, &run) {
+                Ok(over) => over,
+                Err(e) => {
+                    fails(&format!(
+                        "{}: its writable layer: {e}",
+                        id.get(..12).unwrap_or(&id)
+                    ));
+                    return None;
+                }
+            },
+            None => None,
+        };
+        let layer_in = match again.as_ref().filter(|_| resuming.is_none() && over.is_none()) {
             Some(_) => match self.layer_in(threads, &id, joining) {
                 Ok(file) => file,
                 Err(e) => {
@@ -3603,7 +3678,7 @@ impl<D: Disk> Daemon<D> {
             },
             None => None,
         };
-        if let Some(file) = &layer_in {
+        if let Some(file) = layer_in.as_ref().or(over.as_ref().map(|(file, _)| file)) {
             flags |= shards_ipc::RUN_LAYER_IN;
             fds.push(file.as_fd());
         }
@@ -3715,6 +3790,8 @@ impl<D: Disk> Daemon<D> {
             )),
             // And its group's budget (D183).
             group: group_cpu.is_some(),
+            // Its layer as its file (D190).
+            layer_over: over.is_some(),
         }
         .encode_into(&mut payload);
         // A resumed run's command runs already: its request brings its save's tokens instead,
@@ -3744,6 +3821,7 @@ impl<D: Disk> Daemon<D> {
                 named: again.clone().filter(|_| run.detach && !run.silent),
                 restarted: restarting,
                 layer_pending: layer_out.is_some(),
+                layer_over: over.as_ref().map(|(_, at)| at.clone()),
                 log_files: kept.map_or(DEFAULT_LOGS.files, |k| k.files),
                 log_compress: kept.is_some_and(|k| k.compress),
                 visit: false,
@@ -3942,15 +4020,15 @@ impl<D: Disk> Daemon<D> {
         }
     }
 
-    /// Whose host address `at`, found in use, is: the host's; a running container's of
-    /// this daemon, as dockerd's allocator knows its own; or a run's that ended, waited
+    /// Whose host address `at`, found in use, is: the host's; a running microVM's of
+    /// this daemon, which knows its own bindings (`published`); or a run's that ended, waited
     /// for until its network process has gone (its grace, `netproc::GRACE`, and as long
     /// again), where that process never said it closed the run's ports. A run's VM says
     /// PORTS_FREE, as that process has, and DONE, before it tells its client (warm.rs
     /// `finish`), whose next program may bind the port at once: what the holder's run has
     /// sent is taken first, as a name's holder's is (`create`), so that a run its client
-    /// has seen end holds the port no longer, as dockerd's has let go of it by the time
-    /// `docker run` returns.
+    /// has seen end holds the port no longer: a script that runs it again at once finds it
+    /// free (PM M134, M158).
     fn in_use(&self, at: std::net::SocketAddr, proto: u8) -> publish::InUse {
         let began = Instant::now();
         let deadline = began + crate::netproc::GRACE.saturating_mul(2);
@@ -4019,14 +4097,14 @@ impl<D: Disk> Daemon<D> {
     }
 
     /// What a run's guest knows of names (`run`'s `--dns*`, `--add-host` and
-    /// `--domainname`): its `/etc/resolv.conf`, the host's made over as dockerd makes it
-    /// for its bridge (the legacy transform, without IPv6), the run's resolvers in place
-    /// of the host's; `/etc/hosts`' extra lines, `host-gateway` the bridge's gateway, as
-    /// dockerd's HostGatewayIPs default to its bridge's; and the domain name.
+    /// `--domainname`): its `/etc/resolv.conf`, the host's made over for its bridge (moby
+    /// docker-v29.3.1 libnetwork/resolvconf's legacy transform, without IPv6), the run's
+    /// resolvers in place of the host's; `/etc/hosts`' extra lines, `host-gateway` the
+    /// bridge's gateway, the host as the microVM reaches it (D31); and the domain name.
     pub(super) fn name_guest(&self, run: &Run, spec: &mut shards_abi::run::Spec) -> Result<(), String> {
         // On the host's network (D124, PM M177): the host's resolvers as they are, loopback
-        // ones too, which are the host's own there; its hosts file, which `--add-host`
-        // adds nothing to, as dockerd's.
+        // ones too, which are the host's own there; its hosts file, the host's own, which
+        // `--add-host` adds nothing to.
         if run.network == "host" {
             spec.resolv = Some(crate::build::step::resolv_host(
                 &crate::build::step::host_resolv(),
@@ -4212,11 +4290,12 @@ impl<D: Disk> Daemon<D> {
         id: &str,
         dirs: &[(OwnedFd, bool, OsString)],
         parent: &str,
+        moved: bool,
     ) -> Result<Option<ShareEnds>, String> {
         if dirs.is_empty() {
             return Ok(None);
         }
-        let (ends, child) = self.started_shares(threads, dirs, parent)?;
+        let (ends, child) = self.started_shares(threads, dirs, parent, moved)?;
         let mut shared = lock(&self.shared_by);
         let children = shared.entry(id.to_string()).or_default();
         children.retain(|c| !c.has_ended());
@@ -4249,6 +4328,7 @@ impl<D: Disk> Daemon<D> {
         threads: &'s Threads<'s, 'e>,
         dirs: &[(OwnedFd, bool, OsString)],
         parent: &str,
+        moved: bool,
     ) -> Result<(ShareEnds, Arc<shards_ipc::Child>), String> {
         let exe = std::env::current_exe().map_err(|e| format!("this binary: {e}"))?;
         let group = if parent.is_empty() {
@@ -4262,6 +4342,9 @@ impl<D: Disk> Daemon<D> {
             .collect::<io::Result<Vec<_>>>()
             .map_err(|e| format!("a share's stream: {e}"))?;
         let mut args: Vec<&OsStr> = vec![OsStr::new("share")];
+        if moved {
+            args.push(OsStr::new(crate::share::MOVED));
+        }
         for (_, read_only, only) in dirs {
             args.push(OsStr::new(if *read_only { "ro" } else { "rw" }));
             args.push(only.as_os_str());
@@ -4296,10 +4379,14 @@ impl<D: Disk> Daemon<D> {
         threads: &'s Threads<'s, 'e>,
         dirs: &[(OwnedFd, bool, OsString)],
         parent: &str,
+        moved: bool,
     ) -> Result<(UnixStream, Arc<shards_ipc::Child>), String> {
         let exe = std::env::current_exe().map_err(|e| format!("this binary: {e}"))?;
         let (vm, share) = UnixStream::pair().map_err(|e| format!("the share process's connection: {e}"))?;
         let mut args: Vec<&OsStr> = vec![OsStr::new("share")];
+        if moved {
+            args.push(OsStr::new(crate::share::MOVED));
+        }
         for (_, read_only, only) in dirs {
             args.push(OsStr::new(if *read_only { "ro" } else { "rw" }));
             args.push(only.as_os_str());
@@ -4382,9 +4469,9 @@ impl<D: Disk> Daemon<D> {
         if let Some(a) = &prepared.agentfile {
             a.refuse(run)?;
         }
-        // A name held by a container that ended with `--rm`, its end not yet taken or its
-        // removal not yet durable, is free once that is done, as dockerd's is by the time
-        // `docker run --rm` returns: its end is taken, and its removal waited for.
+        // A name held by a microVM that ended with `--rm`, its end not yet taken or its
+        // removal not yet durable, is free once that is done, so that a script's next
+        // `run --rm --name` finds it free: its end is taken, and its removal waited for.
         if let Some(given) = &run.name {
             let name = given.strip_prefix('/').unwrap_or(given);
             let holder = lock(&self.containers).name_taken(name).map(|c| c.id.clone());
@@ -4445,6 +4532,7 @@ impl<D: Disk> Daemon<D> {
             name: name.clone(),
             image: run.image.clone(),
             image_id: Some(prepared.image_id.clone()),
+            image_manifest: Some(prepared.image_manifest.clone()),
             command: prepared
                 .spec
                 .argv
@@ -4476,6 +4564,7 @@ impl<D: Disk> Daemon<D> {
             },
             size_rw: None,
             saved: None,
+            moved: false,
             engine_images: Vec::new(),
             engine_networks: Vec::new(),
             // Made through a microVM's own engine (D181): its name there, or the one it was
@@ -4681,8 +4770,8 @@ impl<D: Disk> Daemon<D> {
     /// [`container_event`](Self::container_event), of a container named `name` made
     /// from `image`, with `labels`: what clients that follow events filter them by, as
     /// Compose follows its project's (`label=com.docker.compose.project=P`). Its own
-    /// attributes first, its labels over them, then its image and name, in moby's order
-    /// (copyAttributes).
+    /// attributes first, its labels over them, then its image and name, the order clients
+    /// read (moby docker-v29.3.1 daemon/events.go copyAttributes).
     pub(super) fn event_for(
         &self,
         id: &str,
@@ -4859,7 +4948,16 @@ impl<D: Disk> Daemon<D> {
         if let Some(mac) = keep.mac {
             asks.ask("MAC", kind::NET_MAC, &mac, &[])?;
         }
-        if keep.egress.as_deref() == Some(&shards_net::HOST_POLICY[..])
+        // eth0's IPv6 for its agents' flows past the microVM (D99), where its network gives
+        // it none, as its init is told (`uplink6=`): on a user network, with its address
+        // there; on the default bridge, beside the bridge's, as the host's network has it.
+        let uplink6 = keep
+            .agentfile
+            .as_ref()
+            .is_some_and(crate::agentfile::Agentfile::egress6)
+            .then(|| self.host_ipv6());
+        let on_bridge = uplink6.is_some() && self.membership(id).is_none();
+        if (keep.egress.as_deref() == Some(&shards_net::HOST_POLICY[..]) || on_bridge)
             && let Some(bridge) = self.bridge
         {
             let (guest6, gateway6) = self.host_ipv6();
@@ -4883,7 +4981,7 @@ impl<D: Disk> Daemon<D> {
                 batch.iter().map(|l| crate::netproc::lend(&l.fd)).collect();
             asks.ask("published ports", kind::PUBLISH, &ports, &fds)?;
         }
-        self.give_network(id, &mut asks, keep.mac.or(ready.mac), &keep.link_local)?;
+        self.give_network(id, &mut asks, keep.mac.or(ready.mac), &keep.link_local, uplink6)?;
         if let Some(ports) = &keep.egress {
             asks.ask("egress grants", kind::NET_POLICY, ports, &[])?;
         }
@@ -5013,6 +5111,7 @@ impl<D: Disk> Daemon<D> {
             named,
             restarted,
             layer_pending,
+            layer_over,
             log_files,
             log_compress,
             visit,
@@ -5062,7 +5161,13 @@ impl<D: Disk> Daemon<D> {
         });
         // Its writable layer's file, for a container that stays; another's goes now, its VM
         // holding it.
-        let layer = if layer_pending { ready.layer } else { None };
+        // A layer that went under its device in place of the VM's own (D190) is the
+        // container's file, where it stays: the VM's own goes now, the VM holding it.
+        let layer = match (layer_pending, layer_over) {
+            (true, Some(at)) => Some(layers::LayerFile::in_place(at)),
+            (true, None) => ready.layer,
+            (false, _) => None,
+        };
         // A joiner's provider (D119), which follows its microVM on for it.
         let provider = ready.joined.as_deref().and_then(|p| self.inbox_of(p));
         if let Some(p) = &provider {
@@ -5094,7 +5199,9 @@ impl<D: Disk> Daemon<D> {
             joiners: 0,
             provider,
             saving: None,
+            precopying: None,
             pausing: Default::default(),
+            devices: Default::default(),
             saved_as: None,
             engine,
         }));
@@ -5170,6 +5277,9 @@ impl<D: Disk> Daemon<D> {
                     // never answered not done.
                     if let Some(saving) = inbox.saving.take() {
                         let _ = saving.told.send(Err("its microVM stopped".into()));
+                    }
+                    if let Some(told) = inbox.precopying.take() {
+                        let _ = told.send(Err("its microVM stopped".into()));
                     }
                     for (_, told) in inbox.pausing.drain(..) {
                         let _ = told.send(Err("its microVM stopped".into()));
@@ -5333,6 +5443,23 @@ impl<D: Disk> Daemon<D> {
                 // Its VM's answer to a save (D176), before anything after it: a microVM the
                 // save stops ends as saved.
                 kind::SAVED => snapshots::answered(inbox, &m.payload),
+                // Its VM's answer to a device step it was asked for (D214).
+                kind::DEVICED => {
+                    if let Some((number, said)) = m.payload.split_first_chunk::<8>()
+                        && let Some(i) = inbox
+                            .devices
+                            .iter()
+                            .position(|(n, _)| *n == u64::from_be_bytes(*number))
+                    {
+                        let (_, told) = inbox.devices.swap_remove(i);
+                        let text = String::from_utf8_lossy(said.get(1..).unwrap_or_default()).into_owned();
+                        let _ = told.send(match said.first() {
+                            Some(0) => Ok(text),
+                            _ => Err(text),
+                        });
+                    }
+                }
+                kind::PRECOPIED => moves::precopied(inbox, &m.payload),
                 // Its VM's answer to a pause or resume it was asked for.
                 kind::PAUSED => {
                     if let Some((number, said)) = m.payload.split_first_chunk::<8>()
@@ -5435,6 +5562,38 @@ impl<D: Disk> Daemon<D> {
         Ok(Some(File::from(OwnedFd::from(reader))))
     }
 
+    /// Container `id`'s writable layer kept in its file (D190), to go under its next run's
+    /// microVM's layer device as it is, with where it is kept: where the run's layer is of the
+    /// file's length (`--storage-opt size`, which its template is made for): its VM maps it
+    /// where the template's layer was (`platform::map_file_shared_at`). Its journal replayed
+    /// first where its microVM was killed ([`layers::open_kept`]). None where it has none, or
+    /// where it is to be put back instead ([`layer_in`](Self::layer_in)).
+    fn layer_over(&self, id: &str, run: &Run) -> Result<Option<(File, PathBuf)>, String> {
+        let at = lock(&self.containers).dir(id).join(layers::KEPT);
+        let Ok(meta) = std::fs::metadata(&at) else {
+            return Ok(None);
+        };
+        let holds = crate::setup::storage_size(run)?.unwrap_or(crate::run::LAYER_HOLDS);
+        if meta.len() != layers::size(holds)? {
+            return Ok(None);
+        }
+        let kept = layers::open_kept(&at)?;
+        // One that holds little is packed and put back: quicker, below what it holds at
+        // [`layers::OVER_FROM`] (PM M443).
+        match layers::held(&kept, meta.len()) {
+            Ok(Some(held)) if held < layers::OVER_FROM => return Ok(None),
+            Ok(_) => {}
+            Err(e) => log(format!("container {id}: what its writable layer holds: {e}")),
+        }
+        drop(kept);
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&at)
+            .map_err(|e| format!("{}: {e}", at.display()))?;
+        Ok(Some((file, at)))
+    }
+
     /// Container `id`'s writable layer, as its VM left it (D37): kept if it came `whole`;
     /// else what came of it goes, and the layer it had before stays.
     /// What container `id`'s writable layer uses as its last run left it, where its VM said
@@ -5479,11 +5638,26 @@ impl<D: Disk> Daemon<D> {
         if let Some(layer) = inbox.layer.take()
             && inbox.container.is_dir()
         {
+            let at = inbox.container.join(layers::KEPT);
             let kept = layer
-                .keep_at(&inbox.container.join(layers::KEPT))
+                .keep_at(&at)
                 .and_then(|()| remove_if_there(&inbox.container.join(LAYER)));
-            if let Err(e) = kept {
-                log(format!("container {id}: keeping its writable layer: {e}"));
+            match kept {
+                // What its guest freed goes back to the host's disk, its microVM gone.
+                Ok(()) => {
+                    let began = Instant::now();
+                    match layers::give_back(&at) {
+                        Ok(Some(given)) if given > 0 => log(format!(
+                            "container {id}: gave back {given} bytes its writable layer's guest freed, in {} us",
+                            began.elapsed().as_micros()
+                        )),
+                        Ok(_) => {}
+                        Err(e) => log(format!(
+                            "container {id}: giving back what its writable layer's guest freed: {e}"
+                        )),
+                    }
+                }
+                Err(e) => log(format!("container {id}: keeping its writable layer: {e}")),
             }
         }
         if let Err(e) = remove_if_there(&inbox.container.join(LAYER_NEW)) {
@@ -5666,8 +5840,10 @@ impl<D: Disk> Daemon<D> {
         let changed = lock(&self.containers).change(id, |c| {
             c.state = Life::Running;
             c.started = Some(containers::now());
-            // Running again, as a snapshot resumes it or not: no save stopped it (D176).
+            // Running again, as a snapshot resumes it or not: no save stopped it (D176), and
+            // one moved here runs here now (part 6).
             c.saved = None;
+            c.moved = false;
             c.exit_code = None;
             c.oom_killed = false;
             c.error.clear();
@@ -6062,8 +6238,8 @@ impl<D: Disk> Daemon<D> {
     }
 
     /// Stops serving: ends its offers, ends the runs in progress, and exits once they
-    /// have ended, as dockerd shuts down (`shards daemon stop`, or a client of another
-    /// build, whose own daemon then takes the home).
+    /// have ended, so that none outlives it (D27; `shards daemon stop`, or a client of
+    /// another build, whose own daemon then takes the home).
     /// Stops serving, for `why`, which its log says: a daemon gone with no word of why
     /// left a test only its absence to go by (a_container_outlives_a_daemon_that_dies, dev
     /// 3c2e3cd3's CI).
@@ -6852,12 +7028,14 @@ impl<D: Disk> Daemon<D> {
                 cfg.cmdline.push_str(&bridge.cmdline());
             }
         };
-        // A run given a host's VFIO groups (D154): a microVM booted for it, their functions
-        // behind its own IOMMU, with a kernel with VFIO; of no template, as a host's device
-        // is no snapshot's. Where the microVM's MSIs are not isolated (vm::ISOLATED_MSIS:
-        // x86_64 has no interrupt remapping yet), its guest's VFIO and iommufd are told to
-        // take them anyway (vfio_iommu_type1.c; iommufd/device.c, iommufd_device_bind), as
-        // they reach the microVM's own interrupt controller alone.
+        // A run given a host's VFIO groups (D154), or VFIO's own nodes to take a host's
+        // functions plugged in as it runs (D214): a microVM booted for it, their functions,
+        // and its slots, behind its own IOMMU, with a kernel with VFIO; of no template, as
+        // a host's device is no snapshot's, nor its IOMMU's domains. Where the microVM's
+        // MSIs are not isolated (vm::ISOLATED_MSIS: x86_64 has no interrupt remapping yet),
+        // its guest's VFIO and iommufd are told to take them anyway (vfio_iommu_type1.c;
+        // iommufd/device.c, iommufd_device_bind), as they reach the microVM's own interrupt
+        // controller alone.
         let vfio = prepared.vfio.as_ref().map_err(String::clone)?;
         if let Some(kernel) = &prepared.vfio_kernel {
             let mut cfg = match &prepared.boot {
@@ -6866,6 +7044,7 @@ impl<D: Disk> Daemon<D> {
             };
             on_network(&mut cfg);
             cfg.vfio = crate::run::vfio_functions(vfio);
+            cfg.pci_slots_iommu = true;
             if !shards_vmm::vm::ISOLATED_MSIS {
                 cfg.cmdline.push_str(
                     " vfio_iommu_type1.allow_unsafe_interrupts=1 iommufd.allow_unsafe_interrupts=1",
@@ -6926,11 +7105,20 @@ impl<D: Disk> Daemon<D> {
                 prepared.layer,
             );
         }
-        let dir = crate::run::template(&self.home, guest, &prepared.rootfs, &cfg, prepared.layer);
+        // The file at the root filesystem's name now, which its template is keyed by.
+        let stamp = shards_image::store::rootfs_stamp(&prepared.rootfs);
+        let dir = crate::run::template(
+            &self.home,
+            guest,
+            &prepared.rootfs,
+            stamp.as_deref(),
+            &cfg,
+            prepared.layer,
+        );
         // Its pool: the template's warm VMs under its parent (D183).
         let key = PoolKey::new(&dir, &prepared.parent);
         if shards_vmm::snapshot::exists(&dir) {
-            match self.claim(threads, &key, &prepared.rootfs) {
+            match self.claim(threads, &key, &prepared.rootfs, stamp.as_deref()) {
                 Ok(ready) => return Ok(ready),
                 Err(Claim::Failed(e)) => return Err(e),
                 Err(Claim::Broken) => {
@@ -6959,6 +7147,7 @@ impl<D: Disk> Daemon<D> {
             && let Err(e) = crate::run::Origin::of(
                 guest,
                 &prepared.rootfs,
+                stamp.as_deref(),
                 server.is_some(),
                 cfg.gpu,
                 prepared.emulator.as_ref().map(|e| e.root.as_path()),
@@ -6982,7 +7171,7 @@ impl<D: Disk> Daemon<D> {
                 dir: dir.clone(),
                 limit,
             });
-            pool_of(&mut lock(&self.state), &key, &prepared.rootfs)
+            pool_of(&mut lock(&self.state), &key, &prepared.rootfs, stamp.as_deref())
                 .working_set_limit
                 .get_or_insert(limit);
             self.refill_soon(threads, Some(&key));
@@ -6998,6 +7187,7 @@ impl<D: Disk> Daemon<D> {
         threads: &'s Threads<'s, 'e>,
         key: &PoolKey,
         rootfs: &Path,
+        stamp: Option<&str>,
     ) -> Result<Ready, Claim> {
         let deadline = Instant::now() + READY_TIMEOUT;
         let mut state = lock(&self.state);
@@ -7008,7 +7198,7 @@ impl<D: Disk> Daemon<D> {
             }
         };
         loop {
-            let pool = pool_of(&mut state, key, rootfs);
+            let pool = pool_of(&mut state, key, rootfs, stamp);
             if pool.failures >= MAX_FAILURES {
                 state.pools.remove(key);
                 return Err(Claim::Broken);
@@ -7046,6 +7236,10 @@ impl<D: Disk> Daemon<D> {
                     self.changed.notify_all();
                     return Err(Claim::Failed(e));
                 }
+                continue;
+            }
+            // Found broken as it planned (its root filesystem replaced): said at once.
+            if state.pools.get(key).is_some_and(|p| p.failures >= MAX_FAILURES) {
                 continue;
             }
             let left = deadline.saturating_duration_since(Instant::now());
@@ -7361,6 +7555,17 @@ impl<D: Disk> Daemon<D> {
         }
         if cfg.share_window_mib > 0 {
             args.extend(["--share-window".into(), cfg.share_window_mib.to_string().into()]);
+        }
+        // PCI slots in every microVM, empty until a device is plugged into its run (D214):
+        // its templates have them, and so every restore of them. SHARDS_PCI_SLOTS gives
+        // another count, 0 for none (PM M430's A/B).
+        let slots = pci_slots();
+        if slots > 0 {
+            args.extend(["--pci-slots".into(), slots.to_string().into()]);
+            // Behind its IOMMU where it was booted to take a host's functions (D214).
+            if cfg.pci_slots_iommu {
+                args.push("--pci-slots-iommu".into());
+            }
         }
         // A join disk and a join share in every microVM, empty and unserved until a
         // container joins its network (D119): its templates have them, and so every restore
@@ -7731,7 +7936,7 @@ impl<D: Disk> Daemon<D> {
         // daemon's, where the run's published ports go; the VM holds its release.
         let (net_process, net_control) = match network {
             Some((ready, side)) => {
-                let started = crate::netproc::start(ready, &suspended)?;
+                let started = crate::netproc::start(ready, &suspended, group.as_ref())?;
                 let control = crate::netproc::Control {
                     socket: side.control,
                     pid: started.id(),
@@ -8225,8 +8430,9 @@ fn isolation(run: &Run) -> Result<(), String> {
     }
 }
 
-/// A run's annotations as dockerd keeps them (HostConfig.Annotations, which docker/cli's
-/// MapOpts makes): each key's last value, a key alone given the empty one.
+/// A run's annotations as inspect answers them (HostConfig.Annotations, D66), from
+/// `--annotation` as docker/cli's MapOpts reads it: each key's last value, a key alone
+/// given the empty one.
 pub(crate) fn annotations(run: &Run) -> std::collections::BTreeMap<String, String> {
     run.annotations
         .iter()
@@ -9135,6 +9341,7 @@ mod tests {
                 parent: String::new(),
                 exposed: Vec::new(),
                 image_id: String::new(),
+                image_manifest: String::new(),
                 size: (1, shards_vmm::vm::MEMORY_MIB),
                 memory_max: shards_vmm::vm::MEMORY_MIB,
                 image_volumes: Vec::new(),
@@ -9184,6 +9391,7 @@ mod tests {
                         named: None,
                         restarted: false,
                         layer_pending: false,
+                        layer_over: None,
                         log_files: DEFAULT_LOGS.files,
                         log_compress: false,
                         visit: false,
@@ -9497,6 +9705,7 @@ mod tests {
                             named: None,
                             restarted: false,
                             layer_pending: false,
+                            layer_over: None,
                             log_files: DEFAULT_LOGS.files,
                             log_compress: false,
                             visit: false,
@@ -11070,7 +11279,7 @@ mod tests {
         });
     }
 
-    /// A container is found from its creation, as dockerd's is: `exec` right after an
+    /// A microVM is found from its creation: `exec` right after an
     /// attached run starts, while its record is being written, finds it, not "No such
     /// container" (seen 2026-10-02 under the parallel suite).
     #[test]
@@ -11533,7 +11742,12 @@ mod tests {
             std::fs::write(dir.join("current"), b"g-1\n").unwrap();
             std::fs::write(dir.join("g-1").join("state"), b"").unwrap();
             let t0 = Instant::now();
-            let claimed = t.t.daemon.claim(t.threads, &own(&dir), Path::new("/rootfs"));
+            // A root filesystem of its own, as a pool's run has, its stamp the pool's: a pool
+            // with none, or another's, restores nothing (D188's pull --no-cache).
+            let rootfs = t.home.join("rootfs.erofs");
+            std::fs::write(&rootfs, b"erofs").unwrap();
+            let stamp = shards_image::store::rootfs_stamp(&rootfs);
+            let claimed = t.t.daemon.claim(t.threads, &own(&dir), &rootfs, stamp.as_deref());
             assert!(
                 matches!(&claimed, Err(Claim::Failed(why)) if why.starts_with("starting a warm VM of ")),
                 "not refused as unstartable"
@@ -11611,6 +11825,7 @@ mod tests {
                 named: None,
                 restarted: false,
                 layer_pending: false,
+                layer_over: None,
                 log_files: DEFAULT_LOGS.files,
                 log_compress: false,
                 visit: false,
@@ -11660,6 +11875,7 @@ mod tests {
                 named: None,
                 restarted: false,
                 layer_pending: false,
+                layer_over: None,
                 log_files: DEFAULT_LOGS.files,
                 log_compress: false,
                 visit: false,
@@ -12077,7 +12293,9 @@ mod tests {
         std::fs::write(dir.join("g-1").join("state"), b"").unwrap();
         let rootfs = dir.with_extension("erofs");
         std::fs::write(&rootfs, b"").unwrap();
-        let origin = serde_json::json!({"rootfs": rootfs, "kernel_digest": "", "init_digest": ""});
+        let stamp = shards_image::store::rootfs_stamp(&rootfs);
+        let origin =
+            serde_json::json!({"rootfs": rootfs, "stamp": stamp, "kernel_digest": "", "init_digest": ""});
         std::fs::write(crate::run::Origin::path(dir).unwrap(), origin.to_string()).unwrap();
     }
 
@@ -12094,7 +12312,7 @@ mod tests {
             let dir = t.home.join("template");
             template(&dir);
             let rootfs = dir.with_extension("erofs");
-            pool_of(&mut lock(&t.daemon.state), &own(&dir), &rootfs);
+            pool_of(&mut lock(&t.daemon.state), &own(&dir), &rootfs, None);
             t.daemon.age_pools();
             assert!(
                 !lock(&t.daemon.state).pools.contains_key(&own(&dir)),
@@ -12119,6 +12337,43 @@ mod tests {
                     .plan_refill(&mut lock(&t.daemon.state), &own(&bare), true)
                     .is_none()
             );
+        });
+    }
+
+    /// A pool whose root filesystem was replaced since its template was keyed (`pull
+    /// --no-cache`) restores it against the new file no more: its refill plans no VM and
+    /// leaves it broken, for its claims to boot instead.
+    #[test]
+    fn a_pool_restores_no_replaced_root_filesystem() {
+        let mut t = Test::new("replaced");
+        t.daemon.target = 2;
+        t.daemon.warm_max = 8;
+        t.run(|t| {
+            let dir = t.home.join("template");
+            template(&dir);
+            let planned =
+                t.t.daemon
+                    .plan_refill(&mut lock(&t.daemon.state), &own(&dir), true);
+            assert!(planned.is_some(), "no VM planned");
+            // Replaced as the store replaces it: by rename, its time later.
+            let rootfs = dir.with_extension("erofs");
+            let new = t.home.join("new.erofs");
+            std::fs::write(&new, b"").unwrap();
+            let later = std::fs::metadata(&rootfs).unwrap().modified().unwrap() + Duration::from_secs(2);
+            std::fs::File::options()
+                .write(true)
+                .open(&new)
+                .unwrap()
+                .set_modified(later)
+                .unwrap();
+            std::fs::rename(&new, &rootfs).unwrap();
+            assert!(
+                t.daemon
+                    .plan_refill(&mut lock(&t.daemon.state), &own(&dir), false)
+                    .is_none(),
+                "a VM planned against the new file"
+            );
+            assert_eq!(lock(&t.daemon.state).pools[&own(&dir)].failures, MAX_FAILURES);
         });
     }
 
@@ -12212,6 +12467,7 @@ mod tests {
                     named: None,
                     restarted: false,
                     layer_pending: false,
+                    layer_over: None,
                     log_files: DEFAULT_LOGS.files,
                     log_compress: false,
                     visit: false,
@@ -12461,8 +12717,8 @@ mod tests {
 
     /// The name a `--rm` container held is free for the next container as soon as its run
     /// has ended: its end is taken, by the followers or by the next container's making,
-    /// and its removal, which the completer makes durable, waited for; as dockerd's name
-    /// is free by the time `docker run --rm` returns.
+    /// and its removal, which the completer makes durable, waited for: a script's next
+    /// `run --rm --name` finds it free.
     #[test]
     fn a_rm_containers_name_is_free_once_its_run_ends() {
         let t = Test::new("rm-name");

@@ -3121,7 +3121,7 @@
       "rmi",
       "--help"
     ],
-    "stdout": "Usage:  shards rmi [OPTIONS] IMAGE [IMAGE...]\n\nRemove one or more images\n\nAliases:\n  shards image rm, shards image remove, shards rmi\n\nOptions:\n  -f, --force      Force removal of the image\n      --no-prune   Do not delete untagged parents\n",
+    "stdout": "Usage:  shards rmi [OPTIONS] IMAGE [IMAGE...]\n\nRemove one or more images\n\nAliases:\n  shards image rm, shards image remove, shards rmi\n\nOptions:\n  -f, --force              Force removal of the image\n      --no-prune           Do not delete untagged parents\n      --platform strings   Remove only the given platform variant.\n                           Formatted as \"os[/arch[/variant]]\" (e.g.,\n                           \"linux/amd64\")\n",
     "stderr": "",
     "status": 0
   },
@@ -3154,7 +3154,7 @@
       "rm",
       "--help"
     ],
-    "stdout": "Usage:  shards image rm [OPTIONS] IMAGE [IMAGE...]\n\nRemove one or more images\n\nAliases:\n  shards image rm, shards image remove, shards rmi\n\nOptions:\n  -f, --force      Force removal of the image\n      --no-prune   Do not delete untagged parents\n",
+    "stdout": "Usage:  shards image rm [OPTIONS] IMAGE [IMAGE...]\n\nRemove one or more images\n\nAliases:\n  shards image rm, shards image remove, shards rmi\n\nOptions:\n  -f, --force              Force removal of the image\n      --no-prune           Do not delete untagged parents\n      --platform strings   Remove only the given platform variant.\n                           Formatted as \"os[/arch[/variant]]\" (e.g.,\n                           \"linux/amd64\")\n",
     "stderr": "",
     "status": 0
   },
@@ -3366,7 +3366,7 @@
       "push",
       "--help"
     ],
-    "stdout": "Usage:  shards push [OPTIONS] NAME[:TAG]\n\nUpload an image to a registry\n\nAliases:\n  shards image push, shards push\n\nOptions:\n  -a, --all-tags   Push all tags of an image to the repository\n  -q, --quiet      Suppress verbose output\n",
+    "stdout": "Usage:  shards push [OPTIONS] NAME[:TAG]\n\nUpload an image to a registry\n\nAliases:\n  shards image push, shards push\n\nOptions:\n  -a, --all-tags          Push all tags of an image to the repository\n      --platform string   Push a platform-specific manifest as a\n                          single-platform image to the registry.\n                          Image index won't be pushed, meaning that other\n                          manifests, including attestations won't be\n                          preserved.\n                          'os[/arch[/variant]]': Explicit platform (eg.\n                          linux/amd64)\n  -q, --quiet             Suppress verbose output\n",
     "stderr": "",
     "status": 0
   },
@@ -3426,7 +3426,7 @@
       "load",
       "--help"
     ],
-    "stdout": "Usage:  shards load [OPTIONS]\n\nLoad an image from a tar archive or STDIN\n\nAliases:\n  shards image load, shards load\n\nOptions:\n  -i, --input string   Read from tar archive file, instead of STDIN\n  -q, --quiet          Suppress the load output\n",
+    "stdout": "Usage:  shards load [OPTIONS]\n\nLoad an image from a tar archive or STDIN\n\nAliases:\n  shards image load, shards load\n\nOptions:\n  -i, --input string       Read from tar archive file, instead of STDIN\n      --platform strings   Load only the given platform(s). Formatted as\n                           a comma-separated list of\n                           \"os[/arch[/variant]]\" (e.g.,\n                           \"linux/amd64,linux/arm64/v8\").\n  -q, --quiet              Suppress the load output\n",
     "stderr": "",
     "status": 0
   },
@@ -3474,7 +3474,7 @@
       "save",
       "--help"
     ],
-    "stdout": "Usage:  shards save [OPTIONS] IMAGE [IMAGE...]\n\nSave one or more images to a tar archive (streamed to STDOUT by default)\n\nAliases:\n  shards image save, shards save\n\nOptions:\n  -o, --output string   Write to a file, instead of STDOUT\n",
+    "stdout": "Usage:  shards save [OPTIONS] IMAGE [IMAGE...]\n\nSave one or more images to a tar archive (streamed to STDOUT by default)\n\nAliases:\n  shards image save, shards save\n\nOptions:\n  -o, --output string      Write to a file, instead of STDOUT\n      --platform strings   Save only the given platform(s). Formatted as\n                           a comma-separated list of\n                           \"os[/arch[/variant]]\" (e.g.,\n                           \"linux/amd64,linux/arm64/v8\")\n",
     "stderr": "",
     "status": 0
   },
@@ -3527,7 +3527,7 @@
       "inspect",
       "--help"
     ],
-    "stdout": "Usage:  shards image inspect [OPTIONS] IMAGE [IMAGE...]\n\nDisplay detailed information on one or more images\n\nOptions:\n  -f, --format string   Format output using a custom template:\n                        'json':             Print in JSON format\n                        'TEMPLATE':         Print output using the given\n                        Go template.\n                        Refer to https://docs.docker.com/go/formatting/\n                        for more information about formatting output with\n                        templates\n",
+    "stdout": "Usage:  shards image inspect [OPTIONS] IMAGE [IMAGE...]\n\nDisplay detailed information on one or more images\n\nOptions:\n  -f, --format string     Format output using a custom template:\n                          'json':             Print in JSON format\n                          'TEMPLATE':         Print output using the\n                          given Go template.\n                          Refer to https://docs.docker.com/go/formatting/\n                          for more information about formatting output\n                          with templates\n      --platform string   Inspect a specific platform of the\n                          multi-platform image.\n                          If the image or the server is not\n                          multi-platform capable, the command will error\n                          out if the platform does not match.\n                          'os[/arch[/variant]]': Explicit platform (eg.\n                          linux/amd64)\n",
     "stderr": "",
     "status": 0
   },

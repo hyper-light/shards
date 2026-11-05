@@ -117,8 +117,8 @@ pub const NO_EL2: &str = "this Mac gives a guest no EL2: virtualization of a gue
 /// thread plugs it, while the VM lives ([`Vm::add_hotplug`]). The pages it maps are the
 /// VM's until it unmaps them: replaced in the host while mapped, the guest kept the old
 /// ones and its writes no longer reached the host's (PM M193).
-#[derive(Debug, Clone, Copy)]
-pub struct Stage2(());
+#[derive(Debug, Clone)]
+pub struct Stage2(Arc<Watch>);
 
 impl Stage2 {
     /// Maps `len` bytes of host memory at `host` as guest RAM at `gpa`.
@@ -128,7 +128,13 @@ impl Stage2 {
     /// destroyed.
     pub unsafe fn map(&self, host: *mut u8, gpa: u64, len: usize) -> Result<()> {
         // SAFETY: forwarded caller contract; the handle exists only while the VM does.
-        Ok(unsafe { sys::map(host, gpa, len, sys::Perms::RWX) }?)
+        unsafe { sys::map(host, gpa, len, sys::Perms::RWX) }?;
+        // Memory plugged is the guest's RAM, whose writes a live move watches (D176 part 7).
+        self.0.mapped(Region {
+            gpa,
+            len: len as u64,
+            perms: sys::Perms::RWX,
+        })
     }
 
     /// Maps `len` bytes of a file's mapping at `host` at `gpa`, in a share's DAX window
@@ -145,6 +151,7 @@ impl Stage2 {
 
     /// Unmaps `len` bytes at `gpa`: the guest's accesses there exit as MMIO to nothing.
     pub fn unmap(&self, gpa: u64, len: usize) -> Result<()> {
+        self.0.unmapped(gpa, len as u64);
         Ok(sys::unmap(gpa, len)?)
     }
 }
@@ -175,8 +182,8 @@ impl Window {
 /// Device memory a device maps into the guest and unmaps, while the VM lives: a swap
 /// window's (D159). Slots are KVM's notion; the framework maps by address, so the index
 /// names nothing here.
-#[derive(Debug, Clone, Copy)]
-pub struct DeviceSlots(());
+#[derive(Debug, Clone)]
+pub struct DeviceSlots(Arc<Watch>);
 
 impl DeviceSlots {
     /// Maps `len` bytes of host memory at `host` at `gpa`, read-only to the guest unless
@@ -188,11 +195,21 @@ impl DeviceSlots {
     pub unsafe fn map(&self, _i: u32, host: *mut u8, gpa: u64, len: usize, writable: bool) -> Result<()> {
         let perms = if writable { sys::Perms::RW } else { sys::Perms::R };
         // SAFETY: forwarded caller contract; the handle exists only while the VM does.
-        Ok(unsafe { sys::map(host, gpa, len, perms) }?)
+        unsafe { sys::map(host, gpa, len, perms) }?;
+        // What the guest writes there, a run's swap, a live move watches (D176 part 7).
+        if writable {
+            self.0.mapped(Region {
+                gpa,
+                len: len as u64,
+                perms,
+            })?;
+        }
+        Ok(())
     }
 
     /// Unmaps `len` bytes at `gpa`: the guest's accesses there exit as MMIO to nothing.
     pub fn unmap(&self, _i: u32, gpa: u64, len: usize) -> Result<()> {
+        self.0.unmapped(gpa, len as u64);
         Ok(sys::unmap(gpa, len)?)
     }
 }
@@ -232,6 +249,23 @@ impl Vm {
         self.watch.clone()
     }
 
+    /// Watches the guest's writes for a live move (D176 part 7): its writable memory taken
+    /// away for writing at stage 2, each page given back as it is written ([`Watch`]).
+    pub fn watch_writes(&self) -> Result<()> {
+        self.watch.watch_writes()
+    }
+
+    /// The pages written since the watch began or was last asked, each taken away for
+    /// writing again first, in order of their addresses.
+    pub fn written(&self) -> Result<Vec<u64>> {
+        self.watch.written()
+    }
+
+    /// Stops watching the guest's writes.
+    pub fn unwatch_writes(&self) {
+        self.watch.unwatch_writes();
+    }
+
     /// Maps `len` bytes of host memory at `host` as guest RAM at `gpa`.
     ///
     /// # Safety
@@ -252,7 +286,7 @@ impl Vm {
     /// What takes guest RAM from the guest and gives it back, from whichever thread gives
     /// its pages back to the host as the guest reports them free (D151).
     pub fn stage2(&self) -> Stage2 {
-        Stage2(())
+        Stage2(self.watch.clone())
     }
 
     /// Gives the guest the memory a virtio-mem device plugs, `len` bytes at `host` seen at
@@ -263,7 +297,7 @@ impl Vm {
     /// # Safety
     /// `host..host+len` must stay mapped in this process until the VM is destroyed.
     pub unsafe fn add_hotplug(&self, _host: *mut u8, _gpa: u64, _len: usize) -> Result<Stage2> {
-        Ok(Stage2(()))
+        Ok(Stage2(self.watch.clone()))
     }
 
     /// What maps a GPU's blobs into its window (D144).
@@ -274,7 +308,7 @@ impl Vm {
     /// What maps a device's memory into the guest while the VM lives, `count` slots of it
     /// on KVM; here the framework's mappings, by address.
     pub fn device_slots(&self, _count: u32) -> DeviceSlots {
-        DeviceSlots(())
+        DeviceSlots(self.watch.clone())
     }
 
     /// Maps device memory (a virtio-pmem region) at `gpa`, writable by the guest only if
@@ -417,6 +451,11 @@ impl Region {
 pub struct Watch {
     regions: Mutex<Vec<Region>>,
     recording: Mutex<Option<Recording>>,
+    /// The pages the guest wrote since they were last taken ([`Watch::written`]), while the
+    /// guest's writes are watched for a live move (D176 part 7): its writable memory taken
+    /// away for writing at stage 2 (`hv_vm_protect`), and each page given back whole as the
+    /// guest writes it, noted. Under the recording's lock's order: this one after it.
+    dirty: Mutex<Option<std::collections::BTreeSet<u64>>>,
 }
 
 #[derive(Debug, Default)]
@@ -429,6 +468,28 @@ struct Recording {
 impl Watch {
     fn add(&self, region: Region) {
         lock(&self.regions).push(region);
+    }
+
+    /// Notes `region`, mapped while the VM runs (memory plugged, a run's swap), taken away
+    /// for writing at once where the guest's writes are watched.
+    fn mapped(&self, region: Region) -> Result<()> {
+        let dirty = lock(&self.dirty);
+        lock(&self.regions).push(region);
+        if dirty.is_some() && region.perms.writes() {
+            sys::protect(region.gpa, region.len, region.perms.read_only())?;
+        }
+        Ok(())
+    }
+
+    /// Forgets the regions within `len` bytes at `gpa`, unmapped.
+    fn unmapped(&self, gpa: u64, len: u64) {
+        let end = gpa.saturating_add(len);
+        lock(&self.regions).retain(|r| r.gpa < gpa || r.gpa.saturating_add(r.len) > end);
+    }
+
+    /// The region that holds `gpa`, where one does.
+    fn region_of(&self, gpa: u64) -> Option<Region> {
+        lock(&self.regions).iter().find(|r| r.holds(gpa)).copied()
     }
 
     /// Takes all guest memory away and starts recording. Call with every vCPU out of the
@@ -463,6 +524,66 @@ impl Watch {
         recorded.map(|r| r.touches).unwrap_or_default()
     }
 
+    /// Watches the guest's writes to its writable memory (D176 part 7): each such region
+    /// taken away for writing, and every page written from now on noted, until
+    /// [`unwatch_writes`](Self::unwatch_writes). Callable while vCPUs run.
+    pub fn watch_writes(&self) -> Result<()> {
+        let mut dirty = lock(&self.dirty);
+        *dirty = Some(std::collections::BTreeSet::new());
+        for r in lock(&self.regions).iter().filter(|r| r.perms.writes()) {
+            if let Err(e) = sys::protect(r.gpa, r.len, r.perms.read_only()) {
+                *dirty = None;
+                drop(dirty);
+                self.unwatch_writes();
+                return Err(e.into());
+            }
+        }
+        Ok(())
+    }
+
+    /// The pages written since the watch began or since this was last asked, each taken away
+    /// for writing again before it is said: a write after it faults and is noted for the
+    /// next ask, and the page's bytes read after this returns hold every write before it.
+    /// In order of their addresses.
+    pub fn written(&self) -> Result<Vec<u64>> {
+        let mut dirty = lock(&self.dirty);
+        let Some(set) = dirty.as_mut() else {
+            return Ok(Vec::new());
+        };
+        let pages: Vec<u64> = std::mem::take(set).into_iter().collect();
+        let regions = lock(&self.regions).clone();
+        // Each run of neighbouring pages of one region taken away at once.
+        let mut at = 0;
+        while let Some(&first) = pages.get(at) {
+            let region = regions.iter().find(|r| r.holds(first));
+            let mut n = 1u64;
+            while pages.get(at + n as usize) == Some(&(first + n * PAGE))
+                && region.is_some_and(|r| r.holds(first + n * PAGE))
+            {
+                n += 1;
+            }
+            // A page of a region since unmapped has nothing to take away.
+            if let Some(r) = region {
+                sys::protect(first, n * PAGE, r.perms.read_only())?;
+            }
+            at += n as usize;
+        }
+        Ok(pages)
+    }
+
+    /// Stops watching the guest's writes, and gives it all its memory back.
+    pub fn unwatch_writes(&self) {
+        let recording = lock(&self.recording);
+        let mut dirty = lock(&self.dirty);
+        *dirty = None;
+        if recording.is_none() {
+            for r in lock(&self.regions).iter() {
+                // It fails only once the VM is gone, with nothing left to give back.
+                let _ = sys::protect(r.gpa, r.len, r.perms);
+            }
+        }
+    }
+
     /// Gives `page` back after a fault on it, `write` if a write, in memory the guest may
     /// access with `full`: what it gets back ([`Recording::touched`]), given under the
     /// recording's lock, so that the access each vCPU is given lands in the order it was
@@ -473,11 +594,28 @@ impl Watch {
     /// watch's: none is given then.
     fn give(&self, page: u64, write: bool, full: sys::Perms, again: bool) -> Result<Option<sys::Perms>> {
         let mut recording = lock(&self.recording);
+        let mut dirty = lock(&self.dirty);
         let perms = match recording.as_mut() {
             Some(r) => r.touched(page, write, full),
             None => full,
         };
-        if perms == full && again {
+        // Watched for a live move, a page taken away again since this vCPU had it whole
+        // faults again, rightly: only a write gets it back whole, noted.
+        let watched = match dirty.as_mut() {
+            Some(set) => {
+                if write {
+                    set.insert(page);
+                }
+                true
+            }
+            None => false,
+        };
+        let perms = if watched && !write && perms == full {
+            full.read_only()
+        } else {
+            perms
+        };
+        if perms == full && again && !watched {
             return Ok(None);
         }
         sys::protect(page, PAGE, perms)?;
@@ -618,13 +756,21 @@ impl Vcpu {
         ipa: u64,
         last: Option<u64>,
     ) -> Result<Option<u64>> {
-        let Some(region) = self.memory.iter().find(|r| r.holds(ipa)).copied() else {
+        // Memory mapped since this vCPU was made (plugged, a run's swap) is the watch's to
+        // say.
+        let Some(region) = self
+            .memory
+            .iter()
+            .find(|r| r.holds(ipa))
+            .copied()
+            .or_else(|| self.watch.region_of(ipa))
+        else {
             return Err(Error::Guest(self.describe_fault(ec, syndrome, ipa)));
         };
         // Cache maintenance reports a write, and needs only to read: it goes on once the
         // page is back, read-only or not (esr::cache_maintenance).
         let write = ec == esr::EC_DABT_LOW && esr::writes(syndrome) && !esr::cache_maintenance(syndrome);
-        if write && region.perms != sys::Perms::RWX {
+        if write && !region.perms.writes() {
             // Dropped, like a write to no device (map_device_memory).
             self.mmio(io, syndrome, ipa)?;
             return Ok(None);
@@ -787,10 +933,13 @@ const SYSREGS: &[u16] = &[
 /// macOS 15.2 additions (SCXTNUM_EL1, SCXTNUM_EL0): saved where the host has them.
 const SYSREGS_15_2: &[u16] = &[0xc687, 0xde87];
 
-/// ID registers that define the guest's CPU. A restore on a CPU that reports different
-/// values is refused.
+/// ID registers that define the guest's CPU, each one Hypervisor.framework says and lets a
+/// VMM set: MIDR, PFR0 and 1, ZFR0, SMFR0, DFR0 and 1, ISAR0 and 1, MMFR0 to 2. It says
+/// none of ISAR2, ISAR3, PFR2, MMFR3 or MMFR4 (HV_BAD_ARGUMENT, M5 Max, macOS 26.5.2, PM
+/// M460). A restore on a CPU short of what they say is refused, and one that has it all is
+/// told them (D176 part 6).
 const ID_REGS: &[u16] = &[
-    0xc000, 0xc020, 0xc021, 0xc028, 0xc029, 0xc030, 0xc031, 0xc038, 0xc039, 0xc03a,
+    0xc000, 0xc020, 0xc021, 0xc024, 0xc025, 0xc028, 0xc029, 0xc030, 0xc031, 0xc038, 0xc039, 0xc03a,
 ];
 const ID_AA64DFR0_EL1: u16 = 0xc028;
 
@@ -841,6 +990,23 @@ impl Vcpu {
     /// The CPU identity the guest sees: ID registers by encoding.
     pub fn cpu_id(&self) -> Result<Vec<(u16, u64)>> {
         ID_REGS.iter().map(|&r| Ok((r, self.sys.sys_reg(r)?))).collect()
+    }
+
+    /// Tells the guest the CPU `id` describes, each ID register set and read back: a guest
+    /// resumed on another CPU than its snapshot's goes on with the one it found (D176 part
+    /// 6). A register the framework keeps as it is fails it.
+    pub fn set_cpu_id(&mut self, id: &[(u16, u64)]) -> Result<()> {
+        for &(r, v) in id {
+            self.sys.set_sys_reg(r, v)?;
+            let now = self.sys.sys_reg(r)?;
+            if now != v {
+                return Err(Error::Guest(format!(
+                    "{} stays {now:#x} where its guest's is {v:#x}",
+                    crate::arch::aarch64::cpu::name(r)
+                )));
+            }
+        }
+        Ok(())
     }
 
     /// Sets `CNTVCT_EL0 = host_counter() - offset`. Every vCPU of a VM gets the same
@@ -1159,6 +1325,19 @@ mod tests {
         std::thread::scope(|s| {
             s.spawn(move || {
                 let mut a = vm.create_vcpu(0).unwrap();
+                // Every ID register a snapshot keeps is one the framework says and lets a
+                // VMM set, as a restore on another CPU tells its guest the CPU it found (D176
+                // part 6): read back as set, a field lowered, and as it was.
+                let id = a.cpu_id().unwrap();
+                assert_eq!(id.len(), ID_REGS.len());
+                let lowered: Vec<(u16, u64)> = id
+                    .iter()
+                    .map(|&(r, v)| (r, if r == 0xc000 { v } else { v & !0xf0 }))
+                    .collect();
+                a.set_cpu_id(&lowered).unwrap();
+                assert_eq!(a.cpu_id().unwrap(), lowered);
+                a.set_cpu_id(&id).unwrap();
+                assert_eq!(a.cpu_id().unwrap(), id);
 
                 // The prefetch touches a page read and a page written, leaves out a page
                 // outside guest memory and a page listed twice, and changes no byte. A

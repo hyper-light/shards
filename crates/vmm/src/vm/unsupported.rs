@@ -59,8 +59,39 @@ pub struct Handle(Never);
 #[derive(Debug)]
 pub struct Saved(Never);
 
+impl Saved {
+    pub fn resume(self) -> Result<(), String> {
+        match self.0 {}
+    }
+}
+
 impl Handle {
     pub fn markers(&self) -> Vec<(u32, u128)> {
+        match self.0 {}
+    }
+
+    pub fn plug_disk(
+        &self,
+        _file: std::fs::File,
+        _read_only: bool,
+        _serial: &str,
+    ) -> Result<super::Plugged, String> {
+        match self.0 {}
+    }
+
+    pub fn plug_share(
+        &self,
+        _tag: &str,
+        _slot: crate::devices::virtio::fs::Share,
+    ) -> Result<super::Plugged, String> {
+        match self.0 {}
+    }
+
+    pub fn unplug(&self, _devfn: u8) -> Result<(), String> {
+        match self.0 {}
+    }
+
+    pub fn disk_size(&self, _index: usize) -> Option<crate::devices::virtio::block::DiskSize> {
         match self.0 {}
     }
 
@@ -92,11 +123,19 @@ impl Handle {
         match self.0 {}
     }
 
+    pub fn stage_layer(&self, _file: std::fs::File) -> Result<(), String> {
+        match self.0 {}
+    }
+
     pub fn attach_swap(&self, _file: std::fs::File) -> Result<Option<u64>, String> {
         match self.0 {}
     }
 
     pub fn restore_swap(&self, _file: std::fs::File) -> Result<(), String> {
+        match self.0 {}
+    }
+
+    pub fn precopy(&self, _out: std::fs::File, _most: u32, _enough: u64) -> Result<super::Precopied, String> {
         match self.0 {}
     }
 

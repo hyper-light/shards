@@ -24,15 +24,23 @@ pub const JOIN_DISK_SERIAL: &str = "shards-join";
 /// until a container joining its network brings volumes, which init mounts then.
 pub const JOIN_SHARE_TAG: &str = "shards-join-share";
 
+/// The attribute init sets on a share's root, or a join share's volume, as it mounts it
+/// (D38): its value `UID:GID`, the owner the share's server gives the guest of each file
+/// there that holds no owner of the guest's (the host made it). Its server takes it of the
+/// guest's root alone, as the guest's kernel lets no process without CAP_SYS_ADMIN set a
+/// `trusted.` attribute (fs/xattr.c `xattr_permission`), and keeps it on no file.
+pub const SHARE_OWNER_XATTR: &str = "trusted.shards.owner";
+
 /// The most a share's server reads or writes in one FUSE request, in pages (its INIT
 /// reply's `max_pages`), which the guest's kernel sends no more than: 256, a mebibyte of
 /// 4 KiB pages.
 pub const SHARE_MAX_PAGES: u16 = 256;
 
-/// The MAC of a guest's gateway, made of its IPv4 address, as Docker made its own (02:42
-/// and the address's four bytes): what the guest's network process answers every ARP
-/// request and neighbor solicitation with, and what the guest's init gives its gateway's
-/// neighbor entry, so that the guest never asks.
+/// The MAC of a guest's gateway, made of its IPv4 address: 02:42, a locally administered
+/// prefix (its first byte's bit 1 set; Docker's bridge took the same), then the address's
+/// four bytes: what the guest's network process answers every ARP request and neighbor
+/// solicitation with, and what the guest's init gives its gateway's neighbor entry, so
+/// that the guest never asks.
 pub const fn gateway_mac(gateway: [u8; 4]) -> [u8; 6] {
     let [a, b, c, d] = gateway;
     [0x02, 0x42, a, b, c, d]
@@ -102,9 +110,15 @@ pub mod control {
     /// the virtio-pmem device whose ext4 file system init mounts with DAX under the root's
     /// overlay; 0 where it has none. Init finds the device's region by it.
     pub const LAYER: u64 = 0x40;
+    /// Write [`SWAP_LAYER`]: the guest has let go of its writable layer's file system
+    /// (D190), nothing of it mounted or open, and the VMM puts the file its host readied for
+    /// the run under the device in its place, a stopped container's own (`run::kind::OVER`).
+    /// Read: 1 once one was put there, else 0.
+    pub const LAYER_SWAP: u64 = 0x48;
 
     pub const SNAPSHOT_NOW: u32 = 1;
     pub const SHOW_SWAP: u32 = 1;
+    pub const SWAP_LAYER: u32 = 1;
 }
 
 /// Boot-phase markers written to the control page.

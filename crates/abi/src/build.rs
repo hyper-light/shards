@@ -209,7 +209,8 @@ pub enum Network {
     /// Its own loopback alone.
     #[default]
     None,
-    /// The builder's network, as BuildKit's steps have their host's.
+    /// The builder's network: a step's `--network=default`, where BuildKit's steps have their
+    /// host's.
     Default,
 }
 

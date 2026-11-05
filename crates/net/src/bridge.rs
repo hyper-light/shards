@@ -45,7 +45,7 @@ pub const NO_SUBNET: &str =
     "error creating default \"bridge\" network: all predefined address pools have been fully subnetted";
 
 /// The default bridge: its subnet, whose first address is the gateway's and second the
-/// guest's, as dockerd's IPAM gives the bridge and then its first container theirs.
+/// guest's, every microVM's on it, so that one template serves them all (D31).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Bridge {
     subnet: Ipv4Addr,
@@ -186,8 +186,8 @@ pub fn elected_here(note: &mut dyn FnMut(String)) -> Option<Bridge> {
     Bridge::elect(&reserved)
 }
 
-/// The host's resolvers, as BuildKit (executor/oci resolvconfPath) and dockerd
-/// (libnetwork resolvconf.Path) read them: /etc/resolv.conf, unless its one nameserver is
+/// The host's resolvers, where a guest's lookups go (D31; the files BuildKit's
+/// executor/oci/resolvconf.go reads too): /etc/resolv.conf, unless its one nameserver is
 /// systemd-resolved's stub, 127.0.0.53, which within a guest is the guest's own address;
 /// then the servers systemd-resolved forwards to, which it lists in
 /// /run/systemd/resolve/resolv.conf.

@@ -1,6 +1,7 @@
-//! The command line: `run` and the container and image commands read as the Docker CLI
-//! reads them, their `--help` and usage mistakes answered here, the rest asked of the
-//! daemon; `shards daemon stop` stops it; `shards run --kernel` and `shards restore` become the VM process; every other
+//! The command line: `run` and the container and image commands read with the Docker CLI's
+//! meaning (crates/cmdline commands.rs, held to docker/cli's answers), their `--help` and
+//! usage mistakes answered here, the rest asked of the daemon; `shards daemon stop` stops
+//! it; `shards run --kernel` and `shards restore` become the VM process; every other
 //! command is the daemon side's (main.rs, `shardsd`), in this process. One binary does it
 //! all and starts as fast as the command alone did: it links no framework that loads at
 //! launch, binding Apple's when first needed (shards_apple, the VMM's hvf::ffi; PM M113).
@@ -21,6 +22,7 @@ pub(crate) use client::ask_here;
 pub(crate) mod cp;
 pub(crate) mod listing;
 pub(crate) mod look;
+mod moves;
 pub(crate) mod request;
 pub(crate) mod save;
 mod screens;
@@ -61,8 +63,12 @@ pub fn main() -> ExitCode {
 /// The commands shards has besides the catalog's: the daemon side's own words.
 /// `daemon`, `guest` and `disk` are what `run daemon`, `stop daemon`, `configure guest` and
 /// `configure disk` are said as, and `daemon` how the client starts the daemon.
-const OWN: [&str; 26] = [
+const OWN: [&str; 30] = [
     "system",
+    // Devices plugged into a running microVM, and its disks grown (D214).
+    "plug",
+    "unplug",
+    "grow",
     // Contexts, and the clients and invitations of this machine's (D180).
     "context",
     "client",
@@ -92,6 +98,8 @@ const OWN: [&str; 26] = [
     "-h",
     "--help",
     "restore",
+    // A microVM moved to another machine (`move vm`, D176 part 6).
+    "move",
 ];
 
 fn dispatch(args: Vec<OsString>) -> ExitCode {
@@ -418,7 +426,7 @@ fn container(
             filtered: false,
         });
     }
-    // A prune asks first, as the Docker CLI does, unless forced: on a colour terminal in
+    // A prune asks first, unless forced, so that nothing goes unasked: on a colour terminal in
     // shards' look, elsewhere in the CLI's words.
     if let Some(warning) = prune_warning(command, &parsed) {
         let asked = match look::styled() {
@@ -526,6 +534,13 @@ fn container(
                 if std::ptr::eq(command, &shards_cmdline::commands::COPY) {
                     drop(fds);
                     return cp::copy(&parsed, &|argv, fds| {
+                        client::ask(&home, &daemon, &command_of(argv), fds)
+                    });
+                }
+                // `move vm` asks this daemon and another machine's in steps (cli/moves.rs).
+                if std::ptr::eq(command, &shards_cmdline::commands::MOVE_VM) {
+                    drop(fds);
+                    return moves::move_vm(&parsed, &home, &|argv, fds| {
                         client::ask(&home, &daemon, &command_of(argv), fds)
                     });
                 }
@@ -640,7 +655,7 @@ fn management_help(name: &str) -> ExitCode {
     }
 }
 
-/// A command shards does not have, refused as docker/cli refuses one (status 1); in a
+/// A command shards does not have, refused with status 1 in the words scripts match; in a
 /// panel on a colour terminal.
 fn unknown(text: &str) -> ExitCode {
     if let Some(p) = look::styled_err() {
@@ -801,8 +816,8 @@ fn prune_filters(parsed: &Parsed) -> Vec<String> {
     filters
 }
 
-/// Whether, asked `question` on stdout, stdin answers yes (`y`, as docker/cli's
-/// PromptForConfirmation takes it, in either case).
+/// Whether, asked `question` on stdout, stdin answers yes (`y`, in either case,
+/// what scripts pipe in: PromptForConfirmation).
 fn confirmed(question: &str) -> bool {
     let _ = std::io::stdout().write_all(question.as_bytes());
     let _ = std::io::stdout().flush();
@@ -831,7 +846,8 @@ pub(crate) fn said_ours(docker: &str) -> String {
 static FORM: std::sync::OnceLock<shards_cmdline::grammar::Form> = std::sync::OnceLock::new();
 
 /// Reads `argv` for `command`, which `path` names; or answers its `--help` or its
-/// mistakes as the Docker CLI does, with the status to exit with.
+/// mistakes in the words scripts match (held to docker/cli's answers, D157), with the
+/// status to exit with.
 pub(crate) fn read(
     command: &'static Command,
     path: &str,

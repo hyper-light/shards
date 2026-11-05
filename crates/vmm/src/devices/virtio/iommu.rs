@@ -21,6 +21,15 @@
 //! virtio-iommu (virtio-devices/src/iommu.rs); and where the endpoint bypasses
 //! translation, all of guest RAM, as virtio 1.3 §5.13 has a bypassing endpoint's DMA go
 //! untranslated.
+//!
+//! A machine's hot-plug slots can sit behind it too (D214): their requester IDs are
+//! endpoints its firmware names from boot (the devicetree's `iommu-map`, ACPI's VIOT), as
+//! a guest's IOMMU core finds a function's IOMMU by its firmware as the function is added,
+//! but each is one it translates only while a function is plugged there
+//! ([`Translation::plugged`]); vacant, it is no endpoint of its (S_NOENT), as one whose
+//! device is gone. A function the VMM emulates there (a disk, a shared directory) has its
+//! MSIs land where its endpoint's domain maps their address ([`Msis`]), as Linux has an
+//! arm64 function's doorbell mapped in its domain whatever its driver's DMA does.
 
 use std::collections::BTreeMap;
 use std::io;
@@ -76,8 +85,14 @@ pub type Shared = Arc<Mutex<Translation>>;
 /// whether an endpoint attached to none bypasses translation.
 #[derive(Debug)]
 pub struct Translation {
-    /// The endpoints the IOMMU translates: the functions' requester IDs.
+    /// The endpoints the IOMMU translates: the functions' requester IDs, its slots'
+    /// among them.
     known: Vec<u32>,
+    /// The endpoints of the machine's hot-plug slots (D214), which its firmware names from
+    /// boot; and of them, those that hold no function, translated by none
+    /// ([`Translation::translates`]).
+    slots: Vec<u32>,
+    vacant: Vec<u32>,
     attached: BTreeMap<u32, u32>,
     domains: BTreeMap<u32, Domain>,
     bypass: bool,
@@ -203,6 +218,8 @@ impl Translation {
     pub fn new(endpoints: Vec<u32>, msi: Option<(u64, u64)>) -> Translation {
         Translation {
             known: endpoints,
+            slots: Vec::new(),
+            vacant: Vec::new(),
             attached: BTreeMap::new(),
             domains: BTreeMap::new(),
             bypass: true,
@@ -226,6 +243,85 @@ impl Translation {
         self
     }
 
+    /// The translation with the endpoints of the machine's hot-plug slots, `slots`, as
+    /// well (D214): known to the guest's firmware from boot, each vacant, translated by
+    /// none, until a function is plugged there ([`plugged`](Self::plugged)).
+    pub fn with_slots(mut self, slots: &[u32]) -> Translation {
+        for &s in slots {
+            if !self.known.contains(&s) {
+                self.known.push(s);
+            }
+        }
+        self.slots = slots.to_vec();
+        self.vacant = slots.to_vec();
+        self
+    }
+
+    /// Whether `endpoint` is one it translates now: one of its own, but a vacant slot's.
+    pub(crate) fn translates(&self, endpoint: u32) -> bool {
+        self.known.contains(&endpoint) && !self.vacant.contains(&endpoint)
+    }
+
+    /// The slot of endpoint `endpoint` holds a function now (D214): translated from here
+    /// on, attached to no domain, as a function found as its guest rescans is. An error
+    /// where it is no slot's, or one that holds a function already.
+    pub fn plugged(&mut self, endpoint: u32) -> io::Result<()> {
+        if !self.slots.contains(&endpoint) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("endpoint {endpoint:#x} is no hot-plug slot's of this IOMMU"),
+            ));
+        }
+        if !self.vacant.contains(&endpoint) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("endpoint {endpoint:#x}'s slot holds a function already"),
+            ));
+        }
+        self.vacant.retain(|&e| e != endpoint);
+        Ok(())
+    }
+
+    /// The function in the slot of endpoint `endpoint` gone (D214): the endpoint taken
+    /// from its domain, which goes once no endpoint is attached to it, and from what
+    /// follows it, which unmaps what it mapped once it follows no endpoint, else shows
+    /// another's view; then vacant again. Nothing where it is no slot's.
+    pub fn unplugged(&mut self, endpoint: u32) {
+        if !self.slots.contains(&endpoint) {
+            return;
+        }
+        self.detach(endpoint);
+        if let Some(at) = self
+            .followers
+            .iter()
+            .position(|f| f.endpoints.contains(&endpoint))
+        {
+            let alone = self.followers.get(at).is_some_and(|f| f.endpoints.len() == 1);
+            if alone {
+                let f = self.followers.remove(at);
+                if let Err(e) = f.follower.clear() {
+                    crate::warn!("virtio-iommu: endpoint {endpoint:#x}'s host mappings, unplugged: {e}");
+                }
+            } else if let Some(f) = self.followers.get_mut(at) {
+                f.endpoints.retain(|&e| e != endpoint);
+                if f.shows == endpoint
+                    && let Some(&other) = f.endpoints.first()
+                {
+                    f.shows = other;
+                }
+            }
+            if !alone
+                && let Some(f) = self.followers.get(at)
+                && let Err(e) = show(&*f.follower, self.view(f.shows))
+            {
+                crate::warn!("virtio-iommu: endpoint {:#x}'s host mappings: {e}", f.shows);
+            }
+        }
+        if !self.vacant.contains(&endpoint) {
+            self.vacant.push(endpoint);
+        }
+    }
+
     /// A device reset: no endpoint attached, and bypass as it was, which a device reset
     /// leaves (virtio 1.3 §5.13.4.2).
     fn reset(&mut self) {
@@ -245,7 +341,7 @@ impl Translation {
     /// view it has now; or, where it follows other endpoints already, with theirs, as one
     /// ([`Follows`]).
     pub fn follow(&mut self, endpoint: u32, follower: Arc<dyn Follower>) -> io::Result<()> {
-        if !self.known.contains(&endpoint) {
+        if !self.translates(endpoint) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 format!("endpoint {endpoint:#x} is not one this IOMMU translates"),
@@ -397,7 +493,7 @@ impl Translation {
     }
 
     pub(crate) fn attach(&mut self, domain: u32, endpoint: u32, flags: u32) -> u8 {
-        if !self.known.contains(&endpoint) {
+        if !self.translates(endpoint) {
             return S_NOENT;
         }
         // A flag it does not offer is one it does not recognize (§5.13.6.3.2).
@@ -540,6 +636,55 @@ impl Translation {
     }
 }
 
+/// The MSIs of a function the VMM emulates in a hot-plug slot behind the IOMMU (D214), a
+/// disk's or a shared directory's: each lands where its endpoint's domain maps its address
+/// for a write, or in the MSI window untranslated ([`Translation::msi_target`]), as a
+/// passed-through function's do (`vfio::Translated`); one its domain maps nothing at
+/// faults, and goes nowhere. Linux has an arm64 function's MSI doorbell mapped in its
+/// domain (iommu.c, iommu_dma_prepare_msi) whether or not its driver's DMA goes through
+/// the IOMMU, which a virtio driver's does not without VIRTIO_F_ACCESS_PLATFORM.
+pub struct Msis {
+    translation: Shared,
+    endpoint: u32,
+    to: Arc<dyn crate::devices::pci::Msi>,
+}
+
+impl std::fmt::Debug for Msis {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Msis")
+            .field("endpoint", &self.endpoint)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Msis {
+    /// The MSIs of `endpoint`, translated by `translation`, sent on by `to`.
+    pub fn new(translation: Shared, endpoint: u32, to: Arc<dyn crate::devices::pci::Msi>) -> Msis {
+        Msis {
+            translation,
+            endpoint,
+            to,
+        }
+    }
+}
+
+impl crate::devices::pci::Msi for Msis {
+    fn send(&self, address: u64, data: u32) {
+        let target = self
+            .translation
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .msi_target(self.endpoint, address);
+        match target {
+            Some(to) => self.to.send(to, data),
+            None => crate::debug!(
+                "virtio-iommu: endpoint {:#x}'s MSI to {address:#x}, which its domain does not map",
+                self.endpoint
+            ),
+        }
+    }
+}
+
 /// The values a request reads from its device-readable part at `at`, little-endian.
 fn le32(req: &[u8], at: usize) -> Option<u32> {
     req.get(at..at + 4)
@@ -589,7 +734,7 @@ fn answer_request(state: &mut Translation, req: &[u8]) -> (u8, Vec<u8>) {
             _ => short,
         },
         T_PROBE => match le32(req, 4) {
-            Some(endpoint) if state.known.contains(&endpoint) => {
+            Some(endpoint) if state.translates(endpoint) => {
                 let mut props = vec![0u8; PROBE_SIZE as usize];
                 // struct virtio_iommu_probe_resv_mem: its head (type, the length after
                 // it), subtype, three reserved bytes, and the region's first and last.
@@ -1228,6 +1373,108 @@ mod tests {
             S_OK
         );
         assert_eq!(t.msi_target(8, 0x800_0040), Some(0x0802_0040), "its doorbell");
+    }
+
+    /// A hot-plug slot's endpoint (D214) is known from boot but translated only while a
+    /// function is plugged there: vacant, PROBE and ATTACH find no endpoint and nothing may
+    /// follow it; plugged, it is attached and followed as any; unplugged, it leaves its
+    /// domain, which goes with its last endpoint, and what followed it alone unmaps what
+    /// it mapped, where one shared by another endpoint shows that one's view; then it is
+    /// vacant again, and plugged afresh, attached to nothing.
+    #[test]
+    fn a_slots_endpoint_is_translated_while_a_function_is_plugged_there() {
+        let mut t = Translation::new(vec![8], MSI)
+            .bypassing(false)
+            .with_slots(&[16, 24]);
+        let mut probe = vec![T_PROBE, 0, 0, 0];
+        probe.extend_from_slice(&16u32.to_le_bytes());
+        probe.extend_from_slice(&[0; 64]);
+        assert_eq!(answer_request(&mut t, &probe).0, S_NOENT, "vacant");
+        assert_eq!(status(&mut t, &attach(1, 16, 0)), S_NOENT);
+        let shown = Arc::new(Shown::default());
+        assert!(
+            t.follow(16, shown.clone()).is_err(),
+            "nothing follows a vacant slot"
+        );
+        assert!(t.plugged(8).is_err(), "no slot's");
+        t.plugged(16).unwrap();
+        assert!(t.plugged(16).is_err(), "plugged already");
+        assert_eq!(answer_request(&mut t, &probe).0, S_OK);
+        t.follow(16, shown.clone()).unwrap();
+        assert!(!shown.whole(), "blocked until attached");
+        assert_eq!(status(&mut t, &attach(1, 16, 0)), S_OK);
+        assert_eq!(
+            status(&mut t, &map(1, 0x1000, 0x1fff, 0x8000, MAP_F_READ | MAP_F_WRITE)),
+            S_OK
+        );
+        assert_eq!(shown.mappings(), [(0x1000, (0x8000, 0x1000, true, true))]);
+        // The test endpoint in the domain too, so that it outlives the slot's.
+        assert_eq!(status(&mut t, &attach(1, 8, 0)), S_OK);
+        t.unplugged(16);
+        assert!(shown.mappings().is_empty(), "its follower unmapped all it mapped");
+        assert_eq!(answer_request(&mut t, &probe).0, S_NOENT, "vacant again");
+        assert_eq!(
+            t.translate(8, 0x1000, 8, false),
+            Some(vec![(0x8000, 8)]),
+            "the domain stays"
+        );
+        assert_eq!(status(&mut t, &detach(1, 8)), S_OK);
+        t.plugged(16).unwrap();
+        assert_eq!(t.translate(16, 0x1000, 8, false), None, "attached to nothing");
+
+        // Two endpoints sharing a follower: the one left is what it shows.
+        let mut t = Translation::new(Vec::new(), MSI)
+            .bypassing(false)
+            .with_slots(&[16, 24]);
+        let shared = Arc::new(Shown::default());
+        for e in [16, 24] {
+            t.plugged(e).unwrap();
+            t.follow(e, shared.clone()).unwrap();
+        }
+        assert_eq!(status(&mut t, &attach(2, 24, 0)), S_OK);
+        assert_eq!(status(&mut t, &map(2, 0x4000, 0x4fff, 0x9000, MAP_F_READ)), S_OK);
+        assert_eq!(status(&mut t, &attach(1, 16, 0)), S_OK);
+        assert!(shared.mappings().is_empty(), "it shows 16's empty domain");
+        t.unplugged(16);
+        assert_eq!(
+            shared.mappings(),
+            [(0x4000, (0x9000, 0x1000, true, false))],
+            "24's"
+        );
+        t.unplugged(24);
+        assert!(shared.mappings().is_empty());
+        t.unplugged(8);
+    }
+
+    /// A function the VMM emulates in a slot behind the IOMMU sends its MSIs where its
+    /// domain maps them, the window's untranslated; one its domain does not map goes
+    /// nowhere.
+    #[test]
+    fn an_emulated_slots_msis_go_where_its_domain_maps_them() {
+        #[derive(Default)]
+        struct Sent(Mutex<Vec<(u64, u32)>>);
+        impl crate::devices::pci::Msi for Sent {
+            fn send(&self, address: u64, data: u32) {
+                self.0.lock().unwrap().push((address, data));
+            }
+        }
+        let t: Shared = Arc::new(Mutex::new(Translation::new(Vec::new(), MSI).with_slots(&[16])));
+        t.lock().unwrap().plugged(16).unwrap();
+        let sent = Arc::new(Sent::default());
+        let msis = Msis::new(t.clone(), 16, sent.clone());
+        use crate::devices::pci::Msi as _;
+        msis.send(0xfee0_0000, 1);
+        assert_eq!(status(&mut t.lock().unwrap(), &attach(1, 16, 0)), S_OK);
+        msis.send(0x800_0040, 2);
+        assert_eq!(
+            status(
+                &mut t.lock().unwrap(),
+                &map(1, 0x800_0000, 0x800_0fff, 0x0802_0000, MAP_F_WRITE | MAP_F_MMIO)
+            ),
+            S_OK
+        );
+        msis.send(0x800_0040, 3);
+        assert_eq!(*sent.0.lock().unwrap(), [(0xfee0_0000, 1), (0x0802_0040, 3)]);
     }
 
     /// PROBE answers an endpoint's reserved regions: the MSI window, of subtype MSI, where

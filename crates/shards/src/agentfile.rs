@@ -33,11 +33,21 @@ pub struct Agentfile {
     /// Whether their flows past the microVM, out or in, or their names, cross init's
     /// network namespace, the command's, on their way to eth0 (D59, D115).
     pub uplink: bool,
+    /// Whether its agents have IPv6 (`NETWORK --ipv6`, D99): with grants past the microVM,
+    /// its run's eth0 takes an IPv6 address for their flows where its network gives none.
+    pub ipv6: bool,
     /// Who each port coming in past the microVM reaches (D122), for `shards read ports`.
     pub receivers: Vec<shards_agentfile::agentfile::Receiver>,
 }
 
 impl Agentfile {
+    /// Whether its agents' flows past the microVM go by IPv6 too (D99): they have IPv6, and
+    /// are granted ports or remote MCP servers past it. Their run's eth0 then needs an IPv6
+    /// address, which a network without IPv6 does not give it.
+    pub fn egress6(&self) -> bool {
+        self.ipv6 && (!self.grants.egress.is_empty() || !self.grants.mcp.is_empty())
+    }
+
     /// What of `run` reaches the image's domains (D115), in the words its init refuses
     /// it with again (`shards_abi::run::beside`): a privileged command, `/proc` unmasked,
     /// the microVM's PID or cgroup namespace (D156) or the host's network (D124), a
@@ -104,8 +114,8 @@ impl Agentfile {
         Ok(())
     }
 
-    /// The capabilities `run` gives its command: Docker's, as moby tweaks them, less
-    /// Docker's default `CAP_NET_RAW` where the domains' flows cross the command's network
+    /// The capabilities `run` gives its command: the default set images are made for (D115),
+    /// less Docker's default `CAP_NET_RAW` where the domains' flows cross the command's network
     /// namespace; one the run adds itself stays, for [`Agentfile::refuse`] to refuse.
     pub fn caps(&self, run: &shards_ipc::Run) -> u64 {
         let caps = crate::setup::capabilities(run);
@@ -235,6 +245,7 @@ pub fn agentfile(rootfs: &std::path::Path, digest: &str) -> Result<Agentfile, St
     let agentfile = Agentfile {
         volumes,
         uplink: !grants.egress.is_empty() || !grants.mcp.is_empty() || grants.dns || ingress,
+        ipv6: af::ipv6(&directives),
         grants,
         domains: u32::try_from(domains).map_err(|_| fail("more agents and harnesses than uids".into()))?,
         receivers,

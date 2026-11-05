@@ -6,9 +6,9 @@ use std::os::fd::AsRawFd;
 
 use super::{
     DeviceFd, KVM_CHECK_EXTENSION, KVM_CREATE_DEVICE, KVM_CREATE_VCPU, KVM_CREATE_VM, KVM_GET_API_VERSION,
-    KVM_GET_DEVICE_ATTR, KVM_GET_MP_STATE, KVM_GET_VCPU_MMAP_SIZE, KVM_IRQ_LINE, KVM_IRQFD, KVM_RUN,
-    KVM_SET_DEVICE_ATTR, KVM_SET_GSI_ROUTING, KVM_SET_MP_STATE, KVM_SET_USER_MEMORY_REGION, KVM_SIGNAL_MSI,
-    VcpuFd, VmFd, ioctl,
+    KVM_GET_DEVICE_ATTR, KVM_GET_MP_STATE, KVM_GET_VCPU_MMAP_SIZE, KVM_IRQ_LINE, KVM_IRQFD,
+    KVM_RESET_DIRTY_RINGS, KVM_RUN, KVM_SET_DEVICE_ATTR, KVM_SET_GSI_ROUTING, KVM_SET_MP_STATE,
+    KVM_SET_USER_MEMORY_REGION, KVM_SIGNAL_MSI, VcpuFd, VmFd, ioctl,
 };
 
 /// Every ioctl request shards makes of KVM: what its seccomp filter allows
@@ -38,6 +38,7 @@ pub const IOCTLS: &[u64] = &[
     KVM_GET_REG_LIST,
     KVM_SIGNAL_MSI,
     KVM_SET_GSI_ROUTING,
+    KVM_RESET_DIRTY_RINGS,
 ];
 
 pub const KVM_GET_ONE_REG: u64 = 0x4010_AEAB;
@@ -153,6 +154,15 @@ pub const VGIC_V3_ADDR_TYPE_REDIST: u64 = 3;
 /// The ITS's register frame, 128 KiB on a 64 KiB boundary (KVM_VGIC_ITS_ADDR_TYPE).
 pub const VGIC_ITS_ADDR_TYPE: u64 = 4;
 pub const VGIC_CTRL_INIT: u64 = 0;
+/// The ITS's registers, 64 bits each by offset (KVM_DEV_ARM_VGIC_GRP_ITS_REGS), and its
+/// controls: its tables written to guest memory and read back, and its reset; and the
+/// GIC's control that writes its LPIs' pending state to guest memory (arm-vgic-its.rst,
+/// arm-vgic-v3.rst).
+pub const VGIC_GRP_ITS_REGS: u32 = 8;
+pub const ITS_SAVE_TABLES: u64 = 1;
+pub const ITS_RESTORE_TABLES: u64 = 2;
+pub const VGIC_SAVE_PENDING_TABLES: u64 = 3;
+pub const ITS_CTRL_RESET: u64 = 4;
 /// Its distributor's frame, and each vCPU's redistributor's two frames.
 pub const VGIC_V3_DIST_SIZE: u64 = 64 << 10;
 pub const VGIC_V3_REDIST_SIZE: u64 = 2 * (64 << 10);

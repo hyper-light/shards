@@ -1200,10 +1200,15 @@ pub static RMI: Command = Command {
         Flag::bool("force", Some(b'f'), "Force removal of the image"),
         HELP,
         Flag::bool("no-prune", None, "Do not delete untagged parents"),
+        Flag::many(
+            "platform",
+            None,
+            "strings",
+            "Remove only the given platform variant. Formatted as \"os[/arch[/variant]]\" (e.g., \"linux/amd64\")",
+        ),
         Flag::bool("vms", None, "Remove stopped microVMs").extension(),
     ],
-    unserved: "\
-platform - m - -",
+    unserved: "",
     interspersed: true,
     error_prefix: "",
 };
@@ -1223,9 +1228,14 @@ pub static IMAGE_INSPECT: Command = Command {
         .extension(),
         Flag::string("format", Some(b'f'), "", INSPECT_FORMAT_HELP),
         HELP,
+        Flag::string(
+            "platform",
+            None,
+            "",
+            "Inspect a specific platform of the multi-platform image.\nIf the image or the server is not multi-platform capable, the command will error out if the platform does not match.\n'os[/arch[/variant]]': Explicit platform (eg. linux/amd64)",
+        ),
     ],
-    unserved: "\
-platform - s - -",
+    unserved: "",
     interspersed: true,
     error_prefix: "",
 };
@@ -1281,10 +1291,15 @@ pub static HISTORY: Command = Command {
         )
         .defaulting("true"),
         Flag::bool("no-trunc", None, "Don't truncate output"),
+        Flag::string(
+            "platform",
+            None,
+            "",
+            "Show history for the given platform. Formatted as \"os[/arch[/variant]]\" (e.g., \"linux/amd64\")",
+        ),
         Flag::bool("quiet", Some(b'q'), "Only show image IDs"),
     ],
-    unserved: "\
-platform - s - -",
+    unserved: "",
     interspersed: true,
     error_prefix: "",
 };
@@ -1847,9 +1862,14 @@ pub static SAVE: Command = Command {
         .extension(),
         HELP,
         Flag::string("output", Some(b'o'), "", "Write to a file, instead of STDOUT"),
+        Flag::many(
+            "platform",
+            None,
+            "strings",
+            "Save only the given platform(s). Formatted as a comma-separated list of \"os[/arch[/variant]]\" (e.g., \"linux/amd64,linux/arm64/v8\")",
+        ),
     ],
-    unserved: "\
-platform - m - -",
+    unserved: "",
     interspersed: true,
     error_prefix: "",
 };
@@ -1868,10 +1888,15 @@ pub static LOAD: Command = Command {
             "",
             "Read from tar archive file, instead of STDIN",
         ),
+        Flag::many(
+            "platform",
+            None,
+            "strings",
+            "Load only the given platform(s). Formatted as a comma-separated list of \"os[/arch[/variant]]\" (e.g., \"linux/amd64,linux/arm64/v8\").",
+        ),
         Flag::bool("quiet", Some(b'q'), "Suppress the load output"),
     ],
-    unserved: "\
-platform - m - -",
+    unserved: "",
     interspersed: true,
     error_prefix: "",
 };
@@ -1949,10 +1974,15 @@ pub static PUSH: Command = Command {
         .defaulting("true")
         .deprecated("support for docker content trust was removed"),
         HELP,
+        Flag::string(
+            "platform",
+            None,
+            "",
+            "Push a platform-specific manifest as a single-platform image to the registry.\nImage index won't be pushed, meaning that other manifests, including attestations won't be preserved.\n'os[/arch[/variant]]': Explicit platform (eg. linux/amd64)",
+        ),
         Flag::bool("quiet", Some(b'q'), "Suppress verbose output"),
     ],
-    unserved: "\
-platform - s - -",
+    unserved: "",
     interspersed: true,
     error_prefix: "",
 };
@@ -2148,6 +2178,26 @@ pub static SAVE_VM: Command = Command {
     error_prefix: "",
 };
 
+/// `shards move vm` (D176 part 6): a microVM saved whole, moved to the machine a context
+/// reaches (D180), and resumed there, where it was saved.
+pub static MOVE_VM: Command = Command {
+    usage: "MICROVM CONTEXT",
+    about: "Move a microVM to the machine a context reaches: saved whole here, and resumed there where it was",
+    aliases: "shards move vm",
+    args: Args::Exactly(2),
+    flags: &[
+        HELP,
+        Flag::bool(
+            "live",
+            None,
+            "Move it as it runs: its memory copied while it runs on, and it held only for what it wrote last",
+        ),
+    ],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "",
+};
+
 /// `shards restore vm` (D176): a stopped microVM resumed from a snapshot of its own, where
 /// it was saved. `shards restore DIR`, a directory holding a snapshot, is the VM process's
 /// (`shards run vm --kernel`'s, D25).
@@ -2168,6 +2218,101 @@ pub static SNAPSHOT_LS: Command = Command {
     about: "List a microVM's snapshots, newest first",
     aliases: "shards list snapshots",
     args: Args::Exactly(1),
+    flags: &[HELP],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "",
+};
+
+/// `shards plug disk` (D214): a disk plugged into a running microVM, its file system
+/// mounted at PATH in it.
+pub static PLUG_DISK: Command = Command {
+    usage: "[OPTIONS] MICROVM FILE:PATH[:ro]",
+    about: "Plug a disk into a running microVM, its file system mounted at PATH",
+    aliases: "shards plug disk",
+    args: Args::Exactly(2),
+    flags: &[
+        HELP,
+        Flag::string(
+            "size",
+            None,
+            "",
+            "Make FILE an empty ext4 file system of this size where it is not there (as 4g)",
+        ),
+    ],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "",
+};
+
+/// `shards plug volume` (D214): a host directory or a named volume plugged into a running
+/// microVM, mounted at PATH in it.
+pub static PLUG_VOLUME: Command = Command {
+    usage: "MICROVM SOURCE:PATH[:ro]",
+    about: "Plug a host directory or a volume into a running microVM, mounted at PATH",
+    aliases: "shards plug volume",
+    args: Args::Exactly(2),
+    flags: &[HELP],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "",
+};
+
+/// `shards plug function` (D214): a host's PCI function plugged into a running microVM,
+/// behind its IOMMU, for its workload to take through VFIO (Linux).
+pub static PLUG_FUNCTION: Command = Command {
+    usage: "MICROVM FUNCTION",
+    about: "Plug a host's PCI function, bound to vfio-pci, into a running microVM, for its workload to take through VFIO",
+    aliases: "shards plug function",
+    args: Args::Exactly(2),
+    flags: &[HELP],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "",
+};
+
+/// `shards unplug function` (D214).
+pub static UNPLUG_FUNCTION: Command = Command {
+    usage: "MICROVM FUNCTION",
+    about: "Unplug a host's PCI function from a running microVM, refused while its workload holds it open",
+    aliases: "shards unplug function",
+    args: Args::Exactly(2),
+    flags: &[HELP],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "",
+};
+
+/// `shards unplug disk` (D214).
+pub static UNPLUG_DISK: Command = Command {
+    usage: "MICROVM PATH",
+    about: "Unmount the disk plugged into a running microVM at PATH, and unplug it",
+    aliases: "shards unplug disk",
+    args: Args::Exactly(2),
+    flags: &[HELP],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "",
+};
+
+/// `shards unplug volume` (D214).
+pub static UNPLUG_VOLUME: Command = Command {
+    usage: "MICROVM PATH",
+    about: "Unmount the volume plugged into a running microVM at PATH, and unplug it",
+    aliases: "shards unplug volume",
+    args: Args::Exactly(2),
+    flags: &[HELP],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "",
+};
+
+/// `shards grow disk` (D214): a plugged disk grown online, its file system with it.
+pub static GROW_DISK: Command = Command {
+    usage: "MICROVM PATH SIZE",
+    about: "Grow the disk plugged into a running microVM at PATH, and its ext4 file system, as it runs",
+    aliases: "shards grow disk",
+    args: Args::Exactly(3),
     flags: &[HELP],
     unserved: "",
     interspersed: true,
@@ -2480,7 +2625,7 @@ pub static BUILD: Command = Command {
         // buildx's root flags.
         Flag::string("builder", None, "", "Override the configured builder instance"),
         Flag::bool("debug", Some(b'D'), "Enable debug logging"),
-        // Hidden in buildx: the legacy resource flags, which --resource supersedes, and
+        // Hidden, as buildx v0.37.1 hides them: the legacy resource flags, which --resource supersedes, and
         // the classic builder's, which BuildKit ignores, some with a warning.
         Flag::string("memory", Some(b'm'), "", "Memory limit").hidden(),
         Flag::string(
@@ -2616,7 +2761,7 @@ pub static POLICY: Command = Command {
     error_prefix: "ERROR: ",
 };
 
-/// The commands `shards buildx policy` lists (its `json-schema` is a TODO in buildx).
+/// The commands `shards buildx policy` lists (its `json-schema` is a TODO in buildx v0.37.1).
 pub const POLICY_COMMANDS: &[(&str, &str)] = &[
     ("eval", "Evaluate policy for a source"),
     ("test", "Run policy tests"),
@@ -2847,10 +2992,18 @@ pub fn find(words: &[&str]) -> Option<(&'static Command, &'static str, usize)> {
         ["images", ..] => (&IMAGES, "shards images", 1),
         ["tag", ..] => (&TAG, "shards tag", 1),
         ["save", "vm", ..] => (&SAVE_VM, "shards save vm", 2),
+        ["move", "vm", ..] => (&MOVE_VM, "shards move vm", 2),
         ["checkpoint", "create", ..] => (&CHECKPOINT_CREATE, "shards checkpoint create", 2),
         ["checkpoint", "ls" | "list", ..] => (&CHECKPOINT_LS, "shards checkpoint ls", 2),
         ["checkpoint", "rm" | "remove", ..] => (&CHECKPOINT_RM, "shards checkpoint rm", 2),
         ["snapshot", "ls" | "list", ..] => (&SNAPSHOT_LS, "shards list snapshots", 2),
+        ["plug", "disk", ..] => (&PLUG_DISK, "shards plug disk", 2),
+        ["plug", "volume", ..] => (&PLUG_VOLUME, "shards plug volume", 2),
+        ["plug", "function", ..] => (&PLUG_FUNCTION, "shards plug function", 2),
+        ["unplug", "function", ..] => (&UNPLUG_FUNCTION, "shards unplug function", 2),
+        ["unplug", "disk", ..] => (&UNPLUG_DISK, "shards unplug disk", 2),
+        ["unplug", "volume", ..] => (&UNPLUG_VOLUME, "shards unplug volume", 2),
+        ["grow", "disk", ..] => (&GROW_DISK, "shards grow disk", 2),
         ["snapshot", "rm" | "remove", ..] => (&SNAPSHOT_RM, "shards remove snapshot", 2),
         ["save", ..] => (&SAVE, "shards save", 1),
         ["load", ..] => (&LOAD, "shards load", 1),
@@ -2930,7 +3083,7 @@ pub fn find(words: &[&str]) -> Option<(&'static Command, &'static str, usize)> {
 
 /// `build` if the start of `words` names it, and how many words do: `build`, `builder
 /// build`, `image build`, `buildx build` or `buildx b`. Its path is always `shards buildx
-/// build`, as buildx's is `docker buildx build` however the CLI was asked.
+/// build`, as buildx v0.37.1's is `docker buildx build` however the CLI was asked.
 pub fn build(words: &[&str]) -> Option<usize> {
     match words {
         ["build", ..] => Some(1),

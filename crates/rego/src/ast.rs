@@ -21,7 +21,7 @@ pub struct Location {
 }
 
 impl Location {
-    /// location.Location.Format("%s", msg) as buildx logs a print: `file:row: msg`.
+    /// location.Location.Format("%s", msg) as buildx v0.37.1 logs a print: `file:row: msg`.
     pub fn format(&self, msg: &str) -> String {
         if self.file.is_empty() {
             format!("{}:{}: {msg}", self.row, self.col)

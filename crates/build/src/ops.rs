@@ -2,8 +2,8 @@
 //! backend.go and backend_unix.go, and ops/user_linux.go for owners by name): `mkdir`,
 //! `mkfile` and `copy`, the actions the Dockerfile frontend asks for.
 //!
-//! Paths in errors are inside the snapshot, as BuildKit trims its mount's directory from
-//! them.
+//! Paths in errors are the snapshot's own, as the Dockerfile names them: no host directory
+//! is in them.
 
 use shards_agentfile::go;
 use shards_agentfile::llb::{OpChown, OpUser};
@@ -334,8 +334,8 @@ fn scan<T>(
     Ok(None)
 }
 
-/// `strconv.Atoi` with its error ignored, as moby/sys/user parses IDs, then cut to 32
-/// bits as Linux's chown takes them.
+/// `strconv.Atoi` with its error ignored, as moby/sys/user's user.go parses IDs, then cut
+/// to 32 bits as Linux's chown takes them.
 fn atoi(s: &[u8]) -> u32 {
     let (neg, digits) = match s.first() {
         Some(b'-') => (true, s.get(1..).unwrap_or_default()),

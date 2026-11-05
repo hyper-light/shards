@@ -72,7 +72,7 @@ pub fn bundles(
     Ok(bundles)
 }
 
-/// An attestation as buildx decodes it: its bundle (a json.RawMessage) and its URL.
+/// An attestation as buildx v0.37.1 decodes it: its bundle (a json.RawMessage) and its URL.
 #[derive(Default)]
 struct Attestation<'r> {
     bundle: Option<&'r [u8]>,
@@ -187,7 +187,7 @@ mod tests {
         }
     }
 
-    /// The API's answers as buildx's struct reads them: names folded, members repeated
+    /// The API's answers as buildx v0.37.1's struct reads them: names folded, members repeated
     /// into what an earlier one decoded, raw bundles as written, and nothing at all from
     /// one with an error anywhere.
     #[test]

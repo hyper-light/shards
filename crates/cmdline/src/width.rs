@@ -1,4 +1,4 @@
-//! How wide text is on a terminal, as the Docker CLI measures it: go-runewidth for the
+//! How wide text is on a terminal, as docker/cli v29.8.1 measures it: go-runewidth for the
 //! tables it aligns (cli/command/formatter/tabwriter), golang.org/x/text/width for the text
 //! it cuts short (formatter.Ellipsis). Their tables differ, and the CLI uses both.
 

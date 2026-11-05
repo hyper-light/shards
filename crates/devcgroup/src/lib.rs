@@ -150,7 +150,7 @@ impl Emulator {
         }
     }
 
-    /// Rules(): the transition from a default cgroup (deny all) to this one, in runc's
+    /// Rules(): the transition from a default cgroup (deny all) to this one, in runc v1.3.4's
     /// order (major, then minor, then type).
     fn rules(&self) -> Vec<Rule> {
         let mut out = Vec::new();
@@ -277,7 +277,7 @@ pub fn program(default_allow: bool, rules: &[Rule]) -> Result<Vec<Insn>, String>
             return Err("[internal error] a rule that changes nothing".into());
         }
         // Up to u32's most, then int32 as Go converts it; the minor's refusal names the
-        // major, as runc's does.
+        // major, as runc v1.3.4's does.
         if r.major > i64::from(u32::MAX) {
             return Err(format!("invalid major {}", r.major));
         }
@@ -324,7 +324,7 @@ pub fn compile(rules: &[Rule]) -> Result<Vec<u8>, String> {
         .collect())
 }
 
-/// A device given to a microVM (`--device`), as runc's rules name it: its path in
+/// A device given to a microVM (`--device`), as runc v1.3.4's rules name it: its path in
 /// the workload, which drops runc's own rule for that path.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Given {

@@ -1613,8 +1613,8 @@ pub(crate) mod tests {
         }
     }
 
-    /// On Linux, a signal a fault raises, sent by another process, is forwarded as Docker
-    /// forwards it, and one a fault of the process's own raises ends it, not looping on the
+    /// On Linux, a signal a fault raises, sent by another process, is forwarded as any
+    /// other signal is, and one a fault of the process's own raises ends it, not looping on the
     /// fault as it would with the signal blocked (review 8.17).
     #[cfg(any(target_os = "linux", target_os = "android"))]
     #[test]

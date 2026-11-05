@@ -1,4 +1,4 @@
-//! `--network` as the Docker CLI reads it: each value an attachment, in the short syntax
+//! `--network` as docker/cli v29.8.1 reads it: each value an attachment, in the short syntax
 //! (a network's name) or the long one (`name=…,alias=…,ip=…`), checked as the CLI checks
 //! them before it asks the daemon (docker/cli opts/network.go NetworkOpt.Set,
 //! cli/command/container/opts.go parseNetworkOpts and parseNetworkAttachmentOpt), with the
@@ -220,7 +220,7 @@ pub struct TopLevel {
     /// `--mac-address`, as given.
     pub mac: String,
     /// `--link-local-ip`, as given: counted as given for the conflict, then what netip
-    /// does not read dropped, as docker/cli's toNetipAddrSlice drops it.
+    /// does not read dropped, as docker/cli v29.8.1's toNetipAddrSlice drops it.
     pub link_local: Vec<String>,
 }
 

@@ -42,24 +42,55 @@ platform/mod.rs below its line 11, and daemon.rs below 622 of its 8,400. 31 more
 stood alone unseen, each a host's own mechanism (platform-parity.tsv), one of them row
 11's: main.rs's `working_set`, which macOS needs not, its template's run recording.
 
+Since 2026-11-04 (branch integrate at ff0cf486, with D183's slices 2 and 3, D38's bind
+owners, D99's part four, D179, D188's builders, D190, D191, D208, D212, D214 and D176's
+parts 6 and 7 merged) the script found 19 items alone, 11 of them new, the 8 others row 9's
+routes. What each misses on macOS is a host's own mechanism, or none needed, with its twin
+(platform-parity.tsv): D214's `plug_vfio`, `plug_vfio_files`, `plug_vfio_with` and
+`VfioFiles` stand with macOS's refusal as row 9's routes do; D191's `run_promptly` and
+`PROMPT_SLICE_NS` with macOS's real-time policy; and D188's `build::outside`, a budgeted
+build's writes made outside its budget, which Linux's memory controller alone needs, as
+macOS's groups and Windows' jobs charge no file's dirty pages to a budget, stands with none
+needed on either. The 19 items it finds now are Windows' alone, each of an open row, and
+stand alone until their row is closed: row 9's 12 (VFIO's routes, module and plugs), row
+14's 4 (`daemon::moves`' attributes) and row 15's 3 (`run_promptly`, `PROMPT_SLICE_NS`, and
+`macos_thread`, whose line had said Linux and Windows needed no policy before Linux's was
+measured). On p/winmove row 14's 4 are gone, moves.rs's attributes read and made through the share
+server's own calls on every host (`server::guest`), the script finding 15. A stub of the
+same name hides a gap from the script, as a twin it cannot tell
+from one: the messages of the merged code that name a host found row 17's
+(`daemon::devices`' `plug_share` on Windows, "not plugged into a running microVM on Windows
+yet"), since built: one `plug_share` for every host, which differs only in how the share's
+stream reaches the VM.
+
+The Windows refusal probe does not implement DDA. A refusal is a counterpart only where
+the host forbids assignment; Windows Server hosts that allow it still need a passthrough
+implementation and a real hardware E2E. The PCI routing twins below therefore cover macOS
+alone, so the script keeps Windows' missing passthrough visible (row 9).
+
 ## The gaps
 
 | # | What | Hosts without it | Evidence |
 |---|---|---|---|
 | 1 | The daemon, and all it serves. That is `shards run IMAGE`, containers and their every command (create, start, stop, rm, ps, logs, exec, attach, cp, top, stats, update, wait, kill, inspect), images run, volumes and binds, networks, published ports, log drivers, names, warm pools, the Engine API, compose, events, and the CLI's client, listings, terminal UI, `cp`, `save` and `show` | closed: Windows amd64 (D195); arm64 has no backend (row 5) | main.rs:93-96 "the daemon needs Unix sockets, which shards does not support on this platform yet"; cli/mod.rs:592 "container commands need the daemon"; main.rs:17-66 `containers`, `daemon`, `local_store`, `logging`, `names`, `networks`, `segments`, `share`, `volumes`, `working_set` are `cfg(unix)`; cli/mod.rs:15-29 `client`, `cp`, `listing`, `look`, `screens`, `show` likewise; architecture.md:4282 "No daemon of shards' runs on Windows yet", :9753 "No published ports yet", :7897 "etwlogs ... waits for shards' daemon on Windows" |
 | 2a | Snapshots and restores: `--snapshot-dir`, `shards restore`, templates (D25), warm pools (D26) | closed: Windows amd64 (D196) | D13 "no snapshots yet (D140)"; grant_answer.rs:406 "a microVM on Windows takes no snapshot yet"; grant.rs:97; vmm platform/windows.rs:559-630 (a snapshot's files, directories, prefetch and working sets "not ... on Windows") |
-| 2b | The same | Linux arm64 (D154) | D13 "no snapshots yet (D154)" |
-| 3 | Host directories shared into a microVM (volumes and binds, D38: the share process and its FUSE server) and their DAX windows (D189) | Windows | virtio/fs/mod.rs: `server`, `host`, `headroom`, `window` are `cfg(unix)`; window_none.rs and vm/mod.rs:764 "a DAX window is not built on Windows yet (D189)" (slates-d7 holds the WHP window, its step 6) |
-| 4 | Memory a microVM gives back: free page reporting (D151), budgets (D148), the host's pressure watched and given back to (D188) for runs and builders | Windows | platform/pressure.rs Linux's and macOS's alone; build/mod.rs:48 `give` `cfg(unix)`; D188 "The daemon has no other platform yet" |
-| 5 | A hypervisor backend | Windows arm64 | hv/mod.rs: `whp` is "Windows on x86_64"; D13 "planned" |
-| 6 | A GPU given a microVM (D144, Venus) | Windows arm64, which has no backend (row 5); closed: Linux (D201), Windows x86_64 (D202) | vm/x86_64.rs and vm/aarch64.rs "a GPU is given on macOS and Linux hosts alone so far (D144, D201)"; user decision 2026-10-13 "--gpus Linux YES" |
+| 2b | The same | closed: Linux arm64 (D154) | D13 "no snapshots yet (D154)" |
+| 3 | Host directories shared into a microVM (volumes and binds, D38: the share process and its FUSE server) and their DAX windows (D189) | closed: Windows (D197, D207) | virtio/fs/mod.rs: `server`, `host`, `headroom`, `window` are `cfg(unix)`; window_none.rs and vm/mod.rs:764 "a DAX window is not built on Windows yet (D189)" (slates-d7 holds the WHP window, its step 6) |
+| 4 | Memory a microVM gives back: free page reporting (D151), budgets (D148), the host's pressure watched and given back to (D188) for runs and builders | closed: Windows (D151, D148, D188) | platform/pressure.rs Linux's and macOS's alone; build/mod.rs:48 `give` `cfg(unix)`; D188 "The daemon has no other platform yet" |
+| 5 | A hypervisor backend | open: Windows arm64, in progress (the plan's step 10) on whp-arm64, not yet merged: its real-VM suite on a native arm64 Windows host last seen at 81 of 84 test binaries passing, three failing at their commands' deadlines (89f52499) | hv/mod.rs on integrate: `whp` is "Windows on x86_64"; D13 |
+| 6 | A GPU given a microVM (D144, Venus) | Windows arm64, which has no backend (row 5); closed: Linux (D201, and musl's hosts and Intel's GPUs, D208), Windows x86_64 (D202); open: the GPU desktop's run of D208's build (its RTX 5060 Ti on NVIDIA's driver, its Radeon 610M) waits for its owner's go, and arm64 Linux is built and linted, untested on a GPU (none here) | vm/x86_64.rs and vm/aarch64.rs "a GPU is given on macOS and Linux hosts alone so far (D144, D201)"; user decision 2026-10-13 "--gpus Linux YES" |
 | 7 | `--cgroup-parent` (D183) | closed: macOS and Windows (D183's slice 3) | D183 "Refused before anything starts" |
 | 8 | Log drivers bound to one host: `journald` (Linux's systemd journal), `etwlogs` (Docker's on Windows) | closed: etwlogs on Windows (D198), and macOS's own log (D199) and etwlogs as journald's counterparts; journald is Linux's own | logging.rs:129, :633, daemon/ship.rs:810; architecture.md:7897 |
-| 9 | A host's PCI function passed through (VFIO, D154) | macOS, Windows | vmm devices/pci/mod.rs:7 `vfio` Linux's |
-| 10 | A machine that serves other machines' clients through a context (D180's machine side): its listener, enrollments and invitations, a client's build contexts kept in step, its secrets, SSH agents and outputs relayed, Docker's tools' engine sockets served | Windows | platform-parity.py (2026-10-30): synced.rs (27 items), context.rs (12: `enroll`, `open_invitations`, `take_terminal`, the cidfile's, `copying`, `step_there`), build/ssh.rs (4: `AGENT_FDS`, `take_agents`, `asked_of`), agent.rs (`sign_step`, `BUNDLE_MOST`), daemon.rs `mod remote` ("Unix's alone as yet"), daemon/relay.rs `fds` |
-| 11 | A restore's working set recorded and mapped ahead, the pages its guest writes copied first (REAP, D29) | Windows | platform-parity.py (2026-10-30): platform/unix.rs's `populate_writable`, `FaultAroundOff` and `uffd`, whose Windows twins are stubs ("a restore on Windows does not record yet", vm::WORKING_SETS, D196), and cli/mod.rs's `working_set_writer` |
+| 9 | A host's PCI function passed through (VFIO, D154), at a run's start or plugged into it as it runs (D214) | open: Windows hosts that permit DDA still have no passthrough implementation or real hardware E2E (the plan's step 13, which needs a Windows Server host that permits it). macOS's refusal is its API's limit (PM M356, M403); the Windows hosts tested here refuse with their own evidence (PM M401, M402) | vmm devices/pci/mod.rs:7 `vfio` Linux's; vm::passthrough_refused reports the implementation gap when WHP accepts AllowDeviceAssignment; platform-parity.py (2026-11-04): runtime.rs's `plug_vfio`, `plug_vfio_files`, `plug_vfio_with`, vm/mod.rs's `VfioFiles` beside the routes and `vfio` |
+| 10 | A machine that serves other machines' clients through a context (D180's machine side): its listener, enrollments and invitations, a client's build contexts kept in step, its secrets, SSH agents and outputs relayed, Docker's tools' engine sockets served | closed: Windows (D180's part 3k) | platform-parity.py (2026-10-30): synced.rs (27 items), context.rs (12: `enroll`, `open_invitations`, `take_terminal`, the cidfile's, `copying`, `step_there`), build/ssh.rs (4: `AGENT_FDS`, `take_agents`, `asked_of`), agent.rs (`sign_step`, `BUNDLE_MOST`), daemon.rs `mod remote` ("Unix's alone as yet"), daemon/relay.rs `fds` |
+| 11 | A restore's working set recorded and mapped ahead, the pages its guest writes copied first (REAP, D29) | closed: Windows (D196) | platform-parity.py (2026-10-30): platform/unix.rs's `populate_writable`, `FaultAroundOff` and `uffd`, whose Windows twins are stubs ("a restore on Windows does not record yet", vm::WORKING_SETS, D196), and cli/mod.rs's `working_set_writer` |
 | 12 | Keyless signing's SPIFFE provider: a JWT-SVID from the agent's Workload API (cosign's `spiffe`) | closed: Windows (D126) | platform-parity.py (2026-11-01): spiffe.rs's `request`, `svids`, `spiffe_id` and `check` `any(unix, test)`; `jwt_svid` on Windows refuses ("the SPIFFE Workload API's named pipe: give the token itself with --identity-token"). cosign v3.1.3 dials `unix://` and the path alone (pkg/providers/spiffe), which go-spiffe v2.7.0 refuses on Windows, where it dials `npipe:` and `tcp:` (workloadapi/addr_windows.go) |
-| 13 | The GPU's VM process given what its drivers reach, as confine.rs gives Linux's (D201) | Windows, until gpu-windows lands: its spawn on a window station and desktop of its own (D202, `shards_ipc::Spawn::graphics`) | platform-parity.py (2026-11-01): confine.rs's `GPU_IOCTL_TYPES`, `GPU_SYSCALLS`, `gpu_paths` and `library_paths` |
+| 13 | The GPU's VM process given what its drivers reach, as confine.rs gives Linux's (D201) | closed: Windows, its spawn on a window station and desktop of its own (D202, `shards_ipc::Spawn::graphics`) | platform-parity.py (2026-11-01): confine.rs's `GPU_IOCTL_TYPES`, `GPU_SYSCALLS`, `gpu_paths` and `library_paths` |
+| 14 | A microVM moved to another machine (D176 part 6) with its volumes' guest owners, which a volume's server keeps in its files' extended attributes (D38; on Windows NTFS's, as WSL keeps them, D197) | built on every host, its tests not yet run: each file moves as its guest sees it, read and made through the share server's own calls on both sides (`server::guest`, stream version 2), so its owner, mode, kind, device number and attributes, and a name no Windows name holds, cross any pair of hosts; open until its unit tests pass on each host and `a_volumes_guest_owners_move_with_it` (tests/moved.rs) passes with a Windows peer | was: daemon/moves.rs's `NO_ATTR` and `sys`, macOS's and Linux's, alone, Windows' `xattrs::list` and `set` saying none; platform-parity.py (p/winmove) finds no item of moves.rs |
+| 15 | The policy a vCPU thread wakes at on a busy host (D191) | open: Windows, a candidate built (`platform::windows_thread`: vCPU threads and device workers at THREAD_PRIORITY_ABOVE_NORMAL, back to normal while one uses more than half of its CPU; the hold's governor at TIME_CRITICAL, PM M294), pending its measurement on a contended host (`cpu-elastic/phases.py --affinity`, `winslice.py`) | platform-parity.py (2026-11-04): platform/unix.rs's `run_promptly` and `PROMPT_SLICE_NS` (Linux's shortest slice, PM M440), platform/mod.rs's `macos_thread` (macOS's real-time policy, M8, M10); D191's Next, "Windows' vCPUs on a contended host: unmeasured" |
+| 16 | A microVM moved live (D176 part 7) | open: arm64 Linux, whose dirty rings need the ITS's bitmap beside them (`KVM_CAP_DIRTY_LOG_RING_WITH_BITMAP`), and Windows, whose dirty page tracking (`WHvQueryGpaRangeDirtyBitmap`) is not asked yet: each refuses a live move, saying so, and moves one saved. A saved move on either, built, has not run there yet | D176's Not yet; moves.rs, "this host's microVMs move only saved, not live"; tests/moved.rs asserts the refusal off macOS and Linux x86_64 |
+| 17 | Devices plugged into a running microVM through the CLI (D214: `shards plug`, `unplug`, `grow`) | open, built: Windows, whose daemon now plugs a volume, its share process's stream (a duplex pipe the daemon makes, D197) handed to the VM as a run's are (D207) and taken there as a `PipeStream` (vm_run.rs `device::SHARE`); tests/plug.rs builds and runs on every host (booted where WHP restores no template), and tests/hotplug.rs serves its shared directory over a pipe on Windows. Neither has run on WHP yet (CI's windows-2022 and windows-2025, jupiter) | daemon/devices.rs `plug_share`, every host's; tests/plug.rs no longer `cfg(unix)`; architecture.md D214's Verified and Not yet |
+| 18 | A run's writable layer restarted over its kept file, not packed (D190 slice 7, PM M443) | open: Windows and macOS, built and held by unit tests, not yet run on their real microVMs. Windows now goes over the kept file as Unix does: each shared view replaces a placeholder (VirtualAlloc2, MapViewOfFile3's MEM_REPLACE_PLACEHOLDER), and the swap unmaps the template's view back to it (UnmapViewOfFile2's MEM_PRESERVE_PLACEHOLDER) and places the container's file's there, unmapped from WHP's partition and mapped back around it; the daemon no longer packs there. To close: the two D190 E2E tests (`a_stopped_microvms_next_run_goes_on_over_its_kept_file`, `a_restored_microvm_goes_on_over_a_stopped_containers_kept_file`, now built for Windows) passing on Windows and a Mac, and Windows' restarts measured against packing. A restart works on every host; this is its cost past 5 MiB written | D190's "On Windows, a view in place of a view" and Next; `platform::map_file_shared_at`, `a_view_goes_in_place_of_another_at_its_address` |
 
 The rest of the script's 494 items fall within these rows: `workload.rs` (95), `synced.rs`
 (29), `vm_run.rs` (18), `context.rs` (14) and `cli/*` items are the daemon's and its client's
@@ -91,6 +122,21 @@ Each lone item is confirmed or closed as its row is worked.
 13. Row 12, the SPIFFE Workload API reached on Windows by its named pipe, as SPIRE's agent
     serves it there.
 14. Row 13, with gpu-windows, after win-pools lands.
+15. Row 14, a volume's guest owners moved to and from a Windows machine: each file's
+    attributes as the guest sees them on both sides, through its share server's own reading
+    of them (the owner's attribute on Unix, WSL's metadata on Windows), so that a move between
+    hosts of either kind keeps them. Built on p/winmove (`server::guest`); its unit tests on
+    each host and its E2E with a Windows peer to run.
+16. Row 15, Windows' vCPU threads on a busy host measured as Linux's were (PM M440), and a
+    policy taken where they wait as Linux's did: the candidate is built (D191), its harness
+    committed; its measurement on jupiter decides it.
+17. Row 17, built on p/winplug: tests/plug.rs and tests/hotplug.rs run on CI's
+    windows-2022 and windows-2025 and on jupiter, and their numbers recorded in D214.
+18. Row 16, live moves on arm64 KVM (dirty rings with the ITS's bitmap) and WHP
+    (WHvQueryGpaRangeDirtyBitmap); saved moves run on both.
+19. Row 18, restarts over the kept file (built on Windows with placeholder views) run on
+    Windows' and a Mac's real microVMs, and measured.
+20. Row 9 on a Windows Server host that permits DDA (step 13), and row 5 (step 10).
 
 ## Closed
 
@@ -123,7 +169,9 @@ Each lone item is confirmed or closed as its row is worked.
   and etwlogs on Windows, journald itself refused off Linux as Linux's own.
 - Row 6, Linux: a microVM given its host's GPUs through Venus, rendered by the host's own
   Vulkan driver in the GPU's VM process (D201), tested by tests/gpu.rs on the GPU desktop's
-  NVIDIA GeForce RTX 5060 Ti and Radeon 610M (PM M381, M382, M384).
+  NVIDIA GeForce RTX 5060 Ti and Radeon 610M (PM M381, M382, M384); on musl hosts too, the
+  GPU's VM process linked against the host's musl, and on Intel's GPUs, tested by
+  tests/gpu.rs on fedora's UHD Graphics with glibc and in Alpine (D208, PM M422).
 - Row 6, Windows: the same on an x86_64 Windows host, the krunkit fork's Venus in the GPU's
   VM process, its blobs of the renderer's own pages mapped by WHP, the process in its
   AppContainer on a window station and desktop of its own (D202), tested by tests/gpu.rs on
@@ -177,3 +225,83 @@ Each lone item is confirmed or closed as its row is worked.
   `a_jwt_svid_is_asked_of_the_workload_api_on_its_named_pipe` and
   `a_named_pipe_is_named_as_go_spiffe_names_it`, beside its socket's twin on Linux and
   macOS. platform-parity.py finds none of the row's items alone.
+- Row 10, a Windows machine serving other machines' clients through a context (D180's part
+  3k): its listener, enrollments and invitations, as a Unix machine's; a client's command
+  started through the daemon's spawner with its streams, signals' pipe, a build's secrets,
+  SSH agents' pipes and a `--cidfile`'s pipe given by number, in a pseudoconsole of its own
+  that starts at its terminal's cursor (PSEUDOCONSOLE_INHERIT_CURSOR, its question answered
+  and kept from the client), so that no command clears its client's screen; a build's
+  context copy kept as a Linux tree on NTFS, as WSL keeps one (crates/ntfs,
+  `apply_layer_lx`), and read back as the client's by the build's walk and the manifest
+  the client compares with, times compared to NTFS's 100 ns; a build's output to a
+  directory asked for as its archive; and Docker's tools through a context, a Windows
+  client's engine a named pipe. Tested with real VMs in tests/context.rs, whole: on CI's
+  windows-2022 and windows-2025 (budget-e2e 41273324343 at 7452404e), and on jupiter
+  (Windows 11 Pro 10.0.26200, 19 of 19 at 341450a4's Rust, Docker's 29.9.1 client among
+  them, built by windows-binaries.yml as kiln's guard there holds builds); a Linux
+  client's tree on a Windows machine by archive's tests/lx.rs and synced's
+  `a_linux_clients_tree_is_its_own_in_a_windows_copy` on both runners (budget-e2e
+  41273319640 and 41262337649). platform-parity.py finds none of the row's items alone.
+- Row 11, a Windows restore's working set (D196): what its guest touched read back as its VM
+  process's own working set (QueryWorkingSetEx), a page its file's read and a private one a
+  copy its guest wrote, recorded by a template's first warm restore and by `shards restore`
+  through the CLI that started it; and mapped ahead by the next, before its guest runs, in two
+  calls of WHP's populate, its written pages for writing, which copies each in the host's
+  kernel, and the rest for reading; its memory kept cached by a view of it held where its
+  generation is held, as Windows drops a sparse file's pages once no process maps them (PM
+  M421). With it against without, a cold restore at p50 / p99: on jupiter, held as the
+  daemon holds a template, 15.1 / 17.0 ms against 17.5 / 22.4, and a warm one 2.49 / 2.54
+  against 6.79 / 10.58; on CI's windows-2025, held, 20.4 / 23.1 against 36.0 / 52.9 (PM
+  M415, M421, n=100 each). Tested with real VMs on CI's windows-2025 (41176475317 at
+  54f7c0fb, which fails rather than skips a VM test it cannot run): snapshot.rs's
+  `a_restore_maps_ahead_the_working_set_the_restore_before_it_recorded` and images.rs's
+  `repeat_runs_restore_a_template_of_the_image`; the restore bench's arms with and without,
+  held and not, there and on jupiter; and windows_process.rs's and hv::whp's tests of what is
+  mapped, on CI's Windows runners, the populate's on jupiter too (M415). platform-parity.py
+  finds none of the row's items alone.
+- Row 13, the GPU's VM process on Windows given what its driver reaches, as confine.rs gives
+  Linux's (D201): its AppContainer and every mitigation kept but Win32k's, on a window
+  station and desktop of its own (D202, `shards_ipc::Spawn::graphics`, PM M385), the
+  GPU's Station its twin of confine.rs's GPU rules (platform-parity.tsv). Tested with real
+  VMs on jupiter's Radeon 8060S: tests/gpu.rs at gpu-windows' e39a9218, a run's and a build
+  step's `vulkaninfo` finding `Virtio-GPU Venus` through Venus (196.6 s); CI 41331454598
+  green on every target there, its Windows runners building, linting and testing the
+  renderer. Landed on gpu (e39a9218) and dev (bc0b245b). platform-parity.py finds no item
+  alone, of any row.
+
+### Since 2026-11-04 (integrate)
+
+What the merges into integrate brought, host by host, each in D13's table:
+
+- Row 7, wider: `--cgroup-parent` on Linux without a user's manager, a cgroup delegated to
+  the user (D183's slice 2, `a_microvm_is_made_in_the_delegated_cgroup_its_cgroup_parent_names`
+  on Fedora 44), and on Windows the microVM's network process made in its group's job beside
+  its VM process (`a_groups_microvm_is_made_in_its_job_its_network_process_too`), so a group
+  holds a microVM's whole host footprint there as a slice's scope does on Linux.
+- Rows 3 and 4, wider, each written once over every host's share server and budget: a
+  bind's host-made files its run's user's (D38, `a_binds_host_files_are_its_runs_users`,
+  NTFS's WSL metadata the owner's attribute on Windows); a budgeted build's own writes made
+  outside its budget on Linux, which alone charges them to it (D188, PM M442), its twin
+  none needed on macOS and Windows (platform-parity.tsv); an export over its base's clone
+  where the store's file system clones (APFS, Btrfs, XFS), written whole where it does not
+  (ext4, NTFS: `build::host::clone_file` makes no clone on Windows, as ReFS's block clone is
+  not asked).
+- IPv6 past the microVM (D99's part four), `--platform` for one platform's microVM (D179),
+  the build cache collected as its user's shares say (D212), and D191's limits and hold:
+  the guest's, the network process's and the daemon's, written once for every host. D191's
+  vCPU wake policy is each host's (row 15).
+- A run's writable layer (D190): ext4 over pmem and its freed blocks given back on every
+  host (FALLOC_FL_PUNCH_HOLE, F_PUNCHHOLE, FSCTL_SET_ZERO_DATA); restarts over the kept
+  file on Linux, built on macOS and Windows (placeholder views) and run on neither's real
+  microVMs yet (row 18).
+- GPUs on every Linux host, musl's and Intel's (D208, PM M422; row 6).
+- Devices plugged in (D214) on Hypervisor.framework, KVM x86_64 and, nested, arm64 KVM,
+  through the CLI; a host's function on Linux alone, the others refusing as at a start
+  (row 9); the CLI's path on Windows built, not yet run (row 17).
+- Moves (D176 parts 6 and 7): saved on every backend, live on KVM x86_64 (PM M461) and
+  Hypervisor.framework; open rows 14 and 16.
+
+CI on the merged whole has not passed yet: integrate's CI 41959673660 (b5113c13) failed,
+and ff0cf486, which merges the builders, VFIO plugs and moves, has no run yet. The plan's
+step 14 closes once rows 5, 9 and 14 to 18 are closed and a run of CI on the closing
+commit passes on every target, Windows' E2E included.

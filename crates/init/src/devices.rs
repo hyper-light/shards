@@ -76,12 +76,61 @@ pub fn keep_devtmpfs() -> io::Result<()> {
 /// every later mount of it then too. Through it init gives the functions to vfio-pci.
 static SYSFS: std::sync::OnceLock<OwnedFd> = std::sync::OnceLock::new();
 
-/// Keeps [`SYSFS`], where the kernel's command line asks (`shards_vfio`).
+/// Keeps [`SYSFS`]: init's way to the PCI bus, which it rescans for the devices its host
+/// plugs in as the microVM runs and lets them go through (D214), and gives a host's VFIO
+/// functions to vfio-pci through (`shards_vfio`, D154).
 pub fn keep_sysfs() -> io::Result<()> {
-    if std::env::var_os("shards_vfio").is_some() {
-        let _ = SYSFS.set(crate::domains::detached(c"sysfs", &[])?);
-    }
+    let _ = SYSFS.set(crate::domains::detached(c"sysfs", &[])?);
     Ok(())
+}
+
+/// Writes `value` to the attribute at `path` of init's own sysfs ([`SYSFS`]).
+pub fn sysfs_write(path: &str, value: &str) -> io::Result<()> {
+    let sys = SYSFS
+        .get()
+        .ok_or_else(|| io::Error::other("boot kept no sysfs"))?;
+    write_at(sys.as_fd(), path, value).map_err(|e| io::Error::new(e.kind(), format!("{path}: {e}")))
+}
+
+/// The attribute at `path` of init's own sysfs, where it reads.
+pub fn sysfs_read(path: &str) -> Option<String> {
+    let sys = SYSFS.get()?;
+    let c = CString::new(path).ok()?;
+    // SAFETY: openat(2) of a NUL-terminated path beneath a descriptor of init's.
+    let fd = unsafe { libc::openat(sys.as_raw_fd(), c.as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC) };
+    if fd < 0 {
+        return None;
+    }
+    // SAFETY: the descriptor openat just made, owned here alone.
+    let mut file = std::fs::File::from(unsafe { OwnedFd::from_raw_fd(fd) });
+    let mut text = String::new();
+    std::io::Read::read_to_string(&mut file, &mut text).ok()?;
+    Some(text)
+}
+
+/// The names in the directory at `path` of init's own sysfs, where it is one.
+pub fn sysfs_list(path: &str) -> Option<Vec<String>> {
+    let sys = SYSFS.get()?;
+    let c = CString::new(path).ok()?;
+    // SAFETY: openat(2) of a NUL-terminated path beneath a descriptor of init's.
+    let fd = unsafe {
+        libc::openat(
+            sys.as_raw_fd(),
+            c.as_ptr(),
+            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC,
+        )
+    };
+    if fd < 0 {
+        return None;
+    }
+    // SAFETY: the descriptor openat just made, owned here alone.
+    let dir = unsafe { OwnedFd::from_raw_fd(fd) };
+    Some(names(&dir, c"."))
+}
+
+/// What the link at `path` of init's own sysfs holds, where it is one.
+pub fn sysfs_link(path: &str) -> Option<PathBuf> {
+    link_at(SYSFS.get()?.as_fd(), path).ok()
 }
 
 /// The VM's device `name` in its devtmpfs, opened `O_PATH`: a handle a process may open
@@ -110,8 +159,8 @@ pub fn vm_devices(path: &str) -> Vec<Node> {
         .unwrap_or_default()
 }
 
-/// The devices at `path` and beneath it in `dev`, a `/dev`, as runc finds a host's
-/// (DeviceFromPath, and a directory walked as DevicesFromPath's filepath.WalkDir walks
+/// The devices at `path` and beneath it in `dev`, a `/dev`, found as a `--device` asks (D44:
+/// DeviceFromPath, and a directory walked as DevicesFromPath's filepath.WalkDir walks
 /// one): each node with its numbers, mode and owner, udev's modes over devtmpfs's, sorted
 /// as WalkDir visits a tree, by each path's names in turn. None where `path` is no path of
 /// `/dev` as the kernel names its nodes: no `.`, `..` or empty name in it.
@@ -220,7 +269,8 @@ fn names(dev: &OwnedFd, at: &std::ffi::CStr) -> Vec<String> {
     out
 }
 
-/// dockerd's words for a device it could not gather, `host` as the run named it.
+/// The refusal of a device that cannot be gathered, in the words scripts read (D44), `host`
+/// as the run named it.
 fn gathering(host: &str, e: &str) -> String {
     format!("error gathering device information while adding custom device \"{host}\": {e}")
 }
@@ -496,10 +546,10 @@ pub struct Prepared {
     unowned: Vec<(usize, bool, bool)>,
 }
 
-/// What setup entry `entry` asks, as dockerd makes a spec of it (WithResources, then
-/// WithDevices) and runc prepares a container's root (createDevices): the devices'
-/// numbers found, the CDI devices refused, and the nodes made in the `/dev` init shares
-/// with the workload. What failed, as dockerd or runc says it.
+/// What setup entry `entry` asks, in the order a start meets it (D44: WithResources, then
+/// WithDevices, then createDevices): the devices' numbers found, the CDI devices refused,
+/// and the nodes made in the `/dev` init shares with the workload. What failed, in the
+/// words scripts read (D44).
 ///
 /// `owner` is the process's user and group, which CDI gives a node whose spec gives it none.
 pub fn prepare(entry: &[u8], owner: &dyn Fn() -> Result<(u32, u32), String>) -> Result<Prepared, String> {
@@ -730,7 +780,7 @@ fn prepare_with(entry: &[u8]) -> Result<Prepared, String> {
     })
 }
 
-/// Makes `nodes` in the root this process is in, as runc makes a container's.
+/// Makes `nodes` in the root this process is in: the workload's `/dev` (D44).
 pub fn make_nodes(nodes: &[Node]) -> Result<(), String> {
     for node in nodes {
         make(node).map_err(|e| format!("error creating device nodes: {e}"))?;
@@ -813,22 +863,191 @@ impl Prepared {
 
     /// runc's setDevices: the filter of its rules compiled, loaded and attached to
     /// `cgroup` in place of Docker's default one, which it leaves where they are the
-    /// same; none for a privileged microVM, which has the default taken away.
+    /// same; none for a privileged microVM, which has the default taken away. Its rules
+    /// and its filter kept, which a host's function plugged in as it runs widens
+    /// ([`allow`], D214).
     pub fn attach(&self, cgroup: &str) -> Result<(), String> {
         let default = DEFAULT.get();
         let Some(rules) = &self.rules else {
+            keep_workload(Workload {
+                cgroup: cgroup.to_string(),
+                rules: None,
+                attached: None,
+            });
             return match default {
                 Some((_, fd)) => detach(fd, cgroup),
                 None => Ok(()),
             };
         };
         let program = dc::compile(rules)?;
-        match default {
-            Some((bytes, _)) if *bytes == program => Ok(()),
-            Some((_, fd)) => attach(&program, cgroup, Some(fd)).map(drop),
-            None => attach(&program, cgroup, None).map(drop),
+        let attached = match default {
+            Some((bytes, _)) if *bytes == program => None,
+            Some((_, fd)) => Some(attach(&program, cgroup, Some(fd))?),
+            None => Some(attach(&program, cgroup, None)?),
+        };
+        keep_workload(Workload {
+            cgroup: cgroup.to_string(),
+            rules: Some(rules.clone()),
+            attached: attached.map(|fd| (program, fd)),
+        });
+        Ok(())
+    }
+}
+
+/// The workload's device filter as its run set it (D44): its cgroup, its run's rules (none
+/// where it is privileged, which has no filter), and the filter attached where it is not
+/// Docker's default ([`DEFAULT`]), by which another takes its place.
+struct Workload {
+    cgroup: String,
+    rules: Option<Vec<Rule>>,
+    attached: Option<Filter>,
+}
+
+/// [`Workload`], kept by init's own process, which serves the run's built-ins.
+static WORKLOAD: std::sync::Mutex<Option<Workload>> = std::sync::Mutex::new(None);
+
+fn keep_workload(w: Workload) {
+    *WORKLOAD.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(w);
+}
+
+/// The workload's device filter widened to its run's rules and each of `rules` too, each
+/// `c MAJ:MIN rwm`, the nodes of the host's functions plugged into the microVM as it runs
+/// (D214), as a container given their devices at its start has them (runc's rules, the
+/// ones given after the defaults, which then take precedence): the whole list each time,
+/// so a function unplugged leaves it. `cgroup` is the workload's, whose filter is
+/// Docker's default where its run set none. Nothing for a privileged microVM, which has
+/// no filter. Done by init's own process, which keeps the filter attached.
+pub fn allow(rules: &[Vec<u8>], cgroup: &str) -> Result<String, String> {
+    let extra = function_rules(rules)?;
+    let mut kept = WORKLOAD.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let w = kept.get_or_insert_with(|| Workload {
+        cgroup: cgroup.to_string(),
+        rules: Some(dc::container(&[], &[], false)),
+        attached: None,
+    });
+    let Some(rules) = &w.rules else {
+        return Ok(String::new());
+    };
+    let mut all = rules.clone();
+    all.extend(extra);
+    let program = dc::compile(&all)?;
+    let replacing = match (&w.attached, DEFAULT.get()) {
+        (Some((bytes, fd)), _) | (None, Some((bytes, fd))) => {
+            if *bytes == program {
+                return Ok(String::new());
+            }
+            Some(fd)
+        }
+        (None, None) => None,
+    };
+    let fd = attach(&program, &w.cgroup, replacing)?;
+    w.attached = Some((program, fd));
+    Ok(String::new())
+}
+
+/// [`allow`]'s rules, each `c MAJ:MIN rwm`: one character device's, whole; any other is
+/// refused, so that nothing else widens the filter.
+fn function_rules(rules: &[Vec<u8>]) -> Result<Vec<Rule>, String> {
+    rules
+        .iter()
+        .map(|r| {
+            let text = std::str::from_utf8(r).map_err(|_| "a rule that is not UTF-8".to_string())?;
+            let rule = cgroup_rule(text)?;
+            if rule.kind != Kind::Char || rule.major < 0 || rule.minor < 0 || rule.perms != dc::RWM {
+                return Err(format!(
+                    "{text:?}: a function's node is one character device, read, written and made"
+                ));
+            }
+            Ok(rule)
+        })
+        .collect()
+}
+
+/// How long a function found by a rescan is waited for, its group's node made.
+const FUNCTION_WITHIN: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// The function at `address` on the microVM's bus, a host's plugged in as it runs (D214),
+/// `host` as its daemon named it: given to vfio-pci, as [`vfio_group`] gives a run's, and
+/// the node of it the workload opens, its group's (`/dev/vfio/G`, G the guest's number,
+/// where `kind` is `group`) or its own (`/dev/vfio/devices/vfioN`, where `node`), as the
+/// VM's devtmpfs has it.
+pub fn vfio_function(address: &str, kind: &str, host: &str) -> Result<Node, String> {
+    let sys = SYSFS
+        .get()
+        .ok_or_else(|| gathering(host, "no sysfs to give it to vfio-pci in"))?;
+    let group = vfio_group(sys.as_fd(), host, address)?;
+    let path = match kind {
+        "group" => format!("/dev/vfio/{group}"),
+        "node" => {
+            let at = CString::new(format!("bus/pci/devices/{address}/vfio-dev"))
+                .map_err(|e| gathering(host, &e.to_string()))?;
+            match names(sys, &at).as_slice() {
+                [one] => format!("/dev/vfio/devices/{one}"),
+                _ => {
+                    return Err(gathering(
+                        host,
+                        &format!(
+                            "{address}: no VFIO device node of its own, which the guest's kernel makes where it has VFIO_DEVICE_CDEV"
+                        ),
+                    ));
+                }
+            }
+        }
+        other => return Err(format!("{other:?}: a function is had by its group or its node")),
+    };
+    // devtmpfs makes a node as its device is added, before vfio-pci's probe returns
+    // (devtmpfs_create_node waits for it); waited for a while all the same.
+    let end = std::time::Instant::now() + FUNCTION_WITHIN;
+    loop {
+        if let Some(node) = vm_devices(&path).into_iter().find(|n| n.path == path) {
+            return Ok(node);
+        }
+        if std::time::Instant::now() > end {
+            return Err(gathering(host, &format!("{address}: the guest made no {path}")));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+}
+
+/// What holds the device `node`, or the VFIO device of the function at `address`, open in
+/// the microVM, where anything does: a process's descriptor of the node, or of the device
+/// (`[vfio-device]`, which its group gives, and which keeps its function bound), named by
+/// its fdinfo's `vfio-device-syspath` (vfio_device_show_fdinfo) or, where the kernel says
+/// none, taken for it; but this process's own. A function let go of while either is held
+/// would block its guest's `remove` until it is closed (vfio_unregister_group_dev waits
+/// for its last user).
+pub fn holder(node: &Node, address: &str) -> Option<String> {
+    use std::os::unix::fs::{FileTypeExt as _, MetadataExt as _};
+    let ours = std::process::id().to_string();
+    let rdev = libc::makedev(node.major, node.minor);
+    let its = format!("/{address}");
+    for process in std::fs::read_dir("/proc").ok()?.flatten() {
+        let pid = process.file_name().to_string_lossy().into_owned();
+        if pid == ours || !pid.bytes().all(|b| b.is_ascii_digit()) {
+            continue;
+        }
+        let Ok(fds) = std::fs::read_dir(process.path().join("fd")) else {
+            continue;
+        };
+        for fd in fds.flatten() {
+            let path = fd.path();
+            let device = std::fs::read_link(&path).is_ok_and(|l| l.as_os_str() == "anon_inode:[vfio-device]")
+                && std::fs::read_to_string(process.path().join("fdinfo").join(fd.file_name())).is_ok_and(
+                    |info| {
+                        info.lines()
+                            .find_map(|l| l.strip_prefix("vfio-device-syspath:"))
+                            .is_none_or(|sys| sys.trim().ends_with(&its))
+                    },
+                );
+            let held = device
+                || std::fs::metadata(&path).is_ok_and(|m| m.file_type().is_char_device() && m.rdev() == rdev);
+            if held {
+                let comm = std::fs::read_to_string(process.path().join("comm")).unwrap_or_default();
+                return Some(format!("process {pid} ({})", comm.trim()));
+            }
         }
     }
+    None
 }
 
 fn errno_text(e: &io::Error) -> String {
@@ -931,7 +1150,7 @@ pub fn confine_joiner(cgroup: &str) -> Result<Filter, String> {
     Ok((program, fd))
 }
 
-/// `union bpf_attr` for BPF_PROG_LOAD, as far as runc's load sets it.
+/// `union bpf_attr` for BPF_PROG_LOAD, up to the last field the device filter's load sets.
 #[repr(C)]
 #[derive(Default)]
 struct ProgLoad {
@@ -970,8 +1189,8 @@ const BPF_F_REPLACE: u32 = 4;
 
 /// runc's loadAttachCgroupDeviceFilter: `program` loaded and attached to `cgroup`, others
 /// allowed beneath it (BPF_F_ALLOW_MULTI), in place of `replacing` where one is
-/// (BPF_F_REPLACE, as runc replaces its one old program), as cilium/ebpf and runc say it
-/// fails. Its descriptor.
+/// (BPF_F_REPLACE: one program at a time, the old one replaced), its failures in the words
+/// cilium/ebpf and runc give them (D44). Its descriptor.
 fn attach(program: &[u8], cgroup: &str, replacing: Option<&OwnedFd>) -> Result<OwnedFd, String> {
     let err = |what: &str| {
         let e = io::Error::last_os_error().raw_os_error().unwrap_or(libc::EIO);
@@ -1102,8 +1321,8 @@ mod tests {
         );
     }
 
-    /// The devices at a path of `/dev` and beneath it, from a descriptor of it, as runc's
-    /// walk of a host's finds them, in WalkDir's order; none at a path that is no path of
+    /// The devices at a path of `/dev` and beneath it, from a descriptor of it, found as a
+    /// `--device` asks (D44), in WalkDir's order; none at a path that is no path of
     /// `/dev` as the kernel names its nodes, a link, or nothing.
     #[test]
     fn devices_are_found_in_dev_by_name() {
@@ -1163,6 +1382,41 @@ mod tests {
             cgroup_rule("c 99999999999999999999:1 r").unwrap_err(),
             "invalid major value in device cgroup rule format: 'c 99999999999999999999:1 r'"
         );
+    }
+
+    /// A function plugged in as the microVM runs (D214) widens the workload's filter by
+    /// its node alone, a whole character device's: its run's rules, then it, which the
+    /// filter then allows, and nothing beside it; a rule of any other shape is refused.
+    #[test]
+    fn a_plugged_functions_node_alone_widens_the_filter() {
+        let rules = function_rules(&[b"c 241:0 rwm".to_vec()]).unwrap();
+        for refused in [
+            "b 8:0 rwm",
+            "c *:* rwm",
+            "c 241:* rwm",
+            "c 241:0 r",
+            "a *:* rwm",
+            "c 241:0",
+        ] {
+            assert!(
+                function_rules(&[refused.as_bytes().to_vec()]).is_err(),
+                "{refused}"
+            );
+        }
+        let mut all = dc::container(&[], &[], false);
+        all.extend(rules);
+        let (default_allow, clean) = dc::reduce(&all).unwrap();
+        let program = dc::program(default_allow, &clean).unwrap();
+        assert_eq!(dc::run(&program, Kind::Char, dc::RWM, 241, 0), Some(true));
+        assert_eq!(dc::run(&program, Kind::Char, dc::READ, 241, 1), Some(false));
+        assert_eq!(
+            dc::run(&program, Kind::Char, dc::READ, 1, 3),
+            Some(true),
+            "the run's own"
+        );
+        let (default_allow, clean) = dc::reduce(&dc::container(&[], &[], false)).unwrap();
+        let unplugged = dc::program(default_allow, &clean).unwrap();
+        assert_eq!(dc::run(&unplugged, Kind::Char, dc::READ, 241, 0), Some(false));
     }
 
     #[test]

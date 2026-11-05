@@ -1,0 +1,12 @@
+host: Darwin Mac.attlocal.net 25.4.0 Darwin Kernel Version 25.4.0: Thu Mar 19 19:33:50 PDT 2026; root:xnu-12377.101.15~1/RELEASE_ARM64_T6050 arm64 (Apple M5 Max, 18 CPUs, macOS 26.4.1, Hypervisor.framework)
+revision: 3edf11d3, run through macos-sched/launchd-run.sh (no QoS clamp); load at the end: { 8.34 9.12 9.12 }
+rounds: 100, boots: 40 each
+PLUG-STATS share plug to first write: 11396 us
+PLUG-STATS boot to init, 4 slots: n 40 p50 18902 p90 19150 p99 27394 max 27394 us
+PLUG-STATS boot to init, no PCI bus: n 40 p50 18882 p90 19235 p99 20602 max 20602 us
+PLUG-STATS host plug: n 100 p50 11 p90 15 p99 29 max 391 us
+PLUG-STATS guest rescan: n 100 p50 2358 p90 2929 p99 3126 max 3159 us
+PLUG-STATS guest rescan to first read: n 100 p50 3142 p90 3780 p99 4042 max 4136 us
+PLUG-STATS guest remove: n 100 p50 7837 p90 8124 p99 8296 max 8303 us
+PLUG-STATS host unplug: n 100 p50 4 p90 5 p99 36 max 42 us
+test result: ok. 1 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 15.60s

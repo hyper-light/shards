@@ -468,6 +468,9 @@ impl Plug {
             )));
         }
         if pid == 0 {
+            // Nothing of the run's writable layer held past what it needs: a stopped
+            // container's layer takes the template's place (D190, over.rs).
+            crate::over::close_layer_fds();
             grow(*self, &events, &notes);
         }
         let _ = GROWER.set(pid);
@@ -549,18 +552,32 @@ fn grown_hold(cgroup: &str) -> io::Result<u64> {
 /// back one way or another, and with no swap only by throttling it, where what the guest's
 /// own passes counted cold (`inactive_file`) left a held build's host 38 MiB past its
 /// budget, its reread throttled for 15 minutes (CI's ubuntu-24.04, 2026-10-27). What the
-/// hold leaves above it the kernel reclaims at once, which is then reported free (D151).
-/// The bytes it is held within past what it uses; `None` with no budget.
+/// hold leaves above it the kernel reclaims at once, which is then reported free (D151);
+/// a hold that took nothing, its room as large as before or larger, reports nothing ahead
+/// of the kernel's own reporting: a build is told its room again each pressure window, and
+/// a report of what its steps had just freed hands the host pages they take again
+/// ([`reclaimed`]). The bytes it is held within past what it uses; `None` with no budget.
 pub fn hold_within(cgroup: &str, room: Option<i64>) -> io::Result<Option<u64>> {
+    let short = room.is_some_and(|r| r < 0);
     if let Some(short) = room.filter(|r| *r < 0) {
         crate::run::reclaim_files(cgroup, short.unsigned_abs())?;
     }
     let used = number(&format!("{cgroup}/memory.current"))
         .ok_or_else(|| err(format!("{cgroup}/memory.current unread")))?;
-    set_cap(room.map_or(u64::MAX, |r| within(used, r, working_room(), cap())));
+    let was = cap();
+    set_cap(room.map_or(u64::MAX, |r| within(used, r, working_room(), was)));
     set_high(cgroup, grown_hold(cgroup)?)?;
-    crate::run::flush_page_reports();
+    if reclaimed(short, was, cap()) {
+        crate::run::flush_page_reports();
+    }
     Ok(room.map(|_| cap().saturating_sub(used)))
+}
+
+/// Whether a hold took anything back for its host to have at once: its room `short`, its
+/// run's file pages reclaimed, or its cap lowered from `was` to `now`, which the kernel
+/// reclaims down to.
+fn reclaimed(short: bool, was: u64, now: u64) -> bool {
+    short || now < was
 }
 
 /// The least room a run is held within past what it uses, however short its budget (D188),
@@ -1536,6 +1553,18 @@ mod tests {
         assert_eq!(in_pages(100 * MIB + 4097, 4096), 100 * MIB + 4096);
         assert_eq!(in_pages(4095, 4096), 0);
         assert_eq!(in_pages(u64::MAX, 4096), u64::MAX);
+    }
+
+    /// A hold reports what it took back at once, and nothing where it took nothing: a
+    /// build's room told again each window, as large as before or larger, reports none of
+    /// what its steps had just freed (PM M442).
+    #[test]
+    fn a_hold_reports_free_only_what_it_took_back() {
+        assert!(reclaimed(true, 102 * MIB, 142 * MIB), "its files reclaimed");
+        assert!(reclaimed(false, 142 * MIB, 102 * MIB), "its cap lowered");
+        assert!(!reclaimed(false, 102 * MIB, 102 * MIB), "the same cap");
+        assert!(!reclaimed(false, 102 * MIB, 142 * MIB), "a cap raised");
+        assert!(!reclaimed(false, u64::MAX, u64::MAX), "no budget");
     }
 
     /// A hold counts out what its device has been asked to unplug, free or not, so that the

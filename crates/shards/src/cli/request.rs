@@ -154,7 +154,7 @@ pub fn start(path: &str, args: &[OsString]) -> ExitCode {
         let Some(container) = parsed.args.first().cloned() else {
             return crate::cli::failed("a container is required");
         };
-        // ContainerInspect first, as docker/cli's start does: the container's terminal,
+        // Inspected first: the container's terminal,
         // which takes the client's raw input and size, and with which signals are not
         // passed on (the terminal's own keys are); and whether it reads a stdin, which `-i`
         // attaches.
@@ -194,7 +194,7 @@ pub fn start(path: &str, args: &[OsString]) -> ExitCode {
             detach: true,
             ..Run::default()
         };
-        // Started alone, as docker/cli's start passes no signal on to it.
+        // Started alone: `start` passes no signal on to it.
         if send(&mut request, &detach_keys, &mut None, false) != ExitCode::SUCCESS {
             failed.push(container.as_str());
         }
@@ -324,7 +324,7 @@ pub fn exec(path: &str, args: &[OsString]) -> ExitCode {
     }
 }
 
-/// Container `container`, inspected as docker/cli inspects one before attaching to it: the
+/// Container `container`, inspected before attaching to it: the
 /// home and daemon asked, the daemon's identity, and whether it has a terminal and reads a
 /// stdin (`Config.Tty`, `Config.OpenStdin`); or the answer given, its status.
 fn inspected(container: &str) -> Result<(PathBuf, PathBuf, Identity, bool, bool), ExitCode> {
@@ -805,9 +805,8 @@ pub(crate) fn check_platform(platform: &str) -> Result<(), String> {
 }
 
 /// `path` absolute, joined to the working directory where it is relative, its own text
-/// kept, so that what an open of it says says it as it was given, as docker/cli's
-/// newCIDFile does: std's `absolute` rewrites a Windows path's every separator a backslash
-/// (GetFullPathNameW).
+/// kept, so that what an open of it says says it as it was given: std's `absolute` rewrites
+/// a Windows path's every separator a backslash (GetFullPathNameW).
 fn absolute_as_given(path: &str) -> std::io::Result<PathBuf> {
     let given = std::path::Path::new(path);
     if given.is_absolute() {
@@ -816,7 +815,7 @@ fn absolute_as_given(path: &str) -> std::io::Result<PathBuf> {
     Ok(std::env::current_dir()?.join(given))
 }
 
-/// `--cidfile`'s file, as docker/cli's cidFile keeps it: made before the container, its ID
+/// `--cidfile`'s file: made before the container, its ID
 /// written once there is one, and removed if none was; or, a client's over a context, the
 /// descriptor its daemon tells the client the ID through, the file being the client's.
 pub(crate) struct CidFile {
@@ -1066,7 +1065,7 @@ pub(crate) fn check_swappiness(swappiness: i64, by: &str) -> Result<(), String> 
     Ok(())
 }
 
-/// `--restart` as docker/cli reads it (opts.ParseRestartPolicy): `NAME[:COUNT]`, an empty
+/// `--restart` as the CLI's input means it (opts.ParseRestartPolicy): `NAME[:COUNT]`, an empty
 /// value none at all; the name checked by the daemon.
 fn restart_policy(policy: &str) -> Result<(String, i64), String> {
     if policy.is_empty() {
@@ -1087,7 +1086,7 @@ fn restart_policy(policy: &str) -> Result<(String, i64), String> {
     Ok((name.to_string(), count))
 }
 
-/// `--cap-add` and `--cap-drop` as dockerd keeps them (moby daemon/pkg/oci/caps,
+/// `--cap-add` and `--cap-drop` as `inspect` reports them (moby daemon/pkg/oci/caps,
 /// NormalizeLegacyCapabilities): upper case, `CAP_` before each but `ALL`, in the order
 /// given, duplicates and all; docker/cli sends them as given.
 pub(crate) fn effective_caps(add: &[String], drop: &[String]) -> (Vec<String>, Vec<String>) {
@@ -1139,11 +1138,12 @@ fn security_opts(opts: &[String]) -> Result<(Vec<String>, bool), String> {
     Ok((out, system_paths))
 }
 
-/// The seccomp profile `--security-opt seccomp=V` names, its JSON compacted, as docker/cli
-/// reads it (parseSecurityOpts): the file `V`, read here; or, where no file is read by that
-/// name, `V` itself where it is a profile's JSON, as a context's client sends the profile
-/// its own file holds (D180), and as the Engine API takes one. Docker's CLI refuses that,
-/// with the file it could not open; shards refuses what is neither a file nor JSON so.
+/// The seccomp profile `--security-opt seccomp=V` names, its JSON compacted, as the CLI's
+/// input means it (parseSecurityOpts): the file `V`, read here; or, where no file is read
+/// by that name, `V` itself where it is a profile's JSON, as a context's client sends the
+/// profile its own file holds (D180), and as the Engine API takes one. Docker's CLI refuses
+/// that, with the file it could not open; shards refuses what is neither a file nor JSON
+/// so.
 pub(crate) fn seccomp_profile(v: &str) -> Result<String, String> {
     let text = match std::fs::read(v) {
         Ok(text) => text,

@@ -220,7 +220,7 @@ fn run_step(lower: &Fs, src: &Fs, upper: &mut Fs, actions: &Value, mem: &mut Sou
 
 #[derive(Debug, PartialEq, Eq)]
 enum Path {
-    /// The case fails, as BuildKit's does: no image.
+    /// The case fails: no image.
     Failed,
     /// The image written from the snapshot, and the same as the layers'.
     Snapshot,

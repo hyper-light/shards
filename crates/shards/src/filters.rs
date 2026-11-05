@@ -52,7 +52,7 @@ impl Filters {
         self.exact(name, source) || self.get(name).any(|prefix| source.starts_with(prefix))
     }
 
-    /// Refuses a filter not among `accepted` (Validate), in dockerd's words.
+    /// Refuses a filter not among `accepted` (Validate), in the words scripts match.
     pub(crate) fn validate(&self, accepted: &[&str]) -> Result<(), String> {
         match self.0.keys().find(|name| !accepted.contains(&name.as_str())) {
             Some(name) => Err(invalid(name, None)),

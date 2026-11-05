@@ -5,7 +5,7 @@
 //! `data.docker.decision` of each source the build loads. What a decision needs of a
 //! source that is not known yet, partial evaluation finds; the source's metadata is
 //! resolved for it, and the policy asked again. One policy's denial stops the build in
-//! BuildKit's words; every policy must allow a source for the build to load it.
+//! BuildKit v0.28.1's words; every policy must allow a source for the build to load it.
 
 mod eval;
 mod github;
@@ -16,6 +16,7 @@ mod signatures;
 mod snappy;
 pub(crate) mod tester;
 mod testinput;
+pub(crate) mod wire;
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -311,7 +312,7 @@ fn within(dir: &Path, name: &str) -> Option<String> {
     })
 }
 
-/// A source as BuildKit names one (pb.SourceOp): its identifier and attributes.
+/// A source as BuildKit names one (solver/pb/ops.proto `SourceOp`): its identifier and attributes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Source {
     pub identifier: String,
@@ -377,7 +378,7 @@ pub struct ImageMeta {
     pub attestation_chain: Option<AttestationChain>,
 }
 
-/// sourceresolver.AttestationChain as buildx reads it: from the image's index (`root`),
+/// sourceresolver.AttestationChain as buildx v0.37.1 reads it: from the image's index (`root`),
 /// the attestation manifest beside the manifest its platform resolved to, the signature
 /// manifests referring to that, and the blobs read on the way (the index, the
 /// attestation and signature manifests and their layers, and the attestations asked
@@ -457,7 +458,7 @@ enum Step {
     Retry,
 }
 
-/// A source the policies would not have, in BuildKit's words, the messages the policy
+/// A source the policies would not have, in BuildKit v0.28.1's words, the messages the policy
 /// that refused it gave (policysession.DenyMessagesError), and who refused it.
 #[derive(Debug, Clone)]
 pub struct Refused {
@@ -488,8 +489,8 @@ impl Refused {
         }
     }
 
-    /// Whether the policies' step fails with the build: for a decision only, as buildx
-    /// closes it with the build's error only for a denial (DenyMessages,
+    /// Whether the policies' step fails with the build: for a decision only, as
+    /// buildx v0.37.1 closes it with the build's error only for a denial (DenyMessages,
     /// isPolicyEvaluationError); any other error ends it done.
     pub fn denied(&self) -> bool {
         self.by == By::Decision
@@ -2000,7 +2001,7 @@ fn pinned(source: &Source, digest: &str) -> Result<Source, String> {
     })
 }
 
-/// A decision as buildx reads one (parsePolicyDecision).
+/// A decision as buildx v0.37.1 reads one (parsePolicyDecision).
 struct Decision {
     allow: Option<bool>,
     deny: Vec<String>,

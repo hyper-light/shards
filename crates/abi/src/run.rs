@@ -4,7 +4,7 @@
 //!
 //! Frames have the header of Docker's attach streams (moby api/pkg/stdcopy): a kind byte,
 //! three zero bytes, and the payload's length as a big-endian u32. So output reaches the
-//! host framed as Docker's Engine API sends it.
+//! host already in the frames the Engine API's clients read (D170).
 
 use alloc::vec::Vec;
 
@@ -12,7 +12,7 @@ use alloc::vec::Vec;
 pub const PORT: u32 = 1024;
 /// The host port the guest dials, once the workload runs, for [`kind::SIGNAL`] frames.
 /// They travel apart from the run connection, so that stdin a workload leaves unread
-/// cannot hold them up, as Docker sends them apart from its attach stream.
+/// cannot hold them up.
 pub const SIGNAL_PORT: u32 = 1025;
 /// The host port the guest dials once for each command run beside the workload (`docker
 /// exec`), after the host asks for one with [`kind::EXEC`]. The host takes every
@@ -95,7 +95,7 @@ pub mod kind {
     /// containerd tells dockerd of an OOM.
     pub const OOM: u8 = 28;
     /// Guest to host, after [`SAVE`] and before the [`LAYER`] frames: the disk its
-    /// writable layer uses (a big-endian u64), counted as containerd's snapshots count
+    /// writable layer uses (a big-endian u64), counted as init's layer.rs `usage` counts
     /// it, for inspect's SizeRw once it has stopped.
     pub const USAGE: u8 = 29;
     /// Guest to host, on the workload's connection, as they come: what processes the run's
@@ -146,6 +146,12 @@ pub mod kind {
     /// or thread past its limit (its `pids.events` counts a `max`, cgroup-v2.rst), with what
     /// its cgroup was allowed and held: as [`OOM`] says memory's (D193).
     pub const PIDS: u8 = 41;
+    /// Host to guest, in a [`LAYER`]'s place before [`SPEC`], empty: a stopped container's
+    /// writable layer kept in its file (D190, [`KEEP`]) is the microVM's layer device's
+    /// from here on, its host having it ready (`control::LAYER_SWAP`): the guest lets go of
+    /// the layer its template mounted, has its host put the container's file under the
+    /// device, mounts it and makes its root the image under it, as the container left it.
+    pub const OVER: u8 = 42;
 }
 
 /// The file at the root of a writable layer kept in its own file (D190), beside its
@@ -337,7 +343,7 @@ pub struct Spec {
     /// the host as [`kind::STDOUT`] alone; `None` for pipes.
     pub tty: Option<Size>,
     /// The bytes of the run's `/etc/resolv.conf`, for a run on a network: the host's
-    /// resolvers as Docker gives a container on its bridge.
+    /// resolvers, made for its network by build/step.rs (`resolv_with`).
     pub resolv: Option<Vec<u8>>,
     /// Docker's `-i`: the workload reads the client's stdin, through a pipe. Without it,
     /// and without a terminal, its stdin is `/dev/null`, as Docker gives a container's
@@ -638,6 +644,10 @@ pub mod builtin {
     /// Without one, it has no budget, is held only as its memory is (D148), and nothing is
     /// answered.
     pub const ROOM: u8 = 16;
+    /// A device plugged into the running microVM, or let go of, or a disk grown (D214;
+    /// shards-init hotplug.rs): `disk ADDR DST [ro]`, `share ADDR TAG DST [ro]`, `unmount
+    /// ADDR DST`, `grow ADDR DST SECTORS`, ADDR the function's PCI address.
+    pub const DEVICE: u8 = 17;
 }
 
 /// A terminal's size in character cells. Zero in either leaves the pty's size alone, as

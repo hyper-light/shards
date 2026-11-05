@@ -45,7 +45,7 @@ pub struct Flag {
     /// Left out of `--help`.
     pub hidden: bool,
     /// Whether shards does what it asks. The rest parse as `docker`'s do, are left out of
-    /// `--help` as dockerd's unsupported ones are, and refuse any value but their default.
+    /// `--help`, shards doing nothing with them, and refuse any value but their default.
     pub supported: bool,
     /// The flag whose value this one sets too: the CLI binds both to one variable
     /// (`stop --time` and `--timeout`).
@@ -781,7 +781,7 @@ fn go_json(s: &str) -> String {
     out
 }
 
-/// A value of a flag that takes many, as docker/cli's option type for it takes it: a
+/// A value of a flag that takes many, as docker/cli v29.8.1's option type takes it: a
 /// filter (opts.FilterOpt.Set) is `name=value`, its name lowered and both trimmed, or
 /// empty; a run's `--label`, `--dns`, `--dns-search` and `--add-host` as their ListOpts
 /// validate them (opts/opts.go); others are as given.

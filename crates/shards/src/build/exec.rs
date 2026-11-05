@@ -2,12 +2,12 @@
 //! base images and the context as snapshots, file operations as BuildKit's
 //! FileOpSolver runs them (dockerfile/1.27.1 solver/llbsolver/ops/file.go), and merges.
 //! Each committed result is a snapshot and the chain of layers that makes it; a layer
-//! is written to the store as BuildKit's differ writes it (`shards_build::diff`),
+//! is written to the store by `shards_build::diff`, held to BuildKit's differ (its oracle.rs),
 //! uncompressed. Each result follows the tree its layers stack to too
 //! (`shards_build::stack`), so the image's root filesystem is written from the last
 //! snapshot, not stacked again from the layers.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io::BufReader;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -144,6 +144,10 @@ pub struct Exec<'a> {
     /// The build context's snapshots: what BuildKit takes content checksums of before an
     /// operation reads them.
     contexts: Vec<Rc<Fs>>,
+    /// Each base image's snapshot as its layers made it, by its layers' DiffIDs: what an
+    /// export over that base's root filesystem finds its unchanged files by
+    /// ([`Exec::rootfs`]).
+    bases: Vec<(Vec<Digest>, Rc<Fs>)>,
 }
 
 /// A thread removing what a stage holds that nothing reads: waited for as it drops.
@@ -169,6 +173,12 @@ fn err(e: impl std::fmt::Display) -> String {
     e.to_string()
 }
 
+/// A base's kept root filesystem: its path (whose name the image written over it is named by
+/// in part, `Store::rootfs_written_over`), the file opened, and where it holds each of that
+/// base's files' data: by the data's place in the build's sources, its block there and its
+/// size ([`blocks_below`]).
+type Below = (PathBuf, std::fs::File, HashMap<(u32, u64), (u32, u64)>);
+
 impl<'a> Exec<'a> {
     pub fn new(store: &'a Store, limits: &'a Limits) -> Exec<'a> {
         Exec {
@@ -182,6 +192,7 @@ impl<'a> Exec<'a> {
             budget: shards_build::archive::Budget::new(*limits),
             run_staging: None,
             contexts: Vec::new(),
+            bases: Vec::new(),
         }
     }
 
@@ -358,6 +369,13 @@ impl<'a> Exec<'a> {
         let mut tree = layer::root();
         let tally = self.apply(&mut tree, &layers)?;
         let fs = Rc::new(Fs::new(tree, now()));
+        let ids: Option<Vec<Digest>> = layers
+            .iter()
+            .map(|l| Digest::parse(&String::from_utf8_lossy(&l.diff_id)).ok())
+            .collect();
+        if let Some(ids) = ids.filter(|ids| !ids.is_empty()) {
+            self.bases.push((ids, fs.clone()));
+        }
         let stack = Stack::layers(tally, fs.tree());
         let origin = match base {
             Some(n) => Origin::Image(n),
@@ -456,8 +474,8 @@ impl<'a> Exec<'a> {
                 kind: Kind::File { size: d.size, data },
                 meta: Meta {
                     mode: 0o600,
-                    // Without a Last-Modified, the time is 1970's, as BuildKit's save
-                    // leaves it.
+                    // Without a Last-Modified, the time is 1970's, as
+                    // source/http/source.go's `save` leaves it.
                     mtime: d.last_modified.map_or(0, |t| t.0),
                     mtime_nsec: d.last_modified.map_or(0, |t| t.1),
                     ..Meta::default()
@@ -613,7 +631,7 @@ impl<'a> Exec<'a> {
     /// `r`'s snapshot, to write its image's root filesystem from, or why the export must
     /// stack its layers again instead: a stack not followed, or one past the store's
     /// limits, which `Store::rootfs` words.
-    pub fn flat(&self, r: Ref) -> Result<Flat, String> {
+    pub fn flat(&mut self, r: Ref) -> Result<Flat, String> {
         let tally = match &r.stack {
             Stack::Unknown(why) => return Err(why.to_string()),
             Stack::Known(_) => r.stack.tally().unwrap_or_default(),
@@ -625,6 +643,10 @@ impl<'a> Exec<'a> {
         // The snapshot itself, not a copy: a copy is another tree, whose node ids the
         // stack does not follow. Its origin goes first, since it may hold it too.
         drop(r.origin);
+        // A base kept to write an image over ([`Exec::below`]) may hold this very snapshot
+        // (CI 41986336342: a staged build's export found it shared); an image that is its
+        // base's own snapshot has nothing to write over it, so the base lets go of it here.
+        self.bases.retain(|(_, base)| !Rc::ptr_eq(base, &r.fs));
         let fs = Rc::try_unwrap(r.fs).map_err(|_| "a snapshot still shared".to_string())?;
         if !r.stack.follows(fs.tree()) {
             return Err("a snapshot other than the one followed".into());
@@ -634,8 +656,46 @@ impl<'a> Exec<'a> {
 
     /// The root filesystem of `layers`, the image of `flat`, as `Store::rootfs` builds
     /// it: the snapshot put in its layers' form, its files read where the build has them.
+    ///
+    /// Over a base's root filesystem where the store's file system clones it: the image
+    /// starts as a clone of the base's, and only what the build added is written past its
+    /// blocks, each file of the base the build left as it was read from the base's blocks
+    /// (shards_erofs::write_over, PM M442). Where none is made, the image is written whole.
     pub fn rootfs(&mut self, flat: Flat, layers: &[store::Layer]) -> Result<PathBuf, String> {
         let Flat { mut fs, stack } = flat;
+        if let Some((below_path, below, at)) = self.below(layers) {
+            let sources = &mut self.sources;
+            let fs = &mut fs;
+            let stack = &stack;
+            let below_len = below.metadata().map_err(err)?.len();
+            let made = self
+                .store
+                .rootfs_written_over(
+                    layers,
+                    self.limits,
+                    shards_build::stack::PRODUCER_OVER,
+                    &below_path,
+                    below_len,
+                    |dst| shards_build::host::clone_file(&below, dst),
+                    |out| {
+                        stack.finish(fs).map_err(|why| {
+                            shards_image::Error::from(std::io::Error::other(why.to_string()))
+                        })?;
+                        fs.unrecorded_tree().drop_index();
+                        let held = held_below(fs.tree(), &at);
+                        let over = erofs::Over {
+                            blocks: below_len / erofs::BLOCK,
+                            held: &held,
+                        };
+                        let (_, head) = erofs::write_over(fs.tree(), sources, out, [0; 16], &over)?;
+                        Ok(head)
+                    },
+                )
+                .map_err(err)?;
+            if let Some(path) = made {
+                return Ok(path);
+            }
+        }
         let sources = &mut self.sources;
         self.store
             .rootfs_written(layers, self.limits, shards_build::stack::PRODUCER, |out| {
@@ -647,6 +707,26 @@ impl<'a> Exec<'a> {
                 Ok(())
             })
             .map_err(err)
+    }
+
+    /// The root filesystem kept for the longest run of `layers` from the first that a base
+    /// of the build's is, opened, and where it holds each of that base's files' data
+    /// ([`blocks_below`]): none where no base's is kept, or it cannot be read back.
+    fn below(&self, layers: &[store::Layer]) -> Option<Below> {
+        let ids: Vec<Digest> = layers.iter().map(|l| l.diff_id.clone()).collect();
+        let mut bases: Vec<&(Vec<Digest>, Rc<Fs>)> = self
+            .bases
+            .iter()
+            .filter(|(base, _)| base.len() < ids.len() && ids.starts_with(base))
+            .collect();
+        bases.sort_by_key(|(base, _)| std::cmp::Reverse(base.len()));
+        let (path, base) = bases
+            .into_iter()
+            .find_map(|(ids, fs)| Some((self.store.rootfs_kept(ids)?, fs)))?;
+        let file = std::fs::File::open(&path).ok()?;
+        let below = erofs::read_tree(&mut &file, 0).ok()?;
+        let at = blocks_below(base.tree(), &below);
+        (!at.is_empty()).then_some((path, file, at))
     }
 
     /// A file operation's outputs, its actions run as FileOpSolver runs them: each on a
@@ -932,8 +1012,8 @@ struct Taken {
     writable: bool,
 }
 
-/// A new cache record's id, as BuildKit's identity.NewID makes one: 128 random bits, the
-/// high one set, in base 36, the 25 digits after the first.
+/// A new cache record's id, as BuildKit's identity/randomid.go `NewID` makes one: 128
+/// random bits, the high one set, in base 36, the 25 digits after the first.
 fn record_id() -> Result<String, String> {
     let mut n = [0u8; 17];
     entropy(&mut n)?;
@@ -988,8 +1068,8 @@ pub fn cpu_weight(shares: u64) -> u64 {
 
 /// The cgroup v2 files a step's limits are, as runc writes them (opencontainers/cgroups
 /// v0.0.4 fs2/memory.go `setMemory`, fs2/cpu.go `setCPU`, fs2/cpuset.go): the swap first,
-/// memory, the CPU's weight and maximum, the CPUs and memory nodes. A swap past the
-/// memory alone is refused as runc refuses it.
+/// memory, the CPU's weight and maximum, the CPUs and memory nodes. A swap limit without
+/// a memory limit, or below it, means nothing and is refused (cgroups utils.go's words).
 pub fn cgroup_files(r: &shards_agentfile::llb::LinuxResources) -> Result<CgroupFiles, String> {
     let mut out: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
     let mut put = |k: &str, v: String| out.push((k.as_bytes().to_vec(), v.into_bytes()));
@@ -1037,7 +1117,7 @@ pub fn cgroup_files(r: &shards_agentfile::llb::LinuxResources) -> Result<CgroupF
     Ok(out)
 }
 
-/// An SSH mount's agent id: `default` where it names none, as BuildKit's sshforward
+/// An SSH mount's agent id: `default` where it names none, as session/sshforward/ssh.go
 /// reads an empty one (DefaultID).
 fn ssh_id(id: &[u8]) -> String {
     if id.is_empty() {
@@ -1175,8 +1255,9 @@ impl Exec<'_> {
         })
     }
 
-    /// Runs a `RUN` in `builder` as BuildKit runs it (docs/research/buildkit-run.md), its
-    /// output to `out` as it comes; its result is its root mount's.
+    /// Runs a `RUN` in `builder` with what BuildKit gives a step (D33,
+    /// docs/research/buildkit-run.md), its output to `out` as it comes; its result is its
+    /// root mount's.
     ///
     /// Under the build's proxy (D110) its requests are put to `check`, the build's policies,
     /// its log ends with them as BuildKit's does, and what they came to is returned with
@@ -1334,8 +1415,8 @@ impl Exec<'_> {
             if usize::try_from(m.input).is_ok() && held.fresh {
                 let from = input(m.input)?;
                 let image = self.seed_image(&held, &from)?;
-                // Its root as containerd's snapshotter makes a child's: its parent's
-                // owner, mode 0755.
+                // Its root as containerd's snapshots/overlay/overlay.go makes a child's: its
+                // parent's owner, mode 0755.
                 let root = from.fs.tree().node(Tree::ROOT).map(|n| &n.meta);
                 let root = store::MountRoot {
                     mode: 0o755,
@@ -1567,8 +1648,8 @@ impl Exec<'_> {
                 *end = at;
             }
         }
-        // Each cache's changes, kept whatever the step's end, as BuildKit keeps a cache's
-        // writes; every one read, whichever fails.
+        // Each cache's changes, kept whatever the step's end, as a cache mount outlives its
+        // step (D114): every one read, whichever fails.
         let mut kept = Ok(());
         for (t, out) in taken.into_iter().zip(outs) {
             let r = self.keep_cache(builder, t, out);
@@ -1631,6 +1712,64 @@ impl Exec<'_> {
             .collect::<Result<Vec<_>, String>>()?;
         Ok((results, capture))
     }
+}
+
+/// Where `below`, a base's root filesystem read back (shards_erofs::read_tree), holds the
+/// data of each regular file of `base`, the base's snapshot as its layers made it: by the
+/// data's place in the build's sources, its block in `below` and its size, for each path
+/// where both have a file of one size. Both are the base's layers' tree, as its ChainID
+/// names them, so a path's file is the same file in each.
+fn blocks_below(base: &Tree, below: &Tree) -> HashMap<(u32, u64), (u32, u64)> {
+    let mut at = HashMap::new();
+    let mut todo = vec![(Tree::ROOT, Tree::ROOT)];
+    while let Some((dir, there)) = todo.pop() {
+        for (name, id) in base.entries(dir) {
+            let Some(theirs) = below.child(there, name) else {
+                continue;
+            };
+            match (
+                base.node(id).map(|n| &n.kind),
+                below.node(theirs).map(|n| &n.kind),
+            ) {
+                (Some(Kind::Dir(_)), Some(Kind::Dir(_))) => todo.push((id, theirs)),
+                (
+                    Some(Kind::File { size, data }),
+                    Some(Kind::File {
+                        size: len,
+                        data: held,
+                    }),
+                ) if size == len && *size > 0 => {
+                    let offset = held.offset;
+                    if offset % erofs::BLOCK == 0
+                        && let Ok(block) = u32::try_from(offset / erofs::BLOCK)
+                    {
+                        at.insert((data.source, data.offset), (block, *size));
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    at
+}
+
+/// The files of `tree` whose data is a base's as it was, by node, where the base's root
+/// filesystem holds it ([`blocks_below`]): what an image over that root filesystem points
+/// at there rather than writes again.
+fn held_below(tree: &Tree, at: &HashMap<(u32, u64), (u32, u64)>) -> HashMap<erofs::NodeId, (u32, u64)> {
+    let mut held = HashMap::new();
+    for id in 0..tree.len() {
+        if let Some(Node {
+            kind: Kind::File { size, data },
+            ..
+        }) = tree.node(id)
+            && let Some(&(block, len)) = at.get(&(data.source, data.offset))
+            && len == *size
+        {
+            held.insert(id, (block, len));
+        }
+    }
+    held
 }
 
 #[cfg(test)]

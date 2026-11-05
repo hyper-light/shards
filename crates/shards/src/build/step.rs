@@ -1,5 +1,5 @@
-//! What a `RUN` step is given besides its tree, as BuildKit gives it
-//! (docs/research/buildkit-run.md): its environment, `/etc/hosts`, `/etc/resolv.conf`,
+//! What a `RUN` step is given besides its tree, matching a BuildKit step's (D33;
+//! docs/research/buildkit-run.md): its environment, `/etc/hosts`, `/etc/resolv.conf`,
 //! and the words of its failure.
 
 use std::net::IpAddr;
@@ -63,15 +63,15 @@ pub fn hosts(hostname: &[u8], extra: &[HostIp]) -> Vec<u8> {
     out
 }
 
-/// The host's resolvers, as BuildKit and dockerd read them (shards_net::bridge::host_resolv;
+/// The host's resolvers (shards_net::bridge::host_resolv;
 /// on Windows each up adapter's).
 pub fn host_resolv() -> Vec<u8> {
     shards_net::bridge::host_resolv()
 }
 
 /// `/etc/resolv.conf` made from the host's as BuildKit makes it for a step without the
-/// host's network (util/resolvconf: Parse, TransformForLegacyNw(true), Generate(false)),
-/// and as dockerd makes it for a container on a network without IPv6
+/// host's network (util/resolvconf/resolvconf.go: Parse, TransformForLegacyNw(true),
+/// Generate(false)), and for a run on a network without IPv6, as dockerd makes a container's
 /// (TransformForLegacyNw(false)): nameservers less loopback ones, and less IPv6 ones
 /// without `ipv6`, or Google's when none remain; the last `search`; every `options`;
 /// other lines as they were; no comments, which name the engine that wrote them.

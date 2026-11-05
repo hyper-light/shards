@@ -61,6 +61,16 @@ impl Perms {
     pub const R: Perms = Perms(ffi::HV_MEMORY_READ);
     /// No access: every touch exits to the VMM.
     pub const NONE: Perms = Perms(0);
+
+    /// Whether the guest may write it.
+    pub fn writes(self) -> bool {
+        self.0 & ffi::HV_MEMORY_WRITE != 0
+    }
+
+    /// The same, the guest's writes taken away.
+    pub fn read_only(self) -> Perms {
+        Perms(self.0 & !ffi::HV_MEMORY_WRITE)
+    }
 }
 
 #[derive(Debug, Clone, Copy)]

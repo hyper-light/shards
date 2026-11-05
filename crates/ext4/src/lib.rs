@@ -182,6 +182,8 @@ pub struct Made {
     pub journal_blocks: u64,
     /// Blocks written: the rest of the file is a hole.
     pub written: u64,
+    /// Blocks free: every group's count, as its descriptor says it.
+    pub free_blocks: u64,
 }
 
 /// Makes an empty ext4 file system of `options` in `sink`, from its byte 0: a root
@@ -270,6 +272,7 @@ pub fn format(sink: &mut impl Sink, options: &Options) -> Result<Made, Error> {
         inodes: g.groups * g.ipg,
         journal_blocks: g.journal,
         written,
+        free_blocks,
     })
 }
 

@@ -106,6 +106,26 @@ pub fn main() -> ! {
             let _ = writeln!(io::stdout(), "fifo: {said}");
             0
         }
+        // Each path's file system's size: `statfs PATH BYTES`, or the errno that refused it.
+        "statfs" => {
+            for p in args.get(1..).unwrap_or_default() {
+                let said = std::ffi::CString::new(p.as_str()).map_or_else(
+                    |_| "errno 22".to_string(),
+                    |c| {
+                        // SAFETY: an all-zero statvfs is a valid out-parameter.
+                        let mut st: libc::statvfs = unsafe { std::mem::zeroed() };
+                        // SAFETY: statvfs(3) of a NUL-terminated path into a struct it owns.
+                        if unsafe { libc::statvfs(c.as_ptr(), &raw mut st) } == 0 {
+                            st.f_blocks.saturating_mul(st.f_frsize).to_string()
+                        } else {
+                            format!("errno {}", io::Error::last_os_error().raw_os_error().unwrap_or(0))
+                        }
+                    },
+                );
+                let _ = writeln!(io::stdout(), "statfs {p} {said}");
+            }
+            0
+        }
         "stat" => stat(args.get(1..).unwrap_or_default()),
         // Each path's device: `PATH char MAJOR:MINOR`, `PATH block MAJOR:MINOR`, or
         // `PATH none` (an overlay's whiteout is a character device of 0:0).
@@ -516,6 +536,44 @@ pub fn main() -> ! {
                 std::thread::sleep(every);
             }
         }
+        // `arg(1)` MiB of memory (64 if none) stamped page by page, a sweep after another,
+        // each sweep's number in the first and last words of every 4 KiB page, 256 pages
+        // every 10 ms; after each sweep every page checked to hold it, and the sweep's
+        // number printed: a page whose last write a live move lost holds an older one, and
+        // is said (`BAD`), and the workload ends (D176 part 7).
+        "scribble" => {
+            let mib: usize = arg(1).parse().unwrap_or(64);
+            let words = 512;
+            let mut buf = vec![0u64; mib << 17];
+            let pages = buf.len() / words;
+            let _ = writeln!(io::stdout(), "ready");
+            let mut sweep = 1u64;
+            loop {
+                for (p, page) in buf.chunks_mut(words).take(pages).enumerate() {
+                    if let Some(first) = page.first_mut() {
+                        *first = sweep;
+                    }
+                    if let Some(last) = page.last_mut() {
+                        *last = sweep;
+                    }
+                    if p % 256 == 255 {
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                    }
+                }
+                for (p, page) in buf.chunks(words).take(pages).enumerate() {
+                    let (first, last) = (
+                        page.first().copied().unwrap_or(0),
+                        page.last().copied().unwrap_or(0),
+                    );
+                    if first != sweep || last != sweep {
+                        let _ = writeln!(io::stdout(), "BAD page {p}: {first} {last}, sweep {sweep}");
+                        std::process::exit(1);
+                    }
+                }
+                let _ = writeln!(io::stdout(), "{sweep}");
+                sweep += 1;
+            }
+        }
         // A counter written to file `arg(1)` as it grows, a line every `arg(2)` ms, each line
         // synced, through one descriptor opened once in the file's directory, which it works
         // in, and printed: a volume's file and directory a saved microVM holds, which a
@@ -541,7 +599,7 @@ pub fn main() -> ! {
                 unsafe { libc::pause() };
             }
         }
-        // As a nested runtime starts (BuildKit's buildkitd, Docker in Docker's entrypoint):
+        // What a nested runtime does as it starts (buildkitd, an engine of its own; D173):
         // moves itself into a cgroup below its own, and enables a controller for its own
         // cgroup's children, so that cgroup v2 keeps every process out of it from then on
         // (no internal processes); says `nested`, then sleeps.
@@ -2699,7 +2757,8 @@ fn addrs() -> i32 {
     0
 }
 
-/// File operations, in order: `mkdir:P`, `write:P=DATA`, `link:OLD:NEW`, `symlink:T:P`,
+/// File operations, in order: `mkdir:P`, `write:P=DATA`, `fill:BYTES:P`, `link:OLD:NEW`,
+/// `symlink:T:P`,
 /// `rm:P`, `rmdir:P` (and what it holds), `chmod:OCTAL:P`, `chown:UID:GID:P` (not
 /// followed), `mknod:b|c:MAJOR:MINOR:P`, `open:r|w:P`, `dev:P`, which prints a device
 /// node's type, numbers and mode, `ino:P`, which prints P's device and inode numbers (not
@@ -2728,6 +2787,21 @@ fn fs(ops: &[String]) -> i32 {
                 std::os::unix::fs::symlink(t, p)
             }
             "rm" => std::fs::remove_file(rest),
+            // BYTES:P, a file of that many bytes, none of them zeros, written a MiB at a time.
+            "fill" => {
+                let (n, p) = rest.split_once(':').unwrap_or((rest, ""));
+                n.parse::<usize>().map_err(io::Error::other).and_then(|n| {
+                    let mut f = std::fs::File::create(p)?;
+                    let chunk = vec![0x5Au8; 1 << 20];
+                    let mut left = n;
+                    while left > 0 {
+                        let k = left.min(chunk.len());
+                        f.write_all(chunk.get(..k).unwrap_or_default())?;
+                        left -= k;
+                    }
+                    Ok(())
+                })
+            }
             "rename" => {
                 let (a, b) = rest.split_once(':').unwrap_or((rest, ""));
                 std::fs::rename(a, b)
@@ -2901,7 +2975,8 @@ fn fs(ops: &[String]) -> i32 {
             // `map2m:PATH:SIGNAL`: its first 8 MiB mapped shared at a 2 MiB boundary and each
             // page read, which a DAX file's mapping takes in 2 MiB pages (fs/dax.c,
             // `dax_iomap_pmd_fault`), SIGNAL.ready made; once the host makes SIGNAL, and its
-            // attributes have aged (VALID_S, a second), the file stat'ed and opened again,
+            // attributes have aged (VALID_S, a second, by CLOCK_MONOTONIC and by the jiffies
+            // FUSE times it by), the file stat'ed and opened again,
             // and each page read again, said as `map2m PATH SIZE`.
             "map2m" => {
                 let (path, signal) = rest.rsplit_once(':').unwrap_or((rest, ""));
@@ -3009,9 +3084,18 @@ fn map_2m(path: &str, signal: &str) -> io::Result<u64> {
     // the kernel's jiffies, which FUSE times its attributes' second by (fs/fuse/dir.c,
     // fuse_dentry_revalidate), went against CLOCK_MONOTONIC, which the sleep is timed by:
     // CI's windows-2025 saw a stat 1.2 s past its file's attributes ask nothing of its
-    // share's server (05e9cc57, the server's log).
+    // share's server (05e9cc57, the server's log). So the second is waited out in jiffies
+    // too, 1.1 s of their clock ticks: on CI's windows-2022 at b5113c13 (41959673660) they
+    // went 56 ticks at 100 a second across a sleep of 1,235,378 us, the attributes still
+    // valid by them, and the stat said the size the server had told before the host grew
+    // the file, where a statx asked afresh said the new one.
     let (mono, ticks) = (std::time::Instant::now(), clock_ticks());
+    // SAFETY: sysconf(3) reads a constant.
+    let hz = u64::try_from(unsafe { libc::sysconf(libc::_SC_CLK_TCK) }).map_err(io::Error::other)?;
     std::thread::sleep(std::time::Duration::from_millis(1100));
+    while clock_ticks().saturating_sub(ticks) < hz.saturating_mul(11) / 10 {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
     let size = std::fs::metadata(path)?.len();
     let slept = (mono.elapsed(), clock_ticks().saturating_sub(ticks));
     // And asked of the file system afresh, whatever the kernel holds of it, said on stderr:
@@ -3031,8 +3115,7 @@ fn map_2m(path: &str, signal: &str) -> io::Result<u64> {
         "map2m {path} asked afresh {asked}; slept {} us of CLOCK_MONOTONIC, {} clock ticks of jiffies at {} a second; clocksource {}, clockevent {}",
         slept.0.as_micros(),
         slept.1,
-        // SAFETY: sysconf(3) reads a constant.
-        unsafe { libc::sysconf(libc::_SC_CLK_TCK) },
+        hz,
         clocks[0],
         clocks[1]
     );

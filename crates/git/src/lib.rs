@@ -1,4 +1,4 @@
-//! Git repositories, fetched as BuildKit's git source fetches them (`ADD <git URL>`):
+//! Git repositories, fetched as BuildKit's git source fetches them (`ADD <git URL>`, D48):
 //! the protocol's packet lines ([`pktline`]), packfiles and their deltas ([`pack`]), and
 //! the objects a checkout reads ([`object`]). Written from git's own documents
 //! (Documentation/gitprotocol-common.adoc, gitprotocol-v2.adoc, gitformat-pack.adoc,
