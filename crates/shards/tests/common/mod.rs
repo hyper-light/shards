@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 
 use std::net::TcpListener;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use sha2::Digest as _;
 use shards_image::erofs::{self, DataRef, Dir, Kind, Meta, Node, NodeId, Source, Tree};
@@ -3018,30 +3018,42 @@ impl Vm {
         }
     }
 
-    /// [`wait_for_any`](Self::wait_for_any), going on past `timeout` while its microVM
-    /// runs ([`Ran`]): for a guest whose workload its host may run slower than `timeout`
-    /// allows. One that runs nothing for [`DAEMON_QUIET`] past it fails as before.
-    pub fn wait_for_any_running(&mut self, texts: &[&str], timeout: Duration) -> String {
+    /// [`wait_for_any`](Self::wait_for_any), going on past `timeout` while its guest
+    /// progresses ([`Heard`]): says something new, or carries more of `streamed`'s stream,
+    /// within [`DAEMON_QUIET`]; for a guest whose workload its host may run slower than
+    /// `timeout` allows. One that does neither for as long past it fails as before.
+    pub fn wait_for_any_within(
+        &mut self,
+        texts: &[&str],
+        timeout: Duration,
+        streamed: Option<&AtomicU64>,
+    ) -> String {
         let deadline = Instant::now() + timeout;
-        let mut ran = Ran::of(self.child.id());
+        let mut heard = Heard::of(self.child.id(), streamed);
         loop {
-            // Asked each pass, so that each slice of its microVM's is judged as it comes.
-            let running = ran.lately();
+            let progressing = heard.lately(!self.seen.is_empty());
             match self.lines.recv_timeout(Duration::from_secs(1)) {
                 Ok(line) => {
                     let found = texts.iter().any(|t| line.contains(t));
-                    self.seen.push(line.clone());
+                    self.hear(line.clone(), &mut heard);
                     if found {
                         return line;
                     }
                 }
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout) if Instant::now() < deadline || running => {}
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+                    if Instant::now() < deadline || progressing => {}
                 Err(_) => panic!(
-                    "no {texts:?} from the VM in {timeout:?} and while its microVM ran after; it said:\n{}",
+                    "no {texts:?} from the VM in {timeout:?}, nor anything new from it for {DAEMON_QUIET:?} after; it said:\n{}",
                     self.seen.join("\n")
                 ),
             }
         }
+    }
+
+    /// Keeps a line it printed, which [`Heard`] takes for progress where it is new.
+    fn hear(&mut self, line: String, heard: &mut Heard<'_>) {
+        heard.said(!self.seen.contains(&line));
+        self.seen.push(line);
     }
 
     /// Waits for the process to exit, keeping everything it printed.
@@ -3053,27 +3065,83 @@ impl Vm {
     }
 
     /// [`wait_exit`](Self::wait_exit), failing, with what it printed, if the process runs
-    /// past `timeout` and its microVM has run nothing for [`DAEMON_QUIET`] ([`Ran`]): a
-    /// guest whose workload its host runs slower than `timeout` allows (the parity plan's
-    /// step 10, a 64-vCPU storm on 4 TCG CPUs) is waited on while it runs, and one that
-    /// runs nothing fails as before.
-    pub fn wait_exit_within(&mut self, timeout: Duration) -> Option<i32> {
+    /// past `timeout` and its guest has said nothing new, nor carried more of `streamed`'s
+    /// stream, for [`DAEMON_QUIET`] ([`Heard`]): a guest whose workload its host runs slower
+    /// than `timeout` allows (the parity plan's step 10, a 64-vCPU storm on 4 TCG CPUs) is
+    /// waited on while it gets on with it, and one that does not fails as before.
+    pub fn wait_exit_within(&mut self, timeout: Duration, streamed: Option<&AtomicU64>) -> Option<i32> {
         let deadline = Instant::now() + timeout;
-        let mut ran = Ran::of(self.child.id());
+        let mut heard = Heard::of(self.child.id(), streamed);
         while self.child.try_wait().unwrap().is_none() {
-            // Asked each pass, so that each slice of its microVM's is judged as it comes.
-            let running = ran.lately();
-            if Instant::now() > deadline && !running {
+            // Asked each pass, so that each slice of its microVM's and each byte of its
+            // stream is judged as it comes.
+            let progressing = heard.lately(!self.seen.is_empty());
+            if Instant::now() > deadline && !progressing {
                 let _ = self.child.kill();
                 self.wait_exit();
                 panic!(
-                    "still running after {timeout:?} and while its microVM ran after; it said:\n{}",
+                    "still running after {timeout:?}, and nothing new from its guest for {DAEMON_QUIET:?} after; it said:\n{}",
                     self.seen.join("\n")
                 );
             }
-            std::thread::sleep(Duration::from_millis(5));
+            match self.lines.recv_timeout(Duration::from_millis(5)) {
+                Ok(line) => self.hear(line, &mut heard),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                // Its pipes closed as it goes: it is waited for alone.
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    std::thread::sleep(Duration::from_millis(5))
+                }
+            }
         }
         self.wait_exit()
+    }
+}
+
+/// What a wait on a guest past its deadline takes for its progress (D209): a line it has
+/// not printed before, or bytes more of a stream a test carries through it (`streamed`, as
+/// [`Following`] counts them); and before its first line, while it starts, its microVM's
+/// CPU time ([`Ran`]). CPU time is no progress once a guest has its own words: a 64-vCPU
+/// guest on 4 TCG CPUs shows it for ever, its stream stopped or not (the parity plan's
+/// step 10: a storm waited on for 2 h 16 min, its VM process at 31,324 CPU-seconds), and a
+/// guest that repeats a line says nothing new.
+struct Heard<'a> {
+    ran: Ran,
+    streamed: Option<&'a AtomicU64>,
+    bytes: u64,
+    /// When it last progressed, since this began watching.
+    at: Option<Instant>,
+}
+
+impl<'a> Heard<'a> {
+    fn of(vm: u32, streamed: Option<&'a AtomicU64>) -> Heard<'a> {
+        Heard {
+            ran: Ran::of(vm),
+            bytes: streamed.map_or(0, |s| s.load(Ordering::Relaxed)),
+            streamed,
+            at: None,
+        }
+    }
+
+    /// A line it printed, `new` where it had not printed it before.
+    fn said(&mut self, new: bool) {
+        if new {
+            self.at = Some(Instant::now());
+        }
+    }
+
+    /// Whether it progressed within [`DAEMON_QUIET`]; `started`, whether it has printed a
+    /// line, past which its CPU time counts for nothing.
+    fn lately(&mut self, started: bool) -> bool {
+        if let Some(s) = self.streamed {
+            let bytes = s.load(Ordering::Relaxed);
+            if bytes != self.bytes {
+                self.bytes = bytes;
+                self.at = Some(Instant::now());
+            }
+        }
+        // Its microVM's CPU time only while it starts.
+        let starting = !started && self.ran.lately();
+        starting || self.at.is_some_and(|at| at.elapsed() < DAEMON_QUIET)
     }
 }
 
@@ -3095,23 +3163,6 @@ pub fn vsock_connect(
         shards_vmm::platform::UnixStream::connect(sock).map_err(|e| format!("{}: {e}", sock.display()))?;
     s.set_read_timeout(Some(timeout)).map_err(|e| e.to_string())?;
     vsock_handshake(&s, &mut &s, port)?;
-    Ok(s)
-}
-
-/// [`vsock_connect`], its answer waited on past `timeout` while the microVM of `vm` (the
-/// `shards` process that is it or started it) runs ([`Following`]). The stream it returns
-/// reads with `timeout` again.
-pub fn vsock_connect_running(
-    sock: &Path,
-    port: u32,
-    timeout: Duration,
-    vm: u32,
-) -> Result<shards_vmm::platform::UnixStream, String> {
-    let s =
-        shards_vmm::platform::UnixStream::connect(sock).map_err(|e| format!("{}: {e}", sock.display()))?;
-    let mut r = Following::of(&s, timeout, vm).map_err(|e| e.to_string())?;
-    vsock_handshake(&s, &mut r, port)?;
-    s.set_read_timeout(Some(timeout)).map_err(|e| e.to_string())?;
     Ok(s)
 }
 
@@ -3142,72 +3193,66 @@ fn vsock_handshake(
     Ok(())
 }
 
-/// A guest's stream read as long as its microVM runs: a read that has no data within
-/// `timeout` waits on while the microVM of `vm` (the `shards` process that is it or
-/// started it) ran within [`DAEMON_QUIET`] ([`Ran`]), as a guest's workload runs at its
-/// host's speed (the parity plan's step 10: a 64-vCPU storm's echo, on 4 TCG CPUs, sent
-/// nothing for a minute). A fast host's reads keep `timeout`; one whose microVM runs
-/// nothing fails a read as before, with the stream's own timeout error.
+/// A guest's stream, read for as long as it carries bytes: each read waits up to
+/// [`DAEMON_QUIET`] for one, so that a stream that carries anything goes on however slowly
+/// its host runs its guest (the parity plan's step 10: a 64-vCPU storm's echo on 4 TCG
+/// CPUs, 196,608 bytes in 120 s), and one that carries nothing for as long fails, with the
+/// stream's own timeout error, whatever its microVM's CPU does (a guest on more vCPUs than
+/// its host's CPUs runs them all for ever). What it reads is added to `carried`, where a
+/// wait on its guest follows it ([`Vm::wait_exit_within`]).
 pub struct Following<'a> {
     stream: &'a shards_vmm::platform::UnixStream,
-    timeout: Duration,
-    ran: Ran,
+    carried: Option<&'a AtomicU64>,
 }
 
 impl<'a> Following<'a> {
-    /// How long each read of the stream waits before its microVM is asked about again.
-    const LOOK: Duration = Duration::from_secs(1);
-
-    /// Reads of `stream`, which reads with [`Self::LOOK`]'s timeout from now on.
+    /// Reads of `stream`, which reads with [`DAEMON_QUIET`]'s timeout from now on.
     pub fn of(
         stream: &'a shards_vmm::platform::UnixStream,
-        timeout: Duration,
-        vm: u32,
+        carried: Option<&'a AtomicU64>,
     ) -> io::Result<Following<'a>> {
-        stream.set_read_timeout(Some(Self::LOOK))?;
-        Ok(Following {
-            stream,
-            timeout,
-            ran: Ran::of(vm),
-        })
+        stream.set_read_timeout(Some(DAEMON_QUIET))?;
+        Ok(Following { stream, carried })
     }
 }
 
 impl Read for Following<'_> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        let start = Instant::now();
         loop {
             match self.stream.read(buf) {
+                Ok(n) => {
+                    if let Some(c) = self.carried {
+                        c.fetch_add(n as u64, Ordering::Relaxed);
+                    }
+                    return Ok(n);
+                }
                 // A timeout says WouldBlock through SO_RCVTIMEO, TimedOut on Windows.
                 Err(e) if matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut) => {
-                    // Asked each pass, so that each slice of its microVM's is judged as it
-                    // comes.
-                    let running = self.ran.lately();
-                    if start.elapsed() >= self.timeout && !running {
-                        return Err(io::Error::new(
-                            e.kind(),
-                            format!(
-                                "{e}: nothing in {:?} and while its microVM ran after",
-                                self.timeout
-                            ),
-                        ));
-                    }
+                    return Err(io::Error::new(
+                        e.kind(),
+                        format!("{e}: nothing for {DAEMON_QUIET:?}"),
+                    ));
                 }
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
-                got => return got,
+                Err(e) => return Err(e),
             }
         }
     }
 }
 
 /// Streams `len` bytes of pattern `salt` through the guest's echo on `port` and checks
-/// what comes back, byte for byte, after the half-close: each read waits a minute, or on
-/// while the microVM of `vm` (the `shards` process that is it or started it) runs
-/// ([`Following`]).
-pub fn echo(sock: &Path, port: u32, salt: u64, len: usize, vm: u32) -> Result<(), String> {
+/// what comes back, byte for byte, after the half-close: each read waits a minute for its
+/// next byte ([`Following`]), and what comes back is added to `carried`.
+pub fn echo(
+    sock: &Path,
+    port: u32,
+    salt: u64,
+    len: usize,
+    carried: Option<&AtomicU64>,
+) -> Result<(), String> {
     let s =
         shards_vmm::platform::UnixStream::connect(sock).map_err(|e| format!("{}: {e}", sock.display()))?;
-    let mut r = Following::of(&s, Duration::from_secs(60), vm).map_err(|e| e.to_string())?;
+    let mut r = Following::of(&s, carried).map_err(|e| e.to_string())?;
     vsock_handshake(&s, &mut r, port)?;
     let mut w = s.try_clone().map_err(|e| e.to_string())?;
     let writer = std::thread::spawn(move || -> Result<(), String> {

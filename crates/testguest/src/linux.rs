@@ -1149,14 +1149,15 @@ fn storm() -> Result<(), String> {
     ))?;
     // A machine that went on carries the host's stream on past its snapshot: two rounds'
     // worth (the host's rounds are 4 MiB), so the round the snapshot cut through ends and
-    // another runs whole after it, however slowly a loaded host streams.
+    // another runs whole after it, however slowly a loaded host streams: for as long as
+    // the stream carries bytes ([`STREAM_QUIET`]).
     if generation == 0 {
-        let deadline = Instant::now() + Duration::from_secs(60);
+        let mut stream = Streaming::new();
         while ECHOED.load(Ordering::Relaxed).saturating_sub(echoed_at) < 8 << 20 {
             beats.fetch_add(1, Ordering::Relaxed);
-            if Instant::now() > deadline {
+            if !stream.carries() {
                 return Err(format!(
-                    "the host streamed {} bytes after the snapshot in 60 s",
+                    "the host streamed {} bytes after the snapshot, then nothing for {STREAM_QUIET:?}",
                     ECHOED.load(Ordering::Relaxed).saturating_sub(echoed_at)
                 ));
             }
@@ -1168,8 +1169,9 @@ fn storm() -> Result<(), String> {
     beats.store(u64::MAX, Ordering::Relaxed);
     report(format_args!("SHARDS-TEST INFO storm checked"))?;
     // The host's side of the connection is up only once it has read its OK, after this
-    // side's accept: its byte, or its close, says so.
-    let mut host = accept_within(&done, Duration::from_secs(60))?;
+    // side's accept: its byte, or its close, says so. The host connects once the round it
+    // streams ends, waited for while its stream carries bytes.
+    let mut host = accept_while_streaming(&done)?;
     let mut byte = [0u8; 1];
     std::io::Read::read(&mut host, &mut byte)
         .map(drop)
@@ -1319,15 +1321,47 @@ fn kernel_log(at_most: u32) -> Vec<String> {
     said
 }
 
-/// The next connection to `listener`, or an error once `limit` passes without one.
-fn accept_within(listener: &std::fs::File, limit: Duration) -> Result<std::fs::File, String> {
+/// How long the host's stream through the echo may carry nothing before a storm takes it
+/// for stopped: the host's own `DAEMON_QUIET` (crates/shards/tests/common), a minute,
+/// after which its reads of the stream fail. A stream that carries anything is waited on
+/// however slowly its host runs it (the parity plan's step 10: 196,608 bytes in 120 s).
+const STREAM_QUIET: Duration = Duration::from_secs(60);
+
+/// Whether the host's stream through the echo ([`ECHOED`]) has carried bytes within
+/// [`STREAM_QUIET`], or since it began watching.
+struct Streaming {
+    echoed: u64,
+    since: Instant,
+}
+
+impl Streaming {
+    fn new() -> Streaming {
+        Streaming {
+            echoed: ECHOED.load(std::sync::atomic::Ordering::Relaxed),
+            since: Instant::now(),
+        }
+    }
+
+    fn carries(&mut self) -> bool {
+        let echoed = ECHOED.load(std::sync::atomic::Ordering::Relaxed);
+        if echoed != self.echoed {
+            (self.echoed, self.since) = (echoed, Instant::now());
+        }
+        self.since.elapsed() < STREAM_QUIET
+    }
+}
+
+/// A connection to `listener`, waited for while the host's stream through the echo carries
+/// bytes ([`Streaming`]): the host connects once it has stopped streaming, at the end of a
+/// round however long its host takes over it.
+fn accept_while_streaming(listener: &std::fs::File) -> Result<std::fs::File, String> {
     use std::os::fd::{AsRawFd, FromRawFd};
+    // Each accept(2) gives up after a second, for a look at the stream.
     let wait = libc::timeval {
-        tv_sec: limit.as_secs().try_into().unwrap_or(60),
+        tv_sec: 1,
         tv_usec: 0,
     };
-    // SAFETY: setsockopt(2) on our own socket, with a timeval of its size: accept(2) gives
-    // up after it.
+    // SAFETY: setsockopt(2) on our own socket, with a timeval of its size.
     let set = unsafe {
         libc::setsockopt(
             listener.as_raw_fd(),
@@ -1340,23 +1374,31 @@ fn accept_within(listener: &std::fs::File, limit: Duration) -> Result<std::fs::F
     if set != 0 {
         return Err(format!("SO_RCVTIMEO: {}", io::Error::last_os_error()));
     }
-    // SAFETY: accept(2) on our listening socket, without the peer address.
-    let fd = unsafe {
-        libc::accept4(
-            listener.as_raw_fd(),
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
-            libc::SOCK_CLOEXEC,
-        )
-    };
-    if fd < 0 {
-        return Err(format!(
-            "no host connection in {limit:?}: {}",
-            io::Error::last_os_error()
-        ));
+    let mut stream = Streaming::new();
+    loop {
+        // SAFETY: accept(2) on our listening socket, without the peer address.
+        let fd = unsafe {
+            libc::accept4(
+                listener.as_raw_fd(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                libc::SOCK_CLOEXEC,
+            )
+        };
+        if fd >= 0 {
+            // SAFETY: a fresh descriptor nothing else owns.
+            return Ok(unsafe { std::fs::File::from_raw_fd(fd) });
+        }
+        let e = io::Error::last_os_error();
+        if !matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted) {
+            return Err(format!("accepting the host's connection: {e}"));
+        }
+        if !stream.carries() {
+            return Err(format!(
+                "no host connection, and nothing through the echo, for {STREAM_QUIET:?}"
+            ));
+        }
     }
-    // SAFETY: a fresh descriptor nothing else owns.
-    Ok(unsafe { std::fs::File::from_raw_fd(fd) })
 }
 
 /// The benchmark guest: asks for a snapshot; a restored clone marks that it runs again

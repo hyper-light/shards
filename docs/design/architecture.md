@@ -6662,7 +6662,7 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
   runs, and given up on a minute after it last ran, as before. Where a microVM is the
   client's own, no daemon's (`shards run --kernel`, `shards restore`, `shards build`'s
   builders), the test judges the VM processes under its client itself, by the same basis
-  and slice (`common::Ran`, `Vm::wait_for_any_running`). Detached runs are not looked at:
+  and slice (`common::Ran`), while they start. Detached runs are not looked at:
   a busy server run with `-d` logs nothing. Not caught, as of a start: a guest that spins
   for ever, which its CI job's limit ends. `a_microvm_is_followed_while_a_client_waits_on_it`
   holds who is looked at and the slice (a sixth of `READY_TIMEOUT`), and
@@ -6678,6 +6678,24 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
   PowerShell's look at Windows' processes may outlast a slice. daemon.rs' `eventually`
   and `wait`, saved.rs', containers.rs', engine.rs' and budget.rs' waits on pools,
   restored VMs and guests' answers, and warm.rs' warm VM's end take it.
+- **A guest's stream follows its bytes, and its end its output** (every host). CPU time is
+  no progress past a start: a guest on more vCPUs than its host has CPUs runs them all for
+  ever, its stream stopped or not, and snapshot.rs' 64-vCPU storm on the arm64 Windows
+  host (4 TCG CPUs), waited on while its microVM ran, ran 2 h 16 min, its VM process at
+  31,324 CPU-seconds, all four cores busy throughout. A test's reads of a guest's stream
+  (`common::Following`, the vsock echo's and handshakes) wait `DAEMON_QUIET`, a minute,
+  for each next byte, however slowly it comes, and fail a minute after the last, whatever
+  the microVM's CPU does. A wait on a guest's line or its end past the test's deadline
+  (`Vm::wait_for_any_within`, `Vm::wait_exit_within`) follows what the guest itself gives
+  (`common::Heard`): a line it has not printed before, or bytes more of the stream the test
+  carries through it; its microVM's CPU time (`Ran`) only before its first line, while it
+  starts. The storm's guest waits on its host as the host waits on it: for its stream's
+  8 MiB past a snapshot and for the host's word at its end, while the echo carries bytes
+  within a minute (`STREAM_QUIET`), never a fixed minute. No wall clock bounds a storm: at
+  the rate that host streamed, 196,608 bytes in 120 s (1,638.4 B/s), the busy machine's
+  restores carry 13 MiB (1 MiB before its snapshot, a whole 4 MiB round in each of three
+  restores), 8,320 s, and the machine that goes on 12 MiB (1 MiB before, 8 MiB after and
+  the rest of their round), 7,680 s, each going on while its bytes come.
 
 ### D207. A Windows host's bind sources: its drives' paths (built)
 
