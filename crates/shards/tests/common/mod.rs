@@ -1809,6 +1809,14 @@ pub fn stacks_of(pids: &[(&str, u32)], home: Option<&Path>) -> String {
             "\n--- ps -a in its home\n{}",
             said_by(&mut ps, Duration::from_secs(20))
         ));
+        // What its daemon said last, of its runs and their groups' budgets: a run held or
+        // stopped says why there alone.
+        let log = std::fs::read(home.join("daemon.log")).unwrap_or_default();
+        let tail = &log[log.len().saturating_sub(16 << 10)..];
+        said.push_str(&format!(
+            "\n--- the end of its daemon.log\n{}",
+            String::from_utf8_lossy(tail)
+        ));
     }
     #[cfg(windows)]
     {

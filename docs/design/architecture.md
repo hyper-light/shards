@@ -5665,7 +5665,11 @@ Decided by the user on 2026-10-14 ("so long as they apply appropriately to micro
     which refuses its processes' commits past it: 512 MiB alone, and 160 MiB beside
     another's 160, under 256, M359), set again as the file changes; `memory.high` the room
     its microVMs are told, as on macOS, whose give-backs on Windows are the platform parity
-    plan's step 7. Tested on real microVMs on CI's windows-2022 and windows-2025
+    plan's step 7. `memory.high` alone (`Budget::room_of`): told a room under `memory.max`
+    too, a run past it was held at that room by its guest's own `memory.high`, which slows
+    and ends nothing, and the daemon's stop past `memory.max` never came, its VM processes'
+    private working sets within what the job lets them commit; the test's run of 2 GiB
+    under 1 GiB ended 69 s after its workload began (CI 42046987905, windows-2022). Tested on real microVMs on CI's windows-2022 and windows-2025
     (`a_groups_job_holds_its_microvms_to_its_memory_max`, budget-e2e run 40624202863):
     under a `memory.max` of 1 GiB, a run that allocates 2 GiB never holds it, where one
     that allocates 2 GiB under no group, and one that allocates 128 MiB under it, run to
