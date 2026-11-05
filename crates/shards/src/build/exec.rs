@@ -173,6 +173,10 @@ fn err(e: impl std::fmt::Display) -> String {
     e.to_string()
 }
 
+/// A base's kept root filesystem, opened, and where it holds each of that base's files' data:
+/// (inode, offset) in the build's image to (block, length) in it ([`blocks_below`]).
+type Below = (std::fs::File, HashMap<(u32, u64), (u32, u64)>);
+
 impl<'a> Exec<'a> {
     pub fn new(store: &'a Store, limits: &'a Limits) -> Exec<'a> {
         Exec {
@@ -701,7 +705,7 @@ impl<'a> Exec<'a> {
     /// The root filesystem kept for the longest run of `layers` from the first that a base
     /// of the build's is, opened, and where it holds each of that base's files' data
     /// ([`blocks_below`]): none where no base's is kept, or it cannot be read back.
-    fn below(&self, layers: &[store::Layer]) -> Option<(std::fs::File, HashMap<(u32, u64), (u32, u64)>)> {
+    fn below(&self, layers: &[store::Layer]) -> Option<Below> {
         let ids: Vec<Digest> = layers.iter().map(|l| l.diff_id.clone()).collect();
         let mut bases: Vec<&(Vec<Digest>, Rc<Fs>)> = self
             .bases

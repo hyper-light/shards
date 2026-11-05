@@ -46,6 +46,13 @@ pub(super) struct Plugged {
 #[derive(Debug, Clone)]
 pub(super) struct Function {
     pub given: String,
+    #[cfg_attr(
+        not(target_os = "linux"),
+        allow(
+            dead_code,
+            reason = "read where a function is plugged, which Linux alone does (D214)"
+        )
+    )]
     pub group: PathBuf,
     pub node: String,
     pub rule: String,
@@ -566,6 +573,13 @@ fn function_rules(plugged: Option<&HashMap<String, Plugged>>, but: &str) -> Vec<
 }
 
 /// What init's `function` step answers, `PATH c MAJ:MIN`: the node, and its device rule.
+#[cfg_attr(
+    not(target_os = "linux"),
+    allow(
+        dead_code,
+        reason = "init answers it where a function is plugged, which Linux alone does (D214)"
+    )
+)]
 fn node_of(said: &str) -> Option<(String, String)> {
     let (path, rest) = said.split_once(' ')?;
     let (kind, numbers) = rest.split_once(' ')?;

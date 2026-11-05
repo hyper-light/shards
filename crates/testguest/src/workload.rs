@@ -549,15 +549,22 @@ pub fn main() -> ! {
             let _ = writeln!(io::stdout(), "ready");
             let mut sweep = 1u64;
             loop {
-                for p in 0..pages {
-                    buf[p * words] = sweep;
-                    buf[p * words + words - 1] = sweep;
+                for (p, page) in buf.chunks_mut(words).take(pages).enumerate() {
+                    if let Some(first) = page.first_mut() {
+                        *first = sweep;
+                    }
+                    if let Some(last) = page.last_mut() {
+                        *last = sweep;
+                    }
                     if p % 256 == 255 {
                         std::thread::sleep(std::time::Duration::from_millis(10));
                     }
                 }
-                for p in 0..pages {
-                    let (first, last) = (buf[p * words], buf[p * words + words - 1]);
+                for (p, page) in buf.chunks(words).take(pages).enumerate() {
+                    let (first, last) = (
+                        page.first().copied().unwrap_or(0),
+                        page.last().copied().unwrap_or(0),
+                    );
                     if first != sweep || last != sweep {
                         let _ = writeln!(io::stdout(), "BAD page {p}: {first} {last}, sweep {sweep}");
                         std::process::exit(1);
