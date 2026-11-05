@@ -26,6 +26,9 @@ use crate::cli::cp::Ask;
 /// What a step on the other machine said: its status, its stdout and its stderr.
 type There = (u8, Vec<u8>, Vec<u8>);
 
+/// A step asked of the other machine: its arguments and what it reads, if anything.
+type AskThere<'a> = dyn Fn(Vec<String>, Option<Box<dyn Read + Send>>) -> Result<There, String> + 'a;
+
 /// What a step writes, sent to its taker as it comes, taken whole once the step is through.
 struct Taken(std::sync::mpsc::Sender<Vec<u8>>);
 
@@ -120,10 +123,7 @@ impl Times {
 
 /// Whether microVM `name` runs on the other machine, asked through `there` up to a minute
 /// as its answers do not come: none where none came.
-fn running_there(
-    there: &dyn Fn(Vec<String>, Option<Box<dyn Read + Send>>) -> Result<There, String>,
-    name: &str,
-) -> Option<bool> {
+fn running_there(there: &AskThere<'_>, name: &str) -> Option<bool> {
     let ask = || {
         there(
             ["inspect", "-f", "{{.State.Running}}", name]
@@ -141,6 +141,15 @@ fn running_there(
         }
     }
     None
+}
+
+/// Whether microVM `name` is gone from the other machine, removed there through `there`:
+/// what a restore there left of it, running or not, which a restore still going on there
+/// cannot bring back once its record is gone.
+fn removed_there(there: &AskThere<'_>, name: &str) -> bool {
+    let argv = |a: &[&str]| a.iter().map(|s| (*s).to_string()).collect::<Vec<String>>();
+    let _ = there(argv(&["rm", "-f", name]), None);
+    matches!(there(argv(&["inspect", "-f", "{{.Id}}", name]), None), Ok((s, _, _)) if s != 0)
 }
 
 fn moved(home: &Path, name: &str, to: &str, live: bool, ask: &Ask<'_>) -> Result<(), String> {
@@ -237,6 +246,8 @@ fn moved(home: &Path, name: &str, to: &str, live: bool, ask: &Ask<'_>) -> Result
                 match (saved, loaded) {
                     (Ok((0, _, _)), Ok((0, _, _))) => Ok(()),
                     (Ok(s), _) if s.0 != 0 => Err(said("its image's save", &s)),
+                    // Each breaks the other's stream: both said.
+                    (Err(e), Err(l)) => Err(format!("{e}; its load: {l}")),
                     (Err(e), _) | (_, Err(e)) => Err(e),
                     (_, Ok(l)) => Err(format!("{to}: {}", said("its image's load", &l))),
                 }
@@ -302,6 +313,8 @@ fn moved(home: &Path, name: &str, to: &str, live: bool, ask: &Ask<'_>) -> Result
             match (sent, taken) {
                 (Ok((0, _, _)), Ok((0, _, _))) => Ok(()),
                 (Ok(s), _) if s.0 != 0 => Err(said("its export", &s)),
+                // Each breaks the other's stream: both said.
+                (Err(e), Err(t)) => Err(format!("{e}; its import: {t}")),
                 (Err(e), _) | (_, Err(e)) => Err(e),
                 (_, Ok(t)) => Err(format!("{to}: {}", said("its import", &t))),
             }
@@ -338,11 +351,9 @@ fn moved(home: &Path, name: &str, to: &str, live: bool, ask: &Ask<'_>) -> Result
         // run in both places, nor in neither, where it cannot.
         Err(e) => match running_there(&there, name) {
             Some(true) => {}
-            Some(false) => {
-                let _ = there(step(&["rm", "-f", name]), None);
-                return Err(back_here(e));
-            }
-            None => {
+            // Not running there, and seen gone: it goes on here alone.
+            Some(false) if removed_there(&there, name) => return Err(back_here(e)),
+            _ => {
                 return Err(format!(
                     "{e}; whether {name} runs on {to} is not known: {}, saved, is held here until it is (shards --context {to} ps -a; then shards rm -f {name}, here or there)",
                     if held { "it" } else { "its copy" }

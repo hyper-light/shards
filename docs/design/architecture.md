@@ -8429,8 +8429,10 @@ machine's is), by `a_running_microvm_moves_to_another_machine_and_goes_on_there`
 appending to a file it holds open in its volume, from the volume's directory: each count
 once there, in order), `a_moved_microvms_log_and_image_go_with_it` (an image no registry
 holds, saved and loaded) and `a_move_refused_leaves_the_microvm_running_here`
-(tests/moved.rs); between two machines by `docs/research/measurements/migrate/two-hosts.sh`
-(PM M460).
+(tests/moved.rs); between two machines by `a_microvm_moves_to_another_host_saved_and_live`
+(tests/moved.rs, to the machine whose invitation `SHARDS_MOVE_INVITE` names: saved, with a
+volume and its image and files going with it, and live, a guest stamping 16 MiB as it moves)
+and measured there by `docs/research/measurements/migrate/two-hosts.sh` (PM M460).
 
 **Moved live** (part 7, roadmap item 7b). `shards move vm --live NAME CONTEXT` moves it as
 it runs, by pre-copy (Clark et al., "Live Migration of Virtual Machines", NSDI 2005): its

@@ -3,8 +3,10 @@
 //! listens, reached through a context (D180), as another machine's is. On this machine, two
 //! homes stand for two machines: nothing of the one is the other's but what the move sends
 //! (its directory, snapshot, volumes and the files its snapshot restores against) and what
-//! the other machine pulls itself (its image, by the digest it was made of). A move between
-//! two machines is the harness's (docs/research/measurements/migrate).
+//! the other machine pulls itself (its image, by the digest it was made of). Between two
+//! machines, `a_microvm_moves_to_another_host_saved_and_live` moves microVMs to the machine
+//! whose invitation `SHARDS_MOVE_INVITE` names, and the harness measures moves there
+//! (docs/research/measurements/migrate/two-hosts.sh).
 
 #![allow(
     clippy::panic,
@@ -274,6 +276,11 @@ fn a_move_refused_leaves_the_microvm_running_here() {
 /// `shards move vm --live NAME lab` with what it reports of its rounds and its downtime
 /// (`SHARDS_MOVE_TIMES`): the run, and the downtime in µs where it said one.
 fn move_live(here: &Path, name: &str) -> (Run, Option<u64>) {
+    move_live_to(here, name, "lab")
+}
+
+/// [`move_live`], to context `to`.
+fn move_live_to(here: &Path, name: &str, to: &str) -> (Run, Option<u64>) {
     let (kernel, init) = (kernel(), guest_init());
     let env: [(&str, &OsStr); 4] = [
         ("SHARDS_HOME", here.as_os_str()),
@@ -281,7 +288,7 @@ fn move_live(here: &Path, name: &str) -> (Run, Option<u64>) {
         ("SHARDS_INIT", init.as_os_str()),
         ("SHARDS_MOVE_TIMES", OsStr::new("1")),
     ];
-    let moved = run_shards_env(&[], &["move", "vm", "--live", name, "lab"], &env, TIMEOUT);
+    let moved = run_shards_env(&[], &["move", "vm", "--live", name, to], &env, TIMEOUT);
     let downtime = moved.stderr.lines().find_map(|l| {
         l.strip_prefix("move: downtime ")?
             .strip_suffix(" us")?
@@ -404,6 +411,182 @@ fn a_microvm_writing_its_memory_moves_live_with_none_of_it_lost() {
     let all = counts(&said);
     assert_eq!(all, (1..=all.len() as u64).collect::<Vec<_>>(), "{said}");
     assert_eq!(shards_in(&there, &["rm", "-f", "scribbler"]).status, Some(0));
+}
+
+/// What a test moved to the other machine, removed there as it drops, the test passing or
+/// failing: microVMs and volumes of names its own.
+struct LeftThere<'a> {
+    here: &'a Path,
+    microvms: Vec<String>,
+    volumes: Vec<String>,
+}
+
+impl Drop for LeftThere<'_> {
+    fn drop(&mut self) {
+        for name in &self.microvms {
+            let _ = shards_in(self.here, &["--context", "peer", "rm", "-f", name]);
+        }
+        for name in &self.volumes {
+            let _ = shards_in(self.here, &["--context", "peer", "volume", "rm", "-f", name]);
+        }
+    }
+}
+
+/// A microVM moved to another machine, the one whose invitation `SHARDS_MOVE_INVITE` names
+/// (a file: two-hosts.sh `invite`, run there, makes one), as context `peer`; the test image
+/// pulled here alone, from this machine's own loopback registry, which the other cannot
+/// reach: its image goes with the move, saved here and loaded there, and so do the files its
+/// snapshot restores against that the other has not alike (its kernel and init among them,
+/// where that machine has none at their paths). A host whose hypervisor gives a live move
+/// nothing to watch writes by (KVM on arm64, WHP) refuses one, the microVM going on here.
+///
+/// Saved: a counter appending to a file it holds open in a volume goes on there from its
+/// count, each count once, in order, its volume and log with it, and is gone from here.
+/// Live: a guest stamping 16 MiB page by page goes on sweeping there, every page holding its
+/// last write, the time it ran nowhere said. 16, not 64 as between homes: it rewrites them
+/// at 100 MiB/s, which a network between machines may not carry, so that its rounds end by
+/// their count, and what they send then is the size of what it stamps.
+#[test]
+fn a_microvm_moves_to_another_host_saved_and_live() {
+    let Some(invite) = std::env::var_os("SHARDS_MOVE_INVITE") else {
+        eprintln!("SKIP: SHARDS_MOVE_INVITE names no other machine's invitation (two-hosts.sh invite)");
+        return;
+    };
+    if cannot_run_vms() || cannot_pool() {
+        return;
+    }
+    let (image, _) = served();
+    let here = TempDir::new("peer");
+    let invite = PathBuf::from(invite);
+    let joined = shards_in(
+        &here,
+        &[
+            "create",
+            "context",
+            "peer",
+            "--invite-file",
+            invite.to_str().unwrap(),
+        ],
+    );
+    assert_eq!(joined.status, Some(0), "{joined}");
+    let pulled = shards_in(&here, &["pull", "-q", &image]);
+    assert_eq!(pulled.status, Some(0), "{pulled}");
+    let id = std::process::id();
+    let (counter, volume, scribbler) = (format!("cold{id}"), format!("kept{id}"), format!("live{id}"));
+    let _left = LeftThere {
+        here: &here,
+        microvms: vec![counter.clone(), scribbler.clone()],
+        volumes: vec![volume.clone()],
+    };
+    let logs_there = |name: &str| shards_in(&here, &["--context", "peer", "logs", name]).stdout;
+    let moved_ok = |moved: &Run, name: &str| {
+        assert_eq!(
+            (moved.status, moved.stdout.as_str()),
+            (Some(0), format!("{name}\n").as_str()),
+            "{moved}\nhere:\n{}",
+            daemon_log(&here)
+        );
+        let gone = shards_in(&here, &["inspect", name]);
+        assert_eq!(gone.status, Some(1), "{gone}");
+    };
+
+    // Saved.
+    let mount = format!("{volume}:/kept");
+    let run = shards_in(
+        &here,
+        &[
+            "run",
+            "-d",
+            "--pull",
+            "never",
+            "--name",
+            &counter,
+            "-u",
+            "0",
+            "-v",
+            &mount,
+            &image,
+            "appender",
+            "/kept/counts",
+            "20",
+        ],
+    );
+    assert_eq!(run.status, Some(0), "{run}");
+    let log_here = || logs(&here, &counter);
+    until("appending", &mut || counts(&log_here()).len() >= 10, &log_here);
+    let (kernel, init) = (kernel(), guest_init());
+    let timed: [(&str, &OsStr); 4] = [
+        ("SHARDS_HOME", here.as_os_str()),
+        ("SHARDS_KERNEL", kernel.as_os_str()),
+        ("SHARDS_INIT", init.as_os_str()),
+        ("SHARDS_MOVE_TIMES", OsStr::new("1")),
+    ];
+    let moved = run_shards_env(&[], &["move", "vm", &counter, "peer"], &timed, TIMEOUT);
+    moved_ok(&moved, &counter);
+    eprintln!("saved move: {}", moved.stderr);
+    let n = counts(&logs_there(&counter)).len();
+    until(
+        "appending there",
+        &mut || counts(&logs_there(&counter)).len() >= n + 10,
+        &|| logs_there(&counter),
+    );
+    let all = counts(&logs_there(&counter));
+    assert_eq!(
+        all,
+        (1..=all.len() as u64).collect::<Vec<_>>(),
+        "each count once, in order, from here on to there"
+    );
+    let ps = shards_in(
+        &here,
+        &[
+            "--context",
+            "peer",
+            "ps",
+            "--filter",
+            &format!("name={counter}"),
+            "--format",
+            "{{.Status}}",
+        ],
+    );
+    assert!(ps.stdout.starts_with("Up "), "{ps}");
+
+    // Live.
+    let run = shards_in(
+        &here,
+        &[
+            "run", "-d", "--pull", "never", "--name", &scribbler, &image, "scribble", "16",
+        ],
+    );
+    assert_eq!(run.status, Some(0), "{run}");
+    let log_here = || logs(&here, &scribbler);
+    until("sweeping", &mut || counts(&log_here()).len() >= 2, &log_here);
+    let (moved, downtime) = move_live_to(&here, &scribbler, "peer");
+    let watched = cfg!(any(
+        target_os = "macos",
+        all(target_os = "linux", target_arch = "x86_64")
+    ));
+    if !watched {
+        assert_eq!(moved.status, Some(1), "{moved}");
+        assert!(moved.stderr.contains("goes on here"), "{moved}");
+        return;
+    }
+    moved_ok(&moved, &scribbler);
+    assert!(moved.stderr.contains("move: round 0: "), "{moved}");
+    let downtime = downtime.unwrap_or_else(|| panic!("no downtime said: {moved}"));
+    eprintln!("live move: downtime {downtime} us; {}", moved.stderr);
+    let n = counts(&logs_there(&scribbler)).len();
+    until(
+        "sweeping there",
+        &mut || {
+            let said = logs_there(&scribbler);
+            counts(&said).len() >= n + 3 || said.contains("BAD")
+        },
+        &|| logs_there(&scribbler),
+    );
+    let said = logs_there(&scribbler);
+    assert!(!said.contains("BAD"), "a page lost its last write: {said}");
+    let all = counts(&said);
+    assert_eq!(all, (1..=all.len() as u64).collect::<Vec<_>>(), "{said}");
 }
 
 /// The downtime of live moves, measured (PM, D176 part 7): `SHARDS_MOVES` microVMs, each
