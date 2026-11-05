@@ -903,9 +903,13 @@ impl Window {
                 changed = true;
             }
         }
-        drop(table);
+        // Counted before the lock goes: a vCPU whose fault waited for it must read a count past
+        // this change, or it takes a live range's fault for the guest's own (PM M421).
         if changed {
             self.changes.fetch_add(1, Ordering::AcqRel);
+        }
+        drop(table);
+        if changed {
             self.restored.notify_all();
         }
         refused.map_or(Ok(()), Err)
@@ -937,10 +941,11 @@ impl Window {
             e.held = Held::LetGo;
             changed = true;
         }
-        drop(table);
+        // Counted before the lock goes, as [`Window::reconcile`] does.
         if changed {
             self.changes.fetch_add(1, Ordering::AcqRel);
         }
+        drop(table);
     }
 
     /// A guest's access to memory the host could not give, at `gpa`, which WHP's memory
