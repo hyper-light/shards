@@ -92,6 +92,8 @@ impl AsRawSocket for UnixListener {
 
 #[cfg(target_os = "macos")]
 mod macos_thread;
+#[cfg(windows)]
+mod windows_thread;
 
 mod pressure;
 pub use pressure::{MemoryPressure, PRESSURE_WINDOW, PressureWatches};
@@ -110,11 +112,15 @@ pub use shards_syscall_filter as seccomp;
 /// What keeps a thread at the policy a `prioritize_` call gave it: the thread holds it
 /// while it runs and drops it before it ends. On macOS the real-time policy's governor
 /// watches the thread while it is held (macos_thread.rs): one that runs long goes to
-/// timeshare before XNU's fail-safe would depress it (PM M317).
+/// timeshare before XNU's fail-safe would depress it (PM M317). On Windows a priority
+/// governor does (windows_thread.rs): one that uses more than half of its CPU goes back to
+/// normal priority.
 #[derive(Debug)]
 pub struct Prioritized {
     #[cfg(target_os = "macos")]
     _watch: macos_thread::Watch,
+    #[cfg(windows)]
+    _watch: Option<windows_thread::Watch>,
 }
 
 /// Applies the scheduling policy measured to have a vCPU run as it wakes: on macOS the
@@ -122,8 +128,9 @@ pub struct Prioritized {
 /// M8, M10); on Linux EEVDF's shortest slice, at its weight as before, where on a host
 /// whose CPUs are busy each of a guest's wakeups of another vCPU (an IPI, a woken task)
 /// waited for the busy thread's slice to run out, and a run's start in a microVM of every
-/// CPU of the host took twice as long as in one of one (PM M292, M440). Elsewhere as it is
-/// until a policy is measured.
+/// CPU of the host took twice as long as in one of one (PM M292, M440). On Windows a
+/// candidate, until it is measured on a contended host (D191): a step above normal priority
+/// while the thread uses no more than half of its CPU (windows_thread.rs).
 pub fn prioritize_vcpu_thread() -> Result<Prioritized, String> {
     #[cfg(target_os = "macos")]
     return macos_thread::make_current_realtime().map(|watch| Prioritized { _watch: watch });
@@ -131,7 +138,9 @@ pub fn prioritize_vcpu_thread() -> Result<Prioritized, String> {
     return unix::run_promptly()
         .map(|()| Prioritized {})
         .map_err(|e| format!("its slice (sched_setattr): {e}"));
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    #[cfg(windows)]
+    return windows_thread::raise_current().map(|watch| Prioritized { _watch: watch });
+    #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
     Ok(Prioritized {})
 }
 
@@ -139,8 +148,8 @@ pub fn prioritize_vcpu_thread() -> Result<Prioritized, String> {
 /// policy, where with every CPU of the host busy a block device's readers had 238k reads
 /// verified in 3 s at p50, 210k at QoS user-interactive and 156k at the default, and all
 /// three alike on a quiet host (PM M317); on Linux at the vCPUs' slice too (a start on a
-/// busy host gained nothing measured past its vCPUs' slice from every thread's, PM M440).
-/// Elsewhere as it is.
+/// busy host gained nothing measured past its vCPUs' slice from every thread's, PM M440);
+/// on Windows at the vCPUs' candidate priority.
 pub fn prioritize_device_thread() -> Result<Prioritized, String> {
     prioritize_vcpu_thread()
 }
@@ -154,7 +163,7 @@ pub fn prioritize_device_thread() -> Result<Prioritized, String> {
 /// however busy the host (PM M441).
 pub fn prioritize_governor_thread() -> Result<Prioritized, String> {
     #[cfg(windows)]
-    return windows::run_time_critical().map(|()| Prioritized {});
+    return windows::run_time_critical().map(|()| Prioritized { _watch: None });
     #[cfg(not(windows))]
     prioritize_vcpu_thread()
 }

@@ -1396,23 +1396,29 @@ impl ThreadClock {
 
     /// The CPU time its thread has used, in nanoseconds.
     pub fn read(&self) -> io::Result<u64> {
-        use windows_sys::Win32::Foundation::FILETIME;
-        use windows_sys::Win32::System::Threading::GetThreadTimes;
-        let zero = || FILETIME {
-            dwLowDateTime: 0,
-            dwHighDateTime: 0,
-        };
-        let (mut created, mut exited, mut kernel, mut user) = (zero(), zero(), zero(), zero());
-        // SAFETY: a handle this value owns, and four times to write.
-        if unsafe { GetThreadTimes(self.0, &mut created, &mut exited, &mut kernel, &mut user) } == 0 {
-            return Err(io::Error::last_os_error());
-        }
-        // In 100 ns units.
-        let ns = |t: FILETIME| {
-            ((u64::from(t.dwHighDateTime) << 32) | u64::from(t.dwLowDateTime)).saturating_mul(100)
-        };
-        Ok(ns(kernel).saturating_add(ns(user)))
+        thread_time(self.0)
     }
+}
+
+/// The CPU time the thread `handle` names has used, in nanoseconds: its kernel and user
+/// times (GetThreadTimes), which Windows counts by its clock's ticks. `handle` is a thread
+/// handle its caller holds open with THREAD_QUERY_LIMITED_INFORMATION or more.
+pub(super) fn thread_time(handle: windows_sys::Win32::Foundation::HANDLE) -> io::Result<u64> {
+    use windows_sys::Win32::Foundation::FILETIME;
+    use windows_sys::Win32::System::Threading::GetThreadTimes;
+    let zero = || FILETIME {
+        dwLowDateTime: 0,
+        dwHighDateTime: 0,
+    };
+    let (mut created, mut exited, mut kernel, mut user) = (zero(), zero(), zero(), zero());
+    // SAFETY: a handle the caller holds open, and four times to write.
+    if unsafe { GetThreadTimes(handle, &mut created, &mut exited, &mut kernel, &mut user) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // In 100 ns units.
+    let ns =
+        |t: FILETIME| ((u64::from(t.dwHighDateTime) << 32) | u64::from(t.dwLowDateTime)).saturating_mul(100);
+    Ok(ns(kernel).saturating_add(ns(user)))
 }
 
 impl Drop for ThreadClock {

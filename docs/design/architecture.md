@@ -231,7 +231,7 @@ amd64 cell's once it does.
 | Memory given back: free page reporting, budgets, the host's word, for runs and builders (D148, D151, D188) | yes | yes | yes | yes (PM M371, M375, M391) |
 | A budgeted build's writes made outside its budget (D188, PM M442) | yes | yes | needs none: no kernel charges its page cache to a group shards keeps | needs none: a job's limit is its commit, never its cache |
 | `--cgroup-parent` (D183) | a slice of the user's manager, or a cgroup delegated to the user (slices 1, 2) | as amd64 | groups shards keeps (slice 3, PM M355) | groups shards keeps, each a job its VM and network processes are made in (slice 3, PM M359, M361) |
-| vCPUs of every host CPU, the workload's CPUs held to its limits (D191) | yes, vCPUs at the fair scheduler's shortest slice (PM M440, M441) | yes | yes, vCPUs at the real-time policy (PM M8, M10) | yes; open: its vCPUs' wake policy on a busy host, unmeasured (D191's Next) |
+| vCPUs of every host CPU, the workload's CPUs held to its limits (D191) | yes, vCPUs at the fair scheduler's shortest slice (PM M440, M441) | yes | yes, vCPUs at the real-time policy (PM M8, M10) | yes; open: its vCPUs' wake policy on a busy host, a candidate pending its measurement (D191) |
 | Log drivers (D163, D198, D199) | every driver, journald its own | as amd64 | every driver but journald, macOS's own log (`oslog`) its counterpart | every driver but journald, `etwlogs` its counterpart |
 | A GPU (D144, Venus) | yes, glibc and musl, NVIDIA's, AMD's and Intel's GPUs (D201, D208); open: the GPU desktop's run of D208's build, waiting for its owner's go | built and linted, untested on a GPU (none here) | yes | yes (D202) |
 | Devices plugged into a running microVM, disks grown (D214) | yes | yes (nested, its MSIs through the GIC's ITS) | yes | built, not yet run: in the VMM (WHP's disk steps passed on jupiter; its shared directory over a duplex pipe), and through the CLI a disk and a volume, its share process's stream given the VM as a run's are (tests/plug.rs, now every host's) |
@@ -8104,7 +8104,7 @@ on a network whose members' images have agents with grants of their own, held ap
 the address its flows come from; a run's own grant on the default bridge, if one is
 asked for beside a network's.
 
-### D191. A run's microVM has every CPU of its host, its workload the CPUs its limits give it (slices 1 and 2 built, its contended start and hold mended)
+### D191. A run's microVM has every CPU of its host, its workload the CPUs its limits give it (slices 1 and 2 built, its contended start and hold mended; Windows' start a candidate)
 
 The user's plan, item 3 (2026-10-18): a run's `--cpus` as elastic as its memory (D148),
 every microVM given the host's CPUs, init bringing the run's online and `update --cpus`
@@ -8225,9 +8225,41 @@ the user told).
   ms past their period on 4 busy CPUs (PM M441). Tested: hold's
   `a_held_vcpu_goes_on_at_its_periods_end_without_its_governor`, its other tests as
   before.
-- **Next.** Windows' vCPUs on a contended host: unmeasured (jupiter's runs are held to a
-  few thousandths of a core by its headroom guard), whether WHP's vCPU threads wait there
-  as Linux's did.
+- **Windows: a candidate, pending its measurement** (2026-11-04). Whether WHP's vCPU
+  threads wait on a contended host as Linux's did is unmeasured (jupiter's runs are held to
+  a few thousandths of a core by its headroom guard). On a Windows client the hypervisor
+  leaves guests' virtual processors to the root's NT scheduler (the root scheduler, clients'
+  only one since Windows 10 1803; Microsoft, Manage Hyper-V hypervisor scheduler types), so
+  a vCPU runs as the thread that runs it: threads of one priority take time slices in turn,
+  and one of a higher priority that becomes ready stops a lower one "without allowing it to
+  finish using its time slice" (Scheduling Priorities). A vCPU another wakes, at its host's
+  busy threads' priority, may so wait for one's slice to end, unless the boost a thread gets
+  as its wait is satisfied (Priority Boosts) lifts it past them already. The candidate
+  (`platform::windows_thread`, through `prioritize_vcpu_thread`, where Linux's slice is
+  given; device workers too): each vCPU thread and device worker at
+  THREAD_PRIORITY_ABOVE_NORMAL, base priority 9 in a NORMAL_PRIORITY_CLASS process against
+  the host's threads' 8, the least step above them, in any user's rights and below the 11
+  past which a thread "interferes with the normal operation of the operating system"
+  (SetThreadPriority). A priority is strict where Linux's slice kept a thread's share, and
+  Microsoft lowers processor-intensive threads (Scheduling Priorities), so a governor reads
+  each raised thread's CPU time every 100 ms (GetThreadTimes, as the hold does, PM M294):
+  one that used more than half of the time since goes back to THREAD_PRIORITY_NORMAL, and is
+  raised again once it uses half or less: a raised thread takes about half a CPU from the
+  host's threads at most, what a fair scheduler gives one thread beside one busy one. A
+  thread its program set at another priority is left at it. Not MMCSS
+  (AvSetMmThreadCharacteristics), which moves a thread into the real-time range, 16 to 26
+  (Multimedia Class Scheduler Service), nor power throttling off (SetThreadInformation,
+  ThreadPowerThrottling), which chooses the cores and clock a thread runs at, "while
+  scheduling priority remains the main metric by which the system determines which thread
+  to schedule next" (Quality of Service); the harness tries it beside the priority, and
+  HIGHEST (10). Tested: platform's `a_thread_run_long_goes_back_to_normal_and_is_raised_again_as_it_waits`,
+  `a_thread_that_waits_between_its_runs_stays_raised` and
+  `a_thread_set_otherwise_is_left_as_it_is`. To measure (as PM M440, n 100 a side,
+  interleaved): `cpu-elastic/phases.py` on Windows (`--affinity`, Python's busy loops, the
+  hypervisor's scheduler type), first from outside one build of none (`winslice.py`, the
+  vCPUs of one home's VM processes at ABOVE_NORMAL, at HIGHEST, HighQoS), then this build
+  against the one before it. It stays if it shortens a contended start, and goes, its
+  threads as they were, if Windows' wake boost already gives them their CPU.
 
 ### D190. A run's writable layer on its host's disk: ext4 with DAX over pmem (slices 1 to 8 built)
 
