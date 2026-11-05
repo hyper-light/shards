@@ -94,9 +94,11 @@ cc = "1.5"
 # What tests/confined.rs reads of a running VM process; how tests/daemon.rs interrupts a
 # client (Console), takes a slot (Storage_FileSystem), reads the daemon's threads' cycles
 # (WindowsProgramming) and the files it holds (FileProcessIdsUsingFileInformation); how
-# tests/containers.rs holds a run pending (Ioctl's oplocks).
+# tests/containers.rs holds a run pending (Ioctl's oplocks); how tests/common reads a
+# process's command line (Wdk_System_Threading's NtQueryInformationProcess).
 windows-sys = { workspace = true, features = [
   "Wdk_Storage_FileSystem",
+  "Wdk_System_Threading",
   "Win32_Security",
   "Win32_Security_Authorization",
   "Win32_Security_Isolation",

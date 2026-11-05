@@ -85,57 +85,18 @@ pub fn processes_with(needle: &str) -> Vec<u32> {
     commands_with(needle).into_iter().map(|(pid, _)| pid).collect()
 }
 
-/// The processes whose command line mentions `needle`, and the command lines: from /proc
-/// on Linux, whose `ps` may be busybox's, which takes no `-o args`; from `ps` elsewhere;
-/// on Windows from its own table of processes (CIM's Win32_Process).
-#[allow(clippy::print_stderr)]
+/// The processes whose command line mentions `needle`, and the command lines.
 pub fn commands_with(needle: &str) -> Vec<(u32, String)> {
-    if cfg!(windows) {
-        let listed =
-            r#"Get-CimInstance Win32_Process | ForEach-Object { "$($_.ProcessId) $($_.CommandLine)" }"#;
-        let out = Command::new("powershell")
-            .args(["-NoProfile", "-NonInteractive", "-Command", listed])
-            .output()
-            .unwrap();
-        let listed = String::from_utf8_lossy(&out.stdout);
-        // What a look that finds no VM leaves unseen, said with the test's failure: CIM's
-        // own failure, and VM processes whose command lines it gave none of (step 10's
-        // arm64 Windows host nested under QEMU's TCG found no warm VM, and no restored one,
-        // while its daemon's log said they ran). Captured, as a failing test's output is.
-        if !out.status.success() || !out.stderr.is_empty() {
-            eprintln!(
-                "Get-CimInstance Win32_Process: {}: {}",
-                out.status,
-                String::from_utf8_lossy(&out.stderr)
-            );
-        }
-        #[cfg(windows)]
-        {
-            let read = |pid: u32| {
-                listed.lines().any(|l| {
-                    l.trim_start().split_once(' ').is_some_and(|(id, args)| {
-                        id.parse::<u32>().ok() == Some(pid) && !args.trim().is_empty()
-                    })
-                })
-            };
-            let unread: Vec<u32> = processes()
-                .into_iter()
-                .filter(|(pid, _, name)| name.eq_ignore_ascii_case("shards-vm.exe") && !read(*pid))
-                .map(|(pid, ..)| pid)
-                .collect();
-            if !unread.is_empty() {
-                eprintln!("VM processes CIM gave no command line of: {unread:?}");
-            }
-        }
-        return listed
-            .lines()
-            .filter(|l| l.contains(needle))
-            .filter_map(|l| {
-                let (pid, args) = l.trim_start().split_once(' ')?;
-                Some((pid.parse().ok()?, args.to_string()))
-            })
-            .collect();
-    }
+    commands()
+        .into_iter()
+        .filter(|(_, args)| args.contains(needle))
+        .collect()
+}
+
+/// Every process and its command line: from /proc on Linux, whose `ps` may be busybox's,
+/// which takes no `-o args`; from `ps` elsewhere.
+#[cfg(not(windows))]
+fn commands() -> Vec<(u32, String)> {
     if cfg!(target_os = "linux") {
         return std::fs::read_dir("/proc")
             .unwrap()
@@ -143,19 +104,27 @@ pub fn commands_with(needle: &str) -> Vec<(u32, String)> {
                 let e = e.ok()?;
                 let pid: u32 = e.file_name().to_str()?.parse().ok()?;
                 let cmdline = std::fs::read(e.path().join("cmdline")).ok()?;
-                let args = String::from_utf8_lossy(&cmdline).replace('\0', " ");
-                args.contains(needle).then_some((pid, args))
+                Some((pid, String::from_utf8_lossy(&cmdline).replace('\0', " ")))
             })
             .collect();
     }
     let out = Command::new("ps").args(["-axo", "pid=,args="]).output().unwrap();
     String::from_utf8_lossy(&out.stdout)
         .lines()
-        .filter(|l| l.contains(needle))
         .filter_map(|l| {
             let (pid, args) = l.trim_start().split_once(' ')?;
             Some((pid.parse().ok()?, args.to_string()))
         })
+        .collect()
+}
+
+/// Every process and its command line, on Windows from the system's own table of them
+/// ([`command_lines`]).
+#[cfg(windows)]
+fn commands() -> Vec<(u32, String)> {
+    command_lines()
+        .into_iter()
+        .map(|process| (process.pid, process.command))
         .collect()
 }
 
@@ -851,6 +820,111 @@ pub fn processes() -> Vec<(u32, u32, String)> {
     found
 }
 
+/// A process as [`command_lines`] lists it.
+#[cfg(windows)]
+pub struct Listed {
+    pub pid: u32,
+    pub parent: u32,
+    /// Its executable's name, as Toolhelp32's snapshot gives it.
+    pub name: String,
+    /// Its command line, empty where it could not be read.
+    pub command: String,
+}
+
+/// Every process of the system's ([`processes`]), each with its command line, read
+/// through the process's own handle ([`command_line`]), not WMI: CIM's Win32_Process
+/// answers a standard user logged on over SSH, a network logon, "Access denied"
+/// (0x80041003; root\cimv2 grants remote enable to administrators alone), and tests run
+/// so (step 10's arm64 Windows host) found no warm or restored VM while the daemon's log
+/// said they ran. A process whose command line cannot be read is kept, its command line
+/// empty, and one of shards' is said on stderr, captured with a failing test's output.
+#[cfg(windows)]
+#[allow(clippy::print_stderr)]
+pub fn command_lines() -> Vec<Listed> {
+    processes()
+        .into_iter()
+        .map(|(pid, parent, name)| {
+            let command = command_line(pid).unwrap_or_else(|e| {
+                if name.to_ascii_lowercase().starts_with("shards") {
+                    eprintln!("the command line of {name} ({pid}) unread: {e}");
+                }
+                String::new()
+            });
+            Listed {
+                pid,
+                parent,
+                name,
+                command,
+            }
+        })
+        .collect()
+}
+
+/// Process `pid`'s command line, as the process was started with it: NtQueryInformationProcess's
+/// ProcessCommandLineInformation (60; PROCESSINFOCLASS, as the WDK declares it and
+/// windows-sys's Wdk_System_Threading carries it), asked through a handle of the least
+/// right, PROCESS_QUERY_LIMITED_INFORMATION, which [`alive`] asks too. It answers as
+/// ProcessImageFileName does, as Microsoft's page of the function has it: a UNICODE_STRING
+/// followed by its text, and STATUS_INFO_LENGTH_MISMATCH with the size needed in
+/// ReturnLength when the buffer is too small
+/// (<https://learn.microsoft.com/en-us/windows/win32/api/winternl/nf-winternl-ntqueryinformationprocess>).
+#[cfg(windows)]
+pub fn command_line(pid: u32) -> Result<String, String> {
+    use windows_sys::Wdk::System::Threading::{NtQueryInformationProcess, ProcessCommandLineInformation};
+    use windows_sys::Win32::Foundation::{
+        CloseHandle, STATUS_BUFFER_OVERFLOW, STATUS_BUFFER_TOO_SMALL, STATUS_INFO_LENGTH_MISMATCH,
+        UNICODE_STRING,
+    };
+    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+    // SAFETY: a process's handle of one right, closed below.
+    let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    if process.is_null() {
+        return Err(format!("OpenProcess: {}", io::Error::last_os_error()));
+    }
+    // In u64s, which align the UNICODE_STRING at its start as its pointer needs.
+    let mut buffer = vec![0u64; 256];
+    let read = loop {
+        let size = u32::try_from(buffer.len() * size_of::<u64>()).unwrap_or(u32::MAX);
+        let mut needed = 0u32;
+        // SAFETY: a buffer of `size` bytes, and the handle opened above.
+        let status = unsafe {
+            NtQueryInformationProcess(
+                process,
+                ProcessCommandLineInformation,
+                buffer.as_mut_ptr().cast(),
+                size,
+                &raw mut needed,
+            )
+        };
+        let short = [
+            STATUS_INFO_LENGTH_MISMATCH,
+            STATUS_BUFFER_TOO_SMALL,
+            STATUS_BUFFER_OVERFLOW,
+        ];
+        if short.contains(&status) && needed > size {
+            buffer.resize(usize::try_from(needed).unwrap().div_ceil(size_of::<u64>()), 0);
+            continue;
+        }
+        if status < 0 {
+            break Err(format!(
+                "NtQueryInformationProcess: NTSTATUS {:#010x}",
+                status.cast_unsigned()
+            ));
+        }
+        // SAFETY: the call succeeded, so the buffer starts with the UNICODE_STRING it wrote.
+        let text = unsafe { buffer.as_ptr().cast::<UNICODE_STRING>().read() };
+        if text.Buffer.is_null() || text.Length == 0 {
+            break Ok(String::new());
+        }
+        // SAFETY: the string's text, Length bytes in the buffer after it, which lives on.
+        let units = unsafe { std::slice::from_raw_parts(text.Buffer, usize::from(text.Length) / 2) };
+        break Ok(String::from_utf16_lossy(units));
+    };
+    // SAFETY: the handle opened above, closed once.
+    unsafe { CloseHandle(process) };
+    read
+}
+
 /// A handle to process `pid` that may give it handles (PROCESS_DUP_HANDLE), as a VM's
 /// spawner holds one: what `shards_ipc::Stream::gives_to` takes.
 #[cfg(windows)]
@@ -1159,8 +1233,8 @@ pub fn until_unserved(home: &Path) {
 }
 
 /// The processes under the daemon whose log is `log` (its first line names its PID), each
-/// as `ps` shows it, or Windows' table of processes: whether a run's VM and network
-/// processes still live, for a failure to say.
+/// as `ps` shows it, or on Windows as [`command_lines`] lists it (ID, parent's ID, name,
+/// command line): whether a run's VM and network processes still live, for a failure to say.
 pub fn processes_under(log: &str) -> String {
     let Some(daemon) = log.lines().find_map(|l| {
         l.strip_prefix("shards daemon ")?
@@ -1171,28 +1245,33 @@ pub fn processes_under(log: &str) -> String {
     }) else {
         return "(no daemon named in its log)".into();
     };
-    let listed = if cfg!(windows) {
-        let each = r#"Get-CimInstance Win32_Process | ForEach-Object { "$($_.ProcessId) $($_.ParentProcessId) $($_.CommandLine)" }"#;
-        Command::new("powershell")
-            .args(["-NoProfile", "-NonInteractive", "-Command", each])
-            .output()
-    } else {
-        Command::new("ps")
-            .args(["-axo", "pid=,ppid=,stat=,etime=,command="])
-            .output()
-    }
-    .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
-    .unwrap_or_default();
-    let rows: Vec<(u32, u32, &str)> = listed
+    #[cfg(windows)]
+    let listed: Vec<(u32, u32, String)> = command_lines()
+        .into_iter()
+        .map(|p| {
+            let line = format!("{} {} {} {}", p.pid, p.parent, p.name, p.command);
+            (p.pid, p.parent, line)
+        })
+        .collect();
+    #[cfg(not(windows))]
+    let listed: Vec<(u32, u32, String)> = Command::new("ps")
+        .args(["-axo", "pid=,ppid=,stat=,etime=,command="])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        .unwrap_or_default()
         .lines()
         .filter_map(|l| {
             let mut f = l.split_whitespace();
-            Some((f.next()?.parse().ok()?, f.next()?.parse().ok()?, l.trim()))
+            Some((
+                f.next()?.parse().ok()?,
+                f.next()?.parse().ok()?,
+                l.trim().to_string(),
+            ))
         })
         .collect();
     let mut under = vec![daemon];
     loop {
-        let more: Vec<u32> = rows
+        let more: Vec<u32> = listed
             .iter()
             .filter(|(pid, ppid, _)| under.contains(ppid) && !under.contains(pid))
             .map(|(pid, ..)| *pid)
@@ -1202,10 +1281,10 @@ pub fn processes_under(log: &str) -> String {
         }
         under.extend(more);
     }
-    let shown: Vec<&str> = rows
+    let shown: Vec<&str> = listed
         .iter()
         .filter(|(pid, ..)| under.contains(pid))
-        .map(|(.., line)| *line)
+        .map(|(.., line)| line.as_str())
         .collect();
     if shown.is_empty() {
         format!("(daemon {daemon} is gone)")
