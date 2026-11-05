@@ -3053,15 +3053,21 @@ impl Vm {
     }
 
     /// [`wait_exit`](Self::wait_exit), failing, with what it printed, if the process runs
-    /// past `timeout`.
+    /// past `timeout` and its microVM has run nothing for [`DAEMON_QUIET`] ([`Ran`]): a
+    /// guest whose workload its host runs slower than `timeout` allows (the parity plan's
+    /// step 10, a 64-vCPU storm on 4 TCG CPUs) is waited on while it runs, and one that
+    /// runs nothing fails as before.
     pub fn wait_exit_within(&mut self, timeout: Duration) -> Option<i32> {
         let deadline = Instant::now() + timeout;
+        let mut ran = Ran::of(self.child.id());
         while self.child.try_wait().unwrap().is_none() {
-            if Instant::now() > deadline {
+            // Asked each pass, so that each slice of its microVM's is judged as it comes.
+            let running = ran.lately();
+            if Instant::now() > deadline && !running {
                 let _ = self.child.kill();
                 self.wait_exit();
                 panic!(
-                    "still running after {timeout:?}; it said:\n{}",
+                    "still running after {timeout:?} and while its microVM ran after; it said:\n{}",
                     self.seen.join("\n")
                 );
             }
@@ -3085,15 +3091,42 @@ pub fn vsock_connect(
     port: u32,
     timeout: Duration,
 ) -> Result<shards_vmm::platform::UnixStream, String> {
-    let mut s =
+    let s =
         shards_vmm::platform::UnixStream::connect(sock).map_err(|e| format!("{}: {e}", sock.display()))?;
     s.set_read_timeout(Some(timeout)).map_err(|e| e.to_string())?;
+    vsock_handshake(&s, &mut &s, port)?;
+    Ok(s)
+}
+
+/// [`vsock_connect`], its answer waited on past `timeout` while the microVM of `vm` (the
+/// `shards` process that is it or started it) runs ([`Following`]). The stream it returns
+/// reads with `timeout` again.
+pub fn vsock_connect_running(
+    sock: &Path,
+    port: u32,
+    timeout: Duration,
+    vm: u32,
+) -> Result<shards_vmm::platform::UnixStream, String> {
+    let s =
+        shards_vmm::platform::UnixStream::connect(sock).map_err(|e| format!("{}: {e}", sock.display()))?;
+    let mut r = Following::of(&s, timeout, vm).map_err(|e| e.to_string())?;
+    vsock_handshake(&s, &mut r, port)?;
+    s.set_read_timeout(Some(timeout)).map_err(|e| e.to_string())?;
+    Ok(s)
+}
+
+/// Asks the VM's socket `s` for guest port `port`, reading its answer through `r`.
+fn vsock_handshake(
+    mut s: &shards_vmm::platform::UnixStream,
+    r: &mut impl Read,
+    port: u32,
+) -> Result<(), String> {
     s.write_all(format!("CONNECT {port}\n").as_bytes())
         .map_err(|e| format!("CONNECT: {e}"))?;
     let mut line = Vec::new();
     let mut byte = [0u8; 1];
     while line.last() != Some(&b'\n') {
-        match s.read(&mut byte) {
+        match r.read(&mut byte) {
             Ok(1) => line.push(byte[0]),
             _ => return Err(format!("refused after {:?}", String::from_utf8_lossy(&line))),
         }
@@ -3106,13 +3139,76 @@ pub fn vsock_connect(
     if host < 1 << 30 {
         return Err(format!("host port {host} outside [2^30, 2^31)"));
     }
-    Ok(s)
+    Ok(())
+}
+
+/// A guest's stream read as long as its microVM runs: a read that has no data within
+/// `timeout` waits on while the microVM of `vm` (the `shards` process that is it or
+/// started it) ran within [`DAEMON_QUIET`] ([`Ran`]), as a guest's workload runs at its
+/// host's speed (the parity plan's step 10: a 64-vCPU storm's echo, on 4 TCG CPUs, sent
+/// nothing for a minute). A fast host's reads keep `timeout`; one whose microVM runs
+/// nothing fails a read as before, with the stream's own timeout error.
+pub struct Following<'a> {
+    stream: &'a shards_vmm::platform::UnixStream,
+    timeout: Duration,
+    ran: Ran,
+}
+
+impl<'a> Following<'a> {
+    /// How long each read of the stream waits before its microVM is asked about again.
+    const LOOK: Duration = Duration::from_secs(1);
+
+    /// Reads of `stream`, which reads with [`Self::LOOK`]'s timeout from now on.
+    pub fn of(
+        stream: &'a shards_vmm::platform::UnixStream,
+        timeout: Duration,
+        vm: u32,
+    ) -> io::Result<Following<'a>> {
+        stream.set_read_timeout(Some(Self::LOOK))?;
+        Ok(Following {
+            stream,
+            timeout,
+            ran: Ran::of(vm),
+        })
+    }
+}
+
+impl Read for Following<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let start = Instant::now();
+        loop {
+            match self.stream.read(buf) {
+                // A timeout says WouldBlock through SO_RCVTIMEO, TimedOut on Windows.
+                Err(e) if matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut) => {
+                    // Asked each pass, so that each slice of its microVM's is judged as it
+                    // comes.
+                    let running = self.ran.lately();
+                    if start.elapsed() >= self.timeout && !running {
+                        return Err(io::Error::new(
+                            e.kind(),
+                            format!(
+                                "{e}: nothing in {:?} and while its microVM ran after",
+                                self.timeout
+                            ),
+                        ));
+                    }
+                }
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                got => return got,
+            }
+        }
+    }
 }
 
 /// Streams `len` bytes of pattern `salt` through the guest's echo on `port` and checks
-/// what comes back, byte for byte, after the half-close.
-pub fn echo(sock: &Path, port: u32, salt: u64, len: usize) -> Result<(), String> {
-    let s = vsock_connect(sock, port, Duration::from_secs(60))?;
+/// what comes back, byte for byte, after the half-close: each read waits a minute, or on
+/// while the microVM of `vm` (the `shards` process that is it or started it) runs
+/// ([`Following`]).
+pub fn echo(sock: &Path, port: u32, salt: u64, len: usize, vm: u32) -> Result<(), String> {
+    let s =
+        shards_vmm::platform::UnixStream::connect(sock).map_err(|e| format!("{}: {e}", sock.display()))?;
+    let mut r = Following::of(&s, Duration::from_secs(60), vm).map_err(|e| e.to_string())?;
+    vsock_handshake(&s, &mut r, port)?;
     let mut w = s.try_clone().map_err(|e| e.to_string())?;
     let writer = std::thread::spawn(move || -> Result<(), String> {
         let mut buf = vec![0u8; 256 * 1024];
@@ -3125,7 +3221,6 @@ pub fn echo(sock: &Path, port: u32, salt: u64, len: usize) -> Result<(), String>
         }
         w.shutdown(std::net::Shutdown::Write).map_err(|e| e.to_string())
     });
-    let mut r = s;
     let mut got = 0usize;
     let mut buf = vec![0u8; 256 * 1024];
     loop {

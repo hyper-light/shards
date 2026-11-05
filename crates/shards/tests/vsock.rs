@@ -20,7 +20,9 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
-use common::{TempDir, Vm, cannot_run_vms, cannot_snapshot, echo, kernel, test_guest, vsock_connect, within};
+use common::{
+    Following, TempDir, Vm, cannot_run_vms, cannot_snapshot, echo, kernel, test_guest, vsock_connect, within,
+};
 
 const TIMEOUT: Duration = Duration::from_secs(60);
 /// The most a test's streams take, past which it fails saying what its VM said.
@@ -54,13 +56,13 @@ fn boot_echo_guest(dir: &Path) -> (Vm, PathBuf) {
     let host = UnixListener::bind(dir.join("v.sock_5000")).unwrap();
     // Its device's debug lines, which a failure prints with what the VM said.
     let mut vm = Vm::spawn_env(&os(&guest_args("vsock", &sock)), &[("SHARDS_LOG", "debug")]);
+    let pid = vm.id();
     let (tx, rx) = mpsc::channel();
     thread::spawn(move || {
         let result = (|| {
             let (mut s, _) = host.accept().map_err(|e| e.to_string())?;
-            s.set_read_timeout(Some(TIMEOUT)).map_err(|e| e.to_string())?;
             let mut line = String::new();
-            BufReader::new(&s)
+            BufReader::new(Following::of(&s, TIMEOUT, pid).map_err(|e| e.to_string())?)
                 .read_line(&mut line)
                 .map_err(|e| e.to_string())?;
             s.write_all(b"hello from the host\n").map_err(|e| e.to_string())?;
@@ -81,6 +83,7 @@ fn host_and_guest_connect_both_ways_and_stream_in_parallel() {
     }
     let dir = TempDir::new("vsock-both");
     let (vm, sock) = boot_echo_guest(&dir);
+    let pid = vm.id();
     // Eight streams at once, each far past every credit window and socket buffer.
     within(
         "eight streams through the echo",
@@ -90,7 +93,7 @@ fn host_and_guest_connect_both_ways_and_stream_in_parallel() {
             let streams: Vec<_> = (0..8u64)
                 .map(|salt| {
                     let sock = sock.clone();
-                    thread::spawn(move || echo(&sock, ECHO_PORT, salt, 8 << 20).unwrap())
+                    thread::spawn(move || echo(&sock, ECHO_PORT, salt, 8 << 20, pid).unwrap())
                 })
                 .collect();
             for s in streams {
@@ -107,22 +110,25 @@ fn refused_ports_and_bad_handshakes_close_the_host_socket() {
     }
     let dir = TempDir::new("vsock-refuse");
     let (vm, sock) = boot_echo_guest(&dir);
+    let pid = vm.id();
     within("refusals, then an echo", STREAMING, &vm.log(), move || {
         assert!(
             vsock_connect(&sock, 4321, TIMEOUT).is_err(),
             "a port nobody listens on was accepted"
         );
         let mut s = UnixStream::connect(&sock).unwrap();
-        s.set_read_timeout(Some(TIMEOUT)).unwrap();
         s.write_all(b"HELLO 1234\n").unwrap();
         let mut rest = Vec::new();
         assert_eq!(
-            s.read_to_end(&mut rest).unwrap(),
+            Following::of(&s, TIMEOUT, pid)
+                .unwrap()
+                .read_to_end(&mut rest)
+                .unwrap(),
             0,
             "a bad handshake got {rest:?}"
         );
         // The device still serves after both.
-        echo(&sock, ECHO_PORT, 99, 1 << 20).unwrap();
+        echo(&sock, ECHO_PORT, 99, 1 << 20, pid).unwrap();
     });
 }
 
@@ -152,9 +158,10 @@ fn restored_copies_listen_on_their_own_sockets() {
     let (mut b, sock_b) = restore("b.sock");
     a.wait_for("SHARDS-TEST READY", TIMEOUT);
     b.wait_for("SHARDS-TEST READY", TIMEOUT);
+    let (pa, pb) = (a.id(), b.id());
     let (ta, tb) = (
-        thread::spawn(move || echo(&sock_a, ECHO_PORT, 1, 4 << 20).unwrap()),
-        thread::spawn(move || echo(&sock_b, ECHO_PORT, 2, 4 << 20).unwrap()),
+        thread::spawn(move || echo(&sock_a, ECHO_PORT, 1, 4 << 20, pa).unwrap()),
+        thread::spawn(move || echo(&sock_b, ECHO_PORT, 2, 4 << 20, pb).unwrap()),
     );
     ta.join().unwrap();
     tb.join().unwrap();
@@ -169,15 +176,15 @@ fn restored_copies_listen_on_their_own_sockets() {
 }
 
 /// Serves one guest connection to host port 5000 at `sock`: reads the guest's line,
-/// answers, and holds the connection until the guest's side closes.
+/// answers, and holds the connection until the guest's side closes, waiting on it while
+/// a microVM of this test's runs ([`Following`]; it is bound before its microVM starts).
 fn greet_once(sock: &Path) -> thread::JoinHandle<String> {
     let mut path = sock.as_os_str().to_owned();
     path.push("_5000");
     let host = UnixListener::bind(path).unwrap();
     thread::spawn(move || {
         let (s, _) = host.accept().unwrap();
-        s.set_read_timeout(Some(TIMEOUT)).unwrap();
-        let mut reader = BufReader::new(&s);
+        let mut reader = BufReader::new(Following::of(&s, TIMEOUT, std::process::id()).unwrap());
         let mut line = String::new();
         reader.read_line(&mut line).unwrap();
         (&s).write_all(b"hello from the host\n").unwrap();
@@ -215,6 +222,6 @@ fn restored_copies_find_held_connections_closed() {
         ]);
         copy.wait_for("SHARDS-TEST READY", TIMEOUT);
         assert_eq!(greeted.join().unwrap(), "hello from the guest\n");
-        echo(&sock, ECHO_PORT, salt, 1 << 20).unwrap();
+        echo(&sock, ECHO_PORT, salt, 1 << 20, copy.id()).unwrap();
     }
 }

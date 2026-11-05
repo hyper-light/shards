@@ -427,8 +427,8 @@ mod storm {
     type Rounds = Vec<Result<(), String>>;
 
     /// Streams rounds of 4 MiB through the echo of the VM at `sock` until `stop`, from when
-    /// it answers; returns each round's result.
-    fn stream(sock: PathBuf, stop: Arc<AtomicBool>) -> std::thread::JoinHandle<Rounds> {
+    /// it answers, for as long as the microVM of `vm` runs them; returns each round's result.
+    fn stream(sock: PathBuf, stop: Arc<AtomicBool>, vm: u32) -> std::thread::JoinHandle<Rounds> {
         std::thread::spawn(move || {
             let mut rounds = Vec::new();
             let mut salt = 0;
@@ -438,7 +438,7 @@ mod storm {
                     continue;
                 }
                 salt += 1;
-                let round = echo(&sock, ECHO_PORT, salt, 4 << 20);
+                let round = echo(&sock, ECHO_PORT, salt, 4 << 20, vm);
                 if round.is_err() {
                     std::thread::sleep(Duration::from_millis(5));
                 }
@@ -465,7 +465,7 @@ mod storm {
         assert!(line.contains("storm checked"), "{}", vm.seen.join("\n"));
         // Connected, then a byte: the guest waits for it, so it lives until the host has
         // read its OK.
-        let told = common::vsock_connect(sock, DONE_PORT, TIMEOUT)
+        let told = common::vsock_connect_running(sock, DONE_PORT, TIMEOUT, vm.id())
             .and_then(|mut s| s.write_all(b"\n").map_err(|e| e.to_string()));
         if let Err(e) = told {
             vm.wait_exit_within(TIMEOUT);
@@ -525,8 +525,8 @@ mod storm {
             std::fs::write(&rw, vec![0u8; RW_BYTES]).unwrap();
             let sock = s.0.join("v.sock");
             let stop = Arc::new(AtomicBool::new(false));
-            let streamer = stream(sock.clone(), stop.clone());
             let mut original = Vm::spawn(&storm_args(&s, cpus, &sock, "stop"));
+            let streamer = stream(sock.clone(), stop.clone(), original.id());
             let code = original.wait_exit_within(TIMEOUT);
             // Its stream breaks where it stopped, at the snapshot.
             stop.store(true, Ordering::Relaxed);
@@ -541,13 +541,13 @@ mod storm {
                 std::fs::write(&rw, &taken).unwrap();
                 let sock = s.0.join(format!("r{i}.sock"));
                 let stop = Arc::new(AtomicBool::new(false));
-                let streamer = stream(sock.clone(), stop.clone());
                 let mut copy = Vm::spawn(&[
                     "restore".as_ref(),
                     s.snapshot().as_os_str(),
                     "--vsock".as_ref(),
                     sock.as_os_str(),
                 ]);
+                let streamer = stream(sock.clone(), stop.clone(), copy.id());
                 let rounds = storm_done(&mut copy, &sock, &stop, streamer);
                 let code = copy.wait_exit_within(TIMEOUT);
                 let what = format!("{cpus} vCPUs, restore {i}");
@@ -574,8 +574,8 @@ mod storm {
             std::fs::write(s.0.join("rw.img"), vec![0u8; RW_BYTES]).unwrap();
             let sock = s.0.join("v.sock");
             let stop = Arc::new(AtomicBool::new(false));
-            let streamer = stream(sock.clone(), stop.clone());
             let mut vm = Vm::spawn(&storm_args(&s, cpus, &sock, "resume"));
+            let streamer = stream(sock.clone(), stop.clone(), vm.id());
             let rounds = storm_done(&mut vm, &sock, &stop, streamer);
             let code = vm.wait_exit_within(TIMEOUT);
             let said = vm.seen.join("\n");
