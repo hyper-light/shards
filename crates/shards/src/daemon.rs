@@ -11742,7 +11742,7 @@ mod tests {
             std::fs::write(dir.join("current"), b"g-1\n").unwrap();
             std::fs::write(dir.join("g-1").join("state"), b"").unwrap();
             let t0 = Instant::now();
-            let claimed = t.t.daemon.claim(t.threads, &own(&dir), Path::new("/rootfs"));
+            let claimed = t.t.daemon.claim(t.threads, &own(&dir), Path::new("/rootfs"), None);
             assert!(
                 matches!(&claimed, Err(Claim::Failed(why)) if why.starts_with("starting a warm VM of ")),
                 "not refused as unstartable"
