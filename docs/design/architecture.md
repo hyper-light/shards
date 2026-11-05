@@ -6402,6 +6402,30 @@ host (PM M267), where a container's page cache is its host's to drop. Free page 
   written whole, as before. Its images are told apart by their producer (`snapshot 1,
   over its base's root filesystem 1`).
 
+  Such an image holds its layers' tree, the same entries, kinds, modes, owners, times,
+  xattrs, link targets, device numbers, hard links and file bytes, but not their stacked
+  bytes: its metadata lies past its base's blocks, and its files' data where the base or
+  the build put it. Nothing reads a root filesystem's bytes as its layers' (an image's ID
+  and digests are its config's and blobs', `save` and `push` send the blobs, a guest reads
+  the tree; store.rs: blobs keep the registry's bytes for them), but much takes a root filesystem's *name* to keep its bytes: a template is
+  keyed by the path (run.rs `template`), saved with its guest's page cache, EROFS inodes
+  and DAX mappings of it by block, and restored and its pool refilled by opening that path
+  again later (run.rs `Origin`, daemon/refill.rs), and
+  `Partial::commit` keeps a file already at a name as "the same bytes". A stacked image's
+  name kept that, as stacking always lays the same layers out alike, and the snapshot's
+  whole export alike (tests/build.rs `assert_rootfs_is_its_layers`, byte for byte); an
+  image over a base, put at the same name, did not: once it went while a template of it
+  stayed (a collection removes root filesystems, then the templates whose root filesystem
+  has gone, and one that stops between, as `collect_garbage` does on an error, leaves
+  those), a run would stack it again under that name and restore the template against
+  other bytes. So an image over a base is named apart, by the SHA-256 of its base's name
+  and of what is written over the clone (`<ChainID>.over-<hex>.erofs`), which make its
+  bytes, and a record beside the stacked one's place names it (`<ChainID>.over`;
+  `Store::kept_at`): a name is never given other bytes, whichever image goes and comes
+  again. The tests hold an export over a base to its layers' tree, entry by entry and
+  byte for byte of each file (`assert_same_tree`), and one written whole to their stacked
+  bytes (CI 41989398811: APFS's export over its base's, failing the byte comparison).
+
 **Measured against DAMON (PM M293).** DAMON_RECLAIM, built into the pinned kernel, does
 nothing in a run's guest as the kernel has it (its watermarks, which run it only while a
 guest's free memory is between a fifth and a half of it, kept it off in five rounds of

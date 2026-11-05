@@ -173,9 +173,11 @@ fn err(e: impl std::fmt::Display) -> String {
     e.to_string()
 }
 
-/// A base's kept root filesystem, opened, and where it holds each of that base's files' data:
-/// by the data's place in the build's sources, its block there and its size ([`blocks_below`]).
-type Below = (std::fs::File, HashMap<(u32, u64), (u32, u64)>);
+/// A base's kept root filesystem: its path (whose name the image written over it is named by
+/// in part, `Store::rootfs_written_over`), the file opened, and where it holds each of that
+/// base's files' data: by the data's place in the build's sources, its block there and its
+/// size ([`blocks_below`]).
+type Below = (PathBuf, std::fs::File, HashMap<(u32, u64), (u32, u64)>);
 
 impl<'a> Exec<'a> {
     pub fn new(store: &'a Store, limits: &'a Limits) -> Exec<'a> {
@@ -661,7 +663,7 @@ impl<'a> Exec<'a> {
     /// (shards_erofs::write_over, PM M442). Where none is made, the image is written whole.
     pub fn rootfs(&mut self, flat: Flat, layers: &[store::Layer]) -> Result<PathBuf, String> {
         let Flat { mut fs, stack } = flat;
-        if let Some((below, at)) = self.below(layers) {
+        if let Some((below_path, below, at)) = self.below(layers) {
             let sources = &mut self.sources;
             let fs = &mut fs;
             let stack = &stack;
@@ -672,6 +674,7 @@ impl<'a> Exec<'a> {
                     layers,
                     self.limits,
                     shards_build::stack::PRODUCER_OVER,
+                    &below_path,
                     below_len,
                     |dst| shards_build::host::clone_file(&below, dst),
                     |out| {
@@ -723,7 +726,7 @@ impl<'a> Exec<'a> {
         let file = std::fs::File::open(&path).ok()?;
         let below = erofs::read_tree(&mut &file, 0).ok()?;
         let at = blocks_below(base.tree(), &below);
-        (!at.is_empty()).then_some((file, at))
+        (!at.is_empty()).then_some((path, file, at))
     }
 
     /// A file operation's outputs, its actions run as FileOpSolver runs them: each on a

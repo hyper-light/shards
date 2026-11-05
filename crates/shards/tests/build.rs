@@ -105,8 +105,6 @@ fn the_agentignore_is_read_before_the_dockerignore() {
     );
 }
 
-/// The root filesystem a build wrote of `reference`'s image from its last snapshot is the
-/// one the store stacks of its layers (shards_build::stack), byte for byte.
 /// Which way a build's export went, from the line SHARDS_TIMING (which the tests set) has
 /// it print: "snapshot",
 /// or "layers: " and why.
@@ -146,13 +144,76 @@ fn assert_rootfs_is_its_layers(home: &std::path::Path, reference: &str) {
         })
         .collect();
     let path = store.rootfs(&layers, &Limits::none()).unwrap();
+    let over = store.rootfs_producer(&path).as_deref() == Some(shards_build::stack::PRODUCER_OVER);
     let built = std::fs::read(&path).unwrap();
     std::fs::remove_file(&path).unwrap();
-    let stacked = std::fs::read(store.rootfs(&layers, &Limits::none()).unwrap()).unwrap();
-    assert!(
-        built == stacked,
-        "{reference}: the build's root filesystem is not its layers'"
-    );
+    let stacked_at = store.rootfs(&layers, &Limits::none()).unwrap();
+    let stacked = std::fs::read(&stacked_at).unwrap();
+    if over {
+        // Written over its base's root filesystem where the store's file system clones
+        // (APFS, Btrfs, XFS; D188): its tree is its layers', laid out otherwise, and under a
+        // name of its own, which stacking never gives other bytes.
+        assert_ne!(
+            path, stacked_at,
+            "{reference}: over its base's, at the stacked one's name"
+        );
+        assert_same_tree(reference, &built, &stacked);
+    } else {
+        assert!(
+            built == stacked,
+            "{reference}: the build's root filesystem is not its layers'"
+        );
+    }
+}
+
+/// The EROFS images `a` and `b` hold the same tree as a guest reads it: each path, its kind,
+/// mode, owners, times and xattrs, a link's target, a device's numbers, which paths are one
+/// file (hard links), and each file's bytes, read where each image has them.
+fn assert_same_tree(reference: &str, a: &[u8], b: &[u8]) {
+    use shards_image::erofs::{Kind, NodeId, Tree, read_tree};
+    use std::collections::HashMap;
+    let ta = read_tree(&mut std::io::Cursor::new(a), 0).unwrap();
+    let tb = read_tree(&mut std::io::Cursor::new(b), 0).unwrap();
+    let data = |image: &[u8], offset: u64, size: u64| -> Vec<u8> {
+        let at = usize::try_from(offset).unwrap();
+        image[at..at + usize::try_from(size).unwrap()].to_vec()
+    };
+    // Each node's first path, in each image: a path of another node in one is of another
+    // in the other too.
+    let (mut first_a, mut first_b) = (HashMap::<NodeId, String>::new(), HashMap::<NodeId, String>::new());
+    let mut todo = vec![(String::from("/"), Tree::ROOT, Tree::ROOT)];
+    let mut seen = 0usize;
+    while let Some((path, na, nb)) = todo.pop() {
+        seen += 1;
+        let (x, y) = (ta.node(na).unwrap(), tb.node(nb).unwrap());
+        assert_eq!(x.meta, y.meta, "{reference}: {path}'s metadata");
+        let fa = first_a.entry(na).or_insert_with(|| path.clone()).clone();
+        let fb = first_b.entry(nb).or_insert_with(|| path.clone()).clone();
+        assert_eq!(
+            fa, fb,
+            "{reference}: {path} is another file's link in one image alone"
+        );
+        match (&x.kind, &y.kind) {
+            (Kind::Dir(_), Kind::Dir(_)) => {
+                let (ea, eb) = (ta.entries(na), tb.entries(nb));
+                let names = |e: &[(&[u8], NodeId)]| e.iter().map(|(n, _)| n.to_vec()).collect::<Vec<_>>();
+                assert_eq!(names(&ea[..]), names(&eb[..]), "{reference}: {path}'s entries");
+                for ((name, ida), (_, idb)) in ea.iter().zip(&eb) {
+                    let name = String::from_utf8_lossy(name);
+                    todo.push((format!("{}/{name}", path.trim_end_matches('/')), *ida, *idb));
+                }
+            }
+            (Kind::File { size: sa, data: da }, Kind::File { size: sb, data: db }) => {
+                assert_eq!(sa, sb, "{reference}: {path}'s size");
+                assert!(
+                    data(a, da.offset, *sa) == data(b, db.offset, *sb),
+                    "{reference}: {path}'s bytes"
+                );
+            }
+            (kind_a, kind_b) => assert_eq!(kind_a, kind_b, "{reference}: {path}'s kind"),
+        }
+    }
+    assert!(seen > 1, "{reference}: an empty tree");
 }
 
 #[test]

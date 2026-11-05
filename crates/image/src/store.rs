@@ -1890,6 +1890,7 @@ impl Store {
                         if let Ok(path) = diff_ids
                             .map_err(|e| Error(e.to_string()))
                             .and_then(|d| self.rootfs_path(&d))
+                            && let Some(path) = self.kept_at(&path)
                         {
                             listed.unpacked = fs::metadata(path).map_or(0, |m| m.len());
                         }
@@ -2169,6 +2170,37 @@ impl Store {
         )))
     }
 
+    /// The root filesystem kept for the layers whose stacked one goes at `stacked`
+    /// ([`Store::rootfs_path`]): that one, else the one written over a base's that their
+    /// record names ([`Store::rootfs_written_over`]), where it is.
+    ///
+    /// A name never comes to hold other bytes than it was first given (templates are keyed
+    /// by it, run.rs `template`, and mapped by block): the stacked one's are its layers'
+    /// alone, stacked as they always stack; one over a base's is named by its own digest,
+    /// so one laid out otherwise, over another base or the same base again, has a name of
+    /// its own.
+    fn kept_at(&self, stacked: &Path) -> Option<PathBuf> {
+        if stacked.is_file() {
+            return Some(stacked.to_path_buf());
+        }
+        self.over_named(stacked)
+    }
+
+    /// The image written over a base's for the layers whose stacked one goes at `stacked`,
+    /// as the record beside it (`.over`) names it, where that is a file: a name the store
+    /// made, in its own directory, never a path.
+    fn over_named(&self, stacked: &Path) -> Option<PathBuf> {
+        let name = fs::read_to_string(stacked.with_extension("over")).ok()?;
+        let stem = stacked.file_stem()?.to_str()?;
+        let ours = name
+            .strip_prefix(stem)
+            .and_then(|n| n.strip_prefix(".over-"))
+            .and_then(|n| n.strip_suffix(".erofs"))
+            .is_some_and(|hex| hex.len() == 64 && hex.bytes().all(|b| b.is_ascii_hexdigit()));
+        let path = stacked.with_file_name(name);
+        (ours && path.is_file()).then_some(path)
+    }
+
     /// A hold on the store's content for as long as it is kept, by whoever writes content
     /// not yet recorded by a reference, or reads what a run is about to use: a collection
     /// ([`collect`](Self::collect)) never runs while one is held, in any process.
@@ -2239,6 +2271,10 @@ impl Store {
                 // What wrote an image goes with it.
                 if path.extension().is_some_and(|e| e == "from") && !rootfs.contains(&path.with_extension(""))
                 {
+                    let _ = fs::remove_file(&path);
+                }
+                // And the record naming one written over a base's, where that goes.
+                if path.extension().is_some_and(|e| e == "over") && !rootfs.contains(&path) {
                     let _ = fs::remove_file(&path);
                 }
             }
@@ -2371,6 +2407,14 @@ impl Store {
             .map_err(|e| Error(e.to_string()))
             .and_then(|d| self.rootfs_path(&d))
         {
+            // The one its runs are given (`kept_at`), and the record naming it where it was
+            // written over a base's: another of its layers' goes, its templates with it.
+            if !path.is_file()
+                && let Some(over) = self.over_named(&path)
+            {
+                rootfs.insert(path.with_extension("over"));
+                rootfs.insert(over);
+            }
             rootfs.insert(path);
         }
         Ok(())
@@ -2806,11 +2850,11 @@ impl Store {
         })
     }
 
-    /// The root filesystem kept for the layers with `diff_ids`, where it is: none where it
-    /// was never built, or was of another version.
+    /// The root filesystem kept for the layers with `diff_ids`, where it is ([`Store::kept_at`]):
+    /// none where it was never built, or was of another version.
     pub fn rootfs_kept(&self, diff_ids: &[Digest]) -> Option<PathBuf> {
         let path = self.rootfs_path(diff_ids).ok()?;
-        path.is_file().then_some(path)
+        self.kept_at(&path)
     }
 
     /// [`Store::rootfs_written`] over `below`, a root filesystem of `below_len` bytes kept
@@ -2821,23 +2865,43 @@ impl Store {
     /// in place of `below`'s. So only what the layers past `below` add is written (PM M442:
     /// rust:1-slim's whole 850 MiB root filesystem written again for a build's 7 MiB).
     /// `Ok(None)` where no clone is made, nothing written: the image is to be written whole.
+    ///
+    /// Its tree is its layers' (shards_erofs::write_over), its bytes laid out otherwise than
+    /// stacking lays them, and otherwise again over another base. So it is not put where the
+    /// stacked one goes, whose bytes a template keyed by its name expects of it whenever it is
+    /// stacked again (run.rs `template`; a collection that ended before its templates did,
+    /// say): it is named by the SHA-256 of its base's name, length and of what is written
+    /// over it, which make its bytes (a base's name keeps its bytes, by this rule and
+    /// stacking's), `<ChainID>.over-<hex>.erofs`, and a record beside the stacked one's
+    /// place (`<ChainID>.over`) names it ([`Store::kept_at`]).
+    #[allow(clippy::too_many_arguments)]
     pub fn rootfs_written_over(
         &self,
         layers: &[Layer],
         limits: &Limits,
         producer: &str,
+        below: &Path,
         below_len: u64,
         clone: impl FnOnce(&Path) -> io::Result<bool>,
         write: impl FnOnce(&mut dyn Write) -> Result<Vec<u8>, Error>,
     ) -> Result<Option<PathBuf>, Error> {
         let diff_ids: Vec<Digest> = layers.iter().map(|l| l.diff_id.clone()).collect();
-        let path = self.rootfs_path(&diff_ids)?;
-        if path.is_file() {
-            return Ok(Some(path));
+        let stacked = self.rootfs_path(&diff_ids)?;
+        if let Some(kept) = self.kept_at(&stacked) {
+            return Ok(Some(kept));
         }
         if below_len == 0 || !below_len.is_multiple_of(crate::erofs::BLOCK) {
             return Ok(None);
         }
+        let below_name = below
+            .file_name()
+            .and_then(|n| n.to_str())
+            .ok_or_else(|| Error(format!("{}: not a root filesystem's name", below.display())))?;
+        let stem = stacked
+            .file_stem()
+            .and_then(|n| n.to_str())
+            .ok_or_else(|| Error("a root filesystem with no name".into()))?
+            .to_string();
         let at = Partial::unused(&self.root.join("ingest"))?;
         if !clone(&at)? {
             return Ok(None);
@@ -2859,36 +2923,66 @@ impl Store {
         if len != below_len {
             return bad(format!("a clone of {below_len} bytes came to {len}"));
         }
-        let from = from_path(&path);
-        self.rootfs_by(layers, limits, false, |room, ingest| {
-            let mut marker = Partial::create(ingest)?;
-            marker.write_all(producer.as_bytes())?;
-            marker.replace(&from)?;
-            let gone = || Error("the clone's file is gone".into());
-            cloned
-                .file
-                .as_mut()
-                .ok_or_else(gone)?
-                .seek(io::SeekFrom::Start(below_len))?;
-            let head = write(&mut Checked {
+        let building = self.building()?;
+        building.lock()?;
+        if let Some(kept) = self.kept_at(&stacked) {
+            return Ok(Some(kept));
+        }
+        let ingest = self.root.join("ingest");
+        let room = Room::new(&ingest, limits)?;
+        let gone = || Error("the clone's file is gone".into());
+        cloned
+            .file
+            .as_mut()
+            .ok_or_else(gone)?
+            .seek(io::SeekFrom::Start(below_len))?;
+        let mut hasher = Sha256::new();
+        hasher.update(format!("over {below_name} {below_len}\n").as_bytes());
+        let head = write(&mut Hashed {
+            out: Checked {
                 out: &mut cloned,
-                room,
-            })?;
-            if head.len() as u64 != crate::erofs::BLOCK {
-                return bad("an image's first block of another size");
-            }
-            let f = cloned.file.as_mut().ok_or_else(gone)?;
-            f.seek(io::SeekFrom::Start(0))?;
-            f.write_all(&head)?;
-            f.flush()?;
-            Ok(cloned)
-        })
-        .map(Some)
+                room: &room,
+            },
+            hasher: &mut hasher,
+        })?;
+        if head.len() as u64 != crate::erofs::BLOCK {
+            return bad("an image's first block of another size");
+        }
+        hasher.update(&head);
+        let f = cloned.file.as_mut().ok_or_else(gone)?;
+        f.seek(io::SeekFrom::Start(0))?;
+        f.write_all(&head)?;
+        f.flush()?;
+        let hex: String = hasher.finalize().iter().map(|b| format!("{b:02x}")).collect();
+        let name = format!("{stem}.over-{hex}.erofs");
+        let path = stacked.with_file_name(&name);
+        // Named before it is in place, so that a crash never leaves it unnamed
+        // ([`Store::rootfs_written`]); found once its record names it.
+        let mut marker = Partial::create(&ingest)?;
+        marker.write_all(producer.as_bytes())?;
+        marker.replace(&from_path(&path))?;
+        cloned.commit(&path)?;
+        let mut record = Partial::create(&ingest)?;
+        record.write_all(name.as_bytes())?;
+        record.replace(&stacked.with_extension("over"))?;
+        drop(building);
+        Ok(Some(path))
     }
 
-    /// The root filesystem of `layers` where it is kept, made by `make` unless it is
-    /// there, while this process holds the store's lock on building them: `make` writes
-    /// it into a file under `ingest`, within `room`.
+    /// The lock one build of a root filesystem holds at a time in a store, whichever
+    /// process builds it.
+    fn building(&self) -> Result<File, Error> {
+        Ok(File::options()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(self.root.join(format!("rootfs/v{ROOTFS_VERSION}/.building")))?)
+    }
+
+    /// The root filesystem of `layers` where it is kept ([`Store::kept_at`]), made by
+    /// `make` unless it is there, while this process holds the store's lock on building
+    /// them: `make` writes it into a file under `ingest`, within `room`, for the place of
+    /// the one stacked of them.
     fn rootfs_by(
         &self,
         layers: &[Layer],
@@ -2898,17 +2992,13 @@ impl Store {
     ) -> Result<PathBuf, Error> {
         let diff_ids: Vec<Digest> = layers.iter().map(|l| l.diff_id.clone()).collect();
         let path = self.rootfs_path(&diff_ids)?;
-        if path.is_file() && !again {
-            return Ok(path);
+        if !again && let Some(kept) = self.kept_at(&path) {
+            return Ok(kept);
         }
-        let building = File::options()
-            .create(true)
-            .truncate(false)
-            .write(true)
-            .open(self.root.join(format!("rootfs/v{ROOTFS_VERSION}/.building")))?;
+        let building = self.building()?;
         building.lock()?;
-        if path.is_file() && !again {
-            return Ok(path);
+        if !again && let Some(kept) = self.kept_at(&path) {
+            return Ok(kept);
         }
         let ingest = self.root.join("ingest");
         let room = Room::new(&ingest, limits)?;
@@ -3019,6 +3109,25 @@ impl Write for Checked<'_> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         self.room.wrote(buf.len())?;
         self.out.write(buf)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.out.flush()
+    }
+}
+
+/// What is written through `out`, hashed as it goes: the bytes an image over another's
+/// writes past that one's, which name it ([`Store::rootfs_written_over`]).
+struct Hashed<'a> {
+    out: Checked<'a>,
+    hasher: &'a mut Sha256,
+}
+
+impl Write for Hashed<'_> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let n = self.out.write(buf)?;
+        self.hasher.update(buf.get(..n).unwrap_or_default());
+        Ok(n)
     }
 
     fn flush(&mut self) -> io::Result<()> {
@@ -4961,6 +5070,7 @@ mod tests {
                 &layers,
                 &Limits::none(),
                 "over",
+                &below,
                 below_bytes.len() as u64,
                 |_| Ok(false),
                 |_| panic!("nothing to write with no clone"),
@@ -4972,6 +5082,7 @@ mod tests {
                 &layers,
                 &Limits::none(),
                 "over",
+                &below,
                 below_bytes.len() as u64,
                 |dst| fs::copy(&below, dst).map(|_| true),
                 |out| {
@@ -5011,6 +5122,39 @@ mod tests {
                 erofs::Found::File(bytes) => assert_eq!(bytes, want),
                 _ => panic!("no file {}", String::from_utf8_lossy(name)),
             }
+        }
+        // Named apart from the place of the one stacked of its layers, by its own digest,
+        // and found by their record: stacked again, those go elsewhere, so a template keyed
+        // by either name never finds other bytes under it.
+        let ids = [base_layer.diff_id.clone(), added_layer.diff_id.clone()];
+        let stacked_at = store.rootfs_path(&ids).unwrap();
+        assert_ne!(written, stacked_at);
+        let name = written.file_name().unwrap().to_str().unwrap().to_string();
+        assert!(
+            name.starts_with(&format!(
+                "{}.over-",
+                stacked_at.file_stem().unwrap().to_str().unwrap()
+            )),
+            "{name}"
+        );
+        assert_eq!(store.rootfs_kept(&ids), Some(written.clone()));
+        assert_eq!(store.rootfs(&layers, &Limits::none()).unwrap(), written);
+        assert!(!stacked_at.exists(), "stacked though one was kept");
+        let record = stacked_at.with_extension("over");
+        fs::write(&record, "../elsewhere.erofs").unwrap();
+        assert_eq!(
+            store.rootfs_kept(&ids),
+            None,
+            "a record naming a path is followed"
+        );
+        fs::write(&record, &name).unwrap();
+        fs::remove_file(&written).unwrap();
+        let stacked = store.rootfs(&layers, &Limits::none()).unwrap();
+        assert_eq!(stacked, stacked_at);
+        // No reference holds them: each goes, the record and what named its image too.
+        store.collect().unwrap();
+        for left in [&stacked, &record, &from_path(&written)] {
+            assert!(!left.exists(), "{} kept", left.display());
         }
         let _ = fs::remove_dir_all(&root);
     }
