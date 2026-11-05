@@ -58,7 +58,7 @@ impl Handle {
             .ok_or("this microVM has no PCI slots to plug a device into")?;
         let memory = self.memory.clone();
         plugs.hotplug.plug(|slot| {
-            let f = crate::devices::virtio::pci::VirtioPci::new(device, memory, slot.msi.clone())?;
+            let f = crate::devices::virtio::pci::VirtioPci::new(device, memory, slot.emulated_msi())?;
             Ok(Arc::new(f) as Arc<dyn crate::devices::pci::hotplug::Plugged>)
         })
     }
@@ -101,42 +101,118 @@ impl Handle {
         })
     }
 
-    /// Passes the host's function `f` through to the running machine (D214), outside its
-    /// guest's IOMMU, all of its RAM mapped for the function's DMA, pinned, as one it boots
-    /// with (D154): its guest finds it as its init rescans its PCI bus.
+    /// Passes the host's function `f` through to the running machine (D214), all of its
+    /// RAM mapped for the function's DMA, pinned, as one it boots with outside its IOMMU
+    /// (D154); or, where its slots sit behind its IOMMU ([`super::Config::pci_slots_iommu`]),
+    /// behind it, as `f` must then be ([`super::Vfio::iommu`]), its group's own container
+    /// or address space mapping what its endpoint's domain maps. Opened by its group's or
+    /// its device's node: its guest finds it as its init rescans its PCI bus.
     #[cfg(target_os = "linux")]
     pub fn plug_vfio(&self, f: &super::Vfio) -> Result<super::Plugged, String> {
+        self.plug_vfio_with(f, None)
+    }
+
+    /// [`plug_vfio`](Self::plug_vfio), of a function opened by another process, as a
+    /// confined VM process, which opens no device, is handed one by its daemon: `files`,
+    /// VFIO's container and its group, or iommufd and its device, by `f.cdev`.
+    #[cfg(target_os = "linux")]
+    pub fn plug_vfio_files(
+        &self,
+        f: &super::Vfio,
+        files: super::VfioFiles,
+    ) -> Result<super::Plugged, String> {
+        self.plug_vfio_with(f, Some(files))
+    }
+
+    #[cfg(target_os = "linux")]
+    fn plug_vfio_with(
+        &self,
+        f: &super::Vfio,
+        files: Option<super::VfioFiles>,
+    ) -> Result<super::Plugged, String> {
         use crate::devices::pci::{self, vfio as v};
         let plugs = self
             .control
             .plugs()
             .ok_or("this microVM has no PCI slots to plug a device into")?;
-        if f.iommu {
-            return Err(format!(
-                "{}: a function plugged in as its microVM runs sits outside its guest's IOMMU, whose endpoints are its boot's",
-                f.name
-            ));
+        let named = |e: String| format!("{}: {e}", f.name);
+        if f.iommu && f.noiommu {
+            return Err(named("a group without an IOMMU cannot follow the guest's".into()));
         }
-        if let Some(why) = &plugs.unpinnable {
-            return Err(format!("{}: {why}", f.name));
+        let behind = plugs.hotplug.slots_behind_iommu();
+        match (f.iommu, behind) {
+            (true, false) => {
+                return Err(named(
+                    "behind its microVM's IOMMU, where its slots are not: a microVM takes a host's function behind its IOMMU as it runs where it was booted for one (D214)".into(),
+                ));
+            }
+            (false, true) => {
+                return Err(named(
+                    "outside its microVM's IOMMU, where its slots sit behind it: a function plugged in there is behind it too".into(),
+                ));
+            }
+            _ => {}
+        }
+        if !f.iommu
+            && let Some(why) = &plugs.unpinnable
+        {
+            return Err(named(why.clone()));
         }
         v::raise_memlock();
         let (memory, host) = (self.memory.clone(), plugs.vfio.clone());
         let devfn = plugs.hotplug.plug(|slot| {
-            let named = |e: String| format!("{}: {e}", f.name);
-            let opened = match &f.cdev {
+            let (first, second) = files.map(|given| (given.first, given.second)).unzip();
+            let endpoint = slot.endpoint();
+            // Behind the IOMMU: a container, or an address space, of its own, which maps
+            // what its endpoint's domain maps (D154's follower).
+            let (opened, follower) = match &f.cdev {
                 Some(cdev) => {
-                    let iommufd = v::Iommufd::open().map_err(named)?;
+                    let iommufd = match first {
+                        Some(fd) => v::Iommufd::of_file(fd),
+                        None => v::Iommufd::open().map_err(named)?,
+                    };
                     let ioas = iommufd.ioas().map_err(named)?;
-                    let opened = v::Device::open_cdev(&f.name, cdev, &ioas, &host)?;
-                    ioas.map_ram(&memory).map_err(named)?;
-                    opened
+                    let opened = v::Device::open_cdev_with(&f.name, cdev, second, &ioas, &host)?;
+                    if f.iommu {
+                        (opened, Some(Arc::new(ioas.follower(memory.clone()))))
+                    } else {
+                        ioas.map_ram(&memory).map_err(named)?;
+                        (opened, None)
+                    }
                 }
                 None => {
-                    let mut container = v::Container::open(f.noiommu).map_err(named)?;
-                    v::Device::open(&f.name, &f.group, &mut container, &memory, &host)?
+                    let mut container = match first {
+                        Some(fd) => v::Container::of_file(fd, f.noiommu, !f.iommu).map_err(named)?,
+                        None if f.iommu => v::Container::followed().map_err(named)?,
+                        None => v::Container::open(f.noiommu).map_err(named)?,
+                    };
+                    let follower = f.iommu.then(|| Arc::new(container.follower(memory.clone())));
+                    let opened =
+                        v::Device::open_with(&f.name, &f.group, second, &mut container, &memory, &host)?;
+                    (opened, follower)
                 }
             };
+            let (mut route, mut send) = (slot.route.clone(), Some(slot.msi.clone()));
+            if let Some(follower) = follower {
+                let translation = slot
+                    .iommu
+                    .clone()
+                    .ok_or_else(|| named("behind its microVM's IOMMU, where its slot is not".into()))?;
+                translation
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .follow(endpoint, follower)
+                    .map_err(|e| named(format!("its DMA mappings: {e}")))?;
+                // Its MSIs land where its endpoint's domain maps their addresses.
+                let translated = Arc::new(v::Translated::new(
+                    translation,
+                    endpoint,
+                    route.clone(),
+                    send.clone(),
+                ));
+                route = route.map(|_| translated.clone() as Arc<dyn v::Route>);
+                send = send.map(|_| translated as Arc<dyn pci::Msi>);
+            }
             let bars = opened
                 .bars()
                 .into_iter()
@@ -147,8 +223,7 @@ impl Handle {
                     kind,
                 })
                 .collect();
-            let function =
-                v::VfioFunction::plugged(opened, bars, slot.route.clone(), Some(slot.msi.clone()), &host)?;
+            let function = v::VfioFunction::plugged(opened, bars, route, send, &host)?;
             Ok(Arc::new(v::PluggedFunction::new(function, host.clone())) as Arc<dyn pci::hotplug::Plugged>)
         })?;
         Ok(super::Plugged {

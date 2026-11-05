@@ -9,6 +9,10 @@
 //! 120 ms for each function it adds (pciehp's link wait, pcie_wait_for_link_delay) and its
 //! attention button 5 s (pciehp_ctrl.c, pciehp_handle_button_press), and ACPI's is x86's
 //! alone (D214).
+//!
+//! Where the machine's slots sit behind its IOMMU, as a microVM booted to take a host's
+//! functions has them (D214), a slot's endpoint is translated from the plug to the unplug
+//! of what is plugged there (`iommu::Translation::plugged`).
 
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
 
@@ -137,6 +141,51 @@ pub struct Slot {
     /// How a function passed through there interrupts its guest, by irqfds.
     #[cfg(target_os = "linux")]
     pub route: Option<Arc<dyn super::vfio::Route>>,
+    /// The machine's IOMMU, where the slot sits behind it (D214): its requester ID an
+    /// endpoint of the IOMMU's while a function is plugged there.
+    pub iommu: Option<crate::devices::virtio::iommu::Shared>,
+}
+
+impl Slot {
+    /// Its requester ID: the endpoint its IOMMU knows it by.
+    pub fn endpoint(&self) -> u32 {
+        u32::from(self.devfn)
+    }
+
+    /// Where the MSIs of a function the VMM emulates there go: through its IOMMU's
+    /// translation, where it sits behind one (`iommu::Msis`), else as they are.
+    pub fn emulated_msi(&self) -> Arc<dyn Msi> {
+        match &self.iommu {
+            Some(t) => Arc::new(crate::devices::virtio::iommu::Msis::new(
+                t.clone(),
+                self.endpoint(),
+                self.msi.clone(),
+            )) as Arc<dyn Msi>,
+            None => self.msi.clone(),
+        }
+    }
+
+    /// Its endpoint translated by its IOMMU, where it sits behind one: a function is
+    /// plugged there.
+    fn occupy(&self) -> Result<(), String> {
+        match &self.iommu {
+            Some(t) => t
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .plugged(self.endpoint())
+                .map_err(|e| e.to_string()),
+            None => Ok(()),
+        }
+    }
+
+    /// Its endpoint vacant again, its domain and what followed it let go of.
+    fn vacate(&self) {
+        if let Some(t) = &self.iommu {
+            t.lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .unplugged(self.endpoint());
+        }
+    }
 }
 
 /// A running machine's hot-plug: the bus's configuration space, its 32-bit window, and the
@@ -186,7 +235,14 @@ impl Hotplug {
                     self.slots.len()
                 )
             })?;
-        let function = make(slot)?;
+        slot.occupy()?;
+        let function = match make(slot) {
+            Ok(function) => function,
+            Err(e) => {
+                slot.vacate();
+                return Err(e);
+            }
+        };
         self.window
             .plugged
             .write()
@@ -195,6 +251,7 @@ impl Hotplug {
         if let Err(e) = self.ecam.plug(slot.devfn, function.clone()) {
             self.take(slot.devfn);
             function.unplugged();
+            slot.vacate();
             return Err(e);
         }
         Ok(slot.devfn)
@@ -223,7 +280,15 @@ impl Hotplug {
         self.ecam.unplug(devfn);
         self.take(devfn);
         function.unplugged();
+        if let Some(slot) = self.slots.iter().find(|s| s.devfn == devfn) {
+            slot.vacate();
+        }
         Ok(())
+    }
+
+    /// Whether its slots sit behind the machine's IOMMU (D214).
+    pub fn slots_behind_iommu(&self) -> bool {
+        self.slots.iter().any(|s| s.iommu.is_some())
     }
 
     /// The places of the functions plugged, in the order they were.
@@ -332,6 +397,7 @@ mod tests {
                 msi: Arc::new(NoMsi),
                 #[cfg(target_os = "linux")]
                 route: None,
+                iommu: None,
             })
             .to_vec();
         let hotplug = Hotplug::new(ecam.clone(), window.clone(), slots);
@@ -373,5 +439,37 @@ mod tests {
             gone: AtomicBool::new(false),
         });
         assert!(hotplug.plug(move |_| Ok(f as Arc<dyn Plugged>)).is_err());
+    }
+
+    /// A slot behind the machine's IOMMU (D214): its endpoint translated from the plug of
+    /// a function to its unplug, and vacant again where the function could not be made.
+    #[test]
+    fn a_slot_behind_the_iommu_is_its_endpoint_while_plugged() {
+        use crate::devices::virtio::iommu::{Shared, Translation};
+        let t: Shared = Arc::new(Mutex::new(
+            Translation::new(Vec::new(), None).with_slots(&[2 << 3]),
+        ));
+        let slots = vec![Slot {
+            devfn: 2 << 3,
+            msi: Arc::new(NoMsi),
+            #[cfg(target_os = "linux")]
+            route: None,
+            iommu: Some(t.clone()),
+        }];
+        let window = Arc::new(Window::new(0, MmioBus::default()));
+        let hotplug = Hotplug::new(Arc::new(Ecam::new(Vec::new())), window, slots);
+        let translates = || t.lock().unwrap().translates(2 << 3);
+        assert!(!translates(), "vacant");
+        assert!(hotplug.plug(|_| Err("no function".to_string())).is_err());
+        assert!(!translates(), "vacant again");
+        let f = Arc::new(Fake {
+            at: 0,
+            held: AtomicBool::new(false),
+            gone: AtomicBool::new(false),
+        });
+        let devfn = hotplug.plug(move |_| Ok(f as Arc<dyn Plugged>)).unwrap();
+        assert!(translates(), "plugged");
+        hotplug.unplug(devfn).unwrap();
+        assert!(!translates(), "unplugged");
     }
 }

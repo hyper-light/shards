@@ -1167,6 +1167,14 @@ pub struct Config {
     /// shared directories and, on Linux, host functions, each found by its guest as its
     /// init rescans the bus. 0 for none; with any, the machine has a PCI bus.
     pub pci_slots: u8,
+    /// Its slots behind its own IOMMU (virtio-iommu, D214), each slot's requester ID one
+    /// its firmware names from boot and the IOMMU translates while a function is plugged
+    /// there: what a host's function plugged in as it runs needs for its guest's VFIO to
+    /// give it to a process, as one it boots with behind the IOMMU does (D154). Its guest's
+    /// kernel needs VIRTIO_IOMMU, as the `kvm` kernel has, else it defers the probe of
+    /// every function plugged in. Its snapshot is refused, as its IOMMU's state is no
+    /// snapshot's.
+    pub pci_slots_iommu: bool,
 }
 
 /// A device plugged into a running machine (D214): its place on bus 0 (`devfn`, device <<
@@ -1201,6 +1209,17 @@ pub struct Vfio {
     /// (`/dev/vfio/devices/vfioN`; vfio.rst, "VFIO Device cdev"): `group` then names its
     /// IOMMU group, whose node it needs not.
     pub cdev: Option<PathBuf>,
+}
+
+/// A host's function as another process opened it for a VM process to plug in (D214),
+/// which, confined, opens no device of its own: VFIO's container (`/dev/vfio/vfio`) and
+/// the function's group (`/dev/vfio/N`), or, where the function is taken by its device
+/// node ([`Vfio::cdev`]), iommufd (`/dev/iommu`) and that node.
+#[cfg(target_os = "linux")]
+#[derive(Debug)]
+pub struct VfioFiles {
+    pub first: std::os::fd::OwnedFd,
+    pub second: std::os::fd::OwnedFd,
 }
 
 /// Why this host passes no PCI function through to a microVM (D154): VFIO, Linux's, is how a
@@ -1281,6 +1300,8 @@ pub(crate) struct Pci<'a> {
     pub vfio: &'a [Vfio],
     /// Its slots kept for functions plugged in as it runs (D214).
     pub slots: u8,
+    /// Whether its slots sit behind its IOMMU ([`Config::pci_slots_iommu`]).
+    pub slots_iommu: bool,
 }
 
 #[cfg(hv)]
@@ -1288,6 +1309,17 @@ impl Pci<'_> {
     /// Whether the machine has a PCI bus: functions to put on it, or slots to plug into.
     pub fn any(&self) -> bool {
         !self.test.is_empty() || !self.vfio.is_empty() || self.slots > 0
+    }
+
+    /// The devices of bus 0 its slots are, after its other functions' (D214): as many as
+    /// it asks for, or fewer where the bus has no room for them.
+    pub fn slot_devices(&self) -> Vec<u8> {
+        let first = vfio_places(self.vfio, self.test)
+            .into_iter()
+            .flatten()
+            .map(|(device, _)| device.saturating_add(1))
+            .fold(after_tests(self.test), u8::max);
+        (first..32).take(usize::from(self.slots)).collect()
     }
 
     /// What its functions' 64-bit BARs take of the machine's 64-bit window, placed as the
@@ -1491,10 +1523,12 @@ pub fn guest_address((device, function): (u8, u8)) -> String {
 }
 
 /// The IOMMU of the machine's PCI functions (virtio-iommu, D154), where any sits behind
-/// it: the test function, whose DMA the VMM translates, and each function passed through
-/// behind it ([`Vfio::iommu`]), whose group's container follows its endpoint. Its
-/// translation of their requester IDs, with the MSI window `msi`, its first and last
-/// address, where the machine has one; the device; and the requester IDs.
+/// it: the test function, whose DMA the VMM translates, each function passed through
+/// behind it ([`Vfio::iommu`]), whose group's container follows its endpoint, and its
+/// hot-plug slots where they sit behind it ([`Pci::slots_iommu`], D214), each translated
+/// while a function is plugged there. Its translation of their requester IDs, with the
+/// MSI window `msi`, its first and last address, where the machine has one; the device;
+/// and the requester IDs, which the machine's firmware names.
 #[cfg(hv)]
 fn iommu_of(
     pci: Pci<'_>,
@@ -1512,21 +1546,33 @@ fn iommu_of(
         .zip(places)
         .filter(|(f, _)| f.iommu)
         .filter_map(|(_, place)| place);
-    let endpoints: Vec<u32> = pci
+    let slots: Vec<u32> = match pci.slots_iommu {
+        true => pci
+            .slot_devices()
+            .into_iter()
+            .map(|d| u32::from(d) << 3)
+            .collect(),
+        false => Vec::new(),
+    };
+    let mut endpoints: Vec<u32> = pci
         .test
         .iter()
         .copied()
         .chain(behind)
         .map(|(device, function)| u32::from(device) << 3 | u32::from(function))
         .collect();
+    let functions = endpoints.clone();
+    endpoints.extend(&slots);
     if endpoints.is_empty() {
         return None;
     }
     // Bypassing from the start where the test function is behind it, whose tests take a
-    // guest without the driver; blocked where only functions passed through are, whose
-    // guest needs the driver to give them to a process anyway.
+    // guest without the driver; blocked where only functions passed through, or slots for
+    // them, are, whose guest needs the driver to give them to a process anyway.
     let translation = Arc::new(std::sync::Mutex::new(
-        iommu::Translation::new(endpoints.clone(), msi).bypassing(!pci.test.is_empty()),
+        iommu::Translation::new(functions, msi)
+            .bypassing(!pci.test.is_empty())
+            .with_slots(&slots),
     ));
     let device =
         Box::new(iommu::Iommu::new(translation.clone())) as Box<dyn crate::devices::virtio::VirtioDevice>;
@@ -1617,20 +1663,27 @@ fn pci_bus(
     }
     let space = Arc::new(pci::Ecam::new(functions));
     if pci.slots > 0 {
-        let first = vfio_places(pci.vfio, pci.test)
-            .into_iter()
-            .flatten()
-            .map(|(device, _)| device.saturating_add(1))
-            .fold(after_tests(pci.test), u8::max);
         let irqs =
             irqs.ok_or("a PCI bus with hot-plug slots needs MSIs, which this machine routes none of")?;
-        let slots = (first..32)
-            .take(usize::from(pci.slots))
+        // Behind its IOMMU where its maker asks (D214).
+        let iommu = match pci.slots_iommu {
+            true => Some(
+                machine
+                    .iommu
+                    .clone()
+                    .ok_or("hot-plug slots behind its IOMMU, where the machine has none")?,
+            ),
+            false => None,
+        };
+        let slots = pci
+            .slot_devices()
+            .into_iter()
             .map(|device| pci::hotplug::Slot {
                 devfn: device << 3,
                 msi: irqs.msi(u32::from(device) << 3),
                 #[cfg(target_os = "linux")]
                 route: irqs.route(u32::from(device) << 3),
+                iommu: iommu.clone(),
             })
             .collect::<Vec<_>>();
         if slots.len() < usize::from(pci.slots) {
@@ -1999,6 +2052,7 @@ impl Config {
             pci_test: Vec::new(),
             vfio: Vec::new(),
             pci_slots: 0,
+            pci_slots_iommu: false,
         }
     }
 }
@@ -2851,6 +2905,55 @@ mod tests {
             "past a device's eight functions"
         );
         assert_eq!(guest_address((3, 1)), "0000:00:03.1");
+    }
+
+    /// Slots behind the IOMMU (D214): their requester IDs, after the bus's other
+    /// functions, are endpoints its firmware names beside the functions behind it, each
+    /// vacant until a function is plugged there; slots outside it are none of its, and a
+    /// machine of slots alone has no IOMMU but where they sit behind one.
+    #[test]
+    fn slots_behind_the_iommu_are_its_endpoints_from_boot() {
+        let behind = [Vfio {
+            name: "0000:01:00.0".into(),
+            group: PathBuf::from("/dev/vfio/7"),
+            noiommu: false,
+            bars64: Vec::new(),
+            iommu: true,
+            cdev: None,
+        }];
+        let pci = Pci {
+            vfio: &behind,
+            slots: 2,
+            slots_iommu: true,
+            ..Pci::default()
+        };
+        assert_eq!(pci.slot_devices(), [2, 3], "after the function's device");
+        let (translation, _, endpoints) = iommu_of(pci, None).unwrap();
+        assert_eq!(endpoints, [1 << 3, 2 << 3, 3 << 3]);
+        let t = translation.lock().unwrap();
+        assert!(t.translates(1 << 3));
+        assert!(!t.translates(2 << 3) && !t.translates(3 << 3), "vacant");
+        drop(t);
+        let outside = Pci {
+            slots_iommu: false,
+            ..pci
+        };
+        assert_eq!(iommu_of(outside, None).unwrap().2, [1 << 3]);
+        let alone = Pci {
+            slots: 4,
+            ..Pci::default()
+        };
+        assert!(iommu_of(alone, None).is_none());
+        let alone_behind = Pci {
+            slots_iommu: true,
+            ..alone
+        };
+        assert_eq!(
+            iommu_of(alone_behind, None).unwrap().2,
+            [1 << 3, 2 << 3, 3 << 3, 4 << 3]
+        );
+        let full = Pci { slots: 40, ..alone };
+        assert_eq!(full.slot_devices().len(), 31, "no room past device 31");
     }
 
     /// Functions are given a machine once each, and a group's functions one way: all

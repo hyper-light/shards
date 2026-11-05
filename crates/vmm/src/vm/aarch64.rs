@@ -838,6 +838,7 @@ pub fn build(cfg: &Config) -> Result<Machine, String> {
                 test: &cfg.pci_test,
                 vfio: &cfg.vfio,
                 slots: cfg.pci_slots,
+                slots_iommu: cfg.pci_slots_iommu,
             },
         )?;
         a.vmgenid.write_new_id()?;
