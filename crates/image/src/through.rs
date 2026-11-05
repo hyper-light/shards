@@ -19,6 +19,12 @@ pub trait Writer: Send + Sync {
 
 static WRITER: OnceLock<Box<dyn Writer>> = OnceLock::new();
 
+/// The bytes a buffered writer of a build's files gathers before it hands them on: as many
+/// as a writer outside the budget takes in one message (`shards_ipc::MAX_PAYLOAD`, which
+/// build/outside.rs holds it to), so that each of its round trips carries a whole one, not
+/// a file's few bytes.
+pub const CHUNK: usize = 1 << 20;
+
 /// Hands this process's writes to `writer` from here on: once, for the process's life.
 /// Whether it was set (another was, before).
 pub fn set(writer: Box<dyn Writer>) -> bool {

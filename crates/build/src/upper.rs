@@ -23,8 +23,13 @@ pub struct Applier<'a> {
     /// Where the changes' file bytes are kept, as source `source` of the build's.
     staging: &'a mut File,
     source: u32,
-    /// How many bytes the staging file holds.
+    /// How many bytes the staging file holds, those not yet written to it among them.
     at: u64,
+    /// File bytes not yet written to the staging file: gathered to a whole message of a
+    /// writer outside a budget (`shards_image::through::CHUNK`, D188), where written as they
+    /// came each file's took a round trip of its own. All written before [`Applier::finish`]
+    /// answers, and nothing reads the staging file before then.
+    unwritten: Vec<u8>,
     /// Each directory put, and its metadata: set again once all is in, since putting what a
     /// directory holds stamps its time.
     dirs: Vec<(Vec<u8>, Meta)>,
@@ -44,6 +49,7 @@ impl<'a> Applier<'a> {
             staging,
             source,
             at,
+            unwritten: Vec::new(),
             dirs: Vec::new(),
             pending: 0,
             changed: false,
@@ -63,9 +69,7 @@ impl<'a> Applier<'a> {
             match event {
                 Event::Entry(e) => self.entry(e)?,
                 Event::Data(bytes) => {
-                    // As the build's writes go: outside a budget it is held to (D188).
-                    shards_image::through::write_all(self.staging, bytes)
-                        .map_err(|e| Error(format!("keeping the step's files: {e}")))?;
+                    self.keep(bytes)?;
                     self.at = self.at.saturating_add(bytes.len() as u64);
                     self.pending = self.pending.saturating_sub(bytes.len() as u64);
                 }
@@ -90,15 +94,39 @@ impl<'a> Applier<'a> {
     }
 
     /// Ends the stream: it must have ended whole. Every directory then takes the time its
-    /// step left it. How many bytes the staging file holds.
-    pub fn finish(self) -> Result<u64, Error> {
+    /// step left it. How many bytes the staging file holds, each of them written.
+    pub fn finish(mut self) -> Result<u64, Error> {
         if !self.decoder.ended() || self.pending != 0 {
             return Err(Error("the step's changes ended early".into()));
         }
+        self.write_out()?;
         for (path, meta) in self.dirs {
             self.fs.set_meta(&path, meta).map_err(|e| Error(e.to_string()))?;
         }
         Ok(self.at)
+    }
+
+    /// Keeps `bytes` of a file, gathered until they would fill a chunk.
+    fn keep(&mut self, bytes: &[u8]) -> Result<(), Error> {
+        use shards_image::through::CHUNK;
+        if self.unwritten.len().saturating_add(bytes.len()) > CHUNK {
+            self.write_out()?;
+        }
+        if bytes.len() >= CHUNK {
+            return write(self.staging, bytes);
+        }
+        if self.unwritten.capacity() == 0 {
+            self.unwritten.reserve_exact(CHUNK);
+        }
+        self.unwritten.extend_from_slice(bytes);
+        Ok(())
+    }
+
+    /// Writes the bytes gathered to the staging file.
+    fn write_out(&mut self) -> Result<(), Error> {
+        write(self.staging, &self.unwritten)?;
+        self.unwritten.clear();
+        Ok(())
     }
 
     fn entry(&mut self, e: changes::Entry) -> Result<(), Error> {
@@ -155,6 +183,13 @@ impl<'a> Applier<'a> {
         }
         Ok(())
     }
+}
+
+/// Writes `bytes` to the staging file as the build's writes go: outside a budget it is held
+/// to (D188).
+fn write(staging: &File, bytes: &[u8]) -> Result<(), Error> {
+    shards_image::through::write_all(staging, bytes)
+        .map_err(|e| Error(format!("keeping the step's files: {e}")))
 }
 
 /// An entry's metadata, less overlayfs's own xattrs, which the guest's kernel keeps for
@@ -355,5 +390,71 @@ mod tests {
         let mut applier = Applier::new(&mut fs, &mut staging, 0, 0);
         assert!(applier.feed(&bytes).is_err());
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// Files' bytes gathered into chunks reach the staging file whole and in order, each
+    /// file's at the offset its node names, past what the file held before: a file filling
+    /// part of a chunk, a small one completing it, and one longer than a chunk, fed in
+    /// frames' pieces and whole.
+    #[test]
+    fn files_gathered_into_chunks_land_where_their_nodes_say() {
+        use shards_image::through::CHUNK;
+        let dir = shards_testdir::TempDir::new("upper-chunks").unwrap();
+        let path = dir.join("staging");
+        let mut staging = File::options()
+            .create_new(true)
+            .read(true)
+            .append(true)
+            .open(&path)
+            .unwrap();
+        std::io::Write::write_all(&mut staging, b"before").unwrap();
+        let pattern =
+            |len: usize, seed: u8| -> Vec<u8> { (0..len).map(|i| (i % 251) as u8 ^ seed).collect() };
+        let files = [
+            ("a", pattern(CHUNK - 3, 1)),
+            ("b", pattern(5, 2)),
+            ("c", pattern(CHUNK + 2, 3)),
+        ];
+        let entries: Vec<(changes::Entry, &[u8])> = files
+            .iter()
+            .map(|(name, data)| {
+                let e = changes::Entry {
+                    size: data.len() as u64,
+                    ..entry(kind::FILE, name)
+                };
+                (e, data.as_slice())
+            })
+            .collect();
+        let bytes = stream(&entries);
+        for piece in [64 << 10, bytes.len()] {
+            let mut fs = empty();
+            fs.begin();
+            let at = std::fs::metadata(&path).unwrap().len();
+            let mut applier = Applier::new(&mut fs, &mut staging, 0, at);
+            for part in bytes.chunks(piece) {
+                applier.feed(part).unwrap();
+            }
+            let end = applier.finish().unwrap();
+            let held = std::fs::read(&path).unwrap();
+            assert_eq!(
+                held.len() as u64,
+                end,
+                "{piece}: every byte written by its finish"
+            );
+            for (name, data) in &files {
+                let node = fs.node(fs.lstat(format!("/{name}").as_bytes()).unwrap()).unwrap();
+                let Kind::File { size, data: at } = &node.kind else {
+                    panic!("/{name} is not a file");
+                };
+                let start = at.offset as usize;
+                assert_eq!(*size as usize, data.len());
+                assert_eq!(
+                    &held[start..start + data.len()],
+                    data.as_slice(),
+                    "{piece}: /{name}"
+                );
+            }
+        }
+        assert!(std::fs::read(&path).unwrap().starts_with(b"before"));
     }
 }

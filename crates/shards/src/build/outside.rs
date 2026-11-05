@@ -49,6 +49,8 @@ const FAILED: u8 = 3;
 
 /// The most bytes one write hands over: a message's most.
 const CHUNK: usize = shards_ipc::MAX_PAYLOAD;
+// What a build's buffered writers gather goes in one write.
+const _: () = assert!(shards_image::through::CHUNK <= CHUNK);
 
 /// Where cgroup v2 is mounted.
 const ROOT: &str = "/sys/fs/cgroup";
