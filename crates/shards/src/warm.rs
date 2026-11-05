@@ -876,6 +876,10 @@ fn relay_signals(conn: &UnixStream, to: &'static ToGuest, from: From<'_>) {
                         if let Some(named) = named {
                             let _ = SAVED.set(named);
                         }
+                        #[allow(
+                            clippy::drop_non_drop,
+                            reason = "a backend's Saved that holds nothing (WHP arm64's) has no Drop; elsewhere this lets its machine go before SAVING clears"
+                        )]
                         drop(saved);
                     } else {
                         crate::workload::resume_guest();
