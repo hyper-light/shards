@@ -21,8 +21,8 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use common::{
-    Run, TempDir, bridge, cannot_run_vms, fixed_port, guest_init, kernel, noise, registry, run_shards_env,
-    served, served_counting, sha256_digest, test_index,
+    Patience, Run, TempDir, bridge, cannot_run_vms, fixed_port, guest_init, kernel, noise, registry,
+    run_shards_env, served, served_counting, sha256_digest, test_index,
 };
 #[cfg(unix)]
 use common::{shards, shards_vm};
@@ -170,14 +170,15 @@ fn ended(child: &mut Child, stderr: Option<&Path>) -> String {
     format!("{status}\n--- stderr\n{said}")
 }
 
-/// Waits for a child, failing the test rather than hanging it.
-fn exit(child: &mut Child) -> Option<i32> {
-    let deadline = Instant::now() + TIMEOUT;
+/// Waits for a child, a client of `home`'s daemon, failing the test rather than hanging it:
+/// within [`TIMEOUT`], or past it while the daemon or its microVMs progress ([`Patience`]).
+fn exit(child: &mut Child, home: &Path) -> Option<i32> {
+    let mut patience = Patience::of(home, TIMEOUT);
     loop {
         if let Some(status) = child.try_wait().unwrap() {
             return status.code();
         }
-        if Instant::now() >= deadline {
+        if !patience.holds() {
             let _ = child.kill();
             panic!("shards run did not exit within {TIMEOUT:?}");
         }
@@ -232,7 +233,7 @@ fn many_published_ports_all_reach_the_guest() {
         c.read_to_string(&mut got).unwrap();
         assert_eq!(got, format!("from {}\nhello", bridge().gateway()), "port {port}");
     }
-    assert_eq!(exit(&mut run), Some(0));
+    assert_eq!(exit(&mut run, &home), Some(0));
 }
 
 /// `--network container:NAME` (D119): the joiner runs in the provider's microVM, in its
@@ -255,7 +256,7 @@ fn a_container_joins_another_containers_network() {
         (Some(0), "ask from 127.0.0.1\n"),
         "{joined}"
     );
-    assert_eq!(exit(&mut provider), Some(0));
+    assert_eq!(exit(&mut provider, &home), Some(0));
 }
 
 /// A joiner is a container of its own (D119): detached, its log kept; an exec in it runs
@@ -277,9 +278,9 @@ fn a_joiner_is_a_container_of_its_own() {
         &["trap", "TERM"],
     );
     assert_eq!(detached.status, Some(0), "{detached}");
-    let deadline = Instant::now() + TIMEOUT;
+    let mut patience = Patience::of(&home, TIMEOUT);
     while !shards(&["logs", "joiner"]).stdout.contains("ready") {
-        assert!(Instant::now() < deadline, "the joiner never said it was ready");
+        assert!(patience.holds(), "the joiner never said it was ready");
         std::thread::sleep(Duration::from_millis(20));
     }
     let hostname = shards(&["inspect", "-f", "{{.Config.Hostname}}", "prov"]);
@@ -320,7 +321,7 @@ fn a_joiner_is_a_container_of_its_own() {
     let asked = shards(&["exec", "joiner", "/bin/testguest", "ask", "127.0.0.1:7000"]);
     assert_eq!(asked.stdout, "ask from 127.0.0.1\n", "{asked}");
     // The provider served its one connection and ended; its joiner goes on.
-    assert_eq!(exit(&mut provider), Some(0));
+    assert_eq!(exit(&mut provider, &home), Some(0));
     let running = shards(&["inspect", "-f", "{{.State.Status}}", "joiner"]);
     assert_eq!(running.stdout, "running\n", "{running}");
     // Its stop signal reaches its own command, on its own connection.
@@ -515,7 +516,7 @@ fn a_joiner_takes_volumes_as_a_container_does() {
         assert_eq!(shards(&["stop", "-t", "1", name]).status, Some(0));
     }
     assert_eq!(shards(&["stop", "-t", "1", "prov"]).status, Some(0));
-    let _ = exit(&mut provider);
+    let _ = exit(&mut provider, &home);
 }
 
 /// A joiner's own commands reach the joiner (D119), never its provider: a client attached
@@ -624,9 +625,9 @@ fn a_joiners_own_commands_reach_the_joiner() {
     // timeout, as Docker's would be (D119); the client attached hears its status.
     let stopped = shards(&["stop", "-t", "1", "joiner"]);
     assert_eq!(stopped.status, Some(0), "{stopped}");
-    assert_eq!(exit(&mut attached), Some(137));
+    assert_eq!(exit(&mut attached, &home), Some(137));
     assert_eq!(shards(&["stop", "-t", "1", "prov"]).status, Some(0));
-    let _ = exit(&mut provider);
+    let _ = exit(&mut provider, &home);
 }
 
 /// A joiner may share its provider's PID namespace, `--pid container:NAME` with `--network
@@ -687,16 +688,16 @@ fn a_joiner_may_share_its_providers_pid_namespace() {
     let left = shards(&["exec", "-d", "joiner", "/bin/testguest", "fs", "sleep:600000"]);
     assert_eq!(left.status, Some(0), "{left}");
     let seen = || shards(&["exec", "prov", "/bin/testguest", "ps"]).stdout;
-    let deadline = Instant::now() + TIMEOUT;
+    let mut patience = Patience::of(&home, TIMEOUT);
     while !seen().contains("fs sleep:600000") {
-        assert!(Instant::now() < deadline, "the exec never showed: {}", seen());
+        assert!(patience.holds(), "the exec never showed: {}", seen());
         std::thread::sleep(Duration::from_millis(20));
     }
     assert_eq!(shards(&["stop", "-t", "1", "joiner"]).status, Some(0));
-    let deadline = Instant::now() + TIMEOUT;
+    let mut patience = Patience::of(&home, TIMEOUT);
     while seen().contains("fs sleep:600000") {
         assert!(
-            Instant::now() < deadline,
+            patience.holds(),
             "what the joiner started outlived it: {}",
             seen()
         );
@@ -729,7 +730,7 @@ fn a_joiner_may_share_its_providers_pid_namespace() {
         "--pid container:nope: no run is named nope",
     );
     assert_eq!(shards(&["stop", "-t", "1", "prov"]).status, Some(0));
-    let _ = exit(&mut provider);
+    let _ = exit(&mut provider, &home);
 }
 
 /// A joiner may share another joiner's PID namespace, as Docker's `--pid container:NAME`
@@ -799,18 +800,14 @@ fn a_joiner_may_share_another_joiners_pid_namespace() {
     // j1's end is its namespace's: j2's command goes with it, killed.
     assert_eq!(shards(&["stop", "-t", "1", "j1"]).status, Some(0));
     let state = || shards(&["inspect", "-f", "{{.State.Status}} {{.State.ExitCode}}", "j2"]).stdout;
-    let deadline = Instant::now() + TIMEOUT;
+    let mut patience = Patience::of(&home, TIMEOUT);
     while state() != "exited 137\n" {
-        assert!(
-            Instant::now() < deadline,
-            "j2 outlived its namespace: {}",
-            state()
-        );
+        assert!(patience.holds(), "j2 outlived its namespace: {}", state());
         std::thread::sleep(Duration::from_millis(20));
     }
     assert_eq!(shards(&["stop", "-t", "1", "j3"]).status, Some(0));
     assert_eq!(shards(&["stop", "-t", "1", "prov"]).status, Some(0));
-    let _ = exit(&mut provider);
+    let _ = exit(&mut provider, &home);
 }
 
 /// A joiner under `--init`, in a PID namespace of its own, has a reaper first in it, as the
@@ -858,7 +855,7 @@ fn a_joiner_under_init_has_a_reaper_of_its_own() {
     let code = shards(&["inspect", "-f", "{{.State.ExitCode}}", "joiner"]);
     assert_eq!(code.stdout, "143\n", "{code}");
     assert_eq!(shards(&["stop", "-t", "1", "prov"]).status, Some(0));
-    let _ = exit(&mut provider);
+    let _ = exit(&mut provider, &home);
 }
 
 /// A joiner takes devices as the workload does (D44, D119): the VM's, at another path,
@@ -894,7 +891,7 @@ fn a_joiner_takes_devices_as_a_container_does() {
     let r = fs(&["-u", "0", "--privileged"], &["open:r:/dev/pmem0"]);
     assert_eq!(r.status, Some(0), "{r}");
     assert_eq!(shards_in(&home, &["stop", "-t", "1", "prov"]).status, Some(0));
-    let _ = exit(&mut provider);
+    let _ = exit(&mut provider, &home);
 }
 
 /// A joiner keeps its writable layer as it stops, as any container does (D37, D119): its
@@ -965,7 +962,7 @@ fn a_joiner_keeps_its_files_as_it_stops() {
     assert_eq!(names("joiner"), names("prov"));
     assert_eq!(shards(&["stop", "-t", "1", "joiner"]).status, Some(0));
     assert_eq!(shards(&["stop", "-t", "1", "prov"]).status, Some(0));
-    let _ = exit(&mut provider);
+    let _ = exit(&mut provider, &home);
 }
 
 /// A joiner's writable layer is kept whole though its provider's command ends as it is
@@ -1043,7 +1040,7 @@ fn a_joiners_sysctls_are_set_in_its_namespaces() {
     assert_ne!(lines.next(), Some("1048576"), "{theirs}");
     assert_eq!(lines.next(), Some("500"), "{theirs}");
     assert_eq!(shards(&["stop", "-t", "1", "prov"]).status, Some(0));
-    let _ = exit(&mut provider);
+    let _ = exit(&mut provider, &home);
 }
 
 #[test]
@@ -1119,7 +1116,7 @@ fn stop_and_kill_signal_the_command() {
         "{}",
         stopped.stderr
     );
-    assert_eq!(exit(&mut sleeper), Some(128 + 15));
+    assert_eq!(exit(&mut sleeper, &home), Some(128 + 15));
     let waited = shards_in(&home, &["wait", "sleeper"]);
     assert_eq!(waited.stdout, "143\n");
 
@@ -1131,7 +1128,7 @@ fn stop_and_kill_signal_the_command() {
         "{}",
         killed.stderr
     );
-    assert_eq!(exit(&mut trapper), Some(0));
+    assert_eq!(exit(&mut trapper, &home), Some(0));
     let not_running = shards_in(&home, &["kill", "trapper"]);
     assert_eq!(not_running.status, Some(1));
     assert!(
@@ -1230,8 +1227,8 @@ fn stats_measures_each_microvm_from_its_guest() {
     for name in ["spinner", "sleeper"] {
         assert_eq!(shards_in(&home, &["rm", "-f", name]).status, Some(0));
     }
-    exit(&mut spinner);
-    exit(&mut sleeper);
+    exit(&mut spinner, &home);
+    exit(&mut sleeper, &home);
 }
 
 /// alpine:3.22 as Docker 29.3.1 ran it for D115's measurements (platform-measurements.md
@@ -1346,9 +1343,9 @@ fn a_command_is_pid_1_as_a_containers_is() {
         // neither handles nor blocks (kernel/signal.c, sig_task_ignored), as a container's
         // does under Docker, and a shell may not have run `trap` as `run -d` returns.
         if let Some(ready) = ready {
-            let deadline = Instant::now() + TIMEOUT;
+            let mut patience = Patience::of(&home, TIMEOUT);
             while !shards(&["logs", name]).stdout.contains(ready) {
-                assert!(Instant::now() < deadline, "{name} never said {ready:?}");
+                assert!(patience.holds(), "{name} never said {ready:?}");
                 std::thread::sleep(Duration::from_millis(20));
             }
         }
@@ -1465,10 +1462,10 @@ fn a_command_is_pid_1_as_a_containers_is() {
         "echo $$; exit 3",
     ]);
     assert_eq!(started.status, Some(0), "{started}");
-    let deadline = Instant::now() + TIMEOUT;
+    let mut patience = Patience::of(&home, TIMEOUT);
     let format = "{{.RestartCount}} {{.State.ExitCode}} {{.State.Status}}";
     while shards(&["inspect", "-f", format, "again"]).stdout != "2 3 exited\n" {
-        assert!(Instant::now() < deadline, "again did not end its restarts");
+        assert!(patience.holds(), "again did not end its restarts");
         std::thread::sleep(Duration::from_millis(100));
     }
     assert_eq!(shards(&["logs", "again"]).stdout, "1\n1\n1\n");
@@ -1834,7 +1831,7 @@ fn a_volumes_large_files_go_through_its_dax_window() {
             .unwrap();
         common::write_at(&odd_file, &[9], at as u64);
     }
-    let deadline = Instant::now() + TIMEOUT;
+    let mut patience = Patience::of(&home, TIMEOUT);
     loop {
         let r = shards(&[
             "exec",
@@ -1847,7 +1844,7 @@ fn a_volumes_large_files_go_through_its_dax_window() {
             assert_eq!(r.stdout, format!("peek /v/odd {at} 9\n"));
             break;
         }
-        assert!(Instant::now() < deadline, "{r}");
+        assert!(patience.holds(), "{r}");
         std::thread::sleep(Duration::from_millis(100));
     }
     // Cut short by the host under the guest's mapping: read there before the guest asks
@@ -1874,14 +1871,14 @@ fn a_volumes_large_files_go_through_its_dax_window() {
             "{cut}"
         );
         common::write_at(&odd_file, &[5], 3 << 20);
-        let deadline = Instant::now() + TIMEOUT;
+        let mut patience = Patience::of(&home, TIMEOUT);
         loop {
             let r = shards(&["exec", "dax", "/bin/testguest", "fs", "peek:/v/odd:3145728"]);
             if r.stdout == "peek /v/odd 3145728 5\n" {
                 break;
             }
             assert!(
-                Instant::now() < deadline
+                patience.holds()
                     && (r.stdout == "peek /v/odd 3145728 0\n"
                         || r.stderr.contains("failed to fill whole buffer")),
                 "{r}"
@@ -1913,9 +1910,9 @@ fn a_volumes_large_files_go_through_its_dax_window() {
             run_shards_env(&[], &hold, &env, TIMEOUT)
         })
     };
-    let deadline = Instant::now() + TIMEOUT;
+    let mut patience = Patience::of(&home, TIMEOUT);
     while !dir.join("held-go.ready").exists() {
-        assert!(Instant::now() < deadline, "the holder never read the file");
+        assert!(patience.holds(), "the holder never read the file");
         std::thread::sleep(Duration::from_millis(10));
     }
     let cut = std::fs::OpenOptions::new()
@@ -2009,9 +2006,9 @@ fn a_volumes_large_files_go_through_its_dax_window() {
             run_shards_env(&[], &map, &env, TIMEOUT)
         })
     };
-    let deadline = Instant::now() + TIMEOUT;
+    let mut patience = Patience::of(&home, TIMEOUT);
     while !dir.join("mapped-go.ready").exists() {
-        assert!(Instant::now() < deadline, "the mapper never mapped the file");
+        assert!(patience.holds(), "the mapper never mapped the file");
         std::thread::sleep(Duration::from_millis(10));
     }
     {
@@ -2536,13 +2533,9 @@ fn placed_under_slices(home: &Path, image: &str, path: &Run) {
     // The scope goes with the daemon, each of its processes ended.
     let stopped = shards(&["stop", "daemon"]);
     assert_eq!(stopped.status, Some(0), "{stopped}");
-    let deadline = std::time::Instant::now() + TIMEOUT;
+    let mut patience = Patience::of(&home, TIMEOUT);
     while scope_dir.exists() {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "{} outlived the daemon",
-            scope_dir.display()
-        );
+        assert!(patience.holds(), "{} outlived the daemon", scope_dir.display());
         std::thread::sleep(Duration::from_millis(50));
     }
     // The slice is the test's, stopped as its user would.
@@ -2656,17 +2649,13 @@ fn a_microvm_held_to_a_budget_gives_back_what_it_holds_cold() {
     };
     // The daemon's first line past `at` in its log with `words` in it.
     let first = |at: usize, words: &[&str]| -> String {
-        let deadline = std::time::Instant::now() + TIMEOUT;
+        let mut patience = Patience::of(&home, TIMEOUT);
         loop {
             let after = said().get(at..).unwrap_or_default().to_string();
             if let Some(line) = after.lines().find(|l| words.iter().any(|w| l.contains(w))) {
                 return line.to_string();
             }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "none of {words:?} said:\n{}",
-                said()
-            );
+            assert!(patience.holds(), "none of {words:?} said:\n{}", said());
             std::thread::sleep(Duration::from_millis(50));
         }
     };
@@ -2701,10 +2690,10 @@ fn a_microvm_held_to_a_budget_gives_back_what_it_holds_cold() {
     let booted = current();
     let grown = shards(&["exec", "budget", "/bin/testguest", "alloc-free", "1024", "0"]);
     assert_eq!(grown.status, Some(0), "{grown}");
-    let deadline = std::time::Instant::now() + TIMEOUT;
+    let mut patience = Patience::of(&home, TIMEOUT);
     while current() >= booted + (128 << 20) {
         assert!(
-            std::time::Instant::now() < deadline,
+            patience.holds(),
             "{booted} bytes held booted, {} after touching and freeing a GiB",
             current()
         );
@@ -2733,10 +2722,10 @@ fn a_microvm_held_to_a_budget_gives_back_what_it_holds_cold() {
         // Its host's own pressure has it give back what it read as it reads it on a busy
         // host (Fedora beside a CI job: 231 MiB given back of 512 read, and its slice never
         // held them): read again until it holds them.
-        let deadline = std::time::Instant::now() + TIMEOUT;
+        let mut patience = Patience::of(&home, TIMEOUT);
         while current() <= 512 << 20 {
             assert!(
-                std::time::Instant::now() < deadline,
+                patience.holds(),
                 "its slice never held what it read: {} bytes\n{}",
                 current(),
                 said()
@@ -2801,7 +2790,7 @@ fn a_microvm_held_to_a_budget_gives_back_what_it_holds_cold() {
     if gave.contains("budget is short by") {
         let holds = mib_after(&gave, "MiB, holds ");
         set(&((holds + 128) << 20).to_string());
-        let deadline = std::time::Instant::now() + TIMEOUT;
+        let mut patience = Patience::of(&home, TIMEOUT);
         loop {
             let log = said();
             let words = [
@@ -2816,10 +2805,7 @@ fn a_microvm_held_to_a_budget_gives_back_what_it_holds_cold() {
             if !last.contains("budget is short by") {
                 break;
             }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "short still, its budget raised:\n{log}"
-            );
+            assert!(patience.holds(), "short still, its budget raised:\n{log}");
             std::thread::sleep(Duration::from_millis(50));
         }
     }
@@ -2958,7 +2944,7 @@ fn a_groups_microvms_are_held_to_its_cpu_max_together() {
     }
     assert_eq!(shards(&["rm", "-f", "ga", "gb"]).status, Some(0));
     for mut run in runs {
-        let _ = exit(&mut run);
+        let _ = exit(&mut run, &home);
     }
 }
 
@@ -3065,7 +3051,7 @@ fn a_groups_cpu_held_each_second() {
     }
     assert_eq!(shards(&["rm", "-f", "ma", "mb"]).status, Some(0));
     for mut run in runs {
-        let _ = exit(&mut run);
+        let _ = exit(&mut run, &home);
     }
 }
 
@@ -3179,9 +3165,9 @@ fn a_microvm_under_a_group_is_held_to_its_budget() {
             .unwrap_or(0)
     };
     let until = |what: &str, check: &dyn Fn() -> bool| {
-        let deadline = std::time::Instant::now() + TIMEOUT;
+        let mut patience = Patience::of(&home, TIMEOUT);
         while !check() {
-            assert!(std::time::Instant::now() < deadline, "{what}:\n{}", said());
+            assert!(patience.holds(), "{what}:\n{}", said());
             std::thread::sleep(Duration::from_millis(50));
         }
     };
@@ -3291,10 +3277,10 @@ fn what_a_joiner_reads_of_its_image_is_given_back_at_its_groups_budget() {
             .unwrap_or(0)
     };
     let until = |what: &str, check: &dyn Fn() -> bool| {
-        let deadline = Instant::now() + TIMEOUT;
+        let mut patience = Patience::of(&home, TIMEOUT);
         while !check() {
             assert!(
-                Instant::now() < deadline,
+                patience.holds(),
                 "{what}: its group's memory.current {}:\n{}",
                 current(),
                 said()
@@ -3529,7 +3515,7 @@ fn what_a_microvm_holds_cold_is_given_back_at_its_hosts_word() {
     // pages active, which a give-back takes none of (`reclaim_cold`, `inactive_file`), and
     // an idle measured as it went on giving back had the file read twice and gave back
     // nothing of it on Fedora, once in 6.
-    let deadline = Instant::now() + TIMEOUT;
+    let mut patience = Patience::of(&home, TIMEOUT);
     let mut last = held();
     loop {
         std::thread::sleep(Duration::from_millis(500));
@@ -3538,7 +3524,7 @@ fn what_a_microvm_holds_cold_is_given_back_at_its_hosts_word() {
             break;
         }
         assert!(
-            Instant::now() < deadline,
+            patience.holds(),
             "{booted} bytes held booted, {now} after touching and freeing a GiB"
         );
         last = now;
@@ -3591,10 +3577,10 @@ fn what_a_microvm_holds_cold_is_given_back_at_its_hosts_word() {
     // Its VM process holds that much less, or half of it, once its guest has given it back:
     // what it reported free, and what its device unplugs as it was asked to, after the
     // give-back's answer (D148, D151).
-    let deadline = Instant::now() + TIMEOUT;
+    let mut patience = Patience::of(&home, TIMEOUT);
     while before.saturating_sub(held()) < (gave << 20) / 2 {
         assert!(
-            Instant::now() < deadline,
+            patience.holds(),
             "its VM process held {before} bytes, then {}, having given back {gave} MiB:\n{}",
             held(),
             said()
@@ -3823,7 +3809,7 @@ fn pause_freezes_a_microvm_until_unpause_or_stop() {
         (Some(0), "frozen\n"),
         "{stopped}"
     );
-    assert_eq!(exit(&mut spinner), Some(128 + 15));
+    assert_eq!(exit(&mut spinner, &home), Some(128 + 15));
 }
 
 #[test]
@@ -3869,7 +3855,7 @@ fn top_lists_a_microvms_processes() {
     assert!(paused.stderr.contains("is paused"), "{paused}");
     assert_eq!(shards(&["unpause", "listed"]).status, Some(0));
     stop_run(&home, "listed");
-    exit(&mut sleeper);
+    exit(&mut sleeper, &home);
     let ended = shards(&["top", "listed"]);
     assert!(ended.stderr.ends_with("is not running\n"), "{ended}");
 }
@@ -3910,7 +3896,7 @@ fn diff_shows_what_a_microvm_changed() {
         "{diff}"
     );
     stop_run(&home, "changed");
-    exit(&mut sleeper);
+    exit(&mut sleeper, &home);
     // Stopped, its changes are still there to show (visit.rs).
     let ended = shards(&["diff", "changed"]);
     assert_eq!(ended.status, Some(0), "{ended}");
@@ -4004,7 +3990,7 @@ fn events_tell_a_microvms_life() {
     ] {
         assert_eq!(shards(step).status, Some(0), "{step:?}");
     }
-    exit(&mut sleeper);
+    exit(&mut sleeper, &home);
     assert_eq!(shards(&["rm", "lived2"]).status, Some(0));
     // Past: only what had happened is shown, and the command ends.
     let until = format!(
@@ -4126,7 +4112,7 @@ fn export_writes_a_microvms_files_as_a_tar_archive() {
     );
     assert_eq!(tar.len() % 512, 0);
     stop_run(&home, "exported");
-    exit(&mut sleeper);
+    exit(&mut sleeper, &home);
     // Stopped, its files are still there to export (visit.rs).
     let ended = shards(&["export", "-o", out.to_str().unwrap(), "exported"]);
     assert_eq!(ended.status, Some(0), "{ended}");
@@ -4217,7 +4203,7 @@ fn cp_copies_files_into_and_out_of_a_microvm() {
         "{no_dir}"
     );
     stop_run(&home, "copier");
-    exit(&mut sleeper);
+    exit(&mut sleeper, &home);
     // Stopped, its files are still there to copy (visit.rs).
     let ended = shards(&["cp", "copier:/in", home.join("cp-stopped").to_str().unwrap()]);
     assert_eq!(ended.status, Some(0), "{ended}");
@@ -4737,7 +4723,7 @@ fn a_runs_mac_is_its_own() {
         "{joined}"
     );
     assert_eq!(shards(&["rm", "-f", "own"]).status, Some(0));
-    let _ = exit(&mut own);
+    let _ = exit(&mut own, &home);
     let mut served = start(
         &home,
         &image,
@@ -4767,7 +4753,7 @@ fn a_runs_mac_is_its_own() {
     let mut got = String::new();
     c.read_to_string(&mut got).unwrap();
     assert_eq!(got, format!("from {}\nhello", bridge().gateway()));
-    assert_eq!(exit(&mut served), Some(0));
+    assert_eq!(exit(&mut served, &home), Some(0));
     // Two of one MAC on a network: each reaches the other through its own network process,
     // which frames to it alone; network inspect shows each its MAC.
     let made = shards(&["network", "create", "maclan"]);
@@ -4798,7 +4784,7 @@ fn a_runs_mac_is_its_own() {
         asked.status == Some(0) && asked.stdout.starts_with("ask from "),
         "{asked}"
     );
-    assert_eq!(exit(&mut srv), Some(0));
+    assert_eq!(exit(&mut srv, &home), Some(0));
 }
 
 /// A run's link-local addresses, as dockerd gives them (PM M175): each on eth0 with its
@@ -4971,7 +4957,7 @@ fn a_runs_link_local_addresses_are_its_own() {
         "{joined}"
     );
     assert_eq!(shards(&["rm", "-f", "ll-prov"]).status, Some(0));
-    let _ = exit(&mut prov);
+    let _ = exit(&mut prov, &home);
     // On a network: two given them reach each other at them; one without, neither.
     let made = shards(&["network", "create", "llnet"]);
     assert_eq!(made.status, Some(0), "{made}");
@@ -4996,7 +4982,7 @@ fn a_runs_link_local_addresses_are_its_own() {
         asked.status == Some(0) && asked.stdout.starts_with("ask from 169.254.2.11"),
         "{asked}"
     );
-    assert_eq!(exit(&mut srv), Some(0));
+    assert_eq!(exit(&mut srv, &home), Some(0));
     let mut srv = start(
         &home,
         &image,
@@ -5016,7 +5002,7 @@ fn a_runs_link_local_addresses_are_its_own() {
     );
     assert_ne!(unasked.status, Some(0), "{unasked}");
     assert_eq!(shards(&["rm", "-f", "ll-srv2"]).status, Some(0));
-    let _ = exit(&mut srv);
+    let _ = exit(&mut srv, &home);
     // A network with IPv6: its kernel's link-local address is its MAC's (RFC 4291's
     // modified EUI-64), and a member that was given none reaches another's at it.
     let made = shards(&["network", "create", "--ipv6", "--subnet", "fd7d::/64", "llnet6"]);
@@ -5094,7 +5080,7 @@ fn a_runs_link_local_addresses_are_its_own() {
         &["--name", "ll-client", "--network", "llnet6"],
         &["sleep"],
     );
-    let deadline = Instant::now() + TIMEOUT;
+    let mut patience = Patience::of(&home, TIMEOUT);
     loop {
         let table = shards(&[
             "exec",
@@ -5114,7 +5100,7 @@ fn a_runs_link_local_addresses_are_its_own() {
             break;
         }
         assert!(
-            Instant::now() < deadline,
+            patience.holds(),
             "its link-local address stayed tentative: {table}"
         );
         std::thread::sleep(Duration::from_millis(50));
@@ -5133,9 +5119,9 @@ fn a_runs_link_local_addresses_are_its_own() {
                 .starts_with(&format!("ask from {}", kernels("ll-client"))),
         "{asked}"
     );
-    assert_eq!(exit(&mut srv), Some(0));
+    assert_eq!(exit(&mut srv, &home), Some(0));
     assert_eq!(shards(&["rm", "-f", "ll-client"]).status, Some(0));
-    let _ = exit(&mut client);
+    let _ = exit(&mut client, &home);
 }
 
 /// A microVM's record of the processes its members start and end (D123): its command's
@@ -5297,8 +5283,11 @@ fn a_runs_processes_are_recorded_as_they_start_and_end() {
         "{seen:#?}"
     );
     assert_eq!(shards(&["rm", "-f", "watched"]).status, Some(0));
-    assert!(exit(&mut watcher).is_some(), "the follow ended with the run");
-    let _ = exit(&mut c);
+    assert!(
+        exit(&mut watcher, &home).is_some(),
+        "the follow ended with the run"
+    );
+    let _ = exit(&mut c, &home);
 }
 
 /// A container given CAP_SYS_ADMIN mounts nothing, (D121), as Docker's default AppArmor profile
@@ -5456,13 +5445,13 @@ fn start_attached_passes_signals_on() {
     let got = format!("got {number}");
     let mut plain = attached("plain");
     common::terminate(&plain);
-    assert_eq!(exit(&mut plain), Some(0));
+    assert_eq!(exit(&mut plain, &home), Some(0));
     let logged = shards(&["logs", "plain"]);
     assert!(logged.stdout.contains(&got), "{logged}");
     let mut terminal = attached("terminal");
     common::terminate(&terminal);
     assert_eq!(
-        exit(&mut terminal),
+        exit(&mut terminal, &home),
         common::TERMINATED,
         "the client ends by the signal"
     );
@@ -5499,9 +5488,9 @@ fn a_stopped_microvms_layer_stays_in_its_file() {
     };
     // Kept once its microVM has gone, after its end is told.
     let settled = |dir: &Path| {
-        let deadline = Instant::now() + TIMEOUT;
+        let mut patience = Patience::of(&home, TIMEOUT);
         while !(dir.join("layer.ext4").exists() && !dir.join("layer.new").exists()) {
-            assert!(Instant::now() < deadline, "no layer kept in {}", dir.display());
+            assert!(patience.holds(), "no layer kept in {}", dir.display());
             std::thread::sleep(Duration::from_millis(20));
         }
     };
@@ -5540,16 +5529,13 @@ fn a_stopped_microvms_layer_stays_in_its_file() {
         ],
     );
     assert_eq!(killed.status, Some(0), "{killed}");
-    let deadline = Instant::now() + TIMEOUT;
+    let mut patience = Patience::of(&home, TIMEOUT);
     loop {
         let logs = shards(&["logs", "killed"]);
         if logs.stdout == "two\n" {
             break;
         }
-        assert!(
-            Instant::now() < deadline,
-            "the run never committed its file: {logs}"
-        );
+        assert!(patience.holds(), "the run never committed its file: {logs}");
         std::thread::sleep(Duration::from_millis(20));
     }
     let pid: i32 = shards(&["inspect", "-f", "{{.State.Pid}}", "killed"])
@@ -5748,7 +5734,7 @@ fn commit_makes_an_image_of_what_a_microvm_changed() {
         "{both}"
     );
     assert_eq!(shards(&["rm", "-f", "live"]).status, Some(0));
-    exit(&mut sleeper);
+    exit(&mut sleeper, &home);
 }
 
 #[test]
@@ -5767,7 +5753,7 @@ fn rm_refuses_a_running_container_unless_forced() {
         "{}",
         forced.stderr
     );
-    assert_eq!(exit(&mut sleeper), Some(128 + 9));
+    assert_eq!(exit(&mut sleeper, &home), Some(128 + 9));
     assert_eq!(shards_in(&home, &["wait", "busy"]).status, Some(1));
 }
 
@@ -5849,7 +5835,7 @@ fn ps_filters_microvms() {
         );
     }
     assert_eq!(shards(&["rm", "-f", "up"]).status, Some(0));
-    exit(&mut sleeper);
+    exit(&mut sleeper, &home);
 }
 
 #[test]
@@ -6006,7 +5992,7 @@ fn inspect_describes_microvms_and_images() {
         "{empty}"
     );
     assert_eq!(shards(&["rm", "-f", "probe"]).status, Some(0));
-    exit(&mut sleeper);
+    exit(&mut sleeper, &home);
 }
 
 #[test]
@@ -6274,7 +6260,7 @@ fn run_writes_cidfiles_pulls_quietly_and_keeps_signals() {
         &["sleep"],
     );
     common::terminate(&kept);
-    assert_eq!(exit(&mut kept), common::TERMINATED);
+    assert_eq!(exit(&mut kept, &home), common::TERMINATED);
     let state = shards(&["inspect", "-f", "{{.State.Status}}", "unproxied"]);
     assert_eq!(state.stdout, "running\n", "{state}");
     let removed = shards(&["rm", "-f", "unproxied"]);
@@ -6575,7 +6561,7 @@ fn run_sets_up_mounts_limits_and_sysctls() {
     let found = exec(&["stat", "/run/copied.txt"]);
     assert!(found.stdout.contains("\n= x\n"), "{found}");
     assert_eq!(shards(&["kill", "sealed"]).status, Some(0));
-    exit(&mut held);
+    exit(&mut held, &home);
     // dockerd's refusals as it makes the container, then runc's as it starts it.
     let said = |options: &[&str]| run_in(&home, &image, options, &["exit", "0"]);
     let help = "\n\nRun 'shards run --help' for more information\n";
@@ -6710,7 +6696,7 @@ fn run_sets_capabilities_groups_and_privileges() {
         "{shown}"
     );
     assert_eq!(shards(&["kill", "tweaked"]).status, Some(0));
-    exit(&mut held);
+    exit(&mut held, &home);
     // Privileged: every capability, nothing masked, /sys writable.
     let all = run_in(
         &home,
@@ -6873,7 +6859,7 @@ fn ps_lists_microvms() {
     assert!(lines[1].starts_with(ids[0]), "{}\n{}", quiet.stdout, all.stdout);
     let stopped = shards_in(&home, &["stop", "-t", "1", "up"]);
     assert_eq!(stopped.status, Some(0), "{}", stopped.stderr);
-    assert_eq!(exit(&mut sleeper), Some(128 + 15));
+    assert_eq!(exit(&mut sleeper, &home), Some(128 + 15));
 }
 
 #[test]
@@ -6959,7 +6945,7 @@ fn logs_keep_what_a_container_wrote() {
         .unwrap();
     std::thread::sleep(Duration::from_millis(200));
     stop_run(&home, "follow");
-    assert_eq!(exit(&mut sleeper), Some(128 + 15));
+    assert_eq!(exit(&mut sleeper, &home), Some(128 + 15));
     let followed = follower.wait_with_output().unwrap();
     assert_eq!(followed.status.code(), Some(0));
     assert_eq!(String::from_utf8_lossy(&followed.stdout), "ready\n");
@@ -6973,11 +6959,12 @@ fn untimed(text: &str) -> String {
         .collect()
 }
 
-/// Checks `check` until it holds, failing the test after TIMEOUT.
-fn eventually(what: &str, check: impl Fn() -> bool) {
-    let deadline = Instant::now() + TIMEOUT;
+/// Checks `check` until it holds, failing the test after TIMEOUT, or past it once `home`'s
+/// daemon and its microVMs have progressed no more for as long ([`Patience`]).
+fn eventually(home: &Path, what: &str, mut check: impl FnMut() -> bool) {
+    let mut patience = Patience::of(home, TIMEOUT);
     while !check() {
-        assert!(Instant::now() < deadline, "{what}");
+        assert!(patience.holds(), "{what}");
         std::thread::sleep(Duration::from_millis(20));
     }
 }
@@ -7129,7 +7116,7 @@ fn detached_runs_print_their_id_and_go_on() {
     // It runs on without its client: ps lists it, and its output is kept.
     let listed = shards_in(&home, &["ps", "-q", "--no-trunc"]);
     assert_eq!(listed.stdout, format!("{id}\n"), "{listed}");
-    eventually("the detached run's output never reached its log", || {
+    eventually(&home, "the detached run's output never reached its log", || {
         shards_in(&home, &["logs", "bg"]).stdout == "ready\n"
     });
     // Its host is named for its ID, as Docker names a container's (D27).
@@ -7158,7 +7145,7 @@ fn detached_runs_print_their_id_and_go_on() {
     // With --rm it goes once it ends.
     let gone = run_in(&home, &image, &["-d", "--rm", "--name", "gone"], &["exit", "0"]);
     assert_eq!(gone.status, Some(0), "{gone}");
-    eventually("a --rm container stayed", || {
+    eventually(&home, "a --rm container stayed", || {
         shards_in(&home, &["wait", "gone"]).status == Some(1)
     });
 }
@@ -7568,7 +7555,7 @@ impl Going {
 fn created(gated: &Gated, home: &Path, run: &mut Going) -> String {
     let id = std::cell::RefCell::new(String::new());
     let last = std::cell::RefCell::new(String::new());
-    let deadline = Instant::now() + TIMEOUT;
+    let mut patience = Patience::of(home, TIMEOUT);
     loop {
         let listed = gated.shards(home, &["ps", "-a", "-q", "--no-trunc"]);
         *id.borrow_mut() = listed.stdout.clone();
@@ -7576,7 +7563,7 @@ fn created(gated: &Gated, home: &Path, run: &mut Going) -> String {
             break;
         }
         *last.borrow_mut() = listed.to_string();
-        if Instant::now() >= deadline {
+        if !patience.holds() {
             // Where the run stands: what the daemon said, and its processes.
             let log = std::fs::read_to_string(home.join("daemon.log")).unwrap_or_default();
             let tail: Vec<&str> = log.lines().rev().take(40).collect();
@@ -7973,7 +7960,7 @@ fn a_log_keeps_its_newest_output_within_its_retention() {
         .unwrap();
     // Only a running container's log is followed, as dockerd follows only a running
     // container's (moby daemon/logs.go, `cLogCreated`).
-    eventually("the container to run", || {
+    eventually(&home, "the container to run", || {
         retained_output(&home, &["ps", "-q", "--no-trunc"]).len() == 65
     });
     let mut follower = retained(&home)
@@ -8010,12 +7997,12 @@ fn a_log_keeps_its_newest_output_within_its_retention() {
                 .collect();
             stdin.write_all(lines.as_bytes()).unwrap();
             sent.extend_from_slice(lines.as_bytes());
-            let deadline = Instant::now() + TIMEOUT;
+            let mut patience = Patience::of(&home, TIMEOUT);
             // Each chunk is followed before the next is written: only a follower woken by
             // appends, not only by segments' coming, gets there.
             while received.load(std::sync::atomic::Ordering::Acquire) < sent.len() {
                 assert!(
-                    Instant::now() < deadline,
+                    patience.holds(),
                     "the follower has {} bytes of {} at chunk {chunk}",
                     received.load(std::sync::atomic::Ordering::Acquire),
                     sent.len()
@@ -8024,7 +8011,7 @@ fn a_log_keeps_its_newest_output_within_its_retention() {
             }
         }
     }
-    assert_eq!(exit(&mut run), Some(0));
+    assert_eq!(exit(&mut run, &home), Some(0));
     let followed = reading.join().unwrap();
     assert_eq!(follower.wait().unwrap().code(), Some(0));
     assert!(sent.len() > 3 * 100_000, "the log rotated past its retention");
@@ -8400,13 +8387,13 @@ fn a_run_on_the_hosts_network_is_on_the_hosts_network() {
             format!("from {peer}\necho"),
             "{addr}"
         );
-        assert_eq!(exit(&mut child), Some(0), "{addr}");
+        assert_eq!(exit(&mut child, &home), Some(0), "{addr}");
     }
     if std::net::TcpListener::bind("[::1]:0").is_ok() {
         let (mut child, port) = serving(&home, &image, &["listen", "[::1]:0", "1"]);
         let at = std::net::SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, port));
         assert_eq!(talk(at, "six"), "from ::1\nsix");
-        assert_eq!(exit(&mut child), Some(0));
+        assert_eq!(exit(&mut child, &home), Some(0));
     }
     // A UDP server's answer, sent as its server ends: at the loopback's, by the relay;
     // at every address, from the gateway. Twelve, the race between the answer and the
@@ -8429,7 +8416,7 @@ fn a_run_on_the_hosts_network_is_on_the_hosts_network() {
             format!("from {peer} datagram"),
             "{i}"
         );
-        assert_eq!(exit(&mut child), Some(0));
+        assert_eq!(exit(&mut child, &home), Some(0));
     }
 
     // A port the host holds is the host's (EADDRINUSE, Linux's 98); one the guest closed
@@ -8460,7 +8447,7 @@ fn a_run_on_the_hosts_network_is_on_the_hosts_network() {
         );
         let killed = shards_in(&home, &["kill", &name]);
         assert_eq!(killed.status, Some(0), "{killed}");
-        let _ = exit(&mut child);
+        let _ = exit(&mut child, &home);
         let bound = std::net::TcpListener::bind(("0.0.0.0", port));
         assert!(
             bound.is_ok(),
@@ -8534,7 +8521,7 @@ fn a_joiner_of_a_container_on_the_hosts_network_is_on_it_too() {
     // the joiner's server goes on, and a server the joiner starts now is the host's too.
     let killed = shards(&["kill", "hprov"]);
     assert_eq!(killed.status, Some(0), "{killed}");
-    let _ = exit(&mut provider);
+    let _ = exit(&mut provider, &home);
     drop(std::net::TcpListener::bind(("0.0.0.0", theirs)).expect("the provider's port, free at its end"));
     assert_eq!(talk(loopback(ours), "c"), format!("from {gateway}\nc"));
     let (mut late, port) = ready_on(
@@ -8542,11 +8529,11 @@ fn a_joiner_of_a_container_on_the_hosts_network_is_on_it_too() {
         &["exec", "hjoin", "/bin/testguest", "listen", "127.0.0.1:0", "1"].map(String::from),
     );
     assert_eq!(talk(loopback(port), "d"), "from 127.0.0.1\nd");
-    assert_eq!(exit(&mut late), Some(0));
+    assert_eq!(exit(&mut late, &home), Some(0));
     // The joiner's end: its port the host's to bind again at once.
     let killed = shards(&["kill", "hjoin"]);
     assert_eq!(killed.status, Some(0), "{killed}");
-    let _ = exit(&mut joiner);
+    let _ = exit(&mut joiner, &home);
     drop(std::net::TcpListener::bind(("0.0.0.0", ours)).expect("the joiner's port, free at its end"));
 }
 
@@ -8879,7 +8866,7 @@ fn answers_lost_without_the_gateways_mac() {
         if client.recv(&mut buf).is_err() {
             lost[i % cases.len()] += 1;
         }
-        assert_eq!(exit(&mut child), Some(0), "{command:?}");
+        assert_eq!(exit(&mut child, &home), Some(0), "{command:?}");
     }
     for ((name, _, _), lost) in cases.iter().zip(lost) {
         println!("{name}: lost {lost} of {n}");
@@ -8974,7 +8961,7 @@ fn stop_sends_a_containers_own_stop_signal() {
         (Some(0), "usr1\n"),
         "{stopped}"
     );
-    assert_eq!(exit(&mut run), Some(138));
+    assert_eq!(exit(&mut run, &home), Some(138));
     assert_eq!(shards_in(&home, &["wait", "usr1"]).stdout, "138\n");
     // A signal the command ignores, and its own timeout: SIGKILL after a second, not ten.
     let mut run = start(
@@ -8994,7 +8981,7 @@ fn stop_sends_a_containers_own_stop_signal() {
     let stopped = shards_in(&home, &["stop", "chld"]);
     let took = began.elapsed();
     assert_eq!(stopped.status, Some(0), "{stopped}");
-    assert_eq!(exit(&mut run), Some(137));
+    assert_eq!(exit(&mut run, &home), Some(137));
     assert!(
         took >= Duration::from_secs(1) && took < Duration::from_secs(5),
         "{took:?}"
@@ -9178,7 +9165,7 @@ fn exec_runs_commands_in_a_running_microvm() {
         "invalid detach keys (ctrl-P): Unknown character: 'ctrl-P'\n",
     );
     stop_run(&home, "ex");
-    let _ = exit(&mut run);
+    let _ = exit(&mut run, &home);
     refused(
         &["ex", "/bin/testguest", "report"],
         1,
@@ -9511,7 +9498,7 @@ fn published_ports_reach_the_guest() {
         (from.as_str(), echoed.as_slice()),
         (format!("from {}\n", bridge().gateway()).as_str(), &b"last"[..])
     );
-    assert_eq!(exit(&mut run), Some(0));
+    assert_eq!(exit(&mut run, &home), Some(0));
     // Ended, it lists none, and its port is free at once.
     let gone = shards(&["port", "web"]);
     assert_eq!((gone.status, gone.stdout.as_str()), (Some(0), ""), "{gone}");
@@ -9660,7 +9647,7 @@ fn published_ports_are_free_at_once_while_the_daemon_makes_vms() {
         "the spawner's children: {made:?}"
     );
     stop_run(&home, "asleep");
-    exit(&mut asleep);
+    exit(&mut asleep, &home);
 }
 
 /// The processes whose parent is `parent`, each with its command line: from /proc on
@@ -9822,7 +9809,7 @@ fn published_udp_ports_carry_datagrams_both_ways() {
     gateway_port(&third, "three");
     let (bye, _) = ask(&a, v4, b"bye");
     gateway_port(&bye, "bye");
-    assert_eq!(exit(&mut run), Some(0));
+    assert_eq!(exit(&mut run, &home), Some(0));
     // Ended, its port is free at once.
     drop(UdpSocket::bind(("0.0.0.0", n)).unwrap());
 }
@@ -10198,7 +10185,7 @@ fn rmi_removes_images() {
     assert_eq!(shards(&["images", "-aq"]).stdout, "");
     // Its content goes with the daemon's next collection.
     let blobs = home.join("images/blobs/sha256");
-    eventually("the image's blobs collected", || {
+    eventually(&home, "the image's blobs collected", || {
         std::fs::read_dir(&blobs).map(|d| d.count()).unwrap_or(0) == 0
     });
 }
@@ -10363,7 +10350,7 @@ fn an_interrupted_save_leaves_nothing_behind() {
             });
         }
         let mut save = common::interruptible(&mut save).spawn().unwrap();
-        eventually("the save's temporary file", || !left().is_empty());
+        eventually(&home, "the save's temporary file", || !left().is_empty());
         #[cfg(unix)]
         {
             // SAFETY: kill(2) of the client this test started.
@@ -10378,7 +10365,7 @@ fn an_interrupted_save_leaves_nothing_behind() {
         #[cfg(windows)]
         {
             common::interrupt(&save);
-            exit(&mut save);
+            exit(&mut save, &home);
         }
         assert_eq!(left(), Vec::<std::ffi::OsString>::new(), "after signal {sig}");
     }
@@ -11082,14 +11069,14 @@ fn a_push_ends_with_its_client_and_the_daemon() {
     };
     // Its client killed: its uploads' connections end.
     let mut client = push();
-    eventually("the uploads begun", || begun.load(Ordering::SeqCst) >= 1);
+    eventually(&home, "the uploads begun", || begun.load(Ordering::SeqCst) >= 1);
     client.kill().unwrap();
     let _ = client.wait();
     let_go("the uploads went on without their client");
     // The daemon stopped: it stops at once, and so does the push.
     let first = begun.load(Ordering::SeqCst);
     let mut client = push();
-    eventually("the second push's uploads begun", || {
+    eventually(&home, "the second push's uploads begun", || {
         begun.load(Ordering::SeqCst) > first
     });
     let t0 = Instant::now();
@@ -11136,7 +11123,9 @@ fn a_run_interrupted_as_it_pulls_ends_at_once() {
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    eventually("the pull's blobs asked for", || begun.load(Ordering::SeqCst) >= 1);
+    eventually(&home, "the pull's blobs asked for", || {
+        begun.load(Ordering::SeqCst) >= 1
+    });
     common::interrupt(&client);
     let t0 = Instant::now();
     let out = client.wait_with_output().unwrap();
@@ -11745,9 +11734,9 @@ fn restart_policies_start_microvms_again() {
     let inspect =
         |name: &str, format: &str| shards(&["inspect", "-f", format, name]).stdout.trim().to_string();
     let until = |what: &str, check: &dyn Fn() -> bool| {
-        let deadline = Instant::now() + TIMEOUT;
+        let mut patience = Patience::of(&home, TIMEOUT);
         while !check() {
-            assert!(Instant::now() < deadline, "{what}");
+            assert!(patience.holds(), "{what}");
             std::thread::sleep(Duration::from_millis(20));
         }
     };
@@ -11812,9 +11801,9 @@ fn restart_policies_start_microvms_again() {
     );
     assert_eq!(shards(&["stop", "-t", "0", "held"]).status, Some(0));
     // SIGTERM, then SIGKILL at once: whichever ends it.
-    assert!(matches!(exit(&mut held), Some(137 | 143)));
+    assert!(matches!(exit(&mut held, &home), Some(137 | 143)));
     assert_eq!(shards(&["stop", "daemon"]).status, Some(0));
-    let _ = exit(&mut kept);
+    let _ = exit(&mut kept, &home);
     until("the daemon starts kept again", &|| {
         inspect("kept", "{{.State.Status}}") == "running"
     });
@@ -11905,7 +11894,7 @@ fn a_run_past_its_pids_limit_says_so() {
     assert!(joined.stdout.contains("of 8 threads"), "{joined}");
     // Its microVM's word of the limit reached comes on its own, maybe after its command's
     // end on a loaded host: the home's events read again until it is there (D187).
-    let deadline = Instant::now() + TIMEOUT;
+    let mut patience = Patience::of(&home, TIMEOUT);
     let events = loop {
         let until = (now() + 1).to_string();
         let events = shards_in(
@@ -11922,7 +11911,7 @@ fn a_run_past_its_pids_limit_says_so() {
                 r#"{{.Actor.Attributes.name}} {{index .Actor.Attributes "pids.max"}}"#,
             ],
         );
-        if !events.stdout.is_empty() || Instant::now() >= deadline {
+        if !events.stdout.is_empty() || !patience.holds() {
             break events;
         }
     };
@@ -11976,7 +11965,7 @@ fn update_moves_a_microvms_memory_both_ways() {
     let killed = alloc();
     assert_eq!(killed.status, Some(137), "{killed}");
     assert_eq!(shards(&["stop", "-t", "1", "grows"]).status, Some(0));
-    let _ = exit(&mut held);
+    let _ = exit(&mut held, &home);
 }
 
 /// `update`, as `docker update` takes it: a running microVM's limits written to its
@@ -12109,7 +12098,7 @@ fn update_changes_limits_of_running_microvms() {
         "you must provide one or more flags when using this command\n"
     );
     assert_eq!(shards(&["rm", "-f", "held"]).status, Some(0));
-    let _ = exit(&mut held);
+    let _ = exit(&mut held, &home);
     // On a stopped container the record changes, for its next start.
     assert_eq!(shards(&["create", "--name", "made", &image]).status, Some(0));
     assert_eq!(shards(&["update", "--cpus", "2", "made"]).stdout, "made\n");
@@ -12151,7 +12140,7 @@ fn microvm_sizes_are_listed() {
         "{listed}"
     );
     assert_eq!(shards(&["stop", "-t", "0", "sized"]).status, Some(0));
-    let _ = exit(&mut held);
+    let _ = exit(&mut held, &home);
     assert_eq!(sizes(&["-s"]), (rw, root), "as its last run left it");
 }
 
@@ -13009,8 +12998,8 @@ fn attach_joins_a_running_microvm() {
     }
     // Both end with the command, with its status: SIGTERM's.
     stop_run(&home, "echo");
-    assert_eq!(exit(&mut first), Some(143));
-    assert_eq!(exit(&mut second), Some(143));
+    assert_eq!(exit(&mut first, &home), Some(143));
+    assert_eq!(exit(&mut second, &home), Some(143));
     drop(second_in);
     // docker/cli's refusals.
     let stopped = shards(&["attach", "echo"]);
@@ -13876,7 +13865,7 @@ fn stops_beside_a_gigabyte_build() {
             ));
             let _ = run.kill();
         }
-        let _ = exit(&mut run);
+        let _ = exit(&mut run, &home);
         let _ = shards_in(&home, &["rm", "-f", name]);
         (ms, lost)
     };
@@ -13987,7 +13976,7 @@ fn stops_beside_a_gigabyte_build() {
                 ended.push(t0.elapsed().as_secs_f64() * 1e3);
             }
             for (name, mut run, _) in killed {
-                let _ = exit(&mut run);
+                let _ = exit(&mut run, &home);
                 let _ = shards_in(&home, &["rm", "-f", &name]);
             }
             *ends.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = ended;
@@ -14565,8 +14554,8 @@ fn a_workload_past_its_cgroup_is_held_to_its_cpus_by_its_host() {
         );
     }
     assert_eq!(shards(&["rm", "-f", "held", "free"]).status, Some(0));
-    let _ = exit(&mut limited);
-    let _ = exit(&mut free);
+    let _ = exit(&mut limited, &home);
+    let _ = exit(&mut free, &home);
 }
 
 /// A run's busy vCPUs are never depressed by XNU's real-time fail-safe (D4, PM M317):
@@ -14645,7 +14634,7 @@ fn a_microvms_busy_vcpus_are_never_depressed_by_the_real_time_fail_safe() {
         seen.iter().filter(|s| s.0 > 2000).take(40).collect::<Vec<_>>()
     );
     assert_eq!(shards(&["rm", "-f", "busy"]).status, Some(0));
-    let _ = exit(&mut busy);
+    let _ = exit(&mut busy, &home);
 }
 
 /// A run's swap and memory as its microVM has them (D159): swap as its limits allow,
@@ -14703,7 +14692,7 @@ fn a_microvm_swaps_and_throttles_as_its_limits_say() {
     // Its end said in the daemon's log, as a run's is, as the daemon hears it, which may be
     // as its client has the exit: what its cgroup was allowed and held, none of it swap,
     // and what its kernel said of it.
-    let deadline = Instant::now() + TIMEOUT;
+    let mut patience = Patience::of(&home, TIMEOUT);
     let (log, said) = loop {
         let log = std::fs::read_to_string(home.join("daemon.log")).unwrap_or_default();
         let said = log
@@ -14714,10 +14703,7 @@ fn a_microvm_swaps_and_throttles_as_its_limits_say() {
         if let Some(said) = said {
             break (log, said);
         }
-        assert!(
-            Instant::now() < deadline,
-            "no kill said in the daemon's log:\n{log}"
-        );
+        assert!(patience.holds(), "no kill said in the daemon's log:\n{log}");
         std::thread::sleep(Duration::from_millis(50));
     };
     assert!(
@@ -14941,10 +14927,10 @@ fn a_microvm_takes_its_ipc_hostname_cgroups_umask_and_writable_layer() {
         all.extend(flags);
         let r = run_in(&home, &image, &all, &["ipc-hold", key]);
         assert_eq!(r.status, Some(0), "{name}: {r}");
-        let deadline = Instant::now() + TIMEOUT;
+        let mut patience = Patience::of(&home, TIMEOUT);
         while !shards(&["logs", name]).stdout.contains("held") {
             assert!(
-                Instant::now() < deadline,
+                patience.holds(),
                 "{name} never held its segment: {}",
                 shards(&["logs", name])
             );

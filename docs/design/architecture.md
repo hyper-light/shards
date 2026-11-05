@@ -6668,6 +6668,16 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
   holds who is looked at and the slice (a sixth of `READY_TIMEOUT`), and
   `a_busy_process_is_seen_running_with_its_cpu_and_faults` the look on the host's own
   process times.
+- **A test's own waits on pools and microVMs follow them too** (M424). daemon.rs' rerun at
+  b57cad27 failed 7 of 38, each a wait of the test's own past a fixed minute (a pool
+  filled, a restored run's VM up) while its daemon's log showed templates saved, 264 MiB
+  guests restored and guest markers advancing. `common::Patience` holds them as clients
+  are held: their own deadline, or past it while the home's daemon says something
+  (`Said`), or a VM process under that daemon or under the test's process runs (`Ran`),
+  failing a minute after the last; the look that fails one begins past it, as a
+  PowerShell's look at Windows' processes may outlast a slice. daemon.rs' `eventually`
+  and `wait`, saved.rs', containers.rs', engine.rs' and budget.rs' waits on pools,
+  restored VMs and guests' answers, and warm.rs' warm VM's end take it.
 
 ### D207. A Windows host's bind sources: its drives' paths (built)
 

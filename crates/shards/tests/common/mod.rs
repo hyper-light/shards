@@ -88,6 +88,7 @@ pub fn processes_with(needle: &str) -> Vec<u32> {
 /// The processes whose command line mentions `needle`, and the command lines: from /proc
 /// on Linux, whose `ps` may be busybox's, which takes no `-o args`; from `ps` elsewhere;
 /// on Windows from its own table of processes (CIM's Win32_Process).
+#[allow(clippy::print_stderr)]
 pub fn commands_with(needle: &str) -> Vec<(u32, String)> {
     if cfg!(windows) {
         let listed =
@@ -96,7 +97,37 @@ pub fn commands_with(needle: &str) -> Vec<(u32, String)> {
             .args(["-NoProfile", "-NonInteractive", "-Command", listed])
             .output()
             .unwrap();
-        return String::from_utf8_lossy(&out.stdout)
+        let listed = String::from_utf8_lossy(&out.stdout);
+        // What a look that finds no VM leaves unseen, said with the test's failure: CIM's
+        // own failure, and VM processes whose command lines it gave none of (step 10's
+        // arm64 Windows host nested under QEMU's TCG found no warm VM, and no restored one,
+        // while its daemon's log said they ran). Captured, as a failing test's output is.
+        if !out.status.success() || !out.stderr.is_empty() {
+            eprintln!(
+                "Get-CimInstance Win32_Process: {}: {}",
+                out.status,
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
+        #[cfg(windows)]
+        {
+            let read = |pid: u32| {
+                listed.lines().any(|l| {
+                    l.trim_start().split_once(' ').is_some_and(|(id, args)| {
+                        id.parse::<u32>().ok() == Some(pid) && !args.trim().is_empty()
+                    })
+                })
+            };
+            let unread: Vec<u32> = processes()
+                .into_iter()
+                .filter(|(pid, _, name)| name.eq_ignore_ascii_case("shards-vm.exe") && !read(*pid))
+                .map(|(pid, ..)| pid)
+                .collect();
+            if !unread.is_empty() {
+                eprintln!("VM processes CIM gave no command line of: {unread:?}");
+            }
+        }
+        return listed
             .lines()
             .filter(|l| l.contains(needle))
             .filter_map(|l| {
@@ -1954,6 +1985,81 @@ impl Ran {
             }
         }
         self.at.is_some_and(|at| at.elapsed() < DAEMON_QUIET)
+    }
+}
+
+/// How long a test waits on a state a home's daemon or its microVMs come to (a pool
+/// filled, a restored run's VM up, a VM gone): `timeout`, as before, or past it for as long
+/// as they progress, as [`run_command`] waits on a client: while the home's daemon says
+/// something within [`DAEMON_QUIET`] ([`Said`]), or a VM process under it, or under this
+/// test's process (its clients' own, `run --kernel` and `restore`'s), ran within as long
+/// ([`Ran`]). Fast hosts keep `timeout`; a slow one (the parity plan's step 10, an arm64
+/// Windows host nested under QEMU's TCG, whose template saves took 20 s and pool restores
+/// a further minute) is waited on while it works, and a stuck one fails a minute after its
+/// last progress. The look that fails a wait begins past it: one that takes long itself,
+/// as a PowerShell's look at Windows' processes does, is never what the wait runs out in.
+pub struct Patience {
+    start: Instant,
+    timeout: Duration,
+    home: Option<PathBuf>,
+    said: Option<Said>,
+    /// The VM processes under this test's process.
+    own: Ran,
+    /// The home's daemon, and the VM processes under it, followed anew as it changes.
+    daemon: Option<(u32, Ran)>,
+    /// When the daemon's pid was last read: once a second at most.
+    read: Option<Instant>,
+    /// Whether patience has run out, the look after it still to come.
+    out: bool,
+}
+
+impl Patience {
+    /// Patience with the daemon of `home` and its microVMs, and this test's own.
+    pub fn of(home: &Path, timeout: Duration) -> Patience {
+        Patience::with(Some(home), timeout)
+    }
+
+    /// Patience with this test's own microVMs, where no home's daemon serves them.
+    pub fn own(timeout: Duration) -> Patience {
+        Patience::with(None, timeout)
+    }
+
+    fn with(home: Option<&Path>, timeout: Duration) -> Patience {
+        Patience {
+            start: Instant::now(),
+            timeout,
+            home: home.map(Path::to_path_buf),
+            said: home.map(Said::of),
+            own: Ran::of(std::process::id()),
+            daemon: None,
+            read: None,
+            out: false,
+        }
+    }
+
+    /// Whether to look again: within its timeout, or past it while the daemon or a microVM
+    /// progresses; once neither does, once more, the look after this one, and then no more.
+    /// Ask it after each look that found the state not yet come, as often as they come.
+    pub fn holds(&mut self) -> bool {
+        let due = self.read.is_none_or(|r| r.elapsed() >= Duration::from_secs(1));
+        if let Some(home) = self.home.as_ref().filter(|_| due) {
+            self.read = Some(Instant::now());
+            let pid = std::fs::read_to_string(home.join("daemon.pid"))
+                .ok()
+                .and_then(|p| p.trim().parse::<u32>().ok());
+            if pid != self.daemon.as_ref().map(|(d, _)| *d) {
+                self.daemon = pid.map(|d| (d, Ran::of(d)));
+            }
+        }
+        // Each asked each time, so that each sees when it last progressed.
+        let said = self.said.as_mut().is_some_and(Said::lately);
+        let ran = self.own.lately();
+        let daemons = self.daemon.as_mut().is_some_and(|(_, r)| r.lately());
+        if self.start.elapsed() < self.timeout || said || ran || daemons {
+            self.out = false;
+            return true;
+        }
+        !std::mem::replace(&mut self.out, true)
     }
 }
 
