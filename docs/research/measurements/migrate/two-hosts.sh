@@ -26,9 +26,17 @@
 #            (tests/moved.rs, its two-host test moving to the listening machine saved and
 #            live, SHARDS_MOVE_INVITE its invitation; FILTER picks other tests of moved.rs,
 #            "" every one of them, the two-home ones too)
-#   stop.    On the machine moved to: its daemon stopped, its home removed.
-#   local.   One machine, two homes (a KVM host): listen on loopback, move every mode, the
-#            E2E tests (FILTER, "" unless given: all of moved.rs), stop.
+#   stop.    On the machine moved to: its daemon stopped, its home removed, its daemon's
+#            log kept at $KEEP_LOG first where that is given.
+#   local.   One machine, two homes: listen on loopback, move every mode; then the E2E tests,
+#            all of moved.rs between two homes of its own (FILTER, "" unless given: all), and
+#            each of its tests of another machine (`a_microvm_moves_to_another_host_saved_and_live`,
+#            `a_volumes_guest_owners_move_with_it`) moving to the listening home, each with
+#            an invitation of its own; stop.
+#   summary. $OUT's series as Markdown: n, p50, p90, p99 and max of what each move took and
+#            of the time each ran nowhere, by mode, with the machines and what failed; and
+#            the E2E tests' results in $LOG, where given (.github/workflows/migrate-e2e.yml
+#            writes it to its jobs' summaries).
 #
 # The counter writes a line every 50 ms, and for live moves rewrites 1 MiB of its memory
 # each time it counts (20 MiB/s), so that the rounds have its writes to chase.
@@ -166,7 +174,8 @@ listen)
 	;;
 invite)
 	: "${SHARDS:?the shards binary to run}"
-	name="e2e$(date +%s)"
+	# Unique, as two asked within a second are.
+	name="e2e$(date +%s)$RANDOM"
 	there invite client --name "$name" --output "$HOME_THERE/$name.invite"
 	base64 < "$HOME_THERE/$name.invite" | tr -d '\n'
 	echo
@@ -174,6 +183,7 @@ invite)
 stop)
 	: "${SHARDS:?the shards binary to run}"
 	there stop daemon || true
+	if [ -n "${KEEP_LOG:-}" ]; then cp "$HOME_THERE/daemon.log" "$KEEP_LOG" 2>/dev/null || true; fi
 	rm -rf "$HOME_THERE"
 	;;
 move)
@@ -220,11 +230,42 @@ local)
 	export INVITE
 	status=0
 	"$self" move || status=$?
-	INVITE=$("$self" invite | tail -1) FILTER=${FILTER-} "$self" e2e || status=$?
+	# Between two homes of its own, no other machine named: an invitation enrolls one client,
+	# and each test of another machine joins with a home of its own.
+	(cd "$root" && cargo test -p shards --profile test-release --test moved -- --nocapture ${FILTER-}) || status=$?
+	for t in a_microvm_moves_to_another_host_saved_and_live a_volumes_guest_owners_move_with_it; do
+		INVITE=$("$self" invite | tail -1) FILTER=$t "$self" e2e || status=$?
+	done
 	exit "$status"
 	;;
+summary)
+	if [ ! -f "$OUT" ]; then
+		echo "No results: $OUT was not written."
+		exit 0
+	fi
+	grep -E '^(== |   to: )' "$OUT" | sed 's/^ *//; s/^== /- from /; s/^to: /- to: /' || true
+	echo
+	echo "| mode | µs | n | p50 | p90 | p99 | max |"
+	echo "|---|---|---|---|---|---|---|"
+	awk '/^(cold|live) (move took|ran nowhere) \(us\): / {
+		mode = $1; what = ($2 == "move") ? "took" : "ran nowhere"
+		if ($0 ~ /: none$/) { printf "| %s | %s | 0 | | | | |\n", mode, what; next }
+		sub(/^.*\(us\): /, "")
+		printf "| %s | %s | %s | %s | %s | %s | %s |\n", mode, what, $2, $4, $6, $8, $10
+	}' "$OUT"
+	echo
+	grep -E '^(cold|live): [0-9]+ moves' "$OUT" | sed 's/^/- /' || true
+	if [ -n "${LOG:-}" ] && [ -f "$LOG" ]; then
+		echo
+		echo "tests/moved.rs:"
+		echo
+		grep -aE '^test [A-Za-z0-9_:]+ \.\.\. ' "$LOG" | sed 's/^/- /' || true
+		grep -aE '^test result: ' "$LOG" | sed 's/^/- /' || true
+		grep -aE '^(cold|live) move [0-9]+[: ]' "$LOG" | grep -avE 'ran nowhere [0-9]+ us;' | sed 's/^/- /' || true
+	fi
+	;;
 *)
-	echo "usage: two-hosts.sh listen|invite|move|e2e|stop|local" >&2
+	echo "usage: two-hosts.sh listen|invite|move|e2e|stop|local|summary" >&2
 	exit 2
 	;;
 esac

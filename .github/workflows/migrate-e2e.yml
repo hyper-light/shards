@@ -1,0 +1,301 @@
+name: migrate E2E
+
+# MicroVMs moved between machines (D176 parts 6 and 7, roadmap items 7a and 7b), end to end
+# and measured, on CI's runners: docs/research/measurements/migrate/two-hosts.sh.
+#
+# - `two homes`: on one runner, a home whose daemon listens on loopback and another joined
+#   to it as a context (D180), which the whole move protocol runs between as between two
+#   machines (QUIC, invitations, the move's steps and stream, the image pulled there by its
+#   digest): two-hosts.sh `local`, N moves of each mode (saved, and live by pre-copy), each
+#   one's time taken and the time it ran nowhere, with n, p50, p90, p99 and max; then all of
+#   tests/moved.rs, between two homes of its own and to the listening home. On an x86_64 KVM
+#   runner, and on a macOS arm64 runner where Hypervisor.framework is offered: GitHub's own
+#   (macos-15, an M1 VM) offer none (`kern.hv_support` absent, ci.yml's macOS lane skips its
+#   VM tests), so that job says so and moves nothing unless pointed at a runner with it
+#   (`macos`). Hosted arm64 Linux runners have no /dev/kvm, and a live move is refused on
+#   arm64 KVM and WHP by design (D176 part 7).
+# - `two runners`: the listening and the moving machine on two runners, reaching each other
+#   over a tailnet (WireGuard, which carries the contexts' UDP): GitHub's runners take no
+#   connection from another, and a TCP tunnel carries no QUIC. Runs only where the
+#   repository has a Tailscale OAuth client (secrets TS_OAUTH_CLIENT_ID and TS_OAUTH_SECRET,
+#   with the auth_keys scope and the tag in vars.TS_TAGS, tag:ci unless set, whose nodes the
+#   tailnet's policy lets reach each other).
+#
+# Each job's results file and logs are its artifact, and its tables its summary. Runs when
+# this workflow changes, or when asked.
+on:
+  push:
+    paths:
+      - .github/workflows/migrate-e2e.yml
+  workflow_dispatch:
+    inputs:
+      n:
+        description: moves of each mode
+        default: "30"
+      macos:
+        description: the macOS arm64 runner's label (one with Hypervisor.framework moves microVMs)
+        default: macos-15
+      filter:
+        description: tests/moved.rs's tests between two homes, a filter of their names ("" all)
+        default: ""
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  TOOLCHAIN: 1.98.1 # keep in sync with rust-toolchain.toml
+  N: ${{ github.event.inputs.n || '30' }}
+
+jobs:
+  two-homes:
+    name: two homes (${{ matrix.name }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: KVM x86_64, runner: ubuntu-24.04, guest: x86_64-unknown-linux-musl }
+          - { name: HVF arm64, runner: "${{ github.event.inputs.macos || 'macos-15' }}", guest: aarch64-unknown-linux-musl }
+    steps:
+      - uses: actions/checkout@v7.0.1
+      # Whether this runner offers its hypervisor: KVM must be there; a macOS runner without
+      # Hypervisor.framework says so and moves nothing.
+      - name: Host
+        id: host
+        shell: bash
+        run: |
+          case "$RUNNER_OS" in
+            Linux)
+              nproc && free -m && lscpu | grep -E 'Model name|Vendor ID|Virtualization|Hypervisor' || true
+              uname -r
+              ls -l /dev/kvm
+              echo "vms=1" >> "$GITHUB_OUTPUT"
+              ;;
+            macOS)
+              sysctl -n hw.ncpu hw.memsize machdep.cpu.brand_string || true
+              sw_vers -productVersion
+              if [ "$(sysctl -n kern.hv_support 2>/dev/null)" = 1 ]; then
+                echo "vms=1" >> "$GITHUB_OUTPUT"
+              else
+                echo "vms=0" >> "$GITHUB_OUTPUT"
+                said="${{ matrix.runner }} offers no Hypervisor.framework (kern.hv_support is not 1: a VM without nested virtualization), so no microVM moved here; dispatch with macos set to a runner that offers it"
+                echo "::warning::$said"
+                { echo "### two homes (${{ matrix.name }})"; echo; echo "$said."; } >> "$GITHUB_STEP_SUMMARY"
+              fi
+              ;;
+          esac
+      - name: Install pinned Rust
+        if: steps.host.outputs.vms == '1'
+        shell: bash
+        run: scripts/retry 5 30 rustup toolchain install "$TOOLCHAIN" --profile minimal --target ${{ matrix.guest }}
+      - name: zig
+        if: steps.host.outputs.vms == '1'
+        shell: bash
+        run: scripts/install-zig
+      - name: KVM access
+        if: steps.host.outputs.vms == '1' && runner.os == 'Linux'
+        run: sudo chmod 666 /dev/kvm
+      # shards as releases build it; its own build directory then removed, for the room the
+      # tests' build needs.
+      - name: Build
+        if: steps.host.outputs.vms == '1'
+        shell: bash
+        run: |
+          cargo build --locked -p shards --release
+          mkdir -p "$RUNNER_TEMP/mv"
+          cp target/release/shards "$RUNNER_TEMP/shards"
+          rm -rf target/release
+          df -h .
+      # Two homes, the moves of each mode, then tests/moved.rs; every VM test must run.
+      # In place on macOS (UNCLAMP=0): a runner is no agent session under a QoS clamp.
+      - name: Move
+        if: steps.host.outputs.vms == '1'
+        shell: bash
+        env:
+          SHARDS_REQUIRE_VMS: "1"
+          FILTER: ${{ github.event.inputs.filter || '' }}
+          UNCLAMP: "0"
+        run: |
+          set -o pipefail
+          SHARDS="$RUNNER_TEMP/shards" HOME_HERE="$RUNNER_TEMP/mv/here" HOME_THERE="$RUNNER_TEMP/mv/there" \
+            OUT="$RUNNER_TEMP/mv/results.txt" KEEP_LOG="$RUNNER_TEMP/mv/there-daemon.log" \
+            REVISION="${GITHUB_SHA::8}" MODE="cold live" \
+            docs/research/measurements/migrate/two-hosts.sh local 2>&1 | tee "$RUNNER_TEMP/mv/local.log"
+      - name: Summary
+        if: ${{ !cancelled() && steps.host.outputs.vms == '1' }}
+        shell: bash
+        run: |
+          {
+            echo "### two homes (${{ matrix.name }}), ${{ matrix.runner }}, ${GITHUB_SHA::8}"
+            echo
+            OUT="$RUNNER_TEMP/mv/results.txt" LOG="$RUNNER_TEMP/mv/local.log" \
+              docs/research/measurements/migrate/two-hosts.sh summary
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: What the kernel logged of seccomp refusals and OOM kills
+        if: failure() && runner.os == 'Linux'
+        run: |
+          sudo dmesg | grep -iE 'seccomp|type=1326|out of memory|oom-kill|killed process' | tail -60 || true
+          free -m || true
+      - uses: actions/upload-artifact@v7.0.1
+        if: ${{ !cancelled() && steps.host.outputs.vms == '1' }}
+        with:
+          name: migrate-two-homes-${{ matrix.runner }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/mv/*.txt
+            ${{ runner.temp }}/mv/*.log
+            ${{ runner.temp }}/mv/here/*.txt
+            ${{ runner.temp }}/mv/here/*.log
+          if-no-files-found: warn
+
+  # Whether the repository has a tailnet for two runners to reach each other through.
+  tailnet:
+    runs-on: ubuntu-24.04
+    outputs:
+      ready: ${{ steps.oauth.outputs.ready }}
+    steps:
+      - id: oauth
+        env:
+          ID: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          SECRET: ${{ secrets.TS_OAUTH_SECRET }}
+        run: |
+          if [ -n "$ID" ] && [ -n "$SECRET" ]; then
+            echo "ready=1" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=0" >> "$GITHUB_OUTPUT"
+            said="No tailnet (secrets TS_OAUTH_CLIENT_ID and TS_OAUTH_SECRET): moves between two runners did not run, as GitHub's runners take no connection from another"
+            echo "::notice::$said"
+            echo "$said." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  # Two x86_64 KVM runners, each the other machine to the other: `listen` serves its
+  # invitations to the tailnet and holds its daemon until `move` says it is done; `move`
+  # moves N microVMs of each mode to it, then runs tests/moved.rs's tests of another machine
+  # against it, each with an invitation of its own. The runners' CPUs are whatever each gets:
+  # a move to one lacking a feature of the other's is refused, saying which (D176 part 6).
+  two-runners:
+    name: two runners (${{ matrix.side }})
+    needs: tailnet
+    if: needs.tailnet.outputs.ready == '1'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        side: [listen, move]
+    env:
+      LISTENER: shards-listen-${{ github.run_id }}-${{ github.run_attempt }}
+      MOVER: shards-move-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Host
+        run: |
+          nproc && free -m && lscpu | grep -E 'Model name|Vendor ID|Virtualization|Hypervisor' || true
+          uname -r
+          ls -l /dev/kvm
+      # On the tailnet first, so that a mover whose build fails can still tell the listener.
+      - uses: tailscale/github-action@v4.4.0
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: ${{ vars.TS_TAGS || 'tag:ci' }}
+          hostname: ${{ matrix.side == 'listen' && env.LISTENER || env.MOVER }}
+      - name: Install pinned Rust
+        run: scripts/retry 5 30 rustup toolchain install "$TOOLCHAIN" --profile minimal --target x86_64-unknown-linux-musl
+      - name: zig
+        run: scripts/install-zig
+      - name: KVM access
+        run: sudo chmod 666 /dev/kvm
+      - name: Build
+        run: |
+          cargo build --locked -p shards --release
+          mkdir -p "$RUNNER_TEMP/mv"
+          cp target/release/shards "$RUNNER_TEMP/shards"
+          rm -rf target/release
+          df -h .
+      # Its daemon listening at its tailnet address, three invitations served there (one
+      # for the moves, one for each test of another machine), held until the mover's word or
+      # three hours.
+      - name: Listen
+        if: matrix.side == 'listen'
+        run: |
+          addr=$(sudo tailscale ip -4)
+          serve="$RUNNER_TEMP/mv/serve"
+          mkdir -p "$serve"
+          export SHARDS="$RUNNER_TEMP/shards" HOME_THERE="$RUNNER_TEMP/mv/there"
+          ADDR="$addr:7443" docs/research/measurements/migrate/two-hosts.sh listen | tee "$RUNNER_TEMP/mv/listen.log"
+          tail -1 "$RUNNER_TEMP/mv/listen.log" > "$serve/move.invite"
+          for i in 1 2; do
+            docs/research/measurements/migrate/two-hosts.sh invite | tail -1 > "$serve/e2e-$i.invite"
+          done
+          (cd "$serve" && exec python3 -m http.server 8000 --bind "$addr") > "$RUNNER_TEMP/mv/http.log" 2>&1 &
+          # Its word, or its leaving the tailnet (its job over) once it was seen there.
+          deadline=$(($(date +%s) + 3 * 3600))
+          seen=0
+          while :; do
+            if mover=$(sudo tailscale ip -4 "$MOVER" 2>/dev/null); then
+              seen=1
+              if curl -fsS --max-time 5 "http://$mover:8000/done" > /dev/null 2>&1; then break; fi
+            elif [ "$seen" = 1 ]; then
+              echo "$MOVER left the tailnet"; break
+            fi
+            if [ "$(date +%s)" -ge "$deadline" ]; then echo "no word from $MOVER in three hours"; break; fi
+            sleep 10
+          done
+          KEEP_LOG="$RUNNER_TEMP/mv/there-daemon.log" docs/research/measurements/migrate/two-hosts.sh stop
+      - name: Move
+        if: matrix.side == 'move'
+        env:
+          SHARDS_REQUIRE_VMS: "1"
+        run: |
+          set -o pipefail
+          export SHARDS="$RUNNER_TEMP/shards" HOME_HERE="$RUNNER_TEMP/mv/here" OUT="$RUNNER_TEMP/mv/results.txt"
+          # The listener's invitations, once it serves them: up to two hours, its build and
+          # this one's racing.
+          deadline=$(($(date +%s) + 2 * 3600))
+          until listener=$(sudo tailscale ip -4 "$LISTENER" 2>/dev/null) && curl -fsS --max-time 5 -o "$RUNNER_TEMP/mv/move.invite" "http://$listener:8000/move.invite"; do
+            if [ "$(date +%s)" -ge "$deadline" ]; then echo "$LISTENER served no invitation in two hours"; exit 1; fi
+            sleep 10
+          done
+          status=0
+          INVITE=$(cat "$RUNNER_TEMP/mv/move.invite") REVISION="${GITHUB_SHA::8}" MODE="cold live" \
+            docs/research/measurements/migrate/two-hosts.sh move 2>&1 | tee "$RUNNER_TEMP/mv/local.log" || status=$?
+          i=1
+          for t in a_microvm_moves_to_another_host_saved_and_live a_volumes_guest_owners_move_with_it; do
+            INVITE=$(curl -fsS --max-time 30 "http://$listener:8000/e2e-$i.invite") FILTER=$t \
+              docs/research/measurements/migrate/two-hosts.sh e2e 2>&1 | tee -a "$RUNNER_TEMP/mv/local.log" || status=$?
+            i=$((i + 1))
+          done
+          exit "$status"
+      # Its word to the listener, whatever happened here: it stops its daemon on reading it.
+      - name: Done
+        if: ${{ always() && matrix.side == 'move' }}
+        run: |
+          addr=$(sudo tailscale ip -4) || exit 0
+          mkdir -p "$RUNNER_TEMP/mv/word" && touch "$RUNNER_TEMP/mv/word/done"
+          (cd "$RUNNER_TEMP/mv/word" && exec timeout 60 python3 -m http.server 8000 --bind "$addr") || true
+      - name: Summary
+        if: ${{ !cancelled() && matrix.side == 'move' }}
+        run: |
+          {
+            echo "### two runners, ${GITHUB_SHA::8}"
+            echo
+            OUT="$RUNNER_TEMP/mv/results.txt" LOG="$RUNNER_TEMP/mv/local.log" \
+              docs/research/measurements/migrate/two-hosts.sh summary
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: What the kernel logged of seccomp refusals and OOM kills
+        if: failure()
+        run: |
+          sudo dmesg | grep -iE 'seccomp|type=1326|out of memory|oom-kill|killed process' | tail -60 || true
+          free -m || true
+      - uses: actions/upload-artifact@v7.0.1
+        if: ${{ !cancelled() }}
+        with:
+          name: migrate-two-runners-${{ matrix.side }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/mv/*.txt
+            ${{ runner.temp }}/mv/*.log
+            ${{ runner.temp }}/mv/here/*.txt
+            ${{ runner.temp }}/mv/here/*.log
+          if-no-files-found: warn
