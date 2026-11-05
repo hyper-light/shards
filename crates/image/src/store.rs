@@ -2835,7 +2835,7 @@ impl Store {
         if path.is_file() {
             return Ok(Some(path));
         }
-        if below_len == 0 || below_len % crate::erofs::BLOCK != 0 {
+        if below_len == 0 || !below_len.is_multiple_of(crate::erofs::BLOCK) {
             return Ok(None);
         }
         let at = Partial::unused(&self.root.join("ingest"))?;
