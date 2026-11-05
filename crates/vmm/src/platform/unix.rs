@@ -1540,6 +1540,24 @@ pub fn deallocate(file: &File, offset: u64, len: u64) -> io::Result<()> {
     Ok(())
 }
 
+/// The bytes [`deallocate`] gives back whole of the file system holding `path`, at offsets
+/// that are multiples of it: its block (statvfs(3)'s f_frsize), of which a part at either
+/// end of a range is zeroed instead (fallocate(2)).
+pub fn deallocation_unit(path: &std::path::Path) -> io::Result<u64> {
+    use std::os::unix::ffi::OsStrExt;
+    let path = std::ffi::CString::new(path.as_os_str().as_bytes())
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "a path with NUL"))?;
+    // SAFETY: statvfs is plain data, for which all zeroes is a value.
+    let mut st: libc::statvfs = unsafe { std::mem::zeroed() };
+    // SAFETY: statvfs(3) with a NUL-terminated path, into a local it fills.
+    if unsafe { libc::statvfs(path.as_ptr(), &mut st) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    #[allow(clippy::unnecessary_cast, clippy::useless_conversion)]
+    let frsize = u64::from(st.f_frsize);
+    Ok(frsize.max(1))
+}
+
 /// The names in the directory `dir` holds open, but for `.` and `..`, wherever it has gone
 /// (fdopendir(3), readdir(3)).
 pub fn names_in(dir: &File) -> io::Result<Vec<std::ffi::OsString>> {

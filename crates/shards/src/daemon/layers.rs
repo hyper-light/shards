@@ -333,8 +333,9 @@ pub(super) fn give_back(at: &Path) -> Result<Option<u64>, String> {
         .map_err(|e| format!("{}: {e}", at.display()))?
         .len();
     let data = shards_vmm::platform::data_ranges(&file, len).map_err(|e| format!("{}: {e}", at.display()))?;
+    let unit = shards_vmm::platform::deallocation_unit(at).map_err(|e| format!("{}: {e}", at.display()))?;
     let mut given = 0u64;
-    for (from, n) in overlaps(&free, block, &data) {
+    for (from, n) in overlaps(&free, block, unit, &data) {
         shards_vmm::platform::deallocate(&file, from, n).map_err(|e| format!("{}: {e}", at.display()))?;
         given = given.saturating_add(n);
     }
@@ -342,15 +343,21 @@ pub(super) fn give_back(at: &Path) -> Result<Option<u64>, String> {
 }
 
 /// The byte ranges `(offset, len)` both in `free`, runs of blocks of `block` bytes, and in
-/// `data`, byte ranges: each list in order, neither overlapping itself.
-fn overlaps(free: &[(u64, u64)], block: u64, data: &[(u64, u64)]) -> Vec<(u64, u64)> {
+/// `data`, byte ranges: each list in order, neither overlapping itself. Of each free run only
+/// the whole `unit`s it holds, what the host's file system gives back whole
+/// ([`platform::deallocation_unit`](shards_vmm::platform::deallocation_unit)): a part of one
+/// would be zeroed and stay on its disk, and be found as data again.
+fn overlaps(free: &[(u64, u64)], block: u64, unit: u64, data: &[(u64, u64)]) -> Vec<(u64, u64)> {
     let mut out = Vec::new();
+    let unit = unit.max(1);
     let (mut f, mut d) = (free.iter().peekable(), data.iter().peekable());
     while let (Some(&&(fb, fn_)), Some(&&(dat, dlen))) = (f.peek(), d.peek()) {
-        let (fa, fz) = (
-            fb.saturating_mul(block),
-            fb.saturating_add(fn_).saturating_mul(block),
-        );
+        let fa = fb.saturating_mul(block).next_multiple_of(unit);
+        let fz = fb.saturating_add(fn_).saturating_mul(block) / unit * unit;
+        if fa >= fz {
+            f.next();
+            continue;
+        }
         let dz = dat.saturating_add(dlen);
         let (from, to) = (fa.max(dat), fz.min(dz));
         if from < to {
@@ -653,9 +660,16 @@ mod tests {
             overlaps(
                 &[(0, 2), (4, 4)],
                 4096,
+                4096,
                 &[(4096, 8192), (20480, 4096), (65536, 10)]
             ),
             vec![(4096, 4096), (20480, 4096)]
+        );
+        // Of a free run, the whole units it holds alone: NTFS's 64 KiB (FSCTL_SET_ZERO_DATA
+        // zeroes a part of one, which stays allocated), none of a run inside one.
+        assert_eq!(
+            overlaps(&[(2, 30), (40, 8)], 4096, 64 << 10, &[(0, 256 << 10)]),
+            vec![(64 << 10, 64 << 10)]
         );
     }
 

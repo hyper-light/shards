@@ -742,6 +742,34 @@ pub fn deallocate(file: &File, offset: u64, len: u64) -> io::Result<()> {
     punch_hole(file, offset, len)
 }
 
+/// The bytes [`deallocate`] gives back whole of the volume holding `path`, at offsets that
+/// are multiples of it. FSCTL_SET_ZERO_DATA on a sparse file deletes allocation "in
+/// compression unit-aligned chunks" and writes zeros into a part of one at either end,
+/// which stays allocated ([MS-FSA]'s FSCTL_SET_ZERO_DATA); NTFS's compression unit is "64
+/// KB for sparse files" ([MS-FSA] Appendix A, note 4) and a power-of-two multiple of its
+/// cluster (2.1.1.1), which may be up to 2 MB (note 2). So the larger of 64 KiB and the
+/// volume's cluster (GetDiskFreeSpaceW): on ReFS, which keeps no compression unit, a part
+/// of 64 KiB stays. A part of a unit given back stayed allocated and read as data again:
+/// a kept layer's second give-back zeroed the same 8 KiB its first had (CI 42046987905).
+pub fn deallocation_unit(path: &Path) -> io::Result<u64> {
+    use windows_sys::Win32::Storage::FileSystem::{GetDiskFreeSpaceW, GetVolumePathNameW};
+    const SPARSE_UNIT: u64 = 64 << 10;
+    let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+    // A volume's root is no longer than the path it holds, and its trailing separator.
+    let mut root = vec![0u16; wide.len().saturating_add(1).max(261)];
+    let cap = u32::try_from(root.len()).map_err(io::Error::other)?;
+    // SAFETY: a NUL-terminated wide path, and a buffer of `cap` characters for its root.
+    if unsafe { GetVolumePathNameW(wide.as_ptr(), root.as_mut_ptr(), cap) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let (mut sectors, mut bytes, mut free, mut total) = (0u32, 0u32, 0u32, 0u32);
+    // SAFETY: the NUL-terminated root just found, and locals for the counts.
+    if unsafe { GetDiskFreeSpaceW(root.as_ptr(), &mut sectors, &mut bytes, &mut free, &mut total) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok((u64::from(sectors) * u64::from(bytes)).max(SPARSE_UNIT))
+}
+
 /// Makes `file` sparse (FSCTL_SET_SPARSE), so that what it holds past what is written takes
 /// none of its disk, as a Unix file's holes take no blocks: NTFS takes every cluster up to a
 /// file's end as it is extended unless the file is sparse (PM M349: a file set to 10 GiB
