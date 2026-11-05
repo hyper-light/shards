@@ -11742,9 +11742,12 @@ mod tests {
             std::fs::write(dir.join("current"), b"g-1\n").unwrap();
             std::fs::write(dir.join("g-1").join("state"), b"").unwrap();
             let t0 = Instant::now();
-            let claimed =
-                t.t.daemon
-                    .claim(t.threads, &own(&dir), Path::new("/rootfs"), None);
+            // A root filesystem of its own, as a pool's run has, its stamp the pool's: a pool
+            // with none, or another's, restores nothing (D188's pull --no-cache).
+            let rootfs = t.home.join("rootfs.erofs");
+            std::fs::write(&rootfs, b"erofs").unwrap();
+            let stamp = shards_image::store::rootfs_stamp(&rootfs);
+            let claimed = t.t.daemon.claim(t.threads, &own(&dir), &rootfs, stamp.as_deref());
             assert!(
                 matches!(&claimed, Err(Claim::Failed(why)) if why.starts_with("starting a warm VM of ")),
                 "not refused as unstartable"
