@@ -1,17 +1,18 @@
 //! Devices plugged into a running microVM through the daemon, and its disks grown (D214):
 //! `shards plug disk|volume`, `shards unplug disk|volume` and `shards grow disk` on a
-//! detached run restored from its image's template, whose microVM has PCI slots. Real VMs;
-//! the image's entrypoint is the test guest (tests/common, `served`), whose modes the
-//! checks inside the run are.
+//! detached run, restored from its image's template where this host's daemon keeps
+//! templates and booted where it does not (Windows Server 2022, PM M345), its microVM
+//! with PCI slots either way. Real VMs, on every host that runs them; the image's
+//! entrypoint is the test guest (tests/common, `served`), whose modes the checks inside the
+//! run are.
 
-#![cfg(unix)]
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 mod common;
 
 use std::time::Duration;
 
-use common::{TempDir, cannot_pool, cannot_run_vms, guest_init, kernel, run_shards_env, served};
+use common::{TempDir, cannot_run_vms, guest_init, kernel, run_shards_env, served};
 
 const TIMEOUT: Duration = Duration::from_secs(120);
 
@@ -20,7 +21,7 @@ const TIMEOUT: Duration = Duration::from_secs(120);
 /// was written; and a host directory, read and written through, and unplugged.
 #[test]
 fn devices_are_plugged_into_a_run_and_its_disk_grows() {
-    if cannot_run_vms() || cannot_pool() {
+    if cannot_run_vms() {
         return;
     }
     let (image, _) = served();
@@ -46,7 +47,8 @@ fn devices_are_plugged_into_a_run_and_its_disk_grows() {
     ];
     let used = run_shards_env(&["guest"], &args, &env, TIMEOUT);
     assert_eq!(used.status, Some(0), "{}", used.stderr);
-    // Its template saved by a first run; the run plugged into restores it.
+    // Its template saved by a first run where templates are kept; the run plugged into
+    // restores it.
     shards(&["run"], &[&image, "exit", "0"]);
     shards(&["run"], &["-d", "--name", "plugged", &image, "sleep"]);
     let inside = |args: &[&str]| shards(&["exec"], &[&["plugged", "/bin/testguest"], args].concat());
@@ -88,12 +90,26 @@ fn devices_are_plugged_into_a_run_and_its_disk_grows() {
     let dir = files.join("shared");
     std::fs::create_dir(&dir).unwrap();
     // Writable to the image's user, not root, as a bind mount's host mode says (Docker's).
+    // A Windows directory without WSL's metadata is root's and 0755 to its guest (ntfs
+    // `stat`), which root writes to.
+    #[cfg(unix)]
     std::fs::set_permissions(&dir, std::os::unix::fs::PermissionsExt::from_mode(0o777)).unwrap();
     std::fs::write(dir.join("from-host"), "host\n").unwrap();
     let spec = format!("{}:/shared", dir.display());
     shards(&["plug"], &["volume", "plugged", &spec]);
     assert!(inside(&["slurp", "/shared/from-host"]).contains("slurp /shared/from-host: host"));
-    inside(&["fs", "write:/shared/from-guest=guest"]);
+    let mut write: Vec<&str> = if cfg!(windows) {
+        vec!["-u", "0"]
+    } else {
+        Vec::new()
+    };
+    write.extend([
+        "plugged",
+        "/bin/testguest",
+        "fs",
+        "write:/shared/from-guest=guest",
+    ]);
+    shards(&["exec"], &write);
     assert_eq!(std::fs::read_to_string(dir.join("from-guest")).unwrap(), "guest");
     shards(&["unplug"], &["volume", "plugged", "/shared"]);
     assert!(inside(&["slurp", "/shared/from-host"]).contains("errno 2"));

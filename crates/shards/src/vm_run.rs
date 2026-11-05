@@ -740,12 +740,18 @@ pub fn device(payload: &[u8], fds: Vec<shards_ipc::fd::OwnedFd>) -> Result<Strin
             }
             Ok(placed(&plugged))
         }
-        #[cfg(unix)]
         device::SHARE => {
             let tag = std::str::from_utf8(rest).map_err(|_| "a tag that is not UTF-8")?;
             let conn = fds.into_iter().next().ok_or("a share of no server")?;
+            // On Windows its stream itself, a duplex pipe whose other end its share
+            // process holds (D197), as a run's shares are given.
+            #[cfg(unix)]
+            let stream = std::os::unix::net::UnixStream::from(conn);
+            #[cfg(windows)]
+            let stream = shards_vmm::platform::PipeStream::from_handle(conn)
+                .map_err(|e| format!("its share's stream: {e}"))?;
             let slot: shards_vmm::devices::virtio::fs::Share = std::sync::Arc::default();
-            slot.attach(std::os::unix::net::UnixStream::from(conn))?;
+            slot.attach(stream)?;
             Ok(placed(&handle.plug_share(tag, slot)?))
         }
         device::UNPLUG => {

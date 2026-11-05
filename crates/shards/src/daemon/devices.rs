@@ -388,9 +388,11 @@ impl<D: Disk> Daemon<D> {
     }
 
     /// A share of `source`, a host's absolute directory or a named volume, served by a
-    /// share process of its own (share.rs), its connection given the VM of running
-    /// container `id` as a device of `tag`: the VM's answer.
-    #[cfg(unix)]
+    /// share process of its own (share.rs), its stream given the VM of running container
+    /// `id` as a device of `tag`, as a run's are (D207): the VM's answer. On Unix its
+    /// connection, which the share process sends and waits to be taken; on Windows the
+    /// stream itself, a duplex pipe made here whose server end the share process was given
+    /// as it started (D197).
     fn plug_share<'s, 'e>(
         &'s self,
         threads: &'s Threads<'s, 'e>,
@@ -409,44 +411,40 @@ impl<D: Disk> Daemon<D> {
                 .ok_or_else(|| format!("no volume {source}: a volume is made first, or a host directory given by its absolute path"))?;
             store.data(source)
         };
-        let opened = std::fs::File::open(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        // A directory opens on Windows only with backup semantics (`platform::open_dir`).
+        let opened = shards_vmm::platform::open_dir(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
         if !opened.metadata().map_err(|e| e.to_string())?.is_dir() {
             return Err(format!("{}: not a directory", dir.display()));
         }
         let dirs = [(
-            std::os::fd::OwnedFd::from(opened),
+            shards_ipc::fd::OwnedFd::from(opened),
             read_only,
             std::ffi::OsString::new(),
         )];
         let parent = self.parent_of(id).unwrap_or_default();
-        let (link, child) = self.started_shares(threads, &dirs, &parent, false)?;
+        let (ends, child) = self.started_shares(threads, &dirs, &parent, false)?;
         lock(&self.shared_by)
             .entry(id.to_string())
             .or_default()
             .push(child);
-        // Its connection, sent where a VM's would be; the share process waits for it to be
-        // taken.
-        let ends = shards_ipc::recv(&link)
-            .map_err(|e| format!("its share process: {e}"))?
-            .filter(|m| m.kind == kind::SHARE_ENDS)
-            .ok_or("its share process sent no connection")?;
-        let conn = ends.fds.first().ok_or("its share process sent no connection")?;
         let step = [&[device::SHARE][..], tag.as_bytes()].concat();
-        let answer = self.ask_device(id, &step, &[conn.as_fd()]);
-        let _ = shards_ipc::send(&link, kind::TAKEN, &[], &[]);
-        answer
-    }
-
-    #[cfg(windows)]
-    fn plug_share(
-        &self,
-        _threads: &Threads<'_, '_>,
-        _id: &str,
-        _source: &str,
-        _read_only: bool,
-        _tag: &str,
-    ) -> Result<String, String> {
-        Err("a volume is not plugged into a running microVM on Windows yet (D214)".into())
+        #[cfg(unix)]
+        {
+            let link = ends;
+            let ends = shards_ipc::recv(&link)
+                .map_err(|e| format!("its share process: {e}"))?
+                .filter(|m| m.kind == kind::SHARE_ENDS)
+                .ok_or("its share process sent no connection")?;
+            let conn = ends.fds.first().ok_or("its share process sent no connection")?;
+            let answer = self.ask_device(id, &step, &[conn.as_fd()]);
+            let _ = shards_ipc::send(&link, kind::TAKEN, &[], &[]);
+            answer
+        }
+        #[cfg(windows)]
+        {
+            let stream = ends.first().ok_or("no stream was made for its share")?;
+            self.ask_device(id, &step, &[stream.as_fd()])
+        }
     }
 
     /// `shards unplug disk|volume MICROVM PATH` (D214): its guest's mount at PATH

@@ -234,7 +234,7 @@ amd64 cell's once it does.
 | vCPUs of every host CPU, the workload's CPUs held to its limits (D191) | yes, vCPUs at the fair scheduler's shortest slice (PM M440, M441) | yes | yes, vCPUs at the real-time policy (PM M8, M10) | yes; open: its vCPUs' wake policy on a busy host, unmeasured (D191's Next) |
 | Log drivers (D163, D198, D199) | every driver, journald its own | as amd64 | every driver but journald, macOS's own log (`oslog`) its counterpart | every driver but journald, `etwlogs` its counterpart |
 | A GPU (D144, Venus) | yes, glibc and musl, NVIDIA's, AMD's and Intel's GPUs (D201, D208); open: the GPU desktop's run of D208's build, waiting for its owner's go | built and linted, untested on a GPU (none here) | yes | yes (D202) |
-| Devices plugged into a running microVM, disks grown (D214) | yes | yes (nested, its MSIs through the GIC's ITS) | yes | open: in the VMM (WHP's disk steps passed on jupiter); through the CLI a volume is refused and a disk untested (tests/plug.rs is Unix's) |
+| Devices plugged into a running microVM, disks grown (D214) | yes | yes (nested, its MSIs through the GIC's ITS) | yes | built, not yet run: in the VMM (WHP's disk steps passed on jupiter; its shared directory over a duplex pipe), and through the CLI a disk and a volume, its share process's stream given the VM as a run's are (tests/plug.rs, now every host's) |
 | A host's PCI function given a microVM, at its start or plugged in (D154, D214) | built, VFIO; not yet tested on hardware, no x86_64 host here having a function to spare (D214's Not yet) | yes, nested, on QEMU's edu function (D154, D214); plugged into a run's workload, its E2E not yet run | refused: its API assigns no device (PM M403) | open: refused where the hypervisor refuses (PM M401, M402); a host that permits Discrete Device Assignment has no implementation yet (the parity plan's step 13) |
 | A running microVM saved whole, and resumed (D176 parts 1-5) | yes | yes | yes | yes |
 | Moved to another machine, saved (D176 part 6) | yes (PM M460) | built, not yet run | built, its CPU checked as macOS names its features (PM M460); measured on KVM x86_64 alone | built, not yet run; open: a volume's guest owners (NTFS's extended attributes, D197) are not moved yet |
@@ -6878,7 +6878,7 @@ template pays it once; what its restores pay is to be measured with mappings.
   architecture (above: its page structures its head's, and arm64's linear map of it in
   blocks).
 
-### D214. Devices plugged into a running microVM, and its disks grown (built: disks and shared directories through the CLI on Hypervisor.framework and KVM, in the VMM on WHP too; host functions in the VMM on KVM, and through the CLI for a run's workload on Linux, its E2E not yet run)
+### D214. Devices plugged into a running microVM, and its disks grown (built: disks and shared directories through the CLI on Hypervisor.framework, KVM and WHP, WHP's CLI path not yet run; host functions in the VMM on KVM, and through the CLI for a run's workload on Linux, its E2E not yet run)
 
 **Why.** The long-session roadmap's item 6 (2026-10-18): a microVM that runs for hours is
 given what it needs as it goes, not only what it booted with. Every shards device was a
@@ -6971,7 +6971,11 @@ share made ahead), and a disk's capacity was fixed when its file was opened.
   Docker's.
 - **The daemon asks the run's VM, then its guest's init.** `DEVICE` (shards-ipc) carries the
   step and, as descriptors, the disk's file or the connection to the share's server (a
-  share process of its own, share.rs, as each run's shares have); the VM plugs it into a
+  share process of its own, share.rs, as each run's shares have: on Unix the connection
+  the share process sends and waits to be taken; on Windows the share's stream itself, a
+  duplex pipe the daemon makes, its server end given the share process as it starts and
+  its other duplicated into the VM process, as a run's shares are given it, D197, D207,
+  and taken there as a `PipeStream`); the VM plugs it into a
   slot and answers its place (`DEVICED`, by number, as a pause is answered). Init's DEVICE
   built-in (init hotplug.rs) rescans the bus through a sysfs of its own, kept from boot
   now in every microVM, as the run's root's is read-only (D154's `shards_vfio` reason),
@@ -7015,7 +7019,12 @@ share made ahead), and a disk's capacity was fixed when its file was opened.
   written, grown to 128 MiB as it runs (its file, its device and its file system), a
   shrink refused, unplugged, plugged again read-only with what was written; a host
   directory read and written through, unplugged; on Hypervisor.framework, KVM x86_64 and,
-  nested, arm64 KVM, whose templates then keep their ITS. With every run's microVM given
+  nested, arm64 KVM, whose templates then keep their ITS. The same test is built for
+  Windows, on a run booted where WHP restores no template (Windows Server 2022, PM M345),
+  its host directory written by the guest's root, which a directory without WSL's
+  metadata is 0755 to (ntfs `stat`); the in-process test's shared directory is served
+  there over a duplex pipe (`shards_ipc::byte_pair`), as the daemon serves one: neither
+  has run on WHP yet. With every run's microVM given
   its slots, the whole workspace's tests pass on KVM x86_64 (2,367), and the nested
   arm64 KVM suite's daemon, warm, saved, restore, run, vsock, pmem and boot tests. What
   the slots cost a run (PM M430): on Hypervisor.framework its command +0.26 ms in the
@@ -7105,7 +7114,8 @@ share made ahead), and a disk's capacity was fixed when its file was opened.
     guest's edu function plugged in, its workload moving a page through it by DMA through
     its IOMMU, a second plug refused, unplugged and the node gone, twice; a run booted
     otherwise refused. Not yet run; its numbers not yet measured.
-- **Not yet:** a plugged share's DAX window; a plugged function's 64-bit BARs
+- **Not yet:** tests/plug.rs and the in-process test's shared directory run on WHP (CI's
+  windows-2022 and windows-2025, jupiter); a plugged share's DAX window; a plugged function's 64-bit BARs
   past the 32-bit window; a host's function plugged on bare-metal hardware (no host here
   has a spare one bound to vfio-pci: tested nested, on QEMU edu's model); the guest's
   remove's 29 ms on KVM x86_64, not yet split (PM M430).

@@ -58,7 +58,8 @@ stand alone until their row is closed: row 9's 12 (VFIO's routes, module and plu
 measured). A stub of the same name hides a gap from the script, as a twin it cannot tell
 from one: the messages of the merged code that name a host found row 17's
 (`daemon::devices`' `plug_share` on Windows, "not plugged into a running microVM on Windows
-yet").
+yet"), since built: one `plug_share` for every host, which differs only in how the share's
+stream reaches the VM.
 
 The Windows refusal probe does not implement DDA. A refusal is a counterpart only where
 the host forbids assignment; Windows Server hosts that allow it still need a passthrough
@@ -86,7 +87,7 @@ alone, so the script keeps Windows' missing passthrough visible (row 9).
 | 14 | A microVM moved to another machine (D176 part 6) with its volumes' guest owners, which a volume's server keeps in its files' extended attributes (D38; on Windows NTFS's, as WSL keeps them, D197) | open: Windows, whose move carries no attribute (`xattrs::list` and `set` there say none), so a volume moved from or to a Windows machine leaves its guest's owners behind | platform-parity.py (2026-11-04): daemon/moves.rs's `NO_ATTR` and `sys`, macOS's and Linux's, alone; moves.rs "Windows keeps a volume's owners in NTFS's own extended attributes (D197), which this move does not carry yet" |
 | 15 | The policy a vCPU thread wakes at on a busy host (D191) | open: Windows, unmeasured: its vCPU threads run as they are, its hold's governor alone at TIME_CRITICAL (PM M294) | platform-parity.py (2026-11-04): platform/unix.rs's `run_promptly` and `PROMPT_SLICE_NS` (Linux's shortest slice, PM M440), platform/mod.rs's `macos_thread` (macOS's real-time policy, M8, M10); D191's Next, "Windows' vCPUs on a contended host: unmeasured" |
 | 16 | A microVM moved live (D176 part 7) | open: arm64 Linux, whose dirty rings need the ITS's bitmap beside them (`KVM_CAP_DIRTY_LOG_RING_WITH_BITMAP`), and Windows, whose dirty page tracking (`WHvQueryGpaRangeDirtyBitmap`) is not asked yet: each refuses a live move, saying so, and moves one saved. A saved move on either, built, has not run there yet | D176's Not yet; moves.rs, "this host's microVMs move only saved, not live"; tests/moved.rs asserts the refusal off macOS and Linux x86_64 |
-| 17 | Devices plugged into a running microVM through the CLI (D214: `shards plug`, `unplug`, `grow`) | open: Windows, where the VMM plugs a disk (its steps passed on jupiter) but the daemon refuses a volume and a disk's CLI path is untested | daemon/devices.rs `plug_share` on Windows: "a volume is not plugged into a running microVM on Windows yet (D214)"; tests/plug.rs `#![cfg(unix)]` |
+| 17 | Devices plugged into a running microVM through the CLI (D214: `shards plug`, `unplug`, `grow`) | open, built: Windows, whose daemon now plugs a volume, its share process's stream (a duplex pipe the daemon makes, D197) handed to the VM as a run's are (D207) and taken there as a `PipeStream` (vm_run.rs `device::SHARE`); tests/plug.rs builds and runs on every host (booted where WHP restores no template), and tests/hotplug.rs serves its shared directory over a pipe on Windows. Neither has run on WHP yet (CI's windows-2022 and windows-2025, jupiter) | daemon/devices.rs `plug_share`, every host's; tests/plug.rs no longer `cfg(unix)`; architecture.md D214's Verified and Not yet |
 | 18 | A run's writable layer restarted over its kept file, not packed (D190 slice 7, PM M443) | open: Windows, which packs as before, its views of a file not mapped over in place yet (placeholders, MapViewOfFile3's MEM_REPLACE_PLACEHOLDER); macOS, held by unit tests, not yet run on its real microVMs. A restart works on every host; this is its cost past 5 MiB written | D190's Next; `platform::map_file_shared_at` |
 
 The rest of the script's 494 items fall within these rows: `workload.rs` (95), `synced.rs`
@@ -125,8 +126,8 @@ Each lone item is confirmed or closed as its row is worked.
     hosts of either kind keeps them.
 16. Row 15, Windows' vCPU threads on a busy host measured as Linux's were (PM M440), and a
     policy taken where they wait as Linux's did.
-17. Row 17, `shards plug volume` on Windows (its share process's stream given the VM as a
-    run's are, D207) and tests/plug.rs on Windows.
+17. Row 17, built on p/winplug: tests/plug.rs and tests/hotplug.rs run on CI's
+    windows-2022 and windows-2025 and on jupiter, and their numbers recorded in D214.
 18. Row 16, live moves on arm64 KVM (dirty rings with the ITS's bitmap) and WHP
     (WHvQueryGpaRangeDirtyBitmap); saved moves run on both.
 19. Row 18, restarts over the kept file on Windows (placeholder views) and on a Mac's real
@@ -291,7 +292,7 @@ What the merges into integrate brought, host by host, each in D13's table:
 - GPUs on every Linux host, musl's and Intel's (D208, PM M422; row 6).
 - Devices plugged in (D214) on Hypervisor.framework, KVM x86_64 and, nested, arm64 KVM,
   through the CLI; a host's function on Linux alone, the others refusing as at a start
-  (row 9); the CLI's path on Windows open (row 17).
+  (row 9); the CLI's path on Windows built, not yet run (row 17).
 - Moves (D176 parts 6 and 7): saved on every backend, live on KVM x86_64 (PM M461) and
   Hypervisor.framework; open rows 14 and 16.
 

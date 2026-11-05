@@ -178,17 +178,25 @@ fn devices_are_plugged_into_a_running_microvm_and_its_disks_grow() {
     let unplugged = handle.unplug(0x10).unwrap_err();
     assert!(unplugged.contains("no function is plugged"), "{unplugged}");
 
-    // A shared directory, served by a server of this process's (a Unix host's here: a
-    // Windows host's server is reached through a pipe its daemon makes).
-    #[cfg(unix)]
+    // A shared directory, served by a server of this process's: over a socket pair on
+    // Unix, and on Windows over a duplex pipe, as its daemon makes a share's (D197).
     {
         let server = shards_vmm::devices::virtio::fs::server::Server::new(
-            std::fs::File::open(&shared).unwrap().into(),
+            shards_vmm::platform::open_dir(&shared).unwrap().into(),
             false,
             None,
         )
         .unwrap();
+        #[cfg(unix)]
         let (ours, theirs) = std::os::unix::net::UnixStream::pair().unwrap();
+        #[cfg(windows)]
+        let (ours, theirs) = {
+            let (server_end, vm_end) = shards_ipc::byte_pair().unwrap();
+            (
+                shards_vmm::platform::PipeStream::from_handle(vm_end).unwrap(),
+                shards_vmm::platform::PipeStream::from_handle(server_end).unwrap(),
+            )
+        };
         std::thread::spawn(move || shards_vmm::devices::virtio::fs::answer(&server, theirs));
         let slot: shards_vmm::devices::virtio::fs::Share = std::sync::Arc::default();
         slot.attach(ours).unwrap();
