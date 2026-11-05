@@ -1585,6 +1585,17 @@ impl Vcpu {
         Ok(())
     }
 
+    /// Runs this vCPU at the state [`Vcpu::boot`] set, out of the wait for SIPI an application
+    /// processor is created in: a test's guest, which has no boot processor to start it.
+    #[cfg(test)]
+    pub(crate) fn leave_wait_for_sipi(&self) -> Result<()> {
+        self.set(
+            &[WHvRegisterInternalActivityState],
+            &[Value::u64(0)],
+            "WHvSetVirtualProcessorRegisters(activity)",
+        )
+    }
+
     pub fn kicker(&self) -> Kicker {
         Kicker {
             partition: self.partition.clone(),

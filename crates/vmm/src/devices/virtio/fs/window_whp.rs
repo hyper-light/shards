@@ -1622,3 +1622,8 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[cfg(hv = "whp")]
+#[path = "window_whp_guest.rs"]
+mod guest;
