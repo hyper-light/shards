@@ -138,7 +138,7 @@ pub fn sized_bars(probed: [u32; 6]) -> Vec<(usize, u64, BarKind)> {
         };
         // The size is the mask's lowest bit set (§6.2.5.1: the bits a BAR's size keeps
         // zero read back as zero).
-        let size = mask & mask.wrapping_neg();
+        let size = mask.isolate_lowest_one();
         if size >= 16 {
             let kind = if wide {
                 BarKind::Memory64

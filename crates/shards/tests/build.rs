@@ -42,13 +42,17 @@ fn chmod(path: &std::path::Path, mode: u32) {
 /// user make none (ERROR_PRIVILEGE_NOT_HELD: no Developer Mode, nor
 /// SeCreateSymbolicLinkPrivilege), and the test then skips.
 fn symlink(target: &str, link: &std::path::Path) -> bool {
+    use std::io::Write as _;
     #[cfg(unix)]
     let made = std::os::unix::fs::symlink(target, link);
     #[cfg(windows)]
     let made = std::os::windows::fs::symlink_file(target, link);
     match made {
         Err(e) if cfg!(windows) && e.raw_os_error() == Some(1314) => {
-            eprintln!("SKIP: this user may make no symlinks here: {e}");
+            let _ = writeln!(
+                std::io::stderr(),
+                "SKIP: this user may make no symlinks here: {e}"
+            );
             false
         }
         made => {

@@ -630,7 +630,7 @@ fn what_steers_a_command_passes_its_stdin_waiting_for_room() {
     controls.signal(10).unwrap();
     d.seen.saw(&Seen::Resized(what.clone(), 40, 120));
     d.seen.saw(&Seen::Signalled(what, 10));
-    std::fs::write(&go, b"").unwrap();
+    std::fs::write(go, b"").unwrap();
     let (status, _, _) = later.get();
     assert_eq!(status, Ok(0));
 }
@@ -676,7 +676,7 @@ fn a_command_that_reads_no_stdin_holds_up_no_other() {
     let (status, out, _) = run(laptop, d.remote, &["echo", "hi"], None).get();
     assert_eq!(status, Ok(0));
     assert_eq!(out, b"hi\n");
-    std::fs::write(&go, b"").unwrap();
+    std::fs::write(go, b"").unwrap();
     let (status, _, _) = held.get();
     assert_eq!(status, Ok(0));
 }
