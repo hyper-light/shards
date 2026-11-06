@@ -94,14 +94,22 @@ fn shards_with(args: &[&OsStr], stdin: &[u8]) -> Output {
         err.read_to_string(&mut s).unwrap();
         s
     });
+    // Within TIMEOUT, or past it while its VM process runs (D209): `run --kernel` is it on
+    // Unix, and starts it on Windows.
     let start = Instant::now();
+    let mut ran = common::Ran::of(child.id());
     let status = loop {
         if let Some(st) = child.try_wait().unwrap() {
             break st;
         }
-        if start.elapsed() > TIMEOUT {
+        // Asked each pass, so that each slice of its VM process's is judged as it comes.
+        let running = ran.lately();
+        if start.elapsed() > TIMEOUT && !running {
             let _ = child.kill();
-            panic!("shards did not exit within {TIMEOUT:?}");
+            panic!(
+                "shards did not exit within {TIMEOUT:?}, nor its VM process run for {:?} after",
+                common::DAEMON_QUIET
+            );
         }
         std::thread::sleep(Duration::from_millis(2));
     };
@@ -501,12 +509,25 @@ fn signaled_ignoring(image: &Path, command: &[&str], signals: &[Signal], ignorin
         .spawn()
         .unwrap();
     // A regression fails the test instead of hanging it: its child, only reaped after
-    // `done`, ended outright.
+    // `done`, ended outright once past TIMEOUT its VM process has run nothing for
+    // DAEMON_QUIET (D209).
     let pid = i32::try_from(child.id()).unwrap();
+    let mut ran = common::Ran::of(child.id());
     let (done, watch) = std::sync::mpsc::channel::<()>();
     std::thread::spawn(move || {
-        if watch.recv_timeout(TIMEOUT).is_err() {
-            common::kill_now(pid);
+        let start = Instant::now();
+        loop {
+            // Asked each pass, so that each slice of its VM process's is judged as it comes.
+            let running = ran.lately();
+            match watch.recv_timeout(Duration::from_secs(1)) {
+                Ok(()) => return,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) if start.elapsed() < TIMEOUT || running => {}
+                // Past its patience, or the test gone without saying it is done.
+                Err(_) => {
+                    common::kill_now(pid);
+                    return;
+                }
+            }
         }
     });
     let mut out = std::io::BufReader::new(child.stdout.take().unwrap());

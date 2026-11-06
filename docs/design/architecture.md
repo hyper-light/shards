@@ -7479,6 +7479,22 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
   restores carry 13 MiB (1 MiB before its snapshot, a whole 4 MiB round in each of three
   restores), 8,320 s, and the machine that goes on 12 MiB (1 MiB before, 8 MiB after and
   the rest of their round), 7,680 s, each going on while its bytes come.
+- **A direct boot's waits follow its guest and its VM process** (every host). boot.rs'
+  `a_guest_grows_and_gives_back_its_memory` failed on the arm64 Windows host with no
+  `SHARDS-TEST PLUGGED` a minute from the test's start, while its guest, booted in 13 s of
+  its own time, was onlining the 1 GiB it had asked for (virtio_mem's `Built 1 zonelists`
+  its last line), which it says nothing of as it works. A test's own wait on a `run
+  --kernel` or `restore` it started (`Vm::wait_for_any`, `Vm::wait_exit_following`,
+  vsock.rs' `within`, boot.rs' memory plug, restore.rs' held restore, run.rs' runs and its
+  signal watchdog) holds its deadline, or past it while its guest says a line it has not
+  said before or its VM process runs (`Heard::running`, `Ran`): CPU time counts throughout
+  for a guest of fewer vCPUs than its host has CPUs, whose idle vCPUs take less than an
+  idle microVM; one of more (boot.rs' most vCPUs, the storm) keeps `Heard::of`. A machine
+  of the test's own process (`vm::start`: boot.rs', confined.rs' and acg.rs' in-process
+  boots, hotplug.rs' steps) has no VM process of its own, its vCPUs threads beside the
+  other tests' and the wait's own poll: its waits follow its console alone
+  (`Heard::console`, `common::machine_ended`). Each fails `DAEMON_QUIET` after its last
+  progress, as before.
 
 ### D207. A Windows host's bind sources: its drives' paths (built)
 

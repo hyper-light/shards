@@ -160,9 +160,20 @@ fn a_held_restore_runs_its_guest_only_once_released() {
         }
         text
     });
-    if ready.recv_timeout(TIMEOUT).is_err() {
-        let _ = child.kill();
-        panic!("never ready: {}", err.join().unwrap());
+    // Within TIMEOUT, or past it while its VM process runs (D209): it prepares its restore,
+    // and says nothing as it does. One that runs nothing for DAEMON_QUIET fails.
+    let mut ran = common::Ran::of(child.id());
+    loop {
+        // Asked each pass, so that each slice of its VM process's is judged as it comes.
+        let running = ran.lately();
+        match ready.recv_timeout(Duration::from_secs(1)) {
+            Ok(()) => break,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) if started.elapsed() < TIMEOUT || running => {}
+            Err(_) => {
+                let _ = child.kill();
+                panic!("never ready: {}", err.join().unwrap());
+            }
+        }
     }
     std::thread::sleep(HELD);
     assert!(
@@ -172,12 +183,14 @@ fn a_held_restore_runs_its_guest_only_once_released() {
     let mut stdin = child.stdin.take().unwrap();
     stdin.write_all(b"\n").unwrap();
     drop(stdin);
+    // Within TIMEOUT of its release, or past it while its VM process runs.
     let deadline = Instant::now() + TIMEOUT;
     let status = loop {
         if let Some(status) = child.try_wait().unwrap() {
             break status;
         }
-        if Instant::now() > deadline {
+        let running = ran.lately();
+        if Instant::now() > deadline && !running {
             let _ = child.kill();
             break child.wait().unwrap();
         }
