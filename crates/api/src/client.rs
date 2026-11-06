@@ -622,9 +622,13 @@ impl Guest for ShardsGuest {
         if state.exited {
             return Ok(());
         }
+        let grace = STOP_GRACE.map_err(|pending| Refusal::Unsupported {
+            what: "stop",
+            why: pending.to_string(),
+        })?;
         state.stopping = true;
         self.signal(&state, false);
-        let deadline = Instant::now().checked_add(STOP_GRACE);
+        let deadline = Instant::now().checked_add(grace);
         while !state.exited {
             let left = deadline.map_or(Duration::ZERO, |d| d.saturating_duration_since(Instant::now()));
             if left.is_zero() {

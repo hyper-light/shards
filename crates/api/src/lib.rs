@@ -107,13 +107,54 @@ pub enum End {
     Failed(String),
 }
 
-/// How long [`Guest::stop`] lets a guest's process end after SIGTERM before SIGKILL: twice
-/// (the margin) the slowest stop recorded, 13 ms, SIGTERM to a `shards run vm`'s end on HVF
-/// (Hex `bench/native/guest/stop/RECORD.md`, N 40; Shards' PM M463 records shards-api's own
-/// `stop` at 6.59 ms at most, N 80). Shards' daemon gives a container dockerd's 10 s
-/// (`crates/shards/src/daemon.rs:228-231`), a Docker CLI's contract this crate has not.
-/// `stop` returns within it and the kill.
-pub const STOP_GRACE: Duration = Duration::from_millis(2 * 13);
+/// Bounds seeded from records of a host class's own runs: macOS-HVF, Linux-KVM and
+/// Windows-WHP are recorded apart, chosen as this crate is built, and a class with no record
+/// yet has no bound, but the [`Pending`](record::Pending) record it waits on.
+pub mod record {
+    /// This host's class.
+    pub const CLASS: &str = if cfg!(target_os = "macos") {
+        "macOS-HVF"
+    } else if cfg!(target_os = "linux") {
+        "Linux-KVM"
+    } else if cfg!(windows) {
+        "Windows-WHP"
+    } else {
+        "no backend"
+    };
+
+    /// A bound this host class has no record for yet: it is recorded on such a host first
+    /// (`docs/research/measurements/shards-api-waits/run.sh`), never borrowed from another
+    /// class's.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+    #[error("{what} has no record on {class} yet: record it there first ({how})")]
+    pub struct Pending {
+        pub what: &'static str,
+        pub class: &'static str,
+        pub how: &'static str,
+    }
+
+    impl Pending {
+        pub const fn of(what: &'static str) -> Pending {
+            Pending {
+                what,
+                class: CLASS,
+                how: "docs/research/measurements/shards-api-waits/run.sh, PM M463's table",
+            }
+        }
+    }
+}
+
+/// How long [`Guest::stop`] lets a guest's process end after SIGTERM before SIGKILL, by host
+/// class. macOS-HVF: twice (the margin) the slowest stop recorded, 13 ms, SIGTERM to a
+/// `shards run vm`'s end (Hex `bench/native/guest/stop/RECORD.md`, N 40; Shards' PM M463
+/// records shards-api's own `stop` at 6.59 ms at most, N 80). Linux-KVM and Windows-WHP:
+/// pending their records, and `stop` is refused there by name. Shards' daemon gives a
+/// container dockerd's 10 s (`crates/shards/src/daemon.rs:228-231`), a Docker CLI's contract
+/// this crate has not. `stop` returns within it and the kill.
+#[cfg(target_os = "macos")]
+pub const STOP_GRACE: Result<Duration, record::Pending> = Ok(Duration::from_millis(2 * 13));
+#[cfg(not(target_os = "macos"))]
+pub const STOP_GRACE: Result<Duration, record::Pending> = Err(record::Pending::of("STOP_GRACE"));
 
 /// What can't be done, and why.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]

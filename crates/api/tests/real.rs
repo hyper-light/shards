@@ -18,6 +18,7 @@ use std::net::Shutdown;
 use std::time::{Duration, Instant};
 
 use shards_api::conformance::{self, Subject};
+use shards_api::record::Pending;
 use shards_api::{End, GuestSpec, Guests as _, Init, Shards, min_memory_mib};
 
 /// The real guests' specs, by `shards_test=` mode, where `SHARDS_API_REAL=1` asks for them.
@@ -45,6 +46,15 @@ fn specs() -> Option<impl Fn(&str) -> GuestSpec> {
     })
 }
 
+/// A hang guard: each wait returns at its fact. By host class (`record`): macOS-HVF, twice
+/// (the margin) the slowest recorded of these waits, a boot to its port answering, 207.553625
+/// ms (`docs/research/platform-measurements.md` M463); Linux-KVM and Windows-WHP, pending
+/// their records.
+#[cfg(target_os = "macos")]
+const PATIENCE: Result<Duration, Pending> = Ok(Duration::from_nanos(2 * 207_553_625));
+#[cfg(not(target_os = "macos"))]
+const PATIENCE: Result<Duration, Pending> = Err(Pending::of("tests/real.rs PATIENCE"));
+
 /// Every case passes against real guests (Hex HEX-GUEST-10).
 #[test]
 fn shards_conforms() {
@@ -55,10 +65,7 @@ fn shards_conforms() {
         port: 1234,
         unserved: 1236,
         powering_off: spec("kmsg"),
-        // A hang guard: each wait returns at its fact. Twice (the margin) the slowest
-        // recorded of these waits, a boot to its port answering on HVF, 207.553625 ms
-        // (`docs/research/platform-measurements.md` M463).
-        patience: Duration::from_nanos(2 * 207_553_625),
+        patience: PATIENCE.unwrap_or_else(|pending| panic!("{pending}")),
     })
     .unwrap();
 }

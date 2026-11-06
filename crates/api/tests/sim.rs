@@ -14,6 +14,7 @@ use std::net::Shutdown;
 use std::time::Duration;
 
 use shards_api::conformance::{self, Subject};
+use shards_api::record::Pending;
 use shards_api::sim::{SimGuests, SimHost};
 use shards_api::{End, GuestSpec, Guests, Init, Refusal, min_memory_mib};
 
@@ -22,13 +23,25 @@ use shards_api::{End, GuestSpec, Guests, Init, Refusal, min_memory_mib};
 const ECHO: u32 = 1234;
 const UNSERVED: u32 = 1236;
 /// A hang guard: each wait here returns at its fact (a condition variable's signal, a
-/// process's end), and the guard only bounds a failing one. Twice (the margin) the slowest
-/// recorded of these tests' waits, a new stand-in script's boot to its refusal on macOS,
-/// 1.715256 s (`docs/research/platform-measurements.md` M463).
-const PATIENCE: Duration = Duration::from_nanos(2 * 1_715_256_000);
-/// How soon after shards' end its refusal comes: twice (the margin) the slowest recorded,
-/// 2.887209 ms with a child holding shards' output (M463).
-const REFUSED_AFTER_END: Duration = Duration::from_nanos(2 * 2_887_209);
+/// process's end), and the guard only bounds a failing one. By host class (`record`):
+/// macOS-HVF, twice (the margin) the slowest recorded of these tests' waits, a new stand-in
+/// script's boot to its refusal, 1.715256 s (`docs/research/platform-measurements.md` M463);
+/// Linux-KVM and Windows-WHP, pending their records.
+#[cfg(target_os = "macos")]
+const PATIENCE: Result<Duration, Pending> = Ok(Duration::from_nanos(2 * 1_715_256_000));
+#[cfg(not(target_os = "macos"))]
+const PATIENCE: Result<Duration, Pending> = Err(Pending::of("tests/sim.rs PATIENCE"));
+/// How soon after shards' end its refusal comes: macOS-HVF, twice (the margin) the slowest
+/// recorded, 2.887209 ms with a child holding shards' output (M463); other classes pending.
+#[cfg(target_os = "macos")]
+const REFUSED_AFTER_END: Result<Duration, Pending> = Ok(Duration::from_nanos(2 * 2_887_209));
+#[cfg(not(target_os = "macos"))]
+const REFUSED_AFTER_END: Result<Duration, Pending> = Err(Pending::of("REFUSED_AFTER_END"));
+
+/// This class's `PATIENCE`; a test fails naming the record it waits on where there is none.
+fn patience() -> Duration {
+    PATIENCE.unwrap_or_else(|pending| panic!("{pending}"))
+}
 
 /// A spec of the least guest Shards boots: one vCPU, its least memory (`min_memory_mib`).
 fn spec(cmdline: &str) -> GuestSpec {
@@ -82,7 +95,7 @@ fn the_simulator_conforms() {
         port: ECHO,
         unserved: UNSERVED,
         powering_off: spec("shards_test=kmsg"),
-        patience: PATIENCE,
+        patience: patience(),
     })
     .unwrap();
 }
@@ -99,7 +112,7 @@ fn a_connect_waits_for_a_guest_that_listens_late() {
         End::Stopped
     });
     let g = guests.boot(&spec("")).unwrap();
-    assert!(g.connect(ECHO, PATIENCE).is_ok());
+    assert!(g.connect(ECHO, patience()).is_ok());
 }
 
 /// A connect and a wait with no clock (`Duration::MAX`) wait for their facts: the guest's
@@ -130,8 +143,11 @@ fn no_clock_waits_for_the_fact() {
 fn a_guest_ends_as_its_program_says() {
     let guests = SimGuests::new(|_| End::Reset);
     let g = guests.boot(&spec("")).unwrap();
-    assert_eq!(g.wait_for(PATIENCE).unwrap(), Some(End::Reset));
-    assert_eq!(g.connect(ECHO, PATIENCE).err(), Some(Refusal::Ended(End::Reset)));
+    assert_eq!(g.wait_for(patience()).unwrap(), Some(End::Reset));
+    assert_eq!(
+        g.connect(ECHO, patience()).err(),
+        Some(Refusal::Ended(End::Reset))
+    );
 }
 
 #[cfg(unix)]
@@ -162,14 +178,14 @@ mod client {
                 ..spec("")
             })
             .unwrap();
-        match g.connect(ECHO, PATIENCE) {
+        match g.connect(ECHO, patience()) {
             Err(Refusal::Boot(why)) => {
                 assert!(why.contains('7'), "{why}");
                 assert!(why.contains("no kernel at kernel"), "{why}");
             }
             other => panic!("{:?}", other.err()),
         }
-        assert!(matches!(g.wait_for(PATIENCE).unwrap(), Some(End::Failed(_))));
+        assert!(matches!(g.wait_for(patience()).unwrap(), Some(End::Failed(_))));
     }
 
     /// shards that exits 0 or 3 ends as `PowerOff` or `Reset`, as `shards run` exits for
@@ -185,7 +201,7 @@ mod client {
                     ..spec("")
                 })
                 .unwrap();
-            assert_eq!(g.wait_for(PATIENCE).unwrap(), Some(end));
+            assert_eq!(g.wait_for(patience()).unwrap(), Some(end));
         }
     }
 
@@ -203,9 +219,9 @@ mod client {
             .unwrap();
         assert_eq!(g.wait_for(Duration::ZERO).unwrap(), None);
         g.stop().unwrap();
-        assert_eq!(g.wait_for(PATIENCE).unwrap(), Some(End::Stopped));
+        assert_eq!(g.wait_for(patience()).unwrap(), Some(End::Stopped));
         assert_eq!(
-            g.connect(ECHO, PATIENCE).err(),
+            g.connect(ECHO, patience()).err(),
             Some(Refusal::Ended(End::Stopped))
         );
     }
@@ -222,7 +238,7 @@ mod client {
             })
             .unwrap();
         assert!(matches!(
-            g.connect(9, PATIENCE),
+            g.connect(9, patience()),
             Err(Refusal::Channel { port: 9, .. })
         ));
     }
@@ -243,7 +259,7 @@ mod client {
             .unwrap();
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || tx.send(g.connect(ECHO, Duration::MAX).err()));
-        match rx.recv_timeout(PATIENCE).unwrap() {
+        match rx.recv_timeout(patience()).unwrap() {
             Some(Refusal::Boot(why)) => assert!(why.contains("no kernel at kernel"), "{why}"),
             other => panic!("{other:?}"),
         }
@@ -256,7 +272,7 @@ mod client {
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || tx.send(g.wait_for(Duration::MAX)));
         assert!(matches!(
-            rx.recv_timeout(PATIENCE).unwrap(),
+            rx.recv_timeout(patience()).unwrap(),
             Ok(Some(End::Failed(_)))
         ));
     }
@@ -279,7 +295,7 @@ mod client {
                 ..spec("")
             })
             .unwrap();
-        match g.connect(ECHO, PATIENCE) {
+        match g.connect(ECHO, patience()) {
             Err(Refusal::Boot(why)) => assert!(why.ends_with(&report), "{} bytes: {why:.200}", why.len()),
             other => panic!("{:?}", other.err()),
         }
@@ -316,12 +332,12 @@ mod client {
             .unwrap();
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            let refused = g.connect(ECHO, PATIENCE).err();
+            let refused = g.connect(ECHO, patience()).err();
             tx.send((refused, Instant::now()))
         });
         std::fs::read(&ending).unwrap();
         let ended = Instant::now();
-        let (refused, at) = rx.recv_timeout(PATIENCE).unwrap();
+        let (refused, at) = rx.recv_timeout(patience()).unwrap();
         let holder = std::fs::read_to_string(&pid).unwrap();
         let _ = std::process::Command::new("kill").arg(holder.trim()).status();
         match refused {
@@ -329,7 +345,10 @@ mod client {
             other => panic!("{other:?}"),
         }
         let took = at.saturating_duration_since(ended);
-        assert!(took < REFUSED_AFTER_END, "refused {took:?} after shards' end");
+        assert!(
+            took < REFUSED_AFTER_END.unwrap_or_else(|pending| panic!("{pending}")),
+            "refused {took:?} after shards' end"
+        );
     }
 
     /// Measures how long past its patience an unserved connect's refusal comes, the
@@ -551,9 +570,9 @@ mod client {
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             let stopped = g.stop();
-            tx.send((stopped, g.wait_for(PATIENCE)))
+            tx.send((stopped, g.wait_for(patience())))
         });
-        let (stopped, end) = rx.recv_timeout(PATIENCE).unwrap();
+        let (stopped, end) = rx.recv_timeout(patience()).unwrap();
         stopped.unwrap();
         assert_eq!(end.unwrap(), Some(End::Stopped));
     }

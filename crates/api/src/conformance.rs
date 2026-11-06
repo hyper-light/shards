@@ -9,6 +9,7 @@ use std::io::{Read as _, Write as _};
 use std::net::Shutdown;
 use std::time::{Duration, Instant};
 
+use crate::record::Pending;
 use crate::{
     Backend, End, Guest, GuestSpec, Guests, MAX_PORTS, Refusal, backend_of, max_vcpus, min_memory_mib,
 };
@@ -234,7 +235,8 @@ pub fn an_unserved_port_is_refused(s: &Subject<'_>) -> Result<(), Failure> {
     }
     // A handshake under way when patience runs out ends at it (its timeouts are what is
     // left), so a refusal comes at the patience and its thread's wake.
-    if took < patience || took > patience.saturating_add(OVERSHOOT) {
+    let overshoot = OVERSHOOT.map_err(|pending| fail(CASE, pending.to_string()))?;
+    if took < patience || took > patience.saturating_add(overshoot) {
         return Err(fail(
             CASE,
             format!("refused after {took:?}, with patience {patience:?}"),
@@ -248,10 +250,15 @@ pub fn an_unserved_port_is_refused(s: &Subject<'_>) -> Result<(), Failure> {
 /// short, so the case is.
 pub const UNSERVED_PATIENCE: Duration = Duration::from_millis(200);
 
-/// How long past its patience an unserved port's refusal may come: twice (the margin) the
-/// slowest recorded, 150.85425 ms (the simulator's on macOS, its timer leeway on a 200 ms
-/// wait; `docs/research/platform-measurements.md` M462, above M463's real guests' 138.7 ms).
-pub const OVERSHOOT: Duration = Duration::from_nanos(2 * 150_854_250);
+/// How long past its patience an unserved port's refusal may come, by host class (`record`).
+/// macOS-HVF: twice (the margin) the slowest recorded, 150.85425 ms (the simulator's, its
+/// timer leeway on a 200 ms wait; `docs/research/platform-measurements.md` M462, above
+/// M463's real guests' 138.7 ms). Linux-KVM and Windows-WHP: pending their records, and the
+/// case fails naming them.
+#[cfg(target_os = "macos")]
+pub const OVERSHOOT: Result<Duration, Pending> = Ok(Duration::from_nanos(2 * 150_854_250));
+#[cfg(not(target_os = "macos"))]
+pub const OVERSHOOT: Result<Duration, Pending> = Err(Pending::of("OVERSHOOT"));
 
 /// `stop` ends a guest as `Stopped`, and a `connect` after it is refused `Ended(Stopped)`.
 pub fn stop_ends_it_and_later_connects_are_refused(s: &Subject<'_>) -> Result<(), Failure> {
