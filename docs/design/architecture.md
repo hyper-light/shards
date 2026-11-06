@@ -2998,7 +2998,13 @@ microVM as virtio-fs shares (virtio 1.3 §5.11; Linux fs/fuse/virtio_fs.c):
     at the kernel's `d_off` cookies, as virtiofsd reads, keeping only the descriptor
     (glibc's stream would keep 32 KiB a handle); on macOS a stream of 2.2 KiB counted in
     entries, holding the entry a reply had no room for, read again from its start for any
-    other offset. 100 handles hold 8 KB of the heap; a whole listing of 10,000 entries
+    other offset; on Windows the directory's own handle, whose enumeration NTFS keeps
+    between calls (GetFileInformationByHandleEx's FileIdExtdDirectoryInfo, its Restart
+    class for the start), counted in entries as macOS's, holding what of a 4 KiB batch a
+    reply had no room for, enumerated again from its start for any other offset (until
+    2026-11-06 Windows' handle still read the whole listing at OPENDIR: 10.77 MB for the
+    100 handles on CI's windows-2025, `tests/fs_dir_handles.rs`). 100 handles hold 8 KB of
+    the heap; a whole listing of 10,000 entries
     went from 17.7 ms to 4.4 ms at the median, as READDIR no longer copied the rest of the
     listing for each page (PM M130).
   - *A listing comes a largest read at a time* (V06). READDIR's reply grew to the
@@ -8394,17 +8400,27 @@ the user told).
   (SetThreadPriority). A priority is strict where Linux's slice kept a thread's share, and
   Microsoft lowers processor-intensive threads (Scheduling Priorities), so a governor reads
   each raised thread's CPU time every 100 ms (GetThreadTimes, as the hold does, PM M294):
-  one that used more than half of the time since goes back to THREAD_PRIORITY_NORMAL, and is
-  raised again once it uses half or less: a raised thread takes about half a CPU from the
-  host's threads at most, what a fair scheduler gives one thread beside one busy one. A
-  thread its program set at another priority is left at it. Not MMCSS
+  each look credits it half of the time since and charges it what it used, its credit kept
+  to half a period and none; one out of credit goes back to THREAD_PRIORITY_NORMAL, and is
+  raised again once a look finds it some: a raised thread takes half a CPU from the host's
+  threads over a long stretch, and a period more at most, what a fair scheduler gives one
+  thread beside one busy one. The credit carries a thread that waits across its clock's
+  steps: GetThreadTimes charges whole 15.625 ms ticks to the thread running as each ticks
+  (PM M294), 6.4 a period, and judged by each period alone a thread running 1 ms of every 6
+  was charged 4 (62.5 ms) of one and put back to normal for a period
+  (`a_thread_that_waits_between_its_runs_stays_raised`, CI's windows-2025, 2026-11-06;
+  GetThreadPriority reads the base priority, which only the governor's SetThreadPriority
+  changes: neither MMCSS, which shards does not use, nor Windows' boosts and their decay,
+  which move the dynamic priority alone, Priority Boosts). A thread its program set at
+  another priority is left at it. Not MMCSS
   (AvSetMmThreadCharacteristics), which moves a thread into the real-time range, 16 to 26
   (Multimedia Class Scheduler Service), nor power throttling off (SetThreadInformation,
   ThreadPowerThrottling), which chooses the cores and clock a thread runs at, "while
   scheduling priority remains the main metric by which the system determines which thread
   to schedule next" (Quality of Service); the harness tries it beside the priority, and
   HIGHEST (10). Tested: platform's `a_thread_run_long_goes_back_to_normal_and_is_raised_again_as_it_waits`,
-  `a_thread_that_waits_between_its_runs_stays_raised` and
+  `a_thread_that_waits_between_its_runs_stays_raised`,
+  `credit_carries_a_thread_that_waits_across_its_clocks_steps` and
   `a_thread_set_otherwise_is_left_as_it_is`. To measure (as PM M440, n 100 a side,
   interleaved): `cpu-elastic/phases.py` on Windows (`--affinity`, Python's busy loops, the
   hypervisor's scheduler type), first from outside one build of none (`winslice.py`, the
