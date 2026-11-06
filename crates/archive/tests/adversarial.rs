@@ -2,12 +2,12 @@
 //! nothing may be written outside the destination, and no archive may exhaust the stack or
 //! memory.
 
-#![cfg(unix)]
 #![allow(clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::fs;
 use std::path::PathBuf;
 
+#[cfg(unix)]
 use shards_archive::tar::{Format, Header, TYPE_REG, Time, Writer};
 use shards_archive::{UnpackOptions, unpack};
 
@@ -29,7 +29,10 @@ fn opts() -> UnpackOptions {
 
 /// A name of 200,000 components: os.Root walks it a component at a time and the
 /// resolution of its missing parents is iterative, so this ends in an error (the
-/// system's path limit), not a crash, and nothing appears beside the destination.
+/// system's path limit), not a crash, and nothing appears beside the destination. Unix's
+/// alone so far: on Windows its first missing parent's lstat need not meet the limit, and
+/// each implied parent is made by a walk from the root, unmeasured at this depth there.
+#[cfg(unix)]
 #[test]
 fn deep_names_end_without_exhausting_the_stack() {
     let (_dir, dir) = tmp("deep");

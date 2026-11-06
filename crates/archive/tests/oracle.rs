@@ -5,10 +5,10 @@
 //!
 //! Trees with owners, devices or security attributes need root: the generator runs this
 //! test as root in Linux, where SHARDS_ARCHIVE_ROOT=1 makes skipping them a failure.
-//! Elsewhere the cases that need no root run; on Windows none do, as go-archive's own
-//! archives differ there by design (modes, owners, links).
+//! Elsewhere the cases that need no root run. On Windows the trees' cases do not, as
+//! go-archive's own archives of a tree differ there by design (modes, owners, links), and
+//! those of archives alone do: what Go's reader reads of each and the rebases.
 
-#![cfg(unix)]
 #![allow(
     clippy::unwrap_used,
     clippy::panic,
@@ -17,21 +17,28 @@
     clippy::print_stdout
 )]
 
+#[cfg(unix)]
 use std::collections::BTreeMap;
+#[cfg(unix)]
 use std::ffi::CString;
 use std::fs;
 use std::io::Read;
+#[cfg(unix)]
 use std::os::unix::ffi::OsStrExt;
+#[cfg(unix)]
 use std::os::unix::fs::{DirBuilderExt, FileTypeExt, MetadataExt};
 use std::path::{Path, PathBuf};
+#[cfg(unix)]
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value, json};
+use shards_archive::copy::rebase_archive_entries;
+#[cfg(unix)]
 use shards_archive::copy::{
-    copy_resource, preserve_trailing_dot_or_separator, rebase_archive_entries, split_path_dir_entry,
-    tar_resource_rebase,
+    copy_resource, preserve_trailing_dot_or_separator, split_path_dir_entry, tar_resource_rebase,
 };
 use shards_archive::tar::{Header, Reader, Time};
+#[cfg(unix)]
 use shards_archive::{PackOptions, UnpackOptions, WhiteoutFormat, apply_layer, pack, unpack};
 
 fn testdata() -> PathBuf {
@@ -45,11 +52,13 @@ fn load(name: &str) -> Value {
     serde_json::from_slice(&fs::read(testdata().join(name)).unwrap()).unwrap()
 }
 
+#[cfg(unix)]
 fn is_root() -> bool {
     // SAFETY: geteuid has no preconditions.
     unsafe { libc::geteuid() == 0 }
 }
 
+#[cfg(unix)]
 /// Whether a case runs here; with SHARDS_ARCHIVE_ROOT=1, every case must.
 fn runs(case: &Value) -> bool {
     let must = std::env::var_os("SHARDS_ARCHIVE_ROOT").is_some();
@@ -78,6 +87,7 @@ fn hex(b: &[u8]) -> String {
     b.iter().map(|c| format!("{c:02x}")).collect()
 }
 
+#[cfg(unix)]
 fn hex_decode(s: &str) -> Vec<u8> {
     (0..s.len())
         .step_by(2)
@@ -85,6 +95,7 @@ fn hex_decode(s: &str) -> Vec<u8> {
         .collect()
 }
 
+#[cfg(unix)]
 fn pattern(size: usize, seed: usize) -> Vec<u8> {
     (0..size).map(|i| ((i * 31 + seed * 17) % 251) as u8).collect()
 }
@@ -99,10 +110,12 @@ fn fnv(b: &[u8]) -> String {
     format!("{h:016x}")
 }
 
+#[cfg(unix)]
 fn cstr(p: &Path) -> CString {
     CString::new(p.as_os_str().as_bytes()).unwrap()
 }
 
+#[cfg(unix)]
 fn check(r: libc::c_int, what: &str, p: &Path) {
     assert!(
         r == 0,
@@ -122,7 +135,7 @@ fn mknod(p: &Path, kind: libc::mode_t, major: u32, minor: u32) {
     );
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(all(unix, not(target_os = "linux")))]
 fn mknod(p: &Path, _: libc::mode_t, _: u32, _: u32) {
     panic!("devices are made only as root on Linux: {}", p.display());
 }
@@ -233,11 +246,12 @@ fn major_minor(dev: u64) -> (u32, u32) {
     (libc::major(dev as libc::dev_t), libc::minor(dev as libc::dev_t))
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(all(unix, not(target_os = "linux")))]
 fn major_minor(dev: u64) -> (u32, u32) {
     (((dev >> 24) & 0xff) as u32, (dev & 0xff_ffff) as u32)
 }
 
+#[cfg(unix)]
 fn utimes(p: &Path, sec: i64, nsec: i64) {
     let ts = libc::timespec {
         tv_sec: sec as _,
@@ -256,6 +270,7 @@ fn utimes(p: &Path, sec: i64, nsec: i64) {
     check(r, "utimensat", p);
 }
 
+#[cfg(unix)]
 /// oracle/main.go's build: entries, then owners, modes and attributes, then times,
 /// deepest first. On macOS a symlink's mode is set to Linux's 0777.
 fn build(root: &Path, entries: &[Value]) {
@@ -348,10 +363,12 @@ fn build(root: &Path, entries: &[Value]) {
     }
 }
 
+#[cfg(unix)]
 fn now() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as i64
 }
 
+#[cfg(unix)]
 /// oracle/main.go's manifest.
 fn manifest(root: &Path, owners: bool) -> Value {
     let now = now();
@@ -441,6 +458,7 @@ fn manifest(root: &Path, owners: bool) -> Value {
     Value::Array(out)
 }
 
+#[cfg(unix)]
 /// The SELinux label this host gives a file made in `dir` (Fedora's `user_tmp_t`), as a
 /// manifest holds an attribute: the host's, not an archive's, which Go's answers, recorded
 /// where no policy labels files, never hold. None where nothing labels a new file.
@@ -452,6 +470,7 @@ fn host_label(dir: &Path) -> Option<String> {
     label
 }
 
+#[cfg(unix)]
 /// Directories only root could walk, opened to their owner, with the modes they had: an
 /// archive may hold a directory of mode 0, which the root-run Go oracle walks as it is.
 fn open_up(dir: &Path, closed: &mut BTreeMap<PathBuf, u32>) {
@@ -473,6 +492,7 @@ fn open_up(dir: &Path, closed: &mut BTreeMap<PathBuf, u32>) {
     }
 }
 
+#[cfg(unix)]
 /// A file's data, made readable for the read if only root could read it.
 fn read_any(p: &Path, mode: u32) -> Vec<u8> {
     use std::os::unix::fs::PermissionsExt;
@@ -488,6 +508,7 @@ fn read_any(p: &Path, mode: u32) -> Vec<u8> {
     }
 }
 
+#[cfg(unix)]
 /// filepath.WalkDir's order: a directory, then its entries by name, each in full.
 fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
     let mut names: Vec<_> = fs::read_dir(dir)
@@ -504,6 +525,7 @@ fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
+#[cfg(unix)]
 /// A temporary directory, its path free of symlinks (macOS's /var is one); it goes with
 /// the guard.
 fn tmp(name: &str) -> (shards_testdir::TempDir, PathBuf) {
@@ -512,15 +534,18 @@ fn tmp(name: &str) -> (shards_testdir::TempDir, PathBuf) {
     (guard, dir)
 }
 
+#[cfg(unix)]
 fn umask() {
     // SAFETY: umask has no preconditions.
     unsafe { libc::umask(0o022) };
 }
 
+#[cfg(unix)]
 fn trees() -> serde_json::Map<String, Value> {
     load("cases.json")["trees"].as_object().unwrap().clone()
 }
 
+#[cfg(unix)]
 /// The error a case expects, and the one it got, as text.
 fn error_text(e: Option<shards_archive::Error>, path: &Path, as_: &str) -> Value {
     match e {
@@ -560,6 +585,7 @@ fn diff(want: &[u8], got: &[u8]) -> String {
     )
 }
 
+#[cfg(unix)]
 fn pack_opts(o: &Value) -> PackOptions {
     let strings = |v: &Value| -> Vec<Vec<u8>> {
         v.as_array()
@@ -589,6 +615,7 @@ fn pack_opts(o: &Value) -> PackOptions {
     }
 }
 
+#[cfg(unix)]
 fn whiteout(o: &Value) -> WhiteoutFormat {
     match o["whiteout"].as_str() {
         Some("overlay") => WhiteoutFormat::Overlay,
@@ -596,6 +623,7 @@ fn whiteout(o: &Value) -> WhiteoutFormat {
     }
 }
 
+#[cfg(unix)]
 /// Where scripts/archive/generate's Go side left the overlayfs upper directories it made
 /// in the container; elsewhere there are none.
 fn overlay_upper(name: &str) -> Option<PathBuf> {
@@ -609,6 +637,7 @@ fn overlay_upper(name: &str) -> Option<PathBuf> {
     Some(PathBuf::from(dir?).join(format!("overlay-{name}")).join("upper"))
 }
 
+#[cfg(unix)]
 #[test]
 fn packs_match_their_recorded_answers() {
     umask();
@@ -707,6 +736,7 @@ fn input_in(case: &Value, name: &str, dir: &str) -> Vec<u8> {
     fs::read(testdata().join(dir).join(format!("{name}.tar"))).unwrap()
 }
 
+#[cfg(unix)]
 fn unpack_opts(o: &Value) -> UnpackOptions {
     UnpackOptions {
         no_lchown: o["no_lchown"].as_bool().unwrap_or(false),
@@ -727,6 +757,7 @@ fn unpack_opts(o: &Value) -> UnpackOptions {
     }
 }
 
+#[cfg(unix)]
 /// A case's destination, `top/dest`: its `pre` tree, or an empty directory.
 fn destination(case: &Value, top: &Path, trees: &serde_json::Map<String, Value>) -> PathBuf {
     let dest = top.join("dest");
@@ -740,6 +771,7 @@ fn destination(case: &Value, top: &Path, trees: &serde_json::Map<String, Value>)
     dest
 }
 
+#[cfg(unix)]
 #[test]
 fn unpacks_match_their_recorded_answers() {
     umask();
@@ -780,6 +812,7 @@ fn unpacks_match_their_recorded_answers() {
     report(failures);
 }
 
+#[cfg(unix)]
 #[test]
 fn layers_match_their_recorded_answers() {
     umask();
@@ -831,6 +864,7 @@ fn layers_match_their_recorded_answers() {
     report(failures);
 }
 
+#[cfg(unix)]
 #[test]
 fn copies_match_their_recorded_answers() {
     umask();
@@ -943,6 +977,7 @@ fn read_as_go() {
     report(failures);
 }
 
+#[cfg(unix)]
 #[test]
 fn paths_as_go() {
     let answers = load("answers.json");
@@ -963,6 +998,7 @@ fn paths_as_go() {
     }
 }
 
+#[cfg(unix)]
 /// filepath.Clean, for the test's own inputs.
 fn clean(p: &str) -> String {
     if p.is_empty() {

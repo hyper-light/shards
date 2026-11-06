@@ -2,7 +2,6 @@
 //! Basic credentials: checked with it, kept as docker keeps them, used by the next push,
 //! and forgotten.
 
-#![cfg(unix)]
 #![allow(
     clippy::panic,
     clippy::unwrap_used,
@@ -18,7 +17,7 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use base64::Engine as _;
-use common::{TempDir, guest_init, kernel, program, run_shards_env};
+use common::{TempDir, guest_init, kernel, run_shards_env};
 
 const TIMEOUT: Duration = Duration::from_secs(60);
 
@@ -164,12 +163,14 @@ fn logins_are_checked_kept_used_and_forgotten() {
 }
 
 /// Whether process `pid` has gone: reaped, as kill(2) of no signal finds none.
+#[cfg(unix)]
 fn gone(pid: i32) -> bool {
     // SAFETY: kill(2) with no signal sends nothing; it asks whether the process is.
     unsafe { libc::kill(pid, 0) != 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH) }
 }
 
 /// The pids `file` records, a line each.
+#[cfg(unix)]
 fn pids(file: &Path) -> Vec<i32> {
     std::fs::read_to_string(file)
         .unwrap_or_default()
@@ -182,6 +183,9 @@ fn pids(file: &Path) -> Vec<i32> {
 /// backend gone, for 12 minutes and more) holds no pull from a registry that asks for no
 /// credentials: it is asked, never waited for, and ended with the pull. A pull from one that
 /// asks says what it waits on, and its client's going ends the helper with it (D184).
+/// Unix's alone so far: its helper is a shell script that records its pid and waits; a
+/// Windows twin needs a helper program that blocks as it does (credentials.rs's `Talk`).
+#[cfg(unix)]
 #[test]
 fn a_credential_helper_that_never_answers_holds_only_what_needs_its_answer() {
     let home = TempDir::new("stuck-helper");
@@ -190,7 +194,7 @@ fn a_credential_helper_that_never_answers_holds_only_what_needs_its_answer() {
     std::fs::write(config.join("config.json"), r#"{"credsStore":"stuck"}"#).unwrap();
     // Its pid recorded, then a wait for ever, its input never read.
     let recorded = home.join("helper-pids");
-    program(
+    common::program(
         &no_helpers(&home).join("docker-credential-stuck"),
         &format!(
             "#!/bin/sh\necho $$ >> '{}'\nexec /bin/sleep 3613\n",
