@@ -632,7 +632,7 @@ fn node_of(said: &str) -> Option<(String, String, Option<Iommu>)> {
     };
     match said.split(' ').collect::<Vec<_>>().as_slice() {
         [path, kind, numbers] if path.starts_with("/dev/vfio/") => {
-            Some((path.to_string(), rule(*kind, *numbers)?, None))
+            Some((path.to_string(), rule(kind, numbers)?, None))
         }
         [
             path,
@@ -642,12 +642,12 @@ fn node_of(said: &str) -> Option<(String, String, Option<Iommu>)> {
             iommu_kind,
             iommu_numbers,
             before,
-        ] if path.starts_with("/dev/vfio/devices/") && owner(*before) => {
+        ] if path.starts_with("/dev/vfio/devices/") && owner(before) => {
             let iommu = Iommu {
-                rule: rule(*iommu_kind, *iommu_numbers)?,
+                rule: rule(iommu_kind, iommu_numbers)?,
                 before: before.to_string(),
             };
-            Some((path.to_string(), rule(*kind, *numbers)?, Some(iommu)))
+            Some((path.to_string(), rule(kind, numbers)?, Some(iommu)))
         }
         _ => None,
     }

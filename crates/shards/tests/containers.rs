@@ -12943,7 +12943,11 @@ fn inspecting_a_run_as_it_ends_never_deadlocks() {
     let current = std::sync::Mutex::new(String::new());
     let done = std::sync::atomic::AtomicBool::new(false);
     std::thread::scope(|s| {
-        let inspectors: Vec<_> = (0..16)
+        // An inspector a host CPU: each asks as often as a CPU can start one, so a run's end
+        // meets an inspect at every step; more only queue behind them (16 on the nested arm64
+        // Windows host's 4 emulated CPUs: 35 runs in 72 minutes, 2026-11-05).
+        let cpus = std::thread::available_parallelism().map_or(2, |n| n.get().max(2));
+        let inspectors: Vec<_> = (0..cpus)
             .map(|_| {
                 s.spawn(|| {
                     let mut asked = 0;
