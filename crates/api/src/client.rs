@@ -194,9 +194,15 @@ impl PrivateDir {
         for _ in 0..64 {
             let n = NEXT.fetch_add(1, Ordering::Relaxed);
             let dir = tmp.join(format!("shards-api-{}-{n}", std::process::id()));
-            let mut builder = std::fs::DirBuilder::new();
             #[cfg(unix)]
-            std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+            let builder = {
+                let mut builder = std::fs::DirBuilder::new();
+                std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+                builder
+            };
+            // Windows: the user's own temp folder, whose ACL is the user's (GetTempPath2W).
+            #[cfg(windows)]
+            let builder = std::fs::DirBuilder::new();
             match builder.create(&dir) {
                 Ok(()) => return Ok(PrivateDir(dir)),
                 Err(e) if e.kind() == io::ErrorKind::AlreadyExists => last = Some(e),
