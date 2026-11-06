@@ -31,12 +31,6 @@ const UNSERVED: u32 = 1236;
 const PATIENCE: Result<Duration, Pending> = Ok(Duration::from_nanos(2 * 1_715_256_000));
 #[cfg(not(target_os = "macos"))]
 const PATIENCE: Result<Duration, Pending> = Err(Pending::of("tests/sim.rs PATIENCE"));
-/// How soon after shards' end its refusal comes: macOS-HVF, twice (the margin) the slowest
-/// recorded, 2.887209 ms with a child holding shards' output (M463); other classes pending.
-#[cfg(target_os = "macos")]
-const REFUSED_AFTER_END: Result<Duration, Pending> = Ok(Duration::from_nanos(2 * 2_887_209));
-#[cfg(not(target_os = "macos"))]
-const REFUSED_AFTER_END: Result<Duration, Pending> = Err(Pending::of("REFUSED_AFTER_END"));
 
 /// This class's `PATIENCE`; a test fails naming the record it waits on where there is none.
 fn patience() -> Duration {
@@ -157,6 +151,13 @@ mod client {
     use std::os::unix::fs::PermissionsExt as _;
     use std::path::PathBuf;
     use std::time::Instant;
+
+    /// How soon after shards' end its refusal comes: macOS-HVF, twice (the margin) the slowest
+    /// recorded, 2.887209 ms with a child holding shards' output (M463); other classes pending.
+    #[cfg(target_os = "macos")]
+    const REFUSED_AFTER_END: Result<Duration, Pending> = Ok(Duration::from_nanos(2 * 2_887_209));
+    #[cfg(not(target_os = "macos"))]
+    const REFUSED_AFTER_END: Result<Duration, Pending> = Err(Pending::of("REFUSED_AFTER_END"));
 
     /// A stand-in for `shards` that runs `body` whatever it is asked.
     fn stand_in(dir: &shards_testdir::TempDir, body: &str) -> PathBuf {
