@@ -952,6 +952,64 @@ mod tests {
         assert_eq!(dials.load(Ordering::SeqCst), 4);
     }
 
+    /// Measures `c` of `pause`: what one refused dial takes, `SHARDS_API_DIALS_N` (default
+    /// 1000) of each kind, printed as n, p50, p90, p99 and max
+    /// (docs/research/measurements/shards-api-waits/run.sh): to a socket not bound yet
+    /// (refused by this host's kernel), and, where `SHARDS_API_REAL=1` boots a real guest as
+    /// tests/real.rs does, to a port it does not serve (refused by the guest).
+    #[cfg(unix)]
+    #[test]
+    #[ignore = "a measurement, run by its harness"]
+    fn the_cost_of_a_refused_dial() {
+        let n: usize = std::env::var("SHARDS_API_DIALS_N")
+            .ok()
+            .and_then(|n| n.parse().ok())
+            .unwrap_or(1000);
+        let timed = |path: &Path| -> Vec<Duration> {
+            let mut d: Vec<Duration> = (0..n)
+                .map(|_| {
+                    let start = Instant::now();
+                    assert!(matches!(handshake(path, 1236, None), Err(Attempt::Again(_))));
+                    start.elapsed()
+                })
+                .collect();
+            d.sort();
+            d
+        };
+        let dir = PrivateDir::new().unwrap();
+        let mut kinds = vec![("a socket not bound yet", timed(&dir.0.join("v")))];
+        let real = std::env::var_os("SHARDS_API_REAL").is_some_and(|v| v == "1");
+        let guest = real.then(|| {
+            let var = |k: &str| PathBuf::from(std::env::var_os(k).unwrap());
+            start(&GuestSpec {
+                kernel: var("SHARDS_API_KERNEL"),
+                init: Init::Executable(var("SHARDS_API_INIT")),
+                cmdline: "console=ttyS0 quiet shards_test=echo".into(),
+                vcpus: 1,
+                memory_mib: crate::min_memory_mib(std::env::consts::ARCH).max(256),
+                disks: vec![],
+                shares: vec![],
+                ports: vec![1234, 1236],
+                binary: None,
+            })
+            .unwrap()
+        });
+        if let Some(guest) = &guest {
+            drop(guest.connect(1234, Duration::MAX).unwrap());
+            kinds.push(("a real guest's port it does not serve", timed(&guest.vsock)));
+        }
+        for (what, d) in kinds {
+            let q = |p: usize| d[(n - 1) * p / 100];
+            println!(
+                "dial {what}: n={n} p50={:?} p90={:?} p99={:?} max={:?}",
+                q(50),
+                q(90),
+                q(99),
+                d[n - 1]
+            );
+        }
+    }
+
     /// The wait between dials is `sqrt(2 c w)` of the last dial's time and the wait so far,
     /// none at first, never past what patience has left (Hex HEX-GUEST-9).
     #[test]
