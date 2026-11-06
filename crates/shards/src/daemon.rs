@@ -1301,7 +1301,10 @@ fn detach(listen: Option<std::net::SocketAddr>) -> Result<(), String> {
     if let Some(at) = &listening {
         argv.extend(["--listen".as_ref(), OsStr::new(at)]);
     }
-    let daemon = shards_ipc::spawn(
+    // On this machine, whatever context the home has chosen: the daemon's children that take
+    // its environment are too.
+    let (here, this) = crate::context::HERE;
+    let daemon = shards_ipc::spawn_with(
         &exe,
         &argv,
         &[
@@ -1311,6 +1314,7 @@ fn detach(listen: Option<std::net::SocketAddr>) -> Result<(), String> {
             (says.as_fd(), 3),
         ],
         true,
+        &[(here, OsStr::new(this))],
     )
     .map_err(|e| format!("starting the daemon {}: {e}", exe.display()))?;
     drop(says);

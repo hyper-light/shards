@@ -4245,6 +4245,20 @@ here; `--context`, `SHARDS_CONTEXT` and `use context`; `-it`, `build` and the ow
 child's `SHARDS_CONTEXT` left out (the client's command sent on), invitations that never
 lapse, a join's proof unchecked, and `run`'s flags read by no parser (an `-it` sent on).
 
+**shards' own children run here (part 1).** A process shards starts of itself reads its
+starter's home, and every `shards` process chooses its context first (`cli::main`): a child of
+a command run `--context default`, in a home whose current context is another machine's, or
+under a `SHARDS_CONTEXT` or `DOCKER_CONTEXT` naming one, sent its command there, which
+refused it as the owner's. So the client's daemon never started (`daemon --detached`, and
+its `daemon --ready`), and a macOS `restore`'s grants broker, a Linux restore's working-set
+writer and an artifact's SBOM build went to the other machine. The parts of the binary no one
+types are one list (`cli::INTERNAL`: `grants`, `working-set`, `build-writer`, `share`,
+`frontend`, `spawner`), each run here whatever context is chosen (`kept_here`) and refused to
+a client (`owners`); a child started by a word people type too, the daemon, the Engine API's
+build and an SBOM's, has `SHARDS_CONTEXT=default` (`context::HERE`), the daemon's children
+that take its environment with it. Children given no environment (the spawner, a Unix share
+process, the build writer) resolve no home, and choose nothing.
+
 **Streams' ends, as CI found them (part 1).** The aarch64 Linux job hung in
 `tests/loopback.rs`, which hung here in 4 runs of 120 at a load average near 39: a client
 read its command's last frames and the stream's end in one read, and lost the end.

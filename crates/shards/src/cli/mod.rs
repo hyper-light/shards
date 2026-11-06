@@ -60,10 +60,11 @@ pub fn main() -> ExitCode {
     dispatch(args)
 }
 
-/// The commands shards has besides the catalog's: the daemon side's own words.
-/// `daemon`, `guest` and `disk` are what `run daemon`, `stop daemon`, `configure guest` and
-/// `configure disk` are said as, and `daemon` how the client starts the daemon.
-const OWN: [&str; 31] = [
+/// The commands shards has besides the catalog's: the daemon side's own words, and
+/// [`INTERNAL`]'s. `daemon`, `guest` and `disk` are what `run daemon`, `stop daemon`,
+/// `configure guest` and `configure disk` are said as, and `daemon` how the client starts the
+/// daemon.
+const OWN: [&str; 25] = [
     "system",
     // Devices plugged into a running microVM, and its disks grown (D214).
     "plug",
@@ -86,14 +87,6 @@ const OWN: [&str; 31] = [
     "daemon",
     "guest",
     "disk",
-    "grants",
-    "working-set",
-    // A budgeted build's writer outside its budget, which the build starts (D188): refused
-    // here, it ended at once, and every build held to a budget wrote under it (PM M442).
-    "build-writer",
-    "share",
-    "frontend",
-    "spawner",
     "--version",
     "builder",
     "buildx",
@@ -103,6 +96,27 @@ const OWN: [&str; 31] = [
     "restore",
     // A microVM moved to another machine (`move vm`, D176 part 6).
     "move",
+];
+
+/// The commands shards starts of itself, parts of it that no one types. Each runs on this
+/// machine whatever context is chosen, as the process that started it does
+/// (`context::kept_here`): a child of a command run `--context default` reads the same
+/// home, whose current context may be another machine's. No client of this machine's runs
+/// one (daemon/remote.rs `owners`).
+pub(crate) const INTERNAL: [&str; 6] = [
+    // The VM's broker (`shards run --kernel`, `shards restore`, macOS).
+    "grants",
+    // The writer of a restore's working set (`shards restore`, Linux).
+    "working-set",
+    // A budgeted build's writer outside its budget, which the build starts (D188): refused
+    // here, it ended at once, and every build held to a budget wrote under it (PM M442).
+    "build-writer",
+    // A run's share process (D38), which the daemon starts.
+    "share",
+    // BuildKit's frontend, which BuildKit runs from shards' image (D113).
+    "frontend",
+    // The daemon's spawner (PM M158).
+    "spawner",
 ];
 
 fn dispatch(args: Vec<OsString>) -> ExitCode {
@@ -175,6 +189,7 @@ fn dispatch(args: Vec<OsString>) -> ExitCode {
         [word, ..]
             if !word.starts_with('-')
                 && !OWN.contains(word)
+                && !INTERNAL.contains(word)
                 && !shards_cmdline::catalog::TOP
                     .iter()
                     .any(|g| g.entries.iter().any(|e| e.name == *word)) =>

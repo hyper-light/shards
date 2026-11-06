@@ -211,7 +211,10 @@ fn attach_sbom(
     fs::write(&file, format!("FROM scratch\nCOPY{excludes} . /\n")).map_err(|e| e.to_string())?;
     let out = stage.path().join("out");
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    // Built here, as the artifact is, whatever context the home has chosen.
+    let (here, this) = crate::context::HERE;
     let ran = std::process::Command::new(exe)
+        .env(here, this)
         .arg("build")
         .arg("--progress=plain")
         .arg(format!("--sbom={sbom}"))

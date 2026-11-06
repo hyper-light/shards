@@ -479,6 +479,12 @@ fn valid_name(name: &str) -> bool {
 /// The context this machine's own shards is.
 pub(crate) const DEFAULT: &str = "default";
 
+/// The variable, and its value, that keep a command shards starts of itself, by a word a
+/// user may type too, on this machine: the daemon, a build of the Engine API's or of an
+/// artifact's SBOM. Its home is the starter's, whose current context may be another
+/// machine's, and `SHARDS_CONTEXT` comes before it ([`chosen`]).
+pub(crate) const HERE: (&str, &str) = ("SHARDS_CONTEXT", DEFAULT);
+
 /// A context: another machine's daemon, its address and its key's SHA-256.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Context {
@@ -667,6 +673,15 @@ pub(crate) enum Chosen {
 /// order of docker/cli v29.8.1 cli/command/cli.go, resolveContextName); `default` is this
 /// machine.
 pub(crate) fn chosen(home: &Path, args: &mut Vec<OsString>) -> Result<Chosen, String> {
+    chosen_in(home, args, &|name| std::env::var(name).ok())
+}
+
+/// [`chosen`], `env` this process's environment.
+fn chosen_in(
+    home: &Path,
+    args: &mut Vec<OsString>,
+    env: &dyn Fn(&str) -> Option<String>,
+) -> Result<Chosen, String> {
     let mut given = None;
     loop {
         let first = args.first().and_then(|a| a.to_str()).map(str::to_string);
@@ -687,7 +702,7 @@ pub(crate) fn chosen(home: &Path, args: &mut Vec<OsString>) -> Result<Chosen, St
             _ => break,
         }
     }
-    let env = |name: &str| std::env::var(name).ok().filter(|v| !v.is_empty());
+    let env = |name: &str| env(name).filter(|v| !v.is_empty());
     let name = match given {
         Some(name) => name,
         None => match env("SHARDS_CONTEXT").or_else(|| env("DOCKER_CONTEXT")) {
@@ -2414,11 +2429,13 @@ pub(crate) fn kept_here(args: &[OsString]) -> bool {
     };
     // A login is the client's, as `docker --context NAME login` keeps it (docker/cli
     // cli/command/registry/login.go): checked with the registry and kept where this
-    // client's commands find it, never in the machine's store. A build's writer (D188) is
-    // the build's own, here: a build `--context default` runs here, its writer told none.
+    // client's commands find it, never in the machine's store. What shards starts of itself
+    // is its starter's, here (`cli::INTERNAL`).
     words.is_empty()
         || words.first().is_some_and(|w| {
-            own(w) || matches!(*w, "help" | "-h" | "--help" | "login" | "logout" | "build-writer")
+            own(w)
+                || crate::cli::INTERNAL.contains(w)
+                || matches!(*w, "help" | "-h" | "--help" | "login" | "logout")
         })
         || words.get(1).is_some_and(|w| own(w))
 }
@@ -3696,8 +3713,63 @@ mod tests {
         }
         assert!(kept_here(&args("context ls")));
         assert!(kept_here(&args("list contexts")));
-        assert!(kept_here(&args("build-writer")));
         assert!(!kept_here(&args("ps")));
+    }
+
+    /// What shards starts of itself runs here whatever context its home has chosen: each
+    /// word as its starter gives it, and every one `cli::INTERNAL` lists.
+    #[test]
+    fn shards_own_children_run_here() {
+        let args = |s: &str| s.split(' ').map(OsString::from).collect::<Vec<_>>();
+        for child in [
+            "grants",
+            "grants --template /t",
+            "working-set --template /t",
+            "build-writer",
+            "share rw /a",
+            "share --join",
+            "frontend osi",
+            "spawner",
+        ] {
+            assert!(kept_here(&args(child)), "{child}");
+        }
+        for word in crate::cli::INTERNAL {
+            assert!(kept_here(&args(word)), "{word}");
+        }
+    }
+
+    /// A command shards starts by a word a user types too, `HERE` in its environment, runs
+    /// here, where its home's current context, or its starter's `DOCKER_CONTEXT`, names
+    /// another machine's.
+    #[test]
+    fn here_holds_a_child_to_this_machine() {
+        let home = shards_testdir::TempDir::new("ctx-here").unwrap();
+        let gpu = Context {
+            name: "gpu".into(),
+            description: String::new(),
+            address: "192.0.2.1:2376".parse().unwrap(),
+            daemon: [7; 32],
+        };
+        std::fs::create_dir(home.join("contexts")).unwrap();
+        std::fs::write(home.join("contexts").join("gpu"), gpu.text()).unwrap();
+        std::fs::write(home.join("context"), "gpu\n").unwrap();
+        let words = || vec![OsString::from("daemon"), OsString::from("--detached")];
+        let (name, value) = HERE;
+        let pinned = |var: &str| (var == name).then(|| value.to_string());
+        let docker = |var: &str| (var == "DOCKER_CONTEXT").then(|| "gpu".to_string());
+        let both = |var: &str| pinned(var).or_else(|| docker(var));
+        assert!(matches!(
+            chosen_in(&home, &mut words(), &pinned),
+            Ok(Chosen::Here)
+        ));
+        assert!(matches!(chosen_in(&home, &mut words(), &both), Ok(Chosen::Here)));
+        // Without it, the home's choice, or the starter's: `gpu`'s machine.
+        let there = |env: &dyn Fn(&str) -> Option<String>| match chosen_in(&home, &mut words(), env) {
+            Ok(Chosen::There(context)) => context.name,
+            _ => String::new(),
+        };
+        assert_eq!(there(&|_| None), "gpu");
+        assert_eq!(there(&docker), "gpu");
     }
 
     #[test]
