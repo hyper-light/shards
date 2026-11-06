@@ -529,7 +529,9 @@ mod client {
     #[test]
     fn stop_kills_a_shards_that_ignores_sigterm() {
         let dir = shards_testdir::TempDir::new("api-deaf").unwrap();
-        let bin = stand_in(&dir, "trap '' TERM; exec sleep 1000");
+        // The shell itself ignores SIGTERM (an exec'd program's dispositions vary by shell);
+        // the sleep it waits on at its kill ends within its second.
+        let bin = stand_in(&dir, "trap '' TERM; while :; do sleep 1; done");
         let g = Shards
             .boot(&GuestSpec {
                 binary: Some(bin),
