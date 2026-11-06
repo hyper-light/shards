@@ -707,7 +707,7 @@ fn a_restored_microvm_goes_on_over_a_stopped_containers_kept_file() {
     let dir = home.join("containers").join(id.stdout.trim());
     let kept = dir.join("layer.ext4");
     let settled = || {
-        eventually("no layer kept", || {
+        eventually(&home, "no layer kept", || {
             kept.exists() && !dir.join("layer.new").exists()
         })
     };
