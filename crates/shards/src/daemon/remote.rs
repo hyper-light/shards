@@ -42,7 +42,9 @@ fn owners(args: &[String]) -> Option<String> {
     let said = shards_cmdline::grammar::rewrite(args).unwrap_or_else(|| args.to_vec());
     let first = said.first().map(String::as_str).unwrap_or_default();
     (crate::cli::INTERNAL.contains(&first)
-        || matches!(first, "context" | "client" | "invitation" | "daemon" | "guest"))
+        // `guest` and `disk` are `configure guest` and `configure disk`: the machine's own
+        // guest and the share of its disk shards keeps (D28, D186), its owner's to set.
+        || matches!(first, "context" | "client" | "invitation" | "daemon" | "guest" | "disk"))
     .then(|| format!("{first}: this machine's owner's to run, not a client's"))
 }
 
@@ -1647,6 +1649,8 @@ mod tests {
             "stop daemon",
             "daemon stop",
             "configure guest --kernel k --init i",
+            "configure disk --log-history 2g",
+            "configure disk",
             "spawner",
             "build-writer",
             "grants --template /t",
