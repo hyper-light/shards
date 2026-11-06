@@ -21,7 +21,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use crate::stream::{self, Socket};
-use crate::{End, Guest, GuestSpec, Guests, Init, Refusal, Stream, allowed, backend, check};
+use crate::{End, Guest, GuestSpec, Guests, Init, Refusal, STOP_GRACE, Stream, allowed, backend, check};
 
 /// The guests the `shards` binary boots: [`GuestSpec::binary`], else `SHARDS_BIN`, else
 /// `shards` on `PATH`.
@@ -37,9 +37,6 @@ impl Shards {
 /// How much of what shards says on its stdout and stderr is kept, its last bytes: a
 /// refusal's worth, its last few lines.
 const TAIL: usize = 4096;
-/// How long `stop` lets shards end after SIGTERM before SIGKILL: what `shards daemon stop`
-/// gives a run (`daemon.rs` `STOP_GRACE`).
-const STOP_GRACE: Duration = Duration::from_secs(10);
 /// How long an ended shards' stdout and stderr are read for, for its last words, once it has
 /// ended: a child it left holding them (macOS's grants broker until it exits) holds no
 /// refusal back longer.
@@ -59,65 +56,70 @@ impl Guests for Shards {
     }
 
     fn boot(&self, spec: &GuestSpec) -> Result<Box<dyn Guest>, Refusal> {
-        check(spec)?;
-        backend()?;
-        let dir = PrivateDir::new()?;
-        let vsock = dir.0.join("v");
-        let args = arguments(spec, &vsock)?;
-        let binary = spec
-            .binary
-            .clone()
-            .or_else(|| std::env::var_os("SHARDS_BIN").map(PathBuf::from))
-            .unwrap_or_else(|| PathBuf::from("shards"));
-        let mut child = Command::new(&binary)
-            .args(&args)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|e| Refusal::Boot(format!("{}: {e}", binary.display())))?;
-        let shared = Arc::new(Shared {
-            state: Mutex::new(State {
-                exited: false,
-                stopping: false,
-                ready: false,
-                end: None,
-                said: String::new(),
-                ended_as: String::new(),
-            }),
-            changed: Condvar::new(),
-            tail: Mutex::new(Tail {
-                bytes: VecDeque::new(),
-                open: 0,
-            }),
-            drained: Condvar::new(),
-        });
-        let outputs: [Option<Box<dyn io::Read + Send>>; 2] = [
-            child
-                .stdout
-                .take()
-                .map(|o| Box::new(o) as Box<dyn io::Read + Send>),
-            child
-                .stderr
-                .take()
-                .map(|e| Box::new(e) as Box<dyn io::Read + Send>),
-        ];
-        let started = start_threads(&shared, &child, outputs);
-        if let Err(e) = started {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(Refusal::Boot(format!("a thread to watch shards: {e}")));
-        }
-        Ok(Box::new(ShardsGuest {
-            ports: spec.ports.clone(),
-            vsock,
-            #[cfg(unix)]
-            pid: child.id(),
-            child: Mutex::new(child),
-            shared,
-            _dir: dir,
-        }))
+        Ok(Box::new(start(spec)?))
     }
+}
+
+/// Boots `spec`'s guest through shards.
+fn start(spec: &GuestSpec) -> Result<ShardsGuest, Refusal> {
+    check(spec)?;
+    backend()?;
+    let dir = PrivateDir::new()?;
+    let vsock = dir.0.join("v");
+    let args = arguments(spec, &vsock)?;
+    let binary = spec
+        .binary
+        .clone()
+        .or_else(|| std::env::var_os("SHARDS_BIN").map(PathBuf::from))
+        .unwrap_or_else(|| PathBuf::from("shards"));
+    let mut child = Command::new(&binary)
+        .args(&args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| Refusal::Boot(format!("{}: {e}", binary.display())))?;
+    let shared = Arc::new(Shared {
+        state: Mutex::new(State {
+            exited: false,
+            stopping: false,
+            ready: false,
+            end: None,
+            said: String::new(),
+            ended_as: String::new(),
+        }),
+        changed: Condvar::new(),
+        tail: Mutex::new(Tail {
+            bytes: VecDeque::new(),
+            open: 0,
+        }),
+        drained: Condvar::new(),
+    });
+    let outputs: [Option<Box<dyn io::Read + Send>>; 2] = [
+        child
+            .stdout
+            .take()
+            .map(|o| Box::new(o) as Box<dyn io::Read + Send>),
+        child
+            .stderr
+            .take()
+            .map(|e| Box::new(e) as Box<dyn io::Read + Send>),
+    ];
+    let started = start_threads(&shared, &child, outputs);
+    if let Err(e) = started {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(Refusal::Boot(format!("a thread to watch shards: {e}")));
+    }
+    Ok(ShardsGuest {
+        ports: spec.ports.clone(),
+        vsock,
+        #[cfg(unix)]
+        pid: child.id(),
+        child: Mutex::new(child),
+        shared,
+        _dir: dir,
+    })
 }
 
 /// `shards run --kernel …` for `spec`, its vsock at `vsock`. `--kernel` comes first, as the
@@ -624,6 +626,7 @@ mod tests {
     use super::*;
     use crate::{Disk, Share};
 
+    /// Inputs, each only formatted into a flag: any values show the mapping.
     fn spec() -> GuestSpec {
         GuestSpec {
             kernel: "/k/Image".into(),
@@ -716,5 +719,120 @@ mod tests {
         assert!(path.join("v").as_os_str().len() <= SOCKET_PATH);
         drop(dir);
         assert!(!path.exists());
+    }
+
+    /// The socket directory's name carries no pid, so a directory an earlier process of the
+    /// same pid left, or one another user made to take it first, is never its name (Hex
+    /// HEX-GUEST-9).
+    #[test]
+    fn the_socket_directory_is_named_apart_from_the_pid() {
+        let dir = PrivateDir::new().unwrap();
+        let name = dir.0.file_name().unwrap().to_str().unwrap().to_string();
+        let pid = format!("shards-api-{}-", std::process::id());
+        assert!(!name.starts_with(&pid), "{name}");
+        let again = PrivateDir::new().unwrap();
+        assert_ne!(dir.0, again.0);
+    }
+
+    /// A guest's socket and its muxer's side of one connection, answering `answer` to the
+    /// first `CONNECT` line; the refusal, where the dial is refused.
+    #[cfg(unix)]
+    fn answered(answer: &'static [u8]) -> Option<Attempt> {
+        let dir = PrivateDir::new().unwrap();
+        let path = dir.0.join("v");
+        let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        let muxer = std::thread::spawn(move || {
+            let (mut s, _) = listener.accept().unwrap();
+            let mut line = Vec::new();
+            let mut byte = [0u8; 1];
+            while line.last() != Some(&b'\n') {
+                s.read_exact(&mut byte).unwrap();
+                line.push(byte[0]);
+            }
+            assert_eq!(line, b"CONNECT 5\n");
+            s.write_all(answer).unwrap();
+            s
+        });
+        let got = handshake(&path, 5, Instant::now() + STOP_GRACE);
+        drop(muxer.join().unwrap());
+        got.err()
+    }
+
+    /// The longest answer Firecracker's protocol gives, `OK 4294967295\n`, is taken; one a
+    /// byte longer is refused as no answer (Hex HEX-GUEST-9).
+    #[cfg(unix)]
+    #[test]
+    fn an_answer_past_the_longest_ok_is_refused() {
+        assert!(answered(b"OK 4294967295\n").is_none());
+        assert!(matches!(answered(b"OK 04294967295\n"), Some(Attempt::Refused(_))));
+    }
+
+    /// A guest booted by a stand-in for shards that runs on until it is stopped, with a
+    /// muxer at its vsock socket that closes its first `refusals` dials unanswered (as a
+    /// guest that does not listen yet), answers the next `OK`, and counts them.
+    #[cfg(unix)]
+    fn listening_after(
+        refusals: usize,
+    ) -> (
+        shards_testdir::TempDir,
+        ShardsGuest,
+        Arc<std::sync::atomic::AtomicUsize>,
+    ) {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = shards_testdir::TempDir::new("api-dials").unwrap();
+        let bin = dir.path().join("shards");
+        std::fs::write(&bin, "#!/bin/sh\nexec sleep 1000\n").unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let guest = start(&GuestSpec {
+            binary: Some(bin),
+            ..spec()
+        })
+        .unwrap();
+        let listener = std::os::unix::net::UnixListener::bind(&guest.vsock).unwrap();
+        let dials = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = dials.clone();
+        std::thread::spawn(move || {
+            for s in listener.incoming() {
+                let mut s = s.unwrap();
+                let mut line = Vec::new();
+                let mut byte = [0u8; 1];
+                while line.last() != Some(&b'\n') && s.read_exact(&mut byte).is_ok() {
+                    line.push(byte[0]);
+                }
+                // Counted before it is closed or answered, which the dial waits for.
+                if counted.fetch_add(1, Ordering::SeqCst) >= refusals {
+                    s.write_all(b"OK 1073741824\n").unwrap();
+                    std::mem::forget(s);
+                }
+            }
+        });
+        (dir, guest, dials)
+    }
+
+    /// A patience of zero is one dial, its answer awaited, and no other (Hex HEX-GUEST-9).
+    #[cfg(unix)]
+    #[test]
+    fn a_patience_of_zero_dials_once() {
+        let (_dir, guest, dials) = listening_after(usize::MAX);
+        let refused = guest.connect(1024, Duration::ZERO);
+        assert!(
+            matches!(refused, Err(Refusal::Channel { port: 1024, .. })),
+            "{:?}",
+            refused.err()
+        );
+        assert_eq!(dials.load(Ordering::SeqCst), 1);
+        let (_dir, guest, dials) = listening_after(0);
+        assert!(guest.connect(1024, Duration::ZERO).is_ok());
+        assert_eq!(dials.load(Ordering::SeqCst), 1);
+    }
+
+    /// A patience of `Duration::MAX` is no clock: dials go on until the guest listens
+    /// (Hex HEX-GUEST-9).
+    #[cfg(unix)]
+    #[test]
+    fn a_patience_of_max_dials_until_the_guest_listens() {
+        let (_dir, guest, dials) = listening_after(3);
+        assert!(guest.connect(1024, Duration::MAX).is_ok());
+        assert_eq!(dials.load(Ordering::SeqCst), 4);
     }
 }

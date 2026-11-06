@@ -107,6 +107,12 @@ pub enum End {
     Failed(String),
 }
 
+/// How long [`Guest::stop`] lets a guest's process end after SIGTERM before SIGKILL: what
+/// `shards daemon stop` gives a run, Shards' own `STOP_GRACE`
+/// (`crates/shards/src/daemon.rs:228-231`), dockerd's default stop timeout (moby
+/// `daemon/config/config_linux.go`). `stop` returns within it and the kill's reaping.
+pub const STOP_GRACE: Duration = Duration::from_secs(10);
+
 /// What can't be done, and why.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum Refusal {
@@ -160,11 +166,14 @@ pub trait Guests: Send + Sync {
 pub trait Guest: Send + Sync {
     /// A stream to its vsock `port` (`CONNECT <port>`), within `patience`: until the guest
     /// listens there it is refused, and asked again, so the first that connects says the
-    /// guest is ready.
+    /// guest is ready. One dial is always made, so a patience of zero is that one alone;
+    /// `Duration::MAX` is no clock, until the guest listens or ends. A guest that has ended
+    /// is refused as soon as it has, whatever patience is left.
     fn connect(&self, port: u32, patience: Duration) -> Result<Box<dyn Stream>, Refusal>;
     /// Stops it: its [`wait_for`](Guest::wait_for) then returns [`End::Stopped`].
     fn stop(&self) -> Result<(), Refusal>;
-    /// Its end, once it has come, waiting at most `timeout`.
+    /// Its end, once it has come, waiting at most `timeout` (`Duration::MAX`: until it
+    /// comes).
     fn wait_for(&self, timeout: Duration) -> Result<Option<End>, Refusal>;
 }
 
@@ -259,6 +268,8 @@ fn allowed(ports: &[u32], port: u32) -> Result<(), Refusal> {
 mod tests {
     use super::*;
 
+    /// Inputs: one vCPU and 256 MiB, within every host's bounds; the cases below step
+    /// past each bound by one (257, odd; `least - 2`; `MAX_PORTS + 1` ports).
     fn spec() -> GuestSpec {
         GuestSpec {
             kernel: "k".into(),

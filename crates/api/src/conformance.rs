@@ -9,7 +9,9 @@ use std::io::{Read as _, Write as _};
 use std::net::Shutdown;
 use std::time::{Duration, Instant};
 
-use crate::{Backend, End, Guest, GuestSpec, Guests, Refusal, backend_of, max_vcpus, min_memory_mib};
+use crate::{
+    Backend, End, Guest, GuestSpec, Guests, MAX_PORTS, Refusal, backend_of, max_vcpus, min_memory_mib,
+};
 
 /// What the suite runs against.
 pub struct Subject<'a> {
@@ -149,7 +151,11 @@ pub fn a_served_port_carries_bytes_and_a_half_close(s: &Subject<'_>) -> Result<(
         .map_err(|e| fail(CASE, format!("connect: {e}")))?;
     conn.set_read_timeout(Some(s.patience))
         .map_err(|e| fail(CASE, format!("its read timeout: {e}")))?;
-    let sent: Vec<u8> = (0..64 * 1024u32).map(|i| (i % 251) as u8).collect();
+    // An input, sized to exercise a bound: one byte more than shards' device holds of a
+    // connection's (`BUF_ALLOC`, 64 KiB, `crates/vmm/src/devices/virtio/vsock/conn.rs:21`),
+    // so the echo goes through only as the device's credit updates let it. 251, a prime, so
+    // no power-of-two-sized piece repeats another.
+    let sent: Vec<u8> = (0..64 * 1024 + 1u32).map(|i| (i % 251) as u8).collect();
     let mut writer = conn
         .try_clone()
         .map_err(|e| fail(CASE, format!("a clone: {e}")))?;
@@ -204,8 +210,9 @@ pub fn an_unserved_port_is_refused(s: &Subject<'_>) -> Result<(), Failure> {
             .connect(s.port, s.patience)
             .map_err(|e| fail(CASE, format!("connect to the served port: {e}")))?,
     );
+    // A spec allows at most MAX_PORTS ports, so one of the first MAX_PORTS + 1 is off it.
     let off = (0..=u32::MAX)
-        .take(4096)
+        .take(MAX_PORTS.saturating_add(1))
         .find(|p| !s.serving.ports.contains(p))
         .ok_or_else(|| fail(CASE, "every port is allowed"))?;
     match guest.connect(off, s.patience) {
@@ -217,7 +224,7 @@ pub fn an_unserved_port_is_refused(s: &Subject<'_>) -> Result<(), Failure> {
             ));
         }
     }
-    let patience = Duration::from_millis(200);
+    let patience = UNSERVED_PATIENCE;
     let start = Instant::now();
     let refused = guest.connect(s.unserved, patience);
     let took = start.elapsed();
@@ -225,8 +232,9 @@ pub fn an_unserved_port_is_refused(s: &Subject<'_>) -> Result<(), Failure> {
         Err(Refusal::Channel { port, .. }) if port == s.unserved => {}
         other => return Err(fail(CASE, format!("port {}: {:?}", s.unserved, other.err()))),
     }
-    // A handshake under way when patience runs out ends at it; a second is past any.
-    if took < patience || took > patience.saturating_add(Duration::from_secs(1)) {
+    // A handshake under way when patience runs out ends at it (its timeouts are what is
+    // left), so a refusal comes at the patience and its thread's wake.
+    if took < patience || took > patience.saturating_add(OVERSHOOT) {
         return Err(fail(
             CASE,
             format!("refused after {took:?}, with patience {patience:?}"),
@@ -235,6 +243,15 @@ pub fn an_unserved_port_is_refused(s: &Subject<'_>) -> Result<(), Failure> {
     let _ = guest.stop();
     Ok(())
 }
+
+/// The patience an unserved port is asked with: an input, as any shows the patience kept;
+/// short, so the case is.
+pub const UNSERVED_PATIENCE: Duration = Duration::from_millis(200);
+
+/// How long past its patience an unserved port's refusal may come: the most measured, rounded
+/// up to the next 10 ms (`docs/research/measurements/shards-api-overshoot/`, recorded in
+/// `docs/research/platform-measurements.md`, "shards-api: a refusal's overshoot").
+pub const OVERSHOOT: Duration = Duration::from_secs(1);
 
 /// `stop` ends a guest as `Stopped`, and a `connect` after it is refused `Ended(Stopped)`.
 pub fn stop_ends_it_and_later_connects_are_refused(s: &Subject<'_>) -> Result<(), Failure> {
