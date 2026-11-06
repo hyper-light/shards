@@ -210,12 +210,15 @@ the guest arch is always the host arch.
 | Windows | x86_64 / amd64 | Windows Hypervisor Platform | the features below, as their cells say |
 | Windows | aarch64 / arm64 | Windows Hypervisor Platform (arm64) | in progress (the platform parity plan's step 10): its backend on whp-arm64, not yet merged; its real-VM suite on a native arm64 Windows host last seen at 81 of 84 test binaries passing, three failing at their commands' deadlines |
 
-What each target runs, feature by feature (2026-11-04, branch integrate; the platform parity
-audit, docs/audit/2026-10-27_platform-parity.md, holds the evidence of each and its open
-rows). "Yes" is built and tested with real VMs there. Linux arm64's are built and linted on
-CI, whose arm64 runners have no KVM, and tested with real VMs nested (D154's L1 harness):
-the snapshot suites (PM M346), and the daemon, warm, saved, restore, run, vsock, pmem, boot
-and hot-plug suites (D214); its other cells' VM tests are amd64's code, not yet run there.
+What each target runs, feature by feature (2026-11-05, branch p/internal-local at b8270370,
+whose CI 42134267973 passed on every target; the platform parity audit,
+docs/audit/2026-10-27_platform-parity.md, holds the evidence of each and its open rows).
+"Yes" is built and tested with real VMs there. Linux arm64's are built and linted on CI,
+whose arm64 runners have no KVM, and tested with real VMs nested (D154's L1 harness): the
+snapshot suites (PM M346), and the daemon, warm, saved, restore, run, vsock, pmem, boot and
+hot-plug suites (D214); its other cells' VM tests are amd64's code, not yet run there.
+macOS arm64's are tested with real VMs on Macs here: CI's macOS runners offer no
+Hypervisor.framework (`kern.hv_support`), and their VM tests say SKIP.
 Windows arm64 runs nothing until its backend lands, and each of its cells is the Windows
 amd64 cell's once it does.
 
@@ -227,17 +230,17 @@ amd64 cell's once it does.
 | A restore's working set recorded and mapped ahead (D29) | yes | yes (D154) | yes | yes (D196, PM M415, M421) |
 | Networks, published ports, default deny, IPv6 on networks and past the microVM (D46, D59, D99) | yes | yes | yes | yes (D142, D143) |
 | Volumes and binds, a bind's host-made files its run's user's, DAX windows (D38, D189) | yes | yes | yes | yes (D197, D207, PM M412, M413) |
-| A run's writable layer, ext4 over pmem, restarts over the kept layer, freed blocks given back (D190) | yes | yes | yes; restarts over the kept layer held by unit tests, not yet run on real microVMs | yes; restarts over the kept layer, a view placed where the template's was (placeholders), held by unit tests, not yet run on real microVMs |
+| A run's writable layer, ext4 over pmem, restarts over the kept layer, freed blocks given back (D190) | yes | yes | yes; restarts over the kept layer held by unit tests, not yet run on real microVMs | yes; restarts over the kept layer, a view placed where the template's was (placeholders), on real microVMs (CI's windows-2025 and windows-2022); their cost against packing not yet measured |
 | Memory given back: free page reporting, budgets, the host's word, for runs and builders (D148, D151, D188) | yes | yes | yes | yes (PM M371, M375, M391) |
 | A budgeted build's writes made outside its budget (D188, PM M442) | yes | yes | needs none: no kernel charges its page cache to a group shards keeps | needs none: a job's limit is its commit, never its cache |
 | `--cgroup-parent` (D183) | a slice of the user's manager, or a cgroup delegated to the user (slices 1, 2) | as amd64 | groups shards keeps (slice 3, PM M355) | groups shards keeps, each a job its VM and network processes are made in (slice 3, PM M359, M361) |
 | vCPUs of every host CPU, the workload's CPUs held to its limits (D191) | yes, vCPUs at the fair scheduler's shortest slice (PM M440, M441) | yes | yes, vCPUs at the real-time policy (PM M8, M10) | yes; open: its vCPUs' wake policy on a busy host, a candidate pending its measurement (D191) |
 | Log drivers (D163, D198, D199) | every driver, journald its own | as amd64 | every driver but journald, macOS's own log (`oslog`) its counterpart | every driver but journald, `etwlogs` its counterpart |
 | A GPU (D144, Venus) | yes, glibc and musl, NVIDIA's, AMD's and Intel's GPUs (D201, D208); open: the GPU desktop's run of D208's build, waiting for its owner's go | built and linted, untested on a GPU (none here) | yes | yes (D202) |
-| Devices plugged into a running microVM, disks grown (D214) | yes | yes (nested, its MSIs through the GIC's ITS) | yes | built, not yet run: in the VMM (WHP's disk steps passed on jupiter; its shared directory over a duplex pipe), and through the CLI a disk and a volume, its share process's stream given the VM as a run's are (tests/plug.rs, now every host's) |
+| Devices plugged into a running microVM, disks grown (D214) | yes | yes (nested, its MSIs through the GIC's ITS) | yes | yes: in the VMM, its shared directory over a duplex pipe (tests/hotplug.rs), and through the CLI a disk and a volume, its share process's stream given the VM as a run's are (tests/plug.rs), on CI's windows-2025 and windows-2022 |
 | A host's PCI function given a microVM, at its start or plugged in (D154, D214) | built, VFIO; not yet tested on hardware, no x86_64 host here having a function to spare (D214's Not yet) | yes, nested, on QEMU's edu function (D154, D214); plugged into a run's workload, its E2E not yet run | refused: its API assigns no device (PM M403) | open: refused where the hypervisor refuses (PM M401, M402); a host that permits Discrete Device Assignment has no implementation yet (the parity plan's step 13) |
 | A running microVM saved whole, and resumed (D176 parts 1-5) | yes | yes | yes | yes |
-| Moved to another machine, saved (D176 part 6) | yes (PM M460; CI's runners, migrate-e2e.yml) | built, not yet run | built, its CPU checked as macOS names its features (PM M460); measured on KVM x86_64 alone | built, not yet run; a volume's guest owners moved as its guest sees them (`server::guest`), not yet run |
+| Moved to another machine, saved (D176 part 6) | yes (PM M460; CI's runners, migrate-e2e.yml) | built, not yet run | built, its CPU checked as macOS names its features (PM M460); measured on KVM x86_64 alone | yes between two homes, a volume's guest owners moved as its guest sees them (`server::guest`): tests/moved.rs on CI's windows-2025; not yet between two machines |
 | Moved live (D176 part 7) | yes (PM M461; CI's runners, migrate-e2e.yml) | refused: its dirty rings need the ITS's bitmap (`KVM_CAP_DIRTY_LOG_RING_WITH_BITMAP`), not yet asked | built, its guest's writes watched at stage 2 as D25's recorder watches them; measured on KVM x86_64 alone | refused: WHP's dirty page tracking (`WHvQueryGpaRangeDirtyBitmap`) not yet asked |
 | Contexts, both sides, the machine's listener, enrollments and relays (D180) | yes | yes | yes | yes (part 3k) |
 | Keyless signing, its SPIFFE provider (D126) | yes | yes | yes | yes, by the Workload API's named pipe |
@@ -6943,7 +6946,7 @@ template pays it once; what its restores pay is to be measured with mappings.
   architecture (above: its page structures its head's, and arm64's linear map of it in
   blocks).
 
-### D214. Devices plugged into a running microVM, and its disks grown (built: disks and shared directories through the CLI on Hypervisor.framework, KVM and WHP, WHP's CLI path not yet run; host functions in the VMM on KVM, and through the CLI for a run's workload on Linux, its E2E not yet run)
+### D214. Devices plugged into a running microVM, and its disks grown (built: disks and shared directories through the CLI on Hypervisor.framework, KVM and WHP, WHP's run on CI's Windows runners; host functions in the VMM on KVM, and through the CLI for a run's workload on Linux, its E2E not yet run)
 
 **Why.** The long-session roadmap's item 6 (2026-10-18): a microVM that runs for hours is
 given what it needs as it goes, not only what it booted with. Every shards device was a
@@ -7088,8 +7091,11 @@ share made ahead), and a disk's capacity was fixed when its file was opened.
   Windows, on a run booted where WHP restores no template (Windows Server 2022, PM M345),
   its host directory written by the guest's root, which a directory without WSL's
   metadata is 0755 to (ntfs `stat`); the in-process test's shared directory is served
-  there over a duplex pipe (`shards_ipc::byte_pair`), as the daemon serves one: neither
-  has run on WHP yet. With every run's microVM given
+  there over a duplex pipe (`shards_ipc::byte_pair`), as the daemon serves one. Both pass
+  on WHP, on CI's windows-2025 (the run restored from its template) and windows-2022 (booted),
+  with every VM test required to run there (`SHARDS_REQUIRE_VMS`): tests/plug.rs in 4.9 to
+  6.6 s and tests/hotplug.rs in 1.0 to 1.5 s (CI 42070454222 at 90de623f, 42134267973 at
+  b8270370). With every run's microVM given
   its slots, the whole workspace's tests pass on KVM x86_64 (2,367), and the nested
   arm64 KVM suite's daemon, warm, saved, restore, run, vsock, pmem and boot tests. What
   the slots cost a run (PM M430): on Hypervisor.framework its command +0.26 ms in the
@@ -7179,8 +7185,8 @@ share made ahead), and a disk's capacity was fixed when its file was opened.
     guest's edu function plugged in, its workload moving a page through it by DMA through
     its IOMMU, a second plug refused, unplugged and the node gone, twice; a run booted
     otherwise refused. Not yet run; its numbers not yet measured.
-- **Not yet:** tests/plug.rs and the in-process test's shared directory run on WHP (CI's
-  windows-2022 and windows-2025, jupiter); a plugged share's DAX window; a plugged function's 64-bit BARs
+- **Not yet:** tests/plug.rs and the in-process test's shared directory on jupiter, and
+  their steps' numbers on WHP; a plugged share's DAX window; a plugged function's 64-bit BARs
   past the 32-bit window; a host's function plugged on bare-metal hardware (no host here
   has a spare one bound to vfio-pci: tested nested, on QEMU edu's model); the guest's
   remove's 29 ms on KVM x86_64, not yet split (PM M430).
@@ -8654,9 +8660,11 @@ the guest keeps their metadata alone.
   both on Windows now, and `layers`' `a_kept_layers_freed_blocks_go_back_to_its_disk` on every
   host; `a_stopped_microvms_next_run_goes_on_over_its_kept_file` and
   `a_restored_microvm_goes_on_over_a_stopped_containers_kept_file` run on Windows too, the
-  file's identity its volume's serial and file index (GetFileInformationByHandle). Not yet
-  run on Windows' real microVMs, and its cost there against packing unmeasured: Windows
-  takes the same 5 MiB crossing (`OVER_FROM`) until it is measured there.
+  file's identity its volume's serial and file index (GetFileInformationByHandle). Both
+  pass on WHP, on CI's windows-2025 and windows-2022, with every VM test required to run
+  there (CI 42070454222 at 90de623f, 42134267973 at b8270370). Its cost there against
+  packing is unmeasured: Windows takes the same 5 MiB crossing (`OVER_FROM`) until it is
+  measured there.
 - **What the guest freed goes back to the host** (slice 8, PM M443). pmem takes no
   discard (drivers/nvdimm/pmem.c), so a layer's file only grew while its microVM lived,
   whatever its guest deleted. As a stopped container's layer is kept, its microVM gone,
@@ -8674,9 +8682,9 @@ the guest keeps their metadata alone.
   that reads the layer goes on (PM M443).
 
 **Next** (the slices after these).
-- Restarts over the kept file run on Windows' and a Mac's real microVMs, and measured
-  there against packing (Windows' crossing its own, where it is not 5 MiB); and visits and
-  joiners' runs over it too.
+- Restarts over the kept file run on a Mac's real microVMs (CI's macOS runners offer no
+  Hypervisor.framework), and measured on Windows and a Mac against packing (Windows'
+  crossing its own, where it is not 5 MiB); and visits and joiners' runs over it too.
 - Going over's fixed cost below packing's, so that a layer holding under 5 MiB goes over
   too: the mount of the container's file system and its one host flush, and the root's two
   moves (PM M443).
@@ -9378,7 +9386,11 @@ against, those the other lacked kept in its directory there, and no others; an e
 it there and a stop's SIGTERM ending it, its connections dialed again) and
 `a_volume_shared_here_moves_with_one_and_the_other_goes_on_here` (a volume two microVMs share
 moves with the one moved, and the other's move, refused there for the volume of its name,
-leaves it appending on here).
+leaves it appending on here). On WHP all of tests/moved.rs between two homes passes on CI's
+windows-2025, saved moves with `a_volumes_guest_owners_move_with_it` among them and the live
+move held refused, with every VM test required to run there (CI 42070454222 at 90de623f,
+42134267973 at b8270370; windows-2022, whose WHP restores nothing, says SKIP for those that
+restore, PM M345), and `server::guest`'s unit tests on every target.
 
 Tested on CI's runners by `.github/workflows/migrate-e2e.yml`, run when asked: two-hosts.sh
 `local` (two homes, 30 moves of each mode, then all of tests/moved.rs, between two homes and

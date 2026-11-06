@@ -63,6 +63,20 @@ from one: the messages of the merged code that name a host found row 17's
 yet"), since built: one `plug_share` for every host, which differs only in how the share's
 stream reaches the VM.
 
+Since 2026-11-05 (branch p/internal-local at b8270370, everything of integrate and gpu at
+90de623f merged, CI 42134267973 green on every target) the script finds 12 items alone, all
+Windows' and all row 9's: vm/aarch64.rs:272 `route`, :305 `IrqfdRoute`, :313 its `impl`;
+vm/x86_64.rs:259 `route`, :282 `IrqfdRoute`, :288 its `impl`; vm/mod.rs:1221 `VfioFiles`,
+:1361 `route`; vm/runtime.rs:115 `plug_vfio`, :123 `plug_vfio_files`, :132
+`plug_vfio_with`; devices/pci/mod.rs:9 `mod vfio`. Each is Linux's VFIO, twinned with macOS's
+refusal (its API assigns no device, PM M403) and with none on Windows, whose refusal
+(`vm::passthrough_refused`) is no twin where a host permits Discrete Device Assignment: they
+stand alone until row 9 is built on such a host. Row 15's items stand with Windows'
+candidate (`windows_thread::raise_current`), a mechanism of its own whose measurement keeps
+the row open. One stub of a shared name the script cannot tell from a twin remains, row
+16's: hv/whp/mod.rs's `watch_writes`, which refuses a live move, and its `written` and
+`unwatch_writes`, which do nothing.
+
 The Windows refusal probe does not implement DDA. A refusal is a counterpart only where
 the host forbids assignment; Windows Server hosts that allow it still need a passthrough
 implementation and a real hardware E2E. The PCI routing twins below therefore cover macOS
@@ -86,11 +100,11 @@ alone, so the script keeps Windows' missing passthrough visible (row 9).
 | 11 | A restore's working set recorded and mapped ahead, the pages its guest writes copied first (REAP, D29) | closed: Windows (D196) | platform-parity.py (2026-10-30): platform/unix.rs's `populate_writable`, `FaultAroundOff` and `uffd`, whose Windows twins are stubs ("a restore on Windows does not record yet", vm::WORKING_SETS, D196), and cli/mod.rs's `working_set_writer` |
 | 12 | Keyless signing's SPIFFE provider: a JWT-SVID from the agent's Workload API (cosign's `spiffe`) | closed: Windows (D126) | platform-parity.py (2026-11-01): spiffe.rs's `request`, `svids`, `spiffe_id` and `check` `any(unix, test)`; `jwt_svid` on Windows refuses ("the SPIFFE Workload API's named pipe: give the token itself with --identity-token"). cosign v3.1.3 dials `unix://` and the path alone (pkg/providers/spiffe), which go-spiffe v2.7.0 refuses on Windows, where it dials `npipe:` and `tcp:` (workloadapi/addr_windows.go) |
 | 13 | The GPU's VM process given what its drivers reach, as confine.rs gives Linux's (D201) | closed: Windows, its spawn on a window station and desktop of its own (D202, `shards_ipc::Spawn::graphics`) | platform-parity.py (2026-11-01): confine.rs's `GPU_IOCTL_TYPES`, `GPU_SYSCALLS`, `gpu_paths` and `library_paths` |
-| 14 | A microVM moved to another machine (D176 part 6) with its volumes' guest owners, which a volume's server keeps in its files' extended attributes (D38; on Windows NTFS's, as WSL keeps them, D197) | built on every host, its tests not yet run: each file moves as its guest sees it, read and made through the share server's own calls on both sides (`server::guest`, stream version 2), so its owner, mode, kind, device number and attributes, and a name no Windows name holds, cross any pair of hosts; open until its unit tests pass on each host and `a_volumes_guest_owners_move_with_it` (tests/moved.rs) passes with a Windows peer | was: daemon/moves.rs's `NO_ATTR` and `sys`, macOS's and Linux's, alone, Windows' `xattrs::list` and `set` saying none; platform-parity.py (p/winmove) finds no item of moves.rs |
+| 14 | A microVM moved to another machine (D176 part 6) with its volumes' guest owners, which a volume's server keeps in its files' extended attributes (D38; on Windows NTFS's, as WSL keeps them, D197) | closed: Windows (D176 part 6), each file moved as its guest sees it, read and made through the share server's own calls on both sides (`server::guest`, stream version 2), so its owner, mode, kind, device number and attributes, and a name no Windows name holds, cross any pair of hosts | was: daemon/moves.rs's `NO_ATTR` and `sys`, macOS's and Linux's, alone, Windows' `xattrs::list` and `set` saying none; platform-parity.py (p/winmove) finds no item of moves.rs. Closed by CI 42070454222 at 90de623f and 42134267973 at b8270370: tests/moved.rs 9 of 9 on windows-2025 with every VM test required to run (`SHARDS_REQUIRE_VMS`, no SKIP), `a_volumes_guest_owners_move_with_it` and the saved moves among them, and `server::guest`'s unit tests (`a_guests_names_are_the_hosts_and_back`, `what_is_set_reads_back`) on every target |
 | 15 | The policy a vCPU thread wakes at on a busy host (D191) | open: Windows, a candidate built (`platform::windows_thread`: vCPU threads and device workers at THREAD_PRIORITY_ABOVE_NORMAL, back to normal while one uses more than half of its CPU; the hold's governor at TIME_CRITICAL, PM M294), pending its measurement on a contended host (`cpu-elastic/phases.py --affinity`, `winslice.py`) | platform-parity.py (2026-11-04): platform/unix.rs's `run_promptly` and `PROMPT_SLICE_NS` (Linux's shortest slice, PM M440), platform/mod.rs's `macos_thread` (macOS's real-time policy, M8, M10); D191's Next, "Windows' vCPUs on a contended host: unmeasured" |
-| 16 | A microVM moved live (D176 part 7) | open: arm64 Linux, whose dirty rings need the ITS's bitmap beside them (`KVM_CAP_DIRTY_LOG_RING_WITH_BITMAP`), and Windows, whose dirty page tracking (`WHvQueryGpaRangeDirtyBitmap`) is not asked yet: each refuses a live move, saying so, and moves one saved. A saved move on either, built, has not run there yet | D176's Not yet; moves.rs, "this host's microVMs move only saved, not live"; tests/moved.rs asserts the refusal off macOS and Linux x86_64 |
-| 17 | Devices plugged into a running microVM through the CLI (D214: `shards plug`, `unplug`, `grow`) | open, built: Windows, whose daemon now plugs a volume, its share process's stream (a duplex pipe the daemon makes, D197) handed to the VM as a run's are (D207) and taken there as a `PipeStream` (vm_run.rs `device::SHARE`); tests/plug.rs builds and runs on every host (booted where WHP restores no template), and tests/hotplug.rs serves its shared directory over a pipe on Windows. Neither has run on WHP yet (CI's windows-2022 and windows-2025, jupiter) | daemon/devices.rs `plug_share`, every host's; tests/plug.rs no longer `cfg(unix)`; architecture.md D214's Verified and Not yet |
-| 18 | A run's writable layer restarted over its kept file, not packed (D190 slice 7, PM M443) | open: Windows and macOS, built and held by unit tests, not yet run on their real microVMs. Windows now goes over the kept file as Unix does: each shared view replaces a placeholder (VirtualAlloc2, MapViewOfFile3's MEM_REPLACE_PLACEHOLDER), and the swap unmaps the template's view back to it (UnmapViewOfFile2's MEM_PRESERVE_PLACEHOLDER) and places the container's file's there, unmapped from WHP's partition and mapped back around it; the daemon no longer packs there. To close: the two D190 E2E tests (`a_stopped_microvms_next_run_goes_on_over_its_kept_file`, `a_restored_microvm_goes_on_over_a_stopped_containers_kept_file`, now built for Windows) passing on Windows and a Mac, and Windows' restarts measured against packing. A restart works on every host; this is its cost past 5 MiB written | D190's "On Windows, a view in place of a view" and Next; `platform::map_file_shared_at`, `a_view_goes_in_place_of_another_at_its_address` |
+| 16 | A microVM moved live (D176 part 7) | open: arm64 Linux, whose dirty rings need the ITS's bitmap beside them (`KVM_CAP_DIRTY_LOG_RING_WITH_BITMAP`), and Windows, whose dirty page tracking (`WHvQueryGpaRangeDirtyBitmap`) is not asked yet: each refuses a live move, saying so, and moves one saved. Windows' saved moves run (tests/moved.rs on CI's windows-2025, row 14); arm64 Linux's have not run there yet (the nested L1 suite runs no tests/moved.rs) | D176's Not yet; hv/whp/mod.rs:875-883 `watch_writes` refuses, `written` and `unwatch_writes` do nothing, a stub of the script's name; hv/kvm/mod.rs:246-251 arm64's `enable` gives its vCPUs no ring; tests/moved.rs asserts the refusal off macOS and Linux x86_64 |
+| 17 | Devices plugged into a running microVM through the CLI (D214: `shards plug`, `unplug`, `grow`) | closed: Windows, whose daemon plugs a volume, its share process's stream (a duplex pipe the daemon makes, D197) handed to the VM as a run's are (D207) and taken there as a `PipeStream` (vm_run.rs `device::SHARE`) | daemon/devices.rs `plug_share`, every host's; tests/plug.rs no longer `cfg(unix)`. Closed by CI 42070454222 at 90de623f and 42134267973 at b8270370: tests/plug.rs's `devices_are_plugged_into_a_run_and_its_disk_grows` (4.9 to 6.6 s) and tests/hotplug.rs's `devices_are_plugged_into_a_running_microvm_and_its_disks_grow` (1.0 to 1.5 s) on windows-2025 (the run restored from its template) and windows-2022 (booted, PM M345), every VM test required to run; architecture.md D214's Verified. Not yet on jupiter |
+| 18 | A run's writable layer restarted over its kept file, not packed (D190 slice 7, PM M443) | open: macOS, built and held by unit tests, not yet run on its real microVMs (CI's macOS runners offer no Hypervisor.framework); and Windows' restarts not yet measured against packing. Windows goes over the kept file as Unix does: each shared view replaces a placeholder (VirtualAlloc2, MapViewOfFile3's MEM_REPLACE_PLACEHOLDER), and the swap unmaps the template's view back to it (UnmapViewOfFile2's MEM_PRESERVE_PLACEHOLDER) and places the container's file's there, unmapped from WHP's partition and mapped back around it; the daemon no longer packs there. To close: the two D190 E2E tests passing on a Mac, and Windows' restarts measured against packing. A restart works on every host; this is its cost past 5 MiB written | D190's "On Windows, a view in place of a view" and Next; `platform::map_file_shared_at`, `a_view_goes_in_place_of_another_at_its_address`; on Windows' real microVMs, CI 42070454222 at 90de623f and 42134267973 at b8270370: `a_stopped_microvms_next_run_goes_on_over_its_kept_file` (containers.rs) and `a_restored_microvm_goes_on_over_a_stopped_containers_kept_file` (daemon.rs) on windows-2025 and windows-2022 |
 
 The rest of the script's 494 items fall within these rows: `workload.rs` (95), `synced.rs`
 (29), `vm_run.rs` (18), `context.rs` (14) and `cli/*` items are the daemon's and its client's
@@ -125,17 +139,19 @@ Each lone item is confirmed or closed as its row is worked.
 15. Row 14, a volume's guest owners moved to and from a Windows machine: each file's
     attributes as the guest sees them on both sides, through its share server's own reading
     of them (the owner's attribute on Unix, WSL's metadata on Windows), so that a move between
-    hosts of either kind keeps them. Built on p/winmove (`server::guest`); its unit tests on
-    each host and its E2E with a Windows peer to run.
+    hosts of either kind keeps them. Built on p/winmove (`server::guest`); done (Closed,
+    below).
 16. Row 15, Windows' vCPU threads on a busy host measured as Linux's were (PM M440), and a
     policy taken where they wait as Linux's did: the candidate is built (D191), its harness
     committed; its measurement on jupiter decides it.
 17. Row 17, built on p/winplug: tests/plug.rs and tests/hotplug.rs run on CI's
-    windows-2022 and windows-2025 and on jupiter, and their numbers recorded in D214.
+    windows-2022 and windows-2025, done (Closed, below); on jupiter, and their steps' numbers
+    recorded in D214, still to do.
 18. Row 16, live moves on arm64 KVM (dirty rings with the ITS's bitmap) and WHP
-    (WHvQueryGpaRangeDirtyBitmap); saved moves run on both.
+    (WHvQueryGpaRangeDirtyBitmap); saved moves run on both (WHP's done on CI's windows-2025,
+    arm64 KVM's to run nested).
 19. Row 18, restarts over the kept file (built on Windows with placeholder views) run on
-    Windows' and a Mac's real microVMs, and measured.
+    a Mac's real microVMs (Windows' done on CI), and measured on both against packing.
 20. Row 9 on a Windows Server host that permits DDA (step 13), and row 5 (step 10).
 
 ## Closed
@@ -268,6 +284,24 @@ Each lone item is confirmed or closed as its row is worked.
   green on every target there, its Windows runners building, linting and testing the
   renderer. Landed on gpu (e39a9218) and dev (bc0b245b). platform-parity.py finds no item
   alone, of any row.
+- Row 14, a microVM moved with its volumes' guest owners to and from a Windows machine
+  (D176 part 6): each file read and made as its guest sees it through the share server's
+  own calls on both sides (`server::guest`, stream version 2). Tested with real VMs on CI's
+  windows-2025, every VM test required to run there (`SHARDS_REQUIRE_VMS`, no SKIP):
+  tests/moved.rs 9 of 9 between two homes, `a_volumes_guest_owners_move_with_it`,
+  `a_microvm_moved_saved_keeps_its_cpu_image_files_and_connections` and
+  `a_volume_shared_here_moves_with_one_and_the_other_goes_on_here` among them, and
+  `server::guest`'s unit tests on every target (CI 42070454222 at 90de623f, 42134267973 at
+  b8270370). Landed on gpu and dev (94838b88). A move between a Windows and a Unix machine
+  has no CI job yet: migrate-e2e.yml's pairs are KVM's and HVF's.
+- Row 17, devices plugged into a running microVM through the CLI on Windows (D214): a disk
+  plugged, grown, unplugged and plugged again, and a host directory through its share
+  process's duplex pipe. Tested with real VMs on CI's windows-2025 (the run restored from its
+  image's template) and windows-2022 (booted, PM M345), every VM test required to run:
+  tests/plug.rs's `devices_are_plugged_into_a_run_and_its_disk_grows` in 4.9 to 6.6 s and
+  tests/hotplug.rs's `devices_are_plugged_into_a_running_microvm_and_its_disks_grow` in 1.0
+  to 1.5 s (CI 42070454222 at 90de623f, 42134267973 at b8270370). Not yet run on jupiter,
+  nor its steps timed on WHP.
 
 ### Since 2026-11-04 (integrate)
 
@@ -301,7 +335,93 @@ What the merges into integrate brought, host by host, each in D13's table:
 - Moves (D176 parts 6 and 7): saved on every backend, live on KVM x86_64 (PM M461) and
   Hypervisor.framework; open rows 14 and 16.
 
-CI on the merged whole has not passed yet: integrate's CI 41959673660 (b5113c13) failed,
-and ff0cf486, which merges the builders, VFIO plugs and moves, has no run yet. The plan's
-step 14 closes once rows 5, 9 and 14 to 18 are closed and a run of CI on the closing
-commit passes on every target, Windows' E2E included.
+### CI's lanes (2026-11-05)
+
+What every target's CI runs (.github/workflows/ci.yml's `native` and `musl` jobs), read from
+the workflow and from the logs of CI 42134267973 at b8270370, all 17 jobs green:
+
+- x86_64 Windows, on windows-2025 and windows-2022: the whole workspace's tests,
+  `cargo test --workspace --no-fail-fast`, with `SHARDS_REQUIRE_VMS=1`, so a VM test that
+  cannot run fails rather than skips (tests/common `cannot_run_vms`). windows-2025's log has
+  no SKIP; windows-2022's has 58, each a snapshot's restore, which its WHP cannot do (it sets
+  no APIC page back, PM M345, `cannot_snapshot`), restores running on windows-2025. Every
+  test ignored there is a measurement run by its own harness.
+- arm64 Windows: built and linted on windows-2025 (`test: false`); no test runs. GitHub's
+  windows-11-arm runner, the only hosted arm64 Windows, has the hypervisor platform
+  disabled, and enabling it needs a restart the runner cannot take: WHvCreatePartition
+  0xC0351000 before and after (PM M172, whp-probe.yml run 38097837105; again in
+  whp-passthrough.yml's run 41363714971, PM M402). Its VM tests can run on a host of its own
+  alone: the nested Windows 11 arm64 of step 10 (row 5). whp-arm64 moves the lane to
+  windows-11-arm with `test: true`, its unit tests and every VM test's SKIP, limits from its
+  first two runs (24.6 and 26.2 minutes, its M423); that lands with its backend.
+- macOS arm64: the whole workspace's tests, every VM test saying SKIP (431 in its log):
+  macos-15 is an M1 VM without Hypervisor.framework (`kern.hv_support`), as migrate-e2e.yml
+  says too. A Mac's real-VM suite runs on this project's Macs.
+
+Test files compiled for some hosts alone, which no Windows lane runs. Brought to every host
+on p/parity-close: tests/guest.rs (the default guest fetched, checked and refused, D28);
+tests/isolation.rs's vsock, engine-token and local MCP tests (its App Sandbox test stays
+macOS's); tests/login.rs's `logins_are_checked_kept_used_and_forgotten`; vmm's
+tests/fs_dir_handles.rs (its root opened through `platform::open_dir`); archive's
+tests/adversarial.rs's bounded sparse map (its deep names stay Unix's: on Windows each
+implied parent is made by a walk from the root, unmeasured at 200,000 components), and
+tests/oracle.rs's `read_as_go` and `rebases_match_their_recorded_answers` (its trees' cases
+stay Unix's, go-archive's own archives of a tree differing on Windows by design). Unix
+mechanisms with their Windows twin, or none needed:
+
+- shards' tests/budget.rs (Linux's memory controller under FUSE reads) and containers.rs's
+  `a_microvm_held_to_a_budget_gives_back_what_it_holds_cold` and
+  `..._reads_a_large_file_through_its_window_to_its_end`: Windows' groups' tests,
+  `a_groups_job_holds_its_microvms_to_its_memory_max`,
+  `a_microvm_under_a_group_is_held_to_its_budget` and
+  `what_a_joiner_reads_of_its_image_is_given_back_at_its_groups_budget` (containers.rs).
+- daemon.rs's `a_background_run_stops_to_read_its_terminal` (SIGTTIN, Unix's job control),
+  `a_daemon_raises_its_descriptor_limit` and `a_daemon_out_of_descriptors_waits_for_room`
+  (RLIMIT_NOFILE), and vmm's tests/fs_dir_budget.rs (a share under a descriptor limit set
+  by setrlimit): Windows has no per-process descriptor limit to raise or meet.
+  `runs_under_a_slice_start_after_it_was_stopped` (a systemd slice):
+  `a_groups_microvm_is_made_in_its_job_its_network_process_too` (containers.rs).
+- images.rs's `a_templates_saver_leaves_nothing_the_daemon_writes_through` and
+  `a_restore_reaches_nothing_its_saver_left_in_its_template`: warm.rs's
+  `a_template_saver_takes_a_run_only_out_of_the_templates_reach` (D196).
+- slates_fs.rs's `a_microvm_maps_a_slates_mount_file_through_its_own_dax_window`: its
+  `a_microvm_maps_a_slates_file_with_dax_and_each_side_sees_the_others_writes`.
+- context_client.rs's `a_file_not_written_whole_here_is_kept_by_no_exit` (RLIMIT_FSIZE).
+- fleet.rs and commit.rs: measurements, every test of them ignored.
+
+Not yet run on Windows, each to be brought there (open):
+
+- tests/build.rs, 129 tests of `shards build` into the store and its images run, against
+  build_windows.rs's 6, each exported to a directory (`--output type=local`): no Windows test
+  builds into the store and runs what it built. About 20 of build.rs's use a Unix API (an SSH
+  agent's socket, mkfifo, systemd-run, ps, symlinks, modes and the umask); the rest use none,
+  and want gating test by test, with the helpers only they use. referrers.rs's
+  `policies_hold_an_agent_to_its_signature` and `an_agents_sbom_is_a_scanned_referrer` wait
+  on the same.
+- tests/buildx.rs (Docker's own buildx through shards' engine): its plugin found on Windows,
+  a copy, and the engine reached at its pipe; done on whp-arm64, which lands with row 5.
+- login.rs's `a_credential_helper_that_never_answers_holds_only_what_needs_its_answer`: its
+  helper a shell script; Windows' wait on a helper (credentials.rs's `Talk`) has no test.
+- daemon.rs's `an_engine_stream_ends_with_its_client` (the Engine API's socket; engine.rs
+  reaches its pipe), context_client.rs's
+  `a_client_ended_before_its_machine_answers_leaves_no_file` (SIGINT; Windows' end through
+  `common::terminate`), boot.rs's `a_guest_grows_and_gives_back_its_memory` (the VM process
+  found by `common::vm_processes` there, as `shards run --kernel` is not it), and boot.rs's
+  two DAX window tests: each a small change, not yet run on WHP.
+- archive's tests/changes.rs (mtimes at NTFS's 100 ns, symlink_file), remote's
+  tests/loopback.rs (a helper program for sh, cat and sleep), build's tests/context.rs
+  (fsutil's answers recorded on Windows), and the git crate's
+  `a_kept_git_dir_is_one_git_reads_as_its_own`.
+- The Windows network process's AppContainer: no test holds it, as
+  `the_network_process_runs_in_app_sandbox_alone` holds macOS's.
+
+## Where step 14 stands
+
+CI on the merged whole passes: CI 42070454222 at 90de623f (integrate, landed on gpu and dev
+94838b88) and 42134267973 at b8270370 (p/internal-local) green on every target, both
+Windows runners' VM tests among them. Rows 14 and 17 are closed. Open: row 5 (WHP on arm64,
+on whp-arm64), row 9 (passthrough on a Windows host that permits DDA: the script's 12
+items), row 15 (Windows' wake policy to measure), row 16 (live moves on arm64 KVM and WHP),
+and row 18 (restarts over the kept layer on a Mac, and Windows' cost against packing); and
+the Windows test gaps above. The plan's step 14 closes once those are closed and a run of
+CI on the closing commit passes on every target, Windows' E2E included.

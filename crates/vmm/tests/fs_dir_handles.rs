@@ -1,6 +1,5 @@
 //! What a share holds for the directories a guest opens (audit V05), counted by this
 //! binary's allocator: a test of its own, so that no other test's allocations are counted.
-#![cfg(unix)]
 #![allow(clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::alloc::{GlobalAlloc, Layout, System};
@@ -83,7 +82,8 @@ fn directory_handles_hold_no_listing() {
         std::fs::write(dir.join(format!("entry-{i:0>14}")), "").unwrap();
     }
     // Room for the 101 handles opened below, whatever this host's budget for a share.
-    let root = std::fs::File::open(&dir).unwrap();
+    // A directory opens on Windows for backup semantics alone (`platform::open_dir`).
+    let root = shards_vmm::platform::open_dir(&dir).unwrap();
     let server = Server::with_budget(root.into(), true, None, 1000).unwrap();
     // The server's own tables grow first, outside what is counted.
     let warm = server.handle(&req(OPENDIR, ROOT, &[0u8; 8])).unwrap();
