@@ -271,7 +271,8 @@ fn sweep(_: &Path) {}
 /// directory of its own beside the tests' (`testhelper`), one build at a time under its
 /// lock; and copied into a directory of this process's own, which it runs from, so that no
 /// build after a change replaces a program another test process runs (which Windows
-/// refuses).
+/// refuses). `SHARDS_TESTHELPER` names one built already, for a host given tests built
+/// elsewhere, which has no cargo.
 pub fn helper() -> Result<&'static Path, String> {
     static BUILT: std::sync::OnceLock<Result<(TempDir, PathBuf), String>> = std::sync::OnceLock::new();
     match BUILT.get_or_init(build_helper) {
@@ -282,6 +283,12 @@ pub fn helper() -> Result<&'static Path, String> {
 
 fn build_helper() -> Result<(TempDir, PathBuf), String> {
     let name = format!("shards-testhelper{}", std::env::consts::EXE_SUFFIX);
+    // A host given the tests built for it, with no cargo to build with (a Windows host the
+    // tests were cross-built for), names a helper built beside them, as SHARDS_TEST_GUESTS
+    // names its guests.
+    if let Some(given) = std::env::var_os("SHARDS_TESTHELPER") {
+        return copy_helper(Path::new(&given), &name);
+    }
     let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     // A test's program is `<target>/<profile>/deps/<test>`.
     let exe = std::env::current_exe().map_err(|e| format!("this test's program: {e}"))?;
@@ -324,7 +331,11 @@ fn build_and_copy(workspace: &Path, target: &Path, name: &str) -> Result<(TempDi
             String::from_utf8_lossy(&out.stderr)
         ));
     }
-    let built = target.join("debug").join(name);
+    copy_helper(&target.join("debug").join(name), name)
+}
+
+/// `built` copied into a directory of this process's own, which it runs from.
+fn copy_helper(built: &Path, name: &str) -> Result<(TempDir, PathBuf), String> {
     let dir = TempDir::new("testhelper").map_err(|e| e.to_string())?;
     let program = dir.join(name);
     // Written by a process of its own on Unix: a file this one held open to write, a child
@@ -333,7 +344,7 @@ fn build_and_copy(workspace: &Path, target: &Path, name: &str) -> Result<(TempDi
     #[cfg(unix)]
     {
         let copied = std::process::Command::new("cp")
-            .arg(&built)
+            .arg(built)
             .arg(&program)
             .status()
             .map_err(|e| format!("cp: {e}"))?;
@@ -342,7 +353,7 @@ fn build_and_copy(workspace: &Path, target: &Path, name: &str) -> Result<(TempDi
         }
     }
     #[cfg(not(unix))]
-    std::fs::copy(&built, &program).map_err(|e| format!("{}: {e}", built.display()))?;
+    std::fs::copy(built, &program).map_err(|e| format!("{}: {e}", built.display()))?;
     Ok((dir, program))
 }
 
