@@ -7166,8 +7166,20 @@ share made ahead), and a disk's capacity was fixed when its file was opened.
   - **Its guest gives it to the workload.** Init's DEVICE built-in rescans the bus, gives
     the function to vfio-pci (driver_override, drivers_probe) through its own sysfs, and
     makes the node of it the workload opens, its guest group's (`/dev/vfio/G`) or its own
-    VFIO device node, in the workload's `/dev`, the VM's devtmpfs's numbers, mode and owner,
-    as a container given it at its start has it (D44). The workload's device filter is
+    VFIO device node, in the workload's `/dev`, with the VM's devtmpfs's numbers and mode
+    (D44), and owned by the user and group the workload runs as (its effective IDs, as a
+    plugged disk's empty top is, D38). devtmpfs makes both nodes root's and 0600 (the
+    group's and the device's devnode callbacks, vfio_devnode and vfio_device_devnode, set
+    no mode; drivers/base/devtmpfs.c's default), and a node of root's left so refused the
+    workload of an image's own user: the first nested run of the E2E's run of `User: app`
+    failed `open /dev/vfio/0: Permission denied` (EACCES, the mode's refusal; the device
+    filter's is EPERM, kernel/bpf/cgroup.c's bpf_prog_run_array_cg). A run given a group
+    at its start has it root's as Docker gives one (D154's runs use `--user root`); a
+    function plugged in is for the run's workload, whose user cannot change once it runs,
+    and the node its user's alone (0600 kept) gives nothing to another user of the
+    microVM, as containerd's and CRI-O's `device_ownership_from_security_context` give a
+    non-root container's devices its user (Kubernetes blog, "Non-root Containers And
+    Devices", 2021-11-09). The workload's device filter is
     then its run's rules and one `c MAJ:MIN rwm` for each function plugged in, given last,
     as runc's given devices come after the defaults and take precedence (`devices::allow`):
     done by init's own process, which keeps the run's rules and the program attached, and
@@ -7184,8 +7196,9 @@ share made ahead), and a disk's capacity was fixed when its file was opened.
     it off its bus, its container and its file in KVM let go of, the host's again.
   - **Verified:** unit tests of the slots' endpoints (vacant, plugged, followed, unplugged,
     a shared follower kept), of the slots' MSIs, of the firmware's endpoints, of a slot's
-    endpoint across a plug that fails, of the filter's rules and their refusals, and of the
-    daemon's reading of init's answers. Its E2E (`a_hosts_function_is_plugged_into_a_run
+    endpoint across a plug that fails, of the filter's rules and their refusals, of the
+    workload's IDs its node is given (hotplug.rs `the_workloads_user_is_its_effective_ids`),
+    and of the daemon's reading of init's answers. Its E2E (`a_hosts_function_is_plugged_into_a_run
     _for_its_workload`, tests/plug.rs), nested as D214's VFIO test is (`SHARDS_L1_PCI_TESTS
     =01.0 SHARDS_L1_TESTS=plug:a_hosts_function`): a run given `/dev/vfio/vfio`, the L1
     guest's edu function plugged in, its workload moving a page through it by DMA through
