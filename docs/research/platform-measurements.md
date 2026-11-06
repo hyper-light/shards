@@ -17408,23 +17408,29 @@ revision before comparing a changed API/implementation.
 
     The first round's host plug alone is slow, every run: 63.8 ms here against 0.87 to
     1.11 ms for the 29 after it, and 143.2 ms and 83.6 ms, each its run's single maximum
-    and its first round, in two earlier runs at other revisions. **Its cause is not yet
-    measured.** What only a VM's first plug does, by the code: it raises the process's
-    locked-memory limit (`raise_memlock`, a no-op once raised), makes KVM's VFIO device at
-    its first file (`KVM_CREATE_DEVICE`, `VfioHost::add_file`), and pins guest RAM no plug
-    pinned before, each later plug's container pinning the same RAM again; and the test
-    plugs its first round right after `vm::start`, before its guest says `SHARDS-PLUG WAIT
-    0`, its later ones while the guest waits on its console. The hypothesis to test, not
-    a finding: the first pin faults in guest RAM the VM has never touched, and later pins
-    find it resident. From p/vfio-plug-steps on, the host plug times each of its own steps
-    (`vfio::Clock`, `Plugged::steps`, at debug in the VM's log too): the test prints each
-    round's (`PLUG-STEPS round N: memlock …, slot …, container …, group-open …, kvm-file …,
-    group-set …, iommu-set …, dma-map …, device-fd …, regions …, reset …, bars …,
-    interrupts …, bar-mmap …, bar-slots …, bus … us`) and each step's n, p50, p90, p99 and
-    max (`PLUG-STATS a host's function, host plug's STEP`); `dma-map` slow alone on the
-    first round would put its time in the pin, `kvm-file` in KVM's device, and steps slow
-    that do no first-only work would point at what runs beside the plug, the guest's
-    start, which a first round plugged after `WAIT 0` would then test. Through the CLI, plug.rs's
+    and its first round, in two earlier runs at other revisions. **Its time is the first
+    pin of guest RAM.** At 89194593 (p/integrate-1106, the host plug timing each of its own
+    steps: `vfio::Clock`, `Plugged::steps`), the same host and harness, 30 rounds, µs:
+
+    | Step | n | p50 | p90 | p99 | max | round 0 | rounds 1 to 29 |
+    |---|---|---|---|---|---|---|---|
+    | host plug, whole | 30 | 602 | 626 | 170011 | 170011 | 170011 | 552 to 631 |
+    | dma-map (`VFIO_IOMMU_MAP_DMA`, the pin) | 30 | 429 | 450 | 167327 | 167327 | 167327 | 389 to 458 |
+    | group-set (`VFIO_GROUP_SET_CONTAINER`) | 30 | 7 | 9 | 2298 | 2298 | 2298 | 4 to 20 |
+    | device-fd | 30 | 93 | 109 | 271 | 271 | 271 | 72 to 118 |
+    | kvm-file (KVM's VFIO device made in round 0) | 30 | 1 | 1 | 4 | 4 | 4 | 0 to 1 |
+
+    Round 0's 170.0 ms are 167.3 ms of `dma-map` and 2.3 ms of `group-set`, every other
+    step at most 38 µs in any round; each later round maps the same range, guest RAM whole,
+    in 0.39 to 0.46 ms. Neither the memlock raise nor KVM's device costs anything
+    measurable, and no step that does no first-only work is slow, so the guest's start
+    beside round 0 takes nothing of it. Type1 pins through `vfio_pin_pages_remote`,
+    `pin_user_pages_remote` with `FOLL_WRITE`, which faults in a page not yet present
+    (drivers/vfio/vfio_iommu_type1.c; mm/gup.c): the first pin is where guest RAM the VM
+    had not touched is first given host pages, and a later container's pin of the same RAM
+    finds them resident. That is VFIO's own contract for a function outside a guest's
+    IOMMU, all of guest RAM pinned for its DMA (D154), not a cost of shards' plug: a
+    microVM booted with a function pays it in its start instead. Through the CLI, plug.rs's
     `a_hosts_function_is_plugged_into_a_run_for_its_workload` passes nested at the same
     revision, as a user not root, by group and by device node through iommufd; its steps
     are not timed yet.

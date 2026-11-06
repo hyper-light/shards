@@ -7142,11 +7142,13 @@ share made ahead), and a disk's capacity was fixed when its file was opened.
   p99, max): the host's plug 951 (1062, 63804, 63804), the guest's rescan to its read of
   the BAR 12084 (12183, 14074, 14074), its remove 36 (65, 142, 142), the host's unplug 927
   (961, 1004, 1004). The plug's one slow round is its first, in each of three runs (63.8,
-  143.2 and 83.6 ms), the rest 0.87 to 1.11 ms; its cause not yet measured. The plug times
-  its own steps (`vfio::Clock`, `Plugged::steps`, the VM's log at debug), which the test
-  prints each round (`PLUG-STEPS`) and as each step's n, p50, p90, p99 and max, for the next
-  nested run to say which step the first round's time is in (M430 lists what only a first
-  plug does).
+  143.2 and 83.6 ms), the rest 0.87 to 1.11 ms. The plug times its own steps
+  (`vfio::Clock`, `Plugged::steps`, the VM's log at debug), which the test prints each round
+  (`PLUG-STEPS`) and as each step's n, p50, p90, p99 and max: at 89194593 the first round's
+  170.0 ms are 167.3 ms of `VFIO_IOMMU_MAP_DMA`, type1's first pin of guest RAM, which
+  faults in what the VM had not touched (vfio_pin_pages_remote, pin_user_pages_remote),
+  later rounds' pins 0.39 to 0.46 ms (PM M430): VFIO's own cost for a function outside a
+  guest's IOMMU, a boot with one paying it in its start.
 - **A host's function plugged into a run for its workload** (`shards plug function
   MICROVM FUNCTION`, `shards unplug function MICROVM FUNCTION`; Linux): FUNCTION the host's
   name of it (`0000:01:00.0`), bound to vfio-pci, or its VFIO device node
@@ -7261,15 +7263,13 @@ share made ahead), and a disk's capacity was fixed when its file was opened.
     VMM's own refusal off Linux is `vm`'s `a_hosts_pci_function_is_refused_with_its_oss_own
     _limit`. The in-process test's steps' costs, n, p50, p90, p99 and max, as M430 gives a
     disk's, are `docs/research/measurements/pci-hotplug/vfio-nested.sh`'s (its
-    `SHARDS_PLUG_ROUNDS` rounds, nested): 30 rounds at 8928fbe4 in PM M430, above, the host
-    plug's first round's 63.8 ms not yet split.
+    `SHARDS_PLUG_ROUNDS` rounds, nested): 30 rounds at 8928fbe4 and at 89194593, its steps
+    split, in PM M430, above.
 - **Not yet:** tests/plug.rs and the in-process test's shared directory on jupiter, and
   their steps' numbers on WHP; a plugged share's DAX window; a plugged function's 64-bit BARs
   past the 32-bit window; a host's function plugged on bare-metal hardware (no host here
   has a spare one bound to vfio-pci: tested nested, on QEMU edu's model); the guest's
-  remove's 29 ms on KVM x86_64, not yet split (PM M430); a host's function's first plug of
-  a VM, 64 to 143 ms nested where the rest take a millisecond, its steps timed but not yet
-  run (PM M430).
+  remove's 29 ms on KVM x86_64, not yet split (PM M430).
 
 ### D208. A GPU on every Linux host: musl's GPU VM process, and Intel's GPUs (built)
 
