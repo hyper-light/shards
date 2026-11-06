@@ -1537,6 +1537,12 @@ impl Run {
         self.timing_field("footprint_kib")
     }
 
+    /// The VMM process's peak commit charge as it reported, in KiB: Windows' alone, which
+    /// charges memory as it is committed, touched or not (PM M413); 0 elsewhere.
+    pub fn peak_commit_kib(&self) -> Option<u128> {
+        self.timing_field("peak_commit_kib")
+    }
+
     /// What the VM's guest reported free, given back or not (D151), in KiB.
     pub fn reported_kib(&self) -> Option<u128> {
         self.timing_field("reported_kib")

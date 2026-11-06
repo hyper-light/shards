@@ -1247,6 +1247,13 @@ pub fn peak_rss_kib() -> u64 {
     memory().map_or(0, |m| (m.PeakWorkingSetSize / 1024) as u64)
 }
 
+/// This process's peak commit charge so far, in KiB: the most private memory it has had
+/// committed at once (PeakPagefileUsage), touched or not, which its peak working set does
+/// not count, and Windows charges as memory is committed (PM M413); 0 where unknown.
+pub fn peak_commit_kib() -> u64 {
+    memory().map_or(0, |m| (m.PeakPagefileUsage / 1024) as u64)
+}
+
 /// This process's own memory now, in KiB: its private working set, what it holds of the
 /// host's memory that no other process shares (PROCESS_MEMORY_COUNTERS_EX2), as the daemon
 /// reads a VM process's (`platform::process_usage`); where Windows counts none, its working
