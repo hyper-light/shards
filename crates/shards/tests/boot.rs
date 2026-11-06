@@ -1410,7 +1410,20 @@ fn a_guest_grows_and_gives_back_its_memory() {
     let full = footprint();
     stdin.write_all(b"\n").unwrap();
     let unplugged_ms: u64 = until("SHARDS-TEST UNPLUGGED").parse().unwrap();
-    let given_back = footprint();
+    // The guest's kernel counts a memory block gone from MemTotal as it takes it offline,
+    // before it asks the device to unplug it (drivers/virtio/virtio_mem.c,
+    // virtio_mem_sbm_unplug_sb_online: virtio_mem_fake_offline, then
+    // virtio_mem_sbm_unplug_sb): as the guest says it gave all back, its last block, 128
+    // MiB, may still be the host's to give back, as it was on windows-2025 (964 MiB, then
+    // 196). What it gives back stays given back until the guest is answered, so the
+    // footprint is read until it has fallen, or the test's time is up.
+    let given_back = loop {
+        let now = footprint();
+        if full.saturating_sub(now) >= 768 << 20 || start.elapsed() >= TIMEOUT {
+            break now;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
     stdin.write_all(b"\n").unwrap();
     until("SHARDS-TEST PASS");
     eprintln!(
