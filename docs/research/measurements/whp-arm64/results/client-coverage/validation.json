@@ -1,0 +1,10 @@
+{
+  "all_eight_lint_targets_exit": 0,
+  "fresh_guest_build_exit": 0,
+  "fresh_windows_build_exit": 0,
+  "native_powershell_parse_exit": 0,
+  "native_missing_client_control_exit": 0,
+  "native_client_versions": "not run",
+  "native_feature_tests": "not run",
+  "full_suite": "not qualified"
+}

@@ -863,35 +863,7 @@ pub fn restore(
 /// ([`mapped::every_run`]).
 #[cfg(hv = "whp")]
 fn pre_fault(vcpu: &hv::Vcpu, working_set: &[hv::Touch]) -> (usize, usize) {
-    let mut ahead = 0;
-    let mut count = 0;
-    for write in [false, true] {
-        let t0 = crate::log::uptime_us();
-        let runs = mapped::runs(working_set.iter().filter(|t| t.written == write).map(|t| t.gpa));
-        let made = runs.len();
-        count += made;
-        let mut done = 0;
-        if vcpu.pre_fault_runs(&runs, write).is_ok() {
-            done = runs.iter().map(|(_, len)| (len / PAGE) as usize).sum();
-        } else {
-            let every = mapped::every_run(runs, |gpa, len| {
-                vcpu.pre_fault_runs(&[(gpa, len)], write)
-                    .map(|()| done += (len / PAGE) as usize)
-                    .map_err(|e| e.to_string())
-            });
-            if let Err(e) = every {
-                warn!("mapping the working set ahead {e}: the guest faults those pages in");
-            }
-        }
-        ahead += done;
-        if write && done > 0 {
-            info!(
-                "copied {done} written working-set pages ahead, in {made} runs, in {} us",
-                crate::log::uptime_us().saturating_sub(t0)
-            );
-        }
-    }
-    (ahead, count)
+    mapped::populate(vcpu, working_set)
 }
 
 /// Maps every page of `working_set` into the stage-2 tables; how many it mapped, and in how

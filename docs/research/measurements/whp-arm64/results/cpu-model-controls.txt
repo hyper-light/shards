@@ -1,0 +1,1760 @@
+BOOT CONTROLS, NO WHP TEST RESULTS.
+
+== a76-firmware-abort.txt
+2026-11-03T18:19:09.242926+00:00
+Controller stopped after firmware-only BL1 failure; Windows and all four planned tests did not start.
+Captured CPU0 EL3h PC 0x4b30, LR 0x580c; resolving against the existing BL1 ELF.
+
+== a76-firmware-serial.txt
+NOTICE:  Booting Trusted Firmware
+NOTICE:  BL1: v2.15.0(debug):v2.15.0
+NOTICE:  BL1: Built : 21:14:56, Nov  2 2026
+INFO:    BL1: RAM 0xe0ee000 - 0xe0f6000
+INFO:    BL1: cortex_a76: CPU workaround for erratum 2 was applied
+
+== a76-firmware-registers.txt
+iininfinfoinfo info rinfo reinfo reginfo regiinfo regisinfo registinfo registeinfo registerinfo registersinfo registers info registers -info registers -a
+
+CPU#0
+ PC=0000000000004b30 X00=0000000000000000 X01=0000000009000000
+X02=0000000000000001 X03=0000000000000000 X04=0000000000000000
+X05=0000000000008210 X06=000000000e0efa58 X07=0000000000000000
+X08=0000000000004238 X09=0000000000000000 X10=0000000000000000
+X11=0000000000000000 X12=0000000000000000 X13=0000000000000038
+X14=0000000000000000 X15=0000000000000000 X16=000000000e001000
+X17=000000000e0fffff X18=000000000e0fffff X19=0000000000008120
+X20=0000000000000041 X21=0000000000006df0 X22=0000000000007aba
+X23=0000000000007c05 X24=0000000000007a42 X25=0000000000000001
+X26=00000000000076c1 X27=00000000000074fd X28=0000000000006cb0
+X29=000000000e0ef0c0 X30=000000000000580c  SP=0000000000000000
+PSTATE=00000000000003cd ---- EL3h    FPU disabled
+
+CPU#1
+ PC=0000000000004bc4 X00=0000000000000000 X01=000000000e000040
+X02=00000000cafecafe X03=00000000ff00fff0 X04=0000000000008150
+X05=0000000000008210 X06=0000000000000000 X07=0000000000000000
+X08=0000000000000000 X09=0000000000000000 X10=0000000000000000
+X11=0000000000000000 X12=0000000000000000 X13=0000000000000000
+X14=0000000000000041 X15=0000000000000000 X16=0000000000000000
+X17=0000000000000000 X18=0000000000000000 X19=0000000000000000
+X20=0000000000000000 X21=0000000000000000 X22=0000000000000000
+X23=0000000000000000 X24=0000000000000000 X25=0000000000000000
+X26=0000000000000000 X27=0000000000000000 X28=0000000000000000
+X29=0000000000000000 X30=0000000000004b74  SP=0000000000000000
+PSTATE=00000000800002cd N--- EL3h    FPU disabled
+
+CPU#2
+ PC=0000000000004bc4 X00=0000000000000000 X01=000000000e000080
+X02=00000000cafecafe X03=00000000ff00fff0 X04=0000000000008150
+X05=0000000000008210 X06=0000000000000000 X07=0000000000000000
+X08=0000000000000000 X09=0000000000000000 X10=0000000000000000
+X11=0000000000000000 X12=0000000000000000 X13=0000000000000000
+X14=0000000000000041 X15=0000000000000000 X16=0000000000000000
+X17=0000000000000000 X18=0000000000000000 X19=0000000000000000
+X20=0000000000000000 X21=0000000000000000 X22=0000000000000000
+X23=0000000000000000 X24=0000000000000000 X25=0000000000000000
+X26=0000000000000000 X27=0000000000000000 X28=0000000000000000
+X29=0000000000000000 X30=0000000000004b74  SP=0000000000000000
+PSTATE=00000000800002cd N--- EL3h    FPU disabled
+
+CPU#3
+ PC=0000000000004bc4 X00=0000000000000000 X01=000000000e0000c0
+X02=00000000cafecafe X03=00000000ff00fff0 X04=0000000000008150
+X05=0000000000008210 X06=0000000000000000 X07=0000000000000000
+X08=0000000000000000 X09=0000000000000000 X10=0000000000000000
+X11=0000000000000000 X12=0000000000000000 X13=0000000000000000
+X14=0000000000000041 X15=0000000000000000 X16=0000000000000000
+X17=0000000000000000 X18=0000000000000000 X19=0000000000000000
+X20=0000000000000000 X21=0000000000000000 X22=0000000000000000
+X23=0000000000000000 X24=0000000000000000 X25=0000000000000000
+X26=0000000000000000 X27=0000000000000000 X28=0000000000000000
+X29=0000000000000000 X30=0000000000004b74  SP=0000000000000000
+PSTATE=00000000800002cd N--- EL3h    FPU disabled
+(qemu)
+
+== a76-firmware-symbols.txt
+plat_panic_handler
+/Users/adalundhe/g121-a4-winarm/tfa-src/plat/common/aarch64/platform_helpers.S:70
+SynchronousExceptionSP0
+/Users/adalundhe/g121-a4-winarm/tfa-src/bl1/aarch64/bl1_exceptions.S:28
+
+== pmuoff-boot-aborted.txt
+2026-11-03T18:39:10.000044+00:00
+PMU-off boot trial stopped before SSH readiness after more than 8 min. No host probe or VM test started.
+Screen remained at TianoCore/Windows Boot Manager; CPU0 NS EL2h PC 0x63caa5a0c. No Windows failure cause inferred.
+
+== pmuoff-boot-serial.txt
+NOTICE:  Booting Trusted Firmware
+NOTICE:  BL1: v2.15.0(debug):v2.15.0
+NOTICE:  BL1: Built : 21:14:56, Nov  2 2026
+INFO:    BL1: RAM 0xe0ee000 - 0xe0f6000
+INFO:    BL1: Loading BL2
+INFO:    Loading image id=1 at address 0xe05b000
+INFO:    Image id=1 loaded: 0xe05b000 - 0xe064204
+NOTICE:  BL1: Booting BL2
+INFO:    Entry point address = 0xe05b000
+INFO:    SPSR = 0x3c5
+NOTICE:  BL2: v2.15.0(debug):v2.15.0
+NOTICE:  BL2: Built : 21:14:57, Nov  2 2026
+INFO:    BL2: Doing platform setup
+INFO:    BL2: Loading image id 3
+INFO:    Loading image id=3 at address 0xe090000
+INFO:    Image id=3 loaded: 0xe090000 - 0xe0a089b
+INFO:    BL2: Loading image id 5
+INFO:    Loading image id=5 at address 0x60000000
+INFO:    Image id=5 loaded: 0x60000000 - 0x60300000
+NOTICE:  BL1: Booting BL31
+INFO:    Entry point address = 0xe090000
+INFO:    SPSR = 0x3cd
+NOTICE:  BL31: v2.15.0(debug):v2.15.0
+NOTICE:  BL31: Built : 21:14:57, Nov  2 2026
+INFO:    GICv3 without legacy support detected.
+INFO:    ARM GICv3 driver initialized in EL3
+INFO:    Maximum SPI INTID supported: 287
+INFO:    BL31: Initializing runtime services
+INFO:    BL31: Preparing for EL3 exit to normal world
+INFO:    Entry point address = 0x60000000
+INFO:    SPSR = 0x3c9
+Loading driver at 0x00060009160 EntryPoint=0x00000000000
+ArmVirtGetMemoryMap: Dumping System DRAM Memory Map:
+	PhysicalBase: 0x40000000
+	VirtualBase: 0x40000000
+	Length: 0x600000000
+UEFI firmware (version  built at 05:10:31 on Nov  3 2026)
+PlatformPeim: PL011 UART (console) @ 0x9000000
+PlatformPeim: PL011 UART (debug) @ 0x9000000
+add-symbol-file /Users/adalundhe/g121-a4-winarm/edk2-src/Build/ArmVirtQemuKernel-AArch64/DEBUG_CLANGDWARF/AARCH64/MdeModulePkg/Core/Dxe/DxeMain/DEBUG/DxeCore.dll 0x63EFD3000
+Loading DxeCore at 0x063EFD2000 EntryPoint=0x063EFD306C
+CoreInitializeMemoryServices:
+  BaseAddress - 0x63C001000 Length - 0x2FB1000 MinimalMemorySizeNeeded - 0x5B4000
+AllocateMemoryTypeInformationBins: Allocated 0x63EA00000 - 0x63EFA3FFF for memory bins
+InstallProtocolInterface: 5B1B31A1-9562-11D2-8E3F-00A0C969723B 63F009EE8
+ProtectUefiImageCommon - 0x3F009EE8
+  - 0x000000063EFD2000 - 0x0000000000055000
+DxeMain: MemoryBaseAddress=0x63C001000 MemoryLength=0x2FB1000
+add-symbol-file /Users/adalundhe/g121-a4-winarm/edk2-src/Build/ArmVirtQemuKernel-AArch64/DEBUG_CLANGDWARF/AARCH64/MdeModulePkg/Core/Dxe/DxeMain/DEBUG/DxeCore.dll 0x63EFD3000
+HOBLIST address in DXE = 0x63E9FE018
+Memory Allocation 0x00000004 0x63FFFB000 - 0x63FFFBFFF
+Memory Allocation 0x00000004 0x63FFFA000 - 0x63FFFAFFF
+Memory Allocation 0x00000004 0x63FFF9000 - 0x63FFF9FFF
+Memory Allocation 0x00000004 0x63FFF8000 - 0x63FFF8FFF
+Memory Allocation 0x00000004 0x63FFF7000 - 0x63FFF7FFF
+Memory Allocation 0x00000004 0x63FFF6000 - 0x63FFF6FFF
+Memory Allocation 0x00000004 0x63FFF5000 - 0x63FFF5FFF
+Memory Allocation 0x00000004 0x63FFF4000 - 0x63FFF4FFF
+Memory Allocation 0x00000004 0x63FFF3000 - 0x63FFF3FFF
+Memory Allocation 0x00000004 0x63EFB2000 - 0x63EFD1FFF
+Memory Allocation 0x00000004 0x63FFF0000 - 0x63FFF2FFF
+Memory Allocation 0x00000004 0x63FFE0000 - 0x63FFEFFFF
+Memory Allocation 0x00000004 0x63F803000 - 0x63FFDFFFF
+Memory Allocation 0x00000004 0x63F027000 - 0x63F802FFF
+Memory Allocation 0x00000003 0x63EFD2000 - 0x63F026FFF
+Memory Allocation 0x00000003 0x63EFD2000 - 0x63F026FFF
+Memory Allocation 0x00000004 0x63EFB2000 - 0x63EFD1FFF
+Memory Allocation 0x00000007 0x63FFFC000 - 0x63FFFFFFF
+FV Hob            0x60008000 - 0x602FFFFF
+FV Hob            0x63F027000 - 0x63F801FFF
+FV2 Hob           0x63F027000 - 0x63F801FFF
+                  00000000-0000-0000-0000-000000000000 - 9E21FD93-9C72-4C15-8C4B-E77F1DB2D792
+FV3 Hob           0x63F027000 - 0x63F801FFF - 0x0 - 0x1
+                  00000000-0000-0000-0000-000000000000 - 9E21FD93-9C72-4C15-8C4B-E77F1DB2D792
+InstallProtocolInterface: D8117CFE-94A6-11D4-9A3A-0090273FC14D 63F009328
+InstallProtocolInterface: 8F644FA9-E850-4DB1-9CE2-0B44698E8DA4 63E9FA330
+InstallProtocolInterface: 09576E91-6D3F-11D2-8E39-00A0C969723B 63E9FA618
+InstallProtocolInterface: 8F644FA9-E850-4DB1-9CE2-0B44698E8DA4 63E9F6B30
+InstallProtocolInterface: 09576E91-6D3F-11D2-8E39-00A0C969723B 63E9F6E98
+InstallProtocolInterface: 220E73B6-6BDB-4413-8405-B974B108619A 63E9F68B0
+InstallProtocolInterface: 220E73B6-6BDB-4413-8405-B974B108619A 63E9F6230
+InstallProtocolInterface: FC1BCDB0-7D31-49AA-936A-A4600D9DD083 63F00A650
+Loading driver 9B680FCE-AD6B-4F3A-B60B-F59899003443
+InstallProtocolInterface: 5B1B31A1-9562-11D2-8E3F-00A0C969723B 63E15BBC0
+add-symbol-file /Users/adalundhe/g121-a4-winarm/edk2-src/Build/ArmVirtQemuKernel-AArch64/DEBUG_CLANGDWARF/AARCH64/MdeModulePkg/Universal/DevicePathDxe/DevicePathDxe/DEBUG/DevicePathDxe.dll 0x63E131000
+Loading driver at 0x0063E130000 EntryPoint=0x0063E131560 DevicePathDxe.efi
+InstallProtocolInterface: BC62157E-3E33-4FEC-9920-2D3B36D750DF 63E15B998
+ProtectUefiImageCommon - 0x3E15BBC0
+  - 0x000000063E130000 - 0x0000000000014000
+InstallProtocolInterface: 0379BE4E-D706-437D-B037-EDB82FB772A4 63E13FD18
+InstallProtocolInterface: 8B843E20-8132-4852-90CC-551A4E4A7F1C 63E13FD58
+InstallProtocolInterface: 05C99A21-C70F-4AD2-8A5F-35DF3343F51E 63E13FD68
+Loading driver 80CF7257-87AB-47F9-A3FE-D50B76D89541
+InstallProtocolInterface: 5B1B31A1-9562-11D2-8E3F-00A0C969723B 63E14B040
+add-symbol-file /Users/adalundhe/g121-a4-winarm/edk2-src/Build/ArmVirtQemuKernel-AArch64/DEBUG_CLANGDWARF/AARCH64/MdeModulePkg/Universal/PCD/Dxe/Pcd/DEBUG/PcdDxe.dll 0x63E125000
+Loading driver at 0x0063E124000 EntryPoint=0x0063E125560 PcdDxe.efi
+InstallProtocolInterface: BC62157E-3E33-4FEC-9920-2D3B36D750DF 63E14BD18
+ProtectUefiImageCommon - 0x3E14B040
+  - 0x000000063E124000 - 0x000000000000C000
+InstallProtocolInterface: 11B34006-D85B-4D0A-A290-D5A571310EF7 63E12E040
+InstallProtocolInterface: 13A3F0F6-264A-3EF0-F2E0-DEC512342F34 63E12E138
+InstallProtocolInterface: 5BE40F57-FA68-4610-BBBF-E9C5FCDAD365 63E12E1C8
+InstallProtocolInterface: FD0F4478-0EFD-461D-BA2D-E58C45FD5F5E 63E12E1E0
+Loading driver 9A871B00-1C16-4F61-8D2C-93B6654B5AD6
+InstallProtocolInterface: 5B1B31A1-9562-11D2-8E3F-00A0C969723B 63E1580C0
+add-symbol-file /Users/adalundhe/g121-a4-winarm/edk2-src/Build/ArmVirtQemuKernel-AArch64/DEBUG_CLANGDWARF/AARCH64/EmbeddedPkg/Drivers/FdtClientDxe/FdtClientDxe/DEBUG/FdtClientDxe.dll 0x63E11B000
+Loading driver at 0x0063E11A000 EntryPoint=0x0063E11B738 FdtClientDxe.efi
+InstallProtocolInterface: BC62157E-3E33-4FEC-9920-2D3B36D750DF 63E158918
+ProtectUefiImageCommon - 0x3E1580C0
+  - 0x000000063E11A000 - 0x000000000000A000
+InitializeFdtClientDxe: DTB @ 0x63FFF0000
+InstallProtocolInterface: E11FACA0-4710-4C8E-A7A2-01BAA2591B4C 63E122050
+Loading driver B8D9777E-D72A-451F-9BDB-BAFB52A68415
+InstallProtocolInterface: 5B1B31A1-9562-11D2-8E3F-00A0C969723B 63E157040
+add-symbol-file /Users/adalundhe/g121-a4-winarm/edk2-src/Build/ArmVirtQemuKernel-AArch64/DEBUG_CLANGDWARF/AARCH64/ArmPkg/Drivers/CpuDxe/CpuDxe/DEBUG/ArmCpuDxe.dll 0x63E0FC000
+Loading driver at 0x0063E0FB000 EntryPoint=0x0063E0FD808 ArmCpuDxe.efi
+InstallProtocolInterface: BC62157E-3E33-4FEC-9920-2D3B36D750DF 63E157D98
+ProtectUefiImageCommon - 0x3E157040
+  - 0x000000063E0FB000 - 0x000000000000F000
+ReplaceTableEntry: splitting block entry with MMU disabled
+InstallProtocolInterface: 26BACCB1-6F42-11D4-BCE7-0080C73C8881 63E106030
+InstallProtocolInterface: F4560CF6-40EC-4B4A-A192-BF1D57D0B189 63E1060B8
+MemoryProtectionCpuArchProtocolNotify:
+InitializeDxeNxMemoryProtectionPolicy: StackBase = 0x000000063EFB2000  StackSize = 0x0000000000020000
+InitializeDxeNxMemoryProtectionPolicy: applying strict permissions to active memory regions
+InitializeDxeNxMemoryProtectionPolicy: applying strict permissions to inactive memory regions
+ProtectUefiImageCommon - 0x3F009EE8
+  - 0x000000063EFD2000 - 0x0000000000055000
+ProtectUefiImageCommon - 0x3E15BBC0
+  - 0x000000063E130000 - 0x0000000000014000
+ProtectUefiImageCommon - 0x3E14B040
+  - 0x000000063E124000 - 0x000000000000C000
+ProtectUefiImageCommon - 0x3E1580C0
+  - 0x000000063E11A000 - 0x000000000000A000
+ProtectUefiImageCommon - 0x3E157040
+  - 0x000000063E0FB000 - 0x000000000000F000
+Loading driver B601F8C4-43B7-4784-95B1-F4226CB40CEE
+InstallProtocolInterface: 5B1B31A1-9562-11D2-8E3F-00A0C969723B 63E152040
+add-symbol-file /Users/adalundhe/g121-a4-winarm/edk2-src/Build/ArmVirtQemuKernel-AArch64/DEBUG_CLANGDWARF/AARCH64/MdeModulePkg/Core/RuntimeDxe/RuntimeDxe/DEBUG/RuntimeDxe.dll 0x63EDF0000
+Loading driver at 0x0063EDE0000 EntryPoint=0x0063EDF0168 RuntimeDxe.efi
+InstallProtocolInterface: BC62157E-3E33-4FEC-9920-2D3B36D750DF 63E154218
+ProtectUefiImageCommon - 0x3E152040
+  - 0x000000063EDE0000 - 0x0000000000040000
+InstallProtocolInterface: B7DFB4E1-052F-449F-87BE-9818FC91B733 63EE00040
+Loading driver F80697E9-7FD6-4665-8646-88E33EF71DFC
+InstallProtocolInterface: 5B1B31A1-9562-11D2-8E3F-00A0C969723B 63E1523C0
+add-symbol-file /Users/adalundhe/g121-a4-winarm/edk2-src/Build/ArmVirtQemuKernel-AArch64/DEBUG_CLANGDWARF/AARCH64/MdeModulePkg/Universal/SecurityStubDxe/SecurityStubDxe/DEBUG/SecurityStubDxe.dll 0x63E0F3000
+Loading driver at 0x0063E0F2000 EntryPoint=0x0063E0F3650 SecurityStubDxe.efi
+InstallProtocolInterface: BC62157E-3E33-4FEC-9920-2D3B36D750DF 63E152818
+ProtectUefiImageCommon - 0x3E1523C0
+  - 0x000000063E0F2000 - 0x0000000000009000
+InstallProtocolInterface: 94AB2F58-1438-4EF1-9152-18941A3A0E68 63E0F9048
+InstallProtocolInterface: A46423E3-4617-49F1-B9FF-D1BFA9115839 63E0F9040
+InstallProtocolInterface: 15853D7C-3DDF-43E0-A1CB-EBF85B8F872C 63E0F9070
+Loading driver C8339973-A563-4561-B858-D8476F9DEFC4
+InstallProtocolInterface: 5B1B31A1-9562-11D2-8E3F-00A0C969723B 63E150240
+add-symbol-file /Users/adalundhe/g121-a4-winarm/edk2-src/Build/ArmVirtQemuKernel-AArch64/DEBUG_CLANGDWARF/AARCH64/MdeModulePkg/Universal/Metronome/Metronome/DEBUG/Metronome.dll 0x63E145000
+Loading driver at 0x0063E144000 EntryPoint=0x0063E145140 Metronome.efi
+InstallProtocolInterface: BC62157E-3E33-4FEC-9920-2D3B36D750DF 63E14FF98
+ProtectUefiImageCommon - 0x3E150240
+  - 0x000000063E144000 - 0x0000000000007000
+InstallProtocolInterface: 26BACCB2-6F42-11D4-BCE7-0080C73C8881 63E149020
+Loading driver 348C4D62-BFBD-4882-9ECE-C80BB1C4783B
+InstallProtocolInterface: 5B1B31A1-9562-11D2-8E3F-00A0C969723B 63E14F840
+add-symbol-file /Users/adalundhe/g121-a4-winarm/edk2-src/Build/ArmVirtQemuKernel-AArch64/DEBUG_CLANGDWARF/AARCH64/MdeModulePkg/Universal/HiiDatabaseDxe/HiiDatabaseDxe/DEBUG/HiiDatabase.dll 0x63E0A6000
+Loading driver at 0x0063E0A5000 EntryPoint=0x0063E0A6650 HiiDatabase.efi
+InstallProtocolInterface: BC62157E-3E33-4FEC-9920-2D3B36D750DF 63E14F618
+ProtectUefiImageCommon - 0x3E14F840
+  - 0x000000063E0A5000 - 0x0000000000026000
+InstallProtocolInterface: E9CA4775-8657-47FC-97E7-7ED65A084324 63E0C91F8
+InstallProtocolInterface: 0FD96974-23AA-4CDC-B9CB-98D17750322A 63E0C9270
+InstallProtocolInterface: EF9FC172-A1B2-4693-B327-6D32FC416042 63E0C9298
+InstallProtocolInterface: 587E72D7-CC50-4F79-8209-CA291FC1A10F 63E0C92F0
+InstallProtocolInterface: 0A8BADD5-03B8-4D19-B128-7B8F0EDAA596 63E0C9320
+InstallProtocolInterface: 31A6406A-6BDF-4E46-B2A2-EBAA89C40920 63E0C9218
+InstallProtocolInterface: 1A1241E6-8F19-41A9-BC0E-E8EF39E06546 63E0C9240
+Loading driver 9A5163E7-5C29-453F-825C-837A46A81E15
+InstallProtocolInterface: 5B1B31A1-9562-11D2-8E3F-00A0C969723B 63E14E1C0
+add-symbol-file /Users/adalundhe/g121-a4-winarm/edk2-src/Build/ArmVirtQemuKernel-AArch64/DEBUG_CLANGDWARF/AARCH64/MdeModulePkg/Universal/SerialDxe/SerialDxe/DEBUG/SerialDxe.dll 0x63E10C000
+Loading driver at 0x0063E10B000 EntryPoint=0x0063E10C140 SerialDxe.efi
+InstallProtocolInterface: BC62157E-3E33-4FEC-9920-2D3B36D750DF 63E14E498
+ProtectUefiImageCommon - 0x3E14E1C0
+  - 0x000000063E10B000 - 0x0000000000007000
+InstallProtocolInterface: BB25CF6F-F1D4-11D2-9A0C-0090273FC1FD 63E110070
+InstallProtocolInterface: 09576E91-6D3F-11D2-8E39-00A0C969723B 63E110020
+Loading driver D93CE3D8-A7EB-4730-8C8E-CC466A9ECC3C
+InstallProtocolInterface: 5B1B31A1-9562-11D2-8E3F-00A0C969723B 63E14DB40
+add-symbol-file /Users/adalundhe/g121-a4-winarm/edk2-src/Build/ArmVirtQemuKernel-AArch64/DEBUG_CLANGDWARF/AARCH64/MdeModulePkg/Universal/ReportStatusCodeRouter/RuntimeDxe/ReportStatusCodeRouterRuntimeDxe/DEBUG/ReportStatusCodeRouterRuntimeDxe.dll 0x63EDA0Loading driver at 0x0063ED90000 EntryPoint=0x0063EDA0560 ReportStatusCodeRouterRuntimeDxe.efi
+InstallProtocolInterface: BC62157E-3E33-4FEC-9920-2D3B36D750DF 63E14D518
+ProtectUefiImageCommon - 0x3E14DB40
+  - 0x000000063ED90000 - 0x0000000000040000
+InstallProtocolInterface: 86212936-0E76-41C8-A03A-2AF2FC1C39E2 63EDB0048
+InstallProtocolInterface: D2B2B828-0826-48A7-B3DF-983C006024F0 63EDB0040
+Loading driver A210F973-229D-4F4D-AA37-9895E6C9EABA
+InstallProtocolInterface: 5B1B31A1-9562-11D2-8E3F-00A0C969723B 63E14C140
+add-symbol-file /Users/adalundhe/g121-a4-winarm/edk2-src/Build/ArmVirtQemuKernel-AArch64/DEBUG_CLANGDWARF/AARCH64/NetworkPkg/DpcDxe/DpcDxe/DEBUG/DpcDxe.dll 0x63E0EC000
+Loading driver at 0x0063E0EB000 EntryPoint=0x0063E0EC140 DpcDxe.efi
+InstallProtocolInterface: BC62157E-3E33-4FEC-9920-2D3B36D750DF 63E14CE98
+ProtectUefiImageCommon - 0x3E14C140
+  - 0x000000063E0EB000 - 0x0000000000007000
+InstallProtocolInterface: 480F8AE9-0C46-4AA9-BC89-DB9FBA619806 63E0F0020
+Loading driver 0049858F-8CA7-4CCD-918B-D952CBF32975
+InstallProtocolInterface: 5B1B31A1-9562-11D2-8E3F-00A0C969723B 63E119040
+add-symbol-file /Users/adalundhe/g121-a4-winarm/edk2-src/Build/ArmVirtQemuKernel-AArch64/DEBUG_CLANGDWARF/AARCH64/OvmfPkg/Fdt/VirtioFdtDxe/VirtioFdtDxe/DEBUG/VirtioFdtDxe.dll 0x63E0D9000
+Loading driver at 0x0063E0D8000 EntryPoint=0x0063E0D9560 VirtioFdtDxe.efi
+InstallProtocolInterface: BC62157E-3E33-4FEC-9920-2D3B36D750DF 63E14C698
+ProtectUefiImageCommon - 0x3E119040
+  - 0x000000063E0D8000 - 0x0000000000009000
+virtio-mmio : RegBase = 0xA000000 - 0x200
+Map MMIO Memory: 0x0A000000 - 0x00000200 : 0x00004001
+virtio-mmio : RegBase = 0xA000200 - 0x200
+Map MMIO Memory: 0x0A000200 - 0x00000200 : 0x00004001
+virtio-mmio : RegBase = 0xA000400 - 0x200
+Map MMIO Memory: 0x0A000400 - 0x00000200 : 0x00004001
+virtio-mmio : RegBase = 0xA000600 - 0x200
+Map MMIO Memory: 0x0A000600 - 0x00000200 : 0x00004001
+virtio-mmio : RegBase = 0xA000800 - 0x200
+Map MMIO Memory: 0x0A000800 - 0x00000200 : 0x00004001
+virtio-mmio : RegBase = 0xA000A00 - 0x200
+Map MMIO Memory: 0x0A000A00 - 0x00000200 : 0x00004001
+virtio-mmio : RegBase = 0xA000C00 - 0x200
+Map MMIO Memory: 0x0A000C00 - 0x00000200 : 0x00004001
+virtio-mmio : RegBase = 0xA000E00 - 0x200
+Map MMIO Memory: 0x0A000E00 - 0x00000200 : 0x00004001
+virtio-mmio : RegBase = 0xA001000 - 0x200
+Map MMIO Memory: 0x0A001000 - 0x00000200 : 0x00004001
+virtio-mmio : RegBase = 0xA001200 - 0x200
+Map MMIO Memory: 0x0A001200 - 0x00000200 : 0x00004001
+virtio-mmio : RegBase = 0xA001400 - 0x200
+Map MMIO Memory: 0x0A001400 - 0x00000200 : 0x00004001
+virtio-mmio : RegBase = 0xA001600 - 0x200
+Map MMIO Memory: 0x0A001600 - 0x00000200 : 0x00004001
+virtio-mmio : RegBase = 0xA001800 - 0x200
+Map MMIO Memory: 0x0A001800 - 0x00000200 : 0x00004001
+virtio-mmio : RegBase = 0xA001A00 - 0x200
+Map MMIO Memory: 0x0A001A00 - 0x00000200 : 0x00004001
+virtio-mmio : RegBase = 0xA001C00 - 0x200
+Map MMIO Memory: 0x0A001C00 - 0x00000200 : 0x00004001
+virtio-mmio : RegBase = 0xA001E00 - 0x200
+Map MMIO Memory: 0x0A001E00 - 0x00000200 : 0x00004001
+virtio-mmio : RegBase = 0xA002000 - 0x200
+Map MMIO Memory: 0x0A002000 - 0x00000200 : 0x00004001
+virtio-mmio : RegBase = 0xA002200 - 0x200
+Map MMIO Memory: 0x0A002200 - 0x00000200 : 0x00004001
+virtio-mmio : RegBase = 0xA002400 - 0x200
+Map MMIO Memory: 0x0A002400 - 0x00000200 : 0x00004001
+virtio-mmio : RegBase = 0xA002600 - 0x200
+Map MMIO Memory: 0x0A002600 - 0x00000200 : 0x00004001
+virtio-mmio : RegBase = 0xA002800 - 0x200
+Map MMIO Memory: 0x0A002800 - 0x00000200 : 0x00004001
+virtio-mmio : RegBase = 0xA002A00 - 0x200
+Map MMIO Memory: 0x0A002A00 - 0x00000200 : 0x00004001
+virtio-mmio : RegBase = 0xA002C00 - 0x200
+Map MMIO Memory: 0x0A002C00 - 0x00000200 : 0x00004001
+virtio-mmio : RegBase = 0xA002E00 - 0x200
+Map MMIO Memory: 0x0A002E00 - 0x00000200 : 0x00004001
+virtio-mmio : RegBase = 0xA003000 - 0x200
+Map MMIO Memory: 0x0A003000 - 0x00000200 : 0x00004001
+virtio-mmio : RegBase = 0xA003200 - 0x200
+Map MMIO Memory: 0x0A003200 - 0x00000200 : 0x00004001
+virtio-mmio : RegBase = 0xA003400 - 0x200
+Map MMIO Memory: 0x0A003400 - 0x00000200 : 0x00004001
+virtio-mmio : RegBase = 0xA003600 - 0x200
+Map MMIO Memory: 0x0A003600 - 0x00000200 : 0x00004001
+virtio-mmio : RegBase = 0xA003800 - 0x200
+Map MMIO Memory: 0x0A003800 - 0x00000200 : 0x00004001
+virtio-mmio : RegBase = 0xA003A00 - 0x200
+Map MMIO Memory: 0x0A003A00 - 0x00000200 : 0x00004001
+virtio-mmio : RegBase = 0xA003C00 - 0x200
+Map MMIO Memory: 0x0A003C00 - 0x00000200 : 0x00004001
+virtio-mmio : RegBase = 0xA003E00 - 0x200
+Map MMIO Memory: 0x0A003E00 - 0x00000200 : 0x00004001
+InstallProtocolInterface: 09576E91-6D3F-11D2-8E39-00A0C969723B 63E9FFA18
+VirtioMmioInit virtio 0.9.5, id 0
+InstallProtocolInterface: FA920010-6785-4941-B6EC-498C579F160A 63E119828
+InstallProtocolInterface: 09576E91-6D3F-11D2-8E39-00A0C969723B 63E119718
+VirtioMmioInit virtio 0.9.5, id 0
+InstallProtocolInterface: FA920010-6785-4941-B6EC-498C579F160A 63E119528
+InstallProtocolInterface: 09576E91-6D3F-11D2-8E39-00A0C969723B 63E118F18
+VirtioMmioInit virtio 0.9.5, id 0
+InstallProtocolInterface: FA920010-6785-4941-B6EC-498C579F160A 63E118BA8
+InstallProtocolInterface: 09576E91-6D3F-11D2-8E39-00A0C969723B 63E118C98
+VirtioMmioInit virtio 0.9.5, id 0
+InstallProtocolInterface: FA920010-6785-4941-B6EC-498C579F160A 63E118A28
+InstallProtocolInterface: 09576E91-6D3F-11D2-8E39-00A0C969723B 63E118998
+VirtioMmioInit virtio 0.9.5, id 0
+InstallProtocolInterface: FA920010-6785-4941-B6EC-498C579F160A 63E118128
+InstallProtocolInterface: 09576E91-6D3F-11D2-8E39-00A0C969723B 63E118698
+VirtioMmioInit virtio 0.9.5, id 0
+InstallProtocolInterface: FA920010-6785-4941-B6EC-498C579F160A 63E1182A8
+InstallProtocolInterface: 09576E91-6D3F-11D2-8E39-00A0C969723B 63E118398
+VirtioMmioInit virtio 0.9.5, id 0
+InstallProtocolInterface: FA920010-6785-4941-B6EC-498C579F160A 63E117F28
+InstallProtocolInterface: 09576E91-6D3F-11D2-8E39-00A0C969723B 63E117E18
+VirtioMmioInit virtio 0.9.5, id 0
+InstallProtocolInterface: FA920010-6785-4941-B6EC-498C579F160A 63E117C28
+InstallProtocolInterface: 09576E91-6D3F-11D2-8E39-00A0C969723B 63E117098
+VirtioMmioInit virtio 0.9.5, id 0
+InstallProtocolInterface: FA920010-6785-4941-B6EC-498C579F160A 63E117828
+InstallProtocolInterface: 09576E91-6D3F-11D2-8E39-00A0C969723B 63E117998
+VirtioMmioInit virtio 0.9.5, id 0
+InstallProtocolInterface: FA920010-6785-4941-B6EC-498C579F160A 63E117628
+InstallProtocolInterface: 09576E91-6D3F-11D2-8E39-00A0C969723B 63E117498
+VirtioMmioInit virtio 0.9.5, id 0
+InstallProtocolInterface: FA920010-6785-4941-B6EC-498C579F160A 63E1172A8
+InstallProtocolInterface: 09576E91-6D3F-11D2-8E39-00A0C969723B 63E116018
+VirtioMmioInit virtio 0.9.5, id 0
+InstallProtocolInterface: FA920010-6785-4941-B6EC-498C579F160A 63E116E28
+InstallProtocolInterface: 09576E91-6D3F-11D2-8E39-00A0C969723B 63E116D98
+VirtioMmioInit virtio 0.9.5, id 0
+InstallProtocolInterface: FA920010-6785-4941-B6EC-498C579F160A 63E1160A8
+InstallProtocolInterface: 09576E91-6D3F-11D2-8E39-00A0C969723B 63E116818
+VirtioMmioInit virtio 0.9.5, id 0
+InstallProtocolInterface: FA920010-6785-4941-B6EC-498C579F160A 63E1161A8
+InstallProtocolInterface: 09576E91-6D3F-11D2-8E39-00A0C969723B 63E116698
+VirtioMmioInit virtio 0.9.5, id 0
+InstallProtocolInterface: FA920010-6785-4941-B6EC-498C579F160A 63E1165A8
+InstallProtocolInterface: 09576E91-6D3F-11D2-8E39-00A0C969723B 63E116518
+VirtioMmioInit virtio 0.9.5, id 0
+InstallProtocolInterface: FA920010-6785-4941-B6EC-498C579F160A 63E115028
+InstallProtocolInterface: 09576E91-6D3F-11D2-8E39-00A0C969723B 63E115B98
+VirtioMmioInit virtio 0.9.5, id 0
+InstallProtocolInterface: FA920010-6785-4941-B6EC-498C579F160A 63E115CA8
+InstallProtocolInterface: 09576E91-6D3F-11D2-8E39-00A0C969723B 63E115E18
+VirtioMmioInit virtio 0.9.5, id 0
+InstallProtocolInterface: FA920010-6785-4941-B6EC-498C579F160A 63E115828
+InstallProtocolInterface: 09576E91-6D3F-11D2-8E39-00A0C969723B 63E115998
+VirtioMmioInit virtio 0.9.5, id 0
+InstallProtocolInterface: FA920010-6785-4941-B6EC-498C579F160A 63E115628
+InstallProtocolInterface: 09576E91-6D3F-11D2-8E39-00A0C969723B 63E115218
+VirtioMmioInit virtio 0.9.5, id 0
+InstallProtocolInterface: FA920010-6785-4941-B6EC-498C579F160A 63E115328
+InstallProtocolInterface: 09576E91-6D3F-11D2-8E39-00A0C969723B 63E115498
+VirtioMmioInit virtio 0.9.5, id 0
+InstallProtocolInterface: FA920010-6785-4941-B6EC-498C579F160A 63E114B28
+InstallProtocolInterface: 09576E91-6D3F-11D2-8E39-00A0C969723B 63E114C18
+VirtioMmioInit virtio 0.9.5, id 0
+InstallProtocolInterface: FA920010-6785-4941-B6EC-498C579F160A 63E1140A8
+InstallProtocolInterface: 09576E91-6D3F-11D2-8E39-00A0C969723B 63E114D98
+VirtioMmioInit virtio 0.9.5, id 0
+InstallProtocolInterface: FA920010-6785-4941-B6EC-498C579F160A 63E114928
+InstallProtocolInterface: 09576E91-6D3F-11D2-8E39-00A0C969723B 63E114798
+VirtioMmioInit virtio 0.9.5, id 0
+InstallProtocolInterface: FA920010-6785-4941-B6EC-498C579F160A 63E114228
+InstallProtocolInterface: 09576E91-6D3F-11D2-8E39-00A0C969723B 63E114318
+VirtioMmioInit virtio 0.9.5, id 0
+InstallProtocolInterface: FA920010-6785-4941-B6EC-498C579F160A 63E113028
+InstallProtocolInterface: 09576E91-6D3F-11D2-8E39-00A0C969723B 63E114498
+VirtioMmioInit virtio 0.9.5, id 0
+InstallProtocolInterface: FA920010-6785-4941-B6EC-498C579F160A 63E113C28
+InstallProtocolInterface: 09576E91-6D3F-11D2-8E39-00A0C969723B 63E113D98
+VirtioMmioInit virtio 0.9.5, id 0
+InstallProtocolInterface: FA920010-6785-4941-B6EC-498C579F160A 63E113828
+InstallProtocolInterface: 09576E91-6D3F-11D2-8E39-00A0C969723B 63E113918
+VirtioMmioInit virtio 0.9.5, id 0
+InstallProtocolInterface: FA920010-6785-4941-B6EC-498C579F160A 63E113628
+InstallProtocolInterface: 09576E91-6D3F-11D2-8E39-00A0C969723B 63E113798
+VirtioMmioInit virtio 0.9.5, id 0
+InstallProtocolInterface: FA920010-6785-4941-B6EC-498C579F160A 63E1132A8
+InstallProtocolInterface: 09576E91-6D3F-11D2-8E39-00A0C969723B 63E113418
+VirtioMmioInit virtio 0.9.5, id 0
+InstallProtocolInterface: FA920010-6785-4941-B6EC-498C579F160A 63E112B28
+InstallProtocolInterface: 09576E91-6D3F-11D2-8E39-00A0C969723B 63E112F98
+VirtioMmioInit virtio 0.9.5, id 0
+InstallProtocolInterface: FA920010-6785-4941-B6EC-498C579F160A 63E112D28
+InstallProtocolInterface: 09576E91-6D3F-11D2-8E39-00A0C969723B 63E112A18
+VirtioMmioInit virtio 0.9.5, id 0
+InstallProtocolInterface: FA920010-6785-4941-B6EC-498C579F160A 63E112828
+Loading driver 63EA1463-FBFA-428A-B97F-E222755852D7
+InstallProtocolInterface: 5B1B31A1-9562-11D2-8E3F-00A0C969723B 63E10A1C0
+add-symbol-file /Users/adalundhe/g121-a4-winarm/edk2-src/Build/ArmVirtQemuKernel-AArch64/DEBUG_CLANGDWARF/AARCH64/OvmfPkg/Fdt/HighMemDxe/HighMemDxe/DEBUG/HighMemDxe.dll 0x63E0D2000
+Loading driver at 0x0063E0D1000 EntryPoint=0x0063E0D2140 HighMemDxe.efi
+InstallProtocolInterface: BC62157E-3E33-4FEC-9920-2D3B36D750DF 63E10A518
+ProtectUefiImageCommon - 0x3E10A1C0
+  - 0x000000063E0D1000 - 0x0000000000007000
+FindNextMemoryNodeReg: ignoring disabled memory node
+Loading driver 4B28E4C7-FF36-4E10-93CF-A82159E777C5
+InstallProtocolInterface: 5B1B31A1-9562-11D2-8E3F-00A0C969723B 63E0E2BC0
+add-symbol-file /Users/adalundhe/g121-a4-winarm/edk2-src/Build/ArmVirtQemuKernel-AArch64/DEBUG_CLANGDWARF/AARCH64/MdeModulePkg/Universal/ResetSystemRuntimeDxe/ResetSystemRuntimeDxe/DEBUG/ResetSystemRuntimeDxe.dll 0x63ED50000
+Loading driver at 0x0063ED40000 EntryPoint=0x0063ED501CC ResetSystemRuntimeDxe.efi
+InstallProtocolInterface: BC62157E-3E33-4FEC-9920-2D3B36D750DF 63E0E2818
+ProtectUefiImageCommon - 0x3E0E2BC0
+  - 0x000000063ED40000 - 0x0000000000040000
+InstallProtocolInterface: 27CFAC88-46CC-11D4-9A38-0090273FC14D 0
+InstallProtocolInterface: 9DA34AE0-EAF9-4BBF-8EC3-FD60226C44BE 63ED60068
+InstallProtocolInterface: 695D7835-8D47-4C11-AB22-FA8ACCE7AE7A 63ED60090
+InstallProtocolInterface: 2DF6BA0B-7092-440D-BD04-FB091EC3F3C1 63ED600B8
+Loading driver DE371F7C-DEC4-4D21-ADF1-593ABCC15882
+InstallProtocolInterface: 5B1B31A1-9562-11D2-8E3F-00A0C969723B 63E0EA140
+add-symbol-file /Users/adalundhe/g121-a4-winarm/edk2-src/Build/ArmVirtQemuKernel-AArch64/DEBUG_CLANGDWARF/AARCH64/ArmPkg/Drivers/ArmGicDxe/ArmGicDxe/DEBUG/ArmGicDxe.dll 0x63E08F000
+Loading driver at 0x0063E08E000 EntryPoint=0x0063E08F4B0 ArmGicDxe.efi
+InstallProtocolInterface: BC62157E-3E33-4FEC-9920-2D3B36D750DF 63E0EAD18
+ProtectUefiImageCommon - 0x3E0EA140
+  - 0x000000063E08E000 - 0x000000000000B000
+Found GIC v3 Distributor @ 0x8000000, Len 0x10000
+Found GIC v3 Redistributor @ 0x80A0000, Len 0xF60000
+Map MMIO Memory: 0x08000000 - 0x00010000 : 0x00004001
+Map MMIO Memory: 0x080A0000 - 0x00F60000 : 0x00004001
+InstallProtocolInterface: 2890B3EA-053D-1643-AD0C-D64808DA3FF1 63E0970B8
+InstallProtocolInterface: 32898322-2DA1-474A-BAAA-F3F7CF569470 63E0970E0
+Loading driver E452CABD-5FE1-4D97-8161-E80ED6A409A8
+InstallProtocolInterface: 5B1B31A1-9562-11D2-8E3F-00A0C969723B 63E0E9B40
+add-symbol-file /Users/adalundhe/g121-a4-winarm/edk2-src/Build/ArmVirtQemuKernel-AArch64/DEBUG_CLANGDWARF/AARCH64/OvmfPkg/VirtNorFlashDxe/VirtNorFlashDxe/DEBUG/VirtNorFlashDxe.dll 0x63ED00000
+Loading driver at 0x0063ECF0000 EntryPoint=0x0063ED00120 VirtNorFlashDxe.efi
+InstallProtocolInterface: BC62157E-3E33-4FEC-9920-2D3B36D750DF 63E0E7E18
+ProtectUefiImageCommon - 0x3E0E9B40
+  - 0x000000063ECF0000 - 0x0000000000040000
+ValidateFvHeader: checking variables
+ValidateFvHeader: end of var list (no startid)
+InstallProtocolInterface: D1A86E3F-0707-4C35-83CD-DC2C29C891A3 0
+InstallProtocolInterface: 09576E91-6D3F-11D2-8E39-00A0C969723B 63EF5F820
+InstallProtocolInterface: 8F644FA9-E850-4DB1-9CE2-0B44698E8DA4 63EF5F7D8
+Loading driver B981A835-6EE8-4F4C-AE0B-210AA0BFBF01
+InstallProtocolInterface: 5B1B31A1-9562-11D2-8E3F-00A0C969723B 63E0E6040
+add-symbol-file /Users/adalundhe/g121-a4-winarm/edk2-src/Build/ArmVirtQemuKernel-AArch64/DEBUG_CLANGDWARF/AARCH64/SecurityPkg/RandomNumberGenerator/RngDxe/RngDxe/DEBUG/RngDxe.dll 0x63E087000
+Loading driver at 0x0063E086000 EntryPoint=0x0063E0875EC RngDxe.efi
+InstallProtocolInterface: BC62157E-3E33-4FEC-9920-2D3B36D750DF 63E0E7418
+ProtectUefiImageCommon - 0x3E0E6040
+  - 0x000000063E086000 - 0x0000000000008000
+ArmTrngLib could not be correctly initialized.
+InstallProtocolInterface: 3152BCA5-EADE-433D-862E-C01CDC291F44 63E08C030
+Loading driver 17D0EF2A-5933-4007-8950-5749169D3DC5
+InstallProtocolInterface: 5B1B31A1-9562-11D2-8E3F-00A0C969723B 63E0E6340
+add-symbol-file /Users/adalundhe/g121-a4-winarm/edk2-src/Build/ArmVirtQemuKernel-AArch64/DEBUG_CLANGDWARF/AARCH64/ShellPkg/DynamicCommand/VariablePolicyDynamicCommand/VariablePolicyDynamicCommand/DEBUG/VariablePolicyDynamicCommand.dll 0x63E066000
+Loading driver at 0x0063E065000 EntryPoint=0x0063E066560 VariablePolicyDynamicCommand.efi
+InstallProtocolInterface: BC62157E-3E33-4FEC-9920-2D3B36D750DF 63E0E6818
+InstallProtocolInterface: 6A1EE763-D47A-43B4-AABE-EF1DE2AB56FC 63E072070
+ProtectUefiImageCommon - 0x3E0E6340
+  - 0x000000063E065000 - 0x0000000000010000
+InstallProtocolInterface: 3C7200E9-005F-4EA4-87DE-A3DFAC8A27C3 63E071090
+Loading driver 2F30DA26-F51B-4B6F-85C4-31873C281BCA
+InstallProtocolInterface: 5B1B31A1-9562-11D2-8E3F-00A0C969723B 63E0E5140
+add-symbol-file /Users/adalundhe/g121-a4-winarm/edk2-src/Build/ArmVirtQemuKernel-AArch64/DEBUG_CLANGDWARF/AARCH64/OvmfPkg/LinuxInitrdDynamicShellCommand/LinuxInitrdDynamicShellCommand/DEBUG/LinuxInitrdDynamicShellCommand.dll 0x63E058000
+Loading driver at 0x0063E057000 EntryPoint=0x0063E058560 LinuxInitrdDynamicShellCommand.efi
+InstallProtocolInterface: BC62157E-3E33-4FEC-9920-2D3B36D750DF 63E0E5698
+InstallProtocolInterface: 6A1EE763-D47A-43B4-AABE-EF1DE2AB56FC 63E063070
+ProtectUefiImageCommon - 0x3E0E5140
+  - 0x000000063E057000 - 0x000000000000E000
+InstallProtocolInterface: 3C7200E9-005F-4EA4-87DE-A3DFAC8A27C3 63E0620B0
+Loading driver EBF342FE-B1D3-4EF8-957C-8048606FF671
+InstallProtocolInterface: 5B1B31A1-9562-11D2-8E3F-00A0C969723B 63E0D0040
+add-symbol-file /Users/adalundhe/g121-a4-winarm/edk2-src/Build/ArmVirtQemuKernel-AArch64/DEBUG_CLANGDWARF/AARCH64/MdeModulePkg/Universal/SetupBrowserDxe/SetupBrowserDxe/DEBUG/SetupBrowser.dll 0x63DF5A000
+Loading driver at 0x0063DF59000 EntryPoint=0x0063DF5A650 SetupBrowser.efi
+InstallProtocolInterface: BC62157E-3E33-4FEC-9920-2D3B36D750DF 63E0D0E18
+ProtectUefiImageCommon - 0x3E0D0040
+  - 0x000000063DF59000 - 0x0000000000023000
+InstallProtocolInterface: B9D4C360-BCFB-4F9B-9298-53C136982258 63DF7A140
+InstallProtocolInterface: A770C357-B693-4E6D-A6CF-D21C728E550B 63DF7A170
+InstallProtocolInterface: 1F73B18D-4630-43C1-A1DE-6F80855D7DA4 63DF7A150
+Loading driver F9D88642-0737-49BC-81B5-6889CD57D9EA
+InstallProtocolInterface: 5B1B31A1-9562-11D2-8E3F-00A0C969723B 63E0CEBC0
+add-symbol-file /Users/adalundhe/g121-a4-winarm/edk2-src/Build/ArmVirtQemuKernel-AArch64/DEBUG_CLANGDWARF/AARCH64/MdeModulePkg/Universal/SmbiosDxe/SmbiosDxe/DEBUG/SmbiosDxe.dll 0x63E09A000
+Loading driver at 0x0063E099000 EntryPoint=0x0063E09A658 SmbiosDxe.efi
+InstallProtocolInterface: BC62157E-3E33-4FEC-9920-2D3B36D750DF 63E0CE118
+ProtectUefiImageCommon - 0x3E0CEBC0
+  - 0x000000063E099000 - 0x000000000000C000
+Found FwCfg @ 0x9020008/0x9020000
+Found FwCfg DMA @ 0x9020010
+DetectSmbiosVersion: SMBIOS 3.x DocRev from QEMU: 0x00
+DetectSmbiosVersion: SMBIOS version from QEMU: 0x0300
+InstallProtocolInterface: 03583FF6-CB36-4940-947E-B9B39F4AFAF7 63E0A3188
+Loading driver FBC36D76-CF22-2584-DBD8-85FF765BAEF1
+InstallProtocolInterface: 5B1B31A1-9562-11D2-8E3F-00A0C969723B 63E0CE2C0
+add-symbol-file /Users/adalundhe/g121-a4-winarm/edk2-src/Build/ArmVirtQemuKernel-AArch64/DEBUG_CLANGDWARF/AARCH64/UefiCpuPkg/CpuMmio2Dxe/CpuMmio2Dxe/DEBUG/CpuMmio2Dxe.dll 0x63E078000
+Loading driver at 0x0063E077000 EntryPoint=0x0063E078140 CpuMmio2Dxe.efi
+InstallProtocolInterface: BC62157E-3E33-4FEC-9920-2D3B36D750DF 63E0CDF18
+ProtectUefiImageCommon - 0x3E0CE2C0
+  - 0x000000063E077000 - 0x0000000000007000
+InstallProtocolInterface: AD61F191-AE5F-4C0E-B9FA-E869D288C64F 63E07C030
+Loading driver 11A6EDF6-A9BE-426D-A6CC-B22FE51D9224
+InstallProtocolInterface: 5B1B31A1-9562-11D2-8E3F-00A0C969723B 63E0CD7C0
+add-symbol-file /Users/adalundhe/g121-a4-winarm/edk2-src/Build/ArmVirtQemuKernel-AArch64/DEBUG_CLANGDWARF/AARCH64/OvmfPkg/PciHotPlugInitDxe/PciHotPlugInit/DEBUG/PciHotPlugInitDxe.dll 0x63E041000
+Loading driver at 0x0063E040000 EntryPoint=0x0063E041560 PciHotPlugInitDxe.efi
+InstallProtocolInterface: BC62157E-3E33-4FEC-9920-2D3B36D750DF 63E0CD698
+ProtectUefiImageCommon - 0x3E0CD7C0
+  - 0x000000063E040000 - 0x000000000000B000
+InstallProtocolInterface: AA0E8BC1-DABC-46B0-A844-37B8169B2BEA 63E0490C0
+Loading driver DCE1B094-7DC6-45D0-9FDD-D7FC3CC3E4EF
+InstallProtocolInterface: 5B1B31A1-9562-11D2-8E3F-00A0C969723B 63E0CCBC0
+add-symbol-file /Users/adalundhe/g121-a4-winarm/edk2-src/Build/ArmVirtQemuKernel-AArch64/DEBUG_CLANGDWARF/AARCH64/OvmfPkg/QemuRamfbDxe/QemuRamfbDxe/DEBUG/QemuRamfbDxe.dll 0x63DF97000
+Loading driver at 0x0063DF96000 EntryPoint=0x0063DF97560 QemuRamfbDxe.efi
+InstallProtocolInterface: BC62157E-3E33-4FEC-9920-2D3B36D750DF 63E0CC118
+ProtectUefiImageCommon - 0x3E0CCBC0
+  - 0x000000063DF96000 - 0x000000000000A000
+Found FwCfg @ 0x9020008/0x9020000
+Found FwCfg DMA @ 0x9020010
+Ramfb: Mode 0: 640x480, 1200 kB
+Ramfb: Mode 1: 800x600, 1875 kB
+Ramfb: Mode 2: 1024x768, 3072 kB
+Ramfb: Framebuffer at 0x63DC50000, 3072 kB, 768 pages
+Ramfb: SetMode 1 (800x600)
+0: shl:0 shr:0 mask:FF0000
+1: shl:0 shr:0 mask:FF00
+2: shl:0 shr:0 mask:FF
+Bytes per pixel: 4
+0: shl:0 shr:0 mask:FF0000
+1: shl:0 shr:0 mask:FF00
+2: shl:0 shr:0 mask:FF
+Bytes per pixel: 4
+InstallProtocolInterface: 09576E91-6D3F-11D2-8E39-00A0C969723B 63E0CC698
+InstallProtocolInterface: 09576E91-6D3F-11D2-8E39-00A0C969723B 63E0CC598
+InstallProtocolInterface: 9042A9DE-23DC-4A38-96FB-7ADED080516A 63DF9E0B8
+Loading driver F74D20EE-37E7-48FC-97F7-9B1047749C69
+InstallProtocolInterface: 5B1B31A1-9562-11D2-8E3F-00A0C969723B 63E085B40
+add-symbol-file /Users/adalundhe/g121-a4-winarm/edk2-src/Build/ArmVirtQemuKernel-AArch64/DEBUG_CLANGDWARF/AARCH64/MdeModulePkg/Logo/LogoDxe/DEBUG/LogoDxe.dll 0x63DF8E000
+Loading driver at 0x0063DF8D000 EntryPoint=0x0063DF8E140 LogoDxe.efi
+InstallProtocolInterface: BC62157E-3E33-4FEC-9920-2D3B36D750DF 63E085E98
+InstallProtocolInterface: 6A1EE763-D47A-43B4-AABE-EF1DE2AB56FC 63DF92070
+ProtectUefiImageCommon - 0x3E085B40
+  - 0x000000063DF8D000 - 0x0000000000009000
+InstallProtocolInterface: 53CD299F-2BC1-40C0-8C07-23F64FDB30E0 63DF91038
+Loading driver FE5CEA76-4F72-49E8-986F-2CD899DFFE5D
+InstallProtocolInterface: 5B1B31A1-9562-11D2-8E3F-00A0C969723B 63E0852C0
+add-symbol-file /Users/adalundhe/g121-a4-winarm/edk2-src/Build/ArmVirtQemuKernel-AArch64/DEBUG_CLANGDWARF/AARCH64/MdeModulePkg/Universal/FaultTolerantWriteDxe/FaultTolerantWriteDxe/DEBUG/FaultTolerantWriteDxe.dll 0x63E04C000
+Loading driver at 0x0063E04B000 EntryPoint=0x0063E04C650 FaultTolerantWriteDxe.efi
+InstallProtocolInterface: BC62157E-3E33-4FEC-9920-2D3B36D750DF 63E084D18
+ProtectUefiImageCommon - 0x3E0852C0
+  - 0x000000063E04B000 - 0x000000000000C000
+Ftw: FtwWorkSpaceLba - 0x1, WorkBlockSize  - 0x40000, FtwWorkSpaceBase - 0x0
+Ftw: FtwSpareLba     - 0x2, SpareBlockSize - 0x40000
+Ftw: NumberOfWorkBlock - 0x1, FtwWorkBlockLba - 0x1
+Ftw: WorkSpaceLbaInSpare - 0x0, WorkSpaceBaseInSpare - 0x0
+Ftw: Remaining work space size - 3FFE0
+InstallProtocolInterface: 3EBD9E82-2C78-4DE6-9786-8D4BFCB7C881 63DC0F028
+Loading driver CBD2E4D5-7068-4FF5-B462-9822B4AD8D60
+InstallProtocolInterface: 5B1B31A1-9562-11D2-8E3F-00A0C969723B 63E080040
+add-symbol-file /Users/adalundhe/g121-a4-winarm/edk2-src/Build/ArmVirtQemuKernel-AArch64/DEBUG_CLANGDWARF/AARCH64/MdeModulePkg/Universal/Variable/RuntimeDxe/VariableRuntimeDxe/DEBUG/VariableRuntimeDxe.dll 0x63ECA0000
+Loading driver at 0x0063EC90000 EntryPoint=0x0063ECA01D4 VariableRuntimeDxe.efi
+InstallProtocolInterface: BC62157E-3E33-4FEC-9920-2D3B36D750DF 63E080F18
+ProtectUefiImageCommon - 0x3E080040
+  - 0x000000063EC90000 - 0x0000000000050000
+VarCheckLibRegisterSetVariableCheckHandler - 0x3ECAF014 Success
+Variable driver common space: 0x3FF9C 0x3FF9C 0x3FF9C
+Variable driver will work with auth variable format!
+InstallProtocolInterface: CD3D0A05-9E24-437C-A891-1EE053DB7638 63ECC0040
+InstallProtocolInterface: AF23B340-97B4-4685-8D4F-A3F28169B21D 63ECC0088
+InstallProtocolInterface: 1E5668E2-8481-11D4-BCF1-0080C73C8881 0
+NOTICE - AuthVariableLibInitialize() returns Unsupported!
+Variable driver will continue to work without auth variable support!
+RecordSecureBootPolicyVarData GetVariable SecureBoot Status E
+InstallProtocolInterface: 6441F818-6362-4E44-B570-7DBA31DD2453 0
+VarCheckLibRegisterSetVariableCheckHandler - 0x3ECADD00 Success
+InstallProtocolInterface: 81D1675C-86F6-48DF-BD95-9A6E4F0925C3 63ECC0048
+Loading driver 49EA041E-6752-42CA-B0B1-7344FE2546B7
+InstallProtocolInterface: 5B1B31A1-9562-11D2-8E3F-00A0C969723B 63E07FB40
+add-symbol-file /Users/adalundhe/g121-a4-winarm/edk2-src/Build/ArmVirtQemuKernel-AArch64/DEBUG_CLANGDWARF/AARCH64/ArmPkg/Drivers/TimerDxe/TimerDxe/DEBUG/ArmTimerDxe.dll 0x63DF7D000
+Loading driver at 0x0063DF7C000 EntryPoint=0x0063DF7D158 ArmTimerDxe.efi
+InstallProtocolInterface: BC62157E-3E33-4FEC-9920-2D3B36D750DF 63E07FA18
+ProtectUefiImageCommon - 0x3E07FB40
+  - 0x000000063DF7C000 - 0x0000000000008000
+Found Timer interrupts 29, 30, 27, 26
+InstallProtocolInterface: 26BACCB3-6F42-11D4-BCE7-0080C73C8881 63DF82038
+Loading driver A487A478-51EF-48AA-8794-7BEE2A0562F1
+InstallProtocolInterface: 5B1B31A1-9562-11D2-8E3F-00A0C969723B 63E07F2C0
+add-symbol-file /Users/adalundhe/g121-a4-winarm/edk2-src/Build/ArmVirtQemuKernel-AArch64/DEBUG_CLANGDWARF/AARCH64/ShellPkg/DynamicCommand/TftpDynamicCommand/TftpDynamicCommand/DEBUG/TftpDynamicCommand.dll 0x63DB3C000
+Loading driver at 0x0063DB3B000 EntryPoint=0x0063DB3C560 TftpDynamicCommand.efi
+InstallProtocolInterface: BC62157E-3E33-4FEC-9920-2D3B36D750DF 63E07EB18
+InstallProtocolInterface: 6A1EE763-D47A-43B4-AABE-EF1DE2AB56FC 63DB4A070
+ProtectUefiImageCommon - 0x3E07F2C0
+  - 0x000000063DB3B000 - 0x0000000000012000
+InstallProtocolInterface: 3C7200E9-005F-4EA4-87DE-A3DFAC8A27C3 63DB490A0
+Loading driver 19618BCE-55AE-09C6-37E9-4CE04084C7A1
+InstallProtocolInterface: 5B1B31A1-9562-11D2-8E3F-00A0C969723B 63E07E1C0
+add-symbol-file /Users/adalundhe/g121-a4-winarm/edk2-src/Build/ArmVirtQemuKernel-AArch64/DEBUG_CLANGDWARF/AARCH64/ShellPkg/DynamicCommand/HttpDynamicCommand/HttpDynamicCommand/DEBUG/httpDynamicCommand.dll 0x63DB11000
+Loading driver at 0x0063DB10000 EntryPoint=0x0063DB11560 httpDynamicCommand.efi
+InstallProtocolInterface: BC62157E-3E33-4FEC-9920-2D3B36D750DF 63E07E618
+InstallProtocolInterface: 6A1EE763-D47A-43B4-AABE-EF1DE2AB56FC 63DB21070
+ProtectUefiImageCommon - 0x3E07E1C0
+  - 0x000000063DB10000 - 0x0000000000015000
+InstallProtocolInterface: 3C7200E9-005F-4EA4-87DE-A3DFAC8A27C3 63DB20090
+Loading driver E660EA85-058E-4B55-A54B-F02F83A24707
+InstallProtocolInterface: 5B1B31A1-9562-11D2-8E3F-00A0C969723B 63E0751C0
+add-symbol-file /Users/adalundhe/g121-a4-winarm/edk2-src/Build/ArmVirtQemuKernel-AArch64/DEBUG_CLANGDWARF/AARCH64/MdeModulePkg/Universal/DisplayEngineDxe/DisplayEngineDxe/DEBUG/DisplayEngine.dll 0x63DAD4000
+Loading driver at 0x0063DAD3000 EntryPoint=0x0063DAD4650 DisplayEngine.efi
+InstallProtocolInterface: BC62157E-3E33-4FEC-9920-2D3B36D750DF 63E075718
+ProtectUefiImageCommon - 0x3E0751C0
+  - 0x000000063DAD3000 - 0x000000000001E000
+InstallProtocolInterface: 9BBE29E9-FDA1-41EC-AD52-452213742D2E 63DAED140
+InstallProtocolInterface: 4311EDC0-6054-46D4-9E40-893EA952FCCC 63DAED158
+Loading driver EBF8ED7C-0DD1-4787-84F1-F48D537DCACF
+InstallProtocolInterface: 5B1B31A1-9562-11D2-8E3F-00A0C969723B 63DF57C40
+add-symbol-file /Users/adalundhe/g121-a4-winarm/edk2-src/Build/ArmVirtQemuKernel-AArch64/DEBUG_CLANGDWARF/AARCH64/MdeModulePkg/Universal/DriverHealthManagerDxe/DriverHealthManagerDxe/DEBUG/DriverHealthManagerDxe.dll 0x63DB56000
+Loading driver at 0x0063DB55000 EntryPoint=0x0063DB56650 DriverHealthManagerDxe.efi
+InstallProtocolInterface: BC62157E-3E33-4FEC-9920-2D3B36D750DF 63DF57A98
+ProtectUefiImageCommon - 0x3DF57C40
+  - 0x000000063DB55000 - 0x000000000000B000
+InstallProtocolInterface: 09576E91-6D3F-11D2-8E39-00A0C969723B 63DB5E0A8
+InstallProtocolInterface: 330D4706-F2A0-4E4F-A369-B66FA8D54385 63DB5E080
+Loading driver 4110465D-5FF3-4F4B-B580-24ED0D06747A
+InstallProtocolInterface: 5B1B31A1-9562-11D2-8E3F-00A0C969723B 63DF55440
+add-symbol-file /Users/adalundhe/g121-a4-winarm/edk2-src/Build/ArmVirtQemuKernel-AArch64/DEBUG_CLANGDWARF/AARCH64/OvmfPkg/SmbiosPlatformDxe/SmbiosPlatformDxe/DEBUG/SmbiosPlatformDxe.dll 0x63DB33000
+Loading driver at 0x0063DB32000 EntryPoint=0x0063DB33568 SmbiosPlatformDxe.efi
+InstallProtocolInterface: BC62157E-3E33-4FEC-9920-2D3B36D750DF 63DF55C98
+ProtectUefiImageCommon - 0x3DF55440
+  - 0x000000063DB32000 - 0x0000000000009000
+Found FwCfg @ 0x9020008/0x9020000
+Found FwCfg DMA @ 0x9020010
+SmbiosAdd: Smbios type 1 with size 0x40 is added to 32-bit table
+SmbiosAdd: Smbios type 1 with size 0x40 is added to 64-bit table
+SmbiosCreateTable: Initialize 32-bit entry point structure
+SmbiosCreateTable() re-allocate SMBIOS 32-bit table
+SmbiosCreateTable: Initialize 64-bit entry point structure
+SmbiosCreate64BitTable() re-allocate SMBIOS 64-bit table
+SmbiosAdd: Smbios type 3 with size 0x26 is added to 32-bit table
+SmbiosAdd: Smbios type 3 with size 0x26 is added to 64-bit table
+SmbiosAdd: Smbios type 4 with size 0x46 is added to 32-bit table
+SmbiosAdd: Smbios type 4 with size 0x46 is added to 64-bit table
+SmbiosAdd: Smbios type 16 with size 0x19 is added to 32-bit table
+SmbiosAdd: Smbios type 16 with size 0x19 is added to 64-bit table
+SmbiosAdd: Smbios type 17 with size 0x35 is added to 32-bit table
+SmbiosAdd: Smbios type 17 with size 0x35 is added to 64-bit table
+SmbiosAdd: Smbios type 19 with size 0x21 is added to 32-bit table
+SmbiosAdd: Smbios type 19 with size 0x21 is added to 64-bit table
+SmbiosAdd: Smbios type 32 with size 0xD is added to 32-bit table
+SmbiosAdd: Smbios type 32 with size 0xD is added to 64-bit table
+FirmwareVendor:            "EDK II" (6 chars)
+FirmwareVersionString:     "unknown" (7 chars)
+FirmwareReleaseDateString: "02/02/2022" (10 chars)
+SmbiosAdd: Smbios type 0 with size 0x35 is added to 32-bit table
+SmbiosAdd: Smbios type 0 with size 0x35 is added to 64-bit table
+Loading driver 128FB770-5E79-4176-9E51-9BB268A17DD1
+InstallProtocolInterface: 5B1B31A1-9562-11D2-8E3F-00A0C969723B 63DF53140
+add-symbol-file /Users/adalundhe/g121-a4-winarm/edk2-src/Build/ArmVirtQemuKernel-AArch64/DEBUG_CLANGDWARF/AARCH64/MdeModulePkg/Bus/Pci/PciHostBridgeDxe/PciHostBridgeDxe/DEBUG/PciHostBridgeDxe.dll 0x63DAAF000
+Loading driver at 0x0063DAAE000 EntryPoint=0x0063DAAF568 PciHostBridgeDxe.efi
+InstallProtocolInterface: BC62157E-3E33-4FEC-9920-2D3B36D750DF 63DF53B18
+ProtectUefiImageCommon - 0x3DF53140
+  - 0x000000063DAAE000 - 0x0000000000012000
+Found FwCfg @ 0x9020008/0x9020000
+Found FwCfg DMA @ 0x9020010
+ProcessPciHost: Config[0x4010000000+0x10000000) Bus[0x0..0xFF] Io[0x0+0x10000)@0x3EFF0000 Mem32[0x10000000+0x2EFF0000)@0x0 Mem64[0x8000000000+0x8000000000)@0x0
+Map MMIO Memory: 0x4010000000 - 0x10000000 : 0x00004001
+Map MMIO Memory: 0x3EFF0000 - 0x00010000 : 0x00004001
+Map MMIO Memory: 0x10000000 - 0x2EFF0000 : 0x00004001
+Map MMIO Memory: 0x8000000000 - 0x8000000000 : 0x00004001
+PciHostBridgeUtilityInitRootBridge: populated root bus 0, with room for 255 subordinate bus(es)
+RootBridge: PciRoot(0x0)
+  Support/Attr: 70001 / 70001
+    DmaAbove4G: Yes
+NoExtConfSpace: No
+     AllocAttr: 3 (CombineMemPMem Mem64Decode)
+           Bus: 0 - FF Translation=0
+            Io: 0 - FFFF Translation=0
+           Mem: 10000000 - 3EFEFFFF Translation=0
+    MemAbove4G: 8000000000 - FFFFFFFFFF Translation=0
+          PMem: FFFFFFFFFFFFFFFF - 0 Translation=0
+   PMemAbove4G: FFFFFFFFFFFFFFFF - 0 Translation=0
+InstallProtocolInterface: CF8034BE-6768-4D8B-B739-7CCE683A9FBE 63DF50BC0
+InstallProtocolInterface: 09576E91-6D3F-11D2-8E39-00A0C969723B 63DF50F18
+InstallProtocolInterface: 2F707EBB-4A1A-11D4-9A38-0090273FC14D 63DF502F0
+Loading driver 28A03FF4-12B3-4305-A417-BB1A4F94081E
+InstallProtocolInterface: 5B1B31A1-9562-11D2-8E3F-00A0C969723B 63DC0D040
+add-symbol-file /Users/adalundhe/g121-a4-winarm/edk2-src/Build/ArmVirtQemuKernel-AArch64/DEBUG_CLANGDWARF/AARCH64/MdeModulePkg/Universal/Disk/RamDiskDxe/RamDiskDxe/DEBUG/RamDiskDxe.dll 0x63DA9E000
+Loading driver at 0x0063DA9D000 EntryPoint=0x0063DA9E650 RamDiskDxe.efi
+InstallProtocolInterface: BC62157E-3E33-4FEC-9920-2D3B36D750DF 63DC0DF18
+ProtectUefiImageCommon - 0x3DC0D040
+  - 0x000000063DA9D000 - 0x0000000000011000
+InstallProtocolInterface: 09576E91-6D3F-11D2-8E39-00A0C969723B 63DC0DB18
+InstallProtocolInterface: 330D4706-F2A0-4E4F-A369-B66FA8D54385 63DAAB9C0
+InstallProtocolInterface: 09576E91-6D3F-11D2-8E39-00A0C969723B 63DAAB270
+InstallProtocolInterface: 330D4706-F2A0-4E4F-A369-B66FA8D54385 63DC0BEB0
+InstallProtocolInterface: AB38A0DF-6873-44A9-87E6-D4EB56148449 63DAAB090
+InstallProtocolInterface: 28A03FF4-12B3-4305-A417-BB1A4F94081E 63DC0BE98
+Loading driver 42857F0A-13F2-4B21-8A23-53D3F714B840
+InstallProtocolInterface: 5B1B31A1-9562-11D2-8E3F-00A0C969723B 63DC0C740
+add-symbol-file /Users/adalundhe/g121-a4-winarm/edk2-src/Build/ArmVirtQemuKernel-AArch64/DEBUG_CLANGDWARF/AARCH64/MdeModulePkg/Universal/CapsuleRuntimeDxe/CapsuleRuntimeDxe/DEBUG/CapsuleRuntimeDxe.dll 0x63EC50000
+Loading driver at 0x0063EC40000 EntryPoint=0x0063EC50140 CapsuleRuntimeDxe.efi
+InstallProtocolInterface: BC62157E-3E33-4FEC-9920-2D3B36D750DF 63DC0C418
+ProtectUefiImageCommon - 0x3DC0C740
+  - 0x000000063EC40000 - 0x0000000000040000
+InstallProtocolInterface: 5053697E-2CBC-4819-90D9-0580DEEE5754 0
+Loading driver AD608272-D07F-4964-801E-7BD3B7888652
+InstallProtocolInterface: 5B1B31A1-9562-11D2-8E3F-00A0C969723B 63DC0A240
+add-symbol-file /Users/adalundhe/g121-a4-winarm/edk2-src/Build/ArmVirtQemuKernel-AArch64/DEBUG_CLANGDWARF/AARCH64/MdeModulePkg/Universal/MonotonicCounterRuntimeDxe/MonotonicCounterRuntimeDxe/DEBUG/MonotonicCounterRuntimeDxe.dll 0x63EC00000
+Loading driver at 0x0063EBF0000 EntryPoint=0x0063EC00140 MonotonicCounterRuntimeDxe.efi
+InstallProtocolInterface: BC62157E-3E33-4FEC-9920-2D3B36D750DF 63DC08F18
+ProtectUefiImageCommon - 0x3DC0A240
+  - 0x000000063EBF0000 - 0x0000000000040000
+InstallProtocolInterface: 1DA97072-BDDC-4B30-99F1-72A0B56FFF2A 0
+Loading driver B336F62D-4135-4A55-AE4E-4971BBF0885D
+InstallProtocolInterface: 5B1B31A1-9562-11D2-8E3F-00A0C969723B 63DC082C0
+add-symbol-file /Users/adalundhe/g121-a4-winarm/edk2-src/Build/ArmVirtQemuKernel-AArch64/DEBUG_CLANGDWARF/AARCH64/EmbeddedPkg/RealTimeClockRuntimeDxe/RealTimeClockRuntimeDxe/DEBUG/RealTimeClock.dll 0x63EBB0000
+Loading driver at 0x0063EBA0000 EntryPoint=0x0063EBB0140 RealTimeClock.efi
+InstallProtocolInterface: BC62157E-3E33-4FEC-9920-2D3B36D750DF 63DC06018
+ProtectUefiImageCommon - 0x3DC082C0
+  - 0x000000063EBA0000 - 0x0000000000040000
+Found PL031 RTC @ 0x9010000
+InitializeRealTimeClock: using default timezone/daylight settings
+InstallProtocolInterface: 27CFAC87-46CC-11D4-9A38-0090273FC14D 0
+Loading driver F099D67F-71AE-4C36-B2A3-DCEB0EB2B7D8
+InstallProtocolInterface: 5B1B31A1-9562-11D2-8E3F-00A0C969723B 63DC06240
+add-symbol-file /Users/adalundhe/g121-a4-winarm/edk2-src/Build/ArmVirtQemuKernel-AArch64/DEBUG_CLANGDWARF/AARCH64/MdeModulePkg/Universal/WatchdogTimerDxe/WatchdogTimer/DEBUG/WatchdogTimer.dll 0x63DB2C000
+Loading driver at 0x0063DB2B000 EntryPoint=0x0063DB2C140 WatchdogTimer.efi
+InstallProtocolInterface: BC62157E-3E33-4FEC-9920-2D3B36D750DF 63DC06618
+ProtectUefiImageCommon - 0x3DC06240
+  - 0x000000063DB2B000 - 0x0000000000007000
+InstallProtocolInterface: 665E3FF5-46CC-11D4-9A38-0090273FC14D 63DB30030
+Loading driver 6D33944A-EC75-4855-A54D-809C75241F6C
+InstallProtocolInterface: 5B1B31A1-9562-11D2-8E3F-00A0C969723B 63DC050C0
+add-symbol-file /Users/adalundhe/g121-a4-winarm/edk2-src/Build/ArmVirtQemuKernel-AArch64/DEBUG_CLANGDWARF/AARCH64/MdeModulePkg/Universal/BdsDxe/BdsDxe/DEBUG/BdsDxe.dll 0x63DA53000
+Loading driver at 0x0063DA52000 EntryPoint=0x0063DA53658 BdsDxe.efi
+InstallProtocolInterface: BC62157E-3E33-4FEC-9920-2D3B36D750DF 63DC05918
+ProtectUefiImageCommon - 0x3DC050C0
+  - 0x000000063DA52000 - 0x0000000000025000
+Found FwCfg @ 0x9020008/0x9020000
+Found FwCfg DMA @ 0x9020010
+InstallProtocolInterface: 665E3FF6-46CC-11D4-9A38-0090273FC14D 63DA750E0
+Loading driver 9D1DD27F-6D7F-427B-AEC4-B62F6279C2F1
+InstallProtocolInterface: 5B1B31A1-9562-11D2-8E3F-00A0C969723B 63DC04BC0
+add-symbol-file /Users/adalundhe/g121-a4-winarm/edk2-src/Build/ArmVirtQemuKernel-AArch64/DEBUG_CLANGDWARF/AARCH64/OvmfPkg/PlatformHasAcpiDtDxe/PlatformHasAcpiDtDxe/DEBUG/PlatformHasAcpiDtDxe.dll 0x63DB4E000
+Loading driver at 0x0063DB4D000 EntryPoint=0x0063DB4E348 PlatformHasAcpiDtDxe.efi
+InstallProtocolInterface: BC62157E-3E33-4FEC-9920-2D3B36D750DF 63DC04118
+ProtectUefiImageCommon - 0x3DC04BC0
+  - 0x000000063DB4D000 - 0x0000000000008000
+Found FwCfg @ 0x9020008/0x9020000
+Found FwCfg DMA @ 0x9020010
+InstallProtocolInterface: F0966B41-C23F-41B9-9604-0FF7E111965A 0
+Loading driver D9DCC5DF-4007-435E-9098-8970935504B2
+InstallProtocolInterface: 5B1B31A1-9562-11D2-8E3F-00A0C969723B 63DC042C0
+add-symbol-file /Users/adalundhe/g121-a4-winarm/edk2-src/Build/ArmVirtQemuKernel-AArch64/DEBUG_CLANGDWARF/AARCH64/OvmfPkg/PlatformDxe/Platform/DEBUG/PlatformDxe.dll 0x63DAC8000
+Loading driver at 0x0063DAC7000 EntryPoint=0x0063DAC8650 PlatformDxe.efi
+InstallProtocolInterface: BC62157E-3E33-4FEC-9920-2D3B36D750DF 63DC04618
+ProtectUefiImageCommon - 0x3DC042C0
+  - 0x000000063DAC7000 - 0x000000000000C000
+InstallProtocolInterface: 09576E91-6D3F-11D2-8E39-00A0C969723B 63DAD1090
+InstallProtocolInterface: 330D4706-F2A0-4E4F-A369-B66FA8D54385 63DAD1640
+Loading driver 51CCF399-4FDF-4E55-A45B-E123F84D456A
+InstallProtocolInterface: 5B1B31A1-9562-11D2-8E3F-00A0C969723B 63DC030C0
+add-symbol-file /Users/adalundhe/g121-a4-winarm/edk2-src/Build/ArmVirtQemuKernel-AArch64/DEBUG_CLANGDWARF/AARCH64/MdeModulePkg/Universal/Console/ConPlatformDxe/ConPlatformDxe/DEBUG/ConPlatformDxe.dll 0x63DA95000
+Loading driver at 0x0063DA94000 EntryPoint=0x0063DA95250 ConPlatformDxe.efi
+InstallProtocolInterface: BC62157E-3E33-4FEC-9920-2D3B36D750DF 63DC03598
+ProtectUefiImageCommon - 0x3DC030C0
+  - 0x000000063DA94000 - 0x0000000000009000
+InstallProtocolInterface: 18A031AB-B443-4D1A-A5C0-0C09261E9F71 63DA9B080
+InstallProtocolInterface: 107A772C-D5E1-11D4-9A46-0090273FC14D 63DA9B150
+InstallProtocolInterface: 6A7A5CFF-E8D9-4F70-BADA-75AB3025CE14 63DA9B168
+InstallProtocolInterface: 18A031AB-B443-4D1A-A5C0-0C09261E9F71 63DA9B0B0
+InstallProtocolInterface: 107A772C-D5E1-11D4-9A46-0090273FC14D 63DA9B150
+InstallProtocolInterface: 6A7A5CFF-E8D9-4F70-BADA-75AB3025CE14 63DA9B168
+Loading driver 408EDCEC-CF6D-477C-A5A8-B4844E3DE281
+InstallProtocolInterface: 5B1B31A1-9562-11D2-8E3F-00A0C969723B 63DC02840
+add-symbol-file /Users/adalundhe/g121-a4-winarm/edk2-src/Build/ArmVirtQemuKernel-AArch64/DEBUG_CLANGDWARF/AARCH64/MdeModulePkg/Universal/Console/ConSplitterDxe/ConSplitterDxe/DEBUG/ConSplitterDxe.dll 0x63DA87000
+Loading driver at 0x0063DA86000 EntryPoint=0x0063DA87660 ConSplitterDxe.efi
+InstallProtocolInterface: BC62157E-3E33-4FEC-9920-2D3B36D750DF 63DC02398
+ProtectUefiImageCommon - 0x3DC02840
+  - 0x000000063DA86000 - 0x000000000000E000
+InstallProtocolInterface: 18A031AB-B443-4D1A-A5C0-0C09261E9F71 63DA925A8
+InstallProtocolInterface: 107A772C-D5E1-11D4-9A46-0090273FC14D 63DA923F8
+InstallProtocolInterface: 6A7A5CFF-E8D9-4F70-BADA-75AB3025CE14 63DA92410
+InstallProtocolInterface: 18A031AB-B443-4D1A-A5C0-0C09261E9F71 63DA925E8
+InstallProtocolInterface: 107A772C-D5E1-11D4-9A46-0090273FC14D 63DA92428
+InstallProtocolInterface: 6A7A5CFF-E8D9-4F70-BADA-75AB3025CE14 63DA92440
+InstallProtocolInterface: 18A031AB-B443-4D1A-A5C0-0C09261E9F71 63DA92628
+InstallProtocolInterface: 107A772C-D5E1-11D4-9A46-0090273FC14D 63DA92458
+InstallProtocolInterface: 6A7A5CFF-E8D9-4F70-BADA-75AB3025CE14 63DA92470
+InstallProtocolInterface: 18A031AB-B443-4D1A-A5C0-0C09261E9F71 63DA92668
+InstallProtocolInterface: 107A772C-D5E1-11D4-9A46-0090273FC14D 63DA92488
+InstallProtocolInterface: 6A7A5CFF-E8D9-4F70-BADA-75AB3025CE14 63DA924A0
+InstallProtocolInterface: 18A031AB-B443-4D1A-A5C0-0C09261E9F71 63DA926A8
+InstallProtocolInterface: 107A772C-D5E1-11D4-9A46-0090273FC14D 63DA924B8
+InstallProtocolInterface: 6A7A5CFF-E8D9-4F70-BADA-75AB3025CE14 63DA924D0
+InstallProtocolInterface: 387477C1-69C7-11D2-8E39-00A0C969723B 63DA92040
+InstallProtocolInterface: DD9E7534-7762-4698-8C14-F58517A625AA 63DA92070
+InstallProtocolInterface: 31878C87-0B75-11D5-9A4F-0090273FC14D 63DA920E0
+InstallProtocolInterface: 8D59D32B-C655-4AE9-9B15-F25904992A43 63DA92138
+InstallProtocolInterface: 387477C2-69C7-11D2-8E39-00A0C969723B 63DA921E8
+InstallProtocolInterface: 387477C2-69C7-11D2-8E39-00A0C969723B 63DA922C8
+Loading driver CCCB0C28-4B24-11D5-9A5A-0090273FC14D
+InstallProtocolInterface: 5B1B31A1-9562-11D2-8E3F-00A0C969723B 63DB29440
+add-symbol-file /Users/adalundhe/g121-a4-winarm/edk2-src/Build/ArmVirtQemuKernel-AArch64/DEBUG_CLANGDWARF/AARCH64/MdeModulePkg/Universal/Console/GraphicsConsoleDxe/GraphicsConsoleDxe/DEBUG/GraphicsConsoleDxe.dll 0x63DA7C000
+Loading driver at 0x0063DA7B000 EntryPoint=0x0063DA7C660 GraphicsConsoleDxe.efi
+InstallProtocolInterface: BC62157E-3E33-4FEC-9920-2D3B36D750DF 63DB28F98
+ProtectUefiImageCommon - 0x3DB29440
+  - 0x000000063DA7B000 - 0x000000000000B000
+InstallProtocolInterface: 18A031AB-B443-4D1A-A5C0-0C09261E9F71 63DA83220
+InstallProtocolInterface: 107A772C-D5E1-11D4-9A46-0090273FC14D 63DA84750
+InstallProtocolInterface: 6A7A5CFF-E8D9-4F70-BADA-75AB3025CE14 63DA84768
+Loading driver 9E863906-A40F-4875-977F-5B93FF237FC6
+InstallProtocolInterface: 5B1B31A1-9562-11D2-8E3F-00A0C969723B 63DB28240
+add-symbol-file /Users/adalundhe/g121-a4-winarm/edk2-src/Build/ArmVirtQemuKernel-AArch64/DEBUG_CLANGDWARF/AARCH64/MdeModulePkg/Universal/Console/TerminalDxe/TerminalDxe/DEBUG/TerminalDxe.dll 0x63D944000
+Loading driver at 0x0063D943000 EntryPoint=0x0063D944650 TerminalDxe.efi
+InstallProtocolInterface: BC62157E-3E33-4FEC-9920-2D3B36D750DF 63DB28598
+ProtectUefiImageCommon - 0x3DB28240
+  - 0x000000063D943000 - 0x000000000000E000
+InstallProtocolInterface: 18A031AB-B443-4D1A-A5C0-0C09261E9F71 63D94F4E8
+InstallProtocolInterface: 107A772C-D5E1-11D4-9A46-0090273FC14D 63D94F498
+InstallProtocolInterface: 6A7A5CFF-E8D9-4F70-BADA-75AB3025CE14 63D94F4B0
+Loading driver 6B38F7B4-AD98-40E9-9093-ACA2B5A253C4
+InstallProtocolInterface: 5B1B31A1-9562-11D2-8E3F-00A0C969723B 63DB267C0
+add-symbol-file /Users/adalundhe/g121-a4-winarm/edk2-src/Build/ArmVirtQemuKernel-AArch64/DEBUG_CLANGDWARF/AARCH64/MdeModulePkg/Universal/Disk/DiskIoDxe/DiskIoDxe/DEBUG/DiskIoDxe.dll 0x63D957000
+Loading driver at 0x0063D956000 EntryPoint=0x0063D957660 DiskIoDxe.efi
+InstallProtocolInterface: BC62157E-3E33-4FEC-9920-2D3B36D750DF 63DB26718
+ProtectUefiImageCommon - 0x3DB267C0
+  - 0x000000063D956000 - 0x000000000000A000
+InstallProtocolInterface: 18A031AB-B443-4D1A-A5C0-0C09261E9F71 63D95E030
+InstallProtocolInterface: 107A772C-D5E1-11D4-9A46-0090273FC14D 63D95E128
+InstallProtocolInterface: 6A7A5CFF-E8D9-4F70-BADA-75AB3025CE14 63D95E140
+Loading driver 1FA1F39E-FEFF-4AAE-BD7B-38A070A3B609
+InstallProtocolInterface: 5B1B31A1-9562-11D2-8E3F-00A0C969723B 63DB25B40
+add-symbol-file /Users/adalundhe/g121-a4-winarm/edk2-src/Build/ArmVirtQemuKernel-AArch64/DEBUG_CLANGDWARF/AARCH64/MdeModulePkg/Universal/Disk/PartitionDxe/PartitionDxe/DEBUG/PartitionDxe.dll 0x63D92B000
+Loading driver at 0x0063D92A000 EntryPoint=0x0063D92B650 PartitionDxe.efi
+InstallProtocolInterface: BC62157E-3E33-4FEC-9920-2D3B36D750DF 63DB25E18
+ProtectUefiImageCommon - 0x3DB25B40
+  - 0x000000063D92A000 - 0x000000000000C000
+InstallProtocolInterface: 18A031AB-B443-4D1A-A5C0-0C09261E9F71 63D934030
+InstallProtocolInterface: 107A772C-D5E1-11D4-9A46-0090273FC14D 63D934108
+InstallProtocolInterface: 6A7A5CFF-E8D9-4F70-BADA-75AB3025CE14 63D934120
+Loading driver 961578FE-B6B7-44C3-AF35-6BC705CD2B1F
+InstallProtocolInterface: 5B1B31A1-9562-11D2-8E3F-00A0C969723B 63DB251C0
+add-symbol-file /Users/adalundhe/g121-a4-winarm/edk2-src/Build/ArmVirtQemuKernel-AArch64/DEBUG_CLANGDWARF/AARCH64/FatPkg/EnhancedFatDxe/Fat/DEBUG/Fat.dll 0x63D908000
+Loading driver at 0x0063D907000 EntryPoint=0x0063D908650 Fat.efi
+InstallProtocolInterface: BC62157E-3E33-4FEC-9920-2D3B36D750DF 63DB25498
+ProtectUefiImageCommon - 0x3DB251C0
+  - 0x000000063D907000 - 0x0000000000011000
+InstallProtocolInterface: 18A031AB-B443-4D1A-A5C0-0C09261E9F71 63D9161C8
+InstallProtocolInterface: 107A772C-D5E1-11D4-9A46-0090273FC14D 63D916158
+InstallProtocolInterface: 6A7A5CFF-E8D9-4F70-BADA-75AB3025CE14 63D916170
+Loading driver CD3BAFB6-50FB-4FE8-8E4E-AB74D2C1A600
+InstallProtocolInterface: 5B1B31A1-9562-11D2-8E3F-00A0C969723B 63DAFF840
+add-symbol-file /Users/adalundhe/g121-a4-winarm/edk2-src/Build/ArmVirtQemuKernel-AArch64/DEBUG_CLANGDWARF/AARCH64/MdeModulePkg/Universal/Disk/UnicodeCollation/EnglishDxe/EnglishDxe/DEBUG/EnglishDxe.dll 0x63DAC1000
+Loading driver at 0x0063DAC0000 EntryPoint=0x0063DAC1140 EnglishDxe.efi
+InstallProtocolInterface: BC62157E-3E33-4FEC-9920-2D3B36D750DF 63DAFF798
+ProtectUefiImageCommon - 0x3DAFF840
+  - 0x000000063DAC0000 - 0x0000000000007000
+InstallProtocolInterface: A4C751FC-23AE-4C3E-92E9-4964CF63F349 63DAC5040
+Loading driver 905F13B0-8F91-4B0A-BD76-E1E78F9422E4
+InstallProtocolInterface: 5B1B31A1-9562-11D2-8E3F-00A0C969723B 63DAFE040
+add-symbol-file /Users/adalundhe/g121-a4-winarm/edk2-src/Build/ArmVirtQemuKernel-AArch64/DEBUG_CLANGDWARF/AARCH64/MdeModulePkg/Universal/Disk/UdfDxe/UdfDxe/DEBUG/UdfDxe.dll 0x63D91F000
+Loading driver at 0x0063D91E000 EntryPoint=0x0063D91F650 UdfDxe.efi
+InstallProtocolInterface: BC62157E-3E33-4FEC-9920-2D3B36D750DF 63DAFEC98
+ProtectUefiImageCommon - 0x3DAFE040
+  - 0x000000063D91E000 - 0x000000000000C000
+InstallProtocolInterface: 18A031AB-B443-4D1A-A5C0-0C09261E9F71 63D928030
+InstallProtocolInterface: 107A772C-D5E1-11D4-9A46-0090273FC14D 63D928158
+InstallProtocolInterface: 6A7A5CFF-E8D9-4F70-BADA-75AB3025CE14 63D928170
+Loading driver 7BD9DDF7-8B83-488E-AEC9-24C78610289C
+InstallProtocolInterface: 5B1B31A1-9562-11D2-8E3F-00A0C969723B 63DAFE4C0
+add-symbol-file /Users/adalundhe/g121-a4-winarm/edk2-src/Build/ArmVirtQemuKernel-AArch64/DEBUG_CLANGDWARF/AARCH64/OvmfPkg/VirtioFsDxe/VirtioFsDxe/DEBUG/VirtioFsDxe.dll 0x63D8E9000
+Loading driver at 0x0063D8E8000 EntryPoint=0x0063D8E9650 VirtioFsDxe.efi
+InstallProtocolInterface: BC62157E-3E33-4FEC-9920-2D3B36D750DF 63DAFE818
+ProtectUefiImageCommon - 0x3DAFE4C0
+  - 0x000000063D8E8000 - 0x000000000000F000
+InstallProtocolInterface: 18A031AB-B443-4D1A-A5C0-0C09261E9F71 63D8F50C8
+InstallProtocolInterface: 6A7A5CFF-E8D9-4F70-BADA-75AB3025CE14 63D8F50F8
+Loading driver 11D92DFB-3CA9-4F93-BA2E-4780ED3E03B5
+InstallProtocolInterface: 5B1B31A1-9562-11D2-8E3F-00A0C969723B 63DAFB0C0
+add-symbol-file /Users/adalundhe/g121-a4-winarm/edk2-src/Build/ArmVirtQemuKernel-AArch64/DEBUG_CLANGDWARF/AARCH64/OvmfPkg/VirtioBlkDxe/VirtioBlk/DEBUG/VirtioBlkDxe.dll 0x63D93B000
+Loading driver at 0x0063D93A000 EntryPoint=0x0063D93B340 VirtioBlkDxe.efi
+InstallProtocolInterface: BC62157E-3E33-4FEC-9920-2D3B36D750DF 63DAFBA98
+ProtectUefiImageCommon - 0x3DAFB0C0
+  - 0x000000063D93A000 - 0x0000000000009000
+InstallProtocolInterface: 18A031AB-B443-4D1A-A5C0-0C09261E9F71 63D941090
+InstallProtocolInterface: 107A772C-D5E1-11D4-9A46-0090273FC14D 63D941060
+InstallProtocolInterface: 6A7A5CFF-E8D9-4F70-BADA-75AB3025CE14 63D941078
+Loading driver A92CDB4B-82F1-4E0B-A516-8A655D371524
+InstallProtocolInterface: 5B1B31A1-9562-11D2-8E3F-00A0C969723B 63DAFA040
+add-symbol-file /Users/adalundhe/g121-a4-winarm/edk2-src/Build/ArmVirtQemuKernel-AArch64/DEBUG_CLANGDWARF/AARCH64/OvmfPkg/VirtioNetDxe/VirtioNet/DEBUG/VirtioNetDxe.dll 0x63D8DC000
+Loading driver at 0x0063D8DB000 EntryPoint=0x0063D8E34E4 VirtioNetDxe.efi
+InstallProtocolInterface: BC62157E-3E33-4FEC-9920-2D3B36D750DF 63DAFAF18
+ProtectUefiImageCommon - 0x3DAFA040
+  - 0x000000063D8DB000 - 0x000000000000D000
+Found FwCfg @ 0x9020008/0x9020000
+Found FwCfg DMA @ 0x9020010
+EntryPointFwCfgOverride: opt/org.tianocore/VirtioNetSupport = enabled (default)
+InstallProtocolInterface: 18A031AB-B443-4D1A-A5C0-0C09261E9F71 63D8E60B8
+InstallProtocolInterface: 107A772C-D5E1-11D4-9A46-0090273FC14D 63D8E6068
+InstallProtocolInterface: 6A7A5CFF-E8D9-4F70-BADA-75AB3025CE14 63D8E6080
+Loading driver FAB5D4F4-83C0-4AAF-8480-442D11DF6CEA
+InstallProtocolInterface: 5B1B31A1-9562-11D2-8E3F-00A0C969723B 63DAFA440
+add-symbol-file /Users/adalundhe/g121-a4-winarm/edk2-src/Build/ArmVirtQemuKernel-AArch64/DEBUG_CLANGDWARF/AARCH64/OvmfPkg/VirtioScsiDxe/VirtioScsi/DEBUG/VirtioScsiDxe.dll 0x63DAF2000
+Loading driver at 0x0063DAF1000 EntryPoint=0x0063DAF2560 VirtioScsiDxe.efi
+InstallProtocolInterface: BC62157E-3E33-4FEC-9920-2D3B36D750DF 63DAFA798
+ProtectUefiImageCommon - 0x3DAFA440
+  - 0x000000063DAF1000 - 0x0000000000009000
+InstallProtocolInterface: 18A031AB-B443-4D1A-A5C0-0C09261E9F71 63DAF8090
+InstallProtocolInterface: 107A772C-D5E1-11D4-9A46-0090273FC14D 63DAF8060
+InstallProtocolInterface: 6A7A5CFF-E8D9-4F70-BADA-75AB3025CE14 63DAF8078
+Loading driver 58E26F0D-CBAC-4BBA-B70F-18221415665A
+InstallProtocolInterface: 5B1B31A1-9562-11D2-8E3F-00A0C969723B 63DA7A0C0
+add-symbol-file /Users/adalundhe/g121-a4-winarm/edk2-src/Build/ArmVirtQemuKernel-AArch64/DEBUG_CLANGDWARF/AARCH64/OvmfPkg/VirtioRngDxe/VirtioRng/DEBUG/VirtioRngDxe.dll 0x63D8D4000
+Loading driver at 0x0063D8D3000 EntryPoint=0x0063D8D4560 VirtioRngDxe.efi
+InstallProtocolInterface: BC62157E-3E33-4FEC-9920-2D3B36D750DF 63DA7AA98
+ProtectUefiImageCommon - 0x3DA7A0C0
+  - 0x000000063D8D3000 - 0x0000000000008000
+InstallProtocolInterface: 18A031AB-B443-4D1A-A5C0-0C09261E9F71 63D8D9050
+InstallProtocolInterface: 107A772C-D5E1-11D4-9A46-0090273FC14D 63D8D9020
+InstallProtocolInterface: 6A7A5CFF-E8D9-4F70-BADA-75AB3025CE14 63D8D9038
+Loading driver 23CACE14-EBA4-49F6-9681-C697FF0B649E
+InstallProtocolInterface: 5B1B31A1-9562-11D2-8E3F-00A0C969723B 63DA79040
+add-symbol-file /Users/adalundhe/g121-a4-winarm/edk2-src/Build/ArmVirtQemuKernel-AArch64/DEBUG_CLANGDWARF/AARCH64/OvmfPkg/VirtioSerialDxe/VirtioSerial/DEBUG/VirtioSerialDxe.dll 0x63D8CA000
+Loading driver at 0x0063D8C9000 EntryPoint=0x0063D8CA568 VirtioSerialDxe.efi
+InstallProtocolInterface: BC62157E-3E33-4FEC-9920-2D3B36D750DF 63DA79F18
+ProtectUefiImageCommon - 0x3DA79040
+  - 0x000000063D8C9000 - 0x000000000000A000
+InstallProtocolInterface: 18A031AB-B443-4D1A-A5C0-0C09261E9F71 63D8D1050
+InstallProtocolInterface: 107A772C-D5E1-11D4-9A46-0090273FC14D 63D8D1020
+InstallProtocolInterface: 6A7A5CFF-E8D9-4F70-BADA-75AB3025CE14 63D8D1038
+Loading driver 806040CA-DAD9-4978-A3B4-2D2AB0C8A48F
+InstallProtocolInterface: 5B1B31A1-9562-11D2-8E3F-00A0C969723B 63DA79440
+add-symbol-file /Users/adalundhe/g121-a4-winarm/edk2-src/Build/ArmVirtQemuKernel-AArch64/DEBUG_CLANGDWARF/AARCH64/OvmfPkg/QemuKernelLoaderFsDxe/QemuKernelLoaderFsDxe/DEBUG/QemuKernelLoaderFsDxe.dll 0x63D8C0000
+Loading driver at 0x0063D8BF000 EntryPoint=0x0063D8C0568 QemuKernelLoaderFsDxe.efi
+InstallProtocolInterface: BC62157E-3E33-4FEC-9920-2D3B36D750DF 63DA79918
+ProtectUefiImageCommon - 0x3DA79440
+  - 0x000000063D8BF000 - 0x000000000000A000
+Found FwCfg @ 0x9020008/0x9020000
+Found FwCfg DMA @ 0x9020010
+QemuKernelLoaderFsDxeEntrypoint: igvm blobs
+QemuKernelLoaderFsDxeEntrypoint: named blobs (etc/boot/*)
+QemuKernelLoaderFsDxeEntrypoint: traditional blobs
+QemuKernelLoaderFsDxeEntrypoint: no kernel and no named blobs present -> quit
+Error: Image at 0063D8BF000 start failed: Not Found
+remove-symbol-file /Users/adalundhe/g121-a4-winarm/edk2-src/Build/ArmVirtQemuKernel-AArch64/DEBUG_CLANGDWARF/AARCH64/OvmfPkg/QemuKernelLoaderFsDxe/QemuKernelLoaderFsDxe/DEBUG/QemuKernelLoaderFsDxe.dll 0x3D8C0000
+Loading driver E4F61863-FE2C-4B56-A8F4-08519BC439DF
+InstallProtocolInterface: 5B1B31A1-9562-11D2-8E3F-00A0C969723B 63DA79440
+add-symbol-file /Users/adalundhe/g121-a4-winarm/edk2-src/Build/ArmVirtQemuKernel-AArch64/DEBUG_CLANGDWARF/AARCH64/NetworkPkg/VlanConfigDxe/VlanConfigDxe/DEBUG/VlanConfigDxe.dll 0x63D8B5000
+Loading driver at 0x0063D8B4000 EntryPoint=0x0063D8B5660 VlanConfigDxe.efi
+InstallProtocolInterface: BC62157E-3E33-4FEC-9920-2D3B36D750DF 63DA78E18
+ProtectUefiImageCommon - 0x3DA79440
+  - 0x000000063D8B4000 - 0x000000000000C000
+InstallProtocolInterface: 18A031AB-B443-4D1A-A5C0-0C09261E9F71 63D8BE030
+InstallProtocolInterface: 107A772C-D5E1-11D4-9A46-0090273FC14D 63D8BE700
+InstallProtocolInterface: 6A7A5CFF-E8D9-4F70-BADA-75AB3025CE14 63D8BE718
+Loading driver 025BBFC7-E6A9-4B8B-82AD-6815A1AEAF4A
+InstallProtocolInterface: 5B1B31A1-9562-11D2-8E3F-00A0C969723B 63DA784C0
+add-symbol-file /Users/adalundhe/g121-a4-winarm/edk2-src/Build/ArmVirtQemuKernel-AArch64/DEBUG_CLANGDWARF/AARCH64/NetworkPkg/MnpDxe/MnpDxe/DEBUG/MnpDxe.dll 0x63D892000
+Loading driver at 0x0063D891000 EntryPoint=0x0063D892650 MnpDxe.efi
+InstallProtocolInterface: BC62157E-3E33-4FEC-9920-2D3B36D750DF 63DA78A98
+ProtectUefiImageCommon - 0x3DA784C0
+  - 0x000000063D891000 - 0x0000000000011000
+InstallProtocolInterface: 18A031AB-B443-4D1A-A5C0-0C09261E9F71 63D8A0118
+InstallProtocolInterface: 107A772C-D5E1-11D4-9A46-0090273FC14D 63D8A00C8
+InstallProtocolInterface: 6A7A5CFF-E8D9-4F70-BADA-75AB3025CE14 63D8A00E0
+Loading driver 529D3F93-E8E9-4E73-B1E1-BDF6A9D50113
+InstallProtocolInterface: 5B1B31A1-9562-11D2-8E3F-00A0C969723B 63DA51C40
+add-symbol-file /Users/adalundhe/g121-a4-winarm/edk2-src/Build/ArmVirtQemuKernel-AArch64/DEBUG_CLANGDWARF/AARCH64/NetworkPkg/ArpDxe/ArpDxe/DEBUG/ArpDxe.dll 0x63D8A9000
+Loading driver at 0x0063D8A8000 EntryPoint=0x0063D8A9650 ArpDxe.efi
+InstallProtocolInterface: BC62157E-3E33-4FEC-9920-2D3B36D750DF 63DA51A98
+ProtectUefiImageCommon - 0x3DA51C40
+  - 0x000000063D8A8000 - 0x000000000000C000
+InstallProtocolInterface: 18A031AB-B443-4D1A-A5C0-0C09261E9F71 63D8B2030
+InstallProtocolInterface: 107A772C-D5E1-11D4-9A46-0090273FC14D 63D8B20A8
+InstallProtocolInterface: 6A7A5CFF-E8D9-4F70-BADA-75AB3025CE14 63D8B20C0
+Loading driver 94734718-0BBC-47FB-96A5-EE7A5AE6A2AD
+InstallProtocolInterface: 5B1B31A1-9562-11D2-8E3F-00A0C969723B 63DA513C0
+add-symbol-file /Users/adalundhe/g121-a4-winarm/edk2-src/Build/ArmVirtQemuKernel-AArch64/DEBUG_CLANGDWARF/AARCH64/NetworkPkg/Dhcp4Dxe/Dhcp4Dxe/DEBUG/Dhcp4Dxe.dll 0x63D86D000
+Loading driver at 0x0063D86C000 EntryPoint=0x0063D86D650 Dhcp4Dxe.efi
+InstallProtocolInterface: BC62157E-3E33-4FEC-9920-2D3B36D750DF 63DA50E98
+ProtectUefiImageCommon - 0x3DA513C0
+  - 0x000000063D86C000 - 0x0000000000012000
+InstallProtocolInterface: 18A031AB-B443-4D1A-A5C0-0C09261E9F71 63D87B030
+InstallProtocolInterface: 107A772C-D5E1-11D4-9A46-0090273FC14D 63D87BC90
+InstallProtocolInterface: 6A7A5CFF-E8D9-4F70-BADA-75AB3025CE14 63D87BCA8
+Loading driver 9FB1A1F3-3B71-4324-B39A-745CBB015FFF
+InstallProtocolInterface: 5B1B31A1-9562-11D2-8E3F-00A0C969723B 63DA50140
+add-symbol-file /Users/adalundhe/g121-a4-winarm/edk2-src/Build/ArmVirtQemuKernel-AArch64/DEBUG_CLANGDWARF/AARCH64/NetworkPkg/Ip4Dxe/Ip4Dxe/DEBUG/Ip4Dxe.dll 0x63D832000
+Loading driver at 0x0063D831000 EntryPoint=0x0063D8450A4 Ip4Dxe.efi
+InstallProtocolInterface: BC62157E-3E33-4FEC-9920-2D3B36D750DF 63DA50718
+ProtectUefiImageCommon - 0x3DA50140
+  - 0x000000063D831000 - 0x000000000001D000
+Found FwCfg @ 0x9020008/0x9020000
+Found FwCfg DMA @ 0x9020010
+EntryPointFwCfgOverride: opt/org.tianocore/IPv4Support = enabled (default)
+InstallProtocolInterface: 18A031AB-B443-4D1A-A5C0-0C09261E9F71 63D84C170
+InstallProtocolInterface: 107A772C-D5E1-11D4-9A46-0090273FC14D 63D84C7A8
+InstallProtocolInterface: 6A7A5CFF-E8D9-4F70-BADA-75AB3025CE14 63D84C7C0
+Loading driver 6D6963AB-906D-4A65-A7CA-BD40E5D6AF2B
+InstallProtocolInterface: 5B1B31A1-9562-11D2-8E3F-00A0C969723B 63D955140
+add-symbol-file /Users/adalundhe/g121-a4-winarm/edk2-src/Build/ArmVirtQemuKernel-AArch64/DEBUG_CLANGDWARF/AARCH64/NetworkPkg/Udp4Dxe/Udp4Dxe/DEBUG/Udp4Dxe.dll 0x63D8F8000
+Loading driver at 0x0063D8F7000 EntryPoint=0x0063D8F8650 Udp4Dxe.efi
+InstallProtocolInterface: BC62157E-3E33-4FEC-9920-2D3B36D750DF 63D955398
+ProtectUefiImageCommon - 0x3D955140
+  - 0x000000063D8F7000 - 0x0000000000010000
+InstallProtocolInterface: 18A031AB-B443-4D1A-A5C0-0C09261E9F71 63D905030
+InstallProtocolInterface: 107A772C-D5E1-11D4-9A46-0090273FC14D 63D9050C0
+InstallProtocolInterface: 6A7A5CFF-E8D9-4F70-BADA-75AB3025CE14 63D9050D8
+Loading driver DC3641B8-2FA8-4ED3-BC1F-F9962A03454B
+InstallProtocolInterface: 5B1B31A1-9562-11D2-8E3F-00A0C969723B 63D954BC0
+add-symbol-file /Users/adalundhe/g121-a4-winarm/edk2-src/Build/ArmVirtQemuKernel-AArch64/DEBUG_CLANGDWARF/AARCH64/NetworkPkg/Mtftp4Dxe/Mtftp4Dxe/DEBUG/Mtftp4Dxe.dll 0x63D85D000
+Loading driver at 0x0063D85C000 EntryPoint=0x0063D85D650 Mtftp4Dxe.efi
+InstallProtocolInterface: BC62157E-3E33-4FEC-9920-2D3B36D750DF 63D954B18
+ProtectUefiImageCommon - 0x3D954BC0
+  - 0x000000063D85C000 - 0x0000000000010000
+InstallProtocolInterface: 18A031AB-B443-4D1A-A5C0-0C09261E9F71 63D86A050
+InstallProtocolInterface: 107A772C-D5E1-11D4-9A46-0090273FC14D 63D86A0E8
+InstallProtocolInterface: 6A7A5CFF-E8D9-4F70-BADA-75AB3025CE14 63D86A100
+Loading driver B95E9FDA-26DE-48D2-8807-1F9107AC5E3A
+InstallProtocolInterface: 5B1B31A1-9562-11D2-8E3F-00A0C969723B 63D954340
+add-symbol-file /Users/adalundhe/g121-a4-winarm/edk2-src/Build/ArmVirtQemuKernel-AArch64/DEBUG_CLANGDWARF/AARCH64/NetworkPkg/UefiPxeBcDxe/UefiPxeBcDxe/DEBUG/UefiPxeBcDxe.dll 0x63D7FF000
+Loading driver at 0x0063D7FE000 EntryPoint=0x0063D7FF670 UefiPxeBcDxe.efi
+InstallProtocolInterface: BC62157E-3E33-4FEC-9920-2D3B36D750DF 63D954698
+ProtectUefiImageCommon - 0x3D954340
+  - 0x000000063D7FE000 - 0x0000000000019000
+Found FwCfg @ 0x9020008/0x9020000
+Found FwCfg DMA @ 0x9020010
+InstallProtocolInterface: 18A031AB-B443-4D1A-A5C0-0C09261E9F71 63D815068
+InstallProtocolInterface: 107A772C-D5E1-11D4-9A46-0090273FC14D 63D815350
+InstallProtocolInterface: 6A7A5CFF-E8D9-4F70-BADA-75AB3025CE14 63D815368
+InstallProtocolInterface: 18A031AB-B443-4D1A-A5C0-0C09261E9F71 63D815098
+InstallProtocolInterface: 107A772C-D5E1-11D4-9A46-0090273FC14D 63D815350
+InstallProtocolInterface: 6A7A5CFF-E8D9-4F70-BADA-75AB3025CE14 63D815368
+Loading driver 0167CCC4-D0F7-4F21-A3EF-9E64B7CDCE8B
+InstallProtocolInterface: 5B1B31A1-9562-11D2-8E3F-00A0C969723B 63D9522C0
+add-symbol-file /Users/adalundhe/g121-a4-winarm/edk2-src/Build/ArmVirtQemuKernel-AArch64/DEBUG_CLANGDWARF/AARCH64/MdeModulePkg/Bus/Scsi/ScsiBusDxe/ScsiBusDxe/DEBUG/ScsiBus.dll 0x63D87F000
+Loading driver at 0x0063D87E000 EntryPoint=0x0063D87F660 ScsiBus.efi
+InstallProtocolInterface: BC62157E-3E33-4FEC-9920-2D3B36D750DF 63D952598
+ProtectUefiImageCommon - 0x3D9522C0
+  - 0x000000063D87E000 - 0x0000000000009000
+InstallProtocolInterface: 18A031AB-B443-4D1A-A5C0-0C09261E9F71 63D885030
+InstallProtocolInterface: 107A772C-D5E1-11D4-9A46-0090273FC14D 63D8850A0
+InstallProtocolInterface: 6A7A5CFF-E8D9-4F70-BADA-75AB3025CE14 63D8850B8
+Loading driver 0A66E322-3740-4CCE-AD62-BD172CECCA35
+InstallProtocolInterface: 5B1B31A1-9562-11D2-8E3F-00A0C969723B 63D951940
+add-symbol-file /Users/adalundhe/g121-a4-winarm/edk2-src/Build/ArmVirtQemuKernel-AArch64/DEBUG_CLANGDWARF/AARCH64/MdeModulePkg/Bus/Scsi/ScsiDiskDxe/ScsiDiskDxe/DEBUG/ScsiDisk.dll 0x63D7EE000
+Loading driver at 0x0063D7ED000 EntryPoint=0x0063D7EE660 ScsiDisk.efi
+InstallProtocolInterface: BC62157E-3E33-4FEC-9920-2D3B36D750DF 63D951C18
+ProtectUefiImageCommon - 0x3D951940
+  - 0x000000063D7ED000 - 0x0000000000011000
+InstallProtocolInterface: 18A031AB-B443-4D1A-A5C0-0C09261E9F71 63D7FC150
+InstallProtocolInterface: 107A772C-D5E1-11D4-9A46-0090273FC14D 63D7FC100
+InstallProtocolInterface: 6A7A5CFF-E8D9-4F70-BADA-75AB3025CE14 63D7FC118
+Loading driver 5BE3BDF4-53CF-46A3-A6A9-73C34A6E5EE3
+InstallProtocolInterface: 5B1B31A1-9562-11D2-8E3F-00A0C969723B 63D939040
+add-symbol-file /Users/adalundhe/g121-a4-winarm/edk2-src/Build/ArmVirtQemuKernel-AArch64/DEBUG_CLANGDWARF/AARCH64/MdeModulePkg/Bus/Pci/NvmExpressDxe/NvmExpressDxe/DEBUG/NvmExpressDxe.dll 0x63D7DD000
+Loading driver at 0x0063D7DC000 EntryPoint=0x0063D7DD560 NvmExpressDxe.efi
+InstallProtocolInterface: BC62157E-3E33-4FEC-9920-2D3B36D750DF 63D951698
+ProtectUefiImageCommon - 0x3D939040
+  - 0x000000063D7DC000 - 0x0000000000011000
+InstallProtocolInterface: 18A031AB-B443-4D1A-A5C0-0C09261E9F71 63D7EB158
+InstallProtocolInterface: 107A772C-D5E1-11D4-9A46-0090273FC14D 63D7EB0E8
+InstallProtocolInterface: 6A7A5CFF-E8D9-4F70-BADA-75AB3025CE14 63D7EB100
+InstallProtocolInterface: 5C198761-16A8-4E69-972C-89D67954F81D 63D7EB020
+Loading driver 9622E42C-8E38-4A08-9E8F-54F784652F6B
+InstallProtocolInterface: 5B1B31A1-9562-11D2-8E3F-00A0C969723B 63D939540
+add-symbol-file /Users/adalundhe/g121-a4-winarm/edk2-src/Build/ArmVirtQemuKernel-AArch64/DEBUG_CLANGDWARF/AARCH64/MdeModulePkg/Universal/Acpi/AcpiTableDxe/AcpiTableDxe/DEBUG/AcpiTableDxe.dll 0x63D7CE000
+Loading driver at 0x0063D7CD000 EntryPoint=0x0063D7CE650 AcpiTableDxe.efi
+InstallProtocolInterface: BC62157E-3E33-4FEC-9920-2D3B36D750DF 63D939A98
+ProtectUefiImageCommon - 0x3D939540
+  - 0x000000063D7CD000 - 0x000000000000F000
+Fail to locate AcpiSiliconHob!!
+InstallProtocolInterface: FFE06BDD-6107-46A6-7BB2-5A9C7EC5275C 63D938BA0
+InstallProtocolInterface: EB97088E-CFDF-49C6-BE4B-D906A5B20E86 63D938BB0
+Loading driver B8E62775-BB0A-43F0-A843-5BE8B14F8CCD
+InstallProtocolInterface: 5B1B31A1-9562-11D2-8E3F-00A0C969723B 63D9382C0
+add-symbol-file /Users/adalundhe/g121-a4-winarm/edk2-src/Build/ArmVirtQemuKernel-AArch64/DEBUG_CLANGDWARF/AARCH64/MdeModulePkg/Universal/Acpi/BootGraphicsResourceTableDxe/BootGraphicsResourceTableDxe/DEBUG/BootGraphicsResourceTableDxe.dll 0x63D855000
+Loading driver at 0x0063D854000 EntryPoint=0x0063D855560 BootGraphicsResourceTableDxe.efi
+InstallProtocolInterface: BC62157E-3E33-4FEC-9920-2D3B36D750DF 63D938998
+ProtectUefiImageCommon - 0x3D9382C0
+  - 0x000000063D854000 - 0x0000000000008000
+InstallProtocolInterface: CDEA2BD3-FC25-4C1C-B97C-B31186064990 63D85A020
+InstallProtocolInterface: 4B5DC1DF-1EAA-48B2-A7E9-EAC489A00B5C 63D85A028
+Loading driver 93B80004-9FB3-11D4-9A3A-0090273FC14D
+InstallProtocolInterface: 5B1B31A1-9562-11D2-8E3F-00A0C969723B 63D9378C0
+add-symbol-file /Users/adalundhe/g121-a4-winarm/edk2-src/Build/ArmVirtQemuKernel-AArch64/DEBUG_CLANGDWARF/AARCH64/MdeModulePkg/Bus/Pci/PciBusDxe/PciBusDxe/DEBUG/PciBusDxe.dll 0x63D7B6000
+Loading driver at 0x0063D7B5000 EntryPoint=0x0063D7B6650 PciBusDxe.efi
+InstallProtocolInterface: BC62157E-3E33-4FEC-9920-2D3B36D750DF 63D937798
+ProtectUefiImageCommon - 0x3D9378C0
+  - 0x000000063D7B5000 - 0x0000000000018000
+InstallProtocolInterface: 18A031AB-B443-4D1A-A5C0-0C09261E9F71 63D7CB1C0
+InstallProtocolInterface: 107A772C-D5E1-11D4-9A46-0090273FC14D 63D7CB2A0
+InstallProtocolInterface: 6A7A5CFF-E8D9-4F70-BADA-75AB3025CE14 63D7CB2B8
+InstallProtocolInterface: 19CB87AB-2CB9-4665-8360-DDCF6054F79D 63D7CB040
+Loading driver 83DD3B39-7CAF-4FAC-A542-E050B767E3A7
+InstallProtocolInterface: 5B1B31A1-9562-11D2-8E3F-00A0C969723B 63D936040
+add-symbol-file /Users/adalundhe/g121-a4-winarm/edk2-src/Build/ArmVirtQemuKernel-AArch64/DEBUG_CLANGDWARF/AARCH64/OvmfPkg/VirtioPciDeviceDxe/VirtioPciDeviceDxe/DEBUG/VirtioPciDeviceDxe.dll 0x63D82A000
+Loading driver at 0x0063D829000 EntryPoint=0x0063D82A560 VirtioPciDeviceDxe.efi
+InstallProtocolInterface: BC62157E-3E33-4FEC-9920-2D3B36D750DF 63D936F18
+ProtectUefiImageCommon - 0x3D936040
+  - 0x000000063D829000 - 0x0000000000008000
+InstallProtocolInterface: 18A031AB-B443-4D1A-A5C0-0C09261E9F71 63D82F070
+InstallProtocolInterface: 107A772C-D5E1-11D4-9A46-0090273FC14D 63D82F040
+InstallProtocolInterface: 6A7A5CFF-E8D9-4F70-BADA-75AB3025CE14 63D82F058
+Loading driver 0170F60C-1D40-4651-956D-F0BD9879D527
+InstallProtocolInterface: 5B1B31A1-9562-11D2-8E3F-00A0C969723B 63D936740
+add-symbol-file /Users/adalundhe/g121-a4-winarm/edk2-src/Build/ArmVirtQemuKernel-AArch64/DEBUG_CLANGDWARF/AARCH64/OvmfPkg/Virtio10Dxe/Virtio10/DEBUG/Virtio10.dll 0x63D7AB000
+Loading driver at 0x0063D7AA000 EntryPoint=0x0063D7AB560 Virtio10.efi
+InstallProtocolInterface: BC62157E-3E33-4FEC-9920-2D3B36D750DF 63D936698
+ProtectUefiImageCommon - 0x3D936740
+  - 0x000000063D7AA000 - 0x000000000000B000
+InstallProtocolInterface: 18A031AB-B443-4D1A-A5C0-0C09261E9F71 63D7B3048
+InstallProtocolInterface: 107A772C-D5E1-11D4-9A46-0090273FC14D 63D7B3018
+InstallProtocolInterface: 6A7A5CFF-E8D9-4F70-BADA-75AB3025CE14 63D7B3030
+Loading driver D6099B94-CD97-4CC5-8714-7F6312701A8A
+InstallProtocolInterface: 5B1B31A1-9562-11D2-8E3F-00A0C969723B 63D91D8C0
+add-symbol-file /Users/adalundhe/g121-a4-winarm/edk2-src/Build/ArmVirtQemuKernel-AArch64/DEBUG_CLANGDWARF/AARCH64/OvmfPkg/VirtioGpuDxe/VirtioGpu/DEBUG/VirtioGpuDxe.dll 0x63D79F000
+Loading driver at 0x0063D79E000 EntryPoint=0x0063D79F650 VirtioGpuDxe.efi
+InstallProtocolInterface: BC62157E-3E33-4FEC-9920-2D3B36D750DF 63D91D798
+ProtectUefiImageCommon - 0x3D91D8C0
+  - 0x000000063D79E000 - 0x000000000000C000
+InstallProtocolInterface: 18A031AB-B443-4D1A-A5C0-0C09261E9F71 63D7A8020
+InstallProtocolInterface: 6A7A5CFF-E8D9-4F70-BADA-75AB3025CE14 63D7A6AF8
+Loading driver 2FB92EFA-2EE0-4BAE-9EB6-7464125E1EF7
+InstallProtocolInterface: 5B1B31A1-9562-11D2-8E3F-00A0C969723B 63D91C040
+add-symbol-file /Users/adalundhe/g121-a4-winarm/edk2-src/Build/ArmVirtQemuKernel-AArch64/DEBUG_CLANGDWARF/AARCH64/MdeModulePkg/Bus/Pci/UhciDxe/UhciDxe/DEBUG/UhciDxe.dll 0x63D792000
+Loading driver at 0x0063D791000 EntryPoint=0x0063D792660 UhciDxe.efi
+InstallProtocolInterface: BC62157E-3E33-4FEC-9920-2D3B36D750DF 63D91D698
+ProtectUefiImageCommon - 0x3D91C040
+  - 0x000000063D791000 - 0x000000000000D000
+InstallProtocolInterface: 18A031AB-B443-4D1A-A5C0-0C09261E9F71 63D79C0A0
+InstallProtocolInterface: 107A772C-D5E1-11D4-9A46-0090273FC14D 63D79C050
+InstallProtocolInterface: 6A7A5CFF-E8D9-4F70-BADA-75AB3025CE14 63D79C068
+Loading driver BDFE430E-8F2A-4DB0-9991-6F856594777E
+InstallProtocolInterface: 5B1B31A1-9562-11D2-8E3F-00A0C969723B 63D91C740
+add-symbol-file /Users/adalundhe/g121-a4-winarm/edk2-src/Build/ArmVirtQemuKernel-AArch64/DEBUG_CLANGDWARF/AARCH64/MdeModulePkg/Bus/Pci/EhciDxe/EhciDxe/DEBUG/EhciDxe.dll 0x63D783000
+Loading driver at 0x0063D782000 EntryPoint=0x0063D783660 EhciDxe.efi
+InstallProtocolInterface: BC62157E-3E33-4FEC-9920-2D3B36D750DF 63D91C418
+ProtectUefiImageCommon - 0x3D91C740
+  - 0x000000063D782000 - 0x000000000000F000
+InstallProtocolInterface: 18A031AB-B443-4D1A-A5C0-0C09261E9F71 63D78F0C8
+InstallProtocolInterface: 107A772C-D5E1-11D4-9A46-0090273FC14D 63D78F078
+InstallProtocolInterface: 6A7A5CFF-E8D9-4F70-BADA-75AB3025CE14 63D78F090
+Loading driver B7F50E91-A759-412C-ADE4-DCD03E7F7C28
+InstallProtocolInterface: 5B1B31A1-9562-11D2-8E3F-00A0C969723B 63D91B8C0
+add-symbol-file /Users/adalundhe/g121-a4-winarm/edk2-src/Build/ArmVirtQemuKernel-AArch64/DEBUG_CLANGDWARF/AARCH64/MdeModulePkg/Bus/Pci/XhciDxe/XhciDxe/DEBUG/XhciDxe.dll 0x63D75A000
+Loading driver at 0x0063D759000 EntryPoint=0x0063D75A660 XhciDxe.efi
+InstallProtocolInterface: BC62157E-3E33-4FEC-9920-2D3B36D750DF 63D91B198
+ProtectUefiImageCommon - 0x3D91B8C0
+  - 0x000000063D759000 - 0x0000000000014000
+InstallProtocolInterface: 18A031AB-B443-4D1A-A5C0-0C09261E9F71 63D76B1D8
+InstallProtocolInterface: 107A772C-D5E1-11D4-9A46-0090273FC14D 63D76B188
+InstallProtocolInterface: 6A7A5CFF-E8D9-4F70-BADA-75AB3025CE14 63D76B1A0
+Loading driver 240612B7-A063-11D4-9A3A-0090273FC14D
+InstallProtocolInterface: 5B1B31A1-9562-11D2-8E3F-00A0C969723B 63D91A040
+add-symbol-file /Users/adalundhe/g121-a4-winarm/edk2-src/Build/ArmVirtQemuKernel-AArch64/DEBUG_CLANGDWARF/AARCH64/MdeModulePkg/Bus/Usb/UsbBusDxe/UsbBusDxe/DEBUG/UsbBusDxe.dll 0x63D773000
+Loading driver at 0x0063D772000 EntryPoint=0x0063D773650 UsbBusDxe.efi
+InstallProtocolInterface: BC62157E-3E33-4FEC-9920-2D3B36D750DF 63D91AE98
+ProtectUefiImageCommon - 0x3D91A040
+  - 0x000000063D772000 - 0x0000000000010000
+InstallProtocolInterface: 18A031AB-B443-4D1A-A5C0-0C09261E9F71 63D780060
+InstallProtocolInterface: 107A772C-D5E1-11D4-9A46-0090273FC14D 63D7801D8
+InstallProtocolInterface: 6A7A5CFF-E8D9-4F70-BADA-75AB3025CE14 63D7801F0
+Loading driver 2D2E62CF-9ECF-43B7-8219-94E7FC713DFE
+InstallProtocolInterface: 5B1B31A1-9562-11D2-8E3F-00A0C969723B 63D91A5C0
+add-symbol-file /Users/adalundhe/g121-a4-winarm/edk2-src/Build/ArmVirtQemuKernel-AArch64/DEBUG_CLANGDWARF/AARCH64/MdeModulePkg/Bus/Usb/UsbKbDxe/UsbKbDxe/DEBUG/UsbKbDxe.dll 0x63D74E000
+Loading driver at 0x0063D74D000 EntryPoint=0x0063D74E660 UsbKbDxe.efi
+InstallProtocolInterface: BC62157E-3E33-4FEC-9920-2D3B36D750DF 63D91A918
+ProtectUefiImageCommon - 0x3D91A5C0
+  - 0x000000063D74D000 - 0x000000000000C000
+InstallProtocolInterface: 18A031AB-B443-4D1A-A5C0-0C09261E9F71 63D757848
+InstallProtocolInterface: 107A772C-D5E1-11D4-9A46-0090273FC14D 63D7577E8
+InstallProtocolInterface: 6A7A5CFF-E8D9-4F70-BADA-75AB3025CE14 63D757800
+Loading driver 9FB4B4A7-42C0-4BCD-8540-9BCC6711F83E
+InstallProtocolInterface: 5B1B31A1-9562-11D2-8E3F-00A0C969723B 63D919940
+add-symbol-file /Users/adalundhe/g121-a4-winarm/edk2-src/Build/ArmVirtQemuKernel-AArch64/DEBUG_CLANGDWARF/AARCH64/MdeModulePkg/Bus/Usb/UsbMassStorageDxe/UsbMassStorageDxe/DEBUG/UsbMassStorageDxe.dll 0x63D741000
+Loading driver at 0x0063D740000 EntryPoint=0x0063D748B40 UsbMassStorageDxe.efi
+InstallProtocolInterface: BC62157E-3E33-4FEC-9920-2D3B36D750DF 63D919218
+ProtectUefiImageCommon - 0x3D919940
+  - 0x000000063D740000 - 0x000000000000D000
+Found FwCfg @ 0x9020008/0x9020000
+Found FwCfg DMA @ 0x9020010
+EntryPointFwCfgOverride: opt/org.tianocore/UsbStorageSupport = enabled (default)
+InstallProtocolInterface: 18A031AB-B443-4D1A-A5C0-0C09261E9F71 63D74B080
+InstallProtocolInterface: 107A772C-D5E1-11D4-9A46-0090273FC14D 63D74B1B0
+InstallProtocolInterface: 6A7A5CFF-E8D9-4F70-BADA-75AB3025CE14 63D74B1C8
+Loading driver 63E3BDCF-2AC7-4AC0-9B92-03A7541422FF
+InstallProtocolInterface: 5B1B31A1-9562-11D2-8E3F-00A0C969723B 63D918040
+add-symbol-file /Users/adalundhe/g121-a4-winarm/edk2-src/Build/ArmVirtQemuKernel-AArch64/DEBUG_CLANGDWARF/AARCH64/SecurityPkg/Hash2DxeCrypto/Hash2DxeCrypto/DEBUG/Hash2DxeCrypto.dll 0x63D821000
+Loading driver at 0x0063D820000 EntryPoint=0x0063D821544 Hash2DxeCrypto.efi
+InstallProtocolInterface: BC62157E-3E33-4FEC-9920-2D3B36D750DF 63D919618
+ProtectUefiImageCommon - 0x3D918040
+  - 0x000000063D820000 - 0x0000000000009000
+InstallProtocolInterface: DA836F8D-217F-4CA0-99C2-1CA4E16077EA 63D918D28
+Loading driver 1A7E4468-2F55-4A56-903C-01265EB7622B
+InstallProtocolInterface: 5B1B31A1-9562-11D2-8E3F-00A0C969723B 63D918740
+add-symbol-file /Users/adalundhe/g121-a4-winarm/edk2-src/Build/ArmVirtQemuKernel-AArch64/DEBUG_CLANGDWARF/AARCH64/NetworkPkg/TcpDxe/TcpDxe/DEBUG/TcpDxe.dll 0x63D70A000
+Loading driver at 0x0063D709000 EntryPoint=0x0063D70A650 TcpDxe.efi
+InstallProtocolInterface: BC62157E-3E33-4FEC-9920-2D3B36D750DF 63D918698
+ProtectUefiImageCommon - 0x3D918740
+  - 0x000000063D709000 - 0x000000000001B000
+InstallProtocolInterface: 18A031AB-B443-4D1A-A5C0-0C09261E9F71 63D722128
+InstallProtocolInterface: 107A772C-D5E1-11D4-9A46-0090273FC14D 63D7222A8
+InstallProtocolInterface: 6A7A5CFF-E8D9-4F70-BADA-75AB3025CE14 63D7222C0
+InstallProtocolInterface: 18A031AB-B443-4D1A-A5C0-0C09261E9F71 63D722158
+InstallProtocolInterface: 107A772C-D5E1-11D4-9A46-0090273FC14D 63D7222A8
+InstallProtocolInterface: 6A7A5CFF-E8D9-4F70-BADA-75AB3025CE14 63D7222C0
+Loading driver 17985E6F-E778-4D94-AEFA-C5DD2B77E186
+InstallProtocolInterface: 5B1B31A1-9562-11D2-8E3F-00A0C969723B 63D8C82C0
+add-symbol-file /Users/adalundhe/g121-a4-winarm/edk2-src/Build/ArmVirtQemuKernel-AArch64/DEBUG_CLANGDWARF/AARCH64/OvmfPkg/AcpiPlatformDxe/AcpiPlatformDxe/DEBUG/QemuFwCfgAcpiPlatform.dll 0x63D726000
+Loading driver at 0x0063D725000 EntryPoint=0x0063D726568 QemuFwCfgAcpiPlatform.efi
+InstallProtocolInterface: BC62157E-3E33-4FEC-9920-2D3B36D750DF 63D8C8598
+ProtectUefiImageCommon - 0x3D8C82C0
+  - 0x000000063D725000 - 0x000000000000D000
+Found FwCfg @ 0x9020008/0x9020000
+Found FwCfg DMA @ 0x9020010
+AcpiPlatformEntryPoint: waiting for root bridges to be connected, registered callback
+[Bds] Entry...
+[BdsDxe] Locate Variable Policy protocol - Success
+Variable Driver Auto Update PlatformLang, PlatformLang:en, Lang:eng Status: Success
+DXE - Total Runtime Image Count: 0x8
+DXE - Dump Runtime Image Records:
+RealTimeClock.efi: 0x63EBA0000 - 0x63EBE0000
+  Code Section: 0x63EBB0000 - 0x63EBC0000
+MonotonicCounterRuntimeDxe.efi: 0x63EBF0000 - 0x63EC30000
+  Code Section: 0x63EC00000 - 0x63EC10000
+CapsuleRuntimeDxe.efi: 0x63EC40000 - 0x63EC80000
+  Code Section: 0x63EC50000 - 0x63EC60000
+VariableRuntimeDxe.efi: 0x63EC90000 - 0x63ECE0000
+  Code Section: 0x63ECA0000 - 0x63ECC0000
+VirtNorFlashDxe.efi: 0x63ECF0000 - 0x63ED30000
+  Code Section: 0x63ED00000 - 0x63ED10000
+ResetSystemRuntimeDxe.efi: 0x63ED40000 - 0x63ED80000
+  Code Section: 0x63ED50000 - 0x63ED60000
+ReportStatusCodeRouterRuntimeDxe.efi: 0x63ED90000 - 0x63EDD0000
+  Code Section: 0x63EDA0000 - 0x63EDB0000
+RuntimeDxe.efi: 0x63EDE0000 - 0x63EE20000
+  Code Section: 0x63EDF0000 - 0x63EE00000
+[Variable]END_OF_DXE is signaled
+Initialize variable error flag (FF)
+PCI Bus First Scanning
+PciBus: Discovered PCI @ [00|00|00]  [VID = 0x1B36, DID = 0x0008]
+
+PciBus: Discovered PCI @ [00|01|00]  [VID = 0x1B36, DID = 0x000D]
+   BAR[0]: Type =  Mem64; Alignment = 0x3FFF;	Length = 0x4000;	Offset = 0x10
+
+PciBus: Discovered PCI @ [00|02|00]  [VID = 0x1B36, DID = 0x0010]
+   BAR[0]: Type =  Mem64; Alignment = 0x3FFF;	Length = 0x4000;	Offset = 0x10
+
+PciBus: Discovered PCI @ [00|03|00]  [VID = 0x1AF4, DID = 0x1000]
+   BAR[0]: Type =   Io32; Alignment = 0x1F;	Length = 0x20;	Offset = 0x10
+   BAR[1]: Type =  Mem32; Alignment = 0xFFF;	Length = 0x1000;	Offset = 0x14
+   BAR[4]: Type = PMem64; Alignment = 0x3FFF;	Length = 0x4000;	Offset = 0x20
+
+PCI Bus Second Scanning
+PciBus: Discovered PCI @ [00|00|00]  [VID = 0x1B36, DID = 0x0008]
+
+PciBus: Discovered PCI @ [00|01|00]  [VID = 0x1B36, DID = 0x000D]
+   BAR[0]: Type =  Mem64; Alignment = 0x3FFF;	Length = 0x4000;	Offset = 0x10
+
+PciBus: Discovered PCI @ [00|02|00]  [VID = 0x1B36, DID = 0x0010]
+   BAR[0]: Type =  Mem64; Alignment = 0x3FFF;	Length = 0x4000;	Offset = 0x10
+
+PciBus: Discovered PCI @ [00|03|00]  [VID = 0x1AF4, DID = 0x1000]
+   BAR[0]: Type =   Io32; Alignment = 0x1F;	Length = 0x20;	Offset = 0x10
+   BAR[1]: Type =  Mem32; Alignment = 0xFFF;	Length = 0x1000;	Offset = 0x14
+   BAR[4]: Type = PMem64; Alignment = 0x3FFF;	Length = 0x4000;	Offset = 0x20
+
+PciBus: Discovered PCI @ [00|00|00]  [VID = 0x1B36, DID = 0x0008]
+
+PciBus: Discovered PCI @ [00|01|00]  [VID = 0x1B36, DID = 0x000D]
+   BAR[0]: Type =  Mem64; Alignment = 0x3FFF;	Length = 0x4000;	Offset = 0x10
+
+PciBus: Discovered PCI @ [00|02|00]  [VID = 0x1B36, DID = 0x0010]
+   BAR[0]: Type =  Mem64; Alignment = 0x3FFF;	Length = 0x4000;	Offset = 0x10
+
+PciBus: Discovered PCI @ [00|03|00]  [VID = 0x1AF4, DID = 0x1000]
+   BAR[0]: Type =   Io32; Alignment = 0x1F;	Length = 0x20;	Offset = 0x10
+   BAR[1]: Type =  Mem32; Alignment = 0xFFF;	Length = 0x1000;	Offset = 0x14
+   BAR[4]: Type = PMem64; Alignment = 0x3FFF;	Length = 0x4000;	Offset = 0x20
+
+PciHostBridge: SubmitResources for PciRoot(0x0)
+ I/O: Granularity/SpecificFlag = 0 / 01
+      Length/Alignment = 0x1000 / 0xFFF
+ Mem: Granularity/SpecificFlag = 32 / 00
+      Length/Alignment = 0x100000 / 0xFFFFF
+ Mem: Granularity/SpecificFlag = 64 / 00
+      Length/Alignment = 0x100000 / 0xFFFFF
+PciBus: HostBridge->SubmitResources() - Success
+PciHostBridge: NotifyPhase (AllocateResources)
+ RootBridge: PciRoot(0x0)
+  Mem64: Base/Length/Alignment = 8000000000/100000/FFFFF - Success
+  Mem: Base/Length/Alignment = 10000000/100000/FFFFF - Success
+  I/O: Base/Length/Alignment = 0/1000/FFF - Success
+PciBus: HostBridge->NotifyPhase(AllocateResources) - Success
+Process Option ROM: BAR Base/Length = 10000000/40000
+PciBus: Resource Map for Root Bridge PciRoot(0x0)
+Type =   Io16; Base = 0x0;	Length = 0x1000;	Alignment = 0xFFF
+   Base = 0x0;	Length = 0x20;	Alignment = 0x1F;	Owner = PCI [00|03|00:10]
+Type =  Mem32; Base = 0x10000000;	Length = 0x100000;	Alignment = 0xFFFFF
+   Base = 0x10000000;	Length = 0x40000;	Alignment = 0x3FFFF;	Owner = PCI [00|00|00:00]; Type =  OpRom
+   Base = 0x10040000;	Length = 0x1000;	Alignment = 0xFFF;	Owner = PCI [00|03|00:14]
+Type =  Mem64; Base = 0x8000000000;	Length = 0x100000;	Alignment = 0xFFFFF
+   Base = 0x8000000000;	Length = 0x4000;	Alignment = 0x3FFF;	Owner = PCI [00|03|00:20]; Type = PMem64
+   Base = 0x8000004000;	Length = 0x4000;	Alignment = 0x3FFF;	Owner = PCI [00|02|00:10]
+   Base = 0x8000008000;	Length = 0x4000;	Alignment = 0x3FFF;	Owner = PCI [00|01|00:10]
+
+InstallProtocolInterface: 09576E91-6D3F-11D2-8E39-00A0C969723B 63D8C7898
+InstallProtocolInterface: 4CF5B200-68B8-4CA5-9EEC-B23E3F50029A 63D8C7328
+InstallProtocolInterface: 09576E91-6D3F-11D2-8E39-00A0C969723B 63D8C7018
+InstallProtocolInterface: 4CF5B200-68B8-4CA5-9EEC-B23E3F50029A 63D8C6028
+InstallProtocolInterface: 09576E91-6D3F-11D2-8E39-00A0C969723B 63D8C7098
+InstallProtocolInterface: 4CF5B200-68B8-4CA5-9EEC-B23E3F50029A 63D8C6428
+InstallProtocolInterface: 09576E91-6D3F-11D2-8E39-00A0C969723B 63E07FF18
+InstallProtocolInterface: 4CF5B200-68B8-4CA5-9EEC-B23E3F50029A 63D8C6828
+InstallProtocolInterface: 4006C0C1-FCB3-403E-996D-4A6C8724E06D 63D8C68F0
+[Security] 3rd party image[0] can be loaded after EndOfDxe: PciRoot(0x0)/Pci(0x3,0x0)/Offset(0x10E00,0x273FF).
+InstallProtocolInterface: 5B1B31A1-9562-11D2-8E3F-00A0C969723B 63D8C3C40
+Image type X64 can't be loaded on AARCH64 UEFI system.
+Unloading driver at 0x00000000000
+InstallProtocolInterface: 3BC1B285-8A15-4A82-AABF-4D7D13FB3265 63D8C68D8
+InstallProtocolInterface: 30CFE3E7-3DE1-4586-BE20-DEABA1B3B793 0
+OnRootBridgesConnected: root bridges have been connected, installing ACPI tables
+InstallProtocolInterface: 928939B2-4235-462F-9580-F6A2B2C21A4F 0
+InstallQemuFwCfgTables: installed 9 tables
+[Bds]RegisterKeyNotify: 000C/0000 80000000/00 Success
+[Bds]RegisterKeyNotify: 0017/0000 80000000/00 Success
+[Bds]RegisterKeyNotify: 0000/000D 80000000/00 Success
+Terminal - Mode 0, Column = 80, Row = 25
+Terminal - Mode 1, Column = 80, Row = 50
+Terminal - Mode 2, Column = 100, Row = 31
+Terminal - Mode 3, Column = 128, Row = 40
+Terminal - Mode 4, Column = 160, Row = 42
+Terminal - Mode 5, Column = 240, Row = 56
+[2J[001;001H[=3h[2J[001;001HInstallProtocolInterface: 387477C1-69C7-11D2-8E39-00A0C969723B 63D8A7040
+InstallProtocolInterface: DD9E7534-7762-4698-8C14-F58517A625AA 63D8A7128
+InstallProtocolInterface: 387477C2-69C7-11D2-8E39-00A0C969723B 63D8A7058
+InstallProtocolInterface: 09576E91-6D3F-11D2-8E39-00A0C969723B 63D8C1798
+InstallProtocolInterface: D3B36F2B-D551-11D4-9A46-0090273FC14D 0
+InstallProtocolInterface: D3B36F2C-D551-11D4-9A46-0090273FC14D 0
+InstallProtocolInterface: D3B36F2D-D551-11D4-9A46-0090273FC14D 0
+[2J[001;001H[8;056;240t[2J[001;001HGraphicsConsole video resolution 800 x 600
+Graphics - Mode 0, Column = 80, Row = 25
+Graphics - Mode 1, Column = 0, Row = 0
+Graphics - Mode 2, Column = 100, Row = 31
+Graphics Console Started, Mode: 2
+InstallProtocolInterface: 387477C2-69C7-11D2-8E39-00A0C969723B 63D8900A8
+InstallProtocolInterface: D3B36F2C-D551-11D4-9A46-0090273FC14D 0
+InstallProtocolInterface: D3B36F2D-D551-11D4-9A46-0090273FC14D 0
+[2J[001;001H[=3h[2J[001;001HInstallProtocolInterface: 9042A9DE-23DC-4A38-96FB-7ADED080516A 63DA92250
+[2J[001;001H[8;031;100t[2J[001;001HXhcCreateUsb3Hc: Capability length 0x40
+XhcCreateUsb3Hc: HcSParams1 0x8001040
+XhcCreateUsb3Hc: HcSParams2 0xF
+XhcCreateUsb3Hc: HcCParams 0x87001
+XhcCreateUsb3Hc: DBOff 0x2000
+XhcCreateUsb3Hc: RTSOff 0x1000
+XhcCreateUsb3Hc: UsbLegSupOffset 0xFFFFFFFF
+XhcCreateUsb3Hc: DebugCapSupOffset 0xFFFFFFFF
+XhcCreateUsb3Hc: Usb2SupOffset 0x0
+XhcCreateUsb3Hc: Usb3SupOffset 0x10
+XhcResetHC!
+XhcInitSched:DCBAA=0x3D68A000
+XhcInitSched: Created CMD ring [63D68A240~63D68B240) EVENT ring [63D68B240~63D68D240)
+InstallProtocolInterface: 3E745226-9818-45B6-A2AC-D7CD0E8BA2BC 63D69A038
+XhcDriverBindingStart: XHCI started for controller @ 3D8C6D18
+InstallProtocolInterface: 240612B7-A063-11D4-9A3A-0090273FC14D 63D88E020
+XhcGetCapability: 8 ports, 64 bit 1
+UsbRootHubInit: root hub 63D88EA98 - max speed 3, 8 ports
+XhcClearRootHubPortFeature: status Success
+UsbEnumeratePort: port 0 state - 00, change - 01 on 63D88EA98
+UsbEnumeratePort: Device Connect/Disconnect Normally (port 0)
+UsbEnumeratePort: device disconnected event on port 0
+XhcClearRootHubPortFeature: status Success
+UsbEnumeratePort: port 1 state - 00, change - 01 on 63D88EA98
+UsbEnumeratePort: Device Connect/Disconnect Normally (port 1)
+UsbEnumeratePort: device disconnected event on port 1
+XhcClearRootHubPortFeature: status Success
+UsbEnumeratePort: port 2 state - 00, change - 01 on 63D88EA98
+UsbEnumeratePort: Device Connect/Disconnect Normally (port 2)
+UsbEnumeratePort: device disconnected event on port 2
+XhcClearRootHubPortFeature: status Success
+UsbEnumeratePort: port 3 state - 00, change - 01 on 63D88EA98
+UsbEnumeratePort: Device Connect/Disconnect Normally (port 3)
+UsbEnumeratePort: device disconnected event on port 3
+XhcClearRootHubPortFeature: status Success
+UsbEnumeratePort: port 4 state - 401, change - 01 on 63D88EA98
+UsbEnumeratePort: Device Connect/Disconnect Normally (port 4)
+UsbEnumeratePort: new device connected at port 4
+XhcUsbPortReset!
+XhcSetRootHubPortFeature: status Success
+XhcClearRootHubPortFeature: status Success
+XhcClearRootHubPortFeature: status Success
+Enable Slot Successfully, The Slot ID = 0x1
+    Address 1 assigned successfully
+UsbEnumerateNewDev: hub port 4 is reset
+UsbEnumerateNewDev: device is of 2 speed
+UsbEnumerateNewDev: device uses translator (0, 0)
+UsbEnumerateNewDev: device is now ADDRESSED at 1
+UsbEnumerateNewDev: max packet size for EP 0 is 64
+Evaluate context
+UsbBuildDescTable: device has 1 configures
+UsbGetOneConfig: total length is 34
+UsbParseConfigDesc: config 1 has 1 interfaces
+UsbParseInterfaceDesc: interface 0(setting 0) has 1 endpoints
+Endpoint[81]: Created INT ring [63D68EAC0~63D68FAC0)
+Configure Endpoint
+UsbEnumerateNewDev: device 1 is now in CONFIGED state
+UsbSelectConfig: config 1 selected for device 1
+UsbSelectSetting: setting 0 selected for interface 0
+InstallProtocolInterface: 09576E91-6D3F-11D2-8E39-00A0C969723B 63D88F518
+InstallProtocolInterface: 2B2F68D6-0CD2-44CF-8E8B-BBA20B1B5B75 63D88DDC0
+UsbConnectDriver: TPL before connect is 8, 63D88F598
+InstallProtocolInterface: 387477C1-69C7-11D2-8E39-00A0C969723B 63D88C238
+InstallProtocolInterface: DD9E7534-7762-4698-8C14-F58517A625AA 63D88C250
+InstallProtocolInterface: D3B36F2B-D551-11D4-9A46-0090273FC14D 0
+UsbConnectDriver: TPL after connect is 8
+XhcClearRootHubPortFeature: status Success
+UsbEnumeratePort: port 5 state - 401, change - 01 on 63D88EA98
+UsbEnumeratePort: Device Connect/Disconnect Normally (port 5)
+UsbEnumeratePort: new device connected at port 5
+XhcUsbPortReset!
+XhcSetRootHubPortFeature: status Success
+XhcClearRootHubPortFeature: status Success
+XhcClearRootHubPortFeature: status Success
+Enable Slot Successfully, The Slot ID = 0x2
+    Address 2 assigned successfully
+UsbEnumerateNewDev: hub port 5 is reset
+UsbEnumerateNewDev: device is of 2 speed
+UsbEnumerateNewDev: device uses translator (0, 0)
+UsbEnumerateNewDev: device is now ADDRESSED at 2
+UsbEnumerateNewDev: max packet size for EP 0 is 64
+Evaluate context
+UsbBuildDescTable: device has 1 configures
+UsbGetOneConfig: total length is 34
+UsbParseConfigDesc: config 1 has 1 interfaces
+UsbParseInterfaceDesc: interface 0(setting 0) has 1 endpoints
+Endpoint[81]: Created INT ring [63D691400~63D692400)
+Configure Endpoint
+UsbEnumerateNewDev: device 2 is now in CONFIGED state
+UsbSelectConfig: config 1 selected for device 2
+UsbSelectSetting: setting 0 selected for interface 0
+InstallProtocolInterface: 09576E91-6D3F-11D2-8E39-00A0C969723B 63D887F98
+InstallProtocolInterface: 2B2F68D6-0CD2-44CF-8E8B-BBA20B1B5B75 63D887DC0
+XhcClearRootHubPortFeature: status Success
+UsbEnumeratePort: port 6 state - 00, change - 01 on 63D88EA98
+UsbEnumeratePort: Device Connect/Disconnect Normally (port 6)
+UsbEnumeratePort: device disconnected event on port 6
+XhcClearRootHubPortFeature: status Success
+UsbEnumeratePort: port 7 state - 00, change - 01 on 63D88EA98
+UsbEnumeratePort: Device Connect/Disconnect Normally (port 7)
+UsbEnumeratePort: device disconnected event on port 7
+UsbBusStart: usb bus started on 63D8C6D18, root hub 63D88EA98
+PlatformBootManagerAfterConsole: not uninstalling EFI memory protocol
+QemuLoadKernelImage: LoadImage(): Not Found
+NvmExpressDriverBindingStart: start
+Cc.En: 0
+Cc.Css: 0
+Cc.Mps: 0
+Cc.Ams: 0
+Cc.Shn: 0
+Cc.Iosqes: 0
+Cc.Iocqes: 0
+NVMe controller is disabled with status [Success].
+Private->Buffer = [000000003D81A000]
+Admin     Submission Queue size (Aqa.Asqs) = [00000001]
+Admin     Completion Queue size (Aqa.Acqs) = [00000001]
+Admin     Submission Queue (SqBuffer[0]) = [000000003D81A000]
+Admin     Completion Queue (CqBuffer[0]) = [000000003D81B000]
+Sync  I/O Submission Queue (SqBuffer[1]) = [000000003D81C000]
+Sync  I/O Completion Queue (CqBuffer[1]) = [000000003D81D000]
+Async I/O Submission Queue (SqBuffer[2]) = [000000003D81E000]
+Async I/O Completion Queue (CqBuffer[2]) = [000000003D81F000]
+Aqa.Asqs: 1
+Aqa.Acqs: 1
+Asq: 63D81A000
+Acq: 63D81B000h
+Cc.En: 1
+Cc.Css: 0
+Cc.Mps: 0
+Cc.Ams: 0
+Cc.Shn: 0
+Cc.Iosqes: 6
+Cc.Iocqes: 4
+NVMe controller is enabled with status [Success].
+ == NVME IDENTIFY CONTROLLER DATA ==
+    PCI VID   : 0x1B36
+    PCI SSVID : 0x1AF4
+    SN        : shards0
+    MN        : QEMU NVMe Ctrl
+    FR        : 0x312E3131
+    TNVMCAP (high 8-byte) : 0x0
+    TNVMCAP (low 8-byte)  : 0x0
+    RAB       : 0x6
+    IEEE      : 0x525400
+    AERL      : 0x3
+    SQES      : 0x66
+    CQES      : 0x44
+    NN        : 0x100
+InstallProtocolInterface: 52C78312-8EDC-4233-98F2-1A1AA5E388A5 63D853D60
+NvmExpressDriverBindingStart: end successfully
+NvmExpressDriverBindingStart: start
+InstallProtocolInterface: 09576E91-6D3F-11D2-8E39-00A0C969723B 63D853C98
+InstallProtocolInterface: 964E5B21-6459-11D2-8E39-00A0C969723B 63D818088
+InstallProtocolInterface: A77B2472-E282-4E9F-A245-C2C0E27BBCC1 63D8180B8
+InstallProtocolInterface: D432A67F-14DC-484B-B3BB-3F0291849327 63D8180E0
+InstallProtocolInterface: 0D799A99-25AF-429E-9272-D0B27D6D5F14 63D818120
+InstallProtocolInterface: C88B0B6D-0DFC-49A7-9CB4-49074B4C3A78 63D818110
+ == NVME IDENTIFY NAMESPACE [1] DATA ==
+    NSZE        : 0xC000000
+    NCAP        : 0xC000000
+    NUSE        : 0xC000000
+    LBAF0.LBADS : 0x9
+NvmExpressDriverBindingStart: end successfully
+InstallProtocolInterface: CE345171-BA0B-11D2-8E4F-00A0C969723B 63D8536A0
+InstallProtocolInterface: 151C8EAE-7F2C-472C-9E54-9828194F6A88 63D8536B8
+ BlockSize : 512
+ LastBlock : BFFFFFF
+ Valid efi partition table header
+ Valid efi partition table header
+ Valid primary and Valid backup partition table
+ Partition entries read block success
+ Number of partition entries: 128
+ start check partition entries
+ End check partition entries
+ Index : 0
+ Start LBA : 800
+ End LBA : 827FF
+ Partition size: 82000
+ Start : 100000 End : 104FFE00
+InstallProtocolInterface: 09576E91-6D3F-11D2-8E39-00A0C969723B 63D84E618
+InstallProtocolInterface: 964E5B21-6459-11D2-8E39-00A0C969723B 63D850D30
+InstallProtocolInterface: A77B2472-E282-4E9F-A245-C2C0E27BBCC1 63D850D60
+InstallProtocolInterface: 8CF2F62C-BC9B-4821-808D-EC9EC421A1A0 63D850DE8
+InstallProtocolInterface: C12A7328-F81F-11D2-BA4B-00A0C93EC93B 0
+ Index : 1
+ Start LBA : 82800
+ End LBA : 8A7FF
+ Partition size: 8000
+ Start : 10500000 End : 114FFE00
+InstallProtocolInterface: 09576E91-6D3F-11D2-8E39-00A0C969723B 63D850618
+InstallProtocolInterface: 964E5B21-6459-11D2-8E39-00A0C969723B 63D8503B0
+InstallProtocolInterface: A77B2472-E282-4E9F-A245-C2C0E27BBCC1 63D8503E0
+InstallProtocolInterface: 8CF2F62C-BC9B-4821-808D-EC9EC421A1A0 63D850468
+InstallProtocolInterface: E3C9E316-0B5C-4DB8-817D-F92DF00215AE 0
+ Index : 2
+ Start LBA : 8A800
+ End LBA : BE547FF
+ Partition size: BDCA000
+ Start : 11500000 End : 17CA8FFE00
+InstallProtocolInterface: 09576E91-6D3F-11D2-8E39-00A0C969723B 63D84FE18
+InstallProtocolInterface: 964E5B21-6459-11D2-8E39-00A0C969723B 63D84FB30
+InstallProtocolInterface: A77B2472-E282-4E9F-A245-C2C0E27BBCC1 63D84FB60
+InstallProtocolInterface: 8CF2F62C-BC9B-4821-808D-EC9EC421A1A0 63D84FBE8
+InstallProtocolInterface: EBD0A0A2-B9E5-4433-87C0-68B6B72699C7 0
+ Index : 3
+ Start LBA : BE54800
+ End LBA : BFFEFFF
+ Partition size: 1AA800
+ Start : 17CA900000 End : 17FFDFFE00
+InstallProtocolInterface: 09576E91-6D3F-11D2-8E39-00A0C969723B 63D84F398
+InstallProtocolInterface: 964E5B21-6459-11D2-8E39-00A0C969723B 63D84F130
+InstallProtocolInterface: A77B2472-E282-4E9F-A245-C2C0E27BBCC1 63D84F160
+InstallProtocolInterface: 8CF2F62C-BC9B-4821-808D-EC9EC421A1A0 63D84F1E8
+InstallProtocolInterface: DE94BBA4-06D1-4D40-A16A-BFD50179D6AC 0
+Prepare to Free Pool
+InstallProtocolInterface: CE345171-BA0B-11D2-8E4F-00A0C969723B 63D817F20
+InstallProtocolInterface: 151C8EAE-7F2C-472C-9E54-9828194F6A88 63D817F38
+ BlockSize : 512
+ LastBlock : 81FFF
+PartitionValidMbr: Bad MBR partition size EndingLBA(D99299D3) > LastLBA(81FFF)
+InstallProtocolInterface: 964E5B22-6459-11D2-8E39-00A0C969723B 63D76D030
+Installed Fat filesystem on 63D850298
+InstallProtocolInterface: CE345171-BA0B-11D2-8E4F-00A0C969723B 63D8500A0
+InstallProtocolInterface: 151C8EAE-7F2C-472C-9E54-9828194F6A88 63D8500B8
+ BlockSize : 512
+ LastBlock : 7FFF
+InstallProtocolInterface: CE345171-BA0B-11D2-8E4F-00A0C969723B 63D817220
+InstallProtocolInterface: 151C8EAE-7F2C-472C-9E54-9828194F6A88 63D817238
+ BlockSize : 512
+ LastBlock : BDC9FFF
+PartitionValidMbr: Bad MBR partition size EndingLBA(DEB56E8B) > LastLBA(BDC9FFF)
+InstallProtocolInterface: CE345171-BA0B-11D2-8E4F-00A0C969723B 63D7371A0
+InstallProtocolInterface: 151C8EAE-7F2C-472C-9E54-9828194F6A88 63D7371B8
+ BlockSize : 512
+ LastBlock : 1AA7FF
+PartitionValidMbr: Bad MBR partition size EndingLBA(DEB56E8B) > LastLBA(1AA7FF)
+ConnectDevicesFromQemu: 1 OpenFirmware device path(s) connected
+FSOpen: Open '\EFI\Microsoft\Boot\bootmgfw.efi' Success
+[Bds] Expand HD(1,GPT,B030BB8E-E43A-42C2-8725-4F57BF9217B0,0x800,0x82000)/\EFI\Microsoft\Boot\bootmgfw.efi -> PciRoot(0x0)/Pci(0x2,0x0)/NVMe(0x1,00-00-00-00-00-00-00-00)/HD(1,GPT,B030BB8E-E43A-42C2-8725-4F57BF9217B0,0x800,0x82000)/\EFI\Microsoft\Boot\bootmgfw.efi
+SetBootOrderFromQemu: setting BootOrder: success
+[Bds]OsIndication: 0000000000000000
+[Bds]=============Begin Load Options Dumping ...=============
+  Driver Options:
+  SysPrep Options:
+  Boot Options:
+    Boot0004: Windows Boot Manager 		 0x0001
+    Boot0003: UEFI QEMU NVMe Ctrl shards0 1 		 0x0001
+    Boot0002: BootManagerMenuApp 		 0x0109
+    Boot0000: EFI Firmware Setup 		 0x0101
+    Boot0001: EFI Internal Shell 		 0x0101
+  PlatformRecovery Options:
+    PlatformRecovery0000: Default PlatformRecovery 		 0x0001
+[Bds]=============End Load Options Dumping=============
+[Bds]BdsWait ...Zzzzzzzzzzzz...
+[Bds]Exit the waiting!
+[Bds]Stop Hotkey Service!
+[Bds]UnregisterKeyNotify: 000C/0000 Success
+[Bds]UnregisterKeyNotify: 0017/0000 Success
+[Bds]UnregisterKeyNotify: 0000/000D Success
+Memory  Previous  Current    Next
+ Type    Pages     Pages     Pages
+======  ========  ========  ========
+  09    00000004  00000003  00000004
+  0A    0000003C  00000030  0000003C
+  00    00000000  00000300  000003C0
+  06    0000012C  00000370  0000044C
+  05    00000424  00000290  00000424
+Memory Type Information settings change.
+[Bds]Booting Windows Boot Manager
+FSOpen: Open '\EFI\Microsoft\Boot\bootmgfw.efi' Success
+[Bds] Expand HD(1,GPT,B030BB8E-E43A-42C2-8725-4F57BF9217B0,0x800,0x82000)/\EFI\Microsoft\Boot\bootmgfw.efi -> PciRoot(0x0)/Pci(0x2,0x0)/NVMe(0x1,00-00-00-00-00-00-00-00)/HD(1,GPT,B030BB8E-E43A-42C2-8725-4F57BF9217B0,0x800,0x82000)/\EFI\Microsoft\Boot\bootmgfw.efi
+BdsDxe: loading Boot0004 "Windows Boot Manager" from HD(1,GPT,B030BB8E-E43A-42C2-8725-4F57BF9217B0,0x800,0x82000)/\EFI\Microsoft\Boot\bootmgfw.efi
+[Security] 3rd party image[0] can be loaded after EndOfDxe: PciRoot(0x0)/Pci(0x2,0x0)/NVMe(0x1,00-00-00-00-00-00-00-00)/HD(1,GPT,B030BB8E-E43A-42C2-8725-4F57BF9217B0,0x800,0x82000)/\EFI\Microsoft\Boot\bootmgfw.efi.
+InstallProtocolInterface: 5B1B31A1-9562-11D2-8E3F-00A0C969723B 63D8C2440
+ConvertPages: failed to find range 10000000 - 10340FFF
+add-symbol-file bootmgfw.pdb 0x63CA68400
+Loading driver at 0x0063CA68000 EntryPoint=0x0063CAA6130 bootmgfw.efi
+InstallProtocolInterface: BC62157E-3E33-4FEC-9920-2D3B36D750DF 63D8C1898
+ProtectUefiImageCommon - 0x3D8C2440
+  - 0x000000063CA68000 - 0x0000000000341000
+BdsDxe: starting Boot0004 "Windows Boot Manager" from HD(1,GPT,B030BB8E-E43A-42C2-8725-4F57BF9217B0,0x800,0x82000)/\EFI\Microsoft\Boot\bootmgfw.efi
+ConvertPages: failed to find range 102000 - 102FFF
+
+== pmuoff-registers.txt
+iininfinfoinfo info rinfo reinfo reginfo regiinfo regisinfo registinfo registeinfo registerinfo registersinfo registers info registers -info registers -a
+
+CPU#0
+ PC=000000063caa5a0c X00=0000000000000000 X01=0000000000000000
+X02=0000000000000000 X03=0000000000000000 X04=0000000000000000
+X05=0000000000000000 X06=000000063caa2040 X07=0000000000000008
+X08=0000000000000000 X09=0000000000000000 X10=0000000000000000
+X11=000000004001e220 X12=0000000000000000 X13=0000000000004008
+X14=000000063d8c6428 X15=000000063d7e2444 X16=000000063cab4148
+X17=00002b992ddfa232 X18=0000000000000000 X19=000000063cd46530
+X20=0000000000000000 X21=0000000000000002 X22=0000000000000000
+X23=00000000c0000225 X24=0000000000000080 X25=0000000000000000
+X26=0000000000000080 X27=00000000e0000000 X28=000000004000f730
+X29=000000063efd1660 X30=000000063cafbe3c  SP=000000063efd1660
+PSTATE=00000000000023c9 ---- NS EL2h  BTYPE=0     FPCR=00000000 FPSR=00000000 FPMR=0x0
+Q00=afafafafafafafaf:afafafafafafafaf Q01=0000000000000000:0000000000000000
+Q02=0000000000000000:0000000000000000 Q03=0000000000000000:0000000000000000
+Q04=1429296706ca6351:d5a79147c6e00bf3 Q05=53380d134d2c6dfc:2e1b213827b70a85
+Q06=2e2b34ca59fa4c88:3b2c8aefd44be966 Q07=2e2b34ca59fa4c88:3b2c8aefd44be966
+Q08=0000000000000000:0000000000000000 Q09=0000000000000000:0000000000000000
+Q10=0000000000000000:0000000000000000 Q11=0000000000000000:0000000000000000
+Q12=0000000000000000:0000000000000000 Q13=0000000000000000:0000000000000000
+Q14=0000000000000000:0000000000000000 Q15=0000000000000000:0000000000000000
+Q16=000000063efd19a0:000000063ca70178 Q17=0000000000000000:0000000000000000
+Q18=ede1e9e78e828a84:ede1e9e78e828a84 Q19=6ecdb1107f3b7cf7:c88bbe6d349c9a6d
+Q20=b4aa5241da67e351:a55c9fa66dd721cb Q21=d45362fe60f930bf:ba9ed3ee1fc24c48
+Q22=c4d47d6310871f9d:707e2f22cae0fccc Q23=dd329dcc19e6e0af:0961ff32791fd010
+Q24=38188f6f7951e9bf:a7e2b53e7df6c828 Q25=8cd34ff629f2d534:d218f6533255904f
+Q26=38188f6f7951e9bf:a7e2b53e7df6c828 Q27=c67178f2bef9a3f7:a4506ceb90befffa
+Q28=8cc7020884c87814:78a5636f748f82ee Q29=682e6ff35b9cca4f:4ed8aa4a391c0cb3
+Q30=0000000000000000:0000000000000000 Q31=106aa070f40e3585:d6990624d192e819
+
+CPU#1
+ PC=0000000000004bc4 X00=0000000000000000 X01=000000000e000040
+X02=00000000cafecafe X03=00000000ff00fff0 X04=0000000000008210
+X05=0000000000008210 X06=0000000000000000 X07=0000000000000000
+X08=0000000000000000 X09=0000000000000000 X10=0000000000000000
+X11=0000000000000000 X12=0000000000000000 X13=0000000000000000
+X14=0000000000000000 X15=0000000001000000 X16=0000000000000000
+X17=0000000000000000 X18=0000000000000000 X19=0000000000000000
+X20=0000000000000000 X21=0000000000000000 X22=0000000000000000
+X23=0000000000000000 X24=0000000000000000 X25=0000000000000000
+X26=0000000000000000 X27=0000000000000000 X28=0000000000000000
+X29=0000000000000000 X30=0000000000004b74  SP=0000000000000000
+PSTATE=00000000810002cd N--- EL3h  BTYPE=0    FPU disabled
+
+CPU#2
+ PC=0000000000004bc4 X00=0000000000000000 X01=000000000e000080
+X02=00000000cafecafe X03=00000000ff00fff0 X04=0000000000008210
+X05=0000000000008210 X06=0000000000000000 X07=0000000000000000
+X08=0000000000000000 X09=0000000000000000 X10=0000000000000000
+X11=0000000000000000 X12=0000000000000000 X13=0000000000000000
+X14=0000000000000000 X15=0000000001000000 X16=0000000000000000
+X17=0000000000000000 X18=0000000000000000 X19=0000000000000000
+X20=0000000000000000 X21=0000000000000000 X22=0000000000000000
+X23=0000000000000000 X24=0000000000000000 X25=0000000000000000
+X26=0000000000000000 X27=0000000000000000 X28=0000000000000000
+X29=0000000000000000 X30=0000000000004b74  SP=0000000000000000
+PSTATE=00000000810002cd N--- EL3h  BTYPE=0    FPU disabled
+
+CPU#3
+ PC=0000000000004bc4 X00=0000000000000000 X01=000000000e0000c0
+X02=00000000cafecafe X03=00000000ff00fff0 X04=0000000000008210
+X05=0000000000008210 X06=0000000000000000 X07=0000000000000000
+X08=0000000000000000 X09=0000000000000000 X10=0000000000000000
+X11=0000000000000000 X12=0000000000000000 X13=0000000000000000
+X14=0000000000000000 X15=0000000001000000 X16=0000000000000000
+X17=0000000000000000 X18=0000000000000000 X19=0000000000000000
+X20=0000000000000000 X21=0000000000000000 X22=0000000000000000
+X23=0000000000000000 X24=0000000000000000 X25=0000000000000000
+X26=0000000000000000 X27=0000000000000000 X28=0000000000000000
+X29=0000000000000000 X30=0000000000004b74  SP=0000000000000000
+PSTATE=00000000810002cd N--- EL3h  BTYPE=0    FPU disabled
+(qemu)

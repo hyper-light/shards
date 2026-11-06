@@ -54,7 +54,9 @@ pub fn main() {
         Ok(()) => "SHARDS-TEST PASS".to_string(),
         Err(e) => format!("SHARDS-TEST FAIL {e}"),
     };
-    let _ = writeln!(io::stdout(), "{line}");
+    if let Err(e) = report(format_args!("{line}")) {
+        let _ = writeln!(io::stdout(), "SHARDS-TEST FAIL reporting the verdict: {e}");
+    }
     // SAFETY: PID 1 waiting for its console to send what it wrote, flushing and powering
     // off. The console's tty holds a write until its UART has sent it, and the kernel's
     // own lines as it powers off go past it: powering off at once can drop the last line.
@@ -62,6 +64,18 @@ pub fn main() {
         libc::tcdrain(1);
         libc::sync();
         libc::reboot(libc::RB_POWER_OFF);
+    }
+}
+
+/// A protocol line the host reads. A storm's kernel diagnostics can interrupt a tty
+/// write even inside a word. Give printk the whole record so it serializes it with
+/// those diagnostics; LOG_USER/ERR keeps it visible with the test kernel's `quiet`.
+fn report(line: std::fmt::Arguments<'_>) -> Result<(), String> {
+    if std::env::var("shards_test").is_ok_and(|test| test == "storm") {
+        std::fs::write("/dev/kmsg", format!("<11>{line}\n"))
+            .map_err(|e| format!("writing the test record to /dev/kmsg: {e}"))
+    } else {
+        writeln!(io::stdout(), "{line}").map_err(|e| format!("writing the test record: {e}"))
     }
 }
 
@@ -793,22 +807,20 @@ fn warps(cpus: usize, window: Duration, read: fn() -> u128) -> Result<(u64, u64)
 /// [`clock_warps`], as a verdict: `when` names the moment for the log.
 fn clock_in_step(cpus: usize, when: &str) -> Result<(), String> {
     let (reads, worst) = clock_warps(cpus, Duration::from_millis(100))?;
-    let _ = writeln!(
-        io::stdout(),
+    report(format_args!(
         "SHARDS-TEST INFO clock {when}: {reads} reads in turn on {cpus} CPUs, worst step back {worst} ns"
-    );
+    ))?;
     if worst > 0 {
         // What keeps the guest's time, and whether the CPUs' own counters disagree: a TSC
         // restored out of step with the others, or a clock's parameters out of step.
         let source = sysfs("/sys/devices/system/clocksource/clocksource0/current_clocksource")
             .unwrap_or_else(|e| format!("unread: {e}"));
-        let _ = writeln!(io::stdout(), "SHARDS-TEST INFO clocksource {when}: {source}");
+        report(format_args!("SHARDS-TEST INFO clocksource {when}: {source}"))?;
         #[cfg(target_arch = "x86_64")]
         if let Ok((reads, back)) = warps(cpus, Duration::from_millis(100), tsc) {
-            let _ = writeln!(
-                io::stdout(),
+            report(format_args!(
                 "SHARDS-TEST INFO tsc {when}: {reads} reads in turn on {cpus} CPUs, worst step back {back} cycles"
-            );
+            ))?;
         }
         return Err(format!(
             "CLOCK_MONOTONIC went back {worst} ns from one CPU to another {when}"
@@ -1009,12 +1021,11 @@ fn storm() -> Result<(), String> {
     // The storm in its steady state, for `shards_storm_ms`, with nothing paused.
     gaps(&storm, true);
     thread::sleep(Duration::from_millis(env_u64("shards_storm_ms").unwrap_or(0)));
-    let _ = writeln!(
-        io::stdout(),
+    report(format_args!(
         "SHARDS-TEST INFO longest gaps steady: {}; longest turns taken: {}",
         gaps(&storm, true),
         spread(&storm.late, true)
-    );
+    ))?;
     clock_in_step(cpus, "before the snapshot")?;
     let control = ControlPage::map()?;
     control.write(shards_abi::control::SNAPSHOT, shards_abi::control::SNAPSHOT_NOW);
@@ -1022,14 +1033,13 @@ fn storm() -> Result<(), String> {
     let generation = control.read(shards_abi::control::GENERATION);
     let echoed_at = ECHOED.load(Ordering::Relaxed);
     let beats = watch_main_thread(cpus);
-    let _ = writeln!(io::stdout(), "SHARDS-TEST INFO generation={generation}");
+    report(format_args!("SHARDS-TEST INFO generation={generation}"))?;
 
-    let _ = writeln!(
-        io::stdout(),
+    report(format_args!(
         "SHARDS-TEST INFO longest gaps before: {}; longest turns taken: {}",
         gaps(&storm, true),
         spread(&storm.late, true)
-    );
+    ))?;
     // Every CPU's clock goes on from the snapshot in step with the others'.
     beats.fetch_add(1, Ordering::Relaxed);
     clock_in_step(cpus, "after the snapshot")?;
@@ -1133,23 +1143,23 @@ fn storm() -> Result<(), String> {
             return Err(format!("slot {k}, after the {written} written, holds data"));
         }
     }
-    let _ = writeln!(io::stdout(), "SHARDS-TEST INFO records={written}");
-    let _ = writeln!(
-        io::stdout(),
+    report(format_args!("SHARDS-TEST INFO records={written}"))?;
+    report(format_args!(
         "SHARDS-TEST INFO longest gaps after: {}; longest turns taken: {}",
         gaps(&storm, false),
         spread(&storm.late, false)
-    );
+    ))?;
     // A machine that went on carries the host's stream on past its snapshot: two rounds'
     // worth (the host's rounds are 4 MiB), so the round the snapshot cut through ends and
-    // another runs whole after it, however slowly a loaded host streams.
+    // another runs whole after it, however slowly a loaded host streams: for as long as
+    // the stream carries bytes ([`STREAM_QUIET`]).
     if generation == 0 {
-        let deadline = Instant::now() + Duration::from_secs(60);
+        let mut stream = Streaming::new();
         while ECHOED.load(Ordering::Relaxed).saturating_sub(echoed_at) < 8 << 20 {
             beats.fetch_add(1, Ordering::Relaxed);
-            if Instant::now() > deadline {
+            if !stream.carries() {
                 return Err(format!(
-                    "the host streamed {} bytes after the snapshot in 60 s",
+                    "the host streamed {} bytes after the snapshot, then nothing for {STREAM_QUIET:?}",
                     ECHOED.load(Ordering::Relaxed).saturating_sub(echoed_at)
                 ));
             }
@@ -1159,10 +1169,11 @@ fn storm() -> Result<(), String> {
     // The verdict waits for the host to say it has stopped streaming, so every round the
     // host streamed ended with the guest alive: its main thread watched no more.
     beats.store(u64::MAX, Ordering::Relaxed);
-    let _ = writeln!(io::stdout(), "SHARDS-TEST INFO storm checked");
+    report(format_args!("SHARDS-TEST INFO storm checked"))?;
     // The host's side of the connection is up only once it has read its OK, after this
-    // side's accept: its byte, or its close, says so.
-    let mut host = accept_within(&done, Duration::from_secs(60))?;
+    // side's accept: its byte, or its close, says so. The host connects once the round it
+    // streams ends, waited for while its stream carries bytes.
+    let mut host = accept_while_streaming(&done)?;
     let mut byte = [0u8; 1];
     std::io::Read::read(&mut host, &mut byte)
         .map(drop)
@@ -1293,17 +1304,14 @@ fn kernel_log(at_most: u32) -> Vec<String> {
             Ok(0) => break,
             Ok(n) => {
                 // "PRIORITY,SEQUENCE,MICROSECONDS,FLAGS;MESSAGE": the level is the
-                // priority's low three bits.
+                // priority's low three bits, the facility the rest. Replay only kernel
+                // records, never the storm's own LOG_USER protocol lines.
                 let record = String::from_utf8_lossy(buf.get(..n).unwrap_or_default()).into_owned();
                 let Some((head, message)) = record.split_once(';') else {
                     continue;
                 };
-                let level = head
-                    .split(',')
-                    .next()
-                    .and_then(|p| p.parse::<u32>().ok())
-                    .map(|p| p & 7);
-                if level.is_some_and(|l| l <= at_most) {
+                let priority = head.split(',').next().and_then(|p| p.parse::<u32>().ok());
+                if priority.is_some_and(|p| p >> 3 == 0 && p & 7 <= at_most) {
                     said.push(message.lines().next().unwrap_or_default().to_string());
                 }
             }
@@ -1315,15 +1323,47 @@ fn kernel_log(at_most: u32) -> Vec<String> {
     said
 }
 
-/// The next connection to `listener`, or an error once `limit` passes without one.
-fn accept_within(listener: &std::fs::File, limit: Duration) -> Result<std::fs::File, String> {
+/// How long the host's stream through the echo may carry nothing before a storm takes it
+/// for stopped: the host's own `DAEMON_QUIET` (crates/shards/tests/common), a minute,
+/// after which its reads of the stream fail. A stream that carries anything is waited on
+/// however slowly its host runs it (the parity plan's step 10: 196,608 bytes in 120 s).
+const STREAM_QUIET: Duration = Duration::from_secs(60);
+
+/// Whether the host's stream through the echo ([`ECHOED`]) has carried bytes within
+/// [`STREAM_QUIET`], or since it began watching.
+struct Streaming {
+    echoed: u64,
+    since: Instant,
+}
+
+impl Streaming {
+    fn new() -> Streaming {
+        Streaming {
+            echoed: ECHOED.load(std::sync::atomic::Ordering::Relaxed),
+            since: Instant::now(),
+        }
+    }
+
+    fn carries(&mut self) -> bool {
+        let echoed = ECHOED.load(std::sync::atomic::Ordering::Relaxed);
+        if echoed != self.echoed {
+            (self.echoed, self.since) = (echoed, Instant::now());
+        }
+        self.since.elapsed() < STREAM_QUIET
+    }
+}
+
+/// A connection to `listener`, waited for while the host's stream through the echo carries
+/// bytes ([`Streaming`]): the host connects once it has stopped streaming, at the end of a
+/// round however long its host takes over it.
+fn accept_while_streaming(listener: &std::fs::File) -> Result<std::fs::File, String> {
     use std::os::fd::{AsRawFd, FromRawFd};
+    // Each accept(2) gives up after a second, for a look at the stream.
     let wait = libc::timeval {
-        tv_sec: limit.as_secs().try_into().unwrap_or(60),
+        tv_sec: 1,
         tv_usec: 0,
     };
-    // SAFETY: setsockopt(2) on our own socket, with a timeval of its size: accept(2) gives
-    // up after it.
+    // SAFETY: setsockopt(2) on our own socket, with a timeval of its size.
     let set = unsafe {
         libc::setsockopt(
             listener.as_raw_fd(),
@@ -1336,23 +1376,31 @@ fn accept_within(listener: &std::fs::File, limit: Duration) -> Result<std::fs::F
     if set != 0 {
         return Err(format!("SO_RCVTIMEO: {}", io::Error::last_os_error()));
     }
-    // SAFETY: accept(2) on our listening socket, without the peer address.
-    let fd = unsafe {
-        libc::accept4(
-            listener.as_raw_fd(),
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
-            libc::SOCK_CLOEXEC,
-        )
-    };
-    if fd < 0 {
-        return Err(format!(
-            "no host connection in {limit:?}: {}",
-            io::Error::last_os_error()
-        ));
+    let mut stream = Streaming::new();
+    loop {
+        // SAFETY: accept(2) on our listening socket, without the peer address.
+        let fd = unsafe {
+            libc::accept4(
+                listener.as_raw_fd(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                libc::SOCK_CLOEXEC,
+            )
+        };
+        if fd >= 0 {
+            // SAFETY: a fresh descriptor nothing else owns.
+            return Ok(unsafe { std::fs::File::from_raw_fd(fd) });
+        }
+        let e = io::Error::last_os_error();
+        if !matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted) {
+            return Err(format!("accepting the host's connection: {e}"));
+        }
+        if !stream.carries() {
+            return Err(format!(
+                "no host connection, and nothing through the echo, for {STREAM_QUIET:?}"
+            ));
+        }
     }
-    // SAFETY: a fresh descriptor nothing else owns.
-    Ok(unsafe { std::fs::File::from_raw_fd(fd) })
 }
 
 /// The benchmark guest: asks for a snapshot; a restored clone marks that it runs again

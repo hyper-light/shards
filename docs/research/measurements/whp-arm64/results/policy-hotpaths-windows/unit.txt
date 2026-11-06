@@ -1,0 +1,11 @@
+2026-11-03T13:32:51.2226730-08:00
+MANIFEST binaries=3
+START 2/3 path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/rego#shards-rego@0.1.0 shards_rego 2026-11-03T21:32:52.6765060Z
+test index::tests::hashes_are_opas ... ok
+test stack::tests::a_thread_knows_how_much_stack_it_has_left ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.03s
+
+END 002-shards_rego exit=0 elapsed=6.515155
+COMPLETE binaries=1 manifest=3 failed=0 filter=shards_rego/ start=0
+2026-11-03T13:33:00.4466340-08:00

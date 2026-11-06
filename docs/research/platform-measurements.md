@@ -16898,6 +16898,170 @@ revision before comparing a changed API/implementation.
   `platform::reserve_withheld` makes one) answered as one readable and writable did, in
   every step above.
 
+### M414. WHP on arm64 Windows: a nested host, GICv3, PSCI, MMIO and snapshot state (D209)
+
+- **Method.** `docs/research/measurements/whp-arm64/`, 2026-11-01 to 2026-11-04 UTC, on
+  an M5 Max, macOS 26.4.1. Windows 11 Pro arm64 26300.9457 installed from Microsoft's
+  ISO, its hash verified; HypervisorPlatform, VirtualMachinePlatform and Hyper-V enabled.
+  QEMU 11.1.3, four CPUs and 8 GiB RAM. The harness records the host's events and WHP
+  calls, and runs its own two-vCPU guest independently of shards. The README records the
+  boot matrix, firmware revisions, fixture patches and raw results. No Windows binary or
+  check was patched.
+- **Host found.**
+  - HVF with EL2 off and on both reached the desktop but gave Hyper-V event 43, EL2 not
+    present; WHP's HypervisorPresent was 0. HVF's default PFR0.EL2 field is 0 even with
+    nested virtualization enabled (M422); setting it to 1 changed Windows' failure to
+    event 26, BalStatus 0x19, sub-status 0xC.
+  - TCG with VHE but without EL3 failed the same way. Instrumenting its failure path
+    identified PFR0.EL3=0 as the rejected CPU field. With TF-A at EL3, Windows passed that
+    check but faulted on a pointer authentication key write; disabling that optional CPU
+    feature reached a HAL initialization failure. QEMU's generated FADT described no
+    PSCI when its own handler was disabled for TF-A; describing TF-A's SMC handler fixed
+    that failure.
+  - TCG `max,sve=off,sme=off,pauth=off`, secure and virtualized, TF-A 2.15.0 and EDK2
+    stable202608: Windows reached the desktop, System event 1 said its hypervisor
+    successfully started, WHvGetCapability returned HypervisorPresent=1 and Arm64Support=1,
+    and WHvCreatePartition succeeded. This is software emulation of Windows on this Mac,
+    running Windows' real hypervisor. Its timings are not native hardware timings.
+- **Partition found.**
+  - The guest read back an MMIO answer (0x5678), took SPI INTID 33 and acknowledged it.
+    PSCI_VERSION returned 1.1, CPU_ON started vCPU 1 at its entry with context X0=0x42 and
+    MPIDR=0x80000001, and SYSTEM_OFF returned an Arm64Reset/PowerOff exit.
+  - GICD_TYPER 0x748041e: 960 SPIs. WHvGetVirtualProcessorState returned 200 bytes of
+    interrupt controller state per vCPU and 4096 bytes of global state, all set back with
+    S_OK. Resetting vCPU 0's CNTVCT_EL0 to zero left vCPU 1's counter advancing: one counter
+    per vCPU. SuspendPartitionTime returned WHV_E_INVALID_VP_STATE with vCPU 1 running.
+    With all vCPUs stopped it succeeded: both counters held their values across 100 ms,
+    including after each was set to 1,000,000,000. ResumePartitionTime advanced both.
+    The restore suspends time before making vCPUs, sets each counter before its timer
+    registers, and resumes time through the first WHvRunVirtualProcessor.
+  - WHvAdviseGpaRange's Populate advice on two memory ranges succeeded for read and write
+    access as the standard runner. The backend shares x86_64 WHP's mapped-page recorder
+    and bulk Populate path; the working-set snapshot E2E recorded and prefetched pages.
+  - 64- and 128-vCPU partitions set up and their last vCPU was created; ProcessorCount=256
+    was refused. Shards' redistributor layout holds 123 vCPUs, within the measured limit.
+  - Forbidding dynamic code after setup allowed mapping RAM, making a vCPU and running
+    it. A cancel before a run returned Canceled, then the next run reached the first MMIO
+    write. The probe drops its original mapped partition before this control; while it
+    still held it, the second map returned STATUS_VID_PARTITION_ALREADY_EXISTS.
+  - MMIO write round trips on the emulated host during development: n=999, p50=455,
+    p90=608, p99=900, max=1606 microseconds. This run alone, not a native WHP latency claim.
+- **Shards found.** Its pinned arm64 Linux kernel booted as the standard `runner` user
+  through the confined VM process, finding PSCI 1.1, GICv3 at the expected redistributor
+  and the 1 GHz virtual counter; with no init/root disk it reached the expected VFS panic
+  and requested a reset. The boot test now checks the host's counter frequency rather
+  than assuming HVF's 24 MHz. Boot E2E passed (27.81 s), as did the core snapshot E2E
+  (36.76 s): three independent processes restored one two-vCPU snapshot with its state
+  intact and fresh randomness. Nine tests of the first complete snapshot run passed;
+  the busy-machine test found a 59 microsecond backward clock step from per-thread
+  counter sampling at release. After the suspended-time fix, its two- and eight-vCPU
+  cases passed, including all three restores and clock checks (29.35 and 24.34 s).
+  The 64-vCPU original guest timed out streaming before its snapshot on the four-CPU
+  outer host. The nested host was resized to 16 CPUs and 24 GiB for the full suite,
+  keeping every assertion and deadline. The full real-VM suite remains to pass before
+  step 10 is closed. Raw results and the failure are retained with the harness.
+- **Qualification follow-up, 2026-11-03 UTC.** The 16-CPU run completed 80 of 141
+  binaries, with 76 passing and four failed, then was aborted after more than two hours
+  in the container binary. It is incomplete evidence. Its failures included 64-vCPU
+  storms, boot, the 10 s wide-policy compiler deadline, and both Windows builder memory
+  cases. The arm64 nested-refusal assertion was corrected and passed its next checks.
+  Windows updated to 26300.9711 during shutdown. Subsequent four-CPU, 24 GiB comparisons
+  found no improvement from single-threaded TCG over multithreaded TCG. After returning
+  to multithreaded TCG, maximum-vCPU boot passed in 56.66 s and builder memory growth in
+  149.34 s, but the faster builder memory case still failed its 180 s deadline. These
+  subsets do not qualify the suite, and the OS update confounds comparisons with the
+  16-CPU run. A direct 123-vCPU boot prepared vCPUs in 0.918 s, brought Linux's configured
+  64 CPUs online at guest time 15.723 s and reached the expected VFS reset after 97.523 s
+  wall time; no counter defect follows from those different milestones. The README
+  records exact selections and retained results. Step 10 remains open.
+- **VBS/HVF follow-up.** On a child of the cleanly stopped 26300.9711 disk, first setting
+  `vsmlaunchtype Off`, then also setting the documented DeviceGuard
+  `EnableVirtualizationBasedSecurity=0` system and policy values, each followed by a
+  reboot, left Win32_DeviceGuard's VBS status at 2 with no services running. WHP remained
+  present and partition creation succeeded. These settings did not yield a VBS-off
+  control. An HVF boot of a separate child, with enabled EL2 truthfully advertised,
+  reached the desktop but gave current-boot Hyper-V event 26 (BalStatus 0x19/sub-status
+  0xC), WHP present=0 and CreatePartition=0xC0351000. VBS then reported 0 while the
+  hypervisor had failed. No Windows code/check or locked/signed policy was changed.
+  The README records the settings and full transcripts; there is no VBS performance or
+  VHE causality claim from these experiments.
+- **Emulator profile.** On the restored four-CPU baseline, the faster-growth builder
+  again failed its 180 s deadline. Info logs put vCPU preparation at 0.342 s and the
+  startup marker at 4.898 s. Three five-second QEMU samples include page-table translation
+  and locking; cumulative counters after the test recorded 22,347,718 partial TLB flushes
+  and four translation-buffer flushes since host boot. This is a diagnostic profile,
+  not a performance qualification. A one-CPU child started Hyper-V and ran a real WHP
+  guest, but still failed the selected compiler and maximum-vCPU boot deadlines. A local
+  tag-validation error prevented its other two planned checks from starting. The retained
+  reports distinguish those unrun checks from VM failures. No assertion was relaxed.
+- **Additional controls.** The same 6000-rule compiler test, built alone with production
+  `release` (fat LTO, one codegen unit, static CRT), still failed its 10 s assertion
+  after 10.09 s on the verified WHP host. A Cortex-A76 control stopped in TF-A BL1's
+  synchronous EL3 exception/panic path; a `max,pmu=off` control reached Windows Boot
+  Manager but was ended before SSH readiness after more than eight minutes. Neither
+  control ran a WHP probe or VM test, and neither establishes a performance result or
+  the original failure cause. Their retained records distinguish boot controls from
+  VM results.
+- **Complete retry.** `real-03` began 2026-11-03 18:43 UTC on the working four-CPU,
+  24 GiB `max` model, Windows 26300.9711, with all 141 original `test-release` binaries
+  (source 360ad0cd). The runner now has optional heartbeats while waiting for a native
+  binary, with no added test deadline or filter. Windows parsed the script and verified
+  its hash and manifest before launch. The first binary emitted heartbeats, returned
+  its native exit 101 (eight snapshot tests passed, two failed, two helper entries
+  ignored), and the runner continued to boot tests. This validates progress/exit
+  reporting, not qualification. The complete suite must still pass before row 5 closes.
+- **Compiler diagnostic.** The unchanged 6000-rule policy failed its 10 s Windows
+  deadline. Native profiling found repeated construction of whole type extents for
+  reference queries. `whp-arm64/wide-policy.py` compares the original source with a
+  candidate that obtains string keys directly and avoids the extent for scalar-valued
+  dynamic references, retaining the function-type path. On this M5 Max, macOS 26.4.1,
+  standalone rustc 1.99.1, release/fat LTO/codegen-units=1, n=30/build with alternating
+  order, parse plus compile was p50/p90/p99/max 779.528/806.984/825.200/825.200 ms before
+  and 299.800/308.567/313.776/313.776 ms after. The Windows fixture/full suite and
+  cross-build jobs were active. The README and retained rows record that scope and the
+  compiler-metadata correction. Native Rego tests/OPA comparisons and all eight lint
+  targets passed with the candidate. This native comparison does not qualify Windows.
+- **Follow-up regressions.** Indexing the evaluator's binding sets after 16 variables
+  retains iteration/undo order and removes their linear lookup. On the same Mac,
+  rustc 1.98.1/test-release, `deep-policy.py` alternated n=20/build of the unchanged
+  deep-every test: whole-process p50/p90/p99/max 3371.999/3533.665/3598.273/3598.273 ms
+  before and 1735.963/1894.770/1908.657/1908.657 ms after. Rego tests/OPA comparisons,
+  a binding undo regression, all eight lint targets and the Windows cross-build passed.
+  A separate standard-user Windows kit then passed the original wide-policy test
+  in 5.28 s within 10 s, the deep-policy test in 38.47 s within 60 s, and all ten Rego
+  library tests. The M414 guest also passed with aligned stack register writes and its
+  MMIO load result/PC set together. These checks overlapped the already-failing
+  real-03 container binary. The README retains the method, source patches and raw
+  evidence; neither the selected tests nor this API probe qualify the full suite.
+- **Credential commands.** The continuing container run found its CloudWatch fixture's
+  Unix `printf` command unavailable on Windows. A native probe then found normal
+  argument escaping corrupting configured credential commands' JSON and quoted program
+  paths. The provider now passes the configured command literally with `raw_arg`, as
+  Rust documents; the Windows fixture uses `echo`. The existing credential regression,
+  enabled on Windows and extended with a helper filename containing a space, passed
+  there in 1.20 s, including environment, expiry, Version 2 rejection and exit code 3.
+  Native Mac, all eight lint targets and the complete Windows cross-build passed.
+  The README records the raw control's `/D /S /C` versus production's `/C`, an earlier
+  failed probe control, and the exact production regression. These checks overlapped
+  the already-failing full run; the CloudWatch VM E2E and full qualification remain open.
+
+- **Cross-built init and user logon.** The original Engine E2E reproduced an HTTP 500
+  in 3.01 s: its Mac `OUT_DIR` init path lacked a Windows drive. Resolving that file on
+  the executing host fixed the fixture; the unchanged case passed on a real WHP guest
+  in 29.25 s after a fresh 142-binary build and native verification of every executable
+  hash. All eight lint targets passed. The dedicated standard user also passed the
+  file-observer regression (one case, 0.13 s), actual unprivileged symlink create/read,
+  ETW session control, gzip and output-directory writes, and WHP capability/partition
+  checks. SSH's original user reported RedirectionGuard enforcement and refused its
+  own link traversal; the normal batch logon reported flags=0 without any policy
+  override. The README and `results/init-path/` and `results/normal-logon/` record the
+  original failure, compiled patch, hashes, launch method and failed controls. The
+  original unit binary, run alone after enabling kernel-dump capture, finished 551
+  passed, one failed and three ignored without reproducing the host crash. It failed
+  the existing minimum-wait assertion at 39.018 ms. The cause of the earlier bugcheck
+  remains unresolved. These selected checks do not replace the outstanding complete
+  142-binary real-VM suite or close step 10.
+
 ### M415. A Windows restore's working set, mapped ahead (D196, the platform parity audit's row 11)
 
 - **Question.** What does a working set mapped ahead buy a Windows restore, as Linux's and
@@ -17271,7 +17435,7 @@ revision before comparing a changed API/implementation.
   its snapshot so, as the daemon holds a template; `--held no` holds none, as a lone
   `shards restore` finds it.
 
-### M422. What a GPU's VM process needs on Intel's GPUs and on a musl host (D208)
+### M425. What a GPU's VM process needs on Intel's GPUs and on a musl host (D208)
 
 - **Question.** M382 found what NVIDIA's and AMD's drivers reach of a Linux host from the
   GPU's VM process, with glibc. Does Mesa's Intel driver reach more, and does a GPU's VM
@@ -18061,3 +18225,80 @@ revision before comparing a changed API/implementation.
   and the restore, not its memory.
 - **Consequence.** The downtime D176 part 7 says; what is left to cut is in the last stream
   and the restore.
+### M422. Whether a Hypervisor.framework guest given EL2 has VHE (the parity plan's step 10)
+
+- **Question.** Step 10's host is to be Windows 11 arm64 under QEMU on this Mac, given EL2
+  (QEMU's `virtualization=on`, Hypervisor.framework's nested virtualization), its own
+  hypervisor running there under shards' arm64 WHP backend. A hypervisor that runs with
+  VHE sets HCR_EL2.E2H, which exists only where ID_AA64MMFR1_EL1's VH field says so (the
+  Arm ARM's FEAT_VHE). Does a framework guest at EL2 have VHE?
+- **Method.** `docs/research/measurements/hvf-el2-vhe/run.sh`, on the M5 Max (macOS
+  26.4.1), 2026-11-01: a VM made with EL2 off and one with it on
+  (`hv_vm_config_set_el2_enabled`), each vCPU's ID registers as its guest reads them
+  (`hv_vcpu_get_sys_reg`), and, at EL2, HCR_EL2 written with E2H (bit 34) set and then
+  clear, each read back.
+- **Found.**
+  - EL2 is supported here (`hv_vm_config_get_el2_supported`: 1).
+  - ID_AA64MMFR1_EL1 reads 0x0000100011312000 with EL2 off and on: VH (11:8) 0.
+    ID_AA64MMFR2_EL1 0x1001001102001011, ID_AA64PFR0_EL1 0x1101000010110011, alike. The
+    framework does not offer ID_AA64MMFR4_EL1 (HV_BAD_ARGUMENT, 0xfae94003).
+  - HCR_EL2 is 0x80000000 as made; written with E2H set, it reads back 0x80000000: E2H is
+    RES0. A guest hypervisor here runs without VHE, as the arm64 Linux guest's KVM did
+    under it ("Hyp nVHE mode initialized successfully", D154), no `kvm-arm.mode` told.
+- **Follow-up.** The expanded probe also reads the vCPU configuration: PFR0.EL2 remains 0
+  with EL2 enabled; writing the vCPU's field to 1 succeeds and reads back 1
+  (`config-result.txt`). VHE's absence alone does not establish why Windows fails to
+  launch. M414 records the measured Windows boots, including the working TCG host.
+  The [HVF advertisement A/B evidence](measurements/whp-arm64/results/hvf-advertisement/README.md)
+  retains the default run's event 43 and the corrected run's event 26, paired with their
+  own boots, with WHP present 0 in both; the exact patch/base and recorded launch settings
+  are retained. Missing historical expanded argv and executable hashes are stated
+  explicitly. This remains an unresolved HVF host result, not a VHE causal finding.
+
+### M423. CI's arm64 Windows lane on windows-11-arm: its steps' times and limits (M245, M420)
+
+- **Method.** `docs/research/measurements/ci-limits/limits.py` over the lane's first two runs
+  on windows-11-arm (41365265628 at ec4ba969, 41370584211 at 48b4e808, whp-arm64,
+  2026-11-02), its tests' limit then x86_64 Windows' 122 minutes: the native build, lints
+  and the workspace's tests, every VM test saying SKIP, the image having no hypervisor
+  platform (M172).
+- **Found.** The tests' step ran through both times: 24.6 and 26.2 minutes (n 2); the job's
+  other steps 11.9 and 12.5. The first run's tests failed (boot.rs's three, of 179 test
+  binaries), the second passed.
+- **Decided.** As M245 sets the native lanes' limits, a third above the slowest: the tests'
+  step 35 minutes, the job 52 (the step's 35 and a third above its other steps' 12.5).
+  Two runs are few: limits.py derives them again over runs.txt as the lane's runs gather.
+
+### M424. Cold boots on the nested arm64 Windows host: their microVMs' CPU while they start (D209, M357)
+
+- **Question.** In step 10's full suite (FullReal04, 142 test binaries, the whp-arm64
+  branch's 2026-11-04 build) on the arm64 Windows 11 host nested under QEMU's TCG with TF-A
+  on this Mac (4 vCPUs, 24 GiB; M414), 10 binaries failed, nearly every case a run whose
+  microVM was not ready by a deadline: the client's minute, or the daemon's
+  `READY_TIMEOUT` (60 s past its 20 s of samples). Were those microVMs stuck, or booting
+  slowly?
+- **Method.** The daemon's own samples of a microVM not ready in 10 and 20 s (Windows'
+  `READY_STALL` log lines: GetProcessTimes' user and kernel time), every one in the run's
+  per-test logs, n = 61 at 10 s and 50 at 20 s (the rest had become ready, or been given
+  up on, by then); their CPU between the two samples, n = 50. Up to four tests' cold boots
+  ran at once, each microVM of the host's 4 CPUs.
+- **Found.** CPU time to 10 s: min 4,062 ms, p50 11,218, p90 13,077, p99 13,203, max
+  13,905. To 20 s: min 7,327, p50 29,796, p90 33,155, p99 35,937, max 35,937. Between the
+  two, a 10 s slice: min 3,265 ms, p50 18,828, p90 21,531, max 23,813. A rerun of the same
+  binaries with Defender excluding C:\ (2026-11-05) still failed
+  `warm_vms_are_given_their_templates_root_filesystem`, in 102 s: 14,686 ms by 10 s,
+  24,828 ms by 20 s. Defender was not the cause.
+- **Consequence (D209).** Every microVM not ready ran its start the whole time: its least
+  slice, 3,265 ms in 10 s, is 52 times the most an idle microVM takes (63 ms in 10 s,
+  M357). They were slow, not stuck, and a wall-clock deadline that holds on CI's runners
+  (a boot of 1.6 to 2.2 s, M357) ends them here. The daemon now waits for a starting
+  microVM as long as its process runs its start, and gives up on one only after
+  `READY_TIMEOUT` in which it ran no more than an idle one (`progressed`, now
+  `shards_vmm::platform`'s); the builder's boot likewise; and a test's client past its
+  deadline is waited on while its daemon says something, as it does each 10 s of such a
+  wait (`common::Said`).
+- **Not measured: the WORK cases.** Five failures came after their boots (the storm, the
+  3 GiB build step, `run_limits_a_microvms_resources`' 2.4 GiB allocation, two 1 GiB
+  `exec alloc-free`), and nothing in their logs says what their microVMs ran meanwhile:
+  the daemon logged nothing while a workload ran. It now logs a microVM a client waits on
+  each 10 s where it ran (D209's second bullet); the rerun's logs are those cases' evidence.

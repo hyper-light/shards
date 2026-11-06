@@ -1,0 +1,996 @@
+[
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/shards#0.6.0",
+    "name": "snapshot",
+    "exe": "C:\\shards-step10\\tests\\snapshot-168b5ff30982710b.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\shards",
+    "sha256": "a9aa61e998261bcb0a5dec68756ff58a32f5da8f29187598d479036c8fd4ef22"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/shards#0.6.0",
+    "name": "boot",
+    "exe": "C:\\shards-step10\\tests\\boot-3818b602b2b46e7e.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\shards",
+    "sha256": "9495a41a18c6aef994c03f7cdc48765806f1522fbdfc87d17c5bbf4b20ab13c8"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/abi#shards-abi@0.1.0",
+    "name": "allocations",
+    "exe": "C:\\shards-step10\\tests\\allocations-942a212acf98d972.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\abi",
+    "sha256": "ed037d7bc69db77f5eb6975c64c072b766a6a66e796d3336cf4f07b47e01789a"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/abi#shards-abi@0.1.0",
+    "name": "shards_abi",
+    "exe": "C:\\shards-step10\\tests\\shards_abi-498bac19f4d7f8ee.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\abi",
+    "sha256": "bdcd0591ebb3bb5445a611b1b7847caeae8c08686fbc0f082a3cb385dd8e8889"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/afunix#shards-afunix@0.1.0",
+    "name": "shards_afunix",
+    "exe": "C:\\shards-step10\\tests\\shards_afunix-75c16a6fc63dc123.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\afunix",
+    "sha256": "fa584a1fdb7603cb2703b7cdd89e2c1892567258399fde6c1b13b359dd94e3a1"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/agentfile#shards-agentfile@0.1.0",
+    "name": "agentfile",
+    "exe": "C:\\shards-step10\\tests\\agentfile-d0bcc81f6bf81046.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\agentfile",
+    "sha256": "9f2010ce7ec56c8f1fdba454d0745dc7b80868957a3c822de0a1b590c1b17f6e"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/agentfile#shards-agentfile@0.1.0",
+    "name": "commit",
+    "exe": "C:\\shards-step10\\tests\\commit-20e4c33d6f720d88.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\agentfile",
+    "sha256": "f1e332f4c70d47ffb964e70e7e49155f9269f6a115e2bc64d6191c094f0e36eb"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/agentfile#shards-agentfile@0.1.0",
+    "name": "gateway",
+    "exe": "C:\\shards-step10\\tests\\gateway-5a8a50631da0791b.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\agentfile",
+    "sha256": "9711e9dfec8c3ac16858fac606257d9cb6275d4b1a8971857efc1c566f8d0e5f"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/agentfile#shards-agentfile@0.1.0",
+    "name": "oracle",
+    "exe": "C:\\shards-step10\\tests\\oracle-b238aadc2348176d.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\agentfile",
+    "sha256": "8dbcf9c9dcdb6e243286ba518e964bb08559bed1fba42a6e88ca9ed4e553ac95"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/agentfile#shards-agentfile@0.1.0",
+    "name": "shards_agentfile",
+    "exe": "C:\\shards-step10\\tests\\shards_agentfile-bef8d961a503abbf.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\agentfile",
+    "sha256": "c6447645824f86a878a47f14aa065d42d2ea62c87e9959c95dcfb4210ad0c89a"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/apple#shards-apple@0.1.0",
+    "name": "shards_apple",
+    "exe": "C:\\shards-step10\\tests\\shards_apple-62ffa32318a565a9.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\apple",
+    "sha256": "139345267ca044105aeaa9f66e84f00039f2d74e48205821b5c2badef35107d1"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/archive#shards-archive@0.1.0",
+    "name": "adversarial",
+    "exe": "C:\\shards-step10\\tests\\adversarial-9188489b68b5e87c.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\archive",
+    "sha256": "ba51ab8ed92da553ab047b0b827444c05b338501c2d62026a10805c99f93680e"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/archive#shards-archive@0.1.0",
+    "name": "changes",
+    "exe": "C:\\shards-step10\\tests\\changes-b900f80fe0cce1a3.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\archive",
+    "sha256": "11a0c26aae9f91528437471934b6c4547ff0ca1f131208db6589d9e77ea5b7b0"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/archive#shards-archive@0.1.0",
+    "name": "lx",
+    "exe": "C:\\shards-step10\\tests\\lx-e6a787531e41ac90.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\archive",
+    "sha256": "5fd6df9d9834327792302f76206fab2627060f72d2bfb73648874699b7f954c9"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/archive#shards-archive@0.1.0",
+    "name": "oracle",
+    "exe": "C:\\shards-step10\\tests\\oracle-69d253c94b2fa344.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\archive",
+    "sha256": "576e63f9197e772872fc730c521a74db76702bb2eafda5a88adca0d5b2beae01"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/archive#shards-archive@0.1.0",
+    "name": "shards_archive",
+    "exe": "C:\\shards-step10\\tests\\shards_archive-62ca6054fa08ca85.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\archive",
+    "sha256": "873550f7c3b84bc1b7d86f889f8b6550d7e6944cbfbe2aeefcb42f247a375d8e"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/build#shards-build@0.1.0",
+    "name": "context",
+    "exe": "C:\\shards-step10\\tests\\context-391a08ff7fa76166.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\build",
+    "sha256": "7084dddddd930d37f23ae2993c0d1cd7283affd07a0314316884bfa177aa049a"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/build#shards-build@0.1.0",
+    "name": "oracle",
+    "exe": "C:\\shards-step10\\tests\\oracle-2f869accfb5bc1b0.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\build",
+    "sha256": "a312a1a7b8c98732e769262f923b65336e9e6a7e80642a0422be8d686c61f4bb"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/build#shards-build@0.1.0",
+    "name": "shards_build",
+    "exe": "C:\\shards-step10\\tests\\shards_build-ac238381a59df6a6.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\build",
+    "sha256": "ee4e423e779a394d942fc36ee41279a80175b04806c0d380e5509a5bbe77321c"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/build#shards-build@0.1.0",
+    "name": "skills",
+    "exe": "C:\\shards-step10\\tests\\skills-edd3d2dc28d5628e.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\build",
+    "sha256": "898d31283788e390d4224428885aa114bfda927f9c1ce9b46ff3c0d8fa32dba8"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/build#shards-build@0.1.0",
+    "name": "stack",
+    "exe": "C:\\shards-step10\\tests\\stack-5d30a97290b20bf4.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\build",
+    "sha256": "353b1a28ab312099c267959eac9e28ef861637c3cf8a0b6d5b494aec6f287a60"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/bus#shards-bus@0.1.0",
+    "name": "shards_bus",
+    "exe": "C:\\shards-step10\\tests\\shards_bus-034bab53c161c2ed.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\bus",
+    "sha256": "6b8625ad369de50e6e18bf091a55dd904581625ea2f1f690c98193b9787d775f"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/cmdline#shards-cmdline@0.1.0",
+    "name": "build_cache_usage",
+    "exe": "C:\\shards-step10\\tests\\build_cache_usage-8c04df91499b8217.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\cmdline",
+    "sha256": "2950dc967af69b343aeb37af4f51dfccbc69740723a57ae8f853c0f23f445410"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/cmdline#shards-cmdline@0.1.0",
+    "name": "build_command_lines",
+    "exe": "C:\\shards-step10\\tests\\build_command_lines-98102785d49f3f5d.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\cmdline",
+    "sha256": "4c41c2f01a0b7cf1ea2ca7f8f92d657fc8566d5f37ede86c11a0fd28c6e31167"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/cmdline#shards-cmdline@0.1.0",
+    "name": "command_lines",
+    "exe": "C:\\shards-step10\\tests\\command_lines-5c9f4585463d04b8.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\cmdline",
+    "sha256": "c5e72f633038074275aa1ba7e668ccfb8d3dd0f2a58e4f3682334c11a43abc67"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/cmdline#shards-cmdline@0.1.0",
+    "name": "flags",
+    "exe": "C:\\shards-step10\\tests\\flags-7d29b873e179dcb7.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\cmdline",
+    "sha256": "1d3126a20b7e5fef0f597b29ad4bf4da41be2068de233ef8393878163abad840"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/cmdline#shards-cmdline@0.1.0",
+    "name": "format",
+    "exe": "C:\\shards-step10\\tests\\format-df7bc92abd5c7eb5.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\cmdline",
+    "sha256": "411605f54f2dacc6b54689df8dbcd44d1956081665c8becd936a37e92faf44b2"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/cmdline#shards-cmdline@0.1.0",
+    "name": "log_times",
+    "exe": "C:\\shards-step10\\tests\\log_times-b057e782c1875c73.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\cmdline",
+    "sha256": "8a5af08bffb007c703427883f0e7760cc43262d11272ae1a33e131b66141dcbb"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/cmdline#shards-cmdline@0.1.0",
+    "name": "network",
+    "exe": "C:\\shards-step10\\tests\\network-ca6f6532106c7967.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\cmdline",
+    "sha256": "800e7bc4657fa48d3648efc6cfd2576fd56ced127b93a0a7544aa539f6f8f5c9"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/cmdline#shards-cmdline@0.1.0",
+    "name": "search",
+    "exe": "C:\\shards-step10\\tests\\search-107409a48784973b.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\cmdline",
+    "sha256": "24191956a9597e2b9aa19826eb60b59c97cd5db2cbde9694879494f39f3a033a"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/cmdline#shards-cmdline@0.1.0",
+    "name": "shards_cmdline",
+    "exe": "C:\\shards-step10\\tests\\shards_cmdline-ebe5fa39e18494be.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\cmdline",
+    "sha256": "8836dd4a4ae1de1e585410cbafed4683d7c0fab994bd6d4e2f04c8674f49bacb"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/devcgroup#shards-devcgroup@0.1.0",
+    "name": "shards_devcgroup",
+    "exe": "C:\\shards-step10\\tests\\shards_devcgroup-2f53f3faef78024c.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\devcgroup",
+    "sha256": "5247ab9c2bd96571686399a91e798d40ff9b899013be83d7cc9138891feffc6a"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/dns#shards-dns@0.1.0",
+    "name": "shards_dns",
+    "exe": "C:\\shards-step10\\tests\\shards_dns-eb52283da66e3b7c.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\dns",
+    "sha256": "d3c60dc22ffc5ca9fd96bb2ca6f931bd99b7470d49a1efeadce75010ce6d7049"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/erofs#shards-erofs@0.1.0",
+    "name": "shards_erofs",
+    "exe": "C:\\shards-step10\\tests\\shards_erofs-9e981cc6ea815067.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\erofs",
+    "sha256": "7b15a7c00f12b152e95fad174ee4a3e9e3fe282f906d8099d3b595b2c0776877"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/ext4#shards-ext4@0.1.0",
+    "name": "shards_ext4",
+    "exe": "C:\\shards-step10\\tests\\shards_ext4-ce857cc110772a13.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\ext4",
+    "sha256": "265a090989a839f002382d1c66cc9f7d2ded9d25013568e0132b0a6601e9c8e4"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/flate#shards-flate@0.1.0",
+    "name": "oracle",
+    "exe": "C:\\shards-step10\\tests\\oracle-f7ca3ffaedc5352d.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\flate",
+    "sha256": "35c3ee86fd37a0f9d0284a8ae843ee49041991ab24824565b5f0c4b3eef8af31"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/flate#shards-flate@0.1.0",
+    "name": "shards_flate",
+    "exe": "C:\\shards-step10\\tests\\shards_flate-3f0f2bd5549f3c50.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\flate",
+    "sha256": "d78c8e8f76e07e15303d67e888cad2342c90f175f30c49b2d5bc7d11cd0991b1"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/gateway#shards-gateway@0.1.0",
+    "name": "shards_gateway",
+    "exe": "C:\\shards-step10\\tests\\shards_gateway-eb654123ef54ac04.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\gateway",
+    "sha256": "3fcf2588af6dae87e5f0b16250b147c8715073cedcea4f373a442e6fe722c28b"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/git#shards-git@0.1.0",
+    "name": "real_git",
+    "exe": "C:\\shards-step10\\tests\\real_git-927341cf940c9bd2.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\git",
+    "sha256": "f9fafc35b1dabe80de92add030ac8c3755f7776897081808609f45ee67a127bb"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/git#shards-git@0.1.0",
+    "name": "shards_git",
+    "exe": "C:\\shards-step10\\tests\\shards_git-2f18c2e5f7882871.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\git",
+    "sha256": "d6d362dc89eba40ed278a4e118b71931771a7d85ada58d42f2885b9e92788e18"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/gitsign#shards-gitsign@0.1.0",
+    "name": "adversarial",
+    "exe": "C:\\shards-step10\\tests\\adversarial-2c722a3cbd27592b.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\gitsign",
+    "sha256": "997de5b57b4cc9dbfc037df2f5f8b1dc84feb5d52ef4580096050343eea5d71b"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/gitsign#shards-gitsign@0.1.0",
+    "name": "certs",
+    "exe": "C:\\shards-step10\\tests\\certs-b59d879351e54ed5.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\gitsign",
+    "sha256": "2a58b5b1003417f0a144a14fa03737bad11ba883e3ce94abb28461c898fd4309"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/gitsign#shards-gitsign@0.1.0",
+    "name": "keyring_cost",
+    "exe": "C:\\shards-step10\\tests\\keyring_cost-dcf28c5f929ec1de.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\gitsign",
+    "sha256": "1b086bf7e01bbc854f0f67c47755d686d9de3bc81e0bf45fba1f355149c9378b"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/gitsign#shards-gitsign@0.1.0",
+    "name": "oracle",
+    "exe": "C:\\shards-step10\\tests\\oracle-6e852240116b1864.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\gitsign",
+    "sha256": "ce4867d0df58b321206fcce04bbeb7a589846d470bf936c9653b2ce4405cc269"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/gitsign#shards-gitsign@0.1.0",
+    "name": "rsa",
+    "exe": "C:\\shards-step10\\tests\\rsa-4dbf7dffb7fea4d7.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\gitsign",
+    "sha256": "b8027132c7b02c31c65698f2082b38dfee80d5bb488af1094abdb24bd80c912c"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/gitsign#shards-gitsign@0.1.0",
+    "name": "shards_gitsign",
+    "exe": "C:\\shards-step10\\tests\\shards_gitsign-dd0ebe0d816fd741.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\gitsign",
+    "sha256": "98b7fbfb2fd88965850062a4359e08200e029adbd5886638bffba7cba8b40a56"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/gitsign#shards-gitsign@0.1.0",
+    "name": "verify",
+    "exe": "C:\\shards-step10\\tests\\verify-b080179d8149f34d.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\gitsign",
+    "sha256": "c2965b4dd0a553e37f361f03f58324f5814128ec420d9ccd09105293a5682f91"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/gitsign#shards-gitsign@0.1.0",
+    "name": "wipe",
+    "exe": "C:\\shards-step10\\tests\\wipe-42de4aaf81ac42d8.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\gitsign",
+    "sha256": "4a1b8c0b38a22ceabbaaa920ed226ada3b52ce0d97412141a94fb6e9dd6110d3"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/image#shards-image@0.1.0",
+    "name": "allocations",
+    "exe": "C:\\shards-step10\\tests\\allocations-d6ef1df9befdc78b.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\image",
+    "sha256": "6ad22dafd0a154b6eba622a898582ccb473408670a895ca912456bd3c02fb71e"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/image#shards-image@0.1.0",
+    "name": "shards_image",
+    "exe": "C:\\shards-step10\\tests\\shards_image-4a79b35dc85eb43c.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\image",
+    "sha256": "d7ff76d0b3a4bf28ada246e4da92f5f59262a301e67edd8e8dc933777d9e9c5c"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/init#shards-init@0.1.0",
+    "name": "shards-init",
+    "exe": "C:\\shards-step10\\tests\\shards_init-f5c87fc25b9744d6.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\init",
+    "sha256": "4c7f02dcde9abff65807f20ca56c5e59e39cd887efa9d9a53b192b0f0245f5b2"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/ipc#shards-ipc@0.1.0",
+    "name": "shards_ipc",
+    "exe": "C:\\shards-step10\\tests\\shards_ipc-ab8233b3c0c39837.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\ipc",
+    "sha256": "cbe635100fd7f0c0ba81a495931070424c0bc86a7a385d17c3558a14178ec496"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/net#shards-net@0.1.0",
+    "name": "shards_net",
+    "exe": "C:\\shards-step10\\tests\\shards_net-5ca213697b811d3f.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\net",
+    "sha256": "ccb93af50eb1d2844f5dadd5527353965cb21da1a4cfa4b1441c28931a18737f"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/net-process#shards-net-process@0.1.0",
+    "name": "shards-net",
+    "exe": "C:\\shards-step10\\tests\\shards_net-09efc6bfa34b8745.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\net-process",
+    "sha256": "cc644e2c33a35eb2b436aa65a1e1325cc328a32028d4ed0731615ddcd3b398d5"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/netring#shards-netring@0.1.0",
+    "name": "shards_netring",
+    "exe": "C:\\shards-step10\\tests\\shards_netring-329fb2d0c3f9d13f.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\netring",
+    "sha256": "f3b6518af518ac6aa2e9c08220917963a52bb76a75c5d772f414bc2a211d76c7"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/ntfs#shards-ntfs@0.1.0",
+    "name": "shards_ntfs",
+    "exe": "C:\\shards-step10\\tests\\shards_ntfs-0caa6a066f35a421.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\ntfs",
+    "sha256": "56f5b53f814083aa6adec97ef99f82780457ee73234b45c0f864a0812a47a658"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/registry#shards-registry@0.1.0",
+    "name": "shards_registry",
+    "exe": "C:\\shards-step10\\tests\\shards_registry-3eace1e6ab09b5a4.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\registry",
+    "sha256": "e3cc865dfc5058d7130c4f8af5ae5b08b3b403f5020bd0d4fd130950ffcf8692"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/rego#shards-rego@0.1.0",
+    "name": "builtins",
+    "exe": "C:\\shards-step10\\tests\\builtins-37c59f64c9b09d59.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\rego",
+    "sha256": "5299ea3cd9dbc2609dfeb033c8317c5cb746901a77397468d23c12eb9fa62e8e"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/rego#shards-rego@0.1.0",
+    "name": "check",
+    "exe": "C:\\shards-step10\\tests\\check-64ff0db167be217b.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\rego",
+    "sha256": "a3091f5793f8f2908a53dbd10b96464b95cb592b3db59d114e5554e8fa2d7e02"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/rego#shards-rego@0.1.0",
+    "name": "compile",
+    "exe": "C:\\shards-step10\\tests\\compile-13c7f13ecde43134.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\rego",
+    "sha256": "bd99d8984fd3399c9aedef55d5e72ae3fa7d12acb55dcf4b50e3d6d6761f2bba"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/rego#shards-rego@0.1.0",
+    "name": "deep",
+    "exe": "C:\\shards-step10\\tests\\deep-4de3b6f7c8208cc1.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\rego",
+    "sha256": "325bc8979af2823a1521b5f723fa3aec7ac69d799d35037c5de0c91cf041c397"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/rego#shards-rego@0.1.0",
+    "name": "depth",
+    "exe": "C:\\shards-step10\\tests\\depth-8a5635e8477611fd.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\rego",
+    "sha256": "74e1876960523bb6c8a3294565f1538c8c3c343356543e02057444a4d216ec57"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/rego#shards-rego@0.1.0",
+    "name": "else",
+    "exe": "C:\\shards-step10\\tests\\else-3bd4763358731c89.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\rego",
+    "sha256": "dd62da54cc760489651239857761981cd7dffb1718063dc57ff977ff575e3dd1"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/rego#shards-rego@0.1.0",
+    "name": "eval",
+    "exe": "C:\\shards-step10\\tests\\eval-6dee44ab7cffc7af.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\rego",
+    "sha256": "ee91a17c12e9a93d6177e9b231be9983e7a877cead85e80c6f2252bd92be5e6d"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/rego#shards-rego@0.1.0",
+    "name": "index",
+    "exe": "C:\\shards-step10\\tests\\index-aa5fc9bf45feac78.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\rego",
+    "sha256": "ce2a8fa6bc728e006c1dd8ebcf8cb488ca77dc55f8ac49420a4ba2a7918e465e"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/rego#shards-rego@0.1.0",
+    "name": "numbers",
+    "exe": "C:\\shards-step10\\tests\\numbers-7fb55c28babbbd8d.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\rego",
+    "sha256": "b0642fd0671c7d1f6202427e045e5afa54da4c254a9b5680f65d2121147deeed"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/rego#shards-rego@0.1.0",
+    "name": "parse",
+    "exe": "C:\\shards-step10\\tests\\parse-e208493eaeceb538.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\rego",
+    "sha256": "c8224976616ca73388ae50b8cb35102b6c9494d0796bcbe1b3ab50079ea59040"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/rego#shards-rego@0.1.0",
+    "name": "shards_rego",
+    "exe": "C:\\shards-step10\\tests\\shards_rego-73a2a32fe713aa7c.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\rego",
+    "sha256": "84a4f9530712f186993cd1726ffa4b759ff67a004f5098c32b8f94391e098e4a"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/remote#shards-remote@0.1.0",
+    "name": "loopback",
+    "exe": "C:\\shards-step10\\tests\\loopback-0d23b4ed63fe874a.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\remote",
+    "sha256": "45edf128856bfa3feb9ce12a5f20b1011836ef404708dfdcb7607f2ef702c85d"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/remote#shards-remote@0.1.0",
+    "name": "shards_remote",
+    "exe": "C:\\shards-step10\\tests\\shards_remote-a237a4c650a002d7.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\remote",
+    "sha256": "0acf25b15fa0d74a6c6ccb362628bcc10ea9a202ad96f99dc73549fb0931f77d"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/seccomp#shards-seccomp@0.1.0",
+    "name": "shards_seccomp",
+    "exe": "C:\\shards-step10\\tests\\shards_seccomp-82abb0edabba8437.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\seccomp",
+    "sha256": "bfee04da6198c279f43a140f0f6ddaad78bf67df55e4d4fa33061e9eb1c5be6a"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/server#shards-server@0.1.0",
+    "name": "shards-server",
+    "exe": "C:\\shards-step10\\tests\\shards_server-74f2c2840cb13bb5.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\server",
+    "sha256": "9a4e7de80ba0b95a80177882574198b1d258644c3eeea628c0bd01fd2a4d60cc"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/shards#0.6.0",
+    "name": "acg",
+    "exe": "C:\\shards-step10\\tests\\acg-c53574fad9e6ea61.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\shards",
+    "sha256": "7468fd0234b7da6b4482ba7cd03582be253637d64f7cfb65875ad2e17645bf77"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/shards#0.6.0",
+    "name": "block",
+    "exe": "C:\\shards-step10\\tests\\block-7acef16ffbf2d9d2.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\shards",
+    "sha256": "4480bfd95014db1e4b6598c82dfc3306bec35e401f47d6a22c49eb369cd6c989"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/shards#0.6.0",
+    "name": "budget",
+    "exe": "C:\\shards-step10\\tests\\budget-b15f334be2756856.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\shards",
+    "sha256": "56f7e326d699ee196626fc0561dd8afe7ace93ecf838519f37b74a02b09a57d9"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/shards#0.6.0",
+    "name": "build",
+    "exe": "C:\\shards-step10\\tests\\build-79b124c0fbbd68f7.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\shards",
+    "sha256": "1848dec3f1b0690510811088078d5bc141047562be531009748f58ca43615b68"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/shards#0.6.0",
+    "name": "build_windows",
+    "exe": "C:\\shards-step10\\tests\\build_windows-3bbd6c81701d047f.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\shards",
+    "sha256": "69dadf60f08624d9f3fe6e1b8195fdada101cd9ba46e204ab714130da7e6b2aa"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/shards#0.6.0",
+    "name": "buildx",
+    "exe": "C:\\shards-step10\\tests\\buildx-7a1ee85fab2eaab0.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\shards",
+    "sha256": "c0bc3becdbda2a9988fab7cd6c2b7b3b5bf4f34c1099af7f46b0419c76e24f43"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/shards#0.6.0",
+    "name": "commit",
+    "exe": "C:\\shards-step10\\tests\\commit-00a49d3c77e131a4.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\shards",
+    "sha256": "beebbd34975709a69396e1f039d7a68f0c258d20a42d5d99eca48fde5d2a6942"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/shards#0.6.0",
+    "name": "compose",
+    "exe": "C:\\shards-step10\\tests\\compose-1163c9f1106c8867.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\shards",
+    "sha256": "e506faa45e39b336bbeda505517c34e4bf36f140bec6d12cdad2be2345bbe579"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/shards#0.6.0",
+    "name": "confined",
+    "exe": "C:\\shards-step10\\tests\\confined-d1da0626f5ed1aee.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\shards",
+    "sha256": "498ef15e4797b056d68987b7491bbda2016bf4d192896a84856187b9019478c5"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/shards#0.6.0",
+    "name": "containers",
+    "exe": "C:\\shards-step10\\tests\\containers-597e066da3056373.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\shards",
+    "sha256": "2368f204f6803af414d74cac63d95474f338b5873be30cb517f152d02f9b00b0"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/shards#0.6.0",
+    "name": "context",
+    "exe": "C:\\shards-step10\\tests\\context-6472caf15d00107b.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\shards",
+    "sha256": "c70b56ae15a6fb74686ccaf577e85955d905f3e68eb2d89a473cf5c93cec3cf6"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/shards#0.6.0",
+    "name": "context_client",
+    "exe": "C:\\shards-step10\\tests\\context_client-c6b2cd4c217e8b47.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\shards",
+    "sha256": "8526af81ed0bcc66911fc1a47b9a904537f55e450f7d677f1bac5e33f2575992"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/shards#0.6.0",
+    "name": "daemon",
+    "exe": "C:\\shards-step10\\tests\\daemon-8259826ba779c4fa.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\shards",
+    "sha256": "a9fc28d67033681efa21c867dd3097336eebc5fa536b34e2515e6c13740c0cc7"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/shards#0.6.0",
+    "name": "engine",
+    "exe": "C:\\shards-step10\\tests\\engine-46f70c7fbde736eb.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\shards",
+    "sha256": "cacd0de25d2e47893dc52fbc9b80d63dbf3a321cd28422e05e15f20c11b2c38c"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/shards#0.6.0",
+    "name": "erofs",
+    "exe": "C:\\shards-step10\\tests\\erofs-7cc1e48cf204ccf6.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\shards",
+    "sha256": "7d49ac0a07f873981ee9ac09906c81ab449aad93165264eaae3ec89d979032ff"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/shards#0.6.0",
+    "name": "fleet",
+    "exe": "C:\\shards-step10\\tests\\fleet-56b1360210197fde.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\shards",
+    "sha256": "a001d9620fbc5f157654a0410418652cbb41e63b6bc12189ec8edab9713e348d"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/shards#0.6.0",
+    "name": "gigabytes",
+    "exe": "C:\\shards-step10\\tests\\gigabytes-d8273473ef80cae5.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\shards",
+    "sha256": "9f18f71123093041d1dc8e0332a34c7e9ac83bb48a3caf3609fbdb8716891dc2"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/shards#0.6.0",
+    "name": "gpu",
+    "exe": "C:\\shards-step10\\tests\\gpu-9672dd821df7145f.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\shards",
+    "sha256": "dacfc740ae389a63aab096988cd49bd70e0863e398606b5f475fb6067b824141"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/shards#0.6.0",
+    "name": "guest",
+    "exe": "C:\\shards-step10\\tests\\guest-426f5052a9c8c1b4.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\shards",
+    "sha256": "0a7bc87e8ebb3677fb0e16244cfc8f6380acf1b43dcde4612ac4df33e1dc5f03"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/shards#0.6.0",
+    "name": "images",
+    "exe": "C:\\shards-step10\\tests\\images-c26ad2ada871006f.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\shards",
+    "sha256": "74f79370f442ea5011e4f7e278b396a2c49db963dbac971c272cbd3aac7fbb2a"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/shards#0.6.0",
+    "name": "isolation",
+    "exe": "C:\\shards-step10\\tests\\isolation-d0d0d24d1ef8ce5e.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\shards",
+    "sha256": "ad3e12876f3561cfa5256ee3d1ad7ec49a877a0f20318d8b2deedc823b7618e6"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/shards#0.6.0",
+    "name": "layers",
+    "exe": "C:\\shards-step10\\tests\\layers-5bce94b06dda7c86.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\shards",
+    "sha256": "4e7d01ab459dd7f6151ff32ae1ddaf6fce669896a7f4148360f5c44f2b86edee"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/shards#0.6.0",
+    "name": "lifecycle",
+    "exe": "C:\\shards-step10\\tests\\lifecycle-043a0520f538c47d.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\shards",
+    "sha256": "003eab7437e5e0ef671a9fea4d1a83daa5fab069b629f8040d7044a6e2a9c8cb"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/shards#0.6.0",
+    "name": "login",
+    "exe": "C:\\shards-step10\\tests\\login-334c4df8a557f341.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\shards",
+    "sha256": "eaf0ae99839ab31299e8faebcf00fd91e0d969783dba094b4f5c06decd86add0"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/shards#0.6.0",
+    "name": "pmem",
+    "exe": "C:\\shards-step10\\tests\\pmem-50687573fb9ba6d0.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\shards",
+    "sha256": "23b4250131652db750a5d6116ff473423dc105aa680d2840c1e04b0c1b2f4172"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/shards#0.6.0",
+    "name": "referrers",
+    "exe": "C:\\shards-step10\\tests\\referrers-8709cd247ce58e24.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\shards",
+    "sha256": "f4bffd29c5b49741d8be47ec525c965cc20ecf62554e3f24786656c04dd9ef5a"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/shards#0.6.0",
+    "name": "restore",
+    "exe": "C:\\shards-step10\\tests\\restore-e7d016e1724ee9c3.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\shards",
+    "sha256": "897a96ed869929837862c2d1f140d8b79ca55f2154326488393940bac8381c51"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/shards#0.6.0",
+    "name": "run",
+    "exe": "C:\\shards-step10\\tests\\run-f786c30cc1c65c3e.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\shards",
+    "sha256": "dfe1e4a227ebccbff7630c6014a7ff0ef8069fd712d8599b09ae449625a42624"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/shards#0.6.0",
+    "name": "saved",
+    "exe": "C:\\shards-step10\\tests\\saved-7cf004401dea67a4.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\shards",
+    "sha256": "9a918ef682841cac46f720d96c965b62b04b61eff44b411ecb97ddde0b904712"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/shards#0.6.0",
+    "name": "search",
+    "exe": "C:\\shards-step10\\tests\\search-73ff1db9d0fc6830.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\shards",
+    "sha256": "f99c81b351dcce5bcc515a970ff13e03a08bfa8d577e2cf99726b2fa846157d2"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/shards#0.6.0",
+    "name": "shards",
+    "exe": "C:\\shards-step10\\tests\\shards-666bfae7608c3fb4.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\shards",
+    "sha256": "6a55af726f2f3b162ef8350578fe938b491cbad245a74109a800a8e0ad7cdfae"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/shards#0.6.0",
+    "name": "slates_fs",
+    "exe": "C:\\shards-step10\\tests\\slates_fs-d5231e185f4cb106.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\shards",
+    "sha256": "0dae40b553decefe10755d09338d6349cbf288684639b69ab69949803c4bdb3a"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/shards#0.6.0",
+    "name": "toolchain",
+    "exe": "C:\\shards-step10\\tests\\toolchain-aadb62e5074b259c.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\shards",
+    "sha256": "250c646b7418fe0abbef5c53d7fedf5d87e92ffc9e4d71f438debdd649c4c8aa"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/shards#0.6.0",
+    "name": "tty",
+    "exe": "C:\\shards-step10\\tests\\tty-e34f47880a887c4c.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\shards",
+    "sha256": "b61becffbbe92c8d70aa40957ac9ca20667745e1d54074267d12bd3a85a6aa5c"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/shards#0.6.0",
+    "name": "vsock",
+    "exe": "C:\\shards-step10\\tests\\vsock-fe38a3620d7d78f2.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\shards",
+    "sha256": "ce8028553049981687318c5f89945dffdfb65a008076198fe03ab8fb8378368a"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/shards#0.6.0",
+    "name": "warm",
+    "exe": "C:\\shards-step10\\tests\\warm-931a3b2e325ab0f6.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\shards",
+    "sha256": "0a0674bd5582765976b2b564a6b281836a3e6cc9f40160a6d56de7d08d4cc008"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/sigstore#shards-sigstore@0.1.0",
+    "name": "image",
+    "exe": "C:\\shards-step10\\tests\\image-9bb9c5ed98b246b7.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\sigstore",
+    "sha256": "cb340a3bf7238ba870595ed632ece0b15ce3eb19df104c3f82a94212822aee09"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/sigstore#shards-sigstore@0.1.0",
+    "name": "keyless",
+    "exe": "C:\\shards-step10\\tests\\keyless-1d266ddf18b1260a.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\sigstore",
+    "sha256": "75d4b860646b4e0dedd910b2c8d3d759c53138a9f760bd067cb97bbe754e24c0"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/sigstore#shards-sigstore@0.1.0",
+    "name": "keyless_oracle",
+    "exe": "C:\\shards-step10\\tests\\keyless_oracle-193fc48b2fb589f2.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\sigstore",
+    "sha256": "3def2e1a68f00820a2bf79de6d2149e9700106febef1844f4e4c66b5c88866ca"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/sigstore#shards-sigstore@0.1.0",
+    "name": "limits",
+    "exe": "C:\\shards-step10\\tests\\limits-b08fdea53f922989.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\sigstore",
+    "sha256": "b656f3b134518d3b98afc9c8e036d56f24e64ab21d61325eec0bb19798e7e5ae"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/sigstore#shards-sigstore@0.1.0",
+    "name": "oracle",
+    "exe": "C:\\shards-step10\\tests\\oracle-d4867e211f667925.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\sigstore",
+    "sha256": "53446d7b690e81e66bd8f41bad513270ea890f3306ffd2886ed92898ac328302"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/sigstore#shards-sigstore@0.1.0",
+    "name": "platforms",
+    "exe": "C:\\shards-step10\\tests\\platforms-7bd81da3abd830a1.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\sigstore",
+    "sha256": "dbd7998b8ff47a643d111590c5e027cfb20444ec857958b05d7cd32245bf6994"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/sigstore#shards-sigstore@0.1.0",
+    "name": "real",
+    "exe": "C:\\shards-step10\\tests\\real-d4ba373056a4d7c8.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\sigstore",
+    "sha256": "8e1527ca8c1bff75bc17f6994f51dfab58d47bed9b44496a3216806c278f5838"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/sigstore#shards-sigstore@0.1.0",
+    "name": "rsa_exponent",
+    "exe": "C:\\shards-step10\\tests\\rsa_exponent-599ef5c5b1a8cae8.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\sigstore",
+    "sha256": "13c9132ba4f4fe293118e89d96c89be8a94a55d850c98918ec614deb25fd3214"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/sigstore#shards-sigstore@0.1.0",
+    "name": "sct",
+    "exe": "C:\\shards-step10\\tests\\sct-7bd1c27c1ac1c239.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\sigstore",
+    "sha256": "c22822d895123ae53e8b588ff315f83a024d7b30c9d0f5d9a2123f673af0985b"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/sigstore#shards-sigstore@0.1.0",
+    "name": "sct_real",
+    "exe": "C:\\shards-step10\\tests\\sct_real-7a5f4dc9b38a4464.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\sigstore",
+    "sha256": "33c4a458297a2f4ee579de6aeae07b557dbabb108620a44ec265b16cc2714dcb"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/sigstore#shards-sigstore@0.1.0",
+    "name": "shards_sigstore",
+    "exe": "C:\\shards-step10\\tests\\shards_sigstore-12d70ee56803ded1.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\sigstore",
+    "sha256": "5e607088fc093d2706bc4e4288de3cd26038aba65545a690fefcbd896c5bb226"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/sigstore#shards-sigstore@0.1.0",
+    "name": "tlog_oracle",
+    "exe": "C:\\shards-step10\\tests\\tlog_oracle-e56641c164f01007.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\sigstore",
+    "sha256": "297a0b932f643704f2fef4d9bb6ebd774c30204d0e64419c7c2b4bf9b95857b1"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/sigstore#shards-sigstore@0.1.0",
+    "name": "tlog_real",
+    "exe": "C:\\shards-step10\\tests\\tlog_real-694ed38d2bea511a.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\sigstore",
+    "sha256": "e5a2835b0c25a946ac5ebd56c4ef9f8034141bb8bdf87ff3f216709a63103b48"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/sigstore#shards-sigstore@0.1.0",
+    "name": "tsa",
+    "exe": "C:\\shards-step10\\tests\\tsa-f3190705a8048aa4.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\sigstore",
+    "sha256": "08c4095905f325f250b70ef38fcb1411a3ea3bf276435064aeee9a145c535c9d"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/sigstore#shards-sigstore@0.1.0",
+    "name": "x509",
+    "exe": "C:\\shards-step10\\tests\\x509-408bc062ba0a80b0.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\sigstore",
+    "sha256": "59396cbadb15cb05aa7348c6165a92eb8b5e2904f99a494683504848a7bb5ad3"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/syscall-filter#shards-syscall-filter@0.1.0",
+    "name": "shards_syscall_filter",
+    "exe": "C:\\shards-step10\\tests\\shards_syscall_filter-3c980e8c6334be6e.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\syscall-filter",
+    "sha256": "d7246b20de7b0441a8f3fbb7cba3ec790c25c565b0ade70f3258109e9901543e"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/template#shards-template@0.1.0",
+    "name": "oracle",
+    "exe": "C:\\shards-step10\\tests\\oracle-746ca39cd275851f.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\template",
+    "sha256": "75fb5607b545c67ed40704356c4fb3c209154b2951166b1c513bd07df606e539"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/template#shards-template@0.1.0",
+    "name": "shards_template",
+    "exe": "C:\\shards-step10\\tests\\shards_template-aaf077e09f52af90.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\template",
+    "sha256": "0e68e0859a0087b40a28e8eb029d5a156e465dedb47b54d4ff82aa4655995f0f"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/testdir#shards-testdir@0.1.0",
+    "name": "shards_testdir",
+    "exe": "C:\\shards-step10\\tests\\shards_testdir-224aa59b11222b7b.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\testdir",
+    "sha256": "a6714a210b5686d8635d75d89c1038dcb7a9377809346c020b0ddb1ec8103fd9"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/testguest#shards-testguest@0.1.0",
+    "name": "shards-testguest",
+    "exe": "C:\\shards-step10\\tests\\shards_testguest-808b89d152aab2b2.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\testguest",
+    "sha256": "f5a67fbcf726f86c48ab9bafc281d72e5a6dd114b478fe5cd152aeda93af1ad9"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/testguest#shards-testguest@0.1.0",
+    "name": "shards_testguest",
+    "exe": "C:\\shards-step10\\tests\\shards_testguest-4c060e458667e1d1.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\testguest",
+    "sha256": "c2f4e20e9cca209c52504c5c9f21b913bd7cec9c769d199bbd2a824f0fd3489a"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/tuf#shards-tuf@0.1.0",
+    "name": "keys",
+    "exe": "C:\\shards-step10\\tests\\keys-37dcbbcb4a84165b.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\tuf",
+    "sha256": "0ec19a37c10d7ae3a0f95380500b36edd5d9764114ee42af342efb44df0dbdb6"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/tuf#shards-tuf@0.1.0",
+    "name": "limits",
+    "exe": "C:\\shards-step10\\tests\\limits-e26664e86f62d4c3.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\tuf",
+    "sha256": "b9098b61ae8a537fca823c45a75bca177db6a2247e69d0d6286b6ebd63b98c03"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/tuf#shards-tuf@0.1.0",
+    "name": "oracle",
+    "exe": "C:\\shards-step10\\tests\\oracle-225e3dbb3657039d.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\tuf",
+    "sha256": "5678b3637a7dccea4b2d467293bf703b8b63f2d7212efca9ae611e7dc3c94de3"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/tuf#shards-tuf@0.1.0",
+    "name": "shards_tuf",
+    "exe": "C:\\shards-step10\\tests\\shards_tuf-449629d527ab0d1d.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\tuf",
+    "sha256": "ffc44313cbb5735e3bb8d3faabdfc4f3df0e76a9f9b8dca43ec92c3968ebd949"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/tui#shards-tui@0.1.0",
+    "name": "shards_tui",
+    "exe": "C:\\shards-step10\\tests\\shards_tui-fedc36149c213235.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\tui",
+    "sha256": "b4c333463a050185c9976a6e7c7445879647034809ca3943f8c7e97aaa9b4e34"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/user#shards-user@0.1.0",
+    "name": "shards_user",
+    "exe": "C:\\shards-step10\\tests\\shards_user-a5c8f2dd1a7d7e69.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\user",
+    "sha256": "3dd78516cc2488d679e32c682e74655636d5dd90b20a0611c3bdfc0e5777be26"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/vm-process#shards-vm-process@0.1.0",
+    "name": "shards-vm",
+    "exe": "C:\\shards-step10\\tests\\shards_vm-7e6e3901ae1b0cb1.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\vm-process",
+    "sha256": "20985149f03646583ed452338963242c06a294e2ade35c47e84ed222a1d4ce04"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/vmm#shards-vmm@0.1.0",
+    "name": "device_reset_log",
+    "exe": "C:\\shards-step10\\tests\\device_reset_log-a2ebdbd34d48505a.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\vmm",
+    "sha256": "adbf34b6ccf41eead951b63df18796b93f48c22c9efd66e2eca55fe31a57041d"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/vmm#shards-vmm@0.1.0",
+    "name": "fs_dir_budget",
+    "exe": "C:\\shards-step10\\tests\\fs_dir_budget-f4971e83673f1bcb.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\vmm",
+    "sha256": "a2e4eb4ae2d2a5a51f4db3887d337895af09179e1c103b8acddf0f565be626b5"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/vmm#shards-vmm@0.1.0",
+    "name": "fs_dir_handles",
+    "exe": "C:\\shards-step10\\tests\\fs_dir_handles-5cf0c813cf625030.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\vmm",
+    "sha256": "5ce4db8cd9d9c944f372ae83d4fd4835d788c3da0d8579171d8b21b6649ebf74"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/vmm#shards-vmm@0.1.0",
+    "name": "shards_vmm",
+    "exe": "C:\\shards-step10\\tests\\shards_vmm-d6bfc95cbd21c02c.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\vmm",
+    "sha256": "645d04c72818b2ac521929b9f5f302da15482671d677796401c763e3384aa960"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/zstd#shards-zstd@0.1.0",
+    "name": "oracle",
+    "exe": "C:\\shards-step10\\tests\\oracle-147e81203b977603.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\zstd",
+    "sha256": "1bff4707ddcf9a3307fbb993d767cc44a5167601827c0dad0c5beac6ac685df7"
+  },
+  {
+    "package": "path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/zstd#shards-zstd@0.1.0",
+    "name": "shards_zstd",
+    "exe": "C:\\shards-step10\\tests\\shards_zstd-ba0579c4b2824cf9.exe",
+    "cwd": "C:\\Users\\adalundhe\\Projects\\shards\\.claude\\worktrees\\g121-wa64\\crates\\zstd",
+    "sha256": "96cdadae45f08531d123fdc983964848d536ac611cfd2d9bf75b4e67e9391dab"
+  }
+]

@@ -1,0 +1,12 @@
+Original complete containers binary, real-03, compiled code360ad0cd.
+Windows11 arm64 26300.9711, standard user runner, real WHP guests under TCG4CPU24GiB.
+This is failure evidence; the original141-binary suite is still running. Short
+selected policy/credential/API checks and QEMU profiling overlapped this already
+failing attempt, so its timing is diagnostic and does not qualify a full suite.
+
+thread 'run_mounts_binds_volumes_and_tmpfs' (6080) panicked at crates/shards/tests/containers.rs:11398:54:
+called `Result::unwrap()` on an `Err` value: Os { code: 1314, kind: Uncategorized, message: "A required privilege is not held by the client." }
+
+SKIP: an ETW session is an administrator's or Performance Log Users', and this host's user is neither
+
+test result: FAILED. 126 passed; 14 failed; 8 ignored; 0 measured; 0 filtered out; finished in 13993.87s

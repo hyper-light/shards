@@ -1,0 +1,21 @@
+2026-11-02T08:23:19.726030+00:00
+QEMU emulator version 11.1.3 (v11.1.3-dirty)
+Copyright (c) 2003-2026 Fabrice Bellard and the QEMU Project developers
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict><key>Label</key><string>com.hyperlight.shards.winarm</string>
+<key>ProgramArguments</key><array><string>/bin/sh</string><string>/Users/adalundhe/g121-a4-winarm/start.sh</string></array>
+<key>WorkingDirectory</key><string>/Users/adalundhe/g121-a4-winarm</string>
+<key>EnvironmentVariables</key><dict><key>PATH</key><string>/opt/homebrew/bin:/usr/bin:/bin</string>
+<key>NESTED</key><string>1</string>
+<key>CPUS</key><string>4</string>
+<key>MEM</key><string>8G</string>
+<key>ACCEL</key><string>hvf</string>
+<key>CPU</key><string>host</string>
+<key>QEMU_BIN</key><string>/Users/adalundhe/g121-a4-winarm/qemu-build/qemu-system-aarch64</string>
+<key>VM_DISK</key><string>win-el2-id.qcow2</string>
+<key>VARS</key><string>vars-el2-id.fd</string>
+</dict>
+<key>ProcessType</key><string>Interactive</string><key>RunAtLoad</key><true/>
+<key>StandardOutPath</key><string>/Users/adalundhe/g121-a4-winarm/qemu.log</string><key>StandardErrorPath</key><string>/Users/adalundhe/g121-a4-winarm/qemu.log</string>
+</dict></plist>

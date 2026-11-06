@@ -1,0 +1,5 @@
+debug1: Connecting to 127.0.0.1 [127.0.0.1] port 2222.
+debug1: Connection established.
+debug1: Local version string SSH-2.0-OpenSSH_10.2
+debug1: kex_exchange_identification: banner line 0: Exceeded MaxStartups
+kex_exchange_identification: Connection closed by remote host

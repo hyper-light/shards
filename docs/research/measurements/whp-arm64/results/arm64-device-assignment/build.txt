@@ -1,0 +1,7 @@
+   Compiling windows-sys v0.61.2
+   Compiling shards-vmm v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/vmm)
+   Compiling shards-afunix v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/afunix)
+   Compiling shards-netring v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/netring)
+   Compiling shards-ipc v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/ipc)
+   Compiling shards-ntfs v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/ntfs)
+    Finished `test-release` profile [optimized + debuginfo] target(s) in 22.42s

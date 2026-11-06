@@ -1,0 +1,11 @@
+2026-11-03T13:31:42.1196740-08:00
+MANIFEST binaries=3
+START 0/3 path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/rego#shards-rego@0.1.0 compile 2026-11-03T21:31:43.7635700Z
+running 1 test
+test a_wide_policy_without_cycles_compiles_in_time ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 5.28s
+
+END 000-compile exit=0 elapsed=7.459028
+COMPLETE binaries=1 manifest=3 failed=0 filter=compile/a_wide_policy_without_cycles_compiles_in_time start=0
+2026-11-03T13:31:51.8706430-08:00

@@ -19,7 +19,8 @@ use windows_sys::Win32::System::Threading::{
 const HANDLES: u64 = 1 << 24;
 
 /// What a process uses of the host (unix.rs `Usage`): its working set, its own memory, in
-/// bytes, and the CPU time it has had, user and kernel together, in nanoseconds.
+/// bytes, the CPU time it has had, user and kernel together, in nanoseconds, and the page
+/// faults it has taken.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Usage {
     pub resident: u64,
@@ -33,6 +34,8 @@ pub struct Usage {
     /// whole working set instead, its own pages and those it shares: never less than its own.
     pub footprint: u64,
     pub cpu_ns: u64,
+    /// Its page faults, soft and hard (PROCESS_MEMORY_COUNTERS' PageFaultCount).
+    pub faults: u64,
 }
 
 /// Whether process `pid` has run anything of its own yet (unix.rs `launched`): Windows makes
@@ -53,7 +56,7 @@ pub fn process_usage(pid: u32) -> io::Result<Usage> {
     }
     // SAFETY: the handle just opened, owned by nothing else.
     let process = unsafe { OwnedHandle::from_raw_handle(raw) };
-    let (resident, footprint) = memory(&process)?;
+    let (resident, footprint, faults) = memory(&process)?;
     let [mut created, mut exited, mut kernel, mut user] = [FILETIME::default(); 4];
     // SAFETY: a process handle `process` holds, and four FILETIMEs to fill.
     if unsafe {
@@ -75,12 +78,13 @@ pub fn process_usage(pid: u32) -> io::Result<Usage> {
         cpu_ns: hundreds(kernel)
             .saturating_add(hundreds(user))
             .saturating_mul(100),
+        faults,
     })
 }
 
-/// `process`'s working set and its private working set ([`Usage::footprint`]): EX2's, else
-/// EX's working set for both.
-fn memory(process: &OwnedHandle) -> io::Result<(u64, u64)> {
+/// `process`'s working set, its private working set ([`Usage::footprint`]) and its page
+/// faults: EX2's, else EX's working set for both.
+fn memory(process: &OwnedHandle) -> io::Result<(u64, u64, u64)> {
     let mut ex2 = PROCESS_MEMORY_COUNTERS_EX2 {
         cb: u32::try_from(size_of::<PROCESS_MEMORY_COUNTERS_EX2>()).map_err(io::Error::other)?,
         ..Default::default()
@@ -89,7 +93,11 @@ fn memory(process: &OwnedHandle) -> io::Result<(u64, u64)> {
     if unsafe { GetProcessMemoryInfo(process.as_raw_handle(), (&raw mut ex2).cast(), ex2.cb) } != 0
         && ex2.PrivateWorkingSetSize != 0
     {
-        return Ok((ex2.WorkingSetSize as u64, ex2.PrivateWorkingSetSize as u64));
+        return Ok((
+            ex2.WorkingSetSize as u64,
+            ex2.PrivateWorkingSetSize as u64,
+            u64::from(ex2.PageFaultCount),
+        ));
     }
     let mut ex = PROCESS_MEMORY_COUNTERS_EX {
         cb: u32::try_from(size_of::<PROCESS_MEMORY_COUNTERS_EX>()).map_err(io::Error::other)?,
@@ -99,7 +107,11 @@ fn memory(process: &OwnedHandle) -> io::Result<(u64, u64)> {
     if unsafe { GetProcessMemoryInfo(process.as_raw_handle(), (&raw mut ex).cast(), ex.cb) } == 0 {
         return Err(io::Error::last_os_error());
     }
-    Ok((ex.WorkingSetSize as u64, ex.WorkingSetSize as u64))
+    Ok((
+        ex.WorkingSetSize as u64,
+        ex.WorkingSetSize as u64,
+        u64::from(ex.PageFaultCount),
+    ))
 }
 
 /// How many threads this process may have, as far as the system says (unix.rs

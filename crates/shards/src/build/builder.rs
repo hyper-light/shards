@@ -31,7 +31,10 @@ use shards_cmdline::buildflags::Agent;
 use shards_image::erofs::Source;
 use shards_vmm::platform::{AsRawSocket as _, UnixListener, UnixStream};
 
-/// How long a builder may take to boot and dial back.
+/// How long a builder may run nothing of its boot before it is given up: one that runs it
+/// is waited for as long as its host takes to boot it, judged as the daemon judges a
+/// starting microVM (`shards_vmm::platform::progressed`, PM M357), a slice of `daemon::READY_STALL` at a
+/// time.
 const BOOT_PATIENCE: Duration = Duration::from_secs(30);
 
 /// The memory a builder boots with, in MiB, where it may have more: what its page
@@ -828,11 +831,27 @@ impl Builder {
         let launched = launch(&args, policy, &mac, &bridge, attach_theirs)?;
         let vm = launched.vm;
         let began = Instant::now();
+        // Its process's CPU time when last judged, and when it last ran its boot.
+        let cpu = || {
+            shards_vmm::platform::process_usage(vm.id())
+                .ok()
+                .map(|u| u.cpu_ns)
+        };
+        let (mut seen, mut judged, mut ran) = (cpu(), began, began);
         let conn = loop {
             match listener.accept() {
                 Ok((conn, _)) => break conn,
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
-                    if began.elapsed() > BOOT_PATIENCE {
+                    let now = Instant::now();
+                    let slice = now.saturating_duration_since(judged);
+                    if slice >= crate::daemon::READY_STALL {
+                        let cpu_now = cpu();
+                        if shards_vmm::platform::progressed(seen, cpu_now, slice) {
+                            ran = now;
+                        }
+                        (seen, judged) = (cpu_now, now);
+                    }
+                    if now.saturating_duration_since(ran) > BOOT_PATIENCE {
                         // One the host has not let run yet is not the builder's failure
                         // to boot, and says so (PM M166).
                         #[cfg(unix)]

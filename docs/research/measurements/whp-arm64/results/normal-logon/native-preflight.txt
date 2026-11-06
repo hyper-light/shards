@@ -1,0 +1,26 @@
+2026-11-03T19:01:23.5360782-08:00
+FILE C:\shards-step10\local-user-broker02.txt
+2026-11-03T19:00:32.2592482-08:00
+FILE C:\shards-step10\local-user-broker02.exit
+0
+FILE C:\shards-step10-admin\local-user-api01.txt
+2026-11-04T03:00:36.0158612Z BROKER=NT AUTHORITY\SYSTEM RedirectionTrust flags=0x00000002
+2026-11-04T03:00:36.2150822Z TEST TOKEN=WINARM\shards-e2e SID=S-1-5-21-4187853375-3986741409-3176094604-1003 Administrator=False
+2026-11-04T03:00:42.4189172Z CHILD PID=6604
+2026-11-04T03:01:01.8247872Z CHILD EXIT=0
+FILE C:\shards-step10\local-user-preflight02.txt
+2026-11-03T19:00:48.5803682-08:00
+PROFILE=C:\Users\shards-e2e
+RedirectionTrust flags=0x00000000
+Standard user=WINARM\shards-e2e SID=S-1-5-21-4187853375-3986741409-3176094604-1003; elevated=False; trace group present; Developer Mode=1
+Unprivileged CreateSymbolicLinkW and read through its link passed
+The command completed successfully.
+The command completed successfully.
+Native ETW session create/enable/stop passed as the standard user
+Runner parsed; SHA256=625CA393DC009EFDC67DCF9F9F70118DB04C2DE1D7FD99DE92FA6AA1B0440E11
+gzip=C:\shards-step10\git\usr\bin\gzip.exe SHA256=B7FBDDF74E7666AED1F7BBD17592E55732F88EB75464D5B12FACAAF45866D17D
+Native gzip exit=0; compressed bytes=39; independent .NET round trip passed
+LOCAL STANDARD-USER PREFLIGHT PASSED: symlink, ETW, gzip and actual target write.
+FILE C:\shards-step10\local-user-preflight02.exit
+0
+TASK state=3 result=0 lastRun=2026-11-03T19:00:29.0000000

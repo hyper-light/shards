@@ -27,6 +27,8 @@ pub struct Terminal {
     seen: String,
     /// The settings before the client ran.
     before: libc::termios,
+    /// What its home's daemon has said, for a wait past its deadline ([`super::Said`]).
+    said: super::Said,
 }
 
 impl Terminal {
@@ -102,11 +104,13 @@ impl Terminal {
             shell,
             seen: String::new(),
             before,
+            said: super::Said::of(home),
         }
     }
 
     /// Reads what the terminal shows until `text` has appeared since the last wait, and
-    /// returns everything read since then.
+    /// returns everything read since then: failing past [`TIMEOUT`] once its home's daemon
+    /// says nothing ([`super::Said`]).
     pub fn wait_for(&mut self, text: &str) -> String {
         let deadline = Instant::now() + TIMEOUT;
         let mut buf = [0u8; 4096];
@@ -120,7 +124,7 @@ impl Terminal {
                 Ok(n) if n > 0 => self.seen.push_str(&String::from_utf8_lossy(&buf[..n])),
                 _ => {
                     assert!(
-                        Instant::now() < deadline,
+                        Instant::now() < deadline || self.said.lately(),
                         "{text:?} did not come; the terminal showed {:?}",
                         self.seen
                     );

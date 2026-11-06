@@ -1,0 +1,23 @@
+Apple M5 Max
+26.4.1
+el2 supported: 1 (ret 0)
+el2 off
+  config PFR0        0x1101000010110011 EL2 0 (ret 0)
+  config MMFR1       0x0000100011312000 VH 0 (ret 0)
+  ID_AA64MMFR1_EL1   0x0000100011312000 (ret 0)
+  VH                 0
+  ID_AA64MMFR2_EL1   0x1001001102001011 (ret 0)
+  ID_AA64MMFR4_EL1   000000000000000000 (ret 0xfae94003)
+  ID_AA64PFR0_EL1    0x1101000010110011 (ret 0)
+el2 on: set_el2_enabled ret 0
+  config PFR0        0x1101000010110011 EL2 0 (ret 0)
+  config MMFR1       0x0000100011312000 VH 0 (ret 0)
+  ID_AA64MMFR1_EL1   0x0000100011312000 (ret 0)
+  VH                 0
+  ID_AA64MMFR2_EL1   0x1001001102001011 (ret 0)
+  ID_AA64MMFR4_EL1   000000000000000000 (ret 0xfae94003)
+  ID_AA64PFR0_EL1    0x1101000010110011 (ret 0)
+  PFR0 EL2=1         set ret 0, read back 0x1101000010110111: EL2 1
+  HCR_EL2            0x0000000080000000 (ret 0)
+  HCR_EL2 | E2H      set ret 0, read back 0x0000000080000000: E2H 0
+  HCR_EL2 & ~E2H     set ret 0, read back 0x0000000080000000: E2H 0

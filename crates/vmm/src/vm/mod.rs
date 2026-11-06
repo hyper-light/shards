@@ -25,13 +25,13 @@ use aarch64 as machine;
 mod x86_64;
 #[cfg(all(hv, target_arch = "x86_64"))]
 use x86_64 as machine;
-/// Working sets from the pages a restored machine's host maps: KVM's, and the x86_64
-/// machine's on any backend.
-#[cfg(any(hv = "kvm", all(hv, target_arch = "x86_64")))]
+/// Working sets from the pages a restored machine's host maps: KVM's and WHP's, and the
+/// x86_64 machine's on any backend.
+#[cfg(any(hv = "kvm", hv = "whp", all(hv, target_arch = "x86_64")))]
 mod mapped;
 /// Whether this build's VMs can be snapshotted and restored: HVF's and KVM's, on x86_64 and
-/// arm64 (D154), and WHP's (D196).
-pub const SNAPSHOTS: bool = cfg!(any(hv = "hvf", hv = "kvm", hv = "whp"));
+/// arm64 (D154), and WHP's on x86_64 (D196) and arm64 (D209).
+pub const SNAPSHOTS: bool = cfg!(hv);
 
 /// The most vCPUs of VMs booting at once that a host of `cpus` CPUs boots the most VMs a
 /// second with, on this build's backend. WHP's: twice its CPUs, the most boots a second CI's
@@ -39,7 +39,7 @@ pub const SNAPSHOTS: bool = cfg!(any(hv = "hvf", hv = "kvm", hv = "whp"));
 /// were slower than one after another on Windows Server 2022, and eight took 52 to 55 s
 /// each there where one took 1.6 (PM M357). Elsewhere unmeasured, and so unheld.
 pub fn booting_vcpus_at_most(cpus: usize) -> usize {
-    if cfg!(hv = "whp") {
+    if cfg!(all(hv = "whp", target_arch = "x86_64")) {
         cpus.saturating_mul(2).max(1)
     } else {
         usize::MAX
@@ -60,18 +60,18 @@ pub fn booting_vcpus_at_most(cpus: usize) -> usize {
 /// CPUs brought online in 2.1 s (M379): nothing there, nor elsewhere (on the M5 Max's HVF a
 /// guest of 18 vCPUs came up in 0.11 s with every CPU at boot, and in 0.35 s so).
 pub fn late_cpus_cmdline(vcpus: u32) -> &'static str {
-    #[cfg(hv = "whp")]
+    #[cfg(all(hv = "whp", target_arch = "x86_64"))]
     if vcpus > 1 && host_hyperv_nested() {
         return " maxcpus=1 shards_online=1";
     }
-    #[cfg(not(hv = "whp"))]
+    #[cfg(not(all(hv = "whp", target_arch = "x86_64")))]
     let _ = vcpus;
     ""
 }
 
 /// Whether this host's Hyper-V, whose leaves its processes read, is nested in another's
 /// partition ([`nested_hyperv`]).
-#[cfg(hv = "whp")]
+#[cfg(all(hv = "whp", target_arch = "x86_64"))]
 fn host_hyperv_nested() -> bool {
     use std::arch::x86_64::__cpuid;
     let top = __cpuid(0x4000_0000);
@@ -95,19 +95,15 @@ pub fn nested_hyperv(top: [u32; 4], info: u32) -> bool {
 }
 
 /// Whether a VM resumed from its snapshot records its working set, for restores to
-/// prefetch: HVF's at stage 2 (hv::hvf::Watch), KVM's and x86_64 WHP's from the pages its
-/// host maps (vm::mapped). Not arm64 WHP's yet, which takes no snapshot.
-pub const WORKING_SETS: bool = cfg!(any(
-    hv = "hvf",
-    hv = "kvm",
-    all(hv = "whp", target_arch = "x86_64")
-));
+/// prefetch: HVF's at stage 2 (hv::hvf::Watch), KVM's and WHP's from the pages its host
+/// maps (vm::mapped).
+pub const WORKING_SETS: bool = cfg!(hv);
 /// Which run records it. HVF's: the one that saves the template, whose command recording
 /// slows sixfold (PM M30), on a run that boots anyway. KVM's and WHP's: the first warm
 /// restore without one, for which recording costs nothing, its host's mapped pages read
 /// after (vm::mapped), and whose pages later restores touch, where the saving run's they
 /// barely do (PM M33).
-pub const RESTORES_RECORD: bool = cfg!(any(hv = "kvm", all(hv = "whp", target_arch = "x86_64")));
+pub const RESTORES_RECORD: bool = cfg!(any(hv = "kvm", hv = "whp"));
 
 #[cfg(any(hv, test))]
 mod barrier;
@@ -1245,6 +1241,7 @@ pub fn passthrough_refused() -> String {
         Some(said) => format!(
             "{said}; Microsoft supports Discrete Device Assignment, a function dismounted from its host and assigned to a VM, on Windows Server, on server-class hardware that gives Windows the PCIe fabric's control and whose root complex has Access Control Services, its traffic forced through the IOMMU (D154)"
         ),
+        None if cfg!(target_arch = "aarch64") => WHP_ARM64_NO_ASSIGNMENT.into(),
         None => WHP_NO_GUEST_IOMMU.into(),
     };
     #[cfg(not(any(target_os = "macos", hv = "whp")))]
@@ -1272,7 +1269,7 @@ impl Vfio {
         }
         #[cfg(hv = "whp")]
         {
-            if crate::hv::device_assignment_refused().is_some() {
+            if cfg!(target_arch = "aarch64") || crate::hv::device_assignment_refused().is_some() {
                 return Err(format!("{name}: {}", passthrough_refused()));
             }
             if !name
@@ -1406,7 +1403,7 @@ pub(crate) struct PciBus {
 #[cfg(hv)]
 pub(crate) struct PciMachine<'a> {
     #[cfg_attr(
-        not(any(target_os = "linux", hv = "whp")),
+        not(any(target_os = "linux", all(hv = "whp", target_arch = "x86_64"))),
         expect(dead_code, reason = "read by VFIO, Linux's, and by WHP's assignment alone")
     )]
     pub vm: &'a crate::hv::Vm,
@@ -1416,7 +1413,7 @@ pub(crate) struct PciMachine<'a> {
     /// The host's functions its hypervisor assigns, each a device of its partition since
     /// before the machine's layout, which sizes its 64-bit window from their BARs, in
     /// [`Pci::vfio`]'s order, with what their BAR registers read sized (D154).
-    #[cfg(hv = "whp")]
+    #[cfg(all(hv = "whp", target_arch = "x86_64"))]
     pub assigned: std::cell::Cell<Vec<(crate::hv::Assigned, [u32; 6])>>,
 }
 
@@ -1979,7 +1976,7 @@ fn passed_through(
 /// all of guest RAM, as a VFIO function's outside the guest's IOMMU; behind it, where the
 /// guest's VFIO would give it a process, it is refused, as WHP gives the guest no I/O
 /// address space of its own.
-#[cfg(hv = "whp")]
+#[cfg(all(hv = "whp", target_arch = "x86_64"))]
 fn passed_through(
     bus: &mut crate::devices::MmioBus,
     mut windows: [&mut BarWindow; 2],
@@ -2051,6 +2048,11 @@ fn passed_through(
 #[cfg(hv = "whp")]
 const WHP_NO_GUEST_IOMMU: &str = "its hypervisor remaps an assigned function's DMA to all of its VM's memory as it assigns it (WHvCreateVpciDevice), with no I/O address space of the guest's own, which a microVM's own VFIO needs to give a workload the function: give it to the VM's kernel instead (`shards run vm --kernel ... --vfio PCIP\\...`; D154)";
 
+/// What WHP's arm64 backend gives a host's function: no device of its partition, as it
+/// makes none (D209), where its hypervisor would assign one.
+#[cfg(hv = "whp")]
+const WHP_ARM64_NO_ASSIGNMENT: &str = "WHP's arm64 backend makes no host function a device of its partition yet (WHvCreateVpciDevice is x86_64's backend's alone; D154, D209)";
+
 /// The prefix of a function's instance ID once dismounted from its Windows host (D154).
 #[cfg(hv = "whp")]
 const DISMOUNTED: &str = "PCIP\\";
@@ -2068,7 +2070,7 @@ impl crate::devices::pci::assigned::Windows for crate::hv::DeviceSlots {
     }
 }
 
-#[cfg(all(hv, not(target_os = "linux"), not(hv = "whp")))]
+#[cfg(all(hv, not(target_os = "linux"), not(all(hv = "whp", target_arch = "x86_64"))))]
 fn passed_through(
     _bus: &mut crate::devices::MmioBus,
     _windows: [&mut BarWindow; 2],
@@ -3160,9 +3162,9 @@ mod tests {
     fn guests_are_brought_up_late_on_a_nested_hyperv_alone() {
         assert_eq!(late_cpus_cmdline(1), "");
         let late = late_cpus_cmdline(4);
-        #[cfg(hv = "whp")]
+        #[cfg(all(hv = "whp", target_arch = "x86_64"))]
         let nested = host_hyperv_nested();
-        #[cfg(not(hv = "whp"))]
+        #[cfg(not(all(hv = "whp", target_arch = "x86_64")))]
         let nested = false;
         if nested {
             assert!(
@@ -3214,7 +3216,7 @@ mod tests {
     fn a_hosts_pci_function_is_refused_with_its_oss_own_limit() {
         let limit = passthrough_refused();
         eprintln!("{limit}");
-        #[cfg(hv = "whp")]
+        #[cfg(all(hv = "whp", target_arch = "x86_64"))]
         if crate::hv::device_assignment_refused().is_none() {
             let dismounted = "PCIP\\VEN_17A0&DEV_9755&SUBSYS_202F1043&REV_01\\4&632F499&0&0012";
             assert_eq!(
@@ -3251,6 +3253,7 @@ mod tests {
                 "VirtualPciDeviceSupport 0",
                 "the Windows Hypervisor Platform is not on this host",
                 "asking the Windows Hypervisor Platform",
+                "arm64 backend makes no host function a device of its partition",
             ]
         } else {
             &["no hypervisor backend for this host"]

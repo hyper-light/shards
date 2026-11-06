@@ -1,0 +1,59 @@
+== host
+Windows 10 Pro 26H2 build 26300.9457
+virt-11.1
+== capabilities
+HypervisorPresent 1
+Features 0xad9: Arm64Support 1
+ExtendedVmExits 0x4c20 0x0
+ProcessorVendor 0x10 0x0
+ProcessorFeatures 0xffe1ef07fbf33fff 0x0
+ProcessorClockFrequency 0x3b9aca00 0x0
+SyntheticProcessorFeaturesBanks 0x1 0xe07f4403ff
+PhysicalAddressWidth 0x30 0x0
+GicLpiIntIdBits 0x1 0x0
+MaxSveVectorLength 0x0 0x0
+== partition
+set up: 2 vCPUs, GICv3 at 0x8000000, ITS at 0x8080000
+RAM: 2048 KiB at 0x80000000, the guest's code 4144 bytes
+vCPU 0 as made: MIDR 0xf0510 MPIDR 0x80000000 SCTLR 0x30d00800 PSTATE 0x3c5 CNTVCT 0x1b09e0 activity 0x0
+vCPU 1 as made: MIDR 0xf0510 MPIDR 0x80000001 SCTLR 0x30d00800 PSTATE 0x3c5 CNTVCT 0x1b09e0 activity 0x1
+ID_AA64PFR0 0x1100000001111112 PFR1 0x20 ISAR0 0x1221111110012120 MMFR0 0x11100101025
+time with every vCPU stopped: suspend 0x00000000
+stopped counters: before [1772000, 1772000], 100 ms later [1772000, 1772000]; reset to 1000000000: [1000000000, 1000000000], 100 ms later [1000000000, 1000000000]; resume 0x00000000
+resumed counters 100 ms later: [1103587000, 1103772000]
+populate two ranges: read Ok(()), write Ok(())
+== run
+CNTVCT_EL0: vCPU 0 0x5ccc4d48, vCPU 1 0x5ccea6d8; set vCPU 0 to zero: taken, then vCPU 0 0x3e418, vCPU 1 0x5cd92658
+reference time 5582620 then, its time suspended (0x80370308), 6759640 100 ms later, resumed (0x00000000), 7828740 100 ms after
+CNTVCT_EL0 0x10d498, 0x7173368, 0xd77fb98: 117858000 and 107006000 ticks
+== limits
+64 vCPUs: set up, its vCPU 63 made
+128 vCPUs: set up, its vCPU 127 made
+256 vCPUs: WHvSetPartitionProperty: HRESULT 0x80070057
+== dynamic code forbidden once set up (D141, as PM M202 on x86_64)
+dynamic code forbidden: yes
+its RAM mapped after: Ok(())
+its vCPU made after: Ok(())
+a cancel before a run (0x00000000): the run Ok(()) in 286µs, exit 0xffffffff (Canceled is 0xffffffff)
+its vCPU run after: Ok(()), exit 0x80000000 at GPA 0xa000000 (the guest's first write: 0xa000000)
+another partition set up after: Ok(())
+== found
+vCPU 0 write: GPA 0xa000000, syndrome 0x93c08046 (ISV 1, 8 bytes, X0), PC 0x80000008, instruction length 4, access type 1, exit 0x80000000
+vCPU 0 read: GPA 0xa000008, syndrome 0x93c28006 (ISV 1, 8 bytes, X2), PC 0x8000000c, instruction length 4, access type 0, exit 0x80000000
+vCPU 0 write: GPA 0xa000010, syndrome 0x93c28046 (ISV 1, 8 bytes, X2), PC 0x80000010, instruction length 4, access type 1, exit 0x80000000
+vCPU 0 wrote 0x1234 at 0x0
+vCPU 0 wrote 0x5678 at 0x10
+vCPU 0 wrote 0x748041e at 0x70
+vCPU 0 wrote 0x0 at 0x78
+vCPU 0 wrote 0x0 at 0x50
+vCPU 0 wrote 0x21 at 0x48
+vCPU 0 wrote 0x10001 at 0x28
+vCPU 0 wrote 0x0 at 0x20
+vCPU 1 wrote 0x42 at 0x38
+vCPU 1 wrote 0x80000001 at 0x40
+vCPU 0 wrote 0x1 at 0x30
+GICD_TYPER 0x748041e: INTIDs up to 991, ID bits 10
+interrupt controller state: vCPU 0 200 bytes, set back 0x00000000; vCPU 1 200 bytes, set back 0x00000000; global 4096 bytes, set back 0x00000000
+SYSTEM_OFF: an Arm64Reset exit, PowerOff
+vCPU 1 started: true
+an MMIO write's round trip through its exit: n=999 p50=393.00 p90=486.00 p99=858.00 max=10553.00 µs

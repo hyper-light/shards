@@ -1,0 +1,2 @@
+Native PowerShell5.1 parsed candidate launcher; script was not executed.
+5.1.26100.9711

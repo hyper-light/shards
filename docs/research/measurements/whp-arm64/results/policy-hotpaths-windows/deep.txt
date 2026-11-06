@@ -1,0 +1,12 @@
+2026-11-03T13:32:01.0206770-08:00
+MANIFEST binaries=3
+START 1/3 path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/rego#shards-rego@0.1.0 deep 2026-11-03T21:32:02.8818530Z
+ALIVE 001-deep pid=3524 elapsed=32.332745
+running 1 test
+test every_statements_nested_deep_answer_in_time ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 38.47s
+
+END 001-deep exit=0 elapsed=40.90381
+COMPLETE binaries=1 manifest=3 failed=0 filter=deep/every_statements_nested_deep_answer_in_time start=0
+2026-11-03T13:32:44.1189660-08:00

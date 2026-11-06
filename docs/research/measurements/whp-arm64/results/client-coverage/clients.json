@@ -1,0 +1,48 @@
+{
+  "utc": "2026-11-04T04:58:40.324667+00:00",
+  "compose": {
+    "upstream": "https://github.com/docker/compose/releases/tag/v5.6.0",
+    "tag": "v5.6.0",
+    "release_id": 401946090,
+    "published_at": "2026-10-02T16:07:06Z",
+    "asset_id": 605922754,
+    "url": "https://github.com/docker/compose/releases/download/v5.6.0/docker-compose-windows-aarch64.exe",
+    "sha256": "73cdc73a03443cba37c7ae91aec12c7b86c0eb75a8f40f296aaa5159e66b29bc",
+    "bytes": 30822912,
+    "checksum_url": "https://github.com/docker/compose/releases/download/v5.6.0/docker-compose-windows-aarch64.exe.sha256",
+    "pe_machine": "ARM64/0xaa64",
+    "native_version_check": "pending; current full suite unchanged"
+  },
+  "docker_cli": {
+    "upstream": "https://github.com/docker/cli",
+    "tag": "v29.8.1",
+    "commit": "4a63305d74332de5ceba7fcbccbc3cbb7412f5ba",
+    "rationale": "same exact upstream commit pinned by scripts/docker-cli/generate",
+    "state": "cross-build passed; native version and feature tests pending",
+    "toolchain": "go1.26.8",
+    "cgo_enabled": false,
+    "source_date_epoch": "1789471273",
+    "bytes": 40098304,
+    "sha256": "043ea64378a17fe564601ef02afc57a8287d71c5ac3cdd41f800a2a1069cb680",
+    "pe_machine": "ARM64/0xaa64",
+    "build_method": "upstream scripts/with-go-mod.sh scripts/build/binary; vendored dependencies; goversioninfo1.5.0; GNU sed for upstream manifest generation",
+    "built_at": "2026-11-04T05:05:04.514769+00:00"
+  },
+  "deployed": false,
+  "purpose": "missing optional clients must not silently skip feature qualification",
+  "buildx": {
+    "upstream": "https://github.com/docker/buildx/releases/tag/v0.37.1",
+    "tag": "v0.37.1",
+    "release_id": 387148383,
+    "published_at": "2026-09-11T15:35:46Z",
+    "asset_id": 557519679,
+    "url": "https://github.com/docker/buildx/releases/download/v0.37.1/buildx-v0.37.1.windows-arm64.exe",
+    "checksum_url": "https://github.com/docker/buildx/releases/download/v0.37.1/checksums.txt",
+    "sha256": "bdf356a5f2c8f3efd8a357b1f044860216e15e654a9a7105ca4e5dd5b5697ee4",
+    "bytes": 62223400,
+    "integrity_source": "GitHub release asset digest; checksums.txt has no Windows asset entry",
+    "pe_machine": "ARM64/0xaa64",
+    "deployed": false,
+    "native_version_check": "pending"
+  }
+}

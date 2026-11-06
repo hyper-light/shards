@@ -90,7 +90,7 @@ fn host_and_guest_connect_both_ways_and_stream_in_parallel() {
             let streams: Vec<_> = (0..8u64)
                 .map(|salt| {
                     let sock = sock.clone();
-                    thread::spawn(move || echo(&sock, ECHO_PORT, salt, 8 << 20).unwrap())
+                    thread::spawn(move || echo(&sock, ECHO_PORT, salt, 8 << 20, None).unwrap())
                 })
                 .collect();
             for s in streams {
@@ -122,7 +122,7 @@ fn refused_ports_and_bad_handshakes_close_the_host_socket() {
             "a bad handshake got {rest:?}"
         );
         // The device still serves after both.
-        echo(&sock, ECHO_PORT, 99, 1 << 20).unwrap();
+        echo(&sock, ECHO_PORT, 99, 1 << 20, None).unwrap();
     });
 }
 
@@ -153,8 +153,8 @@ fn restored_copies_listen_on_their_own_sockets() {
     a.wait_for("SHARDS-TEST READY", TIMEOUT);
     b.wait_for("SHARDS-TEST READY", TIMEOUT);
     let (ta, tb) = (
-        thread::spawn(move || echo(&sock_a, ECHO_PORT, 1, 4 << 20).unwrap()),
-        thread::spawn(move || echo(&sock_b, ECHO_PORT, 2, 4 << 20).unwrap()),
+        thread::spawn(move || echo(&sock_a, ECHO_PORT, 1, 4 << 20, None).unwrap()),
+        thread::spawn(move || echo(&sock_b, ECHO_PORT, 2, 4 << 20, None).unwrap()),
     );
     ta.join().unwrap();
     tb.join().unwrap();
@@ -215,6 +215,6 @@ fn restored_copies_find_held_connections_closed() {
         ]);
         copy.wait_for("SHARDS-TEST READY", TIMEOUT);
         assert_eq!(greeted.join().unwrap(), "hello from the guest\n");
-        echo(&sock, ECHO_PORT, salt, 1 << 20).unwrap();
+        echo(&sock, ECHO_PORT, salt, 1 << 20, None).unwrap();
     }
 }

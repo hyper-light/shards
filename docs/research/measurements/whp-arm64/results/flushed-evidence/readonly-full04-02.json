@@ -1,0 +1,136 @@
+{
+  "capture_utc": "2026-11-04T07:28:36.499907+00:00",
+  "qemu_pid": 22354,
+  "scope": "flushed disk bytes, not an atomic snapshot or native task-state query",
+  "vm_stopped_or_restarted": false,
+  "files": [
+    {
+      "windows_path": "C:/shards-step10/full-real-04/results.jsonl",
+      "bytes": 23025,
+      "sha256": "c891c9f9c2d75f773edd8511455de0526efef144d97baba56acdc76622f3279d",
+      "local": "results.jsonl",
+      "native_records": 81,
+      "failed_records": 2,
+      "last_records": [
+        {
+          "index": 75,
+          "name": "build",
+          "exit": 0
+        },
+        {
+          "index": 76,
+          "name": "build_windows",
+          "exit": 101
+        },
+        {
+          "index": 77,
+          "name": "buildx",
+          "exit": 0
+        },
+        {
+          "index": 78,
+          "name": "commit",
+          "exit": 0
+        },
+        {
+          "index": 79,
+          "name": "compose",
+          "exit": 0
+        },
+        {
+          "index": 80,
+          "name": "confined",
+          "exit": 0
+        }
+      ]
+    },
+    {
+      "windows_path": "C:/shards-step10/full-real04-normal-controller.txt",
+      "bytes": 120880,
+      "sha256": "d04dde4c243b8ca95b8a39280952e7931a471ca98df4982c668cfa247a730a7d",
+      "local": "full-real04-normal-controller.txt"
+    },
+    {
+      "windows_path": "C:/shards-step10/full-real04-normal-child.exit",
+      "error_type": "FileNotFoundError",
+      "error": "File not found: shards-step10/full-real04-normal-child.exit"
+    },
+    {
+      "windows_path": "C:/shards-step10/full-real04-normal-start.json",
+      "bytes": 432,
+      "sha256": "f1344877a767458d1abb98b5f8b469d2e65ddbfb6a97296fa44b21eecbe95635",
+      "local": "full-real04-normal-start.json"
+    },
+    {
+      "windows_path": "C:/shards-step10/full-real-04/081-containers.stdout.txt",
+      "bytes": 4096,
+      "sha256": "421d521d5e7537a24cf404f80c3f0e65ed17ecf86e9e59e7a599af30627cdf93",
+      "local": "081-containers.stdout.txt"
+    },
+    {
+      "windows_path": "C:/shards-step10/full-real-04/081-containers.stderr.txt",
+      "bytes": 45056,
+      "sha256": "492498dd28b178587827652f61b6897f2abc921f3fb30fc3131fb95b62c66845",
+      "local": "081-containers.stderr.txt"
+    },
+    {
+      "windows_path": "C:/Windows/System32/winevt/Logs/System.evtx",
+      "bytes": 2166784,
+      "sha256": "bfd4845f7b6ba5243d219daa8d301924fc475628f9ef8eff70f64c2f8a8e2520",
+      "local": "System.evtx"
+    },
+    {
+      "windows_path": "C:/Windows/System32/winevt/Logs/OpenSSH%4Operational.evtx",
+      "bytes": 1052672,
+      "sha256": "e1c840e82f1ef0df0cf532acf27772399a24052c74ba84fc1bda2183dd9dcb7b",
+      "local": "OpenSSH%4Operational.evtx"
+    },
+    {
+      "windows_path": "C:/ProgramData/ssh/sshd_config",
+      "bytes": 2390,
+      "sha256": "975a73c0035bab20bb3ec3d54634586eb81c9ca269987de5d4cc1588d767f671",
+      "local": "sshd_config"
+    },
+    {
+      "windows_path": "C:/ProgramData/ssh/logs/sshd.log",
+      "error_type": "FileNotFoundError",
+      "error": "File not found: ProgramData/ssh/logs/sshd.log"
+    }
+  ],
+  "export_read_only": true,
+  "export_flags": "0x50f",
+  "disk_size": 103079215104,
+  "partitions": [
+    {
+      "index": 0,
+      "type": "c12a7328-f81f-11d2-ba4b-00a0c93ec93b",
+      "offset": 1048576,
+      "size": 272629760,
+      "name": "EFI system partition"
+    },
+    {
+      "index": 1,
+      "type": "e3c9e316-0b5c-4db8-817d-f92df00215ae",
+      "offset": 273678336,
+      "size": 16777216,
+      "name": "Microsoft reserved partition"
+    },
+    {
+      "index": 2,
+      "type": "ebd0a0a2-b9e5-4433-87c0-68b6b72699c7",
+      "offset": 290455552,
+      "size": 101892227072,
+      "name": "Basic data partition"
+    },
+    {
+      "index": 3,
+      "type": "de94bba4-06d1-4d40-a16a-bfd50179d6ac",
+      "offset": 102182682624,
+      "size": 894435328,
+      "name": ""
+    }
+  ],
+  "nbd_requests": 152,
+  "nbd_bytes_read": 2354688,
+  "export_stopped": true
+}

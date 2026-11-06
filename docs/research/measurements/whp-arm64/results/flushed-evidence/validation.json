@@ -1,0 +1,21 @@
+{
+  "layout_export_read_only": true,
+  "gpt_crc_checks": true,
+  "native_log_captures": 3,
+  "exports_stopped_and_listener_closed": true,
+  "native_vm_or_suite_restarted": false,
+  "current_native_result": "capture03: 82 completed, 79 passed, 3 failed; context PID2760 heartbeat",
+  "event_parser_lazy_reference_control": true,
+  "scope": "flushed bytes and native controller reports; active filesystem is not an atomic snapshot",
+  "full_suite_qualification": false,
+  "shipping_source": "addc504773347f166bd38bf7d85b9bb68b18fd59; no production code changed for this observer",
+  "latest_native_result": "84 completed binaries, 81 passed, 3 failed; original controller waiting for daemon PID4984; no full completion marker",
+  "watcher_capture_utc": "2026-11-04T07:57:54.205985+00:00",
+  "containers_result": {
+    "passed": 131,
+    "failed": 9,
+    "ignored": 8,
+    "seconds": 13098.38,
+    "native_exit": 101
+  }
+}

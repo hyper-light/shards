@@ -45,9 +45,9 @@ use crate::pipe::Message;
 use crate::signal::SIGKILL;
 
 use windows_sys::Win32::Foundation::{
-    DUPLICATE_SAME_ACCESS, DuplicateHandle, ERROR_ALREADY_EXISTS, ERROR_INVALID_PARAMETER, ERROR_MORE_DATA,
-    GENERIC_ALL, HANDLE, HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE, LocalFree, SetHandleInformation,
-    WAIT_OBJECT_0, WAIT_TIMEOUT,
+    DUPLICATE_SAME_ACCESS, DuplicateHandle, ERROR_ALREADY_EXISTS, ERROR_FILE_NOT_FOUND,
+    ERROR_INVALID_PARAMETER, ERROR_MORE_DATA, ERROR_PATH_NOT_FOUND, GENERIC_ALL, HANDLE, HANDLE_FLAG_INHERIT,
+    INVALID_HANDLE_VALUE, LocalFree, SetHandleInformation, WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
 use windows_sys::Win32::Security::Authorization::{
     EXPLICIT_ACCESS_W, GRANT_ACCESS, GetNamedSecurityInfoW, GetSecurityInfo, NO_MULTIPLE_TRUSTEE,
@@ -868,17 +868,23 @@ fn hresult(code: u32) -> i32 {
 
 /// The capability SIDs `\\?\VidExo`'s DACL allows to read and write it, as bytes: what an
 /// AppContainer holds to run a WHP partition (M200). Read from the device, once a process,
-/// so that a Windows that grants another capability is followed.
+/// so that a Windows that grants another capability is followed. None where there is no
+/// device, a host without the hypervisor platform: its VM process runs no partition, and
+/// says why itself, as on any host without a backend, its arguments read first (boot.rs's
+/// `explains_when_this_host_cannot_run_vms`). Only an answer that found the device is kept.
 pub fn hypervisor_capabilities() -> io::Result<&'static [Vec<u8>]> {
     static CAPS: OnceLock<Vec<Vec<u8>>> = OnceLock::new();
     if let Some(caps) = CAPS.get() {
         return Ok(caps);
     }
-    let found = read_capabilities()?;
+    let Some(found) = read_capabilities()? else {
+        return Ok(&[]);
+    };
     Ok(CAPS.get_or_init(|| found))
 }
 
-fn read_capabilities() -> io::Result<Vec<Vec<u8>>> {
+/// The capabilities, or None where the device is not there.
+fn read_capabilities() -> io::Result<Option<Vec<Vec<u8>>>> {
     let name = wide(OsStr::new(r"\\?\VidExo"));
     // SAFETY: a NUL-terminated name; READ_CONTROL alone.
     let raw = unsafe {
@@ -893,9 +899,15 @@ fn read_capabilities() -> io::Result<Vec<Vec<u8>>> {
         )
     };
     if raw == INVALID_HANDLE_VALUE {
+        let e = last();
+        if matches!(
+            e.raw_os_error().map(|c| c as u32),
+            Some(ERROR_FILE_NOT_FOUND | ERROR_PATH_NOT_FOUND)
+        ) {
+            return Ok(None);
+        }
         return Err(io::Error::other(format!(
-            "the hypervisor's device, \\\\?\\VidExo: {} (is the Windows Hypervisor Platform on?)",
-            last()
+            "the hypervisor's device, \\\\?\\VidExo: {e} (is the Windows Hypervisor Platform on?)"
         )));
     }
     // SAFETY: a handle just opened, which nothing else owns.
@@ -949,7 +961,7 @@ fn read_capabilities() -> io::Result<Vec<Vec<u8>>> {
             "the hypervisor's device grants no capability: a confined VM process could run no partition",
         ));
     }
-    Ok(found)
+    Ok(Some(found))
 }
 
 /// A handle given a child, and the name it is told by.

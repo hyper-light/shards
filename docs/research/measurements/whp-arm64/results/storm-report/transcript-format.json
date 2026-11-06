@@ -1,0 +1,12 @@
+{
+  "baseline.stdout.txt": {
+    "capture_sha256": "ce9e42d281a3419c1818bbc58c07b1d6ba3de4291151b5d6903e129d6cac4a85",
+    "display_sha256": "7cc176b3629c396ff5997c1e5cbb49598848471062dfb030c09226564cb73732",
+    "format": "LF and trailing display padding removed; original bytes retained locally"
+  },
+  "baseline.stderr.txt": {
+    "capture_sha256": "ec286f54d0cf2f109a12320b44fbd932bdfdf3694cbdc973cf1ad6a63cae832e",
+    "display_sha256": "081c7b6f4981e9f29eaa21ef409286c2896e5779da1edf8aa2f0f3664dc9e767",
+    "format": "LF and trailing display padding removed; original bytes retained locally"
+  }
+}

@@ -1,0 +1,47 @@
+2026-11-03T16:45:18.2032714-08:00
+user=WINARM\runner SID=S-1-5-21-4187853375-3986741409-3176094604-1002 elevated=False session=0
+observer_pid=5468
+closed: file=C:\Users\runner\AppData\Local\Temp\shards-restart-manager-5468\memory metadata=Ok((true, false, 1048576)) start=0
+closed: register=0 get=5 needed=0 listed=64 reasons=0 struct_size=668 users=[]
+closed: end=0
+closed: NT status=0x00000000 info=8 count=0 list_offset=8
+closed: NT users=[]; query itself holds a handle in observer PID5468
+open: file=C:\Users\runner\AppData\Local\Temp\shards-restart-manager-5468\memory metadata=Ok((true, false, 1048576)) start=0
+open: register=0 get=5 needed=0 listed=64 reasons=0 struct_size=668 users=[]
+open: end=0
+open: NT status=0x00000000 info=16 count=1 list_offset=8
+open: NT users=[5468]; query itself holds a handle in observer PID5468
+open-and-mapped: file=C:\Users\runner\AppData\Local\Temp\shards-restart-manager-5468\memory metadata=Ok((true, false, 1048576)) start=0
+open-and-mapped: register=0 get=5 needed=0 listed=64 reasons=0 struct_size=668 users=[]
+open-and-mapped: end=0
+open-and-mapped: NT status=0x00000000 info=16 count=1 list_offset=8
+open-and-mapped: NT users=[5468]; query itself holds a handle in observer PID5468
+mapped-only: file=C:\Users\runner\AppData\Local\Temp\shards-restart-manager-5468\memory metadata=Ok((true, false, 1048576)) start=0
+mapped-only: register=0 get=5 needed=0 listed=64 reasons=0 struct_size=668 users=[]
+mapped-only: end=0
+mapped-only: NT status=0x00000000 info=16 count=1 list_offset=8
+mapped-only: NT users=[5468]; query itself holds a handle in observer PID5468
+unmapped: file=C:\Users\runner\AppData\Local\Temp\shards-restart-manager-5468\memory metadata=Ok((true, false, 1048576)) start=0
+unmapped: register=0 get=5 needed=0 listed=64 reasons=0 struct_size=668 users=[]
+unmapped: end=0
+unmapped: NT status=0x00000000 info=8 count=0 list_offset=8
+unmapped: NT users=[]; query itself holds a handle in observer PID5468
+child-open-and-mapped: file=C:\Users\runner\AppData\Local\Temp\shards-restart-manager-5468\memory metadata=Ok((true, false, 1048576)) start=0
+child-open-and-mapped: register=0 get=5 needed=0 listed=64 reasons=0 struct_size=668 users=[]
+child-open-and-mapped: end=0
+child-open-and-mapped: NT status=0x00000000 info=16 count=1 list_offset=8
+child-open-and-mapped: NT users=[980]; query itself holds a handle in observer PID5468
+child-mapped-only: file=C:\Users\runner\AppData\Local\Temp\shards-restart-manager-5468\memory metadata=Ok((true, false, 1048576)) start=0
+child-mapped-only: register=0 get=5 needed=0 listed=64 reasons=0 struct_size=668 users=[]
+child-mapped-only: end=0
+child-mapped-only: NT status=0x00000000 info=24 count=2 list_offset=8
+child-mapped-only: NT users=[1280, 980]; query itself holds a handle in observer PID5468
+child-ended: file=C:\Users\runner\AppData\Local\Temp\shards-restart-manager-5468\memory metadata=Ok((true, false, 1048576)) start=0
+child-ended: register=0 get=5 needed=0 listed=64 reasons=0 struct_size=668 users=[]
+child-ended: end=0
+child-ended: NT status=0x00000000 info=8 count=0 list_offset=8
+child-ended: NT users=[]; query itself holds a handle in observer PID5468
+directory-control: file=C:\Users\runner\AppData\Local\Temp\shards-restart-manager-5468 metadata=Ok((false, true, 0)) start=0
+directory-control: register=0 get=5 needed=0 listed=64 reasons=0 struct_size=668 users=[]
+directory-control: end=0
+directory-control: NT query open failed: Access is denied. (os error 5)

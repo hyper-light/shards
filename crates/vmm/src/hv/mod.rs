@@ -5,7 +5,7 @@
 //! |---|---|
 //! | `hvf` | macOS on arm64: Hypervisor.framework |
 //! | `kvm` | Linux on x86_64 and arm64: KVM |
-//! | `whp` | Windows on x86_64: the Windows Hypervisor Platform |
+//! | `whp` | Windows on x86_64 and arm64: the Windows Hypervisor Platform |
 //!
 //! Every other target in the platform matrix (docs/design/architecture.md D13) builds
 //! without a backend until its backend lands, and reports that VMs cannot run there.
@@ -27,7 +27,11 @@ pub mod kvm;
 #[cfg(hv = "kvm")]
 pub use kvm::*;
 
-#[cfg(hv = "whp")]
+#[cfg(all(hv = "whp", target_arch = "x86_64"))]
+pub mod whp;
+/// arm64's: its own partition, GIC and exits, beside x86_64's.
+#[cfg(all(hv = "whp", target_arch = "aarch64"))]
+#[path = "whp_arm64/mod.rs"]
 pub mod whp;
 #[cfg(hv = "whp")]
 pub use whp::*;

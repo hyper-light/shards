@@ -1,0 +1,207 @@
+DIAGNOSTIC SUBSETS; NOT A COMPLETE SUITE.
+{"tag": "single4-00-boot", "binary": "boot", "test": "a_nested_guest_is_a_kvm_host", "exit": 0, "one_pass": true, "time": "2026-11-03T15:51:30.862747+00:00"}
+{"tag": "single4-01-compile", "binary": "compile", "test": "a_wide_policy_without_cycles_compiles_in_time", "exit": 1, "one_pass": false, "time": "2026-11-03T15:53:06.356508+00:00"}
+{"tag": "single4-02-build_windows", "binary": "build_windows", "test": "run_steps_run_in_a_confined_builder_and_their_changes_are_built", "exit": 0, "one_pass": true, "time": "2026-11-03T15:55:41.760426+00:00"}
+{"tag": "single4-03-boot", "binary": "boot", "test": "boots_the_hosts_maximum_vcpu_count", "exit": 1, "one_pass": false, "time": "2026-11-03T15:58:20.223802+00:00"}
+{"tag": "single4-04-snapshot", "binary": "snapshot", "test": "storm::restores_of_a_busy_machine_lose_no_interrupt_and_repeat_no_write", "exit": 1, "one_pass": false, "time": "2026-11-03T16:02:59.917600+00:00"}
+{"tag": "single4-05-containers", "binary": "containers", "test": "a_groups_microvms_are_held_to_its_cpu_max_together", "exit": 0, "one_pass": true, "time": "2026-11-03T16:06:19.271176+00:00"}
+{"tag": "single4-06-build_windows", "binary": "build_windows", "test": "a_builders_memory_is_plugged_as_its_build_needs_it", "exit": 1, "one_pass": false, "time": "2026-11-03T16:11:11.564137+00:00"}
+{"tag": "single4-07-build_windows", "binary": "build_windows", "test": "a_builders_memory_is_plugged_as_fast_as_its_jobs_take_it", "exit": 1, "one_pass": false, "time": "2026-11-03T16:16:08.501367+00:00"}
+
+== single4-00-boot.txt
+MANIFEST binaries=141
+START 1/141 path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/shards#0.6.0 boot 2026-11-03T15:51:19.8991280Z
+running 1 test
+test a_nested_guest_is_a_kvm_host ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 26 filtered out; finished in 6.67s
+
+END 001-boot exit=0 elapsed=8.110337
+COMPLETE binaries=1 manifest=141 failed=0 filter=boot/a_nested_guest_is_a_kvm_host start=0
+
+== single4-01-compile.txt
+MANIFEST binaries=141
+START 59/141 path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/rego#shards-rego@0.1.0 compile 2026-11-03T15:52:51.4497900Z
+failures:
+    a_wide_policy_without_cycles_compiles_in_time
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 3 filtered out; finished in 10.12s
+
+FAILED 059-compile exit=101
+
+thread 'a_wide_policy_without_cycles_compiles_in_time' (1572) panicked at crates/rego/tests/compile.rs:206:10:
+6000 rules did not compile within 10 s: Timeout
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+END 059-compile exit=101 elapsed=12.312963
+COMPLETE binaries=1 manifest=141 failed=1 filter=compile/a_wide_policy_without_cycles_compiles_in_time start=0
+
+== single4-02-build_windows.txt
+MANIFEST binaries=141
+START 75/141 path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/shards#0.6.0 build_windows 2026-11-03T15:55:11.7032400Z
+running 1 test
+test run_steps_run_in_a_confined_builder_and_their_changes_are_built ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 7 filtered out; finished in 25.33s
+
+END 075-build_windows exit=0 elapsed=28.188398
+COMPLETE binaries=1 manifest=141 failed=0 filter=build_windows/run_steps_run_in_a_confined_builder_and_their_changes_are_built start=0
+
+== single4-03-boot.txt
+MANIFEST binaries=141
+START 1/141 path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/shards#0.6.0 boot 2026-11-03T15:57:13.7739090Z
+failures:
+    boots_the_hosts_maximum_vcpu_count
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 26 filtered out; finished in 62.87s
+
+FAILED 001-boot exit=101
+[    0.000000]   DMA      [mem 0x0000000080200000-0x00000000bfffffff]
+[    0.000000]   DMA32    empty
+[    0.000000]   Normal   empty
+[    0.000000]   Device   empty
+[    0.000000] Movable zone start for each node
+[    0.000000] Early memory node ranges
+[    0.000000]   node   0: [mem 0x0000000080200000-0x00000000bfffffff]
+[    0.000000] Initmem setup node 0 [mem 0x0000000080200000-0x00000000bfffffff]
+[    0.000000] On node 0, zone DMA: 512 pages in unavailable ranges
+[    0.000000] psci: probing for conduit method from DT.
+[    0.000000] psci: PSCIv1.1 detected in firmware.
+[    0.000000] psci: Using standard PSCI v0.2 function IDs
+[    0.000000] psci: MIGRATE_INFO_TYPE not supported.
+[    0.000000] psci: SMC Calling Convention v1.4
+[    0.000000] psci: OSI mode supported.
+[    0.000000] psci: [Firmware Bug]: failed to set PC mode: -1
+[    0.000000] Number of cores (123) exceeds configured maximum of 64 - clipping
+[    0.000000] percpu: Embedded 22 pages/cpu s52312 r8192 d29608 u90112
+[    0.000000] Detected PIPT I-cache on CPU0
+[    0.000000] CPU features: detected: GICv3 CPU interface
+[    0.000000] CPU features: detected: Spectre-v4
+[    0.000000] CPU features: detected: Spectre-BHB
+[    0.000000] alternatives: applying boot alternatives
+[    0.000000] Kernel command line: console=ttyS0 panic=-1
+[    0.000000] printk: log_buf_len individual max cpu contribution: 4096 bytes
+[    0.000000] printk: log_buf_len total cpu_extra contributions: 258048 bytes
+[    0.000000] printk: log_buf_len min size: 131072 bytes
+[    0.000000] printk: log buffer data + meta data: 524288 + 1835008 = 2359296 bytes
+[    0.000000] printk: early log buf free: 128400(97%)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+END 001-boot exit=101 elapsed=63.89652
+COMPLETE binaries=1 manifest=141 failed=1 filter=boot/boots_the_hosts_maximum_vcpu_count start=0
+
+== single4-04-snapshot.txt
+MANIFEST binaries=141
+START 0/141 path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/shards#0.6.0 snapshot 2026-11-03T15:59:31.0307380Z
+failures:
+    storm::restores_of_a_busy_machine_lose_no_interrupt_and_repeat_no_write
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 11 filtered out; finished in 203.58s
+
+FAILED 000-snapshot exit=101
+
+thread 'storm::restores_of_a_busy_machine_lose_no_interrupt_and_repeat_no_write' (2500) panicked at crates/shards/tests/common/mod.rs:2613:17:
+still running after 120s; it said:
+SHARDS-TEST READY
+SHARDS-TEST INFO waiting for the host's stream through the echo: 0 bytes echoed
+SHARDS-TEST INFO waiting for the host's stream through the echo: 0 bytes echoed
+SHARDS-TEST INFO waiting for the host's stream through the echo: 0 bytes echoed
+SHARDS-TEST INFO waiting for the host's stream through the echo: 0 bytes echoed
+SHARDS-TEST INFO waiting for the host's stream through the echo: 0 bytes echoed
+SHARDS-TEST INFO waiting for the host's stream through the echo: 0 bytes echoe
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+END 000-snapshot exit=101 elapsed=204.723862
+COMPLETE binaries=1 manifest=141 failed=1 filter=snapshot/storm::restores_of_a_busy_machine_lose_no_interrupt_and_repeat_no_write start=0
+
+== single4-05-containers.txt
+MANIFEST binaries=141
+START 80/141 path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/shards#0.6.0 containers 2026-11-03T16:04:29.3548700Z
+running 1 test
+test a_groups_microvms_are_held_to_its_cpu_max_together ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 147 filtered out; finished in 98.29s
+
+END 080-containers exit=0 elapsed=105.397341
+COMPLETE binaries=1 manifest=141 failed=0 filter=containers/a_groups_microvms_are_held_to_its_cpu_max_together start=0
+
+== single4-06-build_windows.txt
+MANIFEST binaries=141
+START 75/141 path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/shards#0.6.0 build_windows 2026-11-03T16:08:00.3356110Z
+failures:
+    a_builders_memory_is_plugged_as_its_build_needs_it
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7 filtered out; finished in 185.12s
+
+FAILED 075-build_windows exit=101
+#4 [1/2] FROM 127.0.0.1:49944/test/image:v1@sha256:fb0376462c6a31d7c1f4fc628d6b0801c9321288de34b31a5be21849cfb16a13
+#4 resolve 127.0.0.1:49944/test/image:v1@sha256:fb0376462c6a31d7c1f4fc628d6b0801c9321288de34b31a5be21849cfb16a13 done
+#4 DONE 0.0s
+
+#5 [2/2] RUN ["/bin/testguest", "alloc", "1536"]
+#5 168.3 allocated 1536
+#5 DONE 170.5s
+shards-export {"from":"snapshot"}
+
+#6 exporting to image
+#6 exporting layers done
+#6 writing image sha256:88f4744e22394dbc186e83ecbf239da7105bf94d7ef8af00f84b5e5d3d65c71e done
+#6 DONE 0.7s
+shards-timing {"released_us":538098,"entry_us":540339,"exit_us":171542231,"request_us":0,"answered_us":0,"prefetched":0,"rss_kib":1662608,"footprint_kib":1317920,"hotplug_held_kib":0,"reported_kib":2277376,"markers":[[1,8621845]]}
+
+--- ps -a in its home
+CONTAINER ID   IMAGE     COMMAND   CREATED   STATUS    PORTS     NAMES
+
+(no cdb on this host for the stacks)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+--- C:\Users\runner\AppData\Local\Temp\shards-tests\2024\bw-plug-ctx-1\daemon.log, its last 0 lines
+--- C:\Users\runner\AppData\Local\Temp\shards-tests\2024\bw-plug-home-0\daemon.log, its last 3 lines
+shards daemon 4480: the default bridge is 172.17.0.0/16
+shards daemon 4480: serving C:\Users\runner\AppData\Local\Temp\shards-tests\2024\bw-plug-home-0 through C:\Users\runner\AppData\Local\Temp\shards-tests\2024\bw-plug-home-0\requests, with up to 16777216 descriptors open
+shards daemon 4480: watching the host's memory pressure: the system's low memory notification (CreateMemoryResourceNotification), said again every 2 s while it lasts
+--- C:\Users\runner\AppData\Local\Temp\shards-tests\2024\bw-plug-home-0\daemon.log, its last 441 of 441 bytes
+shards daemon 4480: the default bridge is 172.17.0.0/16
+shards daemon 4480: serving C:\Users\runner\AppData\Local\Temp\shards-tests\2024\bw-plug-home-0 through C:\Users\runner\AppData\Local\Temp\shards-tests\2024\bw-plug-home-0\requests, with up to 16777216 descriptors open
+shards daemon 4480: watching the host's memory pressure: the system's low memory notification (CreateMemoryResourceNotification), said again every 2 s while it lasts
+
+END 075-build_windows exit=101 elapsed=187.965437
+COMPLETE binaries=1 manifest=141 failed=1 filter=build_windows/a_builders_memory_is_plugged_as_its_build_needs_it start=0
+
+== single4-07-build_windows.txt
+MANIFEST binaries=141
+START 75/141 path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/shards#0.6.0 build_windows 2026-11-03T16:12:42.9290530Z
+failures:
+    a_builders_memory_is_plugged_as_fast_as_its_jobs_take_it
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7 filtered out; finished in 199.24s
+
+FAILED 075-build_windows exit=101
+#2 [internal] load metadata for 127.0.0.1:49949/test/image:v1
+#2 DONE 1.5s
+
+#3 [internal] load .agentignore
+#3 DONE 0.0s
+
+#4 [stage-0 1/2] FROM 127.0.0.1:49949/test/image:v1@sha256:fb0376462c6a31d7c1f4fc628d6b0801c9321288de34b31a5be21849cfb16a13
+#4 resolve 127.0.0.1:49949/test/image:v1@sha256:fb0376462c6a31d7c1f4fc628d6b0801c9321288de34b31a5be21849cfb16a13 done
+#4 DONE 0.1s
+
+#5 [stage-0 2/2] RUN --mount=type=tmpfs,target=/held,size=2g ["/bin/testguest", "alloc-par", "1", "3072", "/held/big", "1024"]
+shards: its builder is gone, and so this builder ends
+
+--- ps -a in its home
+CONTAINER ID   IMAGE     COMMAND   CREATED   STATUS    PORTS     NAMES
+
+(no cdb on this host for the stacks)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+--- C:\Users\runner\AppData\Local\Temp\shards-tests\5104\bw-fast-ctx-1\daemon.log, its last 0 lines
+--- C:\Users\runner\AppData\Local\Temp\shards-tests\5104\bw-fast-home-0\daemon.log, its last 4 lines
+shards daemon 1400: the default bridge is 172.17.0.0/16
+shards daemon 1400: serving C:\Users\runner\AppData\Local\Temp\shards-tests\5104\bw-fast-home-0 through C:\Users\runner\AppData\Local\Temp\shards-tests\5104\bw-fast-home-0\requests, with up to 16777216 descriptors open
+shards daemon 1400: watching the host's memory pressure: the system's low memory notification (CreateMemoryResourceNotification), said again every 2 s while it lasts
+shards daemon 1400: collected 0 blobs, 0 root filesystems and 1 files left in ingest/: 0 bytes, in 3.687201s
+--- C:\Users\runner\AppData\Local\Temp\shards-tests\5104\bw-fast-home-0\daemon.log, its last 550 of 550 bytes
+shards daemon 1400: the default bridge is 172.17.0.0/16
+shards daemon 1400: serving C:\Users\runner\AppData\Local\Temp\shards-tests\5104\bw-fast-home-0 through C:\Users\runner\AppData\Local\Temp\shards-tests\5104\bw-fast-home-0\requests, with up to 16777216 descriptors open
+shards daemon 1400: watching the host's memory pressure: the system's low memory notification (CreateMemoryResourceNotification), said again every 2 s while it lasts
+shards daemon 1400: collected 0 blobs, 0 root filesystems and 1 files left in ingest/: 0 bytes, in 3.687201s
+
+END 075-build_windows exit=101 elapsed=203.13211
+COMPLETE binaries=1 manifest=141 failed=1 filter=build_windows/a_builders_memory_is_plugged_as_fast_as_its_jobs_take_it start=0

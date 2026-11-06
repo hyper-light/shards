@@ -35,6 +35,8 @@ pub struct Terminal {
     /// pseudo console drew of its own.
     raw: String,
     dir: super::TempDir,
+    /// What its home's daemon has said, for a wait past its deadline ([`super::Said`]).
+    said: super::Said,
 }
 
 /// How much of what a console wrote [`Terminal`] keeps to say as its test fails.
@@ -217,6 +219,7 @@ impl Terminal {
             pending: String::new(),
             raw: String::new(),
             dir,
+            said: super::Said::of(home),
         }
     }
 }
@@ -263,7 +266,8 @@ fn text_of(raw: &str) -> (String, &str) {
 
 impl Terminal {
     /// Reads what the terminal shows until `text` has appeared since the last wait, and
-    /// returns everything read since then, its escape sequences taken out ([`text_of`]).
+    /// returns everything read since then, its escape sequences taken out ([`text_of`]):
+    /// failing past [`TIMEOUT`] once its home's daemon says nothing ([`super::Said`]).
     pub fn wait_for(&mut self, text: &str) -> String {
         let deadline = Instant::now() + TIMEOUT;
         loop {
@@ -272,7 +276,12 @@ impl Terminal {
                 return self.seen.drain(..upto).collect();
             }
             let left = deadline.saturating_duration_since(Instant::now());
-            match self.shown.recv_timeout(left.min(Duration::from_millis(100))) {
+            let wait = if left.is_zero() {
+                Duration::from_millis(100)
+            } else {
+                left.min(Duration::from_millis(100))
+            };
+            match self.shown.recv_timeout(wait) {
                 Ok(bytes) => {
                     self.keep(&bytes);
                     let raw = std::mem::take(&mut self.pending) + &String::from_utf8_lossy(&bytes);
@@ -288,7 +297,7 @@ impl Terminal {
                     self.pending = rest.to_string();
                 }
                 Err(_) => assert!(
-                    Instant::now() < deadline,
+                    Instant::now() < deadline || self.said.lately(),
                     "{text:?} did not come; the terminal showed {:?}",
                     self.seen
                 ),

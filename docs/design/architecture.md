@@ -7294,7 +7294,7 @@ built without one. What every Linux host has now:
   that a file it has is not there. It needs musl's libc and libgcc_s alone, which a musl
   host's Mesa drivers, C++, need too. Landlock lets it read musl's loader's search path
   (`/etc/ld-musl-<arch>.path`, musl's ldso/dynlink.c), where a host names one.
-- **What else the GPU's VM process is allowed** (PM M422), found as tests/gpu.rs ran on
+- **What else the GPU's VM process is allowed** (PM M425), found as tests/gpu.rs ran on
   Intel's UHD Graphics (Raptor Lake-S) under Mesa's Intel driver, glibc's and musl's, each
   refusal ending the VM process before its guest was ready or as its `vulkaninfo` ran:
   `sysinfo`, by which glibc's and musl's `sysconf(_SC_PHYS_PAGES)` says the host's memory
@@ -7339,6 +7339,131 @@ built without one. What every Linux host has now:
   NVIDIA's driver and Radeon 610M, D201's) waits for its owner's go; a musl host gives a
   run Mesa's drivers alone (Intel's, AMD's, NVK), NVIDIA shipping no driver for musl; and
   arm64 musl hosts are built for as x86_64's are, untested on a GPU.
+### D209. microVMs on arm64 Windows hosts: WHP's arm64 backend (boot measured, E2E pending)
+
+**Why.** The platform parity plan's step 10 (docs/audit/2026-10-27_platform-parity.md): WHP
+has a released arm64 API from Windows 11 24H2's build 26100.3915 (QEMU's
+docs/system/whpx.rst), which says so by WinHvPlatformDefs.h's `Arm64Support` feature, as
+QEMU's whpx_accel_init and shards' `check_host` ask; shards' VMM drives it as it drives
+x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
+
+- **Its types are the header's own.** windows-sys carries none of WHP's arm64 types (its
+  metadata is x64's), so the backend declares them from the Windows SDK 10.0.26100's
+  WinHvPlatformDefs.h, each size held to its C_ASSERT; its functions bound as first called,
+  as x86_64's are (PM M113).
+- **The platform's GICv3, at QEMU virt's places** (arch/aarch64's layout): its distributor
+  and ITS frame given as the partition is set up (WHvPartitionPropertyCodeArm64IcParameters,
+  as QEMU's whpx_accel_init gives them), each vCPU's redistributor by its GICR base register
+  as it is made, the virtual timer's PPI 27 and the PMU's 23. SPIs asked of it
+  (WHvRequestInterrupt); a PCI bus's MSIs through a GICv2m frame the VMM keeps, each an edge
+  on the SPI it names, as the platform's GIC takes no ITS here (QEMU: "ITS not supported on
+  WHPX").
+- **PSCI is the hypervisor's.** A vCPU past the first is held in StartupSuspend until the
+  guest's CPU_ON starts it, and SYSTEM_OFF and SYSTEM_RESET come back as an Arm64Reset exit,
+  as QEMU's target/arm/whpx has them; the guest's devicetree names HVC, the guest having no
+  EL2 (QEMU's `virt` too, without EL2).
+- **MMIO completed from the exit's syndrome**, as KVM completes it (`kvm_handle_mmio_return`):
+  the access's register, size and sign extension, PC past it.
+- **Snapshots** keep each vCPU's registers by their encodings, as HVF's backend keeps them
+  (arch/aarch64/state.rs): the general, SIMD and floating-point registers, the EL1 system
+  registers QEMU's accelerator syncs, the pointer authentication keys and the breakpoint and
+  watchpoint registers its ID registers say the guest has, its OS lock, and its power as
+  StartupSuspend holds it; the GIC's state in the platform's own layouts
+  (WHvGetVirtualProcessorState: the partition's global interrupt state, distributor and
+  SPIs, and each vCPU's interrupt controller state, redistributor and CPU interface, in
+  page-aligned buffers, as their types are page frames'); and the CPU's identity, MIDR
+  from its vCPU and 15 global ID registers Linux takes its features by, read with
+  WHV_ANY_VP. A guest given SVE or SME, whose vector state none of these keeps, and a
+  vCPU stopped with an event pending take no snapshot. The guest's counter is set through
+  CNTVCT_EL0. Partition time is suspended before the restored vCPUs are made; each counter
+  is set before its timer registers, and the first run resumes time for them together.
+  Per-thread host-counter samples at release caused a backward clock step in the busy
+  snapshot E2E (M414). Working sets use WHP's Populate advice and the host's mapped pages,
+  as on x86_64 (D196).
+- **What the integration's backends do since, as x86_64's WHP does them** (built, not yet
+  run here): a live move's watch of its guest's writes (D176 part 7), each writable range
+  the partition maps kept, mapped again with tracking as the watch begins and its bitmap
+  read each round (`WHvQueryGpaRangeDirtyBitmap`, its API x64's and Arm64's alike), a
+  share's DAX window untracked as x86_64's; a guest restored on another CPU told the
+  snapshot's (D176 part 6), MIDR_EL1 set on its vCPU and the feature ID registers on the
+  partition (`WHV_ANY_VP`), each read back, a CPU that keeps any otherwise refused by
+  name. A host's PCI function is refused (D154): only x86_64's backend makes one a device
+  of its partition (`WHvCreateVpciDevice`), whatever the hypervisor answers.
+- **Measured boot; feature E2E pending.** Its host is Windows 11 Pro arm64 26300.9457
+  from Microsoft's ISO, nested under QEMU on this Mac (the user's decision, 2026-10-30).
+  M414 records the failed HVF boots and the working TCG host, with TF-A at EL3, pointer
+  authentication off and ACPI describing TF-A's PSCI handler. Windows reports its
+  hypervisor started; the probe ran its real WHP guest, took an SPI, started its secondary
+  through PSCI, and set back the GIC states. CNTVCT_EL0 is set per vCPU. Shards booted its
+  pinned Linux kernel as a standard user through the confined VM process. Core snapshot
+  restores and the busy-machine test at two and eight vCPUs passed. The full snapshot
+  and feature E2E suite must still pass before step 10 is closed. CI's native
+  windows-11-arm image has no WHP (M172); its VM tests saying SKIP remain no VM evidence.
+- **A start is waited for while it runs** (M424, every host). Its full suite's failures
+  were nearly all microVMs given up on as they booted, each running its start the whole
+  wait: their least 10 s of it, 3.3 s of CPU. The deadline was a wall clock's, a minute
+  held to by CI's runners, where a cold boot takes 1.6 to 2.2 s (M357), which this host's
+  speed sets past it. Now the daemon judges a starting microVM by its process each
+  `READY_STALL` (10 s): one that took more CPU than an idle microVM takes in as long (63 ms
+  in 10 s, M357's most, `IDLE_VM_CPU`) ran its start, and is waited for; one given up on
+  has run no more than that for `READY_TIMEOUT`, as one that never runs is given up on a
+  minute after its start, as before. A claim of a pool whose VM is starting waits for it
+  past its minute, its watcher waking it; and a builder's boot is judged so, past
+  `BOOT_PATIENCE`'s 30 s. Not caught: a guest that spins before it is ready (a panic
+  resets it, `panic=-1`, which ends its VM). Each slice is logged, the durable evidence by
+  which the tests' clients past their deadlines are waited on while their daemon says
+  something (`common::Said`, within the daemon's `READY_TIMEOUT`), never a guess at the
+  host's speed. `a_starting_vm_progresses_by_more_cpu_than_an_idle_one_takes` holds the
+  basis to M357, and `a_sleeping_process_runs_nothing_a_boot_does_and_a_busy_one_runs`
+  to the host's own process times.
+- **A workload is waited for while it runs** (M424, every host). Five of the suite's cases
+  failed after their boots, their guests' work run past a test's deadline at TCG's speed
+  (a 64-vCPU storm, a 3 GiB build step, a 2.4 GiB allocation, two 1 GiB execs), where the
+  daemon said nothing while a workload ran, so that no test could tell slow from stuck.
+  Now its listener looks at each microVM a client waits on, an attached run's own client
+  until its run ends or an exec's (none detached) until it ends (`EXEC_ENDED`), each
+  `READY_STALL`, and logs its CPU time and page faults and what each grew by where it ran
+  more than an idle microVM takes in as long (`shards_vmm::platform::progressed`, the
+  basis `ready` judges a start by, moved beside `process_usage`, which counts each
+  process's page faults now on every host). An idle or stalled microVM is said nothing
+  of: a test's client past its deadline (`common::Said`) is waited on while its microVM
+  runs, and given up on a minute after it last ran, as before. Where a microVM is the
+  client's own, no daemon's (`shards run --kernel`, `shards restore`, `shards build`'s
+  builders), the test judges the VM processes under its client itself, by the same basis
+  and slice (`common::Ran`), while they start. Detached runs are not looked at:
+  a busy server run with `-d` logs nothing. Not caught, as of a start: a guest that spins
+  for ever, which its CI job's limit ends. `a_microvm_is_followed_while_a_client_waits_on_it`
+  holds who is looked at and the slice (a sixth of `READY_TIMEOUT`), and
+  `a_busy_process_is_seen_running_with_its_cpu_and_faults` the look on the host's own
+  process times.
+- **A test's own waits on pools and microVMs follow them too** (M424). daemon.rs' rerun at
+  b57cad27 failed 7 of 38, each a wait of the test's own past a fixed minute (a pool
+  filled, a restored run's VM up) while its daemon's log showed templates saved, 264 MiB
+  guests restored and guest markers advancing. `common::Patience` holds them as clients
+  are held: their own deadline, or past it while the home's daemon says something
+  (`Said`), or a VM process under that daemon or under the test's process runs (`Ran`),
+  failing a minute after the last; the look that fails one begins past it, as a
+  PowerShell's look at Windows' processes may outlast a slice. daemon.rs' `eventually`
+  and `wait`, saved.rs', containers.rs', engine.rs' and budget.rs' waits on pools,
+  restored VMs and guests' answers, and warm.rs' warm VM's end take it.
+- **A guest's stream follows its bytes, and its end its output** (every host). CPU time is
+  no progress past a start: a guest on more vCPUs than its host has CPUs runs them all for
+  ever, its stream stopped or not, and snapshot.rs' 64-vCPU storm on the arm64 Windows
+  host (4 TCG CPUs), waited on while its microVM ran, ran 2 h 16 min, its VM process at
+  31,324 CPU-seconds, all four cores busy throughout. A test's reads of a guest's stream
+  (`common::Following`, the vsock echo's and handshakes) wait `DAEMON_QUIET`, a minute,
+  for each next byte, however slowly it comes, and fail a minute after the last, whatever
+  the microVM's CPU does. A wait on a guest's line or its end past the test's deadline
+  (`Vm::wait_for_any_within`, `Vm::wait_exit_within`) follows what the guest itself gives
+  (`common::Heard`): a line it has not printed before, or bytes more of the stream the test
+  carries through it; its microVM's CPU time (`Ran`) only before its first line, while it
+  starts. The storm's guest waits on its host as the host waits on it: for its stream's
+  8 MiB past a snapshot and for the host's word at its end, while the echo carries bytes
+  within a minute (`STREAM_QUIET`), never a fixed minute. No wall clock bounds a storm: at
+  the rate that host streamed, 196,608 bytes in 120 s (1,638.4 B/s), the busy machine's
+  restores carry 13 MiB (1 MiB before its snapshot, a whole 4 MiB round in each of three
+  restores), 8,320 s, and the machine that goes on 12 MiB (1 MiB before, 8 MiB after and
+  the rest of their round), 7,680 s, each going on while its bytes come.
 
 ### D207. A Windows host's bind sources: its drives' paths (built)
 
