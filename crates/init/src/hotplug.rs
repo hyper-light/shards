@@ -17,8 +17,8 @@
 //!   DST grown to fill it (EXT4_IOC_RESIZE_FS, online). Answers its size in bytes.
 //! - `function ADDR group|node HOST`: a host's function at ADDR, HOST as its daemon named
 //!   it, given to vfio-pci, and its group's node, or its own VFIO device node, made in the
-//!   workload's `/dev` as a container given it at its start has it (D44, D154). Answers
-//!   the node's path and its numbers, `PATH c MAJ:MIN`.
+//!   workload's `/dev` with the VM's numbers and mode (D44, D154), owned by the user and
+//!   group the workload runs as. Answers the node's path and its numbers, `PATH c MAJ:MIN`.
 //! - `allow [c MAJ:MIN rwm]...`: the workload's device filter, its run's rules and these,
 //!   the nodes of every function plugged in. Init's own process does it, as it keeps the
 //!   filter (`devices::allow`); not here.
@@ -118,7 +118,12 @@ pub fn device(args: &[Vec<u8>], workload: libc::pid_t, out: &mut impl Write) -> 
             wait(|| crate::devices::sysfs_list(&format!("bus/pci/devices/{addr}"))).ok_or_else(|| {
                 io::Error::other(format!("no function at {addr} after a rescan of the PCI bus"))
             })?;
-            let node = crate::devices::vfio_function(addr, kind, host).map_err(io::Error::other)?;
+            let mut node = crate::devices::vfio_function(addr, kind, host).map_err(io::Error::other)?;
+            // The workload's to open: the VM's devtmpfs makes a group's node, and a VFIO
+            // device's, root's and 0600 (vfio_devnode and vfio_device_devnode set no mode;
+            // devtmpfs.c's default), which a workload of a user other than root cannot
+            // open (EACCES); its mode kept, so that it is the workload's user's alone.
+            (node.uid, node.gid) = workload_ids(workload)?;
             in_workload(workload, || {
                 crate::devices::make_nodes(std::slice::from_ref(&node)).map_err(io::Error::other)
             })?;
@@ -313,21 +318,31 @@ fn give_empty(mounted: &OwnedFd, workload: libc::pid_t) -> io::Result<()> {
     if !empty {
         return Ok(());
     }
-    let status = std::fs::read_to_string(format!("/proc/{workload}/status"))?;
-    let id = |key: &str| -> io::Result<u32> {
-        status
-            .lines()
-            .find_map(|l| l.strip_prefix(key))
-            .and_then(|ids| ids.split_whitespace().nth(1))
-            .and_then(|effective| effective.parse().ok())
-            .ok_or_else(|| io::Error::other(format!("the workload's {key}")))
-    };
-    let (uid, gid) = (id("Uid:")?, id("Gid:")?);
+    let (uid, gid) = workload_ids(workload)?;
     // SAFETY: fchownat(2) of the mount's own top, by its descriptor.
     if unsafe { libc::fchownat(mounted.as_raw_fd(), c"".as_ptr(), uid, gid, libc::AT_EMPTY_PATH) } != 0 {
         return Err(io::Error::last_os_error());
     }
     Ok(())
+}
+
+/// The user and group process `workload` runs as: its effective IDs.
+fn workload_ids(workload: libc::pid_t) -> io::Result<(u32, u32)> {
+    let status = std::fs::read_to_string(format!("/proc/{workload}/status"))?;
+    effective_ids(&status).ok_or_else(|| io::Error::other("the workload's Uid: and Gid:"))
+}
+
+/// The effective user and group a process's `status` says: the second of its `Uid:` and
+/// `Gid:` lines' IDs, which are real, effective, saved and filesystem in turn (proc(5)).
+fn effective_ids(status: &str) -> Option<(u32, u32)> {
+    let id = |key: &str| {
+        status
+            .lines()
+            .find_map(|l| l.strip_prefix(key))
+            .and_then(|ids| ids.split_whitespace().nth(1))
+            .and_then(|effective| effective.parse().ok())
+    };
+    Some((id("Uid:")?, id("Gid:")?))
 }
 
 /// Attaches `mounted` at `dst` in the mount namespace of process `workload`, made a
@@ -436,4 +451,25 @@ fn grow_ext4(dst: &str, bytes: u64) -> io::Result<()> {
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A plugged function's node, and a fresh disk's top, are given the user and group the
+    /// workload runs as, its effective IDs, not its real or saved ones (proc(5)'s order);
+    /// a status that does not name both is no owner.
+    #[test]
+    fn the_workloads_user_is_its_effective_ids() {
+        let status =
+            "Name:\ttestguest\nUmask:\t0022\nUid:\t0\t1000\t0\t1000\nGid:\t5\t1001\t5\t1001\nGroups:\t\n";
+        assert_eq!(effective_ids(status), Some((1000, 1001)));
+        assert_eq!(
+            effective_ids("Uid:\t0\t0\t0\t0\nGid:\t0\t0\t0\t0\n"),
+            Some((0, 0))
+        );
+        assert_eq!(effective_ids("Uid:\t1000\t1000\t1000\t1000\n"), None, "no Gid:");
+        assert_eq!(effective_ids("Uid:\t1000\nGid:\t1000\n"), None, "no effective ID");
+    }
 }
