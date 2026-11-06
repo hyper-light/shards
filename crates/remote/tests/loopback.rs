@@ -3,8 +3,8 @@
 //! enrolled, and a join with another secret, are refused in the daemon's words. And what a
 //! stream's ends may do to it: a daemon end it with its last frames at once, a command leave
 //! its stdin unread, a client send none, leave the stream, or go, none of which holds up,
-//! keeps or reaches another command.
-#![cfg(unix)]
+//! keeps or reaches another command. Its machine's commands are the tests' helper
+//! program's (`shards_testdir::helper`), the same on every host.
 #![allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
 
 use std::collections::HashMap;
@@ -113,10 +113,15 @@ impl Host for Machine {
         // `made-late COMMAND...`: COMMAND, which tells what it made only once it has exited.
         let late = args.first().is_some_and(|a| a == "made-late");
         let args = if late { args[1..].to_vec() } else { args };
+        // `outlives-hangup COMMAND...`: COMMAND, which goes on through its hangup, as one
+        // that ignores SIGHUP does.
+        let outlives = args.first().is_some_and(|a| a == "outlives-hangup");
+        let args = if outlives { args[1..].to_vec() } else { args };
         let (gone, gone_rx) = mpsc::channel::<()>();
         let what = args.join(" ");
-        let mut child = Command::new(&args[0])
-            .args(&args[1..])
+        // Each command one of the tests' helper program's, the same on every host.
+        let mut child = Command::new(shards_testdir::helper().map_err(Error::new)?)
+            .args(&args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -129,19 +134,32 @@ impl Host for Machine {
         };
         let stdout = child.stdout.take().unwrap();
         let stderr = child.stderr.take().unwrap();
-        let pid = child.id();
         let _ = self.seen.send(Seen::Started(what.clone()));
         let (exited, hung) = (self.seen.clone(), self.seen.clone());
         let hung_what = what.clone();
         let held = Held(self.seen.clone(), what.clone());
         let (resized, signalled) = (self.seen.clone(), self.seen.clone());
         let (resized_what, signalled_what) = (what.clone(), what.clone());
+        // A hangup ends the command, unless it outlives one: the wait kills it as it is
+        // told, which holds the child.
+        let (hang_up, hung_up) = mpsc::channel::<()>();
         Ok(Running {
             stdin: Box::new(stdin),
             stdout: Box::new(stdout),
             stderr: Box::new(stderr),
             wait: Box::new(move || {
-                let status = child.wait().map(|s| s.code().unwrap_or(128)).unwrap_or(1);
+                let ended = loop {
+                    match child.try_wait() {
+                        Ok(Some(status)) => break Ok(status),
+                        Ok(None) => {}
+                        Err(e) => break Err(e),
+                    }
+                    if hung_up.try_recv().is_ok() && !outlives {
+                        let _ = child.kill();
+                    }
+                    std::thread::sleep(Duration::from_millis(5));
+                };
+                let status = ended.map(|s| s.code().unwrap_or(128)).unwrap_or(1);
                 let _ = exited.send(Seen::Exited(what, status));
                 let _ = gone.send(());
                 status
@@ -149,7 +167,7 @@ impl Host for Machine {
             hangup: Box::new(move || {
                 let _ = &held;
                 let _ = hung.send(Seen::HungUp(hung_what.clone()));
-                let _ = Command::new("kill").args(["-HUP", &pid.to_string()]).status();
+                let _ = hang_up.send(());
             }),
             resize: Some(Box::new(move |rows, cols| {
                 let _ = resized.send(Seen::Resized(resized_what.clone(), rows, cols));
@@ -379,13 +397,7 @@ fn a_client_joins_then_runs_commands_whose_output_crosses_whole() {
         Err(server::NOT_INVITED.to_string())
     );
 
-    let (status, out, err) = run(
-        laptop,
-        remote,
-        &["sh", "-c", "echo out; echo err >&2; exit 3"],
-        None,
-    )
-    .get();
+    let (status, out, err) = run(laptop, remote, &["say", "out", "err", "3"], None).get();
     assert_eq!(status, Ok(3));
     assert_eq!(out, b"out\n");
     assert_eq!(err, b"err\n");
@@ -398,7 +410,7 @@ fn a_client_joins_then_runs_commands_whose_output_crosses_whole() {
     assert_eq!(out.len(), 8 << 20);
     assert!(out.iter().all(|b| *b == 7));
     // Eight MiB, more than a stream's window: it crosses whole.
-    let (status, out, _) = run(laptop, remote, &["sh", "-c", "head -c 8388608 /dev/zero"], None).get();
+    let (status, out, _) = run(laptop, remote, &["zeros", "8388608"], None).get();
     assert_eq!(status, Ok(0));
     assert_eq!(out.len(), 8 << 20);
     assert!(out.iter().all(|b| *b == 0));
@@ -602,17 +614,14 @@ fn what_steers_a_command_passes_its_stdin_waiting_for_room() {
     );
     let dir = TempDir::new("remote-steer").unwrap();
     let go = dir.path().join("go");
-    // Each command that waits on the test waits no longer than the test lives: one whose
-    // test failed, or was killed, before it wrote what it waits for is no command left
-    // behind (`kill -0 $PPID`, the test's process).
-    let waits = format!(
-        "while [ ! -e '{}' ] && kill -0 $PPID 2>/dev/null; do sleep 0.01; done",
-        go.display()
-    );
-    let what = format!("sh -c {waits}");
+    // Each command that waits on the test waits for it a while alone (the helper's
+    // `await`): one whose test failed, or was killed, before it wrote what it waits for is
+    // no command left behind for long.
+    let go = go.to_str().unwrap();
+    let what = format!("await {go}");
     let endless: Option<Box<dyn Read + Send>> = Some(Box::new(std::io::repeat(b'y')));
     let (steered, controls) = mpsc::channel();
-    let later = run_steered(laptop, d.remote, &["sh", "-c", &waits], endless, Some(steered));
+    let later = run_steered(laptop, d.remote, &["await", go], endless, Some(steered));
     let controls = controls.recv_timeout(DEADLINE).unwrap();
     d.seen.saw(&Seen::Started(what.clone()));
     // Long enough for its pipe, and the daemon's room for its stdin, to fill.
@@ -658,13 +667,10 @@ fn a_command_that_reads_no_stdin_holds_up_no_other() {
     );
     let dir = TempDir::new("remote-held").unwrap();
     let go = dir.path().join("go");
-    let waits = format!(
-        "while [ ! -e '{}' ] && kill -0 $PPID 2>/dev/null; do sleep 0.01; done",
-        go.display()
-    );
+    let go = go.to_str().unwrap();
     let endless: Option<Box<dyn Read + Send>> = Some(Box::new(std::io::repeat(b'y')));
-    let held = run(laptop, d.remote, &["sh", "-c", &waits], endless);
-    d.seen.saw(&Seen::Started(format!("sh -c {waits}")));
+    let held = run(laptop, d.remote, &["await", go], endless);
+    d.seen.saw(&Seen::Started(format!("await {go}")));
     // Long enough for its pipe, and the daemon's room for its stdin, to fill.
     std::thread::sleep(Duration::from_millis(300));
     let (status, out, _) = run(laptop, d.remote, &["echo", "hi"], None).get();
@@ -1126,28 +1132,23 @@ fn what_a_command_of_a_connection_gone_writes_reaches_no_other() {
         dir.path().join("ready"),
     );
     // It goes on through the hangup its client's going brings, once it has said it will.
-    let stale = format!(
-        "trap '' HUP; : > '{}'; while [ ! -e '{}' ] && kill -0 $PPID 2>/dev/null; do sleep 0.01; done; echo stale",
-        ready.display(),
-        go.display()
-    );
+    let readied = format!("ready={}", ready.to_str().unwrap());
+    let stale = ["await", go.to_str().unwrap(), readied.as_str(), "say=stale"];
     {
         let raw = RawClient::new(laptop, d.remote);
-        raw.open(exec(&["sh", "-c", &stale]));
+        let outlives: Vec<&str> = ["outlives-hangup"].into_iter().chain(stale).collect();
+        raw.open(exec(&outlives));
         until_there(&ready);
         raw.ask(Ask::Close);
     }
-    d.seen.saw(&Seen::HungUp(format!("sh -c {stale}")));
+    d.seen.saw(&Seen::HungUp(stale.join(" ")));
     // The connection gone, and drained: three probe timeouts on loopback.
     std::thread::sleep(Duration::from_millis(500));
-    let fresh = format!(
-        "while [ ! -e '{}' ] && kill -0 $PPID 2>/dev/null; do sleep 0.01; done; echo fresh; exit 7",
-        done.display()
-    );
-    let later = run(laptop, d.remote, &["sh", "-c", &fresh], None);
-    d.seen.saw(&Seen::Started(format!("sh -c {fresh}")));
+    let fresh = ["await", done.to_str().unwrap(), "say=fresh", "exit=7"];
+    let later = run(laptop, d.remote, &fresh, None);
+    d.seen.saw(&Seen::Started(fresh.join(" ")));
     std::fs::write(&go, b"").unwrap();
-    d.seen.saw(&Seen::Exited(format!("sh -c {stale}"), 0));
+    d.seen.saw(&Seen::Exited(stale.join(" "), 0));
     // What it wrote, and its exit, reach the daemon's driver meanwhile.
     std::thread::sleep(Duration::from_millis(300));
     std::fs::write(&done, b"").unwrap();
