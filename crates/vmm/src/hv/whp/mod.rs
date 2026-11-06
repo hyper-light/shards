@@ -216,7 +216,7 @@ pub fn device_assignment_refused() -> Option<String> {
     }) {
         return asked(e);
     }
-    let partition = Partition(handle, Mutex::new(Vec::new()));
+    let partition = Partition::new(handle);
     let allowed: windows_sys::core::BOOL = 1;
     let refused = partition
         .set(
@@ -457,9 +457,10 @@ fn cpuid_list(results: &[cpuid::Masked]) -> Vec<WHV_X64_CPUID_RESULT2> {
 
 /// A partition: deleted, its vCPUs with it, once nothing holds it. With what it maps of this
 /// process's memory, where the instruction emulator's accesses to guest RAM go
-/// ([`Vcpu::emulate`]).
+/// ([`Vcpu::emulate`]), and what it maps writable, whose guest's writes a live move watches
+/// ([`Tracked`]).
 #[derive(Debug)]
-struct Partition(WHV_PARTITION_HANDLE, Mutex<Vec<Mapped>>);
+struct Partition(WHV_PARTITION_HANDLE, Mutex<Vec<Mapped>>, Mutex<Tracked>);
 
 /// `len` bytes of guest-physical memory from `gpa`, at `host` in this process.
 #[derive(Debug, Clone, Copy)]
@@ -467,6 +468,81 @@ struct Mapped {
     gpa: u64,
     host: usize,
     len: u64,
+}
+
+/// The page of WHP's dirty bitmaps, a bit each (WinHvPlatform.h's
+/// WHvQueryGpaRangeDirtyBitmap: "RangeSizeInBytes / 4096 / 64" words), on x64 and Arm64.
+const DIRTY_PAGE: u64 = 4096;
+
+/// WHV_CAPABILITY_FEATURES' DirtyPageTracking (WinHvPlatformDefs.h), bit 3 on x64 and
+/// Arm64 alike.
+const DIRTY_PAGE_TRACKING: u64 = 1 << 3;
+
+/// What a partition maps writable, as it maps it (D176 part 7): each range, cut where part
+/// of it is unmapped since (a block the balloon gives back), mapped again with
+/// WHvMapGpaRangeFlagTrackDirtyPages while a live move watches its guest's writes, which
+/// WHvQueryGpaRangeDirtyBitmap then reads; and the pages written, noted as a watched range
+/// is unmapped or replaced. A range is mapped again in place, as WHvMapGpaRange "replaces
+/// any previous mappings for the specified GPA pages" (Microsoft Learn), so the guest never
+/// meets it unmapped. Under its lock, every map and unmap of the partition's and every
+/// read of a bitmap: none is read of a range unmapped since.
+#[derive(Debug, Default)]
+struct Tracked {
+    ranges: Vec<Writable>,
+    written: Option<std::collections::BTreeSet<u64>>,
+}
+
+/// `len` bytes at `gpa`, at `host` in this process, mapped with `flags`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Writable {
+    gpa: u64,
+    host: usize,
+    len: u64,
+    flags: WHV_MAP_GPA_RANGE_FLAGS,
+}
+
+impl Tracked {
+    /// Takes `len` bytes at `gpa` out of the ranges, unmapped or mapped anew: what is left
+    /// of each range they cut kept, at its own place in this process.
+    fn cut(&mut self, gpa: u64, len: u64) {
+        let end = gpa.saturating_add(len);
+        let mut kept = Vec::with_capacity(self.ranges.len());
+        for r in self.ranges.drain(..) {
+            let r_end = r.gpa.saturating_add(r.len);
+            if r_end <= gpa || r.gpa >= end {
+                kept.push(r);
+                continue;
+            }
+            if r.gpa < gpa {
+                kept.push(Writable {
+                    len: gpa - r.gpa,
+                    ..r
+                });
+            }
+            if r_end > end {
+                kept.push(Writable {
+                    gpa: end,
+                    host: r.host.saturating_add((end - r.gpa) as usize),
+                    len: r_end - end,
+                    flags: r.flags,
+                });
+            }
+        }
+        self.ranges = kept;
+    }
+
+    /// The parts of the ranges within `len` bytes at `gpa`.
+    fn within(&self, gpa: u64, len: u64) -> Vec<(u64, u64)> {
+        let end = gpa.saturating_add(len);
+        self.ranges
+            .iter()
+            .filter_map(|r| {
+                let from = r.gpa.max(gpa);
+                let to = r.gpa.saturating_add(r.len).min(end);
+                (from < to).then_some((from, to - from))
+            })
+            .collect()
+    }
 }
 
 impl Drop for Partition {
@@ -477,6 +553,10 @@ impl Drop for Partition {
 }
 
 impl Partition {
+    fn new(handle: WHV_PARTITION_HANDLE) -> Partition {
+        Partition(handle, Mutex::new(Vec::new()), Mutex::new(Tracked::default()))
+    }
+
     fn set<T>(&self, code: WHV_PARTITION_PROPERTY_CODE, value: &T, op: &'static str) -> Result<()> {
         // SAFETY: a property of its own size.
         check(op, unsafe {
@@ -484,15 +564,41 @@ impl Partition {
         })
     }
 
-    /// Maps `len` bytes at `host` at `gpa`, as `flags` say.
+    /// Maps `len` bytes at `host` at `gpa`, as `flags` say: its writes tracked where it is
+    /// writable and a live move watches them.
     ///
     /// # Safety
     /// `host..host+len` must stay mapped until unmapped or the partition is deleted.
     unsafe fn map(&self, host: *mut u8, gpa: u64, len: usize, flags: WHV_MAP_GPA_RANGE_FLAGS) -> Result<()> {
+        let mut tracked = lock(&self.2);
+        let writable = flags & WHvMapGpaRangeFlagWrite != 0;
+        let tracking = if writable && tracked.written.is_some() {
+            WHvMapGpaRangeFlagTrackDirtyPages
+        } else {
+            0
+        };
+        // What it replaces of a watched range: the writes there noted first.
+        self.note_written(&mut tracked, gpa, len as u64);
         // SAFETY: forwarded caller contract.
         check("WHvMapGpaRange", unsafe {
-            WHvMapGpaRange(self.0, host.cast_const().cast::<c_void>(), gpa, len as u64, flags)
+            WHvMapGpaRange(
+                self.0,
+                host.cast_const().cast::<c_void>(),
+                gpa,
+                len as u64,
+                flags | tracking,
+            )
         })?;
+        tracked.cut(gpa, len as u64);
+        if writable {
+            tracked.ranges.push(Writable {
+                gpa,
+                host: host as usize,
+                len: len as u64,
+                flags,
+            });
+        }
+        drop(tracked);
         lock(&self.1).push(Mapped {
             gpa,
             host: host as usize,
@@ -522,11 +628,123 @@ impl Partition {
         })
     }
 
+    /// Unmaps `len` bytes at `gpa`: what the guest wrote there, while a live move watches
+    /// its writes, noted first.
     fn unmap(&self, gpa: u64, len: u64) -> Result<()> {
+        let mut tracked = lock(&self.2);
+        self.note_written(&mut tracked, gpa, len);
         // SAFETY: the partition's own mapping, which nothing else uses.
         check("WHvUnmapGpaRange", unsafe { WHvUnmapGpaRange(self.0, gpa, len) })?;
+        tracked.cut(gpa, len);
+        drop(tracked);
         lock(&self.1).retain(|m| m.gpa != gpa || m.len != len);
         Ok(())
+    }
+
+    /// Notes the pages the guest wrote of the watched ranges within `len` bytes at `gpa`,
+    /// while a live move watches: every page of a part whose bitmap is not read.
+    fn note_written(&self, tracked: &mut Tracked, gpa: u64, len: u64) {
+        if tracked.written.is_none() {
+            return;
+        }
+        let parts = tracked.within(gpa, len);
+        let Some(set) = tracked.written.as_mut() else {
+            return;
+        };
+        for (at, n) in parts {
+            if self.dirty(at, n, set).is_err() {
+                set.extend(crate::hv::every_page(at, n));
+            }
+        }
+    }
+
+    /// Notes in `set` the pages of `len` bytes at `gpa`, mapped with their writes tracked,
+    /// that the guest wrote since they were last asked (WHvQueryGpaRangeDirtyBitmap: a bit
+    /// a [`DIRTY_PAGE`], in 64-bit words from `gpa`). Microsoft Learn's page says a call
+    /// with no bitmap clears the range's dirty state "without querying the current state",
+    /// and no more: that a query clears the bits it gives, as KVM_GET_DIRTY_LOG does, is
+    /// read from it, not stated. Nothing here clears a bit after reading it, which could
+    /// lose a write between the two: a query that kept them would give each round every
+    /// page written since the watch began, more than was written, and so lengthen a move's
+    /// rounds, never lose a page.
+    fn dirty(&self, gpa: u64, len: u64, set: &mut std::collections::BTreeSet<u64>) -> Result<()> {
+        let words = len.div_ceil(DIRTY_PAGE).div_ceil(64);
+        let too_large = || Error::Guest(format!("a dirty bitmap of {len} bytes' pages at {gpa:#x}"));
+        let size = words
+            .checked_mul(8)
+            .and_then(|bytes| u32::try_from(bytes).ok())
+            .ok_or_else(too_large)?;
+        let mut bitmap = vec![0u64; usize::try_from(words).map_err(|_| too_large())?];
+        // SAFETY: a bitmap of `size` bytes, 8-aligned, a bit for each page of the range.
+        check("WHvQueryGpaRangeDirtyBitmap", unsafe {
+            WHvQueryGpaRangeDirtyBitmap(self.0, gpa, len, bitmap.as_mut_ptr(), size)
+        })?;
+        crate::hv::note_dirty(&bitmap, gpa, DIRTY_PAGE, set);
+        Ok(())
+    }
+
+    /// Watches the guest's writes to the partition's writable memory (D176 part 7): each
+    /// range mapped again in place with its writes tracked
+    /// (WHvMapGpaRangeFlagTrackDirtyPages), and its dirty state cleared, as nothing of it
+    /// is read yet. Callable while vCPUs run.
+    fn watch_writes(&self) -> Result<()> {
+        // SAFETY: the union member the code fills.
+        let features = unsafe { capability(WHvCapabilityCodeFeatures)?.Features.AsUINT64 };
+        if features & DIRTY_PAGE_TRACKING == 0 {
+            return Err(Error::Guest(
+                "this host's Windows Hypervisor Platform tracks no partition's dirty pages \
+                 (WHvCapabilityCodeFeatures: DirtyPageTracking 0), which a live move reads"
+                    .into(),
+            ));
+        }
+        let mut tracked = lock(&self.2);
+        tracked.written = Some(std::collections::BTreeSet::new());
+        let tracking = tracked.ranges.iter().try_for_each(|r| {
+            // SAFETY: a range the partition maps, mapped again at the same memory of this
+            // process, which stays mapped as long as it did.
+            check("WHvMapGpaRange", unsafe {
+                WHvMapGpaRange(
+                    self.0,
+                    r.host as *const c_void,
+                    r.gpa,
+                    r.len,
+                    r.flags | WHvMapGpaRangeFlagTrackDirtyPages,
+                )
+            })?;
+            // SAFETY: no bitmap, of no bytes: the range's dirty state cleared.
+            check("WHvQueryGpaRangeDirtyBitmap", unsafe {
+                WHvQueryGpaRangeDirtyBitmap(self.0, r.gpa, r.len, std::ptr::null_mut(), 0)
+            })
+        });
+        drop(tracked);
+        tracking.inspect_err(|_| self.unwatch_writes())
+    }
+
+    /// The pages written since the watch began or since this was last asked, in order of
+    /// their addresses.
+    fn written(&self) -> Result<Vec<u64>> {
+        let mut tracked = lock(&self.2);
+        let Tracked { ranges, written } = &mut *tracked;
+        let Some(set) = written.as_mut() else {
+            return Ok(Vec::new());
+        };
+        for r in ranges.iter() {
+            self.dirty(r.gpa, r.len, set)?;
+        }
+        Ok(std::mem::take(set).into_iter().collect())
+    }
+
+    /// Stops watching the guest's writes: each range mapped again in place as it was.
+    fn unwatch_writes(&self) {
+        let mut tracked = lock(&self.2);
+        if tracked.written.take().is_none() {
+            return;
+        }
+        for r in &tracked.ranges {
+            // SAFETY: a range the partition maps, mapped again as it was first. It fails
+            // only once the partition is going, with nothing left to track.
+            let _ = unsafe { WHvMapGpaRange(self.0, r.host as *const c_void, r.gpa, r.len, r.flags) };
+        }
     }
 
     /// Where `len` bytes of guest RAM at `gpa` lie in this process, if one mapping holds
@@ -808,7 +1026,7 @@ fn partition(vcpus: u32, assign: bool) -> Result<Partition> {
     check("WHvCreatePartition", unsafe {
         WHvCreatePartition(&raw mut handle)
     })?;
-    let partition = Partition(handle, Mutex::new(Vec::new()));
+    let partition = Partition::new(handle);
     partition.set(
         WHvPartitionPropertyCodeProcessorCount,
         &vcpus,
@@ -885,20 +1103,23 @@ fn forbid_dynamic_code() -> Result<()> {
 }
 
 impl Vm {
-    /// A live move watches its guest's writes (D176 part 7), which WHP's dirty page
-    /// tracking would (WHvQueryGpaRangeDirtyBitmap) and shards does not ask yet.
+    /// Watches the guest's writes for a live move (D176 part 7): WHP's dirty page tracking
+    /// of every writable range the partition maps ([`Tracked`]), plugged memory and a run's
+    /// swap mapped while it runs among them.
     pub fn watch_writes(&self) -> Result<()> {
-        Err(Error::Guest(
-            "this host's microVMs move only saved, not live: WHP's dirty page tracking is not asked yet"
-                .into(),
-        ))
+        self.partition.watch_writes()
     }
 
+    /// The pages written since the watch began or was last asked, in order of their
+    /// addresses (WHvQueryGpaRangeDirtyBitmap).
     pub fn written(&self) -> Result<Vec<u64>> {
-        Ok(Vec::new())
+        self.partition.written()
     }
 
-    pub fn unwatch_writes(&self) {}
+    /// Stops watching the guest's writes.
+    pub fn unwatch_writes(&self) {
+        self.partition.unwatch_writes();
+    }
 }
 
 impl Vm {
@@ -1636,6 +1857,88 @@ impl Kicker {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    /// A writable range cut by an unmap keeps what is left of it on either side, each at
+    /// its own place in this process; ranges it misses stay whole; and the parts within a
+    /// span are those it overlaps.
+    #[test]
+    fn a_watched_range_is_cut_where_part_of_it_is_unmapped() {
+        let range = |gpa: u64, len: u64, host: usize| Writable {
+            gpa,
+            host,
+            len,
+            flags: RWX,
+        };
+        let mut tracked = Tracked {
+            ranges: vec![
+                range(0, 0x10_0000, 0x1000_0000),
+                range(0x20_0000, 0x1000, 0x2000_0000),
+            ],
+            written: None,
+        };
+        assert_eq!(
+            tracked.within(0xf_f000, 0x11_1000),
+            [(0xf_f000, 0x1000), (0x20_0000, 0x1000)]
+        );
+        tracked.cut(0x4000, 0x2000);
+        assert_eq!(
+            tracked.ranges,
+            [
+                range(0, 0x4000, 0x1000_0000),
+                range(0x6000, 0xf_a000, 0x1000_6000),
+                range(0x20_0000, 0x1000, 0x2000_0000),
+            ]
+        );
+        tracked.cut(0, 0x6000);
+        tracked.cut(0x20_0000, 0x1000);
+        assert_eq!(tracked.ranges, [range(0x6000, 0xf_a000, 0x1000_6000)]);
+        assert!(tracked.within(0, 0x6000).is_empty());
+    }
+
+    /// Do, on a real partition: map 64 pages of RAM, watch its guest's writes (the range
+    /// mapped again in place with them tracked), ask what was written, ask a part of the
+    /// range alone, give a block of it back and map it again as the balloon does, ask
+    /// again, and stop. Expect each call taken, nothing said written before the block went
+    /// (the guest ran nothing), after it nothing but the block's, and nothing once the
+    /// watch is over. Skips where the host offers no WHP.
+    #[test]
+    fn a_partitions_writes_are_watched_where_it_maps_them() {
+        use windows_sys::Win32::System::Memory::{
+            MEM_COMMIT, MEM_RELEASE, MEM_RESERVE, PAGE_READWRITE, VirtualAlloc, VirtualFree,
+        };
+        if let Err(why) = check_host() {
+            eprintln!("SKIP: no WHP here ({why})");
+            return;
+        }
+        const PAGE: usize = 4096;
+        let len = 64 * PAGE;
+        // SAFETY: fresh memory of this process, freed below once the VM is gone.
+        let at = unsafe { VirtualAlloc(std::ptr::null(), len, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE) }
+            .cast::<u8>();
+        assert!(!at.is_null());
+        let vm = Vm::new(VmConfig { vcpus: 1 }).unwrap();
+        // SAFETY: the memory stays until the VM is dropped, below.
+        unsafe { vm.map_ram(at, 0, len) }.unwrap();
+        let block = (16 * PAGE) as u64..(32 * PAGE) as u64;
+        vm.watch_writes().unwrap();
+        assert_eq!(vm.written().unwrap(), Vec::<u64>::new(), "the guest ran nothing");
+        let mut part = std::collections::BTreeSet::new();
+        vm.partition
+            .dirty(block.start, block.end - block.start, &mut part)
+            .unwrap();
+        vm.stage2().unmap(block.start, 16 * PAGE).unwrap();
+        assert_eq!(lock(&vm.partition.2).ranges.len(), 2, "cut around the block");
+        let stage2 = vm.stage2();
+        // SAFETY: as map_ram's.
+        unsafe { stage2.map(at.wrapping_add(16 * PAGE), block.start, 16 * PAGE) }.unwrap();
+        let pages = vm.written().unwrap();
+        assert!(pages.iter().all(|p| block.contains(p)), "{pages:x?}");
+        vm.unwatch_writes();
+        assert_eq!(vm.written().unwrap(), Vec::<u64>::new(), "no longer watched");
+        drop((stage2, vm));
+        // SAFETY: the memory allocated above, the VM gone.
+        unsafe { VirtualFree(at.cast(), 0, MEM_RELEASE) };
+    }
 
     /// Do, on a real partition: map a copy-on-write view of a file as guest RAM, and populate
     /// 512 of its pages for writing and 512 for reading, each a run of its own as a restore's

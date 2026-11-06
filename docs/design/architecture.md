@@ -241,7 +241,7 @@ amd64 cell's once it does.
 | A host's PCI function given a microVM, at its start or plugged in (D154, D214) | built, VFIO; not yet tested on hardware, no x86_64 host here having a function to spare (D214's Not yet) | yes, nested, on QEMU's edu function (D154, D214); plugged into a run's workload, its E2E not yet run | refused: its APIs assign no PCI function, Virtualization's one passthrough a USB device's (D154, PM M403) | built where the hypervisor assigns devices (Discrete Device Assignment, D154), its E2E waiting on a Windows Server host that assigns one; refused with the hypervisor's own answer where it assigns none (PM M401, M402) |
 | A running microVM saved whole, and resumed (D176 parts 1-5) | yes | yes | yes | yes |
 | Moved to another machine, saved (D176 part 6) | yes, between two homes of one machine (PM M460; CI's runners, migrate-e2e.yml); between two machines built, not yet run | built, not yet run | built, its CPU checked as macOS names its features (PM M460); measured on KVM x86_64 alone; between two Macs not yet run | yes between two homes, a volume's guest owners moved as its guest sees them (`server::guest`): tests/moved.rs on CI's windows-2025; between two machines built, not yet run |
-| Moved live (D176 part 7) | yes, between two homes of one machine (PM M461; CI's runners, migrate-e2e.yml); between two machines built, not yet run | refused: its dirty rings need the ITS's bitmap (`KVM_CAP_DIRTY_LOG_RING_WITH_BITMAP`), not yet asked | built, its guest's writes watched at stage 2 as D25's recorder watches them; measured on KVM x86_64 alone; between two Macs not yet run | refused: WHP's dirty page tracking (`WHvQueryGpaRangeDirtyBitmap`) not yet asked |
+| Moved live (D176 part 7) | yes, between two homes of one machine (PM M461; CI's runners, migrate-e2e.yml); between two machines built, not yet run | built, not yet run: each writable slot's dirty bitmap (`KVM_GET_DIRTY_LOG`), which takes the ITS's writes too | built, its guest's writes watched at stage 2 as D25's recorder watches them; measured on KVM x86_64 alone; between two Macs not yet run | built, not yet run: WHP's dirty page tracking (`WHvQueryGpaRangeDirtyBitmap`) |
 | Contexts, both sides, the machine's listener, enrollments and relays (D180) | yes | yes | yes | yes (part 3k) |
 | Keyless signing, its SPIFFE provider (D126) | yes | yes | yes | yes, by the Workload API's named pipe |
 | `--platform` for one platform's microVM, other CPUs' images emulated (D179) | yes | yes | yes | yes |
@@ -9434,16 +9434,50 @@ vCPUs parked and devices quiet, those three written only where its guest wrote s
 last round, which the other machine lays over what the rounds sent; resumed there; and
 stopped here once it runs there.
 
-- **What its guest writes**, watched by the hypervisor as it runs: on KVM its vCPUs' dirty
-  rings (api.rst 8.29; `KVM_CAP_DIRTY_LOG_RING_ACQ_REL`, else `KVM_CAP_DIRTY_LOG_RING`),
-  a page of the host's for each vCPU, each writable memory slot's writes logged while the
-  move watches, each vCPU whose ring fills emptying it as it exits; on Hypervisor.framework
-  its writable memory taken away for writing at stage 2 (`hv_vm_protect`) and each page
-  given back whole as its guest writes it, noted, the working-set recorder's mechanism
-  (D25). Memory plugged and a run's swap mapped while it runs are watched as they are
-  mapped. What its devices write into its memory, which no hypervisor's log sees, is noted
-  as each completes a request, its chain's writable buffers whole, and as the VMM writes
-  through its own accesses (`GuestMemory::device_wrote`).
+- **What its guest writes**, watched by the hypervisor as it runs, through one interface
+  every backend gives the pre-copy loop (`Vm::watch_writes`, `written`, `unwatch_writes`;
+  `vm/runtime.rs` `precopy`):
+  - On KVM x86_64, its vCPUs' dirty rings (api.rst 8.29; `KVM_CAP_DIRTY_LOG_RING_ACQ_REL`,
+    else `KVM_CAP_DIRTY_LOG_RING`), a page of the host's for each vCPU, each writable
+    memory slot's writes logged while the move watches, each vCPU whose ring fills emptying
+    it as it exits.
+  - On KVM arm64, and on an x86_64 KVM that keeps no rings (before Linux 5.11), each
+    writable slot's dirty bitmap (`KVM_MEM_LOG_DIRTY_PAGES`, read by `KVM_GET_DIRTY_LOG`
+    each round, api.rst 4.8), which every KVM has: without
+    `KVM_CAP_MANUAL_DIRTY_LOG_PROTECT2` enabled, KVM clears each bit it gives and takes its
+    page away for writing again before it answers (virt/kvm/kvm_main.c,
+    `kvm_get_dirty_log_protect`), so a write after the read is in the next. Not arm64's
+    rings: its GIC's ITS writes its tables and its LPIs' pending state into guest memory as
+    a save writes them, with no vCPU's ring to note them in, which a ring needs KVM's bitmap
+    beside it for (`KVM_CAP_DIRTY_LOG_RING_WITH_BITMAP`, api.rst 8.40, Linux 6.3); a slot's
+    bitmap takes every write, a vCPU's or KVM's own (`mark_page_dirty_in_slot`), the ITS's
+    in the last save's among them, read after it. The manual protect (api.rst 7.18), which
+    clears bits apart from reading them and spares the write protect of a whole slot as the
+    watch begins, is a cost the move has not measured yet, not a need. A slot deleted as it
+    is watched has its bitmap read first; one whose bitmap cannot be read counts whole as
+    written. Each bit is a host page, given the loop as the 4 KiB units it sends.
+  - On Hypervisor.framework, its writable memory taken away for writing at stage 2
+    (`hv_vm_protect`) and each page given back whole as its guest writes it, noted, the
+    working-set recorder's mechanism (D25).
+  - On WHP, its dirty page tracking (`WHvCapabilityCodeFeatures`' DirtyPageTracking): each
+    writable range the partition maps mapped again in place with
+    `WHvMapGpaRangeFlagTrackDirtyPages` as the watch begins, as WHvMapGpaRange "replaces
+    any previous mappings for the specified GPA pages" (Microsoft Learn), so its guest never
+    meets it unmapped, and its dirty state cleared (a query of no bitmap, which "indicates
+    that the range's dirty state should be cleared"); each round reads every range's bitmap
+    (`WHvQueryGpaRangeDirtyBitmap`, a bit for each 4 KiB page). Microsoft Learn does not say
+    a query clears the bits it gives, as KVM's does; it is read so from the page, and
+    nothing clears a bit after reading it, which could lose a write between the two: a
+    query that kept them would make each round send every page written since the watch
+    began, lengthening its rounds, losing none. A range is mapped with tracking from the
+    watch alone, so that no microVM that does not move pays for it. Ranges are kept as
+    mapped, cut where the balloon gives part of one back, its pages read first; the same on
+    Windows on arm64, whose API is the same (x64 and Arm64 on both pages).
+
+  Memory plugged and a run's swap mapped while it runs are watched as they are mapped. What
+  its devices write into its memory, which no hypervisor's log sees, is noted as each
+  completes a request, its chain's writable buffers whole, and as the VMM writes through
+  its own accesses (`GuestMemory::device_wrote`).
 - **Its last save holds it** (`AfterSnapshot::Hold`): a move the other machine does not
   take lets it go on here as a save that leaves a microVM running does, nothing of it lost
   (its last save, which holds only what its guest wrote last, removed); one taken stops it
@@ -9456,15 +9490,21 @@ stopped here once it runs there.
   once, from here on to there; refused there, it goes on here) and
   `a_microvm_writing_its_memory_moves_live_with_none_of_it_lost` (a guest stamping 64 MiB
   page by page as it moves, checking every page after each sweep), mutation-checked: with
-  the dirty rings' pages, or the devices' writes, not noted, it fails. Where a live move is
-  refused (KVM on arm64, WHP), both hold it refused and the microVM going on here. Run on
-  CI's runners by `.github/workflows/migrate-e2e.yml` as part 6 is.
+  the dirty rings' pages, or the devices' writes, not noted, it fails. Run on CI's runners
+  by `.github/workflows/migrate-e2e.yml` as part 6 is. The bitmaps' bits are held by
+  `hv::note_dirty`'s unit test, KVM's ioctls in the confined VM process's allowlist by
+  `a_live_moves_ioctls_are_allowed`, and WHP's calls on a real partition (its RAM mapped
+  again with tracking, a part of a range read, a block given back and mapped again as it
+  is watched) by `a_partitions_writes_are_watched_where_it_maps_them`.
 
-Not yet: arm64 KVM's dirty rings, which its GIC's ITS needs a bitmap beside
-(`KVM_CAP_DIRTY_LOG_RING_WITH_BITMAP`), and WHP's dirty page tracking
-(`WHvQueryGpaRangeDirtyBitmap`): a live move there is refused, saying so, and a saved one
-moves; a volume's files moved live, which go with its last save, and so lengthen the time
-it runs nowhere by their bytes. A move between two machines, saved or live, and the time
+Not yet: live moves on KVM arm64 (the dirty bitmaps, built), on WHP x64 and on WHP Arm64
+(dirty page tracking, built), not yet run on real microVMs: tests/moved.rs's live tests
+held them refused until now, and are each host's to pass, KVM arm64's in the nested L1
+guest of an M3 or later Mac (`SHARDS_L1_TESTS=moved`), WHP x64's on jupiter and CI's
+Windows runners, WHP Arm64's once its backend lands (the parity plan's step 10), with each
+one's rounds, whether WHP's shrink as KVM's do, and the time it ran nowhere measured; a
+volume's files moved live, which go with its last save, and so lengthen the time it runs
+nowhere by their bytes. A move between two machines, saved or live, and the time
 one moved live runs nowhere there: every move measured so far is between two homes of one
 machine (PM M460, M461), where the stream crosses no network. Two Macs of one chip and OS
 (Hypervisor.framework) are a pair to run it on; a pair of KVM x86_64 hosts needs a second
