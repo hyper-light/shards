@@ -618,30 +618,10 @@ impl Guest for ShardsGuest {
     }
 
     fn stop(&self) -> Result<(), Refusal> {
-        let mut state = lock(&self.shared.state);
-        if state.exited {
-            return Ok(());
-        }
-        let grace = STOP_GRACE.map_err(|pending| Refusal::Unsupported {
-            what: "stop",
-            why: pending.to_string(),
-        })?;
-        state.stopping = true;
-        self.signal(&state, false);
-        let deadline = Instant::now().checked_add(grace);
-        while !state.exited {
-            let left = deadline.map_or(Duration::ZERO, |d| d.saturating_duration_since(Instant::now()));
-            if left.is_zero() {
-                self.signal(&state, true);
-                break;
-            }
-            state = self
-                .shared
-                .changed
-                .wait_timeout(state, left)
-                .unwrap_or_else(PoisonError::into_inner)
-                .0;
-        }
+        // No record of a stop on this host class: no grace, killed at once. A guest's state
+        // is tmpfs and goes with it, so a kill loses nothing a graceful stop would keep;
+        // and a stop is never refused, which would leave the VM running.
+        self.stop_within(STOP_GRACE.ok());
         Ok(())
     }
 
@@ -668,6 +648,37 @@ impl Guest for ShardsGuest {
                     .wait(state)
                     .unwrap_or_else(PoisonError::into_inner),
             };
+        }
+    }
+}
+
+impl ShardsGuest {
+    /// Ends it: SIGTERM, then the kill once `grace` is out; with no grace, the kill at once
+    /// (on Windows, the process's end either way, as `signal` ends it).
+    fn stop_within(&self, grace: Option<Duration>) {
+        let mut state = lock(&self.shared.state);
+        if state.exited {
+            return;
+        }
+        state.stopping = true;
+        let Some(grace) = grace else {
+            self.signal(&state, true);
+            return;
+        };
+        self.signal(&state, false);
+        let deadline = Instant::now().checked_add(grace);
+        while !state.exited {
+            let left = deadline.map_or(Duration::ZERO, |d| d.saturating_duration_since(Instant::now()));
+            if left.is_zero() {
+                self.signal(&state, true);
+                break;
+            }
+            state = self
+                .shared
+                .changed
+                .wait_timeout(state, left)
+                .unwrap_or_else(PoisonError::into_inner)
+                .0;
         }
     }
 }
@@ -899,7 +910,7 @@ mod tests {
     #[test]
     fn a_stop_with_no_grace_kills_at_once() {
         let (_dir, guest) = deaf();
-        guest.stop_within(None).unwrap();
+        guest.stop_within(None);
         assert_eq!(guest.wait_for(Duration::MAX).unwrap(), Some(End::Stopped));
     }
 

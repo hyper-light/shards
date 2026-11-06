@@ -148,7 +148,8 @@ pub mod record {
 /// class. macOS-HVF: twice (the margin) the slowest stop recorded, 13 ms, SIGTERM to a
 /// `shards run vm`'s end (Hex `bench/native/guest/stop/RECORD.md`, N 40; Shards' PM M463
 /// records shards-api's own `stop` at 6.59 ms at most, N 80). Linux-KVM and Windows-WHP:
-/// pending their records, and `stop` is refused there by name. Shards' daemon gives a
+/// no record: no grace, killed at once (a guest's state is tmpfs, so a kill loses nothing),
+/// until their records are made; never a number borrowed from HVF's. Shards' daemon gives a
 /// container dockerd's 10 s (`crates/shards/src/daemon.rs:228-231`), a Docker CLI's contract
 /// this crate has not. `stop` returns within it and the kill.
 #[cfg(target_os = "macos")]
