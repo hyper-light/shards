@@ -14,7 +14,15 @@
 //!   socket pairs, with the same bounds and refusals.
 //! - [`conformance`] holds both to one behaviour.
 
-#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing))]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::indexing_slicing
+    )
+)]
 
 use std::io::{self, Read, Write};
 use std::net::Shutdown;
@@ -226,7 +234,10 @@ pub fn check(spec: &GuestSpec) -> Result<(), Refusal> {
     if spec.ports.len() > MAX_PORTS {
         return Err(Refusal::Bounds {
             what: "ports",
-            why: format!("{} ports; a guest's vsock holds at most {MAX_PORTS}", spec.ports.len()),
+            why: format!(
+                "{} ports; a guest's vsock holds at most {MAX_PORTS}",
+                spec.ports.len()
+            ),
         });
     }
     Ok(())
@@ -272,11 +283,35 @@ mod tests {
             other => panic!("{other:?}"),
         };
         assert_eq!(refused(GuestSpec { vcpus: 0, ..spec() }), "vcpus");
-        assert_eq!(refused(GuestSpec { vcpus: max_vcpus() + 1, ..spec() }), "vcpus");
-        assert_eq!(refused(GuestSpec { memory_mib: 257, ..spec() }), "memory_mib");
+        assert_eq!(
+            refused(GuestSpec {
+                vcpus: max_vcpus() + 1,
+                ..spec()
+            }),
+            "vcpus"
+        );
+        assert_eq!(
+            refused(GuestSpec {
+                memory_mib: 257,
+                ..spec()
+            }),
+            "memory_mib"
+        );
         let least = min_memory_mib(std::env::consts::ARCH);
-        assert_eq!(refused(GuestSpec { memory_mib: least - 2, ..spec() }), "memory_mib");
-        assert!(check(&GuestSpec { memory_mib: least, ..spec() }).is_ok());
+        assert_eq!(
+            refused(GuestSpec {
+                memory_mib: least - 2,
+                ..spec()
+            }),
+            "memory_mib"
+        );
+        assert!(
+            check(&GuestSpec {
+                memory_mib: least,
+                ..spec()
+            })
+            .is_ok()
+        );
         let ports = (0..=MAX_PORTS as u32).collect();
         assert_eq!(refused(GuestSpec { ports, ..spec() }), "ports");
     }
@@ -288,14 +323,23 @@ mod tests {
         assert_eq!(backend_of("linux", "x86_64"), Ok(Backend::Kvm));
         assert_eq!(backend_of("linux", "aarch64"), Ok(Backend::Kvm));
         assert_eq!(backend_of("macos", "aarch64"), Ok(Backend::HypervisorFramework));
-        assert_eq!(backend_of("windows", "x86_64"), Ok(Backend::WindowsHypervisorPlatform));
+        assert_eq!(
+            backend_of("windows", "x86_64"),
+            Ok(Backend::WindowsHypervisorPlatform)
+        );
         assert_eq!(
             backend_of("macos", "x86_64"),
-            Err(Refusal::NoBackend { os: "macos", arch: "x86_64" })
+            Err(Refusal::NoBackend {
+                os: "macos",
+                arch: "x86_64"
+            })
         );
         assert_eq!(
             backend_of("windows", "aarch64"),
-            Err(Refusal::NoBackend { os: "windows", arch: "aarch64" })
+            Err(Refusal::NoBackend {
+                os: "windows",
+                arch: "aarch64"
+            })
         );
         assert_eq!(min_memory_mib("x86_64"), 128);
         assert_eq!(min_memory_mib("aarch64"), 64);

@@ -15,7 +15,10 @@ use std::path::PathBuf;
 /// last name holds another `:MODE` is refused: no other mode is served.
 pub(super) fn parse(value: &OsStr) -> Result<(PathBuf, bool), String> {
     let bytes = value.as_encoded_bytes();
-    let last = bytes.rsplit(|&b| b == b'/' || (cfg!(windows) && b == b'\\')).next().unwrap_or_default();
+    let last = bytes
+        .rsplit(|&b| b == b'/' || (cfg!(windows) && b == b'\\'))
+        .next()
+        .unwrap_or_default();
     let Some(colon) = last.iter().rposition(|&b| b == b':') else {
         return directory(value, false);
     };
@@ -165,7 +168,8 @@ pub(super) fn served(args: &[OsString]) -> Result<Vec<OsString>, String> {
     }
     // It holds its ends until told they are taken (M24: XNU's collector flushes a socket in
     // flight that no process holds).
-    shards_ipc::send(&link, shards_ipc::kind::TAKEN, &[], &[]).map_err(|e| format!("the share process: {e}"))?;
+    shards_ipc::send(&link, shards_ipc::kind::TAKEN, &[], &[])
+        .map_err(|e| format!("the share process: {e}"))?;
     // Its flags as given, `--kernel` first, as the command line knows a direct boot by it;
     // each share's connection after them; then its command.
     let at = kept.iter().position(|a| a == "--").unwrap_or(kept.len());
@@ -177,7 +181,10 @@ pub(super) fn served(args: &[OsString]) -> Result<Vec<OsString>, String> {
         // SAFETY: fcntl(2) clearing close-on-exec on a descriptor this process owns, kept
         // open through the exec, for the VM.
         if unsafe { libc::fcntl(fd, libc::F_SETFD, 0) } != 0 {
-            return Err(format!("a share's connection: {}", std::io::Error::last_os_error()));
+            return Err(format!(
+                "a share's connection: {}",
+                std::io::Error::last_os_error()
+            ));
         }
         with.extend(["--slates-fs-fd".into(), fd.to_string().into()]);
     }
@@ -212,14 +219,26 @@ pub(super) fn served(
     let n = shares.len();
     let number = |at: usize| i32::try_from(at).map_err(|_| "too many shares".to_string());
     let err = std::io::stderr();
-    let mut fds = vec![(err.as_handle(), 2), (ghosts.as_handle(), number(4usize.saturating_add(n))?)];
+    let mut fds = vec![
+        (err.as_handle(), 2),
+        (ghosts.as_handle(), number(4usize.saturating_add(n))?),
+    ];
     for (i, (dir, (server, _))) in dirs.iter().zip(&streams).enumerate() {
         fds.push((dir.as_handle(), number(4usize.saturating_add(i))?));
-        fds.push((server.as_handle(), number(5usize.saturating_add(n).saturating_add(i))?));
+        fds.push((
+            server.as_handle(),
+            number(5usize.saturating_add(n).saturating_add(i))?,
+        ));
     }
     let env = crate::netproc::child_env();
-    shards_ipc::spawn_in_job(None, &exe, &share_args(&shares), &fds, &crate::netproc::env_pairs(&env))
-        .map_err(|e| format!("starting the share process: {e}"))?;
+    shards_ipc::spawn_in_job(
+        None,
+        &exe,
+        &share_args(&shares),
+        &fds,
+        &crate::netproc::env_pairs(&env),
+    )
+    .map_err(|e| format!("starting the share process: {e}"))?;
     let mut with: Vec<OsString> = vec!["run".into()];
     let mut given = Vec::with_capacity(n);
     let at = kept.iter().position(|a| a == "--").unwrap_or(kept.len());
@@ -240,8 +259,14 @@ mod tests {
     /// `--share DIR` is writable, `DIR:ro` read-only, and any other mode refused.
     #[test]
     fn a_share_is_a_directory_and_its_mode() {
-        assert_eq!(parse(OsStr::new("/srv/data")).unwrap(), ("/srv/data".into(), false));
-        assert_eq!(parse(OsStr::new("/srv/data:ro")).unwrap(), ("/srv/data".into(), true));
+        assert_eq!(
+            parse(OsStr::new("/srv/data")).unwrap(),
+            ("/srv/data".into(), false)
+        );
+        assert_eq!(
+            parse(OsStr::new("/srv/data:ro")).unwrap(),
+            ("/srv/data".into(), true)
+        );
         assert_eq!(parse(OsStr::new("rel/dir:ro")).unwrap(), ("rel/dir".into(), true));
         // A colon in a name above the last is the path's.
         assert_eq!(parse(OsStr::new("/a:b/c")).unwrap(), ("/a:b/c".into(), false));
@@ -253,10 +278,12 @@ mod tests {
     /// Every `--share` before `--` is taken, in order; those after it are the command's.
     #[test]
     fn shares_are_taken_from_the_flags() {
-        let args: Vec<OsString> = ["--kernel", "k", "--share", "/a", "--share", "/b:ro", "--", "--share", "x"]
-            .into_iter()
-            .map(OsString::from)
-            .collect();
+        let args: Vec<OsString> = [
+            "--kernel", "k", "--share", "/a", "--share", "/b:ro", "--", "--share", "x",
+        ]
+        .into_iter()
+        .map(OsString::from)
+        .collect();
         let (kept, shares) = take(&args).unwrap();
         assert_eq!(kept, ["--kernel", "k", "--", "--share", "x"]);
         assert_eq!(shares, [("/a".into(), false), ("/b".into(), true)]);

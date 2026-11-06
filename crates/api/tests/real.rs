@@ -5,7 +5,13 @@
 //! serves port 1234, `shards_test=kmsg` powers off. `SHARDS_BIN` names the `shards` to
 //! boot them with (on macOS a signed build), else `shards` on `PATH`.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing, clippy::print_stdout)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    clippy::print_stdout
+)]
 
 use std::time::Duration;
 

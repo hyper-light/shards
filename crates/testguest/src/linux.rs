@@ -135,17 +135,20 @@ fn share() -> Result<(), String> {
         if unsafe { libc::mount(src.as_ptr(), target.as_ptr(), fs.as_ptr(), 0, std::ptr::null()) } != 0 {
             return Err(format!("mount {tag} (virtiofs): {}", io::Error::last_os_error()));
         }
-        let got = std::fs::read_to_string(format!("{at}/hello")).map_err(|e| format!("read {at}/hello: {e}"))?;
+        let got =
+            std::fs::read_to_string(format!("{at}/hello")).map_err(|e| format!("read {at}/hello: {e}"))?;
         if got != want {
             return Err(format!("{tag} served {got:?}, expected {want:?}"));
         }
     }
     let wrote = "written by a shards guest through --share\n";
     {
-        let mut file = std::fs::File::create("/mnt0/from-guest").map_err(|e| format!("create /mnt0/from-guest: {e}"))?;
+        let mut file =
+            std::fs::File::create("/mnt0/from-guest").map_err(|e| format!("create /mnt0/from-guest: {e}"))?;
         file.write_all(wrote.as_bytes())
             .map_err(|e| format!("write /mnt0/from-guest: {e}"))?;
-        file.sync_all().map_err(|e| format!("fsync /mnt0/from-guest: {e}"))?;
+        file.sync_all()
+            .map_err(|e| format!("fsync /mnt0/from-guest: {e}"))?;
     }
     match std::fs::File::create("/mnt1/from-guest") {
         Ok(_) => Err("created /mnt1/from-guest through the read-only share".into()),

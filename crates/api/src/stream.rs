@@ -71,8 +71,14 @@ mod unix {
         /// its timeout: then fails `WouldBlock`, as std's sockets do at theirs on Unix.
         pub(super) fn ready(&self, which: usize) -> io::Result<()> {
             let ms = self.waits.get(which).map_or(0, |w| w.load(Ordering::Relaxed));
-            let deadline = (ms != 0).then(|| Instant::now().checked_add(Duration::from_millis(ms))).flatten();
-            let events = if which == READ { libc::POLLIN } else { libc::POLLOUT };
+            let deadline = (ms != 0)
+                .then(|| Instant::now().checked_add(Duration::from_millis(ms)))
+                .flatten();
+            let events = if which == READ {
+                libc::POLLIN
+            } else {
+                libc::POLLOUT
+            };
             loop {
                 let wait = match deadline {
                     None => -1,

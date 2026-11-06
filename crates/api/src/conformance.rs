@@ -47,7 +47,10 @@ pub struct Failure {
 }
 
 fn fail(case: &'static str, why: impl Into<String>) -> Failure {
-    Failure { case, why: why.into() }
+    Failure {
+        case,
+        why: why.into(),
+    }
 }
 
 /// Every case, in order; on a host without a backend, the ones that boot nothing.
@@ -75,7 +78,10 @@ pub fn hosts_without_a_backend_are_named(s: &Subject<'_>) -> Result<(), Failure>
     let here: Result<Backend, Refusal> = backend_of(std::env::consts::OS, std::env::consts::ARCH);
     let said = s.guests.backend();
     if said != here {
-        return Err(fail(CASE, format!("backend() is {said:?}; this host's is {here:?}")));
+        return Err(fail(
+            CASE,
+            format!("backend() is {said:?}; this host's is {here:?}"),
+        ));
     }
     Ok(())
 }
@@ -90,7 +96,13 @@ pub fn bounds_are_refused_before_boot(s: &Subject<'_>) -> Result<(), Failure> {
     };
     let least = min_memory_mib(std::env::consts::ARCH);
     let past = [
-        ("no vCPU", GuestSpec { vcpus: 0, ..none.clone() }),
+        (
+            "no vCPU",
+            GuestSpec {
+                vcpus: 0,
+                ..none.clone()
+            },
+        ),
         (
             "more vCPUs than the host's",
             GuestSpec {
@@ -168,7 +180,11 @@ pub fn a_served_port_carries_bytes_and_a_half_close(s: &Subject<'_>) -> Result<(
         Ok(got) => {
             return Err(fail(
                 CASE,
-                format!("sent {} bytes, read back {} different ones", sent.len(), got.len()),
+                format!(
+                    "sent {} bytes, read back {} different ones",
+                    sent.len(),
+                    got.len()
+                ),
             ));
         }
         Err(why) => return Err(fail(CASE, why)),
@@ -194,7 +210,12 @@ pub fn an_unserved_port_is_refused(s: &Subject<'_>) -> Result<(), Failure> {
         .ok_or_else(|| fail(CASE, "every port is allowed"))?;
     match guest.connect(off, s.patience) {
         Err(Refusal::Channel { port, .. }) if port == off => {}
-        other => return Err(fail(CASE, format!("port {off}, off the allowlist: {:?}", other.err()))),
+        other => {
+            return Err(fail(
+                CASE,
+                format!("port {off}, off the allowlist: {:?}", other.err()),
+            ));
+        }
     }
     let patience = Duration::from_millis(200);
     let start = Instant::now();
@@ -206,7 +227,10 @@ pub fn an_unserved_port_is_refused(s: &Subject<'_>) -> Result<(), Failure> {
     }
     // A handshake under way when patience runs out ends at it; a second is past any.
     if took < patience || took > patience.saturating_add(Duration::from_secs(1)) {
-        return Err(fail(CASE, format!("refused after {took:?}, with patience {patience:?}")));
+        return Err(fail(
+            CASE,
+            format!("refused after {took:?}, with patience {patience:?}"),
+        ));
     }
     let _ = guest.stop();
     Ok(())

@@ -93,8 +93,14 @@ impl Guests for Shards {
             drained: Condvar::new(),
         });
         let outputs: [Option<Box<dyn io::Read + Send>>; 2] = [
-            child.stdout.take().map(|o| Box::new(o) as Box<dyn io::Read + Send>),
-            child.stderr.take().map(|e| Box::new(e) as Box<dyn io::Read + Send>),
+            child
+                .stdout
+                .take()
+                .map(|o| Box::new(o) as Box<dyn io::Read + Send>),
+            child
+                .stderr
+                .take()
+                .map(|e| Box::new(e) as Box<dyn io::Read + Send>),
         ];
         let started = start_threads(&shared, &child, outputs);
         if let Err(e) = started {
@@ -368,7 +374,9 @@ impl Exit {
                 .unwrap_or_else(PoisonError::into_inner)
                 .0;
         }
-        let said = String::from_utf8_lossy(tail.bytes.make_contiguous()).trim().to_string();
+        let said = String::from_utf8_lossy(tail.bytes.make_contiguous())
+            .trim()
+            .to_string();
         drop(tail);
         let mut state = lock(&shared.state);
         if let Err(e) = awaited {
@@ -448,7 +456,11 @@ impl ShardsGuest {
 
 /// `what`, with what shards said last where it said anything.
 fn said(what: &str, said: &str) -> String {
-    if said.is_empty() { what.to_string() } else { format!("{what}: {said}") }
+    if said.is_empty() {
+        what.to_string()
+    } else {
+        format!("{what}: {said}")
+    }
 }
 
 /// Why a handshake failed: worth asking again, or not.
@@ -467,7 +479,8 @@ fn handshake(vsock: &Path, port: u32, deadline: Instant) -> Result<Socket, Attem
     let left = deadline
         .saturating_duration_since(Instant::now())
         .max(Duration::from_millis(1));
-    let timeouts = Stream::set_write_timeout(&s, Some(left)).and_then(|()| Stream::set_read_timeout(&s, Some(left)));
+    let timeouts =
+        Stream::set_write_timeout(&s, Some(left)).and_then(|()| Stream::set_read_timeout(&s, Some(left)));
     timeouts.map_err(|e| Attempt::Refused(format!("its timeouts: {e}")))?;
     s.write_all(format!("CONNECT {port}\n").as_bytes())
         .map_err(|e| Attempt::Again(format!("asking: {e}")))?;
@@ -482,7 +495,11 @@ fn handshake(vsock: &Path, port: u32, deadline: Instant) -> Result<Socket, Attem
         }
         match s.read(&mut byte) {
             // The guest did not accept: its device closes the connection.
-            Ok(0) => return Err(Attempt::Again("closed unanswered (the guest does not listen there)".into())),
+            Ok(0) => {
+                return Err(Attempt::Again(
+                    "closed unanswered (the guest does not listen there)".into(),
+                ));
+            }
             Ok(_) => line.extend_from_slice(&byte),
             Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
             Err(e) => return Err(Attempt::Again(format!("awaiting its answer: {e}"))),
@@ -506,30 +523,31 @@ impl Guest for ShardsGuest {
         let start = Instant::now();
         let deadline = start.checked_add(patience).unwrap_or(start);
         let mut backoff = FIRST_BACKOFF;
-        let mut last = String::from("never asked");
-        loop {
+        let last = loop {
             if let Some(refusal) = self.gone(&mut lock(&self.shared.state)) {
                 return Err(refusal);
             }
-            match handshake(&self.vsock, port, deadline) {
+            let left = match handshake(&self.vsock, port, deadline) {
                 Ok(s) => {
                     lock(&self.shared.state).ready = true;
                     return Ok(Box::new(s));
                 }
                 Err(Attempt::Refused(why)) => return Err(Refusal::Channel { port, why }),
-                Err(Attempt::Again(why)) => last = why,
-            }
-            let left = deadline.saturating_duration_since(Instant::now());
-            if left.is_zero() {
-                break;
-            }
+                Err(Attempt::Again(why)) => {
+                    let left = deadline.saturating_duration_since(Instant::now());
+                    if left.is_zero() {
+                        break why;
+                    }
+                    left
+                }
+            };
             // Waits out the backoff, woken early by the process's end.
             let state = lock(&self.shared.state);
             if !state.exited {
                 let _ = self.shared.changed.wait_timeout(state, backoff.min(left));
             }
             backoff = backoff.saturating_mul(2).min(LAST_BACKOFF);
-        }
+        };
         if let Some(refusal) = self.gone(&mut lock(&self.shared.state)) {
             return Err(refusal);
         }
