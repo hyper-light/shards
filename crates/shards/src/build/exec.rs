@@ -261,10 +261,13 @@ impl<'a> Exec<'a> {
 
     /// The first content of a fresh cache record that `held` is, from `from` (a mutable ref
     /// on its source's, mount.go): an image of it, written whole into a file of the
-    /// record's.
+    /// record's, as the build's own files are written (`through`, D188).
     fn seed_image(&mut self, held: &store::HeldMount, from: &Ref) -> Result<store::MountChanges, String> {
         let part = self.store.mount_part(held, &record_id()?, 0).map_err(err)?;
-        let mut out = std::io::BufWriter::new(part.file());
+        let mut out = std::io::BufWriter::with_capacity(
+            shards_image::through::CHUNK,
+            shards_image::through::Through(part.file().try_clone().map_err(err)?),
+        );
         let uuid = store::layer_uuid(&["seed", &held.id]);
         let written = erofs::write_uuid(from.fs.tree(), &mut self.sources, &mut out, uuid).map_err(err)?;
         std::io::Write::flush(&mut out).map_err(err)?;

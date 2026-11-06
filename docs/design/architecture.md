@@ -6392,8 +6392,9 @@ host (PM M267), where a container's page cache is its host's to drop. Free page 
   build-writer`), which its user's manager makes a scope in its application slice
   (systemd.special(7), `app.slice`) as the daemon places a spawner (D183); where that scope
   is not under the budget, every file the build writes through the store (`Partial`: its
-  layers, its image's root filesystem) and its steps' changes (`upper::Applier`'s staging
-  file) are written by it, each write to the build's own open file, passed with it
+  layers, its image's root filesystem; a cache's merged layers, `merge_run`, and its first
+  content, `seed_image`) and its steps' changes (`upper::Applier`'s staging file) are
+  written by it, each write to the build's own open file, passed with it
   (SCM_RIGHTS), at that file's offset (`shards_image::through`, build/outside.rs): their
   pages are charged to it, paced by the host's dirty limit alone. BuildKit makes its own
   writes so, in buildkitd, never in the cgroup its `RUN` steps are given (`docker build
@@ -6409,7 +6410,12 @@ host (PM M267), where a container's page cache is its host's to drop. Free page 
   `RUN`'s end 4.3 to 10.9 s against 2.6 to 4.4 free while apt itself was not (PM M442).
   The word is the command line's now, and a step's changes go to their staging file a
   chunk at a time (`through::CHUNK`, the most one message to the writer carries), not a
-  write, and a round trip to the writer, for each file.
+  write, and a round trip to the writer, for each file. At 0849ecb3 the writer ran in every
+  held build. apt's `RUN` was still 0.7 to 1.9 s slower held on two runners, all of it
+  after the guest's own end, which came no later held. That is where the build keeps and
+  merges its caches. A merge's writes were the build's own writes still made under the
+  budget, and they go through the writer now. The harness now splits that gap phase by
+  phase and process by process (PM M442).
 - **An image's root filesystem over its base's** (PM M442; built, its measurement
   awaited). An export wrote its image's whole root filesystem, rust:1-slim's 850 MiB again
   for a build that added 7 MiB. Where the store's file system clones a file (APFS's
