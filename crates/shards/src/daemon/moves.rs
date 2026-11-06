@@ -1633,12 +1633,13 @@ mod tests {
     fn a_live_moves_last_round_lays_over_its_rounds_page_by_page() {
         use shards_vmm::vm::live;
         let mut bytes = Vec::new();
-        let mut w = live::Writer::new(&mut bytes).unwrap();
-        w.record(live::RAM, 0, &[1; 64 << 10]).unwrap();
-        w.round(0).unwrap();
-        w.record(live::RAM, 0x3000, &[2; 4096]).unwrap();
-        w.round(1).unwrap();
-        drop(w);
+        {
+            let mut w = live::Writer::new(&mut bytes).unwrap();
+            w.record(live::RAM, 0, &[1; 64 << 10]).unwrap();
+            w.round(0).unwrap();
+            w.record(live::RAM, 0x3000, &[2; 4096]).unwrap();
+            w.round(1).unwrap();
+        }
         let mut last = live::Writer::going_on(&mut bytes);
         last.record(live::RAM, 0x1000, &[0; 4096]).unwrap();
         last.record(live::RAM, 0x8000, &[3; 4096]).unwrap();
