@@ -15235,7 +15235,7 @@ fn a_microvms_vcpus_and_governor_wake_at_the_shortest_slice() {
         );
     }
     assert_eq!(shards(&["rm", "-f", "sliced"]).status, Some(0));
-    let _ = exit(&mut sliced);
+    let _ = exit(&mut sliced, &home);
 }
 
 /// A run's busy vCPUs are never depressed by XNU's real-time fail-safe (D4, PM M317):
