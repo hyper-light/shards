@@ -120,6 +120,19 @@ fn devices_are_plugged_into_a_run_and_its_disk_grows() {
         none.stderr
     );
 
+    // Off Linux no host's function is plugged in: refused by name, with its host's own
+    // limit, as a run's start refuses one (D154; PM M401, M402, M403).
+    #[cfg(not(target_os = "linux"))]
+    {
+        let limit = shards_vmm::vm::passthrough_refused();
+        for function in ["0000:01:00.0", "/dev/vfio/devices/vfio0"] {
+            let r = run_shards_env(&["plug"], &["function", "plugged", function], &env, TIMEOUT);
+            assert_ne!(r.status, Some(0), "{function}: {}", r.stdout);
+            let said = format!("shards: cannot plug into plugged: {function}: {limit}");
+            assert!(r.stderr.contains(&said), "{function}: {}", r.stderr);
+        }
+    }
+
     shards(&["rm"], &["-f", "plugged"]);
 }
 

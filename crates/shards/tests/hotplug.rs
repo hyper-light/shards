@@ -2,9 +2,9 @@
 //! (D214): real guests on the host's hypervisor, booted in this process (one VM a process,
 //! as Hypervisor.framework allows), the test guest told each step on its console.
 //!
-//! `SHARDS_PLUG_ROUNDS` plugs, reads, writes and unplugs a disk that many times, and says
-//! each step's times as n, p50, p90, p99 and max (PM M430's harness,
-//! docs/research/measurements/pci-hotplug).
+//! `SHARDS_PLUG_ROUNDS` plugs, reads, writes and unplugs a disk (and a host's function,
+//! where the host has one to give) that many times, and says each step's times as n, p50,
+//! p90, p99 and max (PM M430's harness, docs/research/measurements/pci-hotplug).
 
 #![allow(clippy::panic)]
 
@@ -287,9 +287,10 @@ fn edu_function() -> Option<String> {
 /// IOMMU: its guest rescans, finds QEMU edu's IDs at the place it was plugged into, and
 /// reads its identification register and liveness check through its BAR 0, mapped from
 /// sysfs where the guest placed it, the BAR's window a memory slot of KVM's that moved
-/// with it; then lets it go, and it is unplugged, KVM told to forget its group. Twice, as
-/// a function let go is the host's again. Runs where a host has an edu function to give:
-/// nested, `SHARDS_L1_PCI_TESTS=01.0 SHARDS_L1_TESTS=hotplug` (boot.rs).
+/// with it; then lets it go, and it is unplugged, KVM told to forget its group. Twice at
+/// least (`SHARDS_PLUG_ROUNDS`), as a function let go is the host's again, each step timed.
+/// Runs where a host has an edu function to give: nested, `SHARDS_L1_PCI_TESTS=01.0
+/// SHARDS_L1_TESTS=hotplug:a_hosts_function` (boot.rs).
 #[cfg(target_os = "linux")]
 #[test]
 fn a_hosts_function_is_plugged_into_a_running_microvm() {
@@ -324,18 +325,35 @@ fn a_hosts_function_is_plugged_into_a_running_microvm() {
         step += 1;
         until(handle, &format!("SHARDS-PLUG WAIT {step}"))
     };
-    for _ in 0..2 {
+    // SHARDS_PLUG_ROUNDS times (twice where unset), each step timed as the disk's are.
+    let rounds: usize = std::env::var("SHARDS_PLUG_ROUNDS")
+        .ok()
+        .and_then(|r| r.parse().ok())
+        .unwrap_or(2)
+        .max(2);
+    let (mut plugs, mut reads, mut removes, mut unplugs) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    for _ in 0..rounds {
+        let t0 = Instant::now();
         let plugged = handle.plug_vfio(&f).unwrap_or_else(|e| panic!("{e}"));
+        plugs.push(t0.elapsed().as_micros());
         let said = ask(&handle, format!("vfio {}", plugged.address));
-        eprintln!(
-            "PLUG-STATS a host's function, rescan to its BAR read: {} us",
-            answer(&said, "SHARDS-PLUG VFIO ")[0]
-        );
-        ask(&handle, format!("remove {}", plugged.address));
+        reads.push(answer(&said, "SHARDS-PLUG VFIO ")[0].parse().unwrap());
+        let said = ask(&handle, format!("remove {}", plugged.address));
+        removes.push(answer(&said, "SHARDS-PLUG REMOVED ")[0].parse().unwrap());
+        let t0 = Instant::now();
         handle.unplug(plugged.devfn).unwrap_or_else(|e| panic!("{e}"));
+        unplugs.push(t0.elapsed().as_micros());
     }
     until(&handle, &format!("SHARDS-PLUG WAIT {step}"));
     handle.console_input(b"done\n");
     let said = until(&handle, "SHARDS-TEST PASS");
     assert_eq!(running.wait(), ExitReason::PowerOff, "{said}");
+    for (name, samples) in [
+        ("a host's function, host plug", &mut plugs),
+        ("a host's function, guest rescan to its BAR read", &mut reads),
+        ("a host's function, guest remove", &mut removes),
+        ("a host's function, host unplug", &mut unplugs),
+    ] {
+        eprintln!("{}", stats(name, samples));
+    }
 }

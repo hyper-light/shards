@@ -7178,7 +7178,14 @@ share made ahead), and a disk's capacity was fixed when its file was opened.
     =01.0 SHARDS_L1_TESTS=plug:a_hosts_function`): a run given `/dev/vfio/vfio`, the L1
     guest's edu function plugged in, its workload moving a page through it by DMA through
     its IOMMU, a second plug refused, unplugged and the node gone, twice; a run booted
-    otherwise refused. Not yet run; its numbers not yet measured.
+    otherwise refused. Not yet run; its numbers not yet measured. Off Linux, `shards plug
+    function` is refused by name with its host's own limit, as a run's start refuses one
+    (`passthrough_refused`: on macOS, Hypervisor.framework's API assigns no device to a VM,
+    PM M403), in tests/plug.rs's `devices_are_plugged_into_a_run_and_its_disk_grows`; the
+    VMM's own refusal off Linux is `vm`'s `a_hosts_pci_function_is_refused_with_its_oss_own
+    _limit`. The steps' costs, n, p50, p90, p99 and max, as M430 gives a disk's, are
+    `docs/research/measurements/pci-hotplug/vfio-nested.sh`'s (the in-process test's
+    `SHARDS_PLUG_ROUNDS` rounds, nested): not yet run.
 - **Not yet:** tests/plug.rs and the in-process test's shared directory run on WHP (CI's
   windows-2022 and windows-2025, jupiter); a plugged share's DAX window; a plugged function's 64-bit BARs
   past the 32-bit window; a host's function plugged on bare-metal hardware (no host here

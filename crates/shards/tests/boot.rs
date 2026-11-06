@@ -1026,8 +1026,9 @@ fn snapshot_tests_pass_on_a_kvm_host_of_this_architecture() {
     // guests stall 30 s between resuming and dialing their host, their runs past 60 s, in
     // 11 of 24 rounds, where the one that failed passed 9 of 9 alone (PM M346).
     // SHARDS_L1_TESTS names others instead (`binary` or `binary:filter`, comma-separated),
-    // SHARDS_L1_LOG their SHARDS_LOG, and SHARDS_TEST_LOG_SHOWN how much of a failing
-    // test's logs they show.
+    // SHARDS_L1_LOG their SHARDS_LOG, SHARDS_TEST_LOG_SHOWN how much of a failing
+    // test's logs they show, and SHARDS_PLUG_ROUNDS how many rounds tests/hotplug.rs's
+    // plug.
     let runs: Vec<(String, String)> = match std::env::var("SHARDS_L1_TESTS") {
         Ok(chosen) => chosen
             .split(',')
@@ -1137,6 +1138,9 @@ fn snapshot_tests_pass_on_a_kvm_host_of_this_architecture() {
     }
     if let Ok(bytes) = std::env::var("SHARDS_TEST_LOG_SHOWN") {
         env.push_str(&format!("SHARDS_TEST_LOG_SHOWN={bytes}\n"));
+    }
+    if let Ok(rounds) = std::env::var("SHARDS_PLUG_ROUNDS") {
+        env.push_str(&format!("SHARDS_PLUG_ROUNDS={rounds}\n"));
     }
     if let Some(k) = functions_kernel {
         env.push_str(&format!("SHARDS_TEST_NESTED_KERNEL={}\n", k.display()));
