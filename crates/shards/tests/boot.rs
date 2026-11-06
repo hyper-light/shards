@@ -1883,7 +1883,7 @@ fn a_direct_boot_writes_through_a_share_and_not_through_a_read_only_one() {
         return;
     }
     let dir = common::TempDir::new("share");
-    let (rw, ro) = (dir.path().join("rw"), dir.path().join("ro"));
+    let (rw, ro) = (dir.join("rw"), dir.join("ro"));
     for d in [&rw, &ro] {
         std::fs::create_dir(d).unwrap();
         std::fs::write(d.join("hello"), "hello through --share\n").unwrap();

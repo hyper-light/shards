@@ -47,9 +47,12 @@ fn directory(dir: &OsStr, read_only: bool) -> Result<(PathBuf, bool), String> {
     Ok((PathBuf::from(dir), read_only))
 }
 
+/// A share as `--share` names it: its directory, and whether it is read-only.
+type Named = (PathBuf, bool);
+
 /// `args` (a `run`'s, after `run`) with each `--share` taken out, and the shares, in order.
 /// Those after `--` are its command's.
-pub(super) fn take(args: &[OsString]) -> Result<(Vec<OsString>, Vec<(PathBuf, bool)>), String> {
+pub(super) fn take(args: &[OsString]) -> Result<(Vec<OsString>, Vec<Named>), String> {
     let mut kept = Vec::with_capacity(args.len());
     let mut shares = Vec::new();
     let mut rest = args.iter();
