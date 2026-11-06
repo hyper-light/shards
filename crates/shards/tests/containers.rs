@@ -2539,7 +2539,7 @@ fn placed_under_slices(home: &Path, image: &str, path: &Run) {
     // The scope goes with the daemon, each of its processes ended.
     let stopped = shards(&["stop", "daemon"]);
     assert_eq!(stopped.status, Some(0), "{stopped}");
-    let mut patience = Patience::of(&home, TIMEOUT);
+    let mut patience = Patience::of(home, TIMEOUT);
     while scope_dir.exists() {
         assert!(patience.holds(), "{} outlived the daemon", scope_dir.display());
         std::thread::sleep(Duration::from_millis(50));
