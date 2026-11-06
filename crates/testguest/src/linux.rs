@@ -1180,22 +1180,41 @@ fn storm() -> Result<(), String> {
         .map_err(|e| format!("waiting for the host's word: {e}"))
 }
 
+/// How long the storm's main thread stands still before a watcher says so, in one line
+/// ([`standing_still`]): well inside the host's `DAEMON_QUIET`, so that the host, which
+/// waits a minute past its deadline for something new, hears of a stall before it gives up.
+const STOOD_STILL: Duration = Duration::from_secs(15);
+
 /// Watches the storm's main thread from its snapshot on, by the count it adds to at each
-/// step and each look at what it waits for: once the count has stood still 15 s, has the
-/// kernel say what it can of it ([`stood_still`]). What stops the main thread past the
-/// snapshot stops what it says too, a lost timer and a stuck console alike; printk's
-/// console polls the UART, needing none of its interrupts, so the kernel's word reaches
-/// the host either way. Four watchers, each pinned to its own of the guest's `cpus`, spread
-/// across them: a CPU whose timer stopped stops the one there, whose sleeps never end, and
-/// not the rest. The first to see it says it, once; none does after the count is
-/// `u64::MAX`, which ends the watch.
+/// step and each look at what it waits for. Once the count has stood still [`STOOD_STILL`],
+/// a watcher says so in a line ([`standing_still`]), once for each beat it stands still at;
+/// once it has stood still [`STREAM_QUIET`], the storm's own bound for a stream that has
+/// stopped, past which the host gives up on it too, the kernel says all it can of it
+/// ([`stood_still`]), once. What stops the main thread past the snapshot stops what it
+/// says too, a lost timer and a stuck console alike; printk's console polls the UART,
+/// needing none of its interrupts, so the kernel's word reaches the host either way.
+///
+/// The kernel's whole account waits for the longer bound because it is no cheap read
+/// (PM M427): on the nested arm64 Windows host (QEMU's TCG, 4 CPUs) a 64-vCPU storm's
+/// main thread stood 26 and 56 s at its clock check after the snapshot, as the same check
+/// took 20 s before it, and the account given after 15 s, some 6,000 lines of timers
+/// alone, held the console for 172 s at milliseconds a byte, on CPU 0, which every device
+/// interrupt goes to: its echo carried nothing for 60 s and the guest failed itself; the
+/// other storm's CPU 0 left its tasks unrun for 750 s, its disk completions with them.
+/// A storm that stalls for good still has the account, a minute in.
+///
+/// Four watchers, each pinned to its own of the guest's `cpus`, spread across them: a CPU
+/// whose timer stopped stops the one there, whose sleeps never end, and not the rest. None
+/// says anything after the count is `u64::MAX`, which ends the watch.
 fn watch_main_thread(cpus: usize) -> std::sync::Arc<std::sync::atomic::AtomicU64> {
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     let beats = std::sync::Arc::new(AtomicU64::new(0));
-    let said = std::sync::Arc::new(AtomicBool::new(false));
+    // The beat a stall was last said at, and whether the kernel's account was given.
+    let told = std::sync::Arc::new(AtomicU64::new(u64::MAX));
+    let accounted = std::sync::Arc::new(AtomicBool::new(false));
     let watchers = cpus.clamp(1, 4);
     for w in 0..watchers {
-        let (watched, said) = (beats.clone(), said.clone());
+        let (watched, told, accounted) = (beats.clone(), told.clone(), accounted.clone());
         thread::spawn(move || {
             if pin(w * cpus / watchers).is_err() {
                 return;
@@ -1204,16 +1223,22 @@ fn watch_main_thread(cpus: usize) -> std::sync::Arc<std::sync::atomic::AtomicU64
             loop {
                 thread::sleep(Duration::from_secs(1));
                 let now = watched.load(Ordering::Relaxed);
-                if now == u64::MAX || said.load(Ordering::Relaxed) {
+                if now == u64::MAX || accounted.load(Ordering::Relaxed) {
                     return;
                 }
                 if now != last {
                     (last, since) = (now, Instant::now());
-                } else if since.elapsed() >= Duration::from_secs(15) {
-                    if !said.swap(true, Ordering::Relaxed) {
+                    continue;
+                }
+                let still = since.elapsed();
+                if still >= STREAM_QUIET {
+                    if !accounted.swap(true, Ordering::Relaxed) {
                         stood_still(now);
                     }
                     return;
+                }
+                if still >= STOOD_STILL && told.swap(now, Ordering::Relaxed) != now {
+                    standing_still(now);
                 }
             }
         });
@@ -1221,27 +1246,16 @@ fn watch_main_thread(cpus: usize) -> std::sync::Arc<std::sync::atomic::AtomicU64
     beats
 }
 
-/// What the kernel can say of a main thread that stood still ([`watch_main_thread`]), on
-/// its console at a log level that shows it: what it logged that the console's level kept
-/// off it (notices and worse), the CPU the main thread last ran on, the CPUs whose local
-/// timer took no interrupt in a second, each CPU's timers and clock event device (sysrq
-/// `q`), and every task's stack (sysrq `t`).
-fn stood_still(beat: u64) {
-    let say = |line: &str| {
-        let _ = std::fs::write("/dev/kmsg", format!("storm: {line}\n"));
-    };
-    let _ = std::fs::write("/proc/sys/kernel/printk", "7");
-    let logged = kernel_log(5);
-    // SAFETY: sched_getcpu(3) takes no arguments.
-    let here = unsafe { libc::sched_getcpu() };
-    say(&format!(
-        "the main thread stood still 15 s at beat {beat} (seen from CPU {here})"
-    ));
-    for line in logged {
-        say(&format!("log: {line}"));
-    }
-    // /proc/PID/stat's field 39, the CPU it last ran on: the 37th after its command's ")".
-    let cpu = std::fs::read_to_string("/proc/1/stat")
+/// A line of the storm's watch on its console, at LOG_USER/ERR, which the test kernel's
+/// `quiet` shows ([`report`]).
+fn say(line: &str) {
+    let _ = std::fs::write("/dev/kmsg", format!("<11>storm: {line}\n"));
+}
+
+/// The CPU the main thread last ran on: /proc/PID/stat's field 39, the 37th after its
+/// command's ")".
+fn main_thread_cpu() -> String {
+    std::fs::read_to_string("/proc/1/stat")
         .ok()
         .and_then(|s| {
             s.rsplit(')')
@@ -1249,8 +1263,39 @@ fn stood_still(beat: u64) {
                 .and_then(|rest| rest.split_whitespace().nth(36))
                 .map(str::to_string)
         })
-        .unwrap_or_default();
-    say(&format!("the main thread last ran on CPU {cpu}"));
+        .unwrap_or_default()
+}
+
+/// That the main thread has stood still [`STOOD_STILL`] at `beat`, and where it last ran,
+/// in one line ([`watch_main_thread`]).
+fn standing_still(beat: u64) {
+    // SAFETY: sched_getcpu(3) takes no arguments.
+    let here = unsafe { libc::sched_getcpu() };
+    say(&format!(
+        "the main thread stood still {} s at beat {beat} (seen from CPU {here}); it last ran on CPU {}",
+        STOOD_STILL.as_secs(),
+        main_thread_cpu()
+    ));
+}
+
+/// What the kernel can say of a main thread that stood still [`STREAM_QUIET`]
+/// ([`watch_main_thread`]), on its console at a log level that shows it: what it logged
+/// that the console's level kept off it (notices and worse), the CPU the main thread last
+/// ran on, the CPUs whose local timer took no interrupt in a second, each CPU's timers and
+/// clock event device (sysrq `q`), and every task's stack (sysrq `t`).
+fn stood_still(beat: u64) {
+    let _ = std::fs::write("/proc/sys/kernel/printk", "7");
+    let logged = kernel_log(5);
+    // SAFETY: sched_getcpu(3) takes no arguments.
+    let here = unsafe { libc::sched_getcpu() };
+    say(&format!(
+        "the main thread stood still {} s at beat {beat} (seen from CPU {here})",
+        STREAM_QUIET.as_secs()
+    ));
+    for line in logged {
+        say(&format!("log: {line}"));
+    }
+    say(&format!("the main thread last ran on CPU {}", main_thread_cpu()));
     if let Some(before) = local_timer_interrupts() {
         thread::sleep(Duration::from_secs(1));
         if let Some(after) = local_timer_interrupts() {
@@ -1272,11 +1317,21 @@ fn stood_still(beat: u64) {
     let _ = std::fs::write("/proc/sysrq-trigger", "t");
 }
 
-/// Each CPU's count of local timer interrupts, /proc/interrupts' `LOC` line.
+/// Each CPU's count of local timer interrupts: /proc/interrupts' `LOC` line on x86_64, and
+/// on arm64, which has none, the architected timer's (`arch_timer`, its PPI): reading
+/// `LOC` alone, a 64-vCPU storm on arm64 said nothing of its timers (PM M427).
 fn local_timer_interrupts() -> Option<Vec<u64>> {
     let text = std::fs::read_to_string("/proc/interrupts").ok()?;
     let cpus = text.lines().next()?.split_whitespace().count();
-    let line = text.lines().find_map(|l| l.trim_start().strip_prefix("LOC:"))?;
+    let line = text.lines().map(str::trim_start).find_map(|l| {
+        if let Some(rest) = l.strip_prefix("LOC:") {
+            return Some(rest);
+        }
+        if l.trim_end().ends_with(" arch_timer") {
+            return l.split_once(':').map(|(_, rest)| rest);
+        }
+        None
+    })?;
     Some(
         line.split_whitespace()
             .take(cpus)

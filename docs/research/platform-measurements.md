@@ -18349,3 +18349,70 @@ revision before comparing a changed API/implementation.
   `exec alloc-free`), and nothing in their logs says what their microVMs ran meanwhile:
   the daemon logged nothing while a workload ran. It now logs a microVM a client waits on
   each 10 s where it ran (D209's second bullet); the rerun's logs are those cases' evidence.
+
+### M427. A 64-vCPU storm on the nested arm64 Windows host: slow, not losing interrupts (D209, M414)
+
+- **Question.** In step 10's full suite on the arm64 Windows 11 host nested under QEMU's
+  TCG with TF-A on this Mac (4 CPUs; M414), both storms of `tests/snapshot.rs` failed at
+  64 vCPUs (`storm_cpus()`: 2, 8, and the hypervisor's and kernel's 64), having passed at
+  2 and 8: `a_busy_machine_goes_on_whole_past_its_snapshot` (no `storm checked`, nothing
+  new for 60 s) and `restores_of_a_busy_machine_lose_no_interrupt_and_repeat_no_write`
+  (restore 0's guest gave up on the host's word). Did arm64's WHP backend lose an
+  interrupt, park a vCPU or restore its GIC wrong, or did the host not run the guest?
+- **Method.** The binary's whole output,
+  [n21-snapshot.stderr.txt](measurements/whp-arm64/results/storm-64/n21-snapshot.stderr.txt)
+  (line numbers below are its), 2026-11-05: the guest's reports, its watchdog's account
+  (testguest `stood_still`: the kernel's notices, sysrq `q`, sysrq `t`), and the
+  backend's code (`hv/whp_arm64`).
+- **Found.**
+  - The host starved the guest before any snapshot. From READY to the steady report a
+    pair's thread waited 15.1 s for its turn, the median worker's longest wait 1.67 s
+    (line 7); between that report and the snapshot the longest gap was 15.8 s, the
+    median 2.27 s (11); the clock check, a 100 ms window once 64 pinned readers meet,
+    took 59.55 to 79.27 s of guest time (7, 8). After the snapshot the same check took 26
+    s in the original (11 to 18) and 56 s in the restore (1402 to 1413).
+  - vCPUs were off their host CPUs for seconds inside bounded interrupt handlers:
+    hrtimer `max_hang_time` 3.84 s on CPU 63 (6320), 3.53 s on CPU 8 (2131), 2.31 s on
+    CPU 29 (3731); `hrtimer: interrupt took 84457000 ns` (37). No timer was overdue: of
+    the restore's 71 pending hrtimers, none expired before its CPU's list was read (each
+    `[in` positive, lines 1452 to 6272); every CPU's 4 s `watchdog_timer_fn` was rearmed
+    within its period as its list was printed (CPU 63's at 298.751 s, last tick 298.756,
+    lines 6272, 6323).
+  - Device interrupts went on: virtio0, 1 and 2's counts, all on CPU 0, rose from 403,
+    428, 299 to 407, 432, 303 between two reports after the snapshot (58, 80, 81), and
+    the writer moved from slot 213 to 215.
+  - The woken were runnable, not waiting: of the guest's init threads in the original's
+    sysrq `t` (195.86 s), 13 storm threads `R running task` and 16 `R` without it
+    (TASK_WAKING: queued for a CPU's wake list), all with futex stacks (lines 101 to
+    1121); CPU 0's ksoftirqd/0, migration/0 and kworker/0:0 `R running task` (1248, 1299,
+    1351); its reader and writer in `D` in `submit_bio_wait` (1075, 1098) with nothing in
+    flight, their completions waiting on CPU 0. A lost interrupt leaves its waiter asleep
+    on an idle CPU; CPU 0 had three tasks it did not run, and its own watchdog timer fired
+    (45).
+  - The storm's watchdog made it worse. Its account was given once the main thread had
+    stood still 15 s, which the clock check alone takes here (12, 1403). Through the
+    emulated UART, at 1.3 s a line of 49 to 184 bytes where its writer printed them (13
+    to 17), sysrq `q` for 64 CPUs (some 6,000 lines) took 172 s (1437 to 7509). The
+    restore's was given from CPU 0 (1403), the CPU every device interrupt goes to:
+    workers 0 and 1 stopped (1427), its echo carried nothing for 60 s, and its guest, its
+    checks passed (`storm checked`, 1577; records=256, 1573; the clock in step after
+    170,607 reads, 1413), failed on that (3737). In the original the account began from
+    CPU 32, whose pair stopped (81); CPU 0's soft lockup report (45) came as the
+    console's records began to be dropped (6,438, line 86), and the rest took about 750 s
+    to print, 156 reports of workers 0, 65 and 66, CPU 0's, still in their rounds (85 to
+    1394), until nothing new came for 60 s.
+  - Its timers line printed nothing on arm64: `local_timer_interrupts` read x86's `LOC`.
+  - The backend delivers no SGI or timer interrupt: the platform's GICv3 and its timer's
+    PPI are Hyper-V's (`Vm::new`'s `IcParameters`); the VMM decodes MMIO and raises SPIs.
+    A machine that went on past its snapshot had nothing restored into it, and failed;
+    the restored one passed every check its storm makes.
+- **Consequence.** No backend bug: a host that ran 64 vCPUs on 4 emulated CPUs at
+  milliseconds an exit, and a watchdog whose account, given on a slow step, took the CPU
+  the storm's devices need. The watchdog now says a stall in one line after 15 s, and gives
+  the kernel's account only after `STREAM_QUIET` (60 s), the storm's own bound for a
+  stopped stream and the host's for a silent guest, so a stall that lasts has it and a
+  slow step does not pay for it; its timers line reads arm64's `arch_timer`. The storm's
+  checks, counts and bounds are unchanged. Open: the 64-vCPU storms on this host with the
+  change, and on a native arm64 Windows host with WHP (a Snapdragon X machine, as a user
+  session), which alone says whether Hyper-V's SGIs and timers hold across a 64-vCPU
+  snapshot at a native host's timing.

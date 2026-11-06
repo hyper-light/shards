@@ -1,0 +1,23 @@
+
+running 12 tests
+test a_restore_given_its_files_refuses_a_snapshot_naming_others ... ok
+test a_restore_maps_ahead_the_working_set_the_restore_before_it_recorded ... ok
+test a_snapshot_that_cannot_be_written_stops_no_resumed_run ... ok
+test common::port_probe ... ignored, a process of its own for port_free and hold_port, which run it
+test common::terminal::console_shell ... ignored, the shell of a terminal a test holds, which runs it
+test damaged_or_missing_snapshots_are_refused ... ok
+test every_restore_continues_the_guest_where_it_asked_for_the_snapshot ... ok
+test kvm_counters_are_summed_per_name_and_absent_where_unlisted ... ok
+test restores_elsewhere_read_the_disks_the_snapshot_was_taken_with ... ok
+test storm::a_busy_machine_goes_on_whole_past_its_snapshot ... FAILED
+test storm::restores_of_a_busy_machine_lose_no_interrupt_and_repeat_no_write ... FAILED
+test the_original_guest_can_continue_after_its_snapshot ... ok
+
+failures:
+
+failures:
+    storm::a_busy_machine_goes_on_whole_past_its_snapshot
+    storm::restores_of_a_busy_machine_lose_no_interrupt_and_repeat_no_write
+
+test result: FAILED. 8 passed; 2 failed; 2 ignored; 0 measured; 0 filtered out; finished in 1577.44s
+

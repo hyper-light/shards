@@ -517,6 +517,10 @@ mod storm {
     /// vCPU counts from two to as many as this host and the kernel take, or
     /// `SHARDS_STORM_CPUS` alone. `SHARDS_STORM_MS` runs the storm that long before its
     /// snapshot, for its report of the workers' longest gaps (platform-measurements M45).
+    /// The most a host takes is what it is held to, however slowly it runs them: 64 vCPUs
+    /// on the nested arm64 Windows host's 4 TCG CPUs left woken threads unrun for 15 s
+    /// before any snapshot, and lost no interrupt (M427); the guest's watchdog gives the
+    /// kernel's account of a stall only once it has lasted `STREAM_QUIET`.
     fn storm_cpus() -> Vec<u32> {
         let max = shards_vmm::vm::max_vcpus().unwrap().min(common::KERNEL_NR_CPUS);
         if let Ok(only) = std::env::var("SHARDS_STORM_CPUS") {
