@@ -47,11 +47,11 @@ fn specs() -> Option<impl Fn(&str) -> GuestSpec> {
 }
 
 /// A hang guard: each wait returns at its fact. By host class (`record`): macOS-HVF, twice
-/// (the margin) the slowest recorded of these waits, a boot to its port answering, 207.553625
-/// ms (`docs/research/platform-measurements.md` M463); Linux-KVM and Windows-WHP, pending
+/// (the margin) the slowest recorded of these waits, a boot to its port answering, 248.467 ms
+/// (`docs/research/platform-measurements.md` M463); Linux-KVM and Windows-WHP, pending
 /// their records.
 #[cfg(target_os = "macos")]
-const PATIENCE: Result<Duration, Pending> = Ok(Duration::from_nanos(2 * 207_553_625));
+const PATIENCE: Result<Duration, Pending> = Ok(Duration::from_nanos(2 * 248_467_000));
 #[cfg(not(target_os = "macos"))]
 const PATIENCE: Result<Duration, Pending> = Err(Pending::of("tests/real.rs PATIENCE"));
 

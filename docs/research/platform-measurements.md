@@ -20394,30 +20394,52 @@ revision before comparing a changed API/implementation.
   adas-mac-studio-2.local (Mac16,9, M4 Max, macOS 26.2), one-shot launchd jobs (kiln's
   headroom guard paces none of it), under its own co-tenants, nothing added: run 1 at 6b7e12e9,
   2026-11-06T18:02Z, load average 6.4 to 8.6; run 2 at 9f666412, 18:04Z, load 6.8 to 7.7 (it
-  adds the echoes).
-- **Found** (n 40 each; the max of either run in the last column):
+  adds the echoes); run 3 at fb082e06, 19:04Z, load 12.2 to 18.8.
+- **Found** (n 40 each; p50 and max of each run, and the slowest of all):
 
-  | wait | run 1 p50 | run 1 max | run 2 p50 | run 2 max | slowest |
-  |---|---|---|---|---|---|
-  | simulated guest listening after 100 ms, connected to | 241.8 ms | 252.0 ms | 244.5 ms | 253.5 ms | 253.455625 ms |
-  | simulated guest's echo of 64 KiB + 1 | | | 0.28 ms | 1.90 ms | 1.901875 ms |
-  | new stand-in script ending first, its boot to its refusal | 749.9 ms | 1.715 s | 455.7 ms | 0.982 s | 1.715256 s |
-  | new stand-in script exiting 0, its boot to its end | 751.2 ms | 1.535 s | 442.8 ms | 0.871 s | 1.534608 s |
-  | running stand-in, `stop` to its end | 0.11 ms | 0.27 ms | 0.10 ms | 0.87 ms | 0.867667 ms |
-  | a held output's refusal after shards' end | 0.66 ms | 2.72 ms | 0.69 ms | 2.89 ms | 2.887209 ms |
-  | real guest, boot to its port answering | 115.6 ms | 207.6 ms | 107.1 ms | 206.3 ms | 207.553625 ms |
-  | real guest, echo of 64 KiB + 1 | | | 0.54 ms | 1.04 ms | 1.044084 ms |
-  | real guest, unserved refusal past 200 ms patience | 52.9 ms | 138.7 ms | 49.7 ms | 135.3 ms | 138.719291 ms |
-  | real guest, `stop` (SIGTERM to its end, as shards-api sees it) | 2.96 ms | 6.59 ms | 2.56 ms | 4.92 ms | 6.593416 ms |
-  | real guest, boot to power-off | 92.6 ms | 96.9 ms | 90.0 ms | 98.2 ms | 98.23225 ms |
+  | wait | run 1 p50 / max | run 2 p50 / max | run 3 p50 / max | slowest |
+  |---|---|---|---|---|
+  | simulated guest listening after 100 ms, connected to | 241.8 / 252.0 ms | 244.5 / 253.5 ms | 242.8 / 252.3 ms | 253.455625 ms |
+  | simulated guest's echo of 64 KiB + 1 | | 0.28 / 1.90 ms | 0.24 / 2.13 ms | 2.130333 ms |
+  | new stand-in script ending first, its boot to its refusal | 0.750 / 1.715 s | 0.456 / 0.982 s | 0.806 / 4.373 s | 4.373059625 s |
+  | new stand-in script exiting 0, its boot to its end | 0.751 / 1.535 s | 0.443 / 0.871 s | 0.821 / 4.403 s | 4.402617625 s |
+  | running stand-in, `stop` to its end | 0.11 / 0.27 ms | 0.10 / 0.87 ms | 0.07 / 0.75 ms | 0.867667 ms |
+  | a held output's refusal after shards' end | 0.66 / 2.72 ms | 0.69 / 2.89 ms | 0.46 / 4.28 ms | 4.277875 ms |
+  | real guest, boot to its port answering | 115.6 / 207.6 ms | 107.1 / 206.3 ms | 204.8 / 248.5 ms | 248.467 ms |
+  | real guest, echo of 64 KiB + 1 | | 0.54 / 1.04 ms | 0.59 / 1.18 ms | 1.18425 ms |
+  | real guest, unserved refusal past 200 ms patience | 52.9 / 138.7 ms | 49.7 / 135.3 ms | 38.3 / 102.7 ms | 138.719291 ms |
+  | real guest, `stop` (SIGTERM to its end, as shards-api sees it) | 2.96 / 6.59 ms | 2.56 / 4.92 ms | 1.55 / 3.52 ms | 6.593416 ms |
+  | real guest, boot to power-off | 92.6 / 96.9 ms | 90.0 / 98.2 ms | 101.1 / 134.2 ms | 134.161917 ms |
 
-- **Reading.** A new script's first start on macOS takes up to 1.7 s side by side, where the
-  simulator and a running process answer in ms. The bounds, each twice (the margin) its
-  slowest record: tests/sim.rs `PATIENCE` 2 × 1.715256 s; its held-output bound 2 × 2.887209 ms;
-  tests/real.rs's patience 2 × 207.553625 ms (the slowest of the waits it bounds);
-  `STOP_GRACE` 2 × 13 ms, the slowest stop recorded, Hex's `bench/native/guest/stop/RECORD.md`
-  (N 40, the same SIGTERM to a `shards run vm`'s end, on this Mac), above this record's 6.59 ms;
-  `OVERSHOOT` 2 × 150.85425 ms (M462), above this record's real 138.7 ms. The VMM was the
-  debug build this Mac had; a release build's runs, and KVM's and WHP's, go beside these when
-  recorded, and until then these bound them.
-  What would falsify a bound: a run slower than its record, which is recorded here.
+- **Reading.** A new script's first start on macOS takes up to 4.4 s side by side under load
+  18, where the simulator and a running process answer in ms; run 3, under twice runs 1 and
+  2's load, was slower than their records, and its numbers are the records now. The bounds,
+  each twice (the margin) its slowest record: tests/sim.rs `PATIENCE` 2 × 4.402617625 s;
+  `REFUSED_AFTER_END` 2 × 4.277875 ms; tests/real.rs's patience 2 × 248.467 ms (the slowest
+  of the waits it bounds); `STOP_GRACE` 2 × 13 ms, the slowest stop recorded, Hex's
+  `bench/native/guest/stop/RECORD.md` (N 40, the same SIGTERM to a `shards run vm`'s end, on
+  this Mac), above this record's 6.59 ms; `OVERSHOOT` 2 × 150.85425 ms (M462), above this
+  record's real 138.7 ms. The VMM was the debug build this Mac had; a release build's runs,
+  and KVM's and WHP's, go beside these when recorded: until then those classes have no bound
+  (`shards_api::record`). What would falsify a bound: a run slower than its record, which is
+  recorded here and becomes it.
+
+### M464. What a refused dial costs shards-api, on HVF (`pause`'s `c`)
+
+- **Question.** `pause` waits `sqrt(2 c w)` between dials, `c` what the last refused dial
+  took, measured at run time. What is `c`?
+- **Method.** `run.sh`'s last part, `client::tests::the_cost_of_a_refused_dial` (release):
+  1000 handshakes to a socket path not bound yet (refused by this host's kernel), and 1000
+  `CONNECT`s to a port a real guest (as in M463) does not serve (refused by the guest's RST,
+  through shards' muxer). adas-mac-studio-2.local, launchd one-shot, at fb082e06,
+  2026-11-06T19:05Z, load 12.2 to 18.8.
+- **Found** (n 1000 each):
+
+  | refused dial | p50 | p90 | p99 | max |
+  |---|---|---|---|---|
+  | a socket not bound yet | 5.5 µs | 6.9 µs | 52.6 µs | 266.1 µs |
+  | a real guest's port it does not serve | 44.1 µs | 58.1 µs | 80.2 µs | 197.6 µs |
+
+- **Reading.** At 150 ms waited, `pause` is 1.3 ms with a 5.5 µs dial and 3.6 ms with a 44 µs
+  one, so dialing holds 0.4% and 1.2% of a thread, and a guest that starts to listen is
+  reached about half a pause later on average.

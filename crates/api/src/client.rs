@@ -501,15 +501,22 @@ fn said(what: &str, said: &str) -> String {
     }
 }
 
-/// The wait before dialing again, learned from what each dial shows: `sqrt(2 c w)`, where
-/// `c` is what the last refused dial took and `w` how long this connect has waited. Waiting
-/// `p` between dials costs `c w / p` of dialing over a wait like the one so far and `p / 2`
-/// of lateness on average once the guest listens; both are seconds, of this thread and of
-/// its caller, and this `p` makes their sum least. So a few dials go out early, fewer as the
-/// wait grows, and a guest that starts to listen is reached within a pause of it: with a
-/// dial of 5 µs (a socket not bound yet) after 150 ms, 1.2 ms, which dialing holds 0.4% of.
-/// A dial to a VM that listens waits for the guest's own answer, so the guest paces it. At
-/// most `left`.
+/// The wait before dialing again, `p = sqrt(2 c w)`: pacing that balances one dial's cost `c`
+/// against the waiting so far `w`, both measured as this connect runs.
+///
+/// - `c` is the time the last refused dial took, measured each dial: on HVF 5.5 µs at p50 to
+///   a socket not bound yet and 44 µs to a guest that does not listen yet
+///   (`docs/research/platform-measurements.md` M464).
+/// - `w` is how long this connect has waited so far, and stands for the wait still to come.
+/// - Pausing `p` between dials, a wait of `w` takes `w / p` dials, `c w / p` of dialing; and a
+///   guest that starts to listen at a uniform moment within a pause is reached `p / 2` late on
+///   average. Both are seconds, of this thread and of its caller.
+/// - Their sum `f(p) = c w / p + p / 2` is least where `f'(p) = -c w / p² + 1 / 2 = 0`, that
+///   is `p² = 2 c w`: `p = sqrt(2 c w)`.
+///
+/// So a few dials go out early and fewer as the wait grows: at 150 ms waited, 1.3 ms with a
+/// 5.5 µs dial and 3.6 ms with a 44 µs one, which dialing holds 0.4% and 1.2% of. A dial to a
+/// VM that listens waits for the guest's own answer, so the guest paces it. At most `left`.
 fn pause(dialed: Duration, waited: Duration, left: Duration) -> Duration {
     let product = dialed
         .as_nanos()

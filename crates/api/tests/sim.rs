@@ -25,10 +25,10 @@ const UNSERVED: u32 = 1236;
 /// A hang guard: each wait here returns at its fact (a condition variable's signal, a
 /// process's end), and the guard only bounds a failing one. By host class (`record`):
 /// macOS-HVF, twice (the margin) the slowest recorded of these tests' waits, a new stand-in
-/// script's boot to its refusal, 1.715256 s (`docs/research/platform-measurements.md` M463);
+/// script's boot to its end, 4.402617625 s (`docs/research/platform-measurements.md` M463);
 /// Linux-KVM and Windows-WHP, pending their records.
 #[cfg(target_os = "macos")]
-const PATIENCE: Result<Duration, Pending> = Ok(Duration::from_nanos(2 * 1_715_256_000));
+const PATIENCE: Result<Duration, Pending> = Ok(Duration::from_nanos(2 * 4_402_617_625));
 #[cfg(not(target_os = "macos"))]
 const PATIENCE: Result<Duration, Pending> = Err(Pending::of("tests/sim.rs PATIENCE"));
 
@@ -153,9 +153,9 @@ mod client {
     use std::time::Instant;
 
     /// How soon after shards' end its refusal comes: macOS-HVF, twice (the margin) the slowest
-    /// recorded, 2.887209 ms with a child holding shards' output (M463); other classes pending.
+    /// recorded, 4.277875 ms with a child holding shards' output (M463); other classes pending.
     #[cfg(target_os = "macos")]
-    const REFUSED_AFTER_END: Result<Duration, Pending> = Ok(Duration::from_nanos(2 * 2_887_209));
+    const REFUSED_AFTER_END: Result<Duration, Pending> = Ok(Duration::from_nanos(2 * 4_277_875));
     #[cfg(not(target_os = "macos"))]
     const REFUSED_AFTER_END: Result<Duration, Pending> = Err(Pending::of("REFUSED_AFTER_END"));
 
