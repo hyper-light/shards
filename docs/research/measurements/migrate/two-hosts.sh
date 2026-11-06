@@ -4,9 +4,10 @@
 #
 #   listen.  On the machine moved to: SHARDS=/path/to/shards [ADDR=192.168.1.71:7443]
 #            two-hosts.sh listen   (a home of its own in $HOME_THERE, its daemon listening at
-#            ADDR, this machine's LAN address and port 7443 unless given; an invitation for
-#            the other written, and printed base64 on its last line before HOLD, seconds
-#            it then waits, where given, keeping the daemon, and stops it)
+#            ADDR, this machine's address on its default route and port 7443 unless given;
+#            an invitation for the other written, and printed base64 on its last line; then,
+#            where HOLD is given, it holds the daemon up to HOLD seconds, or until `stop`
+#            removes its home, and stops it)
 #   invite.  On the machine moved to, listening: another invitation, printed base64 on the
 #            last line. One enrolls one client: each run of `e2e` joins with a home of its own,
 #            so each needs one.
@@ -18,10 +19,14 @@
 #            its save asked (cold) or its last save asked (live), which stopped it here, to
 #            its restore there said done, by this machine's clock. A move that fails is
 #            counted, its log kept, and the series goes on; any failure exits 1 at the end.
-#            Results also go to $OUT, $HOME_HERE/results.txt unless given. On macOS it runs
-#            itself as a launchd job (macos-sched/launchd-run.sh), free of an agent
-#            session's QoS clamp, as a user's program runs (PM M317); UNCLAMP=0 runs it in
-#            place.
+#            Results also go to $OUT, $HOME_HERE/results.txt unless given, headed by both
+#            machines: this one's, and the other's as THERE says it (listen's `listening at`
+#            line), where given. On macOS it runs itself as a launchd job
+#            (macos-sched/launchd-run.sh), free of an agent session's QoS clamp, as a user's
+#            program runs (PM M317); UNCLAMP=0 runs it in place. On macOS each machine's
+#            line says the priority its daemon runs at, which its microVMs' threads start
+#            from: 31 a terminal's program's, 20 under the utility clamp, 4 in the
+#            background band.
 #   e2e.     On the machine moved from, in a checkout: INVITE=<invite's line> two-hosts.sh e2e
 #            (tests/moved.rs, its two-host test moving to the listening machine saved and
 #            live, SHARDS_MOVE_INVITE its invitation; FILTER picks other tests of moved.rs,
@@ -37,6 +42,31 @@
 #            of the time each ran nowhere, by mode, with the machines and what failed; and
 #            the E2E tests' results in $LOG, where given (.github/workflows/migrate-e2e.yml
 #            writes it to its jobs' summaries).
+#
+# Between two machines on one network: A, moved to, and B, moved from, of one architecture
+# (a move to another is refused, D176 part 6), B's CPU having no feature A's lacks (a move
+# to one lacking any is refused, naming each: an M5's microVM to an M4, PM M460), each with
+# a checkout of one revision. The move goes over B's context of A (D180): QUIC, UDP to A's
+# port, TLS 1.3 with each side's Ed25519 key pinned by the other and the invitation's
+# secret proved bound to the session, A's daemon serving only the clients its invitations
+# enrolled. In order, each in its checkout:
+#
+#   1. A and B: cargo build --locked -p shards --release; B also
+#      cargo test -p shards --profile test-release --test moved --no-run. Before any
+#      invitation, as one expires an hour after it is made.
+#   2. A, kept running for as long as the rest takes (in the background: a runner ends what
+#      a command leaves running): SHARDS=$PWD/target/release/shards HOLD=10800 \
+#      two-hosts.sh listen. Its last line is the invitation for `move`; its
+#      `listening at` line is THERE.
+#   3. A, twice, one for each of B's tests of another machine:
+#      SHARDS=$PWD/target/release/shards two-hosts.sh invite   (its last line)
+#   4. B: SHARDS=$PWD/target/release/shards INVITE=<2's last line> THERE=<2's listening
+#      line> N=30 two-hosts.sh move; then OUT=$HOME/.cache/shards-move-here/results.txt
+#      two-hosts.sh summary, its tables.
+#   5. B: INVITE=<3's first> two-hosts.sh e2e; then INVITE=<3's second>
+#      FILTER=a_volumes_guest_owners_move_with_it two-hosts.sh e2e
+#   6. A: SHARDS=$PWD/target/release/shards KEEP_LOG=<a file> two-hosts.sh stop, which ends
+#      2's hold.
 #
 # The counter writes a line every 50 ms, and for live moves rewrites 1 MiB of its memory
 # each time it counts (20 MiB/s), so that the rounds have its writes to chase.
@@ -55,16 +85,28 @@ there() { SHARDS_HOME=$HOME_THERE "$SHARDS" "$@"; }
 now() { python3 -c 'import time; print(time.time_ns())'; }
 here() { SHARDS_HOME=$HOME_HERE "$SHARDS" "$@"; }
 
-# This machine: its OS, its CPU, and where it is.
+# This machine: its OS, its CPU, and where it is; on macOS the priority its daemon in home
+# `$1` runs at (an agent's session clamps a program it starts, PM M317, and a runner's
+# commands may run in the background band).
 machine() {
-	local cpu
+	local cpu pri=""
 	cpu=$(sysctl -n machdep.cpu.brand_string 2>/dev/null || sed -n 's/^model name[[:space:]]*: //p' /proc/cpuinfo | head -1)
-	echo "$(hostname -s 2>/dev/null || hostname), $(uname -sm), $(sw_vers -productVersion 2>/dev/null || uname -r), $cpu"
+	if [ "$(uname -s)" = Darwin ] && [ -f "$1/daemon.pid" ]; then
+		pri=", daemon at priority $(ps -o pri= -p "$(cat "$1/daemon.pid")" | tr -d ' ')"
+	fi
+	echo "$(hostname -s 2>/dev/null || hostname), $(uname -sm), $(sw_vers -productVersion 2>/dev/null || uname -r), $cpu$pri"
 }
 
-# An address of this machine's that another on its network reaches.
+# An address of this machine's that another on its network reaches: its default route's (a
+# Mac Studio's is en1, a Linux host's first address may be a bridge's or a tailnet's).
 lan() {
-	ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null ||
+	local ifc
+	ifc=$(route -n get default 2>/dev/null | sed -n 's/^ *interface: //p') || true
+	if [ -n "$ifc" ] && ipconfig getifaddr "$ifc" 2>/dev/null; then
+		return
+	fi
+	ip -4 route get 1.1.1.1 2>/dev/null | sed -n 's/.* src \([0-9.]*\).*/\1/p' | grep . ||
+		ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null ||
 		hostname -I 2>/dev/null | awk '{print $1}'
 }
 
@@ -162,14 +204,16 @@ listen)
 	mkdir -p "$HOME_THERE"
 	there run daemon --detached --listen "$ADDR"
 	there invite client --name mover --output "$HOME_THERE/mover.invite"
-	echo "listening at $ADDR: $(machine), shards $(there version 2>/dev/null | head -1)"
+	echo "listening at $ADDR: $(machine "$HOME_THERE"), shards $(there version 2>/dev/null | head -1)"
 	base64 < "$HOME_THERE/mover.invite" | tr -d '\n'
 	echo
-	# Held up HOLD seconds, where given: a runner that ends what a command leaves running
-	# (kiln's) keeps the daemon while this waits, run in the background.
+	# Held up to HOLD seconds, where given, or until `stop` removes the home: a runner that
+	# ends what a command leaves running (kiln's) keeps the daemon while this waits, run in
+	# the background.
 	if [ -n "${HOLD:-}" ]; then
-		sleep "$HOLD"
-		there stop daemon || true
+		held=$(($(date +%s) + HOLD))
+		while [ -d "$HOME_THERE" ] && [ "$(date +%s)" -lt "$held" ]; do sleep 5; done
+		if [ -d "$HOME_THERE" ]; then there stop daemon || true; fi
 	fi
 	;;
 invite)
@@ -192,7 +236,7 @@ move)
 	if [ "$(uname -s)" = Darwin ] && [ -z "${TWO_HOSTS_UNCLAMPED:-}" ] && [ "${UNCLAMP:-1}" = 1 ]; then
 		job=$(mktemp -d)/move
 		pass=(TWO_HOSTS_UNCLAMPED=1)
-		for v in SHARDS INVITE N MODE IMAGE HOME_HERE HOME_THERE OUT REVISION DOCKER_CONFIG; do
+		for v in SHARDS INVITE THERE N MODE IMAGE HOME_HERE HOME_THERE OUT REVISION DOCKER_CONFIG; do
 			if [ -n "${!v+x}" ]; then pass+=("$v=${!v}"); fi
 		done
 		status=0
@@ -206,8 +250,8 @@ move)
 	here inspect context lab >/dev/null 2>&1 || here create context lab --invite-file "$HOME_HERE/lab.invite"
 	here pull -q "$IMAGE" >/dev/null
 	{
-		echo "== $(date -u +%FT%TZ): moving from $(machine), revision ${REVISION:-$(git -C "$root" rev-parse --short HEAD 2>/dev/null || echo unknown)}, image $IMAGE, n $N"
-		echo "   to: $(here --context lab info --format '{{.Name}} {{.OperatingSystem}} {{.Architecture}}' 2>/dev/null || echo unknown)"
+		echo "== $(date -u +%FT%TZ): moving from $(machine "$HOME_HERE"), revision ${REVISION:-$(git -C "$root" rev-parse --short HEAD 2>/dev/null || echo unknown)}, image $IMAGE, n $N"
+		echo "   to: ${THERE:-$(here --context lab info --format '{{.Name}} {{.OperatingSystem}} {{.Architecture}}' 2>/dev/null || echo unknown)}"
 	} | tee -a "$OUT"
 	for mode in $MODE; do
 		series "$mode"
