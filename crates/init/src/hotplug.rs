@@ -19,12 +19,16 @@
 //!   it, given to vfio-pci, and its group's node, or its own VFIO device node, made in the
 //!   workload's `/dev` with the VM's numbers and mode (D44, D154), owned by the user and
 //!   group the workload runs as. Answers the node's path and its numbers, `PATH c MAJ:MIN`.
+//!   A function by its device node is taken through iommufd too: the workload's
+//!   `/dev/iommu` its user's and group's as well, made where it has none; answered after,
+//!   `/dev/iommu c MAJ:MIN BEFORE`, BEFORE `made` or its owner before, `UID:GID`.
 //! - `allow [c MAJ:MIN rwm]...`: the workload's device filter, its run's rules and these,
 //!   the nodes of every function plugged in. Init's own process does it, as it keeps the
 //!   filter (`devices::allow`); not here.
-//! - `release ADDR [PATH]`: the function at ADDR let go of, refused while anything in the
-//!   microVM holds its node at PATH or its VFIO device open, its node taken out of the
-//!   workload's `/dev`, then its `remove` written, for its host to unplug.
+//! - `release ADDR [PATH [iommu BEFORE]]`: the function at ADDR let go of, refused while
+//!   anything in the microVM holds its node at PATH or its VFIO device open, its node
+//!   taken out of the workload's `/dev` (and `/dev/iommu` made as BEFORE says it was, for
+//!   the last function had through it), then its `remove` written, for its host to unplug.
 
 use std::ffi::CString;
 use std::io::{self, Write};
@@ -123,14 +127,37 @@ pub fn device(args: &[Vec<u8>], workload: libc::pid_t, out: &mut impl Write) -> 
             // device's, root's and 0600 (vfio_devnode and vfio_device_devnode set no mode;
             // devtmpfs.c's default), which a workload of a user other than root cannot
             // open (EACCES); its mode kept, so that it is the workload's user's alone.
-            (node.uid, node.gid) = workload_ids(workload)?;
-            in_workload(workload, || {
-                crate::devices::make_nodes(std::slice::from_ref(&node)).map_err(io::Error::other)
+            let ids = workload_ids(workload)?;
+            (node.uid, node.gid) = ids;
+            // A function by its device node is taken through iommufd as well (vfio.rst,
+            // "Device cdev Example"): the workload's /dev/iommu its user's too.
+            let iommu = match *kind {
+                "node" => Some(iommu_node()?),
+                _ => None,
+            };
+            let before = in_workload(workload, || {
+                let before = iommu.as_ref().map(|vm| give_iommu(vm, ids)).transpose()?;
+                if let Err(e) = crate::devices::make_nodes(std::slice::from_ref(&node)) {
+                    if let Some(b) = &before {
+                        let _ = give_back_iommu(b);
+                    }
+                    return Err(io::Error::other(e));
+                }
+                Ok(before)
             })?;
-            write!(out, "{} c {}:{}", node.path, node.major, node.minor)
+            write!(out, "{} c {}:{}", node.path, node.major, node.minor)?;
+            match (&iommu, before) {
+                (Some(vm), Some(before)) => write!(out, " {IOMMU} c {}:{} {before}", vm.major, vm.minor),
+                _ => Ok(()),
+            }
         }
         ["release", addr, rest @ ..] => {
             if let Some(path) = rest.first().filter(|p| !p.is_empty()) {
+                let iommu = match rest.get(1..) {
+                    Some(["iommu", before]) => Some(*before),
+                    Some([]) => None,
+                    other => return Err(io::Error::other(format!("no release step {other:?}"))),
+                };
                 if let Some(node) = crate::devices::vm_devices(path)
                     .into_iter()
                     .find(|n| n.path == *path)
@@ -142,6 +169,10 @@ pub fn device(args: &[Vec<u8>], workload: libc::pid_t, out: &mut impl Write) -> 
                     ));
                 }
                 in_workload(workload, || {
+                    // The last function had through it gone: /dev/iommu as it was.
+                    if let Some(before) = iommu {
+                        give_back_iommu(before)?;
+                    }
                     let c = CString::new(*path).map_err(io::Error::other)?;
                     // SAFETY: unlink(2) of a NUL-terminated path.
                     if unsafe { libc::unlink(c.as_ptr()) } != 0 {
@@ -345,6 +376,73 @@ fn effective_ids(status: &str) -> Option<(u32, u32)> {
     Some((id("Uid:")?, id("Gid:")?))
 }
 
+/// Where a workload has iommufd: a misc device of a dynamic minor, its node `iommu`, mode
+/// 0660 (drivers/iommu/iommufd/main.c, `iommu_misc_dev`).
+const IOMMU: &str = "/dev/iommu";
+
+/// The VM's `/dev/iommu`, its numbers and mode.
+fn iommu_node() -> io::Result<crate::devices::Node> {
+    crate::devices::vm_devices(IOMMU)
+        .into_iter()
+        .find(|n| n.path == IOMMU)
+        .ok_or_else(|| {
+            io::Error::other(format!(
+                "the microVM has no {IOMMU}, which a function by its device node is taken through: its kernel has no IOMMUFD"
+            ))
+        })
+}
+
+/// The workload's `/dev/iommu` given the user and group `ids`, in its mount namespace:
+/// made with the VM's numbers and mode where it has none, else its own, iommufd's,
+/// given them. What it was before, which [`give_back_iommu`] makes it again: `made`, or
+/// its owner, `UID:GID`.
+fn give_iommu(vm: &crate::devices::Node, ids: (u32, u32)) -> io::Result<String> {
+    use std::os::unix::fs::{FileTypeExt as _, MetadataExt as _};
+    let named = |e: io::Error| io::Error::new(e.kind(), format!("{IOMMU}: {e}"));
+    match std::fs::symlink_metadata(IOMMU) {
+        Ok(m) => {
+            if !m.file_type().is_char_device() || m.rdev() != libc::makedev(vm.major, vm.minor) {
+                return Err(io::Error::other(format!(
+                    "the workload's {IOMMU} is another device than iommufd's {}:{}",
+                    vm.major, vm.minor
+                )));
+            }
+            std::os::unix::fs::lchown(IOMMU, Some(ids.0), Some(ids.1)).map_err(named)?;
+            Ok(format!("{}:{}", m.uid(), m.gid()))
+        }
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            let mut node = vm.clone();
+            (node.uid, node.gid) = ids;
+            crate::devices::make_nodes(std::slice::from_ref(&node)).map_err(io::Error::other)?;
+            Ok("made".into())
+        }
+        Err(e) => Err(named(e)),
+    }
+}
+
+/// The workload's `/dev/iommu` as it was before [`give_iommu`], `before` its answer:
+/// taken out where it was made, else given its owner again. In its mount namespace.
+fn give_back_iommu(before: &str) -> io::Result<()> {
+    let named = |e: io::Error| io::Error::new(e.kind(), format!("{IOMMU}: {e}"));
+    match owner_before(before) {
+        Some(None) => match std::fs::remove_file(IOMMU) {
+            Err(e) if e.kind() != io::ErrorKind::NotFound => Err(named(e)),
+            _ => Ok(()),
+        },
+        Some(Some((uid, gid))) => std::os::unix::fs::lchown(IOMMU, Some(uid), Some(gid)).map_err(named),
+        None => Err(io::Error::other(format!("{IOMMU} was {before:?} before"))),
+    }
+}
+
+/// What [`give_iommu`] said `/dev/iommu` was: none (`made`), or its owner (`UID:GID`).
+fn owner_before(before: &str) -> Option<Option<(u32, u32)>> {
+    if before == "made" {
+        return Some(None);
+    }
+    let (uid, gid) = before.split_once(':')?;
+    Some(Some((uid.parse().ok()?, gid.parse().ok()?)))
+}
+
 /// Attaches `mounted` at `dst` in the mount namespace of process `workload`, made a
 /// directory there first where it is none.
 fn attach(mounted: OwnedFd, workload: libc::pid_t, dst: &str) -> io::Result<()> {
@@ -471,5 +569,18 @@ mod tests {
         );
         assert_eq!(effective_ids("Uid:\t1000\t1000\t1000\t1000\n"), None, "no Gid:");
         assert_eq!(effective_ids("Uid:\t1000\nGid:\t1000\n"), None, "no effective ID");
+    }
+
+    /// `/dev/iommu` is given back as it was before a function by its device node had it:
+    /// taken out where it was made for it, else its owner again; anything else said of it
+    /// is refused, so nothing else is given.
+    #[test]
+    fn iommu_is_given_back_as_it_was() {
+        assert_eq!(owner_before("made"), Some(None));
+        assert_eq!(owner_before("0:0"), Some(Some((0, 0))));
+        assert_eq!(owner_before("1000:50"), Some(Some((1000, 50))));
+        for wrong in ["", "root", "0", "0:", ":0", "-1:0", "0:0:0", "made "] {
+            assert_eq!(owner_before(wrong), None, "{wrong}");
+        }
     }
 }

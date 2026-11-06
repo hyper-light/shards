@@ -7179,8 +7179,20 @@ share made ahead), and a disk's capacity was fixed when its file was opened.
     and the node its user's alone (0600 kept) gives nothing to another user of the
     microVM, as containerd's and CRI-O's `device_ownership_from_security_context` give a
     non-root container's devices its user (Kubernetes blog, "Non-root Containers And
-    Devices", 2021-11-09). The workload's device filter is
-    then its run's rules and one `c MAJ:MIN rwm` for each function plugged in, given last,
+    Devices", 2021-11-09). A function had by its device node is taken through iommufd too
+    (vfio.rst, "Device cdev Example"), whose `/dev/iommu` is a misc device of a dynamic
+    minor (10:M) and mode 0660, root's (drivers/iommu/iommufd/main.c, `iommu_misc_dev`):
+    init gives the workload's its user and group as well while such a function is plugged,
+    made with the VM's numbers and mode where its run was not given it, and answers what
+    it was before (`made`, or its owner), which the daemon keeps from the first such
+    function and has init restore as the last goes (taken out, or its owner again), so a
+    run given `/dev/iommu` at its start has it as Docker gives it once nothing is plugged.
+    That `/dev` is the run's own: a tmpfs init mounts at the run's root (`container_mounts`),
+    which its command and execs share; each agent's domain mounts a `/dev` of its own, and
+    each joiner (D119) makes its own in its mount namespace, so no other workload of the
+    microVM is given it. The workload's device filter is
+    then its run's rules and one `c MAJ:MIN rwm` for each function plugged in (and
+    `/dev/iommu`'s, once, where its run's rules have it not already), given last,
     as runc's given devices come after the defaults and take precedence (`devices::allow`):
     done by init's own process, which keeps the run's rules and the program attached, and
     replaces it (BPF_F_REPLACE) each time with the whole list, so a function unplugged
@@ -7196,15 +7208,22 @@ share made ahead), and a disk's capacity was fixed when its file was opened.
     it off its bus, its container and its file in KVM let go of, the host's again.
   - **Verified:** unit tests of the slots' endpoints (vacant, plugged, followed, unplugged,
     a shared follower kept), of the slots' MSIs, of the firmware's endpoints, of a slot's
-    endpoint across a plug that fails, of the filter's rules and their refusals, of the
-    workload's IDs its node is given (hotplug.rs `the_workloads_user_is_its_effective_ids`),
-    and of the daemon's reading of init's answers. Its E2E (`a_hosts_function_is_plugged_into_a_run
-    _for_its_workload`, tests/plug.rs), nested as D214's VFIO test is (`SHARDS_L1_PCI_TESTS
-    =01.0 SHARDS_L1_TESTS=plug:a_hosts_function`): a run given `/dev/vfio/vfio`, the L1
-    guest's edu function plugged in, its workload moving a page through it by DMA through
-    its IOMMU, a second plug refused, unplugged and the node gone, twice; a run booted
-    otherwise refused. Not yet run; its numbers not yet measured. Off Linux, `shards plug
-    function` is refused by name with its host's own limit, as a run's start refuses one
+    endpoint across a plug that fails, of the filter's rules and their refusals (and
+    `/dev/iommu`'s rule once, not again where given at the start), of the workload's IDs
+    its node is given (hotplug.rs `the_workloads_user_is_its_effective_ids`), of
+    `/dev/iommu` given back as it was (`iommu_is_given_back_as_it_was`), and of the
+    daemon's reading of init's answers and keeping of what `/dev/iommu` was. Its E2E
+    (`a_hosts_function_is_plugged_into_a_run_for_its_workload`, tests/plug.rs), nested as
+    D214's VFIO test is (`SHARDS_L1_PCI_TESTS=01.0 SHARDS_L1_TESTS=plug:a_hosts_function`):
+    a run of the image's user (`app`, 1000:1000) given `/dev/vfio/vfio`, the L1 guest's edu
+    function plugged in by its name, its node the user's, its workload moving a page
+    through it by DMA through its IOMMU, a second plug refused, unplugged and the node
+    gone, twice; then, where the L1 kernel makes device nodes, plugged by its device node
+    into that run (its `/dev/iommu` made the user's, gone after) and into one given
+    `/dev/iommu` at its start (the user's while plugged, root's again after), its workload
+    moving a page through iommufd each time; a run booted otherwise refused. Run nested
+    once, before the ownership fix, which failed as above; not yet passed, its numbers not
+    yet measured. Off Linux, `shards plug function` is refused by name with its host's own limit, as a run's start refuses one
     (`passthrough_refused`: on macOS, Hypervisor.framework's API assigns no device to a VM,
     PM M403), in tests/plug.rs's `devices_are_plugged_into_a_run_and_its_disk_grows`; the
     VMM's own refusal off Linux is `vm`'s `a_hosts_pci_function_is_refused_with_its_oss_own
