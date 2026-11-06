@@ -1177,8 +1177,22 @@ pub struct Listed {
 /// their reparse tags): none once it has given them all. `.` and `..` among them, as NTFS
 /// lists them.
 pub fn list(h: BorrowedHandle<'_>, restart: bool) -> Result<Vec<Listed>, Errno> {
+    list_within(h, restart, 64 << 10)
+}
+
+/// The room one entry of the longest name NTFS keeps (255 UTF-16 units) takes in a
+/// [`list_within`] call's buffer: FILE_ID_EXTD_DIR_INFO's fields before its name, then it.
+pub const LISTED_ROOM: usize = std::mem::offset_of!(FILE_ID_EXTD_DIR_INFO, FileName) + 255 * 2;
+
+/// [`list`]'s next entries, as many as `room` bytes of them hold (never less than
+/// [`LISTED_ROOM`], so that each call gives one at least). The enumeration's place is the
+/// handle's, past the last entry given, and a call that does not restart goes on from
+/// there (Microsoft Learn, FILE_INFO_BY_HANDLE_CLASS: the Restart classes "force the
+/// enumeration operation to start again from the beginning"; ZwQueryDirectoryFile: a scan
+/// not restarted resumes after the entries its handle's last call returned).
+pub fn list_within(h: BorrowedHandle<'_>, restart: bool, room: usize) -> Result<Vec<Listed>, Errno> {
     use std::mem::offset_of;
-    let mut buf = vec![0u8; 64 << 10];
+    let mut buf = vec![0u8; room.max(LISTED_ROOM)];
     let class = if restart {
         FileIdExtdDirectoryRestartInfo
     } else {

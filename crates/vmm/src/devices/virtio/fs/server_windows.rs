@@ -486,13 +486,31 @@ pub(super) fn open_beneath(dir: host::Raw, names: &[CString]) -> Result<host::Ow
     at.ok_or(EINVAL)
 }
 
-/// A directory's entries, read whole as it is opened and from its start again at offset
-/// 0, served in turn: offsets the entries' own indexes, as the macOS stream counts them.
+/// A directory handle's stream: the directory's own handle, whose enumeration NTFS keeps
+/// in place between calls, the entries given since its start, and those read and not given
+/// yet, a batch's at most; never the listing, which a guest opening a large directory again
+/// and again, never releasing it, made host memory without bound (audit V05).
+///
+/// Its offsets are the entries' indexes, as the macOS stream counts them: FUSE's are the
+/// server's to choose, any value but 0, which is the directory's start, so long as each
+/// entry's names the place after it (libfuse, fuse_lowlevel.h, fuse_add_direntry). A request
+/// at the offset where the last reply stopped goes on from the handle's place; one at any
+/// other starts the enumeration again (`FileIdExtdDirectoryRestartInfo`) and passes over
+/// the entries before it.
 #[derive(Debug)]
 pub(super) struct DirStream {
     dir: host::Owned,
-    entries: Vec<Entry>,
+    /// Entries given since the enumeration's start: the offset of the next.
+    at: u64,
+    /// Whether the next batch starts the enumeration again.
+    restart: bool,
+    /// The entries from `at` on that the last batch read and no reply has given yet.
+    held: std::collections::VecDeque<Entry>,
 }
+
+/// How many bytes of entries a batch reads: what a stream holds between requests at most
+/// (the entries a reply had no room for), six entries of the longest name at the fewest.
+const BATCH: usize = 4096;
 
 impl DirStream {
     pub(super) fn open(dir: host::Raw) -> Result<DirStream, Errno> {
@@ -503,8 +521,32 @@ impl DirStream {
             FILE_OPEN,
             FILE_DIRECTORY_FILE,
         )?;
-        let entries = listed(dir.as_handle())?;
-        Ok(DirStream { dir, entries })
+        Ok(DirStream {
+            dir,
+            at: 0,
+            restart: true,
+            held: std::collections::VecDeque::new(),
+        })
+    }
+
+    /// The entry at `at`: one held, or the first of the next batch; none at the end.
+    fn next(&mut self) -> Result<Option<Entry>, Errno> {
+        if self.held.is_empty() {
+            let batch = ntfs::list_within(self.dir.as_handle(), self.restart, BATCH)
+                .and_then(|batch| batch.into_iter().map(entry).collect::<Result<Vec<_>, _>>());
+            match batch {
+                Ok(batch) => {
+                    self.restart = false;
+                    self.held.extend(batch);
+                }
+                // Its place in the enumeration unknown: the next read starts it again.
+                Err(e) => {
+                    self.restart = true;
+                    return Err(e);
+                }
+            }
+        }
+        Ok(self.held.pop_front())
     }
 
     /// Gives `each` the entries from `offset` on, with the offset that follows each, until
@@ -515,46 +557,44 @@ impl DirStream {
         _want: usize,
         mut each: impl FnMut(&Entry, u64) -> bool,
     ) -> Result<(), Errno> {
-        if offset == 0 {
-            self.entries = listed(self.dir.as_handle())?;
-        }
-        let from = usize::try_from(offset).unwrap_or(usize::MAX);
-        for (i, entry) in self.entries.iter().enumerate().skip(from) {
-            if !each(entry, u64::try_from(i).unwrap_or(u64::MAX).saturating_add(1)) {
-                break;
+        if offset != self.at || self.restart {
+            self.at = 0;
+            self.restart = true;
+            self.held.clear();
+            while self.at < offset {
+                if self.next()?.is_none() {
+                    return Ok(());
+                }
+                self.at += 1;
             }
+        }
+        while let Some(entry) = self.next()? {
+            if !each(&entry, self.at.saturating_add(1)) {
+                self.held.push_front(entry);
+                return Ok(());
+            }
+            self.at += 1;
         }
         Ok(())
     }
 }
 
-/// Every entry of `dir`, its kind as Linux's d_type.
-fn listed(dir: BorrowedHandle<'_>) -> Result<Vec<Entry>, Errno> {
-    let mut out = Vec::new();
-    let mut restart = true;
-    loop {
-        let batch = ntfs::list(dir, restart)?;
-        if batch.is_empty() {
-            return Ok(out);
-        }
-        restart = false;
-        for listed in batch {
-            let kind = match listed.kind {
-                S_IFDIR => 4,
-                S_IFLNK => 10,
-                S_IFIFO => u32::from(host::DT_FIFO),
-                S_IFCHR => u32::from(host::DT_CHR),
-                S_IFBLK => u32::from(host::DT_BLK),
-                S_IFSOCK => u32::from(host::DT_SOCK),
-                _ => u32::from(host::DT_REG),
-            };
-            out.push(Entry {
-                name: CString::new(listed.name).map_err(|_| EINVAL)?,
-                ino: listed.ino,
-                kind,
-            });
-        }
-    }
+/// An entry NTFS lists, its kind as Linux's d_type.
+fn entry(listed: ntfs::Listed) -> Result<Entry, Errno> {
+    let kind = match listed.kind {
+        S_IFDIR => 4,
+        S_IFLNK => 10,
+        S_IFIFO => u32::from(host::DT_FIFO),
+        S_IFCHR => u32::from(host::DT_CHR),
+        S_IFBLK => u32::from(host::DT_BLK),
+        S_IFSOCK => u32::from(host::DT_SOCK),
+        _ => u32::from(host::DT_REG),
+    };
+    Ok(Entry {
+        name: CString::new(listed.name).map_err(|_| EINVAL)?,
+        ino: listed.ino,
+        kind,
+    })
 }
 
 /// `old` in `od` renamed `new` in `nd` with Linux's `flags`: over nothing where
