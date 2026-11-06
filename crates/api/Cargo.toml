@@ -1,0 +1,25 @@
+[package]
+name = "shards-api"
+version = "0.1.0"
+description = "Linux guests booted through the shards binary, for other programs: its client, a simulator, and the conformance suite both pass"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+thiserror = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+shards-afunix = { path = "../afunix" }
+windows-sys = { workspace = true }
+
+[dev-dependencies]
+shards-testdir = { path = "../testdir" }
+
+[lints]
+workspace = true

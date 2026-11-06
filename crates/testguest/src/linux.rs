@@ -25,6 +25,8 @@ pub fn main() {
             "kmsg" => kmsg(),
             "beat" => beat(),
             "vsock" => vsock(),
+            // Serves the echo alone, until stopped: shards-api's conformance suite.
+            "echo" => vsock_listen(ECHO_PORT).and_then(|l| serve_echo(&l)),
             "vsock_snapshot" => vsock_snapshot(),
             "vsock_snapshot_held" => vsock_snapshot_held(),
             "pmem" => pmem(),
