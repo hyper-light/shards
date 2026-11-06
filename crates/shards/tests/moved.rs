@@ -125,16 +125,6 @@ fn appended(file: &Path) -> Vec<u64> {
     whole.lines().filter_map(|l| l.parse().ok()).collect()
 }
 
-/// Whether this host's hypervisor tells a live move what its guest writes (D176 part 7):
-/// KVM on x86_64 and Hypervisor.framework do; KVM on arm64 and WHP refuse one, the microVM
-/// going on here.
-fn live_moves_here() -> bool {
-    cfg!(any(
-        target_os = "macos",
-        all(target_os = "linux", target_arch = "x86_64")
-    ))
-}
-
 /// What a guest's /proc/cpuinfo, as testguest's `files` prints it, says of its CPUs: their
 /// numbers, identity and features, the lines of those keys alone (not their clocks).
 fn cpu_identity(said: &str) -> Vec<String> {
@@ -586,12 +576,6 @@ fn a_running_microvm_moves_live_and_goes_on_there() {
     let log_here = || logs(&here, "counter");
     until("counting", &mut || counts(&log_here()).len() >= 10, &log_here);
     let (moved, downtime) = move_live(&here, "counter");
-    if !live_moves_here() {
-        assert_eq!(moved.status, Some(1), "{moved}");
-        assert!(moved.stderr.contains("goes on here"), "{moved}");
-        assert_eq!(shards_in(&here, &["rm", "-f", "counter"]).status, Some(0));
-        return;
-    }
     assert_eq!(
         (moved.status, moved.stdout.as_str()),
         (Some(0), "counter\n"),
@@ -666,12 +650,6 @@ fn a_microvm_writing_its_memory_moves_live_with_none_of_it_lost() {
     let log_here = || logs(&here, "scribbler");
     until("sweeping", &mut || counts(&log_here()).len() >= 2, &log_here);
     let (moved, downtime) = move_live(&here, "scribbler");
-    if !live_moves_here() {
-        assert_eq!(moved.status, Some(1), "{moved}");
-        assert!(moved.stderr.contains("goes on here"), "{moved}");
-        assert_eq!(shards_in(&here, &["rm", "-f", "scribbler"]).status, Some(0));
-        return;
-    }
     assert_eq!(
         (moved.status, moved.stdout.as_str()),
         (Some(0), "scribbler\n"),
@@ -722,8 +700,7 @@ impl Drop for LeftThere<'_> {
 /// pulled here alone, from this machine's own loopback registry, which the other cannot
 /// reach: its image goes with the move, saved here and loaded there, and so do the files its
 /// snapshot restores against that the other has not alike (its kernel and init among them,
-/// where that machine has none at their paths). A host whose hypervisor gives a live move
-/// nothing to watch writes by (KVM on arm64, WHP) refuses one, the microVM going on here.
+/// where that machine has none at their paths).
 ///
 /// Saved: a counter appending to a file it holds open in a volume goes on there from its
 /// count, each count once, in order, its volume and log with it, and is gone from here.
@@ -847,11 +824,6 @@ fn a_microvm_moves_to_another_host_saved_and_live() {
     let log_here = || logs(&here, &scribbler);
     until("sweeping", &mut || counts(&log_here()).len() >= 2, &log_here);
     let (moved, downtime) = move_live_to(&here, &scribbler, "peer");
-    if !live_moves_here() {
-        assert_eq!(moved.status, Some(1), "{moved}");
-        assert!(moved.stderr.contains("goes on here"), "{moved}");
-        return;
-    }
     moved_ok(&moved, &scribbler);
     assert!(moved.stderr.contains("move: round 0: "), "{moved}");
     let downtime = downtime.unwrap_or_else(|| panic!("no downtime said: {moved}"));
