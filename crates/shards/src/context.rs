@@ -1196,6 +1196,10 @@ fn building(words: &[String], stdin: &dyn Fn() -> Result<Vec<u8>, String>) -> Re
                     path.strip_prefix(&context)
                         .ok()
                         .map(|r| r.to_string_lossy().replace('\\', "/"))
+                } else if cfg!(windows) {
+                    // A name in the context, said with `/` as the machine reads one
+                    // (normalizeLocalPolicyPath: filepath.ToSlash).
+                    Some(here.replace('\\', "/"))
                 } else {
                     Some(here.to_string())
                 };

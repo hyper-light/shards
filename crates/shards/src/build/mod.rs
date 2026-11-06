@@ -2069,8 +2069,10 @@ fn policies_of(
         if base == "Dockerfile" && !dir.join("Dockerfile").exists() && dir.join("dockerfile").exists() {
             base = "dockerfile".into();
         }
+        // filepath.Join's, by this host's rules: `Dockerfile.rego` of the context `.` on
+        // Windows too, as buildx names it there, never `.\Dockerfile.rego`.
         let rego = dir.join(format!("{base}.rego"));
-        let filename = show(&shards_agentfile::go::clean(rego.to_string_lossy().as_bytes()));
+        let filename = shards_archive::copy::clean(&rego).to_string_lossy().into_owned();
         match std::fs::read(&rego) {
             Ok(data) => default.files.push(policy::FileSpec {
                 filename,
