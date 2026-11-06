@@ -5052,6 +5052,27 @@ descriptors to give, no pseudo-terminal and no file system of Linux's:
   read-only, as a build of the same files has, where its files were 0644 and 0444, none of
   its scripts executable, and std read none of a Linux tree's symlinks ("Unsupported reparse
   point type", tests/context.rs's artifact test on windows-2025 at 2d53e206).
+- **A Windows client's hard links are its own, where Docker's are not.** go-archive's pack
+  finds none on Windows (`hasHardlinks`, changes_windows.go, always false), and fsutil's
+  walk tells none apart there (stat_windows.go sets no inode), so a Windows client sent
+  each name of a file whole, its bytes again each time, and its copy's tree was not the
+  client's. NTFS and ReFS keep hard links as Unix does, which any user makes
+  ([CreateHardLinkW](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-createhardlinkw)).
+  So shards-archive's `sys::lstat` and shards-build's `host::lstat` ask each file that is not
+  a directory, on the handle its metadata is read from, its link count
+  ([GetFileInformationByHandle](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-getfileinformationbyhandle)'s
+  `nNumberOfLinks`), and only where that is above 1, its volume's serial number and 128-bit
+  file ID ([GetFileInformationByHandleEx](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-getfileinformationbyhandleex)
+  `FileIdInfo`, [FILE_ID_INFO](https://learn.microsoft.com/en-us/windows/win32/api/winbase/ns-winbase-file_id_info)),
+  since [BY_HANDLE_FILE_INFORMATION](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/ns-fileapi-by_handle_file_information)'s
+  64-bit index "is not guaranteed to be unique on ReFS" (`shards_ntfs::links`). Each other
+  name of a file goes as a link to its first, as on Unix: the archive is the bytes a Unix
+  host's pack of the same tree makes, and the receiver is unchanged. The client's own walk
+  tells the links apart too, so that an artifact made here, of links, is the one made of
+  the copy, whose links a machine's walk reads (Linux's, or a Windows machine's Linux
+  tree). A build here of a Windows tree therefore links what Docker's on Windows sends
+  whole. A file of one name pays one query more than before (its count), its handle the
+  one std opens for its metadata; not yet measured.
 - **And a Windows client** copies through a context (`copy vm`, driven here step by step as
   on Unix, cli/cp.rs), and its daemon serves each context's engine at a named pipe, which
   the file at the context's socket path names and `inspect context` gives as

@@ -159,7 +159,7 @@ struct Walker {
     only_prefix_includes: bool,
     only_prefix_exceptions: bool,
     /// Files with several links, by inode, and the first path sent of each (seenFiles).
-    seen: std::collections::HashMap<u64, Vec<u8>>,
+    seen: std::collections::HashMap<u128, Vec<u8>>,
     /// The directories it did not walk all of, by path: one holding a directory it left
     /// out without walking in or could not read, a device, a FIFO or a socket, or such a
     /// directory itself. The rest are whole, cloned at once where the stage can.

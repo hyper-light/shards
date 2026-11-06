@@ -474,7 +474,7 @@ pub(crate) fn plan(here: &[(Vec<u8>, Stat)], there: &Manifest) -> Plan {
     }
     // The inodes of what changed that more than one name holds, and the unchanged names
     // that hold them too (a walk sees no directory's).
-    let inodes: BTreeSet<u64> = here
+    let inodes: BTreeSet<u128> = here
         .iter()
         .filter(|(p, _)| changed.contains(p))
         .filter_map(|(_, s)| s.inode.filter(|&(_, links)| links > 1).map(|(ino, _)| ino))
@@ -1171,7 +1171,7 @@ mod tests {
     /// is named, and no other file that has more than one name.
     #[test]
     fn a_new_link_to_a_file_the_copy_holds_names_it() {
-        let linked = |ino: u64, links: u64, mtime: i64| Stat {
+        let linked = |ino: u128, links: u64, mtime: i64| Stat {
             inode: Some((ino, links)),
             ..stat(0o644, 4, (mtime, 0))
         };

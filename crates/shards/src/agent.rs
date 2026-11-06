@@ -584,7 +584,7 @@ fn pack(dir: &Path, skip: &[&str], out: &mut Vec<u8>) -> Result<(), String> {
     let tree = shards_build::host::Tree::at(&root);
     let mut tw = gotar::Writer::new(out);
     // A file's first name, by its inode: each other name of it a hard link to it.
-    let mut seen: BTreeMap<u64, Vec<u8>> = BTreeMap::new();
+    let mut seen: BTreeMap<u128, Vec<u8>> = BTreeMap::new();
     let mut stack: Vec<Vec<u8>> = vec![Vec::new()];
     while let Some(rel) = stack.pop() {
         let names = tree
