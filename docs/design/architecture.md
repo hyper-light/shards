@@ -237,8 +237,8 @@ amd64 cell's once it does.
 | Devices plugged into a running microVM, disks grown (D214) | yes | yes (nested, its MSIs through the GIC's ITS) | yes | built, not yet run: in the VMM (WHP's disk steps passed on jupiter; its shared directory over a duplex pipe), and through the CLI a disk and a volume, its share process's stream given the VM as a run's are (tests/plug.rs, now every host's) |
 | A host's PCI function given a microVM, at its start or plugged in (D154, D214) | built, VFIO; not yet tested on hardware, no x86_64 host here having a function to spare (D214's Not yet) | yes, nested, on QEMU's edu function (D154, D214); plugged into a run's workload, its E2E not yet run | refused: its API assigns no device (PM M403) | open: refused where the hypervisor refuses (PM M401, M402); a host that permits Discrete Device Assignment has no implementation yet (the parity plan's step 13) |
 | A running microVM saved whole, and resumed (D176 parts 1-5) | yes | yes | yes | yes |
-| Moved to another machine, saved (D176 part 6) | yes (PM M460; CI's runners, migrate-e2e.yml) | built, not yet run | built, its CPU checked as macOS names its features (PM M460); measured on KVM x86_64 alone | built, not yet run; a volume's guest owners moved as its guest sees them (`server::guest`), not yet run |
-| Moved live (D176 part 7) | yes (PM M461; CI's runners, migrate-e2e.yml) | refused: its dirty rings need the ITS's bitmap (`KVM_CAP_DIRTY_LOG_RING_WITH_BITMAP`), not yet asked | built, its guest's writes watched at stage 2 as D25's recorder watches them; measured on KVM x86_64 alone | refused: WHP's dirty page tracking (`WHvQueryGpaRangeDirtyBitmap`) not yet asked |
+| Moved to another machine, saved (D176 part 6) | yes, between two homes of one machine (PM M460; CI's runners, migrate-e2e.yml); between two machines built, not yet run | built, not yet run | built, its CPU checked as macOS names its features (PM M460); measured on KVM x86_64 alone; between two Macs not yet run | built, not yet run; a volume's guest owners moved as its guest sees them (`server::guest`), not yet run |
+| Moved live (D176 part 7) | yes, between two homes of one machine (PM M461; CI's runners, migrate-e2e.yml); between two machines built, not yet run | refused: its dirty rings need the ITS's bitmap (`KVM_CAP_DIRTY_LOG_RING_WITH_BITMAP`), not yet asked | built, its guest's writes watched at stage 2 as D25's recorder watches them; measured on KVM x86_64 alone; between two Macs not yet run | refused: WHP's dirty page tracking (`WHvQueryGpaRangeDirtyBitmap`) not yet asked |
 | Contexts, both sides, the machine's listener, enrollments and relays (D180) | yes | yes | yes | yes (part 3k) |
 | Keyless signing, its SPIFFE provider (D126) | yes | yes | yes | yes, by the Workload API's named pipe |
 | `--platform` for one platform's microVM, other CPUs' images emulated (D179) | yes | yes | yes | yes |
@@ -9375,14 +9375,16 @@ machine's is), by `a_running_microvm_moves_to_another_machine_and_goes_on_there`
 appending to a file it holds open in its volume, from the volume's directory: each count
 once there, in order), `a_moved_microvms_log_and_image_go_with_it` (an image no registry
 holds, saved and loaded) and `a_move_refused_leaves_the_microvm_running_here`
-(tests/moved.rs); between two machines by `a_microvm_moves_to_another_host_saved_and_live`
+(tests/moved.rs); between two machines (built, not yet run there; each skips, saying so,
+where `SHARDS_MOVE_INVITE` names no machine) by `a_microvm_moves_to_another_host_saved_and_live`
 (tests/moved.rs, to the machine whose invitation `SHARDS_MOVE_INVITE` names: saved, with a
 volume and its image and files going with it, and live, a guest stamping 16 MiB as it moves)
 and `a_volumes_guest_owners_move_with_it` (owners, modes, an attribute, a symlink, a device
 node and a name no Windows name holds, the guest's `tree` of its volume the same there; to
 the `SHARDS_MOVE_INVITE` machine, a Windows one among them, else between two homes), with
 the unit tests of `server::guest`, `server`'s `a_guests_files_show_it_the_same_copied_as_they_move`
-and moves.rs's `a_volumes_files_move_as_its_guest_saw_them`, and measured there by `docs/research/measurements/migrate/two-hosts.sh` (PM M460).
+and moves.rs's `a_volumes_files_move_as_its_guest_saw_them`, and to be measured there by
+`docs/research/measurements/migrate/two-hosts.sh` (PM M460 its method).
 Each check the move makes holds between two homes too:
 `a_microvm_moved_saved_keeps_its_cpu_image_files_and_connections` (its CPUs as its guest
 sees them the same there; its image pulled there by its digest though its name there tags
@@ -9401,7 +9403,15 @@ job says so and moves nothing; n, p50, p90, p99 and max of what each move took a
 time each ran nowhere in each job's summary. Between two runners, which take no connection
 from each other and whose contexts speak QUIC over UDP, which no TCP tunnel carries, it
 moves over a tailnet, where the repository has a Tailscale OAuth client
-(`TS_OAUTH_CLIENT_ID`, `TS_OAUTH_SECRET`); without one, that pair does not run.
+(`TS_OAUTH_CLIENT_ID`, `TS_OAUTH_SECRET`); without one, that pair does not run. Between two
+machines on one network, two-hosts.sh's own steps, its header saying each machine's in
+order: the one moved to `listen`s at its default route's address, held in the background,
+and makes an invitation for each of the other's tests (`invite`); the one moved from
+`move`s N of each mode to it and runs the tests of another machine (`e2e`); then `stop`.
+Whatever the network, the move is the context's: QUIC under TLS 1.3, each side's key pinned
+by the other and the invitation's secret bound to the session (D180), the listening daemon
+serving only the clients it enrolled. A move between two machines has not yet run, on
+either path (Not yet).
 
 **Moved live** (part 7, roadmap item 7b). `shards move vm --live NAME CONTEXT` moves it as
 it runs, by pre-copy (Clark et al., "Live Migration of Virtual Machines", NSDI 2005): its
@@ -9442,7 +9452,12 @@ Not yet: arm64 KVM's dirty rings, which its GIC's ITS needs a bitmap beside
 (`KVM_CAP_DIRTY_LOG_RING_WITH_BITMAP`), and WHP's dirty page tracking
 (`WHvQueryGpaRangeDirtyBitmap`): a live move there is refused, saying so, and a saved one
 moves; a volume's files moved live, which go with its last save, and so lengthen the time
-it runs nowhere by their bytes.
+it runs nowhere by their bytes. A move between two machines, saved or live, and the time
+one moved live runs nowhere there: every move measured so far is between two homes of one
+machine (PM M460, M461), where the stream crosses no network. Two Macs of one chip and OS
+(Hypervisor.framework) are a pair to run it on; a pair of KVM x86_64 hosts needs a second
+whose CPU has every feature of the first's, as /proc/cpuinfo names them, or a tailnet for
+CI's runners.
 
 ### D175. Sockets read in poll(2) on macOS, and streams ended one way at a time
 
