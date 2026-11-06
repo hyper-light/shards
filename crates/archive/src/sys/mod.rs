@@ -27,7 +27,7 @@ pub enum FileKind {
     Other,
 }
 
-/// What lstat says of a file. Windows has no owners, links or device numbers to pack.
+/// What lstat says of a file. Windows has no owners or device numbers to pack.
 #[derive(Debug, Clone)]
 #[cfg_attr(windows, allow(dead_code))]
 pub struct Stat {
@@ -38,7 +38,10 @@ pub struct Stat {
     pub gid: u32,
     pub size: u64,
     pub mtime: Time,
-    pub ino: u64,
+    /// Which file it is on its device: `st_ino` on Unix; on Windows its 128-bit file ID
+    /// and `dev` its volume's serial number, asked of a file of more than one name alone,
+    /// 0 for one of one.
+    pub ino: u128,
     pub dev: u64,
     pub nlink: u64,
     /// The numbers of the device it is (`st_rdev`'s major and minor), 0 where it is none.

@@ -16,7 +16,9 @@
 //! - An old GNU sparse map is held to 1 MiB, as Go holds every other header.
 //! - A symlink entry's extended attributes are set on the symlink, not its target.
 //! - Archives are not decompressed: `docker export` and `docker cp` send them plain.
-//! - On Windows, devices and FIFOs are skipped (go-archive fails on them there).
+//! - On Windows, devices and FIFOs are skipped (go-archive fails on them there), and hard
+//!   links are found as on Unix, by volume and file ID, where go-archive finds none there
+//!   and archives each name of a file whole (D180).
 //!
 //! [`apply_layer`] applies a layer over a tree, whiteouts as deletions (diff.go's
 //! UnpackLayer); [`WhiteoutFormat::Overlay`] packs an overlayfs upper directory into such a

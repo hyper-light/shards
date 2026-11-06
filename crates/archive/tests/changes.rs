@@ -25,6 +25,27 @@ fn mtime(path: &Path) -> (i64, i64) {
     )
 }
 
+/// Which file `path` is: its device and inode on Unix; on Windows its volume's serial
+/// number and its index on the volume (GetFileInformationByHandle), NTFS's own.
+#[cfg(unix)]
+fn identity(path: &Path) -> (u64, u64) {
+    use std::os::unix::fs::MetadataExt as _;
+    let md = std::fs::metadata(path).unwrap();
+    (md.dev(), md.ino())
+}
+
+#[cfg(windows)]
+fn identity(path: &Path) -> (u32, u32, u32) {
+    use std::os::windows::io::AsRawHandle as _;
+    use windows_sys::Win32::Storage::FileSystem::{BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle};
+    let file = std::fs::File::open(path).unwrap();
+    let mut info = BY_HANDLE_FILE_INFORMATION::default();
+    // SAFETY: a buffer of its own type, for a handle held above.
+    let got = unsafe { GetFileInformationByHandle(file.as_raw_handle(), &raw mut info) };
+    assert_ne!(got, 0, "{}: {}", path.display(), std::io::Error::last_os_error());
+    (info.dwVolumeSerialNumber, info.nFileIndexHigh, info.nFileIndexLow)
+}
+
 fn set_mtime(path: &Path, at: SystemTime) {
     std::fs::File::options()
         .write(true)
@@ -80,25 +101,10 @@ fn a_layer_of_what_changed_brings_a_copy_in_step() {
         (1_700_000_000, 123_456_789 / GRAIN * GRAIN)
     );
     assert_eq!(std::fs::read_to_string(there.join("dir/added")).unwrap(), "added");
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt as _;
-        let (added, linked) = (
-            std::fs::metadata(there.join("dir/added")).unwrap(),
-            std::fs::metadata(there.join("dir/linked")).unwrap(),
-        );
-        assert_eq!(
-            (added.dev(), added.ino()),
-            (linked.dev(), linked.ino()),
-            "linked again"
-        );
-    }
-    // A Windows client's pack finds no hard links, as go-archive's finds none there
-    // (hasHardlinks): the link goes as a file of its own.
-    #[cfg(windows)]
     assert_eq!(
-        std::fs::read_to_string(there.join("dir/linked")).unwrap(),
-        "added"
+        identity(&there.join("dir/added")),
+        identity(&there.join("dir/linked")),
+        "linked again"
     );
     assert_eq!(
         std::fs::read_link(there.join("dir/pointer")).unwrap(),
@@ -114,13 +120,10 @@ fn a_layer_of_what_changed_brings_a_copy_in_step() {
 }
 
 /// A new name of a file the copy holds already, unchanged, goes as a link to it there: the
-/// layer carries none of its bytes, and the copy's two names are one file, as here. Unix's
-/// alone: a Windows client's pack finds no hard links (go-archive's hasHardlinks), and its
-/// files' stats say no inode or link count to find them by (shards_archive's `sys::lstat`).
-#[cfg(unix)]
+/// layer carries none of its bytes, and the copy's two names are one file, as here. A
+/// Windows client's too, where go-archive finds no hard links (hasHardlinks).
 #[test]
 fn a_new_name_of_a_file_the_copy_holds_is_linked_to_it_there() {
-    use std::os::unix::fs::MetadataExt as _;
     let (here_dir, there_dir) = (
         TempDir::new("changes-link-here").unwrap(),
         TempDir::new("changes-link-there").unwrap(),
@@ -142,11 +145,11 @@ fn a_new_name_of_a_file_the_copy_holds_is_linked_to_it_there() {
         ..UnpackOptions::default()
     };
     apply_layer(&layer[..], there, &opts).unwrap();
-    let (a, b) = (
-        std::fs::metadata(there.join("held")).unwrap(),
-        std::fs::metadata(there.join("named")).unwrap(),
+    assert_eq!(
+        identity(&there.join("held")),
+        identity(&there.join("named")),
+        "not linked there"
     );
-    assert_eq!((a.dev(), a.ino()), (b.dev(), b.ino()), "not linked there");
     assert_eq!(std::fs::read(there.join("named")).unwrap(), held);
     // Alone, without the copy's file named, it goes whole, as before.
     let whole = pack_changes(here, &[b"named".to_vec()], &[], &[], Vec::new()).unwrap();

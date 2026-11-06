@@ -14,6 +14,7 @@ use std::fs::{self, File, FileTimes, OpenOptions};
 use std::io;
 use std::os::windows::ffi::OsStrExt;
 use std::os::windows::fs::{FileTimesExt, MetadataExt, OpenOptionsExt};
+use std::os::windows::io::AsHandle as _;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -89,10 +90,21 @@ fn unix_time(t: io::Result<SystemTime>) -> Time {
 
 /// os.Lstat's FileMode on Windows: 0444 or 0666 by the read-only attribute, a directory
 /// 0111 more; symlinks by their reparse tag, and other reparse points (junctions among
-/// them) irregular.
+/// them) irregular. And, of what is not a directory, its links as Unix's lstat says them
+/// (`shards_ntfs::links`), which go-archive does not ask on Windows ([`crate::pack`]).
 pub(crate) fn lstat(p: &[u8]) -> io::Result<Stat> {
     let path = os_path(p);
-    let md = fs::symlink_metadata(&path)?;
+    // The file itself, opened for no access as std's lstat opens it, a reparse point not
+    // followed: its metadata and its links asked of one handle. One std's lstat cannot open
+    // (a sharing violation) it reads from its directory's entry, which says no links.
+    let opened = OpenOptions::new()
+        .access_mode(0)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(&path);
+    let md = match &opened {
+        Ok(f) => f.metadata()?,
+        Err(_) => fs::symlink_metadata(&path)?,
+    };
     let attrs = md.file_attributes();
     let mut mode = if attrs & FILE_ATTRIBUTE_READONLY != 0 {
         0o444
@@ -113,6 +125,11 @@ pub(crate) fn lstat(p: &[u8]) -> io::Result<Stat> {
             _ => kind = FileKind::Other,
         }
     }
+    // A file whose links cannot be asked is packed as one of one name, as before.
+    let links = match &opened {
+        Ok(f) if kind != FileKind::Dir => shards_ntfs::links(f.as_handle()).ok().flatten(),
+        _ => None,
+    };
     Ok(Stat {
         kind,
         mode,
@@ -120,9 +137,9 @@ pub(crate) fn lstat(p: &[u8]) -> io::Result<Stat> {
         gid: 0,
         size: md.len(),
         mtime: unix_time(md.modified()),
-        ino: 0,
-        dev: 0,
-        nlink: 1,
+        ino: links.map_or(0, |l| l.file),
+        dev: links.map_or(0, |l| l.volume),
+        nlink: links.map_or(1, |l| l.count),
         major: 0,
         minor: 0,
     })

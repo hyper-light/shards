@@ -232,7 +232,7 @@ pub fn pack_changes<W: Write>(
         let src = gopath::join(NATIVE, &[&root, &gopath::from_slash(NATIVE, rel)]);
         if let Ok(st) = sys::lstat(&src)
             && st.kind != FileKind::Dir
-            && has_hardlinks(NATIVE, &st)
+            && has_hardlinks(&st)
         {
             packer
                 .seen_inodes
@@ -341,8 +341,9 @@ struct Packer<W: Write> {
     tw: Writer<W>,
     /// The first name of each inode with more than one link. Keyed by device and inode,
     /// where go-archive keys by inode alone and so links files of two filesystems that
-    /// share an inode number; within one filesystem the archives are the same.
-    seen_inodes: HashMap<(u64, u64), Vec<u8>>,
+    /// share an inode number; within one filesystem the archives are the same. On Windows
+    /// by volume and file ID ([`Stat::ino`]).
+    seen_inodes: HashMap<(u64, u128), Vec<u8>>,
     chown: Option<(i64, i64)>,
     whiteout: Option<Overlay>,
     /// Times kept to the nanosecond, where go-archive keeps seconds ([`pack_changes`]).
@@ -387,7 +388,7 @@ impl<W: Write> Packer<W> {
             hdr.pax
                 .insert([PAX_SCHILY_XATTR, b"security.capability"].concat(), cap);
         }
-        if st.kind != FileKind::Dir && has_hardlinks(os, &st) {
+        if st.kind != FileKind::Dir && has_hardlinks(&st) {
             match self.seen_inodes.get(&(st.dev, st.ino)) {
                 Some(first) => {
                     hdr.typeflag = TYPE_LINK;
@@ -432,12 +433,14 @@ impl<W: Write> Packer<W> {
     }
 }
 
-/// Whether a file has other names: on Unix, more than one link; changes_windows.go: none.
-fn has_hardlinks(os: Os, st: &Stat) -> bool {
-    match os {
-        Os::Unix => st.nlink > 1,
-        Os::Windows => false,
-    }
+/// Whether a file has other names: more than one link. go-archive finds none on Windows
+/// (hasHardlinks, changes_windows.go), where NTFS and ReFS keep them as Unix does, and a
+/// Windows client sent each name of a file whole, its bytes again, and the tree its copy
+/// was made of no longer the client's (D180): a Windows host's files are linked as a Unix
+/// host's are, by their volume and file ID (`sys::lstat`), the archive the bytes a Unix
+/// host's of the same tree would be.
+fn has_hardlinks(st: &Stat) -> bool {
+    st.nlink > 1
 }
 
 /// FileInfoHeader: Go's tar.FileInfoHeader without name lookups, then go-archive's

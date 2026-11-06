@@ -1171,6 +1171,50 @@ pub unsafe fn untouched(_ptr: *const u8, _len: usize, _page: usize) -> io::Resul
     Ok(None)
 }
 
+/// Of the `len` bytes at `ptr`, memory [`reserve_withheld`] reserved, the bytes the process
+/// holds (unix.rs `held`): those it has committed ([`grant`]) and not decommitted since
+/// ([`withhold`]), each run of pages of one state as VirtualQuery describes it
+/// (MEMORY_BASIC_INFORMATION's `State`, MEM_COMMIT). Windows charges a process the host's
+/// commit for what it has committed, touched or not, in its working set or paged out, until
+/// it decommits it (PM M371, M413): what it holds of the host, as resident and swapped pages
+/// are on Unix. A page's residency (QueryWorkingSetEx's `Valid`) says only whether it is in
+/// the working set, and would miss the pages paged out, which Unix counts. Asked a run at a
+/// time, not a page: of a GiB given back, a call or a few.
+///
+/// # Safety
+/// `ptr..ptr+len` must be memory this process owns.
+pub unsafe fn held(ptr: *const u8, len: usize, _page: usize) -> io::Result<Option<u64>> {
+    use windows_sys::Win32::System::Memory::{MEMORY_BASIC_INFORMATION, VirtualQuery};
+    let (mut at, end) = (ptr as usize, (ptr as usize).saturating_add(len));
+    let mut held = 0u64;
+    while at < end {
+        let mut info = MEMORY_BASIC_INFORMATION::default();
+        // SAFETY: a query of this process's own address, into a value of its own size.
+        let got = unsafe {
+            VirtualQuery(
+                at as *const _,
+                &raw mut info,
+                size_of::<MEMORY_BASIC_INFORMATION>(),
+            )
+        };
+        if got == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // The run's end: its size counts from its base, `at` rounded down to a page.
+        let run_end = (info.BaseAddress as usize)
+            .saturating_add(info.RegionSize)
+            .min(end);
+        if run_end <= at {
+            return Ok(None);
+        }
+        if info.State == MEM_COMMIT {
+            held = held.saturating_add((run_end - at) as u64);
+        }
+        at = run_end;
+    }
+    Ok(Some(held))
+}
+
 /// Whether every page of a range was never touched (unix.rs `all_untouched`): Windows is not
 /// asked, as [`untouched`] is not.
 ///
