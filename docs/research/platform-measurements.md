@@ -17386,6 +17386,48 @@ revision before comparing a changed API/implementation.
     Boot to init, n 40 each: with four slots p50 18.90 ms (p90 19.15, p99 27.39), with no
     bus 18.88 (p90 19.24, p99 20.60): no cost measured at p50, where x86_64's ACPI-described
     bus costs 4 ms.
+  - **A host's function plugged in**, KVM arm64 nested in a guest with EL2 (the M5 Max,
+    Darwin 25.4.0; boot.rs's L1 harness, QEMU's edu function at the L1 guest's 01.0, bound
+    to its vfio-pci), 8928fbe4 (p/integrate-1106), test-release, the host's load not
+    recorded: `vfio-nested.sh`, tests/hotplug.rs's
+    `a_hosts_function_is_plugged_into_a_running_microvm`, `SHARDS_PLUG_ROUNDS=30`, the
+    test guest of 512 MiB and 1 vCPU with two slots outside its IOMMU, the function taken
+    by its group: each round `Handle::plug_vfio` (timed by the host: a container of its
+    own, its group set in it, all of guest RAM mapped for its DMA by
+    `VFIO_IOMMU_MAP_DMA`, which pins it, the device opened and reset, its BARs mapped and
+    the function put on the bus), the guest's rescan to its read of the function's BAR 0
+    where it placed it (timed by the guest), the guest's write of its `remove` (timed by
+    the guest), and the host's unplug (timed by the host, KVM forgetting its group), µs:
+
+    | Step | n | p50 | p90 | p99 | max | rounds in order |
+    |---|---|---|---|---|---|---|
+    | host plug | 30 | 951 | 1062 | 63804 | 63804 | 63804, 962, 987, 968, 930, 951, 1060, 931, 893, 895, 938, 944, 966, 866, 1106, 955, 939, 1062, 897, 883, 954, 978, 917, 925, 871, 1094, 1042, 1006, 902, 979 |
+    | guest rescan to its BAR read | 30 | 12084 | 12183 | 14074 | 14074 | the first 14074, then 11767 to 12419 |
+    | guest remove | 30 | 36 | 65 | 142 | 142 | the first 122 |
+    | host unplug | 30 | 927 | 961 | 1004 | 1004 | the first 1004 |
+
+    The first round's host plug alone is slow, every run: 63.8 ms here against 0.87 to
+    1.11 ms for the 29 after it, and 143.2 ms and 83.6 ms, each its run's single maximum
+    and its first round, in two earlier runs at other revisions. **Its cause is not yet
+    measured.** What only a VM's first plug does, by the code: it raises the process's
+    locked-memory limit (`raise_memlock`, a no-op once raised), makes KVM's VFIO device at
+    its first file (`KVM_CREATE_DEVICE`, `VfioHost::add_file`), and pins guest RAM no plug
+    pinned before, each later plug's container pinning the same RAM again; and the test
+    plugs its first round right after `vm::start`, before its guest says `SHARDS-PLUG WAIT
+    0`, its later ones while the guest waits on its console. The hypothesis to test, not
+    a finding: the first pin faults in guest RAM the VM has never touched, and later pins
+    find it resident. From p/vfio-plug-steps on, the host plug times each of its own steps
+    (`vfio::Clock`, `Plugged::steps`, at debug in the VM's log too): the test prints each
+    round's (`PLUG-STEPS round N: memlock …, slot …, container …, group-open …, kvm-file …,
+    group-set …, iommu-set …, dma-map …, device-fd …, regions …, reset …, bars …,
+    interrupts …, bar-mmap …, bar-slots …, bus … us`) and each step's n, p50, p90, p99 and
+    max (`PLUG-STATS a host's function, host plug's STEP`); `dma-map` slow alone on the
+    first round would put its time in the pin, `kvm-file` in KVM's device, and steps slow
+    that do no first-only work would point at what runs beside the plug, the guest's
+    start, which a first round plugged after `WAIT 0` would then test. Through the CLI, plug.rs's
+    `a_hosts_function_is_plugged_into_a_run_for_its_workload` passes nested at the same
+    revision, as a user not root, by group and by device node through iommufd; its steps
+    are not timed yet.
   - **Through the CLI** (`cli.py`, a detached busybox run restored from its template,
     the client's wall clock, n 30, Mac at load 11, fd56a4eb test-release): `plug disk`
     p50 20.9 ms (p90 27.9, p99 29.9, max 29.9), `unplug disk` 62.5 ms (p90 91.4, p99
@@ -17405,7 +17447,8 @@ revision before comparing a changed API/implementation.
     KVM x86_64 (load 7.2 to 18): wall 22.91 against 22.37 ms, paired −0.54 ms, 95%
     [−2.22, +1.27]; command 4.30 against 4.15 ms, paired −0.16 ms, [−0.52, +0.18]: none
     measured.
-  - The host's sides are microseconds; the guest's rescan and its remove are the cost: a
+  - A disk's host sides are microseconds (a host's function's, nested, a millisecond but
+    for its first plug); the guest's rescan and its remove are the cost: a
     probe of the virtio function and its disk, and a remove of 29 ms whose parts are not
     measured yet.
 

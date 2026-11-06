@@ -238,7 +238,7 @@ amd64 cell's once it does.
 | Log drivers (D163, D198, D199) | every driver, journald its own | as amd64 | every driver but journald, macOS's own log (`oslog`) its counterpart | every driver but journald, `etwlogs` its counterpart |
 | A GPU (D144, Venus) | yes, glibc and musl, NVIDIA's, AMD's and Intel's GPUs (D201, D208); open: the GPU desktop's run of D208's build, waiting for its owner's go | built and linted, untested on a GPU (none here) | yes | yes (D202) |
 | Devices plugged into a running microVM, disks grown (D214) | yes | yes (nested, its MSIs through the GIC's ITS) | yes | yes: in the VMM, its shared directory over a duplex pipe (tests/hotplug.rs), and through the CLI a disk and a volume, its share process's stream given the VM as a run's are (tests/plug.rs), on CI's windows-2025 and windows-2022 |
-| A host's PCI function given a microVM, at its start or plugged in (D154, D214) | built, VFIO; not yet tested on hardware, no x86_64 host here having a function to spare (D214's Not yet) | yes, nested, on QEMU's edu function (D154, D214); plugged into a run's workload, its E2E not yet run | refused: its APIs assign no PCI function, Virtualization's one passthrough a USB device's (D154, PM M403) | built where the hypervisor assigns devices (Discrete Device Assignment, D154), its E2E waiting on a Windows Server host that assigns one; refused with the hypervisor's own answer where it assigns none (PM M401, M402) |
+| A host's PCI function given a microVM, at its start or plugged in (D154, D214) | built, VFIO; not yet tested on hardware, no x86_64 host here having a function to spare (D214's Not yet) | yes, nested, on QEMU's edu function (D154, D214), plugged into a run's workload too, as a user not root, by group and by device node (D214, at 8928fbe4) | refused: its APIs assign no PCI function, Virtualization's one passthrough a USB device's (D154, PM M403) | built where the hypervisor assigns devices (Discrete Device Assignment, D154), its E2E waiting on a Windows Server host that assigns one; refused with the hypervisor's own answer where it assigns none (PM M401, M402) |
 | A running microVM saved whole, and resumed (D176 parts 1-5) | yes | yes | yes | yes |
 | Moved to another machine, saved (D176 part 6) | yes, between two homes of one machine (PM M460; CI's runners, migrate-e2e.yml); between two machines built, not yet run | built, not yet run | built, its CPU checked as macOS names its features (PM M460); measured on KVM x86_64 alone; between two Macs not yet run | yes between two homes, a volume's guest owners moved as its guest sees them (`server::guest`): tests/moved.rs on CI's windows-2025; between two machines built, not yet run |
 | Moved live (D176 part 7) | yes, between two homes of one machine (PM M461; CI's runners, migrate-e2e.yml); between two machines built, not yet run | built, not yet run: each writable slot's dirty bitmap (`KVM_GET_DIRTY_LOG`), which takes the ITS's writes too | built, its guest's writes watched at stage 2 as D25's recorder watches them; measured on KVM x86_64 alone; between two Macs not yet run | built, not yet run: WHP's dirty page tracking (`WHvQueryGpaRangeDirtyBitmap`) |
@@ -6973,7 +6973,7 @@ template pays it once; what its restores pay is to be measured with mappings.
   architecture (above: its page structures its head's, and arm64's linear map of it in
   blocks).
 
-### D214. Devices plugged into a running microVM, and its disks grown (built: disks and shared directories through the CLI on Hypervisor.framework, KVM and WHP, WHP's run on CI's Windows runners; host functions in the VMM on KVM, and through the CLI for a run's workload on Linux, its E2E not yet run)
+### D214. Devices plugged into a running microVM, and its disks grown (built: disks and shared directories through the CLI on Hypervisor.framework, KVM and WHP, WHP's run on CI's Windows runners; host functions in the VMM on KVM, and through the CLI for a run's workload on Linux, both passing nested on arm64 KVM)
 
 **Why.** The long-session roadmap's item 6 (2026-10-18): a microVM that runs for hours is
 given what it needs as it goes, not only what it booted with. Every shards device was a
@@ -7133,11 +7133,20 @@ share made ahead), and a disk's capacity was fixed when its file was opened.
   hotplug`), its MSIs through the GIC's ITS: the same test, and a host's function plugged
   in (`a_hosts_function_is_plugged_into_a_running_microvm`, `SHARDS_L1_PCI_TESTS=01.0`):
   the L1 guest's QEMU edu test function bound to its vfio-pci, plugged into a microVM of
-  its own twice, whose guest rescans, finds 1234:11e8 where it was plugged and reads its
-  identification register and liveness check through its BAR 0 where it placed it, lets it
-  go, and it is unplugged, KVM forgetting its group. Its first run found a plugged
-  function's BAR windows mapped at 0 as its guest turned decoding on before placing its
-  BARs (KVM refused them, EEXIST): a window is mapped only where its BAR is placed.
+  its own twice (`SHARDS_PLUG_ROUNDS` times where set), whose guest rescans, finds
+  1234:11e8 where it was plugged and reads its identification register and liveness check
+  through its BAR 0 where it placed it, lets it go, and it is unplugged, KVM forgetting its
+  group. Its first run found a plugged function's BAR windows mapped at 0 as its guest
+  turned decoding on before placing its BARs (KVM refused them, EEXIST): a window is mapped
+  only where its BAR is placed. Its costs, 30 rounds at 8928fbe4 (PM M430), µs at p50 (p90,
+  p99, max): the host's plug 951 (1062, 63804, 63804), the guest's rescan to its read of
+  the BAR 12084 (12183, 14074, 14074), its remove 36 (65, 142, 142), the host's unplug 927
+  (961, 1004, 1004). The plug's one slow round is its first, in each of three runs (63.8,
+  143.2 and 83.6 ms), the rest 0.87 to 1.11 ms; its cause not yet measured. The plug times
+  its own steps (`vfio::Clock`, `Plugged::steps`, the VM's log at debug), which the test
+  prints each round (`PLUG-STEPS`) and as each step's n, p50, p90, p99 and max, for the next
+  nested run to say which step the first round's time is in (M430 lists what only a first
+  plug does).
 - **A host's function plugged into a run for its workload** (`shards plug function
   MICROVM FUNCTION`, `shards unplug function MICROVM FUNCTION`; Linux): FUNCTION the host's
   name of it (`0000:01:00.0`), bound to vfio-pci, or its VFIO device node
@@ -7243,19 +7252,24 @@ share made ahead), and a disk's capacity was fixed when its file was opened.
     into that run (its `/dev/iommu` made the user's, gone after) and into one given
     `/dev/iommu` at its start (the user's while plugged, root's again after), its workload
     moving a page through iommufd each time; a run booted otherwise refused. Run nested
-    once, before the ownership fix, which failed as above; not yet passed, its numbers not
-    yet measured. Off Linux, `shards plug function` is refused by name with its host's own limit, as a run's start refuses one
+    first before the ownership fix, which failed as above; it passes nested now, at
+    8928fbe4 on the M5 Max (Darwin 25.4.0), as the run's user, not root, both by the
+    function's group and by its device node through iommufd; the CLI's steps of a
+    function are not timed yet. Off Linux, `shards plug function` is refused by name with its host's own limit, as a run's start refuses one
     (`passthrough_refused`: on macOS, Hypervisor.framework's API assigns no device to a VM,
     PM M403), in tests/plug.rs's `devices_are_plugged_into_a_run_and_its_disk_grows`; the
     VMM's own refusal off Linux is `vm`'s `a_hosts_pci_function_is_refused_with_its_oss_own
-    _limit`. The steps' costs, n, p50, p90, p99 and max, as M430 gives a disk's, are
-    `docs/research/measurements/pci-hotplug/vfio-nested.sh`'s (the in-process test's
-    `SHARDS_PLUG_ROUNDS` rounds, nested): not yet run.
+    _limit`. The in-process test's steps' costs, n, p50, p90, p99 and max, as M430 gives a
+    disk's, are `docs/research/measurements/pci-hotplug/vfio-nested.sh`'s (its
+    `SHARDS_PLUG_ROUNDS` rounds, nested): 30 rounds at 8928fbe4 in PM M430, above, the host
+    plug's first round's 63.8 ms not yet split.
 - **Not yet:** tests/plug.rs and the in-process test's shared directory on jupiter, and
   their steps' numbers on WHP; a plugged share's DAX window; a plugged function's 64-bit BARs
   past the 32-bit window; a host's function plugged on bare-metal hardware (no host here
   has a spare one bound to vfio-pci: tested nested, on QEMU edu's model); the guest's
-  remove's 29 ms on KVM x86_64, not yet split (PM M430).
+  remove's 29 ms on KVM x86_64, not yet split (PM M430); a host's function's first plug of
+  a VM, 64 to 143 ms nested where the rest take a millisecond, its steps timed but not yet
+  run (PM M430).
 
 ### D208. A GPU on every Linux host: musl's GPU VM process, and Intel's GPUs (built)
 

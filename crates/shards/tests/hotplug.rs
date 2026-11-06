@@ -290,8 +290,8 @@ fn edu_function() -> Option<String> {
 /// reads its identification register and liveness check through its BAR 0, mapped from
 /// sysfs where the guest placed it, the BAR's window a memory slot of KVM's that moved
 /// with it; then lets it go, and it is unplugged, KVM told to forget its group. Twice at
-/// least (`SHARDS_PLUG_ROUNDS`), as a function let go is the host's again, each step timed.
-/// Runs where a host has an edu function to give: nested, `SHARDS_L1_PCI_TESTS=01.0
+/// least (`SHARDS_PLUG_ROUNDS`), as a function let go is the host's again, each step timed,
+/// and the host plug's own steps too (`PLUG-STEPS`, PM M430). Runs where a host has an edu function to give: nested, `SHARDS_L1_PCI_TESTS=01.0
 /// SHARDS_L1_TESTS=hotplug:a_hosts_function` (boot.rs).
 #[cfg(target_os = "linux")]
 #[test]
@@ -334,10 +334,29 @@ fn a_hosts_function_is_plugged_into_a_running_microvm() {
         .unwrap_or(2)
         .max(2);
     let (mut plugs, mut reads, mut removes, mut unplugs) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
-    for _ in 0..rounds {
+    // The host plug's own steps (`Plugged::steps`, PM M430), each step's rounds in order.
+    let mut steps: Vec<(&'static str, Vec<u128>)> = Vec::new();
+    for round in 0..rounds {
         let t0 = Instant::now();
         let plugged = handle.plug_vfio(&f).unwrap_or_else(|e| panic!("{e}"));
-        plugs.push(t0.elapsed().as_micros());
+        let plug = t0.elapsed().as_micros();
+        plugs.push(plug);
+        let said: Vec<String> = plugged
+            .steps
+            .iter()
+            .map(|(step, took)| format!("{step} {}", took.as_micros()))
+            .collect();
+        let sum: u128 = plugged.steps.iter().map(|(_, took)| took.as_micros()).sum();
+        eprintln!(
+            "PLUG-STEPS round {round}: {} us; steps {sum} of the plug's {plug} us",
+            said.join(", ")
+        );
+        for &(step, took) in &plugged.steps {
+            match steps.iter_mut().find(|(name, _)| *name == step) {
+                Some((_, samples)) => samples.push(took.as_micros()),
+                None => steps.push((step, vec![took.as_micros()])),
+            }
+        }
         let said = ask(&handle, format!("vfio {}", plugged.address));
         reads.push(answer(&said, "SHARDS-PLUG VFIO ")[0].parse().unwrap());
         let said = ask(&handle, format!("remove {}", plugged.address));
@@ -357,5 +376,11 @@ fn a_hosts_function_is_plugged_into_a_running_microvm() {
         ("a host's function, host unplug", &mut unplugs),
     ] {
         eprintln!("{}", stats(name, samples));
+    }
+    for (step, samples) in &mut steps {
+        eprintln!(
+            "{}",
+            stats(&format!("a host's function, host plug's {step}"), samples)
+        );
     }
 }

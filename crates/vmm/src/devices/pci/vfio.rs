@@ -17,6 +17,7 @@ use std::os::unix::fs::FileExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::{Mutex, PoisonError};
+use std::time::{Duration, Instant};
 
 use super::passed::{self, in_bars, kept, windows_of};
 use super::{Bar, BarKind, Header, Identity, Interrupts, Msi, MsiCap, MsixCap, MsixTable, PciFunction, reg};
@@ -231,6 +232,40 @@ unsafe fn ioctl(fd: &impl std::os::fd::AsRawFd, request: u64, arg: usize) -> io:
     Ok(r)
 }
 
+/// How long each step of opening and plugging a function took, in their order, each from
+/// the end of the one before (D214, PM M430): `Instant` reads alone.
+#[derive(Debug)]
+pub struct Clock {
+    last: Instant,
+    steps: Vec<(&'static str, Duration)>,
+}
+
+impl Clock {
+    pub fn new() -> Clock {
+        Clock {
+            last: Instant::now(),
+            steps: Vec::new(),
+        }
+    }
+
+    /// Step `name` done: its time, since the step before it ended.
+    pub fn mark(&mut self, name: &'static str) {
+        let now = Instant::now();
+        self.steps.push((name, now.saturating_duration_since(self.last)));
+        self.last = now;
+    }
+
+    pub fn steps(self) -> Vec<(&'static str, Duration)> {
+        self.steps
+    }
+}
+
+impl Default for Clock {
+    fn default() -> Clock {
+        Clock::new()
+    }
+}
+
 /// A host's PCI function, as VFIO hands it to this process.
 #[derive(Debug)]
 pub struct Device {
@@ -330,13 +365,15 @@ impl Container {
 
     /// The group at `path`, set in this container and told of to `host`'s hypervisor: the
     /// first sets its IOMMU and maps guest RAM, `memory`, for their DMA; a group set
-    /// already is the same. Opened here, or `given`, opened by another process.
+    /// already is the same. Opened here, or `given`, opened by another process; each step
+    /// timed on `clock`.
     fn group(
         &mut self,
         path: &Path,
         given: Option<OwnedFd>,
         memory: &GuestMemory,
         host: &dyn Host,
+        clock: &mut Clock,
     ) -> Result<Arc<OwnedFd>, String> {
         if let Some((_, fd)) = self.groups.iter().find(|(p, _)| p == path) {
             return Ok(fd.clone());
@@ -355,8 +392,11 @@ impl Container {
                 format!("{}: opening it: {e}{hint}", path.display())
             })?,
         };
+        clock.mark("group-open");
+        // The VM's first makes KVM's VFIO device (KVM_CREATE_DEVICE).
         host.add_file(group.as_raw_fd())
             .map_err(|e| format!("{}: {e}", path.display()))?;
+        clock.mark("kvm-file");
         let mut status = GroupStatus {
             argsz: size_of::<GroupStatus>() as u32,
             flags: 0,
@@ -374,6 +414,7 @@ impl Container {
         // SAFETY: VFIO_GROUP_SET_CONTAINER reads the container's descriptor it points at.
         unsafe { ioctl(&group, VFIO_GROUP_SET_CONTAINER, (&raw const container) as usize) }
             .map_err(|e| err("setting its container", e))?;
+        clock.mark("group-set");
         if self.groups.is_empty() {
             // SAFETY: VFIO_SET_IOMMU takes an integer.
             unsafe { ioctl(&*self.fd, VFIO_SET_IOMMU, Self::iommu(self.noiommu) as usize) }.map_err(|e| {
@@ -385,8 +426,10 @@ impl Container {
                 };
                 format!("{}: setting its IOMMU: {e}{hint}", path.display())
             })?;
+            clock.mark("iommu-set");
             if !self.noiommu && self.maps_ram {
                 self.map(memory)?;
+                clock.mark("dma-map");
             }
         }
         let group = Arc::new(group);
@@ -885,11 +928,11 @@ impl Device {
         memory: &GuestMemory,
         host: &dyn Host,
     ) -> Result<Device, String> {
-        Device::open_with(name, group, None, container, memory, host)
+        Device::open_with(name, group, None, container, memory, host, &mut Clock::new())
     }
 
     /// [`Device::open`], its group's node opened here, or `given`, opened by another
-    /// process (D214).
+    /// process (D214); each step timed on `clock`.
     pub fn open_with(
         name: &str,
         group: &Path,
@@ -897,10 +940,11 @@ impl Device {
         container: &mut Container,
         memory: &GuestMemory,
         host: &dyn Host,
+        clock: &mut Clock,
     ) -> Result<Device, String> {
         let err = |what: &str, e: io::Error| format!("{name}: {what}: {e}");
         let group = container
-            .group(group, given, memory, host)
+            .group(group, given, memory, host, clock)
             .map_err(|e| format!("{name}: {e}"))?;
         let cname = CString::new(name).map_err(|_| format!("{name}: a NUL in its name"))?;
         // SAFETY: VFIO_GROUP_GET_DEVICE_FD reads a NUL-terminated device name.
@@ -908,34 +952,39 @@ impl Device {
             .map_err(|e| err("its device", e))?;
         // SAFETY: the descriptor the ioctl just returned, ours alone.
         let file = File::from(unsafe { OwnedFd::from_raw_fd(fd) });
+        clock.mark("device-fd");
         let told = group.as_raw_fd();
-        Device::of_file(name, file, vec![group, container.fd.clone()], Some(told))
+        Device::of_file(name, file, vec![group, container.fd.clone()], Some(told), clock)
     }
 
     /// The host's function `name` by its device node `cdev` (vfio.rst, "VFIO Device
     /// cdev"): told of to `host`'s hypervisor, bound to iommufd and attached to `ioas`,
     /// where its DMA's mappings are made; reset where it can be.
     pub fn open_cdev(name: &str, cdev: &Path, ioas: &Ioas, host: &dyn Host) -> Result<Device, String> {
-        Device::open_cdev_with(name, cdev, None, ioas, host)
+        Device::open_cdev_with(name, cdev, None, ioas, host, &mut Clock::new())
     }
 
     /// [`Device::open_cdev`], its node opened here, or `given`, opened by another process
-    /// (D214).
+    /// (D214); each step timed on `clock`.
     pub fn open_cdev_with(
         name: &str,
         cdev: &Path,
         given: Option<OwnedFd>,
         ioas: &Ioas,
         host: &dyn Host,
+        clock: &mut Clock,
     ) -> Result<Device, String> {
         let err = |what: &str, e: io::Error| format!("{name}: {} {what}: {e}", cdev.display());
         let fd = match given {
             Some(fd) => fd,
             None => open(cdev).map_err(|e| err("opening it", e))?,
         };
-        // Before it is bound, as a driver that needs the VM finds it then (vfio.rst).
+        clock.mark("cdev-open");
+        // Before it is bound, as a driver that needs the VM finds it then (vfio.rst); the
+        // VM's first makes KVM's VFIO device (KVM_CREATE_DEVICE).
         host.add_file(fd.as_raw_fd())
             .map_err(|e| format!("{name}: {}: {e}", cdev.display()))?;
+        clock.mark("kvm-file");
         let mut bind = BindIommufd {
             argsz: size_of::<BindIommufd>() as u32,
             iommufd: ioas.fd.as_raw_fd(),
@@ -960,6 +1009,7 @@ impl Device {
             };
             format!("{name}: {} binding it to iommufd: {e}{hint}", cdev.display())
         })?;
+        clock.mark("bind");
         let mut attach = AttachPt {
             argsz: size_of::<AttachPt>() as u32,
             pt_id: ioas.id,
@@ -969,16 +1019,18 @@ impl Device {
         // `vfio_device_attach_iommufd_pt`.
         unsafe { ioctl(&fd, VFIO_DEVICE_ATTACH_IOMMUFD_PT, (&raw mut attach) as usize) }
             .map_err(|e| err("attaching it to its I/O address space", e))?;
-        Device::of_file(name, File::from(fd), vec![ioas.fd.clone()], None)
+        clock.mark("attach");
+        Device::of_file(name, File::from(fd), vec![ioas.fd.clone()], None, clock)
     }
 
     /// The function `name` whose device descriptor is `file`, had through `holds`, its
-    /// hypervisor told of `told`, or of `file` where none.
+    /// hypervisor told of `told`, or of `file` where none; each step timed on `clock`.
     fn of_file(
         name: &str,
         file: File,
         holds: Vec<Arc<OwnedFd>>,
         told: Option<RawFd>,
+        clock: &mut Clock,
     ) -> Result<Device, String> {
         let err = |what: &str, e: io::Error| format!("{name}: {what}: {e}");
         let mut info = DeviceInfo {
@@ -1006,9 +1058,11 @@ impl Device {
         if regions.get(CONFIG_REGION as usize).is_none_or(|r| r.size < 256) {
             return Err(format!("{name}: no configuration space"));
         }
+        clock.mark("regions");
         if info.flags & VFIO_DEVICE_FLAGS_RESET != 0 {
             // SAFETY: VFIO_DEVICE_RESET takes no argument.
             unsafe { ioctl(&file, VFIO_DEVICE_RESET, 0) }.map_err(|e| err("resetting it", e))?;
+            clock.mark("reset");
         }
         let told = told.unwrap_or_else(|| file.as_raw_fd());
         Ok(Device {
@@ -1469,21 +1523,31 @@ impl VfioFunction {
         host: &dyn Host,
         together: bool,
     ) -> Result<VfioFunction, String> {
-        VfioFunction::made(device, bars, route, send, host, together, false)
+        VfioFunction::made(
+            device,
+            bars,
+            route,
+            send,
+            host,
+            together,
+            false,
+            &mut Clock::new(),
+        )
     }
 
     /// `device` plugged into a running machine (D214): its BARs where its guest places
     /// them, from `bars`' sizes; its interrupts as [`VfioFunction::new`]'s; a function of
-    /// its own on its device.
+    /// its own on its device. Each step timed on `clock`.
     pub fn plugged(
         device: Device,
         bars: Vec<Bar>,
         route: Option<Arc<dyn Route>>,
         send: Option<Arc<dyn Msi>>,
         host: &dyn Host,
+        clock: &mut Clock,
     ) -> Result<VfioFunction, String> {
         let unplaced = bars.into_iter().map(|bar| Bar { addr: 0, ..bar }).collect();
-        VfioFunction::made(device, unplaced, route, send, host, false, true)
+        VfioFunction::made(device, unplaced, route, send, host, false, true, clock)
     }
 
     /// The file its hypervisor was told of, which it forgets as the function is unplugged.
@@ -1491,6 +1555,7 @@ impl VfioFunction {
         self.device.told
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn made(
         device: Device,
         bars: Vec<Bar>,
@@ -1499,6 +1564,7 @@ impl VfioFunction {
         host: &dyn Host,
         together: bool,
         movable: bool,
+        clock: &mut Clock,
     ) -> Result<VfioFunction, String> {
         let routed = route.is_some() && send.is_some();
         // A plugged function's slot has no INTx line its machine's firmware tables route
@@ -1528,6 +1594,7 @@ impl VfioFunction {
             }
             fits
         });
+        clock.mark("interrupts");
         // Each BAR vfio-pci maps, in the guest but for the pages the VMM keeps.
         let page = crate::platform::page_size().map_err(|e| e.to_string())? as u64;
         let (mut windows, mut mappings) = (Vec::new(), Vec::new());
@@ -1550,7 +1617,9 @@ impl VfioFunction {
             }
             mappings.push(mapping);
         }
+        clock.mark("bar-mmap");
         let slots = (!windows.is_empty()).then(|| host.slots(windows.len() as u32));
+        clock.mark("bar-slots");
         let kept = Header::with_interrupts(
             Identity {
                 vendor: 0,

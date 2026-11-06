@@ -84,6 +84,7 @@ impl Handle {
             devfn,
             address: super::guest_address((devfn >> 3, devfn & 7)),
             size,
+            steps: Vec::new(),
         })
     }
 
@@ -102,6 +103,7 @@ impl Handle {
             devfn,
             address: super::guest_address((devfn >> 3, devfn & 7)),
             size: None,
+            steps: Vec::new(),
         })
     }
 
@@ -162,9 +164,14 @@ impl Handle {
         {
             return Err(named(why.clone()));
         }
+        // Each step timed (PM M430): `Plugged::steps`, and the VM's log at debug.
+        let mut clock = v::Clock::new();
         v::raise_memlock();
+        clock.mark("memlock");
         let (memory, host) = (self.memory.clone(), plugs.vfio.clone());
         let devfn = plugs.hotplug.plug(|slot| {
+            // Its slot found, and its endpoint made translated where behind the IOMMU.
+            clock.mark("slot");
             let (first, second) = files.map(|given| (given.first, given.second)).unzip();
             let endpoint = slot.endpoint();
             // Behind the IOMMU: a container, or an address space, of its own, which maps
@@ -175,12 +182,15 @@ impl Handle {
                         Some(fd) => v::Iommufd::of_file(fd),
                         None => v::Iommufd::open().map_err(named)?,
                     };
+                    clock.mark("iommufd");
                     let ioas = iommufd.ioas().map_err(named)?;
-                    let opened = v::Device::open_cdev_with(&f.name, cdev, second, &ioas, &host)?;
+                    clock.mark("ioas");
+                    let opened = v::Device::open_cdev_with(&f.name, cdev, second, &ioas, &host, &mut clock)?;
                     if f.iommu {
                         (opened, Some(Arc::new(ioas.follower(memory.clone()))))
                     } else {
                         ioas.map_ram(&memory).map_err(named)?;
+                        clock.mark("dma-map");
                         (opened, None)
                     }
                 }
@@ -190,9 +200,17 @@ impl Handle {
                         None if f.iommu => v::Container::followed().map_err(named)?,
                         None => v::Container::open(f.noiommu).map_err(named)?,
                     };
+                    clock.mark("container");
                     let follower = f.iommu.then(|| Arc::new(container.follower(memory.clone())));
-                    let opened =
-                        v::Device::open_with(&f.name, &f.group, second, &mut container, &memory, &host)?;
+                    let opened = v::Device::open_with(
+                        &f.name,
+                        &f.group,
+                        second,
+                        &mut container,
+                        &memory,
+                        &host,
+                        &mut clock,
+                    )?;
                     (opened, follower)
                 }
             };
@@ -216,6 +234,7 @@ impl Handle {
                 ));
                 route = route.map(|_| translated.clone() as Arc<dyn v::Route>);
                 send = send.map(|_| translated as Arc<dyn pci::Msi>);
+                clock.mark("followed");
             }
             let bars = opened
                 .bars()
@@ -227,13 +246,27 @@ impl Handle {
                     kind,
                 })
                 .collect();
-            let function = v::VfioFunction::plugged(opened, bars, route, send, &host)?;
+            clock.mark("bars");
+            let function = v::VfioFunction::plugged(opened, bars, route, send, &host, &mut clock)?;
             Ok(Arc::new(v::PluggedFunction::new(function, host.clone())) as Arc<dyn pci::hotplug::Plugged>)
         })?;
+        // On the bus: its configuration space reached where its guest looks.
+        clock.mark("bus");
+        let steps = clock.steps();
+        crate::debug!(
+            "{}: plugged in at {devfn:#04x}: {}",
+            f.name,
+            steps
+                .iter()
+                .map(|(step, took)| format!("{step} {} us", took.as_micros()))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
         Ok(super::Plugged {
             devfn,
             address: super::guest_address((devfn >> 3, devfn & 7)),
             size: None,
+            steps,
         })
     }
 
