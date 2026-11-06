@@ -48,8 +48,10 @@ fn answer(said: &str, prefix: &str) -> Vec<String> {
     line.split_whitespace().map(str::to_string).collect()
 }
 
-/// n, p50, p90, p99 and max of `samples`, nearest rank.
+/// n, p50, p90, p99 and max of `samples`, nearest rank, and each round's in its order: an
+/// outlier is told by its round (the first's, or one that repeats, PM M430).
 fn stats(name: &str, samples: &mut [u128]) -> String {
+    let rounds = samples.iter().map(u128::to_string).collect::<Vec<_>>().join(",");
     samples.sort_unstable();
     let rank = |p: usize| {
         samples
@@ -58,7 +60,7 @@ fn stats(name: &str, samples: &mut [u128]) -> String {
             .unwrap_or_default()
     };
     format!(
-        "PLUG-STATS {name}: n {} p50 {} p90 {} p99 {} max {} us",
+        "PLUG-STATS {name}: n {} p50 {} p90 {} p99 {} max {} us; rounds {rounds}",
         samples.len(),
         rank(50),
         rank(90),
