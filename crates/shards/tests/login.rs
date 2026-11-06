@@ -162,15 +162,13 @@ fn logins_are_checked_kept_used_and_forgotten() {
     );
 }
 
-/// Whether process `pid` has gone: reaped, as kill(2) of no signal finds none.
-#[cfg(unix)]
+/// Whether process `pid` has gone: reaped, where Unix's kill(2) of no signal finds none,
+/// and ended, where Windows' process has its exit code.
 fn gone(pid: i32) -> bool {
-    // SAFETY: kill(2) with no signal sends nothing; it asks whether the process is.
-    unsafe { libc::kill(pid, 0) != 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH) }
+    !common::alive(pid)
 }
 
 /// The pids `file` records, a line each.
-#[cfg(unix)]
 fn pids(file: &Path) -> Vec<i32> {
     std::fs::read_to_string(file)
         .unwrap_or_default()
@@ -182,25 +180,19 @@ fn pids(file: &Path) -> Vec<i32> {
 /// A credential helper that never answers (docker-credential-desktop on 2026-10-17, its
 /// backend gone, for 12 minutes and more) holds no pull from a registry that asks for no
 /// credentials: it is asked, never waited for, and ended with the pull. A pull from one that
-/// asks says what it waits on, and its client's going ends the helper with it (D184).
-/// Unix's alone so far: its helper is a shell script that records its pid and waits; a
-/// Windows twin needs a helper program that blocks as it does (credentials.rs's `Talk`).
-#[cfg(unix)]
+/// asks says what it waits on, and its client's going ends the helper with it (D184). The
+/// helper is the tests' helper program named as one, which records its pid and waits, a
+/// program on every host (on Windows, credentials.rs's `Talk` starts it by std's Command).
 #[test]
 fn a_credential_helper_that_never_answers_holds_only_what_needs_its_answer() {
     let home = TempDir::new("stuck-helper");
     let config = home.join("config");
     std::fs::create_dir_all(&config).unwrap();
     std::fs::write(config.join("config.json"), r#"{"credsStore":"stuck"}"#).unwrap();
-    // Its pid recorded, then a wait for ever, its input never read.
-    let recorded = home.join("helper-pids");
-    common::program(
-        &no_helpers(&home).join("docker-credential-stuck"),
-        &format!(
-            "#!/bin/sh\necho $$ >> '{}'\nexec /bin/sleep 3613\n",
-            recorded.display()
-        ),
-    );
+    // Its pid recorded beside it, then a wait for ever, its input never read.
+    let stuck = no_helpers(&home).join(format!("docker-credential-stuck{}", std::env::consts::EXE_SUFFIX));
+    common::program_copy(shards_testdir::helper().unwrap(), &stuck);
+    let recorded = stuck.with_extension("pids");
     let deadline = std::time::Instant::now() + TIMEOUT;
     let ends = |asked: &[i32], what: &str| {
         while !asked.iter().all(|&p| gone(p)) {
@@ -287,7 +279,7 @@ fn a_credential_helper_that_never_answers_holds_only_what_needs_its_answer() {
         repos.lock().unwrap().log.iter().any(|l| l.starts_with("401 ")),
         "the registry challenged"
     );
-    // Its pid, once its shell has come to record it.
+    // Its pid, once it has come to record it.
     let waiting = loop {
         let waiting: Vec<i32> = pids(&recorded)
             .into_iter()

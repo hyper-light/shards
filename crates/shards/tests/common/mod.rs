@@ -82,6 +82,19 @@ pub fn program(path: &Path, text: &str) {
     assert!(writer.wait().unwrap().success(), "{} not written", path.display());
 }
 
+/// The program at `from`, copied to `to` as [`program`] writes one: by a process of its own
+/// on Unix, so that no child another test's thread forks holds it open to write.
+pub fn program_copy(from: &Path, to: &Path) {
+    #[cfg(unix)]
+    assert!(
+        Command::new("cp").arg(from).arg(to).status().unwrap().success(),
+        "{} not copied",
+        from.display()
+    );
+    #[cfg(windows)]
+    std::fs::copy(from, to).unwrap();
+}
+
 /// A home whose guest is the test kernel and init, recorded before its daemon starts.
 pub fn home_with(name: &str, timeout: Duration) -> TempDir {
     let home = TempDir::new(name);
