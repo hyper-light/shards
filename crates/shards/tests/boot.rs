@@ -1053,12 +1053,14 @@ fn snapshot_tests_pass_on_a_kvm_host_of_this_architecture() {
     let dir = common::TempDir::new("l1-e2e");
     let read = |p: &std::path::Path| std::fs::read(p).unwrap();
     // SHARDS_L1_PCI_TESTS gives the guest test functions at those places (`--pci-tests`),
-    // which its tests may pass through to guests of their own (tests/hotplug.rs): its
-    // VFIO told it may take them, whose MSIs its GICv2m frame does not isolate (D154).
+    // which its tests may pass through to guests of their own (tests/hotplug.rs,
+    // tests/plug.rs): its VFIO, by group and by device node through iommufd, told it may
+    // take them, whose MSIs its GICv2m frame does not isolate (D154; iommufd/device.c,
+    // iommufd_device_bind, refused a node's bind with EPERM without it).
     let pci_tests = std::env::var("SHARDS_L1_PCI_TESTS").ok();
     let outer = |initrd: &std::path::Path, cpus: &str, memory: &str, cmdline: &str, timeout| {
         let unsafe_msis = match &pci_tests {
-            Some(_) => " vfio_iommu_type1.allow_unsafe_interrupts=1",
+            Some(_) => " vfio_iommu_type1.allow_unsafe_interrupts=1 iommufd.allow_unsafe_interrupts=1",
             None => "",
         };
         let cmdline = format!("console=ttyS0 panic=-1 {cmdline}{unsafe_msis}");
