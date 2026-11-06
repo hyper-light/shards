@@ -1872,3 +1872,46 @@ fn cold_boots_profiled() {
         );
     }
 }
+
+/// `run --kernel … --share DIR --share DIR:ro`: the guest mounts `shards0` and `shards1`
+/// over virtio-fs, reads what the host put in each, writes a file through the first, which
+/// the host then reads, and is refused creating one through the second, which stays
+/// without it (D38's share process, served by `run --kernel` before its VM confines itself).
+#[test]
+fn a_direct_boot_writes_through_a_share_and_not_through_a_read_only_one() {
+    if cannot_run_vms() {
+        return;
+    }
+    let dir = common::TempDir::new("share");
+    let (rw, ro) = (dir.path().join("rw"), dir.path().join("ro"));
+    for d in [&rw, &ro] {
+        std::fs::create_dir(d).unwrap();
+        std::fs::write(d.join("hello"), "hello through --share\n").unwrap();
+    }
+    let read_only = format!("{}:ro", ro.display());
+    let r = vm_run(
+        &[
+            "--kernel",
+            kernel().to_str().unwrap(),
+            "--init",
+            test_guest().to_str().unwrap(),
+            "--memory",
+            "256",
+            "--cmdline",
+            "console=ttyS0 quiet panic=-1 shards_test=share",
+            "--share",
+            rw.to_str().unwrap(),
+            "--share",
+            &read_only,
+        ],
+        TIMEOUT,
+    );
+    assert_eq!(r.status, Some(0), "{r}");
+    assert!(r.stdout.contains("SHARDS-TEST PASS"), "{r}");
+    assert!(r.stdout.contains("SHARE READ-ONLY"), "{r}");
+    assert_eq!(
+        std::fs::read_to_string(rw.join("from-guest")).unwrap(),
+        "written by a shards guest through --share\n"
+    );
+    assert!(!ro.join("from-guest").exists());
+}
