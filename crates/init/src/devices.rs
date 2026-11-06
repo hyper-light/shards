@@ -928,9 +928,7 @@ pub fn allow(rules: &[Vec<u8>], cgroup: &str) -> Result<String, String> {
     let Some(rules) = &w.rules else {
         return Ok(String::new());
     };
-    let mut all = rules.clone();
-    all.extend(extra);
-    let program = dc::compile(&all)?;
+    let program = dc::compile(&widened(rules, extra))?;
     let replacing = match (&w.attached, DEFAULT.get()) {
         (Some((bytes, fd)), _) | (None, Some((bytes, fd))) => {
             if *bytes == program {
@@ -943,6 +941,19 @@ pub fn allow(rules: &[Vec<u8>], cgroup: &str) -> Result<String, String> {
     let fd = attach(&program, &w.cgroup, replacing)?;
     w.attached = Some((program, fd));
     Ok(String::new())
+}
+
+/// A run's `rules` and then each of `extra` its rules have not already: `/dev/iommu`'s,
+/// where it was given at its start (`--device /dev/iommu`), and once however many
+/// functions are had through it.
+fn widened(rules: &[Rule], extra: Vec<Rule>) -> Vec<Rule> {
+    let mut all = rules.to_vec();
+    for rule in extra {
+        if !all.contains(&rule) {
+            all.push(rule);
+        }
+    }
+    all
 }
 
 /// [`allow`]'s rules, each `c MAJ:MIN rwm`: one character device's, whole; any other is
@@ -1403,8 +1414,7 @@ mod tests {
                 "{refused}"
             );
         }
-        let mut all = dc::container(&[], &[], false);
-        all.extend(rules);
+        let all = widened(&dc::container(&[], &[], false), rules);
         let (default_allow, clean) = dc::reduce(&all).unwrap();
         let program = dc::program(default_allow, &clean).unwrap();
         assert_eq!(dc::run(&program, Kind::Char, dc::RWM, 241, 0), Some(true));
@@ -1417,6 +1427,33 @@ mod tests {
         let (default_allow, clean) = dc::reduce(&dc::container(&[], &[], false)).unwrap();
         let unplugged = dc::program(default_allow, &clean).unwrap();
         assert_eq!(dc::run(&unplugged, Kind::Char, dc::READ, 241, 0), Some(false));
+
+        // A function by its device node: its node and /dev/iommu (a misc device, 10:M),
+        // once for two of them, and not again where its run was given it at its start.
+        let iommu = cgroup_rule("c 10:123 rwm").unwrap();
+        let two = function_rules(&[
+            b"c 238:0 rwm".to_vec(),
+            b"c 10:123 rwm".to_vec(),
+            b"c 238:1 rwm".to_vec(),
+            b"c 10:123 rwm".to_vec(),
+        ])
+        .unwrap();
+        let run = dc::container(&[], &[], false);
+        let all = widened(&run, two.clone());
+        assert_eq!(all.len(), run.len() + 3);
+        let (default_allow, clean) = dc::reduce(&all).unwrap();
+        let program = dc::program(default_allow, &clean).unwrap();
+        for minor in [0, 1] {
+            assert_eq!(dc::run(&program, Kind::Char, dc::RWM, 238, minor), Some(true));
+        }
+        assert_eq!(dc::run(&program, Kind::Char, dc::RWM, 10, 123), Some(true));
+        assert_eq!(dc::run(&program, Kind::Char, dc::READ, 10, 124), Some(false));
+        let mut given = run.clone();
+        given.push(iommu);
+        assert_eq!(widened(&given, two).len(), given.len() + 2, "given at its start");
+        let (default_allow, clean) = dc::reduce(&dc::container(&[], &[], false)).unwrap();
+        let unplugged = dc::program(default_allow, &clean).unwrap();
+        assert_eq!(dc::run(&unplugged, Kind::Char, dc::READ, 10, 123), Some(false));
     }
 
     #[test]
