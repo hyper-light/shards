@@ -3079,15 +3079,54 @@ fn idle_followers_cost_nothing_and_end_with_their_container() {
                 .args(["logs", "-f", "up"])
                 .env("SHARDS_HOME", &*home)
                 .stdin(Stdio::null())
-                .stdout(Stdio::null())
+                .stdout(Stdio::piped())
                 .stderr(Stdio::null())
                 .spawn()
                 .unwrap()
         })
         .collect();
-    // Once they have all been taken, which a host under load takes a while to start: a
-    // second of the daemon's that costs next to nothing, as no follower that looks for
-    // output on a timer lets it have (audit A12's, 50 times a second each).
+    // Each served: it has shown the log's line, the `ready` the container says as it starts,
+    // which its daemon sends it as it takes its request, before it follows. A quiet second
+    // alone did not say so: on windows-2022 (88ff4cbc) 92 of them came to their daemon in
+    // the 3 s measured after one, their requests' threads' cycles in it what each thread had
+    // run in all (a `run` 2.2 M, a `slot-say` 0.1 M), and the slots' maker's 117 M what
+    // making their 92 slots costs. Read to their end, so that none waits on its output.
+    let (shown, heard) = std::sync::mpsc::channel();
+    for follower in &mut followers {
+        let out = BufReader::new(follower.stdout.take().unwrap());
+        let shown = shown.clone();
+        std::thread::spawn(move || {
+            for line in out.lines().map_while(Result::ok) {
+                if line == "ready" {
+                    let _ = shown.send(());
+                }
+            }
+        });
+    }
+    drop(shown);
+    // Within TIMEOUT, or past it while they still come, each within DAEMON_QUIET of the
+    // last: a host under load takes a while to start a hundred.
+    let began = Instant::now();
+    for n in 0..followers.len() {
+        let waited = Instant::now();
+        loop {
+            match heard.recv_timeout(Duration::from_secs(1)) {
+                Ok(()) => break,
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    panic!("followers ended with {n} of 100 served")
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => assert!(
+                    began.elapsed() < TIMEOUT || waited.elapsed() < common::DAEMON_QUIET,
+                    "{n} of 100 followers served in {:?}, none in the last {:?}",
+                    began.elapsed(),
+                    waited.elapsed()
+                ),
+            }
+        }
+    }
+    // What each does past what it shows (its watch, its wait) done: a second of the
+    // daemon's that costs next to nothing, as no follower that looks for output on a timer
+    // lets it have (audit A12's, 50 times a second each).
     let daemon = daemon_pid(&home).expect("a daemon pid");
     let deadline = Instant::now() + Duration::from_secs(60);
     loop {
