@@ -6415,7 +6415,16 @@ host (PM M267), where a container's page cache is its host's to drop. Free page 
   after the guest's own end, which came no later held. That is where the build keeps and
   merges its caches. A merge's writes were the build's own writes still made under the
   budget, and they go through the writer now. The harness now splits that gap phase by
-  phase and process by process (PM M442).
+  phase and process by process (PM M442). At eb9f70a4 the rule held for 11 of CI's 12
+  runner and build pairs; on every runner rust's export, its 926 MiB root filesystem, was
+  0.21 to 0.29 s slower held, all of it in the writes: each MiB went through the socket,
+  copied in, copied out into memory zeroed for it, and the build waited for each. The bytes
+  now go in two slots of memory the two share, allocated by the writer so that their pages
+  are charged to it (mm/shmem.c `shmem_fallocate`; cgroup-v2.rst, "Memory Ownership"),
+  only which slot and whose in the message, and a buffered writer of a build's file goes on
+  once a write is handed, its writes settled before the file is flushed, sought in, taken
+  back or dropped (`through::Through`): the writer makes one while the build makes the
+  next.
 - **An image's root filesystem over its base's** (PM M442; built, its measurement
   awaited). An export wrote its image's whole root filesystem, rust:1-slim's 850 MiB again
   for a build that added 7 MiB. Where the store's file system clones a file (APFS's

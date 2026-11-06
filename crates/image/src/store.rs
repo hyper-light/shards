@@ -219,7 +219,10 @@ impl Partial {
     fn of(path: PathBuf, file: File) -> Partial {
         Partial {
             path,
-            file: Some(BufWriter::with_capacity(CHUNK, crate::through::Through(file))),
+            file: Some(BufWriter::with_capacity(
+                CHUNK,
+                crate::through::Through::new(file),
+            )),
         }
     }
 
@@ -250,7 +253,8 @@ impl Partial {
         let moved = f
             .into_inner()
             .map_err(|e| Error(e.to_string()))
-            .and_then(|file| Ok(sync_durable(&file.0)?))
+            .and_then(|through| Ok(through.into_file()?))
+            .and_then(|file| Ok(sync_durable(&file)?))
             .and_then(|()| Ok(fs::rename(&self.path, to)?));
         if moved.is_err() {
             let _ = fs::remove_file(&self.path);
@@ -278,6 +282,7 @@ impl Partial {
             return Ok(false);
         };
         let placed = f.into_inner().map_err(|e| Error(e.to_string())).and_then(|file| {
+            let file = file.into_file()?;
             let before = match fs::metadata(to) {
                 Ok(before) => Some(before),
                 Err(e) if e.kind() == io::ErrorKind::NotFound => None,
@@ -289,11 +294,11 @@ impl Partial {
                 }
                 // Two seconds: past the coarsest file times a store may be on (FAT's).
                 let was = before.modified()?;
-                if file.0.metadata()?.modified()? <= was {
-                    file.0.set_modified(was + std::time::Duration::from_secs(2))?;
+                if file.metadata()?.modified()? <= was {
+                    file.set_modified(was + std::time::Duration::from_secs(2))?;
                 }
             }
-            sync_durable(&file.0)?;
+            sync_durable(&file)?;
             fs::rename(&self.path, to)?;
             Ok(true)
         });
@@ -311,7 +316,8 @@ impl Partial {
         let moved = f
             .into_inner()
             .map_err(|e| Error(e.to_string()))
-            .and_then(|file| Ok(sync_durable(&file.0)?))
+            .and_then(|through| Ok(through.into_file()?))
+            .and_then(|file| Ok(sync_durable(&file)?))
             .and_then(|()| Ok(fs::rename(&self.path, to)?));
         if moved.is_err() {
             let _ = fs::remove_file(&self.path);

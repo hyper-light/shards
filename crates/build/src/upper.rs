@@ -25,7 +25,7 @@ pub struct Applier<'a> {
     source: u32,
     /// How many bytes the staging file holds, those not yet written to it among them.
     at: u64,
-    /// File bytes not yet written to the staging file: gathered to a whole message of a
+    /// File bytes not yet written to the staging file: gathered to a whole write of a
     /// writer outside a budget (`shards_image::through::CHUNK`, D188), where written as they
     /// came each file's took a round trip of its own. All written before [`Applier::finish`]
     /// answers, and nothing reads the staging file before then.
