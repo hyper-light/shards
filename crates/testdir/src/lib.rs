@@ -80,8 +80,20 @@ pub struct TempDir(PathBuf);
 
 impl TempDir {
     /// A directory of the test's own, named for `name`: `shards-tests/<pid>/<name>-<n>`
-    /// under the system's temporary directory.
+    /// under the system's temporary directory, each character no Windows name may hold
+    /// (`<>:"/\|?*` and the control characters: Naming Files, Paths, and Namespaces) a `-`
+    /// on every host, so that a name made of an image's (`oom-x:1`) is one directory there.
     pub fn new(name: &str) -> io::Result<TempDir> {
+        let name: String = name
+            .chars()
+            .map(|c| {
+                if c.is_control() || matches!(c, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*') {
+                    '-'
+                } else {
+                    c
+                }
+            })
+            .collect();
         static SWEPT: Once = Once::new();
         static N: AtomicUsize = AtomicUsize::new(0);
         let parent = parent();

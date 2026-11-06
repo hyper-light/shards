@@ -90,6 +90,12 @@ pub fn to_slash(p: &Path) -> PathBuf {
     path(&gopath::to_slash(NATIVE, &bytes(p)))
 }
 
+/// filepath.Clean: the shortest path equivalent to `p`, lexically, by this platform's rules:
+/// on Windows `\` between names, `/` read as one, and its volume kept.
+pub fn clean(p: &Path) -> PathBuf {
+    path(&gopath::clean(NATIVE, &bytes(p)))
+}
+
 /// filepath.Dir: all of a path but its last element, cleaned, by this platform's rules.
 pub fn dir(p: &Path) -> PathBuf {
     path(&gopath::dir(NATIVE, &bytes(p)))

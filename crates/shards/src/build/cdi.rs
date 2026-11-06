@@ -153,14 +153,13 @@ pub struct Registry {
     auto_allowed: BTreeSet<String>,
 }
 
-/// The directories CDI specs are read from: `SHARDS_CDI_SPEC_DIRS` (`:`-separated), else
-/// CDI's defaults, `/etc/cdi` then `/var/run/cdi`.
+/// The directories CDI specs are read from: `SHARDS_CDI_SPEC_DIRS`, a list as this host's
+/// `PATH` is (`:` between them on Unix, `;` on Windows, where a `:` is a drive's: `C:\`),
+/// else CDI's defaults, `/etc/cdi` then `/var/run/cdi`.
 pub fn spec_dirs(env: &dyn Fn(&str) -> Option<String>) -> Vec<PathBuf> {
     match env("SHARDS_CDI_SPEC_DIRS") {
-        Some(v) => v
-            .split(':')
-            .filter(|d| !d.is_empty())
-            .map(PathBuf::from)
+        Some(v) => std::env::split_paths(&v)
+            .filter(|d| !d.as_os_str().is_empty())
             .collect(),
         None => vec![PathBuf::from("/etc/cdi"), PathBuf::from("/var/run/cdi")],
     }

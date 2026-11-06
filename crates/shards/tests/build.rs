@@ -2279,6 +2279,8 @@ fn add_unpacks_archives_of_every_compression_in_the_vm() {
     let shown = format!("--- stdout\n{}\n--- stderr\n{}", ran.stdout, ran.stderr);
     assert_eq!(ran.status, Some(0), "{shown}");
     // a/x is the file a/h links to: the link's header, the archive's later word, set it.
+    // The archives' files have the modes their headers give; fake.tar, no archive, is
+    // copied as the context sent it.
     let fake = String::from_utf8(archive("fake.tar"))
         .unwrap()
         .replace('\n', "\\n");
@@ -2290,7 +2292,8 @@ fn add_unpacks_archives_of_every_compression_in_the_vm() {
          /g/b file 644 0:0 3\n= top\n\
          /b/a/x file 644 0:0 6\n= x-data\n\
          /z/b file 644 0:0 3\n= top\n\
-         /f/fake.tar file 644 0:0 {}\n= {fake}\n",
+         /f/fake.tar file {} 0:0 {}\n= {fake}\n",
+        sent("644"),
         archive("fake.tar").len()
     );
     assert_eq!(ran.stdout, want, "{shown}");
@@ -4738,7 +4741,10 @@ fn builds_take_remote_contexts() {
                 if p.is_dir() {
                     todo.push(p.clone());
                 }
-                all.push(p.strip_prefix(dir).unwrap().to_string_lossy().into_owned());
+                // Each name in the tree's words, `/` between its parts on every host.
+                let rel = p.strip_prefix(dir).unwrap();
+                let parts: Vec<String> = rel.iter().map(|c| c.to_string_lossy().into_owned()).collect();
+                all.push(parts.join("/"));
             }
         }
         all.sort();
@@ -8558,10 +8564,16 @@ fn named_contexts_stand_in_for_what_they_name() {
         ctx.to_str().unwrap(),
     ]);
     assert_ne!(missing.status, Some(0));
+    // In the host's own words, as Go's os.Stat says them on each.
+    let not_there = if cfg!(windows) {
+        "The system cannot find the file specified."
+    } else {
+        "no such file or directory"
+    };
     assert!(
-        missing.stderr.contains(
-            "failed to get build context src: stat /nonexistent-shards-context: no such file or directory"
-        ),
+        missing.stderr.contains(&format!(
+            "failed to get build context src: stat /nonexistent-shards-context: {not_there}"
+        )),
         "{}",
         missing.stderr
     );
@@ -8637,9 +8649,15 @@ fn oci_layout_contexts_are_the_images_they_hold() {
         second.to_str().unwrap(),
     ]);
     assert_ne!(missing.status, Some(0));
+    // In the host's own words, as Go's os.ReadFile says them on each.
+    let not_there = if cfg!(windows) {
+        "The system cannot find the file specified."
+    } else {
+        "no such file or directory"
+    };
     assert!(
         missing.stderr.contains("could not be resolved: could not read")
-            && missing.stderr.contains("index.json: no such file or directory"),
+            && missing.stderr.contains(&format!("index.json: {not_there}")),
         "{}",
         missing.stderr
     );
@@ -14528,10 +14546,12 @@ fn builds_heed_their_policies() {
     let at = ctx.to_str().unwrap();
     let refused = build_in(&cwd, at, &["--policy", "filename=cwd://deny.rego"]);
     assert_eq!(refused.status, Some(1), "{}", refused.stderr);
+    // filepath.Join's of the context named whole: `\` between its names on Windows.
+    let own = ctx.join("Dockerfile.rego");
     assert!(
-        refused.stderr.contains(&format!(
-            " loading policies {at}/Dockerfile.rego, cwd://deny.rego\n"
-        )),
+        refused
+            .stderr
+            .contains(&format!(" loading policies {}, cwd://deny.rego\n", own.display())),
         "{}",
         refused.stderr
     );
@@ -15384,6 +15404,13 @@ fn policy_test_runs() {
         (out.status, out.stdout, out.stderr)
     };
     let refused = |e: &str| (Some(1), String::new(), format!("ERROR: {e}\n"));
+    // A file not there in the host's own words, as Go's os.DirFS says them on each
+    // (syscall's Errno: ERROR_FILE_NOT_FOUND's text on Windows).
+    let not_there = if cfg!(windows) {
+        "The system cannot find the file specified."
+    } else {
+        "no such file or directory"
+    };
     // The image test's input resolved by the policy's own questions: its config read for
     // linux/amd64, the input the policy decides on; its own `with` input lacks it.
     let all = "test_alpine: FAIL (allow=true)\ninput:\n{\n  \"image\": {\n    \"ref\": \"docker.io/library/alpine@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc\",\n    \"host\": \"docker.io\",\n    \"repo\": \"alpine\",\n    \"fullRepo\": \"docker.io/library/alpine\",\n    \"platform\": \"linux/amd64\",\n    \"os\": \"linux\",\n    \"arch\": \"amd64\",\n    \"isCanonical\": true,\n    \"checksum\": \"sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc\",\n    \"createdTime\": \"2026-04-16T23:53:26Z\",\n    \"env\": [\n      \"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\"\n    ],\n    \"workingDir\": \"/\"\n  }\n}\ndecision:\n{\n  \"allow\": true\n}\nmissing_input: input.local\ntest_git_denied: PASS (allow=false, deny_msg=not allowed)\ntest_local: PASS (allow=true)\ntest_nothing: FAIL (allow=false, deny_msg=not allowed)\ninput: <nil>\ndecision:\n{\n  \"allow\": false,\n  \"deny_msg\": [\n    \"not allowed\"\n  ]\n}\nmissing_input: input.image.env, input.image.repo, input.local\n";
@@ -15405,7 +15432,7 @@ fn policy_test_runs() {
     assert_eq!(test("basic", &["--run", "zzz", "."]), refused("no tests found"));
     assert_eq!(
         test("basic", &["nope"]),
-        refused("stat nope: stat nope: no such file or directory")
+        refused(&format!("stat nope: stat nope: {not_there}"))
     );
     assert_eq!(
         test("basic", &["Dockerfile.rego"]),
@@ -15413,7 +15440,9 @@ fn policy_test_runs() {
     );
     assert_eq!(
         test("basic", &["--filename", "other", "."]),
-        refused("read policy module other.rego: open other.rego: no such file or directory")
+        refused(&format!(
+            "read policy module other.rego: open other.rego: {not_there}"
+        ))
     );
     assert_eq!(test("notests", &["."]), refused("no policy tests found"));
 }
