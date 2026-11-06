@@ -7,8 +7,11 @@ backed) in a partition allowed device assignment
 (`WHvPartitionPropertyCodeAllowDeviceAssignment`).
 
 These are host API probes. They do not boot a shards guest or verify a passed-through
-function's DMA and interrupts. Windows DDA support in shards and its real hardware E2E
-remain outstanding; a host's refusal here does not establish support on another host.
+function's DMA and interrupts. shards assigns a function where a host's hypervisor allows it
+(D154: `hv/whp/vpci.rs`, `devices/pci/assigned.rs`); its real hardware E2E, boot.rs's
+`a_hosts_pci_function_is_assigned_where_its_hypervisor_assigns_one`, waits on a Windows
+Server host that assigns one. A host's refusal here does not establish support on another
+host.
 
 - `probe.ps1` asks a host, read-only: its Windows, WHP's features (VirtualPciDeviceSupport,
   IommuSupport), an empty virtual PCI resource, AllowDeviceAssignment set on a partition of

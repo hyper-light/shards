@@ -41,6 +41,7 @@ pub fn main() {
             "pci-plug" => pci_plug(),
             "pci-irq" => pci_irq(),
             "pci-dma" => pci_dma(),
+            "pci-host" => pci_host(),
             "host" => host(),
             "daemon" => daemon(),
             "e2e" => e2e(),
@@ -1728,6 +1729,107 @@ fn pci() -> Result<(), String> {
     unsafe { libc::munmap(scratch.cast(), 4096) };
     if (first, last) != (0x5ca7_c400, 0x0dd_ba11) {
         return Err(format!("BAR 4 read back {first:#x} and {last:#x}"));
+    }
+    Ok(())
+}
+
+/// A host's PCI function its hypervisor assigns (D154; boot.rs's
+/// `a_hosts_pci_function_is_assigned_where_its_hypervisor_assigns_one`): at 0000:00:01.0
+/// with the IDs `shards_pci_ids` names (`0xVVVV:0xDDDD`). With `shards_pci_driver`, the
+/// guest kernel's driver of that name has taken it. Else its first memory BAR, mapped from
+/// sysfs, reads other than all ones while its memory decoding is on, and all ones while it
+/// is off, as an access no function claims (PCI 3.0 §6.2.2), then as before once it is on
+/// again.
+fn pci_host() -> Result<(), String> {
+    const DIR: &str = "/sys/bus/pci/devices/0000:00:01.0";
+    let read = |f: &str| {
+        std::fs::read_to_string(format!("{DIR}/{f}"))
+            .map(|s| s.trim().to_string())
+            .map_err(|e| format!("{DIR}/{f}: {e}"))
+    };
+    let want = std::env::var("shards_pci_ids").map_err(|_| "no shards_pci_ids".to_string())?;
+    let ids = format!("{}:{}", read("vendor")?, read("device")?);
+    if ids != want {
+        return Err(format!("00:01.0 is {ids}, not {want}"));
+    }
+    if let Ok(driver) = std::env::var("shards_pci_driver") {
+        let bound = wait_for(Duration::from_secs(10), || {
+            std::fs::read_link(format!("{DIR}/driver")).ok()
+        });
+        let name = bound
+            .as_deref()
+            .and_then(Path::file_name)
+            .and_then(|n| n.to_str())
+            .map(str::to_string);
+        if name.as_deref() != Some(driver.as_str()) {
+            return Err(format!("00:01.0's driver is {name:?}, not {driver}"));
+        }
+        return Ok(());
+    }
+    // Each BAR's start, end and flags; IORESOURCE_MEM (include/linux/ioport.h) a memory
+    // BAR's.
+    let hex = |v: &str| u64::from_str_radix(v.trim_start_matches("0x"), 16).unwrap_or(0);
+    let resources = read("resource")?;
+    let (index, start) = resources
+        .lines()
+        .take(6)
+        .enumerate()
+        .find_map(|(i, line)| {
+            let fields: Vec<u64> = line.split_whitespace().map(hex).collect();
+            match fields.as_slice() {
+                [start, _, flags] if *start != 0 && flags & 0x200 != 0 => Some((i, *start)),
+                _ => None,
+            }
+        })
+        .ok_or_else(|| format!("{DIR}/resource: no memory BAR in {resources:?}"))?;
+    std::fs::write(format!("{DIR}/enable"), "1").map_err(|e| format!("{DIR}/enable: {e}"))?;
+    let bar = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(format!("{DIR}/resource{index}"))
+        .map_err(|e| format!("{DIR}/resource{index}: {e}"))?;
+    use std::os::fd::AsRawFd as _;
+    // SAFETY: a fresh shared mapping of the page that holds the BAR's start, which nothing
+    // else maps.
+    let page = unsafe {
+        libc::mmap(
+            std::ptr::null_mut(),
+            4096,
+            libc::PROT_READ,
+            libc::MAP_SHARED,
+            bar.as_raw_fd(),
+            0,
+        )
+    };
+    if page == libc::MAP_FAILED {
+        return Err(format!("mapping BAR {index}: {}", io::Error::last_os_error()));
+    }
+    // SAFETY: the BAR's first register, in the page mapped, 4-aligned as a BAR is.
+    let register = unsafe { page.cast::<u8>().add((start % 4096) as usize).cast::<u32>() };
+    let config = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(format!("{DIR}/config"))
+        .map_err(|e| format!("{DIR}/config: {e}"))?;
+    let decoding = |on: bool| -> Result<u32, String> {
+        let mut command = [0u8; 2];
+        pread_exact(config.as_raw_fd(), &mut command, 4)?;
+        let command = u16::from_le_bytes(command);
+        let command = if on { command | 2 } else { command & !2 };
+        pwrite_exact(config.as_raw_fd(), &command.to_le_bytes(), 4)?;
+        // SAFETY: a volatile read of the BAR's first register.
+        Ok(unsafe { register.read_volatile() })
+    };
+    // SAFETY: a volatile read of the BAR's first register.
+    let first = unsafe { register.read_volatile() };
+    let (off, on) = (decoding(false), decoding(true));
+    // SAFETY: the mapping made above.
+    unsafe { libc::munmap(page, 4096) };
+    let (off, on) = (off?, on?);
+    if first == u32::MAX || off != u32::MAX || on == u32::MAX {
+        return Err(format!(
+            "BAR {index} read {first:#x}, {off:#x} with memory space off, {on:#x} with it on again"
+        ));
     }
     Ok(())
 }

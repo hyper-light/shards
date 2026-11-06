@@ -3,8 +3,12 @@
 //! §7.2.2), as Linux's pci-host-generic finds it in an arm64 guest's devicetree and its
 //! ACPI host bridge, by MCFG, in an x86_64 guest's.
 
+#[cfg(any(hv = "whp", test))]
+pub mod assigned;
 pub mod edu;
 pub mod hotplug;
+#[cfg(any(target_os = "linux", hv = "whp", test))]
+pub mod passed;
 #[cfg(target_os = "linux")]
 pub mod vfio;
 

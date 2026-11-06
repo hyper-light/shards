@@ -15,6 +15,7 @@
 
 mod ffi;
 mod state;
+mod vpci;
 
 use std::cell::Cell;
 use std::ffi::c_void;
@@ -30,6 +31,7 @@ use crate::arch::x86_64::{Boot, Segment, cpuid, layout};
 use crate::sync::lock;
 
 pub use self::state::{Tsc, TscStart, VcpuState, VmState};
+pub use self::vpci::Assigned;
 
 /// A failed WHP call, or guest behavior the VMM does not emulate.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -187,10 +189,10 @@ const IOMMU_SUPPORT: u64 = 1 << 8;
 /// Why this host's hypervisor gives no partition a host's PCI function, in its own words;
 /// none where it would (D154, PM M401, M402). A function reaches a partition as a virtual PCI
 /// device WHP makes of it once its administrator has dismounted it from the host
-/// (WHvAllocateVpciResource, then WHvCreateVpciDevice, physically backed), in a partition
-/// allowed device assignment (WHvPartitionPropertyCodeAllowDeviceAssignment): asked of a
-/// partition of its own, never set up and given no memory, which a hypervisor that assigns
-/// none refuses as it is set, as Windows 11 Pro's does (M401).
+/// (WHvAllocateVpciResource, then WHvCreateVpciDevice, physically backed; vpci.rs), in a
+/// partition allowed device assignment (WHvPartitionPropertyCodeAllowDeviceAssignment):
+/// asked of a partition of its own, never set up and given no memory, which a hypervisor
+/// that assigns none refuses as it is set, as Windows 11 Pro's does (M401).
 pub fn device_assignment_refused() -> Option<String> {
     if !ffi::loaded() {
         return Some("the Windows Hypervisor Platform is not on this host".into());
@@ -243,7 +245,7 @@ pub fn device_assignment_refused() -> Option<String> {
 pub fn restores() -> bool {
     static RESTORES: OnceLock<bool> = OnceLock::new();
     *RESTORES.get_or_init(|| {
-        let Ok(partition) = partition(1) else {
+        let Ok(partition) = partition(1, false) else {
             return true;
         };
         // SAFETY: the partition just set up.
@@ -302,7 +304,7 @@ fn host() -> Result<&'static Host> {
     if let Some(h) = HOST.get() {
         return Ok(h);
     }
-    let partition = partition(1)?;
+    let partition = partition(1, false)?;
     // SAFETY: the partition just set up.
     check("WHvCreateVirtualProcessor", unsafe {
         WHvCreateVirtualProcessor(partition.0, 0, 0)
@@ -796,8 +798,10 @@ pub struct Vm {
 /// A partition of `vcpus` vCPUs, set up as every one of shards' is: its local APICs
 /// emulated by the hypervisor (XApic), its guest offered [`SYNTHETIC`] of the host's
 /// synthetic features, which the hypervisor sets up only with the APICs it emulates
-/// (HV_STATUS_INVALID_PARAMETER, 0xc0350005, without; CI run 38222358454).
-fn partition(vcpus: u32) -> Result<Partition> {
+/// (HV_STATUS_INVALID_PARAMETER, 0xc0350005, without; CI run 38222358454). Allowed device
+/// assignment where `assign` says (D154): a property set before setup alone, as WHP refuses
+/// it after (E_INVALIDARG, PM M401).
+fn partition(vcpus: u32, assign: bool) -> Result<Partition> {
     let features = features().map_err(Error::Guest)?;
     let mut handle: WHV_PARTITION_HANDLE = 0;
     // SAFETY: a handle for the call to fill.
@@ -824,6 +828,14 @@ fn partition(vcpus: u32) -> Result<Partition> {
         },
         "WHvSetPartitionProperty(SyntheticProcessorFeaturesBanks)",
     )?;
+    if assign {
+        let allowed: windows_sys::core::BOOL = 1;
+        partition.set(
+            WHvPartitionPropertyCodeAllowDeviceAssignment,
+            &allowed,
+            "WHvSetPartitionProperty(AllowDeviceAssignment)",
+        )?;
+    }
     // SAFETY: the partition just configured.
     check("WHvSetupPartition", unsafe { WHvSetupPartition(partition.0) })?;
     Ok(partition)
@@ -893,8 +905,18 @@ impl Vm {
     /// A partition of `config.vcpus` vCPUs, their local APICs emulated by the hypervisor, its
     /// guest offered [`SYNTHETIC`] of the host's synthetic features.
     pub fn new(config: VmConfig) -> Result<Vm> {
+        Vm::made(config, false)
+    }
+
+    /// [`Vm::new`]'s, its partition allowed device assignment, for a host's PCI functions
+    /// ([`Vm::assign`], D154).
+    pub fn assigning(config: VmConfig) -> Result<Vm> {
+        Vm::made(config, true)
+    }
+
+    fn made(config: VmConfig, assign: bool) -> Result<Vm> {
         let cpuid = cpuid_results(host()?, config.vcpus);
-        let partition = partition(config.vcpus)?;
+        let partition = partition(config.vcpus, assign)?;
         if FORBID_DYNAMIC_CODE.load(Ordering::Relaxed) {
             forbid_dynamic_code()?;
         }

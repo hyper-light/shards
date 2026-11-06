@@ -1190,7 +1190,8 @@ pub struct Plugged {
 
 /// A host PCI function a VM is given (D154): its name as the host has it (`0000:01:00.0`)
 /// and its IOMMU group's VFIO device, found before the VM process is confined
-/// ([`Vfio::of`]).
+/// ([`Vfio::of`]); on Windows its instance ID once dismounted from the host
+/// (`PCIP\...`), which its hypervisor assigns, a group of its own.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Vfio {
     pub name: String,
@@ -1228,7 +1229,11 @@ pub struct VfioFiles {
 /// Hypervisor.framework's API assigns no device to a VM (PM M403). Windows gives
 /// a partition one only where its hypervisor assigns devices, as it answers when asked
 /// (`hv::device_assignment_refused`): Windows 11's refuses (PM M401), CI's Windows Server
-/// runners' too (PM M402).
+/// runners' too (PM M402). Where it assigns one, it gives it the VM's own kernel
+/// ([`Vfio::of`]), its DMA remapped to the partition's addresses as the device is made
+/// (WHvCreateVpciDevice's remarks), with no I/O address space of the guest's own: what a
+/// guest's VFIO needs to give the function to a process, so a workload, or a function
+/// plugged in as the microVM runs, behind its IOMMU, is refused with that limit.
 #[cfg(not(target_os = "linux"))]
 pub fn passthrough_refused() -> String {
     #[cfg(target_os = "macos")]
@@ -1238,7 +1243,7 @@ pub fn passthrough_refused() -> String {
         Some(said) => format!(
             "{said}; Microsoft supports Discrete Device Assignment, a function dismounted from its host and assigned to a VM, on Windows Server, on server-class hardware that gives Windows the PCIe fabric's control and whose root complex has Access Control Services, its traffic forced through the IOMMU (D154)"
         ),
-        None => "its hypervisor allows a partition device assignment, which shards does not use yet: no Windows host it is tested on allows one (D154)".into(),
+        None => WHP_NO_GUEST_IOMMU.into(),
     };
     #[cfg(not(any(target_os = "macos", hv = "whp")))]
     let why = check_host().err().unwrap_or_default();
@@ -1263,7 +1268,29 @@ impl Vfio {
                 cdev: None,
             })
         }
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(hv = "whp")]
+        {
+            if crate::hv::device_assignment_refused().is_some() {
+                return Err(format!("{name}: {}", passthrough_refused()));
+            }
+            if !name
+                .get(..DISMOUNTED.len())
+                .is_some_and(|p| p.eq_ignore_ascii_case(DISMOUNTED))
+            {
+                return Err(format!(
+                    "{name}: not a function dismounted from this host: dismount it (Dismount-VMHostAssignableDevice) and give the instance ID Get-VMHostAssignableDevice lists for it ({DISMOUNTED}...), which its hypervisor assigns (D154)"
+                ));
+            }
+            Ok(Vfio {
+                name: name.to_string(),
+                group: PathBuf::from(name),
+                noiommu: false,
+                bars64: Vec::new(),
+                iommu: false,
+                cdev: None,
+            })
+        }
+        #[cfg(not(any(target_os = "linux", hv = "whp")))]
         Err(format!("{name}: {}", passthrough_refused()))
     }
 
@@ -1377,13 +1404,18 @@ pub(crate) struct PciBus {
 #[cfg(hv)]
 pub(crate) struct PciMachine<'a> {
     #[cfg_attr(
-        not(target_os = "linux"),
-        expect(dead_code, reason = "read by VFIO, Linux's alone")
+        not(any(target_os = "linux", hv = "whp")),
+        expect(dead_code, reason = "read by VFIO, Linux's, and by WHP's assignment alone")
     )]
     pub vm: &'a crate::hv::Vm,
     pub memory: &'a Arc<crate::memory::GuestMemory>,
     pub irqs: Option<&'a dyn PciInterrupts>,
     pub iommu: Option<crate::devices::virtio::iommu::Shared>,
+    /// The host's functions its hypervisor assigns, each a device of its partition since
+    /// before the machine's layout, which sizes its 64-bit window from their BARs, in
+    /// [`Pci::vfio`]'s order, with what their BAR registers read sized (D154).
+    #[cfg(hv = "whp")]
+    pub assigned: std::cell::Cell<Vec<(crate::hv::Assigned, [u32; 6])>>,
 }
 
 /// Whether a machine's PCI functions' MSIs are isolated from each other's, as a guest's
@@ -1482,7 +1514,11 @@ pub fn vfio_places(vfio: &[Vfio], test: &[(u8, u8)]) -> Vec<Option<(u8, u8)>> {
     let first = after_tests(test);
     vfio.iter()
         .map(|f| {
-            number(&f.name)?;
+            // A function named as no address is (an instance ID, on Windows) keeps no
+            // function number of its own.
+            if slot(&f.name).is_some() {
+                number(&f.name)?;
+            }
             let device = groups
                 .iter()
                 .position(|g| *g == f.group)
@@ -1933,7 +1969,104 @@ fn passed_through(
     Ok(functions)
 }
 
-#[cfg(all(hv, not(target_os = "linux")))]
+/// The host's functions its hypervisor assigns (D154): each made a device of the partition
+/// before the machine's layout ([`PciMachine::assigned`]), on a device of its own on bus 0
+/// after the test functions, its BARs placed in the bus's windows, the parts of them WHP
+/// maps into this process put into the guest by the partition's mappings, its interrupts
+/// its MSI and MSI-X, which WHP maps ([`crate::devices::pci::assigned`]). Its DMA reaches
+/// all of guest RAM, as a VFIO function's outside the guest's IOMMU; behind it, where the
+/// guest's VFIO would give it a process, it is refused, as WHP gives the guest no I/O
+/// address space of its own.
+#[cfg(hv = "whp")]
+fn passed_through(
+    bus: &mut crate::devices::MmioBus,
+    mut windows: [&mut BarWindow; 2],
+    vfio: &[Vfio],
+    test: &[(u8, u8)],
+    machine: &PciMachine<'_>,
+    _routed: &mut PciBus,
+) -> Result<Vec<crate::devices::pci::Function>, String> {
+    use crate::devices::pci::{self, assigned, passed};
+    let page = crate::platform::page_size().map_err(|e| e.to_string())? as u64;
+    let made = machine.assigned.take();
+    if made.len() != vfio.len() {
+        return Err(format!(
+            "{} host functions given, {} assigned by the hypervisor",
+            vfio.len(),
+            made.len()
+        ));
+    }
+    let places = vfio_places(vfio, test);
+    let mut functions: Vec<pci::Function> = Vec::new();
+    for ((f, place), (device, probed)) in vfio.iter().zip(&places).zip(made) {
+        let named = |e: String| format!("{}: {e}", f.name);
+        if f.iommu {
+            return Err(named(WHP_NO_GUEST_IOMMU.into()));
+        }
+        let &Some((slot, function)) = place else {
+            return Err(named(
+                "no place on the guest's bus, which has room for 32 devices".into(),
+            ));
+        };
+        let mut bars = Vec::new();
+        let [window, window64] = &mut windows;
+        for (index, size, kind) in passed::sized_bars(probed) {
+            let window = if kind == pci::BarKind::Memory64 {
+                &mut **window64
+            } else {
+                &mut **window
+            };
+            let addr = window
+                .take(size)
+                .map_err(|e| named(format!("BAR {index}: {e}")))?;
+            bars.push(pci::Bar {
+                index,
+                addr,
+                size,
+                kind,
+            });
+        }
+        let slots: Box<dyn assigned::Windows> = Box::new(machine.vm.device_slots(0));
+        let given = Arc::new(assigned::AssignedFunction::new(
+            Box::new(device),
+            bars,
+            slots,
+            page,
+        )?);
+        for bar in given.bars() {
+            bus.insert(
+                bar.addr,
+                bar.size,
+                Arc::new(assigned::AssignedBar::new(given.clone(), bar.index)),
+            )?;
+        }
+        functions.push((slot << 3 | function, given));
+    }
+    Ok(functions)
+}
+
+/// What WHP gives a function it assigns of the guest's IOMMU: nothing (D154).
+#[cfg(hv = "whp")]
+const WHP_NO_GUEST_IOMMU: &str = "its hypervisor remaps an assigned function's DMA to all of its VM's memory as it assigns it (WHvCreateVpciDevice), with no I/O address space of the guest's own, which a microVM's own VFIO needs to give a workload the function: give it to the VM's kernel instead (`shards run vm --kernel ... --vfio PCIP\\...`; D154)";
+
+/// The prefix of a function's instance ID once dismounted from its Windows host (D154).
+#[cfg(hv = "whp")]
+const DISMOUNTED: &str = "PCIP\\";
+
+/// The partition's mappings, as an assigned function's BARs go into the guest (D154).
+#[cfg(hv = "whp")]
+impl crate::devices::pci::assigned::Windows for crate::hv::DeviceSlots {
+    unsafe fn map(&self, host: *mut u8, gpa: u64, len: usize, writable: bool) -> Result<(), String> {
+        // SAFETY: forwarded caller contract.
+        unsafe { crate::hv::DeviceSlots::map(self, 0, host, gpa, len, writable) }.map_err(|e| e.to_string())
+    }
+
+    fn unmap(&self, gpa: u64, len: usize) -> Result<(), String> {
+        crate::hv::DeviceSlots::unmap(self, 0, gpa, len).map_err(|e| e.to_string())
+    }
+}
+
+#[cfg(all(hv, not(target_os = "linux"), not(hv = "whp")))]
 fn passed_through(
     _bus: &mut crate::devices::MmioBus,
     _windows: [&mut BarWindow; 2],
@@ -3068,17 +3201,40 @@ mod tests {
     /// Off Linux a host's PCI function is refused by name, with the host's own limit (D154):
     /// macOS's Hypervisor.framework assigns no device (PM M356, M403); on Windows, what its
     /// hypervisor answers as a partition is allowed device assignment, which Windows 11's
-    /// and CI's Windows Server runners' refuse (PM M401, M402). Printed: what this host said.
+    /// and CI's Windows Server runners' refuse (PM M401, M402). Where it assigns devices, a
+    /// function is taken by the instance ID it has once dismounted from the host, and refused
+    /// by any other name with how to give it, and by VFIO's nodes with WHP's own limit, no
+    /// I/O address space of the guest's; boot.rs's
+    /// `a_hosts_pci_function_is_assigned_where_its_hypervisor_assigns_one` boots a guest
+    /// with one there. Printed: what this host said.
     #[cfg(not(target_os = "linux"))]
     #[test]
     fn a_hosts_pci_function_is_refused_with_its_oss_own_limit() {
-        #[cfg(hv = "whp")]
-        assert!(
-            crate::hv::device_assignment_refused().is_some(),
-            "this host permits PCI device assignment: step 13 needs a passthrough implementation and a successful real hardware E2E here; an implementation refusal is not an OS limit"
-        );
         let limit = passthrough_refused();
         eprintln!("{limit}");
+        #[cfg(hv = "whp")]
+        if crate::hv::device_assignment_refused().is_none() {
+            let dismounted = "PCIP\\VEN_17A0&DEV_9755&SUBSYS_202F1043&REV_01\\4&632F499&0&0012";
+            assert_eq!(
+                Vfio::of(dismounted).map(|f| (f.group, f.iommu)),
+                Ok((PathBuf::from(dismounted), false))
+            );
+            for name in [
+                "0000:01:00.0",
+                "PCIROOT(0)#PCI(0202)#PCI(0000)",
+                "PCI\\VEN_17A0&DEV_9755&SUBSYS_202F1043&REV_01\\4&632F499&0&0012",
+            ] {
+                let refused = Vfio::of(name).unwrap_err();
+                assert!(
+                    refused.starts_with(name) && refused.contains("Dismount-VMHostAssignableDevice"),
+                    "{refused}"
+                );
+            }
+            let node = Vfio::of_cdev(std::path::Path::new("/dev/vfio/devices/vfio0")).unwrap_err();
+            assert!(node.ends_with(&limit), "{node}");
+            assert!(limit.contains("WHvCreateVpciDevice"), "{limit}");
+            return;
+        }
         for refused in [
             Vfio::of("0000:01:00.0").unwrap_err(),
             Vfio::of_cdev(std::path::Path::new("/dev/vfio/devices/vfio0")).unwrap_err(),

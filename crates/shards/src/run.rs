@@ -81,10 +81,12 @@ pub fn vfio_functions(groups: &[VfioGroup]) -> Vec<shards_vmm::vm::Vfio> {
     all
 }
 
-/// Whether a run's device's host path names a host's PCI function off Linux, where no host
-/// passes one through (D154): VFIO's nodes, and on Windows a function as Discrete Device
-/// Assignment's cmdlets name it, by its location path (`PCIROOT(0)#PCI(0202)#PCI(0000)`) or
-/// its instance ID, mounted (`PCI\...`) or dismounted from the host (`PCIP\...`).
+/// Whether a run's device's host path names a host's PCI function off Linux, where no run's
+/// workload is given one (D154: macOS assigns none, and WHP, where it assigns one, gives
+/// the guest no I/O address space its VFIO needs): VFIO's nodes, and on Windows a function
+/// as Discrete Device Assignment's cmdlets name it, by its location path
+/// (`PCIROOT(0)#PCI(0202)#PCI(0000)`) or its instance ID, mounted (`PCI\...`) or dismounted
+/// from the host (`PCIP\...`).
 #[cfg(not(target_os = "linux"))]
 fn names_a_function(path: &str) -> bool {
     let named = |prefix: &str| {

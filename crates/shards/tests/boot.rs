@@ -852,11 +852,16 @@ fn a_nested_guest_runs_vms_of_its_own() {
 /// with its host's own limit (D154): macOS's Hypervisor.framework assigns no device (PM
 /// M403); on Windows its hypervisor answers whether it assigns one, by a function's VFIO
 /// name or as Discrete Device Assignment names it, and Windows 11's and CI's Windows Server
-/// runners' refuse (PM M401, M402).
+/// runners' refuse (PM M401, M402). Where it assigns one, the next test runs.
 #[cfg(not(target_os = "linux"))]
 #[test]
 fn a_hosts_pci_function_is_refused_where_its_os_passes_none() {
     if cannot_run_vms() {
+        return;
+    }
+    #[cfg(all(windows, target_arch = "x86_64"))]
+    if shards_vmm::hv::device_assignment_refused().is_none() {
+        eprintln!("SKIP: this host's hypervisor assigns devices");
         return;
     }
     let limit = shards_vmm::vm::passthrough_refused();
@@ -870,6 +875,66 @@ fn a_hosts_pci_function_is_refused_where_its_os_passes_none() {
         assert_ne!(r.status, Some(0), "{name}: {r}");
         assert!(r.stderr.contains(&format!("{name}: {limit}")), "{name}: {r}");
     }
+}
+
+/// A host's PCI function its hypervisor assigns (D154): on a Windows host whose hypervisor
+/// assigns devices (Discrete Device Assignment, Windows Server on hardware with an IOMMU
+/// that controls the PCIe fabric and Access Control Services), a function its administrator
+/// has dismounted from the host (Dismount-VMHostAssignableDevice), named in
+/// SHARDS_ASSIGN_FUNCTION by the instance ID it has then (`PCIP\VEN_...&DEV_...\...`, as
+/// Get-VMHostAssignableDevice lists it), is at 00:01.0 on the guest's bus with the vendor
+/// and device IDs its instance ID names, its first memory BAR reaching the device while
+/// its memory decoding is on, and reading all ones while it is off; with
+/// SHARDS_ASSIGN_DRIVER, the guest kernel's driver of that name takes it, which reaches
+/// its BARs, its MSI or MSI-X and its DMA as it probes it. A host that assigns none skips:
+/// the test above holds its refusal.
+#[cfg(all(windows, target_arch = "x86_64"))]
+#[test]
+fn a_hosts_pci_function_is_assigned_where_its_hypervisor_assigns_one() {
+    if cannot_run_vms() {
+        return;
+    }
+    if let Some(why) = shards_vmm::hv::device_assignment_refused() {
+        eprintln!("SKIP: this host's hypervisor assigns no device: {why}");
+        return;
+    }
+    let Ok(function) = std::env::var("SHARDS_ASSIGN_FUNCTION") else {
+        eprintln!(
+            "SKIP: this host's hypervisor assigns devices: name one dismounted from it in SHARDS_ASSIGN_FUNCTION (PCIP\\...), as Get-VMHostAssignableDevice lists it"
+        );
+        return;
+    };
+    let id = |key: &str| {
+        function
+            .split(['\\', '&'])
+            .find_map(|part| part.strip_prefix(key))
+            .map(|id| format!("0x{}", id.to_ascii_lowercase()))
+            .unwrap_or_else(|| panic!("{function}: no {key} in its instance ID"))
+    };
+    let driver = std::env::var("SHARDS_ASSIGN_DRIVER")
+        .map(|d| format!(" shards_pci_driver={d}"))
+        .unwrap_or_default();
+    let cmdline = format!(
+        "console=ttyS0 panic=-1 shards_test=pci-host shards_pci_ids={}:{}{driver}",
+        id("VEN_"),
+        id("DEV_")
+    );
+    let (k, g) = (kernel().to_str().unwrap(), test_guest().to_str().unwrap());
+    let r = vm_run(
+        &[
+            "--kernel",
+            k,
+            "--init",
+            g,
+            "--vfio",
+            &function,
+            "--cmdline",
+            &cmdline,
+        ],
+        TIMEOUT,
+    );
+    assert!(r.stdout.contains("SHARDS-TEST PASS"), "{r}");
+    assert_eq!(r.status, Some(0), "{r}");
 }
 
 /// A run given a host's VFIO group (`shards run --device /dev/vfio/N`, D154), on a host
