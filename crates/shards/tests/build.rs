@@ -3,7 +3,6 @@
 //! BuildKit's exporter writes it, then booted by `shards run` in a real VM, where the
 //! build's settings must hold.
 
-#![cfg(unix)]
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 mod common;
@@ -19,6 +18,44 @@ fn context(name: &str, dockerfile: &str) -> TempDir {
     let dir = TempDir::new(name);
     std::fs::write(dir.join("Dockerfile"), dockerfile).unwrap();
     dir
+}
+
+/// The mode a file this test wrote into a context has in what a build copies of it, as
+/// `stat` shows it: `unix`, the mode the test gave it, on Unix; 755 on Windows, whose files
+/// have no mode, as fsutil sends every Windows file (stat.go's mkstat: Go's 0666 made
+/// executable and capped at 0755; shards_build's host.rs), as Docker's builds have them.
+fn sent(unix: &str) -> &str {
+    if cfg!(windows) { "755" } else { unix }
+}
+
+/// Gives the file at `path` the mode `mode`, where the host's files have modes (Unix).
+fn chmod(path: &std::path::Path, mode: u32) {
+    #[cfg(unix)]
+    std::fs::set_permissions(path, std::os::unix::fs::PermissionsExt::from_mode(mode)).unwrap();
+    #[cfg(windows)]
+    let _ = (path, mode);
+}
+
+/// A symlink at `link` to `target`, as the host makes one: on Windows a file's
+/// (CreateSymbolicLinkW), which a build reads as fsutil reads any (its target, its
+/// separators forward), whatever the target is. `false`, said, where Windows lets this
+/// user make none (ERROR_PRIVILEGE_NOT_HELD: no Developer Mode, nor
+/// SeCreateSymbolicLinkPrivilege), and the test then skips.
+fn symlink(target: &str, link: &std::path::Path) -> bool {
+    #[cfg(unix)]
+    let made = std::os::unix::fs::symlink(target, link);
+    #[cfg(windows)]
+    let made = std::os::windows::fs::symlink_file(target, link);
+    match made {
+        Err(e) if cfg!(windows) && e.raw_os_error() == Some(1314) => {
+            eprintln!("SKIP: this user may make no symlinks here: {e}");
+            false
+        }
+        made => {
+            made.unwrap();
+            true
+        }
+    }
 }
 
 /// A build's ignore file: `.agentignore`, shards' own, read before `.dockerignore`, and one
@@ -567,7 +604,9 @@ fn a_builders_memory_is_plugged_as_fast_as_its_jobs_take_it() {
 /// holding that much less on its host, the step going on to its end; and the build's
 /// layers are the same as the same build's not told, byte for byte. Each build runs its
 /// step again for a build argument of its own, its cache kept, as `--no-cache` would start
-/// the step's cache empty (PM M141).
+/// the step's cache empty (PM M141). Its word is a FIFO's (mkfifo(3)): build_windows.rs
+/// holds the test of the name on Windows, its word a named pipe's.
+#[cfg(unix)]
 #[test]
 fn a_builder_gives_back_what_it_holds_cold_at_its_builds_word() {
     use std::io::{BufRead as _, Write as _};
@@ -706,6 +745,7 @@ fn a_builder_gives_back_what_it_holds_cold_at_its_builds_word() {
 /// what its guest held the build within, as the answers came, and it succeeds, its layers
 /// those of the same build held to nothing. Linux alone, with a user's manager, as the
 /// budget test of runs.
+#[cfg(unix)]
 #[test]
 fn a_build_held_short_of_memory_has_its_builder_give_back() {
     use std::io::BufRead as _;
@@ -869,6 +909,7 @@ fn a_build_held_short_of_memory_has_its_builder_give_back() {
 /// The layers of the image an OCI layout `out` holds, as its config lists them
 /// (`rootfs.diff_ids`): two builds whose results are the same bytes, whatever their history
 /// says, have the same.
+#[cfg(unix)]
 fn layers(out: &std::path::Path) -> serde_json::Value {
     let blob = |digest: &str| -> serde_json::Value {
         let path = out
@@ -884,6 +925,7 @@ fn layers(out: &std::path::Path) -> serde_json::Value {
 
 /// The VM process of the builder under `build`, a build's process: its descendant named
 /// shards-vm.
+#[cfg(unix)]
 fn builder_vm(build: u32) -> Option<u32> {
     let ps = std::process::Command::new("ps")
         .args(["-A", "-o", "pid=,ppid=,comm="])
@@ -926,13 +968,15 @@ fn a_killed_build_takes_its_builder_with_it() {
     }
     let (image, _) = served();
     let home = TempDir::new("kill-home");
-    // The builders' sockets' directories, here alone: short, as sockets' paths must be.
+    // The builders' sockets' directories, here alone: short, as sockets' paths must be. The
+    // temporary directory is TMPDIR on Unix, TMP on Windows (GetTempPath2W).
     let tmp = TempDir::new("kt");
     let env = [
         ("SHARDS_HOME", home.as_os_str()),
         ("SHARDS_KERNEL", kernel().as_os_str()),
         ("SHARDS_INIT", guest_init().as_os_str()),
         ("TMPDIR", tmp.as_os_str()),
+        ("TMP", tmp.as_os_str()),
     ];
     let ctx = context(
         "kill-ctx",
@@ -957,29 +1001,13 @@ fn a_killed_build_takes_its_builder_with_it() {
     });
     said.recv_timeout(TIMEOUT)
         .expect("the step never said it was ready");
-    // Its builder: the processes whose command lines name its directory, its VM's. Read
-    // from /proc where there is one: a BusyBox `ps` (CI's Alpine) takes no `-o command`.
+    // Its builder: the processes whose command lines name its directory, its VM's
+    // (`--vsock`), as each host lists them (`common::commands_with`).
     let builders = || {
-        let tmp = tmp.to_str().unwrap();
-        if cfg!(target_os = "linux") {
-            std::fs::read_dir("/proc")
-                .unwrap()
-                .flatten()
-                .filter_map(|e| std::fs::read(e.path().join("cmdline")).ok())
-                .map(|c| String::from_utf8_lossy(&c).replace('\0', " "))
-                .filter(|l| l.contains(tmp))
-                .collect::<Vec<_>>()
-        } else {
-            let ps = std::process::Command::new("ps")
-                .args(["-axo", "pid=,command="])
-                .output()
-                .unwrap();
-            String::from_utf8_lossy(&ps.stdout)
-                .lines()
-                .filter(|l| l.contains(tmp))
-                .map(str::to_string)
-                .collect::<Vec<_>>()
-        }
+        common::commands_with(tmp.to_str().unwrap())
+            .into_iter()
+            .map(|(_, line)| line)
+            .collect::<Vec<_>>()
     };
     assert!(!builders().is_empty(), "no builder runs");
     build.kill().unwrap();
@@ -1876,7 +1904,9 @@ fn steps_bind_one_layer_trees() {
     );
     assert_eq!(built.status, Some(1), "{}", built.stderr);
     assert!(
-        built.stderr.contains(" /ctx file 644 0:0 17\n"),
+        built
+            .stderr
+            .contains(&format!(" /ctx file {} 0:0 17\n", sent("644"))),
         "{}",
         built.stderr
     );
@@ -1966,7 +1996,6 @@ fn steps_resolve_their_paths_in_their_root() {
 
 #[test]
 fn files_a_build_copies_are_in_the_vm_as_built() {
-    use std::os::unix::fs::PermissionsExt;
     let (image, _) = served();
     let home = TempDir::new("build-files-home");
     let ctx = context(
@@ -1987,7 +2016,7 @@ fn files_a_build_copies_are_in_the_vm_as_built() {
         let p = ctx.join(name);
         std::fs::create_dir_all(p.parent().unwrap()).unwrap();
         std::fs::write(&p, text).unwrap();
-        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(mode)).unwrap();
+        chmod(&p, mode);
     };
     write("a.txt", "a\n", 0o644);
     write("sub/c.txt", "c\n", 0o600);
@@ -2035,13 +2064,16 @@ fn files_a_build_copies_are_in_the_vm_as_built() {
         "x.log is ignored, so stat fails on it\n{shown}"
     );
     // The base runs as 1000:1000, and WORKDIR makes its directory for the user it has.
-    let want = "/app dir 755 1000:1000 4096\n\
-                /app/a.txt file 644 0:0 2\n= a\\n\n\
-                /app/c.txt file 600 0:0 2\n= c\\n\n\
-                /etc/secret file 640 7:8 2\n= s\\n\n\
-                /linked/link.txt file 644 0:0 2\n= l\\n\n\
-                /notes.txt file 644 0:0 6\n= hello\\n\n\
-                /all/a.txt file 644 0:0 2\n= a\\n\n";
+    let (rw, own) = (sent("644"), sent("600"));
+    let want = format!(
+        "/app dir 755 1000:1000 4096\n\
+         /app/a.txt file {rw} 0:0 2\n= a\\n\n\
+         /app/c.txt file {own} 0:0 2\n= c\\n\n\
+         /etc/secret file 640 7:8 2\n= s\\n\n\
+         /linked/link.txt file {rw} 0:0 2\n= l\\n\n\
+         /notes.txt file 644 0:0 6\n= hello\\n\n\
+         /all/a.txt file {rw} 0:0 2\n= a\\n\n"
+    );
     let got: String = ran
         .stdout
         .lines()
@@ -2132,10 +2164,11 @@ fn a_staged_build_copies_from_its_stages_and_images() {
     assert_eq!(ran.status, Some(1), "/src is the base stage's alone\n{shown}");
     let group = "root:x:0:\\napp:x:1000:\\nstaff:x:50:app\\n";
     let want = format!(
-        "/out/a.txt file 644 0:0 2\n= a\\n\n\
+        "/out/a.txt file {} 0:0 2\n= a\\n\n\
          /out/b.txt file 600 0:0 2\n= b\\n\n\
          /out/group file 644 0:0 {}\n= {group}\n\
          /out/b1.txt file 600 0:0 2\n= b\\n\n",
+        sent("644"),
         group.replace("\\n", "\n").len()
     );
     let got: String = ran
@@ -2164,7 +2197,8 @@ fn a_staged_build_copies_from_its_stages_and_images() {
     );
     let shown = format!("--- stdout\n{}\n--- stderr\n{}", base.stdout, base.stderr);
     assert!(
-        base.stdout.starts_with("/src/a.txt file 644 0:0 2\n= a\\n\n"),
+        base.stdout
+            .starts_with(&format!("/src/a.txt file {} 0:0 2\n= a\\n\n", sent("644"))),
         "{shown}"
     );
     assert!(base.stdout.contains("/out missing"), "{shown}");
@@ -2592,8 +2626,10 @@ fn an_images_volumes_are_anonymous_volumes_at_run() {
     ]);
     assert_eq!(ran.status, Some(0), "{}", ran.stderr);
     assert!(
-        ran.stdout
-            .starts_with("/data/seed file 644 0:0 15\n= from the image\\n\n"),
+        ran.stdout.starts_with(&format!(
+            "/data/seed file {} 0:0 15\n= from the image\\n\n",
+            sent("644")
+        )),
         "{}",
         ran.stdout
     );
@@ -4839,8 +4875,8 @@ fn add_fetches_git_repositories() {
         .arg("--exec-path")
         .output()
         .unwrap();
-    let git_daemon =
-        std::path::Path::new(String::from_utf8(exec_path.stdout).unwrap().trim()).join("git-daemon");
+    let git_daemon = std::path::Path::new(String::from_utf8(exec_path.stdout).unwrap().trim())
+        .join(format!("git-daemon{}", std::env::consts::EXE_SUFFIX));
     if !git_daemon.is_file() {
         eprintln!("SKIP: no git-daemon on this host ({})", git_daemon.display());
         return;
@@ -4857,9 +4893,22 @@ fn add_fetches_git_repositories() {
     std::fs::write(origin.join("a.txt"), "first\n").unwrap();
     std::fs::write(origin.join("run.sh"), "#!/bin/sh\n").unwrap();
     std::fs::write(origin.join("dir/deep/d.txt"), "deep\n").unwrap();
-    std::os::unix::fs::symlink("a.txt", origin.join("link")).unwrap();
     git_in(&origin, &["add", "-A"]);
     git_in(&origin, &["update-index", "--chmod=+x", "run.sh"]);
+    // A symlink, committed as git keeps one (mode 120000, its blob its target), with no
+    // link of the host's, which Windows lets few users make.
+    let target = repos.join("link-target");
+    std::fs::write(&target, "a.txt").unwrap();
+    let blob = git_in(&origin, &["hash-object", "-w", target.to_str().unwrap()]);
+    git_in(
+        &origin,
+        &[
+            "update-index",
+            "--add",
+            "--cacheinfo",
+            &format!("120000,{},link", blob.trim()),
+        ],
+    );
     git_in(&origin, &["submodule", "add", "-q", "../sub.git", "mods/sub"]);
     git_in(&origin, &["commit", "-q", "-m", "two"]);
     git_in(&origin, &["tag", "-a", "v1", "-m", "annotated"]);
@@ -5094,7 +5143,10 @@ fn add_fetches_git_repositories() {
 /// `curve25519-sha256@libssh.org` with `aes128-gcm@openssh.com` and an RSA host key), each
 /// repository's submodule over SSH too, authenticated by a key file the build serves and
 /// by an agent's socket; refused: a host known_hosts does not know, a key the server does
-/// not take, a repository it lacks, and a build given no agent.
+/// not take, a repository it lacks, and a build given no agent. Unix alone: its servers are
+/// sshd run as this user's own processes (`/usr/sbin/sshd`), and its agent is ssh-agent at
+/// a socket of the test's, which Windows' OpenSSH runs as services of the machine alone.
+#[cfg(unix)]
 #[test]
 fn add_fetches_git_over_ssh() {
     if cannot_run_vms() {
@@ -5645,7 +5697,11 @@ fn builds_reuse_the_steps_they_have_run() {
     assert!(!cached(&changed, "write:/two=2"), "{changed}");
     let stat = shards(&["run", "--rm", "-u", "root", "cached:3", "stat", "/a.txt", "/two"]);
     assert_eq!(
-        stat.stdout, "/a.txt file 644 0:0 7\n= second\\n\n/two file 644 0:0 1\n= 2\n",
+        stat.stdout,
+        format!(
+            "/a.txt file {} 0:0 7\n= second\\n\n/two file 644 0:0 1\n= 2\n",
+            sent("644")
+        ),
         "{}",
         stat.stderr
     );
@@ -7860,13 +7916,19 @@ fn check_says_the_builds_warnings() {
 /// BuildKit's steps reach it (`--ssh default`, `SSH_AUTH_SOCK` in the step): the step
 /// sees the agent's keys and has it sign, and cannot have it forget them, which BuildKit's
 /// read-only agent refuses; the same of a key file the client serves (D68); without
-/// `--ssh`, BuildKit's refusal.
+/// `--ssh`, BuildKit's refusal. The agent is ssh-agent at a socket of the test's on Unix;
+/// on Windows, whose OpenSSH runs its agent as a service of the machine's alone, one of the
+/// test's at a named pipe, as Windows' is reached (`common::ssh_agent_windows`).
 #[test]
 fn run_steps_reach_the_clients_ssh_agent() {
     if cannot_run_vms() {
         return;
     }
-    let tools = ["ssh-agent", "ssh-keygen", "ssh-add"];
+    let tools: &[&str] = if cfg!(windows) {
+        &["ssh-keygen"]
+    } else {
+        &["ssh-agent", "ssh-keygen", "ssh-add"]
+    };
     if tools
         .iter()
         .any(|t| std::process::Command::new(t).arg("-h").output().is_err())
@@ -7875,39 +7937,49 @@ fn run_steps_reach_the_clients_ssh_agent() {
         return;
     }
     let keys = TempDir::new("build-ssh-agent");
-    let sock = keys.join("agent.sock");
-    let mut agent = common::ssh_agent(&sock);
-    struct Ended<'a>(&'a mut std::process::Child);
-    impl Drop for Ended<'_> {
-        fn drop(&mut self) {
-            let _ = self.0.kill();
-            let _ = self.0.wait();
-        }
-    }
-    let _agent = Ended(&mut agent);
-    for _ in 0..100 {
-        if sock.exists() {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
     let key = keys.join("id");
-    let made = std::process::Command::new("ssh-keygen")
-        .args(["-q", "-t", "ed25519", "-N", "", "-C", "shards-test-key", "-f"])
-        .arg(&key)
-        .output()
-        .unwrap();
-    assert!(made.status.success(), "{}", String::from_utf8_lossy(&made.stderr));
-    let added = std::process::Command::new("ssh-add")
-        .arg(&key)
-        .env("SSH_AUTH_SOCK", &sock)
-        .output()
-        .unwrap();
-    assert!(
-        added.status.success(),
-        "{}",
-        String::from_utf8_lossy(&added.stderr)
-    );
+    #[cfg(unix)]
+    let (sock, _agent) = {
+        let sock = keys.join("agent.sock");
+        struct Ended(std::process::Child);
+        impl Drop for Ended {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let agent = Ended(common::ssh_agent(&sock));
+        for _ in 0..100 {
+            if sock.exists() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let made = std::process::Command::new("ssh-keygen")
+            .args(["-q", "-t", "ed25519", "-N", "", "-C", "shards-test-key", "-f"])
+            .arg(&key)
+            .output()
+            .unwrap();
+        assert!(made.status.success(), "{}", String::from_utf8_lossy(&made.stderr));
+        let added = std::process::Command::new("ssh-add")
+            .arg(&key)
+            .env("SSH_AUTH_SOCK", &sock)
+            .output()
+            .unwrap();
+        assert!(
+            added.status.success(),
+            "{}",
+            String::from_utf8_lossy(&added.stderr)
+        );
+        (sock, agent)
+    };
+    #[cfg(windows)]
+    let (sock, agent) = {
+        let seed = [7u8; 32];
+        common::ssh_key_file(&key, &seed, "shards-test-key");
+        let agent = common::ssh_agent_windows(seed, "shards-test-key");
+        (std::path::PathBuf::from(&agent.pipe), agent)
+    };
 
     let (image, _) = served();
     let home = TempDir::new("build-ssh-home");
@@ -7947,12 +8019,21 @@ fn run_steps_reach_the_clients_ssh_agent() {
         assert!(built.stderr.contains(line), "{line:?}\n{}", built.stderr);
     }
     // The agent kept its key: the step could not have it forget them.
-    let listed = std::process::Command::new("ssh-add")
-        .arg("-l")
-        .env("SSH_AUTH_SOCK", &sock)
-        .output()
-        .unwrap();
-    assert!(String::from_utf8_lossy(&listed.stdout).contains("shards-test-key"));
+    #[cfg(unix)]
+    {
+        let listed = std::process::Command::new("ssh-add")
+            .arg("-l")
+            .env("SSH_AUTH_SOCK", &sock)
+            .output()
+            .unwrap();
+        assert!(String::from_utf8_lossy(&listed.stdout).contains("shards-test-key"));
+    }
+    #[cfg(windows)]
+    assert_eq!(
+        agent.removals.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "a removal reached the client's agent"
+    );
 
     // The key file itself, served from the client's own keyring (D68): the step sees the
     // key (its comment dropped, as x/crypto drops it) and has it sign, and is refused what
@@ -8113,9 +8194,12 @@ fn tar_entries(bytes: &[u8]) -> Vec<(shards_archive::tar::Header, Vec<u8>)> {
 /// nanosecond times kept), the same as fsutil's tar (times rounded, owners kept, no
 /// root), and the image as an OCI or Docker layout of the very blobs the store keeps;
 /// none of them leaves an image in the store; what BuildKit refuses before it solves is
-/// refused before any step runs.
+/// refused before any step runs. Windows' files have no modes or owners, which fsutil's
+/// DiskWriter sets nothing of there (diskwriter_windows.go): there the directory's files
+/// are held to the rest.
 #[test]
 fn builds_write_each_output() {
+    #[cfg(unix)]
     use std::os::unix::fs::MetadataExt as _;
     if cannot_run_vms() {
         return;
@@ -8208,20 +8292,29 @@ fn builds_write_each_output() {
     // local: the whole tree, as the builder owns it.
     let root = out.join("rootfs");
     let md = |p: &str| std::fs::symlink_metadata(root.join(p)).unwrap();
+    #[cfg(unix)]
     assert_eq!(md(".").mode() & 0o7777, 0o700 & !umask());
     assert!(root.join("bin/testguest").exists(), "the base image's files too");
+    #[cfg(unix)]
     assert_eq!(md("out/f").mode() & 0o7777, 0o4755);
-    assert_eq!(md("out/f").ino(), md("out/h").ino());
+    assert_eq!(
+        common::file_identity(&root.join("out/f")),
+        common::file_identity(&root.join("out/h")),
+        "a hard link is one file"
+    );
     assert_eq!(
         std::fs::read_link(root.join("out/l")).unwrap().to_str(),
         Some("f")
     );
     assert!(md("out/empty").is_dir());
-    let me = std::fs::metadata(&*out).unwrap();
-    assert_eq!(
-        (md("out/owned").uid(), md("out/owned").gid()),
-        (me.uid(), me.gid())
-    );
+    #[cfg(unix)]
+    {
+        let me = std::fs::metadata(&*out).unwrap();
+        assert_eq!(
+            (md("out/owned").uid(), md("out/owned").gid()),
+            (me.uid(), me.gid())
+        );
+    }
     assert_eq!(std::fs::read(root.join("out/owned")).unwrap(), b"owned\n");
 
     // tar: stdout's and the file's are one archive.
@@ -8254,9 +8347,14 @@ fn builds_write_each_output() {
         names.iter().any(|n| n == "out/\u{fc}n\u{ef}c\u{f8}d\u{e9}"),
         "{names:?}"
     );
-    // Times: the snapshot's, to the nearest second.
-    let local = md("out/f");
-    let rounded = local.mtime() + i64::from(local.mtime_nsec() >= 500_000_000);
+    // Times: the snapshot's, to the nearest second (Windows keeps them to 100 ns, which
+    // rounds the same).
+    let local = md("out/f")
+        .modified()
+        .unwrap()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap();
+    let rounded = i64::try_from(local.as_secs()).unwrap() + i64::from(local.subsec_nanos() >= 500_000_000);
     assert_eq!(entry("out/f").mtime.sec, rounded);
 
     // oci and docker: layouts of the store's own blobs, named as built.
@@ -8325,6 +8423,7 @@ fn builds_write_each_output() {
     // oci with tar=false: a content store, its index merged into.
     let layout = out.join("layout");
     assert!(layout.join("ingest").is_dir());
+    #[cfg(unix)]
     assert_eq!(
         std::fs::metadata(layout.join("oci-layout")).unwrap().mode() & 0o777,
         0o644
@@ -8374,6 +8473,7 @@ fn builds_write_each_output() {
 }
 
 /// The process's umask, as a directory made with 0777 shows it.
+#[cfg(unix)]
 fn umask() -> u32 {
     use std::os::unix::fs::PermissionsExt as _;
     let probe = TempDir::new("umask-probe");
@@ -8583,18 +8683,11 @@ fn agentfile_directives_lay_out_what_they_bring() {
         "---\nname: notes\ndescription: Takes notes.\n---\n",
     );
     // A harness as an archive: unpacked where it goes.
-    let tar = ctx.join("harness.tar");
-    let status = std::process::Command::new("tar")
-        .args([
-            "-cf",
-            tar.to_str().unwrap(),
-            "-C",
-            ctx.join("agent").to_str().unwrap(),
-            "run.sh",
-        ])
-        .status()
-        .unwrap();
-    assert!(status.success());
+    std::fs::write(
+        ctx.join("harness.tar"),
+        ustar(&[("run.sh", b"#!/bin/sh\necho agent\n")]),
+    )
+    .unwrap();
     std::fs::write(
         ctx.join("Agentfile"),
         format!(
@@ -8749,7 +8842,9 @@ fn agents_are_osi_artifacts_made_pushed_and_taken() {
     );
 
     // What no domain may hold is refused when the artifact is made.
-    std::os::unix::fs::symlink("/etc/passwd", dir.join("escape")).unwrap();
+    if !symlink("/etc/passwd", &dir.join("escape")) {
+        return;
+    }
     let refused = shards(&["build", "agent", dir.to_str().unwrap(), "-t", "local/bad:1"]);
     assert_ne!(refused.status, Some(0));
     assert!(
@@ -9030,7 +9125,9 @@ fn domains_are_checked_before_an_image_leaves_the_build() {
     let ctx = context("build-isolation-ctx", &format!("FROM {image}\n"));
     std::fs::create_dir_all(ctx.join("agent")).unwrap();
     std::fs::write(ctx.join("agent/run"), "run\n").unwrap();
-    std::os::unix::fs::symlink("run", ctx.join("agent/inside")).unwrap();
+    if !symlink("run", &ctx.join("agent/inside")) {
+        return;
+    }
     std::fs::write(
         ctx.join("Agentfile"),
         format!("FROM {image}\nAGENT main FROM ./agent\n"),
@@ -9044,7 +9141,7 @@ fn domains_are_checked_before_an_image_leaves_the_build() {
         ok.stderr
     );
 
-    std::os::unix::fs::symlink("/etc/passwd", ctx.join("agent/escape")).unwrap();
+    assert!(symlink("/etc/passwd", &ctx.join("agent/escape")));
     let out = shards(&["build", ctx.to_str().unwrap()]);
     assert_ne!(out.status, Some(0));
     assert!(
@@ -13008,10 +13105,8 @@ fn a_step_for_another_cpu_runs_under_its_emulator() {
         "FROM alpine:3.22\nCOPY crash /crash\nRUN [\"/crash\"]\n",
     );
     std::fs::write(crashing.join("crash"), common::crashing_program(theirs.0)).unwrap();
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        std::fs::set_permissions(crashing.join("crash"), std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
+    // Executable: Windows sends every file so (`sent`).
+    chmod(&crashing.join("crash"), 0o755);
     let failed = shards(&[
         "build",
         "--platform",
@@ -13782,7 +13877,10 @@ fn an_agentfile_made_from_an_image_builds_its_config() {
 /// a build copies, adds and configures, over no base), built at SOURCE_DATE_EPOCH with
 /// `rewrite-timestamp=true` for a pinned platform into an OCI archive, makes the manifest
 /// Docker 29.3.1 makes of it (`scripts/repro/generate`), byte for byte; where it does not,
-/// the manifest and config said beside Docker's.
+/// the manifest and config said beside Docker's. Unix alone: the cases' files have Unix
+/// modes, which no Windows file carries (`sent`), and so Docker's digests are of a Unix
+/// client's.
+#[cfg(unix)]
 #[test]
 fn builds_are_reproducible_byte_for_byte() {
     use std::os::unix::fs::PermissionsExt as _;
@@ -13861,6 +13959,7 @@ fn builds_are_reproducible_byte_for_byte() {
 }
 
 /// Standard base64, padded: the cases' binary files.
+#[cfg(unix)]
 fn base64_decode(s: &str) -> Vec<u8> {
     let value = |c: u8| match c {
         b'A'..=b'Z' => c - b'A',
@@ -15663,9 +15762,11 @@ fn agentfile_volumes_reach_whom_they_are_for() {
     std::fs::create_dir_all(ctx.join("tree/run")).unwrap();
     std::fs::create_dir_all(ctx.join("tree/var")).unwrap();
     std::fs::write(ctx.join("tree/run/marker"), "image-run\n").unwrap();
-    std::os::unix::fs::symlink("/run", ctx.join("tree/var/run")).unwrap();
-    std::os::unix::fs::symlink("/etc", ctx.join("tree/fill")).unwrap();
-    std::os::unix::fs::symlink("/dev/shm", ctx.join("tree/var/shm")).unwrap();
+    if !symlink("/run", &ctx.join("tree/var/run")) {
+        return;
+    }
+    assert!(symlink("/etc", &ctx.join("tree/fill")));
+    assert!(symlink("/dev/shm", &ctx.join("tree/var/shm")));
     std::fs::write(
         ctx.join("Agentfile"),
         format!(
@@ -15780,11 +15881,16 @@ fn agentfile_volumes_reach_whom_they_are_for() {
     // A host directory stands in for b's: given to b, and never owned or moded by the
     // Agentfile's --chown and --chmod, which are for its volumes.
     let host = TempDir::new("agvol-host");
-    std::fs::set_permissions(&*host, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    chmod(&host, 0o755);
+    // What the host says of it: its mode and owner on Unix; on Windows, which has neither,
+    // whether it is read-only.
+    #[cfg(unix)]
     let shown = |m: &std::fs::Metadata| {
         use std::os::unix::fs::MetadataExt as _;
         (m.mode() & 0o7777, m.uid(), m.gid())
     };
+    #[cfg(windows)]
+    let shown = |m: &std::fs::Metadata| m.permissions().readonly();
     let before = shown(&std::fs::metadata(&*host).unwrap());
     let bound = run_with(&["-v", &format!("{}:/scratch", host.display())]);
     assert_eq!(shown(&std::fs::metadata(&*host).unwrap()), before, "{bound}");
