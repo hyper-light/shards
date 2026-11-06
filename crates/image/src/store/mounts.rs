@@ -617,7 +617,7 @@ impl Store {
         let merged = {
             let mut out = BufWriter::with_capacity(
                 crate::through::CHUNK,
-                crate::through::Through(part.file.try_clone()?),
+                crate::through::Through::new(part.file.try_clone()?),
             );
             let mut parts = vec!["merge", id];
             parts.extend(run.names.iter().map(String::as_str));

@@ -266,7 +266,7 @@ impl<'a> Exec<'a> {
         let part = self.store.mount_part(held, &record_id()?, 0).map_err(err)?;
         let mut out = std::io::BufWriter::with_capacity(
             shards_image::through::CHUNK,
-            shards_image::through::Through(part.file().try_clone().map_err(err)?),
+            shards_image::through::Through::new(part.file().try_clone().map_err(err)?),
         );
         let uuid = store::layer_uuid(&["seed", &held.id]);
         let written = erofs::write_uuid(from.fs.tree(), &mut self.sources, &mut out, uuid).map_err(err)?;

@@ -18009,6 +18009,53 @@ revision before comparing a changed API/implementation.
   dirtied and read from storage (/proc/PID/io `write_bytes`, `read_bytes`, counted to the
   task that dirtied a page whatever cgroup it is charged to). tables.py gives each, free
   against held. To measure: `builder-pressure.yml` at the commit that has them.
+- **At eb9f70a4, on CI's four runners: the writer's own transfer, in rust's export.** The
+  writer was outside in every held build, and the rule held for 11 of the 12 runner and
+  build pairs. rust failed it on one runner (an EPYC 7763): held's fastest 5.2 s against
+  free's slowest 5.0. Phase by phase (s, the rounds past the caches', from raw/'s build
+  logs: the `phase` lines and the export's `writing image` line), the difference is in one
+  phase on every runner, the export's root filesystem (from `writing image` to
+  `rootfs-from-snapshot`: rust:1-slim's and the build's 926 MiB written whole on the
+  runners' ext4, then synced, `Partial::commit`):
+
+  | runner | free | held |
+  |---|---|---|
+  | Xeon 8370C | 2.362 to 2.429 | 2.651 to 2.716 |
+  | EPYC 7763, the one that failed | 2.330 to 2.365 | 2.553 to 2.604 |
+  | EPYC 9V74 | 2.318 to 2.355 | 2.519 to 2.559 |
+  | EPYC 7763, another | 2.338 to 2.381 | 2.557 to 2.616 |
+
+  No held round is as fast as any free one on any runner: medians 0.29, 0.22, 0.22 and
+  0.21 s apart. The other phases are within their spread or a few ms: the step's `RUN`
+  (`run`) 0.87 to 0.99 free and 0.92 to 1.02 held on the one that failed; its layer 6 to 9
+  ms longer held; the export's layers and blobs, before its `writing image` line, 0.79 to
+  0.91 s in either arm. The rule passed on the other three only because their free rounds
+  spread wider in `RUN` (0.87 to 1.30, 1.31 to 1.52 and, on the other EPYC 7763, 0.95 to
+  2.33 s) than the failing one's 0.12 s, less than the 0.22 s each held export paid there.
+  So the failure is no noise of the run, and more rounds would not show held no slower:
+  they could hide it there only by a free round 0.19 s slower than its slowest of five,
+  whose p50 is 0.04 s under it.
+
+  Where in the export: the samples that caught a free arm still writing (0.17 to 0.33 s
+  after the line, two runners) put it at 2,478 to 2,799 MiB/s, and each later one found it
+  all written, its sync's writeback under way (168 to 480 MiB) by 0.39 to 0.76 s; held had
+  written only 507 to 867 MiB of it 0.34 to 0.51 s on, 1,395 to 1,768 MiB/s, nothing yet
+  written back. From the sync on, both drained alike. So held paid in its writes, not its
+  sync: each MiB copied into the socket, out of it into a buffer zeroed for it
+  (`shards_ipc::recv`), then written, and the build waited for each answer, 0.22 to 0.29
+  ms a MiB on these runners. A merge's writes agree (apt, on the failing runner: 190.9 MiB
+  written in 63 ms free and 109 held, 0.24 ms a MiB more).
+
+  Fixed (build/outside.rs, `shards_image::through`): the bytes go in two slots of memory
+  the build and its writer share (a memfd, which the writer allocates once placed, so its
+  pages are charged to the writer: mm/shmem.c `shmem_fallocate` charges the allocating
+  task's cgroup, and a charge stays where it was made, cgroup-v2.rst "Memory Ownership"), a
+  message names the slot, the bytes and their owner, the file comes with it, and the
+  writer writes from the slot. A `Through` goes on once a write is handed, its writes
+  settled when its file is flushed, sought in, taken back or dropped, so the writer makes
+  one write while the build makes and hands the next; a write after one of its owner's
+  that failed is not made. To measure: `builder-pressure.yml` at the commit that has it,
+  the export's phase free against held.
 
 ### M443. A restart over the kept layer file itself, and what the guest freed given back (D190)
 
