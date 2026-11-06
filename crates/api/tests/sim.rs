@@ -374,6 +374,134 @@ mod client {
         }
     }
 
+    /// Measures the waits this file's tests make, each kind on a thread of its own as the
+    /// tests run side by side, `SHARDS_API_WAITS_N` (default 40) of each, with a new stand-in
+    /// script for each (a new script's first start is slow on macOS): printed as n, p50, p90,
+    /// p99 and max (docs/research/measurements/shards-api-waits/run.sh), for `PATIENCE` and
+    /// the held-output test's bound.
+    #[test]
+    #[ignore = "a measurement, run by its harness"]
+    fn the_waits_of_these_tests() {
+        let n: usize = std::env::var("SHARDS_API_WAITS_N")
+            .ok()
+            .and_then(|n| n.parse().ok())
+            .unwrap_or(40);
+        let fresh = |name: &str, body: &str| {
+            let dir = shards_testdir::TempDir::new(name).unwrap();
+            let bin = stand_in(&dir, body);
+            (dir, bin)
+        };
+        let boot = |bin: PathBuf| {
+            Shards
+                .boot(&GuestSpec {
+                    binary: Some(bin),
+                    ..spec("")
+                })
+                .unwrap()
+        };
+        type Kind = (&'static str, Box<dyn Fn() -> Duration + Send + Sync>);
+        let kinds: Vec<Kind> = vec![
+            (
+                "a simulated guest that listens late, connected to",
+                Box::new(|| {
+                    let late = SimGuests::new(|host| {
+                        std::thread::sleep(Duration::from_millis(100));
+                        host.listen(ECHO);
+                        while host.accept().is_some() {}
+                        End::Stopped
+                    });
+                    let start = Instant::now();
+                    let g = late.boot(&spec("")).unwrap();
+                    assert!(g.connect(ECHO, Duration::MAX).is_ok());
+                    start.elapsed()
+                }),
+            ),
+            (
+                "a stand-in ending first, refused",
+                Box::new(move || {
+                    let (_dir, bin) = fresh("w-end", "echo 'no kernel' >&2; exit 7");
+                    let start = Instant::now();
+                    let g = boot(bin);
+                    assert!(matches!(g.connect(ECHO, Duration::MAX), Err(Refusal::Boot(_))));
+                    start.elapsed()
+                }),
+            ),
+            (
+                "a stand-in exiting 0, its end",
+                Box::new(move || {
+                    let (_dir, bin) = fresh("w-off", "exit 0");
+                    let start = Instant::now();
+                    let g = boot(bin);
+                    assert_eq!(g.wait_for(Duration::MAX).unwrap(), Some(End::PowerOff));
+                    start.elapsed()
+                }),
+            ),
+            (
+                "a running stand-in, stopped",
+                Box::new(move || {
+                    let (_dir, bin) = fresh("w-stop", "exec sleep 1000");
+                    let g = boot(bin);
+                    let start = Instant::now();
+                    g.stop().unwrap();
+                    assert_eq!(g.wait_for(Duration::ZERO).unwrap(), Some(End::Stopped));
+                    start.elapsed()
+                }),
+            ),
+            (
+                "a held output's refusal after shards' end",
+                Box::new(move || {
+                    let dir = shards_testdir::TempDir::new("w-held").unwrap();
+                    let (pid, ending) = (dir.path().join("pid"), dir.path().join("ending"));
+                    let made = std::process::Command::new("mkfifo").arg(&ending).status();
+                    assert!(made.unwrap().success());
+                    let bin = stand_in(
+                        &dir,
+                        &format!(
+                            "sleep 1000 & echo $! > '{}'; echo > '{}'; exit 7",
+                            pid.display(),
+                            ending.display()
+                        ),
+                    );
+                    let g = boot(bin);
+                    let (tx, rx) = std::sync::mpsc::channel();
+                    std::thread::spawn(move || {
+                        let _ = g.connect(ECHO, Duration::MAX);
+                        tx.send(Instant::now())
+                    });
+                    std::fs::read(&ending).unwrap();
+                    let ended = Instant::now();
+                    let at = rx.recv().unwrap();
+                    let holder = std::fs::read_to_string(&pid).unwrap();
+                    let _ = std::process::Command::new("kill").arg(holder.trim()).status();
+                    at.saturating_duration_since(ended)
+                }),
+            ),
+        ];
+        std::thread::scope(|scope| {
+            let runs: Vec<_> = kinds
+                .iter()
+                .map(|(what, kind)| {
+                    scope.spawn(move || {
+                        let mut d: Vec<Duration> = (0..n).map(|_| kind()).collect();
+                        d.sort();
+                        (*what, d)
+                    })
+                })
+                .collect();
+            for run in runs {
+                let (what, d) = run.join().unwrap();
+                let q = |p: usize| d[(n - 1) * p / 100];
+                println!(
+                    "wait {what}: n={n} p50={:?} p90={:?} p99={:?} max={:?}",
+                    q(50),
+                    q(90),
+                    q(99),
+                    d[n - 1]
+                );
+            }
+        });
+    }
+
     /// A binary that isn't there is a `Boot` refusal naming it (Hex HEX-GUEST-9).
     #[test]
     fn a_missing_binary_is_refused() {

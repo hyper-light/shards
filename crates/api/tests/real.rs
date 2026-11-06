@@ -13,17 +13,16 @@
     clippy::print_stdout
 )]
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use shards_api::conformance::{self, Subject};
-use shards_api::{GuestSpec, Init, Shards, min_memory_mib};
+use shards_api::{End, GuestSpec, Guests as _, Init, Shards, min_memory_mib};
 
-/// Every case passes against real guests (Hex HEX-GUEST-10).
-#[test]
-fn shards_conforms() {
+/// The real guests' specs, by `shards_test=` mode, where `SHARDS_API_REAL=1` asks for them.
+fn specs() -> Option<impl Fn(&str) -> GuestSpec> {
     if std::env::var_os("SHARDS_API_REAL").is_none_or(|v| v != "1") {
         println!("SKIP: SHARDS_API_REAL=1 boots real guests");
-        return;
+        return None;
     }
     let kernel = std::env::var_os("SHARDS_API_KERNEL").expect("SHARDS_API_KERNEL");
     let init = std::env::var_os("SHARDS_API_INIT").expect("SHARDS_API_INIT");
@@ -31,7 +30,7 @@ fn shards_conforms() {
     // kernel in (`crates/shards/tests/boot.rs:42-43`), and no less than the least it boots
     // in (`min_memory_mib`). Ports: identifiers (vsock(7), a 32-bit port), the test guest's
     // echo port (`crates/testguest/src/linux.rs:3293` `ECHO_PORT`) and one it does not serve.
-    let spec = |mode: &str| GuestSpec {
+    Some(move |mode: &str| GuestSpec {
         kernel: kernel.clone().into(),
         init: Init::Executable(init.clone().into()),
         cmdline: format!("console=ttyS0 quiet shards_test={mode}"),
@@ -41,7 +40,13 @@ fn shards_conforms() {
         shares: vec![],
         ports: vec![1234, 1236],
         binary: None,
-    };
+    })
+}
+
+/// Every case passes against real guests (Hex HEX-GUEST-10).
+#[test]
+fn shards_conforms() {
+    let Some(spec) = specs() else { return };
     conformance::run(&Subject {
         guests: &Shards,
         serving: spec("echo"),
@@ -53,4 +58,52 @@ fn shards_conforms() {
         patience: Duration::from_secs(60),
     })
     .unwrap();
+}
+
+/// Measures the waits real guests make, for the bounds that hold them: a boot to its echo
+/// port answering, an unserved port's refusal past `UNSERVED_PATIENCE`, `stop`, and a boot
+/// to a guest's power-off. `SHARDS_API_WAITS_N` (default 40) of each, printed as n, p50,
+/// p90, p99 and max (docs/research/measurements/shards-api-waits/run.sh).
+#[test]
+#[ignore = "a measurement, run by its harness"]
+fn the_waits_of_real_guests() {
+    let Some(spec) = specs() else { return };
+    let n: usize = std::env::var("SHARDS_API_WAITS_N")
+        .ok()
+        .and_then(|n| n.parse().ok())
+        .unwrap_or(40);
+    let (mut ready, mut over, mut stop, mut off) = (vec![], vec![], vec![], vec![]);
+    for _ in 0..n {
+        let start = Instant::now();
+        let g = Shards.boot(&spec("echo")).unwrap();
+        drop(g.connect(1234, Duration::MAX).unwrap());
+        ready.push(start.elapsed());
+        let start = Instant::now();
+        assert!(g.connect(1236, conformance::UNSERVED_PATIENCE).is_err());
+        over.push(start.elapsed().saturating_sub(conformance::UNSERVED_PATIENCE));
+        let start = Instant::now();
+        g.stop().unwrap();
+        stop.push(start.elapsed());
+        assert_eq!(g.wait_for(Duration::ZERO).unwrap(), Some(End::Stopped));
+        let start = Instant::now();
+        let g = Shards.boot(&spec("kmsg")).unwrap();
+        assert_eq!(g.wait_for(Duration::MAX).unwrap(), Some(End::PowerOff));
+        off.push(start.elapsed());
+    }
+    for (what, mut d) in [
+        ("boot to its port answering", ready),
+        ("an unserved refusal past its patience", over),
+        ("stop", stop),
+        ("boot to power-off", off),
+    ] {
+        d.sort();
+        let q = |p: usize| d[(n - 1) * p / 100];
+        println!(
+            "wait {what}: n={n} p50={:?} p90={:?} p99={:?} max={:?}",
+            q(50),
+            q(90),
+            q(99),
+            d[n - 1]
+        );
+    }
 }
