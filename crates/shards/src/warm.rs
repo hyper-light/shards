@@ -1058,7 +1058,15 @@ fn save_request(message: shards_ipc::Message) -> Result<shards_vmm::vm::Saved, S
     };
     let (name, snapshot, microvm) = (name?, snapshot?, microvm?);
     let count = message.fds.len();
-    let mut fds = message.fds.into_iter().map(File::from);
+    let mut fds: Vec<File> = message.fds.into_iter().map(File::from).collect();
+    // A live move's last save brings, last, the stream its rounds went to, which its last
+    // round ends (D176 part 7).
+    let delta = if flags & shards_ipc::SAVE_DELTA != 0 {
+        Some(fds.pop().ok_or("a live move's last save without its stream")?)
+    } else {
+        None
+    };
+    let mut fds = fds.into_iter();
     let (Some(memory), Some(state)) = (fds.next(), fds.next()) else {
         return Err(format!(
             "a save brings {count} descriptors, without its memory and state"
@@ -1076,7 +1084,7 @@ fn save_request(message: shards_ipc::Message) -> Result<shards_vmm::vm::Saved, S
     if fds.next().is_some() {
         return Err(format!("a save brings too many descriptors: {count}"));
     }
-    let then = if flags & shards_ipc::SAVE_DELTA != 0 {
+    let then = if delta.is_some() {
         shards_vmm::vm::AfterSnapshot::Hold
     } else if flags & shards_ipc::SAVE_LEAVE_RUNNING != 0 {
         shards_vmm::vm::AfterSnapshot::Resume
@@ -1096,7 +1104,7 @@ fn save_request(message: shards_ipc::Message) -> Result<shards_vmm::vm::Saved, S
         layer,
         window_heads,
         then,
-        delta: flags & shards_ipc::SAVE_DELTA != 0,
+        delta,
     });
     // The guest goes on where the microVM does: saved and left running, or not saved.
     if saved.is_err() || then == shards_vmm::vm::AfterSnapshot::Resume {

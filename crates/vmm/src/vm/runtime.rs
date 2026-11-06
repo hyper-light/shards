@@ -451,7 +451,8 @@ impl Handle {
     /// live move (D176 part 7), as its guest runs on: everything in a first round, then,
     /// round after round, what its guest and its devices wrote since the round before,
     /// until a round has sent no more than `enough` bytes, or `most` rounds. The guest's
-    /// writes are watched from then on, for the [`Save`] with `delta` that ends the move.
+    /// writes are watched from then on, for the [`Save`] with `delta` that ends the move
+    /// and the stream, which this leaves without its end.
     pub fn precopy(&self, out: std::fs::File, most: u32, enough: u64) -> Result<Precopied, String> {
         let sh = &self.shared;
         if !super::SNAPSHOTS {
@@ -471,12 +472,12 @@ impl Handle {
             vm.unwatch_writes();
             self.memory.unwatch_device_writes();
         };
+        // Each round flushed as it ends: the last save's round goes on after them.
         let sent = self.precopy_rounds(&vm, &mut w, most, enough);
-        let finished = sent.and_then(|precopied| w.finish().map(|()| precopied).map_err(fail));
-        if finished.is_err() {
+        if sent.is_err() {
             unwatch();
         }
-        finished
+        sent
     }
 
     fn precopy_rounds<W: std::io::Write>(
@@ -540,31 +541,7 @@ impl Handle {
             let t = crate::log::uptime_us();
             let mut written = Pages::of(vm.written().map_err(|e| e.to_string())?, machine::PAGE);
             written.merge(Pages::of(self.memory.device_written(), live::PAGE));
-            for gpa in written.iter() {
-                if let Some((plugged, at, bytes)) = self.memory.page_at(gpa) {
-                    w.record(if plugged { live::PLUGGED } else { live::RAM }, at, bytes)
-                        .map_err(fail)?;
-                    continue;
-                }
-                let page = buf
-                    .get_mut(..live::PAGE as usize)
-                    .ok_or("a page past its buffer")?;
-                if let Some((base, len)) = layer.as_ref().and_then(|l| l.data_at())
-                    && let Some(off) = gpa.checked_sub(base).filter(|off| off + live::PAGE <= len)
-                    && let Some(l) = &layer
-                {
-                    l.read_data(off, page)?;
-                    w.record(live::LAYER, off, page).map_err(fail)?;
-                    continue;
-                }
-                if let Some((base, len)) = swap.as_ref().and_then(|s| s.run_at())
-                    && let Some(off) = gpa.checked_sub(base).filter(|off| off + live::PAGE <= len)
-                    && let Some(s) = &swap
-                {
-                    s.read_run(off, page)?;
-                    w.record(live::SWAP, off, page).map_err(fail)?;
-                }
-            }
+            self.send_pages(&written, w, &mut buf)?;
             let (pages, bytes) = w.round(n).map_err(fail)?;
             precopied
                 .rounds
@@ -574,6 +551,45 @@ impl Handle {
             }
         }
         Ok(precopied)
+    }
+
+    /// Sends each page of `written` into `w` from where a save keeps it: its RAM or the
+    /// memory plugged, its writable layer's file system, or its run's swap. A page of none
+    /// of them (memory unplugged since) is no page of a snapshot's.
+    fn send_pages<W: std::io::Write>(
+        &self,
+        written: &Pages,
+        w: &mut live::Writer<W>,
+        buf: &mut [u8],
+    ) -> Result<(), String> {
+        let fail = |e: std::io::Error| format!("sending its memory: {e}");
+        let (layer, swap) = (self.control.layer(), self.control.swap());
+        for gpa in written.iter() {
+            if let Some((plugged, at, bytes)) = self.memory.page_at(gpa) {
+                w.record(if plugged { live::PLUGGED } else { live::RAM }, at, bytes)
+                    .map_err(fail)?;
+                continue;
+            }
+            let page = buf
+                .get_mut(..live::PAGE as usize)
+                .ok_or("a page past its buffer")?;
+            if let Some(l) = layer
+                && let Some((base, len)) = l.data_at()
+                && let Some(off) = gpa.checked_sub(base).filter(|off| off + live::PAGE <= len)
+            {
+                l.read_data(off, page)?;
+                w.record(live::LAYER, off, page).map_err(fail)?;
+                continue;
+            }
+            if let Some(s) = swap
+                && let Some((base, len)) = s.run_at()
+                && let Some(off) = gpa.checked_sub(base).filter(|off| off + live::PAGE <= len)
+            {
+                s.read_run(off, page)?;
+                w.record(live::SWAP, off, page).map_err(fail)?;
+            }
+        }
+        Ok(())
     }
 
     /// [`save`](Handle::save)'s snapshot: what it holds of the machine goes before the
@@ -611,7 +627,7 @@ impl Handle {
         let swap = cut.swap.filter(|w| w.attached());
         // The last of a live move: what was written since its last round, its guest's and
         // its devices', the vCPUs parked and the devices quiet now (D176 part 7).
-        let delta = if save.delta {
+        let delta = if save.delta.is_some() {
             let mut pages = match vm.written() {
                 Ok(written) => Pages::of(written, machine::PAGE),
                 Err(e) => {
@@ -626,23 +642,27 @@ impl Handle {
         } else {
             None
         };
-        let written = match &delta {
-            Some(pages) => {
-                snapshot::fill_pages(&save.name, &snap, &self.memory, pages, &save.memory, &save.state)
-            }
-            None => snapshot::fill(&save.name, &snap, &self.memory, &save.memory, &save.state),
+        // A live move's pages go in its stream, after its rounds, each by its own record:
+        // its memory, layer and swap files here only as long as a save's, all holes. Which
+        // pages a file holds is never read from its file system's holes, which NTFS keeps
+        // in units of 64 KiB, the rest of a unit a page is written into reading as zeros.
+        let held = delta.is_some();
+        let written = if held {
+            snapshot::fill_none(&save.name, &snap, &self.memory, &save.memory, &save.state)
+        } else {
+            snapshot::fill(&save.name, &snap, &self.memory, &save.memory, &save.state)
         }
-        .and_then(|()| match (swap, &save.swap, &delta) {
-            (None, _, _) => Ok(()),
-            (Some(window), Some(file), Some(pages)) => window.save_run_pages(file, pages).map(|_| ()),
-            (Some(window), Some(file), None) => window.save_run(file).map(|_| ()),
-            (Some(_), None, _) => Err("its run's swap has nowhere to go".into()),
+        .and_then(|()| match (swap, &save.swap) {
+            (None, _) => Ok(()),
+            (Some(window), Some(file)) if held => window.save_run_length(file).map(|_| ()),
+            (Some(window), Some(file)) => window.save_run(file).map(|_| ()),
+            (Some(_), None) => Err("its run's swap has nowhere to go".into()),
         })
-        .and_then(|()| match (self.control.layer(), &save.layer, &delta) {
-            (None, _, _) => Ok(()),
-            (Some(layer), Some((head, data)), Some(pages)) => layer.save_pages(head, data, pages),
-            (Some(layer), Some((head, data)), None) => layer.save(head, data),
-            (Some(_), None, _) => Err("its writable layer has nowhere to go".into()),
+        .and_then(|()| match (self.control.layer(), &save.layer) {
+            (None, _) => Ok(()),
+            (Some(layer), Some((head, data))) if held => layer.save_head(head, data),
+            (Some(layer), Some((head, data))) => layer.save(head, data),
+            (Some(_), None) => Err("its writable layer has nowhere to go".into()),
         })
         .and_then(|()| match (self.control.window_heads(), &save.window_heads) {
             (None, _) => Ok(()),
@@ -650,6 +670,18 @@ impl Handle {
                 .save(file)
                 .map_err(|e| format!("its DAX windows' heads: {e}")),
             (Some(_), None) => Err("its DAX windows' heads have nowhere to go".into()),
+        })
+        // Its last round, then the stream's end, before its spawner hears of the save and
+        // writes what follows them.
+        .and_then(|()| match (&save.delta, &delta) {
+            (Some(stream), Some(pages)) => {
+                let fail = |e: std::io::Error| format!("sending its memory: {e}");
+                let mut w = live::Writer::going_on(std::io::BufWriter::with_capacity(1 << 20, stream));
+                let mut buf = vec![0u8; live::PAGE as usize];
+                self.send_pages(pages, &mut w, &mut buf)?;
+                w.finish().map_err(fail)
+            }
+            _ => Ok(()),
         });
         if let Err(e) = written {
             // One whose guest lost a mapping taken from it for the save stops.

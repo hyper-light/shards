@@ -1,15 +1,17 @@
 //! A running microVM moved live (D176 part 7): its memory copied to the other machine as
 //! its guest runs on, round after round, each round the pages its guest and its devices
 //! wrote since the last ([`Pages`]), until what is left is little; then the machine saved
-//! as a save does, its files holding only the pages written since that last round, which
-//! the other machine lays over what it was sent before.
+//! as a save does, held, and the pages written since that last round sent as the stream's
+//! last round ([`Writer::going_on`]), which the other machine lays over the others page by
+//! page, as it lays each round over the one before.
 //!
 //! The rounds' stream ([`Writer`]): a magic, then records, each a kind, an offset and a run
 //! of bytes, into what a snapshot keeps: its memory file's RAM by its offset there, the
 //! memory plugged by its guest-physical address (its place in the memory file is known only
 //! once the last plugged run is), its writable layer's file system and its run's swap by
 //! their offsets; and an end. What a snapshot keeps besides (its state, the heads its guest
-//! wrote page structures into) is the save's, whole.
+//! wrote page structures into) is the save's, whole; its memory, layer and swap files hold
+//! none of their pages, which the stream holds.
 
 use std::io::{self, Write};
 
@@ -66,26 +68,6 @@ impl Pages {
     pub fn iter(&self) -> impl Iterator<Item = u64> + '_ {
         self.0.iter().copied()
     }
-
-    /// The runs of these within `len` bytes at `base`, each its offset from `base` and its
-    /// length, in order.
-    pub fn runs_within(&self, base: u64, len: u64) -> Vec<(u64, u64)> {
-        let end = base.saturating_add(len);
-        let first = self.0.partition_point(|&p| p < base);
-        let mut runs: Vec<(u64, u64)> = Vec::new();
-        for &p in self.0.get(first..).unwrap_or_default() {
-            if p >= end {
-                break;
-            }
-            let off = p - base;
-            let n = PAGE.min(end - p);
-            match runs.last_mut() {
-                Some(last) if last.0 + last.1 == off => last.1 += n,
-                _ => runs.push((off, n)),
-            }
-        }
-        runs
-    }
 }
 
 /// Writes a live move's stream (the module's words) into `out`.
@@ -105,6 +87,17 @@ impl<W: Write> Writer<W> {
             pages: 0,
             bytes: 0,
         })
+    }
+
+    /// The stream [`new`](Self::new) began in `out`, written on after its rounds, which
+    /// wrote no end: a live move's last save sends its last round so, the stream its spawner
+    /// hands it again (D176 part 7).
+    pub fn going_on(out: W) -> Writer<W> {
+        Writer {
+            out,
+            pages: 0,
+            bytes: 0,
+        }
     }
 
     /// A record of `kind`: `bytes` at `offset`.
@@ -194,19 +187,17 @@ pub fn read(
 mod tests {
     use super::*;
 
-    /// Pages noted in a hypervisor's 16 KiB are each of their four 4 KiB, once; their runs
-    /// within a region are its offsets, neighbours joined.
+    /// Pages noted in a hypervisor's 16 KiB are each of their four 4 KiB, once, in order.
     #[test]
-    fn pages_are_4k_runs_within_a_region() {
+    fn pages_are_4k_each_once() {
         let mut p = Pages::of([0x10_0000 + 0x4000, 0x10_0000], 0x4000);
         assert_eq!(p.len(), 8);
         p.merge(Pages::of([0x10_0000 + 0x1000, 0x20_0000], PAGE));
         assert_eq!(p.len(), 9);
         assert!(p.iter().all(|a| a % PAGE == 0));
-        assert_eq!(p.runs_within(0x10_0000, 0x8000), vec![(0, 0x8000)]);
-        assert_eq!(p.runs_within(0x10_2000, 0x1000), vec![(0, 0x1000)]);
-        assert_eq!(p.runs_within(0x20_0000, 0x10_0000), vec![(0, 0x1000)]);
-        assert!(p.runs_within(0x30_0000, 0x1000).is_empty());
+        let all: Vec<u64> = p.iter().collect();
+        assert!(all.windows(2).all(|w| w[0] < w[1]), "{all:x?}");
+        assert_eq!((all[0], all[8]), (0x10_0000, 0x20_0000));
     }
 
     /// A stream of rounds reads back record by record, to its end; cut short, it is refused.
@@ -231,5 +222,35 @@ mod tests {
         assert_eq!(seen[2].0, ROUND);
         assert_eq!(seen[3], (LAYER, 0, 4096, Some(3)));
         assert!(read(&mut &bytes[..bytes.len() - 1], &mut |_| Ok(())).is_err());
+    }
+
+    /// Rounds that wrote no end, written on by another writer (a live move's last save),
+    /// read back as one stream: its records after theirs, then its end.
+    #[test]
+    fn a_last_round_goes_on_from_the_rounds() {
+        let mut bytes = Vec::new();
+        let mut w = Writer::new(&mut bytes).unwrap();
+        w.record(RAM, 0, &[1; 8192]).unwrap();
+        w.round(0).unwrap();
+        drop(w);
+        let mut last = Writer::going_on(&mut bytes);
+        last.record(RAM, 0x1000, &[0; 4096]).unwrap();
+        last.record(SWAP, 0x2000, &[4; 4096]).unwrap();
+        last.finish().unwrap();
+        let mut seen = Vec::new();
+        read(&mut bytes.as_slice(), &mut |r| {
+            seen.push((r.kind, r.offset, r.bytes.len()));
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(
+            seen,
+            vec![
+                (RAM, 0, 8192),
+                (ROUND, 0, 16),
+                (RAM, 0x1000, 4096),
+                (SWAP, 0x2000, 4096)
+            ]
+        );
     }
 }
