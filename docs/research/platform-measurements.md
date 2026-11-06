@@ -20353,3 +20353,30 @@ revision before comparing a changed API/implementation.
   `macos-sched/launchd-run.sh` (its binary is chained fixups already, `LC_DYLD_CHAINED_
   FIXUPS` at minimum macOS 15: 27,727 fixups in `__DATA_CONST,__const`, 33 pages of 16
   KiB); Windows', whose loader applies PE base relocations, unmeasured.
+
+### M462. How long past its patience shards-api's refusal of an unserved port comes
+
+- **Question.** `shards-api`'s conformance case "an unserved port is refused" holds a
+  refusal to its patience: not before it, and not long after. How long after does it come,
+  so that the case's bound (`conformance::OVERSHOOT`) is a measured one?
+- **Method.** `docs/research/measurements/shards-api-overshoot/run.sh` (the ignored test
+  `overshoot_of_an_unserved_connect`, release): 300 connects of each kind to a port nothing
+  serves, with patience `UNSERVED_PATIENCE` (200 ms), each one's time past it: the client
+  against a stand-in `shards` that never binds its socket (its dials paced by `pause`,
+  `sqrt(2 c w)`), and the simulator against a guest that never listens there (one condition
+  variable wait). On adas-mac-studio.local-2 (macOS 26.4, arm64), a one-shot launchd job
+  (kiln's headroom guard paces none of it), at 0ccabdb1, 2026-11-06T15:18Z, load average
+  5 to 15; and the simulator's again at 15:04Z, load 40.
+- **Found** (n 300 each):
+
+  | | p50 | p90 | p99 | max |
+  |---|---|---|---|---|
+  | client, 15:18Z | 20.9 ms | 49.3 ms | 107.4 ms | 132.5 ms |
+  | simulator, 15:18Z | 100.0 ms | 148.5 ms | 150.1 ms | 150.1 ms |
+  | simulator, 15:04Z (load 40) | 83.3 ms | 145.5 ms | 150.1 ms | 150.9 ms |
+
+- **Reading.** A 200 ms wait on macOS ends up to 151 ms late: XNU coalesces a timed wait's
+  wake-up, so the overshoot is the platform's timer leeway, not the client's dialing (its
+  pauses are a few ms). `conformance::OVERSHOOT` is the most measured, rounded up to the next
+  10 ms: 160 ms. What would falsify it: a host where a conforming refusal comes later, which
+  is a new measurement here, not a raised bound.
