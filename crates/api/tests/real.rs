@@ -27,6 +27,10 @@ fn shards_conforms() {
     }
     let kernel = std::env::var_os("SHARDS_API_KERNEL").expect("SHARDS_API_KERNEL");
     let init = std::env::var_os("SHARDS_API_INIT").expect("SHARDS_API_INIT");
+    // One vCPU, the least a guest has; 256 MiB, what Shards' own E2E tests boot its pinned
+    // kernel in (`crates/shards/tests/boot.rs:42-43`), and no less than the least it boots
+    // in (`min_memory_mib`). Ports: identifiers (vsock(7), a 32-bit port), the test guest's
+    // echo port (`crates/testguest/src/linux.rs:3293` `ECHO_PORT`) and one it does not serve.
     let spec = |mode: &str| GuestSpec {
         kernel: kernel.clone().into(),
         init: Init::Executable(init.clone().into()),
@@ -44,6 +48,8 @@ fn shards_conforms() {
         port: 1234,
         unserved: 1236,
         powering_off: spec("kmsg"),
+        // A hang guard: each wait returns at its fact. Shards' own E2E tests' guard for a
+        // real boot (`crates/shards/tests/boot.rs:14` `TIMEOUT`).
         patience: Duration::from_secs(60),
     })
     .unwrap();

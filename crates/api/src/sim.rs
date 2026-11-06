@@ -139,6 +139,7 @@ struct SimGuest {
 impl Guest for SimGuest {
     fn connect(&self, port: u32, patience: Duration) -> Result<Box<dyn Stream>, Refusal> {
         allowed(&self.ports, port)?;
+        // None: past `Instant`'s range (`Duration::MAX`): until the guest listens or ends.
         let deadline = Instant::now().checked_add(patience);
         let mut state = lock(&self.shared);
         loop {
@@ -160,19 +161,20 @@ impl Guest for SimGuest {
                 self.shared.changed.notify_all();
                 return Ok(Box::new(ours));
             }
-            let left = deadline.map_or(Duration::ZERO, |d| d.saturating_duration_since(Instant::now()));
-            if left.is_zero() {
-                return Err(Refusal::Channel {
-                    port,
-                    why: format!("no OK within {patience:?}: the guest does not listen there"),
-                });
-            }
-            state = self
-                .shared
-                .changed
-                .wait_timeout(state, left)
-                .unwrap_or_else(PoisonError::into_inner)
-                .0;
+            state = match deadline.map(|d| d.saturating_duration_since(Instant::now())) {
+                Some(left) if left.is_zero() => {
+                    return Err(Refusal::Channel {
+                        port,
+                        why: format!("no OK within {patience:?}: the guest does not listen there"),
+                    });
+                }
+                Some(left) => self.wait(state, left),
+                None => self
+                    .shared
+                    .changed
+                    .wait(state)
+                    .unwrap_or_else(PoisonError::into_inner),
+            };
         }
     }
 
@@ -186,23 +188,34 @@ impl Guest for SimGuest {
     }
 
     fn wait_for(&self, timeout: Duration) -> Result<Option<End>, Refusal> {
+        // None: past `Instant`'s range (`Duration::MAX`): until it ends.
         let deadline = Instant::now().checked_add(timeout);
         let mut state = lock(&self.shared);
         loop {
             if let Some(end) = &state.end {
                 return Ok(Some(end.clone()));
             }
-            let left = deadline.map_or(Duration::ZERO, |d| d.saturating_duration_since(Instant::now()));
-            if left.is_zero() {
-                return Ok(None);
-            }
-            state = self
-                .shared
-                .changed
-                .wait_timeout(state, left)
-                .unwrap_or_else(PoisonError::into_inner)
-                .0;
+            state = match deadline.map(|d| d.saturating_duration_since(Instant::now())) {
+                Some(left) if left.is_zero() => return Ok(None),
+                Some(left) => self.wait(state, left),
+                None => self
+                    .shared
+                    .changed
+                    .wait(state)
+                    .unwrap_or_else(PoisonError::into_inner),
+            };
         }
+    }
+}
+
+impl SimGuest {
+    /// Waits at most `left` for a change.
+    fn wait<'a>(&'a self, state: MutexGuard<'a, State>, left: Duration) -> MutexGuard<'a, State> {
+        self.shared
+            .changed
+            .wait_timeout(state, left)
+            .unwrap_or_else(PoisonError::into_inner)
+            .0
     }
 }
 

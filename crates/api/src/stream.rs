@@ -15,7 +15,7 @@ pub(crate) struct Socket {
     inner: std::os::unix::net::UnixStream,
     #[cfg(windows)]
     inner: shards_afunix::UnixStream,
-    /// How long a read and a write wait, in ms, 0 for ever: shared by its clones, as a
+    /// How long a read and a write wait, in ns, 0 for ever: shared by its clones, as a
     /// socket's own timeouts are.
     #[cfg(unix)]
     waits: std::sync::Arc<[std::sync::atomic::AtomicU64; 2]>,
@@ -60,9 +60,9 @@ mod unix {
         }
 
         pub(super) fn set_wait(&self, which: usize, timeout: Option<Duration>) -> io::Result<()> {
-            let ms = millis(timeout)?;
+            let ns = nanos(timeout)?;
             if let Some(wait) = self.waits.get(which) {
-                wait.store(ms, Ordering::Relaxed);
+                wait.store(ns, Ordering::Relaxed);
             }
             Ok(())
         }
@@ -70,9 +70,9 @@ mod unix {
         /// Waits until it can be read (`READ`) or written (`WRITE`), or has ended, at most
         /// its timeout: then fails `WouldBlock`, as std's sockets do at theirs on Unix.
         pub(super) fn ready(&self, which: usize) -> io::Result<()> {
-            let ms = self.waits.get(which).map_or(0, |w| w.load(Ordering::Relaxed));
-            let deadline = (ms != 0)
-                .then(|| Instant::now().checked_add(Duration::from_millis(ms)))
+            let ns = self.waits.get(which).map_or(0, |w| w.load(Ordering::Relaxed));
+            let deadline = (ns != 0)
+                .then(|| Instant::now().checked_add(Duration::from_nanos(ns)))
                 .flatten();
             let events = if which == READ {
                 libc::POLLIN
@@ -87,8 +87,10 @@ mod unix {
                         if left.is_zero() {
                             return Err(io::ErrorKind::WouldBlock.into());
                         }
-                        // Rounded up: a wait of 0 ms returns at once, and would spin.
-                        libc::c_int::try_from(left.as_micros().div_ceil(1000)).unwrap_or(libc::c_int::MAX)
+                        // In poll(2)'s unit, ms (poll(2): "timeout specifies the number of
+                        // milliseconds"), rounded up: a wait of 0 returns at once, and would
+                        // spin until the deadline.
+                        libc::c_int::try_from(left.as_nanos().div_ceil(1_000_000)).unwrap_or(libc::c_int::MAX)
                     }
                 };
                 let mut fd = libc::pollfd {
@@ -111,15 +113,17 @@ mod unix {
         }
     }
 
-    /// A timeout in ms, 0 for none; a zero timeout refused, as std refuses it.
-    fn millis(timeout: Option<Duration>) -> io::Result<u64> {
+    /// A timeout in ns, 0 for none: a `Duration`'s own unit, so any timeout is kept as
+    /// given (a nonzero one is at least 1 ns), and one past u64's 584 years is for ever's
+    /// equal. A zero timeout is refused, as std refuses it (`UnixStream::set_read_timeout`).
+    pub(super) fn nanos(timeout: Option<Duration>) -> io::Result<u64> {
         match timeout {
             None => Ok(0),
             Some(t) if t.is_zero() => Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "cannot set a 0 duration timeout",
             )),
-            Some(t) => Ok(u64::try_from(t.as_millis()).unwrap_or(u64::MAX).max(1)),
+            Some(t) => Ok(u64::try_from(t.as_nanos()).unwrap_or(u64::MAX)),
         }
     }
 
@@ -224,6 +228,7 @@ mod tests {
     #[test]
     fn a_read_times_out_and_the_connection_goes_on() {
         let (mut a, mut b) = pair().unwrap();
+        // An input: any timeout shows it kept.
         Stream::set_read_timeout(&a, Some(Duration::from_millis(50))).unwrap();
         let start = Instant::now();
         let e = a.read(&mut [0; 4]).unwrap_err();
@@ -237,6 +242,18 @@ mod tests {
         a.read_exact(&mut got).unwrap();
         assert_eq!(&got, b"late");
         assert!(Stream::set_read_timeout(&a, Some(Duration::ZERO)).is_err());
+    }
+
+    /// A timeout is kept as given, to its nanosecond: none rounded down to a shorter one or
+    /// up to poll(2)'s millisecond, and none of them for ever (Hex HEX-GUEST-9).
+    #[cfg(unix)]
+    #[test]
+    fn a_timeout_is_kept_as_given() {
+        assert_eq!(unix::nanos(Some(Duration::from_micros(1500))).unwrap(), 1_500_000);
+        assert_eq!(unix::nanos(Some(Duration::from_nanos(1))).unwrap(), 1);
+        assert_eq!(unix::nanos(None).unwrap(), 0);
+        assert!(unix::nanos(Some(Duration::ZERO)).is_err());
+        assert_eq!(unix::nanos(Some(Duration::MAX)).unwrap(), u64::MAX);
     }
 
     /// A clone is the same connection: what one writes the peer reads (Hex HEX-GUEST-9).
