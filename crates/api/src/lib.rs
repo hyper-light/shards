@@ -107,11 +107,13 @@ pub enum End {
     Failed(String),
 }
 
-/// How long [`Guest::stop`] lets a guest's process end after SIGTERM before SIGKILL: what
-/// `shards daemon stop` gives a run, Shards' own `STOP_GRACE`
-/// (`crates/shards/src/daemon.rs:228-231`), dockerd's default stop timeout (moby
-/// `daemon/config/config_linux.go`). `stop` returns within it and the kill's reaping.
-pub const STOP_GRACE: Duration = Duration::from_secs(10);
+/// How long [`Guest::stop`] lets a guest's process end after SIGTERM before SIGKILL: twice
+/// (the margin) the slowest stop recorded, 13 ms, SIGTERM to a `shards run vm`'s end on HVF
+/// (Hex `bench/native/guest/stop/RECORD.md`, N 40; Shards' PM M463 records shards-api's own
+/// `stop` at 6.59 ms at most, N 80). Shards' daemon gives a container dockerd's 10 s
+/// (`crates/shards/src/daemon.rs:228-231`), a Docker CLI's contract this crate has not.
+/// `stop` returns within it and the kill.
+pub const STOP_GRACE: Duration = Duration::from_millis(2 * 13);
 
 /// What can't be done, and why.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]

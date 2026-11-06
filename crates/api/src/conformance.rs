@@ -248,11 +248,10 @@ pub fn an_unserved_port_is_refused(s: &Subject<'_>) -> Result<(), Failure> {
 /// short, so the case is.
 pub const UNSERVED_PATIENCE: Duration = Duration::from_millis(200);
 
-/// How long past its patience an unserved port's refusal may come: the most measured, 150.9
-/// ms (macOS's timer leeway on a 200 ms wait), rounded up to the next 10 ms
-/// (`docs/research/platform-measurements.md` M462, harness
-/// `docs/research/measurements/shards-api-overshoot/run.sh`).
-pub const OVERSHOOT: Duration = Duration::from_millis(160);
+/// How long past its patience an unserved port's refusal may come: twice (the margin) the
+/// slowest recorded, 150.85425 ms (the simulator's on macOS, its timer leeway on a 200 ms
+/// wait; `docs/research/platform-measurements.md` M462, above M463's real guests' 138.7 ms).
+pub const OVERSHOOT: Duration = Duration::from_nanos(2 * 150_854_250);
 
 /// `stop` ends a guest as `Stopped`, and a `connect` after it is refused `Ended(Stopped)`.
 pub fn stop_ends_it_and_later_connects_are_refused(s: &Subject<'_>) -> Result<(), Failure> {
