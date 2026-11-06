@@ -20380,3 +20380,44 @@ revision before comparing a changed API/implementation.
   pauses are a few ms). `conformance::OVERSHOOT` is the most measured, rounded up to the next
   10 ms: 160 ms. What would falsify it: a host where a conforming refusal comes later, which
   is a new measurement here, not a raised bound.
+
+### M463. The waits shards-api's bounds hold, on HVF
+
+- **Question.** Each shards-api bound on a wait that can't wait on a fact alone is twice (the
+  margin) the slowest recorded run of that wait: `STOP_GRACE`, conformance's `OVERSHOOT`
+  (M462), and the tests' hang guards. How long do those waits take?
+- **Method.** `docs/research/measurements/shards-api-waits/run.sh` (release harness): tests/sim.rs
+  `the_waits_of_these_tests`, its tests' waits each on a thread of its own as the tests run
+  side by side, a new stand-in script for each run; and tests/real.rs `the_waits_of_real_guests`,
+  real guests booted one at a time by a debug `shards` (a0cced87's, SHA-256 286f3dcd4439ac44…),
+  shards' pinned kernel Image-6.18.48 and its test guest, as tests/real.rs boots them. On
+  adas-mac-studio-2.local (Mac16,9, M4 Max, macOS 26.2), one-shot launchd jobs (kiln's
+  headroom guard paces none of it), under its own co-tenants, nothing added: run 1 at 6b7e12e9,
+  2026-11-06T18:02Z, load average 6.4 to 8.6; run 2 at 9f666412, 18:04Z, load 6.8 to 7.7 (it
+  adds the echoes).
+- **Found** (n 40 each; the max of either run in the last column):
+
+  | wait | run 1 p50 | run 1 max | run 2 p50 | run 2 max | slowest |
+  |---|---|---|---|---|---|
+  | simulated guest listening after 100 ms, connected to | 241.8 ms | 252.0 ms | 244.5 ms | 253.5 ms | 253.455625 ms |
+  | simulated guest's echo of 64 KiB + 1 | | | 0.28 ms | 1.90 ms | 1.901875 ms |
+  | new stand-in script ending first, its boot to its refusal | 749.9 ms | 1.715 s | 455.7 ms | 0.982 s | 1.715256 s |
+  | new stand-in script exiting 0, its boot to its end | 751.2 ms | 1.535 s | 442.8 ms | 0.871 s | 1.534608 s |
+  | running stand-in, `stop` to its end | 0.11 ms | 0.27 ms | 0.10 ms | 0.87 ms | 0.867667 ms |
+  | a held output's refusal after shards' end | 0.66 ms | 2.72 ms | 0.69 ms | 2.89 ms | 2.887209 ms |
+  | real guest, boot to its port answering | 115.6 ms | 207.6 ms | 107.1 ms | 206.3 ms | 207.553625 ms |
+  | real guest, echo of 64 KiB + 1 | | | 0.54 ms | 1.04 ms | 1.044084 ms |
+  | real guest, unserved refusal past 200 ms patience | 52.9 ms | 138.7 ms | 49.7 ms | 135.3 ms | 138.719291 ms |
+  | real guest, `stop` (SIGTERM to its end, as shards-api sees it) | 2.96 ms | 6.59 ms | 2.56 ms | 4.92 ms | 6.593416 ms |
+  | real guest, boot to power-off | 92.6 ms | 96.9 ms | 90.0 ms | 98.2 ms | 98.23225 ms |
+
+- **Reading.** A new script's first start on macOS takes up to 1.7 s side by side, where the
+  simulator and a running process answer in ms. The bounds, each twice (the margin) its
+  slowest record: tests/sim.rs `PATIENCE` 2 × 1.715256 s; its held-output bound 2 × 2.887209 ms;
+  tests/real.rs's patience 2 × 207.553625 ms (the slowest of the waits it bounds);
+  `STOP_GRACE` 2 × 13 ms, the slowest stop recorded, Hex's `bench/native/guest/stop/RECORD.md`
+  (N 40, the same SIGTERM to a `shards run vm`'s end, on this Mac), above this record's 6.59 ms;
+  `OVERSHOOT` 2 × 150.85425 ms (M462), above this record's real 138.7 ms. The VMM was the
+  debug build this Mac had; a release build's runs, and KVM's and WHP's, go beside these when
+  recorded, and until then these bound them.
+  What would falsify a bound: a run slower than its record, which is recorded here.

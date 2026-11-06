@@ -15,16 +15,20 @@ use std::time::Duration;
 
 use shards_api::conformance::{self, Subject};
 use shards_api::sim::{SimGuests, SimHost};
-use shards_api::{End, GuestSpec, Guests, Init, Refusal, STOP_GRACE, min_memory_mib};
+use shards_api::{End, GuestSpec, Guests, Init, Refusal, min_memory_mib};
 
 /// vsock ports (vsock(7): a 32-bit port): identifiers, not tuning. The test guest's echo
 /// port (`crates/testguest/src/linux.rs:3293` `ECHO_PORT`), and one it does not serve.
 const ECHO: u32 = 1234;
 const UNSERVED: u32 = 1236;
 /// A hang guard: each wait here returns at its fact (a condition variable's signal, a
-/// process's end), and the guard only bounds a failing one. The longest this crate waits on
-/// anything of its own, `stop`'s grace.
-const PATIENCE: Duration = STOP_GRACE;
+/// process's end), and the guard only bounds a failing one. Twice (the margin) the slowest
+/// recorded of these tests' waits, a new stand-in script's boot to its refusal on macOS,
+/// 1.715256 s (`docs/research/platform-measurements.md` M463).
+const PATIENCE: Duration = Duration::from_nanos(2 * 1_715_256_000);
+/// How soon after shards' end its refusal comes: twice (the margin) the slowest recorded,
+/// 2.887209 ms with a child holding shards' output (M463).
+const REFUSED_AFTER_END: Duration = Duration::from_nanos(2 * 2_887_209);
 
 /// A spec of the least guest Shards boots: one vCPU, its least memory (`min_memory_mib`).
 fn spec(cmdline: &str) -> GuestSpec {
@@ -284,8 +288,7 @@ mod client {
     /// shards' refusal comes as shards ends, with its last words, though a child it left
     /// holds its output open (macOS's grants broker until it exits): the end of its words is
     /// a fact, not a clock. Timed from shards' last act, as a new script's first start can
-    /// take seconds on macOS, and held to the second the drain it replaced waited out (Hex
-    /// HEX-GUEST-9).
+    /// take seconds on macOS, and held to `REFUSED_AFTER_END` (Hex HEX-GUEST-9).
     #[test]
     fn a_child_holding_shards_output_holds_no_refusal_back() {
         let dir = shards_testdir::TempDir::new("api-held").unwrap();
@@ -326,10 +329,7 @@ mod client {
             other => panic!("{other:?}"),
         }
         let took = at.saturating_duration_since(ended);
-        assert!(
-            took < Duration::from_secs(1),
-            "refused {took:?} after shards' end"
-        );
+        assert!(took < REFUSED_AFTER_END, "refused {took:?} after shards' end");
     }
 
     /// Measures how long past its patience an unserved connect's refusal comes, the
@@ -522,6 +522,28 @@ mod client {
                 );
             }
         });
+    }
+
+    /// A shards that ignores SIGTERM is killed once `stop`'s grace is out, and ends as
+    /// `Stopped` (Hex HEX-GUEST-9).
+    #[test]
+    fn stop_kills_a_shards_that_ignores_sigterm() {
+        let dir = shards_testdir::TempDir::new("api-deaf").unwrap();
+        let bin = stand_in(&dir, "trap '' TERM; exec sleep 1000");
+        let g = Shards
+            .boot(&GuestSpec {
+                binary: Some(bin),
+                ..spec("")
+            })
+            .unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let stopped = g.stop();
+            tx.send((stopped, g.wait_for(PATIENCE)))
+        });
+        let (stopped, end) = rx.recv_timeout(PATIENCE).unwrap();
+        stopped.unwrap();
+        assert_eq!(end.unwrap(), Some(End::Stopped));
     }
 
     /// A binary that isn't there is a `Boot` refusal naming it (Hex HEX-GUEST-9).

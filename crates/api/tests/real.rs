@@ -55,9 +55,10 @@ fn shards_conforms() {
         port: 1234,
         unserved: 1236,
         powering_off: spec("kmsg"),
-        // A hang guard: each wait returns at its fact. Shards' own E2E tests' guard for a
-        // real boot (`crates/shards/tests/boot.rs:14` `TIMEOUT`).
-        patience: Duration::from_secs(60),
+        // A hang guard: each wait returns at its fact. Twice (the margin) the slowest
+        // recorded of these waits, a boot to its port answering on HVF, 207.553625 ms
+        // (`docs/research/platform-measurements.md` M463).
+        patience: Duration::from_nanos(2 * 207_553_625),
     })
     .unwrap();
 }
