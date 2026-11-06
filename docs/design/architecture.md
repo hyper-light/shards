@@ -235,7 +235,7 @@ amd64 cell's once it does.
 | Log drivers (D163, D198, D199) | every driver, journald its own | as amd64 | every driver but journald, macOS's own log (`oslog`) its counterpart | every driver but journald, `etwlogs` its counterpart |
 | A GPU (D144, Venus) | yes, glibc and musl, NVIDIA's, AMD's and Intel's GPUs (D201, D208); open: the GPU desktop's run of D208's build, waiting for its owner's go | built and linted, untested on a GPU (none here) | yes | yes (D202) |
 | Devices plugged into a running microVM, disks grown (D214) | yes | yes (nested, its MSIs through the GIC's ITS) | yes | built, not yet run: in the VMM (WHP's disk steps passed on jupiter; its shared directory over a duplex pipe), and through the CLI a disk and a volume, its share process's stream given the VM as a run's are (tests/plug.rs, now every host's) |
-| A host's PCI function given a microVM, at its start or plugged in (D154, D214) | built, VFIO; not yet tested on hardware, no x86_64 host here having a function to spare (D214's Not yet) | yes, nested, on QEMU's edu function (D154, D214); plugged into a run's workload, its E2E not yet run | refused: its API assigns no device (PM M403) | open: refused where the hypervisor refuses (PM M401, M402); a host that permits Discrete Device Assignment has no implementation yet (the parity plan's step 13) |
+| A host's PCI function given a microVM, at its start or plugged in (D154, D214) | built, VFIO; not yet tested on hardware, no x86_64 host here having a function to spare (D214's Not yet) | yes, nested, on QEMU's edu function (D154, D214); plugged into a run's workload, its E2E not yet run | refused: its APIs assign no PCI function, Virtualization's one passthrough a USB device's (D154, PM M403) | built where the hypervisor assigns devices (Discrete Device Assignment, D154), its E2E waiting on a Windows Server host that assigns one; refused with the hypervisor's own answer where it assigns none (PM M401, M402) |
 | A running microVM saved whole, and resumed (D176 parts 1-5) | yes | yes | yes | yes |
 | Moved to another machine, saved (D176 part 6) | yes (PM M460; CI's runners, migrate-e2e.yml) | built, not yet run | built, its CPU checked as macOS names its features (PM M460); measured on KVM x86_64 alone | built, not yet run; a volume's guest owners moved as its guest sees them (`server::guest`), not yet run |
 | Moved live (D176 part 7) | yes (PM M461; CI's runners, migrate-e2e.yml) | refused: its dirty rings need the ITS's bitmap (`KVM_CAP_DIRTY_LOG_RING_WITH_BITMAP`), not yet asked | built, its guest's writes watched at stage 2 as D25's recorder watches them; measured on KVM x86_64 alone | refused: WHP's dirty page tracking (`WHvQueryGpaRangeDirtyBitmap`) not yet asked |
@@ -10959,44 +10959,102 @@ one. So both, in that order.
   it lives: KVM forgets its groups as its descriptor closes (kvm_vfio_release). A machine
   given a function has no memory to plug, no balloon (its DMA mappings pinned; QEMU's
   `ram_block_discard_disable`) and no snapshot.
-- **Where no host passes one through, refused with its host's own limit** (part of the parity
-  plan's step 13; M356, M401, M402, M403). macOS: Hypervisor.framework's API maps a
-  process's memory into a VM and runs its vCPUs, and none of its 162 functions takes a
-  device (M403); Virtualization's devices are ones it emulates. Windows: a function reaches a
-  partition as a virtual PCI device WHP makes of it once its administrator has dismounted
-  it from the host (Discrete Device Assignment; `WHvAllocateVpciResource`, then
-  `WHvCreateVpciDevice`, physically backed), in a partition allowed device assignment,
-  which only a hypervisor that assigns devices allows: so a host's refusal is its
-  hypervisor's own answer, asked as a function is (`hv::device_assignment_refused`: WHP's
-  VirtualPciDeviceSupport, then `WHvPartitionPropertyCodeAllowDeviceAssignment` set on a
-  partition of its own, never set up and mapping nothing, so that a process's one mapped
-  partition, M345, is not disturbed). Every Windows host here refuses. jupiter's Windows 11
-  Pro, with an IOMMU, dismounts its SD card reader and allocates it, but allows no
-  partition device assignment (ERROR_NOT_SUPPORTED), makes no physically backed device of
-  it (the same), makes one not physically backed that reaches nothing of it, and refuses
-  Hyper-V's own VM given it as it starts (HV_STATUS_FEATURE_UNAVAILABLE), WHP saying it has
-  no IOMMU support (M401). CI's Windows Server 2022 and 2025, the edition Microsoft supports
-  Discrete Device Assignment on, given server-class hardware that grants Windows the PCIe
-  fabric's control and Access Control Services at its root complex, which force a
-  function's traffic through the IOMMU (Microsoft Learn, "Deploy devices by using Discrete
-  Device Assignment"), refuse the property too, inside Azure's VMs, which give them neither,
-  as Hyper-V says, and no function but Azure's own VMBus adapters; windows-11-arm runs no
-  hypervisor at all (M402). A run that names a host's function off Linux, by VFIO's
-  nodes or on Windows as DDA's cmdlets name one (its location path, its instance ID), is
-  refused with those words in dockerd's for a device it cannot give, as is `--vfio NAME`
-  (`vm::passthrough_refused`). Held by `a_hosts_pci_function_is_refused_with_its_oss_own_limit`
-  (vm/mod.rs), `a_hosts_pci_function_is_refused_where_its_os_passes_none` (boot.rs) and
-  `a_run_given_a_hosts_pci_function_is_refused_with_its_hosts_limit` (containers.rs). Not
-  yet: a Windows host whose hypervisor allows device assignment, Windows Server on hardware
-  with an IOMMU, is told shards does not use it, as no host it is tested on allows one.
-  Jupiter's approved two-reboot experiment with `hypervisoriommupolicy Enable` on
-  2026-11-03 changed neither WHP's IommuSupport 0 nor its assignment refusal
-  0x80070032. The original loader and boot manager were restored exactly, the
-  temporary entry removed, and BitLocker and Secure Boot kept on (M401). Step 13 remains open: a
-  Windows Server host that permits DDA still needs an implementation in shards and an E2E
-  that exercises the assigned function on real hardware. The refused configurations
-  above do not meet that part of the completion criterion. The VMM refusal test fails if
-  WHP accepts device assignment: shards' missing implementation is not an OS limit.
+- **Each host's answer** (the parity plan's step 13: a host's function passed through where
+  its OS allows one, or refused with the OS's own limit and its evidence; M356, M401, M402,
+  M403).
+  - **Linux passes one through**, by VFIO, as this decision says. Its E2E runs nested, on
+    QEMU's edu function a guest is given: on an arm64 Mac with EL2 (M3 or later), boot.rs's
+    `a_nested_guest_runs_vms_of_its_own` and `a_run_is_given_a_hosts_vfio_group` as they
+    are, and plug.rs's and hotplug.rs's through the L1 harness
+    (`SHARDS_L1_PCI_TESTS=01.0 SHARDS_L1_TESTS=plug:a_hosts_function,hotplug` on
+    `snapshot_tests_pass_on_a_kvm_host_of_this_architecture`). CI's x86_64 runners give a
+    guest no virtualization of its own and no function to spare, so x86_64 Linux's VFIO is
+    built, linted and unit-tested, not yet run on hardware.
+  - **macOS passes none: Apple's APIs assign no PCI function to a VM.** Hypervisor.framework
+    (developer.apple.com/documentation/hypervisor) maps a process's memory into a VM and
+    runs its vCPUs; none of its 162 functions in the macOS 26.4 SDK takes a device (M403,
+    `docs/research/measurements/whp-passthrough/macos-api.txt`). Virtualization.framework's
+    devices (developer.apple.com/documentation/virtualization, "Devices") are ones it
+    emulates, and its one passthrough, `VZUSBPassthroughDeviceConfiguration`, captures a
+    host's USB device for the VM's emulated XHCI controller (the
+    `com.apple.vm.device-access` entitlement: "captures USB devices and uses them in the
+    guest"), no PCI function. A run that names one is refused with "macOS's
+    Hypervisor.framework assigns no device to a VM" (`vm::passthrough_refused`).
+  - **Windows passes one through where its hypervisor assigns devices** (Discrete Device
+    Assignment), by WHP's virtual PCI devices (Microsoft Learn, "Windows Hypervisor Platform
+    API Definitions", its Virtual PCI (VPCI) Devices and each function's page, 2026-06-08),
+    as Microsoft's own VMM drives them (OpenVMM's vm/whp/src/lib.rs at 29ff7a10, and
+    vmm_core/virt_whp/src/device.rs at 58d8ab84, `AssignedPciDevice`). The function, dismounted
+    from the host by its administrator (Dismount-VMHostAssignableDevice), is named by the
+    instance ID it has then (`run --kernel ... --vfio PCIP\...`, as
+    Get-VMHostAssignableDevice lists it): allocated by it with no provider
+    (WHvAllocateVpciResource, a WHV_SRIOV_RESOURCE_DESCRIPTOR's PnpInstanceId, as M401
+    allocated jupiter's reader), and made a physically backed device of the VM's partition,
+    which is set up allowed device assignment (WHvPartitionPropertyCodeAllowDeviceAssignment,
+    before setup alone: after it, E_INVALIDARG, M401) (`hv::whp::vpci`). Each is a device of the
+    partition before the machine's layout, whose 64-bit window its BARs' sizes then size
+    (WHvVpciDevicePropertyCodeProbedBARs, sized as PCI 3.0 §6.2.5.1 asks:
+    `devices::pci::passed::sized_bars`). On the guest's bus (`devices::pci::assigned`) it is
+    a function of its own on a device of its own, its configuration space the device's
+    (WHvRead/WriteVpciDeviceRegister) but for what the VMM keeps, as of a function VFIO
+    passes through: its BARs, placed in the bus's windows; no expansion ROM; no INTx pin,
+    as WHP maps a function's MSI and MSI-X alone; its MSI and MSI-X capabilities, each
+    message the guest writes mapped to the vCPUs its destination names
+    (WHvGetInterruptTargetVpSet; WHvMapVpciDeviceInterrupt, MSI as interrupt 0, MSI-X
+    vector k as 1 + k) and the message WHP returns written to the device, as that
+    function's page says to, each MSI-X vector masked at the device while the guest's is
+    and while its message changes; and its power state, the control register's D0 to D3
+    set through WHP (WHvSetVpciDevicePowerState), as OpenVMM routes a guest's power
+    management. In D0 WHP maps its BARs into the VM process (WHvMapVpciDeviceMmioRanges);
+    while the guest's memory decoding is on, their whole pages but MSI-X's table and pending
+    bits are in the guest by the partition's own mappings (WHvMapGpaRange), the rest reached
+    through those mappings or WHP's register calls; out of D0 or decoding nothing, they read
+    all ones (PCI 3.0 §6.2.2). Its DMA the host's IOMMU remaps to the partition's
+    guest-physical addresses as the device is made (WHvCreateVpciDevice's remarks): all of
+    guest RAM, as a VFIO function outside the guest's IOMMU, so a machine given one has no
+    memory to plug, no balloon and no snapshot. WHP gives the guest no I/O address space of
+    its own, which a guest's VFIO needs to give a function to a process: so on Windows a
+    workload's `--device`, `--vfio-iommu` and a function plugged into a running microVM are
+    refused with that limit, and `run --kernel ... --vfio` gives it the guest's kernel. Held
+    by `devices::pci::assigned`'s unit tests (configuration, MSI, MSI-X, BAR windows and
+    power, against a device of their own), `devices::pci::passed`'s (BAR sizing, capability
+    lists), vm/mod.rs's `a_hosts_pci_function_is_refused_with_its_oss_own_limit` (the names
+    a host that assigns takes and refuses), and on such a host the E2E boot.rs's
+    `a_hosts_pci_function_is_assigned_where_its_hypervisor_assigns_one` (the dismounted
+    function named in SHARDS_ASSIGN_FUNCTION at 00:01.0 with its instance ID's vendor and
+    device IDs, its first memory BAR reaching the device while it decodes and reading all
+    ones while it does not; with SHARDS_ASSIGN_DRIVER, the guest kernel's driver of that
+    name taking it). Not yet known, as no host here assigns one: whether the confined VM
+    process (an AppContainer, D30) may allocate the resource, which the E2E's first run
+    answers; and whether WHP keeps resident the guest RAM a function's DMA reaches, which
+    Microsoft's pages do not say.
+  - **Windows refuses where its hypervisor assigns none**, with the hypervisor's own answer,
+    asked as a function is (`hv::device_assignment_refused`: WHP's VirtualPciDeviceSupport,
+    then AllowDeviceAssignment set on a partition of its own, never set up and mapping
+    nothing, so that a process's one mapped partition, M345, is not disturbed). Every
+    Windows host here refuses. jupiter's Windows 11 Pro, with an IOMMU, dismounts its SD
+    card reader and allocates it, but allows no partition device assignment
+    (0x80070032, ERROR_NOT_SUPPORTED), makes no physically backed device of it (the same),
+    makes one not physically backed that reaches nothing of it, and refuses Hyper-V's own VM
+    given it as it starts (0xC035001E, HV_STATUS_FEATURE_UNAVAILABLE), WHP saying it has no
+    IOMMU support (M401); its approved two-reboot experiment with `hypervisoriommupolicy
+    Enable` on 2026-11-03 changed neither WHP's IommuSupport 0 nor its refusal 0x80070032,
+    the original loader and boot manager restored exactly, the temporary entry removed, and
+    BitLocker and Secure Boot kept on. CI's Windows Server 2022 and 2025, the edition
+    Microsoft supports Discrete Device Assignment on, given server-class hardware that
+    grants Windows the PCIe fabric's control and Access Control Services at its root complex,
+    which force a function's traffic through the IOMMU (Microsoft Learn, "Deploy devices by
+    using Discrete Device Assignment"), refuse the property too (0x80070032), inside Azure's
+    VMs, which give them neither, as Hyper-V says (IovSupport False), and no function but
+    Azure's own VMBus adapters; windows-11-arm runs no hypervisor at all (M402). A run that
+    names a host's function there, by VFIO's nodes or as DDA's cmdlets name one (its
+    location path, its instance ID), is refused with those words in dockerd's for a device
+    it cannot give, as is `--vfio NAME` (`vm::passthrough_refused`). Held by
+    `a_hosts_pci_function_is_refused_with_its_oss_own_limit` (vm/mod.rs),
+    `a_hosts_pci_function_is_refused_where_its_os_passes_none` (boot.rs) and
+    `a_run_given_a_hosts_pci_function_is_refused_with_its_hosts_limit` (containers.rs).
+  - Step 13's last part waits on hardware: the Windows E2E passing on a Windows Server host
+    that assigns devices, and x86_64 Linux's VFIO on a host with a function to spare.
 - **BARs in the guest's memory.** Each BAR vfio-pci lets a user map
   (VFIO_REGION_INFO_FLAG_MMAP: a memory BAR of a page or more, vfio_pci_probe_mmaps) is
   mapped into the VM process, and its pages, but for those of the MSI-X table and pending

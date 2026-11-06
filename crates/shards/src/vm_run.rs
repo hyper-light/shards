@@ -64,8 +64,10 @@ const RUN_USAGE: &str = "usage: shards run vm --kernel PATH [--initrd PATH | --i
   --vfio: the host's PCI function NAME (as 0000:01:00.0), passed through to the guest
           on its PCI bus: on Linux, bound to vfio-pci, as every other function in its
           IOMMU group must be. Or its VFIO device node (/dev/vfio/devices/vfioN), taken
-          through /dev/iommu, not its group's node. Not with --snapshot-dir, --memory-max
-          or --reporting: its DMA reaches all of guest RAM through mappings the host
+          through /dev/iommu, not its group's node. On Windows, its instance ID once
+          dismounted from the host (Dismount-VMHostAssignableDevice; PCIP\\...), where
+          its hypervisor assigns devices. Not with --snapshot-dir, --memory-max or
+          --reporting: its DMA reaches all of guest RAM through mappings the host
           holds pinned.
   --vfio-iommu: as --vfio, the function behind the guest's own IOMMU (virtio-iommu):
                 its DMA reaches only what the guest's IOMMU driver maps for it, as the
@@ -1885,8 +1887,11 @@ fn start(cfg: &Config) -> Result<(Handle, Running), String> {
     paths.read.extend(cfg.init.iter().cloned());
     paths.read.extend(cfg.pmem.iter().cloned());
     // A function passed through (D154): VFIO's container and its group, or iommufd and its
-    // device node.
-    let (cdevs, groups): (Vec<&vm::Vfio>, Vec<&vm::Vfio>) = cfg.vfio.iter().partition(|v| v.cdev.is_some());
+    // device node. On Windows its hypervisor assigns it, through the partition, of no file.
+    let (cdevs, groups): (Vec<&vm::Vfio>, Vec<&vm::Vfio>) = match cfg!(target_os = "linux") {
+        true => cfg.vfio.iter().partition(|v| v.cdev.is_some()),
+        false => (Vec::new(), Vec::new()),
+    };
     if !groups.is_empty() {
         paths.devices.push(PathBuf::from("/dev/vfio/vfio"));
         paths.devices.extend(groups.iter().map(|v| v.group.clone()));
