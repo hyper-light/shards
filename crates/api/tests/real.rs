@@ -13,6 +13,8 @@
     clippy::print_stdout
 )]
 
+use std::io::{Read as _, Write as _};
+use std::net::Shutdown;
 use std::time::{Duration, Instant};
 
 use shards_api::conformance::{self, Subject};
@@ -72,12 +74,13 @@ fn the_waits_of_real_guests() {
         .ok()
         .and_then(|n| n.parse().ok())
         .unwrap_or(40);
-    let (mut ready, mut over, mut stop, mut off) = (vec![], vec![], vec![], vec![]);
+    let (mut ready, mut echo, mut over, mut stop, mut off) = (vec![], vec![], vec![], vec![], vec![]);
     for _ in 0..n {
         let start = Instant::now();
         let g = Shards.boot(&spec("echo")).unwrap();
-        drop(g.connect(1234, Duration::MAX).unwrap());
+        let conn = g.connect(1234, Duration::MAX).unwrap();
         ready.push(start.elapsed());
+        echo.push(echoed(conn));
         let start = Instant::now();
         assert!(g.connect(1236, conformance::UNSERVED_PATIENCE).is_err());
         over.push(start.elapsed().saturating_sub(conformance::UNSERVED_PATIENCE));
@@ -92,6 +95,7 @@ fn the_waits_of_real_guests() {
     }
     for (what, mut d) in [
         ("boot to its port answering", ready),
+        ("a served port's echo of conformance's payload", echo),
         ("an unserved refusal past its patience", over),
         ("stop", stop),
         ("boot to power-off", off),
@@ -106,4 +110,24 @@ fn the_waits_of_real_guests() {
             d[n - 1]
         );
     }
+}
+
+/// How long `conn`'s echo of conformance's payload (64 KiB and a byte) takes, written on a
+/// thread of its own as conformance writes it, read to the guest's half-close.
+fn echoed(mut conn: Box<dyn shards_api::Stream>) -> Duration {
+    let sent: Vec<u8> = (0..64 * 1024 + 1u32).map(|i| (i % 251) as u8).collect();
+    let mut writer = conn.try_clone().unwrap();
+    let start = Instant::now();
+    let wrote = std::thread::scope(|scope| {
+        let wrote = scope.spawn(|| {
+            writer.write_all(&sent).unwrap();
+            writer.shutdown(Shutdown::Write).unwrap();
+        });
+        let mut got = Vec::new();
+        conn.read_to_end(&mut got).unwrap();
+        wrote.join().unwrap();
+        got
+    });
+    assert_eq!(wrote, sent);
+    start.elapsed()
 }

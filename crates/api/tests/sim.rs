@@ -417,6 +417,28 @@ mod client {
                 }),
             ),
             (
+                "a simulated guest's echo of conformance's payload",
+                Box::new(|| {
+                    let sims = SimGuests::new(guest);
+                    let g = sims.boot(&spec("shards_test=echo")).unwrap();
+                    let mut conn = g.connect(ECHO, Duration::MAX).unwrap();
+                    let sent: Vec<u8> = (0..64 * 1024 + 1u32).map(|i| (i % 251) as u8).collect();
+                    let mut writer = conn.try_clone().unwrap();
+                    let start = Instant::now();
+                    std::thread::scope(|scope| {
+                        let wrote = scope.spawn(|| {
+                            writer.write_all(&sent).unwrap();
+                            writer.shutdown(Shutdown::Write).unwrap();
+                        });
+                        let mut got = Vec::new();
+                        conn.read_to_end(&mut got).unwrap();
+                        wrote.join().unwrap();
+                        assert_eq!(got, sent);
+                    });
+                    start.elapsed()
+                }),
+            ),
+            (
                 "a stand-in ending first, refused",
                 Box::new(move || {
                     let (_dir, bin) = fresh("w-end", "echo 'no kernel' >&2; exit 7");
