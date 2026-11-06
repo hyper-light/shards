@@ -3005,32 +3005,48 @@ pub struct Vm {
 /// Lines a process printed, as they came.
 pub type Log = Arc<std::sync::Mutex<Vec<String>>>;
 
-/// Runs `f`, failing with `log` where it does not end within `within`: a test that
-/// stalls says where, and what its VM said, rather than holding the whole binary.
+/// Runs `f`, failing with what `vm` said where it does not end within `within`, nor its
+/// guest progress for [`DAEMON_QUIET`] past it: a line more from it, or its VM process's
+/// CPU time ([`Heard::running`]). A test that stalls says where, and what its VM said,
+/// rather than holding the whole binary; one its host runs slowly is waited on as it runs.
 pub fn within<T: Send + 'static>(
     what: &str,
     within: Duration,
-    log: &Log,
+    vm: &Vm,
     f: impl FnOnce() -> T + Send + 'static,
 ) -> T {
     let (tx, rx) = std::sync::mpsc::channel();
     let worker = std::thread::spawn(move || {
         let _ = tx.send(f());
     });
-    match rx.recv_timeout(within) {
-        Ok(v) => v,
-        // Ended without sending: it panicked, and says why, after what the VM said.
-        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-            let said = log.lock().map(|l| l.join("\n")).unwrap_or_default();
-            let _ = writeln!(std::io::stderr(), "{what}: failed; the VM said:\n{said}");
-            match worker.join() {
-                Err(panic) => std::panic::resume_unwind(panic),
-                Ok(()) => panic!("{what}: ended with no result"),
+    let start = Instant::now();
+    let lines = || vm.log.lock().map_or(0, |l| l.len());
+    let mut heard = Heard::running(vm.id());
+    let mut said = lines();
+    loop {
+        let now = lines();
+        heard.said(now != said);
+        said = now;
+        // Asked each pass, so that each slice of its VM process's is judged as it comes.
+        let progressing = heard.lately(true);
+        match rx.recv_timeout(Duration::from_secs(1)) {
+            Ok(v) => return v,
+            // Ended without sending: it panicked, and says why, after what the VM said.
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                let said = vm.log.lock().map(|l| l.join("\n")).unwrap_or_default();
+                let _ = writeln!(std::io::stderr(), "{what}: failed; the VM said:\n{said}");
+                match worker.join() {
+                    Err(panic) => std::panic::resume_unwind(panic),
+                    Ok(()) => panic!("{what}: ended with no result"),
+                }
             }
-        }
-        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-            let said = log.lock().map(|l| l.join("\n")).unwrap_or_default();
-            panic!("{what}: not done in {within:?}; the VM said:\n{said}")
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) if start.elapsed() < within || progressing => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                let said = vm.log.lock().map(|l| l.join("\n")).unwrap_or_default();
+                panic!(
+                    "{what}: not done in {within:?}, nor its guest progressed for {DAEMON_QUIET:?} after; the VM said:\n{said}"
+                )
+            }
         }
     }
 }
@@ -3088,42 +3104,44 @@ impl Vm {
         let _ = self.child.wait();
     }
 
-    /// Waits up to `timeout` for an output line containing `text`.
+    /// Waits for an output line containing `text` ([`wait_for_any`](Self::wait_for_any)).
     pub fn wait_for(&mut self, text: &str, timeout: Duration) {
         self.wait_for_any(&[text], timeout);
     }
 
-    /// Waits up to `timeout` for an output line containing any of `texts`; returns it.
+    /// Waits for an output line containing any of `texts`, and returns it: within
+    /// `timeout`, or past it while its guest says something new or its VM process runs,
+    /// within [`DAEMON_QUIET`] ([`Heard::running`]), for a guest of fewer vCPUs than its
+    /// host has CPUs. One that does neither for as long past it fails, with what it said.
+    /// A guest of more vCPUs than its host's CPUs is waited on by
+    /// [`wait_for_any_within`](Self::wait_for_any_within), whose CPU time counts only as it
+    /// starts.
     pub fn wait_for_any(&mut self, texts: &[&str], timeout: Duration) -> String {
-        let deadline = Instant::now() + timeout;
-        loop {
-            let left = deadline.saturating_duration_since(Instant::now());
-            match self.lines.recv_timeout(left) {
-                Ok(line) => {
-                    let found = texts.iter().any(|t| line.contains(t));
-                    self.seen.push(line.clone());
-                    if found {
-                        return line;
-                    }
-                }
-                Err(_) => panic!("no {texts:?} from the VM; it said:\n{}", self.seen.join("\n")),
-            }
-        }
+        let heard = Heard::running(self.child.id());
+        self.wait_heard(texts, timeout, heard)
     }
 
-    /// [`wait_for_any`](Self::wait_for_any), going on past `timeout` while its guest
-    /// progresses ([`Heard`]): says something new, or carries more of `streamed`'s stream,
-    /// within [`DAEMON_QUIET`]; for a guest whose workload its host may run slower than
-    /// `timeout` allows. One that does neither for as long past it fails as before.
+    /// [`wait_for_any`](Self::wait_for_any), its guest's progress what [`Heard::of`] takes
+    /// for it: a line it has not said before, or more of `streamed`'s stream, within
+    /// [`DAEMON_QUIET`], and its VM process's CPU time only before its first line; for a
+    /// guest of more vCPUs than its host has CPUs, which show CPU time for ever. One that
+    /// does neither for as long past `timeout` fails as before.
     pub fn wait_for_any_within(
         &mut self,
         texts: &[&str],
         timeout: Duration,
         streamed: Option<&AtomicU64>,
     ) -> String {
+        let heard = Heard::of(self.child.id(), streamed);
+        self.wait_heard(texts, timeout, heard)
+    }
+
+    /// Waits for a line containing any of `texts` within `timeout`, or past it while
+    /// `heard` takes its guest to progress.
+    fn wait_heard(&mut self, texts: &[&str], timeout: Duration, mut heard: Heard<'_>) -> String {
         let deadline = Instant::now() + timeout;
-        let mut heard = Heard::of(self.child.id(), streamed);
         loop {
+            // Asked each pass, so that each slice of its microVM's is judged as it comes.
             let progressing = heard.lately(!self.seen.is_empty());
             match self.lines.recv_timeout(Duration::from_secs(1)) {
                 Ok(line) => {
@@ -3136,7 +3154,7 @@ impl Vm {
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout)
                     if Instant::now() < deadline || progressing => {}
                 Err(_) => panic!(
-                    "no {texts:?} from the VM in {timeout:?}, nor anything new from it for {DAEMON_QUIET:?} after; it said:\n{}",
+                    "no {texts:?} from the VM in {timeout:?}, nor progress of its guest's for {DAEMON_QUIET:?} after; it said:\n{}",
                     self.seen.join("\n")
                 ),
             }
@@ -3158,13 +3176,28 @@ impl Vm {
     }
 
     /// [`wait_exit`](Self::wait_exit), failing, with what it printed, if the process runs
+    /// past `timeout` and its guest has said nothing new and its VM process run nothing
+    /// for [`DAEMON_QUIET`] ([`Heard::running`]): for a guest of fewer vCPUs than its host
+    /// has CPUs, as [`wait_for_any`](Self::wait_for_any) waits on one.
+    pub fn wait_exit_following(&mut self, timeout: Duration) -> Option<i32> {
+        let heard = Heard::running(self.child.id());
+        self.wait_exit_heard(timeout, heard)
+    }
+
+    /// [`wait_exit`](Self::wait_exit), failing, with what it printed, if the process runs
     /// past `timeout` and its guest has said nothing new, nor carried more of `streamed`'s
-    /// stream, for [`DAEMON_QUIET`] ([`Heard`]): a guest whose workload its host runs slower
-    /// than `timeout` allows (the parity plan's step 10, a 64-vCPU storm on 4 TCG CPUs) is
-    /// waited on while it gets on with it, and one that does not fails as before.
+    /// stream, for [`DAEMON_QUIET`] ([`Heard::of`]): a guest whose workload its host runs
+    /// slower than `timeout` allows (the parity plan's step 10, a 64-vCPU storm on 4 TCG
+    /// CPUs) is waited on while it gets on with it, and one that does not fails as before.
     pub fn wait_exit_within(&mut self, timeout: Duration, streamed: Option<&AtomicU64>) -> Option<i32> {
+        let heard = Heard::of(self.child.id(), streamed);
+        self.wait_exit_heard(timeout, heard)
+    }
+
+    /// Waits for the process to exit within `timeout`, or past it while `heard` takes its
+    /// guest to progress.
+    fn wait_exit_heard(&mut self, timeout: Duration, mut heard: Heard<'_>) -> Option<i32> {
         let deadline = Instant::now() + timeout;
-        let mut heard = Heard::of(self.child.id(), streamed);
         while self.child.try_wait().unwrap().is_none() {
             // Asked each pass, so that each slice of its microVM's and each byte of its
             // stream is judged as it comes.
@@ -3173,7 +3206,7 @@ impl Vm {
                 let _ = self.child.kill();
                 self.wait_exit();
                 panic!(
-                    "still running after {timeout:?}, and nothing new from its guest for {DAEMON_QUIET:?} after; it said:\n{}",
+                    "still running after {timeout:?}, and no progress of its guest's for {DAEMON_QUIET:?} after; it said:\n{}",
                     self.seen.join("\n")
                 );
             }
@@ -3192,13 +3225,22 @@ impl Vm {
 
 /// What a wait on a guest past its deadline takes for its progress (D209): a line it has
 /// not printed before, or bytes more of a stream a test carries through it (`streamed`, as
-/// [`Following`] counts them); and before its first line, while it starts, its microVM's
-/// CPU time ([`Ran`]). CPU time is no progress once a guest has its own words: a 64-vCPU
-/// guest on 4 TCG CPUs shows it for ever, its stream stopped or not (the parity plan's
-/// step 10: a storm waited on for 2 h 16 min, its VM process at 31,324 CPU-seconds), and a
-/// guest that repeats a line says nothing new.
-struct Heard<'a> {
-    ran: Ran,
+/// [`Following`] counts them); and its microVM's CPU time ([`Ran`]), throughout
+/// ([`Heard::running`]), or only before its first line, while it starts ([`Heard::of`]),
+/// or never, for a machine of this process's own ([`Heard::console`]). CPU time is
+/// progress throughout for a guest of fewer vCPUs than its host has CPUs, whose idle vCPUs
+/// take less than an idle microVM does ([`shards_vmm::platform::IDLE_VM_CPU`]): a guest
+/// onlining a gigabyte it plugged says nothing as it does, past the test's minute on an
+/// arm64 Windows host nested under QEMU's TCG (the parity plan's step 10). It is no
+/// progress once a guest of more vCPUs than that has its own words: a 64-vCPU guest on 4
+/// TCG CPUs shows it for ever, its stream stopped or not (step 10: a storm waited on for
+/// 2 h 16 min, its VM process at 31,324 CPU-seconds), and a guest that repeats a line says
+/// nothing new.
+pub struct Heard<'a> {
+    /// Its VM processes, where their CPU time counts.
+    ran: Option<Ran>,
+    /// Whether their CPU time counts past its guest's first line.
+    throughout: bool,
     streamed: Option<&'a AtomicU64>,
     bytes: u64,
     /// When it last progressed, since this began watching.
@@ -3206,25 +3248,53 @@ struct Heard<'a> {
 }
 
 impl<'a> Heard<'a> {
+    /// The guest of the VM process `vm` is or started, its CPU time counted only before
+    /// its first line.
     fn of(vm: u32, streamed: Option<&'a AtomicU64>) -> Heard<'a> {
         Heard {
-            ran: Ran::of(vm),
+            ran: Some(Ran::of(vm)),
+            throughout: false,
             bytes: streamed.map_or(0, |s| s.load(Ordering::Relaxed)),
             streamed,
             at: None,
         }
     }
 
-    /// A line it printed, `new` where it had not printed it before.
-    fn said(&mut self, new: bool) {
+    /// The guest of the VM process `vm` is or started (`run --kernel`, `restore`), its CPU
+    /// time counted throughout: for a guest of fewer vCPUs than its host has CPUs.
+    pub fn running(vm: u32) -> Heard<'static> {
+        Heard {
+            ran: Some(Ran::of(vm)),
+            throughout: true,
+            streamed: None,
+            bytes: 0,
+            at: None,
+        }
+    }
+
+    /// The guest of a machine this process runs (`vm::start`), by what it says alone: its
+    /// vCPUs are threads of this process, whose CPU time is its other tests' too, and its
+    /// own polling's.
+    pub fn console() -> Heard<'static> {
+        Heard {
+            ran: None,
+            throughout: false,
+            streamed: None,
+            bytes: 0,
+            at: None,
+        }
+    }
+
+    /// Something it said, `new` where it had not said it before.
+    pub fn said(&mut self, new: bool) {
         if new {
             self.at = Some(Instant::now());
         }
     }
 
     /// Whether it progressed within [`DAEMON_QUIET`]; `started`, whether it has printed a
-    /// line, past which its CPU time counts for nothing.
-    fn lately(&mut self, started: bool) -> bool {
+    /// line, past which its CPU time counts only where it counts throughout.
+    pub fn lately(&mut self, started: bool) -> bool {
         if let Some(s) = self.streamed {
             let bytes = s.load(Ordering::Relaxed);
             if bytes != self.bytes {
@@ -3232,9 +3302,36 @@ impl<'a> Heard<'a> {
                 self.at = Some(Instant::now());
             }
         }
-        // Its microVM's CPU time only while it starts.
-        let starting = !started && self.ran.lately();
-        starting || self.at.is_some_and(|at| at.elapsed() < DAEMON_QUIET)
+        let ran = (self.throughout || !started) && self.ran.as_mut().is_some_and(Ran::lately);
+        ran || self.at.is_some_and(|at| at.elapsed() < DAEMON_QUIET)
+    }
+}
+
+/// How a machine this process runs (`vm::start`) ends, as `ended` says (a thread's
+/// `running.wait()`): within `timeout`, or past it while its guest writes something new to
+/// its console within [`DAEMON_QUIET`] ([`Heard::console`]); `None` where it does neither,
+/// its machine then stopped.
+pub fn machine_ended(
+    handle: &shards_vmm::vm::Handle,
+    ended: &std::sync::mpsc::Receiver<shards_vmm::vm::ExitReason>,
+    timeout: Duration,
+) -> Option<shards_vmm::vm::ExitReason> {
+    let deadline = Instant::now() + timeout;
+    let mut heard = Heard::console();
+    let mut console = handle.console_said();
+    loop {
+        let now = handle.console_said();
+        heard.said(now != console);
+        console = now;
+        let progressing = heard.lately(true);
+        match ended.recv_timeout(Duration::from_millis(100)) {
+            Ok(reason) => return Some(reason),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) if Instant::now() < deadline || progressing => {}
+            Err(_) => {
+                handle.stop();
+                return None;
+            }
+        }
     }
 }
 

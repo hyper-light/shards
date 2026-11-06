@@ -36,11 +36,12 @@ fn two_vcpus_boot_to_their_end_under_acg() {
     std::thread::spawn(move || {
         let _ = tx.send(running.wait());
     });
-    match rx.recv_timeout(TIMEOUT) {
-        Ok(reason) => assert_eq!(reason, ExitReason::Reset),
-        Err(_) => {
-            handle.stop();
-            panic!("two vCPUs under ACG did not reach their end in {TIMEOUT:?} in this process");
-        }
+    match common::machine_ended(&handle, &rx, TIMEOUT) {
+        Some(reason) => assert_eq!(reason, ExitReason::Reset),
+        None => panic!(
+            "two vCPUs under ACG did not reach their end in {TIMEOUT:?} in this process, nor said anything new for {:?} after: {}",
+            common::DAEMON_QUIET,
+            String::from_utf8_lossy(&handle.console_said())
+        ),
     }
 }

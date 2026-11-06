@@ -299,12 +299,13 @@ fn two_vcpus_boot_to_their_end_in_this_process() {
     std::thread::spawn(move || {
         let _ = tx.send(running.wait());
     });
-    match rx.recv_timeout(TIMEOUT) {
-        Ok(reason) => assert_eq!(reason, ExitReason::Reset),
-        Err(_) => {
-            handle.stop();
-            panic!("two vCPUs did not reach their end in {TIMEOUT:?} in this process");
-        }
+    match common::machine_ended(&handle, &rx, TIMEOUT) {
+        Some(reason) => assert_eq!(reason, ExitReason::Reset),
+        None => panic!(
+            "two vCPUs did not reach their end in {TIMEOUT:?} in this process, nor said anything new for {:?} after: {}",
+            common::DAEMON_QUIET,
+            String::from_utf8_lossy(&handle.console_said())
+        ),
     }
 }
 
@@ -334,8 +335,10 @@ fn boots_the_hosts_maximum_vcpu_count() {
     let up = max.min(KERNEL_NR_CPUS);
     let plural = if up == 1 { "" } else { "s" };
     let brought = format!("smp: Brought up 1 node, {up} CPU{plural}");
-    // A count other than the one asked for fails at once, with what the guest said.
-    let said = vm.wait_for_any(&["smp: Brought up"], TIMEOUT);
+    // A count other than the one asked for fails at once, with what the guest said. Past
+    // TIMEOUT while it says something new: of more vCPUs than its host has CPUs, its VM
+    // process's CPU time counts only before its first line (`Heard::of`).
+    let said = vm.wait_for_any_within(&["smp: Brought up"], TIMEOUT, None);
     vm.kill();
     let seen = vm.seen.join("\n");
     assert!(said.contains(&brought), "{seen}");
@@ -1362,6 +1365,7 @@ fn a_snapshot_keeps_the_memory_its_guest_plugged() {
 #[test]
 fn a_guest_grows_and_gives_back_its_memory() {
     use std::io::{BufRead, Write};
+    use std::sync::mpsc::RecvTimeoutError::Timeout;
     if cannot_run_vms() {
         return;
     }
@@ -1398,13 +1402,27 @@ fn a_guest_grows_and_gives_back_its_memory() {
     });
     let start = std::time::Instant::now();
     let mut said = String::new();
-    let mut until = |marker: &str| -> String {
+    // Within TIMEOUT of its start, or past it while its guest says something new or its VM
+    // process runs (D209): on an arm64 Windows host nested under QEMU's TCG its kernel was
+    // still onlining the gigabyte it asked for as the test's minute ran out (the parity
+    // plan's step 10), and says nothing as it does. One of neither for DAEMON_QUIET fails.
+    let mut heard = common::Heard::running(front);
+    let mut until = |heard: &mut common::Heard<'_>, marker: &str| -> String {
         loop {
-            let left = TIMEOUT.saturating_sub(start.elapsed());
-            let Ok(line) = lines.recv_timeout(left) else {
-                let _ = child.kill();
-                panic!("no {marker:?} within {TIMEOUT:?}:\n{said}");
+            // Asked each pass, so that each slice of its VM process's is judged as it comes.
+            let progressing = heard.lately(true);
+            let line = match lines.recv_timeout(Duration::from_secs(1)) {
+                Ok(line) => line,
+                Err(Timeout) if start.elapsed() < TIMEOUT || progressing => continue,
+                Err(_) => {
+                    let _ = child.kill();
+                    panic!(
+                        "no {marker:?} within {TIMEOUT:?}, nor anything new from its guest nor CPU time of its VM process's for {:?} after:\n{said}",
+                        common::DAEMON_QUIET
+                    );
+                }
             };
+            heard.said(!said.lines().any(|l| l == line));
             said.push_str(&line);
             said.push('\n');
             if line.contains("SHARDS-TEST FAIL") {
@@ -1416,7 +1434,7 @@ fn a_guest_grows_and_gives_back_its_memory() {
             }
         }
     };
-    let plugged_ms: u64 = until("SHARDS-TEST PLUGGED").parse().unwrap();
+    let plugged_ms: u64 = until(&mut heard, "SHARDS-TEST PLUGGED").parse().unwrap();
     #[cfg(unix)]
     let pid = front;
     #[cfg(windows)]
@@ -1428,23 +1446,28 @@ fn a_guest_grows_and_gives_back_its_memory() {
     let footprint = || shards_vmm::platform::process_usage(pid).unwrap().footprint;
     let full = footprint();
     stdin.write_all(b"\n").unwrap();
-    let unplugged_ms: u64 = until("SHARDS-TEST UNPLUGGED").parse().unwrap();
+    let unplugged_ms: u64 = until(&mut heard, "SHARDS-TEST UNPLUGGED").parse().unwrap();
     // The guest's kernel counts a memory block gone from MemTotal as it takes it offline,
     // before it asks the device to unplug it (drivers/virtio/virtio_mem.c,
     // virtio_mem_sbm_unplug_sb_online: virtio_mem_fake_offline, then
     // virtio_mem_sbm_unplug_sb): as the guest says it gave all back, its last block, 128
     // MiB, may still be the host's to give back, as it was on windows-2025 (964 MiB, then
     // 196). What it gives back stays given back until the guest is answered, so the
-    // footprint is read until it has fallen, or the test's time is up.
+    // footprint is read until it has fallen, or the test's time is up and it has neither
+    // fallen further nor its VM process run for DAEMON_QUIET: a fall is its progress.
+    let mut least = full;
     let given_back = loop {
         let now = footprint();
-        if full.saturating_sub(now) >= 768 << 20 || start.elapsed() >= TIMEOUT {
+        heard.said(now < least);
+        least = least.min(now);
+        let progressing = heard.lately(true);
+        if full.saturating_sub(now) >= 768 << 20 || (start.elapsed() >= TIMEOUT && !progressing) {
             break now;
         }
         std::thread::sleep(Duration::from_millis(10));
     };
     stdin.write_all(b"\n").unwrap();
-    until("SHARDS-TEST PASS");
+    until(&mut heard, "SHARDS-TEST PASS");
     eprintln!(
         "1 GiB plugged in {plugged_ms} ms, unplugged in {unplugged_ms} ms; the VM process held {} MiB, then {} MiB",
         full >> 20,
