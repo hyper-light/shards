@@ -194,14 +194,15 @@ pub fn backend() -> Result<Backend, Refusal> {
     backend_of(std::env::consts::OS, std::env::consts::ARCH)
 }
 
-/// The least memory a guest of `arch` boots in, in MiB (shards-vmm's `MIN_MEMORY_MIB`,
-/// `vm/aarch64.rs` and `vm/x86_64.rs`).
+/// The least memory a guest of `arch` boots in, in MiB: shards-vmm's `MIN_MEMORY_MIB`
+/// (`crates/vmm/src/vm/aarch64.rs:28`, `crates/vmm/src/vm/x86_64.rs:28`).
 pub fn min_memory_mib(arch: &str) -> u64 {
     if arch == "x86_64" { 128 } else { 64 }
 }
 
-/// The most vCPUs a guest has here: the host's CPUs, as std reads them (a cgroup's or
-/// affinity's bound included). shards-vmm then holds a guest to its hypervisor's own limit,
+/// The most vCPUs a guest has here: the host's CPUs, read from it now as std reads them (a
+/// cgroup's or affinity's bound included), as shards-vmm bounds them
+/// (`crates/vmm/src/vm/runtime.rs:1059` `check_vcpus`). shards-vmm then holds a guest to its hypervisor's own limit,
 /// which is no lower on any backend it has.
 pub fn max_vcpus() -> u32 {
     std::thread::available_parallelism()
@@ -210,11 +211,12 @@ pub fn max_vcpus() -> u32 {
 }
 
 /// The most vsock ports a spec may allow: the connections shards' muxer holds at once
-/// (`MAX_CONNECTIONS`, Firecracker's, `devices/virtio/vsock/muxer.rs`).
+/// (`MAX_CONNECTIONS`, Firecracker's, `crates/vmm/src/devices/virtio/vsock/muxer.rs:40-41`).
 pub const MAX_PORTS: usize = 1023;
 
 /// Checks `spec` against this host's bounds, as shards-vmm does as it starts a VM
-/// (`vm/runtime.rs` `check_vcpus`; `vm/{aarch64,x86_64}.rs`' memory), so that both the
+/// (`vm/runtime.rs:1059` `check_vcpus`; memory even and at least the least,
+/// `vm/aarch64.rs:414`, `vm/x86_64.rs:361`), so that both the
 /// client and the simulator refuse it before anything boots.
 pub fn check(spec: &GuestSpec) -> Result<(), Refusal> {
     let max = max_vcpus();
