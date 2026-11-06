@@ -842,30 +842,6 @@ pub fn processes() -> Vec<(u32, u32, String)> {
     found
 }
 
-/// The private bytes process `pid` has committed (PROCESS_MEMORY_COUNTERS_EX's
-/// PrivateUsage): what Windows charges it of the host's commit, which it holds until it
-/// decommits them, touched or not, in its working set or not (PM M371, M413).
-#[cfg(windows)]
-pub fn private_commit(pid: u32) -> u64 {
-    use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle};
-    use windows_sys::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS_EX};
-    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
-    // SAFETY: a process handle of the one right asked, owned from here on.
-    let raw = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
-    assert!(!raw.is_null(), "process {pid}: {}", io::Error::last_os_error());
-    // SAFETY: the handle just opened, which nothing else owns.
-    let process = unsafe { OwnedHandle::from_raw_handle(raw) };
-    let mut counters = PROCESS_MEMORY_COUNTERS_EX {
-        cb: size_of::<PROCESS_MEMORY_COUNTERS_EX>() as u32,
-        ..Default::default()
-    };
-    // SAFETY: counters of the size their `cb` says, of a process handle held above.
-    let read =
-        unsafe { GetProcessMemoryInfo(process.as_raw_handle(), (&raw mut counters).cast(), counters.cb) };
-    assert_ne!(read, 0, "process {pid}: {}", io::Error::last_os_error());
-    counters.PrivateUsage as u64
-}
-
 /// A handle to process `pid` that may give it handles (PROCESS_DUP_HANDLE), as a VM's
 /// spawner holds one: what `shards_ipc::Stream::gives_to` takes.
 #[cfg(windows)]

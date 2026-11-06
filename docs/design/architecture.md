@@ -12643,6 +12643,17 @@ given the rest as its build needs it, up to what it may have.
   holding 96 MiB at its peak where it held 1424; a RUN that writes 4 GiB, the builder growing
   to hold it, ends 67 ms sooner ([-88, -40]), the builder holding 1.2 GiB less. A guest has
   1 GiB online 5 to 7 ms after it asks, and gives it back in 10 to 21.
+- **What is held of memory given back, on Windows** (`hotplug_held_kib`, `platform::held`):
+  what the VM process still has committed of each block it unplugged, asked a run of pages
+  at a time ([VirtualQuery](https://learn.microsoft.com/en-us/windows/win32/api/memoryapi/nf-memoryapi-virtualquery),
+  [MEMORY_BASIC_INFORMATION](https://learn.microsoft.com/en-us/windows/win32/api/winnt/ns-winnt-memory_basic_information)'s
+  `State`, MEM_COMMIT): unplugging decommits a block
+  ([VirtualFree](https://learn.microsoft.com/en-us/windows/win32/api/memoryapi/nf-memoryapi-virtualfree)
+  MEM_DECOMMIT, its pages reserved alone), and Windows charges a process for what it has
+  committed, resident or paged out, until it decommits it (PM M371). That is Unix's
+  meaning, pages resident or swapped out; a page's residency
+  ([QueryWorkingSetEx](https://learn.microsoft.com/en-us/windows/win32/api/psapi/nf-psapi-queryworkingsetex)'s
+  `Valid`) says only whether it is in the working set, and would miss those paged out.
 - **Tested** on an M5 Max, macOS 26.4.1: `a_guest_grows_and_gives_back_its_memory`
   (boot.rs) plugs 1 GiB into a guest booted with 256 MiB, which writes 896 MiB of it and
   gives it all back, its VM process holding none of it as it ends (`hotplug_held_kib`, the

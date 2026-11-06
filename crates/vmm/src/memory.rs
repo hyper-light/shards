@@ -466,9 +466,10 @@ impl GuestMemory {
 
     /// Of the memory the guest gave back, the bytes whose pages the host holds still: of
     /// each block plugged once and unplugged since, its pages touched, by the guest or a
-    /// device, and not given back ([`platform::untouched`]). Unplugging gives them back
-    /// (`platform::withhold`), where a hypervisor's unmapping of them took them out of the
-    /// process's footprint and resident set but left them its own (PM M193). A block plugged
+    /// device, and not given back; on Windows, its pages committed still ([`platform::held`]).
+    /// Unplugging gives them back (`platform::withhold`), where a hypervisor's unmapping of
+    /// them took them out of the process's footprint and resident set but left them its own
+    /// (PM M193). A block plugged
     /// now is the guest's, its pages held as they should be, and none of what it gave back:
     /// a guest that ends asking for memory has its driver plugging as it ends. None where
     /// the guest has no memory to plug, or the host cannot say.
@@ -498,9 +499,8 @@ impl GuestMemory {
                 return Ok(None);
             }
             // SAFETY: a range within the reservation, which this value owns.
-            let untouched = unsafe { platform::untouched(h.host.as_ptr().add(offset), len, page) }?;
-            match untouched {
-                Some(u) => held += u.iter().filter(|&&never| !never).count() as u64 * page as u64,
+            match unsafe { platform::held(h.host.as_ptr().add(offset), len, page) }? {
+                Some(bytes) => held = held.saturating_add(bytes),
                 None => return Ok(None),
             }
         }

@@ -480,6 +480,22 @@ pub unsafe fn untouched(ptr: *const u8, len: usize, page: usize) -> io::Result<O
     }
 }
 
+/// Of the `len / page` pages at `ptr`, anonymous private memory, the bytes the process holds:
+/// the pages it touched and has not given back, resident or paged out ([`untouched`]). Where
+/// the OS cannot say, `None`.
+///
+/// # Safety
+/// As for [`untouched`].
+pub unsafe fn held(ptr: *const u8, len: usize, page: usize) -> io::Result<Option<u64>> {
+    // SAFETY: forwarded caller contract.
+    let Some(untouched) = (unsafe { untouched(ptr, len, page) })? else {
+        return Ok(None);
+    };
+    Ok(Some(
+        untouched.iter().filter(|&&never| !never).count() as u64 * page as u64,
+    ))
+}
+
 /// Whether every one of the `len / page` pages at `ptr` is [`untouched`], asked without
 /// taking memory: a device asks it of what its guest reports free while it holds guest
 /// memory's lock, and memory taken there, charged to a cgroup past its `memory.high`, had
