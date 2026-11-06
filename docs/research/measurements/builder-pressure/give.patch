@@ -48,3 +48,59 @@ diff --git a/crates/shards/src/build/give.rs b/crates/shards/src/build/give.rs
  /// A builder's answer counted in `unsaid`.
  fn count(unsaid: &mut Unsaid, answer: Answer) {
      match answer {
+diff --git a/crates/image/src/store/mounts.rs b/crates/image/src/store/mounts.rs
+index e2124b2c..26954b05 100644
+--- a/crates/image/src/store/mounts.rs
++++ b/crates/image/src/store/mounts.rs
+@@ -529,7 +529,12 @@ impl Store {
+     ) -> Result<bool, Error> {
+         let changes = changes.filter(|c| c.len > 0);
+         if let Some(c) = &changes {
++            let began = std::time::Instant::now();
+             finish(&c.part, c.len)?;
++            // builder-pressure: a step's changes to a cache, as the VM process wrote them,
++            // made durable; one write.
++            let said = format!("builder-keep bytes {} sync_ms {}\n", c.len, began.elapsed().as_millis());
++            let _ = io::stderr().write_all(said.as_bytes());
+         }
+         let kept = changes.is_some();
+         if kept {
+@@ -614,6 +619,7 @@ impl Store {
+     /// holds it, where one is set, as a step's merge is on its `RUN`'s path.
+     fn merge_run(&self, id: &str, run: &Run) -> Result<(MountPart, super::merge::Merged), Error> {
+         let part = self.merge_part(id)?;
++        let began = std::time::Instant::now();
+         let merged = {
+             let mut out = BufWriter::with_capacity(
+                 crate::through::CHUNK,
+@@ -625,7 +631,17 @@ impl Store {
+             out.flush()?;
+             merged
+         };
++        let wrote = began.elapsed();
+         finish(&part, merged.size)?;
++        // builder-pressure: a merge of a cache's layers, written and made durable; one write.
++        let said = format!(
++            "builder-merge layers {} bytes {} write_ms {} sync_ms {}\n",
++            run.names.len(),
++            merged.size,
++            wrote.as_millis(),
++            began.elapsed().saturating_sub(wrote).as_millis()
++        );
++        let _ = io::stderr().write_all(said.as_bytes());
+         Ok((part, merged))
+     }
+ 
+diff --git a/crates/shards/src/main.rs b/crates/shards/src/main.rs
+index 50eaf09e..1884a0b1 100644
+--- a/crates/shards/src/main.rs
++++ b/crates/shards/src/main.rs
+@@ -129,6 +129,8 @@ pub(crate) fn shardsd(args: Vec<std::ffi::OsString>) -> ExitCode {
+ pub(crate) fn phase(_name: &str) {
+     #[cfg(all(feature = "alloc-count", unix))]
+     alloc_count::phase(_name);
++    // builder-pressure: each phase's end, stamped by the harness as it reads it; one write.
++    let _ = std::io::stderr().write_all(format!("builder-phase name {_name}\n").as_bytes());
+ }
+ 
+ /// Says how much of phase `_phase`'s time went to `_part`, over `_bytes`, for the work
