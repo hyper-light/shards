@@ -50,8 +50,13 @@ Beside it, each second, the builder's VM process on this host (phys_footprint on
 and RssAnon on Linux) and, on Linux, the scope's memory.current and memory.peak, and the
 memory of the writer a held build starts outside its budget (D188), where it runs: whether
 it ran, and so where the build's own writes were charged, is the build line's
-`writer_seen`. Into
-OUT/out.txt: a header, then `guest`, `host`, `give` and `build` lines, KEY=VALUE each, for
+`writer_seen`; and what the VM process, the build's own process and its writer each read
+from storage and dirtied of its page cache so far (/proc/PID/io), which tell a step's
+changes to its caches (the VM process's) from their merges (the build's). From the build's
+output (give.patch), each phase's end (`phase`), each step's changes to a cache made durable
+(`keep`) and each merge of a cache's layers (`merge`), stamped as read. Into
+OUT/out.txt: a header, then `guest`, `host`, `give`, `phase`, `keep`, `merge` and `build`
+lines, KEY=VALUE each, for
 tables.py; into OUT/raw/, each build's stderr and its builder's console. Where the room left
 on OUT's or HOME's volume falls under 5 GiB, the build under way is ended and the run with it.
 
@@ -158,6 +163,20 @@ def footprint(pid):
     except OSError:
         return None
     return " ".join(f"{k}={v}" for k, v in fields.items())
+
+
+def io_of(pid, who):
+    """What process `pid` read from and dirtied for its storage so far (Linux), as
+    `WHO_read_bytes` and `WHO_write_bytes` fields: /proc/PID/io's read_bytes, the bytes it
+    had fetched from storage, and write_bytes, those of the page cache it dirtied, each page
+    counted to the task that dirtied it (mm/page-writeback.c `folio_account_dirtied`,
+    `task_io_account_write`; Documentation/filesystems/proc.rst), whichever cgroup the page
+    is charged to; none where it cannot be read."""
+    try:
+        got = dict(l.split(": ", 1) for l in open(f"/proc/{pid}/io").read().splitlines() if ": " in l)
+        return f"{who}_read_bytes={int(got['read_bytes'])} {who}_write_bytes={int(got['write_bytes'])}"
+    except (OSError, KeyError, ValueError):
+        return None
 
 
 def descendants(root):
@@ -272,6 +291,14 @@ def sample_host(build_pid, tag, stop, peak, cold, writer):
             got = footprint(vm)
             if got:
                 fields.append(f"pid={vm} {got}")
+            got = None if macos else io_of(vm, "vm")
+            if got:
+                fields.append(got)
+        # The build's own process, which writes a cache's merges and makes its files durable,
+        # apart from its VM process, which writes a step's changes to its caches (D134).
+        got = None if macos else io_of(build_pid, "build")
+        if got:
+            fields.append(got)
         scope = None if macos else scope_of(build_pid)
         if scope:
             try:
@@ -297,6 +324,10 @@ def sample_host(build_pid, tag, stop, peak, cold, writer):
                     writer["dirty"] = max(writer["dirty"], stat.get("file_dirty", 0))
                     fields.append(f"writer_current={current} " + " ".join(
                         f"writer_{k}={stat.get(k, 0)}" for k in ("file", "file_dirty", "file_writeback")))
+                    for pid in open(f"{outside}/cgroup.procs").read().split()[:1]:
+                        got = io_of(pid, "writer")
+                        if got:
+                            fields.append(got)
             except (OSError, ValueError):
                 pass
         if fields:
@@ -316,6 +347,9 @@ def tell(path, stop):
 
 GUEST = re.compile(r"builder-cold (.*)$")
 GIVE = re.compile(r"builder-give (.*)$")
+# The build's own (give.patch): each phase's end (`crate::phase`), each step's changes to a
+# cache made durable, each merge of a cache's layers.
+OWN = re.compile(r"builder-(phase|keep|merge) (.*)$")
 STEP = re.compile(r"^#(\d+) \[")
 DONE = re.compile(r"^#(\d+) DONE (\d+(?:\.\d+)?)s")
 
@@ -408,6 +442,11 @@ def one(r, name, arm, budget):
             words = m.group(1).split()
             fields = " ".join(f"{k}={v}" for k, v in zip(words[::2], words[1::2]))
             say(f"give t={now:.3f} {tag} {fields}")
+        m = OWN.search(line)
+        if m:
+            words = m.group(2).split()
+            fields = " ".join(f"{k}={v}" for k, v in zip(words[::2], words[1::2]))
+            say(f"{m.group(1)} t={now:.3f} {tag} step={step[0]} {fields}")
     code = proc.wait()
     stop.set()
     if told:

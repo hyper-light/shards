@@ -17755,6 +17755,47 @@ revision before comparing a changed API/implementation.
   (`writer_seen`, tables.py's `writer outside`). How much of a step's end is its caches'
   changes, which its VM process writes under the budget (`keep_cache`), these samples do
   not split. To measure: `builder-pressure.yml` at the commit that has the fix.
+- **At 0849ecb3, on CI's four runners: the writer ran, apt's `RUN`'s end still slower.**
+  The writer was outside in each of the 60 held builds. The rule held for 10 of the 12
+  runner and build pairs. apt failed it on two runners: held's fastest 36.0 s against
+  free's slowest 35.1 s on one (EPYC 9V74), 36.9 against 36.1 on another; the other two
+  passed by 0.1 s. The whole difference is in apt's `RUN` (step 6), and in it, after the
+  guest's own end (s, from apt's last line of output, the rounds past the caches', those
+  two runners, from their out.txt and raw/ build logs):
+  - The guest's step end, which comes after its changes have gone out and its caches'
+    changes are written and synced to their range of the join disk (init `caches.rs`
+    `write`), is no later held. It came 0.82 to 0.88 s free and 0.87 to 1.75 held on the
+    first runner, and 1.15 to 1.19 free and 1.12 to 1.23 held on the second. So the VM
+    process's writes of a step's changes to its caches cost nothing measurable under the
+    budget.
+  - From the guest's end to the step's `DONE` took 2.80 to 3.13 s free and 3.79 to 4.84
+    held on the first runner, and 1.46 to 1.48 free and 2.65 to 2.72 held on the second.
+    That is the build's own work after the guest's: its caches kept (`keep_cache`: each
+    change's file truncated and synced, `mounts::finish`, then merged as `plan` says),
+    then its layer written and synced (`commit`).
+  - Held, the writer's file pages rose by 764 to 780 MiB, the step's changes to their
+    staging file (378 to 390 MiB) and its layer. They sat flat for 1 to 2 s between the
+    two, while the scope's own rose by 101 to 253 MiB with at most 119 MiB of them dirty,
+    and on the first runner `memory.current` sat at its budget (957 MiB at 1.45 and 2.46 s
+    into round 2's end). Free, the scope's file pages rose by 955 to 974 MiB, 381 to 751
+    of them dirty at once. Of the build's own writes in that gap, a merge of a cache's
+    layers was the one still written in the build's process, through a `BufWriter` of its
+    file, not `through`: under its budget's dirty domain (mm/page-writeback.c at v7.0,
+    `folio_account_dirtied` charges the dirtying task and the page's memcg;
+    `balance_dirty_pages_ratelimited_flags` throttles against `wb_get_create_current`'s,
+    the writer's own cgroup's) and its `memory.high`.
+
+  Fixed: a merge (`Store::merge_run`) and a cache's first content (`Exec::seed_image`) are
+  written through `shards_image::through`, as every other file the build makes is. What
+  these samples cannot split is how much of the gap was the merge's writes and how much
+  its reads of the layers it merges or the sync of the step's changes. So the harness now
+  says, from the build's own output (give.patch), when each phase of a step ends (`phase`
+  lines: `run`, `cache-keep`, `layer`, `blob`), each step's change to a cache made durable
+  (`keep`: bytes, sync ms) and each merge (`merge`: layers, bytes, write ms, sync ms). Each
+  second it also samples what the VM process, the build's process and its writer each
+  dirtied and read from storage (/proc/PID/io `write_bytes`, `read_bytes`, counted to the
+  task that dirtied a page whatever cgroup it is charged to). tables.py gives each, free
+  against held. To measure: `builder-pressure.yml` at the commit that has them.
 
 ### M443. A restart over the kept layer file itself, and what the guest freed given back (D190)
 
