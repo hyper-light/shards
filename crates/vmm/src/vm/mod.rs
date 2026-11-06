@@ -1180,12 +1180,14 @@ pub struct Config {
 
 /// A device plugged into a running machine (D214): its place on bus 0 (`devfn`, device <<
 /// 3 | function), its guest's name for it there, which its init rescans the bus to find and
-/// writes `remove` of to let it go, and, for a disk, what grows it.
+/// writes `remove` of to let it go, and, for a disk, what grows it; for a host's function,
+/// how long each step of its plug took, in their order (PM M430), none for the others.
 #[derive(Debug, Clone)]
 pub struct Plugged {
     pub devfn: u8,
     pub address: String,
     pub size: Option<crate::devices::virtio::block::DiskSize>,
+    pub steps: Vec<(&'static str, std::time::Duration)>,
 }
 
 /// A host PCI function a VM is given (D154): its name as the host has it (`0000:01:00.0`)
