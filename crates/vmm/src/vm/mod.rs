@@ -2266,10 +2266,11 @@ pub struct Save {
     /// Where its DAX windows' heads go (D189), where it has windows.
     pub window_heads: Option<std::fs::File>,
     pub then: AfterSnapshot,
-    /// The last of a live move (D176 part 7): its memory, writable layer and swap written
-    /// only where its guest and devices wrote since the move's last round
-    /// ([`Handle::precopy`]), which stops watching for them.
-    pub delta: bool,
+    /// The last of a live move (D176 part 7): the stream its rounds went to
+    /// ([`Handle::precopy`]), which the pages its guest and devices wrote since the last of
+    /// them go to as its last round, and its end; its memory, writable layer and swap files
+    /// as long as a save's and holding none of their pages. It stops watching for them.
+    pub delta: Option<std::fs::File>,
 }
 
 /// What a live move's rounds sent ([`Handle::precopy`]): each round's pages and bytes, and

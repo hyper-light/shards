@@ -9638,9 +9638,23 @@ it runs, by pre-copy (Clark et al., "Live Migration of Virtual Machines", NSDI 2
 memory, writable layer and run's swap copied to the other machine as its guest runs on,
 round after round, each round what its guest and its devices wrote since the last, until a
 round sends no more than 8 MiB, or 30 rounds; then it saved as a save saves it, held, its
-vCPUs parked and devices quiet, those three written only where its guest wrote since the
-last round, which the other machine lays over what the rounds sent; resumed there; and
-stopped here once it runs there.
+vCPUs parked and devices quiet, what its guest wrote of those three since the last round
+sent as the rounds' last, in their stream, which the other machine lays over the rounds
+page by page as each came; resumed there; and stopped here once it runs there.
+
+- **The last round in the rounds' stream**, record by record, never in the last save's
+  files, which keep none of their pages: which pages a file holds read from its holes is
+  its file system's unit, not the page written. NTFS keeps a sparse file's data in
+  compression units, 64 KiB for sparse files ([MS-FSA] Appendix A, note 4; the unit
+  `deallocation_unit` gives back), so a page written into a hole makes its whole unit data,
+  the rest zeros. Laid from the last save's files, each page its guest wrote last brought
+  60 KiB of zeros over what the rounds sent: on CI's windows-2025, the first WHP run, the
+  restored guest's pmem queue was found zeroed ("driver published 65535 new buffers on a
+  queue of 64"), its guest hung, and the move's restore never answered. Linux's file
+  systems and APFS keep 4 KiB blocks, a page each, so KVM and Hypervisor.framework moves
+  never met it. The last save's spawner hands it the stream again with its files
+  (`SAVE_DELTA`'s last descriptor); its VM writes the last round and the stream's end
+  before it answers, and the move's files follow.
 
 - **What its guest writes**, watched by the hypervisor as it runs, through one interface
   every backend gives the pre-copy loop (`Vm::watch_writes`, `written`, `unwatch_writes`;
@@ -9688,7 +9702,7 @@ stopped here once it runs there.
   its own accesses (`GuestMemory::device_wrote`).
 - **Its last save holds it** (`AfterSnapshot::Hold`): a move the other machine does not
   take lets it go on here as a save that leaves a microVM running does, nothing of it lost
-  (its last save, which holds only what its guest wrote last, removed); one taken stops it
+  (its last save, which holds none of its memory, removed); one taken stops it
   as saved, and removes it here.
 - **The time it runs nowhere**, from its last save asked to its restore there said done, by
   the moving machine's clock: 114 ms at p50, 126 at p90 and 140 at most, n 30, a microVM of
