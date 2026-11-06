@@ -1051,6 +1051,13 @@ pub fn peak_rss_kib() -> u64 {
     }
 }
 
+/// This process's peak commit charge so far, in KiB (windows.rs `peak_commit_kib`): none
+/// on Unix, which charges a process its memory as it touches it, what [`peak_rss_kib`]
+/// counts, not as it commits it; 0.
+pub fn peak_commit_kib() -> u64 {
+    0
+}
+
 /// This process's own memory now, in KiB, as memory per VM is counted (PM M30's
 /// `phys_footprint`): macOS's physical footprint, its private and copied pages, without the
 /// file pages it shares with every process mapping them, a template's among them; Linux's

@@ -1822,8 +1822,9 @@ fn report_timing(handle: &Handle, workload: Option<&WorkloadTiming>) {
 
 /// The timing line's fields, as JSON: the VM's clock readings in microseconds since the
 /// process started, 0 for any not yet taken; the process's peak RSS so far and its own
-/// memory now, in KiB; what it holds of the memory to plug (D133), in KiB; and what its
-/// guest has reported free (D151), in KiB.
+/// memory now, in KiB; its peak commit charge, in KiB, where its host charges memory as
+/// it is committed (Windows, PM M413), else 0; what it holds of the memory to plug (D133),
+/// in KiB; and what its guest has reported free (D151), in KiB.
 fn timing_json(handle: &Handle, workload: Option<&WorkloadTiming>) -> String {
     let markers: Vec<String> = handle
         .markers()
@@ -1837,13 +1838,14 @@ fn timing_json(handle: &Handle, workload: Option<&WorkloadTiming>) -> String {
         )
     });
     format!(
-        "{{\"released_us\":{},\"entry_us\":{},\"exit_us\":{},\"request_us\":{request},\"answered_us\":{answered},\"prefetched\":{},\"rss_kib\":{},\"footprint_kib\":{},\"hotplug_held_kib\":{},\"reported_kib\":{},\"markers\":[{}]}}",
+        "{{\"released_us\":{},\"entry_us\":{},\"exit_us\":{},\"request_us\":{request},\"answered_us\":{answered},\"prefetched\":{},\"rss_kib\":{},\"footprint_kib\":{},\"peak_commit_kib\":{},\"hotplug_held_kib\":{},\"reported_kib\":{},\"markers\":[{}]}}",
         handle.released_at_us().unwrap_or(0),
         handle.entered_at_us().unwrap_or(0),
         handle.exited_at_us().unwrap_or(0),
         handle.prefetched(),
         max_rss_kib(),
         footprint_kib(),
+        shards_ipc::peak_commit_kib(),
         handle.hotplug_held().unwrap_or(0) / 1024,
         handle.reported() / 1024,
         markers.join(",")

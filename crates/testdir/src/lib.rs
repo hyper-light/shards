@@ -252,6 +252,88 @@ fn sweep(parent: &Path) {
 #[cfg(not(unix))]
 fn sweep(_: &Path) {}
 
+/// The tests' helper program (`src/bin/shards-testhelper.rs`, which says its commands), for
+/// what a test runs where a Unix host would run a shell's tools: built for this host as a
+/// test process first asks for it, by cargo (the rustup proxy on PATH, without the dyld
+/// paths cargo gives test processes, which keep rust-lld from its libLLVM), into a target
+/// directory of its own beside the tests' (`testhelper`), one build at a time under its
+/// lock; and copied into a directory of this process's own, which it runs from, so that no
+/// build after a change replaces a program another test process runs (which Windows
+/// refuses).
+pub fn helper() -> Result<&'static Path, String> {
+    static BUILT: std::sync::OnceLock<Result<(TempDir, PathBuf), String>> = std::sync::OnceLock::new();
+    match BUILT.get_or_init(build_helper) {
+        Ok((_, program)) => Ok(program.as_path()),
+        Err(e) => Err(e.clone()),
+    }
+}
+
+fn build_helper() -> Result<(TempDir, PathBuf), String> {
+    let name = format!("shards-testhelper{}", std::env::consts::EXE_SUFFIX);
+    let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    // A test's program is `<target>/<profile>/deps/<test>`.
+    let exe = std::env::current_exe().map_err(|e| format!("this test's program: {e}"))?;
+    let target = exe
+        .ancestors()
+        .nth(3)
+        .map_or_else(|| workspace.join("target"), Path::to_path_buf)
+        .join("testhelper");
+    std::fs::create_dir_all(&target).map_err(|e| format!("{}: {e}", target.display()))?;
+    let lock =
+        std::fs::File::create(target.join(".lock")).map_err(|e| format!("{}: {e}", target.display()))?;
+    lock.lock().map_err(|e| format!("{}: {e}", target.display()))?;
+    let built = build_and_copy(&workspace, &target, &name);
+    // Let go of before its file closes (a flock(2) lock is its open file's).
+    let _ = lock.unlock();
+    built
+}
+
+fn build_and_copy(workspace: &Path, target: &Path, name: &str) -> Result<(TempDir, PathBuf), String> {
+    let out = std::process::Command::new("cargo")
+        .env_remove("DYLD_FALLBACK_LIBRARY_PATH")
+        .env_remove("DYLD_LIBRARY_PATH")
+        .current_dir(workspace)
+        .args([
+            "build",
+            "--quiet",
+            "-p",
+            "shards-testdir",
+            "--bin",
+            "shards-testhelper",
+        ])
+        .arg("--target-dir")
+        .arg(target)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map_err(|e| format!("cargo: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "building shards-testhelper: {}",
+            String::from_utf8_lossy(&out.stderr)
+        ));
+    }
+    let built = target.join("debug").join(name);
+    let dir = TempDir::new("testhelper").map_err(|e| e.to_string())?;
+    let program = dir.join(name);
+    // Written by a process of its own on Unix: a file this one held open to write, a child
+    // another test's thread forked meanwhile would hold until it execs, and an exec of it
+    // would fail with ETXTBSY until then (Linux).
+    #[cfg(unix)]
+    {
+        let copied = std::process::Command::new("cp")
+            .arg(&built)
+            .arg(&program)
+            .status()
+            .map_err(|e| format!("cp: {e}"))?;
+        if !copied.success() {
+            return Err(format!("{} not copied: {copied}", built.display()));
+        }
+    }
+    #[cfg(not(unix))]
+    std::fs::copy(&built, &program).map_err(|e| format!("{}: {e}", built.display()))?;
+    Ok((dir, program))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1,20 +1,28 @@
 //! A layer of what changed ([`shards_archive::pack_changes`]) brings a copy of a tree in
 //! step when applied over it ([`shards_archive::apply_layer`]): what changed, as it is now,
-//! times to the nanosecond; what went, gone; what did not change, untouched.
+//! times to the nanosecond, or on Windows to the 100 ns NTFS keeps; what went, gone; what
+//! did not change, untouched. Windows clients pack their contexts' changes so (D180).
 
-#![cfg(unix)]
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
-use std::os::unix::fs::MetadataExt as _;
 use std::path::Path;
 use std::time::{Duration, SystemTime};
 
 use shards_archive::{UnpackOptions, apply_layer, pack_changes};
 use shards_testdir::TempDir;
 
+/// The finest time the host's files keep, in nanoseconds: NTFS's 100 ns on Windows.
+const GRAIN: i64 = if cfg!(windows) { 100 } else { 1 };
+
+/// `path`'s modification time, itself and not a symlink's target: seconds and nanoseconds
+/// since the epoch.
 fn mtime(path: &Path) -> (i64, i64) {
-    let m = std::fs::symlink_metadata(path).unwrap();
-    (m.mtime(), m.mtime_nsec())
+    let at = std::fs::symlink_metadata(path).unwrap().modified().unwrap();
+    let since = at.duration_since(SystemTime::UNIX_EPOCH).unwrap();
+    (
+        i64::try_from(since.as_secs()).unwrap(),
+        i64::from(since.subsec_nanos()),
+    )
 }
 
 fn set_mtime(path: &Path, at: SystemTime) {
@@ -49,7 +57,10 @@ fn a_layer_of_what_changed_brings_a_copy_in_step() {
     set_mtime(&here.join("dir/changed"), at);
     std::fs::write(here.join("dir/added"), "added").unwrap();
     std::fs::hard_link(here.join("dir/added"), here.join("dir/linked")).unwrap();
+    #[cfg(unix)]
     std::os::unix::fs::symlink("added", here.join("dir/pointer")).unwrap();
+    #[cfg(windows)]
+    std::os::windows::fs::symlink_file("added", here.join("dir/pointer")).unwrap();
     std::fs::remove_file(here.join("dir/removed")).unwrap();
     std::fs::remove_dir_all(here.join("dir/gone")).unwrap();
     let changed: Vec<Vec<u8>> = ["dir", "dir/added", "dir/changed", "dir/linked", "dir/pointer"]
@@ -64,16 +75,30 @@ fn a_layer_of_what_changed_brings_a_copy_in_step() {
     };
     apply_layer(&layer[..], there, &opts).unwrap();
     assert_eq!(std::fs::read_to_string(there.join("dir/changed")).unwrap(), "new");
-    assert_eq!(mtime(&there.join("dir/changed")), (1_700_000_000, 123_456_789));
-    assert_eq!(std::fs::read_to_string(there.join("dir/added")).unwrap(), "added");
-    let (added, linked) = (
-        std::fs::metadata(there.join("dir/added")).unwrap(),
-        std::fs::metadata(there.join("dir/linked")).unwrap(),
-    );
     assert_eq!(
-        (added.dev(), added.ino()),
-        (linked.dev(), linked.ino()),
-        "linked again"
+        mtime(&there.join("dir/changed")),
+        (1_700_000_000, 123_456_789 / GRAIN * GRAIN)
+    );
+    assert_eq!(std::fs::read_to_string(there.join("dir/added")).unwrap(), "added");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt as _;
+        let (added, linked) = (
+            std::fs::metadata(there.join("dir/added")).unwrap(),
+            std::fs::metadata(there.join("dir/linked")).unwrap(),
+        );
+        assert_eq!(
+            (added.dev(), added.ino()),
+            (linked.dev(), linked.ino()),
+            "linked again"
+        );
+    }
+    // A Windows client's pack finds no hard links, as go-archive's finds none there
+    // (hasHardlinks): the link goes as a file of its own.
+    #[cfg(windows)]
+    assert_eq!(
+        std::fs::read_to_string(there.join("dir/linked")).unwrap(),
+        "added"
     );
     assert_eq!(
         std::fs::read_link(there.join("dir/pointer")).unwrap(),
@@ -89,9 +114,13 @@ fn a_layer_of_what_changed_brings_a_copy_in_step() {
 }
 
 /// A new name of a file the copy holds already, unchanged, goes as a link to it there: the
-/// layer carries none of its bytes, and the copy's two names are one file, as here.
+/// layer carries none of its bytes, and the copy's two names are one file, as here. Unix's
+/// alone: a Windows client's pack finds no hard links (go-archive's hasHardlinks), and its
+/// files' stats say no inode or link count to find them by (shards_archive's `sys::lstat`).
+#[cfg(unix)]
 #[test]
 fn a_new_name_of_a_file_the_copy_holds_is_linked_to_it_there() {
+    use std::os::unix::fs::MetadataExt as _;
     let (here_dir, there_dir) = (
         TempDir::new("changes-link-here").unwrap(),
         TempDir::new("changes-link-there").unwrap(),

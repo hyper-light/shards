@@ -922,9 +922,8 @@ fn idle_daemons_exit() {
 
 /// A stream the Engine API answers ends with its client: an events stream whose client
 /// leaves while nothing happens ends then, not at the next event, which may never come, and
-/// the daemon, kept while the stream was open, goes idle after it. Windows' Engine API, a
-/// named pipe, comes with the parity plan's step 8.
-#[cfg(unix)]
+/// the daemon, kept while the stream was open, goes idle after it. On Windows the stream is
+/// the named pipe the home's `engine.pipe` names (D170).
 #[test]
 fn an_engine_stream_ends_with_its_client() {
     let home = TempDir::new("engine-gone");
@@ -936,7 +935,13 @@ fn an_engine_stream_ends_with_its_client() {
     assert_eq!(started.status, Some(0), "{}", started.stderr);
     let daemon = daemon_pid(&home).expect("a daemon pid");
     {
+        #[cfg(unix)]
         let mut events = UnixStream::connect(home.join("engine.sock")).unwrap();
+        #[cfg(windows)]
+        let mut events = {
+            let name = std::fs::read_to_string(home.join("engine.pipe")).unwrap();
+            shards_ipc::Stream::connect(name.trim()).unwrap()
+        };
         events.set_read_timeout(Some(TIMEOUT)).unwrap();
         events
             .write_all(b"GET /events HTTP/1.1\r\nHost: api\r\n\r\n")

@@ -95,9 +95,7 @@ fn a_reset_with_no_console_says_its_guests_panic() {
 /// where its page structures took a 64th of the window, 64 MiB, and on arm64 its linear
 /// map's page tables 8.3 MiB more, a 512th of head and window in base pages. Free memory
 /// is MemFree and the pages its CPUs' free lists hold, which held up to 16 MiB as a boot
-/// began (M300); each the most of three boots.
-// Shared directories, and so DAX windows, are Unix hosts' alone.
-#[cfg(unix)]
+/// began (M300); each the most of three boots. Windows' windows too (D197, PM M412, M413).
 #[test]
 fn a_dax_windows_page_structures_take_none_of_its_guests_memory() {
     if cannot_run_vms() {
@@ -157,9 +155,11 @@ fn a_dax_windows_page_structures_take_none_of_its_guests_memory() {
 /// Mac and on Fedora), and with them made but its head's own pages' 20 MiB; with neither,
 /// 0.1 MiB on the Mac and 0.3 on Fedora (2.1, 2.8 and 8.2 on an x86_64 CI runner while
 /// a device's reset wrote its window's whole held record, PM M307). Each the least of
-/// three boots' peaks.
-// Shared directories, and so DAX windows, are Unix hosts' alone.
-#[cfg(unix)]
+/// three boots' peaks. On Windows a peak of the working set counts what the process
+/// touched, not what it committed, which Windows charges whole as it commits it, and which a
+/// head committed as it was reserved took, 2 GiB of jupiter's window (PM M413): there the
+/// peak is its commit charge's, each of its head's 2 MiB blocks committed as its guest
+/// first touches it.
 #[test]
 fn a_long_dax_window_costs_its_boot_next_to_nothing() {
     if cannot_run_vms() {
@@ -189,7 +189,12 @@ fn a_long_dax_window_costs_its_boot_next_to_nothing() {
                     TIMEOUT,
                 );
                 assert_eq!(r.status, Some(0), "{r}");
-                r.rss_kib().unwrap_or_else(|| panic!("no peak said: {r}"))
+                let peak = if cfg!(windows) {
+                    r.peak_commit_kib()
+                } else {
+                    r.rss_kib()
+                };
+                peak.unwrap_or_else(|| panic!("no peak said: {r}"))
             })
             .min()
             .unwrap()
@@ -1329,9 +1334,12 @@ fn a_snapshot_keeps_the_memory_its_guest_plugged() {
 /// page out of the hypervisor's mappings is out of the footprint, held or not, PM M193; a
 /// block the guest's driver is plugging as it ends, asked for everything and then nothing,
 /// is the guest's, and none of what it gave back). Asked for more
-/// than it may have, it is given what it may. On the hosts whose VMs it measures the
-/// memory of (`process_usage`): Windows runs none yet.
-#[cfg(unix)]
+/// than it may have, it is given what it may. On Windows, which says nothing of which pages
+/// a process holds (`platform::untouched` asks it nothing, so `hotplug_held_kib` is 0
+/// there), what the VM process holds of what it gave back is what it still has committed
+/// of it: a block is committed as it is plugged and decommitted as it is given back
+/// (`platform::grant`, `platform::withhold`), so its commit falls by the whole GiB, all of
+/// it given back, but for what it holds still.
 #[test]
 fn a_guest_grows_and_gives_back_its_memory() {
     use std::io::{BufRead, Write};
@@ -1349,8 +1357,9 @@ fn a_guest_grows_and_gives_back_its_memory() {
         .stderr(std::process::Stdio::piped())
         .spawn()
         .unwrap();
-    // `shards run --kernel` becomes the VM process: the same pid.
-    let pid = child.id();
+    // `shards run --kernel` becomes the VM process on Unix, the same pid; on Windows it
+    // starts the VM process, its child, found once the guest has said it plugged.
+    let front = child.id();
     let mut stdin = child.stdin.take().unwrap();
     // Its stderr drained as it runs, so that what it writes there never waits on the test.
     let mut stderr = child.stderr.take().unwrap();
@@ -1388,12 +1397,24 @@ fn a_guest_grows_and_gives_back_its_memory() {
             }
         }
     };
-    let footprint = || shards_vmm::platform::process_usage(pid).unwrap().footprint;
     let plugged_ms: u64 = until("SHARDS-TEST PLUGGED").parse().unwrap();
+    #[cfg(unix)]
+    let pid = front;
+    #[cfg(windows)]
+    let pid = {
+        let found = common::vm_processes(front);
+        assert_eq!(found.len(), 1, "shards {front}'s VM processes: {found:?}");
+        found[0]
+    };
+    let footprint = || shards_vmm::platform::process_usage(pid).unwrap().footprint;
     let full = footprint();
+    #[cfg(windows)]
+    let full_commit = common::private_commit(pid);
     stdin.write_all(b"\n").unwrap();
     let unplugged_ms: u64 = until("SHARDS-TEST UNPLUGGED").parse().unwrap();
     let given_back = footprint();
+    #[cfg(windows)]
+    let back_commit = common::private_commit(pid);
     stdin.write_all(b"\n").unwrap();
     until("SHARDS-TEST PASS");
     eprintln!(
@@ -1407,6 +1428,15 @@ fn a_guest_grows_and_gives_back_its_memory() {
         full.saturating_sub(given_back) >= 768 << 20,
         "the VM process held {full} bytes, then {given_back}"
     );
+    #[cfg(windows)]
+    {
+        let held = (1u64 << 30).saturating_sub(full_commit.saturating_sub(back_commit));
+        assert!(
+            held < 16 << 20,
+            "the VM process had {full_commit} bytes committed, then {back_commit}: it holds {} KiB of the memory it gave back",
+            held >> 10
+        );
+    }
     let status = child.wait().unwrap();
     let err = err.join().unwrap();
     assert!(status.success(), "{err}");

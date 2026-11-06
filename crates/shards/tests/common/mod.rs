@@ -82,6 +82,19 @@ pub fn program(path: &Path, text: &str) {
     assert!(writer.wait().unwrap().success(), "{} not written", path.display());
 }
 
+/// The program at `from`, copied to `to` as [`program`] writes one: by a process of its own
+/// on Unix, so that no child another test's thread forks holds it open to write.
+pub fn program_copy(from: &Path, to: &Path) {
+    #[cfg(unix)]
+    assert!(
+        Command::new("cp").arg(from).arg(to).status().unwrap().success(),
+        "{} not copied",
+        from.display()
+    );
+    #[cfg(windows)]
+    std::fs::copy(from, to).unwrap();
+}
+
 /// A home whose guest is the test kernel and init, recorded before its daemon starts.
 pub fn home_with(name: &str, timeout: Duration) -> TempDir {
     let home = TempDir::new(name);
@@ -829,6 +842,30 @@ pub fn processes() -> Vec<(u32, u32, String)> {
     found
 }
 
+/// The private bytes process `pid` has committed (PROCESS_MEMORY_COUNTERS_EX's
+/// PrivateUsage): what Windows charges it of the host's commit, which it holds until it
+/// decommits them, touched or not, in its working set or not (PM M371, M413).
+#[cfg(windows)]
+pub fn private_commit(pid: u32) -> u64 {
+    use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle};
+    use windows_sys::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS_EX};
+    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+    // SAFETY: a process handle of the one right asked, owned from here on.
+    let raw = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    assert!(!raw.is_null(), "process {pid}: {}", io::Error::last_os_error());
+    // SAFETY: the handle just opened, which nothing else owns.
+    let process = unsafe { OwnedHandle::from_raw_handle(raw) };
+    let mut counters = PROCESS_MEMORY_COUNTERS_EX {
+        cb: size_of::<PROCESS_MEMORY_COUNTERS_EX>() as u32,
+        ..Default::default()
+    };
+    // SAFETY: counters of the size their `cb` says, of a process handle held above.
+    let read =
+        unsafe { GetProcessMemoryInfo(process.as_raw_handle(), (&raw mut counters).cast(), counters.cb) };
+    assert_ne!(read, 0, "process {pid}: {}", io::Error::last_os_error());
+    counters.PrivateUsage as u64
+}
+
 /// A handle to process `pid` that may give it handles (PROCESS_DUP_HANDLE), as a VM's
 /// spawner holds one: what `shards_ipc::Stream::gives_to` takes.
 #[cfg(windows)]
@@ -1511,6 +1548,12 @@ impl Run {
     /// The VMM process's own memory as it reported, in KiB, as memory per VM is counted.
     pub fn footprint_kib(&self) -> Option<u128> {
         self.timing_field("footprint_kib")
+    }
+
+    /// The VMM process's peak commit charge as it reported, in KiB: Windows' alone, which
+    /// charges memory as it is committed, touched or not (PM M413); 0 elsewhere.
+    pub fn peak_commit_kib(&self) -> Option<u128> {
+        self.timing_field("peak_commit_kib")
     }
 
     /// What the VM's guest reported free, given back or not (D151), in KiB.
