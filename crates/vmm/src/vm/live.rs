@@ -229,10 +229,11 @@ mod tests {
     #[test]
     fn a_last_round_goes_on_from_the_rounds() {
         let mut bytes = Vec::new();
-        let mut w = Writer::new(&mut bytes).unwrap();
-        w.record(RAM, 0, &[1; 8192]).unwrap();
-        w.round(0).unwrap();
-        drop(w);
+        {
+            let mut w = Writer::new(&mut bytes).unwrap();
+            w.record(RAM, 0, &[1; 8192]).unwrap();
+            w.round(0).unwrap();
+        }
         let mut last = Writer::going_on(&mut bytes);
         last.record(RAM, 0x1000, &[0; 4096]).unwrap();
         last.record(SWAP, 0x2000, &[4; 4096]).unwrap();
