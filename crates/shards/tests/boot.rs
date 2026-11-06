@@ -1260,9 +1260,12 @@ fn a_snapshot_keeps_the_memory_its_guest_plugged() {
 /// page out of the hypervisor's mappings is out of the footprint, held or not, PM M193; a
 /// block the guest's driver is plugging as it ends, asked for everything and then nothing,
 /// is the guest's, and none of what it gave back). Asked for more
-/// than it may have, it is given what it may. On the hosts whose VMs it measures the
-/// memory of (`process_usage`): Windows runs none yet.
-#[cfg(unix)]
+/// than it may have, it is given what it may. On Windows, which says nothing of which pages
+/// a process holds (`platform::untouched` asks it nothing, so `hotplug_held_kib` is 0
+/// there), what the VM process holds of what it gave back is what it still has committed
+/// of it: a block is committed as it is plugged and decommitted as it is given back
+/// (`platform::grant`, `platform::withhold`), so its commit falls by the whole GiB, all of
+/// it given back, but for what it holds still.
 #[test]
 fn a_guest_grows_and_gives_back_its_memory() {
     use std::io::{BufRead, Write};
@@ -1280,8 +1283,9 @@ fn a_guest_grows_and_gives_back_its_memory() {
         .stderr(std::process::Stdio::piped())
         .spawn()
         .unwrap();
-    // `shards run --kernel` becomes the VM process: the same pid.
-    let pid = child.id();
+    // `shards run --kernel` becomes the VM process on Unix, the same pid; on Windows it
+    // starts the VM process, its child, found once the guest has said it plugged.
+    let front = child.id();
     let mut stdin = child.stdin.take().unwrap();
     // Its stderr drained as it runs, so that what it writes there never waits on the test.
     let mut stderr = child.stderr.take().unwrap();
@@ -1319,12 +1323,24 @@ fn a_guest_grows_and_gives_back_its_memory() {
             }
         }
     };
-    let footprint = || shards_vmm::platform::process_usage(pid).unwrap().footprint;
     let plugged_ms: u64 = until("SHARDS-TEST PLUGGED").parse().unwrap();
+    #[cfg(unix)]
+    let pid = front;
+    #[cfg(windows)]
+    let pid = {
+        let found = common::vm_processes(front);
+        assert_eq!(found.len(), 1, "shards {front}'s VM processes: {found:?}");
+        found[0]
+    };
+    let footprint = || shards_vmm::platform::process_usage(pid).unwrap().footprint;
     let full = footprint();
+    #[cfg(windows)]
+    let full_commit = common::private_commit(pid);
     stdin.write_all(b"\n").unwrap();
     let unplugged_ms: u64 = until("SHARDS-TEST UNPLUGGED").parse().unwrap();
     let given_back = footprint();
+    #[cfg(windows)]
+    let back_commit = common::private_commit(pid);
     stdin.write_all(b"\n").unwrap();
     until("SHARDS-TEST PASS");
     eprintln!(
@@ -1338,6 +1354,15 @@ fn a_guest_grows_and_gives_back_its_memory() {
         full.saturating_sub(given_back) >= 768 << 20,
         "the VM process held {full} bytes, then {given_back}"
     );
+    #[cfg(windows)]
+    {
+        let held = (1u64 << 30).saturating_sub(full_commit.saturating_sub(back_commit));
+        assert!(
+            held < 16 << 20,
+            "the VM process had {full_commit} bytes committed, then {back_commit}: it holds {} KiB of the memory it gave back",
+            held >> 10
+        );
+    }
     let status = child.wait().unwrap();
     let err = err.join().unwrap();
     assert!(status.success(), "{err}");
