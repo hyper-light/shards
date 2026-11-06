@@ -1,6 +1,8 @@
 //! The conformance suite against the simulator, and the client against stand-ins for the
 //! `shards` binary that end or wait as a VM process would.
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing, clippy::print_stdout)]
+
 use std::io::{Read as _, Write as _};
 use std::net::Shutdown;
 use std::time::Duration;

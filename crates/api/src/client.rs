@@ -53,7 +53,7 @@ const LAST_BACKOFF: Duration = Duration::from_millis(50);
 /// The longest answer a handshake reads: `OK 4294967295\n`, with room.
 const ANSWER: usize = 32;
 
-impl crate::Guests for Shards {
+impl Guests for Shards {
     fn backend(&self) -> Result<crate::Backend, Refusal> {
         backend()
     }
@@ -105,6 +105,7 @@ impl crate::Guests for Shards {
         Ok(Box::new(ShardsGuest {
             ports: spec.ports.clone(),
             vsock,
+            #[cfg(unix)]
             pid: child.id(),
             child: Mutex::new(child),
             shared,
@@ -384,6 +385,7 @@ impl Exit {
 struct ShardsGuest {
     ports: Vec<u32>,
     vsock: PathBuf,
+    #[cfg(unix)]
     pid: u32,
     child: Mutex<Child>,
     shared: Arc<Shared>,

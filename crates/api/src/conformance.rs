@@ -144,25 +144,34 @@ pub fn a_served_port_carries_bytes_and_a_half_close(s: &Subject<'_>) -> Result<(
     // Written on a thread of its own while this one reads: the echo writes back as it reads,
     // and neither side's buffers hold all of it.
     let written = std::thread::scope(|scope| {
-        let wrote = scope.spawn(|| {
-            writer.write_all(&sent)?;
-            writer.shutdown(Shutdown::Write)
-        });
+        let wrote = std::thread::Builder::new()
+            .name("conformance-writer".into())
+            .spawn_scoped(scope, || {
+                writer.write_all(&sent)?;
+                writer.shutdown(Shutdown::Write)
+            });
+        let wrote = match wrote {
+            Ok(wrote) => wrote,
+            Err(e) => return Err(format!("a writer thread: {e}")),
+        };
         let mut got = Vec::with_capacity(sent.len());
         let read = conn.read_to_end(&mut got).map(|_| got);
-        (wrote.join(), read)
+        match (wrote.join(), read) {
+            (Ok(Ok(())), Ok(got)) => Ok(got),
+            (Ok(Err(e)), _) => Err(format!("writing: {e}")),
+            (Err(_), _) => Err("the writer panicked".into()),
+            (_, Err(e)) => Err(format!("reading to the guest's half-close: {e}")),
+        }
     });
     match written {
-        (Ok(Ok(())), Ok(got)) if got == sent => {}
-        (Ok(Ok(())), Ok(got)) => {
+        Ok(got) if got == sent => {}
+        Ok(got) => {
             return Err(fail(
                 CASE,
                 format!("sent {} bytes, read back {} different ones", sent.len(), got.len()),
             ));
         }
-        (Ok(Err(e)), _) => return Err(fail(CASE, format!("writing: {e}"))),
-        (Err(_), _) => return Err(fail(CASE, "the writer panicked")),
-        (_, Err(e)) => return Err(fail(CASE, format!("reading to the guest's half-close: {e}"))),
+        Err(why) => return Err(fail(CASE, why)),
     }
     let _ = guest.stop();
     Ok(())
