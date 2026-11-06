@@ -331,6 +331,32 @@ mod tests {
         assert_eq!(refused(GuestSpec { ports, ..spec() }), "ports");
     }
 
+    /// A recorded bound is seeded only from its own host class's record: macOS-HVF's
+    /// here; on Linux-KVM and Windows-WHP, none yet, each naming its pending record, never a
+    /// number borrowed from another class (Hex HEX-GUEST-9).
+    #[test]
+    fn a_bound_is_seeded_only_from_its_own_host_classs_record() {
+        let ms = Duration::from_millis;
+        for (what, bound, macos) in [
+            ("STOP_GRACE", STOP_GRACE, ms(26)),
+            (
+                "OVERSHOOT",
+                conformance::OVERSHOOT,
+                Duration::from_nanos(301_708_500),
+            ),
+        ] {
+            match (record::CLASS, bound) {
+                ("macOS-HVF", Ok(d)) => assert_eq!(d, macos, "{what}"),
+                (class, Err(pending)) => {
+                    assert_ne!(class, "macOS-HVF", "{what}");
+                    assert_eq!((pending.what, pending.class), (what, class));
+                    assert!(pending.to_string().contains(class), "{pending}");
+                }
+                other => panic!("{what}: {other:?}"),
+            }
+        }
+    }
+
     /// The backend each host boots with, and the two hosts without one refused naming
     /// them (Hex HEX-GUEST-9).
     #[test]

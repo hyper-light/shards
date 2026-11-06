@@ -867,6 +867,22 @@ mod tests {
         (dir, guest, dials)
     }
 
+    /// Where this host class has no record of a stop, `stop` is refused naming the record
+    /// it waits on, and sends nothing: no grace borrowed from another class (Hex
+    /// HEX-GUEST-9).
+    #[cfg(all(unix, not(target_os = "macos")))]
+    #[test]
+    fn a_stop_without_this_classs_record_is_refused_by_name() {
+        let (_dir, guest, _) = listening_after(0);
+        match guest.stop() {
+            Err(Refusal::Unsupported { what: "stop", why }) => {
+                assert!(why.contains(crate::record::CLASS), "{why}")
+            }
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(guest.wait_for(Duration::ZERO).unwrap(), None);
+    }
+
     /// A patience of zero is one dial, its answer awaited, and no other (Hex HEX-GUEST-9).
     #[cfg(unix)]
     #[test]
