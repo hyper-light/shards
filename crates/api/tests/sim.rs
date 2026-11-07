@@ -14,7 +14,7 @@ use std::net::Shutdown;
 use std::time::Duration;
 
 use shards_api::conformance::{self, Subject};
-use shards_api::record::Pending;
+use shards_api::record::Learned;
 use shards_api::sim::{SimGuests, SimHost};
 use shards_api::{End, GuestSpec, Guests, Init, Refusal, min_memory_mib};
 
@@ -23,18 +23,17 @@ use shards_api::{End, GuestSpec, Guests, Init, Refusal, min_memory_mib};
 const ECHO: u32 = 1234;
 const UNSERVED: u32 = 1236;
 /// A hang guard: each wait here returns at its fact (a condition variable's signal, a
-/// process's end), and the guard only bounds a failing one. By host class (`record`):
-/// macOS-HVF, twice (the margin) the slowest recorded of these tests' waits, a new stand-in
-/// script's boot to its end, 4.402617625 s (`docs/research/platform-measurements.md` M463);
-/// Linux-KVM and Windows-WHP, pending their records.
-#[cfg(target_os = "macos")]
-const PATIENCE: Result<Duration, Pending> = Ok(Duration::from_nanos(2 * 4_402_617_625));
-#[cfg(not(target_os = "macos"))]
-const PATIENCE: Result<Duration, Pending> = Err(Pending::of("tests/sim.rs PATIENCE"));
+/// process's end), and the guard only bounds a failing one (`record::Learned`). Recorded:
+/// macOS-HVF's slowest of these tests' waits, a new stand-in script's boot to its end,
+/// 4.402617625 s (`docs/research/platform-measurements.md` M463).
+static PATIENCE: Learned = Learned::new(
+    "tests/sim.rs PATIENCE",
+    &[("macOS-HVF", Duration::from_nanos(4_402_617_625))],
+);
 
-/// This class's `PATIENCE`; a test fails naming the record it waits on where there is none.
+/// This node's `PATIENCE` now.
 fn patience() -> Duration {
-    PATIENCE.unwrap_or_else(|pending| panic!("{pending}"))
+    PATIENCE.get()
 }
 
 /// A spec of the least guest Shards boots: one vCPU, its least memory (`min_memory_mib`).
@@ -152,12 +151,12 @@ mod client {
     use std::path::PathBuf;
     use std::time::Instant;
 
-    /// How soon after shards' end its refusal comes: macOS-HVF, twice (the margin) the slowest
-    /// recorded, 4.277875 ms with a child holding shards' output (M463); other classes pending.
-    #[cfg(target_os = "macos")]
-    const REFUSED_AFTER_END: Result<Duration, Pending> = Ok(Duration::from_nanos(2 * 4_277_875));
-    #[cfg(not(target_os = "macos"))]
-    const REFUSED_AFTER_END: Result<Duration, Pending> = Err(Pending::of("REFUSED_AFTER_END"));
+    /// How soon after shards' end its refusal comes (`record::Learned`). Recorded:
+    /// macOS-HVF's slowest, 4.277875 ms with a child holding shards' output (M463).
+    static REFUSED_AFTER_END: Learned = Learned::new(
+        "REFUSED_AFTER_END",
+        &[("macOS-HVF", Duration::from_nanos(4_277_875))],
+    );
 
     /// A stand-in for `shards` that runs `body` whatever it is asked.
     fn stand_in(dir: &shards_testdir::TempDir, body: &str) -> PathBuf {
@@ -390,9 +389,10 @@ mod client {
         }
         let took = at.saturating_duration_since(ended);
         assert!(
-            took < REFUSED_AFTER_END.unwrap_or_else(|pending| panic!("{pending}")),
+            took < REFUSED_AFTER_END.get(),
             "refused {took:?} after shards' end"
         );
+        REFUSED_AFTER_END.saw(took);
     }
 
     /// Measures how long past its patience an unserved connect's refusal comes, the

@@ -106,9 +106,9 @@ pub enum End {
     Failed(String),
 }
 
-/// Bounds seeded from records of a host class's own runs: macOS-HVF, Linux-KVM and
-/// Windows-WHP are recorded apart, chosen as this crate is built, and a class with no record
-/// yet has no bound, but the [`Pending`](record::Pending) record it waits on.
+/// Bounds seeded from records of a host class's runs: macOS-HVF, Linux-KVM and
+/// Windows-WHP are recorded apart and chosen as this crate is built; a class with no record
+/// seeds from the slowest of any, and every bound rises with what its node sees.
 pub mod record {
     /// This host's class.
     pub const CLASS: &str = if cfg!(target_os = "macos") {
@@ -121,24 +121,53 @@ pub mod record {
         "no backend"
     };
 
-    /// A bound this host class has no record for yet: it is recorded on such a host first
-    /// (`docs/research/measurements/shards-api-waits/run.sh`), never borrowed from another
-    /// class's.
-    #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-    #[error("{what} has no record on {class} yet: record it there first ({how})")]
-    pub struct Pending {
-        pub what: &'static str,
-        pub class: &'static str,
-        pub how: &'static str,
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::Duration;
+
+    /// A bound on a wait that can't wait on a fact alone, from the records of its waits by
+    /// host class (`docs/research/measurements/shards-api-waits/run.sh`): twice (the
+    /// margin) this class's slowest record; where this class has none, twice the slowest of
+    /// any class's, as an unrecorded model seeds from the highest on record; and either
+    /// rising to twice the slowest this node has seen ([`Learned::saw`]), never falling.
+    #[derive(Debug)]
+    pub struct Learned {
+        name: &'static str,
+        records: &'static [(&'static str, Duration)],
+        /// The slowest seen here, in ns.
+        seen: AtomicU64,
     }
 
-    impl Pending {
-        pub const fn of(what: &'static str) -> Pending {
-            Pending {
-                what,
-                class: CLASS,
-                how: "docs/research/measurements/shards-api-waits/run.sh, PM M463's table",
+    impl Learned {
+        pub const fn new(name: &'static str, records: &'static [(&'static str, Duration)]) -> Learned {
+            Learned {
+                name,
+                records,
+                seen: AtomicU64::new(0),
             }
+        }
+
+        /// What it bounds.
+        pub fn name(&self) -> &'static str {
+            self.name
+        }
+
+        /// The bound now: twice the slowest of this class's records, else of any class's,
+        /// or of what this node has seen, whichever is longer.
+        pub fn get(&self) -> Duration {
+            let own = self.records.iter().filter(|(class, _)| *class == CLASS);
+            let slowest = |r: &mut dyn Iterator<Item = &(&str, Duration)>| r.map(|(_, d)| *d).max();
+            let recorded = slowest(&mut own.clone())
+                .or_else(|| slowest(&mut self.records.iter()))
+                .unwrap_or_default();
+            let seen = Duration::from_nanos(self.seen.load(Ordering::Relaxed));
+            recorded.max(seen).saturating_mul(2)
+        }
+
+        /// A wait it bounds took `took`: the bound rises to twice it where it is the
+        /// slowest yet.
+        pub fn saw(&self, took: Duration) {
+            let ns = u64::try_from(took.as_nanos()).unwrap_or(u64::MAX);
+            self.seen.fetch_max(ns, Ordering::Relaxed);
         }
     }
 }

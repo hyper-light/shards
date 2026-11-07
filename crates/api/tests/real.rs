@@ -55,7 +55,7 @@ fn shards_conforms() {
         port: 1234,
         unserved: 1236,
         powering_off: spec("kmsg"),
-        patience: conformance::PATIENCE.unwrap_or_else(|pending| panic!("{pending}")),
+        patience: conformance::PATIENCE.get(),
     })
     .unwrap();
 }

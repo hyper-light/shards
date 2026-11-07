@@ -320,7 +320,7 @@ mod tests {
     /// How long a timed operation here may take: its timeout, `UNSERVED_PATIENCE`, and
     /// this host class's recorded lateness of a timed wait (`OVERSHOOT`), a hang guard.
     fn timed() -> (Duration, Duration) {
-        let late = crate::conformance::OVERSHOOT.unwrap_or_else(|pending| panic!("{pending}"));
+        let late = crate::conformance::OVERSHOOT.get();
         let timeout = crate::conformance::UNSERVED_PATIENCE;
         (timeout, timeout.saturating_add(late))
     }

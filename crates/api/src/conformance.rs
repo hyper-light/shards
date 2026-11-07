@@ -10,7 +10,7 @@ use std::io::{Read as _, Write as _};
 use std::net::Shutdown;
 use std::time::{Duration, Instant};
 
-use crate::record::Pending;
+use crate::record::Learned;
 use crate::{Backend, End, Guest, GuestSpec, Guests, Refusal, backend_of, min_memory_mib};
 
 /// What the suite runs against.
@@ -250,40 +250,36 @@ pub fn an_unserved_port_is_refused(s: &Subject<'_>) -> Result<(), Failure> {
     }
     // A handshake under way when patience runs out ends at it (its timeouts are what is
     // left), so a refusal comes at the patience and its thread's wake.
-    let overshoot = OVERSHOOT.map_err(|pending| fail(CASE, pending.to_string()))?;
+    let overshoot = OVERSHOOT.get();
     if took < patience || took > patience.saturating_add(overshoot) {
         return Err(fail(
             CASE,
-            format!("refused after {took:?}, with patience {patience:?}"),
+            format!("refused after {took:?}, with patience {patience:?} and {overshoot:?} past it"),
         ));
     }
+    OVERSHOOT.saw(took.saturating_sub(patience));
     let _ = guest.stop();
     Ok(())
 }
 
-/// How long a real guest may take to boot and listen, to echo, or to end, by host class
-/// (`record`): a hang guard, each wait returning at its fact. macOS-HVF: twice (the margin)
-/// the slowest recorded of those waits, a boot to its port answering, 248.467 ms
-/// (`docs/research/platform-measurements.md` M463); Linux-KVM and Windows-WHP: pending their
-/// records.
-#[cfg(target_os = "macos")]
-pub const PATIENCE: Result<Duration, Pending> = Ok(Duration::from_nanos(2 * 248_467_000));
-#[cfg(not(target_os = "macos"))]
-pub const PATIENCE: Result<Duration, Pending> = Err(Pending::of("conformance::PATIENCE"));
+/// How long a real guest may take to boot and listen, to echo, or to end (`record::Learned`):
+/// a hang guard, each wait returning at its fact. Recorded: macOS-HVF's slowest, a boot to
+/// its port answering, 248.467 ms (`docs/research/platform-measurements.md` M463).
+pub static PATIENCE: Learned = Learned::new(
+    "conformance::PATIENCE",
+    &[("macOS-HVF", Duration::from_nanos(248_467_000))],
+);
 
 /// The patience an unserved port is asked with: an input, as any shows the patience kept;
 /// short, so the case is.
 pub const UNSERVED_PATIENCE: Duration = Duration::from_millis(200);
 
-/// How long past its patience an unserved port's refusal may come, by host class (`record`).
-/// macOS-HVF: twice (the margin) the slowest recorded, 150.85425 ms (the simulator's, its
-/// timer leeway on a 200 ms wait; `docs/research/platform-measurements.md` M462, above
-/// M463's real guests' 138.7 ms). Linux-KVM and Windows-WHP: pending their records, and the
-/// case fails naming them.
-#[cfg(target_os = "macos")]
-pub const OVERSHOOT: Result<Duration, Pending> = Ok(Duration::from_nanos(2 * 150_854_250));
-#[cfg(not(target_os = "macos"))]
-pub const OVERSHOOT: Result<Duration, Pending> = Err(Pending::of("OVERSHOOT"));
+/// How long past its patience an unserved port's refusal may come (`record::Learned`).
+/// Recorded: macOS-HVF's slowest, 150.85425 ms, the simulator's, its timer leeway on a 200
+/// ms wait (`docs/research/platform-measurements.md` M462, above M463's real guests' 138.7
+/// ms).
+pub static OVERSHOOT: Learned =
+    Learned::new("OVERSHOOT", &[("macOS-HVF", Duration::from_nanos(150_854_250))]);
 
 /// `stop` ends a guest as `Stopped`, and a `connect` after it is refused `Ended(Stopped)`.
 pub fn stop_ends_it_and_later_connects_are_refused(s: &Subject<'_>) -> Result<(), Failure> {
