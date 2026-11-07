@@ -512,6 +512,11 @@ fn receive(
         host::Taken::Pack(offset) => Ok(shards_image::erofs::DataRef { source: pack, offset }),
         host::Taken::File(path) => sources.host(path, size).map_err(|e| Error(e.to_string())),
     };
+    // Each file opened beneath the root, never through a link a directory of it became
+    // since the walk.
+    let mut beneath = tree
+        .beneath()
+        .map_err(|e| Error(format!("{}: {e}", tree.root().display())))?;
     let mut read: Vec<Read> = Vec::new();
     let mut fs = Fs::new(
         Tree::new(Meta {
@@ -556,11 +561,13 @@ fn receive(
             // one of a whole directory read in place, the directory's clone to say so.
             let src = tree.path(&rel);
             let dir = whole_of(whole, &rel).filter(|_| st.size < host::CLONE_MIN);
-            let (got, taken, seen) = match dir {
-                Some(_) => stage.read(&src).map(|(g, t, s)| (g, t, Some(s))),
-                None => stage.take(&src).map(|(g, t)| (g, t, None)),
-            }
-            .map_err(|e| Error(format!("{}: {e}", src.display())))?;
+            let (got, taken, seen) = beneath
+                .open(&rel)
+                .and_then(|f| match dir {
+                    Some(_) => stage.read_opened(f, &src).map(|(g, t, s)| (g, t, Some(s))),
+                    None => stage.take_opened(f, &src).map(|(g, t)| (g, t, None)),
+                })
+                .map_err(|e| Error(format!("{}: {e}", src.display())))?;
             st.mode = (st.mode & !(fm::PERM | fm::SETUID | fm::SETGID | fm::STICKY)) | got.mode;
             st.size = got.size;
             st.mtime = got.mtime;
@@ -593,7 +600,7 @@ fn receive(
             None => {
                 let at = tree.path(&r.dir);
                 let done = stage
-                    .clone_dir(&at, &r.dir)
+                    .clone_dir(&mut beneath, &r.dir)
                     .map_err(|e| Error(format!("{}: {e}", at.display())))?;
                 cloned.insert(r.dir.clone(), done);
                 done
@@ -608,8 +615,9 @@ fn receive(
             }
             continue;
         }
-        let (again, taken) = stage
-            .take(&src)
+        let (again, taken) = beneath
+            .open(&r.rel)
+            .and_then(|f| stage.take_opened(f, &src))
             .map_err(|e| Error(format!("{}: {e}", src.display())))?;
         if again != r.got {
             return Err(changed());

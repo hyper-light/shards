@@ -2409,7 +2409,18 @@ containers. Evidence: docs/research/image-build.md (§3 ranks the choices below)
          placeholder or a WOF-compressed file, opened again for its bytes and taken only
          if its volume serial and 128-bit file ID are the first handle's;
          `shards_ntfs::open_unfollowed`, after Microsoft's CreateFileW,
-         IsReparseTagNameSurrogate and FILE_ID_INFO), and refused if a write came
+         IsReparseTagNameSurrogate and FILE_ID_INFO), through no link at any name below
+         the context's root either (added 2026-11-07, host.rs `Beneath`: each directory
+         opened in the one above it, openat(2) `O_NOFOLLOW|O_DIRECTORY`, on Windows
+         NtCreateFile relative to its parent's handle with a link refused, the last
+         directory's handle held for its files; openat2's RESOLVE_BENEATH and macOS's
+         `O_NOFOLLOW_ANY` not needed, one openat of one name per step on every kernel),
+         so a directory a link replaced after the walk is refused, where fsutil's sender
+         (`fs.Open`, `os.Open(filepath.Join(root, p))` at 83cac42c1c52, the FS buildx
+         v0.37.1's `fsutil.NewFS` gives) follows every name of the path, the last
+         included; the walk itself is unchanged, so `tests/context.rs`'s answers are
+         fsutil's still, and `a_directory_a_link_replaced_since_the_walk_is_not_followed`
+         holds the refusal), and refused if a write came
          while it was taken, as GNU tar reports "file changed as we read it" (PM M100,
          M242). A file under 1 MiB is packed into one file of the stage, a larger one
          cloned where the file system clones (APFS, Btrfs, XFS) and copied elsewhere.
