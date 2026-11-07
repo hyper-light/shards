@@ -91,8 +91,9 @@ are inside it; it writes them to your cache directory the first time it needs th
 - **macOS**: 15 or later, on Apple silicon.
 - **Linux**: x86_64 or arm64, with access to `/dev/kvm` (usually the `kvm` group). Add
   `--target x86_64-unknown-linux-musl` (or `aarch64-unknown-linux-musl`) for a static binary.
-- **Windows**: x86_64, with the Windows Hypervisor Platform turned on. On arm64 Windows,
-  shards runs no microVMs yet.
+- **Windows**: x86_64 or arm64, with the Windows Hypervisor Platform turned on. arm64
+  Windows needs Windows 11 24H2 (build 26100.3915) or later, and is new: its full test
+  suite has not passed yet.
 
 ## Quickstart
 
@@ -322,23 +323,25 @@ saved here and resumed there where it was, its image, files and volumes with it;
 `--live` it keeps running while its memory is copied, and stops only for the last pass.
 
 > [!NOTE]
-> Snapshots work on macOS, on x86_64 and arm64 Linux, and on x86_64 Windows. Live moves
-> work on macOS and x86_64 Linux.
+> Snapshots work on macOS, on x86_64 and arm64 Linux, and on x86_64 Windows; arm64
+> Windows saves and restores microVMs too, so far tested on an emulated host only.
+> Live moves work on macOS, x86_64 Linux and x86_64 Windows; on arm64 Linux and arm64
+> Windows they are built but not yet tested with real microVMs.
 
 ## Where things stand
 
-| | Today (2026-11-04) |
+| | Today (2026-11-07) |
 |---|---|
 | MicroVMs on Apple silicon Macs, x86_64 and arm64 Linux, and x86_64 Windows | Work: booted directly and made from images, repeated runs served from warm copies |
-| MicroVMs on arm64 Windows | Not yet: no hypervisor backend |
+| MicroVMs on arm64 Windows | Booted, saved and restored, through the Windows Hypervisor Platform; tested on an emulated host only, its full test suite not yet passed |
 | Snapshots, and saving a running microVM whole | Every host above |
-| Moving a running microVM to another machine | Saved and resumed there, on every host; live on macOS and x86_64 Linux |
-| Disks, folders and volumes plugged into a running microVM, disks grown | macOS and Linux; a host's PCI device plugged in on Linux, tested nested with a test device |
+| Moving a running microVM to another machine | Saved and resumed there, on every host; live on macOS, x86_64 Linux and x86_64 Windows, built on arm64 Linux and arm64 Windows. Tested between two homes on one machine |
+| Disks, folders and volumes plugged into a running microVM, disks grown | macOS, Linux and Windows; a host's PCI device plugged in on Linux, tested nested with a test device |
 | Images, Dockerfiles and Agentfiles | Pulled, pushed and built, every `RUN` step in a microVM of the build's own, for other CPUs too under emulation |
 | Many agents in one microVM, each in its own domain | Works, from an Agentfile: each agent's own processes, files, networks and devices, and nothing it isn't granted |
 | Networks, volumes and devices | Work: a microVM reaches only what you give it, networks deny by default, over IPv4 and IPv6 |
 | GPUs | macOS, Linux (glibc and musl) and Windows (x86_64): your machine's GPU, for Vulkan in the microVM (`--gpus all`), tested on Apple's, NVIDIA's, AMD's and Intel's |
-| PCI passthrough | Linux passes a host's function through with VFIO, tested with a test device. macOS's Hypervisor.framework provides no device assignment API. The Windows hosts tested here refuse device assignment and shards reports their answers; DDA on a Windows Server host that permits it remains unimplemented and needs a real hardware E2E (D154) |
+| PCI passthrough | Linux passes a host's function through with VFIO, tested with a test device. macOS's Hypervisor.framework provides no device assignment API. Windows gives a microVM's kernel a host's device as it starts, on x86_64 and arm64, where its hypervisor allows device assignment (Windows Server's DDA); untested there, as every Windows host tested here refuses it, and shards reports their answer |
 | `docker` command lines, Compose and the Docker Engine API | Work, through shards' Engine API file |
 | Running shards' commands on another machine | Works: `shards create context`, over QUIC |
 
