@@ -932,6 +932,28 @@ mod tests {
         assert_eq!(guest.wait_for(Duration::MAX).unwrap(), Some(End::Stopped));
     }
 
+    /// A dropped guest leaves no zombie: once its watcher says it has exited, its process
+    /// is reaped, so its pid names nothing (Hex HEX-GUEST-9; review B2).
+    #[cfg(unix)]
+    #[test]
+    fn a_dropped_guest_leaves_no_zombie() {
+        let (_dir, guest, _) = listening_after(0);
+        let (pid, shared) = (guest.pid, guest.shared.clone());
+        drop(guest);
+        let mut state = lock(&shared.state);
+        while !state.exited {
+            state = shared.changed.wait(state).unwrap();
+        }
+        drop(state);
+        // kill -0 names a zombie as a process; a reaped pid is none.
+        let alive = Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .stderr(Stdio::null())
+            .status()
+            .unwrap();
+        assert!(!alive.success(), "pid {pid} is still a process (a zombie)");
+    }
+
     /// A patience of zero is one dial, its answer awaited, and no other (Hex HEX-GUEST-9).
     #[cfg(unix)]
     #[test]
