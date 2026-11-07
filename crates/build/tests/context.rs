@@ -579,19 +579,82 @@ fn a_directory_that_does_not_clone_is_taken_a_file_at_a_time() {
     drop(sources);
 }
 
-/// A file a symlink replaced since the walk is not followed out of the context. Unix's
-/// alone as yet: Windows' `open` (host.rs) opens through a reparse point, which
-/// docs/audit/2026-10-27_platform-parity.md lists open.
+/// A file a symlink replaced since the walk is not followed out of the context: refused as
+/// a link, Unix's ELOOP (O_NOFOLLOW), Windows' ERROR_STOPPED_ON_SYMLINK (host.rs `open`).
 #[test]
-#[cfg(unix)]
 fn a_symlink_put_in_a_files_place_is_not_followed() {
     let dir = tmp("snapshot-link");
     std::fs::write(dir.join("outside"), b"secret").unwrap();
-    std::os::unix::fs::symlink(dir.join("outside"), dir.join("f")).unwrap();
+    #[cfg(unix)]
+    let (made, refused) = (
+        std::os::unix::fs::symlink(dir.join("outside"), dir.join("f")),
+        libc::ELOOP,
+    );
+    #[cfg(windows)]
+    let (made, refused) = (
+        std::os::windows::fs::symlink_file(dir.join("outside"), dir.join("f")),
+        681, // ERROR_STOPPED_ON_SYMLINK
+    );
+    match made {
+        Ok(()) => {}
+        // ERROR_PRIVILEGE_NOT_HELD: no Developer Mode, not elevated.
+        Err(e) if cfg!(windows) && e.raw_os_error() == Some(1314) => {
+            use std::io::Write as _;
+            let _ = writeln!(std::io::stderr(), "SKIP: this user may make no symlinks here");
+            return;
+        }
+        Err(e) => panic!("{e}"),
+    }
     std::fs::create_dir(dir.join("stage")).unwrap();
     let mut stage = shards_build::host::Stage::new(&dir.join("stage")).unwrap();
     let e = stage.take(&dir.join("f")).unwrap_err();
+    assert_eq!(e.raw_os_error(), Some(refused), "{e}");
+    let e = stage.read(&dir.join("f")).unwrap_err();
+    assert_eq!(e.raw_os_error(), Some(refused), "{e}");
     stage.finish().unwrap();
     assert_eq!(std::fs::metadata(dir.join("stage/pack")).unwrap().len(), 0, "{e}");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// A file Windows keeps as a reparse point that is no link, here one WOF compressed (`compact
+/// /exe`, IO_REPARSE_TAG_WOF), is taken as the bytes it holds, not refused as a link nor read
+/// as its reparse data.
+#[test]
+#[cfg(windows)]
+fn a_reparse_point_that_is_no_link_is_taken_as_its_bytes() {
+    use std::os::windows::fs::MetadataExt as _;
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+    let dir = tmp("snapshot-wof");
+    let bytes: Vec<u8> = (0..256 << 10).map(|i: u32| b"shards"[(i % 6) as usize]).collect();
+    std::fs::write(dir.join("f"), &bytes).unwrap();
+    let compacted = std::process::Command::new("compact.exe")
+        .args(["/c", "/exe:xpress4k", "/q"])
+        .arg(dir.join("f"))
+        .output();
+    let attributes = std::fs::symlink_metadata(dir.join("f"))
+        .unwrap()
+        .file_attributes();
+    if !compacted.is_ok_and(|o| o.status.success()) || attributes & FILE_ATTRIBUTE_REPARSE_POINT == 0 {
+        use std::io::Write as _;
+        let _ = writeln!(
+            std::io::stderr(),
+            "SKIP: compact.exe made no WOF reparse point here"
+        );
+        return;
+    }
+    std::fs::create_dir(dir.join("stage")).unwrap();
+    let mut stage = shards_build::host::Stage::new(&dir.join("stage")).unwrap();
+    let (snap, taken) = stage.take(&dir.join("f")).unwrap();
+    assert_eq!(snap.size, bytes.len() as u64);
+    let pack_path = stage.pack_path();
+    stage.finish().unwrap();
+    let got = match taken {
+        shards_build::host::Taken::File(p) => std::fs::read(p).unwrap(),
+        shards_build::host::Taken::Pack(at) => {
+            let pack = std::fs::read(pack_path).unwrap();
+            pack[at as usize..at as usize + bytes.len()].to_vec()
+        }
+    };
+    assert!(got == bytes, "the bytes it holds");
     std::fs::remove_dir_all(&dir).unwrap();
 }

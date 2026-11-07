@@ -459,9 +459,15 @@ Still Unix's alone, not yet brought to Windows (open):
   Windows keeps in no directory; a file's other names sent as links, shards' D180
   difference from stat_windows.go's fsutil), and its races held to Windows' refusal by
   sharing; closed once those answers are recorded and CI's Windows runs pass it. Its
-  `a_symlink_put_in_a_files_place_is_not_followed` stays Unix's: Windows' `open`
-  (host.rs) opens through a reparse point, a file a symlink replaced after the walk read
-  from the symlink's target.
+  `a_symlink_put_in_a_files_place_is_not_followed` runs on Windows too
+  (p/win-context-nofollow): Windows' `open` (host.rs) opens through no link
+  (`shards_ntfs::open_unfollowed`), refusing one ERROR_STOPPED_ON_SYMLINK as Unix's
+  O_NOFOLLOW refuses one ELOOP, and `a_reparse_point_that_is_no_link_is_taken_as_its_bytes`
+  holds a WOF-compressed file to its bytes; closed once CI's Windows runs pass them. The
+  archive's Windows unpack root opens and makes its files through it too
+  (`follow_open`). Open on every platform alike: a directory of the context put in
+  place as a link after the walk is followed by the open of a file below it (O_NOFOLLOW
+  holds the last name only).
 - the git crate's `a_kept_git_dir_is_one_git_reads_as_its_own` (tests/real_git.rs):
   ungated (p/tests-windows-last), its origin's symlink put in git's index, its checkout's an
   NTFS symlink or, where this user may make none, the file git checks one out as with
