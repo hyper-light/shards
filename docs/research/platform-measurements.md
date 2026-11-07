@@ -20384,8 +20384,9 @@ revision before comparing a changed API/implementation.
 ### M463. The waits shards-api's bounds hold, on HVF
 
 - **Question.** Each shards-api bound on a wait that can't wait on a fact alone is twice (the
-  margin) the slowest recorded run of that wait: `STOP_GRACE`, conformance's `OVERSHOOT`
-  (M462), and the tests' hang guards. How long do those waits take?
+  margin) the slowest recorded run of that wait: conformance's `OVERSHOOT` (M462) and the
+  tests' hang guards. (`STOP_GRACE`, which this measured too, is gone: the VMM has no
+  host-to-guest power-off, so `stop` kills at once.) How long do those waits take?
 - **Method.** `docs/research/measurements/shards-api-waits/run.sh` (release harness): tests/sim.rs
   `the_waits_of_these_tests`, its tests' waits each on a thread of its own as the tests run
   side by side, a new stand-in script for each run; and tests/real.rs `the_waits_of_real_guests`,
@@ -20416,9 +20417,7 @@ revision before comparing a changed API/implementation.
   2's load, was slower than their records, and its numbers are the records now. The bounds,
   each twice (the margin) its slowest record: tests/sim.rs `PATIENCE` 2 × 4.402617625 s;
   `REFUSED_AFTER_END` 2 × 4.277875 ms; tests/real.rs's patience 2 × 248.467 ms (the slowest
-  of the waits it bounds); `STOP_GRACE` 2 × 13 ms, the slowest stop recorded, Hex's
-  `bench/native/guest/stop/RECORD.md` (N 40, the same SIGTERM to a `shards run vm`'s end, on
-  this Mac), above this record's 6.59 ms; `OVERSHOOT` 2 × 150.85425 ms (M462), above this
+  of the waits it bounds); `OVERSHOOT` 2 × 150.85425 ms (M462), above this
   record's real 138.7 ms. The VMM was the debug build this Mac had; a release build's runs,
   and KVM's and WHP's, go beside these when recorded: until then those classes have no bound
   (`shards_api::record`). What would falsify a bound: a run slower than its record, which is

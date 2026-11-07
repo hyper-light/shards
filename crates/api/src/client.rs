@@ -22,7 +22,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use crate::stream::{self, Socket};
-use crate::{End, Guest, GuestSpec, Guests, Init, Refusal, STOP_GRACE, Stream, allowed, backend, check};
+use crate::{End, Guest, GuestSpec, Guests, Init, Refusal, Stream, allowed, backend, check};
 
 /// The guests the `shards` binary boots: [`GuestSpec::binary`], else `SHARDS_BIN`, else
 /// `shards` on `PATH`.
@@ -484,32 +484,32 @@ impl ShardsGuest {
     }
 
     /// The refusal for a guest that has ended: `Boot`, with shards' exit and last words,
-    /// where no `CONNECT` was ever answered, else `Ended`.
+    /// where it failed or reset before any `CONNECT` was answered, else `Ended`.
     fn gone(&self, state: &mut State) -> Option<Refusal> {
         let end = self.end(state)?;
-        if !state.ready && !state.stopping {
+        // A failure or a reset (a kernel's panic) before any answer is the boot's; a power-off
+        // or a stop is a normal end.
+        if !state.ready && matches!(end, End::Failed(_) | End::Reset) {
             return Some(Refusal::Boot(format!("before it was ready, {}", state.ended_as)));
         }
         Some(Refusal::Ended(end))
     }
 
-    /// Signals the process, while it is unreaped.
-    fn signal(&self, state: &State, kill: bool) {
+    /// Kills the process at once, while it is unreaped.
+    fn signal(&self, state: &State) {
         if state.exited {
             return;
         }
         #[cfg(unix)]
         if let Ok(pid) = libc::pid_t::try_from(self.pid) {
-            let signal = if kill { libc::SIGKILL } else { libc::SIGTERM };
             // SAFETY: kill(2) of our own child, unreaped while `exited` is false.
-            unsafe { libc::kill(pid, signal) };
+            unsafe { libc::kill(pid, libc::SIGKILL) };
         }
         // Windows sends a process no signal: shards' daemon ends a VM's process as its
         // Job's (shards_ipc `Child::kill`), and `run --kernel`'s VM, in a Job that ends with
         // it (cli/mod.rs `vm`), ends as it does.
         #[cfg(windows)]
         {
-            let _ = kill;
             let _ = lock(&self.child).kill();
         }
     }
@@ -648,10 +648,11 @@ impl Guest for ShardsGuest {
     }
 
     fn stop(&self) -> Result<(), Refusal> {
-        // No record of a stop on this host class: no grace, killed at once. A guest's state
-        // is tmpfs and goes with it, so a kill loses nothing a graceful stop would keep;
-        // and a stop is never refused, which would leave the VM running.
-        self.stop_within(STOP_GRACE.ok());
+        let mut state = lock(&self.shared.state);
+        if !state.exited {
+            state.stopping = true;
+            self.signal(&state);
+        }
         Ok(())
     }
 
@@ -682,44 +683,13 @@ impl Guest for ShardsGuest {
     }
 }
 
-impl ShardsGuest {
-    /// Ends it: SIGTERM, then the kill once `grace` is out; with no grace, the kill at once
-    /// (on Windows, the process's end either way, as `signal` ends it).
-    fn stop_within(&self, grace: Option<Duration>) {
-        let mut state = lock(&self.shared.state);
-        if state.exited {
-            return;
-        }
-        state.stopping = true;
-        let Some(grace) = grace else {
-            self.signal(&state, true);
-            return;
-        };
-        self.signal(&state, false);
-        let deadline = Instant::now().checked_add(grace);
-        while !state.exited {
-            let left = deadline.map_or(Duration::ZERO, |d| d.saturating_duration_since(Instant::now()));
-            if left.is_zero() {
-                self.signal(&state, true);
-                break;
-            }
-            state = self
-                .shared
-                .changed
-                .wait_timeout(state, left)
-                .unwrap_or_else(PoisonError::into_inner)
-                .0;
-        }
-    }
-}
-
 impl Drop for ShardsGuest {
     /// Ends the guest, if it has not ended: no VM outlives its owner.
     fn drop(&mut self) {
         let mut state = lock(&self.shared.state);
         if !state.exited {
             state.stopping = true;
-            self.signal(&state, true);
+            self.signal(&state);
         }
     }
 }
@@ -934,22 +904,11 @@ mod tests {
         (dir, guest)
     }
 
-    /// With no grace (a host class with no stop record), a stop kills at once, and the guest
-    /// ends `Stopped`, though it ignores SIGTERM: a stop is never refused (Hex HEX-GUEST-9).
+    /// A stop kills at once, though the guest ignores SIGTERM, returns `Ok`, and the guest
+    /// ends `Stopped`: never refused (review B7).
     #[cfg(unix)]
     #[test]
-    fn a_stop_with_no_grace_kills_at_once() {
-        let (_dir, guest) = deaf();
-        guest.stop_within(None);
-        assert_eq!(guest.wait_for(Duration::MAX).unwrap(), Some(End::Stopped));
-    }
-
-    /// Where this host class has no stop record, `stop` kills at once and returns `Ok`, and
-    /// the guest ends `Stopped`: no grace, no number borrowed from another class, and no
-    /// refusal, which would leave the VM running (Hex HEX-GUEST-9).
-    #[cfg(all(unix, not(target_os = "macos")))]
-    #[test]
-    fn a_stop_without_this_classs_record_kills_at_once() {
+    fn a_stop_kills_at_once() {
         let (_dir, guest) = deaf();
         guest.stop().unwrap();
         assert_eq!(guest.wait_for(Duration::MAX).unwrap(), Some(End::Stopped));

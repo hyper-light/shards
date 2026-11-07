@@ -144,19 +144,6 @@ pub mod record {
     }
 }
 
-/// How long [`Guest::stop`] lets a guest's process end after SIGTERM before SIGKILL, by host
-/// class. macOS-HVF: twice (the margin) the slowest stop recorded, 13 ms, SIGTERM to a
-/// `shards run vm`'s end (Hex `bench/native/guest/stop/RECORD.md`, N 40; Shards' PM M463
-/// records shards-api's own `stop` at 6.59 ms at most, N 80). Linux-KVM and Windows-WHP:
-/// no record: no grace, killed at once (a guest's state is tmpfs, so a kill loses nothing),
-/// until their records are made; never a number borrowed from HVF's. Shards' daemon gives a
-/// container dockerd's 10 s (`crates/shards/src/daemon.rs:228-231`), a Docker CLI's contract
-/// this crate has not. `stop` returns within it and the kill.
-#[cfg(target_os = "macos")]
-pub const STOP_GRACE: Result<Duration, record::Pending> = Ok(Duration::from_millis(2 * 13));
-#[cfg(not(target_os = "macos"))]
-pub const STOP_GRACE: Result<Duration, record::Pending> = Err(record::Pending::of("STOP_GRACE"));
-
 /// What can't be done, and why.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum Refusal {
@@ -226,7 +213,14 @@ pub trait Guest: Send + Sync {
     /// `Duration::MAX` is no clock, until the guest listens or ends. A guest that has ended
     /// is refused as soon as it has, whatever patience is left.
     fn connect(&self, port: u32, patience: Duration) -> Result<Box<dyn Stream>, Refusal>;
-    /// Stops it: its [`wait_for`](Guest::wait_for) then returns [`End::Stopped`].
+    /// Ends it at once: its VM's process is killed (SIGKILL; on Windows, its process
+    /// ended), and its [`wait_for`](Guest::wait_for) then returns [`End::Stopped`]. Never
+    /// refused, as a VM left running is a leak. The VMM has no host-to-guest power-off
+    /// (shards-vmm's `vm/runtime.rs`), so no signal asks the guest first: what the VMM has
+    /// already written to a writable disk's file survives, and what the guest still held in
+    /// its page cache is lost. A clean stop is the client's own: ask the guest, through its
+    /// own channel, to sync and power off, `wait_for` its end ([`End::PowerOff`]), and stop
+    /// only as the last resort.
     fn stop(&self) -> Result<(), Refusal>;
     /// Its end, once it has come, waiting at most `timeout` (`Duration::MAX`: until it
     /// comes).
@@ -390,24 +384,15 @@ mod tests {
     /// number borrowed from another class (Hex HEX-GUEST-9).
     #[test]
     fn a_bound_is_seeded_only_from_its_own_host_classs_record() {
-        let ms = Duration::from_millis;
-        for (what, bound, macos) in [
-            ("STOP_GRACE", STOP_GRACE, ms(26)),
-            (
-                "OVERSHOOT",
-                conformance::OVERSHOOT,
-                Duration::from_nanos(301_708_500),
-            ),
-        ] {
-            match (record::CLASS, bound) {
-                ("macOS-HVF", Ok(d)) => assert_eq!(d, macos, "{what}"),
-                (class, Err(pending)) => {
-                    assert_ne!(class, "macOS-HVF", "{what}");
-                    assert_eq!((pending.what, pending.class), (what, class));
-                    assert!(pending.to_string().contains(class), "{pending}");
-                }
-                other => panic!("{what}: {other:?}"),
+        let (what, macos) = ("OVERSHOOT", Duration::from_nanos(301_708_500));
+        match (record::CLASS, conformance::OVERSHOOT) {
+            ("macOS-HVF", Ok(d)) => assert_eq!(d, macos),
+            (class, Err(pending)) => {
+                assert_ne!(class, "macOS-HVF");
+                assert_eq!((pending.what, pending.class), (what, class));
+                assert!(pending.to_string().contains(class), "{pending}");
             }
+            other => panic!("{what}: {other:?}"),
         }
     }
 

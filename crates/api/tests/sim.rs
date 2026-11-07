@@ -563,7 +563,7 @@ mod client {
         });
     }
 
-    /// A shards that ignores SIGTERM is killed once `stop`'s grace is out, and ends as
+    /// A shards that ignores SIGTERM is killed by `stop` at once, and ends as
     /// `Stopped` (Hex HEX-GUEST-9).
     #[test]
     fn stop_kills_a_shards_that_ignores_sigterm() {
