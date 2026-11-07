@@ -1,0 +1,53 @@
+2026-11-03T18:48:29.7951482-08:00
+FILE user-token-broker01.txt
+2026-11-03T18:47:44.7088052-08:00
+Native child failed: 1
+At C:\shards-step10-admin\user-token-broker01.ps1:9 char:13
++   if($code){throw "Native child failed: $code"}
++             ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : OperationStopped: (Native child failed: 1:String) [], RuntimeException
+    + FullyQualifiedErrorId : Native child failed: 1
+
+
+FILE user-token-broker01.exit
+1
+FILE token-user-preflight01.txt
+2026-11-03T18:47:51.1686352-08:00
+PROFILE=C:\Users\runner
+RedirectionTrust flags=0x00000001
+Standard user=WINARM\runner SID=S-1-5-21-4187853375-3986741409-3176094604-1002; elevated=False; trace group present; Developer Mode=1
+Exception calling "ReadAllText" with "1" argument(s): "The path cannot be traversed because it contains an untrusted
+mount point.
+"
+At C:\shards-step10\probe-user.ps1:36 char:9
++     if ([IO.File]::ReadAllText($link) -ne 'shards-host-symlink') { th ...
++         ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (:) [], MethodInvocationException
+    + FullyQualifiedErrorId : IOException
+
+
+FILE token-user-preflight01.exit
+1
+FILE runner-token-holder01.json
+{
+    "pid":  3760,
+    "sid":  "S-1-5-21-4187853375-3986741409-3176094604-1002",
+    "utc":  "2026-11-04T02:47:11.6869722Z"
+}
+Requested owned token holder close after child preflight terminated
+TASK state=3 result=1 lastRun=2026-11-03T18:47:41.0000000
+
+
+Length           : 20480
+LastWriteTimeUtc : 11/4/2026 2:41:03 AM
+
+
+
+test daemon::layers::tests::a_restores_layer_is_its_generations_clone_where_files_clone ... ok
+test daemon::load::tests::archive_json_is_read ... ok
+test daemon::logs::tests::a_reader_following_a_log_shows_each_line_once ... ok
+test daemon::logs::tests::a_reader_following_segments_shows_each_line_once ... ok
+test daemon::logs::tests::a_reader_goes_on_past_a_next_segment_gone ... ok
+test daemon::logs::tests::a_reader_reads_on_past_removed_segments ... ok
+test daemon::logs::tests::a_reader_resumed_where_another_got_to_shows_the_rest ... ok
+test daemon::logs::test

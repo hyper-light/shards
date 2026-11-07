@@ -39,8 +39,7 @@ def read(path, run, into):
     caches (round 0, or round 1 where it has no round 0) as round 0."""
     lines = open(path, errors="replace").read().splitlines()
     warm = any(l.startswith("build ") and " round=0 " in l for l in lines)
-    builds, gives, head = into[:3]
-    plugged = into[3]
+    builds, gives, head, plugged, own, io = into
     for line in lines:
         if line.startswith(("host ", "builds ")) and "=" not in line.split()[1]:
             head.append(line.rstrip())
@@ -50,6 +49,12 @@ def read(path, run, into):
         elif line.startswith("give "):
             f = fields(line)
             gives[(f["build"], f["arm"], (run, counted(f, warm)))].append(f)
+        elif line.startswith(("phase ", "keep ", "merge ")):
+            f = fields(line)
+            own[(f["build"], f["arm"], (run, counted(f, warm)))].append((line.split()[0], float(f["t"]), f))
+        elif line.startswith("host ") and "build_write_bytes" in line:
+            f = fields(line)
+            io[(f["build"], f["arm"], (run, counted(f, warm)))].append(f)
         elif line.startswith("guest "):
             f = fields(line)
             if "plugged" in f:
@@ -77,8 +82,44 @@ def unplugged(samples, t):
     return max(before[-1] - after[0], 0)
 
 
+# The phases of a step's work after its builder's (give.patch's `phase` lines, each its end,
+# timed from the line before it): `run` its builder's work through its root's changes in
+# (from its caches attached), `cache-keep` the rest of its changes to their staging file and
+# its caches' kept and merged, `layer` its layer written, `blob` the layer made durable.
+PHASES = ("run", "cache-keep", "layer", "blob")
+# What each of the build's processes dirtied and read (host lines' /proc/PID/io fields).
+IO = (("vm_write_bytes", "VM process dirtied"), ("build_write_bytes", "build dirtied"),
+      ("build_read_bytes", "build read"), ("writer_write_bytes", "writer dirtied"))
+
+
+def own_of(own, io, key):
+    """A build's sums of its own lines: each phase's seconds, its caches' changes made
+    durable and their merges (bytes, ms), and what each process dirtied and read (bytes)."""
+    sums = defaultdict(float)
+    before = None
+    for kind, t, f in sorted(own.get(key, []), key=lambda e: e[1]):
+        if kind == "phase":
+            if before is not None and f.get("name") in PHASES:
+                sums[f["name"]] += t - before
+            before = t
+        elif kind == "keep":
+            sums["keep_bytes"] += int(f.get("bytes", 0))
+            sums["keep_sync_ms"] += int(f.get("sync_ms", 0))
+        elif kind == "merge":
+            sums["merges"] += 1
+            sums["merge_bytes"] += int(f.get("bytes", 0))
+            sums["merge_write_ms"] += int(f.get("write_ms", 0))
+            sums["merge_sync_ms"] += int(f.get("sync_ms", 0))
+    samples = io.get(key, [])
+    for k, _ in IO:
+        got = [int(f[k]) for f in samples if k in f]
+        if got:
+            sums[k] = max(got) - min(got)
+    return sums
+
+
 def report(title, into):
-    builds, gives, head, plugged = into
+    builds, gives, head, plugged, own, io = into
     print(f"== {title}")
     for h in head:
         print(h)
@@ -109,6 +150,16 @@ def report(title, into):
                           if int(builds.get(k, {}).get("scope_held_peak", 0))]
                 if shorts:
                     print(f"   short of its peak {stats(shorts, ' MiB', MIB)}")
+                # Whether its writer outside the budget ran (D188): where it did not, the
+                # build's own writes were charged to the budget (PM M442).
+                seen = [r for r in rounds if int(builds[(name, arm, r)].get("writer_seen", 0)) > 0]
+                if any("writer_seen" in builds[(name, arm, r)] for r in rounds):
+                    print(f"   writer outside    in {len(seen)} of {len(rounds)} builds")
+                    files = [int(builds[(name, arm, r)]["writer_file_peak"]) for r in seen]
+                    dirty = [int(builds[(name, arm, r)]["writer_dirty_peak"]) for r in seen]
+                    if seen:
+                        print(f"   writer file peak  {stats(files, ' MiB', MIB)}")
+                        print(f"   writer dirty peak {stats(dirty, ' MiB', MIB)}")
             answers = [g for r in rounds for g in gives.get((name, arm, r), []) if "answered_ms" in g]
             unanswered = [g for r in rounds for g in gives.get((name, arm, r), []) if "unanswered_ms" in g]
             if answers or unanswered:
@@ -128,6 +179,19 @@ def report(title, into):
             refusals = [g for r in rounds for g in gives.get((name, arm, r), []) if "refused_ms" in g]
             if refusals:
                 print(f"   refusals          {len(refusals)}, the last: {refusals[-1]['why'].replace('_', ' ')}")
+        # The build's own phases, its caches' writes and its processes' I/O, free against
+        # held: which of a step's end's parts a budget slows, and whose writes they are.
+        mine = {arm: [own_of(own, io, (name, arm, r)) for r in arm_rounds.get(arm, [])]
+                for arm in ("free", "held")}
+        rows = [(p, f"phase {p}", 1, " s") for p in PHASES] + [
+            ("keep_bytes", "caches kept", MIB, " MiB"), ("keep_sync_ms", "kept, synced in", 1, " ms"),
+            ("merges", "merges", 1, ""), ("merge_bytes", "merged", MIB, " MiB"),
+            ("merge_write_ms", "merged, written in", 1, " ms"), ("merge_sync_ms", "merged, synced in", 1, " ms"),
+        ] + [(k, said, MIB, " MiB") for k, said in IO]
+        for k, said, scale, unit in rows:
+            got = {arm: [m[k] for m in mine[arm] if k in m] for arm in ("free", "held")}
+            if got["free"] or got["held"]:
+                print(f"   {said:<19} free {stats(got['free'], unit, scale)}; held {stats(got['held'], unit, scale)}")
         # Each step's time as the build's display says it (`#N DONE`), free against held.
         for n in sorted({k for arm in ("free", "held") for r in arm_rounds.get(arm, [])
                          for k in steps_of(builds[(name, arm, r)])}, key=int):
@@ -146,13 +210,13 @@ def main(args):
     pool = "--pool" in args
     paths = [a for a in args if a != "--pool"]
     if pool:
-        into = ({}, defaultdict(list), [], defaultdict(list))
+        into = ({}, defaultdict(list), [], defaultdict(list), defaultdict(list), defaultdict(list))
         for run, path in enumerate(paths):
             read(path, run, into)
         report(" + ".join(paths), into)
         return
     for path in paths:
-        into = ({}, defaultdict(list), [], defaultdict(list))
+        into = ({}, defaultdict(list), [], defaultdict(list), defaultdict(list), defaultdict(list))
         read(path, 0, into)
         report(path, into)
 

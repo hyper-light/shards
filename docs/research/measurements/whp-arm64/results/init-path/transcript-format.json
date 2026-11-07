@@ -1,0 +1,17 @@
+{
+  "candidate-native.txt": {
+    "capture_sha256": "6b571b19917657ad683d551f85a1fc27aa50991ec2ebd5695bd2f12741cd745d",
+    "display_sha256": "82657c6d4fec2a59c0304c6def72c3d17f7bef26f1c1080a8d3c2d1a141e68a0",
+    "format": "LF, trailing display padding removed; raw capture retained locally"
+  },
+  "original-native.txt": {
+    "capture_sha256": "b4fe23968bf1f3af2a0ff1e3d6bcc7107e12842f532c16296ae0995b8a1b22f6",
+    "display_sha256": "97e9c4a0a76dc029c0b30a3a478b88f81c04368a0c99d6e6539ac284c2f957cd",
+    "format": "LF, trailing display padding removed; raw capture retained locally"
+  },
+  "original-runner.txt": {
+    "capture_sha256": "fda624b2f79f5b27331a9a2937a86f83adc245306a6e208bf176255432a1fbe6",
+    "display_sha256": "32245ad91f1f5940178ceb794d68fb08c569fe061fc9bfe3099306870bf81736",
+    "format": "LF, trailing display padding removed; raw capture retained locally"
+  }
+}

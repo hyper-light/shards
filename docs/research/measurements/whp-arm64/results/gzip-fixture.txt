@@ -1,0 +1,26 @@
+FIXTURE DEPENDENCY CHECK ONLY; no image-load or full-suite success claimed.
+2026-11-03T14:23:40.8903110-08:00
+
+Name     FullName                              Length
+----     --------                              ------
+gzip.exe C:\shards-step10\git\usr\bin\gzip.exe 107808
+
+
+
+Name      FullName                               Length
+----      --------                               ------
+bzip2.exe C:\shards-step10\git\usr\bin\bzip2.exe  92176
+
+
+
+Name       FullName                                Length
+----       --------                                ------
+printf.exe C:\shards-step10\git\usr\bin\printf.exe  72003
+
+
+
+2026-11-03T14:32:18.4485930-08:00
+Runner parsed; SHA256=625CA393DC009EFDC67DCF9F9F70118DB04C2DE1D7FD99DE92FA6AA1B0440E11
+gzip=C:\shards-step10\git\usr\bin\gzip.exe SHA256=B7FBDDF74E7666AED1F7BBD17592E55732F88EB75464D5B12FACAAF45866D17D
+Native gzip exit=0; compressed bytes=39; independent .NET round trip passed
+2026-11-03T14:32:26.9639730-08:00

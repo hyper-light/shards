@@ -2,7 +2,8 @@
 //! registry serves, each step run in a builder microVM confined as D141 confines a VM
 //! process, its network the network process's (D142); what the steps made exported to a
 //! directory of this host (`--output type=local`). tests/build.rs holds `shards build`'s
-//! on Unix hosts, which these follow.
+//! on every host, Windows' too; these came first, and hold what only Windows has (a
+//! builder's word and the client's agent over named pipes).
 
 #![cfg(windows)]
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]

@@ -24,7 +24,8 @@ import sys
 
 REPO = "hyper-light/shards"
 NATIVE = ("x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu", "aarch64-apple-darwin",
-          "x86_64-pc-windows-msvc", "x86_64-pc-windows-msvc (windows-2022)")
+          "x86_64-pc-windows-msvc", "x86_64-pc-windows-msvc (windows-2022)",
+          "aarch64-pc-windows-msvc")
 LINUX = "x86_64-unknown-linux-gnu"
 STAMP = re.compile(r"^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d+)Z ")
 RUNNING = re.compile(r"     Running (\S+) \(target/[^)]*/deps/([A-Za-z0-9_]+)-[0-9a-f]+\)")
@@ -139,7 +140,10 @@ def main():
 
 
 def limit_of(name):
-    """The tests' step's limit the measured runs had (ci.yml before M420)."""
+    """The tests' step's limit the measured runs had (ci.yml before M420; arm64 Windows', on
+    windows-11-arm since ec4ba969, x86_64 Windows' then)."""
+    if name == "aarch64-pc-windows-msvc":
+        return 122
     return 120 if name.startswith("x86_64-pc-windows-msvc") else 41
 
 

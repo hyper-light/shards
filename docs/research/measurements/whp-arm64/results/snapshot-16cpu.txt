@@ -1,0 +1,99 @@
+Full workspace run real-02, first binary; 16 outer CPUs, 24 GiB.
+Native exit: 101
+
+== stdout
+
+running 12 tests
+test a_restore_given_its_files_refuses_a_snapshot_naming_others ... ok
+test a_restore_maps_ahead_the_working_set_the_restore_before_it_recorded ... ok
+test a_snapshot_that_cannot_be_written_stops_no_resumed_run ... ok
+test common::port_probe ... ignored, a process of its own for port_free and hold_port, which run it
+test common::terminal::console_shell ... ignored, the shell of a terminal a test holds, which runs it
+test damaged_or_missing_snapshots_are_refused ... ok
+test every_restore_continues_the_guest_where_it_asked_for_the_snapshot ... ok
+test kvm_counters_are_summed_per_name_and_absent_where_unlisted ... ok
+test restores_elsewhere_read_the_disks_the_snapshot_was_taken_with ... ok
+test storm::a_busy_machine_goes_on_whole_past_its_snapshot ... FAILED
+test storm::restores_of_a_busy_machine_lose_no_interrupt_and_repeat_no_write ... FAILED
+test the_original_guest_can_continue_after_its_snapshot ... ok
+
+failures:
+
+failures:
+    storm::a_busy_machine_goes_on_whole_past_its_snapshot
+    storm::restores_of_a_busy_machine_lose_no_interrupt_and_repeat_no_write
+
+test result: FAILED. 8 passed; 2 failed; 2 ignored; 0 measured; 0 filtered out; finished in 443.29s
+
+
+== stderr
+
+thread 'storm::a_busy_machine_goes_on_whole_past_its_snapshot' (5880) panicked at crates/shards/tests/common/mod.rs:2592:27:
+no ["storm checked", "SHARDS-TEST FAIL"] from the VM; it said:
+[   37.747075] watchdog: BUG: soft lockup - CPU#0 stuck for 35s! [kthreadd:2]
+[   39.523644] watchdog: BUG: soft lockup - CPU#1 stuck for 36s! [swapper/1:0]
+[   39.665106] watchdog: BUG: soft lockup - CPU#2 stuck for 36s! [swapper/2:0]
+[   39.866822] watchdog: BUG: soft lockup - CPU#3 stuck for 37s! [swapper/3:0]
+[   40.115018] watchdog: BUG: soft lockup - CPU#4 stuck for 37s! [swapper/4:0]
+[   40.335800] watchdog: BUG: soft lockup - CPU#5 stuck for 37s! [swapper/5:0]
+[   40.519617] watchdog: BUG: soft lockup - CPU#6 stuck for 37s! [swapper/6:0]
+[   40.860551] watchdog: BUG: soft lockup - CPU#7 stuck for 38s! [swapper/7:0]
+[   41.180485] watchdog: BUG: soft lockup - CPU#8 stuck for 38s! [swapper/8:0]
+[   41.499844] watchdog: BUG: soft lockup - CPU#9 stuck for 38s! [swapper/9:0]
+[   41.719117] watchdog: BUG: soft lockup - CPU#10 stuck for 38s! [swapper/10:0]
+[   42.242512] watchdog: BUG: soft lockup - CPU#11 stuck for 39s! [swapper/11:0]
+[   42.718241] watchdog: BUG: soft lockup - CPU#12 stuck for 39s! [swapper/12:0]
+[   43.326404] watchdog: BUG: soft lockup - CPU#13 stuck for 40s! [swapper/13:0]
+[   44.067178] watchdog: BUG: soft lockup - CPU#14 stuck for 41s! [swapper/14:0]
+[   44.950259] watchdog: BUG: soft lockup - CPU#15 stuck for 40s! [swapper/15:0]
+[   45.930130] watchdog: BUG: soft lockup - CPU#16 stuck for 41s! [swapper/16:0]
+[   46.754143] watchdog: BUG: soft lockup - CPU#17 stuck for 42s! [swapper/17:0]
+[   47.897689] watchdog: BUG: soft lockup - CPU#18 stuck for 43s! [swapper/18:0]
+[   49.073912] watchdog: BUG: soft lockup - CPU#19 stuck for 43s! [swapper/19:0]
+[   50.404106] watchdog: BUG: soft lockup - CPU#20 stuck for 44s! [swapper/20:0]
+[   51.433271] watchdog: BUG: soft lockup - CPU#21 stuck for 45s! [swapper/21:0]
+[   52.623495] watchdog: BUG: soft lockup - CPU#22 stuck for 46s! [swapper/22:0]
+[   54.160458] watchdog: BUG: soft lockup - CPU#23 stuck for 47s! [swapper/23:0]
+[   55.515362] watchdog: BUG: soft lockup - CPU#24 stuck for 48s! [swapper/24:0]
+[   56.697872] watchdog: BUG: soft lockup - CPU#25 stuck for 48s! [swapper/25:0]
+[   58.615975] watchdog: BUG: soft lockup - CPU#26 stuck for 50s! [swapper/26:0]
+[   59.873185] watchdog: BUG: soft lockup - CPU#27 stuck for 50s! [swapper/27:0]
+[   61.378246] watchdog: BUG: soft lockup - CPU#28 stuck for 51s! [swapper/28:0]
+[   63.014073] watchdog: BUG: soft lockup - CPU#29 stuck for 52s! [swapper/29:0]
+[   64.315614] watchdog: BUG: soft lockup - CPU#30 stuck for 52s! [swapper/30:0]
+[   66.050742] watchdog: BUG: soft lockup - CPU#31 stuck for 53s! [swapper/31:0]
+[   67.857459] watchdog: BUG: soft lockup - CPU#32 stuck for 54s! [migration/32:178]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'storm::restores_of_a_busy_machine_lose_no_interrupt_and_repeat_no_write' (8816) panicked at crates/shards/tests/common/mod.rs:2613:17:
+still running after 120s; it said:
+[   36.466111] watchdog: BUG: soft lockup - CPU#0 stuck for 33s! [swapper/0:0]
+[   38.333051] watchdog: BUG: soft lockup - CPU#1 stuck for 35s! [swapper/1:0]
+[   38.553945] watchdog: BUG: soft lockup - CPU#2 stuck for 35s! [swapper/2:0]
+[   38.695685] watchdog: BUG: soft lockup - CPU#3 stuck for 36s! [swapper/3:0]
+[   38.932804] watchdog: BUG: soft lockup - CPU#4 stuck for 36s! [swapper/4:0]
+[   39.158008] watchdog: BUG: soft lockup - CPU#5 stuck for 36s! [swapper/5:0]
+[   39.294485] watchdog: BUG: soft lockup - CPU#6 stuck for 36s! [swapper/6:0]
+[   39.519725] watchdog: BUG: soft lockup - CPU#7 stuck for 36s! [swapper/7:0]
+[   39.789181] watchdog: BUG: soft lockup - CPU#8 stuck for 37s! [swapper/8:0]
+[   40.163996] watchdog: BUG: soft lockup - CPU#9 stuck for 37s! [swapper/9:0]
+[   40.544162] watchdog: BUG: soft lockup - CPU#10 stuck for 37s! [swapper/10:0]
+[   41.010957] watchdog: BUG: soft lockup - CPU#11 stuck for 38s! [swapper/11:0]
+[   41.579784] watchdog: BUG: soft lockup - CPU#12 stuck for 38s! [swapper/12:0]
+[   42.156797] watchdog: BUG: soft lockup - CPU#13 stuck for 39s! [swapper/13:0]
+[   43.101171] watchdog: BUG: soft lockup - CPU#14 stuck for 39s! [swapper/14:0]
+[   44.075043] watchdog: BUG: soft lockup - CPU#15 stuck for 40s! [swapper/15:0]
+[   44.715731] watchdog: BUG: soft lockup - CPU#16 stuck for 40s! [swapper/16:0]
+[   45.806257] watchdog: BUG: soft lockup - CPU#17 stuck for 41s! [swapper/17:0]
+[   46.993097] watchdog: BUG: soft lockup - CPU#18 stuck for 41s! [swapper/18:0]
+[   48.115102] watchdog: BUG: soft lockup - CPU#19 stuck for 42s! [swapper/19:0]
+[   49.410728] watchdog: BUG: soft lockup - CPU#20 stuck for 44s! [swapper/20:0]
+[   50.364854] watchdog: BUG: soft lockup - CPU#21 stuck for 43s! [swapper/21:0]
+[   51.736054] watchdog: BUG: soft lockup - CPU#22 stuck for 45s! [swapper/22:0]
+[   53.200512] watchdog: BUG: soft lockup - CPU#23 stuck for 45s! [swapper/23:0]
+[   54.639665] watchdog: BUG: soft lockup - CPU#24 stuck for 46s! [swapper/24:0]
+[   56.041730] watchdog: BUG: soft lockup - CPU#25 stuck for 47s! [swapper/25:0]
+[   57.471796] watchdog: BUG: soft lockup - CPU#26 stuck for 48s! [swapper/26:0]
+[   58.950846] watchdog: BUG: soft lockup - CPU#27 stuck for 48s! [swapper/27:0]
+[   60.515446] watchdog: BUG: soft lockup - CPU#28 stuck for 50s! [swapper/28:0]
+[   62.082918] watchdog: BUG: soft lockup - CPU#29 stuck for 50s! [migration/29:163]

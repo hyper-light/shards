@@ -631,18 +631,19 @@ impl<D: Disk> Daemon<D> {
         asked: Option<&str>,
         leave_running: bool,
     ) -> Result<(String, String), Unsaved> {
-        self.save_snapshot_as(reference, asked, leave_running, false)
+        self.save_snapshot_as(reference, asked, leave_running, None)
     }
 
-    /// [`save_snapshot`](Self::save_snapshot), the last of a live move where `delta`
-    /// (D176 part 7): its memory, layer and swap only where its guest wrote since the move's
-    /// last round.
+    /// [`save_snapshot`](Self::save_snapshot), the last of a live move where `delta` names
+    /// the stream its rounds went to (D176 part 7): what its guest wrote since the move's
+    /// last round goes there, as the last round, and none of its memory, layer and swap's
+    /// pages in the snapshot's files.
     pub(super) fn save_snapshot_as(
         &self,
         reference: &str,
         asked: Option<&str>,
         leave_running: bool,
-        delta: bool,
+        delta: Option<BorrowedFd<'_>>,
     ) -> Result<(String, String), Unsaved> {
         // A name no snapshot may have is refused before anything is looked up, as dockerd
         // refuses a checkpoint's (moby daemon/checkpoint.go, CheckpointCreate).
@@ -753,7 +754,7 @@ impl<D: Disk> Daemon<D> {
         snapshot: &str,
         tokens: &[u8],
         leave_running: bool,
-        delta: bool,
+        delta: Option<BorrowedFd<'_>>,
     ) -> Result<(), String> {
         let (inbox, socket) = match lock(&self.runs).get(id) {
             Some(RunState::Tracked(t)) => (t.inbox.clone(), t.socket.clone()),
@@ -776,12 +777,18 @@ impl<D: Disk> Daemon<D> {
             inbox.saving = Some(Saving { told, stops_as });
         }
         let files = staged.handed()?;
-        let fds: Vec<BorrowedFd<'_>> = files.iter().map(|f| f.as_fd()).collect();
+        // A live move's stream last, which its VM takes off first (`warm::save_request`).
+        let mut fds: Vec<BorrowedFd<'_>> = files.iter().map(|f| f.as_fd()).collect();
+        fds.extend(delta);
         let flags = if leave_running {
             shards_ipc::SAVE_LEAVE_RUNNING
         } else {
             0
-        } | if delta { shards_ipc::SAVE_DELTA } else { 0 };
+        } | if delta.is_some() {
+            shards_ipc::SAVE_DELTA
+        } else {
+            0
+        };
         let mut payload = vec![flags];
         payload.extend_from_slice(tokens);
         for (i, name) in [staged.name(), snapshot, &microvm].into_iter().enumerate() {

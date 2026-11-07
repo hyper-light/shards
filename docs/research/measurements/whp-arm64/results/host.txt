@@ -1,0 +1,271 @@
+Transcript started, output file is C:\shards-step10\host-tfa-psci.txt
+2026-11-03T06:30:44.1428151-08:00
+== Windows and virtualization
+
+
+WindowsProductName                                : Windows 10 Pro
+WindowsVersion                                    : 2009
+OsName                                            : Microsoft Windows 11 Pro
+OsVersion                                         : 10.0.26300
+OsBuildNumber                                     : 26300
+OsArchitecture                                    : ARM 64-bit Processor
+HyperVisorPresent                                 : True
+HyperVRequirementDataExecutionPreventionAvailable :
+HyperVRequirementSecondLevelAddressTranslation    :
+HyperVRequirementVirtualizationFirmwareEnabled    :
+HyperVRequirementVMMonitorModeExtensions          :
+
+
+
+
+
+
+Caption        : Microsoft Windows 11 Pro
+Version        : 10.0.26300
+BuildNumber    : 26300
+OSArchitecture : ARM 64-bit Processor
+LastBootUpTime : 11/3/2026 6:24:45 AM
+
+
+
+
+
+
+Manufacturer      : QEMU
+Model             : QEMU Virtual Machine
+HypervisorPresent : True
+
+
+
+
+
+
+Name                                    : virt-11.1
+Architecture                            : 12
+VirtualizationFirmwareEnabled           : False
+VMMonitorModeExtensions                 : True
+SecondLevelAddressTranslationExtensions : False
+
+
+
+
+== optional features
+
+
+FeatureName : HypervisorPlatform
+State       : Enabled
+
+
+
+
+
+
+FeatureName : VirtualMachinePlatform
+State       : Enabled
+
+
+
+
+
+
+FeatureName : Microsoft-Hyper-V-All
+State       : Enabled
+
+
+
+
+== boot configuration
+
+Windows Boot Loader
+-------------------
+identifier              {current}
+device                  partition=C:
+path                    \WINDOWS\system32\winload.efi
+description             Windows 11
+locale                  en-US
+inherit                 {bootloadersettings}
+recoverysequence        {bb51ba6b-d6cd-11f1-b62e-d78ea6f24f62}
+displaymessageoverride  Recovery
+recoveryenabled         Yes
+isolatedcontext         Yes
+allowedinmemorysettings 0x15000075
+osdevice                partition=C:
+systemroot              \WINDOWS
+resumeobject            {bb51ba69-d6cd-11f1-b62e-d78ea6f24f62}
+nx                      OptIn
+bootmenupolicy          Standard
+hypervisorlaunchtype    Auto
+== hypervisor events in System
+
+
+TimeCreated      : 11/3/2026 6:24:46 AM
+Id               : 165
+LevelDisplayName : Information
+Message          : Hypervisor configured mitigations for CVE-2019-11091, CVE-2018-12126,
+                   CVE-2018-12127, CVE-2018-12130 for virtual machines.
+
+                   Processor not affected: false
+                   Processor family not affected: false
+                   Processor supports microarchitectural buffer flush: false
+                   Buffer flush needed: false
+
+
+TimeCreated      : 11/3/2026 6:24:46 AM
+Id               : 156
+LevelDisplayName : Information
+Message          : Hypervisor configured mitigations for CVE-2018-3646 for virtual machines.
+
+                   Processor not affected: false
+                   Processor family not affected: false
+                   Processor supports cache flush: false
+                   HyperThreading enabled: false
+                   Parent hypervisor applies mitigations: false
+                   Mitigations disabled by bcdedit: false
+                   Mitigations enabled: true
+                   Cache flush needed: false
+
+
+TimeCreated      : 11/3/2026 6:24:46 AM
+Id               : 129
+LevelDisplayName : Information
+Message          : Hypervisor initialized I/O remapping.
+
+                   Hardware present: false
+                   Hardware enabled: false
+                   Policy: 0x0
+                   Enabled features: 0x0
+                   Internal information: 0x4
+                   Problems: 0x0
+                   Additional information: 0x0
+
+TimeCreated      : 11/3/2026 6:24:46 AM
+Id               : 2
+LevelDisplayName : Information
+Message          : Hypervisor scheduler type is 0x4.
+
+TimeCreated      : 11/3/2026 6:24:46 AM
+Id               : 1
+LevelDisplayName : Information
+Message          : Hypervisor successfully started.
+
+TimeCreated      : 11/2/2026 7:58:03 AM
+Id               : 43
+LevelDisplayName : Error
+Message          : Hypervisor launch failed; EL2 not present.
+
+TimeCreated      : 11/2/2026 7:11:54 AM
+Id               : 43
+LevelDisplayName : Error
+Message          : Hypervisor launch failed; EL2 not present.
+
+
+
+
+== hypervisor event channels
+
+
+LogName     : Microsoft-Windows-Hyper-V-Hypervisor-Operational
+IsEnabled   : True
+RecordCount : 10
+
+
+
+
+
+
+TimeCreated      : 11/3/2026 6:29:12 AM
+Id               : 16642
+LevelDisplayName : Information
+Message          : Hyper-V successfully deleted a partition (partition 2).
+
+TimeCreated      : 11/3/2026 6:29:12 AM
+Id               : 16642
+LevelDisplayName : Information
+Message          : Hyper-V successfully deleted a partition (partition 5).
+
+TimeCreated      : 11/3/2026 6:29:12 AM
+Id               : 16642
+LevelDisplayName : Information
+Message          : Hyper-V successfully deleted a partition (partition 6).
+
+TimeCreated      : 11/3/2026 6:29:12 AM
+Id               : 16641
+LevelDisplayName : Information
+Message          : Hyper-V successfully created a new partition (partition 6).
+
+TimeCreated      : 11/3/2026 6:29:12 AM
+Id               : 16641
+LevelDisplayName : Information
+Message          : Hyper-V successfully created a new partition (partition 5).
+
+TimeCreated      : 11/3/2026 6:29:12 AM
+Id               : 16642
+LevelDisplayName : Information
+Message          : Hyper-V successfully deleted a partition (partition 4).
+
+TimeCreated      : 11/3/2026 6:29:12 AM
+Id               : 16641
+LevelDisplayName : Information
+Message          : Hyper-V successfully created a new partition (partition 4).
+
+TimeCreated      : 11/3/2026 6:29:12 AM
+Id               : 16642
+LevelDisplayName : Information
+Message          : Hyper-V successfully deleted a partition (partition 3).
+
+TimeCreated      : 11/3/2026 6:29:12 AM
+Id               : 16641
+LevelDisplayName : Information
+Message          : Hyper-V successfully created a new partition (partition 3).
+
+TimeCreated      : 11/3/2026 6:29:12 AM
+Id               : 16641
+LevelDisplayName : Information
+Message          : Hyper-V successfully created a new partition (partition 2).
+
+
+
+
+
+
+LogName     : Microsoft-Windows-Hyper-V-Hypervisor-Admin
+IsEnabled   : True
+RecordCount : 4
+
+
+
+
+
+
+TimeCreated      : 11/3/2026 6:25:06 AM
+Id               : 155
+LevelDisplayName : Information
+Message          : Host processor features mask:
+
+                   Host xsave features mask: 0x0
+
+                   Host cache line flush size: 64 bytes
+
+TimeCreated      : 11/3/2026 6:24:46 AM
+Id               : 156
+LevelDisplayName : Information
+Message          : Hypervisor initial page allocation NUMA policy: Proportional NUMA distribution
+
+TimeCreated      : 11/2/2026 7:58:03 AM
+Id               : 156
+LevelDisplayName : Information
+Message          : Hypervisor initial page allocation NUMA policy: Proportional NUMA distribution
+
+TimeCreated      : 11/2/2026 7:11:54 AM
+Id               : 156
+LevelDisplayName : Information
+Message          : Hypervisor initial page allocation NUMA policy: Proportional NUMA distribution
+
+
+
+
+== Windows Hypervisor Platform
+WHvGetCapability(HypervisorPresent): hr=0x00000000 written=4 present=1
+WHvGetCapability(Features): hr=0x00000000 written=8 bits=0x0000000000000AD9
+WHvCreatePartition: hr=0x00000000
+Transcript stopped, output file is C:\shards-step10\host-tfa-psci.txt

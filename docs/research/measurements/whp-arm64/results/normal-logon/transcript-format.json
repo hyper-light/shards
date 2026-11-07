@@ -1,0 +1,37 @@
+{
+  "existing-token-control.txt": {
+    "capture_sha256": "d2430f0c123b72c9e41422aa0d30d1a9f1775764eda41753d2597067c27e8586",
+    "display_sha256": "a170abd780b4c527ad828cccfc32f216a70c0983a5fba8e35f1137f668fb6c60",
+    "format": "LF, trailing display padding removed; raw capture retained locally"
+  },
+  "host-preparation.txt": {
+    "capture_sha256": "92104557f9363b056c4a5229ee7e5e0ecac241a917f077e51fa0acae0fa9810a",
+    "display_sha256": "29621b698d0ad7775f4c9b8b8f6510cbe7f9ea7bcbd7014b237a144be82bef21",
+    "format": "LF, trailing display padding removed; raw capture retained locally"
+  },
+  "initial-acl-failure.txt": {
+    "capture_sha256": "69d1ba860eec738f10c4bff65fdf9b1d40f632a28bacd8efc97fa711a6e18e7d",
+    "display_sha256": "64a7343577ee6f61db4ac0ea521a07b82a55ba42576890bd9ffb8d1bda029367",
+    "format": "LF, trailing display padding removed; raw capture retained locally"
+  },
+  "kernel-dump-postboot.txt": {
+    "capture_sha256": "a6176f987f5a5db8339ade8313dd7bf582f9362434ba207ca00e276d86846cde",
+    "display_sha256": "2e61ae02c71d4a981b210bcbbba555010a5c9251979347d2de842312f8bb679d",
+    "format": "LF, trailing display padding removed; raw capture retained locally"
+  },
+  "native-preflight.txt": {
+    "capture_sha256": "1330b52efb244128677601283c5104601e3bae6391e930a33c7d66dbbc7c1222",
+    "display_sha256": "9544558ffb9602dedf680c93bdeffd9c19cb1d42bc92872739cedd46e1ad4e95",
+    "format": "LF, trailing display padding removed; raw capture retained locally"
+  },
+  "ssh-mitigation.txt": {
+    "capture_sha256": "73904a4b85614d858051a5ea25cdeb5f4b18cdf34bcb87409630e3df9f42fc0b",
+    "display_sha256": "271460bb8e13d5dfc92e1654c221ee68216bb8780e58141ae62e2e8d385eeb2e",
+    "format": "LF, trailing display padding removed; raw capture retained locally"
+  },
+  "ssh-preflight-failure.txt": {
+    "capture_sha256": "acb63d9c8d863a077f7296b4c6877d866d20ab548d957ae9913c3f0b894a8967",
+    "display_sha256": "9261464d0e7d9a8751f5f9ee7328db2864a7ea65e34e99dff991fcf4892679bd",
+    "format": "LF, trailing display padding removed; raw capture retained locally"
+  }
+}

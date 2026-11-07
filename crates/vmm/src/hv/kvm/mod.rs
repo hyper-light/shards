@@ -214,12 +214,13 @@ struct Slots {
 const DIRTY_RING_BYTES: u32 = 4096;
 
 /// A VM's watch of its guest's writes (D176 part 7): its writable slots, which KVM logs the
-/// writes of while it watches, each vCPU's dirty ring, and the pages written since they
-/// were last asked for.
+/// writes of while it watches, into each vCPU's dirty ring where the VM has them, else into
+/// each slot's dirty bitmap; and the pages written since they were last asked for.
 #[derive(Debug)]
 pub(super) struct Dirty {
     fd: Arc<sys::VmFd>,
-    /// Each vCPU's ring's bytes: none where KVM has no dirty rings, or not this VM's.
+    /// Each vCPU's ring's bytes: none where KVM has no dirty rings, or not this VM's, whose
+    /// slots' bitmaps are read instead (KVM_GET_DIRTY_LOG).
     ring: u32,
     slots: Mutex<Vec<sys::kvm_userspace_memory_region>>,
     rings: Mutex<Vec<sys::DirtyRing>>,
@@ -243,9 +244,12 @@ impl Dirty {
         Dirty::with_ring(fd, ring)
     }
 
-    /// arm64's vCPUs get none: its GIC's ITS writes guest memory with no vCPU's ring to
-    /// note it in, which needs KVM's bitmap beside the rings (api.rst 8.40,
-    /// KVM_CAP_DIRTY_LOG_RING_WITH_BITMAP), and no arm64 host here has KVM to hold it to.
+    /// arm64's vCPUs get none, and its slots' bitmaps are read: its GIC's ITS writes guest
+    /// memory with no vCPU's ring to note it in, its tables and its LPIs' pending state as
+    /// a save writes them, for which a ring needs KVM's bitmap beside it (api.rst 8.40,
+    /// KVM_CAP_DIRTY_LOG_RING_WITH_BITMAP, Linux 6.3); a slot's bitmap takes every write,
+    /// a vCPU's or KVM's own (virt/kvm/kvm_main.c, mark_page_dirty_in_slot), on every arm64
+    /// KVM.
     #[cfg(target_arch = "aarch64")]
     fn enable(_kvm: &sys::Kvm, fd: Arc<sys::VmFd>) -> Dirty {
         Dirty::with_ring(fd, 0)
@@ -272,10 +276,13 @@ impl Dirty {
     }
 
     /// Notes slot `r`, writable by its guest, for its writes to be logged as they are
-    /// watched; logged from now on where they are.
+    /// watched; logged from now on where they are. Under the slots' lock throughout, as a
+    /// slot's bitmap is read under it: none is read before its slot is logged.
     fn add_slot(&self, r: &sys::kvm_userspace_memory_region) -> Result<()> {
+        let mut slots = lock(&self.slots);
         let watching = lock(&self.written).is_some();
-        lock(&self.slots).push(*r);
+        slots.retain(|s| s.slot != r.slot);
+        slots.push(*r);
         if watching {
             let mut logged = *r;
             logged.flags |= sys::MEM_LOG_DIRTY_PAGES;
@@ -285,8 +292,21 @@ impl Dirty {
         Ok(())
     }
 
-    /// Forgets slot `slot`, deleted: its pages already noted stay noted.
+    /// Forgets slot `slot`, about to be deleted: its pages already noted stay noted, and
+    /// those its log holds yet are noted first.
     fn remove_slot(&self, slot: u32) {
+        if self.ring == 0 {
+            let mut slots = lock(&self.slots);
+            if let Some(r) = slots.iter().find(|r| r.slot == slot).copied()
+                && let Some(set) = lock(&self.written).as_mut()
+                && self.log(&r, set).is_err()
+            {
+                // Its log unread: every page of it counts as written.
+                set.extend(crate::hv::every_page(r.guest_phys_addr, r.memory_size));
+            }
+            slots.retain(|r| r.slot != slot);
+            return;
+        }
         // The rings may hold its pages yet: taken while its place is known.
         let _ = self.collect();
         lock(&self.slots).retain(|r| r.slot != slot);
@@ -294,29 +314,37 @@ impl Dirty {
 
     /// Starts watching the guest's writes: every writable slot's logged from now on.
     pub(super) fn watch(&self) -> Result<()> {
-        if self.ring == 0 {
-            return Err(Error::Guest(
-                "this host's KVM keeps no dirty rings (KVM_CAP_DIRTY_LOG_RING), which a live move reads"
-                    .into(),
-            ));
-        }
+        let slots = lock(&self.slots);
         *lock(&self.written) = Some(std::collections::BTreeSet::new());
-        for r in lock(&self.slots).iter() {
+        let logged = slots.iter().try_for_each(|r| {
             let mut logged = *r;
             logged.flags |= sys::MEM_LOG_DIRTY_PAGES;
             // SAFETY: a slot the VM made, re-registered at the same range with logging on.
-            if let Err(e) = unsafe { self.fd.set_user_memory_region(&logged) } {
-                self.unwatch();
-                return Err(call("KVM_SET_USER_MEMORY_REGION")(e));
-            }
-        }
-        Ok(())
+            unsafe { self.fd.set_user_memory_region(&logged) }
+        });
+        drop(slots);
+        logged.map_err(|e| {
+            self.unwatch();
+            call("KVM_SET_USER_MEMORY_REGION")(e)
+        })
     }
 
-    /// Empties every vCPU's ring into the pages written, and gives the rings back to KVM,
-    /// which takes each page harvested away for writing again as it does: a vCPU whose ring
-    /// is full runs again after. What is read of a page after this holds every write noted.
+    /// Takes what was written into the pages written: where the VM has rings, empties every
+    /// vCPU's and gives them back to KVM, which takes each page harvested away for writing
+    /// again as it does, a vCPU whose ring is full running again after; else reads every
+    /// slot's bitmap, which takes its pages away for writing again as it answers. What is
+    /// read of a page after this holds every write noted.
     pub(super) fn collect(&self) -> Result<()> {
+        if self.ring == 0 {
+            let slots = lock(&self.slots);
+            let mut written = lock(&self.written);
+            if let Some(set) = written.as_mut() {
+                for r in slots.iter() {
+                    self.log(r, set)?;
+                }
+            }
+            return Ok(());
+        }
         let slots = lock(&self.slots).clone();
         let mut written = lock(&self.written);
         let page = crate::platform::page_size().map_err(call("sysconf(_SC_PAGESIZE)"))? as u64;
@@ -337,6 +365,22 @@ impl Dirty {
         Ok(())
     }
 
+    /// Notes in `set` the pages slot `r`'s dirty log holds (KVM_GET_DIRTY_LOG), a bit for
+    /// each of the host's pages.
+    fn log(
+        &self,
+        r: &sys::kvm_userspace_memory_region,
+        set: &mut std::collections::BTreeSet<u64>,
+    ) -> Result<()> {
+        let page = crate::platform::page_size().map_err(call("sysconf(_SC_PAGESIZE)"))? as u64;
+        let bitmap = self
+            .fd
+            .dirty_log(r.slot, r.memory_size.div_ceil(page))
+            .map_err(call("KVM_GET_DIRTY_LOG"))?;
+        crate::hv::note_dirty(&bitmap, r.guest_phys_addr, page, set);
+        Ok(())
+    }
+
     /// The pages written since the watch began or since this was last asked, in order of
     /// their addresses: each taken away for writing again before it is said.
     pub(super) fn written(&self) -> Result<Vec<u64>> {
@@ -353,7 +397,10 @@ impl Dirty {
             // SAFETY: a slot the VM made, re-registered as it was made.
             let _ = unsafe { self.fd.set_user_memory_region(r) };
         }
-        let _ = self.collect();
+        // A slot's bitmap goes as its logging stops; the rings keep theirs.
+        if self.ring > 0 {
+            let _ = self.collect();
+        }
         *lock(&self.written) = None;
     }
 }
@@ -441,7 +488,8 @@ impl DeviceSlots {
 
 impl Vm {
     /// Watches the guest's writes for a live move (D176 part 7): every writable slot's
-    /// logged into its vCPUs' dirty rings (api.rst 8.29).
+    /// logged, into its vCPUs' dirty rings where the VM has them (api.rst 8.29), else into
+    /// the slot's dirty bitmap (api.rst 4.8).
     pub fn watch_writes(&self) -> Result<()> {
         self.slots.dirty.watch()
     }
@@ -768,5 +816,19 @@ mod tests {
         let again: *const sys::Kvm = kvm().unwrap();
         assert_eq!(first, again);
         assert!(max_vcpus().unwrap() >= 1);
+    }
+
+    /// Every ioctl a live move's watch of the guest's writes makes (D176 part 7) is one the
+    /// confined VM process's seccomp filter allows (`IOCTLS`): unit tests run unconfined,
+    /// and only a move on Linux would find one missing.
+    #[test]
+    fn a_live_moves_ioctls_are_allowed() {
+        for request in [
+            sys::KVM_SET_USER_MEMORY_REGION,
+            sys::KVM_GET_DIRTY_LOG,
+            sys::KVM_RESET_DIRTY_RINGS,
+        ] {
+            assert!(IOCTLS.contains(&request), "{request:#x}");
+        }
     }
 }

@@ -40,6 +40,10 @@ pub const KVM_SIGNAL_MSI: u64 = 0x4020_AEA5;
 pub const KVM_SET_GSI_ROUTING: u64 = 0x4008_AE6A;
 /// _IO(KVMIO, 0xc7): harvested dirty-ring entries given back to the rings (api.rst 4.137).
 pub const KVM_RESET_DIRTY_RINGS: u64 = 0xAEC7;
+/// _IOW(KVMIO, 0x42, struct kvm_dirty_log): a slot's pages written since it was last asked,
+/// its bits cleared and their pages taken away for writing again as it answers (api.rst
+/// 4.8), where a VM's vCPUs keep no dirty rings.
+pub const KVM_GET_DIRTY_LOG: u64 = 0x4010_AE42;
 
 /// Each structure is the size its ioctl numbers encode (bits 16-29).
 const _: () = {
@@ -54,7 +58,17 @@ const _: () = {
     assert!(size(KVM_CREATE_DEVICE) == size_of::<kvm_create_device>());
     assert!(size(KVM_SIGNAL_MSI) == size_of::<kvm_msi>());
     assert!(size(KVM_SET_GSI_ROUTING) == 8);
+    assert!(size(KVM_GET_DIRTY_LOG) == size_of::<kvm_dirty_log>());
 };
+
+/// What KVM_GET_DIRTY_LOG asks: a slot, and where its bitmap goes, a bit a host page of it.
+#[repr(C)]
+#[derive(Debug, Default)]
+struct kvm_dirty_log {
+    slot: u32,
+    padding: u32,
+    dirty_bitmap: u64,
+}
 
 /// An MSI for the VMM to deliver (api.rst 4.70, KVM_SIGNAL_MSI).
 #[repr(C)]
@@ -332,6 +346,26 @@ impl VmFd {
         };
         // SAFETY: a slot of no memory maps none.
         unsafe { self.set_user_memory_region(&r) }
+    }
+
+    /// The dirty log of slot `slot`, of `pages` host pages, logged (KVM_MEM_LOG_DIRTY_PAGES):
+    /// a bit a page written since it was last asked, each cleared and its page taken away
+    /// for writing again before KVM answers, so that a write after it is in the next
+    /// (api.rst 4.8; virt/kvm/kvm_main.c, kvm_get_dirty_log_protect). Bit `i` is word
+    /// `i / 64`'s bit `i % 64`, KVM's little-endian `unsigned long`s read as words.
+    pub fn dirty_log(&self, slot: u32, pages: u64) -> io::Result<Vec<u64>> {
+        let words =
+            usize::try_from(pages.div_ceil(64)).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
+        let mut bitmap = vec![0u64; words];
+        let log = kvm_dirty_log {
+            slot,
+            padding: 0,
+            dirty_bitmap: bitmap.as_mut_ptr() as u64,
+        };
+        // SAFETY: KVM writes the slot's bitmap, ALIGN(pages, 64) / 8 bytes, which `bitmap`
+        // holds, and reads the struct it is given.
+        unsafe { ioctl(self.fd(), KVM_GET_DIRTY_LOG, (&raw const log) as libc::c_ulong) }?;
+        Ok(bitmap)
     }
 
     /// Delivers the MSI of `address` and `data`, from the device of ID `devid` where the

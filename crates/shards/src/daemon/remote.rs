@@ -37,22 +37,14 @@ fn token(n: usize) -> Result<String, String> {
 }
 
 /// Why a client may not run `args` here: a context's own commands, the daemon's, and what the
-/// shards binary runs only as a part of itself, are the machine's owner's.
+/// shards binary runs only as a part of itself (`cli::INTERNAL`), are the machine's owner's.
 fn owners(args: &[String]) -> Option<String> {
     let said = shards_cmdline::grammar::rewrite(args).unwrap_or_else(|| args.to_vec());
     let first = said.first().map(String::as_str).unwrap_or_default();
-    matches!(
-        first,
-        "context"
-            | "client"
-            | "invitation"
-            | "daemon"
-            | "spawner"
-            | "grants"
-            | "share"
-            | "frontend"
-            | "guest"
-    )
+    (crate::cli::INTERNAL.contains(&first)
+        // `guest` and `disk` are `configure guest` and `configure disk`: the machine's own
+        // guest and the share of its disk shards keeps (D28, D186), its owner's to set.
+        || matches!(first, "context" | "client" | "invitation" | "daemon" | "guest" | "disk"))
     .then(|| format!("{first}: this machine's owner's to run, not a client's"))
 }
 
@@ -516,8 +508,8 @@ impl Machine {
         env.extend([
             ("SHARDS_HOME".to_string(), self.home.clone().into_os_string()),
             (
-                "SHARDS_CONTEXT".to_string(),
-                OsString::from(crate::context::DEFAULT),
+                crate::context::HERE.0.to_string(),
+                OsString::from(crate::context::HERE.1),
             ),
         ]);
         // The daemon's cache, where a build's microVMs find the VM process it writes out:
@@ -1657,9 +1649,21 @@ mod tests {
             "stop daemon",
             "daemon stop",
             "configure guest --kernel k --init i",
+            "configure disk --log-history 2g",
+            "configure disk",
             "spawner",
+            "build-writer",
+            "grants --template /t",
+            "working-set --template /t",
+            "share rw /a",
+            "share --join",
+            "frontend osi",
         ] {
             assert!(owners(&args(owner)).is_some(), "{owner}");
+        }
+        // Every part of the binary its own (`cli::INTERNAL`).
+        for word in crate::cli::INTERNAL {
+            assert!(owners(&args(word)).is_some(), "{word}");
         }
     }
 

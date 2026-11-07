@@ -2,9 +2,9 @@
 //! (D214): real guests on the host's hypervisor, booted in this process (one VM a process,
 //! as Hypervisor.framework allows), the test guest told each step on its console.
 //!
-//! `SHARDS_PLUG_ROUNDS` plugs, reads, writes and unplugs a disk that many times, and says
-//! each step's times as n, p50, p90, p99 and max (PM M430's harness,
-//! docs/research/measurements/pci-hotplug).
+//! `SHARDS_PLUG_ROUNDS` plugs, reads, writes and unplugs a disk (and a host's function,
+//! where the host has one to give) that many times, and says each step's times as n, p50,
+//! p90, p99 and max (PM M430's harness, docs/research/measurements/pci-hotplug).
 
 #![allow(clippy::panic)]
 
@@ -22,18 +22,28 @@ const MIB: u64 = 1 << 20;
 const SALT: u64 = 0x5107;
 
 /// Waits for the guest's console to say `line`, and gives what it said before it since the
-/// last time it was asked: the step's answer.
+/// last time it was asked: the step's answer. Within TIMEOUT, or past it while its console
+/// says something new within DAEMON_QUIET (`common::Heard::console`: its vCPUs are threads
+/// of this process, whose CPU time is its other tests' and this poll's too).
 fn until(handle: &Handle, line: &str) -> String {
     let end = Instant::now() + TIMEOUT;
+    let mut heard = common::Heard::console();
+    let mut before = handle.console_said();
     loop {
-        let said = String::from_utf8_lossy(&handle.console_said()).into_owned();
+        let console = handle.console_said();
+        heard.said(console != before);
+        let said = String::from_utf8_lossy(&console).into_owned();
         if let Some(before) = said.rsplit_once(line).map(|(before, _)| before) {
             return before.to_string();
         }
-        if Instant::now() > end {
+        if Instant::now() > end && !heard.lately(true) {
             handle.stop();
-            panic!("the guest did not say {line:?} in {TIMEOUT:?}: {said}");
+            panic!(
+                "the guest did not say {line:?} in {TIMEOUT:?}, nor anything new for {:?} after: {said}",
+                common::DAEMON_QUIET
+            );
         }
+        before = console;
         std::thread::sleep(Duration::from_millis(1));
     }
 }
@@ -48,8 +58,10 @@ fn answer(said: &str, prefix: &str) -> Vec<String> {
     line.split_whitespace().map(str::to_string).collect()
 }
 
-/// n, p50, p90, p99 and max of `samples`, nearest rank.
+/// n, p50, p90, p99 and max of `samples`, nearest rank, and each round's in its order: an
+/// outlier is told by its round (the first's, or one that repeats, PM M430).
 fn stats(name: &str, samples: &mut [u128]) -> String {
+    let rounds = samples.iter().map(u128::to_string).collect::<Vec<_>>().join(",");
     samples.sort_unstable();
     let rank = |p: usize| {
         samples
@@ -58,7 +70,7 @@ fn stats(name: &str, samples: &mut [u128]) -> String {
             .unwrap_or_default()
     };
     format!(
-        "PLUG-STATS {name}: n {} p50 {} p90 {} p99 {} max {} us",
+        "PLUG-STATS {name}: n {} p50 {} p90 {} p99 {} max {} us; rounds {rounds}",
         samples.len(),
         rank(50),
         rank(90),
@@ -219,12 +231,12 @@ fn devices_are_plugged_into_a_running_microvm_and_its_disks_grow() {
     until(&handle, &format!("SHARDS-PLUG WAIT {step}"));
     handle.console_input(b"done\n");
     let said = until(&handle, "SHARDS-TEST PASS");
-    match rx.recv_timeout(TIMEOUT) {
-        Ok(reason) => assert_eq!(reason, ExitReason::PowerOff, "{said}"),
-        Err(_) => {
-            handle.stop();
-            panic!("the guest did not power off in {TIMEOUT:?}");
-        }
+    match common::machine_ended(&handle, &rx, TIMEOUT) {
+        Some(reason) => assert_eq!(reason, ExitReason::PowerOff, "{said}"),
+        None => panic!(
+            "the guest did not power off in {TIMEOUT:?}, nor said anything new for {:?} after",
+            common::DAEMON_QUIET
+        ),
     }
     // What a PCI bus with slots and nothing on it costs a boot: from its vCPUs' release to
     // its PID 1's first word, booted alternately with four slots and with no bus.
@@ -287,9 +299,10 @@ fn edu_function() -> Option<String> {
 /// IOMMU: its guest rescans, finds QEMU edu's IDs at the place it was plugged into, and
 /// reads its identification register and liveness check through its BAR 0, mapped from
 /// sysfs where the guest placed it, the BAR's window a memory slot of KVM's that moved
-/// with it; then lets it go, and it is unplugged, KVM told to forget its group. Twice, as
-/// a function let go is the host's again. Runs where a host has an edu function to give:
-/// nested, `SHARDS_L1_PCI_TESTS=01.0 SHARDS_L1_TESTS=hotplug` (boot.rs).
+/// with it; then lets it go, and it is unplugged, KVM told to forget its group. Twice at
+/// least (`SHARDS_PLUG_ROUNDS`), as a function let go is the host's again, each step timed,
+/// and the host plug's own steps too (`PLUG-STEPS`, PM M430). Runs where a host has an edu function to give: nested, `SHARDS_L1_PCI_TESTS=01.0
+/// SHARDS_L1_TESTS=hotplug:a_hosts_function` (boot.rs).
 #[cfg(target_os = "linux")]
 #[test]
 fn a_hosts_function_is_plugged_into_a_running_microvm() {
@@ -324,18 +337,60 @@ fn a_hosts_function_is_plugged_into_a_running_microvm() {
         step += 1;
         until(handle, &format!("SHARDS-PLUG WAIT {step}"))
     };
-    for _ in 0..2 {
+    // SHARDS_PLUG_ROUNDS times (twice where unset), each step timed as the disk's are.
+    let rounds: usize = std::env::var("SHARDS_PLUG_ROUNDS")
+        .ok()
+        .and_then(|r| r.parse().ok())
+        .unwrap_or(2)
+        .max(2);
+    let (mut plugs, mut reads, mut removes, mut unplugs) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    // The host plug's own steps (`Plugged::steps`, PM M430), each step's rounds in order.
+    let mut steps: Vec<(&'static str, Vec<u128>)> = Vec::new();
+    for round in 0..rounds {
+        let t0 = Instant::now();
         let plugged = handle.plug_vfio(&f).unwrap_or_else(|e| panic!("{e}"));
-        let said = ask(&handle, format!("vfio {}", plugged.address));
+        let plug = t0.elapsed().as_micros();
+        plugs.push(plug);
+        let said: Vec<String> = plugged
+            .steps
+            .iter()
+            .map(|(step, took)| format!("{step} {}", took.as_micros()))
+            .collect();
+        let sum: u128 = plugged.steps.iter().map(|(_, took)| took.as_micros()).sum();
         eprintln!(
-            "PLUG-STATS a host's function, rescan to its BAR read: {} us",
-            answer(&said, "SHARDS-PLUG VFIO ")[0]
+            "PLUG-STEPS round {round}: {} us; steps {sum} of the plug's {plug} us",
+            said.join(", ")
         );
-        ask(&handle, format!("remove {}", plugged.address));
+        for &(step, took) in &plugged.steps {
+            match steps.iter_mut().find(|(name, _)| *name == step) {
+                Some((_, samples)) => samples.push(took.as_micros()),
+                None => steps.push((step, vec![took.as_micros()])),
+            }
+        }
+        let said = ask(&handle, format!("vfio {}", plugged.address));
+        reads.push(answer(&said, "SHARDS-PLUG VFIO ")[0].parse().unwrap());
+        let said = ask(&handle, format!("remove {}", plugged.address));
+        removes.push(answer(&said, "SHARDS-PLUG REMOVED ")[0].parse().unwrap());
+        let t0 = Instant::now();
         handle.unplug(plugged.devfn).unwrap_or_else(|e| panic!("{e}"));
+        unplugs.push(t0.elapsed().as_micros());
     }
     until(&handle, &format!("SHARDS-PLUG WAIT {step}"));
     handle.console_input(b"done\n");
     let said = until(&handle, "SHARDS-TEST PASS");
     assert_eq!(running.wait(), ExitReason::PowerOff, "{said}");
+    for (name, samples) in [
+        ("a host's function, host plug", &mut plugs),
+        ("a host's function, guest rescan to its BAR read", &mut reads),
+        ("a host's function, guest remove", &mut removes),
+        ("a host's function, host unplug", &mut unplugs),
+    ] {
+        eprintln!("{}", stats(name, samples));
+    }
+    for (step, samples) in &mut steps {
+        eprintln!(
+            "{}",
+            stats(&format!("a host's function, host plug's {step}"), samples)
+        );
+    }
 }

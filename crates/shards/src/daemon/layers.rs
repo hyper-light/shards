@@ -484,7 +484,7 @@ impl shards_archive::Files for Files {
             gid: inode.gid,
             size: inode.size,
             mtime: shards_archive::tar::Time::unix(inode.mtime.sec, i64::from(inode.mtime.nsec)),
-            ino: u64::from(inode.ino),
+            ino: u128::from(inode.ino),
             dev: 0,
             nlink: u64::from(inode.links),
             major: i64::from(major),

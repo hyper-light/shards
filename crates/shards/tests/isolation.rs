@@ -1,7 +1,6 @@
 //! What a workload reaches of the host from inside its microVM
 //! (docs/architecture/AGENTFILE_ARCH.md §9.7).
 
-#![cfg(unix)]
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 mod common;

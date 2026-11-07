@@ -1,0 +1,565 @@
+
+thread 'storm::restores_of_a_busy_machine_lose_no_interrupt_and_repeat_no_write' (5276) panicked at crates/shards/tests/common/mod.rs:2662:27:
+no ["storm checked", "SHARDS-TEST FAIL"] from the VM; it said:
+ clock before the snapshot: 105486 reads in turn on 64 CPUs, worst step back 0 ns
+SHARDS-TEST INFO generation=1
+SHARDS-TEST INFO longest gaps before: median 3792716, longest 7971434 (worker 44), 7932586 (worker 45), 7190303 (worker 66); longest turns taken: median 1928696, longest 7918239 (worker 45), 5549578 (worker 0), 4435788 (worker 29)
+[   77.781458] storm: the main thread stood still 15 s at beat 1 (seen from CPU 48)
+[   78.984403] storm: log: Linux version 6.18.48 (shards@shards) (gcc (Debian 12.2.0-14+deb12u1) 12.2.0, GNU ld (GNU Binutils for Debian) 2.40) #1 SMP 1970-01-01T00:00:00Z
+[   80.523771] storm: log: random: crng init done
+[   80.981258] storm: log: Kernel command line: console=ttyS0 quiet panic=-1 shards_test=storm shards_vda_bytes=4194304 shards_vdb_bytes=1048576 shards_storm_ms=0
+[   82.374474] storm: log: Unknown kernel command line parameters "shards_test=storm shards_vda_bytes=4194304 shards_vdb_bytes=1048576 shards_storm_ms=0", will be passed to user space.
+[   85.958968] storm: log: cacheinfo: Unable to detect cache hierarchy for CPU 0
+[   87.966903] storm: log: audit: type=2000 audit(3.224:1): state=initialized audit_enabled=0 res=1
+SHARDS-TEST INFO[   89.752008] storm: log: SCSI subsystem initialized
+[   91.678134] storm: log: VFS: Disk quotas dquot_6.6.0
+[   92.892419] storm: log: Initialise system trusted keyrings
+ clock after the snapshot: 19504[   95.391625] storm: log: NFS: Registering the id_resolver key type
+5 reads in turn [   96.939573] storm: log: Key type id_resolver registered
+on 64 CPUs, worst step back 0 ns
+SHARDS-TEST IN[   99.958476] storm: log: Key type id_legacy registered
+FO waiting for e[  101.744449] storm: log: Key type asymmetric registered
+very worker's pr[  103.623567] storm: log: Asymmetric key parser 'x509' registered
+ogress after the[  105.160092] storm: log: virtio_blk virtio0: [vda] 8192 512-byte logical blocks (4.19 MB/4.00 MiB)
+ snapshot: worke[  107.340757] storm: log: virtio_blk virtio1: [vdb] 2048 512-byte logical blocks (1.05 MB/1.00 MiB)
+rs [0, 1, 2, 3, [  107.575371] watchdog: BUG: soft lockup - CPU#41 stuck for 24s! [migration/41:224]
+4, 5, 6, 7, 8, 9[  107.576885] Modules linked in:
+, 10, 11, 12, 13[  107.614556] CPU: 41 UID: 0 PID: 224 Comm: migration/41 Not tainted 6.18.48 #1 NONE
+, 14, 15, 16, 17[  107.615141] Hardware name: linux,dummy-virt (DT)
+, 18, 19, 20, 21[  107.615188] Stopper: 0x0 <- 0x0
+, 22, 23, 24, 25[  107.686329] pstate: 20402005 (nzCv daif +PAN -UAO -TCO -DIT -SSBS BTYPE=--)
+, 26, 27, 28, 29[  107.723655] pc : __schedule+0x5c8/0x62c
+, 30, 31, 32, 33[  107.840676] lr : __schedule+0x470/0x62c
+, 34, 35, 36, 37[  107.840693] sp : ffff80008266bd70
+, 38, 39, 40, 41[  107.840703] x29: ffff80008266bdb0 x28: 0000000000000000 x27: 0000000000000000
+, 42, 43, 44, 45[  107.840797] x26: ffff800080e8e6a0 x25: ffff000002a1bb08 x24: ffff800081137ee0
+, 46, 47, 48, 49[  107.840810] x23: ffff000002a1b540 x22: ffff000002a1b540 x21: ffff800080e8e240
+[  107.840822] x20: 0000000000000000 x19: ffff00000f8112c0 x18: 0000000000000001
+, 50, 51, 52, 53[  107.840834] x17: ffff7fff8e854000 x16: ffff8000814a0000 x15: 0000000000000001
+, 54, 55, 56, 57[  107.840847] x14: 0000000000000001 x13: 0000000000000466 x12: 00000000000000ad
+, 58, 59, 60, 61[  107.840862] x11: 00000000000000c0 x10: 0000000000000b40 x9 : ffff800081137ee0
+, 62, 63, 64, 65[  107.840878] x8 : ffff00000f5ec0c0 x7 : 0000000000ec0000 x6 : 000000009a2420f8
+, 66] of 67 have[  107.840888] x5 : 1fffffffffffffff x4 : 0000000000000015 x3 : ffff8000800a01bc
+ not; longest ga[  107.840901] x2 : 0000000000000000 x1 : 0000000000000001 x0 : 0000000000000004
+ps since: median[  107.840960] Call trace:
+ 4300226, longes[  107.841654]  __schedule+0x5c8/0x62c (P)
+t 7785360 (worke[  107.878937]  schedule+0x24/0xb0
+r 53), 6909945 ([  107.878965]  smpboot_thread_fn+0x15c/0x164
+worker 48), 6359[  107.915982]  kthread+0xf4/0x1b8
+410 (worker 1); [  107.916476]  ret_from_fork+0x10/0x20
+the writer is reading slot 246; in flight (reads writes): vda 0        0, vdb 1        0;  14:        419          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0    GICv3  48 Edge      virtio0 |  15:        493          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0    GICv3  49 Edge      virtio1 |  17:        379          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0    GICv3  50 Edge      virtio2
+SHARDS-TEST INFO[  130.246496] storm: log: iscsi: registered transport (tcp)
+ waiting for the[  130.535395] storm: log: Bridge firewalling registered
+ workers' last r[  130.819627] storm: log: Key type dns_resolver registered
+ounds: workers [[  131.120595] storm: log: Loading compiled-in X.509 certificates
+48] still in the[  131.425613] storm: log: Key type .fscrypt registered
+irs; in flight ([  131.648818] storm: log: Key type fscrypt-provisioning registered
+reads writes): v[  131.940623] storm: log: Key type encrypted registered
+da 0        0, v[  132.177413] storm: log: hrtimer: interrupt took 4392000 ns
+db 0        0
+[  132.513260] storm: log: random: crng reseeded due to virtual machine fork
+[  132.774898] storm: log: sched: DL replenish lagged too much
+[  132.850782] storm: the main thread last ran on CPU 8
+[  132.930008] storm: each CPU's timers follow, then every task's stack
+[  133.007976] sysrq: Show clockevent devices & pending hrtimers (no others)
+[  133.083426] Timer List Version: v0.10
+[  133.136527] HRTIMER_MAX_CLOCK_BASES: 8
+[  133.182578] now at 116209148000 nsecs
+[  133.223309]
+[  133.244357] cpu: 0
+[  133.270775]  clock 0:
+[  133.299936]   .base:       0000000019664d2f
+[  133.350923]   .index:      0
+[  133.390627]   .resolution: 1 nsecs
+[  133.433879]   .offset:     0 nsecs
+[  133.477887] active timers:
+[  133.511813]  #0: <000000007ae50850>, tick_nohz_handler
+[  133.514194] , S:01
+[  133.572721]
+[  133.618008]  # expires at 116638000000-116638000000 nsecs [in 428852000 to 428852000 nsecs]
+[  133.715227]  #1: <00000000dee623e4>, dl_task_timer
+[  133.716789] , S:01
+[  133.773307]
+[  133.822654]  # expires at 117784283000-117784283000 nsecs [in 1575135000 to 1575135000 nsecs]
+[  133.919349]  #2: <00000000b0043bf3>, sched_clock_poll
+[  133.919401] , S:01
+[  133.991882]
+[  134.052001]  # expires at 4398059511103-4398059511103 nsecs [in 4281850363103 to 4281850363103 nsecs]
+[  134.179219]  clock 1:
+[  134.212655]   .base:       000000009989bb99
+SHARDS-TEST INFO[  134.281892]   .index:      1
+ records=249
+SHARDS-TEST INFO[  134.340450]   .resolution: 1 nsecs
+ longest gaps af[  134.413319]   .offset:     1793762660845351000 nsecs
+ter: median 4485[  134.482915] active timers:
+732, longest 264[  134.532608]  clock 2:
+03222 (worker 40[  134.573550]   .base:       00000000685b1998
+), 26300996 (wor[  134.639502]   .index:      2
+ker 41), 1177817[  134.679569]   .resolution: 1 nsecs
+8 (worker 48); l[  134.722941]   .offset:     0 nsecs
+ongest turns tak[  134.764762] active timers:
+en: median 26929[  134.803296]  clock 3:
+18, longest 2629[  134.839476]   .base:       00000000d514680a
+0716 (worker 41)[  134.892266]   .index:      3
+, 11743835 (work[  134.931419]   .resolution: 1 nsecs
+er 48), 10866758[  134.976917]   .offset:     1793762660845351000 nsecs
+ (worker 0)
+SHA[  135.028148] active timers:
+RDS-TEST INFO st[  135.066904]  clock 4:
+orm checked
+[  135.101014]   .base:       000000004dfb8536
+[  135.159880]   .index:      4
+[  135.196369]   .resolution: 1 nsecs
+[  135.235570]   .offset:     0 nsecs
+[  135.286711] active timers:
+[  135.321511]  clock 5:
+[  135.349002]   .base:       00000000713c9963
+[  135.393889]   .index:      5
+[  135.428570]   .resolution: 1 nsecs
+[  135.470384]   .offset:     1793762660845351000 nsecs
+[  135.525024] active timers:
+[  135.556463]  clock 6:
+[  135.584221]   .base:       0000000022aaadb6
+[  135.629549]   .index:      6
+[  135.664243]   .resolution: 1 nsecs
+[  135.703412]   .offset:     0 nsecs
+[  135.740723] active timers:
+[  135.777048]  clock 7:
+[  135.803019]   .base:       00000000fbf54e8e
+[  135.853803]   .index:      7
+[  135.890619]   .resolution: 1 nsecs
+[  135.932278]   .offset:     1793762660845351000 nsecs
+[  135.993837] active timers:
+[  136.026249]   .expires_next   : 9223372036854775807 nsecs
+[  136.089618]   .hres_active    : 1
+[  136.137354]   .nr_events      : 4586
+[  136.180150]   .nr_retries     : 326
+[  136.222983]   .nr_hangs       : 27
+[  136.269675]   .max_hang_time  : 287759000
+[  136.319462]   .nohz           : 1
+[  136.362059]   .highres        : 1
+[  136.405008]   .last_tick      : 119503000000 nsecs
+[  136.460501]   .tick_stopped   : 0
+[  136.506905]   .idle_jiffies   : 4294786884
+[  136.566031]   .idle_calls     : 604
+[  136.611846]   .idle_sleeps    : 577
+[  136.660402]   .idle_entrytime : 119785447000 nsecs
+[  136.722301]   .idle_waketime  : 119830611000 nsecs
+[  136.786465]   .idle_exittime  : 119830640000 nsecs
+[  136.850470]   .idle_sleeptime : 8122196000 nsecs
+[  136.913780]   .iowait_sleeptime: 128916000 nsecs
+[  136.972207]   .last_jiffies   : 4294787368
+[  137.024778]   .next_timer     : 9223372036854775807
+[  137.095150]   .idle_expires   : 9223372036854775807 nsecs
+[  137.168084] jiffies: 4294787591
+[  137.216755]
+[  137.243283] cpu: 1
+[  137.278430]  clock 0:
+[  137.317581]   .base:       00000000a2401237
+[  137.379798]   .index:      0
+[  137.423616]   .resolution: 1 nsecs
+[  137.473737]   .offset:     0 nsecs
+[  137.523658] active timers:
+[  137.562946]  #0: <00000000e4c7f148>, watchdog_timer_fn
+[  137.565661] , S:01
+[  137.640037]
+[  137.702931]  # expires at 124255000000-124255000000 nsecs [in 8045852000 to 8045852000 nsecs]
+[  137.824319]  clock 1:
+[  137.863160]   .base:       00000000ba37b609
+[  137.922190]   .index:      1
+[  137.970450]   .resolution: 1 nsecs
+[  138.024543]   .offset:     1793762660845351000 nsecs
+[  138.098193] active timers:
+[  138.140309]  clock 2:
+[  138.176360]   .base:       00000000b6067dd6
+[  138.242293]   .index:      2
+[  138.287115]   .resolution: 1 nsecs
+[  138.334262]   .offset:     0 nsecs
+[  138.387010] active timers:
+[  138.428241]  clock 3:
+[  138.466879]   .base:       00000000c4602323
+[  138.524828]   .index:      3
+[  138.566924]   .resolution: 1 nsecs
+[  138.614180]   .offset:     1793762660845351000 nsecs
+[  138.685499] active timers:
+[  138.725580]  clock 4:
+[  138.763693]   .base:       0000000038e4991d
+[  138.826282]   .index:      4
+[  138.870778]   .resolution: 1 nsecs
+[  138.920772]   .offset:     0 nsecs
+[  138.974196] active timers:
+[  139.012242]  clock 5:
+[  139.049923]   .base:       00000000e6adc0ba
+[  139.111196]   .index:      5
+[  139.158909]   .resolution: 1 nsecs
+[  139.211019]   .offset:     1793762660845351000 nsecs
+[  139.283814] active timers:
+[  139.323696]  clock 6:
+[  139.361544]   .base:       000000002a780472
+[  139.428601]   .index:      6
+[  139.477209]   .resolution: 1 nsecs
+[  139.530587]   .offset:     0 nsecs
+[  139.585749] active timers:
+[  139.627051]  clock 7:
+[  139.661352]   .base:       000000002e263f17
+[  139.727419]   .index:      7
+[  139.769259]   .resolution: 1 nsecs
+[  139.822611]   .offset:     1793762660845351000 nsecs
+[  139.899253] active timers:
+[  139.941871]   .expires_next   : 124255000000 nsecs
+[  140.018746]   .hres_active    : 1
+[  140.069514]   .nr_events      : 4347
+[  140.118498]   .nr_retries     : 140
+[  140.172553]   .nr_hangs       : 0
+[  140.228771]   .max_hang_time  : 0
+[  140.277263]   .nohz           : 1
+[  140.331724]   .highres        : 1
+[  140.382970]   .last_tick      : 120262000000 nsecs
+[  140.455327]   .tick_stopped   : 1
+[  140.501630]   .idle_jiffies   : 4294787554
+[  140.566895]   .idle_calls     : 4044
+[  140.622973]   .idle_sleeps    : 1524
+[  140.677014]   .idle_entrytime : 123796045000 nsecs
+[  140.747877]   .idle_waketime  : 123866082000 nsecs
+[  140.826233]   .idle_exittime  : 120257372000 nsecs
+[  140.905174]   .idle_sleeptime : 70039892000 nsecs
+[  140.976635]   .iowait_sleeptime: 5086028000 nsecs
+[  141.052871]   .last_jiffies   : 4294791449
+[  141.114487]   .next_timer     : 9223372036854775807
+[  141.185369]   .idle_expires   : 9223372036854775807 nsecs
+[  141.271218] jiffies: 4294791694
+[  141.320980]
+[  141.347438] cpu: 2
+[  141.381072]  clock 0:
+[  141.421437]   .base:       000000000f451864
+[  141.481432]   .index:      0
+[  141.527259]   .resolution: 1 nsecs
+[  141.588133]   .offset:     0 nsecs
+[  141.648025] active timers:
+[  141.688050]  #0: <000000002dad3cf7>, dl_task_timer
+[  141.688102] , S:01
+[  141.759315]
+[  141.820701]  # expires at 124985506000-124985506000 nsecs [in 8776358000 to 8776358000 nsecs]
+[  141.937735]  clock 1:
+[  141.976995]   .base:       00000000e06c999c
+[  142.044506]   .index:      1
+[  142.096494]   .resolution: 1 nsecs
+[  142.146410]   .offset:     1793762660845351000 nsecs
+[  142.223119] active timers:
+[  142.266621]  clock 2:
+[  142.304257]   .base:       00000000a7a2f725
+[  142.365275]   .index:      2
+[  142.412769]   .resolution: 1 nsecs
+[  142.464697]   .offset:     0 nsecs
+[  142.514193] active timers:
+[  142.555738]  clock 3:
+[  142.596259]   .base:       00000000e55877a6
+[  142.660717]   .index:      3
+[  142.708352]   .resolution: 1 nsecs
+[  142.762688]   .offset:     1793762660845351000 nsecs
+[  142.841961] active timers:
+[  142.888240]  clock 4:
+[  142.930215]   .base:       00000000698ada88
+[  142.997293]   .index:      4
+[  143.051194]   .resolution: 1 nsecs
+[  143.104774]   .offset:     0 nsecs
+[  143.157305] active timers:
+[  143.199851]  clock 5:
+[  143.235283]   .base:       0000000046e488af
+[  143.298865]   .index:      5
+[  143.341556]   .resolution: 1 nsecs
+[  143.394936]   .offset:     1793762660845351000 nsecs
+[  143.461827] active timers:
+[  143.498534]  clock 6:
+[  143.530431]   .base:       000000003df16851
+[  143.594792]   .index:      6
+[  143.639065]   .resolution: 1 nsecs
+[  143.692067]   .offset:     0 nsecs
+[  143.747779] active timers:
+[  143.790681]  clock 7:
+[  143.831531]   .base:       00000000b6b07271
+[  143.898824]   .index:      7
+[  143.946342]   .resolution: 1 nsecs
+[  143.992875]   .offset:     1793762660845351000 nsecs
+[  144.067673] active timers:
+[  144.109047]   .expires_next   : 128268000000 nsecs
+[  144.183185]   .hres_active    : 1
+[  144.232324]   .nr_events      : 4676
+[  144.285825]   .nr_retries     : 140
+[  144.337346]   .nr_hangs       : 0
+[  144.386493]   .max_hang_time  : 0
+[  144.436709]   .nohz           : 1
+[  144.483621]   .highres        : 1
+[  144.531629]   .last_tick      : 125039000000 nsecs
+[  144.603385]   .tick_stopped   : 1
+[  144.652253]   .idle_jiffies   : 4294792333
+[  144.717130]   .idle_calls     : 2263
+[  144.765120]   .idle_sleeps    : 342
+[  144.822217]   .idle_entrytime : 125038226000 nsecs
+[  144.896899]   .idle_waketime  : 125036173000 nsecs
+[  144.968673]   .idle_exittime  : 125036237000 nsecs
+[  145.040612]   .idle_sleeptime : 68101321000 nsecs
+[  145.109123]   .iowait_sleeptime: 0 nsecs
+[  145.165028]   .last_jiffies   : 4294795568
+[  145.227558]   .next_timer     : 9223372036854775807
+[  145.305764]   .idle_expires   : 9223372036854775807 nsecs
+[  145.388012] jiffies: 4294795811
+[  145.436916]
+[  145.461516] cpu: 3
+[  145.499764]  clock 0:
+[  145.539397]   .base:       000000007e447a78
+[  145.608394]   .index:      0
+[  145.652269]   .resolution: 1 nsecs
+[  145.703576]   .offset:     0 nsecs
+[  145.760582] active timers:
+[  145.801005]  #0: <0000000096a50343>, watchdog_timer_fn
+[  145.801056] , S:01
+[  145.885683]
+[  145.943492]  # expires at 132279000000-132279000000 nsecs [in 16069852000 to 16069852000 nsecs]
+[  146.064478]  clock 1:
+[  146.101868]   .base:       000000006429566a
+[  146.162476]   .index:      1
+[  146.204751]   .resolution: 1 nsecs
+[  146.256935]   .offset:     1793762660845351000 nsecs
+[  146.331703] active timers:
+[  146.373379]  clock 2:
+[  146.412494]   .base:       00000000181cbe68
+[  146.475329]   .index:      2
+[  146.520316]   .resolution: 1 nsecs
+[  146.578554]   .offset:     0 nsecs
+[  146.635020] active timers:
+[  146.676254]  clock 3:
+[  146.712009]   .base:       0000000054acd25a
+[  146.770819]   .index:      3
+[  146.818662]   .resolution: 1 nsecs
+[  146.872948]   .offset:     1793762660845351000 nsecs
+[  146.944015] active timers:
+[  146.987353]  clock 4:
+[  147.025160]   .base:       0000000034cc07e2
+[  147.086005]   .index:      4
+[  147.130909]   .resolution: 1 nsecs
+[  147.183014]   .offset:     0 nsecs
+[  147.234317] active timers:
+[  147.276515]  clock 5:
+[  147.316125]   .base:       00000000a158a9be
+[  147.377399]   .index:      5
+[  147.423887]   .resolution: 1 nsecs
+[  147.480707]   .offset:     1793762660845351000 nsecs
+[  147.551955] active timers:
+[  147.593762]  clock 6:
+[  147.628224]   .base:       0000000028d382c9
+[  147.690178]   .index:      6
+[  147.737281]   .resolution: 1 nsecs
+[  147.794189]   .offset:     0 nsecs
+[  147.847559] active timers:
+[  147.896658]  clock 7:
+[  147.933504]   .base:       0000000064d6b43c
+[  148.000710]   .index:      7
+[  148.052927]   .resolution: 1 nsecs
+[  148.105621]   .offset:     1793762660845351000 nsecs
+[  148.181333] active timers:
+[  148.224939]   .expires_next   : 132279000000 nsecs
+[  148.297903]   .hres_active    : 1
+[  148.347957]   .nr_events      : 4535
+[  148.401605]   .nr_retries     : 125
+[  148.460549]   .nr_hangs       : 1
+[  148.509848]   .max_hang_time  : 72921000
+[  148.580027]   .nohz           : 1
+[  148.633112]   .highres        : 1
+[  148.687579]   .last_tick      : 128283000000 nsecs
+[  148.764878]   .tick_stopped   : 1
+[  148.816104]   .idle_jiffies   : 4294795577
+[  148.880080]   .idle_calls     : 2293
+[  148.938441]   .idle_sleeps    : 153
+[  148.996873]   .idle_entrytime : 128282630000 nsecs
+[  149.068685]   .idle_waketime  : 128280812000 nsecs
+[  149.142992]   .idle_exittime  : 128280869000 nsecs
+[  149.222236]   .idle_sleeptime : 79010723000 nsecs
+[  149.295039]   .iowait_sleeptime: 2426070000 nsecs
+[  149.369058]   .last_jiffies   : 4294799578
+[  149.429618]   .next_timer     : 9223372036854775807
+[  149.504082]   .idle_expires   : 9223372036854775807 nsecs
+[  149.590605] jiffies: 4294800013
+[  149.643089]
+[  149.670347] cpu: 4
+[  149.708315]  clock 0:
+[  149.746570]   .base:       00000000d4087b90
+[  149.811999]   .index:      0
+[  149.872880]   .resolution: 1 nsecs
+[  149.937125]   .offset:     0 nsecs
+[  149.997295] active timers:
+[  150.048212]  #0: <0000000094ee5bad>, watchdog_timer_fn
+[  150.048262] , S:01
+[  150.133044]
+[  150.194215]  # expires at 136291000000-136291000000 nsecs [in 20081852000 to 20081852000 nsecs]
+[  150.326163]  clock 1:
+[  150.362615]   .base:       00000000abbb2d21
+[  150.431113]   .index:      1
+[  150.478107]   .resolution: 1 nsecs
+[  150.533902]   .offset:     1793762660845351000 nsecs
+[  150.615765] active timers:
+[  150.662581]  clock 2:
+[  150.698992]   .base:       00000000d9efac6e
+[  150.767614]   .index:      2
+[  150.819940]   .resolution: 1 nsecs
+[  150.874159]   .offset:     0 nsecs
+[  150.932444] active timers:
+[  150.982011]  clock 3:
+[  151.028189]   .base:       0000000092ed8091
+[  151.094282]   .index:      3
+[  151.144056]   .resolution: 1 nsecs
+[  151.196922]   .offset:     1793762660845351000 nsecs
+[  151.282877] active timers:
+[  151.325086]  clock 4:
+[  151.366469]   .base:       00000000373beb43
+[  151.435849]   .index:      4
+[  151.488328]   .resolution: 1 nsecs
+[  151.545915]   .offset:     0 nsecs
+[  151.602226] active timers:
+[  151.660863]  clock 5:
+[  151.700489]   .base:       00000000fd8d7a78
+[  151.773974]   .index:      5
+[  151.824094]   .resolution: 1 nsecs
+[  151.880437]   .offset:     1793762660845351000 nsecs
+[  151.955867] active timers:
+[  151.999511]  clock 6:
+[  152.036724]   .base:       000000003fd8a84e
+[  152.101496]   .index:      6
+[  152.150437]   .resolution: 1 nsecs
+[  152.209779]   .offset:     0 nsecs
+[  152.266230] active timers:
+[  152.316447]  clock 7:
+[  152.352723]   .base:       00000000f1b4f640
+[  152.417228]   .index:      7
+[  152.465755]   .resolution: 1 nsecs
+[  152.524674]   .offset:     1793762660845351000 nsecs
+[  152.600231] active timers:
+[  152.647107]   .expires_next   : 136291000000 nsecs
+[  152.716878]   .hres_active    : 1
+[  152.775675]   .nr_events      : 4982
+[  152.835945]   .nr_retries     : 149
+[  152.892432]   .nr_hangs       : 0
+[  152.965480]   .max_hang_time  : 0
+[  153.025317]   .nohz           : 1
+[  153.089577]   .highres        : 1
+[  153.145467]   .last_tick      : 132295000000 nsecs
+[  153.220800]   .tick_stopped   : 1
+[  153.276813]   .idle_jiffies   : 4294803589
+[  153.342512]   .idle_calls     : 2453
+[  153.398327]   .idle_sleeps    : 160
+[  153.453539]   .idle_entrytime : 136293671000 nsecs
+[  153.526993]   .idle_waketime  : 136292771000 nsecs
+[  153.601414]   .idle_exittime  : 136292831000 nsecs
+[  153.681650]   .idle_sleeptime : 88279960000 nsecs
+[  153.756384]   .iowait_sleeptime: 868941000 nsecs
+[  153.830058]   .last_jiffies   : 4294803589
+[  153.896612]   .next_timer     : 9223372036854775807
+[  153.967873]   .idle_expires   : 9223372036854775807 nsecs
+[  154.053646] jiffies: 4294804476
+[  154.108755]
+[  154.132508] cpu: 5
+[  154.167273]  clock 0:
+[  154.204570]   .base:       00000000862b31f3
+[  154.271914]   .index:      0
+[  154.316555]   .resolution: 1 nsecs
+[  154.372948]   .offset:     0 nsecs
+[  154.429600] active timers:
+[  154.471882]  #0: <000000003052dfbb>, tick_nohz_handler
+[  154.471937] , S:01
+[  154.543560]
+[  154.608341]  # expires at 137597000000-137597000000 nsecs [in 21387852000 to 21387852000 nsecs]
+[  154.741819]  #1: <000000004306891f>, watchdog_timer_fn
+[  154.741873] , S:01
+[  154.819485]
+[  154.880188]  # expires at 140306000000-140306000000 nsecs [in 24096852000 to 24096852000 nsecs]
+[  155.013611]  clock 1:
+[  155.047735]   .base:       0000000036404ba1
+[  155.114737]   .index:      1
+[  155.164513]   .resolution: 1 nsecs
+[  155.225307]   .offset:     1793762660845351000 nsecs
+[  155.299964] active timers:
+[  155.346001]  clock 2:
+[  155.383938]   .base:       00000000ead33a00
+[  155.453276]   .index:      2
+[  155.508284]   .resolution: 1 nsecs
+[  155.576149]   .offset:     0 nsecs
+[  155.627456] active timers:
+[  155.668607]  clock 3:
+[  155.710071]   .base:       0000000044be5b96
+[  155.772418]   .index:      3
+[  155.815643]   .resolution: 1 nsecs
+[  155.865893]   .offset:     1793762660845351000 nsecs
+[  155.943174] active timers:
+[  155.990869]  clock 4:
+[  156.034243]   .base:       000000002115113f
+[  156.107758]   .index:      4
+[  156.156198]   .resolution: 1 nsecs
+[  156.212550]   .offset:     0 nsecs
+[  156.268106] active timers:
+[  156.311235]  clock 5:
+[  156.346263]   .base:       00000000e4397316
+[  156.413404]   .index:      5
+[  156.460670]   .resolution: 1 nsecs
+[  156.519810]   .offset:     1793762660845351000 nsecs
+[  156.596769] active timers:
+[  156.642562]  clock 6:
+[  156.680435]   .base:       000000006dceb878
+[  156.752460]   .index:      6
+[  156.801719]   .resolution: 1 nsecs
+[  156.870053]   .offset:     0 nsecs
+[  156.930804] active timers:
+[  157.013334]  clock 7:
+[  157.064639]   .base:       00000000300889cb
+[  157.143556]   .index:      7
+[  157.194266]   .resolution: 1 nsecs
+[  157.247599]   .offset:     1793762660845351000 nsecs
+[  157.324470] active timers:
+[  157.371979]   .expires_next   : 140498000000 nsecs
+[  157.453410]   .hres_active    : 1
+[  157.504026]   .nr_events      : 15864
+[  157.560833]   .nr_retries     : 385
+[  157.626337]   .nr_hangs       : 2
+[  157.681121]   .max_hang_time  : 57524000
+[  157.745581]   .nohz           : 1
+[  157.801523]   .highres        : 1
+[  157.856091]   .last_tick      : 116209000000 nsecs
+[  157.941338]   .tick_stopped   : 0
+[  157.999173]   .idle_jiffies   : 4294783504
+[  158.075036]   .idle_calls     : 13180
+[  158.138236]   .idle_sleeps    : 167
+[  158.196558]   .idle_entrytime : 141322653000 nsecs
+[  158.278515]   .idle_waketime  : 116210163000 nsecs
+[  158.361359]   .idle_exittime  : 116210208000 nsecs
+[  158.440869]   .idle_sleeptime : 86167500000 nsecs
+[  158.514427]   .iowait_sleeptime: 8930992000 nsecs
+[  158.594506]   .last_jiffies   : 4294809012
+[  158.659377]   .next_timer     : 9223372036854775807
+[  158.739277]   .idle_expires   : 9223372036854775807 nsecs
+[  158.828498] jiffies: 4294809251
+[  158.882158]
+[  158.910253] cpu: 6
+[  158.945655]  clock 0:
+[  158.986319]   .base:       00000000438cb52c
+[  159.056173]   .index:      0
+[  159.107051]   .resolution: 1 nsecs
+[  159.175217]   .offset:     0 nsecs
+[  159.230678] active timers:
+[  159.280421]  #0: <000000005a4fdce0>, watchdog_timer_fn
+[  159.280475] , S:01
+[  159.363408]
+[  159.429189]  # expires at 144319000000-144319000000 nsecs [in 28109852000 to 28109852000 nsecs]
+[  159.562230]  clock 1:
+[  159.597536]   .base:       00000000fb6fc796
+[  159.665428]   .index:      1
+[  159.718283]   .resolution: 1 nsecs
+[  159.779833]   .offset:     1793762660845351000 nsecs
+[  159.857255] active timers:
+[  159.904596]  clock 2:
+[  159.945498]   .base:       00000000aa97b594
+[  160.014991]   .index:      2
+[  160.064922]   .resolution: 1 nsecs
+[  160.123115]   .offset:     0 nsecs
+[  160.187889] active timers:
+[  160.234107]  clock 3:
+[  160.271014]   .base:       00000000576a90ca
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace

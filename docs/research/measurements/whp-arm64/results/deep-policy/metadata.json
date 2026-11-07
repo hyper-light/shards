@@ -1,0 +1,17 @@
+{
+  "host": "Adas-MacBook-Pro-2.local",
+  "os": "macOS-26.4.1-arm64-arm-64bit-Mach-O",
+  "machine": "arm64",
+  "before_source": "863e035e + wide-policy candidate.patch (eval.rs unchanged from360ad0cd)",
+  "after_source": "eval.rs-sha256:6997c3ca230aafe9301ce6ed2650e8e5257c33e46c5622cb5934dadcee4ea36b",
+  "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)",
+  "profile": "test-release; opt-level=3; no LTO; codegen-units=16",
+  "case": "every_statements_nested_deep_answer_in_time",
+  "binary_sha256": {
+    "before": "1dbff2299f1936cf08f8c2934c6491a0fc559ce22683c68f927d95a4bd905d17",
+    "after": "d0194a4a58b5e7a75ab54dfdfa839a9de0c67569f3ef39b6810bc5edde8413eb"
+  },
+  "n_per_build": 20,
+  "unit": "ms",
+  "clock": "perf_counter_ns; entire test process"
+}

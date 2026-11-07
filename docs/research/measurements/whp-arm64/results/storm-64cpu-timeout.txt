@@ -1,0 +1,25 @@
+
+running 1 test
+test storm::restores_of_a_busy_machine_lose_no_interrupt_and_repeat_no_write ...
+thread 'storm::restores_of_a_busy_machine_lose_no_interrupt_and_repeat_no_write' (6352) panicked at crates/shards/tests/common/mod.rs:2613:17:
+still running after 120s; it said:
+SHARDS-TEST READY
+SHARDS-TEST INFO waiting for the host's stream through the echo: 196608 bytes echoed
+SHARDS-TEST INFO waiting for the host's stream through the echo: 327680 bytes echoed
+SHARDS-TEST INFO waiting for the host's stream through the echo: 458752 bytes echoed
+SHARDS-TEST INFO waiting for the host's stream through the echo: 524288 bytes echoed
+SHARDS-TEST INFO waiting for the host's stream through the echo: 589824 bytes echoed
+SHARDS-TEST INFO waiting for the host's stream through the echo: 655360 bytes echoed
+SHARDS-TEST INFO waiting for the host's stream through the echo: 786432 bytes echoed
+SHARDS-TEST INFO waiting for the host's stream through the echo: 851968 bytes echoed
+SHARDS-TEST INFO waiting for the host's stream through the echo: 917504 bytes echoed
+SHARDS-TEST INFO longest gaps steady: median 0, longest 0 (worker 66), 0 (worker 65), 0 (worker 64); longest turns taken: median 3081367, longest 6375220 (worker 0), 4078374 (worker 17), 4029000 (worker 63)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+
+failures:
+
+failures:
+    storm::restores_of_a_busy_machine_lose_no_interrupt_and_repeat_no_write
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 11 filtered out; finished in 172.04s

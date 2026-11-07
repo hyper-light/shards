@@ -5,7 +5,7 @@
 //! |---|---|
 //! | `hvf` | macOS on arm64: Hypervisor.framework |
 //! | `kvm` | Linux on x86_64 and arm64: KVM |
-//! | `whp` | Windows on x86_64: the Windows Hypervisor Platform |
+//! | `whp` | Windows on x86_64 and arm64: the Windows Hypervisor Platform |
 //!
 //! Every other target in the platform matrix (docs/design/architecture.md D13) builds
 //! without a backend until its backend lands, and reports that VMs cannot run there.
@@ -27,7 +27,11 @@ pub mod kvm;
 #[cfg(hv = "kvm")]
 pub use kvm::*;
 
-#[cfg(hv = "whp")]
+#[cfg(all(hv = "whp", target_arch = "x86_64"))]
+pub mod whp;
+/// arm64's: its own partition, GIC and exits, beside x86_64's.
+#[cfg(all(hv = "whp", target_arch = "aarch64"))]
+#[path = "whp_arm64/mod.rs"]
 pub mod whp;
 #[cfg(hv = "whp")]
 pub use whp::*;
@@ -79,6 +83,34 @@ pub fn budget_writes(touches: &mut [Touch], page: u64, budget: u64) -> usize {
         }
     }
     cleared
+}
+
+/// Notes in `out` the pages a dirty bitmap marks (D176 part 7), as KVM_GET_DIRTY_LOG and
+/// WHvQueryGpaRangeDirtyBitmap give one for `page`-byte pages from `gpa`: bit `i`, word
+/// `i / 64`'s bit `i % 64`, the page at `gpa + i * page`, noted as each
+/// [`live::PAGE`](crate::vm::live::PAGE) it holds, the unit a live move sends, whatever the
+/// host's page (KVM's bits are the host kernel's pages, 16 KiB on some arm64 hosts).
+#[cfg(any(hv = "kvm", hv = "whp", test))]
+pub(crate) fn note_dirty(bitmap: &[u64], gpa: u64, page: u64, out: &mut std::collections::BTreeSet<u64>) {
+    let unit = crate::vm::live::PAGE;
+    let per = (page / unit).max(1);
+    for (w, &word) in (0u64..).zip(bitmap) {
+        let mut bits = word;
+        while bits != 0 {
+            let index = w * 64 + u64::from(bits.trailing_zeros());
+            bits &= bits - 1;
+            let at = gpa.saturating_add(index.saturating_mul(page));
+            out.extend((0..per).map(|k| at.saturating_add(k * unit)));
+        }
+    }
+}
+
+/// Every [`live::PAGE`](crate::vm::live::PAGE) of `len` bytes at `gpa`: what a range whose
+/// dirty bitmap could not be read counts as written.
+#[cfg(any(hv = "kvm", hv = "whp", test))]
+pub(crate) fn every_page(gpa: u64, len: u64) -> impl Iterator<Item = u64> {
+    let unit = crate::vm::live::PAGE;
+    (0..len.div_ceil(unit)).map(move |p| gpa.saturating_add(p * unit))
 }
 
 /// The guest's device accesses, as the VMM's buses serve them. Backends call these from
@@ -147,5 +179,28 @@ mod tests {
             4
         ];
         assert_eq!(budget_writes(&mut all, page, PREFETCH_PRIVATE), 0);
+    }
+
+    /// A dirty bitmap's bits are its pages, by word and bit, from its range's start: each
+    /// noted once as the 4 KiB units it holds, a 16 KiB host page as four, and pages
+    /// noted before kept.
+    #[test]
+    fn a_dirty_bitmaps_bits_are_its_ranges_pages() {
+        let mut out = std::collections::BTreeSet::from([0x10]);
+        // Pages 0, 5 and 63 of the first word, 64 and 127 of the second.
+        let bitmap = [1 | 1 << 5 | 1 << 63, 1 | 1 << 63];
+        note_dirty(&bitmap, 0x4000_0000, 4096, &mut out);
+        let pages: Vec<u64> = out.iter().copied().collect();
+        let marked = [0u64, 5, 63, 64, 127].map(|p| 0x4000_0000 + p * 4096);
+        assert_eq!(pages, [&[0x10u64][..], &marked].concat());
+        let mut out = std::collections::BTreeSet::new();
+        note_dirty(&[0b10], 0x8000, 16 << 10, &mut out);
+        let pages: Vec<u64> = out.into_iter().collect();
+        assert_eq!(pages, [0xc000, 0xd000, 0xe000, 0xf000]);
+        let mut out = std::collections::BTreeSet::new();
+        note_dirty(&[0, 0], 0, 4096, &mut out);
+        assert!(out.is_empty(), "no bit, no page");
+        let all: Vec<u64> = every_page(0x1000, 0x3000).collect();
+        assert_eq!(all, [0x1000, 0x2000, 0x3000], "a range unread counts whole");
     }
 }

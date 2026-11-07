@@ -82,22 +82,17 @@ fn host_and_guest_connect_both_ways_and_stream_in_parallel() {
     let dir = TempDir::new("vsock-both");
     let (vm, sock) = boot_echo_guest(&dir);
     // Eight streams at once, each far past every credit window and socket buffer.
-    within(
-        "eight streams through the echo",
-        STREAMING,
-        &vm.log(),
-        move || {
-            let streams: Vec<_> = (0..8u64)
-                .map(|salt| {
-                    let sock = sock.clone();
-                    thread::spawn(move || echo(&sock, ECHO_PORT, salt, 8 << 20).unwrap())
-                })
-                .collect();
-            for s in streams {
-                s.join().unwrap();
-            }
-        },
-    );
+    within("eight streams through the echo", STREAMING, &vm, move || {
+        let streams: Vec<_> = (0..8u64)
+            .map(|salt| {
+                let sock = sock.clone();
+                thread::spawn(move || echo(&sock, ECHO_PORT, salt, 8 << 20, None).unwrap())
+            })
+            .collect();
+        for s in streams {
+            s.join().unwrap();
+        }
+    });
 }
 
 #[test]
@@ -107,7 +102,7 @@ fn refused_ports_and_bad_handshakes_close_the_host_socket() {
     }
     let dir = TempDir::new("vsock-refuse");
     let (vm, sock) = boot_echo_guest(&dir);
-    within("refusals, then an echo", STREAMING, &vm.log(), move || {
+    within("refusals, then an echo", STREAMING, &vm, move || {
         assert!(
             vsock_connect(&sock, 4321, TIMEOUT).is_err(),
             "a port nobody listens on was accepted"
@@ -122,7 +117,7 @@ fn refused_ports_and_bad_handshakes_close_the_host_socket() {
             "a bad handshake got {rest:?}"
         );
         // The device still serves after both.
-        echo(&sock, ECHO_PORT, 99, 1 << 20).unwrap();
+        echo(&sock, ECHO_PORT, 99, 1 << 20, None).unwrap();
     });
 }
 
@@ -136,7 +131,12 @@ fn restored_copies_listen_on_their_own_sockets() {
     let mut args = guest_args("vsock_snapshot", &dir.join("original.sock"));
     args.extend(["--snapshot-dir".into(), snap.clone().into()]);
     let mut original = Vm::spawn(&os(&args));
-    assert_eq!(original.wait_exit(), Some(0), "{}", original.seen.join("\n"));
+    assert_eq!(
+        original.wait_exit_following(TIMEOUT),
+        Some(0),
+        "{}",
+        original.seen.join("\n")
+    );
 
     let restore = |name: &str| {
         let sock = dir.join(name);
@@ -153,14 +153,14 @@ fn restored_copies_listen_on_their_own_sockets() {
     a.wait_for("SHARDS-TEST READY", TIMEOUT);
     b.wait_for("SHARDS-TEST READY", TIMEOUT);
     let (ta, tb) = (
-        thread::spawn(move || echo(&sock_a, ECHO_PORT, 1, 4 << 20).unwrap()),
-        thread::spawn(move || echo(&sock_b, ECHO_PORT, 2, 4 << 20).unwrap()),
+        thread::spawn(move || echo(&sock_a, ECHO_PORT, 1, 4 << 20, None).unwrap()),
+        thread::spawn(move || echo(&sock_b, ECHO_PORT, 2, 4 << 20, None).unwrap()),
     );
     ta.join().unwrap();
     tb.join().unwrap();
 
     let mut bare = Vm::spawn(&["restore".as_ref(), snap.as_os_str()]);
-    assert_eq!(bare.wait_exit(), Some(1));
+    assert_eq!(bare.wait_exit_following(TIMEOUT), Some(1));
     assert!(
         bare.seen.iter().any(|l| l.contains("--vsock")),
         "{}",
@@ -201,7 +201,12 @@ fn restored_copies_find_held_connections_closed() {
     let mut args = guest_args("vsock_snapshot_held", &original_sock);
     args.extend(["--snapshot-dir".into(), snap.clone().into()]);
     let mut original = Vm::spawn(&os(&args));
-    assert_eq!(original.wait_exit(), Some(0), "{}", original.seen.join("\n"));
+    assert_eq!(
+        original.wait_exit_following(TIMEOUT),
+        Some(0),
+        "{}",
+        original.seen.join("\n")
+    );
     assert_eq!(greeted.join().unwrap(), "hello from the guest\n");
 
     for (salt, name) in [(1, "a.sock"), (2, "b.sock")] {
@@ -215,6 +220,6 @@ fn restored_copies_find_held_connections_closed() {
         ]);
         copy.wait_for("SHARDS-TEST READY", TIMEOUT);
         assert_eq!(greeted.join().unwrap(), "hello from the guest\n");
-        echo(&sock, ECHO_PORT, salt, 1 << 20).unwrap();
+        echo(&sock, ECHO_PORT, salt, 1 << 20, None).unwrap();
     }
 }

@@ -1246,13 +1246,17 @@ fn start(daemon: &Path, home: &Path) -> Result<(), String> {
     let starting = |e: io::Error| format!("starting the daemon {}: {e}", daemon.display());
     let (mut said, speaks) = io::pipe().map_err(starting)?;
     // The home this client resolved, before it made the home its working directory
-    // (audit A17).
+    // (audit A17); and this machine, which the home's current context may not be.
+    let (here, this) = crate::context::HERE;
     let starter = shards_ipc::spawn_with(
         daemon,
         &["daemon".as_ref(), "--detached".as_ref()],
         &[(null.as_fd(), 0), (null.as_fd(), 1), (speaks.as_fd(), 2)],
         true,
-        &[(shards_ipc::HOME, home.as_os_str())],
+        &[
+            (shards_ipc::HOME, home.as_os_str()),
+            (here, std::ffi::OsStr::new(this)),
+        ],
     )
     .map_err(starting)?;
     drop(speaks);

@@ -332,6 +332,52 @@ pub fn stat(h: BorrowedHandle<'_>) -> Result<Stat, Errno> {
     })
 }
 
+/// Which file of several names a host's file is ([`links`]): how many names it has, its
+/// volume's serial number and its file's ID, as a Unix file's link count, device and inode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Links {
+    pub count: u64,
+    pub volume: u64,
+    pub file: u128,
+}
+
+/// Of `h`'s file, a host's own, which file it is where it has more than one name, as Unix
+/// packers tell hard links apart by their device and inode: its link count
+/// (GetFileInformationByHandle's `nNumberOfLinks`), and where that is above 1, its volume's
+/// 64-bit serial number and its 128-bit file ID (FileIdInfo), ReFS's whole, where the 64-bit
+/// index GetFileInformationByHandle gives is not unique on ReFS, and NTFS's index in its low
+/// 8 bytes. A file of one name asks nothing more: None. A handle opened for no access may
+/// ask both, as `std::fs::metadata`'s is.
+pub fn links(h: BorrowedHandle<'_>) -> std::io::Result<Option<Links>> {
+    use windows_sys::Win32::Storage::FileSystem::{BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle};
+    let mut info = BY_HANDLE_FILE_INFORMATION::default();
+    // SAFETY: a buffer of its own type, for a handle the caller holds.
+    if unsafe { GetFileInformationByHandle(h.as_raw_handle(), &raw mut info) } == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    if info.nNumberOfLinks <= 1 {
+        return Ok(None);
+    }
+    let mut id = FILE_ID_INFO::default();
+    // SAFETY: a buffer of its own size for the class asked, of a handle the caller holds.
+    let got = unsafe {
+        GetFileInformationByHandleEx(
+            h.as_raw_handle(),
+            FileIdInfo,
+            (&raw mut id).cast(),
+            u32::try_from(size_of::<FILE_ID_INFO>()).unwrap_or(0),
+        )
+    };
+    if got == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(Some(Links {
+        count: u64::from(info.nNumberOfLinks),
+        volume: id.VolumeSerialNumber,
+        file: u128::from_le_bytes(id.FileId.Identifier),
+    }))
+}
+
 /// The EA a Linux extended attribute `name` is kept in: its bytes as hexadecimal after
 /// `SH.`, as NTFS keeps an EA's name in upper case, ASCII, and at most 255 bytes long, where
 /// Linux's names are any bytes, case kept (so at most 126 bytes of one, ERANGE past it). Its
@@ -1131,8 +1177,22 @@ pub struct Listed {
 /// their reparse tags): none once it has given them all. `.` and `..` among them, as NTFS
 /// lists them.
 pub fn list(h: BorrowedHandle<'_>, restart: bool) -> Result<Vec<Listed>, Errno> {
+    list_within(h, restart, 64 << 10)
+}
+
+/// The room one entry of the longest name NTFS keeps (255 UTF-16 units) takes in a
+/// [`list_within`] call's buffer: FILE_ID_EXTD_DIR_INFO's fields before its name, then it.
+pub const LISTED_ROOM: usize = std::mem::offset_of!(FILE_ID_EXTD_DIR_INFO, FileName) + 255 * 2;
+
+/// [`list`]'s next entries, as many as `room` bytes of them hold (never less than
+/// [`LISTED_ROOM`], so that each call gives one at least). The enumeration's place is the
+/// handle's, past the last entry given, and a call that does not restart goes on from
+/// there (Microsoft Learn, FILE_INFO_BY_HANDLE_CLASS: the Restart classes "force the
+/// enumeration operation to start again from the beginning"; ZwQueryDirectoryFile: a scan
+/// not restarted resumes after the entries its handle's last call returned).
+pub fn list_within(h: BorrowedHandle<'_>, restart: bool, room: usize) -> Result<Vec<Listed>, Errno> {
     use std::mem::offset_of;
-    let mut buf = vec![0u8; 64 << 10];
+    let mut buf = vec![0u8; room.max(LISTED_ROOM)];
     let class = if restart {
         FileIdExtdDirectoryRestartInfo
     } else {

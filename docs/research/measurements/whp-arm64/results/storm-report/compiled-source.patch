@@ -1,0 +1,143 @@
+diff --git a/crates/testguest/src/linux.rs b/crates/testguest/src/linux.rs
+index 15685b9a..bff28683 100644
+--- a/crates/testguest/src/linux.rs
++++ b/crates/testguest/src/linux.rs
+@@ -52,7 +52,9 @@ pub fn main() {
+         Ok(()) => "SHARDS-TEST PASS".to_string(),
+         Err(e) => format!("SHARDS-TEST FAIL {e}"),
+     };
+-    let _ = writeln!(io::stdout(), "{line}");
++    if let Err(e) = report(format_args!("{line}")) {
++        let _ = writeln!(io::stdout(), "SHARDS-TEST FAIL reporting the verdict: {e}");
++    }
+     // SAFETY: PID 1 waiting for its console to send what it wrote, flushing and powering
+     // off. The console's tty holds a write until its UART has sent it, and the kernel's
+     // own lines as it powers off go past it: powering off at once can drop the last line.
+@@ -63,6 +65,18 @@ pub fn main() {
+     }
+ }
+ 
++/// A protocol line the host reads. A storm's kernel diagnostics can interrupt a tty
++/// write even inside a word. Give printk the whole record so it serializes it with
++/// those diagnostics; LOG_USER/ERR keeps it visible with the test kernel's `quiet`.
++fn report(line: std::fmt::Arguments<'_>) -> Result<(), String> {
++    if std::env::var("shards_test").is_ok_and(|test| test == "storm") {
++        std::fs::write("/dev/kmsg", format!("<11>{line}\n"))
++            .map_err(|e| format!("writing the test record to /dev/kmsg: {e}"))
++    } else {
++        writeln!(io::stdout(), "{line}").map_err(|e| format!("writing the test record: {e}"))
++    }
++}
++
+ fn setup() -> Result<(), String> {
+     for (src, target, fs) in [
+         ("devtmpfs", "/dev", "devtmpfs"),
+@@ -791,22 +805,20 @@ fn warps(cpus: usize, window: Duration, read: fn() -> u128) -> Result<(u64, u64)
+ /// [`clock_warps`], as a verdict: `when` names the moment for the log.
+ fn clock_in_step(cpus: usize, when: &str) -> Result<(), String> {
+     let (reads, worst) = clock_warps(cpus, Duration::from_millis(100))?;
+-    let _ = writeln!(
+-        io::stdout(),
++    report(format_args!(
+         "SHARDS-TEST INFO clock {when}: {reads} reads in turn on {cpus} CPUs, worst step back {worst} ns"
+-    );
++    ))?;
+     if worst > 0 {
+         // What keeps the guest's time, and whether the CPUs' own counters disagree: a TSC
+         // restored out of step with the others, or a clock's parameters out of step.
+         let source = sysfs("/sys/devices/system/clocksource/clocksource0/current_clocksource")
+             .unwrap_or_else(|e| format!("unread: {e}"));
+-        let _ = writeln!(io::stdout(), "SHARDS-TEST INFO clocksource {when}: {source}");
++        report(format_args!("SHARDS-TEST INFO clocksource {when}: {source}"))?;
+         #[cfg(target_arch = "x86_64")]
+         if let Ok((reads, back)) = warps(cpus, Duration::from_millis(100), tsc) {
+-            let _ = writeln!(
+-                io::stdout(),
++            report(format_args!(
+                 "SHARDS-TEST INFO tsc {when}: {reads} reads in turn on {cpus} CPUs, worst step back {back} cycles"
+-            );
++            ))?;
+         }
+         return Err(format!(
+             "CLOCK_MONOTONIC went back {worst} ns from one CPU to another {when}"
+@@ -1007,12 +1019,11 @@ fn storm() -> Result<(), String> {
+     // The storm in its steady state, for `shards_storm_ms`, with nothing paused.
+     gaps(&storm, true);
+     thread::sleep(Duration::from_millis(env_u64("shards_storm_ms").unwrap_or(0)));
+-    let _ = writeln!(
+-        io::stdout(),
++    report(format_args!(
+         "SHARDS-TEST INFO longest gaps steady: {}; longest turns taken: {}",
+         gaps(&storm, true),
+         spread(&storm.late, true)
+-    );
++    ))?;
+     clock_in_step(cpus, "before the snapshot")?;
+     let control = ControlPage::map()?;
+     control.write(shards_abi::control::SNAPSHOT, shards_abi::control::SNAPSHOT_NOW);
+@@ -1020,14 +1031,13 @@ fn storm() -> Result<(), String> {
+     let generation = control.read(shards_abi::control::GENERATION);
+     let echoed_at = ECHOED.load(Ordering::Relaxed);
+     let beats = watch_main_thread(cpus);
+-    let _ = writeln!(io::stdout(), "SHARDS-TEST INFO generation={generation}");
++    report(format_args!("SHARDS-TEST INFO generation={generation}"))?;
+ 
+-    let _ = writeln!(
+-        io::stdout(),
++    report(format_args!(
+         "SHARDS-TEST INFO longest gaps before: {}; longest turns taken: {}",
+         gaps(&storm, true),
+         spread(&storm.late, true)
+-    );
++    ))?;
+     // Every CPU's clock goes on from the snapshot in step with the others'.
+     beats.fetch_add(1, Ordering::Relaxed);
+     clock_in_step(cpus, "after the snapshot")?;
+@@ -1131,13 +1141,12 @@ fn storm() -> Result<(), String> {
+             return Err(format!("slot {k}, after the {written} written, holds data"));
+         }
+     }
+-    let _ = writeln!(io::stdout(), "SHARDS-TEST INFO records={written}");
+-    let _ = writeln!(
+-        io::stdout(),
++    report(format_args!("SHARDS-TEST INFO records={written}"))?;
++    report(format_args!(
+         "SHARDS-TEST INFO longest gaps after: {}; longest turns taken: {}",
+         gaps(&storm, false),
+         spread(&storm.late, false)
+-    );
++    ))?;
+     // A machine that went on carries the host's stream on past its snapshot: two rounds'
+     // worth (the host's rounds are 4 MiB), so the round the snapshot cut through ends and
+     // another runs whole after it, however slowly a loaded host streams.
+@@ -1157,7 +1166,7 @@ fn storm() -> Result<(), String> {
+     // The verdict waits for the host to say it has stopped streaming, so every round the
+     // host streamed ended with the guest alive: its main thread watched no more.
+     beats.store(u64::MAX, Ordering::Relaxed);
+-    let _ = writeln!(io::stdout(), "SHARDS-TEST INFO storm checked");
++    report(format_args!("SHARDS-TEST INFO storm checked"))?;
+     // The host's side of the connection is up only once it has read its OK, after this
+     // side's accept: its byte, or its close, says so.
+     let mut host = accept_within(&done, Duration::from_secs(60))?;
+@@ -1291,17 +1300,14 @@ fn kernel_log(at_most: u32) -> Vec<String> {
+             Ok(0) => break,
+             Ok(n) => {
+                 // "PRIORITY,SEQUENCE,MICROSECONDS,FLAGS;MESSAGE": the level is the
+-                // priority's low three bits.
++                // priority's low three bits, the facility the rest. Replay only kernel
++                // records, never the storm's own LOG_USER protocol lines.
+                 let record = String::from_utf8_lossy(buf.get(..n).unwrap_or_default()).into_owned();
+                 let Some((head, message)) = record.split_once(';') else {
+                     continue;
+                 };
+-                let level = head
+-                    .split(',')
+-                    .next()
+-                    .and_then(|p| p.parse::<u32>().ok())
+-                    .map(|p| p & 7);
+-                if level.is_some_and(|l| l <= at_most) {
++                let priority = head.split(',').next().and_then(|p| p.parse::<u32>().ok());
++                if priority.is_some_and(|p| p >> 3 == 0 && p & 7 <= at_most) {
+                     said.push(message.lines().next().unwrap_or_default().to_string());
+                 }
+             }

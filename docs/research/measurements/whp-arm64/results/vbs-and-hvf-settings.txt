@@ -1,0 +1,556 @@
+DIAGNOSTIC HOST SETTINGS; NOT A COMPLETE SUITE OR A VBS PERFORMANCE COMPARISON.
+
+== vbsoff-configure.txt
+2026-11-03T09:01:48.5217360-08:00
+BEFORE
+
+Windows Boot Loader
+-------------------
+identifier              {current}
+device                  partition=C:
+path                    \WINDOWS\system32\winload.efi
+description             Windows 11
+locale                  en-US
+inherit                 {bootloadersettings}
+recoverysequence        {bb51ba6b-d6cd-11f1-b62e-d78ea6f24f62}
+displaymessageoverride  Recovery
+recoveryenabled         Yes
+isolatedcontext         Yes
+allowedinmemorysettings 0x15000075
+osdevice                partition=C:
+systemroot              \WINDOWS
+resumeobject            {bb51ba69-d6cd-11f1-b62e-d78ea6f24f62}
+nx                      OptIn
+bootmenupolicy          Standard
+hypervisorlaunchtype    Auto
+
+
+VirtualizationBasedSecurityStatus : 2
+SecurityServicesConfigured        : {0}
+SecurityServicesRunning           : {0}
+
+
+
+The operation completed successfully.
+AFTER
+
+Windows Boot Loader
+-------------------
+identifier              {current}
+device                  partition=C:
+path                    \WINDOWS\system32\winload.efi
+description             Windows 11
+locale                  en-US
+inherit                 {bootloadersettings}
+recoverysequence        {bb51ba6b-d6cd-11f1-b62e-d78ea6f24f62}
+displaymessageoverride  Recovery
+recoveryenabled         Yes
+isolatedcontext         Yes
+allowedinmemorysettings 0x15000075
+osdevice                partition=C:
+systemroot              \WINDOWS
+resumeobject            {bb51ba69-d6cd-11f1-b62e-d78ea6f24f62}
+nx                      OptIn
+bootmenupolicy          Standard
+hypervisorlaunchtype    Auto
+vsmlaunchtype           Off
+
+== vbsoff-host.txt
+2026-11-03T09:04:41.9172747-08:00
+
+
+DisplayVersion : 26H2
+CurrentBuild   : 26300
+UBR            : 9711
+
+
+
+
+
+Caption        : Microsoft Windows 11 Pro
+Version        : 10.0.26300
+LastBootUpTime : 11/3/2026 9:02:43 AM
+
+
+
+
+
+NumberOfLogicalProcessors : 4
+TotalPhysicalMemory       : 25758253056
+HypervisorPresent         : True
+
+
+
+
+
+VirtualizationBasedSecurityStatus : 2
+SecurityServicesConfigured        : {0}
+SecurityServicesRunning           : {0}
+
+
+
+
+Windows Boot Loader
+-------------------
+identifier              {current}
+device                  partition=C:
+path                    \WINDOWS\system32\winload.efi
+description             Windows 11
+locale                  en-US
+inherit                 {bootloadersettings}
+recoverysequence        {bb51ba6b-d6cd-11f1-b62e-d78ea6f24f62}
+displaymessageoverride  Recovery
+recoveryenabled         Yes
+isolatedcontext         Yes
+allowedinmemorysettings 0x15000075
+osdevice                partition=C:
+systemroot              \WINDOWS
+resumeobject            {bb51ba69-d6cd-11f1-b62e-d78ea6f24f62}
+nx                      OptIn
+bootmenupolicy          Standard
+hypervisorlaunchtype    Auto
+vsmlaunchtype           Off
+
+
+TimeCreated : 11/3/2026 9:02:45 AM
+Id          : 165
+Message     : Hypervisor configured mitigations for CVE-2019-11091, CVE-2018-12126,
+              CVE-2018-12127, CVE-2018-12130 for virtual machines.
+
+              Processor not affected: false
+              Processor family not affected: false
+              Processor supports microarchitectural buffer flush: false
+              Buffer flush needed: false
+
+
+TimeCreated : 11/3/2026 9:02:45 AM
+Id          : 156
+Message     : Hypervisor configured mitigations for CVE-2018-3646 for virtual machines.
+
+              Processor not affected: false
+              Processor family not affected: false
+              Processor supports cache flush: false
+              HyperThreading enabled: false
+              Parent hypervisor applies mitigations: false
+              Mitigations disabled by bcdedit: false
+              Mitigations enabled: true
+              Cache flush needed: false
+
+
+TimeCreated : 11/3/2026 9:02:45 AM
+Id          : 129
+Message     : Hypervisor initialized I/O remapping.
+
+              Hardware present: false
+              Hardware enabled: false
+              Policy: 0x0
+              Enabled features: 0x0
+              Internal information: 0x4
+              Problems: 0x0
+              Additional information: 0x0
+
+TimeCreated : 11/3/2026 9:02:45 AM
+Id          : 2
+Message     : Hypervisor scheduler type is 0x4.
+
+TimeCreated : 11/3/2026 9:02:45 AM
+Id          : 1
+Message     : Hypervisor successfully started.
+
+
+
+WHvGetCapability(HypervisorPresent): hr=0x00000000 written=4 present=1
+WHvCreatePartition: hr=0x00000000
+
+== vbs-policy-before.txt
+2026-11-03T09:08:20.9618097-08:00
+REGISTRY HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard
+
+
+EnableVirtualizationBasedSecurity :
+RequirePlatformSecurityFeatures   :
+Locked                            :
+Mandatory                         :
+
+
+
+HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\DeviceGuard\850BSP
+HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\DeviceGuard\850BSP\Galaxy Book2
+
+
+EnableVirtualizationBasedSecurity :
+Enabled                           :
+Locked                            :
+Mandatory                         :
+WasEnabledBy                      :
+
+
+
+HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios
+HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\KeyGuard
+HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\KeyGuard\Status
+
+
+EnableVirtualizationBasedSecurity :
+Enabled                           :
+Locked                            :
+Mandatory                         :
+WasEnabledBy                      :
+
+
+
+HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\DeviceGuard\VelocityScenarios
+REGISTRY HKLM:\SOFTWARE\Policies\Microsoft\Windows\DeviceGuard
+
+
+AvailableSecurityProperties                  : {1, 5, 7}
+CodeIntegrityPolicyEnforcementStatus         : 2
+InstanceIdentifier                           : 4ff40742-2649-41b8-bdd1-e80fad1cce80
+RequiredSecurityProperties                   : {0}
+SecurityFeaturesEnabled                      : {0}
+SecurityServicesConfigured                   : {0}
+SecurityServicesRunning                      : {0}
+SmmIsolationLevel                            : 0
+UsermodeCodeIntegrityPolicyEnforcementStatus : 1
+Version                                      : 1.0
+VirtualizationBasedSecurityStatus            : 2
+VirtualMachineIsolation                      : False
+VirtualMachineIsolationProperties            : {0}
+PSComputerName                               :
+
+
+
+
+== vbs-policy-disable.txt
+2026-11-03T09:10:53.0013107-08:00
+HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard
+
+
+EnableVirtualizationBasedSecurity : 0
+Locked                            :
+Mandatory                         :
+
+
+
+HKLM:\SOFTWARE\Policies\Microsoft\Windows\DeviceGuard
+
+
+EnableVirtualizationBasedSecurity : 0
+Locked                            :
+Mandatory                         :
+
+
+
+
+Windows Boot Loader
+-------------------
+identifier              {current}
+device                  partition=C:
+path                    \WINDOWS\system32\winload.efi
+description             Windows 11
+locale                  en-US
+inherit                 {bootloadersettings}
+recoverysequence        {bb51ba6b-d6cd-11f1-b62e-d78ea6f24f62}
+displaymessageoverride  Recovery
+recoveryenabled         Yes
+isolatedcontext         Yes
+allowedinmemorysettings 0x15000075
+osdevice                partition=C:
+systemroot              \WINDOWS
+resumeobject            {bb51ba69-d6cd-11f1-b62e-d78ea6f24f62}
+nx                      OptIn
+bootmenupolicy          Standard
+hypervisorlaunchtype    Auto
+vsmlaunchtype           Off
+
+== vbs-policy-host.txt
+2026-11-03T09:13:48.7171648-08:00
+
+
+Caption        : Microsoft Windows 11 Pro
+Version        : 10.0.26300
+LastBootUpTime : 11/3/2026 9:11:43 AM
+
+
+
+
+
+AvailableSecurityProperties                  : {1, 5, 7}
+CodeIntegrityPolicyEnforcementStatus         : 2
+InstanceIdentifier                           : 4ff40742-2649-41b8-bdd1-e80fad1cce80
+RequiredSecurityProperties                   : {0}
+SecurityFeaturesEnabled                      : {0}
+SecurityServicesConfigured                   : {0}
+SecurityServicesRunning                      : {0}
+SmmIsolationLevel                            : 0
+UsermodeCodeIntegrityPolicyEnforcementStatus : 1
+Version                                      : 1.0
+VirtualizationBasedSecurityStatus            : 2
+VirtualMachineIsolation                      : False
+VirtualMachineIsolationProperties            : {0}
+PSComputerName                               :
+
+
+
+HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard
+
+
+EnableVirtualizationBasedSecurity : 0
+Locked                            :
+Mandatory                         :
+
+
+
+HKLM:\SOFTWARE\Policies\Microsoft\Windows\DeviceGuard
+
+
+EnableVirtualizationBasedSecurity : 0
+Locked                            :
+Mandatory                         :
+
+
+
+
+Windows Boot Loader
+-------------------
+identifier              {current}
+device                  partition=C:
+path                    \WINDOWS\system32\winload.efi
+description             Windows 11
+locale                  en-US
+inherit                 {bootloadersettings}
+recoverysequence        {bb51ba6b-d6cd-11f1-b62e-d78ea6f24f62}
+displaymessageoverride  Recovery
+recoveryenabled         Yes
+isolatedcontext         Yes
+allowedinmemorysettings 0x15000075
+osdevice                partition=C:
+systemroot              \WINDOWS
+resumeobject            {bb51ba69-d6cd-11f1-b62e-d78ea6f24f62}
+nx                      OptIn
+bootmenupolicy          Standard
+hypervisorlaunchtype    Auto
+vsmlaunchtype           Off
+
+
+TimeCreated : 11/3/2026 9:11:45 AM
+Id          : 165
+Message     : Hypervisor configured mitigations for CVE-2019-11091, CVE-2018-12126,
+              CVE-2018-12127, CVE-2018-12130 for virtual machines.
+
+              Processor not affected: false
+              Processor family not affected: false
+              Processor supports microarchitectural buffer flush: false
+              Buffer flush needed: false
+
+
+TimeCreated : 11/3/2026 9:11:45 AM
+Id          : 156
+Message     : Hypervisor configured mitigations for CVE-2018-3646 for virtual machines.
+
+              Processor not affected: false
+              Processor family not affected: false
+              Processor supports cache flush: false
+              HyperThreading enabled: false
+              Parent hypervisor applies mitigations: false
+              Mitigations disabled by bcdedit: false
+              Mitigations enabled: true
+              Cache flush needed: false
+
+
+TimeCreated : 11/3/2026 9:11:45 AM
+Id          : 129
+Message     : Hypervisor initialized I/O remapping.
+
+              Hardware present: false
+              Hardware enabled: false
+              Policy: 0x0
+              Enabled features: 0x0
+              Internal information: 0x4
+              Problems: 0x0
+              Additional information: 0x0
+
+TimeCreated : 11/3/2026 9:11:45 AM
+Id          : 2
+Message     : Hypervisor scheduler type is 0x4.
+
+TimeCreated : 11/3/2026 9:11:45 AM
+Id          : 1
+Message     : Hypervisor successfully started.
+
+
+
+WHvGetCapability(HypervisorPresent): hr=0x00000000 written=4 present=1
+WHvCreatePartition: hr=0x00000000
+
+== hvf-vbspolicy-host.txt
+2026-11-03T09:16:39.9664660-08:00
+
+
+WindowsProductName                                : Windows 10 Pro
+OsVersion                                         : 10.0.26300
+OsBuildNumber                                     : 26300
+OsArchitecture                                    : ARM 64-bit Processor
+HyperVisorPresent                                 : True
+HyperVRequirementDataExecutionPreventionAvailable :
+HyperVRequirementSecondLevelAddressTranslation    :
+HyperVRequirementVirtualizationFirmwareEnabled    :
+HyperVRequirementVMMonitorModeExtensions          :
+
+
+
+
+
+Caption        : Microsoft Windows 11 Pro
+Version        : 10.0.26300
+LastBootUpTime : 11/3/2026 9:16:14 AM
+
+
+
+
+
+DisplayVersion : 26H2
+CurrentBuild   : 26300
+UBR            : 9711
+
+
+
+
+
+AvailableSecurityProperties                  : {7}
+CodeIntegrityPolicyEnforcementStatus         : 2
+InstanceIdentifier                           : 4ff40742-2649-41b8-bdd1-e80fad1cce80
+RequiredSecurityProperties                   : {0}
+SecurityFeaturesEnabled                      : {0}
+SecurityServicesConfigured                   : {0}
+SecurityServicesRunning                      : {0}
+SmmIsolationLevel                            : 0
+UsermodeCodeIntegrityPolicyEnforcementStatus : 1
+Version                                      : 1.0
+VirtualizationBasedSecurityStatus            : 0
+VirtualMachineIsolation                      : False
+VirtualMachineIsolationProperties            : {0}
+PSComputerName                               :
+
+
+
+HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard
+
+
+EnableVirtualizationBasedSecurity : 0
+Locked                            :
+Mandatory                         :
+
+
+
+HKLM:\SOFTWARE\Policies\Microsoft\Windows\DeviceGuard
+
+
+EnableVirtualizationBasedSecurity : 0
+Locked                            :
+Mandatory                         :
+
+
+
+
+Windows Boot Loader
+-------------------
+identifier              {current}
+device                  partition=C:
+path                    \WINDOWS\system32\winload.efi
+description             Windows 11
+locale                  en-US
+inherit                 {bootloadersettings}
+recoverysequence        {bb51ba6b-d6cd-11f1-b62e-d78ea6f24f62}
+displaymessageoverride  Recovery
+recoveryenabled         Yes
+isolatedcontext         Yes
+allowedinmemorysettings 0x15000075
+osdevice                partition=C:
+systemroot              \WINDOWS
+resumeobject            {bb51ba69-d6cd-11f1-b62e-d78ea6f24f62}
+nx                      OptIn
+bootmenupolicy          Standard
+hypervisorlaunchtype    Auto
+vsmlaunchtype           Off
+
+
+TimeCreated : 11/3/2026 9:16:14 AM
+Id          : 26
+Message     : Hypervisor launch failed; the hypervisor boot loader's internal logic failed
+              (BalStatus 0x19, sub-status 0xC).
+
+TimeCreated : 11/3/2026 9:11:45 AM
+Id          : 165
+Message     : Hypervisor configured mitigations for CVE-2019-11091, CVE-2018-12126,
+              CVE-2018-12127, CVE-2018-12130 for virtual machines.
+
+              Processor not affected: false
+              Processor family not affected: false
+              Processor supports microarchitectural buffer flush: false
+              Buffer flush needed: false
+
+
+TimeCreated : 11/3/2026 9:11:45 AM
+Id          : 156
+Message     : Hypervisor configured mitigations for CVE-2018-3646 for virtual machines.
+
+              Processor not affected: false
+              Processor family not affected: false
+              Processor supports cache flush: false
+              HyperThreading enabled: false
+              Parent hypervisor applies mitigations: false
+              Mitigations disabled by bcdedit: false
+              Mitigations enabled: true
+              Cache flush needed: false
+
+
+TimeCreated : 11/3/2026 9:11:45 AM
+Id          : 129
+Message     : Hypervisor initialized I/O remapping.
+
+              Hardware present: false
+              Hardware enabled: false
+              Policy: 0x0
+              Enabled features: 0x0
+              Internal information: 0x4
+              Problems: 0x0
+              Additional information: 0x0
+
+TimeCreated : 11/3/2026 9:11:45 AM
+Id          : 2
+Message     : Hypervisor scheduler type is 0x4.
+
+TimeCreated : 11/3/2026 9:11:45 AM
+Id          : 1
+Message     : Hypervisor successfully started.
+
+TimeCreated : 11/3/2026 9:02:45 AM
+Id          : 165
+Message     : Hypervisor configured mitigations for CVE-2019-11091, CVE-2018-12126,
+              CVE-2018-12127, CVE-2018-12130 for virtual machines.
+
+              Processor not affected: false
+              Processor family not affected: false
+              Processor supports microarchitectural buffer flush: false
+              Buffer flush needed: false
+
+
+TimeCreated : 11/3/2026 9:02:45 AM
+Id          : 156
+Message     : Hypervisor configured mitigations for CVE-2018-3646 for virtual machines.
+
+              Processor not affected: false
+              Processor family not affected: false
+              Processor supports cache flush: false
+              HyperThreading enabled: false
+              Parent hypervisor applies mitigations: false
+              Mitigations disabled by bcdedit: false
+              Mitigations enabled: true
+              Cache flush needed: false
+
+
+
+
+WHvGetCapability(HypervisorPresent): hr=0x00000000 written=4 present=0
+WHvCreatePartition: hr=0xC0351000

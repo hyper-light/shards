@@ -17,7 +17,9 @@ use std::os::unix::fs::FileExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::{Mutex, PoisonError};
+use std::time::{Duration, Instant};
 
+use super::passed::{self, in_bars, kept, windows_of};
 use super::{Bar, BarKind, Header, Identity, Interrupts, Msi, MsiCap, MsixCap, MsixTable, PciFunction, reg};
 use crate::devices::{MmioDevice, get_le};
 use crate::memory::GuestMemory;
@@ -230,6 +232,40 @@ unsafe fn ioctl(fd: &impl std::os::fd::AsRawFd, request: u64, arg: usize) -> io:
     Ok(r)
 }
 
+/// How long each step of opening and plugging a function took, in their order, each from
+/// the end of the one before (D214, PM M430): `Instant` reads alone.
+#[derive(Debug)]
+pub struct Clock {
+    last: Instant,
+    steps: Vec<(&'static str, Duration)>,
+}
+
+impl Clock {
+    pub fn new() -> Clock {
+        Clock {
+            last: Instant::now(),
+            steps: Vec::new(),
+        }
+    }
+
+    /// Step `name` done: its time, since the step before it ended.
+    pub fn mark(&mut self, name: &'static str) {
+        let now = Instant::now();
+        self.steps.push((name, now.saturating_duration_since(self.last)));
+        self.last = now;
+    }
+
+    pub fn steps(self) -> Vec<(&'static str, Duration)> {
+        self.steps
+    }
+}
+
+impl Default for Clock {
+    fn default() -> Clock {
+        Clock::new()
+    }
+}
+
 /// A host's PCI function, as VFIO hands it to this process.
 #[derive(Debug)]
 pub struct Device {
@@ -329,13 +365,15 @@ impl Container {
 
     /// The group at `path`, set in this container and told of to `host`'s hypervisor: the
     /// first sets its IOMMU and maps guest RAM, `memory`, for their DMA; a group set
-    /// already is the same. Opened here, or `given`, opened by another process.
+    /// already is the same. Opened here, or `given`, opened by another process; each step
+    /// timed on `clock`.
     fn group(
         &mut self,
         path: &Path,
         given: Option<OwnedFd>,
         memory: &GuestMemory,
         host: &dyn Host,
+        clock: &mut Clock,
     ) -> Result<Arc<OwnedFd>, String> {
         if let Some((_, fd)) = self.groups.iter().find(|(p, _)| p == path) {
             return Ok(fd.clone());
@@ -354,8 +392,11 @@ impl Container {
                 format!("{}: opening it: {e}{hint}", path.display())
             })?,
         };
+        clock.mark("group-open");
+        // The VM's first makes KVM's VFIO device (KVM_CREATE_DEVICE).
         host.add_file(group.as_raw_fd())
             .map_err(|e| format!("{}: {e}", path.display()))?;
+        clock.mark("kvm-file");
         let mut status = GroupStatus {
             argsz: size_of::<GroupStatus>() as u32,
             flags: 0,
@@ -373,6 +414,7 @@ impl Container {
         // SAFETY: VFIO_GROUP_SET_CONTAINER reads the container's descriptor it points at.
         unsafe { ioctl(&group, VFIO_GROUP_SET_CONTAINER, (&raw const container) as usize) }
             .map_err(|e| err("setting its container", e))?;
+        clock.mark("group-set");
         if self.groups.is_empty() {
             // SAFETY: VFIO_SET_IOMMU takes an integer.
             unsafe { ioctl(&*self.fd, VFIO_SET_IOMMU, Self::iommu(self.noiommu) as usize) }.map_err(|e| {
@@ -384,8 +426,10 @@ impl Container {
                 };
                 format!("{}: setting its IOMMU: {e}{hint}", path.display())
             })?;
+            clock.mark("iommu-set");
             if !self.noiommu && self.maps_ram {
                 self.map(memory)?;
+                clock.mark("dma-map");
             }
         }
         let group = Arc::new(group);
@@ -884,11 +928,11 @@ impl Device {
         memory: &GuestMemory,
         host: &dyn Host,
     ) -> Result<Device, String> {
-        Device::open_with(name, group, None, container, memory, host)
+        Device::open_with(name, group, None, container, memory, host, &mut Clock::new())
     }
 
     /// [`Device::open`], its group's node opened here, or `given`, opened by another
-    /// process (D214).
+    /// process (D214); each step timed on `clock`.
     pub fn open_with(
         name: &str,
         group: &Path,
@@ -896,10 +940,11 @@ impl Device {
         container: &mut Container,
         memory: &GuestMemory,
         host: &dyn Host,
+        clock: &mut Clock,
     ) -> Result<Device, String> {
         let err = |what: &str, e: io::Error| format!("{name}: {what}: {e}");
         let group = container
-            .group(group, given, memory, host)
+            .group(group, given, memory, host, clock)
             .map_err(|e| format!("{name}: {e}"))?;
         let cname = CString::new(name).map_err(|_| format!("{name}: a NUL in its name"))?;
         // SAFETY: VFIO_GROUP_GET_DEVICE_FD reads a NUL-terminated device name.
@@ -907,34 +952,39 @@ impl Device {
             .map_err(|e| err("its device", e))?;
         // SAFETY: the descriptor the ioctl just returned, ours alone.
         let file = File::from(unsafe { OwnedFd::from_raw_fd(fd) });
+        clock.mark("device-fd");
         let told = group.as_raw_fd();
-        Device::of_file(name, file, vec![group, container.fd.clone()], Some(told))
+        Device::of_file(name, file, vec![group, container.fd.clone()], Some(told), clock)
     }
 
     /// The host's function `name` by its device node `cdev` (vfio.rst, "VFIO Device
     /// cdev"): told of to `host`'s hypervisor, bound to iommufd and attached to `ioas`,
     /// where its DMA's mappings are made; reset where it can be.
     pub fn open_cdev(name: &str, cdev: &Path, ioas: &Ioas, host: &dyn Host) -> Result<Device, String> {
-        Device::open_cdev_with(name, cdev, None, ioas, host)
+        Device::open_cdev_with(name, cdev, None, ioas, host, &mut Clock::new())
     }
 
     /// [`Device::open_cdev`], its node opened here, or `given`, opened by another process
-    /// (D214).
+    /// (D214); each step timed on `clock`.
     pub fn open_cdev_with(
         name: &str,
         cdev: &Path,
         given: Option<OwnedFd>,
         ioas: &Ioas,
         host: &dyn Host,
+        clock: &mut Clock,
     ) -> Result<Device, String> {
         let err = |what: &str, e: io::Error| format!("{name}: {} {what}: {e}", cdev.display());
         let fd = match given {
             Some(fd) => fd,
             None => open(cdev).map_err(|e| err("opening it", e))?,
         };
-        // Before it is bound, as a driver that needs the VM finds it then (vfio.rst).
+        clock.mark("cdev-open");
+        // Before it is bound, as a driver that needs the VM finds it then (vfio.rst); the
+        // VM's first makes KVM's VFIO device (KVM_CREATE_DEVICE).
         host.add_file(fd.as_raw_fd())
             .map_err(|e| format!("{name}: {}: {e}", cdev.display()))?;
+        clock.mark("kvm-file");
         let mut bind = BindIommufd {
             argsz: size_of::<BindIommufd>() as u32,
             iommufd: ioas.fd.as_raw_fd(),
@@ -959,6 +1009,7 @@ impl Device {
             };
             format!("{name}: {} binding it to iommufd: {e}{hint}", cdev.display())
         })?;
+        clock.mark("bind");
         let mut attach = AttachPt {
             argsz: size_of::<AttachPt>() as u32,
             pt_id: ioas.id,
@@ -968,16 +1019,18 @@ impl Device {
         // `vfio_device_attach_iommufd_pt`.
         unsafe { ioctl(&fd, VFIO_DEVICE_ATTACH_IOMMUFD_PT, (&raw mut attach) as usize) }
             .map_err(|e| err("attaching it to its I/O address space", e))?;
-        Device::of_file(name, File::from(fd), vec![ioas.fd.clone()], None)
+        clock.mark("attach");
+        Device::of_file(name, File::from(fd), vec![ioas.fd.clone()], None, clock)
     }
 
     /// The function `name` whose device descriptor is `file`, had through `holds`, its
-    /// hypervisor told of `told`, or of `file` where none.
+    /// hypervisor told of `told`, or of `file` where none; each step timed on `clock`.
     fn of_file(
         name: &str,
         file: File,
         holds: Vec<Arc<OwnedFd>>,
         told: Option<RawFd>,
+        clock: &mut Clock,
     ) -> Result<Device, String> {
         let err = |what: &str, e: io::Error| format!("{name}: {what}: {e}");
         let mut info = DeviceInfo {
@@ -1005,9 +1058,11 @@ impl Device {
         if regions.get(CONFIG_REGION as usize).is_none_or(|r| r.size < 256) {
             return Err(format!("{name}: no configuration space"));
         }
+        clock.mark("regions");
         if info.flags & VFIO_DEVICE_FLAGS_RESET != 0 {
             // SAFETY: VFIO_DEVICE_RESET takes no argument.
             unsafe { ioctl(&file, VFIO_DEVICE_RESET, 0) }.map_err(|e| err("resetting it", e))?;
+            clock.mark("reset");
         }
         let told = told.unwrap_or_else(|| file.as_raw_fd());
         Ok(Device {
@@ -1168,54 +1223,14 @@ impl Device {
         get_le(bytes) as u32
     }
 
-    /// Where its capability `id` is, found in its list (§6.7).
-    fn cap(&self, id: u8) -> Option<u16> {
-        if self.config(reg::STATUS, 2) as u16 & reg::STATUS_CAPABILITIES == 0 {
-            return None;
-        }
-        let mut at = self.config(reg::CAPABILITIES, 1) as u16 & 0xfc;
-        // The list lives in the header's 192 bytes past its first 64: 48 entries at most.
-        for _ in 0..48 {
-            if at < 0x40 {
-                return None;
-            }
-            if self.config(at, 1) as u8 == id {
-                return Some(at);
-            }
-            at = self.config(at + 1, 1) as u16 & 0xfc;
-        }
-        None
-    }
-
-    /// Its MSI capability (§6.8.1): where it is, the next, its addresses' width, and its
-    /// length, with per-vector masking's registers where it has them.
+    /// Its MSI capability (§6.8.1) and its length ([`passed::msi_cap_of`]).
     fn msi_cap(&self) -> Option<(MsiCap, u16)> {
-        let at = self.cap(reg::CAP_MSI)?;
-        let next = self.config(at + 1, 1) as u8 & 0xfc;
-        let control = self.config(at + reg::MSI_CONTROL, 2) as u16;
-        let is64 = control & reg::MSI_64BIT != 0;
-        let masking = control & reg::MSI_MASKING != 0;
-        let len = 10 + if is64 { 4 } else { 0 } + if masking { 10 } else { 0 };
-        Some((MsiCap { at, next, is64 }, len))
+        passed::msi_cap_of(&|at, len| self.config(at, len))
     }
 
-    /// Its MSI-X capability (§6.8.2): where it is, the next, its table's size, and its
-    /// table's and pending bits' BARs and offsets.
+    /// Its MSI-X capability (§6.8.2; [`passed::msix_cap_of`]).
     fn msix_cap(&self) -> Option<MsixCap> {
-        let at = self.cap(reg::CAP_MSIX)?;
-        let next = self.config(at + 1, 1) as u8 & 0xfc;
-        let control = self.config(at + reg::MSIX_CONTROL, 2) as u16;
-        let place = |register: u16| {
-            let value = self.config(at + register, 4);
-            ((value & 7) as u8, value & !7)
-        };
-        Some(MsixCap {
-            at,
-            next,
-            size: (control & 0x7ff) + 1,
-            table: place(reg::MSIX_TABLE),
-            pba: place(reg::MSIX_PBA),
-        })
+        passed::msix_cap_of(&|at, len| self.config(at, len))
     }
 
     /// The BARs the device has, by their sizes (its regions) and their kinds (its
@@ -1317,23 +1332,6 @@ pub fn raise_memlock() {
     }
 }
 
-/// Whether `offset` is a register the VMM keeps of a function whose MSI and MSI-X
-/// capabilities are at `caps`' places, of their lengths: the BARs, the expansion ROM, the
-/// interrupt line and pin (with PCIe's hardwired-zero Min_Gnt and Max_Lat beside them),
-/// and the capabilities.
-fn kept(offset: u16, caps: &[(u16, u16)]) -> bool {
-    matches!(offset, 0x10..=0x27 | 0x30..=0x33 | 0x3c..=0x3f)
-        || caps.iter().any(|&(at, len)| (at..at + len).contains(&offset))
-}
-
-/// Whether `len` bytes at `place`, a BAR's index and an offset in it, lie in a memory BAR
-/// of `bars`.
-fn in_bars(bars: &[Bar], (index, offset): (u8, u32), len: u64) -> bool {
-    bars.iter().any(|bar| {
-        bar.index == usize::from(index) && bar.kind != BarKind::Io && u64::from(offset) + len <= bar.size
-    })
-}
-
 /// What the machine gives the functions it passes through (D154): its hypervisor told of
 /// their groups or of their own files, and memory slots for their BARs.
 pub trait Host {
@@ -1387,43 +1385,6 @@ struct Window {
     bar: usize,
     offset: u64,
     len: usize,
-}
-
-/// The parts of BAR `index`, `len` bytes of the device's region, that the guest can reach
-/// without exits, each an offset and a length: all of its pages but those of the MSI-X
-/// table and pending bits, which the VMM keeps; none where it is less than a page, as the
-/// page it would take in the guest holds other BARs.
-fn windows_of(index: usize, len: u64, msix: Option<MsixCap>, page: u64) -> Vec<(u64, u64)> {
-    if len < page || !len.is_multiple_of(page) {
-        return Vec::new();
-    }
-    let mut kept: Vec<(u64, u64)> = Vec::new();
-    if let Some(cap) = msix {
-        let size = u64::from(cap.size);
-        for ((bar, offset), bytes) in [
-            (cap.table, size * reg::MSIX_ENTRY),
-            (cap.pba, size.div_ceil(64) * 8),
-        ] {
-            if usize::from(bar) == index {
-                let start = u64::from(offset) / page * page;
-                let end = (u64::from(offset) + bytes).div_ceil(page) * page;
-                kept.push((start, end.min(len)));
-            }
-        }
-    }
-    kept.sort_unstable();
-    let mut out = Vec::new();
-    let mut at = 0;
-    for (start, end) in kept {
-        if start > at {
-            out.push((at, start - at));
-        }
-        at = at.max(end);
-    }
-    if at < len {
-        out.push((at, len - at));
-    }
-    out
 }
 
 /// How a passed-through function's interrupts reach the guest (D154): in the kernel, by
@@ -1562,21 +1523,31 @@ impl VfioFunction {
         host: &dyn Host,
         together: bool,
     ) -> Result<VfioFunction, String> {
-        VfioFunction::made(device, bars, route, send, host, together, false)
+        VfioFunction::made(
+            device,
+            bars,
+            route,
+            send,
+            host,
+            together,
+            false,
+            &mut Clock::new(),
+        )
     }
 
     /// `device` plugged into a running machine (D214): its BARs where its guest places
     /// them, from `bars`' sizes; its interrupts as [`VfioFunction::new`]'s; a function of
-    /// its own on its device.
+    /// its own on its device. Each step timed on `clock`.
     pub fn plugged(
         device: Device,
         bars: Vec<Bar>,
         route: Option<Arc<dyn Route>>,
         send: Option<Arc<dyn Msi>>,
         host: &dyn Host,
+        clock: &mut Clock,
     ) -> Result<VfioFunction, String> {
         let unplaced = bars.into_iter().map(|bar| Bar { addr: 0, ..bar }).collect();
-        VfioFunction::made(device, unplaced, route, send, host, false, true)
+        VfioFunction::made(device, unplaced, route, send, host, false, true, clock)
     }
 
     /// The file its hypervisor was told of, which it forgets as the function is unplugged.
@@ -1584,6 +1555,7 @@ impl VfioFunction {
         self.device.told
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn made(
         device: Device,
         bars: Vec<Bar>,
@@ -1592,6 +1564,7 @@ impl VfioFunction {
         host: &dyn Host,
         together: bool,
         movable: bool,
+        clock: &mut Clock,
     ) -> Result<VfioFunction, String> {
         let routed = route.is_some() && send.is_some();
         // A plugged function's slot has no INTx line its machine's firmware tables route
@@ -1621,6 +1594,7 @@ impl VfioFunction {
             }
             fits
         });
+        clock.mark("interrupts");
         // Each BAR vfio-pci maps, in the guest but for the pages the VMM keeps.
         let page = crate::platform::page_size().map_err(|e| e.to_string())? as u64;
         let (mut windows, mut mappings) = (Vec::new(), Vec::new());
@@ -1643,7 +1617,9 @@ impl VfioFunction {
             }
             mappings.push(mapping);
         }
+        clock.mark("bar-mmap");
         let slots = (!windows.is_empty()).then(|| host.slots(windows.len() as u32));
+        clock.mark("bar-slots");
         let kept = Header::with_interrupts(
             Identity {
                 vendor: 0,
@@ -2249,25 +2225,6 @@ impl MmioDevice for VfioBar {
 mod tests {
     use super::*;
 
-    /// The VMM keeps the BARs, the expansion ROM, the interrupt line and pin (with PCIe's
-    /// hardwired-zero Min_Gnt and Max_Lat beside them) and the MSI and MSI-X
-    /// capabilities, all of them; every other register is the device's, through vfio-pci.
-    #[test]
-    fn the_vmm_keeps_the_bars_rom_interrupt_registers_msi_and_msix() {
-        let caps = [(0x50, 14), (0x70, reg::MSIX_LEN)];
-        for offset in [
-            0x10, 0x14, 0x24, 0x27, 0x30, 0x33, 0x3c, 0x3d, 0x3e, 0x3f, 0x50, 0x5d, 0x70, 0x7b,
-        ] {
-            assert!(kept(offset, &caps), "{offset:#x}");
-        }
-        for offset in [
-            0x00, 0x04, 0x06, 0x0f, 0x28, 0x2c, 0x34, 0x38, 0x40, 0x4f, 0x5e, 0x6f, 0x7c, 0x100,
-        ] {
-            assert!(!kept(offset, &caps), "{offset:#x}");
-        }
-        assert!(!kept(0x50, &[]));
-    }
-
     /// What the guest reads of a function where the VMM puts bits of its own: those bits,
     /// in whichever bytes of a read hold them; and an extended capability taken out of its
     /// list, the first or one past it, the rest of the list as it was.
@@ -2331,60 +2288,5 @@ mod tests {
             ext_cap_taken_out(space(vec![(0x100, header(0x0001, 0x100))]), EXT_CAP_ACS),
             None
         );
-    }
-
-    /// A BAR's pages reach the guest without exits but for those of the MSI-X table and
-    /// pending bits, which the VMM keeps; a BAR of less than a page stays trapped whole.
-    #[test]
-    fn a_bar_is_mapped_but_for_its_msix_pages() {
-        let page = 0x1000;
-        let msix = |table: (u8, u32), pba: (u8, u32), size: u16| {
-            Some(MsixCap {
-                at: 0x70,
-                next: 0,
-                size,
-                table,
-                pba,
-            })
-        };
-        assert_eq!(windows_of(0, 0x10_0000, None, page), vec![(0, 0x10_0000)]);
-        assert_eq!(windows_of(0, 0x800, None, page), vec![], "under a page");
-        // Two vectors and their pending bits in one page: none of it mapped.
-        assert_eq!(windows_of(2, 0x1000, msix((2, 0), (2, 0x800), 2), page), vec![]);
-        // In another BAR: all of this one.
-        assert_eq!(
-            windows_of(0, 0x4000, msix((2, 0), (2, 0x800), 2), page),
-            vec![(0, 0x4000)]
-        );
-        // A table of 512 vectors (8 KiB) at 0x2000, its pending bits at 0x6008: the
-        // pages around each mapped.
-        assert_eq!(
-            windows_of(4, 0x10000, msix((4, 0x2000), (4, 0x6008), 512), page),
-            vec![(0, 0x2000), (0x4000, 0x2000), (0x7000, 0x9000)]
-        );
-    }
-
-    /// MSI-X's table and pending bits are the VMM's only where they lie in a memory BAR
-    /// the function has.
-    #[test]
-    fn an_msix_table_is_kept_only_within_a_bar() {
-        let bars = [
-            Bar {
-                index: 0,
-                addr: 0x1000_0000,
-                size: 0x4000,
-                kind: BarKind::Memory32,
-            },
-            Bar {
-                index: 2,
-                addr: 0x1000,
-                size: 0x100,
-                kind: BarKind::Io,
-            },
-        ];
-        assert!(in_bars(&bars, (0, 0x2000), 0x2000));
-        assert!(!in_bars(&bars, (0, 0x2000), 0x2001));
-        assert!(!in_bars(&bars, (1, 0), 16));
-        assert!(!in_bars(&bars, (2, 0), 16), "an I/O BAR");
     }
 }

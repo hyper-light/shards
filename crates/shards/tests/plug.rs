@@ -120,6 +120,19 @@ fn devices_are_plugged_into_a_run_and_its_disk_grows() {
         none.stderr
     );
 
+    // Off Linux no host's function is plugged in: refused by name, with its host's own
+    // limit, as a run's start refuses one (D154; PM M401, M402, M403).
+    #[cfg(not(target_os = "linux"))]
+    {
+        let limit = shards_vmm::vm::passthrough_refused();
+        for function in ["0000:01:00.0", "/dev/vfio/devices/vfio0"] {
+            let r = run_shards_env(&["plug"], &["function", "plugged", function], &env, TIMEOUT);
+            assert_ne!(r.status, Some(0), "{function}: {}", r.stdout);
+            let said = format!("shards: cannot plug into plugged: {function}: {limit}");
+            assert!(r.stderr.contains(&said), "{function}: {}", r.stderr);
+        }
+    }
+
     shards(&["rm"], &["-f", "plugged"]);
 }
 
@@ -145,8 +158,10 @@ fn edu_function() -> Option<String> {
 /// its group's node made in the workload's `/dev` and its device filter widened to it, so
 /// that the workload finds its group by its address as DPDK does and moves a page through
 /// it by DMA, its IOMMU's mappings followed by the host's; plugged in twice refused; then
-/// unplugged, its node gone and the function the host's again, twice over. A run not
-/// booted for functions is refused one. Runs where a host has an edu function to give:
+/// unplugged, its node gone and the function the host's again, twice over; then plugged by
+/// its VFIO device node, into that run and into one given `/dev/iommu` at its start, and
+/// taken through iommufd. Each node the image's user's (`app`) while it is plugged. A run
+/// not booted for functions is refused one. Runs where a host has an edu function to give:
 /// nested, `SHARDS_L1_PCI_TESTS=01.0 SHARDS_L1_TESTS=plug:a_hosts_function` (boot.rs).
 #[cfg(target_os = "linux")]
 #[test]
@@ -213,6 +228,12 @@ fn a_hosts_function_is_plugged_into_a_run_for_its_workload() {
         assert_eq!(words.len(), 3, "round {round}: {said}");
         let (node, address) = (words[1], words[2]);
         assert!(node.starts_with("/dev/vfio/"), "round {round}: {said}");
+        // The image's user's (app, 1000:1000), devtmpfs's mode kept.
+        let owned = shards(&["exec"], &["taker", "/bin/testguest", "stat", node]);
+        assert!(
+            owned.contains(&format!("{node} other 600 1000:1000 ")),
+            "round {round}: {owned}"
+        );
         let dma = shards(&["exec"], &["taker", "/bin/testguest", "vfio-dma", address]);
         assert!(
             dma.contains("SHARDS-TEST INFO dma: 4096 bytes into the function and back, through its IOMMU"),
@@ -238,6 +259,58 @@ fn a_hosts_function_is_plugged_into_a_run_for_its_workload() {
     }
     let none = refused(&["unplug"], &["function", "taker", &name]);
     assert!(none.contains("is plugged into it"), "{none}");
+
+    // By its VFIO device node, where this host's kernel makes one (VFIO_DEVICE_CDEV), and
+    // taken through iommufd: the workload's /dev/iommu its user's too while it is plugged,
+    // made for the run given /dev/vfio/vfio alone and gone after; a run given it at its
+    // start (root's, devtmpfs's 0660, as Docker gives it) has it so again once unplugged.
+    let cdev = std::fs::read_dir(dir.join("vfio-dev"))
+        .ok()
+        .and_then(|d| d.flatten().next())
+        .map(|e| format!("/dev/vfio/devices/{}", e.file_name().to_string_lossy()));
+    match cdev {
+        None => eprintln!("SKIP: by its device node: this host's kernel makes none (VFIO_DEVICE_CDEV)"),
+        Some(cdev) => {
+            shards(
+                &["run"],
+                &["-d", "--name", "iommu", "--device", "/dev/iommu", &image, "sleep"],
+            );
+            for (run, made) in [("taker", true), ("iommu", false)] {
+                let said = shards(&["plug"], &["function", run, &cdev]);
+                let words: Vec<&str> = said.split_whitespace().collect();
+                assert_eq!(words.len(), 3, "{run}: {said}");
+                let (node, address) = (words[1], words[2]);
+                assert!(node.starts_with("/dev/vfio/devices/vfio"), "{run}: {said}");
+                let stat = [run, "/bin/testguest", "stat", node, "/dev/iommu"];
+                let owned = shards(&["exec"], &stat);
+                assert!(
+                    owned.contains(&format!("{node} other 600 1000:1000 ")),
+                    "{run}: {owned}"
+                );
+                assert!(
+                    owned.contains("/dev/iommu other 660 1000:1000 "),
+                    "{run}: {owned}"
+                );
+                let dma = shards(&["exec"], &[run, "/bin/testguest", "vfio-dma-cdev", address]);
+                assert!(
+                    dma.contains(
+                        "SHARDS-TEST INFO dma: 4096 bytes into the function and back, through its IOMMU"
+                    ),
+                    "{run}: {dma}"
+                );
+                shards(&["unplug"], &["function", run, &cdev]);
+                let after = run_shards_env(&["exec"], &stat, &env, TIMEOUT).stdout;
+                assert!(after.contains(&format!("{node} missing")), "{run}: {after}");
+                let iommu = if made {
+                    "/dev/iommu missing"
+                } else {
+                    "/dev/iommu other 660 0:0 "
+                };
+                assert!(after.contains(iommu), "{run}: {after}");
+            }
+            shards(&["rm"], &["-f", "iommu"]);
+        }
+    }
     shards(&["rm"], &["-f", "taker"]);
 
     // A run booted as any is takes none.

@@ -1,0 +1,7 @@
+    Checking windows-sys v0.61.2
+   Compiling shards-vmm v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/vmm)
+    Checking shards-afunix v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/afunix)
+    Checking shards-netring v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/netring)
+    Checking shards-ntfs v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/ntfs)
+    Checking shards-ipc v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/ipc)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 7.64s

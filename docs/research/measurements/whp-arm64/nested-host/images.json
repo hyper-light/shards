@@ -1,0 +1,26 @@
+{
+  "tfa": "v2.15.0 da738d5eae93af342fdc4995dd3c05acb4c9d757",
+  "edk2": "edk2-stable202608 2970e5699ba6267f3384ffab20f96647578aebc8",
+  "images": {
+    "bl1.bin": {
+      "bytes": 33560,
+      "sha256": "f8c32cc4cf6092c950177153db55e2e8c3b5b240e26d86228ecc6127e3a2ed79"
+    },
+    "bl31.bin": {
+      "bytes": 67739,
+      "sha256": "d4d822be0929748be032745baefd61aea6e4ec29b0ee324526a0d8998f281974"
+    },
+    "fip.bin": {
+      "bytes": 3251023,
+      "sha256": "0487f27f0dd3926e1f629a88f5351a1831e684e2ca4cf6bce14453a2153f4485"
+    },
+    "QEMU_EFI.fd": {
+      "bytes": 3145728,
+      "sha256": "e986b4738a297289f20c8e0a05aa1c479c1f10312d98589d3eed45452e3a73c0"
+    },
+    "tfa-qemu.rom": {
+      "bytes": 67108864,
+      "sha256": "01de43f699a23e1597740853c995e0a28df7bbb718c68bfa72297ca777dc5097"
+    }
+  }
+}

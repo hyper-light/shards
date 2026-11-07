@@ -1,0 +1,28 @@
+{
+  "host": "Adas-MacBook-Pro-2.local",
+  "os": "macOS-26.4.1-arm64-arm-64bit-Mach-O",
+  "machine": "arm64",
+  "baseline_revision": "360ad0cd02f0311f6dc95eac6cd641bedf5c6380",
+  "candidate_head": "863e035ed325c3a54b4ef75762a06e7c1b0c8c5e",
+  "candidate_diff_sha256": "920ae946f6a4e87a1c5fc645f1f62b1fcfe62998ce0c79b21b83c9fc4e9bfc97",
+  "rustc": {
+    "before": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+    "after": "rustc 1.99.1 (58cf8f9c3 2026-10-13)"
+  },
+  "versions": {
+    "num-bigint": "0.4.8",
+    "regex": "1.13.1",
+    "serde_json": "1.0.151",
+    "libc": "0.2.189",
+    "windows-sys": "0.61.2"
+  },
+  "n_per_build": 30,
+  "profile": "release; opt-level=3; fat LTO; codegen-units=1",
+  "workload": "compile.rs host() and layers(500,12), including parse; 123 MiB stack",
+  "harness_sha256": "55328d90e9a2d61ff1eb5ec52f9304e9afd94c2caf20f5300803dde2cfd54dcd",
+  "source_sha256": {
+    "before": "13d04692d06c462a995bee1c2cc9b19b5d4f2fe4382b1f428158e79acfbc5280",
+    "after": "9b02075f59199de5741923dbea97532b73a9b2c324568bc88bcd5e1b6d6aafe7"
+  },
+  "metadata_correction": "Original queried rustc in the parent checkout (1.98.1). Corrected to the actual standalone build directories (1.99.1); original metadata retained."
+}

@@ -1,0 +1,11 @@
+2026-11-03T13:57:29.9510740-08:00
+MANIFEST binaries=1
+START 0/1 path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/shards#0.6.0 credentials 2026-11-03T21:57:32.0508720Z
+running 1 test
+test aws::credentials::tests::credential_processes_give_their_credentials ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 555 filtered out; finished in 1.20s
+
+END 000-credentials exit=0 elapsed=11.136118
+COMPLETE binaries=1 manifest=1 failed=0 filter=credentials/aws::credentials::tests::credential_processes_give_their_credentials start=0
+2026-11-03T13:57:43.6195270-08:00

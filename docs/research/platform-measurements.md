@@ -16898,6 +16898,170 @@ revision before comparing a changed API/implementation.
   `platform::reserve_withheld` makes one) answered as one readable and writable did, in
   every step above.
 
+### M414. WHP on arm64 Windows: a nested host, GICv3, PSCI, MMIO and snapshot state (D209)
+
+- **Method.** `docs/research/measurements/whp-arm64/`, 2026-11-01 to 2026-11-04 UTC, on
+  an M5 Max, macOS 26.4.1. Windows 11 Pro arm64 26300.9457 installed from Microsoft's
+  ISO, its hash verified; HypervisorPlatform, VirtualMachinePlatform and Hyper-V enabled.
+  QEMU 11.1.3, four CPUs and 8 GiB RAM. The harness records the host's events and WHP
+  calls, and runs its own two-vCPU guest independently of shards. The README records the
+  boot matrix, firmware revisions, fixture patches and raw results. No Windows binary or
+  check was patched.
+- **Host found.**
+  - HVF with EL2 off and on both reached the desktop but gave Hyper-V event 43, EL2 not
+    present; WHP's HypervisorPresent was 0. HVF's default PFR0.EL2 field is 0 even with
+    nested virtualization enabled (M422); setting it to 1 changed Windows' failure to
+    event 26, BalStatus 0x19, sub-status 0xC.
+  - TCG with VHE but without EL3 failed the same way. Instrumenting its failure path
+    identified PFR0.EL3=0 as the rejected CPU field. With TF-A at EL3, Windows passed that
+    check but faulted on a pointer authentication key write; disabling that optional CPU
+    feature reached a HAL initialization failure. QEMU's generated FADT described no
+    PSCI when its own handler was disabled for TF-A; describing TF-A's SMC handler fixed
+    that failure.
+  - TCG `max,sve=off,sme=off,pauth=off`, secure and virtualized, TF-A 2.15.0 and EDK2
+    stable202608: Windows reached the desktop, System event 1 said its hypervisor
+    successfully started, WHvGetCapability returned HypervisorPresent=1 and Arm64Support=1,
+    and WHvCreatePartition succeeded. This is software emulation of Windows on this Mac,
+    running Windows' real hypervisor. Its timings are not native hardware timings.
+- **Partition found.**
+  - The guest read back an MMIO answer (0x5678), took SPI INTID 33 and acknowledged it.
+    PSCI_VERSION returned 1.1, CPU_ON started vCPU 1 at its entry with context X0=0x42 and
+    MPIDR=0x80000001, and SYSTEM_OFF returned an Arm64Reset/PowerOff exit.
+  - GICD_TYPER 0x748041e: 960 SPIs. WHvGetVirtualProcessorState returned 200 bytes of
+    interrupt controller state per vCPU and 4096 bytes of global state, all set back with
+    S_OK. Resetting vCPU 0's CNTVCT_EL0 to zero left vCPU 1's counter advancing: one counter
+    per vCPU. SuspendPartitionTime returned WHV_E_INVALID_VP_STATE with vCPU 1 running.
+    With all vCPUs stopped it succeeded: both counters held their values across 100 ms,
+    including after each was set to 1,000,000,000. ResumePartitionTime advanced both.
+    The restore suspends time before making vCPUs, sets each counter before its timer
+    registers, and resumes time through the first WHvRunVirtualProcessor.
+  - WHvAdviseGpaRange's Populate advice on two memory ranges succeeded for read and write
+    access as the standard runner. The backend shares x86_64 WHP's mapped-page recorder
+    and bulk Populate path; the working-set snapshot E2E recorded and prefetched pages.
+  - 64- and 128-vCPU partitions set up and their last vCPU was created; ProcessorCount=256
+    was refused. Shards' redistributor layout holds 123 vCPUs, within the measured limit.
+  - Forbidding dynamic code after setup allowed mapping RAM, making a vCPU and running
+    it. A cancel before a run returned Canceled, then the next run reached the first MMIO
+    write. The probe drops its original mapped partition before this control; while it
+    still held it, the second map returned STATUS_VID_PARTITION_ALREADY_EXISTS.
+  - MMIO write round trips on the emulated host during development: n=999, p50=455,
+    p90=608, p99=900, max=1606 microseconds. This run alone, not a native WHP latency claim.
+- **Shards found.** Its pinned arm64 Linux kernel booted as the standard `runner` user
+  through the confined VM process, finding PSCI 1.1, GICv3 at the expected redistributor
+  and the 1 GHz virtual counter; with no init/root disk it reached the expected VFS panic
+  and requested a reset. The boot test now checks the host's counter frequency rather
+  than assuming HVF's 24 MHz. Boot E2E passed (27.81 s), as did the core snapshot E2E
+  (36.76 s): three independent processes restored one two-vCPU snapshot with its state
+  intact and fresh randomness. Nine tests of the first complete snapshot run passed;
+  the busy-machine test found a 59 microsecond backward clock step from per-thread
+  counter sampling at release. After the suspended-time fix, its two- and eight-vCPU
+  cases passed, including all three restores and clock checks (29.35 and 24.34 s).
+  The 64-vCPU original guest timed out streaming before its snapshot on the four-CPU
+  outer host. The nested host was resized to 16 CPUs and 24 GiB for the full suite,
+  keeping every assertion and deadline. The full real-VM suite remains to pass before
+  step 10 is closed. Raw results and the failure are retained with the harness.
+- **Qualification follow-up, 2026-11-03 UTC.** The 16-CPU run completed 80 of 141
+  binaries, with 76 passing and four failed, then was aborted after more than two hours
+  in the container binary. It is incomplete evidence. Its failures included 64-vCPU
+  storms, boot, the 10 s wide-policy compiler deadline, and both Windows builder memory
+  cases. The arm64 nested-refusal assertion was corrected and passed its next checks.
+  Windows updated to 26300.9711 during shutdown. Subsequent four-CPU, 24 GiB comparisons
+  found no improvement from single-threaded TCG over multithreaded TCG. After returning
+  to multithreaded TCG, maximum-vCPU boot passed in 56.66 s and builder memory growth in
+  149.34 s, but the faster builder memory case still failed its 180 s deadline. These
+  subsets do not qualify the suite, and the OS update confounds comparisons with the
+  16-CPU run. A direct 123-vCPU boot prepared vCPUs in 0.918 s, brought Linux's configured
+  64 CPUs online at guest time 15.723 s and reached the expected VFS reset after 97.523 s
+  wall time; no counter defect follows from those different milestones. The README
+  records exact selections and retained results. Step 10 remains open.
+- **VBS/HVF follow-up.** On a child of the cleanly stopped 26300.9711 disk, first setting
+  `vsmlaunchtype Off`, then also setting the documented DeviceGuard
+  `EnableVirtualizationBasedSecurity=0` system and policy values, each followed by a
+  reboot, left Win32_DeviceGuard's VBS status at 2 with no services running. WHP remained
+  present and partition creation succeeded. These settings did not yield a VBS-off
+  control. An HVF boot of a separate child, with enabled EL2 truthfully advertised,
+  reached the desktop but gave current-boot Hyper-V event 26 (BalStatus 0x19/sub-status
+  0xC), WHP present=0 and CreatePartition=0xC0351000. VBS then reported 0 while the
+  hypervisor had failed. No Windows code/check or locked/signed policy was changed.
+  The README records the settings and full transcripts; there is no VBS performance or
+  VHE causality claim from these experiments.
+- **Emulator profile.** On the restored four-CPU baseline, the faster-growth builder
+  again failed its 180 s deadline. Info logs put vCPU preparation at 0.342 s and the
+  startup marker at 4.898 s. Three five-second QEMU samples include page-table translation
+  and locking; cumulative counters after the test recorded 22,347,718 partial TLB flushes
+  and four translation-buffer flushes since host boot. This is a diagnostic profile,
+  not a performance qualification. A one-CPU child started Hyper-V and ran a real WHP
+  guest, but still failed the selected compiler and maximum-vCPU boot deadlines. A local
+  tag-validation error prevented its other two planned checks from starting. The retained
+  reports distinguish those unrun checks from VM failures. No assertion was relaxed.
+- **Additional controls.** The same 6000-rule compiler test, built alone with production
+  `release` (fat LTO, one codegen unit, static CRT), still failed its 10 s assertion
+  after 10.09 s on the verified WHP host. A Cortex-A76 control stopped in TF-A BL1's
+  synchronous EL3 exception/panic path; a `max,pmu=off` control reached Windows Boot
+  Manager but was ended before SSH readiness after more than eight minutes. Neither
+  control ran a WHP probe or VM test, and neither establishes a performance result or
+  the original failure cause. Their retained records distinguish boot controls from
+  VM results.
+- **Complete retry.** `real-03` began 2026-11-03 18:43 UTC on the working four-CPU,
+  24 GiB `max` model, Windows 26300.9711, with all 141 original `test-release` binaries
+  (source 360ad0cd). The runner now has optional heartbeats while waiting for a native
+  binary, with no added test deadline or filter. Windows parsed the script and verified
+  its hash and manifest before launch. The first binary emitted heartbeats, returned
+  its native exit 101 (eight snapshot tests passed, two failed, two helper entries
+  ignored), and the runner continued to boot tests. This validates progress/exit
+  reporting, not qualification. The complete suite must still pass before row 5 closes.
+- **Compiler diagnostic.** The unchanged 6000-rule policy failed its 10 s Windows
+  deadline. Native profiling found repeated construction of whole type extents for
+  reference queries. `whp-arm64/wide-policy.py` compares the original source with a
+  candidate that obtains string keys directly and avoids the extent for scalar-valued
+  dynamic references, retaining the function-type path. On this M5 Max, macOS 26.4.1,
+  standalone rustc 1.99.1, release/fat LTO/codegen-units=1, n=30/build with alternating
+  order, parse plus compile was p50/p90/p99/max 779.528/806.984/825.200/825.200 ms before
+  and 299.800/308.567/313.776/313.776 ms after. The Windows fixture/full suite and
+  cross-build jobs were active. The README and retained rows record that scope and the
+  compiler-metadata correction. Native Rego tests/OPA comparisons and all eight lint
+  targets passed with the candidate. This native comparison does not qualify Windows.
+- **Follow-up regressions.** Indexing the evaluator's binding sets after 16 variables
+  retains iteration/undo order and removes their linear lookup. On the same Mac,
+  rustc 1.98.1/test-release, `deep-policy.py` alternated n=20/build of the unchanged
+  deep-every test: whole-process p50/p90/p99/max 3371.999/3533.665/3598.273/3598.273 ms
+  before and 1735.963/1894.770/1908.657/1908.657 ms after. Rego tests/OPA comparisons,
+  a binding undo regression, all eight lint targets and the Windows cross-build passed.
+  A separate standard-user Windows kit then passed the original wide-policy test
+  in 5.28 s within 10 s, the deep-policy test in 38.47 s within 60 s, and all ten Rego
+  library tests. The M414 guest also passed with aligned stack register writes and its
+  MMIO load result/PC set together. These checks overlapped the already-failing
+  real-03 container binary. The README retains the method, source patches and raw
+  evidence; neither the selected tests nor this API probe qualify the full suite.
+- **Credential commands.** The continuing container run found its CloudWatch fixture's
+  Unix `printf` command unavailable on Windows. A native probe then found normal
+  argument escaping corrupting configured credential commands' JSON and quoted program
+  paths. The provider now passes the configured command literally with `raw_arg`, as
+  Rust documents; the Windows fixture uses `echo`. The existing credential regression,
+  enabled on Windows and extended with a helper filename containing a space, passed
+  there in 1.20 s, including environment, expiry, Version 2 rejection and exit code 3.
+  Native Mac, all eight lint targets and the complete Windows cross-build passed.
+  The README records the raw control's `/D /S /C` versus production's `/C`, an earlier
+  failed probe control, and the exact production regression. These checks overlapped
+  the already-failing full run; the CloudWatch VM E2E and full qualification remain open.
+
+- **Cross-built init and user logon.** The original Engine E2E reproduced an HTTP 500
+  in 3.01 s: its Mac `OUT_DIR` init path lacked a Windows drive. Resolving that file on
+  the executing host fixed the fixture; the unchanged case passed on a real WHP guest
+  in 29.25 s after a fresh 142-binary build and native verification of every executable
+  hash. All eight lint targets passed. The dedicated standard user also passed the
+  file-observer regression (one case, 0.13 s), actual unprivileged symlink create/read,
+  ETW session control, gzip and output-directory writes, and WHP capability/partition
+  checks. SSH's original user reported RedirectionGuard enforcement and refused its
+  own link traversal; the normal batch logon reported flags=0 without any policy
+  override. The README and `results/init-path/` and `results/normal-logon/` record the
+  original failure, compiled patch, hashes, launch method and failed controls. The
+  original unit binary, run alone after enabling kernel-dump capture, finished 551
+  passed, one failed and three ignored without reproducing the host crash. It failed
+  the existing minimum-wait assertion at 39.018 ms. The cause of the earlier bugcheck
+  remains unresolved. These selected checks do not replace the outstanding complete
+  142-binary real-VM suite or close step 10.
+
 ### M415. A Windows restore's working set, mapped ahead (D196, the platform parity audit's row 11)
 
 - **Question.** What does a working set mapped ahead buy a Windows restore, as Linux's and
@@ -17271,7 +17435,7 @@ revision before comparing a changed API/implementation.
   its snapshot so, as the daemon holds a template; `--held no` holds none, as a lone
   `shards restore` finds it.
 
-### M422. What a GPU's VM process needs on Intel's GPUs and on a musl host (D208)
+### M425. What a GPU's VM process needs on Intel's GPUs and on a musl host (D208)
 
 - **Question.** M382 found what NVIDIA's and AMD's drivers reach of a Linux host from the
   GPU's VM process, with glibc. Does Mesa's Intel driver reach more, and does a GPU's VM
@@ -17386,6 +17550,54 @@ revision before comparing a changed API/implementation.
     Boot to init, n 40 each: with four slots p50 18.90 ms (p90 19.15, p99 27.39), with no
     bus 18.88 (p90 19.24, p99 20.60): no cost measured at p50, where x86_64's ACPI-described
     bus costs 4 ms.
+  - **A host's function plugged in**, KVM arm64 nested in a guest with EL2 (the M5 Max,
+    Darwin 25.4.0; boot.rs's L1 harness, QEMU's edu function at the L1 guest's 01.0, bound
+    to its vfio-pci), 8928fbe4 (p/integrate-1106), test-release, the host's load not
+    recorded: `vfio-nested.sh`, tests/hotplug.rs's
+    `a_hosts_function_is_plugged_into_a_running_microvm`, `SHARDS_PLUG_ROUNDS=30`, the
+    test guest of 512 MiB and 1 vCPU with two slots outside its IOMMU, the function taken
+    by its group: each round `Handle::plug_vfio` (timed by the host: a container of its
+    own, its group set in it, all of guest RAM mapped for its DMA by
+    `VFIO_IOMMU_MAP_DMA`, which pins it, the device opened and reset, its BARs mapped and
+    the function put on the bus), the guest's rescan to its read of the function's BAR 0
+    where it placed it (timed by the guest), the guest's write of its `remove` (timed by
+    the guest), and the host's unplug (timed by the host, KVM forgetting its group), µs:
+
+    | Step | n | p50 | p90 | p99 | max | rounds in order |
+    |---|---|---|---|---|---|---|
+    | host plug | 30 | 951 | 1062 | 63804 | 63804 | 63804, 962, 987, 968, 930, 951, 1060, 931, 893, 895, 938, 944, 966, 866, 1106, 955, 939, 1062, 897, 883, 954, 978, 917, 925, 871, 1094, 1042, 1006, 902, 979 |
+    | guest rescan to its BAR read | 30 | 12084 | 12183 | 14074 | 14074 | the first 14074, then 11767 to 12419 |
+    | guest remove | 30 | 36 | 65 | 142 | 142 | the first 122 |
+    | host unplug | 30 | 927 | 961 | 1004 | 1004 | the first 1004 |
+
+    The first round's host plug alone is slow, every run: 63.8 ms here against 0.87 to
+    1.11 ms for the 29 after it, and 143.2 ms and 83.6 ms, each its run's single maximum
+    and its first round, in two earlier runs at other revisions. **Its time is the first
+    pin of guest RAM.** At 89194593 (p/integrate-1106, the host plug timing each of its own
+    steps: `vfio::Clock`, `Plugged::steps`), the same host and harness, 30 rounds, µs:
+
+    | Step | n | p50 | p90 | p99 | max | round 0 | rounds 1 to 29 |
+    |---|---|---|---|---|---|---|---|
+    | host plug, whole | 30 | 602 | 626 | 170011 | 170011 | 170011 | 552 to 631 |
+    | dma-map (`VFIO_IOMMU_MAP_DMA`, the pin) | 30 | 429 | 450 | 167327 | 167327 | 167327 | 389 to 458 |
+    | group-set (`VFIO_GROUP_SET_CONTAINER`) | 30 | 7 | 9 | 2298 | 2298 | 2298 | 4 to 20 |
+    | device-fd | 30 | 93 | 109 | 271 | 271 | 271 | 72 to 118 |
+    | kvm-file (KVM's VFIO device made in round 0) | 30 | 1 | 1 | 4 | 4 | 4 | 0 to 1 |
+
+    Round 0's 170.0 ms are 167.3 ms of `dma-map` and 2.3 ms of `group-set`, every other
+    step at most 38 µs in any round; each later round maps the same range, guest RAM whole,
+    in 0.39 to 0.46 ms. Neither the memlock raise nor KVM's device costs anything
+    measurable, and no step that does no first-only work is slow, so the guest's start
+    beside round 0 takes nothing of it. Type1 pins through `vfio_pin_pages_remote`,
+    `pin_user_pages_remote` with `FOLL_WRITE`, which faults in a page not yet present
+    (drivers/vfio/vfio_iommu_type1.c; mm/gup.c): the first pin is where guest RAM the VM
+    had not touched is first given host pages, and a later container's pin of the same RAM
+    finds them resident. That is VFIO's own contract for a function outside a guest's
+    IOMMU, all of guest RAM pinned for its DMA (D154), not a cost of shards' plug: a
+    microVM booted with a function pays it in its start instead. Through the CLI, plug.rs's
+    `a_hosts_function_is_plugged_into_a_run_for_its_workload` passes nested at the same
+    revision, as a user not root, by group and by device node through iommufd; its steps
+    are not timed yet.
   - **Through the CLI** (`cli.py`, a detached busybox run restored from its template,
     the client's wall clock, n 30, Mac at load 11, fd56a4eb test-release): `plug disk`
     p50 20.9 ms (p90 27.9, p99 29.9, max 29.9), `unplug disk` 62.5 ms (p90 91.4, p99
@@ -17405,7 +17617,8 @@ revision before comparing a changed API/implementation.
     KVM x86_64 (load 7.2 to 18): wall 22.91 against 22.37 ms, paired −0.54 ms, 95%
     [−2.22, +1.27]; command 4.30 against 4.15 ms, paired −0.16 ms, [−0.52, +0.18]: none
     measured.
-  - The host's sides are microseconds; the guest's rescan and its remove are the cost: a
+  - A disk's host sides are microseconds (a host's function's, nested, a millisecond but
+    for its first plug); the guest's rescan and its remove are the cost: a
     probe of the virtio function and its disk, and a remove of 29 ms whose parts are not
     measured yet.
 
@@ -17720,6 +17933,129 @@ revision before comparing a changed API/implementation.
   The builder's own writes to its caches' ranges (an apt build's lists and archives, npm's
   cache) stay under the budget, its VM process's. To measure: this harness, unchanged, at
   the commit that has them, on CI (`builder-pressure.yml`) and Fedora (`fedora.sh`).
+- **At 94838b88, on CI's four runners: the writer never ran.** Each of the 60 held builds'
+  output begins `shards: unknown command: shards build-writer`, and no free build's: the
+  command line refuses a word that is neither the catalog's nor in its own list (`OWN`,
+  cli/mod.rs) before the daemon side's `shardsd()` sees it, and `build-writer` was in
+  `shardsd()` alone. The writer ended at once, so the build placed none and wrote its files
+  itself, under its budget, saying so only in its debug log. What the held builds still paid
+  is those writes, step by step (s, the rounds past the caches', each runner's range):
+  - apt's own work is no slower held: its last line of output (`0 added, 0 removed; done.`,
+    the guest's clock) came 14.6 to 19.6 s into its `RUN` held against 15.5 to 19.1 free.
+    The step's end, from there to its `DONE`, as its changes go out of the guest (480 MiB
+    of shmem in it as the step ended, runner a) to the build's staging file on the host,
+    took 2.6 to 4.4 s free and 4.3 to 10.9 held, the whole of the step's difference (runner
+    a: 1.7, 3.2, 5.0, 1.8, 2.7 s of 2.5, 3.7, 5.0, 1.8, 2.5). Its export, the image's root
+    filesystem written, 1.2 to 2.8 s free and 1.9 to 4.3 held. Through the step's end free,
+    the scope's file pages rose from 6 to 517 MiB in a second, 432 MiB of them dirty
+    (runner a, round 3); held, its `memory.current` reached its budget (957 MiB) in 4 of
+    the 9 samples and was never more than 100 MiB under it, its dirty pages 197 MiB at most: written
+    at its reclaim's and writeback's pace.
+  - npm's `RUN`'s end, 0.5 to 0.8 s free, 0.9 to 6.1 held; its `npm ci` itself the same
+    but in runner b's first two held rounds (budget 702 MiB, where later rounds had 768).
+  - rust's `RUN` 1.4 to 2.1 s in either arm; its export,
+    rust:1-slim's root filesystem written whole on the runners' ext4, 2.4 to 4.9 s free
+    and 2.5 to 7.5 held.
+
+  So the diagnosis above stands for the build's own writes (its steps' changes and its
+  export, which the writer is for), and not for its caches on the join disk: apt's work,
+  which reads and writes them, is no slower held. Fixed (`build-writer` among the command
+  line's own words, and a client's not to run, boot.rs's
+  `cli_reports_usage_and_rejects_unknown_commands`), and a step's changes now go to their
+  staging file a chunk at a time (`upper::Applier`, `through::CHUNK`, the writer's most in
+  one message), not a write and a round trip to the writer for each file. The harness now
+  samples the writer's own cgroup and says, of each held build, whether it ran
+  (`writer_seen`, tables.py's `writer outside`). How much of a step's end is its caches'
+  changes, which its VM process writes under the budget (`keep_cache`), these samples do
+  not split. To measure: `builder-pressure.yml` at the commit that has the fix.
+- **At 0849ecb3, on CI's four runners: the writer ran, apt's `RUN`'s end still slower.**
+  The writer was outside in each of the 60 held builds. The rule held for 10 of the 12
+  runner and build pairs. apt failed it on two runners: held's fastest 36.0 s against
+  free's slowest 35.1 s on one (EPYC 9V74), 36.9 against 36.1 on another; the other two
+  passed by 0.1 s. The whole difference is in apt's `RUN` (step 6), and in it, after the
+  guest's own end (s, from apt's last line of output, the rounds past the caches', those
+  two runners, from their out.txt and raw/ build logs):
+  - The guest's step end, which comes after its changes have gone out and its caches'
+    changes are written and synced to their range of the join disk (init `caches.rs`
+    `write`), is no later held. It came 0.82 to 0.88 s free and 0.87 to 1.75 held on the
+    first runner, and 1.15 to 1.19 free and 1.12 to 1.23 held on the second. So the VM
+    process's writes of a step's changes to its caches cost nothing measurable under the
+    budget.
+  - From the guest's end to the step's `DONE` took 2.80 to 3.13 s free and 3.79 to 4.84
+    held on the first runner, and 1.46 to 1.48 free and 2.65 to 2.72 held on the second.
+    That is the build's own work after the guest's: its caches kept (`keep_cache`: each
+    change's file truncated and synced, `mounts::finish`, then merged as `plan` says),
+    then its layer written and synced (`commit`).
+  - Held, the writer's file pages rose by 764 to 780 MiB, the step's changes to their
+    staging file (378 to 390 MiB) and its layer. They sat flat for 1 to 2 s between the
+    two, while the scope's own rose by 101 to 253 MiB with at most 119 MiB of them dirty,
+    and on the first runner `memory.current` sat at its budget (957 MiB at 1.45 and 2.46 s
+    into round 2's end). Free, the scope's file pages rose by 955 to 974 MiB, 381 to 751
+    of them dirty at once. Of the build's own writes in that gap, a merge of a cache's
+    layers was the one still written in the build's process, through a `BufWriter` of its
+    file, not `through`: under its budget's dirty domain (mm/page-writeback.c at v7.0,
+    `folio_account_dirtied` charges the dirtying task and the page's memcg;
+    `balance_dirty_pages_ratelimited_flags` throttles against `wb_get_create_current`'s,
+    the writer's own cgroup's) and its `memory.high`.
+
+  Fixed: a merge (`Store::merge_run`) and a cache's first content (`Exec::seed_image`) are
+  written through `shards_image::through`, as every other file the build makes is. What
+  these samples cannot split is how much of the gap was the merge's writes and how much
+  its reads of the layers it merges or the sync of the step's changes. So the harness now
+  says, from the build's own output (give.patch), when each phase of a step ends (`phase`
+  lines: `run`, `cache-keep`, `layer`, `blob`), each step's change to a cache made durable
+  (`keep`: bytes, sync ms) and each merge (`merge`: layers, bytes, write ms, sync ms). Each
+  second it also samples what the VM process, the build's process and its writer each
+  dirtied and read from storage (/proc/PID/io `write_bytes`, `read_bytes`, counted to the
+  task that dirtied a page whatever cgroup it is charged to). tables.py gives each, free
+  against held. To measure: `builder-pressure.yml` at the commit that has them.
+- **At eb9f70a4, on CI's four runners: the writer's own transfer, in rust's export.** The
+  writer was outside in every held build, and the rule held for 11 of the 12 runner and
+  build pairs. rust failed it on one runner (an EPYC 7763): held's fastest 5.2 s against
+  free's slowest 5.0. Phase by phase (s, the rounds past the caches', from raw/'s build
+  logs: the `phase` lines and the export's `writing image` line), the difference is in one
+  phase on every runner, the export's root filesystem (from `writing image` to
+  `rootfs-from-snapshot`: rust:1-slim's and the build's 926 MiB written whole on the
+  runners' ext4, then synced, `Partial::commit`):
+
+  | runner | free | held |
+  |---|---|---|
+  | Xeon 8370C | 2.362 to 2.429 | 2.651 to 2.716 |
+  | EPYC 7763, the one that failed | 2.330 to 2.365 | 2.553 to 2.604 |
+  | EPYC 9V74 | 2.318 to 2.355 | 2.519 to 2.559 |
+  | EPYC 7763, another | 2.338 to 2.381 | 2.557 to 2.616 |
+
+  No held round is as fast as any free one on any runner: medians 0.29, 0.22, 0.22 and
+  0.21 s apart. The other phases are within their spread or a few ms: the step's `RUN`
+  (`run`) 0.87 to 0.99 free and 0.92 to 1.02 held on the one that failed; its layer 6 to 9
+  ms longer held; the export's layers and blobs, before its `writing image` line, 0.79 to
+  0.91 s in either arm. The rule passed on the other three only because their free rounds
+  spread wider in `RUN` (0.87 to 1.30, 1.31 to 1.52 and, on the other EPYC 7763, 0.95 to
+  2.33 s) than the failing one's 0.12 s, less than the 0.22 s each held export paid there.
+  So the failure is no noise of the run, and more rounds would not show held no slower:
+  they could hide it there only by a free round 0.19 s slower than its slowest of five,
+  whose p50 is 0.04 s under it.
+
+  Where in the export: the samples that caught a free arm still writing (0.17 to 0.33 s
+  after the line, two runners) put it at 2,478 to 2,799 MiB/s, and each later one found it
+  all written, its sync's writeback under way (168 to 480 MiB) by 0.39 to 0.76 s; held had
+  written only 507 to 867 MiB of it 0.34 to 0.51 s on, 1,395 to 1,768 MiB/s, nothing yet
+  written back. From the sync on, both drained alike. So held paid in its writes, not its
+  sync: each MiB copied into the socket, out of it into a buffer zeroed for it
+  (`shards_ipc::recv`), then written, and the build waited for each answer, 0.22 to 0.29
+  ms a MiB on these runners. A merge's writes agree (apt, on the failing runner: 190.9 MiB
+  written in 63 ms free and 109 held, 0.24 ms a MiB more).
+
+  Fixed (build/outside.rs, `shards_image::through`): the bytes go in two slots of memory
+  the build and its writer share (a memfd, which the writer allocates once placed, so its
+  pages are charged to the writer: mm/shmem.c `shmem_fallocate` charges the allocating
+  task's cgroup, and a charge stays where it was made, cgroup-v2.rst "Memory Ownership"), a
+  message names the slot, the bytes and their owner, the file comes with it, and the
+  writer writes from the slot. A `Through` goes on once a write is handed, its writes
+  settled when its file is flushed, sought in, taken back or dropped, so the writer makes
+  one write while the build makes and hands the next; a write after one of its owner's
+  that failed is not made. To measure: `builder-pressure.yml` at the commit that has it,
+  the export's phase free against held.
 
 ### M443. A restart over the kept layer file itself, and what the guest freed given back (D190)
 
@@ -17936,3 +18272,147 @@ revision before comparing a changed API/implementation.
   and the restore, not its memory.
 - **Consequence.** The downtime D176 part 7 says; what is left to cut is in the last stream
   and the restore.
+### M422. Whether a Hypervisor.framework guest given EL2 has VHE (the parity plan's step 10)
+
+- **Question.** Step 10's host is to be Windows 11 arm64 under QEMU on this Mac, given EL2
+  (QEMU's `virtualization=on`, Hypervisor.framework's nested virtualization), its own
+  hypervisor running there under shards' arm64 WHP backend. A hypervisor that runs with
+  VHE sets HCR_EL2.E2H, which exists only where ID_AA64MMFR1_EL1's VH field says so (the
+  Arm ARM's FEAT_VHE). Does a framework guest at EL2 have VHE?
+- **Method.** `docs/research/measurements/hvf-el2-vhe/run.sh`, on the M5 Max (macOS
+  26.4.1), 2026-11-01: a VM made with EL2 off and one with it on
+  (`hv_vm_config_set_el2_enabled`), each vCPU's ID registers as its guest reads them
+  (`hv_vcpu_get_sys_reg`), and, at EL2, HCR_EL2 written with E2H (bit 34) set and then
+  clear, each read back.
+- **Found.**
+  - EL2 is supported here (`hv_vm_config_get_el2_supported`: 1).
+  - ID_AA64MMFR1_EL1 reads 0x0000100011312000 with EL2 off and on: VH (11:8) 0.
+    ID_AA64MMFR2_EL1 0x1001001102001011, ID_AA64PFR0_EL1 0x1101000010110011, alike. The
+    framework does not offer ID_AA64MMFR4_EL1 (HV_BAD_ARGUMENT, 0xfae94003).
+  - HCR_EL2 is 0x80000000 as made; written with E2H set, it reads back 0x80000000: E2H is
+    RES0. A guest hypervisor here runs without VHE, as the arm64 Linux guest's KVM did
+    under it ("Hyp nVHE mode initialized successfully", D154), no `kvm-arm.mode` told.
+- **Follow-up.** The expanded probe also reads the vCPU configuration: PFR0.EL2 remains 0
+  with EL2 enabled; writing the vCPU's field to 1 succeeds and reads back 1
+  (`config-result.txt`). VHE's absence alone does not establish why Windows fails to
+  launch. M414 records the measured Windows boots, including the working TCG host.
+  The [HVF advertisement A/B evidence](measurements/whp-arm64/results/hvf-advertisement/README.md)
+  retains the default run's event 43 and the corrected run's event 26, paired with their
+  own boots, with WHP present 0 in both; the exact patch/base and recorded launch settings
+  are retained. Missing historical expanded argv and executable hashes are stated
+  explicitly. This remains an unresolved HVF host result, not a VHE causal finding.
+
+### M423. CI's arm64 Windows lane on windows-11-arm: its steps' times and limits (M245, M420)
+
+- **Method.** `docs/research/measurements/ci-limits/limits.py` over the lane's first two runs
+  on windows-11-arm (41365265628 at ec4ba969, 41370584211 at 48b4e808, whp-arm64,
+  2026-11-02), its tests' limit then x86_64 Windows' 122 minutes: the native build, lints
+  and the workspace's tests, every VM test saying SKIP, the image having no hypervisor
+  platform (M172).
+- **Found.** The tests' step ran through both times: 24.6 and 26.2 minutes (n 2); the job's
+  other steps 11.9 and 12.5. The first run's tests failed (boot.rs's three, of 179 test
+  binaries), the second passed.
+- **Decided.** As M245 sets the native lanes' limits, a third above the slowest: the tests'
+  step 35 minutes, the job 52 (the step's 35 and a third above its other steps' 12.5).
+  Two runs are few: limits.py derives them again over runs.txt as the lane's runs gather.
+
+### M424. Cold boots on the nested arm64 Windows host: their microVMs' CPU while they start (D209, M357)
+
+- **Question.** In step 10's full suite (FullReal04, 142 test binaries, the whp-arm64
+  branch's 2026-11-04 build) on the arm64 Windows 11 host nested under QEMU's TCG with TF-A
+  on this Mac (4 vCPUs, 24 GiB; M414), 10 binaries failed, nearly every case a run whose
+  microVM was not ready by a deadline: the client's minute, or the daemon's
+  `READY_TIMEOUT` (60 s past its 20 s of samples). Were those microVMs stuck, or booting
+  slowly?
+- **Method.** The daemon's own samples of a microVM not ready in 10 and 20 s (Windows'
+  `READY_STALL` log lines: GetProcessTimes' user and kernel time), every one in the run's
+  per-test logs, n = 61 at 10 s and 50 at 20 s (the rest had become ready, or been given
+  up on, by then); their CPU between the two samples, n = 50. Up to four tests' cold boots
+  ran at once, each microVM of the host's 4 CPUs.
+- **Found.** CPU time to 10 s: min 4,062 ms, p50 11,218, p90 13,077, p99 13,203, max
+  13,905. To 20 s: min 7,327, p50 29,796, p90 33,155, p99 35,937, max 35,937. Between the
+  two, a 10 s slice: min 3,265 ms, p50 18,828, p90 21,531, max 23,813. A rerun of the same
+  binaries with Defender excluding C:\ (2026-11-05) still failed
+  `warm_vms_are_given_their_templates_root_filesystem`, in 102 s: 14,686 ms by 10 s,
+  24,828 ms by 20 s. Defender was not the cause.
+- **Consequence (D209).** Every microVM not ready ran its start the whole time: its least
+  slice, 3,265 ms in 10 s, is 52 times the most an idle microVM takes (63 ms in 10 s,
+  M357). They were slow, not stuck, and a wall-clock deadline that holds on CI's runners
+  (a boot of 1.6 to 2.2 s, M357) ends them here. The daemon now waits for a starting
+  microVM as long as its process runs its start, and gives up on one only after
+  `READY_TIMEOUT` in which it ran no more than an idle one (`progressed`, now
+  `shards_vmm::platform`'s); the builder's boot likewise; and a test's client past its
+  deadline is waited on while its daemon says something, as it does each 10 s of such a
+  wait (`common::Said`).
+- **Not measured: the WORK cases.** Five failures came after their boots (the storm, the
+  3 GiB build step, `run_limits_a_microvms_resources`' 2.4 GiB allocation, two 1 GiB
+  `exec alloc-free`), and nothing in their logs says what their microVMs ran meanwhile:
+  the daemon logged nothing while a workload ran. It now logs a microVM a client waits on
+  each 10 s where it ran (D209's second bullet); the rerun's logs are those cases' evidence.
+
+### M427. A 64-vCPU storm on the nested arm64 Windows host: slow, not losing interrupts (D209, M414)
+
+- **Question.** In step 10's full suite on the arm64 Windows 11 host nested under QEMU's
+  TCG with TF-A on this Mac (4 CPUs; M414), both storms of `tests/snapshot.rs` failed at
+  64 vCPUs (`storm_cpus()`: 2, 8, and the hypervisor's and kernel's 64), having passed at
+  2 and 8: `a_busy_machine_goes_on_whole_past_its_snapshot` (no `storm checked`, nothing
+  new for 60 s) and `restores_of_a_busy_machine_lose_no_interrupt_and_repeat_no_write`
+  (restore 0's guest gave up on the host's word). Did arm64's WHP backend lose an
+  interrupt, park a vCPU or restore its GIC wrong, or did the host not run the guest?
+- **Method.** The binary's whole output,
+  [n21-snapshot.stderr.txt](measurements/whp-arm64/results/storm-64/n21-snapshot.stderr.txt)
+  (line numbers below are its), 2026-11-05: the guest's reports, its watchdog's account
+  (testguest `stood_still`: the kernel's notices, sysrq `q`, sysrq `t`), and the
+  backend's code (`hv/whp_arm64`).
+- **Found.**
+  - The host starved the guest before any snapshot. From READY to the steady report a
+    pair's thread waited 15.1 s for its turn, the median worker's longest wait 1.67 s
+    (line 7); between that report and the snapshot the longest gap was 15.8 s, the
+    median 2.27 s (11); the clock check, a 100 ms window once 64 pinned readers meet,
+    took 59.55 to 79.27 s of guest time (7, 8). After the snapshot the same check took 26
+    s in the original (11 to 18) and 56 s in the restore (1402 to 1413).
+  - vCPUs were off their host CPUs for seconds inside bounded interrupt handlers:
+    hrtimer `max_hang_time` 3.84 s on CPU 63 (6320), 3.53 s on CPU 8 (2131), 2.31 s on
+    CPU 29 (3731); `hrtimer: interrupt took 84457000 ns` (37). No timer was overdue: of
+    the restore's 71 pending hrtimers, none expired before its CPU's list was read (each
+    `[in` positive, lines 1452 to 6272); every CPU's 4 s `watchdog_timer_fn` was rearmed
+    within its period as its list was printed (CPU 63's at 298.751 s, last tick 298.756,
+    lines 6272, 6323).
+  - Device interrupts went on: virtio0, 1 and 2's counts, all on CPU 0, rose from 403,
+    428, 299 to 407, 432, 303 between two reports after the snapshot (58, 80, 81), and
+    the writer moved from slot 213 to 215.
+  - The woken were runnable, not waiting: of the guest's init threads in the original's
+    sysrq `t` (195.86 s), 13 storm threads `R running task` and 16 `R` without it
+    (TASK_WAKING: queued for a CPU's wake list), all with futex stacks (lines 101 to
+    1121); CPU 0's ksoftirqd/0, migration/0 and kworker/0:0 `R running task` (1248, 1299,
+    1351); its reader and writer in `D` in `submit_bio_wait` (1075, 1098) with nothing in
+    flight, their completions waiting on CPU 0. A lost interrupt leaves its waiter asleep
+    on an idle CPU; CPU 0 had three tasks it did not run, and its own watchdog timer fired
+    (45).
+  - The storm's watchdog made it worse. Its account was given once the main thread had
+    stood still 15 s, which the clock check alone takes here (12, 1403). Through the
+    emulated UART, at 1.3 s a line of 49 to 184 bytes where its writer printed them (13
+    to 17), sysrq `q` for 64 CPUs (some 6,000 lines) took 172 s (1437 to 7509). The
+    restore's was given from CPU 0 (1403), the CPU every device interrupt goes to:
+    workers 0 and 1 stopped (1427), its echo carried nothing for 60 s, and its guest, its
+    checks passed (`storm checked`, 1577; records=256, 1573; the clock in step after
+    170,607 reads, 1413), failed on that (3737). In the original the account began from
+    CPU 32, whose pair stopped (81); CPU 0's soft lockup report (45) came as the
+    console's records began to be dropped (6,438, line 86), and the rest took about 750 s
+    to print, 156 reports of workers 0, 65 and 66, CPU 0's, still in their rounds (85 to
+    1394), until nothing new came for 60 s.
+  - Its timers line printed nothing on arm64: `local_timer_interrupts` read x86's `LOC`.
+  - The backend delivers no SGI or timer interrupt: the platform's GICv3 and its timer's
+    PPI are Hyper-V's (`Vm::new`'s `IcParameters`); the VMM decodes MMIO and raises SPIs.
+    A machine that went on past its snapshot had nothing restored into it, and failed;
+    the restored one passed every check its storm makes.
+- **Consequence.** No backend bug: a host that ran 64 vCPUs on 4 emulated CPUs at
+  milliseconds an exit, and a watchdog whose account, given on a slow step, took the CPU
+  the storm's devices need. The watchdog now says a stall in one line after 15 s, and gives
+  the kernel's account only after `STREAM_QUIET` (60 s), the storm's own bound for a
+  stopped stream and the host's for a silent guest, so a stall that lasts has it and a
+  slow step does not pay for it; its timers line reads arm64's `arch_timer`. The storm's
+  checks, counts and bounds are unchanged. Open: the 64-vCPU storms on this host with the
+  change, and on a native arm64 Windows host with WHP (a Snapdragon X machine, as a user
+  session), which alone says whether Hyper-V's SGIs and timers hold across a 64-vCPU
+  snapshot at a native host's timing.

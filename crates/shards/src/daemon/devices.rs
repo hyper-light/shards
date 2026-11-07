@@ -42,7 +42,8 @@ pub(super) struct Plugged {
 
 /// A host's function plugged into a run (D214): what its user named it by (its host's
 /// name, or its VFIO device node), its host IOMMU group's node, and the node its workload
-/// has of it, with the device rule that allows that (`c MAJ:MIN rwm`).
+/// has of it, with the device rule that allows that (`c MAJ:MIN rwm`); and, for one had
+/// by its device node, the workload's `/dev/iommu`, which it is taken through too.
 #[derive(Debug, Clone)]
 pub(super) struct Function {
     pub given: String,
@@ -56,6 +57,17 @@ pub(super) struct Function {
     pub group: PathBuf,
     pub node: String,
     pub rule: String,
+    pub iommu: Option<Iommu>,
+}
+
+/// The workload's `/dev/iommu`, given it while a function had by its device node is
+/// plugged into its run (D214): its device rule, and how init gives it back as the last
+/// such function goes, as the workload had it before the first: none (`made`), or its
+/// owner (`UID:GID`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct Iommu {
+    pub rule: String,
+    pub before: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -562,17 +574,43 @@ fn noun(what: What) -> &'static str {
 /// The device rules of the functions plugged into a run (D214), `plugged`, but the one
 /// plugged in as `but`: what its workload's device filter allows past its run's own.
 fn function_rules(plugged: Option<&HashMap<String, Plugged>>, but: &str) -> Vec<String> {
-    let mut rules: Vec<(&String, String)> = plugged
+    let mut functions: Vec<(&String, &Function)> = plugged
         .into_iter()
         .flatten()
         .filter(|(name, _)| name.as_str() != but)
-        .filter_map(|(name, p)| Some((name, p.function.as_ref()?.rule.clone())))
+        .filter_map(|(name, p)| Some((name, p.function.as_ref()?)))
         .collect();
-    rules.sort();
-    rules.into_iter().map(|(_, r)| r).collect()
+    functions.sort_by(|a, b| a.0.cmp(b.0));
+    let mut rules = Vec::new();
+    for (_, f) in functions {
+        allowing(&mut rules, &f.rule);
+        if let Some(iommu) = &f.iommu {
+            allowing(&mut rules, &iommu.rule);
+        }
+    }
+    rules
 }
 
-/// What init's `function` step answers, `PATH c MAJ:MIN`: the node, and its device rule.
+/// `rule` added to `rules` where it is not among them: `/dev/iommu`'s once, however many
+/// functions are had through it.
+fn allowing(rules: &mut Vec<String>, rule: &str) {
+    if !rules.iter().any(|r| r == rule) {
+        rules.push(rule.to_string());
+    }
+}
+
+/// The workload's `/dev/iommu` as a function plugged into its run already gives it, but
+/// `but`'s: the one whose `before` says what the workload had before any.
+fn iommu_given(plugged: Option<&HashMap<String, Plugged>>, but: &str) -> Option<Iommu> {
+    plugged?
+        .iter()
+        .filter(|(name, _)| name.as_str() != but)
+        .find_map(|(_, p)| p.function.as_ref()?.iommu.clone())
+}
+
+/// What init's `function` step answers, `PATH c MAJ:MIN`, then `/dev/iommu c MAJ:MIN
+/// BEFORE` for a function by its device node: the node and its device rule, and the
+/// workload's `/dev/iommu` with what it was before.
 #[cfg_attr(
     not(target_os = "linux"),
     allow(
@@ -580,15 +618,50 @@ fn function_rules(plugged: Option<&HashMap<String, Plugged>>, but: &str) -> Vec<
         reason = "init answers it where a function is plugged, which Linux alone does (D214)"
     )
 )]
-fn node_of(said: &str) -> Option<(String, String)> {
-    let (path, rest) = said.split_once(' ')?;
-    let (kind, numbers) = rest.split_once(' ')?;
-    let (major, minor) = numbers.split_once(':')?;
-    (kind == "c"
-        && path.starts_with("/dev/vfio/")
-        && major.parse::<u32>().is_ok()
-        && minor.parse::<u32>().is_ok())
-    .then(|| (path.to_string(), format!("c {major}:{minor} rwm")))
+fn node_of(said: &str) -> Option<(String, String, Option<Iommu>)> {
+    let rule = |kind: &str, numbers: &str| {
+        let (major, minor) = numbers.split_once(':')?;
+        (kind == "c" && major.parse::<u32>().is_ok() && minor.parse::<u32>().is_ok())
+            .then(|| format!("c {major}:{minor} rwm"))
+    };
+    let owner = |before: &str| {
+        before == "made"
+            || before
+                .split_once(':')
+                .is_some_and(|(u, g)| u.parse::<u32>().is_ok() && g.parse::<u32>().is_ok())
+    };
+    match said.split(' ').collect::<Vec<_>>().as_slice() {
+        [path, kind, numbers] if path.starts_with("/dev/vfio/") => {
+            Some((path.to_string(), rule(kind, numbers)?, None))
+        }
+        [
+            path,
+            kind,
+            numbers,
+            "/dev/iommu",
+            iommu_kind,
+            iommu_numbers,
+            before,
+        ] if path.starts_with("/dev/vfio/devices/") && owner(before) => {
+            let iommu = Iommu {
+                rule: rule(iommu_kind, iommu_numbers)?,
+                before: before.to_string(),
+            };
+            Some((path.to_string(), rule(kind, numbers)?, Some(iommu)))
+        }
+        _ => None,
+    }
+}
+
+/// Init's `release` step of the function at `address`, its node `node` in the workload,
+/// and `/dev/iommu` given back as `iommu` says it was, where the last function had through
+/// it goes.
+fn release<'a>(address: &'a str, node: &'a str, iommu: Option<&'a Iommu>) -> Vec<&'a str> {
+    let mut step = vec!["release", address, node];
+    if let Some(i) = iommu {
+        step.extend(["iommu", i.before.as_str()]);
+    }
+    step
 }
 
 impl<D: Disk> Daemon<D> {
@@ -688,14 +761,28 @@ impl<D: Disk> Daemon<D> {
         let found = self
             .guest_device(id, &["function", &address, kind, given])
             .map_err(given_up)?;
-        let (workload_node, rule) =
+        let (workload_node, rule, iommu) =
             node_of(&found).ok_or_else(|| given_up(format!("its guest answered {found:?}")))?;
+        // The workload's /dev/iommu as it was before it was given it, which the first
+        // function had through it says: init finds it given for a second.
+        let already = iommu_given(lock(&self.plugged).get(id), &f.name);
+        let iommu = iommu.map(|i| match &already {
+            Some(first) => Iommu {
+                rule: i.rule,
+                before: first.before.clone(),
+            },
+            None => i,
+        });
         let mut rules = function_rules(lock(&self.plugged).get(id), &f.name);
-        rules.push(rule.clone());
+        allowing(&mut rules, &rule);
+        if let Some(i) = &iommu {
+            allowing(&mut rules, &i.rule);
+        }
         let mut allow = vec!["allow"];
         allow.extend(rules.iter().map(String::as_str));
         if let Err(e) = self.guest_device(id, &allow) {
-            let _ = self.guest_device(id, &["release", &address, &workload_node]);
+            let back = iommu.as_ref().filter(|_| already.is_none());
+            let _ = self.guest_device(id, &release(&address, &workload_node, back));
             let _ = self.ask_device(id, &[device::UNPLUG, devfn], &[]);
             return Err(e);
         }
@@ -711,6 +798,7 @@ impl<D: Disk> Daemon<D> {
                     group: f.group.clone(),
                     node: workload_node.clone(),
                     rule,
+                    iommu,
                 }),
             },
         );
@@ -740,15 +828,22 @@ impl<D: Disk> Daemon<D> {
             .ok_or_else(|| format!("no function {given} is plugged into it"))?;
         let function = plugged.function.as_ref().ok_or("its node is not known")?;
         let rest = function_rules(lock(&self.plugged).get(id), &name);
+        // The workload's /dev/iommu given back as it was, where no other function plugged
+        // is had through it.
+        let others = iommu_given(lock(&self.plugged).get(id), &name);
+        let back = function.iommu.as_ref().filter(|_| others.is_none());
         let allow = |rules: &[String]| {
             let mut args = vec!["allow"];
             args.extend(rules.iter().map(String::as_str));
             self.guest_device(id, &args)
         };
         allow(&rest)?;
-        if let Err(e) = self.guest_device(id, &["release", &plugged.address, &function.node]) {
+        if let Err(e) = self.guest_device(id, &release(&plugged.address, &function.node, back)) {
             let mut all = rest.clone();
-            all.push(function.rule.clone());
+            allowing(&mut all, &function.rule);
+            if let Some(i) = &function.iommu {
+                allowing(&mut all, &i.rule);
+            }
             let _ = allow(&all);
             return Err(e);
         }
@@ -787,26 +882,104 @@ mod tests {
     }
 
     /// Init's answer of a function's node reads as its path and its rule, a VFIO node's
-    /// alone; the rules a run's filter keeps are every other function's, in order.
+    /// alone, and, after a device node, the workload's `/dev/iommu`'s rule and what it was
+    /// before; the rules a run's filter keeps are every other function's, in order,
+    /// `/dev/iommu`'s once; it is given back by the last function had through it alone.
     #[test]
     fn a_functions_node_and_rules_are_read() {
         assert_eq!(
             node_of("/dev/vfio/0 c 241:0"),
-            Some(("/dev/vfio/0".into(), "c 241:0 rwm".into()))
+            Some(("/dev/vfio/0".into(), "c 241:0 rwm".into(), None))
         );
         assert_eq!(
             node_of("/dev/vfio/devices/vfio0 c 238:0"),
-            Some(("/dev/vfio/devices/vfio0".into(), "c 238:0 rwm".into()))
+            Some(("/dev/vfio/devices/vfio0".into(), "c 238:0 rwm".into(), None))
+        );
+        let iommu = |rule: &str, before: &str| Iommu {
+            rule: rule.into(),
+            before: before.into(),
+        };
+        assert_eq!(
+            node_of("/dev/vfio/devices/vfio0 c 238:0 /dev/iommu c 10:123 made"),
+            Some((
+                "/dev/vfio/devices/vfio0".into(),
+                "c 238:0 rwm".into(),
+                Some(iommu("c 10:123 rwm", "made"))
+            ))
+        );
+        assert_eq!(
+            node_of("/dev/vfio/devices/vfio0 c 238:0 /dev/iommu c 10:123 0:0").and_then(|n| n.2),
+            Some(iommu("c 10:123 rwm", "0:0"))
         );
         for wrong in [
             "/dev/sda b 8:0",
             "/dev/vfio/0 c 241",
             "/dev/vfio/0 c x:0",
             "/dev/null c 1:3",
+            "/dev/vfio/0 c 241:0 /dev/iommu c 10:123 made",
+            "/dev/vfio/devices/vfio0 c 238:0 /dev/iommu c 10:123",
+            "/dev/vfio/devices/vfio0 c 238:0 /dev/iommu c 10:123 root",
+            "/dev/vfio/devices/vfio0 c 238:0 /dev/iommu b 10:123 made",
+            "/dev/vfio/devices/vfio0 c 238:0 /dev/null c 1:3 made",
             "",
         ] {
             assert_eq!(node_of(wrong), None, "{wrong}");
         }
+        let by_node = |name: &str, rule: &str, before: &str| {
+            (
+                name.to_string(),
+                Plugged {
+                    what: What::Function,
+                    devfn: 0,
+                    address: String::new(),
+                    file: None,
+                    function: Some(Function {
+                        given: name.into(),
+                        group: PathBuf::new(),
+                        node: String::new(),
+                        rule: rule.into(),
+                        iommu: Some(iommu("c 10:123 rwm", before)),
+                    }),
+                },
+            )
+        };
+        let two: HashMap<String, Plugged> = [
+            by_node("0000:01:00.0", "c 238:0 rwm", "made"),
+            by_node("0000:02:00.0", "c 238:1 rwm", "made"),
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(
+            function_rules(Some(&two), ""),
+            ["c 238:0 rwm", "c 10:123 rwm", "c 238:1 rwm"]
+        );
+        assert_eq!(
+            function_rules(Some(&two), "0000:01:00.0"),
+            ["c 238:1 rwm", "c 10:123 rwm"]
+        );
+        assert!(iommu_given(Some(&two), "0000:01:00.0").is_some(), "another's");
+        let one: HashMap<String, Plugged> = [by_node("0000:01:00.0", "c 238:0 rwm", "0:0")]
+            .into_iter()
+            .collect();
+        assert_eq!(iommu_given(Some(&one), "0000:01:00.0"), None, "its own alone");
+        assert_eq!(
+            release("0000:00:01.0", "/dev/vfio/devices/vfio0", None),
+            ["release", "0000:00:01.0", "/dev/vfio/devices/vfio0"]
+        );
+        assert_eq!(
+            release(
+                "0000:00:01.0",
+                "/dev/vfio/devices/vfio0",
+                Some(&iommu("c 10:123 rwm", "0:0"))
+            ),
+            [
+                "release",
+                "0000:00:01.0",
+                "/dev/vfio/devices/vfio0",
+                "iommu",
+                "0:0"
+            ]
+        );
         let function = |name: &str, rule: &str| {
             (
                 name.to_string(),
@@ -820,6 +993,7 @@ mod tests {
                         group: PathBuf::new(),
                         node: String::new(),
                         rule: rule.into(),
+                        iommu: None,
                     }),
                 },
             )

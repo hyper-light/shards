@@ -47,8 +47,16 @@ after its word it came, on the build's stderr).
   watcher hears the system's pressure again every 2 s while it stays raised.
 
 Beside it, each second, the builder's VM process on this host (phys_footprint on macOS, Pss
-and RssAnon on Linux) and, on Linux, the scope's memory.current and memory.peak. Into
-OUT/out.txt: a header, then `guest`, `host`, `give` and `build` lines, KEY=VALUE each, for
+and RssAnon on Linux) and, on Linux, the scope's memory.current and memory.peak, and the
+memory of the writer a held build starts outside its budget (D188), where it runs: whether
+it ran, and so where the build's own writes were charged, is the build line's
+`writer_seen`; and what the VM process, the build's own process and its writer each read
+from storage and dirtied of its page cache so far (/proc/PID/io), which tell a step's
+changes to its caches (the VM process's) from their merges (the build's). From the build's
+output (give.patch), each phase's end (`phase`), each step's changes to a cache made durable
+(`keep`) and each merge of a cache's layers (`merge`), stamped as read. Into
+OUT/out.txt: a header, then `guest`, `host`, `give`, `phase`, `keep`, `merge` and `build`
+lines, KEY=VALUE each, for
 tables.py; into OUT/raw/, each build's stderr and its builder's console. Where the room left
 on OUT's or HOME's volume falls under 5 GiB, the build under way is ended and the run with it.
 
@@ -157,6 +165,20 @@ def footprint(pid):
     return " ".join(f"{k}={v}" for k, v in fields.items())
 
 
+def io_of(pid, who):
+    """What process `pid` read from and dirtied for its storage so far (Linux), as
+    `WHO_read_bytes` and `WHO_write_bytes` fields: /proc/PID/io's read_bytes, the bytes it
+    had fetched from storage, and write_bytes, those of the page cache it dirtied, each page
+    counted to the task that dirtied it (mm/page-writeback.c `folio_account_dirtied`,
+    `task_io_account_write`; Documentation/filesystems/proc.rst), whichever cgroup the page
+    is charged to; none where it cannot be read."""
+    try:
+        got = dict(l.split(": ", 1) for l in open(f"/proc/{pid}/io").read().splitlines() if ": " in l)
+        return f"{who}_read_bytes={int(got['read_bytes'])} {who}_write_bytes={int(got['write_bytes'])}"
+    except (OSError, KeyError, ValueError):
+        return None
+
+
 def descendants(root):
     """Each process under `root`, by pid, with its name."""
     ps = subprocess.run(["ps", "-axo", "pid=,ppid=,comm="], capture_output=True, text=True).stdout
@@ -234,12 +256,28 @@ def holding(scope):
     return held, current, stat
 
 
-def sample_host(build_pid, tag, stop, peak, cold):
+def writer_of(scope, build_pid):
+    """The cgroup of the writer a build held to a budget starts outside it (D188,
+    build/outside.rs): its user's manager's scope `shards-build-writer-PID.scope` in its
+    application slice, PID the build's (systemd-run --scope execs it); none where `scope` is
+    not under a user's manager."""
+    parts = scope.split("/")
+    at = next((i for i, p in enumerate(parts) if p.startswith("user@") and p.endswith(".service")), None)
+    if at is None:
+        return None
+    return "/".join(parts[:at + 1] + ["app.slice", f"shards-build-writer-{build_pid}.scope"])
+
+
+def sample_host(build_pid, tag, stop, peak, cold, writer):
     """The builder's VM process's memory each second, and its scope's (Linux), until `stop`;
     in `peak` the most anonymous memory the scope held, the most it held that its host may
     take back from its processes alone (`holding`), and the most of that less what the
-    builder held cold of its files then (`cold`'s second, its last sample's); the build ended
-    where the room runs short."""
+    builder held cold of its files then (`cold`'s second, its last sample's); in `writer`,
+    how many samples found the build's writer outside its budget (its cgroup) and the most
+    file pages and dirty pages charged to it, which say where the build's own writes went:
+    a writer that never ran (CI at 94838b88, its command refused) left them under the budget,
+    and its held builds slower in the steps that write (PM M442). The build ended where the
+    room runs short."""
     while not stop.wait(1):
         left = room()
         if left < ROOM:
@@ -253,6 +291,14 @@ def sample_host(build_pid, tag, stop, peak, cold):
             got = footprint(vm)
             if got:
                 fields.append(f"pid={vm} {got}")
+            got = None if macos else io_of(vm, "vm")
+            if got:
+                fields.append(got)
+        # The build's own process, which writes a cache's merges and makes its files durable,
+        # apart from its VM process, which writes a step's changes to its caches (D134).
+        got = None if macos else io_of(build_pid, "build")
+        if got:
+            fields.append(got)
         scope = None if macos else scope_of(build_pid)
         if scope:
             try:
@@ -265,6 +311,23 @@ def sample_host(build_pid, tag, stop, peak, cold):
                 fields.append(f"scope_current={current} scope_held={held} scope_need={need} " + " ".join(
                     f"scope_{k}={stat.get(k, 0)}" for k in ("anon", "file", "file_mapped", "file_dirty",
                                                            "file_writeback", "shmem", "kernel", "pss_file")))
+            except (OSError, ValueError):
+                pass
+            outside = writer_of(scope, build_pid)
+            try:
+                if outside:
+                    stat = {k: int(v) for k, v in (l.split() for l in open(f"{outside}/memory.stat")
+                                                   if len(l.split()) == 2)}
+                    current = int(open(f"{outside}/memory.current").read())
+                    writer["seen"] += 1
+                    writer["file"] = max(writer["file"], stat.get("file", 0))
+                    writer["dirty"] = max(writer["dirty"], stat.get("file_dirty", 0))
+                    fields.append(f"writer_current={current} " + " ".join(
+                        f"writer_{k}={stat.get(k, 0)}" for k in ("file", "file_dirty", "file_writeback")))
+                    for pid in open(f"{outside}/cgroup.procs").read().split()[:1]:
+                        got = io_of(pid, "writer")
+                        if got:
+                            fields.append(got)
             except (OSError, ValueError):
                 pass
         if fields:
@@ -284,6 +347,9 @@ def tell(path, stop):
 
 GUEST = re.compile(r"builder-cold (.*)$")
 GIVE = re.compile(r"builder-give (.*)$")
+# The build's own (give.patch): each phase's end (`crate::phase`), each step's changes to a
+# cache made durable, each merge of a cache's layers.
+OWN = re.compile(r"builder-(phase|keep|merge) (.*)$")
 STEP = re.compile(r"^#(\d+) \[")
 DONE = re.compile(r"^#(\d+) DONE (\d+(?:\.\d+)?)s")
 
@@ -355,7 +421,8 @@ def one(r, name, arm, budget):
                             errors="replace")
     stop = threading.Event()
     step, peak, held_cold, took = ["-"], [0, 0, 0], [0, 0], {}
-    threads = [threading.Thread(target=sample_host, args=(proc.pid, tag, stop, peak, held_cold)),
+    writer = {"seen": 0, "file": 0, "dirty": 0}
+    threads = [threading.Thread(target=sample_host, args=(proc.pid, tag, stop, peak, held_cold, writer)),
                threading.Thread(target=tail, args=(console, tag, stop, step, held_cold))]
     if told:
         threads.append(threading.Thread(target=tell, args=(told, stop)))
@@ -375,6 +442,11 @@ def one(r, name, arm, budget):
             words = m.group(1).split()
             fields = " ".join(f"{k}={v}" for k, v in zip(words[::2], words[1::2]))
             say(f"give t={now:.3f} {tag} {fields}")
+        m = OWN.search(line)
+        if m:
+            words = m.group(2).split()
+            fields = " ".join(f"{k}={v}" for k, v in zip(words[::2], words[1::2]))
+            say(f"{m.group(1)} t={now:.3f} {tag} step={step[0]} {fields}")
     code = proc.wait()
     stop.set()
     if told:
@@ -388,6 +460,7 @@ def one(r, name, arm, budget):
     raw.close()
     say(f"build {tag} exit={code} s={time.time() - started:.1f} budget={budget} scope_anon_peak={peak[0]} "
         f"scope_held_peak={peak[1]} scope_need_peak={peak[2]} held_cold={held_cold[0]} sync_s={synced:.1f} "
+        f"writer_seen={writer['seen']} writer_file_peak={writer['file']} writer_dirty_peak={writer['dirty']} "
         f"steps={','.join(f'{k}:{v}' for k, v in took.items()) or '-'}")
     for args in (["rmi", "-f", f"builder-pressure-{name}"], ["image", "prune", "-f"]):
         subprocess.run([shards, *args], env=env, capture_output=True)

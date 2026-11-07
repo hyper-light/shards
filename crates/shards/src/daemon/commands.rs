@@ -366,12 +366,20 @@ impl<D: crate::containers::Disk> Daemon<D> {
             if let Some(exec_id) = exec_id {
                 inbox.exec_ids.push((number, exec_id));
             }
+            // Its client waits on its end: the listener looks at its microVM until then.
+            if !exec.detach {
+                inbox.waited_execs.push(number);
+            }
+        }
+        if !exec.detach {
+            self.listener_wake.wake();
         }
         let fds = [handed.as_fd(), stdin.as_fd(), stdout.as_fd(), stderr.as_fd()];
         if let Err(e) = socket.send(kind::EXEC_RUN, &payload, &fds) {
             let mut held = lock(&inbox);
             held.execs_in_flight.retain(|(n, _)| *n != number);
             held.exec_ids.retain(|(n, _)| *n != number);
+            held.waited_execs.retain(|n| *n != number);
             drop(held);
             refuse(&format!("shards: the container's microVM: {e}"));
         }

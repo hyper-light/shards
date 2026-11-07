@@ -609,11 +609,16 @@ impl Store {
         }))
     }
 
-    /// `run` merged into a file of record `id`'s, and what it came to.
+    /// `run` merged into a file of record `id`'s, and what it came to. Written as the
+    /// build's own files are (`crate::through`, D188): by its writer outside the budget that
+    /// holds it, where one is set, as a step's merge is on its `RUN`'s path.
     fn merge_run(&self, id: &str, run: &Run) -> Result<(MountPart, super::merge::Merged), Error> {
         let part = self.merge_part(id)?;
         let merged = {
-            let mut out = BufWriter::new(&part.file);
+            let mut out = BufWriter::with_capacity(
+                crate::through::CHUNK,
+                crate::through::Through::new(part.file.try_clone()?),
+            );
             let mut parts = vec!["merge", id];
             parts.extend(run.names.iter().map(String::as_str));
             let merged = super::merge::merge(&run.files, run.bottom, layer_uuid(&parts), &mut out)?;

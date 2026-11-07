@@ -1,0 +1,12 @@
+{
+  "binaries": 142,
+  "base_revision": "175dc59e6873b2e7a3ee335bfd9394879f082ef7",
+  "workspace_patch_sha256": "457c83b210294e07256f8383f092cd1f9f86ac750df58a74dd3e7922980b2189",
+  "deployed_full": false,
+  "note": "Selected file-API unit and integrated probes ran AFTER host bugcheck/reboot terminated real03. No new VM was created; no full-suite qualification inferred.",
+  "file-users-unit.exe": "afeef9bb739e0cd894b2d01458e9ab9cda9a0d4c5dda9990ff8d9e9bbf086d44",
+  "file-users-integrated.exe": "621c555593d8c1aac8402598334050474c5c54d979b2bcec111f6a7bac0a1968",
+  "host_boot_utc": "2026-11-04T00:34:58Z",
+  "host_version": "Windows11Pro26H2 26300.9711, unchanged build after reboot",
+  "post_build_change": "Only the stale held_under doc comment was corrected after validation; functional code unchanged."
+}

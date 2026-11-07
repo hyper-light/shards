@@ -1,0 +1,32 @@
+{
+  "views": [
+    {
+      "capture": "ssh-transport-debug03.txt",
+      "capture_sha256": "3f13b336de6b41f14961ab12e2c73cc97fed7a9e79f7d321050076691cbd75f8",
+      "view": "key-exchange.txt",
+      "view_sha256": "1333eb3e0e960b33c0ed12e9a273e6ff1d14c21ea2b7276c90d569e72e1c1ded",
+      "selection": "lines containing one of ('Connecting to', 'Connection established', 'Local version string', 'Remote protocol', 'SSH2_MSG_KEXINIT', 'timed out', 'Exceeded MaxStartups', 'Connection closed by remote host')"
+    },
+    {
+      "capture": "ssh-transport-curve25519-04.txt",
+      "capture_sha256": "578212cefeaf90200d1b5fd1dcb0882446d451f41a571ce0a2e65f93cafe4de5",
+      "view": "max-startups.txt",
+      "view_sha256": "17ee0e9b453e9b36acd38afc7163f4af071fb3331c065ff03e7955c2fd0da6bb",
+      "selection": "lines containing one of ('Connecting to', 'Connection established', 'Local version string', 'Remote protocol', 'SSH2_MSG_KEXINIT', 'timed out', 'Exceeded MaxStartups', 'Connection closed by remote host')"
+    }
+  ],
+  "last_successful_native_observation": "2026-11-04T05:41:39Z",
+  "last_observed_results": {
+    "completed_binaries": 81,
+    "passed_binaries": 79,
+    "failed_binaries": 2,
+    "running_binary": "containers",
+    "running_pid": 4964
+  },
+  "current_native_task_state": "unknown; SSH status observation failed",
+  "qemu_pid": 22354,
+  "monitor_status": "running",
+  "display": "Windows lock screen; no bugcheck visible; not proof of native task state",
+  "native_vm_or_task_restart": false,
+  "scope": "SSH observation failure; no measured HVF/VHE causal finding or general WHP host blocker"
+}

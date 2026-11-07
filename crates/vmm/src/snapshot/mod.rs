@@ -1027,15 +1027,15 @@ pub fn relocate(dir: &Path, to: &dyn Fn(&Path) -> Option<PathBuf>) -> Result<(),
     platform::sync_dir(&generation).map_err(|e| at(&e))
 }
 
-/// [`fill`] for the last of a live move (D176 part 7): of its memory, the pages of `pages`
-/// alone, those written since the move's last round, which the other machine lays over
-/// what the rounds sent ([`GuestMemory::save_pages`]); its state saying no runs of data,
-/// as its memory file here holds only those pages: a restore maps it whole.
-pub fn fill_pages(
+/// [`fill`] for the last of a live move (D176 part 7): none of its memory, whose pages
+/// written since the move's last round go in the move's stream as its last round, which
+/// the other machine lays over what the rounds sent and puts in this file's place; the
+/// file as long as a save's, all holes ([`GuestMemory::save_length`]), and its state saying
+/// no runs of data: a restore of what the other machine lays maps it whole.
+pub fn fill_none(
     name: &str,
     snap: &Snapshot,
     memory: &GuestMemory,
-    pages: &crate::vm::live::Pages,
     memory_file: &File,
     state_file: &File,
 ) -> Result<(), String> {
@@ -1044,7 +1044,7 @@ pub fn fill_pages(
     }
     let state = state_of(snap, name)?;
     memory
-        .save_pages(memory_file, pages)
+        .save_length(memory_file)
         .map_err(|e| format!("its memory: {e}"))?;
     write_whole(state_file, &state).map_err(|e| format!("its state: {e}"))
 }

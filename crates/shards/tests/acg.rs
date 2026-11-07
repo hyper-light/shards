@@ -2,9 +2,10 @@
 //! partition is set up, as the VM process forbids it (D141, PM M202): the control that
 //! tells ACG apart from the rest of a confined VM process's confinement where its SMP
 //! boots stall. A binary of its own: ACG is the process's for good, and windows-2022 sets
-//! no other partition up once it is on. Where WHP is shards' backend: x86_64 Windows.
+//! no other partition up once it is on. Where WHP is shards' backend: Windows, x86_64 and
+//! arm64.
 
-#![cfg(all(windows, target_arch = "x86_64"))]
+#![cfg(windows)]
 #![allow(clippy::panic, clippy::unwrap_used)]
 
 mod common;
@@ -35,11 +36,12 @@ fn two_vcpus_boot_to_their_end_under_acg() {
     std::thread::spawn(move || {
         let _ = tx.send(running.wait());
     });
-    match rx.recv_timeout(TIMEOUT) {
-        Ok(reason) => assert_eq!(reason, ExitReason::Reset),
-        Err(_) => {
-            handle.stop();
-            panic!("two vCPUs under ACG did not reach their end in {TIMEOUT:?} in this process");
-        }
+    match common::machine_ended(&handle, &rx, TIMEOUT) {
+        Some(reason) => assert_eq!(reason, ExitReason::Reset),
+        None => panic!(
+            "two vCPUs under ACG did not reach their end in {TIMEOUT:?} in this process, nor said anything new for {:?} after: {}",
+            common::DAEMON_QUIET,
+            String::from_utf8_lossy(&handle.console_said())
+        ),
     }
 }

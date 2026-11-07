@@ -1,0 +1,949 @@
+--- before/eval.rs
++++ after/eval.rs
+@@ -9,7 +9,8 @@
+ use std::rc::Rc;
+ 
+ use crate::ast::{
+-    Body, Every, Expr, ExprTerms, Head, Location, Module, Package, Rule, RuleKind, Term, TermValue, With,
++    Body, Every, Expr, ExprTerms, Head, Location, Module, Package, Rule, RuleKind, Term, TermValue,
++    With,
+ };
+ use crate::compare::{expr_compare, rule_compare, term_compare};
+ use crate::compile::vars::{self as cvars, Params, VarSet, VarVisitor};
+@@ -56,7 +57,10 @@
+ #[derive(Debug, Clone)]
+ enum Flow {
+     Err(EvalError),
+-    Early { deferred: bool, prev: Option<Box<Flow>> },
++    Early {
++        deferred: bool,
++        prev: Option<Box<Flow>>,
++    },
+ }
+ 
+ type R = Result<(), Flow>;
+@@ -138,7 +142,10 @@
+         if matches!(k.value, TermValue::Ref(_) | TermValue::Call(_)) {
+             return None;
+         }
+-        self.children.iter().find(|(key, _)| key.equal(k)).map(|(_, n)| n)
++        self.children
++            .iter()
++            .find(|(key, _)| key.equal(k))
++            .map(|(_, n)| n)
+     }
+ 
+     fn find(&self, r: &[Term]) -> Option<&TreeNode> {
+@@ -196,7 +203,8 @@
+             for rule in &m.rules {
+                 let mut x = Some(rule);
+                 while let Some(r) = x {
+-                    let mut candidates: VarSet = ["data", "input"].iter().map(|v| Rc::from(*v)).collect();
++                    let mut candidates: VarSet =
++                        ["data", "input"].iter().map(|v| Rc::from(*v)).collect();
+                     let mut v = VarVisitor::default();
+                     v.args(&r.head.args);
+                     candidates.extend(v.vars);
+@@ -216,7 +224,10 @@
+     }
+ 
+     fn rules_at(&self, r: &[Term]) -> Vec<Rc<RuleRec>> {
+-        self.root.find(r).map(|n| n.values.clone()).unwrap_or_default()
++        self.root
++            .find(r)
++            .map(|n| n.values.clone())
++            .unwrap_or_default()
+     }
+ 
+     /// GetArity: a builtin's, a host function's or a function rule's arguments.
+@@ -240,7 +251,10 @@
+         let name = crate::compile::text_of_ref(r);
+         crate::compile::allowed(&name).is_some()
+             || self.host_names.contains(&name)
+-            || self.rules_at(r).iter().any(|x| !x.rule.head.args.is_empty())
++            || self
++                .rules_at(r)
++                .iter()
++                .any(|x| !x.rule.head.args.is_empty())
+     }
+ 
+     /// GetRulesDynamicWithOpts: the rules a ref may refer to, variables matching any key.
+@@ -394,7 +408,9 @@
+                 term_bodies(v, f);
+             }
+         }
+-        TermValue::Set(s) => cvars::sorted_items(s).into_iter().for_each(|x| term_bodies(x, f)),
++        TermValue::Set(s) => cvars::sorted_items(s)
++            .into_iter()
++            .for_each(|x| term_bodies(x, f)),
+         TermValue::ArrayCompr(x, b) | TermValue::SetCompr(x, b) => {
+             term_bodies(x, f);
+             f(b);
+@@ -437,19 +453,27 @@
+         return None;
+     };
+     let body = match &term.value {
+-        TermValue::ArrayCompr(_, b) | TermValue::SetCompr(_, b) | TermValue::ObjectCompr(_, _, b) => b,
++        TermValue::ArrayCompr(_, b)
++        | TermValue::SetCompr(_, b)
++        | TermValue::ObjectCompr(_, _, b) => b,
+         _ => return None,
+     };
+     let reserved: VarSet = ["data", "input"].iter().map(|v| Rc::from(*v)).collect();
+     let outputs = crate::compile::safety::output_vars_for_body(body, arity, &reserved);
+     let all = cvars::body_vars(body, cvars::SAFETY);
+-    if all.iter().any(|v| !outputs.contains(v) && !reserved.contains(v)) {
++    if all
++        .iter()
++        .any(|v| !outputs.contains(v) && !reserved.contains(v))
++    {
+         return None;
+     }
+     if compr_regression(candidates, body) || compr_nested_candidate(candidates, body) {
+         return None;
+     }
+-    let mut keys: Vec<Term> = candidates.intersection(&outputs).map(|v| var_term(v)).collect();
++    let mut keys: Vec<Term> = candidates
++        .intersection(&outputs)
++        .map(|v| var_term(v))
++        .collect();
+     if keys.is_empty() {
+         return None;
+     }
+@@ -483,7 +507,9 @@
+                     seen.insert(v.clone());
+                     false
+                 }
+-                TermValue::ArrayCompr(..) | TermValue::SetCompr(..) | TermValue::ObjectCompr(..) => true,
++                TermValue::ArrayCompr(..)
++                | TermValue::SetCompr(..)
++                | TermValue::ObjectCompr(..) => true,
+                 _ => false,
+             }
+         });
+@@ -532,7 +558,16 @@
+     values: Vec<(Rc<str>, Term, usize)>,
+     /// Past MAX_LINEAR_SCAN, OPA keeps a Go map, iterated at random; these keep their
+     /// order.
+-    map_mode: bool,
++    index: Option<HashMap<Rc<str>, usize>>,
++}
++
++impl Bindings {
++    fn position(&self, name: &str) -> Option<usize> {
++        match &self.index {
++            Some(index) => index.get(name).copied(),
++            None => self.values.iter().position(|(key, _, _)| &**key == name),
++        }
++    }
+ }
+ 
+ /// One frame of the save set: refs and variables (in the bindings they are in) that
+@@ -752,7 +787,8 @@
+         };
+         out.push(Term::new(value, None));
+     }
+-    out.pop().unwrap_or_else(|| Term::new(TermValue::Null, None))
++    out.pop()
++        .unwrap_or_else(|| Term::new(TermValue::Null, None))
+ }
+ 
+ fn var_term(name: &str) -> Term {
+@@ -860,11 +896,9 @@
+     }
+ 
+     fn bget(&self, b: usize, v: &str) -> Option<(&Term, usize)> {
+-        self.bindings
+-            .get(b)?
+-            .values
+-            .iter()
+-            .find(|(k, _, _)| &**k == v)
++        let slot = self.bindings.get(b)?;
++        slot.values
++            .get(slot.position(v)?)
+             .map(|(_, t, nb)| (t, *nb))
+     }
+ 
+@@ -998,15 +1032,25 @@
+ 
+     /// bindings.bind; the undo is the variable and the bindings.
+     fn bind(&mut self, a: &Term, value: &Term, vb: usize, b: usize) -> Option<(Rc<str>, usize)> {
+-        let TermValue::Var(v) = &a.value else { return None };
++        let TermValue::Var(v) = &a.value else {
++            return None;
++        };
+         let slot = self.bindings.get_mut(b)?;
+-        if let Some(e) = slot.values.iter_mut().find(|(k, _, _)| k == v) {
++        if let Some(e) = slot.position(v).and_then(|i| slot.values.get_mut(i)) {
+             e.1 = value.clone();
+             e.2 = vb;
+         } else {
+             slot.values.push((v.clone(), value.clone(), vb));
+-            if slot.values.len() > MAX_LINEAR_SCAN {
+-                slot.map_mode = true;
++            if let Some(index) = &mut slot.index {
++                index.insert(v.clone(), slot.values.len().saturating_sub(1));
++            } else if slot.values.len() > MAX_LINEAR_SCAN {
++                slot.index = Some(
++                    slot.values
++                        .iter()
++                        .enumerate()
++                        .map(|(i, (key, _, _))| (key.clone(), i))
++                        .collect(),
++                );
+             }
+         }
+         Some((v.clone(), b))
+@@ -1019,11 +1063,17 @@
+         let Some(slot) = self.bindings.get_mut(b) else {
+             return;
+         };
+-        let Some(i) = slot.values.iter().position(|(k, _, _)| *k == v) else {
++        let Some(i) = slot.position(&v) else {
+             return;
+         };
+-        if slot.map_mode {
++        if let Some(index) = &mut slot.index {
++            index.remove(v.as_ref());
+             slot.values.remove(i);
++            for (pos, (key, _, _)) in slot.values.iter().enumerate().skip(i) {
++                if let Some(entry) = index.get_mut(key.as_ref()) {
++                    *entry = pos;
++                }
++            }
+         } else {
+             slot.values.swap_remove(i);
+         }
+@@ -1036,7 +1086,12 @@
+         };
+         x.values
+             .iter()
+-            .map(|(k, _, _)| (Term::var(k, None), self.plug_ns(&Term::var(k, None), b, caller)))
++            .map(|(k, _, _)| {
++                (
++                    Term::var(k, None),
++                    self.plug_ns(&Term::var(k, None), b, caller),
++                )
++            })
+             .collect()
+     }
+ 
+@@ -1061,10 +1116,12 @@
+     /// functionMocksStack.Get.
+     fn mock(&self, name: &str) -> Option<Term> {
+         let current = self.mocks.last()?;
+-        current
+-            .iter()
+-            .rev()
+-            .find_map(|frame| frame.iter().find(|(n, _)| n == name).map(|(_, v)| v.clone()))
++        current.iter().rev().find_map(|frame| {
++            frame
++                .iter()
++                .find(|(n, _)| n == name)
++                .map(|(_, v)| v.clone())
++        })
+     }
+ 
+     // ---- inliningControl
+@@ -1280,7 +1337,9 @@
+             let name = rule.first().and_then(Term::as_var).unwrap_or_default();
+             return m.rules.iter().any(|r| r.head.name.as_deref() == Some(name));
+         }
+-        m.rules.iter().any(|r| ref_has_prefix(&r.head.ref_path(), &rule))
++        m.rules
++            .iter()
++            .any(|r| ref_has_prefix(&r.head.ref_path(), &rule))
+     }
+ 
+     fn support_insert(&mut self, path: &[Term], rule: Rule) {
+@@ -1289,10 +1348,15 @@
+     }
+ 
+     fn support_insert_by_pkg(&mut self, pkg: Vec<Term>, rule: Rule) {
+-        let Some(p) = self.partial.as_mut() else { return };
++        let Some(p) = self.partial.as_mut() else {
++            return;
++        };
+         let k = ref_text(&pkg);
+         let m = p.support.entry(k).or_insert_with(|| Module {
+-            package: Package { path: pkg, loc: None },
++            package: Package {
++                path: pkg,
++                loc: None,
++            },
+             imports: Vec::new(),
+             rules: Vec::new(),
+         });
+@@ -1301,7 +1365,9 @@
+ 
+     /// eval.namespaceRef.
+     fn namespace_ref(&self, r: &[Term]) -> Vec<Term> {
+-        let Some(p) = &self.partial else { return r.to_vec() };
++        let Some(p) = &self.partial else {
++            return r.to_vec();
++        };
+         if p.skip_namespace {
+             return r.to_vec();
+         }
+@@ -1377,7 +1443,9 @@
+                         }
+                     }
+                     TermValue::Ref(r) => {
+-                        if self.ss_contains(t, Some(b)) || self.disabled_ref(&constant_prefix(r), ii) {
++                        if self.ss_contains(t, Some(b))
++                            || self.disabled_ref(&constant_prefix(r), ii)
++                        {
+                             *found = true;
+                             return;
+                         }
+@@ -1396,7 +1464,10 @@
+                     _ => {}
+                 }
+                 match &t.value {
+-                    TermValue::Ref(r) | TermValue::Array(r) | TermValue::Call(r) | TermValue::Set(r) => r
++                    TermValue::Ref(r)
++                    | TermValue::Array(r)
++                    | TermValue::Call(r)
++                    | TermValue::Set(r) => r
+                         .iter()
+                         .for_each(|x| self.save_required_walk(ii, b, Node::Term(x), rec, found)),
+                     TermValue::Object(o) => o.iter().for_each(|(k, v)| {
+@@ -1453,7 +1524,10 @@
+     fn update_saved_mocks(&self, withs: &[With]) -> Vec<With> {
+         withs
+             .iter()
+-            .filter(|w| !is_other_ref(&w.target) && !w.target.as_ref().is_some_and(|r| self.p.is_function(r)))
++            .filter(|w| {
++                !is_other_ref(&w.target)
++                    && !w.target.as_ref().is_some_and(|r| self.p.is_function(r))
++            })
+             .cloned()
+             .collect()
+     }
+@@ -1552,7 +1626,11 @@
+ }
+ 
+ /// Evaluates `query`'s value: each result of `x = query`, as rego.Eval captures it.
+-pub fn eval_query(m: &mut Machine<'_>, query: &Term, input: Option<Value>) -> Result<Vec<Value>, EvalError> {
++pub fn eval_query(
++    m: &mut Machine<'_>,
++    query: &Term,
++    input: Option<Value>,
++) -> Result<Vec<Value>, EvalError> {
+     let capture = var_term("__localq0__");
+     let loc = query.loc.clone();
+     let expr = Expr::new(
+@@ -1911,7 +1989,10 @@
+     for q in &queries {
+         body_vars.extend(cvars::body_vars(q, Params::default()));
+     }
+-    let mut args: Vec<Term> = unknowns.intersection(&body_vars).map(|v| var_term(v)).collect();
++    let mut args: Vec<Term> = unknowns
++        .intersection(&body_vars)
++        .map(|v| var_term(v))
++        .collect();
+     args.sort_by(term_compare);
+     let head = Head {
+         args: args.clone(),
+@@ -1998,7 +2079,9 @@
+ }
+ 
+ fn eval_every(m: &mut Machine<'_>, f: &Frame, ev: &Every, expr: &Expr, iter: I<'_>) -> R {
+-    if m.is_partial() && (m.unknown(Node::Term(&ev.domain), f.b) || m.unknown(Node::Body(&ev.body), f.b)) {
++    if m.is_partial()
++        && (m.unknown(Node::Term(&ev.domain), f.b) || m.unknown(Node::Body(&ev.body), f.b))
++    {
+         let plugged = plug_every(m, f, expr);
+         return save_expr(m, f, plugged, f.b, &mut |m| iter(m, f));
+     }
+@@ -2139,14 +2222,26 @@
+     }
+     let mut g = f.clone();
+     if !input_pairs.is_empty() {
+-        g.input = Some(Rc::new(merge_with(f.input.as_deref(), &input_pairs).ok_or_else(
+-            || err(CONFLICT_ERR, expr.loc.clone(), "conflicting values for input"),
+-        )?));
++        g.input = Some(Rc::new(
++            merge_with(f.input.as_deref(), &input_pairs).ok_or_else(|| {
++                err(
++                    CONFLICT_ERR,
++                    expr.loc.clone(),
++                    "conflicting values for input",
++                )
++            })?,
++        ));
+     }
+     if !data_pairs.is_empty() {
+-        g.data = Some(Rc::new(merge_with(f.data.as_deref(), &data_pairs).ok_or_else(
+-            || err(CONFLICT_ERR, expr.loc.clone(), "conflicting values for data"),
+-        )?));
++        g.data = Some(Rc::new(
++            merge_with(f.data.as_deref(), &data_pairs).ok_or_else(|| {
++                err(
++                    CONFLICT_ERR,
++                    expr.loc.clone(),
++                    "conflicting values for data",
++                )
++            })?,
++        ));
+     }
+     let push = |m: &mut Machine<'_>| {
+         m.ccache.push(HashMap::new());
+@@ -2243,8 +2338,12 @@
+         (V::Null, V::Var(_) | V::Null | V::Ref(_))
+         | (V::Bool(_), V::Var(_) | V::Bool(_) | V::Ref(_))
+         | (V::Number(_), V::Var(_) | V::Number(_) | V::Ref(_))
+-        | (V::String(_), V::Var(_) | V::String(_) | V::Ref(_)) => unify_values(m, f, &a, &b, b1, b2, k),
+-        (V::Array(_), V::Var(_) | V::Ref(_) | V::ArrayCompr(..)) => unify_values(m, f, &a, &b, b1, b2, k),
++        | (V::String(_), V::Var(_) | V::String(_) | V::Ref(_)) => {
++            unify_values(m, f, &a, &b, b1, b2, k)
++        }
++        (V::Array(_), V::Var(_) | V::Ref(_) | V::ArrayCompr(..)) => {
++            unify_values(m, f, &a, &b, b1, b2, k)
++        }
+         (V::Array(x), V::Array(y)) => {
+             if x.len() == y.len() {
+                 unify_slices(m, f, x, y, b1, b2, 0, k)
+@@ -2252,7 +2351,9 @@
+                 Ok(())
+             }
+         }
+-        (V::Object(_), V::Var(_) | V::Ref(_) | V::ObjectCompr(..)) => unify_values(m, f, &a, &b, b1, b2, k),
++        (V::Object(_), V::Var(_) | V::Ref(_) | V::ObjectCompr(..)) => {
++            unify_values(m, f, &a, &b, b1, b2, k)
++        }
+         (V::Object(x), V::Object(y)) => {
+             if x.len() != y.len() {
+                 return Ok(());
+@@ -2322,7 +2423,9 @@
+     i: usize,
+     k: K<'_>,
+ ) -> R {
+-    let Some((key, av)) = a.get(i) else { return k(m) };
++    let Some((key, av)) = a.get(i) else {
++        return k(m);
++    };
+     let Some((_, bv)) = b.iter().find(|(bk, _)| bk.equal(key)) else {
+         return Ok(());
+     };
+@@ -2332,7 +2435,15 @@
+ }
+ 
+ /// biunifyValues.
+-fn unify_values(m: &mut Machine<'_>, f: &Frame, a: &Term, b: &Term, b1: usize, b2: usize, k: K<'_>) -> R {
++fn unify_values(
++    m: &mut Machine<'_>,
++    f: &Frame,
++    a: &Term,
++    b: &Term,
++    b1: usize,
++    b2: usize,
++    k: K<'_>,
++) -> R {
+     let save_a = if matches!(a.value, TermValue::Set(_)) {
+         m.ss_contains_rec(a, b1)
+     } else {
+@@ -2393,7 +2504,15 @@
+ }
+ 
+ /// biunifyRef.
+-fn unify_ref(m: &mut Machine<'_>, f: &Frame, a: &Term, b: &Term, b1: usize, b2: usize, k: K<'_>) -> R {
++fn unify_ref(
++    m: &mut Machine<'_>,
++    f: &Frame,
++    a: &Term,
++    b: &Term,
++    b1: usize,
++    b2: usize,
++    k: K<'_>,
++) -> R {
+     let Some(r) = a.as_ref() else { return Ok(()) };
+     let head = r.first().and_then(Term::as_var);
+     if head == Some("data") {
+@@ -2441,7 +2560,9 @@
+     if m.ss_contains(term, Some(tb)) {
+         return eval_term_save(m, f, r, pos, b, term, tb, rterm, rb, k);
+     }
+-    let Some(part) = r.get(pos) else { return Ok(()) };
++    let Some(part) = r.get(pos) else {
++        return Ok(());
++    };
+     let plugged = m.plug(part, b);
+     if plugged.is_ground() {
+         let Some((t, nb)) = term_get(m, term, tb, &plugged) else {
+@@ -2578,7 +2699,9 @@
+         let Some(v) = v else { return Ok(()) };
+         return unify(m, f, rterm, &v, rb, b, k);
+     }
+-    let Some(part) = r.get(pos) else { return Ok(()) };
++    let Some(part) = r.get(pos) else {
++        return Ok(());
++    };
+     let p = m.plug(part, b);
+     if p.is_ground() {
+         return tree_next(m, f, r, pos, plugged, b, rterm, rb, node, p, k);
+@@ -2616,7 +2739,11 @@
+         return Err(d);
+     }
+     let Some(n) = node else { return Ok(()) };
+-    let keys: Vec<Term> = node_ref(m, n).children.iter().map(|(kk, _)| kk.clone()).collect();
++    let keys: Vec<Term> = node_ref(m, n)
++        .children
++        .iter()
++        .map(|(kk, _)| kk.clone())
++        .collect();
+     for key in keys {
+         let pl = plugged.clone();
+         unify(m, f, &key, part, b, b, &mut |m| {
+@@ -2796,12 +2923,18 @@
+ }
+ 
+ /// getRules: the rule index's answer at a path, its resolver evalResolver's.
+-fn get_rules(m: &Machine<'_>, f: &Frame, path: &[Term], args: Option<&[Term]>) -> Result<IndexResult, Flow> {
++fn get_rules(
++    m: &Machine<'_>,
++    f: &Frame,
++    path: &[Term],
++    args: Option<&[Term]>,
++) -> Result<IndexResult, Flow> {
+     let Some(index) = m.p.indices.get(&crate::compile::ref_key(path)) else {
+         return Ok(IndexResult::default());
+     };
+-    let mut resolver =
+-        |r: &[Term]| -> Result<crate::index::Resolved<Term>, Flow> { resolve_for_index(m, f, args, r) };
++    let mut resolver = |r: &[Term]| -> Result<crate::index::Resolved<Term>, Flow> {
++        resolve_for_index(m, f, args, r)
++    };
+     let found = index.lookup(&mut resolver)?;
+     let rec = |n: &crate::compile::RuleNode| m.p.nodes.get(n).cloned();
+     let mut ir = IndexResult {
+@@ -2845,9 +2978,8 @@
+             }
+         }
+         Some("input") => match &f.input {
+-            Some(i) => {
+-                Ok(find_in(i, r.get(1..).unwrap_or_default()).map_or(Resolved::Undefined, Resolved::Value))
+-            }
++            Some(i) => Ok(find_in(i, r.get(1..).unwrap_or_default())
++                .map_or(Resolved::Undefined, Resolved::Value)),
+             None => Ok(Resolved::Undefined),
+         },
+         Some("data") => Ok(resolve(m, f, r)?.map_or(Resolved::Undefined, Resolved::Value)),
+@@ -2918,8 +3050,14 @@
+     if ir.empty() {
+         return Ok(());
+     }
+-    if ir.rules.first().is_some_and(|x| !x.rule.head.args.is_empty())
+-        || ir.default.as_ref().is_some_and(|d| !d.rule.head.args.is_empty())
++    if ir
++        .rules
++        .first()
++        .is_some_and(|x| !x.rule.head.args.is_empty())
++        || ir
++            .default
++            .as_ref()
++            .is_some_and(|d| !d.rule.head.args.is_empty())
+     {
+         return Ok(());
+     }
+@@ -2965,7 +3103,9 @@
+     let key = key_text(v.path());
+     match m.vcache_get(&key) {
+         (_, true) => return Ok(()),
+-        (Some(cached), _) => return eval_term(m, f, v.r, v.pos + 1, v.b, &cached, v.b, v.rterm, v.rb, k),
++        (Some(cached), _) => {
++            return eval_term(m, f, v.r, v.pos + 1, v.b, &cached, v.b, v.rterm, v.rb, k);
++        }
+         (None, false) => {}
+     }
+     let mut prev: Option<Term> = None;
+@@ -2977,7 +3117,8 @@
+             let mut next_v = next_v;
+             if next_v.is_none() {
+                 for erule in ir.elses.get(&i).map(Vec::as_slice).unwrap_or_default() {
+-                    let (nv, r1) = complete_value_rule(m, f, v, erule, &mut prev, find_one, &key, k);
++                    let (nv, r1) =
++                        complete_value_rule(m, f, v, erule, &mut prev, find_one, &key, k);
+                     handle_deferred(r1, &mut deferred)?;
+                     if nv.is_some() {
+                         next_v = nv;
+@@ -3109,7 +3250,10 @@
+         let current = m.stack_pop_query();
+         let mut plugged = m.query_plug(&current, caller);
+         if m.passes_type_check(&plugged) {
+-            let head = Head::reference(rule_ref.clone(), Some(m.plug_ns(&value, cf.b, Some(caller))));
++            let head = Head::reference(
++                rule_ref.clone(),
++                Some(m.plug_ns(&value, cf.b, Some(caller))),
++            );
+             if !m.shallow {
+                 let live = head_vars(&head);
+                 plugged = CopyPropagator::new(live, true, &arity).apply(&plugged);
+@@ -3169,7 +3313,10 @@
+ 
+ /// evalVirtualPartial.
+ fn eval_partial(m: &mut Machine<'_>, f: &Frame, v: &Virtual<'_>, empty: Term, k: K<'_>) -> R {
+-    let unknown = m.unknown(Node::Term(&ref_of(v.r.get(..=v.pos).unwrap_or_default())), v.b);
++    let unknown = m.unknown(
++        Node::Term(&ref_of(v.r.get(..=v.pos).unwrap_or_default())),
++        v.b,
++    );
+     if v.r.len() == v.pos + 1 {
+         if unknown {
+             return partial_support(m, f, v, &empty, k);
+@@ -3193,7 +3340,12 @@
+     unify(m, f, &result, v.rterm, v.b, v.rb, k)
+ }
+ 
+-fn all_rules_no_cache(m: &mut Machine<'_>, f: &Frame, v: &Virtual<'_>, empty: Term) -> Result<Term, Flow> {
++fn all_rules_no_cache(
++    m: &mut Machine<'_>,
++    f: &Frame,
++    v: &Virtual<'_>,
++    empty: Term,
++) -> Result<Term, Flow> {
+     let mut result = empty;
+     let mut visited: Vec<Vec<Term>> = Vec::new();
+     for rule in &v.ir.rules {
+@@ -3227,7 +3379,13 @@
+             HintPart::Scope(r) => {
+                 let items: Vec<String> = r
+                     .iter()
+-                    .map(|t| if is_var(t) { "_".to_string() } else { t.to_string() })
++                    .map(|t| {
++                        if is_var(t) {
++                            "_".to_string()
++                        } else {
++                            t.to_string()
++                        }
++                    })
+                     .collect();
+                 s.push('<');
+                 s.push_str(&items.join(","));
+@@ -3263,7 +3421,10 @@
+     }
+     // evalCache.
+     let mut hint: Option<(Vec<HintPart>, bool)> = None;
+-    if !m.unknown(Node::Term(&ref_of(v.r.get(..=v.pos).unwrap_or_default())), v.b) {
++    if !m.unknown(
++        Node::Term(&ref_of(v.r.get(..=v.pos).unwrap_or_default())),
++        v.b,
++    ) {
+         if let (Some(cached), _) = m.vcache_get(&key_text(v.path())) {
+             return eval_term(m, f, v.r, v.pos + 1, v.b, &cached, v.b, v.rterm, v.rb, k);
+         }
+@@ -3347,7 +3508,10 @@
+         return Some(t.clone());
+     };
+     let next = match &t.value {
+-        TermValue::Object(o) => o.iter().find(|(k, _)| k.equal(first)).map(|(_, v)| v.clone()),
++        TermValue::Object(o) => o
++            .iter()
++            .find(|(k, _)| k.equal(first))
++            .map(|(_, v)| v.clone()),
+         TermValue::Set(s) => s.iter().find(|x| x.equal(first)).cloned(),
+         TermValue::Array(a) => match &first.value {
+             TermValue::Number(n) => n
+@@ -3392,7 +3556,12 @@
+     let mut res = Some(result);
+     unify_rule_head(m, f, v.pos + 1, v.r, rule, v.b, cf.b, &mut |m, _| {
+         eval_expr(m, &cf, &mut |m, cf| {
+-            let term = rule.rule.head.value.clone().unwrap_or_else(|| head_key.clone());
++            let term = rule
++                .rule
++                .head
++                .value
++                .clone()
++                .unwrap_or_else(|| head_key.clone());
+             if unknown {
+                 let (t, tb) = m.apply(&term, cf.b);
+                 let t = if rule.rule.head.kind() == RuleKind::MultiValue {
+@@ -3497,7 +3666,8 @@
+                 head.key = rule_ref.last().cloned();
+             }
+             if head.name.is_none()
+-                && (rule_ref.len() == 1 || (rule_ref.len() == 2 && h.kind() == RuleKind::SingleValue))
++                && (rule_ref.len() == 1
++                    || (rule_ref.len() == 2 && h.kind() == RuleKind::SingleValue))
+             {
+                 head.name = rule_ref.first().and_then(Term::as_var).map(Rc::from);
+             }
+@@ -3711,9 +3881,9 @@
+     };
+     if m.ccache.last().is_none_or(|c| !c.contains_key(&ck)) {
+         let body = match &a.value {
+-            TermValue::ArrayCompr(_, b) | TermValue::SetCompr(_, b) | TermValue::ObjectCompr(_, _, b) => {
+-                b.to_vec()
+-            }
++            TermValue::ArrayCompr(_, b)
++            | TermValue::SetCompr(_, b)
++            | TermValue::ObjectCompr(_, _, b) => b.to_vec(),
+             _ => return Ok(None),
+         };
+         let cf = child(m, f, body);
+@@ -3725,13 +3895,17 @@
+             let next = match &a.value {
+                 TermValue::ArrayCompr(h, _) => {
+                     let v = m.plug(h, cf.b);
+-                    let mut items = entry.and_then(|mut t| t.value.take_array()).unwrap_or_default();
++                    let mut items = entry
++                        .and_then(|mut t| t.value.take_array())
++                        .unwrap_or_default();
+                     items.push(v);
+                     Term::new(TermValue::Array(items.into()), None)
+                 }
+                 TermValue::SetCompr(h, _) => {
+                     let v = m.plug(h, cf.b);
+-                    let mut items = entry.and_then(|mut t| t.value.take_set()).unwrap_or_default();
++                    let mut items = entry
++                        .and_then(|mut t| t.value.take_set())
++                        .unwrap_or_default();
+                     if !items.iter().any(|x| x.equal(&v)) {
+                         items.push(v);
+                     }
+@@ -3740,7 +3914,9 @@
+                 TermValue::ObjectCompr(kk, vv, _) => {
+                     let key = m.plug(kk, cf.b);
+                     let val = m.plug(vv, cf.b);
+-                    let mut items = entry.and_then(|mut t| t.value.take_object()).unwrap_or_default();
++                    let mut items = entry
++                        .and_then(|mut t| t.value.take_object())
++                        .unwrap_or_default();
+                     match items.iter_mut().find(|(x, _)| x.equal(&key)) {
+                         Some(slot) => slot.1 = val,
+                         None => items.push((key, val)),
+@@ -3949,7 +4125,12 @@
+             }
+             crate::ast::object_term(
+                 o.iter()
+-                    .map(|(k, v)| (namespace_term(m, k, b, caller), namespace_term(m, v, b, caller)))
++                    .map(|(k, v)| {
++                        (
++                            namespace_term(m, k, b, caller),
++                            namespace_term(m, v, b, caller),
++                        )
++                    })
+                     .collect(),
+                 t.loc.clone(),
+             )
+@@ -4007,7 +4188,15 @@
+ }
+ 
+ /// saveUnify.
+-fn save_unify(m: &mut Machine<'_>, f: &Frame, a: Term, b: Term, b1: usize, b2: usize, k: K<'_>) -> R {
++fn save_unify(
++    m: &mut Machine<'_>,
++    f: &Frame,
++    a: Term,
++    b: Term,
++    b1: usize,
++    b2: usize,
++    k: K<'_>,
++) -> R {
+     let mut e = eq_expr(a.clone(), b.clone());
+     update_from_query(m, f, &mut e);
+     let mut pairs = save_pairs_from_term(m, &a, b1);
+@@ -4074,10 +4263,14 @@
+ 
+ /// getDeclArgsLen.
+ fn decl_args_len(m: &Machine<'_>, f: &Frame, e: &Expr) -> Option<usize> {
+-    let ExprTerms::Call(c) = &e.terms else { return None };
++    let ExprTerms::Call(c) = &e.terms else {
++        return None;
++    };
+     let op = c.first()?.as_ref()?;
+     let name = crate::compile::text_of_ref(op);
+-    if let Some(crate::types::Type::Function { args, .. }) = crate::compile::allowed(&name).map(|b| &b.decl) {
++    if let Some(crate::types::Type::Function { args, .. }) =
++        crate::compile::allowed(&name).map(|b| &b.decl)
++    {
+         return Some(args.len());
+     }
+     if m.p.host_names.contains(&name) {
+@@ -4088,7 +4281,12 @@
+ }
+ 
+ /// getSavePairsFromExpr.
+-fn save_pairs_from_expr(m: &Machine<'_>, decl_args: Option<usize>, e: &Expr, b: usize) -> Vec<(Term, usize)> {
++fn save_pairs_from_expr(
++    m: &Machine<'_>,
++    decl_args: Option<usize>,
++    e: &Expr,
++    b: usize,
++) -> Vec<(Term, usize)> {
+     match &e.terms {
+         ExprTerms::Term(t) => save_pairs_from_term(m, t, b),
+         ExprTerms::Call(terms) => {
+@@ -4170,7 +4368,11 @@
+     let decl_arity = if crate::compile::allowed(&name).is_some() || m.p.host_names.contains(&name) {
+         m.p.arity(op).unwrap_or(0)
+     } else {
+-        return Err(err(INTERNAL_ERR, loc, format!("unsupported built-in: {name}")));
++        return Err(err(
++            INTERNAL_ERR,
++            loc,
++            format!("unsupported built-in: {name}"),
++        ));
+     };
+     if let Some(mv) = mock {
+         return eval_call_value(m, f, decl_arity, terms, &mv, k);
+@@ -4182,7 +4384,9 @@
+     }
+     let operands: Vec<Term> = terms.iter().skip(1).map(|t| m.plug(t, f.b)).collect();
+     let has_output = operands.len() > decl_arity;
+-    let ins = operands.get(..decl_arity.min(operands.len())).unwrap_or_default();
++    let ins = operands
++        .get(..decl_arity.min(operands.len()))
++        .unwrap_or_default();
+     if name == "internal.print" {
+         return eval_print(m, f, ins, loc, k);
+     }
+@@ -4210,7 +4414,11 @@
+         }
+     } else {
+         let Some(bf) = funcs::lookup(&name) else {
+-            return Err(err(INTERNAL_ERR, loc, format!("unsupported built-in: {name}")));
++            return Err(err(
++                INTERNAL_ERR,
++                loc,
++                format!("unsupported built-in: {name}"),
++            ));
+         };
+         match bf(&mut m.ctx, &args) {
+             Ok(v) => v,
+@@ -4240,7 +4448,9 @@
+         return k(m);
+     }
+     if has_output {
+-        let Some(out) = terms.last() else { return Ok(()) };
++        let Some(out) = terms.last() else {
++            return Ok(());
++        };
+         return unify(m, f, out, &to_term(&v), f.b, f.b, k);
+     }
+     if matches!(v, Value::Bool(false)) {
+@@ -4250,9 +4460,18 @@
+ }
+ 
+ /// evalCallValue.
+-fn eval_call_value(m: &mut Machine<'_>, f: &Frame, arity: usize, terms: &[Term], mock: &Term, k: K<'_>) -> R {
++fn eval_call_value(
++    m: &mut Machine<'_>,
++    f: &Frame,
++    arity: usize,
++    terms: &[Term],
++    mock: &Term,
++    k: K<'_>,
++) -> R {
+     if terms.len() == arity + 2 {
+-        let Some(out) = terms.last() else { return Ok(()) };
++        let Some(out) = terms.last() else {
++            return Ok(());
++        };
+         return unify(m, f, out, mock, f.b, f.b, k);
+     }
+     if matches!(mock.value, TermValue::Bool(false)) {
+@@ -4352,7 +4571,11 @@
+                 must_support = true;
+             }
+         }
+-        let op = terms.first().and_then(Term::as_ref).unwrap_or_default().to_vec();
++        let op = terms
++            .first()
++            .and_then(Term::as_ref)
++            .unwrap_or_default()
++            .to_vec();
+         if must_support || m.shallow || m.disabled_ref(&op, false) {
+             let mut unknown = m.unknown_ref(&op, f.b);
+             for i in 1..=arg_count {
+@@ -4391,7 +4614,13 @@
+         let key_terms: Vec<Term> = terms
+             .iter()
+             .take(plen)
+-            .map(|t| if t.is_ground() { t.clone() } else { m.plug(t, f.b) })
++            .map(|t| {
++                if t.is_ground() {
++                    t.clone()
++                } else {
++                    m.plug(t, f.b)
++                }
++            })
+             .collect();
+         let kt = format!("fn:{}", key_text(&key_terms));
+         if let (Some(cached), _) = m.vcache_get(&kt) {
+@@ -4401,7 +4630,9 @@
+                 }
+                 return k(m);
+             }
+-            let Some(out) = terms.last() else { return Ok(()) };
++            let Some(out) = terms.last() else {
++                return Ok(());
++            };
+             return unify(m, f, out, &cached, f.b, f.b, k);
+         }
+         key = Some(kt);
+@@ -4410,11 +4641,13 @@
+     let mut outer: Option<Flow> = None;
+     let res = (|| -> R {
+         for (i, rule) in ir.rules.iter().enumerate() {
+-            let (mut next_v, r1) = func_one_rule(m, f, terms, rule, key.as_deref(), &mut prev, find_one, k);
++            let (mut next_v, r1) =
++                func_one_rule(m, f, terms, rule, key.as_deref(), &mut prev, find_one, k);
+             handle_deferred(r1, &mut outer)?;
+             if next_v.is_none() {
+                 for erule in ir.elses.get(&i).map(Vec::as_slice).unwrap_or_default() {
+-                    let (nv, r1) = func_one_rule(m, f, terms, erule, key.as_deref(), &mut prev, find_one, k);
++                    let (nv, r1) =
++                        func_one_rule(m, f, terms, erule, key.as_deref(), &mut prev, find_one, k);
+                     handle_deferred(r1, &mut outer)?;
+                     if nv.is_some() {
+                         next_v = nv;
+@@ -4517,7 +4750,11 @@
+     decl_args: usize,
+     k: K<'_>,
+ ) -> R {
+-    let op = terms.first().and_then(Term::as_ref).unwrap_or_default().to_vec();
++    let op = terms
++        .first()
++        .and_then(Term::as_ref)
++        .unwrap_or_default()
++        .to_vec();
+     let path = m.namespace_ref(&op);
+     if !m.support_exists(&path) {
+         let rules: Vec<Rc<RuleRec>> = ir
+@@ -4562,7 +4799,11 @@
+                 name: h.name.clone(),
+                 reference: h.reference.clone(),
+                 value: h.value.as_ref().map(|v| m.plug_ns(v, cf.b, Some(caller))),
+-                args: h.args.iter().map(|a| m.plug_ns(a, cf.b, Some(caller))).collect(),
++                args: h
++                    .args
++                    .iter()
++                    .map(|a| m.plug_ns(a, cf.b, Some(caller)))
++                    .collect(),
+                 ..Head::default()
+             };
+             m.support_insert(
+@@ -4630,7 +4871,11 @@
+             .stack_size(256 << 10)
+             .spawn(|| {
+                 let m = crate::parser::parse_module("p.rego", "package p\n\np := 1\n").unwrap();
+-                let mut comp = Compiler::new(BTreeMap::from([("p.rego".to_string(), m)]), Vec::new(), true);
++                let mut comp = Compiler::new(
++                    BTreeMap::from([("p.rego".to_string(), m)]),
++                    Vec::new(),
++                    true,
++                );
+                 comp.compile();
+                 let program = Program::new(&comp, Vec::new());
+                 let mut host = NoHost;
+@@ -4644,7 +4889,8 @@
+                     slots[0],
+                 );
+                 for i in 1..=n {
+-                    let inner = Term::new(TermValue::Array(vec![Term::var("x", None)].into()), None);
++                    let inner =
++                        Term::new(TermValue::Array(vec![Term::var("x", None)].into()), None);
+                     m.bind(&Term::var("x", None), &inner, slots[i - 1], slots[i]);
+                 }
+                 let t = m.plug(&Term::var("x", None), slots[n]);

@@ -26,11 +26,22 @@
 //! priorities for threads that respond and lowers processor-intensive ones (Scheduling
 //! Priorities). So a governor watches each raised thread: every [`PERIOD`] it reads the CPU
 //! time the thread used since its last look (GetThreadTimes, as the hold reads its vCPUs',
-//! D191), and one that used more than half of it goes back to THREAD_PRIORITY_NORMAL, to
-//! share its host's CPUs as before; one that used half or less is raised again. A raised
-//! thread so takes from its host's threads about half a CPU a period at most, what a fair
-//! scheduler gives one thread beside one busy thread of its weight (Linux's slice,
-//! `run_promptly`), to within the clock's steps, 15.625 ms (PM M294).
+//! D191) and keeps its credit: half of the time that passed, less what it used, never more
+//! than half a period nor less than none. A thread out of credit goes back to
+//! THREAD_PRIORITY_NORMAL, to share its host's CPUs as before, and is raised again once a
+//! look finds it some. A raised thread so takes from its host's threads half a CPU over any
+//! long stretch, and a period more at most (its credit, and what it runs past it before
+//! the next look): what a fair scheduler gives one thread beside one busy thread of its
+//! weight (Linux's slice, `run_promptly`).
+//!
+//! The credit is what keeps a thread that waits raised, as GetThreadTimes counts: in whole
+//! steps of its clock, 15.625 ms (PM M294), each charged to the thread that runs as it
+//! ticks, 6.4 a period. Judged by each period alone, a thread that ran 1 ms of every 6 (17
+//! ms a period at most) was charged 4 steps, 62.5 ms, of one period, more than its half,
+//! and went back to normal for a period (`a_thread_that_waits_between_its_runs_stays_raised`
+//! on CI's windows-2025, 2026-11-06: 187.5 ms, 12 steps, in its second). With its credit,
+//! what it does not use of each period's half carries over, and the steps that land on its
+//! runs must outrun half of a stretch by half a period more.
 
 use std::io;
 use std::marker::PhantomData;
@@ -51,8 +62,13 @@ use crate::sync::{lock, wait};
 /// over which GetThreadTimes' clock held three spinning threads to within a tenth of a CPU of
 /// their share (PM M294).
 const PERIOD: Duration = Duration::from_millis(100);
-/// The priority a watched thread runs at while it uses no more than half of a period.
+/// The priority a watched thread runs at while it has credit.
 const RAISED: THREAD_PRIORITY = THREAD_PRIORITY_ABOVE_NORMAL;
+
+/// The most credit a thread keeps, in nanoseconds: what one period gives, half of it.
+fn most_credit() -> u64 {
+    u64::try_from(PERIOD.as_nanos() / 2).unwrap_or(u64::MAX)
+}
 
 /// A thread the governor watches.
 struct Watched {
@@ -63,6 +79,9 @@ struct Watched {
     /// Its CPU time, in nanoseconds, and when the governor read it last.
     ran: u64,
     at: Instant,
+    /// Its credit, in nanoseconds, [`most_credit`] as it is watched: half of each stretch
+    /// between looks added and the CPU time it used taken, kept to [`most_credit`] and none.
+    credit: u64,
     /// Whether the governor has it at [`RAISED`].
     raised: bool,
 }
@@ -84,7 +103,8 @@ static WATCHED: Mutex<Vec<Watched>> = Mutex::new(Vec::new());
 static ADDED: Condvar = Condvar::new();
 static GOVERNOR: OnceLock<Result<(), String>> = OnceLock::new();
 
-/// The calling thread raised while the governor sees it use no more than half of a period.
+/// The calling thread raised while the governor finds it credit: while it uses no more
+/// than half of its CPU, by half a period over any stretch.
 /// Held by the thread while it runs, and dropped before it ends, which takes it from the
 /// governor's watch and sets it back to THREAD_PRIORITY_NORMAL.
 #[derive(Debug)]
@@ -140,6 +160,7 @@ pub fn raise_current() -> Result<Option<Watch>, String> {
         handle,
         ran: 0,
         at: Instant::now(),
+        credit: most_credit(),
         raised: false,
     };
     watched.ran = super::windows::thread_time(handle).map_err(|e| format!("GetThreadTimes: {e}"))?;
@@ -198,9 +219,19 @@ fn govern() {
     }
 }
 
-/// One look at a watched thread at `now`, once a period has passed since its last: back to
-/// THREAD_PRIORITY_NORMAL if it used more than half of the time since, raised again if it
-/// used half or less.
+/// A thread's `credit` once `passed` has gone by since the last look and it used `used`
+/// nanoseconds of CPU time.
+fn credited(credit: u64, passed: Duration, used: u64) -> u64 {
+    let half = u64::try_from(passed.as_nanos() / 2).unwrap_or(u64::MAX);
+    credit
+        .saturating_add(half)
+        .saturating_sub(used)
+        .min(most_credit())
+}
+
+/// One look at a watched thread at `now`, once a period has passed since its last: its
+/// credit given half of the time since and charged the CPU time it used, it is back at
+/// THREAD_PRIORITY_NORMAL with none left, raised again with some.
 fn look(w: &mut Watched, now: Instant) {
     let passed = now.saturating_duration_since(w.at);
     if passed < PERIOD {
@@ -216,7 +247,8 @@ fn look(w: &mut Watched, now: Instant) {
     let used = ran.saturating_sub(w.ran);
     w.ran = ran;
     w.at = now;
-    let raise = used.saturating_mul(2) <= u64::try_from(passed.as_nanos()).unwrap_or(u64::MAX);
+    w.credit = credited(w.credit, passed, used);
+    let raise = w.credit > 0;
     if raise != w.raised {
         let priority = if raise { RAISED } else { THREAD_PRIORITY_NORMAL };
         match set(w.handle, priority) {
@@ -335,6 +367,28 @@ mod tests {
         worker.join().unwrap();
         assert!(seen.iter().all(|p| *p == RAISED), "{seen:?}, {ran} ns run");
         assert_eq!(after, THREAD_PRIORITY_NORMAL);
+    }
+
+    /// What CI's clock charged a thread that ran 1 ms of every 6: whole 15.625 ms steps
+    /// (PM M294), none to two a period and 4 in one (62.5 ms, more than its half), which
+    /// put it back to normal where each period was judged alone. It keeps credit through
+    /// them; one that spins, charged 7 steps of a period, has none left at its first look;
+    /// one charged 4 steps of every period runs out of it at its fourth.
+    #[test]
+    fn credit_carries_a_thread_that_waits_across_its_clocks_steps() {
+        const STEP: u64 = 15_625_000;
+        let mut credit = most_credit();
+        for steps in [1, 0, 1, 2, 0, 1, 4, 0, 1, 1, 2, 1] {
+            credit = credited(credit, PERIOD, steps * STEP);
+            assert!(credit > 0, "out of credit at {steps} steps");
+        }
+        assert_eq!(credited(most_credit(), PERIOD, 7 * STEP), 0);
+        let (mut credit, mut looks) = (most_credit(), 0);
+        while credit > 0 {
+            credit = credited(credit, PERIOD, 4 * STEP);
+            looks += 1;
+        }
+        assert_eq!(looks, 4);
     }
 
     /// A thread its program set at another priority is left at it.

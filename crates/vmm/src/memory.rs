@@ -466,9 +466,10 @@ impl GuestMemory {
 
     /// Of the memory the guest gave back, the bytes whose pages the host holds still: of
     /// each block plugged once and unplugged since, its pages touched, by the guest or a
-    /// device, and not given back ([`platform::untouched`]). Unplugging gives them back
-    /// (`platform::withhold`), where a hypervisor's unmapping of them took them out of the
-    /// process's footprint and resident set but left them its own (PM M193). A block plugged
+    /// device, and not given back; on Windows, its pages committed still ([`platform::held`]).
+    /// Unplugging gives them back (`platform::withhold`), where a hypervisor's unmapping of
+    /// them took them out of the process's footprint and resident set but left them its own
+    /// (PM M193). A block plugged
     /// now is the guest's, its pages held as they should be, and none of what it gave back:
     /// a guest that ends asking for memory has its driver plugging as it ends. None where
     /// the guest has no memory to plug, or the host cannot say.
@@ -498,9 +499,8 @@ impl GuestMemory {
                 return Ok(None);
             }
             // SAFETY: a range within the reservation, which this value owns.
-            let untouched = unsafe { platform::untouched(h.host.as_ptr().add(offset), len, page) }?;
-            match untouched {
-                Some(u) => held += u.iter().filter(|&&never| !never).count() as u64 * page as u64,
+            match unsafe { platform::held(h.host.as_ptr().add(offset), len, page) }? {
+                Some(bytes) => held = held.saturating_add(bytes),
                 None => return Ok(None),
             }
         }
@@ -683,37 +683,20 @@ impl GuestMemory {
         Ok(data)
     }
 
-    /// Writes `pages`, those its guest and devices wrote since a live move's last round
-    /// (D176 part 7), into `file` where [`save`](Self::save) would put them, zeros and all,
-    /// and nothing else: the file as long as a save's, its other pages holes, which the
-    /// other machine fills from what the rounds sent it. A page of the memory to plug that
-    /// is not plugged now is no page of the file.
-    pub fn save_pages(&self, file: &File, pages: &crate::vm::live::Pages) -> io::Result<()> {
+    /// Makes `file` as long as [`save`](Self::save) would, its RAM and then the memory
+    /// plugged now, and all holes: a live move's last save, whose pages go in the move's
+    /// stream (D176 part 7).
+    pub fn save_length(&self, file: &File) -> io::Result<()> {
         let _held = self.access().map_err(io::Error::other)?;
         file.set_len(0)?;
         platform::sparse(file)?;
-        let mut offset = 0u64;
-        let write = |host: *const u8, runs: Vec<(u64, u64)>, offset: u64| -> io::Result<()> {
-            for (at, len) in runs {
-                let n = usize::try_from(len).map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?;
-                // SAFETY: `at..at+len` lies in the region at `host` (`runs_within`), which
-                // the access held keeps mapped; the kernel reads it.
-                let bytes = unsafe { std::slice::from_raw_parts(host.add(at as usize), n) };
-                platform::write_all_at(file, bytes, offset + at)?;
-            }
-            Ok(())
-        };
-        for r in &self.regions {
-            write(r.host.as_ptr(), pages.runs_within(r.gpa, r.len as u64), offset)?;
-            offset += r.len as u64;
-        }
+        let mut len: u64 = self.regions.iter().map(|r| r.len as u64).sum();
         if let Some(h) = &self.hotplug {
-            for (gpa, len) in h.runs(&h.plugged) {
-                write(h.host(gpa), pages.runs_within(gpa, len), offset)?;
-                offset += len;
+            for (_, run) in h.runs(&h.plugged) {
+                len = len.checked_add(run).ok_or(io::ErrorKind::InvalidData)?;
             }
         }
-        file.set_len(offset)
+        file.set_len(len)
     }
 
     /// Each page of its RAM and of the memory plugged that holds anything but zeros, for a

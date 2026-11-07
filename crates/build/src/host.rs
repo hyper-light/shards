@@ -18,8 +18,9 @@ pub struct Stat {
     pub mode: u32,
     pub size: u64,
     pub mtime: (i64, u32),
-    /// The inode and its link count, where hard links are told apart; none on Windows.
-    pub inode: Option<(u64, u64)>,
+    /// The inode and its link count, where hard links are told apart: on Windows, of a
+    /// file of more than one name alone, its file ID (`shards_ntfs::links`).
+    pub inode: Option<(u128, u64)>,
     pub devmajor: u32,
     pub devminor: u32,
     pub link: Vec<u8>,
@@ -127,7 +128,7 @@ pub fn lstat(p: &Path) -> io::Result<Stat> {
         mode,
         size: if dir { 0 } else { m.size() },
         mtime: since_epoch(&m),
-        inode: (!dir).then(|| (m.ino(), m.nlink())),
+        inode: (!dir).then(|| (u128::from(m.ino()), m.nlink())),
         // fsutil's major and minor, Linux's encoding whatever the host's.
         devmajor: if device { ((rdev >> 8) & 0xfff) as u32 } else { 0 },
         devminor: if device {
@@ -142,10 +143,27 @@ pub fn lstat(p: &Path) -> io::Result<Stat> {
 }
 
 /// `os.Lstat` on Windows and fsutil's mkstat: Go's 0666, or 0444 read-only, made
-/// executable and capped at 0755, as fsutil sends Windows files.
+/// executable and capped at 0755, as fsutil sends Windows files. And its hard links told
+/// apart, as fsutil tells a Unix host's (stat_unix.go) and tells none of Windows' (its
+/// Stat's inode unset there), where NTFS and ReFS keep them as Unix does: a Windows
+/// client's context sends a file's other names as links (shards-archive's `pack_changes`,
+/// D180), and the client's own walk of it is the one its copy's makes.
 #[cfg(windows)]
 pub fn lstat(p: &Path) -> io::Result<Stat> {
-    let m = fs::symlink_metadata(p)?;
+    use std::os::windows::fs::OpenOptionsExt as _;
+    use std::os::windows::io::AsHandle as _;
+    use windows_sys::Win32::Storage::FileSystem::{FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT};
+    // The file itself, opened for no access as std's lstat opens it, a reparse point not
+    // followed: its metadata and its links asked of one handle. One std's lstat cannot open
+    // (a sharing violation) it reads from its directory's entry, which says no links.
+    let opened = fs::OpenOptions::new()
+        .access_mode(0)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(p);
+    let m = match &opened {
+        Ok(f) => f.metadata()?,
+        Err(_) => fs::symlink_metadata(p)?,
+    };
     let mut mode = if m.permissions().readonly() { 0o444 } else { 0o666 };
     if m.is_dir() {
         mode |= fm::DIR | 0o111;
@@ -163,11 +181,19 @@ pub fn lstat(p: &Path) -> io::Result<Stat> {
     } else {
         Vec::new()
     };
+    // A file whose links cannot be asked goes as one of one name, as before.
+    let inode = match &opened {
+        Ok(f) if !m.is_dir() => shards_ntfs::links(f.as_handle())
+            .ok()
+            .flatten()
+            .map(|l| (l.file, l.count)),
+        _ => None,
+    };
     Ok(Stat {
         mode,
         size: if m.is_dir() { 0 } else { m.len() },
         mtime: since_epoch(&m),
-        inode: None,
+        inode,
         devmajor: 0,
         devminor: 0,
         link,
@@ -988,7 +1014,7 @@ mod lx {
             mode,
             size: if dir { 0 } else { st.size },
             mtime: (i64::try_from(st.mtime.0).unwrap_or(i64::MAX), st.mtime.1),
-            inode: (!dir).then_some((st.ino, u64::from(st.nlink))),
+            inode: (!dir).then_some((u128::from(st.ino), u64::from(st.nlink))),
             // fsutil's major and minor, Linux's encoding.
             devmajor: if device {
                 u32::try_from((rdev >> 8) & 0xfff).unwrap_or(0)

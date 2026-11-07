@@ -14,7 +14,9 @@ use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use common::{TempDir, cannot_pool, cannot_run_vms, home_with, processes_with, run_shards_env, served};
+use common::{
+    Patience, TempDir, cannot_pool, cannot_run_vms, home_with, processes_with, run_shards_env, served,
+};
 
 const TIMEOUT: Duration = Duration::from_secs(60);
 
@@ -158,13 +160,13 @@ fn a_microvm_held_to_a_budget_reads_through_fuse_within_twice_its_time_without_o
     );
     assert_eq!(first.status, Some(0), "{first}\nthe daemon's log:\n{}", said());
     let templates = home.join("templates").to_string_lossy().into_owned();
-    let deadline = Instant::now() + TIMEOUT;
+    let mut patience = Patience::of(&home, TIMEOUT);
     while !processes_with(&templates).into_iter().any(|pid| {
         std::fs::read_to_string(format!("/proc/{pid}/cgroup"))
             .is_ok_and(|c| c.contains(&format!("/{slice}/")))
     }) {
         assert!(
-            Instant::now() < deadline,
+            patience.holds(),
             "no warm VM in {slice}\nthe daemon's log:\n{}",
             said()
         );
@@ -260,13 +262,13 @@ fn a_microvm_held_to_a_budget_reads_through_fuse_within_twice_its_time_without_o
     };
     let (_, started) = stat_of_pid().unwrap_or_else(|| panic!("held's VM process {pid} is not running"));
     let _ = run_shards_env(&["rm"], &["-f", "held"], &env, TIMEOUT);
-    let deadline = Instant::now() + TIMEOUT;
+    let mut patience = Patience::of(&home, TIMEOUT);
     while let Some((state, start)) = stat_of_pid()
         && !matches!(state.as_str(), "Z" | "X")
         && start == started
     {
         assert!(
-            Instant::now() < deadline,
+            patience.holds(),
             "held's VM process {pid} still runs\nthe daemon's log:\n{}",
             said()
         );

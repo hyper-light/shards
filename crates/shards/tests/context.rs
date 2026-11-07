@@ -1762,14 +1762,14 @@ fn an_artifact_through_a_context_is_made_of_the_clients_files_and_signed_by_its_
         .collect();
     assert_eq!(came.len(), 2, "{log}");
     // Each file's bytes once: the config, the script and the data, whose second name goes
-    // as a link; then the script rewritten alone, the data's third name none of its own.
-    // Windows' walk tells no hard links apart, as fsutil's sends Windows files
-    // (shards_build::host::lstat): each name goes with its bytes there.
+    // as a link; then the script rewritten alone, the data's third name none of its own. A
+    // Windows client's too, its walk and its pack telling NTFS's hard links apart
+    // (shards_build::host::lstat, shards_archive's pack), where fsutil and go-archive tell
+    // none apart there.
     let script = "#!/bin/sh\necho agent, again\n".len() as u64;
-    let names = if cfg!(windows) { [2, 1] } else { [1, 0] };
     assert_eq!(
         came,
-        [33 + 21 + names[0] * (64 << 10), script + names[1] * (64 << 10)],
+        [33 + 21 + (64 << 10), script],
         "the bytes of files that came"
     );
     // What the build says names this client's paths, not the machine's copy's.

@@ -211,7 +211,10 @@ fn attach_sbom(
     fs::write(&file, format!("FROM scratch\nCOPY{excludes} . /\n")).map_err(|e| e.to_string())?;
     let out = stage.path().join("out");
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    // Built here, as the artifact is, whatever context the home has chosen.
+    let (here, this) = crate::context::HERE;
     let ran = std::process::Command::new(exe)
+        .env(here, this)
         .arg("build")
         .arg("--progress=plain")
         .arg(format!("--sbom={sbom}"))
@@ -581,7 +584,7 @@ fn pack(dir: &Path, skip: &[&str], out: &mut Vec<u8>) -> Result<(), String> {
     let tree = shards_build::host::Tree::at(&root);
     let mut tw = gotar::Writer::new(out);
     // A file's first name, by its inode: each other name of it a hard link to it.
-    let mut seen: BTreeMap<u64, Vec<u8>> = BTreeMap::new();
+    let mut seen: BTreeMap<u128, Vec<u8>> = BTreeMap::new();
     let mut stack: Vec<Vec<u8>> = vec![Vec::new()];
     while let Some(rel) = stack.pop() {
         let names = tree

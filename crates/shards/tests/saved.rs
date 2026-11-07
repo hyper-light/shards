@@ -17,7 +17,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdout, Stdio};
 use std::time::{Duration, Instant};
 
-use common::{Run, TempDir, cannot_pool, cannot_run_vms, guest_init, kernel, run_shards_env, served};
+use common::{
+    Patience, Run, TempDir, cannot_pool, cannot_run_vms, guest_init, kernel, run_shards_env, served,
+};
 
 const TIMEOUT: Duration = Duration::from_secs(60);
 
@@ -82,16 +84,18 @@ fn next_count(lines: &mut Lines<BufReader<ChildStdout>>) -> u64 {
     lines.next().unwrap().unwrap().parse().unwrap()
 }
 
-/// Waits for a child, failing the test rather than hanging it.
-fn exit(child: &mut Child) -> Option<i32> {
-    let deadline = Instant::now() + TIMEOUT;
+/// Waits for a child, a client of `home`'s daemon, failing the test rather than hanging
+/// it: within [`TIMEOUT`], or past it while the daemon or its microVMs progress
+/// ([`Patience`]).
+fn exit(child: &mut Child, home: &Path) -> Option<i32> {
+    let mut patience = Patience::of(home, TIMEOUT);
     loop {
         if let Some(status) = child.try_wait().unwrap() {
             return status.code();
         }
-        if Instant::now() >= deadline {
+        if !patience.holds() {
             let _ = child.kill();
-            panic!("shards run did not exit within {TIMEOUT:?}");
+            panic!("shards run did not exit within {TIMEOUT:?}, nor while its daemon or microVMs progressed");
         }
         std::thread::sleep(Duration::from_millis(5));
     }
@@ -292,7 +296,7 @@ fn a_running_microvm_is_saved_whole_left_running_or_stopped() {
         assert_eq!(refused.status, Some(1), "{refused}");
         assert!(refused.stderr.contains("take no snapshots yet"), "{refused}");
         let _ = shards(&["kill", "counter"]);
-        let _ = exit(&mut client);
+        let _ = exit(&mut client, &home);
         return;
     }
     let before = next_count(&mut counts);
@@ -330,7 +334,7 @@ fn a_running_microvm_is_saved_whole_left_running_or_stopped() {
     let name = stopped.stdout.trim().to_string();
     assert!(name.ends_with('Z') && !name.contains(':'), "{stopped}");
     assert!(common::snapshot_file(&snapshot.with_file_name(&name), "state").is_file());
-    assert_eq!(exit(&mut client), Some(148));
+    assert_eq!(exit(&mut client, &home), Some(148));
     let told = std::fs::read_to_string(&said).unwrap();
     assert!(
         told.ends_with(&format!("shards: counter was saved as {name}, and stopped\n")),
@@ -405,7 +409,7 @@ fn a_save_refused_leaves_the_microvm_running_and_nothing_behind() {
     // It goes on, and is stopped as ever.
     let _ = &mut counts;
     assert_eq!(shards(&["kill", "mounted"]).status, Some(0));
-    let _ = exit(&mut client);
+    let _ = exit(&mut client, &home);
     // On the host's network its guest's sockets are the host's, which no snapshot keeps.
     let run = shards(&[
         "run",
@@ -459,8 +463,8 @@ fn a_save_refused_leaves_the_microvm_running_and_nothing_behind() {
     // Once they end, it is saved, and restored with its join disk as its guest knew it: a
     // container joins the restored microVM, its image given the disk's next range.
     let mut saved = shards(&["save", "vm", "provider", "joined"]);
-    let deadline = Instant::now() + TIMEOUT;
-    while saved.status != Some(0) && Instant::now() < deadline {
+    let mut patience = Patience::of(&home, TIMEOUT);
+    while saved.status != Some(0) && patience.holds() {
         std::thread::sleep(Duration::from_millis(50));
         saved = shards(&["save", "vm", "provider", "joined"]);
     }
@@ -526,13 +530,18 @@ fn a_saved_microvm_writes_on_through_its_volume() {
             .collect()
     };
     let log = || logs(&home, "vol");
-    until("appending", &mut || written().len() >= 10, &log);
+    until(&home, "appending", &mut || written().len() >= 10, &log);
     let saved = shards(&["save", "vm", "vol", "first"]);
     assert_eq!(saved.stdout, "first\n", "{saved}");
     let at_save = written().len();
     let restored = shards(&["restore", "vm", "vol", "first"]);
     assert_eq!(restored.status, Some(0), "{restored}");
-    until("appending on", &mut || written().len() >= at_save + 10, &log);
+    until(
+        &home,
+        "appending on",
+        &mut || written().len() >= at_save + 10,
+        &log,
+    );
     let counts = written();
     let wanted: Vec<u64> = (1..=counts.len() as u64).collect();
     assert_eq!(counts, wanted, "each count once, in order: {}", log());
@@ -557,14 +566,14 @@ fn a_saved_microvm_writes_on_through_its_volume() {
     assert_eq!(run.status, Some(0), "{run}");
     let read = || logs(&home, "ghost").matches("held").count();
     let said = || logs(&home, "ghost");
-    until("reading", &mut || read() >= 3, &said);
+    until(&home, "reading", &mut || read() >= 3, &said);
     let saved = shards(&["save", "vm", "ghost", "held"]);
     assert_eq!(saved.stdout, "held\n", "{saved}");
     assert!(!home.join("volumes/kept/_data/held").exists());
     let at_save = read();
     let restored = shards(&["restore", "vm", "ghost", "held"]);
     assert_eq!(restored.status, Some(0), "{restored}");
-    until("reading on", &mut || read() >= at_save + 5, &said);
+    until(&home, "reading on", &mut || read() >= at_save + 5, &said);
     let named: Vec<String> = std::fs::read_dir(home.join("tmp"))
         .unwrap()
         .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
@@ -649,16 +658,13 @@ fn counts(logs: &str) -> Vec<u64> {
     logs.lines().filter_map(|l| l.parse().ok()).collect()
 }
 
-/// Waits until `done`, failing the test after TIMEOUT with what `said` says then.
-fn until(what: &str, done: &mut dyn FnMut() -> bool, said: &dyn Fn() -> String) {
-    until_in(what, TIMEOUT, done, said);
-}
-
-/// As [`until`], within `within`.
-fn until_in(what: &str, within: Duration, done: &mut dyn FnMut() -> bool, said: &dyn Fn() -> String) {
-    let deadline = Instant::now() + within;
+/// Waits until `done`, failing the test with what `said` says then after TIMEOUT, or past
+/// it once `home`'s daemon and its microVMs have progressed no more for as long
+/// ([`Patience`]).
+fn until(home: &Path, what: &str, done: &mut dyn FnMut() -> bool, said: &dyn Fn() -> String) {
+    let mut patience = Patience::of(home, TIMEOUT);
     while !done() {
-        assert!(Instant::now() < deadline, "{what}: {}", said());
+        assert!(patience.holds(), "{what}: {}", said());
         std::thread::sleep(Duration::from_millis(50));
     }
 }
@@ -682,7 +688,7 @@ fn a_saved_microvm_resumes_where_it_was_saved() {
     ]);
     assert_eq!(run.status, Some(0), "{run}");
     let log = || logs(&home, "counter");
-    until("counting", &mut || counts(&log()).len() >= 10, &log);
+    until(&home, "counting", &mut || counts(&log()).len() >= 10, &log);
     let running = shards(&["restore", "vm", "counter"]);
     assert_eq!(running.status, Some(1), "{running}");
     assert!(running.stderr.contains("counter is running"), "{running}");
@@ -708,7 +714,12 @@ fn a_saved_microvm_resumes_where_it_was_saved() {
         (Some(0), "counter\n"),
         "{restored}"
     );
-    until("counting on", &mut || counts(&log()).len() as u64 >= n + 10, &log);
+    until(
+        &home,
+        "counting on",
+        &mut || counts(&log()).len() as u64 >= n + 10,
+        &log,
+    );
     let after = counts(&log());
     assert_eq!(
         after.get(..(n + 10) as usize),
@@ -723,6 +734,7 @@ fn a_saved_microvm_resumes_where_it_was_saved() {
     let again = shards(&["restore", "vm", "counter", "first"]);
     assert_eq!(again.status, Some(0), "{again}");
     until(
+        &home,
         "counting from the save again",
         &mut || counts(&log()).len() >= ended + 5,
         &log,
@@ -752,7 +764,7 @@ fn a_microvm_saved_and_left_running_is_restored_from_its_save() {
     ]);
     assert_eq!(run.status, Some(0), "{run}");
     let log = || logs(&home, "counter");
-    until("counting", &mut || counts(&log()).len() >= 5, &log);
+    until(&home, "counting", &mut || counts(&log()).len() >= 5, &log);
     // The save's cut is between what its log held before it was asked for and what it
     // holds once it is done: left running, the microVM counts on as it is committed.
     let asked = counts(&log()).len() as u64;
@@ -760,6 +772,7 @@ fn a_microvm_saved_and_left_running_is_restored_from_its_save() {
     assert_eq!(saved.status, Some(0), "{saved}");
     let at = counts(&log()).len() as u64;
     until(
+        &home,
         "counting on",
         &mut || counts(&log()).len() as u64 >= at + 10,
         &log,
@@ -769,6 +782,7 @@ fn a_microvm_saved_and_left_running_is_restored_from_its_save() {
     let restored = shards(&["restore", "vm", "counter", "early"]);
     assert_eq!(restored.status, Some(0), "{restored}");
     until(
+        &home,
         "counting from its save",
         &mut || counts(&log()).len() >= ended + 3,
         &log,
@@ -862,7 +876,7 @@ fn a_microvm_saved_as_an_execs_stdin_waits_ends_with_its_run_once_restored() {
     let given = filled(writer);
     let saved = shards(&["save", "vm", "reader", "snap"]);
     assert_eq!(saved.status, Some(0), "{saved}");
-    let _ = exit(&mut exec);
+    let _ = exit(&mut exec, &home);
     let restored = shards(&["restore", "vm", "reader"]);
     assert_eq!(restored.status, Some(0), "{restored}");
     // A stop timeout past the test's, so that one its SIGKILL ended is told apart.
@@ -980,17 +994,17 @@ fn an_exec_reading_its_stdin_through_a_save_ends_once_restored() {
     assert_eq!(echoed, "before the save\n");
     let saved = shards(&["save", "vm", "reader", "snap"]);
     assert_eq!(saved.status, Some(0), "{saved}");
-    let _ = exit(&mut exec);
+    let _ = exit(&mut exec, &home);
     let restored = shards(&["restore", "vm", "reader"]);
     assert_eq!(restored.status, Some(0), "{restored}");
     // The writer is still open here: the exec's stdin ends with its connection's client.
     let listed = || shards(&["exec", "reader", "/bin/testguest", "ps"]).stdout;
     let mut ps = listed();
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut patience = Patience::of(&home, Duration::from_secs(10));
     while ps.contains("testguest cat") {
         assert!(
-            Instant::now() < deadline,
-            "an exec reading its stdin outlived its client by 10 s:\n{ps}"
+            patience.holds(),
+            "an exec reading its stdin outlived its client by 10 s, and its progress by a minute:\n{ps}"
         );
         std::thread::sleep(Duration::from_millis(100));
         ps = listed();
@@ -1032,9 +1046,15 @@ fn a_saved_microvm_keeps_what_it_swapped() {
     };
     // A round's time on this host, from its first to its second: what the rounds after the
     // restore are waited for by (CI's x86_64 runners took 20 s a round, CI 39249195872).
-    until("its pattern kept", &mut || log().contains("kept 1\n"), &said);
+    until(
+        &home,
+        "its pattern kept",
+        &mut || log().contains("kept 1\n"),
+        &said,
+    );
     let first = Instant::now();
     until(
+        &home,
         "its pattern kept again",
         &mut || log().contains("kept 2\n"),
         &said,
@@ -1116,7 +1136,7 @@ fn a_microvm_saved_as_it_writes_loses_none_of_its_output() {
     ]);
     assert_eq!(run.status, Some(0), "{run}");
     let log = || logs(&home, "counter");
-    until("counting", &mut || counts(&log()).len() >= 2000, &|| {
+    until(&home, "counting", &mut || counts(&log()).len() >= 2000, &|| {
         String::new()
     });
     let saved = shards(&["save", "vm", "counter", "midstream"]);
@@ -1130,6 +1150,7 @@ fn a_microvm_saved_as_it_writes_loses_none_of_its_output() {
     let restored = shards(&["restore", "vm", "counter"]);
     assert_eq!(restored.status, Some(0), "{restored}");
     until(
+        &home,
         "counting on",
         &mut || counts(&log()).len() as u64 >= n + 2000,
         &|| String::new(),
@@ -1187,9 +1208,12 @@ fn a_saved_microvm_on_a_network_is_restored_at_its_address() {
         "5",
     ]);
     assert_eq!(run.status, Some(0), "{run}");
-    until("serving", &mut || logs(&home, "srv").contains("ready\n"), &|| {
-        logs(&home, "srv")
-    });
+    until(
+        &home,
+        "serving",
+        &mut || logs(&home, "srv").contains("ready\n"),
+        &|| logs(&home, "srv"),
+    );
     let address = |name: &str| {
         let r = shards(&[
             "inspect",
@@ -1261,7 +1285,7 @@ fn checkpoint_command_lines_save_list_and_restore_microvms() {
     ]);
     assert_eq!(run.status, Some(0), "{run}");
     let log = || logs(&home, "cp");
-    until("counting", &mut || counts(&log()).len() >= 10, &log);
+    until(&home, "counting", &mut || counts(&log()).len() >= 10, &log);
     let made = shards(&["checkpoint", "create", "cp", "first"]);
     assert_eq!(
         (made.status, made.stdout.as_str()),
@@ -1278,7 +1302,12 @@ fn checkpoint_command_lines_save_list_and_restore_microvms() {
         (Some(0), ""),
         "{started}"
     );
-    until("counting on", &mut || counts(&log()).len() as u64 >= n + 5, &log);
+    until(
+        &home,
+        "counting on",
+        &mut || counts(&log()).len() as u64 >= n + 5,
+        &log,
+    );
     assert_eq!(counts(&log())[n as usize], n + 1);
     let left = shards(&["checkpoint", "create", "--leave-running", "cp", "second"]);
     assert_eq!(left.stdout, "second\n", "{left}");
@@ -1465,7 +1494,7 @@ fn a_runs_save_takes_of_its_disk() {
     say("3 s on");
     let _ = next_count(&mut counts);
     let _ = shards(&["kill", "counter"]);
-    let _ = exit(&mut client);
+    let _ = exit(&mut client, &home);
     std::thread::sleep(Duration::from_secs(3));
     say("its run ended");
 }

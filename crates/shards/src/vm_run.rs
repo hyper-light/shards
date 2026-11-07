@@ -64,8 +64,10 @@ const RUN_USAGE: &str = "usage: shards run vm --kernel PATH [--initrd PATH | --i
   --vfio: the host's PCI function NAME (as 0000:01:00.0), passed through to the guest
           on its PCI bus: on Linux, bound to vfio-pci, as every other function in its
           IOMMU group must be. Or its VFIO device node (/dev/vfio/devices/vfioN), taken
-          through /dev/iommu, not its group's node. Not with --snapshot-dir, --memory-max
-          or --reporting: its DMA reaches all of guest RAM through mappings the host
+          through /dev/iommu, not its group's node. On Windows, its instance ID once
+          dismounted from the host (Dismount-VMHostAssignableDevice; PCIP\\...), where
+          its hypervisor assigns devices. Not with --snapshot-dir, --memory-max or
+          --reporting: its DMA reaches all of guest RAM through mappings the host
           holds pinned.
   --vfio-iommu: as --vfio, the function behind the guest's own IOMMU (virtio-iommu):
                 its DMA reaches only what the guest's IOMMU driver maps for it, as the
@@ -1820,8 +1822,9 @@ fn report_timing(handle: &Handle, workload: Option<&WorkloadTiming>) {
 
 /// The timing line's fields, as JSON: the VM's clock readings in microseconds since the
 /// process started, 0 for any not yet taken; the process's peak RSS so far and its own
-/// memory now, in KiB; what it holds of the memory to plug (D133), in KiB; and what its
-/// guest has reported free (D151), in KiB.
+/// memory now, in KiB; its peak commit charge, in KiB, where its host charges memory as
+/// it is committed (Windows, PM M413), else 0; what it holds of the memory to plug (D133),
+/// in KiB; and what its guest has reported free (D151), in KiB.
 fn timing_json(handle: &Handle, workload: Option<&WorkloadTiming>) -> String {
     let markers: Vec<String> = handle
         .markers()
@@ -1835,13 +1838,14 @@ fn timing_json(handle: &Handle, workload: Option<&WorkloadTiming>) -> String {
         )
     });
     format!(
-        "{{\"released_us\":{},\"entry_us\":{},\"exit_us\":{},\"request_us\":{request},\"answered_us\":{answered},\"prefetched\":{},\"rss_kib\":{},\"footprint_kib\":{},\"hotplug_held_kib\":{},\"reported_kib\":{},\"markers\":[{}]}}",
+        "{{\"released_us\":{},\"entry_us\":{},\"exit_us\":{},\"request_us\":{request},\"answered_us\":{answered},\"prefetched\":{},\"rss_kib\":{},\"footprint_kib\":{},\"peak_commit_kib\":{},\"hotplug_held_kib\":{},\"reported_kib\":{},\"markers\":[{}]}}",
         handle.released_at_us().unwrap_or(0),
         handle.entered_at_us().unwrap_or(0),
         handle.exited_at_us().unwrap_or(0),
         handle.prefetched(),
         max_rss_kib(),
         footprint_kib(),
+        shards_ipc::peak_commit_kib(),
         handle.hotplug_held().unwrap_or(0) / 1024,
         handle.reported() / 1024,
         markers.join(",")
@@ -1885,8 +1889,11 @@ fn start(cfg: &Config) -> Result<(Handle, Running), String> {
     paths.read.extend(cfg.init.iter().cloned());
     paths.read.extend(cfg.pmem.iter().cloned());
     // A function passed through (D154): VFIO's container and its group, or iommufd and its
-    // device node.
-    let (cdevs, groups): (Vec<&vm::Vfio>, Vec<&vm::Vfio>) = cfg.vfio.iter().partition(|v| v.cdev.is_some());
+    // device node. On Windows its hypervisor assigns it, through the partition, of no file.
+    let (cdevs, groups): (Vec<&vm::Vfio>, Vec<&vm::Vfio>) = match cfg!(target_os = "linux") {
+        true => cfg.vfio.iter().partition(|v| v.cdev.is_some()),
+        false => (Vec::new(), Vec::new()),
+    };
     if !groups.is_empty() {
         paths.devices.push(PathBuf::from("/dev/vfio/vfio"));
         paths.devices.extend(groups.iter().map(|v| v.group.clone()));
@@ -2670,7 +2677,6 @@ fn confine(paths: &crate::confine::Paths) -> Result<(), String> {
     // spawner stages, over the link (D196), which stays open for them.
     #[cfg(windows)]
     {
-        #[cfg(target_arch = "x86_64")]
         shards_vmm::hv::forbid_dynamic_code_once_set_up();
         granted(paths)?;
         let stages = !paths.write_under.is_empty();

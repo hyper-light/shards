@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 
 use std::net::TcpListener;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use sha2::Digest as _;
 use shards_image::erofs::{self, DataRef, Dir, Kind, Meta, Node, NodeId, Source, Tree};
@@ -82,6 +82,19 @@ pub fn program(path: &Path, text: &str) {
     assert!(writer.wait().unwrap().success(), "{} not written", path.display());
 }
 
+/// The program at `from`, copied to `to` as [`program`] writes one: by a process of its own
+/// on Unix, so that no child another test's thread forks holds it open to write.
+pub fn program_copy(from: &Path, to: &Path) {
+    #[cfg(unix)]
+    assert!(
+        Command::new("cp").arg(from).arg(to).status().unwrap().success(),
+        "{} not copied",
+        from.display()
+    );
+    #[cfg(windows)]
+    std::fs::copy(from, to).unwrap();
+}
+
 /// A home whose guest is the test kernel and init, recorded before its daemon starts.
 pub fn home_with(name: &str, timeout: Duration) -> TempDir {
     let home = TempDir::new(name);
@@ -102,26 +115,18 @@ pub fn processes_with(needle: &str) -> Vec<u32> {
     commands_with(needle).into_iter().map(|(pid, _)| pid).collect()
 }
 
-/// The processes whose command line mentions `needle`, and the command lines: from /proc
-/// on Linux, whose `ps` may be busybox's, which takes no `-o args`; from `ps` elsewhere;
-/// on Windows from its own table of processes (CIM's Win32_Process).
+/// The processes whose command line mentions `needle`, and the command lines.
 pub fn commands_with(needle: &str) -> Vec<(u32, String)> {
-    if cfg!(windows) {
-        let listed =
-            r#"Get-CimInstance Win32_Process | ForEach-Object { "$($_.ProcessId) $($_.CommandLine)" }"#;
-        let out = Command::new("powershell")
-            .args(["-NoProfile", "-NonInteractive", "-Command", listed])
-            .output()
-            .unwrap();
-        return String::from_utf8_lossy(&out.stdout)
-            .lines()
-            .filter(|l| l.contains(needle))
-            .filter_map(|l| {
-                let (pid, args) = l.trim_start().split_once(' ')?;
-                Some((pid.parse().ok()?, args.to_string()))
-            })
-            .collect();
-    }
+    commands()
+        .into_iter()
+        .filter(|(_, args)| args.contains(needle))
+        .collect()
+}
+
+/// Every process and its command line: from /proc on Linux, whose `ps` may be busybox's,
+/// which takes no `-o args`; from `ps` elsewhere.
+#[cfg(not(windows))]
+fn commands() -> Vec<(u32, String)> {
     if cfg!(target_os = "linux") {
         return std::fs::read_dir("/proc")
             .unwrap()
@@ -129,19 +134,27 @@ pub fn commands_with(needle: &str) -> Vec<(u32, String)> {
                 let e = e.ok()?;
                 let pid: u32 = e.file_name().to_str()?.parse().ok()?;
                 let cmdline = std::fs::read(e.path().join("cmdline")).ok()?;
-                let args = String::from_utf8_lossy(&cmdline).replace('\0', " ");
-                args.contains(needle).then_some((pid, args))
+                Some((pid, String::from_utf8_lossy(&cmdline).replace('\0', " ")))
             })
             .collect();
     }
     let out = Command::new("ps").args(["-axo", "pid=,args="]).output().unwrap();
     String::from_utf8_lossy(&out.stdout)
         .lines()
-        .filter(|l| l.contains(needle))
         .filter_map(|l| {
             let (pid, args) = l.trim_start().split_once(' ')?;
             Some((pid.parse().ok()?, args.to_string()))
         })
+        .collect()
+}
+
+/// Every process and its command line, on Windows from the system's own table of them
+/// ([`command_lines`]).
+#[cfg(windows)]
+fn commands() -> Vec<(u32, String)> {
+    command_lines()
+        .into_iter()
+        .map(|process| (process.pid, process.command))
         .collect()
 }
 
@@ -648,7 +661,14 @@ pub fn linux_tests(tests: &[&str]) -> LinuxTests {
 
 /// The production guest init (PID 1): the one `shardsd` carries, as build.rs made it.
 pub fn guest_init() -> &'static Path {
-    Path::new(concat!(env!("OUT_DIR"), "/shards-init"))
+    static INIT: OnceLock<PathBuf> = OnceLock::new();
+    // Resolve the build's path on this host: a Unix cross-build's rooted path needs a
+    // drive on Windows before the daemon can use it as an absolute init path.
+    INIT.get_or_init(|| {
+        Path::new(concat!(env!("OUT_DIR"), "/shards-init"))
+            .canonicalize()
+            .unwrap()
+    })
 }
 
 /// The E2E test agent (PID 1 of test VMs).
@@ -827,6 +847,111 @@ pub fn processes() -> Vec<(u32, u32, String)> {
     // SAFETY: the snapshot taken above, closed once.
     unsafe { CloseHandle(snap) };
     found
+}
+
+/// A process as [`command_lines`] lists it.
+#[cfg(windows)]
+pub struct Listed {
+    pub pid: u32,
+    pub parent: u32,
+    /// Its executable's name, as Toolhelp32's snapshot gives it.
+    pub name: String,
+    /// Its command line, empty where it could not be read.
+    pub command: String,
+}
+
+/// Every process of the system's ([`processes`]), each with its command line, read
+/// through the process's own handle ([`command_line`]), not WMI: CIM's Win32_Process
+/// answers a standard user logged on over SSH, a network logon, "Access denied"
+/// (0x80041003; root\cimv2 grants remote enable to administrators alone), and tests run
+/// so (step 10's arm64 Windows host) found no warm or restored VM while the daemon's log
+/// said they ran. A process whose command line cannot be read is kept, its command line
+/// empty, and one of shards' is said on stderr, captured with a failing test's output.
+#[cfg(windows)]
+#[allow(clippy::print_stderr)]
+pub fn command_lines() -> Vec<Listed> {
+    processes()
+        .into_iter()
+        .map(|(pid, parent, name)| {
+            let command = command_line(pid).unwrap_or_else(|e| {
+                if name.to_ascii_lowercase().starts_with("shards") {
+                    eprintln!("the command line of {name} ({pid}) unread: {e}");
+                }
+                String::new()
+            });
+            Listed {
+                pid,
+                parent,
+                name,
+                command,
+            }
+        })
+        .collect()
+}
+
+/// Process `pid`'s command line, as the process was started with it: NtQueryInformationProcess's
+/// ProcessCommandLineInformation (60; PROCESSINFOCLASS, as the WDK declares it and
+/// windows-sys's Wdk_System_Threading carries it), asked through a handle of the least
+/// right, PROCESS_QUERY_LIMITED_INFORMATION, which [`alive`] asks too. It answers as
+/// ProcessImageFileName does, as Microsoft's page of the function has it: a UNICODE_STRING
+/// followed by its text, and STATUS_INFO_LENGTH_MISMATCH with the size needed in
+/// ReturnLength when the buffer is too small
+/// (<https://learn.microsoft.com/en-us/windows/win32/api/winternl/nf-winternl-ntqueryinformationprocess>).
+#[cfg(windows)]
+pub fn command_line(pid: u32) -> Result<String, String> {
+    use windows_sys::Wdk::System::Threading::{NtQueryInformationProcess, ProcessCommandLineInformation};
+    use windows_sys::Win32::Foundation::{
+        CloseHandle, STATUS_BUFFER_OVERFLOW, STATUS_BUFFER_TOO_SMALL, STATUS_INFO_LENGTH_MISMATCH,
+        UNICODE_STRING,
+    };
+    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+    // SAFETY: a process's handle of one right, closed below.
+    let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    if process.is_null() {
+        return Err(format!("OpenProcess: {}", io::Error::last_os_error()));
+    }
+    // In u64s, which align the UNICODE_STRING at its start as its pointer needs.
+    let mut buffer = vec![0u64; 256];
+    let read = loop {
+        let size = u32::try_from(buffer.len() * size_of::<u64>()).unwrap_or(u32::MAX);
+        let mut needed = 0u32;
+        // SAFETY: a buffer of `size` bytes, and the handle opened above.
+        let status = unsafe {
+            NtQueryInformationProcess(
+                process,
+                ProcessCommandLineInformation,
+                buffer.as_mut_ptr().cast(),
+                size,
+                &raw mut needed,
+            )
+        };
+        let short = [
+            STATUS_INFO_LENGTH_MISMATCH,
+            STATUS_BUFFER_TOO_SMALL,
+            STATUS_BUFFER_OVERFLOW,
+        ];
+        if short.contains(&status) && needed > size {
+            buffer.resize(usize::try_from(needed).unwrap().div_ceil(size_of::<u64>()), 0);
+            continue;
+        }
+        if status < 0 {
+            break Err(format!(
+                "NtQueryInformationProcess: NTSTATUS {:#010x}",
+                status.cast_unsigned()
+            ));
+        }
+        // SAFETY: the call succeeded, so the buffer starts with the UNICODE_STRING it wrote.
+        let text = unsafe { buffer.as_ptr().cast::<UNICODE_STRING>().read() };
+        if text.Buffer.is_null() || text.Length == 0 {
+            break Ok(String::new());
+        }
+        // SAFETY: the string's text, Length bytes in the buffer after it, which lives on.
+        let units = unsafe { std::slice::from_raw_parts(text.Buffer, usize::from(text.Length) / 2) };
+        break Ok(String::from_utf16_lossy(units));
+    };
+    // SAFETY: the handle opened above, closed once.
+    unsafe { CloseHandle(process) };
+    read
 }
 
 /// A handle to process `pid` that may give it handles (PROCESS_DUP_HANDLE), as a VM's
@@ -1137,8 +1262,8 @@ pub fn until_unserved(home: &Path) {
 }
 
 /// The processes under the daemon whose log is `log` (its first line names its PID), each
-/// as `ps` shows it, or Windows' table of processes: whether a run's VM and network
-/// processes still live, for a failure to say.
+/// as `ps` shows it, or on Windows as [`command_lines`] lists it (ID, parent's ID, name,
+/// command line): whether a run's VM and network processes still live, for a failure to say.
 pub fn processes_under(log: &str) -> String {
     let Some(daemon) = log.lines().find_map(|l| {
         l.strip_prefix("shards daemon ")?
@@ -1149,28 +1274,33 @@ pub fn processes_under(log: &str) -> String {
     }) else {
         return "(no daemon named in its log)".into();
     };
-    let listed = if cfg!(windows) {
-        let each = r#"Get-CimInstance Win32_Process | ForEach-Object { "$($_.ProcessId) $($_.ParentProcessId) $($_.CommandLine)" }"#;
-        Command::new("powershell")
-            .args(["-NoProfile", "-NonInteractive", "-Command", each])
-            .output()
-    } else {
-        Command::new("ps")
-            .args(["-axo", "pid=,ppid=,stat=,etime=,command="])
-            .output()
-    }
-    .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
-    .unwrap_or_default();
-    let rows: Vec<(u32, u32, &str)> = listed
+    #[cfg(windows)]
+    let listed: Vec<(u32, u32, String)> = command_lines()
+        .into_iter()
+        .map(|p| {
+            let line = format!("{} {} {} {}", p.pid, p.parent, p.name, p.command);
+            (p.pid, p.parent, line)
+        })
+        .collect();
+    #[cfg(not(windows))]
+    let listed: Vec<(u32, u32, String)> = Command::new("ps")
+        .args(["-axo", "pid=,ppid=,stat=,etime=,command="])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        .unwrap_or_default()
         .lines()
         .filter_map(|l| {
             let mut f = l.split_whitespace();
-            Some((f.next()?.parse().ok()?, f.next()?.parse().ok()?, l.trim()))
+            Some((
+                f.next()?.parse().ok()?,
+                f.next()?.parse().ok()?,
+                l.trim().to_string(),
+            ))
         })
         .collect();
     let mut under = vec![daemon];
     loop {
-        let more: Vec<u32> = rows
+        let more: Vec<u32> = listed
             .iter()
             .filter(|(pid, ppid, _)| under.contains(ppid) && !under.contains(pid))
             .map(|(pid, ..)| *pid)
@@ -1180,10 +1310,10 @@ pub fn processes_under(log: &str) -> String {
         }
         under.extend(more);
     }
-    let shown: Vec<&str> = rows
+    let shown: Vec<&str> = listed
         .iter()
         .filter(|(pid, ..)| under.contains(pid))
-        .map(|(.., line)| *line)
+        .map(|(.., line)| line.as_str())
         .collect();
     if shown.is_empty() {
         format!("(daemon {daemon} is gone)")
@@ -1511,6 +1641,12 @@ impl Run {
     /// The VMM process's own memory as it reported, in KiB, as memory per VM is counted.
     pub fn footprint_kib(&self) -> Option<u128> {
         self.timing_field("footprint_kib")
+    }
+
+    /// The VMM process's peak commit charge as it reported, in KiB: Windows' alone, which
+    /// charges memory as it is committed, touched or not (PM M413); 0 elsewhere.
+    pub fn peak_commit_kib(&self) -> Option<u128> {
+        self.timing_field("peak_commit_kib")
     }
 
     /// What the VM's guest reported free, given back or not (D151), in KiB.
@@ -1862,9 +1998,247 @@ pub fn stacks_of(pids: &[(&str, u32)], home: Option<&Path>) -> String {
     said
 }
 
+/// How long a home's daemon may say nothing while a client of it is past its deadline
+/// before the client is taken for stuck ([`Said`]): the daemon's own `READY_TIMEOUT`
+/// (daemon.rs), the longest it waits on a starting microVM that runs nothing of its start.
+/// While one runs its start, however slowly its host runs it, the daemon says so each
+/// `READY_STALL` (10 s), and says why it gave up on one when it does; and while a microVM
+/// a client waits on runs its workload, a run's or an exec's, it says that each as long
+/// (D209), saying nothing of one that runs nothing.
+pub const DAEMON_QUIET: Duration = Duration::from_secs(60);
+
+/// What the daemon of a home has said in its log since this began watching: a client past
+/// its deadline is waited on while its daemon says something within [`DAEMON_QUIET`], as
+/// it does while it waits on a microVM its host boots slowly, or a client waits on one that
+/// runs its workload slowly (the parity plan's step 10: boots past a minute, and gigabytes
+/// allocated past four minutes, on an arm64 Windows host nested under QEMU's TCG). A test's
+/// deadline then holds where its host is fast, and follows the daemon's own judgment of
+/// progress where it is slow: never a fixed guess at the host's speed.
+pub struct Said {
+    log: PathBuf,
+    len: u64,
+    /// When the log last grew, since this began watching, to within a second.
+    at: Option<Instant>,
+    /// When its length was last read: once a second at most.
+    read: Option<Instant>,
+}
+
+impl Said {
+    pub fn of(home: &Path) -> Said {
+        let log = home.join("daemon.log");
+        let len = std::fs::metadata(&log).map(|m| m.len()).unwrap_or(0);
+        Said {
+            log,
+            len,
+            at: None,
+            read: None,
+        }
+    }
+
+    /// Whether the daemon has said something within [`DAEMON_QUIET`]. Asked as often as
+    /// its caller likes, it reads the log's length once a second.
+    pub fn lately(&mut self) -> bool {
+        if self.read.is_none_or(|r| r.elapsed() >= Duration::from_secs(1)) {
+            self.read = Some(Instant::now());
+            let len = std::fs::metadata(&self.log).map(|m| m.len()).unwrap_or(0);
+            if len != self.len {
+                self.len = len;
+                self.at = Some(Instant::now());
+            }
+        }
+        self.at.is_some_and(|at| at.elapsed() < DAEMON_QUIET)
+    }
+}
+
+/// The slice a microVM's progress is judged over, each as long: the daemon's `READY_STALL`
+/// (daemon.rs), over which it judges a starting microVM, and one a client waits on, and
+/// logs it.
+pub const PROGRESS_SLICE: Duration = Duration::from_secs(10);
+
+/// What the microVMs of a client's own have run: [`Said`]'s counterpart for one whose
+/// microVM is no daemon's, which says nothing of it. `shards run --kernel` and `shards
+/// restore` are the VM process on Unix and start it on Windows, and `shards build`'s
+/// builders are its children (builds run in its process). Each VM process under it is
+/// judged each [`PROGRESS_SLICE`] as the daemon judges one, by its CPU time against the
+/// most an idle microVM takes in as long (`shards_vmm::platform::progressed`, PM M357): a
+/// client past its deadline is waited on while one of them ran within [`DAEMON_QUIET`], as
+/// a guest's workload runs at its host's speed (the parity plan's step 10: a 64-vCPU storm
+/// and a 3 GiB build step on an arm64 Windows host nested under QEMU's TCG). One that runs
+/// nothing for as long fails it as before. Not caught: a guest that spins for ever, as
+/// D209 says of a start, which its CI job's limit ends.
+pub struct Ran {
+    client: u32,
+    followed: std::collections::HashMap<u32, shards_vmm::platform::Progress>,
+    /// When its processes were last looked at.
+    looked: Instant,
+    /// When one of them last ran, since this began watching.
+    at: Option<Instant>,
+}
+
+impl Ran {
+    pub fn of(client: u32) -> Ran {
+        Ran {
+            client,
+            followed: std::collections::HashMap::new(),
+            looked: Instant::now(),
+            at: None,
+        }
+    }
+
+    /// Whether a VM process under its client ran within [`DAEMON_QUIET`]. Asked as often as
+    /// its caller likes, it looks once each [`PROGRESS_SLICE`]; one found anew is judged
+    /// from the next look on.
+    pub fn lately(&mut self) -> bool {
+        if self.looked.elapsed() >= PROGRESS_SLICE {
+            self.looked = Instant::now();
+            let vms = vm_processes_under(self.client);
+            self.followed.retain(|pid, _| vms.contains(pid));
+            for pid in vms {
+                match self.followed.entry(pid) {
+                    std::collections::hash_map::Entry::Occupied(mut p) => {
+                        if p.get_mut().look().ran {
+                            self.at = Some(Instant::now());
+                        }
+                    }
+                    std::collections::hash_map::Entry::Vacant(v) => {
+                        v.insert(shards_vmm::platform::Progress::of(pid));
+                    }
+                }
+            }
+        }
+        self.at.is_some_and(|at| at.elapsed() < DAEMON_QUIET)
+    }
+}
+
+/// How long a test waits on a state a home's daemon or its microVMs come to (a pool
+/// filled, a restored run's VM up, a VM gone): `timeout`, as before, or past it for as long
+/// as they progress, as [`run_command`] waits on a client: while the home's daemon says
+/// something within [`DAEMON_QUIET`] ([`Said`]), or a VM process under it, or under this
+/// test's process (its clients' own, `run --kernel` and `restore`'s), ran within as long
+/// ([`Ran`]). Fast hosts keep `timeout`; a slow one (the parity plan's step 10, an arm64
+/// Windows host nested under QEMU's TCG, whose template saves took 20 s and pool restores
+/// a further minute) is waited on while it works, and a stuck one fails a minute after its
+/// last progress. The look that fails a wait begins past it: one that takes long itself,
+/// as a PowerShell's look at Windows' processes does, is never what the wait runs out in.
+pub struct Patience {
+    start: Instant,
+    timeout: Duration,
+    home: Option<PathBuf>,
+    said: Option<Said>,
+    /// The VM processes under this test's process.
+    own: Ran,
+    /// The home's daemon, and the VM processes under it, followed anew as it changes.
+    daemon: Option<(u32, Ran)>,
+    /// When the daemon's pid was last read: once a second at most.
+    read: Option<Instant>,
+    /// Whether patience has run out, the look after it still to come.
+    out: bool,
+}
+
+impl Patience {
+    /// Patience with the daemon of `home` and its microVMs, and this test's own.
+    pub fn of(home: &Path, timeout: Duration) -> Patience {
+        Patience::with(Some(home), timeout)
+    }
+
+    /// Patience with this test's own microVMs, where no home's daemon serves them.
+    pub fn own(timeout: Duration) -> Patience {
+        Patience::with(None, timeout)
+    }
+
+    fn with(home: Option<&Path>, timeout: Duration) -> Patience {
+        Patience {
+            start: Instant::now(),
+            timeout,
+            home: home.map(Path::to_path_buf),
+            said: home.map(Said::of),
+            own: Ran::of(std::process::id()),
+            daemon: None,
+            read: None,
+            out: false,
+        }
+    }
+
+    /// Whether to look again: within its timeout, or past it while the daemon or a microVM
+    /// progresses; once neither does, once more, the look after this one, and then no more.
+    /// Ask it after each look that found the state not yet come, as often as they come.
+    pub fn holds(&mut self) -> bool {
+        let due = self.read.is_none_or(|r| r.elapsed() >= Duration::from_secs(1));
+        if let Some(home) = self.home.as_ref().filter(|_| due) {
+            self.read = Some(Instant::now());
+            let pid = std::fs::read_to_string(home.join("daemon.pid"))
+                .ok()
+                .and_then(|p| p.trim().parse::<u32>().ok());
+            if pid != self.daemon.as_ref().map(|(d, _)| *d) {
+                self.daemon = pid.map(|d| (d, Ran::of(d)));
+            }
+        }
+        // Each asked each time, so that each sees when it last progressed.
+        let said = self.said.as_mut().is_some_and(Said::lately);
+        let ran = self.own.lately();
+        let daemons = self.daemon.as_mut().is_some_and(|(_, r)| r.lately());
+        if self.start.elapsed() < self.timeout || said || ran || daemons {
+            self.out = false;
+            return true;
+        }
+        !std::mem::replace(&mut self.out, true)
+    }
+}
+
+/// The VM processes `client` is, or started, as far down as its descendants go: shards-vm's
+/// and the GPU's (shards-vm-gpu), from Windows' table of processes or `ps`.
+pub fn vm_processes_under(client: u32) -> Vec<u32> {
+    #[cfg(windows)]
+    let listed = processes();
+    #[cfg(unix)]
+    let listed: Vec<(u32, u32, String)> = Command::new("ps")
+        .args(["-A", "-o", "pid=,ppid=,comm="])
+        .output()
+        .map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .filter_map(|line| {
+                    let mut w = line.split_whitespace();
+                    Some((
+                        w.next()?.parse().ok()?,
+                        w.next()?.parse().ok()?,
+                        w.collect::<Vec<_>>().join(" "),
+                    ))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let is_vm = |name: &str| {
+        let name = name
+            .rsplit(['/', '\\'])
+            .next()
+            .unwrap_or(name)
+            .to_ascii_lowercase();
+        let name = name.strip_suffix(".exe").unwrap_or(&name);
+        name == "shards-vm" || name == "shards-vm-gpu"
+    };
+    let mut under = vec![client];
+    let mut i = 0;
+    while let Some(&parent) = under.get(i) {
+        for (pid, ppid, _) in &listed {
+            if *ppid == parent && !under.contains(pid) {
+                under.push(*pid);
+            }
+        }
+        i += 1;
+    }
+    listed
+        .iter()
+        .filter(|(pid, _, name)| under.contains(pid) && is_vm(name))
+        .map(|(pid, ..)| *pid)
+        .collect()
+}
+
 /// Runs `cmd` as built, `shards` itself ([`run_shards_with`]) or a program that runs it
 /// (given [`as_tests_run`]'s environment), its output collected; killed, failing the test,
-/// after `timeout`, `asked` naming it then.
+/// after `timeout`, `asked` naming it then, or, where its home's daemon still says
+/// something then, once it has said nothing for [`DAEMON_QUIET`] ([`Said`]), or where a
+/// microVM of its own still runs then, once none has run for as long ([`Ran`]).
 pub fn run_command(mut cmd: Command, asked: &[String], timeout: Duration) -> Run {
     let start = Instant::now();
     // Its home, for what is shown of a run that never ends ([`stuck`]).
@@ -1920,11 +2294,17 @@ pub fn run_command(mut cmd: Command, asked: &[String], timeout: Duration) -> Run
     };
     let out = collect(Box::new(child.stdout.take().unwrap()));
     let err = collect(Box::new(child.stderr.take().unwrap()));
+    let mut said = home.as_deref().map(Said::of);
+    let mut ran = Ran::of(child.id());
     let status = loop {
         if let Some(st) = child.try_wait().unwrap() {
             break st;
         }
-        if start.elapsed() > timeout {
+        // Each asked each time, so that it sees when the daemon last said something, and
+        // when a microVM of the client's own last ran.
+        let said_lately = said.as_mut().is_some_and(Said::lately);
+        let ran_lately = ran.lately();
+        if start.elapsed() > timeout && !said_lately && !ran_lately {
             let seen = stuck(child.id(), home.as_deref());
             let _ = child.kill();
             let _ = child.wait();
@@ -2625,32 +3005,48 @@ pub struct Vm {
 /// Lines a process printed, as they came.
 pub type Log = Arc<std::sync::Mutex<Vec<String>>>;
 
-/// Runs `f`, failing with `log` where it does not end within `within`: a test that
-/// stalls says where, and what its VM said, rather than holding the whole binary.
+/// Runs `f`, failing with what `vm` said where it does not end within `within`, nor its
+/// guest progress for [`DAEMON_QUIET`] past it: a line more from it, or its VM process's
+/// CPU time ([`Heard::running`]). A test that stalls says where, and what its VM said,
+/// rather than holding the whole binary; one its host runs slowly is waited on as it runs.
 pub fn within<T: Send + 'static>(
     what: &str,
     within: Duration,
-    log: &Log,
+    vm: &Vm,
     f: impl FnOnce() -> T + Send + 'static,
 ) -> T {
     let (tx, rx) = std::sync::mpsc::channel();
     let worker = std::thread::spawn(move || {
         let _ = tx.send(f());
     });
-    match rx.recv_timeout(within) {
-        Ok(v) => v,
-        // Ended without sending: it panicked, and says why, after what the VM said.
-        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-            let said = log.lock().map(|l| l.join("\n")).unwrap_or_default();
-            let _ = writeln!(std::io::stderr(), "{what}: failed; the VM said:\n{said}");
-            match worker.join() {
-                Err(panic) => std::panic::resume_unwind(panic),
-                Ok(()) => panic!("{what}: ended with no result"),
+    let start = Instant::now();
+    let lines = || vm.log.lock().map_or(0, |l| l.len());
+    let mut heard = Heard::running(vm.id());
+    let mut said = lines();
+    loop {
+        let now = lines();
+        heard.said(now != said);
+        said = now;
+        // Asked each pass, so that each slice of its VM process's is judged as it comes.
+        let progressing = heard.lately(true);
+        match rx.recv_timeout(Duration::from_secs(1)) {
+            Ok(v) => return v,
+            // Ended without sending: it panicked, and says why, after what the VM said.
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                let said = vm.log.lock().map(|l| l.join("\n")).unwrap_or_default();
+                let _ = writeln!(std::io::stderr(), "{what}: failed; the VM said:\n{said}");
+                match worker.join() {
+                    Err(panic) => std::panic::resume_unwind(panic),
+                    Ok(()) => panic!("{what}: ended with no result"),
+                }
             }
-        }
-        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-            let said = log.lock().map(|l| l.join("\n")).unwrap_or_default();
-            panic!("{what}: not done in {within:?}; the VM said:\n{said}")
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) if start.elapsed() < within || progressing => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                let said = vm.log.lock().map(|l| l.join("\n")).unwrap_or_default();
+                panic!(
+                    "{what}: not done in {within:?}, nor its guest progressed for {DAEMON_QUIET:?} after; the VM said:\n{said}"
+                )
+            }
         }
     }
 }
@@ -2708,27 +3104,67 @@ impl Vm {
         let _ = self.child.wait();
     }
 
-    /// Waits up to `timeout` for an output line containing `text`.
+    /// Waits for an output line containing `text` ([`wait_for_any`](Self::wait_for_any)).
     pub fn wait_for(&mut self, text: &str, timeout: Duration) {
         self.wait_for_any(&[text], timeout);
     }
 
-    /// Waits up to `timeout` for an output line containing any of `texts`; returns it.
+    /// Waits for an output line containing any of `texts`, and returns it: within
+    /// `timeout`, or past it while its guest says something new or its VM process runs,
+    /// within [`DAEMON_QUIET`] ([`Heard::running`]), for a guest of fewer vCPUs than its
+    /// host has CPUs. One that does neither for as long past it fails, with what it said.
+    /// A guest of more vCPUs than its host's CPUs is waited on by
+    /// [`wait_for_any_within`](Self::wait_for_any_within), whose CPU time counts only as it
+    /// starts.
     pub fn wait_for_any(&mut self, texts: &[&str], timeout: Duration) -> String {
+        let heard = Heard::running(self.child.id());
+        self.wait_heard(texts, timeout, heard)
+    }
+
+    /// [`wait_for_any`](Self::wait_for_any), its guest's progress what [`Heard::of`] takes
+    /// for it: a line it has not said before, or more of `streamed`'s stream, within
+    /// [`DAEMON_QUIET`], and its VM process's CPU time only before its first line; for a
+    /// guest of more vCPUs than its host has CPUs, which show CPU time for ever. One that
+    /// does neither for as long past `timeout` fails as before.
+    pub fn wait_for_any_within(
+        &mut self,
+        texts: &[&str],
+        timeout: Duration,
+        streamed: Option<&AtomicU64>,
+    ) -> String {
+        let heard = Heard::of(self.child.id(), streamed);
+        self.wait_heard(texts, timeout, heard)
+    }
+
+    /// Waits for a line containing any of `texts` within `timeout`, or past it while
+    /// `heard` takes its guest to progress.
+    fn wait_heard(&mut self, texts: &[&str], timeout: Duration, mut heard: Heard<'_>) -> String {
         let deadline = Instant::now() + timeout;
         loop {
-            let left = deadline.saturating_duration_since(Instant::now());
-            match self.lines.recv_timeout(left) {
+            // Asked each pass, so that each slice of its microVM's is judged as it comes.
+            let progressing = heard.lately(!self.seen.is_empty());
+            match self.lines.recv_timeout(Duration::from_secs(1)) {
                 Ok(line) => {
                     let found = texts.iter().any(|t| line.contains(t));
-                    self.seen.push(line.clone());
+                    self.hear(line.clone(), &mut heard);
                     if found {
                         return line;
                     }
                 }
-                Err(_) => panic!("no {texts:?} from the VM; it said:\n{}", self.seen.join("\n")),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+                    if Instant::now() < deadline || progressing => {}
+                Err(_) => panic!(
+                    "no {texts:?} from the VM in {timeout:?}, nor progress of its guest's for {DAEMON_QUIET:?} after; it said:\n{}",
+                    self.seen.join("\n")
+                ),
             }
         }
+    }
+
+    /// Keeps a line it printed, which [`Heard`] takes for progress where it is new.
+    fn hear(&mut self, line: String, heard: &mut Heard<'_>) {
+        heard.said(!self.seen.contains(&line));
+        self.seen.push(line);
     }
 
     /// Waits for the process to exit, keeping everything it printed.
@@ -2740,21 +3176,162 @@ impl Vm {
     }
 
     /// [`wait_exit`](Self::wait_exit), failing, with what it printed, if the process runs
-    /// past `timeout`.
-    pub fn wait_exit_within(&mut self, timeout: Duration) -> Option<i32> {
+    /// past `timeout` and its guest has said nothing new and its VM process run nothing
+    /// for [`DAEMON_QUIET`] ([`Heard::running`]): for a guest of fewer vCPUs than its host
+    /// has CPUs, as [`wait_for_any`](Self::wait_for_any) waits on one.
+    pub fn wait_exit_following(&mut self, timeout: Duration) -> Option<i32> {
+        let heard = Heard::running(self.child.id());
+        self.wait_exit_heard(timeout, heard)
+    }
+
+    /// [`wait_exit`](Self::wait_exit), failing, with what it printed, if the process runs
+    /// past `timeout` and its guest has said nothing new, nor carried more of `streamed`'s
+    /// stream, for [`DAEMON_QUIET`] ([`Heard::of`]): a guest whose workload its host runs
+    /// slower than `timeout` allows (the parity plan's step 10, a 64-vCPU storm on 4 TCG
+    /// CPUs) is waited on while it gets on with it, and one that does not fails as before.
+    pub fn wait_exit_within(&mut self, timeout: Duration, streamed: Option<&AtomicU64>) -> Option<i32> {
+        let heard = Heard::of(self.child.id(), streamed);
+        self.wait_exit_heard(timeout, heard)
+    }
+
+    /// Waits for the process to exit within `timeout`, or past it while `heard` takes its
+    /// guest to progress.
+    fn wait_exit_heard(&mut self, timeout: Duration, mut heard: Heard<'_>) -> Option<i32> {
         let deadline = Instant::now() + timeout;
         while self.child.try_wait().unwrap().is_none() {
-            if Instant::now() > deadline {
+            // Asked each pass, so that each slice of its microVM's and each byte of its
+            // stream is judged as it comes.
+            let progressing = heard.lately(!self.seen.is_empty());
+            if Instant::now() > deadline && !progressing {
                 let _ = self.child.kill();
                 self.wait_exit();
                 panic!(
-                    "still running after {timeout:?}; it said:\n{}",
+                    "still running after {timeout:?}, and no progress of its guest's for {DAEMON_QUIET:?} after; it said:\n{}",
                     self.seen.join("\n")
                 );
             }
-            std::thread::sleep(Duration::from_millis(5));
+            match self.lines.recv_timeout(Duration::from_millis(5)) {
+                Ok(line) => self.hear(line, &mut heard),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                // Its pipes closed as it goes: it is waited for alone.
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    std::thread::sleep(Duration::from_millis(5))
+                }
+            }
         }
         self.wait_exit()
+    }
+}
+
+/// What a wait on a guest past its deadline takes for its progress (D209): a line it has
+/// not printed before, or bytes more of a stream a test carries through it (`streamed`, as
+/// [`Following`] counts them); and its microVM's CPU time ([`Ran`]), throughout
+/// ([`Heard::running`]), or only before its first line, while it starts ([`Heard::of`]),
+/// or never, for a machine of this process's own ([`Heard::console`]). CPU time is
+/// progress throughout for a guest of fewer vCPUs than its host has CPUs, whose idle vCPUs
+/// take less than an idle microVM does ([`shards_vmm::platform::IDLE_VM_CPU`]): a guest
+/// onlining a gigabyte it plugged says nothing as it does, past the test's minute on an
+/// arm64 Windows host nested under QEMU's TCG (the parity plan's step 10). It is no
+/// progress once a guest of more vCPUs than that has its own words: a 64-vCPU guest on 4
+/// TCG CPUs shows it for ever, its stream stopped or not (step 10: a storm waited on for
+/// 2 h 16 min, its VM process at 31,324 CPU-seconds), and a guest that repeats a line says
+/// nothing new.
+pub struct Heard<'a> {
+    /// Its VM processes, where their CPU time counts.
+    ran: Option<Ran>,
+    /// Whether their CPU time counts past its guest's first line.
+    throughout: bool,
+    streamed: Option<&'a AtomicU64>,
+    bytes: u64,
+    /// When it last progressed, since this began watching.
+    at: Option<Instant>,
+}
+
+impl<'a> Heard<'a> {
+    /// The guest of the VM process `vm` is or started, its CPU time counted only before
+    /// its first line.
+    fn of(vm: u32, streamed: Option<&'a AtomicU64>) -> Heard<'a> {
+        Heard {
+            ran: Some(Ran::of(vm)),
+            throughout: false,
+            bytes: streamed.map_or(0, |s| s.load(Ordering::Relaxed)),
+            streamed,
+            at: None,
+        }
+    }
+
+    /// The guest of the VM process `vm` is or started (`run --kernel`, `restore`), its CPU
+    /// time counted throughout: for a guest of fewer vCPUs than its host has CPUs.
+    pub fn running(vm: u32) -> Heard<'static> {
+        Heard {
+            ran: Some(Ran::of(vm)),
+            throughout: true,
+            streamed: None,
+            bytes: 0,
+            at: None,
+        }
+    }
+
+    /// The guest of a machine this process runs (`vm::start`), by what it says alone: its
+    /// vCPUs are threads of this process, whose CPU time is its other tests' too, and its
+    /// own polling's.
+    pub fn console() -> Heard<'static> {
+        Heard {
+            ran: None,
+            throughout: false,
+            streamed: None,
+            bytes: 0,
+            at: None,
+        }
+    }
+
+    /// Something it said, `new` where it had not said it before.
+    pub fn said(&mut self, new: bool) {
+        if new {
+            self.at = Some(Instant::now());
+        }
+    }
+
+    /// Whether it progressed within [`DAEMON_QUIET`]; `started`, whether it has printed a
+    /// line, past which its CPU time counts only where it counts throughout.
+    pub fn lately(&mut self, started: bool) -> bool {
+        if let Some(s) = self.streamed {
+            let bytes = s.load(Ordering::Relaxed);
+            if bytes != self.bytes {
+                self.bytes = bytes;
+                self.at = Some(Instant::now());
+            }
+        }
+        let ran = (self.throughout || !started) && self.ran.as_mut().is_some_and(Ran::lately);
+        ran || self.at.is_some_and(|at| at.elapsed() < DAEMON_QUIET)
+    }
+}
+
+/// How a machine this process runs (`vm::start`) ends, as `ended` says (a thread's
+/// `running.wait()`): within `timeout`, or past it while its guest writes something new to
+/// its console within [`DAEMON_QUIET`] ([`Heard::console`]); `None` where it does neither,
+/// its machine then stopped.
+pub fn machine_ended(
+    handle: &shards_vmm::vm::Handle,
+    ended: &std::sync::mpsc::Receiver<shards_vmm::vm::ExitReason>,
+    timeout: Duration,
+) -> Option<shards_vmm::vm::ExitReason> {
+    let deadline = Instant::now() + timeout;
+    let mut heard = Heard::console();
+    let mut console = handle.console_said();
+    loop {
+        let now = handle.console_said();
+        heard.said(now != console);
+        console = now;
+        let progressing = heard.lately(true);
+        match ended.recv_timeout(Duration::from_millis(100)) {
+            Ok(reason) => return Some(reason),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) if Instant::now() < deadline || progressing => {}
+            Err(_) => {
+                handle.stop();
+                return None;
+            }
+        }
     }
 }
 
@@ -2772,15 +3349,25 @@ pub fn vsock_connect(
     port: u32,
     timeout: Duration,
 ) -> Result<shards_vmm::platform::UnixStream, String> {
-    let mut s =
+    let s =
         shards_vmm::platform::UnixStream::connect(sock).map_err(|e| format!("{}: {e}", sock.display()))?;
     s.set_read_timeout(Some(timeout)).map_err(|e| e.to_string())?;
+    vsock_handshake(&s, &mut &s, port)?;
+    Ok(s)
+}
+
+/// Asks the VM's socket `s` for guest port `port`, reading its answer through `r`.
+fn vsock_handshake(
+    mut s: &shards_vmm::platform::UnixStream,
+    r: &mut impl Read,
+    port: u32,
+) -> Result<(), String> {
     s.write_all(format!("CONNECT {port}\n").as_bytes())
         .map_err(|e| format!("CONNECT: {e}"))?;
     let mut line = Vec::new();
     let mut byte = [0u8; 1];
     while line.last() != Some(&b'\n') {
-        match s.read(&mut byte) {
+        match r.read(&mut byte) {
             Ok(1) => line.push(byte[0]),
             _ => return Err(format!("refused after {:?}", String::from_utf8_lossy(&line))),
         }
@@ -2793,13 +3380,70 @@ pub fn vsock_connect(
     if host < 1 << 30 {
         return Err(format!("host port {host} outside [2^30, 2^31)"));
     }
-    Ok(s)
+    Ok(())
+}
+
+/// A guest's stream, read for as long as it carries bytes: each read waits up to
+/// [`DAEMON_QUIET`] for one, so that a stream that carries anything goes on however slowly
+/// its host runs its guest (the parity plan's step 10: a 64-vCPU storm's echo on 4 TCG
+/// CPUs, 196,608 bytes in 120 s), and one that carries nothing for as long fails, with the
+/// stream's own timeout error, whatever its microVM's CPU does (a guest on more vCPUs than
+/// its host's CPUs runs them all for ever). What it reads is added to `carried`, where a
+/// wait on its guest follows it ([`Vm::wait_exit_within`]).
+pub struct Following<'a> {
+    stream: &'a shards_vmm::platform::UnixStream,
+    carried: Option<&'a AtomicU64>,
+}
+
+impl<'a> Following<'a> {
+    /// Reads of `stream`, which reads with [`DAEMON_QUIET`]'s timeout from now on.
+    pub fn of(
+        stream: &'a shards_vmm::platform::UnixStream,
+        carried: Option<&'a AtomicU64>,
+    ) -> io::Result<Following<'a>> {
+        stream.set_read_timeout(Some(DAEMON_QUIET))?;
+        Ok(Following { stream, carried })
+    }
+}
+
+impl Read for Following<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        loop {
+            match self.stream.read(buf) {
+                Ok(n) => {
+                    if let Some(c) = self.carried {
+                        c.fetch_add(n as u64, Ordering::Relaxed);
+                    }
+                    return Ok(n);
+                }
+                // A timeout says WouldBlock through SO_RCVTIMEO, TimedOut on Windows.
+                Err(e) if matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut) => {
+                    return Err(io::Error::new(
+                        e.kind(),
+                        format!("{e}: nothing for {DAEMON_QUIET:?}"),
+                    ));
+                }
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                Err(e) => return Err(e),
+            }
+        }
+    }
 }
 
 /// Streams `len` bytes of pattern `salt` through the guest's echo on `port` and checks
-/// what comes back, byte for byte, after the half-close.
-pub fn echo(sock: &Path, port: u32, salt: u64, len: usize) -> Result<(), String> {
-    let s = vsock_connect(sock, port, Duration::from_secs(60))?;
+/// what comes back, byte for byte, after the half-close: each read waits a minute for its
+/// next byte ([`Following`]), and what comes back is added to `carried`.
+pub fn echo(
+    sock: &Path,
+    port: u32,
+    salt: u64,
+    len: usize,
+    carried: Option<&AtomicU64>,
+) -> Result<(), String> {
+    let s =
+        shards_vmm::platform::UnixStream::connect(sock).map_err(|e| format!("{}: {e}", sock.display()))?;
+    let mut r = Following::of(&s, carried).map_err(|e| e.to_string())?;
+    vsock_handshake(&s, &mut r, port)?;
     let mut w = s.try_clone().map_err(|e| e.to_string())?;
     let writer = std::thread::spawn(move || -> Result<(), String> {
         let mut buf = vec![0u8; 256 * 1024];
@@ -2812,7 +3456,6 @@ pub fn echo(sock: &Path, port: u32, salt: u64, len: usize) -> Result<(), String>
         }
         w.shutdown(std::net::Shutdown::Write).map_err(|e| e.to_string())
     });
-    let mut r = s;
     let mut got = 0usize;
     let mut buf = vec![0u8; 256 * 1024];
     loop {

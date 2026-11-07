@@ -287,19 +287,16 @@ impl SwapWindow {
         mapped.read(off, buf).map_err(|e| format!("its swap: {e}"))
     }
 
-    /// [`save_run`](Self::save_run) of the pages of `pages` alone, those written since a
-    /// live move's last round (D176 part 7), zeros and all: `to` as long as the run's swap,
-    /// its other pages holes.
-    pub fn save_run_pages(&self, to: &File, pages: &crate::vm::live::Pages) -> Result<u64, String> {
+    /// [`save_run`](Self::save_run) of none of its pages, which a live move's stream holds
+    /// (D176 part 7): `to` as long as the run's swap, all holes.
+    pub fn save_run_length(&self, to: &File) -> Result<u64, String> {
         let run = lock(&self.run);
         let at = |e: std::io::Error| format!("its swap: {e}");
         let Some(mapped) = run.as_ref() else {
             to.set_len(0).map_err(at)?;
             return Ok(0);
         };
-        mapped
-            .write_runs(to, &pages.runs_within(self.gpa, mapped.len as u64))
-            .map_err(at)?;
+        mapped.write_runs(to, &[]).map_err(at)?;
         Ok(mapped.len as u64)
     }
 
@@ -938,7 +935,7 @@ impl Layer {
     /// its file holds data in, asked with its guest's mapping and this process's taken away
     /// where a mapping hides them ([`Shared::data_ranges`]).
     pub fn save(&self, head: &File, data: &File) -> Result<(), String> {
-        self.save_with(head, data, None)
+        self.save_with(head, data, false)
     }
 
     /// Where its file system is in its guest, its address and length, once placed: what a
@@ -982,29 +979,20 @@ impl Layer {
         self.data.read(off, buf).map_err(|e| format!("its layer: {e}"))
     }
 
-    /// [`save`](Self::save) of its file system's pages of `pages` alone, those written
-    /// since a live move's last round (D176 part 7), zeros and all; its head whole.
-    pub fn save_pages(&self, head: &File, data: &File, pages: &crate::vm::live::Pages) -> Result<(), String> {
-        self.save_with(head, data, Some(pages))
+    /// [`save`](Self::save) of its head alone, whole: its file system's pages a live move's
+    /// stream holds (D176 part 7), `data` as long as it and all holes.
+    pub fn save_head(&self, head: &File, data: &File) -> Result<(), String> {
+        self.save_with(head, data, true)
     }
 
-    fn save_with(
-        &self,
-        head: &File,
-        data: &File,
-        pages: Option<&crate::vm::live::Pages>,
-    ) -> Result<(), String> {
+    fn save_with(&self, head: &File, data: &File, head_alone: bool) -> Result<(), String> {
         if self.data.released() {
             return Err(RELEASED.into());
         }
         let at = |e: std::io::Error| format!("its layer: {e}");
         self.head.save(head).map_err(at)?;
-        if let Some(pages) = pages {
-            let (gpa, len) = self.data_at().ok_or("its layer is not placed in its guest")?;
-            return self
-                .data
-                .write_runs(data, &pages.runs_within(gpa, len))
-                .map_err(at);
+        if head_alone {
+            return self.data.write_runs(data, &[]).map_err(at);
         }
         // SAFETY: the mapping `data` holds, for the layer's life.
         unsafe { platform::flush_shared(self.data.host, self.data.len) }.map_err(at)?;

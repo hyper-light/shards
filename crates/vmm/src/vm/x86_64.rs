@@ -385,6 +385,17 @@ fn assemble(
     gpu: Option<u64>,
     pci: super::Pci<'_>,
 ) -> Result<Assembled, String> {
+    if config.nested {
+        return Err("virtualization of a guest's own is not given on x86_64 yet".into());
+    }
+    // The VM before the layout: on WHP each host function it assigns is a device of its
+    // partition first, whose BARs size the PCI bus's 64-bit window (D154).
+    #[cfg(not(hv = "whp"))]
+    let vm = hv::Vm::new(hv::VmConfig { vcpus: config.vcpus }).map_err(|e| e.to_string())?;
+    #[cfg(hv = "whp")]
+    let (vm, assigned, given) = assigning(config, pci.vfio)?;
+    #[cfg(hv = "whp")]
+    let pci = super::Pci { vfio: &given, ..pci };
     let ram = config
         .memory_mib
         .checked_mul(MIB)
@@ -425,10 +436,6 @@ fn assemble(
             .ok_or("the PCI 64-bit window overflows the address space")?,
         None => end,
     };
-    if config.nested {
-        return Err("virtualization of a guest's own is not given on x86_64 yet".into());
-    }
-    let vm = hv::Vm::new(hv::VmConfig { vcpus: config.vcpus }).map_err(|e| e.to_string())?;
     // Every address the guest is given lies within the physical addresses its CPU says it
     // has: its kernel takes no memory or window past them (Linux's iomem_resource), and the
     // hypervisor maps none.
@@ -588,6 +595,8 @@ fn assemble(
         memory,
         irqs: routes,
         iommu: iommu.clone(),
+        #[cfg(hv = "whp")]
+        assigned: std::cell::Cell::new(assigned),
     };
     let pci = super::pci_bus(
         &mut bus.mmio,
@@ -629,6 +638,38 @@ fn assemble(
         share_window_mib,
         gpu_window,
     })
+}
+
+/// A VM whose partition WHP lets assign the host's functions `vfio` (D154), each made a
+/// device of it, with what its BAR registers read sized; and `vfio` with their 64-bit
+/// BARs' sizes, which the PCI bus's 64-bit window holds.
+#[cfg(hv = "whp")]
+#[allow(clippy::type_complexity)]
+fn assigning(
+    config: &MachineConfig,
+    vfio: &[super::Vfio],
+) -> Result<(hv::Vm, Vec<(hv::Assigned, [u32; 6])>, Vec<super::Vfio>), String> {
+    use crate::devices::pci::{BarKind, passed};
+    let vcpus = hv::VmConfig { vcpus: config.vcpus };
+    if vfio.is_empty() {
+        let vm = hv::Vm::new(vcpus).map_err(|e| e.to_string())?;
+        return Ok((vm, Vec::new(), Vec::new()));
+    }
+    let vm = hv::Vm::assigning(vcpus).map_err(|e| e.to_string())?;
+    let (mut assigned, mut given) = (Vec::new(), Vec::new());
+    for (id, f) in (1u64..).zip(vfio) {
+        let named = |e: hv::Error| format!("{}: {e}", f.name);
+        let device = vm.assign(id, &f.name).map_err(named)?;
+        let probed = device.probed_bars().map_err(named)?;
+        let bars64 = passed::sized_bars(probed)
+            .into_iter()
+            .filter(|&(_, _, kind)| kind == BarKind::Memory64)
+            .map(|(_, size, _)| size)
+            .collect();
+        assigned.push((device, probed));
+        given.push(super::Vfio { bars64, ..f.clone() });
+    }
+    Ok((vm, assigned, given))
 }
 
 pub fn build(cfg: &Config) -> Result<Machine, String> {
@@ -822,35 +863,7 @@ pub fn restore(
 /// ([`mapped::every_run`]).
 #[cfg(hv = "whp")]
 fn pre_fault(vcpu: &hv::Vcpu, working_set: &[hv::Touch]) -> (usize, usize) {
-    let mut ahead = 0;
-    let mut count = 0;
-    for write in [false, true] {
-        let t0 = crate::log::uptime_us();
-        let runs = mapped::runs(working_set.iter().filter(|t| t.written == write).map(|t| t.gpa));
-        let made = runs.len();
-        count += made;
-        let mut done = 0;
-        if vcpu.pre_fault_runs(&runs, write).is_ok() {
-            done = runs.iter().map(|(_, len)| (len / PAGE) as usize).sum();
-        } else {
-            let every = mapped::every_run(runs, |gpa, len| {
-                vcpu.pre_fault_runs(&[(gpa, len)], write)
-                    .map(|()| done += (len / PAGE) as usize)
-                    .map_err(|e| e.to_string())
-            });
-            if let Err(e) = every {
-                warn!("mapping the working set ahead {e}: the guest faults those pages in");
-            }
-        }
-        ahead += done;
-        if write && done > 0 {
-            info!(
-                "copied {done} written working-set pages ahead, in {made} runs, in {} us",
-                crate::log::uptime_us().saturating_sub(t0)
-            );
-        }
-    }
-    (ahead, count)
+    mapped::populate(vcpu, working_set)
 }
 
 /// Maps every page of `working_set` into the stage-2 tables; how many it mapped, and in how

@@ -26,7 +26,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-use common::{TempDir, cannot_pool, cannot_run_vms, guest_init, kernel, workload_image};
+use common::{Patience, TempDir, cannot_pool, cannot_run_vms, guest_init, kernel, workload_image};
 use shards_abi::run::Spec;
 use shards_ipc::Stream;
 use shards_ipc::fd::{AsFd as _, OwnedFd};
@@ -430,12 +430,13 @@ impl Warm {
     /// leaving the daemon's socket.
     fn ends(mut self, status: u8, not_run: Option<&str>) {
         let started = not_run.is_none();
-        let deadline = Instant::now() + TIMEOUT;
+        // Within TIMEOUT, or past it while a VM process of this test's runs ([`Patience`]).
+        let mut patience = Patience::own(TIMEOUT);
         let exited = loop {
             if let Some(exited) = self.child.try_wait().unwrap() {
                 break exited;
             }
-            if Instant::now() >= deadline {
+            if !patience.holds() {
                 let _ = self.child.kill();
                 break self.child.wait().unwrap();
             }

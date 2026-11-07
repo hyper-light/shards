@@ -34,9 +34,6 @@ enum Seen {
     // are tests/context.rs's, on a pty.
     #[cfg_attr(unix, allow(dead_code))]
     Resized(u16, u16),
-    // Read on Unix alone: a test signals another process's console's group on Windows only
-    // from that console (GenerateConsoleCtrlEvent).
-    #[cfg_attr(windows, allow(dead_code))]
     Signalled(u32),
     /// The command was hung up: its client went before it ended.
     HungUp,
@@ -251,9 +248,9 @@ fn names(dir: &Path) -> Vec<String> {
     names
 }
 
-/// `save -o FILE` over a context, in `dir`.
+/// `save -o FILE` over a context, in `dir`, started so that `common::terminate` reaches it.
 fn saving(laptop: &Path, dir: &Path, file: &str) -> std::process::Child {
-    common::command()
+    common::interruptible(&mut common::command())
         .current_dir(dir)
         .args(["--context", "gpu", "save", "-o", file, "image"])
         .env("SHARDS_HOME", laptop.as_os_str())
@@ -360,23 +357,24 @@ fn a_file_the_command_writes_is_the_clients_whole_or_not_at_all() {
     assert_eq!(ended(child).0, Some(1));
     assert_eq!(std::fs::read(files.join("kept.tar")).unwrap(), b"before");
     assert_eq!(names(&files), ["kept.tar", "whole.tar"]);
-    // A signal that ends the command, sent on as it comes.
-    #[cfg(unix)]
+    // A signal that ends the command, sent on as it comes: on Windows the console's event,
+    // which goes as Go's runtime gives it (`common::PROXIED`).
     {
         let child = saving(&laptop, &files, "signalled.tar");
         let Seen::Started(_, output, exit) = d.next() else {
             panic!("no start");
         };
         output.send(b"half".to_vec()).unwrap();
-        // SAFETY: kill(2) of our own child, which is only reaped below.
-        unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGTERM) };
+        common::terminate(&child);
+        let (_, number) = common::PROXIED;
         match d.next() {
-            Seen::Signalled(linux) => assert_eq!(linux, 15),
+            Seen::Signalled(linux) => assert_eq!(linux, u32::from(number)),
             other => panic!("{other:?}, waiting for the signal"),
         }
         drop(output);
-        exit.send(143).unwrap();
-        assert_eq!(ended(child).0, Some(143));
+        let status = 128 + i32::from(number);
+        exit.send(status).unwrap();
+        assert_eq!(ended(child).0, Some(status));
         assert_eq!(names(&files), ["kept.tar", "whole.tar"]);
     }
     // The connection lost, half the archive written here.
@@ -447,8 +445,8 @@ fn a_file_not_written_whole_here_is_kept_by_no_exit() {
 
 /// A signal that ends the client before the machine answers, with nothing yet to send it
 /// to, leaves no file: the context names a port that never answers, and the client is
-/// signalled once its file is made.
-#[cfg(unix)]
+/// signalled once its file is made. On Windows the signal is the console's event, which,
+/// with no command to take it, ends the client as Windows' own handler does.
 #[test]
 fn a_client_ended_before_its_machine_answers_leaves_no_file() {
     let laptop = TempDir::new("cc-unans");
@@ -475,10 +473,14 @@ fn a_client_ended_before_its_machine_answers_leaves_no_file() {
     }
     // Well into its handshake, which gives up after 10 s.
     std::thread::sleep(Duration::from_millis(500));
-    // SAFETY: kill(2) of our own child, which is only reaped below.
-    unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGTERM) };
+    common::terminate(&child);
     let (status, said) = ended(child);
-    assert_eq!(status, Some(143), "{said}");
+    let ended_by = if cfg!(windows) {
+        common::TERMINATED
+    } else {
+        Some(143)
+    };
+    assert_eq!(status, ended_by, "{said}");
     assert!(names(&files).is_empty(), "{:?}", names(&files));
 }
 

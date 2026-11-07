@@ -1,0 +1,108 @@
+DIAGNOSTIC SUBSETS; NOT A COMPLETE SUITE.
+== multi4-profile-host.txt
+2026-11-03T08:30:15.8067168-08:00
+
+
+Caption        : Microsoft Windows 11 Pro
+Version        : 10.0.26300
+BuildNumber    : 26300
+LastBootUpTime : 11/3/2026 8:28:22 AM
+
+
+
+
+
+DisplayVersion : 26H2
+CurrentBuild   : 26300
+UBR            : 9711
+
+
+
+
+
+NumberOfLogicalProcessors : 4
+TotalPhysicalMemory       : 25758253056
+HypervisorPresent         : True
+
+
+
+
+
+VirtualizationBasedSecurityStatus : 2
+SecurityServicesConfigured        : {0}
+SecurityServicesRunning           : {0}
+
+
+
+
+
+TimeCreated : 11/3/2026 8:28:23 AM
+Id          : 1
+Message     : Hypervisor successfully started.
+
+
+
+
+== multi4-profile-bootmax.txt
+MANIFEST binaries=141
+START 1/141 path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/shards#0.6.0 boot 2026-11-03T16:30:55.8824168Z
+running 1 test
+test boots_the_hosts_maximum_vcpu_count ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 26 filtered out; finished in 56.66s
+
+END 001-boot exit=0 elapsed=57.470617
+COMPLETE binaries=1 manifest=141 failed=0 filter=boot/boots_the_hosts_maximum_vcpu_count start=0
+
+== multi4-memory-plug.txt
+MANIFEST binaries=141
+START 75/141 path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/shards#0.6.0 build_windows 2026-11-03T16:32:42.8242738Z
+running 1 test
+test a_builders_memory_is_plugged_as_its_build_needs_it ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 7 filtered out; finished in 149.34s
+
+END 075-build_windows exit=0 elapsed=150.265483
+COMPLETE binaries=1 manifest=141 failed=0 filter=build_windows/a_builders_memory_is_plugged_as_its_build_needs_it start=0
+
+== multi4-memory-fast.txt
+MANIFEST binaries=141
+START 75/141 path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/shards#0.6.0 build_windows 2026-11-03T16:36:03.5348208Z
+failures:
+    a_builders_memory_is_plugged_as_fast_as_its_jobs_take_it
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7 filtered out; finished in 182.18s
+
+FAILED 075-build_windows exit=101
+#2 [internal] load metadata for 127.0.0.1:49926/test/image:v1
+#2 DONE 0.7s
+
+#3 [internal] load .agentignore
+#3 DONE 0.0s
+
+#4 [stage-0 1/2] FROM 127.0.0.1:49926/test/image:v1@sha256:fb0376462c6a31d7c1f4fc628d6b0801c9321288de34b31a5be21849cfb16a13
+#4 resolve 127.0.0.1:49926/test/image:v1@sha256:fb0376462c6a31d7c1f4fc628d6b0801c9321288de34b31a5be21849cfb16a13 done
+#4 DONE 0.0s
+
+#5 [stage-0 2/2] RUN --mount=type=tmpfs,target=/held,size=2g ["/bin/testguest", "alloc-par", "1", "3072", "/held/big", "1024"]
+shards: its builder is gone, and so this builder ends
+
+--- ps -a in its home
+CONTAINER ID   IMAGE     COMMAND   CREATED   STATUS    PORTS     NAMES
+
+(no cdb on this host for the stacks)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+--- C:\Users\runner\AppData\Local\Temp\shards-tests\2660\bw-fast-ctx-1\daemon.log, its last 0 lines
+--- C:\Users\runner\AppData\Local\Temp\shards-tests\2660\bw-fast-home-0\daemon.log, its last 4 lines
+shards daemon 2092: the default bridge is 172.18.0.0/16
+shards daemon 2092: serving C:\Users\runner\AppData\Local\Temp\shards-tests\2660\bw-fast-home-0 through C:\Users\runner\AppData\Local\Temp\shards-tests\2660\bw-fast-home-0\requests, with up to 16777216 descriptors open
+shards daemon 2092: watching the host's memory pressure: the system's low memory notification (CreateMemoryResourceNotification), said again every 2 s while it lasts
+shards daemon 2092: collected 0 blobs, 0 root filesystems and 1 files left in ingest/: 0 bytes, in 177.385ms
+--- C:\Users\runner\AppData\Local\Temp\shards-tests\2660\bw-fast-home-0\daemon.log, its last 550 of 550 bytes
+shards daemon 2092: the default bridge is 172.18.0.0/16
+shards daemon 2092: serving C:\Users\runner\AppData\Local\Temp\shards-tests\2660\bw-fast-home-0 through C:\Users\runner\AppData\Local\Temp\shards-tests\2660\bw-fast-home-0\requests, with up to 16777216 descriptors open
+shards daemon 2092: watching the host's memory pressure: the system's low memory notification (CreateMemoryResourceNotification), said again every 2 s while it lasts
+shards daemon 2092: collected 0 blobs, 0 root filesystems and 1 files left in ingest/: 0 bytes, in 177.385ms
+
+END 075-build_windows exit=101 elapsed=183.308565
+COMPLETE binaries=1 manifest=141 failed=1 filter=build_windows/a_builders_memory_is_plugged_as_fast_as_its_jobs_take_it start=0

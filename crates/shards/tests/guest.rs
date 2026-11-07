@@ -3,7 +3,6 @@
 //! shards-init that `shardsd` carries. Kernels are served on loopback here, through
 //! `SHARDS_KERNEL_URL`, as GitHub serves release assets: behind a redirect.
 
-#![cfg(unix)]
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 mod common;

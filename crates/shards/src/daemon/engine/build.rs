@@ -289,6 +289,9 @@ impl<D: Disk> Daemon<D> {
             env.push(("DOCKER_AUTH_CONFIG".into(), config.into()));
         }
         env.push(("SHARDS_HOME".into(), self.home.clone().into()));
+        // This machine's build, which the home's current context may not be.
+        let (here, this) = crate::context::HERE;
+        env.push((here.into(), this.into()));
         for name in ["SHARDS_KERNEL", "SHARDS_INIT"] {
             if let Some(v) = std::env::var_os(name).filter(|v| std::path::Path::new(v).is_absolute()) {
                 env.push((name.into(), v));

@@ -15,18 +15,35 @@ const TIMEOUT: Duration = Duration::from_secs(60);
 const EXIT_RESET: i32 = 3;
 
 /// Kernel log lines that show the machine as each architecture's firmware describes it.
-fn machine_lines() -> &'static [&'static str] {
-    match common::ARCH {
+fn machine_lines() -> Vec<String> {
+    let lines: &[&str] = match common::ARCH {
         "aarch64" => &[
             "Machine model: linux,dummy-virt",
             "psci: PSCIv1.1 detected in firmware",
             "GICv3: CPU0: found redistributor 0 region 0:0x00000000080a0000",
-            "arch_timer: cp15 timer running at 24.00MHz (virt)",
         ],
         // ACPI is how the x86 guest finds its CPUs and interrupt controller.
         "x86_64" => &["ACPI: RSDP 0x00000000000E0000", "IOAPIC[0]: apic_id 0"],
         other => panic!("no machine expectations for {other}"),
+    };
+    #[cfg(target_arch = "aarch64")]
+    {
+        let frequency: u64;
+        // SAFETY: CNTFRQ_EL0 is the host's counter frequency, readable at EL0, as the
+        // guest reads its frequency. WHP's M414 host has 1 GHz; HVF's has 24 MHz.
+        unsafe {
+            std::arch::asm!("mrs {}, cntfrq_el0", out(reg) frequency, options(nomem, nostack, preserves_flags))
+        };
+        let mut lines: Vec<String> = lines.iter().map(|s| (*s).to_string()).collect();
+        lines.push(format!(
+            "arch_timer: cp15 timer running at {}.{:02}MHz (virt)",
+            frequency / 1_000_000,
+            (frequency % 1_000_000) / 10_000
+        ));
+        lines
     }
+    #[cfg(not(target_arch = "aarch64"))]
+    lines.iter().map(|s| (*s).to_string()).collect()
 }
 
 #[test]
@@ -48,7 +65,7 @@ fn boots_to_root_mount_without_a_root_device() {
     );
     assert_eq!(r.status, Some(EXIT_RESET), "{r}");
     for line in machine_lines() {
-        assert!(r.stdout.contains(line), "missing {line:?}: {r}");
+        assert!(r.stdout.contains(&line), "missing {line:?}: {r}");
     }
     assert!(
         r.stdout
@@ -95,9 +112,7 @@ fn a_reset_with_no_console_says_its_guests_panic() {
 /// where its page structures took a 64th of the window, 64 MiB, and on arm64 its linear
 /// map's page tables 8.3 MiB more, a 512th of head and window in base pages. Free memory
 /// is MemFree and the pages its CPUs' free lists hold, which held up to 16 MiB as a boot
-/// began (M300); each the most of three boots.
-// Shared directories, and so DAX windows, are Unix hosts' alone.
-#[cfg(unix)]
+/// began (M300); each the most of three boots. Windows' windows too (D197, PM M412, M413).
 #[test]
 fn a_dax_windows_page_structures_take_none_of_its_guests_memory() {
     if cannot_run_vms() {
@@ -157,9 +172,11 @@ fn a_dax_windows_page_structures_take_none_of_its_guests_memory() {
 /// Mac and on Fedora), and with them made but its head's own pages' 20 MiB; with neither,
 /// 0.1 MiB on the Mac and 0.3 on Fedora (2.1, 2.8 and 8.2 on an x86_64 CI runner while
 /// a device's reset wrote its window's whole held record, PM M307). Each the least of
-/// three boots' peaks.
-// Shared directories, and so DAX windows, are Unix hosts' alone.
-#[cfg(unix)]
+/// three boots' peaks. On Windows a peak of the working set counts what the process
+/// touched, not what it committed, which Windows charges whole as it commits it, and which a
+/// head committed as it was reserved took, 2 GiB of jupiter's window (PM M413): there the
+/// peak is its commit charge's, each of its head's 2 MiB blocks committed as its guest
+/// first touches it.
 #[test]
 fn a_long_dax_window_costs_its_boot_next_to_nothing() {
     if cannot_run_vms() {
@@ -189,7 +206,12 @@ fn a_long_dax_window_costs_its_boot_next_to_nothing() {
                     TIMEOUT,
                 );
                 assert_eq!(r.status, Some(0), "{r}");
-                r.rss_kib().unwrap_or_else(|| panic!("no peak said: {r}"))
+                let peak = if cfg!(windows) {
+                    r.peak_commit_kib()
+                } else {
+                    r.rss_kib()
+                };
+                peak.unwrap_or_else(|| panic!("no peak said: {r}"))
             })
             .min()
             .unwrap()
@@ -277,12 +299,13 @@ fn two_vcpus_boot_to_their_end_in_this_process() {
     std::thread::spawn(move || {
         let _ = tx.send(running.wait());
     });
-    match rx.recv_timeout(TIMEOUT) {
-        Ok(reason) => assert_eq!(reason, ExitReason::Reset),
-        Err(_) => {
-            handle.stop();
-            panic!("two vCPUs did not reach their end in {TIMEOUT:?} in this process");
-        }
+    match common::machine_ended(&handle, &rx, TIMEOUT) {
+        Some(reason) => assert_eq!(reason, ExitReason::Reset),
+        None => panic!(
+            "two vCPUs did not reach their end in {TIMEOUT:?} in this process, nor said anything new for {:?} after: {}",
+            common::DAEMON_QUIET,
+            String::from_utf8_lossy(&handle.console_said())
+        ),
     }
 }
 
@@ -312,8 +335,10 @@ fn boots_the_hosts_maximum_vcpu_count() {
     let up = max.min(KERNEL_NR_CPUS);
     let plural = if up == 1 { "" } else { "s" };
     let brought = format!("smp: Brought up 1 node, {up} CPU{plural}");
-    // A count other than the one asked for fails at once, with what the guest said.
-    let said = vm.wait_for_any(&["smp: Brought up"], TIMEOUT);
+    // A count other than the one asked for fails at once, with what the guest said. Past
+    // TIMEOUT while it says something new: of more vCPUs than its host has CPUs, its VM
+    // process's CPU time counts only before its first line (`Heard::of`).
+    let said = vm.wait_for_any_within(&["smp: Brought up"], TIMEOUT, None);
     vm.kill();
     let seen = vm.seen.join("\n");
     assert!(said.contains(&brought), "{seen}");
@@ -441,7 +466,7 @@ fn this_host_has_its_hypervisor_backend() {
     let expected = match (std::env::consts::OS, common::ARCH) {
         ("macos", "aarch64") => Some("hvf"),
         ("linux", "x86_64" | "aarch64") => Some("kvm"),
-        ("windows", "x86_64") => Some("whp"),
+        ("windows", "x86_64" | "aarch64") => Some("whp"),
         _ => None,
     };
     assert_eq!(shards_vmm::hv::BACKEND, expected);
@@ -471,6 +496,14 @@ fn cli_reports_usage_and_rejects_unknown_commands() {
         unknown.stderr.contains("unknown command: shards frobnicate"),
         "{unknown}"
     );
+    // A budgeted build's writer (D188) is reached through the command line as the build
+    // starts it, and refuses to run without the build's connection: refused as unknown
+    // there, every build held to a budget wrote under it (PM M442).
+    if cfg!(target_os = "linux") {
+        let writer = run_shards(&["build-writer"], &none, TIMEOUT);
+        assert_eq!(writer.status, Some(1), "{writer}");
+        assert!(writer.stderr.contains("shards: a build's writer: "), "{writer}");
+    }
     // Piped, laid out as the scripts that read `version` parse it (cli/version.rs); the
     // server is this shards too.
     let version = run_shards(&["version"], &none, TIMEOUT);
@@ -511,11 +544,13 @@ fn a_nested_guest_is_a_kvm_host() {
     );
     let Some(nested) = common::nested_kernel() else {
         let r = vm_run(&["--kernel", kernel().to_str().unwrap(), "--nested"], TIMEOUT);
-        assert!(
-            r.stderr
-                .contains("virtualization of a guest's own is not given on x86_64 yet"),
-            "{r}"
-        );
+        let why = match (common::ARCH, std::env::consts::OS) {
+            ("aarch64", "windows") => "Windows' hypervisor platform gives a guest no EL2 on arm64",
+            ("x86_64", _) => "virtualization of a guest's own is not given on x86_64 yet",
+            other => panic!("no nested kernel on {other:?}"),
+        };
+        assert_eq!(r.status, Some(1), "{r}");
+        assert!(r.stderr.contains(why), "{r}");
         return;
     };
     let r = vm_run(
@@ -844,11 +879,16 @@ fn a_nested_guest_runs_vms_of_its_own() {
 /// with its host's own limit (D154): macOS's Hypervisor.framework assigns no device (PM
 /// M403); on Windows its hypervisor answers whether it assigns one, by a function's VFIO
 /// name or as Discrete Device Assignment names it, and Windows 11's and CI's Windows Server
-/// runners' refuse (PM M401, M402).
+/// runners' refuse (PM M401, M402). Where it assigns one, the next test runs.
 #[cfg(not(target_os = "linux"))]
 #[test]
 fn a_hosts_pci_function_is_refused_where_its_os_passes_none() {
     if cannot_run_vms() {
+        return;
+    }
+    #[cfg(all(windows, target_arch = "x86_64"))]
+    if shards_vmm::hv::device_assignment_refused().is_none() {
+        eprintln!("SKIP: this host's hypervisor assigns devices");
         return;
     }
     let limit = shards_vmm::vm::passthrough_refused();
@@ -862,6 +902,66 @@ fn a_hosts_pci_function_is_refused_where_its_os_passes_none() {
         assert_ne!(r.status, Some(0), "{name}: {r}");
         assert!(r.stderr.contains(&format!("{name}: {limit}")), "{name}: {r}");
     }
+}
+
+/// A host's PCI function its hypervisor assigns (D154): on a Windows host whose hypervisor
+/// assigns devices (Discrete Device Assignment, Windows Server on hardware with an IOMMU
+/// that controls the PCIe fabric and Access Control Services), a function its administrator
+/// has dismounted from the host (Dismount-VMHostAssignableDevice), named in
+/// SHARDS_ASSIGN_FUNCTION by the instance ID it has then (`PCIP\VEN_...&DEV_...\...`, as
+/// Get-VMHostAssignableDevice lists it), is at 00:01.0 on the guest's bus with the vendor
+/// and device IDs its instance ID names, its first memory BAR reaching the device while
+/// its memory decoding is on, and reading all ones while it is off; with
+/// SHARDS_ASSIGN_DRIVER, the guest kernel's driver of that name takes it, which reaches
+/// its BARs, its MSI or MSI-X and its DMA as it probes it. A host that assigns none skips:
+/// the test above holds its refusal.
+#[cfg(all(windows, target_arch = "x86_64"))]
+#[test]
+fn a_hosts_pci_function_is_assigned_where_its_hypervisor_assigns_one() {
+    if cannot_run_vms() {
+        return;
+    }
+    if let Some(why) = shards_vmm::hv::device_assignment_refused() {
+        eprintln!("SKIP: this host's hypervisor assigns no device: {why}");
+        return;
+    }
+    let Ok(function) = std::env::var("SHARDS_ASSIGN_FUNCTION") else {
+        eprintln!(
+            "SKIP: this host's hypervisor assigns devices: name one dismounted from it in SHARDS_ASSIGN_FUNCTION (PCIP\\...), as Get-VMHostAssignableDevice lists it"
+        );
+        return;
+    };
+    let id = |key: &str| {
+        function
+            .split(['\\', '&'])
+            .find_map(|part| part.strip_prefix(key))
+            .map(|id| format!("0x{}", id.to_ascii_lowercase()))
+            .unwrap_or_else(|| panic!("{function}: no {key} in its instance ID"))
+    };
+    let driver = std::env::var("SHARDS_ASSIGN_DRIVER")
+        .map(|d| format!(" shards_pci_driver={d}"))
+        .unwrap_or_default();
+    let cmdline = format!(
+        "console=ttyS0 panic=-1 shards_test=pci-host shards_pci_ids={}:{}{driver}",
+        id("VEN_"),
+        id("DEV_")
+    );
+    let (k, g) = (kernel().to_str().unwrap(), test_guest().to_str().unwrap());
+    let r = vm_run(
+        &[
+            "--kernel",
+            k,
+            "--init",
+            g,
+            "--vfio",
+            &function,
+            "--cmdline",
+            &cmdline,
+        ],
+        TIMEOUT,
+    );
+    assert!(r.stdout.contains("SHARDS-TEST PASS"), "{r}");
+    assert_eq!(r.status, Some(0), "{r}");
 }
 
 /// A run given a host's VFIO group (`shards run --device /dev/vfio/N`, D154), on a host
@@ -975,12 +1075,14 @@ fn snapshot_tests_pass_on_a_kvm_host_of_this_architecture() {
     let dir = common::TempDir::new("l1-e2e");
     let read = |p: &std::path::Path| std::fs::read(p).unwrap();
     // SHARDS_L1_PCI_TESTS gives the guest test functions at those places (`--pci-tests`),
-    // which its tests may pass through to guests of their own (tests/hotplug.rs): its
-    // VFIO told it may take them, whose MSIs its GICv2m frame does not isolate (D154).
+    // which its tests may pass through to guests of their own (tests/hotplug.rs,
+    // tests/plug.rs): its VFIO, by group and by device node through iommufd, told it may
+    // take them, whose MSIs its GICv2m frame does not isolate (D154; iommufd/device.c,
+    // iommufd_device_bind, refused a node's bind with EPERM without it).
     let pci_tests = std::env::var("SHARDS_L1_PCI_TESTS").ok();
     let outer = |initrd: &std::path::Path, cpus: &str, memory: &str, cmdline: &str, timeout| {
         let unsafe_msis = match &pci_tests {
-            Some(_) => " vfio_iommu_type1.allow_unsafe_interrupts=1",
+            Some(_) => " vfio_iommu_type1.allow_unsafe_interrupts=1 iommufd.allow_unsafe_interrupts=1",
             None => "",
         };
         let cmdline = format!("console=ttyS0 panic=-1 {cmdline}{unsafe_msis}");
@@ -1018,8 +1120,9 @@ fn snapshot_tests_pass_on_a_kvm_host_of_this_architecture() {
     // guests stall 30 s between resuming and dialing their host, their runs past 60 s, in
     // 11 of 24 rounds, where the one that failed passed 9 of 9 alone (PM M346).
     // SHARDS_L1_TESTS names others instead (`binary` or `binary:filter`, comma-separated),
-    // SHARDS_L1_LOG their SHARDS_LOG, and SHARDS_TEST_LOG_SHOWN how much of a failing
-    // test's logs they show.
+    // SHARDS_L1_LOG their SHARDS_LOG, SHARDS_TEST_LOG_SHOWN how much of a failing
+    // test's logs they show, and SHARDS_PLUG_ROUNDS how many rounds tests/hotplug.rs's
+    // plug.
     let runs: Vec<(String, String)> = match std::env::var("SHARDS_L1_TESTS") {
         Ok(chosen) => chosen
             .split(',')
@@ -1129,6 +1232,9 @@ fn snapshot_tests_pass_on_a_kvm_host_of_this_architecture() {
     }
     if let Ok(bytes) = std::env::var("SHARDS_TEST_LOG_SHOWN") {
         env.push_str(&format!("SHARDS_TEST_LOG_SHOWN={bytes}\n"));
+    }
+    if let Ok(rounds) = std::env::var("SHARDS_PLUG_ROUNDS") {
+        env.push_str(&format!("SHARDS_PLUG_ROUNDS={rounds}\n"));
     }
     if let Some(k) = functions_kernel {
         env.push_str(&format!("SHARDS_TEST_NESTED_KERNEL={}\n", k.display()));
@@ -1252,12 +1358,14 @@ fn a_snapshot_keeps_the_memory_its_guest_plugged() {
 /// page out of the hypervisor's mappings is out of the footprint, held or not, PM M193; a
 /// block the guest's driver is plugging as it ends, asked for everything and then nothing,
 /// is the guest's, and none of what it gave back). Asked for more
-/// than it may have, it is given what it may. On the hosts whose VMs it measures the
-/// memory of (`process_usage`): Windows runs none yet.
-#[cfg(unix)]
+/// than it may have, it is given what it may. On Windows what the VM process holds of what
+/// it gave back is what it still has committed of it (`platform::held`): a block is
+/// committed as it is plugged and decommitted as it is given back (`platform::grant`,
+/// `platform::withhold`).
 #[test]
 fn a_guest_grows_and_gives_back_its_memory() {
     use std::io::{BufRead, Write};
+    use std::sync::mpsc::RecvTimeoutError::Timeout;
     if cannot_run_vms() {
         return;
     }
@@ -1272,8 +1380,9 @@ fn a_guest_grows_and_gives_back_its_memory() {
         .stderr(std::process::Stdio::piped())
         .spawn()
         .unwrap();
-    // `shards run --kernel` becomes the VM process: the same pid.
-    let pid = child.id();
+    // `shards run --kernel` becomes the VM process on Unix, the same pid; on Windows it
+    // starts the VM process, its child, found once the guest has said it plugged.
+    let front = child.id();
     let mut stdin = child.stdin.take().unwrap();
     // Its stderr drained as it runs, so that what it writes there never waits on the test.
     let mut stderr = child.stderr.take().unwrap();
@@ -1293,13 +1402,27 @@ fn a_guest_grows_and_gives_back_its_memory() {
     });
     let start = std::time::Instant::now();
     let mut said = String::new();
-    let mut until = |marker: &str| -> String {
+    // Within TIMEOUT of its start, or past it while its guest says something new or its VM
+    // process runs (D209): on an arm64 Windows host nested under QEMU's TCG its kernel was
+    // still onlining the gigabyte it asked for as the test's minute ran out (the parity
+    // plan's step 10), and says nothing as it does. One of neither for DAEMON_QUIET fails.
+    let mut heard = common::Heard::running(front);
+    let mut until = |heard: &mut common::Heard<'_>, marker: &str| -> String {
         loop {
-            let left = TIMEOUT.saturating_sub(start.elapsed());
-            let Ok(line) = lines.recv_timeout(left) else {
-                let _ = child.kill();
-                panic!("no {marker:?} within {TIMEOUT:?}:\n{said}");
+            // Asked each pass, so that each slice of its VM process's is judged as it comes.
+            let progressing = heard.lately(true);
+            let line = match lines.recv_timeout(Duration::from_secs(1)) {
+                Ok(line) => line,
+                Err(Timeout) if start.elapsed() < TIMEOUT || progressing => continue,
+                Err(_) => {
+                    let _ = child.kill();
+                    panic!(
+                        "no {marker:?} within {TIMEOUT:?}, nor anything new from its guest nor CPU time of its VM process's for {:?} after:\n{said}",
+                        common::DAEMON_QUIET
+                    );
+                }
             };
+            heard.said(!said.lines().any(|l| l == line));
             said.push_str(&line);
             said.push('\n');
             if line.contains("SHARDS-TEST FAIL") {
@@ -1311,14 +1434,40 @@ fn a_guest_grows_and_gives_back_its_memory() {
             }
         }
     };
+    let plugged_ms: u64 = until(&mut heard, "SHARDS-TEST PLUGGED").parse().unwrap();
+    #[cfg(unix)]
+    let pid = front;
+    #[cfg(windows)]
+    let pid = {
+        let found = common::vm_processes(front);
+        assert_eq!(found.len(), 1, "shards {front}'s VM processes: {found:?}");
+        found[0]
+    };
     let footprint = || shards_vmm::platform::process_usage(pid).unwrap().footprint;
-    let plugged_ms: u64 = until("SHARDS-TEST PLUGGED").parse().unwrap();
     let full = footprint();
     stdin.write_all(b"\n").unwrap();
-    let unplugged_ms: u64 = until("SHARDS-TEST UNPLUGGED").parse().unwrap();
-    let given_back = footprint();
+    let unplugged_ms: u64 = until(&mut heard, "SHARDS-TEST UNPLUGGED").parse().unwrap();
+    // The guest's kernel counts a memory block gone from MemTotal as it takes it offline,
+    // before it asks the device to unplug it (drivers/virtio/virtio_mem.c,
+    // virtio_mem_sbm_unplug_sb_online: virtio_mem_fake_offline, then
+    // virtio_mem_sbm_unplug_sb): as the guest says it gave all back, its last block, 128
+    // MiB, may still be the host's to give back, as it was on windows-2025 (964 MiB, then
+    // 196). What it gives back stays given back until the guest is answered, so the
+    // footprint is read until it has fallen, or the test's time is up and it has neither
+    // fallen further nor its VM process run for DAEMON_QUIET: a fall is its progress.
+    let mut least = full;
+    let given_back = loop {
+        let now = footprint();
+        heard.said(now < least);
+        least = least.min(now);
+        let progressing = heard.lately(true);
+        if full.saturating_sub(now) >= 768 << 20 || (start.elapsed() >= TIMEOUT && !progressing) {
+            break now;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
     stdin.write_all(b"\n").unwrap();
-    until("SHARDS-TEST PASS");
+    until(&mut heard, "SHARDS-TEST PASS");
     eprintln!(
         "1 GiB plugged in {plugged_ms} ms, unplugged in {unplugged_ms} ms; the VM process held {} MiB, then {} MiB",
         full >> 20,

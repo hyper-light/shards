@@ -26,7 +26,7 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use common::{
-    TempDir, alive, cannot_pool, cannot_run_vms, commands_with, guest_init, home_with, interrupt,
+    Patience, TempDir, alive, cannot_pool, cannot_run_vms, commands_with, guest_init, home_with, interrupt,
     interruptible, kernel, kill_now, processes_with, registry_of, rootfs_dir, run_shards_env,
     run_shards_env_in, served, served_variant, shards, test_image, test_image_with,
 };
@@ -104,16 +104,17 @@ fn spawn_run(home: &Path, args: &[&str]) -> Child {
         .unwrap()
 }
 
-/// Waits for a child, failing the test rather than hanging it.
-fn wait(child: &mut Child) -> Option<i32> {
-    let deadline = Instant::now() + TIMEOUT;
+/// Waits for a child, a client of `home`'s daemon, failing the test rather than hanging it:
+/// within [`TIMEOUT`], or past it while the daemon or its microVMs progress ([`Patience`]).
+fn wait(child: &mut Child, home: &Path) -> Option<i32> {
+    let mut patience = Patience::of(home, TIMEOUT);
     loop {
         if let Some(status) = child.try_wait().unwrap() {
             return status.code();
         }
-        if Instant::now() >= deadline {
+        if !patience.holds() {
             let _ = child.kill();
-            panic!("shards run did not exit within {TIMEOUT:?}");
+            panic!("shards run did not exit within {TIMEOUT:?}, nor while its daemon or microVMs progressed");
         }
         std::thread::sleep(Duration::from_millis(5));
     }
@@ -121,11 +122,13 @@ fn wait(child: &mut Child) -> Option<i32> {
 
 /// Waits until `check` holds, as long as a run is given ([`TIMEOUT`]): a loaded 4-CPU
 /// runner, each look at its processes a PowerShell's on Windows, took a pool past 5 s to
-/// settle (CI 40908704180).
-fn eventually(what: &str, check: impl Fn() -> bool) {
-    let deadline = Instant::now() + TIMEOUT;
+/// settle (CI 40908704180); and past it while `home`'s daemon or its microVMs progress
+/// ([`Patience`]): an arm64 Windows host nested under QEMU's TCG saved a template in 20 s
+/// and filled its pool after it (D209).
+fn eventually(home: &Path, what: &str, mut check: impl FnMut() -> bool) {
+    let mut patience = Patience::of(home, TIMEOUT);
     while !check() {
-        assert!(Instant::now() < deadline, "{what}");
+        assert!(patience.holds(), "{what}");
         std::thread::sleep(Duration::from_millis(20));
     }
 }
@@ -140,8 +143,8 @@ fn daemon_pid(home: &Path) -> Option<i32> {
 
 /// The files under `dir` whose names `named` takes that process `pid` holds open: of those
 /// it lists open, from /proc on Linux and lsof elsewhere; on Windows, which lists no
-/// process's files, of the files under `dir`, those its Restart Manager says the process
-/// uses (RmGetList: a file open or mapped).
+/// process's files, of the files under `dir`, those the file query says the process
+/// uses (FileProcessIdsUsingFileInformation: a file open or mapped).
 fn held_under(pid: i32, dir: &Path, named: impl Fn(&str) -> bool) -> Vec<PathBuf> {
     let named = |p: &Path| p.file_name().and_then(|n| n.to_str()).is_some_and(&named);
     #[cfg(windows)]
@@ -178,52 +181,97 @@ fn files_under(dir: &Path) -> Vec<PathBuf> {
     files
 }
 
-/// The processes that use `file`, open or mapped, as Windows' Restart Manager says
-/// (RmStartSession, RmRegisterResources, RmGetList).
+/// The processes that use `file`, open or mapped. The file query works as a standard
+/// user; Restart Manager's RmGetList returned access denied even for that user's own
+/// file on the arm64 Windows test host (PM M414's file-users probe).
 #[cfg(windows)]
 fn users(file: &Path) -> Vec<u32> {
-    use std::os::windows::ffi::OsStrExt as _;
-    use windows_sys::Win32::Foundation::ERROR_SUCCESS;
-    use windows_sys::Win32::System::RestartManager::{
-        CCH_RM_SESSION_KEY, RM_PROCESS_INFO, RmEndSession, RmGetList, RmRegisterResources, RmStartSession,
+    use std::os::windows::io::AsRawHandle as _;
+    use windows_sys::Wdk::Storage::FileSystem::{FileProcessIdsUsingFileInformation, NtQueryInformationFile};
+    use windows_sys::Win32::Foundation::{
+        STATUS_BUFFER_OVERFLOW, STATUS_BUFFER_TOO_SMALL, STATUS_INFO_LENGTH_MISMATCH,
     };
-    let mut session = 0u32;
-    let mut key = [0u16; CCH_RM_SESSION_KEY as usize + 1];
-    // SAFETY: a session's handle and key, into locals of their size.
-    let started = unsafe { RmStartSession(&mut session, 0, key.as_mut_ptr()) };
-    assert_eq!(started, ERROR_SUCCESS);
-    let wide: Vec<u16> = file.as_os_str().encode_wide().chain([0]).collect();
-    let names = [wide.as_ptr()];
-    // SAFETY: one file's NUL-terminated name, for the session just started.
-    let registered = unsafe {
-        RmRegisterResources(
-            session,
-            1,
-            names.as_ptr(),
-            0,
+    use windows_sys::Win32::System::IO::IO_STATUS_BLOCK;
+    let handle = std::fs::File::open(file).unwrap();
+    // FILE_PROCESS_IDS_USING_FILE_INFORMATION: a ULONG count, padded to a pointer's
+    // alignment, then that many ULONG_PTR process IDs. Both Windows targets are 64-bit.
+    let mut buffer = vec![0usize; 65];
+    loop {
+        let mut io = IO_STATUS_BLOCK::default();
+        let bytes = u32::try_from(buffer.len().checked_mul(size_of::<usize>()).unwrap()).unwrap();
+        // SAFETY: an open synchronous file, its status block, and `bytes` writable,
+        // pointer-aligned bytes for the header and the IDs that follow it.
+        let status = unsafe {
+            NtQueryInformationFile(
+                handle.as_raw_handle(),
+                &mut io,
+                buffer.as_mut_ptr().cast(),
+                bytes,
+                FileProcessIdsUsingFileInformation,
+            )
+        };
+        if matches!(
+            status,
+            STATUS_BUFFER_OVERFLOW | STATUS_BUFFER_TOO_SMALL | STATUS_INFO_LENGTH_MISMATCH
+        ) {
+            buffer.resize(buffer.len().checked_mul(2).unwrap(), 0);
+            continue;
+        }
+        assert_eq!(status, 0, "file users of {}: {status:#x}", file.display());
+        // SAFETY: a successful query wrote the ULONG header into this initialized buffer.
+        let count = unsafe { *buffer.as_ptr().cast::<u32>() } as usize;
+        assert!(count < buffer.len());
+        return buffer[1..=count]
+            .iter()
+            .map(|&pid| u32::try_from(pid).unwrap())
+            .collect();
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_sees_a_files_users_until_its_last_mapping_is_closed() {
+    use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle};
+    use windows_sys::Win32::System::Memory::{
+        CreateFileMappingW, FILE_MAP_READ, MEMORY_MAPPED_VIEW_ADDRESS, MapViewOfFile, PAGE_READONLY,
+        UnmapViewOfFile,
+    };
+    struct View(MEMORY_MAPPED_VIEW_ADDRESS);
+    impl Drop for View {
+        fn drop(&mut self) {
+            // SAFETY: this view's mapping, released once before its section handle.
+            unsafe { UnmapViewOfFile(self.0) };
+        }
+    }
+    let home = TempDir::new("file-users");
+    let path = home.join("memory");
+    std::fs::File::create(&path).unwrap().set_len(65536).unwrap();
+    let pid = std::process::id();
+    assert!(!users(&path).contains(&pid), "closed file");
+    let file = std::fs::File::open(&path).unwrap();
+    assert!(users(&path).contains(&pid), "open file");
+    // SAFETY: the open file's read-only section; no name or security attributes.
+    let section = unsafe {
+        CreateFileMappingW(
+            file.as_raw_handle(),
             std::ptr::null(),
+            PAGE_READONLY,
+            0,
             0,
             std::ptr::null(),
         )
     };
-    let mut found = vec![RM_PROCESS_INFO::default(); 64];
-    let (mut needed, mut listed, mut reasons) = (0u32, found.len() as u32, 0u32);
-    // SAFETY: room for `listed` entries, which it says how many it filled.
-    let got = unsafe {
-        RmGetList(
-            session,
-            &mut needed,
-            &mut listed,
-            found.as_mut_ptr(),
-            &mut reasons,
-        )
-    };
-    // SAFETY: the session started above, ended once.
-    unsafe { RmEndSession(session) };
-    assert_eq!(registered, ERROR_SUCCESS, "{}", file.display());
-    assert_eq!(got, ERROR_SUCCESS, "{} processes use {}", needed, file.display());
-    found.truncate(listed as usize);
-    found.iter().map(|p| p.Process.dwProcessId).collect()
+    assert!(!section.is_null(), "{}", std::io::Error::last_os_error());
+    // SAFETY: the new section handle, now owned until this test ends.
+    let section = unsafe { OwnedHandle::from_raw_handle(section) };
+    // SAFETY: a read-only view of the whole section; no requested address.
+    let view = View(unsafe { MapViewOfFile(section.as_raw_handle(), FILE_MAP_READ, 0, 0, 0) });
+    assert!(!view.0.Value.is_null(), "{}", std::io::Error::last_os_error());
+    drop(file);
+    assert!(users(&path).contains(&pid), "mapped with its file handle closed");
+    drop(view);
+    drop(section);
+    assert!(!users(&path).contains(&pid), "unmapped and closed");
 }
 
 /// The files process `pid` holds open, by path: from /proc on Linux, from lsof elsewhere.
@@ -391,7 +439,7 @@ fn parallel_runs_keep_their_own_stdio() {
         child.stdout.take().unwrap().read_to_string(&mut out).unwrap();
         let mut err = String::new();
         child.stderr.take().unwrap().read_to_string(&mut err).unwrap();
-        assert_eq!(wait(&mut child), Some(0), "run {i}: {err}");
+        assert_eq!(wait(&mut child, &home), Some(0), "run {i}: {err}");
         let whos: Vec<&str> = out.lines().filter(|l| l.starts_with("env WHO=")).collect();
         assert_eq!(
             whos,
@@ -576,19 +624,29 @@ fn signals_reach_a_warm_run() {
         out.read_line(&mut line).unwrap();
         assert_eq!(line, "ready\n");
         interrupt(&child);
-        // Within a run's time: a signal lost leaves its command waiting, and a read of its
-        // output would wait with it (2 hours in budget E2E 40170179004, cancelled).
+        // Within a run's time, or while its daemon or microVM progress: a signal lost
+        // leaves its command waiting, and a read of its output would wait with it (2 hours
+        // in budget E2E 40170179004, cancelled).
         let (read, rest) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             let mut rest = String::new();
             let _ = out.read_to_string(&mut rest);
             let _ = read.send(rest);
         });
-        let Ok(rest) = rest.recv_timeout(TIMEOUT) else {
-            let _ = child.kill();
-            panic!("the run outlived its SIGINT by {TIMEOUT:?}; ignored at start: {ignored}");
+        let mut patience = Patience::of(&home, TIMEOUT);
+        let rest = loop {
+            match rest.recv_timeout(Duration::from_millis(100)) {
+                Ok(rest) => break rest,
+                Err(_) if patience.holds() => {}
+                Err(_) => {
+                    let _ = child.kill();
+                    panic!(
+                        "the run outlived its SIGINT by {TIMEOUT:?}, and its progress by as long; ignored at start: {ignored}"
+                    );
+                }
+            }
         };
-        assert_eq!(wait(&mut child), Some(0), "ignored at start: {ignored}");
+        assert_eq!(wait(&mut child, &home), Some(0), "ignored at start: {ignored}");
         assert_eq!(rest, "got 2\n", "ignored at start: {ignored}");
     }
 }
@@ -649,7 +707,7 @@ fn a_restored_microvm_goes_on_over_a_stopped_containers_kept_file() {
     let dir = home.join("containers").join(id.stdout.trim());
     let kept = dir.join("layer.ext4");
     let settled = || {
-        eventually("no layer kept", || {
+        eventually(&home, "no layer kept", || {
             kept.exists() && !dir.join("layer.new").exists()
         })
     };
@@ -696,13 +754,13 @@ fn stop_ends_runs_and_waiting_vms() {
     // It has let go of its home; the process ends as the kernel finishes its exit, and
     // init, which adopted it, reaps it (kill(2) finds a zombie too).
     assert!(home_is_free(&home), "stop returned before the daemon exited");
-    eventually("the daemon outlived its stop", || !alive(daemon));
+    eventually(&home, "the daemon outlived its stop", || !alive(daemon));
     assert_eq!(
-        wait(&mut sleeper),
+        wait(&mut sleeper, &home),
         Some(128 + 15),
         "the run was not stopped by SIGTERM"
     );
-    eventually("VMs outlived the daemon's stop", || {
+    eventually(&home, "VMs outlived the daemon's stop", || {
         processes_with(&templates).is_empty()
     });
 }
@@ -743,7 +801,7 @@ fn a_stop_gives_each_run_its_own_signal_and_time() {
     let took = t0.elapsed();
     assert_eq!(stopped.status, Some(0), "{}", stopped.stderr);
     assert_eq!(
-        wait(&mut caught),
+        wait(&mut caught, &home),
         Some(0),
         "its own signal, caught: {}",
         std::fs::read_to_string(home.join("daemon.log")).unwrap_or_default()
@@ -753,7 +811,7 @@ fn a_stop_gives_each_run_its_own_signal_and_time() {
     // Linux numbers SIGUSR1 10.
     assert_eq!(said, "got 10\n");
     assert_eq!(
-        wait(&mut ignoring),
+        wait(&mut ignoring, &home),
         Some(128 + 9),
         "killed once its own time was up: {}",
         std::fs::read_to_string(home.join("daemon.log")).unwrap_or_default()
@@ -803,7 +861,7 @@ fn a_daemon_ending_its_runs_is_waited_for() {
         .unwrap();
     // Ending its runs, and no longer offering slots: a run asked for before then is one it
     // serves itself.
-    eventually("the daemon did not begin to stop", || {
+    eventually(&home, "the daemon did not begin to stop", || {
         home.join("daemon.stopping").exists() && !shards_ipc::slots::served(&home)
     });
     let env = [("SHARDS_HOME", home.as_os_str())];
@@ -811,8 +869,8 @@ fn a_daemon_ending_its_runs_is_waited_for() {
     let next = run_shards_env(&["run"], &["--pull", "never", &image, "exit", "0"], &env, TIMEOUT);
     assert_eq!(next.status, Some(0), "{}", next.stderr);
     assert!(t0.elapsed() >= Duration::from_secs(30), "{:?}", t0.elapsed());
-    assert_eq!(wait(&mut slow), Some(128 + 9));
-    assert_eq!(wait(&mut stopping), Some(0));
+    assert_eq!(wait(&mut slow, &home), Some(128 + 9));
+    assert_eq!(wait(&mut stopping, &home), Some(0));
     assert!(!alive(before), "the old daemon still lives");
     assert_ne!(daemon_pid(&home), Some(before));
 }
@@ -826,10 +884,12 @@ fn a_dead_daemons_waiting_vms_end() {
     let (image, _) = served();
     let home = home("daemon-killed", &image);
     let templates = home.join("templates").to_string_lossy().into_owned();
-    eventually("the pool did not fill", || !processes_with(&templates).is_empty());
+    eventually(&home, "the pool did not fill", || {
+        !processes_with(&templates).is_empty()
+    });
     let daemon = daemon_pid(&home).expect("a daemon pid");
     kill_now(daemon);
-    eventually("warm VMs outlived their daemon", || {
+    eventually(&home, "warm VMs outlived their daemon", || {
         processes_with(&templates).is_empty()
     });
 }
@@ -876,12 +936,12 @@ fn a_rebuilt_binary_replaces_the_daemon() {
         read(Box::new(run.stdout.take().unwrap())),
         read(Box::new(run.stderr.take().unwrap())),
     );
-    let deadline = Instant::now() + TIMEOUT;
+    let mut patience = Patience::of(&home, TIMEOUT);
     let status = loop {
         if let Some(status) = run.try_wait().unwrap() {
             break Some(status);
         }
-        if Instant::now() >= deadline {
+        if !patience.holds() {
             let _ = run.kill();
             let _ = run.wait();
             break None;
@@ -896,7 +956,7 @@ fn a_rebuilt_binary_replaces_the_daemon() {
     );
     let after = daemon_pid(&home).expect("a daemon pid");
     assert_ne!(before, after, "the old daemon still serves");
-    eventually("the old daemon did not exit", || !alive(before));
+    eventually(&home, "the old daemon did not exit", || !alive(before));
 }
 
 #[test]
@@ -916,15 +976,14 @@ fn idle_daemons_exit() {
     let run = run_shards_env(&["run"], &[image.as_str(), "exit", "0"], &env, TIMEOUT);
     assert_eq!(run.status, Some(0), "{}", run.stderr);
     let daemon = daemon_pid(&home).expect("a daemon pid");
-    eventually("the idle daemon did not exit", || !alive(daemon));
+    eventually(&home, "the idle daemon did not exit", || !alive(daemon));
     assert!(daemon_pid(&home).is_none(), "the daemon left its pid file");
 }
 
 /// A stream the Engine API answers ends with its client: an events stream whose client
 /// leaves while nothing happens ends then, not at the next event, which may never come, and
-/// the daemon, kept while the stream was open, goes idle after it. Windows' Engine API, a
-/// named pipe, comes with the parity plan's step 8.
-#[cfg(unix)]
+/// the daemon, kept while the stream was open, goes idle after it. On Windows the stream is
+/// the named pipe the home's `engine.pipe` names (D170).
 #[test]
 fn an_engine_stream_ends_with_its_client() {
     let home = TempDir::new("engine-gone");
@@ -936,7 +995,13 @@ fn an_engine_stream_ends_with_its_client() {
     assert_eq!(started.status, Some(0), "{}", started.stderr);
     let daemon = daemon_pid(&home).expect("a daemon pid");
     {
+        #[cfg(unix)]
         let mut events = UnixStream::connect(home.join("engine.sock")).unwrap();
+        #[cfg(windows)]
+        let mut events = {
+            let name = std::fs::read_to_string(home.join("engine.pipe")).unwrap();
+            shards_ipc::Stream::connect(name.trim()).unwrap()
+        };
         events.set_read_timeout(Some(TIMEOUT)).unwrap();
         events
             .write_all(b"GET /events HTTP/1.1\r\nHost: api\r\n\r\n")
@@ -948,7 +1013,7 @@ fn an_engine_stream_ends_with_its_client() {
         std::thread::sleep(Duration::from_millis(1500));
         assert!(alive(daemon), "the daemon exited while a stream was open");
     }
-    eventually("the daemon kept a stream whose client had gone", || {
+    eventually(&home, "the daemon kept a stream whose client had gone", || {
         !alive(daemon)
     });
 }
@@ -986,10 +1051,12 @@ fn a_daemon_idles_from_its_last_runs_end() {
     std::thread::sleep(Duration::from_millis(1500));
     assert!(alive(daemon), "the daemon exited while a run went on");
     drop(stdin);
-    assert_eq!(wait(&mut client), Some(0));
-    eventually("the daemon did not exit once idle after its last run", || {
-        !alive(daemon)
-    });
+    assert_eq!(wait(&mut client, &home), Some(0));
+    eventually(
+        &home,
+        "the daemon did not exit once idle after its last run",
+        || !alive(daemon),
+    );
 }
 
 /// With -i the command reads the client's stdin, and that stdin ends when the client
@@ -1003,12 +1070,13 @@ fn interactive_stdin_ends_with_its_client() {
     let home = home("daemon-stdin", &image);
     let templates = home.join("templates").to_string_lossy().into_owned();
     // The warm VMs one of which serves the run, once the VMs of the runs before have
-    // gone: the same for 300 ms.
+    // gone: the same for 300 ms. Patient past a run's time while its daemon or microVMs
+    // progress, as `eventually` is.
     let mut waiting = processes_with(&templates);
-    let deadline = Instant::now() + TIMEOUT;
+    let mut patience = Patience::of(&home, TIMEOUT);
     let mut since = Instant::now();
     while waiting.is_empty() || since.elapsed() < Duration::from_millis(300) {
-        assert!(Instant::now() < deadline, "the pool did not settle: {waiting:?}");
+        assert!(patience.holds(), "the pool did not settle: {waiting:?}");
         std::thread::sleep(Duration::from_millis(20));
         let now = processes_with(&templates);
         if now != waiting {
@@ -1037,7 +1105,7 @@ fn interactive_stdin_ends_with_its_client() {
     let vm: u32 = pid.stdout.trim().parse().unwrap_or_else(|_| panic!("{pid}"));
     // The pool refills while the run goes on: a VM of the template's new since it settled.
     let refilled = std::cell::Cell::new(None);
-    eventually("the pool did not refill", || {
+    eventually(&home, "the pool did not refill", || {
         refilled.set(
             processes_with(&templates)
                 .into_iter()
@@ -1048,7 +1116,7 @@ fn interactive_stdin_ends_with_its_client() {
     client.kill().unwrap();
     client.wait().unwrap();
     // The VM that served it ends; the one refilled for the next run stays.
-    eventually("the run outlived its client's stdin", || {
+    eventually(&home, "the run outlived its client's stdin", || {
         !processes_with(&templates).contains(&vm)
     });
     let refilled = refilled.get().unwrap();
@@ -1485,7 +1553,7 @@ fn a_client_that_says_nothing_holds_up_no_stop() {
     let stopped = run_shards_env(&["daemon"], &["stop"], &env, Duration::from_secs(8));
     assert_eq!(stopped.status, Some(0), "{stopped}");
     assert!(t0.elapsed() < Duration::from_secs(5), "{:?}", t0.elapsed());
-    eventually("the daemon outlived its stop", || !alive(daemon));
+    eventually(&home, "the daemon outlived its stop", || !alive(daemon));
     // Let go: told, as it asked nothing yet, to ask the next daemon (RESTART), and shut.
     let heard = || shards_ipc::slots::read_frame(&silent.answer).map(|f| f.map(|f| f.kind));
     let mut got = heard();
@@ -1565,7 +1633,7 @@ fn clients_past_the_cap_wait_their_turn() {
         .collect();
     // Each counted in hand as the daemon reads its first byte, on a thread of the slot's:
     // all of them once it says it has its most, before the next asks.
-    eventually("the daemon never had its most clients in hand", || {
+    eventually(&home, "the daemon never had its most clients in hand", || {
         std::fs::read_to_string(home.join("daemon.log"))
             .unwrap_or_default()
             .contains("16 clients in hand, the most it takes at once")
@@ -1586,7 +1654,7 @@ fn clients_past_the_cap_wait_their_turn() {
     );
     let t0 = Instant::now();
     drop(silent.pop());
-    assert_eq!(wait(&mut listing), Some(0));
+    assert_eq!(wait(&mut listing, &home), Some(0));
     assert!(t0.elapsed() < Duration::from_secs(5), "{:?}", t0.elapsed());
     drop(silent);
     let env = [("SHARDS_HOME", home.as_os_str())];
@@ -1609,11 +1677,11 @@ fn a_home_removed_once_is_gone_with_its_daemon() {
     let requests = path.join("requests");
     // Gone once, whatever the daemon makes in it as it goes: a removal of a directory
     // whose entries are being made fails not empty (rmdir(2)), and is tried again.
-    eventually("the slots' directory could not be removed", || {
+    eventually(&home, "the slots' directory could not be removed", || {
         let _ = std::fs::remove_dir_all(&requests);
         !requests.exists()
     });
-    eventually("the daemon did not offer its slots again", || {
+    eventually(&home, "the daemon did not offer its slots again", || {
         shards_ipc::slots::served(&path)
     });
     // Every other name but the lock, then the directory, which the slots keep: the
@@ -1627,7 +1695,7 @@ fn a_home_removed_once_is_gone_with_its_daemon() {
         }
         // The daemon may be writing in it as it goes, a spare container: until it is gone.
         if name.is_dir() {
-            eventually("a directory of the home could not be removed", || {
+            eventually(&home, "a directory of the home could not be removed", || {
                 std::fs::remove_dir_all(&name).is_ok() || !name.exists()
             });
         } else {
@@ -1643,8 +1711,8 @@ fn a_home_removed_once_is_gone_with_its_daemon() {
     std::fs::create_dir(path.join("networks")).unwrap();
     std::fs::write(path.join("networks").join("made-as-it-went.json"), "{}").unwrap();
     std::fs::remove_file(&lock).unwrap();
-    eventually("the daemon outlived its home", || !alive(daemon));
-    eventually("what was left of the home was left", || !path.exists());
+    eventually(&home, "the daemon outlived its home", || !alive(daemon));
+    eventually(&home, "what was left of the home was left", || !path.exists());
 }
 
 /// Lists removed by hand while the daemon idles, every name of the home kept: the next
@@ -1690,7 +1758,7 @@ fn lists_removed_by_hand_are_made_again_for_the_next_client() {
 #[test]
 fn a_stopping_daemon_waits_for_no_client_that_reads_nothing() {
     let home = TempDir::new("daemon-unread");
-    start_daemon(&home, None);
+    let daemon = start_daemon(&home, None);
     let env = [
         ("SHARDS_HOME", home.as_os_str()),
         ("SHARDS_LOCAL_STORE", "none".as_ref()),
@@ -1741,14 +1809,28 @@ fn a_stopping_daemon_waits_for_no_client_that_reads_nothing() {
         .collect();
     let cut = inspect(&cut);
     let whole = inspect(&["big"]);
-    // Each has the volume in its hands, and stops reading as it waits on its full pipe.
-    for out in [&cut.1, &whole.1] {
+    // Each has the volume in its hands, and stops reading as it waits on its full pipe:
+    // within TIMEOUT, or past it for as long as the daemon works on the answers, its
+    // seconds of work each costing more than an idle daemon's
+    // (idle_followers_cost_nothing_and_end_with_their_container's 30 ms). Step 10's arm64
+    // Windows host under QEMU's TCG showed a client nothing in a minute (FullReal04); a
+    // daemon that does nothing for DAEMON_QUIET fails it as before.
+    for (who, out) in [("cut", &cut.1), ("whole", &whole.1)] {
         let deadline = Instant::now() + TIMEOUT;
-        loop {
-            if waiting_in(out) > 0 {
-                break;
+        let (mut spent, mut looked, mut worked) = (cpu_time(daemon), Instant::now(), Instant::now());
+        while waiting_in(out) == 0 {
+            if looked.elapsed() >= Duration::from_secs(1) {
+                let now = cpu_time(daemon);
+                if now.saturating_sub(spent) >= Duration::from_millis(30) {
+                    worked = Instant::now();
+                }
+                (spent, looked) = (now, Instant::now());
             }
-            assert!(Instant::now() < deadline, "a client showed nothing");
+            assert!(
+                Instant::now() < deadline || worked.elapsed() < common::DAEMON_QUIET,
+                "the {who} client showed nothing, its daemon idle for {:?}: {spent:?} of CPU in all",
+                worked.elapsed()
+            );
             std::thread::sleep(Duration::from_millis(5));
         }
     }
@@ -1966,9 +2048,9 @@ fn waiters_shut_out_no_client() {
     assert_eq!(killed.status, Some(0), "{}", killed.stderr);
     let mut code = String::new();
     waiting.stdout.take().unwrap().read_to_string(&mut code).unwrap();
-    assert_eq!(wait(&mut waiting), Some(0));
+    assert_eq!(wait(&mut waiting, &home), Some(0));
     assert_eq!(code, "137\n");
-    assert_eq!(wait(&mut following), Some(0));
+    assert_eq!(wait(&mut following, &home), Some(0));
     // Gone, it frees no room it did not hold: the next client is served.
     let after = run_shards_env(&["ps"], &["-q"], &env, Duration::from_secs(10));
     assert_eq!(after.status, Some(0), "{}", after.stderr);
@@ -2038,7 +2120,7 @@ fn a_daemon_out_of_descriptors_waits_for_room() {
             let was_out = out(&said());
             silent.clear();
             if was_out {
-                eventually("no room once a round's clients were let go", || {
+                eventually(&home, "no room once a round's clients were let go", || {
                     said().get(before..).is_some_and(|since| since.contains(AGAIN))
                 });
             }
@@ -2052,7 +2134,7 @@ fn a_daemon_out_of_descriptors_waits_for_room() {
             // A collection due meanwhile waits: its files would take what clients wait for.
             std::fs::write(&left, b"left behind").unwrap();
             std::fs::write(&due, b"").unwrap();
-            eventually("the collection due was not seen", || !due.exists());
+            eventually(&home, "the collection due was not seen", || !due.exists());
             std::thread::sleep(Duration::from_millis(500));
             if !said().get(from..).is_some_and(|since| since.contains(AGAIN)) {
                 assert!(
@@ -2088,7 +2170,7 @@ fn a_daemon_out_of_descriptors_waits_for_room() {
     let env = [("SHARDS_HOME", home.as_os_str())];
     let listed = run_shards_env(&["ps"], &[] as &[&str], &env, TIMEOUT);
     assert_eq!(listed.status, Some(0), "{listed}");
-    eventually("not collected once the daemon had room", || !left.exists());
+    eventually(&home, "not collected once the daemon had room", || !left.exists());
     let stopped = run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT);
     assert_eq!(stopped.status, Some(0), "{stopped}");
 }
@@ -2122,7 +2204,7 @@ fn a_stop_cancels_the_downloads_of_runs_being_prepared() {
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    eventually("the pull never reached the registry", || {
+    eventually(&home, "the pull never reached the registry", || {
         !accepted.lock().unwrap().is_empty()
     });
     let t0 = Instant::now();
@@ -2201,10 +2283,10 @@ fn runs_under_a_slice_start_after_it_was_stopped() {
         })
     };
     run("the first run");
-    let deadline = Instant::now() + TIMEOUT;
+    let mut patience = Patience::of(&home, TIMEOUT);
     while !warm_in_slice() {
         assert!(
-            Instant::now() < deadline,
+            patience.holds(),
             "no warm VM in {slice}\nthe daemon's log:\n{}",
             said()
         );
@@ -2221,10 +2303,10 @@ fn runs_under_a_slice_start_after_it_was_stopped() {
     );
     run("the first run after the slice stopped");
     run("the second run after the slice stopped");
-    let deadline = Instant::now() + TIMEOUT;
+    let mut patience = Patience::of(&home, TIMEOUT);
     while !warm_in_slice() {
         assert!(
-            Instant::now() < deadline,
+            patience.holds(),
             "no warm VM in {slice} again\nthe daemon's log:\n{}",
             said()
         );
@@ -2264,7 +2346,9 @@ fn a_pool_of_none_serves_every_run() {
             );
         }
     }
-    eventually("a VM was kept warm", || processes_with(&templates).is_empty());
+    eventually(&home, "a VM was kept warm", || {
+        processes_with(&templates).is_empty()
+    });
     // Where no VM is kept, its daemon holds its template's memory and root filesystem open
     // between its runs, so that its host keeps their pages (PM M315).
     let daemon = daemon_pid(&home).expect("a daemon pid");
@@ -2365,6 +2449,71 @@ fn a_daemon_that_cannot_serve_is_said_at_once() {
     assert!(t0.elapsed() < Duration::from_secs(5), "{:?}", t0.elapsed());
 }
 
+/// A run of an image held under way until [`Held::end`]: `cat`, reading what its client's
+/// stdin gives it (`run -i`). Through it a test learns the run's own microVM, which is no
+/// warm VM of its pool's from its claim on, and which, its run ended, takes its time to go
+/// as its guest's memory is let go of (2 counted 500 ms after the run on a busy runner,
+/// budget E2E 40197051533, PM M337): a test counting a pool's VMs among its template's
+/// processes leaves it out.
+struct Held {
+    client: Child,
+    stdin: Option<std::process::ChildStdin>,
+    out: BufReader<std::process::ChildStdout>,
+    name: String,
+}
+
+impl Held {
+    /// `shards run -i --name NAME IMAGE cat`, with `env`.
+    fn start(image: &str, name: &str, env: &[(&str, &OsStr)]) -> Held {
+        let mut client = common::command()
+            .args(["run", "-i", "--pull", "never", "--name", name, image, "cat"])
+            .envs(env.iter().copied())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let stdin = client.stdin.take();
+        let out = BufReader::new(client.stdout.take().unwrap());
+        Held {
+            client,
+            stdin,
+            out,
+            name: name.to_string(),
+        }
+    }
+
+    /// Its microVM once its command runs, as its container names it (`.State.Pid`), and its
+    /// command line, as [`commands_with`] lists it among the processes that name
+    /// `templates`: its own `--layer` file and MAC tell it from a VM given its process ID
+    /// once it has gone.
+    fn vm(&mut self, env: &[(&str, &OsStr)], templates: &str) -> (u32, String) {
+        let stdin = self.stdin.as_mut().unwrap();
+        stdin.write_all(b"held\n").unwrap();
+        stdin.flush().unwrap();
+        let mut line = String::new();
+        self.out.read_line(&mut line).unwrap();
+        assert_eq!(line, "held\n", "{}", self.name);
+        let pid = run_shards_env(
+            &["inspect"],
+            &["-f", "{{.State.Pid}}", self.name.as_str()],
+            env,
+            TIMEOUT,
+        );
+        let pid: u32 = pid.stdout.trim().parse().unwrap_or_else(|_| panic!("{pid}"));
+        commands_with(templates)
+            .into_iter()
+            .find(|(p, _)| *p == pid)
+            .unwrap_or_else(|| panic!("{}'s VM {pid} is no process of {templates}", self.name))
+    }
+
+    /// Ends its command, its client's stdin closed, and waits for its client's status.
+    fn end(mut self, home: &Path) -> Option<i32> {
+        drop(self.stdin.take());
+        wait(&mut self.client, home)
+    }
+}
+
 /// Warm VMs kept ahead of runs are bounded all pools together (audit A13): with room
 /// for one, a second template's pool takes the first's, least recently claimed from, and
 /// the first is still served, on demand.
@@ -2389,7 +2538,7 @@ fn warm_vms_are_bounded_across_templates() {
     };
     run(&first);
     run(&first);
-    eventually("the first pool did not fill", || warm(&templates) == 1);
+    eventually(&home, "the first pool did not fill", || warm(&templates) == 1);
     run(&second);
     run(&second);
     let dirs: Vec<PathBuf> = std::fs::read_dir(&templates)
@@ -2402,11 +2551,12 @@ fn warm_vms_are_bounded_across_templates() {
         .iter()
         .max_by_key(|d| std::fs::metadata(d).unwrap().modified().unwrap())
         .unwrap();
-    // As long as a run is given, as `eventually` waits.
-    let deadline = Instant::now() + TIMEOUT;
+    // As long as a run is given, or past it while the daemon or its microVMs progress, as
+    // `eventually` waits.
+    let mut patience = Patience::of(&home, TIMEOUT);
     while !(warm(newest) == 1 && warm(&templates) == 1) {
         assert!(
-            Instant::now() < deadline,
+            patience.holds(),
             "the second pool did not take the room: {} of {} warm, of {dirs:?}\n{}",
             warm(newest),
             warm(&templates),
@@ -2414,24 +2564,45 @@ fn warm_vms_are_bounded_across_templates() {
         );
         std::thread::sleep(Duration::from_millis(20));
     }
-    // Never more than the bound, as the first is served again: once its run's own VM and
-    // the warm VM its pool took the room of have gone, as a VM process takes its time to,
-    // its guest's memory let go of (2 counted 500 ms after the run on a busy runner, budget
-    // E2E 40197051533, PM M337), one at most, and no refill takes the pools past it.
-    run(&first);
-    let all = || commands_with(&templates.to_string_lossy());
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while warm(&templates) > 1 {
+    // Never more than the bound, as the first is served again: the pools' VMs are the
+    // templates' processes but the run's own ([`Held`]). Its pool refills, and the warm VM
+    // it took the room of, ended before the refill starts, goes as a VM process takes its
+    // time to; then one at most, and no refill takes the pools past it. Counted with the
+    // run's own VM, a look in the while between that warm VM's end and the refill's start
+    // found the pools within their bound, and the next past it (CI windows-2025 at
+    // b94c114f, as a look took 20 ms rather than a PowerShell's start).
+    let first_dir = dirs
+        .iter()
+        .find(|d| d.as_path() != newest.as_path())
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    let templates_named = templates.to_string_lossy().into_owned();
+    let mut held = Held::start(&first, "first-again", &env);
+    let ran = held.vm(&env, &templates_named);
+    assert_eq!(held.end(&home), Some(0), "the first's run, held");
+    let pooled = |needle: &str| -> Vec<(u32, String)> {
+        commands_with(needle)
+            .into_iter()
+            .filter(|vm| *vm != ran)
+            .collect()
+    };
+    eventually(&home, "the first pool did not refill", || {
+        !pooled(&first_dir).is_empty()
+    });
+    let mut patience = Patience::of(&home, Duration::from_secs(10));
+    while pooled(&templates_named).len() > 1 {
         assert!(
-            Instant::now() < deadline,
-            "the pools came back to their bound in no 10 s: {:?}",
-            all()
+            patience.holds(),
+            "the pools came back to their bound in no 10 s, nor while they progressed: {:?}",
+            pooled(&templates_named)
         );
         std::thread::sleep(Duration::from_millis(20));
     }
     let t0 = Instant::now();
     while t0.elapsed() < Duration::from_millis(500) {
-        assert!(warm(&templates) <= 1, "past the bound: {:?}", all());
+        let now = pooled(&templates_named);
+        assert!(now.len() <= 1, "past the bound: {now:?}, the run's own {ran:?}");
         std::thread::sleep(Duration::from_millis(20));
     }
     let stopped = run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT);
@@ -2463,7 +2634,7 @@ fn warm_vms_are_given_their_templates_root_filesystem() {
             .filter(|args| args.contains(" restore "))
             .collect()
     };
-    eventually("the pool refilled", || !warm().is_empty());
+    eventually(&home, "the pool refilled", || !warm().is_empty());
     // An absolute path in its host's own form: `/...` on Unix, a drive's (`\\?\C:\...`) on
     // Windows.
     let rootfs = if cfg!(windows) { "\\rootfs\\" } else { "/rootfs/" };
@@ -2497,21 +2668,42 @@ fn pools_keep_what_their_runs_need_while_they_come() {
         ("SHARDS_POOL_KEEP", keep.as_ref()),
     ];
     let templates = home.join("templates");
-    let warm = || processes_with(&templates.to_string_lossy()).len();
-    // Whether the pool comes to keep as `want` says within 5 s.
-    let comes = |want: &dyn Fn(usize) -> bool| {
+    let templates_named = templates.to_string_lossy().into_owned();
+    // Its VMs: the template's processes, but for the runs' own VMs the burst learns
+    // ([`Held`]), which leave the pool as they are claimed.
+    let runs_own = std::cell::RefCell::new(Vec::<(u32, String)>::new());
+    let warm = || {
+        let runs_own = runs_own.borrow();
+        commands_with(&templates_named)
+            .into_iter()
+            .filter(|vm| !runs_own.contains(vm))
+            .count()
+    };
+    // Whether the pool comes to keep as `want` says within 5 s: or, `patient`, past them
+    // while the daemon or its microVMs progress ([`Patience`]), as a pool a slow host
+    // refills does. A look begun within them is the last.
+    let comes = |want: &dyn Fn(usize) -> bool, patient: bool| {
+        let mut patience = Patience::of(&home, Duration::from_secs(5));
         let deadline = Instant::now() + Duration::from_secs(5);
-        while !want(warm()) {
-            if Instant::now() >= deadline {
+        loop {
+            let began = Instant::now();
+            if want(warm()) {
+                return true;
+            }
+            let more = if patient {
+                patience.holds()
+            } else {
+                began < deadline
+            };
+            if !more {
                 return false;
             }
             std::thread::sleep(Duration::from_millis(20));
         }
-        true
     };
     let settled = |what: &str, want: &dyn Fn(usize) -> bool| {
         assert!(
-            comes(want),
+            comes(want, true),
             "{what}: {} warm: {:#?}\n{}",
             warm(),
             commands_with(&templates.to_string_lossy()),
@@ -2535,7 +2727,7 @@ fn pools_keep_what_their_runs_need_while_they_come() {
     while kept_one < 4 {
         run();
         settled("a refill", &|n| n >= 1);
-        if comes(&|n| n == 1) {
+        if comes(&|n| n == 1, false) {
             kept_one += 1;
             std::thread::sleep(apart);
             continue;
@@ -2549,41 +2741,40 @@ fn pools_keep_what_their_runs_need_while_they_come() {
         std::thread::sleep(KEEP);
         settled("past the keep-alive", &|n| n == 0);
     }
-    // Three at once: the pool keeps more for the next burst, never past its most.
-    let burst: Vec<_> = (0..3)
-        .map(|_| {
-            let env: Vec<(String, std::ffi::OsString)> = env
-                .iter()
-                .map(|(k, v)| (k.to_string(), v.to_os_string()))
-                .collect();
-            let image = image.clone();
-            std::thread::spawn(move || {
-                let env: Vec<(&str, &OsStr)> = env.iter().map(|(k, v)| (k.as_str(), v.as_os_str())).collect();
-                let began = Instant::now();
-                let status = run_shards_env(&["run"], &[image.as_str(), "exit", "0"], &env, TIMEOUT).status;
-                (status, began.elapsed())
-            })
-        })
+    // Three at once: the pool keeps more for the next burst, never past its most. Each
+    // run held under way until all three are served, for its VM to be learned: what the
+    // pool keeps is the template's processes but those, which go in their own time once
+    // their runs end. Counted with them, a look as one had gone and the pool's refills had
+    // not all started found the pool within its most, and the next past it (CI
+    // windows-2025 at b94c114f, as a look took 20 ms rather than a PowerShell's start).
+    let began = Instant::now();
+    let mut burst: Vec<Held> = (0..3)
+        .map(|n| Held::start(&image, &format!("burst-{n}"), &env))
         .collect();
-    // How long each run took, said where the pool keeps too few after them: a loaded
-    // host's took 28 to 31 s (PM M346).
+    // How long until each was served, said where the pool keeps too few after them: a
+    // loaded host's runs took 28 to 31 s (PM M346).
     let mut took = Vec::new();
-    for b in burst {
-        let (status, run_took) = b.join().unwrap();
-        assert_eq!(status, Some(0));
-        took.push(run_took);
+    for held in &mut burst {
+        let vm = held.vm(&env, &templates_named);
+        took.push(began.elapsed());
+        runs_own.borrow_mut().push(vm);
     }
-    settled(&format!("a burst of three, its runs taking {took:?}"), &|n| {
-        n >= 2
-    });
-    // Never past its most, once the burst's own VMs have gone, each of which tells its run's
-    // end before it goes, a loaded runner's past 500 ms: what the pool keeps it keeps until
-    // its keep-alive, so a pool past its most stays so.
-    settled("the burst's VMs gone", &|n| n <= 3);
+    for held in burst {
+        assert_eq!(held.end(&home), Some(0), "a run of the burst");
+    }
+    settled(&format!("a burst of three, served in {took:?}"), &|n| n >= 2);
+    // Never past its most: what the pool keeps it keeps until its keep-alive, so a pool past
+    // its most stays so.
+    settled("the pool within its most", &|n| n <= 3);
     let held = Instant::now();
     while held.elapsed() < Duration::from_secs(1) {
         let n = warm();
-        assert!(n <= 3, "{n} warm, past the pool's most");
+        assert!(
+            n <= 3,
+            "{n} warm, past the pool's most: {:?}, the runs' own {:?}",
+            commands_with(&templates_named),
+            runs_own.borrow()
+        );
         std::thread::sleep(Duration::from_millis(20));
     }
     // Unclaimed past its keep-alive: nothing, until the next run.
@@ -2606,7 +2797,9 @@ fn a_collection_another_process_leaves_due_is_taken() {
     std::thread::sleep(Duration::from_millis(300));
     let due = home.join("images").join("collect-due");
     std::fs::write(&due, b"").unwrap();
-    eventually("the daemon did not take the collection due", || !due.exists());
+    eventually(&home, "the daemon did not take the collection due", || {
+        !due.exists()
+    });
     assert!(alive(daemon));
 }
 
@@ -2624,7 +2817,7 @@ fn a_collection_waits_for_the_stores_lease() {
     assert_eq!(pulled.status, Some(0), "{}", pulled.stderr);
     let images = home.join("images");
     let due = images.join("collect-due");
-    eventually("the pull's collection was not taken", || !due.exists());
+    eventually(&home, "the pull's collection was not taken", || !due.exists());
     // Once that collection, which may still run, is done.
     let lease = std::fs::File::options()
         .create(true)
@@ -2636,11 +2829,13 @@ fn a_collection_waits_for_the_stores_lease() {
     let left = images.join("ingest").join("left");
     std::fs::write(&left, b"left behind").unwrap();
     std::fs::write(&due, b"").unwrap();
-    eventually("the collection due was not seen", || !due.exists());
+    eventually(&home, "the collection due was not seen", || !due.exists());
     std::thread::sleep(Duration::from_millis(500));
     assert!(left.exists(), "collected under the lease");
     drop(lease);
-    eventually("nothing collected once the lease was let go", || !left.exists());
+    eventually(&home, "nothing collected once the lease was let go", || {
+        !left.exists()
+    });
 }
 
 /// What no reference needs is collected (audit A13). `shards pull` moving a tag to another
@@ -2686,7 +2881,7 @@ fn what_a_moved_tag_named_is_collected() {
         "{rootfs:?} {templates:?}"
     );
     let template = templates[0].to_string_lossy().into_owned();
-    eventually("no warm VM", || !processes_with(&template).is_empty());
+    eventually(&home, "no warm VM", || !processes_with(&template).is_empty());
 
     let old = run_shards_env(&["images"], &["-q", "--no-trunc", image.as_str()], &env, TIMEOUT);
     let old = old.stdout.trim().to_string();
@@ -2703,10 +2898,10 @@ fn what_a_moved_tag_named_is_collected() {
     assert!(rootfs[0].exists() && templates[0].exists());
     let removed = run_shards_env(&["rmi"], &[old.as_str()], &env, TIMEOUT);
     assert_eq!(removed.status, Some(0), "{}", removed.stderr);
-    eventually("the old image was not collected", || {
+    eventually(&home, "the old image was not collected", || {
         blobs.iter().all(|b| !b.exists()) && !rootfs[0].exists() && !templates[0].exists()
     });
-    eventually("the old template's VMs outlived it", || {
+    eventually(&home, "the old template's VMs outlived it", || {
         processes_with(&template).is_empty()
     });
     let (now_blobs, now_rootfs) = (listed("images/blobs/sha256"), listed(&rootfs_dir()));
@@ -2752,11 +2947,13 @@ fn a_daemon_whose_home_is_removed_exits_without_making_it_again() {
     let named = path.to_string_lossy().into_owned();
     // The daemon may be writing in it as it goes, a spare container or a refill: removed
     // again until it is gone.
-    eventually("the home could not be removed", || {
+    eventually(&home, "the home could not be removed", || {
         matches!(std::fs::remove_dir_all(&path), Ok(())) || !path.exists()
     });
-    eventually("the daemon outlived its home", || !alive(daemon));
-    eventually("VMs outlived their home", || processes_with(&named).is_empty());
+    eventually(&home, "the daemon outlived its home", || !alive(daemon));
+    eventually(&home, "VMs outlived their home", || {
+        processes_with(&named).is_empty()
+    });
     std::thread::sleep(Duration::from_millis(500));
     let made: Vec<_> = std::fs::read_dir(&path)
         .map(|d| d.map(|e| e.unwrap().path()).collect())
@@ -2794,9 +2991,11 @@ fn a_restored_microvm_ends_with_its_home() {
     assert_eq!(restored.status, Some(0), "{}", restored.stderr);
     let path = home.to_path_buf();
     let named = path.to_string_lossy().into_owned();
-    assert!(!processes_with(&named).is_empty(), "no VM of the restored run");
+    eventually(&home, "no VM of the restored run", || {
+        !processes_with(&named).is_empty()
+    });
     let daemon = daemon_pid(&home).expect("a daemon pid");
-    eventually("the home could not be removed", || {
+    eventually(&home, "the home could not be removed", || {
         matches!(std::fs::remove_dir_all(&path), Ok(())) || !path.exists()
     });
     // Its log went with its home: where its threads and its VMs' wait, should it outlive
@@ -2821,7 +3020,7 @@ fn a_restored_microvm_ends_with_its_home() {
         };
         panic!("the daemon outlived its home: {ended}; at 5 s:\n{waits}");
     }
-    eventually("a restored VM outlived its home", || {
+    eventually(&home, "a restored VM outlived its home", || {
         processes_with(&named).is_empty()
     });
 }
@@ -2975,15 +3174,54 @@ fn idle_followers_cost_nothing_and_end_with_their_container() {
                 .args(["logs", "-f", "up"])
                 .env("SHARDS_HOME", &*home)
                 .stdin(Stdio::null())
-                .stdout(Stdio::null())
+                .stdout(Stdio::piped())
                 .stderr(Stdio::null())
                 .spawn()
                 .unwrap()
         })
         .collect();
-    // Once they have all been taken, which a host under load takes a while to start: a
-    // second of the daemon's that costs next to nothing, as no follower that looks for
-    // output on a timer lets it have (audit A12's, 50 times a second each).
+    // Each served: it has shown the log's line, the `ready` the container says as it starts,
+    // which its daemon sends it as it takes its request, before it follows. A quiet second
+    // alone did not say so: on windows-2022 (88ff4cbc) 92 of them came to their daemon in
+    // the 3 s measured after one, their requests' threads' cycles in it what each thread had
+    // run in all (a `run` 2.2 M, a `slot-say` 0.1 M), and the slots' maker's 117 M what
+    // making their 92 slots costs. Read to their end, so that none waits on its output.
+    let (shown, heard) = std::sync::mpsc::channel();
+    for follower in &mut followers {
+        let out = BufReader::new(follower.stdout.take().unwrap());
+        let shown = shown.clone();
+        std::thread::spawn(move || {
+            for line in out.lines().map_while(Result::ok) {
+                if line == "ready" {
+                    let _ = shown.send(());
+                }
+            }
+        });
+    }
+    drop(shown);
+    // Within TIMEOUT, or past it while they still come, each within DAEMON_QUIET of the
+    // last: a host under load takes a while to start a hundred.
+    let began = Instant::now();
+    for n in 0..followers.len() {
+        let waited = Instant::now();
+        loop {
+            match heard.recv_timeout(Duration::from_secs(1)) {
+                Ok(()) => break,
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    panic!("followers ended with {n} of 100 served")
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => assert!(
+                    began.elapsed() < TIMEOUT || waited.elapsed() < common::DAEMON_QUIET,
+                    "{n} of 100 followers served in {:?}, none in the last {:?}",
+                    began.elapsed(),
+                    waited.elapsed()
+                ),
+            }
+        }
+    }
+    // What each does past what it shows (its watch, its wait) done: a second of the
+    // daemon's that costs next to nothing, as no follower that looks for output on a timer
+    // lets it have (audit A12's, 50 times a second each).
     let daemon = daemon_pid(&home).expect("a daemon pid");
     let deadline = Instant::now() + Duration::from_secs(60);
     loop {

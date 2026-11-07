@@ -8,6 +8,13 @@ repository.workspace = true
 rust-version.workspace = true
 publish = false
 
+# The tests' helper program (`shards_testdir::helper`), which no test of its own runs.
+[[bin]]
+name = "shards-testhelper"
+path = "src/bin/shards-testhelper.rs"
+test = false
+bench = false
+
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
 

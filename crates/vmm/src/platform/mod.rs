@@ -7,10 +7,12 @@ use std::io;
 
 mod checked;
 mod copy;
+mod progress;
 pub use checked::copy_checked;
 #[cfg(test)]
 pub use copy::COPIED;
 pub use copy::{copy_in, copy_out};
+pub use progress::{IDLE_VM_CPU, Look, Progress, progressed};
 
 #[cfg(unix)]
 mod unix;
@@ -113,8 +115,8 @@ pub use shards_syscall_filter as seccomp;
 /// while it runs and drops it before it ends. On macOS the real-time policy's governor
 /// watches the thread while it is held (macos_thread.rs): one that runs long goes to
 /// timeshare before XNU's fail-safe would depress it (PM M317). On Windows a priority
-/// governor does (windows_thread.rs): one that uses more than half of its CPU goes back to
-/// normal priority.
+/// governor does (windows_thread.rs): one that uses more than half of its CPU, by more
+/// than half a period over a stretch, goes back to normal priority.
 #[derive(Debug)]
 pub struct Prioritized {
     #[cfg(target_os = "macos")]
@@ -130,7 +132,8 @@ pub struct Prioritized {
 /// waited for the busy thread's slice to run out, and a run's start in a microVM of every
 /// CPU of the host took twice as long as in one of one (PM M292, M440). On Windows a
 /// candidate, until it is measured on a contended host (D191): a step above normal priority
-/// while the thread uses no more than half of its CPU (windows_thread.rs).
+/// while the thread uses no more than half of its CPU, its governor's credit carrying half
+/// a period across its clock's coarse steps (windows_thread.rs).
 pub fn prioritize_vcpu_thread() -> Result<Prioritized, String> {
     #[cfg(target_os = "macos")]
     return macos_thread::make_current_realtime().map(|watch| Prioritized { _watch: watch });

@@ -871,9 +871,10 @@ impl<D: Disk> Daemon<D> {
     /// `live NAME SNAPSHOT [--need FILE]... [--checked FILE]...`: the running microVM moved
     /// live (D176 part 7), written to the client's descriptor as it goes: its memory, layer
     /// and swap copied round after round as its guest runs on; then it saved as SNAPSHOT,
-    /// stopping it, those three only where its guest wrote since the last round; then its
-    /// move's stream, as `export`'s, the files the other machine lacks (`--need`) and any its
-    /// last save names that the other machine was not asked of (not `--checked`) with it.
+    /// held, what its guest wrote of those three since the last round sent as the last;
+    /// then its move's stream, as `export`'s, the files the other machine lacks (`--need`)
+    /// and any its last save names that the other machine was not asked of (not
+    /// `--checked`) with it.
     /// Says on stderr when its save was asked, as the time since the epoch in ns, and what
     /// each round sent.
     fn move_live(&self, args: &[String], asker: &Asker, reply: &Reply<'_>) -> Result<String, String> {
@@ -946,13 +947,14 @@ impl<D: Disk> Daemon<D> {
                 reply.err(&format!("move: round {n}: {pages} pages, {bytes} bytes, {us} us"));
             }
         }
-        // Its last save, its guest's writes since the last round alone.
+        // Its last save, its guest's writes since the last round sent by its VM as the
+        // rounds' last, and their end, before it answers.
         let asked = crate::containers::now();
         reply.err(&format!("move: saved at {asked}"));
         // Held, its vCPUs parked and its devices quiet, until the other machine has it or
         // has not (`done`).
         let t0 = std::time::Instant::now();
-        self.save_snapshot_as(reference, Some(snapshot), true, true)
+        self.save_snapshot_as(reference, Some(snapshot), true, Some(out.as_fd()))
             .map_err(|e| e.ours(reference).trim_start_matches("shards: ").to_string())?;
         reply.err(&format!(
             "move: its last save took {} us",
@@ -1435,7 +1437,8 @@ struct Precopy {
 }
 
 impl Precopy {
-    /// Reads the rounds from `r` into files in `dir`.
+    /// Reads the rounds from `r` into files in `dir`, the last save's last, each record
+    /// over those before it.
     fn read(r: &mut dyn Read, dir: &Path) -> Result<Precopy, String> {
         use shards_vmm::vm::live;
         let p = Precopy {
@@ -1472,37 +1475,37 @@ impl Precopy {
         Ok(p)
     }
 
-    /// Lays what the rounds sent under the generation the snapshot in `dir` is at, the last
-    /// save's: wherever its memory, layer or swap holds no page of its own, the rounds' page
-    /// goes in its place. Its memory's plugged runs are where its state says.
+    /// Puts what the rounds sent, the last save's last round among them, in place of the
+    /// files of the generation the snapshot in `dir` is at, the last save's, which hold none
+    /// of their pages, each as long as it: its memory's plugged runs where its state says.
+    /// Which pages the rounds sent is never read from these files' holes, as a file system
+    /// keeps them in units of its own (NTFS: 64 KiB), the rest of a unit a page was written
+    /// into reading as zeros: the rounds' records say, laid in order as they came.
     fn lay_under(&self, dir: &Path) -> Result<(), String> {
         let generation = shards_vmm::snapshot::generation(dir)?;
         let (ram, plugged) = shards_vmm::snapshot::layout(dir)?;
-        // The rounds' files become the generation's, the last save's pages laid over them:
-        // what this takes, as its microVM runs nowhere, is what its guest wrote last and its
-        // memory plugged, never the whole of its memory.
+        // The rounds' files become the generation's: what this takes, as its microVM runs
+        // nowhere, is the memory plugged, never the whole of its memory.
         let memory = generation.join("memory");
-        let delta = memory.with_extension("last");
+        let saved = memory.with_extension("last");
         let at = |p: &Path, e: &dyn std::fmt::Display| format!("{}: {e}", p.display());
-        std::fs::rename(&memory, &delta).map_err(|e| at(&memory, &e))?;
+        std::fs::rename(&memory, &saved).map_err(|e| at(&memory, &e))?;
         std::fs::rename(&self.ram, &memory).map_err(|e| at(&self.ram, &e))?;
-        let len = std::fs::metadata(&delta).map_err(|e| at(&delta, &e))?.len();
+        let len = std::fs::metadata(&saved).map_err(|e| at(&saved, &e))?.len();
         std::fs::OpenOptions::new()
             .write(true)
             .open(&memory)
             .and_then(|f| f.set_len(len))
             .map_err(|e| at(&memory, &e))?;
-        // Each run plugged, from its address in the rounds' file to its place after the
-        // RAM; then the last save's pages over all of it.
+        std::fs::remove_file(&saved).map_err(|e| at(&saved, &e))?;
+        // Each run plugged, from its address in the rounds' file to its place after the RAM.
         let mut moves = Vec::new();
         let mut offset = ram;
         for (gpa, len) in plugged {
             moves.push((gpa, offset, len));
             offset = offset.saturating_add(len);
         }
-        over(&self.plugged, &memory, &moves, false)?;
-        over(&delta, &memory, &[(0, 0, len)], true)?;
-        std::fs::remove_file(&delta).map_err(|e| at(&delta, &e))?;
+        put(&self.plugged, &memory, &moves)?;
         for (pre, name) in [(&self.layer, "layer"), (&self.swap, "swap")] {
             let kept = generation.join(name);
             if !kept.exists() {
@@ -1514,7 +1517,6 @@ impl Precopy {
                 .open(pre)
                 .and_then(|f| f.set_len(len))
                 .map_err(|e| at(pre, &e))?;
-            over(&kept, pre, &[(0, 0, len)], true)?;
             std::fs::rename(pre, &kept).map_err(|e| at(pre, &e))?;
         }
         Ok(())
@@ -1522,9 +1524,10 @@ impl Precopy {
 }
 
 /// Copies into `to` each page of `from` that holds data, by `moves`, each a run of `from` at
-/// its first offset, as long as its third, put at its second in `to`: over what `to` holds
-/// there where `over`, else only where `to` holds nothing.
-fn over(from: &Path, to: &Path, moves: &[(u64, u64, u64)], over: bool) -> Result<(), String> {
+/// its first offset, as long as its third, put at its second in `to`, which holds nothing
+/// there: a page of a unit of `from`'s file system that the rounds wrote none of reads as
+/// zeros, as the page it stands for is (a round sends every page not all zeros first).
+fn put(from: &Path, to: &Path, moves: &[(u64, u64, u64)]) -> Result<(), String> {
     let at = |p: &Path, e: &dyn std::fmt::Display| format!("{}: {e}", p.display());
     let source = File::open(from).map_err(|e| at(from, &e))?;
     let target = std::fs::OpenOptions::new()
@@ -1535,15 +1538,6 @@ fn over(from: &Path, to: &Path, moves: &[(u64, u64, u64)], over: bool) -> Result
     let source_len = source.metadata().map_err(|e| at(from, &e))?.len();
     let target_len = target.metadata().map_err(|e| at(to, &e))?.len();
     let theirs = shards_vmm::platform::data_ranges(&source, source_len).map_err(|e| at(from, &e))?;
-    let own = if over {
-        Vec::new()
-    } else {
-        shards_vmm::platform::data_ranges(&target, target_len).map_err(|e| at(to, &e))?
-    };
-    let held = |offset: u64| {
-        own.iter()
-            .any(|&(s, n)| offset >= s && offset < s.saturating_add(n))
-    };
     let page = shards_vmm::vm::live::PAGE;
     let mut buf = vec![0u8; page as usize];
     for &(src, dst, len) in moves {
@@ -1554,7 +1548,7 @@ fn over(from: &Path, to: &Path, moves: &[(u64, u64, u64)], over: bool) -> Result
             let mut p = lo & !(page - 1);
             while p < hi {
                 let into = dst + (p - src);
-                if p >= src && !held(into) && into + page <= target_len {
+                if p >= src && into + page <= target_len {
                     shards_vmm::platform::read_exact_at(&source, &mut buf, p).map_err(|e| at(from, &e))?;
                     shards_vmm::platform::write_all_at(&target, &buf, into).map_err(|e| at(to, &e))?;
                 }
@@ -1627,6 +1621,45 @@ mod tests {
         )) {
             assert!(!own.is_empty(), "this machine's OS names its CPU's features");
         }
+    }
+
+    /// A live move's last round, which its last save writes on after the rounds, lays over
+    /// them page by page: a page it sends as zeros reads as zeros, and its neighbours as the
+    /// rounds sent them, in the file system's unit too. Where the last save's pages were
+    /// laid from its files' holes, the rest of each 64 KiB unit NTFS keeps a sparse file's
+    /// pages in read as zeros over what the rounds sent (CI's windows-2025: a restored
+    /// guest's pmem queue found zeroed, "65535 new buffers on a queue of 64").
+    #[test]
+    fn a_live_moves_last_round_lays_over_its_rounds_page_by_page() {
+        use shards_vmm::vm::live;
+        let mut bytes = Vec::new();
+        {
+            let mut w = live::Writer::new(&mut bytes).unwrap();
+            w.record(live::RAM, 0, &[1; 64 << 10]).unwrap();
+            w.round(0).unwrap();
+            w.record(live::RAM, 0x3000, &[2; 4096]).unwrap();
+            w.round(1).unwrap();
+        }
+        let mut last = live::Writer::going_on(&mut bytes);
+        last.record(live::RAM, 0x1000, &[0; 4096]).unwrap();
+        last.record(live::RAM, 0x8000, &[3; 4096]).unwrap();
+        last.record(live::SWAP, 0x2000, &[4; 4096]).unwrap();
+        last.finish().unwrap();
+        let dir = shards_testdir::TempDir::new("mv-live").unwrap();
+        let p = Precopy::read(&mut bytes.as_slice(), &dir).unwrap();
+        let ram = std::fs::read(&p.ram).unwrap();
+        assert_eq!(ram.len(), 64 << 10);
+        let page = |n: usize| &ram[n * 4096..(n + 1) * 4096];
+        for (n, want) in [(0, 1), (1, 0), (2, 1), (3, 2), (4, 1), (8, 3), (9, 1), (15, 1)] {
+            assert!(page(n).iter().all(|&b| b == want), "page {n} is not all {want}s");
+        }
+        let swap = std::fs::read(&p.swap).unwrap();
+        assert_eq!(swap.len(), 0x3000);
+        assert!(swap[..0x2000].iter().all(|&b| b == 0));
+        assert!(swap[0x2000..].iter().all(|&b| b == 4));
+        // Cut before its end, as a last save that failed leaves it, it is refused.
+        let cut = shards_testdir::TempDir::new("mv-live-cut").unwrap();
+        assert!(Precopy::read(&mut &bytes[..bytes.len() - 13], &cut).is_err());
     }
 
     /// A tree written as a move's stream reads back whole, a sparse file as sparse, its

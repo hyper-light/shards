@@ -4,7 +4,6 @@
 //! its state volume, and runs each RUN step in a container of its own runc, all in the
 //! microVM; the image it builds is loaded into shards and runs as a microVM.
 
-#![cfg(unix)]
 #![allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
 
 mod common;
@@ -28,14 +27,16 @@ const BUILDKIT: &str = "moby/buildkit:v0.33.0";
 /// Desktop's).
 fn docker_and_buildx() -> Option<(PathBuf, PathBuf)> {
     let on_path = |name: &str| {
+        let name = format!("{name}{}", std::env::consts::EXE_SUFFIX);
         std::env::var_os("PATH")
             .into_iter()
             .flat_map(|p| std::env::split_paths(&p).collect::<Vec<_>>())
-            .map(|d| d.join(name))
+            .map(|d| d.join(&name))
             .find(|p| p.is_file())
     };
     let docker = on_path("docker")?;
-    let buildx = [
+    #[cfg(unix)]
+    let plugins: Vec<PathBuf> = [
         "/usr/local/lib/docker/cli-plugins",
         "/usr/local/libexec/docker/cli-plugins",
         "/usr/lib/docker/cli-plugins",
@@ -44,8 +45,30 @@ fn docker_and_buildx() -> Option<(PathBuf, PathBuf)> {
     ]
     .into_iter()
     .map(|d| Path::new(d).join("docker-buildx"))
-    .find(|p| p.is_file())?;
+    .collect();
+    #[cfg(windows)]
+    let plugins: Vec<PathBuf> = [
+        std::env::var_os("USERPROFILE").map(|h| Path::new(&h).join(".docker").join("cli-plugins")),
+        std::env::var_os("ProgramFiles").map(|p| Path::new(&p).join("Docker").join("cli-plugins")),
+    ]
+    .into_iter()
+    .flatten()
+    .map(|d| d.join("docker-buildx.exe"))
+    .collect();
+    let buildx = on_path("docker-buildx").or_else(|| plugins.into_iter().find(|p| p.is_file()))?;
     Some((docker, buildx))
+}
+
+/// The test daemon's Engine endpoint, as the Docker client names it.
+fn docker_host(home: &Path) -> String {
+    #[cfg(unix)]
+    return format!("unix://{}", home.join("engine.sock").display());
+    #[cfg(windows)]
+    {
+        let name = std::fs::read_to_string(home.join("engine.pipe")).unwrap();
+        let pipe = name.trim().strip_prefix(r"\\.\pipe\").unwrap();
+        format!("npipe:////./pipe/{pipe}")
+    }
 }
 
 /// A Dockerfile's RUN step, built by buildx's own builder in a microVM, its image loaded
@@ -79,10 +102,16 @@ fn buildx_builds_with_its_own_builder_in_a_microvm() {
     // The CLI's own config, its plugin the host's buildx, and no credential helper.
     let config = home.join("docker-config");
     std::fs::create_dir_all(config.join("cli-plugins")).unwrap();
-    std::os::unix::fs::symlink(&buildx, config.join("cli-plugins/docker-buildx")).unwrap();
+    std::fs::copy(
+        &buildx,
+        config
+            .join("cli-plugins")
+            .join(format!("docker-buildx{}", std::env::consts::EXE_SUFFIX)),
+    )
+    .unwrap();
     let no_helpers = home.join("path");
     std::fs::create_dir_all(&no_helpers).unwrap();
-    let host = format!("unix://{}", home.join("engine.sock").display());
+    let host = docker_host(&home);
     let docker = |args: &[&str]| {
         let out = common::output_within(
             std::process::Command::new(&docker)

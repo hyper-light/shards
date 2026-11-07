@@ -532,7 +532,16 @@ struct Bindings {
     values: Vec<(Rc<str>, Term, usize)>,
     /// Past MAX_LINEAR_SCAN, OPA keeps a Go map, iterated at random; these keep their
     /// order.
-    map_mode: bool,
+    index: Option<HashMap<Rc<str>, usize>>,
+}
+
+impl Bindings {
+    fn position(&self, name: &str) -> Option<usize> {
+        match &self.index {
+            Some(index) => index.get(name).copied(),
+            None => self.values.iter().position(|(key, _, _)| &**key == name),
+        }
+    }
 }
 
 /// One frame of the save set: refs and variables (in the bindings they are in) that
@@ -860,12 +869,8 @@ impl<'p> Machine<'p> {
     }
 
     fn bget(&self, b: usize, v: &str) -> Option<(&Term, usize)> {
-        self.bindings
-            .get(b)?
-            .values
-            .iter()
-            .find(|(k, _, _)| &**k == v)
-            .map(|(_, t, nb)| (t, *nb))
+        let slot = self.bindings.get(b)?;
+        slot.values.get(slot.position(v)?).map(|(_, t, nb)| (t, *nb))
     }
 
     /// bindings.apply: a variable's value, followed through the bindings it is in; and
@@ -1000,13 +1005,21 @@ impl<'p> Machine<'p> {
     fn bind(&mut self, a: &Term, value: &Term, vb: usize, b: usize) -> Option<(Rc<str>, usize)> {
         let TermValue::Var(v) = &a.value else { return None };
         let slot = self.bindings.get_mut(b)?;
-        if let Some(e) = slot.values.iter_mut().find(|(k, _, _)| k == v) {
+        if let Some(e) = slot.position(v).and_then(|i| slot.values.get_mut(i)) {
             e.1 = value.clone();
             e.2 = vb;
         } else {
             slot.values.push((v.clone(), value.clone(), vb));
-            if slot.values.len() > MAX_LINEAR_SCAN {
-                slot.map_mode = true;
+            if let Some(index) = &mut slot.index {
+                index.insert(v.clone(), slot.values.len().saturating_sub(1));
+            } else if slot.values.len() > MAX_LINEAR_SCAN {
+                slot.index = Some(
+                    slot.values
+                        .iter()
+                        .enumerate()
+                        .map(|(i, (key, _, _))| (key.clone(), i))
+                        .collect(),
+                );
             }
         }
         Some((v.clone(), b))
@@ -1019,11 +1032,17 @@ impl<'p> Machine<'p> {
         let Some(slot) = self.bindings.get_mut(b) else {
             return;
         };
-        let Some(i) = slot.values.iter().position(|(k, _, _)| *k == v) else {
+        let Some(i) = slot.position(&v) else {
             return;
         };
-        if slot.map_mode {
+        if let Some(index) = &mut slot.index {
+            index.remove(v.as_ref());
             slot.values.remove(i);
+            for (pos, (key, _, _)) in slot.values.iter().enumerate().skip(i) {
+                if let Some(entry) = index.get_mut(key.as_ref()) {
+                    *entry = pos;
+                }
+            }
         } else {
             slot.values.swap_remove(i);
         }
@@ -4620,6 +4639,73 @@ mod tests {
         fn call(&mut self, _: &str, _: &[Value]) -> Result<Option<Value>, HostError> {
             Ok(None)
         }
+    }
+
+    #[test]
+    fn large_binding_sets_keep_lookups_and_undo_order() {
+        let module = crate::parser::parse_module("p.rego", "package p\n\np := 1\n").unwrap();
+        let mut compiler = Compiler::new(BTreeMap::from([("p.rego".to_owned(), module)]), Vec::new(), true);
+        compiler.compile();
+        let program = Program::new(&compiler, Vec::new());
+        let mut host = NoHost;
+        let mut machine = Machine::new(&program, &mut host, crate::funcs::Context::default());
+        let frame = machine.new_bindings(1);
+        let mut undo = Vec::new();
+        for i in 0..34 {
+            undo.push(machine.bind(
+                &Term::var(&format!("v{i}"), None),
+                &Term::string(&format!("value{i}"), None),
+                frame,
+                frame,
+            ));
+        }
+        for i in 0..34 {
+            assert_eq!(
+                machine.bget(frame, &format!("v{i}")).unwrap().0.as_string(),
+                Some(format!("value{i}").as_str())
+            );
+        }
+        for i in [0, 8, 17, 33] {
+            machine.unbind(undo[i].take());
+            assert!(machine.bget(frame, &format!("v{i}")).is_none());
+        }
+        machine.bind(
+            &Term::var("v19", None),
+            &Term::string("updated", None),
+            frame,
+            frame,
+        );
+        machine.bind(
+            &Term::var("v8", None),
+            &Term::string("rebound", None),
+            frame,
+            frame,
+        );
+        for (i, entry) in undo.iter_mut().enumerate() {
+            if ![7, 8, 19, 31].contains(&i) {
+                machine.unbind(entry.take());
+            }
+        }
+        let remaining: Vec<_> = machine
+            .iter_bindings(frame, None)
+            .into_iter()
+            .map(|(key, value)| {
+                (
+                    key.as_var().unwrap().to_owned(),
+                    value.as_string().unwrap().to_owned(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            remaining,
+            [
+                ("v7", "value7"),
+                ("v19", "updated"),
+                ("v31", "value31"),
+                ("v8", "rebound")
+            ]
+            .map(|(key, value)| (key.to_owned(), value.to_owned()))
+        );
     }
 
     /// A variable bound to an array of the variable before it, each in its own bindings,

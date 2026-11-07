@@ -41,6 +41,7 @@ pub fn main() {
             "pci-plug" => pci_plug(),
             "pci-irq" => pci_irq(),
             "pci-dma" => pci_dma(),
+            "pci-host" => pci_host(),
             "host" => host(),
             "daemon" => daemon(),
             "e2e" => e2e(),
@@ -53,7 +54,9 @@ pub fn main() {
         Ok(()) => "SHARDS-TEST PASS".to_string(),
         Err(e) => format!("SHARDS-TEST FAIL {e}"),
     };
-    let _ = writeln!(io::stdout(), "{line}");
+    if let Err(e) = report(format_args!("{line}")) {
+        let _ = writeln!(io::stdout(), "SHARDS-TEST FAIL reporting the verdict: {e}");
+    }
     // SAFETY: PID 1 waiting for its console to send what it wrote, flushing and powering
     // off. The console's tty holds a write until its UART has sent it, and the kernel's
     // own lines as it powers off go past it: powering off at once can drop the last line.
@@ -61,6 +64,18 @@ pub fn main() {
         libc::tcdrain(1);
         libc::sync();
         libc::reboot(libc::RB_POWER_OFF);
+    }
+}
+
+/// A protocol line the host reads. A storm's kernel diagnostics can interrupt a tty
+/// write even inside a word. Give printk the whole record so it serializes it with
+/// those diagnostics; LOG_USER/ERR keeps it visible with the test kernel's `quiet`.
+fn report(line: std::fmt::Arguments<'_>) -> Result<(), String> {
+    if std::env::var("shards_test").is_ok_and(|test| test == "storm") {
+        std::fs::write("/dev/kmsg", format!("<11>{line}\n"))
+            .map_err(|e| format!("writing the test record to /dev/kmsg: {e}"))
+    } else {
+        writeln!(io::stdout(), "{line}").map_err(|e| format!("writing the test record: {e}"))
     }
 }
 
@@ -792,22 +807,20 @@ fn warps(cpus: usize, window: Duration, read: fn() -> u128) -> Result<(u64, u64)
 /// [`clock_warps`], as a verdict: `when` names the moment for the log.
 fn clock_in_step(cpus: usize, when: &str) -> Result<(), String> {
     let (reads, worst) = clock_warps(cpus, Duration::from_millis(100))?;
-    let _ = writeln!(
-        io::stdout(),
+    report(format_args!(
         "SHARDS-TEST INFO clock {when}: {reads} reads in turn on {cpus} CPUs, worst step back {worst} ns"
-    );
+    ))?;
     if worst > 0 {
         // What keeps the guest's time, and whether the CPUs' own counters disagree: a TSC
         // restored out of step with the others, or a clock's parameters out of step.
         let source = sysfs("/sys/devices/system/clocksource/clocksource0/current_clocksource")
             .unwrap_or_else(|e| format!("unread: {e}"));
-        let _ = writeln!(io::stdout(), "SHARDS-TEST INFO clocksource {when}: {source}");
+        report(format_args!("SHARDS-TEST INFO clocksource {when}: {source}"))?;
         #[cfg(target_arch = "x86_64")]
         if let Ok((reads, back)) = warps(cpus, Duration::from_millis(100), tsc) {
-            let _ = writeln!(
-                io::stdout(),
+            report(format_args!(
                 "SHARDS-TEST INFO tsc {when}: {reads} reads in turn on {cpus} CPUs, worst step back {back} cycles"
-            );
+            ))?;
         }
         return Err(format!(
             "CLOCK_MONOTONIC went back {worst} ns from one CPU to another {when}"
@@ -1008,12 +1021,11 @@ fn storm() -> Result<(), String> {
     // The storm in its steady state, for `shards_storm_ms`, with nothing paused.
     gaps(&storm, true);
     thread::sleep(Duration::from_millis(env_u64("shards_storm_ms").unwrap_or(0)));
-    let _ = writeln!(
-        io::stdout(),
+    report(format_args!(
         "SHARDS-TEST INFO longest gaps steady: {}; longest turns taken: {}",
         gaps(&storm, true),
         spread(&storm.late, true)
-    );
+    ))?;
     clock_in_step(cpus, "before the snapshot")?;
     let control = ControlPage::map()?;
     control.write(shards_abi::control::SNAPSHOT, shards_abi::control::SNAPSHOT_NOW);
@@ -1021,14 +1033,13 @@ fn storm() -> Result<(), String> {
     let generation = control.read(shards_abi::control::GENERATION);
     let echoed_at = ECHOED.load(Ordering::Relaxed);
     let beats = watch_main_thread(cpus);
-    let _ = writeln!(io::stdout(), "SHARDS-TEST INFO generation={generation}");
+    report(format_args!("SHARDS-TEST INFO generation={generation}"))?;
 
-    let _ = writeln!(
-        io::stdout(),
+    report(format_args!(
         "SHARDS-TEST INFO longest gaps before: {}; longest turns taken: {}",
         gaps(&storm, true),
         spread(&storm.late, true)
-    );
+    ))?;
     // Every CPU's clock goes on from the snapshot in step with the others'.
     beats.fetch_add(1, Ordering::Relaxed);
     clock_in_step(cpus, "after the snapshot")?;
@@ -1132,23 +1143,23 @@ fn storm() -> Result<(), String> {
             return Err(format!("slot {k}, after the {written} written, holds data"));
         }
     }
-    let _ = writeln!(io::stdout(), "SHARDS-TEST INFO records={written}");
-    let _ = writeln!(
-        io::stdout(),
+    report(format_args!("SHARDS-TEST INFO records={written}"))?;
+    report(format_args!(
         "SHARDS-TEST INFO longest gaps after: {}; longest turns taken: {}",
         gaps(&storm, false),
         spread(&storm.late, false)
-    );
+    ))?;
     // A machine that went on carries the host's stream on past its snapshot: two rounds'
     // worth (the host's rounds are 4 MiB), so the round the snapshot cut through ends and
-    // another runs whole after it, however slowly a loaded host streams.
+    // another runs whole after it, however slowly a loaded host streams: for as long as
+    // the stream carries bytes ([`STREAM_QUIET`]).
     if generation == 0 {
-        let deadline = Instant::now() + Duration::from_secs(60);
+        let mut stream = Streaming::new();
         while ECHOED.load(Ordering::Relaxed).saturating_sub(echoed_at) < 8 << 20 {
             beats.fetch_add(1, Ordering::Relaxed);
-            if Instant::now() > deadline {
+            if !stream.carries() {
                 return Err(format!(
-                    "the host streamed {} bytes after the snapshot in 60 s",
+                    "the host streamed {} bytes after the snapshot, then nothing for {STREAM_QUIET:?}",
                     ECHOED.load(Ordering::Relaxed).saturating_sub(echoed_at)
                 ));
             }
@@ -1158,32 +1169,52 @@ fn storm() -> Result<(), String> {
     // The verdict waits for the host to say it has stopped streaming, so every round the
     // host streamed ended with the guest alive: its main thread watched no more.
     beats.store(u64::MAX, Ordering::Relaxed);
-    let _ = writeln!(io::stdout(), "SHARDS-TEST INFO storm checked");
+    report(format_args!("SHARDS-TEST INFO storm checked"))?;
     // The host's side of the connection is up only once it has read its OK, after this
-    // side's accept: its byte, or its close, says so.
-    let mut host = accept_within(&done, Duration::from_secs(60))?;
+    // side's accept: its byte, or its close, says so. The host connects once the round it
+    // streams ends, waited for while its stream carries bytes.
+    let mut host = accept_while_streaming(&done)?;
     let mut byte = [0u8; 1];
     std::io::Read::read(&mut host, &mut byte)
         .map(drop)
         .map_err(|e| format!("waiting for the host's word: {e}"))
 }
 
+/// How long the storm's main thread stands still before a watcher says so, in one line
+/// ([`standing_still`]): well inside the host's `DAEMON_QUIET`, so that the host, which
+/// waits a minute past its deadline for something new, hears of a stall before it gives up.
+const STOOD_STILL: Duration = Duration::from_secs(15);
+
 /// Watches the storm's main thread from its snapshot on, by the count it adds to at each
-/// step and each look at what it waits for: once the count has stood still 15 s, has the
-/// kernel say what it can of it ([`stood_still`]). What stops the main thread past the
-/// snapshot stops what it says too, a lost timer and a stuck console alike; printk's
-/// console polls the UART, needing none of its interrupts, so the kernel's word reaches
-/// the host either way. Four watchers, each pinned to its own of the guest's `cpus`, spread
-/// across them: a CPU whose timer stopped stops the one there, whose sleeps never end, and
-/// not the rest. The first to see it says it, once; none does after the count is
-/// `u64::MAX`, which ends the watch.
+/// step and each look at what it waits for. Once the count has stood still [`STOOD_STILL`],
+/// a watcher says so in a line ([`standing_still`]), once for each beat it stands still at;
+/// once it has stood still [`STREAM_QUIET`], the storm's own bound for a stream that has
+/// stopped, past which the host gives up on it too, the kernel says all it can of it
+/// ([`stood_still`]), once. What stops the main thread past the snapshot stops what it
+/// says too, a lost timer and a stuck console alike; printk's console polls the UART,
+/// needing none of its interrupts, so the kernel's word reaches the host either way.
+///
+/// The kernel's whole account waits for the longer bound because it is no cheap read
+/// (PM M427): on the nested arm64 Windows host (QEMU's TCG, 4 CPUs) a 64-vCPU storm's
+/// main thread stood 26 and 56 s at its clock check after the snapshot, as the same check
+/// took 20 s before it, and the account given after 15 s, some 6,000 lines of timers
+/// alone, held the console for 172 s at milliseconds a byte, on CPU 0, which every device
+/// interrupt goes to: its echo carried nothing for 60 s and the guest failed itself; the
+/// other storm's CPU 0 left its tasks unrun for 750 s, its disk completions with them.
+/// A storm that stalls for good still has the account, a minute in.
+///
+/// Four watchers, each pinned to its own of the guest's `cpus`, spread across them: a CPU
+/// whose timer stopped stops the one there, whose sleeps never end, and not the rest. None
+/// says anything after the count is `u64::MAX`, which ends the watch.
 fn watch_main_thread(cpus: usize) -> std::sync::Arc<std::sync::atomic::AtomicU64> {
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     let beats = std::sync::Arc::new(AtomicU64::new(0));
-    let said = std::sync::Arc::new(AtomicBool::new(false));
+    // The beat a stall was last said at, and whether the kernel's account was given.
+    let told = std::sync::Arc::new(AtomicU64::new(u64::MAX));
+    let accounted = std::sync::Arc::new(AtomicBool::new(false));
     let watchers = cpus.clamp(1, 4);
     for w in 0..watchers {
-        let (watched, said) = (beats.clone(), said.clone());
+        let (watched, told, accounted) = (beats.clone(), told.clone(), accounted.clone());
         thread::spawn(move || {
             if pin(w * cpus / watchers).is_err() {
                 return;
@@ -1192,16 +1223,22 @@ fn watch_main_thread(cpus: usize) -> std::sync::Arc<std::sync::atomic::AtomicU64
             loop {
                 thread::sleep(Duration::from_secs(1));
                 let now = watched.load(Ordering::Relaxed);
-                if now == u64::MAX || said.load(Ordering::Relaxed) {
+                if now == u64::MAX || accounted.load(Ordering::Relaxed) {
                     return;
                 }
                 if now != last {
                     (last, since) = (now, Instant::now());
-                } else if since.elapsed() >= Duration::from_secs(15) {
-                    if !said.swap(true, Ordering::Relaxed) {
+                    continue;
+                }
+                let still = since.elapsed();
+                if still >= STREAM_QUIET {
+                    if !accounted.swap(true, Ordering::Relaxed) {
                         stood_still(now);
                     }
                     return;
+                }
+                if still >= STOOD_STILL && told.swap(now, Ordering::Relaxed) != now {
+                    standing_still(now);
                 }
             }
         });
@@ -1209,27 +1246,16 @@ fn watch_main_thread(cpus: usize) -> std::sync::Arc<std::sync::atomic::AtomicU64
     beats
 }
 
-/// What the kernel can say of a main thread that stood still ([`watch_main_thread`]), on
-/// its console at a log level that shows it: what it logged that the console's level kept
-/// off it (notices and worse), the CPU the main thread last ran on, the CPUs whose local
-/// timer took no interrupt in a second, each CPU's timers and clock event device (sysrq
-/// `q`), and every task's stack (sysrq `t`).
-fn stood_still(beat: u64) {
-    let say = |line: &str| {
-        let _ = std::fs::write("/dev/kmsg", format!("storm: {line}\n"));
-    };
-    let _ = std::fs::write("/proc/sys/kernel/printk", "7");
-    let logged = kernel_log(5);
-    // SAFETY: sched_getcpu(3) takes no arguments.
-    let here = unsafe { libc::sched_getcpu() };
-    say(&format!(
-        "the main thread stood still 15 s at beat {beat} (seen from CPU {here})"
-    ));
-    for line in logged {
-        say(&format!("log: {line}"));
-    }
-    // /proc/PID/stat's field 39, the CPU it last ran on: the 37th after its command's ")".
-    let cpu = std::fs::read_to_string("/proc/1/stat")
+/// A line of the storm's watch on its console, at LOG_USER/ERR, which the test kernel's
+/// `quiet` shows ([`report`]).
+fn say(line: &str) {
+    let _ = std::fs::write("/dev/kmsg", format!("<11>storm: {line}\n"));
+}
+
+/// The CPU the main thread last ran on: /proc/PID/stat's field 39, the 37th after its
+/// command's ")".
+fn main_thread_cpu() -> String {
+    std::fs::read_to_string("/proc/1/stat")
         .ok()
         .and_then(|s| {
             s.rsplit(')')
@@ -1237,8 +1263,39 @@ fn stood_still(beat: u64) {
                 .and_then(|rest| rest.split_whitespace().nth(36))
                 .map(str::to_string)
         })
-        .unwrap_or_default();
-    say(&format!("the main thread last ran on CPU {cpu}"));
+        .unwrap_or_default()
+}
+
+/// That the main thread has stood still [`STOOD_STILL`] at `beat`, and where it last ran,
+/// in one line ([`watch_main_thread`]).
+fn standing_still(beat: u64) {
+    // SAFETY: sched_getcpu(3) takes no arguments.
+    let here = unsafe { libc::sched_getcpu() };
+    say(&format!(
+        "the main thread stood still {} s at beat {beat} (seen from CPU {here}); it last ran on CPU {}",
+        STOOD_STILL.as_secs(),
+        main_thread_cpu()
+    ));
+}
+
+/// What the kernel can say of a main thread that stood still [`STREAM_QUIET`]
+/// ([`watch_main_thread`]), on its console at a log level that shows it: what it logged
+/// that the console's level kept off it (notices and worse), the CPU the main thread last
+/// ran on, the CPUs whose local timer took no interrupt in a second, each CPU's timers and
+/// clock event device (sysrq `q`), and every task's stack (sysrq `t`).
+fn stood_still(beat: u64) {
+    let _ = std::fs::write("/proc/sys/kernel/printk", "7");
+    let logged = kernel_log(5);
+    // SAFETY: sched_getcpu(3) takes no arguments.
+    let here = unsafe { libc::sched_getcpu() };
+    say(&format!(
+        "the main thread stood still {} s at beat {beat} (seen from CPU {here})",
+        STREAM_QUIET.as_secs()
+    ));
+    for line in logged {
+        say(&format!("log: {line}"));
+    }
+    say(&format!("the main thread last ran on CPU {}", main_thread_cpu()));
     if let Some(before) = local_timer_interrupts() {
         thread::sleep(Duration::from_secs(1));
         if let Some(after) = local_timer_interrupts() {
@@ -1260,11 +1317,21 @@ fn stood_still(beat: u64) {
     let _ = std::fs::write("/proc/sysrq-trigger", "t");
 }
 
-/// Each CPU's count of local timer interrupts, /proc/interrupts' `LOC` line.
+/// Each CPU's count of local timer interrupts: /proc/interrupts' `LOC` line on x86_64, and
+/// on arm64, which has none, the architected timer's (`arch_timer`, its PPI): reading
+/// `LOC` alone, a 64-vCPU storm on arm64 said nothing of its timers (PM M427).
 fn local_timer_interrupts() -> Option<Vec<u64>> {
     let text = std::fs::read_to_string("/proc/interrupts").ok()?;
     let cpus = text.lines().next()?.split_whitespace().count();
-    let line = text.lines().find_map(|l| l.trim_start().strip_prefix("LOC:"))?;
+    let line = text.lines().map(str::trim_start).find_map(|l| {
+        if let Some(rest) = l.strip_prefix("LOC:") {
+            return Some(rest);
+        }
+        if l.trim_end().ends_with(" arch_timer") {
+            return l.split_once(':').map(|(_, rest)| rest);
+        }
+        None
+    })?;
     Some(
         line.split_whitespace()
             .take(cpus)
@@ -1292,17 +1359,14 @@ fn kernel_log(at_most: u32) -> Vec<String> {
             Ok(0) => break,
             Ok(n) => {
                 // "PRIORITY,SEQUENCE,MICROSECONDS,FLAGS;MESSAGE": the level is the
-                // priority's low three bits.
+                // priority's low three bits, the facility the rest. Replay only kernel
+                // records, never the storm's own LOG_USER protocol lines.
                 let record = String::from_utf8_lossy(buf.get(..n).unwrap_or_default()).into_owned();
                 let Some((head, message)) = record.split_once(';') else {
                     continue;
                 };
-                let level = head
-                    .split(',')
-                    .next()
-                    .and_then(|p| p.parse::<u32>().ok())
-                    .map(|p| p & 7);
-                if level.is_some_and(|l| l <= at_most) {
+                let priority = head.split(',').next().and_then(|p| p.parse::<u32>().ok());
+                if priority.is_some_and(|p| p >> 3 == 0 && p & 7 <= at_most) {
                     said.push(message.lines().next().unwrap_or_default().to_string());
                 }
             }
@@ -1314,15 +1378,47 @@ fn kernel_log(at_most: u32) -> Vec<String> {
     said
 }
 
-/// The next connection to `listener`, or an error once `limit` passes without one.
-fn accept_within(listener: &std::fs::File, limit: Duration) -> Result<std::fs::File, String> {
+/// How long the host's stream through the echo may carry nothing before a storm takes it
+/// for stopped: the host's own `DAEMON_QUIET` (crates/shards/tests/common), a minute,
+/// after which its reads of the stream fail. A stream that carries anything is waited on
+/// however slowly its host runs it (the parity plan's step 10: 196,608 bytes in 120 s).
+const STREAM_QUIET: Duration = Duration::from_secs(60);
+
+/// Whether the host's stream through the echo ([`ECHOED`]) has carried bytes within
+/// [`STREAM_QUIET`], or since it began watching.
+struct Streaming {
+    echoed: u64,
+    since: Instant,
+}
+
+impl Streaming {
+    fn new() -> Streaming {
+        Streaming {
+            echoed: ECHOED.load(std::sync::atomic::Ordering::Relaxed),
+            since: Instant::now(),
+        }
+    }
+
+    fn carries(&mut self) -> bool {
+        let echoed = ECHOED.load(std::sync::atomic::Ordering::Relaxed);
+        if echoed != self.echoed {
+            (self.echoed, self.since) = (echoed, Instant::now());
+        }
+        self.since.elapsed() < STREAM_QUIET
+    }
+}
+
+/// A connection to `listener`, waited for while the host's stream through the echo carries
+/// bytes ([`Streaming`]): the host connects once it has stopped streaming, at the end of a
+/// round however long its host takes over it.
+fn accept_while_streaming(listener: &std::fs::File) -> Result<std::fs::File, String> {
     use std::os::fd::{AsRawFd, FromRawFd};
+    // Each accept(2) gives up after a second, for a look at the stream.
     let wait = libc::timeval {
-        tv_sec: limit.as_secs().try_into().unwrap_or(60),
+        tv_sec: 1,
         tv_usec: 0,
     };
-    // SAFETY: setsockopt(2) on our own socket, with a timeval of its size: accept(2) gives
-    // up after it.
+    // SAFETY: setsockopt(2) on our own socket, with a timeval of its size.
     let set = unsafe {
         libc::setsockopt(
             listener.as_raw_fd(),
@@ -1335,23 +1431,31 @@ fn accept_within(listener: &std::fs::File, limit: Duration) -> Result<std::fs::F
     if set != 0 {
         return Err(format!("SO_RCVTIMEO: {}", io::Error::last_os_error()));
     }
-    // SAFETY: accept(2) on our listening socket, without the peer address.
-    let fd = unsafe {
-        libc::accept4(
-            listener.as_raw_fd(),
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
-            libc::SOCK_CLOEXEC,
-        )
-    };
-    if fd < 0 {
-        return Err(format!(
-            "no host connection in {limit:?}: {}",
-            io::Error::last_os_error()
-        ));
+    let mut stream = Streaming::new();
+    loop {
+        // SAFETY: accept(2) on our listening socket, without the peer address.
+        let fd = unsafe {
+            libc::accept4(
+                listener.as_raw_fd(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                libc::SOCK_CLOEXEC,
+            )
+        };
+        if fd >= 0 {
+            // SAFETY: a fresh descriptor nothing else owns.
+            return Ok(unsafe { std::fs::File::from_raw_fd(fd) });
+        }
+        let e = io::Error::last_os_error();
+        if !matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted) {
+            return Err(format!("accepting the host's connection: {e}"));
+        }
+        if !stream.carries() {
+            return Err(format!(
+                "no host connection, and nothing through the echo, for {STREAM_QUIET:?}"
+            ));
+        }
     }
-    // SAFETY: a fresh descriptor nothing else owns.
-    Ok(unsafe { std::fs::File::from_raw_fd(fd) })
 }
 
 /// The benchmark guest: asks for a snapshot; a restored clone marks that it runs again
@@ -1728,6 +1832,107 @@ fn pci() -> Result<(), String> {
     unsafe { libc::munmap(scratch.cast(), 4096) };
     if (first, last) != (0x5ca7_c400, 0x0dd_ba11) {
         return Err(format!("BAR 4 read back {first:#x} and {last:#x}"));
+    }
+    Ok(())
+}
+
+/// A host's PCI function its hypervisor assigns (D154; boot.rs's
+/// `a_hosts_pci_function_is_assigned_where_its_hypervisor_assigns_one`): at 0000:00:01.0
+/// with the IDs `shards_pci_ids` names (`0xVVVV:0xDDDD`). With `shards_pci_driver`, the
+/// guest kernel's driver of that name has taken it. Else its first memory BAR, mapped from
+/// sysfs, reads other than all ones while its memory decoding is on, and all ones while it
+/// is off, as an access no function claims (PCI 3.0 §6.2.2), then as before once it is on
+/// again.
+fn pci_host() -> Result<(), String> {
+    const DIR: &str = "/sys/bus/pci/devices/0000:00:01.0";
+    let read = |f: &str| {
+        std::fs::read_to_string(format!("{DIR}/{f}"))
+            .map(|s| s.trim().to_string())
+            .map_err(|e| format!("{DIR}/{f}: {e}"))
+    };
+    let want = std::env::var("shards_pci_ids").map_err(|_| "no shards_pci_ids".to_string())?;
+    let ids = format!("{}:{}", read("vendor")?, read("device")?);
+    if ids != want {
+        return Err(format!("00:01.0 is {ids}, not {want}"));
+    }
+    if let Ok(driver) = std::env::var("shards_pci_driver") {
+        let bound = wait_for(Duration::from_secs(10), || {
+            std::fs::read_link(format!("{DIR}/driver")).ok()
+        });
+        let name = bound
+            .as_deref()
+            .and_then(Path::file_name)
+            .and_then(|n| n.to_str())
+            .map(str::to_string);
+        if name.as_deref() != Some(driver.as_str()) {
+            return Err(format!("00:01.0's driver is {name:?}, not {driver}"));
+        }
+        return Ok(());
+    }
+    // Each BAR's start, end and flags; IORESOURCE_MEM (include/linux/ioport.h) a memory
+    // BAR's.
+    let hex = |v: &str| u64::from_str_radix(v.trim_start_matches("0x"), 16).unwrap_or(0);
+    let resources = read("resource")?;
+    let (index, start) = resources
+        .lines()
+        .take(6)
+        .enumerate()
+        .find_map(|(i, line)| {
+            let fields: Vec<u64> = line.split_whitespace().map(hex).collect();
+            match fields.as_slice() {
+                [start, _, flags] if *start != 0 && flags & 0x200 != 0 => Some((i, *start)),
+                _ => None,
+            }
+        })
+        .ok_or_else(|| format!("{DIR}/resource: no memory BAR in {resources:?}"))?;
+    std::fs::write(format!("{DIR}/enable"), "1").map_err(|e| format!("{DIR}/enable: {e}"))?;
+    let bar = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(format!("{DIR}/resource{index}"))
+        .map_err(|e| format!("{DIR}/resource{index}: {e}"))?;
+    use std::os::fd::AsRawFd as _;
+    // SAFETY: a fresh shared mapping of the page that holds the BAR's start, which nothing
+    // else maps.
+    let page = unsafe {
+        libc::mmap(
+            std::ptr::null_mut(),
+            4096,
+            libc::PROT_READ,
+            libc::MAP_SHARED,
+            bar.as_raw_fd(),
+            0,
+        )
+    };
+    if page == libc::MAP_FAILED {
+        return Err(format!("mapping BAR {index}: {}", io::Error::last_os_error()));
+    }
+    // SAFETY: the BAR's first register, in the page mapped, 4-aligned as a BAR is.
+    let register = unsafe { page.cast::<u8>().add((start % 4096) as usize).cast::<u32>() };
+    let config = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(format!("{DIR}/config"))
+        .map_err(|e| format!("{DIR}/config: {e}"))?;
+    let decoding = |on: bool| -> Result<u32, String> {
+        let mut command = [0u8; 2];
+        pread_exact(config.as_raw_fd(), &mut command, 4)?;
+        let command = u16::from_le_bytes(command);
+        let command = if on { command | 2 } else { command & !2 };
+        pwrite_exact(config.as_raw_fd(), &command.to_le_bytes(), 4)?;
+        // SAFETY: a volatile read of the BAR's first register.
+        Ok(unsafe { register.read_volatile() })
+    };
+    // SAFETY: a volatile read of the BAR's first register.
+    let first = unsafe { register.read_volatile() };
+    let (off, on) = (decoding(false), decoding(true));
+    // SAFETY: the mapping made above.
+    unsafe { libc::munmap(page, 4096) };
+    let (off, on) = (off?, on?);
+    if first == u32::MAX || off != u32::MAX || on == u32::MAX {
+        return Err(format!(
+            "BAR {index} read {first:#x}, {off:#x} with memory space off, {on:#x} with it on again"
+        ));
     }
     Ok(())
 }
