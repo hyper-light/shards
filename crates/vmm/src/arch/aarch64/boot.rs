@@ -245,6 +245,32 @@ pub struct MsiFrame {
     pub count: u32,
 }
 
+/// A GICv2m frame's doorbell, MSI_SETSPI_NS, at its offset 0x40 (Linux's irq-gic-v2m.c,
+/// V2M_MSI_SETSPI_NS).
+pub const V2M_MSI_SETSPI_NS: u64 = 0x040;
+
+impl MsiFrame {
+    /// The SPI, by INTID, an MSI of `address` and `data` raises here: [`v2m_spi`].
+    pub fn spi_of(&self, address: u64, data: u32) -> Result<u32, String> {
+        v2m_spi(self.base, self.first_intid, self.count, address, data)
+    }
+}
+
+/// The SPI, by INTID, an MSI of `address` and `data` raises at the GICv2m frame at `base`,
+/// whose SPIs are the `count` from `first_intid`: its data, where its address is the
+/// frame's doorbell and its data one of the frame's SPIs, as Linux composes a message
+/// there (irq-gic-v2m.c, gicv2m_compose_msi_msg: the doorbell's address, the SPI's INTID as
+/// its data).
+pub fn v2m_spi(base: u64, first_intid: u32, count: u32, address: u64, data: u32) -> Result<u32, String> {
+    if base.checked_add(V2M_MSI_SETSPI_NS) != Some(address) {
+        return Err(format!("an MSI to {address:#x}, not the GICv2m frame's doorbell"));
+    }
+    if data < first_intid || data - first_intid >= count {
+        return Err(format!("an MSI for INTID {data}, none of the GICv2m frame's"));
+    }
+    Ok(data)
+}
+
 const PHANDLE_GIC: u32 = 1;
 const PHANDLE_APB_PCLK: u32 = 2;
 const PHANDLE_V2M: u32 = 3;
@@ -505,6 +531,33 @@ pub fn build_fdt(m: &Machine<'_>) -> Result<Vec<u8>, FdtError> {
 mod tests {
     use super::*;
     use crate::fdt::decode;
+
+    /// A GICv2m frame's MSI names the SPI its data says, sent to the frame's doorbell alone
+    /// and for the frame's own SPIs alone: what the VMM's frame raises, and what WHP maps an
+    /// assigned function's MSI to on arm64 (D154).
+    #[test]
+    fn a_gicv2m_msi_names_one_of_its_frames_spis_at_its_doorbell() {
+        let frame = MsiFrame {
+            base: layout::GIC_MSI,
+            size: 4 << 10,
+            first_intid: 32 + layout::SPI_MSI,
+            count: layout::MSI_SPIS,
+        };
+        let doorbell = layout::GIC_MSI + V2M_MSI_SETSPI_NS;
+        let first = 32 + layout::SPI_MSI;
+        let last = first + layout::MSI_SPIS - 1;
+        assert_eq!(frame.spi_of(doorbell, first), Ok(first));
+        assert_eq!(frame.spi_of(doorbell, last), Ok(last));
+        for (address, data) in [
+            (doorbell, first - 1),
+            (doorbell, last + 1),
+            (layout::GIC_MSI, first),
+            (doorbell + 4, first),
+        ] {
+            assert!(frame.spi_of(address, data).is_err(), "{address:#x} {data}");
+        }
+        assert!(v2m_spi(u64::MAX, first, 1, doorbell, first).is_err());
+    }
 
     #[test]
     fn parses_the_bootstrap_kernel_header() {

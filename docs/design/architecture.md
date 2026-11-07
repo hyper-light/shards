@@ -221,8 +221,9 @@ hot-plug suites (D214); its other cells' VM tests are amd64's code, not yet run 
 macOS arm64's are tested with real VMs on Macs here: CI's macOS runners offer no
 Hypervisor.framework (`kern.hv_support`), and their VM tests say SKIP.
 Windows arm64's backend has landed (D209), its cells the Windows amd64 cells' code, none of
-them "yes" until its full real-VM suite passes (the audit's row 5); but for a host's PCI
-function, which its backend assigns none of (`WHP_ARM64_NO_ASSIGNMENT`, D154).
+them "yes" until its full real-VM suite passes (the audit's row 5), a host's PCI function
+among them: assigned by the same code as amd64's (`hv::whp`'s vpci.rs), its MSIs the
+SPIs of the GICv2m frame the VMM keeps (D154).
 
 | Feature | Linux amd64 | Linux arm64 | macOS arm64 | Windows amd64 |
 |---|---|---|---|---|
@@ -240,7 +241,7 @@ function, which its backend assigns none of (`WHP_ARM64_NO_ASSIGNMENT`, D154).
 | Log drivers (D163, D198, D199) | every driver, journald its own | as amd64 | every driver but journald, macOS's own log (`oslog`) its counterpart | every driver but journald, `etwlogs` its counterpart |
 | A GPU (D144, Venus) | yes, glibc and musl, NVIDIA's, AMD's and Intel's GPUs (D201, D208); open: the GPU desktop's run of D208's build, waiting for its owner's go | built and linted, untested on a GPU (none here) | yes | yes (D202) |
 | Devices plugged into a running microVM, disks grown (D214) | yes | yes (nested, its MSIs through the GIC's ITS) | yes | yes: in the VMM, its shared directory over a duplex pipe (tests/hotplug.rs), and through the CLI a disk and a volume, its share process's stream given the VM as a run's are (tests/plug.rs), on CI's windows-2025 and windows-2022 |
-| A host's PCI function given a microVM, at its start or plugged in (D154, D214) | built, VFIO; not yet tested on hardware, no x86_64 host here having a function to spare (D214's Not yet) | yes, nested, on QEMU's edu function (D154, D214), plugged into a run's workload too, as a user not root, by group and by device node (D214, at 8928fbe4) | refused: its APIs assign no PCI function, Virtualization's one passthrough a USB device's (D154, PM M403) | at its start, given the VM's kernel: built where the hypervisor assigns devices (Discrete Device Assignment, D154, d3029698), its E2E waiting on a Windows Server host that assigns one; refused with the hypervisor's own answer where it assigns none (PM M401, M402). A workload's, at its start or plugged in behind the guest's IOMMU: refused with WHP's limit, no I/O address space of the guest's (D154). Plugged in outside the IOMMU (D214's VMM path): not built |
+| A host's PCI function given a microVM, at its start or plugged in (D154, D214) | built, VFIO; not yet tested on hardware, no x86_64 host here having a function to spare (D214's Not yet) | yes, nested, on QEMU's edu function (D154, D214), plugged into a run's workload too, as a user not root, by group and by device node (D214, at 8928fbe4) | refused: its APIs assign no PCI function, Virtualization's one passthrough a USB device's (D154, PM M403) | at its start, given the VM's kernel: built where the hypervisor assigns devices (Discrete Device Assignment, D154, d3029698), its E2E waiting on a Windows Server host that assigns one; refused with the hypervisor's own answer where it assigns none (PM M401, M402). A workload's, at its start or plugged in behind the guest's IOMMU: refused with WHP's limit, no I/O address space of the guest's (D154). Plugged in outside the IOMMU (D214's VMM path): refused, Windows documenting a function given a VM as it starts alone (`WHP_NO_PLUG`, D214) |
 | A running microVM saved whole, and resumed (D176 parts 1-5) | yes | yes | yes | yes |
 | Moved to another machine, saved (D176 part 6) | yes, between two homes of one machine (PM M460; CI's runners, migrate-e2e.yml); between two machines built, not yet run | built, not yet run | built, its CPU checked as macOS names its features (PM M460); measured on KVM x86_64 alone; between two Macs not yet run | yes between two homes, a volume's guest owners moved as its guest sees them (`server::guest`): tests/moved.rs on CI's windows-2025; between two machines built, not yet run |
 | Moved live (D176 part 7) | yes, between two homes of one machine (PM M461; CI's runners, migrate-e2e.yml); between two machines built, not yet run | built, not yet run: each writable slot's dirty bitmap (`KVM_GET_DIRTY_LOG`), which takes the ITS's writes too | built, its guest's writes watched at stage 2 as D25's recorder watches them; measured on KVM x86_64 alone; between two Macs not yet run | yes between two homes, by WHP's dirty page tracking (`WHvQueryGpaRangeDirtyBitmap`): tests/moved.rs's live tests on CI's windows-2025 (CI 42329593544 at 51a709e9, e0ed0673), windows-2022 restoring no snapshot (PM M345); between two machines built, not yet run |
@@ -6999,7 +7000,7 @@ template pays it once; what its restores pay is to be measured with mappings.
   architecture (above: its page structures its head's, and arm64's linear map of it in
   blocks).
 
-### D214. Devices plugged into a running microVM, and its disks grown (built: disks and shared directories through the CLI on Hypervisor.framework, KVM and WHP, WHP's run on CI's Windows runners; host functions in the VMM on KVM, and through the CLI for a run's workload on Linux, both passing nested on arm64 KVM)
+### D214. Devices plugged into a running microVM, and its disks grown (built: disks and shared directories through the CLI on Hypervisor.framework, KVM and WHP, WHP's run on CI's Windows runners; host functions in the VMM on KVM, and through the CLI for a run's workload on Linux, both passing nested on arm64 KVM; refused on WHP with Microsoft's documented limit, a function assigned as a VM starts alone)
 
 **Why.** The long-session roadmap's item 6 (2026-10-18): a microVM that runs for hours is
 given what it needs as it goes, not only what it booted with. Every shards device was a
@@ -7071,7 +7072,14 @@ share made ahead), and a disk's capacity was fixed when its file was opened.
   without exits, follow its BARs as the guest places and moves them, and leave as it is
   unplugged; KVM forgets its file then (KVM_DEV_VFIO_FILE_DEL, virt/kvm/vfio.c), which it
   would otherwise hold as long as the VM. KVM's VFIO device and memory slots are reached
-  apart from the VM (`hv::VfioHost`), which the running machine owns.
+  apart from the VM (`hv::VfioHost`), which the running machine owns. Off Linux
+  `Handle::plug_vfio` refuses, changing nothing (`vm::plug_refused`): macOS's
+  Hypervisor.framework assigns no device at all, and Windows gives a microVM a host's
+  function as it starts alone (`WHP_NO_PLUG`): WHP allows a partition device assignment
+  before its setup alone (M401), Microsoft documents Discrete Device Assignment for a VM
+  given its device before it starts and giving it back once stopped, and WHP's pages say
+  nothing of a virtual PCI device made in a partition that runs (D154's "No Windows host
+  plugs a function"). Untested where a hypervisor assigns devices, as none here does.
 - **Slots only where asked for.** A bus of four empty slots costs an x86_64 boot on KVM
   4 ms at p50, 60.3 ms against 56.1 (PM M430), where an arm64 boot on Hypervisor.framework
   pays nothing measured (18.90 against 18.88 ms): x86_64's guest finds its bus through
@@ -7413,8 +7421,13 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
   share's DAX window untracked as x86_64's; a guest restored on another CPU told the
   snapshot's (D176 part 6), MIDR_EL1 set on its vCPU and the feature ID registers on the
   partition (`WHV_ANY_VP`), each read back, a CPU that keeps any otherwise refused by
-  name. A host's PCI function is refused (D154): only x86_64's backend makes one a device
-  of its partition (`WHvCreateVpciDevice`), whatever the hypervisor answers.
+  name. A host's PCI function is given the VM's kernel where its hypervisor assigns
+  devices, by x86_64's code (D154: `hv::whp`'s vpci.rs, included by path, as Microsoft
+  Learn gives every virtual PCI function x64 and Arm64 alike, and the SDK's headers declare
+  them and their types outside their architectures' branches), its partition allowed
+  device assignment before setup, and each MSI the SPI the GICv2m frame the VMM keeps
+  names, at VP 0, as WHP aims an MSI at one vCPU on Arm64; refused with the hypervisor's
+  own answer where it assigns none.
 - **Measured boot; feature E2E pending.** Its host is Windows 11 Pro arm64 26300.9457
   from Microsoft's ISO, nested under QEMU on this Mac (the user's decision, 2026-10-30).
   M414 records the failed HVF boots and the working TCG host, with TF-A at EL3, pointer
@@ -11370,6 +11383,48 @@ one. So both, in that order.
     process (an AppContainer, D30) may allocate the resource, which the E2E's first run
     answers; and whether WHP keeps resident the guest RAM a function's DMA reaches, which
     Microsoft's pages do not say.
+  - **On arm64 Windows by the same code.** Microsoft Learn gives every virtual PCI function
+    "x64, Arm64" (each function's page, 2026-06-08: Windows 11 24H2 build 26100.3915 on
+    Arm64), and the SDK declares them (WinHvPlatform.h) and defines their types
+    (WinHvPlatformDefs.h, its "Virtual PCI type definitions") outside its `_AMD64_` and
+    `_ARM64_` branches, as it does AllowDeviceAssignment and the features' VirtualPciDevice
+    and IommuSupport bits; so WHP's arm64 backend includes x86_64's `hv::whp::vpci` by path,
+    its types windows-sys's (held to the header's sizes), its partition allowed device
+    assignment before setup as x86_64's, and the machine makes the VM before its layout
+    where it is given a function, as x86_64's does, its BARs sizing the 64-bit window
+    (`vm::assigned_functions`, which both share). An MSI's target differs: the header gives
+    WHvGetInterruptTargetVpSet x64 alone, and on Arm64 WHvMapVpciDeviceInterrupt "returns
+    E_INVALIDARG when Target->ProcessorCount is greater than 1 or when
+    WHvVpciInterruptTargetFlagMulticast is set, because the hypervisor targets each MSI to
+    a single virtual processor on Arm64". The arm64 guest's MSIs go to the GICv2m frame the
+    VMM keeps (WHP's GIC is given no ITS, D209), its doorbell the address and the SPI's
+    INTID the data (Linux's irq-gic-v2m.c, gicv2m_compose_msi_msg; `boot::v2m_spi`, which the
+    frame the VMM emulates now shares): so the vector WHP is given is that INTID, as Hyper-V's
+    own virtual PCI takes an SPI's INTID on arm64 (Linux's drivers/pci/controller/
+    pci-hyperv.c at d4872371, hv_msi_get_int_vector, its SPIs from 64; OpenVMM's
+    vmm_core/virt_whp/src/device.rs at ba105dd7 handing WHP the vector its guest's virtual
+    PCI asks for, built for both architectures), aimed at VP 0, an SPI going where the GIC's
+    distributor routes it (pci-hyperv.c's hv_arch_irq_unmask: "SPIs is managed via GICD
+    registers which Hyper-V already supports"). Held by `boot`'s
+    `a_gicv2m_msi_names_one_of_its_frames_spis_at_its_doorbell`, the arm64 ffi's sizes, the
+    refusal test above and the same E2E, now built for Windows arm64 too. Not yet known, no
+    arm64 host here known to assign one (CI's windows-11-arm runs no hypervisor, M402; the
+    nested Windows 11 host's answer, Windows 11's, not yet recorded): whether WHP delivers
+    the SPI where the guest's GICD_IROUTER routes it or at VP 0; and the stage-2 attributes
+    WHP gives a BAR's pages mapped into the guest.
+  - **No Windows host plugs a function into a running microVM** (D214's VMM path outside
+    the guest's IOMMU; behind it WHP's limit above holds). A partition is allowed device
+    assignment as it is made, before WHvSetupPartition alone (E_INVALIDARG after, M401);
+    Microsoft documents Discrete Device Assignment for a VM given its device before it
+    starts and giving it back once stopped (Microsoft Learn, "Deploy graphics devices by
+    using Discrete Device Assignment", 2026-01-30: "After a device is successfully mounted
+    in a VM, you're now able to start that VM", "you must stop the VM and issue this
+    command"); and WHP's pages (WHvCreateVpciDevice and every virtual PCI function's,
+    2026-06-08) say nothing of a device made in a partition that runs, nor does OpenVMM make
+    one (ba105dd7: its `new_physical_device` has no caller). So `Handle::plug_vfio` off
+    Linux refuses (`vm::plug_refused`): where the hypervisor assigns devices with
+    `WHP_NO_PLUG`, naming those limits and how to give the function as the microVM starts;
+    elsewhere with the host's own answer. Untested on such a host, as none here assigns one.
   - **Windows refuses where its hypervisor assigns none**, with the hypervisor's own answer,
     asked as a function is (`hv::device_assignment_refused`: WHP's VirtualPciDeviceSupport,
     then AllowDeviceAssignment set on a partition of its own, never set up and mapping

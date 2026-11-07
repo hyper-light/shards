@@ -3,16 +3,29 @@
 //! x64's), each size held to the header's C_ASSERT (`sizes`, below); and its functions,
 //! looked up the first time any is called, not linked: a binary linked to them starts only
 //! where the optional feature "Windows Hypervisor Platform" is on, and shards' every command
-//! but a VM's must start everywhere and say why a VM cannot.
+//! but a VM's must start everywhere and say why a VM cannot. Its virtual PCI devices' types
+//! are windows-sys's: WinHvPlatformDefs.h defines them once, outside its architectures'
+//! branches, so x64's metadata gives them as Arm64 has them (`sizes` holds them to the
+//! header's C_ASSERTs too).
 
 #![allow(non_snake_case)]
 
 use std::ffi::c_void;
 use std::sync::OnceLock;
 
+use windows_sys::Win32::Foundation::HANDLE;
+pub use windows_sys::Win32::System::Hypervisor::{
+    WHV_ALLOCATE_VPCI_RESOURCE_FLAGS, WHV_CREATE_VPCI_DEVICE_FLAGS, WHV_SRIOV_RESOURCE_DESCRIPTOR,
+    WHV_VPCI_DEVICE_PROPERTY_CODE, WHV_VPCI_DEVICE_REGISTER, WHV_VPCI_INTERRUPT_TARGET, WHV_VPCI_MMIO_MAPPING,
+    WHV_VPCI_PROBED_BARS, WHvAllocateVpciResourceFlagNone, WHvCreateVpciDeviceFlagPhysicallyBacked,
+    WHvVpciBar0, WHvVpciBar5, WHvVpciConfigSpace, WHvVpciDevicePropertyCodeProbedBARs,
+    WHvVpciInterruptTargetFlagMulticast, WHvVpciInterruptTargetFlagNone, WHvVpciMmioRangeFlagReadAccess,
+    WHvVpciMmioRangeFlagWriteAccess,
+};
 use windows_sys::Win32::System::LibraryLoader::{
     GetProcAddress, LOAD_LIBRARY_SEARCH_SYSTEM32, LoadLibraryExW,
 };
+use windows_sys::core::GUID;
 
 pub type Hresult = i32;
 /// WHV_PARTITION_HANDLE, an integer as windows-sys declares it: the platform's, callable from
@@ -350,6 +363,19 @@ winhv! {
     fn WHvGetVirtualProcessorState(partition: Partition, index: u32, kind: u32, buffer: *mut c_void, size: u32, written: *mut u32);
     fn WHvSetVirtualProcessorState(partition: Partition, index: u32, kind: u32, buffer: *const c_void, size: u32);
     fn WHvRequestInterrupt(partition: Partition, control: *const InterruptControl, size: u32);
+    // Virtual PCI devices, a host's function assigned to a partition (D154).
+    fn WHvAllocateVpciResource(provider: *const GUID, flags: WHV_ALLOCATE_VPCI_RESOURCE_FLAGS, descriptor: *const c_void, size: u32, resource: *mut HANDLE);
+    fn WHvCreateVpciDevice(partition: Partition, id: u64, resource: HANDLE, flags: WHV_CREATE_VPCI_DEVICE_FLAGS, event: HANDLE);
+    fn WHvDeleteVpciDevice(partition: Partition, id: u64);
+    fn WHvGetVpciDeviceProperty(partition: Partition, id: u64, code: WHV_VPCI_DEVICE_PROPERTY_CODE, buffer: *mut c_void, size: u32, written: *mut u32);
+    // Its DEVICE_POWER_STATE (wdm.h): D0 is 1, D3 4.
+    fn WHvSetVpciDevicePowerState(partition: Partition, id: u64, state: i32);
+    fn WHvMapVpciDeviceMmioRanges(partition: Partition, id: u64, count: *mut u32, mappings: *mut *mut WHV_VPCI_MMIO_MAPPING);
+    fn WHvUnmapVpciDeviceMmioRanges(partition: Partition, id: u64);
+    fn WHvReadVpciDeviceRegister(partition: Partition, id: u64, register: *const WHV_VPCI_DEVICE_REGISTER, data: *mut c_void);
+    fn WHvWriteVpciDeviceRegister(partition: Partition, id: u64, register: *const WHV_VPCI_DEVICE_REGISTER, data: *const c_void);
+    fn WHvMapVpciDeviceInterrupt(partition: Partition, id: u64, index: u32, count: u32, target: *const WHV_VPCI_INTERRUPT_TARGET, address: *mut u64, data: *mut u32);
+    fn WHvUnmapVpciDeviceInterrupt(partition: Partition, id: u64, index: u32);
 }
 
 #[cfg(test)]
@@ -372,5 +398,10 @@ mod sizes {
         assert_eq!((size_of::<Page>(), align_of::<Page>()), (4096, 4096));
         assert_eq!(std::mem::offset_of!(MemoryAccess, syndrome), 56);
         assert_eq!(std::mem::offset_of!(ExitContext, body), 16);
+        assert_eq!(size_of::<WHV_SRIOV_RESOURCE_DESCRIPTOR>(), 412);
+        assert_eq!(size_of::<WHV_VPCI_PROBED_BARS>(), 24);
+        assert_eq!(size_of::<WHV_VPCI_MMIO_MAPPING>(), 32);
+        assert_eq!(size_of::<WHV_VPCI_DEVICE_REGISTER>(), 16);
+        assert_eq!(size_of::<WHV_VPCI_INTERRUPT_TARGET>(), 16);
     }
 }

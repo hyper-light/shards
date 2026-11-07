@@ -913,9 +913,10 @@ fn a_hosts_pci_function_is_refused_where_its_os_passes_none() {
 /// and device IDs its instance ID names, its first memory BAR reaching the device while
 /// its memory decoding is on, and reading all ones while it is off; with
 /// SHARDS_ASSIGN_DRIVER, the guest kernel's driver of that name takes it, which reaches
-/// its BARs, its MSI or MSI-X and its DMA as it probes it. A host that assigns none skips:
-/// the test above holds its refusal.
-#[cfg(all(windows, target_arch = "x86_64"))]
+/// its BARs, its MSI or MSI-X and its DMA as it probes it. On x86_64 and arm64 alike, an
+/// arm64 guest's MSIs the SPIs of the GICv2m frame the VMM keeps. A host that assigns none
+/// skips: the test above holds its refusal.
+#[cfg(windows)]
 #[test]
 fn a_hosts_pci_function_is_assigned_where_its_hypervisor_assigns_one() {
     if cannot_run_vms() {

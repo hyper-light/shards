@@ -9,6 +9,13 @@
 //! device of a partition allowed device assignment (WHvCreateVpciDevice), which programs the
 //! host's IOMMU to remap the function's DMA to the partition's addresses. The machine sees
 //! it through [`crate::devices::pci::assigned`].
+//!
+//! Both of WHP's backends' (D209): each function's page gives it x64 and Arm64 alike, and
+//! WinHvPlatform.h declares them, and WinHvPlatformDefs.h their types, outside its
+//! architectures' branches (Windows SDK 10.0.26100). What differs is an MSI's target
+//! (`Assigned::target`): on x86_64 the vCPUs its destination names, as the local APICs
+//! resolve it (WHvGetInterruptTargetVpSet, which the header gives x64 alone); on arm64 the
+//! SPI the GICv2m frame the VMM keeps names, at one vCPU.
 
 use std::ffi::c_void;
 use std::sync::Arc;
@@ -17,6 +24,7 @@ use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
 
 use super::ffi::*;
 use super::{Error, Partition, Result, Vm, check};
+#[cfg(target_arch = "x86_64")]
 use crate::arch::x86_64::ioapic::Message;
 use crate::devices::pci::assigned::{Device, Range, Space};
 
@@ -28,6 +36,7 @@ const POWER_D0: i32 = 1;
 #[derive(Debug)]
 pub struct Assigned {
     partition: Arc<Partition>,
+    #[cfg(target_arch = "x86_64")]
     vcpus: u32,
     id: u64,
     name: String,
@@ -81,6 +90,7 @@ impl Vm {
         created?;
         Ok(Assigned {
             partition: self.partition.clone(),
+            #[cfg(target_arch = "x86_64")]
             vcpus: self.vcpus,
             id,
             name: name.to_string(),
@@ -126,6 +136,77 @@ impl Assigned {
             SizeInBytes: u32::try_from(len).map_err(|e| e.to_string())?,
             OffsetInBytes: offset,
         })
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+impl Assigned {
+    /// The guest's MSI of `address` and `data` (Intel SDM Vol. 3A §11.11) as WHP takes it:
+    /// its vector, and the vCPUs its destination names, as the partition's local APICs
+    /// resolve it (WHvGetInterruptTargetVpSet); all of them where its delivery is fixed,
+    /// multicast, and the first where it is lowest priority, which goes to one.
+    fn target(&self, address: u64, data: u32) -> std::result::Result<(u32, Vec<u32>), String> {
+        let m = Message::of_msi(address, data);
+        if m.delivery > 1 {
+            return Err(format!(
+                "an MSI of delivery mode {}: an assigned function's are fixed or lowest priority",
+                m.delivery
+            ));
+        }
+        let mode = if m.logical {
+            WHvX64InterruptDestinationModeLogical
+        } else {
+            WHvX64InterruptDestinationModePhysical
+        };
+        let mut vps = vec![0u32; self.vcpus as usize];
+        let mut written = 0u32;
+        // SAFETY: a buffer of `vcpus` indexes, which the call fills.
+        check("WHvGetInterruptTargetVpSet", unsafe {
+            WHvGetInterruptTargetVpSet(
+                self.partition.0,
+                u64::from(m.destination),
+                mode,
+                vps.as_mut_ptr(),
+                self.vcpus,
+                &raw mut written,
+            )
+        })
+        .map_err(|e| e.to_string())?;
+        vps.truncate(written as usize);
+        if m.delivery == 1 {
+            vps.truncate(1);
+        }
+        if vps.is_empty() {
+            return Err(format!(
+                "an MSI to destination {:#x}, which names no vCPU",
+                m.destination
+            ));
+        }
+        Ok((u32::from(m.vector), vps))
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+impl Assigned {
+    /// The guest's MSI of `address` and `data` as WHP takes it on arm64: as its vector the
+    /// SPI, by INTID, that the GICv2m frame the VMM keeps names (its doorbell the address,
+    /// the INTID the data: `boot::v2m_spi`), as Hyper-V's own virtual PCI takes an SPI's
+    /// INTID as the vector there (Linux's drivers/pci/controller/pci-hyperv.c at d4872371,
+    /// hv_msi_get_int_vector: the GIC's hwirq, from HV_PCI_MSI_SPI_START; OpenVMM's
+    /// vmm_core/virt_whp/src/device.rs at ba105dd7 hands WHP the vector its guest asks for,
+    /// on either architecture); aimed at one vCPU, as WHP aims each MSI at one on Arm64
+    /// (WHvMapVpciDeviceInterrupt: E_INVALIDARG for more). The boot vCPU, VP 0: an SPI goes
+    /// where the GIC's distributor routes it, which the hypervisor's GIC keeps, as
+    /// pci-hyperv.c says of Hyper-V's (hv_arch_irq_unmask: "SPIs is managed via GICD
+    /// registers which Hyper-V already supports").
+    fn target(&self, address: u64, data: u32) -> std::result::Result<(u32, Vec<u32>), String> {
+        let frame = self
+            .partition
+            .msi_frame()
+            .ok_or("its machine's GIC has no GICv2m frame, which an assigned function's MSIs name")?;
+        let intid =
+            crate::arch::aarch64::boot::v2m_spi(frame.base, frame.first_intid, frame.count, address, data)?;
+        Ok((intid, vec![0]))
     }
 }
 
@@ -207,55 +288,20 @@ impl Device for Assigned {
         .map_err(|e| e.to_string())
     }
 
-    /// The guest's MSI of `address` and `data` (Intel SDM Vol. 3A §11.11) as WHP takes it:
-    /// its vector, and the vCPUs its destination names, as the partition's local APICs
-    /// resolve it (WHvGetInterruptTargetVpSet); all of them where its delivery is fixed,
-    /// multicast, and the first where it is lowest priority, which goes to one.
+    /// The guest's MSI of `address` and `data` mapped by WHP as interrupt `index`, to the
+    /// vector and vCPUs [`Assigned::target`] gives: the message WHP returns, which the
+    /// device is to send (WHvMapVpciDeviceInterrupt).
     fn map_interrupt(&self, index: u32, address: u64, data: u32) -> std::result::Result<(u64, u32), String> {
-        let m = Message::of_msi(address, data);
-        if m.delivery > 1 {
-            return Err(format!(
-                "an MSI of delivery mode {}: an assigned function's are fixed or lowest priority",
-                m.delivery
-            ));
-        }
-        let mode = if m.logical {
-            WHvX64InterruptDestinationModeLogical
-        } else {
-            WHvX64InterruptDestinationModePhysical
-        };
-        let mut vps = vec![0u32; self.vcpus as usize];
-        let mut written = 0u32;
-        // SAFETY: a buffer of `vcpus` indexes, which the call fills.
-        check("WHvGetInterruptTargetVpSet", unsafe {
-            WHvGetInterruptTargetVpSet(
-                self.partition.0,
-                u64::from(m.destination),
-                mode,
-                vps.as_mut_ptr(),
-                self.vcpus,
-                &raw mut written,
-            )
-        })
-        .map_err(|e| e.to_string())?;
-        vps.truncate(written as usize);
-        if m.delivery == 1 {
-            vps.truncate(1);
-        }
-        if vps.is_empty() {
-            return Err(format!(
-                "an MSI to destination {:#x}, which names no vCPU",
-                m.destination
-            ));
-        }
+        let (vector, vps) = self.target(address, data)?;
         let flags = if vps.len() > 1 {
             WHvVpciInterruptTargetFlagMulticast
         } else {
             WHvVpciInterruptTargetFlagNone
         };
+        let count = u32::try_from(vps.len()).map_err(|e| e.to_string())?;
         // WHV_VPCI_INTERRUPT_TARGET: its vector, flags and processor count, then as many
         // processors, each a u32.
-        let mut target = vec![u32::from(m.vector), flags as u32, vps.len() as u32];
+        let mut target = vec![vector, flags as u32, count];
         target.extend(&vps);
         let (mut sent, mut with) = (0u64, 0u32);
         // SAFETY: a target of its processor count's length, 4-aligned as the structure is,

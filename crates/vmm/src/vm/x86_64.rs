@@ -642,33 +642,20 @@ fn assemble(
 
 /// A VM whose partition WHP lets assign the host's functions `vfio` (D154), each made a
 /// device of it, with what its BAR registers read sized; and `vfio` with their 64-bit
-/// BARs' sizes, which the PCI bus's 64-bit window holds.
+/// BARs' sizes, which the PCI bus's 64-bit window holds ([`super::assigned_functions`]).
 #[cfg(hv = "whp")]
 #[allow(clippy::type_complexity)]
 fn assigning(
     config: &MachineConfig,
     vfio: &[super::Vfio],
 ) -> Result<(hv::Vm, Vec<(hv::Assigned, [u32; 6])>, Vec<super::Vfio>), String> {
-    use crate::devices::pci::{BarKind, passed};
     let vcpus = hv::VmConfig { vcpus: config.vcpus };
     if vfio.is_empty() {
         let vm = hv::Vm::new(vcpus).map_err(|e| e.to_string())?;
         return Ok((vm, Vec::new(), Vec::new()));
     }
     let vm = hv::Vm::assigning(vcpus).map_err(|e| e.to_string())?;
-    let (mut assigned, mut given) = (Vec::new(), Vec::new());
-    for (id, f) in (1u64..).zip(vfio) {
-        let named = |e: hv::Error| format!("{}: {e}", f.name);
-        let device = vm.assign(id, &f.name).map_err(named)?;
-        let probed = device.probed_bars().map_err(named)?;
-        let bars64 = passed::sized_bars(probed)
-            .into_iter()
-            .filter(|&(_, _, kind)| kind == BarKind::Memory64)
-            .map(|(_, size, _)| size)
-            .collect();
-        assigned.push((device, probed));
-        given.push(super::Vfio { bars64, ..f.clone() });
-    }
+    let (assigned, given) = super::assigned_functions(&vm, vfio)?;
     Ok((vm, assigned, given))
 }
 

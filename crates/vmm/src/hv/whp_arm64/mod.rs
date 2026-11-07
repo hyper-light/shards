@@ -19,12 +19,16 @@
 //! other user.
 
 mod ffi;
+/// A host's function assigned to the partition (D154): x86_64's backend's module, the API
+/// being the same on both.
+#[path = "../whp/vpci.rs"]
+mod vpci;
 
 use std::collections::BTreeSet;
 use std::ffi::c_void;
 use std::fmt;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 
 use self::ffi::*;
 use super::{Exit, Io};
@@ -33,6 +37,7 @@ use crate::arch::aarch64::{Entry, esr, layout, sysreg};
 use crate::devices::get_le;
 use crate::snapshot::codec::{DecodeError, Reader, Writer};
 
+pub use self::vpci::Assigned;
 pub use crate::arch::aarch64::state::VcpuState;
 
 /// The stage-2 page: WHP maps guest memory 4 KiB at a time.
@@ -134,8 +139,8 @@ pub fn check_host() -> std::result::Result<(), String> {
 
 /// This host's refusal to assign a device, as the x86_64 WHP backend asks it: the
 /// capability and AllowDeviceAssignment on a temporary, unconfigured partition with
-/// no memory or device. `None` means WHP accepted the property; an implementation gap
-/// must not be reported as the host's limit.
+/// no memory or device. `None` where WHP accepted the property: [`Vm::assigning`] then
+/// makes a partition a host's functions are assigned to ([`Vm::assign`]).
 pub fn device_assignment_refused() -> Option<String> {
     if !ffi::loaded() {
         return Some("the Windows Hypervisor Platform is not on this host".into());
@@ -274,18 +279,6 @@ pub const NO_EL2: &str = "Windows' hypervisor platform gives a guest no EL2 on a
 
 #[cfg(test)]
 mod tests {
-    /// WHP accepting the property exposes the missing DDA implementation; it is not an
-    /// OS refusal. This test asks the actual host and creates no mapped VM or device.
-    #[test]
-    fn device_assignment_requires_an_actual_host_refusal() {
-        let refused = super::device_assignment_refused();
-        eprintln!("WHP arm64 device-assignment probe: {refused:?}");
-        assert!(
-            refused.is_some(),
-            "WHP accepted AllowDeviceAssignment; DDA implementation and hardware E2E remain open"
-        );
-    }
-
     /// A writable range cut by an unmap keeps what is left of it on either side, each at
     /// its own place in this process; ranges it misses stay whole; and the parts within a
     /// span are those it overlaps.
@@ -366,10 +359,11 @@ fn forbid_dynamic_code() -> Result<()> {
     Ok(())
 }
 
-/// A partition: deleted, its vCPUs with it, once nothing holds it; and what it maps
-/// writable, for a live move to watch ([`Tracked`]).
+/// A partition: deleted, its vCPUs with it, once nothing holds it; what it maps writable,
+/// for a live move to watch ([`Tracked`]); and the GICv2m frame the VMM keeps for it, once
+/// its GIC is made ([`Vm::create_gic`]), whose SPIs an assigned function's MSIs name.
 #[derive(Debug)]
-struct Partition(ffi::Partition, Mutex<Tracked>);
+struct Partition(ffi::Partition, Mutex<Tracked>, OnceLock<MsiFrame>);
 
 /// The page of WHP's dirty bitmaps, a bit each (WinHvPlatform.h's
 /// WHvQueryGpaRangeDirtyBitmap: "RangeSizeInBytes / 4096 / 64" words), on x64 and Arm64.
@@ -452,7 +446,12 @@ impl Drop for Partition {
 
 impl Partition {
     fn new(handle: ffi::Partition) -> Partition {
-        Partition(handle, Mutex::new(Tracked::default()))
+        Partition(handle, Mutex::new(Tracked::default()), OnceLock::new())
+    }
+
+    /// The GICv2m frame its GIC was made with, if any.
+    fn msi_frame(&self) -> Option<MsiFrame> {
+        self.2.get().copied()
     }
 
     fn tracked(&self) -> MutexGuard<'_, Tracked> {
@@ -902,6 +901,17 @@ impl Vm {
     /// requires (QEMU's whpx_accel_init); its redistributors are each vCPU's, given as it is
     /// made ([`Vm::create_vcpu`]). No LPIs: the ITS frame is reserved, never used.
     pub fn new(config: VmConfig) -> Result<Vm> {
+        Vm::made(config, false)
+    }
+
+    /// [`Vm::new`]'s, its partition allowed device assignment, for a host's PCI functions
+    /// ([`Vm::assign`], D154): a property set before setup alone, as x86_64's backend sets
+    /// it (WHP refuses it after: E_INVALIDARG, PM M401).
+    pub fn assigning(config: VmConfig) -> Result<Vm> {
+        Vm::made(config, true)
+    }
+
+    fn made(config: VmConfig, assign: bool) -> Result<Vm> {
         check_host().map_err(Error::Guest)?;
         if config.el2 {
             return Err(Error::Guest(NO_EL2.into()));
@@ -936,6 +946,15 @@ impl Vm {
             &ic,
             "WHvSetPartitionProperty(Arm64IcParameters)",
         )?;
+        if assign {
+            // WHV_PARTITION_PROPERTY's AllowDeviceAssignment is a Windows BOOL (32 bits).
+            let allowed: i32 = 1;
+            partition.set(
+                PROP_ALLOW_DEVICE_ASSIGNMENT,
+                &allowed,
+                "WHvSetPartitionProperty(AllowDeviceAssignment)",
+            )?;
+        }
         // SAFETY: the partition just configured.
         check("WHvSetupPartition", unsafe { WHvSetupPartition(partition.0) })?;
         if FORBID_DYNAMIC_CODE.load(Ordering::Relaxed) {
@@ -1055,6 +1074,10 @@ impl Vm {
                 "the platform's GIC is given no ITS: a PCI bus's MSIs go to the GICv2m frame the VMM keeps"
                     .into(),
             ));
+        }
+        if let Some(frame) = layout.msi {
+            // Made once, as the machine makes its GIC once.
+            let _ = self.partition.2.set(frame);
         }
         Ok(Gic(self.partition.clone()))
     }

@@ -357,32 +357,20 @@ struct V2mFrame {
 }
 
 #[cfg(any(hv = "hvf", hv = "whp"))]
-const V2M_MSI_SETSPI_NS: u64 = 0x040;
-
-#[cfg(any(hv = "hvf", hv = "whp"))]
-impl V2mFrame {
-    /// Raises SPI `intid`, where it is one of the frame's.
-    fn raise(&self, intid: u32) {
-        let f = &self.frame;
-        if intid < f.first_intid || intid - f.first_intid >= f.count {
-            warn!("an MSI for INTID {intid}, none of the GICv2m frame's");
-            return;
-        }
-        if let Err(e) = self.gic.send_msi(f.base + V2M_MSI_SETSPI_NS, intid) {
+impl crate::devices::pci::Msi for V2mFrame {
+    /// An MSI the guest aimed at the frame's doorbell, for one of its SPIs, which it raises;
+    /// any other is none of its.
+    fn send(&self, address: u64, data: u32) {
+        let intid = match self.frame.spi_of(address, data) {
+            Ok(intid) => intid,
+            Err(e) => {
+                warn!("{e}");
+                return;
+            }
+        };
+        if let Err(e) = self.gic.send_msi(address, intid) {
             warn!("MSI {intid}: {e}");
         }
-    }
-}
-
-#[cfg(any(hv = "hvf", hv = "whp"))]
-impl crate::devices::pci::Msi for V2mFrame {
-    /// An MSI the guest aimed at the frame's doorbell; any other address is none of its.
-    fn send(&self, address: u64, data: u32) {
-        if address != self.frame.base + V2M_MSI_SETSPI_NS {
-            warn!("an MSI to {address:#x}, not the GICv2m frame's doorbell");
-            return;
-        }
-        self.raise(data);
     }
 }
 
@@ -473,6 +461,12 @@ fn assemble(
     pci: super::Pci<'_>,
 ) -> Result<Assembled, String> {
     let ram = ram_bytes(config.memory_mib)?;
+    // On WHP a VM given host functions is made before the layout, as on x86_64: each is a
+    // device of its partition first, whose BARs size the PCI bus's 64-bit window (D154).
+    #[cfg(hv = "whp")]
+    let (assigned_vm, assigned, given) = assigning(config, pci.vfio)?;
+    #[cfg(hv = "whp")]
+    let pci = super::Pci { vfio: &given, ..pci };
     // Memory to plug, where the guest has any, starts at the first GiB boundary after RAM
     // (`plug_at`), device memory (pmem regions) at the first after that, and the address
     // space must reach the last's end.
@@ -539,12 +533,18 @@ fn assemble(
     if config.nested && !hv::el2_supported() {
         return Err(hv::NO_EL2.into());
     }
-    let vm = hv::Vm::new(hv::VmConfig {
+    let vm_config = hv::VmConfig {
         ipa_bits,
         mpidrs: mpidrs.clone(),
         el2: config.nested,
-    })
-    .map_err(|e| e.to_string())?;
+    };
+    #[cfg(not(hv = "whp"))]
+    let vm = hv::Vm::new(vm_config).map_err(|e| e.to_string())?;
+    #[cfg(hv = "whp")]
+    let vm = match assigned_vm {
+        Some(vm) => vm,
+        None => hv::Vm::new(vm_config).map_err(|e| e.to_string())?,
+    };
     for (gpa, host, len) in memory.regions() {
         // SAFETY: `memory` outlives the VM: `Machine` and `Running` drop the VM first.
         unsafe { vm.map_ram(host, gpa, len) }.map_err(|e| e.to_string())?;
@@ -720,6 +720,8 @@ fn assemble(
         memory,
         irqs,
         iommu: iommu.clone(),
+        #[cfg(hv = "whp")]
+        assigned: std::cell::Cell::new(assigned),
     };
     let pci = super::pci_bus(&mut bus, layout::PCI_ECAM, mem32, mem64, pci, config, machine)?.map(|routed| {
         if let Some(hotplug) = routed.hotplug {
@@ -776,6 +778,31 @@ fn assemble(
             .map(|(region, gpa)| (*gpa, region.clone()))
             .collect(),
     })
+}
+
+/// Where the host's functions `vfio` are given (D154): a VM whose partition WHP lets assign
+/// them, each made a device of it, with what its BAR registers read sized; and `vfio` with
+/// their 64-bit BARs' sizes ([`super::assigned_functions`]). Made before the layout, and so
+/// given the host's widest addresses, which the layout's are then held to as on every
+/// backend (WHP's arm64 partition is given no width of its own: its `VmConfig::ipa_bits`
+/// reaches no call). None where none are given: the VM is then made after the layout.
+#[cfg(hv = "whp")]
+#[allow(clippy::type_complexity)]
+fn assigning(
+    config: &MachineConfig,
+    vfio: &[super::Vfio],
+) -> Result<(Option<hv::Vm>, Vec<(hv::Assigned, [u32; 6])>, Vec<super::Vfio>), String> {
+    if vfio.is_empty() {
+        return Ok((None, Vec::new(), Vec::new()));
+    }
+    let vm = hv::Vm::assigning(hv::VmConfig {
+        ipa_bits: hv::max_ipa_bits().map_err(|e| e.to_string())?,
+        mpidrs: (0..config.vcpus).map(aarch64::mpidr).collect(),
+        el2: config.nested,
+    })
+    .map_err(|e| e.to_string())?;
+    let (assigned, given) = super::assigned_functions(&vm, vfio)?;
+    Ok((Some(vm), assigned, given))
 }
 
 /// A machine that boots `cfg.kernel`.

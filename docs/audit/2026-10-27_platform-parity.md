@@ -101,18 +101,33 @@ Windows twin (platform-parity.tsv):
   space of its own, which a guest's VFIO needs to give a process a function
   (`WHP_NO_GUEST_IOMMU`, D154).
 
-The 5 that stand alone are real gaps:
+The 5 that stood alone were real gaps, and since branch p/whp-assign-gaps the script finds
+none:
 
-- vm/aarch64.rs:275 `route`, :308 `IrqfdRoute`, :316 its `impl`: Windows arm64 assigns no
-  host function. WHP's arm64 backend (`hv::whp_arm64`) asks its host whether it assigns
-  devices (`device_assignment_refused`) but makes no virtual PCI device
-  (`WHP_ARM64_NO_ASSIGNMENT`: "WHvCreateVpciDevice is x86_64's backend's alone"); where
-  its host would assign one, nothing is built.
+- vm/aarch64.rs:275 `route`, :308 `IrqfdRoute`, :316 its `impl`: Windows arm64 assigned no
+  host function (`WHP_ARM64_NO_ASSIGNMENT`, now gone). Built: Microsoft Learn gives every
+  virtual PCI function "x64, Arm64" (each function's page, 2026-06-08), and the SDK
+  10.0.26100 declares them and their types outside its `_AMD64_`/`_ARM64_` branches
+  (WinHvPlatform.h, WinHvPlatformDefs.h), so WHP's arm64 backend includes hv/whp/vpci.rs
+  by path, its partition allowed device assignment before setup (`Vm::assigning`), the VM
+  made before the layout where it is given a function (`vm::assigned_functions`, shared
+  with x86_64). Its MSIs are mapped by vpci.rs's `map_interrupt` as x86_64's are, their
+  target the SPI the GICv2m frame the VMM keeps names, at VP 0 alone: on Arm64
+  WHvMapVpciDeviceInterrupt refuses more than one processor (its page), and
+  WHvGetInterruptTargetVpSet is the header's x64's alone. The tsv stands the three with it.
 - vm/runtime.rs:117 `plug_vfio`, :134 `plug_vfio_with`: a function plugged into a running
   microVM outside its IOMMU, the VM's kernel driving it (D214's VMM path,
-  tests/hotplug.rs's `a_hosts_function_is_plugged_into_a_running_microvm`). Windows plugs
-  none: nothing is built, and whether WHP makes a virtual PCI device of a partition
-  already running is unknown, as no host here assigns one (PM M401, M402).
+  tests/hotplug.rs's `a_hosts_function_is_plugged_into_a_running_microvm`). Refused off
+  Linux by runtime.rs's own `plug_vfio` (`vm::plug_refused`), on Windows where its
+  hypervisor assigns devices with Microsoft's documented limit (`WHP_NO_PLUG`): a partition
+  is allowed device assignment before its setup alone (E_INVALIDARG after, PM M401);
+  Microsoft documents Discrete Device Assignment for a VM given its device before it starts
+  and giving it back once stopped ("Deploy graphics devices by using Discrete Device
+  Assignment", 2026-01-30); and WHP's pages say nothing of a virtual PCI device made in a
+  partition that runs, nor does OpenVMM make one (ba105dd7). A refusal on the vendor's
+  documentation, not a measured API limit: should a Windows Server host that assigns
+  devices show WHvCreateVpciDevice making one in a running partition allowed assignment,
+  the item stands alone again until it is built.
 
 No stub of a shared name hides a gap the script cannot tell: hv/whp's `watch_writes`,
 `written` and `unwatch_writes` now track the guest's writes (WHvMapGpaRangeFlagTrackDirtyPages,
@@ -131,7 +146,7 @@ WHvQueryGpaRangeDirtyBitmap), as `whp_arm64`'s do (row 16).
 | 6 | A GPU given a microVM (D144, Venus) | Windows arm64 (row 5's qualification pending); closed: Linux (D201, and musl's hosts and Intel's GPUs, D208), Windows x86_64 (D202); open: the GPU desktop's run of D208's build (its RTX 5060 Ti on NVIDIA's driver, its Radeon 610M) waits for its owner's go, and arm64 Linux is built and linted, untested on a GPU (none here) | vm/x86_64.rs and vm/aarch64.rs "a GPU is given on macOS and Linux hosts alone so far (D144, D201)"; user decision 2026-10-13 "--gpus Linux YES" |
 | 7 | `--cgroup-parent` (D183) | closed: macOS and Windows (D183's slice 3) | D183 "Refused before anything starts" |
 | 8 | Log drivers bound to one host: `journald` (Linux's systemd journal), `etwlogs` (Docker's on Windows) | closed: etwlogs on Windows (D198), and macOS's own log (D199) and etwlogs as journald's counterparts; journald is Linux's own | logging.rs:129, :633, daemon/ship.rs:810; architecture.md:7897 |
-| 9 | A host's PCI function passed through (VFIO, D154), at a run's start or plugged into it as it runs (D214) | open: Windows x86_64 gives the VM's kernel a function as it boots where its hypervisor assigns devices (DDA through WHP's virtual PCI devices, D154 step 13, d3029698: hv/whp/vpci.rs, devices/pci/assigned.rs), its E2E (boot.rs `a_hosts_pci_function_is_assigned_where_its_hypervisor_assigns_one`) waiting on a Windows Server host that assigns one; a workload's function, at its start or plugged in behind the guest's IOMMU, is refused there with WHP's own limit, no I/O address space of the guest's (`WHP_NO_GUEST_IOMMU`). Not built: Windows arm64 assigns none (`WHP_ARM64_NO_ASSIGNMENT`), and no Windows host plugs a function into a running microVM outside its IOMMU (D214's VMM path); x86_64 Linux's VFIO is untested on hardware, no host here having a function to spare. macOS's refusal is its APIs' limit, Virtualization's one passthrough a USB device's (D154, PM M356, M403); the Windows hosts tested here refuse with their own evidence (PM M401, M402) | vmm devices/pci/mod.rs `vfio` Linux's, `assigned` WHP's; platform-parity.py (2026-11-07, b8c98e7f): 5 items alone, vm/aarch64.rs's `route`, `IrqfdRoute` and its `impl` (Windows arm64), runtime.rs's `plug_vfio` and `plug_vfio_with` (a plug outside the IOMMU); `vfio`, x86_64's routes, vm/mod.rs's `route`, `VfioFiles` and `plug_vfio_files` stand with WHP's twins or its API's limit (How found, 2026-11-07) |
+| 9 | A host's PCI function passed through (VFIO, D154), at a run's start or plugged into it as it runs (D214) | open: Windows gives the VM's kernel a function as it boots where its hypervisor assigns devices (DDA through WHP's virtual PCI devices, D154 step 13, d3029698: hv/whp/vpci.rs, devices/pci/assigned.rs), on x86_64 and, since p/whp-assign-gaps, arm64 by the same code (vpci.rs included by path; its MSIs the SPIs of the GICv2m frame the VMM keeps, at VP 0, as WHP aims an MSI at one vCPU on Arm64), its E2E (boot.rs `a_hosts_pci_function_is_assigned_where_its_hypervisor_assigns_one`, now built for both) waiting on a Windows Server host that assigns one; a workload's function, at its start or plugged in behind the guest's IOMMU, is refused there with WHP's own limit, no I/O address space of the guest's (`WHP_NO_GUEST_IOMMU`), and one plugged into a running microVM outside its IOMMU (D214's VMM path) with Microsoft's documented one, a function given a VM as it starts alone (`WHP_NO_PLUG`: AllowDeviceAssignment before setup alone, PM M401; DDA documented for a VM off; WHP's pages silent on a running partition), untested where a hypervisor assigns devices. Unmeasured on arm64: where WHP delivers the SPI (GICD_IROUTER or VP 0) and the stage-2 attributes of a BAR's pages. x86_64 Linux's VFIO is untested on hardware, no host here having a function to spare. macOS's refusal is its APIs' limit, Virtualization's one passthrough a USB device's (D154, PM M356, M403); the Windows hosts tested here refuse with their own evidence (PM M401, M402) | vmm devices/pci/mod.rs `vfio` Linux's, `assigned` WHP's; platform-parity.py (2026-11-07, b8c98e7f): 5 items alone, vm/aarch64.rs's `route`, `IrqfdRoute` and its `impl` (Windows arm64), runtime.rs's `plug_vfio` and `plug_vfio_with` (a plug outside the IOMMU); on p/whp-assign-gaps 0: aarch64.rs's three stand with vpci.rs's `map_interrupt` on Windows arm64, `plug_vfio` and `plug_vfio_with` with runtime.rs's `plug_vfio` off Linux; `vfio`, x86_64's routes, vm/mod.rs's `route`, `VfioFiles` and `plug_vfio_files` stand with WHP's twins or its API's limit (How found, 2026-11-07) |
 | 10 | A machine that serves other machines' clients through a context (D180's machine side): its listener, enrollments and invitations, a client's build contexts kept in step, its secrets, SSH agents and outputs relayed, Docker's tools' engine sockets served | closed: Windows (D180's part 3k) | platform-parity.py (2026-10-30): synced.rs (27 items), context.rs (12: `enroll`, `open_invitations`, `take_terminal`, the cidfile's, `copying`, `step_there`), build/ssh.rs (4: `AGENT_FDS`, `take_agents`, `asked_of`), agent.rs (`sign_step`, `BUNDLE_MOST`), daemon.rs `mod remote` ("Unix's alone as yet"), daemon/relay.rs `fds` |
 | 11 | A restore's working set recorded and mapped ahead, the pages its guest writes copied first (REAP, D29) | closed: Windows (D196) | platform-parity.py (2026-10-30): platform/unix.rs's `populate_writable`, `FaultAroundOff` and `uffd`, whose Windows twins are stubs ("a restore on Windows does not record yet", vm::WORKING_SETS, D196), and cli/mod.rs's `working_set_writer` |
 | 12 | Keyless signing's SPIFFE provider: a JWT-SVID from the agent's Workload API (cosign's `spiffe`) | closed: Windows (D126) | platform-parity.py (2026-11-01): spiffe.rs's `request`, `svids`, `spiffe_id` and `check` `any(unix, test)`; `jwt_svid` on Windows refuses ("the SPIFFE Workload API's named pipe: give the token itself with --identity-token"). cosign v3.1.3 dials `unix://` and the path alone (pkg/providers/spiffe), which go-spiffe v2.7.0 refuses on Windows, where it dials `npipe:` and `tcp:` (workloadapi/addr_windows.go) |
@@ -465,8 +480,9 @@ CI on the merged whole passes: CI 42070454222 at 90de623f (integrate, landed on 
 (p/step10-final) green on every target, both x86_64 Windows runners' VM tests among them,
 every test binary of the workspace run with `SHARDS_REQUIRE_VMS=1` (ci.yml's `native` job
 excludes none). Rows 14 and 17 are closed. Open: row 5 (WHP on arm64's full-suite
-qualification), row 9 (the script's 5 items, Windows arm64's assignment and a plug outside
-the IOMMU, not built; and the E2E on a Windows Server host that permits DDA), row 15
+qualification), row 9 (the script's 5 items closed on p/whp-assign-gaps: Windows arm64's
+assignment built, a plug outside the IOMMU refused with Microsoft's documented limit; open:
+the E2E on a Windows Server host that permits DDA, x86_64 and arm64), row 15
 (Windows' wake policy to measure), row 16 (live moves on arm64 KVM, Windows arm64 and
 jupiter; Windows x86_64's pass on windows-2025), and row 18 (restarts over the kept layer
 on a Mac, and Windows' cost against packing); and the two Windows test gaps above (build's

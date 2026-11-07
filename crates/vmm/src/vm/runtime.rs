@@ -118,6 +118,14 @@ impl Handle {
         self.plug_vfio_with(f, None)
     }
 
+    /// Off Linux no host's function is plugged into a running machine (D214): refused with
+    /// its host's limit ([`super::plug_refused`]), Windows' that it gives a microVM one as it
+    /// starts alone, changing nothing.
+    #[cfg(not(target_os = "linux"))]
+    pub fn plug_vfio(&self, f: &super::Vfio) -> Result<super::Plugged, String> {
+        Err(format!("{}: {}", f.name, super::plug_refused()))
+    }
+
     /// [`plug_vfio`](Self::plug_vfio), of a function opened by another process, as a
     /// confined VM process, which opens no device, is handed one by its daemon: `files`,
     /// VFIO's container and its group, or iommufd and its device, by `f.cdev`.
