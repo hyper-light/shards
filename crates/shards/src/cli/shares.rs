@@ -48,6 +48,10 @@ pub(super) fn take(args: &[OsString]) -> Result<(Vec<OsString>, Vec<Named>), Str
         }
         if arg != "--share" {
             kept.push(arg.clone());
+            // A flag's value is its own, whatever it reads as.
+            if arg.to_str().is_some_and(|a| crate::spec::RUN_VALUED.contains(&a)) {
+                kept.extend(rest.next().cloned());
+            }
             continue;
         }
         let value = rest.next().ok_or("--share needs a value")?;
@@ -61,8 +65,16 @@ fn opened(shares: &[(PathBuf, bool)]) -> Result<Vec<std::fs::File>, String> {
     shares
         .iter()
         .map(|(dir, _)| {
+            // A directory alone (O_DIRECTORY), and never waited on (O_NONBLOCK): a FIFO
+            // named as a share is refused at once, not opened for a writer that never comes.
             #[cfg(unix)]
-            let file = std::fs::File::open(dir);
+            let file = {
+                use std::os::unix::fs::OpenOptionsExt as _;
+                std::fs::OpenOptions::new()
+                    .read(true)
+                    .custom_flags(libc::O_DIRECTORY | libc::O_NONBLOCK)
+                    .open(dir)
+            };
             // A directory opens on Windows only with backup semantics.
             #[cfg(windows)]
             let file = shards_vmm::platform::open_dir(dir);
@@ -104,19 +116,20 @@ fn share_args(shares: &[(PathBuf, bool)]) -> Vec<&'static OsStr> {
 }
 
 /// `args` (a `run`'s, `run` first) with its `--share`s served: a share process started on
-/// them, and each share's connection to it given as `--slates-fs-fd N`, a descriptor kept
-/// open through the exec into the VM. The share process ends as its connections close, with
-/// the VM, and the kernel reaps it (SIGCHLD stays ignored through the exec).
+/// them, and each share's connection to it given as `--slates-fs-fd N`, a descriptor
+/// returned close-on-exec, for [`inherit`] to keep open through the exec into the VM alone,
+/// right before it. The share process ends as its connections close, with the VM, and the
+/// kernel reaps it (SIGCHLD stays ignored through the exec).
 #[cfg(unix)]
-pub(super) fn served(args: &[OsString]) -> Result<Vec<OsString>, String> {
-    use std::os::fd::{AsFd as _, IntoRawFd as _};
+pub(super) fn served(args: &[OsString]) -> Result<(Vec<OsString>, Vec<std::os::fd::OwnedFd>), String> {
+    use std::os::fd::{AsFd as _, AsRawFd as _};
     use std::os::unix::net::UnixStream;
     if args.first().is_none_or(|a| a != "run") {
-        return Ok(args.to_vec());
+        return Ok((args.to_vec(), Vec::new()));
     }
     let (mut kept, shares) = take(args.get(1..).unwrap_or_default())?;
     if shares.is_empty() {
-        return Ok(args.to_vec());
+        return Ok((args.to_vec(), Vec::new()));
     }
     let dirs = opened(&shares)?;
     let ghosts = private_dir()?;
@@ -163,7 +176,20 @@ pub(super) fn served(args: &[OsString]) -> Result<Vec<OsString>, String> {
     let command = kept.split_off(at);
     let mut with: Vec<OsString> = vec!["run".into()];
     with.extend(kept);
-    for end in ends {
+    for end in &ends {
+        with.extend(["--slates-fs-fd".into(), end.as_raw_fd().to_string().into()]);
+    }
+    with.extend(command);
+    Ok((with, ends))
+}
+
+/// Keeps `fds` open through the exec that follows at once: their close-on-exec cleared, the
+/// last thing before it, so that no process started before (the grants broker, a working
+/// set's writer) inherits a share's connection (review 12).
+#[cfg(unix)]
+pub(super) fn inherit(fds: Vec<std::os::fd::OwnedFd>) -> Result<(), String> {
+    use std::os::fd::IntoRawFd as _;
+    for end in fds {
         let fd = end.into_raw_fd();
         // SAFETY: fcntl(2) clearing close-on-exec on a descriptor this process owns, kept
         // open through the exec, for the VM.
@@ -173,10 +199,8 @@ pub(super) fn served(args: &[OsString]) -> Result<Vec<OsString>, String> {
                 std::io::Error::last_os_error()
             ));
         }
-        with.extend(["--slates-fs-fd".into(), fd.to_string().into()]);
     }
-    with.extend(command);
-    Ok(with)
+    Ok(())
 }
 
 /// `args` with each `--share` in its served place, and the VM's ends, each named.
@@ -220,14 +244,10 @@ pub(super) fn served(args: &[OsString]) -> Result<Served, String> {
         ));
     }
     let env = crate::netproc::child_env();
-    shards_ipc::spawn_in_job(
-        None,
-        &exe,
-        &share_args(&shares),
-        &fds,
-        &crate::netproc::env_pairs(&env),
-    )
-    .map_err(|e| format!("starting the share process: {e}"))?;
+    // Detached, as Unix's leads a session of its own: out of reach of a Ctrl-C meant for the
+    // VM (review 11).
+    shards_ipc::spawn_detached(&exe, &share_args(&shares), &fds, &crate::netproc::env_pairs(&env))
+        .map_err(|e| format!("starting the share process: {e}"))?;
     let mut with: Vec<OsString> = vec!["run".into()];
     let mut given = Vec::with_capacity(n);
     let at = kept.iter().position(|a| a == "--").unwrap_or(kept.len());
@@ -277,6 +297,19 @@ mod tests {
         for bad in [":ro", ""] {
             assert!(parse(OsStr::new(bad)).is_err(), "{bad}");
         }
+    }
+
+    /// A FIFO named as a share is refused at once as no directory, not opened for a writer
+    /// that never comes, which blocked open(2) for ever (review 10).
+    #[cfg(unix)]
+    #[test]
+    fn a_fifo_named_as_a_share_is_refused_at_once() {
+        let dir = shards_testdir::TempDir::new("share-fifo").unwrap();
+        let fifo = dir.path().join("f");
+        let made = std::process::Command::new("mkfifo").arg(&fifo).status().unwrap();
+        assert!(made.success());
+        let e = opened(&[(fifo.clone(), false)]).unwrap_err();
+        assert!(e.contains(&fifo.display().to_string()), "{e}");
     }
 
     /// Every `--share` before `--` is taken, in order; those after it are the command's.

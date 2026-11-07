@@ -205,6 +205,52 @@ fn os_bytes(value: &std::ffi::OsStr) -> Vec<u8> {
     value.to_string_lossy().into_owned().into_bytes()
 }
 
+/// The flags `run` reads a value after (vm_run.rs `parse_run`, `Common::option`), on any OS
+/// (`--slates-fs` Windows', `--slates-fs-fd` and `--net-release` Unix's), so that what reads
+/// its command line ahead of it (cli/shares.rs `take`) takes no value for a flag.
+#[allow(
+    dead_code,
+    reason = "the shards binary reads it ahead of run (cli/shares.rs); the VM process, which includes this file, only tests it"
+)]
+pub const RUN_VALUED: &[&str] = &[
+    "--attach",
+    "--cmdline",
+    "--cpus",
+    "--cwd",
+    "--disk",
+    "--env",
+    "-e",
+    "--grants",
+    "--hostname",
+    "--init",
+    "--initrd",
+    "--kernel",
+    "--layer",
+    "--memory",
+    "--memory-max",
+    "--net",
+    "--net-release",
+    "--pci-slots",
+    "--pci-tests",
+    "--pmem",
+    "--rootfs",
+    "--shares",
+    "--share-window",
+    "--slates-fs",
+    "--slates-fs-fd",
+    "--snapshot-dir",
+    "--snapshot-then",
+    "--swap-window",
+    "--user",
+    "-u",
+    "--vfio",
+    "--vfio-iommu",
+    "--vsock",
+    "--warm",
+    "--workdir",
+    "-w",
+];
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {

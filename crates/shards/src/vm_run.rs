@@ -2858,6 +2858,19 @@ mod tests {
     }
     use std::os::unix::ffi::OsStrExt as _;
 
+    /// Each flag `spec::RUN_VALUED` names is one `run` reads a value after: given last, with none,
+    /// it is refused as needing one (review 9).
+    #[test]
+    fn valued_flags_need_their_values() {
+        // `--slates-fs` is Windows' alone.
+        for flag in crate::spec::RUN_VALUED.iter().filter(|f| **f != "--slates-fs") {
+            let e = parse_run(args(&[b"--kernel", b"/k", flag.as_bytes()]))
+                .err()
+                .unwrap_or_else(|| panic!("{flag}: taken without a value"));
+            assert!(e.contains("needs a value"), "{flag}: {e}");
+        }
+    }
+
     fn args(list: &[&[u8]]) -> impl Iterator<Item = OsString> {
         list.iter()
             .map(|a| std::ffi::OsStr::from_bytes(a).to_os_string())
