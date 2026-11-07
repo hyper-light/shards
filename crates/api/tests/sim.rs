@@ -23,12 +23,16 @@ use shards_api::{End, GuestSpec, Guests, Init, Refusal, min_memory_mib};
 const ECHO: u32 = 1234;
 const UNSERVED: u32 = 1236;
 /// A hang guard: each wait here returns at its fact (a condition variable's signal, a
-/// process's end), and the guard only bounds a failing one (`record::Learned`). Recorded:
-/// macOS-HVF's slowest of these tests' waits, a new stand-in script's boot to its end,
-/// 4.402617625 s (`docs/research/platform-measurements.md` M463).
+/// process's end), and the guard only bounds a failing one (`record::Learned`). Recorded
+/// (`docs/research/platform-measurements.md` M463), the slowest of these tests' waits:
+/// macOS-HVF's, a new stand-in script's boot to its end, 4.402617625 s; Linux-KVM's, a
+/// simulated guest's connect as it listens 100 ms late, 100.83073 ms.
 static PATIENCE: Learned = Learned::new(
     "tests/sim.rs PATIENCE",
-    &[("macOS-HVF", Duration::from_nanos(4_402_617_625))],
+    &[
+        ("macOS-HVF", Duration::from_nanos(4_402_617_625)),
+        ("Linux-KVM", Duration::from_nanos(100_830_730)),
+    ],
 );
 
 /// This node's `PATIENCE` now.
@@ -150,11 +154,15 @@ mod client {
     use std::path::PathBuf;
     use std::time::Instant;
 
-    /// How soon after shards' end its refusal comes (`record::Learned`). Recorded:
-    /// macOS-HVF's slowest, 4.277875 ms with a child holding shards' output (M463).
+    /// How soon after shards' end its refusal comes, with a child holding shards' output
+    /// (`record::Learned`). Recorded, the slowest (M463): macOS-HVF 4.277875 ms, Linux-KVM
+    /// 205.294 µs.
     static REFUSED_AFTER_END: Learned = Learned::new(
         "REFUSED_AFTER_END",
-        &[("macOS-HVF", Duration::from_nanos(4_277_875))],
+        &[
+            ("macOS-HVF", Duration::from_nanos(4_277_875)),
+            ("Linux-KVM", Duration::from_nanos(205_294)),
+        ],
     );
 
     /// A stand-in for `shards` that runs `body` whatever it is asked.

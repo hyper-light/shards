@@ -23,7 +23,10 @@ const EXIT_RESET: i32 = 3;
 /// (`shards_api_boot_under_the_suites_load`, docs/research/platform-measurements.md M465).
 static E2E: shards_api::record::Learned = shards_api::record::Learned::new(
     "boot.rs E2E",
-    &[("macOS-HVF", Duration::from_nanos(6_202_512_000))],
+    &[
+        ("macOS-HVF", Duration::from_nanos(230_018_375)),
+        ("Linux-KVM", Duration::from_nanos(1_206_822_260)),
+    ],
 );
 
 /// Kernel log lines that show the machine as each architecture's firmware describes it.

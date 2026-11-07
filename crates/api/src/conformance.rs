@@ -263,11 +263,15 @@ pub fn an_unserved_port_is_refused(s: &Subject<'_>) -> Result<(), Failure> {
 }
 
 /// How long a real guest may take to boot and listen, to echo, or to end (`record::Learned`):
-/// a hang guard, each wait returning at its fact. Recorded: macOS-HVF's slowest, a boot to
-/// its port answering, 248.467 ms (`docs/research/platform-measurements.md` M463).
+/// a hang guard, each wait returning at its fact. Recorded, the slowest of those waits by
+/// the client as it is (`docs/research/platform-measurements.md` M463): macOS-HVF's, a boot
+/// to power-off, 134.161917 ms; Linux-KVM's, a boot to power-off, 478.557376 ms.
 pub static PATIENCE: Learned = Learned::new(
     "conformance::PATIENCE",
-    &[("macOS-HVF", Duration::from_nanos(248_467_000))],
+    &[
+        ("macOS-HVF", Duration::from_nanos(134_161_917)),
+        ("Linux-KVM", Duration::from_nanos(478_557_376)),
+    ],
 );
 
 /// The patience an unserved port is asked with: an input, as any shows the patience kept;
