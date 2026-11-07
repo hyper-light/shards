@@ -658,3 +658,122 @@ fn a_reparse_point_that_is_no_link_is_taken_as_its_bytes() {
     assert!(got == bytes, "the bytes it holds");
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+/// How a test puts a link in a directory's place.
+#[derive(Debug, Clone, Copy)]
+enum LinkKind {
+    Symlink,
+    /// A junction, which any Windows user may make.
+    #[cfg(windows)]
+    Junction,
+}
+
+/// A link of `kind` at `at` to the directory `to`; false where this user may make none
+/// (Windows' ERROR_PRIVILEGE_NOT_HELD: no Developer Mode, not elevated).
+fn link_dir(kind: LinkKind, to: &std::path::Path, at: &std::path::Path) -> bool {
+    match kind {
+        #[cfg(unix)]
+        LinkKind::Symlink => std::os::unix::fs::symlink(to, at).unwrap(),
+        #[cfg(windows)]
+        LinkKind::Symlink => match std::os::windows::fs::symlink_dir(to, at) {
+            Ok(()) => {}
+            Err(e) if e.raw_os_error() == Some(1314) => return false,
+            Err(e) => panic!("{e}"),
+        },
+        #[cfg(windows)]
+        LinkKind::Junction => {
+            // A MountPointReparseBuffer (MS-FSCC 2.1.2.5) on an empty directory: its NT and
+            // print names' offsets and lengths, then each name NUL-terminated.
+            use std::os::windows::ffi::OsStrExt as _;
+            use std::os::windows::fs::OpenOptionsExt as _;
+            use std::os::windows::io::AsHandle as _;
+            use windows_sys::Win32::Storage::FileSystem::{
+                FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_GENERIC_WRITE,
+            };
+            const IO_REPARSE_TAG_MOUNT_POINT: u32 = 0xA000_0003;
+            std::fs::create_dir(at).unwrap();
+            let f = std::fs::File::options()
+                .access_mode(FILE_GENERIC_WRITE)
+                .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+                .open(at)
+                .unwrap();
+            let full = std::fs::canonicalize(to).unwrap();
+            // Its verbatim prefix, \\?\, left off.
+            let print: Vec<u16> = full.as_os_str().encode_wide().skip(4).collect();
+            let nt: Vec<u16> = r"\??\".encode_utf16().chain(print.iter().copied()).collect();
+            let bytes = |n: &[u16]| u16::try_from(n.len() * 2).unwrap();
+            let mut data = Vec::new();
+            for word in [0, bytes(&nt), bytes(&nt) + 2, bytes(&print)] {
+                data.extend(word.to_le_bytes());
+            }
+            for c in nt.iter().chain([&0]).chain(&print).chain([&0]) {
+                data.extend(c.to_le_bytes());
+            }
+            shards_ntfs::set_reparse(f.as_handle(), IO_REPARSE_TAG_MOUNT_POINT, &data).unwrap();
+        }
+    }
+    true
+}
+
+/// A directory of the context a link replaced since the walk is not followed out of it
+/// when a file below it is opened to be sent (host.rs `Beneath`): refused as a link,
+/// Unix's ELOOP or ENOTDIR (openat(2) O_NOFOLLOW|O_DIRECTORY), Windows'
+/// ERROR_STOPPED_ON_SYMLINK, a symlink's and a junction's alike; and one renamed away after
+/// its handle was opened is the directory opened still, its files those the walk saw.
+/// fsutil's sender, a path's `os.Open`, would send the link's target's file (D33).
+#[test]
+fn a_directory_a_link_replaced_since_the_walk_is_not_followed() {
+    use std::io::Read as _;
+    let read = |mut f: std::fs::File| {
+        let mut got = Vec::new();
+        f.read_to_end(&mut got).unwrap();
+        got
+    };
+    #[cfg(unix)]
+    let kinds = [LinkKind::Symlink];
+    #[cfg(windows)]
+    let kinds = [LinkKind::Junction, LinkKind::Symlink];
+    for kind in kinds {
+        let dir = tmp("snapshot-dir-link");
+        let (ctx, outside) = (dir.join("ctx"), dir.join("outside"));
+        for d in [ctx.join("d"), ctx.join("e"), outside.clone()] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        for name in ["f", "g"] {
+            std::fs::write(outside.join(name), b"secret").unwrap();
+            std::fs::write(ctx.join("d").join(name), b"mine").unwrap();
+        }
+        std::fs::write(ctx.join("e/x"), b"x").unwrap();
+        let tree = shards_build::host::Tree::at(&ctx);
+        let mut beneath = tree.beneath().unwrap();
+        assert_eq!(read(beneath.open(b"d/f").unwrap()), b"mine");
+        std::fs::rename(ctx.join("d"), ctx.join("moved")).unwrap();
+        if !link_dir(kind, &outside, &ctx.join("d")) {
+            use std::io::Write as _;
+            let _ = writeln!(std::io::stderr(), "SKIP: this user may make no {kind:?} here");
+            continue;
+        }
+        // The directory held since `d/f`'s open, wherever it went.
+        assert_eq!(read(beneath.open(b"d/g").unwrap()), b"mine", "{kind:?}");
+        // Another directory's file, then `d`'s again, walked anew from the root: the link.
+        assert_eq!(read(beneath.open(b"e/x").unwrap()), b"x");
+        let e = beneath.open(b"d/f").unwrap_err();
+        #[cfg(unix)]
+        assert!(
+            matches!(e.raw_os_error(), Some(libc::ELOOP | libc::ENOTDIR)),
+            "{kind:?}: {e}"
+        );
+        #[cfg(windows)]
+        assert_eq!(e.raw_os_error(), Some(681), "{kind:?}: {e}"); // ERROR_STOPPED_ON_SYMLINK
+        // And through a stage, as a context's load takes its files.
+        let stage_dir = dir.join("stage");
+        std::fs::create_dir(&stage_dir).unwrap();
+        let mut stage = shards_build::host::Stage::new(&stage_dir).unwrap();
+        let taken = beneath
+            .open(b"d/g")
+            .and_then(|f| stage.take_opened(f, &ctx.join("d/g")));
+        assert!(taken.is_err(), "{kind:?}: the link's target taken");
+        stage.finish().unwrap();
+        assert_eq!(std::fs::metadata(stage_dir.join("pack")).unwrap().len(), 0);
+    }
+}

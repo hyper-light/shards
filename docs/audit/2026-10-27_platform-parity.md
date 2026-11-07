@@ -478,11 +478,30 @@ Still Unix's alone, not yet brought to Windows (open):
   (p/win-context-nofollow): Windows' `open` (host.rs) opens through no link
   (`shards_ntfs::open_unfollowed`), refusing one ERROR_STOPPED_ON_SYMLINK as Unix's
   O_NOFOLLOW refuses one ELOOP, and `a_reparse_point_that_is_no_link_is_taken_as_its_bytes`
-  holds a WOF-compressed file to its bytes; closed once CI's Windows runs pass them. The
-  archive's Windows unpack root opens and makes its files through it too
-  (`follow_open`). Open on every platform alike: a directory of the context put in
-  place as a link after the walk is followed by the open of a file below it (O_NOFOLLOW
-  holds the last name only).
+  holds a WOF-compressed file to its bytes; closed once CI's Windows runs pass them. A
+  directory of the context put in place as a link after the walk, which the open of a
+  file below it followed on every platform (O_NOFOLLOW held the last name only), is
+  refused (p/dir-swap-races): host.rs `Beneath` opens each directory below the root in
+  the one above it, never through a link (openat(2) O_NOFOLLOW|O_DIRECTORY on Linux and
+  macOS; on Windows NtCreateFile relative to its parent's handle,
+  `shards_ntfs::open_unfollowed_at`), and macOS's whole-directory clone goes through
+  clonefileat(2) in its parent's descriptor; `a_directory_a_link_replaced_since_the_walk_is_not_followed`
+  holds it, a symlink's on Unix, a junction's and a symlink's on Windows; closed once
+  CI's runs on every host pass it.
+- archive's Windows unpack (sys/windows.rs): it walked paths, each directory checked and
+  then used, so a directory a local process swapped for a link in between was followed
+  out of the root. It now walks as Go's os.Root walks on Windows (go1.26.1
+  os/root_windows.go, internal/syscall/windows/at_windows.go) and as unix.rs walks: each
+  name opened relative to its directory's handle as itself (FILE_OPEN_REPARSE_POINT), a
+  link spliced in from its own handle's reparse data, and every operation on the last
+  name made in its directory's handle (`shards_ntfs::create_at`, `hard_link_at`,
+  `host_symlink_at` after Go's Symlinkat, `delete` after Go's Deleteat, `names`), so a
+  read-only file is removed as Go's RemoveAll removes one and a final link of `read_dir`
+  is refused as Unix's O_NOFOLLOW refuses it. sys/windows.rs's and sys/unix.rs's
+  `a_directory_swapped_for_a_link_mid_unpack_leads_nowhere_outside` swap the directory
+  between the walk's open of it and the file's, and `a_link_within_the_root_is_followed_inside_it`
+  holds links inside the root to go-archive's splicing; closed once CI's Windows runs
+  pass them and tests/oracle.rs's Windows cases.
 - the git crate's `a_kept_git_dir_is_one_git_reads_as_its_own` (tests/real_git.rs):
   ungated (p/tests-windows-last), its origin's symlink put in git's index, its checkout's an
   NTFS symlink or, where this user may make none, the file git checks one out as with

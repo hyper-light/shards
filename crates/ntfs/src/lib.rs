@@ -4,7 +4,9 @@
 //! (shards-vmm's share server), and a client's build context its Windows machine keeps a
 //! copy of (D180, shards' `synced`), through shards-archive and shards-build. And a host's
 //! own file opened through no link at its name, as Unix's O_NOFOLLOW opens one
-//! ([`open_unfollowed`]), for both. Nothing on other hosts.
+//! ([`open_unfollowed`]), and a host's own tree walked, opened, made and removed a name at a
+//! time from a directory's handle, through no link anywhere below it, as Unix's openat(2)
+//! walks ([`create_at`], [`open_unfollowed_at`]), for both. Nothing on other hosts.
 
 #![cfg(windows)]
 
@@ -429,19 +431,50 @@ pub fn open_unfollowed(
     p: &std::path::Path,
 ) -> std::io::Result<std::fs::File> {
     use std::os::windows::fs::OpenOptionsExt as _;
-    use windows_sys::Win32::Storage::FileSystem::{
-        FILE_ATTRIBUTE_REPARSE_POINT, FILE_ATTRIBUTE_TAG_INFO, FILE_FLAG_OPEN_REPARSE_POINT,
-        FileAttributeTagInfo,
-    };
+    use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT;
     let first = options
         .clone()
         .custom_flags(flags | FILE_FLAG_OPEN_REPARSE_POINT)
         .open(p)?;
+    match reparse_of(first.as_handle())? {
+        Reparse::None => return Ok(first),
+        Reparse::Link => return Err(std::io::Error::from_raw_os_error(STOPPED_ON_LINK)),
+        Reparse::Other => {}
+    }
+    let again = options.clone().custom_flags(flags).open(p)?;
+    same_file(&first, again)
+}
+
+/// `again`, where it is the file `first` is (FILE_ID_INFO's volume serial number and file
+/// ID, [`open_unfollowed`]); refused [`STOPPED_ON_LINK`] where it is another.
+fn same_file(first: &std::fs::File, again: std::fs::File) -> std::io::Result<std::fs::File> {
+    if file_id(first.as_handle())? != file_id(again.as_handle())? {
+        return Err(std::io::Error::from_raw_os_error(STOPPED_ON_LINK));
+    }
+    Ok(again)
+}
+
+/// What a file is as a reparse point ([`reparse_of`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reparse {
+    /// No reparse point.
+    None,
+    /// A name surrogate (`NAME_SURROGATE`): a symbolic link, a junction or mount point,
+    /// WSL's symlink.
+    Link,
+    /// Any other: a cloud file's placeholder, a deduplicated or WOF-compressed file.
+    Other,
+}
+
+/// `h`'s file's attributes and reparse tag (FileAttributeTagInfo, FILE_ATTRIBUTE_TAG_INFO;
+/// the tag is 0 where the attributes hold no FILE_ATTRIBUTE_REPARSE_POINT).
+pub fn attribute_tag(h: BorrowedHandle<'_>) -> std::io::Result<(u32, u32)> {
+    use windows_sys::Win32::Storage::FileSystem::{FILE_ATTRIBUTE_TAG_INFO, FileAttributeTagInfo};
     let mut info = FILE_ATTRIBUTE_TAG_INFO::default();
-    // SAFETY: a buffer of its own size for the class asked, of a handle this frame holds.
+    // SAFETY: a buffer of its own size for the class asked, of a handle the caller holds.
     let got = unsafe {
         GetFileInformationByHandleEx(
-            first.as_raw_handle(),
+            h.as_raw_handle(),
             FileAttributeTagInfo,
             (&raw mut info).cast(),
             u32::try_from(size_of::<FILE_ATTRIBUTE_TAG_INFO>()).unwrap_or(0),
@@ -450,17 +483,405 @@ pub fn open_unfollowed(
     if got == 0 {
         return Err(std::io::Error::last_os_error());
     }
-    if info.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT == 0 {
-        return Ok(first);
+    Ok((info.FileAttributes, info.ReparseTag))
+}
+
+/// What `h`'s file is as a reparse point, by its [`attribute_tag`].
+pub fn reparse_of(h: BorrowedHandle<'_>) -> std::io::Result<Reparse> {
+    use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
+    let (attributes, tag) = attribute_tag(h)?;
+    Ok(if attributes & FILE_ATTRIBUTE_REPARSE_POINT == 0 {
+        Reparse::None
+    } else if tag & NAME_SURROGATE != 0 {
+        Reparse::Link
+    } else {
+        Reparse::Other
+    })
+}
+
+/// Every sharing a handle may allow, as std's opens allow it: another may read, write,
+/// rename or delete what it holds.
+pub const SHARE_ALL: u32 = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
+
+/// The Win32 error CreateFileW and its kin give for an NTSTATUS (RtlNtStatusToDosError), as
+/// an [`std::io::Error`]: its kind and message Windows' own, as std's calls give them.
+fn win32_error(status: NTSTATUS) -> std::io::Error {
+    // SAFETY: a lookup of a status's Win32 code, with no other effect.
+    let code = unsafe { windows_sys::Win32::Foundation::RtlNtStatusToDosError(status) };
+    std::io::Error::from_raw_os_error(i32::try_from(code).unwrap_or(i32::MAX))
+}
+
+/// `name` in the directory `dir` holds, opened by NtCreateFile relative to its handle
+/// (OBJECT_ATTRIBUTES' RootDirectory), as a host's own names are opened rather than a Linux
+/// tree's ([`open_at`]): without regard to case (OBJ_CASE_INSENSITIVE, as CreateFileW opens
+/// a name and Go's Openat, go1.26.1 internal/syscall/windows/at_windows.go), sharing `share`,
+/// with `access`, `disposition` (FILE_OPEN, FILE_CREATE, FILE_OPEN_IF) and `options`, its
+/// I/O synchronous and its attributes readable, a file it makes FILE_ATTRIBUTE_NORMAL. An
+/// empty `name` opens `dir`'s own file again, wherever it has gone. Its error is the Win32
+/// one CreateFileW gives for the same status, which std's calls and Go's give too.
+pub fn create_at(
+    dir: BorrowedHandle<'_>,
+    name: &[u16],
+    access: u32,
+    share: u32,
+    disposition: u32,
+    options: u32,
+) -> std::io::Result<std::fs::File> {
+    use windows_sys::Win32::Foundation::OBJ_CASE_INSENSITIVE;
+    use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_NORMAL;
+    let too_long =
+        || std::io::Error::from_raw_os_error(i32::try_from(ERROR_FILENAME_EXCED_RANGE).unwrap_or(0));
+    let bytes = name
+        .len()
+        .checked_mul(2)
+        .and_then(|b| u16::try_from(b).ok())
+        .ok_or_else(too_long)?;
+    let object = UNICODE_STRING {
+        Length: bytes,
+        MaximumLength: bytes,
+        Buffer: name.as_ptr().cast_mut(),
+    };
+    let attributes = OBJECT_ATTRIBUTES {
+        Length: u32::try_from(size_of::<OBJECT_ATTRIBUTES>()).unwrap_or(0),
+        RootDirectory: dir.as_raw_handle(),
+        ObjectName: &object,
+        Attributes: OBJ_CASE_INSENSITIVE,
+        SecurityDescriptor: std::ptr::null(),
+        SecurityQualityOfService: std::ptr::null(),
+    };
+    let mut handle = std::ptr::null_mut();
+    let mut io = IO_STATUS_BLOCK::default();
+    // SAFETY: an object name and attributes of this frame's, valid for the call (no name read
+    // where its length is 0); a directory handle the caller holds; plain arguments; no EA
+    // buffer.
+    let status = unsafe {
+        NtCreateFile(
+            &mut handle,
+            access | SYNCHRONIZE | FILE_READ_ATTRIBUTES,
+            &attributes,
+            &mut io,
+            std::ptr::null(),
+            FILE_ATTRIBUTE_NORMAL,
+            share,
+            disposition,
+            options | FILE_SYNCHRONOUS_IO_NONALERT,
+            std::ptr::null(),
+            0,
+        )
+    };
+    if status < 0 {
+        return Err(win32_error(status));
     }
-    if info.ReparseTag & NAME_SURROGATE != 0 {
-        return Err(std::io::Error::from_raw_os_error(STOPPED_ON_LINK));
+    // SAFETY: a handle NtCreateFile just made, owned here alone.
+    Ok(std::fs::File::from(unsafe {
+        OwnedHandle::from_raw_handle(handle)
+    }))
+}
+
+/// `name` in `dir` opened as [`create_at`] opens it, never through a link there, as
+/// [`open_unfollowed`] opens a path's last name: opened as itself first (FILE_OPEN_REPARSE_POINT),
+/// a name surrogate refused [`STOPPED_ON_LINK`], any other reparse point opened again for
+/// what it holds and kept only where it is the same file. Walked a name at a time from a
+/// directory's handle, each directory so opened, no link anywhere below it is followed, as
+/// Unix's openat(2) walks with O_NOFOLLOW (Go's os.Root on Windows walks so too, go1.26.1
+/// os/root_windows.go). `options` must not truncate ([`open_unfollowed`]).
+pub fn open_unfollowed_at(
+    dir: BorrowedHandle<'_>,
+    name: &[u16],
+    access: u32,
+    share: u32,
+    disposition: u32,
+    options: u32,
+) -> std::io::Result<std::fs::File> {
+    let first = create_at(
+        dir,
+        name,
+        access,
+        share,
+        disposition,
+        options | FILE_OPEN_REPARSE_POINT,
+    )?;
+    match reparse_of(first.as_handle())? {
+        Reparse::None => return Ok(first),
+        Reparse::Link => return Err(std::io::Error::from_raw_os_error(STOPPED_ON_LINK)),
+        Reparse::Other => {}
     }
-    let again = options.clone().custom_flags(flags).open(p)?;
-    if file_id(first.as_handle())? != file_id(again.as_handle())? {
-        return Err(std::io::Error::from_raw_os_error(STOPPED_ON_LINK));
+    let again = create_at(
+        dir,
+        name,
+        access,
+        share,
+        FILE_OPEN,
+        options & !FILE_OPEN_REPARSE_POINT,
+    )?;
+    same_file(&first, again)
+}
+
+/// The names in the directory `h` holds open, `.` and `..` aside, as NTFS keeps them,
+/// read through `h` (FileFullDirectoryRestartInfo, then FileFullDirectoryInfo until
+/// ERROR_NO_MORE_FILES): that directory's, wherever it has gone.
+pub fn names(h: BorrowedHandle<'_>) -> std::io::Result<Vec<Vec<u16>>> {
+    use std::mem::offset_of;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_FULL_DIR_INFO, FileFullDirectoryInfo, FileFullDirectoryRestartInfo,
+    };
+    let bad = || std::io::Error::from(std::io::ErrorKind::InvalidData);
+    let mut out = Vec::new();
+    let mut buf = vec![0u8; 64 << 10];
+    let mut class = FileFullDirectoryRestartInfo;
+    loop {
+        // SAFETY: a buffer of its length for the class asked, on a handle the caller holds.
+        let done = unsafe {
+            GetFileInformationByHandleEx(
+                h.as_raw_handle(),
+                class,
+                buf.as_mut_ptr().cast(),
+                u32::try_from(buf.len()).unwrap_or(0),
+            )
+        };
+        if done == 0 {
+            let e = std::io::Error::last_os_error();
+            if e.raw_os_error() == Some(i32::try_from(ERROR_NO_MORE_FILES).unwrap_or(0)) {
+                return Ok(out);
+            }
+            return Err(e);
+        }
+        class = FileFullDirectoryInfo;
+        let word = |at: usize| -> Option<usize> {
+            let b = buf.get(at..at.checked_add(4)?)?;
+            usize::try_from(u32::from_le_bytes(<[u8; 4]>::try_from(b).ok()?)).ok()
+        };
+        let mut at = 0usize;
+        loop {
+            let next = word(at).ok_or_else(bad)?;
+            let len = word(at + offset_of!(FILE_FULL_DIR_INFO, FileNameLength)).ok_or_else(bad)?;
+            let name_at = at + offset_of!(FILE_FULL_DIR_INFO, FileName);
+            let name: Vec<u16> = buf
+                .get(name_at..name_at.checked_add(len).ok_or_else(bad)?)
+                .ok_or_else(bad)?
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|c| u16::from_le_bytes(*c))
+                .collect();
+            if !matches!(name.as_slice(), [0x2e] | [0x2e, 0x2e]) {
+                out.push(name);
+            }
+            if next == 0 {
+                break;
+            }
+            at = at.checked_add(next).ok_or_else(bad)?;
+        }
     }
-    Ok(again)
+}
+
+/// `h`'s file removed as Go's Deleteat removes one (go1.26.1 at_windows.go): its name gone
+/// at once though another handle holds it open (FILE_DISPOSITION_FLAG_POSIX_SEMANTICS), a
+/// read-only one too (FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE); where the system or
+/// its file system takes no such flag (ERROR_INVALID_PARAMETER, ERROR_NOT_SUPPORTED), as
+/// DeleteFileW removes one (FileDispositionInfo). `h` was opened with DELETE access; a link
+/// opened as itself (FILE_OPEN_REPARSE_POINT) is removed itself.
+pub fn delete(h: BorrowedHandle<'_>) -> std::io::Result<()> {
+    use windows_sys::Win32::Storage::FileSystem::{FILE_DISPOSITION_INFO, FileDispositionInfo};
+    let info = FILE_DISPOSITION_INFO_EX {
+        Flags: FILE_DISPOSITION_FLAG_DELETE
+            | FILE_DISPOSITION_FLAG_POSIX_SEMANTICS
+            | FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE,
+    };
+    // SAFETY: an info of its own size on a handle the caller holds.
+    let done = unsafe {
+        SetFileInformationByHandle(
+            h.as_raw_handle(),
+            FileDispositionInfoEx,
+            (&raw const info).cast(),
+            u32::try_from(size_of::<FILE_DISPOSITION_INFO_EX>()).unwrap_or(0),
+        )
+    };
+    if done != 0 {
+        return Ok(());
+    }
+    let e = std::io::Error::last_os_error();
+    if !matches!(
+        e.raw_os_error().and_then(|c| u32::try_from(c).ok()),
+        Some(ERROR_INVALID_PARAMETER | ERROR_NOT_SUPPORTED)
+    ) {
+        return Err(e);
+    }
+    let info = FILE_DISPOSITION_INFO { DeleteFile: true };
+    // SAFETY: as above.
+    let done = unsafe {
+        SetFileInformationByHandle(
+            h.as_raw_handle(),
+            FileDispositionInfo,
+            (&raw const info).cast(),
+            u32::try_from(size_of::<FILE_DISPOSITION_INFO>()).unwrap_or(0),
+        )
+    };
+    if done == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// Another name, `new` in `ndir`, of the file `old` in `odir` names, never over one
+/// (FileLinkInformation, its RootDirectory `ndir`): the link itself where `old` is one
+/// (FILE_OPEN_REPARSE_POINT), as Go's Linkat makes one (go1.26.1 at_windows.go). Names as
+/// [`create_at`] opens them.
+pub fn hard_link_at(
+    odir: BorrowedHandle<'_>,
+    old: &[u16],
+    ndir: BorrowedHandle<'_>,
+    new: &[u16],
+) -> std::io::Result<()> {
+    let linked = create_at(
+        odir,
+        old,
+        FILE_WRITE_ATTRIBUTES,
+        SHARE_ALL,
+        FILE_OPEN,
+        FILE_OPEN_REPARSE_POINT,
+    )?;
+    let info = named(0, ndir, new).map_err(io_error)?;
+    let mut io = IO_STATUS_BLOCK::default();
+    // SAFETY: a FILE_LINK_INFORMATION laid out by `named`, its length, on a handle this holds.
+    let status = unsafe {
+        NtSetInformationFile(
+            linked.as_raw_handle(),
+            &mut io,
+            info.as_ptr().cast(),
+            u32::try_from(info.len()).unwrap_or(u32::MAX),
+            FileLinkInformation,
+        )
+    };
+    if status < 0 {
+        return Err(win32_error(status));
+    }
+    Ok(())
+}
+
+/// An NTFS symbolic link `name` in `dir` to `substitute` (the name Windows follows), shown
+/// as `print`: a directory's link where `directory`, a file's otherwise, its target relative
+/// to the link's directory where `relative` (SYMLINK_FLAG_RELATIVE). Made as Go's Symlinkat
+/// makes one in a directory's handle (go1.26.1 internal/syscall/windows/at_windows.go), as
+/// CreateSymbolicLinkW cannot: a new file opened as itself (FILE_CREATE,
+/// FILE_OPEN_REPARSE_POINT), given a symbolic link's reparse point (FSCTL_SET_REPARSE_POINT,
+/// a SymbolicLinkReparseBuffer, MS-FSCC 2.1.2.4), and removed again where that fails; with
+/// SeCreateSymbolicLinkPrivilege enabled while it is made, where this thread may enable it
+/// (`with_symlink_privilege`). Where it may not (no Developer Mode, not elevated) it fails
+/// as CreateSymbolicLinkW does, ERROR_PRIVILEGE_NOT_HELD.
+pub fn host_symlink_at(
+    dir: BorrowedHandle<'_>,
+    name: &[u16],
+    substitute: &[u16],
+    print: &[u16],
+    directory: bool,
+    relative: bool,
+) -> std::io::Result<()> {
+    let too_long =
+        || std::io::Error::from_raw_os_error(i32::try_from(ERROR_FILENAME_EXCED_RANGE).unwrap_or(0));
+    let len = |n: &[u16]| n.len().checked_mul(2).and_then(|b| u16::try_from(b).ok());
+    let (sub_len, print_len) = (
+        len(substitute).ok_or_else(too_long)?,
+        len(print).ok_or_else(too_long)?,
+    );
+    // Its substitute name's offset and length, its print name's, its flags, then the names.
+    let mut data = Vec::new();
+    for word in [0, sub_len, sub_len, print_len] {
+        data.extend(word.to_le_bytes());
+    }
+    data.extend(u32::from(relative).to_le_bytes());
+    for c in substitute.iter().chain(print) {
+        data.extend(c.to_le_bytes());
+    }
+    let kind = if directory {
+        FILE_DIRECTORY_FILE
+    } else {
+        FILE_NON_DIRECTORY_FILE
+    };
+    with_symlink_privilege(|| {
+        let made = create_at(
+            dir,
+            name,
+            FILE_WRITE_ATTRIBUTES | DELETE,
+            0,
+            FILE_CREATE,
+            FILE_OPEN_REPARSE_POINT | kind,
+        )?;
+        if let Err(e) = set_reparse_io(made.as_handle(), IO_REPARSE_TAG_SYMLINK, &data) {
+            let _ = delete(made.as_handle());
+            return Err(e);
+        }
+        Ok(())
+    })
+}
+
+/// `f` run with SeCreateSymbolicLinkPrivilege enabled in this thread's own copy of its
+/// process's token (ImpersonateSelf, AdjustTokenPrivileges), reverted as it ends
+/// (RevertToSelf), as CreateSymbolicLinkW enables the privilege it holds and Go's
+/// withPrivilege does (go1.26.1 at_windows.go): an elevated administrator holds it disabled.
+/// Where any step fails, `f` is run anyway, and fails as the privilege's absence makes it.
+fn with_symlink_privilege<T>(f: impl FnOnce() -> T) -> T {
+    use windows_sys::Win32::Foundation::LUID;
+    use windows_sys::Win32::Security::{
+        AdjustTokenPrivileges, ImpersonateSelf, LUID_AND_ATTRIBUTES, LookupPrivilegeValueW, RevertToSelf,
+        SE_PRIVILEGE_ENABLED, SecurityImpersonation, TOKEN_ADJUST_PRIVILEGES, TOKEN_PRIVILEGES, TOKEN_QUERY,
+    };
+    use windows_sys::Win32::System::Threading::{GetCurrentThread, OpenThreadToken};
+    /// Reverts this thread to its process's token as it drops.
+    struct Revert;
+    impl Drop for Revert {
+        fn drop(&mut self) {
+            // SAFETY: ends the impersonation ImpersonateSelf began on this thread.
+            unsafe { RevertToSelf() };
+        }
+    }
+    // SAFETY: a copy of the process's token for this thread alone, at a level of its own.
+    if unsafe { ImpersonateSelf(SecurityImpersonation) } == 0 {
+        return f();
+    }
+    let _revert = Revert;
+    let mut token = std::ptr::null_mut();
+    // SAFETY: this thread's pseudo-handle, the token's handle written into `token`.
+    if unsafe {
+        OpenThreadToken(
+            GetCurrentThread(),
+            TOKEN_QUERY | TOKEN_ADJUST_PRIVILEGES,
+            0,
+            &mut token,
+        )
+    } == 0
+    {
+        return f();
+    }
+    // SAFETY: a handle OpenThreadToken just opened, owned here alone.
+    let token = unsafe { OwnedHandle::from_raw_handle(token) };
+    let name: Vec<u16> = "SeCreateSymbolicLinkPrivilege\0".encode_utf16().collect();
+    let mut luid = LUID::default();
+    // SAFETY: a NUL-terminated name, and a LUID of this frame's written.
+    if unsafe { LookupPrivilegeValueW(std::ptr::null(), name.as_ptr(), &mut luid) } == 0 {
+        return f();
+    }
+    let privileges = TOKEN_PRIVILEGES {
+        PrivilegeCount: 1,
+        Privileges: [LUID_AND_ATTRIBUTES {
+            Luid: luid,
+            Attributes: SE_PRIVILEGE_ENABLED,
+        }],
+    };
+    // SAFETY: a token this frame holds, opened to adjust its privileges, and a
+    // TOKEN_PRIVILEGES of this frame's; no previous state asked. A privilege not held is
+    // left as it is (ERROR_NOT_ALL_ASSIGNED), and `f` fails as it would.
+    unsafe {
+        AdjustTokenPrivileges(
+            token.as_raw_handle(),
+            0,
+            &privileges,
+            0,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+    };
+    f()
 }
 
 /// The EA a Linux extended attribute `name` is kept in: its bytes as hexadecimal after
@@ -630,9 +1051,17 @@ pub fn set_lx(
 /// `h`'s file made a reparse point of `tag` holding `data` (FSCTL_SET_REPARSE_POINT): a
 /// REPARSE_DATA_BUFFER, its tag, its data's length and a reserved word, then the data.
 pub fn set_reparse(h: BorrowedHandle<'_>, tag: u32, data: &[u8]) -> Result<(), Errno> {
+    set_reparse_io(h, tag, data).map_err(|e| win32_errno(&e))
+}
+
+/// [`set_reparse`], its error Windows' own: ERROR_FILENAME_EXCED_RANGE where `data` is
+/// longer than a reparse point holds, which [`win32_errno`] makes ENAMETOOLONG.
+fn set_reparse_io(h: BorrowedHandle<'_>, tag: u32, data: &[u8]) -> std::io::Result<()> {
+    let too_long =
+        || std::io::Error::from_raw_os_error(i32::try_from(ERROR_FILENAME_EXCED_RANGE).unwrap_or(0));
     let mut buf = Vec::with_capacity(8 + data.len());
     buf.extend(tag.to_le_bytes());
-    buf.extend(u16::try_from(data.len()).map_err(|_| ENAMETOOLONG)?.to_le_bytes());
+    buf.extend(u16::try_from(data.len()).map_err(|_| too_long())?.to_le_bytes());
     buf.extend(0u16.to_le_bytes());
     buf.extend_from_slice(data);
     let mut returned = 0u32;
@@ -642,7 +1071,7 @@ pub fn set_reparse(h: BorrowedHandle<'_>, tag: u32, data: &[u8]) -> Result<(), E
             h.as_raw_handle(),
             FSCTL_SET_REPARSE_POINT,
             buf.as_ptr().cast(),
-            u32::try_from(buf.len()).map_err(|_| ENAMETOOLONG)?,
+            u32::try_from(buf.len()).map_err(|_| too_long())?,
             std::ptr::null_mut(),
             0,
             &mut returned,
@@ -650,7 +1079,7 @@ pub fn set_reparse(h: BorrowedHandle<'_>, tag: u32, data: &[u8]) -> Result<(), E
         )
     };
     if done == 0 {
-        return Err(last_error());
+        return Err(std::io::Error::last_os_error());
     }
     Ok(())
 }

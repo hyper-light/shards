@@ -371,6 +371,21 @@ fn open_dir(dir: &Handle, name: &[u8]) -> io::Result<Step<Handle>> {
     }
 }
 
+/// Root.OpenFile's open of the last name in the directory `dir`: never through a symlink
+/// (O_NOFOLLOW), one there a step to its target unless creating exclusively, where it is
+/// there already.
+fn open_in(dir: RawFd, last: &CStr, flags: libc::c_int, perm: u32) -> io::Result<Step<OwnedFd>> {
+    let excl = flags & (libc::O_CREAT | libc::O_EXCL) == (libc::O_CREAT | libc::O_EXCL);
+    match openat(dir, last, libc::O_NOFOLLOW | flags, perm) {
+        Ok(fd) => Ok(Step::Done(fd)),
+        Err(e) if !excl && (no_follow(&e) || e.raw_os_error() == Some(libc::ENOTDIR)) => {
+            check_symlink(dir, last, e)
+        }
+        Err(e) if excl && no_follow(&e) => Err(io::Error::from_raw_os_error(libc::EEXIST)),
+        Err(e) => Err(e),
+    }
+}
+
 /// The destination of an unpack: Go's os.Root.
 #[derive(Debug)]
 pub(crate) struct Root {
@@ -459,17 +474,7 @@ impl Root {
     /// Root.OpenFile: a final symlink followed inside the root unless creating
     /// exclusively.
     pub(crate) fn open_file(&self, name: &[u8], flags: libc::c_int, perm: u32) -> Result<File, WalkError> {
-        let excl = flags & (libc::O_CREAT | libc::O_EXCL) == (libc::O_CREAT | libc::O_EXCL);
-        let fd = self.walk(name, |dir, last| {
-            match openat(dir, last, libc::O_NOFOLLOW | flags, perm) {
-                Ok(fd) => Ok(Step::Done(fd)),
-                Err(e) if !excl && (no_follow(&e) || e.raw_os_error() == Some(libc::ENOTDIR)) => {
-                    check_symlink(dir, last, e)
-                }
-                Err(e) if excl && no_follow(&e) => Err(io::Error::from_raw_os_error(libc::EEXIST)),
-                Err(e) => Err(e),
-            }
-        })?;
+        let fd = self.walk(name, |dir, last| open_in(dir, last, flags, perm))?;
         Ok(File::from(fd))
     }
 
@@ -840,4 +845,65 @@ fn fd_path(dir: RawFd, name: &[u8]) -> io::Result<Vec<u8>> {
     buf.push(b'/');
     buf.extend_from_slice(name);
     Ok(buf)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::Cell;
+
+    use super::*;
+
+    /// A directory of the unpack swapped for a symlink out of the root after the walk
+    /// opened it, before the file below it is made: the file is made in the directory the
+    /// walk opened, wherever it was moved, and nothing outside the root (each step an
+    /// openat(2) of one name in the descriptor before it, O_NOFOLLOW); an entry walked after
+    /// the swap meets the symlink, whose absolute target escapes the root, and is refused;
+    /// its removal removes the symlink, never what it leads to.
+    #[test]
+    fn a_directory_swapped_for_a_link_mid_unpack_leads_nowhere_outside() {
+        let tmp = shards_testdir::TempDir::new("archive-swap").unwrap();
+        let (dest, outside) = (tmp.join("root"), tmp.join("outside"));
+        std::fs::create_dir_all(dest.join("a")).unwrap();
+        std::fs::create_dir(&outside).unwrap();
+        let root = Root::open(dest.as_os_str().as_bytes()).unwrap();
+        let swapped = Cell::new(false);
+        let fd = root::walk(
+            Os::Unix,
+            || Handle::Root(root.fd.as_raw_fd()),
+            b"a/f",
+            |dir, name| {
+                let step = open_dir(dir, name);
+                if !swapped.replace(true) {
+                    std::fs::rename(dest.join("a"), dest.join("moved")).unwrap();
+                    std::os::unix::fs::symlink(&outside, dest.join("a")).unwrap();
+                }
+                step
+            },
+            |dir, last| {
+                let flags = libc::O_CREAT | libc::O_WRONLY | libc::O_TRUNC;
+                open_in(dir.fd(), &cstring(last)?, flags, 0o644)
+            },
+        )
+        .unwrap();
+        io::Write::write_all(&mut File::from(fd), b"in").unwrap();
+        assert!(swapped.get());
+        assert_eq!(std::fs::read(dest.join("moved/f")).unwrap(), b"in");
+        assert_eq!(
+            std::fs::read_dir(&outside).unwrap().count(),
+            0,
+            "written outside the root"
+        );
+
+        assert!(root.create(b"a/g", 0o644).unwrap_err().escapes());
+        assert!(root.mkdir(b"a/d", 0o755).unwrap_err().escapes());
+        assert_eq!(
+            std::fs::read_dir(&outside).unwrap().count(),
+            0,
+            "written outside the root"
+        );
+        std::fs::write(outside.join("kept"), b"kept").unwrap();
+        root.remove_all(b"a").unwrap();
+        assert!(std::fs::symlink_metadata(dest.join("a")).is_err());
+        assert_eq!(std::fs::read(outside.join("kept")).unwrap(), b"kept");
+    }
 }

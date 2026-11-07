@@ -3,26 +3,34 @@
 //! an unpack walked as Go's os.Root walks it (root.go, root_windows.go), one component at
 //! a time, every symlink or junction spliced in and checked, `..` cleaned first.
 //!
-//! Go walks with handles opened relative to their parents; here each step is a path
-//! checked before it is used, so a local process racing the unpack could swap a
-//! directory for a link between check and use; a file opened or made is opened through no
-//! link put in its place since (`follow_open`). The archive alone cannot: its entries are
-//! applied one after another. As go-archive does on Windows, owners, modes, devices and
-//! extended attributes are not applied.
+//! As Go walks, the walk holds a handle of each directory and opens the next name relative
+//! to it (NtCreateFile's RootDirectory, `shards_ntfs::create_at`), as itself
+//! (FILE_OPEN_REPARSE_POINT): a link met is never followed but spliced in, its target read
+//! from its own handle, and every operation on the last name is an operation in its
+//! directory's handle. A directory a local process swaps for a link after the walk opened
+//! it is the directory the walk opened still, and a link put in a name's place is a link
+//! the walk splices, so nothing is reached outside the root through either. As go-archive
+//! does on Windows, owners, modes, devices and extended attributes are not applied.
 
 use std::ffi::OsString;
 use std::fs::{self, File, FileTimes, OpenOptions};
 use std::io;
 use std::os::windows::ffi::OsStrExt;
 use std::os::windows::fs::{FileTimesExt, MetadataExt, OpenOptionsExt};
-use std::os::windows::io::AsHandle as _;
+use std::os::windows::io::{AsHandle as _, BorrowedHandle};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use shards_ntfs::{Reparse, SHARE_ALL};
+use windows_sys::Wdk::Storage::FileSystem::{
+    FILE_CREATE, FILE_DIRECTORY_FILE, FILE_NON_DIRECTORY_FILE, FILE_OPEN, FILE_OPEN_IF,
+    FILE_OPEN_REPARSE_POINT,
+};
 use windows_sys::Win32::Storage::FileSystem::{
-    FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_READONLY, FILE_ATTRIBUTE_REPARSE_POINT,
-    FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_GENERIC_WRITE, FILE_READ_ATTRIBUTES,
-    FILE_WRITE_ATTRIBUTES, FindClose, FindFirstFileW, WIN32_FIND_DATAW,
+    DELETE, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_READONLY, FILE_ATTRIBUTE_REPARSE_POINT,
+    FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_GENERIC_READ, FILE_GENERIC_WRITE,
+    FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES, FILE_WRITE_ATTRIBUTES, FindClose, FindFirstFileW,
+    WIN32_FIND_DATAW,
 };
 
 use super::{FileKind, Stat};
@@ -31,10 +39,11 @@ use crate::root::{self, Step, WalkError};
 use crate::tar::Time;
 
 const IO_REPARSE_TAG_SYMLINK: u32 = 0xA000_000C;
+const IO_REPARSE_TAG_MOUNT_POINT: u32 = 0xA000_0003;
 const IO_REPARSE_TAG_AF_UNIX: u32 = 0x8000_0023;
 const IO_REPARSE_TAG_DEDUP: u32 = 0x8000_0013;
-/// ERROR_DIRECTORY: the name is not a directory.
-const ERROR_DIRECTORY: i32 = 267;
+/// A symbolic link's flag that its target is relative to its directory (MS-FSCC 2.1.2.4).
+const SYMLINK_FLAG_RELATIVE: u32 = 1;
 
 pub(crate) const S_IFBLK: u32 = 0o060000;
 pub(crate) const S_IFCHR: u32 = 0o020000;
@@ -89,23 +98,10 @@ fn unix_time(t: io::Result<SystemTime>) -> Time {
     }
 }
 
-/// os.Lstat's FileMode on Windows: 0444 or 0666 by the read-only attribute, a directory
-/// 0111 more; symlinks by their reparse tag, and other reparse points (junctions among
-/// them) irregular. And, of what is not a directory, its links as Unix's lstat says them
-/// (`shards_ntfs::links`), which go-archive does not ask on Windows ([`crate::pack`]).
-pub(crate) fn lstat(p: &[u8]) -> io::Result<Stat> {
-    let path = os_path(p);
-    // The file itself, opened for no access as std's lstat opens it, a reparse point not
-    // followed: its metadata and its links asked of one handle. One std's lstat cannot open
-    // (a sharing violation) it reads from its directory's entry, which says no links.
-    let opened = OpenOptions::new()
-        .access_mode(0)
-        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
-        .open(&path);
-    let md = match &opened {
-        Ok(f) => f.metadata()?,
-        Err(_) => fs::symlink_metadata(&path)?,
-    };
+/// os.Lstat's FileMode on Windows of what `md` says and the reparse tag `tag`: 0444 or
+/// 0666 by the read-only attribute, a directory 0111 more; symlinks by their reparse tag,
+/// and other reparse points (junctions among them) irregular. One name of one file.
+fn stat_from(md: &fs::Metadata, tag: u32) -> Stat {
     let attrs = md.file_attributes();
     let mut mode = if attrs & FILE_ATTRIBUTE_READONLY != 0 {
         0o444
@@ -119,31 +115,58 @@ pub(crate) fn lstat(p: &[u8]) -> io::Result<Stat> {
         kind = FileKind::Dir;
     }
     if attrs & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-        match reparse_tag(&path) {
+        match tag {
             IO_REPARSE_TAG_SYMLINK => kind = FileKind::Symlink,
             IO_REPARSE_TAG_AF_UNIX => kind = FileKind::Socket,
             IO_REPARSE_TAG_DEDUP => {}
             _ => kind = FileKind::Other,
         }
     }
-    // A file whose links cannot be asked is packed as one of one name, as before.
-    let links = match &opened {
-        Ok(f) if kind != FileKind::Dir => shards_ntfs::links(f.as_handle()).ok().flatten(),
-        _ => None,
-    };
-    Ok(Stat {
+    Stat {
         kind,
         mode,
         uid: 0,
         gid: 0,
         size: md.len(),
         mtime: unix_time(md.modified()),
-        ino: links.map_or(0, |l| l.file),
-        dev: links.map_or(0, |l| l.volume),
-        nlink: links.map_or(1, |l| l.count),
+        ino: 0,
+        dev: 0,
+        nlink: 1,
         major: 0,
         minor: 0,
-    })
+    }
+}
+
+/// [`stat_from`] of the file `f` holds, a reparse point's own: its metadata, reparse tag
+/// and, of what is not a directory, its links as Unix's lstat says them
+/// (`shards_ntfs::links`), which go-archive does not ask on Windows ([`crate::pack`]). A
+/// file whose links cannot be asked is one of one name.
+fn stat_of(f: &File) -> io::Result<Stat> {
+    let md = f.metadata()?;
+    let (_, tag) = shards_ntfs::attribute_tag(f.as_handle())?;
+    let mut st = stat_from(&md, tag);
+    if st.kind != FileKind::Dir
+        && let Some(l) = shards_ntfs::links(f.as_handle()).ok().flatten()
+    {
+        (st.ino, st.dev, st.nlink) = (l.file, l.volume, l.count);
+    }
+    Ok(st)
+}
+
+/// os.Lstat, for packing. The file itself, opened for no access as std's lstat opens it, a
+/// reparse point not followed: its metadata, tag and links asked of one handle. One std's
+/// lstat cannot open (a sharing violation) it reads from its directory's entry, which says
+/// no links.
+pub(crate) fn lstat(p: &[u8]) -> io::Result<Stat> {
+    let path = os_path(p);
+    let opened = OpenOptions::new()
+        .access_mode(0)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(&path);
+    match opened {
+        Ok(f) => stat_of(&f),
+        Err(_) => Ok(stat_from(&fs::symlink_metadata(&path)?, reparse_tag(&path))),
+    }
 }
 
 /// os.Stat.
@@ -197,46 +220,196 @@ fn join(dir: &[u8], name: &[u8]) -> Vec<u8> {
     [dir, b"\\", name].concat()
 }
 
-/// rootOpenDir, by path: a directory steps on, a symlink or junction is spliced in.
-fn open_dir(parent: &[u8], name: &[u8]) -> io::Result<Step<Vec<u8>>> {
-    let p = join(parent, name);
-    let md = fs::symlink_metadata(os_path(&p))?;
-    if md.file_type().is_symlink() {
-        return Ok(Step::Link(readlink(&p)?));
-    }
-    if !md.is_dir() {
-        return Err(io::Error::from_raw_os_error(ERROR_DIRECTORY));
-    }
-    Ok(Step::Done(p))
+/// A directory of the walk: the root's own handle, or one the walk opened beneath it.
+#[derive(Debug)]
+pub(crate) enum Dir<'a> {
+    Root(BorrowedHandle<'a>),
+    Owned(File),
 }
 
-/// The final component: a symlink or junction is spliced in, anything else is given to
-/// `f`.
-fn follow<T>(parent: &[u8], name: &[u8], f: impl FnOnce(&[u8]) -> io::Result<T>) -> io::Result<Step<T>> {
-    let p = join(parent, name);
-    match fs::symlink_metadata(os_path(&p)) {
-        Ok(md) if md.file_type().is_symlink() => Ok(Step::Link(readlink(&p)?)),
-        _ => f(&p).map(Step::Done),
-    }
-}
-
-/// The final component opened by `options` as [`follow`] opens it, and never through a link
-/// put in its place after it looked (shards_ntfs::open_unfollowed): one found then is
-/// spliced in, as unix.rs's `open_file` splices one its openat(O_NOFOLLOW) finds, or the
-/// open's error stands where it is no link by then either.
-fn follow_open(parent: &[u8], name: &[u8], options: &OpenOptions) -> io::Result<Step<File>> {
-    let p = join(parent, name);
-    if let Ok(md) = fs::symlink_metadata(os_path(&p))
-        && md.file_type().is_symlink()
-    {
-        return Ok(Step::Link(readlink(&p)?));
-    }
-    match shards_ntfs::open_unfollowed(options, 0, &os_path(&p)) {
-        Err(e) if e.raw_os_error() == Some(shards_ntfs::STOPPED_ON_LINK) => {
-            readlink(&p).map(Step::Link).map_err(|_| e)
+impl Dir<'_> {
+    fn handle(&self) -> BorrowedHandle<'_> {
+        match self {
+            Dir::Root(h) => *h,
+            Dir::Owned(f) => f.as_handle(),
         }
-        opened => opened.map(Step::Done),
     }
+}
+
+/// A name of the walk as NTFS keeps it, UTF-16, as [`os_path`] makes a path of one; `.`,
+/// the directory itself, no name, which opens a directory's own file relative to its handle.
+fn wide(name: &[u8]) -> Vec<u16> {
+    if name == b"." {
+        return Vec::new();
+    }
+    String::from_utf8_lossy(name).encode_utf16().collect()
+}
+
+/// `name` in `dir`, opened as itself, a link not followed, with `access` beside its
+/// attributes ([`shards_ntfs::create_at`]).
+fn itself(dir: &Dir<'_>, name: &[u8], access: u32) -> io::Result<File> {
+    shards_ntfs::create_at(
+        dir.handle(),
+        &wide(name),
+        access,
+        SHARE_ALL,
+        FILE_OPEN,
+        FILE_OPEN_REPARSE_POINT,
+    )
+}
+
+/// What the link `h` holds open, as itself, is to, as std's `read_link` reads one
+/// (library/std/src/sys/fs/windows.rs, readlink): a symbolic link's or a junction's
+/// substitute name (MS-FSCC 2.1.2.4, 2.1.2.5), an absolute one's `\??\` made `\\?\`. Another
+/// reparse point, WSL's symlink among them, std reads no target of: refused as a link,
+/// ERROR_STOPPED_ON_SYMLINK.
+fn link_target(h: BorrowedHandle<'_>) -> io::Result<Vec<u8>> {
+    let refused = || io::Error::from_raw_os_error(shards_ntfs::STOPPED_ON_LINK);
+    let Some((tag, data)) = shards_ntfs::reparse(h).map_err(shards_ntfs::io_error)? else {
+        return Err(refused());
+    };
+    let half = |at: usize| -> Option<usize> {
+        let b = data.get(at..at.checked_add(2)?)?;
+        Some(usize::from(u16::from_le_bytes(<[u8; 2]>::try_from(b).ok()?)))
+    };
+    // A symbolic link's names follow its flags; a junction's, which has none, its lengths.
+    let (names, relative) = match tag {
+        IO_REPARSE_TAG_SYMLINK => {
+            let flags = data
+                .get(8..12)
+                .and_then(|b| <[u8; 4]>::try_from(b).ok())
+                .map(u32::from_le_bytes)
+                .ok_or_else(refused)?;
+            (12, flags & SYMLINK_FLAG_RELATIVE != 0)
+        }
+        IO_REPARSE_TAG_MOUNT_POINT => (8, false),
+        _ => return Err(refused()),
+    };
+    let start = names + half(0).ok_or_else(refused)?;
+    let end = start + half(2).ok_or_else(refused)?;
+    let units: Vec<u16> = data
+        .get(start..end)
+        .ok_or_else(refused)?
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|c| u16::from_le_bytes(*c))
+        .collect();
+    let target = String::from_utf16_lossy(&units);
+    match target.strip_prefix(r"\??\") {
+        Some(rest) if !relative => Ok(format!(r"\\?\{rest}").into_bytes()),
+        _ => Ok(target.into_bytes()),
+    }
+}
+
+/// What `name` in `dir` is a link to, where it is one; None where it is none.
+fn link_at(dir: &Dir<'_>, name: &[u8]) -> io::Result<Option<Vec<u8>>> {
+    let f = itself(dir, name, 0)?;
+    match shards_ntfs::reparse_of(f.as_handle())? {
+        Reparse::Link => link_target(f.as_handle()).map(Some),
+        _ => Ok(None),
+    }
+}
+
+/// `name` in `dir` opened with `access`, `disposition` and `options`, through no link
+/// (`shards_ntfs::open_unfollowed_at`): a link there is a step to its target, as Go's openat
+/// splices one its O_NOFOLLOW_ANY open meets (root_windows.go, openat and
+/// readReparseLinkAt), whether it was refused as a link or as a directory's link opened as
+/// a file or a file's as a directory. Any other error stands.
+fn opened(dir: &Dir<'_>, name: &[u8], access: u32, disposition: u32, options: u32) -> io::Result<Step<File>> {
+    match shards_ntfs::open_unfollowed_at(dir.handle(), &wide(name), access, SHARE_ALL, disposition, options)
+    {
+        Ok(f) => Ok(Step::Done(f)),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Err(e),
+        Err(e) => match link_at(dir, name) {
+            Ok(Some(target)) => Ok(Step::Link(target)),
+            _ => Err(e),
+        },
+    }
+}
+
+/// rootOpenDir: a directory relative to its parent's handle, through no link; a link is
+/// spliced in, anything else refused as Windows refuses it (ERROR_DIRECTORY).
+fn open_dir<'a>(dir: &Dir<'a>, name: &[u8]) -> io::Result<Step<Dir<'a>>> {
+    Ok(
+        match opened(dir, name, FILE_LIST_DIRECTORY, FILE_OPEN, FILE_DIRECTORY_FILE)? {
+            Step::Done(f) => Step::Done(Dir::Owned(f)),
+            Step::Link(target) => Step::Link(target),
+        },
+    )
+}
+
+/// Root.OpenFile(name, O_CREATE|O_WRONLY|O_TRUNC, perm)'s open of the last name in its
+/// directory: opened, or made, through no link, its attributes readable, which the open asks
+/// of its handle. [`Root::create`] empties it.
+fn create_in(dir: &Dir<'_>, name: &[u8]) -> io::Result<Step<File>> {
+    opened(
+        dir,
+        name,
+        FILE_GENERIC_WRITE | FILE_READ_ATTRIBUTES,
+        FILE_OPEN_IF,
+        FILE_NON_DIRECTORY_FILE,
+    )
+}
+
+/// The names a symbolic link to `target` keeps, as CreateSymbolicLinkW keeps them: a
+/// target of no volume (relative, or from its volume's root) as it is, both names, the link
+/// relative, as Go's rootSymlink marks one (os/root_windows.go: "CreateSymbolicLinkW appears
+/// to set the relative flag iff the target does not contain a volume name"); any other its
+/// full path, a volume-relative one made absolute as Go and CreateSymbolicLinkW make it,
+/// substituted in NT's namespace (`\??\`, a share's `\??\UNC\`) and shown as it is.
+fn link_names(target: &[u8]) -> (Vec<u16>, Vec<u16>, bool) {
+    let utf16 = |s: &str| s.encode_utf16().collect::<Vec<u16>>();
+    let given = String::from_utf8_lossy(target).into_owned();
+    if gopath::volume_name_len(Os::Windows, target) == 0 {
+        return (utf16(&given), utf16(&given), true);
+    }
+    let full = match gopath::is_abs(Os::Windows, target) {
+        true => given,
+        false => std::path::absolute(&given).map_or(given, |p| p.to_string_lossy().into_owned()),
+    };
+    let nt = if let Some(rest) = full.strip_prefix(r"\\?\").or_else(|| full.strip_prefix(r"\??\")) {
+        format!(r"\??\{rest}")
+    } else if let Some(rest) = full.strip_prefix(r"\\") {
+        format!(r"\??\UNC\{rest}")
+    } else {
+        format!(r"\??\{full}")
+    };
+    (utf16(&nt), utf16(&full), false)
+}
+
+/// removeAllFrom (go1.26.1 os/removeall_at.go) in `dir`'s handle: `name` opened as itself
+/// to be removed; a directory, no link, emptied first, each of its names removed relative to
+/// a handle of its own (opened by no name relative to the first, the same directory however
+/// it was moved), then removed itself; a link or anything else removed itself. Nothing
+/// followed; a name already gone is none.
+fn remove_all_at(dir: BorrowedHandle<'_>, name: &[u16]) -> io::Result<()> {
+    if name.is_empty() || name == [0x2e, 0x2e] {
+        return Err(io::Error::from(io::ErrorKind::InvalidInput));
+    }
+    let gone = match shards_ntfs::create_at(dir, name, DELETE, SHARE_ALL, FILE_OPEN, FILE_OPEN_REPARSE_POINT)
+    {
+        Ok(f) => f,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e),
+    };
+    let (attributes, _) = shards_ntfs::attribute_tag(gone.as_handle())?;
+    if attributes & FILE_ATTRIBUTE_DIRECTORY != 0
+        && shards_ntfs::reparse_of(gone.as_handle())? != Reparse::Link
+    {
+        let listed = shards_ntfs::create_at(
+            gone.as_handle(),
+            &[],
+            FILE_LIST_DIRECTORY,
+            SHARE_ALL,
+            FILE_OPEN,
+            FILE_DIRECTORY_FILE,
+        )?;
+        for entry in shards_ntfs::names(listed.as_handle())? {
+            remove_all_at(listed.as_handle(), &entry)?;
+        }
+    }
+    shards_ntfs::delete(gone.as_handle())
 }
 
 fn system_time(t: Time) -> SystemTime {
@@ -244,22 +417,33 @@ fn system_time(t: Time) -> SystemTime {
     UNIX_EPOCH.checked_add(d).unwrap_or(UNIX_EPOCH)
 }
 
-/// The destination of an unpack.
+/// The destination of an unpack: its name and its directory's handle, which every walk
+/// starts from (Go's os.Root).
 #[derive(Debug)]
 pub(crate) struct Root {
     name: Vec<u8>,
+    dir: File,
 }
 
 impl Root {
+    /// os.OpenRoot: the directory at `name`, followed as given, held open.
     pub(crate) fn open(name: &[u8]) -> Result<Root, crate::Error> {
-        let md = fs::metadata(os_path(name)).map_err(|e| crate::Error::path("open", name, &e))?;
+        let dir = OpenOptions::new()
+            .read(true)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+            .open(os_path(name))
+            .map_err(|e| crate::Error::path("open", name, &e))?;
+        let md = dir.metadata().map_err(|e| crate::Error::path("open", name, &e))?;
         if !md.is_dir() {
             return Err(crate::Error::other(format!(
                 "open {}: not a directory",
                 String::from_utf8_lossy(name)
             )));
         }
-        Ok(Root { name: name.to_vec() })
+        Ok(Root {
+            name: name.to_vec(),
+            dir,
+        })
     }
 
     pub(crate) fn name(&self) -> &[u8] {
@@ -269,50 +453,59 @@ impl Root {
     fn walk<T>(
         &self,
         name: &[u8],
-        mut f: impl FnMut(&[u8], &[u8]) -> io::Result<Step<T>>,
+        mut f: impl FnMut(&Dir<'_>, &[u8]) -> io::Result<Step<T>>,
     ) -> Result<T, WalkError> {
-        let root = self.name.clone();
         root::walk(
             Os::Windows,
-            || root.clone(),
+            || Dir::Root(self.dir.as_handle()),
             name,
-            |p: &Vec<u8>, n: &[u8]| open_dir(p, n),
+            open_dir,
             |dir, last| f(dir, last),
         )
     }
 
     pub(crate) fn lstat(&self, name: &[u8]) -> Result<Stat, WalkError> {
-        self.walk(name, |dir, last| lstat(&join(dir, last)).map(Step::Done))
+        self.walk(name, |dir, last| stat_of(&itself(dir, last, 0)?).map(Step::Done))
     }
 
+    /// rootStat: a final link followed inside the root.
     pub(crate) fn stat(&self, name: &[u8]) -> Result<Stat, WalkError> {
-        self.walk(name, |dir, last| follow(dir, last, lstat))
+        self.walk(name, |dir, last| {
+            let f = itself(dir, last, 0)?;
+            if shards_ntfs::reparse_of(f.as_handle())? == Reparse::Link {
+                return link_target(f.as_handle()).map(Step::Link);
+            }
+            stat_of(&f).map(Step::Done)
+        })
     }
 
+    /// Mkdirat: made in its parent's handle.
     pub(crate) fn mkdir(&self, name: &[u8], _: u32) -> Result<(), WalkError> {
         self.walk(name, |dir, last| {
-            fs::create_dir(os_path(&join(dir, last))).map(Step::Done)
+            shards_ntfs::create_at(
+                dir.handle(),
+                &wide(last),
+                FILE_GENERIC_READ,
+                SHARE_ALL,
+                FILE_CREATE,
+                FILE_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT,
+            )
+            .map(|_| Step::Done(()))
         })
     }
 
     /// Root.Open: read only, a final symlink followed inside the root.
     pub(crate) fn open_read(&self, name: &[u8]) -> Result<File, WalkError> {
-        let mut options = OpenOptions::new();
-        options.read(true);
-        self.walk(name, |dir, last| follow_open(dir, last, &options))
+        self.walk(name, |dir, last| {
+            opened(dir, last, FILE_GENERIC_READ, FILE_OPEN, FILE_NON_DIRECTORY_FILE)
+        })
     }
 
     /// Root.OpenFile(name, O_CREATE|O_WRONLY|O_TRUNC, perm): opened, or made, then emptied,
     /// as Go's Openat empties it (internal/syscall/windows/at_windows.go), the open never
-    /// truncating what may be a link ([`follow_open`]). Its attributes readable, which the
-    /// open asks of its handle.
+    /// truncating what may be a link ([`create_in`]).
     pub(crate) fn create(&self, name: &[u8], _: u32) -> Result<File, WalkError> {
-        let mut options = OpenOptions::new();
-        options
-            .write(true)
-            .access_mode(FILE_GENERIC_WRITE | FILE_READ_ATTRIBUTES)
-            .create(true);
-        let file = self.walk(name, |dir, last| follow_open(dir, last, &options))?;
+        let file = self.walk(name, create_in)?;
         file.set_len(0)?;
         Ok(file)
     }
@@ -321,21 +514,20 @@ impl Root {
         Ok(())
     }
 
-    /// chtimes (time_windows.go): access and modification times, and the creation time
-    /// set to the modification time, never through a reparse point.
+    /// chtimesat (root_windows.go): access and modification times, and the creation time
+    /// set to the modification time (time_windows.go), on the name itself; a final link
+    /// followed inside the root.
     pub(crate) fn chtimes(&self, name: &[u8], atime: Time, mtime: Time) -> Result<(), WalkError> {
         self.walk(name, |dir, last| {
-            follow(dir, last, |p| {
-                let f = OpenOptions::new()
-                    .access_mode(FILE_WRITE_ATTRIBUTES)
-                    .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
-                    .open(os_path(p))?;
-                let times = FileTimes::new()
-                    .set_accessed(system_time(atime))
-                    .set_modified(system_time(mtime))
-                    .set_created(system_time(mtime));
-                f.set_times(times)
-            })
+            let f = itself(dir, last, FILE_WRITE_ATTRIBUTES)?;
+            if shards_ntfs::reparse_of(f.as_handle())? == Reparse::Link {
+                return link_target(f.as_handle()).map(Step::Link);
+            }
+            let times = FileTimes::new()
+                .set_accessed(system_time(atime))
+                .set_modified(system_time(mtime))
+                .set_created(system_time(mtime));
+            f.set_times(times).map(Step::Done)
         })
     }
 
@@ -344,7 +536,9 @@ impl Root {
     }
 
     /// rootSymlink (root_windows.go): a directory link when a relative target names a
-    /// directory in the root, a file link otherwise; the target stored as it is.
+    /// directory in the root, a file link otherwise, made in its parent's handle
+    /// (`shards_ntfs::host_symlink_at`, Go's Symlinkat); its names as CreateSymbolicLinkW
+    /// keeps them ([`link_names`]).
     pub(crate) fn symlink(&self, target: &[u8], name: &[u8]) -> Result<(), WalkError> {
         let mut is_dir = false;
         if gopath::volume_name_len(Os::Windows, target) == 0
@@ -358,59 +552,55 @@ impl Root {
             };
             is_dir = self.stat(&dest).is_ok_and(|st| st.kind == FileKind::Dir);
         }
-        let t = os_path(target);
+        let (substitute, print, relative) = link_names(target);
         self.walk(name, |dir, last| {
-            let p = os_path(&join(dir, last));
-            let r = if is_dir {
-                std::os::windows::fs::symlink_dir(&t, &p)
-            } else {
-                std::os::windows::fs::symlink_file(&t, &p)
-            };
-            r.map(Step::Done)
+            shards_ntfs::host_symlink_at(dir.handle(), &wide(last), &substitute, &print, is_dir, relative)
+                .map(Step::Done)
         })
     }
 
+    /// Root.Link: both names walked inside the root; a final link of `old` is linked
+    /// itself (Go's Linkat, FILE_OPEN_REPARSE_POINT).
     pub(crate) fn link(&self, old: &[u8], new: &[u8]) -> Result<(), WalkError> {
-        let old_path = self.walk(old, |dir, last| Ok(Step::Done(join(dir, last))))?;
-        self.walk(new, |dir, last| {
-            fs::hard_link(os_path(&old_path), os_path(&join(dir, last))).map(Step::Done)
-        })
+        self.walk(old, |odir, olast| {
+            let r = self.walk(new, |ndir, nlast| {
+                shards_ntfs::hard_link_at(odir.handle(), &wide(olast), ndir.handle(), &wide(nlast))
+                    .map(Step::Done)
+            });
+            Ok(Step::Done(r))
+        })?
     }
 
-    /// The names in the directory `name` (the root itself for `.`).
+    /// The names in the directory `name` (the root itself for `.`), never following it,
+    /// read through its handle.
     pub(crate) fn read_dir(&self, name: &[u8]) -> Result<Vec<Vec<u8>>, WalkError> {
-        let list = |p: &[u8]| -> io::Result<Vec<Vec<u8>>> {
-            fs::read_dir(os_path(p))?
-                .map(|e| e.map(|e| path_bytes(Path::new(&e.file_name()))))
-                .collect()
+        let list = |h: BorrowedHandle<'_>| -> io::Result<Vec<Vec<u8>>> {
+            Ok(shards_ntfs::names(h)?
+                .iter()
+                .map(|n| String::from_utf16_lossy(n).into_bytes())
+                .collect())
         };
         if name.is_empty() || name == b"." {
-            return Ok(list(&self.name)?);
+            return Ok(list(self.dir.as_handle())?);
         }
-        self.walk(name, |dir, last| list(&join(dir, last)).map(Step::Done))
+        self.walk(name, |dir, last| {
+            let d = shards_ntfs::open_unfollowed_at(
+                dir.handle(),
+                &wide(last),
+                FILE_LIST_DIRECTORY,
+                SHARE_ALL,
+                FILE_OPEN,
+                FILE_DIRECTORY_FILE,
+            )?;
+            list(d.as_handle()).map(Step::Done)
+        })
     }
 
-    /// RemoveAll: links themselves removed, never followed.
+    /// Root.RemoveAll: links themselves removed, never followed ([`remove_all_at`]); a
+    /// missing name is no error.
     pub(crate) fn remove_all(&self, name: &[u8]) -> Result<(), WalkError> {
         let r = self.walk(name, |dir, last| {
-            let p = os_path(&join(dir, last));
-            let md = match fs::symlink_metadata(&p) {
-                Ok(md) => md,
-                Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Step::Done(())),
-                Err(e) => return Err(e),
-            };
-            let r = if md.file_type().is_symlink() {
-                if md.file_attributes() & FILE_ATTRIBUTE_DIRECTORY != 0 {
-                    fs::remove_dir(&p)
-                } else {
-                    fs::remove_file(&p)
-                }
-            } else if md.is_dir() {
-                fs::remove_dir_all(&p)
-            } else {
-                fs::remove_file(&p)
-            };
-            r.map(Step::Done)
+            remove_all_at(dir.handle(), &wide(last)).map(Step::Done)
         });
         match r {
             Err(e) if e.is_not_found() => Ok(()),
@@ -449,5 +639,125 @@ impl Root {
         _: &[u8],
     ) -> Result<io::Result<()>, WalkError> {
         Ok(Ok(()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::Cell;
+    use std::os::windows::ffi::OsStrExt as _;
+
+    use super::*;
+
+    /// A junction at `at` to the directory `to`, which Windows lets any user make: an empty
+    /// directory given a MountPointReparseBuffer, its NT and print names' offsets and
+    /// lengths, then each name NUL-terminated (MS-FSCC 2.1.2.5).
+    fn junction(at: &Path, to: &Path) {
+        fs::create_dir(at).unwrap();
+        let f = OpenOptions::new()
+            .access_mode(FILE_GENERIC_WRITE)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(at)
+            .unwrap();
+        let full = fs::canonicalize(to).unwrap();
+        // Its verbatim prefix, \\?\, left off.
+        let print: Vec<u16> = full.as_os_str().encode_wide().skip(4).collect();
+        let nt: Vec<u16> = r"\??\".encode_utf16().chain(print.iter().copied()).collect();
+        let bytes = |n: &[u16]| u16::try_from(n.len() * 2).unwrap();
+        let mut data = Vec::new();
+        for word in [0, bytes(&nt), bytes(&nt) + 2, bytes(&print)] {
+            data.extend(word.to_le_bytes());
+        }
+        for c in nt.iter().chain([&0]).chain(&print).chain([&0]) {
+            data.extend(c.to_le_bytes());
+        }
+        shards_ntfs::set_reparse(f.as_handle(), IO_REPARSE_TAG_MOUNT_POINT, &data).unwrap();
+    }
+
+    /// A directory of the unpack swapped for a junction out of the root after the walk
+    /// opened it, before the file below it is made: the file is made in the directory the
+    /// walk opened, wherever it was moved, and nothing outside the root; an entry walked
+    /// after the swap meets the junction, whose absolute target escapes the root, and is
+    /// refused. A path's check before its use, as this module walked before, followed it.
+    #[test]
+    fn a_directory_swapped_for_a_link_mid_unpack_leads_nowhere_outside() {
+        let tmp = shards_testdir::TempDir::new("archive-swap").unwrap();
+        let (dest, outside) = (tmp.join("root"), tmp.join("outside"));
+        fs::create_dir_all(dest.join("a")).unwrap();
+        fs::create_dir(&outside).unwrap();
+        let root = Root::open(&path_bytes(&dest)).unwrap();
+        let swapped = Cell::new(false);
+        let mut file = root::walk(
+            Os::Windows,
+            || Dir::Root(root.dir.as_handle()),
+            b"a\\f",
+            |dir, name| {
+                let step = open_dir(dir, name);
+                if !swapped.replace(true) {
+                    fs::rename(dest.join("a"), dest.join("moved")).unwrap();
+                    junction(&dest.join("a"), &outside);
+                }
+                step
+            },
+            create_in,
+        )
+        .unwrap();
+        io::Write::write_all(&mut file, b"in").unwrap();
+        drop(file);
+        assert!(swapped.get());
+        assert_eq!(fs::read(dest.join("moved").join("f")).unwrap(), b"in");
+        assert_eq!(
+            fs::read_dir(&outside).unwrap().count(),
+            0,
+            "written outside the root"
+        );
+
+        let e = root.create(b"a\\g", 0o644).unwrap_err();
+        assert!(e.escapes(), "{e:?}");
+        assert!(root.mkdir(b"a\\d", 0o755).unwrap_err().escapes());
+        assert_eq!(
+            fs::read_dir(&outside).unwrap().count(),
+            0,
+            "written outside the root"
+        );
+        // The junction itself goes, never what it leads to.
+        fs::write(outside.join("kept"), b"kept").unwrap();
+        root.remove_all(b"a").unwrap();
+        assert!(fs::symlink_metadata(dest.join("a")).is_err());
+        assert_eq!(fs::read(outside.join("kept")).unwrap(), b"kept");
+    }
+
+    /// A link within the root is still spliced in as go-archive's walk splices it: a file
+    /// made through a junction to a directory of the root is made there; a removal of
+    /// a tree holding a junction removes the junction alone.
+    #[test]
+    fn a_link_within_the_root_is_followed_inside_it() {
+        let tmp = shards_testdir::TempDir::new("archive-inside").unwrap();
+        let dest = tmp.join("root");
+        fs::create_dir_all(dest.join("real")).unwrap();
+        let root = Root::open(&path_bytes(&dest)).unwrap();
+        root.symlink(b"real", b"rel").map_or_else(
+            // ERROR_PRIVILEGE_NOT_HELD: no Developer Mode, not elevated.
+            |e| {
+                assert!(
+                    matches!(&e, WalkError::Os(o) if o.raw_os_error() == Some(1314)),
+                    "{e:?}"
+                )
+            },
+            |()| {
+                let mut f = root.create(b"rel\\f", 0o644).unwrap();
+                io::Write::write_all(&mut f, b"x").unwrap();
+                drop(f);
+                assert_eq!(fs::read(dest.join("real").join("f")).unwrap(), b"x");
+                assert_eq!(root.lstat(b"rel").unwrap().kind, FileKind::Symlink);
+                assert_eq!(root.stat(b"rel").unwrap().kind, FileKind::Dir);
+            },
+        );
+        fs::create_dir(dest.join("tree")).unwrap();
+        junction(&dest.join("tree").join("j"), &dest.join("real"));
+        fs::write(dest.join("real").join("kept"), b"kept").unwrap();
+        root.remove_all(b"tree").unwrap();
+        assert!(fs::symlink_metadata(dest.join("tree")).is_err());
+        assert_eq!(fs::read(dest.join("real").join("kept")).unwrap(), b"kept");
     }
 }

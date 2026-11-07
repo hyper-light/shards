@@ -428,9 +428,15 @@ impl Stage {
         dir.join("tree")
     }
 
-    /// Takes one version of the regular file `src`.
+    /// Takes one version of the regular file at the path `src`, its last name never a link
+    /// followed.
     pub fn take(&mut self, src: &Path) -> io::Result<(Snapshot, Taken)> {
-        let f = open(src)?;
+        self.take_opened(open(src)?, src)
+    }
+
+    /// Takes one version of the regular file `f`, opened as [`Beneath::open`] opens one,
+    /// which `src` names.
+    pub fn take_opened(&mut self, f: fs::File, src: &Path) -> io::Result<(Snapshot, Taken)> {
         #[cfg(target_os = "macos")]
         if let Some(taken) = self.cloned(&f, src)? {
             return Ok(taken);
@@ -465,7 +471,12 @@ impl Stage {
     /// [`Stage::still`] says so of it once a write under way has ended, which the clone of
     /// its directory waits for ([`Stage::clone_dir`]).
     pub fn read(&mut self, src: &Path) -> io::Result<(Snapshot, Taken, Seen)> {
-        let f = open(src)?;
+        self.read_opened(open(src)?, src)
+    }
+
+    /// [`Stage::read`] of the regular file `f`, opened as [`Beneath::open`] opens one,
+    /// which `src` names.
+    pub fn read_opened(&mut self, f: fs::File, src: &Path) -> io::Result<(Snapshot, Taken, Seen)> {
         let meta = f.metadata()?;
         if !meta.is_file() {
             return Err(Self::not_regular(src));
@@ -544,16 +555,19 @@ impl Stage {
         taken.map(Some)
     }
 
-    /// Clones the directory `src`, all it holds, to `rel` in the stage's [`tree`](Self::tree)
-    /// at once, as the barrier [`Stage::read`]'s files wait on: the clone of each file in
-    /// it waits out a write under way, whose end its times then show (PM M242). False
-    /// where no clone of it is made: on macOS's file systems but APFS or from another
-    /// volume than the stage's (clonefile(2), ENOTSUP and EXDEV), with a file or directory
-    /// in it this process may not read (EACCES, PM M242); what was made of it goes with
-    /// the stage.
+    /// Clones the directory `rel` of the tree `beneath` opens, all it holds, to `rel` in the
+    /// stage's [`tree`](Self::tree) at once, as the barrier [`Stage::read`]'s files wait on:
+    /// the clone of each file in it waits out a write under way, whose end its times then
+    /// show (PM M242). False where no clone of it is made: on macOS's file systems but APFS
+    /// or from another volume than the stage's (clonefile(2), ENOTSUP and EXDEV), with a file
+    /// or directory in it this process may not read (EACCES, PM M242); what was made of it
+    /// goes with the stage. A directory below the root is cloned from its parent's
+    /// descriptor (clonefileat(2)), opened beneath the root as its files are, so no
+    /// directory a link replaced since the walk is cloned through it.
     #[cfg(target_os = "macos")]
-    pub fn clone_dir(&mut self, src: &Path, rel: &[u8]) -> io::Result<bool> {
+    pub fn clone_dir(&mut self, beneath: &mut Beneath, rel: &[u8]) -> io::Result<bool> {
         use std::ffi::CString;
+        use std::os::fd::AsRawFd;
         use std::os::unix::ffi::OsStrExt;
         // <sys/clonefile.h>: links cloned as links; the caller's ownership, as a user's
         // clone is given anyway.
@@ -568,16 +582,23 @@ impl Stage {
         if let Some(parent) = dst.parent() {
             fs::create_dir_all(parent)?;
         }
-        let c =
-            |p: &Path| CString::new(p.as_os_str().as_bytes()).map_err(|_| io::Error::other("NUL in path"));
-        let (s, d) = (c(src)?, c(&dst)?);
-        // SAFETY: both paths are NUL-terminated.
-        Ok(unsafe { libc::clonefile(s.as_ptr(), d.as_ptr(), CLONE_NOFOLLOW | CLONE_NOOWNERCOPY) } == 0)
+        let c = |p: &[u8]| CString::new(p).map_err(|_| io::Error::other("NUL in path"));
+        let d = c(dst.as_os_str().as_bytes())?;
+        let flags = CLONE_NOFOLLOW | CLONE_NOOWNERCOPY;
+        if rel.is_empty() {
+            let s = c(beneath.root.as_os_str().as_bytes())?;
+            // SAFETY: both paths are NUL-terminated.
+            return Ok(unsafe { libc::clonefile(s.as_ptr(), d.as_ptr(), flags) } == 0);
+        }
+        let (dir, name) = beneath.parent(rel)?;
+        let s = c(name)?;
+        // SAFETY: a descriptor `beneath` holds open, and both names NUL-terminated.
+        Ok(unsafe { libc::clonefileat(dir.as_raw_fd(), s.as_ptr(), libc::AT_FDCWD, d.as_ptr(), flags) } == 0)
     }
 
     /// Elsewhere no directory is cloned at once: its files are taken one at a time.
     #[cfg(not(target_os = "macos"))]
-    pub fn clone_dir(&mut self, _: &Path, _: &[u8]) -> io::Result<bool> {
+    pub fn clone_dir(&mut self, _: &mut Beneath, _: &[u8]) -> io::Result<bool> {
         Ok(false)
     }
 }
@@ -619,6 +640,160 @@ fn open(src: &Path) -> io::Result<fs::File> {
     let mut options = fs::File::options();
     options.read(true).share_mode(FILE_SHARE_READ);
     shards_ntfs::open_unfollowed(&options, 0, src)
+}
+
+/// A tree's files opened beneath its root ([`Tree::beneath`]), through no link anywhere
+/// below it: each directory under the root opened in the one above it, never following a
+/// symlink (openat(2) O_NOFOLLOW|O_DIRECTORY; on Windows NtCreateFile relative to its
+/// parent's handle, a link refused, `shards_ntfs::open_unfollowed_at`), and the file in the
+/// last as [`Stage::take`] opens one (O_NOFOLLOW, Windows' read sharing). So a directory of
+/// the context a link replaced after the walk is refused as a link, where a path's open
+/// follows every name but its last (fsutil's own `fs.Open`, `os.Open(filepath.Join(root,
+/// p))`, which buildx's `fsutil.NewFS` gives, follows them all). A directory renamed after
+/// it was opened is the one the walk saw, wherever it went. The directory of the last file
+/// opened is held, as the walk sends a directory's files together, so a file's open is one
+/// lookup of one name; each name a plain one, never empty, `.` or `..`.
+///
+/// Neither openat2(2) (RESOLVE_BENEATH, Linux 5.6) nor macOS's O_NOFOLLOW_ANY is needed:
+/// one openat of each directory's name, every kernel and both systems alike, keeps every
+/// name of the walk to the root's own directories.
+#[derive(Debug)]
+pub struct Beneath {
+    /// The root's path, which macOS clones the root's whole directory by.
+    #[cfg(target_os = "macos")]
+    root: PathBuf,
+    dir: fs::File,
+    /// The directory below the root the last file opened is in: its name relative to the
+    /// root and its handle.
+    held: Option<(Vec<u8>, fs::File)>,
+    /// Whether its names are a Linux tree's on NTFS ([`Tree`]), Windows' alone.
+    linux: bool,
+}
+
+impl Beneath {
+    /// The directory `rel`'s last name is in, opened a name at a time from the root (or
+    /// held from the last open), and that name.
+    fn parent<'a>(&mut self, rel: &'a [u8]) -> io::Result<(&fs::File, &'a [u8])> {
+        let (dir, last) = match rel.iter().rposition(|&c| c == b'/') {
+            Some(i) => (
+                rel.get(..i).unwrap_or_default(),
+                rel.get(i + 1..).unwrap_or_default(),
+            ),
+            None => (b"".as_slice(), rel),
+        };
+        plain(last)?;
+        if dir.is_empty() {
+            return Ok((&self.dir, last));
+        }
+        if self.held.as_ref().is_none_or(|(held, _)| held.as_slice() != dir) {
+            self.held = None;
+            let mut at: Option<fs::File> = None;
+            for name in dir.split(|&c| c == b'/') {
+                plain(name)?;
+                at = Some(open_dir_in(at.as_ref().unwrap_or(&self.dir), name, self.linux)?);
+            }
+            self.held = at.map(|f| (dir.to_vec(), f));
+        }
+        match &self.held {
+            Some((_, f)) => Ok((f, last)),
+            None => Ok((&self.dir, last)),
+        }
+    }
+
+    /// The regular file `rel` (slash-separated, as the walk names it) opened beneath the
+    /// root, to be taken ([`Stage::take_opened`]).
+    pub fn open(&mut self, rel: &[u8]) -> io::Result<fs::File> {
+        let linux = self.linux;
+        let (dir, last) = self.parent(rel)?;
+        open_in(dir, last, linux)
+    }
+}
+
+/// `name`, if it names an entry of a directory and no more.
+fn plain(name: &[u8]) -> io::Result<()> {
+    if name.is_empty() || name == b"." || name == b".." || name.contains(&0) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{:?}: not a plain name", String::from_utf8_lossy(name)),
+        ));
+    }
+    Ok(())
+}
+
+/// openat(2) of `name` in `dir`, retried where a signal interrupts it.
+#[cfg(unix)]
+fn openat(dir: &fs::File, name: &[u8], flags: libc::c_int) -> io::Result<fs::File> {
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+    let c = std::ffi::CString::new(name).map_err(|_| io::Error::other("NUL in name"))?;
+    loop {
+        // SAFETY: a NUL-terminated name and a descriptor `dir` holds open.
+        let fd = unsafe { libc::openat(dir.as_raw_fd(), c.as_ptr(), flags | libc::O_CLOEXEC) };
+        if fd >= 0 {
+            // SAFETY: a descriptor openat just opened, owned by nothing else.
+            return Ok(fs::File::from(unsafe { OwnedFd::from_raw_fd(fd) }));
+        }
+        let e = io::Error::last_os_error();
+        if e.raw_os_error() != Some(libc::EINTR) {
+            return Err(e);
+        }
+    }
+}
+
+/// The directory `name` in `dir`, never through a symlink: one there is refused, ELOOP or
+/// ENOTDIR (open(2): O_NOFOLLOW, O_DIRECTORY).
+#[cfg(unix)]
+fn open_dir_in(dir: &fs::File, name: &[u8], _linux: bool) -> io::Result<fs::File> {
+    openat(dir, name, libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW)
+}
+
+/// The file `name` in `dir`, as [`open`] opens a path's last name.
+#[cfg(unix)]
+fn open_in(dir: &fs::File, name: &[u8], _linux: bool) -> io::Result<fs::File> {
+    openat(dir, name, libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK)
+}
+
+/// `name` as NTFS keeps it: a Linux tree's as [`shards_ntfs::nt_name`] escapes it, a host
+/// tree's as the walk read it ([`name_bytes`]).
+#[cfg(windows)]
+fn nt_name(name: &[u8], linux: bool) -> io::Result<Vec<u16>> {
+    if linux {
+        return shards_ntfs::nt_name(name).map_err(shards_ntfs::io_error);
+    }
+    Ok(String::from_utf8_lossy(name).encode_utf16().collect())
+}
+
+/// The directory `name` in `dir`, relative to its handle and through no link: one there
+/// refused, ERROR_STOPPED_ON_SYMLINK (`shards_ntfs::open_unfollowed_at`).
+#[cfg(windows)]
+fn open_dir_in(dir: &fs::File, name: &[u8], linux: bool) -> io::Result<fs::File> {
+    use std::os::windows::io::AsHandle as _;
+    use windows_sys::Wdk::Storage::FileSystem::{FILE_DIRECTORY_FILE, FILE_OPEN};
+    use windows_sys::Win32::Storage::FileSystem::{FILE_LIST_DIRECTORY, FILE_TRAVERSE};
+    shards_ntfs::open_unfollowed_at(
+        dir.as_handle(),
+        &nt_name(name, linux)?,
+        FILE_LIST_DIRECTORY | FILE_TRAVERSE,
+        shards_ntfs::SHARE_ALL,
+        FILE_OPEN,
+        FILE_DIRECTORY_FILE,
+    )
+}
+
+/// The file `name` in `dir`, as [`open`] opens a path's last name: through no link,
+/// sharing reads alone, a directory refused as CreateFileW refuses one opened as a file.
+#[cfg(windows)]
+fn open_in(dir: &fs::File, name: &[u8], linux: bool) -> io::Result<fs::File> {
+    use std::os::windows::io::AsHandle as _;
+    use windows_sys::Wdk::Storage::FileSystem::{FILE_NON_DIRECTORY_FILE, FILE_OPEN};
+    use windows_sys::Win32::Storage::FileSystem::{FILE_GENERIC_READ, FILE_SHARE_READ};
+    shards_ntfs::open_unfollowed_at(
+        dir.as_handle(),
+        &nt_name(name, linux)?,
+        FILE_GENERIC_READ,
+        FILE_SHARE_READ,
+        FILE_OPEN,
+        FILE_NON_DIRECTORY_FILE,
+    )
 }
 
 /// What a source was as its taking began, which it must still be once taken.
@@ -930,6 +1105,34 @@ impl Tree {
         {
             false
         }
+    }
+
+    /// Its files opened beneath its root, held open from now ([`Beneath`]). The root itself
+    /// is followed as given, as `eval_symlinks` resolved it before the walk.
+    pub fn beneath(&self) -> io::Result<Beneath> {
+        let mut options = fs::File::options();
+        options.read(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt as _;
+            options.custom_flags(libc::O_DIRECTORY);
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt as _;
+            use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_BACKUP_SEMANTICS;
+            options.custom_flags(FILE_FLAG_BACKUP_SEMANTICS);
+        }
+        Ok(Beneath {
+            #[cfg(target_os = "macos")]
+            root: self.root.clone(),
+            dir: options.open(&self.root)?,
+            held: None,
+            #[cfg(windows)]
+            linux: self.linux,
+            #[cfg(not(windows))]
+            linux: false,
+        })
     }
 
     /// A path below the root from its slash-separated relative name.
