@@ -4262,8 +4262,11 @@ terminal that went away), and checks a client's enrollment again for each comman
 `shards remove client` ends its access at once. A join's refusal is the same whatever made
 it fail. The client's side (`client.rs`, `context.rs`) refuses here what a context does not
 carry yet, the client's terminal and files, read by shards' own parser of each command (a
-flag past another's value included); and where no daemon answers, it says so once QUIC's
-handshake gives up, the idle bound. Tested: `crates/remote` (raw keys pinned and refused, the
+flag past another's value included); and where no daemon answers, it says so once its
+handshake has not ended within the idle bound, 10 s, which its driver holds it to. A
+connection that has done its handshake lives while its peer is heard, its transport's idle
+timeout 100 s since the last packet (D176 part 6, "Over a slow link": 10 s of silence ended
+2 of the first 20 moves over Wi-Fi). Tested: `crates/remote` (raw keys pinned and refused, the
 frames, an invitation's file and proof, and `tests/loopback.rs`: a join, its refusals, and
 commands' output, stdin and 8 MiB crossing whole over loopback); `tests/context.rs`, two
 homes on this machine: no invitation without a listening daemon; an invitation private and
@@ -9704,17 +9707,107 @@ and makes an invitation for each of the other's tests (`invite`); the one moved 
 `move`s N of each mode to it and runs the tests of another machine (`e2e`); then `stop`.
 Whatever the network, the move is the context's: QUIC under TLS 1.3, each side's key pinned
 by the other and the invitation's secret bound to the session (D180), the listening daemon
-serving only the clients it enrolled. A move between two machines has not yet run, on
-either path (Not yet).
+serving only the clients it enrolled.
+
+**Over a slow link.** The first moves between two machines ran 2026-11-07, two M4 Max Mac
+Studios joined by 2.4 GHz 802.11n Wi-Fi (about 1.3 MB/s in all; raw TCP carried 0.8 MB/s
+beside the move's QUIC at 0.55 MB/s), cold, n 20, alpine:3.20. 18 moved: saved at about
+0.11 s, ready there at about 0.2 s, `sent` at 65 to 248 s (94 s at p50), resumed 0.1 s
+after. 2 ended mid-send, one "the connection ... ended: timed out", the other "reset by
+peer", each going on here as it should. What changed for them:
+
+- **A connection lives while it is heard** (`shards_remote::tls::QUIET`, net.rs
+  `Liveness`). Both ends were QUIC's idle timeout (RFC 9000 §10.1), 10 s, the bound a
+  client waits for a daemon's handshake (`IDLE`), which also ended a connection carrying a
+  move whose peer went unheard that long: "timed out" its expiry here, "reset by peer" the
+  other daemon's stateless reset (§10.3) of a connection it had let go at its own. Every
+  packet the peer sends restarts it, each acknowledgment of the stream's bytes among them, so
+  only silence ends it, and on this link a TCP connection rode out what 10 s of silence
+  ended. An established connection's bound is now 100 s, RFC 1122 §4.2.3.5's floor for TCP
+  giving up on data it has heard nothing of (R2, "at least 100 seconds"; Linux waits 924.6 s,
+  ip-sysctl `tcp_retries2`); its handshake is still held to 10 s, by the driver, so that a
+  client of an address no daemon answers at is told as soon as before
+  (`no_daemon_answering_is_told_at_the_handshakes_bound`, tests/loopback.rs), as is a
+  stranger that has not joined (server.rs). The keep-alives stay at a quarter of 10 s, as
+  §10.1.2 has a peer that awaits an answer send PINGs, more often than the 30 s it finds
+  most middleboxes keep a UDP flow's state for. A connection takes the lesser of the two
+  sides' bounds, so both machines need this build. No other deadline is on the stream's
+  path: the CLI's pipes and the daemons' reads and writes block as the link lets them
+  (cli/moves.rs, daemon/moves.rs, daemon/remote.rs `copy_step`); `running_there`'s
+  minute of asking whether a restore with no answer runs there (twelve asks, 5 s apart) is
+  after the stream, and leaves the microVM held here, saved, saying so, never in two places.
+- **What a move sends**, cold: the move's stream (`Writer`), its plan, then its directory
+  but its other snapshots and its kept layer, its snapshot's state, memory, layer and swap
+  among it; its volumes; and the files its snapshot restores against that the other machine
+  lacks (none here: "0 of its 1 files sent", the image's root filesystem found there by its
+  ChainID). Each file goes as the runs of it that hold data (SEEK_DATA), and its memory file
+  holds only the pages its guest touched that are not all zeros (`GuestMemory::save`), so no
+  untouched RAM and no zero page of RAM crosses; a run's zero pages of a layer or swap did,
+  and nothing was compressed. A live move's rounds: every page not all zeros first
+  (`each_used`), then each page written since, whole.
+- **The stream packed for the link** (`crate::packing`): cut into frames of 1 MiB, each sent
+  as zstd where that is smaller, else as it is, through shards-zstd (klauspost's encoder,
+  which layers are compressed with) and read back by ruzstd, both already in the workspace;
+  frames of 1 MiB of real logs keep 0.07 to 0.10 points more of their size than the whole
+  compressed at once (PM M231).
+  Compression overlaps the link and its effort follows what the link and the processor
+  leave room for, as AdOC's does (Jeannot, Knutsson and Björkman, "Adaptive Online Data
+  Compression", HPDC 2002: the slower the network, the slower and better the compressor;
+  compressing before sending loses on a fast link). Here the level follows who waits: a
+  frame for which the packer finds the queue of two ahead of the link full, and waits for
+  the link longer than the next level took more to compress a frame as it last did (or
+  that level untried), sends the next a level up, to klauspost's best; one the reader
+  waited for, compressing having taken the packer longer than reading it, a level down, to
+  none, as on a link faster than the compressor, where it stays, no wait of the packer's
+  there covering a level's cost. Nothing is measured but the stream's own waits and its
+  compressing. The machine moved to says it unpacks it (`Needs::unpacks`, `zstd`)
+  and is then asked `import --packed zstd`; one of an earlier build says nothing and is sent
+  the stream as it is, as before; held by `a_packed_stream_reads_back_as_it_was`,
+  `the_level_follows_who_waits` and `a_stream_is_packed_only_for_a_daemon_that_unpacks_it`
+  (packing.rs).
+- **Each move says what it sent and what the link did**, where `SHARDS_MOVE_TIMES` is set
+  (`move: stream R bytes, sent W bytes, P of F frames as zstd; link A bytes acknowledged in
+  T us, X B/s, rtt, packets lost, longest silence S us`), a failed move's too; two-hosts.sh
+  records the bytes sent, the rate and the longest silence of every move, and a live move's
+  rounds, with n, p50, p90, p99 and max.
+
+Not yet measured: the moves again on that link with this build, cold and live, n 20: how
+much packing takes off the stream (alpine's memory, layer and swap), the levels it settles
+at on that link and on loopback (none, where the compressor is slower than the link, as
+between two homes; its cost there), and the longest silence each connection lived through,
+which says whether 100 s is enough there or a link's outages ask more.
 
 **Moved live** (part 7, roadmap item 7b). `shards move vm --live NAME CONTEXT` moves it as
 it runs, by pre-copy (Clark et al., "Live Migration of Virtual Machines", NSDI 2005): its
 memory, writable layer and run's swap copied to the other machine as its guest runs on,
-round after round, each round what its guest and its devices wrote since the last, until a
-round sends no more than 8 MiB, or 30 rounds; then it saved as a save saves it, held, its
+round after round, each round what its guest and its devices wrote since the last, until
+pre-copy no longer pays (`live::Stop`); then it saved as a save saves it, held, its
 vCPUs parked and devices quiet, what its guest wrote of those three since the last round
 sent as the rounds' last, in their stream, which the other machine lays over the rounds
 page by page as each came; resumed there; and stopped here once it runs there.
+
+- **When the rounds stop**, never by the clock, whatever the link's rate. A round sends what
+  was written as the round before it went, so its bytes over that round's time are the
+  guest's rate of writing, and the round before's bytes over the same time the link's: the
+  rounds stop at the first that sends no fewer bytes than the one before, the guest writing
+  as fast as the link carries, where another round would leave the last save as much (Clark
+  et al. §4.1: the hottest pages "will be dirtied at least as fast as we can transfer them,
+  and hence must be transferred in the final stop-and-copy phase"; §6.5, a guest writing
+  faster than the network carries, suspended once its rounds did not outpace it). Also at
+  the first that sends no more than 8 MiB, little being left (§5.3 stops under 256 KB, Xen's
+  xc_domain_save under 50 pages); once the rounds have sent three times the first, all its
+  memory held (Xen's `DEF_MAX_FACTOR`, "never send more than 3x"); and at 30 rounds, Xen's
+  own (`DEF_MAX_ITERS`, "limit us to 30 times round loop"). Rounds that each shrink end, as
+  each is fewer bytes than the one before. Until 2026-11-07 they stopped at 8 MiB or 30
+  rounds alone: the first live move between two Macs over 2.4 GHz Wi-Fi at 0.55 MB/s, its
+  guest rewriting a 1 MiB file every 50 ms (two-hosts.sh), had not finished after 30 minutes,
+  its rounds' bytes unsaid, as a move said them only once they ended (not measured). The
+  move's log says each round (`move: round N: pages, bytes, us`) and then their count, their
+  bytes and why they stopped (`move: rounds N, B bytes, ended: ...`), which two-hosts.sh
+  records; held by `precopy_stops_once_its_rounds_no_longer_shrink` (live.rs), each rule
+  and the guest of that move among its cases. A live move's stream is packed for its link as
+  a cold one's is (part 6), its rounds' bytes counted before. Not yet measured: that move
+  again with this build, its rounds and the time it runs nowhere.
 
 - **The last round in the rounds' stream**, record by record, never in the last save's
   files, which keep none of their pages: which pages a file holds read from its holes is
@@ -9804,9 +9897,10 @@ nested L1 guest of an M3 or later Mac (`SHARDS_L1_TESTS=moved`), WHP Arm64's on 
 host (its backend merged, D209); WHP x64's on jupiter; with each one's rounds, whether
 WHP's shrink as KVM's do, and the time it ran nowhere measured on WHP; a
 volume's files moved live, which go with its last save, and so lengthen the time it runs
-nowhere by their bytes. A move between two machines, saved or live, and the time
-one moved live runs nowhere there: every move measured so far is between two homes of one
-machine (PM M460, M461), where the stream crosses no network. Two Macs of one chip and OS
+nowhere by their bytes. A move between two machines live, and the time one moved live runs
+nowhere there: of saved moves between two machines, the first 20, over Wi-Fi (part 6, "Over
+a slow link"), are the only ones run, every other measured between two homes of one machine
+(PM M460, M461), where the stream crosses no network. Two Macs of one chip and OS
 (Hypervisor.framework) are a pair to run it on; a pair of KVM x86_64 hosts needs a second
 whose CPU has every feature of the first's, as /proc/cpuinfo names them, or a tailnet for
 CI's runners.

@@ -1088,6 +1088,40 @@ fn an_enrolled_clients_command_runs_past_the_idle_bound() {
     assert_eq!(status, Ok(0));
 }
 
+/// A client of an address no daemon answers at is told so at its handshake's bound, the
+/// idle bound, never at the longer silence an established connection lives through
+/// (`tls::QUIET`), which its transport's own idle timeout now is.
+#[test]
+fn no_daemon_answering_is_told_at_the_handshakes_bound() {
+    let laptop = leak(Identity::generate().unwrap());
+    // A socket that takes datagrams and answers none.
+    let silent = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    let remote = Remote {
+        address: silent.local_addr().unwrap(),
+        daemon: Identity::generate().unwrap().fingerprint(),
+    };
+    let request = Request {
+        args: vec![b"true".to_vec()],
+        env: Vec::new(),
+        terminal: None,
+    };
+    let start = Instant::now();
+    let said = client::exec(
+        laptop,
+        remote,
+        request,
+        None,
+        std::io::sink(),
+        std::io::sink(),
+        |_| {},
+    )
+    .unwrap_err();
+    let took = start.elapsed();
+    assert!(took >= tls::IDLE && took < tls::QUIET, "{took:?}");
+    assert!(said.to_string().contains("no shards daemon answered"), "{said}");
+    drop(silent);
+}
+
 /// A command whose client leaves its stream, resetting it or reading no more of it, is hung
 /// up, and its state let go.
 #[test]

@@ -458,7 +458,9 @@ impl Handle {
     /// Copies the running machine's memory, writable layer and run's swap into `out` for a
     /// live move (D176 part 7), as its guest runs on: everything in a first round, then,
     /// round after round, what its guest and its devices wrote since the round before,
-    /// until a round has sent no more than `enough` bytes, or `most` rounds. The guest's
+    /// until a round has sent no more than `enough` bytes, or no fewer than the round
+    /// before, or the rounds three times the first, or `most` rounds ([`live::Stop`]),
+    /// whatever the link's rate: never by the clock. The guest's
     /// writes are watched from then on, for the [`Save`] with `delta` that ends the move
     /// and the stream, which this leaves without its end.
     pub fn precopy(&self, out: std::fs::File, most: u32, enough: u64) -> Result<Precopied, String> {
@@ -544,8 +546,11 @@ impl Handle {
         precopied
             .rounds
             .push((pages, bytes, crate::log::uptime_us().saturating_sub(t0)));
-        // Then what was written since, until little is.
-        for n in 1..most.max(1) {
+        let mut sent = vec![bytes];
+        // Then what was written since, until little is, or rounds no longer gain on what
+        // the guest writes ([`live::Stop`]).
+        let mut n = 1u32;
+        while live::Stop::after(&sent, most, enough).is_none() {
             let t = crate::log::uptime_us();
             let mut written = Pages::of(vm.written().map_err(|e| e.to_string())?, machine::PAGE);
             written.merge(Pages::of(self.memory.device_written(), live::PAGE));
@@ -554,9 +559,8 @@ impl Handle {
             precopied
                 .rounds
                 .push((pages, bytes, crate::log::uptime_us().saturating_sub(t)));
-            if bytes <= enough {
-                break;
-            }
+            sent.push(bytes);
+            n = n.saturating_add(1);
         }
         Ok(precopied)
     }

@@ -42,6 +42,7 @@ mod netproc;
 mod networks;
 mod oidc;
 mod os;
+mod packing;
 mod pressure;
 mod pull;
 mod resources;
