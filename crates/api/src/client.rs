@@ -86,7 +86,7 @@ fn start(spec: &GuestSpec) -> Result<ShardsGuest, Refusal> {
         writer.try_clone().map_err(piped)?,
         writer.try_clone().map_err(piped)?,
     );
-    let mut child = Command::new(&binary)
+    let child = Command::new(&binary)
         .args(&args)
         .stdin(Stdio::null())
         .stdout(stdout)
@@ -127,6 +127,7 @@ fn start(spec: &GuestSpec) -> Result<ShardsGuest, Refusal> {
         vsock,
         #[cfg(unix)]
         pid,
+        #[cfg(windows)]
         child,
         shared,
         _dir: dir,
@@ -450,6 +451,8 @@ struct ShardsGuest {
     vsock: PathBuf,
     #[cfg(unix)]
     pid: u32,
+    /// Ended through it on Windows, which sends a process no signal; the watcher reaps it.
+    #[cfg(windows)]
     child: Arc<Mutex<Child>>,
     shared: Arc<Shared>,
     _dir: PrivateDir,
