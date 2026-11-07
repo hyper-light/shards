@@ -353,21 +353,32 @@ mod tests {
         assert!(check(&GuestSpec { ports, ..spec() }).is_ok());
     }
 
-    /// A recorded bound is seeded only from its own host class's record: macOS-HVF's
-    /// here; on Linux-KVM and Windows-WHP, none yet, each naming its pending record, never a
-    /// number borrowed from another class (Hex HEX-GUEST-9).
+    /// A bound is twice its own class's slowest record; a class with none seeds from twice
+    /// the slowest of any class's; and either rises to twice the slowest this node has
+    /// seen, never falling (review: the per-class rule).
     #[test]
-    fn a_bound_is_seeded_only_from_its_own_host_classs_record() {
-        let (what, macos) = ("OVERSHOOT", Duration::from_nanos(301_708_500));
-        match (record::CLASS, conformance::OVERSHOOT) {
-            ("macOS-HVF", Ok(d)) => assert_eq!(d, macos),
-            (class, Err(pending)) => {
-                assert_ne!(class, "macOS-HVF");
-                assert_eq!((pending.what, pending.class), (what, class));
-                assert!(pending.to_string().contains(class), "{pending}");
-            }
-            other => panic!("{what}: {other:?}"),
-        }
+    fn a_bound_seeds_from_the_records_and_rises_with_what_it_sees() {
+        let ms = Duration::from_millis;
+        static OWN: record::Learned = record::Learned::new(
+            "own",
+            &[
+                (record::CLASS, Duration::from_millis(5)),
+                ("another", Duration::from_millis(10)),
+            ],
+        );
+        assert_eq!(OWN.get(), ms(10));
+        static UNRECORDED: record::Learned = record::Learned::new(
+            "unrecorded",
+            &[
+                ("one", Duration::from_millis(10)),
+                ("another", Duration::from_millis(30)),
+            ],
+        );
+        assert_eq!(UNRECORDED.get(), ms(60));
+        UNRECORDED.saw(ms(40));
+        assert_eq!(UNRECORDED.get(), ms(80));
+        UNRECORDED.saw(ms(1));
+        assert_eq!(UNRECORDED.get(), ms(80));
     }
 
     /// The backend each host boots with, and the two hosts without one refused naming
