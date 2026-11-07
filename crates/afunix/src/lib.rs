@@ -18,11 +18,19 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 use windows_sys::Win32::Networking::WinSock::{
     AF_UNIX, FIONBIO, FROM_PROTOCOL_INFO, INVALID_SOCKET, POLLRDNORM, POLLWRNORM, SD_BOTH, SD_RECEIVE,
-    SD_SEND, SO_ERROR, SOCK_STREAM, SOCKADDR_UN, SOCKET, SOL_SOCKET, SOMAXCONN, WSA_FLAG_NO_HANDLE_INHERIT,
-    WSA_FLAG_OVERLAPPED, WSABUF, WSADATA, WSADuplicateSocketW, WSAEWOULDBLOCK, WSAGetLastError, WSAPOLLFD,
-    WSAPROTOCOL_INFOW, WSAPoll, WSARecv, WSASend, WSASocketW, WSAStartup, accept, bind, closesocket, connect,
-    getpeername, getsockopt, ioctlsocket, listen, recv, send, shutdown,
+    SD_SEND, SO_ERROR, SO_RCVBUF, SO_SNDBUF, SOCK_STREAM, SOCKADDR_UN, SOCKET, SOL_SOCKET, SOMAXCONN,
+    WSA_FLAG_NO_HANDLE_INHERIT, WSA_FLAG_OVERLAPPED, WSABUF, WSADATA, WSADuplicateSocketW, WSAEWOULDBLOCK,
+    WSAGetLastError, WSAPOLLFD, WSAPROTOCOL_INFOW, WSAPoll, WSARecv, WSASend, WSASocketW, WSAStartup, accept,
+    bind, closesocket, connect, getpeername, getsockopt, ioctlsocket, listen, recv, send, shutdown,
 };
+
+/// A buffer size Winsock reported, `what` naming it: zero or less is an error, not a size.
+fn buffer_size(what: &str, reported: i32) -> io::Result<usize> {
+    usize::try_from(reported)
+        .ok()
+        .filter(|&n| n > 0)
+        .ok_or_else(|| io::Error::other(format!("{what} {reported}: not a buffer size")))
+}
 
 /// A socket, as WSAPoll and WSAEventSelect name it.
 pub type RawSocket = SOCKET;
@@ -373,23 +381,48 @@ impl UnixStream {
         Socket::shared(info).map(UnixStream::wrap)
     }
 
-    /// The socket's pending error, taken (SO_ERROR), as std's `take_error`.
-    pub fn take_error(&self) -> io::Result<Option<io::Error>> {
-        let (mut error, mut len) = (0i32, 4i32);
-        // SAFETY: an int of its own size, on a socket this value owns.
+    /// A SOL_SOCKET option of an int's size, as Winsock's getsockopt reads it.
+    fn int_option(&self, name: i32) -> io::Result<i32> {
+        let size = std::mem::size_of::<i32>();
+        let (mut value, mut len) = (0i32, i32::try_from(size).map_err(io::Error::other)?);
+        // SAFETY: getsockopt into an int of ours, its length given in `len`, which is
+        // checked on return to be that int's; on a socket this value owns.
         if unsafe {
             getsockopt(
                 self.socket.0,
                 SOL_SOCKET,
-                SO_ERROR,
-                (&raw mut error).cast(),
+                name,
+                (&raw mut value).cast(),
                 &raw mut len,
             )
         } != 0
         {
             return Err(last());
         }
+        if usize::try_from(len).ok() != Some(size) {
+            return Err(io::Error::other(format!(
+                "option {name}: {len} bytes, not an int"
+            )));
+        }
+        Ok(value)
+    }
+
+    /// The socket's pending error, taken (SO_ERROR), as std's `take_error`.
+    pub fn take_error(&self) -> io::Result<Option<io::Error>> {
+        let error = self.int_option(SO_ERROR)?;
         Ok((error != 0).then(|| io::Error::from_raw_os_error(error)))
+    }
+
+    /// Its send buffer's size in bytes (SO_SNDBUF), as Winsock reports it
+    /// (learn.microsoft.com, "SOL_SOCKET socket options"): zero or less is an error.
+    pub fn send_buffer_size(&self) -> io::Result<usize> {
+        buffer_size("SO_SNDBUF", self.int_option(SO_SNDBUF)?)
+    }
+
+    /// Its receive buffer's size in bytes (SO_RCVBUF), as Winsock reports it: zero or less
+    /// is an error.
+    pub fn recv_buffer_size(&self) -> io::Result<usize> {
+        buffer_size("SO_RCVBUF", self.int_option(SO_RCVBUF)?)
     }
 
     /// Whether it is connected: its peer named (getpeername); an AF_UNIX peer is unnamed,
@@ -619,6 +652,19 @@ impl UnixListener {
 #[allow(clippy::unwrap_used, clippy::indexing_slicing)]
 mod tests {
     use super::*;
+
+    /// A connected stream reports its buffer sizes, non-zero; a report of zero or less is an
+    /// error, not a size (shards-api's `Stream::buffer_sizes`).
+    #[test]
+    fn a_stream_reports_its_buffer_sizes() {
+        let (a, _b) = UnixStream::pair().unwrap();
+        let (send, receive) = (a.send_buffer_size().unwrap(), a.recv_buffer_size().unwrap());
+        println!("buffer sizes: send {send}, receive {receive}");
+        assert!(send > 0 && receive > 0);
+        assert_eq!(buffer_size("SO_SNDBUF", 65536).unwrap(), 65536);
+        assert!(buffer_size("SO_SNDBUF", 0).is_err());
+        assert!(buffer_size("SO_RCVBUF", -1).is_err());
+    }
 
     /// A stream made non-blocking says at once that a read would block, whatever its read
     /// timeout, as std's sockets do; made blocking again, a read waits out its timeout.

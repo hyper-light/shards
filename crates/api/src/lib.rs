@@ -191,6 +191,18 @@ pub trait Stream: Read + Write + Send + Sync {
     fn try_clone(&self) -> io::Result<Box<dyn Stream>>;
     /// Ends one way or both; both, one way at a time (D175).
     fn shutdown(&self, how: Shutdown) -> io::Result<()>;
+    /// The connection's send and receive buffer sizes in bytes (SO_SNDBUF, SO_RCVBUF), as
+    /// the OS reports them: getsockopt(2) of SOL_SOCKET's options (socket(7)); on Windows,
+    /// Winsock's getsockopt of the same (learn.microsoft.com, "SOL_SOCKET socket options").
+    /// They are the OS's own numbers, not bytes a write is guaranteed to move; the send
+    /// figure is the unit one write hands the OS. A zero or negative report is an error, not
+    /// a size. Seen: Windows x86_64 (jupiter, 2026-11-06, a probe outside every crate)
+    /// 65536 and 65536; macOS 8192 and 8192, its `net.local.stream.sendspace` and
+    /// `recvspace` (Darwin 25.4 on adas-macbook-pro-2 and 25.2 on adas-mac-studio-2,
+    /// 2026-11-07); Linux twice the value set (socket(7), SO_SNDBUF), from
+    /// `net.core.wmem_default` and `rmem_default` where none is set, its measured value
+    /// pending.
+    fn buffer_sizes(&self) -> io::Result<(usize, usize)>;
     /// A read waits at most this long (`None`: for ever), then fails as std's would.
     fn set_read_timeout(&self, timeout: Option<Duration>) -> io::Result<()>;
     /// A write waits at most this long for room (`None`: for ever).

@@ -139,6 +139,43 @@ mod unix {
         }
     }
 
+    /// A buffer size getsockopt(2) reported, `what` naming it: zero or less is an error,
+    /// not a size.
+    pub(super) fn size(what: &str, reported: libc::c_int) -> io::Result<usize> {
+        usize::try_from(reported)
+            .ok()
+            .filter(|&n| n > 0)
+            .ok_or_else(|| io::Error::other(format!("{what} {reported}: not a buffer size")))
+    }
+
+    impl Socket {
+        /// A SOL_SOCKET buffer size option, SO_SNDBUF or SO_RCVBUF, as getsockopt(2) reads it
+        /// (socket(7)).
+        pub(super) fn buffer_size(&self, name: libc::c_int, what: &str) -> io::Result<usize> {
+            let mut value: libc::c_int = 0;
+            let size = std::mem::size_of::<libc::c_int>();
+            let mut len = libc::socklen_t::try_from(size).map_err(io::Error::other)?;
+            // SAFETY: getsockopt(2) of a socket this value holds open, into a c_int of ours,
+            // its length given in `len`, which is checked on return to be that c_int's.
+            let r = unsafe {
+                libc::getsockopt(
+                    self.inner.as_raw_fd(),
+                    libc::SOL_SOCKET,
+                    name,
+                    (&raw mut value).cast(),
+                    &raw mut len,
+                )
+            };
+            if r != 0 {
+                return Err(io::Error::last_os_error());
+            }
+            if usize::try_from(len).ok() != Some(size) {
+                return Err(io::Error::other(format!("{what}: {len} bytes, not a c_int")));
+            }
+            self::size(what, value)
+        }
+    }
+
     pub(super) const READING: usize = READ;
     pub(super) const WRITING: usize = WRITE;
 }
@@ -198,6 +235,16 @@ impl Stream for Socket {
             }
             how => self.inner.shutdown(how),
         }
+    }
+
+    fn buffer_sizes(&self) -> io::Result<(usize, usize)> {
+        #[cfg(unix)]
+        return Ok((
+            self.buffer_size(libc::SO_SNDBUF, "SO_SNDBUF")?,
+            self.buffer_size(libc::SO_RCVBUF, "SO_RCVBUF")?,
+        ));
+        #[cfg(windows)]
+        Ok((self.inner.send_buffer_size()?, self.inner.recv_buffer_size()?))
     }
 
     fn set_read_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {
@@ -339,11 +386,12 @@ mod tests {
     }
 
     /// A zero or negative buffer size the OS reports is an error, not a size (review A).
+    #[cfg(unix)]
     #[test]
     fn a_buffer_size_of_zero_or_less_is_an_error() {
-        assert_eq!(size("SO_SNDBUF", 8192).unwrap(), 8192);
-        assert!(size("SO_SNDBUF", 0).is_err());
-        assert!(size("SO_RCVBUF", -1).is_err());
+        assert_eq!(unix::size("SO_SNDBUF", 8192).unwrap(), 8192);
+        assert!(unix::size("SO_SNDBUF", 0).is_err());
+        assert!(unix::size("SO_RCVBUF", -1).is_err());
     }
 
     /// A clone is the same connection: what one writes the peer reads (Hex HEX-GUEST-9).
