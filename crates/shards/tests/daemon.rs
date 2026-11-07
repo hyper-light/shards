@@ -2449,6 +2449,71 @@ fn a_daemon_that_cannot_serve_is_said_at_once() {
     assert!(t0.elapsed() < Duration::from_secs(5), "{:?}", t0.elapsed());
 }
 
+/// A run of an image held under way until [`Held::end`]: `cat`, reading what its client's
+/// stdin gives it (`run -i`). Through it a test learns the run's own microVM, which is no
+/// warm VM of its pool's from its claim on, and which, its run ended, takes its time to go
+/// as its guest's memory is let go of (2 counted 500 ms after the run on a busy runner,
+/// budget E2E 40197051533, PM M337): a test counting a pool's VMs among its template's
+/// processes leaves it out.
+struct Held {
+    client: Child,
+    stdin: Option<std::process::ChildStdin>,
+    out: BufReader<std::process::ChildStdout>,
+    name: String,
+}
+
+impl Held {
+    /// `shards run -i --name NAME IMAGE cat`, with `env`.
+    fn start(image: &str, name: &str, env: &[(&str, &OsStr)]) -> Held {
+        let mut client = common::command()
+            .args(["run", "-i", "--pull", "never", "--name", name, image, "cat"])
+            .envs(env.iter().copied())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let stdin = client.stdin.take();
+        let out = BufReader::new(client.stdout.take().unwrap());
+        Held {
+            client,
+            stdin,
+            out,
+            name: name.to_string(),
+        }
+    }
+
+    /// Its microVM once its command runs, as its container names it (`.State.Pid`), and its
+    /// command line, as [`commands_with`] lists it among the processes that name
+    /// `templates`: its own `--layer` file and MAC tell it from a VM given its process ID
+    /// once it has gone.
+    fn vm(&mut self, env: &[(&str, &OsStr)], templates: &str) -> (u32, String) {
+        let stdin = self.stdin.as_mut().unwrap();
+        stdin.write_all(b"held\n").unwrap();
+        stdin.flush().unwrap();
+        let mut line = String::new();
+        self.out.read_line(&mut line).unwrap();
+        assert_eq!(line, "held\n", "{}", self.name);
+        let pid = run_shards_env(
+            &["inspect"],
+            &["-f", "{{.State.Pid}}", self.name.as_str()],
+            env,
+            TIMEOUT,
+        );
+        let pid: u32 = pid.stdout.trim().parse().unwrap_or_else(|_| panic!("{pid}"));
+        commands_with(templates)
+            .into_iter()
+            .find(|(p, _)| *p == pid)
+            .unwrap_or_else(|| panic!("{}'s VM {pid} is no process of {templates}", self.name))
+    }
+
+    /// Ends its command, its client's stdin closed, and waits for its client's status.
+    fn end(mut self, home: &Path) -> Option<i32> {
+        drop(self.stdin.take());
+        wait(&mut self.client, home)
+    }
+}
+
 /// Warm VMs kept ahead of runs are bounded all pools together (audit A13): with room
 /// for one, a second template's pool takes the first's, least recently claimed from, and
 /// the first is still served, on demand.
@@ -2499,24 +2564,45 @@ fn warm_vms_are_bounded_across_templates() {
         );
         std::thread::sleep(Duration::from_millis(20));
     }
-    // Never more than the bound, as the first is served again: once its run's own VM and
-    // the warm VM its pool took the room of have gone, as a VM process takes its time to,
-    // its guest's memory let go of (2 counted 500 ms after the run on a busy runner, budget
-    // E2E 40197051533, PM M337), one at most, and no refill takes the pools past it.
-    run(&first);
-    let all = || commands_with(&templates.to_string_lossy());
+    // Never more than the bound, as the first is served again: the pools' VMs are the
+    // templates' processes but the run's own ([`Held`]). Its pool refills, and the warm VM
+    // it took the room of, ended before the refill starts, goes as a VM process takes its
+    // time to; then one at most, and no refill takes the pools past it. Counted with the
+    // run's own VM, a look in the while between that warm VM's end and the refill's start
+    // found the pools within their bound, and the next past it (CI windows-2025 at
+    // b94c114f, as a look took 20 ms rather than a PowerShell's start).
+    let first_dir = dirs
+        .iter()
+        .find(|d| d.as_path() != newest.as_path())
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    let templates_named = templates.to_string_lossy().into_owned();
+    let mut held = Held::start(&first, "first-again", &env);
+    let ran = held.vm(&env, &templates_named);
+    assert_eq!(held.end(&home), Some(0), "the first's run, held");
+    let pooled = |needle: &str| -> Vec<(u32, String)> {
+        commands_with(needle)
+            .into_iter()
+            .filter(|vm| *vm != ran)
+            .collect()
+    };
+    eventually(&home, "the first pool did not refill", || {
+        !pooled(&first_dir).is_empty()
+    });
     let mut patience = Patience::of(&home, Duration::from_secs(10));
-    while warm(&templates) > 1 {
+    while pooled(&templates_named).len() > 1 {
         assert!(
             patience.holds(),
             "the pools came back to their bound in no 10 s, nor while they progressed: {:?}",
-            all()
+            pooled(&templates_named)
         );
         std::thread::sleep(Duration::from_millis(20));
     }
     let t0 = Instant::now();
     while t0.elapsed() < Duration::from_millis(500) {
-        assert!(warm(&templates) <= 1, "past the bound: {:?}", all());
+        let now = pooled(&templates_named);
+        assert!(now.len() <= 1, "past the bound: {now:?}, the run's own {ran:?}");
         std::thread::sleep(Duration::from_millis(20));
     }
     let stopped = run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT);
@@ -2582,7 +2668,17 @@ fn pools_keep_what_their_runs_need_while_they_come() {
         ("SHARDS_POOL_KEEP", keep.as_ref()),
     ];
     let templates = home.join("templates");
-    let warm = || processes_with(&templates.to_string_lossy()).len();
+    let templates_named = templates.to_string_lossy().into_owned();
+    // Its VMs: the template's processes, but for the runs' own VMs the burst learns
+    // ([`Held`]), which leave the pool as they are claimed.
+    let runs_own = std::cell::RefCell::new(Vec::<(u32, String)>::new());
+    let warm = || {
+        let runs_own = runs_own.borrow();
+        commands_with(&templates_named)
+            .into_iter()
+            .filter(|vm| !runs_own.contains(vm))
+            .count()
+    };
     // Whether the pool comes to keep as `want` says within 5 s: or, `patient`, past them
     // while the daemon or its microVMs progress ([`Patience`]), as a pool a slow host
     // refills does. A look begun within them is the last.
@@ -2645,41 +2741,40 @@ fn pools_keep_what_their_runs_need_while_they_come() {
         std::thread::sleep(KEEP);
         settled("past the keep-alive", &|n| n == 0);
     }
-    // Three at once: the pool keeps more for the next burst, never past its most.
-    let burst: Vec<_> = (0..3)
-        .map(|_| {
-            let env: Vec<(String, std::ffi::OsString)> = env
-                .iter()
-                .map(|(k, v)| (k.to_string(), v.to_os_string()))
-                .collect();
-            let image = image.clone();
-            std::thread::spawn(move || {
-                let env: Vec<(&str, &OsStr)> = env.iter().map(|(k, v)| (k.as_str(), v.as_os_str())).collect();
-                let began = Instant::now();
-                let status = run_shards_env(&["run"], &[image.as_str(), "exit", "0"], &env, TIMEOUT).status;
-                (status, began.elapsed())
-            })
-        })
+    // Three at once: the pool keeps more for the next burst, never past its most. Each
+    // run held under way until all three are served, for its VM to be learned: what the
+    // pool keeps is the template's processes but those, which go in their own time once
+    // their runs end. Counted with them, a look as one had gone and the pool's refills had
+    // not all started found the pool within its most, and the next past it (CI
+    // windows-2025 at b94c114f, as a look took 20 ms rather than a PowerShell's start).
+    let began = Instant::now();
+    let mut burst: Vec<Held> = (0..3)
+        .map(|n| Held::start(&image, &format!("burst-{n}"), &env))
         .collect();
-    // How long each run took, said where the pool keeps too few after them: a loaded
-    // host's took 28 to 31 s (PM M346).
+    // How long until each was served, said where the pool keeps too few after them: a
+    // loaded host's runs took 28 to 31 s (PM M346).
     let mut took = Vec::new();
-    for b in burst {
-        let (status, run_took) = b.join().unwrap();
-        assert_eq!(status, Some(0));
-        took.push(run_took);
+    for held in &mut burst {
+        let vm = held.vm(&env, &templates_named);
+        took.push(began.elapsed());
+        runs_own.borrow_mut().push(vm);
     }
-    settled(&format!("a burst of three, its runs taking {took:?}"), &|n| {
-        n >= 2
-    });
-    // Never past its most, once the burst's own VMs have gone, each of which tells its run's
-    // end before it goes, a loaded runner's past 500 ms: what the pool keeps it keeps until
-    // its keep-alive, so a pool past its most stays so.
-    settled("the burst's VMs gone", &|n| n <= 3);
+    for held in burst {
+        assert_eq!(held.end(&home), Some(0), "a run of the burst");
+    }
+    settled(&format!("a burst of three, served in {took:?}"), &|n| n >= 2);
+    // Never past its most: what the pool keeps it keeps until its keep-alive, so a pool past
+    // its most stays so.
+    settled("the pool within its most", &|n| n <= 3);
     let held = Instant::now();
     while held.elapsed() < Duration::from_secs(1) {
         let n = warm();
-        assert!(n <= 3, "{n} warm, past the pool's most");
+        assert!(
+            n <= 3,
+            "{n} warm, past the pool's most: {:?}, the runs' own {:?}",
+            commands_with(&templates_named),
+            runs_own.borrow()
+        );
         std::thread::sleep(Duration::from_millis(20));
     }
     // Unclaimed past its keep-alive: nothing, until the next run.
