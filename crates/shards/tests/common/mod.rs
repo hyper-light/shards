@@ -2356,7 +2356,7 @@ pub fn run_until(mut cmd: Command, asked: &[String], timeout: Duration) -> Resul
         let ran_lately = ran.lately();
         if start.elapsed() > timeout && !said_lately && !ran_lately {
             let seen = stuck(child.id(), home.as_deref());
-            let (started, left) = end_run(&mut child);
+            let (started, left) = end_run(&mut child, timeout);
             return Err(Ended {
                 said: format!(
                     "{} did not exit within {timeout:?}\n--- stdout\n{}\n--- stderr\n{}{seen}",
@@ -2383,10 +2383,12 @@ pub fn run_until(mut cmd: Command, asked: &[String], timeout: Duration) -> Resul
     })
 }
 
-/// Ends `child`, a run past its deadline, and gives the processes under it (on Windows),
-/// each named, with those of them still running once it has ended. They are read from one
-/// snapshot while it still runs, so that each is the run's by its parent.
-fn end_run(child: &mut std::process::Child) -> (Vec<Process>, Vec<Process>) {
+/// Ends `child`, a run past its deadline, and on Windows each process under it, and gives
+/// those processes, each named, with any still running `within` after. They are read from
+/// one snapshot while it still runs, so that each is the run's by its parent. A direct
+/// boot's share process breaks away from any job a caller could end it by (review 11), so
+/// ending it is the harness's; one past `within` is left for the test to fail on.
+fn end_run(child: &mut std::process::Child, within: Duration) -> (Vec<Process>, Vec<Process>) {
     #[cfg(windows)]
     let under = under(child.id());
     let _ = child.kill();
@@ -2395,12 +2397,22 @@ fn end_run(child: &mut std::process::Child) -> (Vec<Process>, Vec<Process>) {
     {
         use std::os::windows::io::AsRawHandle as _;
         use windows_sys::Win32::Foundation::WAIT_OBJECT_0;
-        use windows_sys::Win32::System::Threading::WaitForSingleObject;
+        use windows_sys::Win32::System::Threading::{TerminateProcess, WaitForSingleObject};
+        for (_, _, h) in &under {
+            // SAFETY: TerminateProcess of a process handle `under` opened with the right to.
+            unsafe { TerminateProcess(h.as_raw_handle(), 1) };
+        }
+        let until = Instant::now() + within;
         let started = under.iter().map(|(pid, name, _)| (*pid, name.clone())).collect();
         let left = under
             .iter()
-            // SAFETY: a process handle `under` opened, polled without waiting.
-            .filter(|(_, _, h)| unsafe { WaitForSingleObject(h.as_raw_handle(), 0) } != WAIT_OBJECT_0)
+            .filter(|(_, _, h)| {
+                let ms = u32::try_from(until.saturating_duration_since(Instant::now()).as_millis())
+                    .unwrap_or(u32::MAX);
+                // SAFETY: a process handle `under` opened, waited on for what is left of `within`.
+                let waited = unsafe { WaitForSingleObject(h.as_raw_handle(), ms) };
+                waited != WAIT_OBJECT_0
+            })
             .map(|(pid, name, _)| (*pid, name.clone()))
             .collect();
         (started, left)
