@@ -37,10 +37,11 @@ pub(crate) fn engine_socket(name: &str) -> PathBuf {
 
 /// The lock of the home's contexts (`contexts/.lock`, a name no context's record has), held
 /// while a context's record and its engine's socket change together: [`remove`] takes the
-/// record and then the socket under it, and the daemon binds a context's socket under it
-/// only where the record is still there (relay.rs), so that once a removal returns no daemon
-/// serves the context's engine at its socket, nor binds it again. Let go before its file
-/// closes (PM M244).
+/// record and then the socket under it, and the daemon binds a context's socket, and admits
+/// a client that came to one, under it only where the record is still there ([`joined`],
+/// relay.rs), so that once a removal returns no daemon serves the context's engine at its
+/// socket, binds it again, or relays a client to its machine. Let go before its file closes
+/// (PM M244).
 #[derive(Debug)]
 pub(crate) struct ContextsLock(fs::File);
 
@@ -60,6 +61,14 @@ pub(crate) fn lock_contexts(home: &Path) -> io::Result<ContextsLock> {
         .open(home.join("contexts").join(".lock"))?;
     file.lock()?;
     Ok(ContextsLock(file))
+}
+
+/// Context `name` as its record is now, read under the contexts' lock, which is returned
+/// held: a removal under way is waited for, and one that has returned is seen (none).
+pub(crate) fn joined(home: &Path, name: &str) -> io::Result<(ContextsLock, Option<Context>)> {
+    let locked = lock_contexts(home)?;
+    let context = load(home, name).map_err(io::Error::other)?;
+    Ok((locked, context))
 }
 
 /// Context `name`'s engine as `DOCKER_HOST` names one: its socket; on Windows the named
@@ -3221,9 +3230,10 @@ fn remove(home: &Path, names: &[&str]) -> Result<(), String> {
         }
         let path = home.join("contexts").join(name);
         // Its record, then its engine's socket, under the contexts' lock, which the daemon
-        // binds a context's socket under only where its record is there: one it bound
-        // before is removed here, and none is bound after. The daemon, watching the
-        // contexts, lets go of the listener whose socket went.
+        // binds a context's socket, and admits a client that came to one, under only where
+        // its record is there: one it bound before is removed here, and none is bound, nor
+        // any client relayed, after. The daemon, watching the contexts, lets go of the
+        // listener whose socket went.
         let locked = lock_contexts(home).map_err(at(&path))?;
         fs::remove_file(&path).map_err(at(&path))?;
         if current(home) == *name {
@@ -3510,6 +3520,45 @@ mod tests {
         assert!(!valid_name("g"));
         assert!(!valid_name("-gpu"));
         assert!(!valid_name("gpu desktop"));
+    }
+
+    /// A context's removal takes its record, the home's choice of it and its engine's socket
+    /// under the contexts' lock, which the daemon binds a socket and admits an engine client
+    /// under (`joined`, daemon/relay.rs): it waits for one under way, and once it returns
+    /// the context is not joined, so no socket is bound for it and no client relayed.
+    #[test]
+    fn a_contexts_removal_waits_for_its_lock_and_unjoins_it() {
+        let home = shards_testdir::TempDir::new("ctx-rm").unwrap();
+        let gpu = Context {
+            name: "gpu".into(),
+            description: String::new(),
+            address: "192.168.1.77:7350".parse().unwrap(),
+            daemon: [5; 32],
+        };
+        std::fs::create_dir(home.join("contexts")).unwrap();
+        std::fs::write(home.join("contexts").join("gpu"), gpu.text()).unwrap();
+        std::fs::write(home.join("context"), "gpu\n").unwrap();
+        let socket = home.join(engine_socket("gpu"));
+        std::fs::create_dir(socket.parent().unwrap()).unwrap();
+        std::fs::write(&socket, "").unwrap();
+        let (held, now) = joined(&home, "gpu").unwrap();
+        assert_eq!(now, Some(gpu));
+        std::thread::scope(|s| {
+            let removing = s.spawn(|| remove(&home, &["gpu"]));
+            // Held, it waits: a sleep that can only let a removal that took no lock finish,
+            // never fail one that waits.
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            assert!(!removing.is_finished(), "removed without the contexts' lock");
+            assert!(home.join("contexts").join("gpu").exists());
+            assert!(socket.exists());
+            drop(held);
+            removing.join().unwrap().unwrap();
+        });
+        assert!(!home.join("contexts").join("gpu").exists());
+        assert!(!home.join("context").exists());
+        assert!(!socket.exists());
+        let (_, now) = joined(&home, "gpu").unwrap();
+        assert_eq!(now, None);
     }
 
     /// A console's events are the signals Go's runtime makes of them for a Windows process:

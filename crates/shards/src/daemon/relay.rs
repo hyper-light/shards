@@ -27,7 +27,6 @@ struct Relay {
     listener: ApiListener,
     #[cfg(windows)]
     _taker: Taker,
-    context: crate::context::Context,
     path: PathBuf,
     /// The socket file bound, by device and inode: one removed, or another put at its
     /// path, is this listener's no more.
@@ -40,8 +39,7 @@ impl Relay {
     /// the socket under (context.rs, `remove`): a socket is never bound after a removal
     /// returned, as one bound for a record read before it would be.
     fn bind(home: &Path, name: &str, #[cfg(windows)] came: Came) -> io::Result<Option<Relay>> {
-        let _locked = crate::context::lock_contexts(home)?;
-        let Some(context) = crate::context::load(home, name).map_err(io::Error::other)? else {
+        let (_locked, Some(context)) = crate::context::joined(home, name)? else {
             return Ok(None);
         };
         let path = crate::context::engine_socket(&context.name);
@@ -57,7 +55,6 @@ impl Relay {
             _taker: Taker::start(listener, context.name.clone(), came)?,
             #[cfg(unix)]
             listener,
-            context,
             path,
             file,
         }))
@@ -255,11 +252,8 @@ impl<D: Disk> Daemon<D> {
                     });
                     relays.unbound.retain(|name| names.contains(name.as_str()));
                     for context in contexts {
-                        match relays.served.get_mut(&context.name) {
-                            Some(relay) => relay.context = context,
-                            None => {
-                                self.serve_relay(relays, context.name);
-                            }
+                        if !relays.served.contains_key(&context.name) {
+                            self.serve_relay(relays, context.name);
                         }
                     }
                 }
@@ -335,8 +329,8 @@ impl<D: Disk> Daemon<D> {
         #[cfg(windows)]
         {
             while let Ok((name, conn)) = relays.came.1.try_recv() {
-                if let Some(relay) = relays.served.get(&name) {
-                    self.relay(threads, conn, relay.context.clone());
+                if relays.served.contains_key(&name) {
+                    self.relay(threads, conn, name);
                 }
             }
             true
@@ -349,17 +343,14 @@ impl<D: Disk> Daemon<D> {
     #[cfg(unix)]
     fn relay_polled<'s, 'e>(&'s self, threads: &'s Threads<'s, 'e>, relays: &Relays) -> bool {
         let mut ready = true;
-        for relay in relays.served.values() {
+        for (name, relay) in &relays.served {
             loop {
                 match super::accept_api(&relay.listener) {
-                    Ok(conn) => self.relay(threads, conn, relay.context.clone()),
+                    Ok(conn) => self.relay(threads, conn, name.clone()),
                     Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
                     Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
                     Err(e) => {
-                        log(format!(
-                            "context {}: accepting its engine's client: {e}",
-                            relay.context.name
-                        ));
+                        log(format!("context {name}: accepting its engine's client: {e}"));
                         ready = false;
                         break;
                     }
@@ -382,17 +373,11 @@ impl<D: Disk> Daemon<D> {
         relays.served.clear();
     }
 
-    /// Relays `conn` to `context`'s machine's Engine API: what its client writes, as a
+    /// Relays `conn` to context `name`'s machine's Engine API: what its client writes, as a
     /// command's stdin, and the machine's answer, as its stdout. Only this daemon's own
     /// user's clients, as its own Engine API serves only them; ended with the API's clients
     /// as the daemon stops.
-    fn relay<'s, 'e>(
-        &'s self,
-        threads: &'s Threads<'s, 'e>,
-        conn: UnixStream,
-        context: crate::context::Context,
-    ) {
-        let name = context.name.clone();
+    fn relay<'s, 'e>(&'s self, threads: &'s Threads<'s, 'e>, conn: UnixStream, name: String) {
         // On Windows a relay's listener is a named pipe whose DACL admits this user's
         // processes alone (ipc pipe.rs `attributes`), as the Engine API's is.
         // SAFETY: geteuid(2) cannot fail.
@@ -410,6 +395,22 @@ impl<D: Disk> Daemon<D> {
                 return;
             }
         }
+        // Admitted as its context's record is now, read under the contexts' lock, and
+        // refused, closed, where a removal took it (context.rs, `remove`): nothing reaches
+        // the machine through a context once its removal returned, not a client that came
+        // to its socket before it went, nor, on Windows, one that came to the pipe it names,
+        // which listens on until the daemon next looks at the contexts.
+        let context = match crate::context::joined(&self.home, &name) {
+            Ok((_, Some(context))) => context,
+            Ok((_, None)) => {
+                log(format!("context {name}: removed; refused an engine client"));
+                return;
+            }
+            Err(e) => {
+                log(format!("context {name}: an engine client's context: {e}"));
+                return;
+            }
+        };
         // Accepted from a listener that does not block, it would not either on macOS
         // (accept(2): it takes the listener's O_NONBLOCK).
         let cloned = conn
