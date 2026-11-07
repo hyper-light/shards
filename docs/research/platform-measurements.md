@@ -17803,8 +17803,9 @@ revision before comparing a changed API/implementation.
   `builder-pressure/mac.sh`, as a user's program runs). `tables.py` gives each build's time,
   each step's (`#N DONE`), the give-backs' answers, what they freed and asked to unplug,
   what the guest then held plugged less, and the rule. Hosts: Fedora 44, i9-14900HX, 32
-  CPUs, 64 GiB, NVMe, shared with other agents' work (`fedora.sh`); CI's ubuntu-24.04
-  runners, 4 vCPUs and 16 GiB, Ubuntu 24.04.5, kernel 7.0.0-1017-azure, on AMD EPYC 7763
+  CPUs, 64 GiB, NVMe, shared with other agents' work (`fedora.sh MIRROR REV`, a transient
+  unit of the user's manager); CI's ubuntu-24.04 runners, 4 vCPUs and 16 GiB, Ubuntu
+  24.04.5, kernel 7.0.0-1017-azure (the Xeon 6975P-C's 7.0.0-1014-aws), on AMD EPYC 7763
   and 9V45 and Intel Xeon 8573C and 6975P-C (`builder-pressure.yml`, four at once); an M3 Ultra Mac Studio, macOS 26.4, 96 GiB. Results under
   `builder-pressure/results/`.
 - **Found on the way, each fixed before the numbers below.**
@@ -17842,7 +17843,20 @@ revision before comparing a changed API/implementation.
     each window, handing its host what the build's steps had just freed and would touch
     again; a hold now flushes only where it took something (`plug::reclaimed`).
 - **Results** (s, n, p50, p90, p99, max of the rounds past the caches'; the rule: the
-  held arm's fastest round against the free arm's slowest).
+  held arm's fastest round against the free arm's slowest). The hosts, as each record's
+  header names them:
+
+  | host | CPU, CPUs, memory | OS, kernel | revision | record (`results/`) |
+  |---|---|---|---|---|
+  | Fedora | Intel Core i9-14900HX, 32, 64,018 MiB | Fedora Linux 44, 6.19.10-300.fc44.x86_64 | 2d168658 | `fedora-2d168658.{out,tables}.txt` |
+  | CI EPYC 7763 | AMD EPYC 7763, 4, 15,983 MiB | Ubuntu 24.04.5 LTS, 7.0.0-1017-azure | 2d168658 (run 41766390762) | `ci-41766390762-a-epyc-7763.out.txt` |
+  | CI EPYC 9V45 | AMD EPYC 9V45, 4, 15,983 MiB | Ubuntu 24.04.5 LTS, 7.0.0-1017-azure | 2d168658 (run 41766390762) | `ci-41766390762-c-epyc-9v45.out.txt` |
+  | CI Xeon 8573C | Intel Xeon Platinum 8573C, 4, 15,982 MiB | Ubuntu 24.04.5 LTS, 7.0.0-1017-azure | 2d168658 (run 41766390762) | `ci-41766390762-d-xeon-8573c.out.txt` |
+  | CI Xeon 6975P-C | Intel Xeon 6975P-C, 4, 15,701 MiB | Ubuntu 24.04.5 LTS, 7.0.0-1014-aws | 2d168658 (run 41766390762) | `ci-41766390762-b-xeon-6975p-c.out.txt` |
+  | M3 Ultra | Apple M3 Ultra, 32, 98,304 MiB | macOS 26.4, Darwin 25.4.0, arm64 | 0e24be3e | `mac-0e24be3e.{builds,tables}.txt` |
+
+  The CI runs' tables are `ci-41766390762.tables.txt`; the Xeon 6975P-C runner's kernel is
+  AWS's, not Azure's as the others'.
 
   | host | build | free | held | held slower beyond the spread |
   |---|---|---|---|---|
@@ -17892,8 +17906,8 @@ revision before comparing a changed API/implementation.
   "Unplugged" is what the guest held plugged less a second after an answer than before it
   (its own samples). Each step's time, free against held, is in `tables.py`'s output
   (`results/*.tables.txt`).
-- **Reading.** A give-back costs its build nothing measurable: its answers came within 6 to 11 ms at
-  p50 on every host, 430 ms at most, and on the Mac, where nothing but the build's own word
+- **Reading.** A give-back costs its build nothing measurable: its answers came 1 to 11 ms
+  after its word at p50 on every host, 430 ms at most, and on the Mac, where nothing but the build's own word
   presses its builder, every build held took no longer than free beyond the spread, as did
   Fedora's rust and apt builds and two of CI's runners' rust builds and one's npm build.
   What a held build still pays on CI's runners is its host-side writes, not its builder: a
@@ -17916,7 +17930,10 @@ revision before comparing a changed API/implementation.
   and npm on one: what is left there is the build's own writes under its budget's dirty
   limit, which no give-back can take, and the root filesystem an image's export writes
   whole, 850 MiB for rust:1-slim's 7 MiB addition, which a root filesystem made of
-  its base's and its own layers would not.
+  its base's and its own layers would not. Both are built since (below): the build's own
+  writes go to a writer outside its budget, and an export over a base that its store's
+  file system clones writes only what the build added; what they cost held, measured at
+  each revision below.
 - **Since (D188, built; awaiting the coordinator's measurement on CI's runners and
   Fedora).** One correction to the reading above: an export's root filesystem is made
   durable before it is named (`Partial::commit`'s fsync), so a free arm paid its disk too,
@@ -18056,6 +18073,18 @@ revision before comparing a changed API/implementation.
   one write while the build makes and hands the next; a write after one of its owner's
   that failed is not made. To measure: `builder-pressure.yml` at the commit that has it,
   the export's phase free against held.
+- **At b8c98e7f, on Fedora: the give-back with the writer's shared slots.** This harness,
+  unchanged, at the revision that has every change above (the writer outside the budget,
+  its shared slots, a merge and a cache's first content through it, an export over its
+  base's root filesystem where the store clones, a base decompressed once):
+  `fedora.sh MIRROR b8c98e7f 5`, on the Fedora host above (i9-14900HX, 32 CPUs, 64 GiB,
+  Fedora Linux 44, kernel 6.19.10-300.fc44.x86_64), its records under
+  `results/fedora-b8c98e7f.*`. The same tables as at 2d168658: each build's time free and
+  held with the rule, and what its builders gave back held (answered in, freed a build,
+  unplugged at an answer, the budget short of the free arm's peak), each n, p50, p90, p99
+  and max.
+
+  <!-- FEDORA b8c98e7f: coordinator pastes tables here -->
 
 ### M443. A restart over the kept layer file itself, and what the guest freed given back (D190)
 
