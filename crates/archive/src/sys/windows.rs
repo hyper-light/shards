@@ -645,7 +645,6 @@ impl Root {
 #[cfg(test)]
 mod tests {
     use std::cell::Cell;
-    use std::os::windows::ffi::OsStrExt as _;
 
     use super::*;
 
