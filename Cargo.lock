@@ -1530,6 +1530,8 @@ dependencies = [
  "libc",
  "rustls",
  "shards-abi",
+ "shards-devcgroup",
+ "shards-seccomp",
 ]
 
 [[package]]

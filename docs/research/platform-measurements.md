@@ -18272,6 +18272,40 @@ revision before comparing a changed API/implementation.
   and the restore, not its memory.
 - **Consequence.** The downtime D176 part 7 says; what is left to cut is in the last stream
   and the restore.
+
+### M462. What a guest's seccomp and device filters cost, interpreted against JIT-compiled (D215, D42, D44)
+
+- **Question.** The pinned guest kernel runs BPF interpreted (Firecracker's configs leave
+  BPF_JIT unset); D215 builds it with BPF_JIT and BPF_JIT_ALWAYS_ON. What does each cost a
+  workload's syscall under Docker's default seccomp profile (D42), a device open under the
+  default device filter (D44), each filter's load, and the guest's memory, either way?
+- **Method.** docs/research/measurements/bpf-jit/ab.py, the test guest's `bpf` mode
+  (crates/testguest/src/linux.rs `bpf_costs`) as PID 1 of `shards run --kernel K --init
+  TESTGUEST --cpus 1 --memory 512 --disk RECORD`, A the kernel pinned now
+  (kernel-6.18.48-64a9427a8997) and B the D215 kernel, booted in turn A B, B A, ... for 10
+  rounds after one boot of each. Each round, in children of PID 1: Docker's default profile
+  compiled by shards_seccomp for a container's default capabilities and the running
+  kernel's version, loaded as shards-init loads it, with init's capabilities (`root`) or as
+  user 65534 with no_new_privs (`nnp`); 10,000 batches of 16 calls of getppid(2) (allowed
+  whatever its arguments: seccomp's action cache), personality(0xffffffff) (allowed by its
+  argument: the filter runs) and acct(NULL) (refused: the filter's whole path), with no
+  filter too, and an empty batch for the clock's own cost; open(2)+close(2) of /dev/null
+  in a cgroup with Docker's default device filter (shards_devcgroup, attached as init
+  attaches it) and in one without; 10,000 seccomp(2) loads each way, each into a fresh
+  child; the device filter's load and attach once a boot; MemAvailable at boot, after the
+  device filter, after the arms and at the end; the JIT's vmalloc areas. n, p50, p90, p99
+  and max in ns per call, pooled over the rounds, and the spread of the rounds' p50s. On
+  macOS run as a user's program (macos-sched/launchd-run.sh). The test guest is built as
+  the tests build it (`common::guest_cargo`):
+  `CC_<arch>_unknown_linux_musl=scripts/zig-cc AR_<arch>_unknown_linux_musl=scripts/zig-ar
+  ZIG_TARGET=<arch>-linux-musl CARGO_TARGET_<ARCH>_UNKNOWN_LINUX_MUSL_LINKER=rust-lld cargo
+  build -p shards-testguest --profile guest --target <arch>-unknown-linux-musl`.
+- **Found.** Results: pending the coordinator's run (Hypervisor.framework on an M-series
+  Mac; KVM x86_64; WHP's hyperv variant where it can be run).
+- **Reading.** Pending.
+- **Consequence.** Pending: whether D215's ALWAYS_ON stays given the JIT's 2 MiB pack in
+  every template (D215's memory risk), and whether unprivileged filters are blinded.
+
 ### M422. Whether a Hypervisor.framework guest given EL2 has VHE (the parity plan's step 10)
 
 - **Question.** Step 10's host is to be Windows 11 arm64 under QEMU on this Mac, given EL2
