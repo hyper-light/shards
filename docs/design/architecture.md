@@ -6389,7 +6389,13 @@ host (PM M267), where a container's page cache is its host's to drop. Free page 
   give-back port (`build::GIVE_PORT`, build/give.rs) to give back what it holds cold of its
   files and what it holds plugged past twice what its build uses (init's `RECLAIM` and
   unplug, as a run's), then tells each its share of the room the budget leaves (`ROOM`),
-  counted as a run's is, which its guest holds the build within. While a budget holds the
+  counted as a run's is, which its guest holds the build within. A builder is told that
+  room as it starts, before its first step; every builder is asked at once, one ask out
+  to each at a time, and one with no answer within 10 s is counted unanswered and asked
+  again only once it has answered, a late answer counted as it comes (a builder its host
+  throttled answered in 9 s and more, PM M350); what they gave back is said on the
+  build's plain output once a minute at most, as the daemon's log says its microVMs'
+  (`give::PATIENCE`, `SAY_EVERY`). While a budget holds the
   build, its builders are told its room again each pressure window where it changed, and
   given a word of pressure where it is short: a guest holds its build within what it was
   last told past what the build used then, and what its host gets back of it outside the
@@ -6398,8 +6404,9 @@ host (PM M267), where a container's page cache is its host's to drop. Free page 
   on Fedora was held within it for 200 s while its budget had 140 MiB to spare, 219 s
   against 31.5 s with none. Under a user scope's `MemoryHigh` the least that holds the
   build where its builder gives back all it holds cold, interleaved with the same builds
-  unbudgeted (builder-pressure/measure.py): on Fedora (i9-14900HX, NVMe) rust, npm and apt
-  builds held took no longer than with no budget beyond their rounds' spread, an apt
+  unbudgeted (builder-pressure/measure.py, at 2d168658; the Mac's at 0e24be3e): on Fedora
+  (i9-14900HX, NVMe) rust and apt builds held took no longer than with no budget beyond
+  their rounds' spread and npm 0.1 s longer, an apt
   build's builder giving back 82 MiB of its files at p50 and unplugging up to 492 MiB,
   its answers 4 ms after the word at p50; on an M3 Ultra, its builds told every 2 s that
   their host was short, none slower beyond the spread, an apt build's builder giving back
@@ -6618,12 +6625,13 @@ none. Plugged memory stays the kernel's own (D133).
 is all anonymous memory, which its host cannot take back without swap, and a read under
 such a budget is throttled for as long as it runs (761 to 1,729 s a gigabyte, PM M318),
 where one restored from its template holds that template's clean pages beside as much
-anonymous memory, which its host may take back. Builders hold little a pass could take
-(PM M295): what a
-builder's steps write it keeps in tmpfs layers, 148 MiB of Shmem after an npm install of 73
-MiB of packages, against 1.4 MiB of file pages, so its memory comes back as its layers
-leave memory, to its swap window or a layer on the host's disk as a run's (D190), not as
-D188's file pages. M268 at larger sizes.
+anonymous memory, which its host may take back. A builder gives back its files and what
+it holds plugged past its use at its build's word (above; PM M442, of its files a build at
+p50 on each host: apt's 69 to 91 MiB, npm's 0.4 to 24, rust's 3 to 34), but most of what
+its steps write it keeps in tmpfs layers, 148 MiB of Shmem after an npm install of 73 MiB
+of packages against 1.4 MiB of file pages (PM M295), which no give-back of file pages
+takes: that comes back as its layers leave memory, to its swap window or a layer on the
+host's disk as a run's (D190). M268 at larger sizes.
 
 ### D189. Volumes' file data once, in the host's page cache: virtio-fs DAX windows (built: every share's window as long as its host's memory, but on a virtual machine on an AMD CPU)
 
@@ -13003,7 +13011,9 @@ given the rest as its build needs it, up to what it may have.
   a budget over the build leaves it, told again each pressure window where it changed
   (D188's builders): on Fedora an apt build's builder gave back 82 MiB of its files at
   p50 and unplugged up to 492 MiB, its build no slower beyond its rounds' spread than
-  with no budget (PM M442).
+  with no budget, and on Fedora, CI's runners and an M3 Ultra every builder answered 1 to
+  11 ms after its build's word at p50 (PM M442). The build's process asks, not the
+  daemon: a builder is its build's, not a run of the daemon's.
 - **What the kernel sized by the memory it booted with** is raised to what it sizes by all
   of it, so that a step sees what it saw in a builder booted with all its memory: the
   layers' tmpfs (`size=` and `nr_inodes=` of all of it, where `size=100%` would be of 512
