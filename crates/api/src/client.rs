@@ -542,9 +542,10 @@ fn said(what: &str, said: &str) -> String {
 /// The wait before dialing again, `p = sqrt(2 c w)`: pacing that balances one dial's cost `c`
 /// against the waiting so far `w`, both measured as this connect runs.
 ///
-/// - `c` is the time the last refused dial took, measured each dial: on HVF 5.5 µs at p50 to
-///   a socket not bound yet and 44 µs to a guest that does not listen yet
-///   (`docs/research/platform-measurements.md` M464).
+/// - `c` is the last refused dial's own work, its connect and its ask, measured each dial;
+///   not its wait for the guest's answer, which costs this thread nothing (a muxer holding a
+///   request for a guest whose vsock is not up yet waits seconds). On HVF (M464) 5.5 µs at
+///   p50 to a socket not bound yet.
 /// - `w` is how long this connect has waited so far, and stands for the wait still to come.
 /// - Pausing `p` between dials, a wait of `w` takes `w / p` dials, `c w / p` of dialing; and a
 ///   guest that starts to listen at a uniform moment within a pause is reached `p / 2` late on
@@ -576,18 +577,33 @@ enum Attempt {
 /// bounds: it ends a request the guest leaves unanswered at Firecracker's
 /// `CONN_REQUEST_TIMEOUT_MS` (`crates/vmm/src/devices/virtio/vsock/conn.rs:26-27`), and the
 /// connection with the VM's process.
-fn handshake(vsock: &Path, port: u32, wait: Option<Duration>) -> Result<Socket, Attempt> {
-    let mut s = stream::connect(vsock).map_err(|e| match e.kind() {
-        // Not yet bound, or bound and not yet listening: the VM is starting.
-        io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused => Attempt::Again(format!("dialing: {e}")),
-        _ => Attempt::Refused(format!("{}: {e}", vsock.display())),
+/// `cost` is set to its own work, the connect and the ask, for `pause`.
+fn handshake(
+    vsock: &Path,
+    port: u32,
+    wait: Option<Duration>,
+    cost: &mut Duration,
+) -> Result<Socket, Attempt> {
+    let began = Instant::now();
+    // Its own work, the connect and the ask, as far as it got: not its wait for the answer.
+    let done = |cost: &mut Duration| *cost = began.elapsed();
+    let mut s = stream::connect(vsock).map_err(|e| {
+        done(cost);
+        match e.kind() {
+            // Not yet bound, or bound and not yet listening: the VM is starting.
+            io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused => {
+                Attempt::Again(format!("dialing: {e}"))
+            }
+            _ => Attempt::Refused(format!("{}: {e}", vsock.display())),
+        }
     })?;
     if wait.is_some() {
         let timeouts = Stream::set_write_timeout(&s, wait).and_then(|()| Stream::set_read_timeout(&s, wait));
         timeouts.map_err(|e| Attempt::Refused(format!("its timeouts: {e}")))?;
     }
-    s.write_all(format!("CONNECT {port}\n").as_bytes())
-        .map_err(|e| Attempt::Again(format!("asking: {e}")))?;
+    let asked = s.write_all(format!("CONNECT {port}\n").as_bytes());
+    done(cost);
+    asked.map_err(|e| Attempt::Again(format!("asking: {e}")))?;
     let mut line = Vec::with_capacity(ANSWER);
     let mut byte = [0u8; 1];
     while line.last() != Some(&b'\n') {
@@ -633,11 +649,11 @@ impl Guest for ShardsGuest {
             if let Some(refusal) = self.gone(&mut lock(&self.shared.state)) {
                 return Err(refusal);
             }
-            let dialed = Instant::now();
+            let mut cost = Duration::ZERO;
             // One dial is always made, its answer awaited for what patience has left, or,
             // with none left (a patience of zero) or no clock, for the guest's own answer.
             let wait = left().filter(|l| !l.is_zero());
-            match handshake(&self.vsock, port, wait) {
+            match handshake(&self.vsock, port, wait, &mut cost) {
                 Ok(s) => {
                     lock(&self.shared.state).ready = true;
                     return Ok(Box::new(s));
@@ -649,7 +665,7 @@ impl Guest for ShardsGuest {
             // Waits out the pause, woken at once by the process's end.
             let state = lock(&self.shared.state);
             if !state.exited {
-                let pause = pause(dialed.elapsed(), began.elapsed(), left().unwrap_or(Duration::MAX));
+                let pause = pause(cost, began.elapsed(), left().unwrap_or(Duration::MAX));
                 let _ = self.shared.changed.wait_timeout(state, pause);
             }
         };
@@ -870,7 +886,8 @@ mod tests {
             s.write_all(answer).unwrap();
             s
         });
-        let got = handshake(&path, 5, None, &mut Duration::ZERO);
+        let mut cost = Duration::ZERO;
+        let got = handshake(&path, 5, None, &mut cost);
         drop(muxer.join().unwrap());
         got.err()
     }
