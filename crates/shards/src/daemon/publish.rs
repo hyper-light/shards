@@ -877,9 +877,16 @@ mod tests {
         // UDP was given could be refused TCP with WSAEACCES (CI windows-2025, run
         // 42320387272). On a busy host one of a few ports is free in UDP; a UDP bind that
         // held TCP's port would fail them all (CI run 38252923745 found the first taken).
-        let udp_free_beside_tcp = (0..16).any(|_| {
+        // Windows keeps UDP's blocks apart too, 100 ports a block and blocks side by side,
+        // and gives the ports it binds at 0 near one another: each TCP port is held until
+        // one is found free in UDP, so that each try is another number, out of a run of
+        // blocks (CI windows-2022, run 42348246426, the build tests' resolver).
+        let mut tried = Vec::new();
+        let udp_free_beside_tcp = (0..1024).any(|_| {
             let held = bind_one(&loopback, "", TCP, &|_| InUse::Host).unwrap();
-            bind_one(&loopback, &held.1.to_string(), UDP, &|_| InUse::Host).is_ok()
+            let free = bind_one(&loopback, &held.1.to_string(), UDP, &|_| InUse::Host).is_ok();
+            tried.push(held);
+            free
         });
         assert!(
             udp_free_beside_tcp,

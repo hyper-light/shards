@@ -10842,19 +10842,45 @@ fn a_remote_mcp_server_is_a_grant_of_that_server_alone() {
     // so that a name refused is shards' refusal, not the resolver's; big.example has an
     // answer too long for UDP, which comes truncated by UDP (RFC 1035 §4.2.1) and whole by
     // TCP.
-    // TCP's port first, one the host lets TCP have, then UDP's of its number: Windows
-    // keeps ranges of its dynamic ports from TCP alone (Hyper-V's and WinNAT's), where a
-    // number UDP was given could be refused TCP with WSAEACCES (CI windows-2025, run
-    // 42320387272). A number UDP already holds is tried again with another.
-    let (resolver, resolver_tcp) = (0..16)
-        .find_map(|_| {
-            let tcp = std::net::TcpListener::bind("0.0.0.0:0").unwrap();
-            let port = tcp.local_addr().unwrap().port();
-            std::net::UdpSocket::bind(("0.0.0.0", port))
-                .ok()
-                .map(|udp| (udp, tcp))
-        })
-        .expect("a port free in both TCP and UDP");
+    // A number free in TCP and UDP both. Windows keeps blocks of its dynamic ports from
+    // each protocol apart (Hyper-V's and WinNAT's, 100 ports a block and blocks side by
+    // side: `netsh int ipv4 show excludedportrange protocol=udp` on jupiter lists
+    // 58847-59346 as five), and gives the ports it binds at 0 near one another, so a port
+    // one protocol was given can sit in the other's block try after try (CI windows-2022
+    // and 2025, run 42348246426: 16 TCP ports, none UDP's). Each try holds what it was
+    // given until a pair is found, so the next is another number, and the protocols take
+    // turns binding first.
+    let (resolver, resolver_tcp) = {
+        let mut held = (Vec::new(), Vec::new());
+        let mut refused = Vec::new();
+        (0..1024)
+            .find_map(|n| {
+                if n % 2 == 0 {
+                    let tcp = std::net::TcpListener::bind("0.0.0.0:0").unwrap();
+                    let port = tcp.local_addr().unwrap().port();
+                    match std::net::UdpSocket::bind(("0.0.0.0", port)) {
+                        Ok(udp) => Some((udp, tcp)),
+                        Err(e) => {
+                            refused.push(format!("{port}/udp: {e}"));
+                            held.0.push(tcp);
+                            None
+                        }
+                    }
+                } else {
+                    let udp = std::net::UdpSocket::bind("0.0.0.0:0").unwrap();
+                    let port = udp.local_addr().unwrap().port();
+                    match std::net::TcpListener::bind(("0.0.0.0", port)) {
+                        Ok(tcp) => Some((udp, tcp)),
+                        Err(e) => {
+                            refused.push(format!("{port}/tcp: {e}"));
+                            held.1.push(udp);
+                            None
+                        }
+                    }
+                }
+            })
+            .unwrap_or_else(|| panic!("no port free in both TCP and UDP: {refused:?}"))
+    };
     let resolver_port = resolver.local_addr().unwrap().port();
     let resolver_at = format!("{host}:{resolver_port}");
     let answer = move |q: &[u8]| -> Vec<u8> {
