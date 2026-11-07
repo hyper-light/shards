@@ -191,27 +191,34 @@ impl UnixStream {
         }
     }
 
+    /// Waits at most `ms` milliseconds (-1: for ever) for the socket to be readable or, with
+    /// `write`, writable, or to have ended: whether it is (WSAPoll).
+    pub fn ready_within(&self, write: bool, ms: i32) -> io::Result<bool> {
+        let mut fd = WSAPOLLFD {
+            fd: self.socket.0,
+            events: if write { POLLWRNORM } else { POLLRDNORM },
+            revents: 0,
+        };
+        // SAFETY: one entry, a socket this value owns.
+        let n = unsafe { WSAPoll(&raw mut fd, 1, ms) };
+        if n < 0 {
+            return Err(last());
+        }
+        Ok(n > 0)
+    }
+
     /// A write of `buf`, waiting no longer than the stream's write timeout for room: a
     /// WSAPoll first, as a read polls before it reads (`read_into`).
     fn write_from(&self, buf: &[u8]) -> io::Result<usize> {
         let ms = self.write_ms.load(Ordering::Relaxed);
-        if ms != 0 && !self.nonblocking.load(Ordering::Relaxed) {
-            let mut fd = WSAPOLLFD {
-                fd: self.socket.0,
-                events: POLLWRNORM,
-                revents: 0,
-            };
-            // SAFETY: one entry, a socket this value owns.
-            let n = unsafe { WSAPoll(&raw mut fd, 1, i32::try_from(ms).unwrap_or(i32::MAX)) };
-            if n < 0 {
-                return Err(last());
-            }
-            if n == 0 {
-                return Err(io::Error::new(
-                    io::ErrorKind::TimedOut,
-                    "no room within the write timeout",
-                ));
-            }
+        if ms != 0
+            && !self.nonblocking.load(Ordering::Relaxed)
+            && !self.ready_within(true, i32::try_from(ms).unwrap_or(i32::MAX))?
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "no room within the write timeout",
+            ));
         }
         write_from(self.socket.0, buf)
     }
@@ -222,23 +229,14 @@ impl UnixStream {
     /// state, to be closed, where a poll that times out leaves it as it was.
     fn read_into(&self, buf: &mut [u8]) -> io::Result<usize> {
         let ms = self.read_ms.load(Ordering::Relaxed);
-        if ms != 0 && !self.nonblocking.load(Ordering::Relaxed) {
-            let mut fd = WSAPOLLFD {
-                fd: self.socket.0,
-                events: POLLRDNORM,
-                revents: 0,
-            };
-            // SAFETY: one entry, a socket this value owns.
-            let n = unsafe { WSAPoll(&raw mut fd, 1, i32::try_from(ms).unwrap_or(i32::MAX)) };
-            if n < 0 {
-                return Err(last());
-            }
-            if n == 0 {
-                return Err(io::Error::new(
-                    io::ErrorKind::TimedOut,
-                    "no data within the read timeout",
-                ));
-            }
+        if ms != 0
+            && !self.nonblocking.load(Ordering::Relaxed)
+            && !self.ready_within(false, i32::try_from(ms).unwrap_or(i32::MAX))?
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "no data within the read timeout",
+            ));
         }
         read_into(self.socket.0, buf)
     }

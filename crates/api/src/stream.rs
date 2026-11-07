@@ -1,5 +1,6 @@
-//! The [`Stream`] every guest connection is: a Unix stream socket whose timeouts and reads
-//! wait in poll(2), or on Windows shards' own AF_UNIX socket, which polls them already.
+//! The [`Stream`] every guest connection is: a Unix stream socket, or on Windows shards' own
+//! AF_UNIX socket, non-blocking, whose reads and writes wait in a poll (poll(2), WSAPoll) to
+//! their timeouts.
 
 use std::io::{self, Read, Write};
 use std::net::Shutdown;
@@ -17,7 +18,6 @@ pub(crate) struct Socket {
     inner: shards_afunix::UnixStream,
     /// How long a read and a write wait, in ns, 0 for ever: shared by its clones, as a
     /// socket's own timeouts are.
-    #[cfg(unix)]
     waits: std::sync::Arc<[std::sync::atomic::AtomicU64; 2]>,
 }
 
@@ -39,28 +39,19 @@ pub(crate) fn pair() -> io::Result<(Socket, Socket)> {
     Ok((Socket::new(a)?, Socket::new(b)?))
 }
 
-#[cfg(unix)]
-mod unix {
+/// Every stream's waits, on every OS: a non-blocking socket, and each read and write looping
+/// its partial I/O and a poll to its own timeout.
+mod waits {
     use std::io;
-    use std::os::fd::AsRawFd;
     use std::sync::atomic::Ordering;
     use std::time::{Duration, Instant};
 
     use super::Socket;
 
-    const READ: usize = 0;
-    const WRITE: usize = 1;
+    pub(super) const READ: usize = 0;
+    pub(super) const WRITE: usize = 1;
 
     impl Socket {
-        /// Its socket made non-blocking, its waits this value's (`waiting`).
-        pub(super) fn new(inner: std::os::unix::net::UnixStream) -> io::Result<Socket> {
-            inner.set_nonblocking(true)?;
-            Ok(Socket {
-                inner,
-                waits: std::sync::Arc::default(),
-            })
-        }
-
         pub(super) fn set_wait(&self, which: usize, timeout: Option<Duration>) -> io::Result<()> {
             let ns = nanos(timeout)?;
             if let Some(wait) = self.waits.get(which) {
@@ -70,7 +61,7 @@ mod unix {
         }
 
         /// Does `op`, a read (`READ`) or a write (`WRITE`) on the non-blocking socket, as
-        /// far as it goes now, and where it would block, waits in poll(2) until it can go on
+        /// far as it goes now, and where it would block, waits in a poll until it can go on
         /// or has ended, at most its timeout from now: then fails `WouldBlock`, as std's
         /// sockets do at theirs on Unix. A write moves what the socket takes, so a peer that
         /// stops reading holds no write past its timeout, and a read a clone raced to the
@@ -84,11 +75,6 @@ mod unix {
             let deadline = (ns != 0)
                 .then(|| Instant::now().checked_add(Duration::from_nanos(ns)))
                 .flatten();
-            let events = if which == READ {
-                libc::POLLIN
-            } else {
-                libc::POLLOUT
-            };
             loop {
                 match op() {
                     Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
@@ -102,25 +88,13 @@ mod unix {
                         if left.is_zero() {
                             return Err(io::ErrorKind::WouldBlock.into());
                         }
-                        // In poll(2)'s unit, ms (poll(2): "timeout specifies the number of
-                        // milliseconds"), rounded up: a wait of 0 returns at once, and would
-                        // spin until the deadline.
-                        libc::c_int::try_from(left.as_nanos().div_ceil(1_000_000)).unwrap_or(libc::c_int::MAX)
+                        // In the poll's unit, ms (poll(2): "timeout specifies the number of
+                        // milliseconds"; WSAPoll's likewise), rounded up: a wait of 0 returns
+                        // at once, and would spin until the deadline.
+                        i32::try_from(left.as_nanos().div_ceil(1_000_000)).unwrap_or(i32::MAX)
                     }
                 };
-                let mut fd = libc::pollfd {
-                    fd: self.inner.as_raw_fd(),
-                    events,
-                    revents: 0,
-                };
-                // SAFETY: poll(2) of one pollfd, of a socket this value holds open.
-                let n = unsafe { libc::poll(&raw mut fd, 1, wait) };
-                if n < 0 {
-                    let e = io::Error::last_os_error();
-                    if e.kind() != io::ErrorKind::Interrupted {
-                        return Err(e);
-                    }
-                }
+                self.poll_ready(which, wait)?;
             }
         }
     }
@@ -136,6 +110,49 @@ mod unix {
                 "cannot set a 0 duration timeout",
             )),
             Some(t) => Ok(u64::try_from(t.as_nanos()).unwrap_or(u64::MAX)),
+        }
+    }
+}
+
+#[cfg(unix)]
+mod unix {
+    use std::io;
+    use std::os::fd::AsRawFd;
+
+    use super::Socket;
+    use super::waits::READ;
+
+    impl Socket {
+        /// Its socket made non-blocking, its waits this value's (`waits`).
+        pub(super) fn new(inner: std::os::unix::net::UnixStream) -> io::Result<Socket> {
+            inner.set_nonblocking(true)?;
+            Ok(Socket {
+                inner,
+                waits: std::sync::Arc::default(),
+            })
+        }
+
+        /// Waits in poll(2) at most `ms` (-1: for ever) for it to be readable (`READ`) or
+        /// writable, or to have ended.
+        pub(super) fn poll_ready(&self, which: usize, ms: i32) -> io::Result<()> {
+            let mut fd = libc::pollfd {
+                fd: self.inner.as_raw_fd(),
+                events: if which == READ {
+                    libc::POLLIN
+                } else {
+                    libc::POLLOUT
+                },
+                revents: 0,
+            };
+            // SAFETY: poll(2) of one pollfd, of a socket this value holds open.
+            let n = unsafe { libc::poll(&raw mut fd, 1, ms) };
+            if n < 0 {
+                let e = io::Error::last_os_error();
+                if e.kind() != io::ErrorKind::Interrupted {
+                    return Err(e);
+                }
+            }
+            Ok(())
         }
     }
 
@@ -175,15 +192,25 @@ mod unix {
             self::size(what, value)
         }
     }
-
-    pub(super) const READING: usize = READ;
-    pub(super) const WRITING: usize = WRITE;
 }
 
 #[cfg(windows)]
 impl Socket {
+    /// Its socket made non-blocking, its waits this value's (`waits`), as on Unix: shards'
+    /// AF_UNIX socket's own timeouts poll and then send a whole buffer, which a peer that
+    /// stops reading holds for ever.
     fn new(inner: shards_afunix::UnixStream) -> io::Result<Socket> {
-        Ok(Socket { inner })
+        inner.set_nonblocking(true)?;
+        Ok(Socket {
+            inner,
+            waits: std::sync::Arc::default(),
+        })
+    }
+
+    /// Waits in WSAPoll at most `ms` (-1: for ever) for it to be readable (`READ`) or
+    /// writable, or to have ended.
+    fn poll_ready(&self, which: usize, ms: i32) -> io::Result<()> {
+        self.inner.ready_within(which == waits::WRITE, ms).map(drop)
     }
 }
 
@@ -191,19 +218,13 @@ impl Read for Socket {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         // Waited for in poll(2), which sees a peer's half-close that a read waiting on a
         // macOS socket can sleep through (PM M236).
-        #[cfg(unix)]
-        return self.waiting(unix::READING, || (&self.inner).read(buf));
-        #[cfg(windows)]
-        (&self.inner).read(buf)
+        self.waiting(waits::READ, || (&self.inner).read(buf))
     }
 }
 
 impl Write for Socket {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        #[cfg(unix)]
-        return self.waiting(unix::WRITING, || (&self.inner).write(buf));
-        #[cfg(windows)]
-        (&self.inner).write(buf)
+        self.waiting(waits::WRITE, || (&self.inner).write(buf))
     }
 
     fn flush(&mut self) -> io::Result<()> {
@@ -215,7 +236,6 @@ impl Stream for Socket {
     fn try_clone(&self) -> io::Result<Box<dyn Stream>> {
         Ok(Box::new(Socket {
             inner: self.inner.try_clone()?,
-            #[cfg(unix)]
             waits: self.waits.clone(),
         }))
     }
@@ -248,17 +268,11 @@ impl Stream for Socket {
     }
 
     fn set_read_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {
-        #[cfg(unix)]
-        return self.set_wait(unix::READING, timeout);
-        #[cfg(windows)]
-        self.inner.set_read_timeout(timeout)
+        self.set_wait(waits::READ, timeout)
     }
 
     fn set_write_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {
-        #[cfg(unix)]
-        return self.set_wait(unix::WRITING, timeout);
-        #[cfg(windows)]
-        self.inner.set_write_timeout(timeout)
+        self.set_wait(waits::WRITE, timeout)
     }
 }
 
@@ -307,14 +321,16 @@ mod tests {
 
     /// A timeout is kept as given, to its nanosecond: none rounded down to a shorter one or
     /// up to poll(2)'s millisecond, and none of them for ever (Hex HEX-GUEST-9).
-    #[cfg(unix)]
     #[test]
     fn a_timeout_is_kept_as_given() {
-        assert_eq!(unix::nanos(Some(Duration::from_micros(1500))).unwrap(), 1_500_000);
-        assert_eq!(unix::nanos(Some(Duration::from_nanos(1))).unwrap(), 1);
-        assert_eq!(unix::nanos(None).unwrap(), 0);
-        assert!(unix::nanos(Some(Duration::ZERO)).is_err());
-        assert_eq!(unix::nanos(Some(Duration::MAX)).unwrap(), u64::MAX);
+        assert_eq!(
+            waits::nanos(Some(Duration::from_micros(1500))).unwrap(),
+            1_500_000
+        );
+        assert_eq!(waits::nanos(Some(Duration::from_nanos(1))).unwrap(), 1);
+        assert_eq!(waits::nanos(None).unwrap(), 0);
+        assert!(waits::nanos(Some(Duration::ZERO)).is_err());
+        assert_eq!(waits::nanos(Some(Duration::MAX)).unwrap(), u64::MAX);
     }
 
     /// How long a timed operation here may take: its timeout, `UNSERVED_PATIENCE`, and
@@ -342,8 +358,13 @@ mod tests {
         let wrote = rx
             .recv_timeout(guard)
             .expect("the write blocked past its timeout");
+        // Winsock may take the whole buffer from a non-blocking send (jupiter took 64 MiB);
+        // what the write may not do is block past its timeout.
         assert!(
-            matches!(wrote, Err(io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut)),
+            matches!(
+                wrote,
+                Ok(()) | Err(io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut)
+            ),
             "{wrote:?}"
         );
     }
