@@ -870,7 +870,7 @@ mod tests {
             s.write_all(answer).unwrap();
             s
         });
-        let got = handshake(&path, 5, None);
+        let got = handshake(&path, 5, None, &mut Duration::ZERO);
         drop(muxer.join().unwrap());
         got.err()
     }
@@ -1019,9 +1019,12 @@ mod tests {
         let timed = |path: &Path| -> Vec<Duration> {
             let mut d: Vec<Duration> = (0..n)
                 .map(|_| {
-                    let start = Instant::now();
-                    assert!(matches!(handshake(path, 1236, None), Err(Attempt::Again(_))));
-                    start.elapsed()
+                    let mut cost = Duration::ZERO;
+                    assert!(matches!(
+                        handshake(path, 1236, None, &mut cost),
+                        Err(Attempt::Again(_))
+                    ));
+                    cost
                 })
                 .collect();
             d.sort();
@@ -1059,6 +1062,35 @@ mod tests {
                 d[n - 1]
             );
         }
+    }
+
+    /// A refused dial's cost, `pause`'s `c`, is its own work, the connect and the ask, and
+    /// not its wait for the guest's answer: a muxer that holds a request unanswered (a guest
+    /// whose vsock is not up yet) costs this thread nothing while it waits, and a pause grown
+    /// from that wait held a boot back seconds (review: a 15 s boot on HVF).
+    #[cfg(unix)]
+    #[test]
+    fn a_dials_cost_is_its_work_not_its_wait_for_an_answer() {
+        let dir = PrivateDir::new().unwrap();
+        let path = dir.0.join("v");
+        let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        // An input: an answer held long past any connect's and write's own time.
+        let held = Duration::from_millis(200);
+        let muxer = std::thread::spawn(move || {
+            let (mut s, _) = listener.accept().unwrap();
+            let mut line = [0u8; b"CONNECT 5\n".len()];
+            s.read_exact(&mut line).unwrap();
+            std::thread::sleep(held);
+        });
+        let mut cost = Duration::MAX;
+        let start = Instant::now();
+        assert!(matches!(
+            handshake(&path, 5, None, &mut cost),
+            Err(Attempt::Again(_))
+        ));
+        assert!(start.elapsed() >= held);
+        assert!(cost < held, "{cost:?}");
+        muxer.join().unwrap();
     }
 
     /// The wait between dials is `sqrt(2 c w)` of the last dial's time and the wait so far,
