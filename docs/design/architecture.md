@@ -4901,6 +4901,12 @@ Compose, the SDKs, Testcontainers) reaches the machine's microVMs:
   - a socket someone removed is bound again as the daemon next looks, as its own are, and
     so is one a context's removal took before the context was made again, which a socket
     kept by name alone would have left unserved;
+  - a context's removal takes its record and then its socket under the contexts' lock
+    (`contexts/.lock`), under which the daemon binds a context's socket only where its
+    record is still there: once `remove context` returns, its socket is gone and no daemon
+    binds it again. Bound for a record read before the removal, as a pass that found the
+    socket gone bound it again, the daemon served it after the removal had returned, until
+    its next look at the contexts (dev's CI 42336885403, x86_64 Linux);
   - as the daemon closes, the sockets go first and the clients that reached one by then are
     relayed, as those at its own sockets are served: no client is cut off as it exits;
   - a socket is bound beside its name and renamed to it once it listens, as `engine.sock`

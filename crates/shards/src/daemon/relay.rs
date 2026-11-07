@@ -10,7 +10,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 #[cfg(unix)]
 use std::os::fd::{AsRawFd as _, RawFd};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::sync::mpsc;
 use std::time::Instant;
@@ -35,7 +35,15 @@ struct Relay {
 }
 
 impl Relay {
-    fn bind(context: crate::context::Context, #[cfg(windows)] came: Came) -> io::Result<Relay> {
+    /// Context `name`'s socket, bound as its record in `home` is now; none where the record
+    /// is gone. Bound under the contexts' lock, which a removal takes the record and then
+    /// the socket under (context.rs, `remove`): a socket is never bound after a removal
+    /// returned, as one bound for a record read before it would be.
+    fn bind(home: &Path, name: &str, #[cfg(windows)] came: Came) -> io::Result<Option<Relay>> {
+        let _locked = crate::context::lock_contexts(home)?;
+        let Some(context) = crate::context::load(home, name).map_err(io::Error::other)? else {
+            return Ok(None);
+        };
         let path = crate::context::engine_socket(&context.name);
         if let Some(dir) = path.parent() {
             shards_vmm::platform::create_private_dir(dir)?;
@@ -44,7 +52,7 @@ impl Relay {
         let listener = super::listening_at(&path)?;
         let file = crate::os::path_id(&path)
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "its socket, bound, is gone"))?;
-        Ok(Relay {
+        Ok(Some(Relay {
             #[cfg(windows)]
             _taker: Taker::start(listener, context.name.clone(), came)?,
             #[cfg(unix)]
@@ -52,7 +60,7 @@ impl Relay {
             context,
             path,
             file,
-        })
+        }))
     }
 
     /// Whether the socket file at its path is still the one it bound.
@@ -249,7 +257,9 @@ impl<D: Disk> Daemon<D> {
                     for context in contexts {
                         match relays.served.get_mut(&context.name) {
                             Some(relay) => relay.context = context,
-                            None => self.serve_relay(relays, context),
+                            None => {
+                                self.serve_relay(relays, context.name);
+                            }
                         }
                     }
                 }
@@ -263,18 +273,21 @@ impl<D: Disk> Daemon<D> {
             .map(|(name, _)| name.clone())
             .collect();
         for name in lost {
-            if let Some(relay) = relays.served.remove(&name) {
+            if let Some(relay) = relays.served.remove(&name)
+                && self.serve_relay(relays, name.clone())
+            {
                 log(format!(
                     "context {name}: {} was removed; listening there again",
                     self.home.join(&relay.path).display()
                 ));
-                self.serve_relay(relays, relay.context);
             }
         }
     }
 
-    fn serve_relay(&self, relays: &mut Relays, context: crate::context::Context) {
-        let name = context.name.clone();
+    /// Serves context `name`'s engine socket, as its record is now ([`Relay::bind`]):
+    /// whether it does. Not where the record is gone: removed since a listing read it, or
+    /// since its socket was bound, whose removal went with it.
+    fn serve_relay(&self, relays: &mut Relays, name: String) -> bool {
         #[cfg(windows)]
         let came = match self.listener_wake.event().try_clone() {
             Ok(wake) => Came {
@@ -283,17 +296,23 @@ impl<D: Disk> Daemon<D> {
             },
             Err(e) => {
                 log(format!("context {name}: its engine is not served: {e}"));
-                return;
+                return false;
             }
         };
         match Relay::bind(
-            context,
+            &self.home,
+            &name,
             #[cfg(windows)]
             came,
         ) {
-            Ok(relay) => {
+            Ok(Some(relay)) => {
                 relays.unbound.remove(&name);
                 relays.served.insert(name, relay);
+                true
+            }
+            Ok(None) => {
+                relays.unbound.remove(&name);
+                false
             }
             Err(e) => {
                 if relays.unbound.insert(name.clone()) {
@@ -303,6 +322,7 @@ impl<D: Disk> Daemon<D> {
                         self.home.join(path).display()
                     ));
                 }
+                false
             }
         }
     }

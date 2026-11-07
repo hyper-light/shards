@@ -35,6 +35,33 @@ pub(crate) fn engine_socket(name: &str) -> PathBuf {
     Path::new("e").join(format!("{short}.sock"))
 }
 
+/// The lock of the home's contexts (`contexts/.lock`, a name no context's record has), held
+/// while a context's record and its engine's socket change together: [`remove`] takes the
+/// record and then the socket under it, and the daemon binds a context's socket under it
+/// only where the record is still there (relay.rs), so that once a removal returns no daemon
+/// serves the context's engine at its socket, nor binds it again. Let go before its file
+/// closes (PM M244).
+#[derive(Debug)]
+pub(crate) struct ContextsLock(fs::File);
+
+impl Drop for ContextsLock {
+    fn drop(&mut self) {
+        let _ = self.0.unlock();
+    }
+}
+
+/// [`ContextsLock`], taken (flock(2), LockFileEx on Windows); NotFound where the home has
+/// no `contexts` directory, and so no context.
+pub(crate) fn lock_contexts(home: &Path) -> io::Result<ContextsLock> {
+    let file = fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(home.join("contexts").join(".lock"))?;
+    file.lock()?;
+    Ok(ContextsLock(file))
+}
+
 /// Context `name`'s engine as `DOCKER_HOST` names one: its socket; on Windows the named
 /// pipe the file at that path names, as the home's own engine's is named
 /// ([`own_endpoint`]), or the path where its daemon has named none yet.
@@ -3193,13 +3220,17 @@ fn remove(home: &Path, names: &[&str]) -> Result<(), String> {
             return Err(format!("context {name:?} does not exist"));
         }
         let path = home.join("contexts").join(name);
+        // Its record, then its engine's socket, under the contexts' lock, which the daemon
+        // binds a context's socket under only where its record is there: one it bound
+        // before is removed here, and none is bound after. The daemon, watching the
+        // contexts, lets go of the listener whose socket went.
+        let locked = lock_contexts(home).map_err(at(&path))?;
         fs::remove_file(&path).map_err(at(&path))?;
         if current(home) == *name {
             let _ = fs::remove_file(home.join("context"));
         }
-        // Its engine's socket goes with it, which the daemon that serves it, watching the
-        // contexts, lets go of; one no daemon serves is removed here.
         let _ = fs::remove_file(home.join(engine_socket(name)));
+        drop(locked);
         let _ = writeln!(io::stdout(), "{name}");
     }
     Ok(())
