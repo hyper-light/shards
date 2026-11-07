@@ -2087,6 +2087,56 @@ fn a_direct_boot_writes_through_a_share_and_not_through_a_read_only_one() {
     assert!(!ro.join("from-guest").exists());
 }
 
+/// `run --kernel … --share DIR` ended at its deadline leaves nothing it started running: on
+/// Windows its share process breaks away from any job its caller holds (review 11), so the
+/// harness ends what is under the run itself, as it ends the run (`common::run_until`).
+#[cfg(windows)]
+#[test]
+fn a_direct_boot_ended_at_its_deadline_leaves_none_of_its_processes() {
+    if cannot_run_vms() {
+        return;
+    }
+    let dir = common::TempDir::new("share-ended");
+    let rw = dir.join("rw");
+    std::fs::create_dir(&rw).unwrap();
+    let args = [
+        "run",
+        "--kernel",
+        kernel().to_str().unwrap(),
+        "--init",
+        test_guest().to_str().unwrap(),
+        "--memory",
+        "256",
+        // The echo guest serves until it is ended: the run is still going at its deadline.
+        "--cmdline",
+        "console=ttyS0 quiet shards_test=echo",
+        "--share",
+        rw.to_str().unwrap(),
+    ];
+    let asked: Vec<String> = std::iter::once("shards").chain(args).map(String::from).collect();
+    let mut cmd = common::command();
+    cmd.args(args);
+    let Err(ended) = common::run_until(cmd, &asked, E2E.get()) else {
+        panic!("an echo guest's run ended by itself");
+    };
+    // Its share process is `shards.exe` (its VM's, shards-vm.exe), started before the VM.
+    assert!(
+        ended
+            .started
+            .iter()
+            .any(|(_, name)| name.eq_ignore_ascii_case("shards.exe")),
+        "no share process under the run: {:?}\n{}",
+        ended.started,
+        ended.said
+    );
+    assert!(
+        ended.left.is_empty(),
+        "left running: {:?} of {:?}",
+        ended.left,
+        ended.started
+    );
+}
+
 /// shards-api's client of this build's `shards` conforms: every case of its conformance
 /// suite against real guests, the test guest as PID 1 (`echo` serves port 1234, `kmsg`
 /// powers off), each wait guarded by [`E2E`], recorded side by side with the suite's boots.
