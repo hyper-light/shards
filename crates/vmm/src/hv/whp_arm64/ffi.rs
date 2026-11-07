@@ -16,11 +16,11 @@ use std::sync::OnceLock;
 use windows_sys::Win32::Foundation::HANDLE;
 pub use windows_sys::Win32::System::Hypervisor::{
     WHV_ALLOCATE_VPCI_RESOURCE_FLAGS, WHV_CREATE_VPCI_DEVICE_FLAGS, WHV_SRIOV_RESOURCE_DESCRIPTOR,
-    WHV_VPCI_DEVICE_PROPERTY_CODE, WHV_VPCI_DEVICE_REGISTER, WHV_VPCI_INTERRUPT_TARGET, WHV_VPCI_MMIO_MAPPING,
-    WHV_VPCI_PROBED_BARS, WHvAllocateVpciResourceFlagNone, WHvCreateVpciDeviceFlagPhysicallyBacked,
-    WHvVpciBar0, WHvVpciBar5, WHvVpciConfigSpace, WHvVpciDevicePropertyCodeProbedBARs,
-    WHvVpciInterruptTargetFlagMulticast, WHvVpciInterruptTargetFlagNone, WHvVpciMmioRangeFlagReadAccess,
-    WHvVpciMmioRangeFlagWriteAccess,
+    WHV_VPCI_DEVICE_PROPERTY_CODE, WHV_VPCI_DEVICE_REGISTER, WHV_VPCI_INTERRUPT_TARGET,
+    WHV_VPCI_MMIO_MAPPING, WHV_VPCI_PROBED_BARS, WHvAllocateVpciResourceFlagNone,
+    WHvCreateVpciDeviceFlagPhysicallyBacked, WHvVpciBar0, WHvVpciBar5, WHvVpciConfigSpace,
+    WHvVpciDevicePropertyCodeProbedBARs, WHvVpciInterruptTargetFlagMulticast, WHvVpciInterruptTargetFlagNone,
+    WHvVpciMmioRangeFlagReadAccess, WHvVpciMmioRangeFlagWriteAccess,
 };
 use windows_sys::Win32::System::LibraryLoader::{
     GetProcAddress, LOAD_LIBRARY_SEARCH_SYSTEM32, LoadLibraryExW,
