@@ -453,10 +453,21 @@ windows-2022's 58, each a snapshot's restore, PM M345):
 
 Still Unix's alone, not yet brought to Windows (open):
 
-- build's tests/context.rs (`#![cfg(unix)]`): fsutil's walk recorded on a Unix tree
-  (testdata/contexts-answers.json); no answers recorded from fsutil on Windows.
-- the git crate's `a_kept_git_dir_is_one_git_reads_as_its_own` (tests/real_git.rs,
-  `cfg(unix)`): its fixture made with Unix modes and a symlink.
+- build's tests/context.rs: ungated whole (p/tests-windows-last), its oracle held on
+  Windows to testdata/contexts-answers-windows.json, fsutil's own walk on Windows that
+  `scripts/build/generate --contexts` records there (the tree's FIFO left out, which
+  Windows keeps in no directory; a file's other names sent as links, shards' D180
+  difference from stat_windows.go's fsutil), and its races held to Windows' refusal by
+  sharing; closed once those answers are recorded and CI's Windows runs pass it. Its
+  `a_symlink_put_in_a_files_place_is_not_followed` stays Unix's: Windows' `open`
+  (host.rs) opens through a reparse point, a file a symlink replaced after the walk read
+  from the symlink's target.
+- the git crate's `a_kept_git_dir_is_one_git_reads_as_its_own` (tests/real_git.rs):
+  ungated (p/tests-windows-last), its origin's symlink put in git's index, its checkout's an
+  NTFS symlink or, where this user may make none, the file git checks one out as with
+  `core.symlinks` false; Windows' git finds only `run.sh`'s mode changed under the kept
+  `filemode = true`, and nothing with `core.fileMode` false. Closed once CI's Windows runs
+  pass it.
 
 ## Where step 14 stands
 

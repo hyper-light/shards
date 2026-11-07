@@ -2,7 +2,10 @@
 // the fixture tree made in a temporary directory, then walked as buildx walks a local
 // source (BuildKit's client/solve.go prepareSyncedFiles, owners reset to root, and
 // session/filesync's filter of the include, exclude and follow paths asked for),
-// with fsutil as BuildKit dockerfile/1.27.1 vendors it. Writes contexts-answers.json.
+// with fsutil as BuildKit dockerfile/1.27.1 vendors it, each stat's path and link
+// slash-separated as fsutil's sender sends them (send.go walk). Writes the answers file
+// it is given: contexts-answers.json on a Unix host, contexts-answers-windows.json on
+// Windows, where the tree's FIFO is not made (host_windows.go mkfifo).
 package main
 
 import (
@@ -16,7 +19,6 @@ import (
 
 	"github.com/tonistiigi/fsutil"
 	"github.com/tonistiigi/fsutil/types"
-	"golang.org/x/sys/unix"
 )
 
 type entry struct {
@@ -46,11 +48,6 @@ func must(err error) {
 	}
 }
 
-func times(p string, tm [2]int64) {
-	ts := []unix.Timespec{{Sec: tm[0], Nsec: tm[1]}, {Sec: tm[0], Nsec: tm[1]}}
-	must(unix.UtimesNanoAt(unix.AT_FDCWD, p, ts, unix.AT_SYMLINK_NOFOLLOW))
-}
-
 func main() {
 	data, err := os.ReadFile(os.Args[1])
 	must(err)
@@ -78,7 +75,9 @@ func main() {
 			must(os.Link(filepath.Join(root, e.Target), p))
 			continue
 		case "fifo":
-			must(unix.Mkfifo(p, 0600))
+			if !mkfifo(p) {
+				continue
+			}
 		case "socket":
 			l, err := net.Listen("unix", p)
 			must(err)
@@ -95,7 +94,7 @@ func main() {
 			if e.Mode != nil {
 				mode = *e.Mode
 			}
-			must(unix.Chmod(p, mode))
+			must(chmod(p, mode))
 		}
 		if e.Type != "dir" {
 			times(p, tm)
@@ -145,8 +144,8 @@ func main() {
 				}
 				st := fi.Sys().(*types.Stat)
 				sent = append(sent, map[string]any{
-					"path": st.Path, "mode": st.Mode, "size": st.Size,
-					"link": st.Linkname, "mtime": st.ModTime,
+					"path": filepath.ToSlash(st.Path), "mode": st.Mode, "size": st.Size,
+					"link": filepath.ToSlash(st.Linkname), "mtime": st.ModTime,
 				})
 				return nil
 			})
