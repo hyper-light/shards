@@ -3313,11 +3313,9 @@ fn a_groups_cpu_held_each_second() {
 /// made in the group's job, its VM process and its network process, as a slice's scope holds
 /// both on Linux, and the group's `cgroup.procs`, which the daemon writes from the job
 /// (JobObjectBasicProcessIdList), lists them, and no process of a run under no group.
+#[cfg(windows)]
 #[test]
 fn a_groups_microvm_is_made_in_its_job_its_network_process_too() {
-    if !cfg!(windows) {
-        return;
-    }
     let Some((home, image)) = home("containers-group-procs") else {
         return;
     };
