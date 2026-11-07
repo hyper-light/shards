@@ -3336,19 +3336,13 @@ fn a_groups_microvm_is_made_in_its_job_its_network_process_too() {
         pid.stdout.trim().parse().unwrap_or_else(|_| panic!("{pid}"))
     };
     let (vm, other) = (pid_of("jobbed"), pid_of("free"));
-    // Each process's image, as Windows' own tasklist names it.
+    // Each process's image, as Toolhelp32 names it (common::processes): not tasklist, which
+    // asks WMI, which a standard user logged on over SSH is refused (step 10's arm64
+    // Windows host named both of the group's processes "").
     let image_of = |pid: u32| -> String {
-        let out = Command::new("tasklist")
-            .args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"])
-            .output()
-            .unwrap();
-        let text = String::from_utf8_lossy(&out.stdout).into_owned();
-        text.lines()
-            .find_map(|l| {
-                l.strip_prefix('"')
-                    .and_then(|l| l.split_once('"'))
-                    .map(|(n, _)| n.to_string())
-            })
+        common::processes()
+            .into_iter()
+            .find_map(|(p, _, name)| (p == pid).then_some(name))
             .unwrap_or_default()
     };
     // Written each pressure window while the group has a microVM: read until it lists both.
