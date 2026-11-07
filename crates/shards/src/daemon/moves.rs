@@ -50,8 +50,10 @@ const CHUNK: usize = 1 << 20;
 /// Where a moved microVM's files that its new machine had none of, or another of, are kept
 /// in its directory: what its snapshot restores against there.
 const BACKING: &str = "backing";
-/// A live move's rounds (D176 part 7): at most so many, the last the first that sends no
-/// more than so many bytes, 8 MiB, what a link of 1 Gb/s carries in 67 ms.
+/// A live move's rounds (D176 part 7): at most so many, Xen's own (xc_domain_save.c,
+/// `DEF_MAX_ITERS`, "limit us to 30 times round loop"), the last the first that sends no
+/// more than so many bytes, 8 MiB, what a link of 1 Gb/s carries in 67 ms, or no fewer than
+/// the round before, or that brings them to three times the first (`live::Stop`).
 const LIVE_ROUNDS: u32 = 30;
 const LIVE_ENOUGH: u64 = 8 << 20;
 
@@ -212,11 +214,15 @@ pub(crate) struct Backing {
 }
 
 /// What a machine lacks to take a [`Plan`]: its image, which the client loads there, and the
-/// files the export is to send.
+/// files the export is to send; and the packings of a move's stream it unpacks
+/// (`crate::packing`), none where a daemon of an earlier build answers, which is sent the
+/// stream as it is.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Needs {
     pub image: bool,
     pub files: Vec<String>,
+    #[serde(default)]
+    pub unpacks: Vec<String>,
 }
 
 /// `bytes`' SHA-256, in hex.
@@ -756,7 +762,7 @@ impl<D: Disk> Daemon<D> {
             Some("done") => self.move_done(args.get(1..).unwrap_or_default()),
             Some("ready") => self.move_ready(args.get(1).map_or("", String::as_str), asker, reply),
             Some("export") => self.move_export(args.get(1..).unwrap_or_default(), asker),
-            Some("import") => self.move_import(asker),
+            Some("import") => self.move_import(args.get(1..).unwrap_or_default(), asker),
             _ => Err(format!("no step of a move in {args:?}")),
         };
         match done {
@@ -941,12 +947,22 @@ impl<D: Disk> Daemon<D> {
                 "move: paused {paused} us to find its layer's and swap's data"
             ));
         }
+        let mut sent = Vec::new();
         for (n, line) in lines.enumerate() {
             let said: Vec<&str> = line.split_whitespace().collect();
             if let [pages, bytes, us] = said.as_slice() {
                 reply.err(&format!("move: round {n}: {pages} pages, {bytes} bytes, {us} us"));
+                sent.push(bytes.parse::<u64>().unwrap_or(0));
             }
         }
+        // Why its rounds ended, as its VM judged them.
+        let why = shards_vmm::vm::live::Stop::after(&sent, LIVE_ROUNDS, LIVE_ENOUGH)
+            .map_or("its VM ended them", shards_vmm::vm::live::Stop::said);
+        reply.err(&format!(
+            "move: rounds {}, {} bytes, ended: {why}",
+            sent.len(),
+            sent.iter().fold(0u64, |a, b| a.saturating_add(*b))
+        ));
         // Its last save, its guest's writes since the last round sent by its VM as the
         // rounds' last, and their end, before it answers.
         let asked = crate::containers::now();
@@ -1127,6 +1143,7 @@ impl<D: Disk> Daemon<D> {
         let mut needs = Needs {
             image: image.is_err(),
             files: Vec::new(),
+            unpacks: vec![crate::packing::CODEC.to_string()],
         };
         for file in &plan.files {
             let here = self.home.join(relative(&file.rel)?);
@@ -1234,17 +1251,28 @@ impl<D: Disk> Daemon<D> {
         Ok(String::new())
     }
 
-    /// `import`: a move's stream read from the client's descriptor, its files put in place,
-    /// its snapshot made to restore against this machine's files, and the microVM made here,
-    /// stopped as saved. Its name, once it is.
-    fn move_import(&self, asker: &Asker) -> Result<String, String> {
+    /// `import [--packed zstd]`: a move's stream read from the client's descriptor, unpacked
+    /// where it was packed (`crate::packing`), its files put in place, its snapshot made to
+    /// restore against this machine's files, and the microVM made here, stopped as saved. Its
+    /// name, once it is.
+    fn move_import(&self, args: &[String], asker: &Asker) -> Result<String, String> {
+        let packed = match args {
+            [] => false,
+            [flag, codec] if flag == "--packed" && codec == crate::packing::CODEC => true,
+            other => return Err(format!("import: {other:?}")),
+        };
         let input = asker
             .files
             .first()
             .ok_or("import: the client sent nothing to read")?
             .try_clone()
             .map_err(|e| e.to_string())?;
-        let mut input = io::BufReader::with_capacity(CHUNK, File::from(input));
+        let read = io::BufReader::with_capacity(CHUNK, File::from(input));
+        let mut input: Box<dyn Read> = if packed {
+            Box::new(crate::packing::Unpacked::new(read))
+        } else {
+            Box::new(read)
+        };
         let staging = self.private_staging()?;
         // A live move's rounds first, where it is one (D176 part 7): what its memory, layer
         // and swap held, kept to be laid under its last save's.

@@ -13,7 +13,7 @@ use hyper_quic::StreamId;
 use crate::frame::{self, Request, Tag};
 use crate::identity::{Fingerprint, Identity};
 use crate::invite::{self, Invitation};
-use crate::net::{Close, Command, ConnKey, Driver, Handler, Io, Read as StreamRead, Sender};
+use crate::net::{Close, Command, ConnKey, Driver, Handler, Io, Read as StreamRead, Seen, Sender};
 use crate::{Error, server, tls};
 
 /// How many bytes of a stream's frames wait unsent before its reader waits too: a QUIC
@@ -126,9 +126,18 @@ struct Client<'a> {
     answer: Option<Answer>,
     failed: Option<String>,
     done: bool,
+    /// What its connection saw of the path, as it ended.
+    seen: Seen,
 }
 
 impl Client<'_> {
+    /// What its connection saw, kept before it goes.
+    fn note(&mut self, io: &mut Io<'_>) {
+        if let Some(seen) = self.conn.and_then(|conn| io.seen(conn)) {
+            self.seen = seen;
+        }
+    }
+
     fn flush(&mut self, io: &mut Io<'_>) {
         let (Some(conn), Some(stream)) = (self.conn, self.stream) else {
             return;
@@ -213,6 +222,7 @@ impl Client<'_> {
         if self.failed.is_none() && self.answer.is_none() {
             self.failed = Some(why);
         }
+        self.note(io);
         if let Some(conn) = self.conn {
             io.close(conn, 0, "");
         }
@@ -221,6 +231,7 @@ impl Client<'_> {
 
     fn answered(&mut self, io: &mut Io<'_>, answer: Answer) {
         self.answer = Some(answer);
+        self.note(io);
         if let Some(conn) = self.conn {
             io.close(conn, 0, "");
         }
@@ -402,7 +413,10 @@ impl Handler for Client<'_> {
         }
     }
 
-    fn lost(&mut self, _io: &mut Io<'_>, _conn: ConnKey, why: &str, code: Option<u64>) {
+    fn lost(&mut self, io: &mut Io<'_>, _conn: ConnKey, why: &str, code: Option<u64>) {
+        if !self.done {
+            self.note(io);
+        }
         if self.answer.is_none() && self.failed.is_none() && code == Some(u64::from(server::UNENROLLED)) {
             // The daemon serves no client it has not enrolled now: refused before a stream
             // could say so, in the words the stream would have said.
@@ -519,6 +533,7 @@ pub fn exec_made(
     made: impl FnMut(&[u8]),
 ) -> Result<Result<i32, String>, Error> {
     let input = stdin.is_some();
+    let mut seen = Seen::default();
     let answer = run(
         identity,
         remote,
@@ -527,12 +542,43 @@ pub fn exec_made(
         Some((Box::new(stdout), Box::new(stderr))),
         Some(Box::new(steered)),
         Some(Box::new(made)),
+        &mut seen,
     )?;
+    exit_of(answer)
+}
+
+fn exit_of(answer: Answer) -> Result<Result<i32, String>, Error> {
     match answer {
         Answer::Exit(status) => Ok(Ok(status)),
         Answer::Refused(why) => Ok(Err(why)),
         Answer::Joined => Err(Error::new("the daemon answered a command as a join")),
     }
+}
+
+/// [`exec`], nothing steering it, and what its connection saw of the path it crossed
+/// ([`Seen`]), whether it was answered or not: a move's record of the link it crossed
+/// (D176 part 6).
+pub fn exec_seen(
+    identity: &Identity,
+    remote: Remote,
+    request: Request,
+    stdin: Option<Box<dyn Read + Send>>,
+    stdout: impl Write + Send + 'static,
+    stderr: impl Write + Send + 'static,
+) -> (Result<Result<i32, String>, Error>, Seen) {
+    let input = stdin.is_some();
+    let mut seen = Seen::default();
+    let answer = run(
+        identity,
+        remote,
+        Ask::Exec { request, input },
+        stdin,
+        Some((Box::new(stdout), Box::new(stderr))),
+        None,
+        None,
+        &mut seen,
+    );
+    (answer.and_then(exit_of), seen)
 }
 
 /// Joins the daemon `invitation` names, as the home whose identity is `identity`: Ok once
@@ -546,7 +592,16 @@ pub fn join(identity: &Identity, invitation: &Invitation) -> Result<Result<(), S
         name: invitation.name.clone(),
         secret: invitation.secret,
     };
-    match run(identity, remote, ask, None, None, None, None)? {
+    match run(
+        identity,
+        remote,
+        ask,
+        None,
+        None,
+        None,
+        None,
+        &mut Seen::default(),
+    )? {
         Answer::Joined => Ok(Ok(())),
         Answer::Refused(why) => Ok(Err(why)),
         Answer::Exit(_) => Err(Error::new("the daemon answered a join as a command")),
@@ -558,6 +613,8 @@ type Outputs = (Box<dyn Write + Send>, Box<dyn Write + Send>);
 /// What is given what a command tells of the microVM it made ([`exec_made`]).
 type Made<'a> = Box<dyn FnMut(&[u8]) + 'a>;
 
+/// Asks `ask` of `remote`; `seen` given what its connection saw, once it has ended.
+#[allow(clippy::too_many_arguments)]
 fn run(
     identity: &Identity,
     remote: Remote,
@@ -566,6 +623,7 @@ fn run(
     outputs: Option<Outputs>,
     steered: Option<Box<dyn FnOnce(Controls) + '_>>,
     made: Option<Made<'_>>,
+    seen: &mut Seen,
 ) -> Result<Answer, Error> {
     let config = tls::client(identity, remote.daemon)?;
     let any: SocketAddr = if remote.address.is_ipv4() {
@@ -599,6 +657,7 @@ fn run(
             answer: None,
             failed: None,
             done: false,
+            seen: Seen::default(),
         };
         let (mut driver, sender) = Driver::bind(any, None, client)?;
         if let Some((stdout, stderr)) = outputs {
@@ -639,6 +698,7 @@ fn run(
         sender.send(Command::Handler(Event::Connect))?;
         driver.run()?;
         let mut client = driver.into_handler();
+        *seen = client.seen;
         // The writers finish what they were given, and end.
         client.stdout = None;
         client.stderr = None;
