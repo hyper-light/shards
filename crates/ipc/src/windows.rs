@@ -2571,6 +2571,16 @@ pub fn given(pipe: usize) -> io::Result<Vec<(String, Handed)>> {
 mod tests {
     use super::*;
 
+    /// A detached child (a run's share process, review 11) runs, its end and status seen
+    /// as any child's, though it is in no console, process group nor Job of this process's.
+    #[test]
+    fn a_detached_child_runs_and_its_end_is_seen() {
+        let shell = std::env::var_os("ComSpec").unwrap();
+        let args = [OsStr::new("/c"), OsStr::new("exit 7")];
+        let child = spawn_detached(Path::new(&shell), &args, &[], &[]).unwrap();
+        assert_eq!(child.ended_status().unwrap(), 7);
+    }
+
     fn line(args: &[&str]) -> String {
         let args: Vec<&OsStr> = args.iter().map(OsStr::new).collect();
         let mut w = command_line(Path::new(r"C:\bin\shards-vm.exe"), &args);
