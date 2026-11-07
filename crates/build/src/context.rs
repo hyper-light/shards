@@ -454,7 +454,7 @@ fn read_symlink(tree: &host::Tree, p: &[u8], wildcard: bool) -> Result<Option<Ve
     }
     let stat = match tree.lstat(&clean) {
         Ok(s) => s,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound || names_nothing(&e) => return Ok(None),
         Err(e) => return Err(Error(e.to_string())),
     };
     if stat.mode & fm::SYMLINK == 0 {
@@ -465,6 +465,23 @@ fn read_symlink(tree: &host::Tree, p: &[u8], wildcard: bool) -> Result<Option<Ve
         return Ok(Some(vec![link]));
     }
     Ok(Some(vec![go::join(&[b"/", &go::join(&[&parent, &link])])]))
+}
+
+/// A name the host's filesystem cannot hold names no entry of the tree: fsutil's statFile
+/// finds a path by walking its parent's entries, so `sr*` there is not found, where
+/// Windows refuses the name itself (ERROR_INVALID_NAME, 123: `*` and `?` are reserved,
+/// "Naming Files, Paths, and Namespaces", Microsoft Learn). Unix names hold them.
+fn names_nothing(e: &std::io::Error) -> bool {
+    #[cfg(windows)]
+    {
+        const ERROR_INVALID_NAME: i32 = 123;
+        e.raw_os_error() == Some(ERROR_INVALID_NAME)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = e;
+        false
+    }
 }
 
 fn contains_wildcards(name: &[u8]) -> bool {
