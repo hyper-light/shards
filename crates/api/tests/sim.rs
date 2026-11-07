@@ -309,8 +309,18 @@ mod client {
     #[test]
     fn no_clock_ends_with_shards() {
         let dir = shards_testdir::TempDir::new("api-noclock").unwrap();
-        // An input: shards ends after the connect has begun.
-        let bin = stand_in(&dir, "sleep 0.2; echo 'no kernel at kernel' >&2; exit 7");
+        // An input: shards ends this long after it starts, so after the connect has begun. Each
+        // wait below is bounded by it plus the recorded wait for a stand-in's end (`patience()`),
+        // as the input is the test's own, not part of what the record timed.
+        let ends_after = Duration::from_millis(200);
+        let bound = ends_after + patience();
+        let bin = stand_in(
+            &dir,
+            &format!(
+                "sleep {}; echo 'no kernel at kernel' >&2; exit 7",
+                ends_after.as_secs_f64()
+            ),
+        );
         let g = Shards
             .boot(&GuestSpec {
                 binary: Some(bin.clone()),
@@ -319,7 +329,7 @@ mod client {
             .unwrap();
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || tx.send(g.connect(ECHO, Duration::MAX).err()));
-        match rx.recv_timeout(patience()).unwrap() {
+        match rx.recv_timeout(bound).unwrap() {
             Some(Refusal::Boot(why)) => assert!(why.contains("no kernel at kernel"), "{why}"),
             other => panic!("{other:?}"),
         }
@@ -332,7 +342,7 @@ mod client {
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || tx.send(g.wait_for(Duration::MAX)));
         assert!(matches!(
-            rx.recv_timeout(patience()).unwrap(),
+            rx.recv_timeout(bound).unwrap(),
             Ok(Some(End::Failed(_)))
         ));
     }
