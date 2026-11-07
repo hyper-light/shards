@@ -20442,3 +20442,21 @@ revision before comparing a changed API/implementation.
 - **Reading.** At 150 ms waited, `pause` is 1.3 ms with a 5.5 µs dial and 3.6 ms with a 44 µs
   one, so dialing holds 0.4% and 1.2% of a thread, and a guest that starts to listen is
   reached about half a pause later on average.
+
+### M465. shards-api's boots under the E2E suite's own load (boot.rs's `E2E` bound)
+
+- **Question.** boot.rs's shards-api tests run side by side with the file's other boots.
+  How long does a boot of the test guest to its echo port answering take there, and a
+  share-mode boot to its power-off, so that their bound (`E2E`, twice the slowest) is
+  recorded rather than copied?
+- **Method.** `shards_api_boot_under_the_suites_load` (5 of each), in the whole of
+  `cargo test -p shards --test boot -- --nocapture`, as CI runs it.
+- **Found.**
+
+  | host class | host, date, load, commit | boot to its port answering, p50 / max | share mode to power-off, p50 / max |
+  |---|---|---|---|
+  | macOS-HVF | adas-mac-studio-2 (Mac16,9, macOS 26.2), launchd one-shot, 2026-11-07T01:22Z, load 8.8-10.7, 33c3a40e + boot.rs's E2E | 186.9 ms / 6.2025 s | 47.5 ms / 78.3 ms |
+
+- **Reading.** Side by side with the suite a boot can wait 6.2 s, where alone it took at
+  most 0.25 s (M463): the bound is twice the slowest under the suite, 12.4 s on HVF. A
+  class without a record seeds from the slowest of any (`shards_api::record::Learned`).

@@ -17,6 +17,14 @@ use common::{
 
 const TIMEOUT: Duration = Duration::from_secs(60);
 const EXIT_RESET: i32 = 3;
+/// How long shards-api's waits here may take, side by side with this file's other boots as
+/// the suite runs them (`shards_api::record::Learned`): twice the slowest boot of the test
+/// guest to its port answering recorded under the suite on each host class
+/// (`shards_api_boot_under_the_suites_load`, docs/research/platform-measurements.md M465).
+static E2E: shards_api::record::Learned = shards_api::record::Learned::new(
+    "boot.rs E2E",
+    &[("macOS-HVF", Duration::from_nanos(6_202_512_000))],
+);
 
 /// Kernel log lines that show the machine as each architecture's firmware describes it.
 fn machine_lines() -> Vec<String> {
@@ -2078,14 +2086,13 @@ fn a_direct_boot_writes_through_a_share_and_not_through_a_read_only_one() {
 
 /// shards-api's client of this build's `shards` conforms: every case of its conformance
 /// suite against real guests, the test guest as PID 1 (`echo` serves port 1234, `kmsg`
-/// powers off), each wait guarded by this file's TIMEOUT, as its other boots are: they run
-/// side by side with the suite's.
+/// powers off), each wait guarded by [`E2E`], recorded side by side with the suite's boots.
 #[test]
 fn shards_api_conforms() {
     if cannot_run_vms() {
         return;
     }
-    let patience = TIMEOUT;
+    let patience = E2E.get();
     let spec = |mode: &str| api_spec(&format!("console=ttyS0 quiet shards_test={mode}"));
     conformance::run(&conformance::Subject {
         guests: &shards_api::Shards,
@@ -2125,12 +2132,85 @@ fn shards_api_shares_a_directory_and_a_read_only_one() {
         ..api_spec("console=ttyS0 quiet panic=-1 shards_test=share")
     };
     let guest = shards_api::Shards.boot(&spec).unwrap();
-    assert_eq!(guest.wait_for(TIMEOUT).unwrap(), Some(shards_api::End::PowerOff));
+    assert_eq!(
+        guest.wait_for(E2E.get()).unwrap(),
+        Some(shards_api::End::PowerOff)
+    );
     assert_eq!(
         std::fs::read_to_string(rw.join("from-guest")).unwrap(),
         "written by a shards guest through --share\n"
     );
     assert!(!ro.join("from-guest").exists());
+}
+
+/// Measures shards-api's boot of the test guest to its echo port answering, here, side by
+/// side with this file's other boots as the suite runs them, for [`E2E`]'s records:
+/// `SHARDS_API_E2E_N` (default 5) boots, printed as n, p50 and max with `--nocapture`.
+#[test]
+fn shards_api_boot_under_the_suites_load() {
+    if cannot_run_vms() {
+        return;
+    }
+    let n: usize = std::env::var("SHARDS_API_E2E_N")
+        .ok()
+        .and_then(|n| n.parse().ok())
+        .unwrap_or(5);
+    let mut took: Vec<Duration> = (0..n)
+        .map(|_| {
+            let start = std::time::Instant::now();
+            let guest = shards_api::Shards
+                .boot(&api_spec("console=ttyS0 quiet shards_test=echo"))
+                .unwrap();
+            drop(guest.connect(1234, Duration::MAX).unwrap());
+            let took = start.elapsed();
+            E2E.saw(took);
+            took
+        })
+        .collect();
+    let mut ended: Vec<Duration> = (0..n)
+        .map(|i| {
+            let dir = common::TempDir::new(&format!("api-e2e{i}"));
+            let (rw, ro) = (dir.join("rw"), dir.join("ro"));
+            for d in [&rw, &ro] {
+                std::fs::create_dir(d).unwrap();
+                std::fs::write(d.join("hello"), "hello through --share\n").unwrap();
+            }
+            let spec = shards_api::GuestSpec {
+                shares: vec![
+                    shards_api::Share {
+                        dir: rw.clone(),
+                        read_only: false,
+                    },
+                    shards_api::Share {
+                        dir: ro.clone(),
+                        read_only: true,
+                    },
+                ],
+                ..api_spec("console=ttyS0 quiet panic=-1 shards_test=share")
+            };
+            let start = std::time::Instant::now();
+            let guest = shards_api::Shards.boot(&spec).unwrap();
+            assert_eq!(
+                guest.wait_for(Duration::MAX).unwrap(),
+                Some(shards_api::End::PowerOff)
+            );
+            let took = start.elapsed();
+            E2E.saw(took);
+            took
+        })
+        .collect();
+    for (what, d) in [
+        ("boot to its port answering", &mut took),
+        ("a share mode's boot to its power-off", &mut ended),
+    ] {
+        d.sort();
+        if let (Some(p50), Some(max)) = (d.get(n / 2), d.last()) {
+            println!(
+                "e2e-wait shards-api {what} under the suite: n={n} p50={p50:?} max={max:?} ({})",
+                shards_api::record::CLASS
+            );
+        }
+    }
 }
 
 /// A shards-api spec of this build's `shards`, kernel and test guest: one vCPU, 256 MiB (as
