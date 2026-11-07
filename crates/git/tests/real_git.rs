@@ -330,12 +330,23 @@ fn refs_resolve_against_real_git() {
 /// A `.git` written for a checkout (ADD --keep-git-dir) is one git reads as its own:
 /// `verify-pack` takes the pack's index, `fsck` finds nothing amiss, `status` finds the
 /// work tree clean, HEAD is the commit, detached, the history shallow, the branch kept.
+///
+/// The `.git` is a Linux checkout's (`filemode = true`, symlinks as symlinks), which a
+/// Windows host's git reads here from NTFS. There, Git for Windows' lstat gives every file
+/// mode 0600 or 0400, never an executable bit (compat/mingw.c `file_attr_to_st_mode`), so
+/// with the kept `filemode = true` its `status` finds `run.sh`'s mode changed and nothing
+/// else; with `core.fileMode` false, as `git init` and `git clone` set it on a file system
+/// that loses the executable bit (git-config(1)), it finds the work tree clean. Its
+/// `core.symlinks` is false unless set (compat/mingw.c `mingw_platform_has_symlinks`), so
+/// the symlink is checked out as an NTFS symlink where this user may make one, and else as
+/// git checks one out with `core.symlinks` false, "a small plain file that contains the
+/// link text" (git-config(1)): git reads either as the symlink it tracks.
 #[test]
-#[cfg(unix)]
 fn a_kept_git_dir_is_one_git_reads_as_its_own() {
     use shards_git::checkout::{self, Item};
     use shards_git::protocol;
     use shards_git::repo::{self, KeptRef, Tracked};
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt as _;
     if Command::new("git").arg("--version").output().is_err() {
         eprintln!("SKIP: no git on this host");
@@ -354,9 +365,19 @@ fn a_kept_git_dir_is_one_git_reads_as_its_own() {
     std::fs::write(dir.join("a/b/deep.txt"), "deep\n").unwrap();
     std::fs::write(dir.join("run.sh"), "#!/bin/sh\n").unwrap();
     std::fs::write(dir.join("empty"), "").unwrap();
-    std::os::unix::fs::symlink("old", dir.join("link")).unwrap();
     git(&dir, &["add", "-A"]);
     git(&dir, &["update-index", "--chmod=+x", "run.sh"]);
+    // The symlink `link` to `old`, put in the index as git tracks one: no symlink on the
+    // host's disk, which Windows lets few users make.
+    let target = fed(
+        git_command(&dir)
+            .arg("-C")
+            .arg(&dir)
+            .args(["hash-object", "-w", "--stdin"]),
+        b"old".to_vec(),
+    );
+    let cacheinfo = format!("120000,{},link", String::from_utf8(target).unwrap().trim());
+    git(&dir, &["update-index", "--add", "--cacheinfo", &cacheinfo]);
     git(&dir, &["commit", "-q", "-m", "two"]);
 
     let caps = protocol::advertisement(&upload_pack(&dir, true, b"")[..])
@@ -376,8 +397,11 @@ fn a_kept_git_dir_is_one_git_reads_as_its_own() {
             Item::Dir => std::fs::create_dir_all(&at).unwrap(),
             Item::File { executable, data, .. } => {
                 std::fs::write(&at, &data).unwrap();
-                let mode = if executable { 0o755 } else { 0o644 };
-                std::fs::set_permissions(&at, std::fs::Permissions::from_mode(mode)).unwrap();
+                #[cfg(unix)]
+                {
+                    let mode = if executable { 0o755 } else { 0o644 };
+                    std::fs::set_permissions(&at, std::fs::Permissions::from_mode(mode)).unwrap();
+                }
                 let oid = Oid::of(Kind::Blob, &data).unwrap();
                 let git_mode = if executable { 0o100755 } else { 0o100644 };
                 tracked.push(Tracked {
@@ -389,7 +413,17 @@ fn a_kept_git_dir_is_one_git_reads_as_its_own() {
                 });
             }
             Item::Symlink { target, .. } => {
-                std::os::unix::fs::symlink(std::str::from_utf8(&target).unwrap(), &at).unwrap();
+                let to = std::str::from_utf8(&target).unwrap();
+                #[cfg(unix)]
+                std::os::unix::fs::symlink(to, &at).unwrap();
+                #[cfg(windows)]
+                match std::os::windows::fs::symlink_file(to, &at) {
+                    Ok(()) => {}
+                    // ERROR_PRIVILEGE_NOT_HELD: no Developer Mode, nor
+                    // SeCreateSymbolicLinkPrivilege. Checked out as git does then.
+                    Err(e) if e.raw_os_error() == Some(1314) => std::fs::write(&at, to).unwrap(),
+                    Err(e) => panic!("{e}"),
+                }
                 let oid = Oid::of(Kind::Blob, &target).unwrap();
                 tracked.push(Tracked {
                     path: text,
@@ -423,7 +457,10 @@ fn a_kept_git_dir_is_one_git_reads_as_its_own() {
         let at = out.join(".git").join(path);
         std::fs::create_dir_all(at.parent().unwrap()).unwrap();
         std::fs::write(&at, bytes).unwrap();
+        #[cfg(unix)]
         std::fs::set_permissions(&at, std::fs::Permissions::from_mode(mode)).unwrap();
+        #[cfg(windows)]
+        let _ = mode;
     }
     for d in ["refs/tags", "objects/info"] {
         std::fs::create_dir_all(out.join(".git").join(d)).unwrap();
@@ -435,7 +472,21 @@ fn a_kept_git_dir_is_one_git_reads_as_its_own() {
         .unwrap();
     git(&out, &["verify-pack", idx.to_str().unwrap()]);
     git(&out, &["fsck", "--no-progress"]);
+    #[cfg(unix)]
     assert_eq!(git(&out, &["status", "--porcelain"]), b"", "a clean work tree");
+    #[cfg(windows)]
+    {
+        assert_eq!(
+            git(&out, &["status", "--porcelain"]),
+            b" M run.sh\n",
+            "NTFS keeps no executable bit for git to find"
+        );
+        assert_eq!(
+            git(&out, &["-c", "core.fileMode=false", "status", "--porcelain"]),
+            b"",
+            "a clean work tree"
+        );
+    }
     assert_eq!(
         git(&out, &["rev-parse", "HEAD"]).trim_ascii(),
         head.hex().as_bytes()

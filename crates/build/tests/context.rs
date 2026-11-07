@@ -1,9 +1,9 @@
 //! Holds shards' walk of a build context to buildx's: the fixture tree of
 //! testdata/contexts.json, made here as scripts/build/generate made it, must send what
-//! fsutil sent under each case's filters (testdata/contexts-answers.json). A symlink's
-//! permission bits are the host's own (0755 on macOS, 0777 on Linux) and BuildKit's
-//! receiver ignores them, so they are not compared.
-#![cfg(unix)]
+//! fsutil sent under each case's filters (testdata/contexts-answers.json, recorded on a
+//! Unix host; contexts-answers-windows.json, on Windows). A symlink's permission bits are
+//! the host's own (0755 on macOS, 0777 on Linux) and BuildKit's receiver ignores them, so
+//! they are not compared.
 #![allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
 
 mod common;
@@ -31,12 +31,60 @@ fn mode_of(m: u64) -> u64 {
     }
 }
 
+/// What fsutil sent on a Unix host, by case and path.
+const UNIX_ANSWERS: &str = include_str!("../testdata/contexts-answers.json");
+
+/// What fsutil sent on this host.
+#[cfg(unix)]
+const ANSWERS: &str = UNIX_ANSWERS;
+#[cfg(windows)]
+const ANSWERS: &str = include_str!("../testdata/contexts-answers-windows.json");
+
+/// The answers of `answers`, as shards sends them on this host. On Windows a file's other
+/// names go as links to its first, as fsutil sends them from a Unix host and not from
+/// Windows, whose `setUnixOpt` (stat_windows.go) records no inode to tell them by: shards
+/// tells them apart on NTFS (host.rs `lstat`, D180), so a file's link is the Unix answer's
+/// of its case and path. Elsewhere the answers as they are.
+fn as_sent_here(mut answers: Value) -> Value {
+    if cfg!(unix) {
+        return answers;
+    }
+    let unix: Value = serde_json::from_str(UNIX_ANSWERS).unwrap();
+    for case in answers.as_array_mut().unwrap() {
+        let name = case["name"].as_str().unwrap().to_string();
+        let Some(sent) = case.get_mut("sent").and_then(Value::as_array_mut) else {
+            continue;
+        };
+        let there = unix
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["name"] == name.as_str())
+            .unwrap();
+        for s in sent {
+            if s["mode"].as_u64().unwrap() as u32 & fm::SYMLINK != 0 {
+                continue;
+            }
+            let link = there["sent"]
+                .as_array()
+                .and_then(|a| a.iter().find(|u| u["path"] == s["path"]))
+                .map_or(Value::from(""), |u| u["link"].clone());
+            s["link"] = link;
+        }
+    }
+    answers
+}
+
 #[test]
 fn build_contexts_are_sent_whole() {
     let spec: Value = serde_json::from_str(include_str!("../testdata/contexts.json")).unwrap();
-    let answers: Value = serde_json::from_str(include_str!("../testdata/contexts-answers.json")).unwrap();
+    let answers = as_sent_here(serde_json::from_str(ANSWERS).unwrap());
     let tmp = shards_testdir::TempDir::new("context-test").unwrap();
-    common::make(&tmp, &spec["tree"]);
+    if !common::make(&tmp, &spec["tree"]) {
+        use std::io::Write as _;
+        let _ = writeln!(std::io::stderr(), "SKIP: this user may make no symlinks here");
+        return;
+    }
     let root = std::fs::canonicalize(&tmp).unwrap();
     let mut failed = Vec::new();
     for (case, want) in spec["cases"]
@@ -131,7 +179,9 @@ fn an_edit_after_the_context_is_read_does_not_reach_the_build() {
 /// write, so every state the file passes through is a whole version, and a snapshot
 /// mixing two could only be a torn read. Both ways of taking it, a large file cloned and
 /// a small one packed; by a writer that holds the file open, which no lease keeps off,
-/// and by one that opens it for each version, which a lease makes wait (host::Stage).
+/// and by one that opens it for each version, which a lease makes wait (host::Stage). On
+/// Windows a take opens the file sharing reads alone (host.rs `open`): a take is refused
+/// while the writer holds it, and the writer while a take does ([`is_refusal`], [`writable`]).
 #[test]
 fn a_file_written_while_it_is_taken_is_one_version_or_refused() {
     for held in [true, false] {
@@ -246,6 +296,25 @@ fn a_context_load_costs() {
     }
 }
 
+/// Whether `e` refuses a take: the file changed as it was read; on Windows also its writer
+/// holding it, which the take's open, sharing reads alone, is refused for
+/// (ERROR_SHARING_VIOLATION, host.rs `open`).
+fn is_refusal(e: &str) -> bool {
+    e.contains("file changed as the build read it") || (cfg!(windows) && e.contains("(os error 32)"))
+}
+
+/// `path` opened to write: on Windows once no take holds it, a take sharing reads alone
+/// (ERROR_SHARING_VIOLATION while one does, host.rs `open`).
+fn writable(path: &std::path::Path) -> std::fs::File {
+    loop {
+        match std::fs::File::options().write(true).open(path) {
+            Ok(f) => return f,
+            Err(e) if cfg!(windows) && e.raw_os_error() == Some(32) => std::thread::yield_now(),
+            Err(e) => panic!("{}: {e}", path.display()),
+        }
+    }
+}
+
 /// Takes the file `takes` times as a writer rewrites it, each version one write: `held`,
 /// through one descriptor; else opening it for each. How many were taken and refused.
 fn race(size: usize, held: bool, takes: usize) -> (usize, usize) {
@@ -273,7 +342,7 @@ fn race(size: usize, held: bool, takes: usize) -> (usize, usize) {
     std::thread::scope(|s| {
         let _stop = Stop(&stop);
         s.spawn(|| {
-            let open = || std::fs::File::options().write(true).open(&src).unwrap();
+            let open = || writable(&src);
             let mut f = open();
             let mut n = 0u8;
             while !stop.load(std::sync::atomic::Ordering::Relaxed) {
@@ -300,7 +369,7 @@ fn race(size: usize, held: bool, takes: usize) -> (usize, usize) {
                     }
                 }
                 Err(e) => {
-                    assert!(e.to_string().contains("file changed as the build read it"), "{e}");
+                    assert!(is_refusal(&e.to_string()), "{e}");
                     refused += 1;
                 }
             }
@@ -329,6 +398,7 @@ fn race(size: usize, held: bool, takes: usize) -> (usize, usize) {
 /// A context loaded while one of its files is rewritten without pause: each load takes a
 /// version the file had, or is refused as the file changing. On macOS the whole tree is
 /// cloned at once and its files taken from the clone; elsewhere each is taken on its own.
+/// On Windows a load is also refused while the writer holds the file ([`is_refusal`]).
 #[test]
 fn a_context_written_while_it_is_loaded_is_one_version_or_refused() {
     use shards_build::data::Sources;
@@ -351,7 +421,7 @@ fn a_context_written_while_it_is_loaded_is_one_version_or_refused() {
         std::thread::scope(|s| {
             let _stop = Stop(&stop);
             s.spawn(|| {
-                let open = || std::fs::File::options().write(true).open(&path).unwrap();
+                let open = || writable(&path);
                 let mut f = open();
                 let mut n = 0u8;
                 while !stop.load(std::sync::atomic::Ordering::Relaxed) {
@@ -384,7 +454,7 @@ fn a_context_written_while_it_is_loaded_is_one_version_or_refused() {
                         taken += 1;
                     }
                     Err(e) => {
-                        assert!(e.0.contains("file changed as the build read it"), "{}", e.0);
+                        assert!(is_refusal(&e.0), "{}", e.0);
                         refused += 1;
                     }
                 }
@@ -509,16 +579,82 @@ fn a_directory_that_does_not_clone_is_taken_a_file_at_a_time() {
     drop(sources);
 }
 
-/// A file a symlink replaced since the walk is not followed out of the context.
+/// A file a symlink replaced since the walk is not followed out of the context: refused as
+/// a link, Unix's ELOOP (O_NOFOLLOW), Windows' ERROR_STOPPED_ON_SYMLINK (host.rs `open`).
 #[test]
 fn a_symlink_put_in_a_files_place_is_not_followed() {
     let dir = tmp("snapshot-link");
     std::fs::write(dir.join("outside"), b"secret").unwrap();
-    std::os::unix::fs::symlink(dir.join("outside"), dir.join("f")).unwrap();
+    #[cfg(unix)]
+    let (made, refused) = (
+        std::os::unix::fs::symlink(dir.join("outside"), dir.join("f")),
+        libc::ELOOP,
+    );
+    #[cfg(windows)]
+    let (made, refused) = (
+        std::os::windows::fs::symlink_file(dir.join("outside"), dir.join("f")),
+        681, // ERROR_STOPPED_ON_SYMLINK
+    );
+    match made {
+        Ok(()) => {}
+        // ERROR_PRIVILEGE_NOT_HELD: no Developer Mode, not elevated.
+        Err(e) if cfg!(windows) && e.raw_os_error() == Some(1314) => {
+            use std::io::Write as _;
+            let _ = writeln!(std::io::stderr(), "SKIP: this user may make no symlinks here");
+            return;
+        }
+        Err(e) => panic!("{e}"),
+    }
     std::fs::create_dir(dir.join("stage")).unwrap();
     let mut stage = shards_build::host::Stage::new(&dir.join("stage")).unwrap();
     let e = stage.take(&dir.join("f")).unwrap_err();
+    assert_eq!(e.raw_os_error(), Some(refused), "{e}");
+    let e = stage.read(&dir.join("f")).unwrap_err();
+    assert_eq!(e.raw_os_error(), Some(refused), "{e}");
     stage.finish().unwrap();
     assert_eq!(std::fs::metadata(dir.join("stage/pack")).unwrap().len(), 0, "{e}");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// A file Windows keeps as a reparse point that is no link, here one WOF compressed (`compact
+/// /exe`, IO_REPARSE_TAG_WOF), is taken as the bytes it holds, not refused as a link nor read
+/// as its reparse data.
+#[test]
+#[cfg(windows)]
+fn a_reparse_point_that_is_no_link_is_taken_as_its_bytes() {
+    use std::os::windows::fs::MetadataExt as _;
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+    let dir = tmp("snapshot-wof");
+    let bytes: Vec<u8> = (0..256 << 10).map(|i: u32| b"shards"[(i % 6) as usize]).collect();
+    std::fs::write(dir.join("f"), &bytes).unwrap();
+    let compacted = std::process::Command::new("compact.exe")
+        .args(["/c", "/exe:xpress4k", "/q"])
+        .arg(dir.join("f"))
+        .output();
+    let attributes = std::fs::symlink_metadata(dir.join("f"))
+        .unwrap()
+        .file_attributes();
+    if !compacted.is_ok_and(|o| o.status.success()) || attributes & FILE_ATTRIBUTE_REPARSE_POINT == 0 {
+        use std::io::Write as _;
+        let _ = writeln!(
+            std::io::stderr(),
+            "SKIP: compact.exe made no WOF reparse point here"
+        );
+        return;
+    }
+    std::fs::create_dir(dir.join("stage")).unwrap();
+    let mut stage = shards_build::host::Stage::new(&dir.join("stage")).unwrap();
+    let (snap, taken) = stage.take(&dir.join("f")).unwrap();
+    assert_eq!(snap.size, bytes.len() as u64);
+    let pack_path = stage.pack_path();
+    stage.finish().unwrap();
+    let got = match taken {
+        shards_build::host::Taken::File(p) => std::fs::read(p).unwrap(),
+        shards_build::host::Taken::Pack(at) => {
+            let pack = std::fs::read(pack_path).unwrap();
+            pack[at as usize..at as usize + bytes.len()].to_vec()
+        }
+    };
+    assert!(got == bytes, "the bytes it holds");
     std::fs::remove_dir_all(&dir).unwrap();
 }

@@ -5,7 +5,8 @@
 //!
 //! Go walks with handles opened relative to their parents; here each step is a path
 //! checked before it is used, so a local process racing the unpack could swap a
-//! directory for a link between check and use. The archive alone cannot: its entries are
+//! directory for a link between check and use; a file opened or made is opened through no
+//! link put in its place since (`follow_open`). The archive alone cannot: its entries are
 //! applied one after another. As go-archive does on Windows, owners, modes, devices and
 //! extended attributes are not applied.
 
@@ -20,8 +21,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use windows_sys::Win32::Storage::FileSystem::{
     FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_READONLY, FILE_ATTRIBUTE_REPARSE_POINT,
-    FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_WRITE_ATTRIBUTES, FindClose,
-    FindFirstFileW, WIN32_FIND_DATAW,
+    FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_GENERIC_WRITE, FILE_READ_ATTRIBUTES,
+    FILE_WRITE_ATTRIBUTES, FindClose, FindFirstFileW, WIN32_FIND_DATAW,
 };
 
 use super::{FileKind, Stat};
@@ -219,6 +220,25 @@ fn follow<T>(parent: &[u8], name: &[u8], f: impl FnOnce(&[u8]) -> io::Result<T>)
     }
 }
 
+/// The final component opened by `options` as [`follow`] opens it, and never through a link
+/// put in its place after it looked (shards_ntfs::open_unfollowed): one found then is
+/// spliced in, as unix.rs's `open_file` splices one its openat(O_NOFOLLOW) finds, or the
+/// open's error stands where it is no link by then either.
+fn follow_open(parent: &[u8], name: &[u8], options: &OpenOptions) -> io::Result<Step<File>> {
+    let p = join(parent, name);
+    if let Ok(md) = fs::symlink_metadata(os_path(&p))
+        && md.file_type().is_symlink()
+    {
+        return Ok(Step::Link(readlink(&p)?));
+    }
+    match shards_ntfs::open_unfollowed(options, 0, &os_path(&p)) {
+        Err(e) if e.raw_os_error() == Some(shards_ntfs::STOPPED_ON_LINK) => {
+            readlink(&p).map(Step::Link).map_err(|_| e)
+        }
+        opened => opened.map(Step::Done),
+    }
+}
+
 fn system_time(t: Time) -> SystemTime {
     let d = Duration::new(u64::try_from(t.sec).unwrap_or(0), t.nsec);
     UNIX_EPOCH.checked_add(d).unwrap_or(UNIX_EPOCH)
@@ -277,19 +297,24 @@ impl Root {
 
     /// Root.Open: read only, a final symlink followed inside the root.
     pub(crate) fn open_read(&self, name: &[u8]) -> Result<File, WalkError> {
-        self.walk(name, |dir, last| follow(dir, last, |p| File::open(os_path(p))))
+        let mut options = OpenOptions::new();
+        options.read(true);
+        self.walk(name, |dir, last| follow_open(dir, last, &options))
     }
 
+    /// Root.OpenFile(name, O_CREATE|O_WRONLY|O_TRUNC, perm): opened, or made, then emptied,
+    /// as Go's Openat empties it (internal/syscall/windows/at_windows.go), the open never
+    /// truncating what may be a link ([`follow_open`]). Its attributes readable, which the
+    /// open asks of its handle.
     pub(crate) fn create(&self, name: &[u8], _: u32) -> Result<File, WalkError> {
-        self.walk(name, |dir, last| {
-            follow(dir, last, |p| {
-                OpenOptions::new()
-                    .write(true)
-                    .create(true)
-                    .truncate(true)
-                    .open(os_path(p))
-            })
-        })
+        let mut options = OpenOptions::new();
+        options
+            .write(true)
+            .access_mode(FILE_GENERIC_WRITE | FILE_READ_ATTRIBUTES)
+            .create(true);
+        let file = self.walk(name, |dir, last| follow_open(dir, last, &options))?;
+        file.set_len(0)?;
+        Ok(file)
     }
 
     pub(crate) fn lchown(&self, _: &[u8], _: i64, _: i64) -> Result<(), WalkError> {

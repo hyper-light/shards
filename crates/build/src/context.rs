@@ -396,6 +396,12 @@ fn append(
     resolved: &mut std::collections::BTreeSet<Vec<u8>>,
     p: &[u8],
 ) -> Result<(), Error> {
+    // symlinkResolver.append on Windows: an absolute path loses all up to its first `:`,
+    // its drive (`C:/x` is `/x`), and is then taken below the root, as any path is.
+    let p = match p.iter().position(|&c| c == b':') {
+        Some(i) if tree.windows_paths() && windows_is_abs(p) => p.get(i + 1..).unwrap_or_default(),
+        _ => p,
+    };
     let mut p = go::join(&[b".", p]);
     let mut current = b".".to_vec();
     loop {
@@ -454,17 +460,120 @@ fn read_symlink(tree: &host::Tree, p: &[u8], wildcard: bool) -> Result<Option<Ve
     }
     let stat = match tree.lstat(&clean) {
         Ok(s) => s,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound || names_nothing(&e) => return Ok(None),
         Err(e) => return Err(Error(e.to_string())),
     };
     if stat.mode & fm::SYMLINK == 0 {
         return Ok(None);
     }
-    let link = go::clean(&stat.link);
-    if go::is_abs(&link) {
-        return Ok(Some(vec![link]));
+    // filepath.IsAbs: on a Windows host a path with a volume and a root (`C:/x`,
+    // `//host/share/x`), never a rooted one without (`/etc/hosts`), which is then taken
+    // from the link's directory as a relative one is: `docs/abs` to `/etc/hosts` is
+    // `/docs/etc/hosts` there.
+    if tree.windows_paths() {
+        if windows_is_abs(&stat.link) {
+            let (volume, rest) = stat
+                .link
+                .split_at_checked(windows_volume_len(&stat.link))
+                .unwrap_or((stat.link.as_slice(), &[][..]));
+            let rest = if rest.is_empty() {
+                Vec::new()
+            } else {
+                go::clean(rest)
+            };
+            return Ok(Some(vec![[volume, &rest].concat()]));
+        }
+    } else if go::is_abs(&stat.link) {
+        return Ok(Some(vec![go::clean(&stat.link)]));
     }
+    let link = go::clean(&stat.link);
     Ok(Some(vec![go::join(&[b"/", &go::join(&[&parent, &link])])]))
+}
+
+/// Go's `os.IsPathSeparator` on Windows: either slash.
+fn windows_separator(c: u8) -> bool {
+    c == b'/' || c == b'\\'
+}
+
+/// Go's `filepath.IsAbs` on Windows (internal/filepathlite/path_windows.go, Go 1.26): a
+/// volume (`windows_volume_len`) that is a UNC or device path's, or a drive's followed by
+/// a separator.
+fn windows_is_abs(p: &[u8]) -> bool {
+    let l = windows_volume_len(p);
+    if l == 0 {
+        return false;
+    }
+    if p.first().is_some_and(|&c| windows_separator(c)) && p.get(1).is_some_and(|&c| windows_separator(c)) {
+        return true;
+    }
+    p.get(l).is_some_and(|&c| windows_separator(c))
+}
+
+/// Go's `volumeNameLen` on Windows (internal/filepathlite/path_windows.go, Go 1.26): a
+/// drive's `C:`, whatever its letter; `//./UNC/host/share`; a device path's `//./NAME`,
+/// `//?/NAME` or `/??/NAME`; a UNC path's `//host/share`; either slash a separator.
+fn windows_volume_len(p: &[u8]) -> usize {
+    if p.get(1) == Some(&b':') {
+        return 2;
+    }
+    if !p.first().is_some_and(|&c| windows_separator(c)) {
+        return 0;
+    }
+    // pathHasPrefixFold: separators match either, letters either case, and the prefix
+    // ends at a separator or the path's end.
+    let prefix = |prefix: &[u8]| {
+        p.len() >= prefix.len()
+            && prefix.iter().zip(p).all(|(&want, &c)| {
+                if windows_separator(want) {
+                    windows_separator(c)
+                } else {
+                    want.eq_ignore_ascii_case(&c)
+                }
+            })
+            && p.get(prefix.len()).is_none_or(|&c| windows_separator(c))
+    };
+    // uncLen: up to the second separator from `from`.
+    let unc = |from: usize| {
+        p.iter()
+            .enumerate()
+            .skip(from)
+            .filter(|&(_, &c)| windows_separator(c))
+            .nth(1)
+            .map_or(p.len(), |(i, _)| i)
+    };
+    if prefix(&b"//./UNC"[..]) {
+        return unc(b"//./UNC/".len());
+    }
+    if prefix(&b"//."[..]) || prefix(&b"//?"[..]) || prefix(&b"/??"[..]) {
+        if p.len() == 3 {
+            return 3;
+        }
+        return p
+            .get(4..)
+            .and_then(|rest| rest.iter().position(|&c| windows_separator(c)))
+            .map_or(p.len(), |i| 4 + i);
+    }
+    if p.get(1).is_some_and(|&c| windows_separator(c)) {
+        return unc(2);
+    }
+    0
+}
+
+/// A name the host's filesystem cannot hold names no entry of the tree: fsutil's statFile
+/// finds a path by walking its parent's entries, so `sr*` there is not found, where
+/// Windows refuses the name itself (ERROR_INVALID_NAME, 123: `*` and `?` are reserved,
+/// "Naming Files, Paths, and Namespaces", Microsoft Learn). Unix names hold them.
+fn names_nothing(e: &std::io::Error) -> bool {
+    #[cfg(windows)]
+    {
+        const ERROR_INVALID_NAME: i32 = 123;
+        e.raw_os_error() == Some(ERROR_INVALID_NAME)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = e;
+        false
+    }
 }
 
 fn contains_wildcards(name: &[u8]) -> bool {

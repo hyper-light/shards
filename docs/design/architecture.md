@@ -2404,7 +2404,13 @@ containers. Evidence: docs/research/image-build.md (§3 ranks the choices below)
          ("read 5 files, 166B"), not a transfer's byte count. What the transfer gives
          BuildKit, one version of each file that no edit during the build can change,
          shards keeps another way: each file is taken into a stage private to the build,
-         from a descriptor opened without following symlinks, and refused if a write came
+         from a descriptor opened without following symlinks (on Windows, added
+         2026-11-07: opened as the reparse point itself, a name surrogate, symlink or
+         junction, refused ERROR_STOPPED_ON_SYMLINK, any other reparse point, a cloud
+         placeholder or a WOF-compressed file, opened again for its bytes and taken only
+         if its volume serial and 128-bit file ID are the first handle's;
+         `shards_ntfs::open_unfollowed`, after Microsoft's CreateFileW,
+         IsReparseTagNameSurrogate and FILE_ID_INFO), and refused if a write came
          while it was taken, as GNU tar reports "file changed as we read it" (PM M100,
          M242). A file under 1 MiB is packed into one file of the stage, a larger one
          cloned where the file system clones (APFS, Btrfs, XFS) and copied elsewhere.

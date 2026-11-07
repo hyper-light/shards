@@ -607,11 +607,18 @@ fn open(src: &Path) -> io::Result<fs::File> {
         .open(src)
 }
 
+/// `src` opened to be taken, never through a link put in its place since the walk, as
+/// O_NOFOLLOW refuses one on Unix (shards_ntfs::open_unfollowed: a symbolic link refused
+/// ERROR_STOPPED_ON_SYMLINK, a junction as a directory is, a cloud placeholder, deduplicated
+/// or compressed file read as what it holds).
 #[cfg(windows)]
 fn open(src: &Path) -> io::Result<fs::File> {
     use std::os::windows::fs::OpenOptionsExt;
-    // FILE_SHARE_READ: others may read, not write or delete, while it is held.
-    fs::File::options().read(true).share_mode(0x1).open(src)
+    use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ;
+    // Others may read, not write or delete, while it is held.
+    let mut options = fs::File::options();
+    options.read(true).share_mode(FILE_SHARE_READ);
+    shards_ntfs::open_unfollowed(&options, 0, src)
 }
 
 /// What a source was as its taking began, which it must still be once taken.
@@ -909,6 +916,20 @@ impl Tree {
 
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    /// Whether fsutil walked it on a Windows host, with Go's path/filepath of Windows: a
+    /// tree of this Windows host's own, not a Linux client's kept on NTFS, which its fsutil
+    /// walked on Linux.
+    pub fn windows_paths(&self) -> bool {
+        #[cfg(windows)]
+        {
+            !self.linux
+        }
+        #[cfg(not(windows))]
+        {
+            false
+        }
     }
 
     /// A path below the root from its slash-separated relative name.

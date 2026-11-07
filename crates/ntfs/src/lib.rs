@@ -2,8 +2,9 @@
 //! of them, each relative to a handle of the tree and following no reparse point, and what
 //! they mean in Linux's terms. A guest's files a share keeps on a Windows host are kept so
 //! (shards-vmm's share server), and a client's build context its Windows machine keeps a
-//! copy of (D180, shards' `synced`), through shards-archive and shards-build. Nothing on
-//! other hosts.
+//! copy of (D180, shards' `synced`), through shards-archive and shards-build. And a host's
+//! own file opened through no link at its name, as Unix's O_NOFOLLOW opens one
+//! ([`open_unfollowed`]), for both. Nothing on other hosts.
 
 #![cfg(windows)]
 
@@ -358,6 +359,17 @@ pub fn links(h: BorrowedHandle<'_>) -> std::io::Result<Option<Links>> {
     if info.nNumberOfLinks <= 1 {
         return Ok(None);
     }
+    let (volume, file) = file_id(h)?;
+    Ok(Some(Links {
+        count: u64::from(info.nNumberOfLinks),
+        volume,
+        file,
+    }))
+}
+
+/// `h`'s file's volume serial number and 128-bit file ID (FileIdInfo, FILE_ID_INFO), which
+/// "uniquely identify a file on a single computer".
+fn file_id(h: BorrowedHandle<'_>) -> std::io::Result<(u64, u128)> {
     let mut id = FILE_ID_INFO::default();
     // SAFETY: a buffer of its own size for the class asked, of a handle the caller holds.
     let got = unsafe {
@@ -371,11 +383,84 @@ pub fn links(h: BorrowedHandle<'_>) -> std::io::Result<Option<Links>> {
     if got == 0 {
         return Err(std::io::Error::last_os_error());
     }
-    Ok(Some(Links {
-        count: u64::from(info.nNumberOfLinks),
-        volume: id.VolumeSerialNumber,
-        file: u128::from_le_bytes(id.FileId.Identifier),
-    }))
+    Ok((id.VolumeSerialNumber, u128::from_le_bytes(id.FileId.Identifier)))
+}
+
+/// The error [`open_unfollowed`] refuses a link with: ERROR_STOPPED_ON_SYMLINK, "The create
+/// operation stopped after reaching a symbolic link" (Microsoft, System Error Codes
+/// 500-999), as Unix's open(2) refuses one ELOOP under O_NOFOLLOW.
+pub const STOPPED_ON_LINK: i32 = windows_sys::Win32::Foundation::ERROR_STOPPED_ON_SYMLINK as i32;
+
+/// A reparse tag's name surrogate bit (winnt.h's IsReparseTagNameSurrogate): set where "the
+/// file or directory represents another named entity in the system" (Microsoft, Reparse
+/// Point Tags), as a symbolic link, a junction or mount point and WSL's symlink do. std's
+/// `FileType::is_symlink` is a reparse point of this bit (library/std/src/sys/fs/windows.rs),
+/// so a walk's `symlink_metadata` calls the same files links.
+const NAME_SURROGATE: u32 = 0x2000_0000;
+
+/// The file at `p` opened as `options` and `flags` (CreateFileW's flags, std's
+/// `custom_flags`) ask, never through a link at its last name, as Unix opens one with
+/// O_NOFOLLOW:
+/// - It is opened first as itself, a reparse point not processed (FILE_FLAG_OPEN_REPARSE_POINT:
+///   "If an existing file is opened and it is a symbolic link, the handle returned is a
+///   handle to the symbolic link", CreateFileW), and its handle asked its attributes and
+///   reparse tag (FileAttributeTagInfo, FILE_ATTRIBUTE_TAG_INFO).
+/// - A file no reparse point is that handle.
+/// - A name surrogate (a symbolic link, a junction, WSL's symlink) is refused,
+///   [`STOPPED_ON_LINK`].
+/// - Any other reparse point (a cloud file's placeholder, a deduplicated or WOF-compressed
+///   file, a container's WCI file) is opened again as `options` ask, its filter at work, for
+///   what it holds and not its reparse data; and is that file only where the second handle's
+///   volume serial number and file ID are the first's (FILE_ID_INFO: "To determine whether
+///   two open handles represent the same file, combine the identifier and the volume serial
+///   number for each file and compare them"). Another file, which a link put in its place
+///   between the two opens or a filter that redirects it gives, is refused, [`STOPPED_ON_LINK`].
+///
+/// `options` must not truncate: FILE_FLAG_OPEN_REPARSE_POINT "cannot be used with the
+/// CREATE_ALWAYS flag", and with TRUNCATE_EXISTING "the file affected is a symbolic link"
+/// (CreateFileW). Truncate the file it gives, as Go's Openat does
+/// (internal/syscall/windows/at_windows.go, go1.26.1). A directory opens only where `flags`
+/// hold FILE_FLAG_BACKUP_SEMANTICS ("You must set this flag to obtain a handle to a
+/// directory"): without it a junction put in a file's place is refused as Windows refuses a
+/// directory opened as a file.
+pub fn open_unfollowed(
+    options: &std::fs::OpenOptions,
+    flags: u32,
+    p: &std::path::Path,
+) -> std::io::Result<std::fs::File> {
+    use std::os::windows::fs::OpenOptionsExt as _;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_ATTRIBUTE_REPARSE_POINT, FILE_ATTRIBUTE_TAG_INFO, FILE_FLAG_OPEN_REPARSE_POINT,
+        FileAttributeTagInfo,
+    };
+    let first = options
+        .clone()
+        .custom_flags(flags | FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(p)?;
+    let mut info = FILE_ATTRIBUTE_TAG_INFO::default();
+    // SAFETY: a buffer of its own size for the class asked, of a handle this frame holds.
+    let got = unsafe {
+        GetFileInformationByHandleEx(
+            first.as_raw_handle(),
+            FileAttributeTagInfo,
+            (&raw mut info).cast(),
+            u32::try_from(size_of::<FILE_ATTRIBUTE_TAG_INFO>()).unwrap_or(0),
+        )
+    };
+    if got == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    if info.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT == 0 {
+        return Ok(first);
+    }
+    if info.ReparseTag & NAME_SURROGATE != 0 {
+        return Err(std::io::Error::from_raw_os_error(STOPPED_ON_LINK));
+    }
+    let again = options.clone().custom_flags(flags).open(p)?;
+    if file_id(first.as_handle())? != file_id(again.as_handle())? {
+        return Err(std::io::Error::from_raw_os_error(STOPPED_ON_LINK));
+    }
+    Ok(again)
 }
 
 /// The EA a Linux extended attribute `name` is kept in: its bytes as hexadecimal after
@@ -1617,5 +1702,61 @@ mod tests {
             v.block_size >= 512 && v.blocks > 0 && v.available <= v.blocks,
             "{v:?}"
         );
+    }
+
+    /// A file [`open_unfollowed`] opens is the file at its name; a link there, an LX symlink
+    /// or a junction to the directory it is in, is refused [`STOPPED_ON_LINK`] and never
+    /// opened through; a junction opened as a file, without backup semantics, refused as a
+    /// directory is.
+    #[test]
+    fn a_link_at_a_name_is_never_opened_through() {
+        use std::os::windows::ffi::OsStrExt as _;
+        use std::os::windows::fs::OpenOptionsExt as _;
+        use windows_sys::Win32::Storage::FileSystem::{
+            FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+        };
+        let (dir, root) = tree("ntfs-unfollowed");
+        std::fs::write(dir.join("plain"), b"plain").unwrap();
+        let mut read = std::fs::File::options();
+        read.read(true);
+        let mut got = Vec::new();
+        let mut plain = open_unfollowed(&read, 0, &dir.join("plain")).unwrap();
+        std::io::Read::read_to_end(&mut plain, &mut got).unwrap();
+        assert_eq!(got, b"plain");
+
+        drop(symlink_at(root.as_handle(), &nt_name(b"link").unwrap(), b"plain").unwrap());
+        let e = open_unfollowed(&read, 0, &dir.join("link")).unwrap_err();
+        assert_eq!(e.raw_os_error(), Some(STOPPED_ON_LINK), "{e}");
+
+        // A junction to this test's directory: a MountPointReparseBuffer, its NT and print
+        // names' offsets and lengths, then each name NUL-terminated.
+        std::fs::create_dir(dir.join("junction")).unwrap();
+        let at = std::fs::File::options()
+            .access_mode(FILE_GENERIC_WRITE)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(dir.join("junction"))
+            .unwrap();
+        let full = std::fs::canonicalize(&*dir).unwrap();
+        // Its verbatim prefix, \\?\, left off.
+        let print: Vec<u16> = full.as_os_str().encode_wide().skip(4).collect();
+        let nt: Vec<u16> = r"\??\".encode_utf16().chain(print.iter().copied()).collect();
+        let bytes = |n: &[u16]| u16::try_from(n.len() * 2).unwrap();
+        let mut data = Vec::new();
+        for word in [0, bytes(&nt), bytes(&nt) + 2, bytes(&print)] {
+            data.extend(word.to_le_bytes());
+        }
+        for c in nt.iter().chain([&0]).chain(&print).chain([&0]) {
+            data.extend(c.to_le_bytes());
+        }
+        set_reparse(at.as_handle(), IO_REPARSE_TAG_MOUNT_POINT, &data).unwrap();
+        drop(at);
+        assert_eq!(
+            std::fs::read(dir.join("junction").join("plain")).unwrap(),
+            b"plain",
+            "a junction Windows follows"
+        );
+        let e = open_unfollowed(&read, FILE_FLAG_BACKUP_SEMANTICS, &dir.join("junction")).unwrap_err();
+        assert_eq!(e.raw_os_error(), Some(STOPPED_ON_LINK), "{e}");
+        assert!(open_unfollowed(&read, 0, &dir.join("junction")).is_err());
     }
 }
