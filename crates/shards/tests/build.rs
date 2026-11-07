@@ -10842,9 +10842,20 @@ fn a_remote_mcp_server_is_a_grant_of_that_server_alone() {
     // so that a name refused is shards' refusal, not the resolver's; big.example has an
     // answer too long for UDP, which comes truncated by UDP (RFC 1035 §4.2.1) and whole by
     // TCP.
-    let resolver = std::net::UdpSocket::bind("0.0.0.0:0").unwrap();
+    // TCP's port first, one the host lets TCP have, then UDP's of its number: Windows
+    // keeps ranges of its dynamic ports from TCP alone (Hyper-V's and WinNAT's), where a
+    // number UDP was given could be refused TCP with WSAEACCES (CI windows-2025, run
+    // 42320387272). A number UDP already holds is tried again with another.
+    let (resolver, resolver_tcp) = (0..16)
+        .find_map(|_| {
+            let tcp = std::net::TcpListener::bind("0.0.0.0:0").unwrap();
+            let port = tcp.local_addr().unwrap().port();
+            std::net::UdpSocket::bind(("0.0.0.0", port))
+                .ok()
+                .map(|udp| (udp, tcp))
+        })
+        .expect("a port free in both TCP and UDP");
     let resolver_port = resolver.local_addr().unwrap().port();
-    let resolver_tcp = std::net::TcpListener::bind(("0.0.0.0", resolver_port)).unwrap();
     let resolver_at = format!("{host}:{resolver_port}");
     let answer = move |q: &[u8]| -> Vec<u8> {
         let mut at = 12;

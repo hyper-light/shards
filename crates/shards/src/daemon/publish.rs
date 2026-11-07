@@ -870,15 +870,19 @@ mod tests {
             bind_one(&loopback, &port.to_string(), UDP, &|_| InUse::Host).unwrap_err(),
             format!("127.0.0.1:{port}/udp: the host's port is taken: {}", in_use())
         );
-        // TCP's port of the same number is another, where no other process holds that one:
-        // on a busy host one of a few ports is free in TCP, and a UDP bind that held TCP's
-        // port would fail them all (CI run 38252923745 found the first taken).
-        let tcp_free_beside_udp = (0..16).any(|_| {
-            let held = bind_one(&loopback, "", UDP, &|_| InUse::Host).unwrap();
-            bind_one(&loopback, &held.1.to_string(), TCP, &|_| InUse::Host).is_ok()
+        // TCP's port of the same number is another: a TCP port the host gave (one it lets
+        // TCP have) stays TCP's own while UDP binds its number, and the other way round. TCP
+        // first, as Windows keeps ranges of its dynamic ports from TCP alone (Hyper-V's and
+        // WinNAT's, `netsh int ipv4 show excludedportrange protocol=tcp`), where a number
+        // UDP was given could be refused TCP with WSAEACCES (CI windows-2025, run
+        // 42320387272). On a busy host one of a few ports is free in UDP; a UDP bind that
+        // held TCP's port would fail them all (CI run 38252923745 found the first taken).
+        let udp_free_beside_tcp = (0..16).any(|_| {
+            let held = bind_one(&loopback, "", TCP, &|_| InUse::Host).unwrap();
+            bind_one(&loopback, &held.1.to_string(), UDP, &|_| InUse::Host).is_ok()
         });
         assert!(
-            tcp_free_beside_udp,
+            udp_free_beside_tcp,
             "a UDP port's bind held TCP's port of its number"
         );
     }
