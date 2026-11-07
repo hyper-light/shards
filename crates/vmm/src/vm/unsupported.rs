@@ -135,7 +135,13 @@ impl Handle {
         match self.0 {}
     }
 
-    pub fn precopy(&self, _out: std::fs::File, _most: u32, _enough: u64) -> Result<super::Precopied, String> {
+    pub fn precopy(
+        &self,
+        _out: std::fs::File,
+        _most: u32,
+        _enough: u64,
+        _told: &dyn Fn(super::Precopying),
+    ) -> Result<super::Precopied, String> {
         match self.0 {}
     }
 

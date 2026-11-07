@@ -938,9 +938,27 @@ impl<D: Disk> Daemon<D> {
             lock(&inbox).precopying = None;
             return Err(format!("asking its microVM: {e}"));
         }
-        let rounds = answer
-            .recv()
-            .unwrap_or_else(|_| Err("its microVM stopped".into()))?;
+        // Each round said as it ends, and the bytes the stream carried as it carries them,
+        // in the client's answer and in the daemon's log: what one waiting on the move
+        // follows, however slowly its host or its link goes (D209), never a clock.
+        let rounds = loop {
+            match answer.recv() {
+                Ok(Rounds::Going(going)) => {
+                    let said: Vec<&str> = going.split_whitespace().collect();
+                    let line = match said.as_slice() {
+                        ["round", n, pages, bytes, us] => {
+                            format!("move: round {n}: {pages} pages, {bytes} bytes, {us} us")
+                        }
+                        ["sent", bytes] => format!("move: carried {bytes} bytes of its rounds"),
+                        _ => continue,
+                    };
+                    super::log(format!("{reference}: {line}"));
+                    reply.err(&line);
+                }
+                Ok(Rounds::Done(rounds)) => break rounds?,
+                Err(_) => return Err("its microVM stopped".into()),
+            }
+        };
         let mut lines = rounds.lines();
         if let Some(paused) = lines.next() {
             reply.err(&format!(
@@ -948,10 +966,9 @@ impl<D: Disk> Daemon<D> {
             ));
         }
         let mut sent = Vec::new();
-        for (n, line) in lines.enumerate() {
+        for line in lines {
             let said: Vec<&str> = line.split_whitespace().collect();
-            if let [pages, bytes, us] = said.as_slice() {
-                reply.err(&format!("move: round {n}: {pages} pages, {bytes} bytes, {us} us"));
+            if let [_pages, bytes, _us] = said.as_slice() {
                 sent.push(bytes.parse::<u64>().unwrap_or(0));
             }
         }
@@ -1440,6 +1457,13 @@ impl<D: Disk> Daemon<D> {
     }
 }
 
+/// What a live move hears of its rounds from its VM (D176 part 7): how they go, as they go
+/// (`kind::PRECOPYING`), then their answer (`kind::PRECOPIED`).
+pub(super) enum Rounds {
+    Going(String),
+    Done(Result<String, String>),
+}
+
 /// A run's VM's answer to its live move's rounds (`kind::PRECOPIED`), told to the move that
 /// waits for it.
 pub(super) fn precopied(inbox: &mut super::Inbox, payload: &[u8]) {
@@ -1450,7 +1474,15 @@ pub(super) fn precopied(inbox: &mut super::Inbox, payload: &[u8]) {
         Some((0, why)) => Err(String::from_utf8_lossy(why).into_owned()),
         _ => Ok(String::from_utf8_lossy(payload).into_owned()),
     };
-    let _ = told.send(answer);
+    let _ = told.send(Rounds::Done(answer));
+}
+
+/// How a run's VM's live move's rounds go (`kind::PRECOPYING`), told to the move that waits
+/// for them.
+pub(super) fn precopying(inbox: &mut super::Inbox, payload: &[u8]) {
+    if let Some(told) = &inbox.precopying {
+        let _ = told.send(Rounds::Going(String::from_utf8_lossy(payload).into_owned()));
+    }
 }
 
 /// What a live move's rounds sent, kept on the machine moved to (D176 part 7): its memory's

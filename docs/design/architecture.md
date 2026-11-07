@@ -9808,6 +9808,21 @@ page by page as each came; resumed there; and stopped here once it runs there.
   and the guest of that move among its cases. A live move's stream is packed for its link as
   a cold one's is (part 6), its rounds' bytes counted before. Not yet measured: that move
   again with this build, its rounds and the time it runs nowhere.
+- **Its rounds told as they go** (`Precopying`, `kind::PRECOPYING`): the VM tells its
+  daemon each round as it ends, and within a round each further 8 MiB (the bytes a last
+  round may send, at least a record's 1 MiB) its stream's carrier has taken, counted as it
+  takes them (`Carried`, held by `a_rounds_stream_tells_what_it_carried_as_it_goes`); the
+  daemon says each in the move's answer and in its log (`move: round N: ...`, `move:
+  carried B bytes of its rounds`), so that what waits on a move follows its progress, never
+  a clock (D209): a test's client is waited on past its deadline while its home's daemon
+  says something within a minute (tests/common `Said`). At the slowest link measured,
+  0.55 MB/s, 8 MiB is 15 s of it. Until 2026-11-07 a move said its rounds only once they
+  ended: on step 10's arm64 Windows host, nested under QEMU's TCG, the guest stamping 64 MiB
+  as it moved (`a_microvm_writing_its_memory_moves_live_with_none_of_it_lost`, build
+  b8c98e7f, its rounds then bound by 8 MiB and 30 rounds alone) was killed at 120 s, its
+  daemon silent for the minute before, though the WHP Arm64 backend's dirty bitmaps
+  (`WHvQueryGpaRangeDirtyBitmap`, 4 KiB pages, as x64's) feed the same loop and its rounds'
+  bytes are counted as every backend's are.
 
 - **The last round in the rounds' stream**, record by record, never in the last save's
   files, which keep none of their pages: which pages a file holds read from its holes is

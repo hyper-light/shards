@@ -10,7 +10,7 @@ use super::barrier::Barrier;
 use super::hold::Hold;
 use super::live::{self, Pages};
 use super::machine::{self, Machine};
-use super::{AfterSnapshot, Config, ExitReason, Precopied, RestoreConfig, Save, SnapshotPolicy};
+use super::{AfterSnapshot, Config, ExitReason, Precopied, Precopying, RestoreConfig, Save, SnapshotPolicy};
 use crate::devices::control::Control;
 use crate::devices::power::PowerEvent;
 use crate::devices::serial::Serial;
@@ -42,6 +42,33 @@ pub fn max_vcpus() -> Result<u32, String> {
 
 /// What reads a run of a live move's layer or swap into a buffer (D176 part 7).
 type Reader<'a> = dyn Fn(u64, &mut [u8]) -> Result<(), String> + 'a;
+
+/// A live move's stream as its rounds write it (D176 part 7): what it carried told
+/// ([`Precopying::Sent`]) each time it has carried `every` bytes more, counted as its
+/// carrier takes them, so that a slow link is seen going.
+struct Carried<'a, W> {
+    out: W,
+    sent: u64,
+    every: u64,
+    next: u64,
+    told: &'a dyn Fn(Precopying),
+}
+
+impl<W: std::io::Write> std::io::Write for Carried<'_, W> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let n = self.out.write(buf)?;
+        self.sent = self.sent.saturating_add(n as u64);
+        if self.sent >= self.next {
+            (self.told)(Precopying::Sent(self.sent));
+            self.next = self.sent.saturating_add(self.every);
+        }
+        Ok(n)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.out.flush()
+    }
+}
 
 /// A running VM's handle for host-side control.
 #[derive(Debug, Clone)]
@@ -462,8 +489,16 @@ impl Handle {
     /// before, or the rounds three times the first, or `most` rounds ([`live::Stop`]),
     /// whatever the link's rate: never by the clock. The guest's
     /// writes are watched from then on, for the [`Save`] with `delta` that ends the move
-    /// and the stream, which this leaves without its end.
-    pub fn precopy(&self, out: std::fs::File, most: u32, enough: u64) -> Result<Precopied, String> {
+    /// and the stream, which this leaves without its end. How they go is `told` as they go
+    /// ([`Precopying`]): each round's end, and within a round each further `enough` bytes
+    /// the stream carried.
+    pub fn precopy(
+        &self,
+        out: std::fs::File,
+        most: u32,
+        enough: u64,
+        told: &dyn Fn(Precopying),
+    ) -> Result<Precopied, String> {
         let sh = &self.shared;
         if !super::SNAPSHOTS {
             return Err("this host's microVMs take no snapshots yet".into());
@@ -474,7 +509,14 @@ impl Handle {
         }
         let vm = parts.vm.upgrade().ok_or("the microVM has stopped")?;
         let fail = |e: std::io::Error| format!("sending its memory: {e}");
-        let mut w = live::Writer::new(std::io::BufWriter::with_capacity(1 << 20, out)).map_err(fail)?;
+        let carried = Carried {
+            out,
+            sent: 0,
+            every: enough.max(live::MAX_RECORD as u64),
+            next: enough.max(live::MAX_RECORD as u64),
+            told,
+        };
+        let mut w = live::Writer::new(std::io::BufWriter::with_capacity(1 << 20, carried)).map_err(fail)?;
         // Watched first: what the guest writes as a round reads is sent again after it.
         vm.watch_writes().map_err(|e| e.to_string())?;
         self.memory.watch_device_writes();
@@ -483,7 +525,7 @@ impl Handle {
             self.memory.unwatch_device_writes();
         };
         // Each round flushed as it ends: the last save's round goes on after them.
-        let sent = self.precopy_rounds(&vm, &mut w, most, enough);
+        let sent = self.precopy_rounds(&vm, &mut w, most, enough, told);
         if sent.is_err() {
             unwatch();
         }
@@ -496,6 +538,7 @@ impl Handle {
         w: &mut live::Writer<W>,
         most: u32,
         enough: u64,
+        told: &dyn Fn(Precopying),
     ) -> Result<Precopied, String> {
         let fail = |e: std::io::Error| format!("sending its memory: {e}");
         let mut precopied = Precopied::default();
@@ -543,9 +586,14 @@ impl Handle {
             send(live::SWAP, runs, &|at, b| s.read_run(at, b))?;
         }
         let (pages, bytes) = w.round(0).map_err(fail)?;
-        precopied
-            .rounds
-            .push((pages, bytes, crate::log::uptime_us().saturating_sub(t0)));
+        let us = crate::log::uptime_us().saturating_sub(t0);
+        precopied.rounds.push((pages, bytes, us));
+        told(Precopying::Round {
+            n: 0,
+            pages,
+            bytes,
+            us,
+        });
         let mut sent = vec![bytes];
         // Then what was written since, until little is, or rounds no longer gain on what
         // the guest writes ([`live::Stop`]).
@@ -556,9 +604,9 @@ impl Handle {
             written.merge(Pages::of(self.memory.device_written(), live::PAGE));
             self.send_pages(&written, w, &mut buf)?;
             let (pages, bytes) = w.round(n).map_err(fail)?;
-            precopied
-                .rounds
-                .push((pages, bytes, crate::log::uptime_us().saturating_sub(t)));
+            let us = crate::log::uptime_us().saturating_sub(t);
+            precopied.rounds.push((pages, bytes, us));
+            told(Precopying::Round { n, pages, bytes, us });
             sent.push(bytes);
             n = n.saturating_add(1);
         }
@@ -1865,5 +1913,35 @@ mod tests {
         assert_eq!(pmem::ALIGN, 2 << 20);
         assert_eq!(guest_pages(&snap), ((16 + 4 + 4) << 20) / machine::PAGE);
         let _ = std::fs::remove_file(&file);
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod carried_tests {
+    use super::*;
+    use std::io::Write as _;
+
+    /// A live move's stream tells what it carried each time it has carried `every` bytes
+    /// more, as its carrier takes them: one waiting on a slow link sees it going.
+    #[test]
+    fn a_rounds_stream_tells_what_it_carried_as_it_goes() {
+        let heard = std::cell::RefCell::new(Vec::new());
+        let told = |p: Precopying| heard.borrow_mut().push(p);
+        let mut carried = Carried {
+            out: Vec::new(),
+            sent: 0,
+            every: 10,
+            next: 10,
+            told: &told,
+        };
+        // 12 bytes pass the first 10; the next is told at 22 or past.
+        for _ in 0..5 {
+            carried.write_all(&[0u8; 4]).unwrap();
+        }
+        assert_eq!(*heard.borrow(), [Precopying::Sent(12)]);
+        carried.write_all(&[0u8; 25]).unwrap();
+        assert_eq!(carried.out.len(), 45);
+        assert_eq!(*heard.borrow(), [Precopying::Sent(12), Precopying::Sent(45)]);
     }
 }
