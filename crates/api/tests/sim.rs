@@ -189,6 +189,25 @@ mod client {
         assert!(matches!(g.wait_for(patience()).unwrap(), Some(End::Failed(_))));
     }
 
+    /// A guest that powers off before anything connected to it is refused `Ended(PowerOff)`,
+    /// a normal end, not `Boot` (review 15).
+    #[test]
+    fn a_guest_powered_off_before_a_connect_is_ended_not_a_boot_refusal() {
+        let dir = shards_testdir::TempDir::new("api-off").unwrap();
+        let bin = stand_in(&dir, "exit 0");
+        let g = Shards
+            .boot(&GuestSpec {
+                binary: Some(bin),
+                ..spec("")
+            })
+            .unwrap();
+        assert_eq!(g.wait_for(Duration::MAX).unwrap(), Some(End::PowerOff));
+        assert_eq!(
+            g.connect(ECHO, Duration::ZERO).err(),
+            Some(Refusal::Ended(End::PowerOff))
+        );
+    }
+
     /// shards that exits 0 or 3 ends as `PowerOff` or `Reset`, as `shards run` exits for
     /// them (Hex HEX-GUEST-9).
     #[test]
