@@ -208,10 +208,11 @@ the guest arch is always the host arch.
 | macOS | aarch64 / arm64 | Hypervisor.framework (arm64 API) | the features below, as their cells say |
 | macOS | x86_64 / amd64 | Hypervisor.framework (x86 VMX API) | out: Intel Macs left out (2026-10-13); built and linted, no backend |
 | Windows | x86_64 / amd64 | Windows Hypervisor Platform | the features below, as their cells say |
-| Windows | aarch64 / arm64 | Windows Hypervisor Platform (arm64) | in progress (the platform parity plan's step 10): its backend on whp-arm64, not yet merged; its real-VM suite on a native arm64 Windows host last seen at 81 of 84 test binaries passing, three failing at their commands' deadlines |
+| Windows | aarch64 / arm64 | Windows Hypervisor Platform (arm64) | in progress (the platform parity plan's step 10): its backend merged (D209, `hv::whp_arm64`, cdd2c031), its full real-VM suite not yet passed: on the nested arm64 Windows 11 host 10 of 142 test binaries failed, nearly every case a microVM still running its start at a wall-clock deadline (PM M424), and the 64-vCPU storms were slow, not losing interrupts (PM M427); neither change since (D209's waits, the storm watchdog's one-line stall) rerun there, nor any of it on a native arm64 Windows host. CI's windows-11-arm has no hypervisor platform (PM M172): its VM tests say SKIP |
 
-What each target runs, feature by feature (2026-11-05, branch p/internal-local at b8270370,
-whose CI 42134267973 passed on every target; the platform parity audit,
+What each target runs, feature by feature (2026-11-07, branch p/step10-final, whose CI
+42329593544 at 51a709e9 passed on every target, as 42134267973 at b8270370 had; the
+platform parity audit,
 docs/audit/2026-10-27_platform-parity.md, holds the evidence of each and its open rows).
 "Yes" is built and tested with real VMs there. Linux arm64's are built and linted on CI,
 whose arm64 runners have no KVM, and tested with real VMs nested (D154's L1 harness): the
@@ -219,8 +220,9 @@ snapshot suites (PM M346), and the daemon, warm, saved, restore, run, vsock, pme
 hot-plug suites (D214); its other cells' VM tests are amd64's code, not yet run there.
 macOS arm64's are tested with real VMs on Macs here: CI's macOS runners offer no
 Hypervisor.framework (`kern.hv_support`), and their VM tests say SKIP.
-Windows arm64 runs nothing until its backend lands, and each of its cells is the Windows
-amd64 cell's once it does.
+Windows arm64's backend has landed (D209), its cells the Windows amd64 cells' code, none of
+them "yes" until its full real-VM suite passes (the audit's row 5); but for a host's PCI
+function, which its backend assigns none of (`WHP_ARM64_NO_ASSIGNMENT`, D154).
 
 | Feature | Linux amd64 | Linux arm64 | macOS arm64 | Windows amd64 |
 |---|---|---|---|---|
@@ -238,10 +240,10 @@ amd64 cell's once it does.
 | Log drivers (D163, D198, D199) | every driver, journald its own | as amd64 | every driver but journald, macOS's own log (`oslog`) its counterpart | every driver but journald, `etwlogs` its counterpart |
 | A GPU (D144, Venus) | yes, glibc and musl, NVIDIA's, AMD's and Intel's GPUs (D201, D208); open: the GPU desktop's run of D208's build, waiting for its owner's go | built and linted, untested on a GPU (none here) | yes | yes (D202) |
 | Devices plugged into a running microVM, disks grown (D214) | yes | yes (nested, its MSIs through the GIC's ITS) | yes | yes: in the VMM, its shared directory over a duplex pipe (tests/hotplug.rs), and through the CLI a disk and a volume, its share process's stream given the VM as a run's are (tests/plug.rs), on CI's windows-2025 and windows-2022 |
-| A host's PCI function given a microVM, at its start or plugged in (D154, D214) | built, VFIO; not yet tested on hardware, no x86_64 host here having a function to spare (D214's Not yet) | yes, nested, on QEMU's edu function (D154, D214), plugged into a run's workload too, as a user not root, by group and by device node (D214, at 8928fbe4) | refused: its APIs assign no PCI function, Virtualization's one passthrough a USB device's (D154, PM M403) | built where the hypervisor assigns devices (Discrete Device Assignment, D154), its E2E waiting on a Windows Server host that assigns one; refused with the hypervisor's own answer where it assigns none (PM M401, M402) |
+| A host's PCI function given a microVM, at its start or plugged in (D154, D214) | built, VFIO; not yet tested on hardware, no x86_64 host here having a function to spare (D214's Not yet) | yes, nested, on QEMU's edu function (D154, D214), plugged into a run's workload too, as a user not root, by group and by device node (D214, at 8928fbe4) | refused: its APIs assign no PCI function, Virtualization's one passthrough a USB device's (D154, PM M403) | at its start, given the VM's kernel: built where the hypervisor assigns devices (Discrete Device Assignment, D154, d3029698), its E2E waiting on a Windows Server host that assigns one; refused with the hypervisor's own answer where it assigns none (PM M401, M402). A workload's, at its start or plugged in behind the guest's IOMMU: refused with WHP's limit, no I/O address space of the guest's (D154). Plugged in outside the IOMMU (D214's VMM path): not built |
 | A running microVM saved whole, and resumed (D176 parts 1-5) | yes | yes | yes | yes |
 | Moved to another machine, saved (D176 part 6) | yes, between two homes of one machine (PM M460; CI's runners, migrate-e2e.yml); between two machines built, not yet run | built, not yet run | built, its CPU checked as macOS names its features (PM M460); measured on KVM x86_64 alone; between two Macs not yet run | yes between two homes, a volume's guest owners moved as its guest sees them (`server::guest`): tests/moved.rs on CI's windows-2025; between two machines built, not yet run |
-| Moved live (D176 part 7) | yes, between two homes of one machine (PM M461; CI's runners, migrate-e2e.yml); between two machines built, not yet run | built, not yet run: each writable slot's dirty bitmap (`KVM_GET_DIRTY_LOG`), which takes the ITS's writes too | built, its guest's writes watched at stage 2 as D25's recorder watches them; measured on KVM x86_64 alone; between two Macs not yet run | built, not yet run: WHP's dirty page tracking (`WHvQueryGpaRangeDirtyBitmap`) |
+| Moved live (D176 part 7) | yes, between two homes of one machine (PM M461; CI's runners, migrate-e2e.yml); between two machines built, not yet run | built, not yet run: each writable slot's dirty bitmap (`KVM_GET_DIRTY_LOG`), which takes the ITS's writes too | built, its guest's writes watched at stage 2 as D25's recorder watches them; measured on KVM x86_64 alone; between two Macs not yet run | yes between two homes, by WHP's dirty page tracking (`WHvQueryGpaRangeDirtyBitmap`): tests/moved.rs's live tests on CI's windows-2025 (CI 42329593544 at 51a709e9, e0ed0673), windows-2022 restoring no snapshot (PM M345); between two machines built, not yet run |
 | Contexts, both sides, the machine's listener, enrollments and relays (D180) | yes | yes | yes | yes (part 3k) |
 | Keyless signing, its SPIFFE provider (D126) | yes | yes | yes | yes, by the Workload API's named pipe |
 | `--platform` for one platform's microVM, other CPUs' images emulated (D179) | yes | yes | yes | yes |
@@ -9753,12 +9755,16 @@ page by page as each came; resumed there; and stopped here once it runs there.
   again with tracking, a part of a range read, a block given back and mapped again as it
   is watched) by `a_partitions_writes_are_watched_where_it_maps_them`.
 
-Not yet: live moves on KVM arm64 (the dirty bitmaps, built), on WHP x64 and on WHP Arm64
-(dirty page tracking, built), not yet run on real microVMs: tests/moved.rs's live tests
-held them refused until now, and are each host's to pass, KVM arm64's in the nested L1
-guest of an M3 or later Mac (`SHARDS_L1_TESTS=moved`), WHP x64's on jupiter and CI's
-Windows runners, WHP Arm64's once its backend lands (the parity plan's step 10), with each
-one's rounds, whether WHP's shrink as KVM's do, and the time it ran nowhere measured; a
+On WHP x64 both live tests pass between two homes on CI's windows-2025, every VM test
+required to run (CI 42329593544 at 51a709e9), since a live move's last round goes in the
+rounds' stream (e0ed0673): laid as its save's holes, NTFS's 64 KiB allocation units had
+zeroed what the rounds sent. windows-2022 restores no snapshot (PM M345), so they skip there.
+
+Not yet: live moves on KVM arm64 (the dirty bitmaps, built) and on WHP Arm64 (dirty page
+tracking, built), not yet run on real microVMs, each host's to pass, KVM arm64's in the
+nested L1 guest of an M3 or later Mac (`SHARDS_L1_TESTS=moved`), WHP Arm64's on step 10's
+host (its backend merged, D209); WHP x64's on jupiter; with each one's rounds, whether
+WHP's shrink as KVM's do, and the time it ran nowhere measured on WHP; a
 volume's files moved live, which go with its last save, and so lengthen the time it runs
 nowhere by their bytes. A move between two machines, saved or live, and the time
 one moved live runs nowhere there: every move measured so far is between two homes of one
