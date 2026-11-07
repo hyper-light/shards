@@ -2844,8 +2844,10 @@ microVM as virtio-fs shares (virtio 1.3 §5.11; Linux fs/fuse/virtio_fs.c):
   seccomp confine it before it runs a guest; on Windows its AppContainer reaches none of its
   user's files (D141). So only a process outside that confinement can open the directories,
   and it must do so before the VM starts. The server and its path rules are the daemon's
-  run's, unchanged (`fs::server::Server`, `fs::answer`); `:ro` is its read-only mode, and
-  any other suffix is refused. Test: boot.rs
+  run's, unchanged (`fs::server::Server`, `fs::answer`); a last `:ro` is its read-only
+  mode, as `--disk`'s, and every other colon the path's. Its tags follow any
+  `--slates-fs-fd` given beside them: with k of those, the i-th `--share` is `shards{k+i}`,
+  as the share connections are handed on after the flags given. Test: boot.rs
   `a_direct_boot_writes_through_a_share_and_not_through_a_read_only_one`; shards-api's
   conformance suite on real guests, boot.rs `shards_api_conforms_on_real_guests`.
 - **A share another server serves** (`shards run vm --kernel … --slates-fs-fd N`): a direct
@@ -20175,6 +20177,41 @@ dependency of itself, failed as a circular one (found by the test, and the same 
 Tested: `a_skill_an_agent_lists_is_taken_from_it` (an OSI agent's listed skill laid in
 another's grants, nothing else of its content; an unlisted path and an agent with no
 config refused in their words), the listing check mutation-checked.
+
+### D215. shards-api: Linux guests booted through the `shards` binary, for other programs (built: the client, its simulator and conformance suite; conformance passes on HVF, KVM and WHP records pending)
+
+**Why.** A program that runs its own PID 1 in a guest and reaches it over vsock (Hex's
+guest node is the first) needs a guest booted, a stream to a port, and the guest's end,
+with every refusal typed. It may not link the VMM: on macOS the process that calls
+Hypervisor.framework must be shards' own signed, sandboxed VM process (D30), and shards is
+one binary (D36). So `crates/api` is a client of the binary: `boot` starts `shards run
+--kernel … --vsock <socket> --no-console` (D38's direct boot, `--share` for its shares) in
+a 0700 directory of its own, and `connect` speaks Firecracker's hybrid vsock handshake to
+that socket (`CONNECT <port>` / `OK <host port>`, firecracker `docs/vsock.md`, muxer.rs).
+
+**What it is.**
+- `Guests`/`Guest`/`Stream`, the real `Shards`, `sim::SimGuests` (a closure as PID 1 over
+  in-process socket pairs, with the same refusals) and `conformance::run`, which holds both
+  to one behaviour; crates/shards/tests/boot.rs runs it against this build's binary.
+- Its bounds are facts or records: a spec is refused before boot where shards-vmm refuses
+  it on every host (a vCPU at least, memory even and at least the least); the vCPUs a host
+  runs are its hypervisor's, and shards' own refusal comes back as `Refusal::Bounds`. Its
+  waits wait on facts: the VM process's exit (reaped by its watcher), its output read to an
+  end mark written after that exit, `Duration::MAX` as no clock. What remains timed is
+  twice the slowest recorded run on the host class (`shards_api::record`, PM M462-M464);
+  a class without a record has no bound, and its timed tests fail naming the record due.
+- `stop` kills the VM's process at once: the VMM has no host-to-guest power-off
+  (vm/runtime.rs), so the page cache a guest held is lost, and a clean stop is the
+  client's (ask the guest to sync and power off, `wait_for` its `PowerOff`).
+- A stream is non-blocking, each read and write waiting in poll(2) to its timeout; its
+  `buffer_sizes` are the OS's SO_SNDBUF/SO_RCVBUF.
+
+**Evidence.** PM M462 (an unserved port's refusal past its patience), M463 (the waits
+the bounds hold), M464 (what a refused dial costs, the pacing's `c`); the conformance
+suite and E2E on HVF.
+
+**What would falsify it.** A conforming client that needs to link the VMM; a host class
+whose runs are slower than its record (a new record, not a raised bound).
 
 ## 4. Start path (≤ 5 ms budget)
 

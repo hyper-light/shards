@@ -1,7 +1,6 @@
 //! Linux guests booted through the `shards` binary, for programs that run their own PID 1
-//! in one and reach it over vsock (Hex's guest node, its design `docs/design/shards-guest.md`
-//! §2 and Appendix A): a [`GuestSpec`] in, a [`Guest`] out, whose vsock ports give
-//! [`Stream`]s, and every refusal typed ([`Refusal`]).
+//! in one and reach it over vsock (docs/design/architecture.md D215): a [`GuestSpec`] in, a
+//! [`Guest`] out, whose vsock ports give [`Stream`]s, and every refusal typed ([`Refusal`]).
 //!
 //! - [`Shards`], the real one, is a client of the `shards` binary, not of `shards-vmm`: on
 //!   macOS the process that calls Hypervisor.framework must be shards' own signed VM process

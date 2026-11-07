@@ -176,6 +176,23 @@ fn with_mode(what: &'static str, path: &Path, read_only: bool) -> Result<OsStrin
     Ok(arg)
 }
 
+/// Where a guest's socket directory goes: `tmp`, where `<tmp>/shards-api-<nonce>-<n>/v` is
+/// short enough to bind; else on Unix /tmp; on Windows, which has no such fallback, a
+/// refusal naming the bound (review 16).
+fn socket_dir(tmp: PathBuf) -> Result<PathBuf, Refusal> {
+    let longest = "/shards-api-ffffffffffffffff-18446744073709551615/v".len();
+    if tmp.as_os_str().len().saturating_add(longest) <= SOCKET_PATH {
+        return Ok(tmp);
+    }
+    #[cfg(unix)]
+    return Ok(PathBuf::from("/tmp"));
+    #[cfg(windows)]
+    Err(Refusal::Boot(format!(
+        "{}: too long for a guest's socket beneath it, {SOCKET_PATH} bytes at most",
+        tmp.display()
+    )))
+}
+
 /// A directory of this process's own for a guest's vsock socket, 0700, removed as it drops.
 #[derive(Debug)]
 struct PrivateDir(PathBuf);
@@ -192,17 +209,7 @@ impl PrivateDir {
             clippy::disallowed_methods,
             reason = "a guest's socket directory, made 0700 and removed with its guest, no test's"
         )]
-        let tmp = std::env::temp_dir();
-        // `<tmp>/shards-api-<nonce>-<n>/v`, short enough to bind, else under /tmp.
-        let longest = "/shards-api-ffffffffffffffff-18446744073709551615/v".len();
-        #[cfg(unix)]
-        let tmp = if tmp.as_os_str().len().saturating_add(longest) <= SOCKET_PATH {
-            tmp
-        } else {
-            PathBuf::from("/tmp")
-        };
-        #[cfg(not(unix))]
-        let _ = (longest, SOCKET_PATH);
+        let tmp = socket_dir(std::env::temp_dir())?;
         // Unique in this process by its counter, and apart from every other process's by
         // the process's nonce: 64 bits of std's `RandomState`, seeded from the OS's random
         // source, which no earlier process of the same pid shares and no other user can
@@ -800,6 +807,19 @@ mod tests {
         assert!(path.join("v").as_os_str().len() <= SOCKET_PATH);
         drop(dir);
         assert!(!path.exists());
+    }
+
+    /// A temporary directory too long for a socket beneath it is passed over for /tmp on
+    /// Unix, and refused by name on Windows, whose AF_UNIX paths hold 108 bytes (review 16).
+    #[test]
+    fn a_socket_directory_too_long_is_passed_over_or_refused() {
+        let short = PathBuf::from("/t");
+        assert_eq!(socket_dir(short.clone()).unwrap(), short);
+        let long = PathBuf::from(format!("/{}", "d".repeat(SOCKET_PATH)));
+        #[cfg(unix)]
+        assert_eq!(socket_dir(long).unwrap(), PathBuf::from("/tmp"));
+        #[cfg(windows)]
+        assert!(matches!(socket_dir(long), Err(Refusal::Boot(why)) if why.contains("bytes at most")));
     }
 
     /// The socket directory's name carries no pid, so a directory an earlier process of the
