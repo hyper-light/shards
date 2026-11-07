@@ -326,6 +326,26 @@ mod tests {
         );
     }
 
+    /// A connected socket's buffer sizes are the OS's, non-zero, both ways (Hex
+    /// HEX-GUEST-9; review A).
+    #[test]
+    fn a_connection_reports_its_buffer_sizes() {
+        let (a, b) = pair().unwrap();
+        for end in [&a, &b] {
+            let (send, receive) = Stream::buffer_sizes(end).unwrap();
+            println!("buffer_sizes: send {send}, receive {receive}");
+            assert!(send > 0 && receive > 0, "{send} {receive}");
+        }
+    }
+
+    /// A zero or negative buffer size the OS reports is an error, not a size (review A).
+    #[test]
+    fn a_buffer_size_of_zero_or_less_is_an_error() {
+        assert_eq!(size("SO_SNDBUF", 8192).unwrap(), 8192);
+        assert!(size("SO_SNDBUF", 0).is_err());
+        assert!(size("SO_RCVBUF", -1).is_err());
+    }
+
     /// A clone is the same connection: what one writes the peer reads (Hex HEX-GUEST-9).
     #[test]
     fn a_clone_is_the_same_connection() {
