@@ -1190,14 +1190,23 @@ impl Child {
     }
 
     /// Whether the child has ended, without waiting: its status as [`Child::wait`] gives
-    /// it once it has, `None` while it runs.
+    /// it once it has, `None` while it runs. A child of this process's own is reaped
+    /// without waiting too: on macOS waitid(2) once said a running child had ended, and a
+    /// build's start waited in waitpid(2) for 23 minutes as its builder ran on, its
+    /// connection never accepted (PM M442).
     pub fn try_wait(&self) -> Option<i32> {
         let ended = match self.by {
             Some(by) => crate::spawner::status(by, self.pid, false),
             None => status_of(self.pid, false),
         };
         ended.ok().flatten()?;
-        self.wait().ok()
+        if self.by.is_some() {
+            return self.wait().ok();
+        }
+        let mut reaped = self.reaped.lock().unwrap_or_else(PoisonError::into_inner);
+        let status = reap_now(self.pid).ok().flatten()?;
+        *reaped = true;
+        Some(status)
     }
 
     /// Sends `signal` to the child, unless it has been reaped.
@@ -1282,23 +1291,38 @@ pub(crate) fn status_of(pid: libc::pid_t, wait: bool) -> io::Result<Option<i32>>
 /// Reaps this process's child `pid`, once it has ended: its exit status, or 128 plus the
 /// signal that ended it.
 pub(crate) fn reap(pid: libc::pid_t) -> io::Result<i32> {
+    reaped(pid, 0).map(|status| status.unwrap_or_default())
+}
+
+/// Reaps this process's child `pid` if it has ended, without waiting: its status as
+/// [`reap`] gives it, `None` while it runs.
+fn reap_now(pid: libc::pid_t) -> io::Result<Option<i32>> {
+    reaped(pid, libc::WNOHANG)
+}
+
+/// waitpid(2) for child `pid` with `flags`: its status, `None` where WNOHANG found it
+/// running.
+fn reaped(pid: libc::pid_t, flags: libc::c_int) -> io::Result<Option<i32>> {
     let mut status = 0;
     loop {
         // SAFETY: waitpid(2) for our own child into a local.
-        let r = unsafe { libc::waitpid(pid, &mut status, 0) };
+        let r = unsafe { libc::waitpid(pid, &mut status, flags) };
         if r == pid {
             break;
+        }
+        if r == 0 {
+            return Ok(None);
         }
         let e = io::Error::last_os_error();
         if e.kind() != io::ErrorKind::Interrupted {
             return Err(e);
         }
     }
-    Ok(if libc::WIFEXITED(status) {
+    Ok(Some(if libc::WIFEXITED(status) {
         libc::WEXITSTATUS(status)
     } else {
         128 + libc::WTERMSIG(status)
-    })
+    }))
 }
 
 /// Starts `program` with `args` and this process's environment. The child gets exactly the
