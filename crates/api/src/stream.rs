@@ -27,7 +27,7 @@ pub(crate) fn connect(path: &Path) -> io::Result<Socket> {
     let inner = std::os::unix::net::UnixStream::connect(path)?;
     #[cfg(windows)]
     let inner = shards_afunix::UnixStream::connect(path)?;
-    Ok(Socket::new(inner))
+    Socket::new(inner)
 }
 
 /// Two connected ends.
@@ -36,7 +36,7 @@ pub(crate) fn pair() -> io::Result<(Socket, Socket)> {
     let (a, b) = std::os::unix::net::UnixStream::pair()?;
     #[cfg(windows)]
     let (a, b) = shards_afunix::UnixStream::pair()?;
-    Ok((Socket::new(a), Socket::new(b)))
+    Ok((Socket::new(a)?, Socket::new(b)?))
 }
 
 #[cfg(unix)]
@@ -52,11 +52,13 @@ mod unix {
     const WRITE: usize = 1;
 
     impl Socket {
-        pub(super) fn new(inner: std::os::unix::net::UnixStream) -> Socket {
-            Socket {
+        /// Its socket made non-blocking, its waits this value's (`waiting`).
+        pub(super) fn new(inner: std::os::unix::net::UnixStream) -> io::Result<Socket> {
+            inner.set_nonblocking(true)?;
+            Ok(Socket {
                 inner,
                 waits: std::sync::Arc::default(),
-            }
+            })
         }
 
         pub(super) fn set_wait(&self, which: usize, timeout: Option<Duration>) -> io::Result<()> {
@@ -67,9 +69,17 @@ mod unix {
             Ok(())
         }
 
-        /// Waits until it can be read (`READ`) or written (`WRITE`), or has ended, at most
-        /// its timeout: then fails `WouldBlock`, as std's sockets do at theirs on Unix.
-        pub(super) fn ready(&self, which: usize) -> io::Result<()> {
+        /// Does `op`, a read (`READ`) or a write (`WRITE`) on the non-blocking socket, as
+        /// far as it goes now, and where it would block, waits in poll(2) until it can go on
+        /// or has ended, at most its timeout from now: then fails `WouldBlock`, as std's
+        /// sockets do at theirs on Unix. A write moves what the socket takes, so a peer that
+        /// stops reading holds no write past its timeout, and a read a clone raced to the
+        /// bytes waits again rather than blocking.
+        pub(super) fn waiting<T>(
+            &self,
+            which: usize,
+            mut op: impl FnMut() -> io::Result<T>,
+        ) -> io::Result<T> {
             let ns = self.waits.get(which).map_or(0, |w| w.load(Ordering::Relaxed));
             let deadline = (ns != 0)
                 .then(|| Instant::now().checked_add(Duration::from_nanos(ns)))
@@ -80,6 +90,11 @@ mod unix {
                 libc::POLLOUT
             };
             loop {
+                match op() {
+                    Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
+                    Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                    done => return done,
+                }
                 let wait = match deadline {
                     None => -1,
                     Some(deadline) => {
@@ -100,9 +115,6 @@ mod unix {
                 };
                 // SAFETY: poll(2) of one pollfd, of a socket this value holds open.
                 let n = unsafe { libc::poll(&raw mut fd, 1, wait) };
-                if n > 0 {
-                    return Ok(());
-                }
                 if n < 0 {
                     let e = io::Error::last_os_error();
                     if e.kind() != io::ErrorKind::Interrupted {
@@ -133,8 +145,8 @@ mod unix {
 
 #[cfg(windows)]
 impl Socket {
-    fn new(inner: shards_afunix::UnixStream) -> Socket {
-        Socket { inner }
+    fn new(inner: shards_afunix::UnixStream) -> io::Result<Socket> {
+        Ok(Socket { inner })
     }
 }
 
@@ -143,7 +155,8 @@ impl Read for Socket {
         // Waited for in poll(2), which sees a peer's half-close that a read waiting on a
         // macOS socket can sleep through (PM M236).
         #[cfg(unix)]
-        self.ready(unix::READING)?;
+        return self.waiting(unix::READING, || (&self.inner).read(buf));
+        #[cfg(windows)]
         (&self.inner).read(buf)
     }
 }
@@ -151,7 +164,8 @@ impl Read for Socket {
 impl Write for Socket {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         #[cfg(unix)]
-        self.ready(unix::WRITING)?;
+        return self.waiting(unix::WRITING, || (&self.inner).write(buf));
+        #[cfg(windows)]
         (&self.inner).write(buf)
     }
 
