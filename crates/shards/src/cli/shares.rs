@@ -258,19 +258,21 @@ mod tests {
             ("/srv/data".into(), true)
         );
         assert_eq!(parse(OsStr::new("rel/dir:ro")).unwrap(), ("rel/dir".into(), true));
-        // Colons anywhere but a trailing `:ro` are the path's, the last name's too.
+        // Colons anywhere but a trailing `:ro` are the path's, the last name's too, as
+        // `--disk`'s (review 8).
         assert_eq!(parse(OsStr::new("/a:b/c")).unwrap(), ("/a:b/c".into(), false));
-        assert_eq!(
-            parse(OsStr::new("/srv/v1:2024")).unwrap(),
-            ("/srv/v1:2024".into(), false)
-        );
+        for path in [
+            "/srv/a:b",
+            "/srv/v1:2024",
+            "/srv/data:rw",
+            "/srv/data:",
+            "/srv/data:RO",
+        ] {
+            assert_eq!(parse(OsStr::new(path)).unwrap(), (path.into(), false), "{path}");
+        }
         assert_eq!(
             parse(OsStr::new("/srv/v1:2024:ro")).unwrap(),
             ("/srv/v1:2024".into(), true)
-        );
-        assert_eq!(
-            parse(OsStr::new("/srv/data:rw")).unwrap(),
-            ("/srv/data:rw".into(), false)
         );
         for bad in [":ro", ""] {
             assert!(parse(OsStr::new(bad)).is_err(), "{bad}");
@@ -290,5 +292,27 @@ mod tests {
         assert_eq!(kept, ["--kernel", "k", "--", "--share", "x"]);
         assert_eq!(shares, [("/a".into(), false), ("/b".into(), true)]);
         assert!(take(&[OsString::from("--share")]).is_err());
+    }
+
+    /// A flag's value is not a flag: `--cmdline --share` keeps `--share` as the command
+    /// line's, and `--env --` keeps `--` as the variable (review 9).
+    #[test]
+    fn a_flags_value_is_not_taken_as_a_flag() {
+        let args: Vec<OsString> = [
+            "--kernel",
+            "k",
+            "--cmdline",
+            "--share",
+            "-e",
+            "--",
+            "--share",
+            "/a",
+        ]
+        .into_iter()
+        .map(OsString::from)
+        .collect();
+        let (kept, shares) = take(&args).unwrap();
+        assert_eq!(kept, ["--kernel", "k", "--cmdline", "--share", "-e", "--"]);
+        assert_eq!(shares, [("/a".into(), false)]);
     }
 }
