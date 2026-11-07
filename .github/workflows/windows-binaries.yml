@@ -8,7 +8,9 @@ name: windows binaries
 # built at the paths the machine keeps them at, kiln's copy of this checkout and a target
 # directory of its own, and uploaded with what it reaches, each file at its place beneath
 # that target directory: shards, the init and the helpers build.rs made, and for the
-# benches the test guest (SHARDS_TEST_GUESTS, test-guests/ there). Built on windows-2022,
+# benches the test guest (SHARDS_TEST_GUESTS, test-guests/ there); and `shards` alone,
+# release-built as measurements take it, each variant with its measurement's patch applied
+# and its artifact named for it. Built on windows-2022,
 # whose temp disk has room for a release build (78 GB free, windows-2025's 27). Runs when
 # the workflow changes on a working branch (`BUILD`, raised, builds its head again; the
 # branches work lands on build none), or when asked.
@@ -34,10 +36,11 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   TOOLCHAIN: 1.98.1 # keep in sync with rust-toolchain.toml
-  WORKSPACE: ${{ github.event.inputs.workspace || 'C:\Users\corph\.kiln\reach\adas-macbook-pro-2.local\g121-cli-6628f0fd9d' }}
-  TARGET: ${{ github.event.inputs.target || 'C:\Users\corph\g121-db-pre' }}
-  # Raised to build again: the restore bench with its snapshot held (PM M421).
-  BUILD: 2
+  WORKSPACE: ${{ github.event.inputs.workspace || 'C:\Users\corph\.kiln\reach\e30189ea29182644fe5a4b2e06c7dac2\agent-afd023ac2b8dd16b8-cc4813901e' }}
+  TARGET: ${{ github.event.inputs.target || 'C:\Users\corph\g121-parity-target' }}
+  # Raised to build again: the parity audit's step 14, D191's Windows wake policy and D190's
+  # restarts measured on jupiter, and its moves, plugs and restarts run there.
+  BUILD: 3
 
 jobs:
   build:
@@ -48,9 +51,20 @@ jobs:
       matrix:
         include:
           - kind: bench
-            names: ${{ github.event.inputs.benches || 'restore' }}
+            names: ${{ github.event.inputs.benches || '' }}
           - kind: test
-            names: ${{ github.event.inputs.tests || 'context' }}
+            names: ${{ github.event.inputs.tests || 'moved,plug,hotplug,containers,daemon' }}
+          - kind: shards
+            variant: as-built
+          - kind: shards
+            variant: winnone
+            patch: docs/research/measurements/cpu-elastic/winnone.patch
+          - kind: shards
+            variant: pack
+            patch: docs/research/measurements/layer-kept/pack.patch
+          - kind: shards
+            variant: over
+            patch: docs/research/measurements/layer-kept/over.patch
     steps:
       - uses: actions/checkout@v7.0.1
       - name: Install pinned Rust
@@ -81,8 +95,10 @@ jobs:
         env:
           KIND: ${{ matrix.kind }}
           NAMES: ${{ matrix.names }}
+          PATCH: ${{ matrix.patch }}
         run: |
           set -euo pipefail
+          if [ "$KIND" != shards ] && [ -z "$NAMES" ]; then echo "none asked"; exit 0; fi
           export CARGO_TARGET_DIR="$TARGET"
           target=$(cygpath -u "$TARGET")
           stage=$(cygpath -u "$RUNNER_TEMP")/stage
@@ -98,7 +114,10 @@ jobs:
           }
           args=()
           for name in ${NAMES//,/ }; do args+=("--$KIND" "$name"); done
-          if [ "$KIND" = bench ]; then
+          if [ "$KIND" = shards ]; then
+            if [ -n "$PATCH" ]; then git apply "$PATCH"; fi
+            cargo build --locked -p shards --bin shards --release --message-format=json-render-diagnostics > "$RUNNER_TEMP/built.json"
+          elif [ "$KIND" = bench ]; then
             cargo bench --locked -p shards --no-run --message-format=json-render-diagnostics "${args[@]}" > "$RUNNER_TEMP/built.json"
           else
             cargo test --locked -p shards --profile test-release --no-run --message-format=json-render-diagnostics "${args[@]}" > "$RUNNER_TEMP/built.json"
@@ -124,6 +143,6 @@ jobs:
           find "$stage" -type f -exec ls -l {} +
       - uses: actions/upload-artifact@v7.0.1
         with:
-          name: windows-${{ matrix.kind }}-${{ github.sha }}
+          name: windows-${{ matrix.kind }}${{ matrix.variant && '-' || '' }}${{ matrix.variant }}-${{ github.sha }}
           path: ${{ runner.temp }}/stage
           retention-days: 7
