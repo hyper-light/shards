@@ -918,6 +918,20 @@ impl Tree {
         &self.root
     }
 
+    /// Whether fsutil walked it on a Windows host, with Go's path/filepath of Windows: a
+    /// tree of this Windows host's own, not a Linux client's kept on NTFS, which its fsutil
+    /// walked on Linux.
+    pub fn windows_paths(&self) -> bool {
+        #[cfg(windows)]
+        {
+            !self.linux
+        }
+        #[cfg(not(windows))]
+        {
+            false
+        }
+    }
+
     /// A path below the root from its slash-separated relative name.
     pub fn path(&self, rel: &[u8]) -> PathBuf {
         #[cfg(windows)]
