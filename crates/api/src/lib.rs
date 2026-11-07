@@ -250,36 +250,16 @@ pub fn min_memory_mib(arch: &str) -> u64 {
     if arch == "x86_64" { 128 } else { 64 }
 }
 
-/// The most vCPUs a guest has here: the host's CPUs, read from it now as std reads them (a
-/// cgroup's or affinity's bound included), as shards-vmm bounds them
-/// (`crates/vmm/src/vm/runtime.rs:1059` `check_vcpus`). shards-vmm then holds a guest to its hypervisor's own limit,
-/// which is no lower on any backend it has.
-pub fn max_vcpus() -> u32 {
-    std::thread::available_parallelism()
-        .map(|n| u32::try_from(n.get()).unwrap_or(u32::MAX))
-        .unwrap_or(1)
-}
-
-/// The most vsock ports a spec may allow: the connections shards' muxer holds at once
-/// (`MAX_CONNECTIONS`, Firecracker's, `crates/vmm/src/devices/virtio/vsock/muxer.rs:40-41`).
-pub const MAX_PORTS: usize = 1023;
-
-/// Checks `spec` against this host's bounds, as shards-vmm does as it starts a VM
-/// (`vm/runtime.rs:1059` `check_vcpus`; memory even and at least the least,
-/// `vm/aarch64.rs:414`, `vm/x86_64.rs:361`), so that both the
-/// client and the simulator refuse it before anything boots.
+/// Checks `spec` against the bounds shards-vmm holds every host to, so that both the
+/// client and the simulator refuse it before anything boots: at least one vCPU, and memory
+/// even and at least the least (`vm/aarch64.rs:414`, `vm/x86_64.rs:361`). How many vCPUs a
+/// host takes is its hypervisor's own limit, which shards reads as it starts the VM
+/// (`vm/runtime.rs:1059` `check_vcpus`); its refusal comes back as [`Refusal::Bounds`].
 pub fn check(spec: &GuestSpec) -> Result<(), Refusal> {
-    let max = max_vcpus();
     if spec.vcpus == 0 {
         return Err(Refusal::Bounds {
             what: "vcpus",
             why: "at least one vCPU is required".into(),
-        });
-    }
-    if spec.vcpus > max {
-        return Err(Refusal::Bounds {
-            what: "vcpus",
-            why: format!("{} vCPUs requested; this host has {max}", spec.vcpus),
         });
     }
     let least = min_memory_mib(std::env::consts::ARCH);
@@ -289,15 +269,6 @@ pub fn check(spec: &GuestSpec) -> Result<(), Refusal> {
             why: format!(
                 "{} MiB: guest memory must be an even number of MiB, at least {least}",
                 spec.memory_mib
-            ),
-        });
-    }
-    if spec.ports.len() > MAX_PORTS {
-        return Err(Refusal::Bounds {
-            what: "ports",
-            why: format!(
-                "{} ports; a guest's vsock holds at most {MAX_PORTS}",
-                spec.ports.len()
             ),
         });
     }
@@ -321,7 +292,7 @@ mod tests {
     use super::*;
 
     /// Inputs: one vCPU and 256 MiB, within every host's bounds; the cases below step
-    /// past each bound by one (257, odd; `least - 2`; `MAX_PORTS + 1` ports).
+    /// past each bound by one (257, odd; `least - 2`).
     fn spec() -> GuestSpec {
         GuestSpec {
             kernel: "k".into(),

@@ -8,7 +8,19 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use crate::stream::{self, Socket};
-use crate::{End, Guest, GuestSpec, Guests, MAX_PORTS, Refusal, Stream, allowed, backend, check};
+use crate::{End, Guest, GuestSpec, Guests, Refusal, Stream, allowed, backend, check};
+
+/// The connections shards' muxer holds at once, open and pending together
+/// (`MAX_CONNECTIONS`, Firecracker's, `crates/vmm/src/devices/virtio/vsock/muxer.rs:40-41`).
+const MAX_CONNECTIONS: usize = 1023;
+
+/// The most vCPUs the simulated hypervisor runs: the CPUs this process may run on, as std
+/// reads them, where shards-vmm asks its hypervisor (`vm/runtime.rs:1059` `check_vcpus`).
+fn max_vcpus() -> u32 {
+    std::thread::available_parallelism()
+        .map(|n| u32::try_from(n.get()).unwrap_or(u32::MAX))
+        .unwrap_or(1)
+}
 
 /// A guest's program: given its side of the guest, it returns how the guest ends
 /// ([`End::PowerOff`], say).
@@ -50,7 +62,7 @@ struct Shared {
 #[derive(Debug, Default)]
 struct State {
     listening: BTreeSet<u32>,
-    /// Connections made and not yet accepted, at most [`MAX_PORTS`] (the muxer's bound on
+    /// Connections made and not yet accepted, at most [`MAX_CONNECTIONS`] (the muxer's bound on
     /// pending and open connections).
     pending: VecDeque<(u32, Socket)>,
     end: Option<End>,
@@ -104,6 +116,13 @@ impl Guests for SimGuests {
     fn boot(&self, spec: &GuestSpec) -> Result<Box<dyn Guest>, Refusal> {
         check(spec)?;
         backend()?;
+        let max = max_vcpus();
+        if spec.vcpus > max {
+            return Err(Refusal::Bounds {
+                what: "vcpus",
+                why: format!("{} vCPUs requested; this host supports {max}", spec.vcpus),
+            });
+        }
         let shared = Arc::new(Shared {
             state: Mutex::new(State::default()),
             changed: Condvar::new(),
@@ -147,10 +166,10 @@ impl Guest for SimGuest {
                 return Err(Refusal::Ended(end.clone()));
             }
             if state.listening.contains(&port) {
-                if state.pending.len() >= MAX_PORTS {
+                if state.pending.len() >= MAX_CONNECTIONS {
                     return Err(Refusal::Channel {
                         port,
-                        why: format!("{MAX_PORTS} connections wait to be accepted"),
+                        why: format!("{MAX_CONNECTIONS} connections wait to be accepted"),
                     });
                 }
                 let (ours, theirs) = stream::pair().map_err(|e| Refusal::Channel {

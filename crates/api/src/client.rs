@@ -490,6 +490,14 @@ impl ShardsGuest {
         // A failure or a reset (a kernel's panic) before any answer is the boot's; a power-off
         // or a stop is a normal end.
         if !state.ready && matches!(end, End::Failed(_) | End::Reset) {
+            // shards-vmm's own refusal of the vCPUs its hypervisor won't run
+            // (`crates/vmm/src/vm/runtime.rs:1065`), as shards reports it.
+            if state.said.contains("vCPUs requested; this host supports") {
+                return Some(Refusal::Bounds {
+                    what: "vcpus",
+                    why: state.ended_as.clone(),
+                });
+            }
             return Some(Refusal::Boot(format!("before it was ready, {}", state.ended_as)));
         }
         Some(Refusal::Ended(end))

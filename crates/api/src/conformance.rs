@@ -1,5 +1,6 @@
 //! What every [`Guests`] does, run against the simulator in this crate's tests and against
-//! [`Shards`](crate::Shards) on each backend: a spec past the bounds is refused before boot;
+//! [`Shards`](crate::Shards) on each backend: a spec past the bounds is refused before boot,
+//! and one past the hypervisor's vCPUs as `Bounds`;
 //! a served port carries bytes both ways and a half-close; an unserved port is refused as
 //! `Channel` within its patience, one off the allowlist at once; `stop` ends a guest as
 //! `Stopped`, and every later `connect` is refused `Ended`; a guest that powers off ends as
@@ -10,9 +11,7 @@ use std::net::Shutdown;
 use std::time::{Duration, Instant};
 
 use crate::record::Pending;
-use crate::{
-    Backend, End, Guest, GuestSpec, Guests, MAX_PORTS, Refusal, backend_of, max_vcpus, min_memory_mib,
-};
+use crate::{Backend, End, Guest, GuestSpec, Guests, Refusal, backend_of, min_memory_mib};
 
 /// What the suite runs against.
 pub struct Subject<'a> {
@@ -63,6 +62,7 @@ pub fn run(s: &Subject<'_>) -> Result<(), Failure> {
     if s.guests.backend().is_err() {
         return Ok(());
     }
+    more_vcpus_than_the_hypervisor_runs_are_refused_as_bounds(s)?;
     a_served_port_carries_bytes_and_a_half_close(s)?;
     an_unserved_port_is_refused(s)?;
     stop_ends_it_and_later_connects_are_refused(s)?;
@@ -107,13 +107,6 @@ pub fn bounds_are_refused_before_boot(s: &Subject<'_>) -> Result<(), Failure> {
             },
         ),
         (
-            "more vCPUs than the host's",
-            GuestSpec {
-                vcpus: max_vcpus().saturating_add(1),
-                ..none.clone()
-            },
-        ),
-        (
             "odd memory",
             GuestSpec {
                 memory_mib: least.saturating_add(1),
@@ -136,6 +129,28 @@ pub fn bounds_are_refused_before_boot(s: &Subject<'_>) -> Result<(), Failure> {
         }
     }
     Ok(())
+}
+
+/// More vCPUs than any hypervisor runs are refused as `Bounds` naming the vCPUs: by `boot`,
+/// or, where the hypervisor's own limit is read as the VM starts (shards-vmm's
+/// `check_vcpus`), by the `connect` that finds the guest gone. An input: u32's most.
+pub fn more_vcpus_than_the_hypervisor_runs_are_refused_as_bounds(s: &Subject<'_>) -> Result<(), Failure> {
+    const CASE: &str = "more vCPUs than the hypervisor runs are refused as bounds";
+    let spec = GuestSpec {
+        vcpus: u32::MAX,
+        ..s.serving.clone()
+    };
+    let refused = match s.guests.boot(&spec) {
+        Err(refused) => refused,
+        Ok(guest) => match guest.connect(s.port, s.patience) {
+            Err(refused) => refused,
+            Ok(_) => return Err(fail(CASE, "connected")),
+        },
+    };
+    match refused {
+        Refusal::Bounds { what: "vcpus", .. } => Ok(()),
+        other => Err(fail(CASE, other.to_string())),
+    }
 }
 
 fn boot(case: &'static str, s: &Subject<'_>, spec: &GuestSpec) -> Result<Box<dyn Guest>, Failure> {
@@ -211,9 +226,9 @@ pub fn an_unserved_port_is_refused(s: &Subject<'_>) -> Result<(), Failure> {
             .connect(s.port, s.patience)
             .map_err(|e| fail(CASE, format!("connect to the served port: {e}")))?,
     );
-    // A spec allows at most MAX_PORTS ports, so one of the first MAX_PORTS + 1 is off it.
+    // A spec allows its ports alone, so one of the first of them plus one is off it.
     let off = (0..=u32::MAX)
-        .take(MAX_PORTS.saturating_add(1))
+        .take(s.serving.ports.len().saturating_add(1))
         .find(|p| !s.serving.ports.contains(p))
         .ok_or_else(|| fail(CASE, "every port is allowed"))?;
     match guest.connect(off, s.patience) {
