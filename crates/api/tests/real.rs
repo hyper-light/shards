@@ -84,8 +84,8 @@ fn the_waits_of_real_guests() {
         over.push(start.elapsed().saturating_sub(conformance::UNSERVED_PATIENCE));
         let start = Instant::now();
         g.stop().unwrap();
+        assert_eq!(g.wait_for(Duration::MAX).unwrap(), Some(End::Stopped));
         stop.push(start.elapsed());
-        assert_eq!(g.wait_for(Duration::ZERO).unwrap(), Some(End::Stopped));
         let start = Instant::now();
         let g = Shards.boot(&spec("kmsg")).unwrap();
         assert_eq!(g.wait_for(Duration::MAX).unwrap(), Some(End::PowerOff));

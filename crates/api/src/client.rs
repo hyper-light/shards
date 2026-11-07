@@ -835,6 +835,22 @@ mod tests {
         assert_ne!(dir.0, again.0);
     }
 
+    /// A stand-in script at `bin`, `body` its text: written beside it and installed by
+    /// install(1), so no descriptor of this process ever writes the file it executes (one a
+    /// test beside it forked while open would fail its exec ETXTBSY, execve(2)).
+    #[cfg(unix)]
+    fn installed(bin: &Path, body: &str) {
+        let source = bin.with_extension("sh");
+        std::fs::write(&source, body).unwrap();
+        let done = Command::new("install")
+            .args(["-m", "755"])
+            .arg(&source)
+            .arg(bin)
+            .status()
+            .unwrap();
+        assert!(done.success());
+    }
+
     /// A guest's socket and its muxer's side of one connection, answering `answer` to the
     /// first `CONNECT` line; the refusal, where the dial is refused.
     #[cfg(unix)]
@@ -879,11 +895,9 @@ mod tests {
         ShardsGuest,
         Arc<std::sync::atomic::AtomicUsize>,
     ) {
-        use std::os::unix::fs::PermissionsExt as _;
         let dir = shards_testdir::TempDir::new("api-dials").unwrap();
         let bin = dir.path().join("shards");
-        std::fs::write(&bin, "#!/bin/sh\nexec sleep 1000\n").unwrap();
-        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        installed(&bin, "#!/bin/sh\nexec sleep 1000\n");
         let guest = start(&GuestSpec {
             binary: Some(bin),
             ..spec()
@@ -913,7 +927,6 @@ mod tests {
     /// A stand-in for shards that ignores SIGTERM, booted, once it does.
     #[cfg(unix)]
     fn deaf() -> (shards_testdir::TempDir, ShardsGuest) {
-        use std::os::unix::fs::PermissionsExt as _;
         let dir = shards_testdir::TempDir::new("api-deaf-unit").unwrap();
         let (bin, deaf) = (dir.path().join("shards"), dir.path().join("deaf"));
         assert!(Command::new("mkfifo").arg(&deaf).status().unwrap().success());
@@ -921,8 +934,7 @@ mod tests {
             "#!/bin/sh\ntrap '' TERM; echo > '{}'; while :; do sleep 1; done\n",
             deaf.display()
         );
-        std::fs::write(&bin, body).unwrap();
-        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        installed(&bin, &body);
         let guest = start(&GuestSpec {
             binary: Some(bin),
             ..spec()

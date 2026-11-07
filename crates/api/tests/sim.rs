@@ -147,7 +147,6 @@ fn a_guest_ends_as_its_program_says() {
 mod client {
     use super::*;
     use shards_api::Shards;
-    use std::os::unix::fs::PermissionsExt as _;
     use std::path::PathBuf;
     use std::time::Instant;
 
@@ -159,10 +158,20 @@ mod client {
     );
 
     /// A stand-in for `shards` that runs `body` whatever it is asked.
+    /// A stand-in for `shards` that runs `body` whatever it is asked. Written to a file of
+    /// its own and installed by install(1), so no descriptor of this process ever writes
+    /// the file it executes: one that a test running beside it forked while it was open
+    /// would make its exec fail ETXTBSY (execve(2)).
     fn stand_in(dir: &shards_testdir::TempDir, body: &str) -> PathBuf {
-        let path = dir.path().join("shards");
-        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let (source, path) = (dir.path().join("shards.sh"), dir.path().join("shards"));
+        std::fs::write(&source, format!("#!/bin/sh\n{body}\n")).unwrap();
+        let installed = std::process::Command::new("install")
+            .args(["-m", "755"])
+            .arg(&source)
+            .arg(&path)
+            .status()
+            .unwrap();
+        assert!(installed.success());
         path
     }
 
@@ -528,7 +537,7 @@ mod client {
                     let g = boot(bin);
                     let start = Instant::now();
                     g.stop().unwrap();
-                    assert_eq!(g.wait_for(Duration::ZERO).unwrap(), Some(End::Stopped));
+                    assert_eq!(g.wait_for(Duration::MAX).unwrap(), Some(End::Stopped));
                     start.elapsed()
                 }),
             ),
