@@ -14725,6 +14725,16 @@ const PLAIN_KEY: &str = "-----BEGIN PGP PUBLIC KEY BLOCK-----\n\nmDMEaskNERYJKwY
 const PLAIN_SIGNATURE: &str = "-----BEGIN PGP SIGNATURE-----\n\niKYEABYIAE4WIQSDM7XWA1J5Rh9FKKzqq3t/ODXfygUCaskNERsUgAAAAAAEAA5t\nYW51MiwyLjUrMS4xMiwwLDMUHHRlc3RAc2hhcmRzLmludmFsaWQACgkQ6qt7fzg1\n38ozhAEA/hBRDJnv8fnPgR6g+hQal71AtWkCxbuCegjgh6NMrpwBAN5cDFthW9pr\nhQbn/RcLu8nCl08Ek7cgvWvMw5zWCnMJ\n=FGhd\n-----END PGP SIGNATURE-----\n";
 const OTHER_KEY: &str = "-----BEGIN PGP PUBLIC KEY BLOCK-----\n\nmDMEaskNERYJKwYBBAHaRw8BAQdAl4zNkBEdNizcxF9lYqt9XJC6zZE0Kq7lT0BC\niFlYXhW0I3NoYXJkcy1vdGhlciA8b3RoZXJAc2hhcmRzLmludmFsaWQ+iK8EExYK\nAFcWIQRfvs3uwqa0nRus8Otf0NV8Yk2TPQUCaskNERsUgAAAAAAEAA5tYW51Miwy\nLjUrMS4xMiwwLDMCGwMFCwkIBwICIgIGFQoJCAsCBBYCAwECHgcCF4AACgkQX9DV\nfGJNkz3vNQD/Wts1530geucKfgFEdqdR1F93F9cu4rAgy63uPIE/ppAA/1AFTPOE\nB4sxLmvSX0NaawVXFf1j0VxyxxhXwGZQaBsF\n=6v3O\n-----END PGP PUBLIC KEY BLOCK-----\n";
 
+/// Whether `tool` is a program on PATH, found without running it: Windows' ssh-keygen, given
+/// an argument it does not know (`-?`), went on to make a key and waited on its console for
+/// a file name, which nothing answered, holding the suite 15 hours (the nested arm64
+/// Windows host, 2026-11-06).
+fn on_path(tool: &str) -> bool {
+    let name = format!("{tool}{}", std::env::consts::EXE_SUFFIX);
+    std::env::var_os("PATH")
+        .is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join(&name).is_file()))
+}
+
 /// Policies that verify signatures (D103): a commit signed with an SSH key, as
 /// `gpg.format=ssh` signs it, by `verify_git_signature` and an allowed-signers key; an
 /// HTTP download by `verify_http_pgp_signature`, over the digest of its content and the
@@ -14735,8 +14745,7 @@ fn policies_verify_git_and_http_signatures() {
     if cannot_run_vms() {
         return;
     }
-    let has = |tool: &str, arg: &str| std::process::Command::new(tool).arg(arg).output().is_ok();
-    if !has("git", "--version") || !has("ssh-keygen", "-?") {
+    if !on_path("git") || !on_path("ssh-keygen") {
         eprintln!(
             "NOTE: no git or ssh-keygen on this host: signed Git sources in policies are not exercised"
         );
@@ -15537,8 +15546,7 @@ fn policies_verify_git_signatures_by_ssh_certificates() {
     if cannot_run_vms() {
         return;
     }
-    let has = |tool: &str, arg: &str| std::process::Command::new(tool).arg(arg).output().is_ok();
-    if !has("git", "--version") || !has("ssh-keygen", "-?") {
+    if !on_path("git") || !on_path("ssh-keygen") {
         eprintln!("NOTE: no git or ssh-keygen on this host: SSH certificates in policies are not exercised");
         return;
     }
