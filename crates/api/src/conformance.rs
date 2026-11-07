@@ -261,6 +261,16 @@ pub fn an_unserved_port_is_refused(s: &Subject<'_>) -> Result<(), Failure> {
     Ok(())
 }
 
+/// How long a real guest may take to boot and listen, to echo, or to end, by host class
+/// (`record`): a hang guard, each wait returning at its fact. macOS-HVF: twice (the margin)
+/// the slowest recorded of those waits, a boot to its port answering, 248.467 ms
+/// (`docs/research/platform-measurements.md` M463); Linux-KVM and Windows-WHP: pending their
+/// records.
+#[cfg(target_os = "macos")]
+pub const PATIENCE: Result<Duration, Pending> = Ok(Duration::from_nanos(2 * 248_467_000));
+#[cfg(not(target_os = "macos"))]
+pub const PATIENCE: Result<Duration, Pending> = Err(Pending::of("conformance::PATIENCE"));
+
 /// The patience an unserved port is asked with: an input, as any shows the patience kept;
 /// short, so the case is.
 pub const UNSERVED_PATIENCE: Duration = Duration::from_millis(200);
