@@ -256,6 +256,62 @@ mod tests {
         assert_eq!(unix::nanos(Some(Duration::MAX)).unwrap(), u64::MAX);
     }
 
+    /// How long a timed operation here may take: its timeout, `UNSERVED_PATIENCE`, and
+    /// this host class's recorded lateness of a timed wait (`OVERSHOOT`), a hang guard.
+    fn timed() -> (Duration, Duration) {
+        let late = crate::conformance::OVERSHOOT.unwrap_or_else(|pending| panic!("{pending}"));
+        let timeout = crate::conformance::UNSERVED_PATIENCE;
+        (timeout, timeout.saturating_add(late))
+    }
+
+    /// A write to a peer that stops reading fails at its timeout, having moved what the
+    /// socket took, rather than blocking for ever (Hex HEX-GUEST-9; review B3).
+    #[test]
+    fn a_write_to_a_peer_that_stops_reading_ends_at_its_timeout() {
+        let (timeout, guard) = timed();
+        let (mut a, _b) = pair().unwrap();
+        Stream::set_write_timeout(&a, Some(timeout)).unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            // An input: more than any socket's buffer holds (macOS's 8 KiB, Linux's
+            // wmem_max), so the peer's not reading is what stops it.
+            let big = vec![7u8; 64 << 20];
+            tx.send(a.write_all(&big).map_err(|e| e.kind()))
+        });
+        let wrote = rx
+            .recv_timeout(guard)
+            .expect("the write blocked past its timeout");
+        assert!(
+            matches!(wrote, Err(io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut)),
+            "{wrote:?}"
+        );
+    }
+
+    /// Two clones reading one byte: one reads it, the other fails at its timeout rather
+    /// than blocking after a poll said the byte was there (Hex HEX-GUEST-9; review B3).
+    #[test]
+    fn a_read_a_clone_raced_ends_at_its_timeout() {
+        let (timeout, guard) = timed();
+        let (a, mut b) = pair().unwrap();
+        Stream::set_read_timeout(&a, Some(timeout)).unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        for _ in 0..2 {
+            let mut reader = Stream::try_clone(&a).unwrap();
+            let tx = tx.clone();
+            std::thread::spawn(move || tx.send(reader.read(&mut [0u8; 1]).map_err(|e| e.kind())));
+        }
+        b.write_all(b"x").unwrap();
+        let mut got: Vec<_> = (0..2)
+            .map(|_| rx.recv_timeout(guard).expect("a read blocked past its timeout"))
+            .collect();
+        got.sort_by_key(|r| r.is_err());
+        assert_eq!(got[0], Ok(1));
+        assert!(
+            matches!(got[1], Err(io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut)),
+            "{got:?}"
+        );
+    }
+
     /// A clone is the same connection: what one writes the peer reads (Hex HEX-GUEST-9).
     #[test]
     fn a_clone_is_the_same_connection() {
