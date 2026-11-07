@@ -169,7 +169,8 @@ fn share() -> Result<(), String> {
     }
     // Each way to change the read-only share is refused EROFS, as its server answers a
     // change (fs/server.rs `writable`): a file made, one written, removed, renamed and cut.
-    let tries: [(&str, Box<dyn Fn() -> io::Result<()>>); 5] = [
+    type Change = (&'static str, Box<dyn Fn() -> io::Result<()>>);
+    let tries: [Change; 5] = [
         (
             "create",
             Box::new(|| std::fs::File::create("/mnt1/from-guest").map(drop)),
