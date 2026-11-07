@@ -101,6 +101,7 @@ fn start(spec: &GuestSpec) -> Result<ShardsGuest, Refusal> {
             end: None,
             said: String::new(),
             ended_as: String::new(),
+            status: None,
         }),
         changed: Condvar::new(),
         tail: Mutex::new(Tail {
@@ -111,8 +112,12 @@ fn start(spec: &GuestSpec) -> Result<ShardsGuest, Refusal> {
         drained: Condvar::new(),
         end_mark: end_mark(),
     });
+    #[cfg(unix)]
+    let pid = child.id();
+    let child = Arc::new(Mutex::new(child));
     let started = start_threads(&shared, &child, output, writer);
     if let Err(e) = started {
+        let mut child = lock(&child);
         let _ = child.kill();
         let _ = child.wait();
         return Err(Refusal::Boot(format!("a thread to watch shards: {e}")));
@@ -121,8 +126,8 @@ fn start(spec: &GuestSpec) -> Result<ShardsGuest, Refusal> {
         ports: spec.ports.clone(),
         vsock,
         #[cfg(unix)]
-        pid: child.id(),
-        child: Mutex::new(child),
+        pid,
+        child,
         shared,
         _dir: dir,
     })
@@ -242,7 +247,7 @@ struct Shared {
 
 #[derive(Debug)]
 struct State {
-    /// The process has exited (and is reaped, or about to be under this lock).
+    /// The process has exited and is reaped (both under this lock).
     exited: bool,
     /// `stop` or a drop is ending it: its end is `Stopped`.
     stopping: bool,
@@ -253,6 +258,8 @@ struct State {
     said: String,
     /// How shards ended, with its last words, once reaped.
     ended_as: String,
+    /// Its exit status, as the watcher reaped it.
+    status: Option<Result<std::process::ExitStatus, String>>,
 }
 
 #[derive(Debug)]
@@ -282,7 +289,7 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 /// to exit.
 fn start_threads(
     shared: &Arc<Shared>,
-    child: &Child,
+    child: &Arc<Mutex<Child>>,
     output: io::PipeReader,
     writer: io::PipeWriter,
 ) -> io::Result<()> {
@@ -344,17 +351,24 @@ struct Exit {
     pid: libc::id_t,
     #[cfg(windows)]
     handle: std::os::windows::io::OwnedHandle,
+    /// The process, reaped once it has exited, under the state's lock.
+    child: Arc<Mutex<Child>>,
 }
 
 impl Exit {
-    fn of(child: &Child) -> io::Result<Exit> {
+    fn of(child: &Arc<Mutex<Child>>) -> io::Result<Exit> {
+        let process = lock(child);
         #[cfg(unix)]
-        return Ok(Exit { pid: child.id() });
+        return Ok(Exit {
+            pid: process.id(),
+            child: child.clone(),
+        });
         #[cfg(windows)]
         {
             use std::os::windows::io::AsHandle as _;
             Ok(Exit {
-                handle: child.as_handle().try_clone_to_owned()?,
+                handle: process.as_handle().try_clone_to_owned()?,
+                child: child.clone(),
             })
         }
     }
@@ -421,6 +435,9 @@ impl Exit {
             state.end = Some(End::Failed(format!("waiting for shards: {e}")));
             state.ended_as = format!("waiting for shards: {e}");
         }
+        // Reaped under the state's lock as `exited` is set, so no signal sent while it is
+        // false reaches another process, and none is left a zombie, dropped or not.
+        state.status = Some(lock(&self.child).wait().map_err(|e| e.to_string()));
         state.said = said;
         state.exited = true;
         shared.changed.notify_all();
@@ -433,19 +450,22 @@ struct ShardsGuest {
     vsock: PathBuf,
     #[cfg(unix)]
     pid: u32,
-    child: Mutex<Child>,
+    child: Arc<Mutex<Child>>,
     shared: Arc<Shared>,
     _dir: PrivateDir,
 }
 
 impl ShardsGuest {
-    /// Its end, once the process has exited: reaped here, under its state's lock, once.
+    /// Its end, once the process has exited and its watcher reaped it.
     fn end(&self, state: &mut State) -> Option<End> {
         if !state.exited {
             return None;
         }
         if state.end.is_none() {
-            let status = lock(&self.child).wait();
+            let status = state
+                .status
+                .clone()
+                .unwrap_or_else(|| Err("no status reaped".into()));
             state.ended_as = match &status {
                 Ok(status) => said(&format!("shards {status}"), &state.said),
                 Err(e) => format!("shards: {e}"),
