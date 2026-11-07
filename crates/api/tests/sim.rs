@@ -208,6 +208,30 @@ mod client {
         );
     }
 
+    /// shards' own refusal of a spec past its hypervisor's bounds, its VMM's words
+    /// (`crates/vmm/src/vm/runtime.rs:1065`), is a `Bounds` refusal naming the vCPUs, not
+    /// `Boot` (review 6).
+    #[test]
+    fn shards_refusing_the_vcpus_is_a_bounds_refusal() {
+        let dir = shards_testdir::TempDir::new("api-vcpus").unwrap();
+        let bin = stand_in(
+            &dir,
+            "echo 'shards: 4294967295 vCPUs requested; this host supports 14' >&2; exit 1",
+        );
+        let g = Shards
+            .boot(&GuestSpec {
+                binary: Some(bin),
+                ..spec("")
+            })
+            .unwrap();
+        match g.connect(ECHO, Duration::MAX) {
+            Err(Refusal::Bounds { what: "vcpus", why }) => {
+                assert!(why.contains("this host supports 14"), "{why}")
+            }
+            other => panic!("{:?}", other.err()),
+        }
+    }
+
     /// shards that exits 0 or 3 ends as `PowerOff` or `Reset`, as `shards run` exits for
     /// them (Hex HEX-GUEST-9).
     #[test]

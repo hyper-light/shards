@@ -348,13 +348,6 @@ mod tests {
         assert_eq!(refused(GuestSpec { vcpus: 0, ..spec() }), "vcpus");
         assert_eq!(
             refused(GuestSpec {
-                vcpus: max_vcpus() + 1,
-                ..spec()
-            }),
-            "vcpus"
-        );
-        assert_eq!(
-            refused(GuestSpec {
                 memory_mib: 257,
                 ..spec()
             }),
@@ -375,8 +368,19 @@ mod tests {
             })
             .is_ok()
         );
-        let ports = (0..=MAX_PORTS as u32).collect();
-        assert_eq!(refused(GuestSpec { ports, ..spec() }), "ports");
+    }
+
+    /// More vCPUs than this process may run on, and more ports than the muxer's
+    /// connections, pass the client's own check: the VMM bounds vCPUs by its hypervisor's
+    /// own limit, and an allowlist names ports, not connections (review 6). Inputs: one past
+    /// what std reads, and 1024 ports.
+    #[test]
+    fn the_hypervisors_bounds_are_its_own_to_refuse() {
+        let many = std::thread::available_parallelism().map_or(1, |n| n.get());
+        let vcpus = u32::try_from(many).unwrap() + 1;
+        assert!(check(&GuestSpec { vcpus, ..spec() }).is_ok());
+        let ports = (0..1024).collect();
+        assert!(check(&GuestSpec { ports, ..spec() }).is_ok());
     }
 
     /// A recorded bound is seeded only from its own host class's record: macOS-HVF's
