@@ -459,15 +459,14 @@ impl Way {
 
 /// The chance that Student's t with `free` degrees of freedom is farther than `√t2` from
 /// zero, either way: `I_x(free/2, 1/2)` at `x = free/(free + t2)`, the regularized
-/// incomplete beta function (Abramowitz and Stegun 26.7.1 with 26.5.27; DLMF 8.17.2).
+/// incomplete beta function (Press et al., Numerical Recipes, 2nd ed., eq. 6.4.9).
 fn t_beyond(t2: f64, free: f64) -> f64 {
     incomplete_beta(free / 2.0, 0.5, free / (free + t2))
 }
 
 /// The regularized incomplete beta function `I_x(a, b)`: its continued fraction (DLMF
 /// 8.17.22), evaluated by Lentz's method where it converges quickly, `x < (a + 1)/(a + b + 2)`,
-/// and through `I_x(a, b) = 1 − I_(1−x)(b, a)` where not (Press et al., Numerical Recipes,
-/// 3rd ed., §6.4).
+/// and through `I_x(a, b) = 1 − I_(1−x)(b, a)` where not (Numerical Recipes, 2nd ed., §6.4).
 fn incomplete_beta(a: f64, b: f64, x: f64) -> f64 {
     if !(x > 0.0) {
         return 0.0;
@@ -484,8 +483,8 @@ fn incomplete_beta(a: f64, b: f64, x: f64) -> f64 {
     }
 }
 
-/// DLMF 8.17.22's continued fraction for `I_x(a, b)`, by Lentz's method (Numerical Recipes
-/// §5.2, §6.4): its terms taken until one changes it by less than an `f64` can tell
+/// DLMF 8.17.22's continued fraction for `I_x(a, b)`, by Lentz's method (Numerical Recipes,
+/// 2nd ed., §5.2, §6.4): its terms taken until one changes it by less than an `f64` can tell
 /// (`f64::EPSILON`), a denominator of zero kept off it by the least normal `f64`. It needs
 /// `O(√max(a, b))` terms (Numerical Recipes §6.4); it is cut at `max(a, b) + 1`, so that a
 /// line of absurd count read from a damaged file ends.
