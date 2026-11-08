@@ -13,8 +13,9 @@ in each home:
   template, each one's client wall clock (`restored`): request to a workload running;
 - once the home's VM processes stay the same for 5 s, each one's memory (Linux:
   /proc/PID/smaps_rollup's Rss, Pss and Anonymous; macOS: proc_pid_rusage's physical
-  footprint and resident size), the booted one apart from the restored ones (the runs and
-  the warm microVMs the pool keeps), and their sum; the template's disk blocks (du);
+  footprint and resident size): the booted run's, the restored runs' (the VM processes
+  `inspect` names, State.Pid) and the warm microVMs' the pool keeps, apart, and their sum;
+  the template's disk blocks (du);
 - every run removed (`rm -f`).
 
     fleet.py --shards SHARDS --init INIT --a KERNEL --b KERNEL --homes DIR
@@ -52,7 +53,7 @@ def shards(arm, *args, check=True):
     took = (time.perf_counter() - t) * 1000
     if check and done.returncode != 0:
         raise SystemExit(f"{arm} {' '.join(args)}: {done.returncode}: {done.stderr.decode(errors='replace')}")
-    return took
+    return took, done.stdout.decode(errors="replace")
 
 
 @atexit.register
@@ -164,17 +165,21 @@ for i in range(a.warmup + a.rounds):
         for j in range(a.n):
             serial += 1
             name = f"jit-{os.getpid()}-{serial}"
-            took = shards(arm, "run", "-d", "--pull", "never", "--name", name, a.image, "sleep", "100000")
+            took, _ = shards(arm, "run", "-d", "--pull", "never", "--name", name, a.image, "sleep", "100000")
             names.append(name)
             note(arm, "first run ms" if j == 0 else "restored run ms", took, counted)
         now = settled(home, a.n)
+        # The runs' VM processes (State.Pid); the rest restored are the pool's warm microVMs.
+        _, out = shards(arm, "inspect", "--format", "{{.State.Pid}}", *names)
+        runs = {int(w) for w in out.split()}
         sums = {}
         for pid, booted in now:
             m = memory(pid)
             if not m:
                 continue
+            kind = "booted run" if booted else "restored run" if pid in runs else "warm"
             for k, v in m.items():
-                note(arm, f"{'booted' if booted else 'restored'} {k} KiB", v, counted)
+                note(arm, f"{kind} {k} KiB", v, counted)
                 sums[k] = sums.get(k, 0) + v
         note(arm, "VMs", len(now), counted)
         for k, v in sums.items():
