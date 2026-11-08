@@ -2437,7 +2437,7 @@ mod tests {
     fn a_kept_socket_holds_no_answer_of_an_exchange_before() {
         let (ours, kernel) = std::os::unix::net::UnixDatagram::pair().unwrap();
         let ours = OwnedFd::from(ours);
-        let asked = [(0, NLM_F_REQUEST | NLM_F_ACK, Vec::new()); 3];
+        let asked = vec![(0u16, NLM_F_REQUEST | NLM_F_ACK, Vec::new()); 3];
         for code in [0, -libc::EEXIST, 0] {
             kernel.send(&ack(code)).unwrap();
         }
