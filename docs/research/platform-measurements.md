@@ -5179,7 +5179,7 @@ revision before comparing a changed API/implementation.
   Every case answers as OPA answers (results, or the first error of the same list) but
   for the two marked. 99990 deep with x unused, OPA's memory passed 48 GiB in 64 s,
   when it was stopped (one run outside the harness, watched for its memory).
-- **Open.** Shapes both still take time growing with the square or faster, from a
+- **Open.** (Comprehensions nested, print calls and closures closed since by M497.) Shapes both still take time growing with the square or faster, from a
   policy of a few kilobytes; shards' whole check, one run each (the same harness), and
   OPA's (`run`, one run each):
 
@@ -18990,3 +18990,65 @@ revision before comparing a changed API/implementation.
   of two runs of 1,000 did at 49ee67a5 with an ask and a give-back's request serialized besides (a lock
   in the shared page): that lock changed nothing, and is not kept; the stall's cause is
   not yet found.
+
+### M497. Hostile policies: what fuzzing found in shards' Rego, and the compile stages that grew faster than their input
+
+- **Question.** A build's policy may be anyone's (a remote context's `Dockerfile.rego`,
+  D111): can a policy's text, its input, or a builtin's operands make shards' Rego panic,
+  overflow its stack, or take time or memory growing faster than what it is given? M160
+  left five shapes open whose compile grew with the square or faster.
+- **Method.** Two cargo-fuzz targets (`fuzz/fuzz_targets/rego.rs`: a policy's text and
+  input, parsed, compiled with buildx's functions and evaluated, partially and whole, on
+  the policy thread's stack; `rego-builtins.rs`: any builtin, any operands), seeded from
+  the oracle suites (503 policies, 11,393 calls), with libFuzzer's `-timeout=10
+  -rss_limit_mb=2048 -max_len=65536`, 20 minutes each with 6 and 4 workers. Each slow
+  input was run through OPA v1.14.1 (scripts/rego/oracle_test.go's builtin calls, built
+  with go1.27.3) and this port, built without a sanitizer. The shapes then through
+  `docs/research/measurements/rego-nesting/run.sh 5 glob-terms comprehension-nested
+  prints-wide closures-wide` (shards: a warm-up then n = 5; OPA: one run). Host: AMD
+  Ryzen 9 9950X3D2 (adacachy2), Linux 7.3.3-1-cachyos, shared with other agents' work
+  (load average 6 to 12), revision 8501f093 with 825a7c6c, c02fe4b5 and 5bd2c3e7's changes,
+  2026-11-08.
+- **Results.** No panic and no stack overflow in 20 minutes of each target. The timeouts
+  and memory limits were `numbers.range` over spans of 10^14 and more (OPA's array grows
+  as long; neither can finish) and `glob.match` patterns of many matchers: OPA 0.32 and
+  1.08 s on two of them where this port took 1.7 and 6.5 s, 102 s on a third where it
+  took more than 300 s, and more than 120 s, as this port did, on a fourth (now 5, 8, 77
+  and 76 ms). The cause, in gobwas/glob's compiler, both: minimizeMatchers
+  glues every run of a pattern's matchers to judge it, reading each matcher's length again
+  for each run (cubic; this port also copied each run). The shapes (shards whole check
+  p50 / p90 / max, n = 5, after the changes; before them one run; OPA one run):
+
+  | shape, size | shards before | shards now | OPA |
+  |---|---|---|---|
+  | glob.match `{a}b` x 500 | 5.1 s (1) | 1.2 / 1.3 / 1.3 ms | 1.25 s |
+  | glob.match `{a}b` x 1000 | 41 s (1) | 3.3 / 3.3 / 3.3 ms | 13.3 s |
+  | glob.match `{a}b` x 1500 | 141 to 157 s (1) | 6.5 / 6.7 / 6.7 ms | 50.8 s |
+  | comprehensions nested, 10 | 0.28 s | 0.46 / 0.50 / 0.50 ms | 0.18 s |
+  | comprehensions nested, 12 | 3.25 s | 0.51 / 0.61 / 0.61 ms | 2.34 s |
+  | print calls, 500 in a body | 2.81 s | 80 / 80 / 80 ms | 4.29 s |
+  | print calls, 1000 in a body | 26.3 s | 324 / 324 / 324 ms | 34.7 s |
+  | closures, 500 in a body | 4.60 s | 122 / 124 / 124 ms | 8.42 s |
+  | closures, 1000 in a body | 42.3 s | 480 / 481 / 481 ms | 65.8 s |
+
+  (1) The fuzz harness built without a sanitizer, three runs (`{a}b` x n against
+  `ab` x n); OPA's three runs of x 1500 there took 41.4 to 44.7 s.
+
+  Every case answers as OPA does. What changed: glob's runs are judged from lengths summed
+  once and counts kept as a run grows, only the run chosen glued; the type checker keeps
+  each comprehension body's check while a rule is checked, by the nodes of the variables
+  the body names, and takes it again where they are the same (OPA checks a comprehension
+  again for each walk that meets it, three a level); the safety check reads the placed
+  expressions' outputs again only as one is placed, the print rewrite reads a body on from
+  the last expression it asked about, and an equality unifies with its operands' safe
+  variables, not a copy of the whole safe set.
+- **Open.** As OPA's, still: every statement and comprehension alternating (20 deep 9.3 s,
+  twice as long a level; OPA 7 min at 12) and every statements declaring after the one
+  within (2000 deep 3.1 s, quadratic), both in rewriteLocalVars, whose second walk of an
+  every statement rewrites the comprehensions within it again and numbers their
+  variables anew: the numbers are in what OPA compiles (and the partial evaluation buildx
+  reads), so a shortcut has to number as the walk would; rule wrap's type check (2000
+  0.69 s, 10000 24.9 s, quadratic). Evaluation is OPA's: a policy may ask for work
+  without bound (`numbers.range` over any span, comprehensions over each other), as it
+  may of OPA; buildx's evaluation ends with its build's context, and shards' with its
+  build's process, which Ctrl-C ends.
