@@ -311,7 +311,7 @@ mod tests {
     use std::time::Instant;
 
     /// Bytes go both ways, a half-close reaches the peer as its end, and the other way
-    /// still carries bytes after it (D12's half-close; Hex HEX-GUEST-9).
+    /// still carries bytes after it (D12's half-close; D215).
     #[test]
     fn a_pair_carries_bytes_both_ways_and_a_half_close() {
         let (mut a, mut b) = pair().unwrap();
@@ -328,7 +328,7 @@ mod tests {
     }
 
     /// A read with nothing to read fails at its timeout, and leaves the connection as it
-    /// was: what comes later is read (Hex HEX-GUEST-9).
+    /// was: what comes later is read (D215).
     #[test]
     fn a_read_times_out_and_the_connection_goes_on() {
         let (mut a, mut b) = pair().unwrap();
@@ -349,7 +349,7 @@ mod tests {
     }
 
     /// A timeout is kept as given, to its nanosecond: none rounded down to a shorter one or
-    /// up to poll(2)'s millisecond, and none of them for ever (Hex HEX-GUEST-9).
+    /// up to poll(2)'s millisecond, and none of them for ever (D215).
     #[test]
     fn a_timeout_is_kept_as_given() {
         assert_eq!(
@@ -371,7 +371,7 @@ mod tests {
     }
 
     /// A write to a peer that stops reading fails at its timeout, having moved what the
-    /// socket took, rather than blocking for ever (Hex HEX-GUEST-9; review B3).
+    /// socket took, rather than blocking for ever (D215; review B3).
     #[test]
     fn a_write_to_a_peer_that_stops_reading_ends_at_its_timeout() {
         let (timeout, guard) = timed();
@@ -446,7 +446,7 @@ mod tests {
     }
 
     /// Two clones reading one byte: one reads it, the other fails at its timeout rather
-    /// than blocking after a poll said the byte was there (Hex HEX-GUEST-9; review B3).
+    /// than blocking after a poll said the byte was there (D215; review B3).
     #[test]
     fn a_read_a_clone_raced_ends_at_its_timeout() {
         let (timeout, guard) = timed();
@@ -470,8 +470,7 @@ mod tests {
         );
     }
 
-    /// A connected socket's buffer sizes are the OS's, non-zero, both ways (Hex
-    /// HEX-GUEST-9; review A).
+    /// A connected socket's buffer sizes are the OS's, non-zero, both ways (D215; review A).
     #[test]
     fn a_connection_reports_its_buffer_sizes() {
         let (a, b) = pair().unwrap();
@@ -491,7 +490,7 @@ mod tests {
         assert!(unix::size("SO_RCVBUF", -1).is_err());
     }
 
-    /// A clone is the same connection: what one writes the peer reads (Hex HEX-GUEST-9).
+    /// A clone is the same connection: what one writes the peer reads (D215).
     #[test]
     fn a_clone_is_the_same_connection() {
         let (a, mut b) = pair().unwrap();

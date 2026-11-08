@@ -82,7 +82,7 @@ fn guest(host: &SimHost) -> End {
     End::Stopped
 }
 
-/// Every case of the conformance suite passes against the simulator (Hex HEX-GUEST-9).
+/// Every case of the conformance suite passes against the simulator (D215).
 #[test]
 fn the_simulator_conforms() {
     let guests = SimGuests::new(guest);
@@ -97,8 +97,7 @@ fn the_simulator_conforms() {
     .unwrap();
 }
 
-/// A connect waits for a guest that listens late, and is answered as it does (Hex
-/// HEX-GUEST-9).
+/// A connect waits for a guest that listens late, and is answered as it does (D215).
 #[test]
 fn a_connect_waits_for_a_guest_that_listens_late() {
     let guests = SimGuests::new(|host| {
@@ -113,7 +112,7 @@ fn a_connect_waits_for_a_guest_that_listens_late() {
 }
 
 /// A connect and a wait with no clock (`Duration::MAX`) wait for their facts: the guest's
-/// listening, its end (Hex HEX-GUEST-9).
+/// listening, its end (D215).
 #[test]
 fn no_clock_waits_for_the_fact() {
     // An input: late enough that the connect and the wait are waiting.
@@ -135,7 +134,7 @@ fn no_clock_waits_for_the_fact() {
 }
 
 /// A guest whose program ends in a reset ends as `Reset`, and is refused `Ended` after
-/// (Hex HEX-GUEST-9).
+/// (D215).
 #[test]
 fn a_guest_ends_as_its_program_says() {
     let guests = SimGuests::new(|_| End::Reset);
@@ -184,7 +183,7 @@ mod client {
     }
 
     /// shards that ends before its guest is ready is refused as `Boot`, with its exit code
-    /// and what it said last (Hex HEX-GUEST-9).
+    /// and what it said last (D215).
     #[test]
     fn shards_ending_first_is_a_boot_refusal_with_its_exit_code() {
         let dir = shards_testdir::TempDir::new("api-boot").unwrap();
@@ -249,7 +248,7 @@ mod client {
     }
 
     /// shards that exits 0 or 3 ends as `PowerOff` or `Reset`, as `shards run` exits for
-    /// them (Hex HEX-GUEST-9).
+    /// them (D215).
     #[test]
     fn exit_codes_are_ends() {
         for (code, end) in [(0, End::PowerOff), (3, End::Reset)] {
@@ -266,7 +265,7 @@ mod client {
     }
 
     /// `stop` ends a shards that runs on, as `Stopped`; a connect after is refused
-    /// `Ended(Stopped)` (Hex HEX-GUEST-9).
+    /// `Ended(Stopped)` (D215).
     #[test]
     fn stop_ends_a_running_shards() {
         let dir = shards_testdir::TempDir::new("api-stop").unwrap();
@@ -286,7 +285,7 @@ mod client {
         );
     }
 
-    /// A port off the allowlist is refused before anything is dialled (Hex HEX-GUEST-9).
+    /// A port off the allowlist is refused before anything is dialled (D215).
     #[test]
     fn a_port_off_the_allowlist_is_refused() {
         let dir = shards_testdir::TempDir::new("api-port").unwrap();
@@ -305,7 +304,7 @@ mod client {
 
     /// A connect with no clock (`Duration::MAX`) is refused as soon as shards ends, as
     /// `Boot` with its last words: the VM's end is the fact it waits on; and a wait with no
-    /// clock returns at that end (Hex HEX-GUEST-9).
+    /// clock returns at that end (D215).
     #[test]
     fn no_clock_ends_with_shards() {
         let dir = shards_testdir::TempDir::new("api-noclock").unwrap();
@@ -348,7 +347,7 @@ mod client {
     }
 
     /// The longest report shards writes as it ends, a reset's with its guest's last console
-    /// page escaped (six bytes for each of its 4096), is quoted whole (Hex HEX-GUEST-9).
+    /// page escaped (six bytes for each of its 4096), is quoted whole (D215).
     #[test]
     fn the_longest_report_shards_writes_is_quoted_whole() {
         let dir = shards_testdir::TempDir::new("api-tail").unwrap();
@@ -374,7 +373,7 @@ mod client {
     /// shards' refusal comes as shards ends, with its last words, though a child it left
     /// holds its output open (macOS's grants broker until it exits): the end of its words is
     /// a fact, not a clock. Timed from shards' last act, as a new script's first start can
-    /// take seconds on macOS, and held to `REFUSED_AFTER_END` (Hex HEX-GUEST-9).
+    /// take seconds on macOS, and held to `REFUSED_AFTER_END` (D215).
     #[test]
     fn a_child_holding_shards_output_holds_no_refusal_back() {
         let dir = shards_testdir::TempDir::new("api-held").unwrap();
@@ -615,7 +614,7 @@ mod client {
     }
 
     /// A shards that ignores SIGTERM is killed by `stop` at once, and ends as
-    /// `Stopped` (Hex HEX-GUEST-9).
+    /// `Stopped` (D215).
     #[test]
     fn stop_kills_a_shards_that_ignores_sigterm() {
         let dir = shards_testdir::TempDir::new("api-deaf").unwrap();
@@ -648,7 +647,7 @@ mod client {
         assert_eq!(end.unwrap(), Some(End::Stopped));
     }
 
-    /// A binary that isn't there is a `Boot` refusal naming it (Hex HEX-GUEST-9).
+    /// A binary that isn't there is a `Boot` refusal naming it (D215).
     #[test]
     fn a_missing_binary_is_refused() {
         let missing = PathBuf::from("/shards-api/no/such/shards");

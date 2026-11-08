@@ -20199,13 +20199,40 @@ that socket (`CONNECT <port>` / `OK <host port>`, firecracker `docs/vsock.md`, m
   waits wait on facts: the VM process's exit (reaped by its watcher), its output read to an
   end mark written after that exit, `Duration::MAX` as no clock. What remains timed is
   twice the slowest recorded run on the host class (`shards_api::record`, PM M463, M464,
-  M515);
-  a class without a record has no bound, and its timed tests fail naming the record due.
+  M515); a class without a record has no bound, and its timed tests fail naming the record
+  due.
 - `stop` kills the VM's process at once: the VMM has no host-to-guest power-off
   (vm/runtime.rs), so the page cache a guest held is lost, and a clean stop is the
   client's (ask the guest to sync and power off, `wait_for` its `PowerOff`).
 - A stream is non-blocking, each read and write waiting in poll(2) to its timeout; its
   `buffer_sizes` are the OS's SO_SNDBUF/SO_RCVBUF.
+
+**What it holds to** (the requirement its tests cite as D215):
+- *A spec* becomes `run --kernel`'s flags as vm_run.rs reads them, the kernel first. A
+  disk's or a share's path that ends in `:ro`, which shards would read as a mode, is
+  refused `Unsupported`. Past shards-vmm's bounds (no vCPU; memory odd or under the least)
+  it is refused `Bounds` before anything boots, and the hypervisor's own refusal of its
+  vCPUs comes back as `Bounds` too; a host without a backend (macOS x86_64, Windows arm64)
+  is refused `NoBackend`, by name.
+- *A guest's socket directory* is the client's alone (0700), named apart from its pid,
+  short enough to bind (else /tmp on Unix; refused by name on Windows), and removed with
+  the guest.
+- *A connect* dials `CONNECT <port>` until the guest answers `OK`, within its patience: a
+  patience of zero is one dial, `Duration::MAX` no clock, and the pause between dials
+  `sqrt(2 c w)` of a dial's own work and the wait so far. An answer past
+  `OK 4294967295\n` is refused; a port off the allowlist is refused before any dial; a
+  guest that has ended is refused at once, `Ended`, or `Boot` with shards' exit and last
+  words where it ended before any `OK`.
+- *An end*: shards' exit 0 is `PowerOff`, 3 `Reset`, a kill by `stop` `Stopped`, any other
+  `Failed` with its words. Its last words are quoted whole, its longest report a reset's,
+  and no child that holds its output holds them back; a binary that isn't there is
+  `Boot`, by name; no guest's process is left a zombie, dropped or not.
+- *A stream* carries bytes both ways and a half-close; a read or a write waits at most its
+  timeout, kept to the nanosecond, whether its peer stops reading or a clone took the
+  bytes, and the connection goes on after; a clone is the same connection; its
+  `buffer_sizes` are the OS's; and a write to a peer that has gone fails `EPIPE`, never
+  raising SIGPIPE.
+- *The simulator* meets every case of the same conformance suite.
 
 **Evidence.** PM M515 (an unserved port's refusal past its patience), M463 (the waits
 the bounds hold), M464 (what a refused dial costs, the pacing's `c`); the conformance

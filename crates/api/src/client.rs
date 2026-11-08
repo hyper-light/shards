@@ -758,7 +758,7 @@ mod tests {
     }
 
     /// A spec becomes `shards run --kernel` and its flags, as vm_run.rs reads them, the
-    /// kernel first (Hex HEX-GUEST-9).
+    /// kernel first (D215).
     #[test]
     fn a_spec_is_the_flags_shards_run_reads() {
         let args = arguments(&spec(), Path::new("/p/v")).unwrap();
@@ -796,8 +796,7 @@ mod tests {
         assert_eq!(args.get(3..5).unwrap(), ["--initrd", "/k/initrd"]);
     }
 
-    /// A path ending in `:ro`, which shards would read as a mode, is refused by name (Hex
-    /// HEX-GUEST-9).
+    /// A path ending in `:ro`, which shards would read as a mode, is refused by name (D215).
     #[test]
     fn a_path_ending_in_ro_is_refused() {
         let mut s = spec();
@@ -839,8 +838,7 @@ mod tests {
     }
 
     /// The socket directory's name carries no pid, so a directory an earlier process of the
-    /// same pid left, or one another user made to take it first, is never its name (Hex
-    /// HEX-GUEST-9).
+    /// same pid left, or one another user made to take it first, is never its name (D215).
     #[test]
     fn the_socket_directory_is_named_apart_from_the_pid() {
         let dir = PrivateDir::new().unwrap();
@@ -893,7 +891,7 @@ mod tests {
     }
 
     /// The longest answer Firecracker's protocol gives, `OK 4294967295\n`, is taken; one a
-    /// byte longer is refused as no answer (Hex HEX-GUEST-9).
+    /// byte longer is refused as no answer (D215).
     #[cfg(unix)]
     #[test]
     fn an_answer_past_the_longest_ok_is_refused() {
@@ -990,7 +988,7 @@ mod tests {
 
     /// A guest leaves no zombie, dropped while its shards runs or after shards has exited
     /// with nobody asking its end: once its watcher says it has exited, its process is
-    /// reaped, so its pid names nothing (Hex HEX-GUEST-9; review B2; both of integrate's
+    /// reaped, so its pid names nothing (D215; review B2; both of integrate's
     /// 80078b00 cases).
     #[cfg(unix)]
     #[test]
@@ -1018,7 +1016,7 @@ mod tests {
         drop(guest);
     }
 
-    /// A patience of zero is one dial, its answer awaited, and no other (Hex HEX-GUEST-9).
+    /// A patience of zero is one dial, its answer awaited, and no other (D215).
     #[cfg(unix)]
     #[test]
     fn a_patience_of_zero_dials_once() {
@@ -1036,7 +1034,7 @@ mod tests {
     }
 
     /// A patience of `Duration::MAX` is no clock: dials go on until the guest listens
-    /// (Hex HEX-GUEST-9).
+    /// (D215).
     #[cfg(unix)]
     #[test]
     fn a_patience_of_max_dials_until_the_guest_listens() {
@@ -1136,7 +1134,7 @@ mod tests {
     }
 
     /// The wait between dials is `sqrt(2 c w)` of the last dial's time and the wait so far,
-    /// none at first, never past what patience has left (Hex HEX-GUEST-9).
+    /// none at first, never past what patience has left (D215).
     #[test]
     fn a_pause_weighs_the_dials_cost_against_lateness() {
         let (us, ms) = (Duration::from_micros, Duration::from_millis);

@@ -345,8 +345,8 @@ mod tests {
         }
     }
 
-    /// A spec past the host's bounds is refused, naming which: no vCPU, more than the host
-    /// has, odd memory, too little, too many ports (Hex HEX-GUEST-9).
+    /// A spec past the bounds shards-vmm holds every host to is refused, naming which: no
+    /// vCPU, odd memory, too little (D215).
     #[test]
     fn bounds_are_refused_by_name() {
         assert!(check(&spec()).is_ok());
@@ -421,7 +421,7 @@ mod tests {
     }
 
     /// The backend each host boots with, and the two hosts without one refused naming
-    /// them (Hex HEX-GUEST-9).
+    /// them (D215).
     #[test]
     fn backends_are_named_per_host() {
         assert_eq!(backend_of("linux", "x86_64"), Ok(Backend::Kvm));
