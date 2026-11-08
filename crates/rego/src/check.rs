@@ -9,7 +9,7 @@
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use crate::ast::{Expr, ExprTerms, Location, RuleKind, TemplatePart, Term, TermValue};
+use crate::ast::{Body, Expr, ExprTerms, Location, RuleKind, Shared, TemplatePart, Term, TermValue};
 use crate::compare::term_compare;
 use crate::compile::safety::walk_terms;
 use crate::compile::vars::{Var, sorted_items, sorted_pairs};
@@ -378,6 +378,8 @@ pub fn builtin_ref(name: &str) -> Vec<Term> {
 pub struct TypeEnv {
     below: Vec<Rc<Node>>,
     top: Rc<Node>,
+    /// The comprehension bodies checked while a rule is, and what each made.
+    memo: Option<Box<Memo>>,
 }
 
 impl Default for TypeEnv {
@@ -385,8 +387,134 @@ impl Default for TypeEnv {
         TypeEnv {
             below: Vec::new(),
             top: Rc::new(Node::default()),
+            memo: None,
         }
     }
+}
+
+/// What checking a comprehension's body made, and of what. OPA checks a comprehension
+/// again for each walk that meets it: the walk of its expression's closures (and of
+/// each closure's closures, again), and the inference of its expression's types. Each
+/// meets the ones nested in it again, so a policy's few hundred bytes of comprehensions
+/// nested a dozen deep cost OPA seconds, three times as long a level (PM M160). A check
+/// reads the env below its own frame only through the variables its body names (their
+/// nodes in each frame, top down; the frames below the rule's, rules' and builtins'
+/// types, stay as they are while the rule is checked): a body met again under the same
+/// nodes of those variables makes the same frame and errors, which it takes from here.
+#[derive(Debug, Clone, Default)]
+struct Memo {
+    /// The level of the frame below the rule's.
+    global: usize,
+    by_body: HashMap<usize, Bodied>,
+}
+
+#[derive(Debug, Clone)]
+struct Bodied {
+    /// The body, kept so that its address names it alone.
+    _body: Shared<Body>,
+    /// The variables it names, its closures' included.
+    vars: Vec<Term>,
+    checked: Vec<Checked>,
+}
+
+#[derive(Debug, Clone)]
+struct Checked {
+    /// Each variable's nodes in the rule's frames, top down.
+    seen: Vec<Vec<Node>>,
+    /// The rewriter its errors were written with.
+    rewritten: Option<usize>,
+    frame: Rc<Node>,
+    errs: Vec<CompileError>,
+}
+
+fn node_eq(a: &Node, b: &Node) -> bool {
+    a.value == b.value
+        && a.children.len() == b.children.len()
+        && a.children
+            .iter()
+            .zip(&b.children)
+            .all(|((ka, na), (kb, nb))| same(ka, kb) && node_eq(na, nb))
+}
+
+fn seen_eq(a: &[Vec<Node>], b: &[Vec<Node>]) -> bool {
+    a.len() == b.len()
+        && a.iter()
+            .zip(b)
+            .all(|(x, y)| x.len() == y.len() && x.iter().zip(y).all(|(p, q)| node_eq(p, q)))
+}
+
+/// CheckBody of a comprehension's body on a copy of the checker, its frame left on the
+/// env for the caller to read and pop; taken from what an earlier check of the body
+/// made where its variables' nodes are the same (see [`Memo`]). `errs` is false where
+/// the caller reads only whether there are any.
+fn check_closure_body(
+    env: &mut TypeEnv,
+    rewritten: Option<&HashMap<Var, Var>>,
+    body: &Shared<Body>,
+    errs: bool,
+) -> Vec<CompileError> {
+    let rw = rewritten.map(|m| std::ptr::from_ref(m).addr());
+    let Some(global) = env.memo.as_ref().map(|m| m.global) else {
+        return Checker::new(rewritten).check_body(env, body);
+    };
+    let at = body.addr();
+    if env.memo.as_ref().is_some_and(|m| !m.by_body.contains_key(&at)) {
+        let mut vis = crate::compile::vars::VarVisitor::default();
+        vis.body(body);
+        let vars = vis.vars.iter().map(|v| Term::var(v, None)).collect();
+        if let Some(m) = env.memo.as_mut() {
+            m.by_body.insert(
+                at,
+                Bodied {
+                    _body: body.clone(),
+                    vars,
+                    checked: Vec::new(),
+                },
+            );
+        }
+    }
+    let seen: Vec<Vec<Node>> = env
+        .memo
+        .as_ref()
+        .and_then(|m| m.by_body.get(&at))
+        .map(|b| {
+            b.vars
+                .iter()
+                .map(|v| {
+                    (global + 1..=env.top_level())
+                        .rev()
+                        .filter_map(|l| env.frame(l).and_then(|f| f.child(v)).cloned())
+                        .collect()
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let hit = env
+        .memo
+        .as_ref()
+        .and_then(|m| m.by_body.get(&at))
+        .and_then(|b| {
+            b.checked
+                .iter()
+                .find(|c| (c.rewritten == rw || c.errs.is_empty() || !errs) && seen_eq(&c.seen, &seen))
+        })
+        .map(|c| (Rc::clone(&c.frame), c.errs.clone()));
+    if let Some((frame, found)) = hit {
+        env.wrap();
+        env.top = frame;
+        return found;
+    }
+    let found = Checker::new(rewritten).check_body(env, body);
+    let frame = Rc::clone(&env.top);
+    if let Some(b) = env.memo.as_mut().and_then(|m| m.by_body.get_mut(&at)) {
+        b.checked.push(Checked {
+            seen,
+            rewritten: rw,
+            frame,
+            errs: found.clone(),
+        });
+    }
+    found
 }
 
 impl TypeEnv {
@@ -571,7 +699,7 @@ pub fn get_value(env: &mut TypeEnv, t: &Term) -> Type {
             Type::set(if tpe.is_nil() { A } else { tpe })
         }
         TermValue::ArrayCompr(term, body) => {
-            let ok = Checker::new(None).check_body(env, body).is_empty();
+            let ok = check_closure_body(env, None, body, false).is_empty();
             let out = if ok {
                 Type::array(Vec::new(), get_value(env, term))
             } else {
@@ -581,7 +709,7 @@ pub fn get_value(env: &mut TypeEnv, t: &Term) -> Type {
             out
         }
         TermValue::ObjectCompr(k, v, body) => {
-            let ok = Checker::new(None).check_body(env, body).is_empty();
+            let ok = check_closure_body(env, None, body, false).is_empty();
             let out = if ok {
                 let kt = get_value(env, k);
                 Type::object(Vec::new(), Some((kt, get_value(env, v))))
@@ -592,7 +720,7 @@ pub fn get_value(env: &mut TypeEnv, t: &Term) -> Type {
             out
         }
         TermValue::SetCompr(term, body) => {
-            let ok = Checker::new(None).check_body(env, body).is_empty();
+            let ok = check_closure_body(env, None, body, false).is_empty();
             let out = if ok {
                 Type::set(get_value(env, term))
             } else {
@@ -1028,10 +1156,6 @@ impl<'a> Checker<'a> {
         }
     }
 
-    fn copy(&self) -> Checker<'a> {
-        Checker::new(self.rewritten)
-    }
-
     /// CheckTypes: each rule in turn, in dependency order, by its ref; the errors sorted
     /// by location, then by text.
     pub fn check_types(
@@ -1040,7 +1164,20 @@ impl<'a> Checker<'a> {
         rules: &[(Vec<Term>, &crate::ast::Rule)],
     ) -> Vec<CompileError> {
         for (path, rule) in rules {
+            // Each rule's checks remembered while it is checked: the frames below its own
+            // change as each rule's type joins them.
+            #[cfg(test)]
+            let remember = !memo_tests::OFF.with(std::cell::Cell::get);
+            #[cfg(not(test))]
+            let remember = true;
+            env.memo = remember.then(|| {
+                Box::new(Memo {
+                    global: env.top_level(),
+                    by_body: HashMap::new(),
+                })
+            });
             self.check_rule(env, path.clone(), rule);
+            env.memo = None;
         }
         let mut errs = std::mem::take(&mut self.errs);
         errs.sort_by(|a, b| {
@@ -1219,8 +1356,8 @@ impl<'a> Checker<'a> {
     }
 
     /// A comprehension's body checked; true to walk on into it (it has no errors).
-    fn closure(&mut self, env: &mut TypeEnv, body: &[Expr], out: &mut Vec<CompileError>) -> bool {
-        let errs = self.copy().check_body(env, body);
+    fn closure(&mut self, env: &mut TypeEnv, body: &Shared<Body>, out: &mut Vec<CompileError>) -> bool {
+        let errs = check_closure_body(env, self.rewritten, body, true);
         env.pop();
         if errs.is_empty() {
             return true;
@@ -1601,6 +1738,114 @@ impl RefChecker<'_> {
             }
         }
         self.check_ref_leaf(env, &types::values(tpe), r, idx + 1)
+    }
+}
+
+#[cfg(test)]
+mod memo_tests {
+    use std::collections::BTreeMap;
+
+    use crate::compile::Compiler;
+    use crate::parser::parse_module;
+
+    thread_local! {
+        /// Checks every comprehension afresh, as OPA does.
+        pub(super) static OFF: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+
+    fn errors(modules: &[(String, String)], off: bool) -> Option<Vec<String>> {
+        let mut parsed = BTreeMap::new();
+        for (name, src) in modules {
+            parsed.insert(name.clone(), parse_module(name, src).ok()?);
+        }
+        OFF.with(|o| o.set(off));
+        let mut c = Compiler::new(parsed, Vec::new(), true);
+        c.compile();
+        OFF.with(|o| o.set(false));
+        Some(c.errors.iter().map(ToString::to_string).collect())
+    }
+
+    /// Comprehensions nested `depth` deep, each body binding its own variable from the
+    /// one around it, the innermost `inner` (`{v}` the variable around it).
+    fn nested(depth: usize, inner: &str, every: bool) -> String {
+        let mut s = String::from("package docker\n\nimport rego.v1\n\np := ");
+        for i in 0..depth {
+            let around = if i == 0 {
+                "input.n".to_string()
+            } else {
+                format!("v{}", i - 1)
+            };
+            if every && i % 2 == 1 {
+                s.push_str(&format!(
+                    "[v{i} | every w{i} in [{around}] {{ w{i} == {around} }}; v{i} := {around}; c{i} := "
+                ));
+            } else {
+                s.push_str(&format!("[v{i} | v{i} := {around}; c{i} := "));
+            }
+        }
+        let last = depth.saturating_sub(1);
+        s.push_str(&inner.replace("{v}", &format!("v{last}")));
+        s.push_str(&"]".repeat(depth));
+        s.push('\n');
+        s
+    }
+
+    /// The checker remembering what each comprehension's body made answers as checking
+    /// each afresh does: the corpora's modules, and comprehensions nested in every way
+    /// the variables around them reach in, with type errors at each depth.
+    #[test]
+    fn remembered_checks_answer_as_fresh_ones() {
+        let mut cases: Vec<Vec<(String, String)>> = Vec::new();
+        for file in [
+            include_str!("../testdata/check.json"),
+            include_str!("../testdata/cases.json"),
+        ] {
+            let v: serde_json::Value = serde_json::from_str(file).unwrap();
+            for c in v.as_array().unwrap() {
+                let Some(ms) = c.get("modules").and_then(serde_json::Value::as_array) else {
+                    continue;
+                };
+                cases.push(
+                    ms.iter()
+                        .map(|m| {
+                            (
+                                m[0].as_str().unwrap().to_string(),
+                                m[1].as_str().unwrap().to_string(),
+                            )
+                        })
+                        .collect(),
+                );
+            }
+        }
+        let inners = [
+            "{v} + 1",
+            "count({v})",
+            "{v}.foo",
+            "{v}[0]",
+            "[x | x := {v}; x > \"a\"]",
+            "{y | y := {v}; y.z == 1}",
+            "{k: 1 | some k in {v}}",
+            "concat(\",\", {v})",
+            "input.a.b[{v}]",
+            "{\"a\": {v}}[\"b\"]",
+        ];
+        for depth in 1..=6 {
+            for inner in inners {
+                for every in [false, true] {
+                    cases.push(vec![("p.rego".to_string(), nested(depth, inner, every))]);
+                }
+            }
+        }
+        let (mut checked, mut errored) = (0, 0);
+        for modules in &cases {
+            let fresh = errors(modules, true);
+            assert_eq!(errors(modules, false), fresh, "{modules:?}");
+            if let Some(e) = fresh {
+                checked += 1;
+                errored += usize::from(!e.is_empty());
+            }
+        }
+        assert!(checked > 300 && errored > 60, "{checked} {errored}");
     }
 }
 
