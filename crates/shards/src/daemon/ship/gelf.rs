@@ -204,7 +204,7 @@ impl Driver for Gelf {
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::indexing_slicing)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use std::net::TcpListener;
 
@@ -291,5 +291,88 @@ mod tests {
         assert!(most < refused, "{most} {refused}");
         let again = Gelf::new(config, from, &home);
         assert_eq!(again.learned.unwrap().most(), most);
+    }
+
+    /// Closes a driver by `close` as its shipper does, again where its receiver ended the connection with
+    /// messages held (`ConnectionAborted`), until it ends.
+    pub(in crate::daemon::ship) fn close_until_ended(close: &mut dyn FnMut() -> io::Result<()>) {
+        for _ in 0..64 {
+            match close() {
+                Ok(()) => return,
+                Err(e) if e.kind() == io::ErrorKind::ConnectionAborted => {}
+                Err(e) => panic!("{e}"),
+            }
+        }
+        panic!("the connection never ended with all delivered");
+    }
+
+    /// Do: over TCP, to a receiver that ends its connection on any GELF message of more
+    /// than 2,000 bytes, send a short line and one of 6,000 bytes, the run's last, and close
+    /// the driver as its shipper does, the close tried again while it says its receiver
+    /// ended the connection with messages held. Expect no line lost: the long one received
+    /// whole, in messages each within 2,000 bytes, before the close ends; the destination's
+    /// bound learned below the long line's message.
+    #[test]
+    fn a_runs_last_message_refused_at_close_is_sent_again_cut() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap().to_string();
+        let (got, frames) = std::sync::mpsc::channel::<Vec<u8>>();
+        std::thread::spawn(move || {
+            for conn in listener.incoming() {
+                let Ok(conn) = conn else { return };
+                let mut read = std::io::BufReader::new(conn);
+                loop {
+                    let mut frame = Vec::new();
+                    match std::io::BufRead::read_until(&mut read, 0, &mut frame) {
+                        Ok(0) | Err(_) => break,
+                        Ok(_) => {}
+                    }
+                    frame.pop();
+                    if frame.len() > 2000 {
+                        break;
+                    }
+                    if got.send(frame).is_err() {
+                        return;
+                    }
+                }
+            }
+        });
+        let home = shards_testdir::TempDir::new("gelf-close").unwrap();
+        let config = Config {
+            to: To::Tcp(address),
+            compression: gelf::Compression::None,
+            level: 1,
+            reconnects: 3,
+            delay: 0,
+        };
+        let from = From {
+            host: "h".into(),
+            extra: String::new(),
+        };
+        let mut g = Gelf::new(config, from.clone(), &home);
+        let (_stop, stopped) = shards_ipc::Stream::pair().unwrap();
+        let wait = Wait(&stopped);
+        let m = |line: &'static [u8]| Message {
+            stream: crate::spec::LOG_STDOUT,
+            at: 1_000_000_000,
+            line,
+            part: None,
+        };
+        let long: &'static [u8] = Vec::leak((0..6000u32).map(|i| b'a' + (i % 26) as u8).collect());
+        g.send(&m(b"first"), &wait).unwrap();
+        g.send(&m(long), &wait).unwrap();
+        close_until_ended(&mut || g.close(&wait));
+        let mut lines = String::new();
+        for f in frames.try_iter() {
+            assert!(f.len() <= 2000, "{}", f.len());
+            let v: serde_json::Value = serde_json::from_slice(&f).unwrap();
+            let line = v["short_message"].as_str().unwrap();
+            if line != "first" {
+                lines.push_str(line);
+            }
+        }
+        assert!(lines.contains(std::str::from_utf8(long).unwrap()), "{lines}");
+        let refused = gelf::message(&from, crate::spec::LOG_STDOUT, 1_000_000_000, long).len();
+        assert!(g.learned.as_ref().unwrap().most() < refused);
     }
 }

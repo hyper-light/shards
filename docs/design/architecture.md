@@ -11827,12 +11827,27 @@ and the way every later one sends.
   refusal narrows it, the next message's most halfway between the two, and the file,
   removed, starts it again. A receiver that ends connections is read as refusing only
   where two in a row ended with a message held that is longer than any it took (a
-  receiver's restart or a network's drop ends connections whatever their messages); a
-  TLS receiver's close_notify is not read so, nor a unix socket's, whose writes are
-  delivered as written. A message the shipper has not yet given up is cut again by it
-  (`ErrorKind::FileTooLarge`), its parts' places its own; one already written that a
-  stream holds is cut again by its driver, a fluentd event's pieces then a line of their
-  own, with an ID of their own.
+  receiver's restart or a network's drop ends connections whatever their messages). Its
+  end is its FIN, a reset, or over TLS its close_notify, read from the records as they
+  come (RFC 8446 §6.1: its sender "will not send any more messages on this connection"),
+  which comes before its FIN and which a peek at the TCP socket read as bytes sent; and
+  over a unix socket as over TCP. A message the shipper has not yet given up is cut again
+  by it (`ErrorKind::FileTooLarge`), its parts' places its own; one already written that a
+  stream holds is cut again by its driver.
+
+  A fluentd event cut so keeps its line's identity. The forward protocol names none of an
+  event's: its one ID is `chunk`'s, "an ID of a set of events", and a server sent one
+  "MUST respond `ack`" (Forward Protocol Specification v1, Option and Response), so
+  without acks there is none. A line's parts are joined by their records' own fields,
+  moby's `partial_id`, `partial_ordinal` and `partial_last`: fluent-plugin-concat gathers
+  them by tag and `partial_id`, sorts them by `partial_ordinal` and joins them at the part
+  whose `partial_last` is true (filter_concat.rb at b8583840). So the pieces of an event
+  that was a line's part go under its line's `partial_id` in its place: the first takes
+  its ordinal, each the next, every part of the line after it goes as many places later
+  (those held written again so, the shipper's still to come numbered so), and the last
+  piece is the last part where the event was. What the receiver had of the line stands,
+  and the line it joins is the line, where the pieces under an ID of their own had left
+  it a part short. A whole line cut so goes as a line of its own ID.
 
   moby's copier cuts every line past 16 KiB whatever its receiver takes (copier.go,
   defaultBufSize), a character in two among them: a syslog receiver that takes 8,192
@@ -11848,8 +11863,9 @@ and the way every later one sends.
   wrote it some 18 times (0.48 s a MiB of random bytes, M494). A driver that says only
   whether a message fits is cut by halves.
 - **Delivered, not written** (`daemon/ship/stream.rs`, PM M233). Over TCP, TLS or a unix
-  stream socket, a message counts as sent only once its receiver has it.
-  - Over TCP, that is once its receiver's TCP has acknowledged its last byte, as the
+  stream socket, a message counts as sent only once its receiver has it and has not ended
+  the connection on it.
+  - Over TCP, its receiver has it once its TCP has acknowledged its last byte, as the
     kernel counts them: Linux's SIOCOUTQ, macOS's TCP_CONNECTION_INFO, Windows'
     SIO_TCP_INFO, whose BytesOut counts the bytes sent again too (PM M373): there the
     bytes written less `BytesOut − BytesRetrans − BytesInFlight`, BytesRetrans's 32 bits
@@ -11857,12 +11873,27 @@ and the way every later one sends.
     socket's bytes are in its receiver's buffer as they are written; on Windows an AF_UNIX
     stream's (afunix), Windows having no AF_UNIX datagrams: a `unixgram` address is
     refused there as its run is made, in shards' words.
+  - A receiver that ends a connection on a message it will not take has had its bytes,
+    its TCP acknowledging them as it reads. So a message is let go of only once the
+    connection is found open the kernel's RTO after its receiver was first seen to have it
+    (RFC 6298: the time within which the kernel takes what it sent to have been answered),
+    and a unix socket's RFC 6298's least, 1 s, a unix socket having no round trip of its
+    own; an end found before is followed. Nothing gelf or forward without acks sends says
+    more: neither answers a message, and their receivers end connections on those they
+    refuse. With acks, fluentd's ack says its receiver has it (D165).
   - The shipper keeps its place only as far as what is delivered. So a daemon that stops
     or dies costs sending again what was not yet delivered, and loses no line.
   - What a connection had not delivered when it ended (a reset, a receiver that
     restarts, a timeout after a partition) is held, and written again, in order, on the
     next. srslog, go-gelf and fluent-logger-golang lose it.
-  - A connection ends only once its receiver has all of it:
+  - A connection ends only once nothing is held: what is held is written on one where
+    there is none and waited on until it is delivered, so that a receiver's end after the
+    stream's is its answer to it, and one before it is followed as any other: the close
+    says so (`ConnectionAborted`) and is tried again, the driver cutting what connections
+    end on. So a run's last message, refused at close, is sent again cut before the
+    shipper ends, where gelf's and fluentd's without acks were lost; the shipper's end
+    waits on its receiver's TCP and its end, and on no time of its own. Then the
+    connection ends once its receiver has all of it:
     - TLS's close_notify is sent;
     - its write side is shut;
     - what the receiver still sends is read and let go;
@@ -11947,7 +11978,18 @@ Unit tests cover:
   at once, its receiver sees a reset);
 - what a connection reset by its receiver had not delivered, written again on the next,
   in order, before what comes after (mutation-checked: what is held dropped fails it);
-- the segments wholly sent going.
+- the segments wholly sent going;
+- over TLS, a receiver's close_notify found as its end as the stream settles, no write
+  failing (mutation-checked: read as bytes sent, no end is found);
+- over a unix socket, messages held until delivered and a receiver that ends connections
+  on one pointed at, as over TCP (mutation-checked: an end never found);
+- gelf over TCP, a run's last message its receiver ends connections on, sent again cut
+  before the close ends (mutation-checked: the close taking that end for its answer
+  loses it);
+- fluentd without acks, over TCP, TLS and a unix socket, a line's middle part refused at
+  close and one refused before its last part is sent: every part within the receiver's
+  bound, the line rebuilt whole by its places under its one ID (mutation-checked: pieces
+  under an ID of their own leave it a part short).
 
 ### D162. A run's rotated log segments compressed, seekably; a log that never holds up its run
 

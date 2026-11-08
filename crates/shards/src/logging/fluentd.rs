@@ -336,7 +336,7 @@ fn int(out: &mut Vec<u8>, i: i64) {
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::indexing_slicing)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     /// What Docker 29's fluentd driver sent, and which of its options Docker took
@@ -347,7 +347,7 @@ mod tests {
 
     /// The MessagePack value at `b[*at]`, as the oracle records one: strings, maps and
     /// arrays as JSON's, ints and EventTimes by their forms.
-    fn unpack(b: &[u8], at: &mut usize) -> serde_json::Value {
+    pub(crate) fn unpack(b: &[u8], at: &mut usize) -> serde_json::Value {
         use serde_json::Value;
         let t = b[*at];
         *at += 1;
