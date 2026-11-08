@@ -11071,14 +11071,14 @@ fn a_port_comes_in_to_the_member_listening_on_it() {
     let _ = shards(&["rm", "-f", "listening"]);
 }
 
-/// PM M497 (D122): what the chooser costs a candidate's bind(2) and listen(2), from the
+/// PM M498 (D122): what the chooser costs a candidate's bind(2) and listen(2), from the
 /// agent's side, `SHARDS_CHOOSER_N` of each (2,000 by default): `cand`, one of two members
 /// a port is given, listens on that port (the chooser makes the listen) and on one no one
 /// contests (its notification let through); `solo`, a member no port is contested for,
 /// listens under no filter. Prints each agent's `listencost` lines; run by
 /// docs/research/measurements/step-devices/chooser.sh.
 #[test]
-#[ignore = "a measurement (PM M497): run by docs/research/measurements/step-devices/chooser.sh"]
+#[ignore = "a measurement (PM M498): run by docs/research/measurements/step-devices/chooser.sh"]
 fn chooser_round_trip_costs() {
     if cannot_run_vms() {
         return;

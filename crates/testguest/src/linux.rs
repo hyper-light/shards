@@ -4467,7 +4467,7 @@ fn bpf_costs() -> Result<(), String> {
     disk.sync_all().map_err(|e| format!("syncing /dev/vda: {e}"))
 }
 
-/// What a build step's devices cost its start (D44, PM M497): init's step_cgroup as it
+/// What a build step's devices cost its start (D44, PM M498): init's step_cgroup as it
 /// starts a `RUN` step (crates/init/src/build.rs), against a step started as before, with
 /// no cgroup of its own; `shards_step_n` starts of each (1,000 by default), interleaved,
 /// each its own child, started with clone3(2) and waited for. The arms:

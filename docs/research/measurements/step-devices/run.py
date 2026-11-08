@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""PM M497 (D44): what a build step's devices cost its start. A guest kernel booted
+"""PM M498 (D44): what a build step's devices cost its start. A guest kernel booted
 --rounds times on this host, each boot one round of the test guest's `stepcgroup` mode
 (crates/testguest/src/linux.rs `step_cgroup_costs`), which starts --n children of each
 arm, interleaved, as init starts a `RUN` step (crates/init/src/build.rs step_cgroup):

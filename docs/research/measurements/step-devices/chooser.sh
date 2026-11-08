@@ -1,5 +1,5 @@
 #!/bin/bash
-# PM M497 (D44, D122): both of this directory's measurements, from the repository's root,
+# PM M498 (D44, D122): both of this directory's measurements, from the repository's root,
 # release builds as every measurement's:
 #
 #     chooser.sh [STEPS_N] [ROUNDS] [CHOOSER_N]

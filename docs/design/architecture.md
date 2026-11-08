@@ -14540,7 +14540,7 @@ receiver for an incoming port" above:
   A notification names the calling thread, which pidfd_open(2) refuses where it leads no
   thread group: the chooser, and the host network's binds (D124), open its group's leader
   then, so that a server binding on a thread of its own is seen (found by that test).
-- **Not yet**: ports past the microVM are IPv4's alone (D99). The costs (PM M497) are
+- **Not yet**: ports past the microVM are IPv4's alone (D99). The costs (PM M498) are
   unmeasured: a build step's device cgroup (`docs/research/measurements/step-devices/run.py`)
   and the chooser's round trip (`step-devices/chooser.sh`).
 
