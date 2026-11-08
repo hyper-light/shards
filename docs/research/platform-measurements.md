@@ -18754,7 +18754,8 @@ revision before comparing a changed API/implementation.
   from their answers as it runs, its first try ETW's stated 64 KB less an EVENT_HEADER.
   `a_sessions_bound_is_learned_from_a_real_sessions_answers` holds that the learning ends
   at what a real session of logman's default buffers takes; these numbers are its check,
-  not a constant of shards'.
+  not a constant of shards'. On jupiter it ended at 8,040 bytes, as found above (the tree of
+  this entry's commit, 2026-11-08).
 
 ### M493. How long a dial of OpenSSH for Windows' agent waits for its pipe (D51)
 
