@@ -378,6 +378,38 @@ pub fn container(given: &[Given], rules: &[Rule], privileged: bool) -> Vec<Rule>
     out
 }
 
+/// A build step's rules, as BuildKit v0.28.1's runc executor makes a RUN step's
+/// container's (executor/oci/spec.go GenerateSpec): containerd v2.2.1's default spec,
+/// every device denied (pkg/oci/spec.go populateDefaultUnixSpec); with
+/// `--security=insecure`, every char and block device allowed in its place
+/// (util/entitlements/security WithInsecureSpec); then each CDI device node's own rule, of
+/// its permissions (container-device-interface v1.1.0, ContainerEdits.Apply); then runc's
+/// own, less those whose path a device given takes, as for a container.
+pub fn build_step(given: &[Given], insecure: bool) -> Vec<Rule> {
+    let mut out = if insecure {
+        vec![
+            allowed(Kind::Char, ANY, ANY, RWM),
+            allowed(Kind::Block, ANY, ANY, RWM),
+        ]
+    } else {
+        vec![Rule {
+            kind: Kind::All,
+            major: ANY,
+            minor: ANY,
+            perms: RWM,
+            allow: false,
+        }]
+    };
+    out.extend(given.iter().map(|g| g.rule));
+    out.extend(
+        ALWAYS_ALLOWED
+            .iter()
+            .filter(|(path, _)| path.is_empty() || given.iter().all(|g| g.path != *path))
+            .map(|(_, r)| *r),
+    );
+    out
+}
+
 /// moby's default rules, a container's (daemon/pkg/oci/defaults.go): none but
 /// /dev/null, zero, urandom, random, tty and console, and /dev/fuse denied.
 pub fn default_rules() -> Vec<Rule> {
@@ -593,6 +625,76 @@ mod tests {
             "runc's alone named it"
         );
         assert_eq!(run(&p, Kind::Char, READ, 10, 229), Some(true));
+    }
+
+    /// A build step's (BuildKit's runc executor): runc's devices alone, where a container
+    /// has moby's too (no console, fuse not singled out), any device made, none other
+    /// read; a CDI device's node of its permissions; an insecure step's, everything.
+    #[test]
+    fn a_build_step_reaches_runcs_devices_and_its_cdi_devices_alone() {
+        let (allow, clean) = reduce(&build_step(&[], false)).unwrap();
+        assert!(!allow);
+        let p = program(allow, &clean).unwrap();
+        for (major, minor) in [
+            (1, 3),
+            (1, 5),
+            (1, 7),
+            (1, 8),
+            (1, 9),
+            (5, 0),
+            (5, 2),
+            (136, 0),
+            (10, 200),
+        ] {
+            assert_eq!(
+                run(&p, Kind::Char, READ | WRITE, major, minor),
+                Some(true),
+                "{major}:{minor}"
+            );
+        }
+        assert_eq!(
+            run(&p, Kind::Char, READ, 5, 1),
+            Some(false),
+            "no console: moby's alone"
+        );
+        assert_eq!(
+            run(&p, Kind::Block, READ, 259, 0),
+            Some(false),
+            "the builder's pmem"
+        );
+        assert_eq!(
+            run(&p, Kind::Block, READ, 254, 0),
+            Some(false),
+            "the builder's disk"
+        );
+        assert_eq!(run(&p, Kind::Block, MKNOD, 259, 0), Some(true));
+        assert_eq!(run(&p, Kind::Char, READ, 10, 229), Some(false), "fuse");
+        let kvm = Given {
+            path: "/dev/kvm".into(),
+            rule: allowed(Kind::Char, 10, 232, READ | WRITE),
+        };
+        let (allow, clean) = reduce(&build_step(&[kvm], false)).unwrap();
+        let p = program(allow, &clean).unwrap();
+        assert_eq!(run(&p, Kind::Char, READ | WRITE, 10, 232), Some(true));
+        assert_eq!(
+            run(&p, Kind::Char, MKNOD, 10, 232),
+            Some(true),
+            "runc's mknod of any"
+        );
+        assert_eq!(run(&p, Kind::Block, READ, 259, 0), Some(false));
+        // One at /dev/null takes runc's rule for it.
+        let at_null = Given {
+            path: "/dev/null".into(),
+            rule: allowed(Kind::Char, 10, 232, RWM),
+        };
+        let (allow, clean) = reduce(&build_step(&[at_null], false)).unwrap();
+        let p = program(allow, &clean).unwrap();
+        assert_eq!(run(&p, Kind::Char, READ, 1, 3), Some(false));
+        let (allow, clean) = reduce(&build_step(&[], true)).unwrap();
+        let p = program(allow, &clean).unwrap();
+        for kind in [Kind::Char, Kind::Block] {
+            assert_eq!(run(&p, kind, RWM, 259, 0), Some(true), "{kind:?}");
+        }
     }
 }
 

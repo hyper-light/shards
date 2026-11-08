@@ -1,0 +1,95 @@
+name: windows wake
+
+# D191's Windows candidate measured on a host of its own (the platform parity audit's row
+# 15, PM M495): on windows-2025 (4 CPUs, WHP; windows-2022 restores no template, PM M345),
+# this checkout's shards as built, whose vCPU threads and device workers start at
+# THREAD_PRIORITY_ABOVE_NORMAL (platform::windows_thread), against the same with
+# cpu-elastic/winnone.patch applied, which leaves them at the priority they start at;
+# cpu-elastic/phases.py's starts of `run --rm --cpus 1 alpine true`, the two arms
+# alternating each round, with 4 busy loops on the runner's 4 CPUs and with none; and the
+# patched build against itself with winslice.py raising one home's vCPU threads from
+# outside. Runs when the workflow changes, or when asked.
+on:
+  push:
+    paths:
+      - .github/workflows/windows-wake.yml
+  workflow_dispatch:
+    inputs:
+      rounds:
+        description: rounds of 5 starts a side
+        default: "20"
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  TOOLCHAIN: 1.98.1 # keep in sync with rust-toolchain.toml
+
+jobs:
+  wake:
+    runs-on: windows-2025
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Install pinned Rust
+        shell: bash
+        run: |
+          scripts/retry 5 30 rustup toolchain install "$TOOLCHAIN" --profile minimal \
+            --target x86_64-pc-windows-msvc --target x86_64-unknown-linux-musl
+      - name: zig
+        shell: bash
+        run: scripts/install-zig
+      - name: NASM
+        shell: bash
+        run: |
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 10 -o "$RUNNER_TEMP/nasm.zip" https://www.nasm.us/pub/nasm/releasebuilds/3.02/win64/nasm-3.02-win64.zip
+          echo "161d0bfaff53c2f9e9f3e69fd0672323ebabafd1268976a5cec11be92a19aee7  $RUNNER_TEMP/nasm.zip" | sha256sum -c
+          unzip -q "$RUNNER_TEMP/nasm.zip" -d "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/nasm-3.02" >> "$GITHUB_PATH"
+      - name: Host
+        shell: pwsh
+        run: |
+          [Environment]::ProcessorCount
+          (Get-CimInstance Win32_Processor).Name
+          [System.Environment]::OSVersion.VersionString
+      - name: Both builds
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin=$(cygpath -u "$RUNNER_TEMP")/bin
+          mkdir -p "$bin"
+          cargo build --locked -p shards --bin shards --release
+          cp target/release/shards.exe "$bin/as-built.exe"
+          git apply docs/research/measurements/cpu-elastic/winnone.patch
+          cargo build --locked -p shards --bin shards --release
+          cp target/release/shards.exe "$bin/winnone.exe"
+          git checkout -- crates
+      - name: Starts
+        shell: bash
+        env:
+          ROUNDS: ${{ github.event.inputs.rounds || '20' }}
+        run: |
+          set -euo pipefail
+          temp=$(cygpath -w "$RUNNER_TEMP")
+          bin=$(cygpath -u "$RUNNER_TEMP")/bin
+          rev=$(git rev-parse --short HEAD)
+          homes="$temp\\ha,$temp\\hb"
+          mkdir -p "$RUNNER_TEMP/dc"
+          for h in ha hb; do
+            DOCKER_CONFIG="$temp\\dc" SHARDS_HOME="$temp\\$h" scripts/retry 5 30 "$bin/as-built.exe" pull -q alpine
+          done
+          phases() {
+            python -u docs/research/measurements/cpu-elastic/phases.py "$@" --homes "$homes" --rounds "$ROUNDS" --starts 5
+          }
+          echo "== winnone against as built, 4 busy loops"
+          phases "$bin/winnone.exe" "$bin/as-built.exe" --revs "$rev+winnone,$rev" --load 4
+          echo "== winnone against as built, idle"
+          phases "$bin/winnone.exe" "$bin/as-built.exe" --revs "$rev+winnone,$rev" --load 0
+          echo "== winnone against itself raised from outside (winslice.py, above_normal), 4 busy loops"
+          python -u docs/research/measurements/cpu-elastic/winslice.py "$temp\\hb" --priority above_normal &
+          slice=$!
+          phases "$bin/winnone.exe" "$bin/winnone.exe" --revs "$rev+winnone,$rev+winnone+winslice" --load 4
+          kill "$slice" || true
+          echo "== winnone against as built, 4 busy loops, again"
+          phases "$bin/winnone.exe" "$bin/as-built.exe" --revs "$rev+winnone,$rev" --load 4

@@ -18,6 +18,13 @@
 //!     command's run in the guest.
 //!   - `template_outside`: the rest of the wall clock: the client launched, the request
 //!     handed to a warm VM, the status back, the client gone.
+//!   - `template_start`: the command sent → it executing in the guest (WORKLOAD_STARTED,
+//!     the VM's clock).
+//! - `*_usable`: the client's spawn → the command executing in its microVM, the start
+//!   target's "usable": the wall clock less the VM's own clock from WORKLOAD_STARTED to
+//!   the status read. An upper bound, as it still holds the status's way back to the
+//!   client and the client's exit. Runs whose timing line has no WORKLOAD_STARTED are
+//!   left out.
 //! - `*_rss`: the VM process's peak RSS when it answered, including the guest memory it
 //!   touched. `client_rss`: the client process's.
 //!
@@ -116,14 +123,41 @@ fn main() {
         stats("run_cold", "us", wall_us(&cold)),
         stats("run_cold_rss", "MiB", peak_rss_mib(&cold)),
     ];
+    // From the command executing to its status read, on the VM's clock.
+    let after_start = |r: &common::Run| {
+        r.answered_us()?
+            .checked_sub(r.marker_us(shards_abi::marker::WORKLOAD_STARTED)?)
+    };
+    let usable = |samples: &[support::Sample]| -> Vec<f64> {
+        samples
+            .iter()
+            .map(|s| {
+                after_start(&s.run).map_or(f64::NAN, |after| s.run.elapsed.as_secs_f64() * 1e6 - after as f64)
+            })
+            .collect()
+    };
+    rows.push(support::diagnostic("cold_usable", "us", usable(&cold)));
     if templated {
         let command = |r: &common::Run| r.answered_us()?.checked_sub(r.request_us()?);
+        let start = |r: &common::Run| {
+            r.marker_us(shards_abi::marker::WORKLOAD_STARTED)?
+                .checked_sub(r.request_us()?)
+        };
         let outside: Vec<f64> = template
             .iter()
             .map(|s| s.run.elapsed.as_secs_f64() * 1e6 - command(&s.run).expect("timing field") as f64)
             .collect();
         rows.extend([
             stats("run_template", "us", wall_us(&template)),
+            support::diagnostic("template_usable", "us", usable(&template)),
+            support::diagnostic(
+                "template_start",
+                "us",
+                template
+                    .iter()
+                    .map(|s| start(&s.run).map_or(f64::NAN, |t| t as f64))
+                    .collect(),
+            ),
             stats("template_command", "us", us(&template, command)),
             stats("template_outside", "us", outside),
             stats("run_template_rss", "MiB", peak_rss_mib(&template)),

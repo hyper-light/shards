@@ -49,7 +49,7 @@ def read(path, run, into):
         elif line.startswith("give "):
             f = fields(line)
             gives[(f["build"], f["arm"], (run, counted(f, warm)))].append(f)
-        elif line.startswith(("phase ", "keep ", "merge ")):
+        elif line.startswith(("phase ", "keep ", "merge ", "room ")):
             f = fields(line)
             own[(f["build"], f["arm"], (run, counted(f, warm)))].append((line.split()[0], float(f["t"]), f))
         elif line.startswith("host ") and "build_write_bytes" in line:
@@ -57,6 +57,7 @@ def read(path, run, into):
             io[(f["build"], f["arm"], (run, counted(f, warm)))].append(f)
         elif line.startswith("guest "):
             f = fields(line)
+            io[(f["build"], f["arm"], (run, counted(f, warm)))].append(f)
             if "plugged" in f:
                 plugged[(f["build"], f["arm"], (run, counted(f, warm)))].append((float(f["t"]), int(f["plugged"])))
 
@@ -87,6 +88,14 @@ def unplugged(samples, t):
 # (from its caches attached), `cache-keep` the rest of its changes to their staging file and
 # its caches' kept and merged, `layer` its layer written, `blob` the layer made durable.
 PHASES = ("run", "cache-keep", "layer", "blob")
+# What a build's pages cost it, each a count so far in its samples (cold.patch's guest lines,
+# measure.py's host lines): its guest's major faults and file refaults and the times its
+# guest's kernel throttled it past its hold (the build cgroup's memory.events `high`), its
+# VM process's major faults on this host, and the times this host's kernel throttled its
+# scope past its budget.
+COSTS = (("pgmajfault", "guest major faults", 1, ""), ("refault_file", "guest refaults", 1, ""),
+         ("high_events", "guest throttled", 1, ""), ("vm_majflt", "VM major faults", 1, ""),
+         ("scope_high_events", "host throttled", 1, ""))
 # What each of the build's processes dirtied and read (host lines' /proc/PID/io fields).
 IO = (("vm_write_bytes", "VM process dirtied"), ("build_write_bytes", "build dirtied"),
       ("build_read_bytes", "build read"), ("writer_write_bytes", "writer dirtied"))
@@ -111,10 +120,16 @@ def own_of(own, io, key):
             sums["merge_write_ms"] += int(f.get("write_ms", 0))
             sums["merge_sync_ms"] += int(f.get("sync_ms", 0))
     samples = io.get(key, [])
-    for k, _ in IO:
+    for k in [k for k, _ in IO] + [k for k, _, _, _ in COSTS]:
         got = [int(f[k]) for f in samples if k in f]
         if got:
             sums[k] = max(got) - min(got)
+    # The least room the build told its builders (give.patch's `room` lines, its own count),
+    # and the least its budget left it as this host's kernel counts it, the budget less
+    # what the scope was charged (memory.current), in its samples.
+    told = [int(f["told"]) for kind, _, f in own.get(key, []) if kind == "room" and f.get("told", "none") != "none"]
+    if told:
+        sums["told_least"] = min(told)
     return sums
 
 
@@ -183,11 +198,17 @@ def report(title, into):
         # held: which of a step's end's parts a budget slows, and whose writes they are.
         mine = {arm: [own_of(own, io, (name, arm, r)) for r in arm_rounds.get(arm, [])]
                 for arm in ("free", "held")}
+        for r, m in zip(arm_rounds.get("held", []), mine["held"]):
+            budget = int(builds[(name, "held", r)].get("budget", 0))
+            real = [budget - int(f["scope_current"]) for f in io.get((name, "held", r), []) if "scope_current" in f]
+            if budget and real:
+                m["real_least"] = min(real)
         rows = [(p, f"phase {p}", 1, " s") for p in PHASES] + [
             ("keep_bytes", "caches kept", MIB, " MiB"), ("keep_sync_ms", "kept, synced in", 1, " ms"),
             ("merges", "merges", 1, ""), ("merge_bytes", "merged", MIB, " MiB"),
             ("merge_write_ms", "merged, written in", 1, " ms"), ("merge_sync_ms", "merged, synced in", 1, " ms"),
-        ] + [(k, said, MIB, " MiB") for k, said in IO]
+        ] + [(k, said, MIB, " MiB") for k, said in IO] + list(COSTS) + [
+            ("told_least", "room told, least", MIB, " MiB"), ("real_least", "room real, least", MIB, " MiB")]
         for k, said, scale, unit in rows:
             got = {arm: [m[k] for m in mine[arm] if k in m] for arm in ("free", "held")}
             if got["free"] or got["held"]:

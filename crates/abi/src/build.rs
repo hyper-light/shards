@@ -73,6 +73,13 @@ pub mod kind {
     /// build is held within past what it uses, in decimal, or nothing with no budget; else
     /// why it is not held.
     pub const HELD: u8 = 43;
+    /// Host to guest, between steps: what has the build needed of memory so far? No
+    /// payload. Its home records it, and the next builders' ceilings come from it (D133).
+    pub const NEEDS: u8 = 44;
+    /// Guest to host, a `NEEDS`'s answer: the bytes of memory the builder needed for its
+    /// build's peak to fit under its `memory.high`, and the processes of the build ended
+    /// for want of memory, in decimal, a space between; else why it cannot say.
+    pub const NEEDED: u8 = 45;
 }
 
 /// A cache's root directory: what overlayfs shows of the directory its upper layer is,
@@ -267,7 +274,9 @@ pub struct Step {
 /// A device node a step is given: its path in the step, the guest's device it is (`from`,
 /// the path itself where empty; never a host's numbers, which name nothing in a guest),
 /// the kind it must be (`c`, `b`, a FIFO `p`, or 0 for the guest device's own), and its
-/// mode (the guest device's where `None`) and owner.
+/// mode (the guest device's where `None`) and owner; and the access its device rule
+/// allows (D44: CDI's `permissions`, read 2, write 4 and mknod 1 as BPF_DEVCG_ACC_* are;
+/// 0, a FIFO's, for none).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Device {
     pub path: Vec<u8>,
@@ -276,6 +285,7 @@ pub struct Device {
     pub mode: Option<u32>,
     pub uid: u32,
     pub gid: u32,
+    pub access: u8,
 }
 
 fn put_u32(out: &mut Vec<u8>, n: u32) {
@@ -426,6 +436,7 @@ impl Step {
             put_u32(&mut out, d.mode.unwrap_or(0));
             put_u32(&mut out, d.uid);
             put_u32(&mut out, d.gid);
+            out.push(d.access);
         }
         put_bytes(&mut out, &self.proxy_ca);
         out.push(u8::from(self.emulated));
@@ -527,7 +538,7 @@ impl Step {
                 root: Root::decode(r.take(12)?)?,
             });
         }
-        let n = r.count(19)?;
+        let n = r.count(20)?;
         let mut devices = Vec::with_capacity(n);
         for _ in 0..n {
             let path = r.bytes()?;
@@ -542,6 +553,7 @@ impl Step {
                 mode: has_mode.then_some(mode),
                 uid: r.u32()?,
                 gid: r.u32()?,
+                access: r.u8()?,
             });
         }
         let proxy_ca = r.bytes()?;
@@ -757,6 +769,7 @@ mod tests {
                     mode: None,
                     uid: 0,
                     gid: 0,
+                    access: 7,
                 },
                 Device {
                     path: b"/dev/vendor0".to_vec(),
@@ -765,6 +778,7 @@ mod tests {
                     mode: Some(0o660),
                     uid: 1000,
                     gid: 44,
+                    access: 6,
                 },
             ],
             proxy_ca: b"-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n".to_vec(),

@@ -57,6 +57,18 @@ pub(super) const MIN_VERSION: &str = crate::cli::version::ENGINE_API.1;
 /// bytes, its names and spaces more.
 const BODY_MOST: u64 = 8 * shards_ipc::MAX_PAYLOAD as u64;
 
+thread_local! {
+    /// The client of another machine's whose connection this thread serves (D228), through
+    /// its context's engine (D180 part 4): empty for this machine's own user's.
+    static CLIENT: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
+}
+
+/// The client whose Engine API connection this thread serves (D228), empty for this
+/// machine's own user's: what a create or a volume made through it is judged by.
+pub(super) fn engine_client() -> String {
+    CLIENT.with(|c| c.borrow().clone())
+}
+
 /// What the engine keeps between calls.
 #[derive(Default)]
 pub(super) struct Engine {
@@ -480,6 +492,7 @@ impl<D: Disk> Daemon<D> {
         threads: &'s Threads<'s, 'e>,
         conn: UnixStream,
         scope: Option<Scope>,
+        client: Option<String>,
     ) {
         // On Windows a host client comes through the Engine API's named pipe, whose DACL
         // admits this user's processes alone (shards_ipc::Listener), as Unix's comes
@@ -538,6 +551,8 @@ impl<D: Disk> Daemon<D> {
         let spawned = std::thread::Builder::new()
             .name("engine".into())
             .spawn_scoped(threads, move || {
+                // A client's of another machine's (D228): what its calls make is its.
+                CLIENT.with(|c| *c.borrow_mut() = client.unwrap_or_default());
                 self.engine_connection(threads, &conn, scope.as_ref());
                 done(&theirs);
             });
@@ -941,6 +956,7 @@ impl<D: Disk> Daemon<D> {
             // The daemon's own zone, which it has from the client that started it.
             utc_offset: crate::cli::utc_offset(),
             daemon: self.identity,
+            client: engine_client(),
             ..shards_ipc::Command::default()
         };
         let (ours, theirs) = UnixStream::pair().map_err(|e| format!("a socket pair: {e}"))?;

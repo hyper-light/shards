@@ -640,6 +640,9 @@ pub struct Command {
     pub width: u16,
     pub color: bool,
     pub daemon: Identity,
+    /// The client of another machine's that asked for it through its context (D228), as
+    /// [`Run::client`]; empty for this machine's own user.
+    pub client: String,
 }
 
 impl Command {
@@ -654,6 +657,7 @@ impl Command {
         w.extend_from_slice(&self.width.to_be_bytes());
         w.push(u8::from(self.color));
         put_identity(&mut w, &self.daemon);
+        put_list(&mut w, std::slice::from_ref(&self.client));
         w
     }
 
@@ -670,6 +674,7 @@ impl Command {
             width: u16::from_be_bytes(r.take(2)?.try_into().ok()?),
             color: r.flag()?,
             daemon: r.identity()?,
+            client: r.list()?.into_iter().next().unwrap_or_default(),
         };
         r.0.is_empty().then_some(command)
     }
@@ -937,6 +942,10 @@ pub struct Run {
     /// environment names no TERM; empty where the client says none, as an Engine API client
     /// says none.
     pub terms: Vec<String>,
+    /// The client of another machine's this one's daemon enrolled that asked for the run
+    /// through its context (D228): what it may reach of this machine is what its owner
+    /// granted it. Empty for this machine's own user's runs.
+    pub client: String,
 }
 
 /// The streams a create says its client attaches (Config.AttachStdin, AttachStdout and
@@ -1545,6 +1554,7 @@ impl Run {
             ("engine-nets", self.engine_nets.clone()),
             ("cgroup-parent", one(&self.cgroup_parent)),
             ("terms", self.terms.clone()),
+            ("client", one(&self.client)),
             ("device-requests", {
                 let mut values = Vec::new();
                 for r in &self.device_requests {
@@ -1729,6 +1739,7 @@ impl Run {
                     "engine-nets" => run.engine_nets = values,
                     "cgroup-parent" => run.cgroup_parent = values.into_iter().next().unwrap_or_default(),
                     "terms" => run.terms = values,
+                    "client" => run.client = values.into_iter().next().unwrap_or_default(),
                     "device-requests" => {
                         let mut rest = values.iter();
                         while rest.len() > 0 {
@@ -2678,6 +2689,7 @@ mod tests {
             engine_nets: vec!["app\0\0web\0www".into(), "back\x0010.244.2.9".into()],
             cgroup_parent: "agents-ci.slice".into(),
             terms: vec!["xterm-ghostty".into(), "xterm-256color".into()],
+            client: "laptop".into(),
         };
         let bytes = run.encode();
         let identity = run.daemon;
@@ -2750,6 +2762,7 @@ mod tests {
             engine_nets: Vec::new(),
             cgroup_parent: String::new(),
             terms: Vec::new(),
+            client: String::new(),
             ..run.clone()
         };
         let boundary = earlier.encode().len() - 4;
@@ -2771,6 +2784,7 @@ mod tests {
             width: 132,
             color: true,
             daemon: identity,
+            client: "laptop".into(),
         };
         let bytes = command.encode();
         assert_eq!(Command::decode(&bytes), Some(command));

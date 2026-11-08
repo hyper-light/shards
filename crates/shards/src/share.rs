@@ -244,8 +244,17 @@ pub fn share(args: impl Iterator<Item = OsString>) -> ExitCode {
     let (mut dirs, mut conns, mut theirs) = (Vec::new(), Vec::new(), Vec::new());
     for (i, g) in given.into_iter().enumerate() {
         let fd = 4 + i as i32;
+        // A client's own directory, which its client serves through its context (D228):
+        // the stream it is served on, the VM's as it is, answered there.
+        if is(fd, libc::S_IFSOCK) {
+            // SAFETY: a socket the daemon left for this process alone, checked above.
+            theirs.push(unsafe { UnixStream::from_raw_fd(fd) });
+            continue;
+        }
         if !is(fd, libc::S_IFDIR) {
-            return failed(&format!("share {i}: descriptor {fd} is not a directory"));
+            return failed(&format!(
+                "share {i}: descriptor {fd} is neither a directory nor a client's stream"
+            ));
         }
         // SAFETY: a directory the daemon left for this process alone, checked above.
         dirs.push((unsafe { OwnedFd::from_raw_fd(fd) }, g));

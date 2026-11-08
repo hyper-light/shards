@@ -208,6 +208,11 @@ pub fn main() -> ! {
         // Reads each file named through, a megabyte at a time, and says how much: what it
         // read stays in the page cache, the reader's own memory one megabyte.
         "read" => read_through(args.get(1..).unwrap_or_default()),
+        // What a share costs its guest (D228's relay): N opens of FILE, each reading its
+        // first 4 KiB and closing it, timed one by one, said as their n, p50, p90, p99 and
+        // max in µs; then FILE read through and a copy of it written and synced beside it,
+        // each said as MiB/s.
+        "share-cost" => share_cost(arg(1), arg(2).parse().unwrap_or(0)),
         // Says it begins, reads a file through, as `read` does, then waits up to N seconds
         // for the guest's page cache to hold at least half of it less, as its builder gives
         // back what it holds cold (D188), and says whether it did; then reads it again and
@@ -390,6 +395,19 @@ pub fn main() -> ! {
         "clean-cache" => clean_cache(arg(1)),
         "orphan" => orphan(),
         "heavy" => heavy(arg(1).parse().unwrap_or(0)),
+        // PROCS processes of THREADS threads each, holding MIB MiB among them, every page
+        // touched; `ready` once all hold theirs, then held until killed: what a SIGKILL's
+        // end costs its guest by what the command holds (PM M480).
+        "held" => held(
+            arg(1).parse().unwrap_or(0),
+            arg(2).parse().unwrap_or(1),
+            arg(3).parse().unwrap_or(1),
+        ),
+        // N threads spinning (`spin`), N processes spinning (`procs`), or N threads each
+        // writing a MiB to a file of DIR (/tmp where none is given) and syncing
+        // it, over and over (`write`); `ready` once all are at it: what a freeze waits for
+        // (PM M482).
+        "busy" => busy(arg(1), arg(2).parse().unwrap_or(1), arg(3)),
         "burn" => burn(
             arg(1).parse().unwrap_or(1),
             arg(2).parse().unwrap_or(1000),
@@ -3572,6 +3590,63 @@ fn read_dropped(path: &str, secs: u64, out: &str) -> i32 {
     }
 }
 
+fn share_cost(path: &str, n: usize) -> i32 {
+    let failed = |e: io::Error| {
+        let _ = writeln!(io::stderr(), "{path}: {e}");
+        1
+    };
+    let mut small = [0u8; 4096];
+    let mut each = Vec::with_capacity(n);
+    for _ in 0..n {
+        let began = std::time::Instant::now();
+        let read = std::fs::File::open(path).and_then(|mut f| f.read(&mut small));
+        if let Err(e) = read {
+            return failed(e);
+        }
+        each.push(began.elapsed().as_micros());
+    }
+    each.sort_unstable();
+    let at = |q: f64| {
+        each.get(((each.len() as f64 * q) as usize).min(each.len().saturating_sub(1)))
+            .copied()
+            .unwrap_or(0)
+    };
+    let _ = writeln!(
+        io::stdout(),
+        "open-read-close n {} p50 {} p90 {} p99 {} max {} us",
+        each.len(),
+        at(0.5),
+        at(0.9),
+        at(0.99),
+        each.last().copied().unwrap_or(0)
+    );
+    let began = std::time::Instant::now();
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(e) => return failed(e),
+    };
+    let mib = bytes.len() as f64 / f64::from(1u32 << 20);
+    let _ = writeln!(
+        io::stdout(),
+        "read {:.1} MiB/s",
+        mib / began.elapsed().as_secs_f64()
+    );
+    let began = std::time::Instant::now();
+    let wrote = std::fs::File::create(format!("{path}.w")).and_then(|mut f| {
+        f.write_all(&bytes)?;
+        f.sync_all()
+    });
+    if let Err(e) = wrote {
+        return failed(e);
+    }
+    let _ = writeln!(
+        io::stdout(),
+        "write {:.1} MiB/s",
+        mib / began.elapsed().as_secs_f64()
+    );
+    0
+}
+
 fn read_through(paths: &[String]) -> i32 {
     let mut buf = vec![0u8; 1 << 20];
     for path in paths {
@@ -3686,6 +3761,149 @@ fn burn(threads: usize, ms: u64, escape: bool) -> i32 {
     }
     let _ = writeln!(io::stdout(), "burned");
     0
+}
+
+/// Forks `procs` children, each running `work` with its index, which writes a byte to the
+/// pipe when it is at it; says `ready` once every one has, then waits for a signal for
+/// ever, its children with it. A child that cannot get to it says why and ends, and this
+/// ends 1 as its end closes the pipe.
+fn forked_ready(procs: usize, work: &(dyn Fn(usize, libc::c_int) + Sync)) -> i32 {
+    let mut fds = [0; 2];
+    // SAFETY: pipe(2) into a two-element array.
+    if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
+        return 1;
+    }
+    for i in 0..procs.max(1) {
+        // SAFETY: fork(2) of this single-threaded process, which makes no thread.
+        match unsafe { libc::fork() } {
+            0 => {
+                // SAFETY: the read end, which this child never reads.
+                unsafe { libc::close(fds[0]) };
+                work(i, fds[1]);
+                loop {
+                    // SAFETY: blocks until a signal arrives.
+                    unsafe { libc::pause() };
+                }
+            }
+            pid if pid > 0 => {}
+            _ => return 1,
+        }
+    }
+    // Only the children hold the write end now: their ends are its end.
+    // SAFETY: the write end, which this process never writes.
+    unsafe { libc::close(fds[1]) };
+    let mut got = 0;
+    while got < procs.max(1) {
+        let mut byte = 0u8;
+        // SAFETY: read(2) of a byte into a local.
+        match unsafe { libc::read(fds[0], (&raw mut byte).cast(), 1) } {
+            1 => got += 1,
+            _ if io::Error::last_os_error().kind() == io::ErrorKind::Interrupted => {}
+            _ => {
+                let _ = writeln!(io::stderr(), "a worker ended before it was at its work");
+                return 1;
+            }
+        }
+    }
+    let _ = writeln!(io::stdout(), "ready");
+    let _ = io::stdout().flush();
+    loop {
+        // SAFETY: blocks until a signal arrives.
+        unsafe { libc::pause() };
+    }
+}
+
+/// [`forked_ready`]'s workers for `held`: each process's `threads` threads touch their
+/// shares of `mib` MiB and hold them; the process says so once all have.
+fn held(mib: usize, threads: usize, procs: usize) -> i32 {
+    let (threads, procs) = (threads.max(1), procs.max(1));
+    let shares = threads * procs;
+    forked_ready(procs, &|p, ready| {
+        let (tx, rx) = std::sync::mpsc::channel::<()>();
+        for t in 0..threads {
+            let n = p * threads + t;
+            let share = mib / shares + usize::from(n < mib % shares);
+            let tx = tx.clone();
+            let _ = std::thread::Builder::new().spawn(move || {
+                let mut chunks: Vec<Vec<u8>> = Vec::with_capacity(share);
+                for _ in 0..share {
+                    chunks.push(vec![1u8; 1 << 20]);
+                }
+                let _ = tx.send(());
+                loop {
+                    std::thread::park();
+                    std::hint::black_box(&chunks);
+                }
+            });
+        }
+        drop(tx);
+        if rx.iter().take(threads).count() < threads {
+            let _ = writeln!(io::stderr(), "held: a thread could not hold its share");
+            // SAFETY: _exit(2) of this child, which owns nothing to flush.
+            unsafe { libc::_exit(1) };
+        }
+        // SAFETY: write(2) of a byte of ours to the pipe's write end.
+        unsafe { libc::write(ready, b"r".as_ptr().cast(), 1) };
+    })
+}
+
+/// [`forked_ready`]'s workers for `busy`; `write`'s files in `dir` (`/tmp` where none is
+/// given).
+fn busy(kind: &str, n: usize, dir: &str) -> i32 {
+    let n = n.max(1);
+    let dir = if dir.is_empty() { "/tmp" } else { dir };
+    let spin = || {
+        let mut x = 0u64;
+        loop {
+            x = std::hint::black_box(x.wrapping_add(1));
+        }
+    };
+    match kind {
+        "procs" => forked_ready(n, &|_, ready| {
+            // SAFETY: write(2) of a byte of ours to the pipe's write end.
+            unsafe { libc::write(ready, b"r".as_ptr().cast(), 1) };
+            spin();
+        }),
+        "spin" | "write" => forked_ready(1, &|_, ready| {
+            let (tx, rx) = std::sync::mpsc::channel::<()>();
+            for t in 0..n {
+                let tx = tx.clone();
+                let writing = kind == "write";
+                let path = format!("{dir}/busy-{t}");
+                let _ = std::thread::Builder::new().spawn(move || {
+                    if !writing {
+                        let _ = tx.send(());
+                        spin();
+                    }
+                    let chunk = vec![7u8; 1 << 20];
+                    let mut told = false;
+                    loop {
+                        let wrote = std::fs::File::create(&path)
+                            .and_then(|mut f| f.write_all(&chunk).and_then(|()| f.sync_all()));
+                        if let Err(e) = wrote {
+                            let _ = writeln!(io::stderr(), "busy: writing {path}: {e}");
+                            return;
+                        }
+                        if !told {
+                            let _ = tx.send(());
+                            told = true;
+                        }
+                    }
+                });
+            }
+            drop(tx);
+            if rx.iter().take(n).count() < n {
+                // SAFETY: _exit(2) of this child, which owns nothing to flush.
+                unsafe { libc::_exit(1) };
+            }
+            // SAFETY: write(2) of a byte of ours to the pipe's write end.
+            unsafe { libc::write(ready, b"r".as_ptr().cast(), 1) };
+        }),
+        _ => {
+            let _ = writeln!(io::stderr(), "busy: spin, procs or write");
+            1
+        }
+    }
 }
 
 fn heavy(mib: usize) -> i32 {
@@ -4075,7 +4293,61 @@ fn confined(args: &[String]) -> i32 {
             | "srv-send" | "srv-receive" | "srv-answer" | "owner" | "mcp-run" | "srv-run"
             | "srv-run-timeout" | "srv-run-cancel" | "srv-run-abandon" | "srv-bench" | "srv-modern"
             | "hold-tell" | "make" | "srv-hand" | "follow" | "hardlink" | "exec" | "nosuid" | "hear"
-            | "size" => mode = a.as_str(),
+            | "size" | "udpserve" | "listencost" => mode = a.as_str(),
+            // `listencost N:PORT`: N times a TCP socket bound at PORT on every IPv4 address,
+            // listening, and closed; how long bind(2) and listen(2) each took, in ns.
+            spec if mode == "listencost" => {
+                let (n, port) = spec.split_once(':').unwrap_or((spec, "0"));
+                let (n, port) = (n.parse::<usize>().unwrap_or(0), port.parse::<u16>().unwrap_or(0));
+                let mut binds = Vec::with_capacity(n);
+                let mut listens = Vec::with_capacity(n);
+                let mut failed = String::new();
+                for _ in 0..n {
+                    match listen_once(port) {
+                        Ok((b, l)) => {
+                            binds.push(b);
+                            listens.push(l);
+                        }
+                        Err(e) => {
+                            failed = errno(&e);
+                            break;
+                        }
+                    }
+                }
+                out.push_str(&format!(
+                    "confined listencost {port}: bind ns {} listen ns {} {failed}\n",
+                    summary_us(&mut binds),
+                    summary_us(&mut listens)
+                ));
+            }
+            // `udpserve PORT:AFTER_MS:FOR_MS`: after AFTER_MS, a UDP socket bound at PORT on
+            // every IPv4 address answers each datagram with its host name, for FOR_MS (0,
+            // for as long as the agent runs), then is closed; on a thread of its own.
+            spec if mode == "udpserve" => {
+                let mut parts = spec.split(':').map(|p| p.parse::<u64>().unwrap_or(0));
+                let (port, after, lasts) = (
+                    parts.next().unwrap_or(0),
+                    parts.next().unwrap_or(0),
+                    parts.next().unwrap_or(0),
+                );
+                let hello = format!("hello from {host}\n");
+                let _ = std::thread::Builder::new().spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_millis(after));
+                    let Ok(sock) = std::net::UdpSocket::bind(("0.0.0.0", u16::try_from(port).unwrap_or(0)))
+                    else {
+                        return;
+                    };
+                    let until = std::time::Instant::now() + std::time::Duration::from_millis(lasts);
+                    let _ = sock.set_read_timeout(Some(std::time::Duration::from_millis(100)));
+                    let mut buf = [0u8; 512];
+                    while lasts == 0 || std::time::Instant::now() < until {
+                        if let Ok((_, from)) = sock.recv_from(&mut buf) {
+                            let _ = sock.send_to(hello.as_bytes(), from);
+                        }
+                    }
+                });
+                out.push_str(&format!("confined udpserve {spec}: started\n"));
+            }
             "srv-mcp" => {
                 let said = match server_call("mcp", "{}") {
                     Ok((t, false)) => t,
@@ -5554,6 +5826,58 @@ impl Session {
             }
         }
     }
+}
+
+/// A TCP socket bound at `port` on every IPv4 address and listening, then closed: how long
+/// its bind(2) and its listen(2) took, in ns.
+fn listen_once(port: u16) -> io::Result<(f64, f64)> {
+    use std::os::fd::FromRawFd as _;
+    // SAFETY: socket(2) with constant arguments.
+    let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_STREAM | libc::SOCK_CLOEXEC, 0) };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: a descriptor just made, owned here alone.
+    let sock = unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) };
+    let one: libc::c_int = 1;
+    // SAFETY: setsockopt(2) of an int of ours, its size given.
+    unsafe {
+        libc::setsockopt(
+            fd,
+            libc::SOL_SOCKET,
+            libc::SO_REUSEADDR,
+            (&raw const one).cast(),
+            size_of::<libc::c_int>() as libc::socklen_t,
+        )
+    };
+    let sin = libc::sockaddr_in {
+        sin_family: libc::AF_INET as libc::sa_family_t,
+        sin_port: port.to_be(),
+        sin_addr: libc::in_addr { s_addr: 0 },
+        sin_zero: [0; 8],
+    };
+    let at = std::time::Instant::now();
+    // SAFETY: bind(2) with a sockaddr_in of ours, its size given.
+    let bound = unsafe {
+        libc::bind(
+            fd,
+            (&raw const sin).cast(),
+            size_of::<libc::sockaddr_in>() as libc::socklen_t,
+        )
+    };
+    let bind = at.elapsed().as_nanos() as f64;
+    if bound != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let at = std::time::Instant::now();
+    // SAFETY: listen(2) of a socket of ours.
+    let listening = unsafe { libc::listen(fd, 128) };
+    let listen = at.elapsed().as_nanos() as f64;
+    if listening != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    drop(sock);
+    Ok((bind, listen))
 }
 
 /// `values`, sorted: n, and the nearest-rank p50, p90, p99 and max, in µs.

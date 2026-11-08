@@ -155,6 +155,7 @@ pub(crate) mod nft {
     pub const NFTA_CMP_DATA: u16 = 3;
     pub const NFTA_CT_DREG: u16 = 1;
     pub const NFTA_CT_KEY: u16 = 2;
+    pub const NFTA_CT_SREG: u16 = 4;
     pub const NFTA_BITWISE_SREG: u16 = 1;
     pub const NFTA_BITWISE_DREG: u16 = 2;
     pub const NFTA_BITWISE_LEN: u16 = 3;
@@ -168,6 +169,8 @@ pub(crate) mod nft {
     pub const NFT_META_IIF: u32 = 4;
     pub const NFT_META_OIF: u32 = 5;
     pub const NFT_CT_STATE: u32 = 0;
+    /// enum nft_ct_keys (linux/netfilter/nf_tables.h): the conntrack zone.
+    pub const NFT_CT_ZONE: u32 = 17;
     pub const NFT_CMP_EQ: u32 = 0;
     pub const NFT_CMP_NEQ: u32 = 1;
     /// NF_CT_STATE_BIT(IP_CT_ESTABLISHED) | NF_CT_STATE_BIT(IP_CT_RELATED).
@@ -1421,6 +1424,100 @@ impl Batch {
     }
 }
 
+/// The chain of the ports several domains are given (D122), each to the domain the
+/// chooser finds listening on it, before `pre` (crate::chooser).
+const CHOSEN: &[u8] = b"chosen\0";
+
+/// The chain that puts a chosen UDP port's flows in its choice's conntrack zone, before
+/// connection tracking (D122).
+const CHOSEN_ZONE: &[u8] = b"chosen-zone\0";
+
+/// One of the chooser's choices: what comes in on eth0 to port `from` goes to `to`, at its
+/// port `at`; and, for a UDP port, the conntrack zone of this choice, which its flows, both
+/// ways, are tracked in.
+pub(crate) type Chosen = (
+    crate::netplan::Egress,
+    Ipv4Addr,
+    crate::netplan::Egress,
+    Option<u16>,
+);
+
+/// The chooser's choices, programmed again whole in one transaction: what comes in on
+/// eth0 to each port `from` goes to `to`, at its port `at`, as `pre` gives a port that is
+/// one domain's; a port of no one listening, nowhere here (the run's own command's, as a
+/// port no domain claims is). A UDP port's flows are tracked in its choice's zone, coming
+/// in and the holder's answers going out: a choice of another holder has a zone of its
+/// own, in which a flow admitted before is new, and so translated to the new holder, its
+/// entry in the old zone left to expire, as the old holder's answers past it are new
+/// flows no grant opens. Linux keeps a NAT binding for a flow's life (nf_nat_core.c; a
+/// UDP flow lives 30 s past its last datagram, 120 s once it streams,
+/// nf_conntrack_proto_udp.c), and a guest kernel without ctnetlink (shards' has none) has
+/// no other way to let one go.
+pub(crate) fn program_chosen(chosen: &[Chosen]) -> io::Result<()> {
+    let eth0 = interface_index("eth0")?;
+    let mut b = Batch::new();
+    b.chain(
+        CHOSEN_ZONE,
+        b"filter\0",
+        nft::NF_INET_PRE_ROUTING,
+        nft::PRIORITY_RAW,
+        nft::NF_ACCEPT,
+    );
+    b.flush(CHOSEN_ZONE);
+    let zone = |e: &mut Vec<u8>, z: u16| {
+        load(e, &z.to_ne_bytes());
+        expr(e, b"ct\0", |d| {
+            be32(d, nft::NFTA_CT_KEY, nft::NFT_CT_ZONE);
+            be32(d, nft::NFTA_CT_SREG, nft::NFT_REG_1);
+        });
+    };
+    for &(from, to, at, z) in chosen {
+        let Some(z) = z else { continue };
+        let mut e = Vec::new();
+        meta(&mut e, nft::NFT_META_IIF);
+        compare(&mut e, nft::NFT_CMP_EQ, &eth0.to_ne_bytes());
+        ports(&mut e, from);
+        zone(&mut e, z);
+        b.rule(CHOSEN_ZONE, e);
+        let mut e = Vec::new();
+        meta(&mut e, nft::NFT_META_IIF);
+        compare(&mut e, nft::NFT_CMP_EQ, &(UPLINK_IFINDEX as u32).to_ne_bytes());
+        address(&mut e, SOURCE, to);
+        source_ports(&mut e, at);
+        zone(&mut e, z);
+        b.rule(CHOSEN_ZONE, e);
+    }
+    b.chain(
+        CHOSEN,
+        b"nat\0",
+        nft::NF_INET_PRE_ROUTING,
+        nft::PRIORITY_DNAT.wrapping_sub(1),
+        nft::NF_ACCEPT,
+    );
+    b.flush(CHOSEN);
+    for &(from, to, at, _) in chosen {
+        let mut e = Vec::new();
+        meta(&mut e, nft::NFT_META_IIF);
+        compare(&mut e, nft::NFT_CMP_EQ, &eth0.to_ne_bytes());
+        ports(&mut e, from);
+        load(&mut e, &to.octets());
+        let mapped = from != at;
+        if mapped {
+            load_into(&mut e, nft::NFT_REG_2, &at.1.to_be_bytes());
+        }
+        expr(&mut e, b"nat\0", |d| {
+            be32(d, nft::NFTA_NAT_TYPE, nft::NFT_NAT_DNAT);
+            be32(d, nft::NFTA_NAT_FAMILY, u32::from(nft::NFPROTO_IPV4));
+            be32(d, nft::NFTA_NAT_REG_ADDR_MIN, nft::NFT_REG_1);
+            if mapped {
+                be32(d, nft::NFTA_NAT_REG_PROTO_MIN, nft::NFT_REG_2);
+            }
+        });
+        b.rule(CHOSEN, e);
+    }
+    b.commit(&netlink_socket(libc::NETLINK_NETFILTER)?)
+}
+
 /// On the host's network (D124): what the run's processes send IPv6's loopback (`::1`)
 /// goes to the host's, its TCP and UDP. IPv6 keeps `::1` off every link but the loopback
 /// (RFC 4291 §2.5.3), so it goes by address translation: to `gateway6`, which the network
@@ -2113,8 +2210,24 @@ fn outside(sock: &OwnedFd, eth0: u32, u: &Uplink, members: &[Member]) -> io::Res
             nft::NF_ACCEPT,
         );
         b.flush(b"pre\0");
+        // A port several domains are given goes to the one listening (D122): chosen, as
+        // they listen and stop, by the chooser (crate::chooser) in a chain of its own,
+        // before this one; every other to its one domain here.
+        let contested = crate::chooser::contested(ingress);
+        if !contested.is_empty() {
+            b.chain(
+                CHOSEN,
+                b"nat\0",
+                nft::NF_INET_PRE_ROUTING,
+                nft::PRIORITY_DNAT.wrapping_sub(1),
+                nft::NF_ACCEPT,
+            );
+        }
         for (to, ranges) in ingress {
-            for &(from, at) in ranges {
+            for &(from, at) in ranges
+                .iter()
+                .filter(|(from, _)| contested.iter().all(|c| c.from != *from))
+            {
                 let mut e = Vec::new();
                 meta(&mut e, nft::NFT_META_IIF);
                 compare(&mut e, nft::NFT_CMP_EQ, &eth0.to_ne_bytes());

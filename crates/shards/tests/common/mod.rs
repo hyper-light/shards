@@ -22,6 +22,38 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use sha2::Digest as _;
 use shards_image::erofs::{self, DataRef, Dir, Kind, Meta, Node, NodeId, Source, Tree};
 
+/// Records in `home` of a host whose restarts go over a kept layer quicker than they pack
+/// it from `from` bytes, and pack it quicker below (D190's `layers::Restarts`, the home's
+/// `restarts`): a thousand restarts each way, of layers holding 0 to 64 MiB evenly, on two
+/// exact lines meeting at `from`, packing's the steeper, so that the few a test's own
+/// restarts add move neither. The home's daemon is stopped, as the next reads them.
+pub fn restarts_cross_at(home: &Path, from: u64, timeout: Duration) {
+    let mib = f64::from(1u32 << 20);
+    let (n, top) = (1000.0f64, 64.0 * mib);
+    let (mean, xx) = (top / 2.0, (top / (n - 1.0)).powi(2) * n * (n * n - 1.0) / 12.0);
+    let from = from as f64;
+    // Packing 50 ms and 10 a MiB; going over the same at `from`, 2 a MiB, in µs.
+    let (packed, over) = (
+        (50e3, 10e3 / mib),
+        (50e3 + 10e3 / mib * from - 2e3 / mib * from, 2e3 / mib),
+    );
+    let line = |(at_zero, slope): (f64, f64)| {
+        format!(
+            "{n} {mean} {} {xx} {} {}",
+            at_zero + slope * mean,
+            slope * xx,
+            slope * slope * xx
+        )
+    };
+    std::fs::write(
+        home.join("restarts"),
+        format!("packed {}\nover {}\n", line(packed), line(over)),
+    )
+    .unwrap();
+    let env = [("SHARDS_HOME", home.as_os_str())];
+    let _ = run_shards_env(&["daemon"], &["stop"], &env, timeout);
+}
+
 /// Which file is at `path`: its device and inode on Unix, its volume's serial number and
 /// its index on that volume on Windows (`platform::file_id`), so that a test tells the same
 /// file from another put in its place.
@@ -392,14 +424,14 @@ pub fn kvm_kernel() -> Option<&'static Path> {
         let pinned = match ARCH {
             _ if cfg!(windows) => return None,
             "aarch64" => Artifact {
-                name: "Image-6.18.48-aarch64-kvm-64a9427a8997",
-                url: "https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-64a9427a8997/Image-6.18.48-aarch64-kvm",
-                sha256: "b3834451dd3504010f9ac398d8602f37030cda3225ecb2ef2d8f60eebc5d14a6",
+                name: "Image-6.18.48-aarch64-kvm-fa4edcc82303",
+                url: "https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-fa4edcc82303/Image-6.18.48-aarch64-kvm",
+                sha256: "825ece94b6371289a8820deed951324335fbb054b907e337116d1424de7188d8",
             },
             "x86_64" => Artifact {
-                name: "vmlinux-6.18.48-x86_64-kvm-64a9427a8997",
-                url: "https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-64a9427a8997/vmlinux-6.18.48-x86_64-kvm",
-                sha256: "fb1a14009a675a39d61a5d2c19bd62129266bd4bbbb04038bdbefa419c0b6c2d",
+                name: "vmlinux-6.18.48-x86_64-kvm-fa4edcc82303",
+                url: "https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-fa4edcc82303/vmlinux-6.18.48-x86_64-kvm",
+                sha256: "91ae2d5ca2230be3c16bb2b0c2b50d2f1513a43cdeddf7719a73476c8f8c7848",
             },
             _ => return None,
         };

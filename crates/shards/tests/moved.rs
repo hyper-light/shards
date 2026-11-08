@@ -125,6 +125,16 @@ fn appended(file: &Path) -> Vec<u64> {
     whole.lines().filter_map(|l| l.parse().ok()).collect()
 }
 
+/// The CPU every machine of this one and context `peer` has told this home's microVMs, where
+/// `SHARDS_MOVE_BASELINE` asks: for a pair neither of which has every feature of the other
+/// (D176 part 6, PM M462).
+fn baseline_with_peer(here: &Path) {
+    if std::env::var_os("SHARDS_MOVE_BASELINE").is_some() {
+        let said = shards_in(here, &["configure", "cpu", "--baseline", "peer"]);
+        assert_eq!(said.status, Some(0), "{said}");
+    }
+}
+
 /// What a guest's /proc/cpuinfo, as testguest's `files` prints it, says of its CPUs: their
 /// numbers, identity and features, the lines of those keys alone (not their clocks).
 fn cpu_identity(said: &str) -> Vec<String> {
@@ -695,6 +705,82 @@ impl Drop for LeftThere<'_> {
     }
 }
 
+/// The CPU baseline a home's microVMs are told (D176 part 6) is all a guest finds, and goes
+/// with it: told ID_AA64PFR1_EL1 of nothing, a guest finds no SSBS and no BTI, whatever its
+/// host has; moved, it finds the same there, the guest's CPU, not that machine's.
+#[cfg(target_arch = "aarch64")]
+#[test]
+fn a_cpu_baseline_is_all_its_guest_finds_and_goes_with_it() {
+    let Some((here, there, _listening, image)) = machines("baseline") else {
+        return;
+    };
+    let field = |home: &Path, args: &[&str]| {
+        let said = shards_in(home, args);
+        assert_eq!(said.status, Some(0), "{args:?}: {said}");
+        said.stdout.trim().to_string()
+    };
+    let cpu = |home: &Path, name: &str| {
+        cpu_identity(&field(
+            home,
+            &["exec", name, "/bin/testguest", "files", "/proc/cpuinfo"],
+        ))
+    };
+    let features = |cpu: &[String]| {
+        cpu.iter()
+            .find_map(|l| l.strip_prefix("Features"))
+            .unwrap_or_default()
+            .split_whitespace()
+            .map(str::to_string)
+            .collect::<Vec<_>>()
+    };
+    let start = |name: &str| {
+        let run = shards_in(
+            &here,
+            &[
+                "run", "-d", "--pull", "never", "--name", name, &image, "counter", "20",
+            ],
+        );
+        assert_eq!(run.status, Some(0), "{run}");
+        let log_here = || logs(&here, name);
+        until("counting", &mut || counts(&log_here()).len() >= 3, &log_here);
+    };
+    start("host");
+    let hosts = features(&cpu(&here, "host"));
+    assert_eq!(shards_in(&here, &["rm", "-f", "host"]).status, Some(0));
+    // Hypervisor.framework shows a guest no WFxT or RPRES, ID_AA64ISAR2_EL1's, whatever
+    // macOS names (PM M499): a move checks neither by name (daemon/moves.rs `host_cpu`).
+    if cfg!(target_os = "macos") {
+        for hidden in ["wfxt", "rpres"] {
+            assert!(!hosts.iter().any(|f| f == hidden), "{hidden}: {hosts:?}");
+        }
+    }
+
+    std::fs::write(here.join("cpu-baseline"), "c021=0000000000000000\nlab\n").unwrap();
+    let inspected = field(&here, &["inspect", "cpu"]);
+    assert!(inspected.contains("c021=0000000000000000"), "{inspected}");
+    start("told");
+    let told = cpu(&here, "told");
+    let found = features(&told);
+    assert!(!found.is_empty(), "{told:?}");
+    for masked in ["ssbs", "bti"] {
+        assert!(!found.iter().any(|f| f == masked), "{masked}: {found:?}");
+    }
+    // Where this host has either, the baseline took it away.
+    if hosts.iter().any(|f| f == "ssbs" || f == "bti") {
+        assert_ne!(found, hosts);
+    }
+    let (kernel, init) = (kernel(), guest_init());
+    let timed: [(&str, &OsStr); 3] = [
+        ("SHARDS_HOME", here.as_os_str()),
+        ("SHARDS_KERNEL", kernel.as_os_str()),
+        ("SHARDS_INIT", init.as_os_str()),
+    ];
+    let moved = run_shards_env(&[], &["move", "vm", "told", "lab"], &timed, TIMEOUT);
+    assert_eq!(moved.status, Some(0), "{moved}");
+    assert_eq!(cpu(&there, "told"), told);
+    assert_eq!(shards_in(&there, &["rm", "-f", "told"]).status, Some(0));
+}
+
 /// A microVM moved to another machine, the one whose invitation `SHARDS_MOVE_INVITE` names
 /// (a file: two-hosts.sh `invite`, run there, makes one), as context `peer`; the test image
 /// pulled here alone, from this machine's own loopback registry, which the other cannot
@@ -732,6 +818,7 @@ fn a_microvm_moves_to_another_host_saved_and_live() {
         ],
     );
     assert_eq!(joined.status, Some(0), "{joined}");
+    baseline_with_peer(&here);
     let pulled = shards_in(&here, &["pull", "-q", &image]);
     assert_eq!(pulled.status, Some(0), "{pulled}");
     let id = std::process::id();
@@ -872,6 +959,7 @@ fn a_volumes_guest_owners_move_with_it() {
                 ],
             );
             assert_eq!(joined.status, Some(0), "{joined}");
+            baseline_with_peer(&here);
             let pulled = shards_in(&here, &["pull", "-q", &image]);
             assert_eq!(pulled.status, Some(0), "{pulled}");
             (here, None, image, "peer")

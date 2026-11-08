@@ -117,6 +117,8 @@ windows-sys = { workspace = true, features = [
 ] }
 
 [dev-dependencies]
+# shards-api's conformance suite, run on real guests this binary boots (tests/boot.rs).
+shards-api = { path = "../api" }
 shards-testdir = { path = "../testdir" }
 shards-testguest = { path = "../testguest" }
 # `load`'s archives of every compression (tests/containers.rs), written in-process.

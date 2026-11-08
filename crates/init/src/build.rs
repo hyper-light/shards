@@ -280,6 +280,13 @@ fn serve() -> io::Result<()> {
                     .unwrap_or_default();
                 send(&b.conn, kind::EMULATED, why.as_bytes())?;
             }
+            kind::NEEDS => {
+                let said = match crate::plug::needed() {
+                    Ok((need, killed)) => format!("{need} {killed}"),
+                    Err(e) => e.to_string(),
+                };
+                send(&b.conn, kind::NEEDED, said.as_bytes())?;
+            }
             other => return Err(err(format!("an unknown frame kind {other}"))),
         }
     }
@@ -616,9 +623,9 @@ impl Builder {
             | libc::CLONE_NEWIPC
             | net
             | libc::CLONE_NEWCGROUP;
-        // Its limits, where it has any: a cgroup of its own it starts in, whose namespace
-        // is rooted there, as a container's is.
-        let cgroup = step_cgroup(&step.cgroup, self.plugging)?;
+        // A cgroup of its own it starts in, whose namespace is rooted there, as a
+        // container's is: its limits, and its devices (D44).
+        let cgroup = step_cgroup(&step.cgroup, self.plugging, &step_devices(step)?)?;
         let mut args = crate::domains::CloneArgs {
             flags: flags as u64,
             exit_signal: libc::SIGCHLD as u64,
@@ -1654,26 +1661,69 @@ fn find_executable(file: &[u8]) -> Result<(), String> {
     }
 }
 
-/// A step's own cgroup, under the builder's `steps`, with its limits written in order
-/// (`Step::cgroup`, runc's files): open, and where it is; none for a step without limits,
-/// unless the builder's memory is `plugging` (D133), where every step has one under the
-/// build's cgroup, whose `memory.high` holds it. The controllers its files need are enabled
-/// on the way down. A swap file absent, as where the kernel has no swap, is skipped for
-/// "max" or "0", as runc skips it (D64).
-fn step_cgroup(files: &[(Vec<u8>, Vec<u8>)], plugging: bool) -> io::Result<Option<(OwnedFd, PathBuf)>> {
+/// A step's device rules (D44), as BuildKit's runc executor gives a RUN step's container
+/// ([`shards_devcgroup::build_step`]): runc's own devices, every device made, and each CDI
+/// device node's own (D96), the builder's device at its `from` of the access the spec
+/// gives; with `--security=insecure`, every device. A node no device is, a FIFO, or a
+/// path the builder lacks has no rule (its node fails the step, `cdi_node`, in its words).
+fn step_devices(step: &Step) -> io::Result<Vec<u8>> {
+    use shards_devcgroup as dc;
+    use std::os::unix::fs::FileTypeExt as _;
+    let mut given = Vec::new();
+    for d in step.devices.iter().filter(|d| d.kind != b'p' && d.access != 0) {
+        let from = if d.from.is_empty() { &d.path } else { &d.from };
+        let Ok(md) = std::fs::metadata(OsStr::from_bytes(from)) else {
+            continue;
+        };
+        let ft = md.file_type();
+        let kind = match (ft.is_char_device(), ft.is_block_device()) {
+            (true, _) => dc::Kind::Char,
+            (_, true) => dc::Kind::Block,
+            _ => continue,
+        };
+        given.push(dc::Given {
+            path: String::from_utf8_lossy(&d.path).into_owned(),
+            rule: dc::Rule {
+                kind,
+                major: i64::from(libc::major(md.rdev())),
+                minor: i64::from(libc::minor(md.rdev())),
+                perms: d.access & dc::RWM,
+                allow: true,
+            },
+        });
+    }
+    dc::compile(&dc::build_step(&given, step.insecure)).map_err(err)
+}
+
+/// A step's own cgroup, with its limits written in order (`Step::cgroup`, runc's files)
+/// and its devices confined (D44, [`step_devices`]): open, and where it is. Under the
+/// builder's `steps`, which BuildKit's default device rules confine once, made so by the
+/// first step, for a step of those rules; under `devices`, which none confine, for one of
+/// its own, which its program confines alone (a cgroup's programs and its parents' must
+/// all allow an access). Under the build's cgroup where the builder's memory is `plugging`
+/// (D133), whose `memory.high` holds it. The controllers its files need are enabled on the
+/// way down. A swap file absent, as where the kernel has no swap, is skipped for "max" or
+/// "0", as runc skips it (D64).
+fn step_cgroup(
+    files: &[(Vec<u8>, Vec<u8>)],
+    plugging: bool,
+    program: &[u8],
+) -> io::Result<Option<(OwnedFd, PathBuf)>> {
     use std::os::unix::fs::OpenOptionsExt;
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    if files.is_empty() && !plugging {
-        return Ok(None);
-    }
+    /// The parents BuildKit's default device rules confine already.
+    static CONFINED: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
+    let default = shards_devcgroup::compile(&shards_devcgroup::build_step(&[], false)).map_err(err)?;
     let root = Path::new("/sys/fs/cgroup");
-    // The builder's own cgroup2, mounted by the first step with limits.
+    // The builder's own cgroup2, mounted by its first step.
     crate::plug::mount_cgroups()?;
-    let steps = if plugging {
-        Path::new(crate::plug::BUILD).join("steps")
+    let base = if plugging {
+        PathBuf::from(crate::plug::BUILD)
     } else {
-        root.join("steps")
+        root.to_path_buf()
     };
+    let own = program != default.as_slice();
+    let steps = base.join(if own { "devices" } else { "steps" });
     let enable = |dir: &Path| std::fs::write(dir.join("cgroup.subtree_control"), "+memory +cpu +cpuset");
     enable(root).map_err(|e| err(format!("enabling the builder's cgroup controllers: {e}")))?;
     match std::fs::create_dir(&steps) {
@@ -1682,11 +1732,22 @@ fn step_cgroup(files: &[(Vec<u8>, Vec<u8>)], plugging: bool) -> io::Result<Optio
         Err(e) => return Err(err(format!("{}: {e}", steps.display()))),
     }
     enable(&steps).map_err(|e| err(format!("{}: enabling controllers: {e}", steps.display())))?;
+    if !own {
+        let mut confined = CONFINED.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !confined.contains(&steps) {
+            crate::devices::confine(&default, &steps.to_string_lossy()).map_err(Executor::wrap)?;
+            confined.push(steps.clone());
+        }
+    }
     let dir = steps.join(
         NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
             .to_string(),
     );
     std::fs::create_dir(&dir).map_err(|e| err(format!("{}: {e}", dir.display())))?;
+    if own && let Err(e) = crate::devices::confine(program, &dir.to_string_lossy()) {
+        let _ = std::fs::remove_dir(&dir);
+        return Err(Executor::wrap(e));
+    }
     for (file, value) in files {
         let name = String::from_utf8_lossy(file).into_owned();
         match std::fs::write(dir.join(&name), value) {

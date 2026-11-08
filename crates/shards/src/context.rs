@@ -2673,6 +2673,43 @@ pub(crate) fn forward(home: &Path, context: &Context, args: Vec<OsString>) -> Ex
             return ExitCode::from(status);
         }
     };
+    // A run's binds of this client's paths are of its files, served from here while the
+    // run there has them (D228); a run that goes on without its command, by a process of
+    // their own.
+    let (words, served, apart) = match crate::client_binds::here_binds(words) {
+        Ok(rewritten) => rewritten,
+        Err((run, why)) => {
+            let (said, status) = refused_cid(run, why);
+            let _ = writeln!(io::stderr(), "{said}");
+            return ExitCode::from(status);
+        }
+    };
+    // A directory of this client's plugged into a microVM there is served apart, for as long
+    // as it is plugged in (D228).
+    let (words, plugged) = match crate::client_binds::here_plug(words) {
+        Ok(rewritten) => rewritten,
+        Err(why) => return fail(why),
+    };
+    let (served, apart) = if plugged.is_empty() {
+        (served, apart)
+    } else {
+        (plugged, true)
+    };
+    let mut serving_apart = None;
+    let _relays = match (served.is_empty(), apart) {
+        (true, _) => None,
+        (false, true) => match crate::client_binds::start_apart(&context.name, &served) {
+            Ok(child) => {
+                serving_apart = Some(child);
+                None
+            }
+            Err(e) => return fail(e),
+        },
+        (false, false) => match crate::client_binds::Relays::start(home, context.remote(), &served) {
+            Ok(relays) => Some(relays),
+            Err(e) => return fail(e),
+        },
+    };
     let words_sent = words.clone();
     let bytes: Vec<Vec<u8>> = words.into_iter().map(String::into_bytes).collect();
     // Of this client's own variables, what shapes the command; and of its credentials, those
@@ -2914,6 +2951,12 @@ pub(crate) fn forward(home: &Path, context: &Context, args: Vec<OsString>) -> Ex
         made,
     );
     crate::cli::terminal::restore();
+    // A command that failed took none of what was served apart for it (D228).
+    if let Some(child) = serving_apart
+        && !matches!(ran, Ok(Ok(0)))
+    {
+        let _ = child.kill(shards_ipc::signal::SIGKILL);
+    }
     if let Some((said, status)) = unwritten {
         let _ = writeln!(io::stderr(), "{said}");
         return ExitCode::from(status);
@@ -3353,11 +3396,20 @@ pub(crate) fn admin(thing: &str, args: &[OsString]) -> ExitCode {
         Err(e) => return failed(&e),
     };
     let words: Vec<&str> = args.iter().map_while(|a| a.to_str()).collect();
-    if asks_help(&words, &["--name", "--output"]) {
+    if asks_help(&words, &["--name", "--output", "--dir", "--device"]) {
         return help_page(thing, ADMIN_USAGE);
     }
     let result = match (thing, words.as_slice()) {
         ("client", ["invite", rest @ ..]) => invite_client(&home, rest),
+        ("client", ["grant", name, rest @ ..]) => grant_client(&home, name, rest, true),
+        ("client", ["revoke", name, rest @ ..]) => grant_client(&home, name, rest, false),
+        ("client", ["inspect", names @ ..]) if !names.is_empty() => names.iter().try_for_each(|name| {
+            if !clients(&home).iter().any(|c| c.name == *name) {
+                return Err(format!("no client {name:?}"));
+            }
+            show_grants(name, &crate::client_grants::load(&home, name));
+            Ok(())
+        }),
         ("client", ["ls" | "list"]) => {
             let mut out = io::stdout().lock();
             let _ = writeln!(out, "NAME\tKEY\tENROLLED");
@@ -3379,6 +3431,8 @@ pub(crate) fn admin(thing: &str, args: &[OsString]) -> ExitCode {
                 return Err(format!("no client {name:?}"));
             }
             fs::remove_file(&path).map_err(at(&path))?;
+            // What its owner granted it goes with it (D228).
+            crate::client_grants::remove(&home, name)?;
             // The copies of its build contexts this machine kept go with it (crate::synced).
             let copies = home.join("synced").join(name);
             if copies.exists() {
@@ -3401,6 +3455,10 @@ pub(crate) fn admin(thing: &str, args: &[OsString]) -> ExitCode {
                     return Err(format!("no invitation {name:?}"));
                 }
                 redeem(&home, name)?;
+                // What it would have granted, where it enrolled no client (D228).
+                if !clients(&home).iter().any(|c| c.name == *name) {
+                    crate::client_grants::remove(&home, name)?;
+                }
                 let _ = writeln!(io::stdout(), "{name}");
                 Ok(())
             })
@@ -3413,18 +3471,81 @@ pub(crate) fn admin(thing: &str, args: &[OsString]) -> ExitCode {
     }
 }
 
-const ADMIN_USAGE: &str = "usage: shards invite client --name NAME --output FILE
+const ADMIN_USAGE: &str =
+    "usage: shards invite client --name NAME --output FILE [--dir PATH[:ro]]... [--device NAME]... [--gpus]
+       shards grant client NAME [--dir PATH[:ro]]... [--device NAME]... [--gpus]
+       shards revoke client NAME [--dir PATH]... [--device NAME]... [--gpus]
+       shards inspect client NAME...
        shards list clients
        shards remove client NAME...
        shards list invitations
        shards remove invitation NAME...
   On the machine that runs the microVMs, whose daemon listens for clients (shards run
   daemon --listen ADDR:PORT): an invitation, a private file that enrolls one client as
-  NAME and lapses an hour after it is made, and the clients enrolled.";
+  NAME and lapses an hour after it is made, and the clients enrolled.
+  A client reaches none of this machine's directories or devices but those granted it:
+  --dir a directory, and all beneath it, which a volume of it (o=bind) mounts, :ro to
+  read alone; --device a CDI device, a VFIO group's node or a host's PCI function by its
+  name; --gpus this machine's GPUs. Its own directories it binds are its own, served from
+  it.";
+
+/// `shards grant client NAME ...`, or `revoke` where not `adding` (D228): what client NAME
+/// may reach of this machine, said once it is kept.
+fn grant_client(home: &Path, name: &str, rest: &[&str], adding: bool) -> Result<(), String> {
+    if !clients(home).iter().any(|c| c.name == name) {
+        return Err(format!("no client {name:?}"));
+    }
+    let mut asked = crate::client_grants::Asked::default();
+    let mut i = 0;
+    while i < rest.len() {
+        match asked.read(rest, i)? {
+            0 => {
+                return Err(format!(
+                    "unknown flag: {}",
+                    rest.get(i).copied().unwrap_or_default()
+                ));
+            }
+            n => i += n,
+        }
+    }
+    if asked.is_empty() {
+        return Err(ADMIN_USAGE.to_string());
+    }
+    let mut grants = crate::client_grants::load(home, name);
+    if adding {
+        grants.add(&asked)?;
+    } else {
+        grants.take(&asked);
+    }
+    crate::client_grants::save(home, name, &grants)?;
+    show_grants(name, &grants);
+    Ok(())
+}
+
+/// What client `name` holds of this machine, a line a grant.
+fn show_grants(name: &str, grants: &crate::client_grants::Grants) {
+    let mut out = io::stdout().lock();
+    let _ = writeln!(out, "client {name}");
+    for d in &grants.dirs {
+        let mode = if d.read_only { "read-only" } else { "read-write" };
+        let _ = writeln!(out, "  dir {} ({mode})", d.path.display());
+    }
+    for d in &grants.devices {
+        let _ = writeln!(out, "  device {d}");
+    }
+    if grants.gpus {
+        let _ = writeln!(out, "  gpus");
+    }
+    if grants.is_empty() {
+        let _ = writeln!(out, "  none of this machine's directories or devices");
+    }
+}
 
 fn invite_client(home: &Path, rest: &[&str]) -> Result<(), String> {
     let mut name = None;
     let mut output = None;
+    // What the client it enrolls may reach of this machine (D228), none unless named.
+    let mut asked = crate::client_grants::Asked::default();
     let mut i = 0;
     while let Some(word) = rest.get(i) {
         match *word {
@@ -3436,7 +3557,10 @@ fn invite_client(home: &Path, rest: &[&str]) -> Result<(), String> {
                 output = Some(*rest.get(i + 1).ok_or("flag needs an argument: --output")?);
                 i += 2;
             }
-            other => return Err(format!("unknown flag: {other}")),
+            other => match asked.read(rest, i)? {
+                0 => return Err(format!("unknown flag: {other}")),
+                n => i += n,
+            },
         }
     }
     let (Some(name), Some(output)) = (name, output) else {
@@ -3463,6 +3587,11 @@ fn invite_client(home: &Path, rest: &[&str]) -> Result<(), String> {
     let record = format!("{INVITATION}\ncreated {}\n{}", now(), made.text());
     let path = dir(home, "invitations")?.join(name);
     let _ = fs::remove_file(&path);
+    // Kept under the name it enrolls its client as, which no client has: what an
+    // invitation of the name made before granted is gone.
+    let mut grants = crate::client_grants::Grants::default();
+    grants.add(&asked)?;
+    crate::client_grants::save(home, name, &grants)?;
     write_new(&path, record.as_bytes())?;
     made.write(Path::new(output)).map_err(|e| e.to_string())?;
     let _ = writeln!(io::stdout(), "{output}");

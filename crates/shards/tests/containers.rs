@@ -2835,12 +2835,24 @@ fn a_microvm_held_to_a_budget_gives_back_what_it_holds_cold() {
     let (kernel, init) = (kernel(), guest_init());
     // Its daemon, started by the pull, gives its share no window: the files come through
     // FUSE into the guest's page cache, which is what it holds cold.
-    let env: [(&str, &OsStr); 4] = [
+    let mut env: Vec<(&str, &OsStr)> = vec![
         ("SHARDS_HOME", home.as_os_str()),
         ("SHARDS_KERNEL", kernel.as_os_str()),
         ("SHARDS_INIT", init.as_os_str()),
         ("SHARDS_SHARE_WINDOW_MIB", "0".as_ref()),
     ];
+    // Its host short of memory throughout, as a whole suite's runner is, where a stress says
+    // so: its daemon told it every `SHARDS_STRESS_PRESSURE_MS` (PM M467).
+    let every = std::env::var("SHARDS_STRESS_PRESSURE_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .filter(|&ms| ms > 0);
+    let told = every.map(|_| Told::new(&home));
+    let pipe = told.as_ref().map(|t| t.path.clone());
+    if let Some(pipe) = &pipe {
+        env.push(("SHARDS_PRESSURE", pipe.as_os_str()));
+    }
+    let _saying = told.zip(every).map(|(told, every)| Saying::start(told, every));
     let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
     let pulled = shards(&["pull", "-q", &image]);
     assert_eq!(pulled.status, Some(0), "{pulled}");
@@ -3027,9 +3039,15 @@ fn a_microvm_held_to_a_budget_gives_back_what_it_holds_cold() {
             break word;
         }
         tries += 1;
+        // Its host's pressure having taken first, said with its budget's words since, or by
+        // the host's own word, which comes once a minute at most (PM M467): what it gave back
+        // of its files, or what it asked to unplug, which takes their pages with it.
+        let pressed = "its host's pressure having had it give back ";
         let host_took = said().get(counting..).unwrap_or_default().lines().any(|l| {
             l.contains("the host is short of memory: its microVMs gave back ")
                 && mib_after(l, "gave back ") > 0
+                || l.contains(pressed)
+                    && (mib_after(l, pressed) > 0 || mib_after(l, "and ask to unplug ") > 0)
         });
         assert!(
             tries < 5 && (word.contains("held within its budget") || host_took),
@@ -3085,6 +3103,9 @@ fn a_microvm_held_to_a_budget_gives_back_what_it_holds_cold() {
     // 41255435995's x86_64 Linux said 213 MiB, with no answer.
     if !gave.contains("with no answer") {
         let _said = mib_after(&gave, "asking to unplug ");
+    }
+    for line in said().lines().filter(|l| l.contains(": answered after ")) {
+        println!("{line}");
     }
     assert_eq!(shards(&["kill", "budget"]).status, Some(0));
 }
@@ -3762,6 +3783,30 @@ impl Told {
             .unwrap();
         #[cfg(windows)]
         self.server.write_all(b"\n").unwrap();
+    }
+}
+
+/// A host's word that it is short of memory, said on a thread of its own every `every` ms
+/// until this drops.
+struct Saying(&'static std::sync::atomic::AtomicBool);
+
+impl Saying {
+    fn start(mut told: Told, every: u64) -> Saying {
+        let stop: &'static std::sync::atomic::AtomicBool =
+            Box::leak(Box::new(std::sync::atomic::AtomicBool::new(false)));
+        std::thread::spawn(move || {
+            while !stop.load(std::sync::atomic::Ordering::SeqCst) {
+                told.say();
+                std::thread::sleep(Duration::from_millis(every));
+            }
+        });
+        Saying(stop)
+    }
+}
+
+impl Drop for Saying {
+    fn drop(&mut self) {
+        self.0.store(true, std::sync::atomic::Ordering::SeqCst);
     }
 }
 
@@ -5888,7 +5933,8 @@ fn a_stopped_microvms_layer_stays_in_its_file() {
 }
 
 /// A stopped microVM's next run goes on over the file its layer was kept in (D190), where
-/// the layer holds past what packing it costs less below (`layers::OVER_FROM`, 5 MiB): the
+/// the home's restarts say going over is the quicker for what it holds (a home whose
+/// records cross at 4 MiB, `common::restarts_cross_at`): the
 /// file goes under its microVM's layer device as it is, its root the image over it, and
 /// stays the microVM's, the same file, with what each run wrote; the microVM's own layer
 /// goes. One that holds little is packed and put back, in another file. What a run's guest
@@ -5899,6 +5945,7 @@ fn a_stopped_microvms_next_run_goes_on_over_its_kept_file() {
     let Some((home, image)) = home("containers-over") else {
         return;
     };
+    common::restarts_cross_at(&home, 4 << 20, TIMEOUT);
     let shards = |args: &[&str]| shards_in(&home, args);
     let big = 32u64 << 20;
     // Each run writes a file, 8 MiB it keeps and 32 MiB it removes, and makes a directory: a
@@ -12739,6 +12786,108 @@ fn update_moves_a_microvms_memory_both_ways() {
     let _ = exit(&mut held, &home);
 }
 
+/// The stress of [`update_moves_a_microvms_memory_both_ways`]'s raise beside its host's
+/// pressure: one run of `-m 256m`, `SHARDS_STRESS_N` rounds (default 40) of it raised to
+/// `1g`, allocating 512 MiB while its daemon is told its host is short of memory every
+/// `SHARDS_STRESS_PRESSURE_MS` (default 50; 0, never), as a whole suite's host says it, so
+/// that its microVM gives back what it holds cold as it grows (D188), then lowered to
+/// `256m` again, where the same allocation is killed. One line a round, then the raised
+/// allocations' n, p50, p90, p99 and max, and the rounds where one was not held.
+#[test]
+#[ignore = "a stress: SHARDS_STRESS_N=… cargo test --test containers -- --ignored update_under_pressure --nocapture"]
+fn update_under_pressure_stress() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    if cannot_run_vms() {
+        return;
+    }
+    let setting = |name: &str, default: u64| -> u64 {
+        std::env::var(name)
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(default)
+    };
+    let (rounds, every) = (
+        setting("SHARDS_STRESS_N", 40),
+        setting("SHARDS_STRESS_PRESSURE_MS", 50),
+    );
+    let (image, _) = served();
+    let home = TempDir::new("containers-update-pressure");
+    let mut told = Told::new(&home);
+    let pipe = told.path.clone();
+    let (kernel, init) = (kernel(), guest_init());
+    let env: [(&str, &OsStr); 4] = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel.as_os_str()),
+        ("SHARDS_INIT", init.as_os_str()),
+        ("SHARDS_PRESSURE", pipe.as_os_str()),
+    ];
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let pulled = shards(&["pull", "-q", &image]);
+    assert_eq!(pulled.status, Some(0), "{pulled}");
+    let mut held = start(
+        &home,
+        &image,
+        &["--name", "grows", "-m", "256m", "--memory-swap", "256m"],
+        &["sleep"],
+    );
+    let alloc = || shards(&["exec", "grows", "/bin/testguest", "alloc", "512"]);
+    let (mut took, mut killed) = (Vec::new(), Vec::new());
+    for round in 0..rounds {
+        let first = alloc();
+        assert_eq!(first.status, Some(137), "round {round}: {first}");
+        let raised = shards(&["update", "-m", "1g", "--memory-swap", "1g", "grows"]);
+        assert_eq!(raised.status, Some(0), "{raised}");
+        let done = AtomicBool::new(false);
+        let (held_more, words) = std::thread::scope(|s| {
+            let saying = s.spawn(|| {
+                let mut words = 0u32;
+                while every > 0 && !done.load(Ordering::SeqCst) {
+                    told.say();
+                    words += 1;
+                    std::thread::sleep(Duration::from_millis(every));
+                }
+                words
+            });
+            let held_more = alloc();
+            done.store(true, Ordering::SeqCst);
+            (held_more, saying.join().unwrap())
+        });
+        let ok = (held_more.status, held_more.stdout.as_str()) == (Some(0), "allocated 512\n");
+        println!(
+            "round {round}: {:?} in {:.0} ms, {words} words{}",
+            held_more.status,
+            held_more.elapsed.as_secs_f64() * 1e3,
+            if ok {
+                String::new()
+            } else {
+                // What its guest's kernel said of the kill: the daemon's last such word.
+                let said = oom_said(&home);
+                format!("\n{held_more}{}", said.lines().last().unwrap_or_default())
+            }
+        );
+        took.push(held_more.elapsed.as_secs_f64() * 1e3);
+        if !ok {
+            killed.push(round);
+        }
+        let lowered = shards(&["update", "-m", "256m", "--memory-swap", "256m", "grows"]);
+        assert_eq!(lowered.status, Some(0), "{lowered}");
+    }
+    took.sort_by(f64::total_cmp);
+    let at = |q: f64| took[((took.len() as f64 - 1.0) * q).round() as usize];
+    println!(
+        "allocations: n {}, p50 {:.0}, p90 {:.0}, p99 {:.0}, max {:.0} ms; not held {} {killed:?}",
+        took.len(),
+        at(0.5),
+        at(0.9),
+        at(0.99),
+        at(1.0),
+        killed.len()
+    );
+    assert_eq!(shards(&["stop", "-t", "1", "grows"]).status, Some(0));
+    let _ = exit(&mut held, &home);
+    assert!(killed.is_empty(), "{killed:?}");
+}
+
 /// `update`, as `docker update` takes it: a running microVM's limits written to its
 /// workload's cgroup as it runs, and kept; dockerd's refusals; the restart policy.
 #[test]
@@ -14230,7 +14379,8 @@ fn microvms_on_an_ipv6_network_reach_one_another() {
 }
 
 /// A network's options are what its microVMs do: one made with `enable_icc` false keeps its
-/// members from one another, their names still answered (D46); its ports published with no
+/// members from one another, and so each one's name from the others (default deny), each
+/// answered its own (D46); its ports published with no
 /// address are bound at its `host_binding_ipv4` alone, and reached there; an MTU is kept as
 /// given, its members keeping their devices'; a routed one publishes no port; and each
 /// option is read with its meaning (D46). The default network says what it does.
@@ -14320,14 +14470,22 @@ fn a_networks_options_are_what_its_microvms_do() {
         &["--name", "lone", "--network", "apart", "-p", "7000"],
         &["serve", "7000", "1"],
     );
-    // Its name answers, and nothing reaches it.
+    // Nothing reaches it, and so its name answers no other member (default deny, D46):
+    // refused at once, as a name past the network is; a member's own name answers it.
     let r = run_in(
         &home,
         &image,
         &["--rm", "--network", "apart"],
-        &["resolve", "lone"],
+        &["dnsttl", "lone"],
     );
-    assert!(r.stdout.starts_with("resolve 10.78.0."), "{r}");
+    assert_eq!(r.stdout, "dnsttl rcode 5\n", "{r}");
+    let r = run_in(
+        &home,
+        &image,
+        &["--rm", "--network", "apart", "--name", "other"],
+        &["dnsttl", "other"],
+    );
+    assert!(r.stdout.starts_with("dnsttl 0 10.78.0."), "{r}");
     let r = run_in(
         &home,
         &image,
@@ -15133,6 +15291,249 @@ fn stops_beside_a_gigabyte_build() {
             eprintln!("M419 {label}: {l}");
         }
     }
+}
+
+/// Host load for a measurement: `n` threads spinning until `done`.
+fn spinning<'s>(s: &'s std::thread::Scope<'s, '_>, n: usize, done: &'s std::sync::atomic::AtomicBool) {
+    for _ in 0..n {
+        s.spawn(move || {
+            let mut x = 0u64;
+            while !done.load(std::sync::atomic::Ordering::Relaxed) {
+                x = std::hint::black_box(x.wrapping_add(1));
+            }
+        });
+    }
+}
+
+/// `sorted`'s n, p50, p90, p99 and max (nearest rank), in ms.
+fn spread(sorted: &[f64]) -> String {
+    if sorted.is_empty() {
+        return "n 0".into();
+    }
+    let at = |q: f64| {
+        let rank = ((q * sorted.len() as f64).ceil() as usize).clamp(1, sorted.len());
+        sorted[rank - 1]
+    };
+    format!(
+        "n {} p50 {:.1} p90 {:.1} p99 {:.1} max {:.1} ms",
+        sorted.len(),
+        at(0.5),
+        at(0.9),
+        at(0.99),
+        at(1.0)
+    )
+}
+
+/// D217: a SIGKILLed command's end, once heard, is this host's: kept in the home's `ends`,
+/// the record each later kill's slice is read from, and its microVM was not killed under
+/// it, its teardown run to its end.
+#[test]
+fn a_kills_end_is_kept_as_this_hosts_in_its_home() {
+    let Some((home, image)) = home("containers-ends") else {
+        return;
+    };
+    let mut run = start(&home, &image, &["--name", "e1"], &["held", "256", "4", "2"]);
+    let killed = shards_in(&home, &["kill", "e1"]);
+    assert_eq!(killed.status, Some(0), "{killed}");
+    let _ = exit(&mut run, &home);
+    let record = std::fs::read_to_string(home.join("ends")).unwrap();
+    let ms: u64 = record
+        .lines()
+        .find_map(|l| l.strip_prefix("teardown "))
+        .and_then(|ms| ms.parse().ok())
+        .unwrap_or_else(|| panic!("no teardown kept: {record:?}"));
+    assert!(ms > 0, "{record:?}");
+    let log = std::fs::read_to_string(home.join("daemon.log")).unwrap();
+    assert!(!log.contains("its microVM killed"), "{log}");
+}
+
+/// PM M480, M481: what a SIGKILL's end costs a microVM by what its command holds, and what
+/// a VM process's end costs once it is killed. For each size of `KILLS_MIB` (MiB, default
+/// 64,1024,4096,16384) and each shape (one process of one thread; one of 64 threads; 16
+/// processes of 4 threads, a tree under the command, which is its PID namespace's first),
+/// `KILLS_ROUNDS` runs (5) hold that much, every page touched (`held`), and are killed by
+/// `shards kill`, which waits for the end its guest says: each kill's time, its VM
+/// process's CPU over it where it can still be read, and what the daemon's log says of the
+/// kills (D217: teardowns followed past a slice, microVMs killed under them). Then runs of
+/// each size whose VM processes are killed outright: each's end after its kill. All of it
+/// with nothing beside it (unless `KILLS_QUIET=0`), then beside `KILLS_LOAD` threads
+/// spinning on the host (twice its CPUs); `KILLS_SHAPES` picks shapes (`one,threads,tree`).
+/// Each as n, p50, p90, p99 and max (nearest rank).
+#[test]
+#[ignore = "a measurement: docs/research/measurements/kill-waits/run.sh"]
+fn kills_cost_by_what_the_command_holds() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let Some((home, image)) = home("containers-m480") else {
+        return;
+    };
+    let env = |name: &str| std::env::var(name).ok();
+    let sizes: Vec<usize> = env("KILLS_MIB")
+        .unwrap_or_else(|| "64,1024,4096,16384".into())
+        .split(',')
+        .filter_map(|s| s.trim().parse().ok())
+        .collect();
+    let rounds: usize = env("KILLS_ROUNDS").and_then(|v| v.parse().ok()).unwrap_or(5);
+    let cpus = std::thread::available_parallelism().map_or(1, usize::from);
+    let load: usize = env("KILLS_LOAD").and_then(|v| v.parse().ok()).unwrap_or(2 * cpus);
+    let picked = env("KILLS_SHAPES").unwrap_or_else(|| "one,threads,tree".into());
+    let shapes: Vec<_> = [("one", 1, 1), ("threads", 64, 1), ("tree", 4, 16)]
+        .into_iter()
+        .filter(|(shape, _, _)| picked.split(',').any(|p| p == *shape))
+        .collect();
+    let timeout = Duration::from_secs(600);
+    // What the daemon's log says of kills so far: teardowns followed past a slice, and
+    // microVMs killed under them (D217).
+    let said = || {
+        let log = std::fs::read_to_string(home.join("daemon.log")).unwrap_or_default();
+        (
+            log.matches("after SIGKILL, its microVM going on with its end")
+                .count(),
+            log.matches("its microVM killed").count(),
+        )
+    };
+    let n = std::sync::atomic::AtomicUsize::new(0);
+    // A run of `held` started: its name, its client, its VM process and the most of its
+    // resident memory and footprint (shards_vmm::platform::process_usage), in GiB.
+    let held = |mib: usize, threads: usize, procs: usize| {
+        let name = format!("m480-{}", n.fetch_add(1, Ordering::Relaxed));
+        let (mib, threads, procs) = (mib.to_string(), threads.to_string(), procs.to_string());
+        let run = start(
+            &home,
+            &image,
+            &["--name", &name],
+            &["held", &mib, &threads, &procs],
+        );
+        let vm = shards_in(&home, &["inspect", "-f", "{{.State.Pid}}", &name]);
+        let vm: u32 = vm.stdout.trim().parse().unwrap();
+        let usage = shards_vmm::platform::process_usage(vm).unwrap();
+        let gib = usage.resident.max(usage.footprint) as f64 / f64::from(1u32 << 30);
+        (name, run, vm, gib)
+    };
+    let measure = |label: &str| {
+        for &mib in &sizes {
+            for &(shape, threads, procs) in &shapes {
+                let (mut took, mut per_gib, mut most) = (Vec::new(), Vec::new(), 0f64);
+                let (mut ran, before) = (Vec::new(), said());
+                for _ in 0..rounds {
+                    let (name, mut run, vm, gib) = held(mib, threads, procs);
+                    let cpu = || shards_vmm::platform::process_usage(vm).ok().map(|u| u.cpu_ns);
+                    let (cpu0, t0) = (cpu(), Instant::now());
+                    let killed = shards_in_within(&home, &["kill", &name], timeout);
+                    let ms = t0.elapsed().as_secs_f64() * 1e3;
+                    // Its VM process's CPU over the teardown, where it is still there to read.
+                    if let (Some(a), Some(b)) = (cpu0, cpu()) {
+                        ran.push(b.saturating_sub(a) as f64 / 1e6 / ms.max(f64::MIN_POSITIVE));
+                    }
+                    assert_eq!(killed.status, Some(0), "{killed}");
+                    took.push(ms);
+                    per_gib.push(ms / gib.max(f64::MIN_POSITIVE));
+                    most = most.max(gib);
+                    let _ = exit(&mut run, &home);
+                    let _ = shards_in(&home, &["rm", "-f", &name]);
+                }
+                took.sort_by(f64::total_cmp);
+                per_gib.sort_by(f64::total_cmp);
+                ran.sort_by(f64::total_cmp);
+                let after = said();
+                eprintln!(
+                    "M480 {label} {mib} MiB {shape}, its VM process holding {most:.2} GiB at most: {}; per GiB it held: {}; its VM process's CPUs busy over it (CPU ms per ms): {}; followed past a slice {} times, microVMs killed under it {}",
+                    spread(&took),
+                    spread(&per_gib),
+                    spread(&ran).replace(" ms", ""),
+                    after.0 - before.0,
+                    after.1 - before.1
+                );
+            }
+            let (mut ended, mut most) = (Vec::new(), 0f64);
+            for _ in 0..rounds {
+                let (name, mut run, vm, gib) = held(mib, 1, 1);
+                let vm = i32::try_from(vm).unwrap();
+                most = most.max(gib);
+                let t0 = Instant::now();
+                common::kill_now(vm);
+                while common::alive(vm) && t0.elapsed() < timeout {
+                    std::thread::sleep(Duration::from_micros(200));
+                }
+                ended.push(t0.elapsed().as_secs_f64() * 1e3);
+                let _ = exit(&mut run, &home);
+                let _ = shards_in(&home, &["rm", "-f", &name]);
+            }
+            ended.sort_by(f64::total_cmp);
+            eprintln!(
+                "M481 {label} {mib} MiB, its VM process holding {most:.2} GiB at most, killed: {}",
+                spread(&ended)
+            );
+        }
+    };
+    if env("KILLS_QUIET").as_deref() != Some("0") {
+        measure("quiet");
+    }
+    let done = AtomicBool::new(false);
+    std::thread::scope(|s| {
+        spinning(s, load, &done);
+        measure(&format!("beside {load} spinning threads"));
+        done.store(true, Ordering::Relaxed);
+    });
+}
+
+/// PM M482: how long a joiner's freeze (D119: its cgroup in its provider's guest, `shards
+/// pause`) takes by what it does: `busy spin 64` (64 threads spinning), `busy procs 64` (64
+/// processes spinning), `busy write 8` (8 threads each writing a MiB to a file and syncing
+/// it, over and over: to the joiner's `/tmp`, and to a volume, `/v`, whose writes wait on
+/// its host's share server), `FREEZES_ROUNDS` pauses each (20), each unpaused before the
+/// next; with nothing beside
+/// it, then beside `KILLS_LOAD` threads spinning on the host. Each as n, p50, p90, p99 and
+/// max (nearest rank).
+#[test]
+#[ignore = "a measurement: docs/research/measurements/kill-waits/run.sh"]
+fn freezes_cost_by_what_a_joiner_does() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let Some((home, image)) = home("containers-m482") else {
+        return;
+    };
+    let env = |name: &str| std::env::var(name).ok();
+    let rounds: usize = env("FREEZES_ROUNDS").and_then(|v| v.parse().ok()).unwrap_or(20);
+    let cpus = std::thread::available_parallelism().map_or(1, usize::from);
+    let load: usize = env("KILLS_LOAD").and_then(|v| v.parse().ok()).unwrap_or(2 * cpus);
+    let mut provider = start(&home, &image, &["--name", "m482p"], &["sleep"]);
+    let measure = |label: &str| {
+        for (kind, count, dir) in [
+            ("spin", "64", ""),
+            ("procs", "64", ""),
+            ("write", "8", "/tmp"),
+            ("write", "8", "/v"),
+        ] {
+            let name = format!("m482-{kind}{}", dir.replace('/', "-"));
+            let mut joiner = start(
+                &home,
+                &image,
+                &["--name", &name, "--network", "container:m482p", "-v", "m482v:/v"],
+                &["busy", kind, count, dir],
+            );
+            let mut took = Vec::new();
+            for _ in 0..rounds {
+                let t0 = Instant::now();
+                let paused = shards_in(&home, &["pause", &name]);
+                took.push(t0.elapsed().as_secs_f64() * 1e3);
+                assert_eq!(paused.status, Some(0), "{paused}");
+                let unpaused = shards_in(&home, &["unpause", &name]);
+                assert_eq!(unpaused.status, Some(0), "{unpaused}");
+            }
+            took.sort_by(f64::total_cmp);
+            eprintln!("M482 {label} busy {kind} {count} {dir}: {}", spread(&took));
+            let _ = shards_in(&home, &["rm", "-f", &name]);
+            let _ = exit(&mut joiner, &home);
+        }
+    };
+    measure("quiet");
+    let done = AtomicBool::new(false);
+    std::thread::scope(|s| {
+        spinning(s, load, &done);
+        measure(&format!("beside {load} spinning threads"));
+        done.store(true, Ordering::Relaxed);
+    });
+    let _ = shards_in(&home, &["rm", "-f", "m482p"]);
+    let _ = exit(&mut provider, &home);
 }
 
 /// What a run's workload frees goes back to the host (D151): half a gigabyte touched, then
@@ -16612,6 +17013,18 @@ fn accept_within(listener: &std::net::TcpListener) -> Option<std::net::TcpStream
     }
 }
 
+/// A 40,000-byte line's parts as syslog messages carry them: each as long as a message
+/// within 8,192 octets leaves of a line, the last the rest (D163).
+fn syslog_parts(parts: &[usize]) {
+    assert_eq!(parts.iter().sum::<usize>(), 40000, "{parts:?}");
+    let (last, whole) = parts.split_last().unwrap();
+    assert!(
+        whole.iter().all(|&p| p == whole[0]) && *last <= whole[0],
+        "{parts:?}"
+    );
+    assert!((8000..8192).contains(&whole[0]), "{parts:?}");
+}
+
 /// What a syslog server reads on `listener`'s first connection: its lines until `lines`
 /// have come, or all it gets until the connection ends; none where none comes.
 fn syslog_lines(listener: std::net::TcpListener, lines: usize) -> std::thread::JoinHandle<Vec<String>> {
@@ -16650,7 +17063,8 @@ fn free_port() -> u16 {
 /// - its tag as asked, else the microVM's short ID;
 /// - stamped with when its output came (Docker stamps when it sends);
 /// - naming this host (Docker names its socket's address and port);
-/// - a line longer than 16 KiB in parts.
+/// - a line longer than a message within 8,192 octets carries in parts (RFC 5425's
+///   least a receiver takes; Docker cuts at 16 KiB whatever its receiver takes).
 ///
 /// One sent to a server that comes up only after its run gets there, and so does one
 /// whose daemon restarted meanwhile: Docker's would not start without its server, and
@@ -16840,7 +17254,7 @@ fn a_runs_log_is_sent_to_syslog_as_its_options_say() {
         .collect();
     assert_eq!(said, [("27".into(), "err".into()), ("30".into(), "out".into())]);
 
-    // A unix datagram socket; a line of 40,000 bytes in parts of 16 KiB. Windows has none,
+    // A unix datagram socket; a line of 40,000 bytes in parts. Windows has none,
     // and refuses one's address as a run is made: its parts go on a unix stream there.
     let sockets = TempDir::new("sl");
     #[cfg(windows)]
@@ -16863,13 +17277,16 @@ fn a_runs_log_is_sent_to_syslog_as_its_options_say() {
             let (conn, ()) = unix.accept().unwrap();
             conn.set_read_timeout(Some(TIMEOUT)).unwrap();
             let mut read = BufReader::new(conn);
-            (0..3)
-                .map(|_| {
-                    let mut line = String::new();
-                    read.read_line(&mut line).unwrap();
-                    line
-                })
-                .collect::<Vec<String>>()
+            let (mut lines, mut carried) = (Vec::new(), 0);
+            while carried < 40000 {
+                let mut line = String::new();
+                read.read_line(&mut line).unwrap();
+                carried += line
+                    .split_once("]: ")
+                    .map_or(0, |(_, b)| b.trim_end_matches('\n').len());
+                lines.push(line);
+            }
+            lines
         });
         syslog(
             "gram",
@@ -16883,10 +17300,12 @@ fn a_runs_log_is_sent_to_syslog_as_its_options_say() {
             .map(|m| {
                 let body = m.split_once("]: ").unwrap().1.trim_end_matches('\n');
                 assert!(body.bytes().all(|b| b == b'x'), "{m:?}");
+                // Within what syslog's receivers take, its newline counted (RFC 5425).
+                assert!(m.len() <= 8192, "{}", m.len());
                 body.len()
             })
             .collect();
-        assert_eq!(parts, [16384, 16384, 7232]);
+        syslog_parts(&parts);
     }
     #[cfg(unix)]
     let gram = sockets.join("g");
@@ -16914,15 +17333,17 @@ fn a_runs_log_is_sent_to_syslog_as_its_options_say() {
             &["wide", "40000"],
         );
         let mut parts = Vec::new();
-        for _ in 0..3 {
+        while parts.iter().sum::<usize>() < 40000 {
             let mut b = vec![0u8; 1 << 16];
             let n = unixgram.recv(&mut b).unwrap();
+            // Within what syslog's receivers take, its newline counted (RFC 5425).
+            assert!(n <= 8192, "{n}");
             let m = String::from_utf8(b[..n].to_vec()).unwrap();
             let body = m.split_once("]: ").unwrap().1.trim_end_matches('\n');
             assert!(body.bytes().all(|b| b == b'x'), "{m:?}");
             parts.push(body.len());
         }
-        assert_eq!(parts, [16384, 16384, 7232]);
+        syslog_parts(&parts);
     }
 
     // A server that comes up only after the run: its log waits in the store, and goes.
@@ -17156,18 +17577,18 @@ fn a_runs_log_is_sent_to_gelf_as_its_options_say() {
         assert_eq!(sent_ms, kept_ms, "{m}: {stamped}");
     }
 
-    // Uncompressed: a line of 40,000 bytes, in parts of 16 KiB, each its own message in
-    // chunks.
+    // Uncompressed: a line of 40,000 bytes, one message in chunks, as a GELF input takes
+    // 128 of them (moby's goes in 16 KiB parts).
     gelf(
         "wide",
         &[&address, "gelf-compression-type=none"],
         &["wide", "40000"],
     );
-    let parts: Vec<usize> = receive(3)
+    let parts: Vec<usize> = receive(1)
         .iter()
         .map(|m| m["short_message"].as_str().unwrap().len())
         .collect();
-    assert_eq!(parts, [16384, 16384, 7232]);
+    assert_eq!(parts, [40000]);
 
     // TCP: each message followed by a NUL.
     let tcp = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -17306,8 +17727,8 @@ fn fluentd_events(
 /// (D163): each line an event of Fluentd's forward protocol as Docker's fluentd driver
 /// sends it: its tag, its time (whole seconds, or to the nanosecond), its record (the
 /// microVM's ID and name, the stream, the line, the attributes asked for, and a part's
-/// place in a line longer than 16 KiB), and an ack asked for where told. Over TCP and a
-/// unix socket.
+/// place in a line longer than a forward input takes), and an ack asked for where told.
+/// Over TCP and a unix socket.
 #[test]
 fn a_runs_log_is_sent_to_fluentd_as_its_options_say() {
     let Some((home, image)) = home("containers-fluentd") else {
@@ -17379,7 +17800,8 @@ fn a_runs_log_is_sent_to_fluentd_as_its_options_say() {
         assert_eq!(*at, stamped("nanos", line), "its time its output's");
     }
 
-    // A unix socket, whole seconds, a line of 40,000 bytes in parts.
+    // A unix socket, whole seconds, a line longer than a forward input takes (Fluent Bit's
+    // 6,144,000 bytes) in parts, the first as long as one takes.
     let sockets = TempDir::new("fd");
     let path = sockets.join("f");
     #[cfg(unix)]
@@ -17393,21 +17815,27 @@ fn a_runs_log_is_sent_to_fluentd_as_its_options_say() {
     let reading = std::thread::spawn(move || {
         let (mut conn, _) = unix.accept().unwrap();
         conn.set_read_timeout(Some(TIMEOUT)).unwrap();
-        fluentd_events(&mut conn, 3)
+        fluentd_events(&mut conn, 2)
     });
     fluentd(
         "parts",
         &[&format!("fluentd-address=unix:///{}", path.display())],
-        &["wide", "40000"],
+        &["wide", "6200000"],
     );
     let events = reading.join().unwrap();
     let id = events[0].2["partial_id"].clone();
+    let lens: Vec<usize> = events
+        .iter()
+        .map(|e| e.2["log"].as_str().unwrap().len())
+        .collect();
+    assert_eq!(lens.iter().sum::<usize>(), 6_200_000, "{lens:?}");
+    // Its event within the input's bound, the rest of the event a few hundred bytes.
+    assert!((6_143_000..6_144_000).contains(&lens[0]), "{lens:?}");
     for (i, (_, at, record, _)) in events.iter().enumerate() {
-        assert_eq!(record["log"].as_str().unwrap().len(), [16384, 16384, 7232][i]);
         assert_eq!(record["partial_message"], "true");
         assert_eq!(record["partial_id"], id);
         assert_eq!(record["partial_ordinal"], (i + 1).to_string());
-        assert_eq!(record["partial_last"], if i == 2 { "true" } else { "false" });
+        assert_eq!(record["partial_last"], if i == 1 { "true" } else { "false" });
         assert_eq!(*at % 1_000_000_000, 0, "whole seconds");
     }
 
@@ -17609,14 +18037,13 @@ fn a_runs_log_is_sent_to_journald_as_its_options_say() {
         ordinals.sort();
         assert_eq!(ordinals, ["1", "2"]);
 
-        // A line of 40,000 bytes in parts of 16 KiB, the size receivers that join parts
-        // expect.
-        journald("parts", &[], &["wide", "40000"]);
+        // A line of 100,000 bytes in parts of the journal's own LineMax, 48 KiB.
+        journald("parts", &[], &["wide", "100000"]);
         let parts: Vec<_> = (0..3).map(|_| journal_entry(&journal).0).collect();
         let partial = field(&parts[0], "CONTAINER_PARTIAL_ID");
         assert_eq!(partial[0].len(), 64);
         for (i, fields) in parts.iter().enumerate() {
-            assert_eq!(field(fields, "MESSAGE")[0].len(), [16384, 16384, 7232][i]);
+            assert_eq!(field(fields, "MESSAGE")[0].len(), [49152, 49152, 1696][i]);
             assert_eq!(field(fields, "CONTAINER_PARTIAL_ID"), partial);
             assert_eq!(field(fields, "CONTAINER_PARTIAL_ORDINAL"), [(i + 1).to_string()]);
             let last = i == 2;

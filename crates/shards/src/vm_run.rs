@@ -18,9 +18,11 @@ use shards_vmm::vm::{
 use crate::spec::Options;
 use crate::terminal::RawTerminal;
 
-const RUN_USAGE: &str = "usage: shards run vm --kernel PATH [--initrd PATH | --init PATH] [--cmdline STR] [--cpus N] [--memory MIB] [--memory-max MIB] [--disk PATH[:ro]]... [--pmem PATH]... [--layer PATH] [--vsock PATH] [--nested] [--gpu] [--reporting] [--pci-test | --pci-tests SS.F,...] [--pci-slots N [--pci-slots-iommu]] [--vfio NAME|NODE]... [--vfio-iommu NAME|NODE]... [--no-console] [--snapshot-dir DIR [--snapshot-then stop|resume]]
+const RUN_USAGE: &str = "usage: shards run vm --kernel PATH [--initrd PATH | --init PATH] [--cmdline STR] [--cpus N] [--memory MIB] [--memory-max MIB] [--disk PATH[:ro]]... [--share DIR[:ro]]... [--pmem PATH]... [--layer PATH] [--vsock PATH] [--nested] [--gpu] [--reporting] [--pci-test | --pci-tests SS.F,...] [--pci-slots N [--pci-slots-iommu]] [--vfio NAME|NODE]... [--vfio-iommu NAME|NODE]... [--no-console] [--snapshot-dir DIR [--snapshot-then stop|resume]]
        shards run vm --kernel PATH --init SHARDS-INIT --rootfs IMAGE [OPTIONS] [WORKLOAD OPTIONS] -- COMMAND [ARG...]
        shards run vm --kernel PATH --init SHARDS-INIT --rootfs IMAGE --snapshot-dir DIR [OPTIONS]
+  --share: the host directory DIR, as virtio-fs tag shards0, shards1, ... in order;
+           read-only with :ro. Served by a share process shards starts first.
   --pmem: a read-only virtio-pmem device backed by PATH: /dev/pmem0, pmem1, ... in order.
   --layer: a writable layer (D190): the ext4 file system in PATH, whole 2 MiB, on a
            virtio-pmem device after the --pmem ones, which the guest mounts with DAX and
@@ -447,6 +449,11 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
                     .map_err(|e| format!("--pci-slots: {e}"))?
             }
             "--pci-slots-iommu" => cfg.pci_slots_iommu = true,
+            // The CPU baseline its guest is told (D176 part 6), ID registers as its home keeps
+            // them.
+            "--cpu-baseline" => {
+                cfg.cpu_baseline = shards_vmm::arch::aarch64::cpu::decode(&text(value("--cpu-baseline")?)?)?
+            }
             "--vfio" => cfg.vfio.push(vfio(&text(value("--vfio")?)?)?),
             "--vfio-iommu" => cfg.vfio.push(vm::Vfio {
                 iommu: true,
@@ -696,6 +703,28 @@ pub fn save(save: vm::Save) -> Result<vm::Saved, String> {
     RUNNING.get().ok_or("the microVM has not started")?.save(save)
 }
 
+/// `shards-vm cpu`: this host's CPU as its hypervisor shows a guest, its ID registers on
+/// stdout as a CPU baseline is written ([`shards_vmm::arch::aarch64::cpu::encode`]), for its
+/// daemon (D176 part 6). The VM process's alone (crates/vm-process): shards carries this file
+/// for `run --kernel` and `restore`.
+#[allow(dead_code)]
+pub fn cpu() -> ExitCode {
+    match vm::host_cpu_id() {
+        Ok(id) => {
+            let _ = writeln!(
+                std::io::stdout(),
+                "{}",
+                shards_vmm::arch::aarch64::cpu::encode(&id)
+            );
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            let _ = writeln!(std::io::stderr(), "shards-vm: this host's CPU: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
 /// Copies this VM's memory for a live move into `out` (D176 part 7, `PRECOPY`), how it
 /// goes `told` as it goes.
 pub fn precopy(
@@ -865,15 +894,28 @@ fn serve_attach(fd: &str) -> Result<(), String> {
     let answer = |m: shards_ipc::Message| -> Result<(u8, Vec<u8>), String> {
         match m.kind {
             kind::DISK_ATTACH => {
+                // Its file, and where the builder gives one, the connection to the process
+                // that reads and writes it for the guest (block::Through, D188).
                 let mut fds = m.fds.into_iter();
-                let (Some(fd), None) = (fds.next(), fds.next()) else {
+                let (Some(fd), through, None) = (fds.next(), fds.next(), fds.next()) else {
                     return Err("an attach without its one file".into());
                 };
                 let file = std::fs::File::from(fd);
-                let (start, len) = match m.payload.as_slice() {
-                    [0] => JOIN.attach(file),
-                    [1] => JOIN.attach_writable(file),
-                    _ => Err("an attach neither read-only nor writable".into()),
+                let writable = match m.payload.as_slice() {
+                    [0] => false,
+                    [1] => true,
+                    _ => return Err("an attach neither read-only nor writable".into()),
+                };
+                let (start, len) = match through {
+                    Some(conn) => JOIN.attach_through(
+                        file,
+                        writable,
+                        shards_vmm::devices::virtio::block::Through::new(
+                            std::os::unix::net::UnixStream::from(conn),
+                        ),
+                    ),
+                    None if writable => JOIN.attach_writable(file),
+                    None => JOIN.attach(file),
                 }?;
                 Ok((
                     kind::DISK_ATTACH,

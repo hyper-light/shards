@@ -5200,7 +5200,7 @@ revision before comparing a changed API/implementation.
   Every case answers as OPA answers (results, or the first error of the same list) but
   for the two marked. 99990 deep with x unused, OPA's memory passed 48 GiB in 64 s,
   when it was stopped (one run outside the harness, watched for its memory).
-- **Open.** Shapes both still take time growing with the square or faster, from a
+- **Open.** (Comprehensions nested, print calls and closures closed since by M510.) Shapes both still take time growing with the square or faster, from a
   policy of a few kilobytes; shards' whole check, one run each (the same harness), and
   OPA's (`run`, one run each):
 
@@ -18340,10 +18340,136 @@ revision before comparing a changed API/implementation.
 - **Consequence.** The plan's step 4 is met: D133 and D188 say what a builder gives back,
   as runs do, and at what cost (this entry). The harness sizes a held budget from held
   arms (c3ce85e's free arms' budget pressed nothing). A build's start no longer waits on a
-  running builder's exit (`Child::try_wait`). Left as measured: a budget short of a
-  build's peak takes back its own files' page cache first (mm/vmscan.c), which an apt
-  build's merge of its caches reads again, 0.5 to 1.2 s at p50 on the runners where it
-  did.
+  running builder's exit (`Child::try_wait`). What a budget short of a build's peak took
+  of its own files' page cache, which an apt build's merge of its caches read again, is
+  fixed at its root since (below).
+- **Who read the cache layers again, and why the budget took them.** A cache's layers and
+  the changes a step makes to it are ranges of the builder's join disk (D134), read and
+  written by its VM process, in the build's scope. A page cache folio is charged as it is
+  added, to the memcg of the task that adds it (mm/filemap.c `filemap_add_folio`:
+  `mem_cgroup_charge(folio, NULL, gfp)`; mm/memcontrol.c `get_mem_cgroup_from_mm`, with no
+  mm, `current`'s), and a later read that finds it charges nothing: so the layers' pages
+  were the scope's. Over `memory.high` the kernel reclaims from the scope alone
+  (mm/memcontrol.c `reclaim_high`, `try_to_free_mem_cgroup_pages` of the memcg;
+  mm/vmscan.c `shrink_node_memcgs`, `mem_cgroup_iter(target_memcg, ...)`: only the
+  target's own subtree), and with no swap from its file pages alone (mm/vmscan.c
+  `get_scan_count`: "If we have no swap space, do not bother scanning anon folios",
+  `SCAN_FILE`). The pages no process maps go first, and the merge, in the build's process,
+  read them back from the disk: 58 and 45 MiB at p50 on the two runners that paid
+  (2f82adb6, above). Read at v7.0, CI's kernel, and v7.2-rc4; the same code in both.
+  Three changes:
+  - e0e430d5: where the writer is outside the budget, each cache range of the join disk
+    is read and written for the guest by the writer, over a connection of its own
+    (`block::Through`, build/outside.rs `serve_range`), so that its page cache is charged
+    to the writer, which no reclaim of the budget's scans (D188's "writer outside");
+  - d9a1c65b: the guest writes a cache's changes to the join disk with O_DIRECT, so that
+    they are not in its own page cache a second time as they go out;
+  - b2751e7c: a request to the writer in one round trip (at most a MiB), not one for each
+    of its 4 KiB segments; d9c42120 keeps the connection in step after a read cut short
+    (`a_through_range_moves_a_request_whole`), and `a_held_builds_caches_go_through_its_writer`
+    (build.rs) builds a 24 MiB cache held and free, the same image's bytes.
+- **At e0e430d5, on CI's runners (runs 42462346562 and 42462348862): no read again, a round
+  trip a page.** Eight runners (EPYC 7763 three times, 9V45 twice, 9V74 twice, Xeon
+  6973P-C once), `results/ci-42462346562-*`, `results/ci-42462348862-*`. No held apt
+  build's process read anything from storage at p50 or p90 on any runner (`build read`), against
+  58 and 45 MiB at p50 at 2f82adb6, and apt passed on the Xeon 6973P-C (held's fastest
+  27.5 s, free's slowest 27.7). It failed on an EPYC 7763 by 0.6 s (35.6 against 35.0):
+  from a step's `run` phase to its first cache kept, where the guest writes its caches'
+  85.7 MiB of changes to the join disk, took 0.31 to 1.00 s held against 0.10 to 0.54 free
+  (s, rounds 1 to 5, each runner), each 4 KiB a round trip to the writer. Fixed in
+  b2751e7c. On Fedora at e0e430d5 every pair held within the spread (apt held's fastest
+  17.1 s against free's slowest 23.9; `results/fedora-e0e430d5.tables.txt`). (Runs 42464364924 and 42464367989 at b2751e7c measured nothing: GitHub's
+  release download of the pinned kernel answered HTTP 504 on 6 of their 8 runners.)
+- **At d9c42120, on CI's runners (runs 42496009314 and 42496014878) and Fedora: every pair
+  within the spread.** The same harness, unchanged: on CI, EPYC 7763 four times, 9V74
+  twice, Xeon Platinum 8573C and Xeon 6973P-C, Ubuntu 24.04.5, kernel 7.0.0-1017-azure, 4
+  vCPUs and 16 GiB each (`results/ci-42496009314-*`, `results/ci-42496014878-*`); Fedora
+  as above, beside other agents' builds (load 29 as it started),
+  `results/fedora-d9c42120.tables.txt`. The writer was outside in each of the 135 held
+  builds. Build time, s, and what the builders gave back, held (n, p50, p90, p99, max):
+
+  | host (run) | build | free | held | held slower beyond the spread | answers | answered in (ms) | freed a build (MiB) | unplugged at an answer (MiB) | budget short of the free arm's peak (MiB) |
+  |---|---|---|---|---|---|---|---|---|---|
+  | EPYC 7763 (1, a) | rust | 5, 5.0, 5.7, 5.7, 5.7 | 5, 5.0, 5.2, 5.2, 5.2 | no | 3 | 3, 7, 8, 8, 8 | 5, 0.0, 30.3, 30.3, 30.3 | 1, 0, 0, 0, 0 | 5, 24.8, 27.6, 27.6, 27.6 |
+  | EPYC 7763 (1, a) | npm | 5, 9.4, 9.7, 9.7, 9.7 | 5, 9.3, 9.3, 9.3, 9.3 | no | 5 | 5, 13, 19, 19, 19 | 5, 18.4, 22.2, 22.2, 22.2 | 5, 128, 128, 128, 128 | 5, 28.0, 31.0, 31.0, 31.0 |
+  | EPYC 7763 (1, a) | apt | 5, 35.8, 36.0, 36.0, 36.0 | 5, 35.8, 36.0, 36.0, 36.0 | no | 0 | - | - | - | 5, 125.3, 161.6, 161.6, 161.6 |
+  | EPYC 7763 (1, b) | rust | 5, 5.4, 5.4, 5.4, 5.4 | 5, 5.4, 5.5, 5.5, 5.5 | no | 6 | 6, 7, 8, 8, 8 | 5, 17.8, 21.5, 21.5, 21.5 | 3, 0, 0, 0, 0 | 5, 25.9, 32.0, 32.0, 32.0 |
+  | EPYC 7763 (1, b) | npm | 5, 9.3, 9.4, 9.4, 9.4 | 5, 9.3, 9.4, 9.4, 9.4 | no | 4 | 4, 13, 15, 15, 15 | 5, 16.1, 19.2, 19.2, 19.2 | 4, 128, 128, 128, 128 | 5, 21.8, 31.4, 31.4, 31.4 |
+  | EPYC 7763 (1, b) | apt | 5, 35.8, 36.3, 36.3, 36.3 | 5, 36.5, 37.5, 37.5, 37.5 | no | 2 | 2, 37, 37, 37, 37 | 5, 0.0, 77.8, 77.8, 77.8 | 2, 128, 128, 128, 128 | 5, 150.5, 161.1, 161.1, 161.1 |
+  | Xeon 8573C (1) | rust | 5, 7.3, 7.6, 7.6, 7.6 | 5, 7.3, 8.1, 8.1, 8.1 | no | 1 | 1, 8, 8, 8, 8 | 5, 0.0, 2.9, 2.9, 2.9 | 1, 0, 0, 0, 0 | 5, 25.5, 28.4, 28.4, 28.4 |
+  | Xeon 8573C (1) | npm | 5, 9.8, 9.8, 9.8, 9.8 | 5, 9.6, 9.9, 9.9, 9.9 | no | 5 | 5, 8, 9, 9, 9 | 5, 2.5, 4.1, 4.1, 4.1 | 5, 128, 128, 128, 128 | 5, 6.6, 11.5, 11.5, 11.5 |
+  | Xeon 8573C (1) | apt | 5, 33.2, 33.7, 33.7, 33.7 | 5, 34.5, 36.1, 36.1, 36.1 | no | 0 | - | - | - | 5, 86.0, 106.9, 106.9, 106.9 |
+  | EPYC 7763 (1, d) | rust | 5, 5.0, 5.2, 5.2, 5.2 | 5, 4.9, 5.2, 5.2, 5.2 | no | 7 | 7, 6, 8, 8, 8 | 5, 26.7, 32.0, 32.0, 32.0 | 3, 0, 0, 0, 0 | 5, 29.7, 33.2, 33.2, 33.2 |
+  | EPYC 7763 (1, d) | npm | 5, 9.2, 10.6, 10.6, 10.6 | 5, 9.2, 9.3, 9.3, 9.3 | no | 4 | 4, 14, 15, 15, 15 | 5, 15.8, 21.0, 21.0, 21.0 | 4, 128, 128, 128, 128 | 5, 24.4, 31.7, 31.7, 31.7 |
+  | EPYC 7763 (1, d) | apt | 5, 35.9, 36.0, 36.0, 36.0 | 5, 35.9, 36.8, 36.8, 36.8 | no | 0 | - | - | - | 5, 152.0, 161.7, 161.7, 161.7 |
+  | EPYC 9V74 (2, a) | rust | 5, 6.9, 7.3, 7.3, 7.3 | 5, 6.7, 7.5, 7.5, 7.5 | no | 8 | 8, 7, 7, 7, 7 | 5, 31.6, 33.3, 33.3, 33.3 | 8, 0, 0, 0, 0 | 5, 28.1, 30.2, 30.2, 30.2 |
+  | EPYC 9V74 (2, a) | npm | 5, 8.8, 8.9, 8.9, 8.9 | 5, 9.1, 11.1, 11.1, 11.1 | no | 6 | 6, 6, 50, 50, 50 | 5, 0.1, 0.2, 0.2, 0.2 | 6, 128, 256, 256, 256 | 5, 50.5, 55.3, 55.3, 55.3 |
+  | EPYC 9V74 (2, a) | apt | 5, 35.1, 35.2, 35.2, 35.2 | 5, 35.3, 39.5, 39.5, 39.5 | no | 3 | 3, 9, 11, 11, 11 | 5, 0.0, 70.0, 70.0, 70.0 | 3, 128, 128, 128, 128 | 5, 157.6, 163.2, 163.2, 163.2 |
+  | EPYC 7763 (2) | rust | 5, 5.1, 5.3, 5.3, 5.3 | 5, 5.1, 5.2, 5.2, 5.2 | no | 4 | 4, 7, 7, 7, 7 | 5, 0.0, 29.6, 29.6, 29.6 | 2, 0, 0, 0, 0 | 5, 27.0, 38.9, 38.9, 38.9 |
+  | EPYC 7763 (2) | npm | 5, 9.3, 9.6, 9.6, 9.6 | 5, 9.3, 9.4, 9.4, 9.4 | no | 5 | 5, 14, 16, 16, 16 | 5, 20.4, 22.1, 22.1, 22.1 | 5, 128, 128, 128, 128 | 5, 17.0, 21.9, 21.9, 21.9 |
+  | EPYC 7763 (2) | apt | 5, 36.3, 36.7, 36.7, 36.7 | 5, 36.4, 37.4, 37.4, 37.4 | no | 0 | - | - | - | 5, 108.9, 150.3, 150.3, 150.3 |
+  | EPYC 9V74 (2, c) | rust | 5, 6.7, 7.2, 7.2, 7.2 | 5, 6.9, 10.8, 10.8, 10.8 | no | 2 | 2, 7, 7, 7, 7 | 5, 0.0, 33.5, 33.5, 33.5 | 2, 0, 0, 0, 0 | 5, 23.3, 26.1, 26.1, 26.1 |
+  | EPYC 9V74 (2, c) | npm | 5, 8.6, 8.8, 8.8, 8.8 | 5, 8.7, 9.0, 9.0, 9.0 | no | 5 | 5, 7, 42, 42, 42 | 5, 1.6, 2.5, 2.5, 2.5 | 5, 128, 128, 128, 128 | 5, 22.2, 33.5, 33.5, 33.5 |
+  | EPYC 9V74 (2, c) | apt | 5, 35.6, 39.9, 39.9, 39.9 | 5, 35.0, 37.1, 37.1, 37.1 | no | 5 | 5, 17, 31, 31, 31 | 5, 52.6, 57.7, 57.7, 57.7 | 5, 128, 128, 128, 128 | 5, 95.3, 126.0, 126.0, 126.0 |
+  | Xeon 6973P-C (2) | rust | 5, 6.8, 7.3, 7.3, 7.3 | 5, 6.6, 7.0, 7.0, 7.0 | no | 10 | 10, 5, 9, 9, 9 | 5, 30.0, 31.5, 31.5, 31.5 | 8, 0, 0, 0, 0 | 5, 30.4, 31.9, 31.9, 31.9 |
+  | Xeon 6973P-C (2) | npm | 5, 8.1, 8.6, 8.6, 8.6 | 5, 8.3, 8.7, 8.7, 8.7 | no | 5 | 5, 9, 19, 19, 19 | 5, 10.1, 13.1, 13.1, 13.1 | 5, 128, 128, 128, 128 | 5, 1.4, 27.2, 27.2, 27.2 |
+  | Xeon 6973P-C (2) | apt | 5, 27.9, 28.2, 28.2, 28.2 | 5, 28.1, 29.1, 29.1, 29.1 | no | 1 | 1, 5, 5, 5, 5 | 5, 0.0, 0.2, 0.2, 0.2 | 1, 128, 128, 128, 128 | 5, 107.9, 134.0, 134.0, 134.0 |
+  | Fedora | rust | 5, 2.9, 3.2, 3.2, 3.2 | 5, 2.8, 3.2, 3.2, 3.2 | no | 4 | 4, 1, 3, 3, 3 | 5, 2.9, 2.9, 2.9, 2.9 | - | 5, 3.3, 54.0, 54.0, 54.0 |
+  | Fedora | npm | 5, 6.9, 8.2, 8.2, 8.2 | 5, 6.8, 7.5, 7.5, 7.5 | no | 9 | 9, 5, 15, 15, 15 | 5, 17.2, 18.1, 18.1, 18.1 | 7, 0, 128, 128, 128 | 5, -3.3, 17.2, 17.2, 17.2 |
+  | Fedora | apt | 5, 23.9, 26.2, 26.2, 26.2 | 5, 22.4, 28.9, 28.9, 28.9 | no | 15 | 15, 1, 18, 24, 24 | 5, 36.6, 107.8, 107.8, 107.8 | 15, 0, 128, 128, 128 | 5, 64.3, 88.1, 88.1, 88.1 |
+
+  The rule held for all 27 host and build pairs, apt on the Xeon 6973P-C among them (held's
+  fastest 28.0 s against free's slowest 28.2). From a step's `run` phase to its first cache
+  kept, held 0.09 to 0.61 s against free 0.09 to 0.63 on CI, held's median no later than
+  free's on any runner (0.40 against 0.40 on the Xeon 6973P-C), and 0.12 to 0.16 s against
+  0.10 to 0.14 on Fedora; a merge of apt's 191 MiB written in less time held than free at
+  p50 on every host. No held build's process read from storage at p50 on any of CI's
+  runners.
+
+  Every held build was told its budget's room (D188's builders), and every held rust and
+  npm build was asked to give back, but apt's on four runners was never asked: its budget,
+  the most a held arm so far had held as the build counts it less its builder's cold
+  files, was 4 to 49 MiB over each round's peak by that count, and its scope's
+  `memory.current` peaked 60 to 113 MiB under its `memory.high` (the count holds pages the
+  scope is not charged for, the builder's mapped base and the VM process's text among them,
+  573e4bf8 above), so nothing reclaimed and no word came. Its builder held 0 to 23 MiB cold at the peak (the count's peak less the
+  budget's measure of it) and 46 to 105 MiB at its build's end. Before e0e430d5 the same
+  budget pressed: the cache layers' unmapped page cache, the scope's then, filled what the
+  count left, and its reclaim took them. So under a budget short of its peak by what its
+  builder holds cold, an apt build no longer needs its builder's give-back to fit on half
+  of these runners, and where it does (four runners, Fedora: 1 to 15 answers) it is no
+  slower.
+- **Consequence, at d9c42120.** The plan's step 4 is met on every host measured: a build
+  held to a budget short of its peak by what its builder holds cold took no longer than the
+  same build unbudgeted beyond its rounds' spread in all 27 host and build pairs (eight of
+  CI's runners, Intel and AMD, and Fedora), as on the Mac at 9f2520c2. A held build's
+  caches are read and written for its guest outside its budget, by its writer, as its own
+  files are: what a budget takes back first, with no swap, is no longer the files the
+  build reads again.
+- **Since d9c42120: every held build pressed, and a builder's room as its kernel charges
+  it.** The four runners' apt builds above were never pressed, and a budget set below what
+  a build counts as held made 10 s builds take 246 to 622 s (573e4bf8, above). Both have one
+  cause in the build's count: it held the file pages its processes map wherever charged
+  (each process's `Pss_File`), and at every held peak of runs 42496009314 and 42496014878
+  it exceeded the scope's `memory.current` by exactly the pages mapped and charged
+  elsewhere (`Pss_File` less memory.stat's `file_mapped`): 13 to 14 MiB for npm, 55 to 64
+  for apt, 99 to 100 for rust, its base rust:1-slim on the builder's pmem device. So a
+  budget in that count left the kernel that much more room (apt's held arms never reached
+  their `memory.high`), and a budget short of the kernel's charge told the guest it was
+  short by them besides, which holds its build at what it uses and reclaims as many of its
+  file pages (init's `ROOM`, `plug::hold_within`). A builder's room now counts them only
+  where charged to the budget (`daemon::budget::charged_room`, D188): no reclaim of the
+  budget takes pages charged elsewhere (mm/vmscan.c `shrink_node_memcgs`), and read again
+  once another's takes them they come back charged to it, counted then. The harness counts
+  as the build does now, and holds each build to its held arms' own peak less the most its
+  builder held cold in that arm: a round 0 settling arm, under the peak of a round 0 arm
+  held under the host's whole memory, sets it for rounds 1 on (a builder told the host's
+  whole memory as its room plugs and holds more, and a budget from that arm was 4 to 49 MiB
+  past the later rounds' peaks on the four runners). Its samples now say what the pressure
+  cost: the guest's major faults, file refaults and throttles past its hold (cold.patch),
+  the VM process's major faults and the host's throttles of the scope (memory.events), and
+  the least room the build told against the least its budget left as the kernel charges it
+  (tables.py). To measure: `builder-pressure.yml` and `fedora.sh` at the commit that has it.
 
 ### M443. A restart over the kept layer file itself, and what the guest freed given back (D190)
 
@@ -18652,6 +18778,249 @@ revision before comparing a changed API/implementation.
   26.4), cold and live, n 20, and tests/moved.rs's two tests of another machine, over a
   link and runners that hold for the length of the series; the 117 s seen once before a
   fresh home's live rounds.
+
+### M489. What a guest's seccomp and device filters cost, interpreted against JIT-compiled (D227, D42, D44)
+
+- **Question.** The pinned guest kernel runs BPF interpreted (Firecracker's configs leave
+  BPF_JIT unset); D227 builds it with BPF_JIT and BPF_JIT_ALWAYS_ON. What does each cost a
+  workload's syscall under Docker's default seccomp profile (D42), a device open under the
+  default device filter (D44), each filter's load, and the guest's memory, either way?
+- **Method.** docs/research/measurements/bpf-jit/ab.py, the test guest's `bpf` mode
+  (crates/testguest/src/linux.rs `bpf_costs`) as PID 1 of `shards run --kernel K --init
+  TESTGUEST --cpus 1 --memory 512 --disk RECORD`, A the kernel pinned before
+  (kernel-6.18.48-64a9427a8997) and B the D227 kernel, booted in turn A B, B A, ... for 10
+  rounds after one boot of each. Each round, in children of PID 1: Docker's default profile
+  compiled by shards_seccomp for a container's default capabilities and the running
+  kernel's version, loaded as shards-init loads it, with init's capabilities (`root`) or as
+  user 65534 with no_new_privs (`nnp`); 10,000 batches of 16 calls of getppid(2) (allowed
+  whatever its arguments: seccomp's action cache), personality(0xffffffff) (allowed by its
+  argument: the filter runs) and acct(NULL) (refused: the filter's whole path), with no
+  filter too, and an empty batch for the clock's own cost; open(2)+close(2) of /dev/null
+  in a cgroup with Docker's default device filter (shards_devcgroup, attached as init
+  attaches it) and in one without; 10,000 seccomp(2) loads each way, each into a fresh
+  child; the device filter's load and attach once a boot; MemAvailable at boot, after the
+  device filter, after the arms and at the end; the JIT's vmalloc areas. n, p50, p90, p99
+  and max in ns per call, pooled over the rounds, and the spread of the rounds' p50s. The
+  test guest is built as
+  the tests build it (`common::guest_cargo`):
+  `CC_<arch>_unknown_linux_musl=scripts/zig-cc AR_<arch>_unknown_linux_musl=scripts/zig-ar
+  ZIG_TARGET=<arch>-linux-musl CARGO_TARGET_<ARCH>_UNKNOWN_LINUX_MUSL_LINKER=rust-lld cargo
+  build -p shards-testguest --profile guest --target <arch>-unknown-linux-musl`. B is
+  kernel-6.18.48-fa4edcc82303 (built at 36e47536); the two releases' configs differ in
+  three lines on each architecture, `CONFIG_BPF_JIT`, `CONFIG_BPF_JIT_ALWAYS_ON` and
+  `CONFIG_BPF_JIT_DEFAULT_ON` (diff of their config-6.18.48-{x86_64,aarch64} assets), so
+  every difference below is the JIT's.
+  - A fleet's memory and runs: docs/research/measurements/bpf-jit/fleet.py, one release
+    `shards`, two homes, each with alpine (sha256:294b683c…) and a guest recorded
+    (`configure guest --kernel K --init` shards-init), rounds alternating which goes first.
+    Each round, in each home: the daemon stopped and its templates removed; 10 `run -d
+    alpine sleep`, the first booting the guest and saving the template (init attaches the
+    device filter before the save, D44), the other 9 served from the pool's VMs restored
+    from it; once the home's VM processes stay the same for 5 s, each one's memory (Linux:
+    smaps_rollup Rss, Pss, Anonymous; macOS: proc_pid_rusage's physical footprint and
+    resident size), the booted run, the restored runs (State.Pid) and the pool's warm VMs
+    apart; the template's disk blocks (du). 10 rounds after 1.
+  - Start latency: docs/research/measurements/bpf-jit/latency.sh, build-ab/ab.py's paired
+    runs over fleet.py's two homes, `run --rm alpine true` one at a time, 4 segments of 100
+    pairs, each segment with templates of its own (PM M29). `command` is request to status
+    on the VM's clock (SHARDS_TIMING), `wall` the client's spawn to reap.
+- **Found.** KVM: fedora-2, x86_64, Fedora 44, Linux 6.19.10-300.fc44, host load 6 to 45
+  from other agents' work (each run's own `uptime`), revisions dd3e96a1 (ab.py),
+  9a121863 (fleet.py), f8eb2a5d (latency.sh). Hypervisor.framework: Mac Studio, M3 Ultra,
+  macOS 26.4, through kiln's runner (nice 10, priority 20) beside another agent's fleet test
+  (load 20 to 25), revision c6367f8. ns per call, p50 (p99); n 100,000 an arm and kernel, 10
+  rounds; loads n 100,000, device load n 10.
+
+  | arm | KVM A | KVM B | HVF A | HVF B |
+  |---|---|---|---|---|
+  | none/personality (no filter) | 56.8 (147.2) | 57.6 (72.5) | 91.1 (101.6) | 91.1 (93.8) |
+  | root/getppid (action cache) | 68.4 (165.9) | 70.8 (91.3) | 112.0 (119.8) | 112.0 (119.8) |
+  | root/personality (filter runs) | 87.4 (209.4) | 68.1 (89.2) | 127.6 (132.8) | 112.0 (117.2) |
+  | root/denied (whole path) | 84.1 (132.2) | 68.5 (90.8) | 114.6 (117.2) | 104.1 (106.8) |
+  | nnp/personality | 88.6 (212.8) | 67.2 (88.0) | 127.6 (132.8) | 114.6 (117.2) |
+  | nnp/denied | 86.4 (208.8) | 68.1 (92.6) | 112.0 (117.2) | 101.6 (106.8) |
+  | dev/open (device filter) | 506.6 (903.9) | 481.8 (919.4) | 487.0 (695.3) | 479.2 (739.6) |
+  | nodev/open | 495.6 (935.7) | 483.9 (816.9) | 468.8 (648.4) | 476.6 (721.3) |
+  | root/load | 40,006 (99,963) | 59,503 (122,774) | 30,834 (53,917) | 42,042 (63,500) |
+  | nnp/load | 40,204 (113,078) | 58,076 (127,181) | 30,709 (56,667) | 42,000 (71,375) |
+  | device/load | 144,944 (813,248) | 153,802 (219,187) | 99,125 (114,792) | 95,959 (116,042) |
+
+  The JIT's vmalloc areas in B: one of 2,101,248 bytes (`execmem_alloc` on x86_64,
+  `bpf_jit_alloc_exec` on arm64: the 2 MiB pack and its guard page), beside the 16 KiB
+  `bpf_prog_alloc_no_stats` area both kernels have. Guest MemAvailable, KiB, p50 (boot /
+  device filter / arms / end): KVM A 461,404 / 461,308 / 461,308 / 465,736, B 464,032 /
+  463,844 / 463,844 / 462,580; HVF A 472,836 / 472,616 / 472,504 / 470,096, B 470,540 /
+  470,460 / 470,460 / 468,056.
+
+  The fleet, KiB a VM process, p50 (p90) over 10 rounds:
+
+  | | KVM A | KVM B | HVF A | HVF B |
+  |---|---|---|---|---|
+  | booted run (anon; footprint) | 87,272 (88,968) | 90,140 (91,048) | 105,026 (106,050) | 107,474 (108,546) |
+  | restored run, n 90 (anon; footprint) | 9,756 (10,384) | 9,164 (9,948) | 22,306 (22,594) | 22,738 (23,218) |
+  | restored run Pss (KVM) | 10,753 (11,402) | 10,069 (10,842) | | |
+  | warm VM, n 20 (anon; footprint) | 6,380 (6,784) | 6,132 (6,600) | 18,034 (18,386) | 17,954 (18,178) |
+  | all 12 VMs a VM (Pss; footprint) | 16,676 (16,984) | 16,326 (17,003) | 28,485 (28,673) | 29,027 (29,378) |
+  | template on disk (du) | 77,284 (78,704) | 79,800 (80,996) | 79,080 (93,784) | 80,600 (80,680) |
+
+  On HVF every round's p50 of a restored run's footprint was higher in B (B's rounds 22,546
+  to 23,250, A's 22,018 to 22,594). On KVM, two earlier fleet runs (revisions dd3e96a1,
+  f8eb2a5d, the restored runs and warm VMs not yet apart) put the booted run's anonymous
+  memory 2,184 and 3,608 KiB higher in B, the restored VMs' p50 48 and 132 KiB lower, their
+  p90 1,304 and 1,124 KiB higher, and the template 2,016 and 3,060 KiB larger: on KVM the
+  restored VMs' tails go either way from run to run, their p50 never higher in B.
+
+  Start latency, µs, p50 (p99), n 400 an arm (4 templates), and the paired difference's
+  median, B less A: KVM `command` A 6,583 (38,140), B 4,664 (31,458), -873; its first
+  segment, at load 15.7 (the others at 27 to 45), 3,346 against 2,829, -533 (95% interval
+  -661 to -442), every segment's below 0. `wall` A 28,096, B 25,914, -1,592. HVF `command`
+  A 1,197 (1,962), B 1,404 (2,124), +206, every segment's interval above 0 (+161 to +286);
+  `wall` A 8,817 (34,797), B 9,176 (34,583), +235, every segment's interval holding 0.
+- **Reading.**
+  - A filter that runs costs a syscall 30.6 ns over none interpreted and 10.5 ns compiled
+    on KVM (personality, p50; the refused path 27 against 11), 36.5 against 20.9 ns on HVF:
+    compiled, it costs a third of what it did on KVM and 57 % on HVF, and on KVM the call's
+    p99 falls from 209 to 89 ns. What
+    the action cache answers (getppid) costs the same either way. A filter loaded by a task
+    without CAP_SYS_ADMIN (nnp) costs what one loaded with it does on both: the arm64 BHB
+    epilogue (D227) is not measurable here, the guest seeing its CPU as needing none
+    (`spectre_v2: CSV2, but not BHB`, no firmware call: arch/aarch64/psci.rs).
+  - The device filter, an eBPF program, costs an open 11.0 ns interpreted and nothing
+    measurable compiled on KVM (B's dev/open below its nodev/open), 18.2 against 2.6 ns on
+    HVF: 7 times less.
+  - Each load compiles: +19.5 µs a seccomp(2) load on KVM (40.0 to 59.5), +11.2 µs on HVF
+    (30.8 to 42.0); the device filter's load is the same either way.
+  - The pack is allocated once, at the first program a guest compiles (kernel/bpf/core.c at
+    v6.18, `bpf_prog_pack_alloc`: a new pack only when no pack on `pack_list` has room),
+    and filled whole with trapping instructions (`alloc_new_pack`, `bpf_fill_ill_insns`
+    over `BPF_PROG_PACK_SIZE`, `SZ_2M * num_possible_nodes()`, one node in a microVM); every
+    later program takes 64-byte chunks of it (`BPF_PROG_CHUNK_SIZE`), and it is freed only
+    when its last program goes (`bpf_prog_pack_free`). It is lazy already: no program, no
+    pack. Init's device filter is the first program, at boot, so the pack is written into
+    the booted VM (+2.2 to 3.6 MiB anonymous on KVM, +2.4 MiB footprint on HVF) and into
+    the template (+1.5 to 3.1 MiB on disk), where every VM restored from it maps it from
+    the template's file as it maps the rest: the warm VMs, which compiled nothing since
+    their restore, hold what they held interpreted on both hosts. Making the fill lazier
+    would leave the pack's unused chunks without their trapping instructions, which is what
+    the fill is for: not done.
+  - A restored VM that starts a workload compiles its filter after the restore: on HVF that
+    run holds 432 KiB more footprint (p50; 1.9 % of its 22.3 MiB) and its start takes 206
+    µs more on the VM's clock (1,197 to 1,404 µs); on KVM it holds no more (its p50 592 KiB
+    less) and starts 533 µs sooner at the quietest load, 873 µs pooled. Which pages the HVF
+    run writes, and what of the KVM run's path the JIT speeds, are not split here.
+- **Consequence.** D227 kept: kernel-6.18.48-fa4edcc82303 pinned (crates/shards/src/
+  kernel.rs, tests/common, README). Its costs, recorded in D227: one 2 MiB pack per booted
+  guest and template, 11 to 20 µs a filter load, and on Hypervisor.framework 0.43 MiB and
+  0.2 ms a run started from a template. Not measured: WHP's hyperv variant; whether
+  unprivileged filters are blinded stays D227's open question.
+
+### M497. Moves between two wired machines, cold and live, and a CPU baseline told and moved (D176 parts 6 and 7)
+
+- **Question.** Between two machines on one wired network, what does a move cost, cold and
+  live, n 20, and do tests/moved.rs's tests of another machine pass across them? Does a
+  home's CPU baseline (`configure cpu`, D176 part 6) reach its guest, and go with it when it
+  moves?
+- **Method.** At abcea5f5, 2026-11-08T16:55Z: docs/research/measurements/migrate/two-hosts.sh
+  `listen` on adacachy (AMD Ryzen 9 9950X3D2, 32 threads, CachyOS, Linux 7.2.9-2-cachyos,
+  KVM; 192.168.1.90, wired), `ADDR=192.168.1.90:3000` (the one UDP port its firewall takes
+  from the LAN that nothing held); `move`, N 20, `MODE="cold live"`, alpine:3.20 counting
+  every 50 ms (each live one rewriting 1 MiB of /dev/shm as it counts), from adacachy2 (the
+  same CPU model, Linux 7.3.3-1-cachyos, KVM; 192.168.1.91, wired), the two machines' CPU
+  flags identical as /proc/cpuinfo names them. The other way is not measured: adacachy2's
+  firewall takes no free UDP port from the LAN. Both runs by kiln runners; adacachy2 beside
+  other sessions' builds (load 19 to 20, 0.2 to 0.6 GB of its 61 GB available, 22 GB in
+  zram swap: memory pressure's `some` 20% over 10 s). Then tests/moved.rs's
+  `a_microvm_moves_to_another_host_saved_and_live` and `a_volumes_guest_owners_move_with_it`
+  on adacachy2, each with an invitation of the listening home of its own, the test binary
+  built on adacachy at the same paths (its prebuilt guests through `SHARDS_TEST_GUESTS`);
+  and all of tests/moved.rs between two homes of adacachy. The baseline:
+  `a_cpu_baseline_is_all_its_guest_finds_and_goes_with_it` between two homes of
+  Adas-Mac-Studio (Apple M3 Ultra, macOS 26.4, Hypervisor.framework), and
+  `alpine:3.20 grep Features /proc/cpuinfo` there with no baseline.
+- **Found** (µs unless said; n 20 each, adacachy2 to adacachy):
+
+  | mode | what | p50 | p90 | p99 | max |
+  |---|---|---|---|---|---|
+  | cold | move took | 954,047 | 1,159,569 | 9,986,861 | 9,986,861 |
+  | cold | ran nowhere | 908,119 | 1,124,556 | 9,894,417 | 9,894,417 |
+  | cold | sent (bytes) | 39,339,806 | 44,236,449 | 76,307,190 | 76,307,190 |
+  | cold | link (B/s) | 77,763,982 | 100,386,905 | 109,593,620 | 109,593,620 |
+  | cold | longest silence | 64,686 | 416,980 | 485,488 | 485,488 |
+  | live | move took | 705,170 | 833,503 | 1,034,245 | 1,034,245 |
+  | live | ran nowhere | 207,740 | 280,932 | 345,251 | 345,251 |
+  | live | sent (bytes) | 49,597,811 | 54,362,422 | 101,169,507 | 101,169,507 |
+  | live | link (B/s) | 76,006,620 | 83,885,916 | 105,849,205 | 105,849,205 |
+  | live | longest silence | 60,626 | 120,740 | 195,338 | 195,338 |
+  | live | rounds (n) | 3 | 3 | 3 | 3 |
+
+  40 of 40 moved, every count once there. The link: up to 109.6 MB/s acknowledged (a
+  gigabit link's), round trips 0.7 to 2.5 ms, no packets lost.
+  - **Cold.** Each stream 80.5 to 81.6 MB as written, sent as 32.9 to 76.3 MB. Move 1, the
+    fresh home's first, ran nowhere 9.89 s (its link 15.2 MB/s, the image fetched there by
+    its digest as it readied); moves 2 to 20 ran nowhere 0.74 to 1.26 s.
+  - **Live.** Round 0 sent 74.5 to 75.4 MB in 364 to 620 ms, round 1 7.4 to 11.3 MB, and
+    15 of 20 a third of 0.9 to 6.1 MB; every one ended with little left (8 MiB or less).
+    Its last save took 50.8 to 161.5 ms and its last stream 9.1 to 41.0 ms of the time it
+    ran nowhere.
+  - **E2E.** Both tests of another machine passed across the two (the saved and the live
+    move of the first: its live move ran nowhere 132 ms, its streams at 106 and 92 MB/s);
+    tests/moved.rs between two homes of adacachy, 9 of 9.
+  - **The baseline.** Told ID_AA64PFR1_EL1 of nothing, a guest on the M3 Ultra found
+    neither `ssbs` nor `bti`, and moved to the other home found the same CPU there: passed.
+    With no baseline its guest's Features were `fp asimd evtstrm aes pmull sha1 sha2 crc32
+    atomics fphp asimdhp cpuid asimdrdm jscvt fcma lrcpc dcpop sha3 asimddp sha512 asimdfhm
+    dit uscat ilrcpc flagm sb paca pacg dcpodp flagm2 frint i8mm bf16 bti afp`: no `ssbs`
+    and no `rpres` (ID_AA64ISAR2_EL1's), though macOS names FEAT_SSBS and FEAT_RPRES on
+    the host.
+  - First built, the VM process's probe of its host's CPU (`shards-vm cpu`) failed on
+    Hypervisor.framework, "vCPUs need the GIC first": it makes the VM's GIC before its
+    vCPU now (abcea5f5).
+- **Reading.** On a wired link a cold move of alpine runs nowhere about 0.9 s and a live one
+  about 0.2 s, its downtime its last save and the restore, as on loopback (M462); a fresh
+  home's first move pays for its image. A guest on Hypervisor.framework is shown less than
+  its host's OS names: the features macOS names are no measure of what a guest may have
+  used.
+- **Consequence.** D176 parts 6 and 7 record these as the two-machine numbers. Still to
+  measure: the M3 Ultra and an M4 Max with a baseline, both ways, and the Studios' Wi-Fi.
+
+### M499. What a Hypervisor.framework guest is shown of its host's CPU, and a listener that outlives its runner (D176 part 6)
+
+- **Question.** A move between Macs is checked by the features macOS names
+  (`hw.optional.arm.FEAT_*`): does a guest find them? And can the listening end of a
+  two-machine series outlive a kiln runner's restart, which ends what its runs started?
+- **Method.** At abcea5f5, 2026-11-08: `shards run --rm alpine:3.20 grep -m1 Features
+  /proc/cpuinfo`, no CPU baseline, a fresh home each, on Adas-Mac-Studio (Apple M3 Ultra,
+  macOS 26.4) and Adas-Mac-Studio-4 (Apple M4 Max, macOS 26.2), beside `sysctl
+  hw.optional.arm` on each (the M4 Max's as Adas-Mac-Studio-3's, an M4 Max on 26.2 too, says
+  it). A launchd user agent (`launchctl bootstrap gui/UID`, a shell loop trapping SIGTERM
+  and writing the time) started by a kiln run on the M3 Ultra. docs/research/measurements/
+  migrate/two-hosts.sh `restart` at 9a6f5ac5 (the script; shards at abcea5f5) on adacachy
+  (Linux 7.2.9, KVM): two homes, 4 cold moves, the listening daemon and its hold sent
+  SIGTERM as the second microVM started, `listen` run again on its home 10 s later.
+- **Found.**
+  - Guests' Features, the two the same but `i8mm`, which the M3 Ultra's has and the M4
+    Max's not: `fp asimd evtstrm aes pmull sha1 sha2 crc32 atomics fphp asimdhp cpuid
+    asimdrdm jscvt fcma lrcpc dcpop sha3 asimddp sha512 asimdfhm dit uscat ilrcpc flagm sb
+    paca pacg dcpodp flagm2 frint [i8mm] bf16 bti afp`. Neither has `rpres` or `ssbs`
+    (macOS names FEAT_RPRES on both, FEAT_SSBS on the M3 Ultra), nor the M4 Max's `wfxt`
+    or any of `sme` (FEAT_WFxT, FEAT_SME, FEAT_SME2 named there), nor `i8mm` on the M4 Max
+    (FEAT_I8MM named there).
+  - The launchd agent was sent SIGTERM 3 s after it started.
+  - `restart`: move 2's client found no daemon ("no shards daemon answered at
+    127.0.0.1:7443 within 10s"; the microVM went on here); the series waited, moved it
+    again once `listen` had listened again on the home, the context's enrollment and the
+    daemon's key as they were, and moves 2 to 4 went through: 4 moved, 0 failed, 1 moved
+    again. Before the error was read too, the series counted that move failed: the daemon
+    was back by the time the client's 10 s wait ended.
+- **Reading.** Hypervisor.framework shows a guest ID_AA64ISAR2_EL1's WFxT and RPRES on no
+  host measured, and less than macOS names in ISAR1 too: what macOS names is no measure of
+  what a guest found, which the hypervisors' views a baseline meets are. Under kiln no
+  process a run starts outlives its runner; its home does.
+- **Consequence.** A move checks neither FEAT_WFxT nor FEAT_RPRES by name on macOS
+  (9a6f5ac5), the baseline test asserting that a guest finds neither on each Mac it runs
+  on; two-hosts.sh's `listen` listens again on a kept home, and its series wait for the
+  listener and move again what its going cut short (D176 part 6). Not measured: an M5's
+  guest (FEAT_CSSC, FEAT_HBC, still checked by name).
 ### M422. Whether a Hypervisor.framework guest given EL2 has VHE (the parity plan's step 10)
 
 - **Question.** Step 10's host is to be Windows 11 arm64 under QEMU on this Mac, given EL2
@@ -18796,3 +19165,815 @@ revision before comparing a changed API/implementation.
   change, and on a native arm64 Windows host with WHP (a Snapdragon X machine, as a user
   session), which alone says whether Hyper-V's SGIs and timers hold across a 64-vCPU
   snapshot at a native host's timing.
+
+### M511. What a client's bind through its context costs its guest (D228)
+
+- **Question.** A client's bind is its own directory, each FUSE request its microVM's share
+  makes relayed over the context's QUIC to the client's share server (D228). What does that
+  cost a guest's opens, reads and writes against the machine's own bind of the same files?
+- **Method.** docs/research/measurements/client-binds/run.sh 10 (`what_a_clients_bind_costs`,
+  tests/context.rs) at 703c6a06 on adacachy2 (the GPU desktop: x86_64, 32 cores, CachyOS,
+  Linux 7.3.3-1-cachyos), 2026-11-08T08:00Z, load average 7 to 10 (another session's work):
+  two homes of the one machine, the client's context over loopback QUIC. Each of 10 rounds, in
+  turns (the order swapped each round), a run of the owner's binding a directory of the
+  machine's and the client's binding its own, each running the test guest's `share-cost` on
+  a 64 MiB file: 2,000 opens, each reading 4 KiB and closing, timed one by one; then the file
+  read through, and a copy written and fsynced. Once as the daemon is by default, its shares'
+  DAX windows on (D189), and once with `SHARDS_SHARE_WINDOW_MIB=0`, FUSE alone for both, which
+  is what a client's relay always is (`serves_afar`).
+- **Found** (FUSE alone; each quantile the median of the 10 rounds' own, of n 2,000 opens
+  each; max the largest of any round; MiB/s the rounds' median):
+
+  | bind | open, 4 KiB read, close p50 | p90 | p99 | max | read MiB/s | write MiB/s |
+  |---|---|---|---|---|---|---|
+  | the machine's own | 136 µs | 160 µs | 206 µs | 1,434 µs | 468 | 2,157 |
+  | the client's, relayed | 251 µs | 310 µs | 399 µs | 914 µs | 458 | 572 |
+
+  The relay adds 115 µs at p50 to an open, a 4 KiB read and a close (its requests' round
+  trips through the share's socket, the daemon's relay, QUIC on loopback and the client's
+  server), and 193 at p99. A large file reads as fast (the guest's reads are 1 MiB requests,
+  the relay's round trip small beside each); writes are a quarter as fast, each 1 MiB write a
+  request whose reply waits on the client's write. Every round of the client's at p99 under
+  430 µs. With the machine's DAX window on, its own bind's opens cost 513 µs at p50 and its
+  64 MiB read 9.5 MiB/s on this host, slower than the relay's: every file of 1 MiB or more is
+  mapped (DAX_SMALLEST), and on this host a mapped read is far slower than FUSE's; not
+  D228's, and open (D189's to explain on this kernel).
+- **Not measured.** Two machines apart (Mac Studios on one network: their runners did not
+  take this run on 2026-11-08); a Mac's own; latency under a lossy link.
+
+### M466. Flakes: a raised run's allocation killed as its host stays short of memory (D148, D188)
+
+- **Question.** `update_moves_a_microvms_memory_both_ways` once had its `alloc 512`, after
+  `update -m 1g` raised a run of 256 MiB, killed for want of memory (137) on a full suite's
+  Fedora, and passed alone (600 of 600 on CI, M325). What kills it?
+- **Method.** `update_under_pressure_stress` (tests/containers.rs, ignored): one run of
+  `-m 256m --memory-swap 256m`; each round its `alloc 512` killed at 256 MiB, the run
+  raised to `1g`, `alloc 512` again while its daemon is told its host is short of memory
+  every 50 ms (`SHARDS_PRESSURE`, as a whole suite's host says it each window), then
+  lowered; the raised allocation's time and status each round. On adacachy2 (AMD Ryzen 9
+  9950X3D2, 16 cores, 32 threads, 64 GB, CachyOS, Linux 7.3.3), the test pinned to 15 of
+  its threads (`taskset`), the host loaded by other agents' work (load 9 to 37), at
+  8501f093 (the tree) and at 49ee67a5 with the change below, 2026-11-08.
+- **Results.** Raised allocations, ms:
+
+  | build | n | killed | p50 | p90 | p99 | max |
+  |---|---|---|---|---|---|---|
+  | 8501f093 | 74 | 15 | 125 | 807,303 | 2,461,830 | 2,516,060 |
+  | the change, run 1 | 1,000 | 0 | 119 | 171 | 1,035 | 5,393 |
+  | the change, run 2 | 1,000 | 0 | 113 | 129 | 144 | 5,117 |
+
+  On the tree an allocation that went wrong never recovered quickly: 32 of 74 took over 5
+  s, up to 42 minutes, and 15 were killed by the guest's own OOM killer (`memory.events`
+  `oom 0 oom_kill 1` of its cgroup, the kernel's `testguest invoked oom-killer`, its
+  `memory.peak` 541 MB of a `memory.max` of 1 GiB). A give-back's keep is twice what the
+  run uses (`memory.current`) past what its microVM booted with, in 128 MiB blocks, and
+  its peak since the pass before; the grower asks for twice what its guest has (MemTotal),
+  which counts the kernel's own and init's memory besides the run's. Raised to 1 GiB and
+  held at its hold, the run had the grower plug 128 MiB for the allocation; a pass of the
+  host's pressure between its coming and the allocation's touching it found the run's use
+  where it had been and its keep a block short, took the block back and held the run at
+  what it would have after; the run grew into its hold, the grower plugged the block again,
+  and the next pass, 50 ms on, took it again, until an unplug left the guest's kernel
+  without free memory as the allocation faulted, and its OOM killer ended it.
+- **Consequence (D188).** The grower marks each ask and each block that comes (init plug.rs
+  `mark_growth`, in the page init shares with its grower and builtins), and a give-back
+  that finds a mark within the window the host's pressure is measured over (2 s,
+  `shards_abi::PRESSURE_WINDOW_US`, the PSI trigger's window, D188) keeps all it has. 0 of
+  2,000 raised allocations killed, against 15 of 74 (under 3 in 2,000 at 95%).
+- **The rest, a tail.** 6 of the 2,000 took 5.1 to 5.4 s, the grower's `STALLED` (5 s) and
+  its second ask, as 3 and 4 of two runs of 1,000 did at 49ee67a5 with an ask and a
+  give-back's request serialized besides (a lock in the shared page, which changed nothing
+  and is not kept), and 5 of 1,992 rounds of a privileged run (whose exec may read its
+  guest's kernel log), all five after the host's free memory fell to 5 to 8 GB of 64
+  under other agents' work. The guest's kernel said why, at the grower's second ask:
+  `943718400 bytes asked for, 354418688 came in 5 s; ... requested size: 0x38400000;
+  plugged size: 0x30000000; requested size: 0x2e00000`, then `plugged size: 0x15200000,
+  requested size: 0x38400000`. The round before had ended lowering the run to `-m 256m`,
+  its device's request to 46 MiB (0x2e00000, what is pluggable under 256 MiB); its driver
+  was still unplugging 768 MiB down to it when the raise's ask for 900 MiB came, and went
+  on unplugging (to 338 MiB) for the 5 s before the second ask. Linux's driver stops for a
+  changed request between its requests to the device and between its tries to take a
+  range (drivers/virtio/virtio_mem.c `virtio_mem_send_unplug_request`,
+  `virtio_mem_fake_offline`: `config_changed`, then `-EAGAIN` back to
+  `virtio_mem_run_wq`), but not inside one: a memory block it offlines whole
+  (`offline_and_remove_memory`) migrates every page of it, and `offline_pages`
+  (mm/memory_hotplug.c) retries until it is done or its thread has a signal pending, which
+  a kworker never has; a guest at its hold, allocating, has little free memory to migrate
+  to, and a host short of memory runs it slowly. Read in Linux 7.2-rc4's source, not
+  checked against the pinned 6.18.48's; where in its unplug the driver was is not
+  recorded. Nothing of shards' asks is lost: the grow waits on the unplug before it. Not
+  fixed here: an unplug that gives way to a grow is a change to the guest kernel's
+  driver, and a new kernel pin (D148's patches).
+
+### M495. A start on a contended Windows host: WHP's vCPUs at THREAD_PRIORITY_ABOVE_NORMAL (D191)
+
+- **Question.** D191's Windows candidate (`platform::windows_thread`) runs each vCPU thread
+  and device worker a step above normal priority, base 9 against the host's threads' 8,
+  back to normal while one uses more than half of its CPU. On Linux a woken vCPU waited for
+  the busy thread on its CPU to run its slice out, and a contended start's guest part took
+  20.8 ms at p50 where 9.2 with the shortest slice (M440). Does a WHP vCPU wait so behind
+  a Windows host's busy threads, or does the boost Windows gives a thread whose wait is
+  satisfied (Microsoft, Priority Boosts) give it its CPU already?
+- **Method.** 2026-11-07 and 08. Release builds of p/parity-step14, each as built and with
+  `cpu-elastic/winnone.patch` (the candidate left out: every vCPU thread and device worker
+  at the priority it starts at); `cpu-elastic/phases.py` (its Windows path:
+  `--affinity` holds the harness and so its runs, daemons, VM processes and busy loops to
+  those CPUs, SetProcessAffinityMask, inherited by each child; the loops Python's), `run
+  --rm --cpus 1 alpine true`, 20 rounds of 5 starts after a warmup, the two arms alternating
+  each round, n 100 a side, each pair its own run; and the patched build against itself, one
+  home's vCPU threads raised from outside by `cpu-elastic/winslice.py`. Two hosts:
+  - CI's windows-2025 (`.github/workflows/windows-wake.yml`, run 42435846541 at 3efe4190):
+    an Intel Xeon Platinum 8370C at 2.80 GHz, 4 CPUs, Windows Server 2025 10.0.26100, the
+    hypervisor's root scheduler (its launch event's scheduler type 0x4), nothing else of
+    note running; 4 busy loops on its 4 CPUs, or none.
+  - jupiter (AMD Ryzen AI Max+ 395, 32 CPUs, Windows 11 Pro 10.0.26200, root scheduler
+    0x4), e2820ce9, shared with other agents' work; `--affinity f` (CPUs 0 to 3) and 4
+    loops, or none; `--affinity ffff` and 16 loops. Its kernel (the System process) took 21
+    to 29 of its 32 CPUs for hours at a time on both days (`\Process(System)\% Processor
+    Time`; the hypervisor's root virtual processors 70% run, no other partition running a
+    virtual processor), gone after each restart of its kiln runner and back later; each
+    pair below says which.
+- **Found, first: a held daemon's microVMs had every CPU of the host.** At 8a13e492, with
+  `--affinity f`, each VM process had 32 vCPU threads on its 4 CPUs (winslice.py: "at most
+  32 vCPU threads a VM process; the first VM process's affinity 0xf"): `resources::host_cpus`
+  took `available_parallelism`, which on Windows reads no affinity mask ("may overcount the
+  amount of parallelism available when limited by process-wide affinity masks", its
+  documentation), where on Linux it reads sched_getaffinity(2), as M440's `taskset -c 0-3`
+  gave a microVM of 4. Fixed (e2820ce9): on Windows `host_cpus` counts the process's
+  affinity mask (GetProcessAffinityMask), held by resources'
+  `a_microvm_has_the_cpus_its_daemon_may_run_on` on Linux and Windows (CI 42429865659); every
+  pair below but the last row's is of builds with it, a microVM of 4 vCPUs on 4 CPUs.
+- **Results** (ms, p50 (p90), p99, which at n 100 is the max, phases.py taking the
+  sample at index ⌊0.99 n⌋ of the sorted 100; `start` the request to the command
+  executing, `command` its run, `wall` the client's, as phases.py takes them; winnone → as
+  built unless said):
+
+  | host, case | wall | start | start p99 | command |
+  |---|---|---|---|---|
+  | windows-2025, 4 busy loops | 715.64 (1,039.95) → 646.40 (902.24) | 217.09 (365.94) → **8.20 (31.43)** | 453.96 → 45.08 | 49.10 (119.83) → 1.13 (1.87) |
+  | windows-2025, 4 busy loops, again | 781.48 (1,030.80) → 685.13 (919.44) | 336.51 (489.53) → **10.13 (34.19)** | 680.90 → 78.91 | 67.84 (104.95) → 1.33 (2.12) |
+  | windows-2025, 4 busy loops: winnone, then raised from outside | 856.68 (1,056.53) → 719.49 (939.05) | 351.90 (469.48) → **8.73 (57.41)** | 590.90 → 159.72 | 77.40 (126.33) → 1.42 (1.99) |
+  | windows-2025, idle | 323.04 (633.04) → 332.97 (606.38) | 49.85 (184.19) → 21.96 (65.09) | 286.07 → 112.06 | 5.60 (42.62) → 1.76 (2.75) |
+  | jupiter quiet (System 0.03 to 0.22 cores), 4 CPUs, 4 busy loops | 582.80 (1,186.68) → 588.70 (1,216.92) | 241.45 (927.65) → 293.28 (1,130.25) | 2,898.78 → 4,025.59 | 14.63 (216.73) → 11.30 (128.44) |
+  | jupiter quiet, 4 CPUs idle | 283.99 (604.89) → 323.15 (561.99) | 44.13 (213.55) → 56.34 (231.88) | 498.26 → 377.69 | 2.44 (22.50) → 3.00 (34.60) |
+  | jupiter quiet, 4 busy loops: winnone, then raised from outside | 571.68 (1,006.88) → 524.87 (907.23) | 217.68 (520.30) → 224.55 (448.36) | 873.57 → 641.95 | 18.90 (114.78) → 44.64 (176.26) |
+  | jupiter quiet, 16 CPUs, 16 busy loops | 1,221.42 (2,379.64) → 1,359.40 (2,245.22) | 513.51 (1,116.49) → 549.82 (1,221.38) | 1,579.10 → 2,372.87 | 81.80 (511.50) → 130.82 (438.33) |
+  | jupiter, its kernel at 24 to 29 cores, 4 CPUs, 4 busy loops | 2,028.53 (3,483.37) → 1,540.18 (2,998.99) | 1,347.30 (2,656.86) → 932.75 (2,259.67) | 7,036.11 → 4,436.14 | 160.67 (650.42) → 132.66 (624.66) |
+  | jupiter, its kernel at 25 to 29 cores, 4 CPUs idle | 1,410.29 (3,871.95) → 1,323.83 (4,182.29) | 422.48 (1,870.04) → 323.42 (2,731.15) | 7,176.28 → 4,716.76 | 12.81 (427.30) → 17.16 (555.07) |
+  | jupiter, its kernel at 24 to 29 cores, 4 busy loops: winnone, then raised from outside | 2,141.44 (4,506.37) → 2,180.40 (4,000.42) | 1,393.60 (3,351.35) → 1,375.13 (3,276.14) | 5,521.49 → 4,738.76 | 175.69 (807.88) → 181.62 (835.95) |
+  | jupiter quiet, 8a13e492 (32 vCPUs on 4 CPUs), 4 busy loops | 760.64 (2,967.60) → 691.47 (2,366.64) | 550.47 (1,942.76) → 463.20 (1,833.65) | 14,203.13 → 7,625.13 | 18.82 (639.79) → 29.00 (367.03) |
+
+- **Reading.** On windows-2025 a WHP vCPU woken on a CPU a busy thread holds waits for it,
+  as Linux's did: with its vCPUs at the priority they start at, the guest's part of a
+  contended start took 217 and 337 ms at p50, at ABOVE_NORMAL 8.2 and 10.1, the command's
+  run 49 to 68 ms where 1.1 to 1.3, the tail (p99) a tenth. Raised from outside, the same
+  (8.73): the priority, nothing else of the build. Windows' wake boost does not give them
+  their CPU. Idle the start is shorter too (49.9 where 22.0 at p50). The wall gains less
+  than the start, 70 to 137 ms, its other parts the client's and the removal's. On jupiter
+  neither the build nor the raise from outside moved a start by more than its spread, quiet
+  or under its kernel's load: its starts, idle ones too (44 to 56 ms at p50, p90 four to
+  five times that), are held by something this harness does not see, which the vCPUs'
+  priority does not reach; what it is was not found.
+- **Consequence.** D191's Windows policy, kept: vCPU threads and device workers at
+  THREAD_PRIORITY_ABOVE_NORMAL with their governor (`platform::windows_thread`), which
+  shortens a contended start where a busy thread holds the vCPUs' CPUs (windows-2025) and
+  costs nothing measured where it does not (jupiter); the hold's governor at TIME_CRITICAL
+  as before (M294). And a daemon held to some CPUs gives its microVMs those alone on Windows
+  as on Linux (D125, e2820ce9). Harness: `cpu-elastic/phases.py`, `winslice.py`,
+  `winnone.patch`, `.github/workflows/windows-wake.yml`.
+
+### M496. A restart over the kept layer against packing it, on macOS and Windows (D190)
+
+- **Question.** D190's restart goes over a stopped container's kept layer file where it
+  holds 5 MiB or more and packs and puts it back below, where Linux's two restarts cross
+  (M443). Do macOS's and Windows' cross there too?
+- **Method.** `docs/research/measurements/layer-kept/ab.py OLD NEW` (M278's harness, as
+  M443 ran it): release builds of p/parity-step14 with `layer-kept/pack.patch` (OLD: every
+  kept layer packed and put back) and `layer-kept/over.patch` (NEW: every one gone over),
+  each with a home of its own, interleaved; a container writes that many bytes, ends, and
+  `start -a` runs it again; n after one round not counted.
+  - macOS: adas-mac-studio (Apple M3 Ultra, 32 CPUs, macOS 26.4, APFS), 8a13e492,
+    2026-11-07; its load 4 to 27 as they ran (other work on it).
+  - Windows: jupiter (AMD Ryzen AI Max+ 395, 32 CPUs, Windows 11 Pro 10.0.26200, NTFS),
+    e2820ce9, 2026-11-08, its kernel quiet (the System process 0 to 0.08 cores, the
+    processor queue 0 at the start and the end); and a first run at 8a13e492 on 2026-11-07
+    while its kernel took 21 to 29 of its 32 CPUs (M495), cut off after 8 MiB.
+- **Found** (`start -a` ms at p50 (p90), OLD → NEW, NEW less OLD at p50):
+
+  | written | macOS, n 20 | macOS, n 40 | macOS, n 40 again | Windows quiet, n 20 | Windows, kernel busy, n 20 |
+  |---|---|---|---|---|---|
+  | 0 | 32.52 (37.93) → 39.99 (51.91), +7.47 | 35.96 (37.06) → 44.67 (51.32), +8.71 | 41.40 (47.60) → 48.89 (55.91), +7.49 | 88.66 (152.12) → 321.55 (482.10), +232.89 | 139.51 (327.82) → 368.06 (513.23), +228.55 |
+  | 1 MiB | 39.74 (44.76) → 45.59 (53.53), +5.85 | | | 182.17 (265.71) → 319.86 (382.09), +137.69 | 381.85 (823.39) → 706.19 (1,736.96), +324.34 |
+  | 2 MiB | 43.41 (45.77) → 50.18 (55.64), +6.77 | | | 243.61 (317.63) → 344.20 (362.40), +100.59 | 512.77 (676.16) → 589.68 (834.94), +76.91 |
+  | 4 MiB | 53.32 (56.39) → 58.11 (61.77), +4.79 | 69.81 (92.41) → 73.80 (89.29), +3.99 | 64.37 (69.27) → 65.82 (71.17), +1.45 | 494.89 (775.57) → 652.89 (891.73), +158.00 | 685.70 (1,000.93) → 748.36 (985.50), +62.66 |
+  | 6 MiB | | 96.53 (125.21) → 97.97 (139.09), +1.44 | 77.38 (81.77) → 78.75 (86.40), +1.37 | | |
+  | 8 MiB | 78.10 (97.43) → 78.01 (95.69), -0.09 | 115.07 (120.50) → 112.71 (116.55), -2.36 | 78.39 (84.06) → 78.10 (86.03), -0.29 | 824.35 (946.69) → 822.56 (900.11), -1.79 | 1,863.65 (8,670.62) → 1,118.65 (1,625.98), -745.00 |
+  | 12 MiB | | 197.43 (422.18) → 145.52 (283.30), -51.91 | 97.77 (102.78) → 95.63 (100.22), -2.14 | | |
+  | 16 MiB | 177.09 (234.95) → 149.12 (197.61), -27.97 | 125.95 (145.31) → 118.20 (134.18), -7.75 | 124.28 (130.01) → 113.45 (120.48), -10.83 | 1,612.55 (1,677.04) → 1,344.67 (1,450.10), -267.88 | |
+  | 32 MiB | 190.19 (231.17) → 163.40 (291.93), -26.79 | | | 3,126.39 (3,431.87) → 2,205.23 (5,006.59), -921.16 | |
+
+  The lines between the last size packing was quicker at and the first going over was
+  meet at 7.93, 6.76 and 7.65 MiB on macOS, 7.95 on quiet Windows (4.31 with its kernel
+  busy). A fourth macOS run, n 100 at 0, 4, 5, 6, 7, 8, 10, 12 and 16 MiB as its load rose to
+  15, had packing quicker at 0 to 7 MiB by 1.7 to 8.1 ms and the two within 7 ms of each
+  other from 8 on, while its times at a size moved by more than their difference from size
+  to size (8 MiB 228 ms, 12 MiB 153): not kept. `diff` of the stopped container was
+  quicker gone over at every size on both, `run` and `commit` alike between the builds.
+- **Again, with their tails** (2026-11-08): the runs above printed each p99 and max, which
+  this record did not keep, so the two hosts ran once more, the same builds (the Mac's
+  8a13e492 pair; jupiter's e2820ce9 pair from windows-binaries.yml's run 42429865706), ms
+  p50 (p90, p99 = max: ab.py takes the sample at index ⌊0.99 n⌋, the last at n 20 and 40):
+
+  | written | macOS, n 40, load 19 to 23 | Windows quiet, n 20 (System 0.08 to 0.09 cores, queue 0) |
+  |---|---|---|
+  | 0 | 41.99 (89.31, 174.18) → 48.40 (113.37, 218.71), +6.41 | 79.60 (115.06, 328.55) → 318.76 (448.66, 468.23), +239.16 |
+  | 1 MiB | | 162.27 (268.11, 300.97) → 317.79 (335.23, 349.38), +155.52 |
+  | 2 MiB | | 225.30 (261.79, 297.49) → 325.42 (350.99, 376.57), +100.12 |
+  | 4 MiB | 64.60 (110.86, 167.12) → 69.09 (115.27, 205.89), +4.49 | 373.50 (542.32, 546.24) → 402.48 (632.31, 648.23), +28.98 |
+  | 6 MiB | 75.54 (117.18, 165.58) → 73.15 (125.44, 195.31), -2.39 | |
+  | 8 MiB | 88.53 (110.50, 165.61) → 79.44 (134.62, 166.99), -9.09 | 776.61 (796.54, 810.70) → 774.51 (866.06, 871.60), -2.10 |
+  | 12 MiB | 109.94 (169.89, 316.02) → 103.31 (166.52, 203.28), -6.63 | |
+  | 16 MiB | 136.19 (176.28, 206.52) → 120.15 (174.32, 220.29), -16.04 | 1,506.98 (1,566.92, 1,604.48) → 1,166.18 (1,336.36, 1,343.11), -340.80 |
+  | 32 MiB | | 3,065.68 (7,431.42, 12,126.22) → 2,371.70 (3,560.15, 7,386.60), -693.98 |
+
+  Their lines meet at 5.31 MiB on the loaded Mac, where its p90s overlap at every size to
+  12 MiB, and 7.73 on quiet Windows, beside its 7.95 above. A first Windows run that day
+  ended at 4 MiB as jupiter's disk filled (other work's; os error 112, the VM process's
+  mapped layer failing in-page, 0xC0000006): not kept. Going over's max is the longer at
+  every size to 8 MiB on both hosts and at 16 on the Mac; packing's at 12 on the Mac and
+  from 16 on Windows, its 32 MiB restart's 12.1 s.
+- **Reading.** Packing grows with what the layer holds on every host; going over costs a
+  restart about the same whatever it holds, more on macOS than on Linux (7.5 to 8.7 ms
+  more than packing an empty layer, against M443's 10.6 on a loaded Fedora) and far more on
+  Windows (233 ms), so they cross later there: at 7 to 8 MiB on both, where Linux's cross at
+  5.08. Windows' go-over cost is its own to find (the view swap around WHP's unmap and map
+  of the layer's range, D190; not measured step by step here).
+- **Consequence.** A crossing that moves from host to host (5.08 MiB on a Fedora, 6.8 to
+  7.9 on an M3 Ultra, 7.73 to 7.95 on jupiter) is no constant: each host learns its own
+  from its restarts (D190, `layers::Restarts`, an online least-squares line a way, decided
+  at the records' own spread), and these tables, with M443's, hold the estimator
+  (`a_restart_goes_the_way_this_hosts_restarts_say_is_quicker`: where it decides, the way
+  measured quicker; packing an empty layer, going over the largest). Harness: `layer-kept/ab.py`, `pack.patch`, `over.patch`.
+
+### M492. The longest string event ETW gives a session, by its buffers (D198, D163)
+
+- **Question.** The etwlogs driver writes each line as one EventWriteString event, and cut
+  lines in moby's copier's 16 KiB parts. Microsoft's documentation bounds an event at
+  "64KB - header" (ERROR_ARITHMETIC_OVERFLOW) and by the buffers of the sessions that listen
+  (ERROR_MORE_DATA), without saying the header's size or the most a session of the default
+  buffers takes. How long may an event's string be?
+- **Method.** `docs/research/measurements/etw-event-size` (`run.sh`, `src/main.rs`): a
+  provider of a GUID of its own registered, and, while a file-mode session started by
+  logman listens for it (one of logman's default buffers, one of 128 KB), the most UTF-16
+  units, its NUL among them, that EventWriteString takes, found by halves, then the answer
+  of each length around it. On jupiter (Windows 11 Pro 10.0.26200.9711, AMD Ryzen AI Max+
+  395, 32 CPUs), elevated, 2026-11-08, the harness of 68dfea28.
+- **Found.**
+
+  | session's buffers | most taken | one unit more |
+  |---|---:|---|
+  | logman's default (`Buffer Size: 8`, KB) | 4,020 units, 8,040 bytes | 234, ERROR_MORE_DATA |
+  | 128 KB | 32,724 units, 65,448 bytes | 534, ERROR_ARITHMETIC_OVERFLOW |
+
+  - ETW's own bound is 64 KiB less an 88-byte header; a session of logman's default
+    buffers loses every event past 8,040 bytes of string, which a session of bigger buffers
+    still has. A 16 KiB part of moby's, 32 KiB of UTF-16 and more, is lost whole to a
+    session of default buffers, as the logman command moby's documentation gives makes.
+- **So** (D163, D198): no one length serves every session, and ETW says which it gave an
+  event (ERROR_MORE_DATA) as it is written: the etwlogs driver learns the sessions' bound
+  from their answers as it runs, its first try ETW's stated 64 KB less an EVENT_HEADER.
+  `a_sessions_bound_is_learned_from_a_real_sessions_answers` holds that the learning ends
+  at what a real session of logman's default buffers takes; these numbers are its check,
+  not a constant of shards'. On jupiter it ended at 8,040 bytes, as found above (the tree of
+  this entry's commit, 2026-11-08).
+
+### M493. How long a dial of OpenSSH for Windows' agent waits for its pipe (D51)
+
+- **Question.** A build dials a client's SSH agent once for each connection a step makes;
+  on Windows OpenSSH's agent serves `\\.\pipe\openssh-ssh-agent` one instance at a time,
+  making the next once it has started a worker process for the last connection
+  (openssh-portable contrib/win32/win32compat/ssh-agent/agent.c, `agent_listen_loop`). A
+  dial that finds every instance busy waited for one as go-winio does, 2 s in all
+  (pipe.go's default, which BuildKit's call leaves). How long do dials wait, and how long
+  does the agent take to free each instance?
+- **Method.** `docs/research/measurements/ssh-agent-pipe`: N client threads started
+  together, each dialing the agent's pipe 100 times (50 at 128 clients) as `ssh::pipe`
+  dials it (anonymous to its server), waiting in WaitNamedPipe without end where all are
+  busy and dialing again as each is freed, then asking the agent for its identities
+  (SSH_AGENTC_REQUEST_IDENTITIES). Each dial's whole wait, each WaitNamedPipe's (the
+  agent's interval between instances) and each request's round trip. On jupiter (as
+  M492), OpenSSH_for_Windows_9.5p2's agent holding one ED25519 key, 2026-11-08, quiet but
+  for other agents' runs, the harness of 68dfea28.
+- **Found** (ms; busy dials those that found every instance busy):
+
+  | clients | busy dials: n | p50 | p90 | p99 | max | past 2 s | instance waits: n | p50 | p99 | max |
+  |---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+  | 1 | 0 | | | | | 0 | 0 | | | |
+  | 2 | 65 | 0.62 | 1.28 | 1.48 | 1.80 | 0 | 65 | 0.59 | 1.43 | 1.76 |
+  | 4 | 174 | 0.41 | 0.92 | 3.05 | 7.12 | 0 | 182 | 0.39 | 1.95 | 4.26 |
+  | 8 | 786 | 3.07 | 6.41 | 12.0 | 15.6 | 0 | 2,372 | 1.26 | 1.75 | 6.06 |
+  | 16 | 1,569 | 8.58 | 29.4 | 74.2 | 113 | 0 | 15,375 | 1.30 | 2.79 | 14.3 |
+  | 32 | 3,147 | 18.4 | 72.4 | 247 | 588 | 0 | 68,506 | 1.38 | 3.06 | 10.3 |
+  | 64 | 6,242 | 40.6 | 188 | 656 | 1,391 | 0 | 295,155 | 1.42 | 3.28 | 297 |
+  | 128 | 6,146 | 99.1 | 400 | 1,131 | 2,796 | 6 | 627,514 | 1.35 | 2.84 | 8.61 |
+
+  - Every dial reached the agent and every request was answered (7 to 8 ms at the median,
+    the agent's worker). A dial's whole wait grows with the clients ahead of it, past 2 s
+    at 128 clients, where go-winio's dial fails; the agent's interval between instances
+    does not grow: 1.4 ms at the median at every count, 297 ms at most once.
+- **So** (D51): no fixed wait holds whatever the clients ahead of a dial: a dial follows
+  the agent, dialing again as each instance is freed, each wait the agent's pipe's own, and
+  ends as the agent serves it or goes, with no time of shards'.
+
+### M494. What a long line's parts cost, and what the journal and os_log keep whole (D163, D166, D199)
+
+- **Question.** The shipper cuts a long line in parts as long as each driver's receiver
+  takes (D163) where it cut every line at moby's copier's 16 KiB. What does cutting cost it,
+  where a part is asked whether it fits as written? And are the bounds the journald and
+  oslog drivers cut at their receivers' on the hosts shards runs on?
+- **Method.**
+  - `daemon::ship::tests::what_cutting_a_long_line_costs` (`cargo test -p shards --bin
+    shards --profile test-release -- --ignored --nocapture what_cutting`): a line of 1 MiB cut
+    30 times each way: in 16 KiB parts, no fit asked; in syslog's parts (8,092 bytes), no
+    fit asked; and in the longest GELF UDP messages that 128 chunks carry (the driver's
+    part, each asked to fit), uncompressed and by gzip, of one byte repeated and of random
+    bytes. The time of a line, n, p50, p90, p99, max. On kiln-a094a12d (Fedora 44, Linux
+    6.19.10, x86_64, 32 CPUs, 62 GiB; load average 15 beside CI jobs), 2026-11-08, the
+    tree of this entry's commit.
+  - `docs/research/measurements/journald-parts/run.py` on kiln-a094a12d (systemd 259,
+    LineMax as shipped, `#LineMax=48K`): a 100,000-byte line written to the journal as a
+    program's output (systemd-cat), and native entries (a datagram each, as the driver
+    sends one) of 49,152 to 200,000 bytes, each read back with journalctl.
+  - `docs/research/measurements/macos-log/run.sh` (M374's) on adas-mac-studio (Apple M4 Max,
+    macOS 26.2).
+- **Found.**
+  - Cutting a 1 MiB line (ms a line, n=30):
+
+    | how | host | parts | p50 | p90 | p99 | max |
+    |---|---|---:|---:|---:|---:|---:|
+    | 16 KiB parts, no fit asked | Fedora | 64 | 0.85 | 1.71 | 3.01 | 3.01 |
+    | syslog's parts, no fit asked | Fedora | 130 | 2.91 | 3.94 | 4.09 | 4.09 |
+    | gelf udp, none, one byte | Fedora | 6 | 3.54 | 3.67 | 5.54 | 5.54 |
+    | gelf udp, gzip, one byte | Fedora | 6 | 3.73 | 3.81 | 3.84 | 3.84 |
+    | gelf udp, gzip, random | Fedora | 9 | 483 | 554 | 597 | 597 |
+  - A part that fits as its driver's part says costs one ask, a message written once, as
+    moby's are. One that does not (bytes gzip cannot shrink, a line JSON escapes at length)
+    is found by halves, its message written about 18 times: 0.48 s of the shipper's CPU a
+    MiB of random bytes over gelf's UDP and gzip, on the shipper's own thread, the store
+    holding what it has not yet sent (D162).
+  - The journal cut the program's 100,000-byte line into entries of 49,152, 49,152 and
+    1,696 bytes, its LineMax; its native entries of 49,152, 65,536, 150,000 and 200,000
+    bytes it kept whole. LineMax is the journal's own cut of any program's output, not the
+    most it keeps of an entry.
+  - os_log on the Mac Studio's macOS 26.2 kept lines of 1,008 to 1,015 bytes whole, and
+    of 1,016 to 1,024 its first 1,015 bytes and `<…>`, as M374 found on macOS 26.4.1.
+- **So** (D163): journald's parts are the host's journal's LineMax as configured, read as
+  the journal reads its configuration while shards runs (its default, 48K, where none sets
+  it), so that a run's lines are in the journal as any program's are; this run checks the
+  reading, not a number to keep. oslog's 1,015 bytes is os_log's as measured, below the
+  1,024 os/log.h states, still a measured constant (open).
+
+### M468. Flakes: the CLI killed at launch, as a home's first client, 100,000 launches on an M3 Ultra (the flakes goal, M322)
+
+- **Question.** The one `shards pull` ended by a signal in 17 ms (2026-10-06) was a test's
+  first command in its home, the client that starts the home's daemon; M322 launched the
+  CLI 200,000 times, but as a home's first client only 8 times, each other launch a client
+  of a daemon already serving. Does a first client, starting its daemon, or the `shards
+  stop daemon` that ends it, end by a signal on a loaded Mac?
+- **Method.** docs/research/measurements/launch-stress/launch.rs's `fresh` mode (added
+  here): each launch the first client of a home of its own (`ps -q`, `images -q` or `ps
+  -aq`; its daemon started by it, D26), then `shards stop daemon` in that home, the home
+  removed after; each ending counted. 50,000 such pairs from 8 threads, the copy of
+  `shards` placed as the tests place theirs (written beside, renamed into place), beside
+  the grant-stall campaign's fleet rounds (M469) and 16 busy loops, another agent's E2E
+  tests on the same host besides (load 30 to 88), on an Apple M3 Ultra (32 CPUs, 96 GiB,
+  macOS 26.4, 25E246) at a8c4602f, 2026-11-08.
+- **Results.** 50,000 first clients exited 0 and 50,000 stops exited 0; none ended by a
+  signal, none exited otherwise. A first client's launch, its daemon's start in it: n
+  50,000, p50 22.95, p90 31.72, p99 45.27, max 172.20 ms.
+- **Consequence.** None found: with M322, no launch of 300,000 ended by a signal, 100,000
+  of them a home's first client or its daemon's stop (under 3 in 100,000 at 95% for
+  those). Its cause is not found, nor ruled out on 2026-10-06's tree: since then every
+  child the daemon makes comes from its spawner (M158), and a pid it holds is not
+  signalled once the spawner that made it has gone (`shards_ipc` `Child::kill`), which
+  keeps the daemon from signalling a pid another process has taken; no failed test since
+  has recorded a killing signal (`Run::signal`).
+
+### M469. Flakes: the macOS VM grant stall, none in 31,200 runs on an M3 Ultra (D30, M326)
+
+- **Question.** M326 found no grant stall in 115,440 runs on an M5 Max beside full gates.
+  Does a VM process stall before or between its asks on other Apple silicon, loaded
+  otherwise?
+- **Method.** docs/research/measurements/vm-grant-stall/campaign.sh, 30 rounds of the fleet
+  (FLEET_SIZES=10 FLEET_BURST=16 FLEET_ROUNDS=60, 1,040 runs a round), each round's daemon
+  saying the VMs it saw stall (it samples one that has asked nothing for 10 s), beside 16
+  busy loops, M468's 100,000 launches for its first 4 minutes and another agent's E2E
+  tests (load 30 to 88), on the M3 Ultra of M468 (32 CPUs, macOS 26.4) at a8c4602f,
+  2026-11-08, its tests run from a kiln runner's session.
+- **Results.** 30 rounds, 31,200 runs: no stall said, none failed. Starts, the median of
+  the rounds' own figures and the most of them, ms:
+
+  | runs | a round | p50 | p90 | p99 | max |
+  |---|---|---|---|---|---|
+  | first (pull, boot, save) | 10 | 384.6 | 406.6 | 454.4 (most 1,256.8) | 1,256.8 |
+  | second (restore) | 10 | 20.2 | 27.6 | 33.2 (most 40.2) | 40.2 |
+  | one at a time | 60 | 18.4 | 23.6 | 26.9 (most 153.6) | 232.3 |
+  | bursts of 16 | 960 | 76.0 | 130.8 | 220.8 (most 615.4) | 638.2 |
+
+- **Consequence.** None in the code: with M326, no stall in 146,640 runs on two Macs (under
+  3 in 146,640, one in 48,880, at 95%). The stall was never caught with its stacks; its
+  two suspects' fixes (M315's held templates, M317's governor) came before every run since
+  and of either, which ended it is not shown.
+
+### M470. A pooled run's hand-over held by its warm VM's descriptor table growing (D26)
+
+- **Question.** The start target is a request to a usable microVM in under 5 ms. On Fedora
+  the image bench's pooled run (`run_template`, `exit 0` from the E2E image) took 22.3 ms at
+  p50 (n 100 over 5 templates, at 2d2a783a, load 15), and its guest's own part
+  (`template_start`, the request to the command executing) 5.6 ms of it. Where does the
+  rest go?
+- **Method.** `docs/research/measurements/start-path`: `trace.patch` makes every process's
+  timing clock the host's monotonic clock and has the client, the daemon's slot and
+  handling threads and the warm VM write each step of a run (its request written, read
+  whole, handled, a VM acquired, its network process told, the run sent, read by the VM,
+  TAKEN); `trace.py` spawns pooled `shards run --pull never alpine true`, n 100 after 5
+  warm-ups, a 0.3 s pause after each, and splits each from its client's spawn to its reap.
+  Then the warm VM's threads sampled through the hand-over (`/proc/PID/task/*/stat` and
+  `wchan`, every few tens of µs; `schedstat`), and its `FDSize` idle and during a run.
+  Fedora 44, Linux 6.19.10-300.fc44 (M258's Intel Core i9-14900HX, 32 CPUs, THP
+  `madvise`), other agents' builds and VMs running throughout, 2026-11-08. Each microVM
+  has a vCPU per host CPU (D191): 32.
+- **Found.** The hand-over (the daemon's send of the run to the warm VM's read of it) took
+  13.4 ms at p50: the VM's thread that reads the run sat in `__wait_rcu_gp` (state D) 8.1
+  to 12.8 ms of it, and was on a run queue for at most 35 µs (`schedstat`). An idle warm VM
+  held 64 descriptors, its first table's all (`FDSize: 64`); its run's brought it to 73
+  (`FDSize: 128`), in 3 of 4 VMs looked at, the fourth's table at 128 already, whose
+  hand-over took 30 µs. Linux grows the descriptor table of a process whose threads share
+  it only after an RCU grace period (fs/file.c `expand_fdtable`: `synchronize_rcu()` when
+  `files->count > 1`), which on this host took the time above.
+- **The change.** Each warm VM takes and lets go of `2 × shards_ipc::MAX_FDS` descriptors
+  (as many again as a run's message brings at most, for the clones and connections its
+  start makes) before it says READY (warm.rs `reserve_descriptors`): its table grows while
+  it idles, and never shrinks.
+- **Results.** trace.py, baad0965 (before) against 48c8ad1d (the change), each with
+  trace.patch, one after the other on one home, load 20 to 26; ms:
+
+  | step | before p50 | p90 | p99 | max | after p50 | p90 | p99 | max |
+  |---|---|---|---|---|---|---|---|---|
+  | hand-over | 13.53 | 18.93 | 24.51 | 24.51 | 0.14 | 0.17 | 0.27 | 0.27 |
+  | its read by the VM | 13.44 | 18.75 | 24.41 | 24.41 | 0.04 | 0.07 | 0.11 | 0.11 |
+  | spawn to usable | 19.17 | 24.85 | 29.69 | 29.69 | 5.82 | 7.29 | 66.91 | 66.91 |
+  | spawn to reap | 21.11 | 26.89 | 36.94 | 36.94 | 7.82 | 9.94 | 69.26 | 69.26 |
+
+  `build-ab/ab.py`, release builds, 2d2a783a against 86e41c99 (the change and the
+  integration's work since), each its own home, pooled `run --rm alpine true`, both in
+  turn, n 150 pairs, the host's load 64 throughout: wall 33.9 (p90 53.6, p99 373.5, max
+  380.2) against 18.9 ms (39.8, 205.0, 871.0), paired median −15.1 ms [95% −16.1, −13.0];
+  outside the guest −14.8 [−15.5, −13.7]; the command's own time +0.6 [−0.6, +1.5], tied.
+  The 66.9 and 69.3 ms maxima after are one run whose daemon took 61 ms from its handling's
+  start to a VM in hand.
+- **Where the rest goes** (after the change, with cpu-elastic/markers.patch too, n 100,
+  load 30; p50, ms): the client's launch, spawn to its `main` 1.57 (a 160 MB PIE binary's:
+  `/usr/bin/true` spawns and exits in 0.57, a small Rust program in 0.71, `shards
+  --version` 1.53, with 180 more page faults, 125 of them its 500 KB of relocated
+  read-only data copied); the client to its request written 0.37; the slot's read and
+  bridge 0.18; the daemon's handling to a VM 1.14 (the run prepared 0.55, its container
+  made 0.19, its request kept 0.13, the rest 0.20); its network told 0.07; the hand-over
+  0.17; the guest's start of the command 3.53: init's taking of the request 0.49, the
+  hostname's files 0.35 and 0.13, the standby woken 0.39 and its setup 0.16, and the
+  command's exec until init hears it 1.67 (`m16`).
+- **Reading.** Most of a pooled run's time on this host was one RCU grace period in its warm
+  VM, from a table one descriptor short. Without it a run is usable 5.8 ms after the
+  user's request at p50 on a host at load 20 to 30, the start target's 5 ms not yet met:
+  the guest's start of the command (3.5) and the client's launch (1.6) are most of it.
+- **Consequence.** D26: a warm VM makes room in its descriptor table for its run before
+  READY. Tested: daemon.rs `a_warm_vms_run_starts_without_growing_its_descriptor_table`
+  (a pool's VM's `FDSize` the same as its run starts as while it waited, Linux), on
+  Fedora. Harness: start-path/trace.py and trace.patch.
+
+### M471. Where the start and memory targets stand on Fedora: the image bench and the Firecracker comparison (D25, D26)
+
+- **Question.** CLAUDE.md's targets: a request to a usable microVM under 5 ms, boot
+  included, and less memory per VM than Firecracker. Where does the current build stand,
+  by the committed benches?
+- **Method.** Fedora 44, Linux 6.19.10-300.fc44, M258's Intel Core i9-14900HX (32 CPUs, THP
+  `madvise`), other agents' builds, clusters and VMs running throughout (each run's load
+  below), 2026-11-07 and -08. `cargo bench -p shards --bench image -- --runs 100
+  --templates 5` (with `template_usable`, the client's spawn to the command executing,
+  less the VM's own clock from WORKLOAD_STARTED to the status read: an upper bound); and
+  `--bench firecracker -- --runs 30` (Firecracker v1.17.0, the pinned kernel
+  vmlinux-6.18.48-x86_64-64a9427a8997, one initrd, 1 vCPU, 128 MiB, the two VMMs
+  interleaved; density 16 VMs a VMM, rounds S F F S S F F S), with `scripts/bench-envelope`.
+  At 2d2a783a (before M470) and 86e41c99 (after it, with the integration's work since).
+- **Results, the image bench** (µs; the microVM a vCPU per host CPU, D191):
+
+  | revision (load) | row | p50 | p90 | p99 | max |
+  |---|---|---|---|---|---|
+  | 2d2a783a (14.5) | run_template | 22,321 | 30,905 | 37,809 | 46,390 |
+  | | template_usable | 21,324 | 27,972 | 36,185 | 42,434 |
+  | | template_start | 5,589 | 6,394 | 11,516 | 21,977 |
+  | | run_cold | 249,087 | 424,361 | 720,943 | 1,436,650 |
+  | 86e41c99 (86) | run_template | 19,297 | 33,493 | 242,238 | 248,923 |
+  | | template_usable | 15,615 | 28,927 | 234,552 | 245,112 |
+  | | template_start | 5,287 | 12,325 | 22,082 | 87,659 |
+  | | run_cold | 1,447,281 | 1,893,914 | 2,269,459 | 2,476,815 |
+
+  The second run's host was overloaded (load 86 at its end): its rows say what an overloaded
+  host does, not the build. M470's trace, at load 20 to 30, has the start's own steps.
+- **Results, the comparison** (p50, shards against Firecracker; the envelope's paired median
+  difference [95%]):
+
+  | revision (load) | metric | shards | Firecracker | difference | verdict |
+  |---|---|---|---|---|---|
+  | 2d2a783a (15) | boot: spawn to ready | 90.4 ms | 96.5 ms | −7.9 [−21.8, +21.1] | tied |
+  | | boot: PSS | 54.3 MiB | 54.7 MiB | −0.8 [−1.0, −0.1] | better |
+  | | boot: outside guest memory | 2.0 MiB | 2.5 MiB | −0.5 | better |
+  | | restore: spawn to first beat | 9.1 ms | 10.4 ms | −1.6 [−2.1, −1.2] | better |
+  | | restore: PSS | 4.9 MiB | 12.6 MiB | −7.7 | better |
+  | | restore: outside guest memory | 2.0 MiB | 2.8 MiB | −0.8 | better |
+  | | 16 VMs: PSS a VM | 1.2 MiB | 1.7 MiB | −0.5 [−0.5, −0.5] | better |
+  | | 16 VMs: host memory a VM | 5.8 MiB | 0.0 MiB | +5.8 [+0.0, +15.2] | tied |
+  | 86e41c99 (85) | boot: spawn to ready | 205.5 ms | 168.3 ms | +27.5 [+1.3, +71.0] | worse |
+  | | boot: PSS | 53.0 MiB | 54.2 MiB | −1.1 [−1.6, −0.9] | better |
+  | | restore: spawn to first beat | 12.1 ms | 24.9 ms | −8.7 [−16.5, −7.3] | better |
+  | | restore: PSS | 4.9 MiB | 12.9 MiB | −8.0 | better |
+  | | 16 VMs: PSS a VM | 1.2 MiB | 1.8 MiB | −0.6 [−0.6, −0.6] | better |
+  | | 16 VMs: host memory a VM | 2.4 MiB | 15.1 MiB | −10.9 [−17.8, −4.6] | better |
+
+  Every other memory row (peak RSS, anonymous and file-backed RSS and PSS, page tables)
+  is better or tied in both runs. The boot's p90 was shards' 206.4 against 127.7 ms at load
+  15, its time outside the guest (the VMM's spawn and setup, the kernel's start) 164.5
+  against 51.0 ms at p90: under load the spawn of shards' VM process goes slower than
+  Firecracker's; at load 85 its median too. The 16 VMs' host memory (MemAvailable given
+  up) moves by more than the VMs' own between rounds on this host; tied, then better.
+- **Also: DAX windows on Linux 6.19.** M463 found a bind's DAX window (D189) on adacachy2
+  (CachyOS, Linux 7.3.3) read 64 MiB at 9.5 MiB/s, 513 µs an open, a 4 KiB read and a
+  close. The same test (`what_a_clients_bind_costs`, 3 rounds, 86e41c99) here, load 40 to
+  65: the machine's own bind with DAX 111 to 201 µs at p50 an open, read 122 to 577 MiB/s;
+  FUSE alone 146 to 257 µs, 99 to 383 MiB/s. Not this kernel's or this host's: open on
+  adacachy2.
+- **Reading.** Memory: on every axis the comparison measures, booted, restored and held 16
+  at once, a shards VM holds less than Firecracker's (16 VMs: 1.2 against 1.7 to 1.8 MiB
+  of PSS a VM); the VMM's own memory outside its guest's 1.9 to 2.0 against 2.5 to 2.8 MiB,
+  glibc gone from it (M281). The start target is not met on Fedora: M470's fix took a pooled
+  run's usable from 19.2 to 5.8 ms at load 20 to 26; the rest is the guest's start of the
+  command and the client's launch. A boot's spawn under heavy load is slower than
+  Firecracker's: open.
+
+### M484. What a microVM's restart and an idle microVM cost their host (D219)
+
+- **Question.** A restart's wait was dockerd's figures (100 ms doubling to a minute). What
+  does a restart of a microVM cost its host, and what does a microVM cost idling, so that
+  the waits can come from them? And can the daemon learn them from its own VM processes?
+- **Method.** `docs/research/measurements/restart-cost/restart.py`. The daemon is the
+  harness's child, on Linux in a transient systemd scope. Each daemon life starts with one
+  run. Short and 30 s lives with nothing more give the daemon's own CPU a second, which is
+  taken off the others'. In a loop life, 5 microVMs run `false` under
+  `--restart on-failure:10`: 55 runs, whose CPU from end to next start is the life's less
+  the daemon's own, a run each. In an idle life, a microVM runs `sleep` for 30 s: its CPU a
+  second, less one run's. Each figure is n 8 trials. CPU is the daemon's whole process tree
+  as it stands before its stop, each process with the children it reaped (/proc
+  utime+stime+cutime+cstime; proc_pid_rusage on macOS), and on Linux the scope's cgroup
+  `cpu.stat`. wait4 on the daemon read 8.4 to 8.9 ms a run where the cgroup read 78 to 82:
+  the spawner outlives the daemon, and the VM processes are the spawner's. The process tree
+  agrees with the cgroup within 1.2 ms a run. alpine:3.22, template restores. Host:
+  kiln-a094a12d (Intel Core i9-14900HX, 32 CPUs, Fedora 44, Linux 6.19.10), the tree of
+  8501f093 with D219's drafts, 2026-11-08, shared with CI jobs and other agents' builds.
+- **Found** (ms; p50, p90, p99, max, mean of the 8 trials):
+
+  | | load | a run, end to next start, CPU | a sleeping microVM, CPU a second | the daemon idling, CPU a second |
+  |---|---|---|---|---|
+  | frozen-constant build | 16 to 29 | 87.9, 96.4, 104.8, 104.8, 88.8 | 10.8, 12.5, 16.3, 16.3, 11.1 | 6.0, 6.0, 6.0, 6.0, 5.5 |
+  | same, +16 busy loops | 28 to 51 | 99.6, 110.8, 141.8, 141.8, 102.2 | 10.2, 11.7, 122.8, 122.8, 12.5 | 4.3, 5.0, 82.2, 82.2, 13.8 |
+  | D219's first learned build | 55 to 64 | 93.1, 97.2, 103.8, 103.8, 92.1 | 6.4, 9.4, 10.0, 10.0, 6.0 | 4.0, 4.3, 4.7, 4.7, 4.1 |
+
+  - The cgroup's figures for the same runs: 88.5 to 105.1 ms a run and 6.8 to 16.9 ms a
+    second at p50 to max, within 1.2 ms of the tree's.
+  - In the loaded run, one trial's daemon idled at 82 ms a second and the next trial's idle
+    microVM came out at 122.8. Both are other work landing in the short life the harness
+    subtracts. They show as p99 and max and are not taken out.
+  - A run's life, `start` to `die`, p50 1.3 to 5.1 ms. Its die to the next start, the
+    policy's wait included, p50 99 to 289 ms, p99 829 to 2,501 under load.
+  - What the first learned build learned of idling, the warm VMs' CPU over their time,
+    summed: 23.8 ms a second over 42.8 s of warm VMs, against 6.4 for a sleeping microVM.
+    The short waits of a crash loop count, many times over, what a VM still does as it
+    becomes ready.
+- **So** (D219): a restart costs about ten times what an idle microVM spends a second on
+  this host, so its longest wait here is seconds, not a minute. These are this host's
+  figures at this load, so the daemon learns its own from its VM processes, and they
+  become no constant. The idle rate is a fitted slope, not CPU over time.
+- **Owed:** the same on macOS; the harness again on Fedora with the slope build, setting
+  the daemon's learned figures (its log, `restart-costs`) beside these.
+
+### M480. What a SIGKILL's end costs a microVM by what its command holds (D217)
+
+- **Question.** A SIGKILLed command's VM was killed 10 s after the SIGKILL, moby's
+  kill.go figure (`KILL_WAIT`), and a shutting-down daemon's 5 s past the stop timeout
+  (`SHUTDOWN_KILL`). How long does a guest take to tear a killed command down, by what it
+  holds and how its host is loaded, and is that work its VM process runs, so that the wait
+  can follow it (D209)?
+- **Method.** containers.rs `kills_cost_by_what_the_command_holds` (ignored;
+  docs/research/measurements/kill-waits/run.sh): for 64, 1,024, 4,096 and 16,384 MiB and
+  three shapes, one process of one thread (`one`), one of 64 threads (`threads`) and 16
+  processes of 4 threads under the command (`tree`), 5 runs of the test guest's `held`
+  each hold that much, every page touched, and are killed by `shards kill`, which waits
+  for the end its guest says: each kill's time, and per GiB its VM process held (resident
+  or footprint, the more). With nothing beside it, then beside as many threads spinning
+  on the host as it has CPUs. n, p50, p90, p99 and max (nearest rank), ms.
+- **Found, Fedora** (Intel Core i9-14900HX, 32 CPUs, Linux 6.19.10-300.fc44, KVM;
+  7f4e8e46's tree; the host's own load 11 to 26 beside the measurement, other agents'):
+  - quiet: 64 MiB, its VM process 0.31 GiB: `threads` p50 8.6, max 14.8; `tree` p50 8.6,
+    max 12.7. 1,024 MiB (1.3 GiB): `one` p50 27.1, max 41.6; `threads` p50 50.6, max
+    103.5; `tree` p50 82.8, max 140.5. 4,096 MiB (4.4 GiB): p50 99.3 to 181.8, max 146.5
+    to 394.1. 16,384 MiB (16.8 GiB): `one` p50 723.8, max 773.0; `threads` p50 798.6, max
+    846.6; `tree` p50 307.8, max 936.7. Per GiB held, 18 to 64 ms at p50, 110 at most.
+  - beside 32 spinning threads: 64 MiB p50 23.0 to 34.4, max 381.2; 1,024 MiB p50 73.5
+    to 110.6, max 135.0; 4,096 MiB p50 204.5 to 355.7, max 446.6; 16,384 MiB `one` p50
+    1,255.2, max 1,551.9; `threads` p50 1,458.0, max 2,107.2; `tree` p50 1,111.7, max
+    5,612.4. Per GiB, 45 to 111 ms at p50, 1,211 at most (a 0.32 GiB run's 381 ms).
+  - Every kill ended: none was cut, the most 5.6 s.
+- **Found, a Mac Studio** (Apple M3 Ultra, 32 CPUs, macOS 26.4, Hypervisor.framework;
+  7f4e8e46; the host's own load 21 to 26 before the measurement and 56 to 66 at its end,
+  other agents'):
+  - quiet: 64 MiB (0.32 GiB) p50 19.2 to 19.5, max 24.3; 1,024 MiB p50 26.1 to 35.7, max
+    70.1; 4,096 MiB p50 84.3 to 111.2, max 339.2; 16,384 MiB (16.8 GiB) p50 187.0 to
+    296.8, max 392.6. Per GiB, 11 to 60 ms at p50, 77 at most.
+  - beside 32 spinning threads, `one` and `threads`: 64 MiB p50 14.1 to 18.7, max 23.3;
+    1,024 MiB p50 27.5 to 31.7, max 45.2; 4,096 MiB p50 79.9 to 94.3, max 122.7; 16,384
+    MiB p50 285.4 to 301.9, max 554.3.
+  - beside 32 spinning threads, `tree` (16 processes): 1,024 MiB p50 31.1, max 1,189.2;
+    4,096 MiB p50 2,952.3, p90 59,529.2, max 59,529.2; 16,384 MiB p50 48,256.4, p90 and max
+    121,856.5: at least 4 of these 10 outlived moby's 10 s.
+- **Reading.** A teardown is work that grows with what the command holds, by 11 to 110
+  ms a GiB on a quiet host, more on a loaded one: on the Mac a tree of 16 processes beside
+  a host whose every CPU was busy took 2 minutes for 16.8 GiB. A fixed wait is short for
+  a microVM holding GiB on a busy host and long for a small one on a quiet host, and no
+  figure from one host holds on another. Its
+  work is the guest kernel's freeing, on the VM's vCPUs, which its VM process's CPU time
+  counts (proc(5): `utime` includes `guest_time`, the time a virtual CPU ran), so following that time tells a teardown going on from a guest that has stalled.
+- **Consequence.** D217: a teardown is followed while its VM process runs or frees, its
+  VM killed only after a slice with neither; the slice is the slowest end the host has
+  shown (the home's `ends`), never less than `Progress`'s window. These numbers validate
+  that method on this host; no constant is taken from them.
+
+### M481. What a killed VM process's end costs, by what it held (D217)
+
+- **Question.** Once a VM was killed, its end was given up on 2 s later (`LAST_WAIT`,
+  moby's). How long does a host take to end a killed VM process, by what it holds?
+- **Method.** containers.rs `kills_cost_by_what_the_command_holds`, after each size's
+  kills: 5 runs holding that much (`held` of one thread) whose VM processes are killed
+  outright (SIGKILL), each's end, as no longer alive, after its kill; quiet, then beside
+  the spinning threads. n, p50, p90, p99 and max, ms.
+- **Found, Fedora** (as M480): quiet, 0.31 GiB p50 40.9, max 45.1; 1.3 GiB p50 82.0, max
+  109.0; 4.4 GiB p50 279.6, max 685.1; 16.8 GiB p50 524.9, max 1,431.5. Beside 32 spinning
+  threads, 0.31 GiB p50 128.2, max 277.2; 1.3 GiB p50 43.6, max 61.0; 4.4 GiB p50 80.8, max
+  88.2; 16.8 GiB p50 779.2, max 1,047.9.
+- **Reading.** A killed VM process's end is its host freeing what it held, which its
+  resident memory shows falling as it goes: the killed microVM is followed by that, as its
+  teardown is by its CPU (D217).
+
+### M482. How long a joiner's freeze takes by what it does (D217)
+
+- **Question.** A joiner's pause (D119: its cgroup frozen in its provider's guest) gave up
+  after 10 s, runc's `waitFrozen`. How long does a freeze take a busy joiner, and does what
+  it waits for end as the joiner's own work does?
+- **Method.** containers.rs `freezes_cost_by_what_a_joiner_does` (ignored; run.sh): a
+  provider and, joined to it in turn, the test guest's `busy spin 64` (64 threads
+  spinning), `busy procs 64` (64 processes spinning) and `busy write 8` (8 threads each
+  writing a MiB to a file and syncing it, over and over) to its `/tmp` and to a volume,
+  `/v`, whose writes wait on the host's share server; 20 `shards pause` each, each
+  unpaused before the next, quiet, then beside the spinning threads. n, p50, p90, p99 and
+  max, ms. Its first run, at 8501f093, waited 13 h for a `write` joiner that never said it
+  was at work, its writes to the root failing unsaid: the guest's workers now say a
+  failure and end, and write to `/tmp`.
+- **Found, Fedora** (as M480): quiet, `spin` p50 23.4, max 35.4; `procs` p50 25.1, max
+  227.4; `write /tmp` p50 12.7, max 24.1; `write /v` p50 16.7, max 35.3. Beside 32 spinning
+  threads, `spin` p50 38.6, max 62.4; `procs` p50 56.6, max 135.3; `write /tmp` p50 24.3,
+  max 42.7; `write /v` p50 29.5, max 51.9.
+- **Reading.** A freeze takes what its processes' way out of the kernel takes, a volume's
+  write its share server's answer, tens of ms; nothing a deadline guards ends it sooner,
+  and a freeze given up on leaves the cgroup freezing. D217: no deadline, a joiner whose
+  work cannot end ended by its kill.
+
+### M467. Flakes: a budget's give-back and room told past a 10 s deadline, and its word saying nothing given back (D188)
+
+- **Question.** `a_microvm_held_to_a_budget_gives_back_what_it_holds_cold` failed on CI's
+  x86_64 Linux (42423531064, at 9f2520c2) and once on Fedora: with its budget set 256 MiB
+  short, the daemon's `RECLAIM` and `ROOM` to the microVM had no answer within 10 s, and
+  its budget's word never came or said nothing was given back; it passed 3 of 3 again.
+- **Method.** The test alone, in a row, on adacachy2 (M466's host, CachyOS, Linux 7.3.3),
+  pinned with its daemon and microVM to 1 to 4 of its threads beside 4 busy loops pinned
+  there too (`taskset`), the host short of memory from other agents' work (1 to 8 GB free
+  of 64, swapping), `SHARDS_LOG=debug` for each exec's time to its answer; the tree
+  (8501f093) and the change in turn, 2026-11-08. Then a knob of the test's
+  (`SHARDS_STRESS_PRESSURE_MS`), which tells its daemon its host is short every so many
+  ms, as a whole suite's runner is.
+- **Results.**
+  - The tree, 2 threads: 1 of 10 failed as CI's had. Its daemon told the microVM its room
+    twice with "no answer within 10s, and so it was ended", and then said its budget
+    short by 109 MiB "past 0 warm VMs ended and 0 MiB it gave back"; the host's pressure
+    had had it give back 341 MiB of its files in that minute, said only at the minute's
+    end, after the test had failed. A budget falling short asked for no give-back while
+    one of its host's pressure was under way (one at a time a microVM, M308), and its
+    word counted none of what that one gave.
+  - The tree and the change in turn, 2 threads: 18 and 18 passed; 1 thread: 10 and 9
+    passed. The change's answers (each exec's `answered after`, log lines): p50 7.9 ms,
+    p90 142, p99 2,174, max 2,199 ms on 2 threads; p50 30.9, p90 274, p99 4,104, max
+    4,470 ms on 1. None passed 10 s in these, so neither arm met the deadline's failure.
+  - The host's word every 50 ms, 4 threads: the tree failed 3 of 3 (its give-backs and
+    rooms "no answer within 10s, and so it was ended"; its words nothing given back); the
+    change's answers came within 4,520 ms (968 lines, p99 4,114), none ended, but it failed
+    3 of 3 too: its guest's page cache was gone before the short budget (`Cached` 2,408
+    kB), taken by its host's give-backs and unplugs, said with the budget's words before,
+    which the test did not read.
+- **Consequence (D188).** The daemon waits on its own give-backs and rooms as long as the
+  microVM's process runs (`Wait::WhileRuns`: more CPU in each 10 s than an idle microVM
+  takes, M357), ending one that runs nothing for 10 s; a group's (macOS, Windows) keep
+  10 s. A budget falling short waits for a give-back of its host's under way and then
+  reads its room again (`give_after`); its words say what its host's pressure had it give
+  back and ask to unplug since the word before (`gave_at_pressure`), and the test reads
+  those in any word since it read. Unit tests: health.rs
+  `an_exec_is_waited_for_as_long_as_its_microvm_runs`, budget.rs
+  `what_its_hosts_pressure_had_it_give_back_is_counted_for_its_word`; the daemon's unit
+  tests 265 of 265 on adacachy2. Owed: the test in a row under its host's word every
+  2 s (`SHARDS_STRESS_PRESSURE_MS=2000`) on a loaded host, both arms; the series begun
+  here completed no run in 30 minutes, the host out of memory to other work.
+
+### M498. A build step's device cgroup, and the ports' chooser's round trip (D44, D122)
+
+- **Question.** D44 starts every `RUN` step in a cgroup of its own (mkdir, CLONE_INTO_CGROUP,
+  rmdir; a step of rules of its own also loads and attaches its device program), where a
+  step without limits had none. D122's chooser answers each bind(2) and listen(2) of a
+  candidate domain (seccomp_unotify), and makes a contested TCP socket's listen itself.
+  What does each cost a step's start and a candidate's call?
+- **Method.** `docs/research/measurements/step-devices/chooser.sh [STEPS_N] [ROUNDS]
+  [CHOOSER_N]`, release builds: build.rs `chooser_round_trip_costs` (ignored; the test
+  guest's `confined listencost`, from the agent's side: a contested port, an uncontested
+  port in a candidate, and a domain under no chooser filter, bind and listen each in ns),
+  then `step-devices/run.py` (the test guest's `stepcgroup` mode as PID 1: `fork`,
+  `steps`, `devices` and `confine` arms, interleaved, µs per start). Reports n, p50, p90,
+  p99 and max with host, OS and revision. On macOS through
+  `docs/research/measurements/macos-sched/launchd-run.sh`.
+- **Results.** Not yet measured.
+
+### M510. Hostile policies: what fuzzing found in shards' Rego, and the compile stages that grew faster than their input
+
+- **Question.** A build's policy may be anyone's (a remote context's `Dockerfile.rego`,
+  D111): can a policy's text, its input, or a builtin's operands make shards' Rego panic,
+  overflow its stack, or take time or memory growing faster than what it is given? M160
+  left five shapes open whose compile grew with the square or faster.
+- **Method.** Two cargo-fuzz targets (`fuzz/fuzz_targets/rego.rs`: a policy's text and
+  input, parsed, compiled with buildx's functions and evaluated, partially and whole, on
+  the policy thread's stack; `rego-builtins.rs`: any builtin, any operands), seeded from
+  the oracle suites (503 policies, 11,393 calls), with libFuzzer's `-timeout=10
+  -rss_limit_mb=2048 -max_len=65536`, 20 minutes each with 6 and 4 workers. Each slow
+  input was run through OPA v1.14.1 (scripts/rego/oracle_test.go's builtin calls, built
+  with go1.27.3) and this port, built without a sanitizer. The shapes then through
+  `docs/research/measurements/rego-nesting/run.sh 5 glob-terms comprehension-nested
+  prints-wide closures-wide` (shards: a warm-up then n = 5; OPA: one run). Host: AMD
+  Ryzen 9 9950X3D2 (adacachy2), Linux 7.3.3-1-cachyos, shared with other agents' work
+  (load average 6 to 12), revision 8501f093 with 825a7c6c, c02fe4b5 and 5bd2c3e7's changes,
+  2026-11-08.
+- **Results.** No panic and no stack overflow in 20 minutes of each target. The timeouts
+  and memory limits were `numbers.range` over spans of 10^14 and more (OPA's array grows
+  as long; neither can finish) and `glob.match` patterns of many matchers: OPA 0.32 and
+  1.08 s on two of them where this port took 1.7 and 6.5 s, 102 s on a third where it
+  took more than 300 s, and more than 120 s, as this port did, on a fourth (now 5, 8, 77
+  and 76 ms). The cause, in gobwas/glob's compiler, both: minimizeMatchers
+  glues every run of a pattern's matchers to judge it, reading each matcher's length again
+  for each run (cubic; this port also copied each run). The shapes (shards whole check
+  p50 / p90 / max, n = 5, after the changes; before them one run; OPA one run):
+
+  | shape, size | shards before | shards now | OPA |
+  |---|---|---|---|
+  | glob.match `{a}b` x 500 | 5.1 s (1) | 1.2 / 1.3 / 1.3 ms | 1.25 s |
+  | glob.match `{a}b` x 1000 | 41 s (1) | 3.3 / 3.3 / 3.3 ms | 13.3 s |
+  | glob.match `{a}b` x 1500 | 141 to 157 s (1) | 6.5 / 6.7 / 6.7 ms | 50.8 s |
+  | comprehensions nested, 10 | 0.28 s | 0.46 / 0.50 / 0.50 ms | 0.18 s |
+  | comprehensions nested, 12 | 3.25 s | 0.51 / 0.61 / 0.61 ms | 2.34 s |
+  | print calls, 500 in a body | 2.81 s | 80 / 80 / 80 ms | 4.29 s |
+  | print calls, 1000 in a body | 26.3 s | 324 / 324 / 324 ms | 34.7 s |
+  | closures, 500 in a body | 4.60 s | 122 / 124 / 124 ms | 8.42 s |
+  | closures, 1000 in a body | 42.3 s | 480 / 481 / 481 ms | 65.8 s |
+
+  (1) The fuzz harness built without a sanitizer, three runs (`{a}b` x n against
+  `ab` x n); OPA's three runs of x 1500 there took 41.4 to 44.7 s.
+
+  Every case answers as OPA does. What changed: glob's runs are judged from lengths summed
+  once and counts kept as a run grows, only the run chosen glued; the type checker keeps
+  each comprehension body's check while a rule is checked, by the nodes of the variables
+  the body names, and takes it again where they are the same (OPA checks a comprehension
+  again for each walk that meets it, three a level); the safety check reads the placed
+  expressions' outputs again only as one is placed, the print rewrite reads a body on from
+  the last expression it asked about, and an equality unifies with its operands' safe
+  variables, not a copy of the whole safe set.
+- **Open.** As OPA's, still: every statement and comprehension alternating (20 deep 9.3 s,
+  twice as long a level; OPA 7 min at 12) and every statements declaring after the one
+  within (2000 deep 3.1 s, quadratic), both in rewriteLocalVars, whose second walk of an
+  every statement rewrites the comprehensions within it again and numbers their
+  variables anew: the numbers are in what OPA compiles (and the partial evaluation buildx
+  reads), so a shortcut has to number as the walk would; rule wrap's type check (2000
+  0.69 s, 10000 24.9 s, quadratic). Evaluation is OPA's: a policy may ask for work
+  without bound (`numbers.range` over any span, comprehensions over each other), as it
+  may of OPA; buildx's evaluation ends with its build's context, and shards' with its
+  build's process, which Ctrl-C ends.

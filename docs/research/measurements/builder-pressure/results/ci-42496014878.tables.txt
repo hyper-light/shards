@@ -1,0 +1,512 @@
+== ci-42496014878-a-epyc-9v74.out.txt
+host runnervm7aw5e; Ubuntu 24.04.5 LTS; kernel 7.0.0-1017-azure; x86_64; AMD EPYC 9V74 80-Core Processor; shards d9c4212; memory 15983 MiB; cpus 4
+builds rust,npm,apt; rounds 5; home /home/runner/work/_temp/home; bases docker.io/library
+-- apt free: rounds past the caches' 5, failed 0
+   build time        n 5 p50 35.1 p90 35.2 p99 35.2 max 35.2 s
+   scope anon peak   n 5 p50 947.8 p90 949.2 p99 949.2 max 949.2 MiB
+   scope held peak   n 5 p50 1030.7 p90 1036.2 p99 1036.2 max 1036.2 MiB
+   answers           2, unanswered 0
+   answered in       n 2 p50 11 p90 11 p99 11 max 11 ms
+   freed an answer   n 2 p50 84.1 p90 84.1 p99 84.1 max 84.1 MiB
+   unplug asked      n 2 p50 1024.0 p90 1024.0 p99 1024.0 max 1024.0 MiB
+   unplug done       n 2 p50 1024.0 p90 1024.0 p99 1024.0 max 1024.0 MiB
+   freed a build     n 5 p50 0.0 p90 84.1 p99 84.1 max 84.1 MiB
+-- apt held: rounds past the caches' 5, failed 0
+   build time        n 5 p50 35.3 p90 39.5 p99 39.5 max 39.5 s
+   scope anon peak   n 5 p50 800.2 p90 822.1 p99 822.1 max 822.1 MiB
+   scope held peak   n 5 p50 865.1 p90 881.5 p99 881.5 max 881.5 MiB
+   budget            n 5 p50 873.0 p90 873.0 p99 873.0 max 873.0 MiB
+   short of its peak n 5 p50 157.6 p90 163.2 p99 163.2 max 163.2 MiB
+   writer outside    in 5 of 5 builds
+   writer file peak  n 5 p50 1568.5 p90 1568.5 p99 1568.5 max 1568.5 MiB
+   writer dirty peak n 5 p50 757.0 p90 846.4 p99 846.4 max 846.4 MiB
+   answers           3, unanswered 0
+   answered in       n 3 p50 9 p90 11 p99 11 max 11 ms
+   freed an answer   n 3 p50 0.1 p90 69.9 p99 69.9 max 69.9 MiB
+   unplug asked      n 3 p50 128.0 p90 128.0 p99 128.0 max 128.0 MiB
+   unplug done       n 3 p50 128.0 p90 128.0 p99 128.0 max 128.0 MiB
+   freed a build     n 5 p50 0.0 p90 70.0 p99 70.0 max 70.0 MiB
+   rooms told        78, held within n 78 p50 103.9 p90 600.2 p99 795.6 max 795.6 MiB
+   phase run           free n 5 p50 17.0 p90 17.4 p99 17.4 max 17.4 s; held n 5 p50 17.3 p90 21.5 p99 21.5 max 21.5 s
+   phase cache-keep    free n 5 p50 1.3 p90 1.4 p99 1.4 max 1.4 s; held n 5 p50 1.4 p90 1.6 p99 1.6 max 1.6 s
+   phase layer         free n 5 p50 0.3 p90 0.3 p99 0.3 max 0.3 s; held n 5 p50 0.2 p90 0.2 p99 0.2 max 0.2 s
+   phase blob          free n 5 p50 1.4 p90 1.6 p99 1.6 max 1.6 s; held n 5 p50 1.5 p90 1.9 p99 1.9 max 1.9 s
+   caches kept         free n 5 p50 85.7 p90 85.7 p99 85.7 max 85.7 MiB; held n 5 p50 85.7 p90 85.7 p99 85.7 max 85.7 MiB
+   kept, synced in     free n 5 p50 341.0 p90 535.0 p99 535.0 max 535.0 ms; held n 5 p50 315.0 p90 502.0 p99 502.0 max 502.0 ms
+   merges              free n 5 p50 2.0 p90 2.0 p99 2.0 max 2.0; held n 5 p50 2.0 p90 2.0 p99 2.0 max 2.0
+   merged              free n 5 p50 190.9 p90 190.9 p99 190.9 max 190.9 MiB; held n 5 p50 190.9 p90 190.9 p99 190.9 max 190.9 MiB
+   merged, written in  free n 5 p50 52.0 p90 53.0 p99 53.0 max 53.0 ms; held n 5 p50 43.0 p90 47.0 p99 47.0 max 47.0 ms
+   merged, synced in   free n 5 p50 705.0 p90 893.0 p99 893.0 max 893.0 ms; held n 5 p50 862.0 p90 1004.0 p99 1004.0 max 1004.0 ms
+   VM process dirtied  free n 5 p50 85.7 p90 85.7 p99 85.7 max 85.7 MiB; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 MiB
+   build dirtied       free n 5 p50 1566.5 p90 1566.5 p99 1566.5 max 1566.5 MiB; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 MiB
+   build read          free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 MiB; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 MiB
+   writer dirtied      free -; held n 5 p50 1652.2 p90 1652.2 p99 1652.2 max 1652.2 MiB
+   step #1   free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s
+   step #2   free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s
+   step #3   free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s
+   step #4   free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s
+   step #5   free n 5 p50 0.6 p90 0.7 p99 0.7 max 0.7 s; held n 5 p50 0.7 p90 0.7 p99 0.7 max 0.7 s
+   step #6   free n 5 p50 20.0 p90 20.1 p99 20.1 max 20.1 s; held n 5 p50 20.5 p90 24.6 p99 24.6 max 24.6 s
+   step #7   free n 5 p50 2.5 p90 2.5 p99 2.5 max 2.5 s; held n 5 p50 2.5 p90 2.5 p99 2.5 max 2.5 s
+   rule: held slower than free beyond the rounds' spread: no (held's fastest 34.3 s, free's slowest 35.2 s)
+-- npm free: rounds past the caches' 5, failed 0
+   build time        n 5 p50 8.8 p90 8.9 p99 8.9 max 8.9 s
+   scope anon peak   n 5 p50 762.0 p90 766.0 p99 766.0 max 766.0 MiB
+   scope held peak   n 5 p50 780.2 p90 784.0 p99 784.0 max 784.0 MiB
+-- npm held: rounds past the caches' 5, failed 0
+   build time        n 5 p50 9.1 p90 11.1 p99 11.1 max 11.1 s
+   scope anon peak   n 5 p50 729.6 p90 737.9 p99 737.9 max 737.9 MiB
+   scope held peak   n 5 p50 747.1 p90 755.6 p99 755.6 max 755.6 MiB
+   budget            n 5 p50 732.3 p90 743.2 p99 743.2 max 743.2 MiB
+   short of its peak n 5 p50 50.5 p90 55.3 p99 55.3 max 55.3 MiB
+   writer outside    in 5 of 5 builds
+   writer file peak  n 5 p50 524.1 p90 524.7 p99 524.7 max 524.7 MiB
+   writer dirty peak n 5 p50 224.9 p90 312.9 p99 312.9 max 312.9 MiB
+   answers           6, unanswered 0
+   answered in       n 6 p50 6 p90 50 p99 50 max 50 ms
+   freed an answer   n 6 p50 0.1 p90 0.2 p99 0.2 max 0.2 MiB
+   unplug asked      n 6 p50 128.0 p90 128.0 p99 128.0 max 128.0 MiB
+   unplug done       n 6 p50 128.0 p90 256.0 p99 256.0 max 256.0 MiB
+   freed a build     n 5 p50 0.1 p90 0.2 p99 0.2 max 0.2 MiB
+   rooms told        21, held within n 21 p50 183.4 p90 647.9 p99 657.9 max 657.9 MiB
+   phase run           free n 5 p50 3.7 p90 3.8 p99 3.8 max 3.8 s; held n 5 p50 3.8 p90 6.3 p99 6.3 max 6.3 s
+   phase cache-keep    free n 5 p50 0.0 p90 0.2 p99 0.2 max 0.2 s; held n 5 p50 0.0 p90 0.2 p99 0.2 max 0.2 s
+   phase layer         free n 5 p50 0.1 p90 0.1 p99 0.1 max 0.1 s; held n 5 p50 0.1 p90 0.2 p99 0.2 max 0.2 s
+   phase blob          free n 5 p50 0.3 p90 0.4 p99 0.4 max 0.4 s; held n 5 p50 0.5 p90 0.8 p99 0.8 max 0.8 s
+   caches kept         free n 5 p50 0.1 p90 0.1 p99 0.1 max 0.1 MiB; held n 5 p50 0.1 p90 0.1 p99 0.1 max 0.1 MiB
+   kept, synced in     free n 5 p50 0.0 p90 35.0 p99 35.0 max 35.0 ms; held n 5 p50 0.0 p90 14.0 p99 14.0 max 14.0 ms
+   merges              free n 3 p50 1.0 p90 1.0 p99 1.0 max 1.0; held n 4 p50 1.0 p90 1.0 p99 1.0 max 1.0
+   merged              free n 3 p50 0.2 p90 0.4 p99 0.4 max 0.4 MiB; held n 4 p50 0.6 p90 0.9 p99 0.9 max 0.9 MiB
+   merged, written in  free n 3 p50 0.0 p90 0.0 p99 0.0 max 0.0 ms; held n 4 p50 0.0 p90 59.0 p99 59.0 max 59.0 ms
+   merged, synced in   free n 3 p50 0.0 p90 0.0 p99 0.0 max 0.0 ms; held n 4 p50 0.0 p90 39.0 p99 39.0 max 39.0 ms
+   VM process dirtied  free n 5 p50 0.1 p90 0.1 p99 0.1 max 0.1 MiB; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 MiB
+   build dirtied       free n 5 p50 522.0 p90 522.2 p99 522.2 max 522.2 MiB; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 MiB
+   build read          free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 MiB; held n 5 p50 0.0 p90 1.3 p99 1.3 max 1.3 MiB
+   writer dirtied      free -; held n 5 p50 522.2 p90 522.8 p99 522.8 max 522.8 MiB
+   step #1   free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s
+   step #2   free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s
+   step #3   free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s
+   step #4   free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s
+   step #6   free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s
+   step #8   free n 5 p50 4.7 p90 4.8 p99 4.8 max 4.8 s; held n 5 p50 5.0 p90 7.3 p99 7.3 max 7.3 s
+   step #9   free n 5 p50 1.7 p90 1.8 p99 1.8 max 1.8 s; held n 5 p50 1.8 p90 1.9 p99 1.9 max 1.9 s
+   rule: held slower than free beyond the rounds' spread: no (held's fastest 8.5 s, free's slowest 8.9 s)
+-- rust free: rounds past the caches' 5, failed 0
+   build time        n 5 p50 6.9 p90 7.3 p99 7.3 max 7.3 s
+   scope anon peak   n 5 p50 157.8 p90 160.0 p99 160.0 max 160.0 MiB
+   scope held peak   n 5 p50 289.1 p90 291.2 p99 291.2 max 291.2 MiB
+-- rust held: rounds past the caches' 5, failed 0
+   build time        n 5 p50 6.7 p90 7.5 p99 7.5 max 7.5 s
+   scope anon peak   n 5 p50 159.2 p90 162.5 p99 162.5 max 162.5 MiB
+   scope held peak   n 5 p50 262.4 p90 266.0 p99 266.0 max 266.0 MiB
+   budget            n 5 p50 261.1 p90 261.2 p99 261.2 max 261.2 MiB
+   short of its peak n 5 p50 28.1 p90 30.2 p99 30.2 max 30.2 MiB
+   writer outside    in 5 of 5 builds
+   writer file peak  n 5 p50 987.9 p90 987.9 p99 987.9 max 987.9 MiB
+   writer dirty peak n 5 p50 845.6 p90 945.7 p99 945.7 max 945.7 MiB
+   answers           8, unanswered 0
+   answered in       n 8 p50 7 p90 7 p99 7 max 7 ms
+   freed an answer   n 8 p50 28.2 p90 30.4 p99 30.4 max 30.4 MiB
+   unplug asked      n 8 p50 0.0 p90 0.0 p99 0.0 max 0.0 MiB
+   unplug done       n 8 p50 0.0 p90 0.0 p99 0.0 max 0.0 MiB
+   freed a build     n 5 p50 31.6 p90 33.3 p99 33.3 max 33.3 MiB
+   rooms told        11, held within n 11 p50 13.0 p90 17.6 p99 168.6 max 168.6 MiB
+   phase run           free n 5 p50 1.2 p90 1.3 p99 1.3 max 1.3 s; held n 5 p50 1.0 p90 1.3 p99 1.3 max 1.3 s
+   phase cache-keep    free n 5 p50 0.0 p90 0.3 p99 0.3 max 0.3 s; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s
+   phase layer         free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s
+   phase blob          free n 5 p50 0.1 p90 0.1 p99 0.1 max 0.1 s; held n 5 p50 0.1 p90 0.2 p99 0.2 max 0.2 s
+   caches kept         free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 MiB; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 MiB
+   kept, synced in     free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 ms; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 ms
+   merges              free n 5 p50 2.0 p90 2.0 p99 2.0 max 2.0; held n 5 p50 2.0 p90 2.0 p99 2.0 max 2.0
+   merged              free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 MiB; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 MiB
+   merged, written in  free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 ms; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 ms
+   merged, synced in   free n 5 p50 0.0 p90 277.0 p99 277.0 max 277.0 ms; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 ms
+   VM process dirtied  free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 MiB; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 MiB
+   build dirtied       free n 5 p50 985.9 p90 985.9 p99 985.9 max 985.9 MiB; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 MiB
+   build read          free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 MiB; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 MiB
+   writer dirtied      free -; held n 5 p50 985.9 p90 985.9 p99 985.9 max 985.9 MiB
+   step #1   free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s
+   step #2   free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s
+   step #3   free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s
+   step #4   free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s
+   step #5   free n 5 p50 1.8 p90 2.3 p99 2.3 max 2.3 s; held n 5 p50 1.7 p90 2.0 p99 2.0 max 2.0 s
+   step #6   free n 5 p50 4.2 p90 4.3 p99 4.3 max 4.3 s; held n 5 p50 4.2 p90 4.7 p99 4.7 max 4.7 s
+   rule: held slower than free beyond the rounds' spread: no (held's fastest 6.6 s, free's slowest 7.3 s)
+== ci-42496014878-b-epyc-7763.out.txt
+host runnervm7aw5e; Ubuntu 24.04.5 LTS; kernel 7.0.0-1017-azure; x86_64; AMD EPYC 7763 64-Core Processor; shards d9c4212; memory 15983 MiB; cpus 4
+builds rust,npm,apt; rounds 5; home /home/runner/work/_temp/home; bases docker.io/library
+-- apt free: rounds past the caches' 5, failed 0
+   build time        n 5 p50 36.3 p90 36.7 p99 36.7 max 36.7 s
+   scope anon peak   n 5 p50 914.8 p90 952.0 p99 952.0 max 952.0 MiB
+   scope held peak   n 5 p50 1006.0 p90 1047.4 p99 1047.4 max 1047.4 MiB
+-- apt held: rounds past the caches' 5, failed 0
+   build time        n 5 p50 36.4 p90 37.4 p99 37.4 max 37.4 s
+   scope anon peak   n 5 p50 797.4 p90 812.1 p99 812.1 max 812.1 MiB
+   scope held peak   n 5 p50 862.6 p90 881.0 p99 881.0 max 881.0 MiB
+   budget            n 5 p50 897.1 p90 897.1 p99 897.1 max 897.1 MiB
+   short of its peak n 5 p50 108.9 p90 150.3 p99 150.3 max 150.3 MiB
+   writer outside    in 5 of 5 builds
+   writer file peak  n 5 p50 1568.5 p90 1568.5 p99 1568.5 max 1568.5 MiB
+   writer dirty peak n 5 p50 510.5 p90 751.5 p99 751.5 max 751.5 MiB
+   rooms told        79, held within n 79 p50 116.1 p90 631.7 p99 820.1 max 820.1 MiB
+   phase run           free n 5 p50 19.6 p90 19.9 p99 19.9 max 19.9 s; held n 5 p50 19.7 p90 20.8 p99 20.8 max 20.8 s
+   phase cache-keep    free n 5 p50 0.6 p90 0.6 p99 0.6 max 0.6 s; held n 5 p50 0.5 p90 0.5 p99 0.5 max 0.5 s
+   phase layer         free n 5 p50 0.4 p90 0.4 p99 0.4 max 0.4 s; held n 5 p50 0.3 p90 0.3 p99 0.3 max 0.3 s
+   phase blob          free n 5 p50 0.7 p90 0.7 p99 0.7 max 0.7 s; held n 5 p50 0.7 p90 0.7 p99 0.7 max 0.7 s
+   caches kept         free n 5 p50 85.7 p90 85.7 p99 85.7 max 85.7 MiB; held n 5 p50 85.7 p90 85.7 p99 85.7 max 85.7 MiB
+   kept, synced in     free n 5 p50 25.0 p90 30.0 p99 30.0 max 30.0 ms; held n 5 p50 21.0 p90 23.0 p99 23.0 max 23.0 ms
+   merges              free n 5 p50 2.0 p90 2.0 p99 2.0 max 2.0; held n 5 p50 2.0 p90 2.0 p99 2.0 max 2.0
+   merged              free n 5 p50 190.9 p90 190.9 p99 190.9 max 190.9 MiB; held n 5 p50 190.9 p90 190.9 p99 190.9 max 190.9 MiB
+   merged, written in  free n 5 p50 66.0 p90 70.0 p99 70.0 max 70.0 ms; held n 5 p50 61.0 p90 63.0 p99 63.0 max 63.0 ms
+   merged, synced in   free n 5 p50 334.0 p90 355.0 p99 355.0 max 355.0 ms; held n 5 p50 344.0 p90 371.0 p99 371.0 max 371.0 ms
+   VM process dirtied  free n 5 p50 85.7 p90 85.7 p99 85.7 max 85.7 MiB; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 MiB
+   build dirtied       free n 5 p50 1566.5 p90 1566.5 p99 1566.5 max 1566.5 MiB; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 MiB
+   build read          free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 MiB; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 MiB
+   writer dirtied      free -; held n 5 p50 1652.2 p90 1652.2 p99 1652.2 max 1652.2 MiB
+   step #1   free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s
+   step #2   free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s
+   step #3   free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s
+   step #4   free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s
+   step #5   free n 5 p50 0.8 p90 0.8 p99 0.8 max 0.8 s; held n 5 p50 0.8 p90 0.8 p99 0.8 max 0.8 s
+   step #6   free n 5 p50 21.1 p90 21.3 p99 21.3 max 21.3 s; held n 5 p50 21.1 p90 22.2 p99 22.2 max 22.2 s
+   step #7   free n 5 p50 1.2 p90 1.2 p99 1.2 max 1.2 s; held n 5 p50 1.2 p90 1.2 p99 1.2 max 1.2 s
+   rule: held slower than free beyond the rounds' spread: no (held's fastest 36.3 s, free's slowest 36.7 s)
+-- npm free: rounds past the caches' 5, failed 0
+   build time        n 5 p50 9.3 p90 9.6 p99 9.6 max 9.6 s
+   scope anon peak   n 5 p50 768.7 p90 774.6 p99 774.6 max 774.6 MiB
+   scope held peak   n 5 p50 792.3 p90 797.6 p99 797.6 max 797.6 MiB
+-- npm held: rounds past the caches' 5, failed 0
+   build time        n 5 p50 9.3 p90 9.4 p99 9.4 max 9.4 s
+   scope anon peak   n 5 p50 767.4 p90 771.7 p99 771.7 max 771.7 MiB
+   scope held peak   n 5 p50 785.7 p90 789.7 p99 789.7 max 789.7 MiB
+   budget            n 5 p50 775.7 p90 775.7 p99 775.7 max 775.7 MiB
+   short of its peak n 5 p50 17.0 p90 21.9 p99 21.9 max 21.9 MiB
+   writer outside    in 5 of 5 builds
+   writer file peak  n 5 p50 524.1 p90 524.7 p99 524.7 max 524.7 MiB
+   writer dirty peak n 5 p50 92.4 p90 97.4 p99 97.4 max 97.4 MiB
+   answers           5, unanswered 0
+   answered in       n 5 p50 14 p90 16 p99 16 max 16 ms
+   freed an answer   n 5 p50 20.4 p90 22.1 p99 22.1 max 22.1 MiB
+   unplug asked      n 5 p50 128.0 p90 128.0 p99 128.0 max 128.0 MiB
+   unplug done       n 5 p50 128.0 p90 128.0 p99 128.0 max 128.0 MiB
+   freed a build     n 5 p50 20.4 p90 22.1 p99 22.1 max 22.1 MiB
+   rooms told        20, held within n 20 p50 256.2 p90 693.5 p99 694.2 max 694.2 MiB
+   phase run           free n 5 p50 5.2 p90 5.5 p99 5.5 max 5.5 s; held n 5 p50 5.2 p90 5.3 p99 5.3 max 5.3 s
+   phase cache-keep    free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s
+   phase layer         free n 5 p50 0.1 p90 0.1 p99 0.1 max 0.1 s; held n 5 p50 0.1 p90 0.1 p99 0.1 max 0.1 s
+   phase blob          free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s
+   caches kept         free n 5 p50 0.1 p90 0.1 p99 0.1 max 0.1 MiB; held n 5 p50 0.1 p90 0.1 p99 0.1 max 0.1 MiB
+   kept, synced in     free n 5 p50 0.0 p90 1.0 p99 1.0 max 1.0 ms; held n 5 p50 0.0 p90 1.0 p99 1.0 max 1.0 ms
+   merges              free n 3 p50 1.0 p90 1.0 p99 1.0 max 1.0; held n 4 p50 1.0 p90 1.0 p99 1.0 max 1.0
+   merged              free n 3 p50 0.2 p90 0.4 p99 0.4 max 0.4 MiB; held n 4 p50 0.6 p90 0.9 p99 0.9 max 0.9 MiB
+   merged, written in  free n 3 p50 0.0 p90 0.0 p99 0.0 max 0.0 ms; held n 4 p50 0.0 p90 2.0 p99 2.0 max 2.0 ms
+   merged, synced in   free n 3 p50 0.0 p90 0.0 p99 0.0 max 0.0 ms; held n 4 p50 0.0 p90 0.0 p99 0.0 max 0.0 ms
+   VM process dirtied  free n 5 p50 0.1 p90 0.1 p99 0.1 max 0.1 MiB; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 MiB
+   build dirtied       free n 5 p50 522.0 p90 522.2 p99 522.2 max 522.2 MiB; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 MiB
+   build read          free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 MiB; held n 5 p50 0.0 p90 0.6 p99 0.6 max 0.6 MiB
+   writer dirtied      free -; held n 5 p50 522.2 p90 522.8 p99 522.8 max 522.8 MiB
+   step #1   free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s
+   step #2   free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s
+   step #3   free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s
+   step #4   free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s
+   step #6   free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s
+   step #8   free n 5 p50 6.0 p90 6.3 p99 6.3 max 6.3 s; held n 5 p50 6.0 p90 6.1 p99 6.1 max 6.1 s
+   step #9   free n 5 p50 0.7 p90 0.7 p99 0.7 max 0.7 s; held n 5 p50 0.7 p90 0.7 p99 0.7 max 0.7 s
+   rule: held slower than free beyond the rounds' spread: no (held's fastest 9.2 s, free's slowest 9.6 s)
+-- rust free: rounds past the caches' 5, failed 0
+   build time        n 5 p50 5.1 p90 5.3 p99 5.3 max 5.3 s
+   scope anon peak   n 5 p50 160.3 p90 166.3 p99 166.3 max 166.3 MiB
+   scope held peak   n 5 p50 290.1 p90 297.6 p99 297.6 max 297.6 MiB
+-- rust held: rounds past the caches' 5, failed 0
+   build time        n 5 p50 5.1 p90 5.2 p99 5.2 max 5.2 s
+   scope anon peak   n 5 p50 159.5 p90 166.3 p99 166.3 max 166.3 MiB
+   scope held peak   n 5 p50 262.5 p90 269.3 p99 269.3 max 269.3 MiB
+   budget            n 5 p50 263.1 p90 266.5 p99 266.5 max 266.5 MiB
+   short of its peak n 5 p50 27.0 p90 38.9 p99 38.9 max 38.9 MiB
+   writer outside    in 5 of 5 builds
+   writer file peak  n 5 p50 987.9 p90 987.9 p99 987.9 max 987.9 MiB
+   writer dirty peak n 5 p50 405.6 p90 661.6 p99 661.6 max 661.6 MiB
+   answers           4, unanswered 0
+   answered in       n 4 p50 7 p90 7 p99 7 max 7 ms
+   freed an answer   n 4 p50 9.0 p90 26.7 p99 26.7 max 26.7 MiB
+   unplug asked      n 4 p50 0.0 p90 0.0 p99 0.0 max 0.0 MiB
+   unplug done       n 2 p50 0.0 p90 0.0 p99 0.0 max 0.0 MiB
+   freed a build     n 5 p50 0.0 p90 29.6 p99 29.6 max 29.6 MiB
+   rooms told        10, held within n 10 p50 4.6 p90 174.3 p99 174.3 max 174.3 MiB
+   phase run           free n 5 p50 1.1 p90 1.3 p99 1.3 max 1.3 s; held n 5 p50 1.1 p90 1.3 p99 1.3 max 1.3 s
+   phase cache-keep    free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s
+   phase layer         free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s
+   phase blob          free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s
+   caches kept         free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 MiB; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 MiB
+   kept, synced in     free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 ms; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 ms
+   merges              free n 5 p50 2.0 p90 2.0 p99 2.0 max 2.0; held n 5 p50 2.0 p90 2.0 p99 2.0 max 2.0
+   merged              free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 MiB; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 MiB
+   merged, written in  free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 ms; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 ms
+   merged, synced in   free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 ms; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 ms
+   VM process dirtied  free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 MiB; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 MiB
+   build dirtied       free n 5 p50 985.9 p90 985.9 p99 985.9 max 985.9 MiB; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 MiB
+   build read          free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 MiB; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 MiB
+   writer dirtied      free -; held n 5 p50 985.9 p90 985.9 p99 985.9 max 985.9 MiB
+   step #1   free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s
+   step #2   free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s
+   step #3   free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s
+   step #4   free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s
+   step #5   free n 5 p50 1.8 p90 2.0 p99 2.0 max 2.0 s; held n 5 p50 1.8 p90 2.0 p99 2.0 max 2.0 s
+   step #6   free n 5 p50 2.4 p90 2.4 p99 2.4 max 2.4 s; held n 5 p50 2.3 p90 2.3 p99 2.3 max 2.3 s
+   rule: held slower than free beyond the rounds' spread: no (held's fastest 4.8 s, free's slowest 5.3 s)
+== ci-42496014878-c-epyc-9v74.out.txt
+host runnervm7aw5e; Ubuntu 24.04.5 LTS; kernel 7.0.0-1017-azure; x86_64; AMD EPYC 9V74 80-Core Processor; shards d9c4212; memory 15983 MiB; cpus 4
+builds rust,npm,apt; rounds 5; home /home/runner/work/_temp/home; bases docker.io/library
+-- apt free: rounds past the caches' 5, failed 0
+   build time        n 5 p50 35.6 p90 39.9 p99 39.9 max 39.9 s
+   scope anon peak   n 5 p50 916.0 p90 946.7 p99 946.7 max 946.7 MiB
+   scope held peak   n 5 p50 1003.2 p90 1033.9 p99 1033.9 max 1033.9 MiB
+-- apt held: rounds past the caches' 5, failed 0
+   build time        n 5 p50 35.0 p90 37.1 p99 37.1 max 37.1 s
+   scope anon peak   n 5 p50 817.9 p90 855.7 p99 855.7 max 855.7 MiB
+   scope held peak   n 5 p50 878.0 p90 916.9 p99 916.9 max 916.9 MiB
+   budget            n 5 p50 907.9 p90 907.9 p99 907.9 max 907.9 MiB
+   short of its peak n 5 p50 95.3 p90 126.0 p99 126.0 max 126.0 MiB
+   writer outside    in 5 of 5 builds
+   writer file peak  n 5 p50 1568.5 p90 1568.5 p99 1568.5 max 1568.5 MiB
+   writer dirty peak n 5 p50 662.5 p90 713.8 p99 713.8 max 713.8 MiB
+   answers           5, unanswered 0
+   answered in       n 5 p50 17 p90 31 p99 31 max 31 ms
+   freed an answer   n 5 p50 52.6 p90 57.7 p99 57.7 max 57.7 MiB
+   unplug asked      n 5 p50 128.0 p90 128.0 p99 128.0 max 128.0 MiB
+   unplug done       n 5 p50 128.0 p90 128.0 p99 128.0 max 128.0 MiB
+   freed a build     n 5 p50 52.6 p90 57.7 p99 57.7 max 57.7 MiB
+   rooms told        79, held within n 79 p50 156.5 p90 637.9 p99 830.0 max 830.0 MiB
+   phase run           free n 5 p50 17.5 p90 17.7 p99 17.7 max 17.7 s; held n 5 p50 17.4 p90 17.8 p99 17.8 max 17.8 s
+   phase cache-keep    free n 5 p50 1.4 p90 1.8 p99 1.8 max 1.8 s; held n 5 p50 1.2 p90 2.8 p99 2.8 max 2.8 s
+   phase layer         free n 5 p50 0.3 p90 0.3 p99 0.3 max 0.3 s; held n 5 p50 0.2 p90 0.2 p99 0.2 max 0.2 s
+   phase blob          free n 5 p50 1.4 p90 5.3 p99 5.3 max 5.3 s; held n 5 p50 1.4 p90 1.8 p99 1.8 max 1.8 s
+   caches kept         free n 5 p50 85.7 p90 85.7 p99 85.7 max 85.7 MiB; held n 5 p50 85.7 p90 85.7 p99 85.7 max 85.7 MiB
+   kept, synced in     free n 5 p50 322.0 p90 373.0 p99 373.0 max 373.0 ms; held n 5 p50 321.0 p90 394.0 p99 394.0 max 394.0 ms
+   merges              free n 5 p50 2.0 p90 2.0 p99 2.0 max 2.0; held n 5 p50 2.0 p90 2.0 p99 2.0 max 2.0
+   merged              free n 5 p50 190.9 p90 190.9 p99 190.9 max 190.9 MiB; held n 5 p50 190.9 p90 190.9 p99 190.9 max 190.9 MiB
+   merged, written in  free n 5 p50 51.0 p90 52.0 p99 52.0 max 52.0 ms; held n 5 p50 47.0 p90 48.0 p99 48.0 max 48.0 ms
+   merged, synced in   free n 5 p50 912.0 p90 1092.0 p99 1092.0 max 1092.0 ms; held n 5 p50 713.0 p90 2335.0 p99 2335.0 max 2335.0 ms
+   VM process dirtied  free n 5 p50 85.7 p90 85.7 p99 85.7 max 85.7 MiB; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 MiB
+   build dirtied       free n 5 p50 1566.5 p90 1566.5 p99 1566.5 max 1566.5 MiB; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 MiB
+   build read          free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 MiB; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 MiB
+   writer dirtied      free -; held n 5 p50 1652.2 p90 1652.2 p99 1652.2 max 1652.2 MiB
+   step #1   free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s
+   step #2   free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s
+   step #3   free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s
+   step #4   free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s
+   step #5   free n 5 p50 0.6 p90 0.7 p99 0.7 max 0.7 s; held n 5 p50 0.7 p90 0.7 p99 0.7 max 0.7 s
+   step #6   free n 5 p50 20.5 p90 24.8 p99 24.8 max 24.8 s; held n 5 p50 20.3 p90 22.1 p99 22.1 max 22.1 s
+   step #7   free n 5 p50 2.4 p90 2.5 p99 2.5 max 2.5 s; held n 5 p50 2.2 p90 2.5 p99 2.5 max 2.5 s
+   rule: held slower than free beyond the rounds' spread: no (held's fastest 34.4 s, free's slowest 39.9 s)
+-- npm free: rounds past the caches' 5, failed 0
+   build time        n 5 p50 8.6 p90 8.8 p99 8.8 max 8.8 s
+   scope anon peak   n 5 p50 757.6 p90 768.9 p99 768.9 max 768.9 MiB
+   scope held peak   n 5 p50 775.4 p90 786.8 p99 786.8 max 786.8 MiB
+-- npm held: rounds past the caches' 5, failed 0
+   build time        n 5 p50 8.7 p90 9.0 p99 9.0 max 9.0 s
+   scope anon peak   n 5 p50 741.0 p90 748.2 p99 748.2 max 748.2 MiB
+   scope held peak   n 5 p50 759.0 p90 765.7 p99 765.7 max 765.7 MiB
+   budget            n 5 p50 753.2 p90 753.2 p99 753.2 max 753.2 MiB
+   short of its peak n 5 p50 22.2 p90 33.5 p99 33.5 max 33.5 MiB
+   writer outside    in 5 of 5 builds
+   writer file peak  n 5 p50 524.1 p90 524.7 p99 524.7 max 524.7 MiB
+   writer dirty peak n 5 p50 360.9 p90 376.9 p99 376.9 max 376.9 MiB
+   answers           5, unanswered 0
+   answered in       n 5 p50 7 p90 42 p99 42 max 42 ms
+   freed an answer   n 5 p50 1.6 p90 2.5 p99 2.5 max 2.5 MiB
+   unplug asked      n 5 p50 128.0 p90 128.0 p99 128.0 max 128.0 MiB
+   unplug done       n 5 p50 128.0 p90 128.0 p99 128.0 max 128.0 MiB
+   freed a build     n 5 p50 1.6 p90 2.5 p99 2.5 max 2.5 MiB
+   rooms told        17, held within n 17 p50 239.1 p90 668.8 p99 669.2 max 669.2 MiB
+   phase run           free n 5 p50 3.7 p90 3.8 p99 3.8 max 3.8 s; held n 5 p50 3.8 p90 3.8 p99 3.8 max 3.8 s
+   phase cache-keep    free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s; held n 5 p50 0.0 p90 0.3 p99 0.3 max 0.3 s
+   phase layer         free n 5 p50 0.1 p90 0.1 p99 0.1 max 0.1 s; held n 5 p50 0.1 p90 0.1 p99 0.1 max 0.1 s
+   phase blob          free n 5 p50 0.3 p90 0.3 p99 0.3 max 0.3 s; held n 5 p50 0.3 p90 0.5 p99 0.5 max 0.5 s
+   caches kept         free n 5 p50 0.1 p90 0.1 p99 0.1 max 0.1 MiB; held n 5 p50 0.1 p90 0.1 p99 0.1 max 0.1 MiB
+   kept, synced in     free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 ms; held n 5 p50 1.0 p90 71.0 p99 71.0 max 71.0 ms
+   merges              free n 3 p50 1.0 p90 1.0 p99 1.0 max 1.0; held n 4 p50 1.0 p90 1.0 p99 1.0 max 1.0
+   merged              free n 3 p50 0.2 p90 0.4 p99 0.4 max 0.4 MiB; held n 4 p50 0.6 p90 0.9 p99 0.9 max 0.9 MiB
+   merged, written in  free n 3 p50 0.0 p90 0.0 p99 0.0 max 0.0 ms; held n 4 p50 0.0 p90 0.0 p99 0.0 max 0.0 ms
+   merged, synced in   free n 3 p50 0.0 p90 0.0 p99 0.0 max 0.0 ms; held n 4 p50 3.0 p90 55.0 p99 55.0 max 55.0 ms
+   VM process dirtied  free n 5 p50 0.1 p90 0.1 p99 0.1 max 0.1 MiB; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 MiB
+   build dirtied       free n 5 p50 522.0 p90 522.2 p99 522.2 max 522.2 MiB; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 MiB
+   build read          free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 MiB; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 MiB
+   writer dirtied      free -; held n 5 p50 522.2 p90 522.8 p99 522.8 max 522.8 MiB
+   step #1   free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s
+   step #2   free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s
+   step #3   free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s
+   step #4   free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s
+   step #6   free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s
+   step #8   free n 5 p50 4.7 p90 4.7 p99 4.7 max 4.7 s; held n 5 p50 4.7 p90 5.0 p99 5.0 max 5.0 s
+   step #9   free n 5 p50 1.5 p90 1.8 p99 1.8 max 1.8 s; held n 5 p50 1.5 p90 1.7 p99 1.7 max 1.7 s
+   rule: held slower than free beyond the rounds' spread: no (held's fastest 8.3 s, free's slowest 8.8 s)
+-- rust free: rounds past the caches' 5, failed 0
+   build time        n 5 p50 6.7 p90 7.2 p99 7.2 max 7.2 s
+   scope anon peak   n 5 p50 160.2 p90 163.0 p99 163.0 max 163.0 MiB
+   scope held peak   n 5 p50 291.2 p90 294.0 p99 294.0 max 294.0 MiB
+-- rust held: rounds past the caches' 5, failed 0
+   build time        n 5 p50 6.9 p90 10.8 p99 10.8 max 10.8 s
+   scope anon peak   n 5 p50 162.9 p90 165.1 p99 165.1 max 165.1 MiB
+   scope held peak   n 5 p50 266.2 p90 268.4 p99 268.4 max 268.4 MiB
+   budget            n 5 p50 267.9 p90 267.9 p99 267.9 max 267.9 MiB
+   short of its peak n 5 p50 23.3 p90 26.1 p99 26.1 max 26.1 MiB
+   writer outside    in 5 of 5 builds
+   writer file peak  n 5 p50 987.9 p90 987.9 p99 987.9 max 987.9 MiB
+   writer dirty peak n 5 p50 845.6 p90 893.6 p99 893.6 max 893.6 MiB
+   answers           2, unanswered 0
+   answered in       n 2 p50 7 p90 7 p99 7 max 7 ms
+   freed an answer   n 2 p50 30.7 p90 30.7 p99 30.7 max 30.7 MiB
+   unplug asked      n 2 p50 0.0 p90 0.0 p99 0.0 max 0.0 MiB
+   unplug done       n 2 p50 0.0 p90 0.0 p99 0.0 max 0.0 MiB
+   freed a build     n 5 p50 0.0 p90 33.5 p99 33.5 max 33.5 MiB
+   rooms told        14, held within n 14 p50 22.0 p90 174.8 p99 175.0 max 175.0 MiB
+   phase run           free n 5 p50 1.0 p90 1.1 p99 1.1 max 1.1 s; held n 5 p50 1.0 p90 1.3 p99 1.3 max 1.3 s
+   phase cache-keep    free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s
+   phase layer         free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s
+   phase blob          free n 5 p50 0.1 p90 0.1 p99 0.1 max 0.1 s; held n 5 p50 0.1 p90 0.1 p99 0.1 max 0.1 s
+   caches kept         free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 MiB; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 MiB
+   kept, synced in     free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 ms; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 ms
+   merges              free n 5 p50 2.0 p90 2.0 p99 2.0 max 2.0; held n 5 p50 2.0 p90 2.0 p99 2.0 max 2.0
+   merged              free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 MiB; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 MiB
+   merged, written in  free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 ms; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 ms
+   merged, synced in   free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 ms; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 ms
+   VM process dirtied  free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 MiB; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 MiB
+   build dirtied       free n 5 p50 985.9 p90 985.9 p99 985.9 max 985.9 MiB; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 MiB
+   build read          free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 MiB; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 MiB
+   writer dirtied      free -; held n 5 p50 985.9 p90 985.9 p99 985.9 max 985.9 MiB
+   step #1   free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s
+   step #2   free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s
+   step #3   free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s
+   step #4   free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s
+   step #5   free n 5 p50 1.6 p90 1.7 p99 1.7 max 1.7 s; held n 5 p50 1.7 p90 1.9 p99 1.9 max 1.9 s
+   step #6   free n 5 p50 4.2 p90 4.7 p99 4.7 max 4.7 s; held n 5 p50 4.1 p90 8.3 p99 8.3 max 8.3 s
+   rule: held slower than free beyond the rounds' spread: no (held's fastest 6.2 s, free's slowest 7.2 s)
+== ci-42496014878-d-xeon-6973p-c.out.txt
+host runnervm7aw5e; Ubuntu 24.04.5 LTS; kernel 7.0.0-1017-azure; x86_64; Intel(R) Xeon(R) 6973P-C; shards d9c4212; memory 15982 MiB; cpus 4
+builds rust,npm,apt; rounds 5; home /home/runner/work/_temp/home; bases docker.io/library
+-- apt free: rounds past the caches' 5, failed 0
+   build time        n 5 p50 27.9 p90 28.2 p99 28.2 max 28.2 s
+   scope anon peak   n 5 p50 935.7 p90 955.9 p99 955.9 max 955.9 MiB
+   scope held peak   n 5 p50 1022.8 p90 1042.9 p99 1042.9 max 1042.9 MiB
+-- apt held: rounds past the caches' 5, failed 0
+   build time        n 5 p50 28.1 p90 29.1 p99 29.1 max 29.1 s
+   scope anon peak   n 5 p50 814.4 p90 846.4 p99 846.4 max 846.4 MiB
+   scope held peak   n 5 p50 882.8 p90 915.0 p99 915.0 max 915.0 MiB
+   budget            n 5 p50 915.0 p90 915.0 p99 915.0 max 915.0 MiB
+   short of its peak n 5 p50 107.9 p90 134.0 p99 134.0 max 134.0 MiB
+   writer outside    in 5 of 5 builds
+   writer file peak  n 5 p50 1568.5 p90 1568.5 p99 1568.5 max 1568.5 MiB
+   writer dirty peak n 5 p50 661.0 p90 757.0 p99 757.0 max 757.0 MiB
+   answers           1, unanswered 0
+   answered in       n 1 p50 5 p90 5 p99 5 max 5 ms
+   freed an answer   n 1 p50 0.2 p90 0.2 p99 0.2 max 0.2 MiB
+   unplug asked      n 1 p50 128.0 p90 128.0 p99 128.0 max 128.0 MiB
+   unplug done       n 1 p50 128.0 p90 128.0 p99 128.0 max 128.0 MiB
+   freed a build     n 5 p50 0.0 p90 0.2 p99 0.2 max 0.2 MiB
+   rooms told        59, held within n 59 p50 131.5 p90 617.5 p99 835.8 max 835.8 MiB
+   phase run           free n 5 p50 10.8 p90 10.9 p99 10.9 max 10.9 s; held n 5 p50 10.9 p90 11.5 p99 11.5 max 11.5 s
+   phase cache-keep    free n 5 p50 1.2 p90 1.2 p99 1.2 max 1.2 s; held n 5 p50 1.2 p90 1.2 p99 1.2 max 1.2 s
+   phase layer         free n 5 p50 0.3 p90 0.3 p99 0.3 max 0.3 s; held n 5 p50 0.3 p90 0.3 p99 0.3 max 0.3 s
+   phase blob          free n 5 p50 1.4 p90 1.7 p99 1.7 max 1.7 s; held n 5 p50 1.7 p90 1.9 p99 1.9 max 1.9 s
+   caches kept         free n 5 p50 85.7 p90 85.7 p99 85.7 max 85.7 MiB; held n 5 p50 85.7 p90 85.7 p99 85.7 max 85.7 MiB
+   kept, synced in     free n 5 p50 320.0 p90 321.0 p99 321.0 max 321.0 ms; held n 5 p50 320.0 p90 321.0 p99 321.0 max 321.0 ms
+   merges              free n 5 p50 2.0 p90 2.0 p99 2.0 max 2.0; held n 5 p50 2.0 p90 2.0 p99 2.0 max 2.0
+   merged              free n 5 p50 190.9 p90 190.9 p99 190.9 max 190.9 MiB; held n 5 p50 190.9 p90 190.9 p99 190.9 max 190.9 MiB
+   merged, written in  free n 5 p50 66.0 p90 67.0 p99 67.0 max 67.0 ms; held n 5 p50 53.0 p90 70.0 p99 70.0 max 70.0 ms
+   merged, synced in   free n 5 p50 714.0 p90 715.0 p99 715.0 max 715.0 ms; held n 5 p50 715.0 p90 715.0 p99 715.0 max 715.0 ms
+   VM process dirtied  free n 5 p50 85.7 p90 85.7 p99 85.7 max 85.7 MiB; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 MiB
+   build dirtied       free n 5 p50 1566.5 p90 1566.5 p99 1566.5 max 1566.5 MiB; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 MiB
+   build read          free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 MiB; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 MiB
+   writer dirtied      free -; held n 5 p50 1652.2 p90 1652.2 p99 1652.2 max 1652.2 MiB
+   step #1   free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s
+   step #2   free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s
+   step #3   free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s
+   step #4   free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s
+   step #5   free n 5 p50 0.6 p90 0.7 p99 0.7 max 0.7 s; held n 5 p50 0.6 p90 0.7 p99 0.7 max 0.7 s
+   step #6   free n 5 p50 13.7 p90 14.0 p99 14.0 max 14.0 s; held n 5 p50 14.0 p90 14.6 p99 14.6 max 14.6 s
+   step #7   free n 5 p50 2.6 p90 2.7 p99 2.7 max 2.7 s; held n 5 p50 2.6 p90 2.6 p99 2.6 max 2.6 s
+   rule: held slower than free beyond the rounds' spread: no (held's fastest 28.0 s, free's slowest 28.2 s)
+-- npm free: rounds past the caches' 5, failed 0
+   build time        n 5 p50 8.1 p90 8.6 p99 8.6 max 8.6 s
+   scope anon peak   n 5 p50 751.8 p90 760.7 p99 760.7 max 760.7 MiB
+   scope held peak   n 5 p50 771.3 p90 783.4 p99 783.4 max 783.4 MiB
+-- npm held: rounds past the caches' 5, failed 0
+   build time        n 5 p50 8.3 p90 8.7 p99 8.7 max 8.7 s
+   scope anon peak   n 5 p50 760.3 p90 763.5 p99 763.5 max 763.5 MiB
+   scope held peak   n 5 p50 778.3 p90 781.3 p99 781.3 max 781.3 MiB
+   budget            n 5 p50 769.9 p90 769.9 p99 769.9 max 769.9 MiB
+   short of its peak n 5 p50 1.4 p90 27.2 p99 27.2 max 27.2 MiB
+   writer outside    in 5 of 5 builds
+   writer file peak  n 5 p50 524.1 p90 524.7 p99 524.7 max 524.7 MiB
+   writer dirty peak n 5 p50 225.5 p90 304.9 p99 304.9 max 304.9 MiB
+   answers           5, unanswered 0
+   answered in       n 5 p50 9 p90 19 p99 19 max 19 ms
+   freed an answer   n 5 p50 10.1 p90 13.1 p99 13.1 max 13.1 MiB
+   unplug asked      n 5 p50 128.0 p90 128.0 p99 128.0 max 128.0 MiB
+   unplug done       n 5 p50 128.0 p90 128.0 p99 128.0 max 128.0 MiB
+   freed a build     n 5 p50 10.1 p90 13.1 p99 13.1 max 13.1 MiB
+   rooms told        16, held within n 16 p50 247.0 p90 685.1 p99 685.4 max 685.4 MiB
+   phase run           free n 5 p50 3.5 p90 3.7 p99 3.7 max 3.7 s; held n 5 p50 3.4 p90 3.6 p99 3.6 max 3.6 s
+   phase cache-keep    free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s
+   phase layer         free n 5 p50 0.1 p90 0.1 p99 0.1 max 0.1 s; held n 5 p50 0.1 p90 0.1 p99 0.1 max 0.1 s
+   phase blob          free n 5 p50 0.3 p90 0.3 p99 0.3 max 0.3 s; held n 5 p50 0.3 p90 0.5 p99 0.5 max 0.5 s
+   caches kept         free n 5 p50 0.1 p90 0.1 p99 0.1 max 0.1 MiB; held n 5 p50 0.1 p90 0.1 p99 0.1 max 0.1 MiB
+   kept, synced in     free n 5 p50 0.0 p90 1.0 p99 1.0 max 1.0 ms; held n 5 p50 1.0 p90 1.0 p99 1.0 max 1.0 ms
+   merges              free n 3 p50 1.0 p90 1.0 p99 1.0 max 1.0; held n 4 p50 1.0 p90 1.0 p99 1.0 max 1.0
+   merged              free n 3 p50 0.2 p90 0.4 p99 0.4 max 0.4 MiB; held n 4 p50 0.6 p90 0.9 p99 0.9 max 0.9 MiB
+   merged, written in  free n 3 p50 0.0 p90 0.0 p99 0.0 max 0.0 ms; held n 4 p50 0.0 p90 0.0 p99 0.0 max 0.0 ms
+   merged, synced in   free n 3 p50 1.0 p90 1.0 p99 1.0 max 1.0 ms; held n 4 p50 2.0 p90 3.0 p99 3.0 max 3.0 ms
+   VM process dirtied  free n 5 p50 0.1 p90 0.1 p99 0.1 max 0.1 MiB; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 MiB
+   build dirtied       free n 5 p50 522.0 p90 522.2 p99 522.2 max 522.2 MiB; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 MiB
+   build read          free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 MiB; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 MiB
+   writer dirtied      free -; held n 5 p50 522.2 p90 522.8 p99 522.8 max 522.8 MiB
+   step #1   free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s
+   step #2   free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s
+   step #3   free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s
+   step #4   free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s
+   step #6   free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s
+   step #8   free n 5 p50 4.5 p90 4.7 p99 4.7 max 4.7 s; held n 5 p50 4.5 p90 4.8 p99 4.8 max 4.8 s
+   step #9   free n 5 p50 1.4 p90 1.8 p99 1.8 max 1.8 s; held n 5 p50 1.8 p90 1.8 p99 1.8 max 1.8 s
+   rule: held slower than free beyond the rounds' spread: no (held's fastest 7.9 s, free's slowest 8.6 s)
+-- rust free: rounds past the caches' 5, failed 0
+   build time        n 5 p50 6.8 p90 7.3 p99 7.3 max 7.3 s
+   scope anon peak   n 5 p50 158.6 p90 159.8 p99 159.8 max 159.8 MiB
+   scope held peak   n 5 p50 290.0 p90 291.0 p99 291.0 max 291.0 MiB
+-- rust held: rounds past the caches' 5, failed 0
+   build time        n 5 p50 6.6 p90 7.0 p99 7.0 max 7.0 s
+   scope anon peak   n 5 p50 159.1 p90 162.6 p99 162.6 max 162.6 MiB
+   scope held peak   n 5 p50 262.4 p90 266.0 p99 266.0 max 266.0 MiB
+   budget            n 5 p50 259.1 p90 263.0 p99 263.0 max 263.0 MiB
+   short of its peak n 5 p50 30.4 p90 31.9 p99 31.9 max 31.9 MiB
+   writer outside    in 5 of 5 builds
+   writer file peak  n 5 p50 987.9 p90 987.9 p99 987.9 max 987.9 MiB
+   writer dirty peak n 5 p50 805.6 p90 893.6 p99 893.6 max 893.6 MiB
+   answers           10, unanswered 0
+   answered in       n 10 p50 5 p90 9 p99 9 max 9 ms
+   freed an answer   n 10 p50 14.9 p90 28.6 p99 28.6 max 28.6 MiB
+   unplug asked      n 10 p50 0.0 p90 0.0 p99 0.0 max 0.0 MiB
+   unplug done       n 8 p50 0.0 p90 0.0 p99 0.0 max 0.0 MiB
+   freed a build     n 5 p50 30.0 p90 31.5 p99 31.5 max 31.5 MiB
+   rooms told        11, held within n 11 p50 3.2 p90 18.1 p99 21.2 max 21.2 MiB
+   phase run           free n 5 p50 0.9 p90 1.3 p99 1.3 max 1.3 s; held n 5 p50 0.9 p90 1.2 p99 1.2 max 1.2 s
+   phase cache-keep    free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s
+   phase layer         free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s
+   phase blob          free n 5 p50 0.1 p90 0.1 p99 0.1 max 0.1 s; held n 5 p50 0.1 p90 0.1 p99 0.1 max 0.1 s
+   caches kept         free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 MiB; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 MiB
+   kept, synced in     free n 5 p50 0.0 p90 1.0 p99 1.0 max 1.0 ms; held n 5 p50 1.0 p90 1.0 p99 1.0 max 1.0 ms
+   merges              free n 5 p50 2.0 p90 2.0 p99 2.0 max 2.0; held n 5 p50 2.0 p90 2.0 p99 2.0 max 2.0
+   merged              free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 MiB; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 MiB
+   merged, written in  free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 ms; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 ms
+   merged, synced in   free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 ms; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 ms
+   VM process dirtied  free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 MiB; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 MiB
+   build dirtied       free n 5 p50 985.9 p90 985.9 p99 985.9 max 985.9 MiB; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 MiB
+   build read          free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 MiB; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 MiB
+   writer dirtied      free -; held n 5 p50 985.9 p90 985.9 p99 985.9 max 985.9 MiB
+   step #1   free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s
+   step #2   free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s
+   step #3   free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s
+   step #4   free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s
+   step #5   free n 5 p50 1.6 p90 2.1 p99 2.1 max 2.1 s; held n 5 p50 1.6 p90 1.9 p99 1.9 max 1.9 s
+   step #6   free n 5 p50 4.4 p90 4.5 p99 4.5 max 4.5 s; held n 5 p50 4.3 p90 4.4 p99 4.4 max 4.4 s
+   rule: held slower than free beyond the rounds' spread: no (held's fastest 6.0 s, free's slowest 7.3 s)

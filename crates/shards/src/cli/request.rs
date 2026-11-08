@@ -797,6 +797,9 @@ fn request(parsed: &Parsed) -> Result<Run, String> {
             crate::cli::env_ours_first("SHARDS_DEFAULT_PLATFORM", "DOCKER_DEFAULT_PLATFORM")
                 .unwrap_or_default()
         },
+        // The client this command runs for through its context (D228), which the daemon
+        // gives what its owner granted it alone.
+        client: crate::client_grants::client_here(),
         ..Run::default()
     })
 }

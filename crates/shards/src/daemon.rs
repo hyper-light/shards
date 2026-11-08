@@ -45,6 +45,7 @@ mod commit;
 mod cuts;
 mod demand;
 mod devices;
+mod ends;
 mod engine;
 /// The Engine API's socket in the home (D170), relative to it: what Docker's clients reach;
 /// on Windows the file that names its named pipe.
@@ -176,6 +177,17 @@ type JoinDoor = UnixStream;
 #[cfg(windows)]
 type JoinDoor = (UnixStream, std::os::windows::io::OwnedHandle);
 
+/// Whether `handle` is a pipe's (GetFileType): on Windows, a share's that a client serves
+/// (D228), where every other share's is its directory's.
+#[cfg(windows)]
+fn is_pipe(handle: &OwnedFd) -> bool {
+    use std::os::windows::io::AsRawHandle as _;
+    use windows_sys::Win32::Storage::FileSystem::{FILE_TYPE_PIPE, GetFileType};
+    // SAFETY: GetFileType reads an open handle's type, which this borrows, and touches no
+    // memory.
+    unsafe { GetFileType(handle.as_raw_handle()) == FILE_TYPE_PIPE }
+}
+
 /// A new, empty swap file of `bytes` at `at`, sparse (PM M349), in place of any before it:
 /// only this user's.
 fn open_swap(at: &Path, bytes: u64) -> std::io::Result<std::fs::File> {
@@ -221,19 +233,18 @@ const TAKE_TIMEOUT: Duration = Duration::from_secs(10);
 const JOIN_ROOT: &str = "join-root";
 /// The home's private directory, 0700: a build's ID file, and what a share process keeps of
 /// a restored guest's files that no path reaches (D176).
-const PRIVATE: &str = "tmp";
+pub(crate) const PRIVATE: &str = "tmp";
 /// How long a daemon waits for the lock of one that neither listens nor ends its runs
 /// (shards_ipc::exiting): one started at the same moment, which listens as soon as it
 /// has the lock. One ending its runs is waited for as long as it takes.
 const TAKEOVER: Duration = Duration::from_secs(20);
-/// How long `shards daemon stop` lets a command end after its SIGTERM, before SIGKILL:
-/// dockerd's default stop timeout (moby daemon/config/config_linux.go), which it gives
-/// each container when it shuts down.
+/// How long a command made with no stop timeout of its own is given to end after its stop
+/// signal, before SIGKILL: by `stop`, `restart` and the daemon's own stop alike. The
+/// input's meaning, not a figure of shards': a Compose file's `stop_grace_period` left out
+/// is "10 seconds for the container to exit before sending SIGKILL" (the Compose file
+/// reference, services, `stop_grace_period`), and a run's `--stop-timeout` left out is read
+/// the same, so that what its author expected of a stop holds in a microVM.
 const STOP_GRACE: Duration = Duration::from_secs(10);
-/// How long a shutting-down daemon lets a command take to end after that SIGKILL, before
-/// its VM goes too: dockerd gives up on its containers after the larger of its shutdown
-/// timeout (15 s) and the stop timeout plus 5 s (moby daemon/daemon.go, ShutdownTimeout).
-const SHUTDOWN_KILL: Duration = Duration::from_secs(5);
 /// How often a listener out of descriptors looks for one again: nothing tells of one
 /// closed anywhere in the process. And how often one whose watches could not be made
 /// looks at its home.
@@ -428,6 +439,23 @@ impl Wake {
         }
         #[cfg(windows)]
         self.event.set();
+    }
+
+    /// What wakes it from another thread that holds no daemon: its side of the pair, or
+    /// its event.
+    fn waker(&self) -> io::Result<Box<dyn Fn() + Send + Sync>> {
+        #[cfg(unix)]
+        {
+            let tell = self.pair.0.try_clone()?;
+            Ok(Box::new(move || {
+                let _ = (&tell).write(&[0]);
+            }))
+        }
+        #[cfg(windows)]
+        {
+            let event = self.event.try_clone()?;
+            Ok(Box::new(move || event.set()))
+        }
     }
 
     /// Whether a wake is pending: Windows' listener asks; Unix's polls.
@@ -717,6 +745,12 @@ struct OwnEngine {
     registry_env: Vec<String>,
 }
 
+/// The way a restart took its kept layer (D190), what that held, and when it was chosen.
+type LayerWay = (layers::Restart, u64, Instant);
+
+/// A kept layer's file going under a restart's layer device (D190), and where it is.
+type KeptOver = (File, PathBuf);
+
 /// What a run's registration keeps of its request: a detached client, until it is told
 /// whether its command started, and what each `exec` in its microVM starts from.
 struct Keep<'a> {
@@ -738,6 +772,9 @@ struct Keep<'a> {
     /// Where its writable layer was kept, which goes under its microVM's layer device as
     /// it starts (D190): its VM's layer from then on, which stays where it is.
     layer_over: Option<PathBuf>,
+    /// The way its kept layer was taken, where it could go either, what it held, and when
+    /// it was chosen: recorded as its command starts ([`layers::Restarts`]).
+    layer_way: Option<LayerWay>,
     /// How many segments its log keeps (D161): its own, else the daemon's.
     log_files: u64,
     /// Its log's rotated segments are compressed (D162).
@@ -869,6 +906,8 @@ struct Inbox {
     /// word once its command had started, its journal then to replay as it is read
     /// (`layers::open_kept`). Else let go of.
     layer: Option<layers::LayerFile>,
+    /// [`Keep::layer_way`].
+    layer_way: Option<LayerWay>,
     /// [`Keep::named`].
     named: Option<String>,
     /// [`Keep::restarted`].
@@ -1005,26 +1044,17 @@ fn resolved(rootfs: &Path) -> PathBuf {
 }
 
 /// A run's stop as the daemon stops, once begun ([`Daemon::stop_each`]): SIGKILL at
-/// `kill`, if ever, then its VM's end SHUTDOWN_KILL later.
+/// `next`, if ever, then its VM's end once its guest's teardown has gone on no more for a
+/// slice (`ends`, D217).
 struct Stop {
     socket: Arc<RunSocket>,
     /// Its VM, which its stop ends past its grace; none for a joiner, whose VM is its
     /// provider's, ended by the provider's own stop (D119).
     vm: Option<Arc<shards_ipc::Child>>,
-    kill: Option<Instant>,
-    killed: bool,
-}
-
-impl Stop {
-    /// When its next step is due, if it has one.
-    fn next(&self) -> Option<Instant> {
-        let kill = self.kill?;
-        if self.killed {
-            kill.checked_add(SHUTDOWN_KILL)
-        } else {
-            Some(kill)
-        }
-    }
+    /// When its next step is due: its SIGKILL, then its VM's end; none once it has none.
+    next: Option<Instant>,
+    /// Its command's teardown once it is sent SIGKILL.
+    killed: Option<ends::Followed>,
 }
 
 /// Why a template's pool gave no warm VM.
@@ -1122,6 +1152,9 @@ struct Daemon<D: Disk = Real> {
     /// The microVMs a client waits on, by their processes' IDs, each as the listener last
     /// looked at it ([`Daemon::log_progress`]).
     followed: Mutex<HashMap<u32, Progress>>,
+    /// How long this host's microVMs have taken to end once killed, kept in the home
+    /// (D217).
+    ends: ends::Ends,
     /// A run's start was decided: it runs, or never will.
     resolved: Condvar,
     /// `shards daemon stop` asked this daemon to end its runs.
@@ -1159,8 +1192,13 @@ struct Daemon<D: Disk = Real> {
     /// one is no more.
     settling: Mutex<HashSet<String>>,
     settled: Condvar,
+    /// What this host's restarts over a kept layer and packing it cost (D190), which
+    /// decides each next one's way.
+    layer_restarts: Mutex<layers::Restarts>,
     /// Each microVM's restart manager, as its runs end (restart.rs).
     restarts: Mutex<HashMap<String, restart::Manager>>,
+    /// What restarts cost on this host, as its microVMs show it (restart.rs).
+    costs: Mutex<restart::Costs>,
     /// The microVMs the daemon itself is starting again, for their policies: such a
     /// start keeps its restart count, where `shards start vm` resets it.
     restarting_now: Mutex<HashSet<String>>,
@@ -1670,7 +1708,11 @@ fn serve(ready: Option<File>, listen: Option<std::net::SocketAddr>) -> Result<()
     // Other machines' clients (D180), before it says it serves: an address it cannot bind
     // is its starter's to hear.
     if let Some(at) = listen {
-        remote::listen(daemon.home.clone(), exe.clone(), at)?;
+        let wake = daemon
+            .listener_wake
+            .waker()
+            .map_err(|e| format!("what wakes the listener: {e}"))?;
+        remote::listen(daemon.home.clone(), exe.clone(), at, wake)?;
     }
     // Its starter returns once it hears this: its slots are offered from now on.
     if let Some(mut ready) = ready {
@@ -1907,6 +1949,10 @@ impl<D: Disk> Daemon<D> {
     ) -> io::Result<Daemon<D>> {
         let home_id = crate::os::path_id(&home);
         let events = events::Events::kept_in(&home);
+        let costs = restart::Costs::load(&home);
+        let ends = ends::Ends::kept_in(&home);
+        // What this host's restarts cost each way, as its last daemon left them (D190).
+        let layer_restarts = layers::Restarts::kept_in(&home);
         Ok(Daemon {
             home,
             bridge: settings.bridge,
@@ -1944,6 +1990,7 @@ impl<D: Disk> Daemon<D> {
             stoppers: Mutex::default(),
             runs: Mutex::default(),
             followed: Mutex::default(),
+            ends,
             resolved: Condvar::new(),
             ending: AtomicBool::new(false),
             containers: Mutex::new(containers),
@@ -1966,7 +2013,9 @@ impl<D: Disk> Daemon<D> {
             events,
             settling: Mutex::default(),
             settled: Condvar::new(),
+            layer_restarts: Mutex::new(layer_restarts),
             restarts: Mutex::default(),
+            costs: Mutex::new(costs),
             restarting_now: Mutex::default(),
             visiting: Mutex::default(),
             visited: Condvar::new(),
@@ -2118,7 +2167,7 @@ impl<D: Disk> Daemon<D> {
             if let Some(api) = &api {
                 loop {
                     match accept_api(api) {
-                        Ok(conn) => self.take_engine(threads, conn, None),
+                        Ok(conn) => self.take_engine(threads, conn, None, None),
                         Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
                         Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
                         Err(e) => {
@@ -2132,7 +2181,11 @@ impl<D: Disk> Daemon<D> {
             // What runs' commands asked of their own microVMs' engines (D181), each served
             // scoped to its microVM.
             for (provider, conn) in self.engine.take_arrived() {
-                self.take_engine(threads, conn, Some(engine::Scope { provider }));
+                self.take_engine(threads, conn, Some(engine::Scope { provider }), None);
+            }
+            // Clients' of other machines', through their contexts' engines (D228).
+            for (client, conn) in remote::take_engine_clients() {
+                self.take_engine(threads, conn, None, Some(client));
             }
             self.age_pools();
             self.mark_collection();
@@ -2666,10 +2719,16 @@ impl<D: Disk> Daemon<D> {
                     width: command.width,
                     color: command.color,
                     files: message.fds,
+                    whose: command.client.clone(),
                 };
                 // A stopped microVM's files are read in a VM booted over them (visit.rs).
                 let visit = self.visit_for(threads, &command.argv);
-                let status = match self.device_command(threads, &command.argv, &commands::Reply(conn)) {
+                let status = match self.device_command(
+                    threads,
+                    &command.argv,
+                    &command.client,
+                    &commands::Reply(conn),
+                ) {
                     Some(status) => status,
                     None => self.command(&command.argv, &asker, &commands::Reply(conn)),
                 };
@@ -3418,7 +3477,16 @@ impl<D: Disk> Daemon<D> {
         let shared = cdi_points
             .and_then(|more| {
                 points.extend(more);
-                crate::volumes::open(&points, first, &crate::volumes::Store::new(&self.home))
+                // A client's (D228): judged by what its owner granted it, and its own
+                // directories served by the relays its client opened for them.
+                let grants =
+                    (!run.client.is_empty()).then(|| crate::client_grants::load(&self.home, &run.client));
+                let relay = |token: &str| remote::take_relay(&run.client, token);
+                let access = crate::volumes::Access {
+                    client: grants.as_ref().map(|g| (run.client.as_str(), g)),
+                    relay: Some(&relay),
+                };
+                crate::volumes::open_for(&points, first, &crate::volumes::Store::new(&self.home), &access)
             })
             .and_then(|opened| {
                 let cdi = prepared.cdi.as_ref().ok().and_then(Option::as_ref);
@@ -3619,6 +3687,11 @@ impl<D: Disk> Daemon<D> {
                 }
                 // A joiner's are volumes of its microVM's join share, each named so that no
                 // other microVM can guess it (D119), as no run's own shares are its.
+                if joining && points.iter().any(|p| !p.relay.is_empty()) {
+                    return Err(
+                        "a client's own directory is served to a run of a microVM of its own: a run joining another's network (--network container:NAME) takes none".into(),
+                    );
+                }
                 if joining {
                     let names = opened
                         .dirs
@@ -3720,7 +3793,7 @@ impl<D: Disk> Daemon<D> {
         // What it changed before (D37); a resumed one's is in its memory. Its layer kept in
         // its file goes under its microVM's layer device as it is, where the microVM's is of
         // its length (D190); else it is put back.
-        let over = match again.as_ref().filter(|_| resuming.is_none() && !joining) {
+        let (over, layer_way) = match again.as_ref().filter(|_| resuming.is_none() && !joining) {
             Some(_) => match self.layer_over(&id, &run) {
                 Ok(over) => over,
                 Err(e) => {
@@ -3731,7 +3804,7 @@ impl<D: Disk> Daemon<D> {
                     return None;
                 }
             },
-            None => None,
+            None => (None, None),
         };
         let layer_in = match again.as_ref().filter(|_| resuming.is_none() && over.is_none()) {
             Some(_) => match self.layer_in(threads, &id, joining) {
@@ -3890,6 +3963,7 @@ impl<D: Disk> Daemon<D> {
                 restarted: restarting,
                 layer_pending: layer_out.is_some(),
                 layer_over: over.as_ref().map(|(_, at)| at.clone()),
+                layer_way,
                 log_files: kept.map_or(DEFAULT_LOGS.files, |k| k.files),
                 log_compress: kept.is_some_and(|k| k.compress),
                 visit: false,
@@ -3937,6 +4011,24 @@ impl<D: Disk> Daemon<D> {
         drop(prepared.lease.take());
         if let Some((_, at)) = &swap {
             let _ = std::fs::remove_file(at);
+        }
+        // The CPU baseline its guest was told (D176 part 6), which a move of it is checked
+        // against: its home's as it booted; a resumed run's is its snapshot's, kept from its
+        // first start, and a joiner's its provider's.
+        if started.is_ok() && resuming.is_none() && !matches!(start, network::Start::Join(_)) {
+            let at = lock(&self.containers).dir(&id).join(moves::RUN_BASELINE);
+            let baseline = moves::home_baseline(&self.home);
+            let kept = if baseline.is_empty() {
+                std::fs::remove_file(&at).or_else(|e| match e.kind() {
+                    io::ErrorKind::NotFound => Ok(()),
+                    _ => Err(e),
+                })
+            } else {
+                std::fs::write(&at, shards_vmm::arch::aarch64::cpu::encode(&baseline))
+            };
+            if let Err(e) = kept {
+                log(format!("{}: {e}", at.display()));
+            }
         }
         match started {
             Ok(inbox) => Some((id, inbox)),
@@ -4364,10 +4456,13 @@ impl<D: Disk> Daemon<D> {
             return Ok(None);
         }
         let (ends, child) = self.started_shares(threads, dirs, parent, moved)?;
+        // On Windows none where every share is a client's, served from it (D228).
+        #[cfg(unix)]
+        let child = Some(child);
         let mut shared = lock(&self.shared_by);
         let children = shared.entry(id.to_string()).or_default();
         children.retain(|c| !c.has_ended());
-        children.push(child);
+        children.extend(child);
         Ok(Some(ends))
     }
 
@@ -4389,7 +4484,10 @@ impl<D: Disk> Daemon<D> {
     /// child's mitigations: it is shards' own binary, which no Win32k-less process loads
     /// (STATUS_DLL_INIT_FAILED, jupiter), and it sets reparse points, which are FSCTLs. Given
     /// each share's directory at 4 + i, the home's private directory at 4 + n and each share's
-    /// end of its stream at 5 + n + i, as its Unix twin is numbered (share.rs).
+    /// end of its stream at 5 + n + i, as its Unix twin is numbered (share.rs). A client's
+    /// directory (D228) comes as the VM's end of the pipe its client serves it on, which
+    /// the VM is handed as it is, in its place, and the share process serves none of; none
+    /// is started where every share is a client's.
     #[cfg(windows)]
     fn started_shares<'s, 'e>(
         &'s self,
@@ -4397,14 +4495,30 @@ impl<D: Disk> Daemon<D> {
         dirs: &[(OwnedFd, bool, OsString)],
         parent: &str,
         moved: bool,
-    ) -> Result<(ShareEnds, Arc<shards_ipc::Child>), String> {
+    ) -> Result<(ShareEnds, Option<Arc<shards_ipc::Child>>), String> {
         let exe = std::env::current_exe().map_err(|e| format!("this binary: {e}"))?;
+        // Each share's VM end, in order: a client's its relay's, the rest made below.
+        let mut ends: Vec<Option<OwnedFd>> = Vec::with_capacity(dirs.len());
+        let mut served = Vec::new();
+        for (dir, read_only, only) in dirs {
+            if is_pipe(dir) {
+                ends.push(Some(
+                    dir.try_clone().map_err(|e| format!("a client's share: {e}"))?,
+                ));
+            } else {
+                ends.push(None);
+                served.push((dir, *read_only, only));
+            }
+        }
+        if served.is_empty() {
+            return Ok((ends.into_iter().flatten().collect(), None));
+        }
         let group = if parent.is_empty() {
             None
         } else {
             Some(self.group_job(parent)?)
         };
-        let streams = dirs
+        let streams = served
             .iter()
             .map(|_| shards_ipc::byte_pair())
             .collect::<io::Result<Vec<_>>>()
@@ -4413,17 +4527,17 @@ impl<D: Disk> Daemon<D> {
         if moved {
             args.push(OsStr::new(crate::share::MOVED));
         }
-        for (_, read_only, only) in dirs {
+        for (_, read_only, only) in &served {
             args.push(OsStr::new(if *read_only { "ro" } else { "rw" }));
             args.push(only.as_os_str());
         }
-        let n = dirs.len();
+        let n = served.len();
         let number = |at: usize| i32::try_from(at).map_err(|_| "too many shares".to_string());
         // What it says of its failures, the daemon's log.
         let err = io::stderr();
         let ghosts = self.private_dir()?;
         let mut fds = vec![(err.as_fd(), 2), (ghosts.as_fd(), number(4 + n)?)];
-        for (i, ((dir, _, _), (server, _))) in dirs.iter().zip(&streams).enumerate() {
+        for (i, ((dir, _, _), (server, _))) in served.iter().zip(&streams).enumerate() {
             fds.push((dir.as_fd(), number(4 + i)?));
             fds.push((server.as_fd(), number(5 + n + i)?));
         }
@@ -4437,7 +4551,13 @@ impl<D: Disk> Daemon<D> {
         )
         .map_err(|e| format!("starting the share process: {e}"))?;
         let child = self.follow_share(threads, child);
-        Ok((streams.into_iter().map(|(_, vm)| vm).collect(), child))
+        let mut made = streams.into_iter().map(|(_, vm)| vm);
+        let ends = ends
+            .into_iter()
+            .map(|end| end.or_else(|| made.next()))
+            .collect::<Option<Vec<_>>>()
+            .ok_or("a share's stream was not made")?;
+        Ok((ends, Some(child)))
     }
 
     /// [`start_shares`](Self::start_shares)'s process, for `dirs`, some.
@@ -4532,6 +4652,23 @@ impl<D: Disk> Daemon<D> {
         crate::resources::verify(&run.resources, crate::resources::host_cpus(), false)?;
         crate::setup::verify(run)?;
         validate_restart_policy(&run.restart_policy)?;
+        // A client's, through its context: what it reaches of this machine is what its owner
+        // granted it (D228), its devices judged here, its mounts' directories below.
+        let grants = (!run.client.is_empty()).then(|| crate::client_grants::load(&self.home, &run.client));
+        if let Some(grants) = &grants {
+            crate::client_grants::refuse_devices(run, &run.client, grants)?;
+            for spec in &run.mounts {
+                let m = shards_cmdline::mounts::parse_mount(spec, None)?;
+                let name = if m.source.is_empty() {
+                    "an anonymous volume"
+                } else {
+                    m.source.as_str()
+                };
+                if let Some((_, options)) = m.volume.as_ref().and_then(|v| v.driver.as_ref()) {
+                    crate::volumes::refuse_options(options, name, &run.client, grants)?;
+                }
+            }
+        }
         // Then shards' own: beside its image's agents and harnesses, nothing that reaches
         // them (D115); its init refuses each again as it starts the command.
         if let Some(a) = &prepared.agentfile {
@@ -4572,6 +4709,11 @@ impl<D: Disk> Daemon<D> {
             }
             e
         };
+        if let Some(grants) = &grants {
+            let held: Vec<crate::volumes::MountPoint> = points.iter().map(|(p, _)| p.clone()).collect();
+            let store = crate::volumes::Store::new(&self.home);
+            crate::volumes::refuse_points(&held, &store, &run.client, grants).map_err(unmade)?;
+        }
         let mut registry = lock(&self.containers);
         let named = match &run.name {
             Some(given) => {
@@ -5180,6 +5322,7 @@ impl<D: Disk> Daemon<D> {
             restarted,
             layer_pending,
             layer_over,
+            layer_way,
             log_files,
             log_compress,
             visit,
@@ -5262,6 +5405,7 @@ impl<D: Disk> Daemon<D> {
             waited_execs: Vec::new(),
             layer_pending,
             layer,
+            layer_way,
             named,
             restarted,
             incoming: Default::default(),
@@ -5647,23 +5791,33 @@ impl<D: Disk> Daemon<D> {
     /// file's length (`--storage-opt size`, which its template is made for): its VM maps it
     /// where the template's layer was (`platform::map_file_shared_at`). Its journal replayed
     /// first where its microVM was killed ([`layers::open_kept`]). None where it has none, or
-    /// where it is to be put back instead ([`layer_in`](Self::layer_in)).
-    fn layer_over(&self, id: &str, run: &Run) -> Result<Option<(File, PathBuf)>, String> {
+    /// where it is to be put back instead ([`layer_in`](Self::layer_in)): the way this host's
+    /// restarts say is quicker for what it holds ([`layers::Restarts`]), which goes with it,
+    /// what it held and when, to be recorded as its command starts.
+    fn layer_over(&self, id: &str, run: &Run) -> Result<(Option<KeptOver>, Option<LayerWay>), String> {
         let at = lock(&self.containers).dir(id).join(layers::KEPT);
         let Ok(meta) = std::fs::metadata(&at) else {
-            return Ok(None);
+            return Ok((None, None));
         };
         let holds = crate::setup::storage_size(run)?.unwrap_or(crate::run::LAYER_HOLDS);
         if meta.len() != layers::size(holds)? {
-            return Ok(None);
+            return Ok((None, None));
         }
         let kept = layers::open_kept(&at)?;
-        // One that holds little is packed and put back: quicker, below what it holds at
-        // [`layers::OVER_FROM`] (PM M443).
-        match layers::held(&kept, meta.len()) {
-            Ok(Some(held)) if held < layers::OVER_FROM => return Ok(None),
-            Ok(_) => {}
-            Err(e) => log(format!("container {id}: what its writable layer holds: {e}")),
+        // One whose blocks are not counted goes over, whatever it holds.
+        let way = match layers::held(&kept, meta.len()) {
+            Ok(Some(held)) => {
+                let way = lock(&self.layer_restarts).choose(held);
+                Some((way, held, Instant::now()))
+            }
+            Ok(None) => None,
+            Err(e) => {
+                log(format!("container {id}: what its writable layer holds: {e}"));
+                None
+            }
+        };
+        if let Some((layers::Restart::Packed, ..)) = way {
+            return Ok((None, way));
         }
         drop(kept);
         let file = std::fs::OpenOptions::new()
@@ -5671,7 +5825,7 @@ impl<D: Disk> Daemon<D> {
             .write(true)
             .open(&at)
             .map_err(|e| format!("{}: {e}", at.display()))?;
-        Ok(Some((file, at)))
+        Ok((Some((file, at)), way))
     }
 
     /// Container `id`'s writable layer, as its VM left it (D37): kept if it came `whole`;
@@ -5913,6 +6067,12 @@ impl<D: Disk> Daemon<D> {
     /// `SetRunning`).
     fn run_started(&self, id: &str, inbox: &mut Inbox) {
         inbox.started = true;
+        // What its restart's way took, for the next (D190).
+        if let Some((way, held, chosen)) = inbox.layer_way.take()
+            && let Err(e) = lock(&self.layer_restarts).record(&self.home, way, held, chosen.elapsed())
+        {
+            log(format!("container {id}: its restart's cost: {e}"));
+        }
         if inbox.visit {
             return;
         }
@@ -6057,8 +6217,9 @@ impl<D: Disk> Daemon<D> {
             .unwrap_or_default();
         // Its policy's say (handleContainerExit): started again after a wait, or not; a
         // command that never started is never restarted.
+        let cost = self.vm_ended(pid);
         let restart_after = if started && saved.is_none() {
-            self.should_restart(id, status, ran)
+            self.should_restart(id, status, ran, cost)
         } else {
             None
         };
@@ -6345,11 +6506,10 @@ impl<D: Disk> Daemon<D> {
         self.changed.notify_all();
     }
 
-    /// Ends the runs in progress as dockerd ends its containers when it shuts down (moby
-    /// daemon/daemon.go Shutdown and shutdownContainer, daemon/stop.go containerStop): each
-    /// command gets its microVM's stop signal, SIGKILL once its stop timeout is up,
-    /// unless that is negative, and its VM goes too if the command outlives even that by
-    /// SHUTDOWN_KILL. A run handed to a VM as the daemon stops is stopped as it registers.
+    /// Ends the runs in progress: each command gets its stop signal, SIGKILL once its stop
+    /// timeout is up, unless that is negative, and its VM goes too once its guest's
+    /// teardown has gone on no more for a slice (`ends`, D217). A run handed to a VM as the
+    /// daemon stops is stopped as it registers.
     fn stop_runs<'s, 'e>(&'s self, threads: &'s Threads<'s, 'e>) {
         {
             // Under the runs' lock: a run still starting is either one the stop thread
@@ -6394,7 +6554,7 @@ impl<D: Disk> Daemon<D> {
                     let now = Instant::now();
                     let due: Vec<String> = stops
                         .iter()
-                        .filter(|(_, stop)| stop.next().is_some_and(|at| at <= now))
+                        .filter(|(_, stop)| stop.next.is_some_and(|at| at <= now))
                         .map(|(id, _)| id.clone())
                         .collect();
                     if !new.is_empty() || !due.is_empty() {
@@ -6403,7 +6563,7 @@ impl<D: Disk> Daemon<D> {
                     if runs.values().all(|run| matches!(run, RunState::Pending { .. })) {
                         return;
                     }
-                    runs = match stops.values().filter_map(Stop::next).min() {
+                    runs = match stops.values().filter_map(|stop| stop.next).min() {
                         Some(at) => {
                             self.resolved
                                 .wait_timeout(runs, at.saturating_duration_since(now))
@@ -6430,8 +6590,8 @@ impl<D: Disk> Daemon<D> {
                     Stop {
                         socket,
                         vm,
-                        kill,
-                        killed: false,
+                        next: kill,
+                        killed: None,
                     },
                 );
             }
@@ -6439,14 +6599,35 @@ impl<D: Disk> Daemon<D> {
                 let Some(stop) = stops.get_mut(&id) else {
                     continue;
                 };
-                if stop.killed {
-                    if let Some(vm) = &stop.vm {
-                        let _ = vm.kill(shards_ipc::signal::SIGKILL);
+                match &mut stop.killed {
+                    Some(teardown) => {
+                        if teardown.goes_on().is_some() {
+                            // Its guest still at its end: another slice.
+                            stop.next = Instant::now().checked_add(self.ends.slice(ends::End::Teardown));
+                            continue;
+                        }
+                        if let Some(vm) = &stop.vm {
+                            log(format!(
+                                "container {id}: its command not ended as the daemon stops, its microVM gone on with nothing of its end for {:?}: its microVM killed",
+                                self.ends.slice(ends::End::Teardown)
+                            ));
+                            let _ = vm.kill(shards_ipc::signal::SIGKILL);
+                        }
+                        stop.next = None;
                     }
-                    stop.kill = None;
-                } else {
-                    let _ = stop.socket.send(kind::SIGNAL, &9u32.to_be_bytes(), &[]);
-                    stop.killed = true;
+                    None => {
+                        // A SIGKILL that cannot be sent leaves its guest nothing to end it
+                        // by, nor to say its end on: its VM goes at once.
+                        let teardown = ends::Followed::of(stop.vm.as_ref().map(|vm| vm.id()));
+                        let sent = stop.socket.send(kind::SIGNAL, &9u32.to_be_bytes(), &[]).is_ok();
+                        let wait = if sent {
+                            self.ends.slice(ends::End::Teardown)
+                        } else {
+                            Duration::ZERO
+                        };
+                        stop.next = Instant::now().checked_add(wait);
+                        stop.killed = Some(teardown);
+                    }
                 }
             }
         }
@@ -7062,8 +7243,11 @@ impl<D: Disk> Daemon<D> {
         // asks for as its workload needs it within its own most (D148): one template for
         // every limit (run::template). Plugged memory comes online as the kernel's own, as
         // a builder's does (D133).
+        // The CPU baseline its home's microVMs are told (D176 part 6), read once a run.
+        let cpu_baseline = moves::home_baseline(&self.home);
         let on_network = |cfg: &mut Config| {
             (cfg.vcpus, cfg.memory_mib) = prepared.size;
+            cfg.cpu_baseline.clone_from(&cpu_baseline);
             cfg.hotplug_mib = crate::build::host_memory()
                 .map_or(0, |bytes| ((bytes >> 20) & !1).saturating_sub(cfg.memory_mib));
             if cfg.hotplug_mib > 0 {
@@ -7196,7 +7380,10 @@ impl<D: Disk> Daemon<D> {
         let key = PoolKey::new(&dir, &prepared.parent);
         if shards_vmm::snapshot::exists(&dir) {
             match self.claim(threads, &key, &prepared.rootfs, stamp.as_deref()) {
-                Ok(ready) => return Ok(ready),
+                Ok(ready) => {
+                    self.vm_claimed(ready.vm.id());
+                    return Ok(ready);
+                }
                 Err(Claim::Failed(e)) => return Err(e),
                 Err(Claim::Broken) => {
                     say(&format!(
@@ -7648,6 +7835,13 @@ impl<D: Disk> Daemon<D> {
             if cfg.pci_slots_iommu {
                 args.push("--pci-slots-iommu".into());
             }
+        }
+        // The CPU baseline its guest is told (D176 part 6).
+        if !cfg.cpu_baseline.is_empty() {
+            args.extend([
+                "--cpu-baseline".into(),
+                shards_vmm::arch::aarch64::cpu::encode(&cfg.cpu_baseline).into(),
+            ]);
         }
         // A join disk and a join share in every microVM, empty and unserved until a
         // joiner joins its network (D119): its templates have them, and so every restore
@@ -8156,6 +8350,12 @@ impl<D: Disk> Daemon<D> {
                             joined: None,
                             layer,
                         });
+                        let live: Vec<u32> = state
+                            .pools
+                            .values()
+                            .flat_map(|p| p.ready.iter().map(|r| r.vm.id()))
+                            .collect();
+                        self.vm_readied(pid, &live);
                         self.rebalance(threads, &state, key);
                     }
                     Err(e) => {
@@ -9602,6 +9802,7 @@ mod tests {
                         restarted: false,
                         layer_pending: false,
                         layer_over: None,
+                        layer_way: None,
                         log_files: DEFAULT_LOGS.files,
                         log_compress: false,
                         visit: false,
@@ -9752,6 +9953,7 @@ mod tests {
             width: 0,
             color: false,
             files: Vec::new(),
+            whose: String::new(),
         };
         let status = daemon.command(&argv, &asker, &commands::Reply(&ours));
         drop(ours);
@@ -9929,6 +10131,7 @@ mod tests {
                             restarted: false,
                             layer_pending: false,
                             layer_over: None,
+                            layer_way: None,
                             log_files: DEFAULT_LOGS.files,
                             log_compress: false,
                             visit: false,
@@ -10200,6 +10403,7 @@ mod tests {
             width: 0,
             color: false,
             daemon: Identity::default(),
+            client: String::new(),
         };
         shards_ipc::send(&client, kind::CONTAINER, &command.encode(), &[]).unwrap();
         (daemon, client)
@@ -10551,6 +10755,7 @@ mod tests {
                 width: 0,
                 color: false,
                 daemon: Identity::default(),
+                client: String::new(),
             };
             let ask = || {
                 let s::Taken::Slot(client) = s::take(&t.home, 0).unwrap() else {
@@ -11183,6 +11388,7 @@ mod tests {
                         width: 0,
                         color: false,
                         files: Vec::new(),
+                        whose: String::new(),
                     };
                     daemon.command(&argv, &asker, &commands::Reply(&ours))
                 });
@@ -11236,6 +11442,7 @@ mod tests {
             width: 0,
             color: false,
             files: Vec::new(),
+            whose: String::new(),
         };
         let status = daemon.command(&argv, &asker, &commands::Reply(&ours));
         drop(ours);
@@ -11362,6 +11569,7 @@ mod tests {
                     width: 0,
                     color: false,
                     files: Vec::new(),
+                    whose: String::new(),
                 };
                 daemon.command(&argv, &asker, &commands::Reply(&ours))
             });
@@ -12098,6 +12306,7 @@ mod tests {
                 restarted: false,
                 layer_pending: false,
                 layer_over: None,
+                layer_way: None,
                 log_files: DEFAULT_LOGS.files,
                 log_compress: false,
                 visit: false,
@@ -12148,6 +12357,7 @@ mod tests {
                 restarted: false,
                 layer_pending: false,
                 layer_over: None,
+                layer_way: None,
                 log_files: DEFAULT_LOGS.files,
                 log_compress: false,
                 visit: false,
@@ -12740,6 +12950,7 @@ mod tests {
                     restarted: false,
                     layer_pending: false,
                     layer_over: None,
+                    layer_way: None,
                     log_files: DEFAULT_LOGS.files,
                     log_compress: false,
                     visit: false,
@@ -12767,7 +12978,7 @@ mod tests {
                         let [(provider, conn)] = <[(String, UnixStream); 1]>::try_from(arrived).unwrap();
                         assert_eq!(provider, id);
                         t.t.daemon
-                            .take_engine(t.threads, conn, Some(engine::Scope { provider }));
+                            .take_engine(t.threads, conn, Some(engine::Scope { provider }), None);
                         (&ours)
                             .write_all(b"GET /_ping HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
                             .unwrap();

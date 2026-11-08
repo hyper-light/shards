@@ -1165,6 +1165,7 @@ dependencies = [
  "sha2",
  "shards-abi",
  "shards-agentfile",
+ "shards-api",
  "shards-apple",
  "shards-archive",
  "shards-build",
@@ -1219,6 +1220,16 @@ dependencies = [
  "sha2",
  "shards-cmdline",
  "shards-image",
+]
+
+[[package]]
+name = "shards-api"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "shards-afunix",
+ "shards-testdir",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1530,6 +1541,8 @@ dependencies = [
  "libc",
  "rustls",
  "shards-abi",
+ "shards-devcgroup",
+ "shards-seccomp",
 ]
 
 [[package]]

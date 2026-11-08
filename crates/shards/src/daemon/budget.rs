@@ -12,8 +12,10 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Condvar, Mutex, PoisonError};
+use std::time::Instant;
 
-use super::{Daemon, RunState, TAKE_TIMEOUT, Threads, lock, log};
+use super::health::Wait;
+use super::{Daemon, RunState, Threads, lock, log};
 use crate::containers::Disk;
 
 /// The cgroup v2 hierarchy's root, which holds nothing to a budget (cgroup-v2.rst).
@@ -31,13 +33,43 @@ pub(crate) fn room(
     root: &Path,
     evicted: &mut dyn FnMut(&Mapped) -> u64,
 ) -> Option<(i64, PathBuf)> {
+    least_room(dir, root, &mut |at, held| {
+        let mapped = mapped_under(at);
+        let files = mapped.iter().fold(0u64, |sum, &(_, b)| sum.saturating_add(b));
+        held.room_with(files, evicted(&mapped))
+    })
+}
+
+/// What the budget over the cgroup `dir` leaves a build's builders (D188's builders), and
+/// which cgroup that is: as [`room`], but of the file pages their processes map only those
+/// charged to it ([`Holding::charged_room`]). A builder boots cold, its guest's RAM its VM
+/// process's own memory, charged to the budget; what it maps charged elsewhere is its
+/// bases' images on its pmem devices and its VM process's program, page cache an earlier
+/// build or run read, which no reclaim of this budget takes (mm/vmscan.c
+/// `shrink_node_memcgs` scans the budget's own memcgs alone), and which, once taken back
+/// by another's and read again, comes back charged to it and counted then. Counted as held,
+/// they told a held build's builders a room short of the budget's by them, 13 to 100 MiB on
+/// CI's runners (100 a rust build's, its base rust:1-slim; PM M442), where a guest told it
+/// is short holds its build at what it uses (init's `ROOM`, `plug::hold_within`): under a
+/// budget of what its kernel charged less what its builder held cold, builds of 10 s took
+/// 246 to 622 s, their builders held at what they used (573e4bf8, run 41738284986). A run's guest maps its own RAM from its template, whose pages charged
+/// elsewhere it reads again once its host takes them back (PM M309): [`room`] holds those.
+pub(crate) fn charged_room(dir: &Path, root: &Path) -> Option<(i64, PathBuf)> {
+    least_room(dir, root, &mut |_, held| held.charged_room())
+}
+
+/// The least `room_of` says, of `dir` and each cgroup above it below `root` held to a
+/// budget, and which cgroup that is: none where none is.
+fn least_room(
+    dir: &Path,
+    root: &Path,
+    room_of: &mut dyn FnMut(&Path, &Holding) -> i64,
+) -> Option<(i64, PathBuf)> {
     let mut least: Option<(i64, PathBuf)> = None;
     let mut at = dir;
     while at.starts_with(root) && at != root {
         if let Some(held) = held_at(at) {
-            let mapped = mapped_under(at);
-            let files = mapped.iter().fold(0u64, |sum, &(_, b)| sum.saturating_add(b));
-            let room = held.room_with(files, evicted(&mapped));
+            let room = room_of(at, &held);
             if least.as_ref().is_none_or(|(l, _)| room < *l) {
                 least = Some((room, at.to_path_buf()));
             }
@@ -82,6 +114,12 @@ impl Holding {
             .max(self.floor)
             .min(self.current);
         charged.saturating_add(files.saturating_sub(self.mapped))
+    }
+
+    /// Its [`room`](Self::room) with no files mapped past those charged to it: what its
+    /// budget leaves as its kernel charges it ([`charged_room`]).
+    pub fn charged_room(&self) -> i64 {
+        self.room_with(self.mapped, 0)
     }
 
     /// The bytes of its budget not [`held`](Self::held), less the inactive pages its kernel
@@ -292,6 +330,14 @@ impl Budgets {
     /// VM process `pid` gave back `freed` bytes of what it held cold, holding `before` bytes
     /// of files resident before it did ([`resident_file`]): its most held lowered by what of
     /// its files it holds no more ([`given_back`]).
+    /// Counts what VM process `pid` gave back at its host's pressure, for its budget's next
+    /// word to say.
+    pub(super) fn gave_at_pressure(&self, pid: u32, gave: super::reclaim::Gave) {
+        if let Some(h) = lock(&self.held).get_mut(&pid) {
+            h.pressed = h.pressed.and(gave);
+        }
+    }
+
     pub(super) fn gave_back(&self, pid: u32, before: Option<u64>, freed: u64) {
         let (Some(before), Some(now)) = (before, resident_file(pid)) else {
             return;
@@ -358,6 +404,11 @@ struct Held {
     /// as another VM process restored from the same template, which shares its pages,
     /// leaves it as it is.
     most: u64,
+    /// What its host's pressure had it give back since its budget's last word, which the
+    /// next says: a budget that fell short just after found nothing left to give, and its
+    /// word said nothing given back, its host's pressure saying its own once a minute (PM
+    /// M467).
+    pressed: super::reclaim::Gave,
 }
 
 impl Held {
@@ -375,6 +426,7 @@ impl Held {
             telling: false,
             again: false,
             most: resident_file(pid).unwrap_or(0),
+            pressed: super::reclaim::Gave::default(),
         }
     }
 }
@@ -739,12 +791,23 @@ impl<D: Disk> Daemon<D> {
             if ended > 0 {
                 room = self::room(&dir, Path::new(ROOT), evicted);
             }
-            if room.as_ref().is_some_and(|(r, _)| *r < 0) && lock(self.watching_giving()).insert(vm.clone()) {
+            // Once a give-back of its host's pressure under way has ended, what it gave
+            // counted in the room (PM M467).
+            let giving = room.as_ref().is_some_and(|(r, _)| *r < 0);
+            if giving {
+                self.give_after(&vm);
+                room = self::room(&dir, Path::new(ROOT), evicted);
+            }
+            if !room.as_ref().is_some_and(|(r, _)| *r < 0) {
+                if giving {
+                    self.given_back(&vm);
+                }
+            } else {
                 asked = true;
                 let before = resident_file(pid);
                 let held_before = room.as_ref().and_then(|(_, level)| self.held_now(level));
-                gave = self.give_back_of(&id);
-                lock(self.watching_giving()).remove(&vm);
+                gave = self.give_back_of(&id, Wait::WhileRuns(pid));
+                self.given_back(&vm);
                 // Said with its budget's word below, its own: not its host's shortage,
                 // which says what its pressure had given back at most once a minute.
                 if let Some(g) = gave {
@@ -774,7 +837,10 @@ impl<D: Disk> Daemon<D> {
         };
         // What it is held within past what it uses, as its init answers (none with no
         // budget): never less than the least room a run goes on in, however short.
-        let held = match self.exec_quietly(&id, &spec, None, 1 << 12, TAKE_TIMEOUT) {
+        let told_at = Instant::now();
+        let quiet = self.exec_waiting(&id, &spec, None, 1 << 12, Wait::WhileRuns(pid));
+        super::reclaim::said_if_long(&id, "telling its microVM its budget's room", told_at.elapsed());
+        let held = match quiet {
             Ok(q) if q.status == Some(0) && !q.timed_out => std::str::from_utf8(&q.output)
                 .ok()
                 .and_then(|o| o.trim().parse::<u64>().ok()),
@@ -857,30 +923,54 @@ impl<D: Disk> Daemon<D> {
             )
         };
         let done_if = || if did { done.as_str() } else { "" };
-        match (had, told) {
+        // What its host's pressure had it give back since the budget's last word, a MiB or
+        // more of either, said with the next.
+        let pressed = lock(&self.budgets.held)
+            .get_mut(&pid)
+            .map(|h| std::mem::take(&mut h.pressed))
+            .unwrap_or_default();
+        let pressed_said = if (pressed.freed | pressed.unplugging) >> 20 > 0 {
+            format!(
+                ", its host's pressure having had it give back {} MiB of its files and ask to unplug {} MiB since its budget's word before",
+                pressed.freed >> 20,
+                pressed.unplugging >> 20
+            )
+        } else {
+            String::new()
+        };
+        let word = match (had, told) {
             // As it is first held, as it is held within it again by what it did or asked, and
             // as it is set anew.
-            (_, Some(r)) if r >= 0 && !was_short && (had.is_none() || did || asked || anew) => log(format!(
-                "container {id}: its microVM held within its budget, {} MiB of room{}{}{}",
+            (_, Some(r)) if r >= 0 && !was_short && (had.is_none() || did || asked || anew) => Some(format!(
+                "container {id}: its microVM held within its budget, {} MiB of room{}{pressed_said}{}{}",
                 r >> 20,
                 done_if(),
                 least(r),
                 parts()
             )),
-            (_, Some(r)) if r < 0 && (!was_short || did || anew) => log(format!(
-                "container {id}: its microVM's budget is short by {} MiB{done}{}{}",
+            (_, Some(r)) if r < 0 && (!was_short || did || anew) => Some(format!(
+                "container {id}: its microVM's budget is short by {} MiB{done}{pressed_said}{}{}",
                 r.unsigned_abs() >> 20,
                 least(r),
                 parts()
             )),
-            (_, Some(r)) if r >= 0 && was_short => log(format!(
-                "container {id}: its microVM's budget has room again, {} MiB{}{}",
+            (_, Some(r)) if r >= 0 && was_short => Some(format!(
+                "container {id}: its microVM's budget has room again, {} MiB{}{pressed_said}{}",
                 r >> 20,
                 done_if(),
                 parts()
             )),
-            (Some(_), None) => log(format!("container {id}: its microVM held to no budget")),
-            _ => {}
+            (Some(_), None) => Some(format!("container {id}: its microVM held to no budget")),
+            _ => None,
+        };
+        match word {
+            Some(word) => log(word),
+            // Kept for the next word.
+            None => {
+                if let Some(h) = lock(&self.budgets.held).get_mut(&pid) {
+                    h.pressed = h.pressed.and(pressed);
+                }
+            }
         }
     }
 }
@@ -1036,6 +1126,63 @@ mod tests {
         }
     }
 
+    /// A builder's room holds only the file pages its processes map that are charged to its
+    /// budget: those charged elsewhere (its bases' images an earlier build read, its VM
+    /// process's program) no reclaim of the budget takes, and counted they told a builder
+    /// the budget short where its kernel had room (573e4bf8, PM M442); a run's room holds
+    /// them, its guest's RAM its template's pages (PM M309).
+    #[test]
+    fn a_builders_room_holds_only_what_its_budget_is_charged() {
+        let held = Holding {
+            budget: 384 * MIB,
+            own: 145 * MIB,
+            mapped: 16 * MIB,
+            current: 383 * MIB,
+            floor: 168 * MIB,
+        };
+        // 83 MiB mapped, 67 of them charged elsewhere: a run's room holds them, a builder's
+        // does not.
+        assert_eq!(held.room(83 * MIB), 133 * MIB as i64);
+        assert_eq!(held.charged_room(), 200 * MIB as i64);
+        // Short as its kernel charges it, short still: its 16 MiB of inactive pages beside
+        // its mapped ones kept, as a run's are.
+        let short = Holding {
+            budget: 160 * MIB,
+            ..held
+        };
+        assert_eq!(short.charged_room(), -24 * MIB as i64);
+        // The least of every cgroup over the build, as a run's: a process of the scope
+        // maps files charged elsewhere (this test's own program, its pages charged to no
+        // cgroup of this fake hierarchy), which a run's room holds and a builder's does
+        // not, on a host whose processes have /proc entries.
+        let tmp = shards_testdir::TempDir::new("budget-charged").unwrap();
+        let root = tmp.join("cg");
+        let slice = root.join("user.slice");
+        let scope = slice.join("run-1.scope");
+        let stat = "anon 100000000\nfile 0\nkernel 0\nfile_mapped 0\nshmem 0\n";
+        cgroup(&slice, Some(384 * MIB), None, 100_000_000, stat);
+        cgroup(&scope, Some(350 * MIB), None, 100_000_000, stat);
+        assert_eq!(
+            charged_room(&scope, &root),
+            Some((350 * MIB as i64 - 100_000_000, scope.clone()))
+        );
+        if std::path::Path::new("/proc/self/smaps_rollup").exists() {
+            std::fs::write(scope.join("cgroup.procs"), format!("{}\n", std::process::id())).unwrap();
+            let mine = mapped_by(std::process::id()).unwrap();
+            assert!(mine > 0);
+            let run = room(&scope, &root, &mut |_| 0).unwrap();
+            assert_eq!(run.1, scope);
+            // Its program's pages mapped as this reads them, which can move a little.
+            assert!(run.0 < 350 * MIB as i64 - 100_000_000);
+            assert_eq!(
+                charged_room(&scope, &root),
+                Some((350 * MIB as i64 - 100_000_000, scope.clone()))
+            );
+        }
+        // The root itself holds nothing to a budget.
+        assert_eq!(charged_room(&root, &root), None);
+    }
+
     /// A guest's RAM its host took back under a budget is no room: a lone microVM's 71 MiB
     /// of its template's pages, taken back where its budget was 23 MiB short, left its
     /// budget as short as before, where counted as room they had told its guest 111 MiB
@@ -1065,6 +1212,22 @@ mod tests {
         assert_eq!(before.room_with(123 * MIB, 0), short);
     }
 
+    /// What its host's pressure had a microVM give back is counted for its budget's next
+    /// word, each give-back's added, and a microVM held to none counts nothing (PM M467).
+    #[test]
+    fn what_its_hosts_pressure_had_it_give_back_is_counted_for_its_word() {
+        use super::super::reclaim::Gave;
+        let budgets = Budgets::default();
+        lock(&budgets.held).insert(7, Held::of(PathBuf::from("/sys/fs/cgroup/a.slice"), 0));
+        let gave = |freed, unplugging| Gave { freed, unplugging };
+        budgets.gave_at_pressure(7, gave(100 * MIB, 0));
+        budgets.gave_at_pressure(7, gave(20 * MIB, 128 * MIB));
+        budgets.gave_at_pressure(8, gave(MIB, MIB));
+        let pressed = lock(&budgets.held).get(&7).map(|h| h.pressed).unwrap();
+        assert_eq!((pressed.freed, pressed.unplugging), (120 * MIB, 128 * MIB));
+        assert!(!lock(&budgets.held).contains_key(&8));
+    }
+
     /// The most a microVM followed has held resident is kept as what it holds falls, raised
     /// as it rises, and lowered by what it gives back; a process not followed counts
     /// nothing.
@@ -1081,6 +1244,7 @@ mod tests {
                 telling: false,
                 again: false,
                 most: 0,
+                pressed: super::super::reclaim::Gave::default(),
             },
         );
         let evicted = |resident: &[(u32, u64)]| evicted_of(&mut lock(&budgets.held), resident);

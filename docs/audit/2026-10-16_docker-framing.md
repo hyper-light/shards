@@ -130,22 +130,33 @@ Reviewed feature by feature, each D-entry's design against what it took from Doc
     docker/docs content/manuals/engine/logging/configure.md), and a run that wants another
     names it.
   - A long line cut into parts of 16 KiB for the drivers that send a log away (moby's copier's
-    size): open. It is what receivers that join Docker's parts expect, so it stays until a
-    receiver-led size is measured.
+    size). Done (2026-11-08, D163, PM M492, M494): each driver's parts are as long as its
+    receiver takes a message (syslog's 8,192 octets, Graylog's 128 chunks and 2 MiB, Fluent
+    Bit's forward buffer, the journal's LineMax, HEC's content over a batch, CloudWatch's and
+    Cloud Logging's event and entry, os_log's 1,015 bytes, an 8 KB ETW session's 8,040), each
+    asked to fit as written, never a character in two; receivers join them by the same
+    fields.
   - A registry's request tried 5 times, 50 ms apart, and a 500, 502, 503 or 504 tried again
     only once unless it changes (containerd's `maxAttempts` and pause, crates/registry
     `ATTEMPTS`, `PAUSE`): open. Docker Hub's token server answered 502 twice within the
     pause and a CI build failed (job 117733752147, 2026-10-18). To derive from how long a
     registry's 5xx last, measured.
   - A builder's ceiling of half the host's memory (Docker Desktop's VM's share, which
-    `builder_memory_mib` took): open. Its memory is plugged as its build needs it (D133),
-    so the ceiling can come from what the host can give as the build asks, measured.
+    `builder_memory_mib` took). Done (D133, PM M490): from the host it runs on and its
+    home's builds, never a figure of ours: what the host has available as the builder
+    starts, the most a build of the home needed where more (each builder's guest says its
+    build's need, recorded in the home's `builder-memory`), and all the host's memory once
+    a build was ended short of it.
   - A restart's wait (100 ms doubling to a minute, from scratch after a run of 10 s), dockerd's
-    restart manager's figures: open, to derive from what a microVM's restart costs, so that
-    a crash loop's restarts take a bounded share of a core.
-  - A daemon's shutdown ends a VM whose command outlives its stop timeout by 5 s (dockerd's
-    `ShutdownTimeout` grace): open, to derive from how long a guest takes to say a killed
-    command's end, measured.
+    restart manager's figures. Done (D219): the doubling kept, its ends learned on each host
+    as it runs, from its VM processes' CPU: the first a restart's CPU at the share of a CPU
+    the run's limits give it, the longest a restart's CPU at an idle microVM's rate a
+    second, past which a microVM failing for good costs its host what one idling does; kept
+    in the home for the next daemon, uncapped before an idle microVM is measured (PM M484).
+  - A daemon's shutdown ended a VM whose command outlived its stop timeout by 5 s (dockerd's
+    `ShutdownTimeout` grace). Done (D217): its teardown is followed as long as its microVM
+    goes on ending it, each slice the slowest end its host has shown (the home's `ends`),
+    PM M480 and M481 validating the method.
   - The build cache's other rules were still dockerd's: the temporary share of the
     reserve (e·π·φ %, 512 MB at least) that what is easiest to make again might take, the
     ages at which records went (two days for those, 60 for any), and 2 GB reserved where
@@ -182,11 +193,15 @@ Reviewed feature by feature, each D-entry's design against what it took from Doc
       while a doubling pays past the path's own noise, to its bandwidth-delay product, at
       most the cores; and a blob goes in chunks of the size that costs least a byte where
       the path's sends fail, or of what a registry that refused it whole (a 413) takes.
-    - A microVM whose command outlives its SIGKILL: its VM ended 10 s later, and a signal
-      that could not be sent waited out 2 s, moby's kill.go and stop.go. To derive from how
-      long a guest takes to say a killed command's end, with the shutdown's 5 s above.
+    - A microVM whose command outlives its SIGKILL: its VM ended 10 s later, its end given
+      up 2 s after, and a signal that could not be sent waited out 2 s, moby's kill.go and
+      stop.go. Done (D217): followed as the shutdown's above, its killed VM process too; a
+      signal that cannot be sent kills its VM at once, nothing being able to come. A run's
+      stop timeout of 10 s where it sets none stays: the input's meaning (Compose's
+      `stop_grace_period`), not a wait on work.
     - A microVM paused: its cgroup waited for 10 s to say it is frozen, runc's `waitFrozen`.
-      To derive from how long a freeze takes a busy microVM, measured.
+      Done (D217): waited for to its end, which comes as its processes leave the kernel
+      work they were in (PM M482: 0.23 s at most), its kill ending one that cannot.
     - A builder's cache mount whose records are all held: its taker looked again every
       100 ms, BuildKit's mount.go, a timer where the lock's release could wake it. Done
       (2026-11-03): a `locked` taker waits on the held record's lock, and is woken as its
@@ -198,8 +213,11 @@ Reviewed feature by feature, each D-entry's design against what it took from Doc
       way the cache passes its bounds, one collection at a time in a home, and a build
       answered from the cache collects nothing; no timer.
     - A build's SSH agent on Windows: its pipe waited for 2 s, go-winio's default, which
-      BuildKit's call leaves unset (build/ssh.rs; found 2026-11-03). To derive from how
-      long an agent's pipe takes to come free, measured.
+      BuildKit's call leaves unset (build/ssh.rs; found 2026-11-03). Done (2026-11-08,
+      D51, PM M493): OpenSSH's agent frees an instance 1.4 ms apart at the median however
+      many dial, while a dial's whole wait passed 2 s at 128 clients; a dial now follows the
+      agent, with no time of shards': it dials again as each instance is freed, each wait
+      the agent's pipe's own, and ends as the agent serves it or goes.
 - The rest: open, D-entry by D-entry.
 
 ## Fixing order

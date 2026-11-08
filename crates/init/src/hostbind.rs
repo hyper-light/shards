@@ -52,12 +52,12 @@ const SYS_LISTEN: u64 = 4;
 /// its requests' and messages' type; the groups of each TCP and UDP socket's end,
 /// SKNLGRP_INET_TCP_DESTROY to SKNLGRP_INET6_UDP_DESTROY, bits 0 to 3 of a socket's groups.
 const NETLINK_SOCK_DIAG: libc::c_int = 4;
-const SOCK_DIAG_BY_FAMILY: u16 = 20;
+pub(crate) const SOCK_DIAG_BY_FAMILY: u16 = 20;
 const DESTROY_GROUPS: u32 = 0b1111;
-const NLM_F_REQUEST: u16 = 1;
-const NLM_F_DUMP: u16 = 0x300;
-const NLMSG_ERROR: u16 = 2;
-const NLMSG_DONE: u16 = 3;
+pub(crate) const NLM_F_REQUEST: u16 = 1;
+pub(crate) const NLM_F_DUMP: u16 = 0x300;
+pub(crate) const NLMSG_ERROR: u16 = 2;
+pub(crate) const NLMSG_DONE: u16 = 3;
 /// Where an inet_diag_msg's socket's cookie is, after its nlmsghdr (16 bytes): its family,
 /// state, timer and retransmits (4), then its inet_diag_sockid, whose cookie, two u32s,
 /// follows its ports (4), addresses (32) and interface (4).
@@ -279,7 +279,7 @@ pub fn recv_fd(channel: RawFd, buf: &mut [u8], flags: libc::c_int) -> io::Result
 }
 
 /// A bind(2) or listen(2), with the arguments that matter here.
-enum Call {
+pub(crate) enum Call {
     Bind { fd: RawFd, addr: u64, len: i32 },
     Listen { fd: RawFd, backlog: u32 },
 }
@@ -287,7 +287,7 @@ enum Call {
 /// The call notification `n` is: bind(2) or listen(2), or, on a 32-bit ABI, socketcall(2)
 /// for one, its arguments read from the caller's memory. Each argument is the C type the
 /// kernel takes it as, an int its register's low 32 bits.
-fn call(n: &libc::seccomp_notif) -> Option<Call> {
+pub(crate) fn call(n: &libc::seccomp_notif) -> Option<Call> {
     let [a0, a1, a2, ..] = n.data.args;
     let int = |a: u64| a as u32 as i32;
     let which = match (n.data.arch, n.data.nr) {
@@ -1583,13 +1583,13 @@ fn put<T>(slots: &mut Vec<Option<T>>, item: T) -> usize {
     }
 }
 
-fn errno() -> i32 {
+pub(crate) fn errno() -> i32 {
     io::Error::last_os_error().raw_os_error().unwrap_or(libc::EIO)
 }
 
 /// Whether notification `id` still waits on `listener`: its caller has not gone, nor been
 /// interrupted, so its PID and memory are still its.
-fn valid(listener: RawFd, id: u64) -> bool {
+pub(crate) fn valid(listener: RawFd, id: u64) -> bool {
     // SAFETY: ioctl(2) with a u64 of ours.
     unsafe { libc::ioctl(listener, libc::SECCOMP_IOCTL_NOTIF_ID_VALID, &raw const id) == 0 }
 }
@@ -1609,11 +1609,26 @@ fn read_memory(pid: libc::pid_t, at: u64, out: &mut [u8]) -> Option<()> {
     (usize::try_from(n).ok()? == out.len()).then_some(())
 }
 
-/// The socket `fd` of process `pid`, as a descriptor of ours (pidfd_getfd(2)).
-fn socket_of(pid: libc::pid_t, fd: RawFd) -> Option<OwnedFd> {
-    // SAFETY: pidfd_open(2) of a process by its PID, no flags.
-    let pidfd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
-    let pidfd = RawFd::try_from(pidfd).ok().filter(|&f| f >= 0)?;
+/// The socket `fd` of thread `pid`, as a descriptor of ours (pidfd_getfd(2)). A
+/// notification names the thread that called (seccomp_unotify(2)), and pidfd_open(2)
+/// refuses a thread that leads no thread group (EINVAL, without PIDFD_THREAD, which
+/// kernels before 6.9 lack): its group's leader then, which shares its descriptors
+/// (CLONE_FILES, as every thread of a process does).
+pub(crate) fn socket_of(pid: libc::pid_t, fd: RawFd) -> Option<OwnedFd> {
+    let open = |pid: libc::pid_t| {
+        // SAFETY: pidfd_open(2) of a process by its PID, no flags.
+        let pidfd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
+        RawFd::try_from(pidfd).ok().filter(|&f| f >= 0)
+    };
+    let pidfd = open(pid).or_else(|| {
+        let status = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
+        let leader = status
+            .lines()
+            .find_map(|l| l.strip_prefix("Tgid:"))
+            .and_then(|v| v.trim().parse::<libc::pid_t>().ok())
+            .filter(|&t| t != pid)?;
+        open(leader)
+    })?;
     // SAFETY: a descriptor just made, owned here alone.
     let pidfd = unsafe { OwnedFd::from_raw_fd(pidfd) };
     // SAFETY: pidfd_getfd(2) of the process's descriptor, no flags.
@@ -1631,12 +1646,12 @@ fn sockopt_raw(fd: RawFd, level: libc::c_int, name: libc::c_int) -> Option<libc:
     (r == 0).then_some(v)
 }
 
-fn sockopt(sock: &OwnedFd, level: libc::c_int, name: libc::c_int) -> Option<libc::c_int> {
+pub(crate) fn sockopt(sock: &OwnedFd, level: libc::c_int, name: libc::c_int) -> Option<libc::c_int> {
     sockopt_raw(sock.as_raw_fd(), level, name)
 }
 
 /// The family and protocol of a TCP or UDP socket of IPv4's or IPv6's; none for any other.
-fn inet(sock: &OwnedFd) -> Option<(libc::c_int, u8)> {
+pub(crate) fn inet(sock: &OwnedFd) -> Option<(libc::c_int, u8)> {
     let domain = sockopt(sock, libc::SOL_SOCKET, libc::SO_DOMAIN)?;
     if domain != libc::AF_INET && domain != libc::AF_INET6 {
         return None;
@@ -1690,7 +1705,7 @@ fn own_netns() -> Option<u64> {
 }
 
 /// A socket's port, 0 where it is not bound.
-fn local_port(sock: &OwnedFd) -> Option<u16> {
+pub(crate) fn local_port(sock: &OwnedFd) -> Option<u16> {
     // SAFETY: zeroed is a valid sockaddr_storage.
     let mut ss: libc::sockaddr_storage = unsafe { std::mem::zeroed() };
     let mut len = size_of::<libc::sockaddr_storage>() as libc::socklen_t;
@@ -1713,7 +1728,12 @@ fn peer_known(fd: RawFd) -> bool {
 /// A bind's address and port, as the caller passed them (`len` bytes at `at`) for a socket
 /// of `domain`; none for one the kernel refuses, which it then does. An IPv4 socket's
 /// AF_UNSPEC is its every address where it names that, as inet_bind takes it.
-fn read_sockaddr(pid: libc::pid_t, at: u64, len: i32, domain: libc::c_int) -> Option<(IpAddr, u16)> {
+pub(crate) fn read_sockaddr(
+    pid: libc::pid_t,
+    at: u64,
+    len: i32,
+    domain: libc::c_int,
+) -> Option<(IpAddr, u16)> {
     let len = usize::try_from(len).ok()?;
     match domain {
         libc::AF_INET if len >= size_of::<libc::sockaddr_in>() => {
@@ -1799,7 +1819,7 @@ fn from_storage(ss: &libc::sockaddr_storage) -> Option<SocketAddr> {
 }
 
 /// Binds `sock` to `addr` at `port`: its errno where the guest's own kernel refuses it.
-fn bind_socket(sock: &OwnedFd, addr: IpAddr, port: u16) -> Result<(), i32> {
+pub(crate) fn bind_socket(sock: &OwnedFd, addr: IpAddr, port: u16) -> Result<(), i32> {
     let (ss, len) = sockaddr(SocketAddr::new(addr, port));
     // SAFETY: bind(2) with a sockaddr of ours, its length given.
     if unsafe { libc::bind(sock.as_raw_fd(), (&raw const ss).cast(), len) } == 0 {
@@ -1925,7 +1945,7 @@ fn cookies(mut msgs: &[u8]) -> Vec<u64> {
 
 /// A sock_diag socket in the destroy groups: each TCP and UDP socket of init's network
 /// namespace as it goes.
-fn destroy_listener() -> io::Result<OwnedFd> {
+pub(crate) fn destroy_listener() -> io::Result<OwnedFd> {
     let sock = diag_socket()?;
     // SAFETY: zeroed is a valid sockaddr_nl.
     let mut addr: libc::sockaddr_nl = unsafe { std::mem::zeroed() };
@@ -1945,7 +1965,7 @@ fn destroy_listener() -> io::Result<OwnedFd> {
     Ok(sock)
 }
 
-fn diag_socket() -> io::Result<OwnedFd> {
+pub(crate) fn diag_socket() -> io::Result<OwnedFd> {
     // SAFETY: socket(2) with constant arguments.
     let fd = unsafe {
         libc::socket(

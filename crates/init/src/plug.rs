@@ -486,7 +486,16 @@ impl Plug {
 /// builtins run in (`MAP_SHARED`, made as init starts, [`make_cap`]),
 /// so that what the host says to a builtin holds the grower too; and in a template, which
 /// its restores resume with none.
-static CAP: std::sync::OnceLock<&'static std::sync::atomic::AtomicU64> = std::sync::OnceLock::new();
+static CAP: std::sync::OnceLock<&'static Shared> = std::sync::OnceLock::new();
+
+/// What init, its grower and its builtins' forks share in [`CAP`]'s page: the cap, and when
+/// the grower last asked for memory or had memory come ([`grew_lately`]).
+#[repr(C)]
+#[derive(Debug)]
+struct Shared {
+    cap: std::sync::atomic::AtomicU64,
+    grown_at: std::sync::atomic::AtomicU64,
+}
 
 /// Makes [`CAP`], none yet: by PID 1 as it starts, before it forks anything, a grower or a
 /// builtin's fork, each of which shares it.
@@ -512,19 +521,65 @@ pub fn make_cap() -> io::Result<()> {
             io::Error::last_os_error()
         )));
     }
-    // SAFETY: the page just mapped, zeroed, aligned to a page and never unmapped: an
-    // AtomicU64 at its start, a valid one in its zeroes, lives as long as the process,
-    // and every process forked from it shares it.
-    let cap = unsafe { &*page.cast::<std::sync::atomic::AtomicU64>() };
-    cap.store(u64::MAX, std::sync::atomic::Ordering::SeqCst);
-    let _ = CAP.set(cap);
+    // SAFETY: the page just mapped, zeroed, aligned to a page and never unmapped: a
+    // `Shared` at its start, atomics valid in their zeroes and far smaller than a page,
+    // lives as long as the process, and every process forked from it shares it.
+    let shared = unsafe { &*page.cast::<Shared>() };
+    shared.cap.store(u64::MAX, std::sync::atomic::Ordering::SeqCst);
+    let _ = CAP.set(shared);
     Ok(())
 }
 
 /// [`CAP`]'s bytes: `u64::MAX` where it has none.
 fn cap() -> u64 {
     CAP.get()
-        .map_or(u64::MAX, |cap| cap.load(std::sync::atomic::Ordering::SeqCst))
+        .map_or(u64::MAX, |s| s.cap.load(std::sync::atomic::Ordering::SeqCst))
+}
+
+/// Now, in nanoseconds since boot; a value [`grew_within`] reads against.
+fn now_ns() -> u64 {
+    let mut t = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: clock_gettime(2) into a timespec of ours.
+    unsafe { libc::clock_gettime(libc::CLOCK_BOOTTIME, &raw mut t) };
+    u64::try_from(t.tv_sec)
+        .unwrap_or(0)
+        .saturating_mul(1_000_000_000)
+        .saturating_add(u64::try_from(t.tv_nsec).unwrap_or(0))
+}
+
+/// Marks that the grower asked for memory, or had memory come ([`Grows::ask`],
+/// [`Grows::raise`]): the run grows.
+fn mark_growth() {
+    if let Some(s) = CAP.get() {
+        s.grown_at.store(now_ns(), std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// Whether the run's grower asked for memory, or had memory come, within the window its
+/// host's pressure is measured over ([`shards_abi::PRESSURE_WINDOW_US`]): memory plugged
+/// so lately is what its run grows into, not what it holds cold. A give-back that took it
+/// for cold, counting what it keeps from what the run had reached so far where the grower
+/// asks for twice as much, took back what the grower had just plugged for a run raised to
+/// more (`update -m`, D149) and held it at what it would have after, pass after pass of a
+/// host that stays short of memory, 128 MiB plugged and unplugged in turn, until its guest
+/// ran out of memory and killed what grew (PM M466). The window, not the pass before: a
+/// host's words come as fast as its watches do. False where nothing is shared.
+fn grew_lately() -> bool {
+    CAP.get().is_some_and(|s| {
+        grew_within(
+            s.grown_at.load(std::sync::atomic::Ordering::SeqCst),
+            now_ns(),
+            shards_abi::PRESSURE_WINDOW_US.saturating_mul(1000),
+        )
+    })
+}
+
+/// Whether `grown_at` is within `window` of `now`, nanoseconds; none is 0.
+fn grew_within(grown_at: u64, now: u64, window: u64) -> bool {
+    grown_at != 0 && now.saturating_sub(grown_at) < window
 }
 
 /// The run's `memory.high` as its grower holds it ([`Plug::hold_run`]), what it uses and
@@ -665,8 +720,9 @@ fn within(used: u64, room: i64, least: u64, was: u64) -> u64 {
 /// of itself, and its grower took a run held at its cap for one held short of it, writing
 /// its hold again at each of its run's events, each a reclaim the kernel makes at once.
 fn set_cap(bytes: u64) {
-    if let Some(cap) = CAP.get() {
-        cap.store(in_pages(bytes, page_size()), std::sync::atomic::Ordering::SeqCst);
+    if let Some(s) = CAP.get() {
+        s.cap
+            .store(in_pages(bytes, page_size()), std::sync::atomic::Ordering::SeqCst);
     }
 }
 
@@ -745,6 +801,11 @@ pub fn shrink_run(cgroup: &str) -> io::Result<u64> {
     let asked = control_read64(control::HOTPLUG_REQUEST).unwrap_or(plugged);
     let used = number(&format!("{cgroup}/memory.current"))
         .ok_or_else(|| err(format!("{cgroup}/memory.current unread")))?;
+    // A run that grew lately keeps all it has, its peak counted on from then: what was
+    // plugged lately is what it grows into (PM M466).
+    if grew_lately() {
+        return Ok(0);
+    }
     // Of what stays: what a give-back before asked its driver to unplug goes already.
     let stays = staying(boot, total);
     let Some(keep) = to_keep(boot, most, stays, asked, used, peak_since(used)) else {
@@ -986,6 +1047,34 @@ fn reserve(total: u64, left: u64) -> u64 {
 /// only there, was never asked to plug more (PM M392).
 const PCP_FRACTION: u64 = 8;
 
+/// What the build has needed of its builder's memory so far, for its host to record
+/// (`kind::NEEDED`, D133): the least memory, in whole blocks, whose hold keeps the most its
+/// cgroup has held (`memory.peak`, Documentation/admin-guide/cgroup-v2.rst) under its
+/// `memory.high`, and the processes of the build the kernel ended for want of memory
+/// (`memory.events`' `oom_kill`, any OOM killer's, its descendants' counted with its own).
+pub fn needed() -> io::Result<(u64, u64)> {
+    let peak = number(&format!("{BUILD}/memory.peak"))
+        .ok_or_else(|| err(format!("{BUILD}/memory.peak: none to read")))?;
+    let events = std::fs::read_to_string(format!("{BUILD}/memory.events"))
+        .map_err(|e| err(format!("{BUILD}/memory.events: {e}")))?;
+    let killed = events
+        .lines()
+        .find_map(|l| l.strip_prefix("oom_kill "))
+        .and_then(|n| n.trim().parse().ok())
+        .unwrap_or(0);
+    Ok((needed_for(peak), killed))
+}
+
+/// The least memory in whole blocks whose hold, its [`reserve`] beside it and nothing left
+/// to plug, is at least `peak`: `total − SLACK − total / PCP_FRACTION ≥ peak`.
+fn needed_for(peak: u64) -> u64 {
+    let total = peak
+        .saturating_add(SLACK)
+        .saturating_mul(PCP_FRACTION)
+        .div_ceil(PCP_FRACTION - 1);
+    total.div_ceil(ALIGN).saturating_mul(ALIGN)
+}
+
 /// The build's `memory.high`: what it holds now and what is free and stays plugged, less
 /// the [`reserve`] for what may still be plugged, `left` of it. Its page cache counts as
 /// its own, so it is not free; nothing else the kernel keeps is the build's.
@@ -1153,10 +1242,12 @@ impl Grows for Builder<'_> {
     }
 
     fn ask(&mut self, bytes: u64) -> io::Result<()> {
+        mark_growth();
         control_write64(control::HOTPLUG_REQUEST, bytes)
     }
 
     fn raise(&mut self, plugged: u64) {
+        mark_growth();
         let cgroup = self.plug.cgroup;
         if let Err(e) = high(cgroup, self.plug.most, plugged).and_then(|h| set_high(cgroup, h)) {
             say(self.notes, self.plug.whose, &e.to_string());
@@ -1473,6 +1564,22 @@ mod tests {
         whose: "the builder's",
     };
 
+    /// What a build needed is the least memory in whole blocks whose hold, with nothing
+    /// left to plug, keeps its peak: a block less holds less.
+    #[test]
+    fn what_a_build_needed_is_the_least_memory_that_holds_its_peak() {
+        let hold = |total: u64| total.saturating_sub(reserve(total, 0));
+        for peak in [0, 1, 300 * MIB, 512 * MIB, 1536 * MIB, 34 << 30, 120 << 30] {
+            let need = needed_for(peak);
+            assert_eq!(need % ALIGN, 0, "{peak}");
+            assert!(hold(need) >= peak, "{peak}: {need} holds {}", hold(need));
+            assert!(
+                hold(need - ALIGN) < peak || need == ALIGN,
+                "{peak}: {need} is not the least"
+            );
+        }
+    }
+
     /// A builder whose memory is what `comes` makes of the requests so far and the time.
     struct Fake<F> {
         comes: F,
@@ -1565,6 +1672,18 @@ mod tests {
         assert!(!reclaimed(false, 102 * MIB, 102 * MIB), "the same cap");
         assert!(!reclaimed(false, 102 * MIB, 142 * MIB), "a cap raised");
         assert!(!reclaimed(false, u64::MAX, u64::MAX), "no budget");
+    }
+
+    /// A run whose grower asked for memory, or had memory come, within the host's pressure
+    /// window keeps all it has; one quiet for the window, or never grown, is asked as any
+    /// other (PM M466).
+    #[test]
+    fn a_run_grown_lately_is_taken_for_growing_for_the_window() {
+        const WINDOW: u64 = shards_abi::PRESSURE_WINDOW_US * 1000;
+        assert!(!grew_within(0, 5 * WINDOW, WINDOW), "never grown");
+        assert!(grew_within(WINDOW, WINDOW, WINDOW), "just now");
+        assert!(grew_within(WINDOW, 2 * WINDOW - 1, WINDOW), "within");
+        assert!(!grew_within(WINDOW, 2 * WINDOW, WINDOW), "past it");
     }
 
     /// A hold counts out what its device has been asked to unplug, free or not, so that the
