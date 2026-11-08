@@ -233,6 +233,15 @@ impl std::error::Error for Refusal {}
 pub trait Stream: Read + Write + Send + Sync {
     /// Another handle to the same connection.
     fn try_clone(&self) -> io::Result<Box<dyn Stream>>;
+    /// The OS handle under it, for a caller that waits in its own event loop (epoll, kqueue,
+    /// IOCP) rather than in a read: readable when a read won't wait, writable when a write
+    /// won't, both once the connection has ended. It stays the stream's: the caller waits on
+    /// it and never reads, writes or closes it.
+    fn handle(&self) -> Handle;
+    /// With `on`, a read or a write that would wait fails `WouldBlock` at once, for a caller
+    /// that waits on [`handle`](Stream::handle); else each waits to its timeout, as by
+    /// default. Shared by its clones, as its timeouts are.
+    fn set_nonblocking(&self, on: bool) -> io::Result<()>;
     /// Ends one way or both; both, one way at a time (D175).
     fn shutdown(&self, how: Shutdown) -> io::Result<()>;
     /// The connection's send and receive buffer sizes in bytes (SO_SNDBUF, SO_RCVBUF), as
@@ -252,6 +261,12 @@ pub trait Stream: Read + Write + Send + Sync {
     /// A write waits at most this long for room (`None`: for ever).
     fn set_write_timeout(&self, timeout: Option<Duration>) -> io::Result<()>;
 }
+
+/// The OS handle under a [`Stream`]: a file descriptor on Unix, a Winsock socket on Windows.
+#[cfg(unix)]
+pub type Handle = std::os::fd::RawFd;
+#[cfg(windows)]
+pub type Handle = std::os::windows::io::RawSocket;
 
 /// What boots guests.
 pub trait Guests: Send + Sync {

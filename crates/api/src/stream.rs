@@ -19,6 +19,9 @@ pub(crate) struct Socket {
     /// How long a read and a write wait, in ns, 0 for ever: shared by its clones, as a
     /// socket's own timeouts are.
     waits: std::sync::Arc<[std::sync::atomic::AtomicU64; 2]>,
+    /// Whether a read or a write that would wait fails at once instead (`set_nonblocking`),
+    /// shared by its clones as its waits are.
+    nonblocking: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// Connects to the Unix socket at `path`.
@@ -71,6 +74,14 @@ mod waits {
             which: usize,
             mut op: impl FnMut() -> io::Result<T>,
         ) -> io::Result<T> {
+            if self.nonblocking.load(Ordering::Relaxed) {
+                return loop {
+                    match op() {
+                        Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                        done => break done,
+                    }
+                };
+            }
             let ns = self.waits.get(which).map_or(0, |w| w.load(Ordering::Relaxed));
             let deadline = (ns != 0)
                 .then(|| Instant::now().checked_add(Duration::from_nanos(ns)))
@@ -134,6 +145,7 @@ mod unix {
             Ok(Socket {
                 inner,
                 waits: std::sync::Arc::default(),
+                nonblocking: std::sync::Arc::default(),
             })
         }
 
@@ -233,6 +245,7 @@ impl Socket {
         Ok(Socket {
             inner,
             waits: std::sync::Arc::default(),
+            nonblocking: std::sync::Arc::default(),
         })
     }
 
@@ -266,7 +279,21 @@ impl Stream for Socket {
         Ok(Box::new(Socket {
             inner: self.inner.try_clone()?,
             waits: self.waits.clone(),
+            nonblocking: self.nonblocking.clone(),
         }))
+    }
+
+    fn handle(&self) -> crate::Handle {
+        #[cfg(unix)]
+        return std::os::fd::AsRawFd::as_raw_fd(&self.inner);
+        // A Winsock SOCKET is a pointer-sized integer; std's RawSocket is its u64.
+        #[cfg(windows)]
+        u64::try_from(self.inner.raw()).unwrap_or(u64::MAX)
+    }
+
+    fn set_nonblocking(&self, on: bool) -> io::Result<()> {
+        self.nonblocking.store(on, std::sync::atomic::Ordering::Relaxed);
+        Ok(())
     }
 
     fn shutdown(&self, how: Shutdown) -> io::Result<()> {
@@ -488,6 +515,42 @@ mod tests {
         assert_eq!(unix::size("SO_SNDBUF", 8192).unwrap(), 8192);
         assert!(unix::size("SO_SNDBUF", 0).is_err());
         assert!(unix::size("SO_RCVBUF", -1).is_err());
+    }
+
+    /// Non-blocking, a read with nothing to read fails `WouldBlock` at once even with no
+    /// timeout set (it would otherwise wait for ever), and so does its clone's; once the peer
+    /// writes, the handle polls readable and the read takes the bytes (Hex's event loop,
+    /// native plan step 8).
+    #[test]
+    fn a_nonblocking_read_fails_at_once_and_its_handle_says_when_to_read() {
+        let (a, mut b) = pair().unwrap();
+        Stream::set_nonblocking(&a, true).unwrap();
+        let mut clone = Stream::try_clone(&a).unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let reader = std::thread::spawn(move || {
+            let mut buf = [0u8; 8];
+            let empty = clone.read(&mut buf).map_err(|e| e.kind());
+            tx.send(empty).unwrap();
+            clone
+        });
+        let empty = rx.recv_timeout(Duration::from_secs(60)).unwrap();
+        assert_eq!(empty, Err(io::ErrorKind::WouldBlock));
+        let mut clone = reader.join().unwrap();
+        b.write_all(b"now").unwrap();
+        #[cfg(unix)]
+        {
+            let mut fd = libc::pollfd {
+                fd: Stream::handle(&a),
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            // SAFETY: poll(2) of one pollfd, of a socket `a` holds open.
+            let n = unsafe { libc::poll(&raw mut fd, 1, 60_000) };
+            assert_eq!((n, fd.revents & libc::POLLIN), (1, libc::POLLIN));
+        }
+        let mut buf = [0u8; 8];
+        let n = clone.read(&mut buf).unwrap();
+        assert_eq!(&buf[..n], b"now");
     }
 
     /// A clone is the same connection: what one writes the peer reads (D215).
