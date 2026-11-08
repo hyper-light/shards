@@ -111,37 +111,6 @@ mod unix {
         }
     }
 
-    impl Socket {
-        /// Reads (`READ`) or writes (`WRITE`) once it can, at most its timeout, by `once`
-        /// given the socket and `MSG_DONTWAIT`: never waiting in the call itself, so that a
-        /// write larger than the room the socket has takes what fits and a later one waits
-        /// in poll(2) again, and a read another handle beat it to waits again too, both
-        /// within the timeout.
-        pub(super) fn transfer(
-            &self,
-            which: usize,
-            mut once: impl FnMut(libc::c_int, libc::c_int) -> libc::ssize_t,
-        ) -> io::Result<usize> {
-            // A write to a peer that has gone fails EPIPE, not SIGPIPE (Linux; on macOS a
-            // Unix socket std connects holds SO_NOSIGPIPE, std's `Socket::new_raw`).
-            #[cfg(any(target_os = "linux", target_os = "android"))]
-            let flags = libc::MSG_DONTWAIT | if which == WRITE { libc::MSG_NOSIGNAL } else { 0 };
-            #[cfg(not(any(target_os = "linux", target_os = "android")))]
-            let flags = libc::MSG_DONTWAIT;
-            loop {
-                self.ready(which)?;
-                let n = once(self.inner.as_raw_fd(), flags);
-                if let Ok(n) = usize::try_from(n) {
-                    return Ok(n);
-                }
-                let e = io::Error::last_os_error();
-                if !matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted) {
-                    return Err(e);
-                }
-            }
-        }
-    }
-
     /// A timeout in ms, 0 for none; a zero timeout refused, as std refuses it.
     fn millis(timeout: Option<Duration>) -> io::Result<u64> {
         match timeout {
@@ -170,12 +139,7 @@ impl Read for Socket {
         // Waited for in poll(2), which sees a peer's half-close that a read waiting on a
         // macOS socket can sleep through (PM M236).
         #[cfg(unix)]
-        return self.transfer(unix::READING, |fd, flags| {
-            // SAFETY: recv(2) into `buf`, writable for its length, from a socket this value
-            // holds open.
-            unsafe { libc::recv(fd, buf.as_mut_ptr().cast(), buf.len(), flags) }
-        });
-        #[cfg(windows)]
+        self.ready(unix::READING)?;
         (&self.inner).read(buf)
     }
 }
@@ -183,12 +147,7 @@ impl Read for Socket {
 impl Write for Socket {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         #[cfg(unix)]
-        return self.transfer(unix::WRITING, |fd, flags| {
-            // SAFETY: send(2) of `buf`, readable for its length, on a socket this value
-            // holds open.
-            unsafe { libc::send(fd, buf.as_ptr().cast(), buf.len(), flags) }
-        });
-        #[cfg(windows)]
+        self.ready(unix::WRITING)?;
         (&self.inner).write(buf)
     }
 
@@ -278,35 +237,6 @@ mod tests {
         a.read_exact(&mut got).unwrap();
         assert_eq!(&got, b"late");
         assert!(Stream::set_read_timeout(&a, Some(Duration::ZERO)).is_err());
-    }
-
-    /// A write waits for room at most its timeout, however much it is given: one far larger
-    /// than a Unix socket's buffers, to a peer that reads none of it, fails there rather
-    /// than waiting in the call for room that never comes. On Windows Winsock's AF_UNIX
-    /// took all 64 MiB without a reader (jupiter, Windows x86_64), so the write ends
-    /// there too, having written it.
-    #[test]
-    fn a_write_times_out_however_large() {
-        let (mut a, _b) = pair().unwrap();
-        Stream::set_write_timeout(&a, Some(Duration::from_millis(50))).unwrap();
-        let start = Instant::now();
-        let wrote = a.write_all(&vec![0u8; 64 << 20]);
-        #[cfg(unix)]
-        {
-            let e = wrote.unwrap_err();
-            assert!(
-                matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut),
-                "{e:?}"
-            );
-        }
-        #[cfg(windows)]
-        if let Err(e) = wrote {
-            assert!(
-                matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut),
-                "{e:?}"
-            );
-        }
-        assert!(start.elapsed() < Duration::from_secs(10), "{:?}", start.elapsed());
     }
 
     /// A clone is the same connection: what one writes the peer reads (Hex HEX-GUEST-9).

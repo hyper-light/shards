@@ -1,6 +1,5 @@
 //! What every [`Guests`] does, run against the simulator in this crate's tests and against
-//! [`Shards`](crate::Shards) on each backend's real guests (`crates/shards/tests/boot.rs`
-//! `shards_api_conforms_on_real_guests`): a spec past the bounds is refused before boot;
+//! [`Shards`](crate::Shards) on each backend: a spec past the bounds is refused before boot;
 //! a served port carries bytes both ways and a half-close; an unserved port is refused as
 //! `Channel` within its patience, one off the allowlist at once; `stop` ends a guest as
 //! `Stopped`, and every later `connect` is refused `Ended`; a guest that powers off ends as
@@ -40,19 +39,12 @@ impl std::fmt::Debug for Subject<'_> {
 }
 
 /// A case that failed, and why.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("{case}: {why}")]
 pub struct Failure {
     pub case: &'static str,
     pub why: String,
 }
-
-impl std::fmt::Display for Failure {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}: {}", self.case, self.why)
-    }
-}
-
-impl std::error::Error for Failure {}
 
 fn fail(case: &'static str, why: impl Into<String>) -> Failure {
     Failure {
