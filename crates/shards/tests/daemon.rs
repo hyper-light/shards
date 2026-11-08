@@ -787,7 +787,7 @@ fn a_warm_vms_run_starts_without_growing_its_descriptor_table() {
     // The run's VM: the one relaying its client's signals.
     let served: Vec<&(u32, u64)> = idle
         .iter()
-        .filter(|(pid, _)| waits(*pid, "client-signals").as_deref() == Some("unix_stream_data_wait"))
+        .filter(|(pid, _)| waits(*pid, "client-signals").is_some_and(|w| w.starts_with("unix_stream_")))
         .collect();
     assert_eq!(served.len(), 1, "the run's VM among the pool's {idle:?}");
     for &&(pid, before) in &served {
