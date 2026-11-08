@@ -767,7 +767,8 @@ fn a_warm_vms_run_starts_without_growing_its_descriptor_table() {
         idle = commands_with(&templates)
             .into_iter()
             .filter(|(pid, args)| {
-                args.contains(" restore ") && waits(*pid, "workload").as_deref() == Some("unix_stream_data_wait")
+                args.contains(" restore ")
+                    && waits(*pid, "workload").as_deref() == Some("unix_stream_data_wait")
             })
             .filter_map(|(pid, _)| Some((pid, table(pid)?)))
             .collect();
@@ -786,7 +787,11 @@ fn a_warm_vms_run_starts_without_growing_its_descriptor_table() {
         .collect();
     assert_eq!(served.len(), 1, "the run's VM among the pool's {idle:?}");
     for &&(pid, before) in &served {
-        assert_eq!(table(pid), Some(before), "VM {pid}'s descriptor table grew as its run started");
+        assert_eq!(
+            table(pid),
+            Some(before),
+            "VM {pid}'s descriptor table grew as its run started"
+        );
     }
     let _ = sleeper.kill();
     let _ = sleeper.wait();

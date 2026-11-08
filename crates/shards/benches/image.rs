@@ -132,8 +132,7 @@ fn main() {
         samples
             .iter()
             .map(|s| {
-                after_start(&s.run)
-                    .map_or(f64::NAN, |after| s.run.elapsed.as_secs_f64() * 1e6 - after as f64)
+                after_start(&s.run).map_or(f64::NAN, |after| s.run.elapsed.as_secs_f64() * 1e6 - after as f64)
             })
             .collect()
     };
@@ -154,7 +153,10 @@ fn main() {
             support::diagnostic(
                 "template_start",
                 "us",
-                template.iter().map(|s| start(&s.run).map_or(f64::NAN, |t| t as f64)).collect(),
+                template
+                    .iter()
+                    .map(|s| start(&s.run).map_or(f64::NAN, |t| t as f64))
+                    .collect(),
             ),
             stats("template_command", "us", us(&template, command)),
             stats("template_outside", "us", outside),
