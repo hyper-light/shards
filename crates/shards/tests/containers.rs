@@ -11539,6 +11539,165 @@ fn a_push_ends_with_its_client_and_the_daemon() {
     let_go("the uploads went on past the daemon");
 }
 
+/// A registry that takes uploads at `per` bytes a second on each connection, as a link
+/// whose every connection has a ceiling of its own carries them (PM M488: one upload to
+/// ttl.sh 4.5 MB/s, four 9.2). Every blob is new to it; its uploads are taken whole, with
+/// a 201, and its manifests too. The most PUTs of a blob it had at once.
+fn pacing_registry(per: usize) -> (u16, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+    use std::io::{Read as _, Write as _};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (now, most) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+    let held = most.clone();
+    std::thread::spawn(move || {
+        for tcp in listener.incoming() {
+            let Ok(tcp) = tcp else { return };
+            let (now, most) = (now.clone(), held.clone());
+            std::thread::spawn(move || {
+                let mut first = [0u8; 1];
+                if tcp.peek(&mut first).is_ok_and(|n| n == 1) && first[0] == 0x16 {
+                    let _ = (&tcp).write_all(common::GO_BAD_REQUEST);
+                    return;
+                }
+                let mut reader = BufReader::new(tcp.try_clone().unwrap());
+                let mut out = tcp;
+                loop {
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                        return;
+                    }
+                    let mut length = 0usize;
+                    loop {
+                        let mut header = String::new();
+                        if reader.read_line(&mut header).unwrap_or(0) <= 2 {
+                            break;
+                        }
+                        if let Some((name, value)) = header.split_once(':')
+                            && name.eq_ignore_ascii_case("content-length")
+                        {
+                            length = value.trim().parse().unwrap_or(0);
+                        }
+                    }
+                    let blob_put = line.starts_with("PUT ") && line.contains("/blobs/uploads/");
+                    if blob_put {
+                        most.fetch_max(now.fetch_add(1, Ordering::SeqCst) + 1, Ordering::SeqCst);
+                    }
+                    // Its body at `per` a second: a 64 KiB piece, then its share of a second.
+                    let mut left = length;
+                    let mut piece = vec![0u8; 64 << 10];
+                    let t0 = Instant::now();
+                    let mut taken = 0usize;
+                    while left > 0 {
+                        let n = left.min(piece.len());
+                        if reader.read_exact(&mut piece[..n]).is_err() {
+                            return;
+                        }
+                        left -= n;
+                        taken += n;
+                        if blob_put {
+                            let due = Duration::from_secs_f64(taken as f64 / per as f64);
+                            if let Some(wait) = due.checked_sub(t0.elapsed()) {
+                                std::thread::sleep(wait);
+                            }
+                        }
+                    }
+                    if blob_put {
+                        now.fetch_sub(1, Ordering::SeqCst);
+                    }
+                    let answer: &[u8] = if line.starts_with("HEAD ") {
+                        b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n"
+                    } else if line.starts_with("POST ") {
+                        b"HTTP/1.1 202 Accepted\r\nLocation: /v2/team/app/blobs/uploads/u\r\nContent-Length: 0\r\n\r\n"
+                    } else {
+                        b"HTTP/1.1 201 Created\r\nContent-Length: 0\r\n\r\n"
+                    };
+                    if out.write_all(answer).is_err() {
+                        return;
+                    }
+                }
+            });
+        }
+    });
+    (port, most)
+}
+
+/// A push sends as many of a microVM's blobs at once as pay (PM M488): where each upload
+/// carries no more than its connection's ceiling, more go at once than it started with,
+/// so that a push of many layers over such a link is not held to a fixed few.
+#[test]
+fn a_push_uploads_more_blobs_at_once_while_that_carries_more() {
+    use std::sync::atomic::Ordering;
+    if cannot_run_vms() {
+        return;
+    }
+    // Forty layers of 2 MiB each, each a file of its own.
+    let mut layers = Vec::new();
+    let mut seed = 0x9e37_79b9_u32;
+    for i in 0..40 {
+        let data: Vec<u8> = (0..2 << 20)
+            .map(|_| {
+                seed ^= seed << 13;
+                seed ^= seed >> 17;
+                seed ^= seed << 5;
+                seed as u8
+            })
+            .collect();
+        layers.push(common::tar(&[(&format!("f{i}"), 0o644, 0, Some(&data[..]))]));
+    }
+    let arch = match std::env::consts::ARCH {
+        "aarch64" => "arm64",
+        _ => "amd64",
+    };
+    let diff_ids: Vec<String> = layers
+        .iter()
+        .map(|l| format!("\"{}\"", sha256_digest(l)))
+        .collect();
+    let config = format!(
+        r#"{{"architecture":"{arch}","os":"linux","config":{{"Cmd":["/f0"]}},"rootfs":{{"type":"layers","diff_ids":[{}]}}}}"#,
+        diff_ids.join(",")
+    )
+    .into_bytes();
+    let described: Vec<String> = layers
+        .iter()
+        .map(|l| {
+            format!(
+                r#"{{"mediaType":"application/vnd.oci.image.layer.v1.tar","digest":"{}","size":{}}}"#,
+                sha256_digest(l),
+                l.len()
+            )
+        })
+        .collect();
+    let manifest = format!(
+        r#"{{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{{"mediaType":"application/vnd.oci.image.config.v1+json","digest":"{}","size":{}}},"layers":[{}]}}"#,
+        sha256_digest(&config),
+        config.len(),
+        described.join(",")
+    )
+    .into_bytes();
+    let mut blobs = vec![config];
+    blobs.extend(layers);
+    let (from, _) = registry(manifest, blobs);
+    let source = format!("127.0.0.1:{from}/test/image:v1");
+    // 4 MiB a second each: forty layers take 5 s at four at once, past the windows a
+    // count is measured in.
+    let (port, most) = pacing_registry(4 << 20);
+    let home = TempDir::new("containers-push-climbs");
+    let shards = |args: &[&str]| shards_in(&home, args);
+    let pulled = shards(&["pull", "-q", &source]);
+    assert_eq!(pulled.status, Some(0), "{pulled}");
+    let target = format!("127.0.0.1:{port}/team/app:1");
+    assert_eq!(shards(&["tag", &source, &target]).status, Some(0));
+    let pushed = shards(&["push", &target]);
+    assert_eq!(pushed.status, Some(0), "{pushed}");
+    let most = most.load(Ordering::SeqCst);
+    assert!(
+        most >= 8,
+        "at most {most} uploads at once: they never climbed past four"
+    );
+}
+
 /// A run interrupted as it pulls ends as `docker run` does, measured on Docker 29.3.1:
 /// at once, with 130 and nothing more said; its pull let go, and neither a container nor
 /// the image left. The client starts with SIGINT's default action, as a terminal's

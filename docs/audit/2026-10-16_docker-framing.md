@@ -178,7 +178,10 @@ Reviewed feature by feature, each D-entry's design against what it took from Doc
       dockerd's `eventsLimit`, gone with the daemon. Done: a journal in the home, its
       history a log's, `configure disk --events-history` (D187).
     - A microVM's image pushed: 5 blobs at once, dockerd's `max-concurrent-uploads`, where a
-      pull's fetcher measures and adapts (PM M114). To adapt as the fetcher does, measured.
+      pull's fetcher measures and adapts (PM M114). Done (D226, PM M488): uploads start at
+      four and double while a doubling pays, as the fetcher's connections do, bounded by
+      the blobs alone; and a blob a registry refuses whole (a 413) goes in chunks of what
+      it takes.
     - A microVM whose command outlives its SIGKILL: its VM ended 10 s later, and a signal
       that could not be sent waited out 2 s, moby's kill.go and stop.go. To derive from how
       long a guest takes to say a killed command's end, with the shutdown's 5 s above.

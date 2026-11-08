@@ -26,6 +26,7 @@ use shards_image::oci::{Descriptor, Manifest};
 use shards_image::reference::Digest;
 use shards_image::store::{Limits, Ranged, Store};
 
+use crate::climb::{Climb, WINDOW};
 use crate::pull::Event;
 use crate::registry::{CHUNK, MAX_STALLS, Registry, not_fetched};
 use crate::url::Url;
@@ -35,11 +36,6 @@ use crate::{Error, ErrorKind};
 const FIRST: usize = 4;
 /// The most connections: the most measured.
 const MOST: usize = 16;
-/// How long each count of connections is measured, after as long again to settle.
-const WINDOW: Duration = Duration::from_secs(1);
-/// What doubling the connections must bring to be kept: more than four connections'
-/// spread from second to second (PM M114).
-const GAIN: f64 = 1.1;
 
 /// A layer of the pull.
 struct Layer<'a> {
@@ -199,10 +195,8 @@ impl<'a> Flows<'a> {
     /// Measures what the connections bring, doubling them while that pays, until the
     /// layers are in; `start` starts connections up to a count.
     fn adapt(&self, mut start: impl FnMut(usize)) {
-        let mut best: Option<f64> = None;
-        let mut settled = false;
+        let mut climb = Climb::new(FIRST, MOST);
         let mut since = (Instant::now(), self.bytes.load(Ordering::Relaxed));
-        let mut settling = true;
         let mut work = self.work();
         loop {
             if work.left == 0 || self.stopped() {
@@ -220,35 +214,17 @@ impl<'a> Flows<'a> {
             let now = (Instant::now(), self.bytes.load(Ordering::Relaxed));
             let rate = (now.1 - since.1) as f64 / now.0.duration_since(since.0).as_secs_f64();
             since = now;
-            if settled {
-                continue;
-            }
-            if settling {
-                // The window that new connections started in is not theirs.
-                settling = false;
-                continue;
-            }
             let target = self.target.load(Ordering::Relaxed);
-            // Measured only while every connection has work: with less work than
-            // connections, more would show nothing.
-            if work.busy < target {
+            // Measured only while every connection has work.
+            let Some(to) = climb.window(rate, target, work.busy >= target) else {
                 continue;
-            }
-            if best.is_some_and(|before| rate < before * GAIN) {
-                // Not worth it: back to what it was, and kept.
-                self.target.store((target / 2).max(FIRST), Ordering::Relaxed);
-                self.changed.notify_all();
-                settled = true;
-            } else if target >= MOST {
-                settled = true;
-            } else {
-                best = Some(rate);
-                let more = (target * 2).min(MOST);
-                self.target.store(more, Ordering::Relaxed);
+            };
+            self.target.store(to, Ordering::Relaxed);
+            self.changed.notify_all();
+            if to > target {
                 drop(work);
-                start(more);
+                start(to);
                 work = self.work();
-                settling = true;
             }
         }
     }

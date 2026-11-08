@@ -4,20 +4,29 @@
 //! child manifest of an index before the index, each blob only if the repository lacks
 //! it, mounted from another repository of the registry where one holds it, else uploaded
 //! with a POST and one PUT. The target goes last, by its tag.
+//!
+//! A manifest's blobs go up together, as many at once as pay (crate::climb, D226, PM
+//! M488): a blob's upload is one connection's, its bytes in order, so what more uploads at
+//! once bring is the link one leaves idle, its round trips (a HEAD, a POST and a PUT a
+//! blob) and a connection's own ceiling, and where that stops paying differs from link to
+//! link: to a registry on the same host sixteen carried 7.3 times what one did, to one
+//! across a LAN one already carried what the link does, and eight less than four.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Mutex, PoisonError};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Condvar, Mutex, MutexGuard, PoisonError};
+use std::time::Instant;
 
 use shards_image::oci::{self, Descriptor, Document};
 use shards_image::reference::Digest;
 use shards_image::store::{Held, Store};
 
+use crate::climb::{Climb, WINDOW};
 use crate::registry::Registry;
 use crate::{Error, ErrorKind};
 
-/// Blobs uploaded at once: dockerd's default `max-concurrent-uploads` (daemon/config
-/// config.go, DefaultMaxConcurrentUploads).
-const CONCURRENT: usize = 5;
+/// Uploads at first: on no link measured did fewer carry more than four (PM M488: on one
+/// host, across a LAN and to ttl.sh across the Internet, large blobs and small).
+const FIRST: usize = 4;
 
 /// What happened to a layer.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -116,44 +125,15 @@ fn push_manifest(
             return Err(missing(&blob.digest));
         }
     }
-    // The config and the layers together, under one limiter (containerd v2.4.1 dispatches
-    // a manifest's children so); the layers' fates are what is told.
+    // The config and the layers together; the layers' fates are what is told.
     let blobs: Vec<&Descriptor> = std::iter::once(&manifest.config)
         .chain(&manifest.layers)
         .collect();
-    let next = AtomicUsize::new(0);
-    let failed: Mutex<Option<Error>> = Mutex::new(None);
-    let stopped = || failed.lock().unwrap_or_else(PoisonError::into_inner).is_some();
-    let work = || {
-        while !stopped() {
-            let n = next.fetch_add(1, Ordering::Relaxed);
-            let Some(desc) = blobs.get(n) else {
-                return;
-            };
-            match blob(registry, store, desc, from).and_then(|fate| Ok((desc.digest()?, fate))) {
-                Ok((digest, fate)) if n > 0 => report(&digest, fate),
-                Ok(_) => {}
-                Err(e) => {
-                    failed
-                        .lock()
-                        .unwrap_or_else(PoisonError::into_inner)
-                        .get_or_insert(e);
-                }
-            }
-        }
-    };
-    std::thread::scope(|scope| {
-        let workers: Vec<_> = (0..CONCURRENT.min(blobs.len()))
-            .filter_map(|_| std::thread::Builder::new().spawn_scoped(scope, work).ok())
-            .collect();
-        // Without a thread to spare, this one does the work.
-        if workers.is_empty() {
-            work();
-        }
-    });
-    if let Some(e) = failed.into_inner().unwrap_or_else(PoisonError::into_inner) {
-        return Err(e);
-    }
+    upload_all(
+        &blobs,
+        &|desc, sent| blob(registry, store, desc, from, sent),
+        report,
+    )?;
     if registry.exists(desc, true, tag)? {
         return Ok(None);
     }
@@ -171,15 +151,193 @@ fn put(
     registry.put_manifest_subject(tag.unwrap_or(&desc.digest), &desc.media_type, bytes)
 }
 
-/// One blob: there already, mounted, or uploaded.
-fn blob(registry: &Registry, store: &Store, desc: &Descriptor, from: Option<&str>) -> Result<Layer, Error> {
+/// Uploads `blobs`, each by `up`, which counts its bytes into what it is given as they go,
+/// as many at once as pay; each fate but the first blob's (a manifest's config) told to
+/// `report`. The first failure, once the uploads under way have ended.
+fn upload_all(
+    blobs: &[&Descriptor],
+    up: &(dyn Fn(&Descriptor, &AtomicU64) -> Result<Layer, Error> + Sync),
+    report: &(dyn Fn(&Digest, Layer) + Sync),
+) -> Result<(), Error> {
+    let uploads = Uploads {
+        blobs,
+        work: Mutex::new(Work {
+            next: 0,
+            busy: 0,
+            left: blobs.len(),
+        }),
+        changed: Condvar::new(),
+        target: AtomicUsize::new(FIRST),
+        sent: AtomicU64::new(0),
+        failed: Mutex::new(None),
+    };
+    let one = |n: usize| uploads.work_on(n, |desc| up(desc, &uploads.sent), report);
+    std::thread::scope(|scope| {
+        let mut started = 0;
+        let mut start = |to: usize| {
+            while started < to.min(blobs.len()) {
+                let n = started;
+                let one = &one;
+                if std::thread::Builder::new()
+                    .name("shards-push".into())
+                    .spawn_scoped(scope, move || one(n))
+                    .is_err()
+                {
+                    break;
+                }
+                started += 1;
+            }
+            started
+        };
+        // Without a thread to spare, this one does the work.
+        if start(FIRST) == 0 {
+            one(0);
+            return;
+        }
+        uploads.adapt(&mut start);
+    });
+    match uploads
+        .failed
+        .into_inner()
+        .unwrap_or_else(PoisonError::into_inner)
+    {
+        Some(e) => Err(e),
+        None => Ok(()),
+    }
+}
+
+/// A manifest's blobs going up, as many at once as `target` says.
+struct Uploads<'a> {
+    blobs: &'a [&'a Descriptor],
+    work: Mutex<Work>,
+    /// Told as an upload ends, or one fails.
+    changed: Condvar,
+    /// How many uploads are to go at once: an upload numbered past it takes no more.
+    target: AtomicUsize,
+    /// The blobs' bytes sent so far, for measuring.
+    sent: AtomicU64,
+    failed: Mutex<Option<Error>>,
+}
+
+struct Work {
+    /// The next blob no upload has taken.
+    next: usize,
+    /// Uploads under way.
+    busy: usize,
+    /// Blobs not yet up.
+    left: usize,
+}
+
+impl Uploads<'_> {
+    fn work(&self) -> MutexGuard<'_, Work> {
+        lock(&self.work)
+    }
+
+    fn stopped(&self) -> bool {
+        lock(&self.failed).is_some()
+    }
+
+    /// Upload `n`'s work: the blobs no other has taken, while it is within the target,
+    /// each by `up`, its fate told to `report` but the config's (the first).
+    fn work_on(
+        &self,
+        n: usize,
+        up: impl Fn(&Descriptor) -> Result<Layer, Error>,
+        report: &(dyn Fn(&Digest, Layer) + Sync),
+    ) {
+        loop {
+            let i = {
+                let mut work = self.work();
+                if self.stopped() || n >= self.target.load(Ordering::Relaxed) {
+                    return;
+                }
+                let Some(i) = (work.next < self.blobs.len()).then_some(work.next) else {
+                    return;
+                };
+                work.next += 1;
+                work.busy += 1;
+                i
+            };
+            let done = self
+                .blobs
+                .get(i)
+                .ok_or_else(|| Error::new("no such blob"))
+                .and_then(|desc| up(desc).and_then(|fate| Ok((desc.digest()?, fate))));
+            match done {
+                Ok((digest, fate)) if i > 0 => report(&digest, fate),
+                Ok(_) => {}
+                Err(e) => {
+                    lock(&self.failed).get_or_insert(e);
+                }
+            }
+            let mut work = self.work();
+            work.busy = work.busy.saturating_sub(1);
+            work.left = work.left.saturating_sub(1);
+            drop(work);
+            self.changed.notify_all();
+        }
+    }
+
+    /// Measures what the uploads carry together, doubling them while that pays, until
+    /// every blob is up or one has failed; `start` starts uploads up to a count, and says
+    /// how many have started.
+    fn adapt(&self, start: &mut impl FnMut(usize) -> usize) {
+        // No most but the blobs: a doubling is kept only where it pays, and where it
+        // stopped paying differs from link to link (PM M488).
+        let mut climb = Climb::new(FIRST, self.blobs.len());
+        let mut since = (Instant::now(), self.sent.load(Ordering::Relaxed));
+        let mut work = self.work();
+        loop {
+            if work.left == 0 || self.stopped() {
+                return;
+            }
+            let wait = WINDOW.saturating_sub(since.0.elapsed());
+            if !wait.is_zero() {
+                work = self
+                    .changed
+                    .wait_timeout(work, wait)
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .0;
+                continue;
+            }
+            let now = (Instant::now(), self.sent.load(Ordering::Relaxed));
+            let rate = now.1.saturating_sub(since.1) as f64 / now.0.duration_since(since.0).as_secs_f64();
+            since = now;
+            let target = self.target.load(Ordering::Relaxed);
+            // Measured only while every upload has a blob: with fewer blobs left than
+            // uploads, more would show nothing.
+            let Some(to) = climb.window(rate, target, work.busy >= target) else {
+                continue;
+            };
+            self.target.store(to, Ordering::Relaxed);
+            if to > target {
+                drop(work);
+                start(to);
+                work = self.work();
+            }
+        }
+    }
+}
+
+fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// One blob: there already, mounted, or uploaded, its bytes counted into `sent`.
+fn blob(
+    registry: &Registry,
+    store: &Store,
+    desc: &Descriptor,
+    from: Option<&str>,
+    sent: &AtomicU64,
+) -> Result<Layer, Error> {
     if registry.exists(desc, false, None)? {
         return Ok(Layer::Exists);
     }
     let digest = desc.digest()?;
     let file =
         std::fs::File::open(store.blob_path(&digest)).map_err(|e| Error::new(format!("{digest}: {e}")))?;
-    Ok(match registry.upload(desc, &file, from)? {
+    Ok(match registry.upload(desc, &file, from, Some(sent))? {
         true => Layer::Mounted(from.unwrap_or_default().to_string()),
         false => Layer::Pushed,
     })
@@ -194,6 +352,7 @@ mod tests {
     use crate::testing::{After, route};
     use sha2::{Digest as _, Sha256};
     use shards_image::reference::{Algorithm, Reference};
+    use std::time::Duration;
 
     fn described(media_type: &str, bytes: &[u8]) -> Descriptor {
         Descriptor {
@@ -414,5 +573,62 @@ mod tests {
             )
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `blobs` uploads through [`upload_all`], each of ten steps of a MiB, each step waiting
+    /// what `pace` says. How many uploads were under way as each began, in order.
+    fn uploaded(blobs: usize, pace: &(dyn Fn() -> Duration + Sync)) -> Vec<usize> {
+        let descs: Vec<Descriptor> = (0..blobs)
+            .map(|i| described("application/octet-stream", format!("blob {i}").as_bytes()))
+            .collect();
+        let refs: Vec<&Descriptor> = descs.iter().collect();
+        let now = AtomicUsize::new(0);
+        let began = Mutex::new(Vec::new());
+        let up = |_: &Descriptor, sent: &AtomicU64| {
+            let at_once = now.fetch_add(1, Ordering::SeqCst) + 1;
+            lock(&began).push(at_once);
+            for _ in 0..10 {
+                std::thread::sleep(pace());
+                sent.fetch_add(1 << 20, Ordering::Relaxed);
+            }
+            now.fetch_sub(1, Ordering::SeqCst);
+            Ok(Layer::Pushed)
+        };
+        upload_all(&refs, &up, &|_: &Digest, _: Layer| {}).unwrap();
+        began.into_inner().unwrap()
+    }
+
+    /// Where each upload carries as much as the one before it, they double while that
+    /// pays; where they share one link, the doubling that brought nothing
+    /// goes back to the first count, which is kept.
+    #[test]
+    fn uploads_climb_while_more_carry_more() {
+        // Each upload 50 MiB a second whatever the others do: 4, 8, 16, then more at once.
+        let began = uploaded(300, &|| Duration::from_millis(20));
+        let most = began.iter().copied().max().unwrap();
+        assert!(
+            most >= 4 * FIRST,
+            "uploads that each carry their own did not climb: {began:?}"
+        );
+        // One link of 200 MiB a second, which the uploads share.
+        let link = Mutex::new(Instant::now());
+        let shared = || {
+            let mut free = lock(&link);
+            let now = Instant::now();
+            let at = (*free).max(now) + Duration::from_millis(5);
+            *free = at;
+            at - now
+        };
+        let began = uploaded(150, &shared);
+        let most = began.iter().copied().max().unwrap();
+        assert!(
+            most <= 2 * FIRST,
+            "climbed past one doubling on a shared link: {began:?}"
+        );
+        let late = began.iter().rev().take(30).copied().max().unwrap();
+        assert!(
+            late <= FIRST,
+            "kept more than the first on a shared link: {began:?}"
+        );
     }
 }

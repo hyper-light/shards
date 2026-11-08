@@ -3953,6 +3953,57 @@ revision before comparing a changed API/implementation.
   longer bounds a large pull: unpacking its largest layer does, after the layer has
   arrived. Next: unpack a layer as its bytes arrive in order, not after.
 
+### M488. A push's uploads: how many at once, and what chunks cost (D226)
+
+- **Question.** `shards push` sent 5 blobs at once, dockerd's figure, each in one PUT.
+  Where do more uploads at once stop paying, and is it one count across links? What does
+  sending a blob in chunks cost, for a registry that refuses it whole?
+- **Method.** `docs/research/measurements/push-uploads/`:
+  - `push.py`: N new blobs of random bytes uploaded as shards' pusher sends them (HEAD,
+    POST, one PUT of the whole), each worker on one kept-alive connection, at 1 to 16 at
+    once, 3 rounds in alternating order; or, with `--chunk`, in PATCHes of that size and
+    a PUT with no body. Each blob's upload time, n, p50, p90, p99, max.
+  - `sweep.sh`: 16 blobs of 16 MiB (8 of 8 MiB across the Internet) and 32 of 256 KiB at
+    each count, then the large blobs at 4 at once whole and in chunks of 1, 4 and 8 MiB.
+  - `limited.sh`: `shards push` of nginx:alpine (Docker's pull, then given to the
+    registry by Docker) to registry:2 behind nginx at `client_max_body_size 1m`, nginx's
+    default, then pulled back through nginx into a fresh home; nginx's answers counted.
+  - Links: registry:2 (image a3d8aaa63ed8) on fedora-2 (x86_64, 32 CPUs, Fedora 44, Linux
+    6.19.10, on Wi-Fi), asked from the same host, load average 13 to 25 from other work;
+    and from adacachy2 (x86_64, 32 CPUs, CachyOS, Linux 7.3.3, wired) across the LAN, at
+    load 5 to 15; and ttl.sh from adacachy2 over home broadband. 2026-11-08, revision
+    8501f093 plus D226.
+- **Results** (MB/s of the whole, median of 3 rounds; each round).
+  - One host, 16 MiB blobs: 1: 234.7 (238.1, 234.7, 231.2); 2: 403.3; 4: 691.6; 8: 1115.1;
+    16: 1705.4 (1705.4, 1728.1, 1682.1). A blob's upload at 1, n=48: p50 70 ms, p90 79,
+    p99 88, max 88; at 16, p50 152, p90 156, p99 159, max 159.
+  - One host, 256 KiB blobs: 1: 10.5; 2: 13.7; 4: 24.9; 8: 46.7; 16: 84.6. At 1, n=96:
+    p50 24 ms, p90 28, p99 39, max 46.
+  - LAN, 16 MiB: 1: 71.2 (43.0, 71.2, 74.6); 2: 72.6; 4: 73.9 (42.3, 73.9, 87.3); 8: 54.0
+    (33.1, 65.1, 54.0); 16: 61.1. At 4, n=48: p50 771 ms, p90 1323, p99 5185, max 5185.
+    256 KiB: 1: 8.2; 2: 13.4; 4: 19.4; 8: 27.4; 16: 37.9.
+  - ttl.sh, 8 MiB: 1: 4.5 (2.2, 4.5, 4.9); 2: 5.9 (5.9, 9.6, 5.4); 4: 9.2 (1.7, 9.2,
+    13.3); 8: 2.3 (2.1, 12.1, 2.3). At 4, n=24: p50 3173 ms, p90 7755, p99 39654, max
+    39654. 256 KiB: 1: 0.2; 2: 0.4; 4: 0.6; 8: 0.7; 16: 0.9; at 1, n=96, p50 748 ms, p99
+    6012, max 9212.
+  - Chunks, 4 at once: one host whole 632.5, 8 MiB 421.5, 4 MiB 342.7, 1 MiB 165.9; LAN
+    whole 95.6, 8 MiB 88.4, 4 MiB 83.7, 1 MiB 78.9; ttl.sh whole 2.3 (2.3, 3.5, 2.3), 8 MiB
+    10.0 (2.9, 10.0, 10.1), 4 MiB 5.4 (12.6, 2.7, 5.4), 1 MiB 4.1: across the Internet
+    rounds of one case differed fourfold, more than the cases did.
+  - `limited.sh`, run twice: the push took 0.48 s and 0.45 s. nginx answered the first
+    with one PUT 413 and one PATCH 413 then 30 PATCHes 202, the second with two PUTs 413
+    (two uploads at once refused before either knew) and 28 PATCHes 202 of 177,552 to
+    970,385 bytes each, every one under the limit; each image pulled back through nginx to
+    the digest pushed, sha256:697b0b15….
+- **Consequence.** No one count is right: on one host more kept paying past 16, across
+  the LAN one filled the link and 8 lost a quarter, across the Internet 4 doubled 1 and 8
+  fell back, and small blobs, bound by round trips, gained to 16 on every link. On none
+  did fewer than 4 carry more than 4. So a push starts at 4 and doubles while a doubling
+  pays, as the pull's connections do, bounded by its blobs alone (D226). Chunks cost a
+  request each: on one host they lost a third of the rate at 8 MiB and three quarters at
+  1 MiB, across the LAN 7 to 18%, and across the Internet less than its noise: a blob goes whole, in chunks only once its registry refused
+  a request so long, each half the least refused.
+
 ### M115. What keeping a container's writable layer costs a run
 
 - **Question.** A container that stays keeps its writable layer once its microVM stops

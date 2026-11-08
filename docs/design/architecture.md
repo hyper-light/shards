@@ -8404,6 +8404,59 @@ prints.
 **Next.** A mirror that answers but stalls a blob's body: the pull's resumes go on asking
 it (fetch.rs), where dockerd's pull would fall to its next endpoint.
 
+### D226. A push sends as many blobs at once as pay, each in as few requests as its registry takes (built)
+
+**Found.** `shards push` uploaded a manifest's blobs 5 at once, dockerd's
+`max-concurrent-uploads` (moby `daemon/config/config.go`, `DefaultMaxConcurrentUploads`),
+whatever the link, where a pull's fetcher measures its connections and doubles them while
+that pays (M114): a figure of Docker's machinery, listed open in the de-Dockerify audit
+(docs/audit/2026-10-16_docker-framing.md). And it sent each blob in one PUT, as
+containerd's pusher does, so a registry that takes no request so large could not be
+pushed to at all: nginx refuses a body past `client_max_body_size`, 1 MiB unless set, with
+a 413 (nginx.org `ngx_http_core_module`), the limit distribution's own nginx recipe tells
+its users to lift "to avoid HTTP 413 for large image uploads" (distribution
+`docs/content/recipes/nginx.md`). Measured (M488): where more uploads at once stop paying
+differs from link to link, and so does how much they bring. On one host sixteen carried
+7.3 times what one did and still gained; across a LAN one carried what the link does and
+eight carried less than four; to ttl.sh across the Internet four carried twice what one
+did, and blobs of 256 KiB, bound by their round trips, gained to sixteen everywhere. A
+blob sent in chunks cost what a request does: whole 632 MB/s on one host, in 8 MiB chunks
+421, in 1 MiB 166.
+
+**Decided.**
+- **Uploads at once climb while they pay** (`crate::climb`, shared with the pull's
+  fetcher, which it was taken out of): four at first, as on no link measured did fewer
+  carry more; each second the bytes every upload has sent are measured, the second after
+  a change passed over and a second where an upload had no blob left out; a doubling is
+  kept where it brings a tenth more (the fetcher's figure, four connections' spread from
+  second to second, M114), and one that does not goes back to the count before, kept for
+  the rest of the manifest. No most but the manifest's blobs: a fixed most would be a
+  number measured on one link only. Uploads past the count take no new blob once the
+  count falls; each finishes the one it has.
+- **A blob goes whole, and in chunks only where its registry refuses it whole** (push.rs,
+  registry.rs `upload`): one PUT, the fewest requests, unless a request of a blob so long
+  was refused with a 413 already. Then it goes in PATCHes of distribution-spec v1.1.1's
+  chunked upload (spec.md, "Pushing a blob in chunks": in order, each `Content-Range`
+  inclusive, each answered 202 with a `Location` the next goes to and a `Range` that says
+  what the registry has, which is where the next starts), then a PUT with its digest and
+  no body. A chunk holds half the least the registry refused, halved again at each 413,
+  never less than the `OCI-Chunk-Min-Length` its POST's answer names (a refusal of one so
+  small fails the push, naming the request); what was refused is the push's own, so the
+  next blob goes straight to chunks the registry takes. A proxy's 413 comes before the
+  registry has the request, so the upload begun stays open and takes the chunks.
+- **Tested**: `climb`'s unit tests (a count doubles while a doubling pays, returns to the
+  last that did, measures no window it began in or where a transfer had no work);
+  `push`'s `uploads_climb_while_more_carry_more` (uploads that each carry their own climb
+  to sixteen or more; uploads sharing one link go back to four and stay); `registry`'s
+  `a_blob_refused_whole_goes_up_in_chunks_the_registry_takes` and
+  `chunks_hold_at_least_what_the_registry_asks` (each request's method and range, in
+  order); and containers.rs' `a_push_uploads_more_blobs_at_once_while_that_carries_more`
+  (`shards push` of forty 2 MiB layers to a registry that takes each connection's upload
+  at 4 MiB/s has more than four at once), on Fedora's KVM. Against a real registry:
+  `measurements/push-uploads/limited.sh`, `shards push` of nginx:alpine to registry:2
+  behind nginx at its default 1 MiB limit, pulled back through it to the same digest
+  (M488).
+
 ### D193. A run past its pids limit says so: a `pids-limit` event (built)
 
 **Found** (kiln's harnesses, 2026-10-21). A run held to `--pids-limit` whose processes or

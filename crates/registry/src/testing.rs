@@ -270,7 +270,8 @@ pub(crate) fn route(
 pub(crate) const GO_BAD_REQUEST: &[u8] =
     b"HTTP/1.1 400 Bad Request\r\nContent-Type: text/plain; charset=utf-8\r\nConnection: close\r\n\r\n400 Bad Request";
 
-fn parse(text: &str) -> Seen {
+/// A request's head, as a test server reads it.
+pub(crate) fn parse(text: &str) -> Seen {
     let head = text.split("\r\n\r\n").next().unwrap_or_default();
     let mut lines = head.split("\r\n");
     let mut first = lines.next().unwrap_or_default().split(' ');
