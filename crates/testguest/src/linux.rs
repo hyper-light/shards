@@ -51,6 +51,7 @@ pub fn main() {
             "share" => share(),
             "slates_fs_dax" => slates_fs_dax(),
             "bpf" => bpf_costs(),
+            "stepcgroup" => step_cgroup_costs(),
             other => Err(format!("unknown test {other:?}")),
         },
     );
@@ -4498,6 +4499,136 @@ fn bpf_costs() -> Result<(), String> {
     if rec.len() as u64 > room {
         return Err(format!("a record of {} bytes, a disk of {room}", rec.len()));
     }
+    let mut disk = std::fs::OpenOptions::new()
+        .write(true)
+        .open("/dev/vda")
+        .map_err(|e| format!("/dev/vda: {e}"))?;
+    disk.write_all(rec.as_bytes())
+        .map_err(|e| format!("writing /dev/vda: {e}"))?;
+    disk.sync_all().map_err(|e| format!("syncing /dev/vda: {e}"))
+}
+
+/// What a build step's devices cost its start (D44, PM M498): init's step_cgroup as it
+/// starts a `RUN` step (crates/init/src/build.rs), against a step started as before, with
+/// no cgroup of its own; `shards_step_n` starts of each (1,000 by default), interleaved,
+/// each its own child, started with clone3(2) and waited for. The arms:
+///
+/// - `fork`: clone3 alone, as a step without limits started before.
+/// - `steps`: a cgroup of its own under `steps` (mkdir, opened), which BuildKit's default
+///   device rules confine once, the child cloned into it (CLONE_INTO_CGROUP), its cgroup
+///   removed once it is reaped: a step of the default rules.
+/// - `devices`: the same under `devices`, its own program (BuildKit's rules with one CDI
+///   node's) loaded and attached first: a step of rules of its own.
+/// - `confine`: the default program's load and attach on `steps`, once a boot.
+///
+/// The record goes to /dev/vda (docs/research/measurements/step-devices/run.py): `arm NAME
+/// 1 NS...`, each start's nanoseconds.
+fn step_cgroup_costs() -> Result<(), String> {
+    use std::fmt::Write as _;
+    use std::os::fd::AsRawFd as _;
+    let n =
+        std::env::var("shards_step_n").map_or(Ok(1000), |v| v.parse::<usize>().map_err(|e| e.to_string()))?;
+    let cgroups = "/sys/fs/cgroup";
+    let (src, target, fs) = (cstr("cgroup2")?, cstr(cgroups)?, cstr("cgroup2")?);
+    // SAFETY: NUL-terminated strings and no data argument.
+    if unsafe { libc::mount(src.as_ptr(), target.as_ptr(), fs.as_ptr(), 0, std::ptr::null()) } != 0 {
+        return Err(format!("mount cgroup2: {}", io::Error::last_os_error()));
+    }
+    for dir in ["steps", "devices"] {
+        std::fs::create_dir(format!("{cgroups}/{dir}")).map_err(|e| format!("mkdir {cgroups}/{dir}: {e}"))?;
+    }
+    let mut rec = String::new();
+    let release = sysfs("/proc/sys/kernel/osrelease")?;
+    let _ = writeln!(rec, "kernel {release}");
+    let default = shards_devcgroup::compile(&shards_devcgroup::build_step(&[], false))?;
+    let kvm = shards_devcgroup::Given {
+        path: "/dev/kvm".into(),
+        rule: shards_devcgroup::Rule {
+            kind: shards_devcgroup::Kind::Char,
+            major: 10,
+            minor: 232,
+            perms: shards_devcgroup::READ | shards_devcgroup::WRITE,
+            allow: true,
+        },
+    };
+    let own = shards_devcgroup::compile(&shards_devcgroup::build_step(&[kvm], false))?;
+    let started = now_ns();
+    let _confined = attach_device_filter(&default, &format!("{cgroups}/steps"))?;
+    let _ = writeln!(rec, "arm confine 1 {}", now_ns().saturating_sub(started));
+    /// `struct clone_args`, to `cgroup`.
+    #[repr(C)]
+    #[derive(Default)]
+    struct CloneArgs {
+        flags: u64,
+        pidfd: u64,
+        child_tid: u64,
+        parent_tid: u64,
+        exit_signal: u64,
+        stack: u64,
+        stack_size: u64,
+        tls: u64,
+        set_tid: u64,
+        set_tid_size: u64,
+        cgroup: u64,
+    }
+    const CLONE_INTO_CGROUP: u64 = 0x2_0000_0000;
+    // A child started, into `cgroup` where one is given, and reaped.
+    let start = |cgroup: Option<i32>| -> Result<(), String> {
+        let mut args = CloneArgs {
+            exit_signal: libc::SIGCHLD as u64,
+            ..CloneArgs::default()
+        };
+        if let Some(fd) = cgroup {
+            args.flags = CLONE_INTO_CGROUP;
+            args.cgroup = u64::try_from(fd).map_err(|_| "a negative descriptor")?;
+        }
+        // SAFETY: clone3(2) as fork(2): the child calls _exit(2) alone.
+        let pid = unsafe { libc::syscall(libc::SYS_clone3, &raw mut args, size_of::<CloneArgs>()) };
+        if pid == 0 {
+            // SAFETY: _exit(2), the child's end.
+            unsafe { libc::_exit(0) };
+        }
+        let pid = libc::pid_t::try_from(pid)
+            .ok()
+            .filter(|&p| p > 0)
+            .ok_or_else(|| format!("clone3: {}", io::Error::last_os_error()))?;
+        // SAFETY: waitpid(2) of the child just started.
+        unsafe { libc::waitpid(pid, std::ptr::null_mut(), 0) };
+        Ok(())
+    };
+    let into = |parent: &str, i: usize, program: Option<&[u8]>| -> Result<(), String> {
+        let dir = format!("{cgroups}/{parent}/{i}");
+        std::fs::create_dir(&dir).map_err(|e| format!("mkdir {dir}: {e}"))?;
+        let fd = std::fs::File::open(&dir).map_err(|e| format!("{dir}: {e}"))?;
+        let attached = program.map(|p| attach_device_filter(p, &dir)).transpose()?;
+        start(Some(fd.as_raw_fd()))?;
+        drop((attached, fd));
+        std::fs::remove_dir(&dir).map_err(|e| format!("rmdir {dir}: {e}"))
+    };
+    let mut arms: [(&str, Vec<u64>); 3] = [
+        ("fork", Vec::new()),
+        ("steps", Vec::new()),
+        ("devices", Vec::new()),
+    ];
+    for i in 0..n {
+        for (k, (_, took)) in arms.iter_mut().enumerate() {
+            let at = now_ns();
+            match k {
+                0 => start(None)?,
+                1 => into("steps", i, None)?,
+                _ => into("devices", i, Some(&own))?,
+            }
+            took.push(now_ns().saturating_sub(at));
+        }
+    }
+    for (name, took) in &arms {
+        let _ = write!(rec, "arm {name} 1");
+        for v in took {
+            let _ = write!(rec, " {v}");
+        }
+        rec.push('\n');
+    }
+    rec.push_str("end\n");
     let mut disk = std::fs::OpenOptions::new()
         .write(true)
         .open("/dev/vda")

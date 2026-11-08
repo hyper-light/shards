@@ -245,59 +245,224 @@ pub(super) fn open_kept(at: &Path) -> Result<std::fs::File, String> {
     Ok(file)
 }
 
-/// What a kept layer holds past which its microVM's next run goes on over its file rather
-/// than having it packed and put back (D190, PM M443): packing costs a restart as the layer
-/// holds more, going over about the same whatever it holds (its guest's let-go of the
-/// template's layer and mount of the microVM's). Where the two cost the same on the
-/// host's kind, as measured ([`CROSSOVER_BASIS`]), to the MiB: 5 MiB on Linux (PM M443).
-#[cfg(target_os = "linux")]
-pub(super) const OVER_FROM: u64 = 5 << 20;
+/// How a stopped microVM's next run takes the layer kept in its file (D190).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Restart {
+    /// Packed here and put back into the warm microVM's own layer ([`pack`]).
+    Packed,
+    /// Its file under the microVM's layer device as it is, in place of the microVM's own.
+    Over,
+}
 
-/// [`OVER_FROM`] on macOS and Windows, 7 MiB, where their restarts cross (PM M496): going
-/// over costs more there than on Linux whatever the layer holds (an empty layer's restart 7
-/// to 9 ms more than its packing at p50 on macOS, 233 on Windows), and packing grows with
-/// what it holds as on Linux.
-#[cfg(not(target_os = "linux"))]
-pub(super) const OVER_FROM: u64 = 7 << 20;
+/// Where the home keeps what its restarts cost ([`Restarts`]).
+const RESTARTS: &str = "restarts";
 
-/// PM M443's restarts, `start -a` of a microVM that wrote that many bytes, n = 20 a side
-/// interleaved, ms at p50: packed and put back, then gone over (Fedora, Btrfs). Packing was
-/// quicker up to 4 MiB and going over from 8; they cross where the two lines between those
-/// meet.
-#[cfg(all(test, target_os = "linux"))]
-const CROSSOVER_BASIS: [(u64, f64, f64); 7] = [
-    (0, 52.55, 63.14),
-    (1 << 20, 70.37, 75.47),
-    (2 << 20, 76.38, 90.44),
-    (4 << 20, 95.90, 100.92),
-    (8 << 20, 135.68, 122.06),
-    (16 << 20, 259.86, 189.81),
-    (32 << 20, 396.48, 286.21),
-];
+/// One way's restarts on this host: the least-squares line of a restart's time against the
+/// bytes its layer held, kept online as its count, means and co-moments (Welford's
+/// updates), which a file of the home keeps between daemons.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct Line {
+    n: u64,
+    /// The mean of what the layers held, bytes, and of what their restarts took, µs.
+    x: f64,
+    y: f64,
+    /// Sums of the products of their deviations from those means.
+    xx: f64,
+    xy: f64,
+    yy: f64,
+}
 
-/// PM M496's macOS restarts, as [`CROSSOVER_BASIS`] on Linux, n = 40 a side (an M3 Ultra,
-/// macOS 26.4, APFS): packing quicker up to 6 MiB, going over from 8.
-#[cfg(all(test, target_os = "macos"))]
-const CROSSOVER_BASIS: [(u64, f64, f64); 6] = [
-    (0, 41.40, 48.89),
-    (4 << 20, 64.37, 65.82),
-    (6 << 20, 77.38, 78.75),
-    (8 << 20, 78.39, 78.10),
-    (12 << 20, 97.77, 95.63),
-    (16 << 20, 124.28, 113.45),
-];
+impl Line {
+    fn add(&mut self, x: f64, y: f64) {
+        self.n += 1;
+        let n = self.n as f64;
+        let (dx, dy) = (x - self.x, y - self.y);
+        self.x += dx / n;
+        self.y += dy / n;
+        self.xx += dx * (x - self.x);
+        self.xy += dx * (y - self.y);
+        self.yy += dy * (y - self.y);
+    }
 
-/// PM M496's Windows restarts, as [`CROSSOVER_BASIS`] on Linux, n = 20 a side (jupiter,
-/// Windows 11 10.0.26200, NTFS): packing quicker up to 4 MiB, going over from 8.
-#[cfg(all(test, windows))]
-const CROSSOVER_BASIS: [(u64, f64, f64); 7] = [
-    (0, 88.66, 321.55),
-    (1 << 20, 182.17, 319.86),
-    (2 << 20, 243.61, 344.20),
-    (4 << 20, 494.89, 652.89),
-    (8 << 20, 824.35, 822.56),
-    (16 << 20, 1612.55, 1344.67),
-    (32 << 20, 3126.39, 2205.23),
+    /// What a restart of a layer holding `x` bytes takes by the line, µs, and the variance
+    /// of that estimate (its residuals' variance over the line's degrees of freedom, as an
+    /// estimate of a regression's mean at `x` has it). None while the records cannot say: a
+    /// line of fewer than three, or one whose layers all held one size, asked of another.
+    fn at(&self, x: f64) -> Option<(f64, f64)> {
+        let n = self.n as f64;
+        let (slope, residual, free, spread) = if self.xx > 0.0 {
+            let slope = self.xy / self.xx;
+            (
+                slope,
+                self.yy - slope * self.xy,
+                n - 2.0,
+                (x - self.x).powi(2) / self.xx,
+            )
+        } else if x == self.x {
+            (0.0, self.yy, n - 1.0, 0.0)
+        } else {
+            return None;
+        };
+        if free < 1.0 {
+            return None;
+        }
+        let variance = residual.max(0.0) / free;
+        Some((self.y + slope * (x - self.x), variance * (1.0 / n + spread)))
+    }
+
+    fn encode(&self) -> String {
+        format!(
+            "{} {} {} {} {} {}",
+            self.n, self.x, self.y, self.xx, self.xy, self.yy
+        )
+    }
+
+    fn decode(text: &str) -> Option<Line> {
+        let mut f = text.split(' ');
+        let n = f.next()?.parse().ok()?;
+        let mut next = || {
+            f.next()
+                .and_then(|v| v.parse::<f64>().ok())
+                .filter(|v| v.is_finite())
+        };
+        let line = Line {
+            n,
+            x: next()?,
+            y: next()?,
+            xx: next()?,
+            xy: next()?,
+            yy: next()?,
+        };
+        next().is_none().then_some(line)
+    }
+}
+
+/// What this host's restarts cost each way (D190, PM M443, M496): each restart that could go
+/// either way records the bytes its layer held and the time from the choice to its command
+/// executing, and the next one takes the way its records say is quicker for what it holds.
+/// Packing grows with what the layer holds, going over less so, so a line a way says where
+/// they cross on this host, its own disk, file system and load; the decision is made only
+/// where the two estimates differ by more than the spread of their difference, as the
+/// records measure it; where they do not (the first restarts, or near the crossing, where
+/// either costs about the same), the way recorded fewer times goes, so that both are
+/// measured until they can be told apart.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(super) struct Restarts {
+    packed: Line,
+    over: Line,
+}
+
+impl Restarts {
+    /// Those `home` keeps; none where it keeps none, or none it can read.
+    pub(super) fn kept_in(home: &Path) -> Restarts {
+        let mut restarts = Restarts::default();
+        let Ok(text) = std::fs::read_to_string(home.join(RESTARTS)) else {
+            return restarts;
+        };
+        for line in text.lines() {
+            match line.split_once(' ') {
+                Some(("packed", rest)) => restarts.packed = Line::decode(rest).unwrap_or_default(),
+                Some(("over", rest)) => restarts.over = Line::decode(rest).unwrap_or_default(),
+                _ => {}
+            }
+        }
+        restarts
+    }
+
+    /// The way the restart of a layer holding `held` bytes goes.
+    pub(super) fn choose(&self, held: u64) -> Restart {
+        let x = held as f64;
+        if let (Some((packed, vp)), Some((over, vo))) = (self.packed.at(x), self.over.at(x)) {
+            let difference = packed - over;
+            if difference * difference > vp + vo {
+                return if difference > 0.0 {
+                    Restart::Over
+                } else {
+                    Restart::Packed
+                };
+            }
+        }
+        if self.over.n < self.packed.n {
+            Restart::Over
+        } else {
+            Restart::Packed
+        }
+    }
+
+    /// A restart that went `way` with a layer holding `held` bytes took `took`; kept in
+    /// `home` for the next daemon.
+    pub(super) fn record(
+        &mut self,
+        home: &Path,
+        way: Restart,
+        held: u64,
+        took: std::time::Duration,
+    ) -> Result<(), String> {
+        let line = match way {
+            Restart::Packed => &mut self.packed,
+            Restart::Over => &mut self.over,
+        };
+        line.add(held as f64, took.as_secs_f64() * 1e6);
+        let at = home.join(RESTARTS);
+        let new = home.join(format!("{RESTARTS}.new"));
+        let text = format!("packed {}\nover {}\n", self.packed.encode(), self.over.encode());
+        std::fs::write(&new, text)
+            .and_then(|()| std::fs::rename(&new, &at))
+            .map_err(|e| format!("{}: {e}", at.display()))
+    }
+
+    /// Where the two lines cross, bytes: none while either is not a line yet, or where they
+    /// never meet.
+    #[cfg(test)]
+    fn crossing(&self) -> Option<f64> {
+        let line = |l: &Line| (l.xx > 0.0).then(|| (l.xy / l.xx, l.y - l.xy / l.xx * l.x));
+        let ((sp, ip), (so, io)) = (line(&self.packed)?, line(&self.over)?);
+        (sp != so).then(|| (io - ip) / (sp - so))
+    }
+}
+
+/// PM M443's and M496's restarts, `start -a` of a microVM that wrote that many bytes, ms at
+/// p50, packed and put back, then gone over, interleaved: Linux's (Fedora, Btrfs, n = 20
+/// a side), macOS's (an M3 Ultra, macOS 26.4, APFS, n = 40, "again") and Windows' (jupiter,
+/// Windows 11 10.0.26200, NTFS, n = 20, quiet, and its second run with its tails): what
+/// [`Restarts`] is held to.
+#[cfg(test)]
+const MEASURED: [&[(u64, f64, f64)]; 4] = [
+    &[
+        (0, 52.55, 63.14),
+        (1 << 20, 70.37, 75.47),
+        (2 << 20, 76.38, 90.44),
+        (4 << 20, 95.90, 100.92),
+        (8 << 20, 135.68, 122.06),
+        (16 << 20, 259.86, 189.81),
+        (32 << 20, 396.48, 286.21),
+    ],
+    &[
+        (0, 41.40, 48.89),
+        (4 << 20, 64.37, 65.82),
+        (6 << 20, 77.38, 78.75),
+        (8 << 20, 78.39, 78.10),
+        (12 << 20, 97.77, 95.63),
+        (16 << 20, 124.28, 113.45),
+    ],
+    &[
+        (0, 88.66, 321.55),
+        (1 << 20, 182.17, 319.86),
+        (2 << 20, 243.61, 344.20),
+        (4 << 20, 494.89, 652.89),
+        (8 << 20, 824.35, 822.56),
+        (16 << 20, 1612.55, 1344.67),
+        (32 << 20, 3126.39, 2205.23),
+    ],
+    &[
+        (0, 79.60, 318.76),
+        (1 << 20, 162.27, 317.79),
+        (2 << 20, 225.30, 325.42),
+        (4 << 20, 373.50, 402.48),
+        (8 << 20, 776.61, 774.51),
+        (16 << 20, 1506.98, 1166.18),
+        (32 << 20, 3065.68, 2371.70),
+    ],
 ];
 
 /// The bytes the layer kept in `file`, `len` bytes long, holds past what an empty one of its
@@ -706,31 +871,63 @@ mod tests {
         );
     }
 
-    /// A restart goes over its kept file from where the measured restarts cross: below the
-    /// first size whose restart went over quicker, past the last whose packing was quicker,
-    /// within a MiB of where the two lines between them meet, on each host's kind its own
-    /// (PM M443, M496).
-    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+    /// Each host's measured restarts, given as records: wherever the estimator decides, it
+    /// takes the way that was measured quicker there, and it is sure of both ends of each
+    /// table, packing an empty layer and going over the largest; where it is not, it tries
+    /// the way it has fewer records of. Its first restarts, with no records, try each way in
+    /// turn; and what it records is what the next daemon of the home reads (PM M443, M496).
     #[test]
-    fn a_restart_goes_over_from_where_packing_costs_more() {
-        let first_over = CROSSOVER_BASIS
-            .iter()
-            .position(|&(_, pack, over)| over < pack)
-            .unwrap();
-        assert!(
-            CROSSOVER_BASIS[first_over..]
-                .iter()
-                .all(|&(_, pack, over)| over < pack)
+    fn a_restart_goes_the_way_this_hosts_restarts_say_is_quicker() {
+        let home = shards_testdir::TempDir::new("layers-restarts").unwrap();
+        let ms = |v: f64| std::time::Duration::from_secs_f64(v / 1e3);
+        for table in MEASURED {
+            let mut restarts = Restarts::default();
+            for &(held, packed, over) in table {
+                restarts.record(&home, Restart::Packed, held, ms(packed)).unwrap();
+                restarts.record(&home, Restart::Over, held, ms(over)).unwrap();
+            }
+            assert_eq!(Restarts::kept_in(&home), restarts);
+            for &(held, packed, over) in table {
+                let sure = restarts
+                    .packed
+                    .at(held as f64)
+                    .zip(restarts.over.at(held as f64))
+                    .filter(|&((p, vp), (o, vo))| (p - o) * (p - o) > vp + vo);
+                let quicker = if over < packed {
+                    Restart::Over
+                } else {
+                    Restart::Packed
+                };
+                if sure.is_some() {
+                    assert_eq!(restarts.choose(held), quicker, "{held} of {table:?}");
+                }
+            }
+            let (first, last) = (table[0], table[table.len() - 1]);
+            assert_eq!(restarts.choose(first.0), Restart::Packed, "{table:?}");
+            assert_eq!(restarts.choose(last.0), Restart::Over, "{table:?}");
+            let crossing = restarts.crossing().unwrap();
+            assert!(
+                crossing > first.0 as f64 && crossing < last.0 as f64,
+                "{crossing}"
+            );
+        }
+        // No records: each way in turn, until both can say.
+        let mut restarts = Restarts::default();
+        let mut ways = Vec::new();
+        for _ in 0..4 {
+            let way = restarts.choose(1 << 20);
+            ways.push(way);
+            restarts.record(&home, way, 1 << 20, ms(10.0)).unwrap();
+        }
+        assert_eq!(
+            ways,
+            [Restart::Packed, Restart::Over, Restart::Packed, Restart::Over]
         );
-        let (b, pb, ob) = CROSSOVER_BASIS[first_over - 1];
-        let (a, pa, oa) = CROSSOVER_BASIS[first_over];
-        let (db, da) = (ob - pb, pa - oa);
-        let crossing = b as f64 + (a - b) as f64 * db / (db + da);
-        assert!(
-            (OVER_FROM as f64 - crossing).abs() <= f64::from(1u32 << 20),
-            "{crossing}"
-        );
-        assert!(b < OVER_FROM && OVER_FROM < a);
+        // Layers of one size say nothing of another's.
+        assert_eq!(restarts.packed.at(2.0 * f64::from(1u32 << 20)), None);
+        // A file that cannot be read is no records.
+        std::fs::write(home.join(RESTARTS), "packed 3 x\nover\n").unwrap();
+        assert_eq!(Restarts::kept_in(&home), Restarts::default());
     }
 
     /// A layer made empty holds nothing past what any of its size holds; one whose blocks a

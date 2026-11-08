@@ -672,7 +672,8 @@ fn errors_reach_the_client() {
 }
 
 /// A stopped microVM's next run, served by a microVM its image's template restored, goes
-/// on over the file its layer was kept in (D190): the template's own layer let go of, the
+/// on over the file its layer was kept in (D190), where the home's restarts say going over
+/// is the quicker (`common::restarts_cross_at`): the template's own layer let go of, the
 /// microVM's file under the device, what its run before made there, and the file the
 /// microVM's still, the same one, once it stops again.
 #[test]
@@ -683,6 +684,7 @@ fn a_restored_microvm_goes_on_over_a_stopped_containers_kept_file() {
     let (image, _) = served();
     let home = home("daemon-over", &image);
     let env = [("SHARDS_HOME", home.as_os_str())];
+    common::restarts_cross_at(&home, 4 << 20, TIMEOUT);
     let first = run_shards_env(
         &["run"],
         &[
@@ -695,7 +697,7 @@ fn a_restored_microvm_goes_on_over_a_stopped_containers_kept_file() {
             &image,
             "fs",
             "write:/kept=one",
-            // Past what packing it costs less below (`layers::OVER_FROM`).
+            // Past where the home's restarts cross.
             "fill:8388608:/held",
             "mkdir:/made",
         ],

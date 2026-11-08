@@ -157,8 +157,11 @@ struct Serve {
     /// Each contest's holder, by its candidate's index.
     holders: Vec<Option<usize>>,
     members: Vec<Member>,
+    /// Each UDP contest's conntrack zone, of its holder's choice; the last zone given.
+    zones: Vec<Option<u16>>,
+    zone: u16,
     /// What was last programmed, so that a change alone is.
-    programmed: Option<Vec<(Egress, Ipv4Addr, Egress)>>,
+    programmed: Option<Vec<crate::links::Chosen>>,
 }
 
 #[derive(Clone, Copy)]
@@ -170,11 +173,14 @@ enum Owner {
 
 fn serve(ctl: OwnedFd, contests: Vec<Contest>) {
     let holders = vec![None; contests.len()];
+    let zones = vec![None; contests.len()];
     let mut s = Serve {
         ctl,
         contests,
         holders,
         members: Vec::new(),
+        zones,
+        zone: 0,
         programmed: None,
     };
     s.program();
@@ -425,23 +431,41 @@ impl Serve {
                         .is_some_and(|ask| listening(ask, addr, at))
                 })
             };
-            let held = self.holders.get(c).copied().flatten().filter(|&k| listens(k));
+            let udp = contest.from.0 == 17;
+            let was = self.holders.get(c).copied().flatten();
+            let held = was.filter(|&k| listens(k));
             let holder = held.or_else(|| (0..contest.candidates.len()).find(|&k| listens(k)));
             if let Some(h) = self.holders.get_mut(c) {
                 *h = holder;
+            }
+            // A UDP port given another holder: a zone of its own, in which the flows the
+            // last one had are new, and go to this one (links::program_chosen).
+            if udp && holder != was {
+                let zone = holder.map(|_| self.next_zone());
+                if let Some(z) = self.zones.get_mut(c) {
+                    *z = zone;
+                }
             }
         }
         self.program();
     }
 
+    /// A conntrack zone no choice holds: 1 up, past 65535 to 1 again, by which time a
+    /// zone's flows have long expired (120 s at most, nf_conntrack_proto_udp.c); never 0,
+    /// every other flow's.
+    fn next_zone(&mut self) -> u16 {
+        self.zone = self.zone.checked_add(1).unwrap_or(1);
+        self.zone
+    }
+
     fn program(&mut self) {
-        let chosen: Vec<(Egress, Ipv4Addr, Egress)> = self
+        let chosen: Vec<crate::links::Chosen> = self
             .contests
             .iter()
-            .zip(&self.holders)
-            .filter_map(|(c, h)| {
+            .zip(self.holders.iter().zip(&self.zones))
+            .filter_map(|(c, (h, z))| {
                 let (addr, at) = c.candidates.get((*h)?)?;
-                Some((c.from, *addr, *at))
+                Some((c.from, *addr, *at, *z))
             })
             .collect();
         if self.programmed.as_ref() == Some(&chosen) {
