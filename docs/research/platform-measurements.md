@@ -18849,8 +18849,10 @@ revision before comparing a changed API/implementation.
   affinity mask (GetProcessAffinityMask), held by resources'
   `a_microvm_has_the_cpus_its_daemon_may_run_on` on Linux and Windows (CI 42429865659); every
   pair below but the last row's is of builds with it, a microVM of 4 vCPUs on 4 CPUs.
-- **Results** (ms, p50 (p90), p99; `start` the request to the command executing, `command`
-  its run, `wall` the client's, as phases.py takes them; winnone → as built unless said):
+- **Results** (ms, p50 (p90), p99, which at n 100 is the max, phases.py taking the
+  sample at index ⌊0.99 n⌋ of the sorted 100; `start` the request to the command
+  executing, `command` its run, `wall` the client's, as phases.py takes them; winnone → as
+  built unless said):
 
   | host, case | wall | start | start p99 | command |
   |---|---|---|---|---|
@@ -18923,6 +18925,29 @@ revision before comparing a changed API/implementation.
   other from 8 on, while its times at a size moved by more than their difference from size
   to size (8 MiB 228 ms, 12 MiB 153): not kept. `diff` of the stopped container was
   quicker gone over at every size on both, `run` and `commit` alike between the builds.
+- **Again, with their tails** (2026-11-08): the runs above printed each p99 and max, which
+  this record did not keep, so the two hosts ran once more, the same builds (the Mac's
+  8a13e492 pair; jupiter's e2820ce9 pair from windows-binaries.yml's run 42429865706), ms
+  p50 (p90, p99 = max: ab.py takes the sample at index ⌊0.99 n⌋, the last at n 20 and 40):
+
+  | written | macOS, n 40, load 19 to 23 | Windows quiet, n 20 (System 0.08 to 0.09 cores, queue 0) |
+  |---|---|---|
+  | 0 | 41.99 (89.31, 174.18) → 48.40 (113.37, 218.71), +6.41 | 79.60 (115.06, 328.55) → 318.76 (448.66, 468.23), +239.16 |
+  | 1 MiB | | 162.27 (268.11, 300.97) → 317.79 (335.23, 349.38), +155.52 |
+  | 2 MiB | | 225.30 (261.79, 297.49) → 325.42 (350.99, 376.57), +100.12 |
+  | 4 MiB | 64.60 (110.86, 167.12) → 69.09 (115.27, 205.89), +4.49 | 373.50 (542.32, 546.24) → 402.48 (632.31, 648.23), +28.98 |
+  | 6 MiB | 75.54 (117.18, 165.58) → 73.15 (125.44, 195.31), -2.39 | |
+  | 8 MiB | 88.53 (110.50, 165.61) → 79.44 (134.62, 166.99), -9.09 | 776.61 (796.54, 810.70) → 774.51 (866.06, 871.60), -2.10 |
+  | 12 MiB | 109.94 (169.89, 316.02) → 103.31 (166.52, 203.28), -6.63 | |
+  | 16 MiB | 136.19 (176.28, 206.52) → 120.15 (174.32, 220.29), -16.04 | 1,506.98 (1,566.92, 1,604.48) → 1,166.18 (1,336.36, 1,343.11), -340.80 |
+  | 32 MiB | | 3,065.68 (7,431.42, 12,126.22) → 2,371.70 (3,560.15, 7,386.60), -693.98 |
+
+  Their lines meet at 5.31 MiB on the loaded Mac, where its p90s overlap at every size to
+  12 MiB, and 7.73 on quiet Windows, beside its 7.95 above. A first Windows run that day
+  ended at 4 MiB as jupiter's disk filled (other work's; os error 112, the VM process's
+  mapped layer failing in-page, 0xC0000006): not kept. Going over's max is the longer at
+  every size to 8 MiB on both hosts and at 16 on the Mac; packing's at 12 on the Mac and
+  from 16 on Windows, its 32 MiB restart's 12.1 s.
 - **Reading.** Packing grows with what the layer holds on every host; going over costs a
   restart about the same whatever it holds, more on macOS than on Linux (7.5 to 8.7 ms
   more than packing an empty layer, against M443's 10.6 on a loaded Fedora) and far more on

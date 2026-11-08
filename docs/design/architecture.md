@@ -9248,8 +9248,9 @@ the guest keeps their metadata alone.
   cross later than Linux's (PM M496): going over costs a restart more there whatever the
   layer holds (an empty layer's 7.5 to 8.7 ms more than its packing at p50 on macOS, 233 on
   Windows), packing growing with what it holds as on Linux, the lines meeting at 6.8 to 7.9
-  MiB on macOS (three runs, n 20 and 40) and 7.95 on Windows (jupiter, n 20). So
-  `OVER_FROM` is 7 MiB on both, each held by the test to its own table.
+  MiB on macOS (three runs, n 20 and 40; a fourth at load 19 to 23, its p90s overlapping
+  at every size to 12 MiB, at 5.3) and 7.95 and 7.73 on Windows (jupiter, n 20, two runs).
+  So `OVER_FROM` is 7 MiB on both, each held by the test to its own table.
 - **On Windows, a view in place of a view** (row 18 of the parity audit). Windows maps no
   file over a mapping as `mmap(MAP_FIXED)` does: a view is made at an address that is free
   (MapViewOfFile3), and a range unmapped then mapped again is free between the two calls,
@@ -9282,7 +9283,7 @@ the guest keeps their metadata alone.
   packing (PM M496, n 20 a side, interleaved), `start` at p50: 0 B 321.55 ms gone over
   against 88.66 packed, 4 MiB 652.89 against 494.89, 8 MiB 822.56 against 824.35, 16 MiB
   1,344.67 against 1,612.55, 32 MiB 2,205.23 against 3,126.39: Windows' restarts cross at
-  7.95 MiB, and it goes over from 7 (`OVER_FROM`).
+  7.95 MiB (7.73 run again, its tails kept), and it goes over from 7 (`OVER_FROM`).
 - **What the guest freed goes back to the host** (slice 8, PM M443). pmem takes no
   discard (drivers/nvdimm/pmem.c), so a layer's file only grew while its microVM lived,
   whatever its guest deleted. As a stopped microVM's layer is kept, its microVM gone,
