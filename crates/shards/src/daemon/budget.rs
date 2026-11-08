@@ -294,6 +294,14 @@ impl Budgets {
     /// VM process `pid` gave back `freed` bytes of what it held cold, holding `before` bytes
     /// of files resident before it did ([`resident_file`]): its most held lowered by what of
     /// its files it holds no more ([`given_back`]).
+    /// Counts what VM process `pid` gave back at its host's pressure, for its budget's next
+    /// word to say.
+    pub(super) fn gave_at_pressure(&self, pid: u32, gave: super::reclaim::Gave) {
+        if let Some(h) = lock(&self.held).get_mut(&pid) {
+            h.pressed = h.pressed.and(gave);
+        }
+    }
+
     pub(super) fn gave_back(&self, pid: u32, before: Option<u64>, freed: u64) {
         let (Some(before), Some(now)) = (before, resident_file(pid)) else {
             return;
@@ -360,6 +368,11 @@ struct Held {
     /// as another VM process restored from the same template, which shares its pages,
     /// leaves it as it is.
     most: u64,
+    /// What its host's pressure had it give back since its budget's last word, which the
+    /// next says: a budget that fell short just after found nothing left to give, and its
+    /// word said nothing given back, its host's pressure saying its own once a minute (PM
+    /// M467).
+    pressed: super::reclaim::Gave,
 }
 
 impl Held {
@@ -377,6 +390,7 @@ impl Held {
             telling: false,
             again: false,
             most: resident_file(pid).unwrap_or(0),
+            pressed: super::reclaim::Gave::default(),
         }
     }
 }
@@ -741,12 +755,23 @@ impl<D: Disk> Daemon<D> {
             if ended > 0 {
                 room = self::room(&dir, Path::new(ROOT), evicted);
             }
-            if room.as_ref().is_some_and(|(r, _)| *r < 0) && lock(self.watching_giving()).insert(vm.clone()) {
+            // Once a give-back of its host's pressure under way has ended, what it gave
+            // counted in the room (PM M467).
+            let giving = room.as_ref().is_some_and(|(r, _)| *r < 0);
+            if giving {
+                self.give_after(&vm);
+                room = self::room(&dir, Path::new(ROOT), evicted);
+            }
+            if !room.as_ref().is_some_and(|(r, _)| *r < 0) {
+                if giving {
+                    self.given_back(&vm);
+                }
+            } else {
                 asked = true;
                 let before = resident_file(pid);
                 let held_before = room.as_ref().and_then(|(_, level)| self.held_now(level));
                 gave = self.give_back_of(&id, Wait::WhileRuns(pid));
-                lock(self.watching_giving()).remove(&vm);
+                self.given_back(&vm);
                 // Said with its budget's word below, its own: not its host's shortage,
                 // which says what its pressure had given back at most once a minute.
                 if let Some(g) = gave {
@@ -862,30 +887,54 @@ impl<D: Disk> Daemon<D> {
             )
         };
         let done_if = || if did { done.as_str() } else { "" };
-        match (had, told) {
+        // What its host's pressure had it give back since the budget's last word, a MiB or
+        // more of either, said with the next.
+        let pressed = lock(&self.budgets.held)
+            .get_mut(&pid)
+            .map(|h| std::mem::take(&mut h.pressed))
+            .unwrap_or_default();
+        let pressed_said = if (pressed.freed | pressed.unplugging) >> 20 > 0 {
+            format!(
+                ", its host's pressure having had it give back {} MiB of its files and ask to unplug {} MiB since its budget's word before",
+                pressed.freed >> 20,
+                pressed.unplugging >> 20
+            )
+        } else {
+            String::new()
+        };
+        let word = match (had, told) {
             // As it is first held, as it is held within it again by what it did or asked, and
             // as it is set anew.
-            (_, Some(r)) if r >= 0 && !was_short && (had.is_none() || did || asked || anew) => log(format!(
-                "container {id}: its microVM held within its budget, {} MiB of room{}{}{}",
+            (_, Some(r)) if r >= 0 && !was_short && (had.is_none() || did || asked || anew) => Some(format!(
+                "container {id}: its microVM held within its budget, {} MiB of room{}{pressed_said}{}{}",
                 r >> 20,
                 done_if(),
                 least(r),
                 parts()
             )),
-            (_, Some(r)) if r < 0 && (!was_short || did || anew) => log(format!(
-                "container {id}: its microVM's budget is short by {} MiB{done}{}{}",
+            (_, Some(r)) if r < 0 && (!was_short || did || anew) => Some(format!(
+                "container {id}: its microVM's budget is short by {} MiB{done}{pressed_said}{}{}",
                 r.unsigned_abs() >> 20,
                 least(r),
                 parts()
             )),
-            (_, Some(r)) if r >= 0 && was_short => log(format!(
-                "container {id}: its microVM's budget has room again, {} MiB{}{}",
+            (_, Some(r)) if r >= 0 && was_short => Some(format!(
+                "container {id}: its microVM's budget has room again, {} MiB{}{pressed_said}{}",
                 r >> 20,
                 done_if(),
                 parts()
             )),
-            (Some(_), None) => log(format!("container {id}: its microVM held to no budget")),
-            _ => {}
+            (Some(_), None) => Some(format!("container {id}: its microVM held to no budget")),
+            _ => None,
+        };
+        match word {
+            Some(word) => log(word),
+            // Kept for the next word.
+            None => {
+                if let Some(h) = lock(&self.budgets.held).get_mut(&pid) {
+                    h.pressed = h.pressed.and(pressed);
+                }
+            }
         }
     }
 }
@@ -1086,6 +1135,7 @@ mod tests {
                 telling: false,
                 again: false,
                 most: 0,
+                pressed: super::super::reclaim::Gave::default(),
             },
         );
         let evicted = |resident: &[(u32, u64)]| evicted_of(&mut lock(&budgets.held), resident);

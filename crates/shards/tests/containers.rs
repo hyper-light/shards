@@ -3020,10 +3020,14 @@ fn a_microvm_held_to_a_budget_gives_back_what_it_holds_cold() {
             break word;
         }
         tries += 1;
-        let host_took = said().get(counting..).unwrap_or_default().lines().any(|l| {
-            l.contains("the host is short of memory: its microVMs gave back ")
-                && mib_after(l, "gave back ") > 0
-        });
+        // Its host's pressure having taken first, said with the word, or by the host's own
+        // word, which comes once a minute at most (PM M467).
+        let host_took = word.contains("its host's pressure having had it give back ")
+            && mib_after(&word, "its host's pressure having had it give back ") > 0
+            || said().get(counting..).unwrap_or_default().lines().any(|l| {
+                l.contains("the host is short of memory: its microVMs gave back ")
+                    && mib_after(l, "gave back ") > 0
+            });
         assert!(
             tries < 5 && (word.contains("held within its budget") || host_took),
             "nothing given back said, try {tries}: {word}\nits guest's kernel counting as its budget came:\n{}\n{}",
@@ -12593,7 +12597,7 @@ fn update_under_pressure_stress() {
     let mut held = start(
         &home,
         &image,
-        &["--name", "grows", "-m", "256m", "--memory-swap", "256m"],
+        &["--privileged", "--name", "grows", "-m", "256m", "--memory-swap", "256m"],
         &["sleep"],
     );
     let alloc = || shards(&["exec", "grows", "/bin/testguest", "alloc", "512"]);
@@ -12642,7 +12646,20 @@ fn update_under_pressure_stress() {
             for line in said.lines().filter(noted).take(40) {
                 println!("  said: {}", line.get(..300).unwrap_or(line));
             }
-            let kernel = shards(&["exec", "grows", "/bin/testguest", "fs", "kmsg:shards-init"]);
+            // Its kernel's ring, which only a privileged exec reads (CAP_SYSLOG).
+            let kernel = shards(&[
+                "exec",
+                "--privileged",
+                "-u",
+                "0",
+                "grows",
+                "/bin/testguest",
+                "fs",
+                "kmsg:mem",
+            ]);
+            if kernel.status != Some(0) {
+                println!("  kernel unread: {kernel}");
+            }
             let lines: Vec<&str> = kernel.stdout.lines().collect();
             for line in lines.get(lines.len().saturating_sub(12)..).unwrap_or_default() {
                 println!("  kernel: {}", line.get(..300).unwrap_or(line));
