@@ -179,14 +179,16 @@ pub(super) fn served(args: &[OsString]) -> Result<Vec<OsString>, String> {
     Ok(with)
 }
 
+/// `args` with each `--share` in its served place, and the VM's ends, each named.
+#[cfg(windows)]
+pub(super) type Served = (Vec<OsString>, Vec<(String, std::os::windows::io::OwnedHandle)>);
+
 /// The share streams of `args`' `--share`s on Windows (D197): a share process started on
 /// the directories, given each share's server end of a duplex pipe, and the VM's ends,
 /// named `share-{i}`, for the VM to be given as `--slates-fs share-{i}`, which takes the
 /// place of each `--share`.
 #[cfg(windows)]
-pub(super) fn served(
-    args: &[OsString],
-) -> Result<(Vec<OsString>, Vec<(String, std::os::windows::io::OwnedHandle)>), String> {
+pub(super) fn served(args: &[OsString]) -> Result<Served, String> {
     use std::os::windows::io::AsHandle as _;
     if args.first().is_none_or(|a| a != "run") {
         return Ok((args.to_vec(), Vec::new()));

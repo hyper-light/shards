@@ -3787,9 +3787,11 @@ impl Told {
 }
 
 /// A host's word that it is short of memory, said on a thread of its own every `every` ms
-/// until this drops.
+/// until this drops. Unix's alone, as the budget test that says it is.
+#[cfg(unix)]
 struct Saying(&'static std::sync::atomic::AtomicBool);
 
+#[cfg(unix)]
 impl Saying {
     fn start(mut told: Told, every: u64) -> Saying {
         let stop: &'static std::sync::atomic::AtomicBool =
@@ -3804,6 +3806,7 @@ impl Saying {
     }
 }
 
+#[cfg(unix)]
 impl Drop for Saying {
     fn drop(&mut self) {
         self.0.store(true, std::sync::atomic::Ordering::SeqCst);

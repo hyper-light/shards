@@ -635,9 +635,11 @@ mod tests {
         });
     }
 
-    /// A child killed as it drops.
+    /// A child killed as it drops, of the Unix tests.
+    #[cfg(unix)]
     struct Killed(std::process::Child);
 
+    #[cfg(unix)]
     impl Drop for Killed {
         fn drop(&mut self) {
             let _ = self.0.kill();
