@@ -805,7 +805,7 @@ impl Layer {
         })
     }
 
-    /// Readies `file`, a stopped container's writable layer kept in its own file (D190), to
+    /// Readies `file`, a stopped microVM's writable layer kept in its own file (D190), to
     /// go under the device in place of the file it has, the one its template mounted, once
     /// its guest has let go of that ([`swap_staged`](Self::swap_staged)): as long as the
     /// device's file system, whose page structures its guest made as it probed the device
