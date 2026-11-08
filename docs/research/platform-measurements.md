@@ -17934,9 +17934,8 @@ revision before comparing a changed API/implementation.
   writes go to a writer outside its budget, and an export over a base that its store's
   file system clones writes only what the build added; what they cost held, measured at
   each revision below.
-- **Since (D188, built; awaiting the coordinator's measurement on CI's runners and
-  Fedora).** One correction to the reading above: an export's root filesystem is made
-  durable before it is named (`Partial::commit`'s fsync), so a free arm paid its disk too,
+- **Since (D188, built; measured at each revision below).** One correction to the
+  reading above: an export's root filesystem is made durable before it is named (`Partial::commit`'s fsync), so a free arm paid its disk too,
   only at memory's pace before its sync; what is flushed after a free build ends is its
   steps' changes, kept in a staging file the build reads and removes. Two changes, both
   from the kernel's source (mm/page-writeback.c and mm/memcontrol.c at v7.0, CI's
@@ -18084,7 +18083,180 @@ revision before comparing a changed API/implementation.
   unplugged at an answer, the budget short of the free arm's peak), each n, p50, p90, p99
   and max.
 
-  <!-- FEDORA b8c98e7f: coordinator pastes tables here -->
+  | host | build | free | held | held slower beyond the spread |
+  |---|---|---|---|---|
+  | Fedora | rust | 5, 2.2, 2.4, 2.4, 2.4 | 5, 2.2, 2.3, 2.3, 2.3 | no |
+  | Fedora | npm | 5, 4.1, 4.1, 4.1, 4.1 | 5, 4.0, 4.1, 4.1, 4.1 | no |
+  | Fedora | apt | 5, 18.3, 18.4, 18.4, 18.4 | 5, 18.3, 19.0, 19.0, 19.0 | no |
+
+  | host | build | answered in (ms) | freed a build (MiB) | unplugged at an answer (MiB) | budget short of the free arm's peak (MiB) |
+  |---|---|---|---|---|---|
+  | Fedora | rust | 1, 0, 0, 0, 0 | 5, 0.0, 2.9, 2.9, 2.9 | - | 5, 2.7, 2.8, 2.8, 2.8 |
+  | Fedora | npm | 7, 5, 6, 6, 6 | 5, 21.1, 24.9, 24.9, 24.9 | 2, 128, 128, 128, 128 | 5, 15.9, 19.0, 19.0, 19.0 |
+  | Fedora | apt | 8, 3, 318, 318, 318 | 5, 79.6, 114.0, 114.0, 114.0 | 8, 0, 128, 128, 128 | 5, 0.1, 14.6, 14.6, 14.6 |
+
+  The writer was outside in each of the 15 held builds, and the rule held for all three:
+  held's fastest round 2.2, 3.8 and 18.1 s against free's slowest 2.4, 4.1 and 18.4. Its
+  free arms answered too (rust 2, npm 2, apt 10 answers, 11 ms at most): the host's own
+  pressure, its other agents' builds beside these, which a build watches as the daemon
+  does. Against 2d168658, rust's free arm is quicker (2.2 s at p50 against 3.0), its
+  export (step 6) 0.1 s at p50 in either arm against 0.9 and 0.6: the harness's home is on
+  Btrfs, which clones, so an export over rust:1-slim writes only what the build added.
+- **At c3ce85e, on CI's four runners (run 42366506933): the writer outside, and nothing
+  pressed.** The same harness and revision's builder (c3ce85e has b8c98e7f's builder and
+  nothing after it in `crates/build`, `crates/image`, `crates/init` or the daemon), on two
+  EPYC 9V45s, an EPYC 7763 and an EPYC 9V74 (`results/ci-42366506933-*`). The rule held for
+  all 12 runner and build pairs, but most held builds were never asked to give back: npm's
+  were on every runner (4 or 5 answers, 8 to 18 ms at p90, 128 MiB unplugged at each), apt's
+  on one (2 answers), rust's on none. Their scopes peaked under their budgets: rust's 263 to
+  266 MiB under 292 to 297, apt's 964 to 977 under 990 to 1,039 (p50). The budget was the
+  free arms' count, and a free arm counts what a held one hands its writer: at the sample
+  where its scope held most (p50 of 5 rounds), a free rust arm's scope held 30 MiB of
+  kernel memory and a held one's 3, a free apt arm's 1,012 MiB anonymous and 22 MiB
+  kernel against 906 and 4 (runner a; runner c alike), the writes' page cache and their
+  buffers charged to the writer once it is outside. So a budget from the free arms left a
+  held build room it never filled. Fixed in the harness (`measure.py`): a round 0 held arm
+  under a budget of the host's whole memory, which places the writer as any budget does
+  and presses nothing, sizes the first held budget, then the most of every held arm's so
+  far.
+- **At 2f82adb6, on CI's runners: every held build pressed.** That harness, the builder
+  unchanged (2f82adb6 differs from c3ce85e in `measure.py` and in a context's walk on
+  Windows), twice on four runners each (runs 42417699256 and 42419993958,
+  `results/ci-42417699256-*`, `results/ci-42419993958-*`): EPYC 7763 three times, 9V45
+  once, 9V74 twice, Intel Xeon 6973P-C once and Xeon Platinum 8573C once, Ubuntu 24.04.5,
+  kernel 7.0.0-1017-azure, 4 vCPUs and 16 GiB each. The writer was outside in each of the
+  120 held builds. Every held build was asked to give back but apt's on one EPYC 9V74,
+  whose scope peaked at 874 MiB under its 882 (p50). Build time, s (n, p50, p90, p99, max):
+
+  | runner (run) | build | free | held | held slower beyond the spread |
+  |---|---|---|---|---|
+  | EPYC 7763 (1, a) | rust | 5, 5.2, 5.6, 5.6, 5.6 | 5, 5.1, 5.2, 5.2, 5.2 | no |
+  | EPYC 7763 (1, a) | npm | 5, 9.1, 9.4, 9.4, 9.4 | 5, 9.0, 9.1, 9.1, 9.1 | no |
+  | EPYC 7763 (1, a) | apt | 5, 34.6, 34.8, 34.8, 34.8 | 5, 34.5, 36.0, 36.0, 36.0 | no |
+  | EPYC 7763 (1, c) | rust | 5, 5.1, 5.9, 5.9, 5.9 | 5, 5.1, 5.3, 5.3, 5.3 | no |
+  | EPYC 7763 (1, c) | npm | 5, 9.5, 9.9, 9.9, 9.9 | 5, 9.5, 9.5, 9.5, 9.5 | no |
+  | EPYC 7763 (1, c) | apt | 5, 37.8, 38.2, 38.2, 38.2 | 5, 37.9, 38.2, 38.2, 38.2 | no |
+  | EPYC 9V45 (1) | rust | 5, 6.6, 6.9, 6.9, 6.9 | 5, 6.2, 7.4, 7.4, 7.4 | no |
+  | EPYC 9V45 (1) | npm | 5, 8.2, 8.3, 8.3, 8.3 | 5, 7.9, 9.1, 9.1, 9.1 | no |
+  | EPYC 9V45 (1) | apt | 5, 35.0, 35.2, 35.2, 35.2 | 5, 34.2, 35.4, 35.4, 35.4 | no |
+  | Xeon 6973P-C (1) | rust | 5, 7.0, 7.3, 7.3, 7.3 | 5, 6.5, 7.0, 7.0, 7.0 | no |
+  | Xeon 6973P-C (1) | npm | 5, 8.2, 8.3, 8.3, 8.3 | 5, 8.1, 8.3, 8.3, 8.3 | no |
+  | Xeon 6973P-C (1) | apt | 5, 27.5, 27.6, 27.6, 27.6 | 5, 28.5, 29.7, 29.7, 29.7 | by 0.1 s |
+  | EPYC 7763 (2) | rust | 5, 5.2, 5.3, 5.3, 5.3 | 5, 5.1, 5.2, 5.2, 5.2 | no |
+  | EPYC 7763 (2) | npm | 5, 9.2, 9.3, 9.3, 9.3 | 5, 9.3, 9.5, 9.5, 9.5 | no |
+  | EPYC 7763 (2) | apt | 5, 36.1, 37.4, 37.4, 37.4 | 5, 36.9, 37.4, 37.4, 37.4 | no |
+  | EPYC 9V74 (2, a) | rust | 5, 7.3, 8.1, 8.1, 8.1 | 5, 6.8, 7.9, 7.9, 7.9 | no |
+  | EPYC 9V74 (2, a) | npm | 5, 8.8, 8.8, 8.8, 8.8 | 5, 8.9, 9.2, 9.2, 9.2 | no |
+  | EPYC 9V74 (2, a) | apt | 5, 35.0, 35.7, 35.7, 35.7 | 5, 37.6, 38.1, 38.1, 38.1 | no |
+  | EPYC 9V74 (2, b) | rust | 5, 6.8, 6.9, 6.9, 6.9 | 5, 6.6, 6.8, 6.8, 6.8 | no |
+  | EPYC 9V74 (2, b) | npm | 5, 8.6, 8.8, 8.8, 8.8 | 5, 8.7, 8.8, 8.8, 8.8 | no |
+  | EPYC 9V74 (2, b) | apt | 5, 35.3, 36.1, 36.1, 36.1 | 5, 35.7, 36.3, 36.3, 36.3 | no |
+  | Xeon 8573C (2) | rust | 5, 6.6, 7.8, 7.8, 7.8 | 5, 7.0, 7.7, 7.7, 7.7 | no |
+  | Xeon 8573C (2) | npm | 5, 8.7, 8.9, 8.9, 8.9 | 5, 8.5, 9.1, 9.1, 9.1 | no |
+  | Xeon 8573C (2) | apt | 5, 29.9, 31.3, 31.3, 31.3 | 5, 30.9, 32.8, 32.8, 32.8 | no |
+
+  What the builders gave back, held (n, p50, p90, p99, max):
+
+  | runner (run) | build | answered in (ms) | freed a build (MiB) | unplugged at an answer (MiB) | budget short of the free arm's peak (MiB) |
+  |---|---|---|---|---|---|
+  | EPYC 7763 (1, a) | rust | 8, 7, 8, 8, 8 | 5, 28.5, 33.4, 33.4, 33.4 | 4, 0, 0, 0, 0 | 5, 31.5, 35.3, 35.3, 35.3 |
+  | EPYC 7763 (1, a) | npm | 5, 13, 14, 14, 14 | 5, 17.4, 19.9, 19.9, 19.9 | 5, 128, 128, 128, 128 | 5, 22.8, 27.6, 27.6, 27.6 |
+  | EPYC 7763 (1, a) | apt | 4, 30, 41, 41, 41 | 5, 17.7, 60.4, 60.4, 60.4 | 4, 128, 128, 128, 128 | 5, 173.1, 186.8, 186.8, 186.8 |
+  | EPYC 7763 (1, c) | rust | 2, 10, 10, 10, 10 | 5, 0.0, 21.0, 21.0, 21.0 | 1, 0, 0, 0, 0 | 5, 27.8, 31.8, 31.8, 31.8 |
+  | EPYC 7763 (1, c) | npm | 5, 14, 16, 16, 16 | 5, 5.4, 12.9, 12.9, 12.9 | 5, 128, 128, 128, 128 | 5, 30.4, 32.1, 32.1, 32.1 |
+  | EPYC 7763 (1, c) | apt | 5, 33, 53, 53, 53 | 5, 64.3, 87.3, 87.3, 87.3 | 5, 128, 128, 128, 128 | 5, 166.8, 177.7, 177.7, 177.7 |
+  | EPYC 9V45 (1) | rust | 8, 7, 9, 9, 9 | 5, 31.3, 33.4, 33.4, 33.4 | 6, 0, 0, 0, 0 | 5, 27.4, 29.3, 29.3, 29.3 |
+  | EPYC 9V45 (1) | npm | 5, 12, 13, 13, 13 | 5, 19.5, 21.3, 21.3, 21.3 | 5, 128, 128, 128, 128 | 5, 18.7, 28.3, 28.3, 28.3 |
+  | EPYC 9V45 (1) | apt | 5, 30, 710, 710, 710 | 5, 47.6, 121.0, 121.0, 121.0 | 5, 128, 256, 256, 256 | 5, 113.6, 177.4, 177.4, 177.4 |
+  | Xeon 6973P-C (1) | rust | 7, 5, 12, 12, 12 | 5, 23.6, 32.6, 32.6, 32.6 | 5, 0, 0, 0, 0 | 5, 30.3, 33.2, 33.2, 33.2 |
+  | Xeon 6973P-C (1) | npm | 4, 12, 13, 13, 13 | 5, 18.9, 22.3, 22.3, 22.3 | 4, 128, 128, 128, 128 | 5, 4.4, 9.2, 9.2, 9.2 |
+  | Xeon 6973P-C (1) | apt | 6, 8, 687, 687, 687 | 5, 53.7, 201.6, 201.6, 201.6 | 6, 248, 256, 256, 256 | 5, 121.2, 147.6, 147.6, 147.6 |
+  | EPYC 7763 (2) | rust | 4, 8, 8, 8, 8 | 5, 0.0, 32.3, 32.3, 32.3 | 2, 0, 0, 0, 0 | 5, 21.9, 29.3, 29.3, 29.3 |
+  | EPYC 7763 (2) | npm | 5, 14, 15, 15, 15 | 5, 15.7, 19.1, 19.1, 19.1 | 5, 128, 128, 128, 128 | 5, 18.6, 37.4, 37.4, 37.4 |
+  | EPYC 7763 (2) | apt | 1, 8, 8, 8, 8 | 5, 0.0, 2.6, 2.6, 2.6 | 1, 128, 128, 128, 128 | 5, 67.8, 142.7, 142.7, 142.7 |
+  | EPYC 9V74 (2, a) | rust | 6, 7, 7, 7, 7 | 5, 26.6, 31.4, 31.4, 31.4 | 5, 0, 0, 0, 0 | 5, 26.8, 32.6, 32.6, 32.6 |
+  | EPYC 9V74 (2, a) | npm | 5, 9, 24, 24, 24 | 5, 5.4, 154.2, 154.2, 154.2 | 5, 128, 128, 128, 128 | 5, 24.5, 30.2, 30.2, 30.2 |
+  | EPYC 9V74 (2, a) | apt | 4, 23, 23, 23, 23 | 5, 26.5, 169.4, 169.4, 169.4 | 4, 128, 256, 256, 256 | 5, 82.8, 191.8, 191.8, 191.8 |
+  | EPYC 9V74 (2, b) | rust | 5, 7, 8, 8, 8 | 5, 2.9, 32.3, 32.3, 32.3 | 3, 0, 0, 0, 0 | 5, 25.0, 29.6, 29.6, 29.6 |
+  | EPYC 9V74 (2, b) | npm | 5, 10, 10, 10, 10 | 5, 10.4, 17.3, 17.3, 17.3 | 5, 128, 128, 128, 128 | 5, 9.9, 21.0, 21.0, 21.0 |
+  | EPYC 9V74 (2, b) | apt | - | - | - | 5, 206.2, 210.0, 210.0, 210.0 |
+  | Xeon 8573C (2) | rust | 4, 6, 6, 6, 6 | 5, 2.9, 29.6, 29.6, 29.6 | 4, 0, 0, 0, 0 | 5, 25.4, 29.2, 29.2, 29.2 |
+  | Xeon 8573C (2) | npm | 5, 6, 10, 10, 10 | 5, 1.0, 6.6, 6.6, 6.6 | 5, 128, 128, 128, 128 | 5, 23.9, 39.9, 39.9, 39.9 |
+  | Xeon 8573C (2) | apt | 3, 6, 29, 29, 29 | 5, 0.1, 23.4, 23.4, 23.4 | 3, 128, 256, 256, 256 | 5, 199.4, 220.6, 220.6, 220.6 |
+
+  The rule held for 23 of the 24 runner and build pairs. apt failed it on the Xeon
+  6973P-C by 0.1 s (held's fastest 27.7 s, free's slowest 27.6), and passed on one EPYC
+  9V74 with held 2.6 s slower at p50 (37.6 against 35.0; held's fastest 35.4, free's
+  slowest 35.7). On both, the difference is in the step's end where the build keeps and
+  merges its caches (`cache-keep`, s at p50, free against held: 1.2 against 1.7 on the
+  Xeon, 1.3 against 2.5 on the EPYC), its merge of apt's 191 MiB of cache layers (written
+  in 65 against 199 ms, and 48 against 1,081 ms), and in what the build's process read
+  from storage, none free and 58 and 45 MiB held at p50: the layers it merges, whose page
+  cache its budget had taken back (the scope's file pages no process maps, which the
+  budget leaves no room for and its host reclaims first, mm/vmscan.c), read again. Its
+  builder's answers came 8 and 23 ms after its word at p50. So what a held apt build still
+  pays is its own files' page cache, taken under a budget set short of its peak, not its
+  builder's give-back. On the other six runners held builds read 0 to 6 MiB at p50 and up
+  to 85 at p90 (none on one EPYC 7763), `cache-keep` 0.0 to 1.0 s longer at p50, and the
+  arms' times overlapped.
+- **At 9f2520c2, on the Mac: a give-back's cost and return, on a shared host.** The
+  builder's code changed since 0e24be3e (the base decompressed once, the room told again
+  each window, a hold's report), so `mac.sh MIRROR 9f2520c2 5` again on the same M3 Ultra
+  (32 CPUs, 96 GiB, macOS 26.4), as a launchd job (`launchd-run.sh`: priority 31, no
+  agent's QoS clamp), each held build told every 2 s that its host is short. The host was
+  not quiet: other agents' benchmarks and a CI job ran beside it, load 11 to 21
+  (`results/mac-9f2520c2.{builds,tables}.txt`). The give-back (n, p50, p90, p99, max):
+
+  | build | answers | answered in (ms) | freed an answer (MiB) | freed a build (MiB) | unplugged at an answer (MiB) |
+  |---|---|---|---|---|---|
+  | rust | 15, none unanswered | 15, 64, 392, 410, 410 | 15, 2.5, 3.1, 3.5, 3.5 | 5, 6.9, 12.7, 12.7, 12.7 | 12, 0, 0, 0, 0 |
+  | npm | 20, none unanswered | 20, 84, 421, 579, 579 | 20, 0.2, 25.1, 29.7, 29.7 | 5, 25.5, 30.4, 30.4, 30.4 | 15, 0, 128, 128, 128 |
+  | apt | 84, none unanswered | 84, 71, 326, 784, 784 | 84, 0.0, 30.0, 174.2, 174.2 | 5, 141.9, 265.2, 265.2, 265.2 | 79, 0, 128, 1,152, 1,152 |
+
+  Build time, s: rust free 5, 7.4, 29.9, 29.9, 29.9 and held 5, 11.3, 39.0, 39.0, 39.0;
+  npm free 5, 25.1, 39.4, 39.4, 39.4 and held 5, 23.0, 31.0, 31.0, 31.0; apt free 5, 40.6,
+  52.4, 52.4, 52.4 and held 5, 32.0, 73.3, 73.3, 73.3. The rule held for all three, but
+  under this load it says little: the same builds took 2.0 to 39.0 s (rust) from round to
+  round in either arm, against 4.4 to 5.4 s at p50 and max quiet at 0e24be3e. What load does not hide:
+  every word was answered, an answer gave back a held apt build's cold files, 142 MiB of
+  them a build at p50 against 70 at 0e24be3e, and unplugged up to 1,152 MiB, as before; its answers came 64 to 84 ms
+  after the word at p50 against 2 to 4 quiet, its guest's vCPUs sharing 32 CPUs with a
+  load of 11 to 21.
+- **Found on the way, on an M4 Max: a build's start that waited on its builder's exit as
+  its builder ran.** The first Mac run (2f82adb6, Mac Studio M4 Max, 14 CPUs, 36 GiB,
+  macOS 26.2) stopped in round 1: a build's `shards build` printed nothing for 23 minutes
+  while its builder ran on, its console sampled each second. `sample(1)` of the build: its
+  main thread in `Builder::start` (build/builder.rs), in its wait for the builder's
+  connection, in `Child::try_wait` and from there `Child::wait`, in waitpid(2); the VM
+  process alive (`ps`: not a zombie), its threads in its own waits. `try_wait` asks
+  waitid(2) (`WEXITED | WNOWAIT | WNOHANG`) whether the child has ended and, where it says
+  so, reaps it with `wait`, whose waitpid(2) waits: waitid had said a running child ended,
+  so the start that polls it waited for an exit that never came, and the builder's
+  connection was never accepted. Fixed (9f2520c2, `shards_ipc` unix.rs): a child of the
+  process's own is reaped there with `WNOHANG`, and one found running is still running.
+  The 33 builds above, which call it about once a millisecond as each builder boots, ran
+  to the end.
+- **Reading, with the writer outside and every held build pressed.** A builder gives back
+  at its build's word on every host, its answer 0 to 5 ms after the word at p50 on Fedora,
+  5 to 33 on CI's runners and 64 to 84 on a loaded M3 Ultra, 784 ms at most anywhere, and
+  every word was answered. What it gives back is what it holds cold of its files, an apt
+  build's 0 to 80 MiB a build at p50 on Linux (up to 202 MiB) and 142 on the Mac, an npm
+  build's 1 to 26, a rust build's 0 to 31, and what it holds plugged past twice its use,
+  128 to 256 MiB at an answer, 1,152 at most. A build held to a budget short of its peak
+  by what its builder holds cold took no longer than the same build unbudgeted beyond its
+  rounds' spread in 26 of 27 host and build pairs on Linux (Fedora at b8c98e7f; eight
+  runners at 2f82adb6) and in all three on the Mac; the one that did not, apt on a Xeon
+  6973P-C by 0.1 s, paid in reading again the cache layers its build merges, whose page
+  cache its budget had taken back: a budget's cost to the build's own files, not its
+  builder's give-back. Before the writer, the same rule failed for 6 of the 9 pairs of the
+  three runners that finished at 2d168658, every failure in the steps that write.
+- **Consequence.** The plan's step 4 is met: D133 and D188 say what a builder gives back,
+  as runs do, and at what cost (this entry). The harness sizes a held budget from held
+  arms (c3ce85e's free arms' budget pressed nothing). A build's start no longer waits on a
+  running builder's exit (`Child::try_wait`). Left as measured: a budget short of a
+  build's peak takes back its own files' page cache first (mm/vmscan.c), which an apt
+  build's merge of its caches reads again, 0.5 to 1.2 s at p50 on the runners where it
+  did.
 
 ### M443. A restart over the kept layer file itself, and what the guest freed given back (D190)
 
