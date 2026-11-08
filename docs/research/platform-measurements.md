@@ -19121,7 +19121,7 @@ revision before comparing a changed API/implementation.
   session), which alone says whether Hyper-V's SGIs and timers hold across a 64-vCPU
   snapshot at a native host's timing.
 
-### M498. What a client's bind through its context costs its guest (D228)
+### M511. What a client's bind through its context costs its guest (D228)
 
 - **Question.** A client's bind is its own directory, each FUSE request its microVM's share
   makes relayed over the context's QUIC to the client's share server (D228). What does that
