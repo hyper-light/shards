@@ -262,13 +262,14 @@ mod tests {
         use windows_sys::Win32::System::Diagnostics::Etw::EventUnregister;
         let id = 0x5a4d_0000_4e00_0000_0000_0000_0000_0000 | u128::from(std::process::id());
         let hex = format!("{id:032x}");
+        let at = |r: std::ops::Range<usize>| hex.get(r).unwrap();
         let guid = format!(
             "{}-{}-{}-{}-{}",
-            &hex[..8],
-            &hex[8..12],
-            &hex[12..16],
-            &hex[16..20],
-            &hex[20..]
+            at(0..8),
+            at(8..12),
+            at(12..16),
+            at(16..20),
+            at(20..32)
         );
         let name = format!("shards-tests-etw-{}", std::process::id());
         let dir = shards_testdir::TempDir::new("etw").unwrap();
