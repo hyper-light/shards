@@ -11,6 +11,8 @@ use crate::builtins::{self, Builtin};
 use crate::check;
 use crate::types::Type;
 
+#[cfg(test)]
+mod fast_tests;
 mod graph;
 pub mod localvars;
 pub mod rewrite;
@@ -423,18 +425,19 @@ impl Compiler {
         let mut all_errs = Vec::new();
         for m in self.modules.values_mut() {
             for rule in m.rules.iter_mut() {
-                let mut rw = localvars::Rewriter {
-                    vargen: &mut vargen,
-                    errs: Vec::new(),
-                };
-                let mut args_stack = localvars::Stack::default();
-                localvars::rewrite_arg_vars(&mut rw, &mut args_stack, rule);
-                let mut r = Some(rule);
-                while let Some(x) = r {
-                    let _ = localvars::rewrite_rule(&mut rw, &mut rewritten, x, &args_stack);
-                    r = x.else_.as_deref_mut();
+                // As localvars::Fast does, and where that meets an error, again OPA's way
+                // from where the rule began, for OPA's errors.
+                let (written, calls) = (rule.clone(), vargen.calls());
+                let mut ours = HashMap::new();
+                let mut errs = rewrite_rule_local_vars(&mut vargen, &mut ours, rule, localvars::fast());
+                if !errs.is_empty() {
+                    *rule = written;
+                    vargen.rewind(calls);
+                    ours.clear();
+                    errs = rewrite_rule_local_vars(&mut vargen, &mut ours, rule, None);
                 }
-                all_errs.extend(rw.errs);
+                rewritten.extend(ours);
+                all_errs.extend(errs);
             }
         }
         self.vargen = vargen;
@@ -841,6 +844,28 @@ pub fn text_of_ref(r: &[Term]) -> String {
 }
 
 /// rewriteVarsInRef: generated names back to the ones written.
+/// rewriteLocalVars of one rule and its else branches: its errors.
+fn rewrite_rule_local_vars(
+    vargen: &mut localvars::LocalVarGen,
+    rewritten: &mut HashMap<Var, Var>,
+    rule: &mut Rule,
+    fast: Option<Box<localvars::Fast>>,
+) -> Vec<CompileError> {
+    let mut rw = localvars::Rewriter {
+        vargen,
+        errs: Vec::new(),
+        fast,
+    };
+    let mut args_stack = localvars::Stack::default();
+    localvars::rewrite_arg_vars(&mut rw, &mut args_stack, rule);
+    let mut r = Some(rule);
+    while let Some(x) = r {
+        let _ = localvars::rewrite_rule(&mut rw, rewritten, x, &args_stack);
+        r = x.else_.as_deref_mut();
+    }
+    rw.errs
+}
+
 pub fn rewrite_ref(rewritten: &HashMap<Var, Var>, r: &[Term]) -> Vec<Term> {
     let mut r = r.to_vec();
     for t in r.iter_mut() {

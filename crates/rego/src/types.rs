@@ -4,11 +4,12 @@
 
 use std::cmp::Ordering;
 use std::fmt;
+use std::sync::Arc;
 
 use crate::value::number_compare;
 
 /// A static object property's key: the Go value OPA keeps (`ast.JSON` of a term).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Key {
     Null,
     Bool(bool),
@@ -113,7 +114,10 @@ impl fmt::Display for Key {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+/// A type's parts are shared, not copied, as OPA's are pointers: the checker copies a
+/// rule's type into each rule that names it, and a chain of rules each wrapping the one
+/// before (`r2 := [r1]`, ten thousand deep) would copy every level below at each.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Type {
     /// Go's nil: a type not known.
     Nil,
@@ -124,38 +128,133 @@ pub enum Type {
     /// A union, sorted; empty for "any type at all".
     Any(Vec<Type>),
     Array {
-        fixed: Vec<Type>,
-        dynamic: Option<Box<Type>>,
+        fixed: Shares<Type>,
+        dynamic: Option<Part>,
     },
     /// Static properties sorted by key; a dynamic property's key or value may be Nil.
     Object {
-        fixed: Vec<(Key, Type)>,
-        dynamic: Option<(Box<Type>, Box<Type>)>,
+        fixed: Shares<(Key, Type)>,
+        dynamic: Option<(Part, Part)>,
     },
     /// The element type; None for nil.
-    Set(Option<Box<Type>>),
+    Set(Option<Part>),
     Function {
         args: Vec<Type>,
-        result: Option<Box<Type>>,
-        variadic: Option<Box<Type>>,
+        result: Option<Part>,
+        variadic: Option<Part>,
     },
     Named {
         name: String,
-        ty: Box<Type>,
+        ty: Part,
     },
+}
+
+/// A part of a type, shared (atomically: the builtins' declarations are every policy
+/// thread's), with whether any of it is not known (types.Nil) kept beside it: the checker asks that of each operand of each equality, and of a type wrapping
+/// another ten thousand deep each asking would walk every level below.
+#[derive(Debug, Clone)]
+pub struct Part {
+    ty: Arc<Type>,
+    nil: bool,
+}
+
+impl Part {
+    pub fn new(t: Type) -> Part {
+        Part {
+            nil: has_nil(&t),
+            ty: Arc::new(t),
+        }
+    }
+
+    /// The type, unshared: moved out where nothing else holds it, else copied.
+    pub fn into_inner(self) -> Type {
+        Arc::unwrap_or_clone(self.ty)
+    }
+}
+
+impl std::ops::Deref for Part {
+    type Target = Type;
+
+    fn deref(&self) -> &Type {
+        &self.ty
+    }
+}
+
+impl fmt::Display for Part {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.ty.fmt(f)
+    }
+}
+
+impl PartialEq for Part {
+    fn eq(&self, other: &Part) -> bool {
+        self.ty == other.ty
+    }
+}
+
+impl Eq for Part {}
+
+/// A type's list of parts, shared, with whether any is not known.
+#[derive(Debug, Clone)]
+pub struct Shares<T> {
+    items: Arc<[T]>,
+    nil: bool,
+}
+
+impl<T> std::ops::Deref for Shares<T> {
+    type Target = [T];
+
+    fn deref(&self) -> &[T] {
+        &self.items
+    }
+}
+
+impl<'a, T> IntoIterator for &'a Shares<T> {
+    type Item = &'a T;
+    type IntoIter = std::slice::Iter<'a, T>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.items.iter()
+    }
+}
+
+impl<T: PartialEq> PartialEq for Shares<T> {
+    fn eq(&self, other: &Shares<T>) -> bool {
+        self.items == other.items
+    }
+}
+
+impl<T: Eq> Eq for Shares<T> {}
+
+impl From<Vec<Type>> for Shares<Type> {
+    fn from(items: Vec<Type>) -> Shares<Type> {
+        Shares {
+            nil: items.iter().any(has_nil),
+            items: items.into(),
+        }
+    }
+}
+
+impl From<Vec<(Key, Type)>> for Shares<(Key, Type)> {
+    fn from(items: Vec<(Key, Type)>) -> Shares<(Key, Type)> {
+        Shares {
+            nil: items.iter().any(|(_, v)| has_nil(v)),
+            items: items.into(),
+        }
+    }
 }
 
 /// types.A.
 pub const A: Type = Type::Any(Vec::new());
 
-fn boxed(t: Type) -> Option<Box<Type>> {
+fn boxed(t: Type) -> Option<Part> {
     match t {
         Type::Nil => None,
-        t => Some(Box::new(t)),
+        t => Some(Part::new(t)),
     }
 }
 
-fn opt(t: &Option<Box<Type>>) -> &Type {
+fn opt(t: &Option<Part>) -> &Type {
     t.as_deref().unwrap_or(&Type::Nil)
 }
 
@@ -187,7 +286,7 @@ impl Type {
     /// types.NewArray.
     pub fn array(fixed: Vec<Type>, dynamic: Type) -> Type {
         Type::Array {
-            fixed,
+            fixed: fixed.into(),
             dynamic: boxed(dynamic),
         }
     }
@@ -196,8 +295,8 @@ impl Type {
     pub fn object(mut fixed: Vec<(Key, Type)>, dynamic: Option<(Type, Type)>) -> Type {
         fixed.sort_by(|a, b| a.0.compare(&b.0));
         Type::Object {
-            fixed,
-            dynamic: dynamic.map(|(k, v)| (Box::new(k), Box::new(v))),
+            fixed: fixed.into(),
+            dynamic: dynamic.map(|(k, v)| (Part::new(k), Part::new(v))),
         }
     }
 
@@ -292,7 +391,7 @@ impl Type {
             let ty = Type::from_json(&serde_json::Value::Object(inner))?;
             return Some(Type::Named {
                 name: name.to_string(),
-                ty: Box::new(ty),
+                ty: Part::new(ty),
             });
         }
         let list = |k: &str| -> Option<Vec<Type>> {
@@ -301,10 +400,10 @@ impl Type {
                 Some(a) => a.as_array()?.iter().map(Type::from_json).collect(),
             }
         };
-        let one = |k: &str| -> Option<Option<Box<Type>>> {
+        let one = |k: &str| -> Option<Option<Part>> {
             match o.get(k) {
                 None => Some(None),
-                Some(t) => Some(Some(Box::new(Type::from_json(t)?))),
+                Some(t) => Some(Some(Part::new(Type::from_json(t)?))),
             }
         };
         Some(match o.get("type")?.as_str()? {
@@ -314,7 +413,7 @@ impl Type {
             "string" => Type::String,
             "any" => Type::any(list("of")?),
             "array" => Type::Array {
-                fixed: list("static")?,
+                fixed: list("static")?.into(),
                 dynamic: one("dynamic")?,
             },
             "set" => Type::Set(one("of")?),
@@ -599,7 +698,7 @@ fn func_union(a: &Type, b: &Type) -> Type {
 pub fn or_owned(a: Type, b: Type) -> Type {
     fn unwrapped(mut t: Type) -> Type {
         while let Type::Named { ty, .. } = t {
-            t = *ty;
+            t = ty.into_inner();
         }
         t
     }
@@ -775,19 +874,16 @@ pub fn values(a: &Type) -> Type {
     }
 }
 
-/// types.Nil: whether any part of a is not known.
+/// types.Nil: whether any part of a is not known, read from what each part keeps.
 pub fn has_nil(a: &Type) -> bool {
     match a.unwrap() {
         Type::Nil => true,
-        Type::Function { args, result, .. } => args.iter().any(has_nil) || has_nil(opt(result)),
-        Type::Array { fixed, dynamic } => {
-            fixed.iter().any(has_nil) || dynamic.as_deref().is_some_and(has_nil)
+        Type::Function { args, result, .. } => {
+            args.iter().any(has_nil) || result.as_ref().is_none_or(|r| r.nil)
         }
-        Type::Object { fixed, dynamic } => {
-            fixed.iter().any(|(_, v)| has_nil(v))
-                || dynamic.as_ref().is_some_and(|(k, v)| has_nil(k) || has_nil(v))
-        }
-        Type::Set(of) => has_nil(opt(of)),
+        Type::Array { fixed, dynamic } => fixed.nil || dynamic.as_ref().is_some_and(|d| d.nil),
+        Type::Object { fixed, dynamic } => fixed.nil || dynamic.as_ref().is_some_and(|(k, v)| k.nil || v.nil),
+        Type::Set(of) => of.as_ref().is_none_or(|o| o.nil),
         _ => false,
     }
 }

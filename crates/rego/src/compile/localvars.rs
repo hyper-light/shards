@@ -8,33 +8,82 @@ use std::rc::Rc;
 
 use super::vars::{self, Var, VarSet, sorted_items, sorted_pairs};
 use super::{COMPILE_ERR, CompileError};
-use crate::ast::{Body, Expr, ExprTerms, Location, Rule, TemplatePart, Term, TermValue};
+use crate::ast::{Body, Expr, ExprTerms, Location, Rule, Shared, TemplatePart, Term, TermValue};
 
-/// localVarGenerator: `__local<n>__`, skipping names the modules use.
+/// localVarGenerator: `__local<n>__`, skipping names the modules use. Its `n` is Go's
+/// `int`, so past `i64::MAX` it goes on from `i64::MIN`, as OPA's would; the names the
+/// modules use are skipped from the numbers not negative (a module's `__local-1__` matters
+/// only after 2^63 names, which OPA would not live to generate).
 #[derive(Debug, Clone)]
 pub struct LocalVarGen {
-    exclude: VarSet,
-    suffix: String,
-    next: usize,
+    /// The numbers whose names the modules use, ascending.
+    taken: Vec<u64>,
+    prefix: String,
+    /// How many names have been generated, or passed over by [`LocalVarGen::advance`].
+    calls: u64,
 }
 
 impl LocalVarGen {
     pub fn new(exclude: VarSet, suffix: &str) -> LocalVarGen {
+        let prefix = format!("__local{suffix}");
+        let mut taken: Vec<u64> = exclude
+            .iter()
+            .filter_map(|v| {
+                let n = v.strip_prefix(prefix.as_str())?.strip_suffix("__")?;
+                let k: u64 = n.parse().ok()?;
+                (k.to_string() == n).then_some(k)
+            })
+            .collect();
+        taken.sort_unstable();
+        taken.dedup();
         LocalVarGen {
-            exclude,
-            suffix: format!("__local{suffix}"),
-            next: 0,
+            taken,
+            prefix,
+            calls: 0,
         }
     }
 
     pub fn generate(&mut self) -> Var {
-        loop {
-            let v: Var = format!("{}{}__", self.suffix, self.next).into();
-            self.next += 1;
-            if !self.exclude.contains(&v) {
-                return v;
+        let v = self.name_at(self.calls);
+        self.calls = self.calls.wrapping_add(1);
+        v
+    }
+
+    /// The name the `k`th generation gives: the `k`th number no module's name takes. A
+    /// taken number lies below it where its place among the numbers not taken is `k` or
+    /// less (`taken[i] - i` of them lie below `taken[i]`), so the count of those, `j`, is
+    /// found by halving, and the name's number is `k + j`.
+    pub fn name_at(&self, k: u64) -> Var {
+        let (mut lo, mut hi) = (0usize, self.taken.len());
+        while lo < hi {
+            let mid = lo + (hi - lo) / 2;
+            let free_below = self
+                .taken
+                .get(mid)
+                .map_or(u64::MAX, |t| t.saturating_sub(mid as u64));
+            if free_below <= k {
+                lo = mid + 1;
+            } else {
+                hi = mid;
             }
         }
+        let n = k.wrapping_add(lo as u64);
+        format!("{}{}__", self.prefix, i64::from_ne_bytes(n.to_ne_bytes())).into()
+    }
+
+    /// How many names have been generated.
+    pub fn calls(&self) -> u64 {
+        self.calls
+    }
+
+    /// Passes over `n` names, as generating them would.
+    pub fn advance(&mut self, n: u64) {
+        self.calls = self.calls.wrapping_add(n);
+    }
+
+    /// Back to where `calls` names had been generated.
+    pub fn rewind(&mut self, calls: u64) {
+        self.calls = calls;
     }
 }
 
@@ -241,11 +290,328 @@ impl Stack {
     }
 }
 
-/// The state a rewrite threads through: the generator and the errors.
+/// The state a rewrite threads through: the generator, the errors, and, rewriting as
+/// [`Fast`] does, what it keeps.
 #[derive(Debug)]
 pub struct Rewriter<'a> {
     pub vargen: &'a mut LocalVarGen,
     pub errs: Vec<CompileError>,
+    pub fast: Option<Box<Fast>>,
+}
+
+/// A rule's rewrite as [`Fast`] does it (in this crate's tests, OPA's way where they ask).
+pub fn fast() -> Option<Box<Fast>> {
+    #[cfg(test)]
+    if EXACT.with(std::cell::Cell::get) {
+        return None;
+    }
+    Some(Box::default())
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Rewrites OPA's way, walking again each walk, for tests holding [`Fast`] to it.
+    pub static EXACT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// OPA's rewrite of a rule without OPA's walks again, for a rule that rewrites without
+/// errors (one with errors is rewritten again OPA's way, its errors OPA's).
+///
+/// rewriteEveryStatement (ast/compile.go) rewrites an `every` statement's body, then walks
+/// the whole statement again (rewriteDeclaredVarsInExpr), and that walk rewrites each
+/// comprehension in it again (rewriteDeclaredVarsInArrayComprehension and its kin), the
+/// `every` statements in the comprehension's body again (rewriteEveryStatement: each one's
+/// key and value declared again, given new numbers by localVarGenerator.Generate), and
+/// those walk themselves again: twice a level, an `every` and a comprehension alternating
+/// 20 deep took 9.3 s (PM M510), OPA 7 minutes at 12. The numbers are in what OPA compiles
+/// (and in the partial evaluation buildx reads), so this rewrite numbers as OPA's would:
+///
+/// - A walk whose work a later walk does again is not walked but counted: the generator
+///   passes over as many names as it would have generated ([`LocalVarGen::advance`]),
+///   each part of a rule keeping how many its walk generates (`walk`, `whole`). The walk
+///   of a comprehension in a statement's body or domain while the statement is rewritten
+///   again is done again by the statement's walk; an `every` statement's walk, by the walk
+///   of a statement around it whose body is still being rewritten (`pending`), where
+///   nothing it would rename (a name the statement declares after a use within it, met
+///   unrenamed since the statement began: `last_free`) is lost by not walking it.
+/// - Each walk of a comprehension generates the names of the statements it holds in one
+///   order, so a name declared again in the walk that is done has, as the name it
+///   replaces (RewrittenVars, in error texts), the one at the same place in the walk of
+///   the comprehension before (`record`, carried down a walk as `ctx`; `owners`).
+/// - A use within a comprehension not walked keeps the name it had: it is given the name
+///   its declaration was last given (`successors`) where a walk meets it.
+#[derive(Debug, Default)]
+pub struct Fast {
+    /// The `every` statements being rewritten, outermost first.
+    frames: Vec<Frame>,
+    /// Where in `frames` the statements whose domain or body is being rewritten are.
+    pending: Vec<usize>,
+    /// How many of `frames` are being walked again; of them, how many are met for the
+    /// first time (not themselves within a walk).
+    walks: usize,
+    orig_walks: usize,
+    clock: u64,
+    /// When each name was last met and left as it is.
+    last_free: HashMap<Var, u64>,
+    /// What is kept of each comprehension's and `every` statement's body, by its address.
+    nodes: HashMap<usize, NodeInfo>,
+    /// The name each declaration given anew was given in place of the one before.
+    successors: HashMap<Var, Var>,
+    /// The comprehensions being walked, innermost last.
+    owners: Vec<Owner>,
+    ctx: Vec<Ctx>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct Frame {
+    /// Within a walk again: its key and value declared anew.
+    again: bool,
+    walking: bool,
+    /// When its rewrite began.
+    t0: u64,
+    orig_walks_below: usize,
+}
+
+#[derive(Debug)]
+struct NodeInfo {
+    /// Holds the body's place, so that no other body takes the address while this is kept
+    /// (and a change to the body moves it: see [`Shared::downgrade`]).
+    _body: std::rc::Weak<Body>,
+    /// How many names a walk of it generates: of a comprehension, a walk of it; of an
+    /// `every` statement, rewriteDeclaredVarsInExpr's of it (`walk`) and
+    /// rewriteEveryStatement's (`whole`). Wrapping: a walk 64 levels deep generates more
+    /// than 2^64, and OPA's counter, an int, wraps.
+    walk: Option<u64>,
+    whole: Option<u64>,
+    record: Option<Record>,
+}
+
+/// The last walk of a comprehension, or of an `every` statement as a term walk: when it
+/// was, how many names had been generated as it began, and whether it was the rewrite of
+/// the comprehension as written.
+#[derive(Debug, Clone, Copy)]
+struct Record {
+    time: u64,
+    start: u64,
+    orig: bool,
+}
+
+/// A comprehension walked: how many names had been generated as this walk began, and as
+/// the walk of it before began (none where that was its rewrite as written).
+#[derive(Debug, Clone, Copy)]
+struct Owner {
+    cur: u64,
+    prev: Option<u64>,
+}
+
+/// What a walk knows of the walk before of what it walks: when that was, and how many
+/// names fewer had been generated as it met what this walk now meets (none: the
+/// rewrite as written, whose names the terms keep).
+#[derive(Debug, Clone, Copy, Default)]
+struct Ctx {
+    time: u64,
+    delta: Option<u64>,
+}
+
+impl Fast {
+    fn tick(&mut self) -> u64 {
+        self.clock += 1;
+        self.clock
+    }
+
+    fn node(&self, body: &Shared<Body>) -> Option<&NodeInfo> {
+        self.nodes.get(&body.addr())
+    }
+
+    fn node_mut(&mut self, body: &Shared<Body>) -> &mut NodeInfo {
+        self.nodes.entry(body.addr()).or_insert_with(|| NodeInfo {
+            _body: Shared::downgrade(body),
+            walk: None,
+            whole: None,
+            record: None,
+        })
+    }
+
+    fn record(&mut self, body: &Shared<Body>, record: Record) {
+        self.node_mut(body).record = Some(record);
+    }
+
+    fn ctx(&self) -> Ctx {
+        self.ctx.last().copied().unwrap_or_default()
+    }
+
+    /// What a walk meeting `body`'s node, `here` names in, knows of the walk of it before.
+    fn ctx_for(&self, body: &Shared<Body>, here: u64) -> Ctx {
+        let c = self.ctx();
+        match self.node(body).and_then(|n| n.record) {
+            Some(r) if r.time > c.time => Ctx {
+                time: r.time,
+                delta: (!r.orig).then(|| here.wrapping_sub(r.start)),
+            },
+            _ => c,
+        }
+    }
+
+    /// The name its declaration was last given, of a use left as it was.
+    fn successor(&mut self, v: &str) -> Option<Var> {
+        let mut cur = self.successors.get(v)?.clone();
+        while let Some(n) = self.successors.get(&cur) {
+            cur = n.clone();
+        }
+        self.successors.insert(v.into(), cur.clone());
+        Some(cur)
+    }
+
+    fn met_free(&mut self, v: &str) {
+        let t = self.tick();
+        self.last_free.insert(v.into(), t);
+    }
+
+    /// Whether the frame closing has a statement around it whose body is being
+    /// rewritten, with no statement between met for the first time and being walked
+    /// (whose scope a walk of it later would not have).
+    fn enclosed(&self) -> bool {
+        let Some(p) = self.pending.last().and_then(|&i| self.frames.get(i)) else {
+            return false;
+        };
+        self.orig_walks == p.orig_walks_below
+    }
+
+    /// How many names the walks of a comprehension's head and body generate.
+    fn touch_g(&self, terms: &[&mut Term], body: &[Expr]) -> Option<u64> {
+        let mut n = self.body_g(body)?;
+        for t in terms {
+            n = n.wrapping_add(self.term_g(t)?);
+        }
+        Some(n)
+    }
+
+    /// rewriteDeclaredVarsInBody of a body rewritten.
+    fn body_g(&self, body: &[Expr]) -> Option<u64> {
+        let mut n = 0u64;
+        for e in body {
+            let g = match &e.terms {
+                ExprTerms::Every(ev) => self.node(&ev.body)?.whole?,
+                // A body rewritten without errors keeps no declarations.
+                _ if e.is_assignment() || e.is_some() => return None,
+                _ => self.walk_g(e)?,
+            };
+            n = n.wrapping_add(g);
+        }
+        Some(n)
+    }
+
+    /// rewriteDeclaredVarsInExpr of an expression rewritten.
+    fn walk_g(&self, e: &Expr) -> Option<u64> {
+        let mut n = match &e.terms {
+            ExprTerms::Term(t) => self.term_g(t)?,
+            ExprTerms::Call(c) => self.terms_g(c)?,
+            ExprTerms::Some(d) => self.terms_g(&d.symbols)?,
+            ExprTerms::Every(ev) => return self.node(&ev.body)?.walk,
+        };
+        for w in &e.with {
+            n = n
+                .wrapping_add(self.term_g(&w.target)?)
+                .wrapping_add(self.term_g(&w.value)?);
+        }
+        Some(n)
+    }
+
+    /// rewriteDeclaredVarsInExpr of an `every` statement rewritten.
+    fn every_walk_g(&self, e: &Expr) -> Option<u64> {
+        let ExprTerms::Every(ev) = &e.terms else {
+            return self.walk_g(e);
+        };
+        let mut n = self.term_g(&ev.value)?.wrapping_add(self.term_g(&ev.domain)?);
+        if let Some(k) = &ev.key {
+            n = n.wrapping_add(self.term_g(k)?);
+        }
+        for b in ev.body.iter() {
+            n = n.wrapping_add(self.walk_g(b)?);
+        }
+        for w in &e.with {
+            n = n
+                .wrapping_add(self.term_g(&w.target)?)
+                .wrapping_add(self.term_g(&w.value)?);
+        }
+        Some(n)
+    }
+
+    /// rewriteEveryStatement of an `every` statement rewritten: its domain, its key and
+    /// value declared anew, its body, and its walk.
+    fn every_whole_g(&self, e: &Expr, walk: u64) -> Option<u64> {
+        let ExprTerms::Every(ev) = &e.terms else {
+            return None;
+        };
+        let declares = |t: &Term| t.as_var().is_some_and(|v| !vars::is_wildcard(v));
+        let kv = u64::from(ev.key.as_ref().is_none_or(declares)) + u64::from(declares(&ev.value));
+        Some(
+            self.term_g(&ev.domain)?
+                .wrapping_add(kv)
+                .wrapping_add(self.body_g(&ev.body)?)
+                .wrapping_add(walk),
+        )
+    }
+
+    fn terms_g(&self, ts: &[Term]) -> Option<u64> {
+        let mut n = 0u64;
+        for t in ts {
+            n = n.wrapping_add(self.term_g(t)?);
+        }
+        Some(n)
+    }
+
+    /// A GenericVisitor walk of rewriteDeclaredVarsInTerm over a term: its comprehensions'
+    /// walks, as kept.
+    fn term_g(&self, t: &Term) -> Option<u64> {
+        match &t.value {
+            TermValue::Null
+            | TermValue::Bool(_)
+            | TermValue::Number(_)
+            | TermValue::String(_)
+            | TermValue::Var(_) => Some(0),
+            TermValue::Ref(r)
+                if r.len() == 1 && matches!(r.first().and_then(Term::as_var), Some("data" | "input")) =>
+            {
+                Some(0)
+            }
+            TermValue::Ref(r) | TermValue::Array(r) | TermValue::Call(r) | TermValue::Set(r) => {
+                self.terms_g(r)
+            }
+            TermValue::Object(o) => {
+                let mut n = 0u64;
+                for (k, v) in o.iter() {
+                    n = n.wrapping_add(self.term_g(k)?).wrapping_add(self.term_g(v)?);
+                }
+                Some(n)
+            }
+            TermValue::ArrayCompr(_, body)
+            | TermValue::SetCompr(_, body)
+            | TermValue::ObjectCompr(_, _, body) => self.node(body)?.walk,
+            TermValue::TemplateString { parts, .. } => {
+                let mut n = 0u64;
+                for p in parts {
+                    n = n.wrapping_add(match p {
+                        TemplatePart::Term(t) => self.term_g(t)?,
+                        TemplatePart::Expr(e) => self.walk_g(e)?,
+                    });
+                }
+                Some(n)
+            }
+        }
+    }
+
+    /// What is kept of an `every` statement as its rewrite or a walk of it leaves it.
+    fn keep_every(&mut self, e: &Expr) {
+        let ExprTerms::Every(ev) = &e.terms else {
+            return;
+        };
+        let walk = self.every_walk_g(e);
+        let whole = walk.and_then(|w| self.every_whole_g(e, w));
+        let n = self.node_mut(&ev.body);
+        n.walk = walk;
+        n.whole = whole;
+    }
 }
 
 fn err(loc: &Option<Location>, msg: String) -> CompileError {
@@ -704,44 +1070,87 @@ fn every_open(rw: &mut Rewriter<'_>, stack: &mut Stack, mut expr: Expr) -> Opene
     let ExprTerms::Every(ev) = &mut expr.terms else {
         return Opened::Expr(expr);
     };
+    let again = if let Some(f) = rw.fast.as_mut() {
+        let t0 = f.tick();
+        let again = f.walks > 0;
+        f.pending.push(f.frames.len());
+        f.frames.push(Frame {
+            again,
+            walking: false,
+            t0,
+            orig_walks_below: f.orig_walks,
+        });
+        again
+    } else {
+        false
+    };
     term_recursive(rw, stack, &mut ev.domain);
     stack.push();
     let fail = |rw: &mut Rewriter<'_>, m: String| rw.errs.push(err(&ev.loc.clone().or(loc.clone()), m));
+    let mut failed = false;
     if let Some(k) = ev.key.as_mut() {
         if let Some(v) = k.as_var().map(Rc::from)
             && !vars::is_wildcard(&v)
         {
-            match declare(rw, stack, &v, Occurrence::Declared) {
+            match declare_again(rw, stack, &v, again) {
                 Ok(gv) => k.value = TermValue::Var(gv),
                 Err(m) => {
                     fail(rw, m);
-                    stack.pop();
-                    return Opened::Failed;
+                    failed = true;
                 }
             }
         }
     } else {
         ev.key = Some(Term::new(TermValue::Var(rw.vargen.generate()), None));
     }
-    if let Some(v) = ev.value.as_var().map(Rc::from)
+    if !failed
+        && let Some(v) = ev.value.as_var().map(Rc::from)
         && !vars::is_wildcard(&v)
     {
-        match declare(rw, stack, &v, Occurrence::Declared) {
+        match declare_again(rw, stack, &v, again) {
             Ok(gv) => ev.value.value = TermValue::Var(gv),
             Err(m) => {
                 fail(rw, m);
-                stack.pop();
-                return Opened::Failed;
+                failed = true;
             }
         }
+    }
+    if failed {
+        stack.pop();
+        if let Some(f) = rw.fast.as_mut() {
+            f.frames.pop();
+            f.pending.pop();
+        }
+        return Opened::Failed;
     }
     let body = std::mem::take(&mut ev.body).into_inner();
     Opened::Body(expr, body)
 }
 
+/// rewriteDeclaredVar of an `every` statement's key or value; declared again, within a
+/// walk, the name it replaces is the one OPA's walk before gave it (see [`Fast`]).
+fn declare_again(rw: &mut Rewriter<'_>, stack: &mut Stack, v: &Var, again: bool) -> Result<Var, String> {
+    let here = rw.vargen.calls();
+    let gv = declare(rw, stack, v, Occurrence::Declared)?;
+    if again && let Some(f) = rw.fast.as_mut() {
+        let prev = f
+            .owners
+            .last()
+            .and_then(|o| {
+                o.prev
+                    .map(|p| rw.vargen.name_at(p.wrapping_add(here.wrapping_sub(o.cur))))
+            })
+            .unwrap_or_else(|| v.clone());
+        stack.rewritten.insert(gv.clone(), prev);
+        f.successors.insert(v.clone(), gv.clone());
+    }
+    Ok(gv)
+}
+
 /// The rest of rewriteEveryStatement, its body rewritten: the whole statement walked
-/// again in its scope (but for what `settled` says the walk would leave as it is), and
-/// the scope ended. Gives back what a walk of the body it is in may skip of it.
+/// again in its scope (but for what `settled` says the walk would leave as it is, or, as
+/// [`Fast`], where a walk later does its work), and the scope ended. Gives back what a
+/// walk of the body it is in may skip of it.
 fn every_close(
     rw: &mut Rewriter<'_>,
     stack: &mut Stack,
@@ -752,7 +1161,56 @@ fn every_close(
     if let ExprTerms::Every(ev) = &mut expr.terms {
         ev.body = body.into();
     }
-    let out = rewrite_expr_settled(rw, stack, expr, settled);
+    let out = match rw.fast.as_mut() {
+        None => rewrite_expr_settled(rw, stack, expr, settled),
+        Some(f) => {
+            f.pending.pop();
+            let frame = f.frames.last().copied();
+            let skip = frame.is_some_and(|fr| f.enclosed() && (fr.again || scope_clean(f, stack, fr.t0)));
+            let g = if skip { f.every_walk_g(&expr) } else { None };
+            let time = f.tick();
+            let start = rw.vargen.calls();
+            let out = match g {
+                Some(g) => {
+                    rw.vargen.advance(g);
+                    expr
+                }
+                None => {
+                    let again = frame.is_some_and(|fr| fr.again);
+                    if let Some(fr) = f.frames.last_mut() {
+                        fr.walking = true;
+                    }
+                    f.walks += 1;
+                    if !again {
+                        f.orig_walks += 1;
+                    }
+                    let out = rewrite_expr_settled(rw, stack, expr, settled);
+                    if let Some(f) = rw.fast.as_mut() {
+                        f.walks = f.walks.saturating_sub(1);
+                        if !again {
+                            f.orig_walks = f.orig_walks.saturating_sub(1);
+                        }
+                    }
+                    out
+                }
+            };
+            if let Some(f) = rw.fast.as_mut() {
+                f.frames.pop();
+                if let ExprTerms::Every(ev) = &out.terms {
+                    f.record(
+                        &ev.body,
+                        Record {
+                            time,
+                            start,
+                            orig: false,
+                        },
+                    );
+                }
+                f.keep_every(&out);
+            }
+            out
+        }
+    };
     stack.pop();
     let plain = out.with.is_empty()
         && match &out.terms {
@@ -769,6 +1227,18 @@ fn every_close(
         };
     let decls = stack.decls();
     (out, Settled { plain, decls })
+}
+
+/// Whether the walk of an `every` statement first met, its scope on top, would rename
+/// nothing: no name it declares was met within it and left as it was since it began
+/// (`t0`); only those could the walk rename, the scopes below it declaring nothing since.
+fn scope_clean(f: &Fast, stack: &Stack, t0: u64) -> bool {
+    let Some(s) = stack.peek() else { return true };
+    s.occurrence.iter().all(|(name, occ)| {
+        *occ == Occurrence::Seen
+            || s.vs.get(name) == Some(name)
+            || f.last_free.get(name).is_none_or(|t| *t < t0)
+    })
 }
 
 /// An expression with no `with`, whose terms hold no comprehension or template string,
@@ -931,6 +1401,10 @@ fn rewrite_expr(rw: &mut Rewriter<'_>, stack: &mut Stack, expr: Expr) -> Expr {
     rewrite_expr_settled(rw, stack, expr, &[])
 }
 
+/// A statement being walked, the place of its body's next expression, and when its walk
+/// began with how many names had been generated (see [`rewrite_expr_settled`]).
+type Open = (Expr, usize, Option<(u64, u64)>);
+
 /// rewriteDeclaredVarsInExpr, skipping the expressions of an `every` statement's own
 /// body that `settled` says the walk would leave as they are. A statement within
 /// another's body is walked on a stack of statements, not in a call within a call.
@@ -941,8 +1415,9 @@ fn rewrite_expr_settled(
     settled: &[Option<Settled>],
 ) -> Expr {
     // The statements being walked, outermost first, each with the place of its body's
-    // next expression.
-    let mut open: Vec<(Expr, usize)> = Vec::new();
+    // next expression and, rewriting as [`Fast`] does, when its walk began and how many
+    // names had been generated (a statement within another's).
+    let mut open: Vec<Open> = Vec::new();
     let mut next = Some(expr);
     loop {
         if let Some(mut e) = next.take() {
@@ -951,24 +1426,33 @@ fn rewrite_expr_settled(
                 ExprTerms::Call(c) => c.iter_mut().for_each(|t| walk_decl_terms(rw, stack, t)),
                 ExprTerms::Some(d) => d.symbols.iter_mut().for_each(|t| walk_decl_terms(rw, stack, t)),
                 ExprTerms::Every(ev) => {
+                    let mut enter = None;
+                    if !open.is_empty()
+                        && let Some(f) = rw.fast.as_mut()
+                    {
+                        let start = rw.vargen.calls();
+                        let ctx = f.ctx_for(&ev.body, start);
+                        f.ctx.push(ctx);
+                        enter = Some((f.tick(), start));
+                    }
                     if let Some(k) = ev.key.as_mut() {
                         walk_decl_terms(rw, stack, k);
                     }
                     walk_decl_terms(rw, stack, &mut ev.value);
                     walk_decl_terms(rw, stack, &mut ev.domain);
-                    open.push((e, 0));
+                    open.push((e, 0, enter));
                     continue;
                 }
             }
             rewrite_with(rw, stack, &mut e);
             match open.last_mut() {
-                Some((parent, i)) => put_back(parent, i.saturating_sub(1), e),
+                Some((parent, i, _)) => put_back(parent, i.saturating_sub(1), e),
                 None => return e,
             }
             continue;
         }
         let outermost = open.len() == 1;
-        let Some((parent, i)) = open.last_mut() else {
+        let Some((parent, i, _)) = open.last_mut() else {
             return Expr::term(Term::boolean(true, None));
         };
         if let ExprTerms::Every(ev) = &mut parent.terms
@@ -980,12 +1464,26 @@ fn rewrite_expr_settled(
             }
             continue;
         }
-        let Some((mut done, _)) = open.pop() else {
+        let Some((mut done, _, enter)) = open.pop() else {
             return Expr::term(Term::boolean(true, None));
         };
         rewrite_with(rw, stack, &mut done);
+        if let (Some((time, start)), Some(f)) = (enter, rw.fast.as_mut()) {
+            f.ctx.pop();
+            if let ExprTerms::Every(ev) = &done.terms {
+                f.record(
+                    &ev.body,
+                    Record {
+                        time,
+                        start,
+                        orig: false,
+                    },
+                );
+            }
+            f.keep_every(&done);
+        }
         match open.last_mut() {
-            Some((parent, i)) => put_back(parent, i.saturating_sub(1), done),
+            Some((parent, i, _)) => put_back(parent, i.saturating_sub(1), done),
             None => return done,
         }
     }
@@ -1060,10 +1558,32 @@ fn decl_term(rw: &mut Rewriter<'_>, stack: &mut Stack, t: &mut Term) -> bool {
         TermValue::Var(v) => {
             let v = v.clone();
             if let Some(gv) = stack.use_var(&v) {
+                if gv == v
+                    && let Some(f) = rw.fast.as_mut()
+                {
+                    f.met_free(&v);
+                }
                 t.value = TermValue::Var(gv);
                 stack.seen(&v);
-            } else if stack.occurrence(&v) == Occurrence::New {
-                stack.insert(&v, &v, Occurrence::Seen);
+            } else if let Some(succ) = rw.fast.as_mut().and_then(|f| f.successor(&v)) {
+                // A use a walk left as it was: OPA's term has the name its declaration was
+                // last given, and meets it.
+                if let Some(gv) = stack.use_var(&succ) {
+                    t.value = TermValue::Var(gv);
+                    stack.seen(&succ);
+                } else {
+                    if stack.occurrence(&succ) == Occurrence::New {
+                        stack.insert(&succ, &succ, Occurrence::Seen);
+                    }
+                    t.value = TermValue::Var(succ);
+                }
+            } else {
+                if stack.occurrence(&v) == Occurrence::New {
+                    stack.insert(&v, &v, Occurrence::Seen);
+                }
+                if let Some(f) = rw.fast.as_mut() {
+                    f.met_free(&v);
+                }
             }
             true
         }
@@ -1079,6 +1599,8 @@ fn decl_term(rw: &mut Rewriter<'_>, stack: &mut Stack, t: &mut Term) -> bool {
                     && let Some(gv) = stack.use_var(x)
                 {
                     t.value = TermValue::Var(gv);
+                } else if let Some(f) = rw.fast.as_mut() {
+                    f.met_free(x);
                 }
                 return true;
             }
@@ -1127,19 +1649,63 @@ fn decl_term(rw: &mut Rewriter<'_>, stack: &mut Stack, t: &mut Term) -> bool {
     }
 }
 
-/// rewriteDeclaredVarsIn{Array,Set,Object}Comprehension.
-fn comprehension(rw: &mut Rewriter<'_>, stack: &mut Stack, terms: &mut [&mut Term], body: &mut Body) {
+/// rewriteDeclaredVarsIn{Array,Set,Object}Comprehension. Rewriting as [`Fast`], a walk
+/// of it in an `every` statement's domain or body as the statement is rewritten again is
+/// counted, not walked: the statement's walk does it again.
+fn comprehension(rw: &mut Rewriter<'_>, stack: &mut Stack, terms: &mut [&mut Term], body: &mut Shared<Body>) {
+    let mut start = 0;
+    let mut time = 0;
+    let mut first = true;
+    if let Some(f) = rw.fast.as_mut() {
+        start = rw.vargen.calls();
+        first = f.walks == 0;
+        let doomed = f.frames.last().is_some_and(|fr| fr.again && !fr.walking);
+        if doomed && let Some(g) = f.node(body).and_then(|n| n.walk) {
+            let time = f.tick();
+            f.record(
+                body,
+                Record {
+                    time,
+                    start,
+                    orig: false,
+                },
+            );
+            rw.vargen.advance(g);
+            return;
+        }
+        let ctx = f.ctx_for(body, start);
+        f.owners.push(Owner {
+            cur: start,
+            prev: ctx.delta.map(|d| start.wrapping_sub(d)),
+        });
+        f.ctx.push(ctx);
+        time = f.tick();
+    }
     let mut used = VarSet::new();
     for t in terms.iter() {
         used.extend(vars::term_vars(t));
     }
     stack.push();
-    let b = std::mem::take(body);
-    *body = rewrite_body(rw, stack, &used, b);
+    let b = std::mem::replace(body, Shared::from(Vec::new())).into_inner();
+    *body = rewrite_body(rw, stack, &used, b).into();
     for t in terms.iter_mut() {
         term_recursive(rw, stack, t);
     }
     stack.pop();
+    if let Some(f) = rw.fast.as_mut() {
+        f.owners.pop();
+        f.ctx.pop();
+        f.record(
+            body,
+            Record {
+                time,
+                start,
+                orig: first,
+            },
+        );
+        let walk = f.touch_g(terms, body);
+        f.node_mut(body).walk = walk;
+    }
 }
 
 /// rewriteDeclaredVarsInTemplateString.

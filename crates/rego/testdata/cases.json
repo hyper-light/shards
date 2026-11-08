@@ -3694,5 +3694,105 @@
     3
    ]
   }
+ },
+ {
+  "name": "lv-fast-alternating",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tevery x in [1] { x == 1; count([z | z := x; every x in [1] { x == 1; count([z | z := x; every x in [1] { x == 1; count([z | z := x; every x in [1] { x == 1; count([z | z := x; true]) == 1 }]) == 1 }]) == 1 }]) == 1 }\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "lv-fast-alternating-partial",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tevery x in input.image.labels { x == 1; count([z | z := x; every x in input.image.labels { x == 1; count([z | z := x; every x in input.image.labels { x == 1; count([z | z := x; true]) >= 0 }]) >= 0 }]) >= 0 }\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "image": {
+    "labels": [
+     1
+    ]
+   }
+  },
+  "unknowns": [
+   "input.image.labels"
+  ]
+ },
+ {
+  "name": "lv-fast-declared-after",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tevery x in [1] { x == 1; count([z | z := y; z == 1]) == 1; every x in [1] { x == 1; count([z | z := y; z == 1]) == 1; every x in [1] { x == 1; count([z | z := y; z == 1]) == 1; true; y := 1 }; y := 1 }; y := 1 }\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "lv-fast-keyed",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tevery k, x in [1] { k == 0; [z | z := x; every _, q in [k] { q == k; [w | w := q] }]; every k, x in [1] { k == 0; [z | z := x; every _, q in [k] { q == k; [w | w := q] }]; every k, x in [1] { k == 0; [z | z := x; every _, q in [k] { q == k; [w | w := q] }]; true } } }\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "lv-fast-domain",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tevery x in [y | y := 1] { x == 1; count([z | z := x; every q in {w | w := x} { q == x; every x in [y | y := 1] { x == 1; count([z | z := x; every q in {w | w := x} { q == x; every x in [y | y := 1] { x == 1; count([z | z := x; every q in {w | w := x} { q == x; true }]) == 1 } }]) == 1 } }]) == 1 }\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "lv-fast-with-template",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tevery x in [1] { count([z | z := $\"{x}\"; every q in input.xs { q == 1; every x in [1] { count([z | z := $\"{x}\"; every q in input.xs { q == 1; every x in [1] { count([z | z := $\"{x}\"; every q in input.xs { q == 1; true }]) == 1 with input as {\"xs\": [1]} } }]) == 1 with input as {\"xs\": [1]} } }]) == 1 with input as {\"xs\": [1]} }\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "lv-fast-type-error-renamed",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tevery x in [1] {\n\t\tcount([z | z := x; every q in [1] { count([w | w := q; q.a.b == 1]) == 1 }]) == 1\n\t}\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "lv-fast-shadowed-after",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tevery x in [1] {\n\t\tcount([z | z := x; every q in [1] { count([q]) == 1 }]) == 1\n\t\tcount := 1\n\t}\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "lv-fast-rule-wrap",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nr0 := 1\n\nr1 := [r0]\n\nr2 := [r1]\n\nr3 := [r2]\n\nr4 := [r3]\n\nr5 := [r4]\n\nr6 := [r5]\n\nr7 := [r6]\n\nr8 := [r7]\n\nr9 := [r8]\n\nr10 := [r9]\n\nr11 := [r10]\n\nr12 := [r11]\n\nr13 := [r12]\n\nr14 := [r13]\n\nr15 := [r14]\n\nr16 := [r15]\n\nr17 := [r16]\n\nr18 := [r17]\n\nr19 := [r18]\n\nr20 := [r19]\n\nr21 := [r20]\n\nr22 := [r21]\n\nr23 := [r22]\n\nr24 := [r23]\n\nr25 := [r24]\n\nr26 := [r25]\n\nr27 := [r26]\n\nr28 := [r27]\n\nr29 := [r28]\n\nr30 := [r29]\n\nr31 := [r30]\n\nr32 := [r31]\n\nr33 := [r32]\n\nr34 := [r33]\n\nr35 := [r34]\n\nr36 := [r35]\n\nr37 := [r36]\n\nr38 := [r37]\n\nr39 := [r38]\n\nr40 := [r39]\n\nr41 := [r40]\n\nr42 := [r41]\n\nr43 := [r42]\n\nr44 := [r43]\n\nr45 := [r44]\n\nr46 := [r45]\n\nr47 := [r46]\n\nr48 := [r47]\n\nr49 := [r48]\n\nr50 := [r49]\n\nr51 := [r50]\n\nr52 := [r51]\n\nr53 := [r52]\n\nr54 := [r53]\n\nr55 := [r54]\n\nr56 := [r55]\n\nr57 := [r56]\n\nr58 := [r57]\n\nr59 := [r58]\n\nr60 := [r59]\n\ndecision := count(json.marshal(r60))\n"
+   ]
+  ],
+  "query": "data.docker.decision"
  }
 ]

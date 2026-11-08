@@ -364,11 +364,7 @@ mod tests {
     fn host() -> Vec<Function> {
         let f = |name: &str, args: Vec<Type>, result: Type| Function {
             name: name.into(),
-            decl: Type::Function {
-                args,
-                result: Some(Box::new(result)),
-                variadic: None,
-            },
+            decl: Type::function(args, result),
         };
         let (s, a) = (|| Type::String, || Type::Any(Vec::new()));
         vec![

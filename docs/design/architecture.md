@@ -17597,13 +17597,40 @@ held to more than OPA's answers:
   walk that meets it (three times as long each level: 12 deep 3.25 s, now 0.5 ms); the
   safety check's and print rewrite's outputs read again for each expression, and each
   equality copying the whole safe set (cubic: 1000 closures in a body 42 s, now 0.48 s).
-- Left, as OPA's: rewriteLocalVars walks an `every` statement again after its body and
-  numbers the comprehensions within it anew, twice the work each level they alternate
-  (20 deep 9.3 s; OPA takes 7 minutes at 12), and the numbers are in what OPA compiles
-  and partial evaluation leaves, so a shortcut must number as the walk does; rule wrap's
-  type check is quadratic (10000 rules 24.9 s). Evaluation asks no bound of a policy, as
-  OPA's does not (`numbers.range` over any span); a build's policies run in its own
-  process, which Ctrl-C ends, as buildx's end with its build's context.
+- The rewrite of local variables walked as OPA's does, and OPA's way is exponential:
+  rewriteEveryStatement (ast/compile.go) rewrites a statement's body, then walks the
+  whole statement again (rewriteDeclaredVarsInExpr), whose walk rewrites each
+  comprehension within again (rewriteDeclaredVarsInArrayComprehension and its kin) and
+  so each `every` statement in those (rewriteEveryStatement again: its key and value
+  declared anew, numbered by localVarGenerator.Generate), twice a level where they
+  alternate (20 deep 9.3 s; OPA 7 minutes at 12). The numbers are in what OPA compiles
+  and what its partial evaluation leaves, and the names each replaced
+  (localDeclaredVars.Insert's `rewritten`) in its error texts. `localvars::Fast` gives
+  those numbers without the walks: a walk whose work a later walk does again (a
+  comprehension's in a statement's body while the statement is walked again; an `every`
+  statement's, where a statement around it is still being rewritten and the walk would
+  rename nothing) is counted, not walked, the generator passing over the names it would
+  have made, each part of the rule keeping how many its walk makes; each walk of a
+  comprehension makes its statements' names in one order, so a name's predecessor is the
+  one at its place in the walk of that comprehension before. A rule whose rewrite meets
+  an error is rewritten again OPA's way, for OPA's errors. Held to OPA's way by
+  `compile/fast_tests.rs` (4000 policies made at random, and M510's shapes, compiled
+  both ways), and to OPA by the oracle. Also linear now: an `every` statement declaring
+  after the one within (quadratic: each level's walk again, never skippable as the
+  scope had changed). OPA's counter is a Go int, which wraps: 64 alternating levels
+  generate more than 2^64 names, and past that names repeat, as OPA's would, were it to
+  live so long. The rule wrap's type check was quadratic (10000 rules 24.9 s): each
+  rule's type copied the type of the rule within whole, the check of each equality
+  asked whether any part of a type is not known (types.Nil) by walking it, and a
+  node's children were searched from the first. A type's parts are shared now, as
+  OPA's pointers are, each keeping whether any of it is unknown, and a node finds a
+  child by name, as OPA's typeTreeNode does with its map. The times after: owed, the
+  nesting bench's M510 inputs and deeper (`rego-nesting/run.sh`).
+- Left: a rule whose local-variable rewrite errs is rewritten OPA's way, so an
+  erroring rule of `every` statements and comprehensions alternating takes OPA's time.
+  Evaluation asks no bound of a policy, as OPA's does not (`numbers.range` over any
+  span); a build's policies run in its own process, which Ctrl-C ends, as buildx's end
+  with its build's context.
 
 ### D97. OSI artifacts of several platforms: an index
 

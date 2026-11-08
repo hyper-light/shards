@@ -21,6 +21,27 @@ use crate::types::{self, A, FuncArgs, Key, Type};
 pub struct Node {
     value: Type,
     children: Vec<(Term, Node)>,
+    /// Where each child keyed by a string or a variable is in `children`, as OPA's map
+    /// finds it: a package's rules are one node's children, and a node of ten thousand
+    /// rules searched from the start for each would make checking them quadratic.
+    named: HashMap<Name, usize>,
+}
+
+/// A string or variable key, which equals only a key of its kind and text.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum Name {
+    String(Rc<str>),
+    Var(Rc<str>),
+}
+
+impl Name {
+    fn of(key: &Term) -> Option<Name> {
+        match &key.value {
+            TermValue::String(s) => Some(Name::String(Rc::clone(s))),
+            TermValue::Var(v) => Some(Name::Var(Rc::clone(v))),
+            _ => None,
+        }
+    }
 }
 
 impl Default for Node {
@@ -28,6 +49,7 @@ impl Default for Node {
         Node {
             value: Type::Nil,
             children: Vec::new(),
+            named: HashMap::new(),
         }
     }
 }
@@ -37,8 +59,15 @@ fn same(a: &Term, b: &Term) -> bool {
 }
 
 impl Node {
+    fn position(&self, key: &Term) -> Option<usize> {
+        match Name::of(key) {
+            Some(name) => self.named.get(&name).copied(),
+            None => self.children.iter().position(|(k, _)| same(k, key)),
+        }
+    }
+
     fn child(&self, key: &Term) -> Option<&Node> {
-        self.children.iter().find(|(k, _)| same(k, key)).map(|(_, n)| n)
+        self.children.get(self.position(key)?).map(|(_, n)| n)
     }
 
     fn leaf(&self) -> bool {
@@ -60,11 +89,15 @@ impl Node {
     }
 
     fn child_mut(&mut self, key: &Term) -> Option<&mut Node> {
-        let pos = match self.children.iter().position(|(k, _)| same(k, key)) {
+        let pos = match self.position(key) {
             Some(p) => p,
             None => {
+                let pos = self.children.len();
+                if let Some(name) = Name::of(key) {
+                    self.named.insert(name, pos);
+                }
                 self.children.push((key.clone(), Node::default()));
-                self.children.len().saturating_sub(1)
+                pos
             }
         };
         self.children.get_mut(pos).map(|(_, n)| n)
@@ -172,7 +205,7 @@ impl Node {
     }
 }
 
-fn dyn_parts(d: &Option<(Box<Type>, Box<Type>)>) -> (Type, Type) {
+fn dyn_parts(d: &Option<(types::Part, types::Part)>) -> (Type, Type) {
     match d {
         Some((k, v)) => ((**k).clone(), (**v).clone()),
         None => (Type::Nil, Type::Nil),
@@ -216,8 +249,11 @@ fn merge_types(a: &Type, b: &Type) -> Type {
                         let mut out = of.clone();
                         if let Some(slot) = out.get_mut(i) {
                             *slot = Type::Object {
-                                fixed: Vec::new(),
-                                dynamic: Some((Box::new(types::or(&tk, &ak)), Box::new(types::or(&tv, &av)))),
+                                fixed: Vec::new().into(),
+                                dynamic: Some((
+                                    types::Part::new(types::or(&tk, &ak)),
+                                    types::Part::new(types::or(&tv, &av)),
+                                )),
                             };
                         }
                         return Type::Any(out);
@@ -227,7 +263,7 @@ fn merge_types(a: &Type, b: &Type) -> Type {
         }
         Type::Set(x) => {
             if let Type::Set(y) = b {
-                let of = |s: &Option<Box<Type>>| s.as_deref().cloned().unwrap_or(Type::Nil);
+                let of = |s: &Option<types::Part>| s.as_deref().cloned().unwrap_or(Type::Nil);
                 return Type::set(types::or(&of(x), &of(y)));
             }
         }
@@ -255,7 +291,7 @@ fn insert_into_object(o: &Type, path: &[Term], tpe: &Type) -> Type {
         Some((k, v)) => (types::or(k, &key), types::or(v, &value)),
         None => (key, value),
     };
-    Type::object(fixed.clone(), Some(d))
+    Type::object(fixed.to_vec(), Some(d))
 }
 
 /// The type of a ground term, as GetByValue gives it.
