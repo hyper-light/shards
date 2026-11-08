@@ -18199,6 +18199,21 @@ revision before comparing a changed API/implementation.
   builder's give-back. On the other six runners held builds read 0 to 6 MiB at p50 and up
   to 85 at p90 (none on one EPYC 7763), `cache-keep` 0.0 to 1.0 s longer at p50, and the
   arms' times overlapped.
+- **At 2f82adb6, on Fedora: the held arms' budget.** `fedora.sh MIRROR 2f82adb6 5` on the
+  Fedora host above, beside other agents' builds and two CI jobs (load 15 to 21 as it
+  started), `results/fedora-2f82adb6.{builds,tables}.txt` (its header, build, give, phase,
+  keep and merge lines, and its tables). The writer was outside in each of the 15 held
+  builds and every one was asked to give back. Build time, s, and what the builders gave
+  back, held (n, p50, p90, p99, max):
+
+  | build | free | held | held slower beyond the spread | answered in (ms) | freed a build (MiB) | unplugged at an answer (MiB) | budget short of the free arm's peak (MiB) |
+  |---|---|---|---|---|---|---|---|
+  | rust | 5, 2.6, 2.8, 2.8, 2.8 | 5, 2.4, 2.6, 2.6, 2.6 | no | 5, 1, 1, 1, 1 | 5, 2.9, 3.9, 3.9, 3.9 | 1, 0, 0, 0, 0 | 5, 0.7, 3.2, 3.2, 3.2 |
+  | npm | 5, 6.1, 7.0, 7.0, 7.0 | 5, 5.7, 6.7, 6.7, 6.7 | no | 11, 2, 7, 12, 12 | 5, 18.9, 24.1, 24.1, 24.1 | 9, 0, 128, 128, 128 | 5, -0.6, 20.7, 20.7, 20.7 |
+  | apt | 5, 22.0, 26.3, 26.3, 26.3 | 5, 21.9, 25.5, 25.5, 25.5 | no | 15, 3, 8, 11, 11 | 5, 55.2, 89.8, 89.8, 89.8 | 15, 0, 128, 128, 128 | 5, 47.1, 57.5, 57.5, 57.5 |
+
+  Held at p50 0.1 to 0.4 s quicker than free in each build; held's fastest 2.2, 5.1 and
+  20.5 s against free's slowest 2.8, 7.0 and 26.3.
 - **At 9f2520c2, on the Mac: a give-back's cost and return, on a shared host.** The
   builder's code changed since 0e24be3e (the base decompressed once, the room told again
   each window, a hold's report), so `mac.sh MIRROR 9f2520c2 5` again on the same M3 Ultra
@@ -18244,8 +18259,8 @@ revision before comparing a changed API/implementation.
   build's 1 to 26, a rust build's 0 to 31, and what it holds plugged past twice its use,
   128 to 256 MiB at an answer, 1,152 at most. A build held to a budget short of its peak
   by what its builder holds cold took no longer than the same build unbudgeted beyond its
-  rounds' spread in 26 of 27 host and build pairs on Linux (Fedora at b8c98e7f; eight
-  runners at 2f82adb6) and in all three on the Mac; the one that did not, apt on a Xeon
+  rounds' spread in 29 of 30 host and build pairs on Linux (Fedora at b8c98e7f and
+  2f82adb6; eight runners at 2f82adb6) and in all three on the Mac; the one that did not, apt on a Xeon
   6973P-C by 0.1 s, paid in reading again the cache layers its build merges, whose page
   cache its budget had taken back: a budget's cost to the build's own files, not its
   builder's give-back. Before the writer, the same rule failed for 6 of the 9 pairs of the

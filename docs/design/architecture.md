@@ -6432,9 +6432,9 @@ host (PM M267), where a container's page cache is its host's to drop. Free page 
   spread in 23 of the 24 runner and build pairs: apt on the Xeon 6973P-C was 0.1 s slower,
   its build reading again 58 MiB at p50 of the cache layers it merges, whose page cache its
   budget had taken back, not slowed by its builder. On Fedora (i9-14900HX, NVMe, Btrfs) at
-  b8c98e7f, the same builder, every build held answered (0 to 5 ms at p50, 318 ms at
-  most), an apt builder giving back 80 MiB of its files at p50, none slower beyond the
-  spread. On an M3 Ultra at 9f2520c2, its builds told every 2 s that their host was short
+  b8c98e7f and 2f82adb6, the same builder, every build held answered (0 to 5 ms at p50,
+  318 ms at most), an apt builder giving back 55 and 80 MiB of its files a build at p50,
+  none slower beyond the spread. On an M3 Ultra at 9f2520c2, its builds told every 2 s that their host was short
   and the host loaded by other work (load 11 to 21), every word answered, 64 to 84 ms
   after it at p50, an apt builder giving back 142 MiB of its files a build at p50 and
   unplugging up to 1,152 MiB, none slower beyond the spread. The budget is the most the
@@ -6497,7 +6497,7 @@ host (PM M267), where a container's page cache is its host's to drop. Free page 
   only which slot and whose in the message, and a buffered writer of a build's file goes on
   once a write is handed, its writes settled before the file is flushed, sought in, taken
   back or dropped (`through::Through`): the writer makes one while the build makes the
-  next. So at b8c98e7f and after, the writer outside in every held build (135 on Fedora
+  next. So at b8c98e7f and after, the writer outside in every held build (150 on Fedora
   and eight of CI's runners), held builds took no longer than unbudgeted beyond their
   rounds' spread but apt's on one runner by 0.1 s, which read again what its budget took
   of its cache layers' page cache (above).
@@ -13102,7 +13102,7 @@ given the rest as its build needs it, up to what it may have.
   apt build's builder gave back up to 202 MiB of its files a build and unplugged up to
   1,152 MiB, every builder answered 0 to 84 ms after its build's word at p50 on Fedora,
   eight of CI's runners and an M3 Ultra, and the build took no longer than with no budget
-  beyond its rounds' spread in 29 of 30 host and build pairs, the other 0.1 s longer as it
+  beyond its rounds' spread in 32 of 33 host and build pairs, the other 0.1 s longer as it
   read again what its budget took of its own files' page cache (PM M442). The build's
   process asks, not the daemon: a builder is its build's, not a run of the daemon's.
 - **What the kernel sized by the memory it booted with** is raised to what it sizes by all
