@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""PM M462 (D215): the guest's BPF programs, interpreted against JIT-compiled. Two guest
+"""PM M489 (D227): the guest's BPF programs, interpreted against JIT-compiled. Two guest
 kernels booted in turn on this host, A then B, then B then A, and so on, each boot one
 round of the test guest's `bpf` mode (crates/testguest/src/linux.rs `bpf_costs`):
 

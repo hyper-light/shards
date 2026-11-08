@@ -1,5 +1,5 @@
 #!/bin/bash
-# PM M462 (D215): start latency, request to status, through each home's pools
+# PM M489 (D227): start latency, request to status, through each home's pools
 # (build-ab/ab.py, `run --rm IMAGE true`), over SEGMENTS templates an arm: each segment's
 # daemons stopped and templates removed first, so that each restores a template of its own
 # (restore costs differ from template to template, PM M29).

@@ -18302,16 +18302,16 @@ revision before comparing a changed API/implementation.
 - **Consequence.** The downtime D176 part 7 says; what is left to cut is in the last stream
   and the restore.
 
-### M462. What a guest's seccomp and device filters cost, interpreted against JIT-compiled (D215, D42, D44)
+### M489. What a guest's seccomp and device filters cost, interpreted against JIT-compiled (D227, D42, D44)
 
 - **Question.** The pinned guest kernel runs BPF interpreted (Firecracker's configs leave
-  BPF_JIT unset); D215 builds it with BPF_JIT and BPF_JIT_ALWAYS_ON. What does each cost a
+  BPF_JIT unset); D227 builds it with BPF_JIT and BPF_JIT_ALWAYS_ON. What does each cost a
   workload's syscall under Docker's default seccomp profile (D42), a device open under the
   default device filter (D44), each filter's load, and the guest's memory, either way?
 - **Method.** docs/research/measurements/bpf-jit/ab.py, the test guest's `bpf` mode
   (crates/testguest/src/linux.rs `bpf_costs`) as PID 1 of `shards run --kernel K --init
   TESTGUEST --cpus 1 --memory 512 --disk RECORD`, A the kernel pinned before
-  (kernel-6.18.48-64a9427a8997) and B the D215 kernel, booted in turn A B, B A, ... for 10
+  (kernel-6.18.48-64a9427a8997) and B the D227 kernel, booted in turn A B, B A, ... for 10
   rounds after one boot of each. Each round, in children of PID 1: Docker's default profile
   compiled by shards_seccomp for a container's default capabilities and the running
   kernel's version, loaded as shards-init loads it, with init's capabilities (`root`) or as
@@ -18406,7 +18406,7 @@ revision before comparing a changed API/implementation.
     p99 falls from 209 to 89 ns. What
     the action cache answers (getppid) costs the same either way. A filter loaded by a task
     without CAP_SYS_ADMIN (nnp) costs what one loaded with it does on both: the arm64 BHB
-    epilogue (D215) is not measurable here, the guest seeing its CPU as needing none
+    epilogue (D227) is not measurable here, the guest seeing its CPU as needing none
     (`spectre_v2: CSV2, but not BHB`, no firmware call: arch/aarch64/psci.rs).
   - The device filter, an eBPF program, costs an open 11.0 ns interpreted and nothing
     measurable compiled on KVM (B's dev/open below its nodev/open), 18.2 against 2.6 ns on
@@ -18431,10 +18431,10 @@ revision before comparing a changed API/implementation.
     µs more on the VM's clock (1,197 to 1,404 µs); on KVM it holds no more (its p50 592 KiB
     less) and starts 533 µs sooner at the quietest load, 873 µs pooled. Which pages the HVF
     run writes, and what of the KVM run's path the JIT speeds, are not split here.
-- **Consequence.** D215 kept: kernel-6.18.48-fa4edcc82303 pinned (crates/shards/src/
-  kernel.rs, tests/common, README). Its costs, recorded in D215: one 2 MiB pack per booted
+- **Consequence.** D227 kept: kernel-6.18.48-fa4edcc82303 pinned (crates/shards/src/
+  kernel.rs, tests/common, README). Its costs, recorded in D227: one 2 MiB pack per booted
   guest and template, 11 to 20 µs a filter load, and on Hypervisor.framework 0.43 MiB and
-  0.2 ms a run started from a template. Not measured: WHP's hyperv variant; whether unprivileged filters are blinded stays D215's
+  0.2 ms a run started from a template. Not measured: WHP's hyperv variant; whether unprivileged filters are blinded stays D227's
   open question.
 
 ### M422. Whether a Hypervisor.framework guest given EL2 has VHE (the parity plan's step 10)

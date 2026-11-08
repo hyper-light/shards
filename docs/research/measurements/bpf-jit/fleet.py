@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""PM M462 (D215): what the guest kernel's BPF JIT costs a host's fleet of microVMs, beside
+"""PM M489 (D227): what the guest kernel's BPF JIT costs a host's fleet of microVMs, beside
 ab.py's costs inside one guest. One `shards`, two homes, each with IMAGE and a guest of its
 own recorded (`shards configure guest --kernel K --init INIT`): A the kernel pinned before
-D215 (interpreter), B the JIT kernel. Rounds alternate which home goes first. Each round,
+D227 (interpreter), B the JIT kernel. Rounds alternate which home goes first. Each round,
 in each home:
 
 - the daemon stopped and the home's templates removed, so the round's first run boots its

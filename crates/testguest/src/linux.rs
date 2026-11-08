@@ -4192,7 +4192,7 @@ fn check_entry(line: &str) -> Result<(), String> {
     }
 }
 
-/// PM M462 (D215): what the guest's BPF programs cost, run by its kernel's JIT or by its
+/// PM M489 (D227): what the guest's BPF programs cost, run by its kernel's JIT or by its
 /// interpreter as the kernel was built. Docker's default seccomp profile is compiled as
 /// shards compiles a run's (D42: a container's default capabilities, this kernel's
 /// version) and loaded as shards-init loads it, and Docker's default device filter (D44)
