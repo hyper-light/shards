@@ -272,14 +272,35 @@ pub(crate) fn netlink_socket(protocol: libc::c_int) -> io::Result<OwnedFd> {
 /// waits in synchronize_rcu: nf_tables_api.c at Linux 6.18.48; PM M513), and the tables a
 /// run's start programs there (its confinement, the host's loopback, its agents' way past
 /// the microVM) are on its path to its command.
-static INIT_NFT: std::sync::Mutex<Option<OwnedFd>> = std::sync::Mutex::new(None);
+/// Kept with the process and the network namespace it was opened in: a socket's namespace
+/// is its creator's (net/socket.c), and a process init forks inherits the descriptor, whose
+/// acknowledgments two processes reading one socket would take from each other. A caller of
+/// another process or namespace opens its own, as each caller did before.
+static INIT_NFT: std::sync::Mutex<Option<(Opener, OwnedFd)>> = std::sync::Mutex::new(None);
+
+/// Who opened a kept socket: its process, and its network namespace's inode.
+type Opener = (u32, u64);
+
+/// The calling thread's process and network namespace.
+fn opener() -> io::Result<Opener> {
+    use std::os::unix::fs::MetadataExt as _;
+    Ok((
+        std::process::id(),
+        std::fs::metadata("/proc/thread-self/ns/net")?.ino(),
+    ))
+}
 
 /// Runs `f` on init's own namespace's netfilter socket ([`INIT_NFT`]), opened on first use
-/// by its caller, a thread of init's namespace, as each of them opened its own before;
-/// one whose exchange failed is let go, and the next opens another, as the chooser's.
+/// by its caller, and kept for callers of the same process and namespace; a caller of
+/// another opens its own, kept in its place. One whose exchange failed is let go, and the
+/// next opens another, as the chooser's.
 pub(crate) fn on_init_nft<T>(f: impl FnOnce(&OwnedFd) -> io::Result<T>) -> io::Result<T> {
+    let here = opener()?;
     let mut kept = INIT_NFT.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    kept_socket(&mut kept, || netlink_socket(libc::NETLINK_NETFILTER), f)
+    let mut sock = kept.take().filter(|(by, _)| *by == here).map(|(_, sock)| sock);
+    let done = kept_socket(&mut sock, || netlink_socket(libc::NETLINK_NETFILTER), f);
+    *kept = sock.map(|sock| (here, sock));
+    done
 }
 
 /// `f` on the socket `kept` holds, or on one `open` makes, kept again where `f` succeeds.
