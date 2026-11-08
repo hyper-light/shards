@@ -230,9 +230,10 @@ pub fn vfio_groups<'a>(paths: impl IntoIterator<Item = &'a str>) -> Result<Vec<V
 /// Whether a run's devices' and CDI nodes' host paths, `paths`, ask for VFIO's own nodes,
 /// its container (`/dev/vfio/vfio`) or iommufd (`/dev/iommu`), which name no function but
 /// are what a workload takes a host's function through, given beside a group's node
-/// (Linux's Documentation/driver-api/vfio.rst, "VFIO Usage Example"): its microVM is then booted to take host functions plugged in as it runs
-/// (`shards plug function`, D214), with VFIO, its slots behind its IOMMU. Linux's alone;
-/// elsewhere [`vfio_groups`] refuses VFIO's nodes with the host's own limit.
+/// (Linux's Documentation/driver-api/vfio.rst, "VFIO Usage Example"): its microVM is then
+/// booted to take host functions plugged in as it runs (`shards plug function`, D214), with
+/// VFIO, its slots behind its IOMMU. Linux's alone; elsewhere [`vfio_groups`] refuses
+/// VFIO's nodes with the host's own limit.
 pub fn takes_functions<'a>(paths: impl IntoIterator<Item = &'a str>) -> bool {
     cfg!(target_os = "linux")
         && paths
