@@ -18,8 +18,32 @@ const MIN_MEMORY: i64 = 6_291_456;
 const CPU_PERIOD: i64 = 100_000;
 
 /// The CPUs a microVM may have, numbered from 0: every CPU this process may run on (D125).
+/// On Windows those of its affinity mask, which `available_parallelism` does not read there
+/// ("may overcount the amount of parallelism available when limited by process-wide
+/// affinity masks", its documentation), where Linux's reads its sched_getaffinity(2) set:
+/// a daemon held to 4 of 32 CPUs gave every microVM 32 vCPUs, which ran on those 4 (PM M462).
 pub fn host_cpus() -> usize {
+    #[cfg(windows)]
+    if let Some(cpus) = affinity_cpus() {
+        return cpus;
+    }
     std::thread::available_parallelism().map_or(1, std::num::NonZero::get)
+}
+
+/// The CPUs of this process's affinity mask, or None where it has none to give: where its
+/// threads are in more than one processor group, GetProcessAffinityMask gives no mask
+/// (Microsoft, GetProcessAffinityMask).
+#[cfg(windows)]
+fn affinity_cpus() -> Option<usize> {
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetProcessAffinityMask};
+    let (mut process, mut system) = (0usize, 0usize);
+    // SAFETY: GetCurrentProcess's pseudo-handle is always valid, and both masks are this
+    // frame's own.
+    let got = unsafe { GetProcessAffinityMask(GetCurrentProcess(), &mut process, &mut system) };
+    if got == 0 || process == 0 {
+        return None;
+    }
+    usize::try_from(process.count_ones()).ok()
 }
 
 /// The vCPUs every run's microVM has, whatever its run is given: the host's, all online, so
@@ -611,6 +635,80 @@ mod tests {
 
     fn r() -> Resources {
         Resources::default()
+    }
+
+    /// A daemon held to some of its host's CPUs gives each microVM those alone (D125): on
+    /// Linux its sched_getaffinity(2) set, on Windows its affinity mask (PM M462). In a
+    /// process of its own, as an affinity is its whole process's.
+    #[cfg(any(target_os = "linux", windows))]
+    #[test]
+    fn a_microvm_has_the_cpus_its_daemon_may_run_on() {
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "resources::tests::held_to_two_cpus",
+                "--exact",
+                "--ignored",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .output()
+            .unwrap();
+        let (stdout, stderr) = (
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr),
+        );
+        assert!(
+            out.status.success() && stdout.contains("1 passed"),
+            "{stdout}\n{stderr}"
+        );
+    }
+
+    /// Holds this process to the first two CPUs it may run on (one, where it may run on one
+    /// alone), and finds its microVMs given as many.
+    #[cfg(any(target_os = "linux", windows))]
+    #[test]
+    #[ignore = "run in a process of its own by a_microvm_has_the_cpus_its_daemon_may_run_on"]
+    fn held_to_two_cpus() {
+        #[cfg(target_os = "linux")]
+        let held = {
+            // SAFETY: an all-zero cpu_set_t is an empty set; sched_getaffinity(2) and
+            // sched_setaffinity(2) of this process read and write this frame's own.
+            unsafe {
+                let mut set: libc::cpu_set_t = std::mem::zeroed();
+                let size = std::mem::size_of::<libc::cpu_set_t>();
+                assert_eq!(libc::sched_getaffinity(0, size, &mut set), 0);
+                let first: Vec<usize> = (0..libc::CPU_SETSIZE as usize)
+                    .filter(|&c| libc::CPU_ISSET(c, &set))
+                    .take(2)
+                    .collect();
+                let mut two: libc::cpu_set_t = std::mem::zeroed();
+                for &c in &first {
+                    libc::CPU_SET(c, &mut two);
+                }
+                assert_eq!(libc::sched_setaffinity(0, size, &two), 0);
+                first.len()
+            }
+        };
+        #[cfg(windows)]
+        let held = {
+            use windows_sys::Win32::System::Threading::{
+                GetCurrentProcess, GetProcessAffinityMask, SetProcessAffinityMask,
+            };
+            let (mut process, mut system) = (0usize, 0usize);
+            // SAFETY: the current process's pseudo-handle; both masks are this frame's own.
+            unsafe {
+                assert_ne!(
+                    GetProcessAffinityMask(GetCurrentProcess(), &mut process, &mut system),
+                    0
+                );
+                let lowest = process.isolate_lowest_one();
+                let two = lowest | (process & !lowest).isolate_lowest_one();
+                assert_ne!(SetProcessAffinityMask(GetCurrentProcess(), two), 0);
+                two.count_ones() as usize
+            }
+        };
+        assert_eq!(host_cpus(), held);
+        assert_eq!(microvm_vcpus() as usize, held);
     }
 
     /// What a run's limits may ask, on a host of 18 CPUs, refused in shards' words (D158):
