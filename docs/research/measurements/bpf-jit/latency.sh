@@ -16,6 +16,9 @@ mkdir -p "$dirs/cfg"
 for arm in A B; do
   mkdir -p "$dirs/$arm"
   ln -s "$shards" "$dirs/$arm/shards"
+  # Windows starts `shards` as shards.exe (CreateProcess adds the extension). Run there with
+  # MSYS=winsymlinks:nativestrict, or Git's ln copies the home.
+  case $shards in *.exe) ln -s "$shards" "$dirs/$arm/shards.exe" ;; esac
   ln -s "$(cd "$homes/$arm" && pwd)" "$dirs/$arm/home"
 done
 image=alpine@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6

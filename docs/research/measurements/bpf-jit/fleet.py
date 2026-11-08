@@ -13,9 +13,10 @@ in each home:
   template, each one's client wall clock (`restored`): request to a workload running;
 - once the home's VM processes stay the same for 5 s, each one's memory (Linux:
   /proc/PID/smaps_rollup's Rss, Pss and Anonymous; macOS: proc_pid_rusage's physical
-  footprint and resident size): the booted run's, the restored runs' (the VM processes
-  `inspect` names, State.Pid) and the warm microVMs' the pool keeps, apart, and their sum;
-  the template's disk blocks (du);
+  footprint and resident size; Windows: Get-Process's private bytes and working set): the
+  booted run's, the restored runs' (the VM processes `inspect` names, State.Pid) and the
+  warm microVMs' the pool keeps, apart, and their sum; the template's disk blocks (du; not
+  on Windows, where Git's du reads a sparse file's length);
 - every run removed (`rm -f`).
 
     fleet.py --shards SHARDS --init INIT --a KERNEL --b KERNEL --homes DIR
@@ -23,8 +24,8 @@ in each home:
 
 DIR keeps both homes (DIR/A, DIR/B) between invocations: IMAGE is pulled into each once
 (a registry limits the pulls it serves). INIT is the shards-init the guests run. Prints n,
-p50, p90, p99 and max of each, and each round's p50, with host, OS and revision. Every `shards` runs with an empty
-DOCKER_CONFIG. Start latency through the daemon's pools, request to status, one run at a
+p50, p90, p99 and max of each, and each round's p50, with host, OS and revision. Every
+`shards` runs with an empty DOCKER_CONFIG. Start latency through the daemon's pools, request to status, one run at a
 time: build-ab/ab.py over the same two homes (ENV_* unset, each home's own guest).
 """
 import argparse, atexit, ctypes, hashlib, math, os, platform, re, shutil, subprocess, sys, tempfile, time
@@ -39,6 +40,7 @@ p.add_argument("--image", default="alpine@sha256:294b683cb724975bec92580e1e68567
 a = p.parse_args()
 
 MACOS = platform.system() == "Darwin"
+WINDOWS = platform.system() == "Windows"
 work = tempfile.mkdtemp(prefix="bpf-fleet-")
 config = os.path.join(work, "docker-config")
 os.makedirs(config)
@@ -63,14 +65,24 @@ def clean():
     shutil.rmtree(work, ignore_errors=True)
 
 
+def powershell(script):
+    return subprocess.run(["powershell", "-NoProfile", "-Command", script], capture_output=True,
+                          text=True).stdout
+
+
 def vms(home):
     """The home's VM processes: (pid, booted), booted for one that runs a kernel."""
-    out = subprocess.run(["ps", "-axww", "-o", "pid=,command="], capture_output=True, text=True).stdout
+    if WINDOWS:
+        out = powershell("Get-CimInstance Win32_Process -Filter \"Name like 'shards-vm%'\" | "
+                         "ForEach-Object { \"$($_.ProcessId) $($_.CommandLine)\" }")
+    else:
+        out = subprocess.run(["ps", "-axww", "-o", "pid=,command="], capture_output=True, text=True).stdout
     found = []
     for line in out.splitlines():
         pid, _, command = line.strip().partition(" ")
         words = command.split()
-        if len(words) < 2 or not words[0].endswith("shards-vm") or home not in command:
+        name = words[0].strip('"').lower().removesuffix(".exe") if words else ""
+        if len(words) < 2 or not name.endswith("shards-vm") or home not in command:
             continue
         if words[1] == "run" and "--kernel" in words:
             found.append((int(pid), True))
@@ -91,7 +103,14 @@ if MACOS:
 
 
 def memory(pid):
-    """A VM process's memory in KiB: macOS {footprint, resident}; Linux {rss, pss, anon}."""
+    """A VM process's memory in KiB: macOS {footprint, resident}; Linux {rss, pss, anon};
+    Windows {private, working set} (Get-Process's PrivateMemorySize64, WorkingSet64)."""
+    if WINDOWS:
+        out = powershell(f"Get-Process -Id {pid} -ErrorAction SilentlyContinue | ForEach-Object "
+                         "{ \"$($_.PrivateMemorySize64) $($_.WorkingSet64)\" }").split()
+        if len(out) != 2:
+            return None
+        return {"private": int(out[0]) // 1024, "working set": int(out[1]) // 1024}
     if MACOS:
         u = RusageV2()
         if libproc.proc_pid_rusage(pid, 2, ctypes.byref(u)) != 0:
@@ -120,6 +139,9 @@ def settled(home, least, timeout=300):
 
 
 def du_kib(path):
+    if WINDOWS:
+        # Git's du reads a sparse file's length, not what it holds.
+        return None
     out = subprocess.run(["du", "-sk", path], capture_output=True, text=True).stdout.split()
     return int(out[0]) if out else 0
 
