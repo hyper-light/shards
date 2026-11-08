@@ -9668,7 +9668,8 @@ machine's is), by `a_running_microvm_moves_to_another_machine_and_goes_on_there`
 appending to a file it holds open in its volume, from the volume's directory: each count
 once there, in order), `a_moved_microvms_log_and_image_go_with_it` (an image no registry
 holds, saved and loaded) and `a_move_refused_leaves_the_microvm_running_here`
-(tests/moved.rs); between two machines (built, not yet run there; each skips, saying so,
+(tests/moved.rs); between two machines (run to another home of the same machine, each
+passing on HVF and KVM, PM M462; across two machines not yet; each skips, saying so,
 where `SHARDS_MOVE_INVITE` names no machine) by `a_microvm_moves_to_another_host_saved_and_live`
 (tests/moved.rs, to the machine whose invitation `SHARDS_MOVE_INVITE` names: saved, with a
 volume and its image and files going with it, and live, a guest stamping 16 MiB as it moves)
@@ -9771,11 +9772,32 @@ peer", each going on here as it should. What changed for them:
   records the bytes sent, the rate and the longest silence of every move, and a live move's
   rounds, with n, p50, p90, p99 and max.
 
-Not yet measured: the moves again on that link with this build, cold and live, n 20: how
-much packing takes off the stream (alpine's memory, layer and swap), the levels it settles
-at on that link and on loopback (none, where the compressor is slower than the link, as
-between two homes; its cost there), and the longest silence each connection lived through,
-which says whether 100 s is enough there or a link's outages ask more.
+- **Measured with this build** between two homes of a Mac Studio (M3 Ultra, PM M462), n 20
+  each, every count once there: a cold move ran nowhere 1.09 s at p50 and 1.37 s at p90, its
+  stream of about 83 MB sent packed as 21 to 33 MB, 55 to 69 of its 80 frames as zstd (on
+  loopback the packer stays at zstd's levels, its reader seldom waiting on it); a live one
+  0.28 s at p50 and 0.42 s at most, its rounds 4 at p50, ending with little left (12) or
+  as they stopped shrinking (8).
+- **A fresh home's first move** paid for the pinned guest inside its restore: a restore
+  prepares its run's request as a start does (`run::prepare`), which downloads the pinned
+  kernel where the home records none, 17 to 46 s of that p99 (the kernel's file in the
+  home's `guest/` written the second the restore answered, PM M462), which a live move's
+  microVM would wait running nowhere. The plan says whether its run boots the stored guest
+  (`Plan::guest`, from its request: no kernel given), and the machine moved to fetches it as
+  it readies, before the stream; a run given its kernel fetches none.
+- **Between two Macs of different OSes, refused.** From the M3 Ultra (macOS 26.4) to an M4
+  Max Studio (macOS 26.2), 38 of 40 moves were refused at `ready`, "this machine's CPU
+  lacks FEAT_SSBS", each going on where it was (two more failed to reach the daemon there,
+  and went on where they were too): macOS 26.4 names FEAT_SSBS on the M3 Ultra, 26.2 not on
+  either M4 Max, which name FEAT_FPACCOMBINE, FEAT_WFxT and SME's features the M3 Ultra does
+  not, so neither way is taken, as the check is meant to (PM M460, M462).
+
+Not yet measured: the moves on that link with this build, between two machines of one
+macOS (two M4 Max Studios), cold and live, n 20, and tests/moved.rs's tests of another
+machine run across two: on 2026-11-08 the Studios' link carried 193 kB/s and their kiln
+runners restarted within the hour, each ending the listening daemon its run held (PM
+M462). Then the levels packing settles at on a slow link, and the longest silence each
+connection lived through, which says whether 100 s is enough there.
 
 **Moved live** (part 7, roadmap item 7b). `shards move vm --live NAME CONTEXT` moves it as
 it runs, by pre-copy (Clark et al., "Live Migration of Virtual Machines", NSDI 2005): its
@@ -9806,8 +9828,12 @@ page by page as each came; resumed there; and stopped here once it runs there.
   bytes and why they stopped (`move: rounds N, B bytes, ended: ...`), which two-hosts.sh
   records; held by `precopy_stops_once_its_rounds_no_longer_shrink` (live.rs), each rule
   and the guest of that move among its cases. A live move's stream is packed for its link as
-  a cold one's is (part 6), its rounds' bytes counted before. Not yet measured: that move
-  again with this build, its rounds and the time it runs nowhere.
+  a cold one's is (part 6), its rounds' bytes counted before. Between two homes of a Mac
+  Studio with this build, n 20, that guest's rounds numbered 4 at p50 and 6 at most, round 0
+  about 60 MB and each later one 9 to 19 MB, 12 ending with little left and 8 as they
+  stopped shrinking; it ran nowhere 0.28 s at p50, 0.37 at p90 and 0.42 at most, its last
+  save 83 to 228 ms of it (PM M462). Not yet measured: that move between two machines, its
+  rounds over a slow link and the time it runs nowhere there.
 - **Its rounds told as they go** (`Precopying`, `kind::PRECOPYING`): the VM tells its
   daemon each round as it ends, and within a round each further 8 MiB (the bytes a last
   round may send, at least a record's 1 MiB) its stream's carrier has taken, counted as it
@@ -9913,10 +9939,12 @@ host (its backend merged, D209); WHP x64's on jupiter; with each one's rounds, w
 WHP's shrink as KVM's do, and the time it ran nowhere measured on WHP; a
 volume's files moved live, which go with its last save, and so lengthen the time it runs
 nowhere by their bytes. A move between two machines live, and the time one moved live runs
-nowhere there: of saved moves between two machines, the first 20, over Wi-Fi (part 6, "Over
-a slow link"), are the only ones run, every other measured between two homes of one machine
-(PM M460, M461), where the stream crosses no network. Two Macs of one chip and OS
-(Hypervisor.framework) are a pair to run it on; a pair of KVM x86_64 hosts needs a second
+nowhere there: saved moves between two machines have run, 18 of 20 over Wi-Fi before the
+slow-link build (part 6, "Over a slow link"); with it, every move was measured between two
+homes of one machine (PM M460, M461, M462), where the stream crosses no network, as the
+pair it was run on, an M3 Ultra on macOS 26.4 and an M4 Max on 26.2, takes no move either
+way (FEAT_SSBS one way, FEAT_FPACCOMBINE, FEAT_WFxT and SME's the other). Two Macs of one
+chip and OS (Hypervisor.framework) are a pair to run it on; a pair of KVM x86_64 hosts needs a second
 whose CPU has every feature of the first's, as /proc/cpuinfo names them, or a tailnet for
 CI's runners.
 

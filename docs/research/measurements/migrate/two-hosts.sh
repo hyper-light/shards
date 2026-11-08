@@ -23,7 +23,8 @@
 #            peer went unheard (`move: stream ...; link ...` in its log), a failed move's
 #            too; a live move's rounds, their bytes and why they ended (`move: rounds`). A
 #            move that fails is counted, its log kept, and the series goes on; any failure
-#            exits 1 at the end.
+#            exits 1 at the end. FIRST resumes a series cut short at that move (its runner
+#            gone, say), the moves before it counted with the rest.
 #            Results also go to $OUT, $HOME_HERE/results.txt unless given, headed by both
 #            machines: this one's, and the other's as THERE says it (listen's `listening at`
 #            line), where given. On macOS it runs itself as a launchd job
@@ -82,6 +83,7 @@ HOME_THERE=${HOME_THERE:-$HOME/.cache/shards-move-there}
 HOME_HERE=${HOME_HERE:-$HOME/.cache/shards-move-here}
 IMAGE=${IMAGE:-alpine:3.20}
 N=${N:-20}
+FIRST=${FIRST:-1}
 MODE=${MODE:-cold live}
 OUT=${OUT:-$HOME_HERE/results.txt}
 export DOCKER_CONFIG=${DOCKER_CONFIG:-$(mktemp -d)}
@@ -145,13 +147,11 @@ series() {
 		work="$work"'head -c 1048576 /dev/zero | tr "\0" "x" > /dev/shm/dirty; '
 	fi
 	work="$work"'sleep 0.05; done'
-	: > "$HOME_HERE/took-$mode.txt"
-	: > "$HOME_HERE/nowhere-$mode.txt"
-	: > "$HOME_HERE/sent-$mode.txt"
-	: > "$HOME_HERE/rate-$mode.txt"
-	: > "$HOME_HERE/silence-$mode.txt"
-	: > "$HOME_HERE/rounds-$mode.txt"
-	for i in $(seq 1 "$N"); do
+	# A series resumed (FIRST past 1) goes on with the files of the moves before it.
+	if [ "$FIRST" = 1 ]; then
+		for f in took nowhere sent rate silence rounds failed; do : > "$HOME_HERE/$f-$mode.txt"; done
+	fi
+	for i in $(seq "$FIRST" "$((FIRST + N - 1))"); do
 		name="mv-$mode-$i"
 		# One a failed move left here, or an earlier series' there.
 		here rm -f "$name" >/dev/null 2>&1 || true
@@ -201,7 +201,8 @@ series() {
 		here --context lab rm -f "$name" >/dev/null
 	done
 	{
-		echo "$mode: $N moves, $((failed - was)) failed"
+		echo "$((failed - was))" >> "$HOME_HERE/failed-$mode.txt"
+		echo "$mode: $((FIRST + N - 1)) moves, $(awk '{n += $1} END {print n + 0}' "$HOME_HERE/failed-$mode.txt") failed"
 		stats "$mode move took (us)" < "$HOME_HERE/took-$mode.txt"
 		stats "$mode ran nowhere (us)" < "$HOME_HERE/nowhere-$mode.txt"
 		stats "$mode sent (bytes)" < "$HOME_HERE/sent-$mode.txt"
@@ -270,7 +271,7 @@ move)
 	if [ "$(uname -s)" = Darwin ] && [ -z "${TWO_HOSTS_UNCLAMPED:-}" ] && [ "${UNCLAMP:-1}" = 1 ]; then
 		job=$(mktemp -d)/move
 		pass=(TWO_HOSTS_UNCLAMPED=1)
-		for v in SHARDS INVITE THERE N MODE IMAGE HOME_HERE HOME_THERE OUT REVISION DOCKER_CONFIG; do
+		for v in SHARDS INVITE THERE N FIRST MODE IMAGE HOME_HERE HOME_THERE OUT REVISION DOCKER_CONFIG; do
 			if [ -n "${!v+x}" ]; then pass+=("$v=${!v}"); fi
 		done
 		status=0
@@ -284,7 +285,7 @@ move)
 	here inspect context lab >/dev/null 2>&1 || here create context lab --invite-file "$HOME_HERE/lab.invite"
 	here pull -q "$IMAGE" >/dev/null
 	{
-		echo "== $(date -u +%FT%TZ): moving from $(machine "$HOME_HERE"), revision ${REVISION:-$(git -C "$root" rev-parse --short HEAD 2>/dev/null || echo unknown)}, image $IMAGE, n $N"
+		echo "== $(date -u +%FT%TZ): moving from $(machine "$HOME_HERE"), revision ${REVISION:-$(git -C "$root" rev-parse --short HEAD 2>/dev/null || echo unknown)}, image $IMAGE, n $N, from move $FIRST"
 		echo "   to: ${THERE:-$(here --context lab info --format '{{.Name}} {{.OperatingSystem}} {{.Architecture}}' 2>/dev/null || echo unknown)}"
 	} | tee -a "$OUT"
 	for mode in $MODE; do
@@ -325,15 +326,20 @@ summary)
 	echo
 	echo "| mode | what | n | p50 | p90 | p99 | max |"
 	echo "|---|---|---|---|---|---|---|"
+	# Each row as the last series (or the last part of a resumed one) said it, over all its
+	# moves.
 	awk '/^(cold|live) (move took|ran nowhere|sent|link|longest silence|rounds) \([^)]*\): / {
 		mode = $1; what = $0
 		sub(/^(cold|live) /, "", what); sub(/: .*$/, "", what); sub(/^move /, "", what)
-		if ($0 ~ /: none$/) { printf "| %s | %s | 0 | | | | |\n", mode, what; next }
+		key = mode " " what
+		if (!(key in row)) order[++n] = key
+		if ($0 ~ /: none$/) { row[key] = sprintf("| %s | %s | 0 | | | | |", mode, what); next }
 		sub(/^[^:]*: /, "")
-		printf "| %s | %s | %s | %s | %s | %s | %s |\n", mode, what, $2, $4, $6, $8, $10
-	}' "$OUT"
+		row[key] = sprintf("| %s | %s | %s | %s | %s | %s | %s |", mode, what, $2, $4, $6, $8, $10)
+	} END { for (i = 1; i <= n; i++) print row[order[i]] }' "$OUT"
 	echo
-	grep -E '^(cold|live): [0-9]+ moves' "$OUT" | sed 's/^/- /' || true
+	awk '/^(cold|live): [0-9]+ moves/ { if (!($1 in last)) order[++n] = $1; last[$1] = $0 }
+		END { for (i = 1; i <= n; i++) print "- " last[order[i]] }' "$OUT"
 	if [ -n "${LOG:-}" ] && [ -f "$LOG" ]; then
 		echo
 		echo "tests/moved.rs:"
