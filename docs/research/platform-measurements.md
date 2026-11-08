@@ -18849,8 +18849,28 @@ revision before comparing a changed API/implementation.
   `mark_growth`, in the page init shares with its grower and builtins), and a give-back
   that finds a mark within the window the host's pressure is measured over (2 s,
   `shards_abi::PRESSURE_WINDOW_US`, the PSI trigger's window, D188) keeps all it has. 0 of
-  2,000 raised allocations killed, against 15 of 74 (under 3 in 2,000 at 95%). Open: 6 of
-  the 2,000 took 5.1 to 5.4 s, the grower's `STALLED` (5 s) and its second ask, as 3 and 4
-  of two runs of 1,000 did at 49ee67a5 with an ask and a give-back's request serialized besides (a lock
-  in the shared page): that lock changed nothing, and is not kept; the stall's cause is
-  not yet found.
+  2,000 raised allocations killed, against 15 of 74 (under 3 in 2,000 at 95%).
+- **The rest, a tail.** 6 of the 2,000 took 5.1 to 5.4 s, the grower's `STALLED` (5 s) and
+  its second ask, as 3 and 4 of two runs of 1,000 did at 49ee67a5 with an ask and a
+  give-back's request serialized besides (a lock in the shared page, which changed nothing
+  and is not kept), and 5 of 1,992 rounds of a privileged run (whose exec may read its
+  guest's kernel log), all five after the host's free memory fell to 5 to 8 GB of 64
+  under other agents' work. The guest's kernel said why, at the grower's second ask:
+  `943718400 bytes asked for, 354418688 came in 5 s; ... requested size: 0x38400000;
+  plugged size: 0x30000000; requested size: 0x2e00000`, then `plugged size: 0x15200000,
+  requested size: 0x38400000`. The round before had ended lowering the run to `-m 256m`,
+  its device's request to 46 MiB (0x2e00000, what is pluggable under 256 MiB); its driver
+  was still unplugging 768 MiB down to it when the raise's ask for 900 MiB came, and went
+  on unplugging (to 338 MiB) for the 5 s before the second ask. Linux's driver stops for a
+  changed request between its requests to the device and between its tries to take a
+  range (drivers/virtio/virtio_mem.c `virtio_mem_send_unplug_request`,
+  `virtio_mem_fake_offline`: `config_changed`, then `-EAGAIN` back to
+  `virtio_mem_run_wq`), but not inside one: a memory block it offlines whole
+  (`offline_and_remove_memory`) migrates every page of it, and `offline_pages`
+  (mm/memory_hotplug.c) retries until it is done or its thread has a signal pending, which
+  a kworker never has; a guest at its hold, allocating, has little free memory to migrate
+  to, and a host short of memory runs it slowly. Read in Linux 7.2-rc4's source, not
+  checked against the pinned 6.18.48's; where in its unplug the driver was is not
+  recorded. Nothing of shards' asks is lost: the grow waits on the unplug before it. Not
+  fixed here: an unplug that gives way to a grow is a change to the guest kernel's
+  driver, and a new kernel pin (D148's patches).
