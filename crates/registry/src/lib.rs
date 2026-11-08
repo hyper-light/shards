@@ -41,6 +41,9 @@ pub struct Error {
     /// registry named insecure without a port is then asked in plain HTTP on HTTP's
     /// (registry.rs, D194).
     refused: bool,
+    /// Whether it is an answer its path's wait cut (crate::patience `Cutoff`): asked
+    /// again at once, the trouble's pause spent waiting for it.
+    overdue: bool,
 }
 
 /// What dockerd says of a registry's refusal in place of containerd's words
@@ -88,6 +91,7 @@ impl Error {
             said: None,
             not_tls: false,
             refused: false,
+            overdue: false,
         }
     }
 
@@ -113,6 +117,18 @@ impl Error {
 
     pub(crate) fn is_refused(&self) -> bool {
         self.refused
+    }
+
+    /// The same error, of an answer its path's wait cut.
+    pub(crate) fn overdue(self) -> Error {
+        Error {
+            overdue: true,
+            ..self
+        }
+    }
+
+    pub(crate) fn is_overdue(&self) -> bool {
+        self.overdue
     }
 
     /// The same error, with what dockerd says of it.
@@ -146,6 +162,7 @@ impl Error {
             said: self.said,
             not_tls: self.not_tls,
             refused: self.refused,
+            overdue: self.overdue,
         }
     }
 }

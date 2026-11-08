@@ -34,7 +34,7 @@ use std::time::{Duration, Instant};
 use rustls::pki_types::ServerName;
 use rustls::{ClientConfig, ClientConnection};
 
-use crate::patience::{Pace, Paths, Wait, path_of};
+use crate::patience::{Paths, Silenced, Sketch, Wait, path_of};
 use crate::proxy::{Proxies, Proxy};
 use crate::registries::Registries;
 use crate::url::{Scheme, Url};
@@ -102,7 +102,7 @@ pub struct Client {
 /// its response's head; and on any read or write that makes no progress. `None` waits
 /// for as long as it takes, until the request is cancelled. By default 30 s, [`HEAD`] and
 /// 30 s, Go's transport's; a registry's client waits instead as long as its path has shown
-/// (D222: connects, handshakes, bodiless answers and silences, where its patience bounds
+/// (D222: connects, handshakes, lookups' answers and silences, where its patience bounds
 /// them at all); a build's proxy waits as long as the step it serves does, as Go's
 /// transport has no bound of its own (D110); EC2's instance metadata is given 250 ms to
 /// connect, as the AWS SDK gives it (D168).
@@ -439,9 +439,17 @@ impl Client {
         }
     }
 
+    /// This client, every wait it draws drawn as `u` in [0, 1) says (crate::patience).
+    #[cfg(test)]
+    pub(crate) fn drawing(mut self, u: f64) -> Client {
+        self.paths.draw_as(u);
+        self
+    }
+
     /// This client, its waits on each server the ones that server's path has shown
-    /// (D222), within its patience: an answer to a request without a body waited for as
-    /// long as the path's answers say, and a body's silence as long as its silences say.
+    /// (D222), within its patience: an answer to a lookup (a GET or HEAD without a body)
+    /// waited for as long as the path's answers say, and a body's silence as long as its
+    /// silences say.
     pub(crate) fn learning(mut self) -> Client {
         self.learning = true;
         self
@@ -740,11 +748,13 @@ impl Client {
         sent: Option<&AtomicU64>,
     ) -> Result<Response<'_>, Failure> {
         let path = path_of(req.url);
-        // A request without a body is answered as fast as its path answers: one with a
-        // body waits on its server's work with it, as long as its patience says.
-        let bodiless = req.file.is_none() && req.body.is_empty();
+        // A lookup, a GET or HEAD without a body, is answered as fast as its path answers,
+        // and asked again where it is not, as it may be (a safe method, RFC 9110 §9.2.1):
+        // anything else waits on its server's work with it (an upload begun, or committed,
+        // its digest checked), as long as its patience says.
+        let lookup = matches!(req.method, "GET" | "HEAD") && req.file.is_none() && req.body.is_empty();
         let answer = match self.patience.head {
-            Some(_) if self.learning && bodiless => Some(self.paths.timeout(&path, Wait::Answer)),
+            Some(_) if self.learning && lookup => Some(self.paths.timeout(&path, Wait::Answer)),
             patience => patience,
         };
         let written = conn.io.get_mut().write_all(head).and_then(|()| match req.file {
@@ -752,17 +762,24 @@ impl Client {
             None => conn.io.get_mut().flush().map(|()| true),
         });
         let asked = Instant::now();
+        // An answer its wait cut is said overdue: asked again at once, its wait having
+        // been drawn to end where the trouble's pause would (crate::patience `Cutoff`).
         let learned = |read: Result<Head, Failure>| {
-            if self.learning && bodiless {
-                match &read {
-                    Ok(_) => self.paths.waited(&path, Wait::Answer, asked.elapsed()),
-                    Err(_) if answer.is_some_and(|a| asked.elapsed() >= a) => {
-                        self.paths.timed_out(&path, Wait::Answer)
-                    }
-                    Err(_) => {}
-                }
+            if !(self.learning && lookup) {
+                return read;
             }
-            read
+            let took = asked.elapsed();
+            match read {
+                Ok(head) => {
+                    self.paths.waited(&path, Wait::Answer, took);
+                    Ok(head)
+                }
+                Err(failure) if answer.is_some_and(|a| took >= a) => {
+                    self.paths.timed_out(&path, Wait::Answer, took);
+                    Err(failure.overdue())
+                }
+                Err(failure) => Err(failure),
+            }
         };
         // A server may answer before it has read the whole request, then close: a 413 or a
         // 401 to an upload. Its answer is taken as it comes (`send_body`), or where a
@@ -815,14 +832,21 @@ impl Client {
         // A body's silence is cut where its path's silences say it has gone on too long.
         let paced = match self.patience.stall {
             Some(_) if self.learning => {
-                let (timeout, silence) = self.paths.silence(&path);
+                let timeout = self.paths.silence(&path);
+                let now = Instant::now();
                 Some(Paced {
                     paths: &self.paths,
                     path,
-                    silence,
                     timeout,
-                    last: Instant::now(),
-                    timed_out: None,
+                    last: now,
+                    body: Silenced {
+                        seen: Sketch::default(),
+                        began: now,
+                        first: None,
+                        timed_out: None,
+                        waited: timeout,
+                        cut: None,
+                    },
                 })
             }
             _ => None,
@@ -929,7 +953,7 @@ impl Client {
         if ok {
             self.paths.waited(path, wait, took);
         } else if took >= within {
-            self.paths.timed_out(path, wait);
+            self.paths.timed_out(path, wait, took);
         }
     }
 
@@ -1318,6 +1342,14 @@ impl Failure {
     fn into_error(self) -> Error {
         match self {
             Failure::BeforeResponse(e) | Failure::Other(e) => e,
+        }
+    }
+
+    /// The same failure, of an answer its path's wait cut.
+    fn overdue(self) -> Failure {
+        match self {
+            Failure::BeforeResponse(e) => Failure::BeforeResponse(e.overdue()),
+            Failure::Other(e) => Failure::Other(e.overdue()),
         }
     }
 }
@@ -1718,25 +1750,22 @@ struct Body<'c> {
     pool: &'c Pool,
 }
 
-/// A body's silences, the waits between its reads that brought bytes, added to its path's
-/// as it goes ([`Pace`]), and kept as the body is let go of.
+/// A body's silences, the times between its reads that brought bytes, counted as it goes
+/// and added to its path's ([`Paths::silenced`]) as the body is let go of.
 #[derive(Debug)]
 struct Paced<'c> {
     paths: &'c Paths,
     path: String,
-    silence: Pace,
     /// How long a read may wait.
     timeout: Duration,
     /// When the last read that brought bytes returned, or the body began.
     last: Instant,
-    /// Whether a read timed out (`Some(true)`), or brought bytes after one or from the
-    /// start (`Some(false)`).
-    timed_out: Option<bool>,
+    body: Silenced,
 }
 
 impl Drop for Paced<'_> {
     fn drop(&mut self) {
-        self.paths.silenced(&self.path, self.silence, self.timed_out);
+        self.paths.silenced(&self.path, &self.body);
     }
 }
 
@@ -1765,12 +1794,14 @@ impl Body<'_> {
             match &read {
                 Ok(n) if *n > 0 => {
                     let now = Instant::now();
-                    p.silence.add(now.duration_since(p.last));
+                    p.body.seen.add(now.duration_since(p.last));
+                    p.body.first.get_or_insert(now);
                     p.last = now;
-                    p.timed_out = Some(false);
+                    p.body.timed_out = Some(false);
                 }
                 Err(e) if matches!(e.kind(), io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock) => {
-                    p.timed_out = Some(true);
+                    p.body.timed_out = Some(true);
+                    p.body.cut = Some(Instant::now());
                 }
                 _ => {}
             }
@@ -2180,7 +2211,7 @@ mod tests {
     use super::*;
     use std::net::{Ipv4Addr, Ipv6Addr};
 
-    use crate::testing::{After, registry, serve};
+    use crate::testing::{After, registry, route, serve};
     use crate::tls::client_config;
 
     fn plain() -> Client {
@@ -2841,7 +2872,7 @@ mod tests {
         assert_eq!(listening.accepted(), 1);
         let shown = client.shown("localhost", listening.port);
         assert_eq!(
-            (shown.connect.n, shown.handshake.n, shown.answer.n),
+            (shown.connect.n, shown.handshake.n, shown.answers.answered.total()),
             (1, 1, 2),
             "{shown:?}"
         );
@@ -2853,6 +2884,29 @@ mod tests {
             client.paths.timeout(&path, Wait::Handshake),
             crate::patience::FIRST
         );
+    }
+
+    /// An answer its path's wait cut is said overdue, so it is asked again at once
+    /// (crate::patience `Cutoff`): a learning client's, past its first second; another
+    /// client's wait is its patience, and a failure past it is not overdue.
+    #[test]
+    fn an_answer_cut_by_its_wait_is_overdue() {
+        let server = route(None, |_| {
+            std::thread::sleep(Duration::from_millis(1300));
+            Some((
+                b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n".to_vec(),
+                After::Keep,
+            ))
+        });
+        let url = at("http", "127.0.0.1", server.port);
+        let e = fetch(&plain().learning().drawing(0.0), "GET", &url).unwrap_err();
+        assert!(e.is_overdue() && e.kind() == ErrorKind::Transient, "{e}");
+        let impatient = plain().with_patience(Patience {
+            head: Some(Duration::from_millis(500)),
+            ..Patience::default()
+        });
+        let e = fetch(&impatient, "GET", &url).unwrap_err();
+        assert!(!e.is_overdue(), "{e}");
     }
 
     /// A proxy on loopback: each connection's request head is kept; a CONNECT answered

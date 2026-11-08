@@ -4044,10 +4044,17 @@ revision before comparing a changed API/implementation.
     reset, refused) asked again every 50 ms to its first answer. `episodes.py`: answers'
     times by endpoint (n, p50, p90, p99, max) and each failure's episode, from its first
     failed request's start to the answer, with its askings and when it began.
-  - `replay.py`: each endpoint's answers, in order, through patience.rs's estimator (the
-    smoothed wait and four deviations, at least 1 s, 1 s before any, doubled per timeout
-    in a row): the healthy answers it would have cut and asked again, and the time lost,
-    against 30 s waits.
+  - `replay.py`: each endpoint's answers, in order, through each rule as patience.rs
+    keeps it, learning as they come: fixed 30 s waits; RFC 6298's estimator (the smoothed
+    wait and four deviations, at least 1 s, 1 s before any, doubled per timeout in a row,
+    D222 as first built); and the cutoff that replaced it (D222's `Cutoff`, below). Two
+    models of what asking again meets: `same`, the model first replayed here (a healthy
+    answer cut is answered as it was, after each wait it outlasts: asking again never
+    helps), and `trace`, the endpoint's own next recorded asking begun once the asking
+    again would have been, `Trouble`'s pause included (a slow spell, and an outage, as
+    recorded). For each, the healthy answers cut and asked again, and the time lost: each
+    asking's time to its answer, less its own recorded answer; and by endpoint, how often
+    an asking past its p90 was followed by another.
   - `silences.py`: the four largest layers of ghcr.io/actions/actions-runner:latest and
     of Docker Hub's library/python:3.13 (linux/amd64), downloaded four at once, 4 rounds
     each, following the redirect to the CDN; each download's head times and its longest
@@ -4076,7 +4083,8 @@ revision before comparing a changed API/implementation.
   | mcr.microsoft.com/v2/ | 3,585 | 90 | 152 | 362 | 5,289 | 1 |
   | registry.gitlab.com/v2/ | 3,573 | 272 | 309 | 684 | 1,574 | 2 |
 
-  Replayed: the learned waits stayed at their 1 s floor at p50 on every endpoint, rising
+  Replayed through RFC 6298's estimator (D222 as first built; `same`): the learned
+  waits stayed at their 1 s floor at p50 on every endpoint, rising
   to 2.0 to 8.1 s at most after slow answers; they would have cut 73 of 39,235 healthy
   answers (0.19%, 0.03% to 0.53% by endpoint, most on ghcr.io and quay.io, whose answers
   run longest), each asked again, and lost 120 s in all, where 30 s waits lost 752 s to
@@ -4099,13 +4107,80 @@ revision before comparing a changed API/implementation.
   trial run before, one ghcr.io download of 324 MB ended 19.6 MB short after 546 s,
   progressing at 0.56 MB/s: a transfer a deadline would have cut, and one a resume
   finishes.
+- **Found on the Mac Studio (Wi-Fi).** adas-mac-studio.local-2 (kiln
+  d1323898b255a3ed435eb83fa0f7b0cf: Apple M3 Ultra, 32 CPUs, macOS 26.4, Darwin 25.4.0,
+  on Wi-Fi, home broadband), 2026-11-08, the same harness (records kept on that host at
+  `/tmp/regprobe/studio.jsonl` and `sil-studio.jsonl`; Fedora's at fedora-2's
+  `/tmp/regprobe/fedora.jsonl` and `sil-fedora.jsonl`). 30,687 requests over 2.01 h, and
+  answers heavy-tailed on every endpoint: p99 ten to forty times p50, and 43 healthy
+  answers past 30 s. 68 failure episodes: 32 requests never answered within 30 s
+  (0.10%), resets and lookups failing in bursts (mcr.microsoft.com's resets up to 109 s,
+  nine askings), and timeouts across every endpoint at once at +2,371 s and +5,183 s (the
+  host's own network). Answers (ms):
+
+  | endpoint | n | p50 | p90 | p99 | max | never answered |
+  |---|---|---|---|---|---|---|
+  | auth.docker.io/token | 2,566 | 392 | 3,327 | 14,358 | 47,588 | 2 |
+  | registry-1.docker.io/v2/ | 2,499 | 529 | 3,151 | 20,948 | 41,220 | 3 |
+  | ghcr.io/token | 2,589 | 483 | 3,720 | 15,367 | 45,078 | 3 |
+  | ghcr.io/v2/ | 2,605 | 480 | 3,770 | 15,431 | 45,071 | 2 |
+  | quay.io/v2/ | 2,543 | 525 | 3,476 | 17,269 | 63,822 | 6 |
+  | public.ecr.aws/token/ | 2,635 | 322 | 3,814 | 14,683 | 40,401 | 2 |
+  | gcr.io/v2/ | 3,279 | 555 | 1,047 | 4,376 | 19,407 | 3 |
+  | us-docker.pkg.dev/v2/ | 3,296 | 539 | 1,053 | 4,597 | 19,655 | 2 |
+  | registry.k8s.io/v2/ | 3,180 | 369 | 1,033 | 6,335 | 29,401 | 3 |
+  | mcr.microsoft.com/v2/ | 2,542 | 320 | 2,883 | 14,139 | 34,101 | 3 |
+  | registry.gitlab.com/v2/ | 2,953 | 533 | 1,089 | 11,890 | 38,359 | 3 |
+
+  Replayed as first (`same`): RFC 6298's waits cut 1,191 healthy answers of 30,594
+  (3.89%) and lost 5,110.8 s, where fixed 30 s waits lost 1,001.2 s to the stuck ones:
+  on a heavy-tailed path the estimator, which follows the latest answers, cuts answers
+  that are merely slow, and each asking again starts its wait over. Downloads: ghcr.io's
+  went silent past a second 6 to 142 times each, its longest silence 2.0 to 25.3 s (two
+  of its sixteen ended short); Docker Hub's eight (its last two rounds refused, 401) at
+  most three times each, 1.4 s.
+
+  **The cutoff (D222's `Cutoff`) replayed**, beside the rules it replaced (`replay.py`,
+  seed 0, the draws of seeds 1 and 2 in brackets; healthy cuts as a share of answers):
+
+  | records | model | fixed 30 s | RFC 6298 | cutoff |
+  |---|---|---|---|---|
+  | fedora-2 (wired) | trace | 1,124.8 s, 0% | 50.3 s, 0.21% | 19.7 s [17.7, 19.1], 0.05% |
+  | fedora-2 (wired) | same | 752.0 s, 0% | 120.1 s, 0.19% | 102.3 s [105.9, 98.3], 0.04% |
+  | Mac Studio (Wi-Fi) | trace | 3,836.3 s, 0.15% | 3,579.6 s, 5.09% | 1,251.3 s [1,769.4, 1,548.4], 3.01% |
+  | Mac Studio (Wi-Fi) | same | 5,301.2 s, 0.14% | 5,110.8 s, 3.89% | 2,344.0 s [2,327.8, 2,344.4], 0.30% |
+
+  Slowness persists: after an asking past its endpoint's p90, the next (2 s later) was
+  past it 26% to 59% of the time on Fedora and 24% to 77% on the Studio (seven of its
+  endpoints 72% to 77%), where independent askings would be 10%; so asking again is not
+  a fresh draw, and what a cut costs is measured (R). `same` first counted nothing
+  against fixed waits for the Studio's 43 answers past
+  30 s (1,001.2 s): each, answered as it was, never comes within a 30 s wait, and is
+  charged here the least budget a trouble is ridden out for, R2's 100 s, and its
+  failure. A negative loss is an asking again that beat a slow answer. Variants
+  replayed on the way (seed 0): Luby's cutoff with asking again taken as a fresh draw
+  (`luby`: 19.1% of the Studio's answers cut and 9,711.0 s lost in `trace`, 22,240.8 s
+  in `same`); the cutoff without RFC 6298's least second (`unfloored`: Fedora −20.7 s in
+  `trace` but 119.7 s, 136.3 s and 142.9 s by seed in `same`, the Studio 1,083.8 s and
+  2,351.4 s; and this crate's unit tests, on a host at a load of 190, cut healthy
+  loopback answers their paths had learned were quick); and, before the draw, one fixed
+  t with the trouble's pause after each cut (past t, F is never seen, and t only falls:
+  Fedora 127.0 s in `trace` and 139.3 s in `same`, the Studio 3,442.8 s in `trace`).
 - **Consequence.** What fails is a request that is never answered, at random and rarely,
-  where its next asking answers: waiting a fixed 30 s for it loses most of the time lost,
-  and a wait learned from the path's own answers loses a sixth of it, at the cost of a
-  second asking of one healthy answer in five hundred. No registry here was down or
-  answered 5xx within two hours, so how long a trouble lasts is learned where troubles
-  happen (D222's budget), from what each path passes. Healthy silences reach a second:
-  a learned wait at its floor cuts a rare one, and a resume costs a request.
+  where its next asking answers: waiting a fixed 30 s for it loses most of the time lost
+  on a wired path. On a heavy-tailed one (Wi-Fi), answers that are merely slow are most
+  of the tail, and RFC 6298's estimator, built for a round trip's mean and deviation,
+  cuts them: it lost five times what fixed waits did. The cutoff that makes answers come
+  soonest given the path's own distribution (Luby, Sinclair and Zuckerman 1993), with
+  what a cut costs measured rather than assumed and RFC 6298's least second kept, loses
+  less than both in both models on both hosts, at every seed: of the better one's loss,
+  35% to 39% on Fedora in `trace` and 82% to 88% in `same`, 35% to 49% on the Studio in
+  `trace` and 46% in `same`. Against `same`'s
+  first count for fixed waits on the Studio (1,001.2 s, its 43 answers past 30 s
+  uncounted), it loses more (2,344.0 s). How long a trouble lasts is learned where troubles
+  happen (D222's budget), from what each path passes. Healthy silences reach 25 s on
+  Wi-Fi: RFC 6298's estimator at its floor would cut dozens of a download's, so the
+  same cutoff governs them (D222).
 
 ### M115. What keeping a container's writable layer costs a run
 

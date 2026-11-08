@@ -14422,19 +14422,83 @@ usual time: a stuck request, not a registry down. Healthy answers took 61 to 272
 and up to 7.1 s at most, by endpoint; a healthy download's longest silence was 1.2 s in
 32 of 3.4 GB. A figure measured on these machines would be as arbitrary on anyone else's
 network as containerd's: so each wait is learned from the path it is on, as shards runs.
+Learned first as TCP learns its retransmission timeout (RFC 6298), the answer wait then
+failed on Wi-Fi (M486, the Mac Studio): over 2.01 h and 30,687 requests, answers were
+heavy-tailed on every endpoint (p50 0.3 to 0.55 s, p90 1 to 3.8 s, p99 4 to 21 s, at
+most 19 to 64 s, 43 past 30 s), with 32 never answered and the host's network down for
+every endpoint twice. Replayed, RFC 6298's waits cut 3.89% of healthy answers and lost
+5,110.8 s where fixed 30 s waits lost 1,001.2 s: SRTT + 4·RTTVAR follows the latest
+answers, so it cuts answers that are merely slow, and each asking again starts its wait
+over. The healthy downloads' silences there reached 25 s, dozens past a second a
+download.
 
 **Decided** (crates/registry `patience.rs`, `http.rs`, `registry.rs` `Trouble`):
-- **A request without a body waits for its answer as long as its path answers**, and a
-  download for its next byte as long as its silences go: each estimated as TCP estimates
-  its retransmission timeout (RFC 6298 §2, after Jacobson, "Congestion Avoidance and
-  Control", SIGCOMM 1988), the smoothed wait and four smoothed deviations, at least a
-  second (§2.4), a second before the path has shown any (§2.1, the cold start), and
-  doubled for each timeout in a row (§5.5) until one is answered. An answer or a byte
-  overdue is cut and asked again (a download resumed where it was), on a fresh
-  connection. Replayed on M486's own answers, the learned waits cut 73 healthy answers in
-  39,235 (0.19%), each asked again, and lost 120 s in all where 30 s waits lost 752 s.
-  A request with a body waits on its server's work with it (a blob's digest checked as
-  its upload ends), as long as its patience says (D226's).
+- **A lookup (a GET or HEAD without a body) waits for its answer, and a download for its
+  next byte, as long as makes the answer come soonest** (`patience::Cutoff`): a wait cut
+  is asked again (a download resumed where it was), on a fresh connection, so the wait is a
+  restart cutoff, and the optimal one for a known distribution F of the time to an
+  answer, restarts each drawing anew, is one fixed t* minimising E(t) = ∫0^t (1 − F) /
+  F(t) (Luby, Sinclair and Zuckerman, "Optimal speedup of Las Vegas algorithms", Inf.
+  Process. Lett. 47(4), 1993; the renewal-reward expectation of cycles costing min(X, t)
+  and succeeding with F(t)). shards keeps the renewal and measures the rest, per path:
+  - **F is the path's own**: its answers' times, and the times waited before a cut (an
+    answer that came later, if ever), as Kaplan and Meier estimate a distribution from
+    observations cut short ("Nonparametric estimation from incomplete observations", JASA
+    53(282), 1958). A request never answered keeps F below 1, so E grows without end past
+    what the path answers in. Kept in log buckets of 1% relative accuracy (DDSketch,
+    Masson, Rim and Lee, PVLDB 12(12), 2019): a time known within a factor γ = 1.01/0.99,
+    at most 2,219 buckets whatever the count, and two sketches merged exactly by adding
+    their counts. The cutoff is a bucket's upper bound: E(γt) ≤ γ·E(t), as ∫t^γt S ≤
+    (γ − 1)·t·S(t) ≤ (γ − 1)·∫0^t S, so at most 2.02% slower than the best of the times
+    as bucketed.
+  - **What a cut costs is measured, not assumed**: R, the mean time from a cut to the
+    answer of an asking begun after it (from a silence's cut to the first byte of a body
+    begun after it), and the wait W's expected time ∫0^W S + S(W)·R, S = 1 − F. A path
+    whose slow answers come in spells, so that the asking again is slow too (after an
+    asking past its endpoint's p90, the next was past it 26% to 59% of the time on Fedora
+    and 24% to 77% on the Studio, not the 10% of independent askings, M486), is cut
+    later. Before any R is measured, Luby's own: asking again a fresh draw,
+    E[∫0^W S] / E[F(W)].
+  - **The wait is drawn uniformly from [t, 2t)**, and t chosen for that draw. A fixed
+    cutoff cuts every asking at it, so F past it is never seen and t can only fall
+    (replayed, it fell below the paths' p99 and lost more than RFC 6298's waits); the draw
+    spreads the cuts over [t, 2t), Kaplan-Meier sees past t, and t rises where the path
+    answers later. For an answer, the draw is the pause `Trouble` takes before asking
+    again (a uniform share of how long the trouble has lasted, t at the first cut) spent
+    listening to the asking instead of asleep: an answer cut by its wait is overdue
+    (`Error::is_overdue`) and asked again at once, at the moment the pause would have
+    ended, and one that comes meanwhile is taken. A stalled download already resumes at
+    once once it brought bytes (fetch.rs).
+  - **At least a second** (RFC 6298 §2.4's least timeout, which keeps it conservative
+    against what its samples do not show; RFC 6298 cites Allman and Paxson, SIGCOMM
+    1999: a large minimum avoids spurious retransmissions). Without it, this crate's
+    tests on a host at a load of 190 cut healthy loopback answers their paths had learned
+    were quick, and replayed (M486) it lost more on Fedora than RFC 6298's waits in the
+    model where asking again never helps, at two seeds of three.
+  - **Doubled for each cut in a row** (RFC 6298 §5.5), which reaches past anything the
+    path has shown, within its trouble budget (below).
+  - **Only a lookup is cut**: asking again is a restart only where it repeats the request
+    without effect (a safe method, RFC 9110 §9.2.1). A bodiless PUT (an upload's commit,
+    its digest checked) or POST (an upload begun) waits on its server's work, as a
+    request with a body does; before, any bodiless request was cut as its path's
+    answers said, and a commit cut could be asked of an upload its server had finished.
+  - **Before any answer, a second** (RFC 6298 §2.1), drawn and doubled as any wait: no
+    cut at all would hold a request that is never answered forever, and the doubling
+    reaches an answer of any time x within 2x (Baeza-Yates, Culberson and Rawlins 1993).
+  Replayed on both hosts' records (M486; seed 0 of the draws, seeds 1 and 2 within
+  the ranges given there), in the model where asking again meets the path's own next
+  recorded asking: fixed 30 s waits lost 1,124.8 s on Fedora and 3,836.3 s on the
+  Studio, RFC 6298's 50.3 s and 3,579.6 s, the cutoff 19.7 s and 1,251.3 s (cutting
+  0.05% and 3.01% of healthy answers, against RFC 6298's 0.21% and 5.09%); in the model
+  first replayed, where asking again never helps, RFC 6298's lost 120.1 s and 5,110.8 s,
+  fixed waits 752.0 s and 5,301.2 s (the Studio's 43 answers past 30 s, never answered
+  within them, each charged R2's 100 s; uncounted, as first replayed, 1,001.2 s), and the
+  cutoff 102.3 s and 2,344.0 s. Silences follow the same rule, since a stall cut is a
+  restart whose cost is a reconnect (a resume by range, no bytes lost): RFC 6298's
+  estimator at its floor would cut dozens of a Wi-Fi download's healthy silences
+  (M486). A request with a body
+  waits on its server's work with it (a blob's digest checked as its upload ends), as
+  long as its patience says (D226's), and so does any request but a lookup.
 - **A connection is made, and its TLS handshake done, as fast as its path's are**
   (`Wait::Connect`, `Wait::Handshake`): each the same estimator over the path's own
   connects (the name's lookup included, as Go's dialer counts it, and the race of RFC
@@ -14466,17 +14530,20 @@ network as containerd's: so each wait is learned from the path it is on, as shar
   or a trouble past it, is said as the registry's failure. A 500, which RFC 9110 §15.6.1
   does not say passes, is asked again once, and a repeat is the request's own answer.
   A cancel ends a wait at once.
-- **Kept in the home, by path**: what each path showed (its answers', silences',
-  connects' and handshakes' estimators, the longest trouble it passed and how many) is
+- **Kept in the home, by path**: what each path showed (its answers' and silences'
+  times, cuts and what the cuts cost, its connects' and handshakes' estimators, the
+  longest trouble it passed and how many) is
   kept in the path's one record under the image store's `links/`, named by its host and
   port and this host's address on its route there (D226), with what transfers learn of
   the path; merged into the record as the pull or push lets its client go, under the
   records' lock (D226), and read as a client first asks the path, and again once a
   connection says its route. Clients that asked one path at once all keep theirs
   (`Shown::merged`, three ways: the record as it is now, what the client read, what it
-  holds): each wait's estimator is the one whose last sample is the newer, whole, for
-  RFC 6298's SRTT and RTTVAR are their latest samples' (each moves them an eighth and a
-  quarter, §2.3), with the count of waits both clients'; the longest trouble the longer;
+  holds): the answers' and silences' counts are the record's and those each client
+  added (a sketch merges exactly); each connect's and handshake's estimator is the one
+  whose last sample is the newer, whole, for RFC 6298's SRTT and RTTVAR are their latest
+  samples' (each moves them an eighth and a quarter, §2.3), with the count of waits both
+  clients'; the longest trouble the longer;
   the troubles passed the record's and each client's own. Each estimator keeps when its
   last wait was seen (`at_us`, the wall clock, compared across processes). A pull's
   registry, its token server and its CDN are three paths, each learned for itself.
@@ -14489,34 +14556,47 @@ network as containerd's: so each wait is learned from the path it is on, as shar
 - **Unlike Docker, recorded:** containerd gives a request five attempts 50 ms apart and a
   download three stalls; Go's transport, 30 s to connect, 10 s for a handshake, 30 s for
   an answer and none for a body's silence unless set, and containerd's keeps an idle
-  connection 30 s. shards learns each wait from the path, and keeps an idle connection
-  as long as its server and RFC 5382's NATs do.
+  connection 30 s. shards learns each wait from the path (an answer's and a silence's as
+  the cutoff that makes them come soonest), and keeps an idle connection as long as its
+  server and RFC 5382's NATs do.
 - **Every value, and where it comes from:**
 
   | Value | Where | Source |
   |---|---|---|
-  | timeout = SRTT + 4·RTTVAR, α = 1/8, β = 1/4, first: R, R/2 | `Pace` | RFC 6298 §2.2, §2.3 |
-  | 1 s before any wait, and the least | `patience::FIRST` | RFC 6298 §2.1, §2.4 |
+  | an answer's and a silence's cutoff t: argmin of E over W of ∫0^W S + S(W)·R | `Cutoff::base` | Luby, Sinclair and Zuckerman 1993 (restart cutoff, renewal-reward) |
+  | S: Kaplan-Meier over answers and cuts | `Cutoff::base` | Kaplan and Meier 1958 |
+  | R: mean time from a cut to an answer of an asking begun after it; before any, Luby's fresh draw | `Cutoff::recovered`, `Paths::waited`, `Paths::silenced` | measured on the path |
+  | times in buckets of α = 1%, t a bucket's upper bound (≤ 2.02% slower), ≤ 2,219 buckets, merged by adding | `Sketch`, `patience::ALPHA` | DDSketch (Masson, Rim and Lee 2019) |
+  | the wait drawn from [t, 2t); an overdue answer asked again at once | `Cutoff::wait`, `Error::is_overdue` | `Trouble`'s pause (a uniform share of the trouble, t at the first cut) spent listening; Kaplan-Meier past t |
+  | t at least 1 s | `Cutoff::base`, `patience::FIRST` | RFC 6298 §2.4 (after Allman and Paxson 1999) |
+  | only GET and HEAD without a body cut by their answers' wait | `Client::exchange` | safe methods, RFC 9110 §9.2.1 |
+  | connect, handshake: SRTT + 4·RTTVAR, α = 1/8, β = 1/4, first: R, R/2 | `Pace` | RFC 6298 §2.2, §2.3 |
+  | 1 s before any wait, and a pace's least | `patience::FIRST` | RFC 6298 §2.1, §2.4 |
   | ×2 a timeout in a row | `backed_off` | RFC 6298 §5.5 |
-  | answers, silences, connects, handshakes each learned | `Wait`, `Paths::timeout` | the same estimator over each one's own waits |
+  | answers, silences, connects, handshakes each learned | `Wait`, `Paths::timeout`, `Paths::silence` | each over its own times |
   | budget: 2 × the longest trouble passed | `Shown::budget` | doubling search (Baeza-Yates, Culberson and Rawlins 1993) |
   | budget at least 100 s | `patience::R2` | RFC 1122 §4.2.3.5, R2 |
   | a random share of the trouble so far | `Trouble` | full jitter, bounded by the trouble's own length |
   | at least `Retry-After` | `Trouble` | RFC 9110 §10.2.3 |
   | 502, 503, 504, 408 pass; a 500 asked once more | `Trouble` | RFC 9110 §15.5.9, §15.6.1, §15.6.3 to §15.6.5 |
-  | merged: the newer sample's estimator, waits and troubles summed, the longest kept | `Shown::merged` | RFC 6298 §2.3 (SRTT, RTTVAR follow their latest samples) |
+  | merged: answers' and silences' counts summed, the newer sample's pace, troubles summed, the longest kept | `Shown::merged` | DDSketch's merge; RFC 6298 §2.3 (SRTT, RTTVAR follow their latest samples) |
   | an idle connection kept 2 h 4 min at most | `http::IDLE` | not a wait (RFC 9112 §9.5); RFC 5382 §5 REQ-5 |
   | 30 s to connect, 10 s a handshake: clients that do not learn | `http::CONNECT`, `http::HANDSHAKE` | Go's dialer and `TLSHandshakeTimeout`, as containerd sets them |
-- **Tested:** patience.rs (RFC 6298's arithmetic; a path's budget, backoff and record,
-  kept and read back by the next client; each wait's backoff its own; two clients at
-  once both kept, `clients_at_once_both_keep_what_they_showed`; a record of before
-  connects were kept read whole); http.rs (`a_learning_client_learns_its_connects_and_handshakes`:
-  one connect, one handshake, two answers over a connection used twice); registry.rs (a gateway's 502, 503, 504, 408 or
+- **Tested:** patience.rs (RFC 6298's arithmetic; a sketch's buckets within γ and its
+  merge, `a_sketch_keeps_times_within_its_accuracy`; the cutoff, `the_cutoff_makes_answers_come_soonest`:
+  nine answers in ten at 2 s and one at 100 s cut just past 2 s, waited past 100 s once
+  a cut is measured to cost an hour, a path that answers alike cut just past its
+  answers, one that answers in 100 ms at the least second, the draw and doubling; what a cut costs, `what_a_cut_costs_is_measured`; a
+  path's budget, backoff and record, kept and read back by the next client; each wait's
+  backoff its own; two clients at once both kept, `clients_at_once_both_keep_what_they_showed`;
+  a record of before answers were counted read whole); http.rs (`a_learning_client_learns_its_connects_and_handshakes`:
+  one connect, one handshake, two answers over a connection used twice;
+  `an_answer_cut_by_its_wait_is_overdue`); registry.rs (a gateway's 502, 503, 504, 408 or
   cut connections ridden out for as long as they last and no longer than their length
   again; past the budget the registry's answer; a named wait waited, one past the budget
-  not; a cancel ends a wait; a path whose answers come 1.5 s late cut once, then waited
-  for; a download silent 1.5 s cut and resumed where it was; a blob short of its size
-  failing at once); fetch.rs (a stuck layer keeps no other waiting; a blob shorter than
+  not; a cancel ends a wait; a path whose answers come 1.5 s late cut once at the 1.25 s
+  drawn, asked again, then waited for; a download silent 1.5 s cut and resumed where it
+  was, what the cut cost learned; a blob short of its size failing at once); fetch.rs (a stuck layer keeps no other waiting; a blob shorter than
   its descriptor fails at once, with ranges and without); auth.rs (a token server's
   gateway failures ridden out). Mutation-checked: the budget, the riding, the short blob.
   A real pull from ghcr.io on Fedora kept ghcr.io's and its CDN's paths in the home.
