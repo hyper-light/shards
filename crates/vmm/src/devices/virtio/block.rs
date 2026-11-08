@@ -246,6 +246,90 @@ impl Through {
         }
         Ok(moved)
     }
+
+    /// Asks for `op` of all `n` bytes the `iov` describe, at most [`THROUGH_MAX`], at
+    /// `offset` of the file, in one round trip: a request's segments are the pages of its
+    /// guest's buffer, 4 KiB each, and a round trip for each cost more than the writes: 85 MiB
+    /// took 0.5 to 0.7 s longer than the same writes made here (PM M442).
+    ///
+    /// # Safety
+    ///
+    /// Each of `iov` lies in guest memory, as `GuestMemory::io_ptr` gives it.
+    unsafe fn ask_all(&self, op: u8, iov: &mut [libc::iovec], n: usize, offset: u64) -> std::io::Result<()> {
+        use std::io::{Read as _, Write as _};
+        use std::os::fd::AsRawFd as _;
+        let mut conn = self.conn.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut head = vec![op];
+        head.extend_from_slice(&offset.to_be_bytes());
+        head.extend_from_slice(&u32::try_from(n).unwrap_or(u32::MAX).to_be_bytes());
+        conn.write_all(&head)?;
+        if op == THROUGH_WRITE {
+            // SAFETY: the caller's: guest memory, which writev(2) reads.
+            unsafe { raw_all(conn.as_raw_fd(), iov, true) }?;
+        }
+        let mut code = [0u8; 4];
+        let mut moved = [0u8; 4];
+        conn.read_exact(&mut code)?;
+        conn.read_exact(&mut moved)?;
+        let code = i32::from_be_bytes(code);
+        if code != 0 {
+            return Err(std::io::Error::from_raw_os_error(code));
+        }
+        if u32::from_be_bytes(moved) as usize != n {
+            return Err(std::io::Error::other(
+                "a range's process moved other than it was asked",
+            ));
+        }
+        if op == THROUGH_READ {
+            // SAFETY: the caller's: guest memory, which readv(2) writes.
+            unsafe { raw_all(conn.as_raw_fd(), iov, false) }?;
+        }
+        Ok(())
+    }
+}
+
+/// All the bytes the `iov` describe written to `fd` (`out`), or read from it into them. The
+/// `iov` are used up.
+///
+/// # Safety
+///
+/// Each of `iov` is valid memory, for reads where `out`, for writes where not.
+#[cfg(unix)]
+unsafe fn raw_all(fd: std::os::fd::RawFd, iov: &mut [libc::iovec], out: bool) -> std::io::Result<()> {
+    let mut at = 0usize;
+    while let Some(rest) = iov.get(at..).filter(|r| !r.is_empty()) {
+        let count = libc::c_int::try_from(rest.len().min(1024)).unwrap_or(1);
+        // SAFETY: the caller's: each of `rest` is valid.
+        let n = unsafe {
+            if out {
+                libc::writev(fd, rest.as_ptr(), count)
+            } else {
+                libc::readv(fd, rest.as_ptr(), count)
+            }
+        };
+        let mut left = match n {
+            0 => return Err(std::io::ErrorKind::UnexpectedEof.into()),
+            n if n > 0 => n.unsigned_abs(),
+            _ => {
+                let e = std::io::Error::last_os_error();
+                if e.kind() == std::io::ErrorKind::Interrupted {
+                    continue;
+                }
+                return Err(e);
+            }
+        };
+        while let Some(v) = iov.get_mut(at) {
+            if left < v.iov_len {
+                // SAFETY: within the segment, `left` bytes being less than its length.
+                v.iov_base = unsafe { v.iov_base.cast::<u8>().add(left) }.cast();
+                v.iov_len -= left;
+                break;
+            }
+            left -= v.iov_len;
+            at += 1;
+        }
+    }
+    Ok(())
 }
 
 /// All `len` bytes at `ptr` written to `fd` (`out`), or read from it into them.
@@ -483,6 +567,72 @@ impl Join {
         // SAFETY: the caller's: `ptr .. ptr + gap` lies in guest memory.
         unsafe { zeros(ptr, gap) }?;
         Ok(gap)
+    }
+
+    /// Whether the range at `offset` is read and written through a [`Through`].
+    #[cfg(unix)]
+    fn goes_through(&self, offset: u64) -> bool {
+        let ranges = self.ranges.read().unwrap_or_else(PoisonError::into_inner);
+        let at = ranges.partition_point(|r| r.start <= offset);
+        at.checked_sub(1)
+            .and_then(|i| ranges.get(i))
+            .is_some_and(|r| offset < r.start.saturating_add(r.len) && r.through.is_some())
+    }
+
+    /// One request's `segments`, guest memory, read or written at `offset` through its
+    /// range's [`Through`], in round trips of at most [`THROUGH_MAX`]; none (`None`) where
+    /// they are not all of one such range, and its segments go one at a time.
+    ///
+    /// # Safety
+    ///
+    /// Each of `segments` lies in guest memory, as `GuestMemory::io_ptr` gives it.
+    #[cfg(unix)]
+    unsafe fn through_request(
+        &self,
+        segments: &[(*mut u8, usize)],
+        offset: u64,
+        write: bool,
+    ) -> Option<Result<(), u8>> {
+        let ranges = self.ranges.read().unwrap_or_else(PoisonError::into_inner);
+        let at = ranges.partition_point(|r| r.start <= offset);
+        let r = at.checked_sub(1).and_then(|i| ranges.get(i))?;
+        let through = r.through.as_ref()?;
+        r.file.as_ref()?;
+        let total = segments.iter().map(|&(_, len)| len as u64).sum::<u64>();
+        if offset.checked_add(total)? > r.start.saturating_add(r.len) || (write && !r.writable) {
+            return None;
+        }
+        let op = if write { THROUGH_WRITE } else { THROUGH_READ };
+        let mut at = offset - r.start;
+        let mut iov = Vec::with_capacity(segments.len());
+        let mut gathered = 0usize;
+        for &(ptr, len) in segments {
+            let mut done = 0usize;
+            while done < len {
+                let take = (len - done).min(THROUGH_MAX - gathered);
+                iov.push(libc::iovec {
+                    // SAFETY: the caller's: `ptr + done` lies in the segment.
+                    iov_base: unsafe { ptr.add(done) }.cast(),
+                    iov_len: take,
+                });
+                done += take;
+                gathered += take;
+                if gathered == THROUGH_MAX {
+                    // SAFETY: the caller's: each of `iov` lies in guest memory.
+                    if unsafe { through.ask_all(op, &mut iov, gathered, at) }.is_err() {
+                        return Some(Err(S_IOERR));
+                    }
+                    at += gathered as u64;
+                    gathered = 0;
+                    iov.clear();
+                }
+            }
+        }
+        // SAFETY: the caller's: each of `iov` lies in guest memory.
+        if gathered > 0 && unsafe { through.ask_all(op, &mut iov, gathered, at) }.is_err() {
+            return Some(Err(S_IOERR));
+        }
+        Some(Ok(()))
     }
 
     /// Writes up to `len` bytes from the guest's memory at `ptr` at `offset`: into the
@@ -929,6 +1079,27 @@ fn transfer(
     let end = start.checked_add(total).ok_or(S_IOERR)?;
     if end > backend.capacity().saturating_mul(SECTOR) {
         return Err(S_IOERR);
+    }
+    #[cfg(unix)]
+    if let Store::Join(join) = &backend.store
+        && join.goes_through(start)
+    {
+        let segments = bufs
+            .iter()
+            .map(|d| {
+                Ok((
+                    mem.io_ptr(d.addr, d.len as usize).map_err(|_| S_IOERR)?,
+                    d.len as usize,
+                ))
+            })
+            .collect::<Result<Vec<_>, u8>>()?;
+        // SAFETY: each lies inside guest memory (io_ptr checked it), which the kernel reads
+        // or writes, with no Rust reference to it.
+        if let Some(done) = unsafe { join.through_request(&segments, start, matches!(dir, Direction::Write)) }
+        {
+            done?;
+            return u32::try_from(total).map_err(|_| S_IOERR);
+        }
     }
     let mut offset = start;
     for d in bufs {
