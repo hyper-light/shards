@@ -7484,8 +7484,21 @@ its owner's grant, default deny, as shards' networks are.
   another's), the step's stream the other, and the run's start takes it (`take_relay`): its
   share process hands the VM that socket as the share's end as it is (share.rs), so the
   guest's FUSE requests reach the client's server byte for byte and its answers come back.
-  Nothing of the machine's is opened for it; a source of the prefix in an owner's run, or a
-  client's bind of any other source, is refused (`refuse_bind`).
+  On a Windows machine, whose shares' streams are pipes its daemon makes (D197), the relay
+  is such a pair (`shards_ipc::byte_pair`): the step reads and writes its end through
+  overlapped handles of its own (`platform::PipeStream`), and the run's request hands the
+  VM the other in the share's place, the share process started for the machine's own
+  shares alone, none where every share is a client's (`started_shares`, a pipe's handle
+  told apart from a directory's by GetFileType). Nothing of the machine's is opened for it;
+  a source of the prefix in an owner's run, or a client's bind of any other source, is
+  refused (`refuse_bind`). A run joining another's microVM (`--network container:NAME`)
+  takes none, its volumes its join share's (D119).
+- **Plugged in as it runs** (`shards plug volume MICROVM DIR:PATH[:ro]`, D214): a directory
+  of the client's is sent as its relay and served apart, as a detached run's binds are; the
+  machine gives the VM the relay's end as the plugged share's stream, starting no share
+  process, and the relay ends as the share is unplugged or its microVM ends. A named
+  volume plugged in is the daemon's, judged by the client's grants where it binds a
+  directory of the machine's.
 - **What the relay gives.** The same server, so the same semantics as a bind of a local
   directory: no FUSE writeback cache is negotiated (server.rs `INIT` offers none), so a
   guest's write reaches the client's file before its `write(2)` returns; the guest's page
@@ -7552,14 +7565,19 @@ directory and a file bound alone read in a microVM there, its writes landing on 
 read-only refused, a detached run's write landing; nothing of the laptop's made on the
 machine; a client's volume of the machine's directory refused, the owner's refused to the
 client until granted read-only, then refused read-write, and refused again once revoked; a
-named volume the client's; and `--gpus` refused without a grant. And
+named volume the client's; `--gpus` refused without a grant; and a directory of the
+laptop's plugged into a running microVM there, read and written there, gone once unplugged. On
+adacachy2 (Linux 7.3, KVM) and Fedora at 34408c9d, and with the plugged directory at
+ea34aa23 on adacachy2 and on jupiter (Windows 11, WHP; the machine's side a Windows
+daemon's, the relay its pipe pair). And
 `a_contexts_engine_is_its_machines`: a create through the context's engine binding a
 directory of the machine's refused.
 
-**Not yet.** A Windows machine serves no client's directory (its shares' streams are pipes
-its daemon makes, D197): refused, said so. Docker's CLI through a context serves none of
-its client's directories, as its API names a path alone. `plug volume` of a client's own
-directory. A context's relays measured across two machines (PM M495 has loopback alone).
+**Not yet.** Docker's CLI through a context serves none of its client's directories, as its
+API names a path alone. A context's relays measured across two machines (PM M495 has
+loopback alone). A command whose run goes on without it that fails ends the process serving
+its binds apart; one that succeeds but whose microVM is never started (`create`, then no
+`start`) keeps it serving until its client ends it.
 
 ### D208. A GPU on every Linux host: musl's GPU VM process, and Intel's GPUs (built)
 

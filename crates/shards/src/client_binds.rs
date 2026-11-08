@@ -489,7 +489,7 @@ pub(crate) fn serve_apart(args: impl Iterator<Item = std::ffi::OsString>) -> std
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;

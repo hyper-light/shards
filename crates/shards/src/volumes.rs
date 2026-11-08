@@ -1057,7 +1057,13 @@ fn register_into(
         .collect();
     let mut bound: Vec<String> = Vec::new();
     for b in binds {
-        let mut mp = parse_raw(b, driver)?;
+        // A client's own directory's relay is no path of this host's (D228), checked as
+        // one on none: a Windows host's paths are its drives' (D207).
+        let mut mp = if b.starts_with(crate::client_grants::RELAYED) {
+            parse_raw_within(b)?
+        } else {
+            parse_raw(b, driver)?
+        };
         if mp.kind == "bind" {
             relay(&mut mp, &run.client)?;
         }

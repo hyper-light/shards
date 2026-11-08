@@ -1100,7 +1100,10 @@ pub(super) fn take_relay(client: &str, token: &str) -> Result<OwnedFd, String> {
     let end = taken.ok_or_else(|| {
         format!("client {client} serves this directory no longer: a client's directory is served to the run that names it, as long as its client is there; run it again from the client")
     })?;
-    Ok(OwnedFd::from(end))
+    #[cfg(unix)]
+    return Ok(OwnedFd::from(end));
+    #[cfg(windows)]
+    Ok(end)
 }
 
 /// A connection's writing half, closed as it drops: what its reader then reads is the end.
