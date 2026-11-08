@@ -1,4 +1,4 @@
-//! `shards run -t` and `-it`, end to end, as `docker run` has them
+//! `shards run vm -t` and `-it`, end to end, as `docker run` has them
 //! (docs/research/tty-and-interactive-runs.md): the command's stdio is a pty in the guest,
 //! and under `-it` the client's terminal goes raw, detaches on its keys, and resizes the
 //! pty. Real VMs, booted from SHARDS_KERNEL and SHARDS_INIT; the image comes from a

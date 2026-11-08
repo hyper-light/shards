@@ -1,5 +1,5 @@
 //! The default guest (docs/design/architecture.md D28): with no guest recorded and none
-//! named, `shards run IMAGE` boots the pinned kernel, downloaded on first need, and the
+//! named, `shards run vm IMAGE` boots the pinned kernel, downloaded on first need, and the
 //! shards-init that `shardsd` carries. Kernels are served on loopback here, through
 //! `SHARDS_KERNEL_URL`, as GitHub serves release assets: behind a redirect.
 

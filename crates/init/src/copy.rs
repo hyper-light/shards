@@ -1,4 +1,4 @@
-//! `shards cp`'s work in the guest, as dockerd does it in a container's root (moby
+//! `shards copy vm`'s work in the guest, as dockerd does it in a container's root (moby
 //! daemon/archive_unix.go: containerStatPath, containerArchivePath, containerExtractToDir;
 //! daemon/containerfs_linux.go, Stat): a path's stat, a tar archive of it, and an
 //! archive unpacked into a directory. Init's built-ins run in the workload's root, as

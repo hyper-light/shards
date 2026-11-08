@@ -1,4 +1,4 @@
-//! Commands run in images, end to end: `shards run --rootfs IMAGE -- COMMAND` boots a
+//! Commands run in images, end to end: `shards run vm --rootfs IMAGE -- COMMAND` boots a
 //! real VM into an EROFS image, shards-init runs the command as `docker run` would, and
 //! its output and exit status come back through shards. The command is the test guest,
 //! run as a workload (crates/testguest/src/workload.rs).

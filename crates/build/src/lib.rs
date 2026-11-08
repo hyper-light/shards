@@ -1,4 +1,4 @@
-//! What `shards build` does to files (docs/design/architecture.md D33): BuildKit's file
+//! What `shards build image` does to files (docs/design/architecture.md D33): BuildKit's file
 //! operations, on snapshots held in memory, and the layers BuildKit writes of them.
 
 use std::fmt;

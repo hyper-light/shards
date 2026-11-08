@@ -1,4 +1,4 @@
-//! What a container changed of its image's files, for `shards diff`: Docker's answer
+//! What a container changed of its image's files, for `shards read changes`: Docker's answer
 //! (moby daemon/containerd/image_changes.go: go-archive v0.3.3 `ChangesDirs` of the
 //! container's root against its image's), found without walking the whole image.
 //!

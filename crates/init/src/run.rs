@@ -2682,7 +2682,7 @@ impl Standby {
         if let Some(r) = &spec.resolv {
             write_file("/etc/resolv.conf", r)?;
         }
-        // A visit to a stopped container's files (`shards cp`, `diff`, `export`): the
+        // A visit to a stopped container's files (`shards copy vm`, `diff`, `export`): the
         // standby is the workload, run nothing of the image's, and holds until killed; a
         // copy's sees its shared directories as its runs do, and what it copies in is held
         // to its writable layer's size as theirs is (D156).
