@@ -9813,12 +9813,15 @@ peer", each going on here as it should. What changed for them:
   it neither says nor lets a VMM set (PM M460, `feature_register`). On arm64 only: x86_64's
   CPUID has `covers` and no meet yet, and `configure cpu` says so there.
 
-Not yet measured: the moves on that link with this build, between two machines of one
-macOS (two M4 Max Studios), cold and live, n 20, and tests/moved.rs's tests of another
-machine run across two: on 2026-11-08 the Studios' link carried 193 kB/s and their kiln
-runners restarted within the hour, each ending the listening daemon its run held (PM
-M462). Then the levels packing settles at on a slow link, and the longest silence each
-connection lived through, which says whether 100 s is enough there.
+Between two machines on a wired gigabit link (two AMD Ryzen 9 9950X3D2 hosts, Linux 7.3.3
+to 7.2.9, KVM), n 20 cold: a move took 0.95 s at p50, 1.16 at p90 and 9.99 at most, and
+ran nowhere 0.91 s at p50, 1.12 at p90 and 9.89 at most, the most the fresh home's first,
+its image fetched as it readied, moves 2 to 20 at 1.26 s at most; its stream of about 81
+MB sent as 33 to 76 MB at up to 110 MB/s; and tests/moved.rs's two tests of another
+machine passed across them (PM M497). Not yet measured: the Studios' slow Wi-Fi with this
+build (193 kB/s on 2026-11-08, their kiln runners restarting within the hour, each ending
+the listening daemon its run held, PM M462), the levels packing settles at there, and the
+longest silence each connection lived through, which says whether 100 s is enough.
 
 **Moved live** (part 7, roadmap item 7b). `shards move vm --live NAME CONTEXT` moves it as
 it runs, by pre-copy (Clark et al., "Live Migration of Virtual Machines", NSDI 2005): its
@@ -9853,8 +9856,11 @@ page by page as each came; resumed there; and stopped here once it runs there.
   Studio with this build, n 20, that guest's rounds numbered 4 at p50 and 6 at most, round 0
   about 60 MB and each later one 9 to 19 MB, 12 ending with little left and 8 as they
   stopped shrinking; it ran nowhere 0.28 s at p50, 0.37 at p90 and 0.42 at most, its last
-  save 83 to 228 ms of it (PM M462). Not yet measured: that move between two machines, its
-  rounds over a slow link and the time it runs nowhere there.
+  save 83 to 228 ms of it (PM M462). Between two wired machines (PM M497), n 20: it took
+  0.71 s at p50 and 1.03 at most, and ran nowhere 0.21 s at p50, 0.28 at p90, 0.35 at p99
+  and at most, in 2 or 3 rounds, each ending with little left, its last save 51 to 161 ms
+  and its last stream 9 to 41 ms of it. Not yet measured: its rounds over a slow link and
+  the time it runs nowhere there.
 - **Its rounds told as they go** (`Precopying`, `kind::PRECOPYING`): the VM tells its
   daemon each round as it ends, and within a round each further 8 MiB (the bytes a last
   round may send, at least a record's 1 MiB) its stream's carrier has taken, counted as it
