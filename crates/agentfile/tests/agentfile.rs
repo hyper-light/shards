@@ -245,7 +245,7 @@ fn expose_takes_a_direction_and_networks_and_stays_plain_without_them() {
     assert!(refused("EXPOSE AS ingress").contains("at least one port before AS or FOR"));
     assert!(refused("EXPOSE 80 AS sideways").contains("ingress or egress, not \"sideways\""));
     assert!(refused("EXPOSE 80 AS ingress egress").contains("AS takes one word"));
-    assert!(refused("EXPOSE 80 FOR").contains("FOR names no network"));
+    assert!(refused("EXPOSE 80 FOR").contains("FOR names no network, agent nor harness"));
     // The members it is for (D122): each flag its own kind, a list comma-separated or
     // given again; a port mapped to a member's, ingress's alone, one port to one.
     assert_eq!(
@@ -493,6 +493,20 @@ fn every_name_a_grant_uses_is_declared_of_its_kind() {
         checked("FROM scratch\nEXPOSE 80 FOR nowhere\n")
             .unwrap_err()
             .contains("EXPOSE names network \"nowhere\"")
+    );
+    // FOR names networks and members alike (2026-11-08), never a name that is both.
+    assert!(checked("FROM scratch\nAGENT a FROM x\nNETWORK n\nEXPOSE 80 FOR n a\n").is_ok());
+    assert!(
+        checked("FROM scratch\nAGENT a FROM x\nNETWORK a\nEXPOSE 80 FOR a\n")
+            .unwrap_err()
+            .contains("EXPOSE ... FOR names \"a\", which is both a network and an agent")
+    );
+    assert!(
+        checked("FROM scratch\nAGENT a FROM x\nEXPOSE --agents=a 80 FOR a\n")
+            .unwrap_err()
+            .contains(
+                "EXPOSE --agents and --harnesses name members of the networks after FOR, which names none"
+            )
     );
 }
 
@@ -794,12 +808,14 @@ fn egress_is_what_joined_networks_open() {
     );
 }
 
-/// A network's ports both boundaries open inward reach its one member; with several, which
-/// one a connection is for no directive says, and the build says so rather than guess.
+/// A network's ports both boundaries open inward reach the members an `EXPOSE` names, or
+/// every member where it names none; of several, the one listening takes each connection
+/// (the user's decision, 2026-11-08). `FOR` names networks and members alike: a member it
+/// names is given the ports on each network it is on, as `--agents` names it there.
 #[test]
 fn ingress_reaches_a_networks_one_member() {
     use shards_agentfile::instructions::Kind;
-    let check = |text: &str| -> Result<(), String> {
+    let receivers = |text: &str| -> Result<Vec<String>, String> {
         let parsed = parser::parse_as(text.as_bytes(), Dialect::Agentfile).unwrap();
         let ins = instructions::parse(&parsed, &Linter::default()).unwrap();
         let directives: Vec<_> = ins
@@ -813,10 +829,26 @@ fn ingress_reaches_a_networks_one_member() {
                 _ => None,
             })
             .collect();
-        shards_agentfile::agentfile::ingress(&directives)
-            .map(drop)
-            .map_err(|e| String::from_utf8_lossy(&e).into_owned())
+        let said = |e: Vec<u8>| String::from_utf8_lossy(&e).into_owned();
+        let directives = shards_agentfile::agentfile::resolve_targets(&directives).map_err(said)?;
+        let got = shards_agentfile::agentfile::ingress(&directives).map_err(said)?;
+        Ok(got
+            .iter()
+            .map(|r| {
+                format!(
+                    "{}->{} {} {}",
+                    r.at.1,
+                    r.to.1,
+                    match r.kind {
+                        shards_agentfile::agentfile::TargetKind::Agent => "agent",
+                        shards_agentfile::agentfile::TargetKind::Harness => "harness",
+                    },
+                    String::from_utf8_lossy(&r.name)
+                )
+            })
+            .collect())
     };
+    let check = |text: &str| receivers(text).map(drop);
     let base = "FROM alpine\nAGENT a FROM ./a\nAGENT b FROM ./b\n";
     assert_eq!(
         check(&format!(
@@ -825,30 +857,38 @@ fn ingress_reaches_a_networks_one_member() {
         Ok(())
     );
     let several = format!("{base}NETWORK --ingress=8080 front\nCONNECT --port=8080 a WITH b ON front\n");
-    let e = check(&format!("{several}EXPOSE 8080 AS ingress FOR front\n")).unwrap_err();
-    assert!(
-        e.contains("network front lets port 8080 in past the microVM to its members agent a, agent b: name the one it is for"),
-        "{e}"
-    );
-    // Named, one member a port (D122); a port claimed twice, and a claim of two, refused.
+    // Named none: every member, the one listening taking each connection.
     assert_eq!(
-        check(&format!("{several}EXPOSE --agents=a 8080 AS ingress FOR front\n")),
-        Ok(())
+        receivers(&format!("{several}EXPOSE 8080 AS ingress FOR front\n")).unwrap(),
+        ["8080->8080 agent a", "8080->8080 agent b"]
     );
+    // Named: those alone, one or several.
+    assert_eq!(
+        receivers(&format!("{several}EXPOSE --agents=a 8080 AS ingress FOR front\n")).unwrap(),
+        ["8080->8080 agent a"]
+    );
+    assert_eq!(
+        receivers(&format!(
+            "{several}EXPOSE --agents=a 8080 AS ingress FOR front\nEXPOSE --agents=b 8080 FOR front\n"
+        ))
+        .unwrap(),
+        ["8080->8080 agent a", "8080->8080 agent b"]
+    );
+    assert_eq!(
+        receivers(&format!(
+            "{several}EXPOSE --agents=a,b 8080 AS ingress FOR front\n"
+        ))
+        .unwrap(),
+        ["8080->8080 agent a", "8080->8080 agent b"]
+    );
+    // Claims that overlap without being the same ports: which holds the rest, no rule says.
     let e = check(&format!(
-        "{several}EXPOSE --agents=a 8080 AS ingress FOR front\nEXPOSE --agents=b 8080 FOR front\n"
+        "{base}NETWORK --ingress=8000-8100 front\nCONNECT --port=8080 a WITH b ON front\n\
+         EXPOSE --agents=a 8000-8090 AS ingress FOR front\nEXPOSE --agents=b 8080 AS ingress FOR front\n"
     ))
     .unwrap_err();
     assert!(
-        e.contains("port 8080 on network front comes in to two members, agent a and agent b"),
-        "{e}"
-    );
-    let e = check(&format!(
-        "{several}EXPOSE --agents=a,b 8080 AS ingress FOR front\n"
-    ))
-    .unwrap_err();
-    assert!(
-        e.contains("names agent a, agent b: a port coming in goes to one member"),
+        e.contains("ports 8000-8090 of agent a and 8080 of agent b overlap"),
         "{e}"
     );
     // Each its own port, the second mapped to its member's 8080 at the network's
@@ -859,6 +899,31 @@ fn ingress_reaches_a_networks_one_member() {
         )),
         Ok(())
     );
+    // FOR's targets, networks and members mixed: a member on each of its networks, as
+    // --agents names it there; a network's every member; the line's --agents its networks'.
+    let two = format!(
+        "{base}AGENT c FROM ./c\nNETWORK --ingress=8080 front\nNETWORK --ingress=8080 back\n\
+         CONNECT --port=8080 a WITH b ON front\nCONNECT c WITH c ON back\n"
+    );
+    assert_eq!(
+        receivers(&format!("{two}EXPOSE 8080 AS ingress FOR c\n")).unwrap(),
+        ["8080->8080 agent c"]
+    );
+    assert_eq!(
+        receivers(&format!("{two}EXPOSE 8080 AS ingress FOR front c\n")).unwrap(),
+        ["8080->8080 agent a", "8080->8080 agent b", "8080->8080 agent c"]
+    );
+    assert_eq!(
+        receivers(&format!("{two}EXPOSE --agents=b 8080 AS ingress FOR front c\n")).unwrap(),
+        ["8080->8080 agent b", "8080->8080 agent c"]
+    );
+    assert_eq!(
+        receivers(&format!("{two}EXPOSE 8080 AS ingress FOR back front\n")).unwrap(),
+        ["8080->8080 agent a", "8080->8080 agent b", "8080->8080 agent c"]
+    );
+    // A member a FOR names on no network: nothing reaches it.
+    let e = receivers(&format!("{two}AGENT d FROM ./d\nEXPOSE 8080 AS ingress FOR d\n")).unwrap_err();
+    assert!(e.contains("EXPOSE ... FOR agent d: it is on no network"), "{e}");
     // One the network's members do not hold.
     let e = check(&format!(
         "{several}AGENT c FROM ./c\nEXPOSE --agents=c 8080 AS ingress FOR front\n"

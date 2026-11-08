@@ -3342,8 +3342,34 @@ Improvements over Docker, each measured or tested:
 - `shards start vm` of a microVM that cannot start says why as `docker start` does, without
   run's help (it said run's before, for every start that failed).
 
-Open: BuildKit's RUN steps run under containerd's default device rules; `shards build image`'s
-steps are to be held to them.
+A build's (`shards build image`'s) `RUN` steps reach the devices BuildKit gives a step's container, and no other of
+their builder's: before, a step could make a node of the builder's image device (259:0) and
+read it, as a run could before this entry. BuildKit v0.28.1's runc executor
+(executor/oci/spec.go GenerateSpec) starts from containerd v2.2.1's default spec, which
+denies every device (pkg/oci/spec.go populateDefaultUnixSpec), where dockerd's run starts
+from moby's few; `--security=insecure` allows every char and block device in its place
+(util/entitlements/security WithInsecureSpec); each CDI device node (D96) adds its rule, of
+the access its spec's `permissions` gives, `rwm` where none
+(container-device-interface v1.1.0 ContainerEdits.Apply); then runc's own, less those whose
+path a device given takes (`shards_devcgroup::build_step`). Each step starts in a cgroup of
+its own, under the builder's `steps`, which the first step confines to the default rules
+once (a step of those rules, the most, costs no program of its own), or under `devices`,
+which nothing confines, where its own program is attached alone (a cgroup's programs and
+its parents' must all allow an access). Unlike BuildKit, by design: CDI gives a node of
+type `u` (an unbuffered char device) no rule, so that the step it is given cannot open it;
+shards gives it its rule, as a `c` node's. Tested: devcgroup's
+`a_build_step_reaches_runcs_devices_and_its_cdi_devices_alone` (the rules, run through
+the kernel's evaluation of the program, the compiler held to runc's by the oracle above);
+build.rs `run_steps_reach_the_devices_buildkit_gives_them_alone` (a step opens runc's
+devices and makes a node of the builder's 259:0, and is refused it, "Operation not
+permitted"; an insecure step reads it and /dev/kmsg) and `run_steps_take_cdi_devices` (a
+CDI node of the builder's disk given `r` read and not written).
+
+`shards attach` (D45) and the network commands (D46) touch no device rule: a joined or
+attached process is the run's own, under the run's filter, and a network is no device.
+Shards' own grammar names devices where a run takes them (`--device`, worded as the VM's,
+never the host's, `cmdline::grammar`) and where a running microVM is given a host's PCI
+function (`plug`, D214).
 
 ### attach (D45)
 
@@ -3426,7 +3452,15 @@ the daemon elected (D31).
   refused at once (REFUSED, a refusal by policy, RFC 1035 §4.1.1): SERVFAIL, a server's
   failure, which it answered until 2026-10-17 as Docker's embedded resolver does, is
   taken for a passing one and asked again (musl reads it as `EAI_AGAIN`). The daemon
-  sends each member the table as members come and go (`NET_NAMES`).
+  sends each member its own table as members come and go (`NET_NAMES`): its own names and
+  those of the members it reaches, and no other's. Networks are default deny: a name is a
+  grant's, never membership's alone, so a member no link reaches has no name either (one of
+  an `enable_icc` false network, below), where Docker's embedded resolver answers every
+  container of the network, reached or not (libnetwork's resolver answers from the
+  network's service records, which `enable_icc` does not touch). Unit-tested
+  (`a_member_is_answered_the_names_it_reaches_alone`) and on real microVMs
+  (`a_networks_options_are_what_its_microvms_do`: a peer's name refused at once, its own
+  answered).
 - **Members.** A microVM is a member while its run lasts: from its start, under the
   network's lock (no two take one address), to its end; one whose start fails is no
   member, however it failed. An address a run asked for is free once its end is told,
@@ -3450,8 +3484,9 @@ drivers/bridge/bridge_linux.go, port_mapping_linux.go; netlabel). Before, they w
 checked (two of them) and ignored, and two of those asked for less reach: a network made
 with `enable_icc` false or `host_binding_ipv4` 127.0.0.1 got neither, and was not told.
 - **`enable_icc` false keeps its members from one another:** no link between their
-  network processes (`NET_PEER`), the only way one reaches another; their names still
-  answered: a service finds its peers by name, as Compose files expect.
+  network processes (`NET_PEER`), the only way one reaches another, and none of their
+  names: each is answered its own alone (default deny; until 2026-11-08 their names were
+  answered, a name with no flow behind it).
 - **`host_binding_ipv4` is where a port published with no address is bound**, alone, as
   the option means to Docker's clients: an IPv4 address or an IPv6 one, whatever its name says; 0.0.0.0 or
   unset, every address, IPv4's and IPv6's (`configurePortBindingIPv4`, `IPv6`).
@@ -3478,7 +3513,7 @@ with `enable_icc` false or `host_binding_ipv4` 127.0.0.1 got neither, and was no
   read.
 Tested (`a_networks_options_are_what_its_microvms_do`: the default network's options,
 an old record's made true; each refusal in dockerd's words; a member of an `enable_icc`
-false network resolved by name and not reached; its port bound at 127.0.0.1 alone and
+false network neither resolved by another's name (REFUSED) nor reached; its port bound at 127.0.0.1 alone and
 reached there; the MTU kept in inspect, 65520 in the guest; a routed network's port
 refused; publish.rs `a_port_at_no_address_takes_its_networks`), mutation-checked: members
 linked whatever icc says, the host binding ignored, the default network saying icc, an
@@ -14290,6 +14325,53 @@ process a container listens with (https://docs.docker.com/reference/cli/docker/c
 
 `--mcps=` waits on local MCP servers joining networks: today each caller runs its own
 instance over stdio, in its own confinement (D60, §9.6).
+
+**2026-11-08, the user's decision: `FOR` takes a list of targets, networks and members
+mixed, and a port of several members goes to the one listening.** This replaces "one
+receiver for an incoming port" above:
+
+- **`EXPOSE <port>… [AS …] FOR <network_or_member>…`.** Each target is a network or an
+  agent or harness the lineage declares; a name that is both is a build error, and so is
+  `--agents`/`--harnesses` on a line whose targets are members alone. A member named is
+  given the ports on each network it is on (`CONNECT ... ON`), as `EXPOSE --agents=<it>
+  <ports> FOR <its networks>` says (`agentfile::resolve_targets`, which the build applies
+  before it checks and keeps the normalized Agentfile so); a member on no network is a
+  build error, as no flow reaches a member but on a network. Every target gets the
+  exposure, and nothing a target does not name is opened: both boundaries still apply
+  (the network's `--ingress`/`--expose` and the microVM's `EXPOSE`).
+- **Named members alone, both ways.** An `EXPOSE` that names its members opens egress for
+  them alone, as it opens ingress: before, egress named for one member was every member's
+  of the network (default deny: a grant to one is no other's).
+- **Several members on one port: the one listening takes each connection.** A port the
+  `EXPOSE`s give several members (a network's every member where none is named, several
+  named, or members of several networks) goes to the member that listens on it, the first
+  to listen holding it while it listens and then the next that does in declaration order;
+  no member listening, it goes nowhere past init, as a port no member claims. This is a
+  host's rule for a port (RFC 9293 §3.10.7.2: a SYN is for the socket in LISTEN on its
+  port; POSIX bind(2): EADDRINUSE keeps a second socket off a bound port), the microVM's
+  port standing for one host's. Two members' claims that overlap without being the same
+  ports are a build error, as which holds the rest no rule says. Init's chooser
+  (crate::chooser) makes it so: each candidate runs under a seccomp filter that notifies of
+  listen(2) and bind(2) (seccomp_unotify(2)); the chooser makes a TCP socket's listen
+  itself, and a UDP socket's bind to a contested port, refused EACCES as the member's own
+  kernel would refuse a privileged one, so that it knows the socket takes the port as it
+  answers; sock_diag tells it each socket's end in each candidate's namespace
+  (SKNLGRP_*_DESTROY), and it asks sock_diag who listens before it chooses. Each choice is
+  the uplink's chain `chosen`, before `pre`, programmed again whole. No grant rests on the
+  chooser: every candidate's gate and the switch let the port in to it, and the chooser
+  only picks among them. `shards read ports` names every candidate ("the one listening of
+  agent web; agent api").
+- **Tested**: the parser's and the plan's cases (agentfile.rs
+  `ingress_reaches_a_networks_one_member`: FOR's mixes, named and unnamed members, overlaps
+  refused, a member on no network refused; netplan's
+  `ingress_goes_to_the_member_its_expose_names`: every member a candidate, egress the named
+  member's alone; the chooser's unit tests of its filter, its contests and sock_diag's
+  messages) and on real microVMs, build.rs `a_port_comes_in_to_the_member_listening_on_it`:
+  two networks, `FOR front ops` giving three members four ports, each port reaching the one
+  member listening, every connection, and a member no `FOR` names not reached.
+- **Not yet**: a UDP flow already admitted keeps its conntrack entry's member past a change
+  of holder, as a host's kernel keeps a connected flow; ports past the microVM are IPv4's
+  alone (D99).
 
 ### D121. Docker's AppArmor mount rule, in guests that have no AppArmor
 

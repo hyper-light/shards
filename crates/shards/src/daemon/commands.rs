@@ -1349,11 +1349,12 @@ impl<D: crate::containers::Disk> Daemon<D> {
             .filter_map(|p| {
                 let at = std::net::SocketAddr::new(p.ip?, p.public);
                 let proto = if p.proto == "udp" { 17 } else { 6 };
-                let reaches = match receivers
+                // Each member the port is for; of several, the one listening takes each
+                // connection (D122).
+                let each: Vec<String> = receivers
                     .iter()
-                    .find(|r| r.at.0 == proto && r.at.1 <= p.private && p.private <= r.at.2)
-                {
-                    Some(r) => {
+                    .filter(|r| r.at.0 == proto && r.at.1 <= p.private && p.private <= r.at.2)
+                    .map(|r| {
                         let kind = match r.kind {
                             TargetKind::Agent => "agent",
                             TargetKind::Harness => "harness",
@@ -1365,8 +1366,12 @@ impl<D: crate::containers::Disk> Daemon<D> {
                         } else {
                             format!("{kind} {name}, at {own}/{}", p.proto)
                         }
-                    }
-                    None => "the command".to_string(),
+                    })
+                    .collect();
+                let reaches = match each.as_slice() {
+                    [] => "the command".to_string(),
+                    [one] => one.clone(),
+                    several => format!("the one listening of {}", several.join("; ")),
                 };
                 Some([format!("{}/{}", p.private, p.proto), at.to_string(), reaches])
             })
