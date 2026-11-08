@@ -18488,6 +18488,98 @@ revision before comparing a changed API/implementation.
   and the restore, not its memory.
 - **Consequence.** The downtime D176 part 7 says; what is left to cut is in the last stream
   and the restore.
+
+### M462. Moves of the slow-link build on Mac Studios: packed streams, rounds that stop, a fresh home's first restore, and a move to another Mac refused (D176 parts 6 and 7)
+
+- **Question.** With the stream packed for its link, pre-copy stopped once its rounds stop
+  shrinking (`live::Stop`) and the rounds told as they go (D176 parts 6 and 7, built
+  2026-11-07), what does a move cost on Hypervisor.framework, cold and live, how much does
+  packing take off its stream, why do the rounds end, and does a move between two Mac
+  Studios on one network go through?
+- **Method.** docs/research/measurements/migrate/two-hosts.sh `local` at f96073f6, on
+  Adas-Mac-Studio (Apple M3 Ultra, 32 cores, macOS 26.4), 2026-11-07T23:22Z: two homes of
+  the one machine, the one listening on 127.0.0.1:7443 and the other joined to it as context
+  `lab`; n 20 cold, then n 20 live, of alpine:3.20 counting every 50 ms (each live one
+  rewriting 1 MiB of /dev/shm as it counts), then all of tests/moved.rs. Run by a kiln
+  runner (`UNCLAMP=0`): both daemons at priority 20, beside another session's CI job on the
+  same host. Each move's `SHARDS_MOVE_TIMES` lines kept. The first restore of a fresh home
+  taken apart: `local` again with `SHARDS_LOG=debug`, the other home's daemon log kept, and a
+  `listen`/`move` pair with N 1 whose homes were kept, the times of the files in the
+  restoring home's `guest/` beside the move's steps. Between two machines: `listen` on
+  Adas-Mac-Studio-4 (Apple M4 Max, 14 cores, macOS 26.2, 192.168.1.83, Wi-Fi), `move` N 20
+  `MODE="cold live"` from Adas-Mac-Studio (192.168.1.88, Wi-Fi), at 20f080a4,
+  2026-11-08T02:45Z; the link between them read by a 33,042,504-byte HTTP transfer (curl,
+  python3's http.server). `sysctl hw.optional.arm` on every Studio.
+- **Found** (µs unless said; n 20 each, two homes of the M3 Ultra):
+
+  | mode | what | p50 | p90 | p99 | max |
+  |---|---|---|---|---|---|
+  | cold | move took | 1,171,537 | 1,451,934 | 40,698,953 | 40,698,953 |
+  | cold | ran nowhere | 1,085,578 | 1,367,700 | 40,659,524 | 40,659,524 |
+  | cold | sent (bytes) | 28,112,898 | 32,175,609 | 33,177,175 | 33,177,175 |
+  | cold | link (B/s) | 42,407,139 | 60,113,598 | 82,243,310 | 82,243,310 |
+  | cold | longest silence | 28,153 | 41,516 | 61,408 | 61,408 |
+  | live | move took | 886,448 | 1,064,983 | 1,256,768 | 1,256,768 |
+  | live | ran nowhere | 282,054 | 372,821 | 421,575 | 421,575 |
+  | live | sent (bytes) | 36,803,893 | 50,000,863 | 53,299,117 | 53,299,117 |
+  | live | link (B/s) | 66,410,052 | 82,787,411 | 95,974,127 | 95,974,127 |
+  | live | longest silence | 59,665 | 106,077 | 109,741 | 109,741 |
+  | live | rounds (n) | 4 | 6 | 6 | 6 |
+
+  40 of 40 moved, every count once there; tests/moved.rs 9 of 9 passed, the two of another
+  machine among them (to the listening home).
+  - **Packing.** A cold move's stream was 82.2 to 84.0 MB as written, sent as 21.4 to 33.2
+    MB (26% to 40%), 55 to 69 of its 79 to 81 frames of 1 MiB as zstd; a live one's 90.0 to
+    135.5 MB, sent as 27.0 to 53.3 MB. On loopback the packer stayed at zstd's levels rather
+    than none: its reader seldom waited on it.
+  - **Rounds.** Round 0 sent 59.0 to 61.3 MB in 218 to 546 ms; later rounds 9 to 19 MB each,
+    the counter's rewrites. 12 of 20 ended with little left (a round of 8 MiB or less), 8
+    as their rounds no longer shrank (a round of about 9.5 MB after one as large); none
+    reached three times the first round or 30 rounds. The last save took 83 to 228 ms and
+    the last stream 14 to 44 ms of the time each ran nowhere.
+  - **The p99 is a fresh home's first move.** Cold move 1 ran nowhere 40.7 s: ready there
+    at 11.7 s (alpine pulled there by its digest from Docker Hub) and its restore 28.7 s
+    after its stream, where the other 19 restored in about 30 ms. Taken apart twice more:
+    the restoring daemon spawned the VM 23 s after it was asked, the VM then ready in 159 ms;
+    and with the homes kept, the pinned kernel (19,016,192 bytes) landed in the restoring
+    home's `guest/` at 16:21:49, the second the restore answered, its init at 16:21:32, the
+    second the stream ended. A restore prepares its run's request as a start does
+    (`run::prepare`), which downloads the pinned kernel where the home records none: 16.0 s
+    by curl from the same host then. Cold moves 2 to 20 have no outlier: their ran-nowhere
+    max is 1.60 s.
+  - **Fixed** (20f080a4): the machine moved to fetches the guest as it readies (`ready`),
+    before the stream, where the moved run boots the stored guest (`Plan::guest`). A fresh
+    home's first move live then: ready there at 157.9 s (image and kernel over the host's
+    link then), restored 0.28 s after its stream, downtime 1.21 s; another, ready at 67.1 s,
+    restored 0.40 s after, downtime 2.10 s (its last save 1.43 s, the host busier). The
+    first of these took 122 s from ready to the end of its stream, of which its rounds
+    took 2.4 s; the 117 s left are not explained (seen once in three fresh-home live moves,
+    its homes not kept).
+  - **Between the two Studios, refused.** 38 of 40 moves were refused by the M4 Max's
+    `ready`: "this machine's CPU lacks FEAT_SSBS, which mv-cold-1's guest may have used
+    where it ran", each going on where it was, every count once; 2 (cold 10 and 11) failed
+    to reach its daemon ("no shards daemon answered ... within 10s", "aborted by peer ...
+    during the handshake"), each going on where it was too. `hw.optional.arm.FEAT_SSBS` is 1
+    on the M3 Ultra (macOS 26.4) and absent on both M4 Max Studios (macOS 26.2), which name
+    FEAT_FPACCOMBINE, FEAT_WFxT and SME's features the M3 Ultra does not: neither way is a
+    move between them taken.
+  - **The link.** 33,042,504 bytes from the M3 Ultra to the M4 Max over HTTP took 171 s:
+    193 kB/s. Within an hour both M4 Max Studios' kiln runners restarted at least once,
+    each ending what its runs had started, the listening daemon among them; the third M4
+    Max Studio was on another network (10.0.0.14, behind a NAT), 0.9 to 2.0 s from the
+    first by ping.
+- **Reading.** On loopback a cold move of alpine runs nowhere about a second, most of it
+  its packed stream of about 83 MB, and a live one about 0.3 s, its rounds ending as they
+  should, by little left or by the counter's writes keeping pace; a fresh home's first
+  move paid for the pinned kernel inside its restore. A move between Macs is refused where
+  their OSes name different features, as D176 part 6 has it; whether the M4 Max's cores
+  lack SSBS or macOS 26.2 leaves it unnamed (the two Studios differ in both chip and OS) is
+  not measured.
+- **Consequence.** 20f080a4 fetches the guest in `ready`. Still to measure: moves between
+  two machines of one macOS (two of the M4 Max Studios, or the M3 Ultra and a Mac on macOS
+  26.4), cold and live, n 20, and tests/moved.rs's two tests of another machine, over a
+  link and runners that hold for the length of the series; the 117 s seen once before a
+  fresh home's live rounds.
 ### M422. Whether a Hypervisor.framework guest given EL2 has VHE (the parity plan's step 10)
 
 - **Question.** Step 10's host is to be Windows 11 arm64 under QEMU on this Mac, given EL2
