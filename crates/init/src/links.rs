@@ -1008,11 +1008,12 @@ impl Switch {
             .gates
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let (_, _, nft) = gates
+        let (_, ns, _) = gates
             .iter()
             .find(|(i, ..)| *i == n)
             .ok_or_else(|| io::Error::other("no such member's gate"))?;
-        gate_policy(nft, gate)
+        let nft = in_netns(Some(ns.as_raw_fd()), || netlink_socket(libc::NETLINK_NETFILTER))?;
+        gate_policy(&nft, gate)
     }
 
     /// Links the `n`-th domain, its first process `pid`, as `link` says, through a gate
