@@ -41,12 +41,19 @@ impl std::fmt::Debug for Subject<'_> {
 }
 
 /// A case that failed, and why.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[error("{case}: {why}")]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Failure {
     pub case: &'static str,
     pub why: String,
 }
+
+impl std::fmt::Display for Failure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: {}", self.case, self.why)
+    }
+}
+
+impl std::error::Error for Failure {}
 
 fn fail(case: &'static str, why: impl Into<String>) -> Failure {
     Failure {
