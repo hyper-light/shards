@@ -19204,3 +19204,72 @@ revision before comparing a changed API/implementation.
   READY. Tested: daemon.rs `a_warm_vms_run_starts_without_growing_its_descriptor_table`
   (a pool's VM's `FDSize` the same as its run starts as while it waited, Linux), on
   Fedora. Harness: start-path/trace.py and trace.patch.
+
+### M471. Where the start and memory targets stand on Fedora: the image bench and the Firecracker comparison (D25, D26)
+
+- **Question.** CLAUDE.md's targets: a request to a usable microVM under 5 ms, boot
+  included, and less memory per VM than Firecracker. Where does the current build stand,
+  by the committed benches?
+- **Method.** Fedora 44, Linux 6.19.10-300.fc44, M258's Intel Core i9-14900HX (32 CPUs, THP
+  `madvise`), other agents' builds, clusters and VMs running throughout (each run's load
+  below), 2026-11-07 and -08. `cargo bench -p shards --bench image -- --runs 100
+  --templates 5` (with `template_usable`, the client's spawn to the command executing,
+  less the VM's own clock from WORKLOAD_STARTED to the status read: an upper bound); and
+  `--bench firecracker -- --runs 30` (Firecracker v1.17.0, the pinned kernel
+  vmlinux-6.18.48-x86_64-64a9427a8997, one initrd, 1 vCPU, 128 MiB, the two VMMs
+  interleaved; density 16 VMs a VMM, rounds S F F S S F F S), with `scripts/bench-envelope`.
+  At 2d2a783a (before M470) and 86e41c99 (after it, with the integration's work since).
+- **Results, the image bench** (µs; the microVM a vCPU per host CPU, D191):
+
+  | revision (load) | row | p50 | p90 | p99 | max |
+  |---|---|---|---|---|---|
+  | 2d2a783a (14.5) | run_template | 22,321 | 30,905 | 37,809 | 46,390 |
+  | | template_usable | 21,324 | 27,972 | 36,185 | 42,434 |
+  | | template_start | 5,589 | 6,394 | 11,516 | 21,977 |
+  | | run_cold | 249,087 | 424,361 | 720,943 | 1,436,650 |
+  | 86e41c99 (86) | run_template | 19,297 | 33,493 | 242,238 | 248,923 |
+  | | template_usable | 15,615 | 28,927 | 234,552 | 245,112 |
+  | | template_start | 5,287 | 12,325 | 22,082 | 87,659 |
+  | | run_cold | 1,447,281 | 1,893,914 | 2,269,459 | 2,476,815 |
+
+  The second run's host was overloaded (load 86 at its end): its rows say what an overloaded
+  host does, not the build. M470's trace, at load 20 to 30, has the start's own steps.
+- **Results, the comparison** (p50, shards against Firecracker; the envelope's paired median
+  difference [95%]):
+
+  | revision (load) | metric | shards | Firecracker | difference | verdict |
+  |---|---|---|---|---|---|
+  | 2d2a783a (15) | boot: spawn to ready | 90.4 ms | 96.5 ms | −7.9 [−21.8, +21.1] | tied |
+  | | boot: PSS | 54.3 MiB | 54.7 MiB | −0.8 [−1.0, −0.1] | better |
+  | | boot: outside guest memory | 2.0 MiB | 2.5 MiB | −0.5 | better |
+  | | restore: spawn to first beat | 9.1 ms | 10.4 ms | −1.6 [−2.1, −1.2] | better |
+  | | restore: PSS | 4.9 MiB | 12.6 MiB | −7.7 | better |
+  | | restore: outside guest memory | 2.0 MiB | 2.8 MiB | −0.8 | better |
+  | | 16 VMs: PSS a VM | 1.2 MiB | 1.7 MiB | −0.5 [−0.5, −0.5] | better |
+  | | 16 VMs: host memory a VM | 5.8 MiB | 0.0 MiB | +5.8 [+0.0, +15.2] | tied |
+  | 86e41c99 (85) | boot: spawn to ready | 205.5 ms | 168.3 ms | +27.5 [+1.3, +71.0] | worse |
+  | | boot: PSS | 53.0 MiB | 54.2 MiB | −1.1 [−1.6, −0.9] | better |
+  | | restore: spawn to first beat | 12.1 ms | 24.9 ms | −8.7 [−16.5, −7.3] | better |
+  | | restore: PSS | 4.9 MiB | 12.9 MiB | −8.0 | better |
+  | | 16 VMs: PSS a VM | 1.2 MiB | 1.8 MiB | −0.6 [−0.6, −0.6] | better |
+  | | 16 VMs: host memory a VM | 2.4 MiB | 15.1 MiB | −10.9 [−17.8, −4.6] | better |
+
+  Every other memory row (peak RSS, anonymous and file-backed RSS and PSS, page tables)
+  is better or tied in both runs. The boot's p90 was shards' 206.4 against 127.7 ms at load
+  15, its time outside the guest (the VMM's spawn and setup, the kernel's start) 164.5
+  against 51.0 ms at p90: under load the spawn of shards' VM process goes slower than
+  Firecracker's; at load 85 its median too. The 16 VMs' host memory (MemAvailable given
+  up) moves by more than the VMs' own between rounds on this host; tied, then better.
+- **Also: DAX windows on Linux 6.19.** M463 found a bind's DAX window (D189) on adacachy2
+  (CachyOS, Linux 7.3.3) read 64 MiB at 9.5 MiB/s, 513 µs an open, a 4 KiB read and a
+  close. The same test (`what_a_clients_bind_costs`, 3 rounds, 86e41c99) here, load 40 to
+  65: the machine's own bind with DAX 111 to 201 µs at p50 an open, read 122 to 577 MiB/s;
+  FUSE alone 146 to 257 µs, 99 to 383 MiB/s. Not this kernel's or this host's: open on
+  adacachy2.
+- **Reading.** Memory: on every axis the comparison measures, booted, restored and held 16
+  at once, a shards VM holds less than Firecracker's (16 VMs: 1.2 against 1.7 to 1.8 MiB
+  of PSS a VM); the VMM's own memory outside its guest's 1.9 to 2.0 against 2.5 to 2.8 MiB,
+  glibc gone from it (M281). The start target is not met on Fedora: M470's fix took a pooled
+  run's usable from 19.2 to 5.8 ms at load 20 to 26; the rest is the guest's start of the
+  command and the client's launch. A boot's spawn under heavy load is slower than
+  Firecracker's: open.
