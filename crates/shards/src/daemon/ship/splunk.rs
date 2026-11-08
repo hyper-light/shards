@@ -29,10 +29,19 @@ const POST: Duration = Duration::from_secs(30);
 const UNACKNOWLEDGED: Duration = Duration::from_secs(5 * 60);
 /// The most of an answer's body a refusal quotes (moby's maxResponseSize).
 const QUOTED: usize = 1024;
-/// The most of a post's content HEC takes: `max_content_length`, "the maximum length, in
-/// bytes, of HTTP request content that is accepted by the HTTP Event Collector server",
-/// 838,860,800 unless set (Splunk Enterprise 10.0 limits.conf, `[http_input]`).
-const CONTENT_MOST: usize = 838_860_800;
+/// The most of a post's content HEC takes unless its server is set otherwise, where a
+/// destination's own bound starts (learned.rs): `max_content_length`, "the maximum length,
+/// in bytes, of HTTP request content that is accepted by the HTTP Event Collector server",
+/// 838,860,800 unless set (Splunk Enterprise 10.0 limits.conf, `[http_input]`). A post past
+/// what its server takes is answered 413, "Content Too Large" (RFC 9110 section 15.5.14),
+/// and the destination's bound learned from it.
+pub(super) const CONTENT_MOST: usize = 838_860_800;
+
+/// An event made, not yet posted, and the line it carries where it can be cut again.
+struct Pending {
+    event: Vec<u8>,
+    line: Option<(u8, u64, Vec<u8>)>,
+}
 
 pub(super) struct Splunk {
     config: Config,
@@ -44,7 +53,9 @@ pub(super) struct Splunk {
     channel: String,
     batch_size: usize,
     /// Events made, not yet posted, oldest first.
-    batch: Vec<Vec<u8>>,
+    batch: Vec<Pending>,
+    /// What the destination has shown it takes of a post (learned.rs).
+    learned: super::learned::Learned,
     /// Batches posted that HEC has not yet said are indexed: each its ack's ID, when it
     /// was posted, and its events.
     waiting: Vec<(u64, Instant, Vec<Vec<u8>>)>,
@@ -53,7 +64,11 @@ pub(super) struct Splunk {
 }
 
 impl Splunk {
-    pub(super) fn new(config: Config, from: From) -> Result<Splunk, String> {
+    pub(super) fn new(
+        config: Config,
+        from: From,
+        learned: super::learned::Learned,
+    ) -> Result<Splunk, String> {
         let tls = shards_registry::tls::client_config(config.roots()?, None).map_err(|e| e.to_string())?;
         let mut client = Client::new(
             Box::new(move |_| Ok(tls.clone())),
@@ -89,22 +104,41 @@ impl Splunk {
             channel,
             batch_size,
             batch: Vec::new(),
+            learned,
             waiting: Vec::new(),
             unacknowledged: UNACKNOWLEDGED,
         })
     }
 
-    /// The most of an event's bytes: its share of a post of `batch_size` events within
-    /// what HEC takes of a post ([`CONTENT_MOST`]).
+    /// The most of an event's bytes: what the destination takes of a post (learned.rs),
+    /// an event alone in one.
     fn event_most(&self) -> usize {
-        CONTENT_MOST / self.batch_size.max(1)
+        self.learned.most()
     }
 
-    /// Posts the batch, in posts of `batch_size` events, the oldest first.
+    /// Posts the batch, the oldest first, in posts of at most `batch_size` events and of no
+    /// more bytes than the destination takes (learned.rs), each event's uncompressed. A post
+    /// answered 413 is past it: learned so, and posted again in smaller posts; an event
+    /// alone that is, its line cut in halves at a character's boundary, each an event of
+    /// its own (HEC's events carry no part's place).
     fn post(&mut self) -> io::Result<()> {
         while !self.batch.is_empty() {
-            let n = self.batch.len().min(self.batch_size);
-            let body = self.batch.get(..n).unwrap_or_default().concat();
+            let most = self.learned.most();
+            let mut n = 0;
+            let mut bytes = 0usize;
+            for p in self.batch.iter().take(self.batch_size) {
+                if n > 0 && bytes.saturating_add(p.event.len()) > most {
+                    break;
+                }
+                bytes = bytes.saturating_add(p.event.len());
+                n += 1;
+            }
+            let body: Vec<u8> = self
+                .batch
+                .iter()
+                .take(n)
+                .flat_map(|p| p.event.iter().copied())
+                .collect();
             let body = match self.config.gzip {
                 Some(level) => {
                     let level = flate2::Compression::new(u32::try_from(level).unwrap_or(6));
@@ -114,8 +148,18 @@ impl Splunk {
                 }
                 None => body,
             };
-            let answer = self.request(&self.events.clone(), &body, self.config.gzip.is_some(), 64)?;
-            let events: Vec<Vec<u8>> = self.batch.drain(..n).collect();
+            let answer = match self.request(&self.events.clone(), &body, self.config.gzip.is_some(), 64) {
+                Err(e) if e.kind() == io::ErrorKind::FileTooLarge => {
+                    self.learned.refused(body.len());
+                    if n == 1 {
+                        self.cut_first()?;
+                    }
+                    continue;
+                }
+                answer => answer?,
+            };
+            self.learned.taken(body.len());
+            let events: Vec<Vec<u8>> = self.batch.drain(..n).map(|p| p.event).collect();
             // With indexer acknowledgment, HEC names the post's ack; without, its 200 is
             // its word.
             if self.config.index_ack
@@ -145,9 +189,42 @@ impl Splunk {
             .into_iter()
             .partition(|(_, at, _)| now.saturating_duration_since(*at) >= self.unacknowledged);
         self.waiting = kept;
-        let mut again: Vec<Vec<u8>> = overdue.into_iter().flat_map(|(_, _, events)| events).collect();
+        let mut again: Vec<Pending> = overdue
+            .into_iter()
+            .flat_map(|(_, _, events)| events)
+            .map(|event| Pending { event, line: None })
+            .collect();
         again.append(&mut self.batch);
         self.batch = again;
+        Ok(())
+    }
+
+    /// Cuts the first event's line in halves, each an event of its own, where its line is
+    /// kept and more than a character; else gives up the post as refused.
+    fn cut_first(&mut self) -> io::Result<()> {
+        let refused = || io::Error::other("splunk: an event alone is past what its server takes (413)");
+        let Some(first) = self.batch.first_mut() else {
+            return Ok(());
+        };
+        let Some((stream, at, line)) = first.line.take() else {
+            return Err(refused());
+        };
+        let half = super::boundary(&line, line.len() / 2);
+        if half == 0 || half >= line.len() {
+            first.line = Some((stream, at, line));
+            return Err(refused());
+        }
+        let (a, b) = line.split_at(half);
+        let made: Vec<Pending> = [a, b]
+            .into_iter()
+            .filter_map(|l| {
+                splunk::event(&self.config, &self.from, stream, at, l).map(|event| Pending {
+                    event,
+                    line: Some((stream, at, l.to_vec())),
+                })
+            })
+            .collect();
+        self.batch.splice(..1, made);
         Ok(())
     }
 
@@ -181,21 +258,28 @@ impl Splunk {
         io::copy(&mut answer, &mut io::sink())?;
         if answer.status != 200 {
             text.truncate(QUOTED);
-            return Err(io::Error::other(format!(
-                "splunk: {} - {}",
-                answer.status_text(),
-                String::from_utf8_lossy(&text)
-            )));
+            let kind = if answer.status == 413 {
+                io::ErrorKind::FileTooLarge
+            } else {
+                io::ErrorKind::Other
+            };
+            return Err(io::Error::new(
+                kind,
+                format!(
+                    "splunk: {} - {}",
+                    answer.status_text(),
+                    String::from_utf8_lossy(&text)
+                ),
+            ));
         }
         Ok(text)
     }
 }
 
 impl Driver for Splunk {
-    /// The most of a line one event carries: an event's share of a post of `batch_size`
-    /// events, each as long, within what HEC takes of a post ([`CONTENT_MOST`]),
-    /// uncompressed, less the rest of an event, its time at its widest. A line's bytes are
-    /// no fewer in its event.
+    /// The most of a line one event carries: what the destination takes of a post
+    /// (learned.rs), an event alone in one, uncompressed, less the rest of an event, its
+    /// time at its widest. A line's bytes are no fewer in its event.
     fn part(&self) -> usize {
         let rest = splunk::event(&self.config, &self.from, crate::spec::LOG_STDERR, u64::MAX, b"x")
             .map_or(0, |e| e.len().saturating_sub(1));
@@ -213,7 +297,10 @@ impl Driver for Splunk {
             self.post()?;
         }
         if let Some(event) = splunk::event(&self.config, &self.from, m.stream, m.at, m.line) {
-            self.batch.push(event);
+            self.batch.push(Pending {
+                event,
+                line: Some((m.stream, m.at, m.line.to_vec())),
+            });
         }
         Ok(())
     }
@@ -377,7 +464,12 @@ mod tests {
             tag: None,
             attrs: BTreeMap::new(),
         };
-        Splunk::new(crate::logging::splunk::config(&all).unwrap(), from).unwrap()
+        Splunk::new(
+            crate::logging::splunk::config(&all).unwrap(),
+            from,
+            super::super::learned::Learned::new(CONTENT_MOST),
+        )
+        .unwrap()
     }
 
     fn message(line: &[u8]) -> Message<'_> {
@@ -389,22 +481,58 @@ mod tests {
         }
     }
 
-    /// A line as long as the driver's part leaves its event, and a post of a batch of such
-    /// events, within what HEC takes of a post; a byte more of the line's escaped JSON does
-    /// not fit; and a smaller batch's events may be longer.
+    /// Do: post to a fake HEC that answers 413 to any post of more than 3,000 bytes, eight
+    /// lines of 900 bytes then one of 5,000, uncompressed. Expect every line indexed once,
+    /// whole but the long one, which comes in events whose lines make it; every post HEC
+    /// took within its 3,000 bytes; the destination's bound learned below the shortest post
+    /// it refused, from the refusals alone, each refused post posted again.
     #[test]
-    fn an_event_leaves_a_full_post_within_what_hec_takes() {
-        let mut s = splunk(1, &[]);
-        let part = s.part();
-        let line = vec![b'x'; part];
-        let event = splunk::event(&s.config, &s.from, crate::spec::LOG_STDOUT, u64::MAX, &line).unwrap();
-        assert!(event.len() * BATCH <= CONTENT_MOST, "{}", event.len());
-        assert!(s.fits(&message(&line)).unwrap());
-        // A quote is two bytes of JSON: an event past its share.
-        let over = vec![b'"'; s.event_most() / 2];
-        assert!(!s.fits(&message(&over)).unwrap());
-        s.batch_size = 10;
-        assert!(s.part() > part * 99);
+    fn posts_follow_what_hec_refuses_as_too_large() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (seen, posts) = mpsc::channel();
+        let shortest_refused = std::sync::atomic::AtomicUsize::new(usize::MAX);
+        let answer = |request: &Seen| {
+            if request.body.len() > 3000 {
+                shortest_refused.fetch_min(request.body.len(), std::sync::atomic::Ordering::Relaxed);
+                (413, r#"{"text":"Content too large"}"#.to_string())
+            } else {
+                (200, r#"{"text":"Success","code":0}"#.to_string())
+            }
+        };
+        let mut most = 0;
+        std::thread::scope(|scope| {
+            scope.spawn(|| serve(&listener, &answer, &seen));
+            let _quit = Quit(port);
+            let (_stop, stopped) = UnixStream::pair().unwrap();
+            let wait = Wait(&stopped);
+            let mut hec = splunk(port, &[]);
+            for i in 0..8u8 {
+                hec.send(&message(&vec![b'a' + i; 900]), &wait).unwrap();
+            }
+            hec.send(&message(&vec![b'z'; 5000]), &wait).unwrap();
+            hec.flush(&wait).unwrap();
+            assert_eq!(hec.undelivered(), 0);
+            most = hec.learned.most();
+        });
+        let shortest = shortest_refused.load(std::sync::atomic::Ordering::Relaxed);
+        assert!(most < shortest, "{most} {shortest}");
+        let mut got = Vec::new();
+        for post in posts.try_iter() {
+            if post.body.len() <= 3000 {
+                got.extend(lines(&post.body));
+            }
+        }
+        for i in 0..8u8 {
+            let line = String::from_utf8(vec![b'a' + i; 900]).unwrap();
+            assert_eq!(got.iter().filter(|l| **l == line).count(), 1, "{i}");
+        }
+        let long: String = got
+            .iter()
+            .filter(|l| l.starts_with('z'))
+            .map(String::as_str)
+            .collect();
+        assert_eq!(long, "z".repeat(5000));
     }
 
     /// The lines of a post's events.

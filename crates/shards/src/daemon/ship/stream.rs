@@ -44,6 +44,12 @@ pub(super) struct Stream {
     /// The messages written on this connection or one before it that their receiver may
     /// not have, oldest first: each, and its connection's bytes once it was written.
     held: VecDeque<(Vec<u8>, u64)>,
+    /// How many connections in a row ended, by their receiver or a write that failed, with
+    /// messages held and none of them delivered meanwhile ([`Stream::suspect`]).
+    ended: u32,
+    /// The connection's bytes its receiver's TCP had acknowledged as it was last settled:
+    /// let go of as it is next found not ended by its receiver.
+    acknowledged: u64,
 }
 
 impl Stream {
@@ -53,6 +59,8 @@ impl Stream {
             timeouts,
             conn: None,
             held: VecDeque::new(),
+            ended: 0,
+            acknowledged: 0,
         }
     }
 
@@ -65,6 +73,8 @@ impl Stream {
             timeouts: [None; 2],
             conn: Some(Conn::Unix(socket)),
             held: VecDeque::new(),
+            ended: 0,
+            acknowledged: 0,
         }
     }
 
@@ -78,6 +88,9 @@ impl Stream {
         };
         if let Err(e) = conn.write_all(message).and_then(|()| conn.flush()) {
             self.conn = None;
+            if !self.held.is_empty() {
+                self.ended = self.ended.saturating_add(1);
+            }
             return Err(e);
         }
         if let Some(tcp) = conn.tcp() {
@@ -93,6 +106,7 @@ impl Stream {
             return Ok(());
         }
         let mut conn = Conn::open(&self.to, self.timeouts)?;
+        self.acknowledged = 0;
         for (message, at) in &mut self.held {
             conn.write_all(message)?;
             conn.flush()?;
@@ -104,17 +118,68 @@ impl Stream {
 
     /// Lets go of the messages delivered: those whose last byte their receiver's TCP has
     /// acknowledged. A connection that cannot say, or has ended, lets go of none.
+    ///
+    /// A connection its receiver has ended lets go of none either: a receiver that ends one
+    /// as it reads a message it will not take (Graylog's GELF input past its
+    /// `max_message_size`, Fluent Bit's forward input past its buffer) has acknowledged
+    /// that message's bytes as it read them. So a message acknowledged is let go of only as
+    /// the connection is next settled and found not ended by its receiver; what is held
+    /// goes on the next connection, and connections that end so in a row point at the
+    /// message held that the receiver may not take ([`Stream::suspect`]).
     fn settle(&mut self) {
+        if self.conn.as_ref().is_some_and(Conn::ended_by_peer) {
+            self.conn = None;
+            self.acknowledged = 0;
+            if !self.held.is_empty() {
+                self.ended = self.ended.saturating_add(1);
+            }
+            return;
+        }
         let Some(tcp) = self.conn.as_mut().and_then(Conn::tcp_mut) else {
             return;
         };
         let Ok((unacknowledged, _)) = tcp.unacknowledged() else {
             return;
         };
-        let acknowledged = tcp.written.saturating_sub(unacknowledged);
+        let acknowledged =
+            std::mem::replace(&mut self.acknowledged, tcp.written.saturating_sub(unacknowledged));
+        let before = self.held.len();
         while self.held.front().is_some_and(|(_, at)| *at <= acknowledged) {
             self.held.pop_front();
         }
+        if self.held.len() < before {
+            self.ended = 0;
+        }
+    }
+
+    /// How many messages are held, the oldest the first.
+    pub(super) fn held(&self) -> usize {
+        self.held.len()
+    }
+
+    /// The message held that its receiver may refuse as too long: where two connections in
+    /// a row have ended with messages held and none delivered between, the longest held,
+    /// where it is longer than `took`, the longest the destination is known to have taken
+    /// (learned.rs). None where nothing points at one: a receiver that restarts, or a
+    /// network that drops, ends connections whatever their messages' lengths.
+    pub(super) fn suspect(&self, took: usize) -> Option<usize> {
+        if self.ended < 2 {
+            return None;
+        }
+        let (i, (longest, _)) = self.held.iter().enumerate().max_by_key(|(_, (m, _))| m.len())?;
+        (longest.len() > took).then_some(i)
+    }
+
+    /// Puts `with` where the held message at `index` was, as its driver cut it again, the
+    /// count of ended connections begun again: all held goes on the next connection.
+    pub(super) fn replace(&mut self, index: usize, with: Vec<Vec<u8>>) {
+        if index < self.held.len() {
+            let rest = self.held.split_off(index);
+            self.held.extend(with.into_iter().map(|m| (m, 0)));
+            self.held.extend(rest.into_iter().skip(1));
+        }
+        self.ended = 0;
+        self.conn = None;
     }
 
     /// How many of the messages written their receiver may not have yet.
@@ -273,6 +338,27 @@ impl Conn {
                 Conn::Unix(socket)
             }
         })
+    }
+
+    /// Whether its receiver has ended it: its TCP socket read, without waiting and taking
+    /// nothing, at its end (a FIN) or reset. A unix socket's, whose writes are delivered as
+    /// they are written, is not asked; nor is a TLS connection's receiver's close_notify,
+    /// which comes before its FIN, read so.
+    fn ended_by_peer(&self) -> bool {
+        let Some(tcp) = self.tcp() else {
+            return false;
+        };
+        let socket = &tcp.socket;
+        if socket.set_nonblocking(true).is_err() {
+            return false;
+        }
+        let mut byte = [0u8; 1];
+        let ended = match socket.peek(&mut byte) {
+            Ok(n) => n == 0,
+            Err(e) => !matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted),
+        };
+        let _ = socket.set_nonblocking(false);
+        ended
     }
 
     /// Its TCP socket, and what has been written on it: none for a unix socket's.
@@ -621,5 +707,70 @@ mod tests {
         let mut want: Vec<u8> = held.concat();
         want.extend_from_slice(b"last");
         assert_eq!(reading.join().unwrap(), want);
+    }
+
+    /// Do: a receiver of NUL-ended messages that ends its connection on reading one of more
+    /// than 100 bytes, as Graylog's GELF input ends one past its `max_message_size`; send
+    /// a short message, a long one, then short ones, each connection's end found as the
+    /// stream next settles. Expect the long one pointed at once two connections have ended
+    /// with it held, and not before; nothing pointed at that is no longer than what the
+    /// destination took; and, the long one replaced by short pieces, every message but it
+    /// received.
+    #[test]
+    fn a_receiver_that_ends_connections_on_a_message_points_at_it() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap().to_string();
+        let (got, frames) = std::sync::mpsc::channel::<Vec<u8>>();
+        std::thread::spawn(move || {
+            for conn in listener.incoming() {
+                let Ok(conn) = conn else { return };
+                let mut read = std::io::BufReader::new(conn);
+                loop {
+                    let mut frame = Vec::new();
+                    match std::io::BufRead::read_until(&mut read, 0, &mut frame) {
+                        Ok(0) | Err(_) => break,
+                        Ok(_) => {}
+                    }
+                    frame.pop();
+                    if frame.len() > 100 {
+                        break;
+                    }
+                    if got.send(frame).is_err() {
+                        return;
+                    }
+                }
+            }
+        });
+        let mut stream = Stream::new(To::Tcp(address), [None; 2]);
+        let long = [vec![b'L'; 300], vec![0]].concat();
+        stream.send(b"first\0").unwrap();
+        stream.send(&long).unwrap();
+        let started = std::time::Instant::now();
+        let mut i = 0;
+        let at = loop {
+            assert!(started.elapsed() < Duration::from_secs(20), "nothing pointed at");
+            if let Some(at) = stream.suspect(10) {
+                break at;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+            stream.undelivered();
+            let _ = stream.send(format!("tick{i}\0").as_bytes());
+            i += 1;
+        };
+        assert_eq!(stream.held.get(at).map(|(m, _)| m.len()), Some(301));
+        assert_eq!(
+            stream.suspect(301),
+            None,
+            "pointed at though no longer than taken"
+        );
+        stream.replace(at, vec![b"piece1\0".to_vec(), b"piece2\0".to_vec()]);
+        let (_stop, stopped) = shards_ipc::Stream::pair().unwrap();
+        stream.close(&Wait(&stopped)).unwrap();
+        let frames: Vec<String> = frames.try_iter().map(|f| String::from_utf8(f).unwrap()).collect();
+        assert!(
+            frames.contains(&"first".to_string()) && frames.contains(&"piece2".to_string()),
+            "{frames:?}"
+        );
+        assert!(frames.iter().all(|f| f.len() <= 100));
     }
 }

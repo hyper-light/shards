@@ -11059,18 +11059,28 @@ and the way every later one sends.
   |---|---|---|
   | syslog | 8,192 octets over a stream, 2,048 over UDP, header and newline counted | the protocol: RFC 5425 4.3.1, RFC 5426 3.2; a local datagram refused as too long sent again in halves |
   | gelf | 128 chunks over UDP, compressed as asked | the protocol: GELF's "MUST NOT consist of more than 128 chunks" |
-  | gelf over TCP | 2 MiB | Graylog's `max_message_size` default: GELF states none (open) |
-  | fluentd | 6,144,000 bytes of event | Fluent Bit's forward `buffer_max_size` default: the forward protocol states none (open) |
+  | gelf over TCP | what the destination has taken, learned from its refusals | first Graylog's documented `max_message_size`, 2 MiB (GELF states none); then each connection its receiver ends on a message (Graylog's input, past its bound), that message sent again cut |
+  | fluentd | what the destination has taken, learned from its refusals | first Fluent Bit's documented `buffer_max_size`, 6,144,000 bytes (the forward protocol states none); then an event acked on no connection (Fluentd's `chunk_size_limit`, Fluent Bit's bound), cut again by the shipper, or without acks a connection its receiver ends on an event, that event sent again cut |
   | journald | the host's journal's LineMax | its configuration as journald reads it, as shards runs; journald.conf(5)'s 48K where none sets it |
-  | splunk | 838,860,800 bytes over a batch of events | HEC's `max_content_length` default (open: HEC says 413 past it) |
+  | splunk | what the destination has taken of a post, learned from its refusals | first HEC's documented `max_content_length`, 838,860,800 bytes; then each post answered 413 (RFC 9110 15.5.14), posted again in smaller posts, an event alone cut in halves |
   | awslogs | 1,048,550 bytes as CloudWatch counts them | the API: PutLogEvents' 1 MB event |
   | gcplogs | 256 KiB of entry, as JSON | the API: Cloud Logging's LogEntry size |
-  | oslog | 1,015 bytes | os/log.h states a 1,024-byte cap on dynamic content; the 1,015 it keeps whole is measured (M374, M494; open) |
+  | oslog | what the host's log keeps whole, read back as the daemon runs | entries of its own written and read back from its process's log store (OSLogStore, current process), by halves below os/log.h's stated 1,024-byte cap, which a line goes in parts of where the store cannot be read |
   | etwlogs | the listening sessions' | their answers as shards runs (ERROR_MORE_DATA, ERROR_ARITHMETIC_OVERFLOW): first ETW's stated 64 KB less an EVENT_HEADER, then narrowed between the longest all took and the shortest refused; a line no session took sent again in halves |
 
   A bound the measurements show (M492, M494) validates the method; none is kept as a
-  number. The rows marked open take a receiver's documented default where the protocol
-  states no bound, until the destination's own refusals are followed.
+  number. What a destination has shown (the longest message it took, the shortest it
+  refused) is kept in the home, a file a destination in `log-bounds/`
+  (`daemon/ship/learned.rs`), so that a daemon started again starts from it; only a
+  refusal narrows it, the next message's most halfway between the two, and the file,
+  removed, starts it again. A receiver that ends connections is read as refusing only
+  where two in a row ended with a message held that is longer than any it took (a
+  receiver's restart or a network's drop ends connections whatever their messages); a
+  TLS receiver's close_notify is not read so, nor a unix socket's, whose writes are
+  delivered as written. A message the shipper has not yet given up is cut again by it
+  (`ErrorKind::FileTooLarge`), its parts' places its own; one already written that a
+  stream holds is cut again by its driver, a fluentd event's pieces then a line of their
+  own, with an ID of their own.
 
   moby's copier cuts every line past 16 KiB whatever its receiver takes (copier.go,
   defaultBufSize), a character in two among them: a syslog receiver that takes 8,192
@@ -11078,9 +11088,13 @@ and the way every later one sends.
   whole, and Fluent Bit's, journald's and CloudWatch's take lines whole that Docker cut.
   A receiver that joins Docker's parts by their fields joins shards'. Cutting costs the
   shipper (M494): a part that fits as its driver's part says is written once, as moby's
-  are (a 1 MiB line in 3.5 ms over gelf's UDP, 0.85 ms in 16 KiB parts); one that does not
-  is found by halves, its message written about 18 times (0.48 s a MiB of random bytes over
-  gelf's UDP and gzip), on the shipper's thread, its store holding what waits.
+  are (a 1 MiB line in 3.5 ms over gelf's UDP, 0.85 ms in 16 KiB parts). One whose
+  message as written is not in a fixed ratio to its line (gelf's UDP datagrams by gzip) is
+  cut where the ratio of written bytes to the line's, the last a part showed and as far
+  again as it last moved, says the bound is reached, and grown once by its own ratio where
+  there is room: written once to three times a part, where finding the longest by halves
+  wrote it some 18 times (0.48 s a MiB of random bytes, M494). A driver that says only
+  whether a message fits is cut by halves.
 - **Delivered, not written** (`daemon/ship/stream.rs`, PM M233). Over TCP, TLS or a unix
   stream socket, a message counts as sent only once its receiver has it.
   - Over TCP, that is once its receiver's TCP has acknowledged its last byte, as the
