@@ -1,4 +1,4 @@
-//! Image benchmark: `shards run IMAGE COMMAND` as a user runs it, the host's wall clock
+//! Image benchmark: `shards run vm IMAGE COMMAND` as a user runs it, the host's wall clock
 //! around the client process, from its spawn to its exit. The image is the E2E tests'
 //! registry image (tests/common, `served`), pulled once from a loopback registry; the
 //! command is `exit 0`, so the test guest exits at once. Every run goes through the

@@ -4,7 +4,7 @@
 //!
 //! dockerd runs `ps ARGS -qPIDS` and, when that fails (`-q` refuses sorting, forests,
 //! negation and other selections), `ps ARGS` (ContainerTop); `ps` here does the same
-//! over the guest's processes, which are all the container's. procps's parser, formats
+//! over the guest's processes, which are all the microVM's. procps's parser, formats
 //! and layout are ported in `top/`; what the guest does not send (threads, `/proc/PID/io`
 //! and the like) is refused rather than shown wrong.
 
@@ -169,7 +169,7 @@ pub(super) fn table(output: &str) -> Result<Table, String> {
         field
             .parse::<i64>()
             .map_err(|e| format!("Unexpected pid '{field}': {e}"))?;
-        // Every process the guest lists is the container's.
+        // Every process the guest lists is the microVM's.
         after_process = true;
         processes.push(row(&f, titles.len()));
     }

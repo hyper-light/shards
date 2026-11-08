@@ -1,5 +1,5 @@
 //! Pulling an image as `docker pull` does (docs/design/architecture.md D19–D22) into this
-//! user's image store: for `shards pull` and `shards run` (the daemon's), and what both
+//! user's image store: for `shards pull image` and `shards run vm` (the daemon's), and what both
 //! share of the store and its limits.
 
 use std::io::Write;
@@ -60,7 +60,7 @@ pub fn store(home: &Path) -> Result<Store, String> {
     Store::open(&root).map_err(|e| e.to_string())
 }
 
-/// Where `shards pull` says what it does: its lines, its errors, and, for a client on a
+/// Where `shards pull image` says what it does: its lines, its errors, and, for a client on a
 /// colour terminal, its steps instead of its lines ([`Progress`]).
 pub struct Out<'a> {
     pub out: &'a (dyn Fn(&str) + Sync),
@@ -73,7 +73,7 @@ pub struct Out<'a> {
 /// layer a second, not one for each read.
 const PROGRESS_EVERY: Duration = Duration::from_millis(100);
 
-/// `shards pull NAME[:TAG|@DIGEST]`, `-a` for every tag of the repository, as docker/cli
+/// `shards pull image NAME[:TAG|@DIGEST]`, `-a` for every tag of the repository, as docker/cli
 /// asks for it (cli/command/image/pull.go, runPull) and dockerd's containerd store pulls
 /// (moby daemon/containerd/image_pull.go, PullImage): the reference read, `-a` checked
 /// against a tag, the default tag said, the platform read; then each tag, or the one

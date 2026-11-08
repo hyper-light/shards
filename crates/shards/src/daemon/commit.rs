@@ -1,7 +1,7 @@
-//! `shards commit CONTAINER [REPOSITORY[:TAG]]` (moby daemon/commit.go,
+//! `shards commit vm CONTAINER [REPOSITORY[:TAG]]` (moby daemon/commit.go,
 //! CreateImageFromContainer; daemon/containerd/image_commit.go, CommitImage): a new
-//! image of the container's image and the layer of what it changed (D37), its config the
-//! container's, its history one step longer.
+//! image of the microVM's image and the layer of what it changed (D37), its config the
+//! microVM's, its history one step longer.
 
 use std::io::{Read as _, Write};
 
@@ -13,7 +13,7 @@ use super::commands::{Asker, Reply};
 use super::{Daemon, LAYER, lock};
 use crate::containers::State as Life;
 
-/// An OCI layer's media type, uncompressed, as `shards build` writes its layers.
+/// An OCI layer's media type, uncompressed, as `shards build image` writes its layers.
 const LAYER_TAR: &str = "application/vnd.oci.image.layer.v1.tar";
 
 impl<D: crate::containers::Disk> Daemon<D> {
@@ -414,7 +414,7 @@ fn digest_of(bytes: &[u8]) -> shards_image::reference::Digest {
     )
 }
 
-/// The container's config as dockerd keeps it (its image's, with what its run set: moby
+/// The microVM's config as dockerd keeps it (its image's, with what its run set: moby
 /// daemon/create.go, merge), in the OCI image config's form commit writes
 /// (containerConfigToDockerOCIImageConfig).
 fn container_config(image: Option<&serde_json::Value>, run: Option<&Run>) -> serde_json::Value {

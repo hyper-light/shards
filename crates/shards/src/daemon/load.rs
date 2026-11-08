@@ -1,4 +1,4 @@
-//! `shards load` as dockerd's containerd store loads an archive (moby docker-v29.3.1
+//! `shards load image` as dockerd's containerd store loads an archive (moby docker-v29.3.1
 //! daemon/containerd/image_exporter.go, LoadImage; containerd v2 core/images/archive
 //! importer.go, ImportIndex; client/import.go, Import): every regular file of the tar
 //! ingested as a blob, hashed as it streams; then the images an OCI layout's
@@ -420,7 +420,7 @@ fn source(target: &Descriptor) -> Option<String> {
 }
 
 impl<D: crate::containers::Disk> super::Daemon<D> {
-    /// `shards load` (docker/cli runLoad; moby LoadImage): the archive the client sent,
+    /// `shards load image` (docker/cli runLoad; moby LoadImage): the archive the client sent,
     /// read as it comes, each image it holds recorded and unpacked, said as it is; of each,
     /// with `--platform`, the microVMs of those platforms alone (D179).
     pub(super) fn load(

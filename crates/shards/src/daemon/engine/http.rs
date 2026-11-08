@@ -11,7 +11,7 @@ use shards_ipc::Stream as UnixStream;
 use crate::build::proxy::head::{self, Head};
 
 /// What every answer carries: the API's version (moby api/server/middleware), the
-/// platform its containers are (`Ostype`, which clients read from `_ping`), and the
+/// platform its microVMs are (`Ostype`, which clients read from `_ping`), and the
 /// server.
 fn common() -> String {
     format!(
@@ -182,7 +182,7 @@ pub(super) fn head_to_close(
     conn.write_all(out.as_bytes())
 }
 
-/// The media types of a stream of a container's output: raw, a terminal's, or Docker's
+/// The media types of a stream of a microVM's output: raw, a terminal's, or Docker's
 /// multiplexed one (stdcopy), each write a frame of its stream.
 pub(super) const RAW: &str = "application/vnd.docker.raw-stream";
 pub(super) const MULTIPLEXED: &str = "application/vnd.docker.multiplexed-stream";

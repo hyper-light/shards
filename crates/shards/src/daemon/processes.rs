@@ -1,5 +1,5 @@
 //! A run's record of the processes its members start and end (AGENTFILE_ARCH.md §9.9,
-//! D123): what its guest's init sends (`kind::PROCESS`), kept in its container's directory
+//! D123): what its guest's init sends (`kind::PROCESS`), kept in its microVM's directory
 //! as its log is kept, in segments `processes.0`, `processes.1` and on, each of the log's
 //! size at most and as many as its files, the oldest removed first; `shards read
 //! processes` shows it, `shards watch processes` follows it as it grows.
@@ -69,7 +69,7 @@ fn segments(dir: &Path) -> Vec<(u64, PathBuf)> {
     out
 }
 
-/// Keeps `records`, whole lines, in the record in container directory `dir`: in its last
+/// Keeps `records`, whole lines, in the record in its directory `dir`: in its last
 /// segment, or a new one where that would pass `size`, the oldest past `files` removed.
 fn keep(dir: &Path, records: &[u8], size: u64, files: u64) -> io::Result<()> {
     let all = segments(dir);
@@ -183,7 +183,7 @@ fn row([time, member, pid, event, says]: &[String; 5], [a, b, c, d]: [usize; 4])
 }
 
 impl<D: Disk> Daemon<D> {
-    /// Keeps `records` in container `id`'s record of processes, as its log is kept.
+    /// Keeps `records` in microVM `id`'s record of processes, as its log is kept.
     pub(super) fn keep_processes(&self, id: &str, records: &[u8]) {
         let dir = lock(&self.containers).dir(id);
         let kept = self.log_retention().unwrap_or_else(|e| {

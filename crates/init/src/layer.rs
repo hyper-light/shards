@@ -1,5 +1,5 @@
-//! A container's writable layer across the microVMs it runs in (docs/design/
-//! architecture.md D37): saved as the container stops, as the OCI layer of its changes
+//! A run's writable layer across the microVMs it runs in (docs/design/
+//! architecture.md D37): saved as the run stops, as the OCI layer of its changes
 //! (go-archive's tar of an overlay upper directory, whiteouts made `.wh.` entries), and
 //! put back over a fresh image root before its command runs again (go-archive's
 //! ApplyLayer), so that a stopped microVM's changes are there as it starts again.
@@ -31,7 +31,7 @@ pub fn apply(conn: &File, first: u32) -> io::Result<()> {
     io::copy(&mut frames, &mut io::sink()).map(drop)
 }
 
-/// Sends the container's writable layer on `conn`, as [`save_from`] sends one.
+/// Sends the microVM's writable layer on `conn`, as [`save_from`] sends one.
 pub fn save(conn: &File) -> io::Result<()> {
     match (crate::changes::lower_path(), crate::changes::upper()) {
         (Some(lower), Some(upper)) => save_from(conn, &lower, &upper),
@@ -43,7 +43,7 @@ pub fn save(conn: &File) -> io::Result<()> {
     }
 }
 
-/// The container's writable layer kept in its file by its host (D190, `kind::KEEP`): what
+/// The microVM's writable layer kept in its file by its host (D190, `kind::KEEP`): what
 /// it uses ([`kind::USAGE`]) and an empty [`kind::LAYER`] frame, its files left where they
 /// are, every file system's writes made and its journal written in place first
 /// (`pmem::checkpoint_layer`): its host stops the machine as it hears, and reads the layer
@@ -130,8 +130,8 @@ pub fn usage(root: &std::path::Path) -> io::Result<u64> {
     Ok(total)
 }
 
-/// Writes the container's writable layer to `out`, as an OCI layer: what init made of
-/// every container left out, and the directories that hold nothing else and are as the
+/// Writes the microVM's writable layer to `out`, as an OCI layer: what init made of
+/// every microVM left out, and the directories that hold nothing else and are as the
 /// image has them (Docker's init layer is beneath a container's, not in it).
 pub fn pack(out: &mut impl Write) -> io::Result<()> {
     let not_kept = || io::Error::other("the writable layer was not kept");
@@ -161,7 +161,7 @@ pub fn pack_from(lower: &str, upper: &str, out: &mut impl Write) -> io::Result<(
 
 /// The directories of the writable layer `upper` that hold only what init made, and whose
 /// mode and owner are those of the image's root at `lower`: copied up for init's files, not
-/// changed by the container. (The root's own, an overlay over both, shows the copy's.)
+/// changed by the workload. (The root's own, an overlay over both, shows the copy's.)
 fn made_only(lower: &str, upper: &str) -> Vec<String> {
     use std::os::unix::fs::MetadataExt;
     let mut dirs: Vec<&str> = MADE

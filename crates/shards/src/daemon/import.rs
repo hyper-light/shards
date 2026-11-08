@@ -344,7 +344,7 @@ impl<D: Disk> Daemon<D> {
 
 /// Whether the tarball at `path` (plain or compressed) is an image archive: an OCI image
 /// layout (`oci-layout`, `index.json`), a shards microVM among them, or a `docker save`
-/// archive (`manifest.json`), as containerd's importer recognizes one; not a container's
+/// archive (`manifest.json`), as containerd's importer recognizes one; not a microVM's
 /// files.
 fn is_image_archive(path: &std::path::Path) -> bool {
     let Ok(file) = std::fs::File::open(path) else {

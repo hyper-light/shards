@@ -51,7 +51,7 @@ pub fn keep_rw() -> io::Result<()> {
 }
 
 /// The descriptor [`keep_rw`] kept, where it did: one whose number stays as a stopped
-/// container's layer takes the template's place (D190, over.rs).
+/// microVM's layer takes the template's place (D190, over.rs).
 pub fn rw_fd() -> Option<std::os::fd::RawFd> {
     RW.get().map(std::os::fd::AsRawFd::as_raw_fd)
 }
@@ -1060,7 +1060,7 @@ pub fn filter_named(entries: &[Vec<u8>], name: &[u8]) -> Option<(u32, Vec<libc::
     Some((u32::from_le_bytes(*flags), program))
 }
 
-/// What a privileged container has of the host's, of the VM's (moby daemon/oci_linux.go,
+/// What a privileged run has of the host's, of the VM's (moby daemon/oci_linux.go,
 /// WithDevices, WithMounts and masked and read-only paths left out): no masked or
 /// read-only paths, `/sys` and its cgroup writable, and every device the VM has, made in
 /// `/dev` as the VM has them (devices.rs), as runc makes a host's devices.

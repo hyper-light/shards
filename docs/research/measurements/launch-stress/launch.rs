@@ -10,7 +10,7 @@
 //!     LAUNCH DIR LAUNCHES THREADS [HOME]    (DIR: target/e2e/shards-DIGEST)
 //!
 //! With HOME, each launch is a client of the daemon in that home (SHARDS_HOME, which the
-//! first starts), asking it what it holds, as a test's `shards ps` or `pull` does; a
+//! first starts), asking it what it holds, as a test's `shards list vms` or `pull` does; a
 //! DOCKER_CONFIG of its own, empty, as the tests give theirs.
 //!
 //! Prints, at the end: launches, how many exited 0, exited otherwise, and were ended by a

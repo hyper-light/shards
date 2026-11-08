@@ -1698,7 +1698,7 @@ pub fn run_shards_env<S: AsRef<std::ffi::OsStr>>(
     run_shards_with(command, args, env, None, timeout)
 }
 
-/// `shards <args>` (`run` or `start -a`) of container `container`, whose command waits for
+/// `shards <args>` (`run` or `start -a`) of microVM `container`, whose command waits for
 /// SIGUSR1 (the test guest's `await`): the command sees none of its microVM's agents, its
 /// PID namespace being its own (D115), so the host watches them in `shards top container
 /// -o fields`, each process a row of its columns, until `ready` says of the rows that it

@@ -18,11 +18,11 @@
 //! Times are relative to the [`Clock`] given and printed in its zone, where the CLI reads
 //! the host's clock and `time.Local`. crates/cmdline/tests/format.rs holds all of it to
 //! the CLI's own output (scripts/format/generate). Where shards differs:
-//! - Go ranges over maps in random order: a container's networks are sorted here, and an
+//! - Go ranges over maps in random order: a microVM's networks are sorted here, and an
 //!   image's repositories come in the order its names give them;
 //! - `{{.}}` and `%v` of a context print `{}`, where Go prints its private fields and
 //!   pointers' addresses;
-//! - a container without a platform has one that prints `<nil>` but is true in an `if`,
+//! - a microVM without a platform has one that prints `<nil>` but is true in an `if`,
 //!   where Go's nil pointer is false; platforms carry no OS version or features, which
 //!   only Windows images have, and `stats` has Linux's columns only;
 //! - volumes have no cluster volume, so Group, Availability and Status are `N/A`;

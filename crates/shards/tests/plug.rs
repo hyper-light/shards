@@ -263,7 +263,8 @@ fn a_hosts_function_is_plugged_into_a_run_for_its_workload() {
     // By its VFIO device node, where this host's kernel makes one (VFIO_DEVICE_CDEV), and
     // taken through iommufd: the workload's /dev/iommu its user's too while it is plugged,
     // made for the run given /dev/vfio/vfio alone and gone after; a run given it at its
-    // start (root's, devtmpfs's 0660, as Docker gives it) has it so again once unplugged.
+    // start (root's, devtmpfs's 0660, as a node a run is given keeps its host's mode, D44)
+    // has it so again once unplugged.
     let cdev = std::fs::read_dir(dir.join("vfio-dev"))
         .ok()
         .and_then(|d| d.flatten().next())

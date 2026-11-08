@@ -706,8 +706,9 @@ impl Drop for LeftThere<'_> {
 /// count, each count once, in order, its volume and log with it, and is gone from here.
 /// Live: a guest stamping 16 MiB page by page goes on sweeping there, every page holding its
 /// last write, the time it ran nowhere said. 16, not 64 as between homes: it rewrites them
-/// at 100 MiB/s, which a network between machines may not carry, so that its rounds end by
-/// their count, and what they send then is the size of what it stamps.
+/// at 100 MiB/s, which a network between machines may not carry, so that its rounds end as
+/// they no longer shrink (`live::Stop`), and what they send then is the size of what it
+/// stamps.
 #[test]
 fn a_microvm_moves_to_another_host_saved_and_live() {
     let Some(invite) = std::env::var_os("SHARDS_MOVE_INVITE") else {

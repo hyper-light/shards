@@ -1,7 +1,7 @@
 //! Docker's seccomp profiles: decoded as dockerd decodes one (moby/profiles seccomp
-//! v0.2.3, seccomp.go, by Go's encoding/json), resolved for a container as its
+//! v0.2.3, seccomp.go, by Go's encoding/json), resolved for a run as dockerd's
 //! setupSeccomp resolves one (seccomp_linux.go: the architecture's archMap entry, and the
-//! rules whose includes and excludes the container's capabilities, architecture and
+//! rules whose includes and excludes the run's capabilities, architecture and
 //! kernel meet), and converted as runc v1.3.4's specconv.SetupSeccomp converts the result
 //! (libcontainer/specconv, libcontainer/seccomp/config.go), each refusal in its words.
 
@@ -332,7 +332,7 @@ pub struct Spec {
     pub syscalls: Vec<Resolved>,
 }
 
-/// The container a profile is resolved for: its architecture, the capabilities of its
+/// The run a profile is resolved for: its architecture, the capabilities of its
 /// bounding set (`CAP_…`), and the kernel it runs.
 #[derive(Debug, Clone)]
 pub struct Container<'a> {

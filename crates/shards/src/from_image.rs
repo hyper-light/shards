@@ -265,7 +265,7 @@ fn whole(path: &str, text: &str) -> Result<(), String> {
 }
 
 /// The file an Agentfile written to `path` goes to: `path`, or, for a directory,
-/// `Agentfile` in it, where `shards build DIR` finds one.
+/// `Agentfile` in it, where `shards build image DIR` finds one.
 pub fn output_path(path: &str) -> String {
     let dir = std::path::Path::new(path);
     if dir.is_dir() {

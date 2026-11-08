@@ -1,4 +1,4 @@
-//! Open-loop arrival benchmark: `shards run` requests arriving at a rate, whether or not
+//! Open-loop arrival benchmark: `shards run vm` requests arriving at a rate, whether or not
 //! the ones before them are done, as users' requests do. A closed loop, which sends the
 //! next request only once the last has answered, slows with the system it measures and
 //! hides its queueing (Schroeder, Wierman and Harchol-Balter, "Open Versus Closed: A
@@ -7,7 +7,7 @@
 //! The image bench's image and guest (benches/image.rs), its template saved and its
 //! working set recorded first. Then for each rate in `--rates` (per second; default
 //! 2,5,10,20,40), for `--secs` seconds (10): arrivals a Poisson process of that rate,
-//! from a seeded generator, each `shards run --rm --pull never IMAGE exit 0` spawned at
+//! from a seeded generator, each `shards run vm --rm --pull never IMAGE exit 0` spawned at
 //! its time on a thread of its own. The rates run in order, one daemon throughout, so its
 //! pools size themselves to the demand as it grows (D26).
 //!

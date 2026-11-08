@@ -113,9 +113,8 @@ Reviewed feature by feature, each D-entry's design against what it took from Doc
     dockerd's 10% reserve, 80% most and 20% free as its defaults, each the user's to set
     with `shards configure disk`; each now exactly that share of the disk, where dockerd's
     arithmetic, which shards had taken, kept 9.3%, 74.5% and 18.6%.)
-  - A terminal run's `TERM=xterm`, dockerd's value: open. The client's own terminal type,
-    where the image's terminfo has it, would serve its programs better (colours, keys);
-    xterm where it has not.
+  - (Done, the same item as the constants' `TERM=xterm` below: the client's own terminal
+    type where the run's root describes it, D16, PM M263.)
   - A download that stops without progress fails after three (containerd's
     `httpReadSeeker`'s count): open, to derive from what a stalling server costs.
   - Splunk's batch of 1,000 events. Kept, decided (2026-11-03): it is the documented

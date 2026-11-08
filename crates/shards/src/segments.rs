@@ -1,5 +1,5 @@
-//! A container log's segments (audit A12), which only the daemon makes: no VM reaches a
-//! container's directory (D30), so a warm VM asks its daemon for each segment after the
+//! A microVM log's segments (audit A12), which only the daemon makes: no VM reaches a
+//! microVM's directory (D30), so a warm VM asks its daemon for each segment after the
 //! first (`kind::LOG_SEGMENT`).
 
 use std::fs;
@@ -28,7 +28,7 @@ pub fn packed_segment(seq: u64) -> String {
     format!("{}.zst", log_segment(seq).0)
 }
 
-/// Makes segment `seq` of the log in the container directory `dir` holds open, and removes
+/// Makes segment `seq` of the log in the microVM directory `dir` holds open, and removes
 /// the oldest past `files` segments, its log compressed or not. A segment is there for
 /// readers once its index is, so its log is made first, and its index goes first; the
 /// index there says the segment before is done ([`log_segment`]). A segment already there

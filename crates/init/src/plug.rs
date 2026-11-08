@@ -167,7 +167,7 @@ pub fn run_plug(cgroup: &'static str) -> io::Result<Option<Plug>> {
 }
 
 /// The kernel's log, opened where init's /dev still has it, before its root's own /dev
-/// holds a container's devices alone: where a run's grower says what it sees (D148).
+/// holds the workload's devices alone: where a run's grower says what it sees (D148).
 pub fn kmsg() -> io::Result<OwnedFd> {
     std::fs::OpenOptions::new()
         .write(true)
@@ -469,7 +469,7 @@ impl Plug {
         }
         if pid == 0 {
             // Nothing of the run's writable layer held past what it needs: a stopped
-            // container's layer takes the template's place (D190, over.rs).
+            // microVM's layer takes the template's place (D190, over.rs).
             crate::over::close_layer_fds();
             grow(*self, &events, &notes);
         }

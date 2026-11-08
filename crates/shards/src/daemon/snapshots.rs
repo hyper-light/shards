@@ -1,5 +1,5 @@
 //! A running microVM saved whole (D176): `shards save vm`. Its snapshots are in its
-//! container's directory, `snapshots/NAME`, each a snapshot directory as
+//! microVM's directory, `snapshots/NAME`, each a snapshot directory as
 //! `shards_vmm::snapshot` keeps one: a generation the daemon prepares, which the microVM's
 //! VM process fills, as it writes only what it is handed (D30), and the daemon commits.
 
@@ -16,7 +16,7 @@ use super::commands::Reply;
 use super::{Daemon, Inbox, RunState, lock};
 use crate::containers::Disk;
 
-/// Where a container's snapshots are, in its directory.
+/// Where a microVM's snapshots are, in its directory.
 pub(super) const SNAPSHOTS: &str = "snapshots";
 
 /// The file a snapshot's generation keeps its [`Resume`] in.
@@ -97,11 +97,11 @@ pub(super) fn answered(inbox: &mut Inbox, payload: &[u8]) {
 /// Why a microVM was not saved (D176), said in the words of the command that asked:
 /// shards' own `save vm`, or Docker's `checkpoint create` and the Engine API's, dockerd's.
 pub(super) enum Unsaved {
-    /// No container its reference names, as the resolve says it.
+    /// No microVM its reference names, as the resolve says it.
     Unknown(String),
     /// By its ID.
     NotRunning(String),
-    /// A container joined to another's microVM (D119).
+    /// A joiner of another's microVM (D119).
     Joined,
     /// On the host's network (D124).
     HostNetwork,
@@ -173,7 +173,7 @@ fn remove(at: &std::path::Path) -> std::io::Result<()> {
     shards_vmm::snapshot::remove(at)
 }
 
-/// Removes the snapshots in container directory `dir` with no generation in place (D176),
+/// Removes the snapshots in a microVM's directory `dir` with no generation in place (D176),
 /// as a daemon starts, before it serves: what a save its daemon's end cut short left, its
 /// name free again, and what a removal cut short left, which takes the pointer first. What
 /// cannot be removed is noted.
@@ -266,7 +266,7 @@ fn fresh(claim: &mut dyn FnMut(&str) -> std::io::Result<()>) -> std::io::Result<
     Err(std::io::Error::other("every name of the time is taken"))
 }
 
-/// `run`, a container's request, as its microVM resumed from a snapshot has its interface
+/// `run`, a microVM's request, as its microVM resumed from a snapshot has its interface
 /// (D176): its own endpoint given the guest's MAC, as `--mac-address` gives it one, and its
 /// addresses on its network, as `--ip` and `--ip6` ask for them.
 pub(super) fn resume_interface(run: &mut shards_ipc::Run, resume: &Resume) {
@@ -336,7 +336,7 @@ fn on_disk(generation: &Path) -> u64 {
         .unwrap_or(0)
 }
 
-/// A snapshot of a container to resume it from (D176): its directory, its generation,
+/// A snapshot of a microVM to resume it from (D176): its directory, its generation,
 /// and what it kept for its restore, its tokens read.
 pub(super) struct Resumable {
     pub(super) dir: PathBuf,
@@ -349,7 +349,7 @@ pub(super) struct Resumable {
 /// The most a resume record holds: its tokens, a MAC, and a network's ID and addresses.
 const MAX_RESUME: u64 = 4 << 10;
 
-/// The newest snapshot in `snapshots`, a container's: the one whose generation was written
+/// The newest snapshot in `snapshots`, a microVM's: the one whose generation was written
 /// last, which its name says (`g-` and the time in nanoseconds, in hex).
 fn newest(snapshots: &Path) -> Option<String> {
     std::fs::read_dir(snapshots)
@@ -366,7 +366,7 @@ fn newest(snapshots: &Path) -> Option<String> {
 
 impl<D: Disk> Daemon<D> {
     /// Container `id`'s snapshot `asked`, or its newest where `asked` is empty, to resume
-    /// it from, `given` naming the container as its client did: why not, where it has none.
+    /// it from, `given` naming the microVM as its client did: why not, where it has none.
     pub(super) fn resumable(&self, id: &str, given: &str, asked: &str) -> Result<Resumable, String> {
         let snapshots = lock(&self.containers).dir(id).join(SNAPSHOTS);
         let name = match asked {
@@ -521,7 +521,7 @@ impl<D: Disk> Daemon<D> {
     /// `shards save vm MICROVM [SNAPSHOT] [--leave-running]` (D176): the running microVM
     /// saved whole, its memory, every process and pty, its devices and its run's swap as
     /// they are, its vCPUs parked for the save; then stopped, as `docker checkpoint
-    /// create` stops a container, or left running. Prints the snapshot's name.
+    /// create` stops a microVM, or left running. Prints the snapshot's name.
     pub(super) fn save_vm(&self, parsed: &Parsed, reply: &Reply<'_>) -> u8 {
         let reference = parsed.args.first().map(|r| r.trim()).unwrap_or_default();
         let asked = parsed.args.get(1).map(String::as_str);
@@ -589,7 +589,7 @@ impl<D: Disk> Daemon<D> {
         remove(&at).map_err(|e| (500, e.to_string()))
     }
 
-    /// The names of container `id`'s snapshots, in their order.
+    /// The names of microVM `id`'s snapshots, in their order.
     pub(super) fn snapshot_names(&self, id: &str) -> Vec<String> {
         let dir = lock(&self.containers).dir(id).join(SNAPSHOTS);
         let mut names: Vec<String> = std::fs::read_dir(&dir)
@@ -743,7 +743,7 @@ impl<D: Disk> Daemon<D> {
         Ok((id, name))
     }
 
-    /// Asks container `id`'s VM to fill `staged`, its snapshot `snapshot`, and waits for its
+    /// Asks microVM `id`'s VM to fill `staged`, its snapshot `snapshot`, and waits for its
     /// answer: a save that stops the microVM unless `leave_running`. A frozen microVM goes
     /// on for the moment its save takes to park its vCPUs, and is frozen again after one
     /// that leaves it running.
@@ -918,7 +918,7 @@ mod tests {
         assert!(!snapshots.join("cut").exists() && !snapshots.join("half").exists());
         remove(&written).unwrap();
         assert!(!written.exists());
-        // A container with none has nothing to remove, and nothing to say.
+        // A microVM with none has nothing to remove, and nothing to say.
         let none = shards_testdir::TempDir::new("none").unwrap();
         remove_unsaved(none.path(), &mut |n| notes.push(n));
         assert!(notes.is_empty(), "{notes:?}");

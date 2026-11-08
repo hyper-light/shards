@@ -1,7 +1,7 @@
-//! `shards build`: builds an image as `docker build` does (docs/design/architecture.md
+//! `shards build image`: builds an image as `docker build` does (docs/design/architecture.md
 //! D33). The command line is buildx's (`shards_cmdline::commands::BUILD`); the plan is
 //! BuildKit's (`shards_agentfile::plan`); the image is written to this user's store as
-//! BuildKit's exporter writes it (`shards_agentfile::export`), so `shards run` boots it.
+//! BuildKit's exporter writes it (`shards_agentfile::export`), so `shards run vm` boots it.
 //! Progress is BuildKit's plain display.
 //!
 //! Every Dockerfile instruction runs: file operations (COPY, ADD of the context, of
@@ -2078,7 +2078,8 @@ fn policies_of(
             base = "dockerfile".into();
         }
         // filepath.Join's, by this host's rules: `Dockerfile.rego` of the context `.` on
-        // Windows too, as buildx names it there, never `.\Dockerfile.rego`.
+        // Windows too, the name buildx v0.37.1 gives the policy there, never
+        // `.\Dockerfile.rego`.
         let rego = dir.join(format!("{base}.rego"));
         let filename = shards_archive::copy::clean(&rego).to_string_lossy().into_owned();
         match std::fs::read(&rego) {
