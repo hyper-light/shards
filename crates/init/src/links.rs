@@ -295,7 +295,11 @@ fn opener() -> io::Result<Opener> {
 /// another opens its own, kept in its place. One whose exchange failed is let go, and the
 /// next opens another, as the chooser's.
 pub(crate) fn on_init_nft<T>(f: impl FnOnce(&OwnedFd) -> io::Result<T>) -> io::Result<T> {
-    let here = opener()?;
+    // A caller that cannot say which namespace it is in (a process whose mount namespace has
+    // no /proc, as a member's may be as it is set up) is no opener's: its own socket, let go.
+    let Ok(here) = opener() else {
+        return f(&netlink_socket(libc::NETLINK_NETFILTER)?);
+    };
     let mut kept = INIT_NFT.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let mut sock = kept.take().filter(|(by, _)| *by == here).map(|(_, sock)| sock);
     let done = kept_socket(&mut sock, || netlink_socket(libc::NETLINK_NETFILTER), f);
