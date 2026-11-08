@@ -1,0 +1,8 @@
+# Where shards may, for now, be worse than Firecracker in the comparison CI runs
+# (scripts/bench-envelope): each allowance names the metric as bench/metric, why, the most
+# it allows (at_most, the median difference in the metric's unit, which a wider gap fails),
+# and the date it lapses, after which the check fails until the gap is closed or the
+# allowance decided again.
+#
+# None now: a boot's file-backed memory, glibc's pages, went with static helpers (D36, PM
+# M281), and a restore's memory file is mapped on base pages (PM M287).

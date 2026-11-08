@@ -1,0 +1,531 @@
+[
+  {
+    "op": "container properties",
+    "method": "GET",
+    "url": "http://127.0.0.1:50588/devstoreaccount1/buildkit-cache?restype=container",
+    "headers": [
+      [
+        "accept",
+        "application/xml"
+      ],
+      [
+        "accept-encoding",
+        "gzip"
+      ],
+      [
+        "authorization",
+        "SharedKey devstoreaccount1:Fj/K6P1d6VoKEG4x85lkINijBZtX4haRQaC8oHWYgVs="
+      ],
+      [
+        "user-agent",
+        "azsdk-go-azblob/v1.5.0 (go1.25.8; darwin)"
+      ],
+      [
+        "x-ms-date",
+        "Thu, 08 Oct 2026 19:45:21 GMT"
+      ],
+      [
+        "x-ms-version",
+        "2024-11-04"
+      ]
+    ],
+    "length": 0
+  },
+  {
+    "op": "container create",
+    "method": "PUT",
+    "url": "http://127.0.0.1:50588/devstoreaccount1/buildkit-cache?restype=container",
+    "headers": [
+      [
+        "accept",
+        "application/xml"
+      ],
+      [
+        "accept-encoding",
+        "gzip"
+      ],
+      [
+        "authorization",
+        "SharedKey devstoreaccount1:OMrmskH5n1GNMIZCFKmRSm0/WCle5yecpsYSWH6OcHQ="
+      ],
+      [
+        "content-length",
+        "0"
+      ],
+      [
+        "user-agent",
+        "azsdk-go-azblob/v1.5.0 (go1.25.8; darwin)"
+      ],
+      [
+        "x-ms-date",
+        "Thu, 08 Oct 2026 19:45:21 GMT"
+      ],
+      [
+        "x-ms-version",
+        "2024-11-04"
+      ]
+    ],
+    "length": 0
+  },
+  {
+    "op": "blob properties, none",
+    "method": "HEAD",
+    "url": "http://127.0.0.1:50588/devstoreaccount1/buildkit-cache/cache%2Fblobs%2Fsha256:abc",
+    "headers": [
+      [
+        "accept",
+        "application/xml"
+      ],
+      [
+        "authorization",
+        "SharedKey devstoreaccount1:ARKYd1UPB6GnG/pndZEGnkLpnDbyT3jtkBMc2CQvDQM="
+      ],
+      [
+        "user-agent",
+        "azsdk-go-azblob/v1.5.0 (go1.25.8; darwin)"
+      ],
+      [
+        "x-ms-date",
+        "Thu, 08 Oct 2026 19:45:21 GMT"
+      ],
+      [
+        "x-ms-version",
+        "2024-11-04"
+      ]
+    ],
+    "length": 0
+  },
+  {
+    "op": "upload, a manifest",
+    "method": "PUT",
+    "url": "http://127.0.0.1:50588/devstoreaccount1/buildkit-cache/cache%2Fmanifests%2Fbuildkit",
+    "headers": [
+      [
+        "accept",
+        "application/xml"
+      ],
+      [
+        "accept-encoding",
+        "gzip"
+      ],
+      [
+        "authorization",
+        "SharedKey devstoreaccount1:j1JxWTrWl6RzkqsXj6fmvCpZFkBfrvbup7tsXUBT1DM="
+      ],
+      [
+        "content-length",
+        "14"
+      ],
+      [
+        "content-type",
+        "application/octet-stream"
+      ],
+      [
+        "user-agent",
+        "azsdk-go-azblob/v1.5.0 (go1.25.8; darwin)"
+      ],
+      [
+        "x-ms-blob-type",
+        "BlockBlob"
+      ],
+      [
+        "x-ms-date",
+        "Thu, 08 Oct 2026 19:45:21 GMT"
+      ],
+      [
+        "x-ms-version",
+        "2024-11-04"
+      ]
+    ],
+    "length": 14
+  },
+  {
+    "op": "upload stream, a small layer",
+    "method": "PUT",
+    "url": "http://127.0.0.1:50588/devstoreaccount1/buildkit-cache/cache%2Fblobs%2Fsha256:small",
+    "headers": [
+      [
+        "accept",
+        "application/xml"
+      ],
+      [
+        "accept-encoding",
+        "gzip"
+      ],
+      [
+        "authorization",
+        "SharedKey devstoreaccount1:9gXagr519wyVBiG5we8atWQ2f817rG5nizoYk2GVMI8="
+      ],
+      [
+        "content-length",
+        "1000"
+      ],
+      [
+        "content-type",
+        "application/octet-stream"
+      ],
+      [
+        "if-none-match",
+        "*"
+      ],
+      [
+        "user-agent",
+        "azsdk-go-azblob/v1.5.0 (go1.25.8; darwin)"
+      ],
+      [
+        "x-ms-blob-type",
+        "BlockBlob"
+      ],
+      [
+        "x-ms-date",
+        "Thu, 08 Oct 2026 19:45:21 GMT"
+      ],
+      [
+        "x-ms-version",
+        "2024-11-04"
+      ]
+    ],
+    "length": 1000
+  },
+  {
+    "op": "upload stream, a layer of two blocks",
+    "method": "PUT",
+    "url": "http://127.0.0.1:50588/devstoreaccount1/buildkit-cache/cache%2Fblobs%2Fsha256:two?blockid=4kJXsGwwTNVZSuzajs4B4AAAAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA%3D%3D\u0026comp=block",
+    "headers": [
+      [
+        "accept",
+        "application/xml"
+      ],
+      [
+        "accept-encoding",
+        "gzip"
+      ],
+      [
+        "authorization",
+        "SharedKey devstoreaccount1:F3Vbe+iGc4qab+xO5nuxaXPZPrFUz2fYVj+FNsZiOFw="
+      ],
+      [
+        "content-length",
+        "5"
+      ],
+      [
+        "content-type",
+        "application/octet-stream"
+      ],
+      [
+        "user-agent",
+        "azsdk-go-azblob/v1.5.0 (go1.25.8; darwin)"
+      ],
+      [
+        "x-ms-date",
+        "Thu, 08 Oct 2026 19:45:21 GMT"
+      ],
+      [
+        "x-ms-version",
+        "2024-11-04"
+      ]
+    ],
+    "length": 5
+  },
+  {
+    "op": "upload stream, a layer of two blocks",
+    "method": "PUT",
+    "url": "http://127.0.0.1:50588/devstoreaccount1/buildkit-cache/cache%2Fblobs%2Fsha256:two?blockid=4kJXsGwwTNVZSuzajs4B4AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA%3D%3D\u0026comp=block",
+    "headers": [
+      [
+        "accept",
+        "application/xml"
+      ],
+      [
+        "accept-encoding",
+        "gzip"
+      ],
+      [
+        "authorization",
+        "SharedKey devstoreaccount1:oNioLw8b0cmz3JImT6K50wemeXFaTCzJkQjV3daaPZQ="
+      ],
+      [
+        "content-length",
+        "33554432"
+      ],
+      [
+        "content-type",
+        "application/octet-stream"
+      ],
+      [
+        "user-agent",
+        "azsdk-go-azblob/v1.5.0 (go1.25.8; darwin)"
+      ],
+      [
+        "x-ms-date",
+        "Thu, 08 Oct 2026 19:45:21 GMT"
+      ],
+      [
+        "x-ms-version",
+        "2024-11-04"
+      ]
+    ],
+    "length": 33554432
+  },
+  {
+    "op": "upload stream, a layer of two blocks",
+    "method": "PUT",
+    "url": "http://127.0.0.1:50588/devstoreaccount1/buildkit-cache/cache%2Fblobs%2Fsha256:two?comp=blocklist",
+    "headers": [
+      [
+        "accept",
+        "application/xml"
+      ],
+      [
+        "accept-encoding",
+        "gzip"
+      ],
+      [
+        "authorization",
+        "SharedKey devstoreaccount1:V4sdkWwTIV9VjYTgdJ+c+20mwdCDgWgxcTPW+ydQHdk="
+      ],
+      [
+        "content-length",
+        "272"
+      ],
+      [
+        "content-type",
+        "application/xml"
+      ],
+      [
+        "if-none-match",
+        "*"
+      ],
+      [
+        "user-agent",
+        "azsdk-go-azblob/v1.5.0 (go1.25.8; darwin)"
+      ],
+      [
+        "x-ms-date",
+        "Thu, 08 Oct 2026 19:45:21 GMT"
+      ],
+      [
+        "x-ms-version",
+        "2024-11-04"
+      ]
+    ],
+    "length": 272,
+    "body": "\u003c?xml version=\"1.0\" encoding=\"UTF-8\"?\u003e\n\u003cBlockList\u003e\u003cLatest\u003e4kJXsGwwTNVZSuzajs4B4AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==\u003c/Latest\u003e\u003cLatest\u003e4kJXsGwwTNVZSuzajs4B4AAAAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==\u003c/Latest\u003e\u003c/BlockList\u003e"
+  },
+  {
+    "op": "upload stream, a layer there",
+    "method": "PUT",
+    "url": "http://127.0.0.1:50588/devstoreaccount1/buildkit-cache/cache%2Fblobs%2Fsha256:two",
+    "headers": [
+      [
+        "accept",
+        "application/xml"
+      ],
+      [
+        "accept-encoding",
+        "gzip"
+      ],
+      [
+        "authorization",
+        "SharedKey devstoreaccount1:z0axeuQ9ki2ILXywYty3PtzCk6sHss8m9qgg3/tk2hA="
+      ],
+      [
+        "content-length",
+        "10"
+      ],
+      [
+        "content-type",
+        "application/octet-stream"
+      ],
+      [
+        "if-none-match",
+        "*"
+      ],
+      [
+        "user-agent",
+        "azsdk-go-azblob/v1.5.0 (go1.25.8; darwin)"
+      ],
+      [
+        "x-ms-blob-type",
+        "BlockBlob"
+      ],
+      [
+        "x-ms-date",
+        "Thu, 08 Oct 2026 19:45:21 GMT"
+      ],
+      [
+        "x-ms-version",
+        "2024-11-04"
+      ]
+    ],
+    "length": 10
+  },
+  {
+    "op": "blob properties",
+    "method": "HEAD",
+    "url": "http://127.0.0.1:50588/devstoreaccount1/buildkit-cache/cache%2Fblobs%2Fsha256:small",
+    "headers": [
+      [
+        "accept",
+        "application/xml"
+      ],
+      [
+        "authorization",
+        "SharedKey devstoreaccount1:F2v3IX/upuczGfZUvEZYLM/qY3KBFDKn44Ln9y3QHNQ="
+      ],
+      [
+        "user-agent",
+        "azsdk-go-azblob/v1.5.0 (go1.25.8; darwin)"
+      ],
+      [
+        "x-ms-date",
+        "Thu, 08 Oct 2026 19:45:21 GMT"
+      ],
+      [
+        "x-ms-version",
+        "2024-11-04"
+      ]
+    ],
+    "length": 0
+  },
+  {
+    "op": "download",
+    "method": "GET",
+    "url": "http://127.0.0.1:50588/devstoreaccount1/buildkit-cache/cache%2Fmanifests%2Fbuildkit",
+    "headers": [
+      [
+        "accept",
+        "application/xml"
+      ],
+      [
+        "accept-encoding",
+        "gzip"
+      ],
+      [
+        "authorization",
+        "SharedKey devstoreaccount1:+FUPtwLzBE6wbbRyuxqis98aISXMRNi8LE9xKL97clw="
+      ],
+      [
+        "user-agent",
+        "azsdk-go-azblob/v1.5.0 (go1.25.8; darwin)"
+      ],
+      [
+        "x-ms-date",
+        "Thu, 08 Oct 2026 19:45:21 GMT"
+      ],
+      [
+        "x-ms-version",
+        "2024-11-04"
+      ]
+    ],
+    "length": 0
+  },
+  {
+    "op": "a key with a space and a snowman",
+    "method": "PUT",
+    "url": "http://127.0.0.1:50588/devstoreaccount1/buildkit-cache/a%20dir%2F%E2%98%83",
+    "headers": [
+      [
+        "accept",
+        "application/xml"
+      ],
+      [
+        "accept-encoding",
+        "gzip"
+      ],
+      [
+        "authorization",
+        "SharedKey devstoreaccount1:kLxY/uUq0PoOtqrOLrY7MvILTCm7wzfzfJ1CismK+Tg="
+      ],
+      [
+        "content-length",
+        "1"
+      ],
+      [
+        "content-type",
+        "application/octet-stream"
+      ],
+      [
+        "user-agent",
+        "azsdk-go-azblob/v1.5.0 (go1.25.8; darwin)"
+      ],
+      [
+        "x-ms-blob-type",
+        "BlockBlob"
+      ],
+      [
+        "x-ms-date",
+        "Thu, 08 Oct 2026 19:45:21 GMT"
+      ],
+      [
+        "x-ms-version",
+        "2024-11-04"
+      ]
+    ],
+    "length": 1
+  },
+  {
+    "op": "metadata, the x-ms headers' order",
+    "method": "PUT",
+    "url": "http://127.0.0.1:50588/devstoreaccount1/buildkit-cache/m",
+    "headers": [
+      [
+        "accept",
+        "application/xml"
+      ],
+      [
+        "accept-encoding",
+        "gzip"
+      ],
+      [
+        "authorization",
+        "SharedKey devstoreaccount1:LvcvGlTLWkhNCJmG3zJJMQvScXQp+Jsiwo/jf9Qyopk="
+      ],
+      [
+        "content-length",
+        "1"
+      ],
+      [
+        "content-type",
+        "application/octet-stream"
+      ],
+      [
+        "user-agent",
+        "azsdk-go-azblob/v1.5.0 (go1.25.8; darwin)"
+      ],
+      [
+        "x-ms-blob-type",
+        "BlockBlob"
+      ],
+      [
+        "x-ms-date",
+        "Thu, 08 Oct 2026 19:45:21 GMT"
+      ],
+      [
+        "x-ms-meta-a",
+        "1"
+      ],
+      [
+        "x-ms-meta-a-b",
+        "2"
+      ],
+      [
+        "x-ms-meta-a_c",
+        "4"
+      ],
+      [
+        "x-ms-meta-aa",
+        "3"
+      ],
+      [
+        "x-ms-meta-b",
+        "5"
+      ],
+      [
+        "x-ms-version",
+        "2024-11-04"
+      ]
+    ],
+    "length": 1
+  }
+]

@@ -1,0 +1,316 @@
+//! What a microVM changed of its image's files, for `shards read changes`: Docker's answer
+//! (moby daemon/containerd/image_changes.go: go-archive v0.3.3 `ChangesDirs` of the
+//! container's root against its image's), found without walking the whole image.
+//!
+//! The root is an overlay of the microVM's writable layer over the image
+//! (run.rs, mount_root), and a directory the microVM changed anything in is in that
+//! layer: only those are walked, each one's entries in the root compared with the
+//! image's by go-archive's rules (changes_unix.go, statDifferent): mode, owner, device,
+//! and for all but directories size and mtime, and the `security.capability` xattr. A
+//! directory with changes inside that is not itself added or changed is changed too
+//! (changes.go, addChanges). Docker's init layer, which the comparison starts from, is
+//! what init makes of every microVM: its mounts and `/etc`'s files, which are not the
+//! microVM's changes.
+//!
+//! Each change is a line as docker/cli prints it (diff.go): its kind (`C`, `A` or `D`),
+//! a space and its path. Each directory's entries come in name order, each followed by
+//! what is under it, where Docker's order within a directory is its map's, which
+//! varies.
+
+use std::collections::BTreeMap;
+use std::ffi::{OsStr, OsString};
+use std::fs::Metadata;
+use std::io::{self, Write};
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::MetadataExt;
+use std::sync::OnceLock;
+
+/// The image's layer and the microVM's writable one, as init mounted them, kept before
+/// the root moved over them (run.rs).
+static LAYERS: OnceLock<(OwnedFd, OwnedFd)> = OnceLock::new();
+
+/// What init makes of every microVM, as Docker's init layer holds it (moby
+/// daemon/initlayer/setup_unix.go): its mounts and the files it writes in `/etc`.
+const MADE: [&str; 7] = [
+    "/proc",
+    "/sys",
+    "/dev",
+    "/etc/mtab",
+    "/etc/hosts",
+    "/etc/hostname",
+    "/etc/resolv.conf",
+];
+
+/// Keeps the layers at `lower` and `upper` for [`write`]: called once they are mounted,
+/// before the root moves over them.
+pub fn keep(lower: &str, upper: &str) -> io::Result<()> {
+    let open = |path: &str| -> io::Result<OwnedFd> {
+        use std::os::unix::fs::OpenOptionsExt;
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_PATH | libc::O_DIRECTORY)
+            .open(path)?;
+        Ok(file.into())
+    };
+    let _ = LAYERS.set((open(lower)?, open(upper)?));
+    Ok(())
+}
+
+/// The descriptor of the writable layer [`keep`] kept, where it did: one whose number stays
+/// as a stopped microVM's layer takes the template's place (D190, over.rs).
+pub fn upper_fd() -> Option<std::os::fd::RawFd> {
+    LAYERS
+        .get()
+        .map(|(_, upper)| std::os::fd::AsRawFd::as_raw_fd(upper))
+}
+
+/// The image's layers kept by [`keep`]: the root as the image made it, before the run
+/// wrote to it.
+pub fn lower() -> Option<std::os::fd::BorrowedFd<'static>> {
+    use std::os::fd::AsFd;
+    LAYERS.get().map(|(lower, _)| lower.as_fd())
+}
+
+/// Where the image's layers kept by [`keep`] are reached, whatever the root.
+pub fn lower_path() -> Option<String> {
+    LAYERS
+        .get()
+        .map(|(lower, _)| format!("/proc/self/fd/{}", lower.as_raw_fd()))
+}
+
+/// Where the writable layer kept by [`keep`] is reached, whatever the root.
+pub fn upper() -> Option<String> {
+    LAYERS
+        .get()
+        .map(|(_, upper)| format!("/proc/self/fd/{}", upper.as_raw_fd()))
+}
+
+/// A change: its kind and path.
+type Change = (u8, Vec<u8>);
+
+/// Writes the changes to `out`.
+pub fn write(out: &mut impl Write) -> io::Result<()> {
+    let (lower, upper) = LAYERS
+        .get()
+        .ok_or_else(|| io::Error::other("the container's layers were not kept"))?;
+    write_with(lower, upper, &std::fs::read("/proc/self/mountinfo")?, out)
+}
+
+/// Writes the changes of the root this process stands in, whose layers are `lower` and
+/// `upper` and whose mounts `mountinfo` lists (proc(5)), to `out`: the workload's, or a
+/// joiner's (D119) from within its mount namespace. This process's working directory
+/// becomes the image's layer.
+pub fn write_with(
+    lower: &OwnedFd,
+    upper: &OwnedFd,
+    mountinfo: &[u8],
+    out: &mut impl Write,
+) -> io::Result<()> {
+    // The layers by their descriptors alone: no path reaches them once the root has
+    // moved over them, and a joiner's `/proc`, its own PID namespace's, has no
+    // `/proc/self` for this process. The image's is read from where this process stands,
+    // a read-only layer whose directories stay as the walk found them.
+    // SAFETY: fchdir(2) to a directory this process holds a descriptor of.
+    if unsafe { libc::fchdir(lower.as_raw_fd()) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let walk = Walk {
+        mounts: mounts(mountinfo),
+    };
+    let mut changes = Vec::new();
+    walk.dir(b"", true, Some(upper), &mut changes)?;
+    for (kind, path) in changes {
+        out.write_all(&[kind, b' '])?;
+        out.write_all(&path)?;
+        out.write_all(b"\n")?;
+    }
+    Ok(())
+}
+
+struct Walk {
+    /// Where something is mounted over the root: what is there is not the microVM's
+    /// files.
+    mounts: Vec<Vec<u8>>,
+}
+
+impl Walk {
+    /// The changes under directory `rel` (empty for the root), which is in the image
+    /// (`old`) or not, and in the writable layer as `upper` or not, appended in path
+    /// order.
+    fn dir(
+        &self,
+        rel: &[u8],
+        old: bool,
+        upper: Option<&OwnedFd>,
+        changes: &mut Vec<Change>,
+    ) -> io::Result<()> {
+        let merged = entries(&join(b"/", rel))?;
+        let image = if old {
+            entries(&join(b".", rel)).unwrap_or_default()
+        } else {
+            BTreeMap::new()
+        };
+        // Every name of either, in order.
+        let mut names: Vec<&OsString> = merged.keys().chain(image.keys()).collect();
+        names.sort();
+        names.dedup();
+        for name in names {
+            let path = [rel, b"/", name.as_bytes()].concat();
+            if MADE.iter().any(|m| m.as_bytes() == path.as_slice()) {
+                continue;
+            }
+            // `/etc` where the image has no directory is init's (container_files): only
+            // what is in it is the microVM's, and it is changed if anything is.
+            if path == b"/etc" && image.get(name).is_none_or(|m| !m.is_dir()) {
+                if merged.get(name).is_some_and(|m| m.is_dir()) {
+                    let start = changes.len();
+                    self.dir(&path, false, None, changes)?;
+                    if changes.len() > start {
+                        changes.insert(start, (b'C', path));
+                    }
+                }
+                continue;
+            }
+            match (merged.get(name), image.get(name)) {
+                (Some(new), Some(was)) => {
+                    if self.mounts.contains(&path) {
+                        continue;
+                    }
+                    let start = changes.len();
+                    let changed = different(was, new)
+                        || capability(&join(b".", &path)) != capability(&join(b"/", &path));
+                    if changed {
+                        changes.push((b'C', path.clone()));
+                    }
+                    // Only a directory in the writable layer can hold changes.
+                    let written = if new.is_dir() {
+                        written(upper, name).transpose()?
+                    } else {
+                        None
+                    };
+                    if let Some(written) = written {
+                        self.dir(&path, was.is_dir(), Some(&written), changes)?;
+                        if !changed && changes.len() > start {
+                            changes.insert(start, (b'C', path));
+                        }
+                    }
+                }
+                (Some(new), None) => {
+                    if self.mounts.contains(&path) {
+                        continue;
+                    }
+                    changes.push((b'A', path.clone()));
+                    if new.is_dir() {
+                        self.dir(&path, false, None, changes)?;
+                    }
+                }
+                (None, Some(_)) => changes.push((b'D', path)),
+                (None, None) => {}
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Directory `name` of the writable layer's directory `upper`, if it is a directory
+/// there: opened by its name alone, not following a link the workload may have put in
+/// its place (openat(2): O_NOFOLLOW, and O_DIRECTORY refusing what is not one).
+fn written(upper: Option<&OwnedFd>, name: &OsStr) -> Option<io::Result<OwnedFd>> {
+    let upper = upper?;
+    let name = std::ffi::CString::new(name.as_bytes()).ok()?;
+    let flags = libc::O_PATH | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC;
+    // SAFETY: openat(2) of a NUL-terminated name in a directory this walk holds.
+    let fd = unsafe { libc::openat(upper.as_raw_fd(), name.as_ptr(), flags) };
+    if fd < 0 {
+        let e = io::Error::last_os_error();
+        return match e.raw_os_error() {
+            Some(libc::ENOENT | libc::ENOTDIR | libc::ELOOP) => None,
+            _ => Some(Err(e)),
+        };
+    }
+    // SAFETY: the descriptor openat(2) just returned, which nothing else owns.
+    Some(Ok(unsafe { OwnedFd::from_raw_fd(fd) }))
+}
+
+/// The mount points under the root, from its `mountinfo` (proc(5)): each line's fifth
+/// field, with its octal escapes undone.
+fn mounts(info: &[u8]) -> Vec<Vec<u8>> {
+    info.split(|&b| b == b'\n')
+        .filter_map(|line| line.split(|&b| b == b' ').nth(4))
+        .map(unescape)
+        .filter(|p| p.as_slice() != b"/")
+        .collect()
+}
+
+/// A mountinfo path: `\NNN` is the byte of octal NNN (the kernel's show_path).
+fn unescape(path: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(path.len());
+    let mut i = 0;
+    while let Some(&b) = path.get(i) {
+        let octal = path
+            .get(i + 1..i + 4)
+            .filter(|d| b == b'\\' && d.iter().all(|c| (b'0'..=b'7').contains(c)))
+            .and_then(|d| u8::from_str_radix(std::str::from_utf8(d).ok()?, 8).ok());
+        match octal {
+            Some(byte) => {
+                out.push(byte);
+                i += 4;
+            }
+            None => {
+                out.push(b);
+                i += 1;
+            }
+        }
+    }
+    out
+}
+
+/// `base` and `rel` (empty, or starting with `/`).
+fn join(base: &[u8], rel: &[u8]) -> Vec<u8> {
+    let base = if rel.is_empty() {
+        base
+    } else {
+        base.strip_suffix(b"/").unwrap_or(base)
+    };
+    [base, rel].concat()
+}
+
+/// Each entry of directory `path`, by name, as lstat(2) has it; one gone as it is read is
+/// left out.
+fn entries(path: &[u8]) -> io::Result<BTreeMap<OsString, Metadata>> {
+    let path = std::path::Path::new(OsStr::from_bytes(path));
+    let mut found = BTreeMap::new();
+    for entry in std::fs::read_dir(path)? {
+        let entry = entry?;
+        if let Ok(meta) = std::fs::symlink_metadata(entry.path()) {
+            found.insert(entry.file_name(), meta);
+        }
+    }
+    Ok(found)
+}
+
+/// go-archive's statDifferent (changes_unix.go): mode, owner and device, and for all but
+/// directories mtime (sameFsTime: equal, or the same second where either has no
+/// nanoseconds) and size.
+fn different(was: &Metadata, new: &Metadata) -> bool {
+    let same_time = (was.mtime(), was.mtime_nsec()) == (new.mtime(), new.mtime_nsec())
+        || (was.mtime() == new.mtime() && (was.mtime_nsec() == 0 || new.mtime_nsec() == 0));
+    was.mode() != new.mode()
+        || was.uid() != new.uid()
+        || was.gid() != new.gid()
+        || was.rdev() != new.rdev()
+        || (!new.is_dir() && (!same_time || was.size() != new.size()))
+}
+
+/// A file's `security.capability` xattr, not following a link, or none.
+fn capability(path: &[u8]) -> Option<Vec<u8>> {
+    let path = std::ffi::CString::new(path).ok()?;
+    let name = c"security.capability";
+    let mut buf = vec![0u8; 256];
+    // SAFETY: lgetxattr(2) writes at most the buffer's length.
+    let n = unsafe { libc::lgetxattr(path.as_ptr(), name.as_ptr(), buf.as_mut_ptr().cast(), buf.len()) };
+    let n = usize::try_from(n).ok()?;
+    buf.truncate(n);
+    Some(buf)
+}

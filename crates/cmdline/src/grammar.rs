@@ -1,0 +1,1279 @@
+//! shards' own grammar, `shards ACTION THING [ARG...]`: what to do, then what to do it to,
+//! `vm` (a microVM), `container` or `image`. Each is said again as the command shards
+//! runs for it, which is Docker's where Docker has one: `shards stop vm web` is `shards
+//! stop web`, `shards remove image alpine` is `shards rmi alpine`. Docker's own words
+//! stay what they are, so a script written for `docker` runs unchanged; the grammar is
+//! the surface shards documents, and gives every action one shape. Docker's management
+//! commands said the other way round, `shards image ls`, are read as `shards ls image`.
+//! A kernel is booted with `shards run vm --kernel FILE`, and a snapshot resumed with
+//! `shards restore vm DIR`.
+//!
+//! What a container is to shards: an OCI image, made into a microVM when anything but its
+//! removal is asked of it (pull, run, push, import). So `vm` and `container` name the same
+//! runs, and `image` what they start from.
+
+/// What an action is done to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Thing {
+    Vm,
+    Container,
+    Image,
+    /// The daemon that serves runs from warm microVMs.
+    Daemon,
+    /// The kernel and shards-init runs boot.
+    Guest,
+    /// What shards takes on disk.
+    Disk,
+    /// The CPU this home's microVMs are told: a baseline every machine they may move to
+    /// has (D176 part 6).
+    Cpu,
+    /// All of shards' own: what prune system clears.
+    System,
+    /// Volumes: directories microVMs mount, which outlive them.
+    Volume,
+    /// Agents, harnesses and MCP servers: OSI artifacts (D54), shards' own groups.
+    Agent,
+    Harness,
+    Mcp,
+    /// An Agentfile made from an image (§10).
+    Agentfile,
+    /// A registry images are pulled from and pushed to, which `login` and `logout` reach.
+    Registry,
+    /// A microVM's snapshots, what `save vm` saves it as (D176).
+    Snapshot,
+    /// Another machine's shards, which this one's commands run on whole (D180).
+    Context,
+    /// A machine this one's daemon enrolled, which runs shards here (D180).
+    Client,
+    /// What enrolls a client, once (D180).
+    Invitation,
+}
+
+impl Thing {
+    fn of(word: &str) -> Option<Thing> {
+        match word {
+            "vm" | "vms" | "microvm" | "microvms" => Some(Thing::Vm),
+            "container" | "containers" => Some(Thing::Container),
+            "image" | "images" => Some(Thing::Image),
+            "daemon" => Some(Thing::Daemon),
+            "guest" => Some(Thing::Guest),
+            "disk" => Some(Thing::Disk),
+            "cpu" => Some(Thing::Cpu),
+            "system" => Some(Thing::System),
+            "volume" | "volumes" => Some(Thing::Volume),
+            "agent" | "agents" => Some(Thing::Agent),
+            "harness" | "harnesses" => Some(Thing::Harness),
+            "mcp" => Some(Thing::Mcp),
+            "agentfile" | "agentfiles" => Some(Thing::Agentfile),
+            "registry" | "registries" => Some(Thing::Registry),
+            "snapshot" | "snapshots" => Some(Thing::Snapshot),
+            "context" | "contexts" => Some(Thing::Context),
+            "client" | "clients" => Some(Thing::Client),
+            "invitation" | "invitations" => Some(Thing::Invitation),
+            _ => None,
+        }
+    }
+}
+
+/// `args` said as the command shards runs, if they are in its grammar; `None` if they
+/// are not, and are read as they are.
+pub fn rewrite(args: &[String]) -> Option<Vec<String>> {
+    let (first, second) = (args.first()?.as_str(), args.get(1).map(String::as_str));
+    // What a microVM or an image holds, read once or watched as it comes (D123): what a
+    // microVM's command printed, what it changed of its image's files, how an image's
+    // layers were made. `read ports`, `read processes` and `watch processes` are commands
+    // of their own (commands.rs).
+    let view: Option<&[&str]> = match (first, second) {
+        ("read", Some("logs")) => Some(&["logs"]),
+        ("watch", Some("logs")) => Some(&["logs", "--follow"]),
+        ("read", Some("changes")) => Some(&["diff"]),
+        ("read", Some("history")) => Some(&["history", "--convert"]),
+        _ => None,
+    };
+    if let Some(said) = view {
+        let mut out: Vec<String> = said.iter().map(|w| (*w).to_string()).collect();
+        out.extend(args.get(2..)?.iter().cloned());
+        return Some(out);
+    }
+    // `shards image ls` is `shards ls image`, and `shards vm ls` is `shards ls vm`: the
+    // THING ACTION form, turned round. Docker's management commands (`image`, `container`)
+    // keep Docker's answers, `--convert` left out; `vm` is shards' own, and keeps it.
+    let thing_first = matches!(Thing::of(first), Some(Thing::Image | Thing::Container));
+    let (action, thing, rest) = match (Thing::of(first), second) {
+        (Some(thing @ (Thing::Image | Thing::Container | Thing::Vm)), Some(action)) => {
+            (action, thing, args.get(2..)?)
+        }
+        (
+            Some(
+                Thing::Daemon
+                | Thing::Guest
+                | Thing::Disk
+                | Thing::Cpu
+                | Thing::System
+                | Thing::Volume
+                | Thing::Agent
+                | Thing::Harness
+                | Thing::Mcp
+                | Thing::Agentfile
+                | Thing::Registry
+                | Thing::Snapshot
+                | Thing::Context
+                | Thing::Client
+                | Thing::Invitation,
+            ),
+            _,
+        ) => {
+            return None;
+        }
+        _ => (first, Thing::of(second?)?, args.get(2..)?),
+    };
+    let said: &[&str] = match (action, thing) {
+        ("list" | "ls" | "ps", Thing::Vm | Thing::Container) => &["ps"],
+        ("list" | "ls", Thing::Image) => &["images"],
+        ("remove" | "rm" | "delete", Thing::Vm | Thing::Container) => &["rm"],
+        // An image goes with the stopped microVMs made from it.
+        ("remove" | "rm" | "delete" | "rmi", Thing::Image) => &["rmi", "--vms"],
+        // An image not yet a microVM is made one first, as anything but its removal
+        // asked of it does (`--convert`); Docker's own order, `image inspect`, keeps the
+        // answer its scripts parse.
+        ("inspect", Thing::Image) => &["image", "inspect", "--convert"],
+        ("inspect", Thing::Disk) => &["system", "df"],
+        ("prune", Thing::Vm | Thing::Container) => &["container", "prune"],
+        ("prune", Thing::Image) => &["image", "prune"],
+        ("prune", Thing::System) => &["system", "prune"],
+        ("list" | "ls", Thing::Volume) => &["volume", "ls"],
+        ("list" | "ls", Thing::Snapshot) => &["snapshot", "ls"],
+        ("remove" | "rm" | "delete", Thing::Snapshot) => &["snapshot", "rm"],
+        ("create" | "make", Thing::Context) => &["context", "create"],
+        ("use" | "set", Thing::Context) => &["context", "use"],
+        ("list" | "ls", Thing::Context) => &["context", "ls"],
+        ("inspect" | "show", Thing::Context) => &["context", "inspect"],
+        ("remove" | "rm" | "delete", Thing::Context) => &["context", "rm"],
+        ("invite", Thing::Client) => &["client", "invite"],
+        ("grant", Thing::Client) => &["client", "grant"],
+        ("revoke", Thing::Client) => &["client", "revoke"],
+        ("inspect" | "show", Thing::Client) => &["client", "inspect"],
+        ("list" | "ls", Thing::Client) => &["client", "ls"],
+        ("remove" | "rm" | "delete", Thing::Client) => &["client", "rm"],
+        ("list" | "ls", Thing::Invitation) => &["invitation", "ls"],
+        ("remove" | "rm" | "delete", Thing::Invitation) => &["invitation", "rm"],
+        ("create" | "make", Thing::Volume) => &["volume", "create"],
+        ("create" | "make", Thing::Agentfile) => &["agentfile"],
+        ("remove" | "rm" | "delete", Thing::Volume) => &["volume", "rm"],
+        ("inspect", Thing::Volume) => &["volume", "inspect"],
+        ("prune", Thing::Volume) => &["volume", "prune"],
+        ("rename", Thing::Vm | Thing::Container) => &["rename"],
+        ("watch", Thing::Vm | Thing::Container) => &["stats"],
+        ("pause" | "freeze", Thing::Vm | Thing::Container) => &["pause"],
+        ("watch", Thing::System) => &["events"],
+        ("inspect", Thing::System) => &["info"],
+        ("export", Thing::Vm | Thing::Container) => &["export"],
+        ("start", Thing::Vm | Thing::Container) => &["start"],
+        ("commit", Thing::Vm | Thing::Container) => &["commit"],
+        ("copy" | "cp", Thing::Vm | Thing::Container) => &["cp"],
+        ("restart", Thing::Vm | Thing::Container) => &["restart"],
+        // A container is an image to make a microVM of: one that is a shards microVM
+        // already is refused, its words saying how it runs (`--container-image`).
+        ("create" | "make", Thing::Container) => &["create", "--container-image"],
+        ("create" | "make", Thing::Vm) => &["create"],
+        ("unpause" | "resume" | "thaw", Thing::Vm | Thing::Container) => &["unpause"],
+        ("inspect", Thing::Vm | Thing::Container) => &["container", "inspect", "--convert"],
+        ("run", Thing::Container) => &["run", "--container-image"],
+        ("run", Thing::Vm) => &["run"],
+        ("restore", Thing::Vm) => &["restore"],
+        // A terminal joined to a running microVM's command, and its limits changed as it
+        // runs (D40, D45); Docker's `container attach` and `container update` are its own.
+        ("attach", Thing::Vm | Thing::Container) if !thing_first => &["attach"],
+        ("update", Thing::Vm | Thing::Container) if !thing_first => &["update"],
+        // A microVM brought in whole, or made of an image's or a microVM's files (D41);
+        // Docker's `image import` is its own.
+        ("import", Thing::Vm | Thing::Image) if !thing_first => &["import"],
+        ("run" | "start", Thing::Daemon) => &["daemon"],
+        ("stop", Thing::Daemon) => &["daemon", "stop"],
+        ("configure" | "use" | "set", Thing::Guest) => &["guest", "use"],
+        ("configure" | "set", Thing::Disk) => &["disk", "configure"],
+        ("configure" | "set", Thing::Cpu) => &["cpu", "configure"],
+        ("inspect" | "show", Thing::Cpu) => &["cpu"],
+        ("inspect" | "show", Thing::Guest) => &["guest"],
+        ("login", Thing::Registry) => &["login"],
+        ("logout", Thing::Registry) => &["logout"],
+        ("search", Thing::Image) => &["search"],
+        (action @ ("stop" | "kill" | "wait" | "exec"), Thing::Vm | Thing::Container) => {
+            return Some(once(action, rest));
+        }
+        // An agent, harness or MCP server: shards' own group, `shards agent build ...`.
+        (
+            action @ ("build" | "push" | "pull" | "list" | "ls" | "inspect" | "remove" | "rm" | "delete"
+            | "sign"),
+            thing @ (Thing::Agent | Thing::Harness | Thing::Mcp),
+        ) => {
+            let group = match thing {
+                Thing::Agent => "agent",
+                Thing::Harness => "harness",
+                _ => "mcp",
+            };
+            let mut out = vec![group.to_string(), action.to_string()];
+            out.extend(rest.iter().cloned());
+            return Some(out);
+        }
+        // A running microVM saved whole, to restore later (D176): shards' own, as Docker's
+        // `checkpoint create` is its own command.
+        ("save", Thing::Vm | Thing::Container) => &["save", "vm"],
+        // A microVM moved to another machine whole, through its context (D176 part 6).
+        ("move", Thing::Vm | Thing::Container) => &["move", "vm"],
+        (action @ ("push" | "tag" | "save"), _) if !thing_first => {
+            let mut out = once(action, &[]);
+            out.push("--convert".into());
+            out.extend(rest.iter().cloned());
+            return Some(out);
+        }
+        (action @ ("pull" | "load" | "build"), _) => {
+            return Some(once(action, rest));
+        }
+        _ => return None,
+    };
+    let mut out: Vec<String> = said
+        .iter()
+        .filter(|w| !(thing_first && SHARDS_OWN.contains(*w)))
+        .map(|w| (*w).to_string())
+        .collect();
+    out.extend(rest.iter().cloned());
+    Some(out)
+}
+
+/// The options of shards' own the grammar adds, which Docker's management commands said
+/// turned round (`image inspect`, `container run`) go without, answering as Docker's do.
+const SHARDS_OWN: [&str; 2] = ["--convert", "--container-image"];
+
+fn once(action: &str, rest: &[String]) -> Vec<String> {
+    std::iter::once(action.to_string())
+        .chain(rest.iter().cloned())
+        .collect()
+}
+
+/// The sections shards' help lists its actions in, by what they are for, in order.
+pub static SECTIONS: &[&str] = &["run", "inspect", "manage", "images"];
+
+/// The actions shards' grammar has, for its help: a line each, its section, the action,
+/// the things it acts on, and what it does. How each thing is given is on the action's
+/// own page ([`USES`]).
+pub static ACTIONS: &[(&str, &str, &str, &str)] = &[
+    (
+        "run",
+        "attach",
+        "vm",
+        "Join your terminal to a running microVM's command",
+    ),
+    (
+        "run",
+        "create",
+        "vm | volume | agentfile | context",
+        "Make a microVM without starting it, a volume, an Agentfile of an image, or a context",
+    ),
+    ("run", "exec", "vm", "Run a command in a running microVM"),
+    (
+        "run",
+        "move",
+        "vm",
+        "Move a microVM to another machine, as it runs",
+    ),
+    ("run", "restart", "vm", "Stop microVMs, and start them again"),
+    ("run", "restore", "vm", "Resume a microVM from a snapshot"),
+    (
+        "run",
+        "run",
+        "vm | daemon",
+        "Run a command in a new microVM, or the daemon that serves them",
+    ),
+    (
+        "run",
+        "save",
+        "vm | image",
+        "Save a running microVM whole, to restore later, or images to a tar archive",
+    ),
+    (
+        "run",
+        "start",
+        "vm",
+        "Start stopped microVMs again, their files as they left them",
+    ),
+    (
+        "inspect",
+        "inspect",
+        "vm | image | volume | disk | guest | system | context",
+        "Show a microVM, an image, a volume, disk use, the guest, shards itself, or a context",
+    ),
+    (
+        "inspect",
+        "list",
+        "vm | image | volume | snapshot | context | client | invitation",
+        "List microVMs, images, volumes, a microVM's snapshots, contexts, or this machine's clients and invitations",
+    ),
+    (
+        "inspect",
+        "read",
+        "processes | ports | logs | changes | history",
+        "Read what a microVM ran, where its ports go, what its command printed or changed, or how an image was made",
+    ),
+    (
+        "inspect",
+        "watch",
+        "vms | processes | logs | system",
+        "Watch microVMs as they run: what they take of the host, their processes, what a command prints, what happens to them",
+    ),
+    (
+        "manage",
+        "configure",
+        "guest | disk | cpu",
+        "Choose the kernel and shards-init runs boot, how much of the disk shards keeps, or the CPU every machine its microVMs move to has",
+    ),
+    ("manage", "copy", "vm", "Copy files into or out of a microVM"),
+    (
+        "manage",
+        "grant",
+        "client",
+        "Let a client reach directories or devices of this machine's, which it reaches none of until then",
+    ),
+    (
+        "manage",
+        "grow",
+        "disk",
+        "Grow a disk plugged into a running microVM, and its file system, as it runs",
+    ),
+    (
+        "manage",
+        "invite",
+        "client",
+        "Let another machine run shards here, by an invitation it joins with",
+    ),
+    ("manage", "kill", "vm", "Kill microVMs"),
+    ("manage", "pause", "vm", "Freeze microVMs where they are"),
+    (
+        "manage",
+        "plug",
+        "disk | volume | function",
+        "Plug a disk, a directory or a host's PCI function into a running microVM",
+    ),
+    (
+        "manage",
+        "prune",
+        "vm | image | volume | system",
+        "Remove stopped microVMs, unused images or volumes, or all of them",
+    ),
+    (
+        "manage",
+        "remove",
+        "vm | image | volume | snapshot | context | client | invitation",
+        "Remove microVMs, images with their stopped microVMs, volumes, snapshots, contexts, clients, or invitations",
+    ),
+    ("manage", "rename", "vm", "Name a microVM again"),
+    (
+        "manage",
+        "revoke",
+        "client",
+        "Take back what a client was granted of this machine's",
+    ),
+    (
+        "manage",
+        "stop",
+        "vm | daemon",
+        "Stop microVMs, or the daemon and its runs",
+    ),
+    ("manage", "tag", "image", "Name an image again"),
+    ("manage", "unpause", "vm", "Let frozen microVMs run on"),
+    (
+        "manage",
+        "unplug",
+        "disk | volume | function",
+        "Unplug a disk, a directory or a host's PCI function from a running microVM",
+    ),
+    (
+        "manage",
+        "update",
+        "vm",
+        "Change what a microVM may take of the host, as it runs",
+    ),
+    (
+        "manage",
+        "use",
+        "context",
+        "Choose the machine shards' commands run on",
+    ),
+    (
+        "manage",
+        "wait",
+        "vm",
+        "Wait for microVMs to stop, and say how each command ended",
+    ),
+    (
+        "images",
+        "build",
+        "image",
+        "Build an image from a Dockerfile or Agentfile, and make it a microVM",
+    ),
+    (
+        "images",
+        "commit",
+        "vm",
+        "Make an image of what a microVM changed",
+    ),
+    (
+        "images",
+        "export",
+        "vm",
+        "Write a microVM's files out as a tar archive",
+    ),
+    (
+        "images",
+        "import",
+        "vm | image",
+        "Bring in a microVM saved whole, or make one of a tarball's files",
+    ),
+    (
+        "images",
+        "load",
+        "image",
+        "Load images from a tar archive or stdin",
+    ),
+    ("images", "login", "registry", "Log in to a registry"),
+    ("images", "logout", "registry", "Forget a registry's credentials"),
+    (
+        "images",
+        "pull",
+        "image",
+        "Download an image, and make it a microVM",
+    ),
+    ("images", "push", "image", "Upload an image to a registry"),
+    (
+        "images",
+        "search",
+        "image",
+        "Find images in registries, and whether each runs here",
+    ),
+];
+
+/// Each way an action is said, for its own page (`shards run`): its section, the action,
+/// what it takes, and what it does.
+pub static USES: &[(&str, &str, &str, &str)] = &[
+    (
+        "run",
+        "attach",
+        "vm NAME",
+        "Join your terminal to a running microVM's command: its output, and your input where it reads it; ctrl-p ctrl-q leaves it running",
+    ),
+    (
+        "run",
+        "create",
+        "vm IMAGE [COMMAND]",
+        "Make a microVM from an image, without starting it",
+    ),
+    (
+        "run",
+        "exec",
+        "vm NAME COMMAND",
+        "Run a command in a running microVM",
+    ),
+    (
+        "run",
+        "restart",
+        "vm NAME",
+        "Stop microVMs: their stop signal, then SIGKILL; and start them again",
+    ),
+    (
+        "run",
+        "create",
+        "volume [NAME]",
+        "Make a volume microVMs can mount, named or not",
+    ),
+    (
+        "run",
+        "create",
+        "context NAME --invite-file FILE",
+        "Join another machine's shards by its owner's invitation, as context NAME",
+    ),
+    ("run", "restore", "vm DIR", "Resume a microVM from a snapshot"),
+    (
+        "run",
+        "restore",
+        "vm NAME [SNAPSHOT]",
+        "Resume a stopped microVM where it was saved, from its newest snapshot unless SNAPSHOT names one",
+    ),
+    (
+        "run",
+        "move",
+        "vm NAME CONTEXT",
+        "Move a microVM to the machine a context reaches: saved whole here, its files, volumes and image sent, and resumed there where it was",
+    ),
+    (
+        "run",
+        "save",
+        "vm NAME [SNAPSHOT]",
+        "Save a running microVM whole, its memory, processes and devices as they are; then stop it, or leave it running",
+    ),
+    (
+        "run",
+        "run",
+        "daemon",
+        "Serve runs from warm microVMs (the first run starts it)",
+    ),
+    (
+        "run",
+        "run",
+        "vm --kernel FILE",
+        "Boot a kernel directly in a microVM of its own",
+    ),
+    (
+        "run",
+        "run",
+        "vm IMAGE",
+        "Run a command in a new microVM made from an image",
+    ),
+    (
+        "run",
+        "start",
+        "vm NAME",
+        "Start stopped microVMs again, their files as they left them",
+    ),
+    (
+        "inspect",
+        "inspect",
+        "disk",
+        "Show what images, microVMs and templates take on disk",
+    ),
+    (
+        "inspect",
+        "inspect",
+        "guest",
+        "Show the kernel and shards-init runs boot",
+    ),
+    (
+        "inspect",
+        "inspect",
+        "cpu",
+        "Show the CPU this home's microVMs are told, and the machines it is every one's of",
+    ),
+    (
+        "inspect",
+        "inspect",
+        "system",
+        "Show what shards is, holds and runs on",
+    ),
+    (
+        "inspect",
+        "inspect",
+        "vm | image NAME",
+        "Show what a microVM runs, or an image's documents",
+    ),
+    (
+        "inspect",
+        "inspect",
+        "volume NAME",
+        "Show a volume: where its files are, and its options",
+    ),
+    (
+        "inspect",
+        "inspect",
+        "context NAME",
+        "Show a context: its machine's address, and the key its daemon presents",
+    ),
+    (
+        "inspect",
+        "list",
+        "vm | image | volume",
+        "List microVMs, images, or volumes",
+    ),
+    (
+        "inspect",
+        "list",
+        "snapshots NAME",
+        "List a microVM's snapshots, newest first: when each was saved, and what it takes on disk",
+    ),
+    (
+        "inspect",
+        "list",
+        "contexts",
+        "List the machines this one's commands may run on, the one they use marked",
+    ),
+    (
+        "inspect",
+        "list",
+        "clients | invitations",
+        "List the machines enrolled to run shards here, or the invitations still open",
+    ),
+    (
+        "inspect",
+        "read",
+        "processes NAME",
+        "The processes a microVM's members started and ended, each whole, as the kernel saw them",
+    ),
+    (
+        "inspect",
+        "read",
+        "ports NAME",
+        "Which of a microVM's members each published port reaches",
+    ),
+    ("inspect", "read", "logs NAME", "What a microVM's command printed"),
+    (
+        "inspect",
+        "read",
+        "changes NAME",
+        "What a microVM changed of its image's files",
+    ),
+    (
+        "inspect",
+        "read",
+        "history IMAGE",
+        "How an image's layers were made",
+    ),
+    (
+        "inspect",
+        "watch",
+        "vms [NAME...]",
+        "What microVMs take of the host, live",
+    ),
+    (
+        "inspect",
+        "watch",
+        "processes NAME",
+        "A microVM's processes as they start and end",
+    ),
+    (
+        "inspect",
+        "watch",
+        "logs NAME",
+        "What a microVM's command prints, as it prints it",
+    ),
+    (
+        "inspect",
+        "watch",
+        "system",
+        "What happens to microVMs and images, as it happens",
+    ),
+    (
+        "manage",
+        "configure",
+        "guest --kernel FILE --init FILE",
+        "Choose the kernel and shards-init runs boot",
+    ),
+    (
+        "manage",
+        "configure",
+        "disk [--build-cache-max N%|SIZE] [--log-history SIZE] ...",
+        "How much of the disk the build cache and each run's log keep",
+    ),
+    (
+        "manage",
+        "copy",
+        "vm NAME:PATH PATH | vm PATH NAME:PATH",
+        "Copy files out of a microVM, or into one",
+    ),
+    ("manage", "kill", "vm NAME", "Kill microVMs"),
+    (
+        "manage",
+        "plug",
+        "disk NAME FILE:PATH[:ro] [--size SIZE]",
+        "Plug a disk into a running microVM, its file system mounted at PATH; with --size, FILE made an empty ext4 file system where it is not there",
+    ),
+    (
+        "manage",
+        "plug",
+        "function NAME FUNCTION",
+        "Plug a host's PCI function (as 0000:01:00.0, bound to vfio-pci) into a running microVM started with --device /dev/vfio/vfio, its workload given its VFIO group (Linux)",
+    ),
+    (
+        "manage",
+        "plug",
+        "volume NAME SOURCE:PATH[:ro]",
+        "Plug a host directory or a volume into a running microVM, mounted at PATH",
+    ),
+    (
+        "manage",
+        "unplug",
+        "disk | volume NAME PATH",
+        "Unmount what is plugged in at PATH, and unplug it, refused while anything there is in use",
+    ),
+    (
+        "manage",
+        "unplug",
+        "function NAME FUNCTION",
+        "Unplug a host's PCI function, refused while anything in the microVM holds it open",
+    ),
+    (
+        "manage",
+        "grow",
+        "disk NAME PATH SIZE",
+        "Grow the disk plugged in at PATH to SIZE, and its ext4 file system, as the microVM runs",
+    ),
+    (
+        "manage",
+        "pause",
+        "vm NAME",
+        "Freeze microVMs where they are: every vCPU and device, at no CPU",
+    ),
+    (
+        "manage",
+        "prune",
+        "vm | image | system",
+        "Remove stopped microVMs, unused images, or both",
+    ),
+    (
+        "manage",
+        "prune",
+        "volume",
+        "Remove volumes no microVM mounts: anonymous ones, or all with --all",
+    ),
+    (
+        "manage",
+        "remove",
+        "vm | image NAME",
+        "Remove microVMs, or images with their stopped microVMs",
+    ),
+    (
+        "manage",
+        "remove",
+        "volume NAME",
+        "Remove volumes no microVM mounts",
+    ),
+    (
+        "manage",
+        "remove",
+        "snapshot NAME SNAPSHOT...",
+        "Remove snapshots of a microVM",
+    ),
+    (
+        "manage",
+        "remove",
+        "context | client | invitation NAME",
+        "Forget a context, or end a client's enrollment here, or an invitation's",
+    ),
+    (
+        "manage",
+        "invite",
+        "client --name NAME --output FILE",
+        "Let another machine run shards here: an invitation, a private file that enrolls it once",
+    ),
+    (
+        "manage",
+        "grant",
+        "client NAME [--dir PATH[:ro]] [--device NAME] [--gpus]",
+        "Let client NAME's microVMs mount a directory of this machine's, or have its devices or GPUs",
+    ),
+    (
+        "manage",
+        "revoke",
+        "client NAME [--dir PATH] [--device NAME] [--gpus]",
+        "Take back what client NAME was granted of this machine's",
+    ),
+    ("manage", "rename", "vm NAME NEW_NAME", "Name a microVM again"),
+    (
+        "manage",
+        "stop",
+        "daemon",
+        "End the daemon's runs, and the daemon",
+    ),
+    (
+        "manage",
+        "stop",
+        "vm NAME",
+        "Stop microVMs: their stop signal, then SIGKILL once their grace is up",
+    ),
+    ("manage", "tag", "image SOURCE TARGET", "Name an image again"),
+    (
+        "manage",
+        "unpause",
+        "vm NAME",
+        "Let frozen microVMs run on from where they were",
+    ),
+    (
+        "manage",
+        "update",
+        "vm NAME [--cpus N] [--memory SIZE] ...",
+        "Change what running microVMs may take of the host, their CPUs, memory and I/O, as they run",
+    ),
+    (
+        "manage",
+        "use",
+        "context NAME",
+        "Run shards' commands on context NAME's machine from now on; `default` is this one",
+    ),
+    (
+        "manage",
+        "wait",
+        "vm NAME",
+        "Wait for microVMs to stop, and print each command's exit status",
+    ),
+    (
+        "images",
+        "build",
+        "image PATH",
+        "Build an image from a Dockerfile or Agentfile, and make it a microVM",
+    ),
+    (
+        "images",
+        "commit",
+        "vm NAME [IMAGE]",
+        "Make an image of what a microVM changed",
+    ),
+    (
+        "images",
+        "export",
+        "vm NAME",
+        "Write a microVM's files out as a tar archive",
+    ),
+    (
+        "images",
+        "import",
+        "vm | image FILE|URL|- [NAME]",
+        "Bring in a shards microVM saved whole, or make a microVM of a tarball's files or an image archive's, named NAME",
+    ),
+    (
+        "images",
+        "load",
+        "image",
+        "Load images from a tar archive or stdin",
+    ),
+    (
+        "images",
+        "login",
+        "registry [SERVER]",
+        "Log in to a registry, Docker Hub's unless SERVER names another",
+    ),
+    (
+        "images",
+        "logout",
+        "registry [SERVER]",
+        "Forget the credentials kept for a registry",
+    ),
+    (
+        "images",
+        "pull",
+        "image NAME",
+        "Download an image, and make it a microVM",
+    ),
+    ("images", "push", "image NAME", "Upload an image to a registry"),
+    ("images", "save", "image NAME", "Save images to a tar archive"),
+    (
+        "images",
+        "search",
+        "image TERM",
+        "Find images on Docker Hub, or in the registry TERM names: whether each runs on this machine, and what its pull takes",
+    ),
+];
+
+/// shards' page of its grammar, plain: its usage and `about`, then each section's actions,
+/// what each acts on and what it does, as its page on a colour terminal lists them.
+pub fn help(about: &str) -> String {
+    let width = ACTIONS.iter().map(|a| a.1.len()).max().unwrap_or(0);
+    let mut text = format!("Usage:  shards ACTION THING [ARG...]\n\n{about}\n");
+    for section in SECTIONS {
+        let mut heading = section.chars();
+        let heading: String = heading
+            .next()
+            .map(|c| c.to_ascii_uppercase())
+            .into_iter()
+            .chain(heading)
+            .collect();
+        text.push_str(&format!("\n{heading}:\n"));
+        for (_, action, things, about) in ACTIONS.iter().filter(|a| a.0 == *section) {
+            text.push_str(&format!(
+                "  {action:<width$}  {things}\n  {:width$}  {about}\n",
+                ""
+            ));
+        }
+    }
+    text.push_str("\nRun 'shards ACTION' for each way an action is said.\n");
+    text
+}
+
+/// Whether `word` is an action of shards' grammar.
+pub fn is_action(word: &str) -> bool {
+    ACTIONS.iter().any(|(_, a, _, _)| *a == word)
+}
+
+/// `text` in shards' words: what Docker's text calls a container is a microVM here.
+pub fn ours(text: &str) -> String {
+    text.replace("containers", "microVMs")
+        .replace("Containers", "MicroVMs")
+        .replace("container", "microVM")
+        .replace("Container", "MicroVM")
+}
+
+/// What an option does, said as shards does it, where the Docker CLI's text (`docker`'s),
+/// made shards' ([`ours`]), would still say what shards does otherwise: a device is its
+/// microVM's, not the host's (D152); an annotation is kept with its microVM, which no OCI
+/// runtime is given; isolation and the runtime are its VM's (D155); privileges and the OOM
+/// killer's preferences are within its microVM; a build reads an Agentfile first (D35).
+pub fn option_ours(docker: &str) -> Option<&'static str> {
+    Some(match docker {
+        "Add a host device to the container" => {
+            "Give the command one of its microVM's devices, the VM's, never the host's"
+        }
+        "Add an annotation to the container (passed through to the OCI runtime)" => {
+            "Add an annotation to the microVM, kept with it and shown by inspect"
+        }
+        "Container isolation technology" => {
+            "Isolation: a VM of its own (default, hyperv); process, sharing the host's kernel, is refused"
+        }
+        "Runtime to use for this container" => {
+            "Runtime: shards, or runc's or Kata Containers' names for it; any other is refused"
+        }
+        "Give extended privileges to this container" | "Give extended privileges to the command" => {
+            "Give the command every privilege within its microVM, none of the host's"
+        }
+        "Tune host's OOM preferences (-1000 to 1000)" => {
+            "Tune which of the microVM's processes its OOM killer picks (-1000 to 1000)"
+        }
+        "Name of the Dockerfile (default: \"PATH/Dockerfile\")" => {
+            "Name of the Agentfile or Dockerfile (default: \"PATH/Agentfile\", else \"PATH/Dockerfile\")"
+        }
+        "Bind mount Docker API socket and required auth" => {
+            "Give the command its own microVM's engine at DOCKER_HOST, its credentials kept outside"
+        }
+        _ => return None,
+    })
+}
+
+/// A form of shards' grammar as its page says it: each way it is said, its action and
+/// thing (`shards copy vm`) and what follows them (`NAME:PATH PATH`), and what it does.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Form {
+    pub usages: Vec<(String, Option<&'static str>)>,
+    pub about: &'static str,
+}
+
+/// The form `words` say, where they begin with an action of shards' and a thing it takes
+/// (`list vms`, `copy vm`): each alternative of its rows ([`USES`]) that takes that thing,
+/// and the first such row's about; none for words of no form, a command of Docker's.
+pub fn form(words: &[String]) -> Option<Form> {
+    let (action, thing) = (words.first()?.as_str(), words.get(1)?.as_str());
+    if !is_action(action) {
+        return None;
+    }
+    // `vm` and `container` name the same runs.
+    let kind = |w: &str| match Thing::of(w) {
+        Some(Thing::Container) => Some(Thing::Vm),
+        t => t,
+    };
+    let takes_it = |w: &str| w == thing || kind(w).is_some_and(|k| kind(thing) == Some(k));
+    let mut usages = Vec::new();
+    let mut about = None;
+    for (_, a, takes, said) in USES.iter().filter(|r| r.1 == action) {
+        let alternatives: Vec<&'static str> = takes.split(" | ").collect();
+        // What follows the last alternative's thing follows each bare one's too
+        // (`vm | image NAME`).
+        let shared = alternatives
+            .last()
+            .and_then(|l| l.split_once(' '))
+            .map(|(_, rest)| rest);
+        for alt in &alternatives {
+            let (first, rest) = match alt.split_once(' ') {
+                Some((first, rest)) => (first, Some(rest)),
+                None => (*alt, shared),
+            };
+            if takes_it(first) {
+                usages.push((format!("shards {a} {first}"), rest));
+                about.get_or_insert(*said);
+            }
+        }
+    }
+    Some(Form {
+        usages,
+        about: about?,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn said(words: &str) -> Option<String> {
+        let args: Vec<String> = words.split(' ').map(String::from).collect();
+        rewrite(&args).map(|w| w.join(" "))
+    }
+
+    #[test]
+    fn actions_on_things_are_said_as_shards_runs_them() {
+        assert_eq!(said("stop vm web db").as_deref(), Some("stop web db"));
+        assert_eq!(said("stop container web").as_deref(), Some("stop web"));
+        assert_eq!(said("remove vm -f web").as_deref(), Some("rm -f web"));
+        assert_eq!(
+            said("remove image alpine:3.22").as_deref(),
+            Some("rmi --vms alpine:3.22")
+        );
+        assert_eq!(said("list vm -a").as_deref(), Some("ps -a"));
+        assert_eq!(said("ls images").as_deref(), Some("images"));
+        assert_eq!(
+            said("run vm -d alpine sleep 9").as_deref(),
+            Some("run -d alpine sleep 9")
+        );
+        // Anything but removal makes an image a microVM first; Docker's order does not.
+        assert_eq!(
+            said("inspect image alpine").as_deref(),
+            Some("image inspect --convert alpine")
+        );
+        assert_eq!(
+            said("image inspect alpine").as_deref(),
+            Some("image inspect alpine")
+        );
+        assert_eq!(
+            said("inspect vm ubuntu").as_deref(),
+            Some("container inspect --convert ubuntu")
+        );
+        // Read once, or watched as it comes (D123).
+        assert_eq!(
+            said("read history ubuntu").as_deref(),
+            Some("history --convert ubuntu")
+        );
+        assert_eq!(said("read logs web").as_deref(), Some("logs web"));
+        assert_eq!(said("watch logs -t web").as_deref(), Some("logs --follow -t web"));
+        assert_eq!(said("read changes web").as_deref(), Some("diff web"));
+        assert_eq!(said("watch vms").as_deref(), Some("stats"));
+        assert_eq!(said("watch vm web").as_deref(), Some("stats web"));
+        assert_eq!(said("watch system").as_deref(), Some("events"));
+        // Docker's verbs are no form of shards': Docker's own commands answer them.
+        for docker in [
+            "top vm web",
+            "stats vm",
+            "events system",
+            "diff vm web",
+            "history image ubuntu",
+            "logs vm web",
+            "port vm web",
+        ] {
+            assert_eq!(said(docker), None, "{docker}");
+        }
+        assert_eq!(
+            said("tag image ubuntu mine").as_deref(),
+            Some("tag --convert ubuntu mine")
+        );
+        assert_eq!(said("push image mine").as_deref(), Some("push --convert mine"));
+        assert_eq!(said("save image a b").as_deref(), Some("save --convert a b"));
+        // A microVM's snapshots (D176).
+        assert_eq!(said("list snapshots web").as_deref(), Some("snapshot ls web"));
+        assert_eq!(
+            said("remove snapshot web first second").as_deref(),
+            Some("snapshot rm web first second")
+        );
+        assert_eq!(said("snapshot ls web"), None);
+        // A running microVM saved whole (D176), however it is named.
+        assert_eq!(said("save vm web").as_deref(), Some("save vm web"));
+        assert_eq!(
+            said("save microvm web first --leave-running").as_deref(),
+            Some("save vm web first --leave-running")
+        );
+        assert_eq!(said("save container web").as_deref(), Some("save vm web"));
+        // A microVM moved to another machine (D176 part 6).
+        assert_eq!(said("move vm web lab").as_deref(), Some("move vm web lab"));
+        assert_eq!(said("move microvm web lab").as_deref(), Some("move vm web lab"));
+        assert_eq!(said("pull image alpine").as_deref(), Some("pull alpine"));
+        assert_eq!(
+            said("run vm --kernel k --cpus 2").as_deref(),
+            Some("run --kernel k --cpus 2")
+        );
+        assert_eq!(said("restore vm dir").as_deref(), Some("restore dir"));
+        // A saved microVM, by its name and its snapshot's (D176): the daemon's to tell it
+        // from a directory holding a snapshot.
+        assert_eq!(said("restore vm web first").as_deref(), Some("restore web first"));
+        // Docker's management form, turned round.
+        assert_eq!(said("image rm alpine").as_deref(), Some("rmi --vms alpine"));
+        assert_eq!(said("container ls").as_deref(), Some("ps"));
+        // shards' own THING ACTION, turned round as Docker's is, keeping shards' options.
+        assert_eq!(said("vm ls").as_deref(), Some("ps"));
+        assert_eq!(said("vms list -a").as_deref(), Some("ps -a"));
+        assert_eq!(said("vm rm -f web").as_deref(), Some("rm -f web"));
+        assert_eq!(said("microvm exec web ls").as_deref(), Some("exec web ls"));
+        assert_eq!(
+            said("vm inspect ubuntu").as_deref(),
+            Some("container inspect --convert ubuntu")
+        );
+        assert_eq!(said("vm run --kernel k").as_deref(), Some("run --kernel k"));
+        assert_eq!(said("vm restore dir").as_deref(), Some("restore dir"));
+        assert_eq!(said("vm"), None);
+        assert_eq!(said("vm nothing"), None);
+        // A terminal joined, limits changed, a microVM brought in, a stop waited for.
+        assert_eq!(said("attach vm web").as_deref(), Some("attach web"));
+        assert_eq!(
+            said("update vm --cpus 2 web").as_deref(),
+            Some("update --cpus 2 web")
+        );
+        assert_eq!(
+            said("import vm vm.tar web:1").as_deref(),
+            Some("import vm.tar web:1")
+        );
+        assert_eq!(
+            said("import image - files:1").as_deref(),
+            Some("import - files:1")
+        );
+        assert_eq!(said("wait vm web db").as_deref(), Some("wait web db"));
+        assert_eq!(said("vm attach web").as_deref(), Some("attach web"));
+        // Docker's management commands of these are Docker's own.
+        for docker in [
+            "container attach web",
+            "container update --cpus 1 web",
+            "image import - x",
+        ] {
+            assert_eq!(said(docker), None, "{docker}");
+        }
+        // A container is an image made a microVM: one that is a microVM already is
+        // refused where a container is asked to run; Docker's order runs either.
+        assert_eq!(
+            said("run container -d alpine").as_deref(),
+            Some("run --container-image -d alpine")
+        );
+        assert_eq!(
+            said("create container alpine").as_deref(),
+            Some("create --container-image alpine")
+        );
+        assert_eq!(said("container run alpine").as_deref(), Some("run alpine"));
+        assert_eq!(said("container create alpine").as_deref(), Some("create alpine"));
+        assert_eq!(said("create vm alpine").as_deref(), Some("create alpine"));
+        assert_eq!(
+            said("run daemon --detached").as_deref(),
+            Some("daemon --detached")
+        );
+        assert_eq!(said("stop daemon").as_deref(), Some("daemon stop"));
+        // What shards keeps on disk, set by its user (D186).
+        assert_eq!(
+            said("configure disk --log-history 2g").as_deref(),
+            Some("disk configure --log-history 2g")
+        );
+        assert_eq!(
+            said("configure guest --kernel k --init i").as_deref(),
+            Some("guest use --kernel k --init i")
+        );
+        assert_eq!(said("inspect guest").as_deref(), Some("guest"));
+        assert_eq!(said("list volumes -q").as_deref(), Some("volume ls -q"));
+        assert_eq!(said("create volume data").as_deref(), Some("volume create data"));
+        assert_eq!(
+            said("remove volume -f data").as_deref(),
+            Some("volume rm -f data")
+        );
+        assert_eq!(
+            said("inspect volume data").as_deref(),
+            Some("volume inspect data")
+        );
+        assert_eq!(said("prune volumes -a").as_deref(), Some("volume prune -a"));
+        // Docker's own `volume` commands are left as they are.
+        assert_eq!(said("volume ls"), None);
+        // A registry, logged in to and out of (D171).
+        assert_eq!(
+            said("login registry -u u r.example").as_deref(),
+            Some("login -u u r.example")
+        );
+        assert_eq!(said("logout registry").as_deref(), Some("logout"));
+        // Images found in registries (D172).
+        assert_eq!(
+            said("search image -f is-official=true python").as_deref(),
+            Some("search -f is-official=true python")
+        );
+        assert_eq!(
+            said("search images quay.io/prometheus").as_deref(),
+            Some("search quay.io/prometheus")
+        );
+        // OSI artifacts are shards' own groups (D54), signed as cosign signs (D116).
+        assert_eq!(said("push agent r/a:1").as_deref(), Some("agent push r/a:1"));
+        assert_eq!(
+            said("sign mcp r/m:1 --key k").as_deref(),
+            Some("mcp sign r/m:1 --key k")
+        );
+    }
+
+    #[test]
+    fn compatible_commands_and_the_vm_process_are_left_alone() {
+        for words in [
+            "stop web",
+            "rm -f web",
+            "rmi alpine",
+            "ps -a",
+            "images",
+            "run alpine",
+            "restore dir",
+            "pull alpine",
+            "login r.example",
+            "logout",
+            "search alpine",
+        ] {
+            assert_eq!(said(words), None, "{words}");
+        }
+    }
+
+    /// A form's page takes each of its rows' alternatives that takes the thing asked for,
+    /// what follows the last one following a bare one; `container` is `vm`; Docker's own
+    /// commands are no form.
+    #[test]
+    fn a_forms_page_says_each_way_it_is_said() {
+        let form = |words: &str| {
+            let words: Vec<String> = words.split(' ').map(String::from).collect();
+            form(&words)
+        };
+        let usages = |words: &str| form(words).map(|f| f.usages);
+        assert_eq!(
+            usages("inspect vm"),
+            Some(vec![("shards inspect vm".to_string(), Some("NAME"))])
+        );
+        assert_eq!(
+            usages("copy vm"),
+            Some(vec![
+                ("shards copy vm".to_string(), Some("NAME:PATH PATH")),
+                ("shards copy vm".to_string(), Some("PATH NAME:PATH")),
+            ])
+        );
+        assert_eq!(
+            usages("list containers"),
+            Some(vec![("shards list vm".to_string(), None)])
+        );
+        assert_eq!(
+            form("stop vm").map(|f| f.about),
+            Some("Stop microVMs: their stop signal, then SIGKILL once their grace is up")
+        );
+        assert_eq!(form("ps -a"), None);
+        assert_eq!(form("list nothing"), None);
+    }
+
+    /// An option the Docker CLI's text would misstate for a microVM is said as shards does it;
+    /// others are left to [`ours`].
+    #[test]
+    fn options_are_said_as_microvms_do_them() {
+        assert_eq!(
+            option_ours("Add a host device to the container"),
+            Some("Give the command one of its microVM's devices, the VM's, never the host's")
+        );
+        assert!(
+            option_ours("Give extended privileges to the command")
+                .is_some_and(|s| s.contains("none of the host's"))
+        );
+        assert_eq!(
+            option_ours("Bind mount Docker API socket and required auth"),
+            Some("Give the command its own microVM's engine at DOCKER_HOST, its credentials kept outside")
+        );
+        assert_eq!(
+            option_ours("Show all containers (default shows just running)"),
+            None
+        );
+    }
+}
+
+#[cfg(test)]
+mod sorted {
+    use super::*;
+
+    #[test]
+    fn each_section_lists_its_actions_in_order_and_names_every_action_once() {
+        for section in SECTIONS {
+            let rows: Vec<(&str, &str)> = ACTIONS
+                .iter()
+                .filter(|r| r.0 == *section)
+                .map(|r| (r.1, r.2))
+                .collect();
+            let mut sorted = rows.clone();
+            sorted.sort();
+            assert_eq!(rows, sorted, "{section}");
+        }
+        assert!(ACTIONS.iter().all(|r| SECTIONS.contains(&r.0)));
+        // An action a line, and each of its ways said on its page.
+        let mut seen = std::collections::HashSet::new();
+        assert!(ACTIONS.iter().all(|r| seen.insert(r.1)));
+        assert!(USES.iter().all(|u| ACTIONS.iter().any(|a| a.1 == u.1)));
+        assert!(ACTIONS.iter().all(|a| USES.iter().any(|u| u.1 == a.1)));
+    }
+}

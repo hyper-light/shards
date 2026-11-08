@@ -1,0 +1,2 @@
+Agent stopping failed diagnostic run real-02 at containers index80; complete qualification still required.
+Completed 80 of 141 binaries; 76 pass, 4 failed. Containers did not complete.

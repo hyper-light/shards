@@ -1,0 +1,924 @@
+//! `run -p` and `-P` as dockerd publishes a container's ports (moby docker-v29.3.1,
+//! daemon/libnetwork/portallocator/osallocator_linux.go; measured against Docker Desktop's
+//! dockerd 29.3.1, 2026-10-02): each binding bound on the host as the run starts, here by
+//! the daemon, which hands the sockets to the VM's network process (D31); that process
+//! opens each connection they take to the guest, and gives each peer of a UDP port a flow
+//! of its own. A binding that cannot be bound fails the start, the microVM left created.
+//! SCTP, which the network process does not carry, is refused before the microVM is.
+//!
+//! Unlike dockerd: a host port range is tried port by port to its end, where dockerd
+//! gives up after 10 tries; and `-P` binds IPv6 too, as `-p` with no address does, where
+//! Docker Desktop's bound IPv4 alone.
+
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+#[cfg(unix)]
+use std::os::fd::{AsFd as _, FromRawFd as _, OwnedFd};
+
+use shards_ipc::{Publish, Run};
+
+use crate::netproc::Sock;
+
+use crate::containers::PortRecord;
+
+/// A published port's host socket: where it is bound, and the guest port and IP protocol
+/// it is for.
+#[derive(Debug)]
+pub(super) struct Listener {
+    pub fd: Sock,
+    pub at: SocketAddr,
+    pub guest_port: u16,
+    pub proto: u8,
+}
+
+/// IP protocol numbers (IANA), as `kind::PUBLISH` names them.
+pub(super) const TCP: u8 = 6;
+pub(super) const UDP: u8 = 17;
+
+/// What a run publishes, bound: the host sockets, and the ports its microVM lists.
+#[derive(Debug, Default)]
+pub(super) struct Bound {
+    pub listeners: Vec<Listener>,
+    pub ports: Vec<PortRecord>,
+}
+
+/// Host addresses a microVM publishes: held from their binding until the network
+/// process of the VM that took them (`vm`) has gone, with the daemon's copies of their
+/// listening sockets once that VM has its run.
+#[derive(Debug)]
+pub(super) struct Held {
+    pub container: String,
+    pub vm: Option<u32>,
+    pub at: Vec<(SocketAddr, u8)>,
+    pub listeners: Vec<Sock>,
+}
+
+/// Whether bindings at `a` and `b` would take one another's connections, on every host
+/// alike whatever its kernel lets in (review 2.7): one port, one family, and either address
+/// the family's every one, or both the same.
+pub(super) fn overlaps(a: SocketAddr, b: SocketAddr) -> bool {
+    a.port() == b.port()
+        && a.is_ipv4() == b.is_ipv4()
+        && (a.ip().is_unspecified() || b.ip().is_unspecified() || a.ip() == b.ip())
+}
+
+/// Whose a host address found in use is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum InUse {
+    /// Another program's.
+    Host,
+    /// A running microVM's of this daemon.
+    Allocated,
+    /// A run's that has ended, and is free now.
+    Freed,
+}
+
+/// A port as an image config's `ExposedPorts` key names it: `80/tcp`, or `80` for TCP.
+fn exposed(key: &str) -> Option<(u16, String)> {
+    let (port, proto) = key.split_once('/').unwrap_or((key, "tcp"));
+    Some((
+        port.parse().ok()?,
+        if proto.is_empty() {
+            "tcp".into()
+        } else {
+            proto.to_lowercase()
+        },
+    ))
+}
+
+/// The bindings `run` asks for: `-p`'s, then with `-P` one to a port the host picks for
+/// each port exposed (the image's and `-p`'s) that has none. And the ports exposed alone,
+/// which its microVM lists without a host side.
+pub(super) fn wanted(run: &Run, image_exposed: &[String]) -> (Vec<Publish>, Vec<(u16, String)>) {
+    let mut ports: Vec<(u16, String)> = image_exposed.iter().filter_map(|k| exposed(k)).collect();
+    for p in &run.publish {
+        let port = (p.port, p.proto.clone());
+        if !ports.contains(&port) {
+            ports.push(port);
+        }
+    }
+    let mut bindings = run.publish.clone();
+    if run.publish_all {
+        for (port, proto) in &ports {
+            if !run.publish.iter().any(|p| p.port == *port && p.proto == *proto) {
+                bindings.push(Publish {
+                    port: *port,
+                    proto: proto.clone(),
+                    host_ip: String::new(),
+                    host_port: String::new(),
+                });
+            }
+        }
+    }
+    let alone = ports
+        .into_iter()
+        .filter(|(port, proto)| !bindings.iter().any(|b| b.port == *port && b.proto == *proto))
+        .collect();
+    (bindings, alone)
+}
+
+/// The ports a joiner its microVM's engine made lists (D181), its bindings' published
+/// in its microVM's command's namespace by init, none of the host's: each at the address
+/// asked, or where none at `default`, its network's for its members' ports, or every IPv4
+/// one; its port the one asked or none until init says the one it was given
+/// (`kind::PORTS`); and those exposed `alone`.
+pub(super) fn engine_ports(
+    bindings: &[Publish],
+    alone: &[(u16, String)],
+    default: Option<std::net::Ipv4Addr>,
+) -> Result<Vec<PortRecord>, String> {
+    let mut ports = Vec::with_capacity(bindings.len() + alone.len());
+    for b in bindings {
+        let ip = match b.host_ip.as_str() {
+            "" => std::net::IpAddr::V4(default.unwrap_or(std::net::Ipv4Addr::UNSPECIFIED)),
+            given => given
+                .trim_matches(|c| c == '[' || c == ']')
+                .parse()
+                .map_err(|_| format!("-p {}:{}: an address of the microVM's", given, b.port))?,
+        };
+        let public = match b
+            .host_port
+            .split_once('-')
+            .map_or(b.host_port.as_str(), |(lo, _)| lo)
+        {
+            "" => 0,
+            port => port
+                .parse()
+                .map_err(|_| format!("-p {}: a port of the microVM's", b.host_port))?,
+        };
+        ports.push(PortRecord {
+            ip: Some(ip),
+            private: b.port,
+            public,
+            proto: b.proto.clone(),
+        });
+    }
+    for (port, proto) in alone {
+        ports.push(PortRecord {
+            ip: None,
+            private: *port,
+            public: 0,
+            proto: proto.clone(),
+        });
+    }
+    Ok(ports)
+}
+
+/// What shards cannot publish yet, refused before a microVM is made for it.
+pub(super) fn unsupported(bindings: &[Publish]) -> Option<String> {
+    bindings
+        .iter()
+        .find(|b| proto(&b.proto).is_none())
+        .map(|b| format!("\"-p {}/{}\" is not supported by shards yet", b.port, b.proto))
+}
+
+/// The IP protocol number of a protocol the network process carries.
+fn proto(name: &str) -> Option<u8> {
+    match name {
+        "tcp" => Some(TCP),
+        "udp" => Some(UDP),
+        _ => None,
+    }
+}
+
+/// Binds `bindings`, and lists them with the ports exposed `alone`; a binding with no
+/// address at its network's (`default`, `host_binding_ipv4`) alone, or with none, at
+/// IPv4's every one, and IPv6's too where `v6`, IPv6 can listen ([`v6_listenable`]). Whose
+/// an address in use is, `in_use` says, waiting for one a run of this daemon has just let
+/// go of.
+pub(super) fn bind(
+    bindings: &[Publish],
+    alone: &[(u16, String)],
+    default: Option<IpAddr>,
+    v6: bool,
+    in_use: impl Fn(SocketAddr, u8) -> InUse,
+) -> Result<Bound, String> {
+    let mut bound = Bound::default();
+    for b in bindings {
+        let p = proto(&b.proto).ok_or_else(|| format!("protocol {} not supported", b.proto))?;
+        // No address is the network's, an IPv4 or an IPv6 one, that one alone, as dockerd
+        // binds it (moby docker-v29.3.1, drivers/bridge/port_mapping_linux.go,
+        // configurePortBindingIPv4 and IPv6); or every one: IPv4's, and IPv6's on one port
+        // where IPv6 can listen.
+        let ips: Vec<IpAddr> = if b.host_ip.is_empty() {
+            match default {
+                Some(ip) => vec![ip],
+                None => {
+                    let mut every = vec![IpAddr::V4(Ipv4Addr::UNSPECIFIED)];
+                    if v6 {
+                        every.push(IpAddr::V6(Ipv6Addr::UNSPECIFIED));
+                    }
+                    every
+                }
+            }
+        } else {
+            // An IPv4 address mapped into IPv6's is IPv4's, recorded and bound as the
+            // address it is (RFC 4291 2.5.5.2), so that it overlaps IPv4's own.
+            let ip: IpAddr = b
+                .host_ip
+                .parse()
+                .map_err(|_| format!("invalid host address {}", b.host_ip))?;
+            vec![ip.to_canonical()]
+        };
+        let (listeners, port) = bind_one(&ips, &b.host_port, p, &|at| in_use(at, p))?;
+        for (ip, fd) in ips.iter().zip(listeners) {
+            bound.listeners.push(Listener {
+                fd,
+                at: SocketAddr::new(*ip, port),
+                guest_port: b.port,
+                proto: p,
+            });
+            bound.ports.push(PortRecord {
+                ip: Some(*ip),
+                private: b.port,
+                public: port,
+                proto: b.proto.clone(),
+            });
+        }
+    }
+    for (port, proto) in alone {
+        bound.ports.push(PortRecord {
+            ip: None,
+            private: *port,
+            public: 0,
+            proto: proto.clone(),
+        });
+    }
+    Ok(bound)
+}
+
+/// Sockets of protocol `proto` at each of `ips` on one host port: `host_port`'s, the
+/// first free one of its range, or one the kernel picks for the first address.
+fn bind_one(
+    ips: &[IpAddr],
+    host_port: &str,
+    proto: u8,
+    in_use: &dyn Fn(SocketAddr) -> InUse,
+) -> Result<(Vec<Sock>, u16), String> {
+    let range = match host_port.split_once('-') {
+        Some((a, b)) => (parse_port(a, host_port)?, parse_port(b, host_port)?),
+        None if host_port.is_empty() => (0, 0),
+        None => {
+            let p = parse_port(host_port, host_port)?;
+            (p, p)
+        }
+    };
+    let mut last_err = String::new();
+    for port in range.0..=range.1 {
+        match bind_all(ips, port, proto, in_use, &|at| listen(at, proto)) {
+            Ok(bound) => return Ok(bound),
+            Err(e) => last_err = e,
+        }
+    }
+    Err(last_err)
+}
+
+fn parse_port(s: &str, whole: &str) -> Result<u16, String> {
+    s.parse().map_err(|_| format!("invalid host port {whole}"))
+}
+
+/// `port` at every one of `ips`, or the first that fails. Port 0 is the kernel's pick at
+/// the first address, then the same at the rest; one taken there is picked afresh, up to
+/// dockerd's 10 tries (maxAllocateAttempts). An address a run has just let go of is
+/// tried again, once.
+fn bind_all(
+    ips: &[IpAddr],
+    port: u16,
+    proto: u8,
+    in_use: &dyn Fn(SocketAddr) -> InUse,
+    listen: &dyn Fn(SocketAddr) -> std::io::Result<(Sock, u16)>,
+) -> Result<(Vec<Sock>, u16), String> {
+    const TRIES: u32 = 10;
+    let name = if proto == UDP { "udp" } else { "tcp" };
+    let mut tries = 1;
+    let mut freed = false;
+    loop {
+        let mut fds = Vec::with_capacity(ips.len());
+        let mut chosen = port;
+        let mut failed = None;
+        for ip in ips {
+            // A port this daemon's microVM holds at the address, or at every address of its
+            // family, is refused before any bind, whether or not the kernel would, so that
+            // no two runs split one port's connections: BSD's SO_REUSEADDR lets a specific
+            // address in over a listener at the family's every address (review 2.7). One
+            // freed as its run ended is bound.
+            if chosen != 0 && in_use(SocketAddr::new(*ip, chosen)) == InUse::Allocated {
+                return Err(format!(
+                    "{ip}:{chosen}: port is already allocated, to another run"
+                ));
+            }
+            match listen(SocketAddr::new(*ip, chosen)) {
+                Ok((fd, at)) => {
+                    chosen = at;
+                    fds.push(fd);
+                }
+                Err(e) => {
+                    failed = Some((ip, e));
+                    break;
+                }
+            }
+        }
+        match failed {
+            None => return Ok((fds, chosen)),
+            // The kernel's pick at IPv4 is taken at IPv6: another.
+            Some((_, e)) if port == 0 && e.kind() == std::io::ErrorKind::AddrInUse && tries < TRIES => {
+                tries += 1;
+            }
+            // Another run's port, or another of the host's programs': which, by the address
+            // and port, with the words scripts look for ("port is already allocated",
+            // "address already in use").
+            Some((ip, e)) if e.kind() == std::io::ErrorKind::AddrInUse && !freed => {
+                match in_use(SocketAddr::new(*ip, chosen)) {
+                    InUse::Allocated => {
+                        return Err(format!(
+                            "{ip}:{chosen}: port is already allocated, to another run"
+                        ));
+                    }
+                    InUse::Freed => freed = true,
+                    InUse::Host => {
+                        return Err(format!(
+                            "{}/{name}: the host's port is taken: {}",
+                            SocketAddr::new(*ip, chosen),
+                            go_error(&e)
+                        ));
+                    }
+                }
+            }
+            Some((ip, e)) => {
+                return Err(format!(
+                    "{}/{name}: the host's port is taken: {}",
+                    SocketAddr::new(*ip, chosen),
+                    go_error(&e)
+                ));
+            }
+        }
+    }
+}
+
+/// An OS error in Go's words (syscall.Errno.Error): Linux's from Go's own table, macOS's
+/// as its strerror, which Go's tables copy, lower-cased; Windows' as FormatMessage gives
+/// it ([`shards_cmdline::buildflags::os_error`]).
+fn go_error(e: &std::io::Error) -> String {
+    shards_cmdline::buildflags::os_error(e)
+}
+
+/// Whether IPv6 can listen here, as dockerd asks once (moby docker-v29.3.1
+/// daemon/libnetwork/netutils/utils.go IsV6Listenable): a TCP listener at [::1]:0. A
+/// kernel booted with ipv6.disable=1 has none, and a binding with no address is then
+/// IPv4's alone, where binding `::` too would fail every one.
+pub(super) fn v6_listenable() -> bool {
+    static LISTENABLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *LISTENABLE.get_or_init(|| std::net::TcpListener::bind((Ipv6Addr::LOCALHOST, 0)).is_ok())
+}
+
+/// A socket of `proto` at `at`, and the port it has, as Unix makes one ([`listen`]): kept
+/// from children (WSA_FLAG_NO_HANDLE_INHERIT); IPv6 alone on an IPv6 address, Windows'
+/// default ("By default, an IPv6 socket created on Windows Vista and later only operates
+/// over the IPv6 protocol", Microsoft Learn, Dual-Stack Sockets); for UDP, each datagram's
+/// destination said (`IP_PKTINFO`), which WSARecvMsg reads. Its address its own alone
+/// (SO_EXCLUSIVEADDRUSE): without it a process of the same user binds the port at a
+/// specific address over one bound at every address, and takes what comes to it there,
+/// where Linux refuses that bind ("Using SO_REUSEADDR and SO_EXCLUSIVEADDRUSE", Microsoft
+/// Learn: "All server applications must set SO_EXCLUSIVEADDRUSE"), and Windows'
+/// SO_REUSEADDR, which Unix's TCP listener sets to bind over its port's connections left in
+/// TIME_WAIT, lets a socket bind over a listener in use. The network process makes it
+/// nonblocking as it takes it.
+#[cfg(windows)]
+fn listen(at: SocketAddr, proto: u8) -> std::io::Result<(Sock, u16)> {
+    use std::os::windows::io::FromRawSocket as _;
+    use windows_sys::Win32::Networking::WinSock::{
+        AF_INET, AF_INET6, INVALID_SOCKET, IPPROTO_TCP, IPPROTO_UDP, SO_EXCLUSIVEADDRUSE, SOCK_DGRAM,
+        SOCK_STREAM, SOL_SOCKET, SOMAXCONN, WSA_FLAG_NO_HANDLE_INHERIT, WSA_FLAG_OVERLAPPED, WSAGetLastError,
+        WSASocketW, bind, listen, setsockopt,
+    };
+    // SAFETY: no arguments.
+    let last = || std::io::Error::from_raw_os_error(unsafe { WSAGetLastError() });
+    let family = if at.is_ipv6() { AF_INET6 } else { AF_INET };
+    let (kind, protocol) = if proto == UDP {
+        (SOCK_DGRAM, IPPROTO_UDP)
+    } else {
+        (SOCK_STREAM, IPPROTO_TCP)
+    };
+    // Winsock, which std starts as it makes a socket of its own, started for this one.
+    shards_vmm::platform::winsock()?;
+    // SAFETY: plain arguments.
+    let raw = unsafe {
+        WSASocketW(
+            i32::from(family),
+            kind,
+            protocol,
+            std::ptr::null(),
+            0,
+            WSA_FLAG_OVERLAPPED | WSA_FLAG_NO_HANDLE_INHERIT,
+        )
+    };
+    if raw == INVALID_SOCKET {
+        return Err(last());
+    }
+    // SAFETY: a socket just made, ours alone.
+    let sock = unsafe { Sock::from_raw_socket(raw as u64) };
+    let on: i32 = 1;
+    // SAFETY: setsockopt on our socket, with a BOOL of its length.
+    if unsafe { setsockopt(raw, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, (&raw const on).cast(), 4) } != 0 {
+        return Err(last());
+    }
+    if proto == UDP {
+        shards_net::pktinfo::enable(raw, at.is_ipv6())?;
+    }
+    let (addr, len) = shards_net::sys::winsock_addr(at);
+    // SAFETY: an address of its own length.
+    if unsafe { bind(raw, (&raw const addr).cast(), len) } != 0 {
+        return Err(last());
+    }
+    if proto == UDP {
+        let sock = std::net::UdpSocket::from(sock);
+        let port = sock.local_addr()?.port();
+        return Ok((Sock::from(sock), port));
+    }
+    // SAFETY: our bound socket.
+    if unsafe { listen(raw, SOMAXCONN as i32) } != 0 {
+        return Err(last());
+    }
+    let listener = std::net::TcpListener::from(sock);
+    let port = listener.local_addr()?.port();
+    Ok((Sock::from(listener), port))
+}
+
+/// A socket of `proto` at `at`, and the port it has, as bindTCPOrUDP makes one:
+/// close-on-exec, nonblocking for the network process, IPv6 alone on an IPv6 address, so
+/// that IPv4's own socket at the same port is not refused; for TCP, address reuse and
+/// listening; for UDP, each datagram's destination said (`IP_PKTINFO`).
+#[cfg(unix)]
+fn listen(at: SocketAddr, proto: u8) -> std::io::Result<(OwnedFd, u16)> {
+    let family = if at.is_ipv6() {
+        libc::AF_INET6
+    } else {
+        libc::AF_INET
+    };
+    let kind = if proto == UDP {
+        libc::SOCK_DGRAM
+    } else {
+        libc::SOCK_STREAM
+    };
+    // Close-on-exec from its making where the kernel can (Linux, SOCK_CLOEXEC):
+    // a VM spawned on another thread meanwhile would otherwise have it, ipc's spawn
+    // trusting every descriptor to be. macOS cannot, and spawns with
+    // POSIX_SPAWN_CLOEXEC_DEFAULT.
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    let kind = kind | libc::SOCK_CLOEXEC | libc::SOCK_NONBLOCK;
+    // SAFETY: socket(2) with constant arguments.
+    let fd = unsafe { libc::socket(family, kind, 0) };
+    if fd < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: a descriptor just made, ours alone.
+    let fd = unsafe { OwnedFd::from_raw_fd(fd) };
+    let raw = std::os::fd::AsRawFd::as_raw_fd(&fd);
+    let on: libc::c_int = 1;
+    let len = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
+    // SAFETY: fcntl(2) and setsockopt(2) on our descriptor, with a c_int of its length.
+    unsafe {
+        #[cfg(not(any(target_os = "linux", target_os = "android")))]
+        {
+            libc::fcntl(raw, libc::F_SETFD, libc::FD_CLOEXEC);
+            let flags = libc::fcntl(raw, libc::F_GETFL);
+            libc::fcntl(raw, libc::F_SETFL, flags | libc::O_NONBLOCK);
+        }
+        if proto == TCP {
+            libc::setsockopt(
+                raw,
+                libc::SOL_SOCKET,
+                libc::SO_REUSEADDR,
+                (&raw const on).cast(),
+                len,
+            );
+        }
+        if at.is_ipv6() {
+            libc::setsockopt(
+                raw,
+                libc::IPPROTO_IPV6,
+                libc::IPV6_V6ONLY,
+                (&raw const on).cast(),
+                len,
+            );
+        }
+    }
+    if proto == UDP {
+        shards_net::pktinfo::enable(fd.as_fd(), at.is_ipv6())?;
+    }
+    let (storage, slen) = shards_net::pktinfo::sockaddr_of(at);
+    // SAFETY: a sockaddr of its own length.
+    if unsafe { libc::bind(raw, (&raw const storage).cast(), slen) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    if proto == UDP {
+        let sock = std::net::UdpSocket::from(fd);
+        let port = sock.local_addr()?.port();
+        return Ok((OwnedFd::from(sock), port));
+    }
+    // SAFETY: listen(2) on our bound socket.
+    if unsafe { libc::listen(raw, libc::SOMAXCONN) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let listener = std::net::TcpListener::from(fd);
+    let port = listener.local_addr()?.port();
+    Ok((OwnedFd::from(listener), port))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// What a bind of an address in use says, in Go's words for the host's error: EADDRINUSE,
+    /// or Windows' WSAEADDRINUSE.
+    fn in_use() -> String {
+        #[cfg(unix)]
+        let code = libc::EADDRINUSE;
+        #[cfg(windows)]
+        let code = windows_sys::Win32::Networking::WinSock::WSAEADDRINUSE;
+        go_error(&std::io::Error::from_raw_os_error(code))
+    }
+
+    fn run(publish: &[(u16, &str, &str)], all: bool) -> Run {
+        Run {
+            publish: publish
+                .iter()
+                .map(|(port, ip, host)| Publish {
+                    port: *port,
+                    proto: "tcp".into(),
+                    host_ip: (*ip).into(),
+                    host_port: (*host).into(),
+                })
+                .collect(),
+            publish_all: all,
+            ..Run::default()
+        }
+    }
+
+    #[test]
+    fn publish_all_binds_every_exposed_port_without_a_binding() {
+        let image = ["90/tcp".to_string(), "53/udp".to_string(), "91".to_string()];
+        let (bindings, alone) = wanted(&run(&[(91, "", "9191")], true), &image);
+        let shown: Vec<(u16, &str, &str)> = bindings
+            .iter()
+            .map(|b| (b.port, b.proto.as_str(), b.host_port.as_str()))
+            .collect();
+        assert_eq!(shown, [(91, "tcp", "9191"), (90, "tcp", ""), (53, "udp", "")]);
+        assert!(alone.is_empty());
+        let (bindings, alone) = wanted(&run(&[], false), &image);
+        assert!(bindings.is_empty());
+        assert_eq!(
+            alone,
+            [(90, "tcp".into()), (53, "udp".into()), (91, "tcp".into())]
+        );
+    }
+
+    /// A port in use is refused in the words scripts match (moby docker-v29.3.1
+    /// portallocator.go), its allocator's for a microVM's; one the kernel picks is the same
+    /// at IPv4 and IPv6; a range takes its first free port.
+    #[test]
+    fn ports_bind_on_the_host() {
+        let taken = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = taken.local_addr().unwrap().port();
+        let loopback = [IpAddr::V4(Ipv4Addr::LOCALHOST)];
+        let host = |_| InUse::Host;
+        assert_eq!(
+            bind_one(&loopback, &port.to_string(), TCP, &host).unwrap_err(),
+            format!("127.0.0.1:{port}/tcp: the host's port is taken: {}", in_use())
+        );
+        assert_eq!(
+            bind_one(&loopback, &port.to_string(), TCP, &|_| InUse::Allocated).unwrap_err(),
+            format!("127.0.0.1:{port}: port is already allocated, to another run")
+        );
+        // An address let go of meanwhile is bound.
+        let holder = std::cell::RefCell::new(Some(taken));
+        let release = |at: SocketAddr| {
+            assert_eq!(at, SocketAddr::new(loopback[0], port));
+            holder.borrow_mut().take();
+            InUse::Freed
+        };
+        assert_eq!(
+            bind_one(&loopback, &port.to_string(), TCP, &release).unwrap().1,
+            port
+        );
+        let both = [IpAddr::V4(Ipv4Addr::LOCALHOST), IpAddr::V6(Ipv6Addr::LOCALHOST)];
+        let (fds, picked) = bind_one(&both, "", TCP, &host).unwrap();
+        assert_eq!(fds.len(), 2);
+        assert_ne!(picked, 0);
+        // A port the kernel picks at IPv6 alone may be another process's at IPv4, as on a
+        // busy CI runner (gpu ea38f209): another is picked, until IPv4's is free.
+        let refused = (0..64)
+            .find_map(|_| {
+                let v6 = std::net::TcpListener::bind("[::1]:0").unwrap();
+                let v6_port = v6.local_addr().unwrap().port();
+                let refused = bind_one(&both, &v6_port.to_string(), TCP, &host).unwrap_err();
+                (!refused.contains("127.0.0.1")).then_some((refused, v6_port))
+            })
+            .unwrap();
+        assert_eq!(
+            refused.0,
+            format!("[::1]:{}/tcp: the host's port is taken: {}", refused.1, in_use())
+        );
+        let blocker = std::net::TcpListener::bind((loopback[0], port)).unwrap();
+        let (_, next) = bind_one(
+            &loopback,
+            &format!("{port}-{}", port.saturating_add(50)),
+            TCP,
+            &host,
+        )
+        .unwrap();
+        assert!(next > port && next <= port.saturating_add(50), "{next}");
+        drop(blocker);
+    }
+
+    /// A port held at an address overlaps it at the family's every address, and that at
+    /// every one of its addresses, whatever the host's kernel lets in (review 2.7); families
+    /// apart, and ports apart, do not.
+    #[test]
+    fn bindings_overlap_across_a_familys_addresses() {
+        let at = |s: &str| s.parse::<SocketAddr>().unwrap();
+        assert!(overlaps(at("0.0.0.0:8080"), at("127.0.0.1:8080")));
+        assert!(overlaps(at("127.0.0.1:8080"), at("0.0.0.0:8080")));
+        assert!(overlaps(at("127.0.0.1:8080"), at("127.0.0.1:8080")));
+        assert!(overlaps(at("[::]:8080"), at("[::1]:8080")));
+        assert!(!overlaps(at("127.0.0.1:8080"), at("10.0.0.1:8080")));
+        assert!(!overlaps(at("0.0.0.0:8080"), at("[::]:8080")));
+        assert!(!overlaps(at("0.0.0.0:8080"), at("0.0.0.0:8081")));
+    }
+
+    /// A microVM's port is refused before any bind, at an address another overlaps,
+    /// whatever the kernel would allow (review 2.7): nothing is bound for it.
+    #[test]
+    fn a_containers_port_is_refused_before_any_bind() {
+        let held = "0.0.0.0:41234".parse::<SocketAddr>().unwrap();
+        let in_use = |at: SocketAddr| {
+            if overlaps(at, held) {
+                InUse::Allocated
+            } else {
+                InUse::Host
+            }
+        };
+        let bound = std::cell::Cell::new(0);
+        let listening = |at: SocketAddr| {
+            bound.set(bound.get() + 1);
+            listen(at, TCP)
+        };
+        let loopback = [IpAddr::V4(Ipv4Addr::LOCALHOST)];
+        assert_eq!(
+            bind_all(&loopback, 41234, TCP, &in_use, &listening).unwrap_err(),
+            "127.0.0.1:41234: port is already allocated, to another run"
+        );
+        assert_eq!(bound.get(), 0, "bound before it was refused");
+    }
+
+    /// A port the kernel picks at IPv4 that IPv6 has taken is picked afresh, up to
+    /// dockerd's 10 tries; a port asked for is not.
+    #[test]
+    fn a_picked_port_taken_at_ipv6_is_picked_again() {
+        let both = [IpAddr::V4(Ipv4Addr::LOCALHOST), IpAddr::V6(Ipv6Addr::LOCALHOST)];
+        let refusals = &std::cell::Cell::new(0);
+        let refusing = |n: u32| {
+            move |at: SocketAddr| {
+                if at.is_ipv6() && refusals.get() < n {
+                    refusals.set(refusals.get() + 1);
+                    return Err(std::io::ErrorKind::AddrInUse.into());
+                }
+                listen(at, TCP)
+            }
+        };
+        let (fds, port) = bind_all(&both, 0, TCP, &|_| InUse::Host, &refusing(9)).unwrap();
+        assert_eq!((fds.len(), refusals.get()), (2, 9));
+        assert_ne!(port, 0);
+        refusals.set(0);
+        assert!(bind_all(&both, 0, TCP, &|_| InUse::Host, &refusing(10)).is_err());
+        refusals.set(0);
+        let asked = listen(SocketAddr::new(both[0], 0), TCP).unwrap().1;
+        assert!(bind_all(&both, asked, TCP, &|_| InUse::Host, &refusing(1)).is_err());
+        assert_eq!(refusals.get(), 1);
+    }
+
+    /// An IPv6 listener takes IPv6 alone: IPv4's connections are not its.
+    #[test]
+    fn ipv6_listeners_take_no_ipv4() {
+        // A port below every ephemeral range, nothing of IPv4's on it as it is taken: an
+        // ephemeral one was another listener's on IPv4 meanwhile, or the connection's own
+        // (aarch64 CI 39291150299), which IPv6's listener does not keep from anyone.
+        let from = 1024 + u16::try_from(std::process::id() % 31_744).unwrap();
+        let (_v6, port) = (from..32_768)
+            .chain(1024..from)
+            .find_map(|port| {
+                let v6 = listen(SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), port), TCP).ok()?;
+                std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, port)).ok()?;
+                Some(v6)
+            })
+            .unwrap();
+        assert!(std::net::TcpStream::connect((Ipv4Addr::LOCALHOST, port)).is_err());
+        assert!(std::net::TcpStream::connect((Ipv6Addr::LOCALHOST, port)).is_ok());
+    }
+
+    /// An IPv4 address mapped into IPv6's binds and is recorded as IPv4's, the address it
+    /// is (RFC 4291 2.5.5.2).
+    #[test]
+    fn a_mapped_address_is_ipv4s() {
+        let bound = bind(
+            &[Publish {
+                port: 7000,
+                proto: "tcp".into(),
+                host_ip: "::ffff:127.0.0.1".into(),
+                host_port: String::new(),
+            }],
+            &[],
+            None,
+            v6_listenable(),
+            |_, _| InUse::Host,
+        )
+        .unwrap();
+        let at = bound.listeners.first().unwrap().at;
+        assert_eq!(at.ip(), IpAddr::V4(Ipv4Addr::LOCALHOST));
+        assert_eq!(
+            bound.ports.first().unwrap().ip,
+            Some(IpAddr::V4(Ipv4Addr::LOCALHOST))
+        );
+        assert!(std::net::TcpStream::connect(at).is_ok());
+    }
+
+    /// A port published at no address is IPv4's every address alone where IPv6 cannot
+    /// listen (a kernel booted with ipv6.disable=1), so that the run still starts, and
+    /// IPv6's too where it can (review 2.18).
+    #[test]
+    fn a_host_without_ipv6_publishes_at_ipv4_alone() {
+        let any = Publish {
+            port: 7000,
+            proto: "tcp".into(),
+            host_ip: String::new(),
+            host_port: String::new(),
+        };
+        let v4 = bind(std::slice::from_ref(&any), &[], None, false, |_, _| InUse::Host).unwrap();
+        let at: Vec<IpAddr> = v4.listeners.iter().map(|l| l.at.ip()).collect();
+        assert_eq!(at, [IpAddr::V4(Ipv4Addr::UNSPECIFIED)]);
+        let recorded: Vec<Option<IpAddr>> = v4.ports.iter().map(|p| p.ip).collect();
+        assert_eq!(recorded, [Some(IpAddr::V4(Ipv4Addr::UNSPECIFIED))]);
+        if v6_listenable() {
+            let both = bind(std::slice::from_ref(&any), &[], None, true, |_, _| InUse::Host).unwrap();
+            let at: Vec<IpAddr> = both.listeners.iter().map(|l| l.at.ip()).collect();
+            assert_eq!(
+                at,
+                [
+                    IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+                    IpAddr::V6(Ipv6Addr::UNSPECIFIED)
+                ]
+            );
+        }
+    }
+
+    /// A listener is close-on-exec and nonblocking from its making: no VM spawned on
+    /// another thread meanwhile has it.
+    #[test]
+    #[cfg(unix)]
+    fn listeners_are_close_on_exec_and_nonblocking() {
+        for proto in [TCP, UDP] {
+            let (fd, _) = listen(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0), proto).unwrap();
+            let raw = std::os::fd::AsRawFd::as_raw_fd(&fd);
+            // SAFETY: fcntl(2) reads of our descriptor's flags.
+            let (fd_flags, fl_flags) =
+                unsafe { (libc::fcntl(raw, libc::F_GETFD), libc::fcntl(raw, libc::F_GETFL)) };
+            assert_ne!(fd_flags & libc::FD_CLOEXEC, 0, "{proto}");
+            assert_ne!(fl_flags & libc::O_NONBLOCK, 0, "{proto}");
+        }
+    }
+
+    /// A listener is kept from children from its making on Windows
+    /// (WSA_FLAG_NO_HANDLE_INHERIT): no VM made on another thread meanwhile has it.
+    #[test]
+    #[cfg(windows)]
+    fn listeners_are_kept_from_children() {
+        use std::os::windows::io::AsRawSocket as _;
+        use windows_sys::Win32::Foundation::{GetHandleInformation, HANDLE_FLAG_INHERIT};
+        for proto in [TCP, UDP] {
+            let (sock, _) = listen(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0), proto).unwrap();
+            let mut flags = 0u32;
+            // SAFETY: a socket of ours, which is a handle, and a flag word for the call.
+            let read = unsafe { GetHandleInformation(sock.as_raw_socket() as usize as _, &raw mut flags) };
+            assert_ne!(read, 0, "{proto}");
+            assert_eq!(flags & HANDLE_FLAG_INHERIT, 0, "{proto}");
+        }
+    }
+
+    /// A port another socket of this user's binds over at an address of its own, which
+    /// Windows lets a socket do over one at every address that does not hold its address
+    /// alone, is refused it ("Using SO_REUSEADDR and SO_EXCLUSIVEADDRUSE").
+    #[test]
+    #[cfg(windows)]
+    fn a_published_port_is_its_own_alone() {
+        let (sock, port) = listen(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0), TCP).unwrap();
+        assert!(std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, port)).is_err());
+        drop(sock);
+        assert!(std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, port)).is_ok());
+    }
+
+    #[test]
+    fn sctp_ports_are_refused_until_shards_carries_them() {
+        let port = |proto: &str| Publish {
+            port: 53,
+            proto: proto.into(),
+            ..Publish::default()
+        };
+        assert_eq!(unsupported(&[port("tcp"), port("udp")]), None);
+        assert_eq!(
+            unsupported(&[port("udp"), port("sctp")]).unwrap(),
+            "\"-p 53/sctp\" is not supported by shards yet"
+        );
+    }
+
+    /// A TCP port a server closed connections on first, its side in TIME_WAIT, binds
+    /// again at once, as Go's net.Listen's does with its address reuse: a run after a
+    /// run publishes the same port. The port is one below every system's ephemeral
+    /// range (Linux's 32768-60999; RFC 6335's 49152-65535, macOS's and Windows'), which
+    /// no connection made meanwhile is given as its own: an ephemeral one was, once,
+    /// between the close and the bind (two of this binary at once, 2026-10-19).
+    #[test]
+    fn tcp_ports_bind_again_after_their_connections_close() {
+        use std::io::Read as _;
+        let at = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
+        let from = 1024 + u16::try_from(std::process::id() % 31_744).unwrap();
+        let (fd, port) = (from..32_768)
+            .chain(1024..from)
+            .find_map(|port| listen(SocketAddr::new(at.ip(), port), TCP).ok())
+            .unwrap();
+        let listener = std::net::TcpListener::from(fd);
+        listener.set_nonblocking(false).unwrap();
+        let mut client = std::net::TcpStream::connect((Ipv4Addr::LOCALHOST, port)).unwrap();
+        let (served, _) = listener.accept().unwrap();
+        // The server's close comes first, so its side is the one left in TIME_WAIT.
+        drop(served);
+        let mut rest = Vec::new();
+        client.read_to_end(&mut rest).unwrap();
+        drop(client);
+        drop(listener);
+        assert!(listen(SocketAddr::new(at.ip(), port), TCP).is_ok());
+    }
+
+    /// A UDP port is bound as a datagram socket, in use at the same port refused in the
+    /// words scripts match (moby docker-v29.3.1 portmapper's bindTCPOrUDP), and apart from
+    /// TCP's at that port.
+    #[test]
+    fn udp_ports_bind_apart_from_tcp() {
+        let loopback = [IpAddr::V4(Ipv4Addr::LOCALHOST)];
+        let (fds, port) = bind_one(&loopback, "", UDP, &|_| InUse::Host).unwrap();
+        let sock = std::net::UdpSocket::from(fds.into_iter().next().unwrap());
+        assert_eq!(sock.local_addr().unwrap(), SocketAddr::new(loopback[0], port));
+        assert_eq!(
+            bind_one(&loopback, &port.to_string(), UDP, &|_| InUse::Host).unwrap_err(),
+            format!("127.0.0.1:{port}/udp: the host's port is taken: {}", in_use())
+        );
+        // TCP's port of the same number is another: a TCP port the host gave (one it lets
+        // TCP have) stays TCP's own while UDP binds its number, and the other way round. TCP
+        // first, as Windows keeps ranges of its dynamic ports from TCP alone (Hyper-V's and
+        // WinNAT's, `netsh int ipv4 show excludedportrange protocol=tcp`), where a number
+        // UDP was given could be refused TCP with WSAEACCES (CI windows-2025, run
+        // 42320387272). On a busy host one of a few ports is free in UDP; a UDP bind that
+        // held TCP's port would fail them all (CI run 38252923745 found the first taken).
+        // Windows keeps UDP's blocks apart too, 100 ports a block and blocks side by side,
+        // and gives the ports it binds at 0 near one another: each TCP port is held until
+        // one is found free in UDP, so that each try is another number, out of a run of
+        // blocks (CI windows-2022, run 42348246426, the build tests' resolver).
+        let mut tried = Vec::new();
+        let udp_free_beside_tcp = (0..1024).any(|_| {
+            let held = bind_one(&loopback, "", TCP, &|_| InUse::Host).unwrap();
+            let free = bind_one(&loopback, &held.1.to_string(), UDP, &|_| InUse::Host).is_ok();
+            tried.push(held);
+            free
+        });
+        assert!(
+            udp_free_beside_tcp,
+            "a UDP port's bind held TCP's port of its number"
+        );
+    }
+
+    /// A port published at no address on a network with a default one
+    /// (`host_binding_ipv4`) is bound there alone, IPv4's or IPv6's, so that a network made
+    /// to keep its ports on the host does (D46); one given an address keeps its own.
+    #[test]
+    fn a_port_at_no_address_takes_its_networks() {
+        let at = |host_ip: &str, default: Option<IpAddr>| -> Vec<IpAddr> {
+            let b = Publish {
+                port: 7000,
+                proto: "tcp".into(),
+                host_ip: host_ip.into(),
+                host_port: String::new(),
+            };
+            bind(std::slice::from_ref(&b), &[], default, true, |_, _| InUse::Host)
+                .unwrap()
+                .listeners
+                .iter()
+                .map(|l| l.at.ip())
+                .collect()
+        };
+        let loopback = IpAddr::V4(Ipv4Addr::LOCALHOST);
+        assert_eq!(at("", Some(loopback)), [loopback]);
+        if v6_listenable() {
+            let loopback6 = IpAddr::V6(Ipv6Addr::LOCALHOST);
+            assert_eq!(at("", Some(loopback6)), [loopback6]);
+        }
+        assert_eq!(at("0.0.0.0", Some(loopback)), [IpAddr::V4(Ipv4Addr::UNSPECIFIED)]);
+    }
+}

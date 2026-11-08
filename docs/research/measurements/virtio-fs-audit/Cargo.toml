@@ -1,0 +1,15 @@
+[package]
+name = "virtio-fs-audit"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# Its own workspace: built against a checkout's shards-vmm by run.py, not with shards'.
+[workspace]
+
+[dependencies]
+libc = "0.2"
+shards-vmm = { path = "../../../../crates/vmm" }
+
+[profile.release]
+debug = "line-tables-only"

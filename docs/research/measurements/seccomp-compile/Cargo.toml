@@ -1,0 +1,11 @@
+[package]
+name = "seccomp-compile"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# Its own workspace: built against a checkout's shards-seccomp, not with shards'.
+[workspace]
+
+[dependencies]
+shards-seccomp = { path = "../../../../crates/seccomp" }

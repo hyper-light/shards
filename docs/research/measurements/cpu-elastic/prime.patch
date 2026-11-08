@@ -1,0 +1,13 @@
+--- a/crates/init/src/run.rs
++++ b/crates/init/src/run.rs
+@@ -456,6 +456,10 @@
+         0,
+         &format!("lowerdir=/lower,upperdir=/rw/upper,workdir=/rw/work,{volatile}{XINO}"),
+     )?;
++    // Experiment (start markers v7, prime): the root's first data write, a file made and
++    // removed, before any snapshot.
++    let _ = std::fs::write("/newroot/.shards-prime", b"x");
++    let _ = std::fs::remove_file("/newroot/.shards-prime");
+     // Kept for `diff` (changes.rs), which compares the layers the root hides.
+     if let Err(e) = crate::changes::keep("/lower", "/rw/upper") {
+         let _ = writeln!(io::stderr(), "shards-init: keeping the layers for diff: {e}");

@@ -1,0 +1,33 @@
+#!/bin/sh
+# Compares `shards save` with `docker save`, byte for byte: each image pulled by both into
+# a home of its own, then each argument list saved by both. Arguments are `save`'s, one
+# list per argument, words split on spaces. Needs docker, and shards built: cargo build
+# --release.
+#
+#   scripts/images/compare-save busybox:1.37 'busybox:1.37 alpine:3.22' 5291449c3df7
+set -eu
+here=$(cd "$(dirname "$0")/../.." && pwd)
+shards="$here/target/release/shards"
+home=$(mktemp -d)
+trap 'SHARDS_HOME="$home" "$shards" daemon stop >/dev/null 2>&1 || true; rm -rf "$home"' EXIT
+status=0
+for list in "$@"; do
+	for image in $list; do
+		case $image in
+		*:* | *@*)
+			docker pull -q "$image" >/dev/null
+			SHARDS_HOME="$home" "$shards" pull -q "$image" >/dev/null
+			;;
+		esac
+	done
+	# shellcheck disable=SC2086
+	docker save -o "$home/docker.tar" $list
+	# shellcheck disable=SC2086
+	SHARDS_HOME="$home" "$shards" save -o "$home/shards.tar" $list
+	if cmp "$home/docker.tar" "$home/shards.tar"; then
+		echo "$list: the same"
+	else
+		status=1
+	fi
+done
+exit $status

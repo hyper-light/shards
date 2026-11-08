@@ -1,0 +1,648 @@
+{
+ "token": "eyJhbGciOiJSUzI1NiIsImtpZCI6ImsifQ.eyJpc3MiOiJodHRwOi8vb3JhY2xlLmlzc3VlciIsInN1YiI6InMiLCJhdWQiOiJzaWdzdG9yZSIsImV4cCI6MjAwMDAwMDAwMCwiZW1haWwiOiJzaWduZXJAZXhhbXBsZS5jb20iLCJlbWFpbF92ZXJpZmllZCI6dHJ1ZX0.c2ln",
+ "keyPem": "-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEdbPDX9o6B+UAH91mZRdUblgcn4Wh\nul/7Z0GGhH9Ja9DxjqDU1HyiMS03OZ1KJRl8ytkXD2vJMdtmDN55ZqAaUA==\n-----END PUBLIC KEY-----\n",
+ "payload": "eyJfdHlwZSI6Imh0dHBzOi8vaW4tdG90by5pby9TdGF0ZW1lbnQvdjEiLCJzdWJqZWN0IjpbeyJkaWdlc3QiOnsic2hhMjU2IjoiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYiJ9LCJhbm5vdGF0aW9ucyI6e319XSwicHJlZGljYXRlVHlwZSI6Imh0dHBzOi8vc2lnc3RvcmUuZGV2L2Nvc2lnbi9zaWduL3YxIiwicHJlZGljYXRlIjp7fX0=",
+ "signature": "MEQCIBAko9oADIEDtTxDu1JtRpvR9qCiwjSbt8skj1DS6xAVAiAD+M24/13DnFw0cr+KfDmIrhifyw8Vj6wVQ4XEmn/h/A==",
+ "proof": "MEQCIHCVS35R0QDmOPCwdlRXgT6je+AEqie+QyQPAfU0Nn7RAiA/7jC6PtdlZ4H84ZD9CeQsUDDyPULxB0DS3IITgdXa6A==",
+ "certDer": "MIIBezCCASGgAwIBAgIBBzAKBggqhkjOPQQDAjAUMRIwEAYDVQQDEwlvcmFjbGUtY2EwHhcNMjYwMTAxMDAwMDAwWhcNMzYwMTAxMDAwMDAwWjAAMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEdbPDX9o6B+UAH91mZRdUblgcn4Whul/7Z0GGhH9Ja9DxjqDU1HyiMS03OZ1KJRl8ytkXD2vJMdtmDN55ZqAaUKN4MHYwDgYDVR0PAQH/BAQDAgeAMBMGA1UdJQQMMAoGCCsGAQUFBwMDMAwGA1UdEwEB/wQCMAAwHwYDVR0jBBgwFoAUU8oNnPb5XdInAAxtxupDrLQqyOIwIAYDVR0RAQH/BBYwFIESc2lnbmVyQGV4YW1wbGUuY29tMAoGCCqGSM49BAMCA0gAMEUCIQDsJDlhkSAg5mfMAFVTNIw7yCpWS1aLX4RvrWQYFM0qwwIgGBLVfJ0j/PXlsiDqAj0yzR+QgpFQorrttnmC4MoklS4=",
+ "fulcio": {
+  "request": "{\"publicKeyRequest\":{\"publicKey\":{\"algorithm\":\"ECDSA\",\"content\":\"-----BEGIN PUBLIC KEY-----\\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEdbPDX9o6B+UAH91mZRdUblgcn4Wh\\nul/7Z0GGhH9Ja9DxjqDU1HyiMS03OZ1KJRl8ytkXD2vJMdtmDN55ZqAaUA==\\n-----END PUBLIC KEY-----\\n\"},\"proofOfPossession\":\"MEQCIHCVS35R0QDmOPCwdlRXgT6je+AEqie+QyQPAfU0Nn7RAiA/7jC6PtdlZ4H84ZD9CeQsUDDyPULxB0DS3IITgdXa6A==\"}}",
+  "answer": "{\"signedCertificateEmbeddedSct\":{\"chain\":{\"certificates\":[\"-----BEGIN CERTIFICATE-----\\nMIIBezCCASGgAwIBAgIBBzAKBggqhkjOPQQDAjAUMRIwEAYDVQQDEwlvcmFjbGUt\\nY2EwHhcNMjYwMTAxMDAwMDAwWhcNMzYwMTAxMDAwMDAwWjAAMFkwEwYHKoZIzj0C\\nAQYIKoZIzj0DAQcDQgAEdbPDX9o6B+UAH91mZRdUblgcn4Whul/7Z0GGhH9Ja9Dx\\njqDU1HyiMS03OZ1KJRl8ytkXD2vJMdtmDN55ZqAaUKN4MHYwDgYDVR0PAQH/BAQD\\nAgeAMBMGA1UdJQQMMAoGCCsGAQUFBwMDMAwGA1UdEwEB/wQCMAAwHwYDVR0jBBgw\\nFoAUU8oNnPb5XdInAAxtxupDrLQqyOIwIAYDVR0RAQH/BBYwFIESc2lnbmVyQGV4\\nYW1wbGUuY29tMAoGCCqGSM49BAMCA0gAMEUCIQDsJDlhkSAg5mfMAFVTNIw7yCpW\\nS1aLX4RvrWQYFM0qwwIgGBLVfJ0j/PXlsiDqAj0yzR+QgpFQorrttnmC4MoklS4=\\n-----END CERTIFICATE-----\\n\",\"-----BEGIN CERTIFICATE-----\\nMIIBWDCB/6ADAgECAgEHMAoGCCqGSM49BAMCMBQxEjAQBgNVBAMTCW9yYWNsZS1j\\nYTAeFw0yNjAxMDEwMDAwMDBaFw0zNjAxMDEwMDAwMDBaMBQxEjAQBgNVBAMTCW9y\\nYWNsZS1jYTBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABNoDZHiUYbeZGgGTToDZ\\nCXzmV6fobBD6KAy86cydqJAV/DyesnSHYHW4JMn40/TlXQj7bXE5STqmmOS+7tTO\\n/jijQjBAMA4GA1UdDwEB/wQEAwIChDAPBgNVHRMBAf8EBTADAQH/MB0GA1UdDgQW\\nBBRTyg2c9vld0icADG3G6kOstCrI4jAKBggqhkjOPQQDAgNIADBFAiAHg8QPtpbP\\nXA1CujYPslUDrzSobe15BV54lcdiHGpEjgIhANF3UAIN6Q9r0ErY2t2hlWa5Dw1l\\nCJcwQdJ4lgTEkGvX\\n-----END CERTIFICATE-----\\n\"]}}}"
+ },
+ "tsa": {
+  "request": "MDYCAQEwMTANBglghkgBZQMEAgEFAAQg9JzkKgbfC9lldIomLw8jPrgxqFMrQ6Sl51EuIEvvYEs="
+ },
+ "rekorV1": {
+  "request": "{\"apiVersion\":\"0.0.1\",\"spec\":{\"proposedContent\":{\"envelope\":\"{\\\"payload\\\":\\\"eyJfdHlwZSI6Imh0dHBzOi8vaW4tdG90by5pby9TdGF0ZW1lbnQvdjEiLCJzdWJqZWN0IjpbeyJkaWdlc3QiOnsic2hhMjU2IjoiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYiJ9LCJhbm5vdGF0aW9ucyI6e319XSwicHJlZGljYXRlVHlwZSI6Imh0dHBzOi8vc2lnc3RvcmUuZGV2L2Nvc2lnbi9zaWduL3YxIiwicHJlZGljYXRlIjp7fX0=\\\",\\\"payloadType\\\":\\\"application/vnd.in-toto+json\\\",\\\"signatures\\\":[{\\\"sig\\\":\\\"MEQCIBAko9oADIEDtTxDu1JtRpvR9qCiwjSbt8skj1DS6xAVAiAD+M24/13DnFw0cr+KfDmIrhifyw8Vj6wVQ4XEmn/h/A==\\\"}]}\",\"verifiers\":[\"LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSUJlekNDQVNHZ0F3SUJBZ0lCQnpBS0JnZ3Foa2pPUFFRREFqQVVNUkl3RUFZRFZRUURFd2x2Y21GamJHVXQKWTJFd0hoY05Nall3TVRBeE1EQXdNREF3V2hjTk16WXdNVEF4TURBd01EQXdXakFBTUZrd0V3WUhLb1pJemowQwpBUVlJS29aSXpqMERBUWNEUWdBRWRiUERYOW82QitVQUg5MW1aUmRVYmxnY240V2h1bC83WjBHR2hIOUphOUR4CmpxRFUxSHlpTVMwM09aMUtKUmw4eXRrWEQydkpNZHRtRE41NVpxQWFVS040TUhZd0RnWURWUjBQQVFIL0JBUUQKQWdlQU1CTUdBMVVkSlFRTU1Bb0dDQ3NHQVFVRkJ3TURNQXdHQTFVZEV3RUIvd1FDTUFBd0h3WURWUjBqQkJndwpGb0FVVThvTm5QYjVYZEluQUF4dHh1cERyTFFxeU9Jd0lBWURWUjBSQVFIL0JCWXdGSUVTYzJsbmJtVnlRR1Y0CllXMXdiR1V1WTI5dE1Bb0dDQ3FHU000OUJBTUNBMGdBTUVVQ0lRRHNKRGxoa1NBZzVtZk1BRlZUTkl3N3lDcFcKUzFhTFg0UnZyV1FZRk0wcXd3SWdHQkxWZkowai9QWGxzaURxQWoweXpSK1FncEZRb3JydHRubUM0TW9rbFM0PQotLS0tLUVORCBDRVJUSUZJQ0FURS0tLS0tCg==\"]},\"signatures\":null},\"kind\":\"dsse\"}\n",
+  "answer": "{\"abababababababababababababababababababababababababababababababab\":{\"body\":\"eyJhcGlWZXJzaW9uIjoiMC4wLjEiLCJzcGVjIjp7ImVudmVsb3BlSGFzaCI6eyJhbGdvcml0aG0iOiJzaGEyNTYiLCJ2YWx1ZSI6IjM4NDRiMDc4NWIyOWNhZGVlYTMxMjBhODQ4NjgxYzU3ZTVjZGViYmE0Yzk4ZjZhYzM4YjFhNzJiMmM3Nzk4YzkifSwicGF5bG9hZEhhc2giOnsiYWxnb3JpdGhtIjoic2hhMjU2IiwidmFsdWUiOiIxZjdhZmVkYzY3ZjdjZWY5YjBkZDFkNThjZjUxMGI2MjQ1YzlkZmQyODFmODc0NzAwYTJlMzgzNmU1NzViZjM4In0sInNpZ25hdHVyZXMiOlt7InNpZ25hdHVyZSI6Ik1FUUNJQkFrbzlvQURJRUR0VHhEdTFKdFJwdlI5cUNpd2pTYnQ4c2tqMURTNnhBVkFpQUQrTTI0LzEzRG5GdzBjcitLZkRtSXJoaWZ5dzhWajZ3VlE0WEVtbi9oL0E9PSIsInZlcmlmaWVyIjoiTFMwdExTMUNSVWRKVGlCRFJWSlVTVVpKUTBGVVJTMHRMUzB0Q2sxSlNVSmxla05EUVZOSFowRjNTVUpCWjBsQ1FucEJTMEpuWjNGb2EycFBVRkZSUkVGcVFWVk5Va2wzUlVGWlJGWlJVVVJGZDJ4MlkyMUdhbUpIVlhRS1dUSkZkMGhvWTA1TmFsbDNUVlJCZUUxRVFYZE5SRUYzVjJoalRrMTZXWGROVkVGNFRVUkJkMDFFUVhkWGFrRkJUVVpyZDBWM1dVaExiMXBKZW1vd1F3cEJVVmxKUzI5YVNYcHFNRVJCVVdORVVXZEJSV1JpVUVSWU9XODJRaXRWUVVnNU1XMWFVbVJWWW14blkyNDBWMmgxYkM4M1dqQkhSMmhJT1VwaE9VUjRDbXB4UkZVeFNIbHBUVk13TTA5YU1VdEtVbXc0ZVhScldFUXlka3BOWkhSdFJFNDFOVnB4UVdGVlMwNDBUVWhaZDBSbldVUldVakJRUVZGSUwwSkJVVVFLUVdkbFFVMUNUVWRCTVZWa1NsRlJUVTFCYjBkRFEzTkhRVkZWUmtKM1RVUk5RWGRIUVRGVlpFVjNSVUl2ZDFGRFRVRkJkMGgzV1VSV1VqQnFRa0puZHdwR2IwRlZWVGh2VG01UVlqVllaRWx1UVVGNGRIaDFjRVJ5VEZGeGVVOUpkMGxCV1VSV1VqQlNRVkZJTDBKQ1dYZEdTVVZUWXpKc2JtSnRWbmxSUjFZMENsbFhNWGRpUjFWMVdUSTVkRTFCYjBkRFEzRkhVMDAwT1VKQlRVTkJNR2RCVFVWVlEwbFJSSE5LUkd4b2ExTkJaelZ0WmsxQlJsWlVUa2wzTjNsRGNGY0tVekZoVEZnMFVuWnlWMUZaUmswd2NYZDNTV2RIUWt4V1prb3dhaTlRV0d4emFVUnhRV293ZVhwU0sxRm5jRVpSYjNKeWRIUnViVU0wVFc5cmJGTTBQUW90TFMwdExVVk9SQ0JEUlZKVVNVWkpRMEZVUlMwdExTMHRDZz09In1dfSwia2luZCI6ImRzc2UifQ==\",\"integratedTime\":1760184000,\"logID\":\"c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0\",\"logIndex\":1234,\"verification\":{\"inclusionProof\":{\"checkpoint\":\"rekor.oracle - 1\\n1000\\nq83vAQ==\\n\\n— rekor.oracle AAAA\\n\",\"hashes\":[\"0101010101010101010101010101010101010101010101010101010101010101\",\"0202020202020202020202020202020202020202020202020202020202020202\"],\"logIndex\":999,\"rootHash\":\"0303030303030303030303030303030303030303030303030303030303030303\",\"treeSize\":1000},\"signedEntryTimestamp\":\"c2V0\"}}}",
+  "etag": "abababababababababababababababababababababababababababababababab"
+ },
+ "rekorV2": {
+  "request": "{\"hashedRekordRequestV002\":{\"digest\":\"oXYAVIhX7AXGprbzIgBxhRbjPJWVCSaSWC0toqxirUc=\", \"signature\":{\"content\":\"MEYCIQDC5NWvFfS9Nvi1VKpU5E2qfj38O2nb6+BlLnDJHb2Y5wIhAKOUFtfIR+dtQAs8V9YsPezezK23OfkD+/b7WmrGMWWu\", \"verifier\":{\"x509Certificate\":{\"rawBytes\":\"MIIBezCCASGgAwIBAgIBBzAKBggqhkjOPQQDAjAUMRIwEAYDVQQDEwlvcmFjbGUtY2EwHhcNMjYwMTAxMDAwMDAwWhcNMzYwMTAxMDAwMDAwWjAAMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEdbPDX9o6B+UAH91mZRdUblgcn4Whul/7Z0GGhH9Ja9DxjqDU1HyiMS03OZ1KJRl8ytkXD2vJMdtmDN55ZqAaUKN4MHYwDgYDVR0PAQH/BAQDAgeAMBMGA1UdJQQMMAoGCCsGAQUFBwMDMAwGA1UdEwEB/wQCMAAwHwYDVR0jBBgwFoAUU8oNnPb5XdInAAxtxupDrLQqyOIwIAYDVR0RAQH/BBYwFIESc2lnbmVyQGV4YW1wbGUuY29tMAoGCCqGSM49BAMCA0gAMEUCIDEKr14VRngjtg45EDRURFbbVZjOt/mAJ+QzGgmuET9ZAiEA/nTF2y1IZztBpGL6Baqcr5pcH7UbkyTyuzGrFFaE4G4=\"}, \"keyDetails\":\"PKIX_ECDSA_P256_SHA_256\"}}}}",
+  "answer": "{\"logIndex\":\"77\",\"logId\":{\"keyId\":\"bG9n\"},\"kindVersion\":{\"kind\":\"hashedrekord\",\"version\":\"0.0.2\"},\"inclusionProof\":{\"logIndex\":\"77\",\"rootHash\":\"cm9vdA==\",\"treeSize\":\"78\",\"hashes\":[\"aGFzaA==\"],\"checkpoint\":{\"envelope\":\"rekor.tiles - 2\\n78\\nq83vAQ==\\n\"}},\"canonicalizedBody\":\"eyJraW5kIjoiaGFzaGVkcmVrb3JkIn0=\"}"
+ },
+ "entryV1": "{\"logIndex\":\"1234\", \"logId\":{\"keyId\":\"wMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMA=\"}, \"kindVersion\":{\"kind\":\"dsse\", \"version\":\"0.0.1\"}, \"integratedTime\":\"1760184000\", \"inclusionPromise\":{\"signedEntryTimestamp\":\"c2V0\"}, \"inclusionProof\":{\"logIndex\":\"999\", \"rootHash\":\"AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM=\", \"treeSize\":\"1000\", \"hashes\":[\"AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=\", \"AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=\"], \"checkpoint\":{\"envelope\":\"rekor.oracle - 1\\n1000\\nq83vAQ==\\n\\n— rekor.oracle AAAA\\n\"}}, \"canonicalizedBody\":\"eyJhcGlWZXJzaW9uIjoiMC4wLjEiLCJzcGVjIjp7ImVudmVsb3BlSGFzaCI6eyJhbGdvcml0aG0iOiJzaGEyNTYiLCJ2YWx1ZSI6IjM4NDRiMDc4NWIyOWNhZGVlYTMxMjBhODQ4NjgxYzU3ZTVjZGViYmE0Yzk4ZjZhYzM4YjFhNzJiMmM3Nzk4YzkifSwicGF5bG9hZEhhc2giOnsiYWxnb3JpdGhtIjoic2hhMjU2IiwidmFsdWUiOiIxZjdhZmVkYzY3ZjdjZWY5YjBkZDFkNThjZjUxMGI2MjQ1YzlkZmQyODFmODc0NzAwYTJlMzgzNmU1NzViZjM4In0sInNpZ25hdHVyZXMiOlt7InNpZ25hdHVyZSI6Ik1FUUNJQkFrbzlvQURJRUR0VHhEdTFKdFJwdlI5cUNpd2pTYnQ4c2tqMURTNnhBVkFpQUQrTTI0LzEzRG5GdzBjcitLZkRtSXJoaWZ5dzhWajZ3VlE0WEVtbi9oL0E9PSIsInZlcmlmaWVyIjoiTFMwdExTMUNSVWRKVGlCRFJWSlVTVVpKUTBGVVJTMHRMUzB0Q2sxSlNVSmxla05EUVZOSFowRjNTVUpCWjBsQ1FucEJTMEpuWjNGb2EycFBVRkZSUkVGcVFWVk5Va2wzUlVGWlJGWlJVVVJGZDJ4MlkyMUdhbUpIVlhRS1dUSkZkMGhvWTA1TmFsbDNUVlJCZUUxRVFYZE5SRUYzVjJoalRrMTZXWGROVkVGNFRVUkJkMDFFUVhkWGFrRkJUVVpyZDBWM1dVaExiMXBKZW1vd1F3cEJVVmxKUzI5YVNYcHFNRVJCVVdORVVXZEJSV1JpVUVSWU9XODJRaXRWUVVnNU1XMWFVbVJWWW14blkyNDBWMmgxYkM4M1dqQkhSMmhJT1VwaE9VUjRDbXB4UkZVeFNIbHBUVk13TTA5YU1VdEtVbXc0ZVhScldFUXlka3BOWkhSdFJFNDFOVnB4UVdGVlMwNDBUVWhaZDBSbldVUldVakJRUVZGSUwwSkJVVVFLUVdkbFFVMUNUVWRCTVZWa1NsRlJUVTFCYjBkRFEzTkhRVkZWUmtKM1RVUk5RWGRIUVRGVlpFVjNSVUl2ZDFGRFRVRkJkMGgzV1VSV1VqQnFRa0puZHdwR2IwRlZWVGh2VG01UVlqVllaRWx1UVVGNGRIaDFjRVJ5VEZGeGVVOUpkMGxCV1VSV1VqQlNRVkZJTDBKQ1dYZEdTVVZUWXpKc2JtSnRWbmxSUjFZMENsbFhNWGRpUjFWMVdUSTVkRTFCYjBkRFEzRkhVMDAwT1VKQlRVTkJNR2RCVFVWVlEwbFJSSE5LUkd4b2ExTkJaelZ0WmsxQlJsWlVUa2wzTjNsRGNGY0tVekZoVEZnMFVuWnlWMUZaUmswd2NYZDNTV2RIUWt4V1prb3dhaTlRV0d4emFVUnhRV293ZVhwU0sxRm5jRVpSYjNKeWRIUnViVU0wVFc5cmJGTTBQUW90TFMwdExVVk9SQ0JEUlZKVVNVWkpRMEZVUlMwdExTMHRDZz09In1dfSwia2luZCI6ImRzc2UifQ==\"}",
+ "entryV2": "{\"logIndex\":\"77\", \"logId\":{\"keyId\":\"bG9n\"}, \"kindVersion\":{\"kind\":\"hashedrekord\", \"version\":\"0.0.2\"}, \"inclusionProof\":{\"logIndex\":\"77\", \"rootHash\":\"cm9vdA==\", \"treeSize\":\"78\", \"hashes\":[\"aGFzaA==\"], \"checkpoint\":{\"envelope\":\"rekor.tiles - 2\\n78\\nq83vAQ==\\n\"}}, \"canonicalizedBody\":\"eyJraW5kIjoiaGFzaGVkcmVrb3JkIn0=\"}",
+ "bundleV1": "{\"mediaType\":\"application/vnd.dev.sigstore.bundle.v0.3+json\", \"verificationMaterial\":{\"certificate\":{\"rawBytes\":\"MIIBezCCASGgAwIBAgIBBzAKBggqhkjOPQQDAjAUMRIwEAYDVQQDEwlvcmFjbGUtY2EwHhcNMjYwMTAxMDAwMDAwWhcNMzYwMTAxMDAwMDAwWjAAMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEdbPDX9o6B+UAH91mZRdUblgcn4Whul/7Z0GGhH9Ja9DxjqDU1HyiMS03OZ1KJRl8ytkXD2vJMdtmDN55ZqAaUKN4MHYwDgYDVR0PAQH/BAQDAgeAMBMGA1UdJQQMMAoGCCsGAQUFBwMDMAwGA1UdEwEB/wQCMAAwHwYDVR0jBBgwFoAUU8oNnPb5XdInAAxtxupDrLQqyOIwIAYDVR0RAQH/BBYwFIESc2lnbmVyQGV4YW1wbGUuY29tMAoGCCqGSM49BAMCA0gAMEUCIQDsJDlhkSAg5mfMAFVTNIw7yCpWS1aLX4RvrWQYFM0qwwIgGBLVfJ0j/PXlsiDqAj0yzR+QgpFQorrttnmC4MoklS4=\"}, \"tlogEntries\":[{\"logIndex\":\"1234\", \"logId\":{\"keyId\":\"wMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMA=\"}, \"kindVersion\":{\"kind\":\"dsse\", \"version\":\"0.0.1\"}, \"integratedTime\":\"1760184000\", \"inclusionPromise\":{\"signedEntryTimestamp\":\"c2V0\"}, \"inclusionProof\":{\"logIndex\":\"999\", \"rootHash\":\"AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM=\", \"treeSize\":\"1000\", \"hashes\":[\"AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=\", \"AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=\"], \"checkpoint\":{\"envelope\":\"rekor.oracle - 1\\n1000\\nq83vAQ==\\n\\n— rekor.oracle AAAA\\n\"}}, \"canonicalizedBody\":\"eyJhcGlWZXJzaW9uIjoiMC4wLjEiLCJzcGVjIjp7ImVudmVsb3BlSGFzaCI6eyJhbGdvcml0aG0iOiJzaGEyNTYiLCJ2YWx1ZSI6IjM4NDRiMDc4NWIyOWNhZGVlYTMxMjBhODQ4NjgxYzU3ZTVjZGViYmE0Yzk4ZjZhYzM4YjFhNzJiMmM3Nzk4YzkifSwicGF5bG9hZEhhc2giOnsiYWxnb3JpdGhtIjoic2hhMjU2IiwidmFsdWUiOiIxZjdhZmVkYzY3ZjdjZWY5YjBkZDFkNThjZjUxMGI2MjQ1YzlkZmQyODFmODc0NzAwYTJlMzgzNmU1NzViZjM4In0sInNpZ25hdHVyZXMiOlt7InNpZ25hdHVyZSI6Ik1FUUNJQkFrbzlvQURJRUR0VHhEdTFKdFJwdlI5cUNpd2pTYnQ4c2tqMURTNnhBVkFpQUQrTTI0LzEzRG5GdzBjcitLZkRtSXJoaWZ5dzhWajZ3VlE0WEVtbi9oL0E9PSIsInZlcmlmaWVyIjoiTFMwdExTMUNSVWRKVGlCRFJWSlVTVVpKUTBGVVJTMHRMUzB0Q2sxSlNVSmxla05EUVZOSFowRjNTVUpCWjBsQ1FucEJTMEpuWjNGb2EycFBVRkZSUkVGcVFWVk5Va2wzUlVGWlJGWlJVVVJGZDJ4MlkyMUdhbUpIVlhRS1dUSkZkMGhvWTA1TmFsbDNUVlJCZUUxRVFYZE5SRUYzVjJoalRrMTZXWGROVkVGNFRVUkJkMDFFUVhkWGFrRkJUVVpyZDBWM1dVaExiMXBKZW1vd1F3cEJVVmxKUzI5YVNYcHFNRVJCVVdORVVXZEJSV1JpVUVSWU9XODJRaXRWUVVnNU1XMWFVbVJWWW14blkyNDBWMmgxYkM4M1dqQkhSMmhJT1VwaE9VUjRDbXB4UkZVeFNIbHBUVk13TTA5YU1VdEtVbXc0ZVhScldFUXlka3BOWkhSdFJFNDFOVnB4UVdGVlMwNDBUVWhaZDBSbldVUldVakJRUVZGSUwwSkJVVVFLUVdkbFFVMUNUVWRCTVZWa1NsRlJUVTFCYjBkRFEzTkhRVkZWUmtKM1RVUk5RWGRIUVRGVlpFVjNSVUl2ZDFGRFRVRkJkMGgzV1VSV1VqQnFRa0puZHdwR2IwRlZWVGh2VG01UVlqVllaRWx1UVVGNGRIaDFjRVJ5VEZGeGVVOUpkMGxCV1VSV1VqQlNRVkZJTDBKQ1dYZEdTVVZUWXpKc2JtSnRWbmxSUjFZMENsbFhNWGRpUjFWMVdUSTVkRTFCYjBkRFEzRkhVMDAwT1VKQlRVTkJNR2RCVFVWVlEwbFJSSE5LUkd4b2ExTkJaelZ0WmsxQlJsWlVUa2wzTjNsRGNGY0tVekZoVEZnMFVuWnlWMUZaUmswd2NYZDNTV2RIUWt4V1prb3dhaTlRV0d4emFVUnhRV293ZVhwU0sxRm5jRVpSYjNKeWRIUnViVU0wVFc5cmJGTTBQUW90TFMwdExVVk9SQ0JEUlZKVVNVWkpRMEZVUlMwdExTMHRDZz09In1dfSwia2luZCI6ImRzc2UifQ==\"}], \"timestampVerificationData\":{\"rfc3161Timestamps\":[{\"signedTimestamp\":\"MIICGjADAgEAMIICEQYJKoZIhvcNAQcCoIICAjCCAf4CAQMxDTALBglghkgBZQMEAgEwgZoGCyqGSIb3DQEJEAEEoIGKBIGHMIGEAgEBBgkrBgEEAYO/MAIwMTANBglghkgBZQMEAgEFAAQg9JzkKgbfC9lldIomLw8jPrgxqFMrQ6Sl51EuIEvvYEsCFQDmQKG+Rlj8c859KKbG+zXKP1UCShgPMjAyNjEwMTExMjAwMDBaoBmkFzAVMRMwEQYDVQQDEwpvcmFjbGUtdHNhoAAxggFJMIIBRQIBATAZMBQxEjAQBgNVBAMTCW9yYWNsZS1jYQIBBzALBglghkgBZQMEAgGggcMwGgYJKoZIhvcNAQkDMQ0GCyqGSIb3DQEJEAEEMBwGCSqGSIb3DQEJBTEPFw0yNjEwMTExNjU3MDJaMC8GCSqGSIb3DQEJBDEiBCD+WtBTYa3vRyRWfTQBFgOeSaJ8sPVAdcDdjeBH1CQfITBWBgsqhkiG9w0BCRACLzFHMEUwQzBBBCBa/3mcOWj/OLcdi+G5FPYTPiRWEt+p6fE0no6R7DdbsTAdMBikFjAUMRIwEAYDVQQDEwlvcmFjbGUtY2ECAQcwCgYIKoZIzj0EAwIERjBEAiB2dDtXH/dwbJ7q6/uv6Ylf7w15+B2EdLlOa2p69RSRmQIgXRm6qhwTzn71OFXXx1p1H7+h9C0LjFcXmAoQYfQH/po=\"}]}}, \"dsseEnvelope\":{\"payload\":\"eyJfdHlwZSI6Imh0dHBzOi8vaW4tdG90by5pby9TdGF0ZW1lbnQvdjEiLCJzdWJqZWN0IjpbeyJkaWdlc3QiOnsic2hhMjU2IjoiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYiJ9LCJhbm5vdGF0aW9ucyI6e319XSwicHJlZGljYXRlVHlwZSI6Imh0dHBzOi8vc2lnc3RvcmUuZGV2L2Nvc2lnbi9zaWduL3YxIiwicHJlZGljYXRlIjp7fX0=\", \"payloadType\":\"application/vnd.in-toto+json\", \"signatures\":[{\"sig\":\"MEQCIBAko9oADIEDtTxDu1JtRpvR9qCiwjSbt8skj1DS6xAVAiAD+M24/13DnFw0cr+KfDmIrhifyw8Vj6wVQ4XEmn/h/A==\"}]}}",
+ "bundleV2": "{\"mediaType\":\"application/vnd.dev.sigstore.bundle.v0.3+json\", \"verificationMaterial\":{\"certificate\":{\"rawBytes\":\"MIIBezCCASGgAwIBAgIBBzAKBggqhkjOPQQDAjAUMRIwEAYDVQQDEwlvcmFjbGUtY2EwHhcNMjYwMTAxMDAwMDAwWhcNMzYwMTAxMDAwMDAwWjAAMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEdbPDX9o6B+UAH91mZRdUblgcn4Whul/7Z0GGhH9Ja9DxjqDU1HyiMS03OZ1KJRl8ytkXD2vJMdtmDN55ZqAaUKN4MHYwDgYDVR0PAQH/BAQDAgeAMBMGA1UdJQQMMAoGCCsGAQUFBwMDMAwGA1UdEwEB/wQCMAAwHwYDVR0jBBgwFoAUU8oNnPb5XdInAAxtxupDrLQqyOIwIAYDVR0RAQH/BBYwFIESc2lnbmVyQGV4YW1wbGUuY29tMAoGCCqGSM49BAMCA0gAMEUCIDEKr14VRngjtg45EDRURFbbVZjOt/mAJ+QzGgmuET9ZAiEA/nTF2y1IZztBpGL6Baqcr5pcH7UbkyTyuzGrFFaE4G4=\"}, \"tlogEntries\":[{\"logIndex\":\"77\", \"logId\":{\"keyId\":\"bG9n\"}, \"kindVersion\":{\"kind\":\"hashedrekord\", \"version\":\"0.0.2\"}, \"inclusionProof\":{\"logIndex\":\"77\", \"rootHash\":\"cm9vdA==\", \"treeSize\":\"78\", \"hashes\":[\"aGFzaA==\"], \"checkpoint\":{\"envelope\":\"rekor.tiles - 2\\n78\\nq83vAQ==\\n\"}}, \"canonicalizedBody\":\"eyJraW5kIjoiaGFzaGVkcmVrb3JkIn0=\"}], \"timestampVerificationData\":{\"rfc3161Timestamps\":[{\"signedTimestamp\":\"MIICGTADAgEAMIICEAYJKoZIhvcNAQcCoIICATCCAf0CAQMxDTALBglghkgBZQMEAgEwgZkGCyqGSIb3DQEJEAEEoIGJBIGGMIGDAgEBBgkrBgEEAYO/MAIwMTANBglghkgBZQMEAgEFAAQg1SdVP0ks8M2Zztrq8GvEI415MGj81oo/dTyApQ5IPwQCFAOE1/BZQke8/RCzBVT1SydnxNFMGA8yMDI2MTAxMTEyMDAwMFqgGaQXMBUxEzARBgNVBAMTCm9yYWNsZS10c2GgADGCAUkwggFFAgEBMBkwFDESMBAGA1UEAxMJb3JhY2xlLWNhAgEHMAsGCWCGSAFlAwQCAaCBwzAaBgkqhkiG9w0BCQMxDQYLKoZIhvcNAQkQAQQwHAYJKoZIhvcNAQkFMQ8XDTI2MTAxMTE2NTcwMlowLwYJKoZIhvcNAQkEMSIEINAQ6GClnupOgvyGQQcdpAiMTCirWKqb/tUyhHKtC4/GMFYGCyqGSIb3DQEJEAIvMUcwRTBDMEEEIFr/eZw5aP84tx2L4bkU9hM+JFYS36np8TSejpHsN1uxMB0wGKQWMBQxEjAQBgNVBAMTCW9yYWNsZS1jYQIBBzAKBggqhkjOPQQDAgRGMEQCIFTjx2vD4MlwMUGvk+q795xkMnSU0mfiIl+xMevnvm7XAiAeVw8Revv7UGIQPDaYG2YJ3dNZwnwkj29hhMrz5WeIqA==\"}]}}, \"dsseEnvelope\":{\"payload\":\"eyJfdHlwZSI6Imh0dHBzOi8vaW4tdG90by5pby9TdGF0ZW1lbnQvdjEiLCJzdWJqZWN0IjpbeyJkaWdlc3QiOnsic2hhMjU2IjoiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYiJ9LCJhbm5vdGF0aW9ucyI6e319XSwicHJlZGljYXRlVHlwZSI6Imh0dHBzOi8vc2lnc3RvcmUuZGV2L2Nvc2lnbi9zaWduL3YxIiwicHJlZGljYXRlIjp7fX0=\", \"payloadType\":\"application/vnd.in-toto+json\", \"signatures\":[{\"sig\":\"MEYCIQDC5NWvFfS9Nvi1VKpU5E2qfj38O2nb6+BlLnDJHb2Y5wIhAKOUFtfIR+dtQAs8V9YsPezezK23OfkD+/b7WmrGMWWu\"}]}}",
+ "selections": [
+  {
+   "services": [
+    {
+     "majorApiVersion": 1,
+     "operator": "a",
+     "start": "2024-01-01T00:00:00Z",
+     "url": "https://a1"
+    },
+    {
+     "majorApiVersion": 1,
+     "operator": "a",
+     "start": "2025-01-01T00:00:00Z",
+     "url": "https://a2"
+    },
+    {
+     "majorApiVersion": 1,
+     "operator": "b",
+     "start": "2023-01-01T00:00:00Z",
+     "url": "https://b"
+    },
+    {
+     "majorApiVersion": 1,
+     "operator": "",
+     "start": "2022-01-01T00:00:00Z",
+     "url": "https://none1"
+    },
+    {
+     "majorApiVersion": 1,
+     "operator": "",
+     "start": "2021-01-01T00:00:00Z",
+     "url": "https://none2"
+    }
+   ],
+   "selector": "ALL",
+   "count": 0,
+   "versions": [
+    1
+   ],
+   "now": "2026-10-11T00:00:00Z",
+   "selected": [
+    "https://a2",
+    "https://b",
+    "https://none1"
+   ]
+  },
+  {
+   "services": [
+    {
+     "majorApiVersion": 1,
+     "operator": "a",
+     "start": "2024-01-01T00:00:00Z",
+     "url": "https://a1"
+    },
+    {
+     "majorApiVersion": 1,
+     "operator": "a",
+     "start": "2025-01-01T00:00:00Z",
+     "url": "https://a2"
+    },
+    {
+     "majorApiVersion": 1,
+     "operator": "b",
+     "start": "2023-01-01T00:00:00Z",
+     "url": "https://b"
+    },
+    {
+     "majorApiVersion": 1,
+     "operator": "",
+     "start": "2022-01-01T00:00:00Z",
+     "url": "https://none1"
+    },
+    {
+     "majorApiVersion": 1,
+     "operator": "",
+     "start": "2021-01-01T00:00:00Z",
+     "url": "https://none2"
+    }
+   ],
+   "selector": "ALL",
+   "count": 0,
+   "versions": [
+    1
+   ],
+   "now": "2025-07-01T00:00:00Z",
+   "selected": [
+    "https://a2",
+    "https://b",
+    "https://none1"
+   ]
+  },
+  {
+   "services": [
+    {
+     "majorApiVersion": 1,
+     "operator": "a",
+     "start": "2024-01-01T00:00:00Z",
+     "url": "https://a1"
+    },
+    {
+     "majorApiVersion": 1,
+     "operator": "a",
+     "start": "2025-01-01T00:00:00Z",
+     "url": "https://a2"
+    },
+    {
+     "majorApiVersion": 1,
+     "operator": "b",
+     "start": "2023-01-01T00:00:00Z",
+     "url": "https://b"
+    },
+    {
+     "majorApiVersion": 1,
+     "operator": "",
+     "start": "2022-01-01T00:00:00Z",
+     "url": "https://none1"
+    },
+    {
+     "majorApiVersion": 1,
+     "operator": "",
+     "start": "2021-01-01T00:00:00Z",
+     "url": "https://none2"
+    }
+   ],
+   "selector": "ALL",
+   "count": 0,
+   "versions": [
+    1,
+    2
+   ],
+   "now": "2026-10-11T00:00:00Z",
+   "selected": [
+    "https://a2",
+    "https://b",
+    "https://none1"
+   ]
+  },
+  {
+   "services": [
+    {
+     "majorApiVersion": 1,
+     "operator": "a",
+     "start": "2024-01-01T00:00:00Z",
+     "url": "https://a1"
+    },
+    {
+     "majorApiVersion": 1,
+     "operator": "a",
+     "start": "2025-01-01T00:00:00Z",
+     "url": "https://a2"
+    },
+    {
+     "majorApiVersion": 1,
+     "operator": "b",
+     "start": "2023-01-01T00:00:00Z",
+     "url": "https://b"
+    },
+    {
+     "majorApiVersion": 1,
+     "operator": "",
+     "start": "2022-01-01T00:00:00Z",
+     "url": "https://none1"
+    },
+    {
+     "majorApiVersion": 1,
+     "operator": "",
+     "start": "2021-01-01T00:00:00Z",
+     "url": "https://none2"
+    }
+   ],
+   "selector": "ALL",
+   "count": 0,
+   "versions": [
+    1,
+    2
+   ],
+   "now": "2025-07-01T00:00:00Z",
+   "selected": [
+    "https://a2",
+    "https://b",
+    "https://none1"
+   ]
+  },
+  {
+   "services": [
+    {
+     "majorApiVersion": 1,
+     "operator": "a",
+     "start": "2024-01-01T00:00:00Z",
+     "url": "https://a1"
+    },
+    {
+     "majorApiVersion": 1,
+     "operator": "a",
+     "start": "2025-01-01T00:00:00Z",
+     "url": "https://a2"
+    },
+    {
+     "majorApiVersion": 1,
+     "operator": "b",
+     "start": "2023-01-01T00:00:00Z",
+     "url": "https://b"
+    },
+    {
+     "majorApiVersion": 1,
+     "operator": "",
+     "start": "2022-01-01T00:00:00Z",
+     "url": "https://none1"
+    },
+    {
+     "majorApiVersion": 1,
+     "operator": "",
+     "start": "2021-01-01T00:00:00Z",
+     "url": "https://none2"
+    }
+   ],
+   "selector": "ALL",
+   "count": 0,
+   "versions": [
+    2
+   ],
+   "now": "2026-10-11T00:00:00Z",
+   "error": "no matching services found for API versions [2]"
+  },
+  {
+   "services": [
+    {
+     "majorApiVersion": 1,
+     "operator": "a",
+     "start": "2024-01-01T00:00:00Z",
+     "url": "https://a1"
+    },
+    {
+     "majorApiVersion": 1,
+     "operator": "a",
+     "start": "2025-01-01T00:00:00Z",
+     "url": "https://a2"
+    },
+    {
+     "majorApiVersion": 1,
+     "operator": "b",
+     "start": "2023-01-01T00:00:00Z",
+     "url": "https://b"
+    },
+    {
+     "majorApiVersion": 1,
+     "operator": "",
+     "start": "2022-01-01T00:00:00Z",
+     "url": "https://none1"
+    },
+    {
+     "majorApiVersion": 1,
+     "operator": "",
+     "start": "2021-01-01T00:00:00Z",
+     "url": "https://none2"
+    }
+   ],
+   "selector": "ALL",
+   "count": 0,
+   "versions": [
+    2
+   ],
+   "now": "2025-07-01T00:00:00Z",
+   "error": "no matching services found for API versions [2]"
+  },
+  {
+   "services": [
+    {
+     "majorApiVersion": 1,
+     "operator": "a",
+     "start": "2024-01-01T00:00:00Z",
+     "url": "https://v1"
+    },
+    {
+     "majorApiVersion": 2,
+     "operator": "a",
+     "start": "2025-01-01T00:00:00Z",
+     "url": "https://v2"
+    },
+    {
+     "end": "2026-01-01T00:00:00Z",
+     "majorApiVersion": 2,
+     "operator": "b",
+     "start": "2025-06-01T00:00:00Z",
+     "url": "https://v2b"
+    }
+   ],
+   "selector": "ALL",
+   "count": 0,
+   "versions": [
+    1
+   ],
+   "now": "2026-10-11T00:00:00Z",
+   "selected": [
+    "https://v1"
+   ]
+  },
+  {
+   "services": [
+    {
+     "majorApiVersion": 1,
+     "operator": "a",
+     "start": "2024-01-01T00:00:00Z",
+     "url": "https://v1"
+    },
+    {
+     "majorApiVersion": 2,
+     "operator": "a",
+     "start": "2025-01-01T00:00:00Z",
+     "url": "https://v2"
+    },
+    {
+     "end": "2026-01-01T00:00:00Z",
+     "majorApiVersion": 2,
+     "operator": "b",
+     "start": "2025-06-01T00:00:00Z",
+     "url": "https://v2b"
+    }
+   ],
+   "selector": "ALL",
+   "count": 0,
+   "versions": [
+    1
+   ],
+   "now": "2025-07-01T00:00:00Z",
+   "selected": [
+    "https://v1"
+   ]
+  },
+  {
+   "services": [
+    {
+     "majorApiVersion": 1,
+     "operator": "a",
+     "start": "2024-01-01T00:00:00Z",
+     "url": "https://v1"
+    },
+    {
+     "majorApiVersion": 2,
+     "operator": "a",
+     "start": "2025-01-01T00:00:00Z",
+     "url": "https://v2"
+    },
+    {
+     "end": "2026-01-01T00:00:00Z",
+     "majorApiVersion": 2,
+     "operator": "b",
+     "start": "2025-06-01T00:00:00Z",
+     "url": "https://v2b"
+    }
+   ],
+   "selector": "ALL",
+   "count": 0,
+   "versions": [
+    1,
+    2
+   ],
+   "now": "2026-10-11T00:00:00Z",
+   "selected": [
+    "https://v2"
+   ]
+  },
+  {
+   "services": [
+    {
+     "majorApiVersion": 1,
+     "operator": "a",
+     "start": "2024-01-01T00:00:00Z",
+     "url": "https://v1"
+    },
+    {
+     "majorApiVersion": 2,
+     "operator": "a",
+     "start": "2025-01-01T00:00:00Z",
+     "url": "https://v2"
+    },
+    {
+     "end": "2026-01-01T00:00:00Z",
+     "majorApiVersion": 2,
+     "operator": "b",
+     "start": "2025-06-01T00:00:00Z",
+     "url": "https://v2b"
+    }
+   ],
+   "selector": "ALL",
+   "count": 0,
+   "versions": [
+    1,
+    2
+   ],
+   "now": "2025-07-01T00:00:00Z",
+   "selected": [
+    "https://v2b",
+    "https://v2"
+   ]
+  },
+  {
+   "services": [
+    {
+     "majorApiVersion": 1,
+     "operator": "a",
+     "start": "2024-01-01T00:00:00Z",
+     "url": "https://v1"
+    },
+    {
+     "majorApiVersion": 2,
+     "operator": "a",
+     "start": "2025-01-01T00:00:00Z",
+     "url": "https://v2"
+    },
+    {
+     "end": "2026-01-01T00:00:00Z",
+     "majorApiVersion": 2,
+     "operator": "b",
+     "start": "2025-06-01T00:00:00Z",
+     "url": "https://v2b"
+    }
+   ],
+   "selector": "ALL",
+   "count": 0,
+   "versions": [
+    2
+   ],
+   "now": "2026-10-11T00:00:00Z",
+   "selected": [
+    "https://v2"
+   ]
+  },
+  {
+   "services": [
+    {
+     "majorApiVersion": 1,
+     "operator": "a",
+     "start": "2024-01-01T00:00:00Z",
+     "url": "https://v1"
+    },
+    {
+     "majorApiVersion": 2,
+     "operator": "a",
+     "start": "2025-01-01T00:00:00Z",
+     "url": "https://v2"
+    },
+    {
+     "end": "2026-01-01T00:00:00Z",
+     "majorApiVersion": 2,
+     "operator": "b",
+     "start": "2025-06-01T00:00:00Z",
+     "url": "https://v2b"
+    }
+   ],
+   "selector": "ALL",
+   "count": 0,
+   "versions": [
+    2
+   ],
+   "now": "2025-07-01T00:00:00Z",
+   "selected": [
+    "https://v2b",
+    "https://v2"
+   ]
+  },
+  {
+   "services": [
+    {
+     "majorApiVersion": 1,
+     "operator": "a",
+     "start": "2030-01-01T00:00:00Z",
+     "url": "https://later"
+    }
+   ],
+   "selector": "ALL",
+   "count": 0,
+   "versions": [
+    1
+   ],
+   "now": "2026-10-11T00:00:00Z",
+   "error": "no matching services found for API versions [1]"
+  },
+  {
+   "services": [
+    {
+     "majorApiVersion": 1,
+     "operator": "a",
+     "start": "2030-01-01T00:00:00Z",
+     "url": "https://later"
+    }
+   ],
+   "selector": "ALL",
+   "count": 0,
+   "versions": [
+    1
+   ],
+   "now": "2025-07-01T00:00:00Z",
+   "error": "no matching services found for API versions [1]"
+  },
+  {
+   "services": [
+    {
+     "majorApiVersion": 1,
+     "operator": "a",
+     "start": "2030-01-01T00:00:00Z",
+     "url": "https://later"
+    }
+   ],
+   "selector": "ALL",
+   "count": 0,
+   "versions": [
+    1,
+    2
+   ],
+   "now": "2026-10-11T00:00:00Z",
+   "error": "no matching services found for API versions [1 2]"
+  },
+  {
+   "services": [
+    {
+     "majorApiVersion": 1,
+     "operator": "a",
+     "start": "2030-01-01T00:00:00Z",
+     "url": "https://later"
+    }
+   ],
+   "selector": "ALL",
+   "count": 0,
+   "versions": [
+    1,
+    2
+   ],
+   "now": "2025-07-01T00:00:00Z",
+   "error": "no matching services found for API versions [1 2]"
+  },
+  {
+   "services": [
+    {
+     "majorApiVersion": 1,
+     "operator": "a",
+     "start": "2030-01-01T00:00:00Z",
+     "url": "https://later"
+    }
+   ],
+   "selector": "ALL",
+   "count": 0,
+   "versions": [
+    2
+   ],
+   "now": "2026-10-11T00:00:00Z",
+   "error": "no matching services found for API versions [2]"
+  },
+  {
+   "services": [
+    {
+     "majorApiVersion": 1,
+     "operator": "a",
+     "start": "2030-01-01T00:00:00Z",
+     "url": "https://later"
+    }
+   ],
+   "selector": "ALL",
+   "count": 0,
+   "versions": [
+    2
+   ],
+   "now": "2025-07-01T00:00:00Z",
+   "error": "no matching services found for API versions [2]"
+  }
+ ],
+ "subjects": [
+  {
+   "claims": "{\"email\":\"a@b.c\",\"email_verified\":true,\"sub\":\"x\"}",
+   "subject": "a@b.c"
+  },
+  {
+   "claims": "{\"email\":\"a@b.c\",\"email_verified\":\"True\"}",
+   "subject": "a@b.c"
+  },
+  {
+   "claims": "{\"EMAIL\":\"a@b.c\",\"Email_Verified\":\"true\"}",
+   "subject": "a@b.c"
+  },
+  {
+   "claims": "{\"sub\":\"repo:o/r:ref:refs/heads/dev\"}",
+   "subject": "repo:o/r:ref:refs/heads/dev"
+  },
+  {
+   "claims": "{\"email\":\"a@b.c\",\"email_verified\":false,\"sub\":\"x\"}",
+   "error": "not verified by identity provider"
+  },
+  {
+   "claims": "{\"email\":\"a@b.c\"}",
+   "error": "not verified by identity provider"
+  },
+  {
+   "claims": "{\"email_verified\":\"yes\"}",
+   "error": "invalid value for boolean"
+  },
+  {
+   "claims": "{\"email_verified\":null,\"sub\":\"x\"}",
+   "error": "invalid value for boolean"
+  },
+  {
+   "claims": "{\"aud\":\"sigstore\"}",
+   "error": "no subject found in claims"
+  },
+  {
+   "claims": "null",
+   "error": "no subject found in claims"
+  },
+  {
+   "claims": "{\"sub\":5}",
+   "error": "json: cannot unmarshal number into Go struct field claims.sub of type string"
+  },
+  {
+   "claims": "[1]",
+   "error": "json: cannot unmarshal array into Go value of type oauthflow.claims"
+  },
+  {
+   "claims": "{\"sub\":\"a\",\"sub\":\"b\"}",
+   "subject": "b"
+  }
+ ]
+}

@@ -1,13 +1,88 @@
 //! shards-init: PID 1 of every shards guest.
 
 #[cfg(target_os = "linux")]
+mod agentdns;
+#[cfg(target_os = "linux")]
+mod build;
+#[cfg(target_os = "linux")]
+mod caches;
+#[cfg(target_os = "linux")]
+mod changes;
+#[cfg(target_os = "linux")]
+mod chooser;
+#[cfg(target_os = "linux")]
+mod copy;
+#[cfg(target_os = "linux")]
+mod defaults;
+#[cfg(target_os = "linux")]
+mod devices;
+#[cfg(target_os = "linux")]
+mod dnsrelay;
+#[cfg(target_os = "linux")]
+mod domains;
+#[cfg(target_os = "linux")]
+mod emulate;
+#[cfg(target_os = "linux")]
+mod engine;
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+mod frames;
+#[cfg(target_os = "linux")]
+mod hostbind;
+#[cfg(target_os = "linux")]
+mod hotplug;
+#[cfg(target_os = "linux")]
+mod inroot;
+#[cfg(target_os = "linux")]
+mod jit;
+#[cfg(target_os = "linux")]
+mod join;
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+mod json;
+#[cfg(target_os = "linux")]
+mod layer;
+#[cfg(target_os = "linux")]
+mod links;
+#[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "linux")]
-mod run;
+mod members;
+#[cfg(target_os = "linux")]
+mod net;
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-mod user;
+mod netplan;
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+mod orders;
+#[cfg(target_os = "linux")]
+mod over;
+#[cfg(target_os = "linux")]
+mod plug;
+#[cfg(target_os = "linux")]
+mod pmem;
+#[cfg(target_os = "linux")]
+mod procevents;
+#[cfg(target_os = "linux")]
+mod procs;
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+mod proxyca;
+#[cfg(target_os = "linux")]
+mod run;
+#[cfg(target_os = "linux")]
+mod setup;
+#[cfg(target_os = "linux")]
+mod swap;
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+mod terms;
+#[cfg(target_os = "linux")]
+mod tree;
 
 fn main() {
+    // `shards-init processes`, as any process but PID 1: the guest's process dump
+    // (procs.rs), for the tests of `top`.
+    #[cfg(target_os = "linux")]
+    if std::process::id() != 1 && std::env::args_os().nth(1).is_some_and(|a| a == "processes") {
+        let code = i32::from(procs::print().is_err());
+        std::process::exit(code);
+    }
     #[cfg(target_os = "linux")]
     linux::main();
     #[cfg(not(target_os = "linux"))]

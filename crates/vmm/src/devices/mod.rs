@@ -3,6 +3,7 @@
 pub mod acpi_sleep;
 pub mod control;
 pub mod i8042;
+pub mod pci;
 pub mod power;
 pub mod rtc;
 pub mod serial;
@@ -31,6 +32,15 @@ pub trait MmioDevice: Send + Sync {
     /// Loads state that `save` wrote into a device built from the same configuration,
     /// then continues as if resumed.
     fn restore(&self, r: &mut Reader<'_>) -> codec::Result<()>;
+    /// Why the paused device's state cannot be saved, where it cannot: a snapshot is
+    /// then refused, not written without it (D148).
+    fn unsaved(&self) -> Option<String> {
+        None
+    }
+    /// As [`crate::hv::Io::memory_fault`], for memory the device gives the guest.
+    fn memory_fault(&self, _gpa: Option<u64>) -> bool {
+        false
+    }
 }
 
 /// Stores `value` little-endian into `data` (an access of 1-8 bytes); bytes past the
@@ -54,6 +64,54 @@ pub fn get_le(data: &[u8]) -> u64 {
 pub trait Interrupt: Send + Sync {
     /// Sets the line level. For edge-triggered lines, `true` produces one edge.
     fn set_level(&self, level: bool);
+}
+
+/// A level-triggered line several sources drive, asserted while any of them asserts it:
+/// PCI's INTx#, wired-OR (PCI Local Bus 3.0 §2.2.6), as a machine with fewer lines than
+/// devices shares one.
+pub struct SharedLine {
+    line: Arc<dyn Interrupt>,
+    asserted: std::sync::Mutex<u64>,
+}
+
+impl std::fmt::Debug for SharedLine {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SharedLine").finish_non_exhaustive()
+    }
+}
+
+impl SharedLine {
+    pub fn new(line: Arc<dyn Interrupt>) -> Arc<SharedLine> {
+        Arc::new(SharedLine {
+            line,
+            asserted: std::sync::Mutex::new(0),
+        })
+    }
+
+    /// Source `n`'s hold on the line, `n` below 64.
+    pub fn source(self: &Arc<Self>, n: u32) -> Arc<dyn Interrupt> {
+        Arc::new(SharedSource {
+            shared: self.clone(),
+            bit: 1u64.checked_shl(n).unwrap_or(0),
+        })
+    }
+}
+
+struct SharedSource {
+    shared: Arc<SharedLine>,
+    bit: u64,
+}
+
+impl Interrupt for SharedSource {
+    fn set_level(&self, level: bool) {
+        let mut asserted = crate::sync::lock(&self.shared.asserted);
+        if level {
+            *asserted |= self.bit;
+        } else {
+            *asserted &= !self.bit;
+        }
+        self.shared.line.set_level(*asserted != 0);
+    }
 }
 
 #[derive(Default)]
@@ -81,6 +139,11 @@ impl MmioBus {
         self.devices.push((base, size, device));
         self.devices.sort_by_key(|d| d.0);
         Ok(())
+    }
+
+    /// Its devices, each with its window's base and size, in address order.
+    pub fn into_devices(self) -> Vec<(u64, u64, Arc<dyn MmioDevice>)> {
+        self.devices
     }
 
     fn find(&self, addr: u64, len: usize) -> Option<(&dyn MmioDevice, u64)> {
@@ -124,6 +187,11 @@ impl MmioBus {
 
     pub fn resume(&self) -> Result<(), String> {
         self.devices.iter().try_for_each(|(_, _, d)| d.resume())
+    }
+
+    /// Why a paused device's state cannot be saved: the first device's that cannot.
+    pub fn unsaved(&self) -> Option<String> {
+        self.devices.iter().find_map(|(_, _, d)| d.unsaved())
     }
 
     pub fn save(&self, w: &mut Writer) {
@@ -172,6 +240,18 @@ impl crate::hv::Io for MmioBus {
             );
         }
     }
+
+    /// None of a device's registers, which an access to is MMIO, as the most are; else
+    /// every device asked, none left out once one has given memory: with no address, each
+    /// may have a range past a file's end.
+    fn memory_fault(&self, gpa: Option<u64>) -> bool {
+        if gpa.is_some_and(|g| self.find(g, 1).is_some()) {
+            return false;
+        }
+        self.devices
+            .iter()
+            .fold(false, |given, (_, _, d)| d.memory_fault(gpa) | given)
+    }
 }
 
 #[cfg(test)]
@@ -201,7 +281,7 @@ mod tests {
             });
         }
         fn restore(&self, r: &mut Reader<'_>) -> codec::Result<()> {
-            let writes = r.seq(64, |r| Ok((r.u64()?, r.bytes(8)?.to_vec())))?;
+            let writes = r.seq(64, 12, |r| Ok((r.u64()?, r.bytes(8)?.to_vec())))?;
             *self.0.lock().unwrap() = writes;
             Ok(())
         }

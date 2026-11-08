@@ -10,15 +10,37 @@ use shards_abi::{CONTROL_PAGE, control, marker};
 pub fn main() {
     if let Err(e) = mount(c"devtmpfs", c"/dev", c"devtmpfs") {
         let _ = writeln!(io::stderr(), "shards-init: mounting /dev: {e}");
+    } else if let Err(e) = crate::devices::keep_devtmpfs() {
+        let _ = writeln!(io::stderr(), "shards-init: keeping /dev: {e}");
     }
+    if let Err(e) = crate::devices::keep_sysfs() {
+        let _ = writeln!(io::stderr(), "shards-init: keeping a sysfs for VFIO: {e}");
+    }
+    crate::plug::settle_reporting();
     if let Err(e) = mark(marker::INIT_STARTED) {
         let _ = writeln!(io::stderr(), "shards-init: control page: {e}");
+    }
+    // `shards_online=1`: the kernel brought up its boot CPU alone, and this brings the rest
+    // online before anything runs (vm::late_cpus_cmdline, PM M379).
+    if std::env::var_os("shards_online").is_some()
+        && let Err(e) = bring_cpus_online()
+    {
+        let _ = writeln!(io::stderr(), "shards-init: bringing its CPUs online: {e}");
+    }
+    // Which contract this init speaks, for the host to check before it hands over a
+    // workload. A snapshot keeps it.
+    if let Err(e) = control_write64(control::ABI, shards_abi::IDENTITY) {
+        let _ = writeln!(io::stderr(), "shards-init: announcing the protocol: {e}");
     }
     if let Err(e) = sync_clock() {
         let _ = writeln!(io::stderr(), "shards-init: setting the clock: {e}");
     }
     // `shards_root=<device>` on the kernel command line: boot into the image on that
     // device and run the host's workload in it; with `shards_template=1`, snapshot first.
+    // `shards_build=1`: a builder for `shards build image`'s steps (build.rs).
+    if std::env::var_os("shards_build").is_some() {
+        crate::build::main()
+    }
     if let Some(device) = std::env::var_os("shards_root") {
         let template = std::env::var_os("shards_template").is_some();
         crate::run::main(&device.to_string_lossy(), template)
@@ -44,6 +66,53 @@ pub fn main() {
         dump_kernel_log();
     }
     power_off();
+}
+
+/// Brings each CPU the kernel has and has not brought up online, one after another, through
+/// a sysfs of its own attached nowhere: on CI's Windows runners 3 CPUs in 67 to 109 ms (PM
+/// M379). A CPU that will not come online is said, and the rest still brought up.
+fn bring_cpus_online() -> io::Result<()> {
+    use std::io::Read as _;
+    use std::os::fd::AsRawFd as _;
+    let sysfs = crate::domains::detached(c"sysfs", &[])?;
+    let open = |path: &str, flags: libc::c_int| -> io::Result<std::fs::File> {
+        let c = std::ffi::CString::new(path).map_err(io::Error::other)?;
+        // SAFETY: openat(2) of a NUL-terminated name beneath a descriptor this holds.
+        let fd = unsafe { libc::openat(sysfs.as_raw_fd(), c.as_ptr(), flags | libc::O_CLOEXEC) };
+        if fd < 0 {
+            let e = io::Error::last_os_error();
+            return Err(io::Error::new(e.kind(), format!("{path}: {e}")));
+        }
+        // SAFETY: a fresh descriptor nothing else owns.
+        Ok(unsafe { <std::fs::File as std::os::fd::FromRawFd>::from_raw_fd(fd) })
+    };
+    let list = |name: &str| -> io::Result<Vec<u32>> {
+        let mut text = String::new();
+        open(&format!("devices/system/cpu/{name}"), libc::O_RDONLY)?.read_to_string(&mut text)?;
+        cpu_list(&text).ok_or_else(|| io::Error::other(format!("CPUs {name}: {text:?}")))
+    };
+    let online = list("online")?;
+    for cpu in list("present")?.into_iter().filter(|c| !online.contains(c)) {
+        let path = format!("devices/system/cpu/cpu{cpu}/online");
+        if let Err(e) = open(&path, libc::O_WRONLY).and_then(|mut f| f.write_all(b"1")) {
+            let _ = writeln!(io::stderr(), "shards-init: CPU {cpu} not brought online: {e}");
+        }
+    }
+    Ok(())
+}
+
+/// The CPUs of a sysfs CPU list (`0-3,5`), in order; none where it is not one.
+fn cpu_list(text: &str) -> Option<Vec<u32>> {
+    let mut cpus = Vec::new();
+    for part in text.trim().split(',').filter(|p| !p.is_empty()) {
+        let (from, to) = part.split_once('-').unwrap_or((part, part));
+        let (from, to) = (from.parse::<u32>().ok()?, to.parse::<u32>().ok()?);
+        if from > to {
+            return None;
+        }
+        cpus.extend(from..=to);
+    }
+    Some(cpus)
 }
 
 fn dump_kernel_log() {
@@ -131,8 +200,20 @@ pub(crate) fn control_write(register: u64, value: u32) -> io::Result<()> {
     Ok(())
 }
 
+/// Writes a 64-bit register of the VMM's control page, in one access.
+pub(crate) fn control_write64(register: u64, value: u64) -> io::Result<()> {
+    let page = control_page()?;
+    let offset = usize::try_from(register)
+        .ok()
+        .filter(|&o| o % 8 == 0 && o < 4096)
+        .ok_or_else(|| io::Error::other("no such control register"))?;
+    // SAFETY: an aligned register inside the mapped page.
+    unsafe { std::ptr::write_volatile(page.add(offset).cast::<u64>(), value) };
+    Ok(())
+}
+
 /// Reads a 64-bit register of the VMM's control page, in one access.
-fn control_read64(register: u64) -> io::Result<u64> {
+pub(crate) fn control_read64(register: u64) -> io::Result<u64> {
     let page = control_page()?;
     let offset = usize::try_from(register)
         .ok()
@@ -161,8 +242,13 @@ pub(crate) fn sync_clock() -> io::Result<()> {
 }
 
 pub(crate) fn power_off() -> ! {
-    // SAFETY: PID 1 flushing filesystems and asking the kernel to power off (PSCI SYSTEM_OFF).
+    // SAFETY: PID 1 waiting for its console to send what it wrote, flushing filesystems and
+    // asking the kernel to power off (PSCI SYSTEM_OFF). The console's tty holds a write
+    // until its UART has sent it, and the kernel's own lines as it powers off go past it:
+    // powering off at once can drop PID 1's last words.
     unsafe {
+        libc::tcdrain(1);
+        libc::tcdrain(2);
         libc::sync();
         libc::reboot(libc::RB_POWER_OFF);
     }
@@ -175,5 +261,18 @@ pub(crate) fn power_off() -> ! {
     loop {
         // SAFETY: blocks until a signal arrives.
         unsafe { libc::pause() };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// A sysfs CPU list reads as its CPUs in order, and what is not one as none.
+    #[test]
+    fn cpu_lists_read_as_sysfs_writes_them() {
+        assert_eq!(super::cpu_list("0\n"), Some(vec![0]));
+        assert_eq!(super::cpu_list("0-3,5,7-8\n"), Some(vec![0, 1, 2, 3, 5, 7, 8]));
+        assert_eq!(super::cpu_list("\n"), Some(vec![]));
+        assert_eq!(super::cpu_list("3-1"), None);
+        assert_eq!(super::cpu_list("a-b"), None);
     }
 }

@@ -1,0 +1,2 @@
+FROM a
+STOPSIGNAL --x=1 a

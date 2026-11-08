@@ -1,0 +1,13 @@
+F S   UID   PID  PPID  C PRI  NI ADDR SZ WCHAN  TTY          TIME CMD
+4 S     0   197     1  0  80   0 -   558 hrtime ?        00:00:00 sleep
+4 S     0   198     1  0  85   5 -   558 hrtime ?        00:00:00 sleep
+4 S  1000   199     1  0  80   0 -   558 hrtime ?        00:00:00 sleep
+4 S  4321   200     1  0  80   0 -   558 hrtime ?        00:00:00 sleep
+0 S     0   201     1  0  80   0 -   558 hrtime ?        00:00:00 sleep
+4 S     0   202     1  0  80   0 -   567 do_sys ?        00:00:00 script
+0 S     0   203     1 64  80   0 -   558 hrtime ?        00:00:02 sleep
+0 S     0   204     1  0  80   0 -   583 do_wai ?        00:00:00 sh
+0 Z     0   207   201  0  80   0 -     0 -      ?        00:00:00 sleep
+0 S     0   208   204  0  80   0 -   558 hrtime ?        00:00:00 sleep
+0 S     0   209   202  0  80   0 -   583 do_wai pts/0    00:00:00 sh
+0 S     0   210   209  0  80   0 -   558 hrtime pts/0    00:00:00 sleep

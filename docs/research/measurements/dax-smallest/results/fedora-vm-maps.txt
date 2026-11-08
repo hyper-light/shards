@@ -1,0 +1,21 @@
+host fedora.attlocal.net; 6.19.10-300.fc44.x86_64;  Intel(R) Core(TM) i9-14900HX; max_map_count 1048576
+window default cpus 1 share none: vm 1091259 maps 372
+window default cpus 1 share volume: vm 1092936 maps 385
+window default cpus 2 share none: vm 1091484 maps 352
+window default cpus 2 share volume: vm 1093168 maps 366
+window default cpus 8 share none: vm 1094401 maps 352
+window default cpus 8 share volume: vm 1095438 maps 367
+window default cpus 16 share none: vm 1096312 maps 356
+window default cpus 16 share volume: vm 1097571 maps 366
+window default cpus 32 share none: vm 1098554 maps 352
+window default cpus 32 share volume: vm 1099938 maps 361
+window 0 cpus 1 share none: vm 1102647 maps 371
+window 0 cpus 1 share volume: vm 1103038 maps 380
+window 0 cpus 2 share none: vm 1102738 maps 348
+window 0 cpus 2 share volume: vm 1103257 maps 357
+window 0 cpus 8 share none: vm 1106041 maps 348
+window 0 cpus 8 share volume: vm 1108158 maps 357
+window 0 cpus 16 share none: vm 1110150 maps 351
+window 0 cpus 16 share volume: vm 1111130 maps 357
+window 0 cpus 32 share none: vm 1111543 maps 346
+window 0 cpus 32 share volume: vm 1111719 maps 352

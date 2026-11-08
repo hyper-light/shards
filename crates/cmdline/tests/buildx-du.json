@@ -1,0 +1,524 @@
+{
+  "cases": [
+    {
+      "format": "",
+      "verbose": false,
+      "filters": null,
+      "records": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ],
+      "stdout": "ID                           RECLAIMABLE   SIZE      LAST ACCESSED\nqit9yatvygfksd43cf1dtw5k5*   false         0B        \ngglyeigvuwm9jfwnylxid6r5f    true          999B      6 weeks ago\nrx92qyq0sh89maoiyvvf44kbe*   true          4.096kB   3 minutes ago\nv8cz0q2a8ectlvskuomzsvjfv*   true          1.049MB   2 hours ago\nkx8kqtz5xgo2ixlw9els774wk    true          12.35MB   About a minute ago\nugszqghmzn7ce8t1eqc5pvim8    true          5GB*      3 days ago\nShared:\t\t5GB\nPrivate:\t13.4MB\nReclaimable:\t5.013GB\nTotal:\t\t5.013GB\n",
+      "error": "",
+      "asked": null
+    },
+    {
+      "format": "",
+      "verbose": true,
+      "filters": null,
+      "records": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ],
+      "stdout": "ID:           qit9yatvygfksd43cf1dtw5k5\nCreated at:   2026-10-10 11:00:00 +0000 UTC\nMutable:      true\nReclaimable:  false\nShared:       false\nSize:         0B\nUsage count:  0\nType:         internal\n\nID:           gglyeigvuwm9jfwnylxid6r5f\nCreated at:   2026-01-02 03:04:05 +0000 UTC\nMutable:      false\nReclaimable:  true\nShared:       false\nSize:         999B\nDescription:  pulled from docker.io/library/alpine:3.22\nUsage count:  12\nLast used:    6 weeks ago\nType:         frontend\n\nID:           rx92qyq0sh89maoiyvvf44kbe\nCreated at:   2026-10-10 10:51:00 +0000 UTC\nMutable:      true\nReclaimable:  true\nShared:       false\nSize:         4.096kB\nDescription:  cached mount /c from exec /bin/sh -c ls -A /c with id \"//c\"\nUsage count:  3\nLast used:    3 minutes ago\nType:         exec.cachemount\n\nID:           v8cz0q2a8ectlvskuomzsvjfv\nCreated at:   2026-10-09 23:59:59.5 +0000 UTC\nMutable:      true\nReclaimable:  true\nShared:       false\nSize:         1.049MB\nDescription:  local source for context\nUsage count:  2\nLast used:    2 hours ago\nType:         source.local\n\nID:           kx8kqtz5xgo2ixlw9els774wk\nParents:\n - qe221zojgn5tbnabgk7hcggrj\nCreated at:   2026-10-10 10:50:52.283772793 +0000 UTC\nMutable:      false\nReclaimable:  true\nShared:       false\nSize:         12.35MB\nDescription:  mount / from exec /bin/sh -c echo hi\nUsage count:  1\nLast used:    About a minute ago\nType:         regular\n\nID:           ugszqghmzn7ce8t1eqc5pvim8\nParents:\n - w573g82hyxry17yity2rfiqxz\n - yobxdjeelt5ayncm49zbj2b6i\nCreated at:   2026-09-01 00:00:00.000000001 +0000 UTC\nMutable:      false\nReclaimable:  true\nShared:       true\nSize:         5GB\nUsage count:  7\nLast used:    3 days ago\nType:         regular\n\nShared:\t\t5GB\nPrivate:\t13.4MB\nReclaimable:\t5.013GB\nTotal:\t\t5.013GB\n",
+      "error": "",
+      "asked": null
+    },
+    {
+      "format": "table",
+      "verbose": false,
+      "filters": null,
+      "records": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ],
+      "stdout": "ID                           RECLAIMABLE   SIZE      LAST ACCESSED\nqit9yatvygfksd43cf1dtw5k5*   false         0B        \ngglyeigvuwm9jfwnylxid6r5f    true          999B      6 weeks ago\nrx92qyq0sh89maoiyvvf44kbe*   true          4.096kB   3 minutes ago\nv8cz0q2a8ectlvskuomzsvjfv*   true          1.049MB   2 hours ago\nkx8kqtz5xgo2ixlw9els774wk    true          12.35MB   About a minute ago\nugszqghmzn7ce8t1eqc5pvim8    true          5GB*      3 days ago\nShared:\t\t5GB\nPrivate:\t13.4MB\nReclaimable:\t5.013GB\nTotal:\t\t5.013GB\n",
+      "error": "",
+      "asked": null
+    },
+    {
+      "format": "pretty",
+      "verbose": false,
+      "filters": null,
+      "records": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ],
+      "stdout": "ID:           qit9yatvygfksd43cf1dtw5k5\nCreated at:   2026-10-10 11:00:00 +0000 UTC\nMutable:      true\nReclaimable:  false\nShared:       false\nSize:         0B\nUsage count:  0\nType:         internal\n\nID:           gglyeigvuwm9jfwnylxid6r5f\nCreated at:   2026-01-02 03:04:05 +0000 UTC\nMutable:      false\nReclaimable:  true\nShared:       false\nSize:         999B\nDescription:  pulled from docker.io/library/alpine:3.22\nUsage count:  12\nLast used:    6 weeks ago\nType:         frontend\n\nID:           rx92qyq0sh89maoiyvvf44kbe\nCreated at:   2026-10-10 10:51:00 +0000 UTC\nMutable:      true\nReclaimable:  true\nShared:       false\nSize:         4.096kB\nDescription:  cached mount /c from exec /bin/sh -c ls -A /c with id \"//c\"\nUsage count:  3\nLast used:    3 minutes ago\nType:         exec.cachemount\n\nID:           v8cz0q2a8ectlvskuomzsvjfv\nCreated at:   2026-10-09 23:59:59.5 +0000 UTC\nMutable:      true\nReclaimable:  true\nShared:       false\nSize:         1.049MB\nDescription:  local source for context\nUsage count:  2\nLast used:    2 hours ago\nType:         source.local\n\nID:           kx8kqtz5xgo2ixlw9els774wk\nParents:\n - qe221zojgn5tbnabgk7hcggrj\nCreated at:   2026-10-10 10:50:52.283772793 +0000 UTC\nMutable:      false\nReclaimable:  true\nShared:       false\nSize:         12.35MB\nDescription:  mount / from exec /bin/sh -c echo hi\nUsage count:  1\nLast used:    About a minute ago\nType:         regular\n\nID:           ugszqghmzn7ce8t1eqc5pvim8\nParents:\n - w573g82hyxry17yity2rfiqxz\n - yobxdjeelt5ayncm49zbj2b6i\nCreated at:   2026-09-01 00:00:00.000000001 +0000 UTC\nMutable:      false\nReclaimable:  true\nShared:       true\nSize:         5GB\nUsage count:  7\nLast used:    3 days ago\nType:         regular\n\nShared:\t\t5GB\nPrivate:\t13.4MB\nReclaimable:\t5.013GB\nTotal:\t\t5.013GB\n",
+      "error": "",
+      "asked": null
+    },
+    {
+      "format": "json",
+      "verbose": false,
+      "filters": null,
+      "records": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ],
+      "stdout": "{\"CreatedAt\":\"2026-10-10 11:00:00 +0000 UTC\",\"Description\":\"\",\"ID\":\"qit9yatvygfksd43cf1dtw5k5\",\"LastUsedAt\":\"\",\"Mutable\":true,\"Parents\":null,\"Reclaimable\":false,\"Shared\":false,\"Size\":\"0B\",\"Type\":\"internal\",\"UsageCount\":0}\n{\"CreatedAt\":\"2026-01-02 03:04:05 +0000 UTC\",\"Description\":\"pulled from docker.io/library/alpine:3.22\",\"ID\":\"gglyeigvuwm9jfwnylxid6r5f\",\"LastUsedAt\":\"6 weeks ago\",\"Mutable\":false,\"Parents\":null,\"Reclaimable\":true,\"Shared\":false,\"Size\":\"999B\",\"Type\":\"frontend\",\"UsageCount\":12}\n{\"CreatedAt\":\"2026-10-10 10:51:00 +0000 UTC\",\"Description\":\"cached mount /c from exec /bin/sh -c ls -A /c with id \\\"//c\\\"\",\"ID\":\"rx92qyq0sh89maoiyvvf44kbe\",\"LastUsedAt\":\"3 minutes ago\",\"Mutable\":true,\"Parents\":null,\"Reclaimable\":true,\"Shared\":false,\"Size\":\"4.096kB\",\"Type\":\"exec.cachemount\",\"UsageCount\":3}\n{\"CreatedAt\":\"2026-10-09 23:59:59.5 +0000 UTC\",\"Description\":\"local source for context\",\"ID\":\"v8cz0q2a8ectlvskuomzsvjfv\",\"LastUsedAt\":\"2 hours ago\",\"Mutable\":true,\"Parents\":null,\"Reclaimable\":true,\"Shared\":false,\"Size\":\"1.049MB\",\"Type\":\"source.local\",\"UsageCount\":2}\n{\"CreatedAt\":\"2026-10-10 10:50:52.283772793 +0000 UTC\",\"Description\":\"mount / from exec /bin/sh -c echo hi\",\"ID\":\"kx8kqtz5xgo2ixlw9els774wk\",\"LastUsedAt\":\"About a minute ago\",\"Mutable\":false,\"Parents\":[\"qe221zojgn5tbnabgk7hcggrj\"],\"Reclaimable\":true,\"Shared\":false,\"Size\":\"12.35MB\",\"Type\":\"regular\",\"UsageCount\":1}\n{\"CreatedAt\":\"2026-09-01 00:00:00.000000001 +0000 UTC\",\"Description\":\"\",\"ID\":\"ugszqghmzn7ce8t1eqc5pvim8\",\"LastUsedAt\":\"3 days ago\",\"Mutable\":false,\"Parents\":[\"w573g82hyxry17yity2rfiqxz\",\"yobxdjeelt5ayncm49zbj2b6i\"],\"Reclaimable\":true,\"Shared\":true,\"Size\":\"5GB\",\"Type\":\"regular\",\"UsageCount\":7}\n",
+      "error": "",
+      "asked": null
+    },
+    {
+      "format": "raw",
+      "verbose": false,
+      "filters": null,
+      "records": [
+        0
+      ],
+      "stdout": "raw\n",
+      "error": "",
+      "asked": null
+    },
+    {
+      "format": "{{.ID}} {{.Type}} {{.Mutable}} {{.Reclaimable}} {{.Shared}}",
+      "verbose": false,
+      "filters": null,
+      "records": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ],
+      "stdout": "qit9yatvygfksd43cf1dtw5k5 internal true false false\ngglyeigvuwm9jfwnylxid6r5f frontend false true false\nrx92qyq0sh89maoiyvvf44kbe exec.cachemount true true false\nv8cz0q2a8ectlvskuomzsvjfv source.local true true false\nkx8kqtz5xgo2ixlw9els774wk regular false true false\nugszqghmzn7ce8t1eqc5pvim8 regular false true true\n",
+      "error": "",
+      "asked": null
+    },
+    {
+      "format": "table {{.ID}}\t{{.Parents}}\t{{.Size}}\t{{.Shared}}",
+      "verbose": false,
+      "filters": null,
+      "records": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ],
+      "stdout": "ID                           PARENTS                                                 SIZE      SHARED\nqit9yatvygfksd43cf1dtw5k5*   []                                                      0B        false\ngglyeigvuwm9jfwnylxid6r5f    []                                                      999B      false\nrx92qyq0sh89maoiyvvf44kbe*   []                                                      4.096kB   false\nv8cz0q2a8ectlvskuomzsvjfv*   []                                                      1.049MB   false\nkx8kqtz5xgo2ixlw9els774wk    [qe221zojgn5tbnabgk7hcggrj]                             12.35MB   false\nugszqghmzn7ce8t1eqc5pvim8    [w573g82hyxry17yity2rfiqxz yobxdjeelt5ayncm49zbj2b6i]   5GB*      true\n",
+      "error": "",
+      "asked": null
+    },
+    {
+      "format": "table {{.CreatedAt}}\t{{.UsageCount}}\t{{.LastUsedAt}}\t{{.Description}}",
+      "verbose": false,
+      "filters": null,
+      "records": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ],
+      "stdout": "CREATED AT                                USAGE COUNT   LAST ACCESSED        DESCRIPTION\n2026-10-10 11:00:00 +0000 UTC             0                                  \n2026-01-02 03:04:05 +0000 UTC             12            6 weeks ago          pulled from docker.io/library/alpine:3.22\n2026-10-10 10:51:00 +0000 UTC             3             3 minutes ago        cached mount /c from exec /bin/sh -c ls -A /c with id \"//c\"\n2026-10-09 23:59:59.5 +0000 UTC           2             2 hours ago          local source for context\n2026-10-10 10:50:52.283772793 +0000 UTC   1             About a minute ago   mount / from exec /bin/sh -c echo hi\n2026-09-01 00:00:00.000000001 +0000 UTC   7             3 days ago           \n",
+      "error": "",
+      "asked": null
+    },
+    {
+      "format": "{{json .}}",
+      "verbose": false,
+      "filters": null,
+      "records": [
+        0,
+        4
+      ],
+      "stdout": "{\"CreatedAt\":\"2026-10-10 11:00:00 +0000 UTC\",\"Description\":\"\",\"ID\":\"qit9yatvygfksd43cf1dtw5k5\",\"LastUsedAt\":\"\",\"Mutable\":true,\"Parents\":null,\"Reclaimable\":false,\"Shared\":false,\"Size\":\"0B\",\"Type\":\"internal\",\"UsageCount\":0}\n{\"CreatedAt\":\"2026-10-10 10:50:52.283772793 +0000 UTC\",\"Description\":\"mount / from exec /bin/sh -c echo hi\",\"ID\":\"kx8kqtz5xgo2ixlw9els774wk\",\"LastUsedAt\":\"About a minute ago\",\"Mutable\":false,\"Parents\":[\"qe221zojgn5tbnabgk7hcggrj\"],\"Reclaimable\":true,\"Shared\":false,\"Size\":\"12.35MB\",\"Type\":\"regular\",\"UsageCount\":1}\n",
+      "error": "",
+      "asked": null
+    },
+    {
+      "format": "{{.Parents}}|{{len .Parents}}",
+      "verbose": false,
+      "filters": null,
+      "records": [
+        0,
+        1,
+        3
+      ],
+      "stdout": "[]|0\n[qe221zojgn5tbnabgk7hcggrj]|1\n[w573g82hyxry17yity2rfiqxz yobxdjeelt5ayncm49zbj2b6i]|2\n",
+      "error": "",
+      "asked": null
+    },
+    {
+      "format": "  table {{.ID}}  ",
+      "verbose": false,
+      "filters": null,
+      "records": [
+        1
+      ],
+      "stdout": "table rx92qyq0sh89maoiyvvf44kbe\n",
+      "error": "",
+      "asked": null
+    },
+    {
+      "format": "{{.ID}}\\t{{.Size}}\\n",
+      "verbose": false,
+      "filters": null,
+      "records": [
+        0,
+        1
+      ],
+      "stdout": "rx92qyq0sh89maoiyvvf44kbe\t4.096kB\n\nkx8kqtz5xgo2ixlw9els774wk\t12.35MB\n\n",
+      "error": "",
+      "asked": null
+    },
+    {
+      "format": "",
+      "verbose": false,
+      "filters": [
+        "type=regular"
+      ],
+      "records": [
+        0,
+        3
+      ],
+      "stdout": "ID                          RECLAIMABLE   SIZE      LAST ACCESSED\nkx8kqtz5xgo2ixlw9els774wk   true          12.35MB   About a minute ago\nugszqghmzn7ce8t1eqc5pvim8   true          5GB*      3 days ago\n",
+      "error": "",
+      "asked": [
+        "type==regular"
+      ]
+    },
+    {
+      "format": "",
+      "verbose": true,
+      "filters": [
+        "until=24h"
+      ],
+      "records": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ],
+      "stdout": "ID:           qit9yatvygfksd43cf1dtw5k5\nCreated at:   2026-10-10 11:00:00 +0000 UTC\nMutable:      true\nReclaimable:  false\nShared:       false\nSize:         0B\nUsage count:  0\nType:         internal\n\nID:           gglyeigvuwm9jfwnylxid6r5f\nCreated at:   2026-01-02 03:04:05 +0000 UTC\nMutable:      false\nReclaimable:  true\nShared:       false\nSize:         999B\nDescription:  pulled from docker.io/library/alpine:3.22\nUsage count:  12\nLast used:    6 weeks ago\nType:         frontend\n\nID:           rx92qyq0sh89maoiyvvf44kbe\nCreated at:   2026-10-10 10:51:00 +0000 UTC\nMutable:      true\nReclaimable:  true\nShared:       false\nSize:         4.096kB\nDescription:  cached mount /c from exec /bin/sh -c ls -A /c with id \"//c\"\nUsage count:  3\nLast used:    3 minutes ago\nType:         exec.cachemount\n\nID:           v8cz0q2a8ectlvskuomzsvjfv\nCreated at:   2026-10-09 23:59:59.5 +0000 UTC\nMutable:      true\nReclaimable:  true\nShared:       false\nSize:         1.049MB\nDescription:  local source for context\nUsage count:  2\nLast used:    2 hours ago\nType:         source.local\n\nID:           kx8kqtz5xgo2ixlw9els774wk\nParents:\n - qe221zojgn5tbnabgk7hcggrj\nCreated at:   2026-10-10 10:50:52.283772793 +0000 UTC\nMutable:      false\nReclaimable:  true\nShared:       false\nSize:         12.35MB\nDescription:  mount / from exec /bin/sh -c echo hi\nUsage count:  1\nLast used:    About a minute ago\nType:         regular\n\nID:           ugszqghmzn7ce8t1eqc5pvim8\nParents:\n - w573g82hyxry17yity2rfiqxz\n - yobxdjeelt5ayncm49zbj2b6i\nCreated at:   2026-09-01 00:00:00.000000001 +0000 UTC\nMutable:      false\nReclaimable:  true\nShared:       true\nSize:         5GB\nUsage count:  7\nLast used:    3 days ago\nType:         regular\n\n",
+      "error": "",
+      "asked": null
+    },
+    {
+      "format": "",
+      "verbose": false,
+      "filters": [
+        "id=kx8k",
+        "description~=mount",
+        "mutable=true"
+      ],
+      "records": [
+        1
+      ],
+      "stdout": "ID                           RECLAIMABLE   SIZE      LAST ACCESSED\nrx92qyq0sh89maoiyvvf44kbe*   true          4.096kB   3 minutes ago\n",
+      "error": "",
+      "asked": [
+        "description~=mount",
+        "id~=kx8k",
+        "mutable==true"
+      ]
+    },
+    {
+      "format": "pretty",
+      "verbose": false,
+      "filters": [
+        "type=exec.cachemount"
+      ],
+      "records": [
+        1
+      ],
+      "stdout": "ID:           rx92qyq0sh89maoiyvvf44kbe\nCreated at:   2026-10-10 10:51:00 +0000 UTC\nMutable:      true\nReclaimable:  true\nShared:       false\nSize:         4.096kB\nDescription:  cached mount /c from exec /bin/sh -c ls -A /c with id \"//c\"\nUsage count:  3\nLast used:    3 minutes ago\nType:         exec.cachemount\n\n",
+      "error": "",
+      "asked": [
+        "type==exec.cachemount"
+      ]
+    },
+    {
+      "format": "",
+      "verbose": false,
+      "filters": null,
+      "records": [],
+      "stdout": "ID        RECLAIMABLE   SIZE      LAST ACCESSED\nReclaimable:\t0B\nTotal:\t\t0B\n",
+      "error": "",
+      "asked": null
+    },
+    {
+      "format": "",
+      "verbose": true,
+      "filters": null,
+      "records": [],
+      "stdout": "Reclaimable:\t0B\nTotal:\t\t0B\n",
+      "error": "",
+      "asked": null
+    },
+    {
+      "format": "json",
+      "verbose": false,
+      "filters": null,
+      "records": [],
+      "stdout": "",
+      "error": "",
+      "asked": null
+    },
+    {
+      "format": "",
+      "verbose": false,
+      "filters": null,
+      "records": [
+        1,
+        2,
+        4
+      ],
+      "stdout": "ID                           RECLAIMABLE   SIZE      LAST ACCESSED\nqit9yatvygfksd43cf1dtw5k5*   false         0B        \nrx92qyq0sh89maoiyvvf44kbe*   true          4.096kB   3 minutes ago\nv8cz0q2a8ectlvskuomzsvjfv*   true          1.049MB   2 hours ago\nReclaimable:\t1.053MB\nTotal:\t\t1.053MB\n",
+      "error": "",
+      "asked": null
+    },
+    {
+      "format": "json",
+      "verbose": true,
+      "filters": null,
+      "records": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ],
+      "stdout": "",
+      "error": "--format and --verbose cannot be used together",
+      "asked": null
+    },
+    {
+      "format": "pretty",
+      "verbose": true,
+      "filters": null,
+      "records": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ],
+      "stdout": "",
+      "error": "--format and --verbose cannot be used together",
+      "asked": null
+    },
+    {
+      "format": "",
+      "verbose": false,
+      "filters": [
+        "until=bogus"
+      ],
+      "records": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ],
+      "stdout": "",
+      "error": "\"until\" filter expects a duration (e.g., '24h'): time: invalid duration \"bogus\"",
+      "asked": null
+    },
+    {
+      "format": "",
+      "verbose": false,
+      "filters": [
+        "until=1h",
+        "unused-for=2h"
+      ],
+      "records": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ],
+      "stdout": "",
+      "error": "conflicting filters \"until\" and \"unused-for\"",
+      "asked": null
+    },
+    {
+      "format": "",
+      "verbose": false,
+      "filters": [
+        "unused-for=1h",
+        "unused-for=2h"
+      ],
+      "records": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ],
+      "stdout": "",
+      "error": "\"unused-for\" filter expects only one value",
+      "asked": null
+    },
+    {
+      "format": "",
+      "verbose": false,
+      "filters": [
+        "type=regular",
+        "type=source.local"
+      ],
+      "records": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ],
+      "stdout": "",
+      "error": "\"type\" filter expects only one value",
+      "asked": null
+    },
+    {
+      "format": "{{.Bogus}}",
+      "verbose": false,
+      "filters": null,
+      "records": [
+        0
+      ],
+      "stdout": "",
+      "error": "template parsing error: template: :1:2: executing \"\" at \u003c.Bogus\u003e: can't evaluate field Bogus in type *commands.diskusageContext",
+      "asked": null
+    },
+    {
+      "format": "table {{.Bogus}}",
+      "verbose": false,
+      "filters": null,
+      "records": [
+        0
+      ],
+      "stdout": "",
+      "error": "template parsing error: template: :1:2: executing \"\" at \u003c.Bogus\u003e: can't evaluate field Bogus in type *commands.diskusageContext",
+      "asked": null
+    },
+    {
+      "format": "{{.ID",
+      "verbose": false,
+      "filters": null,
+      "records": [
+        0
+      ],
+      "stdout": "",
+      "error": "template parsing error: template: :1: unclosed action",
+      "asked": null
+    }
+  ],
+  "records": [
+    {
+      "id": "kx8kqtz5xgo2ixlw9els774wk",
+      "parents": [
+        "qe221zojgn5tbnabgk7hcggrj"
+      ],
+      "created_at": "2026-10-10T10:50:52.283772793Z",
+      "mutable": false,
+      "in_use": false,
+      "shared": false,
+      "size": 12345678,
+      "description": "mount / from exec /bin/sh -c echo hi",
+      "usage_count": 1,
+      "last_used_ago": 90,
+      "type": "regular"
+    },
+    {
+      "id": "rx92qyq0sh89maoiyvvf44kbe",
+      "parents": null,
+      "created_at": "2026-10-10T10:51:00Z",
+      "mutable": true,
+      "in_use": false,
+      "shared": false,
+      "size": 4096,
+      "description": "cached mount /c from exec /bin/sh -c ls -A /c with id \"//c\"",
+      "usage_count": 3,
+      "last_used_ago": 180,
+      "type": "exec.cachemount"
+    },
+    {
+      "id": "v8cz0q2a8ectlvskuomzsvjfv",
+      "parents": null,
+      "created_at": "2026-10-09T23:59:59.5Z",
+      "mutable": true,
+      "in_use": false,
+      "shared": false,
+      "size": 1048576,
+      "description": "local source for context",
+      "usage_count": 2,
+      "last_used_ago": 7200,
+      "type": "source.local"
+    },
+    {
+      "id": "ugszqghmzn7ce8t1eqc5pvim8",
+      "parents": [
+        "w573g82hyxry17yity2rfiqxz",
+        "yobxdjeelt5ayncm49zbj2b6i"
+      ],
+      "created_at": "2026-09-01T00:00:00.000000001Z",
+      "mutable": false,
+      "in_use": false,
+      "shared": true,
+      "size": 5000000000,
+      "description": "",
+      "usage_count": 7,
+      "last_used_ago": 259200,
+      "type": "regular"
+    },
+    {
+      "id": "qit9yatvygfksd43cf1dtw5k5",
+      "parents": null,
+      "created_at": "2026-10-10T11:00:00Z",
+      "mutable": true,
+      "in_use": true,
+      "shared": false,
+      "size": 0,
+      "description": "",
+      "usage_count": 0,
+      "last_used_ago": null,
+      "type": "internal"
+    },
+    {
+      "id": "gglyeigvuwm9jfwnylxid6r5f",
+      "parents": null,
+      "created_at": "2026-01-02T03:04:05Z",
+      "mutable": false,
+      "in_use": false,
+      "shared": false,
+      "size": 999,
+      "description": "pulled from docker.io/library/alpine:3.22",
+      "usage_count": 12,
+      "last_used_ago": 3888000,
+      "type": "frontend"
+    }
+  ]
+}

@@ -1,0 +1,15 @@
+
+running 10 tests
+test check::reference_query_tests::dynamic_references_preserve_scalar_and_function_value_types ... ok
+test compile::graph::tests::each_ref_shape_names_the_rules_it_may_read ... ok
+test compile::graph::tests::edges_lead_to_rules_then_branches ... ok
+test compile::graph::tests::the_index_finds_what_a_scan_of_every_rule_finds ... ok
+test eval::tests::a_chain_of_bound_variables_plugs_on_a_small_stack ... ok
+test eval::tests::large_binding_sets_keep_lookups_and_undo_order ... ok
+test funcs::encoding::tests::yaml_nests_as_deep_as_go_yaml_on_a_small_stack ... ok
+test funcs::regex::tests::glob_fails_where_go_panics ... ok
+test index::tests::hashes_are_opas ... ok
+test stack::tests::a_thread_knows_how_much_stack_it_has_left ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.03s
+

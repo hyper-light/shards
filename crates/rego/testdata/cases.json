@@ -1,0 +1,3798 @@
+[
+ {
+  "name": "allow-constant",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := {\"allow\": true}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "default-allow",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndefault allow := false\n\nallow if input.x == 1\n\ndecision := {\"allow\": allow}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "x": 1
+  }
+ },
+ {
+  "name": "default-deny",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndefault allow := false\n\nallow if input.x == 1\n\ndecision := {\"allow\": allow}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "x": 2
+  }
+ },
+ {
+  "name": "no-input",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndefault allow := false\n\nallow if input.x == 1\n\ndecision := {\"allow\": allow}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "undefined-decision",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := {\"allow\": input.x == 1}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "partial-set",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndeny contains msg if {\n\tsome k, v in input.labels\n\tv == \"\"\n\tmsg := sprintf(\"label %s is empty\", [k])\n}\n\ndecision := {\"allow\": count(deny) == 0, \"deny_msg\": deny}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "labels": {
+    "a": "",
+    "b": "x",
+    "c": ""
+   }
+  }
+ },
+ {
+  "name": "partial-object",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nm[k] := v if {\n\tsome k, v in input\n\tv > 1\n}\n\ndecision := m\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "a": 1,
+   "b": 2,
+   "c": 3
+  }
+ },
+ {
+  "name": "function",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nf(x) := y if y := x * 2\n\ndecision := [f(1), f(2.5), f(-3)]\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "function-multi",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ng(x) := \"small\" if x < 10\n\ng(x) := \"big\" if x >= 10\n\ndecision := [g(1), g(11)]\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "else",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nh(x) := \"a\" if x == 1\n\nelse := \"b\" if x == 2\n\nelse := \"c\"\n\ndecision := [h(1), h(2), h(3)]\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "comprehensions",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := {\n\t\"arr\": [x | some x in [3, 1, 2]; x > 1],\n\t\"set\": {x | some x in [3, 1, 2, 3]},\n\t\"obj\": {k: v | some k, v in {\"a\": 1, \"b\": 2}},\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "every",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := {\"all\": all_pos, \"notall\": not_all}\n\nall_pos if every x in [1, 2, 3] { x > 0 }\n\ndefault not_all := false\n\nnot_all if every x in [1, -2] { x > 0 }\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "negation",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndefault ok := false\n\nok if not input.bad\n\ndecision := ok\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "bad": false
+  }
+ },
+ {
+  "name": "with",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nx := input.v\n\ndecision := [x, y]\n\ny := x with input.v as 7\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "v": 1
+  }
+ },
+ {
+  "name": "in-membership",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := [1 in [1, 2], \"a\" in {\"a\"}, 3 in {\"k\": 3}, \"k\", 3 in {\"k\": 3}]\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "template-string",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nname := \"world\"\n\ndecision := $\"hello {name}, {1 + 2}\"\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "print",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := x if {\n\tx := 1\n\tprint(\"x is\", x)\n\tprint(input.missing)\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "sprintf",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := [sprintf(\"%s-%d-%v\", [\"a\", 3, [1, \"b\"]]), sprintf(\"%.2f\", [3.14159]), sprintf(\"%x\", [255])]\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "strings",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := {\n\t\"lower\": lower(\"AbC\"),\n\t\"upper\": upper(\"abc\"),\n\t\"trim_prefix\": trim_prefix(\"refs/tags/v1\", \"refs/tags/\"),\n\t\"trim_suffix\": trim_suffix(\"a-labs\", \"-labs\"),\n\t\"split\": split(\"a/b/c\", \"/\"),\n\t\"concat\": concat(\",\", [\"a\", \"b\"]),\n\t\"contains\": contains(\"abc\", \"b\"),\n\t\"startswith\": startswith(\"abc\", \"ab\"),\n\t\"endswith\": endswith(\"abc\", \"bc\"),\n\t\"replace\": replace(\"aaa\", \"a\", \"b\"),\n\t\"substring\": substring(\"abcdef\", 1, 3),\n\t\"indexof\": indexof(\"abc\", \"c\"),\n\t\"trim_space\": trim_space(\"  x  \"),\n\t\"format_int\": format_int(255, 16),\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "regex",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := {\n\t\"match\": regex.match(`^v[0-9]+$`, \"v12\"),\n\t\"find\": regex.find_all_string_submatch_n(`^/([^/]+)/([^/]+)/releases/download/[^/]+/.+$`, \"/moby/buildkit/releases/download/v1/x.tgz\", 1),\n\t\"split\": regex.split(`[,;]`, \"a,b;c\"),\n\t\"replace\": regex.replace(\"a1b22\", `[0-9]+`, \"#\"),\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "numbers",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := {\n\t\"to_number\": [to_number(\"12\"), to_number(\"1.5\"), to_number(true)],\n\t\"div\": 7 / 2,\n\t\"rem\": 7 % 3,\n\t\"big\": 10000000000000000000000 + 1,\n\t\"float\": 0.1 + 0.2,\n\t\"round\": round(2.5),\n\t\"abs\": abs(-3),\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "collections",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := {\n\t\"count\": [count([1, 2]), count({\"a\": 1}), count(\"abc\")],\n\t\"sum\": sum([1, 2, 3]),\n\t\"max\": max({1, 5, 3}),\n\t\"sort\": sort([3, 1, 2]),\n\t\"union\": union({{1}, {2}}),\n\t\"concat_arr\": array.concat([1], [2]),\n\t\"slice\": array.slice([1, 2, 3, 4], 1, 3),\n\t\"flatten\": array.flatten([1, [2, [3]]]),\n\t\"object_get\": object.get({\"a\": {\"b\": 1}}, [\"a\", \"b\"], 0),\n\t\"keys\": object.keys({\"a\": 1, \"b\": 2}),\n\t\"remove\": object.remove({\"a\": 1, \"b\": 2}, [\"a\"]),\n\t\"union_obj\": object.union({\"a\": 1}, {\"b\": 2}),\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "sets-ops",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := {\n\t\"and\": {1, 2} & {2, 3},\n\t\"or\": {1} | {2},\n\t\"minus\": {1, 2} - {2},\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "types",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := [is_string(\"a\"), is_number(1), is_array([]), is_object({}), is_set(set()), is_boolean(true), is_null(null), type_name({})]\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "semver",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := [semver.is_valid(\"1.2.3\"), semver.is_valid(\"1.2\"), semver.compare(\"1.2.3\", \"1.10.0\")]\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "json",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := [json.marshal({\"b\": 1, \"a\": [1, 2]}), json.unmarshal(\"{\\\"x\\\": [1, 2]}\"), json.is_valid(\"{\")]\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "base64",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := [base64.encode(\"hi\"), base64.decode(\"aGk=\"), base64url.encode(\"??>\"), hex.encode(\"hi\")]\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "render-template",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := strings.render_template(\"{{.name}} is {{.age}}\", {\"name\": \"x\", \"age\": 3})\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "glob",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := [glob.match(\"*.example.com\", [\".\"], \"a.example.com\"), glob.match(\"*.example.com\", [\".\"], \"a.b.example.com\"), regex.globs_match(\"a.*\", \"a.b\")]\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "compare-mixed",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := sort([{\"a\": 1}, \"s\", 1, null, true, [1], {1}])\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "object-key-order",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := {\"z\": 1, \"a\": 2, \"m\": {\"y\": 1, \"b\": 2}}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "nested-refs",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := [input.a.b[0].c, input.a[\"b\"][0][\"c\"]]\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "a": {
+    "b": [
+     {
+      "c": "deep"
+     }
+    ]
+   }
+  }
+ },
+ {
+  "name": "unification",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := [x, y] if {\n\t[x, y] = [1, 2]\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "conflict",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := 1 if true\n\ndecision := 2 if true\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "undefined-function-error",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := nope(1)\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "parse-error",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := {\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "not-allowed-builtin",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := http.send({\"method\": \"get\", \"url\": \"https://example.com\"})\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "unsafe-var",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := x if {\n\ty := 1\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "import-builtin-module",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := {\"allow\": docker_github_builder_signature(input.sig, \"moby/buildkit\")}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "sig": {
+    "kind": "docker-github-builder",
+    "type": "bundle-v0.3",
+    "signer": {
+     "certificateIssuer": "CN=sigstore-intermediate,O=sigstore.dev",
+     "issuer": "https://token.actions.githubusercontent.com",
+     "sourceRepositoryURI": "https://github.com/moby/buildkit",
+     "runnerEnvironment": "github-hosted"
+    },
+    "timestamps": [
+     {
+      "type": "tlog"
+     }
+    ]
+   }
+  }
+ },
+ {
+  "name": "host-function",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndefault allow := false\n\nallow if pin_image(input.image, \"sha256:aa\")\n\ndecision := {\"allow\": allow}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "image": {
+    "ref": "alpine"
+   }
+  },
+  "host": {
+   "pin_image": {
+    "[{\"ref\":\"alpine\"},\"sha256:aa\"]": true
+   }
+  }
+ },
+ {
+  "name": "host-undefined",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndefault allow := false\n\nallow if pin_image(input.image, \"sha256:bb\")\n\ndecision := {\"allow\": allow}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "image": {
+    "ref": "alpine"
+   }
+  }
+ },
+ {
+  "name": "partial-repo-only",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndefault allow := false\n\nallow if input.image.repo == \"alpine\"\n\ndecision := {\"allow\": allow}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "image": {
+    "repo": "alpine"
+   }
+  },
+  "unknowns": [
+   "input.image.labels",
+   "input.image.checksum",
+   "input.image.signatures",
+   "input.image.hasProvenance"
+  ]
+ },
+ {
+  "name": "partial-labels-default",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndefault allow := false\n\nallow if input.image.labels.foo == \"bar\"\n\ndecision := {\"allow\": allow}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "image": {
+    "repo": "alpine"
+   }
+  },
+  "unknowns": [
+   "input.image.labels",
+   "input.image.checksum",
+   "input.image.signatures",
+   "input.image.hasProvenance"
+  ]
+ },
+ {
+  "name": "partial-labels-inline",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := {\"allow\": input.image.labels.foo == \"bar\"}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "image": {
+    "repo": "alpine"
+   }
+  },
+  "unknowns": [
+   "input.image.labels",
+   "input.image.checksum",
+   "input.image.signatures",
+   "input.image.hasProvenance"
+  ]
+ },
+ {
+  "name": "partial-builtin-helper",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndefault allow := false\n\nallow if docker_github_builder(input.image, \"moby/buildkit\")\n\ndecision := {\"allow\": allow}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "image": {
+    "repo": "alpine"
+   }
+  },
+  "unknowns": [
+   "input.image.labels",
+   "input.image.checksum",
+   "input.image.signatures",
+   "input.image.hasProvenance"
+  ]
+ },
+ {
+  "name": "partial-deny-set",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndeny contains \"unsigned\" if count(input.image.signatures) == 0\n\ndecision := {\"allow\": count(deny) == 0, \"deny_msg\": deny}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "image": {
+    "repo": "alpine"
+   }
+  },
+  "unknowns": [
+   "input.image.labels",
+   "input.image.checksum",
+   "input.image.signatures",
+   "input.image.hasProvenance"
+  ]
+ },
+ {
+  "name": "partial-no-default",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nallow if input.image.checksum == \"sha256:aa\"\n\ndecision := {\"allow\": allow}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "image": {
+    "repo": "alpine"
+   }
+  },
+  "unknowns": [
+   "input.image.labels",
+   "input.image.checksum",
+   "input.image.signatures",
+   "input.image.hasProvenance"
+  ]
+ },
+ {
+  "name": "partial-function",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nsigned(img) if count(img.signatures) > 0\n\ndefault allow := false\n\nallow if signed(input.image)\n\ndecision := {\"allow\": allow}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "image": {
+    "repo": "alpine"
+   }
+  },
+  "unknowns": [
+   "input.image.labels",
+   "input.image.checksum",
+   "input.image.signatures",
+   "input.image.hasProvenance"
+  ]
+ },
+ {
+  "name": "partial-negation",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndefault allow := false\n\nallow if not input.image.hasProvenance\n\ndecision := {\"allow\": allow}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "image": {
+    "repo": "alpine"
+   }
+  },
+  "unknowns": [
+   "input.image.labels",
+   "input.image.checksum",
+   "input.image.signatures",
+   "input.image.hasProvenance"
+  ]
+ },
+ {
+  "name": "c-some-vars",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := [i, x] if {\n\tsome i, x\n\tx := input.a[i]\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "a": [
+    5
+   ]
+  }
+ },
+ {
+  "name": "c-some-in-key",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := {k | some k, _ in input}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "a": 1,
+   "b": 2
+  }
+ },
+ {
+  "name": "c-every-nested",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tevery x in input.a {\n\t\tevery y in x { y > 0 }\n\t}\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "a": [
+    [
+     1
+    ],
+    [
+     2,
+     3
+    ]
+   ]
+  }
+ },
+ {
+  "name": "c-nested-compr",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := [[y | some y in x] | some x in input.a]\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "a": [
+    [
+     1
+    ],
+    [
+     2,
+     3
+    ]
+   ]
+  }
+ },
+ {
+  "name": "c-with-input",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nx := input.v\n\ndecision := y if {\n\ty := x with input.v as 7\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "v": 1
+  }
+ },
+ {
+  "name": "c-with-data",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nx := 1\n\ny := x\n\ndecision := z if {\n\tz := y with data.docker.x as 2\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "c-with-builtin",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := x if {\n\tx := count([1, 2]) with count as 9\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "c-with-function",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nf(x) := x\n\ng(x) := 2 * x\n\ndecision := y if {\n\ty := f(3) with f as g\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "c-with-bad-target",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := x if {\n\tx := 1 with foo as 2\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "c-with-partial",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\na.b := 1\n\ndecision := x if {\n\tx := a.b with data.docker.a.b.c as 2\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "c-with-eq",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := x if {\n\tx := 1 with eq as 2\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "c-with-internal",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := x if {\n\tx := 1 with internal.print as 2\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "c-else-chain",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nf(x) := \"a\" if x == 1\nelse := \"b\" if x == 2\nelse := \"c\"\n\ndecision := [f(1), f(2), f(3)]\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "c-ref-head-var",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\na.b[x] := y if {\n\tsome x, y in input\n}\n\ndecision := a\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "p": 1,
+   "q": 2
+  }
+ },
+ {
+  "name": "c-ref-head-nested",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\na.b.c[x].d := 1 if {\n\tsome x in [\"u\", \"v\"]\n}\n\ndecision := a\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "c-partial-object-multi",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nm[k] := v if {\n\tsome k, v in input.a\n}\n\nm[k] := v if {\n\tsome k, v in input.b\n}\n\ndecision := m\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "a": {
+    "x": 1
+   },
+   "b": {
+    "y": 2
+   }
+  }
+ },
+ {
+  "name": "c-multi-body",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\np if {\n\tinput.a\n} {\n\tinput.b\n}\n\ndecision := p\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "b": true
+  }
+ },
+ {
+  "name": "c-fn-object-args",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nf({\"a\": x}) := x\n\ndecision := f({\"a\": 7})\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "c-fn-array-args",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nf([x, y]) := x + y\n\ndecision := f([3, 4])\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "c-print-in-compr",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := [x | some x in [1, 2]; print(\"x\", x)]\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "c-print-every",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tevery x in [1] {\n\t\tprint(x)\n\t}\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "c-template-undeclared",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := $\"a {nope}\"\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "c-template-compr",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := [$\"v {x}\" | some x in [1, 2]]\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "c-assigned-above",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := x if {\n\tx := 1\n\tx := 2\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "c-referenced-above",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := x if {\n\ty := x\n\tx := 1\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "c-declared-unused",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tsome x\n\ttrue\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "c-cannot-assign",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\t1 := 2\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "c-assign-negated",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tnot x := 1\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "c-arity",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := count([1], [2])\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "c-fn-arity",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nf(x) := x\n\ndecision := f(1, 2, 3)\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "c-conflict-kinds",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\np := 1\n\np contains 2\n\ndecision := p\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "c-multiple-defaults",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndefault p := 1\n\ndefault p := 2\n\ndecision := p\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "c-conflict-child",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\na := 1\n\na.b := 2\n\ndecision := a\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "c-recursion",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\np if q\n\nq if p\n\ndecision := p\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "c-shadow-input",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tinput := 1\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "c-rule-named-input",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ninput := 1\n\ndecision := 1\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "c-unsafe-generated",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := y if {\n\ty := [x | x := z]\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "c-unsafe-in-compr",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := [1 | count(y) > 0]\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "c-unsafe-negation",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tnot x\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "c-type-error",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := count(1)\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "c-type-error-str",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := lower(1)\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "c-void-call",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := print(\"a\")\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "c-reorder",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := y if {\n\ty := x + 1\n\tx := 2\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "c-reorder-compr",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := z if {\n\tz := [w | w := q]\n\tq := 3\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "c-eq-rewrite",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tinput.a == 1\n\t1 == 1\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "a": 1
+  }
+ },
+ {
+  "name": "c-dynamic-terms",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := [input.a[input.i], {input.k: input.v}]\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "a": [
+    9
+   ],
+   "i": 0,
+   "k": "key",
+   "v": "val"
+  }
+ },
+ {
+  "name": "c-not-call",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tnot startswith(\"ab\", \"x\")\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "c-import-alias",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nimport input.image as img\n\ndecision := img.repo\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "image": {
+    "repo": "r"
+   }
+  }
+ },
+ {
+  "name": "c-import-data",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nimport data.docker.x\n\nx := 1\n\ndecision := x\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "c-dup-import",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nimport input.a\nimport input.b as a\n\ndecision := 1\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "c-set-ops-compr",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := {x | some x in input.a} | {y | some y in input.b}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "a": [
+    1
+   ],
+   "b": [
+    2
+   ]
+  }
+ },
+ {
+  "name": "c-obj-compr-ref",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := {k: input[k] | some k, _ in input}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "a": 1
+  }
+ },
+ {
+  "name": "c-head-ref-var-key",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndeny contains msg if {\n\tsome m in input\n\tmsg := sprintf(\"%v\", [m])\n}\n\ndecision := deny\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": [
+   "a"
+  ]
+ },
+ {
+  "name": "c-default-fn-call",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndefault f(_) := 0\n\nf(x) := 1 if x > 5\n\ndecision := [f(1), f(9)]\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "c-wildcards",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := [x | [x, _] := [1, 2]]\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "c-call-in-ref",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := split(\"a.b\", \".\")[1]\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "c-membership-with",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\t\"a\" in input.list with input.list as [\"a\"]\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "c-every-key",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tevery k, v in {\"a\": 1} { k == \"a\"; v == 1 }\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "c-some-in-ref",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := [v | some v in input.a.b]\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "a": {
+    "b": [
+     1
+    ]
+   }
+  }
+ },
+ {
+  "name": "e-index-input",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\np if {\n\tprint(\"a\")\n\tinput.x == 1\n}\n\np if {\n\tprint(\"b\")\n\tinput.x == 2\n}\n\ndecision := p\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "x": 1
+  }
+ },
+ {
+  "name": "e-index-input-none",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\np if {\n\tprint(\"a\")\n\tinput.x == 1\n}\n\np if {\n\tprint(\"b\")\n\tinput.x == 2\n}\n\ndefault p := false\n\ndecision := p\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "x": 3
+  }
+ },
+ {
+  "name": "e-index-missing",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\np if {\n\tprint(\"a\")\n\tinput.x == 1\n}\n\ndefault p := false\n\ndecision := p\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {}
+ },
+ {
+  "name": "e-early-exit",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\np if print(\"1\")\n\np if print(\"2\")\n\ndecision := p\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "e-no-early-exit",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\np := 1 if print(\"1\")\n\np := 1 if print(\"2\")\n\ndecision := p\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "e-cache-complete",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nq := 1 if print(\"q\")\n\ndecision := [q, q]\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "e-cache-function",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nf(x) := x if print(\"f\", x)\n\ndecision := [f(1), f(1), f(2)]\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "e-partial-set-key",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndeny contains m if {\n\tsome m in [\"a\", \"b\"]\n\tprint(\"deny\", m)\n}\n\ndecision := deny[\"a\"]\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "e-partial-set-full",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndeny contains m if {\n\tsome m in [\"a\", \"b\"]\n\tprint(\"deny\", m)\n}\n\ndecision := [deny[\"a\"], count(deny)]\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "e-partial-obj-key",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nm[k] := v if {\n\tsome k, v in {\"a\": 1, \"b\": 2}\n\tprint(\"m\", k)\n}\n\ndecision := m.a\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "e-else-print",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nf(x) := 1 if {\n\tprint(\"one\")\n\tx == 1\n} else := 2 if {\n\tprint(\"two\")\n\tx == 2\n} else := 3\n\ndecision := [f(1), f(2), f(5)]\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "e-not-print",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tnot q\n}\n\nq if {\n\tprint(\"q\")\n\tfalse\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "e-every-print",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tevery x in [1, 2, 3] {\n\t\tprint(\"x\", x)\n\t\tx < 3\n\t}\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "e-compr-index",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := [r | some y in [1, 2, 1]; r := [x | some x in input.a; print(\"c\", x); x == y]]\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "a": [
+    1,
+    2,
+    3
+   ]
+  }
+ },
+ {
+  "name": "e-some-iter-print",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := [x | some x in input.a; print(\"v\", x)]\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "a": [
+    3,
+    1,
+    2
+   ]
+  }
+ },
+ {
+  "name": "e-obj-iter-print",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := {k | some k, _ in input; print(\"k\", k)}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "b": 1,
+   "a": 2,
+   "c": 3
+  }
+ },
+ {
+  "name": "e-index-fn-arg",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nf(x) := \"one\" if {\n\tprint(\"f1\")\n\tx == 1\n}\n\nf(x) := \"two\" if {\n\tprint(\"f2\")\n\tx == 2\n}\n\ndecision := f(2)\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "e-glob-index",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\np if {\n\tprint(\"a\")\n\tglob.match(\"a.*\", [\".\"], input.s)\n}\n\np if {\n\tprint(\"b\")\n\tglob.match(\"b.*\", [\".\"], input.s)\n}\n\ndecision := p\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "s": "a.x"
+  }
+ },
+ {
+  "name": "e-conflict",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\np := 1 if true\n\np := 2 if input.x\n\ndecision := p\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "x": true
+  }
+ },
+ {
+  "name": "e-obj-conflict",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nm[\"a\"] := 1 if true\n\nm[\"a\"] := 2 if true\n\ndecision := m\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "e-fn-conflict",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nf(x) := 1 if true\n\nf(x) := 2 if true\n\ndecision := f(1)\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "e-builtin-error",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := x if {\n\tprint(\"before\")\n\tx := to_number(\"abc\")\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "e-undefined-index",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := input.a[5]\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "a": [
+    1
+   ]
+  }
+ },
+ {
+  "name": "e-ref-iter-data",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nr := {\"a\": 1, \"b\": 2}\n\ndecision := [k | some k; r[k] > 0; print(\"r\", k)]\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "e-multi-print-cross",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if print({x | some x in [1, 2]}, [3])\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "e-with-cache",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nq := input.v if print(\"q\", input.v)\n\ndecision := [q, x] if {\n\tx := q with input.v as 9\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "v": 1
+  }
+ },
+ {
+  "name": "e-default-fn",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndefault f(_) := \"d\"\n\nf(x) := \"one\" if {\n\tprint(\"f\")\n\tx == 1\n}\n\ndecision := [f(1), f(2)]\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "e-rule-ref-head",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\na.b[x] := y if {\n\tsome x, y in {\"p\": 1, \"q\": 2}\n\tprint(\"ab\", x)\n}\n\ndecision := a.b.q\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "pe-not-label",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndefault allow := false\n\nallow if not input.image.labels[\"org.opencontainers.image.source\"]\n\ndecision := {\"allow\": allow}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "image": {
+    "ref": "docker.io/library/alpine:3.20",
+    "host": "docker.io",
+    "repo": "alpine",
+    "fullRepo": "docker.io/library/alpine",
+    "tag": "3.20",
+    "platform": "linux/arm64",
+    "os": "linux",
+    "architecture": "arm64"
+   }
+  },
+  "unknowns": [
+   "input.image.checksum",
+   "input.image.labels",
+   "input.image.user",
+   "input.image.volumes",
+   "input.image.workingDir",
+   "input.image.env",
+   "input.image.hasProvenance",
+   "input.image.provenance",
+   "input.image.signatures"
+  ]
+ },
+ {
+  "name": "pe-not-call-support",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndefault allow := false\n\nallow if not startswith(input.image.labels.src, \"https://github.com/\")\n\ndecision := {\"allow\": allow}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "image": {
+    "ref": "docker.io/library/alpine:3.20",
+    "host": "docker.io",
+    "repo": "alpine",
+    "fullRepo": "docker.io/library/alpine",
+    "tag": "3.20",
+    "platform": "linux/arm64",
+    "os": "linux",
+    "architecture": "arm64"
+   }
+  },
+  "unknowns": [
+   "input.image.checksum",
+   "input.image.labels",
+   "input.image.user",
+   "input.image.volumes",
+   "input.image.workingDir",
+   "input.image.env",
+   "input.image.hasProvenance",
+   "input.image.provenance",
+   "input.image.signatures"
+  ]
+ },
+ {
+  "name": "pe-compr-count",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndefault allow := false\n\nallow if count([s | some s in input.image.signatures; s.kind == \"x\"]) > 0\n\ndecision := {\"allow\": allow}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "image": {
+    "ref": "docker.io/library/alpine:3.20",
+    "host": "docker.io",
+    "repo": "alpine",
+    "fullRepo": "docker.io/library/alpine",
+    "tag": "3.20",
+    "platform": "linux/arm64",
+    "os": "linux",
+    "architecture": "arm64"
+   }
+  },
+  "unknowns": [
+   "input.image.checksum",
+   "input.image.labels",
+   "input.image.user",
+   "input.image.volumes",
+   "input.image.workingDir",
+   "input.image.env",
+   "input.image.hasProvenance",
+   "input.image.provenance",
+   "input.image.signatures"
+  ]
+ },
+ {
+  "name": "pe-every-sigs",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndefault allow := false\n\nallow if {\n\tevery s in input.image.signatures {\n\t\ts.type == \"bundle\"\n\t}\n}\n\ndecision := {\"allow\": allow}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "image": {
+    "ref": "docker.io/library/alpine:3.20",
+    "host": "docker.io",
+    "repo": "alpine",
+    "fullRepo": "docker.io/library/alpine",
+    "tag": "3.20",
+    "platform": "linux/arm64",
+    "os": "linux",
+    "architecture": "arm64"
+   }
+  },
+  "unknowns": [
+   "input.image.checksum",
+   "input.image.labels",
+   "input.image.user",
+   "input.image.volumes",
+   "input.image.workingDir",
+   "input.image.env",
+   "input.image.hasProvenance",
+   "input.image.provenance",
+   "input.image.signatures"
+  ]
+ },
+ {
+  "name": "pe-fn-default",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndefault f(_) := false\n\nf(x) if x.kind == \"a\"\n\ndefault allow := false\n\nallow if f(input.image.signatures[_])\n\ndecision := {\"allow\": allow}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "image": {
+    "ref": "docker.io/library/alpine:3.20",
+    "host": "docker.io",
+    "repo": "alpine",
+    "fullRepo": "docker.io/library/alpine",
+    "tag": "3.20",
+    "platform": "linux/arm64",
+    "os": "linux",
+    "architecture": "arm64"
+   }
+  },
+  "unknowns": [
+   "input.image.checksum",
+   "input.image.labels",
+   "input.image.user",
+   "input.image.volumes",
+   "input.image.workingDir",
+   "input.image.env",
+   "input.image.hasProvenance",
+   "input.image.provenance",
+   "input.image.signatures"
+  ]
+ },
+ {
+  "name": "pe-fn-default-true",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndefault ok(_) := true\n\nok(x) := false if x.kind == \"bad\"\n\ndefault allow := false\n\nallow if ok(input.image.signatures[0])\n\ndecision := {\"allow\": allow}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "image": {
+    "ref": "docker.io/library/alpine:3.20",
+    "host": "docker.io",
+    "repo": "alpine",
+    "fullRepo": "docker.io/library/alpine",
+    "tag": "3.20",
+    "platform": "linux/arm64",
+    "os": "linux",
+    "architecture": "arm64"
+   }
+  },
+  "unknowns": [
+   "input.image.checksum",
+   "input.image.labels",
+   "input.image.user",
+   "input.image.volumes",
+   "input.image.workingDir",
+   "input.image.env",
+   "input.image.hasProvenance",
+   "input.image.provenance",
+   "input.image.signatures"
+  ]
+ },
+ {
+  "name": "pe-else-chain",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nallow := true if input.image.checksum == \"sha256:aa\"\n\nelse := false if input.image.user == \"root\"\n\ndecision := {\"allow\": allow}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "image": {
+    "ref": "docker.io/library/alpine:3.20",
+    "host": "docker.io",
+    "repo": "alpine",
+    "fullRepo": "docker.io/library/alpine",
+    "tag": "3.20",
+    "platform": "linux/arm64",
+    "os": "linux",
+    "architecture": "arm64"
+   }
+  },
+  "unknowns": [
+   "input.image.checksum",
+   "input.image.labels",
+   "input.image.user",
+   "input.image.volumes",
+   "input.image.workingDir",
+   "input.image.env",
+   "input.image.hasProvenance",
+   "input.image.provenance",
+   "input.image.signatures"
+  ]
+ },
+ {
+  "name": "pe-partial-object",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nlabels[k] := v if {\n\tsome k, v in input.image.labels\n}\n\ndecision := {\"allow\": count(labels) > 0}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "image": {
+    "ref": "docker.io/library/alpine:3.20",
+    "host": "docker.io",
+    "repo": "alpine",
+    "fullRepo": "docker.io/library/alpine",
+    "tag": "3.20",
+    "platform": "linux/arm64",
+    "os": "linux",
+    "architecture": "arm64"
+   }
+  },
+  "unknowns": [
+   "input.image.checksum",
+   "input.image.labels",
+   "input.image.user",
+   "input.image.volumes",
+   "input.image.workingDir",
+   "input.image.env",
+   "input.image.hasProvenance",
+   "input.image.provenance",
+   "input.image.signatures"
+  ]
+ },
+ {
+  "name": "pe-git-tag",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndefault allow := false\n\nallow if input.git.tagName == \"v1\"\n\ndecision := {\"allow\": allow}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "git": {
+    "schema": "https",
+    "remote": "https://github.com/moby/buildkit.git",
+    "host": "github.com"
+   }
+  },
+  "unknowns": [
+   "input.git.tagName",
+   "input.git.branch",
+   "input.git.ref",
+   "input.git.checksum",
+   "input.git.isAnnotatedTag",
+   "input.git.commitChecksum",
+   "input.git.isSHA256",
+   "input.git.tag",
+   "input.git.commit"
+  ]
+ },
+ {
+  "name": "pe-git-sig",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndefault allow := false\n\nallow if verify_git_signature(input.git.commit, \"key.pub\")\n\ndecision := {\"allow\": allow}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "git": {
+    "schema": "https",
+    "remote": "https://github.com/moby/buildkit.git",
+    "host": "github.com"
+   }
+  },
+  "unknowns": [
+   "input.git.tagName",
+   "input.git.branch",
+   "input.git.ref",
+   "input.git.checksum",
+   "input.git.isAnnotatedTag",
+   "input.git.commitChecksum",
+   "input.git.isSHA256",
+   "input.git.tag",
+   "input.git.commit"
+  ]
+ },
+ {
+  "name": "pe-git-remote-known",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndefault allow := false\n\nallow if {\n\tinput.git.host == \"github.com\"\n\tinput.git.branch == \"main\"\n}\n\ndecision := {\"allow\": allow}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "git": {
+    "schema": "https",
+    "remote": "https://github.com/moby/buildkit.git",
+    "host": "github.com"
+   }
+  },
+  "unknowns": [
+   "input.git.tagName",
+   "input.git.branch",
+   "input.git.ref",
+   "input.git.checksum",
+   "input.git.isAnnotatedTag",
+   "input.git.commitChecksum",
+   "input.git.isSHA256",
+   "input.git.tag",
+   "input.git.commit"
+  ]
+ },
+ {
+  "name": "pe-http-checksum",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndefault allow := false\n\nallow if input.http.checksum == \"sha256:00\"\n\ndecision := {\"allow\": allow}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "http": {
+    "url": "https://example.com/a.tgz",
+    "schema": "https",
+    "host": "example.com",
+    "path": "/a.tgz"
+   }
+  },
+  "unknowns": [
+   "input.http.checksum"
+  ]
+ },
+ {
+  "name": "pe-with-input",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndefault allow := false\n\nroot if input.image.user == \"root\"\n\nallow if not root with input.image.user as \"nobody\"\n\ndecision := {\"allow\": allow}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "image": {
+    "ref": "docker.io/library/alpine:3.20",
+    "host": "docker.io",
+    "repo": "alpine",
+    "fullRepo": "docker.io/library/alpine",
+    "tag": "3.20",
+    "platform": "linux/arm64",
+    "os": "linux",
+    "architecture": "arm64"
+   }
+  },
+  "unknowns": [
+   "input.image.checksum",
+   "input.image.labels",
+   "input.image.user",
+   "input.image.volumes",
+   "input.image.workingDir",
+   "input.image.env",
+   "input.image.hasProvenance",
+   "input.image.provenance",
+   "input.image.signatures"
+  ]
+ },
+ {
+  "name": "pe-print-unknown",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndefault allow := false\n\nallow if {\n\tprint(\"labels\", input.image.labels)\n\tinput.image.labels.a == \"b\"\n}\n\ndecision := {\"allow\": allow}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "image": {
+    "ref": "docker.io/library/alpine:3.20",
+    "host": "docker.io",
+    "repo": "alpine",
+    "fullRepo": "docker.io/library/alpine",
+    "tag": "3.20",
+    "platform": "linux/arm64",
+    "os": "linux",
+    "architecture": "arm64"
+   }
+  },
+  "unknowns": [
+   "input.image.checksum",
+   "input.image.labels",
+   "input.image.user",
+   "input.image.volumes",
+   "input.image.workingDir",
+   "input.image.env",
+   "input.image.hasProvenance",
+   "input.image.provenance",
+   "input.image.signatures"
+  ]
+ },
+ {
+  "name": "pe-deny-msgs",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndefault allow := false\n\nallow if count(deny) == 0\n\ndeny contains \"no provenance\" if not input.image.hasProvenance\n\ndeny contains msg if {\n\tinput.image.user == \"root\"\n\tmsg := \"runs as root\"\n}\n\ndecision := {\"allow\": allow, \"deny_msg\": deny}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "image": {
+    "ref": "docker.io/library/alpine:3.20",
+    "host": "docker.io",
+    "repo": "alpine",
+    "fullRepo": "docker.io/library/alpine",
+    "tag": "3.20",
+    "platform": "linux/arm64",
+    "os": "linux",
+    "architecture": "arm64"
+   }
+  },
+  "unknowns": [
+   "input.image.checksum",
+   "input.image.labels",
+   "input.image.user",
+   "input.image.volumes",
+   "input.image.workingDir",
+   "input.image.env",
+   "input.image.hasProvenance",
+   "input.image.provenance",
+   "input.image.signatures"
+  ]
+ },
+ {
+  "name": "pe-nested-rules",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndefault allow := false\n\ntrusted if input.image.repo == \"alpine\"\n\nsigned if count(input.image.signatures) > 0\n\nallow if {\n\ttrusted\n\tsigned\n}\n\ndecision := {\"allow\": allow}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "image": {
+    "ref": "docker.io/library/alpine:3.20",
+    "host": "docker.io",
+    "repo": "alpine",
+    "fullRepo": "docker.io/library/alpine",
+    "tag": "3.20",
+    "platform": "linux/arm64",
+    "os": "linux",
+    "architecture": "arm64"
+   }
+  },
+  "unknowns": [
+   "input.image.checksum",
+   "input.image.labels",
+   "input.image.user",
+   "input.image.volumes",
+   "input.image.workingDir",
+   "input.image.env",
+   "input.image.hasProvenance",
+   "input.image.provenance",
+   "input.image.signatures"
+  ]
+ },
+ {
+  "name": "pe-object-get",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndefault allow := false\n\nallow if object.get(input.image.labels, \"a\", \"\") == \"b\"\n\ndecision := {\"allow\": allow}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "image": {
+    "ref": "docker.io/library/alpine:3.20",
+    "host": "docker.io",
+    "repo": "alpine",
+    "fullRepo": "docker.io/library/alpine",
+    "tag": "3.20",
+    "platform": "linux/arm64",
+    "os": "linux",
+    "architecture": "arm64"
+   }
+  },
+  "unknowns": [
+   "input.image.checksum",
+   "input.image.labels",
+   "input.image.user",
+   "input.image.volumes",
+   "input.image.workingDir",
+   "input.image.env",
+   "input.image.hasProvenance",
+   "input.image.provenance",
+   "input.image.signatures"
+  ]
+ },
+ {
+  "name": "pe-some-in",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndefault allow := false\n\nallow if {\n\tsome s in input.image.signatures\n\ts.signer.issuer == \"https://token.actions.githubusercontent.com\"\n}\n\ndecision := {\"allow\": allow}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "image": {
+    "ref": "docker.io/library/alpine:3.20",
+    "host": "docker.io",
+    "repo": "alpine",
+    "fullRepo": "docker.io/library/alpine",
+    "tag": "3.20",
+    "platform": "linux/arm64",
+    "os": "linux",
+    "architecture": "arm64"
+   }
+  },
+  "unknowns": [
+   "input.image.checksum",
+   "input.image.labels",
+   "input.image.user",
+   "input.image.volumes",
+   "input.image.workingDir",
+   "input.image.env",
+   "input.image.hasProvenance",
+   "input.image.provenance",
+   "input.image.signatures"
+  ]
+ },
+ {
+  "name": "pe-known-and-unknown",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndefault allow := false\n\nallow if {\n\tinput.image.repo == \"alpine\"\n\tinput.image.labels.x == \"1\"\n}\n\ndecision := {\"allow\": allow}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "image": {
+    "ref": "docker.io/library/alpine:3.20",
+    "host": "docker.io",
+    "repo": "alpine",
+    "fullRepo": "docker.io/library/alpine",
+    "tag": "3.20",
+    "platform": "linux/arm64",
+    "os": "linux",
+    "architecture": "arm64"
+   }
+  },
+  "unknowns": [
+   "input.image.checksum",
+   "input.image.labels",
+   "input.image.user",
+   "input.image.volumes",
+   "input.image.workingDir",
+   "input.image.env",
+   "input.image.hasProvenance",
+   "input.image.provenance",
+   "input.image.signatures"
+  ]
+ },
+ {
+  "name": "pe-known-false",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndefault allow := false\n\nallow if {\n\tinput.image.repo == \"busybox\"\n\tinput.image.labels.x == \"1\"\n}\n\ndecision := {\"allow\": allow}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "image": {
+    "ref": "docker.io/library/alpine:3.20",
+    "host": "docker.io",
+    "repo": "alpine",
+    "fullRepo": "docker.io/library/alpine",
+    "tag": "3.20",
+    "platform": "linux/arm64",
+    "os": "linux",
+    "architecture": "arm64"
+   }
+  },
+  "unknowns": [
+   "input.image.checksum",
+   "input.image.labels",
+   "input.image.user",
+   "input.image.volumes",
+   "input.image.workingDir",
+   "input.image.env",
+   "input.image.hasProvenance",
+   "input.image.provenance",
+   "input.image.signatures"
+  ]
+ },
+ {
+  "name": "pe-env-startswith",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndefault allow := false\n\nallow if {\n\tsome e in input.image.env\n\tstartswith(e, \"PATH=\")\n}\n\ndecision := {\"allow\": allow}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "image": {
+    "ref": "docker.io/library/alpine:3.20",
+    "host": "docker.io",
+    "repo": "alpine",
+    "fullRepo": "docker.io/library/alpine",
+    "tag": "3.20",
+    "platform": "linux/arm64",
+    "os": "linux",
+    "architecture": "arm64"
+   }
+  },
+  "unknowns": [
+   "input.image.checksum",
+   "input.image.labels",
+   "input.image.user",
+   "input.image.volumes",
+   "input.image.workingDir",
+   "input.image.env",
+   "input.image.hasProvenance",
+   "input.image.provenance",
+   "input.image.signatures"
+  ]
+ },
+ {
+  "name": "pe-default-decision",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndefault decision := {\"allow\": false}\n\ndecision := {\"allow\": true} if input.image.checksum == \"sha256:x\"\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "image": {
+    "ref": "docker.io/library/alpine:3.20",
+    "host": "docker.io",
+    "repo": "alpine",
+    "fullRepo": "docker.io/library/alpine",
+    "tag": "3.20",
+    "platform": "linux/arm64",
+    "os": "linux",
+    "architecture": "arm64"
+   }
+  },
+  "unknowns": [
+   "input.image.checksum",
+   "input.image.labels",
+   "input.image.user",
+   "input.image.volumes",
+   "input.image.workingDir",
+   "input.image.env",
+   "input.image.hasProvenance",
+   "input.image.provenance",
+   "input.image.signatures"
+  ]
+ },
+ {
+  "name": "pe-volumes-set",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndefault allow := false\n\nallow if {x | some x in input.image.volumes} == set()\n\ndecision := {\"allow\": allow}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "image": {
+    "ref": "docker.io/library/alpine:3.20",
+    "host": "docker.io",
+    "repo": "alpine",
+    "fullRepo": "docker.io/library/alpine",
+    "tag": "3.20",
+    "platform": "linux/arm64",
+    "os": "linux",
+    "architecture": "arm64"
+   }
+  },
+  "unknowns": [
+   "input.image.checksum",
+   "input.image.labels",
+   "input.image.user",
+   "input.image.volumes",
+   "input.image.workingDir",
+   "input.image.env",
+   "input.image.hasProvenance",
+   "input.image.provenance",
+   "input.image.signatures"
+  ]
+ },
+ {
+  "name": "pe-materials",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndefault allow := false\n\nallow if input.image.provenance.materials[0].image.labels.foo == \"bar\"\n\ndecision := {\"allow\": allow}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "image": {
+    "ref": "docker.io/library/alpine:3.20",
+    "host": "docker.io",
+    "repo": "alpine",
+    "fullRepo": "docker.io/library/alpine",
+    "tag": "3.20",
+    "platform": "linux/arm64",
+    "os": "linux",
+    "architecture": "arm64",
+    "provenance": {
+     "materials": [
+      {
+       "image": {
+        "repo": "golang"
+       }
+      }
+     ]
+    }
+   }
+  },
+  "unknowns": [
+   "input.image.checksum",
+   "input.image.labels",
+   "input.image.user",
+   "input.image.volumes",
+   "input.image.workingDir",
+   "input.image.env",
+   "input.image.hasProvenance",
+   "input.image.signatures",
+   "input.image.provenance.materials[0].image.labels"
+  ]
+ },
+ {
+  "name": "pe-deny-only",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndeny contains \"no provenance\" if not input.image.hasProvenance\n\ndecision := {\"allow\": count(deny) == 0}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "image": {
+    "ref": "docker.io/library/alpine:3.20",
+    "host": "docker.io",
+    "repo": "alpine",
+    "fullRepo": "docker.io/library/alpine",
+    "tag": "3.20",
+    "platform": "linux/arm64",
+    "os": "linux",
+    "architecture": "arm64"
+   }
+  },
+  "unknowns": [
+   "input.image.checksum",
+   "input.image.labels",
+   "input.image.user",
+   "input.image.volumes",
+   "input.image.workingDir",
+   "input.image.env",
+   "input.image.hasProvenance",
+   "input.image.provenance",
+   "input.image.signatures"
+  ]
+ },
+ {
+  "name": "pe-user-neq",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndefault allow := false\n\nallow if input.image.user != \"root\"\n\ndecision := {\"allow\": allow}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "image": {
+    "ref": "docker.io/library/alpine:3.20",
+    "host": "docker.io",
+    "repo": "alpine",
+    "fullRepo": "docker.io/library/alpine",
+    "tag": "3.20",
+    "platform": "linux/arm64",
+    "os": "linux",
+    "architecture": "arm64"
+   }
+  },
+  "unknowns": [
+   "input.image.checksum",
+   "input.image.labels",
+   "input.image.user",
+   "input.image.volumes",
+   "input.image.workingDir",
+   "input.image.env",
+   "input.image.hasProvenance",
+   "input.image.provenance",
+   "input.image.signatures"
+  ]
+ },
+ {
+  "name": "pe-two-rules",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndefault allow := false\n\nallow if input.image.workingDir == \"/app\"\n\nallow if input.image.user == \"nobody\"\n\ndecision := {\"allow\": allow}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "image": {
+    "ref": "docker.io/library/alpine:3.20",
+    "host": "docker.io",
+    "repo": "alpine",
+    "fullRepo": "docker.io/library/alpine",
+    "tag": "3.20",
+    "platform": "linux/arm64",
+    "os": "linux",
+    "architecture": "arm64"
+   }
+  },
+  "unknowns": [
+   "input.image.checksum",
+   "input.image.labels",
+   "input.image.user",
+   "input.image.volumes",
+   "input.image.workingDir",
+   "input.image.env",
+   "input.image.hasProvenance",
+   "input.image.provenance",
+   "input.image.signatures"
+  ]
+ },
+ {
+  "name": "pe-fn-no-default",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nis_ok(s) if s.kind == \"k\"\n\ndefault allow := false\n\nallow if {\n\tsome s in input.image.signatures\n\tis_ok(s)\n}\n\ndecision := {\"allow\": allow}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "image": {
+    "ref": "docker.io/library/alpine:3.20",
+    "host": "docker.io",
+    "repo": "alpine",
+    "fullRepo": "docker.io/library/alpine",
+    "tag": "3.20",
+    "platform": "linux/arm64",
+    "os": "linux",
+    "architecture": "arm64"
+   }
+  },
+  "unknowns": [
+   "input.image.checksum",
+   "input.image.labels",
+   "input.image.user",
+   "input.image.volumes",
+   "input.image.workingDir",
+   "input.image.env",
+   "input.image.hasProvenance",
+   "input.image.provenance",
+   "input.image.signatures"
+  ]
+ },
+ {
+  "name": "pe-not-rule",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndefault allow := false\n\ndenied if input.image.user == \"root\"\n\nallow if not denied\n\ndecision := {\"allow\": allow}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "image": {
+    "ref": "docker.io/library/alpine:3.20",
+    "host": "docker.io",
+    "repo": "alpine",
+    "fullRepo": "docker.io/library/alpine",
+    "tag": "3.20",
+    "platform": "linux/arm64",
+    "os": "linux",
+    "architecture": "arm64"
+   }
+  },
+  "unknowns": [
+   "input.image.checksum",
+   "input.image.labels",
+   "input.image.user",
+   "input.image.volumes",
+   "input.image.workingDir",
+   "input.image.env",
+   "input.image.hasProvenance",
+   "input.image.provenance",
+   "input.image.signatures"
+  ]
+ },
+ {
+  "name": "pe-github-builder-tag",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndefault allow := false\n\nallow if docker_github_builder_tag(input.image, \"moby/buildkit\", \"v0.20.0\")\n\ndecision := {\"allow\": allow}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "image": {
+    "ref": "docker.io/library/alpine:3.20",
+    "host": "docker.io",
+    "repo": "alpine",
+    "fullRepo": "docker.io/library/alpine",
+    "tag": "3.20",
+    "platform": "linux/arm64",
+    "os": "linux",
+    "architecture": "arm64"
+   }
+  },
+  "unknowns": [
+   "input.image.checksum",
+   "input.image.labels",
+   "input.image.user",
+   "input.image.volumes",
+   "input.image.workingDir",
+   "input.image.env",
+   "input.image.hasProvenance",
+   "input.image.provenance",
+   "input.image.signatures"
+  ]
+ },
+ {
+  "name": "pe-count-ge",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndefault allow := false\n\nallow if count(input.image.signatures) >= 1\n\ndecision := {\"allow\": allow}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "image": {
+    "ref": "docker.io/library/alpine:3.20",
+    "host": "docker.io",
+    "repo": "alpine",
+    "fullRepo": "docker.io/library/alpine",
+    "tag": "3.20",
+    "platform": "linux/arm64",
+    "os": "linux",
+    "architecture": "arm64"
+   }
+  },
+  "unknowns": [
+   "input.image.checksum",
+   "input.image.labels",
+   "input.image.user",
+   "input.image.volumes",
+   "input.image.workingDir",
+   "input.image.env",
+   "input.image.hasProvenance",
+   "input.image.provenance",
+   "input.image.signatures"
+  ]
+ },
+ {
+  "name": "pe-regex-tag",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndefault allow := false\n\nallow if regex.match(`^v[0-9]+`, input.git.tagName)\n\ndecision := {\"allow\": allow}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "git": {
+    "schema": "https",
+    "remote": "https://github.com/moby/buildkit.git",
+    "host": "github.com"
+   }
+  },
+  "unknowns": [
+   "input.git.tagName",
+   "input.git.branch",
+   "input.git.ref",
+   "input.git.checksum",
+   "input.git.isAnnotatedTag",
+   "input.git.commitChecksum",
+   "input.git.isSHA256",
+   "input.git.tag",
+   "input.git.commit"
+  ]
+ },
+ {
+  "name": "pe-sprintf",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndefault allow := false\n\nallow if sprintf(\"%s:%s\", [input.image.repo, input.image.user]) == \"alpine:root\"\n\ndecision := {\"allow\": allow}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "image": {
+    "ref": "docker.io/library/alpine:3.20",
+    "host": "docker.io",
+    "repo": "alpine",
+    "fullRepo": "docker.io/library/alpine",
+    "tag": "3.20",
+    "platform": "linux/arm64",
+    "os": "linux",
+    "architecture": "arm64"
+   }
+  },
+  "unknowns": [
+   "input.image.checksum",
+   "input.image.labels",
+   "input.image.user",
+   "input.image.volumes",
+   "input.image.workingDir",
+   "input.image.env",
+   "input.image.hasProvenance",
+   "input.image.provenance",
+   "input.image.signatures"
+  ]
+ },
+ {
+  "name": "pe-in-labels",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndefault allow := false\n\nallow if \"maintainer\" in object.keys(input.image.labels)\n\ndecision := {\"allow\": allow}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "image": {
+    "ref": "docker.io/library/alpine:3.20",
+    "host": "docker.io",
+    "repo": "alpine",
+    "fullRepo": "docker.io/library/alpine",
+    "tag": "3.20",
+    "platform": "linux/arm64",
+    "os": "linux",
+    "architecture": "arm64"
+   }
+  },
+  "unknowns": [
+   "input.image.checksum",
+   "input.image.labels",
+   "input.image.user",
+   "input.image.volumes",
+   "input.image.workingDir",
+   "input.image.env",
+   "input.image.hasProvenance",
+   "input.image.provenance",
+   "input.image.signatures"
+  ]
+ },
+ {
+  "name": "pe-array-compr-eq",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndefault allow := false\n\nallow if [e | some e in input.image.env; startswith(e, \"SECRET\")] == []\n\ndecision := {\"allow\": allow}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "image": {
+    "ref": "docker.io/library/alpine:3.20",
+    "host": "docker.io",
+    "repo": "alpine",
+    "fullRepo": "docker.io/library/alpine",
+    "tag": "3.20",
+    "platform": "linux/arm64",
+    "os": "linux",
+    "architecture": "arm64"
+   }
+  },
+  "unknowns": [
+   "input.image.checksum",
+   "input.image.labels",
+   "input.image.user",
+   "input.image.volumes",
+   "input.image.workingDir",
+   "input.image.env",
+   "input.image.hasProvenance",
+   "input.image.provenance",
+   "input.image.signatures"
+  ]
+ },
+ {
+  "name": "pe-object-compr",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndefault allow := false\n\nnames := {k: true | some k, _ in input.image.labels}\n\nallow if names.a\n\ndecision := {\"allow\": allow}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "image": {
+    "ref": "docker.io/library/alpine:3.20",
+    "host": "docker.io",
+    "repo": "alpine",
+    "fullRepo": "docker.io/library/alpine",
+    "tag": "3.20",
+    "platform": "linux/arm64",
+    "os": "linux",
+    "architecture": "arm64"
+   }
+  },
+  "unknowns": [
+   "input.image.checksum",
+   "input.image.labels",
+   "input.image.user",
+   "input.image.volumes",
+   "input.image.workingDir",
+   "input.image.env",
+   "input.image.hasProvenance",
+   "input.image.provenance",
+   "input.image.signatures"
+  ]
+ },
+ {
+  "name": "pe-now",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndefault allow := false\n\nallow if {\n\ttime.now_ns() > 0\n\tinput.image.user == \"root\"\n}\n\ndecision := {\"allow\": allow}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "image": {
+    "ref": "docker.io/library/alpine:3.20",
+    "host": "docker.io",
+    "repo": "alpine",
+    "fullRepo": "docker.io/library/alpine",
+    "tag": "3.20",
+    "platform": "linux/arm64",
+    "os": "linux",
+    "architecture": "arm64"
+   }
+  },
+  "unknowns": [
+   "input.image.checksum",
+   "input.image.labels",
+   "input.image.user",
+   "input.image.volumes",
+   "input.image.workingDir",
+   "input.image.env",
+   "input.image.hasProvenance",
+   "input.image.provenance",
+   "input.image.signatures"
+  ]
+ },
+ {
+  "name": "pe-with-fn",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndefault allow := false\n\nf(x) if x == \"root\"\n\ng(x) if x == \"nobody\"\n\nallow if f(input.image.user) with f as g\n\ndecision := {\"allow\": allow}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "image": {
+    "ref": "docker.io/library/alpine:3.20",
+    "host": "docker.io",
+    "repo": "alpine",
+    "fullRepo": "docker.io/library/alpine",
+    "tag": "3.20",
+    "platform": "linux/arm64",
+    "os": "linux",
+    "architecture": "arm64"
+   }
+  },
+  "unknowns": [
+   "input.image.checksum",
+   "input.image.labels",
+   "input.image.user",
+   "input.image.volumes",
+   "input.image.workingDir",
+   "input.image.env",
+   "input.image.hasProvenance",
+   "input.image.provenance",
+   "input.image.signatures"
+  ]
+ },
+ {
+  "name": "pe-fn-else",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nlevel(u) := \"admin\" if u == \"root\"\n\nelse := \"user\"\n\ndefault allow := false\n\nallow if level(input.image.user) == \"user\"\n\ndecision := {\"allow\": allow}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "image": {
+    "ref": "docker.io/library/alpine:3.20",
+    "host": "docker.io",
+    "repo": "alpine",
+    "fullRepo": "docker.io/library/alpine",
+    "tag": "3.20",
+    "platform": "linux/arm64",
+    "os": "linux",
+    "architecture": "arm64"
+   }
+  },
+  "unknowns": [
+   "input.image.checksum",
+   "input.image.labels",
+   "input.image.user",
+   "input.image.volumes",
+   "input.image.workingDir",
+   "input.image.env",
+   "input.image.hasProvenance",
+   "input.image.provenance",
+   "input.image.signatures"
+  ]
+ },
+ {
+  "name": "pe-multi-field",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndefault allow := false\n\nallow if input.image.checksum != \"\"\n\nreason := \"unsigned\" if count(input.image.signatures) == 0\n\ndecision := {\"allow\": allow, \"reason\": reason}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "image": {
+    "ref": "docker.io/library/alpine:3.20",
+    "host": "docker.io",
+    "repo": "alpine",
+    "fullRepo": "docker.io/library/alpine",
+    "tag": "3.20",
+    "platform": "linux/arm64",
+    "os": "linux",
+    "architecture": "arm64"
+   }
+  },
+  "unknowns": [
+   "input.image.checksum",
+   "input.image.labels",
+   "input.image.user",
+   "input.image.volumes",
+   "input.image.workingDir",
+   "input.image.env",
+   "input.image.hasProvenance",
+   "input.image.provenance",
+   "input.image.signatures"
+  ]
+ },
+ {
+  "name": "pe-set-member",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndefault allow := false\n\nallowed := {\"amd64\", \"arm64\"}\n\nallow if {\n\tallowed[input.image.architecture]\n\tinput.image.user != \"root\"\n}\n\ndecision := {\"allow\": allow}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "image": {
+    "ref": "docker.io/library/alpine:3.20",
+    "host": "docker.io",
+    "repo": "alpine",
+    "fullRepo": "docker.io/library/alpine",
+    "tag": "3.20",
+    "platform": "linux/arm64",
+    "os": "linux",
+    "architecture": "arm64"
+   }
+  },
+  "unknowns": [
+   "input.image.checksum",
+   "input.image.labels",
+   "input.image.user",
+   "input.image.volumes",
+   "input.image.workingDir",
+   "input.image.env",
+   "input.image.hasProvenance",
+   "input.image.provenance",
+   "input.image.signatures"
+  ]
+ },
+ {
+  "name": "pe-not-every",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndefault allow := false\n\nallow if {\n\tnot every s in input.image.signatures { s.type == \"bundle\" }\n}\n\ndecision := {\"allow\": allow}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "image": {
+    "ref": "docker.io/library/alpine:3.20",
+    "host": "docker.io",
+    "repo": "alpine",
+    "fullRepo": "docker.io/library/alpine",
+    "tag": "3.20",
+    "platform": "linux/arm64",
+    "os": "linux",
+    "architecture": "arm64"
+   }
+  },
+  "unknowns": [
+   "input.image.checksum",
+   "input.image.labels",
+   "input.image.user",
+   "input.image.volumes",
+   "input.image.workingDir",
+   "input.image.env",
+   "input.image.hasProvenance",
+   "input.image.provenance",
+   "input.image.signatures"
+  ]
+ },
+ {
+  "name": "pe-not-two-exprs",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndefault allow := false\n\nbad if {\n\tinput.image.user == \"root\"\n\tinput.image.workingDir == \"/\"\n}\n\nallow if not bad\n\ndecision := {\"allow\": allow}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "image": {
+    "ref": "docker.io/library/alpine:3.20",
+    "host": "docker.io",
+    "repo": "alpine",
+    "fullRepo": "docker.io/library/alpine",
+    "tag": "3.20",
+    "platform": "linux/arm64",
+    "os": "linux",
+    "architecture": "arm64"
+   }
+  },
+  "unknowns": [
+   "input.image.checksum",
+   "input.image.labels",
+   "input.image.user",
+   "input.image.volumes",
+   "input.image.workingDir",
+   "input.image.env",
+   "input.image.hasProvenance",
+   "input.image.provenance",
+   "input.image.signatures"
+  ]
+ },
+ {
+  "name": "pe-pin-image",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndefault allow := false\n\nallow if pin_image(input.image, \"sha256:aa\")\n\ndecision := {\"allow\": allow}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "image": {
+    "ref": "docker.io/library/alpine:3.20",
+    "host": "docker.io",
+    "repo": "alpine",
+    "fullRepo": "docker.io/library/alpine",
+    "tag": "3.20",
+    "platform": "linux/arm64",
+    "os": "linux",
+    "architecture": "arm64"
+   }
+  },
+  "unknowns": [
+   "input.image.checksum",
+   "input.image.labels",
+   "input.image.user",
+   "input.image.volumes",
+   "input.image.workingDir",
+   "input.image.env",
+   "input.image.hasProvenance",
+   "input.image.provenance",
+   "input.image.signatures"
+  ]
+ },
+ {
+  "name": "pe-no-unknown-touch",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndefault allow := false\n\nallow if input.image.repo == \"alpine\"\n\ndecision := {\"allow\": allow}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "image": {
+    "ref": "docker.io/library/alpine:3.20",
+    "host": "docker.io",
+    "repo": "alpine",
+    "fullRepo": "docker.io/library/alpine",
+    "tag": "3.20",
+    "platform": "linux/arm64",
+    "os": "linux",
+    "architecture": "arm64"
+   }
+  },
+  "unknowns": [
+   "input.image.checksum",
+   "input.image.labels",
+   "input.image.user",
+   "input.image.volumes",
+   "input.image.workingDir",
+   "input.image.env",
+   "input.image.hasProvenance",
+   "input.image.provenance",
+   "input.image.signatures"
+  ]
+ },
+ {
+  "name": "c-recursion-self",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\np if p\n\ndecision := p\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "c-recursion-else",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\np := 1 if input.x else := 2 if q\n\nq if p\n\ndecision := p\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "c-recursion-function",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nf(x) := y if y := f(x)\n\ndecision := f(1)\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "c-recursion-package",
+  "modules": [
+   [
+    "lib.rego",
+    "package lib\n\np if data.lib[_]\n"
+   ],
+   [
+    "policy.rego",
+    "package docker\n\ndecision := data.lib.p\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "c-recursion-modules",
+  "modules": [
+   [
+    "a.rego",
+    "package a\n\np if data.b.q\n"
+   ],
+   [
+    "b.rego",
+    "package b\n\nq if data.a.p\n"
+   ],
+   [
+    "policy.rego",
+    "package docker\n\ndecision := data.a.p\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "c-recursion-tail",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nx if p\n\np if q\n\nq if r\n\nr if p\n\ndecision := x\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "c-recursion-two-cycles",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\na if b\n\nb if a\n\nc if d\n\nd if c\n\ne if { a; c }\n\ndecision := e\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "c-recursion-ref-head",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\na.b[k] := 1 if { some k in [\"x\"]; data.docker.a.c }\n\na.c if data.docker.a.b.x\n\ndecision := a.c\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "c-recursion-ref-var",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\na.b[k] := 1 if { some k in [\"x\"]; data.docker.a[_] }\n\ndecision := a.b\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "c-recursion-none-deep",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nr0 := 0\n\nr1 := r0 + 1\n\nr2 := r1 + r0\n\nr3 := r2 + r1\n\nr4 := r3 + r2\n\ndecision := {\"allow\": r4 > 0, \"n\": r4}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "lv-every-shadowed",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tevery x in [1] { every x in [1] { true } }\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "lv-every-declared-later",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tevery a in [1] {\n\t\tevery b in [1] { b == a; z == 1 }\n\t\tz := 1\n\t}\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "lv-every-declared-later-deep",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tevery a in [1] {\n\t\tevery b in [1] {\n\t\t\tevery c in [1] { c == b; b == a; z == 1 }\n\t\t}\n\t\tz := 1\n\t}\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "lv-every-comprehension-again",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tevery x in [1] {\n\t\tevery y in [1] {\n\t\t\tcount([w | every z in [1] { z == y; y == x }; w := 1]) == 1\n\t\t}\n\t}\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "lv-every-sibling-declares",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tevery x in [1] {\n\t\tevery y in [1] { every z in [1] { z == y } }\n\t\tevery v in [1] { v == x }\n\t}\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "lv-with-input-some",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tsome input\n\ttrue with input as 1\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "lv-with-input-used",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tsome input\n\tinput = 1\n\ttrue with input as 2\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "lv-with-input-path",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tsome input\n\ttrue with input.a as 1\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "lv-function-shadowed-later",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nf(x) := x\n\ndecision if {\n\tevery a in [1] {\n\t\tevery b in [1] { f(b) == a }\n\t\tf := 1\n\t\tf == 1\n\t}\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "lv-every-object-set",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tevery x in [1] {\n\t\tevery y in [2] {\n\t\t\t{\"a\": x, \"b\": y} == {\"a\": 1, \"b\": 2}\n\t\t\t{x, y} == {1, 2}\n\t\t}\n\t}\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "lv-every-template",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tevery x in [1] {\n\t\tevery y in [2] { $\"{x}-{y}\" == \"1-2\" }\n\t}\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "lv-every-key-unused",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tevery k, v in [1] { v == 1 }\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "lv-some-unused",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tsome x\n\ttrue\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "lv-some-in-key",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tsome k, v in [\"a\"]\n\tv == \"a\"\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "lv-comprehension-some-unused",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := [1 | some x; true]\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "lv-every-own-domain",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tevery x in [[1]] {\n\t\tx == [1]\n\t\tevery y in y { y == 1 }\n\t}\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "lv-every-input-declared",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tevery input in [1] {\n\t\tinput == 1\n\t\ttrue with input as 2\n\t}\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "lv-every-with-nested",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tevery x in [1] {\n\t\tevery y in [1] { y == x with input as {} }\n\t}\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "lv-every-later-input",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tevery a in [1] {\n\t\tevery b in [1] { b == a; input == 1 }\n\t\tinput := 1\n\t}\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "lv-every-nested-assigned",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tevery a in [1] {\n\t\tevery b in [1] {\n\t\t\tevery c in [1] { c == b }\n\t\t\td := b\n\t\t\td == 1\n\t\t}\n\t\te := a\n\t\te == 1\n\t}\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "lv-every-some-in",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tevery a in [[1]] {\n\t\tsome v in a\n\t\tv == 1\n\t\tevery b in [1] { b == v }\n\t}\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "tpl-every-nested",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tevery a in [1] {\n\t\tevery b in [2] {\n\t\t\tevery c in [3] { $\"{a}{b}{c}\" == \"123\" }\n\t\t}\n\t}\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "tpl-every-undeclared",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tevery a in [1] { a == 1; every b in [1] { b == 1; $\"{b}{z.a}\" } }\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "tpl-every-undeclared-deep",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tevery a in [1] { a == 1; every b in [1] { b == 1; every c in [1] { c == 1; every d in [1] { d == 1; every e in [1] { e == 1; $\"{e}{z.a}\" } } } } }\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "tpl-every-undeclared-pair",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tevery a in [1] { a == 1; every b in [1] { b == 1; every c in [1] { c == 1; $\"{c}{z.a}\"; $\"{y[0]}\" } } }\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "tpl-comprehension-every",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tevery a in [1] {\n\t\tcount([s | s := $\"{a}\"]) == 1\n\t\tevery b in [2] { count([t | t := $\"{a}{b}\"]) == 1 }\n\t}\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "print-every-nested",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tevery a in [1] {\n\t\tprint(\"a\", a)\n\t\tevery b in [2] {\n\t\t\tprint(\"b\", a, b)\n\t\t\tevery c in [3] { print(\"c\", a, b, c) }\n\t\t}\n\t}\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "print-every-undeclared",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tevery a in [1] { a == 1; every b in [1] { b == 1; print(b, z) } }\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "print-every-undeclared-deep",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tevery a in [1] { a == 1; every b in [1] { b == 1; every c in [1] { c == 1; every d in [1] { d == 1; every e in [1] { e == 1; every f in [1] { f == 1; print(f, z) } } } } } }\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "print-every-undeclared-limit",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tevery a in [1] { a == 1; every b in [1] { b == 1; every c in [1] { c == 1; every d in [1] { d == 1; every e in [1] { e == 1; every f in [1] { f == 1; every g in [1] { g == 1; every h in [1] { h == 1; every i in [1] { i == 1; every j in [1] { j == 1; every k in [1] { k == 1; every l in [1] { l == 1; print(l, z) } } } } } } } } } } } }\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "print-comprehension-every",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tevery a in [1] {\n\t\tcount([s | s := a; print(s)]) == 1\n\t\tevery b in [2] { print(a, b) }\n\t}\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "print-and-template-deep",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tevery a in [1] { a == 1; every b in [1] { b == 1; every c in [1] { c == 1; every d in [1] { d == 1; every e in [1] { e == 1; every f in [1] { f == 1; print($\"{f}\"); f == 1 } } } } } }\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "safety-template-comprehension",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := [x | x := [y | y := $\"{q}\"]]\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "safety-template-later",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := [y | y := $\"{q}\"; q = 1]\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "safety-call-set-later",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := [y | count({q}, t); y = t; q = 1]\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "safety-call-set-every",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tcount({z}, n)\n\tevery y in [1] { y < n }\n\tz = 1\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "safety-call-set-unsafe",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := [y | count({q}, t); y = t]\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "safety-print-after-call",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tcount(input.a[i] + z, n)\n\tx = i\n\tprint(x)\n\tz = 1\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "a": [
+    1
+   ]
+  }
+ },
+ {
+  "name": "safety-print-after-call-unsafe",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tcount(input.a[i] + z, n)\n\tx = w\n\tprint(x)\n\tz = 1\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "a": [
+    1
+   ]
+  }
+ },
+ {
+  "name": "safety-every-after-call",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tsum([input.a[i], z], n)\n\tevery y in [1] { y == 1 }\n\tabs(i, m)\n\tz = 1\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "a": [
+    1
+   ]
+  }
+ },
+ {
+  "name": "compr-index-in-every",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tsome a in input.a\n\tevery b in input.a {\n\t\tc := [d | some d in input.a; d == b; print(\"d\", d)]\n\t\tcount(c) == 1\n\t}\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "a": [
+    1,
+    2,
+    3
+   ]
+  }
+ },
+ {
+  "name": "compr-index-in-nested-every",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tsome a in input.a\n\tevery b in input.a {\n\t\tevery e in [1] {\n\t\t\tc := [d | some d in input.a; d == b; print(\"d\", d, e)]\n\t\t\tcount(c) == 1\n\t\t}\n\t}\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "a": [
+    1,
+    2,
+    3
+   ]
+  }
+ },
+ {
+  "name": "compr-index-head",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := [[y | some y in input.a; y == x; print(\"y\", y)] | some x in input.a]\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "a": [
+    1,
+    2,
+    3
+   ]
+  }
+ },
+ {
+  "name": "compr-index-after-every",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tevery b in input.a { b > 0 }\n\tsome x in input.a\n\tc := [d | some d in input.a; d == x; print(\"d\", d)]\n\tcount(c) == 1\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "a": [
+    1,
+    2,
+    3
+   ]
+  }
+ },
+ {
+  "name": "lv-fast-alternating",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tevery x in [1] { x == 1; count([z | z := x; every x in [1] { x == 1; count([z | z := x; every x in [1] { x == 1; count([z | z := x; every x in [1] { x == 1; count([z | z := x; true]) == 1 }]) == 1 }]) == 1 }]) == 1 }\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "lv-fast-alternating-partial",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tevery x in input.image.labels { x == 1; count([z | z := x; every x in input.image.labels { x == 1; count([z | z := x; every x in input.image.labels { x == 1; count([z | z := x; true]) >= 0 }]) >= 0 }]) >= 0 }\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision",
+  "input": {
+   "image": {
+    "labels": [
+     1
+    ]
+   }
+  },
+  "unknowns": [
+   "input.image.labels"
+  ]
+ },
+ {
+  "name": "lv-fast-declared-after",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tevery x in [1] { x == 1; count([z | z := y; z == 1]) == 1; every x in [1] { x == 1; count([z | z := y; z == 1]) == 1; every x in [1] { x == 1; count([z | z := y; z == 1]) == 1; true; y := 1 }; y := 1 }; y := 1 }\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "lv-fast-keyed",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tevery k, x in [1] { k == 0; [z | z := x; every _, q in [k] { q == k; [w | w := q] }]; every k, x in [1] { k == 0; [z | z := x; every _, q in [k] { q == k; [w | w := q] }]; every k, x in [1] { k == 0; [z | z := x; every _, q in [k] { q == k; [w | w := q] }]; true } } }\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "lv-fast-domain",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tevery x in [y | y := 1] { x == 1; count([z | z := x; every q in {w | w := x} { q == x; every x in [y | y := 1] { x == 1; count([z | z := x; every q in {w | w := x} { q == x; every x in [y | y := 1] { x == 1; count([z | z := x; every q in {w | w := x} { q == x; true }]) == 1 } }]) == 1 } }]) == 1 }\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "lv-fast-with-template",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tevery x in [1] { count([z | z := $\"{x}\"; every q in input.xs { q == 1; every x in [1] { count([z | z := $\"{x}\"; every q in input.xs { q == 1; every x in [1] { count([z | z := $\"{x}\"; every q in input.xs { q == 1; true }]) == 1 with input as {\"xs\": [1]} } }]) == 1 with input as {\"xs\": [1]} } }]) == 1 with input as {\"xs\": [1]} }\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "lv-fast-type-error-renamed",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tevery x in [1] {\n\t\tcount([z | z := x; every q in [1] { count([w | w := q; q.a.b == 1]) == 1 }]) == 1\n\t}\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "lv-fast-shadowed-after",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision if {\n\tevery x in [1] {\n\t\tcount([z | z := x; every q in [1] { count([q]) == 1 }]) == 1\n\t\tcount := 1\n\t}\n}\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ },
+ {
+  "name": "lv-fast-rule-wrap",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nr0 := 1\n\nr1 := [r0]\n\nr2 := [r1]\n\nr3 := [r2]\n\nr4 := [r3]\n\nr5 := [r4]\n\nr6 := [r5]\n\nr7 := [r6]\n\nr8 := [r7]\n\nr9 := [r8]\n\nr10 := [r9]\n\nr11 := [r10]\n\nr12 := [r11]\n\nr13 := [r12]\n\nr14 := [r13]\n\nr15 := [r14]\n\nr16 := [r15]\n\nr17 := [r16]\n\nr18 := [r17]\n\nr19 := [r18]\n\nr20 := [r19]\n\nr21 := [r20]\n\nr22 := [r21]\n\nr23 := [r22]\n\nr24 := [r23]\n\nr25 := [r24]\n\nr26 := [r25]\n\nr27 := [r26]\n\nr28 := [r27]\n\nr29 := [r28]\n\nr30 := [r29]\n\nr31 := [r30]\n\nr32 := [r31]\n\nr33 := [r32]\n\nr34 := [r33]\n\nr35 := [r34]\n\nr36 := [r35]\n\nr37 := [r36]\n\nr38 := [r37]\n\nr39 := [r38]\n\nr40 := [r39]\n\nr41 := [r40]\n\nr42 := [r41]\n\nr43 := [r42]\n\nr44 := [r43]\n\nr45 := [r44]\n\nr46 := [r45]\n\nr47 := [r46]\n\nr48 := [r47]\n\nr49 := [r48]\n\nr50 := [r49]\n\nr51 := [r50]\n\nr52 := [r51]\n\nr53 := [r52]\n\nr54 := [r53]\n\nr55 := [r54]\n\nr56 := [r55]\n\nr57 := [r56]\n\nr58 := [r57]\n\nr59 := [r58]\n\nr60 := [r59]\n\ndecision := count(json.marshal(r60))\n"
+   ]
+  ],
+  "query": "data.docker.decision"
+ }
+]

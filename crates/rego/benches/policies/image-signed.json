@@ -1,0 +1,60 @@
+{
+  "env": {
+    "filename": "Dockerfile",
+    "target": "release",
+    "args": {"VERSION": "1.2.3", "GOFLAGS": "-trimpath"},
+    "labels": {"org.opencontainers.image.source": "https://github.com/my-org/app"},
+    "depth": 0
+  },
+  "image": {
+    "ref": "docker.io/moby/buildkit:v0.28.1",
+    "host": "docker.io",
+    "repo": "moby/buildkit",
+    "fullRepo": "docker.io/moby/buildkit",
+    "tag": "v0.28.1",
+    "platform": "linux/arm64",
+    "os": "linux",
+    "arch": "arm64",
+    "checksum": "sha256:a82d1ab899cda51aade6fe818d71e4b58c4079e047a0cf29dbb93b2b0465ea69",
+    "createdTime": "2026-03-25T13:41:00Z",
+    "labels": {
+      "org.opencontainers.image.source": "https://github.com/moby/buildkit",
+      "org.opencontainers.image.revision": "45b038cd0b2ec2d34013ce0f085522276f7ee0d8",
+      "org.opencontainers.image.version": "v0.28.1"
+    },
+    "env": ["PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", "BUILDKIT_SETUP_CGROUPV2_ROOT=1"],
+    "user": "root",
+    "volumes": ["/var/lib/buildkit"],
+    "workingDir": "/",
+    "hasProvenance": true,
+    "signatures": [
+      {
+        "kind": "docker-github-builder",
+        "type": "bundle-v0.3",
+        "timestamps": [
+          {"type": "Tlog", "uri": "https://rekor.sigstore.dev", "timestamp": "2026-03-25T13:41:32Z"},
+          {"type": "TimestampAuthority", "uri": "https://timestamp.sigstore.dev/api/v1/timestamp", "timestamp": "2026-03-25T13:41:32Z"}
+        ],
+        "signer": {
+          "certificateIssuer": "CN=sigstore-intermediate,O=sigstore.dev",
+          "subjectAlternativeName": "https://github.com/docker/github-builder/.github/workflows/bake.yml@refs/tags/v1",
+          "issuer": "https://token.actions.githubusercontent.com",
+          "buildSignerURI": "https://github.com/docker/github-builder/.github/workflows/bake.yml@refs/tags/v1",
+          "buildSignerDigest": "70313223e2665c3211b454b3fea6534624e78d64",
+          "runnerEnvironment": "github-hosted",
+          "sourceRepositoryURI": "https://github.com/moby/buildkit",
+          "sourceRepositoryDigest": "45b038cd0b2ec2d34013ce0f085522276f7ee0d8",
+          "sourceRepositoryRef": "refs/tags/v0.28.1",
+          "sourceRepositoryIdentifier": "92969352",
+          "sourceRepositoryOwnerURI": "https://github.com/moby",
+          "sourceRepositoryOwnerIdentifier": "27259197",
+          "buildConfigURI": "https://github.com/moby/buildkit/.github/workflows/buildkit.yml@refs/tags/v0.28.1",
+          "buildConfigDigest": "45b038cd0b2ec2d34013ce0f085522276f7ee0d8",
+          "buildTrigger": "push",
+          "runInvocationURI": "https://github.com/moby/buildkit/actions/runs/23542781772/attempts/1",
+          "sourceRepositoryVisibilityAtSigning": "public"
+        }
+      }
+    ]
+  }
+}

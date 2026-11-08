@@ -497,6 +497,47 @@ D26). On a runner with the same CPU as the entry above, the command fell from 81
 runner: 26–39 ms less for a pooled `alpine true` on 5 AMD runners (PM M33). The rest is
 mostly waiting on the outer hypervisor.
 
+## Build (`docs/research/measurements/build-context/bench.py`)
+
+`bench.py SHARDS_BIN WORKDIR FILES BYTES RUNS`
+
+Method:
+- Each context is `FROM alpine:3.22` and `COPY . /app` over FILES files of BYTES random
+  bytes, from a fixed seed, in directories of 100.
+- Each round runs `shards build -q` and `docker build --no-cache -q` once, alternating
+  which goes first, after one warm-up of each (base images pulled, caches warm). Docker
+  runs with `--no-cache` because shards has no build cache yet.
+- Wall time is spawn to exit; percentiles are nearest-rank.
+
+### Runs
+
+**2026-10-01, a clone per context file** · 7760035 · Apple M5 Max, macOS 26.4.1 · Docker
+29.3.1 (BuildKit v0.28.1, containerd image store) · load average 30–37 from other work
+
+| Context | n | shards p50 | p90 | p99 | max | Docker p50 | p90 | p99 | max |
+|---|---|---|---|---|---|---|---|---|---|
+| 10 × 1 KB | 20 | 52 ms | 93 ms | 97 ms | 97 ms | 313 ms | 339 ms | 357 ms | 357 ms |
+| 1,000 × 10 KB | 10 | 377 ms | 426 ms | 433 ms | 433 ms | 659 ms | 696 ms | 707 ms | 707 ms |
+| 10,000 × 10 KB | 10 | 2954 ms | 3472 ms | 4636 ms | 4636 ms | 3080 ms | 3287 ms | 3307 ms | 3307 ms |
+| 50,000 × 1 KB | 5 | **91047 ms** | 133750 ms | 133750 ms | 133750 ms | 6293 ms | 6697 ms | 6697 ms | 6697 ms |
+| 100 × 10 MB | 5 | 2481 ms | 2826 ms | 2826 ms | 2826 ms | 20165 ms | 21709 ms | 21709 ms | 21709 ms |
+
+Taking each file by its own clone cost more than it saved for small files: making, opening
+and removing 50,000 of them (PM M76).
+
+**2026-10-01, small files packed** · this revision · same host, OS and Docker · load
+average 32–35
+
+| Context | n | shards p50 | p90 | p99 | max | Docker p50 | p90 | p99 | max |
+|---|---|---|---|---|---|---|---|---|---|
+| 10,000 × 10 KB | 10 | **679 ms** | 801 ms | 1045 ms | 1045 ms | 3375 ms | 3488 ms | 3496 ms | 3496 ms |
+| 50,000 × 1 KB | 5 | **2305 ms** | 2987 ms | 2987 ms | 2987 ms | 4943 ms | 5354 ms | 5354 ms | 5354 ms |
+| 100 × 10 MB | 5 | **2251 ms** | 2960 ms | 2960 ms | 2960 ms | 19305 ms | 24613 ms | 24613 ms | 24613 ms |
+
+Files under 1 MiB go into one pack, larger ones are cloned. shards builds each context
+faster than Docker: 5.0× at 10,000 files, 2.1× at 50,000, 8.6× at 1 GB. The host was
+loaded throughout; a quiet host's numbers are not yet recorded.
+
 ## Firecracker (`crates/shards/benches/firecracker.rs`)
 
 `cargo bench -p shards --bench firecracker [-- --runs N --cpus N --memory MIB]` (Linux, KVM)
@@ -549,3 +590,97 @@ The runner's THP mode is `always`, so both VMMs' 2 MiB-aligned guest RAM could a
 huge pages. `MADV_HUGEPAGE` adds alignment by construction and, under `defrag=madvise`,
 direct compaction on fault. shards is 2.8% faster at p50 and 29% faster at p99. Peak RSS is
 unchanged. A same-runner A/B without the advice is still needed to attribute the gain.
+
+**2026-09-29, boots and restores** · fd7628d · GitHub `ubuntu-24.04` runner: AMD EPYC
+7763, Linux 6.17.0-1022-azure, KVM nested · Firecracker v1.17.0 · kernel
+vmlinux-6.18.48-x86_64 · n=30, 1 vCPU, 128 MiB · load 1.99 1.20 0.48, then 1.65 1.17 0.49
+
+| Phase | p50 | p90 | p99 | max |
+|---|---|---|---|---|
+| shards to_ready | 121626 µs | 125298 µs | 132115 µs | 132115 µs |
+| Firecracker to_ready | 123039 µs | 126631 µs | 129091 µs | 129091 µs |
+| **shards overhead** | **2.7 MiB** | **2.7 MiB** | **2.7 MiB** | **2.7 MiB** |
+| Firecracker overhead | 4.5 MiB | 4.5 MiB | 4.5 MiB | 4.5 MiB |
+| shards peak_rss | 60.7 MiB | 62.7 MiB | 62.7 MiB | 62.7 MiB |
+| Firecracker peak_rss | 60.5 MiB | 62.5 MiB | 62.5 MiB | 62.5 MiB |
+| shards to_beat (restore) | 18892 µs | 19623 µs | 22896 µs | 22896 µs |
+| **Firecracker to_beat (restore)** | **13945 µs** | **18833 µs** | **21980 µs** | **21980 µs** |
+| **shards overhead (restore)** | **2.7 MiB** | **2.7 MiB** | **2.8 MiB** | **2.8 MiB** |
+| Firecracker overhead (restore) | 6.8 MiB | 6.8 MiB | 6.8 MiB | 6.8 MiB |
+| **shards peak_rss (restore)** | **12.7 MiB** | **12.8 MiB** | **12.8 MiB** | **12.8 MiB** |
+| Firecracker peak_rss (restore) | 18.4 MiB | 18.4 MiB | 18.4 MiB | 18.4 MiB |
+
+The first restores against Firecracker's. A restored shards VM costs 60% less memory
+outside its guest's, and 31% less at its peak, but its guest runs again 4.9 ms later at
+the median, and about as soon at p90 and p99. Each VM process now runs `shards-vm`,
+whose overhead is back to 2.7 MiB from the 3.8 its predecessor, `shardsd`, cost (PM M34).
+`peak_rss` is each process's own `VmHWM` from here on: `ru_maxrss` counted the harness's
+peak on Linux (see Boot).
+
+These restores, like every restore comparison before the `beat` guest waited for the
+kernel's crypto self-tests, include the self-tests' remaining work in each guest, in
+amounts that depend on when each VMM took its snapshot (PM M38). They do not compare the
+VMMs' restores fairly.
+
+**2026-09-29, quiet guests** · 9fb77f5 · GitHub `ubuntu-24.04` runner: AMD EPYC 7763,
+Linux 6.17.0-1022-azure, KVM nested · Firecracker v1.17.0 · kernel vmlinux-6.18.48-x86_64
+· n=30, 1 vCPU, 128 MiB · load 2.02 1.21 0.49, then 1.73 1.19 0.49
+
+| Phase | p50 | p90 | p99 | max |
+|---|---|---|---|---|
+| shards to_ready | 122352 µs | 124801 µs | 126096 µs | 126096 µs |
+| Firecracker to_ready | 122943 µs | 126760 µs | 128179 µs | 128179 µs |
+| **shards overhead** | **2.7 MiB** | **2.7 MiB** | **2.7 MiB** | **2.7 MiB** |
+| Firecracker overhead | 4.5 MiB | 4.5 MiB | 4.5 MiB | 4.5 MiB |
+| shards peak_rss | 60.7 MiB | 62.7 MiB | 62.7 MiB | 62.7 MiB |
+| Firecracker peak_rss | 60.5 MiB | 62.5 MiB | 62.5 MiB | 62.5 MiB |
+| **shards to_beat (restore)** | **8951 µs** | **9159 µs** | **9757 µs** | **9757 µs** |
+| Firecracker to_beat (restore) | 12524 µs | 12734 µs | 18756 µs | 18756 µs |
+| **shards overhead (restore)** | **2.7 MiB** | **2.7 MiB** | **2.7 MiB** | **2.7 MiB** |
+| Firecracker overhead (restore) | 6.8 MiB | 6.8 MiB | 6.8 MiB | 6.8 MiB |
+| shards peak_rss (restore) | 20.8 MiB | 20.9 MiB | 20.9 MiB | 20.9 MiB |
+| **Firecracker peak_rss (restore)** | **16.5 MiB** | **16.5 MiB** | **16.5 MiB** | **16.5 MiB** |
+
+Both guests are now snapshotted once the kernel's crypto self-tests are done (PM M38),
+and shards writes each run of used pages with one write (PM M37). A restored shards
+guest beats again 3.6 ms sooner at the median, 29% less time, and 9.0 ms sooner at p99.
+Its VMM costs 60% less memory outside the guest's.
+
+Its peak RSS is 4.3 MiB higher than Firecracker's, and 8.1 MiB higher than at fd7628d
+(12.7 MiB), when snapshots were written a page per write. The difference is the process
+mapping more of the snapshot file's page cache. VMs restored from one snapshot share
+that page cache, but how much of the RSS is shared has not been measured.
+
+**2026-09-29, resident memory by kind** · c7a3edd · GitHub `ubuntu-24.04` runner: Intel
+Xeon Platinum 8573C, Linux 6.17.0-1022-azure, KVM nested · Firecracker v1.17.0 · kernel
+vmlinux-6.18.48-x86_64 · n=30, 1 vCPU, 128 MiB
+
+| Phase | p50 | p90 | p99 | max |
+|---|---|---|---|---|
+| shards to_ready | 75707 µs | 77155 µs | 79018 µs | 79018 µs |
+| Firecracker to_ready | 77339 µs | 81157 µs | 82951 µs | 82951 µs |
+| **shards overhead** | **2.8 MiB** | **2.8 MiB** | **2.8 MiB** | **2.8 MiB** |
+| Firecracker overhead | 4.5 MiB | 4.5 MiB | 4.5 MiB | 4.5 MiB |
+| shards peak_rss | 62.8 MiB | 62.8 MiB | 64.8 MiB | 64.8 MiB |
+| Firecracker peak_rss | 62.5 MiB | 62.5 MiB | 62.5 MiB | 62.5 MiB |
+| shards rss_anon | 60.2 MiB | 60.2 MiB | 62.2 MiB | 62.2 MiB |
+| Firecracker rss_anon | 60.2 MiB | 60.2 MiB | 60.2 MiB | 60.2 MiB |
+| shards rss_file | 2.6 MiB | 2.6 MiB | 2.6 MiB | 2.6 MiB |
+| Firecracker rss_file | 2.2 MiB | 2.2 MiB | 2.2 MiB | 2.2 MiB |
+| **shards to_beat (restore)** | **7377 µs** | **7832 µs** | **8359 µs** | **8359 µs** |
+| Firecracker to_beat (restore) | 9700 µs | 10248 µs | 13048 µs | 13048 µs |
+| **shards overhead (restore)** | **2.8 MiB** | **2.9 MiB** | **2.9 MiB** | **2.9 MiB** |
+| Firecracker overhead (restore) | 6.8 MiB | 6.8 MiB | 6.8 MiB | 6.8 MiB |
+| shards peak_rss (restore) | 21.2 MiB | 21.2 MiB | 21.2 MiB | 21.2 MiB |
+| **Firecracker peak_rss (restore)** | **16.4 MiB** | **16.4 MiB** | **16.4 MiB** | **16.4 MiB** |
+| **shards rss_anon (restore)** | **0.7 MiB** | **0.7 MiB** | **0.7 MiB** | **0.7 MiB** |
+| Firecracker rss_anon (restore) | 5.0 MiB | 5.0 MiB | 5.0 MiB | 5.0 MiB |
+| shards rss_file (restore) | 20.4 MiB | 20.5 MiB | 20.5 MiB | 20.5 MiB |
+| **Firecracker rss_file (restore)** | **11.4 MiB** | **11.4 MiB** | **11.4 MiB** | **11.4 MiB** |
+
+`rss_anon` and `rss_file` split the resident set as the guest beats. A restored shards
+VM's anonymous memory, its own, is 0.7 MiB against Firecracker's 5.0. The rest of its
+RSS is the snapshot file's page cache, 20.4 MiB against 11.4. Every VM restored from one
+snapshot maps that same page cache, so each more VM costs about 0.7 MiB and its page
+tables. On this Intel runner, the restored guest beats again 24% sooner at the median
+and 36% sooner at p99.

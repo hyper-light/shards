@@ -1,0 +1,965 @@
+host Adas-Mac-Studio.local; macOS 26.4; kernel 25.4.0; arm64; Apple M3 Ultra; shards 9f2520c2; memory 98304 MiB; cpus 32
+builds rust,npm,apt; rounds 5; home /Users/adalundhe/builder-pressure/home; bases each Dockerfiles own
+host t=1794096125.364 round=0 build=rust arm=free pid=42823 footprint=81992
+host t=1794096126.429 round=0 build=rust arm=free pid=42823 footprint=42600512
+host t=1794096127.492 round=0 build=rust arm=free pid=42823 footprint=46221376
+host t=1794096128.556 round=0 build=rust arm=free pid=42823 footprint=56772672
+host t=1794096129.631 round=0 build=rust arm=free pid=42823 footprint=58722368
+host t=1794096130.689 round=0 build=rust arm=free pid=42823 footprint=66373720
+host t=1794096131.753 round=0 build=rust arm=free pid=42823 footprint=66373720
+host t=1794096132.826 round=0 build=rust arm=free pid=42823 footprint=66373720
+host t=1794096133.901 round=0 build=rust arm=free pid=42823 footprint=75892824
+host t=1794096134.973 round=0 build=rust arm=free pid=42823 footprint=79579224
+host t=1794096136.046 round=0 build=rust arm=free pid=42823 footprint=85444720
+host t=1794096137.125 round=0 build=rust arm=free pid=42823 footprint=110774456
+host t=1794096138.203 round=0 build=rust arm=free pid=42823 footprint=137022080
+host t=1794096139.259 round=0 build=rust arm=free pid=42823 footprint=142346904
+host t=1794096140.334 round=0 build=rust arm=free pid=42823 footprint=239356760
+host t=1794096141.398 round=0 build=rust arm=free pid=42823 footprint=239356760
+build round=0 build=rust arm=free exit=0 s=17.3 budget=0 scope_anon_peak=0 scope_held_peak=0 scope_need_peak=0 held_cold=3645440 sync_s=0.9 writer_seen=0 writer_file_peak=0 writer_dirty_peak=0 steps=1:0.0,2:0.0,3:0.0,4:0.2,5:15.8,6:0.6
+host t=1794096143.733 round=0 build=npm arm=free pid=43449 footprint=33589360
+host t=1794096144.816 round=0 build=npm arm=free pid=43449 footprint=34113648
+host t=1794096145.883 round=0 build=npm arm=free pid=43449 footprint=45582448
+host t=1794096146.963 round=0 build=npm arm=free pid=43449 footprint=46237808
+host t=1794096148.037 round=0 build=npm arm=free pid=43449 footprint=56789104
+host t=1794096149.098 round=0 build=npm arm=free pid=43449 footprint=58607728
+host t=1794096150.176 round=0 build=npm arm=free pid=43449 footprint=59705456
+host t=1794096151.258 round=0 build=npm arm=free pid=43449 footprint=66390152
+host t=1794096152.329 round=0 build=npm arm=free pid=43449 footprint=66390152
+host t=1794096153.401 round=0 build=npm arm=free pid=43449 footprint=66390152
+host t=1794096154.465 round=0 build=npm arm=free pid=43449 footprint=66390152
+host t=1794096155.542 round=0 build=npm arm=free pid=43449 footprint=76892296
+host t=1794096156.578 round=0 build=npm arm=free pid=43449 footprint=85198984
+host t=1794096157.623 round=0 build=npm arm=free pid=43449 footprint=113117632
+host t=1794096158.675 round=0 build=npm arm=free pid=43449 footprint=211765840
+host t=1794096159.726 round=0 build=npm arm=free pid=43449 footprint=577899496
+host t=1794096160.795 round=0 build=npm arm=free pid=43449 footprint=463735832
+host t=1794096161.854 round=0 build=npm arm=free pid=43449 footprint=417582056
+host t=1794096162.898 round=0 build=npm arm=free pid=43449 footprint=417582056
+host t=1794096163.973 round=0 build=npm arm=free pid=43449 footprint=417614824
+build round=0 build=npm arm=free exit=0 s=21.7 budget=0 scope_anon_peak=0 scope_held_peak=0 scope_need_peak=0 held_cold=6189056 sync_s=0.8 writer_seen=0 writer_file_peak=0 writer_dirty_peak=0 steps=1:0.0,2:0.0,3:0.0,4:0.2,5:0.0,6:0.0,7:0.0,8:18.2,9:1.2
+host t=1794096166.059 round=0 build=apt arm=free pid=44300 footprint=34031680
+host t=1794096167.130 round=0 build=apt arm=free pid=44300 footprint=46139456
+host t=1794096168.208 round=0 build=apt arm=free pid=44300 footprint=57083968
+host t=1794096169.269 round=0 build=apt arm=free pid=44300 footprint=59590720
+host t=1794096170.341 round=0 build=apt arm=free pid=44300 footprint=66291800
+host t=1794096171.419 round=0 build=apt arm=free pid=44300 footprint=66291800
+host t=1794096172.495 round=0 build=apt arm=free pid=44300 footprint=66291800
+host t=1794096173.571 round=0 build=apt arm=free pid=44300 footprint=74369112
+host t=1794096174.646 round=0 build=apt arm=free pid=44300 footprint=77039704
+host t=1794096175.712 round=0 build=apt arm=free pid=44300 footprint=80644184
+host t=1794096176.756 round=0 build=apt arm=free pid=44300 footprint=90966152
+host t=1794096177.826 round=0 build=apt arm=free pid=44300 footprint=107186432
+host t=1794096178.903 round=0 build=apt arm=free pid=44300 footprint=114067760
+host t=1794096179.965 round=0 build=apt arm=free pid=44300 footprint=118933808
+host t=1794096181.010 round=0 build=apt arm=free pid=44300 footprint=299223536
+host t=1794096182.060 round=0 build=apt arm=free pid=44300 footprint=371313256
+host t=1794096183.119 round=0 build=apt arm=free pid=44300 footprint=518179552
+host t=1794096184.178 round=0 build=apt arm=free pid=44300 footprint=716753944
+host t=1794096185.239 round=0 build=apt arm=free pid=44300 footprint=967494944
+host t=1794096186.288 round=0 build=apt arm=free pid=44300 footprint=1091784184
+host t=1794096187.343 round=0 build=apt arm=free pid=44300 footprint=1114377720
+host t=1794096188.410 round=0 build=apt arm=free pid=44300 footprint=1063259664
+host t=1794096189.496 round=0 build=apt arm=free pid=44300 footprint=1063751184
+host t=1794096190.578 round=0 build=apt arm=free pid=44300 footprint=1064062480
+host t=1794096191.660 round=0 build=apt arm=free pid=44300 footprint=1136692824
+host t=1794096192.730 round=0 build=apt arm=free pid=44300 footprint=1176260208
+host t=1794096193.794 round=0 build=apt arm=free pid=44300 footprint=1219939952
+host t=1794096194.867 round=0 build=apt arm=free pid=44300 footprint=1235504752
+host t=1794096195.954 round=0 build=apt arm=free pid=44300 footprint=1235504752
+host t=1794096197.027 round=0 build=apt arm=free pid=44300 footprint=1007488504
+host t=1794096198.075 round=0 build=apt arm=free pid=44300 footprint=1007488504
+host t=1794096199.115 round=0 build=apt arm=free pid=44300 footprint=1007488504
+host t=1794096200.152 round=0 build=apt arm=free pid=44300 footprint=1007488504
+host t=1794096201.200 round=0 build=apt arm=free pid=44300 footprint=1007488504
+host t=1794096202.246 round=0 build=apt arm=free pid=44300 footprint=1007488504
+host t=1794096203.296 round=0 build=apt arm=free pid=44300 footprint=1007488504
+host t=1794096204.352 round=0 build=apt arm=free pid=44300 footprint=1007488504
+host t=1794096205.391 round=0 build=apt arm=free pid=44300 footprint=1007488504
+host t=1794096206.452 round=0 build=apt arm=free pid=44300 footprint=1007488504
+build round=0 build=apt arm=free exit=0 s=41.8 budget=0 scope_anon_peak=0 scope_held_peak=0 scope_need_peak=0 held_cold=126722048 sync_s=0.5 writer_seen=0 writer_file_peak=0 writer_dirty_peak=0 steps=1:0.0,2:0.0,3:0.0,4:0.1,5:12.5,6:20.2,7:1.4
+host t=1794096208.294 round=1 build=rust arm=free pid=45492 footprint=66275416
+host t=1794096209.366 round=1 build=rust arm=free pid=45492 footprint=78121048
+host t=1794096210.443 round=1 build=rust arm=free pid=45492 footprint=130845312
+host t=1794096211.509 round=1 build=rust arm=free pid=45492 footprint=136661632
+host t=1794096212.577 round=1 build=rust arm=free pid=45492 footprint=138414720
+host t=1794096213.649 round=1 build=rust arm=free pid=45492 footprint=239094544
+host t=1794096214.728 round=1 build=rust arm=free pid=45492 footprint=239094544
+build round=1 build=rust arm=free exit=0 s=8.0 budget=0 scope_anon_peak=0 scope_held_peak=0 scope_need_peak=0 held_cold=3657728 sync_s=0.3 writer_seen=0 writer_file_peak=0 writer_dirty_peak=0 steps=1:0.0,2:0.0,3:0.0,4:0.2,5:6.4,6:0.5
+host t=1794096216.771 round=1 build=rust arm=held pid=45671 footprint=33507416
+host t=1794096217.847 round=1 build=rust arm=held pid=45671 footprint=33507416
+host t=1794096218.912 round=1 build=rust arm=held pid=45671 footprint=34031704
+host t=1794096219.991 round=1 build=rust arm=held pid=45671 footprint=45500504
+host t=1794096221.071 round=1 build=rust arm=held pid=45671 footprint=45844568
+host t=1794096222.145 round=1 build=rust arm=held pid=45671 footprint=47876184
+host t=1794096223.226 round=1 build=rust arm=held pid=45671 footprint=56805464
+host t=1794096224.315 round=1 build=rust arm=held pid=45671 footprint=57788504
+host t=1794096225.401 round=1 build=rust arm=held pid=45671 footprint=58656856
+host t=1794096226.469 round=1 build=rust arm=held pid=45671 footprint=59377752
+host t=1794096227.537 round=1 build=rust arm=held pid=45671 footprint=66308208
+host t=1794096228.620 round=1 build=rust arm=held pid=45671 footprint=66308208
+host t=1794096229.682 round=1 build=rust arm=held pid=45671 footprint=66308208
+host t=1794096230.763 round=1 build=rust arm=held pid=45671 footprint=66308208
+host t=1794096231.842 round=1 build=rust arm=held pid=45671 footprint=66308208
+host t=1794096232.932 round=1 build=rust arm=held pid=45671 footprint=66291824
+host t=1794096234.010 round=1 build=rust arm=held pid=45671 footprint=66291824
+host t=1794096235.101 round=1 build=rust arm=held pid=45671 footprint=66291824
+host t=1794096236.180 round=1 build=rust arm=held pid=45671 footprint=66291824
+host t=1794096237.270 round=1 build=rust arm=held pid=45671 footprint=74369136
+host t=1794096238.338 round=1 build=rust arm=held pid=45671 footprint=76777584
+host t=1794096239.417 round=1 build=rust arm=held pid=45671 footprint=78465136
+host t=1794096240.479 round=1 build=rust arm=held pid=45671 footprint=84428912
+host t=1794096241.529 round=1 build=rust arm=held pid=45671 footprint=108267704
+host t=1794096242.591 round=1 build=rust arm=held pid=45671 footprint=130435664
+host t=1794096243.655 round=1 build=rust arm=held pid=45671 footprint=130615912
+give t=1794096244.063 round=1 build=rust arm=held answered_ms=392 freed=557056 unplugging=0
+host t=1794096244.730 round=1 build=rust arm=held pid=45671 footprint=132172416
+host t=1794096245.794 round=1 build=rust arm=held pid=45671 footprint=134449816
+give t=1794096245.795 round=1 build=rust arm=held answered_ms=113 freed=2625536 unplugging=0
+host t=1794096246.862 round=1 build=rust arm=held pid=45671 footprint=134892184
+give t=1794096247.879 round=1 build=rust arm=held answered_ms=189 freed=1163264 unplugging=0
+host t=1794096247.926 round=1 build=rust arm=held pid=45671 footprint=135154328
+host t=1794096249.001 round=1 build=rust arm=held pid=45671 footprint=135596696
+host t=1794096250.072 round=1 build=rust arm=held pid=45671 footprint=142330544
+give t=1794096250.102 round=1 build=rust arm=held answered_ms=410 freed=3162112 unplugging=0
+host t=1794096251.147 round=1 build=rust arm=held pid=45671 footprint=143035056
+give t=1794096251.893 round=1 build=rust arm=held answered_ms=192 freed=2502656 unplugging=0
+host t=1794096252.227 round=1 build=rust arm=held pid=45671 footprint=144820912
+host t=1794096253.310 round=1 build=rust arm=held pid=45671 footprint=239946560
+give t=1794096253.703 round=1 build=rust arm=held answered_ms=1 freed=3260416 unplugging=0
+host t=1794096254.391 round=1 build=rust arm=held pid=45671 footprint=239946560
+build round=1 build=rust arm=held exit=0 s=39.0 budget=0 scope_anon_peak=0 scope_held_peak=0 scope_need_peak=0 held_cold=30175232 sync_s=0.4 writer_seen=0 writer_file_peak=0 writer_dirty_peak=0 steps=1:0.0,2:0.0,3:0.0,4:0.1,5:37.4,6:0.6
+host t=1794096256.574 round=1 build=npm arm=free pid=46729 footprint=33474672
+host t=1794096257.654 round=1 build=npm arm=free pid=46729 footprint=33998960
+host t=1794096258.723 round=1 build=npm arm=free pid=46729 footprint=45467760
+host t=1794096259.799 round=1 build=npm arm=free pid=46729 footprint=46123120
+host t=1794096260.869 round=1 build=npm arm=free pid=46729 footprint=47843440
+host t=1794096261.935 round=1 build=npm arm=free pid=46729 footprint=57755760
+host t=1794096263.003 round=1 build=npm arm=free pid=46729 footprint=58624112
+host t=1794096264.067 round=1 build=npm arm=free pid=46729 footprint=61278320
+host t=1794096265.137 round=1 build=npm arm=free pid=46729 footprint=66275464
+host t=1794096266.200 round=1 build=npm arm=free pid=46729 footprint=66275464
+host t=1794096267.262 round=1 build=npm arm=free pid=46729 footprint=66275464
+host t=1794096268.320 round=1 build=npm arm=free pid=46729 footprint=66275464
+host t=1794096269.396 round=1 build=npm arm=free pid=46729 footprint=66275464
+host t=1794096270.472 round=1 build=npm arm=free pid=46729 footprint=66275464
+host t=1794096271.538 round=1 build=npm arm=free pid=46729 footprint=66275464
+host t=1794096272.612 round=1 build=npm arm=free pid=46729 footprint=66275464
+host t=1794096273.677 round=1 build=npm arm=free pid=46729 footprint=66275464
+host t=1794096274.757 round=1 build=npm arm=free pid=46729 footprint=66275464
+host t=1794096275.843 round=1 build=npm arm=free pid=46729 footprint=75794568
+host t=1794096276.911 round=1 build=npm arm=free pid=46729 footprint=76466312
+host t=1794096277.978 round=1 build=npm arm=free pid=46729 footprint=76777608
+host t=1794096279.060 round=1 build=npm arm=free pid=46729 footprint=77154440
+host t=1794096280.138 round=1 build=npm arm=free pid=46729 footprint=78547080
+host t=1794096281.217 round=1 build=npm arm=free pid=46729 footprint=79775880
+host t=1794096282.304 round=1 build=npm arm=free pid=46729 footprint=81987720
+host t=1794096283.383 round=1 build=npm arm=free pid=46729 footprint=86231176
+host t=1794096284.452 round=1 build=npm arm=free pid=46729 footprint=86853768
+host t=1794096285.527 round=1 build=npm arm=free pid=46729 footprint=87197856
+host t=1794096286.582 round=1 build=npm arm=free pid=46729 footprint=103565544
+host t=1794096287.640 round=1 build=npm arm=free pid=46729 footprint=501090992
+host t=1794096288.703 round=1 build=npm arm=free pid=46729 footprint=840633320
+host t=1794096289.749 round=1 build=npm arm=free pid=46729 footprint=856099912
+host t=1794096290.806 round=1 build=npm arm=free pid=46729 footprint=856099912
+host t=1794096291.860 round=1 build=npm arm=free pid=46729 footprint=732400688
+host t=1794096292.939 round=1 build=npm arm=free pid=46729 footprint=732515376
+host t=1794096294.010 round=1 build=npm arm=free pid=46729 footprint=726240304
+build round=1 build=npm arm=free exit=0 s=39.4 budget=0 scope_anon_peak=0 scope_held_peak=0 scope_need_peak=0 held_cold=25227264 sync_s=0.8 writer_seen=0 writer_file_peak=0 writer_dirty_peak=0 steps=1:0.0,2:0.0,3:0.0,4:0.2,6:0.0,8:34.6,9:2.5
+host t=1794096296.403 round=1 build=npm arm=held pid=47516 footprint=33589336
+host t=1794096297.463 round=1 build=npm arm=held pid=47516 footprint=45484120
+host t=1794096298.542 round=1 build=npm arm=held pid=47516 footprint=56674392
+host t=1794096299.608 round=1 build=npm arm=held pid=47516 footprint=57837656
+host t=1794096300.680 round=1 build=npm arm=held pid=47516 footprint=59344984
+host t=1794096301.755 round=1 build=npm arm=held pid=47516 footprint=66275440
+host t=1794096302.822 round=1 build=npm arm=held pid=47516 footprint=66275440
+host t=1794096303.896 round=1 build=npm arm=held pid=47516 footprint=66275440
+host t=1794096304.980 round=1 build=npm arm=held pid=47516 footprint=76777584
+host t=1794096306.049 round=1 build=npm arm=held pid=47516 footprint=79595632
+host t=1794096307.119 round=1 build=npm arm=held pid=47516 footprint=84691056
+host t=1794096308.163 round=1 build=npm arm=held pid=47516 footprint=87263368
+host t=1794096309.227 round=1 build=npm arm=held pid=47516 footprint=100714704
+host t=1794096310.282 round=1 build=npm arm=held pid=47516 footprint=538774240
+host t=1794096311.327 round=1 build=npm arm=held pid=47516 footprint=789875592
+give t=1794096311.401 round=1 build=npm arm=held answered_ms=79 freed=31137792 unplugging=0
+host t=1794096312.377 round=1 build=npm arm=held pid=47516 footprint=829197336
+host t=1794096313.430 round=1 build=npm arm=held pid=47516 footprint=829361176
+give t=1794096313.491 round=1 build=npm arm=held answered_ms=158 freed=262144 unplugging=134217728
+host t=1794096314.484 round=1 build=npm arm=held pid=47516 footprint=684493824
+give t=1794096315.509 round=1 build=npm arm=held answered_ms=177 freed=262144 unplugging=0
+host t=1794096315.557 round=1 build=npm arm=held pid=47516 footprint=649563088
+host t=1794096316.627 round=1 build=npm arm=held pid=47516 footprint=649563088
+give t=1794096317.418 round=1 build=npm arm=held answered_ms=84 freed=262144 unplugging=0
+host t=1794096317.693 round=1 build=npm arm=held pid=47516 footprint=649563088
+build round=1 build=npm arm=held exit=0 s=23.0 budget=0 scope_anon_peak=0 scope_held_peak=0 scope_need_peak=0 held_cold=25423872 sync_s=0.3 writer_seen=0 writer_file_peak=0 writer_dirty_peak=0 steps=1:0.0,2:0.0,3:0.0,4:0.0,6:0.0,8:17.8,9:3.1
+host t=1794096319.939 round=1 build=apt arm=free pid=48326 footprint=33556568
+host t=1794096321.015 round=1 build=apt arm=free pid=48326 footprint=34080856
+host t=1794096322.090 round=1 build=apt arm=free pid=48326 footprint=45549656
+host t=1794096323.156 round=1 build=apt arm=free pid=48326 footprint=46188632
+host t=1794096324.217 round=1 build=apt arm=free pid=48326 footprint=56838232
+host t=1794096325.292 round=1 build=apt arm=free pid=48326 footprint=57903192
+host t=1794096326.374 round=1 build=apt arm=free pid=48326 footprint=59361368
+host t=1794096327.448 round=1 build=apt arm=free pid=48326 footprint=66340976
+host t=1794096328.531 round=1 build=apt arm=free pid=48326 footprint=66340976
+host t=1794096329.611 round=1 build=apt arm=free pid=48326 footprint=66340976
+host t=1794096330.682 round=1 build=apt arm=free pid=48326 footprint=66340976
+host t=1794096331.747 round=1 build=apt arm=free pid=48326 footprint=66340976
+host t=1794096332.815 round=1 build=apt arm=free pid=48326 footprint=66340976
+host t=1794096333.891 round=1 build=apt arm=free pid=48326 footprint=66340976
+host t=1794096334.968 round=1 build=apt arm=free pid=48326 footprint=66340976
+host t=1794096336.034 round=1 build=apt arm=free pid=48326 footprint=66340976
+host t=1794096337.101 round=1 build=apt arm=free pid=48326 footprint=66340976
+host t=1794096338.168 round=1 build=apt arm=free pid=48326 footprint=75860080
+host t=1794096339.258 round=1 build=apt arm=free pid=48326 footprint=76531824
+host t=1794096340.330 round=1 build=apt arm=free pid=48326 footprint=78284912
+host t=1794096341.391 round=1 build=apt arm=free pid=48326 footprint=85395568
+host t=1794096342.443 round=1 build=apt arm=free pid=48326 footprint=105285888
+host t=1794096343.501 round=1 build=apt arm=free pid=48326 footprint=174131576
+host t=1794096344.548 round=1 build=apt arm=free pid=48326 footprint=320473608
+host t=1794096345.600 round=1 build=apt arm=free pid=48326 footprint=463506120
+host t=1794096346.644 round=1 build=apt arm=free pid=48326 footprint=592268096
+host t=1794096347.687 round=1 build=apt arm=free pid=48326 footprint=855100560
+host t=1794096348.740 round=1 build=apt arm=free pid=48326 footprint=928189800
+host t=1794096349.804 round=1 build=apt arm=free pid=48326 footprint=1059245560
+host t=1794096350.840 round=1 build=apt arm=free pid=48326 footprint=1103023704
+host t=1794096351.906 round=1 build=apt arm=free pid=48326 footprint=1107529304
+host t=1794096352.962 round=1 build=apt arm=free pid=48326 footprint=1066323520
+host t=1794096354.026 round=1 build=apt arm=free pid=48326 footprint=1067011648
+host t=1794096355.096 round=1 build=apt arm=free pid=48326 footprint=1187155592
+host t=1794096356.155 round=1 build=apt arm=free pid=48326 footprint=1234685600
+host t=1794096357.241 round=1 build=apt arm=free pid=48326 footprint=1234685600
+host t=1794096358.308 round=1 build=apt arm=free pid=48326 footprint=1008143936
+host t=1794096359.369 round=1 build=apt arm=free pid=48326 footprint=1008143936
+host t=1794096360.410 round=1 build=apt arm=free pid=48326 footprint=1008143936
+host t=1794096361.451 round=1 build=apt arm=free pid=48326 footprint=1008143936
+host t=1794096362.497 round=1 build=apt arm=free pid=48326 footprint=1008143936
+host t=1794096363.549 round=1 build=apt arm=free pid=48326 footprint=1008143936
+host t=1794096364.600 round=1 build=apt arm=free pid=48326 footprint=1008143936
+host t=1794096365.660 round=1 build=apt arm=free pid=48326 footprint=1008143936
+host t=1794096366.710 round=1 build=apt arm=free pid=48326 footprint=1008143936
+host t=1794096367.774 round=1 build=apt arm=free pid=48326 footprint=1008143936
+host t=1794096368.839 round=1 build=apt arm=free pid=48326 footprint=1008143936
+host t=1794096369.925 round=1 build=apt arm=free pid=48326 footprint=1008143936
+host t=1794096370.993 round=1 build=apt arm=free pid=48326 footprint=1008143936
+build round=1 build=apt arm=free exit=0 s=52.4 budget=0 scope_anon_peak=0 scope_held_peak=0 scope_need_peak=0 held_cold=131747840 sync_s=0.5 writer_seen=0 writer_file_peak=0 writer_dirty_peak=0 steps=1:0.0,2:0.0,3:0.0,4:0.1,5:23.3,6:17.4,7:3.6
+host t=1794096372.571 round=1 build=apt arm=held pid=49655 footprint=33605768
+host t=1794096373.647 round=1 build=apt arm=held pid=49655 footprint=45500552
+host t=1794096374.714 round=1 build=apt arm=held pid=49655 footprint=46172296
+host t=1794096375.786 round=1 build=apt arm=held pid=49655 footprint=48236680
+host t=1794096376.853 round=1 build=apt arm=held pid=49655 footprint=57821320
+host t=1794096377.922 round=1 build=apt arm=held pid=49655 footprint=59263112
+host t=1794096379.012 round=1 build=apt arm=held pid=49655 footprint=61442184
+host t=1794096380.091 round=1 build=apt arm=held pid=49655 footprint=66324640
+host t=1794096381.160 round=1 build=apt arm=held pid=49655 footprint=66324640
+host t=1794096382.243 round=1 build=apt arm=held pid=49655 footprint=66324640
+host t=1794096383.313 round=1 build=apt arm=held pid=49655 footprint=76073120
+host t=1794096384.382 round=1 build=apt arm=held pid=49655 footprint=108235056
+host t=1794096385.448 round=1 build=apt arm=held pid=49655 footprint=108988720
+give t=1794096385.562 round=1 build=apt arm=held answered_ms=52 freed=401408 unplugging=0
+host t=1794096386.507 round=1 build=apt arm=held pid=49655 footprint=109201712
+give t=1794096387.554 round=1 build=apt arm=held answered_ms=43 freed=507904 unplugging=0
+host t=1794096387.577 round=1 build=apt arm=held pid=49655 footprint=109201712
+host t=1794096388.640 round=1 build=apt arm=held pid=49655 footprint=109201712
+host t=1794096389.725 round=1 build=apt arm=held pid=49655 footprint=109218096
+give t=1794096389.767 round=1 build=apt arm=held answered_ms=256 freed=16384 unplugging=0
+host t=1794096390.788 round=1 build=apt arm=held pid=49655 footprint=109234480
+give t=1794096391.710 round=1 build=apt arm=held answered_ms=189 freed=0 unplugging=0
+host t=1794096391.857 round=1 build=apt arm=held pid=49655 footprint=109250864
+host t=1794096392.927 round=1 build=apt arm=held pid=49655 footprint=109250864
+give t=1794096393.746 round=1 build=apt arm=held answered_ms=216 freed=0 unplugging=0
+host t=1794096393.993 round=1 build=apt arm=held pid=49655 footprint=109267248
+host t=1794096395.067 round=1 build=apt arm=held pid=49655 footprint=109283632
+give t=1794096395.688 round=1 build=apt arm=held answered_ms=148 freed=0 unplugging=0
+host t=1794096396.128 round=1 build=apt arm=held pid=49655 footprint=109300016
+host t=1794096397.189 round=1 build=apt arm=held pid=49655 footprint=109300016
+give t=1794096397.650 round=1 build=apt arm=held answered_ms=110 freed=0 unplugging=0
+host t=1794096398.254 round=1 build=apt arm=held pid=49655 footprint=109316400
+host t=1794096399.324 round=1 build=apt arm=held pid=49655 footprint=109316400
+give t=1794096399.627 round=1 build=apt arm=held answered_ms=84 freed=0 unplugging=0
+host t=1794096400.401 round=1 build=apt arm=held pid=49655 footprint=109332784
+host t=1794096401.497 round=1 build=apt arm=held pid=49655 footprint=109332784
+give t=1794096401.627 round=1 build=apt arm=held answered_ms=83 freed=0 unplugging=0
+host t=1794096402.563 round=1 build=apt arm=held pid=49655 footprint=109332784
+host t=1794096403.653 round=1 build=apt arm=held pid=49655 footprint=109332784
+give t=1794096403.790 round=1 build=apt arm=held answered_ms=236 freed=0 unplugging=0
+host t=1794096404.739 round=1 build=apt arm=held pid=49655 footprint=109349168
+give t=1794096405.703 round=1 build=apt arm=held answered_ms=148 freed=0 unplugging=0
+host t=1794096405.804 round=1 build=apt arm=held pid=49655 footprint=109365552
+host t=1794096406.879 round=1 build=apt arm=held pid=49655 footprint=109365552
+give t=1794096407.622 round=1 build=apt arm=held answered_ms=64 freed=0 unplugging=0
+host t=1794096407.944 round=1 build=apt arm=held pid=49655 footprint=109381936
+host t=1794096409.015 round=1 build=apt arm=held pid=49655 footprint=109381936
+give t=1794096409.559 round=1 build=apt arm=held answered_ms=0 freed=0 unplugging=0
+host t=1794096410.089 round=1 build=apt arm=held pid=49655 footprint=109398320
+host t=1794096411.151 round=1 build=apt arm=held pid=49655 footprint=109398320
+give t=1794096411.733 round=1 build=apt arm=held answered_ms=170 freed=0 unplugging=0
+host t=1794096412.212 round=1 build=apt arm=held pid=49655 footprint=109414704
+host t=1794096413.282 round=1 build=apt arm=held pid=49655 footprint=109414704
+give t=1794096413.689 round=1 build=apt arm=held answered_ms=121 freed=0 unplugging=0
+host t=1794096414.353 round=1 build=apt arm=held pid=49655 footprint=109742384
+host t=1794096415.407 round=1 build=apt arm=held pid=49655 footprint=295619080
+give t=1794096415.656 round=1 build=apt arm=held answered_ms=80 freed=524288 unplugging=0
+host t=1794096416.466 round=1 build=apt arm=held pid=49655 footprint=368085680
+host t=1794096417.515 round=1 build=apt arm=held pid=49655 footprint=526027632
+give t=1794096417.583 round=1 build=apt arm=held answered_ms=5 freed=8007680 unplugging=0
+host t=1794096418.564 round=1 build=apt arm=held pid=49655 footprint=683183200
+host t=1794096419.611 round=1 build=apt arm=held pid=49655 footprint=936168856
+give t=1794096419.627 round=1 build=apt arm=held answered_ms=38 freed=42831872 unplugging=0
+host t=1794096420.660 round=1 build=apt arm=held pid=49655 footprint=981765648
+give t=1794096421.619 round=1 build=apt arm=held answered_ms=20 freed=21958656 unplugging=0
+host t=1794096421.711 round=1 build=apt arm=held pid=49655 footprint=999673360
+host t=1794096422.766 round=1 build=apt arm=held pid=49655 footprint=1014582824
+host t=1794096423.848 round=1 build=apt arm=held pid=49655 footprint=1003015720
+give t=1794096423.850 round=1 build=apt arm=held answered_ms=241 freed=294912 unplugging=0
+host t=1794096424.908 round=1 build=apt arm=held pid=49655 footprint=974392872
+give t=1794096425.830 round=1 build=apt arm=held answered_ms=220 freed=163840 unplugging=0
+host t=1794096425.969 round=1 build=apt arm=held pid=49655 footprint=975277608
+host t=1794096427.041 round=1 build=apt arm=held pid=49655 footprint=1118785160
+give t=1794096427.804 round=1 build=apt arm=held answered_ms=184 freed=92692480 unplugging=0
+host t=1794096428.120 round=1 build=apt arm=held pid=49655 footprint=1004949128
+host t=1794096429.201 round=1 build=apt arm=held pid=49655 footprint=1004949128
+give t=1794096430.100 round=1 build=apt arm=held answered_ms=480 freed=0 unplugging=134217728
+host t=1794096430.284 round=1 build=apt arm=held pid=49655 footprint=888065624
+host t=1794096431.365 round=1 build=apt arm=held pid=49655 footprint=888065624
+give t=1794096431.625 round=1 build=apt arm=held answered_ms=3 freed=0 unplugging=0
+host t=1794096432.444 round=1 build=apt arm=held pid=49655 footprint=886689368
+host t=1794096433.513 round=1 build=apt arm=held pid=49655 footprint=886689368
+give t=1794096433.640 round=1 build=apt arm=held answered_ms=0 freed=0 unplugging=0
+host t=1794096434.573 round=1 build=apt arm=held pid=49655 footprint=886689368
+host t=1794096435.626 round=1 build=apt arm=held pid=49655 footprint=886689368
+give t=1794096435.641 round=1 build=apt arm=held answered_ms=0 freed=0 unplugging=0
+host t=1794096436.686 round=1 build=apt arm=held pid=49655 footprint=886689368
+host t=1794096437.737 round=1 build=apt arm=held pid=49655 footprint=886689368
+give t=1794096437.812 round=1 build=apt arm=held answered_ms=160 freed=0 unplugging=0
+host t=1794096438.798 round=1 build=apt arm=held pid=49655 footprint=886689368
+give t=1794096439.747 round=1 build=apt arm=held answered_ms=85 freed=0 unplugging=0
+host t=1794096439.844 round=1 build=apt arm=held pid=49655 footprint=886689368
+host t=1794096440.894 round=1 build=apt arm=held pid=49655 footprint=886689368
+give t=1794096441.955 round=1 build=apt arm=held answered_ms=288 freed=0 unplugging=0
+host t=1794096441.970 round=1 build=apt arm=held pid=49655 footprint=886689368
+host t=1794096443.048 round=1 build=apt arm=held pid=49655 footprint=886689368
+give t=1794096443.674 round=1 build=apt arm=held answered_ms=0 freed=0 unplugging=0
+host t=1794096444.145 round=1 build=apt arm=held pid=49655 footprint=886689368
+build round=1 build=apt arm=held exit=0 s=73.3 budget=0 scope_anon_peak=0 scope_held_peak=0 scope_need_peak=0 held_cold=81002496 sync_s=0.2 writer_seen=0 writer_file_peak=0 writer_dirty_peak=0 steps=1:0.0,2:0.0,3:0.0,4:0.1,5:11.9,6:50.1,7:3.2
+host t=1794096446.153 round=2 build=npm arm=held pid=50905 footprint=46073896
+host t=1794096447.216 round=2 build=npm arm=held pid=50905 footprint=66226240
+host t=1794096448.282 round=2 build=npm arm=held pid=50905 footprint=66226240
+host t=1794096449.353 round=2 build=npm arm=held pid=50905 footprint=78039104
+host t=1794096450.425 round=2 build=npm arm=held pid=50905 footprint=80250944
+host t=1794096451.498 round=2 build=npm arm=held pid=50905 footprint=86575168
+host t=1794096452.546 round=2 build=npm arm=held pid=50905 footprint=99764384
+host t=1794096453.592 round=2 build=npm arm=held pid=50905 footprint=526404224
+host t=1794096454.647 round=2 build=npm arm=held pid=50905 footprint=795921240
+give t=1794096455.139 round=2 build=npm arm=held answered_ms=421 freed=23592960 unplugging=0
+host t=1794096455.707 round=2 build=npm arm=held pid=50905 footprint=848530408
+give t=1794096456.743 round=2 build=npm arm=held answered_ms=14 freed=909312 unplugging=134217728
+host t=1794096456.787 round=2 build=npm arm=held pid=50905 footprint=662408096
+host t=1794096457.847 round=2 build=npm arm=held pid=50905 footprint=662408096
+give t=1794096458.730 round=2 build=npm arm=held answered_ms=1 freed=196608 unplugging=0
+host t=1794096458.918 round=2 build=npm arm=held pid=50905 footprint=649268128
+host t=1794096459.995 round=2 build=npm arm=held pid=50905 footprint=649268128
+give t=1794096460.740 round=2 build=npm arm=held answered_ms=0 freed=0 unplugging=0
+host t=1794096461.067 round=2 build=npm arm=held pid=50905 footprint=649268128
+build round=2 build=npm arm=held exit=0 s=16.5 budget=0 scope_anon_peak=0 scope_held_peak=0 scope_need_peak=0 held_cold=25444352 sync_s=0.2 writer_seen=0 writer_file_peak=0 writer_dirty_peak=0 steps=1:0.0,2:0.0,3:0.0,4:0.2,6:0.0,8:11.4,9:2.9
+host t=1794096462.956 round=2 build=npm arm=free pid=51418 footprint=61294656
+host t=1794096464.025 round=2 build=npm arm=free pid=51418 footprint=76793944
+host t=1794096465.073 round=2 build=npm arm=free pid=51418 footprint=143296744
+host t=1794096466.150 round=2 build=npm arm=free pid=51418 footprint=486197840
+host t=1794096467.193 round=2 build=npm arm=free pid=51418 footprint=773393240
+host t=1794096468.247 round=2 build=npm arm=free pid=51418 footprint=855870464
+host t=1794096469.307 round=2 build=npm arm=free pid=51418 footprint=707677160
+host t=1794096470.368 round=2 build=npm arm=free pid=51418 footprint=707677160
+host t=1794096471.427 round=2 build=npm arm=free pid=51418 footprint=707693544
+host t=1794096472.505 round=2 build=npm arm=free pid=51418 footprint=707709928
+host t=1794096473.579 round=2 build=npm arm=free pid=51418 footprint=707709928
+host t=1794096474.658 round=2 build=npm arm=free pid=51418 footprint=707709928
+build round=2 build=npm arm=free exit=0 s=13.3 budget=0 scope_anon_peak=0 scope_held_peak=0 scope_need_peak=0 held_cold=25284608 sync_s=0.3 writer_seen=0 writer_file_peak=0 writer_dirty_peak=0 steps=1:0.0,2:0.0,3:0.0,4:0.0,6:0.0,8:7.7,9:3.6
+host t=1794096476.571 round=2 build=apt arm=held pid=51608 footprint=33966144
+host t=1794096477.637 round=2 build=apt arm=held pid=51608 footprint=45434944
+host t=1794096478.711 round=2 build=apt arm=held pid=51608 footprint=46073920
+host t=1794096479.789 round=2 build=apt arm=held pid=51608 footprint=56625216
+host t=1794096480.862 round=2 build=apt arm=held pid=51608 footprint=58443840
+host t=1794096481.934 round=2 build=apt arm=held pid=51608 footprint=59361344
+host t=1794096483.030 round=2 build=apt arm=held pid=51608 footprint=108611864
+host t=1794096484.101 round=2 build=apt arm=held pid=51608 footprint=112544072
+give t=1794096485.093 round=2 build=apt arm=held answered_ms=368 freed=0 unplugging=0
+host t=1794096485.160 round=2 build=apt arm=held pid=51608 footprint=113641800
+host t=1794096486.224 round=2 build=apt arm=held pid=51608 footprint=180455848
+give t=1794096486.805 round=2 build=apt arm=held answered_ms=71 freed=135168 unplugging=0
+host t=1794096487.289 round=2 build=apt arm=held pid=51608 footprint=306563664
+host t=1794096488.336 round=2 build=apt arm=held pid=51608 footprint=453855992
+give t=1794096488.746 round=2 build=apt arm=held answered_ms=3 freed=46084096 unplugging=0
+host t=1794096489.382 round=2 build=apt arm=held pid=51608 footprint=561171288
+host t=1794096490.457 round=2 build=apt arm=held pid=51608 footprint=561187672
+give t=1794096490.789 round=2 build=apt arm=held answered_ms=35 freed=1130496 unplugging=402653184
+host t=1794096491.502 round=2 build=apt arm=held pid=51608 footprint=581929840
+host t=1794096492.550 round=2 build=apt arm=held pid=51608 footprint=861408448
+give t=1794096492.770 round=2 build=apt arm=held answered_ms=15 freed=28282880 unplugging=268435456
+host t=1794096493.600 round=2 build=apt arm=held pid=51608 footprint=903843128
+host t=1794096494.650 round=2 build=apt arm=held pid=51608 footprint=1054100984
+give t=1794096495.024 round=2 build=apt arm=held answered_ms=259 freed=25763840 unplugging=939524096
+host t=1794096495.701 round=2 build=apt arm=held pid=51608 footprint=1078709848
+host t=1794096496.741 round=2 build=apt arm=held pid=51608 footprint=1080921688
+give t=1794096496.805 round=2 build=apt arm=held answered_ms=30 freed=364544 unplugging=1342177280
+host t=1794096497.788 round=2 build=apt arm=held pid=51608 footprint=1170722416
+give t=1794096498.785 round=2 build=apt arm=held answered_ms=0 freed=0 unplugging=1207959552
+host t=1794096498.827 round=2 build=apt arm=held pid=51608 footprint=1001278944
+host t=1794096499.877 round=2 build=apt arm=held pid=51608 footprint=942542280
+give t=1794096500.787 round=2 build=apt arm=held answered_ms=0 freed=0 unplugging=0
+host t=1794096500.923 round=2 build=apt arm=held pid=51608 footprint=942542280
+host t=1794096501.963 round=2 build=apt arm=held pid=51608 footprint=942542280
+give t=1794096502.797 round=2 build=apt arm=held answered_ms=0 freed=0 unplugging=0
+host t=1794096503.008 round=2 build=apt arm=held pid=51608 footprint=942542280
+host t=1794096504.043 round=2 build=apt arm=held pid=51608 footprint=942542280
+give t=1794096504.800 round=2 build=apt arm=held answered_ms=0 freed=0 unplugging=0
+host t=1794096505.093 round=2 build=apt arm=held pid=51608 footprint=942542280
+host t=1794096506.167 round=2 build=apt arm=held pid=51608 footprint=942542280
+give t=1794096507.074 round=2 build=apt arm=held answered_ms=270 freed=0 unplugging=0
+host t=1794096507.236 round=2 build=apt arm=held pid=51608 footprint=942542280
+build round=2 build=apt arm=held exit=0 s=32.0 budget=0 scope_anon_peak=0 scope_held_peak=0 scope_need_peak=0 held_cold=31703040 sync_s=0.3 writer_seen=0 writer_file_peak=0 writer_dirty_peak=0 steps=1:0.0,2:0.0,3:0.0,4:0.1,5:7.2,6:15.2,7:1.9
+host t=1794096508.898 round=2 build=apt arm=free pid=51995 footprint=33982528
+host t=1794096509.965 round=2 build=apt arm=free pid=51995 footprint=45451328
+host t=1794096511.029 round=2 build=apt arm=free pid=51995 footprint=47269952
+host t=1794096512.097 round=2 build=apt arm=free pid=51995 footprint=57739328
+host t=1794096513.169 round=2 build=apt arm=free pid=51995 footprint=59312192
+host t=1794096514.248 round=2 build=apt arm=free pid=51995 footprint=66242648
+host t=1794096515.320 round=2 build=apt arm=free pid=51995 footprint=66242648
+host t=1794096516.407 round=2 build=apt arm=free pid=51995 footprint=66242648
+host t=1794096517.482 round=2 build=apt arm=free pid=51995 footprint=66242648
+host t=1794096518.549 round=2 build=apt arm=free pid=51995 footprint=66242648
+host t=1794096519.613 round=2 build=apt arm=free pid=51995 footprint=74319960
+host t=1794096520.662 round=2 build=apt arm=free pid=51995 footprint=76433496
+host t=1794096521.707 round=2 build=apt arm=free pid=51995 footprint=108071168
+host t=1794096522.772 round=2 build=apt arm=free pid=51995 footprint=153438536
+host t=1794096523.820 round=2 build=apt arm=free pid=51995 footprint=294767136
+host t=1794096524.880 round=2 build=apt arm=free pid=51995 footprint=454494848
+host t=1794096525.931 round=2 build=apt arm=free pid=51995 footprint=583863080
+host t=1794096526.975 round=2 build=apt arm=free pid=51995 footprint=853675128
+host t=1794096528.033 round=2 build=apt arm=free pid=51995 footprint=943705376
+host t=1794096529.087 round=2 build=apt arm=free pid=51995 footprint=1078726064
+host t=1794096530.142 round=2 build=apt arm=free pid=51995 footprint=1120521744
+host t=1794096531.192 round=2 build=apt arm=free pid=51995 footprint=1078464016
+host t=1794096532.241 round=2 build=apt arm=free pid=51995 footprint=1079479824
+host t=1794096533.310 round=2 build=apt arm=free pid=51995 footprint=1247301208
+host t=1794096534.385 round=2 build=apt arm=free pid=51995 footprint=1247301208
+host t=1794096535.453 round=2 build=apt arm=free pid=51995 footprint=1030573536
+host t=1794096536.522 round=2 build=apt arm=free pid=51995 footprint=1030573536
+host t=1794096537.569 round=2 build=apt arm=free pid=51995 footprint=1030573536
+host t=1794096538.616 round=2 build=apt arm=free pid=51995 footprint=1030573536
+host t=1794096539.669 round=2 build=apt arm=free pid=51995 footprint=1030573536
+host t=1794096540.715 round=2 build=apt arm=free pid=51995 footprint=1030573536
+host t=1794096541.761 round=2 build=apt arm=free pid=51995 footprint=1030573536
+host t=1794096542.808 round=2 build=apt arm=free pid=51995 footprint=1030573536
+host t=1794096543.848 round=2 build=apt arm=free pid=51995 footprint=1030573536
+host t=1794096544.924 round=2 build=apt arm=free pid=51995 footprint=1030573536
+host t=1794096545.988 round=2 build=apt arm=free pid=51995 footprint=1030573536
+host t=1794096547.063 round=2 build=apt arm=free pid=51995 footprint=1030573536
+host t=1794096548.140 round=2 build=apt arm=free pid=51995 footprint=1030573536
+build round=2 build=apt arm=free exit=0 s=40.6 budget=0 scope_anon_peak=0 scope_held_peak=0 scope_need_peak=0 held_cold=63324160 sync_s=0.3 writer_seen=0 writer_file_peak=0 writer_dirty_peak=0 steps=1:0.0,2:0.0,3:0.0,4:0.1,5:13.6,6:15.1,7:3.9
+host t=1794096550.083 round=2 build=rust arm=held pid=52788 footprint=33507392
+host t=1794096551.158 round=2 build=rust arm=held pid=52788 footprint=34031680
+host t=1794096552.225 round=2 build=rust arm=held pid=52788 footprint=124979768
+host t=1794096553.289 round=2 build=rust arm=held pid=52788 footprint=126683728
+give t=1794096553.425 round=2 build=rust arm=held answered_ms=18 freed=569344 unplugging=0
+host t=1794096554.355 round=2 build=rust arm=held pid=52788 footprint=127191656
+host t=1794096555.409 round=2 build=rust arm=held pid=52788 footprint=135137896
+give t=1794096555.415 round=2 build=rust arm=held answered_ms=0 freed=3674112 unplugging=0
+host t=1794096556.465 round=2 build=rust arm=held pid=52788 footprint=142674584
+give t=1794096557.426 round=2 build=rust arm=held answered_ms=1 freed=2973696 unplugging=0
+host t=1794096557.508 round=2 build=rust arm=held pid=52788 footprint=239127360
+build round=2 build=rust arm=held exit=0 s=8.5 budget=0 scope_anon_peak=0 scope_held_peak=0 scope_need_peak=0 held_cold=3633152 sync_s=0.5 writer_seen=0 writer_file_peak=0 writer_dirty_peak=0 steps=1:0.0,2:0.0,3:0.0,4:0.2,5:7.7,6:0.1
+host t=1794096558.721 round=2 build=rust arm=free pid=52887 footprint=130206312
+host t=1794096559.786 round=2 build=rust arm=free pid=52887 footprint=136546920
+host t=1794096560.854 round=2 build=rust arm=free pid=52887 footprint=237734696
+build round=2 build=rust arm=free exit=0 s=4.0 budget=0 scope_anon_peak=0 scope_held_peak=0 scope_need_peak=0 held_cold=3653632 sync_s=0.1 writer_seen=0 writer_file_peak=0 writer_dirty_peak=0 steps=1:0.0,2:0.0,3:0.0,4:0.0,5:3.3,6:0.1
+host t=1794096562.800 round=3 build=apt arm=free pid=52946 footprint=108366128
+host t=1794096563.866 round=3 build=apt arm=free pid=52946 footprint=113723696
+host t=1794096564.909 round=3 build=apt arm=free pid=52946 footprint=299076056
+host t=1794096565.955 round=3 build=apt arm=free pid=52946 footprint=429263560
+host t=1794096567.006 round=3 build=apt arm=free pid=52946 footprint=573541184
+host t=1794096568.052 round=3 build=apt arm=free pid=52946 footprint=844893304
+host t=1794096569.093 round=3 build=apt arm=free pid=52946 footprint=950422888
+host t=1794096570.142 round=3 build=apt arm=free pid=52946 footprint=1081298376
+host t=1794096571.179 round=3 build=apt arm=free pid=52946 footprint=1123733008
+host t=1794096572.229 round=3 build=apt arm=free pid=52946 footprint=1250496112
+host t=1794096573.267 round=3 build=apt arm=free pid=52946 footprint=1250496112
+host t=1794096574.307 round=3 build=apt arm=free pid=52946 footprint=1028083216
+host t=1794096575.357 round=3 build=apt arm=free pid=52946 footprint=1028083216
+host t=1794096576.403 round=3 build=apt arm=free pid=52946 footprint=1028083216
+host t=1794096577.451 round=3 build=apt arm=free pid=52946 footprint=1028083216
+host t=1794096578.498 round=3 build=apt arm=free pid=52946 footprint=1028083216
+host t=1794096579.545 round=3 build=apt arm=free pid=52946 footprint=1028083216
+build round=3 build=apt arm=free exit=0 s=18.2 budget=0 scope_anon_peak=0 scope_held_peak=0 scope_need_peak=0 held_cold=63324160 sync_s=0.1 writer_seen=0 writer_file_peak=0 writer_dirty_peak=0 steps=1:0.0,2:0.0,3:0.0,4:0.0,5:0.2,6:10.2,7:0.3
+host t=1794096581.088 round=3 build=apt arm=held pid=53143 footprint=112576816
+host t=1794096582.131 round=3 build=apt arm=held pid=53143 footprint=298944936
+give t=1794096582.301 round=3 build=apt arm=held answered_ms=59 freed=557056 unplugging=0
+host t=1794096583.170 round=3 build=apt arm=held pid=53143 footprint=411847344
+host t=1794096584.210 round=3 build=apt arm=held pid=53143 footprint=543771432
+give t=1794096584.299 round=3 build=apt arm=held answered_ms=49 freed=1179648 unplugging=0
+host t=1794096585.259 round=3 build=apt arm=held pid=53143 footprint=813665424
+give t=1794096586.267 round=3 build=apt arm=held answered_ms=16 freed=47222784 unplugging=0
+host t=1794096586.308 round=3 build=apt arm=held pid=53143 footprint=903466320
+host t=1794096587.369 round=3 build=apt arm=held pid=53143 footprint=1002360288
+give t=1794096588.311 round=3 build=apt arm=held answered_ms=59 freed=9560064 unplugging=0
+host t=1794096588.430 round=3 build=apt arm=held pid=53143 footprint=1031425528
+host t=1794096589.498 round=3 build=apt arm=held pid=53143 footprint=1034046968
+give t=1794096590.548 round=3 build=apt arm=held answered_ms=287 freed=196608 unplugging=0
+host t=1794096590.558 round=3 build=apt arm=held pid=53143 footprint=992955896
+host t=1794096591.620 round=3 build=apt arm=held pid=53143 footprint=993250808
+host t=1794096592.698 round=3 build=apt arm=held pid=53143 footprint=1112903256
+give t=1794096593.051 round=3 build=apt arm=held answered_ms=784 freed=78159872 unplugging=0
+host t=1794096593.781 round=3 build=apt arm=held pid=53143 footprint=1025592824
+give t=1794096594.604 round=3 build=apt arm=held answered_ms=326 freed=12288 unplugging=134217728
+host t=1794096594.844 round=3 build=apt arm=held pid=53143 footprint=917376408
+host t=1794096595.910 round=3 build=apt arm=held pid=53143 footprint=917376408
+give t=1794096596.505 round=3 build=apt arm=held answered_ms=222 freed=32768 unplugging=0
+host t=1794096596.964 round=3 build=apt arm=held pid=53143 footprint=915590552
+host t=1794096598.111 round=3 build=apt arm=held pid=53143 footprint=915590552
+give t=1794096598.378 round=3 build=apt arm=held answered_ms=90 freed=0 unplugging=0
+host t=1794096599.150 round=3 build=apt arm=held pid=53143 footprint=915590552
+host t=1794096600.205 round=3 build=apt arm=held pid=53143 footprint=915590552
+give t=1794096600.356 round=3 build=apt arm=held answered_ms=57 freed=0 unplugging=0
+host t=1794096601.249 round=3 build=apt arm=held pid=53143 footprint=915590552
+host t=1794096602.300 round=3 build=apt arm=held pid=53143 footprint=915590552
+give t=1794096602.384 round=3 build=apt arm=held answered_ms=75 freed=0 unplugging=0
+host t=1794096603.346 round=3 build=apt arm=held pid=53143 footprint=915590552
+give t=1794096604.322 round=3 build=apt arm=held answered_ms=3 freed=0 unplugging=0
+host t=1794096604.386 round=3 build=apt arm=held pid=53143 footprint=915590552
+host t=1794096605.429 round=3 build=apt arm=held pid=53143 footprint=915590552
+host t=1794096606.510 round=3 build=apt arm=held pid=53143 footprint=915590552
+give t=1794096606.772 round=3 build=apt arm=held answered_ms=443 freed=0 unplugging=0
+host t=1794096607.577 round=3 build=apt arm=held pid=53143 footprint=915590552
+host t=1794096608.649 round=3 build=apt arm=held pid=53143 footprint=915590552
+give t=1794096608.677 round=3 build=apt arm=held answered_ms=343 freed=0 unplugging=0
+build round=3 build=apt arm=held exit=0 s=29.6 budget=0 scope_anon_peak=0 scope_held_peak=0 scope_need_peak=0 held_cold=75915264 sync_s=0.1 writer_seen=0 writer_file_peak=0 writer_dirty_peak=0 steps=1:0.0,2:0.0,3:0.0,4:0.0,5:0.2,6:18.0,7:3.6
+host t=1794096611.241 round=3 build=rust arm=free pid=53755 footprint=33589312
+host t=1794096612.318 round=3 build=rust arm=free pid=53755 footprint=34113600
+host t=1794096613.409 round=3 build=rust arm=free pid=53755 footprint=45582400
+host t=1794096614.481 round=3 build=rust arm=free pid=53755 footprint=46221376
+host t=1794096615.543 round=3 build=rust arm=free pid=53755 footprint=48285760
+host t=1794096616.618 round=3 build=rust arm=free pid=53755 footprint=57854016
+host t=1794096617.682 round=3 build=rust arm=free pid=53755 footprint=59000896
+host t=1794096618.750 round=3 build=rust arm=free pid=53755 footprint=61376576
+host t=1794096619.820 round=3 build=rust arm=free pid=53755 footprint=66373720
+host t=1794096620.882 round=3 build=rust arm=free pid=53755 footprint=66373720
+host t=1794096621.960 round=3 build=rust arm=free pid=53755 footprint=66373720
+host t=1794096623.029 round=3 build=rust arm=free pid=53755 footprint=66373720
+host t=1794096624.102 round=3 build=rust arm=free pid=53755 footprint=66373720
+host t=1794096625.168 round=3 build=rust arm=free pid=53755 footprint=66373720
+host t=1794096626.238 round=3 build=rust arm=free pid=53755 footprint=77121624
+host t=1794096627.302 round=3 build=rust arm=free pid=53755 footprint=80578648
+host t=1794096628.370 round=3 build=rust arm=free pid=53755 footprint=87312520
+host t=1794096629.434 round=3 build=rust arm=free pid=53755 footprint=128027216
+host t=1794096630.507 round=3 build=rust arm=free pid=53755 footprint=130026088
+host t=1794096631.575 round=3 build=rust arm=free pid=53755 footprint=130075240
+host t=1794096632.646 round=3 build=rust arm=free pid=53755 footprint=137267888
+host t=1794096633.727 round=3 build=rust arm=free pid=53755 footprint=137267888
+host t=1794096634.802 round=3 build=rust arm=free pid=53755 footprint=137693872
+host t=1794096635.878 round=3 build=rust arm=free pid=53755 footprint=139020976
+host t=1794096636.951 round=3 build=rust arm=free pid=53755 footprint=139070128
+host t=1794096638.034 round=3 build=rust arm=free pid=53755 footprint=237587264
+host t=1794096639.082 round=3 build=rust arm=free pid=53755 footprint=239799104
+build round=3 build=rust arm=free exit=0 s=29.9 budget=0 scope_anon_peak=0 scope_held_peak=0 scope_need_peak=0 held_cold=3719168 sync_s=0.5 writer_seen=0 writer_file_peak=0 writer_dirty_peak=0 steps=1:0.0,2:0.0,3:0.0,4:0.2,5:28.4,6:0.4
+host t=1794096641.571 round=3 build=rust arm=held pid=55301 footprint=42584128
+host t=1794096642.644 round=3 build=rust arm=held pid=55301 footprint=56739904
+host t=1794096643.708 round=3 build=rust arm=held pid=55301 footprint=66340952
+host t=1794096644.790 round=3 build=rust arm=held pid=55301 footprint=66340952
+host t=1794096645.861 round=3 build=rust arm=held pid=55301 footprint=76531800
+host t=1794096646.935 round=3 build=rust arm=held pid=55301 footprint=79726680
+host t=1794096648.003 round=3 build=rust arm=held pid=55301 footprint=85608560
+host t=1794096649.053 round=3 build=rust arm=held pid=55301 footprint=114854096
+host t=1794096650.135 round=3 build=rust arm=held pid=55301 footprint=134646400
+give t=1794096651.073 round=3 build=rust arm=held answered_ms=37 freed=2785280 unplugging=0
+host t=1794096651.207 round=3 build=rust arm=held pid=55301 footprint=138676864
+host t=1794096652.291 round=3 build=rust arm=held pid=55301 footprint=139233920
+give t=1794096653.207 round=3 build=rust arm=held answered_ms=161 freed=2752512 unplugging=0
+host t=1794096653.353 round=3 build=rust arm=held pid=55301 footprint=140757632
+host t=1794096654.440 round=3 build=rust arm=held pid=55301 footprint=141970048
+give t=1794096655.085 round=3 build=rust arm=held answered_ms=31 freed=1818624 unplugging=0
+host t=1794096655.506 round=3 build=rust arm=held pid=55301 footprint=142412416
+host t=1794096656.606 round=3 build=rust arm=held pid=55301 footprint=142428800
+give t=1794096657.150 round=3 build=rust arm=held answered_ms=92 freed=1736704 unplugging=0
+host t=1794096657.679 round=3 build=rust arm=held pid=55301 footprint=143723136
+host t=1794096658.746 round=3 build=rust arm=held pid=55301 footprint=237226792
+give t=1794096659.095 round=3 build=rust arm=held answered_ms=28 freed=2605056 unplugging=0
+host t=1794096659.813 round=3 build=rust arm=held pid=55301 footprint=237243176
+build round=3 build=rust arm=held exit=0 s=19.9 budget=0 scope_anon_peak=0 scope_held_peak=0 scope_need_peak=0 held_cold=29794304 sync_s=0.4 writer_seen=0 writer_file_peak=0 writer_dirty_peak=0 steps=1:0.0,2:0.0,3:0.0,4:0.0,5:18.3,6:0.6
+host t=1794096663.113 round=3 build=npm arm=free pid=59457 footprint=33441904
+host t=1794096664.175 round=3 build=npm arm=free pid=59457 footprint=33966192
+host t=1794096665.246 round=3 build=npm arm=free pid=59457 footprint=45434992
+host t=1794096666.331 round=3 build=npm arm=free pid=59457 footprint=46090352
+host t=1794096667.401 round=3 build=npm arm=free pid=59457 footprint=56641648
+host t=1794096668.466 round=3 build=npm arm=free pid=59457 footprint=57722992
+host t=1794096669.529 round=3 build=npm arm=free pid=59457 footprint=58591344
+host t=1794096670.596 round=3 build=npm arm=free pid=59457 footprint=61360240
+host t=1794096671.666 round=3 build=npm arm=free pid=59457 footprint=66242696
+host t=1794096672.733 round=3 build=npm arm=free pid=59457 footprint=66242696
+host t=1794096673.795 round=3 build=npm arm=free pid=59457 footprint=66242696
+host t=1794096674.866 round=3 build=npm arm=free pid=59457 footprint=66242696
+host t=1794096675.925 round=3 build=npm arm=free pid=59457 footprint=66242696
+host t=1794096677.015 round=3 build=npm arm=free pid=59457 footprint=66242696
+host t=1794096678.088 round=3 build=npm arm=free pid=59457 footprint=76400776
+host t=1794096679.159 round=3 build=npm arm=free pid=59457 footprint=78989448
+host t=1794096680.199 round=3 build=npm arm=free pid=59457 footprint=230017376
+host t=1794096681.241 round=3 build=npm arm=free pid=59457 footprint=693537576
+host t=1794096682.298 round=3 build=npm arm=free pid=59457 footprint=853953536
+host t=1794096683.344 round=3 build=npm arm=free pid=59457 footprint=854100992
+host t=1794096684.388 round=3 build=npm arm=free pid=59457 footprint=701271016
+host t=1794096685.462 round=3 build=npm arm=free pid=59457 footprint=701271016
+host t=1794096686.533 round=3 build=npm arm=free pid=59457 footprint=701271016
+build round=3 build=npm arm=free exit=0 s=25.1 budget=0 scope_anon_peak=0 scope_held_peak=0 scope_need_peak=0 held_cold=25415680 sync_s=1.6 writer_seen=0 writer_file_peak=0 writer_dirty_peak=0 steps=1:0.0,2:0.0,3:0.0,4:0.2,6:0.1,8:20.4,9:2.4
+host t=1794096689.428 round=3 build=npm arm=held pid=60318 footprint=33654872
+host t=1794096690.492 round=3 build=npm arm=held pid=60318 footprint=45877336
+host t=1794096691.570 round=3 build=npm arm=held pid=60318 footprint=57837656
+host t=1794096692.643 round=3 build=npm arm=held pid=60318 footprint=66357360
+host t=1794096693.702 round=3 build=npm arm=held pid=60318 footprint=66357360
+host t=1794096694.765 round=3 build=npm arm=held pid=60318 footprint=66357360
+host t=1794096695.830 round=3 build=npm arm=held pid=60318 footprint=76253296
+host t=1794096696.916 round=3 build=npm arm=held pid=60318 footprint=80070768
+host t=1794096697.971 round=3 build=npm arm=held pid=60318 footprint=96258256
+host t=1794096699.020 round=3 build=npm arm=held pid=60318 footprint=587959008
+host t=1794096700.057 round=3 build=npm arm=held pid=60318 footprint=822660000
+give t=1794096700.203 round=3 build=npm arm=held answered_ms=60 freed=24973312 unplugging=0
+host t=1794096701.130 round=3 build=npm arm=held pid=60318 footprint=845433856
+give t=1794096702.155 round=3 build=npm arm=held answered_ms=6 freed=221184 unplugging=134217728
+host t=1794096702.183 round=3 build=npm arm=held pid=60318 footprint=676744144
+host t=1794096703.239 round=3 build=npm arm=held pid=60318 footprint=676744144
+give t=1794096704.160 round=3 build=npm arm=held answered_ms=2 freed=262144 unplugging=0
+host t=1794096704.317 round=3 build=npm arm=held pid=60318 footprint=650398672
+host t=1794096705.382 round=3 build=npm arm=held pid=60318 footprint=650398672
+give t=1794096706.158 round=3 build=npm arm=held answered_ms=0 freed=262144 unplugging=0
+host t=1794096706.445 round=3 build=npm arm=held pid=60318 footprint=648301520
+build round=3 build=npm arm=held exit=0 s=18.3 budget=0 scope_anon_peak=0 scope_held_peak=0 scope_need_peak=0 held_cold=25473024 sync_s=1.2 writer_seen=0 writer_file_peak=0 writer_dirty_peak=0 steps=1:0.0,2:0.0,3:0.0,4:0.0,6:0.0,8:13.3,9:2.9
+host t=1794096708.564 round=4 build=rust arm=held pid=61013 footprint=34064448
+host t=1794096709.652 round=4 build=rust arm=held pid=61013 footprint=45533248
+host t=1794096710.723 round=4 build=rust arm=held pid=61013 footprint=48187456
+host t=1794096711.802 round=4 build=rust arm=held pid=61013 footprint=57886784
+host t=1794096712.883 round=4 build=rust arm=held pid=61013 footprint=61458496
+host t=1794096713.947 round=4 build=rust arm=held pid=61013 footprint=66324568
+host t=1794096715.017 round=4 build=rust arm=held pid=61013 footprint=79038552
+host t=1794096716.100 round=4 build=rust arm=held pid=61013 footprint=129665664
+host t=1794096717.173 round=4 build=rust arm=held pid=61013 footprint=242879248
+give t=1794096717.985 round=4 build=rust arm=held answered_ms=64 freed=2969600 unplugging=0
+host t=1794096718.219 round=4 build=rust arm=held pid=61013 footprint=243059472
+build round=4 build=rust arm=held exit=0 s=11.3 budget=0 scope_anon_peak=0 scope_held_peak=0 scope_need_peak=0 held_cold=2957312 sync_s=0.8 writer_seen=0 writer_file_peak=0 writer_dirty_peak=0 steps=1:0.0,2:0.0,3:0.0,4:0.0,5:10.2,6:0.4
+host t=1794096720.241 round=4 build=rust arm=free pid=62004 footprint=45467712
+host t=1794096721.300 round=4 build=rust arm=free pid=62004 footprint=56657984
+host t=1794096722.366 round=4 build=rust arm=free pid=62004 footprint=59279424
+host t=1794096723.419 round=4 build=rust arm=free pid=62004 footprint=111118520
+host t=1794096724.486 round=4 build=rust arm=free pid=62004 footprint=239651576
+host t=1794096725.529 round=4 build=rust arm=free pid=62004 footprint=239979256
+build round=4 build=rust arm=free exit=0 s=7.4 budget=0 scope_anon_peak=0 scope_held_peak=0 scope_need_peak=0 held_cold=2953216 sync_s=0.3 writer_seen=0 writer_file_peak=0 writer_dirty_peak=0 steps=1:0.0,2:0.0,3:0.0,4:0.0,5:6.1,6:0.6
+host t=1794096728.068 round=4 build=npm arm=held pid=62152 footprint=33491008
+host t=1794096729.135 round=4 build=npm arm=held pid=62152 footprint=33638464
+host t=1794096730.213 round=4 build=npm arm=held pid=62152 footprint=34015296
+host t=1794096731.287 round=4 build=npm arm=held pid=62152 footprint=45484096
+host t=1794096732.361 round=4 build=npm arm=held pid=62152 footprint=45828160
+host t=1794096733.424 round=4 build=npm arm=held pid=62152 footprint=47319104
+host t=1794096734.504 round=4 build=npm arm=held pid=62152 footprint=58755136
+host t=1794096735.591 round=4 build=npm arm=held pid=62152 footprint=66291800
+host t=1794096736.651 round=4 build=npm arm=held pid=62152 footprint=66291800
+host t=1794096737.717 round=4 build=npm arm=held pid=62152 footprint=66291800
+host t=1794096738.789 round=4 build=npm arm=held pid=62152 footprint=66291800
+host t=1794096739.848 round=4 build=npm arm=held pid=62152 footprint=66291800
+host t=1794096740.915 round=4 build=npm arm=held pid=62152 footprint=66291800
+host t=1794096741.997 round=4 build=npm arm=held pid=62152 footprint=66291800
+host t=1794096743.076 round=4 build=npm arm=held pid=62152 footprint=75728984
+host t=1794096744.152 round=4 build=npm arm=held pid=62152 footprint=76793944
+host t=1794096745.228 round=4 build=npm arm=held pid=62152 footprint=78563416
+host t=1794096746.298 round=4 build=npm arm=held pid=62152 footprint=80119896
+host t=1794096747.358 round=4 build=npm arm=held pid=62152 footprint=86296664
+host t=1794096748.442 round=4 build=npm arm=held pid=62152 footprint=87197808
+host t=1794096749.498 round=4 build=npm arm=held pid=62152 footprint=112625920
+host t=1794096750.549 round=4 build=npm arm=held pid=62152 footprint=673844056
+give t=1794096751.424 round=4 build=npm arm=held answered_ms=43 freed=26275840 unplugging=134217728
+host t=1794096751.588 round=4 build=npm arm=held pid=62152 footprint=679726128
+host t=1794096752.650 round=4 build=npm arm=held pid=62152 footprint=680102984
+give t=1794096753.542 round=4 build=npm arm=held answered_ms=151 freed=131072 unplugging=0
+host t=1794096753.704 round=4 build=npm arm=held pid=62152 footprint=675925064
+host t=1794096754.754 round=4 build=npm arm=held pid=62152 footprint=675925064
+host t=1794096755.826 round=4 build=npm arm=held pid=62152 footprint=675925064
+give t=1794096755.973 round=4 build=npm arm=held answered_ms=579 freed=131072 unplugging=0
+host t=1794096756.893 round=4 build=npm arm=held pid=62152 footprint=675925064
+give t=1794096757.668 round=4 build=npm arm=held answered_ms=267 freed=262144 unplugging=0
+build round=4 build=npm arm=held exit=0 s=31.0 budget=0 scope_anon_peak=0 scope_held_peak=0 scope_need_peak=0 held_cold=25399296 sync_s=0.4 writer_seen=0 writer_file_peak=0 writer_dirty_peak=0 steps=1:0.0,2:0.0,3:0.0,4:0.0,6:0.0,8:25.9,9:3.0
+host t=1794096759.600 round=4 build=npm arm=free pid=62913 footprint=33507416
+host t=1794096760.671 round=4 build=npm arm=free pid=62913 footprint=34031704
+host t=1794096761.745 round=4 build=npm arm=free pid=62913 footprint=34031704
+host t=1794096762.824 round=4 build=npm arm=free pid=62913 footprint=45500504
+host t=1794096763.898 round=4 build=npm arm=free pid=62913 footprint=45828184
+host t=1794096764.961 round=4 build=npm arm=free pid=62913 footprint=47859800
+host t=1794096766.027 round=4 build=npm arm=free pid=62913 footprint=57083992
+host t=1794096767.097 round=4 build=npm arm=free pid=62913 footprint=58509400
+host t=1794096768.156 round=4 build=npm arm=free pid=62913 footprint=58935384
+host t=1794096769.228 round=4 build=npm arm=free pid=62913 footprint=62261336
+host t=1794096770.313 round=4 build=npm arm=free pid=62913 footprint=66291824
+host t=1794096771.393 round=4 build=npm arm=free pid=62913 footprint=66291824
+host t=1794096772.453 round=4 build=npm arm=free pid=62913 footprint=66291824
+host t=1794096773.519 round=4 build=npm arm=free pid=62913 footprint=66291824
+host t=1794096774.588 round=4 build=npm arm=free pid=62913 footprint=66291824
+host t=1794096775.650 round=4 build=npm arm=free pid=62913 footprint=66291824
+host t=1794096776.721 round=4 build=npm arm=free pid=62913 footprint=66291824
+host t=1794096777.782 round=4 build=npm arm=free pid=62913 footprint=75810928
+host t=1794096778.849 round=4 build=npm arm=free pid=62913 footprint=76482672
+host t=1794096779.915 round=4 build=npm arm=free pid=62913 footprint=76793968
+host t=1794096780.982 round=4 build=npm arm=free pid=62913 footprint=78448752
+host t=1794096782.049 round=4 build=npm arm=free pid=62913 footprint=80283760
+host t=1794096783.118 round=4 build=npm arm=free pid=62913 footprint=86362224
+host t=1794096784.179 round=4 build=npm arm=free pid=62913 footprint=87279752
+host t=1794096785.240 round=4 build=npm arm=free pid=62913 footprint=87378056
+host t=1794096786.313 round=4 build=npm arm=free pid=62913 footprint=98306280
+host t=1794096787.350 round=4 build=npm arm=free pid=62913 footprint=372296200
+host t=1794096788.413 round=4 build=npm arm=free pid=62913 footprint=698010528
+host t=1794096789.455 round=4 build=npm arm=free pid=62913 footprint=846203904
+host t=1794096790.536 round=4 build=npm arm=free pid=62913 footprint=706710600
+host t=1794096791.607 round=4 build=npm arm=free pid=62913 footprint=706710600
+host t=1794096792.664 round=4 build=npm arm=free pid=62913 footprint=706710600
+host t=1794096793.727 round=4 build=npm arm=free pid=62913 footprint=706710600
+host t=1794096794.802 round=4 build=npm arm=free pid=62913 footprint=706710600
+host t=1794096795.882 round=4 build=npm arm=free pid=62913 footprint=706710600
+host t=1794096796.941 round=4 build=npm arm=free pid=62913 footprint=689933384
+build round=4 build=npm arm=free exit=0 s=38.9 budget=0 scope_anon_peak=0 scope_held_peak=0 scope_need_peak=0 held_cold=25227264 sync_s=0.4 writer_seen=0 writer_file_peak=0 writer_dirty_peak=0 steps=1:0.0,2:0.0,3:0.0,4:0.0,6:0.1,8:32.9,9:3.8
+host t=1794096799.785 round=4 build=apt arm=held pid=68971 footprint=33540184
+host t=1794096800.848 round=4 build=apt arm=held pid=68971 footprint=33687640
+host t=1794096801.923 round=4 build=apt arm=held pid=68971 footprint=34064472
+host t=1794096802.991 round=4 build=apt arm=held pid=68971 footprint=45533272
+host t=1794096804.049 round=4 build=apt arm=held pid=68971 footprint=45860952
+host t=1794096805.120 round=4 build=apt arm=held pid=68971 footprint=46172248
+host t=1794096806.189 round=4 build=apt arm=held pid=68971 footprint=56723544
+host t=1794096807.250 round=4 build=apt arm=held pid=68971 footprint=57804888
+host t=1794096808.308 round=4 build=apt arm=held pid=68971 footprint=58542168
+host t=1794096809.374 round=4 build=apt arm=held pid=68971 footprint=59623512
+host t=1794096810.438 round=4 build=apt arm=held pid=68971 footprint=66324592
+host t=1794096811.507 round=4 build=apt arm=held pid=68971 footprint=66324592
+host t=1794096812.572 round=4 build=apt arm=held pid=68971 footprint=66324592
+host t=1794096813.631 round=4 build=apt arm=held pid=68971 footprint=66324592
+host t=1794096814.703 round=4 build=apt arm=held pid=68971 footprint=66324592
+host t=1794096815.772 round=4 build=apt arm=held pid=68971 footprint=66324592
+host t=1794096816.836 round=4 build=apt arm=held pid=68971 footprint=66324592
+host t=1794096817.907 round=4 build=apt arm=held pid=68971 footprint=66324592
+host t=1794096818.977 round=4 build=apt arm=held pid=68971 footprint=66324592
+host t=1794096820.045 round=4 build=apt arm=held pid=68971 footprint=66324592
+host t=1794096821.113 round=4 build=apt arm=held pid=68971 footprint=66324592
+host t=1794096822.176 round=4 build=apt arm=held pid=68971 footprint=66324592
+host t=1794096823.272 round=4 build=apt arm=held pid=68971 footprint=66324592
+host t=1794096824.338 round=4 build=apt arm=held pid=68971 footprint=66324592
+host t=1794096825.404 round=4 build=apt arm=held pid=68971 footprint=66324592
+host t=1794096826.468 round=4 build=apt arm=held pid=68971 footprint=66324592
+host t=1794096827.560 round=4 build=apt arm=held pid=68971 footprint=74549360
+host t=1794096828.632 round=4 build=apt arm=held pid=68971 footprint=76482672
+host t=1794096829.700 round=4 build=apt arm=held pid=68971 footprint=76810352
+host t=1794096830.761 round=4 build=apt arm=held pid=68971 footprint=77072496
+host t=1794096831.827 round=4 build=apt arm=held pid=68971 footprint=80021616
+host t=1794096832.877 round=4 build=apt arm=held pid=68971 footprint=86034544
+host t=1794096833.940 round=4 build=apt arm=held pid=68971 footprint=86870128
+host t=1794096835.003 round=4 build=apt arm=held pid=68971 footprint=94144696
+host t=1794096836.048 round=4 build=apt arm=held pid=68971 footprint=103352528
+host t=1794096837.086 round=4 build=apt arm=held pid=68971 footprint=297224688
+give t=1794096838.079 round=4 build=apt arm=held answered_ms=60 freed=27168768 unplugging=0
+host t=1794096838.133 round=4 build=apt arm=held pid=68971 footprint=376949376
+host t=1794096839.180 round=4 build=apt arm=held pid=68971 footprint=534399760
+give t=1794096840.075 round=4 build=apt arm=held answered_ms=47 freed=17043456 unplugging=268435456
+host t=1794096840.215 round=4 build=apt arm=held pid=68971 footprint=678317080
+host t=1794096841.261 round=4 build=apt arm=held pid=68971 footprint=912477496
+give t=1794096842.247 round=4 build=apt arm=held answered_ms=218 freed=31301632 unplugging=402653184
+host t=1794096842.312 round=4 build=apt arm=held pid=68971 footprint=1011699168
+host t=1794096843.366 round=4 build=apt arm=held pid=68971 footprint=1022774776
+host t=1794096844.450 round=4 build=apt arm=held pid=68971 footprint=983059984
+give t=1794096844.538 round=4 build=apt arm=held answered_ms=502 freed=258048 unplugging=134217728
+host t=1794096845.519 round=4 build=apt arm=held pid=68971 footprint=985615888
+host t=1794096846.573 round=4 build=apt arm=held pid=68971 footprint=986205712
+give t=1794096846.669 round=4 build=apt arm=held answered_ms=631 freed=131072 unplugging=0
+host t=1794096847.640 round=4 build=apt arm=held pid=68971 footprint=986402320
+give t=1794096848.171 round=4 build=apt arm=held answered_ms=133 freed=131072 unplugging=0
+host t=1794096848.686 round=4 build=apt arm=held pid=68971 footprint=986435088
+host t=1794096849.744 round=4 build=apt arm=held pid=68971 footprint=1088441920
+give t=1794096850.223 round=4 build=apt arm=held answered_ms=185 freed=72769536 unplugging=0
+host t=1794096850.816 round=4 build=apt arm=held pid=68971 footprint=1016712720
+host t=1794096851.886 round=4 build=apt arm=held pid=68971 footprint=1027132944
+give t=1794096852.195 round=4 build=apt arm=held answered_ms=147 freed=0 unplugging=134217728
+host t=1794096852.964 round=4 build=apt arm=held pid=68971 footprint=938806680
+host t=1794096854.035 round=4 build=apt arm=held pid=68971 footprint=892652928
+give t=1794096854.092 round=4 build=apt arm=held answered_ms=34 freed=0 unplugging=0
+host t=1794096855.107 round=4 build=apt arm=held pid=68971 footprint=892652928
+give t=1794096856.068 round=4 build=apt arm=held answered_ms=0 freed=0 unplugging=0
+host t=1794096856.155 round=4 build=apt arm=held pid=68971 footprint=892652928
+host t=1794096857.211 round=4 build=apt arm=held pid=68971 footprint=890555776
+give t=1794096858.072 round=4 build=apt arm=held answered_ms=0 freed=0 unplugging=0
+host t=1794096858.256 round=4 build=apt arm=held pid=68971 footprint=890555776
+host t=1794096859.299 round=4 build=apt arm=held pid=68971 footprint=890555776
+give t=1794096860.074 round=4 build=apt arm=held answered_ms=0 freed=0 unplugging=0
+host t=1794096860.354 round=4 build=apt arm=held pid=68971 footprint=890555776
+host t=1794096861.400 round=4 build=apt arm=held pid=68971 footprint=890555776
+give t=1794096862.084 round=4 build=apt arm=held answered_ms=0 freed=0 unplugging=0
+host t=1794096862.451 round=4 build=apt arm=held pid=68971 footprint=890555776
+host t=1794096863.499 round=4 build=apt arm=held pid=68971 footprint=890555776
+give t=1794096864.188 round=4 build=apt arm=held answered_ms=101 freed=0 unplugging=0
+host t=1794096864.571 round=4 build=apt arm=held pid=68971 footprint=890555776
+host t=1794096865.633 round=4 build=apt arm=held pid=68971 footprint=890555776
+give t=1794096866.185 round=4 build=apt arm=held answered_ms=92 freed=0 unplugging=0
+host t=1794096866.709 round=4 build=apt arm=held pid=68971 footprint=890555776
+build round=4 build=apt arm=held exit=0 s=68.2 budget=0 scope_anon_peak=0 scope_held_peak=0 scope_need_peak=0 held_cold=70266880 sync_s=1.2 writer_seen=0 writer_file_peak=0 writer_dirty_peak=0 steps=1:0.0,2:0.0,3:0.0,4:0.1,5:37.3,6:19.6,7:3.4
+host t=1794096869.268 round=4 build=apt arm=free pid=72080 footprint=33474648
+host t=1794096870.335 round=4 build=apt arm=free pid=72080 footprint=33998936
+host t=1794096871.407 round=4 build=apt arm=free pid=72080 footprint=42502232
+host t=1794096872.471 round=4 build=apt arm=free pid=72080 footprint=45467736
+host t=1794096873.547 round=4 build=apt arm=free pid=72080 footprint=47319128
+host t=1794096874.611 round=4 build=apt arm=free pid=72080 footprint=56789080
+host t=1794096875.684 round=4 build=apt arm=free pid=72080 footprint=57788504
+host t=1794096876.749 round=4 build=apt arm=free pid=72080 footprint=58919000
+host t=1794096877.821 round=4 build=apt arm=free pid=72080 footprint=66291824
+host t=1794096878.885 round=4 build=apt arm=free pid=72080 footprint=66291824
+host t=1794096879.960 round=4 build=apt arm=free pid=72080 footprint=66291824
+host t=1794096881.024 round=4 build=apt arm=free pid=72080 footprint=66291824
+host t=1794096882.091 round=4 build=apt arm=free pid=72080 footprint=66291824
+host t=1794096883.161 round=4 build=apt arm=free pid=72080 footprint=76777584
+host t=1794096884.223 round=4 build=apt arm=free pid=72080 footprint=79644784
+host t=1794096885.287 round=4 build=apt arm=free pid=72080 footprint=84969584
+host t=1794096886.330 round=4 build=apt arm=free pid=72080 footprint=91801760
+host t=1794096887.393 round=4 build=apt arm=free pid=72080 footprint=109529416
+host t=1794096888.448 round=4 build=apt arm=free pid=72080 footprint=113101176
+host t=1794096889.499 round=4 build=apt arm=free pid=72080 footprint=297765360
+host t=1794096890.554 round=4 build=apt arm=free pid=72080 footprint=368806576
+host t=1794096891.604 round=4 build=apt arm=free pid=72080 footprint=522734400
+host t=1794096892.655 round=4 build=apt arm=free pid=72080 footprint=683314224
+host t=1794096893.715 round=4 build=apt arm=free pid=72080 footprint=937479576
+host t=1794096894.780 round=4 build=apt arm=free pid=72080 footprint=1069518328
+host t=1794096895.839 round=4 build=apt arm=free pid=72080 footprint=1096076816
+host t=1794096896.916 round=4 build=apt arm=free pid=72080 footprint=1127468656
+host t=1794096897.984 round=4 build=apt arm=free pid=72080 footprint=1128173168
+host t=1794096899.049 round=4 build=apt arm=free pid=72080 footprint=1086836312
+host t=1794096900.119 round=4 build=apt arm=free pid=72080 footprint=1147801224
+host t=1794096901.183 round=4 build=apt arm=free pid=72080 footprint=1193135752
+host t=1794096902.267 round=4 build=apt arm=free pid=72080 footprint=1245679240
+host t=1794096903.338 round=4 build=apt arm=free pid=72080 footprint=1245695624
+host t=1794096904.413 round=4 build=apt arm=free pid=72080 footprint=1044614720
+host t=1794096905.485 round=4 build=apt arm=free pid=72080 footprint=1044614720
+host t=1794096906.552 round=4 build=apt arm=free pid=72080 footprint=1044614720
+host t=1794096907.594 round=4 build=apt arm=free pid=72080 footprint=1044614720
+host t=1794096908.653 round=4 build=apt arm=free pid=72080 footprint=1044614720
+host t=1794096909.700 round=4 build=apt arm=free pid=72080 footprint=1044614720
+host t=1794096910.749 round=4 build=apt arm=free pid=72080 footprint=1044614720
+host t=1794096911.802 round=4 build=apt arm=free pid=72080 footprint=1044614720
+host t=1794096912.840 round=4 build=apt arm=free pid=72080 footprint=1044614720
+host t=1794096913.889 round=4 build=apt arm=free pid=72080 footprint=1044614720
+host t=1794096914.976 round=4 build=apt arm=free pid=72080 footprint=1044614720
+host t=1794096916.056 round=4 build=apt arm=free pid=72080 footprint=1044614720
+host t=1794096917.143 round=4 build=apt arm=free pid=72080 footprint=1044614720
+build round=4 build=apt arm=free exit=0 s=49.7 budget=0 scope_anon_peak=0 scope_held_peak=0 scope_need_peak=0 held_cold=128798720 sync_s=1.2 writer_seen=0 writer_file_peak=0 writer_dirty_peak=0 steps=1:0.0,2:0.0,3:0.0,4:0.0,5:18.8,6:19.8,7:3.0
+host t=1794096919.670 round=5 build=npm arm=free pid=75205 footprint=34244768
+host t=1794096920.743 round=5 build=npm arm=free pid=75205 footprint=46352544
+host t=1794096921.816 round=5 build=npm arm=free pid=75205 footprint=59148448
+host t=1794096922.888 round=5 build=npm arm=free pid=75205 footprint=66504888
+host t=1794096923.951 round=5 build=npm arm=free pid=75205 footprint=66504888
+host t=1794096925.003 round=5 build=npm arm=free pid=75205 footprint=80300216
+host t=1794096926.078 round=5 build=npm arm=free pid=75205 footprint=89884880
+host t=1794096927.137 round=5 build=npm arm=free pid=75205 footprint=393906696
+host t=1794096928.202 round=5 build=npm arm=free pid=75205 footprint=807603152
+host t=1794096929.270 round=5 build=npm arm=free pid=75205 footprint=852003864
+host t=1794096930.338 round=5 build=npm arm=free pid=75205 footprint=700877848
+host t=1794096931.399 round=5 build=npm arm=free pid=75205 footprint=700877848
+host t=1794096932.488 round=5 build=npm arm=free pid=75205 footprint=700877848
+host t=1794096933.571 round=5 build=npm arm=free pid=75205 footprint=700877848
+host t=1794096934.640 round=5 build=npm arm=free pid=75205 footprint=700877848
+build round=5 build=npm arm=free exit=0 s=17.2 budget=0 scope_anon_peak=0 scope_held_peak=0 scope_need_peak=0 held_cold=25305088 sync_s=0.7 writer_seen=0 writer_file_peak=0 writer_dirty_peak=0 steps=1:0.0,2:0.0,3:0.0,4:0.0,6:0.0,8:11.5,9:3.4
+host t=1794096937.416 round=5 build=npm arm=held pid=75623 footprint=33540160
+host t=1794096938.474 round=5 build=npm arm=held pid=75623 footprint=34064448
+host t=1794096939.549 round=5 build=npm arm=held pid=75623 footprint=45533248
+host t=1794096940.621 round=5 build=npm arm=held pid=75623 footprint=47351872
+host t=1794096941.683 round=5 build=npm arm=held pid=75623 footprint=57804864
+host t=1794096942.747 round=5 build=npm arm=held pid=75623 footprint=58968128
+host t=1794096943.805 round=5 build=npm arm=held pid=75623 footprint=66324568
+host t=1794096944.868 round=5 build=npm arm=held pid=75623 footprint=66324568
+host t=1794096945.935 round=5 build=npm arm=held pid=75623 footprint=66324568
+host t=1794096946.998 round=5 build=npm arm=held pid=75623 footprint=66324568
+host t=1794096948.059 round=5 build=npm arm=held pid=75623 footprint=66324568
+host t=1794096949.151 round=5 build=npm arm=held pid=75623 footprint=66324568
+host t=1794096950.232 round=5 build=npm arm=held pid=75623 footprint=74975320
+host t=1794096951.302 round=5 build=npm arm=held pid=75623 footprint=76826712
+host t=1794096952.363 round=5 build=npm arm=held pid=75623 footprint=80382040
+host t=1794096953.445 round=5 build=npm arm=held pid=75623 footprint=87033944
+host t=1794096954.485 round=5 build=npm arm=held pid=75623 footprint=100599968
+host t=1794096955.534 round=5 build=npm arm=held pid=75623 footprint=503712384
+host t=1794096956.576 round=5 build=npm arm=held pid=75623 footprint=855182288
+give t=1794096956.721 round=5 build=npm arm=held answered_ms=66 freed=26046464 unplugging=134217728
+host t=1794096957.643 round=5 build=npm arm=held pid=75623 footprint=667208632
+host t=1794096958.688 round=5 build=npm arm=held pid=75623 footprint=667208632
+give t=1794096958.797 round=5 build=npm arm=held answered_ms=142 freed=131072 unplugging=0
+host t=1794096959.723 round=5 build=npm arm=held pid=75623 footprint=660392888
+host t=1794096960.791 round=5 build=npm arm=held pid=75623 footprint=660392888
+give t=1794096960.843 round=5 build=npm arm=held answered_ms=187 freed=262144 unplugging=0
+host t=1794096961.852 round=5 build=npm arm=held pid=75623 footprint=660392888
+give t=1794096962.888 round=5 build=npm arm=held answered_ms=230 freed=266240 unplugging=0
+build round=5 build=npm arm=held exit=0 s=26.6 budget=0 scope_anon_peak=0 scope_held_peak=0 scope_need_peak=0 held_cold=25288704 sync_s=0.5 writer_seen=0 writer_file_peak=0 writer_dirty_peak=0 steps=1:0.0,2:0.0,3:0.0,4:0.0,6:0.1,8:21.5,9:2.9
+host t=1794096966.592 round=5 build=apt arm=free pid=76574 footprint=61048920
+host t=1794096967.653 round=5 build=apt arm=free pid=76574 footprint=66340976
+host t=1794096968.712 round=5 build=apt arm=free pid=76574 footprint=80038000
+host t=1794096969.760 round=5 build=apt arm=free pid=76574 footprint=109513032
+host t=1794096970.815 round=5 build=apt arm=free pid=76574 footprint=176245112
+host t=1794096971.864 round=5 build=apt arm=free pid=76574 footprint=338479720
+host t=1794096972.920 round=5 build=apt arm=free pid=76574 footprint=467356360
+host t=1794096973.962 round=5 build=apt arm=free pid=76574 footprint=592350064
+host t=1794096975.017 round=5 build=apt arm=free pid=76574 footprint=871697576
+host t=1794096976.070 round=5 build=apt arm=free pid=76574 footprint=940346752
+host t=1794096977.113 round=5 build=apt arm=free pid=76574 footprint=1075645944
+host t=1794096978.181 round=5 build=apt arm=free pid=76574 footprint=1115704872
+host t=1794096979.244 round=5 build=apt arm=free pid=76574 footprint=1074744896
+host t=1794096980.302 round=5 build=apt arm=free pid=76574 footprint=1075613248
+host t=1794096981.369 round=5 build=apt arm=free pid=76574 footprint=1076186640
+host t=1794096982.435 round=5 build=apt arm=free pid=76574 footprint=1156238936
+host t=1794096983.504 round=5 build=apt arm=free pid=76574 footprint=1218825864
+host t=1794096984.579 round=5 build=apt arm=free pid=76574 footprint=1247317640
+host t=1794096985.637 round=5 build=apt arm=free pid=76574 footprint=1247317640
+host t=1794096986.683 round=5 build=apt arm=free pid=76574 footprint=1018089000
+host t=1794096987.726 round=5 build=apt arm=free pid=76574 footprint=1018089000
+host t=1794096988.773 round=5 build=apt arm=free pid=76574 footprint=1018089000
+host t=1794096989.814 round=5 build=apt arm=free pid=76574 footprint=1018089000
+host t=1794096990.850 round=5 build=apt arm=free pid=76574 footprint=1018089000
+host t=1794096991.890 round=5 build=apt arm=free pid=76574 footprint=1018089000
+host t=1794096992.927 round=5 build=apt arm=free pid=76574 footprint=1018089000
+build round=5 build=apt arm=free exit=0 s=27.6 budget=0 scope_anon_peak=0 scope_held_peak=0 scope_need_peak=0 held_cold=141791232 sync_s=2.4 writer_seen=0 writer_file_peak=0 writer_dirty_peak=0 steps=1:0.0,2:0.0,3:0.0,4:0.0,5:4.0,6:15.6,7:0.4
+host t=1794096994.289 round=5 build=apt arm=held pid=77188 footprint=108431664
+host t=1794096995.359 round=5 build=apt arm=held pid=77188 footprint=108448048
+give t=1794096995.588 round=5 build=apt arm=held answered_ms=11 freed=401408 unplugging=0
+host t=1794096996.413 round=5 build=apt arm=held pid=77188 footprint=109332784
+host t=1794096997.484 round=5 build=apt arm=held pid=77188 footprint=109332784
+give t=1794096997.582 round=5 build=apt arm=held answered_ms=1 freed=475136 unplugging=0
+host t=1794096998.554 round=5 build=apt arm=held pid=77188 footprint=109349168
+give t=1794096999.582 round=5 build=apt arm=held answered_ms=1 freed=946176 unplugging=0
+host t=1794096999.600 round=5 build=apt arm=held pid=77188 footprint=158878120
+host t=1794097000.651 round=5 build=apt arm=held pid=77188 footprint=315968056
+give t=1794097001.597 round=5 build=apt arm=held answered_ms=6 freed=31473664 unplugging=0
+host t=1794097001.690 round=5 build=apt arm=held pid=77188 footprint=451627768
+host t=1794097002.743 round=5 build=apt arm=held pid=77188 footprint=583109512
+give t=1794097003.602 round=5 build=apt arm=held answered_ms=10 freed=26947584 unplugging=0
+host t=1794097003.793 round=5 build=apt arm=held pid=77188 footprint=814550208
+host t=1794097004.847 round=5 build=apt arm=held pid=77188 footprint=904957288
+give t=1794097005.655 round=5 build=apt arm=held answered_ms=62 freed=34750464 unplugging=0
+host t=1794097005.892 round=5 build=apt arm=held pid=77188 footprint=1032506824
+host t=1794097006.946 round=5 build=apt arm=held pid=77188 footprint=1043271184
+give t=1794097007.717 round=5 build=apt arm=held answered_ms=113 freed=286720 unplugging=0
+host t=1794097008.009 round=5 build=apt arm=held pid=77188 footprint=1000377848
+host t=1794097009.069 round=5 build=apt arm=held pid=77188 footprint=1000918520
+give t=1794097009.742 round=5 build=apt arm=held answered_ms=138 freed=131072 unplugging=0
+host t=1794097010.149 round=5 build=apt arm=held pid=77188 footprint=1063423504
+host t=1794097011.216 round=5 build=apt arm=held pid=77188 footprint=1115147840
+host t=1794097012.299 round=5 build=apt arm=held pid=77188 footprint=1035619928
+give t=1794097012.301 round=5 build=apt arm=held answered_ms=688 freed=182714368 unplugging=134217728
+host t=1794097013.345 round=5 build=apt arm=held pid=77188 footprint=937496104
+give t=1794097013.617 round=5 build=apt arm=held answered_ms=0 freed=0 unplugging=0
+host t=1794097014.390 round=5 build=apt arm=held pid=77188 footprint=933301800
+host t=1794097015.429 round=5 build=apt arm=held pid=77188 footprint=933301800
+give t=1794097015.658 round=5 build=apt arm=held answered_ms=39 freed=0 unplugging=0
+host t=1794097016.482 round=5 build=apt arm=held pid=77188 footprint=933301800
+host t=1794097017.539 round=5 build=apt arm=held pid=77188 footprint=933301800
+give t=1794097017.675 round=5 build=apt arm=held answered_ms=46 freed=0 unplugging=0
+host t=1794097018.578 round=5 build=apt arm=held pid=77188 footprint=933301800
+host t=1794097019.624 round=5 build=apt arm=held pid=77188 footprint=933301800
+give t=1794097019.638 round=5 build=apt arm=held answered_ms=0 freed=0 unplugging=0
+host t=1794097020.670 round=5 build=apt arm=held pid=77188 footprint=933301800
+build round=5 build=apt arm=held exit=0 s=27.7 budget=0 scope_anon_peak=0 scope_held_peak=0 scope_need_peak=0 held_cold=63320064 sync_s=0.1 writer_seen=0 writer_file_peak=0 writer_dirty_peak=0 steps=1:0.0,2:0.0,3:0.0,4:0.0,5:0.4,6:19.5,7:0.3
+host t=1794097022.104 round=5 build=rust arm=free pid=77887 footprint=138054248
+build round=5 build=rust arm=free exit=0 s=2.0 budget=0 scope_anon_peak=0 scope_held_peak=0 scope_need_peak=0 held_cold=2949120 sync_s=0.1 writer_seen=0 writer_file_peak=0 writer_dirty_peak=0 steps=1:0.0,2:0.0,3:0.0,4:0.0,5:1.3,6:0.1
+host t=1794097024.186 round=5 build=rust arm=held pid=77915 footprint=140003992
+build round=5 build=rust arm=held exit=0 s=2.0 budget=0 scope_anon_peak=0 scope_held_peak=0 scope_need_peak=0 held_cold=2957312 sync_s=0.1 writer_seen=0 writer_file_peak=0 writer_dirty_peak=0 steps=1:0.0,2:0.0,3:0.0,4:0.0,5:1.2,6:0.1
+done

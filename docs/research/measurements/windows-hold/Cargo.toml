@@ -1,0 +1,12 @@
+# The vCPU hold's clocks, waits and governor on Windows (D191 slice 2, PM M294): a crate of
+# its own, outside the workspace. On a Windows host: `cargo run --release -- [CPUS]`.
+[package]
+name = "windows-hold"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_Media", "Win32_System_WindowsProgramming"] }

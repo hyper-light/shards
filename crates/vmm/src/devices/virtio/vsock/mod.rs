@@ -12,16 +12,19 @@ pub mod packet;
 mod poll;
 
 use std::io;
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
-use std::path::Path;
+#[cfg(unix)]
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
 use std::time::Instant;
 
-use super::queue::{Chain, Queue, QueueError};
+use super::queue::{Chain, Queue, QueueError, with};
 use super::{Activation, DeviceInterrupt, VirtioDevice, feature};
-use crate::memory::GuestMemory;
+use crate::memory::{Access, GuestMemory};
+#[cfg(unix)]
+use crate::platform::RawSocket;
+use crate::platform::UnixStream;
 use crate::snapshot::codec::{self, Reader, Writer};
 use crate::{debug, warn};
 use muxer::{Muxer, Saved, Token};
@@ -44,6 +47,7 @@ pub struct Span {
     pub len: usize,
 }
 
+#[cfg(unix)]
 fn iovecs(spans: &[Span], max: usize) -> Vec<libc::iovec> {
     let mut left = max;
     let mut out = Vec::with_capacity(spans.len());
@@ -61,14 +65,16 @@ fn iovecs(spans: &[Span], max: usize) -> Vec<libc::iovec> {
     out
 }
 
-/// Reads at most `max` bytes from `fd` into `spans`, in one readv(2).
-fn readv(fd: RawFd, spans: &[Span], max: usize) -> io::Result<usize> {
+/// Reads at most `max` bytes from `stream` into `spans`, in one readv(2).
+#[cfg(unix)]
+fn readv(stream: &UnixStream, spans: &[Span], max: usize) -> io::Result<usize> {
+    let fd = stream.as_raw_fd();
     let iov = iovecs(spans, max);
     if iov.is_empty() {
         return Err(io::ErrorKind::WouldBlock.into());
     }
     loop {
-        // SAFETY: every iovec lies in guest RAM, checked by host_ptr when its span was
+        // SAFETY: every iovec lies in guest memory, checked by io_ptr when its span was
         // made; the kernel writes there without Rust aliasing it.
         let n = unsafe { libc::readv(fd, iov.as_ptr(), iov.len() as libc::c_int) };
         if let Ok(n) = usize::try_from(n) {
@@ -81,8 +87,10 @@ fn readv(fd: RawFd, spans: &[Span], max: usize) -> io::Result<usize> {
     }
 }
 
-/// Writes at most `max` bytes of `spans` to `fd`, in one writev(2).
-fn writev(fd: RawFd, spans: &[Span], max: usize) -> io::Result<usize> {
+/// Writes at most `max` bytes of `spans` to `stream`, in one writev(2).
+#[cfg(unix)]
+fn writev(stream: &UnixStream, spans: &[Span], max: usize) -> io::Result<usize> {
+    let fd = stream.as_raw_fd();
     let iov = iovecs(spans, max);
     if iov.is_empty() {
         return Ok(0);
@@ -100,34 +108,104 @@ fn writev(fd: RawFd, spans: &[Span], max: usize) -> io::Result<usize> {
     }
 }
 
+/// `spans`, at most `max` bytes of them, as (pointer, length) runs.
+#[cfg(windows)]
+fn runs(spans: &[Span], max: usize) -> Vec<(*mut u8, usize)> {
+    let mut left = max;
+    let mut out = Vec::with_capacity(spans.len());
+    for s in spans {
+        if left == 0 {
+            break;
+        }
+        let n = s.len.min(left);
+        out.push((s.ptr, n));
+        left -= n;
+    }
+    out
+}
+
+/// Reads at most `max` bytes from `stream` into `spans`, in one WSARecv.
+#[cfg(windows)]
+fn readv(stream: &UnixStream, spans: &[Span], max: usize) -> io::Result<usize> {
+    let runs = runs(spans, max);
+    if runs.is_empty() {
+        return Err(io::ErrorKind::WouldBlock.into());
+    }
+    // SAFETY: every run lies in guest memory, checked by io_ptr when its span was made;
+    // Winsock writes there without Rust aliasing it.
+    unsafe { stream.readv(&runs) }
+}
+
+/// Writes at most `max` bytes of `spans` to `stream`, in one WSASend.
+#[cfg(windows)]
+fn writev(stream: &UnixStream, spans: &[Span], max: usize) -> io::Result<usize> {
+    let runs: Vec<(*const u8, usize)> = runs(spans, max)
+        .into_iter()
+        .map(|(p, l)| (p.cast_const(), l))
+        .collect();
+    if runs.is_empty() {
+        return Ok(0);
+    }
+    // SAFETY: as in `readv`; Winsock only reads guest memory here.
+    unsafe { stream.writev(&runs) }
+}
+
+/// A pipe, close-on-exec and non-blocking: its read end, then its write end. Linux makes
+/// it so at once with pipe2(2), which the seccomp filter allows where musl's pipe() would
+/// be pipe(2), which it does not.
+#[cfg(target_os = "linux")]
+fn nonblocking_pipe() -> io::Result<[OwnedFd; 2]> {
+    let mut fds = [0; 2];
+    // SAFETY: pipe2(2) fills both descriptors on success.
+    if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC | libc::O_NONBLOCK) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: fresh descriptors that nothing else owns.
+    Ok(fds.map(|fd| unsafe { OwnedFd::from_raw_fd(fd) }))
+}
+
+/// A pipe, close-on-exec and non-blocking: macOS has no pipe2(2), so its flags are set
+/// after.
+#[cfg(target_os = "macos")]
+fn nonblocking_pipe() -> io::Result<[OwnedFd; 2]> {
+    let mut fds = [0; 2];
+    // SAFETY: pipe(2) fills both descriptors on success.
+    if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: fresh descriptors that nothing else owns.
+    let owned = fds.map(|fd| unsafe { OwnedFd::from_raw_fd(fd) });
+    for fd in fds {
+        // SAFETY: fcntl(2) on our own descriptors.
+        let ok = unsafe {
+            libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) == 0
+                && libc::fcntl(fd, libc::F_SETFL, libc::O_NONBLOCK) == 0
+        };
+        if !ok {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    Ok(owned)
+}
+
 /// A self-pipe: vCPU threads write a byte to wake the worker out of poll(2).
+#[cfg(unix)]
 #[derive(Debug)]
 struct Waker {
     read: OwnedFd,
     write: OwnedFd,
 }
 
+#[cfg(unix)]
 impl Waker {
     fn new() -> io::Result<Waker> {
-        let mut fds = [0; 2];
-        // SAFETY: pipe(2) fills both descriptors on success.
-        if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
-            return Err(io::Error::last_os_error());
-        }
-        let [r, w] = fds;
-        // SAFETY: fresh descriptors that nothing else owns.
-        let (read, write) = unsafe { (OwnedFd::from_raw_fd(r), OwnedFd::from_raw_fd(w)) };
-        for fd in [r, w] {
-            // SAFETY: fcntl(2) on our own descriptors.
-            let ok = unsafe {
-                libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) == 0
-                    && libc::fcntl(fd, libc::F_SETFL, libc::O_NONBLOCK) == 0
-            };
-            if !ok {
-                return Err(io::Error::last_os_error());
-            }
-        }
+        let [read, write] = nonblocking_pipe()?;
         Ok(Waker { read, write })
+    }
+
+    /// What the worker's poller waits on.
+    fn raw(&self) -> RawSocket {
+        self.read.as_raw_fd()
     }
 
     /// Cheap enough for a vCPU thread. A full pipe already holds a wakeup.
@@ -143,6 +221,59 @@ impl Waker {
     }
 }
 
+/// An event vCPU threads set to wake the worker out of its wait, which the Windows poller
+/// sleeps on beside its sockets' (poll.rs): no socket, and so no socket file a confined VM
+/// process might be refused.
+#[cfg(windows)]
+#[derive(Debug)]
+struct Waker(windows_sys::Win32::Networking::WinSock::WSAEVENT);
+
+#[cfg(windows)]
+impl Waker {
+    fn new() -> io::Result<Waker> {
+        use windows_sys::Win32::Networking::WinSock::{WSA_INVALID_EVENT, WSACreateEvent};
+        crate::platform::winsock()?;
+        // SAFETY: no arguments.
+        let event = unsafe { WSACreateEvent() };
+        if event == WSA_INVALID_EVENT {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(Waker(event))
+    }
+
+    /// The event the worker's poller sleeps on.
+    fn event(&self) -> windows_sys::Win32::Networking::WinSock::WSAEVENT {
+        self.0
+    }
+
+    /// Cheap enough for a vCPU thread. A set event already holds a wakeup.
+    fn wake(&self) {
+        // SAFETY: our own event.
+        unsafe { windows_sys::Win32::Networking::WinSock::WSASetEvent(self.0) };
+    }
+
+    fn drain(&self) {
+        // SAFETY: our own event.
+        unsafe { windows_sys::Win32::Networking::WinSock::WSAResetEvent(self.0) };
+    }
+}
+
+#[cfg(windows)]
+impl Drop for Waker {
+    fn drop(&mut self) {
+        // SAFETY: our own event, which no wait uses once the waker drops: the worker that
+        // waits on it has ended (Vsock::stop joins it) or holds the waker itself.
+        unsafe { windows_sys::Win32::Networking::WinSock::WSACloseEvent(self.0) };
+    }
+}
+
+// SAFETY: an event handle, set and reset from any thread.
+#[cfg(windows)]
+unsafe impl Send for Waker {}
+// SAFETY: as above.
+#[cfg(windows)]
+unsafe impl Sync for Waker {}
+
 /// What the worker owns while it runs, handed back when it stops.
 struct Session {
     queues: Vec<Queue>,
@@ -150,7 +281,7 @@ struct Session {
 }
 
 struct Worker {
-    thread: JoinHandle<Session>,
+    thread: JoinHandle<Option<Session>>,
     stop: Arc<AtomicBool>,
 }
 
@@ -178,12 +309,12 @@ impl std::fmt::Debug for Vsock {
 }
 
 impl Vsock {
-    /// A device whose host side listens at `path`.
-    pub fn new(path: &Path, guest_cid: u64) -> Result<Vsock, String> {
+    /// A device whose host side is `host`.
+    pub fn new(host: crate::vm::VsockHost, guest_cid: u64) -> Result<Vsock, String> {
         Ok(Vsock {
             guest_cid,
             waker: Arc::new(Waker::new().map_err(|e| format!("vsock: {e}"))?),
-            muxer: Some(Muxer::bind(path, guest_cid).map_err(|e| format!("vsock: {e}"))?),
+            muxer: Some(Muxer::new(host, guest_cid).map_err(|e| format!("vsock: {e}"))?),
             context: None,
             worker: None,
             paused: None,
@@ -191,19 +322,34 @@ impl Vsock {
         })
     }
 
+    /// Starts the worker on `session`; if it cannot, the session waits paused, as a
+    /// snapshot's pause leaves it, for a resume or a reset.
     fn start(&mut self, session: Session) -> Result<(), String> {
-        let (memory, interrupt) = self
-            .context
-            .clone()
-            .ok_or("virtio-vsock started before activation")?;
+        let Some((memory, interrupt)) = self.context.clone() else {
+            self.park(session);
+            return Err("virtio-vsock started before activation".into());
+        };
         let stop = Arc::new(AtomicBool::new(false));
         let (flag, waker) = (stop.clone(), self.waker.clone());
-        let thread = thread::Builder::new()
-            .name("virtio-vsock".into())
-            .spawn(move || run(session, &memory, &interrupt, &waker, &flag))
-            .map_err(|e| format!("spawning virtio-vsock worker: {e}"))?;
-        self.worker = Some(Worker { thread, stop });
-        Ok(())
+        let spawned = super::worker::spawn("virtio-vsock", session, move |session| {
+            Some(run(session, &memory, &interrupt, &waker, &flag))
+        });
+        match spawned {
+            Ok(thread) => {
+                self.worker = Some(Worker { thread, stop });
+                Ok(())
+            }
+            Err((e, session)) => {
+                self.park(session);
+                Err(e)
+            }
+        }
+    }
+
+    /// Keeps a session no worker runs: its queues as paused, its sockets here.
+    fn park(&mut self, session: Session) {
+        self.paused = Some(session.queues);
+        self.muxer = Some(session.muxer);
     }
 
     /// Stops the worker at a boundary between packets and takes back its session.
@@ -212,7 +358,7 @@ impl Vsock {
         w.stop.store(true, Ordering::Release);
         self.waker.wake();
         match w.thread.join() {
-            Ok(s) => Some(s),
+            Ok(s) => s,
             Err(_) => {
                 warn!("virtio-vsock worker ended abnormally");
                 None
@@ -267,7 +413,10 @@ impl VirtioDevice for Vsock {
             muxer.restore(self.saved.take().unwrap_or_default());
         }
         self.context = Some((memory, interrupt));
+        // An activation that fails leaves its queues, which the driver sets up anew, and
+        // keeps the sockets, for the activation after.
         self.start(Session { queues, muxer })
+            .inspect_err(|_| self.paused = None)
     }
 
     fn notify(&self, _queue: u16) {
@@ -343,26 +492,48 @@ fn run(
 ) -> Session {
     let mut interests: Vec<Interest<Option<Token>>> = Vec::new();
     let mut ready: Vec<Ready<Option<Token>>> = Vec::new();
+    let mut poller: Option<poll::Poller> = None;
     while !stop.load(Ordering::Acquire) {
-        if let Err(e) = step(&mut s, mem, irq) {
-            warn!("virtio-vsock: {e}; device needs reset");
-            irq.fail();
-            return s;
-        }
+        let more = match step(&mut s, mem, irq) {
+            Ok(more) => more,
+            Err(e) => {
+                if irq.fail() {
+                    warn!("virtio-vsock: {e}; device needs reset");
+                } else {
+                    debug!("virtio-vsock: {e}; device needs reset");
+                }
+                return s;
+            }
+        };
         interests.clear();
+        #[cfg(unix)]
         interests.push(Interest {
-            fd: waker.read.as_raw_fd(),
+            fd: waker.raw(),
             read: true,
             write: false,
             token: None,
         });
         s.muxer.interests(&mut interests);
-        let timeout = s
-            .muxer
-            .next_deadline()
-            .map(|t| t.saturating_duration_since(Instant::now()));
+        // With packets left for the next round, the sockets are only looked at: they get
+        // their turn, and so does stopping, between rounds.
+        let timeout = if more {
+            Some(std::time::Duration::ZERO)
+        } else {
+            s.muxer
+                .next_deadline()
+                .map(|t| t.saturating_duration_since(Instant::now()))
+        };
         ready.clear();
-        if let Err(e) = poll::wait(&interests, timeout, &mut ready) {
+        let waited = match &mut poller {
+            Some(p) => p.wait(&interests, timeout, &mut ready),
+            None => poll::Poller::new().and_then(|p| {
+                let p = poller.insert(p);
+                #[cfg(windows)]
+                p.watch(waker.event());
+                p.wait(&interests, timeout, &mut ready)
+            }),
+        };
+        if let Err(e) = waited {
             // Unexpected (out of memory or descriptors): back off rather than spin.
             warn!("virtio-vsock: waiting for sockets: {e}");
             thread::sleep(std::time::Duration::from_millis(10));
@@ -374,56 +545,78 @@ fn run(
     s
 }
 
-/// One round: guest packets to the host, host packets to the guest, then one interrupt
-/// if the driver wants one. The event queue is never used: a restore resets the streams
-/// its snapshot held on RX instead (muxer.rs).
-fn step(s: &mut Session, mem: &GuestMemory, irq: &DeviceInterrupt) -> Result<(), QueueError> {
+/// One round: guest packets to the host, host packets to the guest, a ring's worth of
+/// each at most, then one interrupt if the driver wants one. Whether packets may be left
+/// for the next round: a driver refilling TX from another CPU cannot keep RX, the host's
+/// sockets or a stop from their turn (audit A09). The event queue is never used: a
+/// restore resets the streams its snapshot held on RX instead (muxer.rs).
+fn step(s: &mut Session, mem: &GuestMemory, irq: &DeviceInterrupt) -> Result<bool, QueueError> {
     let [rxq, txq, _] = s.queues.as_mut_slice() else {
-        return Ok(());
+        return Ok(false);
     };
     let mut used = [false; 2];
-    // Guest → host. Always drained first: the driver stops taking RX packets while too
+    // Guest → host. First in every round: the driver stops taking RX packets while too
     // many of its replies wait in TX (Linux virtio_transport_more_replies).
-    loop {
-        txq.disable_notification(mem)?;
-        while let Some(chain) = txq.pop(mem)? {
-            if let Some((h, payload)) = parse_tx(&chain, mem) {
+    // Each packet is parsed under an access, and its payload moved to or from the host
+    // socket with none held.
+    let mut sent = 0;
+    let tx_more = 'tx: loop {
+        with(mem, |a| txq.disable_notification(a))?;
+        loop {
+            if sent == usize::from(txq.size()) {
+                // TX's notifications stay off: the next round comes back for the rest.
+                break 'tx true;
+            }
+            let Some((packet, chain)) = with(mem, |a| Ok(txq.pop(a)?.map(|c| (parse_tx(&c, a), c))))? else {
+                break;
+            };
+            if let Some((h, payload)) = packet {
                 s.muxer.on_guest_packet(&h, &payload, mem);
             }
-            txq.add_used(mem, chain.head, 0)?;
+            with(mem, |a| txq.add_used(a, chain.head, 0))?;
             used[TX] = true;
+            sent += 1;
         }
-        if !txq.enable_notification(mem)? {
+        if !with(mem, |a| txq.enable_notification(a))? {
+            break false;
+        }
+    };
+    // Host → guest, while there are packets and buffers for them.
+    let mut received = 0;
+    let mut rx_more = false;
+    while s.muxer.has_pending_rx() {
+        if received == usize::from(rxq.size()) {
+            rx_more = true;
             break;
         }
-    }
-    // Host → guest, while there are packets and buffers for them.
-    while s.muxer.has_pending_rx() {
-        let Some(chain) = rxq.pop(mem)? else {
+        let Some(chain) = with(mem, |a| rxq.pop(a))? else {
             // Out of buffers: ask the driver to notify when it adds some.
-            if rxq.enable_notification(mem)? {
+            if with(mem, |a| rxq.enable_notification(a))? {
                 continue;
             }
             break;
         };
         let written = fill_rx(&chain, mem, &mut s.muxer);
-        rxq.add_used(mem, chain.head, written)?;
+        with(mem, |a| rxq.add_used(a, chain.head, written))?;
         used[RX] = true;
+        received += 1;
     }
     let mut interrupt = false;
     for (q, used) in [(&mut *rxq, used[RX]), (&mut *txq, used[TX])] {
         if used {
-            interrupt |= q.needs_interrupt(mem)?;
+            interrupt |= with(mem, |a| q.needs_interrupt(a))?;
         }
     }
     if interrupt {
         irq.used_buffer();
     }
-    Ok(())
+    Ok(tx_more || rx_more)
 }
 
 /// The spans of a chain's readable or writable descriptors, skipping the first `skip`
-/// bytes. None if a descriptor lies outside guest RAM.
+/// bytes: in guest RAM, or device memory, a page of a file the guest maps (D189), which a
+/// system call reaches as RAM and answers EFAULT where its page is gone. None if a
+/// descriptor lies outside guest memory.
 fn spans(chain: &Chain, mem: &GuestMemory, writable: bool, mut skip: usize) -> Option<Vec<Span>> {
     let mut out = Vec::new();
     for d in chain.descriptors.iter().filter(|d| d.writable == writable) {
@@ -435,7 +628,7 @@ fn spans(chain: &Chain, mem: &GuestMemory, writable: bool, mut skip: usize) -> O
         let gpa = d.addr.checked_add(skip as u64)?;
         let len = len - skip;
         skip = 0;
-        let ptr = mem.host_ptr(gpa, len).ok()?;
+        let ptr = mem.io_ptr(gpa, len).ok()?;
         out.push(Span { gpa, ptr, len });
     }
     Some(out)
@@ -443,7 +636,7 @@ fn spans(chain: &Chain, mem: &GuestMemory, writable: bool, mut skip: usize) -> O
 
 /// A guest packet: its header and payload spans. Malformed packets are dropped, as
 /// Linux drops them in the other direction.
-fn parse_tx(chain: &Chain, mem: &GuestMemory) -> Option<(Header, Vec<Span>)> {
+fn parse_tx(chain: &Chain, mem: &Access<'_>) -> Option<(Header, Vec<Span>)> {
     let mut raw = [0u8; HEADER_LEN];
     let mut filled = 0;
     for d in chain.readable() {
@@ -464,7 +657,7 @@ fn parse_tx(chain: &Chain, mem: &GuestMemory) -> Option<(Header, Vec<Span>)> {
         debug!("virtio-vsock: TX payload of {} bytes", h.len);
         return None;
     }
-    let mut payload = spans(chain, mem, false, HEADER_LEN)?;
+    let mut payload = spans(chain, mem.memory(), false, HEADER_LEN)?;
     let mut need = h.len as usize;
     payload.retain_mut(|s| {
         s.len = s.len.min(need);
@@ -491,13 +684,13 @@ fn fill_rx(chain: &Chain, mem: &GuestMemory, muxer: &mut Muxer) -> u32 {
     let Some(h) = muxer.next_rx(&space) else {
         return 0;
     };
-    let wrote = write_span(chain, mem, &h.encode());
+    let wrote = mem.access().map_or(0, |a| write_span(chain, &a, &h.encode()));
     wrote + h.len
 }
 
 /// Copies `bytes` into the chain's writable descriptors from the start; returns the
 /// bytes copied.
-fn write_span(chain: &Chain, mem: &GuestMemory, bytes: &[u8]) -> u32 {
+fn write_span(chain: &Chain, mem: &Access<'_>, bytes: &[u8]) -> u32 {
     let mut rest = bytes;
     let mut wrote = 0u32;
     for d in chain.writable() {
@@ -513,4 +706,367 @@ fn write_span(chain: &Chain, mem: &GuestMemory, bytes: &[u8]) -> u32 {
         rest = later;
     }
     wrote
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::indexing_slicing)]
+mod tests {
+    use std::sync::atomic::AtomicUsize;
+    use std::time::Duration;
+
+    use super::packet::{HOST_CID, TYPE_STREAM, op};
+    use super::*;
+    use crate::devices::virtio::queue::QueueConfig;
+
+    const BASE: u64 = 0x8000_0000;
+    const SIZE: u16 = 16;
+    const RX: u64 = 0;
+    const TX: u64 = 1;
+
+    fn desc(q: u64) -> u64 {
+        BASE + 0x1000 * q
+    }
+    fn avail(q: u64) -> u64 {
+        BASE + 0x4000 + 0x100 * q
+    }
+    fn used(q: u64) -> u64 {
+        BASE + 0x5000 + 0x200 * q
+    }
+    fn buffer(q: u64, i: u16) -> u64 {
+        BASE + 0x10_000 + 0x10_000 * q + 0x1000 * u64::from(i)
+    }
+
+    struct Line;
+    impl crate::devices::Interrupt for Line {
+        fn set_level(&self, _: bool) {}
+    }
+
+    /// Queue `q`'s descriptor `i`, one buffer of `len` bytes, and published.
+    fn publish(mem: &GuestMemory, q: u64, i: u16, len: u32, writable: bool) {
+        let a = mem.access().unwrap();
+        let mut d = [0u8; 16];
+        d[..8].copy_from_slice(&buffer(q, i).to_le_bytes());
+        d[8..12].copy_from_slice(&len.to_le_bytes());
+        d[12..14].copy_from_slice(&(if writable { 2u16 } else { 0 }).to_le_bytes());
+        a.write(desc(q) + 16 * u64::from(i), &d).unwrap();
+        let idx = a.load_u16(avail(q) + 2, Ordering::Acquire).unwrap();
+        a.write_obj(avail(q) + 4 + 2 * u64::from(idx % SIZE), i).unwrap();
+        a.store_u16(avail(q) + 2, idx.wrapping_add(1), Ordering::Release)
+            .unwrap();
+    }
+
+    /// Puts back every buffer of queue `q` the device has used since `seen`; how many.
+    fn put_back(a: &Access<'_>, q: u64, seen: &mut u16) -> usize {
+        let used_idx = a.load_u16(used(q) + 2, Ordering::Acquire).unwrap();
+        let mut n = 0;
+        while *seen != used_idx {
+            let slot = u64::from(*seen % SIZE);
+            let head = a.read_obj::<u32>(used(q) + 4 + 8 * slot).unwrap() as u16;
+            let idx = a.load_u16(avail(q) + 2, Ordering::Acquire).unwrap();
+            a.write_obj(avail(q) + 4 + 2 * u64::from(idx % SIZE), head)
+                .unwrap();
+            a.store_u16(avail(q) + 2, idx.wrapping_add(1), Ordering::Release)
+                .unwrap();
+            *seen = seen.wrapping_add(1);
+            n += 1;
+        }
+        n
+    }
+
+    /// A session whose TX ring is full of requests for a host port nothing listens on,
+    /// which the device answers with resets on RX, and whose RX ring is full of buffers.
+    fn flooded(tag: &str) -> (Arc<GuestMemory>, Session, shards_testdir::TempDir) {
+        let dir = shards_testdir::TempDir::new(&format!("vsock-{tag}")).unwrap();
+        let mem = Arc::new(GuestMemory::anonymous(&[(BASE, 1 << 20)]).unwrap());
+        let queue = |q: u64| {
+            let cfg = QueueConfig {
+                size: SIZE,
+                desc: desc(q),
+                avail: avail(q),
+                used: used(q),
+                ready: true,
+            };
+            Queue::new(cfg, SIZE, &mem, feature::VERSION_1).unwrap()
+        };
+        for i in 0..SIZE {
+            let request = Header {
+                src_cid: 3,
+                dst_cid: HOST_CID,
+                src_port: 1000 + u32::from(i),
+                dst_port: 9,
+                len: 0,
+                kind: TYPE_STREAM,
+                op: op::REQUEST,
+                flags: 0,
+                buf_alloc: 1 << 16,
+                fwd_cnt: 0,
+            };
+            mem.access()
+                .unwrap()
+                .write(buffer(TX, i), &request.encode())
+                .unwrap();
+            publish(&mem, TX, i, HEADER_LEN as u32, false);
+            publish(&mem, RX, i, 4096, true);
+        }
+        let session = Session {
+            queues: vec![queue(RX), queue(TX), queue(2)],
+            muxer: Muxer::new(crate::vm::VsockHost::at(dir.join("v")), 3).unwrap(),
+        };
+        (mem, session, dir)
+    }
+
+    /// An activation, and a resume after a snapshot's pause, whose worker the system
+    /// refuses fail alone: the device keeps its sockets, which still take connections, and
+    /// its paused queues, and the next activation or resume runs (review 1.14). Before,
+    /// the sockets closed with the refused thread, and the device was "activated twice"
+    /// from then on.
+    #[test]
+    fn a_refused_worker_leaves_the_device_whole() {
+        let dir_guard = shards_testdir::TempDir::new("vsock-refused").unwrap();
+        let dir = dir_guard.join("v");
+        let _ = std::fs::remove_file(&dir);
+        let mem = Arc::new(GuestMemory::anonymous(&[(BASE, 1 << 20)]).unwrap());
+        let irq = Arc::new(DeviceInterrupt::new(Arc::new(Line)));
+        let activation = || Activation {
+            memory: mem.clone(),
+            queues: [RX, TX, 2]
+                .map(|q| {
+                    let cfg = QueueConfig {
+                        size: SIZE,
+                        desc: desc(q),
+                        avail: avail(q),
+                        used: used(q),
+                        ready: true,
+                    };
+                    Queue::new(cfg, SIZE, &mem, feature::VERSION_1).unwrap()
+                })
+                .into(),
+            interrupt: irq.clone(),
+            features: feature::VERSION_1,
+            restored: false,
+        };
+        let mut vsock = Vsock::new(crate::vm::VsockHost::at(dir.clone()), 3).unwrap();
+        super::super::worker::REFUSE.set(true);
+        let refused = vsock.activate(activation());
+        super::super::worker::REFUSE.set(false);
+        assert!(
+            refused
+                .unwrap_err()
+                .starts_with("spawning the virtio-vsock worker")
+        );
+        // Its queues gone with it, and its sockets kept.
+        assert!(vsock.worker.is_none() && vsock.paused.is_none());
+        crate::platform::UnixStream::connect(&dir).unwrap();
+        vsock.activate(activation()).unwrap();
+        assert!(vsock.worker.is_some());
+        let states = vsock.pause();
+        assert_eq!(states.len(), 3);
+        super::super::worker::REFUSE.set(true);
+        assert!(vsock.resume().is_err());
+        super::super::worker::REFUSE.set(false);
+        assert!(vsock.worker.is_none() && vsock.paused.is_some() && vsock.muxer.is_some());
+        crate::platform::UnixStream::connect(&dir).unwrap();
+        assert_eq!(vsock.pause().len(), 3, "paused still");
+        vsock.resume().unwrap();
+        assert!(vsock.worker.is_some() && vsock.paused.is_none());
+        drop(vsock);
+        let _ = std::fs::remove_file(&dir);
+    }
+
+    /// A driver that puts every buffer of queues `qs` the device uses straight back, until
+    /// `flooding` is cleared, counting TX's in `recycled`. It notifies through `notify`
+    /// whenever the device has not asked it not to, as Linux's `virtqueue_kick_prepare`
+    /// decides without EVENT_IDX.
+    fn driver(
+        mem: Arc<GuestMemory>,
+        qs: &'static [u64],
+        flooding: Arc<AtomicBool>,
+        recycled: Arc<AtomicUsize>,
+        notify: Option<Arc<Waker>>,
+    ) -> std::thread::JoinHandle<()> {
+        std::thread::spawn(move || {
+            let mut seen = [0u16; 2];
+            while flooding.load(Ordering::Acquire) {
+                let a = mem.access().unwrap();
+                for &q in qs {
+                    let n = put_back(&a, q, &mut seen[q as usize]);
+                    if q == TX {
+                        recycled.fetch_add(n, Ordering::SeqCst);
+                    }
+                    // The index must be visible before the device's flags are read.
+                    std::sync::atomic::fence(Ordering::SeqCst);
+                    if n > 0
+                        && let Some(waker) = &notify
+                        && a.read_obj::<u16>(used(q)).unwrap() & 1 == 0
+                    {
+                        waker.wake();
+                    }
+                }
+                drop(a);
+                std::thread::yield_now();
+            }
+        })
+    }
+
+    /// A guest flooding TX, which its driver refills as fast as the device uses it, keeps
+    /// neither the round from ending nor RX from its turn: the host's replies reach the
+    /// guest meanwhile. Before, TX was drained until empty, and was never (audit A09).
+    #[test]
+    fn a_flooded_tx_queue_leaves_rx_its_turn() {
+        let (mem, mut session, _dir) = flooded("flood");
+        let irq = DeviceInterrupt::new(Arc::new(Line));
+        let flooding = Arc::new(AtomicBool::new(true));
+        let rounds = Arc::new(AtomicUsize::new(0));
+        let tx_driver = driver(
+            mem.clone(),
+            &[TX],
+            flooding.clone(),
+            Arc::new(AtomicUsize::new(0)),
+            None,
+        );
+        // The device, round after round, on a thread of its own: an old device would
+        // never come back from its first.
+        let device = {
+            let (mem, rounds) = (mem.clone(), rounds.clone());
+            std::thread::spawn(move || {
+                let tx_used = || {
+                    mem.access()
+                        .unwrap()
+                        .load_u16(used(TX) + 2, Ordering::Acquire)
+                        .unwrap()
+                };
+                // The ring starts full, so the first round spends its budget on TX, and
+                // says packets may be left; later rounds find what the driver put back,
+                // a ring's worth at most, however fast it puts them back.
+                for round in 0..20 {
+                    let before = tx_used();
+                    let more = step(&mut session, &mem, &irq).unwrap();
+                    let sent = tx_used().wrapping_sub(before);
+                    assert!(sent <= SIZE, "round {round} took {sent} TX packets");
+                    if round == 0 {
+                        assert!(more, "a round that spent its budget left nothing for the next");
+                    }
+                    rounds.fetch_add(1, Ordering::SeqCst);
+                }
+            })
+        };
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while !device.is_finished() {
+            assert!(
+                Instant::now() < deadline,
+                "a round never ended ({} did)",
+                rounds.load(Ordering::SeqCst)
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        device.join().unwrap();
+        flooding.store(false, Ordering::Release);
+        tx_driver.join().unwrap();
+        let rx_used = mem
+            .access()
+            .unwrap()
+            .load_u16(used(RX) + 2, Ordering::Acquire)
+            .unwrap();
+        assert_eq!(
+            rx_used, SIZE,
+            "the guest's RX buffers never got the host's replies"
+        );
+    }
+
+    /// However many replies wait, and however fast the driver puts RX buffers back, one
+    /// round delivers a ring's worth at most (audit A09).
+    #[test]
+    fn a_round_delivers_a_ring_of_rx_at_most() {
+        let (mem, mut session, _dir) = flooded("rx");
+        let irq = DeviceInterrupt::new(Arc::new(Line));
+        // Four rings of requests, each answered with a reset: the first ring's fill the
+        // RX buffers, and the rest wait.
+        let mut seen_tx = 0;
+        for _ in 0..4 {
+            step(&mut session, &mem, &irq).unwrap();
+            put_back(&mem.access().unwrap(), TX, &mut seen_tx);
+        }
+        let before = mem
+            .access()
+            .unwrap()
+            .load_u16(used(RX) + 2, Ordering::Acquire)
+            .unwrap();
+        assert_eq!(before, SIZE);
+        assert!(session.muxer.has_pending_rx());
+        let flooding = Arc::new(AtomicBool::new(true));
+        let rx_driver = driver(
+            mem.clone(),
+            &[RX],
+            flooding.clone(),
+            Arc::new(AtomicUsize::new(0)),
+            None,
+        );
+        // Every buffer back first, so the round has a ring's worth to fill, and more
+        // coming back as it fills them.
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while mem
+            .access()
+            .unwrap()
+            .load_u16(avail(RX) + 2, Ordering::Acquire)
+            .unwrap()
+            != before.wrapping_add(SIZE)
+        {
+            assert!(Instant::now() < deadline, "the driver never put RX buffers back");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        step(&mut session, &mem, &irq).unwrap();
+        flooding.store(false, Ordering::Release);
+        rx_driver.join().unwrap();
+        let delivered = mem
+            .access()
+            .unwrap()
+            .load_u16(used(RX) + 2, Ordering::Acquire)
+            .unwrap()
+            .wrapping_sub(before);
+        assert_eq!(delivered, SIZE, "one round delivered {delivered} packets");
+    }
+
+    /// The worker keeps up with a driver that floods TX, coming back by itself for what a
+    /// round left, with the driver's notifications off, and woken by them once it has
+    /// caught up; and a stop ends it at once, flood or not (audit A09). RX's buffers run
+    /// out and stay out, so nothing else wakes it.
+    #[test]
+    fn a_flooded_worker_keeps_up_and_stops() {
+        let (mem, session, _dir) = flooded("worker");
+        let irq = Arc::new(DeviceInterrupt::new(Arc::new(Line)));
+        let waker = Arc::new(Waker::new().unwrap());
+        let stop = Arc::new(AtomicBool::new(false));
+        let flooding = Arc::new(AtomicBool::new(true));
+        let recycled = Arc::new(AtomicUsize::new(0));
+        let driver = driver(
+            mem.clone(),
+            &[TX],
+            flooding.clone(),
+            recycled.clone(),
+            Some(waker.clone()),
+        );
+        let worker = {
+            let (mem, irq, waker, stop) = (mem.clone(), irq.clone(), waker.clone(), stop.clone());
+            std::thread::spawn(move || run(session, &mem, &irq, &waker, &stop))
+        };
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while recycled.load(Ordering::SeqCst) < 20 * usize::from(SIZE) {
+            assert!(
+                Instant::now() < deadline,
+                "the worker stopped coming back after {} packets",
+                recycled.load(Ordering::SeqCst)
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let t0 = Instant::now();
+        stop.store(true, Ordering::Release);
+        waker.wake();
+        while !worker.is_finished() {
+            assert!(t0.elapsed() < Duration::from_secs(2), "the worker did not stop");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        drop(worker.join().unwrap());
+        flooding.store(false, Ordering::Release);
+        driver.join().unwrap();
+    }
 }

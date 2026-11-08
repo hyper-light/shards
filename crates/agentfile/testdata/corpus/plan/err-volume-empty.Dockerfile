@@ -1,0 +1,3 @@
+FROM alpine
+ARG E
+VOLUME $E

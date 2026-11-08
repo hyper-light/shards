@@ -74,7 +74,7 @@ fn main() {
     let command = ["--", "/bin/testguest", "exit", "0"];
     let cold_args = strings(
         &[
-            &["vm", "run", "--kernel", kernel, "--init", init, "--rootfs", image][..],
+            &["run", "--kernel", kernel, "--init", init, "--rootfs", image][..],
             &command,
         ]
         .concat(),
@@ -85,7 +85,6 @@ fn main() {
         let template = dir.join(format!("template-{t}")).display().to_string();
         run(
             &strings(&[
-                "vm",
                 "run",
                 "--kernel",
                 kernel,
@@ -100,7 +99,7 @@ fn main() {
             false,
         );
         warm_args.push(strings(
-            &[&["vm", "restore", &template, "--hold"][..], &command].concat(),
+            &[&["restore", &template, "--hold"][..], &command].concat(),
         ));
     }
 

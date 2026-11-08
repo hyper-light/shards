@@ -1,0 +1,302 @@
+[
+ {
+  "name": "package-only",
+  "module": "package docker\n"
+ },
+ {
+  "name": "package-dotted",
+  "module": "package a.b.c\n"
+ },
+ {
+  "name": "package-brackets",
+  "module": "package a[\"b-c\"].d\n"
+ },
+ {
+  "name": "package-keyword-ref",
+  "module": "package a[\"if\"].b\n"
+ },
+ {
+  "name": "no-package",
+  "error": "1 error occurred: p.rego:1: rego_parse_error: package expected"
+ },
+ {
+  "name": "empty",
+  "error": "p.rego:0: rego_parse_error: empty module"
+ },
+ {
+  "name": "comments-only",
+  "error": "p.rego:0: rego_parse_error: empty module"
+ },
+ {
+  "name": "import-data",
+  "module": "package docker\n\nimport data.lib.x\nimport input.foo as bar\nimport rego.v1\nimport future.keywords\nimport future.keywords[\"in\"]\n"
+ },
+ {
+  "name": "import-bad-root",
+  "error": "1 error occurred: p.rego:3: rego_parse_error: unexpected import path, must begin with one of: {data, future, input, rego}, got: foo (hint: if this is unexpected, try updating OPA)\n\timport foo.bar\n\t       ^"
+ },
+ {
+  "name": "import-keyword-end",
+  "error": "1 error occurred: p.rego:3: rego_parse_error: unexpected import path, must not end with a keyword, got: if\n\timport data.x.if\n\t              ^"
+ },
+ {
+  "name": "import-future-bad",
+  "error": "1 error occurred: p.rego:3: rego_parse_error: unexpected keyword, must be one of [contains every if in]\n\timport future.keywords.nope\n\t       ^"
+ },
+ {
+  "name": "import-rego-bad",
+  "error": "1 error occurred: p.rego:3: rego_parse_error: invalid import `rego.v2`, must be `rego.v1`\n\timport rego.v2\n\t       ^"
+ },
+ {
+  "name": "rule-assign",
+  "module": "package docker\n\nx := 1 if { true }"
+ },
+ {
+  "name": "rule-unify",
+  "module": "package docker\n\nx = 1 if { true }"
+ },
+ {
+  "name": "rule-if-body",
+  "module": "package docker\n\nx = true if { true }"
+ },
+ {
+  "name": "rule-if-literal",
+  "module": "package docker\n\nx = true if { equal(input.a, \"b\") }"
+ },
+ {
+  "name": "rule-value-if",
+  "module": "package docker\n\nx := 7 if { input.a }"
+ },
+ {
+  "name": "rule-no-if",
+  "error": "1 error occurred: p.rego:3: rego_parse_error: `if` keyword is required before rule body"
+ },
+ {
+  "name": "default",
+  "module": "package docker\n\ndefault allow := false"
+ },
+ {
+  "name": "default-bad",
+  "error": "1 error occurred: p.rego:3: rego_parse_error: illegal default rule (value cannot contain ref)\n\tdefault allow := input.x\n\t^"
+ },
+ {
+  "name": "default-fn",
+  "module": "package docker\n\ndefault f(_) := 1"
+ },
+ {
+  "name": "default-fn-bad",
+  "error": "1 error occurred: p.rego:3: rego_parse_error: illegal default rule (arguments cannot contain number)\n\tdefault f(1) := 1\n\t^"
+ },
+ {
+  "name": "contains",
+  "module": "package docker\n\ndeny contains msg if { assign(msg, \"x\") }"
+ },
+ {
+  "name": "contains-no-body",
+  "module": "package docker\n\ndeny contains \"x\" if { true }"
+ },
+ {
+  "name": "partial-obj",
+  "module": "package docker\n\nm[k] := v if { some k, v in input }"
+ },
+ {
+  "name": "ref-head",
+  "module": "package docker\n\na.b.c := 1 if { true }\na.b[x] := 2 if { assign(x, \"d\") }"
+ },
+ {
+  "name": "ref-head-contains",
+  "module": "package docker\n\na.b contains 1 if { true }"
+ },
+ {
+  "name": "function",
+  "module": "package docker\n\nf(x) := y if { assign(y, plus(x, 1)) }\ng(x, y) = true if { gt(x, y) }"
+ },
+ {
+  "name": "function-wildcard",
+  "module": "package docker\n\nf(_, _) := 1 if { true }"
+ },
+ {
+  "name": "else",
+  "module": "package docker\n\nh(x) := \"a\" if { equal(x, 1) } else = \"b\" if { equal(x, 2) } else = \"c\" if { true }"
+ },
+ {
+  "name": "else-body",
+  "module": "package docker\n\nx := 1 if { false } else = 2 if { true }"
+ },
+ {
+  "name": "multi-body",
+  "module": "package docker\n\nx = true if { false }\nx = true if { true }"
+ },
+ {
+  "name": "operators",
+  "module": "package docker\n\nx := [minus(plus(1, mul(2, 3)), rem(div(4, 2), 3)), lt(1, 2), lte(2, 2), gt(3, 2), gte(3, 3), equal(1, 1), neq(1, 2), or({1}, {2}), and({1, 2}, {2})] if { true }"
+ },
+ {
+  "name": "negation-with",
+  "module": "package docker\n\nx = true if { not input.a; assign(y, input.b) with input.b as 1; equal(y, 1) }"
+ },
+ {
+  "name": "some",
+  "module": "package docker\n\nx = true if { some i; some k, v in input; some y in [1, 2]; equal(y, i) }"
+ },
+ {
+  "name": "every",
+  "module": "package docker\n\nx = true if { every k, v in input { gt(v, 0) }; every v in [1] { v } }"
+ },
+ {
+  "name": "comprehensions",
+  "module": "package docker\n\nx := [y | some y in input] if { true }\ns := {y | some y in input} if { true }\no := {k: v | some k, v in input} if { true }"
+ },
+ {
+  "name": "collections",
+  "module": "package docker\n\nx := {\"a\": [1, {2, 3}], \"b\": {\"c\": null}, \"d\": true, \"e\": set(), \"f\": {}} if { true }"
+ },
+ {
+  "name": "dup-keys",
+  "module": "package docker\n\nx := {\"a\": 2} if { true }"
+ },
+ {
+  "name": "set-dups",
+  "module": "package docker\n\nx := {1, 2} if { true }"
+ },
+ {
+  "name": "strings",
+  "module": "package docker\n\nx := [\"a\\\"b\", \"raw\\\\n\", \"tab\\t\", \"é\", \"é\", \"a\\\\b\"] if { true }"
+ },
+ {
+  "name": "numbers",
+  "module": "package docker\n\nx := [0, 1, -1, 1.5, -0.5, 1e3, 1E-3, 0.1, .5, -.5, 10000000000000000000000] if { true }"
+ },
+ {
+  "name": "number-leading-zero",
+  "error": "2 errors occurred:\np.rego:3: rego_parse_error: unexpected number token: expected number without leading zero\n\tx := 01\n\t     ^\np.rego:3: rego_parse_error: unexpected number token: expected rule value term (e.g., x := \u003cVALUE\u003e { ... })\n\tx := 01\n\t     ^"
+ },
+ {
+  "name": "number-too-big",
+  "error": "2 errors occurred:\np.rego:3: rego_parse_error: number too big\n\tx := 1e100000000\n\t     ^\np.rego:3: rego_parse_error: unexpected number token: expected rule value term (e.g., x := \u003cVALUE\u003e { ... })\n\tx := 1e100000000\n\t     ^"
+ },
+ {
+  "name": "refs",
+  "module": "package docker\n\nx := [input.a.b, input[\"a-b\"], input.a[0], data.x.y, input[x], input.a[\"if\"], input[\"contains\"]] if { true }"
+ },
+ {
+  "name": "calls",
+  "module": "package docker\n\nx := [count(input), regex.match(\"a\", \"b\"), array.concat([1], [2]), object.get({}, \"a\", 0)] if { true }"
+ },
+ {
+  "name": "template",
+  "module": "package docker\n\nx := $\"hello {input.name} {plus(1, 2)} \\{not}\" if { true }\ny := $\"raw {input.a}\\nline\" if { true }"
+ },
+ {
+  "name": "template-bad",
+  "error": "2 errors occurred:\np.rego:3: rego_parse_error: unexpected assignment (':=') in template-string expression\n\tx := $\"a {y := 1}\"\n\t          ^\np.rego:3: rego_parse_error: unexpected } token: expected rule value term (e.g., x := \u003cVALUE\u003e { ... })\n\tx := $\"a {y := 1}\"\n\t                ^"
+ },
+ {
+  "name": "template-not",
+  "error": "2 errors occurred:\np.rego:3: rego_parse_error: unexpected negation ('not') in template-string expression\n\tx := $\"a {not input.b}\"\n\t          ^\np.rego:3: rego_parse_error: unexpected } token: expected rule value term (e.g., x := \u003cVALUE\u003e { ... })\n\tx := $\"a {not input.b}\"\n\t                     ^"
+ },
+ {
+  "name": "in-ops",
+  "module": "package docker\n\nx := [internal.member_2(1, [1]), \"a\", internal.member_2(1, {\"a\": 1})] if { true }"
+ },
+ {
+  "name": "keyword-rule-name",
+  "error": "1 error occurred: p.rego:3: rego_parse_error: unexpected if keyword\n\tif := 1\n\t^"
+ },
+ {
+  "name": "rule-no-value-no-body",
+  "error": "1 error occurred: p.rego:3: rego_parse_error: var cannot be used for rule name"
+ },
+ {
+  "name": "bad-token",
+  "error": "2 errors occurred:\np.rego:3: rego_parse_error: illegal token\n\tx := @\n\t     ^\np.rego:3: rego_parse_error: illegal token\n\tx := @\n\t     ^"
+ },
+ {
+  "name": "bang",
+  "error": "3 errors occurred:\np.rego:3: rego_parse_error: illegal ! character\n\tx := !1\n\t     ^\np.rego:3: rego_parse_error: illegal token\n\tx := !1\n\t     ^\np.rego:3: rego_parse_error: illegal token\n\tx := !1\n\t     ^"
+ },
+ {
+  "name": "unterminated-string",
+  "error": "3 errors occurred:\np.rego:3: rego_parse_error: non-terminated string\n\tx := \"abc\n\t     ^\np.rego:3: rego_parse_error: illegal token\n\tx := \"abc\n\t     ^\np.rego:3: rego_parse_error: illegal token\n\tx := \"abc\n\t     ^"
+ },
+ {
+  "name": "unterminated-body",
+  "error": "1 error occurred: p.rego:5: rego_parse_error: unexpected eof token\n\ttrue\n\t   ^"
+ },
+ {
+  "name": "empty-body",
+  "module": "package docker\n\nx = true if { {} }"
+ },
+ {
+  "name": "illegal-ref-head",
+  "error": "1 error occurred: p.rego:3: rego_parse_error: illegal ref (head cannot be string)\n\tx := \"a\".b\n\t     ^"
+ },
+ {
+  "name": "else-multi",
+  "error": "1 error occurred: p.rego:4: rego_parse_error: else keyword cannot be used on rules with variables in head\n\telse := 2\n\t^"
+ },
+ {
+  "name": "contains-function",
+  "error": "1 error occurred: p.rego:3: rego_parse_error: unexpected contains keyword: the contains keyword can only be used with multi-value rule definitions (e.g., f contains \u003cVALUE\u003e { ... })\n\tf(x) contains 1 if true\n\t     ^"
+ },
+ {
+  "name": "with-chain",
+  "module": "package docker\n\nx = true if { y with input as 1 with data.z as 2 }"
+ },
+ {
+  "name": "semicolons",
+  "module": "package docker\n\nx = true if { assign(a, 1); assign(b, 2); lt(a, b) }"
+ },
+ {
+  "name": "parens",
+  "module": "package docker\n\nx := mul(plus(1, 2), 3) if { true }"
+ },
+ {
+  "name": "negative-ref",
+  "error": "2 errors occurred:\np.rego:3: rego_parse_error: unexpected identifier token: expected number\n\tx := -input.a\n\t      ^\np.rego:3: rego_parse_error: unexpected identifier token: expected rule value term (e.g., x := \u003cVALUE\u003e { ... })\n\tx := -input.a\n\t      ^"
+ },
+ {
+  "name": "deny-no-contains",
+  "module": "package docker\n\ndeny[msg] = true if { assign(msg, \"x\") }"
+ },
+ {
+  "name": "top-level-expr",
+  "error": "1 error occurred: p.rego:3: rego_parse_error: rule name conflicts with built-in function"
+ },
+ {
+  "name": "top-level-call",
+  "module": "package docker\n\nf(1) = true if { true }"
+ },
+ {
+  "name": "print",
+  "module": "package docker\n\nx = true if { print(\"a\", 1) }"
+ },
+ {
+  "name": "var-names",
+  "module": "package docker\n\nx_1 := 1 if { true }\n_y := 2 if { true }"
+ },
+ {
+  "name": "tabs-error",
+  "error": "2 errors occurred:\np.rego:5: rego_parse_error: unexpected eof token\n\t\"a\": \n\t   ^\np.rego:5: rego_parse_error: unexpected eof token: expected rule value term (e.g., x := \u003cVALUE\u003e { ... })\n\t\"a\": \n\t   ^"
+ },
+ {
+  "name": "set-of-sets",
+  "module": "package docker\n\nx := {set(), {1}, {2}} if { true }"
+ },
+ {
+  "name": "object-keys-mixed",
+  "module": "package docker\n\nx := {null: 4, 1: \"a\", \"b\": 2, [1]: 3} if { true }"
+ },
+ {
+  "name": "ref-call-ref",
+  "module": "package docker\n\nx := f(1).a[0] if { true }"
+ },
+ {
+  "name": "nested-compr",
+  "module": "package docker\n\nx := [[y | some y in z] | some z in input] if { true }"
+ },
+ {
+  "name": "import-alias-keyword",
+  "error": "1 error occurred: p.rego:3: rego_parse_error: unexpected if keyword: expected var\n\timport data.x as if\n\t                 ^"
+ }
+]

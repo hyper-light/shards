@@ -1,0 +1,118 @@
+diff --git a/crates/image/src/store/mounts.rs b/crates/image/src/store/mounts.rs
+index 4edd0e3c2..8f69cd427 100644
+--- a/crates/image/src/store/mounts.rs
++++ b/crates/image/src/store/mounts.rs
+@@ -529,7 +529,12 @@ impl Store {
+     ) -> Result<bool, Error> {
+         let changes = changes.filter(|c| c.len > 0);
+         if let Some(c) = &changes {
++            let began = std::time::Instant::now();
+             finish(&c.part, c.len)?;
++            // builder-pressure: a step's changes to a cache, as the VM process wrote them,
++            // made durable; one write.
++            let said = format!("builder-keep bytes {} sync_ms {}\n", c.len, began.elapsed().as_millis());
++            let _ = io::stderr().write_all(said.as_bytes());
+         }
+         let kept = changes.is_some();
+         if kept {
+@@ -614,6 +619,7 @@ impl Store {
+     /// holds it, where one is set, as a step's merge is on its `RUN`'s path.
+     fn merge_run(&self, id: &str, run: &Run) -> Result<(MountPart, super::merge::Merged), Error> {
+         let part = self.merge_part(id)?;
++        let began = std::time::Instant::now();
+         let merged = {
+             let mut out = BufWriter::with_capacity(
+                 crate::through::CHUNK,
+@@ -625,7 +631,17 @@ impl Store {
+             out.flush()?;
+             merged
+         };
++        let wrote = began.elapsed();
+         finish(&part, merged.size)?;
++        // builder-pressure: a merge of a cache's layers, written and made durable; one write.
++        let said = format!(
++            "builder-merge layers {} bytes {} write_ms {} sync_ms {}\n",
++            run.names.len(),
++            merged.size,
++            wrote.as_millis(),
++            began.elapsed().saturating_sub(wrote).as_millis()
++        );
++        let _ = io::stderr().write_all(said.as_bytes());
+         Ok((part, merged))
+     }
+ 
+diff --git a/crates/shards/src/build/give.rs b/crates/shards/src/build/give.rs
+index f14b02d66..7df165ae5 100644
+--- a/crates/shards/src/build/give.rs
++++ b/crates/shards/src/build/give.rs
+@@ -25,7 +25,7 @@
+ //! apt 219 s held against 31.5 s free, PM M442). On Windows its host's word is the system's
+ //! low memory notification, as the daemon's is (D188).
+ 
+-use std::io;
++use std::io::{self, Write as _};
+ use std::sync::OnceLock;
+ use std::sync::mpsc;
+ #[cfg(target_os = "linux")]
+@@ -328,6 +328,10 @@ fn again(
+ /// no budget holds them, each answer heard by `until`: those told alone heard, as one whose
+ /// give-back is still out was counted unanswered. The room told kept in `unsaid`.
+ fn tell(held: &mut Vec<Giver>, r: Option<i64>, until: Instant, unsaid: &mut Unsaid) {
++    // builder-pressure: each room told, the build's own count of it; one write.
++    let _ = io::stderr().write_all(
++        format!("builder-room told {}\n", r.map_or("none".to_string(), |r| r.to_string())).as_bytes(),
++    );
+     unsaid.told = r;
+     let n = i64::try_from(held.len().max(1)).unwrap_or(i64::MAX);
+     let share = r.map(|r| r / n);
+@@ -342,10 +346,25 @@ fn tell(held: &mut Vec<Giver>, r: Option<i64>, until: Instant, unsaid: &mut Unsa
+ fn hear(g: &mut Giver, until: Instant, unsaid: &mut Unsaid) -> bool {
+     match g.answer(until) {
+         Ok(Some(answer)) => {
++            // builder-pressure: each answer, as long after its word as it came, one write.
++            let said = match &answer {
++                Answer::Gave(freed, unplugging) => {
++                    format!("builder-give answered_ms {} freed {freed} unplugging {unplugging}\n", since(until))
++                }
++                Answer::Held(within) => {
++                    let within_said = within.map_or("none".to_string(), |w| w.to_string());
++                    format!("builder-give held_ms {} within {within_said}\n", since(until))
++                }
++                Answer::Refused(why) => {
++                    format!("builder-give refused_ms {} why {}\n", since(until), why.replace(' ', "_"))
++                }
++            };
++            let _ = io::stderr().write_all(said.as_bytes());
+             count(unsaid, answer);
+             true
+         }
+         Ok(None) => {
++            let _ = io::stderr().write_all(format!("builder-give unanswered_ms {}\n", since(until)).as_bytes());
+             unsaid.unanswered += 1;
+             true
+         }
+@@ -353,6 +372,11 @@ fn hear(g: &mut Giver, until: Instant, unsaid: &mut Unsaid) -> bool {
+     }
+ }
+ 
++/// builder-pressure: how long after its word an answer heard by `until` came, in ms.
++fn since(until: Instant) -> u128 {
++    PATIENCE.saturating_sub(until.saturating_duration_since(Instant::now())).as_millis()
++}
++
+ /// A builder's answer counted in `unsaid`.
+ fn count(unsaid: &mut Unsaid, answer: Answer) {
+     match answer {
+diff --git a/crates/shards/src/main.rs b/crates/shards/src/main.rs
+index 50eaf09e3..1884a0b1c 100644
+--- a/crates/shards/src/main.rs
++++ b/crates/shards/src/main.rs
+@@ -129,6 +129,8 @@ pub(crate) fn shardsd(args: Vec<std::ffi::OsString>) -> ExitCode {
+ pub(crate) fn phase(_name: &str) {
+     #[cfg(all(feature = "alloc-count", unix))]
+     alloc_count::phase(_name);
++    // builder-pressure: each phase's end, stamped by the harness as it reads it; one write.
++    let _ = std::io::stderr().write_all(format!("builder-phase name {_name}\n").as_bytes());
+ }
+ 
+ /// Says how much of phase `_phase`'s time went to `_part`, over `_bytes`, for the work

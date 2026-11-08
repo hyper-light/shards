@@ -1,0 +1,16 @@
+--- a/crates/vmm/src/devices/virtio/pmem.rs
++++ b/crates/vmm/src/devices/virtio/pmem.rs
+@@ -704,6 +704,13 @@
+     fn over(head: Head, file: File, data: u64) -> Result<Layer, String> {
+         let len = usize::try_from(data).map_err(|_| format!("a layer of {data} bytes"))?;
+         let data = Shared::map(file, len).map_err(|e| format!("its layer: {e}"))?;
++        // Experiment (docs/research/measurements/layer-first-write): no readahead on the
++        // layer's faults.
++        #[cfg(target_os = "linux")]
++        // SAFETY: madvise(2) of the mapping `data` holds.
++        unsafe {
++            libc::madvise(data.host().cast(), len, libc::MADV_RANDOM);
++        }
+         Ok(Layer {
+             head,
+             data,

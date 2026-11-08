@@ -1,0 +1,100 @@
+--- a/crates/vmm/src/vm/hold.rs
++++ b/crates/vmm/src/vm/hold.rs
+@@ -39,6 +39,8 @@
+     held: AtomicBool,
+     /// Each vCPU thread's clock, which it gives as it starts.
+     clocks: Box<[OnceLock<ThreadClock>]>,
++    /// hold-stats2.patch (PM M441): how far past their period's end held vCPUs went on.
++    over: Mutex<Vec<u64>>,
+ }
+ 
+ #[derive(Debug, Default)]
+@@ -68,6 +70,7 @@
+             waited: Condvar::new(),
+             held: AtomicBool::new(false),
+             clocks: (0..vcpus).map(|_| OnceLock::new()).collect(),
++            over: Mutex::new(Vec::new()),
+         }
+     }
+ 
+@@ -102,6 +105,7 @@
+         let mut s = lock(&self.state);
+         s.waiting = s.waiting.saturating_add(1);
+         self.waited.notify_all();
++        let shared = s.held.filter(|_| !s.group_held && !s.paused);
+         while !stop() {
+             if s.group_held || s.paused {
+                 s = wait(&self.released, s);
+@@ -117,6 +121,10 @@
+             s = wait_timeout(&self.released, s, left);
+         }
+         s.waiting = s.waiting.saturating_sub(1);
++        if let Some(until) = shared {
++            let over = Instant::now().saturating_duration_since(until);
++            lock(&self.over).push(u64::try_from(over.as_micros()).unwrap_or(u64::MAX));
++        }
+     }
+ 
+     /// The machine paused: every vCPU held out of its guest whatever its share, `kick`
+@@ -245,6 +253,26 @@
+         let mut busy = true;
+         let mut start = Instant::now();
+         let mut last = None;
++        // hold-stats2.patch (PM M441): what the hold did, logged as the governor ends.
++        struct Stats<'a> { hold: &'a Hold, cpus: u32, periods: u64, held: u64, held_ns: u128, used_ns: u64, late_us: Vec<u64>, late_held_us: Vec<u64> }
++        impl Drop for Stats<'_> {
++            fn drop(&mut self) {
++                fn at(v: &mut Vec<u64>, q: usize) -> u64 {
++                    v.sort_unstable();
++                    v.get(v.len() * q / 100).copied().unwrap_or(0)
++                }
++                let mut over = lock(&self.hold.over).clone();
++                let max = |v: &Vec<u64>| v.iter().max().copied().unwrap_or(0);
++                crate::warn!(
++                    "hold-stats: cpus {} periods {} held {} held_ms {:.1} used_ms {:.1} late_us p50 {} p90 {} p99 {} max {} late_held_us p50 {} max {} vcpu_over_us n {} p50 {} p99 {} max {}",
++                    self.cpus, self.periods, self.held, self.held_ns as f64 / 1e6, self.used_ns as f64 / 1e6,
++                    at(&mut self.late_us, 50), at(&mut self.late_us, 90), at(&mut self.late_us, 99), max(&self.late_us),
++                    at(&mut self.late_held_us, 50), max(&self.late_held_us),
++                    over.len(), at(&mut over, 50), at(&mut over, 99), max(&over)
++                );
++            }
++        }
++        let mut st = Stats { hold: self, cpus: 0, periods: 0, held: 0, held_ns: 0, used_ns: 0, late_us: Vec::new(), late_held_us: Vec::new() };
+         loop {
+             let (cpus, generation) = {
+                 let mut s = lock(&self.state);
+@@ -269,10 +297,14 @@
+             let allowed = share.saturating_sub(debt);
+             let mut holding = false;
+             let mut changed = false;
++            let mut held_at = None;
++            st.cpus = cpus;
+             while let Some(left) = PERIOD.checked_sub(start.elapsed()).filter(|l| !l.is_zero()) {
+                 let used = self.used().saturating_sub(base);
+                 if !holding && used >= allowed {
+                     holding = true;
++                    held_at = Some(Instant::now());
++                    st.held += 1;
+                     self.set_held(Some(start + PERIOD));
+                     kick();
+                 }
+@@ -306,6 +338,19 @@
+                     holding || used.saturating_mul(2) >= share,
+                 )
+             };
++            let now = Instant::now();
++            if !changed {
++                st.periods += 1;
++                st.used_ns = st.used_ns.saturating_add(used);
++                let late = u64::try_from(now.saturating_duration_since(start + PERIOD).as_micros()).unwrap_or(u64::MAX);
++                st.late_us.push(late);
++                if held_at.is_some() {
++                    st.late_held_us.push(late);
++                }
++            }
++            if let Some(at) = held_at {
++                st.held_ns += now.saturating_duration_since(at).as_nanos();
++            }
+             start += PERIOD;
+             self.set_held(None);
+         }

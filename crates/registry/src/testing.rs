@@ -3,8 +3,8 @@
 #![allow(clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::io::{self, Read, Write};
-use std::net::TcpListener;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::net::{Shutdown, TcpListener, TcpStream};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -30,14 +30,22 @@ fn params(sans: Vec<String>) -> CertificateParams {
 pub(crate) fn registry(
     versions: &[&'static rustls::SupportedProtocolVersion],
 ) -> (CertificateDer<'static>, Arc<ServerConfig>) {
+    registry_named("localhost", versions)
+}
+
+/// [`registry`], certifying the host as `name`.
+pub(crate) fn registry_named(
+    name: &str,
+    versions: &[&'static rustls::SupportedProtocolVersion],
+) -> (CertificateDer<'static>, Arc<ServerConfig>) {
     let mut ca = params(Vec::new());
     ca.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
     ca.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::DigitalSignature];
     ca.distinguished_name
         .push(DnType::CommonName, "shards test registry CA");
     let ca = CertifiedIssuer::self_signed(ca, KeyPair::generate().unwrap()).unwrap();
-    let mut leaf = params(vec!["localhost".into()]);
-    leaf.distinguished_name.push(DnType::CommonName, "localhost");
+    let mut leaf = params(vec![name.into()]);
+    leaf.distinguished_name.push(DnType::CommonName, name);
     leaf.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
     leaf.key_usages = vec![KeyUsagePurpose::DigitalSignature];
     let key = KeyPair::generate().unwrap();
@@ -105,11 +113,43 @@ pub(crate) enum After {
 trait Io: Read + Write {}
 impl<T: Read + Write> Io for T {}
 
+/// A connection a server holds: its socket, to shut down, and its thread.
+type Held = (TcpStream, std::thread::JoinHandle<()>);
+
 /// A scripted server: its port, the connections it accepted, and every request it read.
+/// Dropped, it stops: its threads end and are joined, its connections closed.
 pub(crate) struct Server {
     pub port: u16,
     accepted: Arc<AtomicUsize>,
     requests: Arc<Mutex<Vec<String>>>,
+    /// Set as the server goes; its accept loop then returns.
+    stopping: Arc<AtomicBool>,
+    /// The connections in hand, to shut down as the server goes, and their threads.
+    conns: Arc<Mutex<Vec<Held>>>,
+    acceptor: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Drop for Server {
+    fn drop(&mut self) {
+        self.stopping.store(true, Ordering::SeqCst);
+        // Wakes the accept loop, which then sees it is stopping.
+        drop(TcpStream::connect(("127.0.0.1", self.port)));
+        if let Some(acceptor) = self.acceptor.take() {
+            let _ = acceptor.join();
+        }
+        let conns = std::mem::take(
+            &mut *self
+                .conns
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
+        // One way at a time: on macOS SHUT_RDWR after the client's FIN shuts nothing (PM M236).
+        for (tcp, thread) in conns {
+            let _ = tcp.shutdown(Shutdown::Write);
+            let _ = tcp.shutdown(Shutdown::Read);
+            let _ = thread.join();
+        }
+    }
 }
 
 impl Server {
@@ -156,15 +196,44 @@ pub(crate) fn route(
     let port = listener.local_addr().unwrap().port();
     let accepted = Arc::new(AtomicUsize::new(0));
     let requests = Arc::new(Mutex::new(Vec::new()));
-    let (count, seen) = (accepted.clone(), requests.clone());
+    let stopping = Arc::new(AtomicBool::new(false));
+    let conns = Arc::new(Mutex::new(Vec::new()));
+    let (count, seen, stop, held) = (
+        accepted.clone(),
+        requests.clone(),
+        stopping.clone(),
+        conns.clone(),
+    );
     let answer = Arc::new(answer);
-    std::thread::spawn(move || {
+    let acceptor = std::thread::spawn(move || {
         for tcp in listener.incoming() {
+            if stop.load(Ordering::SeqCst) {
+                return;
+            }
             let Ok(tcp) = tcp else { return };
             count.fetch_add(1, Ordering::SeqCst);
+            let Ok(ours) = tcp.try_clone() else { return };
             let (tls, seen, answer) = (tls.clone(), seen.clone(), answer.clone());
-            std::thread::spawn(move || {
+            let Ok(closer) = tcp.try_clone() else { return };
+            let thread = std::thread::spawn(move || {
+                // However it ends, the connection closes with it: the server's clone,
+                // kept to shut it down, would otherwise hold it open.
+                struct Closes(TcpStream);
+                impl Drop for Closes {
+                    fn drop(&mut self) {
+                        let _ = self.0.shutdown(Shutdown::Write);
+                        let _ = self.0.shutdown(Shutdown::Read);
+                    }
+                }
+                let _closes = Closes(closer);
                 let _ = tcp.set_read_timeout(Some(Duration::from_secs(10)));
+                // A plain server asked for TLS answers as Go's net/http answers a request
+                // it cannot read, as a registry does (server.go, publicErr).
+                let mut first = [0u8; 1];
+                if tls.is_none() && tcp.peek(&mut first).is_ok_and(|n| n == 1) && first[0] == 0x16 {
+                    let _ = (&tcp).write_all(GO_BAD_REQUEST);
+                    return;
+                }
                 let mut io: Box<dyn Io> = match &tls {
                     Some(config) => Box::new(StreamOwned::new(
                         ServerConnection::new(config.clone()).unwrap(),
@@ -184,16 +253,25 @@ pub(crate) fn route(
                     }
                 }
             });
+            held.lock().unwrap().push((ours, thread));
         }
     });
     Server {
         port,
         accepted,
         requests,
+        stopping,
+        conns,
+        acceptor: Some(acceptor),
     }
 }
 
-fn parse(text: &str) -> Seen {
+/// What Go's net/http writes to a connection whose request it cannot read.
+pub(crate) const GO_BAD_REQUEST: &[u8] =
+    b"HTTP/1.1 400 Bad Request\r\nContent-Type: text/plain; charset=utf-8\r\nConnection: close\r\n\r\n400 Bad Request";
+
+/// A request's head, as a test server reads it.
+pub(crate) fn parse(text: &str) -> Seen {
     let head = text.split("\r\n\r\n").next().unwrap_or_default();
     let mut lines = head.split("\r\n");
     let mut first = lines.next().unwrap_or_default().split(' ');
@@ -230,4 +308,38 @@ fn read_request(io: &mut Box<dyn Io>) -> io::Result<Vec<u8>> {
     io.read_exact(&mut body)?;
     head.extend(body);
     Ok(head)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A server dropped is gone: its accept loop has returned and its listener closed, so
+    /// its port refuses connections, and a connection it held is closed.
+    #[test]
+    fn a_dropped_server_leaves_nothing_running() {
+        let server = serve(
+            None,
+            vec![(
+                b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n".to_vec(),
+                After::Keep,
+            )],
+        );
+        let port = server.port;
+        let mut held = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        held.write_all(b"GET / HTTP/1.1\r\n\r\n").unwrap();
+        let mut answer = [0u8; 38];
+        held.read_exact(&mut answer).unwrap();
+        drop(server);
+        // Not probed by connecting to its port again: the tests beside it are given freed
+        // ports at once, so another's server may answer there. Its threads are joined, its
+        // listener gone with its accept loop's; what is left to see is the connection it
+        // held, closed.
+        held.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        assert_eq!(
+            held.read(&mut [0u8; 1]).unwrap(),
+            0,
+            "the connection it held is closed"
+        );
+    }
 }

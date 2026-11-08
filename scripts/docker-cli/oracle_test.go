@@ -1,7 +1,7 @@
 package main
 
 // The Docker CLI's own answers to command lines, for shards-cmdline's tests to match
-// (crates/cmdline/tests/docker_cli.rs). `generate` copies this file into docker/cli's
+// (crates/cmdline/tests/command_lines.rs). `generate` copies this file into docker/cli's
 // cmd/docker and runs it there, against the CLI's real command tree: its root set up as
 // the CLI sets it up (cli.SetupRootCommand), its commands as the CLI adds them, named
 // `shards`, with the flags shards does not serve hidden (as dockerd's unsupported ones
@@ -19,29 +19,364 @@ import (
 	"github.com/docker/cli/cli"
 	"github.com/docker/cli/cli/command"
 	"github.com/docker/cli/cli/command/commands"
+	"github.com/moby/moby/client"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 )
 
 // The flags shards serves, by command; the rest are hidden, as shards hides them.
 var served = map[string][]string{
-	"run": {
-		"detach", "detach-keys", "disable-content-trust", "entrypoint", "env", "help",
-		"hostname", "init", "interactive", "kernel-memory", "name", "pull", "rm", "tty",
-		"user", "workdir",
-	},
-	"ps":   {"all", "help", "last", "latest", "no-trunc", "quiet"},
-	"ls":   {"all", "help", "last", "latest", "no-trunc", "quiet"},
+	"run": {"add-host", "annotation", "attach", "blkio-weight", "blkio-weight-device", "cap-add", "cap-drop", "cgroup-parent", "cgroupns", "cidfile", "cpu-count", "cpu-percent", "cpu-period", "cpu-quota", "cpu-rt-period", "cpu-rt-runtime", "cpu-shares", "cpus", "cpuset-cpus", "cpuset-mems", "detach", "detach-keys", "device", "device-cgroup-rule", "device-read-bps", "device-read-iops", "device-write-bps", "device-write-iops", "disable-content-trust", "dns", "dns-opt", "dns-option", "dns-search", "domainname", "entrypoint", "env", "env-file", "expose", "gpus", "group-add", "health-cmd", "health-interval", "health-retries", "health-start-interval", "health-start-period", "health-timeout", "help", "hostname", "init", "interactive", "io-maxbandwidth", "io-maxiops", "ip", "ip6", "ipc", "isolation", "kernel-memory", "label", "label-file", "link-local-ip", "log-driver", "log-opt", "mac-address", "memory", "memory-reservation", "memory-swap", "memory-swappiness", "mount", "name", "net", "net-alias", "network", "network-alias", "no-healthcheck", "oom-kill-disable", "oom-score-adj", "pid", "pids-limit", "platform", "privileged", "publish", "publish-all", "pull", "quiet", "read-only", "restart", "rm", "runtime", "security-opt", "shm-size", "sig-proxy", "stop-signal", "stop-timeout", "storage-opt", "sysctl", "tmpfs", "tty", "ulimit", "umask", "use-api-socket", "user", "userns", "uts", "volume", "volume-driver", "volumes-from", "workdir"},
+	"ps":   {"all", "filter", "format", "help", "last", "latest", "no-trunc", "quiet", "size"},
+	"ls":   {"all", "filter", "format", "help", "last", "latest", "no-trunc", "quiet", "size"},
 	"wait": {"help"},
 	"logs": {"details", "follow", "help", "since", "tail", "timestamps", "until"},
 	"rm":   {"force", "help", "volumes"},
 	"stop": {"help", "signal", "time", "timeout"},
 	"kill": {"help", "signal"},
+	"port": {"help"},
+	"images": {"all", "digests", "filter", "format", "help", "no-trunc", "quiet", "tree"},
+	"tag":    {"help"},
+	"rmi":    {"force", "help", "no-prune", "platform"},
+	"image ls": {"all", "digests", "filter", "format", "help", "no-trunc", "quiet", "tree"},
+	"image rm": {"force", "help", "no-prune", "platform"},
+	"image tag": {"help"},
+	"image inspect": {"format", "help", "platform"},
+	"version":       {"format", "help"},
+	"df":            {"format", "help", "verbose"},
+	"save":          {"help", "output", "platform"},
+	"image save":    {"help", "output", "platform"},
+	"load":          {"help", "input", "platform", "quiet"},
+	"image load":    {"help", "input", "platform", "quiet"},
+	"pull":          {"all-tags", "disable-content-trust", "help", "platform", "quiet"},
+	"image pull":    {"all-tags", "disable-content-trust", "help", "platform", "quiet"},
+	"push":          {"all-tags", "disable-content-trust", "help", "platform", "quiet"},
+	"login":         {"help", "password", "password-stdin", "username"},
+	"logout":        {"help"},
+	"search":        {"filter", "format", "help", "limit", "no-trunc"},
+	"image push":    {"all-tags", "disable-content-trust", "help", "platform", "quiet"},
+	"exec": {"detach", "detach-keys", "env", "env-file", "help", "interactive", "privileged", "tty", "user", "workdir"},
+	"stats":           {"all", "format", "help", "no-stream", "no-trunc"},
+	"container stats": {"all", "format", "help", "no-stream", "no-trunc"},
+	"pause":             {"help"},
+	"container pause":   {"help"},
+	"unpause":           {"help"},
+	"container unpause": {"help"},
+	"top":               {"help"},
+	"container top":     {"help"},
+	"diff":              {"help"},
+	"container diff":    {"help"},
+	"events":            {"filter", "format", "help", "since", "until"},
+	"system events":     {"filter", "format", "help", "since", "until"},
+	"export":            {"help", "output"},
+	"container export":  {"help", "output"},
+	"info":              {"format", "help"},
+	// `container inspect` (and the top-level inspect, whose own flags shards does not
+	// serve yet).
+	"inspect": {"format", "help", "size", "type"},
+	// `container prune` and `system prune`, which share the name.
+	"prune":             {"all", "filter", "force", "help", "volumes"},
+	"image prune":       {"all", "filter", "force", "help"},
+	"network connect":    {"alias", "driver-opt", "gw-priority", "help", "ip", "ip6", "link", "link-local-ip"},
+	"network create":     {"attachable", "aux-address", "config-from", "config-only", "driver", "gateway", "help", "ingress", "internal", "ip-range", "ipam-driver", "ipam-opt", "ipv4", "ipv6", "label", "opt", "scope", "subnet"},
+	"network disconnect": {"force", "help"},
+	"network inspect":    {"format", "help", "verbose"},
+	"network ls":         {"filter", "format", "help", "no-trunc", "quiet"},
+	"network prune":      {"filter", "force", "help"},
+	"network rm":         {"force", "help"},
+	"volume create":     {"driver", "help", "label", "name", "opt"},
+	"import":            {"change", "help", "message", "platform"},
+	"image import":      {"change", "help", "message", "platform"},
+	"update":            {"blkio-weight", "cpu-period", "cpu-quota", "cpu-shares", "cpus", "cpuset-cpus", "cpuset-mems", "help", "kernel-memory", "memory", "memory-reservation", "memory-swap", "pids-limit", "restart"},
+	"volume ls":         {"filter", "format", "help", "quiet"},
+	"volume inspect":    {"format", "help"},
+	"volume rm":         {"force", "help"},
+	"volume prune":      {"all", "filter", "force", "help"},
+	"create": {"add-host", "annotation", "attach", "blkio-weight", "blkio-weight-device", "cap-add", "cap-drop", "cgroup-parent", "cgroupns", "cidfile", "cpu-count", "cpu-percent", "cpu-period", "cpu-quota", "cpu-rt-period", "cpu-rt-runtime", "cpu-shares", "cpus", "cpuset-cpus", "cpuset-mems", "device", "device-cgroup-rule", "device-read-bps", "device-read-iops", "device-write-bps", "device-write-iops", "disable-content-trust", "dns", "dns-opt", "dns-option", "dns-search", "domainname", "entrypoint", "env", "env-file", "expose", "gpus", "group-add", "health-cmd", "health-interval", "health-retries", "health-start-interval", "health-start-period", "health-timeout", "help", "hostname", "init", "interactive", "io-maxbandwidth", "io-maxiops", "ip", "ip6", "ipc", "isolation", "kernel-memory", "label", "label-file", "link-local-ip", "log-driver", "log-opt", "mac-address", "memory", "memory-reservation", "memory-swap", "memory-swappiness", "mount", "name", "net", "net-alias", "network", "network-alias", "no-healthcheck", "oom-kill-disable", "oom-score-adj", "pid", "pids-limit", "platform", "privileged", "publish", "publish-all", "pull", "quiet", "read-only", "restart", "rm", "runtime", "security-opt", "shm-size", "stop-signal", "stop-timeout", "storage-opt", "sysctl", "tmpfs", "tty", "ulimit", "umask", "use-api-socket", "user", "userns", "uts", "volume", "volume-driver", "volumes-from", "workdir"},
+	"container create": {
+		"disable-content-trust", "entrypoint", "env", "help",
+		"hostname", "init", "interactive", "kernel-memory", "name", "net", "network", "pull",
+		"health-cmd", "health-interval", "health-retries", "health-start-interval",
+		"health-start-period", "health-timeout", "no-healthcheck", "publish", "publish-all",
+		"rm", "stop-signal",
+		"stop-timeout", "tty", "user", "workdir",
+	},
+	"attach":            {"detach-keys", "help", "no-stdin", "sig-proxy"},
+	"container attach":  {"detach-keys", "help", "no-stdin", "sig-proxy"},
+	"start":             {"attach", "checkpoint", "detach-keys", "help", "interactive"},
+	"container start":   {"attach", "checkpoint", "detach-keys", "help", "interactive"},
+	"checkpoint create": {"help", "leave-running"},
+	"checkpoint ls":     {"help"},
+	"checkpoint rm":     {"help"},
+	"restart":           {"help", "signal", "time", "timeout"},
+	"container restart": {"help", "signal", "time", "timeout"},
+	"commit":            {"author", "change", "help", "message", "no-pause", "pause"},
+	"container commit":  {"author", "change", "help", "message", "no-pause", "pause"},
+	"cp":                {"archive", "follow-link", "help", "quiet"},
+	"container cp":      {"archive", "follow-link", "help", "quiet"},
 }
 
 // The command lines asked, each the words after `shards`.
 var cases = [][]string{
+	{"stats", "--help"},
+	{"stats", "-h"},
+	{"stats", "--nope"},
+	{"stats", "--format", "x"},
+	{"container", "stats", "--help"},
+	{"pause"},
+	{"pause", "--help"},
+	{"pause", "--nope", "a"},
+	{"container", "pause", "-h"},
+	{"unpause"},
+	{"unpause", "--help"},
+	{"container", "unpause", "a", "--nope"},
+	{"top"},
+	{"top", "--help"},
+	{"top", "-h"},
+	{"top", "--nope"},
+	{"container", "top", "--help"},
+	{"diff"},
+	{"diff", "a", "b"},
+	{"diff", "--help"},
+	{"container", "diff", "-h"},
+	{"events", "--help"},
+	{"events", "x"},
+	{"events", "--filter", "nope"},
+	{"events", "-f", "a=b", "--since"},
+	{"system", "events", "-h"},
+	{"export"},
+	{"export", "--help"},
+	{"export", "-o"},
+	{"container", "export", "-h"},
+	{"info", "--help"},
+	{"info", "x"},
+	{"system", "info", "-h"},
+	{"info", "--help"},
+	{"info", "-f", "{{.ID}}"},
+	{"system", "info", "--format=json"},
+	{"system", "df", "--help"},
+	{"system", "df", "-v", "--format", "{{.Type}}"},
+	{"system", "df", "x"},
+	{"version", "--help"},
+	{"version", "extra"},
+	{"version", "-f"},
+	{"inspect", "--help"},
+	{"inspect"},
+	{"inspect", "--type", "container", "-f", "{{.Id}}", "x"},
+	{"container", "inspect", "-h"},
+	{"container", "inspect", "-f", "{{.Id}}", "x", "y"},
+	{"container", "inspect", "--format=json", "x"},
+	{"container", "inspect"},
+	{"container", "prune", "--help"},
+	{"container", "prune", "-f", "--filter", "until=1h"},
+	{"image", "prune", "-h"},
+	{"import", "--help"},
+	{"image", "import", "-c", "ENV A=1", "-c", "CMD x", "-m", "msg", "--platform", "linux/arm64", "f.tar", "repo:tag"},
+	{"import"},
+	{"update", "--help"},
+	{"update", "-m", "64m", "--memory-swap", "-1", "--cpus", "1.5", "-c", "512", "--blkio-weight", "300", "--pids-limit", "50", "--restart", "on-failure:3", "a", "b"},
+	{"update", "--blkio-weight", "70000", "a"},
+	{"update", "--kernel-memory", "10m", "a"},
+	{"container", "update", "--cpu-rt-period", "1000", "a"},
+	{"update"},
+	{"run", "--ip", "10.1.0.5", "--ip6", "fd00::5", "--network-alias", "a", "--net-alias", "b", "--network", "n", "img"},
+	{"run", "--ip", "bogus", "img"},
+	{"run", "-a", "stdout", "--attach", "STDERR", "-a", "Stdin", "img"},
+	{"run", "-a", "bogus", "img"},
+	{"create", "-a", "stdout", "img"},
+	{"run", "--log-driver", "json-file", "--log-opt", "max-size=10m", "--log-opt", "max-file=3", "--log-opt", "mode", "img"},
+	{"run", "--log-driver", "none", "--log-opt", "max-size=1m", "img"},
+	{"create", "--log-opt", "tag={{.Name}}", "img"},
+	// A slice of the user's service manager (D183), and a path, which shards refuses.
+	{"run", "--cgroup-parent", "agents-ci.slice", "img"},
+	{"run", "--cgroup-parent", "/x", "img"},
+	{"create", "--cgroup-parent", "/x", "img"},
+	// Flags shards does not serve yet, which parse as the CLI's do and are refused.
+	{"run", "--io-maxbandwidth", "10m", "img"},
+	{"run", "--io-maxbandwidth", "lots", "img"},
+	{"run", "--io-maxiops", "abc", "img"},
+	{"run", "--io-maxiops", "-1", "img"},
+	{"create", "--io-maxiops", "0", "img"},
+	{"save", "--platform", "arm64", "--platform", "amd64", "-o", "f", "img"},
+	{"network", "create", "--help"},
+	{"network", "create", "--subnet", "10.1.0.0/16,10.2.0.0/16", "--gateway", "10.1.0.1", "--ip-range", "10.1.0.5/24", "--aux-address", "a=10.1.0.9", "-o", "k=v", "--label", "l", "--ipv6", "--internal", "n1"},
+	{"network", "create", "--gateway", "bogus", "n"},
+	{"network", "create", "--ip-range", "bogus", "n"},
+	{"network", "create", "--label", "bad label", "n"},
+	{"network", "create", "--label", "=x", "n"},
+	{"network", "create"},
+	{"network", "create", "a", "b"},
+	{"network", "connect", "--help"},
+	{"network", "connect", "--ip", "10.1.0.5", "--ip6", "fd00::5", "--alias", "a,b", "--driver-opt", "k=v", "--gw-priority", "5", "--link-local-ip", "169.254.1.1", "--link", "c:d", "n", "c"},
+	{"network", "connect", "--ip", "bogus", "n", "c"},
+	{"network", "connect", "--link-local-ip", "bogus", "n", "c"},
+	{"network", "connect", "--link", "bad:a:b", "n", "c"},
+	{"network", "connect", "--gw-priority", "x", "n", "c"},
+	{"network", "connect", "n"},
+	{"network", "disconnect", "--help"},
+	{"network", "disconnect", "-f", "n", "c"},
+	{"network", "disconnect", "n"},
+	{"network", "inspect", "--help"},
+	{"network", "inspect", "-v", "-f", "{{.Name}}", "a", "b"},
+	{"network", "inspect"},
+	{"network", "ls", "--help"},
+	{"network", "list", "-q", "--no-trunc", "-f", "driver=bridge", "--format", "{{.Name}}"},
+	{"network", "ls", "-f", "noequals"},
+	{"network", "ls", "x"},
+	{"network", "rm", "--help"},
+	{"network", "remove", "-f", "a", "b"},
+	{"network", "rm"},
+	{"network", "prune", "--help"},
+	{"network", "prune", "-f", "--filter", "until=1h"},
+	{"network", "prune", "x"},
+	{"checkpoint", "create", "--help"},
+	{"checkpoint", "create", "c"},
+	{"checkpoint", "create", "--leave-running", "c", "cp"},
+	{"checkpoint", "ls", "--help"},
+	{"checkpoint", "list", "c"},
+	{"checkpoint", "ls", "c", "d"},
+	{"checkpoint", "rm", "--help"},
+	{"checkpoint", "remove", "c", "cp"},
+	{"checkpoint", "rm", "c"},
+	{"start", "--checkpoint", "cp", "c"},
+	{"volume", "create", "--help"},
+	{"volume", "create", "-d", "local", "--label", "a=b", "-o", "type=tmpfs", "-o", "device=tmpfs", "v1"},
+	{"volume", "create", "--name", "n", "v"},
+	{"volume", "create", "a", "b"},
+	{"volume", "create", "--scope", "multi"},
+	{"volume", "ls", "--help"},
+	{"volume", "list", "-q", "-f", "dangling=true", "--format", "{{.Name}}"},
+	{"volume", "ls", "x"},
+	{"volume", "ls", "--cluster"},
+	{"volume", "inspect", "--help"},
+	{"volume", "inspect", "-f", "{{.Name}}", "a", "b"},
+	{"volume", "inspect"},
+	{"volume", "rm", "--help"},
+	{"volume", "remove", "-f", "a"},
+	{"volume", "rm"},
+	{"volume", "prune", "--help"},
+	{"volume", "prune", "-af", "--filter", "label=a"},
+	{"volume", "prune", "x"},
+	{"image", "prune", "-af", "--filter", "label=a", "--filter", "label!=b"},
+	{"system", "prune", "--help"},
+	{"system", "prune", "--filter", "nope"},
+	{"start"},
+	{"start", "--help"},
+	{"start", "-a", "--nope", "x"},
+	{"container", "start", "-h"},
+	{"restart", "--help"},
+	{"restart", "-t", "x", "a"},
+	{"restart", "--time", "1", "--timeout", "2", "a"},
+	{"container", "restart", "-h"},
+	{"create", "--help"},
+	{"create"},
+	{"create", "-d", "alpine"},
+	{"container", "create", "-h"},
+	{"commit"},
+	{"commit", "--help"},
+	{"commit", "a", "b", "c"},
+	{"commit", "-p=false", "x"},
+	{"container", "commit", "-h"},
+	{"cp"},
+	{"cp", "--help"},
+	{"cp", "a", "b", "c"},
+	{"cp", "-x", "a:/x", "b"},
+	{"container", "cp", "-h"},
 	{"run"},
+	{"run", "--label", "a=1", "-l", "b", "--label-file", "f", "alpine"},
+	{"run", "--label", "=x", "alpine"},
+	{"run", "--label", "a b=1", "alpine"},
+	{"run", "--dns", " 1.1.1.1 ", "--dns", "::ffff:8.8.8.8", "alpine"},
+	{"run", "--dns", "nope", "alpine"},
+	{"run", "--dns-search", "example.com.", "--dns-search", ".", "alpine"},
+	{"run", "--dns-search", "-bad", "alpine"},
+	{"run", "--dns-search", "123", "alpine"},
+	{"run", "--dns-option", "ndots:2", "--dns-opt", "edns0", "alpine"},
+	{"run", "--add-host", "a=1.2.3.4", "--add-host", "b:[::1]", "--add-host", "c:host-gateway", "alpine"},
+	{"run", "--add-host", "a", "alpine"},
+	{"run", "--add-host", "a:nope", "alpine"},
+	{"run", "--domainname", "example.org", "--expose", "80", "--expose", "7000-7002/udp", "alpine"},
+	{"run", "--env-file", "a.env", "alpine"},
+	{"run", "-q", "--sig-proxy=false", "--cidfile", "/tmp/cid", "--platform", "linux/amd64", "alpine"},
+	{"run", "--sig-proxy", "x", "alpine"},
+	{"run", "-m", "1.5g", "--memory-reservation", "512m", "--memory-swap", "-1", "--cpus", "1.5", "-c", "512", "--cpuset-cpus", "0-1", "--pids-limit", "100", "alpine"},
+	{"run", "--memory", "32", "--memory-swap", "64MiB", "--cpus", "3/2", "alpine"},
+	{"run", "-m", "32.3 MiB", "--cpus", "0x1p-1", "alpine"},
+	{"run", "-m", "0.3 MB", "--cpus", "1e-9", "alpine"},
+	{"run", "-m", "1_024k", "--cpus", "2.5e1", "alpine"},
+	{"run", "-m", "1023.99999k", "alpine"},
+	{"run", "-m", "32m b", "alpine"},
+	{"run", "-m", "32 mbmb", "alpine"},
+	{"run", "-m", "32 MBMB", "alpine"},
+	{"run", "-m", "32bm", "alpine"},
+	{"run", "-m", "32Xb", "alpine"},
+	{"run", "-m", "-32", "alpine"},
+	{"run", "-m", "hello", "alpine"},
+	{"run", "-m", "", "alpine"},
+	{"run", "-m", "1e400", "alpine"},
+	{"run", "-m", "0x10", "alpine"},
+	{"run", "-m", "0x1p4k", "alpine"},
+	{"run", "-m", "inf b", "alpine"},
+	{"run", "--memory-swap", "-2", "alpine"},
+	{"run", "--cpus", "1/3", "alpine"},
+	{"run", "--cpus", "x", "alpine"},
+	{"run", "--cpus", "1/0", "alpine"},
+	{"run", "--cpus", "-1", "alpine"},
+	{"run", "--cpus", "0b1.1", "alpine"},
+	{"run", "--cpus", "010/2", "alpine"},
+	{"run", "--cpus", "1_0", "alpine"},
+	{"run", "--cpus", "1.9995", "alpine"},
+	{"run", "--cpus", "0.0005", "alpine"},
+	{"run", "--cpus", "1e30", "alpine"},
+	{"run", "--cpus", "0x1.8", "alpine"},
+	{"run", "--cpus", "1p1", "alpine"},
+	{"run", "--cpus", ".5", "alpine"},
+	{"run", "--cpus", "5.", "alpine"},
+	{"run", "--cpus", "+0", "alpine"},
+	{"run", "--cpus", "1e-10", "alpine"},
+	{"run", "--memory-swappiness", "101", "alpine"},
+	{"run", "--oom-kill-disable", "--cpu-period", "50000", "--cpu-quota", "25000", "--cpuset-mems", "0", "alpine"},
+	{"create", "-m", "64m", "--cpus", "2", "alpine"},
+	{"run", "--read-only", "--tmpfs", "/run:size=1m,exec", "--tmpfs", "/tmp", "--shm-size", "128m", "--ulimit", "nofile=1024:2048", "--ulimit", "nproc=10", "--sysctl", "net.core.somaxconn=1024", "--sysctl", "kernel.shmmax=1", "--sysctl", "net.core.somaxconn=2048", "alpine"},
+	{"run", "--sysctl", "kernel.hostname=x", "alpine"},
+	{"run", "--sysctl", "net", "alpine"},
+	{"run", "--sysctl", "=1", "alpine"},
+	{"run", "--sysctl", "fs.mqueue.msg_max=10", "--sysctl", "kernel.sem=1 2 3 4", "alpine"},
+	{"run", "--ulimit", "as=1", "alpine"},
+	{"run", "--gpus", "all", "--help"},
+	{"run", "--gpus", "foo", "alpine"},
+	{"run", "--gpus", "all,count=2", "alpine"},
+	{"run", "--gpus", "x=1", "alpine"},
+	{"run", "--gpus", "\"device=0", "alpine"},
+	{"create", "--gpus", "options=\"a", "alpine"},
+	{"run", "--ulimit", "nofile=2:1", "alpine"},
+	{"run", "--ulimit", "nofile", "alpine"},
+	{"run", "--ulimit", "nofile=x", "alpine"},
+	{"run", "--ulimit", "nofile=-1:5", "alpine"},
+	{"run", "--shm-size", "x", "alpine"},
+	{"run", "--shm-size", "1g", "alpine"},
+	{"run", "--cap-add", "net_admin", "--cap-add", "ALL", "--cap-drop", "chown", "--group-add", "audio", "--group-add", "1234", "--oom-score-adj", "-500", "--privileged", "alpine"},
+	{"run", "--oom-score-adj", "x", "alpine"},
+	{"run", "-v", "/h:/c:ro", "-v", "name:/d", "-v", "/anon", "--mount", "type=bind,src=/a,dst=/b,readonly", "--mount", "type=tmpfs,dst=/t,tmpfs-size=64m", "--volumes-from", "web:ro", "--volume-driver", "local", "alpine"},
+	{"run", "--mount", "", "alpine"},
+	{"run", "--mount", "type=bind,src", "alpine"},
+	{"run", "--mount", "type=volume,bind-propagation=shared", "alpine"},
+	{"run", "--mount", "type=bind,ro=maybe", "alpine"},
+	{"run", "--mount", "type=bind,nope=1", "alpine"},
+	{"run", "--mount", "type=tmpfs,tmpfs-size=x", "alpine"},
+	{"run", "--mount", "type=tmpfs,tmpfs-mode=9", "alpine"},
+	{"run", "--mount", "type=bind,bind-nonrecursive", "alpine"},
+	{"run", "--mount", "type=bind,src= /a", "alpine"},
+	{"run", "--mount", "type=bind, src=/a", "alpine"},
+	{"run", "--mount", "type=bind,bind-recursive=writable", "alpine"},
+	{"run", "--mount", "type=bind,bind-recursive=readonly,readonly", "alpine"},
+	{"run", "--mount", "type=bind,bind-recursive=nope", "alpine"},
+	{"run", "--mount", "type=bind,src=\"a,b\",dst=/x", "alpine"},
+	{"run", "--mount", "type=bind,src=\"a", "alpine"},
+	{"run", "--mount", "src=/a,dst=/b,volume-label=x=1,volume-opt=o=2,volume-driver=local,volume-nocopy,volume-subpath=s", "alpine"},
+	{"run", "--mount", "type=,dst=/b", "alpine"},
+	{"exec", "--privileged", "--env-file", "a.env", "web", "ls"},
+	{"create", "-q", "--cidfile", "c", "--platform", "arm64", "alpine"},
 	{"run", "--help"},
 	{"run", "-h"},
 	{"run", "--nope", "alpine"},
@@ -51,6 +386,112 @@ var cases = [][]string{
 	{"run", "-di", "-eA=1", "--name=web", "--pull=never", "alpine"},
 	{"run", "-e", "A=1", "-e", "B", "-e", "UNSET", "alpine", "env"},
 	{"run", "-e", "=x", "alpine"},
+	{"run", "--network", "none", "alpine"},
+	{"run", "--health-cmd", "true", "--health-interval", "1m30.5s", "--health-retries", "2", "--health-timeout=500ms", "--health-start-period", "1h", "--health-start-interval", "2s", "alpine"},
+	{"run", "--health-interval", "x", "alpine"},
+	{"run", "--health-interval", "1", "alpine"},
+	{"run", "--health-timeout", "1q", "alpine"},
+	{"run", "--health-interval=-1s", "alpine"},
+	{"run", "--no-healthcheck", "alpine"},
+	{"run", "-p", "8080:80", "-p", "127.0.0.1::81/udp", "-P", "alpine"},
+	{"run", "--publish=80", "--publish-all=false", "alpine"},
+	{"run", "-p"},
+	{"rmi"},
+	{"rmi", "--help"},
+	{"image", "rm", "-f", "--no-prune", "a", "b"},
+	{"image", "remove", "a"},
+	{"image", "rm", "--help"},
+	{"image", "ls", "--help"},
+	{"image", "tag", "--help"},
+	{"login", "--help"},
+	{"login", "a", "b"},
+	{"login", "-u", "u", "--password-stdin", "r.example"},
+	{"search", "--help"},
+	{"search"},
+	{"search", "a", "b"},
+	{"search", "--limit", "5", "-f", "is-official=true", "--no-trunc", "--format", "{{.Name}}", "python"},
+	{"search", "--limit", "x", "python"},
+	{"logout", "--help"},
+	{"logout", "a", "b"},
+	{"pull", "--help"},
+	{"pull"},
+	{"pull", "a", "b"},
+	{"image", "pull", "-a", "-q", "x"},
+	{"pull", "--platform", "linux/arm64", "x"},
+	{"pull", "--platform"},
+	{"pull", "--disable-content-trust", "x"},
+	{"image", "pull", "--help"},
+	{"push", "--help"},
+	{"push"},
+	{"push", "a", "b"},
+	{"image", "push", "-a", "-q", "x"},
+	{"push", "--platform", "linux/arm64", "x"},
+	{"push", "--disable-content-trust=false", "x"},
+	{"load", "--help"},
+	{"load", "x"},
+	{"image", "load", "-q", "-i", "a.tar"},
+	{"load", "--platform", "linux/arm64"},
+	{"save"},
+	{"save", "--help"},
+	{"save", "-o", "x.tar", "a", "b"},
+	{"image", "save", "--output=y", "a"},
+	{"save", "--platform", "linux/arm64", "a"},
+	{"image", "inspect"},
+	{"image", "inspect", "--help"},
+	{"image", "inspect", "a", "b"},
+	{"image", "inspect", "-f", "{{.Id}}", "a"},
+	{"rmi", "--platform", "linux/amd64", "a"},
+	{"tag"},
+	{"tag", "--help"},
+	{"tag", "a"},
+	{"tag", "a", "b", "c"},
+	{"image", "tag", "a", "b"},
+	{"tag", "a", "--", "b"},
+	{"images", "--help"},
+	{"images", "a", "b"},
+	{"images", "-aq", "--digests", "--no-trunc", "--tree", "alpine"},
+	{"image", "ls", "--format", "x"},
+	{"images", "-f", "dangling=true", "-f", "reference=alp*"},
+	{"images", "--filter", "x"},
+	{"image", "list", "-f", "dangling=true"},
+	{"port"},
+	{"port", "--help"},
+	{"port", "a", "b", "c"},
+	{"port", "a", "80/udp"},
+	{"container", "port", "a"},
+	{"port", "--bogus", "a"},
+	{"exec"},
+	{"exec", "web"},
+	{"exec", "--help"},
+	{"exec", "-it", "-e", "A=1", "-e", "B", "-u", "1000:1000", "-w", "/w", "web", "sh", "-c", "env"},
+	{"exec", "-d", "web", "true", "-i"},
+	{"exec", "--privileged", "web", "true"},
+	{"exec", "--env-file", "f", "web", "true"},
+	{"container", "exec", "-t", "web", "top"},
+	{"exec", "--nope", "web", "true"},
+	{"run", "--stop-signal", "SIGUSR1", "--stop-timeout", "3", "alpine"},
+	{"run", "--stop-timeout", "x", "alpine"},
+	{"run", "--stop-timeout=-1", "alpine"},
+	{"run", "--net=none", "--network", "bridge", "alpine"},
+	{"run", "--network=name=bridge,alias=x", "alpine"},
+	{"run", "--network", "a=b", "alpine"},
+	{"run", "--net", "name=x,ip=y", "alpine"},
+	{"run", "--network", "\"name=a", "alpine"},
+	{"run", "--mac-address", "02:42:zz:11:00:99", "alpine"},
+	{"run", "--mac-address", "bad", "--pull", "nope", "alpine"},
+	{"run", "--network", "name=bridge,mac-address=bad", "alpine"},
+	{"run", "--mac-address", "02:42:ac:11:00:02", "--network", "name=bridge,mac-address=02:42:ac:11:00:03", "alpine"},
+	{"run", "--mac-address", "0242.ac11.0002", "alpine"},
+	{"run", "--mac-address", " 02-42-ac-11-00-02 ", "alpine"},
+	{"create", "--mac-address", "02:42:ac:11:00:99:00:01", "alpine"},
+	{"create", "--mac-address", "nope", "alpine"},
+	{"run", "--link-local-ip", "169.254.1.1", "--link-local-ip", "fe80::1", "alpine"},
+	{"run", "--link-local-ip", "nope", "alpine"},
+	{"run", "--link-local-ip", "169.254.9.1", "--network", "name=bridge,link-local-ip=169.254.9.2", "alpine"},
+	{"run", "--link-local-ip", "nope", "--network", "name=bridge,link-local-ip=169.254.9.2", "alpine"},
+	{"create", "--link-local-ip", "fe80::1%eth0", "--link-local-ip", "::ffff:169.254.10.1", "alpine"},
+	{"run", "--network"},
+	{"run", "--network=", "alpine"},
 	{"run", "-e"},
 	{"run", "-it", "alpine", "sh"},
 	{"run", "-t", "alpine"},
@@ -62,6 +503,40 @@ var cases = [][]string{
 	{"run", "--sig-proxy=true", "alpine"},
 	{"run", "--sig-proxy=false", "alpine"},
 	{"run", "--init", "--init=false", "alpine"},
+	{"run", "--pid", "host", "--init", "alpine"},
+	{"run", "--pid=container:web", "alpine"},
+	{"run", "--pid", "foo", "alpine"},
+	{"run", "--pid"},
+	{"create", "--pid", "host", "alpine"},
+	{"run", "--annotation", "a=1", "--annotation", "b", "--annotation", "=x", "alpine"},
+	{"create", "--annotation", "k=v", "--annotation", "k=w", "alpine"},
+	{"run", "--cpu-count", "2", "alpine"},
+	{"run", "--cpu-count", "0", "alpine"},
+	{"run", "--cpu-count", "x", "alpine"},
+	{"run", "--cpu-percent", "50", "--io-maxiops", "5", "--cpu-count", "1", "alpine"},
+	{"run", "--io-maxbandwidth", "10m", "alpine"},
+	{"run", "--io-maxbandwidth", "x", "alpine"},
+	{"run", "--io-maxiops", "-1", "alpine"},
+	{"run", "--cpu-count", "2", "--help"},
+	{"create", "--cpu-percent", "1", "--isolation", "hyperv", "alpine"},
+	{"run", "--cpu-rt-period", "1000", "--cpu-rt-runtime", "950", "alpine"},
+	{"run", "--cpu-rt-runtime", "x", "alpine"},
+	{"run", "--isolation", "default", "alpine"},
+	{"run", "--isolation", "hyperv", "alpine"},
+	{"run", "--isolation="},
+	{"run", "--runtime", "runc", "alpine"},
+	{"create", "--runtime", "io.containerd.runc.v2", "--isolation", "process", "alpine"},
+	{"run", "--uts", "host", "--ipc", "shareable", "--userns", "host", "--cgroupns", "host", "alpine"},
+	{"run", "--ipc", "container:web", "alpine"},
+	{"run", "--ipc", "none", "--cgroupns", "private", "alpine"},
+	{"run", "--storage-opt", "size=1G", "--storage-opt", "size=2G", "alpine"},
+	{"run", "--umask", "022", "alpine"},
+	{"run", "--umask", "0", "alpine"},
+	{"run", "--umask", "7777", "alpine"},
+	{"run", "--umask", "8", "alpine"},
+	{"run", "--umask", "0o22", "alpine"},
+	{"run", "--umask", "77777777777", "alpine"},
+	{"create", "--umask=0077", "alpine"},
 	{"run", "--disable-content-trust", "alpine"},
 	{"run", "--kernel-memory", "0", "alpine"},
 	{"run", "-h", "host", "-u", "1000:1000", "-w", "/srv", "alpine", "pwd"},
@@ -81,6 +556,10 @@ var cases = [][]string{
 	{"ps", "-a", "-q", "--no-trunc"},
 	{"ps", "-n", "3"},
 	{"ps", "-n=3"},
+	{"ps", "-f", "nope"},
+	{"ps", "--filter", "status=exited", "-q"},
+	{"ps", "-f", "name=a", "-f", "label=x=1"},
+	{"ps", "-f", " Name = b<&> ", "-f", "name=a", "-f", "", "-a"},
 	{"ps", "-n3"},
 	{"ps", "--last=0x10"},
 	{"ps", "-n", "x"},
@@ -182,6 +661,22 @@ func root(t *testing.T, stdout, stderr *bytes.Buffer) *cobra.Command {
 	cmd.SetErr(stderr)
 	cli.SetupRootCommand(cmd)
 	commands.AddCommands(cmd, dockerCli)
+	// As the CLI checks and hides what its daemon does not support (docker.go, isSupported
+	// in PersistentPreRunE and hideUnsupportedFeatures in setHelpFunc), against shards'
+	// daemon: Linux, of the CLI's own API version, with experimental features, as shards
+	// serves the CLI's checkpoints (D176).
+	cmd.PersistentPreRunE = func(c *cobra.Command, _ []string) error {
+		return isSupported(c, linuxDaemon{})
+	}
+	defaultHelp := cmd.HelpFunc()
+	cmd.SetHelpFunc(func(c *cobra.Command, args []string) {
+		if err := isSupported(c, linuxDaemon{}); err != nil {
+			c.Println(err)
+			return
+		}
+		hideUnsupportedFeatures(c, linuxDaemon{})
+		defaultHelp(c, args)
+	})
 	var visit func(c *cobra.Command)
 	visit = func(c *cobra.Command) {
 		for _, sub := range c.Commands() {
@@ -190,8 +685,16 @@ func root(t *testing.T, stdout, stderr *bytes.Buffer) *cobra.Command {
 		if a := c.Annotations["aliases"]; a != "" {
 			c.Annotations["aliases"] = strings.ReplaceAll(a, "docker ", "shards ")
 		}
-		keep, ok := served[c.Name()]
-		if !ok || c.Parent() == nil {
+		if c.Parent() == nil {
+			return
+		}
+		// `image ls` and `image rm` share their names with container commands.
+		key := c.Name()
+		if p := c.Parent().Name(); p == "image" || p == "volume" || p == "network" || p == "checkpoint" {
+			key = p + " " + key
+		}
+		keep, ok := served[key]
+		if !ok {
 			return
 		}
 		c.Flags().VisitAll(func(f *pflag.Flag) {
@@ -217,6 +720,18 @@ func root(t *testing.T, stdout, stderr *bytes.Buffer) *cobra.Command {
 	}
 	visit(cmd)
 	return cmd
+}
+
+// linuxDaemon is shards' daemon as the CLI's support checks see it (versionDetails): a
+// Docker Engine on Linux, of the CLI's own API version (client.MaxAPIVersion, which a CLI
+// with no connection reports too), its experimental features on: its checkpoints are a
+// microVM's snapshots (D176).
+type linuxDaemon struct{}
+
+func (linuxDaemon) CurrentVersion() string { return client.MaxAPIVersion }
+
+func (linuxDaemon) ServerInfo() command.ServerInfo {
+	return command.ServerInfo{OSType: "linux", HasExperimental: true}
 }
 
 func contains(list []string, s string) bool {
@@ -251,6 +766,76 @@ func TestShardsOracle(t *testing.T) {
 		answers = append(answers, answer{argv, stdout.String(), stderr.String(), status})
 	}
 	data, err := json.MarshalIndent(answers, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(out, append(data, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A flag as the CLI defines it, served by shards or not: its shorthand, its pflag type,
+// its default, and the first flag defined of those bound to one value with it, if any.
+type flagRecord struct {
+	Name       string `json:"name"`
+	Short      string `json:"short,omitempty"`
+	Type       string `json:"type"`
+	Default    string `json:"default"`
+	Shares     string `json:"shares,omitempty"`
+	Deprecated bool   `json:"deprecated,omitempty"`
+}
+
+// TestShardsFlags records the flags of the CLI's commands that shards has: the top-level
+// ones and the container, image, network, volume and system commands, but for build,
+// whose flags are buildx's (scripts/buildx), and the help flag every command inherits.
+func TestShardsFlags(t *testing.T) {
+	out := os.Getenv("SHARDS_FLAGS_OUT")
+	if out == "" {
+		t.Skip("SHARDS_FLAGS_OUT names the file to write")
+	}
+	var stdout, stderr bytes.Buffer
+	records := map[string][]flagRecord{}
+	var visit func(c *cobra.Command)
+	visit = func(c *cobra.Command) {
+		for _, sub := range c.Commands() {
+			visit(sub)
+		}
+		words := strings.Fields(strings.TrimPrefix(c.CommandPath(), "shards"))
+		switch {
+		case len(words) == 0, c.Name() == "build":
+			return
+		case len(words) == 1 && c.HasSubCommands():
+			return
+		case len(words) == 2 && !contains([]string{"checkpoint", "container", "image", "network", "system", "volume"}, words[0]):
+			return
+		case len(words) > 2:
+			return
+		}
+		var owners []*pflag.Flag
+		flags := []flagRecord{}
+		fs := c.LocalFlags()
+		// In the order they were defined: a value's owner is its first flag.
+		fs.SortFlags = false
+		fs.VisitAll(func(f *pflag.Flag) {
+			if f.Name == "help" {
+				return
+			}
+			r := flagRecord{f.Name, f.Shorthand, f.Value.Type(), f.DefValue, "", f.Deprecated != ""}
+			for _, o := range owners {
+				if o.Value == f.Value {
+					r.Shares = o.Name
+					break
+				}
+			}
+			if r.Shares == "" {
+				owners = append(owners, f)
+			}
+			flags = append(flags, r)
+		})
+		records[strings.Join(words, " ")] = flags
+	}
+	visit(root(t, &stdout, &stderr))
+	data, err := json.MarshalIndent(records, "", "  ")
 	if err != nil {
 		t.Fatal(err)
 	}

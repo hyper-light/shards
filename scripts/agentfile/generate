@@ -1,0 +1,73 @@
+#!/bin/sh
+# Regenerates what crates/agentfile takes from BuildKit's Dockerfile frontend, from
+# moby/buildkit dockerfile/1.27.1 built and run by the Go its go.mod names, in that Go's
+# linux/amd64 image (Docker), where BuildKit runs:
+# - crates/agentfile/testdata/buildkit/, BuildKit's parser test files and lexer tables,
+#   copied unmodified under its Apache-2.0 licence;
+# - crates/agentfile/testdata/parse.json and lex.json, what BuildKit's parser and lexer
+#   make of them and of crates/agentfile/testdata/corpus and lex-cases.json, which the
+#   crate's tests expect byte for byte (oracle/main.go);
+# - crates/agentfile/testdata/instructions.json and plan.json, the typed instructions and
+#   the build plan (Dockerfile2LLB's graph, image config and warnings, with the fake base
+#   images of images.json) BuildKit makes of the corpus;
+# - crates/agentfile/testdata/subrequests.json, what the frontend answers `--call`'s
+#   subrequests with for each plan corpus file: its outline, its targets, and its lint
+#   results (DockerfileLint, the source's LLB definition cleared), and the describe;
+# - crates/agentfile/testdata/configs-answers.json, what Go's encoding/json makes of each
+#   image config in configs.json, read into BuildKit's DockerOCIImage and written back;
+# - crates/agentfile/testdata/sizes-answers.json and urls-answers.json, what go-units,
+#   net/url and BuildKit's git URL parsing make of sizes.json and urls.json;
+# - crates/agentfile/testdata/exports.json, what BuildKit's image exporter writes for each
+#   planned image, its config and manifest, over layers made up for it (export_test.go);
+# - crates/image/src/tables.rs, Go's character classes the parser and lexer use, and the
+#   image crate's reading of image configs.
+#
+#   scripts/agentfile/generate [BUILDKIT_CHECKOUT]
+set -eu
+
+here=$(cd "$(dirname "$0")" && pwd)
+root=$(cd "$here/../.." && pwd)
+data="$root/crates/agentfile/testdata"
+tag=dockerfile/1.27.1
+commit=08f4630c67a49ff3158f218e99fd93ad97a90747
+bk=${1:-}
+if [ -z "$bk" ]; then
+	bk=$(mktemp -d)
+	trap 'rm -rf "$bk"' EXIT
+	git clone --quiet --depth 1 --branch "$tag" https://github.com/moby/buildkit "$bk"
+fi
+if [ "$(git -C "$bk" rev-parse HEAD)" != "$commit" ]; then
+	echo "$bk is not moby/buildkit $tag ($commit)" >&2
+	exit 1
+fi
+
+rm -rf "$data/buildkit"
+mkdir -p "$data/buildkit/shell"
+cp -R "$bk/frontend/dockerfile/parser/testfiles" "$data/buildkit/parser"
+cp -R "$bk/frontend/dockerfile/parser/testfiles-negative" "$data/buildkit/parser-negative"
+cp "$bk/frontend/dockerfile/shell/envVarTest" "$bk/frontend/dockerfile/shell/wordsTest" "$data/buildkit/shell/"
+cp "$bk/LICENSE" "$data/buildkit/LICENSE"
+cat >"$data/buildkit/README.md" <<EOF
+# BuildKit's parser and lexer test data
+
+\`parser/\`, \`parser-negative/\` and \`shell/\` are moby/buildkit's
+\`frontend/dockerfile/parser/testfiles\`, \`testfiles-negative\` and \`shell\`'s
+\`envVarTest\` and \`wordsTest\` at $tag ($commit), unmodified, under BuildKit's
+Apache-2.0 licence in \`LICENSE\`. Regenerate with \`scripts/agentfile/generate\`.
+EOF
+
+mkdir -p "$bk/shards-oracle"
+cp "$here/oracle/main.go" "$bk/shards-oracle/main.go"
+cp "$here/export_test.go" "$bk/exporter/containerimage/zz_shards_export_test.go"
+cleanup() { rm -rf "$bk/shards-oracle" "$bk/exporter/containerimage/zz_shards_export_test.go"; }
+trap 'cleanup; [ -z "${1:-}" ] && rm -rf "$bk"' EXIT
+# Run where BuildKit runs, on linux/amd64, the platform the plans are made for and so the
+# one containerd's platforms package takes for this host's: Go here would be darwin's.
+go=$(sed -n 's/^go //p' "$bk/go.mod")
+docker run --rm --platform linux/amd64 --user "$(id -u):$(id -g)" \
+	-e HOME=/tmp -e GOCACHE=/tmp/go-cache -e GOFLAGS=-mod=vendor -e GOTOOLCHAIN=local \
+	-v "$bk:/bk" -v "$root/crates/agentfile:/crate" -w /bk "golang:$go" sh -c '
+		go run ./shards-oracle /crate/testdata &&
+		SHARDS_PLANS=/crate/testdata/plan.json SHARDS_EXPORT_OUT=/crate/testdata/exports.json \
+			go test -count=1 -run "^TestShardsExport$" ./exporter/containerimage/'
+

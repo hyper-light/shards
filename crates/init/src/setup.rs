@@ -1,0 +1,1225 @@
+//! What a workload's namespaces are given before it starts (shards_abi::run::Spec::setup),
+//! as runc v1.5.1 gives a container's: its tmpfs mounts and `/dev/shm` (libcontainer
+//! rootfs_linux.go, after specconv's parseMountOptions), its rlimits (setupRlimits), the
+//! root read-only (`readonly`), done by the standby in its own mount namespace; and its
+//! sysctls (internal/sys WriteSysctls), done by init through a `/proc/sys` it opened
+//! before `/proc/sys` was made read-only, so that the workload's own view stays read-only.
+
+use std::ffi::CString;
+use std::io;
+use std::os::fd::{AsRawFd as _, FromRawFd as _, OwnedFd};
+use std::sync::OnceLock;
+
+/// `/proc/sys`, opened before it is made read-only (run.rs `masked`).
+static PROC_SYS: OnceLock<OwnedFd> = OnceLock::new();
+
+/// The microVM's own IPC and cgroup namespaces, init's, opened before any standby forks
+/// (D156): what a run's `--ipc host` and `--cgroupns host` enter.
+static MICROVM_NS: OnceLock<(OwnedFd, OwnedFd)> = OnceLock::new();
+
+/// The run's writable layer, the tmpfs at `/rw`, opened before the root moves over it:
+/// what `--storage-opt size=` sizes (D156).
+static RW: OnceLock<OwnedFd> = OnceLock::new();
+
+/// Opens `path` for this process alone, `flags` besides `O_CLOEXEC`.
+fn open_kept(path: &std::ffi::CStr, flags: libc::c_int) -> io::Result<OwnedFd> {
+    // SAFETY: open(2) of a NUL-terminated path.
+    let fd = unsafe { libc::open(path.as_ptr(), flags | libc::O_CLOEXEC) };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: a fresh descriptor nothing else owns.
+    Ok(unsafe { OwnedFd::from_raw_fd(fd) })
+}
+
+/// Opens init's IPC and cgroup namespaces, the microVM's, for [`apply`]'s `ipc=host` and
+/// `cgroupns=host`; a standby, forked after, has them, and its command does not.
+pub fn keep_microvm_namespaces() -> io::Result<()> {
+    let ipc = open_kept(c"/proc/self/ns/ipc", libc::O_RDONLY)?;
+    let cgroup = open_kept(c"/proc/self/ns/cgroup", libc::O_RDONLY)?;
+    let _ = MICROVM_NS.set((ipc, cgroup));
+    Ok(())
+}
+
+/// statfs(2)'s word for ext4 (include/uapi/linux/magic.h).
+const EXT4_SUPER_MAGIC: u64 = 0xEF53;
+
+/// Opens `/rw`, the writable layer's tmpfs, for [`rw_size`], before the root moves over it.
+pub fn keep_rw() -> io::Result<()> {
+    let _ = RW.set(open_kept(c"/rw", libc::O_PATH | libc::O_DIRECTORY)?);
+    Ok(())
+}
+
+/// The descriptor [`keep_rw`] kept, where it did: one whose number stays as a stopped
+/// microVM's layer takes the template's place (D190, over.rs).
+pub fn rw_fd() -> Option<std::os::fd::RawFd> {
+    RW.get().map(std::os::fd::AsRawFd::as_raw_fd)
+}
+
+/// Sizes the run's writable layer, `text` bytes (`--storage-opt size=`, D156): its tmpfs
+/// remounted at that size, which it may not be below what it holds already.
+pub fn rw_size(text: &[u8]) -> Result<(), String> {
+    let size = std::str::from_utf8(text)
+        .ok()
+        .and_then(|t| t.parse::<u64>().ok())
+        .ok_or("a malformed writable layer size")?;
+    let rw = RW.get().ok_or("the writable layer was not kept")?;
+    // An ext4 layer (D190) holds what its run asked for as it was made: its template is
+    // the size's own.
+    // SAFETY: all-zero is a valid statfs, which fstatfs(2) fills from our descriptor.
+    let mut fs: libc::statfs = unsafe { std::mem::zeroed() };
+    // SAFETY: as above.
+    let stated = unsafe { libc::fstatfs(rw.as_raw_fd(), &raw mut fs) } == 0;
+    // `f_type` is signed in some targets' C libraries and unsigned in others.
+    #[allow(clippy::unnecessary_cast)]
+    let ext4 = stated && fs.f_type as u64 == EXT4_SUPER_MAGIC;
+    if ext4 {
+        return Ok(());
+    }
+    let path = CString::new(format!("/proc/self/fd/{}", rw.as_raw_fd())).map_err(|_| "a NUL in a path")?;
+    let data = CString::new(format!("size={size}")).map_err(|_| "a NUL in a size")?;
+    // SAFETY: mount(2) of NUL-terminated strings that outlive the call.
+    let rc = unsafe {
+        libc::mount(
+            std::ptr::null(),
+            path.as_ptr(),
+            std::ptr::null(),
+            libc::MS_REMOUNT,
+            data.as_ptr().cast(),
+        )
+    };
+    if rc != 0 {
+        let e = io::Error::last_os_error();
+        // SAFETY: all-zero is a valid statfs, which fstatfs(2) fills from our descriptor.
+        let mut fs: libc::statfs = unsafe { std::mem::zeroed() };
+        let held = (e.raw_os_error() == Some(libc::EINVAL)
+            // SAFETY: as above.
+            && unsafe { libc::fstatfs(rw.as_raw_fd(), &raw mut fs) } == 0)
+            .then(|| (fs.f_blocks as u64).saturating_sub(fs.f_bfree as u64) * fs.f_bsize as u64);
+        return Err(match held {
+            Some(held) if held > size => {
+                format!("--storage-opt size={size}: the run's writable layer holds {held} bytes as it begins")
+            }
+            _ => format!("--storage-opt size={size}: {}", errno_words(&e)),
+        });
+    }
+    Ok(())
+}
+
+/// Enters init's namespace of `kind`, the microVM's ([`keep_microvm_namespaces`]).
+pub fn enter_microvm(kind: libc::c_int) -> Result<(), i32> {
+    let (ipc, cgroup) = MICROVM_NS.get().ok_or(libc::ENOENT)?;
+    let fd = if kind == libc::CLONE_NEWIPC { ipc } else { cgroup };
+    // SAFETY: setns(2) on a descriptor this process holds; a single-threaded fork of init.
+    if unsafe { libc::setns(fd.as_raw_fd(), kind) } != 0 {
+        return Err(io::Error::last_os_error().raw_os_error().unwrap_or(libc::EIO));
+    }
+    Ok(())
+}
+
+/// Opens `/proc/sys` for [`write_sysctl`], before it is made read-only.
+pub fn keep_proc_sys() -> io::Result<()> {
+    // SAFETY: open(2) of a NUL-terminated literal.
+    let fd = unsafe {
+        libc::open(
+            c"/proc/sys".as_ptr(),
+            libc::O_PATH | libc::O_DIRECTORY | libc::O_CLOEXEC,
+        )
+    };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: a fresh descriptor nothing else owns.
+    let _ = PROC_SYS.set(unsafe { OwnedFd::from_raw_fd(fd) });
+    Ok(())
+}
+
+fn errno_words(e: &io::Error) -> String {
+    shards_cmdline::go::linux_error(e.raw_os_error().unwrap_or(libc::EIO))
+}
+
+/// Sets sysctl `key` to `value`; a failure in the words scripts read of a start's
+/// (internal/sys WriteSysctls).
+pub fn write_sysctl(key: &str, value: &str) -> Result<(), String> {
+    let path = key.replace('.', "/");
+    let shown = format!("/proc/sys/{path}");
+    let dir = PROC_SYS
+        .get()
+        .ok_or_else(|| format!("open sysctl {key} file: open {shown}: no such file or directory"))?;
+    let c = CString::new(path).map_err(|_| format!("open sysctl {key} file: a NUL in its name"))?;
+    // SAFETY: openat(2) of a NUL-terminated path below our own descriptor.
+    let fd = unsafe {
+        libc::openat(
+            dir.as_raw_fd(),
+            c.as_ptr(),
+            libc::O_WRONLY | libc::O_TRUNC | libc::O_CLOEXEC,
+        )
+    };
+    if fd < 0 {
+        let e = io::Error::last_os_error();
+        return Err(format!(
+            "open sysctl {key} file: open {shown}: {}",
+            errno_words(&e)
+        ));
+    }
+    // SAFETY: a fresh descriptor nothing else owns.
+    let file = unsafe { OwnedFd::from_raw_fd(fd) };
+    // SAFETY: write(2) of a live buffer, of its length.
+    let n = unsafe { libc::write(file.as_raw_fd(), value.as_ptr().cast(), value.len()) };
+    if n < 0 {
+        let e = io::Error::last_os_error();
+        return Err(format!(
+            "failed to write sysctl {key} = {}: write {shown}: {}",
+            shards_cmdline::go::quote(value),
+            errno_words(&e)
+        ));
+    }
+    Ok(())
+}
+
+/// The value of sysctl `key`, read beneath init's own `/proc/sys`.
+pub fn read_sysctl(key: &str) -> Result<String, String> {
+    let path = key.replace('.', "/");
+    let dir = PROC_SYS
+        .get()
+        .ok_or_else(|| format!("reading /proc/sys/{path}: no /proc/sys kept"))?;
+    let c = CString::new(path.clone()).map_err(|_| format!("reading /proc/sys/{path}: a NUL in its name"))?;
+    // SAFETY: openat(2) of a NUL-terminated path below our own descriptor.
+    let fd = unsafe { libc::openat(dir.as_raw_fd(), c.as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC) };
+    if fd < 0 {
+        let e = io::Error::last_os_error();
+        return Err(format!("reading /proc/sys/{path}: {}", errno_words(&e)));
+    }
+    // SAFETY: a fresh descriptor nothing else owns.
+    let file = std::fs::File::from(unsafe { OwnedFd::from_raw_fd(fd) });
+    let mut text = String::new();
+    io::Read::read_to_string(&mut &file, &mut text).map_err(|e| format!("reading /proc/sys/{path}: {e}"))?;
+    Ok(text.trim().to_string())
+}
+
+/// Sets the guest's real-time budget to a run's `--cpu-rt-period` and `--cpu-rt-runtime`
+/// (D155), `entry` being `PERIOD,RUNTIME` in microseconds, each 0 for the guest kernel's
+/// own: the run's alone, as the microVM is its own. The period first where it holds the
+/// runtime the kernel has now, else the runtime first, as the kernel takes neither write
+/// that leaves the runtime past the period (kernel/sched/rt.c, sched_rt_global_validate);
+/// one asked of a kernel whose own value it does not fit is refused, in shards' words.
+pub fn real_time(entry: &[u8]) -> Result<(), String> {
+    const PERIOD: &str = "kernel.sched_rt_period_us";
+    const RUNTIME: &str = "kernel.sched_rt_runtime_us";
+    let text = std::str::from_utf8(entry).map_err(|_| "a malformed real-time entry".to_string())?;
+    let (period, runtime) = text
+        .split_once(',')
+        .and_then(|(p, r)| Some((p.parse::<i64>().ok()?, r.parse::<i64>().ok()?)))
+        .ok_or_else(|| format!("a malformed real-time entry: {text}"))?;
+    let now = |key: &str| -> Result<i64, String> {
+        read_sysctl(key)?
+            .parse::<i64>()
+            .map_err(|e| format!("reading {key}: {e}"))
+    };
+    let (have_period, have_runtime) = (now(PERIOD)?, now(RUNTIME)?);
+    let period = if period > 0 { period } else { have_period };
+    let runtime = if runtime > 0 { runtime } else { have_runtime };
+    if runtime > period {
+        return Err(if entry.starts_with(b"0,") {
+            format!(
+                "--cpu-rt-runtime {runtime} is more than this guest's real-time period, {period} microseconds: give --cpu-rt-period too"
+            )
+        } else {
+            format!(
+                "--cpu-rt-period {period} is less than this guest's real-time runtime, {runtime} microseconds: give --cpu-rt-runtime too"
+            )
+        });
+    }
+    let writes = if period >= have_runtime {
+        [(PERIOD, period), (RUNTIME, runtime)]
+    } else {
+        [(RUNTIME, runtime), (PERIOD, period)]
+    };
+    for (key, value) in writes {
+        write_sysctl(key, &value.to_string())?;
+    }
+    Ok(())
+}
+
+/// Sets an endpoint's sysctl `kv`, `net.X.Y.IFNAME.Z=V`, on interface `ifname`, as
+/// libnetwork sets it as it configures the interface (moby
+/// daemon/libnetwork/osl/interface_linux.go, setSysctls): the interface's name in place of
+/// the fourth part; one that is no regular file refused; one that holds the value already
+/// left unwritten; each failure in its words. Written beneath init's own `/proc/sys`.
+pub fn endpoint_sysctl(ifname: &str, kv: &str) -> Result<(), String> {
+    let (key, value) = kv
+        .split_once('=')
+        .ok_or_else(|| format!("expected sysctl '{kv}' to have format name=value"))?;
+    let parts: Vec<&str> = key.split('.').collect();
+    let [a, b, c, _, z] = parts.as_slice() else {
+        return Err(format!("expected sysctl '{kv}' to have format net.X.Y.IFNAME.Z"));
+    };
+    // Go's filepath.Join: empty parts and doubled slashes cleaned away.
+    let path: Vec<&str> = [*a, *b, *c, ifname, *z]
+        .iter()
+        .flat_map(|p| p.split('/'))
+        .filter(|p| !p.is_empty())
+        .collect();
+    let (rel, shown) = (path.join("/"), format!("/proc/sys/{}", path.join("/")));
+    let not_sysctl = || format!("{shown} is not a sysctl file");
+    let dir = PROC_SYS.get().ok_or_else(not_sysctl)?;
+    let c = CString::new(rel).map_err(|_| not_sysctl())?;
+    let open = |flags: libc::c_int| -> io::Result<OwnedFd> {
+        // SAFETY: openat(2) of a NUL-terminated path below our own descriptor, no link
+        // followed.
+        let fd = unsafe {
+            libc::openat(
+                dir.as_raw_fd(),
+                c.as_ptr(),
+                flags | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            )
+        };
+        if fd < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: a fresh descriptor nothing else owns.
+        Ok(unsafe { OwnedFd::from_raw_fd(fd) })
+    };
+    // Read first, as libnetwork reads it (os.Stat, then os.ReadFile).
+    let read = match open(libc::O_RDONLY) {
+        Ok(fd) => fd,
+        Err(e) if matches!(e.raw_os_error(), Some(libc::ENOENT | libc::ENOTDIR | libc::ELOOP)) => {
+            return Err(not_sysctl());
+        }
+        Err(e) => {
+            return Err(format!(
+                "unable to read '{shown}': open {shown}: {}",
+                errno_words(&e)
+            ));
+        }
+    };
+    // SAFETY: fstat(2) into a zeroed stat buffer, of a descriptor we hold.
+    let mut st: libc::stat = unsafe { std::mem::zeroed() };
+    // SAFETY: as above.
+    if unsafe { libc::fstat(read.as_raw_fd(), &mut st) } != 0 || st.st_mode & libc::S_IFMT != libc::S_IFREG {
+        return Err(not_sysctl());
+    }
+    let mut now = Vec::new();
+    std::io::Read::read_to_end(&mut std::fs::File::from(read), &mut now)
+        .map_err(|e| format!("unable to read '{shown}': read {shown}: {}", errno_words(&e)))?;
+    // Already so: not written, as /proc/sys/net may be read-only.
+    if String::from_utf8_lossy(&now).trim() == value {
+        return Ok(());
+    }
+    let write = open(libc::O_WRONLY | libc::O_TRUNC)
+        .map_err(|e| format!("unable to write to '{shown}': open {shown}: {}", errno_words(&e)))?;
+    // SAFETY: write(2) of a live buffer, of its length.
+    let n = unsafe { libc::write(write.as_raw_fd(), value.as_ptr().cast(), value.len()) };
+    if n < 0 {
+        let e = io::Error::last_os_error();
+        return Err(format!(
+            "unable to write to '{shown}': write {shown}: {}",
+            errno_words(&e)
+        ));
+    }
+    Ok(())
+}
+
+/// A tmpfs's options as `--tmpfs` takes them (specconv parseMountOptions): mount flags,
+/// propagation flags, and the rest as the filesystem's data.
+pub struct MountOptions {
+    pub flags: libc::c_ulong,
+    pub propagation: Vec<libc::c_ulong>,
+    pub data: String,
+}
+
+/// runc's mountFlags and mountPropagationMapping, for what MergeTmpfsOptions leaves.
+pub fn mount_options(options: &str) -> MountOptions {
+    let mut m = MountOptions {
+        flags: 0,
+        propagation: Vec::new(),
+        data: String::new(),
+    };
+    let mut data: Vec<&str> = Vec::new();
+    for o in options.split(',').filter(|o| !o.is_empty()) {
+        let flag = |clear: bool, f: libc::c_ulong| Some((clear, f));
+        let set = match o {
+            "async" => flag(true, libc::MS_SYNCHRONOUS),
+            "atime" => flag(true, libc::MS_NOATIME),
+            "bind" => flag(false, libc::MS_BIND),
+            "dev" => flag(true, libc::MS_NODEV),
+            "diratime" => flag(true, libc::MS_NODIRATIME),
+            "dirsync" => flag(false, libc::MS_DIRSYNC),
+            "exec" => flag(true, libc::MS_NOEXEC),
+            "mand" => flag(false, libc::MS_MANDLOCK),
+            "noatime" => flag(false, libc::MS_NOATIME),
+            "nodev" => flag(false, libc::MS_NODEV),
+            "nodiratime" => flag(false, libc::MS_NODIRATIME),
+            "noexec" => flag(false, libc::MS_NOEXEC),
+            "nomand" => flag(true, libc::MS_MANDLOCK),
+            "norelatime" => flag(true, libc::MS_RELATIME),
+            "nostrictatime" => flag(true, libc::MS_STRICTATIME),
+            "nosuid" => flag(false, libc::MS_NOSUID),
+            "rbind" => flag(false, libc::MS_BIND | libc::MS_REC),
+            "relatime" => flag(false, libc::MS_RELATIME),
+            "remount" => flag(false, libc::MS_REMOUNT),
+            "ro" => flag(false, libc::MS_RDONLY),
+            "rw" => flag(true, libc::MS_RDONLY),
+            "strictatime" => flag(false, libc::MS_STRICTATIME),
+            "suid" => flag(true, libc::MS_NOSUID),
+            "sync" => flag(false, libc::MS_SYNCHRONOUS),
+            _ => None,
+        };
+        let propagation = match o {
+            "rprivate" => Some(libc::MS_PRIVATE | libc::MS_REC),
+            "private" => Some(libc::MS_PRIVATE),
+            "rslave" => Some(libc::MS_SLAVE | libc::MS_REC),
+            "slave" => Some(libc::MS_SLAVE),
+            "rshared" => Some(libc::MS_SHARED | libc::MS_REC),
+            "shared" => Some(libc::MS_SHARED),
+            "runbindable" => Some(libc::MS_UNBINDABLE | libc::MS_REC),
+            "unbindable" => Some(libc::MS_UNBINDABLE),
+            _ => None,
+        };
+        match (set, propagation) {
+            (Some((true, f)), _) => m.flags &= !f,
+            (Some((false, f)), _) => m.flags |= f,
+            (None, Some(p)) => m.propagation.push(p),
+            (None, None) => data.push(o),
+        }
+    }
+    m.data = data.join(",");
+    m
+}
+
+/// runc's stringifyMountFlags.
+fn flag_names(flags: libc::c_ulong) -> String {
+    let names: [(&str, libc::c_ulong); 22] = [
+        ("MS_RDONLY", libc::MS_RDONLY),
+        ("MS_NOSUID", libc::MS_NOSUID),
+        ("MS_NODEV", libc::MS_NODEV),
+        ("MS_NOEXEC", libc::MS_NOEXEC),
+        ("MS_SYNCHRONOUS", libc::MS_SYNCHRONOUS),
+        ("MS_REMOUNT", libc::MS_REMOUNT),
+        ("MS_MANDLOCK", libc::MS_MANDLOCK),
+        ("MS_DIRSYNC", libc::MS_DIRSYNC),
+        ("MS_NOSYMFOLLOW", 256),
+        ("MS_NOATIME", libc::MS_NOATIME),
+        ("MS_NODIRATIME", libc::MS_NODIRATIME),
+        ("MS_BIND", libc::MS_BIND),
+        ("MS_MOVE", libc::MS_MOVE),
+        ("MS_REC", libc::MS_REC),
+        ("MS_SILENT", libc::MS_SILENT),
+        ("MS_POSIXACL", libc::MS_POSIXACL),
+        ("MS_UNBINDABLE", libc::MS_UNBINDABLE),
+        ("MS_PRIVATE", libc::MS_PRIVATE),
+        ("MS_SLAVE", libc::MS_SLAVE),
+        ("MS_SHARED", libc::MS_SHARED),
+        ("MS_RELATIME", libc::MS_RELATIME),
+        ("MS_STRICTATIME", libc::MS_STRICTATIME),
+    ];
+    let set: Vec<&str> = names
+        .iter()
+        .filter(|(_, b)| flags & b == *b)
+        .map(|(n, _)| *n)
+        .collect();
+    set.join("|")
+}
+
+/// An rlimit's resource as each C library types it.
+#[cfg(target_env = "gnu")]
+type Resource = libc::__rlimit_resource_t;
+#[cfg(not(target_env = "gnu"))]
+type Resource = libc::c_int;
+
+/// An rlimit's resource number, by go-units' name.
+pub fn rlimit(name: &str) -> Option<Resource> {
+    Some(match name {
+        "core" => libc::RLIMIT_CORE,
+        "cpu" => libc::RLIMIT_CPU,
+        "data" => libc::RLIMIT_DATA,
+        "fsize" => libc::RLIMIT_FSIZE,
+        "locks" => libc::RLIMIT_LOCKS,
+        "memlock" => libc::RLIMIT_MEMLOCK,
+        "msgqueue" => libc::RLIMIT_MSGQUEUE,
+        "nice" => libc::RLIMIT_NICE,
+        "nofile" => libc::RLIMIT_NOFILE,
+        "nproc" => libc::RLIMIT_NPROC,
+        "rss" => libc::RLIMIT_RSS,
+        "rtprio" => libc::RLIMIT_RTPRIO,
+        "rttime" => libc::RLIMIT_RTTIME,
+        "sigpending" => libc::RLIMIT_SIGPENDING,
+        "stack" => libc::RLIMIT_STACK,
+        _ => return None,
+    })
+}
+
+/// `name=soft:hard`'s resource and limits, -1 as unlimited.
+fn ulimit(spec: &str) -> Option<(Resource, libc::rlimit)> {
+    let (name, limits) = spec.split_once('=')?;
+    let (soft, hard) = limits.split_once(':')?;
+    let limit = |s: &str| -> Option<libc::rlim_t> {
+        let n: i64 = s.parse().ok()?;
+        // runc takes the uint64 of the int64 (moby withRlimits): -1 is RLIM_INFINITY.
+        #[allow(clippy::cast_sign_loss)]
+        Some(n as libc::rlim_t)
+    };
+    Some((
+        rlimit(name)?,
+        libc::rlimit {
+            rlim_cur: limit(soft)?,
+            rlim_max: limit(hard)?,
+        },
+    ))
+}
+
+fn c(s: &str) -> Option<CString> {
+    CString::new(s).ok()
+}
+
+/// Makes `path` and its parents: a mount's destination (MkdirAllInRoot).
+fn mkdir_all(path: &str) -> io::Result<()> {
+    use std::os::unix::fs::DirBuilderExt as _;
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o755)
+        .create(path)
+}
+
+/// Applies setup `entry` in this process's namespaces: in the standby, the single-threaded
+/// fork of init, before it execs. The errno of what failed.
+pub fn apply(entry: &[u8]) -> Result<(), i32> {
+    let last = || io::Error::last_os_error().raw_os_error().unwrap_or(libc::EIO);
+    // The process's own, done last, as it execs (run.rs `child`).
+    if entry.starts_with(b"seccomp=")
+        || entry.starts_with(b"seccomp-mounts=")
+        || entry.starts_with(b"seccomp-binds=")
+        || entry == b"nnp"
+    {
+        return Ok(());
+    }
+    // Init's, for the domains it starts (D59), and the volumes it gives them alone (D111).
+    if entry.starts_with(b"domains-seccomp=")
+        || entry.starts_with(b"domains-seccomp-none=")
+        || entry.starts_with(b"domain-volume=")
+    {
+        return Ok(());
+    }
+    let text = std::str::from_utf8(entry).map_err(|_| libc::EINVAL)?;
+    let mount = |src: &str, dst: &str, fstype: &str, flags: libc::c_ulong, data: &str| -> Result<(), i32> {
+        let (src, dst, fstype, data) = (
+            c(src).ok_or(libc::EINVAL)?,
+            c(dst).ok_or(libc::EINVAL)?,
+            c(fstype).ok_or(libc::EINVAL)?,
+            c(data).ok_or(libc::EINVAL)?,
+        );
+        let data_ptr = if data.as_bytes().is_empty() {
+            std::ptr::null()
+        } else {
+            data.as_ptr().cast()
+        };
+        // SAFETY: mount(2) on NUL-terminated strings that outlive the call.
+        if unsafe { libc::mount(src.as_ptr(), dst.as_ptr(), fstype.as_ptr(), flags, data_ptr) } != 0 {
+            return Err(last());
+        }
+        Ok(())
+    };
+    if let Some(rest) = text.strip_prefix("tmpfs=") {
+        let (dest, options) = rest.split_once('\0').ok_or(libc::EINVAL)?;
+        mkdir_all(dest).map_err(|e| e.raw_os_error().unwrap_or(libc::EIO))?;
+        let m = mount_options(options);
+        mount("tmpfs", dest, "tmpfs", m.flags, &m.data)?;
+        for p in m.propagation {
+            mount("", dest, "", p, "")?;
+        }
+    } else if let Some(size) = text.strip_prefix("shm=") {
+        let flags = libc::MS_REMOUNT | libc::MS_NOSUID | libc::MS_NOEXEC | libc::MS_NODEV;
+        mount(
+            "shm",
+            "/dev/shm",
+            "tmpfs",
+            flags,
+            &format!("mode=1777,size={size}"),
+        )?;
+    } else if let Some(spec) = text.strip_prefix("ulimit=") {
+        let (resource, limit) = ulimit(spec).ok_or(libc::EINVAL)?;
+        // SAFETY: setrlimit(2) of a resource with a limit on our stack.
+        if unsafe { libc::setrlimit(resource, &limit) } != 0 {
+            return Err(last());
+        }
+    } else if let Some(rest) = text.strip_prefix("volume=") {
+        volume(rest).map_err(|e| e.raw_os_error().unwrap_or(libc::EIO))?;
+    } else if let Some(rest) = text.strip_prefix("join-volume=") {
+        join_volume(rest).map_err(|e| e.raw_os_error().unwrap_or(libc::EIO))?;
+    } else if text == "ipc=none" {
+        // `--ipc none` (D156): its IPC namespace of its own, with no /dev/shm: neither its
+        // own nor the microVM's under it.
+        detach_or("/dev/shm")?;
+        detach_or("/dev/shm")?;
+    } else if text == "ipc=host" {
+        // `--ipc host`: the microVM's IPC namespace, init's, and its /dev/shm, under the
+        // run's own.
+        enter_microvm(libc::CLONE_NEWIPC)?;
+        detach_or("/dev/shm")?;
+    } else if text == "cgroupns=host" {
+        // `--cgroupns host`: the microVM's cgroup namespace, its whole tree read-only at
+        // /sys/fs/cgroup.
+        enter_microvm(libc::CLONE_NEWCGROUP)?;
+        detach_or("/sys/fs/cgroup")?;
+        mount(
+            "cgroup2",
+            "/sys/fs/cgroup",
+            "cgroup2",
+            libc::MS_RDONLY | libc::MS_NOSUID | libc::MS_NOEXEC | libc::MS_NODEV,
+            "",
+        )?;
+    } else if let Some(mask) = text.strip_prefix("umask=") {
+        // `--umask`: the command's, and its execs'.
+        let mask = u32::from_str_radix(mask, 8).map_err(|_| libc::EINVAL)?;
+        // SAFETY: umask(2) of this process.
+        unsafe { libc::umask(mask as libc::mode_t) };
+    } else if let Some(n) = text.strip_prefix("oom=") {
+        // runc sets the container's process's own (setupOOMScoreAdj, before exec).
+        std::fs::write("/proc/self/oom_score_adj", n).map_err(|e| e.raw_os_error().unwrap_or(libc::EIO))?;
+    } else if text == "privileged" {
+        privileged().map_err(|e| e.raw_os_error().unwrap_or(libc::EIO))?;
+    } else if text == "unmasked" {
+        // `--security-opt systempaths=unconfined`: none masked or made read-only.
+        unmask();
+    } else if text == "cgroups-rw" {
+        // `--security-opt writable-cgroups=true`: the cgroup hierarchy writable.
+        let flags = libc::MS_REMOUNT | libc::MS_BIND | libc::MS_NOSUID | libc::MS_NOEXEC | libc::MS_NODEV;
+        mount("", "/sys/fs/cgroup", "", flags, "")?;
+    } else if text == "readonly" {
+        // runc's remount of the root: this mount namespace's, read-only.
+        mount(
+            "",
+            "/",
+            "",
+            libc::MS_REMOUNT | libc::MS_BIND | libc::MS_RDONLY,
+            "",
+        )?;
+    }
+    Ok(())
+}
+
+/// A shared directory's setup, `WHICH\0DEST\0FLAGS\0NAME`: its four parts, NAME one of a
+/// file in it, or empty.
+fn shared_parts(spec: &str) -> io::Result<(&str, &str, &str, &str)> {
+    let mut parts = spec.split('\0');
+    let (Some(which), Some(dest), Some(flags), Some(name), None) = (
+        parts.next(),
+        parts.next(),
+        parts.next(),
+        parts.next(),
+        parts.next(),
+    ) else {
+        return Err(io::Error::from_raw_os_error(libc::EINVAL));
+    };
+    if !name.is_empty() && !one_name(name) {
+        return Err(io::Error::from_raw_os_error(libc::EINVAL));
+    }
+    Ok((which, dest, flags, name))
+}
+
+/// Whether `name` names a file in a directory, and nothing past it.
+fn one_name(name: &str) -> bool {
+    !name.is_empty() && !name.contains('/') && name != "." && name != ".."
+}
+
+/// `entry`, a `volume=` or `join-volume=` entry, told the run's user and group, `uid` and
+/// `gid` (`owner=UID:GID`): its share's server gives them each file the host made, which
+/// holds no owner of the guest's ([`name_owner`]; D38), so that a run of an unprivileged
+/// user writes the directory it was given; and where the entry copies the image's files
+/// (`copy`) and the image has nothing at its mount point, the fresh volume's top is theirs
+/// (PM M249), as root's shuts a run of another user out of the volume it was given. An
+/// entry told already, and any other entry, as it is.
+pub fn with_owner(entry: Vec<u8>, uid: libc::uid_t, gid: libc::gid_t) -> Vec<u8> {
+    let Ok(text) = std::str::from_utf8(&entry) else {
+        return entry;
+    };
+    let Some((kind, rest)) = ["volume=", "join-volume="]
+        .into_iter()
+        .find_map(|k| text.strip_prefix(k).map(|rest| (k, rest)))
+    else {
+        return entry;
+    };
+    let parts: Vec<&str> = rest.split('\0').collect();
+    let [which, dest, flags, name] = parts.as_slice() else {
+        return entry;
+    };
+    if owner_of(flags).is_some() {
+        return entry;
+    }
+    let sep = if flags.is_empty() { "" } else { "," };
+    format!("{kind}{which}\0{dest}\0{flags}{sep}owner={uid}:{gid}\0{name}").into_bytes()
+}
+
+/// The owner FLAGS name (`owner=UID:GID`): none where they name none, an error where it is
+/// not two numbers.
+fn owner_of(flags: &str) -> Option<io::Result<(libc::uid_t, libc::gid_t)>> {
+    let owner = flags.split(',').find_map(|f| f.strip_prefix("owner="))?;
+    Some(
+        owner
+            .split_once(':')
+            .and_then(|(uid, gid)| Some((uid.parse().ok()?, gid.parse().ok()?)))
+            .ok_or_else(|| io::Error::from_raw_os_error(libc::EINVAL)),
+    )
+}
+
+/// A fresh volume's top, at `top`, given the owner its FLAGS name (`owner=UID:GID`), if
+/// they name one.
+fn own_top(top: &std::path::Path, flags: &str) -> io::Result<()> {
+    let Some(owner) = owner_of(flags) else {
+        return Ok(());
+    };
+    let (uid, gid) = owner?;
+    std::os::unix::fs::lchown(top, Some(uid), Some(gid))
+}
+
+/// Tells the server of the share whose root, or join share volume, is at `root` the owner
+/// FLAGS name (`owner=UID:GID`, [`with_owner`]) of the files the host made there (D38),
+/// through the attribute only the guest's root may set ([`shards_abi::SHARE_OWNER_XATTR`]),
+/// at once as the share is mounted, before anything there is looked at, as the guest's
+/// kernel trusts what it was told of a file for a second. The mount is to be writable, as
+/// the kernel sets no attribute on a read-only one: it is made read-only after. A share
+/// another server serves (`--slates-fs-fd`) may refuse it, and keeps its files' owners as
+/// it keeps them.
+pub fn name_owner(root: &str, flags: &str) -> io::Result<()> {
+    let Some(owner) = owner_of(flags) else {
+        return Ok(());
+    };
+    let (uid, gid) = owner?;
+    name_owner_as(root, uid, gid);
+    Ok(())
+}
+
+/// [`name_owner`] of `uid` and `gid`.
+pub fn name_owner_as(root: &str, uid: libc::uid_t, gid: libc::gid_t) {
+    let (Some(path), Some(name)) = (c(root), c(shards_abi::SHARE_OWNER_XATTR)) else {
+        return;
+    };
+    let value = format!("{uid}:{gid}");
+    // SAFETY: setxattr(2) of NUL-terminated strings and a value that outlive the call. A
+    // server that refuses it leaves the host's files root's, as they were before it.
+    let _ = unsafe {
+        libc::setxattr(
+            path.as_ptr(),
+            name.as_ptr(),
+            value.as_ptr().cast(),
+            value.len(),
+            0,
+        )
+    };
+}
+
+/// mount(2) of `src` at `dst`; a volume's (`dax`) with `dax=inode`, so that its server says
+/// which of its files the guest maps into the share's DAX window, where the share has one
+/// (D189): a kernel without FUSE's DAX refuses the option (EINVAL), and mounts it as
+/// before.
+fn virtiofs_mount(
+    src: &std::ffi::CStr,
+    dst: &std::ffi::CStr,
+    ty: *const libc::c_char,
+    flags: libc::c_ulong,
+    dax: bool,
+) -> io::Result<()> {
+    let data: *const libc::c_void = if dax {
+        c"dax=inode".as_ptr().cast()
+    } else {
+        std::ptr::null()
+    };
+    // SAFETY: mount(2) of NUL-terminated strings that outlive the call.
+    if unsafe { libc::mount(src.as_ptr(), dst.as_ptr(), ty, flags, data) } == 0 {
+        return Ok(());
+    }
+    let e = io::Error::last_os_error();
+    if dax && e.raw_os_error() == Some(libc::EINVAL) {
+        // SAFETY: as above, with no options.
+        if unsafe { libc::mount(src.as_ptr(), dst.as_ptr(), ty, flags, std::ptr::null()) } == 0 {
+            return Ok(());
+        }
+        return Err(io::Error::last_os_error());
+    }
+    Err(e)
+}
+
+/// Mounts a shared directory (D38), `TAG\0DEST\0FLAGS\0NAME`: by its virtio-fs tag at
+/// DEST, read-only with `ro`, and `nosuid`, `nodev` and `noexec` as they say (a CDI
+/// mount's, D146); with `copy`, where it is empty, the image's files at DEST copied into
+/// it first, with their owner, or where the image has nothing at DEST, its top given the
+/// run's user and group (`owner=UID:GID`, [`with_owner`]); with a NAME, only that file of
+/// it, bound at DEST, as a file bind mount is.
+fn volume(spec: &str) -> io::Result<()> {
+    let (tag, dest, flags, name) = shared_parts(spec)?;
+    let file = (!name.is_empty()).then_some(name);
+    let copy = flags.split(',').any(|f| f == "copy");
+    // Read-only with `ro`; a CDI mount's `nosuid`, `nodev` and `noexec` too (D146).
+    let base = flags.split(',').fold(0, |base, f| {
+        base | match f {
+            "ro" => libc::MS_RDONLY,
+            "nosuid" => libc::MS_NOSUID,
+            "nodev" => libc::MS_NODEV,
+            "noexec" => libc::MS_NOEXEC,
+            _ => 0,
+        }
+    });
+    let mount = |src: &str, dst: &str, fstype: Option<&str>, flags: libc::c_ulong| -> io::Result<()> {
+        let (src, dst) = (
+            c(src).ok_or(io::ErrorKind::InvalidInput)?,
+            c(dst).ok_or(io::ErrorKind::InvalidInput)?,
+        );
+        let dax = fstype == Some("virtiofs");
+        let fstype = fstype.and_then(c);
+        let ty = fstype.as_ref().map_or(std::ptr::null(), |t| t.as_ptr());
+        virtiofs_mount(&src, &dst, ty, flags, dax)
+    };
+    let staging = format!("/dev/.shards-{tag}");
+    match file {
+        Some(name) => {
+            std::fs::create_dir_all(&staging)?;
+            // Writable to be told its owner; the file is bound with `base`.
+            mount(tag, &staging, Some("virtiofs"), 0)?;
+            name_owner(&staging, flags)?;
+            if let Some(parent) = std::path::Path::new(dest).parent() {
+                mkdir_all(&parent.to_string_lossy())?;
+            }
+            if std::fs::symlink_metadata(dest).is_err() {
+                std::fs::File::create(dest)?;
+            }
+            mount(&format!("{staging}/{name}"), dest, None, libc::MS_BIND)?;
+            if base != 0 {
+                mount("", dest, None, libc::MS_BIND | libc::MS_REMOUNT | base)?;
+            }
+            detach(&staging);
+            let _ = std::fs::remove_dir(&staging);
+        }
+        None if copy => {
+            let image_has = std::fs::symlink_metadata(dest).is_ok();
+            mkdir_all(dest)?;
+            std::fs::create_dir_all(&staging)?;
+            mount(tag, &staging, Some("virtiofs"), 0)?;
+            name_owner(&staging, flags)?;
+            let empty = std::fs::read_dir(&staging)?.next().is_none();
+            if empty {
+                copy_tree(std::path::Path::new(dest), std::path::Path::new(&staging))?;
+                if !image_has {
+                    own_top(std::path::Path::new(&staging), flags)?;
+                }
+            }
+            mount(&staging, dest, None, libc::MS_MOVE)?;
+            if base != 0 {
+                mount("", dest, None, libc::MS_BIND | libc::MS_REMOUNT | base)?;
+            }
+            let _ = std::fs::remove_dir(&staging);
+        }
+        None => {
+            mkdir_all(dest)?;
+            // Writable to be told its owner, then as `base` says.
+            mount(tag, dest, Some("virtiofs"), 0)?;
+            name_owner(dest, flags)?;
+            if base != 0 {
+                mount("", dest, None, libc::MS_BIND | libc::MS_REMOUNT | base)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Mounts a joiner's volume (D119), `VOLUME\0DEST\0FLAGS\0NAME`: the directory its
+/// microVM's join share serves as VOLUME, as [`volume`] mounts a run's own shared
+/// directory, in the joiner's mount namespace once its root is built, so that DEST resolves
+/// in that root alone. The share is mounted where only this process sees it, and let go
+/// once the volume is bound from it: the joiner's root holds its own volumes, and no way to
+/// the others'. Never read-only itself: every joiner's mount of it is of one file system,
+/// read-only from its first mount if that one were; a volume is made read-only where it is
+/// bound, and its server refuses it writes besides.
+fn join_volume(spec: &str) -> io::Result<()> {
+    let (volume, dest, flags, name) = shared_parts(spec)?;
+    if !one_name(volume) {
+        return Err(io::Error::from_raw_os_error(libc::EINVAL));
+    }
+    let ro = flags.split(',').any(|f| f == "ro");
+    let copy = flags.split(',').any(|f| f == "copy");
+    let tag = shards_abi::JOIN_SHARE_TAG;
+    let staging = format!("/dev/.shards-{tag}");
+    let mount = |src: &str, dst: &str, fstype: Option<&str>, flags: libc::c_ulong| -> io::Result<()> {
+        let (src, dst) = (
+            c(src).ok_or(io::ErrorKind::InvalidInput)?,
+            c(dst).ok_or(io::ErrorKind::InvalidInput)?,
+        );
+        let dax = fstype == Some("virtiofs");
+        let fstype = fstype.and_then(c);
+        let ty = fstype.as_ref().map_or(std::ptr::null(), |t| t.as_ptr());
+        virtiofs_mount(&src, &dst, ty, flags, dax)
+    };
+    std::fs::create_dir_all(&staging)?;
+    mount(tag, &staging, Some("virtiofs"), 0)?;
+    let bound = (|| {
+        let dir = format!("{staging}/{volume}");
+        name_owner(&dir, flags)?;
+        let source = if name.is_empty() {
+            let image_has = std::fs::symlink_metadata(dest).is_ok();
+            mkdir_all(dest)?;
+            if copy && std::fs::read_dir(&dir)?.next().is_none() {
+                copy_tree(std::path::Path::new(dest), std::path::Path::new(&dir))?;
+                if !image_has {
+                    own_top(std::path::Path::new(&dir), flags)?;
+                }
+            }
+            dir
+        } else {
+            if let Some(parent) = std::path::Path::new(dest).parent() {
+                mkdir_all(&parent.to_string_lossy())?;
+            }
+            if std::fs::symlink_metadata(dest).is_err() {
+                std::fs::File::create(dest)?;
+            }
+            format!("{dir}/{name}")
+        };
+        mount(&source, dest, None, libc::MS_BIND)?;
+        if ro {
+            mount("", dest, None, libc::MS_BIND | libc::MS_REMOUNT | libc::MS_RDONLY)?;
+        }
+        Ok(())
+    })();
+    detach(&staging);
+    let _ = std::fs::remove_dir(&staging);
+    bound
+}
+
+fn detach(path: &str) {
+    if let Some(p) = c(path) {
+        // SAFETY: umount2(2) of a NUL-terminated path.
+        unsafe { libc::umount2(p.as_ptr(), libc::MNT_DETACH) };
+    }
+}
+
+/// Detaches the mount at `path`, or the errno of why not.
+fn detach_or(path: &str) -> Result<(), i32> {
+    let p = c(path).ok_or(libc::EINVAL)?;
+    // SAFETY: umount2(2) of a NUL-terminated path.
+    if unsafe { libc::umount2(p.as_ptr(), libc::MNT_DETACH) } != 0 {
+        return Err(io::Error::last_os_error().raw_os_error().unwrap_or(libc::EIO));
+    }
+    Ok(())
+}
+
+/// Copies directory `src`'s contents into `dst`, and its own owner, mode and times, as
+/// continuity's CopyDir does (fs/copy.go): directories, files, symlinks, hard links as
+/// links, devices and FIFOs, each with its owner, mode, times and extended attributes,
+/// those `dst` does not take left.
+pub fn copy_tree(src: &std::path::Path, dst: &std::path::Path) -> io::Result<()> {
+    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+    let mut links: std::collections::HashMap<(u64, u64), std::path::PathBuf> =
+        std::collections::HashMap::new();
+    let meta = std::fs::symlink_metadata(src)?;
+    copy_tree_into(src, dst, &mut links)?;
+    std::os::unix::fs::lchown(dst, Some(meta.uid()), Some(meta.gid()))?;
+    std::fs::set_permissions(dst, std::fs::Permissions::from_mode(meta.mode() & 0o7777))?;
+    copy_times(&meta, dst);
+    Ok(())
+}
+
+fn copy_tree_into(
+    src: &std::path::Path,
+    dst: &std::path::Path,
+    links: &mut std::collections::HashMap<(u64, u64), std::path::PathBuf>,
+) -> io::Result<()> {
+    use std::os::unix::fs::{FileTypeExt as _, MetadataExt as _, PermissionsExt as _};
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let (from, to) = (entry.path(), dst.join(entry.file_name()));
+        let meta = std::fs::symlink_metadata(&from)?;
+        let kind = meta.file_type();
+        if kind.is_dir() {
+            std::fs::create_dir(&to)?;
+            copy_tree_into(&from, &to, links)?;
+        } else if kind.is_symlink() {
+            std::os::unix::fs::symlink(std::fs::read_link(&from)?, &to)?;
+        } else if meta.nlink() > 1
+            && let Some(first) = links.get(&(meta.dev(), meta.ino()))
+        {
+            std::fs::hard_link(first, &to)?;
+            continue;
+        } else if kind.is_file() {
+            std::fs::copy(&from, &to)?;
+            if meta.nlink() > 1 {
+                links.insert((meta.dev(), meta.ino()), to.clone());
+            }
+        } else if kind.is_fifo() || kind.is_char_device() || kind.is_block_device() || kind.is_socket() {
+            let p = c(&to.to_string_lossy()).ok_or(io::ErrorKind::InvalidInput)?;
+            // SAFETY: mknod(2) of a NUL-terminated path, with the source's type and number.
+            if unsafe {
+                libc::mknod(
+                    p.as_ptr(),
+                    meta.mode() as libc::mode_t,
+                    meta.rdev() as libc::dev_t,
+                )
+            } != 0
+            {
+                return Err(io::Error::last_os_error());
+            }
+        }
+        copy_xattrs(&from, &to);
+        std::os::unix::fs::lchown(&to, Some(meta.uid()), Some(meta.gid()))?;
+        if !kind.is_symlink() {
+            std::fs::set_permissions(&to, std::fs::Permissions::from_mode(meta.mode() & 0o7777))?;
+        }
+        copy_times(&meta, &to);
+    }
+    Ok(())
+}
+
+fn copy_times(meta: &std::fs::Metadata, to: &std::path::Path) {
+    use std::os::unix::fs::MetadataExt as _;
+    let times = [
+        libc::timespec {
+            tv_sec: meta.atime() as _,
+            tv_nsec: meta.atime_nsec() as _,
+        },
+        libc::timespec {
+            tv_sec: meta.mtime() as _,
+            tv_nsec: meta.mtime_nsec() as _,
+        },
+    ];
+    if let Some(p) = c(&to.to_string_lossy()) {
+        // SAFETY: utimensat(2) of a NUL-terminated path with two times, not following it.
+        unsafe {
+            libc::utimensat(
+                libc::AT_FDCWD,
+                p.as_ptr(),
+                times.as_ptr(),
+                libc::AT_SYMLINK_NOFOLLOW,
+            )
+        };
+    }
+}
+
+/// The extended attributes of `from` on `to`, those it takes (ignoreUnsupportedXAttrs).
+fn copy_xattrs(from: &std::path::Path, to: &std::path::Path) {
+    let (Some(f), Some(t)) = (c(&from.to_string_lossy()), c(&to.to_string_lossy())) else {
+        return;
+    };
+    let mut names = vec![0u8; 4096];
+    // SAFETY: llistxattr(2) into a buffer of its length.
+    let n = unsafe { libc::llistxattr(f.as_ptr(), names.as_mut_ptr().cast(), names.len()) };
+    let Ok(n) = usize::try_from(n) else {
+        return;
+    };
+    for name in names
+        .get(..n)
+        .unwrap_or_default()
+        .split(|&b| b == 0)
+        .filter(|n| !n.is_empty())
+    {
+        let Ok(name) = CString::new(name) else {
+            continue;
+        };
+        let mut value = vec![0u8; 65536];
+        // SAFETY: lgetxattr(2) into a buffer of its length.
+        let len =
+            unsafe { libc::lgetxattr(f.as_ptr(), name.as_ptr(), value.as_mut_ptr().cast(), value.len()) };
+        let Ok(len) = usize::try_from(len) else {
+            continue;
+        };
+        // SAFETY: lsetxattr(2) of a buffer of `len` bytes.
+        unsafe { libc::lsetxattr(t.as_ptr(), name.as_ptr(), value.as_ptr().cast(), len, 0) };
+    }
+}
+
+/// The masked and read-only paths, undone (each mount over one detached).
+fn unmask() {
+    for p in crate::defaults::MASKED
+        .iter()
+        .chain(crate::defaults::READONLY.iter())
+    {
+        if let Some(c) = c(p) {
+            // SAFETY: umount2(2) of a NUL-terminated path; one not mounted is left.
+            unsafe { libc::umount2(c.as_ptr(), libc::MNT_DETACH) };
+        }
+    }
+}
+
+/// The seccomp filter a setup names (`seccomp=`: its seccomp(2) flags, then its program's
+/// instructions as `struct sock_filter`s), if it names one.
+pub fn filter(entries: &[Vec<u8>]) -> Option<(u32, Vec<libc::sock_filter>)> {
+    filter_named(entries, b"seccomp=")
+}
+
+/// The filter of the entry `name` names: `domains-seccomp=`, the domains' (D59).
+pub fn filter_named(entries: &[Vec<u8>], name: &[u8]) -> Option<(u32, Vec<libc::sock_filter>)> {
+    let raw = entries.iter().find_map(|e| e.strip_prefix(name))?;
+    let (flags, insns) = raw.split_first_chunk::<4>()?;
+    let program = insns
+        .as_chunks::<8>()
+        .0
+        .iter()
+        .map(|&[c0, c1, jt, jf, k0, k1, k2, k3]| libc::sock_filter {
+            code: u16::from_ne_bytes([c0, c1]),
+            jt,
+            jf,
+            k: u32::from_ne_bytes([k0, k1, k2, k3]),
+        })
+        .collect();
+    Some((u32::from_le_bytes(*flags), program))
+}
+
+/// What a privileged run has of the host's, of the VM's (moby daemon/oci_linux.go,
+/// WithDevices, WithMounts and masked and read-only paths left out): no masked or
+/// read-only paths, `/sys` and its cgroup writable, and every device the VM has, made in
+/// `/dev` as the VM has them (devices.rs), as runc makes a host's devices.
+fn privileged() -> io::Result<()> {
+    unmask();
+    let remount = |path: &std::ffi::CStr, flags: libc::c_ulong| -> io::Result<()> {
+        // SAFETY: mount(2) remounting a NUL-terminated path.
+        if unsafe {
+            libc::mount(
+                std::ptr::null(),
+                path.as_ptr(),
+                std::ptr::null(),
+                flags,
+                std::ptr::null(),
+            )
+        } != 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    };
+    let base = libc::MS_NOSUID | libc::MS_NOEXEC | libc::MS_NODEV;
+    // sysfs is read-only as mounted, its superblock and its mount both.
+    remount(c"/sys", libc::MS_REMOUNT | base)?;
+    remount(c"/sys", libc::MS_REMOUNT | libc::MS_BIND | base)?;
+    remount(c"/sys/fs/cgroup", libc::MS_REMOUNT | libc::MS_BIND | base)?;
+    for n in crate::devices::vm_devices("/dev") {
+        if std::fs::symlink_metadata(&n.path).is_ok() {
+            continue;
+        }
+        if let Some(parent) = std::path::Path::new(&n.path).parent() {
+            let _ = mkdir_all(&parent.to_string_lossy());
+        }
+        let Some(p) = c(&n.path) else {
+            continue;
+        };
+        let kind = match n.kind {
+            shards_devcgroup::Kind::Block => libc::S_IFBLK,
+            _ => libc::S_IFCHR,
+        };
+        // SAFETY: mknod(2), chmod(2) and lchown(2) of a NUL-terminated path.
+        unsafe {
+            if libc::mknod(p.as_ptr(), kind | n.mode, libc::makedev(n.major, n.minor)) == 0 {
+                libc::chmod(p.as_ptr(), n.mode);
+                libc::lchown(p.as_ptr(), n.uid, n.gid);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// What is mounted at `path` in this process's mount namespace, for a failed remount's
+/// message: the topmost mount's filesystem, source and superblock options, as
+/// /proc/self/mountinfo has them (proc(5)), or that nothing is.
+fn mounted_at(path: &str) -> String {
+    let Ok(info) = std::fs::read_to_string("/proc/self/mountinfo") else {
+        return "its mounts unread".into();
+    };
+    info.lines()
+        .rev()
+        .find(|l| l.split(' ').nth(4) == Some(path))
+        .map_or_else(
+            || "nothing mounted".into(),
+            |l| l.split_once(" - ").map_or(l, |(_, fs)| fs).to_string(),
+        )
+}
+
+/// What runc says when setup `entry` fails with `errno`.
+pub fn failed(entry: &[u8], errno: i32) -> String {
+    let err = shards_cmdline::go::linux_error(errno);
+    let text = String::from_utf8_lossy(entry);
+    if let Some(rest) = text.strip_prefix("tmpfs=") {
+        let (dest, options) = rest.split_once('\0').unwrap_or((rest, ""));
+        let m = mount_options(options);
+        let mut said =
+            format!("error mounting \"tmpfs\" to rootfs at \"{dest}\": mount src=tmpfs, dst={dest}");
+        if m.flags != 0 {
+            said.push_str(&format!(", flags={}", flag_names(m.flags)));
+        }
+        if !m.data.is_empty() {
+            said.push_str(&format!(", data={}", m.data));
+        }
+        return format!("{said}: {err}");
+    }
+    if let Some(size) = text.strip_prefix("shm=") {
+        return format!(
+            "error mounting \"shm\" to rootfs at \"/dev/shm\": mount src=shm, dst=/dev/shm, flags=MS_NOSUID|MS_NODEV|MS_NOEXEC|MS_REMOUNT, data=mode=1777,size={size}: {err} (at /dev/shm: {})",
+            mounted_at("/dev/shm")
+        );
+    }
+    if let Some(spec) = text.strip_prefix("ulimit=") {
+        let n = spec
+            .split_once('=')
+            .and_then(|(name, _)| rlimit(name))
+            .unwrap_or_default();
+        return format!("error setting rlimit type {n}: {err}");
+    }
+    if text.starts_with("oom=") {
+        return format!("failed to write oom_score_adj: write /proc/self/oom_score_adj: {err}");
+    }
+    if text == "privileged" {
+        return format!("making the container privileged: {err}");
+    }
+    if text == "cgroups-rw" {
+        return format!("error remounting the cgroup hierarchy writable: {err}");
+    }
+    if text == "engine" {
+        return format!(
+            "making its microVM's engine at {}: {err}",
+            shards_abi::run::ENGINE_SOCKET
+        );
+    }
+    if let Some(rest) = text
+        .strip_prefix("volume=")
+        .or_else(|| text.strip_prefix("join-volume="))
+    {
+        let dest = rest.split('\0').nth(1).unwrap_or_default();
+        return format!("error mounting a shared directory to rootfs at \"{dest}\": {err}");
+    }
+    format!("error remounting the root read-only: {err}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Each volume is told the run's owner, once: its share's server gives them the host's
+    /// files, and one that takes the image's files where the image has none gives them its
+    /// top; every other entry is left as it is.
+    #[test]
+    fn a_volume_is_told_its_runs_owner() {
+        let told = |e: &[u8]| String::from_utf8(with_owner(e.to_vec(), 1000, 1001)).unwrap();
+        assert_eq!(
+            told(b"volume=v1\0/data\0copy\0"),
+            "volume=v1\0/data\0copy,owner=1000:1001\0"
+        );
+        assert_eq!(
+            told(b"join-volume=abc\0/data\0ro,copy\0"),
+            "join-volume=abc\0/data\0ro,copy,owner=1000:1001\0"
+        );
+        assert_eq!(
+            told(b"volume=v1\0/data\0ro\0"),
+            "volume=v1\0/data\0ro,owner=1000:1001\0"
+        );
+        assert_eq!(
+            told(b"volume=shards1\0/etc/x.conf\0\0x.conf"),
+            "volume=shards1\0/etc/x.conf\0owner=1000:1001\0x.conf"
+        );
+        for kept in [
+            "volume=v1\0/data\0copy,owner=0:0\0",
+            "hostname=x",
+            "volume=broken",
+        ] {
+            assert_eq!(told(kept.as_bytes()), kept);
+        }
+        assert_eq!(owner_of("ro,owner=5:6").unwrap().unwrap(), (5, 6));
+        assert!(owner_of("ro").is_none());
+        for bad in ["owner=5", "owner=a:6", "owner=5:"] {
+            assert!(owner_of(bad).unwrap().is_err(), "{bad}");
+        }
+    }
+}

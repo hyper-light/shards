@@ -159,6 +159,79 @@ pub fn parse_int(s: &str) -> Result<i64, NumError> {
     })
 }
 
+/// `s` read as `strconv.ParseInt(s, 10, 64)` reads it: an optional sign, then decimal
+/// digits alone, no base prefix or `_`, as go-units reads a ulimit's limits.
+pub fn parse_int10(s: &str) -> Result<i64, NumError> {
+    let fail = |range| NumError {
+        func: "ParseInt",
+        text: s.to_string(),
+        range,
+    };
+    let (negative, digits) = match s.as_bytes().first() {
+        None => return Err(fail(false)),
+        Some(b'+') => (false, s.get(1..).unwrap_or_default()),
+        Some(b'-') => (true, s.get(1..).unwrap_or_default()),
+        Some(_) => (false, s),
+    };
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(fail(false));
+    }
+    let mut magnitude: u64 = 0;
+    for b in digits.bytes() {
+        magnitude = match magnitude
+            .checked_mul(10)
+            .and_then(|m| m.checked_add(u64::from(b - b'0')))
+        {
+            Some(m) => m,
+            None => return Err(fail(true)),
+        };
+    }
+    const CUTOFF: u64 = 1 << 63;
+    if !negative && magnitude >= CUTOFF || negative && magnitude > CUTOFF {
+        return Err(fail(true));
+    }
+    Ok(if negative {
+        0i64.wrapping_sub_unsigned(magnitude)
+    } else {
+        i64::try_from(magnitude).map_err(|_| fail(true))?
+    })
+}
+
+/// `s` read as `strconv.Atoi` reads it: [`parse_int10`]'s reading, its errors Atoi's.
+pub fn atoi(s: &str) -> Result<i64, NumError> {
+    parse_int10(s).map_err(|e| NumError { func: "Atoi", ..e })
+}
+
+/// `s` read as `strconv.ParseUint(s, 0, bits)` reads it, as pflag reads a `uint16` flag.
+pub fn parse_uint_bits(s: &str, bits: u32) -> Result<u64, NumError> {
+    let fail = |range| NumError {
+        func: "ParseUint",
+        text: s.to_string(),
+        range,
+    };
+    match parse_uint(s) {
+        Ok(n) if bits >= 64 || n < (1u64 << bits) => Ok(n),
+        Ok(_) | Err(true) => Err(fail(true)),
+        Err(false) => Err(fail(false)),
+    }
+}
+
+/// Go's `ParseUint(s, 8, 32)`: octal digits alone, no sign, prefix or underscore, the
+/// number fitting 32 bits (docker/cli's UmaskOpt).
+pub fn parse_octal32(s: &str) -> Result<u32, NumError> {
+    if s.is_empty() || !s.bytes().all(|b| (b'0'..=b'7').contains(&b)) {
+        return Err(NumError::syntax("ParseUint", s));
+    }
+    let mut n: u64 = 0;
+    for b in s.bytes() {
+        n = n
+            .checked_mul(8)
+            .and_then(|n| n.checked_add(u64::from(b - b'0')))
+            .ok_or_else(|| NumError::range("ParseUint", s))?;
+    }
+    u32::try_from(n).map_err(|_| NumError::range("ParseUint", s))
+}
+
 /// Go's `ParseUint(s, 0, 64)`: the number, or whether it failed by overflow (`true`)
 /// rather than syntax.
 fn parse_uint(s: &str) -> Result<u64, bool> {
@@ -237,6 +310,82 @@ fn underscores_ok(s: &str) -> bool {
     saw != '_'
 }
 
+/// `s` read as `strconv.ParseFloat(s, 64)` reads it (internal/strconv atof.go, Go 1.26):
+/// `inf`, `infinity` and `nan` in any case, signed; decimal digits with a point and an
+/// `e` exponent; or `0x` and hexadecimal digits with a `p` exponent, which it must have;
+/// `_` between digits as [`underscores_ok`] allows. Out of range is ±Inf and an error.
+pub fn parse_float(s: &str) -> Result<f64, NumError> {
+    let syntax = || NumError::syntax("ParseFloat", s);
+    let (neg, body) = match s.as_bytes().first() {
+        Some(b'-') => (true, s.get(1..).ok_or_else(syntax)?),
+        Some(b'+') => (false, s.get(1..).ok_or_else(syntax)?),
+        _ => (false, s),
+    };
+    let signed = |v: f64| if neg { -v } else { v };
+    match body.to_ascii_lowercase().as_str() {
+        "inf" | "infinity" => return Ok(signed(f64::INFINITY)),
+        // special() takes no sign before "nan".
+        "nan" if body.len() == s.len() => return Ok(f64::NAN),
+        _ => {}
+    }
+    if s.contains('_') && !underscores_ok(s) {
+        return Err(syntax());
+    }
+    let clean: String = body.chars().filter(|&c| c != '_').collect();
+    let lower = clean.to_ascii_lowercase();
+    // readFloat takes the prefix only with a character after it.
+    let v = match lower.strip_prefix("0x").filter(|_| body.len() > 2) {
+        Some(hex) => hex_float(hex).ok_or_else(syntax)?,
+        None => {
+            let digits = |t: &str| t.bytes().any(|b| b.is_ascii_digit());
+            let (mantissa, exp) = lower.split_once('e').unwrap_or((&lower, ""));
+            let exp_ok = !lower.contains('e')
+                || exp
+                    .strip_prefix(['+', '-'])
+                    .unwrap_or(exp)
+                    .bytes()
+                    .all(|b| b.is_ascii_digit())
+                    && digits(exp);
+            let mantissa_ok = digits(mantissa)
+                && mantissa.bytes().all(|b| b.is_ascii_digit() || b == b'.')
+                && mantissa.bytes().filter(|&b| b == b'.').count() <= 1;
+            if !(exp_ok && mantissa_ok) {
+                return Err(syntax());
+            }
+            lower.parse::<f64>().map_err(|_| syntax())?
+        }
+    };
+    if v.is_infinite() {
+        return Err(NumError::range("ParseFloat", s));
+    }
+    Ok(signed(v))
+}
+
+/// A hexadecimal float after its `0x`: digits, a point, and the `p` exponent it must have.
+fn hex_float(s: &str) -> Option<f64> {
+    let (mant, exp) = s.split_once('p')?;
+    let exp_digits = exp.strip_prefix(['+', '-']).unwrap_or(exp);
+    if exp_digits.is_empty() || !exp_digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    // readFloat stops growing the exponent at 10,000; past that it is out of range anyway.
+    let exp: i64 = exp
+        .parse::<i64>()
+        .unwrap_or(if exp.starts_with('-') { -100_000 } else { 100_000 });
+    let (int, frac) = mant.split_once('.').unwrap_or((mant, ""));
+    if int.is_empty() && frac.is_empty() || frac.contains('.') {
+        return None;
+    }
+    let mut digits = num_bigint::BigUint::default();
+    for c in int.chars().chain(frac.chars()) {
+        digits = digits * 16u32 + c.to_digit(16)?;
+    }
+    let shift = exp - 4 * i64::try_from(frac.len()).ok()?;
+    let v = num_traits::ToPrimitive::to_f64(&digits)?;
+    // Exact but for results beyond f64's normal range, which are 0 or ±Inf here too.
+    Some(v * 2f64.powi(i32::try_from(shift.clamp(-2200, 2200)).ok()?))
+}
+
 /// `s` read as `strconv.ParseBool` reads it, as pflag reads a `bool` flag's value.
 pub fn parse_bool(s: &str) -> Result<bool, NumError> {
     match s {
@@ -250,9 +399,125 @@ pub fn parse_bool(s: &str) -> Result<bool, NumError> {
     }
 }
 
+/// `field` as Go's csv.Writer writes it with a comma between fields (encoding/csv
+/// writer.go, `fieldNeedsQuotes`): quoted, its quotes doubled, where it holds a comma, a
+/// quote or a line's end, begins with a space, or is `\.`; as it is otherwise, empty too.
+pub fn csv_field(field: &str) -> String {
+    let quoted = !field.is_empty()
+        && (field == "\\."
+            || field.contains([',', '"', '\r', '\n'])
+            || field.chars().next().is_some_and(char::is_whitespace));
+    if quoted {
+        format!("\"{}\"", field.replace('"', "\"\""))
+    } else {
+        field.to_string()
+    }
+}
+
+/// One CSV record's fields, as tonistiigi/go-csvvalue reads them (Go's `encoding/csv`
+/// rules for one line), with `csv.ParseError`'s text on error.
+pub fn csv_fields(line: &[u8]) -> Result<Vec<Vec<u8>>, Vec<u8>> {
+    let err =
+        |pos: usize, what: &str| format!("parse error on line 1, column {}: {what}", pos + 1).into_bytes();
+    let mut line = line;
+    if line.last() == Some(&b'\n') {
+        line = if line.len() > 1 && line.get(line.len() - 2) == Some(&b'\r') {
+            head(line, line.len() - 2)
+        } else {
+            head(line, line.len() - 1)
+        };
+    }
+    if line.is_empty() {
+        return Err(b"EOF".to_vec());
+    }
+    let mut out: Vec<Vec<u8>> = Vec::new();
+    let mut pos = 0usize;
+    loop {
+        if line.first() != Some(&b'"') {
+            let i = line.iter().position(|&b| b == b',');
+            let field = match i {
+                Some(i) => head(line, i),
+                None => line,
+            };
+            if let Some(j) = field.iter().position(|&b| b == b'"') {
+                return Err(err(pos + j, "bare \" in non-quoted-field"));
+            }
+            out.push(field.to_vec());
+            match i {
+                Some(i) => {
+                    line = tail(line, i + 1);
+                    pos += i + 1;
+                    continue;
+                }
+                None => break,
+            }
+        }
+        line = tail(line, 1);
+        pos += 1;
+        // After a doubled quote, the next piece continues the same field.
+        let mut half_open = false;
+        loop {
+            let Some(i) = line.iter().position(|&b| b == b'"') else {
+                return Err(err(pos, "extraneous or missing \" in quoted-field"));
+            };
+            let piece = head(line, i).to_vec();
+            if half_open {
+                if let Some(last) = out.last_mut() {
+                    last.extend_from_slice(&piece);
+                }
+            } else {
+                out.push(piece);
+            }
+            line = tail(line, i + 1);
+            pos += i + 1;
+            match line.first() {
+                Some(b'"') => {
+                    if let Some(last) = out.last_mut() {
+                        last.push(b'"');
+                    }
+                    line = tail(line, 1);
+                    pos += 1;
+                    half_open = true;
+                }
+                Some(b',') => {
+                    line = tail(line, 1);
+                    pos += 1;
+                    break;
+                }
+                None => return Ok(out),
+                Some(_) => return Err(err(pos - 1, "extraneous or missing \" in quoted-field")),
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// The first `n` bytes of `b`, or all of it.
+fn head(b: &[u8], n: usize) -> &[u8] {
+    b.get(..n).unwrap_or(b)
+}
+
+/// `b` from byte `n` on, or nothing.
+fn tail(b: &[u8], n: usize) -> &[u8] {
+    b.get(n..).unwrap_or_default()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A field written as Go's csv.Writer writes it reads back as itself.
+    #[test]
+    fn a_csv_field_written_reads_back_whole() {
+        for field in ["id=tok", "id=a,b", "id=say \"hi\"", " id=lead", "", "\\."] {
+            let line = format!("{},src=x", csv_field(field));
+            let fields = csv_fields(line.as_bytes()).unwrap();
+            assert_eq!(fields[0], field.as_bytes(), "{line}");
+            assert_eq!(fields[1], b"src=x", "{line}");
+        }
+        assert_eq!(csv_field("id=tok"), "id=tok");
+        assert_eq!(csv_field("id=a,b"), "\"id=a,b\"");
+    }
 
     #[test]
     fn quotes_escape_what_go_escapes() {
@@ -318,6 +583,39 @@ mod tests {
         assert_eq!(linux_error(40), "too many levels of symbolic links");
         assert_eq!(linux_error(0), "errno 0");
         assert_eq!(linux_error(9999), "errno 9999");
+    }
+
+    #[test]
+    fn floats_read_as_go_reads_them() {
+        for (s, v) in [
+            ("1", 1.0),
+            ("1.5", 1.5),
+            ("5.", 5.0),
+            (".5", 0.5),
+            ("1e3", 1000.0),
+            ("1_000", 1000.0),
+            ("0x1p4", 16.0),
+            ("0x1.8p1", 3.0),
+            ("-2", -2.0),
+            ("+Inf", f64::INFINITY),
+            ("infinity", f64::INFINITY),
+        ] {
+            assert_eq!(parse_float(s), Ok(v), "{s}");
+        }
+        assert!(parse_float("NaN").unwrap().is_nan());
+        for s in [
+            "", ".", "e5", "1e", "0x1", "0x", "1__0", "_1", "1.2.3", "+nan", "1x",
+        ] {
+            assert_eq!(
+                parse_float(s).unwrap_err().to_string(),
+                format!("strconv.ParseFloat: parsing {}: invalid syntax", quote(s)),
+                "{s}"
+            );
+        }
+        assert_eq!(
+            parse_float("1e400").unwrap_err().to_string(),
+            "strconv.ParseFloat: parsing \"1e400\": value out of range"
+        );
     }
 
     #[test]

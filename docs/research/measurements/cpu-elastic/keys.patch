@@ -1,0 +1,16 @@
+--- a/crates/init/src/run.rs
++++ b/crates/init/src/run.rs
+@@ -1004,6 +1004,13 @@
+     mkdir(RUN_CGROUP)?;
+     enable(RUN_CGROUP);
+     mkdir(WORKLOAD_CGROUP)?;
++    // Experiment (docs/research/measurements/cpu-elastic, keys): the CFS bandwidth static
++    // key held on from the template, by a cgroup of no process with a quota, so that a
++    // run's first quota does not turn it on, patching the kernel's text.
++    let keys = format!("{RUN_CGROUP}/keys");
++    if mkdir(&keys).is_ok() {
++        let _ = std::fs::write(format!("{keys}/cpu.max"), "1000 100000");
++    }
+     mount("", "/", "", libc::MS_REC | libc::MS_SHARED, "")
+ }
+ 

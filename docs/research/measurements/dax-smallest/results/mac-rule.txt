@@ -1,0 +1,10 @@
+== ../g121d/dax-results/step2.txt: sizes 4k, 16k, 32k, 64k, 256k, 1m, 2044k, 2m; runs failed 0; matrix mappings refused 0
+      4k: fails: first warm p50 window [251.8, 259.3] above fuse [211.0, 216.1]; first warm p99 window [289.5, 407.7] above fuse [246.6, 263.2]; overwrite cold p50 window [284.3, 288.5] above fuse [182.5, 187.6]; overwrite cold p99 window [314.9, 327.2] above fuse [243.8, 273.5]; overwrite warm p50 window [283.5, 292.7] above fuse [182.1, 185.8]; overwrite warm p99 window [317.4, 340.5] above fuse [240.9, 267.2]; memory: window +23.6 KiB a file over fuse (medians, 1,000 files)
+     16k: fails: first cold p50 window [295.8, 299.2] above fuse [275.0, 284.0]; first cold p99 window [396.8, 461.7] above fuse [368.5, 386.5]; first warm p50 window [250.2, 259.6] above fuse [230.8, 236.0]; first warm p99 window [288.9, 311.5] above fuse [269.9, 277.1]; overwrite cold p50 window [282.7, 288.9] above fuse [198.5, 213.2]; overwrite warm p50 window [281.6, 292.2] above fuse [197.4, 200.9]
+     32k: fails: first cold p50 window [370.1, 378.0] above fuse [303.3, 324.0]; first cold p99 window [484.5, 596.3] above fuse [400.8, 440.1]; overwrite cold p50 window [286.5, 294.6] above fuse [219.9, 226.1]; overwrite cold p99 window [313.8, 332.2] above fuse [272.1, 296.4]; overwrite warm p50 window [286.7, 291.4] above fuse [222.5, 229.7]; overwrite warm p99 window [321.6, 345.3] above fuse [274.4, 291.6]
+     64k: fails: first cold p50 window [518.3, 536.8] above fuse [356.5, 372.7]; overwrite cold p50 window [290.6, 297.7] above fuse [257.9, 267.3]; overwrite warm p50 window [290.7, 295.4] above fuse [257.7, 263.8]
+    256k: passes
+      1m: passes
+   2044k: passes
+      2m: passes
+sizes passing in every output: 256k, 1m, 2044k, 2m; the rule's S by the matrix: 256k

@@ -7,6 +7,9 @@
 #
 #   scripts/lint [TARGET...]
 set -eu
+# Clippy checks code; it links nothing, so `shards` need not carry its VM and network
+# processes built for each target (crates/shards/build.rs).
+export SHARDS_HELPERS=skip
 
 root=$(cd "$(dirname "$0")/.." && pwd)
 all="aarch64-apple-darwin x86_64-apple-darwin x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu
@@ -24,12 +27,28 @@ for target in ${*:-$all}; do
 		env "CC_$var=$root/scripts/zig-cc" "AR_$var=$root/scripts/zig-ar" \
 			ZIG_TARGET="${target%%-*}-linux-${target##*-}" \
 			cargo clippy --workspace --all-targets --target "$target" -- -D warnings
+		# The GPU's renderer on Linux with glibc (D201), as on macOS below.
+		case $target in
+		*-linux-gnu)
+			env "CC_$var=$root/scripts/zig-cc" "AR_$var=$root/scripts/zig-ar" \
+				ZIG_TARGET="${target%%-*}-linux-gnu" \
+				cargo clippy -p shards-vmm --features gpu --all-targets --target "$target" -- -D warnings
+			;;
+		esac
 		;;
 	*-windows-msvc)
 		PATH="$llvm:$PATH" cargo xwin clippy --workspace --all-targets --target "$target" -- -D warnings
+		# The GPU's renderer on x86_64 Windows (D202), as on macOS below.
+		if [ "$target" = x86_64-pc-windows-msvc ]; then
+			PATH="$llvm:$PATH" cargo xwin clippy -p shards-vmm --features gpu --all-targets --target "$target" -- -D warnings
+		fi
 		;;
 	*)
 		cargo clippy --workspace --all-targets --target "$target" -- -D warnings
+		# The GPU's renderer (D144): behind vmm's `gpu` feature, the GPU's VM process's alone.
+		if [ "$target" = aarch64-apple-darwin ]; then
+			cargo clippy -p shards-vmm --features gpu --all-targets --target "$target" -- -D warnings
+		fi
 		;;
 	esac
 done

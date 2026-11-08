@@ -1,0 +1,603 @@
+DIAGNOSTIC WITH SAMPLING OVERHEAD; NOT A QUALIFYING PERFORMANCE RUN.
+
+== selected native test
+MANIFEST binaries=141
+START 75/141 path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/shards#0.6.0 build_windows 2026-11-03T17:22:42.9796010Z
+failures:
+    a_builders_memory_is_plugged_as_fast_as_its_jobs_take_it
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7 filtered out; finished in 182.48s
+
+FAILED 075-build_windows exit=101
+#2 [internal] load metadata for 127.0.0.1:49875/test/image:v1
+#2 DONE 0.9s
+
+#3 [internal] load .agentignore
+#3 DONE 0.0s
+
+#4 [stage-0 1/2] FROM 127.0.0.1:49875/test/image:v1@sha256:fb0376462c6a31d7c1f4fc628d6b0801c9321288de34b31a5be21849cfb16a13
+#4 resolve 127.0.0.1:49875/test/image:v1@sha256:fb0376462c6a31d7c1f4fc628d6b0801c9321288de34b31a5be21849cfb16a13 done
+#4 DONE 0.0s
+
+#5 [stage-0 2/2] RUN --mount=type=tmpfs,target=/held,size=2g ["/bin/testguest", "alloc-par", "1", "3072", "/held/big", "1024"]
+[456     342019us INFO] 4 vCPU(s) ready to run after 341920 us
+[456    4898521us INFO] guest marker 1 at 4898482 us
+shards: its builder is gone, and so this builder ends
+
+--- ps -a in its home
+CONTAINER ID   IMAGE     COMMAND   CREATED   STATUS    PORTS     NAMES
+
+(no cdb on this host for the stacks)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+--- C:\Users\runner\AppData\Local\Temp\shards-tests\2820\bw-fast-ctx-1\daemon.log, its last 0 lines
+--- C:\Users\runner\AppData\Local\Temp\shards-tests\2820\bw-fast-home-0\daemon.log, its last 3 lines
+shards daemon 6048: the default bridge is 172.17.0.0/16
+shards daemon 6048: serving C:\Users\runner\AppData\Local\Temp\shards-tests\2820\bw-fast-home-0 through C:\Users\runner\AppData\Local\Temp\shards-tests\2820\bw-fast-home-0\requests, with up to 16777216 descriptors open
+shards daemon 6048: watching the host's memory pressure: the system's low memory notification (CreateMemoryResourceNotification), said again every 2 s while it lasts
+--- C:\Users\runner\AppData\Local\Temp\shards-tests\2820\bw-fast-home-0\daemon.log, its last 441 of 441 bytes
+shards daemon 6048: the default bridge is 172.17.0.0/16
+shards daemon 6048: serving C:\Users\runner\AppData\Local\Temp\shards-tests\2820\bw-fast-home-0 through C:\Users\runner\AppData\Local\Temp\shards-tests\2820\bw-fast-home-0\requests, with up to 16777216 descriptors open
+shards daemon 6048: watching the host's memory pressure: the system's low memory notification (CreateMemoryResourceNotification), said again every 2 s while it lasts
+
+END 075-build_windows exit=101 elapsed=183.854955
+COMPLETE binaries=1 manifest=141 failed=1 filter=build_windows/a_builders_memory_is_plugged_as_fast_as_its_jobs_take_it start=0
+
+== sample at 35 s after SSH diagnostic launch
+Command: /usr/bin/sample 89334 5 10 -file OUTPUT
+Analysis of sampling qemu-system-aarch64 (pid 89334) every 10 milliseconds
+Process:         qemu-system-aarch64 [89334]
+Path:            /Users/USER/*/qemu-system-aarch64
+Load Address:    0x102590000
+Identifier:      qemu-system-aarch64
+Version:         0
+Code Type:       ARM64
+Platform:        macOS
+Parent Process:  launchd [1]
+Target Type:     live task
+
+Date/Time:       2026-11-03 09:22:41.581 -0800
+Launch Time:     2026-11-03 09:20:10.081 -0800
+OS Version:      macOS 26.4.1 (25E253)
+Report Version:  7
+Analysis Tool:   /usr/bin/sample
+
+Physical footprint:         25.2G
+Physical footprint (peak):  25.4G
+Idle exit:                  untracked
+----
+
+Total number in stack (recursive counted multiple, when >=5):
+        62       arm_cpu_tlb_fill_align  (in qemu-system-aarch64) + 384  [0x1029440a0]  tlb_helper.c:389
+        62       get_phys_addr  (in qemu-system-aarch64) + 124  [0x10293e33c]  ptw.c:4092
+        62       get_phys_addr_gpc  (in qemu-system-aarch64) + 52  [0x10293e494]  ptw.c:3956
+        62       helper_lookup_tb_ptr  (in qemu-system-aarch64) + 364  [0x1025dbfa4]  cpu-exec.c:398
+        44       mmu_lookup  (in qemu-system-aarch64) + 96  [0x1025fc294]  cputlb.c:1744
+        43       tb_htable_lookup  (in qemu-system-aarch64) + 60  [0x1025dcb88]  cpu-exec.c:206
+        40       mmu_lookup1  (in qemu-system-aarch64) + 764  [0x1025fc704]  cputlb.c:1652
+        35       get_page_addr_code_hostp  (in qemu-system-aarch64) + 108  [0x1025f39c0]  cputlb.c:1543
+        33       probe_access_internal  (in qemu-system-aarch64) + 672  [0x1025f333c]  cputlb.c:1376
+        32       get_phys_addr_nogpc  (in qemu-system-aarch64) + 1960  [0x10293cb6c]  ptw.c:3876
+        32       tlb_fill_align  (in qemu-system-aarch64) + 100  [0x1025fc154]  cputlb.c:1247
+        24       __psynch_cvwait  (in libsystem_kernel.dylib) + 0  [0x18564f504]
+        24       _pthread_cond_wait  (in libsystem_pthread.dylib) + 980  [0x185690128]
+        24       get_phys_addr_nogpc  (in qemu-system-aarch64) + 4628  [0x10293d5d8]  ptw.c:3940
+        22       _pthread_start  (in libsystem_pthread.dylib) + 136  [0x18568fc58]
+        22       helper_lookup_tb_ptr  (in qemu-system-aarch64) + 0  [0x1025dbe38]  cpu-exec.c:398
+        22       qemu_thread_start  (in qemu-system-aarch64) + 100  [0x102e537f4]  qemu-thread-posix.c:414
+        22       thread_start  (in libsystem_pthread.dylib) + 8  [0x18568ac1c]
+        21       do_ld8_mmu  (in qemu-system-aarch64) + 100  [0x1025f40e0]  cputlb.c:2354
+        20       helper_lookup_tb_ptr  (in qemu-system-aarch64) + 0  [0x1025dbe38]  cpu-exec.c:378
+        18       S1_ptw_translate  (in qemu-system-aarch64) + 120  [0x10293f444]  ptw.c:763
+        17       get_phys_addr_nogpc  (in qemu-system-aarch64) + 2248  [0x10293cc8c]  ptw.c:3876
+        15       get_phys_addr_nogpc  (in qemu-system-aarch64) + 0  [0x10293c3c4]  ptw.c:3940
+        14       qemu_cond_timedwait_impl  (in qemu-system-aarch64) + 176  [0x102e531b4]  qemu-thread-posix.c:268
+        14       qemu_cond_timedwait_ts  (in qemu-system-aarch64) + 64  [0x102e5322c]  qemu-thread-posix.c:254
+        14       qemu_mutex_lock_impl  (in qemu-system-aarch64) + 64  [0x102e52b20]  qemu-thread-posix.c:109
+        14       tb_htable_lookup  (in qemu-system-aarch64) + 344  [0x1025dcca4]  cpu-exec.c:213
+        14       worker_thread  (in qemu-system-aarch64) + 440  [0x102e68158]  thread-pool.c:96
+        13       __psynch_mutexwait  (in libsystem_kernel.dylib) + 0  [0x18564e9d4]
+        13       _pthread_mutex_firstfit_lock_slow  (in libsystem_pthread.dylib) + 216  [0x18568a8e0]
+        13       _pthread_mutex_firstfit_lock_wait  (in libsystem_pthread.dylib) + 84  [0x18568ce9c]
+        13       probe_access_full_mmu  (in qemu-system-aarch64) + 92  [0x1025f3698]  cputlb.c:1441
+        11       qht_lookup_custom  (in qemu-system-aarch64) + 0  [0x102e5f3f0]  qht.c:607
+        10       do_ld4_mmu  (in qemu-system-aarch64) + 100  [0x1025f3e54]  cputlb.c:2333
+        10       helper_ldul_mmu  (in qemu-system-aarch64) + 24  [0x1025f3ddc]  ldst_common.c.inc:33
+        9       qemu_cond_wait_impl  (in qemu-system-aarch64) + 96  [0x102e53030]  qemu-thread-posix.c:240
+        9       tlb_fill_align  (in qemu-system-aarch64) + 124  [0x1025fc16c]  cputlb.c:1249
+        8       helper_lookup_tb_ptr  (in qemu-system-aarch64) + 80  [0x1025dbe88]  cpu-exec.c:391
+        7       helper_lookup_tb_ptr  (in qemu-system-aarch64) + 88  [0x1025dbe90]  cpu-exec.c:392
+        7       tlb_set_page_full  (in qemu-system-aarch64) + 1672  [0x1025f2ecc]  cputlb.c:1088
+        6       do_st8_mmu  (in qemu-system-aarch64) + 96  [0x1025f4b3c]  cputlb.c:2752
+        6       get_ptr_rcu_reader  (in qemu-system-aarch64) + 0  [0x102e5c66c]  rcu.c:72
+        6       helper_get_cp_reg64  (in qemu-system-aarch64) + 60  [0x1029afc40]  op_helper.c:1275
+        6       probe_access_internal  (in qemu-system-aarch64) + 696  [0x1025f3354]  cputlb.c:1376
+        5       mmu_lookup  (in qemu-system-aarch64) + 448  [0x1025fc3f4]  cputlb.c:1751
+        5       mmu_watch_or_dirty  (in qemu-system-aarch64) + 120  [0x1025fc7b8]  cputlb.c:1708
+        5       notdirty_write  (in qemu-system-aarch64) + 100  [0x1025f3458]  cputlb.c:1345
+        5       probe_access_internal  (in qemu-system-aarch64) + 0  [0x1025f309c]  cputlb.c:1369
+        5       probe_access_internal  (in qemu-system-aarch64) + 0  [0x1025f309c]  cputlb.c:1409
+        5       qemu_ram_addr_from_host_nofail  (in qemu-system-aarch64) + 36  [0x10291ba94]  physmem.c:2890
+        5       tb_htable_lookup  (in qemu-system-aarch64) + 0  [0x1025dcb4c]  cpu-exec.c:211
+        5       tb_invalidate_phys_range_fast  (in qemu-system-aarch64) + 184  [0x1025ee410]  tb-maint.c:1217
+
+Sort by top of stack, same collapsed (when >= 5):
+        __psynch_cvwait  (in libsystem_kernel.dylib)        5914
+        __sigwait  (in libsystem_kernel.dylib)        325
+        __workq_kernreturn  (in libsystem_kernel.dylib)        325
+        mach_msg2_trap  (in libsystem_kernel.dylib)        325
+        __select  (in libsystem_kernel.dylib)        322
+        helper_lookup_tb_ptr  (in qemu-system-aarch64)        55
+        get_phys_addr_nogpc  (in qemu-system-aarch64)        22
+        probe_access_internal  (in qemu-system-aarch64)        17
+        qht_lookup_custom  (in qemu-system-aarch64)        14
+        __psynch_mutexwait  (in libsystem_kernel.dylib)        13
+        arm_get_tb_cpu_state  (in qemu-system-aarch64)        8
+        pthread_jit_write_protect_np  (in libsystem_pthread.dylib)        8
+        tb_htable_lookup  (in qemu-system-aarch64)        8
+        curr_cflags  (in qemu-system-aarch64)        7
+        get_ptr_rcu_reader  (in qemu-system-aarch64)        6
+        S1_ptw_translate  (in qemu-system-aarch64)        5
+        arm_hcr_el2_eff_secstate  (in qemu-system-aarch64)        5
+
+
+== sample at 85 s after SSH diagnostic launch
+Command: /usr/bin/sample 89334 5 10 -file OUTPUT
+Analysis of sampling qemu-system-aarch64 (pid 89334) every 10 milliseconds
+Process:         qemu-system-aarch64 [89334]
+Path:            /Users/USER/*/qemu-system-aarch64
+Load Address:    0x102590000
+Identifier:      qemu-system-aarch64
+Version:         0
+Code Type:       ARM64
+Platform:        macOS
+Parent Process:  launchd [1]
+Target Type:     live task
+
+Date/Time:       2026-11-03 09:23:32.008 -0800
+Launch Time:     2026-11-03 09:20:10.081 -0800
+OS Version:      macOS 26.4.1 (25E253)
+Report Version:  7
+Analysis Tool:   /usr/bin/sample
+
+Physical footprint:         25.3G
+Physical footprint (peak):  25.4G
+Idle exit:                  untracked
+----
+
+Total number in stack (recursive counted multiple, when >=5):
+        270       arm_cpu_tlb_fill_align  (in qemu-system-aarch64) + 384  [0x1029440a0]  tlb_helper.c:389
+        263       get_phys_addr  (in qemu-system-aarch64) + 124  [0x10293e33c]  ptw.c:4092
+        260       get_phys_addr_gpc  (in qemu-system-aarch64) + 52  [0x10293e494]  ptw.c:3956
+        204       helper_lookup_tb_ptr  (in qemu-system-aarch64) + 364  [0x1025dbfa4]  cpu-exec.c:398
+        197       mmu_lookup  (in qemu-system-aarch64) + 96  [0x1025fc294]  cputlb.c:1744
+        184       mmu_lookup1  (in qemu-system-aarch64) + 764  [0x1025fc704]  cputlb.c:1652
+        161       tb_htable_lookup  (in qemu-system-aarch64) + 60  [0x1025dcb88]  cpu-exec.c:206
+        152       tlb_fill_align  (in qemu-system-aarch64) + 100  [0x1025fc154]  cputlb.c:1247
+        138       get_page_addr_code_hostp  (in qemu-system-aarch64) + 108  [0x1025f39c0]  cputlb.c:1543
+        127       probe_access_internal  (in qemu-system-aarch64) + 672  [0x1025f333c]  cputlb.c:1376
+        123       get_phys_addr_nogpc  (in qemu-system-aarch64) + 1960  [0x10293cb6c]  ptw.c:3876
+        112       get_phys_addr_nogpc  (in qemu-system-aarch64) + 4628  [0x10293d5d8]  ptw.c:3940
+        109       __psynch_mutexwait  (in libsystem_kernel.dylib) + 0  [0x18564e9d4]
+        109       _pthread_mutex_firstfit_lock_slow  (in libsystem_pthread.dylib) + 216  [0x18568a8e0]
+        109       _pthread_mutex_firstfit_lock_wait  (in libsystem_pthread.dylib) + 84  [0x18568ce9c]
+        109       qemu_mutex_lock_impl  (in qemu-system-aarch64) + 64  [0x102e52b20]  qemu-thread-posix.c:109
+        107       do_ld8_mmu  (in qemu-system-aarch64) + 100  [0x1025f40e0]  cputlb.c:2354
+        76       S1_ptw_translate  (in qemu-system-aarch64) + 120  [0x10293f444]  ptw.c:763
+        70       get_phys_addr_nogpc  (in qemu-system-aarch64) + 2248  [0x10293cc8c]  ptw.c:3876
+        61       probe_access_full_mmu  (in qemu-system-aarch64) + 92  [0x1025f3698]  cputlb.c:1441
+        56       helper_get_cp_reg64  (in qemu-system-aarch64) + 60  [0x1029afc40]  op_helper.c:1275
+        54       get_phys_addr_nogpc  (in qemu-system-aarch64) + 0  [0x10293c3c4]  ptw.c:3940
+        48       helper_lookup_tb_ptr  (in qemu-system-aarch64) + 0  [0x1025dbe38]  cpu-exec.c:378
+        46       tb_htable_lookup  (in qemu-system-aarch64) + 344  [0x1025dcca4]  cpu-exec.c:213
+        44       helper_lookup_tb_ptr  (in qemu-system-aarch64) + 0  [0x1025dbe38]  cpu-exec.c:398
+        40       do_ld4_mmu  (in qemu-system-aarch64) + 100  [0x1025f3e54]  cputlb.c:2333
+        40       helper_ldul_mmu  (in qemu-system-aarch64) + 24  [0x1025f3ddc]  ldst_common.c.inc:33
+        39       probe_access_internal  (in qemu-system-aarch64) + 696  [0x1025f3354]  cputlb.c:1376
+        38       qht_lookup_custom  (in qemu-system-aarch64) + 0  [0x102e5f3f0]  qht.c:607
+        33       tlb_fill_align  (in qemu-system-aarch64) + 124  [0x1025fc16c]  cputlb.c:1249
+        32       __psynch_cvwait  (in libsystem_kernel.dylib) + 0  [0x18564f504]
+        32       _pthread_cond_wait  (in libsystem_pthread.dylib) + 980  [0x185690128]
+        30       qemu_mutex_unlock_impl  (in qemu-system-aarch64) + 72  [0x102e52d14]  qemu-thread-posix.c:137
+        28       __psynch_mutexdrop  (in libsystem_kernel.dylib) + 0  [0x18564eba0]
+        28       _pthread_mutex_firstfit_unlock_slow  (in libsystem_pthread.dylib) + 220  [0x18568ab94]
+        28       _pthread_mutex_firstfit_wake  (in libsystem_pthread.dylib) + 28  [0x18568cf0c]
+        28       _pthread_start  (in libsystem_pthread.dylib) + 136  [0x18568fc58]
+        28       qemu_thread_start  (in qemu-system-aarch64) + 100  [0x102e537f4]  qemu-thread-posix.c:414
+        28       thread_start  (in libsystem_pthread.dylib) + 8  [0x18568ac1c]
+        25       helper_set_cp_reg64  (in qemu-system-aarch64) + 68  [0x1029afbdc]  op_helper.c:1261
+        24       helper_ldub_mmu  (in qemu-system-aarch64) + 96  [0x1025f3abc]  ldst_common.c.inc:19
+        21       tcg_flush_jmp_cache  (in qemu-system-aarch64) + 0  [0x102e7f1d8]  translate-all.c:636
+        20       qemu_cond_timedwait_impl  (in qemu-system-aarch64) + 176  [0x102e531b4]  qemu-thread-posix.c:268
+        20       qemu_cond_timedwait_ts  (in qemu-system-aarch64) + 64  [0x102e5322c]  qemu-thread-posix.c:254
+        20       tlb_set_page_full  (in qemu-system-aarch64) + 1672  [0x1025f2ecc]  cputlb.c:1088
+        20       worker_thread  (in qemu-system-aarch64) + 440  [0x102e68158]  thread-pool.c:96
+        19       get_phys_addr_nogpc  (in qemu-system-aarch64) + 3248  [0x10293d074]  ptw.c:3940
+        18       tlb_flush_by_mmuidx_async_work  (in qemu-system-aarch64) + 168  [0x1025f168c]  cputlb.c:394
+        18       vmsa_ttbr_write  (in qemu-system-aarch64) + 84  [0x1029567a4]  helper.c:2820
+        14       probe_access_internal  (in qemu-system-aarch64) + 0  [0x1025f309c]  cputlb.c:1409
+        13       __commpage_gettimeofday_internal  (in libsystem_kernel.dylib) + 44  [0x18564dc24]
+        13       get_ptr_rcu_reader  (in qemu-system-aarch64) + 0  [0x102e5c66c]  rcu.c:72
+        13       gettimeofday  (in libsystem_c.dylib) + 56  [0x185524dc0]
+        13       mach_absolute_time  (in libsystem_kernel.dylib) + 0  [0x18564c0a0]
+        13       qemu_ram_addr_from_host_nofail  (in qemu-system-aarch64) + 36  [0x10291ba94]  physmem.c:2890
+        12       clock_gettime  (in libsystem_c.dylib) + 296  [0x18552ce4c]
+        12       cpu_get_clock  (in qemu-system-aarch64) + 168  [0x102908e34]  cpu-timers.c:97
+        12       helper_set_cp_reg64  (in qemu-system-aarch64) + 88  [0x1029afbf0]  op_helper.c:1262
+        12       tlb_set_page_full  (in qemu-system-aarch64) + 356  [0x1025f29a8]  cputlb.c:1071
+        11       S1_ptw_translate  (in qemu-system-aarch64) + 0  [0x10293f3cc]  ptw.c:810
+        11       _mach_boottime_usec  (in libsystem_c.dylib) + 64  [0x185552b1c]
+        11       _tlv_get_addr  (in libdyld.dylib) + 0  [0x18529c388]
+        11       get_ptr_rcu_reader  (in qemu-system-aarch64) + 28  [0x102e5c688]  rcu.c:72
+        11       helper_access_check_cp_reg  (in qemu-system-aarch64) + 84  [0x1029af210]  op_helper.c:1028
+        11       probe_access_internal  (in qemu-system-aarch64) + 0  [0x1025f309c]  cputlb.c:0
+        11       qemu_cond_wait_impl  (in qemu-system-aarch64) + 96  [0x102e53030]  qemu-thread-posix.c:240
+        10       _platform_memset  (in libsystem_platform.dylib) + 0  [0x1856990f0]
+        10       do_st8_mmu  (in qemu-system-aarch64) + 96  [0x1025f4b3c]  cputlb.c:2752
+        10       helper_get_cp_reg64  (in qemu-system-aarch64) + 76  [0x1029afc50]  op_helper.c:1276
+        10       probe_access_internal  (in qemu-system-aarch64) + 0  [0x1025f309c]  cputlb.c:1369
+        10       probe_access_internal  (in qemu-system-aarch64) + 0  [0x1025f309c]  cputlb.c:1375
+        10       tlb_flush_one_mmuidx_locked  (in qemu-system-aarch64) + 488  [0x1025fc08c]  cputlb.c:297
+        9       helper_lookup_tb_ptr  (in qemu-system-aarch64) + 80  [0x1025dbe88]  cpu-exec.c:391
+        9       probe_access_full_mmu  (in qemu-system-aarch64) + 0  [0x1025f363c]  cputlb.c:1451
+        9       tlb_set_page_full  (in qemu-system-aarch64) + 252  [0x1025f2940]  cputlb.c:1052
+        8       address_space_translate_for_iotlb  (in qemu-system-aarch64) + 120  [0x1029170a4]  physmem.c:699
+        8       do_st16_mmu  (in qemu-system-aarch64) + 116  [0x1025f4c24]  cputlb.c:2775
+        8       helper_exception_return  (in qemu-system-aarch64) + 948  [0x102bcb1a4]  helper-a64.c:725
+        8       helper_ldq_mmu  (in qemu-system-aarch64) + 0  [0x1025f4068]  ldst_common.c.inc:38
+        8       helper_lookup_tb_ptr  (in qemu-system-aarch64) + 88  [0x1025dbe90]  cpu-exec.c:392
+        8       probe_access_internal  (in qemu-system-aarch64) + 0  [0x1025f309c]  cputlb.c:1400
+        8       qemu_ram_block_from_host  (in qemu-system-aarch64) + 320  [0x10291b878]  physmem.c:2819
+        7       S1_ptw_translate  (in qemu-system-aarch64) + 224  [0x10293f4ac]  ptw.c:781
+        7       arm_hcr_el2_eff_secstate  (in qemu-system-aarch64) + 0  [0x10294ad18]  helper.c:3939
+        7       arm_security_space_below_el3  (in qemu-system-aarch64) + 0  [0x10294aef0]  helper.c:10354
+        7       get_phys_addr_nogpc  (in qemu-system-aarch64) + 4652  [0x10293d5f0]  ptw.c:3940
+        7       helper_access_check_cp_reg  (in qemu-system-aarch64) + 48  [0x1029af1ec]  op_helper.c:1020
+        7       mmu_lookup1  (in qemu-system-aarch64) + 0  [0x1025fc408]  cputlb.c:1650
+        7       physical_memory_is_clean  (in qemu-system-aarch64) + 44  [0x102917b4c]  physmem.c:933
+        7       tlb_flush_by_mmuidx_async_work  (in qemu-system-aarch64) + 140  [0x1025f1670]  cputlb.c:389
+        7       tlb_set_page_full  (in qemu-system-aarch64) + 0  [0x1025f2844]  cputlb.c:1125
+        6       address_space_translate_internal  (in qemu-system-aarch64) + 0  [0x1029172e4]  physmem.c:373
+        6       g_hash_table_lookup  (in libglib-2.0.0.dylib) + 0  [0x104ad973c]
+        6       g_tree_find_node  (in libglib-2.0.0.dylib) + 0  [0x104b147c0]
+        6       g_tree_lookup  (in libglib-2.0.0.dylib) + 12  [0x104b14844]
+        6       gt_virt_cnt_read  (in qemu-system-aarch64) + 44  [0x1029575a4]  helper.c:1581
+        6       helper_get_cp_reg64  (in qemu-system-aarch64) + 84  [0x1029afc58]  op_helper.c:1277
+        6       helper_guarded_page_check  (in qemu-system-aarch64) + 100  [0x102bcac78]  helper-a64.c:1795
+        6       physical_memory_is_clean  (in qemu-system-aarch64) + 60  [0x102917b5c]  physmem.c:935
+        6       pthread_jit_write_protect_np  (in libsystem_pthread.dylib) + 0  [0x185690a1c]
+        6       sys_icache_invalidate  (in libsystem_platform.dylib) + 0  [0x18569a6b4]
+        5       S1_ptw_translate  (in qemu-system-aarch64) + 0  [0x10293f3cc]  ptw.c:732
+        5       S1_ptw_translate  (in qemu-system-aarch64) + 0  [0x10293f3cc]  ptw.c:774
+        5       arm_ldq_ptw  (in qemu-system-aarch64) + 0  [0x10293f628]  ptw.c:855
+        5       atomic_mmu_lookup  (in qemu-system-aarch64) + 708  [0x1025fbc58]  cputlb.c:1821
+        5       curr_cflags  (in qemu-system-aarch64) + 0  [0x1025dd6f0]  cpu-exec-common.c:50
+        5       do_ld16_mmu  (in qemu-system-aarch64) + 104  [0x1025f4324]  cputlb.c:2377
+        5       do_ld2_mmu  (in qemu-system-aarch64) + 92  [0x1025f3bb4]  cputlb.c:2309
+        5       get_phys_addr_nogpc  (in qemu-system-aarch64) + 1212  [0x10293c880]  ptw.c:3940
+        5       get_phys_addr_nogpc  (in qemu-system-aarch64) + 2372  [0x10293cd08]  ptw.c:3876
+        5       get_phys_addr_nogpc  (in qemu-system-aarch64) + 448  [0x10293c584]  ptw.c:3934
+        5       get_phys_addr_nogpc  (in qemu-system-aarch64) + 5504  [0x10293d944]  ptw.c:3940
+        5       helper_access_check_cp_reg  (in qemu-system-aarch64) + 0  [0x1029af1bc]  op_helper.c:1018
+        5       helper_exception_return  (in qemu-system-aarch64) + 984  [0x102bcb1c8]  helper-a64.c:727
+        5       helper_lduw_mmu  (in qemu-system-aarch64) + 24  [0x1025f3b44]  ldst_common.c.inc:26
+        5       helper_lookup_tb_ptr  (in qemu-system-aarch64) + 0  [0x1025dbe38]  cpu-exec.c:391
+        5       helper_rebuild_hflags_a64  (in qemu-system-aarch64) + 64  [0x1029687a0]  hflags.c:631
+        5       memory_region_get_ram_ptr  (in qemu-system-aarch64) + 20  [0x102911784]  memory.c:2345
+        5       physical_memory_get_dirty_flag  (in qemu-system-aarch64) + 0  [0x102917990]  physmem.c:927
+        5       physical_memory_get_dirty_flag  (in qemu-system-aarch64) + 76  [0x1029179dc]  physmem.c:927
+        5       probe_access_full  (in qemu-system-aarch64) + 60  [0x1025f3040]  cputlb.c:1416
+        5       probe_access_internal  (in qemu-system-aarch64) + 0  [0x1025f309c]  cputlb.c:1366
+        5       tcg_tb_lookup  (in qemu-system-aarch64) + 216  [0x10264e9e4]  region.c:259
+
+Sort by top of stack, same collapsed (when >= 5):
+        __psynch_cvwait  (in libsystem_kernel.dylib)        9956
+        __sigwait  (in libsystem_kernel.dylib)        448
+        __workq_kernreturn  (in libsystem_kernel.dylib)        448
+        mach_msg2_trap  (in libsystem_kernel.dylib)        448
+        __select  (in libsystem_kernel.dylib)        441
+        __psynch_mutexwait  (in libsystem_kernel.dylib)        165
+        helper_lookup_tb_ptr  (in qemu-system-aarch64)        108
+        get_phys_addr_nogpc  (in qemu-system-aarch64)        73
+        probe_access_internal  (in qemu-system-aarch64)        63
+        qht_lookup_custom  (in qemu-system-aarch64)        48
+        pthread_jit_write_protect_np  (in libsystem_pthread.dylib)        43
+        S1_ptw_translate  (in qemu-system-aarch64)        32
+        __psynch_mutexdrop  (in libsystem_kernel.dylib)        29
+        tlb_set_page_full  (in qemu-system-aarch64)        28
+        tcg_flush_jmp_cache  (in qemu-system-aarch64)        26
+        aa64_va_parameters  (in qemu-system-aarch64)        22
+        arm_hcr_el2_eff_secstate  (in qemu-system-aarch64)        17
+        mmu_lookup1  (in qemu-system-aarch64)        15
+        probe_access_full_mmu  (in qemu-system-aarch64)        14
+        get_ptr_rcu_reader  (in qemu-system-aarch64)        13
+        mach_absolute_time  (in libsystem_kernel.dylib)        13
+        read  (in libsystem_kernel.dylib)        13
+        cpu_exec_loop  (in qemu-system-aarch64)        12
+        helper_access_check_cp_reg  (in qemu-system-aarch64)        12
+        _platform_memset  (in libsystem_platform.dylib)        11
+        _tlv_get_addr  (in libdyld.dylib)        11
+        liveness_pass_1  (in qemu-system-aarch64)        11
+        arm_ldq_ptw  (in qemu-system-aarch64)        10
+        arm_get_tb_cpu_state  (in qemu-system-aarch64)        9
+        curr_cflags  (in qemu-system-aarch64)        9
+        tb_htable_lookup  (in qemu-system-aarch64)        9
+        address_space_translate_internal  (in qemu-system-aarch64)        8
+        arm_security_space_below_el3  (in qemu-system-aarch64)        8
+        helper_ldq_mmu  (in qemu-system-aarch64)        8
+        arm_el_is_aa64  (in qemu-system-aarch64)        7
+        fp_exception_el  (in qemu-system-aarch64)        7
+        physical_memory_get_dirty_flag  (in qemu-system-aarch64)        7
+        g_hash_table_lookup  (in libglib-2.0.0.dylib)        6
+        g_tree_find_node  (in libglib-2.0.0.dylib)        6
+        liveness_pass_0  (in qemu-system-aarch64)        6
+        sys_icache_invalidate  (in libsystem_platform.dylib)        6
+        atomic_mmu_lookup  (in qemu-system-aarch64)        5
+        combine_cacheattrs  (in qemu-system-aarch64)        5
+        get_phys_addr_gpc  (in qemu-system-aarch64)        5
+        helper_ldub_mmu  (in qemu-system-aarch64)        5
+        qemu_ram_block_from_host  (in qemu-system-aarch64)        5
+        qemu_ram_ptr_length  (in qemu-system-aarch64)        5
+        rebuild_hflags_a64  (in qemu-system-aarch64)        5
+        regime_translation_disabled  (in qemu-system-aarch64)        5
+        simple_ap_to_rw_prot_is_user  (in qemu-system-aarch64)        5
+        tcg_gen_code  (in qemu-system-aarch64)        5
+
+
+== sample at 145 s after SSH diagnostic launch
+Command: /usr/bin/sample 89334 5 10 -file OUTPUT
+Analysis of sampling qemu-system-aarch64 (pid 89334) every 10 milliseconds
+Process:         qemu-system-aarch64 [89334]
+Path:            /Users/USER/*/qemu-system-aarch64
+Load Address:    0x102590000
+Identifier:      qemu-system-aarch64
+Version:         0
+Code Type:       ARM64
+Platform:        macOS
+Parent Process:  launchd [1]
+Target Type:     live task
+
+Date/Time:       2026-11-03 09:24:32.446 -0800
+Launch Time:     2026-11-03 09:20:10.081 -0800
+OS Version:      macOS 26.4.1 (25E253)
+Report Version:  7
+Analysis Tool:   /usr/bin/sample
+
+Physical footprint:         25.3G
+Physical footprint (peak):  25.4G
+Idle exit:                  untracked
+----
+
+Total number in stack (recursive counted multiple, when >=5):
+        418       arm_cpu_tlb_fill_align  (in qemu-system-aarch64) + 384  [0x1029440a0]  tlb_helper.c:389
+        406       get_phys_addr  (in qemu-system-aarch64) + 124  [0x10293e33c]  ptw.c:4092
+        399       get_phys_addr_gpc  (in qemu-system-aarch64) + 52  [0x10293e494]  ptw.c:3956
+        288       helper_lookup_tb_ptr  (in qemu-system-aarch64) + 364  [0x1025dbfa4]  cpu-exec.c:398
+        263       mmu_lookup  (in qemu-system-aarch64) + 96  [0x1025fc294]  cputlb.c:1744
+        252       mmu_lookup1  (in qemu-system-aarch64) + 764  [0x1025fc704]  cputlb.c:1652
+        237       tb_htable_lookup  (in qemu-system-aarch64) + 60  [0x1025dcb88]  cpu-exec.c:206
+        220       tlb_fill_align  (in qemu-system-aarch64) + 100  [0x1025fc154]  cputlb.c:1247
+        213       probe_access_internal  (in qemu-system-aarch64) + 672  [0x1025f333c]  cputlb.c:1376
+        208       get_phys_addr_nogpc  (in qemu-system-aarch64) + 1960  [0x10293cb6c]  ptw.c:3876
+        194       get_page_addr_code_hostp  (in qemu-system-aarch64) + 108  [0x1025f39c0]  cputlb.c:1543
+        176       get_phys_addr_nogpc  (in qemu-system-aarch64) + 4628  [0x10293d5d8]  ptw.c:3940
+        131       S1_ptw_translate  (in qemu-system-aarch64) + 120  [0x10293f444]  ptw.c:763
+        104       do_ld8_mmu  (in qemu-system-aarch64) + 100  [0x1025f40e0]  cputlb.c:2354
+        98       get_phys_addr_nogpc  (in qemu-system-aarch64) + 2248  [0x10293cc8c]  ptw.c:3876
+        96       probe_access_full_mmu  (in qemu-system-aarch64) + 92  [0x1025f3698]  cputlb.c:1441
+        88       do_ld4_mmu  (in qemu-system-aarch64) + 100  [0x1025f3e54]  cputlb.c:2333
+        88       helper_ldul_mmu  (in qemu-system-aarch64) + 24  [0x1025f3ddc]  ldst_common.c.inc:33
+        78       get_phys_addr_nogpc  (in qemu-system-aarch64) + 0  [0x10293c3c4]  ptw.c:3940
+        54       qemu_mutex_lock_impl  (in qemu-system-aarch64) + 64  [0x102e52b20]  qemu-thread-posix.c:109
+        53       __psynch_mutexwait  (in libsystem_kernel.dylib) + 0  [0x18564e9d4]
+        53       _pthread_mutex_firstfit_lock_slow  (in libsystem_pthread.dylib) + 216  [0x18568a8e0]
+        53       _pthread_mutex_firstfit_lock_wait  (in libsystem_pthread.dylib) + 84  [0x18568ce9c]
+        50       helper_lookup_tb_ptr  (in qemu-system-aarch64) + 0  [0x1025dbe38]  cpu-exec.c:378
+        48       helper_lookup_tb_ptr  (in qemu-system-aarch64) + 0  [0x1025dbe38]  cpu-exec.c:398
+        45       probe_access_internal  (in qemu-system-aarch64) + 696  [0x1025f3354]  cputlb.c:1376
+        41       tb_htable_lookup  (in qemu-system-aarch64) + 344  [0x1025dcca4]  cpu-exec.c:213
+        40       tlb_fill_align  (in qemu-system-aarch64) + 124  [0x1025fc16c]  cputlb.c:1249
+        36       get_phys_addr_nogpc  (in qemu-system-aarch64) + 3248  [0x10293d074]  ptw.c:3940
+        36       tcg_flush_jmp_cache  (in qemu-system-aarch64) + 0  [0x102e7f1d8]  translate-all.c:636
+        33       tlb_flush_by_mmuidx_async_work  (in qemu-system-aarch64) + 168  [0x1025f168c]  cputlb.c:394
+        33       tlb_set_page_full  (in qemu-system-aarch64) + 1672  [0x1025f2ecc]  cputlb.c:1088
+        32       helper_ldub_mmu  (in qemu-system-aarch64) + 96  [0x1025f3abc]  ldst_common.c.inc:19
+        30       vmsa_ttbr_write  (in qemu-system-aarch64) + 84  [0x1029567a4]  helper.c:2820
+        29       qemu_ram_addr_from_host_nofail  (in qemu-system-aarch64) + 36  [0x10291ba94]  physmem.c:2890
+        28       __psynch_cvwait  (in libsystem_kernel.dylib) + 0  [0x18564f504]
+        28       _pthread_cond_wait  (in libsystem_pthread.dylib) + 980  [0x185690128]
+        28       _pthread_start  (in libsystem_pthread.dylib) + 136  [0x18568fc58]
+        28       qemu_thread_start  (in qemu-system-aarch64) + 100  [0x102e537f4]  qemu-thread-posix.c:414
+        28       qht_lookup_custom  (in qemu-system-aarch64) + 0  [0x102e5f3f0]  qht.c:607
+        28       thread_start  (in libsystem_pthread.dylib) + 8  [0x18568ac1c]
+        27       helper_get_cp_reg64  (in qemu-system-aarch64) + 60  [0x1029afc40]  op_helper.c:1275
+        24       probe_access_internal  (in qemu-system-aarch64) + 0  [0x1025f309c]  cputlb.c:1409
+        21       get_ptr_rcu_reader  (in qemu-system-aarch64) + 0  [0x102e5c66c]  rcu.c:72
+        20       qemu_cond_timedwait_impl  (in qemu-system-aarch64) + 176  [0x102e531b4]  qemu-thread-posix.c:268
+        20       qemu_cond_timedwait_ts  (in qemu-system-aarch64) + 64  [0x102e5322c]  qemu-thread-posix.c:254
+        20       worker_thread  (in qemu-system-aarch64) + 440  [0x102e68158]  thread-pool.c:96
+        19       _platform_memset  (in libsystem_platform.dylib) + 0  [0x1856990f0]
+        19       helper_lookup_tb_ptr  (in qemu-system-aarch64) + 80  [0x1025dbe88]  cpu-exec.c:391
+        18       tlb_flush_by_mmuidx_async_work  (in qemu-system-aarch64) + 140  [0x1025f1670]  cputlb.c:389
+        18       tlb_flush_one_mmuidx_locked  (in qemu-system-aarch64) + 488  [0x1025fc08c]  cputlb.c:297
+        17       do_st16_mmu  (in qemu-system-aarch64) + 116  [0x1025f4c24]  cputlb.c:2775
+        15       probe_access_internal  (in qemu-system-aarch64) + 0  [0x1025f309c]  cputlb.c:1369
+        14       get_phys_addr_nogpc  (in qemu-system-aarch64) + 5504  [0x10293d944]  ptw.c:3940
+        14       helper_lookup_tb_ptr  (in qemu-system-aarch64) + 88  [0x1025dbe90]  cpu-exec.c:392
+        14       simple_ap_to_rw_prot_is_user  (in qemu-system-aarch64) + 0  [0x10293bf3c]  ptw.c:1115
+        14       tlb_set_page_full  (in qemu-system-aarch64) + 356  [0x1025f29a8]  cputlb.c:1071
+        13       S1_ptw_translate  (in qemu-system-aarch64) + 0  [0x10293f3cc]  ptw.c:810
+        12       _pthread_mutex_firstfit_unlock_slow  (in libsystem_pthread.dylib) + 220  [0x18568ab94]
+        12       probe_access_full_mmu  (in qemu-system-aarch64) + 0  [0x1025f363c]  cputlb.c:1438
+        12       qemu_mutex_unlock_impl  (in qemu-system-aarch64) + 72  [0x102e52d14]  qemu-thread-posix.c:137
+        11       __psynch_mutexdrop  (in libsystem_kernel.dylib) + 0  [0x18564eba0]
+        11       _pthread_mutex_firstfit_wake  (in libsystem_pthread.dylib) + 28  [0x18568cf0c]
+        11       helper_access_check_cp_reg  (in qemu-system-aarch64) + 84  [0x1029af210]  op_helper.c:1028
+        11       physical_memory_is_clean  (in qemu-system-aarch64) + 28  [0x102917b3c]  physmem.c:932
+        11       physical_memory_is_clean  (in qemu-system-aarch64) + 44  [0x102917b4c]  physmem.c:933
+        10       S1_ptw_translate  (in qemu-system-aarch64) + 0  [0x10293f3cc]  ptw.c:732
+        10       get_phys_addr  (in qemu-system-aarch64) + 76  [0x10293e30c]  ptw.c:4088
+        10       get_phys_addr_nogpc  (in qemu-system-aarch64) + 448  [0x10293c584]  ptw.c:3934
+        10       helper_exception_return  (in qemu-system-aarch64) + 948  [0x102bcb1a4]  helper-a64.c:725
+        10       physical_memory_get_dirty_flag  (in qemu-system-aarch64) + 0  [0x102917990]  physmem.c:927
+        10       probe_access_internal  (in qemu-system-aarch64) + 0  [0x1025f309c]  cputlb.c:0
+        9       S1_ptw_translate  (in qemu-system-aarch64) + 0  [0x10293f3cc]  ptw.c:725
+        9       arm_security_space_below_el3  (in qemu-system-aarch64) + 0  [0x10294aef0]  helper.c:10354
+        9       get_phys_addr_nogpc  (in qemu-system-aarch64) + 0  [0x10293c3c4]  ptw.c:0
+        9       get_phys_addr_nogpc  (in qemu-system-aarch64) + 0  [0x10293c3c4]  ptw.c:3948
+        9       get_phys_addr_nogpc  (in qemu-system-aarch64) + 1212  [0x10293c880]  ptw.c:3940
+        9       get_phys_addr_nogpc  (in qemu-system-aarch64) + 4652  [0x10293d5f0]  ptw.c:3940
+        9       helper_guarded_page_check  (in qemu-system-aarch64) + 100  [0x102bcac78]  helper-a64.c:1795
+        9       mmu_lookup1  (in qemu-system-aarch64) + 0  [0x1025fc408]  cputlb.c:1650
+        9       physical_memory_get_dirty_flag  (in qemu-system-aarch64) + 184  [0x102917a48]  physmem.c:927
+        8       arm_ldq_ptw  (in qemu-system-aarch64) + 0  [0x10293f628]  ptw.c:887
+        8       arm_security_space_below_el3  (in qemu-system-aarch64) + 0  [0x10294aef0]  helper.c:10347
+        8       get_phys_addr_nogpc  (in qemu-system-aarch64) + 0  [0x10293c3c4]  ptw.c:3827
+        8       get_phys_addr_nogpc  (in qemu-system-aarch64) + 2372  [0x10293cd08]  ptw.c:3876
+        8       physical_memory_is_clean  (in qemu-system-aarch64) + 60  [0x102917b5c]  physmem.c:935
+        8       probe_access_full  (in qemu-system-aarch64) + 60  [0x1025f3040]  cputlb.c:1416
+        8       probe_access_full_mmu  (in qemu-system-aarch64) + 0  [0x1025f363c]  cputlb.c:1451
+        8       probe_access_internal  (in qemu-system-aarch64) + 0  [0x1025f309c]  cputlb.c:1375
+        8       probe_access_internal  (in qemu-system-aarch64) + 0  [0x1025f309c]  cputlb.c:1400
+        8       tb_htable_lookup  (in qemu-system-aarch64) + 0  [0x1025dcb4c]  cpu-exec.c:211
+        8       xen_map_cache_enabled  (in qemu-system-aarch64) + 0  [0x1028f3d24]  xen_stubs.c:34
+        7       S1_ptw_translate  (in qemu-system-aarch64) + 224  [0x10293f4ac]  ptw.c:781
+        7       arm_get_tb_cpu_state  (in qemu-system-aarch64) + 0  [0x102969080]  hflags.c:686
+        7       atomic_mmu_lookup  (in qemu-system-aarch64) + 708  [0x1025fbc58]  cputlb.c:1821
+        7       clock_gettime  (in libsystem_c.dylib) + 296  [0x18552ce4c]
+        7       cpu_get_clock  (in qemu-system-aarch64) + 168  [0x102908e34]  cpu-timers.c:97
+        7       curr_cflags  (in qemu-system-aarch64) + 0  [0x1025dd6f0]  cpu-exec-common.c:50
+        7       do_ld16_mmu  (in qemu-system-aarch64) + 104  [0x1025f4324]  cputlb.c:2377
+        7       do_ld2_mmu  (in qemu-system-aarch64) + 92  [0x1025f3bb4]  cputlb.c:2309
+        7       do_st4_mmu  (in qemu-system-aarch64) + 104  [0x1025f4924]  cputlb.c:2731
+        7       g_hash_table_lookup  (in libglib-2.0.0.dylib) + 0  [0x104ad973c]
+        7       helper_get_cp_reg64  (in qemu-system-aarch64) + 76  [0x1029afc50]  op_helper.c:1276
+        7       helper_lduw_mmu  (in qemu-system-aarch64) + 24  [0x1025f3b44]  ldst_common.c.inc:26
+        7       helper_rebuild_hflags_a64  (in qemu-system-aarch64) + 64  [0x1029687a0]  hflags.c:631
+        7       helper_set_cp_reg64  (in qemu-system-aarch64) + 68  [0x1029afbdc]  op_helper.c:1261
+        7       qemu_cond_wait_impl  (in qemu-system-aarch64) + 96  [0x102e53030]  qemu-thread-posix.c:240
+        7       qemu_ram_block_from_host  (in qemu-system-aarch64) + 32  [0x10291b758]  physmem.c:2780
+        7       qemu_ram_block_from_host  (in qemu-system-aarch64) + 320  [0x10291b878]  physmem.c:2819
+        7       qht_lookup_custom  (in qemu-system-aarch64) + 112  [0x102e5f460]  qht.c:607
+        6       _tlv_get_addr  (in libdyld.dylib) + 0  [0x18529c388]
+        6       aa64_va_parameters  (in qemu-system-aarch64) + 0  [0x102953000]  helper.c:9838
+        6       arm_cpu_tlb_fill_align  (in qemu-system-aarch64) + 92  [0x102943f7c]  tlb_helper.c:360
+        6       arm_hcr_el2_eff_secstate  (in qemu-system-aarch64) + 0  [0x10294ad18]  helper.c:3939
+        6       arm_ldq_ptw  (in qemu-system-aarch64) + 0  [0x10293f628]  ptw.c:855
+        6       arm_rebuild_hflags  (in qemu-system-aarch64) + 236  [0x102967ef4]  hflags.c:582
+        6       curr_cflags  (in qemu-system-aarch64) + 0  [0x1025dd6f0]  cpu-exec-common.c:54
+        6       get_phys_addr_nogpc  (in qemu-system-aarch64) + 3100  [0x10293cfe0]  ptw.c:3940
+        6       get_ptr_rcu_reader  (in qemu-system-aarch64) + 28  [0x102e5c688]  rcu.c:72
+        6       helper_access_check_cp_reg  (in qemu-system-aarch64) + 48  [0x1029af1ec]  op_helper.c:1020
+        6       helper_ldub_mmu  (in qemu-system-aarch64) + 0  [0x1025f3a5c]  ldst_common.c.inc:17
+        6       helper_lookup_tb_ptr  (in qemu-system-aarch64) + 0  [0x1025dbe38]  cpu-exec.c:391
+        6       helper_set_cp_reg64  (in qemu-system-aarch64) + 88  [0x1029afbf0]  op_helper.c:1262
+        6       physical_memory_get_dirty_flag  (in qemu-system-aarch64) + 0  [0x102917990]  physmem.c:926
+        6       probe_access_full_mmu  (in qemu-system-aarch64) + 0  [0x1025f363c]  cputlb.c:1439
+        6       probe_access_internal  (in qemu-system-aarch64) + 0  [0x1025f309c]  cputlb.c:1366
+        6       qemu_ram_block_from_host  (in qemu-system-aarch64) + 0  [0x10291b738]  physmem.c:2819
+        6       qemu_ram_block_from_host  (in qemu-system-aarch64) + 40  [0x10291b760]  physmem.c:0
+        6       qht_lookup_custom  (in qemu-system-aarch64) + 0  [0x102e5f3f0]  qht.c:616
+        6       tlb_set_page_full  (in qemu-system-aarch64) + 0  [0x1025f2844]  cputlb.c:1125
+        6       tlb_set_page_full  (in qemu-system-aarch64) + 252  [0x1025f2940]  cputlb.c:1052
+        5       __commpage_gettimeofday_internal  (in libsystem_kernel.dylib) + 44  [0x18564dc24]
+        5       _mach_boottime_usec  (in libsystem_c.dylib) + 64  [0x185552b1c]
+        5       aa64_va_parameters  (in qemu-system-aarch64) + 0  [0x102953000]  helper.c:0
+        5       aa64_va_parameters  (in qemu-system-aarch64) + 0  [0x102953000]  helper.c:10004
+        5       aa64_va_parameters  (in qemu-system-aarch64) + 0  [0x102953000]  helper.c:9970
+        5       arm_hcr_el2_eff_secstate  (in qemu-system-aarch64) + 0  [0x10294ad18]  helper.c:3880
+        5       arm_hcr_el2_eff_secstate  (in qemu-system-aarch64) + 0  [0x10294ad18]  helper.c:3920
+        5       arm_security_space_below_el3  (in qemu-system-aarch64) + 0  [0x10294aef0]  helper.c:10332
+        5       do_st8_mmu  (in qemu-system-aarch64) + 96  [0x1025f4b3c]  cputlb.c:2752
+        5       gettimeofday  (in libsystem_c.dylib) + 56  [0x185524dc0]
+        5       helper_guarded_page_check  (in qemu-system-aarch64) + 0  [0x102bcac14]  helper-a64.c:1788
+        5       helper_ldq_mmu  (in qemu-system-aarch64) + 0  [0x1025f4068]  ldst_common.c.inc:38
+        5       helper_lookup_tb_ptr  (in qemu-system-aarch64) + 0  [0x1025dbe38]  cpu-exec.c:394
+        5       mach_absolute_time  (in libsystem_kernel.dylib) + 0  [0x18564c0a0]
+        5       memory_region_get_ram_ptr  (in qemu-system-aarch64) + 88  [0x1029117c8]  memory.c:2351
+        5       physical_memory_get_dirty_flag  (in qemu-system-aarch64) + 288  [0x102917ab0]  physmem.c:927
+        5       rebuild_hflags_a64  (in qemu-system-aarch64) + 984  [0x102968b9c]  hflags.c:415
+        5       regime_translation_disabled  (in qemu-system-aarch64) + 0  [0x10293bde0]  ptw.c:0
+        5       tlb_set_page_full  (in qemu-system-aarch64) + 0  [0x1025f2844]  cputlb.c:1132
+        5       tlb_set_page_full  (in qemu-system-aarch64) + 220  [0x1025f2920]  cputlb.c:1051
+
+Sort by top of stack, same collapsed (when >= 5):
+        __psynch_cvwait  (in libsystem_kernel.dylib)        9825
+        __sigwait  (in libsystem_kernel.dylib)        446
+        __workq_kernreturn  (in libsystem_kernel.dylib)        446
+        mach_msg2_trap  (in libsystem_kernel.dylib)        446
+        __select  (in libsystem_kernel.dylib)        442
+        helper_lookup_tb_ptr  (in qemu-system-aarch64)        124
+        get_phys_addr_nogpc  (in qemu-system-aarch64)        115
+        probe_access_internal  (in qemu-system-aarch64)        77
+        __psynch_mutexwait  (in libsystem_kernel.dylib)        74
+        tcg_flush_jmp_cache  (in qemu-system-aarch64)        52
+        S1_ptw_translate  (in qemu-system-aarch64)        45
+        qht_lookup_custom  (in qemu-system-aarch64)        38
+        aa64_va_parameters  (in qemu-system-aarch64)        37
+        pthread_jit_write_protect_np  (in libsystem_pthread.dylib)        37
+        probe_access_full_mmu  (in qemu-system-aarch64)        30
+        tlb_set_page_full  (in qemu-system-aarch64)        28
+        arm_hcr_el2_eff_secstate  (in qemu-system-aarch64)        27
+        arm_security_space_below_el3  (in qemu-system-aarch64)        23
+        _platform_memset  (in libsystem_platform.dylib)        22
+        get_ptr_rcu_reader  (in qemu-system-aarch64)        21
+        arm_get_tb_cpu_state  (in qemu-system-aarch64)        19
+        arm_ldq_ptw  (in qemu-system-aarch64)        17
+        physical_memory_get_dirty_flag  (in qemu-system-aarch64)        16
+        simple_ap_to_rw_prot_is_user  (in qemu-system-aarch64)        16
+        curr_cflags  (in qemu-system-aarch64)        15
+        mmu_lookup1  (in qemu-system-aarch64)        15
+        qemu_ram_block_from_host  (in qemu-system-aarch64)        15
+        tb_htable_lookup  (in qemu-system-aarch64)        15
+        arm_el_is_aa64  (in qemu-system-aarch64)        14
+        __psynch_mutexdrop  (in libsystem_kernel.dylib)        11
+        regime_translation_disabled  (in qemu-system-aarch64)        11
+        tb_lookup_cmp  (in qemu-system-aarch64)        10
+        atomic_mmu_lookup  (in qemu-system-aarch64)        9
+        find_next_bit  (in qemu-system-aarch64)        9
+        combine_cacheattrs  (in qemu-system-aarch64)        8
+        object_dynamic_cast_assert  (in qemu-system-aarch64)        8
+        xen_map_cache_enabled  (in qemu-system-aarch64)        8
+        address_space_translate_for_iotlb  (in qemu-system-aarch64)        7
+        arm_cpu_tlb_fill_align  (in qemu-system-aarch64)        7
+        g_hash_table_lookup  (in libglib-2.0.0.dylib)        7
+        get_page_addr_code_hostp  (in qemu-system-aarch64)        7
+        _tlv_get_addr  (in libdyld.dylib)        6
+        get_S1prot  (in qemu-system-aarch64)        6
+        helper_guarded_page_check  (in qemu-system-aarch64)        6
+        helper_ldub_mmu  (in qemu-system-aarch64)        6
+        mach_absolute_time  (in libsystem_kernel.dylib)        6
+        arm_hcrx_el2_eff  (in qemu-system-aarch64)        5
+        arm_mmu_idx_to_security_space  (in qemu-system-aarch64)        5
+        arm_rebuild_hflags  (in qemu-system-aarch64)        5
+        cpu_asidx_from_attrs  (in qemu-system-aarch64)        5
+        cpu_exec_loop  (in qemu-system-aarch64)        5
+        helper_access_check_cp_reg  (in qemu-system-aarch64)        5
+        helper_ldq_mmu  (in qemu-system-aarch64)        5
+        pmu_counter_enabled  (in qemu-system-aarch64)        5
+        read  (in libsystem_kernel.dylib)        5
+
+
+== QEMU info jit after test completion (cumulative since host boot)
+iininfinfoinfo info jinfo jiinfo jit
+Accelerator settings:
+one-insn-per-tb: off
+
+Translation buffer state:
+gen code size       876641208/1073184768
+TB count            1431013
+TB avg target size  18 max=1576 bytes
+TB avg host size    273 bytes (expansion ratio: 14.9)
+cross page TB count 0 (0%)
+direct jump count   796668 (55%) (2 jumps=606923 42%)
+TB hash buckets     478035/524288 (91.18% head buckets used)
+TB hash occupancy   52.90% avg chain occ. Histogram: [0,10)%|▃▁▆▁ █▂▆▁▃|[90,100]%
+TB hash avg chain   1.129 buckets. Histogram: 1|█▂▁▁|4
+
+Statistics:
+TB flush count      4
+TB invalidate count 395273
+TLB full flushes    0
+TLB partial flushes 22347718
+TLB elided flushes  243297625
+(qemu)

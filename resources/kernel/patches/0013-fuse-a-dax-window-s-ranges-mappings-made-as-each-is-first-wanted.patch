@@ -1,0 +1,131 @@
+fuse: a dax window's ranges' mappings made as each is first wanted
+
+FUSE's DAX makes a mapping (struct fuse_dax_mapping, 128 bytes) for each 2 MiB range of
+the window as the file system is mounted (fuse_dax_mem_range_init()), and frees them all
+as it is unmounted: a window as long as its host's memory cost its guest 64 KiB of memory
+a GiB, and each run with a volume their making and freeing (shards' PM M306). Each range's
+mapping is now made as the range is first wanted, in the window's order, where no range
+made before is free (alloc_dax_mapping()); the ranges not yet made count among the free,
+so reclaim begins where it did. A mapping that cannot be allocated fails its access with
+ENOMEM (a fault, VM_FAULT_OOM).
+
+--- a/fs/fuse/dax.c
++++ b/fs/fuse/dax.c
+@@ -98,6 +98,13 @@ struct fuse_conn_dax {
+ 
+ 	unsigned long nr_ranges;
+ 
++	/*
++	 * shards: how many of the window's ranges, the last of them, have no mapping yet: each
++	 * is made as it is first wanted (alloc_dax_mapping()), not all as the file system is
++	 * mounted. Counted among the free ranges.
++	 */
++	unsigned long nr_unmade;
++
+ 	/*
+ 	 * shards: which of the window's pages its host holds, one bit a page, where the
+ 	 * device keeps a record of them (virtio-fs shared memory region 0xfd): set by the
+@@ -150,18 +157,42 @@ static void kick_dmap_free_worker(struct fuse_conn_dax *fcd,
+ 
+ static struct fuse_dax_mapping *alloc_dax_mapping(struct fuse_conn_dax *fcd)
+ {
+-	struct fuse_dax_mapping *dmap;
++	struct fuse_dax_mapping *dmap, *made = NULL;
+ 
+ 	spin_lock(&fcd->lock);
+-	dmap = list_first_entry_or_null(&fcd->free_ranges,
+-					struct fuse_dax_mapping, list);
++	/*
++	 * shards: where no made range is free, the next range never handed out, its mapping
++	 * made here, outside the lock: a window costs its guest a mapping for each range it
++	 * has used, not for each of the window's as the file system is mounted.
++	 */
++	while (!(dmap = list_first_entry_or_null(&fcd->free_ranges,
++						 struct fuse_dax_mapping, list)) &&
++	       fcd->nr_unmade && !made) {
++		spin_unlock(&fcd->lock);
++		made = kzalloc(sizeof(*made), GFP_NOFS);
++		if (!made)
++			return ERR_PTR(-ENOMEM);
++		spin_lock(&fcd->lock);
++	}
+ 	if (dmap) {
+ 		list_del_init(&dmap->list);
+ 		WARN_ON(fcd->nr_free_ranges <= 0);
+ 		fcd->nr_free_ranges--;
++	} else if (made && fcd->nr_unmade) {
++		dmap = made;
++		made = NULL;
++		dmap->window_offset = (u64)(fcd->nr_ranges - fcd->nr_unmade) * FUSE_DAX_SZ;
++		dmap->length = FUSE_DAX_SZ;
++		INIT_LIST_HEAD(&dmap->list);
++		INIT_LIST_HEAD(&dmap->busy_list);
++		refcount_set(&dmap->refcnt, 1);
++		fcd->nr_unmade--;
++		WARN_ON(fcd->nr_free_ranges <= 0);
++		fcd->nr_free_ranges--;
+ 	}
+ 	__kick_dmap_free_worker(fcd, 0);
+ 	spin_unlock(&fcd->lock);
++	kfree(made);
+ 
+ 	return dmap;
+ }
+@@ -511,6 +542,8 @@ static int fuse_setup_new_dax_mapping(struct inode *inode, loff_t pos,
+ 	 */
+ 	if (flags & IOMAP_FAULT) {
+ 		alloc_dmap = alloc_dax_mapping(fcd);
++		if (IS_ERR(alloc_dmap))
++			return PTR_ERR(alloc_dmap);
+ 		if (!alloc_dmap)
+ 			return -EAGAIN;
+ 	} else {
+@@ -1419,10 +1452,8 @@ void fuse_dax_conn_free(struct fuse_conn *fc)
+ static int fuse_dax_mem_range_init(struct fuse_conn_dax *fcd)
+ {
+ 	long nr_pages, nr_ranges;
+-	struct fuse_dax_mapping *range;
+-	int ret, id;
++	int id;
+ 	size_t dax_size = -1;
+-	unsigned long i;
+ 
+ 	init_waitqueue_head(&fcd->range_waitq);
+ 	INIT_LIST_HEAD(&fcd->free_ranges);
+@@ -1442,30 +1473,15 @@ static int fuse_dax_mem_range_init(struct fuse_conn_dax *fcd)
+ 	pr_debug("%s: dax mapped %ld pages. nr_ranges=%ld\n",
+ 		__func__, nr_pages, nr_ranges);
+ 
+-	for (i = 0; i < nr_ranges; i++) {
+-		range = kzalloc(sizeof(struct fuse_dax_mapping), GFP_KERNEL);
+-		ret = -ENOMEM;
+-		if (!range)
+-			goto out_err;
+-
+-		/* TODO: This offset only works if virtio-fs driver is not
+-		 * having some memory hidden at the beginning. This needs
+-		 * better handling
+-		 */
+-		range->window_offset = i * FUSE_DAX_SZ;
+-		range->length = FUSE_DAX_SZ;
+-		INIT_LIST_HEAD(&range->busy_list);
+-		refcount_set(&range->refcnt, 1);
+-		list_add_tail(&range->list, &fcd->free_ranges);
+-	}
+-
++	/*
++	 * shards: no range's mapping made yet, each as it is first wanted, in the window's
++	 * order (alloc_dax_mapping()): a window as long as its host's memory took its guest a
++	 * mapping of 128 bytes for each 2 MiB of it, and their making, at each mount.
++	 */
++	fcd->nr_unmade = nr_ranges;
+ 	fcd->nr_free_ranges = nr_ranges;
+ 	fcd->nr_ranges = nr_ranges;
+ 	return 0;
+-out_err:
+-	/* Free All allocated elements */
+-	fuse_free_dax_mem_ranges(&fcd->free_ranges);
+-	return ret;
+ }
+ 
+ int fuse_dax_conn_alloc(struct fuse_conn *fc, enum fuse_dax_mode dax_mode,

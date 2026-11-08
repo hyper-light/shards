@@ -2,25 +2,42 @@
 //! root filesystem as EROFS, by ChainID (docs/design/architecture.md D18).
 //!
 //! Blobs keep the registry's bytes, as containerd's content store and the OCI image layout
-//! keep them, so a later push or save can reproduce their digests. Nothing enters the
+//! (image-spec v1.1) keep them, so a later push or save can reproduce their digests. Nothing enters the
 //! store unverified: a blob is committed only when its size and digest match its
 //! descriptor, and a layer only counts once its decompressed bytes match its DiffID
 //! (docs/research/registry-pull.md §5, rows 4 and 6).
 
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, BufWriter, Read, Seek, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::mpsc;
+use std::sync::{Mutex, PoisonError};
 
 use sha2::{Digest as _, Sha256, Sha384, Sha512};
 
+mod merge;
+mod mounts;
+
+pub use mounts::{
+    HeldMount, MountChanges, MountEntry, MountLayer, MountPart, MountRoot, Sharing, layer_uuid,
+};
+
 use crate::erofs;
 use crate::layer::{self, Archives};
-use crate::oci;
+use crate::oci::{self, Descriptor};
 use crate::reference::{Algorithm, Digest};
 use crate::{Error, bad};
 
 /// Bumped whenever the EROFS writer's output changes, so older root filesystems are rebuilt.
-const ROOTFS_VERSION: u32 = 1;
+/// 2: regular files are plain, for DAX (erofs.rs).
+pub const ROOTFS_VERSION: u32 = 2;
+/// Bumped whenever a reference's record changes shape: records of an older shape are not
+/// read, and the images they name are pulled again.
+const REFS_VERSION: u32 = 1;
+/// The build cache's records' format (`buildcache/v1`).
+const CACHE_VERSION: u32 = 1;
 const CHUNK: usize = 1 << 20;
 /// The largest zstd window decoded: klauspost/compress v1.20.0's `MaxWindowSize`, in the
 /// decoder containerd uses.
@@ -71,24 +88,171 @@ impl Hasher {
     }
 }
 
+/// Whether this process has grown the build cache: put a record, or kept a cache mount's
+/// content. The cache passes its bounds only as it grows, so a build that grew none has
+/// no collection to run (D212).
+static CACHE_GREW: AtomicBool = AtomicBool::new(false);
+
+/// Whether this process has grown the build cache ([`CACHE_GREW`]).
+pub fn cache_grew() -> bool {
+    CACHE_GREW.load(Ordering::Relaxed)
+}
+
+fn grew() {
+    CACHE_GREW.store(true, Ordering::Relaxed);
+}
+
+/// A file whose lock (flock(2), LockFileEx on Windows) goes as it drops: unlocked, then
+/// closed. A lock is its open file's, which a program another thread starts meanwhile
+/// shares until its exec closes it: closed alone, the lock outlasts its drop that long
+/// (PM M244).
+#[derive(Debug)]
+pub struct Locked(pub(crate) File);
+
+impl Locked {
+    /// The file at `path`, made where missing, held alone (flock(2)'s `LOCK_EX`,
+    /// `LockFileEx`'s exclusive lock) by this and no other open of it, in any process,
+    /// until the lock returned drops.
+    pub fn exclusive(path: &Path) -> std::io::Result<Locked> {
+        let file = File::options()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(path)?;
+        file.lock()?;
+        Ok(Locked(file))
+    }
+}
+
+impl Drop for Locked {
+    fn drop(&mut self) {
+        let _ = self.0.unlock();
+    }
+}
+
+impl std::ops::Deref for Locked {
+    type Target = File;
+
+    fn deref(&self) -> &File {
+        &self.0
+    }
+}
+
+/// A hold on a store's content ([`Store::lease`]), let go when dropped.
+#[derive(Debug)]
+pub struct Lease {
+    _file: Locked,
+}
+
+/// A store held whole by a collection ([`Store::collect`]): no lease is given meanwhile.
+#[derive(Debug)]
+pub struct Whole {
+    _file: Locked,
+}
+
+/// What a collection removed ([`Store::collect`]).
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Collected {
+    pub blobs: u64,
+    pub rootfs: u64,
+    /// Files left in `ingest/`.
+    pub ingest: u64,
+    pub bytes: u64,
+}
+
+/// What the store holds of a small blob ([`Store::held`]).
+#[derive(Debug, PartialEq, Eq)]
+pub enum Held {
+    /// Nothing under its digest.
+    Missing,
+    /// A descriptor nothing can be held by, and why: its digest or size cannot be read,
+    /// its size is past the limit, or its blob is not of the size it says. The same at
+    /// every look, unlike a read that fails: a listing passes it by, as a collection
+    /// does, rather than fail every image for one record.
+    Invalid(String),
+    /// A copy that is not what its digest names any more, and why: a pull fetches it
+    /// again in its place.
+    Changed(String),
+    /// Its bytes, checked.
+    Whole(Vec<u8>),
+}
+
+/// Whether `file` is still the file at `path`: not moved, by a download that finished
+/// with it, or replaced. Where files have no identity to compare (Windows offers none in
+/// std), it is taken to be.
+fn still_at(file: &File, path: &Path) -> io::Result<bool> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt as _;
+        let ours = file.metadata()?;
+        match fs::symlink_metadata(path) {
+            Ok(m) => Ok(m.dev() == ours.dev() && m.ino() == ours.ino()),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),
+            Err(e) => Err(e),
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (file, path);
+        Ok(true)
+    }
+}
+
+/// The name of a dangling image's record, before its ID: dockerd's (moby
+/// daemon/containerd/image_delete.go, danglingImageName). An image keeps one while it has
+/// no other name.
+pub const DANGLING: &str = "moby-dangling@";
+
 /// A file being written under `ingest/`, removed unless committed.
 struct Partial {
     path: PathBuf,
-    file: Option<BufWriter<File>>,
+    /// Written as the process's writes go (`crate::through`): by a writer of its own
+    /// outside the budget a build is held to, where one is set (D188).
+    file: Option<BufWriter<crate::through::Through>>,
 }
 
 impl Partial {
     fn create(dir: &Path) -> Result<Partial, Error> {
         // Unique among this store's writers: the process, then a counter. The name is
-        // never trusted; `create_new` refuses one that exists.
+        // never trusted; `create_new` refuses one that exists, which one a crashed
+        // process of the same ID left may: the next is tried, as os.CreateTemp tries
+        // up to 10,000.
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let path = dir.join(format!("{}-{n}", std::process::id()));
-        let file = File::options().write(true).create_new(true).open(&path)?;
-        Ok(Partial {
+        let mut tries = 0;
+        let (path, file) = loop {
+            let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let path = dir.join(format!("{}-{n}", std::process::id()));
+            match File::options().write(true).create_new(true).open(&path) {
+                Ok(file) => break (path, file),
+                Err(e) if e.kind() == io::ErrorKind::AlreadyExists && tries < 10_000 => tries += 1,
+                Err(e) => return Err(e.into()),
+            }
+        };
+        Ok(Partial::of(path, file))
+    }
+
+    fn of(path: PathBuf, file: File) -> Partial {
+        Partial {
             path,
-            file: Some(BufWriter::with_capacity(CHUNK, file)),
-        })
+            file: Some(BufWriter::with_capacity(
+                CHUNK,
+                crate::through::Through::new(file),
+            )),
+        }
+    }
+
+    /// A name in `dir` no file has yet, as [`Partial::create`] names one, for a file another
+    /// makes there (a clone).
+    fn unused(dir: &Path) -> Result<PathBuf, Error> {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        for _ in 0..10_000 {
+            let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let path = dir.join(format!("{}-clone-{n}", std::process::id()));
+            if fs::symlink_metadata(&path).is_err() {
+                return Ok(path);
+            }
+        }
+        bad(format!("{}: no unused name", dir.display()))
     }
 
     /// Flushes and syncs the file, then moves it to the content-addressed name `to`, so a
@@ -104,7 +268,8 @@ impl Partial {
         let moved = f
             .into_inner()
             .map_err(|e| Error(e.to_string()))
-            .and_then(|file| Ok(file.sync_all()?))
+            .and_then(|through| Ok(through.into_file()?))
+            .and_then(|file| Ok(sync_durable(&file)?))
             .and_then(|()| Ok(fs::rename(&self.path, to)?));
         if moved.is_err() {
             let _ = fs::remove_file(&self.path);
@@ -118,6 +283,46 @@ impl Partial {
 }
 
 impl Partial {
+    /// [`Partial::commit`], for a root filesystem built again (`pull --no-cache`), where a
+    /// file at `to` may hold other bytes than it should: one that holds the same bytes is
+    /// kept, as `commit` keeps it, and whatever was made of it holds still; one that holds
+    /// others is replaced, by rename, whoever holds it open keeping its own. Returns whether
+    /// the file was put at `to`.
+    ///
+    /// A replacement is given a later modification time than the file it replaces, set
+    /// before it is made durable, so that [`rootfs_stamp`] tells them apart: what is keyed
+    /// by a root filesystem's name keeps its bytes by that too (run.rs `template`).
+    fn commit_again(mut self, to: &Path) -> Result<bool, Error> {
+        let Some(f) = self.file.take() else {
+            return Ok(false);
+        };
+        let placed = f.into_inner().map_err(|e| Error(e.to_string())).and_then(|file| {
+            let file = file.into_file()?;
+            let before = match fs::metadata(to) {
+                Ok(before) => Some(before),
+                Err(e) if e.kind() == io::ErrorKind::NotFound => None,
+                Err(e) => return Err(e.into()),
+            };
+            if let Some(before) = before {
+                if same_bytes(&self.path, to)? {
+                    return Ok(false);
+                }
+                // Two seconds: past the coarsest file times a store may be on (FAT's).
+                let was = before.modified()?;
+                if file.metadata()?.modified()? <= was {
+                    file.set_modified(was + std::time::Duration::from_secs(2))?;
+                }
+            }
+            sync_durable(&file)?;
+            fs::rename(&self.path, to)?;
+            Ok(true)
+        });
+        if !matches!(placed, Ok(true)) {
+            let _ = fs::remove_file(&self.path);
+        }
+        placed
+    }
+
     /// Flushes and syncs the file, then moves it to `to`, replacing what is there.
     fn replace(mut self, to: &Path) -> Result<(), Error> {
         let Some(f) = self.file.take() else {
@@ -126,7 +331,8 @@ impl Partial {
         let moved = f
             .into_inner()
             .map_err(|e| Error(e.to_string()))
-            .and_then(|file| Ok(file.sync_all()?))
+            .and_then(|through| Ok(through.into_file()?))
+            .and_then(|file| Ok(sync_durable(&file)?))
             .and_then(|()| Ok(fs::rename(&self.path, to)?));
         if moved.is_err() {
             let _ = fs::remove_file(&self.path);
@@ -135,11 +341,233 @@ impl Partial {
     }
 }
 
-/// What `refs/` records for a reference.
+/// Where a record's image came from: the repository it was pulled from, or the image
+/// it was made from.
+#[derive(Default)]
+struct Origin<'a> {
+    source: Option<&'a str>,
+    parent: Option<&'a Digest>,
+}
+
+/// What `refs/` records for a reference: the manifest it names, by the descriptor it was
+/// chosen by, so that finding the image again checks what pulling it checked; and what
+/// the reference resolved to, an index or the manifest itself, as Docker reports it (D18).
+/// Records written before `resolved` was kept read as resolving to their manifest.
 #[derive(serde::Serialize, serde::Deserialize)]
 struct Tag {
     reference: String,
-    manifest: String,
+    manifest: Descriptor,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    resolved: Option<String>,
+    /// The repository it was pulled from, if pulled: what dockerd shows as the image's
+    /// pull identity, kept when another name is given it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    source: Option<String>,
+    /// What it resolved to, described as it was when the record was made: by the
+    /// registry, for a pull; by an archive's index, annotations and all, for a load.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    target: Option<Descriptor>,
+    /// The image it was made from, for one `commit` made: dockerd's
+    /// `org.mobyproject.image.parent` label (daemon/containerd/image_builder.go), which
+    /// `ps --filter ancestor` follows to an image's children.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    parent: Option<String>,
+    /// OCI 1.1 referrers of what it names, kept with it (its signatures and SBOMs, D116):
+    /// each a manifest whose subject is what the reference resolved to.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    referrers: Vec<Descriptor>,
+}
+
+/// An image as the store's records name it, before anything of it is read: what they
+/// resolved to (its ID), its references, sorted, the manifest our platform's runs use as
+/// its first record names it, when a record of it was last written, the repositories it
+/// was pulled from, and what each reference resolved to as its record describes it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Named {
+    pub id: Digest,
+    pub references: Vec<String>,
+    pub manifest: Descriptor,
+    pub tagged_at: Option<std::time::SystemTime>,
+    pub sources: Vec<String>,
+    pub targets: BTreeMap<String, Descriptor>,
+    /// The image it was made from, where a record says.
+    pub parent: Option<Digest>,
+    /// When each reference's record was written: when the name came to name this image,
+    /// as containerd's `CreatedAt` for it (D18) (a name given another image is a new record).
+    pub tagged: BTreeMap<String, std::time::SystemTime>,
+}
+
+/// A build cache record (D50): the blobs it holds, and what the build put.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct CacheRecord {
+    blobs: Vec<String>,
+    body: String,
+    /// The bytes of what its step made itself, its last layer's.
+    #[serde(default)]
+    size: u64,
+    /// When it was made and last used, seconds since the epoch, and how often it has been.
+    #[serde(default)]
+    created: i64,
+    #[serde(default)]
+    last_used: i64,
+    #[serde(default)]
+    usage: u64,
+}
+
+/// A build cache record, as `system df` and `system prune` see it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CacheEntry {
+    pub key: String,
+    pub size: u64,
+    pub created: i64,
+    pub last_used: i64,
+    pub usage: u64,
+    /// Its step's own layer, which an image may share.
+    pub own: Option<Digest>,
+}
+
+fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
+}
+
+/// An image the store's references name: what they resolved to (D18: its ID, as dockerd's
+/// containerd store gives it), those references, when it was made (its config's
+/// `created`), its manifests, and the bytes of it here: its content, and its root
+/// filesystems.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Image {
+    pub id: Digest,
+    pub references: Vec<String>,
+    /// What its references resolved to, described: an index, or its manifest.
+    pub target: Descriptor,
+    /// The manifest our platform's runs use, and its config's bytes, if here.
+    pub manifest: Digest,
+    pub config: Option<Vec<u8>>,
+    /// When a record of it was last written, and the repositories it was pulled from.
+    pub tagged_at: Option<std::time::SystemTime>,
+    pub sources: Vec<String>,
+    /// What each reference resolved to as its record describes it, where it does.
+    pub targets: BTreeMap<String, Descriptor>,
+    /// The image it was made from, for one `commit` made.
+    pub parent: Option<Digest>,
+    pub created: Option<String>,
+    pub manifests: Vec<ImageManifest>,
+    pub content: u64,
+    pub unpacked: u64,
+}
+
+/// A manifest of an image: its platform (`os/arch[/variant]`), whether it is an
+/// attestation, whether all of it is here, and the bytes of it that are.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImageManifest {
+    pub digest: Digest,
+    pub platform: Option<String>,
+    pub attestation: bool,
+    pub available: bool,
+    pub content: u64,
+    pub unpacked: u64,
+}
+
+/// Whether an index's entry is an attestation's manifest (BuildKit's provenance and SBOMs),
+/// which no microVM runs.
+fn is_attestation(desc: &Descriptor) -> bool {
+    desc.annotations
+        .get("vnd.docker.reference.type")
+        .map(String::as_str)
+        == Some("attestation-manifest")
+}
+
+/// A platform as containerd's platforms.Format writes it (D74).
+fn platform_string(p: &oci::Platform) -> String {
+    let mut s = format!("{}/{}", p.os, p.architecture);
+    if let Some(v) = p.variant.as_deref().filter(|v| !v.is_empty()) {
+        s.push('/');
+        s.push_str(v);
+    }
+    s
+}
+
+/// Makes the entries of `dir` durable: the renames into it outlast a power loss. Windows
+/// takes FlushFileBuffers (std's `sync_all`) of a handle to it that may write ("must have
+/// the GENERIC_WRITE access right", its documentation), which a directory opens for only
+/// with backup semantics (CreateFileW), as the VMM's `platform::sync_dir` does.
+fn sync_dir(dir: &Path) -> Result<(), Error> {
+    #[cfg(unix)]
+    sync_durable(&File::open(dir)?)?;
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt as _;
+        const GENERIC_WRITE: u32 = 0x4000_0000;
+        const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+        std::fs::OpenOptions::new()
+            .access_mode(GENERIC_WRITE)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+            .open(dir)?
+            .sync_all()?;
+    }
+    Ok(())
+}
+
+/// Makes `file` sparse, so that what it holds past what is written takes none of its disk,
+/// as the VMM's `platform::make_sparse` does: NTFS takes every cluster up to a file's end as
+/// it is extended unless the file is sparse (FSCTL_SET_SPARSE; PM M349), where a Unix
+/// file's holes take no blocks already.
+fn make_sparse(file: &File) -> io::Result<()> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawHandle as _;
+        use windows_sys::Win32::System::IO::DeviceIoControl;
+        use windows_sys::Win32::System::Ioctl::{FILE_SET_SPARSE_BUFFER, FSCTL_SET_SPARSE};
+        let sparse = FILE_SET_SPARSE_BUFFER { SetSparse: true };
+        let size = u32::try_from(size_of::<FILE_SET_SPARSE_BUFFER>()).map_err(io::Error::other)?;
+        let mut returned = 0u32;
+        // SAFETY: a handle `file` holds open for synchronous I/O, `sparse`'s `size` bytes, no
+        // output buffer, and a count to write.
+        if unsafe {
+            DeviceIoControl(
+                file.as_raw_handle(),
+                FSCTL_SET_SPARSE,
+                std::ptr::from_ref(&sparse).cast(),
+                size,
+                std::ptr::null_mut(),
+                0,
+                &mut returned,
+                std::ptr::null_mut(),
+            )
+        } == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    #[cfg(unix)]
+    let _ = file;
+    Ok(())
+}
+
+/// Makes completed writes to `file` durable on stable storage, as the VMM's
+/// `platform::sync_durable` does where it is linked (review 1.13): on macOS `F_FULLFSYNC`,
+/// which flushes the drive's cache where `fsync` does not (fsync(2)), and `fsync` where
+/// the filesystem has none, as SQLite falls back and Go's `File.Sync` does on an SMB mount
+/// (go.dev/issue/64215), where std's `sync_all` fails: a store on a network share would
+/// keep nothing.
+fn sync_durable(file: &File) -> io::Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::fd::AsRawFd as _;
+        // SAFETY: fcntl(2) on a descriptor the caller holds open.
+        if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_FULLFSYNC) } == 0 {
+            return Ok(());
+        }
+        // SAFETY: fsync(2) on the same descriptor.
+        if unsafe { libc::fsync(file.as_raw_fd()) } == 0 {
+            return Ok(());
+        }
+        Err(io::Error::last_os_error())
+    }
+    #[cfg(not(target_os = "macos"))]
+    file.sync_all()
 }
 
 /// A blob being downloaded (`Store::download`). Its file under `ingest/` stays locked for
@@ -153,6 +581,10 @@ pub struct Download {
     digest: Digest,
     size: u64,
     target: PathBuf,
+    /// Whether it replaces a stored copy that has changed.
+    replace: bool,
+    /// The room the store's filesystem has for it (audit A10).
+    room: Room,
 }
 
 impl std::fmt::Debug for Download {
@@ -177,6 +609,7 @@ impl Download {
         if offset > self.size {
             return bad(format!("{}: more than its {} bytes", self.digest, self.size));
         }
+        self.room.wrote(bytes.len())?;
         self.file.write_all(bytes)?;
         self.hasher.update(bytes);
         self.offset = offset;
@@ -205,6 +638,8 @@ impl Download {
             digest,
             size,
             target,
+            replace,
+            room: _,
         } = self;
         if offset != size {
             return bad(format!("{digest}: {offset} of its {size} bytes"));
@@ -212,19 +647,204 @@ impl Download {
         let actual = hasher.finish();
         let file = file.into_inner().map_err(|e| Error(e.to_string()))?;
         if actual != digest {
-            drop(file);
+            // Gone before the lock is, so that no download waiting on it hashes it.
             let _ = fs::remove_file(&path);
+            drop(file);
             return bad(format!("{digest}: the content hashes to {actual}"));
         }
-        file.sync_all()?;
+        sync_durable(&file)?;
         // Moved while still locked: a download waiting on the lock must find the blob.
-        if target.is_file() {
+        if target.is_file() && !replace {
             let _ = fs::remove_file(&path);
         } else {
             fs::rename(&path, &target)?;
         }
         drop(file);
         Ok(target)
+    }
+}
+
+/// A blob downloaded in ranges at once (shards_registry's ranged fetch): its file made
+/// at its full size, each range written where it belongs, from any thread, and the whole
+/// hashed once every range is in.
+///
+/// It goes on from the bytes in order an earlier download left ([`have`](Self::have)),
+/// and, given up, leaves the ones it has in order from the first, for the next to go on
+/// from as a [`Download`] would. While its file holds bytes out of order, a marker beside
+/// it says so: a download that finds the marker, where a process ended mid-way, starts
+/// the blob over.
+#[derive(Debug)]
+pub struct Ranged {
+    path: PathBuf,
+    file: File,
+    digest: Digest,
+    size: u64,
+    target: PathBuf,
+    room: Room,
+    /// The bytes in order an earlier download left.
+    have: u64,
+    /// The ranges written, in order, none touching another.
+    written: Mutex<Vec<(u64, u64)>>,
+    /// Committed, or given up and its file left as it should be.
+    done: bool,
+    /// Whether it replaces a stored copy (`pull --no-cache`).
+    replace: bool,
+}
+
+impl Ranged {
+    /// `bytes` written at `offset`, within the blob and the room the store has.
+    pub fn write_at(&self, offset: u64, bytes: &[u8]) -> Result<(), Error> {
+        let end = offset.checked_add(bytes.len() as u64).filter(|&e| e <= self.size);
+        if end.is_none() {
+            return bad(format!(
+                "{}: bytes past its {} at {offset}",
+                self.digest, self.size
+            ));
+        }
+        self.room.wrote(bytes.len())?;
+        write_all_at(&self.file, bytes, offset)?;
+        let mut written = self.written.lock().unwrap_or_else(PoisonError::into_inner);
+        insert(&mut written, (offset, offset + bytes.len() as u64));
+        Ok(())
+    }
+
+    pub fn size(&self) -> u64 {
+        self.size
+    }
+
+    /// The bytes in order from the first that an earlier download left: what is still to
+    /// be fetched starts there.
+    pub fn have(&self) -> u64 {
+        self.have
+    }
+
+    /// The bytes in order from the first that are here.
+    fn in_order(&self) -> u64 {
+        let written = self.written.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut end = self.have;
+        for &(lo, hi) in written.iter() {
+            if lo > end {
+                break;
+            }
+            end = end.max(hi);
+        }
+        end
+    }
+
+    /// Checks the digest of what was written, then moves the blob into place, as
+    /// [`Download::commit`] does.
+    pub fn commit(mut self) -> Result<PathBuf, Error> {
+        if self.in_order() != self.size {
+            return bad(format!(
+                "{}: {} of its {} bytes",
+                self.digest,
+                self.in_order(),
+                self.size
+            ));
+        }
+        self.done = true;
+        let marker = marker(&self.path);
+        let mut hasher = Hasher::new(self.digest.algorithm());
+        let mut reader = BufReader::with_capacity(CHUNK, &self.file);
+        reader.rewind()?;
+        io::copy(&mut reader, &mut HashWriter(&mut hasher))?;
+        drop(reader);
+        let actual = hasher.finish();
+        if actual != self.digest {
+            // Gone before the lock is, so that no download waiting on it goes on from it.
+            let _ = fs::remove_file(&self.path);
+            let _ = fs::remove_file(&marker);
+            return bad(format!("{}: the content hashes to {actual}", self.digest));
+        }
+        sync_durable(&self.file)?;
+        if self.target.is_file() && !self.replace {
+            let _ = fs::remove_file(&self.path);
+        } else {
+            fs::rename(&self.path, &self.target)?;
+        }
+        let _ = fs::remove_file(&marker);
+        Ok(self.target.clone())
+    }
+}
+
+/// Given up: only the bytes in order from the first are left, for the next download to
+/// go on from, and the marker goes once they are all that is left.
+impl Drop for Ranged {
+    fn drop(&mut self) {
+        if self.done {
+            return;
+        }
+        let kept = self.file.set_len(self.in_order()).is_ok() && self.file.sync_data().is_ok();
+        if kept {
+            let _ = fs::remove_file(marker(&self.path));
+        }
+    }
+}
+
+/// `written`, with `range` in it: ranges that touch it are merged with it.
+fn insert(written: &mut Vec<(u64, u64)>, range: (u64, u64)) {
+    let (mut lo, mut hi) = range;
+    let first = written.partition_point(|&(_, h)| h < lo);
+    let mut last = first;
+    while let Some(&(l, h)) = written.get(last)
+        && l <= hi
+    {
+        lo = lo.min(l);
+        hi = hi.max(h);
+        last += 1;
+    }
+    written.splice(first..last, [(lo, hi)]);
+}
+
+/// The marker that says a partial download's bytes are out of order.
+fn marker(partial: &Path) -> PathBuf {
+    partial.with_extension("ranged")
+}
+
+/// A partial download a ranged one left out of order, as a process that ended mid-way
+/// leaves it, made empty, so that nothing goes on from it.
+fn unless_out_of_order(file: &File, partial: &Path) -> io::Result<()> {
+    let marker = marker(partial);
+    if marker.exists() {
+        file.set_len(0)?;
+        file.sync_data()?;
+        fs::remove_file(&marker)?;
+    }
+    Ok(())
+}
+
+/// What is written, hashed and dropped.
+struct HashWriter<'a>(&'a mut Hasher);
+
+impl Write for HashWriter<'_> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.0.update(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+/// `buf` written at `offset` of `file`, all of it.
+fn write_all_at(file: &File, buf: &[u8], offset: u64) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::FileExt::write_all_at(file, buf, offset)
+    }
+    #[cfg(windows)]
+    {
+        let (mut buf, mut offset) = (buf, offset);
+        while !buf.is_empty() {
+            let n = std::os::windows::fs::FileExt::seek_write(file, buf, offset)?;
+            if n == 0 {
+                return Err(io::ErrorKind::WriteZero.into());
+            }
+            buf = buf.get(n..).unwrap_or_default();
+            offset += n as u64;
+        }
+        Ok(())
     }
 }
 
@@ -252,21 +872,285 @@ impl Drop for Partial {
     }
 }
 
+/// A layer's archive, decompressed and checked against its DiffID, in a file under
+/// `ingest/` that goes when this is dropped.
+pub struct Unpacked(Tar);
+
+impl std::fmt::Debug for Unpacked {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Unpacked({})", self.0.path().display())
+    }
+}
+
+impl Unpacked {
+    /// The archive, opened for reading.
+    pub fn open(&self) -> Result<File, Error> {
+        Ok(File::open(self.0.path())?)
+    }
+
+    /// The archive's bytes, as [`Store::rootfs`] counts them against its limit.
+    pub fn size(&self) -> Result<u64, Error> {
+        Ok(fs::metadata(self.0.path())?.len())
+    }
+}
+
+/// A layer's archive, checked against its DiffID: a blob that is its own archive, read
+/// where it is, or a decompressed copy, which goes when this does. A blob is only read:
+/// copying one that needs no decompressing wrote it to disk again for nothing (PM M78).
+enum Tar {
+    Blob(PathBuf),
+    Temp(Partial),
+}
+
+impl Tar {
+    fn path(&self) -> &Path {
+        match self {
+            Tar::Blob(p) => p,
+            Tar::Temp(p) => &p.path,
+        }
+    }
+}
+
+/// A directory under `ingest/` private to one build, removed with what it holds when
+/// dropped; one a crashed build leaves is collected.
+#[derive(Debug)]
+pub struct Stage(PathBuf);
+
+impl Stage {
+    pub fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for Stage {
+    fn drop(&mut self) {
+        remove_tree(&self.0);
+    }
+}
+
+/// Removes the stage `dir` and all it holds, never following a link out of it: how many
+/// files went, and their bytes. A build's clones keep their files' flags (macOS), an
+/// immutable file's `uchg` among them, which would keep a clone and its directory from
+/// going: the user's own are cleared first.
+pub fn remove_tree(dir: &Path) -> (u64, u64) {
+    let (mut files, mut bytes) = (0u64, 0u64);
+    let mut dirs = vec![dir.to_path_buf()];
+    let mut walked = Vec::new();
+    while let Some(d) = dirs.pop() {
+        unflag(&d);
+        if let Ok(entries) = fs::read_dir(&d) {
+            for e in entries.flatten() {
+                let path = e.path();
+                match e.file_type() {
+                    Ok(t) if t.is_dir() => dirs.push(path),
+                    _ => {
+                        unflag(&path);
+                        let len = fs::symlink_metadata(&path).map_or(0, |m| m.len());
+                        if fs::remove_file(&path).is_ok() {
+                            files += 1;
+                            bytes = bytes.saturating_add(len);
+                        }
+                    }
+                }
+            }
+        }
+        walked.push(d);
+    }
+    // Deepest first: each is empty by its turn.
+    for d in walked.iter().rev() {
+        let _ = fs::remove_dir(d);
+    }
+    (files, bytes)
+}
+
+/// Clears the user's flags of `path` (macOS, BSD's chflags) where it has any: of the
+/// entry itself, a link's own (O_SYMLINK), never of what a link names.
+#[cfg(target_os = "macos")]
+fn unflag(path: &Path) {
+    use std::os::fd::AsRawFd;
+    use std::os::macos::fs::MetadataExt;
+    use std::os::unix::fs::OpenOptionsExt;
+    if !fs::symlink_metadata(path).is_ok_and(|m| m.st_flags() & libc::UF_SETTABLE != 0) {
+        return;
+    }
+    let opened = fs::File::options()
+        .read(true)
+        .custom_flags(libc::O_SYMLINK | libc::O_NONBLOCK)
+        .open(path);
+    if let Ok(f) = opened {
+        // SAFETY: the descriptor is open for the call.
+        unsafe { libc::fchflags(f.as_raw_fd(), 0) };
+    }
+}
+
+/// Elsewhere a clone keeps no flags that forbid its removal.
+#[cfg(not(target_os = "macos"))]
+fn unflag(_: &Path) {}
+
+/// A blob being written, hashed as it goes; [`BlobWriter::commit`] stores it under its
+/// SHA-256 digest. Dropped uncommitted, it is removed.
+///
+/// A thread of its own hashes and writes what it is given, a piece at a time, so whoever
+/// makes the blob waits for neither: a layer's SHA-256 alone took a sixth of the time a
+/// build spent making a layer of a million entries (PM M78).
+pub struct BlobWriter {
+    piece: Vec<u8>,
+    to: Option<mpsc::SyncSender<Vec<u8>>>,
+    /// Pieces the thread is done with, to be filled again.
+    back: mpsc::Receiver<Vec<u8>>,
+    worker: Option<std::thread::JoinHandle<io::Result<(Partial, Hasher)>>>,
+    size: u64,
+    blobs: PathBuf,
+}
+
+/// How many pieces may wait for a blob's writer: what the two hold between them.
+const PIECES: usize = 2;
+
+impl std::fmt::Debug for BlobWriter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "BlobWriter({} bytes)", self.size)
+    }
+}
+
+impl BlobWriter {
+    fn new(mut partial: Partial, blobs: PathBuf) -> Result<BlobWriter, Error> {
+        let (to, from) = mpsc::sync_channel::<Vec<u8>>(PIECES);
+        let (give_back, back) = mpsc::channel();
+        let worker = std::thread::Builder::new()
+            .name("blob-writer".into())
+            .spawn(move || {
+                let mut hasher = Hasher::new(Algorithm::Sha256);
+                for mut piece in from {
+                    hasher.update(&piece);
+                    partial.write_all(&piece)?;
+                    piece.clear();
+                    // The writer may be gone, done with its last piece.
+                    let _ = give_back.send(piece);
+                }
+                Ok((partial, hasher))
+            })?;
+        Ok(BlobWriter {
+            piece: Vec::with_capacity(CHUNK),
+            to: Some(to),
+            back,
+            worker: Some(worker),
+            size: 0,
+            blobs,
+        })
+    }
+
+    /// Hands the full piece to the thread. If the thread has stopped, its error.
+    fn send(&mut self) -> io::Result<()> {
+        let fresh = self.back.try_recv().unwrap_or_else(|_| Vec::with_capacity(CHUNK));
+        let piece = std::mem::replace(&mut self.piece, fresh);
+        let sent = self.to.as_ref().map(|to| to.send(piece));
+        match sent {
+            Some(Ok(())) => Ok(()),
+            _ => Err(match self.finish() {
+                Err(e) => io::Error::other(e.0),
+                Ok(_) => io::Error::other("the blob's writer stopped"),
+            }),
+        }
+    }
+
+    /// Ends the thread once it has everything: what it wrote, and the hash, or its error.
+    fn finish(&mut self) -> Result<(Partial, Hasher), Error> {
+        drop(self.to.take());
+        let worker = self
+            .worker
+            .take()
+            .ok_or_else(|| Error("the blob's writer is already done".into()))?;
+        match worker.join() {
+            Ok(r) => Ok(r?),
+            Err(_) => bad("the blob's writer failed"),
+        }
+    }
+
+    /// Moves the blob into place (fsync, then rename), returning its digest and size.
+    pub fn commit(mut self) -> Result<(Digest, u64), Error> {
+        if !self.piece.is_empty() {
+            self.send()?;
+        }
+        let (partial, hasher) = self.finish()?;
+        let digest = hasher.finish();
+        let to = self.blobs.join(digest.algorithm().name()).join(digest.hex());
+        partial.commit(&to)?;
+        Ok((digest, self.size))
+    }
+}
+
+impl Write for BlobWriter {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let n = buf.len().min(CHUNK - self.piece.len());
+        self.piece.extend_from_slice(buf.get(..n).unwrap_or_default());
+        self.size += n as u64;
+        if self.piece.len() == CHUNK {
+            self.send()?;
+        }
+        Ok(n)
+    }
+
+    /// Everything given so far goes to the thread; [`BlobWriter::commit`] waits for it.
+    fn flush(&mut self) -> io::Result<()> {
+        if self.piece.is_empty() {
+            return Ok(());
+        }
+        self.send()
+    }
+}
+
+impl Drop for BlobWriter {
+    /// Uncommitted, the thread ends and the partial file with it.
+    fn drop(&mut self) {
+        let _ = self.finish();
+    }
+}
+
 impl Store {
     /// Opens the store at `root`, making its directories inside. The caller makes `root`
-    /// private to its user, as containerd keeps its root 0700: blobs can come from private
+    /// private to its user, as containerd keeps its root 0700 (D18): blobs can come from private
     /// registries.
     pub fn open(root: &Path) -> Result<Store, Error> {
         if !root.is_dir() {
             return bad(format!("{}: not a directory", root.display()));
         }
-        for dir in ["blobs/sha256", "blobs/sha384", "blobs/sha512", "ingest", "refs"] {
-            fs::create_dir_all(root.join(dir))?;
+        // One level at a time, inside `root`: a store whose root was removed meanwhile is
+        // not made again, with the directories above it.
+        let refs = format!("refs/v{REFS_VERSION}");
+        let rootfs = format!("rootfs/v{ROOTFS_VERSION}");
+        let cache = format!("buildcache/v{CACHE_VERSION}");
+        let mounts = format!("cachemounts/v{}", mounts::VERSION);
+        let (records, keys) = (format!("{mounts}/records"), format!("{mounts}/keys"));
+        for dir in [
+            "buildcache",
+            &cache,
+            "cachemounts",
+            &mounts,
+            &records,
+            &keys,
+            "blobs",
+            "blobs/sha256",
+            "blobs/sha384",
+            "blobs/sha512",
+            "ingest",
+            "refs",
+            &refs,
+            "rootfs",
+            &rootfs,
+        ] {
+            match fs::create_dir(root.join(dir)) {
+                Err(e) if e.kind() != io::ErrorKind::AlreadyExists => return Err(e.into()),
+                _ => {}
+            }
         }
-        fs::create_dir_all(root.join(format!("rootfs/v{ROOTFS_VERSION}")))?;
         Ok(Store {
             root: root.to_path_buf(),
         })
+    }
+
+    /// The directory the store is in.
+    pub fn root(&self) -> &Path {
+        &self.root
     }
 
     pub fn blob_path(&self, digest: &Digest) -> PathBuf {
@@ -276,17 +1160,56 @@ impl Store {
             .join(digest.hex())
     }
 
+    /// Whether the blob `digest` names is here and still what its digest says: read
+    /// whole and hashed, for content that failed a check made of it.
+    pub fn intact(&self, digest: &Digest) -> Result<bool, Error> {
+        let mut file = match File::open(self.blob_path(digest)) {
+            Ok(file) => file,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(false),
+            Err(e) => return Err(e.into()),
+        };
+        let mut hasher = Hasher::new(digest.algorithm());
+        let mut buf = vec![0u8; CHUNK];
+        loop {
+            match file.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => hasher.update(buf.get(..n).unwrap_or_default()),
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                Err(e) => return Err(e.into()),
+            }
+        }
+        Ok(hasher.finish() == *digest)
+    }
+
     pub fn has(&self, digest: &Digest) -> bool {
         self.blob_path(digest).is_file()
     }
 
     /// Stores the `size`-byte blob `digest` from `src`: hashed as it is written, and
-    /// committed only if exactly `size` bytes arrived and they hash to `digest`.
+    /// committed only if exactly `size` bytes arrived and they hash to `digest`. A copy
+    /// there is kept.
     pub fn ingest(&self, digest: &Digest, size: u64, src: &mut dyn Read) -> Result<PathBuf, Error> {
+        self.ingest_as(digest, size, src, false)
+    }
+
+    /// [`ingest`](Self::ingest), in place of a stored copy that has changed
+    /// ([`Held::Changed`]).
+    pub fn ingest_again(&self, digest: &Digest, size: u64, src: &mut dyn Read) -> Result<PathBuf, Error> {
+        self.ingest_as(digest, size, src, true)
+    }
+
+    fn ingest_as(
+        &self,
+        digest: &Digest,
+        size: u64,
+        src: &mut dyn Read,
+        replace: bool,
+    ) -> Result<PathBuf, Error> {
         let mut partial = Partial::create(&self.root.join("ingest"))?;
         let mut hasher = Hasher::new(digest.algorithm());
         let mut taken = src.take(size.saturating_add(1));
-        let mut buf = vec![0u8; CHUNK];
+        // As much as the blob can fill, up to a chunk: a manifest takes no megabyte.
+        let mut buf = vec![0u8; usize::try_from(size.saturating_add(1)).map_or(CHUNK, |n| n.min(CHUNK))];
         let mut got: u64 = 0;
         loop {
             let n = match taken.read(&mut buf) {
@@ -311,7 +1234,11 @@ impl Store {
             return bad(format!("{digest}: the content hashes to {actual}"));
         }
         let path = self.blob_path(digest);
-        partial.commit(&path)?;
+        if replace {
+            partial.replace(&path)?;
+        } else {
+            partial.commit(&path)?;
+        }
         Ok(path)
     }
 
@@ -319,25 +1246,148 @@ impl Store {
     /// attempt left are hashed again, so the blob is verified whole when it is committed.
     /// Waits while another process downloads the same blob, and gives `None` if that left
     /// it stored.
-    pub fn download(&self, digest: &Digest, size: u64) -> Result<Option<Download>, Error> {
+    /// It is refused if what is left of it would leave the store's filesystem less free
+    /// than `limits` keep, and stops once it would as it goes (audit A10).
+    pub fn download(&self, digest: &Digest, size: u64, limits: &Limits) -> Result<Option<Download>, Error> {
+        self.download_as(digest, size, limits, false)
+    }
+
+    /// [`download`](Self::download), in place of a stored copy that has changed
+    /// ([`Held::Changed`]).
+    pub fn download_again(
+        &self,
+        digest: &Digest,
+        size: u64,
+        limits: &Limits,
+    ) -> Result<Option<Download>, Error> {
+        self.download_as(digest, size, limits, true)
+    }
+
+    /// A download of `digest`, `size` bytes, in ranges at once ([`Ranged`]), under the
+    /// same lock a [`Store::download`] of it takes; `None` if the blob is here.
+    pub fn download_ranged(
+        &self,
+        digest: &Digest,
+        size: u64,
+        limits: &Limits,
+    ) -> Result<Option<Ranged>, Error> {
+        self.download_ranged_as(digest, size, limits, false)
+    }
+
+    /// [`download_ranged`](Self::download_ranged), whether or not the blob is here, to
+    /// replace it: `pull --no-cache`.
+    pub fn download_ranged_again(
+        &self,
+        digest: &Digest,
+        size: u64,
+        limits: &Limits,
+    ) -> Result<Ranged, Error> {
+        self.download_ranged_as(digest, size, limits, true)?
+            .ok_or_else(|| Error(format!("{digest}: no download to replace it")))
+    }
+
+    fn download_ranged_as(
+        &self,
+        digest: &Digest,
+        size: u64,
+        limits: &Limits,
+        replace: bool,
+    ) -> Result<Option<Ranged>, Error> {
+        let ingest = self.root.join("ingest");
+        let path = ingest.join(format!("{}-{}.partial", digest.algorithm().name(), digest.hex()));
+        let file = loop {
+            let file = File::options()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .open(&path)?;
+            file.lock()?;
+            if still_at(&file, &path)? {
+                break file;
+            }
+        };
+        if self.has(digest) && !replace {
+            drop(file);
+            let _ = fs::remove_file(&path);
+            let _ = fs::remove_file(marker(&path));
+            return Ok(None);
+        }
+        unless_out_of_order(&file, &path)?;
+        if replace {
+            file.set_len(0)?;
+        }
+        // What an earlier download left in order, unless it is more than the blob.
+        let mut have = file.metadata()?.len();
+        if have > size {
+            file.set_len(0)?;
+            have = 0;
+        }
+        let left = size - have;
+        let free = match limits.keep_free {
+            0 => u64::MAX,
+            _ => (limits.available)(&ingest)?,
+        };
+        if free < limits.keep_free.saturating_add(left) {
+            return Err(io::Error::new(
+                io::ErrorKind::StorageFull,
+                format!(
+                    "{digest}: {left} more bytes, with {free} free and {} to be left (SHARDS_KEEP_FREE)",
+                    limits.keep_free
+                ),
+            )
+            .into());
+        }
+        // The marker first, synced: the file is out of order once it is at its full size.
+        File::create(marker(&path))?.sync_all()?;
+        file.set_len(size)?;
+        Ok(Some(Ranged {
+            path,
+            file,
+            digest: digest.clone(),
+            size,
+            target: self.blob_path(digest),
+            room: Room::new(&ingest, limits)?,
+            have,
+            written: Mutex::new(Vec::new()),
+            done: false,
+            replace,
+        }))
+    }
+
+    fn download_as(
+        &self,
+        digest: &Digest,
+        size: u64,
+        limits: &Limits,
+        replace: bool,
+    ) -> Result<Option<Download>, Error> {
         let path =
             self.root
                 .join("ingest")
                 .join(format!("{}-{}.partial", digest.algorithm().name(), digest.hex()));
-        let mut file = File::options()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(&path)?;
-        file.lock()?;
-        // The lock may have been released by a download that finished. Its file has moved,
-        // and what is at `path` now is an empty file this call made.
-        if self.has(digest) {
+        // A download that held the lock before this one may have finished, its file moved
+        // into place while locked: only the file still at `path` is this download's to
+        // go on with, or to remove.
+        let mut file = loop {
+            let file = File::options()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .open(&path)?;
+            file.lock()?;
+            if still_at(&file, &path)? {
+                break file;
+            }
+        };
+        if self.has(digest) && !replace {
             drop(file);
             let _ = fs::remove_file(&path);
+            let _ = fs::remove_file(marker(&path));
             return Ok(None);
         }
+        unless_out_of_order(&file, &path)?;
         let mut hasher = Hasher::new(digest.algorithm());
         let mut offset: u64 = 0;
         let mut buf = vec![0u8; CHUNK];
@@ -351,6 +1401,23 @@ impl Store {
             hasher.update(buf.get(..n).unwrap_or_default());
             offset = offset.saturating_add(n as u64);
         }
+        let ingest = self.root.join("ingest");
+        let left = size.saturating_sub(offset);
+        // With nothing to leave free, a full disk fails the write, as it fails containerd's.
+        let free = match limits.keep_free {
+            0 => u64::MAX,
+            _ => (limits.available)(&ingest)?,
+        };
+        if free < limits.keep_free.saturating_add(left) {
+            return Err(io::Error::new(
+                io::ErrorKind::StorageFull,
+                format!(
+                    "{digest}: {left} more bytes, with {free} free and {} to be left (SHARDS_KEEP_FREE)",
+                    limits.keep_free
+                ),
+            )
+            .into());
+        }
         let mut download = Download {
             path,
             file: BufWriter::with_capacity(CHUNK, file),
@@ -359,6 +1426,8 @@ impl Store {
             digest: digest.clone(),
             size,
             target: self.blob_path(digest),
+            replace,
+            room: Room::new(&ingest, limits)?,
         };
         // More than the blob holds can only be wrong.
         if offset > size {
@@ -367,20 +1436,777 @@ impl Store {
         Ok(Some(download))
     }
 
-    /// Records that `reference` names the manifest `manifest`, replacing what it named.
-    pub fn tag(&self, reference: &str, manifest: &Digest) -> Result<(), Error> {
-        let record = serde_json::to_vec(&Tag {
-            reference: reference.to_string(),
-            manifest: manifest.to_string(),
-        })
-        .map_err(|e| Error(e.to_string()))?;
-        let mut partial = Partial::create(&self.root.join("ingest"))?;
-        partial.write_all(&record)?;
-        partial.replace(&self.tag_path(reference))
+    /// Records that `reference` names the manifest `manifest` describes, replacing what it
+    /// named. What the record names, the blobs `contents` and the root filesystems, is made
+    /// durable first, and the record after: no power loss leaves a record naming what it
+    /// lost (audit A15).
+    pub fn tag(
+        &self,
+        reference: &str,
+        manifest: &Descriptor,
+        resolved: &Digest,
+        contents: &[Digest],
+    ) -> Result<(), Error> {
+        self.record(reference, manifest, resolved, None, contents, Origin::default())
     }
 
-    /// The manifest `reference` names, if it has been pulled.
-    pub fn tagged(&self, reference: &str) -> Result<Option<Digest>, Error> {
+    /// [`tag`](Self::tag), for an image made from image `parent` (`commit`).
+    pub fn tag_child(
+        &self,
+        reference: &str,
+        manifest: &Descriptor,
+        resolved: &Digest,
+        contents: &[Digest],
+        parent: &Digest,
+    ) -> Result<(), Error> {
+        let origin = Origin {
+            source: None,
+            parent: Some(parent),
+        };
+        self.record(reference, manifest, resolved, None, contents, origin)
+    }
+
+    /// [`tag`](Self::tag), with what `reference` resolved to described as `target` says
+    /// (`resolved` its digest), and, for what was pulled, repository `source`.
+    pub fn tag_from(
+        &self,
+        reference: &str,
+        manifest: &Descriptor,
+        target: &Descriptor,
+        contents: &[Digest],
+        source: Option<&str>,
+    ) -> Result<(), Error> {
+        let resolved = target.digest()?;
+        let origin = Origin { source, parent: None };
+        self.record(reference, manifest, &resolved, Some(target), contents, origin)
+    }
+
+    fn record(
+        &self,
+        reference: &str,
+        manifest: &Descriptor,
+        resolved: &Digest,
+        target: Option<&Descriptor>,
+        contents: &[Digest],
+        origin: Origin<'_>,
+    ) -> Result<(), Error> {
+        let mut dirs: Vec<PathBuf> = contents
+            .iter()
+            .map(|d| self.root.join("blobs").join(d.algorithm().name()))
+            .collect();
+        dirs.push(self.root.join(format!("rootfs/v{ROOTFS_VERSION}")));
+        dirs.sort();
+        dirs.dedup();
+        for dir in &dirs {
+            sync_dir(dir)?;
+        }
+        self.replace_record(Tag {
+            reference: reference.to_string(),
+            manifest: manifest.clone(),
+            resolved: Some(resolved.to_string()),
+            source: origin.source.map(String::from),
+            target: target.cloned(),
+            parent: origin.parent.map(Digest::to_string),
+            referrers: Vec::new(),
+        })
+    }
+
+    /// Keeps `referrer`, a manifest whose subject is what `reference` resolved to (an OCI
+    /// 1.1 referrer: a signature, an SBOM), with it, as long as its record names the same:
+    /// its blobs are held by it, made durable first, and pushed with it.
+    pub fn keep_referrer(&self, reference: &str, referrer: &Descriptor) -> Result<(), Error> {
+        let _lease = self.lease()?;
+        let Some(mut tag) = self.tag_record(reference)? else {
+            return bad(format!("{reference}: no such reference"));
+        };
+        if tag.referrers.iter().any(|r| r.digest == referrer.digest) {
+            return Ok(());
+        }
+        let digest = referrer.digest()?;
+        sync_dir(&self.root.join("blobs").join(digest.algorithm().name()))?;
+        tag.referrers.push(referrer.clone());
+        self.write_record(&tag)
+    }
+
+    /// The referrers kept with `reference`.
+    pub fn referrers_of(&self, reference: &str) -> Result<Vec<Descriptor>, Error> {
+        Ok(self
+            .tag_record(reference)?
+            .map(|t| t.referrers)
+            .unwrap_or_default())
+    }
+
+    /// Lets go of the referrer `digest` kept with `reference`; whether it was kept.
+    pub fn drop_referrer(&self, reference: &str, digest: &str) -> Result<bool, Error> {
+        let _lease = self.lease()?;
+        let Some(mut tag) = self.tag_record(reference)? else {
+            return Ok(false);
+        };
+        let before = tag.referrers.len();
+        tag.referrers.retain(|r| r.digest != digest);
+        if tag.referrers.len() == before {
+            return Ok(false);
+        }
+        self.write_record(&tag)?;
+        Ok(true)
+    }
+
+    /// Writes `tag`, in place of what its reference named, as dockerd's
+    /// createOrReplaceImage does (moby docker-v29.3.1 daemon/containerd/image_tag.go):
+    /// - the image it names already: nothing changes, the time it was named included;
+    /// - an image that loses its last name to it stays, dangling (softImageDelete,
+    ///   ensureDanglingImage), for its microVMs and its ID to find, and its record is
+    ///   written first, so that no crash between the two loses it;
+    /// - an image named again is dangling no more.
+    fn replace_record(&self, tag: Tag) -> Result<(), Error> {
+        let id = |t: &Tag| t.resolved.clone().unwrap_or_else(|| t.manifest.digest.clone());
+        let old = self.tag_record(&tag.reference)?;
+        if let Some(old) = &old
+            && id(old) == id(&tag)
+            && old.manifest == tag.manifest
+        {
+            return Ok(());
+        }
+        let naming = !tag.reference.starts_with(DANGLING);
+        if let Some(old) = old
+            && naming
+            && id(&old) != id(&tag)
+            && !self
+                .references()?
+                .iter()
+                .any(|(name, d)| *name != tag.reference && d.to_string() == id(&old))
+        {
+            let dangling = format!("{DANGLING}{}", id(&old));
+            self.write_record(&Tag {
+                reference: dangling,
+                ..old
+            })?;
+        }
+        self.write_record(&tag)?;
+        let dangling = format!("{DANGLING}{}", id(&tag));
+        if naming && self.tag_record(&dangling)?.is_some() {
+            self.untag(&dangling)?;
+        }
+        Ok(())
+    }
+
+    /// Writes `tag`'s record, durably, in place of any of its reference.
+    fn cache_path(&self, key: &str) -> Result<PathBuf, Error> {
+        if key.is_empty() || !key.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return bad(format!("{key}: not a build cache key"));
+        }
+        Ok(self.root.join(format!("buildcache/v{CACHE_VERSION}")).join(key))
+    }
+
+    /// The build cache's record `key` names (D50), if it has one: its body as it was put.
+    pub fn cache_get(&self, key: &str) -> Result<Option<Vec<u8>>, Error> {
+        match fs::read(self.cache_path(key)?) {
+            Ok(bytes) => {
+                let record: CacheRecord = serde_json::from_slice(&bytes).map_err(|e| Error(e.to_string()))?;
+                // A record whose blobs are not all here holds nothing.
+                for b in &record.blobs {
+                    let d = Digest::parse(b).map_err(|e| Error(e.to_string()))?;
+                    if !self.blob_path(&d).exists() {
+                        return Ok(None);
+                    }
+                }
+                Ok(Some(record.body.into_bytes()))
+            }
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// Records `body` as the build cache's for `key`, keeping `blobs` from collection while
+    /// it is there (they are its roots, as a reference's are).
+    pub fn cache_put(&self, key: &str, blobs: &[Digest], size: u64, body: &str) -> Result<(), Error> {
+        let now = unix_now();
+        grew();
+        self.write_cache(
+            key,
+            &CacheRecord {
+                blobs: blobs.iter().map(Digest::to_string).collect(),
+                body: body.to_string(),
+                size,
+                created: now,
+                last_used: now,
+                usage: 1,
+            },
+        )
+    }
+
+    /// Counts a use of record `key`: its last use now, its count one more.
+    pub fn cache_used(&self, key: &str) -> Result<(), Error> {
+        let bytes = match fs::read(self.cache_path(key)?) {
+            Ok(b) => b,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => return Err(e.into()),
+        };
+        let mut record: CacheRecord = serde_json::from_slice(&bytes).map_err(|e| Error(e.to_string()))?;
+        record.last_used = unix_now();
+        record.usage = record.usage.saturating_add(1);
+        self.write_cache(key, &record)
+    }
+
+    /// Every build cache record, by key.
+    pub fn cache_entries(&self) -> Result<Vec<CacheEntry>, Error> {
+        let mut out = Vec::new();
+        for entry in fs::read_dir(self.root.join(format!("buildcache/v{CACHE_VERSION}")))? {
+            let entry = entry?;
+            let Ok(bytes) = fs::read(entry.path()) else {
+                continue;
+            };
+            let Ok(record) = serde_json::from_slice::<CacheRecord>(&bytes) else {
+                continue;
+            };
+            out.push(CacheEntry {
+                key: entry.file_name().to_string_lossy().into_owned(),
+                size: record.size,
+                created: record.created,
+                last_used: record.last_used,
+                usage: record.usage,
+                own: record.blobs.last().and_then(|b| Digest::parse(b).ok()),
+            });
+        }
+        out.sort_by(|a, b| a.key.cmp(&b.key));
+        Ok(out)
+    }
+
+    /// The blobs references hold, the build cache's records left out: what a record
+    /// shares with an image, which removing the record does not free.
+    pub fn referenced_blobs(&self) -> Result<HashSet<PathBuf>, Error> {
+        Ok(self.roots(false)?.0)
+    }
+
+    /// Removes record `key`; its blobs go at the next collection, unless held otherwise.
+    pub fn cache_remove(&self, key: &str) -> Result<(), Error> {
+        match fs::remove_file(self.cache_path(key)?) {
+            Err(e) if e.kind() != io::ErrorKind::NotFound => Err(e.into()),
+            _ => Ok(()),
+        }
+    }
+
+    fn write_cache(&self, key: &str, record: &CacheRecord) -> Result<(), Error> {
+        let bytes = serde_json::to_vec(record).map_err(|e| Error(e.to_string()))?;
+        let path = self.cache_path(key)?;
+        // Written through `ingest/`, which a collection empties: none runs meanwhile.
+        let _lease = self.lease()?;
+        let mut partial = Partial::create(&self.root.join("ingest"))?;
+        partial.write_all(&bytes)?;
+        partial.replace(&path)?;
+        sync_dir(&self.root.join(format!("buildcache/v{CACHE_VERSION}")))
+    }
+
+    /// Removes every build cache record, as `docker builder prune -a` does: how many, and
+    /// the bytes their records took. Their blobs go at the next collection, unless a
+    /// reference holds them.
+    pub fn cache_clear(&self) -> Result<(u64, u64), Error> {
+        let (mut n, mut bytes) = (0u64, 0u64);
+        for entry in fs::read_dir(self.root.join(format!("buildcache/v{CACHE_VERSION}")))? {
+            let entry = entry?;
+            let len = entry.metadata().map_or(0, |m| m.len());
+            if fs::remove_file(entry.path()).is_ok() {
+                n += 1;
+                bytes = bytes.saturating_add(len);
+            }
+        }
+        Ok((n, bytes))
+    }
+
+    fn write_record(&self, tag: &Tag) -> Result<(), Error> {
+        let record = serde_json::to_vec(tag).map_err(|e| Error(e.to_string()))?;
+        let mut partial = Partial::create(&self.root.join("ingest"))?;
+        partial.write_all(&record)?;
+        partial.replace(&self.tag_path(&tag.reference))?;
+        sync_dir(&self.root.join(format!("refs/v{REFS_VERSION}")))
+    }
+
+    /// The descriptor of the manifest `reference` names, if it has been pulled.
+    pub fn tagged(&self, reference: &str) -> Result<Option<Descriptor>, Error> {
+        Ok(self.tag_record(reference)?.map(|t| t.manifest))
+    }
+
+    /// Has `reference` name what `existing` names, as `docker tag` does, replacing what it
+    /// named. What it names is durable already, as `existing`'s record is.
+    pub fn alias(&self, reference: &str, existing: &str) -> Result<(), Error> {
+        // Its record is written through `ingest/`, which a collection empties: none runs
+        // meanwhile.
+        let _lease = self.lease()?;
+        let Some(tag) = self.tag_record(existing)? else {
+            return bad(format!("{existing}: no such reference"));
+        };
+        self.replace_record(Tag {
+            reference: reference.to_string(),
+            ..tag
+        })
+    }
+
+    /// Every reference, and what it resolved to. A record that cannot be read is left out.
+    pub fn references(&self) -> Result<Vec<(String, Digest)>, Error> {
+        let mut out = Vec::new();
+        for entry in fs::read_dir(self.root.join(format!("refs/v{REFS_VERSION}")))? {
+            let Ok(bytes) = fs::read(entry?.path()) else {
+                continue;
+            };
+            let Ok(tag) = serde_json::from_slice::<Tag>(&bytes) else {
+                continue;
+            };
+            if let Ok(id) = Digest::parse(tag.resolved.as_deref().unwrap_or(&tag.manifest.digest)) {
+                out.push((tag.reference, id));
+            }
+        }
+        out.sort();
+        Ok(out)
+    }
+
+    /// A reference whose image is `digest`, what it resolved to or its manifest, if one
+    /// is: the first in name order. An image pinned by digest (`name@sha256:…`) is found
+    /// here whatever it is named, as a store keyed by content finds it.
+    pub fn holding(&self, digest: &Digest) -> Result<Option<String>, Error> {
+        let want = digest.to_string();
+        let mut found = Vec::new();
+        for entry in fs::read_dir(self.root.join(format!("refs/v{REFS_VERSION}")))? {
+            let Ok(bytes) = fs::read(entry?.path()) else {
+                continue;
+            };
+            let Ok(tag) = serde_json::from_slice::<Tag>(&bytes) else {
+                continue;
+            };
+            if tag.resolved.as_deref() == Some(want.as_str()) || tag.manifest.digest == want {
+                found.push(tag.reference);
+            }
+        }
+        found.sort();
+        Ok(found.into_iter().next())
+    }
+
+    /// Removes `reference`'s record, durably; what it named stays until a collection
+    /// finds nothing else names it.
+    pub fn untag(&self, reference: &str) -> Result<(), Error> {
+        fs::remove_file(self.tag_path(reference))?;
+        sync_dir(&self.root.join(format!("refs/v{REFS_VERSION}")))
+    }
+
+    /// What `reference` resolved to when it was tagged: an index, or its manifest.
+    pub fn resolved(&self, reference: &str) -> Result<Option<Digest>, Error> {
+        let Some(tag) = self.tag_record(reference)? else {
+            return Ok(None);
+        };
+        let digest = tag.resolved.unwrap_or(tag.manifest.digest.clone());
+        Digest::parse(&digest)
+            .map(Some)
+            .map_err(|e| Error(format!("{reference}: {e}")))
+    }
+
+    /// The images the references name, by what each resolved to, in its digest's order,
+    /// from the records alone: nothing of an image is read until [`Store::image`] reads
+    /// it. A record that cannot be read is left out.
+    pub fn named(&self) -> Result<Vec<Named>, Error> {
+        let mut records = Vec::new();
+        for entry in fs::read_dir(self.root.join(format!("refs/v{REFS_VERSION}")))? {
+            let path = entry?.path();
+            let Ok(bytes) = fs::read(&path) else {
+                continue;
+            };
+            let Ok(tag) = serde_json::from_slice::<Tag>(&bytes) else {
+                continue;
+            };
+            let Ok(id) = Digest::parse(tag.resolved.as_deref().unwrap_or(&tag.manifest.digest)) else {
+                continue;
+            };
+            let tagged_at = fs::metadata(&path).and_then(|m| m.modified()).ok();
+            records.push((id, tag, tagged_at));
+        }
+        // By reference: an image is read by the manifest its first record names, the same
+        // one each time.
+        records.sort_by(|a, b| a.1.reference.cmp(&b.1.reference));
+        let mut images: Vec<Named> = Vec::new();
+        let mut at: HashMap<Digest, usize> = HashMap::new();
+        for (id, tag, tagged_at) in records {
+            let i = *at.entry(id.clone()).or_insert_with(|| {
+                images.push(Named {
+                    id,
+                    references: Vec::new(),
+                    manifest: tag.manifest.clone(),
+                    tagged_at: None,
+                    sources: Vec::new(),
+                    targets: BTreeMap::new(),
+                    parent: None,
+                    tagged: BTreeMap::new(),
+                });
+                images.len() - 1
+            });
+            let Some(image) = images.get_mut(i) else {
+                continue;
+            };
+            image.tagged_at = image.tagged_at.max(tagged_at);
+            if let Some(at) = tagged_at {
+                image.tagged.insert(tag.reference.clone(), at);
+            }
+            if let Some(target) = tag.target {
+                image.targets.insert(tag.reference.clone(), target);
+            }
+            if image.parent.is_none() {
+                image.parent = tag.parent.as_deref().and_then(|p| Digest::parse(p).ok());
+            }
+            if let Some(source) = tag.source
+                && !image.sources.contains(&source)
+            {
+                image.sources.push(source);
+            }
+            image.references.push(tag.reference);
+        }
+        for image in &mut images {
+            image.sources.sort();
+        }
+        images.sort_by(|a, b| a.id.cmp(&b.id));
+        Ok(images)
+    }
+
+    /// The images the references name, read: each one's references, manifests and what
+    /// of it is here, in its digest's order.
+    pub fn images(&self) -> Result<Vec<Image>, Error> {
+        self.named()?.iter().map(|named| self.image(named)).collect()
+    }
+
+    /// The image `named` names, read.
+    pub fn image(&self, named: &Named) -> Result<Image, Error> {
+        let mut image = self.read_image(named.id.clone(), &named.manifest)?;
+        image.references.clone_from(&named.references);
+        image.tagged_at = named.tagged_at;
+        image.sources.clone_from(&named.sources);
+        image.targets.clone_from(&named.targets);
+        image.parent.clone_from(&named.parent);
+        Ok(image)
+    }
+
+    /// Image `id`, whose manifest for our platform `ours` describes, with no references
+    /// yet. Its content is counted as containerd and dockerd count an image's (D18): each
+    /// manifest's own, the blobs its walk reaches that are here, each as often as it is
+    /// named, and not the index (dockerd 29.3.1, measured: a layer two platforms share
+    /// counts in each, a layer listed twice counts twice).
+    fn read_image(&self, id: Digest, ours: &Descriptor) -> Result<Image, Error> {
+        let size_here = |d: &Digest| {
+            fs::metadata(self.blob_path(d))
+                .ok()
+                .filter(fs::Metadata::is_file)
+                .map(|m| m.len())
+        };
+        // The index's manifests, checked against its digest, or the one manifest it is.
+        let mut descriptors = vec![ours.clone()];
+        let mut target = Descriptor {
+            platform: None,
+            annotations: Default::default(),
+            ..ours.clone()
+        };
+        let mut image_config = None;
+        if id.to_string() != ours.digest
+            && let Some((desc, index)) = self.index(&id)
+        {
+            target = desc;
+            descriptors = index.manifests;
+        }
+        let mut manifests = Vec::with_capacity(descriptors.len());
+        let mut created = None;
+        for desc in descriptors {
+            let Ok(digest) = desc.digest() else { continue };
+            let attestation = desc
+                .annotations
+                .get("vnd.docker.reference.type")
+                .map(String::as_str)
+                == Some("attestation-manifest");
+            let mut listed = ImageManifest {
+                digest: digest.clone(),
+                platform: desc.platform.as_ref().map(platform_string),
+                attestation,
+                available: false,
+                content: 0,
+                unpacked: 0,
+            };
+            // One that cannot be held, for whatever reason, is listed as not here, as
+            // dockerd lists a manifest it cannot read (moby image_list.go).
+            if let Ok(Held::Whole(bytes)) = self.held(&desc, oci::MAX_MANIFEST) {
+                listed.content = bytes.len() as u64;
+                if let Ok(oci::Document::Manifest(manifest)) = oci::parse_document(&bytes, &desc.media_type) {
+                    let mut whole = true;
+                    for part in std::iter::once(&manifest.config).chain(&manifest.layers) {
+                        match part.digest().ok().and_then(|d| size_here(&d)) {
+                            Some(size) => listed.content = listed.content.saturating_add(size),
+                            None => whole = false,
+                        }
+                    }
+                    listed.available = whole;
+                    if let Ok(Held::Whole(bytes)) = self.held(manifest.image_config(), oci::MAX_CONFIG)
+                        && let Ok(config) = oci::parse_config(&bytes)
+                    {
+                        if desc.digest == ours.digest {
+                            image_config = Some(bytes.clone());
+                        }
+                        if listed.platform.is_none() && !attestation {
+                            listed.platform = Some(platform_string(&oci::Platform {
+                                architecture: config.architecture.clone(),
+                                os: config.os.clone(),
+                                variant: config.variant.clone(),
+                                os_features: Vec::new(),
+                            }));
+                        }
+                        let diff_ids: Result<Vec<Digest>, _> =
+                            config.rootfs.diff_ids.iter().map(|d| Digest::parse(d)).collect();
+                        if let Ok(path) = diff_ids
+                            .map_err(|e| Error(e.to_string()))
+                            .and_then(|d| self.rootfs_path(&d))
+                            && let Some(path) = self.kept_at(&path)
+                        {
+                            listed.unpacked = fs::metadata(path).map_or(0, |m| m.len());
+                        }
+                        if desc.digest == ours.digest || created.is_none() {
+                            created = config.created.clone().or(created);
+                        }
+                    }
+                }
+            }
+            manifests.push(listed);
+        }
+        Ok(Image {
+            id,
+            references: Vec::new(),
+            target,
+            manifest: ours.digest().map_err(|e| Error(e.to_string()))?,
+            config: image_config,
+            tagged_at: None,
+            sources: Vec::new(),
+            targets: BTreeMap::new(),
+            parent: None,
+            created,
+            content: manifests.iter().fold(0, |sum, m| sum.saturating_add(m.content)),
+            unpacked: manifests.iter().fold(0, |sum, m| sum.saturating_add(m.unpacked)),
+            manifests,
+        })
+    }
+
+    /// The index stored as `digest`, and its descriptor, where it is here whole and is an
+    /// index.
+    pub fn index(&self, digest: &Digest) -> Option<(Descriptor, oci::Index)> {
+        let meta = fs::metadata(self.blob_path(digest)).ok()?;
+        let desc = Descriptor {
+            media_type: String::new(),
+            digest: digest.to_string(),
+            size: i64::try_from(meta.len()).ok()?,
+            platform: None,
+            annotations: Default::default(),
+        };
+        let Ok(Held::Whole(bytes)) = self.held(&desc, oci::MAX_MANIFEST) else {
+            return None;
+        };
+        // An index lists manifests and has no config, as `oci::parse_document` tells one.
+        let value: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+        if value.get("manifests").is_none() || value.get("config").is_some() {
+            return None;
+        }
+        let index = serde_json::from_value::<oci::Index>(value).ok()?;
+        let desc = Descriptor {
+            media_type: index
+                .media_type
+                .clone()
+                .unwrap_or_else(|| oci::media::OCI_INDEX.into()),
+            ..desc
+        };
+        Some((desc, index))
+    }
+
+    /// Whether the manifest `desc` describes is here whole: itself, its config and each of
+    /// its layers, as a microVM of its platform needs them.
+    pub fn whole(&self, desc: &Descriptor) -> bool {
+        let Ok(Held::Whole(bytes)) = self.held(desc, oci::MAX_MANIFEST) else {
+            return false;
+        };
+        let Ok(oci::Document::Manifest(m)) = oci::parse_document(&bytes, &desc.media_type) else {
+            return false;
+        };
+        std::iter::once(&m.config)
+            .chain(&m.layers)
+            .all(|part| part.digest().is_ok_and(|d| self.has(&d)))
+    }
+
+    /// The platform the manifest `desc` describes is for: its descriptor's label, else its
+    /// config's, where that is here.
+    fn platform_of(&self, desc: &Descriptor) -> Option<oci::Platform> {
+        if let Some(p) = &desc.platform {
+            return Some(p.clone());
+        }
+        let Ok(Held::Whole(bytes)) = self.held(desc, oci::MAX_MANIFEST) else {
+            return None;
+        };
+        let Ok(oci::Document::Manifest(m)) = oci::parse_document(&bytes, &desc.media_type) else {
+            return None;
+        };
+        let Ok(Held::Whole(config)) = self.held(m.image_config(), oci::MAX_CONFIG) else {
+            return None;
+        };
+        let config = oci::parse_config(&config).ok()?;
+        Some(oci::Platform {
+            architecture: config.architecture,
+            os: config.os,
+            variant: config.variant,
+            os_features: Vec::new(),
+        })
+    }
+
+    /// The manifest of image `named` for `target` that is here whole (D179): of its index,
+    /// the first entry for it, attestations passed over; or its lone manifest, where that is
+    /// for it. None where the image has no such platform here: one platform's microVM of a
+    /// multi-platform image, as a command that names a platform takes it.
+    pub fn manifest_for(&self, named: &Named, target: &crate::platform::Target) -> Option<Descriptor> {
+        let candidates = match self.index(&named.id) {
+            Some((_, index)) => index.manifests,
+            None => vec![named.manifest.clone()],
+        };
+        self.first_for(candidates, target)
+    }
+
+    /// [`manifest_for`](Self::manifest_for) of what a reference resolved to, `resolved`:
+    /// an index, or a lone manifest.
+    pub fn manifest_of(&self, resolved: &Descriptor, target: &crate::platform::Target) -> Option<Descriptor> {
+        let candidates = match resolved.digest().ok().and_then(|d| self.index(&d)) {
+            Some((_, index)) => index.manifests,
+            None => vec![resolved.clone()],
+        };
+        self.first_for(candidates, target)
+    }
+
+    /// Of `candidates`, the first for `target` here whole, attestations passed over.
+    fn first_for(&self, candidates: Vec<Descriptor>, target: &crate::platform::Target) -> Option<Descriptor> {
+        let wanted = std::slice::from_ref(target);
+        candidates.into_iter().filter(|d| !is_attestation(d)).find(|d| {
+            self.platform_of(d)
+                .is_some_and(|p| crate::platform::runs(&p, wanted))
+                && self.whole(d)
+        })
+    }
+
+    /// The image `named` names, read as its platform `manifest`'s ([`manifest_for`]): its
+    /// config, size and layers that platform's.
+    ///
+    /// [`manifest_for`]: Self::manifest_for
+    pub fn image_as(&self, named: &Named, manifest: &Descriptor) -> Result<Image, Error> {
+        self.image(&Named {
+            manifest: manifest.clone(),
+            ..named.clone()
+        })
+    }
+
+    /// Each manifest here whole that an image's record holds, and the first reference (in
+    /// name order) that holds it: its record's manifest, and each entry here of the index
+    /// it resolved to. Images resolved to `except` are left out.
+    pub fn manifests_held(&self, except: Option<&Digest>) -> Result<HashMap<String, String>, Error> {
+        let mut held: HashMap<String, String> = HashMap::new();
+        let mut records = Vec::new();
+        for entry in fs::read_dir(self.root.join(format!("refs/v{REFS_VERSION}")))? {
+            let Ok(bytes) = fs::read(entry?.path()) else {
+                continue;
+            };
+            if let Ok(tag) = serde_json::from_slice::<Tag>(&bytes) {
+                records.push(tag);
+            }
+        }
+        records.sort_by(|a, b| a.reference.cmp(&b.reference));
+        for tag in records {
+            let id = tag
+                .resolved
+                .clone()
+                .unwrap_or_else(|| tag.manifest.digest.clone());
+            if except.is_some_and(|e| e.to_string() == id) {
+                continue;
+            }
+            let mut listed = vec![tag.manifest.clone()];
+            if let Some((_, index)) = Digest::parse(&id).ok().and_then(|d| self.index(&d)) {
+                listed.extend(index.manifests);
+            }
+            for desc in listed {
+                if !held.contains_key(&desc.digest) && self.whole(&desc) {
+                    held.insert(desc.digest.clone(), tag.reference.clone());
+                }
+            }
+        }
+        Ok(held)
+    }
+
+    /// Takes the platforms whose manifests are `manifests` from image `id`, an index (D179):
+    /// each manifest, and the attestations of it, goes from the store, so that what only
+    /// they held (their configs, layers and root filesystems, and the microVM templates made
+    /// of them) goes with the next collection; the index stays, listing them as not here, as
+    /// a pull of some of its platforms leaves it. A record of the image that names one of
+    /// them comes to name the best of its platforms left here for this host's microVMs, or,
+    /// with none left, the index itself, as a load names one with none of this host's. The
+    /// records are written before anything goes, so that no crash leaves one naming what is
+    /// gone. The caller has checked that no other image holds them ([`manifests_held`]).
+    ///
+    /// [`manifests_held`]: Self::manifests_held
+    pub fn remove_platforms(&self, id: &Digest, manifests: &[Digest]) -> Result<(), Error> {
+        // Records are written through `ingest/`, which a collection empties.
+        let _lease = self.lease()?;
+        let Some((index_desc, index)) = self.index(id) else {
+            return bad(format!(
+                "{id}: an image of one platform has no platform to take from it"
+            ));
+        };
+        let named: Vec<String> = manifests.iter().map(Digest::to_string).collect();
+        let gone: Vec<&Descriptor> = index
+            .manifests
+            .iter()
+            .filter(|d| {
+                named.contains(&d.digest)
+                    || (is_attestation(d)
+                        && d.annotations
+                            .get("vnd.docker.reference.digest")
+                            .is_some_and(|of| named.contains(of)))
+            })
+            .collect();
+        let left = oci::Index {
+            manifests: index
+                .manifests
+                .iter()
+                .filter(|d| !is_attestation(d) && !gone.iter().any(|g| g.digest == d.digest) && self.whole(d))
+                .cloned()
+                .collect(),
+            ..index.clone()
+        };
+        let next = crate::platform::select(&left, &crate::platform::pullable())
+            .or(left.manifests.first())
+            .cloned()
+            .unwrap_or(index_desc);
+        for entry in fs::read_dir(self.root.join(format!("refs/v{REFS_VERSION}")))? {
+            let Ok(bytes) = fs::read(entry?.path()) else {
+                continue;
+            };
+            let Ok(mut tag) = serde_json::from_slice::<Tag>(&bytes) else {
+                continue;
+            };
+            if tag.resolved.as_deref() == Some(id.to_string().as_str())
+                && gone.iter().any(|g| g.digest == tag.manifest.digest)
+            {
+                tag.manifest = next.clone();
+                self.write_record(&tag)?;
+            }
+        }
+        let mut dirs = Vec::new();
+        for desc in gone {
+            let digest = desc.digest()?;
+            match fs::remove_file(self.blob_path(&digest)) {
+                Ok(()) => dirs.push(self.root.join("blobs").join(digest.algorithm().name())),
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e.into()),
+            }
+        }
+        dirs.sort();
+        dirs.dedup();
+        for dir in &dirs {
+            sync_dir(dir)?;
+        }
+        Ok(())
+    }
+
+    fn tag_record(&self, reference: &str) -> Result<Option<Tag>, Error> {
         let bytes = match fs::read(self.tag_path(reference)) {
             Ok(bytes) => bytes,
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
@@ -390,126 +2216,1037 @@ impl Store {
         if tag.reference != reference {
             return bad(format!("{reference}: its record names {}", tag.reference));
         }
-        Digest::parse(&tag.manifest).map(Some)
+        Ok(Some(tag))
+    }
+
+    /// What wrote the root filesystem at `rootfs`, and the version of its rules
+    /// ([`Store::rootfs_written`]): `<image>.from`, beside it.
+    pub fn rootfs_producer(&self, rootfs: &Path) -> Option<String> {
+        fs::read_to_string(from_path(rootfs)).ok()
+    }
+
+    /// Where the root filesystem of the layers with `diff_ids` is kept: by their ChainID.
+    fn rootfs_path(&self, diff_ids: &[Digest]) -> Result<PathBuf, Error> {
+        let chain = oci::chain_id(diff_ids).ok_or_else(|| Error("an image with no layers".into()))?;
+        Ok(self.root.join(format!("rootfs/v{ROOTFS_VERSION}")).join(format!(
+            "{}-{}.erofs",
+            chain.algorithm().name(),
+            chain.hex()
+        )))
+    }
+
+    /// The root filesystem kept for the layers whose stacked one goes at `stacked`
+    /// ([`Store::rootfs_path`]): that one, else the one written over a base's that their
+    /// record names ([`Store::rootfs_written_over`]), where it is.
+    ///
+    /// A name never comes to hold other bytes than it was first given (templates are keyed
+    /// by it, run.rs `template`, and mapped by block): the stacked one's are its layers'
+    /// alone, stacked as they always stack; one over a base's is named by its own digest,
+    /// so one laid out otherwise, over another base or the same base again, has a name of
+    /// its own.
+    fn kept_at(&self, stacked: &Path) -> Option<PathBuf> {
+        if stacked.is_file() {
+            return Some(stacked.to_path_buf());
+        }
+        self.over_named(stacked)
+    }
+
+    /// The image written over a base's for the layers whose stacked one goes at `stacked`,
+    /// as the record beside it (`.over`) names it, where that is a file: a name the store
+    /// made, in its own directory, never a path.
+    fn over_named(&self, stacked: &Path) -> Option<PathBuf> {
+        let name = fs::read_to_string(stacked.with_extension("over")).ok()?;
+        let stem = stacked.file_stem()?.to_str()?;
+        let ours = name
+            .strip_prefix(stem)
+            .and_then(|n| n.strip_prefix(".over-"))
+            .and_then(|n| n.strip_suffix(".erofs"))
+            .is_some_and(|hex| hex.len() == 64 && hex.bytes().all(|b| b.is_ascii_hexdigit()));
+        let path = stacked.with_file_name(name);
+        (ours && path.is_file()).then_some(path)
+    }
+
+    /// A hold on the store's content for as long as it is kept, by whoever writes content
+    /// not yet recorded by a reference, or reads what a run is about to use: a collection
+    /// ([`collect`](Self::collect)) never runs while one is held, in any process.
+    pub fn lease(&self) -> Result<Lease, Error> {
+        let file = Locked(self.lease_file()?);
+        file.lock_shared()?;
+        Ok(Lease { _file: file })
+    }
+
+    fn lease_file(&self) -> Result<File, Error> {
+        Ok(File::options()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(self.root.join(".lease"))?)
+    }
+
+    /// Removes what no reference needs (audit A13): the blobs its manifest, config and
+    /// layers are not, the root filesystems of no reference's layers, records and root
+    /// filesystems of older versions, and what `ingest/` holds. The roots are the
+    /// references alone; content being written or read for a run is under a
+    /// [`lease`](Self::lease), and while any is held it waits, woken by the kernel once
+    /// the last is let go (flock(2)); leases asked for meanwhile are given. Files a
+    /// running VM holds open stay its own until it closes them. The store stays held whole
+    /// until the [`Whole`] returned is dropped, for its caller to collect what depends on
+    /// it: a lease asked for meanwhile waits.
+    pub fn collect(&self) -> Result<(Collected, Whole), Error> {
+        let whole = Locked(self.lease_file()?);
+        whole.lock()?;
+        self.sweep_mounts()?;
+        let (blobs, rootfs) = self.roots(true)?;
+        let mut collected = Collected::default();
+        let mut remove = |path: &Path, count: &mut u64| {
+            let meta = fs::symlink_metadata(path);
+            if meta.as_ref().is_ok_and(fs::Metadata::is_dir) {
+                // A build's stage (`Store::stage`) its process left, its clones' tree too.
+                let (files, bytes) = remove_tree(path);
+                *count += files;
+                collected.bytes = collected.bytes.saturating_add(bytes);
+                return;
+            }
+            let len = meta.map_or(0, |m| m.len());
+            if fs::remove_file(path).is_ok() {
+                *count += 1;
+                collected.bytes = collected.bytes.saturating_add(len);
+            }
+        };
+        for algorithm in ["sha256", "sha384", "sha512"] {
+            for entry in fs::read_dir(self.root.join("blobs").join(algorithm))? {
+                let path = entry?.path();
+                if !blobs.contains(&path) {
+                    remove(&path, &mut collected.blobs);
+                }
+            }
+        }
+        let current = format!("v{ROOTFS_VERSION}");
+        for entry in fs::read_dir(self.root.join("rootfs"))? {
+            let entry = entry?;
+            if entry.file_name() != current.as_str() {
+                let _ = fs::remove_dir_all(entry.path());
+                continue;
+            }
+            for built in fs::read_dir(entry.path())? {
+                let path = built?.path();
+                if path.extension().is_some_and(|e| e == "erofs") && !rootfs.contains(&path) {
+                    remove(&path, &mut collected.rootfs);
+                }
+                // What wrote an image goes with it.
+                if path.extension().is_some_and(|e| e == "from") && !rootfs.contains(&path.with_extension(""))
+                {
+                    let _ = fs::remove_file(&path);
+                }
+                // And the record naming one written over a base's, where that goes.
+                if path.extension().is_some_and(|e| e == "over") && !rootfs.contains(&path) {
+                    let _ = fs::remove_file(&path);
+                }
+            }
+        }
+        for (dir, version) in [("buildcache", CACHE_VERSION), ("cachemounts", mounts::VERSION)] {
+            let current = format!("v{version}");
+            for entry in fs::read_dir(self.root.join(dir))? {
+                let entry = entry?;
+                if entry.file_name() != current.as_str() {
+                    let _ = fs::remove_dir_all(entry.path());
+                }
+            }
+        }
+        let current = format!("v{REFS_VERSION}");
+        for entry in fs::read_dir(self.root.join("refs"))? {
+            let entry = entry?;
+            if entry.file_name() != current.as_str() {
+                let _ = fs::remove_dir_all(entry.path());
+            }
+        }
+        // Nothing writes there while the store is held whole: what is there was left.
+        for entry in fs::read_dir(self.root.join("ingest"))? {
+            remove(&entry?.path(), &mut collected.ingest);
+        }
+        Ok((collected, Whole { _file: whole }))
+    }
+
+    /// The blobs and root filesystems the references need: each one's manifest, config
+    /// and layers, and the root filesystem of its layers. A record that cannot be read,
+    /// or names what is not whole, holds only what it names that is.
+    fn roots(&self, with_cache: bool) -> Result<(HashSet<PathBuf>, HashSet<PathBuf>), Error> {
+        let (mut blobs, mut rootfs) = (HashSet::new(), HashSet::new());
+        // The build cache's records hold their blobs (D50).
+        let cache_dir = self.root.join(format!("buildcache/v{CACHE_VERSION}"));
+        for entry in fs::read_dir(&cache_dir)?.filter(|_| with_cache) {
+            let Ok(bytes) = fs::read(entry?.path()) else {
+                continue;
+            };
+            let Ok(record) = serde_json::from_slice::<CacheRecord>(&bytes) else {
+                continue;
+            };
+            for b in &record.blobs {
+                if let Ok(d) = Digest::parse(b) {
+                    blobs.insert(self.blob_path(&d));
+                }
+            }
+        }
+        for entry in fs::read_dir(self.root.join(format!("refs/v{REFS_VERSION}")))? {
+            // One removed since it was listed (an rmi meanwhile) holds nothing.
+            let bytes = match fs::read(entry?.path()) {
+                Ok(bytes) => bytes,
+                Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
+                Err(e) => return Err(e.into()),
+            };
+            let Ok(tag) = serde_json::from_slice::<Tag>(&bytes) else {
+                continue;
+            };
+            // What it resolved to, an index, is kept as containerd keeps it (D18), with what it
+            // names that is here: the image's platforms (`images --tree`), each unpacked as
+            // a run of it unpacked it (D179), and the attestations a pull kept.
+            if let Some(resolved) = tag.resolved.as_deref().and_then(|d| Digest::parse(d).ok()) {
+                blobs.insert(self.blob_path(&resolved));
+                if let Ok(index) = fs::read(self.blob_path(&resolved))
+                    && let Ok(index) = serde_json::from_slice::<oci::Index>(&index)
+                {
+                    for desc in &index.manifests {
+                        self.keep_manifest(desc, &mut blobs, &mut rootfs)?;
+                    }
+                }
+            }
+            // Its referrers, each a manifest, its config and its layers.
+            for r in &tag.referrers {
+                let Ok(d) = r.digest() else { continue };
+                blobs.insert(self.blob_path(&d));
+                if let Ok(Held::Whole(bytes)) = self.held(r, oci::MAX_MANIFEST)
+                    && let Ok(oci::Document::Manifest(m)) = oci::parse_document(&bytes, &r.media_type)
+                {
+                    for part in std::iter::once(&m.config).chain(&m.layers) {
+                        if let Ok(d) = part.digest() {
+                            blobs.insert(self.blob_path(&d));
+                        }
+                    }
+                }
+            }
+            self.keep_manifest(&tag.manifest, &mut blobs, &mut rootfs)?;
+        }
+        Ok((blobs, rootfs))
+    }
+
+    /// Adds to `blobs` and `rootfs` what the manifest `desc` describes holds, where it is
+    /// here: itself, its config and layers, each layer's uncompressed blob where the store
+    /// has one (a layer a build made and then compressed, D75), as Docker keeps a layer's
+    /// blob and its snapshot both, and its root filesystem.
+    fn keep_manifest(
+        &self,
+        desc: &Descriptor,
+        blobs: &mut HashSet<PathBuf>,
+        rootfs: &mut HashSet<PathBuf>,
+    ) -> Result<(), Error> {
+        let Ok(digest) = desc.digest() else {
+            return Ok(());
+        };
+        blobs.insert(self.blob_path(&digest));
+        let Held::Whole(bytes) = self.held(desc, oci::MAX_MANIFEST)? else {
+            return Ok(());
+        };
+        let Ok(oci::Document::Manifest(manifest)) = oci::parse_document(&bytes, &desc.media_type) else {
+            return Ok(());
+        };
+        for part in std::iter::once(&manifest.config).chain(&manifest.layers) {
+            if let Ok(digest) = part.digest() {
+                blobs.insert(self.blob_path(&digest));
+            }
+        }
+        let Held::Whole(config) = self.held(manifest.image_config(), oci::MAX_CONFIG)? else {
+            return Ok(());
+        };
+        let Ok(config) = oci::parse_config(&config) else {
+            return Ok(());
+        };
+        let diff_ids: Result<Vec<Digest>, _> =
+            config.rootfs.diff_ids.iter().map(|d| Digest::parse(d)).collect();
+        for d in diff_ids.iter().flatten() {
+            let path = self.blob_path(d);
+            if path.exists() {
+                blobs.insert(path);
+            }
+        }
+        if let Ok(path) = diff_ids
+            .map_err(|e| Error(e.to_string()))
+            .and_then(|d| self.rootfs_path(&d))
+        {
+            // The one its runs are given (`kept_at`), and the record naming it where it was
+            // written over a base's: another of its layers' goes, its templates with it.
+            if !path.is_file()
+                && let Some(over) = self.over_named(&path)
+            {
+                rootfs.insert(path.with_extension("over"));
+                rootfs.insert(over);
+            }
+            rootfs.insert(path);
+        }
+        Ok(())
     }
 
     /// References can be long and hold `/` and `:`, so records are named by their hash.
     fn tag_path(&self, reference: &str) -> PathBuf {
         let name = Digest::from_hash(Algorithm::Sha256, &Sha256::digest(reference.as_bytes()));
-        self.root.join("refs").join(name.hex())
+        self.root.join(format!("refs/v{REFS_VERSION}")).join(name.hex())
     }
 
-    /// A small blob's bytes, at most `max`, checked against its digest again.
-    pub fn read(&self, digest: &Digest, max: u64) -> Result<Vec<u8>, Error> {
-        let mut bytes = Vec::new();
-        File::open(self.blob_path(digest))?
-            .take(max.saturating_add(1))
-            .read_to_end(&mut bytes)?;
-        if bytes.len() as u64 > max {
-            return bad(format!("{digest}: over {max} bytes"));
+    /// The bytes of the small blob `desc` describes, if it is stored: at most `max`, and
+    /// checked again against the digest and then the size. Content whose length is not its
+    /// descriptor's is not trusted (image-spec descriptor.md).
+    pub fn content(&self, desc: &Descriptor, max: u64) -> Result<Option<Vec<u8>>, Error> {
+        match self.held(desc, max)? {
+            Held::Missing => Ok(None),
+            Held::Changed(why) | Held::Invalid(why) => Err(Error(why)),
+            Held::Whole(bytes) => Ok(Some(bytes)),
         }
+    }
+
+    /// What the store holds of the small blob `desc` describes, read as
+    /// [`content`](Self::content) reads it.
+    pub fn held(&self, desc: &Descriptor, max: u64) -> Result<Held, Error> {
+        let digest = match desc.digest() {
+            Ok(digest) => digest,
+            Err(e) => return Ok(Held::Invalid(e.to_string())),
+        };
+        let size = match desc.size() {
+            Ok(size) => size,
+            Err(e) => return Ok(Held::Invalid(e.to_string())),
+        };
+        if size > max {
+            return Ok(Held::Invalid(format!(
+                "{digest}: {size} bytes is over the {max}-byte limit"
+            )));
+        }
+        let path = self.blob_path(&digest);
+        let file = match File::open(&path) {
+            Ok(file) => file,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Held::Missing),
+            Err(e) => return Err(e.into()),
+        };
+        let mut bytes = Vec::new();
+        file.take(max.saturating_add(1)).read_to_end(&mut bytes)?;
+        // Past the limit its descriptor is within, it is not what it was stored as.
         let mut hasher = Hasher::new(digest.algorithm());
         hasher.update(&bytes);
-        if hasher.finish() != *digest {
-            return bad(format!("{digest}: the stored bytes changed"));
+        if bytes.len() as u64 > max || hasher.finish() != digest {
+            return Ok(Held::Changed(format!(
+                "{}: the stored copy has changed",
+                path.display()
+            )));
         }
-        Ok(bytes)
+        if bytes.len() as u64 != size {
+            return Ok(Held::Invalid(format!(
+                "{digest}: {} bytes, where its descriptor says {size}",
+                bytes.len()
+            )));
+        }
+        Ok(Held::Whole(bytes))
+    }
+
+    /// `f` given the uncompressed tar of `layer`, a blob here: the blob itself where it is
+    /// uncompressed, else decompressed into `ingest/` for as long as `f` runs; checked
+    /// against its DiffID and `limits` as an unpack checks it.
+    pub fn with_layer_tar<T>(
+        &self,
+        layer: &Layer,
+        limits: &Limits,
+        f: impl FnOnce(&mut dyn Read) -> Result<T, Error>,
+    ) -> Result<T, Error> {
+        let room = Room::new(&self.root.join("ingest"), limits)?;
+        let bytes = AtomicU64::new(0);
+        let tar = self.unpack(layer, &bytes, limits, &room, false)?;
+        let mut file = File::open(tar.path())?;
+        f(&mut file)
     }
 
     /// Decompresses a layer's blob into a file under `ingest/`, removed when dropped. Its
     /// media type says whether the compression is sniffed (`oci::layer_compression`). The
     /// whole decompressed stream, bytes after the tar's end included, must match the
     /// DiffID, as containerd's applier checks it (`core/diff/apply/apply.go`), and must
-    /// not pass `max` bytes.
-    fn unpack(&self, layer: &Layer, max: u64) -> Result<Partial, Error> {
+    /// not pass `max` bytes. Where `keep`, the checked archive is kept as the layer's
+    /// uncompressed blob, named by its DiffID, as a layer a build made and compressed keeps
+    /// one ([`Store::keep_manifest`]), and read from there by every unpack after, its
+    /// bytes counted against `max` and not hashed again, as a root filesystem's are not: a
+    /// build's base decompressed into `ingest/` at each build wrote its whole size again
+    /// (rust:1-slim's 850 MiB), which under a budget its host wrote out at its disk's pace
+    /// (PM M442).
+    fn unpack(
+        &self,
+        layer: &Layer,
+        bytes: &AtomicU64,
+        limits: &Limits,
+        room: &Room,
+        keep: bool,
+    ) -> Result<Tar, Error> {
+        let kept = self.blob_path(&layer.diff_id);
+        if keep && layer.diff_id != layer.blob && kept.is_file() {
+            let n = fs::metadata(&kept)?.len();
+            let written = bytes.fetch_add(n, Ordering::AcqRel).saturating_add(n);
+            if written > limits.bytes {
+                return bad(format!(
+                    "the image decompresses to more than {} bytes (SHARDS_MAX_IMAGE_BYTES)",
+                    limits.bytes
+                ));
+            }
+            return Ok(Tar::Blob(kept));
+        }
         let how = oci::layer_compression(&layer.media_type)?;
-        let mut file = File::open(self.blob_path(&layer.blob))?;
+        let blob = self.blob_path(&layer.blob);
+        let mut file = File::open(&blob)?;
         let mut head = Vec::with_capacity(8);
         if how == oci::LayerCompression::Sniffed {
             (&mut file).take(8).read_to_end(&mut head)?;
             file.rewind()?;
         }
         let mut src = BufReader::with_capacity(CHUNK, file);
+        let check = |hasher: Hasher| {
+            let actual = hasher.finish();
+            if actual != layer.diff_id {
+                return bad(format!(
+                    "layer {}: its content hashes to {actual}, not its DiffID {}",
+                    layer.blob, layer.diff_id
+                ));
+            }
+            Ok(())
+        };
+        let how = compression(&head);
+        if matches!(how, Compression::None) {
+            let mut sink = Sink {
+                hasher: Hasher::new(layer.diff_id.algorithm()),
+                out: None,
+                written: bytes,
+                max: limits.bytes,
+            };
+            io::copy(&mut src, &mut sink)?;
+            check(sink.hasher)?;
+            return Ok(Tar::Blob(blob));
+        }
         let mut partial = Partial::create(&self.root.join("ingest"))?;
         let mut sink = Sink {
             hasher: Hasher::new(layer.diff_id.algorithm()),
-            out: &mut partial,
-            written: 0,
-            max,
+            out: Some(Checked {
+                out: &mut partial,
+                room,
+            }),
+            written: bytes,
+            max: limits.bytes,
         };
-        match compression(&head) {
-            Compression::None => {
-                io::copy(&mut src, &mut sink)?;
-            }
+        match how {
             Compression::Gzip => {
                 io::copy(&mut flate2::bufread::MultiGzDecoder::new(src), &mut sink)?;
             }
-            Compression::Zstd => zstd(&mut src, &mut sink)?,
+            Compression::Zstd => {
+                io::copy(&mut Zstd::new(src), &mut sink)?;
+            }
+            Compression::None => {}
         }
-        let actual = sink.hasher.finish();
-        if actual != layer.diff_id {
-            return bad(format!(
-                "layer {}: its content hashes to {actual}, not its DiffID {}",
-                layer.blob, layer.diff_id
-            ));
-        }
+        check(sink.hasher)?;
         partial.flush()?;
-        Ok(partial)
+        if keep {
+            partial.commit(&kept)?;
+            return Ok(Tar::Blob(kept));
+        }
+        Ok(Tar::Temp(partial))
+    }
+
+    /// A new stage: on the store's file system, so files cloned into it share their
+    /// blocks where the context is on the same one.
+    pub fn stage(&self) -> Result<Stage, Error> {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let path = self
+            .root
+            .join("ingest")
+            .join(format!("{}-stage-{n}", std::process::id()));
+        fs::create_dir(&path)?;
+        Ok(Stage(path))
+    }
+
+    /// A new blob, written by the caller.
+    pub fn writer(&self) -> Result<BlobWriter, Error> {
+        BlobWriter::new(
+            Partial::create(&self.root.join("ingest"))?,
+            self.root.join("blobs"),
+        )
+    }
+
+    /// `layers`' archives, each decompressed and checked, together taking no more than
+    /// `limits` allow, as [`Store::rootfs`] takes them.
+    pub fn unpack_layers(&self, layers: &[Layer], limits: &Limits) -> Result<Vec<Unpacked>, Error> {
+        let room = Room::new(&self.root.join("ingest"), limits)?;
+        let mut out = Vec::with_capacity(layers.len());
+        self.unpack_in_order_keeping(layers, limits, &room, &|_| Ok(()), true, |_, tar| {
+            out.push(Unpacked(tar));
+            Ok(())
+        })?;
+        Ok(out)
+    }
+
+    /// Unpacks `layers` ([`Store::unpack`]) on as many threads as the host has cores, up
+    /// to one a layer, and gives each to `each` in the layers' order as soon as it and
+    /// those before it are unpacked: decompressing and hashing are most of what building
+    /// a root filesystem costs, and a layer's do not wait on another's (PM M109). A layer
+    /// unpacked ahead of its turn waits on disk, as its temporary archive. An error stops
+    /// the layers not yet begun, and the one returned is the one a sequential unpack
+    /// would meet first. The image's byte limit is shared, so it may trip on another
+    /// layer than sequentially, but it trips only when the image does pass it.
+    fn unpack_in_order(
+        &self,
+        layers: &[Layer],
+        limits: &Limits,
+        room: &Room,
+        ready: &(dyn Fn(usize) -> Result<(), Error> + Sync),
+        each: impl FnMut(usize, Tar) -> Result<(), Error>,
+    ) -> Result<(), Error> {
+        self.unpack_in_order_keeping(layers, limits, room, ready, false, each)
+    }
+
+    /// [`Store::unpack_in_order`], each layer's archive kept as its uncompressed blob where
+    /// `keep` ([`Store::unpack`]).
+    fn unpack_in_order_keeping(
+        &self,
+        layers: &[Layer],
+        limits: &Limits,
+        room: &Room,
+        ready: &(dyn Fn(usize) -> Result<(), Error> + Sync),
+        keep: bool,
+        mut each: impl FnMut(usize, Tar) -> Result<(), Error>,
+    ) -> Result<(), Error> {
+        let workers = std::thread::available_parallelism()
+            .map_or(1, usize::from)
+            .min(layers.len())
+            .max(1);
+        let bytes = AtomicU64::new(0);
+        let next = std::sync::atomic::AtomicUsize::new(0);
+        let stop = AtomicBool::new(false);
+        let (done, finished) = mpsc::channel::<(usize, Result<Tar, Error>)>();
+        std::thread::scope(|scope| -> Result<(), Error> {
+            for _ in 0..workers {
+                let done = done.clone();
+                let (bytes, next, stop) = (&bytes, &next, &stop);
+                std::thread::Builder::new()
+                    .name("unpack".into())
+                    .spawn_scoped(scope, move || {
+                        while !stop.load(Ordering::Acquire) {
+                            let i = next.fetch_add(1, Ordering::AcqRel);
+                            let Some(layer) = layers.get(i) else { break };
+                            let r = ready(i).and_then(|()| self.unpack(layer, bytes, limits, room, keep));
+                            if r.is_err() {
+                                stop.store(true, Ordering::Release);
+                            }
+                            if done.send((i, r)).is_err() {
+                                break;
+                            }
+                        }
+                    })
+                    .map_err(|e| Error(format!("starting to unpack: {e}")))?;
+            }
+            drop(done);
+            let mut waiting: Vec<Option<Tar>> = layers.iter().map(|_| None).collect();
+            let mut turn = 0;
+            // The failure a sequential unpack would meet first: the lowest layer's, or
+            // `each`'s on a layer below it. Every layer below a failed one was begun
+            // (`next` only grows), so it ends and is applied.
+            let mut failed: Option<(usize, Error)> = None;
+            for (i, r) in finished {
+                match r {
+                    Ok(tar) => {
+                        if let Some(slot) = waiting.get_mut(i) {
+                            *slot = Some(tar);
+                        }
+                    }
+                    Err(e) => {
+                        stop.store(true, Ordering::Release);
+                        if failed.as_ref().is_none_or(|(at, _)| i < *at) {
+                            failed = Some((i, e));
+                        }
+                    }
+                }
+                while failed.as_ref().is_none_or(|(at, _)| turn < *at) {
+                    let Some(tar) = waiting.get_mut(turn).and_then(Option::take) else {
+                        break;
+                    };
+                    if let Err(e) = each(turn, tar) {
+                        stop.store(true, Ordering::Release);
+                        failed = Some((turn, e));
+                        break;
+                    }
+                    turn += 1;
+                }
+            }
+            match failed {
+                Some((_, e)) => Err(e),
+                None if turn == layers.len() => Ok(()),
+                None => Err(Error("a layer was never unpacked".into())),
+            }
+        })
     }
 
     /// The EROFS root filesystem of `layers`, built on first use: each layer is unpacked
     /// and checked, the layers are stacked (layer.rs), and the tree is written once. It is
-    /// kept by ChainID; the unpacked tars go when it is done.
-    pub fn rootfs(&self, layers: &[Layer], max: u64) -> Result<PathBuf, Error> {
+    /// kept by ChainID; the unpacked tars go when it is done. Building it takes no more
+    /// than `limits` allow (audit A10), and one build at a time goes on in a store,
+    /// whichever process asks: a second of the same image finds the first's.
+    pub fn rootfs(&self, layers: &[Layer], limits: &Limits) -> Result<PathBuf, Error> {
+        self.rootfs_as_ready(layers, limits, &|_| Ok(()))
+    }
+
+    /// [`Store::rootfs`], each layer unpacked once `ready` says its blob is here: called
+    /// with the layer's index, it returns when the blob is stored, or with why it never
+    /// will be. A pull builds as it downloads so (PM M114).
+    pub fn rootfs_as_ready(
+        &self,
+        layers: &[Layer],
+        limits: &Limits,
+        ready: &(dyn Fn(usize) -> Result<(), Error> + Sync),
+    ) -> Result<PathBuf, Error> {
+        self.rootfs_built(layers, limits, ready, false)
+    }
+
+    /// [`Store::rootfs_as_ready`], built again whether or not it is here: `pull --no-cache`.
+    /// A file at its name that holds other bytes than the layers stack to (a producer's
+    /// whose rules proved wrong, say, or a file changed on disk) is replaced whole, by
+    /// rename, with a later modification time ([`rootfs_stamp`]), and named by no producer
+    /// then; one that holds the same bytes is kept, with what names its producer.
+    pub fn rootfs_again_as_ready(
+        &self,
+        layers: &[Layer],
+        limits: &Limits,
+        ready: &(dyn Fn(usize) -> Result<(), Error> + Sync),
+    ) -> Result<PathBuf, Error> {
+        self.rootfs_built(layers, limits, ready, true)
+    }
+
+    fn rootfs_built(
+        &self,
+        layers: &[Layer],
+        limits: &Limits,
+        ready: &(dyn Fn(usize) -> Result<(), Error> + Sync),
+        again: bool,
+    ) -> Result<PathBuf, Error> {
         let diff_ids: Vec<Digest> = layers.iter().map(|l| l.diff_id.clone()).collect();
-        let chain = oci::chain_id(&diff_ids).ok_or_else(|| Error("an image with no layers".into()))?;
-        let path = self.root.join(format!("rootfs/v{ROOTFS_VERSION}")).join(format!(
-            "{}-{}.erofs",
-            chain.algorithm().name(),
-            chain.hex()
-        ));
-        if path.is_file() {
-            return Ok(path);
+        let from = from_path(&self.rootfs_path(&diff_ids)?);
+        // Stacked from the layers: nothing else wrote it, whatever was named before. Unnamed
+        // once it is in place, so that a crash between leaves the producer named of a file
+        // it never wrote, which its disowning would only build again, never one it wrote
+        // named by nothing.
+        let placed = || match fs::remove_file(&from) {
+            Err(e) if e.kind() != io::ErrorKind::NotFound => Err(e.into()),
+            _ => Ok(()),
+        };
+        self.rootfs_by(layers, limits, again, placed, |room, ingest| {
+            let (mut entries, mut metadata) = (0u64, 0u64);
+            let mut tree = layer::root();
+            let mut tars = Vec::with_capacity(layers.len());
+            self.unpack_in_order(layers, limits, room, ready, |i, tar| {
+                let source = u32::try_from(i).map_err(|_| Error("too many layers".into()))?;
+                let file = File::open(tar.path())?;
+                let mut count = |e: &crate::tar::Entry| {
+                    entries += 1;
+                    let held = e.path.len() + e.link.len();
+                    let held = e.xattrs.iter().fold(held, |n, (k, v)| n + k.len() + v.len());
+                    metadata = metadata.saturating_add(held as u64);
+                    if entries > limits.entries {
+                        return bad(format!(
+                            "the image has more than {} entries (SHARDS_MAX_IMAGE_ENTRIES)",
+                            limits.entries
+                        ));
+                    }
+                    if metadata > limits.metadata {
+                        return bad(format!(
+                            "the image's names, links and xattrs pass {} bytes (SHARDS_MAX_IMAGE_METADATA)",
+                            limits.metadata
+                        ));
+                    }
+                    Ok(())
+                };
+                layer::apply(
+                    &mut tree,
+                    source,
+                    BufReader::with_capacity(CHUNK, file),
+                    &mut count,
+                )?;
+                // What this layer replaced or whited out goes before the next is read, so
+                // the tree holds the image, not its history (audit D11).
+                tree.compact();
+                tars.push(tar);
+                Ok(())
+            })?;
+            let files = tars
+                .iter()
+                .map(|t| File::open(t.path()))
+                .collect::<io::Result<Vec<_>>>()?;
+            let mut partial = Partial::create(ingest)?;
+            erofs::write(
+                &tree,
+                &mut Archives(files),
+                &mut Checked {
+                    out: &mut partial,
+                    room,
+                },
+            )?;
+            Ok(partial)
+        })
+    }
+
+    /// The root filesystem of `layers`, kept as [`Store::rootfs`] keeps it, written by
+    /// `write` when it is not built yet: an image of the tree the layers stack to, which
+    /// the caller holds, such as a build's last snapshot (shards_build::stack). `write`
+    /// writes within the room the store's limits leave, as `rootfs` does.
+    ///
+    /// `producer` names what wrote it and the version of its rules, kept beside it in
+    /// `<image>.from` before the image itself is in place, so that a crash never leaves it
+    /// unnamed: should a producer's rules prove wrong, what they wrote is found and removed,
+    /// and nothing else, as REAPI's action salt disowns a set of results.
+    pub fn rootfs_written(
+        &self,
+        layers: &[Layer],
+        limits: &Limits,
+        producer: &str,
+        write: impl FnOnce(&mut dyn Write) -> Result<(), Error>,
+    ) -> Result<PathBuf, Error> {
+        let diff_ids: Vec<Digest> = layers.iter().map(|l| l.diff_id.clone()).collect();
+        let from = from_path(&self.rootfs_path(&diff_ids)?);
+        self.rootfs_by(
+            layers,
+            limits,
+            false,
+            || Ok(()),
+            |room, ingest| {
+                let mut marker = Partial::create(ingest)?;
+                marker.write_all(producer.as_bytes())?;
+                marker.replace(&from)?;
+                let mut partial = Partial::create(ingest)?;
+                write(&mut Checked {
+                    out: &mut partial,
+                    room,
+                })?;
+                Ok(partial)
+            },
+        )
+    }
+
+    /// The root filesystem kept for the layers with `diff_ids`, where it is ([`Store::kept_at`]):
+    /// none where it was never built, or was of another version.
+    pub fn rootfs_kept(&self, diff_ids: &[Digest]) -> Option<PathBuf> {
+        let path = self.rootfs_path(diff_ids).ok()?;
+        self.kept_at(&path)
+    }
+
+    /// [`Store::rootfs_written`] over `below`, a root filesystem of `below_len` bytes kept
+    /// for a run of `layers` from the first ([`Store::rootfs_kept`]): the image starts as a
+    /// clone of it, which `clone` makes at the path it is given, sharing its blocks (APFS's
+    /// clonefile, Btrfs's and XFS's FICLONE), or says it cannot; `write` writes what follows
+    /// `below`'s blocks (shards_erofs::write_over) and returns the image's first block, put
+    /// in place of `below`'s. So only what the layers past `below` add is written (PM M442:
+    /// rust:1-slim's whole 850 MiB root filesystem written again for a build's 7 MiB).
+    /// `Ok(None)` where no clone is made, nothing written: the image is to be written whole.
+    ///
+    /// Its tree is its layers' (shards_erofs::write_over), its bytes laid out otherwise than
+    /// stacking lays them, and otherwise again over another base. So it is not put where the
+    /// stacked one goes, whose bytes a template keyed by its name expects of it whenever it is
+    /// stacked again (run.rs `template`; a collection that ended before its templates did,
+    /// say): it is named by the SHA-256 of its base's name, length and of what is written
+    /// over it, which make its bytes (a base's name keeps its bytes, by this rule and
+    /// stacking's), `<ChainID>.over-<hex>.erofs`, and a record beside the stacked one's
+    /// place (`<ChainID>.over`) names it ([`Store::kept_at`]).
+    #[allow(clippy::too_many_arguments)]
+    pub fn rootfs_written_over(
+        &self,
+        layers: &[Layer],
+        limits: &Limits,
+        producer: &str,
+        below: &Path,
+        below_len: u64,
+        clone: impl FnOnce(&Path) -> io::Result<bool>,
+        write: impl FnOnce(&mut dyn Write) -> Result<Vec<u8>, Error>,
+    ) -> Result<Option<PathBuf>, Error> {
+        let diff_ids: Vec<Digest> = layers.iter().map(|l| l.diff_id.clone()).collect();
+        let stacked = self.rootfs_path(&diff_ids)?;
+        if let Some(kept) = self.kept_at(&stacked) {
+            return Ok(Some(kept));
         }
-        let mut tree = layer::root();
-        let mut tars = Vec::with_capacity(layers.len());
-        for (i, l) in layers.iter().enumerate() {
-            let tar = self.unpack(l, max)?;
-            let source = u32::try_from(i).map_err(|_| Error("too many layers".into()))?;
-            let file = File::open(&tar.path)?;
-            layer::apply(&mut tree, source, BufReader::with_capacity(CHUNK, file))?;
-            tars.push(tar);
+        if below_len == 0 || !below_len.is_multiple_of(crate::erofs::BLOCK) {
+            return Ok(None);
         }
-        let files = tars
-            .iter()
-            .map(|t| File::open(&t.path))
-            .collect::<io::Result<Vec<_>>>()?;
-        let mut out = Partial::create(&self.root.join("ingest"))?;
-        erofs::write(&tree, &mut Archives(files), &mut out)?;
-        out.commit(&path)?;
+        let below_name = below
+            .file_name()
+            .and_then(|n| n.to_str())
+            .ok_or_else(|| Error(format!("{}: not a root filesystem's name", below.display())))?;
+        let stem = stacked
+            .file_stem()
+            .and_then(|n| n.to_str())
+            .ok_or_else(|| Error("a root filesystem with no name".into()))?
+            .to_string();
+        let at = Partial::unused(&self.root.join("ingest"))?;
+        if !clone(&at)? {
+            return Ok(None);
+        }
+        let opened = File::options()
+            .read(true)
+            .write(true)
+            .open(&at)
+            .and_then(|f| Ok((f.metadata()?.len(), f)));
+        let (len, file) = match opened {
+            Ok(opened) => opened,
+            Err(e) => {
+                let _ = fs::remove_file(&at);
+                return Err(e.into());
+            }
+        };
+        // Removed as it drops, unless it is committed.
+        let mut cloned = Partial::of(at, file);
+        if len != below_len {
+            return bad(format!("a clone of {below_len} bytes came to {len}"));
+        }
+        let building = self.building()?;
+        building.lock()?;
+        if let Some(kept) = self.kept_at(&stacked) {
+            return Ok(Some(kept));
+        }
+        let ingest = self.root.join("ingest");
+        let room = Room::new(&ingest, limits)?;
+        let gone = || Error("the clone's file is gone".into());
+        cloned
+            .file
+            .as_mut()
+            .ok_or_else(gone)?
+            .seek(io::SeekFrom::Start(below_len))?;
+        let mut hasher = Sha256::new();
+        hasher.update(format!("over {below_name} {below_len}\n").as_bytes());
+        let head = write(&mut Hashed {
+            out: Checked {
+                out: &mut cloned,
+                room: &room,
+            },
+            hasher: &mut hasher,
+        })?;
+        if head.len() as u64 != crate::erofs::BLOCK {
+            return bad("an image's first block of another size");
+        }
+        hasher.update(&head);
+        let f = cloned.file.as_mut().ok_or_else(gone)?;
+        f.seek(io::SeekFrom::Start(0))?;
+        f.write_all(&head)?;
+        f.flush()?;
+        let hex: String = hasher.finalize().iter().map(|b| format!("{b:02x}")).collect();
+        let name = format!("{stem}.over-{hex}.erofs");
+        let path = stacked.with_file_name(&name);
+        // Named before it is in place, so that a crash never leaves it unnamed
+        // ([`Store::rootfs_written`]); found once its record names it.
+        let mut marker = Partial::create(&ingest)?;
+        marker.write_all(producer.as_bytes())?;
+        marker.replace(&from_path(&path))?;
+        cloned.commit(&path)?;
+        let mut record = Partial::create(&ingest)?;
+        record.write_all(name.as_bytes())?;
+        record.replace(&stacked.with_extension("over"))?;
+        drop(building);
+        Ok(Some(path))
+    }
+
+    /// The lock one build of a root filesystem holds at a time in a store, whichever
+    /// process builds it.
+    fn building(&self) -> Result<File, Error> {
+        Ok(File::options()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(self.root.join(format!("rootfs/v{ROOTFS_VERSION}/.building")))?)
+    }
+
+    /// The root filesystem of `layers` where it is kept ([`Store::kept_at`]), made by
+    /// `make` unless it is there, or `again`, while this process holds the store's lock on
+    /// building them: `make` writes it into a file under `ingest`, within `room`, for the
+    /// place of the one stacked of them, and `placed` follows once it is put there, under
+    /// the lock still. Made `again`, it is put there as [`Partial::commit_again`] puts it.
+    fn rootfs_by(
+        &self,
+        layers: &[Layer],
+        limits: &Limits,
+        again: bool,
+        placed: impl FnOnce() -> Result<(), Error>,
+        make: impl FnOnce(&Room, &Path) -> Result<Partial, Error>,
+    ) -> Result<PathBuf, Error> {
+        let diff_ids: Vec<Digest> = layers.iter().map(|l| l.diff_id.clone()).collect();
+        let path = self.rootfs_path(&diff_ids)?;
+        if !again && let Some(kept) = self.kept_at(&path) {
+            return Ok(kept);
+        }
+        let building = self.building()?;
+        building.lock()?;
+        if !again && let Some(kept) = self.kept_at(&path) {
+            return Ok(kept);
+        }
+        let ingest = self.root.join("ingest");
+        let room = Room::new(&ingest, limits)?;
+        let partial = make(&room, &ingest)?;
+        let put = if again {
+            partial.commit_again(&path)?
+        } else {
+            // Nothing is there: it was looked for under the lock.
+            partial.commit(&path)?;
+            true
+        };
+        if put {
+            placed()?;
+        }
+        drop(building);
         Ok(path)
     }
 }
 
-/// Where decompressed layer bytes go: hashed, counted against the cap, and written.
+/// What preparing one image's root filesystem may take, its layers together (audit A10).
+/// The work is linear in what it reads, so these bound its time too.
+#[derive(Debug, Clone, Copy)]
+pub struct Limits {
+    /// Bytes its layers decompress to, which `ingest/` holds while it is built.
+    pub bytes: u64,
+    /// Entries in its layers, each held in memory while it is built.
+    pub entries: u64,
+    /// Bytes of its entries' names, link targets and xattrs, held in memory too.
+    pub metadata: u64,
+    /// Bytes to leave free on the store's filesystem: a build stops short of them.
+    pub keep_free: u64,
+    /// The bytes free now on the filesystem holding a path.
+    pub available: fn(&Path) -> io::Result<u64>,
+}
+
+impl Limits {
+    /// No limits, and room for anything.
+    pub fn none() -> Limits {
+        Limits {
+            bytes: u64::MAX,
+            entries: u64::MAX,
+            metadata: u64::MAX,
+            keep_free: 0,
+            available: |_| Ok(u64::MAX),
+        }
+    }
+}
+
+/// How much a build writes before it looks again at what is left free.
+const LOOK_EVERY: u64 = 64 << 20;
+
+/// The room a file system has for what is written to it: past `Limits::keep_free`, the
+/// writing stops (audit A10). Free space is looked at as it starts, and again each time
+/// what its writers wrote together reaches another `LOOK_EVERY` bytes, by the writer
+/// that reached it: writers share it without waiting on one another.
+#[derive(Debug)]
+pub struct Room {
+    dir: PathBuf,
+    keep_free: u64,
+    available: fn(&Path) -> io::Result<u64>,
+    /// Bytes its writers have written, together.
+    written: AtomicU64,
+}
+
+impl Room {
+    pub fn new(dir: &Path, limits: &Limits) -> io::Result<Room> {
+        let room = Room {
+            dir: dir.to_path_buf(),
+            keep_free: limits.keep_free,
+            available: limits.available,
+            written: AtomicU64::new(0),
+        };
+        room.look()?;
+        Ok(room)
+    }
+
+    fn look(&self) -> io::Result<()> {
+        // Nothing to leave free: nothing to look at, and a full disk fails the write.
+        if self.keep_free == 0 {
+            return Ok(());
+        }
+        let free = (self.available)(&self.dir)?;
+        if free < self.keep_free.saturating_add(LOOK_EVERY) {
+            return Err(io::Error::new(
+                io::ErrorKind::StorageFull,
+                format!(
+                    "{}: {free} bytes free, and {} are to be left (SHARDS_KEEP_FREE)",
+                    self.dir.display(),
+                    self.keep_free
+                ),
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn wrote(&self, n: usize) -> io::Result<()> {
+        if self.keep_free == 0 {
+            return Ok(());
+        }
+        let n = n as u64;
+        let before = self.written.fetch_add(n, Ordering::Relaxed);
+        if before / LOOK_EVERY != before.saturating_add(n) / LOOK_EVERY {
+            self.look()?;
+        }
+        Ok(())
+    }
+}
+
+/// A file being written, within the room its build has.
+struct Checked<'a> {
+    out: &'a mut Partial,
+    /// Shared by the layers unpacked at once.
+    room: &'a Room,
+}
+
+impl Write for Checked<'_> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.room.wrote(buf.len())?;
+        self.out.write(buf)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.out.flush()
+    }
+}
+
+/// What is written through `out`, hashed as it goes: the bytes an image over another's
+/// writes past that one's, which name it ([`Store::rootfs_written_over`]).
+struct Hashed<'a> {
+    out: Checked<'a>,
+    hasher: &'a mut Sha256,
+}
+
+impl Write for Hashed<'_> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let n = self.out.write(buf)?;
+        self.hasher.update(buf.get(..n).unwrap_or_default());
+        Ok(n)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.out.flush()
+    }
+}
+
+/// Where a layer's archive goes as it is checked: hashed, counted against the image's
+/// limit, and written to `out` when it is kept apart from its blob.
 struct Sink<'a> {
     hasher: Hasher,
-    out: &'a mut Partial,
-    written: u64,
+    out: Option<Checked<'a>>,
+    /// The image's bytes so far, its layers' together.
+    written: &'a AtomicU64,
     max: u64,
 }
 
 impl Write for Sink<'_> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.written = self.written.saturating_add(buf.len() as u64);
-        if self.written > self.max {
+        let n = buf.len() as u64;
+        let written = self.written.fetch_add(n, Ordering::AcqRel).saturating_add(n);
+        if written > self.max {
             return Err(io::Error::other(format!(
-                "a layer decompresses to more than {} bytes",
+                "the image decompresses to more than {} bytes (SHARDS_MAX_IMAGE_BYTES)",
                 self.max
             )));
         }
         self.hasher.update(buf);
-        self.out.write_all(buf)?;
+        if let Some(out) = &mut self.out {
+            out.write_all(buf)?;
+        }
         Ok(buf.len())
     }
 
@@ -518,7 +3255,9 @@ impl Write for Sink<'_> {
     }
 }
 
-enum Compression {
+/// What a blob's first bytes say it is compressed with, as containerd tells (D18).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Compression {
     None,
     Gzip,
     Zstd,
@@ -527,7 +3266,7 @@ enum Compression {
 /// containerd's `DetectCompression` (`pkg/archive/compression/compression.go`), given a
 /// blob's first 8 bytes: gzip's magic and method, a zstd frame's magic, or a skippable
 /// frame's, which counts only once its 8-byte header is whole.
-fn compression(head: &[u8]) -> Compression {
+pub fn compression(head: &[u8]) -> Compression {
     match head {
         [0x1f, 0x8b, 0x08, ..] => Compression::Gzip,
         [0x28, 0xb5, 0x2f, 0xfd, ..] | [0x50..=0x5f, 0x2a, 0x4d, 0x18, _, _, _, _, ..] => Compression::Zstd,
@@ -535,36 +3274,140 @@ fn compression(head: &[u8]) -> Compression {
     }
 }
 
-/// Decompresses every zstd frame in `src` and skips skippable ones (RFC 8878 §3.1.2), as
-/// klauspost/compress v1.20.0 does for containerd: each frame's checksum is verified, and
-/// its window may not pass 512 MiB. klauspost exempts single-segment frames up to 64 GiB,
-/// which it buffers whole; we cap those too.
-fn zstd(src: &mut BufReader<File>, out: &mut Sink<'_>) -> Result<(), Error> {
-    use ruzstd::decoding::errors::{FrameDecoderError, ReadFrameHeaderError};
-    use ruzstd::decoding::{FrameDecoder, StreamingDecoder};
-    let mut frame = FrameDecoder::new();
-    frame.set_max_window_size(ZSTD_MAX_WINDOW);
-    while !src.fill_buf()?.is_empty() {
-        match StreamingDecoder::new_with_decoder(&mut *src, &mut frame) {
-            Ok(mut decoder) => {
-                io::copy(&mut decoder, out)?;
-                let stored = frame.get_checksum_from_data();
-                if stored.is_some() && stored != frame.get_calculated_checksum() {
-                    return bad("zstd: a frame's checksum does not match its content");
-                }
-            }
-            Err(FrameDecoderError::ReadFrameHeaderError(ReadFrameHeaderError::SkipFrame {
-                length, ..
-            })) => {
-                let skipped = io::copy(&mut (&mut *src).take(u64::from(length)), &mut io::sink())?;
-                if skipped != u64::from(length) {
-                    return bad("a zstd skippable frame is cut short");
-                }
-            }
-            Err(e) => return bad(format!("zstd: {e}")),
+/// What zstd `src` holds, read as it is decoded, as klauspost/compress v1.20.0 decodes it
+/// for containerd and moby: every frame, skippable ones skipped (RFC 8878 §3.1.2), each
+/// frame's checksum verified, and no window past 512 MiB. klauspost exempts
+/// single-segment frames up to 64 GiB, which it buffers whole; we cap those too.
+pub struct Zstd<R> {
+    src: R,
+    frame: ruzstd::decoding::FrameDecoder,
+    /// Whether a frame is begun and not yet read to its end.
+    within: bool,
+}
+
+impl<R> std::fmt::Debug for Zstd<R> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Zstd")
+            .field("within", &self.within)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<R: BufRead> Zstd<R> {
+    pub fn new(src: R) -> Self {
+        let mut frame = ruzstd::decoding::FrameDecoder::new();
+        frame.set_max_window_size(ZSTD_MAX_WINDOW);
+        Zstd {
+            src,
+            frame,
+            within: false,
         }
     }
-    Ok(())
+}
+
+impl<R: BufRead> Read for Zstd<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        use ruzstd::decoding::BlockDecodingStrategy;
+        use ruzstd::decoding::errors::{FrameDecoderError, ReadFrameHeaderError};
+        let invalid = |said: String| io::Error::new(io::ErrorKind::InvalidData, said);
+        if buf.is_empty() {
+            return Ok(0);
+        }
+        loop {
+            if self.within {
+                // As ruzstd's StreamingDecoder reads a frame: decoded until as much as is
+                // asked can be collected, or the frame ends.
+                while self.frame.can_collect() < buf.len() && !self.frame.is_finished() {
+                    let more = buf.len() - self.frame.can_collect();
+                    self.frame
+                        .decode_blocks(&mut self.src, BlockDecodingStrategy::UptoBytes(more))
+                        .map_err(io::Error::other)?;
+                }
+                let n = self.frame.read(buf)?;
+                if n > 0 {
+                    return Ok(n);
+                }
+                let stored = self.frame.get_checksum_from_data();
+                if stored.is_some() && stored != self.frame.get_calculated_checksum() {
+                    return Err(invalid(
+                        "zstd: a frame's checksum does not match its content".into(),
+                    ));
+                }
+                self.within = false;
+            }
+            if self.src.fill_buf()?.is_empty() {
+                return Ok(0);
+            }
+            match self.frame.reset(&mut self.src) {
+                Ok(()) => self.within = true,
+                Err(FrameDecoderError::ReadFrameHeaderError(ReadFrameHeaderError::SkipFrame {
+                    length,
+                    ..
+                })) => {
+                    let length = u64::from(length);
+                    if io::copy(&mut (&mut self.src).take(length), &mut io::sink())? != length {
+                        return Err(invalid("a zstd skippable frame is cut short".into()));
+                    }
+                }
+                Err(e) => return Err(invalid(format!("zstd: {e}"))),
+            }
+        }
+    }
+}
+
+/// What gzip `src` holds, read as it is decoded, every member of it as Go's gzip reader
+/// reads them.
+pub fn gunzip<R: BufRead>(src: R) -> impl Read {
+    flate2::bufread::MultiGzDecoder::new(src)
+}
+
+/// Whether the files at `a` and `b` hold the same bytes.
+fn same_bytes(a: &Path, b: &Path) -> io::Result<bool> {
+    let (mut a, mut b) = (File::open(a)?, File::open(b)?);
+    if a.metadata()?.len() != b.metadata()?.len() {
+        return Ok(false);
+    }
+    let (mut x, mut y) = (Vec::with_capacity(CHUNK), Vec::with_capacity(CHUNK));
+    loop {
+        x.clear();
+        y.clear();
+        let n = (&mut a).take(CHUNK as u64).read_to_end(&mut x)?;
+        (&mut b).take(CHUNK as u64).read_to_end(&mut y)?;
+        if x != y {
+            return Ok(false);
+        }
+        if n == 0 {
+            return Ok(true);
+        }
+    }
+}
+
+/// What tells the root filesystem at `rootfs` from another put at its name since: its
+/// length and modification time; none where no file is there. A name keeps its bytes, but
+/// for one `pull --no-cache` finds holding others than its layers stack to, which it
+/// replaces with a later modification time ([`Store::rootfs_again_as_ready`]): what is
+/// made of a root filesystem and keyed by its name, a template (run.rs `template`), is
+/// keyed by this too, and so apart from what was made of the file it replaced.
+pub fn rootfs_stamp(rootfs: &Path) -> Option<String> {
+    let meta = fs::metadata(rootfs).ok().filter(fs::Metadata::is_file)?;
+    let modified = meta.modified().ok()?;
+    let (sign, since) = match modified.duration_since(std::time::UNIX_EPOCH) {
+        Ok(since) => ("", since),
+        Err(e) => ("-", e.duration()),
+    };
+    Some(format!(
+        "{} {sign}{}.{:09}",
+        meta.len(),
+        since.as_secs(),
+        since.subsec_nanos()
+    ))
+}
+
+/// Where what wrote the root filesystem at `rootfs` is named.
+fn from_path(rootfs: &Path) -> PathBuf {
+    let mut name = rootfs.as_os_str().to_os_string();
+    name.push(".from");
+    PathBuf::from(name)
 }
 
 #[cfg(test)]
@@ -573,21 +3416,591 @@ mod tests {
     use super::*;
     use crate::tar::tests::{Member, Writer};
 
+    /// What a filesystem without F_FULLFSYNC holds is made durable with fsync instead:
+    /// /dev/null refuses F_FULLFSYNC and takes fsync, as an SMB share does, where std's
+    /// sync_all fails (review 1.13).
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_file_without_full_fsync_is_synced_still() {
+        let null = std::fs::OpenOptions::new().write(true).open("/dev/null").unwrap();
+        assert!(null.sync_all().is_err(), "std's sync_all took F_FULLFSYNC here");
+        sync_durable(&null).unwrap();
+        let held = shards_testdir::TempDir::new("sync").unwrap();
+        let dir = std::fs::File::open(&held).unwrap();
+        sync_durable(&dir).unwrap();
+    }
+
+    /// A stage goes whole, a tree of clones in it too, its files counted; on macOS an
+    /// immutable clone and directory with it, never what a link in it names, which keeps
+    /// its own flag.
+    /// A lease let go of lets a collection in at once, though a copy of its lock's
+    /// descriptor lives on, as a program another thread is starting holds one until its
+    /// exec (PM M244); and a collection's hold, so too a lease.
+    #[test]
+    fn a_hold_let_go_goes_while_a_copy_of_its_lock_lives() {
+        let dir = temp("hold-copy");
+        let store = Store::open(&dir).unwrap();
+        let lease = store.lease().unwrap();
+        let copy = lease._file.0.try_clone().unwrap();
+        drop(lease);
+        let file = store.lease_file().unwrap();
+        assert!(file.try_lock().is_ok(), "the lease outlasted its drop");
+        file.unlock().unwrap();
+        drop(copy);
+        let (_, whole) = store.collect().unwrap();
+        let copy = whole._file.0.try_clone().unwrap();
+        drop(whole);
+        assert!(
+            file.try_lock_shared().is_ok(),
+            "the collection outlasted its drop"
+        );
+        drop(copy);
+    }
+
+    #[test]
+    fn a_stage_goes_whole_and_follows_no_link() {
+        let held = temp("stage-whole");
+        let stage = held.join("stage");
+        fs::create_dir_all(stage.join("tree/a/b")).unwrap();
+        fs::write(stage.join("pack"), b"12345").unwrap();
+        fs::write(stage.join("tree/a/b/f"), b"abc").unwrap();
+        let outside = held.join("outside");
+        fs::write(&outside, b"mine").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&outside, stage.join("tree/a/link")).unwrap();
+        #[cfg(target_os = "macos")]
+        let flag = |p: &Path, on: bool| {
+            let what = if on { "uchg" } else { "nouchg" };
+            assert!(
+                std::process::Command::new("chflags")
+                    .args(["-h", what])
+                    .arg(p)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        };
+        #[cfg(target_os = "macos")]
+        {
+            flag(&stage.join("tree/a/b/f"), true);
+            flag(&stage.join("tree/a/b"), true);
+            flag(&outside, true);
+        }
+        let (files, bytes) = remove_tree(&stage);
+        assert!(!stage.exists(), "the stage is gone");
+        assert_eq!(fs::read(&outside).unwrap(), b"mine", "what the link names stays");
+        #[cfg(target_os = "macos")]
+        {
+            use std::os::macos::fs::MetadataExt;
+            assert_ne!(
+                fs::metadata(&outside).unwrap().st_flags() & libc::UF_IMMUTABLE,
+                0,
+                "with its flag"
+            );
+            flag(&outside, false);
+        }
+        assert_eq!(
+            (files, bytes),
+            (
+                2 + u64::from(cfg!(unix)),
+                8 + if cfg!(unix) { link_len(&outside) } else { 0 }
+            )
+        );
+    }
+
+    /// A link's own length, as lstat gives it: its target's path.
+    fn link_len(target: &Path) -> u64 {
+        target.as_os_str().len() as u64
+    }
+
     fn sha256(bytes: &[u8]) -> Digest {
         Digest::from_hash(Algorithm::Sha256, &Sha256::digest(bytes))
     }
 
-    fn temp(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("shards-store-{name}-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
-        dir
+    /// A directory of its own, removed when dropped, whether its test passes or panics.
+    fn temp(name: &str) -> shards_testdir::TempDir {
+        shards_testdir::TempDir::new(&format!("store-{name}")).unwrap()
     }
 
     fn gzip(bytes: &[u8]) -> Vec<u8> {
         let mut e = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
         e.write_all(bytes).unwrap();
         e.finish().unwrap()
+    }
+
+    /// A descriptor of `size` bytes named `digest`.
+    /// A name given while collections run is never lost: its record goes through
+    /// `ingest/`, which a collection empties, so the alias holds a lease.
+    #[test]
+    fn names_given_during_collections_are_kept() {
+        let root = temp("alias-collect");
+        let store = Store::open(&root).unwrap();
+        let blob = b"manifest".to_vec();
+        let d = sha256(&blob);
+        store.ingest(&d, blob.len() as u64, &mut &blob[..]).unwrap();
+        store
+            .tag("docker.io/library/a:1", &described(&d, blob.len()), &d, &[])
+            .unwrap();
+        let stop = std::sync::atomic::AtomicBool::new(false);
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                while !stop.load(std::sync::atomic::Ordering::SeqCst) {
+                    let _ = store.collect().unwrap();
+                }
+            });
+            for n in 0..40 {
+                let name = format!("docker.io/library/b:{n}");
+                let aliased = store.alias(&name, "docker.io/library/a:1");
+                if aliased.is_err() {
+                    stop.store(true, std::sync::atomic::Ordering::SeqCst);
+                }
+                aliased.unwrap();
+            }
+            stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        });
+        assert_eq!(store.references().unwrap().len(), 41);
+    }
+
+    /// Images are listed by what their references resolved to, newest first: each one's
+    /// references, its index's manifests (the attestation told apart, the one not here
+    /// not whole), and the bytes of each manifest here, a blob as often as it is named,
+    /// summed without the index's.
+    #[test]
+    fn images_are_listed_by_what_their_references_resolved_to() {
+        let root = temp("images");
+        let store = Store::open(&root).unwrap();
+        let put = |blob: &[u8]| {
+            let d = sha256(blob);
+            store.ingest(&d, blob.len() as u64, &mut &blob[..]).unwrap();
+            d
+        };
+        let layer = b"layer bytes".to_vec();
+        let config = |created: &str| {
+            format!(
+                r#"{{"architecture":"arm64","os":"linux","created":"{created}","rootfs":{{"type":"layers","diff_ids":["{}"]}}}}"#,
+                sha256(&layer)
+            )
+            .into_bytes()
+        };
+        let manifest = |config: &[u8], copies: usize| {
+            let layer = format!(
+                r#"{{"mediaType":"application/vnd.oci.image.layer.v1.tar","digest":"{}","size":{}}}"#,
+                sha256(&layer),
+                layer.len()
+            );
+            format!(
+                r#"{{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{{"mediaType":"application/vnd.oci.image.config.v1+json","digest":"{}","size":{}}},"layers":[{}]}}"#,
+                sha256(config),
+                config.len(),
+                vec![layer; copies].join(",")
+            )
+            .into_bytes()
+        };
+        put(&layer);
+        let (old_config, new_config) = (config("2024-01-02T03:04:05Z"), config("2025-01-02T03:04:05Z"));
+        put(&old_config);
+        put(&new_config);
+        let (old, new) = (manifest(&old_config, 1), manifest(&new_config, 1));
+        let (old_digest, new_digest) = (put(&old), put(&new));
+        // Another platform's, which shares the layer and names it twice.
+        let twice_config = config("2023-01-02T03:04:05Z");
+        put(&twice_config);
+        let twice = manifest(&twice_config, 2);
+        let twice_digest = put(&twice);
+        let absent = format!("sha256:{}", "1".repeat(64));
+        let attestation = format!("sha256:{}", "2".repeat(64));
+        let index = format!(
+            r#"{{"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[{{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"{old_digest}","size":{},"platform":{{"architecture":"arm64","os":"linux","variant":"v8"}}}},{{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"{twice_digest}","size":{},"platform":{{"architecture":"arm","os":"linux","variant":"v7"}}}},{{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"{absent}","size":9,"platform":{{"architecture":"amd64","os":"linux"}}}},{{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"{attestation}","size":9,"annotations":{{"vnd.docker.reference.type":"attestation-manifest"}},"platform":{{"architecture":"unknown","os":"unknown"}}}}]}}"#,
+            old.len(),
+            twice.len()
+        )
+        .into_bytes();
+        let index_digest = put(&index);
+        let desc = |d: &Digest, len: usize| Descriptor {
+            platform: None,
+            ..described(d, len)
+        };
+        store
+            .tag(
+                "docker.io/library/a:2",
+                &desc(&old_digest, old.len()),
+                &index_digest,
+                &[],
+            )
+            .unwrap();
+        store
+            .tag(
+                "docker.io/library/a:1",
+                &desc(&old_digest, old.len()),
+                &index_digest,
+                &[],
+            )
+            .unwrap();
+        store
+            .tag(
+                "docker.io/library/b:1",
+                &desc(&new_digest, new.len()),
+                &new_digest,
+                &[],
+            )
+            .unwrap();
+        let images = store.images().unwrap();
+        let by_id = |d: &Digest| images.iter().find(|i| i.id == *d).unwrap();
+        assert_eq!(images.len(), 2);
+        let a = by_id(&index_digest);
+        assert_eq!(a.references, ["docker.io/library/a:1", "docker.io/library/a:2"]);
+        assert_eq!(a.created.as_deref(), Some("2024-01-02T03:04:05Z"));
+        let here = (old.len() + old_config.len() + layer.len()) as u64;
+        let twice_here = (twice.len() + twice_config.len() + 2 * layer.len()) as u64;
+        assert_eq!((a.content, a.unpacked), (here + twice_here, 0));
+        let shown: Vec<(Option<&str>, bool, bool, u64)> = a
+            .manifests
+            .iter()
+            .map(|m| (m.platform.as_deref(), m.attestation, m.available, m.content))
+            .collect();
+        assert_eq!(
+            shown,
+            [
+                (Some("linux/arm64/v8"), false, true, here),
+                (Some("linux/arm/v7"), false, true, twice_here),
+                (Some("linux/amd64"), false, false, 0),
+                (Some("unknown/unknown"), true, false, 0),
+            ]
+        );
+        let b = by_id(&new_digest);
+        assert_eq!(
+            (b.references.as_slice(), b.content),
+            (
+                &["docker.io/library/b:1".to_string()][..],
+                (new.len() + new_config.len() + layer.len()) as u64
+            )
+        );
+        assert_eq!(b.manifests.len(), 1);
+        assert_eq!(
+            b.manifests[0].platform.as_deref(),
+            Some("linux/arm64"),
+            "from its config"
+        );
+        // A layer the manifest names that has gone: the manifest is not whole.
+        fs::remove_file(store.blob_path(&sha256(&layer))).unwrap();
+        let images = store.images().unwrap();
+        assert!(!images.iter().find(|i| i.id == new_digest).unwrap().manifests[0].available);
+    }
+
+    /// One platform of a multi-platform image is found, read and taken away alone (D179):
+    /// found where it is here whole, read with its own config, held by another image that
+    /// names it too, and taken away with its attestation, the records that named it naming
+    /// the platform left, then the index; what it alone held goes with the collection.
+    #[test]
+    fn one_platform_of_an_image_is_found_read_and_taken_away_alone() {
+        let root = temp("platforms");
+        let store = Store::open(&root).unwrap();
+        let put = |blob: &[u8]| {
+            let d = sha256(blob);
+            store.ingest(&d, blob.len() as u64, &mut &blob[..]).unwrap();
+            d
+        };
+        let platform = |arch: &str| {
+            crate::platform::normalize(&oci::Platform {
+                architecture: arch.into(),
+                os: "linux".into(),
+                ..oci::Platform::default()
+            })
+        };
+        // Each platform's own layer, config and manifest.
+        let mut made = Vec::new();
+        for arch in ["arm64", "amd64"] {
+            let layer = format!("{arch} layer").into_bytes();
+            let config = format!(
+                r#"{{"architecture":"{arch}","os":"linux","rootfs":{{"type":"layers","diff_ids":["{}"]}}}}"#,
+                sha256(&layer)
+            )
+            .into_bytes();
+            let manifest = format!(
+                r#"{{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{{"mediaType":"application/vnd.oci.image.config.v1+json","digest":"{}","size":{}}},"layers":[{{"mediaType":"application/vnd.oci.image.layer.v1.tar","digest":"{}","size":{}}}]}}"#,
+                sha256(&config),
+                config.len(),
+                sha256(&layer),
+                layer.len()
+            )
+            .into_bytes();
+            let (layer_d, config_d, manifest_d) = (put(&layer), put(&config), put(&manifest));
+            made.push((arch, layer_d, config_d, manifest_d, manifest.len()));
+        }
+        // amd64's attestation, a manifest of its own.
+        let statement = b"statement".to_vec();
+        let statement_d = put(&statement);
+        let attestation = format!(
+            r#"{{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{{"mediaType":"application/vnd.oci.image.config.v1+json","digest":"{statement_d}","size":{}}},"layers":[]}}"#,
+            statement.len()
+        )
+        .into_bytes();
+        let attestation_d = put(&attestation);
+        let entry = |(arch, _, _, d, len): &(&str, Digest, Digest, Digest, usize)| {
+            format!(
+                r#"{{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"{d}","size":{len},"platform":{{"architecture":"{arch}","os":"linux"}}}}"#
+            )
+        };
+        let (arm, amd) = (&made[0], &made[1]);
+        let index = format!(
+            r#"{{"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[{},{},{{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"{attestation_d}","size":{},"annotations":{{"vnd.docker.reference.digest":"{}","vnd.docker.reference.type":"attestation-manifest"}},"platform":{{"architecture":"unknown","os":"unknown"}}}}]}}"#,
+            entry(arm),
+            entry(amd),
+            attestation.len(),
+            amd.3
+        )
+        .into_bytes();
+        let index_d = put(&index);
+        let named_by = |manifest: &(&str, Digest, Digest, Digest, usize)| Descriptor {
+            platform: Some(oci::Platform {
+                architecture: manifest.0.into(),
+                os: "linux".into(),
+                ..oci::Platform::default()
+            }),
+            ..described(&manifest.3, manifest.4)
+        };
+        // The record names the platform this host's microVMs run best.
+        let best = if crate::platform::pullable()
+            .iter()
+            .position(|t| *t == platform("arm64"))
+            < crate::platform::pullable()
+                .iter()
+                .position(|t| *t == platform("amd64"))
+        {
+            (arm, amd)
+        } else {
+            (amd, arm)
+        };
+        store
+            .tag("docker.io/library/a:1", &named_by(best.0), &index_d, &[])
+            .unwrap();
+        let named = || {
+            store
+                .named()
+                .unwrap()
+                .into_iter()
+                .find(|n| n.id == index_d)
+                .unwrap()
+        };
+        for m in [arm, amd] {
+            let found = store.manifest_for(&named(), &platform(m.0)).unwrap();
+            assert_eq!(found.digest, m.3.to_string());
+            let image = store.image_as(&named(), &found).unwrap();
+            assert_eq!(
+                (image.id.clone(), image.manifest.clone()),
+                (index_d.clone(), m.3.clone())
+            );
+            let config = String::from_utf8(image.config.unwrap()).unwrap();
+            assert!(config.contains(&format!("\"{}\"", m.0)), "{config}");
+        }
+        assert_eq!(store.manifest_for(&named(), &platform("riscv64")), None);
+        // Another image that is amd64's manifest alone holds it.
+        assert!(store.manifests_held(Some(&index_d)).unwrap().is_empty());
+        store
+            .tag("docker.io/library/b:1", &named_by(amd), &amd.3, &[])
+            .unwrap();
+        assert_eq!(
+            store
+                .manifests_held(Some(&index_d))
+                .unwrap()
+                .get(&amd.3.to_string()),
+            Some(&"docker.io/library/b:1".to_string())
+        );
+        store.untag("docker.io/library/b:1").unwrap();
+        // The platform the record names goes: the record names the other.
+        store
+            .remove_platforms(&index_d, std::slice::from_ref(&best.0.3))
+            .unwrap();
+        assert_eq!(store.manifest_for(&named(), &platform(best.0.0)), None);
+        assert_eq!(named().manifest.digest, best.1.3.to_string());
+        let (_, whole) = store.collect().unwrap();
+        drop(whole);
+        for d in [&best.0.1, &best.0.2, &best.0.3] {
+            assert!(!store.has(d), "{d} went with it");
+        }
+        for d in [&best.1.1, &best.1.2, &best.1.3, &index_d] {
+            assert!(store.has(d), "{d} stays");
+        }
+        // amd64's attestation goes with it, whichever goes first.
+        assert_eq!(store.has(&attestation_d), best.0.0 != "amd64");
+        // The last platform goes: the record names the index itself.
+        store
+            .remove_platforms(&index_d, std::slice::from_ref(&best.1.3))
+            .unwrap();
+        assert_eq!(named().manifest.digest, index_d.to_string());
+        assert!(!store.has(&attestation_d));
+        assert!(
+            store
+                .images()
+                .unwrap()
+                .iter()
+                .all(|i| i.manifests.iter().all(|m| !m.available))
+        );
+    }
+
+    /// A record whose descriptor nothing can be held by, its size not its blob's,
+    /// breaks neither the listing nor a collection: the listing shows its manifest as not
+    /// here, as dockerd lists one it cannot read (D18), and the rest as ever; a collection runs,
+    /// and keeps what the other image needs.
+    #[test]
+    fn a_record_nothing_can_be_held_by_breaks_nothing_else() {
+        let root = temp("invalid-record");
+        let store = Store::open(&root).unwrap();
+        let put = |blob: &[u8]| {
+            let d = sha256(blob);
+            store.ingest(&d, blob.len() as u64, &mut &blob[..]).unwrap();
+            d
+        };
+        let layer = b"layer bytes".to_vec();
+        put(&layer);
+        let manifest = |arch: &str| {
+            let config = format!(
+                r#"{{"architecture":"{arch}","os":"linux","rootfs":{{"type":"layers","diff_ids":["{}"]}}}}"#,
+                sha256(&layer)
+            )
+            .into_bytes();
+            put(&config);
+            format!(
+                r#"{{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{{"mediaType":"application/vnd.oci.image.config.v1+json","digest":"{}","size":{}}},"layers":[{{"mediaType":"application/vnd.oci.image.layer.v1.tar","digest":"{}","size":{}}}]}}"#,
+                sha256(&config),
+                config.len(),
+                sha256(&layer),
+                layer.len()
+            )
+            .into_bytes()
+        };
+        let (good, bad) = (manifest("arm64"), manifest("amd64"));
+        let (good_digest, bad_digest) = (put(&good), put(&bad));
+        store
+            .tag(
+                "docker.io/library/good:1",
+                &described(&good_digest, good.len()),
+                &good_digest,
+                &[],
+            )
+            .unwrap();
+        store
+            .tag(
+                "docker.io/library/bad:1",
+                &described(&bad_digest, bad.len() + 1),
+                &bad_digest,
+                &[],
+            )
+            .unwrap();
+        let images = store.images().unwrap();
+        assert_eq!(images.len(), 2);
+        let listed = |d: &Digest| images.iter().find(|i| i.id == *d).unwrap();
+        assert!(listed(&good_digest).manifests.iter().all(|m| m.available));
+        assert!(listed(&bad_digest).manifests.iter().all(|m| !m.available));
+        store.collect().unwrap();
+        assert!(store.has(&good_digest) && store.has(&sha256(&layer)));
+    }
+
+    /// A download that opened the partial file before another moved it into place, and
+    /// then had the lock, finds it no longer at its path: it neither goes on with the
+    /// stored blob nor removes another's partial there, but starts over with a file of
+    /// its own (download_as).
+    #[cfg(unix)]
+    #[test]
+    fn a_download_waiting_on_a_finished_one_finds_its_file_moved() {
+        let root = temp("download-moved");
+        let store = Store::open(&root).unwrap();
+        let blob = b"the blob".to_vec();
+        let digest = sha256(&blob);
+        let limits = Limits::none();
+        let path = root
+            .join("ingest")
+            .join(format!("sha256-{}.partial", digest.hex()));
+        let mut first = store
+            .download(&digest, blob.len() as u64, &limits)
+            .unwrap()
+            .unwrap();
+        let waiting = File::options().read(true).write(true).open(&path).unwrap();
+        first.write(&blob).unwrap();
+        first.commit().unwrap();
+        waiting.lock().unwrap();
+        assert!(!still_at(&waiting, &path).unwrap());
+        // A third download's partial at the path is not the one waited on either.
+        let third = File::create(&path).unwrap();
+        assert!(!still_at(&waiting, &path).unwrap());
+        assert!(still_at(&third, &path).unwrap());
+    }
+
+    /// A name moved to another image leaves the image it named dangling, when that was its
+    /// last name, as dockerd leaves it (D18; `<none>`, still found by its ID); named again, it
+    /// is dangling no more; named again what it names, nothing is rewritten.
+    #[test]
+    fn an_image_that_loses_its_last_name_stays_dangling() {
+        let root = temp("dangling");
+        let store = Store::open(&root).unwrap();
+        let put = |blob: &[u8]| {
+            let d = sha256(blob);
+            store.ingest(&d, blob.len() as u64, &mut &blob[..]).unwrap();
+            d
+        };
+        let layer = b"layer".to_vec();
+        put(&layer);
+        let manifest = |arch: &str| {
+            let config = format!(
+                r#"{{"architecture":"{arch}","os":"linux","rootfs":{{"type":"layers","diff_ids":["{}"]}}}}"#,
+                sha256(&layer)
+            )
+            .into_bytes();
+            put(&config);
+            format!(
+                r#"{{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{{"mediaType":"application/vnd.oci.image.config.v1+json","digest":"{}","size":{}}},"layers":[{{"mediaType":"application/vnd.oci.image.layer.v1.tar","digest":"{}","size":{}}}]}}"#,
+                sha256(&config),
+                config.len(),
+                sha256(&layer),
+                layer.len()
+            )
+            .into_bytes()
+        };
+        let (x, y) = (manifest("arm64"), manifest("amd64"));
+        let (xd, yd) = (put(&x), put(&y));
+        let tag = |name: &str, m: &[u8], d: &Digest| store.tag(name, &described(d, m.len()), d, &[]).unwrap();
+        tag("docker.io/library/a:1", &x, &xd);
+        tag("docker.io/library/a:1", &y, &yd);
+        let dangling_x = format!("{DANGLING}{xd}");
+        let names = |d: &Digest| -> Vec<String> {
+            store
+                .references()
+                .unwrap()
+                .into_iter()
+                .filter(|(_, id)| id == d)
+                .map(|(name, _)| name)
+                .collect()
+        };
+        assert_eq!(names(&xd), std::slice::from_ref(&dangling_x));
+        assert_eq!(names(&yd), ["docker.io/library/a:1"]);
+        // Named again, it is dangling no more.
+        tag("docker.io/library/b:1", &x, &xd);
+        assert_eq!(names(&xd), ["docker.io/library/b:1"]);
+        // A name moved off an image that keeps another leaves nothing dangling.
+        tag("docker.io/library/c:1", &x, &xd);
+        tag("docker.io/library/c:1", &y, &yd);
+        assert_eq!(names(&xd), ["docker.io/library/b:1"]);
+        // The same image named again: its record is not rewritten.
+        let record = root.join(format!("refs/v{REFS_VERSION}"));
+        let path = fs::read_dir(&record)
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .find(|p| fs::read_to_string(p).unwrap().contains("docker.io/library/a:1"))
+            .unwrap();
+        let before = fs::metadata(&path).unwrap().modified().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        tag("docker.io/library/a:1", &y, &yd);
+        assert_eq!(fs::metadata(&path).unwrap().modified().unwrap(), before);
+    }
+
+    fn described(digest: &Digest, size: usize) -> Descriptor {
+        Descriptor {
+            media_type: oci::media::OCI_MANIFEST.into(),
+            digest: digest.to_string(),
+            size: i64::try_from(size).unwrap(),
+            platform: None,
+            annotations: Default::default(),
+        }
     }
 
     #[test]
@@ -599,7 +4012,10 @@ mod tests {
         let d = sha256(blob);
         let path = store.ingest(&d, blob.len() as u64, &mut &blob[..]).unwrap();
         assert_eq!(fs::read(&path).unwrap(), blob);
-        assert_eq!(store.read(&d, 100).unwrap(), blob);
+        assert_eq!(
+            store.content(&described(&d, blob.len()), 100).unwrap(),
+            Some(blob.to_vec())
+        );
         // Fetched again, the stored copy stays.
         assert_eq!(store.ingest(&d, blob.len() as u64, &mut &blob[..]).unwrap(), path);
         let other = sha256(b"other");
@@ -644,16 +4060,16 @@ mod tests {
                 media_type: oci::media::DOCKER_LAYER_GZIP.into(),
                 diff_id: diff_id.clone(),
             };
-            let out = store.unpack(&layer, 1 << 20).unwrap();
-            assert_eq!(fs::read(&out.path).unwrap(), tar);
+            let out = unpack_within(&store, &layer, 1 << 20).unwrap();
+            assert_eq!(fs::read(out.path()).unwrap(), tar);
             drop(out);
             // A wrong DiffID, or a cap below the size, and nothing is kept.
             let wrong = Layer {
                 diff_id: sha256(b"x"),
                 ..layer.clone()
             };
-            assert!(store.unpack(&wrong, 1 << 20).is_err());
-            assert!(store.unpack(&layer, 100).is_err());
+            assert!(unpack_within(&store, &wrong, 1 << 20).is_err());
+            assert!(unpack_within(&store, &layer, 100).is_err());
             assert_eq!(fs::read_dir(root.join("ingest")).unwrap().count(), 0);
         }
         // OCI's plain tar type is read as it is, whatever its bytes look like.
@@ -662,9 +4078,59 @@ mod tests {
             media_type: oci::media::OCI_LAYER.into(),
             diff_id,
         };
-        assert!(store.unpack(&raw(diff_id.clone()), 1 << 20).is_err());
-        let out = store.unpack(&raw(sha256(&gz)), 1 << 20).unwrap();
-        assert_eq!(fs::read(&out.path).unwrap(), gz);
+        assert!(unpack_within(&store, &raw(diff_id.clone()), 1 << 20).is_err());
+        let out = unpack_within(&store, &raw(sha256(&gz)), 1 << 20).unwrap();
+        assert_eq!(fs::read(out.path()).unwrap(), gz);
+        drop(out);
+        // A plain blob is read where it is, and still checked: one changed on disk after
+        // it was stored is refused.
+        let plain = Layer {
+            blob: sha256(&tar),
+            media_type: oci::media::OCI_LAYER.into(),
+            diff_id: diff_id.clone(),
+        };
+        assert!(unpack_within(&store, &plain, 1 << 20).is_ok());
+        let path = store.blob_path(&plain.blob);
+        let mut perms = fs::metadata(&path).unwrap().permissions();
+        #[allow(clippy::permissions_set_readonly_false)]
+        perms.set_readonly(false);
+        fs::set_permissions(&path, perms).unwrap();
+        let mut changed = tar.clone();
+        changed[600] ^= 1;
+        fs::write(&path, &changed).unwrap();
+        match unpack_within(&store, &plain, 1 << 20) {
+            Err(e) => assert!(e.to_string().contains("not its DiffID"), "{e}"),
+            Ok(_) => panic!("a changed blob was taken"),
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// A blob written in writes of any size, across its thread's pieces, is stored under
+    /// the digest of exactly its bytes; one dropped uncommitted leaves nothing behind.
+    #[test]
+    fn blobs_written_in_any_pieces_are_stored_whole() {
+        let root = temp("blob-writer");
+        let store = Store::open(&root).unwrap();
+        let blob: Vec<u8> = (0..CHUNK * 3 + 777).map(|i| (i % 253) as u8).collect();
+        for step in [1, 4096, CHUNK - 1, CHUNK, CHUNK + 1, blob.len()] {
+            let mut w = store.writer().unwrap();
+            for c in blob.chunks(step) {
+                w.write_all(c).unwrap();
+            }
+            let (digest, size) = w.commit().unwrap();
+            assert_eq!(
+                (digest.clone(), size),
+                (sha256(&blob), blob.len() as u64),
+                "writes of {step}"
+            );
+            assert_eq!(fs::read(store.blob_path(&digest)).unwrap(), blob);
+        }
+        let empty = store.writer().unwrap().commit().unwrap();
+        assert_eq!(empty, (sha256(b""), 0));
+        let mut w = store.writer().unwrap();
+        w.write_all(&blob).unwrap();
+        drop(w);
+        assert_eq!(fs::read_dir(root.join("ingest")).unwrap().count(), 0);
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -675,10 +4141,10 @@ mod tests {
         let blob: Vec<u8> = (0..100_000u32).map(|i| (i % 251) as u8).collect();
         let d = sha256(&blob);
         let size = blob.len() as u64;
-        let mut first = store.download(&d, size).unwrap().unwrap();
+        let mut first = store.download(&d, size, &Limits::none()).unwrap().unwrap();
         first.write(&blob[..40_000]).unwrap();
         drop(first);
-        let mut second = store.download(&d, size).unwrap().unwrap();
+        let mut second = store.download(&d, size, &Limits::none()).unwrap().unwrap();
         assert_eq!(second.offset(), 40_000, "the first attempt's bytes are kept");
         assert!(
             second.write(&vec![0u8; 60_001]).is_err(),
@@ -687,14 +4153,24 @@ mod tests {
         second.write(&blob[40_000..]).unwrap();
         let path = second.commit().unwrap();
         assert_eq!(fs::read(path).unwrap(), blob);
-        assert!(store.download(&d, size).unwrap().is_none(), "already stored");
+        assert!(
+            store.download(&d, size, &Limits::none()).unwrap().is_none(),
+            "already stored"
+        );
         // Wrong bytes are thrown away, so the next attempt starts clean.
         let other = sha256(b"other");
-        let mut wrong = store.download(&other, 5).unwrap().unwrap();
+        let mut wrong = store.download(&other, 5, &Limits::none()).unwrap().unwrap();
         wrong.write(b"wrong").unwrap();
         assert!(wrong.commit().is_err());
-        assert_eq!(store.download(&other, 5).unwrap().unwrap().offset(), 0);
-        let mut again = store.download(&other, 5).unwrap().unwrap();
+        assert_eq!(
+            store
+                .download(&other, 5, &Limits::none())
+                .unwrap()
+                .unwrap()
+                .offset(),
+            0
+        );
+        let mut again = store.download(&other, 5, &Limits::none()).unwrap().unwrap();
         again.write(b"wro").unwrap();
         again.restart().unwrap();
         assert_eq!(again.offset(), 0);
@@ -708,11 +4184,14 @@ mod tests {
         let store = Store::open(&root).unwrap();
         let blob = b"shared blob".to_vec();
         let d = sha256(&blob);
-        let mut holder = store.download(&d, blob.len() as u64).unwrap().unwrap();
+        let mut holder = store
+            .download(&d, blob.len() as u64, &Limits::none())
+            .unwrap()
+            .unwrap();
         let (tx, rx) = std::sync::mpsc::channel();
         let (store2, d2, n) = (Store::open(&root).unwrap(), d.clone(), blob.len() as u64);
         let waiter = std::thread::spawn(move || {
-            let _ = tx.send(store2.download(&d2, n).map(|d| d.is_none()));
+            let _ = tx.send(store2.download(&d2, n, &Limits::none()).map(|d| d.is_none()));
         });
         // While the holder has the blob's lock, the other download waits.
         assert!(rx.recv_timeout(std::time::Duration::from_millis(300)).is_err());
@@ -732,19 +4211,127 @@ mod tests {
     fn references_record_their_manifest() {
         let root = temp("tags");
         let store = Store::open(&root).unwrap();
-        let (a, b) = (sha256(b"a"), sha256(b"b"));
+        let a = described(&sha256(b"a"), 1);
+        let b = Descriptor {
+            platform: Some(oci::Platform {
+                architecture: "arm64".into(),
+                os: "linux".into(),
+                ..oci::Platform::default()
+            }),
+            ..described(&sha256(b"b"), 1)
+        };
         let name = "docker.io/library/alpine:latest";
         assert_eq!(store.tagged(name).unwrap(), None);
-        store.tag(name, &a).unwrap();
-        assert_eq!(store.tagged(name).unwrap(), Some(a));
-        store.tag(name, &b).unwrap();
-        assert_eq!(store.tagged(name).unwrap(), Some(b));
+        assert_eq!(store.resolved(name).unwrap(), None);
+        let a_digest = Digest::parse(&a.digest).unwrap();
+        store.tag(name, &a, &a_digest, &[]).unwrap();
+        assert_eq!(store.tagged(name).unwrap(), Some(a.clone()));
+        assert_eq!(store.resolved(name).unwrap(), Some(a_digest.clone()));
+        // Through an index: the manifest chosen, and the index the reference named.
+        let index = sha256(b"index");
+        store.tag(name, &b, &index, &[]).unwrap();
+        assert_eq!(store.tagged(name).unwrap(), Some(b.clone()));
+        assert_eq!(store.resolved(name).unwrap(), Some(index));
+        // A record from before `resolved` was kept resolves to its manifest.
+        let path = store.tag_path(name);
+        let record: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        let mut old = record.clone();
+        old.as_object_mut().unwrap().remove("resolved");
+        fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
+        assert_eq!(store.tagged(name).unwrap(), Some(b.clone()));
+        assert_eq!(
+            store.resolved(name).unwrap(),
+            Some(Digest::parse(&b.digest).unwrap())
+        );
+        assert_eq!(store.tagged("docker.io/library/alpine:3").unwrap(), None);
+        // A record of the shape before descriptors is not read: the image is pulled again.
+        let old = root
+            .join("refs")
+            .join(Digest::from_hash(Algorithm::Sha256, &Sha256::digest(b"docker.io/library/alpine:3")).hex());
+        fs::write(
+            &old,
+            format!(
+                r#"{{"reference":"docker.io/library/alpine:3","manifest":"{}"}}"#,
+                a.digest
+            ),
+        )
+        .unwrap();
         assert_eq!(store.tagged("docker.io/library/alpine:3").unwrap(), None);
         let _ = fs::remove_dir_all(&root);
     }
 
+    /// A reference is recorded only once what it names is durable: a directory of what
+    /// it names that cannot be synced fails the record, and nothing is recorded (audit
+    /// A15). Windows has no directory to sync.
+    #[cfg(unix)]
     #[test]
-    fn compression_is_detected_as_containerd_detects_it() {
+    fn a_reference_is_recorded_once_what_it_names_is_durable() {
+        let root = temp("tag-order");
+        let store = Store::open(&root).unwrap();
+        let name = "docker.io/library/alpine:latest";
+        let manifest = described(&sha256(b"a"), 1);
+        let sha512 = Digest::from_hash(Algorithm::Sha512, &Sha512::digest(b"a"));
+        fs::remove_dir_all(root.join("blobs/sha512")).unwrap();
+        let resolved = Digest::parse(&manifest.digest).unwrap();
+        assert!(store.tag(name, &manifest, &resolved, &[sha512]).is_err());
+        assert_eq!(store.tagged(name).unwrap(), None, "nothing recorded");
+        fs::remove_dir_all(root.join(format!("rootfs/v{ROOTFS_VERSION}"))).unwrap();
+        assert!(store.tag(name, &manifest, &resolved, &[]).is_err());
+        assert_eq!(store.tagged(name).unwrap(), None, "nothing recorded");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn small_blobs_are_checked_again_whenever_they_are_read() {
+        let root = temp("content");
+        let store = Store::open(&root).unwrap();
+        let blob = br#"{"config":{"Cmd":["exit","7"]}}"#;
+        let d = sha256(blob);
+        let desc = described(&d, blob.len());
+        assert_eq!(store.content(&desc, 1024).unwrap(), None, "not stored");
+        store.ingest(&d, blob.len() as u64, &mut &blob[..]).unwrap();
+        assert_eq!(store.content(&desc, 1024).unwrap(), Some(blob.to_vec()));
+
+        // The stored copy changed under its name: as valid JSON of the same length,
+        // truncated, grown, or grown past the limit its descriptor is within. Each is a
+        // changed copy, which a pull fetches again.
+        let path = store.blob_path(&d);
+        let same_length = String::from_utf8(blob.to_vec()).unwrap().replace('7', "9");
+        let cases = [
+            same_length.into_bytes(),
+            blob[..blob.len() - 1].to_vec(),
+            [&blob[..], b" "].concat(),
+            vec![b' '; 2048],
+        ];
+        for bytes in cases {
+            fs::write(&path, &bytes).unwrap();
+            let e = store.content(&desc, 1024).unwrap_err().to_string();
+            assert!(
+                e.contains("the stored copy has changed"),
+                "{} bytes: {e}",
+                bytes.len()
+            );
+            assert!(
+                matches!(store.held(&desc, 1024).unwrap(), Held::Changed(_)),
+                "{} bytes",
+                bytes.len()
+            );
+        }
+        fs::write(&path, blob).unwrap();
+
+        // The descriptor is wrong about the content: its size, or a size past the limit.
+        let e = store
+            .content(&described(&d, blob.len() + 1), 1024)
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("where its descriptor says"), "{e}");
+        let e = store.content(&desc, 8).unwrap_err().to_string();
+        assert!(e.contains("over the 8-byte limit"), "{e}");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn compression_is_detected() {
         let skippable = [0x5f, 0x2a, 0x4d, 0x18, 0, 0, 0, 0];
         for (head, gzip, zstd) in [
             (&[0x1f, 0x8b, 0x08][..], true, false),
@@ -788,8 +4375,8 @@ mod tests {
         store
             .ingest(&layer.blob, blob.len() as u64, &mut &blob[..])
             .unwrap();
-        let out = store.unpack(&layer, 1 << 20).unwrap();
-        assert_eq!(fs::read(&out.path).unwrap(), tar);
+        let out = unpack_within(&store, &layer, 1 << 20).unwrap();
+        assert_eq!(fs::read(out.path()).unwrap(), tar);
         // The frame decodes, but its last 4 bytes, the checksum, disagree.
         let mut blob = compress_to_vec(&tar[..], CompressionLevel::Fastest);
         if let Some(last) = blob.last_mut() {
@@ -803,7 +4390,7 @@ mod tests {
         store
             .ingest(&layer.blob, blob.len() as u64, &mut &blob[..])
             .unwrap();
-        assert!(store.unpack(&layer, 1 << 20).is_err());
+        assert!(unpack_within(&store, &layer, 1 << 20).is_err());
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -828,19 +4415,1084 @@ mod tests {
         store
             .ingest(&layer.blob, blob.len() as u64, &mut &blob[..])
             .unwrap();
-        let path = store.rootfs(std::slice::from_ref(&layer), 1 << 20).unwrap();
+        let path = store
+            .rootfs(std::slice::from_ref(&layer), &Limits::none())
+            .unwrap();
         let image = fs::read(&path).unwrap();
         assert_eq!(
             u32::from_le_bytes(image[1024..1028].try_into().unwrap()),
             0xE0F5_E1E2
         );
-        let again = store.rootfs(&[layer], 1 << 20).unwrap();
+        let again = store.rootfs(&[layer], &Limits::none()).unwrap();
         assert_eq!(again, path);
         assert_eq!(
             fs::read_dir(root.join("ingest")).unwrap().count(),
             0,
             "unpacked tars are gone"
         );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_blob_downloaded_in_ranges_is_whole_once_its_ranges_are_in() {
+        let root = temp("ranged");
+        let store = Store::open(&root).unwrap();
+        let blob: Vec<u8> = (0..1_000_003u32).map(|i| (i % 251) as u8).collect();
+        let digest = sha256(&blob);
+        let ranged = store
+            .download_ranged(&digest, blob.len() as u64, &Limits::none())
+            .unwrap()
+            .unwrap();
+        // Eight ranges, written backwards from eight threads.
+        let step = blob.len().div_ceil(8);
+        std::thread::scope(|s| {
+            for i in (0..8).rev() {
+                let (ranged, blob) = (&ranged, &blob);
+                s.spawn(move || {
+                    let lo = i * step;
+                    let hi = (lo + step).min(blob.len());
+                    ranged.write_at(lo as u64, &blob[lo..hi]).unwrap();
+                });
+            }
+        });
+        assert!(
+            ranged.write_at(blob.len() as u64 - 1, b"xx").is_err(),
+            "past its end"
+        );
+        let path = ranged.commit().unwrap();
+        assert_eq!(fs::read(&path).unwrap(), blob);
+        assert!(
+            store
+                .download_ranged(&digest, blob.len() as u64, &Limits::none())
+                .unwrap()
+                .is_none()
+        );
+        // Bytes that hash to another digest are refused, and nothing is kept.
+        let other = sha256(b"something else");
+        let ranged = store
+            .download_ranged(&other, 4, &Limits::none())
+            .unwrap()
+            .unwrap();
+        ranged.write_at(0, b"abcd").unwrap();
+        assert!(ranged.commit().is_err());
+        assert!(!store.has(&other));
+        assert_eq!(fs::read_dir(root.join("ingest")).unwrap().count(), 0);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_ranged_download_given_up_leaves_its_bytes_in_order_and_no_others() {
+        let root = temp("ranged-resume");
+        let store = Store::open(&root).unwrap();
+        let blob: Vec<u8> = (0..300_000u32).map(|i| (i % 249) as u8).collect();
+        let digest = sha256(&blob);
+        let partial = root.join(format!("ingest/sha256-{}.partial", digest.hex()));
+        let marker = root.join(format!("ingest/sha256-{}.ranged", digest.hex()));
+        let size = blob.len() as u64;
+        // Two ranges in, with a gap before the second: only the first is kept.
+        let ranged = store
+            .download_ranged(&digest, size, &Limits::none())
+            .unwrap()
+            .unwrap();
+        assert!(marker.exists());
+        ranged.write_at(0, &blob[..50_000]).unwrap();
+        ranged.write_at(50_000, &blob[50_000..70_000]).unwrap();
+        ranged.write_at(100_000, &blob[100_000..200_000]).unwrap();
+        drop(ranged);
+        assert_eq!(fs::metadata(&partial).unwrap().len(), 70_000);
+        assert!(!marker.exists());
+        // The next goes on from there, as a sequential download would.
+        let ranged = store
+            .download_ranged(&digest, size, &Limits::none())
+            .unwrap()
+            .unwrap();
+        assert_eq!(ranged.have(), 70_000);
+        assert!(ranged.commit().is_err(), "not all of it is in");
+        let ranged = store
+            .download_ranged(&digest, size, &Limits::none())
+            .unwrap()
+            .unwrap();
+        assert_eq!(ranged.have(), 70_000);
+        ranged.write_at(70_000, &blob[70_000..]).unwrap();
+        ranged.commit().unwrap();
+        assert_eq!(fs::read(store.blob_path(&digest)).unwrap(), blob);
+        assert!(!marker.exists() && !partial.exists());
+
+        // A process that ended mid-way left its file out of order, and the marker: the
+        // next download, of either kind, starts over.
+        let blob2: Vec<u8> = blob.iter().map(|b| b ^ 0x5a).collect();
+        let digest2 = sha256(&blob2);
+        let partial2 = root.join(format!("ingest/sha256-{}.partial", digest2.hex()));
+        // As it left them: the file at full size, bytes out of order, and the marker.
+        let mut left = vec![0u8; blob2.len()];
+        left[100_000..].copy_from_slice(&blob2[100_000..]);
+        fs::write(&partial2, &left).unwrap();
+        fs::write(partial2.with_extension("ranged"), b"").unwrap();
+        let mut download = store.download(&digest2, size, &Limits::none()).unwrap().unwrap();
+        assert_eq!(download.offset(), 0);
+        download.write(&blob2).unwrap();
+        download.commit().unwrap();
+        assert_eq!(fs::read(store.blob_path(&digest2)).unwrap(), blob2);
+        assert_eq!(fs::read_dir(root.join("ingest")).unwrap().count(), 0);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn ranges_written_are_merged_where_they_touch() {
+        let mut w = Vec::new();
+        for r in [(10, 20), (30, 40), (0, 5), (20, 30), (50, 60), (4, 9), (55, 70)] {
+            insert(&mut w, r);
+        }
+        assert_eq!(w, vec![(0, 9), (10, 40), (50, 70)]);
+        insert(&mut w, (9, 10));
+        assert_eq!(w, vec![(0, 40), (50, 70)]);
+        insert(&mut w, (0, 100));
+        assert_eq!(w, vec![(0, 100)]);
+    }
+
+    /// Layers of uneven sizes, so that they finish unpacking out of order: layer `i`
+    /// holds one file of `(n - i) * 64 KiB`.
+    fn uneven_layers(store: &Store, n: usize) -> (Vec<Vec<u8>>, Vec<Layer>) {
+        let tars: Vec<Vec<u8>> = (0..n)
+            .map(|i| {
+                let name = format!("layer-{i}");
+                let data: Vec<u8> = (0..(n - i) << 16).map(|b| (b * 31 + i) as u8).collect();
+                Writer::default()
+                    .member(Member {
+                        name: name.as_bytes(),
+                        data: &data,
+                        ..Member::default()
+                    })
+                    .finish()
+            })
+            .collect();
+        let layers = tars.iter().map(|t| stored_layer(store, t)).collect();
+        (tars, layers)
+    }
+
+    /// A build's base layers, unpacked, are kept as their uncompressed blobs, named by
+    /// their DiffIDs, and read from there by every unpack after: none decompressed into
+    /// `ingest/` again, their bytes still counted against the image's limit; a collection
+    /// keeps them while an image names their layers, and takes them with it (PM M442).
+    #[test]
+    fn a_builds_base_layers_are_decompressed_once() {
+        let root = temp("kept");
+        let store = Store::open(&root).unwrap();
+        let (tars, layers) = uneven_layers(&store, 3);
+        let limits = Limits::none();
+        let unpacked = store.unpack_layers(&layers, &limits).unwrap();
+        for (i, l) in layers.iter().enumerate() {
+            let kept = store.blob_path(&l.diff_id);
+            assert_eq!(fs::read(&kept).unwrap(), tars[i], "layer {i} kept whole");
+            assert_eq!(unpacked[i].0.path(), kept.as_path());
+        }
+        drop(unpacked);
+        assert_eq!(fs::read_dir(root.join("ingest")).unwrap().count(), 0);
+        // Read from there: its blob gone, the kept archive is what an unpack gives.
+        for l in &layers {
+            fs::remove_file(store.blob_path(&l.blob)).unwrap();
+        }
+        let again = store.unpack_layers(&layers, &limits).unwrap();
+        for (i, u) in again.iter().enumerate() {
+            assert_eq!(fs::read(u.0.path()).unwrap(), tars[i]);
+        }
+        drop(again);
+        // Counted against the image's limit as an unpack counts it.
+        let total: u64 = tars.iter().map(|t| t.len() as u64).sum();
+        let tight = Limits {
+            bytes: total - 1,
+            ..Limits::none()
+        };
+        let e = store.unpack_layers(&layers, &tight).unwrap_err();
+        assert!(e.0.contains("SHARDS_MAX_IMAGE_BYTES"), "{e}");
+        // A root filesystem's unpack keeps nothing.
+        let other = tar_of(b"other", b"other");
+        let layer = stored_layer(&store, &other);
+        store.rootfs(std::slice::from_ref(&layer), &limits).unwrap();
+        assert!(!store.blob_path(&layer.diff_id).exists());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// What a collection makes of a kept archive: kept while a reference's image names its
+    /// layer, collected once none does.
+    #[test]
+    fn a_kept_base_layer_goes_with_its_image() {
+        let root = temp("kept-gc");
+        let store = Store::open(&root).unwrap();
+        let a = tar_of(b"a", b"a");
+        tagged(&store, "base:v1", &[&a]);
+        let layer = stored_layer(&store, &a);
+        store
+            .unpack_layers(std::slice::from_ref(&layer), &Limits::none())
+            .unwrap();
+        let kept = store.blob_path(&layer.diff_id);
+        assert!(kept.is_file());
+        drop(store.collect().unwrap());
+        assert!(kept.is_file(), "its image named");
+        store.untag("base:v1").unwrap();
+        drop(store.collect().unwrap());
+        assert!(!kept.exists(), "no image names it");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn layers_unpacked_together_are_applied_in_order_and_fail_as_one_by_one() {
+        let root = temp("in-order");
+        let store = Store::open(&root).unwrap();
+        let (tars, layers) = uneven_layers(&store, 12);
+        let limits = Limits::none();
+        let room = Room::new(&root.join("ingest"), &limits).unwrap();
+        // Each layer reaches `each` once, in order, whole.
+        let mut seen = Vec::new();
+        store
+            .unpack_in_order(&layers, &limits, &room, &|_| Ok(()), |i, tar| {
+                assert_eq!(fs::read(tar.path()).unwrap(), tars[i]);
+                seen.push(i);
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(seen, (0..12).collect::<Vec<_>>());
+
+        // Two layers that do not match their DiffIDs: the error is the lower one's, as one
+        // by one, and every layer below it is still applied.
+        let mut bad = layers.clone();
+        for i in [3, 9] {
+            bad[i].diff_id = sha256(format!("not {i}").as_bytes());
+        }
+        let mut seen = Vec::new();
+        let e = store
+            .unpack_in_order(&bad, &limits, &room, &|_| Ok(()), |i, _| {
+                seen.push(i);
+                Ok(())
+            })
+            .unwrap_err();
+        assert!(e.0.contains(&bad[3].blob.to_string()), "{e}");
+        assert_eq!(seen, [0, 1, 2]);
+
+        // `each` failing stops the rest, and is the error, ahead of a later layer's.
+        let mut seen = Vec::new();
+        let e = store
+            .unpack_in_order(&bad, &limits, &room, &|_| Ok(()), |i, _| {
+                seen.push(i);
+                if i == 1 {
+                    Err(Error("stop at 1".into()))
+                } else {
+                    Ok(())
+                }
+            })
+            .unwrap_err();
+        assert_eq!(e.0, "stop at 1");
+        assert_eq!(seen, [0, 1]);
+
+        // The byte limit is the image's, across layers unpacked at once: room for any
+        // one layer, not for all of them.
+        let total: u64 = tars.iter().map(|t| t.len() as u64).sum();
+        let largest = tars.iter().map(Vec::len).max().unwrap() as u64;
+        let tight = Limits {
+            bytes: total - 1,
+            ..Limits::none()
+        };
+        assert!(largest < tight.bytes);
+        let e = store
+            .unpack_in_order(&layers, &tight, &room, &|_| Ok(()), |_, _| Ok(()))
+            .unwrap_err();
+        assert!(e.0.contains("SHARDS_MAX_IMAGE_BYTES"), "{e}");
+        let exact = Limits {
+            bytes: total,
+            ..Limits::none()
+        };
+        store
+            .unpack_in_order(&layers, &exact, &room, &|_| Ok(()), |_, _| Ok(()))
+            .unwrap();
+
+        assert_eq!(
+            fs::read_dir(root.join("ingest")).unwrap().count(),
+            0,
+            "unpacked tars are gone"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Unpacks `layer` alone, within `max` bytes.
+    fn unpack_within(store: &Store, layer: &Layer, max: u64) -> Result<Tar, Error> {
+        let limits = Limits {
+            bytes: max,
+            ..Limits::none()
+        };
+        let room = Room::new(&store.root.join("ingest"), &limits)?;
+        store.unpack(layer, &AtomicU64::new(0), &limits, &room, false)
+    }
+
+    /// Stores `tar`, gzipped, as a layer.
+    fn stored_layer(store: &Store, tar: &[u8]) -> Layer {
+        let blob = gzip(tar);
+        let layer = Layer {
+            blob: sha256(&blob),
+            media_type: format!("{}+gzip", oci::media::OCI_LAYER),
+            diff_id: sha256(tar),
+        };
+        store
+            .ingest(&layer.blob, blob.len() as u64, &mut &blob[..])
+            .unwrap();
+        layer
+    }
+
+    /// An image of `tars`, one layer each, stored and tagged `reference` as a pull leaves
+    /// it, its root filesystem built; its manifest's digest, its blobs and its root
+    /// filesystem.
+    fn tagged(store: &Store, reference: &str, tars: &[&[u8]]) -> (Vec<PathBuf>, PathBuf) {
+        let layers: Vec<Layer> = tars.iter().map(|t| stored_layer(store, t)).collect();
+        let diff_ids: Vec<String> = layers.iter().map(|l| l.diff_id.to_string()).collect();
+        let config = serde_json::json!({
+            "architecture": "arm64", "os": "linux",
+            "rootfs": {"type": "layers", "diff_ids": diff_ids},
+        })
+        .to_string()
+        .into_bytes();
+        let config_digest = sha256(&config);
+        store
+            .ingest(&config_digest, config.len() as u64, &mut &config[..])
+            .unwrap();
+        let layer_descs: Vec<serde_json::Value> = layers
+            .iter()
+            .map(|l| {
+                let size = fs::metadata(store.blob_path(&l.blob)).unwrap().len();
+                serde_json::json!({"mediaType": l.media_type, "digest": l.blob.to_string(), "size": size})
+            })
+            .collect();
+        let manifest = serde_json::json!({
+            "schemaVersion": 2,
+            "mediaType": oci::media::OCI_MANIFEST,
+            "config": {"mediaType": "application/vnd.oci.image.config.v1+json",
+                       "digest": config_digest.to_string(), "size": config.len()},
+            "layers": layer_descs,
+        })
+        .to_string()
+        .into_bytes();
+        let manifest_digest = sha256(&manifest);
+        store
+            .ingest(&manifest_digest, manifest.len() as u64, &mut &manifest[..])
+            .unwrap();
+        let rootfs = store.rootfs(&layers, &Limits::none()).unwrap();
+        let mut contents = vec![manifest_digest.clone(), config_digest.clone()];
+        contents.extend(layers.iter().map(|l| l.blob.clone()));
+        store
+            .tag(
+                reference,
+                &described(&manifest_digest, manifest.len()),
+                &manifest_digest,
+                &contents,
+            )
+            .unwrap();
+        (contents.iter().map(|d| store.blob_path(d)).collect(), rootfs)
+    }
+
+    fn tar_of(name: &[u8], data: &[u8]) -> Vec<u8> {
+        Writer::default()
+            .member(Member {
+                name,
+                data,
+                mode: 0o644,
+                ..Member::default()
+            })
+            .finish()
+    }
+
+    /// A referrer kept with a reference (a signature, an SBOM: D116) is kept with it by a
+    /// collection, its manifest, config and layers; let go of, or once the name is given
+    /// another manifest, which it does not refer to, it is collected.
+    #[test]
+    fn referrers_are_kept_with_what_they_refer_to() {
+        let root = temp("referrers");
+        let store = Store::open(&root).unwrap();
+        let (a, b) = (tar_of(b"a", b"a"), tar_of(b"b", b"b"));
+        tagged(&store, "one:v1", &[&a]);
+        let put = |bytes: &[u8]| {
+            let d = sha256(bytes);
+            store.ingest(&d, bytes.len() as u64, &mut &bytes[..]).unwrap();
+            d
+        };
+        let config = put(b"{\"referrer\":true}");
+        let layer = put(b"a bundle");
+        let manifest = format!(
+            r#"{{"schemaVersion":2,"mediaType":"{}","config":{{"mediaType":"application/x.config","digest":"{config}","size":17}},"layers":[{{"mediaType":"application/x.bundle","digest":"{layer}","size":8}}]}}"#,
+            oci::media::OCI_MANIFEST
+        );
+        let m = put(manifest.as_bytes());
+        let desc = Descriptor {
+            media_type: oci::media::OCI_MANIFEST.into(),
+            digest: m.to_string(),
+            size: i64::try_from(manifest.len()).unwrap(),
+            platform: None,
+            annotations: Default::default(),
+        };
+        store.keep_referrer("one:v1", &desc).unwrap();
+        store.keep_referrer("one:v1", &desc).unwrap();
+        assert_eq!(store.referrers_of("one:v1").unwrap(), vec![desc.clone()]);
+        assert!(store.keep_referrer("none:v1", &desc).is_err());
+        store.collect().unwrap();
+        for d in [&config, &layer, &m] {
+            assert!(store.has(d), "{d}");
+        }
+        assert!(store.drop_referrer("one:v1", &desc.digest).unwrap());
+        assert!(!store.drop_referrer("one:v1", &desc.digest).unwrap());
+        store.collect().unwrap();
+        for d in [&config, &layer, &m] {
+            assert!(!store.has(d), "{d}");
+        }
+        // Kept again, then the name moved to another image: its record names that one.
+        for bytes in [&b"{\"referrer\":true}"[..], b"a bundle", manifest.as_bytes()] {
+            put(bytes);
+        }
+        store.keep_referrer("one:v1", &desc).unwrap();
+        tagged(&store, "one:v1", &[&b]);
+        assert!(store.referrers_of("one:v1").unwrap().is_empty());
+    }
+
+    /// A collection keeps what the references need, their manifests, configs, layers and
+    /// root filesystems, shared ones once; removes the rest, blobs, root filesystems,
+    /// older versions' directories and what `ingest/` holds; and does nothing while any
+    /// process holds the store's lease (audit A13).
+    #[test]
+    fn a_collection_keeps_what_references_need_and_nothing_else() {
+        let root = temp("collect");
+        let store = Store::open(&root).unwrap();
+        let (a, b, c) = (tar_of(b"a", b"a"), tar_of(b"b", b"b"), tar_of(b"c", b"c"));
+        // What `one` named before it was tagged anew.
+        let (old_blobs, old_rootfs) = tagged(&store, "one:v1", &[&c]);
+        let (first_blobs, first_rootfs) = tagged(&store, "one:v1", &[&a, &b]);
+        let (second_blobs, second_rootfs) = tagged(&store, "two:v1", &[&a, &c]);
+        // What `one` named first, its name moved, stays dangling, as dockerd keeps it (D18),
+        // until removed (rmi, prune): then it is the collection's.
+        let dangling: Vec<String> = store
+            .references()
+            .unwrap()
+            .into_iter()
+            .map(|(name, _)| name)
+            .filter(|name| name.starts_with(DANGLING))
+            .collect();
+        assert_eq!(dangling.len(), 1, "{dangling:?}");
+        store.untag(&dangling[0]).unwrap();
+        let orphan = b"nobody's";
+        let orphan_digest = sha256(orphan);
+        store
+            .ingest(&orphan_digest, orphan.len() as u64, &mut &orphan[..])
+            .unwrap();
+        fs::write(root.join("ingest/left-behind"), b"x").unwrap();
+        fs::create_dir_all(root.join("rootfs/v0")).unwrap();
+        fs::write(root.join("rootfs/v0/old.erofs"), b"x").unwrap();
+        fs::create_dir_all(root.join("refs/v0")).unwrap();
+
+        // A collection waits for the lease held to be let go.
+        let lease = store.lease().unwrap();
+        let (collecting, collected) = std::sync::mpsc::channel();
+        let collector = {
+            let root = root.to_path_buf();
+            std::thread::spawn(move || {
+                let held = Store::open(&root).unwrap().collect().unwrap();
+                collecting.send(held).unwrap();
+            })
+        };
+        assert!(
+            collected
+                .recv_timeout(std::time::Duration::from_millis(200))
+                .is_err(),
+            "collected under a lease"
+        );
+        assert!(store.blob_path(&orphan_digest).is_file());
+        drop(lease);
+        let (collected, whole) = collected.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+        collector.join().unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let waiting = {
+            let root = root.to_path_buf();
+            std::thread::spawn(move || {
+                let _lease = Store::open(&root).unwrap().lease().unwrap();
+                tx.send(()).unwrap();
+            })
+        };
+        assert!(
+            rx.recv_timeout(std::time::Duration::from_millis(200)).is_err(),
+            "leased while held whole"
+        );
+        drop(whole);
+        rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+        waiting.join().unwrap();
+
+        let kept: Vec<&PathBuf> = first_blobs.iter().chain(&second_blobs).collect();
+        for path in &kept {
+            assert!(path.is_file(), "{} collected", path.display());
+        }
+        assert!(first_rootfs.is_file() && second_rootfs.is_file());
+        // The old manifest and config of `one` go; its layer `c` is `two`'s too.
+        let gone: Vec<&PathBuf> = old_blobs.iter().filter(|p| !kept.contains(p)).collect();
+        assert_eq!(gone.len(), 2, "{gone:?}");
+        for path in &gone {
+            assert!(!path.exists(), "{} kept", path.display());
+        }
+        assert!(!old_rootfs.exists(), "an old root filesystem kept");
+        assert!(!store.blob_path(&orphan_digest).exists());
+        assert!(!root.join("rootfs/v0").exists() && !root.join("refs/v0").exists());
+        assert_eq!(fs::read_dir(root.join("ingest")).unwrap().count(), 0);
+        assert_eq!(
+            (collected.blobs, collected.rootfs, collected.ingest),
+            (3, 1, 1),
+            "{collected:?}"
+        );
+        // What is kept is whole: the images are found again as they were.
+        assert!(store.tagged("one:v1").unwrap().is_some() && store.tagged("two:v1").unwrap().is_some());
+        assert_eq!(store.collect().unwrap().0, Collected::default());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// A build refused leaves nothing: no root filesystem, nothing in `ingest/`, and the
+    /// store free to build again.
+    fn refused(store: &Store, root: &Path, layer: &Layer, limits: &Limits, why: &str) {
+        let e = store
+            .rootfs(std::slice::from_ref(layer), limits)
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains(why), "{e}");
+        let built = fs::read_dir(root.join(format!("rootfs/v{ROOTFS_VERSION}")))
+            .unwrap()
+            .filter(|e| !e.as_ref().unwrap().file_name().to_string_lossy().starts_with('.'))
+            .count();
+        assert_eq!(built, 0, "{why}: a root filesystem was left");
+        assert_eq!(fs::read_dir(root.join("ingest")).unwrap().count(), 0, "{why}");
+    }
+
+    /// Building a root filesystem takes no more than its limits allow (audit A10): a
+    /// layer that decompresses past the image's bytes, as a compression bomb does; more
+    /// entries, or bytes of names and xattrs, than the image may hold in memory; or a
+    /// filesystem whose room would fall below what is to be left free. Within them it is
+    /// built, after every refusal.
+    #[test]
+    fn a_build_takes_no_more_than_its_limits() {
+        let root = temp("limits");
+        let store = Store::open(&root).unwrap();
+        // 64 MiB of zeroes, which gzip to 64 KiB.
+        let zeroes = vec![0u8; 64 << 20];
+        let bomb = stored_layer(
+            &store,
+            &Writer::default()
+                .member(Member {
+                    name: b"zeroes",
+                    data: &zeroes,
+                    ..Member::default()
+                })
+                .finish(),
+        );
+        let bytes = Limits {
+            bytes: 32 << 20,
+            ..Limits::none()
+        };
+        refused(
+            &store,
+            &root,
+            &bomb,
+            &bytes,
+            "decompresses to more than 33554432 bytes",
+        );
+
+        let mut many = Writer::default();
+        for i in 0..100u32 {
+            let name = format!("f{i}");
+            many.member(Member {
+                name: name.as_bytes(),
+                ..Member::default()
+            });
+        }
+        let many = stored_layer(&store, &many.finish());
+        let entries = Limits {
+            entries: 99,
+            ..Limits::none()
+        };
+        refused(&store, &root, &many, &entries, "more than 99 entries");
+
+        let big = vec![b'x'; 60_000];
+        let xattr = stored_layer(
+            &store,
+            &Writer::default()
+                .pax(&[("SCHILY.xattr.user.big", &big)])
+                .member(Member {
+                    name: b"f",
+                    ..Member::default()
+                })
+                .finish(),
+        );
+        let metadata = Limits {
+            metadata: 50_000,
+            ..Limits::none()
+        };
+        refused(&store, &root, &xattr, &metadata, "pass 50000 bytes");
+
+        let full = Limits {
+            keep_free: 1 << 30,
+            available: |_| Ok((1 << 30) + (32 << 20)),
+            ..Limits::none()
+        };
+        refused(&store, &root, &bomb, &full, "are to be left (SHARDS_KEEP_FREE)");
+        // Room enough as it starts, and none once the layer's 64 MiB are written.
+        static LOOKS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let filling = Limits {
+            keep_free: 1 << 30,
+            available: |_| match LOOKS.fetch_add(1, std::sync::atomic::Ordering::SeqCst) {
+                0 => Ok(u64::MAX),
+                _ => Ok(0),
+            },
+            ..Limits::none()
+        };
+        refused(&store, &root, &bomb, &filling, "0 bytes free");
+        // Room for the unpacked layer, as the build starts and once it is written, and
+        // none as the image is written.
+        static LATER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let late = Limits {
+            keep_free: 1 << 30,
+            available: |_| match LATER.fetch_add(1, std::sync::atomic::Ordering::SeqCst) {
+                0 | 1 => Ok(u64::MAX),
+                _ => Ok(0),
+            },
+            ..Limits::none()
+        };
+        refused(&store, &root, &bomb, &late, "0 bytes free");
+        assert!(
+            LATER.load(std::sync::atomic::Ordering::SeqCst) > 2,
+            "refused as it unpacked"
+        );
+
+        for layer in [&bomb, &many, &xattr] {
+            store
+                .rootfs(std::slice::from_ref(layer), &Limits::none())
+                .unwrap();
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// With nothing to leave free, the default, a build and a download never look at the
+    /// room their filesystem has, however little it says it has: (D18), as containerd's
+    /// unpacking and BuildKit's builds, they write until done or until the disk fails the
+    /// write.
+    #[test]
+    fn nothing_kept_free_never_looks_at_the_room() {
+        let root = temp("no-room-kept");
+        let store = Store::open(&root).unwrap();
+        let blob = vec![9u8; 96 << 20];
+        let none = Limits {
+            available: |_| Err(io::Error::other("looked at the room")),
+            ..Limits::none()
+        };
+        let layer = stored_layer(
+            &store,
+            &Writer::default()
+                .member(Member {
+                    name: b"f",
+                    data: &blob,
+                    ..Member::default()
+                })
+                .finish(),
+        );
+        store.rootfs(std::slice::from_ref(&layer), &none).unwrap();
+        let d = sha256(&blob);
+        let mut w = store.download(&d, blob.len() as u64, &none).unwrap().unwrap();
+        w.write(&blob).unwrap();
+        w.commit().unwrap();
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// An image written by a producer is named beside it as that producer, before it is
+    /// in place; one stacked from the layers is named by nothing, whatever was named before;
+    /// and what names an image goes when a collection takes the image.
+    #[test]
+    fn what_wrote_an_image_is_kept_beside_it() {
+        let root = temp("producer");
+        let store = Store::open(&root).unwrap();
+        let tar = Writer::default()
+            .member(Member {
+                name: b"f",
+                data: b"x",
+                ..Member::default()
+            })
+            .finish();
+        let layer = stored_layer(&store, &tar);
+        let layers = std::slice::from_ref(&layer);
+        let written = store
+            .rootfs_written(layers, &Limits::none(), "snapshot 1", |out| {
+                let mut tree = layer::root();
+                layer::apply(&mut tree, 0, io::Cursor::new(&tar), &mut |_| Ok(())).unwrap();
+                erofs::write(
+                    &tree,
+                    &mut layer::Archives(vec![io::Cursor::new(tar.clone())]),
+                    out,
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(store.rootfs_producer(&written).as_deref(), Some("snapshot 1"));
+        fs::remove_file(&written).unwrap();
+        let stacked = store.rootfs(layers, &Limits::none()).unwrap();
+        assert_eq!(stacked, written);
+        assert_eq!(
+            store.rootfs_producer(&stacked),
+            None,
+            "stacked, so named by nothing"
+        );
+        store
+            .rootfs_written(layers, &Limits::none(), "snapshot 1", |_| Ok(()))
+            .unwrap();
+        fs::remove_file(&stacked).unwrap();
+        fs::write(from_path(&stacked), b"snapshot 1").unwrap();
+        store.collect().unwrap();
+        assert!(!from_path(&stacked).exists(), "named with no image, and kept");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// `pull --no-cache` puts the bytes its layers stack to at their root filesystem's name
+    /// where a file there holds others (a producer's whose rules proved wrong, here): by
+    /// rename, so that a reader holding the old file keeps it whole, with a later
+    /// modification time even where the old one's is ahead of the clock, so that what is
+    /// keyed by the name and its stamp (run.rs `template`) is keyed apart, and named by no
+    /// producer then. Nothing is left in `ingest/`.
+    #[test]
+    fn building_again_replaces_a_root_filesystem_of_other_bytes() {
+        let root = temp("again-other");
+        let store = Store::open(&root).unwrap();
+        let tar = Writer::default()
+            .member(Member {
+                name: b"f",
+                data: b"x",
+                ..Member::default()
+            })
+            .finish();
+        let layer = stored_layer(&store, &tar);
+        let layers = std::slice::from_ref(&layer);
+        let stacked = store.rootfs(layers, &Limits::none()).unwrap();
+        let stacked_bytes = fs::read(&stacked).unwrap();
+        fs::remove_file(&stacked).unwrap();
+        let wrong = vec![0x5a; stacked_bytes.len()];
+        let written = store
+            .rootfs_written(layers, &Limits::none(), "snapshot 1", |out| {
+                out.write_all(&wrong)?;
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(written, stacked);
+        // Its time ahead of the clock: a replacement written now would otherwise be older.
+        let ahead = std::time::SystemTime::now() + std::time::Duration::from_secs(3600);
+        File::options()
+            .write(true)
+            .open(&written)
+            .unwrap()
+            .set_modified(ahead)
+            .unwrap();
+        let before = rootfs_stamp(&written).unwrap();
+        #[cfg(unix)]
+        let mut held = File::open(&written).unwrap();
+
+        let again = store
+            .rootfs_again_as_ready(layers, &Limits::none(), &|_| Ok(()))
+            .unwrap();
+        assert_eq!(again, stacked);
+        assert_eq!(fs::read(&again).unwrap(), stacked_bytes, "not replaced");
+        assert_eq!(
+            store.rootfs_producer(&again),
+            None,
+            "named as the producer's still"
+        );
+        let after = rootfs_stamp(&again).unwrap();
+        assert_ne!(after, before, "stamped as the file it replaced");
+        assert!(fs::metadata(&again).unwrap().modified().unwrap() > ahead);
+        #[cfg(unix)]
+        {
+            let mut old = Vec::new();
+            held.read_to_end(&mut old).unwrap();
+            assert_eq!(old, wrong, "written over in place");
+        }
+        assert_eq!(fs::read_dir(root.join("ingest")).unwrap().count(), 0);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// `pull --no-cache` keeps a root filesystem that holds the bytes its layers stack to,
+    /// the same file, so that what was made of it holds still, and what names its producer
+    /// with it; and builds one where none is.
+    #[test]
+    fn building_again_keeps_a_root_filesystem_of_the_same_bytes() {
+        let root = temp("again-same");
+        let store = Store::open(&root).unwrap();
+        let tar = Writer::default()
+            .member(Member {
+                name: b"f",
+                data: b"x",
+                ..Member::default()
+            })
+            .finish();
+        let layer = stored_layer(&store, &tar);
+        let layers = std::slice::from_ref(&layer);
+        let stacked = store.rootfs(layers, &Limits::none()).unwrap();
+        let stacked_bytes = fs::read(&stacked).unwrap();
+        fs::remove_file(&stacked).unwrap();
+        let written = store
+            .rootfs_written(layers, &Limits::none(), "snapshot 1", |out| {
+                out.write_all(&stacked_bytes)?;
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(written, stacked);
+        let before = rootfs_stamp(&written).unwrap();
+        #[cfg(unix)]
+        let ino = {
+            use std::os::unix::fs::MetadataExt as _;
+            fs::metadata(&written).unwrap().ino()
+        };
+        let again = store
+            .rootfs_again_as_ready(layers, &Limits::none(), &|_| Ok(()))
+            .unwrap();
+        assert_eq!(again, written);
+        assert_eq!(rootfs_stamp(&again).unwrap(), before, "replaced");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt as _;
+            assert_eq!(fs::metadata(&again).unwrap().ino(), ino, "replaced");
+        }
+        assert_eq!(store.rootfs_producer(&again).as_deref(), Some("snapshot 1"));
+        assert_eq!(fs::read_dir(root.join("ingest")).unwrap().count(), 0);
+
+        fs::remove_file(&again).unwrap();
+        let built = store
+            .rootfs_again_as_ready(layers, &Limits::none(), &|_| Ok(()))
+            .unwrap();
+        assert_eq!(built, written);
+        assert!(rootfs_stamp(&built).is_some());
+        assert_eq!(
+            store.rootfs_producer(&built),
+            None,
+            "stacked, so named by nothing"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// An image written over its base's root filesystem starts with that one's bytes, a
+    /// clone of it, its first block the new superblock; past them only what the layers above
+    /// add, its file the base's own read where the base has it; and where no clone is made,
+    /// nothing is written, for the image to be written whole.
+    #[test]
+    fn an_image_over_its_base_writes_only_what_its_layers_add() {
+        let root = temp("over");
+        let store = Store::open(&root).unwrap();
+        let big = vec![7u8; 3 << 20];
+        let base_tar = Writer::default()
+            .member(Member {
+                name: b"big",
+                data: &big,
+                ..Member::default()
+            })
+            .finish();
+        let added_tar = Writer::default()
+            .member(Member {
+                name: b"added",
+                data: b"new",
+                ..Member::default()
+            })
+            .finish();
+        let base_layer = stored_layer(&store, &base_tar);
+        let added_layer = stored_layer(&store, &added_tar);
+        let below = store
+            .rootfs(std::slice::from_ref(&base_layer), &Limits::none())
+            .unwrap();
+        assert_eq!(
+            store.rootfs_kept(std::slice::from_ref(&base_layer.diff_id)),
+            Some(below.clone())
+        );
+        let below_bytes = fs::read(&below).unwrap();
+        let back = erofs::read_tree(&mut io::Cursor::new(&below_bytes), 0).unwrap();
+        let Some(erofs::Node {
+            kind: erofs::Kind::File { data, size },
+            ..
+        }) = back.child(erofs::Tree::ROOT, b"big").and_then(|id| back.node(id))
+        else {
+            panic!("no big file below");
+        };
+        let (held_at, held_size) = (data.offset, *size);
+        let layers = [base_layer.clone(), added_layer.clone()];
+        let tree_of = || {
+            let mut tree = layer::root();
+            layer::apply(&mut tree, 0, io::Cursor::new(&base_tar), &mut |_| Ok(())).unwrap();
+            layer::apply(&mut tree, 1, io::Cursor::new(&added_tar), &mut |_| Ok(())).unwrap();
+            tree
+        };
+        let none = store
+            .rootfs_written_over(
+                &layers,
+                &Limits::none(),
+                "over",
+                &below,
+                below_bytes.len() as u64,
+                |_| Ok(false),
+                |_| panic!("nothing to write with no clone"),
+            )
+            .unwrap();
+        assert_eq!(none, None);
+        let written = store
+            .rootfs_written_over(
+                &layers,
+                &Limits::none(),
+                "over",
+                &below,
+                below_bytes.len() as u64,
+                |dst| fs::copy(&below, dst).map(|_| true),
+                |out| {
+                    let tree = tree_of();
+                    let big = tree.child(erofs::Tree::ROOT, b"big").unwrap();
+                    let held = std::collections::HashMap::from([(
+                        big,
+                        ((held_at / erofs::BLOCK) as u32, held_size),
+                    )]);
+                    let over = erofs::Over {
+                        blocks: below_bytes.len() as u64 / erofs::BLOCK,
+                        held: &held,
+                    };
+                    let mut archives = layer::Archives(vec![
+                        io::Cursor::new(base_tar.clone()),
+                        io::Cursor::new(added_tar.clone()),
+                    ]);
+                    let (_, head) = erofs::write_over(&tree, &mut archives, out, [0; 16], &over)?;
+                    Ok(head)
+                },
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(store.rootfs_producer(&written).as_deref(), Some("over"));
+        let image = fs::read(&written).unwrap();
+        assert_eq!(
+            &image[erofs::BLOCK as usize..below_bytes.len()],
+            &below_bytes[erofs::BLOCK as usize..]
+        );
+        assert!(
+            image.len() - below_bytes.len() < (1 << 20),
+            "the base's 3 MiB written again: {} bytes past it",
+            image.len() - below_bytes.len()
+        );
+        for (name, want) in [(&b"big"[..], &big[..]), (b"added", b"new")] {
+            match erofs::read_file(&mut io::Cursor::new(&image), name, u64::MAX).unwrap() {
+                erofs::Found::File(bytes) => assert_eq!(bytes, want),
+                _ => panic!("no file {}", String::from_utf8_lossy(name)),
+            }
+        }
+        // Named apart from the place of the one stacked of its layers, by its own digest,
+        // and found by their record: stacked again, those go elsewhere, so a template keyed
+        // by either name never finds other bytes under it.
+        let ids = [base_layer.diff_id.clone(), added_layer.diff_id.clone()];
+        let stacked_at = store.rootfs_path(&ids).unwrap();
+        assert_ne!(written, stacked_at);
+        let name = written.file_name().unwrap().to_str().unwrap().to_string();
+        assert!(
+            name.starts_with(&format!(
+                "{}.over-",
+                stacked_at.file_stem().unwrap().to_str().unwrap()
+            )),
+            "{name}"
+        );
+        assert_eq!(store.rootfs_kept(&ids), Some(written.clone()));
+        assert_eq!(store.rootfs(&layers, &Limits::none()).unwrap(), written);
+        assert!(!stacked_at.exists(), "stacked though one was kept");
+        let record = stacked_at.with_extension("over");
+        fs::write(&record, "../elsewhere.erofs").unwrap();
+        assert_eq!(
+            store.rootfs_kept(&ids),
+            None,
+            "a record naming a path is followed"
+        );
+        fs::write(&record, &name).unwrap();
+        fs::remove_file(&written).unwrap();
+        let stacked = store.rootfs(&layers, &Limits::none()).unwrap();
+        assert_eq!(stacked, stacked_at);
+        // No reference holds them: each goes, the record and what named its image too.
+        store.collect().unwrap();
+        for left in [&stacked, &record, &from_path(&written)] {
+            assert!(!left.exists(), "{} kept", left.display());
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Builds of one image at once, from two stores on one directory, as two processes
+    /// would have: one builds it, and the other finds it built (audit A10).
+    #[test]
+    fn an_image_is_built_once_however_many_ask_at_once() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static LOOKS: AtomicUsize = AtomicUsize::new(0);
+        let root = temp("singleflight");
+        let store = Store::open(&root).unwrap();
+        let layer = stored_layer(
+            &store,
+            &Writer::default()
+                .member(Member {
+                    name: b"f",
+                    data: b"x",
+                    ..Member::default()
+                })
+                .finish(),
+        );
+        // A build that keeps room free looks at it as it starts: the number of looks is the
+        // number of builds.
+        let counting = Limits {
+            keep_free: 1,
+            available: |_| {
+                LOOKS.fetch_add(1, Ordering::SeqCst);
+                std::thread::sleep(std::time::Duration::from_millis(50));
+                Ok(u64::MAX)
+            },
+            ..Limits::none()
+        };
+        let paths: Vec<PathBuf> = std::thread::scope(|s| {
+            let builds: Vec<_> = (0..4)
+                .map(|_| {
+                    let (root, layer) = (&root, &layer);
+                    s.spawn(move || {
+                        let store = Store::open(root).unwrap();
+                        store.rootfs(std::slice::from_ref(layer), &counting).unwrap()
+                    })
+                })
+                .collect();
+            builds.into_iter().map(|b| b.join().unwrap()).collect()
+        });
+        assert!(paths.windows(2).all(|w| w[0] == w[1]));
+        assert_eq!(LOOKS.load(Ordering::SeqCst), 1, "built more than once");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// A download is refused if what is left of it would leave the store's filesystem
+    /// less free than its limits keep, and stops as it goes once it would (audit A10).
+    #[test]
+    fn a_download_leaves_the_room_it_must() {
+        let root = temp("download-room");
+        let store = Store::open(&root).unwrap();
+        let blob = vec![7u8; 96 << 20];
+        let d = sha256(&blob);
+        let tight = Limits {
+            keep_free: 1 << 30,
+            available: |_| Ok((1 << 30) + (64 << 20)),
+            ..Limits::none()
+        };
+        let e = store.download(&d, blob.len() as u64, &tight).unwrap_err();
+        assert!(e.to_string().contains("to be left (SHARDS_KEEP_FREE)"), "{e}");
+        static LOOKS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let shrinking = Limits {
+            keep_free: 1 << 30,
+            available: |_| match LOOKS.fetch_add(1, std::sync::atomic::Ordering::SeqCst) {
+                0 | 1 => Ok(u64::MAX),
+                _ => Ok(0),
+            },
+            ..Limits::none()
+        };
+        let mut download = store
+            .download(&d, blob.len() as u64, &shrinking)
+            .unwrap()
+            .unwrap();
+        let written = blob.chunks(1 << 20).try_for_each(|c| download.write(c));
+        let e = written.unwrap_err();
+        assert!(e.to_string().contains("0 bytes free"), "{e}");
+        assert!(download.offset() < blob.len() as u64, "it stopped");
+        drop(download);
+        assert!(!store.has(&d));
         let _ = fs::remove_dir_all(&root);
     }
 }

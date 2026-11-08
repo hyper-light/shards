@@ -1,0 +1,30 @@
+diff --git a/crates/shards/src/daemon/layers.rs b/crates/shards/src/daemon/layers.rs
+index fdc71f6..2e32408 100644
+--- a/crates/shards/src/daemon/layers.rs
++++ b/crates/shards/src/daemon/layers.rs
+@@ -359,22 +359,9 @@ impl Restarts {
+ 
+     /// The way the restart of a layer holding `held` bytes goes.
+     pub(super) fn choose(&self, held: u64) -> Restart {
+-        let x = held as f64;
+-        if let (Some((packed, vp)), Some((over, vo))) = (self.packed.at(x), self.over.at(x)) {
+-            let difference = packed - over;
+-            if difference * difference > vp + vo {
+-                return if difference > 0.0 {
+-                    Restart::Over
+-                } else {
+-                    Restart::Packed
+-                };
+-            }
+-        }
+-        if self.over.n < self.packed.n {
+-            Restart::Over
+-        } else {
+-            Restart::Packed
+-        }
++        // Experiment (docs/research/measurements/layer-kept, pack): every kept layer packed and put back, as before slice 7.
++        let _ = (self, held);
++        Restart::Packed
+     }
+ 
+     /// A restart that went `way` with a layer holding `held` bytes took `took`; kept in

@@ -1,0 +1,135 @@
+diff -ru a/crates/init/src/domains.rs b/crates/init/src/domains.rs
+--- a/crates/init/src/domains.rs	2026-10-15 10:11:58
++++ b/crates/init/src/domains.rs	2026-10-15 10:11:58
+@@ -853,6 +853,8 @@
+ /// other is ended for memory it still holds.
+ pub struct Memory {
+     events: OwnedFd,
++    /// A timer for samples of each domain's memory (PM M237).
++    pub sampler: OwnedFd,
+     /// Whether each domain's end by the kernel's OOM killer was said, by its place among
+     /// the domains.
+     said: std::cell::RefCell<Vec<bool>>,
+@@ -907,14 +909,59 @@
+                 io::Error::last_os_error()
+             ));
+         }
++        // SAFETY: timerfd_create(2) and timerfd_settime(2) of a descriptor owned here.
++        let sampler = unsafe {
++            let fd = libc::timerfd_create(libc::CLOCK_MONOTONIC, libc::TFD_NONBLOCK | libc::TFD_CLOEXEC);
++            let every = libc::timespec { tv_sec: 0, tv_nsec: 250_000_000 };
++            let spec = libc::itimerspec { it_interval: every, it_value: every };
++            libc::timerfd_settime(fd, 0, &spec, std::ptr::null_mut());
++            OwnedFd::from_raw_fd(fd)
++        };
+         Ok(Memory {
+             events,
++            sampler,
+             said: std::cell::RefCell::new(Vec::new()),
+         })
+     }
+ 
+     pub fn fd(&self) -> RawFd {
+         self.events.as_raw_fd()
++    }
++
++    /// Each domain's memory, as its `memory.stat` counts it, and each of its processes:
++    /// name, state, CPU ticks (user, system) and the syscall it is in.
++    pub fn sample(&self, domains: &[Started], mut say: impl FnMut(&[u8])) {
++        let mut b = [0u8; 8];
++        // SAFETY: read(2) of the timer's count.
++        unsafe { libc::read(self.sampler.as_raw_fd(), b.as_mut_ptr().cast(), 8) };
++        let total = std::fs::read_to_string(format!("{CGROUPS}/memory.current")).unwrap_or_default();
++        for d in domains {
++            let stat = std::fs::read_to_string(format!("{}/memory.stat", d.cgroup)).unwrap_or_default();
++            let of = |key: &str| {
++                stat.lines()
++                    .find_map(|l| l.split_once(' ').filter(|(k, _)| *k == key))
++                    .map_or("?", |(_, v)| v.trim())
++            };
++            let cur = std::fs::read_to_string(format!("{}/memory.current", d.cgroup)).unwrap_or_default();
++            let procs = std::fs::read_to_string(format!("{}/cgroup.procs", d.cgroup)).unwrap_or_default();
++            let mut who = String::new();
++            for pid in procs.lines() {
++                let st = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap_or_default();
++                let comm = st.split_once('(').and_then(|(_, r)| r.rsplit_once(')')).map_or("", |(c, _)| c);
++                let f: Vec<&str> = st.rsplit_once(')').map_or("", |(_, r)| r).split_whitespace().collect();
++                let sys = std::fs::read_to_string(format!("/proc/{pid}/syscall")).unwrap_or_default();
++                let sys = sys.split_whitespace().take(3).collect::<Vec<_>>().join(",");
++                let at = |i: usize| f.get(i).copied().unwrap_or("?");
++                who.push_str(&format!(" {pid}:{comm}:{}:u{}s{}:[{sys}]", at(0), at(11), at(12)));
++            }
++            say(format!(
++                "[{}] shards-init: sample total {} cur {} anon {} shmem {} kernel {} slab_u {} slab_r {} sock {} pagetables {} stack {} vmalloc {} percpu {}{who}\n",
++                d.label, total.trim(), cur.trim(), of("anon"), of("shmem"), of("kernel"),
++                of("slab_unreclaimable"), of("slab_reclaimable"), of("sock"), of("pagetables"),
++                of("kernel_stack"), of("vmalloc"), of("percpu")
++            )
++            .as_bytes());
++        }
+     }
+ 
+     /// After the watch says the domains' memory changed: ends the domain holding the most
+diff -ru a/crates/init/src/run.rs b/crates/init/src/run.rs
+--- a/crates/init/src/run.rs	2026-10-15 10:11:58
++++ b/crates/init/src/run.rs	2026-10-15 10:11:58
+@@ -3759,6 +3759,8 @@
+     Domain(usize),
+     /// The domains' memory.
+     Memory,
++    /// Samples of it (PM M237).
++    Sample,
+     /// The process events connector (D123).
+     Procs,
+     /// The process that makes the run's binds the host's (D124).
+@@ -3963,6 +3965,11 @@
+                 Owner::Memory,
+             );
+             poll(
++                self.memory.as_ref().map(|m| m.sampler.as_raw_fd()),
++                libc::POLLIN,
++                Owner::Sample,
++            );
++            poll(
+                 self.procs
+                     .as_ref()
+                     .and_then(|p| p.as_ref().ok())
+@@ -4269,6 +4276,14 @@
+                     Owner::Memory => {
+                         if let Some(m) = self.memory.as_ref() {
+                             m.relieve(&self.domains, |line| {
++                                let len = u32::try_from(line.len()).unwrap_or(u32::MAX);
++                                to_host.extend(&[&run::header(kind::STDERR, len), line]);
++                            });
++                        }
++                    }
++                    Owner::Sample => {
++                        if let Some(m) = self.memory.as_ref() {
++                            m.sample(&self.domains, |line| {
+                                 let len = u32::try_from(line.len()).unwrap_or(u32::MAX);
+                                 to_host.extend(&[&run::header(kind::STDERR, len), line]);
+                             });
+diff -ru a/crates/shards/tests/build.rs b/crates/shards/tests/build.rs
+--- a/crates/shards/tests/build.rs	2026-10-15 10:11:58
++++ b/crates/shards/tests/build.rs	2026-10-15 10:11:58
+@@ -10258,7 +10258,7 @@
+                 let Some(before) = before else {
+                     return true;
+                 };
+-                if at.elapsed() < std::time::Duration::from_secs(3) {
++                if at.elapsed() < std::time::Duration::from_secs(8) {
+                     return false;
+                 }
+                 // Gone since, with z, its server is past saying: z was ended.
+@@ -10302,7 +10302,10 @@
+         // And what init said as it ended each, what each held among it: kept in the test's
+         // output whether it passes or not, for the share and the holdings of the runs that
+         // pass to be weighed against those of one that does not.
+-        let ends: Vec<&str> = all.lines().filter(|l| l.contains("shards-init: ended")).collect();
++        let ends: Vec<&str> = all
++            .lines()
++            .filter(|l| l.contains("shards-init: ended") || l.contains("shards-init: sample"))
++            .collect();
+         eprintln!(
+             "{tag}: x {} y {} z {}; ended-with {ended:?}; its server spun {spun:?} s; {ends:?}",
+             filled("x"),

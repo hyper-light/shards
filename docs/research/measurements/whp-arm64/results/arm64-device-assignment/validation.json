@@ -1,0 +1,17 @@
+{
+  "source_parent": "b5b18c946c60e84f7daaa3231dd8a9fa291703c9",
+  "checked_patch_sha256": "38c7a3c22ef1374798189370a9f9ea6fe6169122b4a0c0f975b00babd881fc5a",
+  "fmt_exit": 0,
+  "arm64_windows_vmm_all_targets_clippy_exit": 0,
+  "static_crt_vmm_test_build_exit": 0,
+  "test_executable": {
+    "name": "shards_vmm-2babb289ce1ece2e.exe",
+    "bytes": 4034048,
+    "sha256": "bf4ce21c17115ca77c9327d647c354dfb9fd138c91afcf0e5a9c356879d5dcbf",
+    "pe_machine": "0xaa64"
+  },
+  "native_selected_test": "hv::whp::tests::device_assignment_requires_an_actual_host_refusal",
+  "native_run": "not run; SSH observation transport unavailable",
+  "scope": "targeted build/lint only; no native capability, DDA, full-suite or real-VM pass",
+  "full_real_vm_suite_passed": false
+}

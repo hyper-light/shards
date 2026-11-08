@@ -1,0 +1,7096 @@
+//! `shards build image`: builds an image as `docker build` does (docs/design/architecture.md
+//! D33). The command line is buildx's (`shards_cmdline::commands::BUILD`); the plan is
+//! BuildKit's (`shards_agentfile::plan`); the image is written to this user's store as
+//! BuildKit's exporter writes it (`shards_agentfile::export`), so `shards run vm` boots it.
+//! Progress is BuildKit's plain display.
+//!
+//! Every Dockerfile instruction runs: file operations (COPY, ADD of the context, of
+//! archives and of URLs, WORKDIR) here, on in-memory snapshots as BuildKit's backend makes (D33)
+//! them (`shards_build`), Git repositories by shards' own client (`git`), and RUN steps in
+//! a builder microVM (`builder`).
+
+use std::cell::RefCell;
+use std::collections::BTreeMap;
+use std::ffi::OsString;
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
+use std::process::ExitCode;
+use std::time::Instant;
+
+use shards_agentfile::export::{self, Layer};
+use shards_agentfile::go::Time;
+use shards_agentfile::image::Image;
+use shards_agentfile::llb::OpKind;
+use shards_agentfile::parser::Dialect;
+use shards_agentfile::plan::{self, EpochSource, Options, Resolved, Resolver};
+use shards_agentfile::platform::{self, Platform};
+use shards_cmdline::buildflags;
+use shards_cmdline::commands::BUILD;
+use shards_cmdline::flags::{self, Outcome, Parsed};
+use shards_image::oci::{self, Descriptor, Document};
+use shards_image::platform as image_platform;
+use shards_image::reference::{Algorithm, Digest, Reference};
+use shards_image::store::{self, Store};
+use shards_registry::pull::{self as registry_pull, Event};
+
+mod attest;
+mod azblob;
+pub(crate) mod builder;
+mod cache;
+pub(crate) mod cdi;
+mod compress;
+pub(crate) mod domains;
+mod estargz;
+mod exec;
+pub mod gc;
+mod gha;
+mod git;
+mod give;
+pub(crate) mod http;
+mod live;
+pub(crate) mod multi;
+mod output;
+#[cfg(target_os = "linux")]
+pub(crate) mod outside;
+pub(crate) mod policy;
+pub(crate) use policy::gitobject;
+pub(crate) mod policy_command;
+mod provenance;
+pub(crate) mod proxy;
+mod remote;
+mod s3;
+pub(crate) mod sbom;
+pub(crate) mod skills;
+pub(crate) mod ssh;
+pub(crate) mod sshkey;
+
+/// The SSH agents `--ssh` gives a build's steps, by id: sockets forwarded, or keys served.
+pub(crate) type Agents = BTreeMap<String, buildflags::Agent<sshkey::Key>>;
+pub(crate) mod step;
+
+const PATH: &str = "shards buildx build";
+
+/// The yellow buildx writes warnings in (aec.YellowF), whatever the output.
+const YELLOW: &str = "\x1b[33m";
+const RESET: &str = "\x1b[0m";
+
+pub fn build(args: impl Iterator<Item = OsString>) -> ExitCode {
+    let mut argv = Vec::new();
+    for a in args {
+        match a.into_string() {
+            Ok(a) => argv.push(a),
+            Err(a) => return failed(&format!("{a:?} is not UTF-8")),
+        }
+    }
+    let parsed = match flags::parse(&BUILD, PATH, &argv, &buildflags::validate) {
+        Outcome::Run(parsed) => parsed,
+        Outcome::Help { notices } => {
+            let _ = write!(std::io::stdout(), "{notices}{}", flags::help(&BUILD, PATH, 80));
+            return ExitCode::SUCCESS;
+        }
+        Outcome::Fail {
+            notices,
+            text,
+            status,
+        } => {
+            let _ = write!(std::io::stdout(), "{notices}");
+            let _ = writeln!(std::io::stderr(), "{text}");
+            return ExitCode::from(status);
+        }
+    };
+    let _ = write!(std::io::stdout(), "{}", parsed.notices);
+    // stdin, read once for every platform's build, as buildx reads it (D91; LoadInputs).
+    let context_stdin = parsed.args.first().is_some_and(|a| a == "-");
+    if context_stdin && parsed.string("file") == "-" {
+        return failed("invalid argument: can't use stdin for both build context and dockerfile");
+    }
+    let stdin = if context_stdin || parsed.string("file") == "-" {
+        match Stdin::read() {
+            Ok(s) => Some(s),
+            Err(e) => return failed(&e),
+        }
+    } else {
+        None
+    };
+    if let Some(s) = &stdin
+        && context_stdin
+        && !shards_agentfile::run_options::is_archive(&s.head)
+        && !parsed.string("file").is_empty()
+    {
+        return failed("ambiguous Dockerfile source: both stdin and flag correspond to Dockerfiles");
+    }
+    let stdin = stdin.map(|s| STDIN.get_or_init(|| s));
+    // What a check (`--call=check`) ends with, which says no error of its own.
+    let status = std::cell::Cell::new(0u8);
+    let r = run(&parsed, &status);
+    // The build cache collected once a build is done, as BuildKit's controller runs its
+    // GC after each (D114); its failure is no build's, and is said.
+    if let Ok(home) = shards_ipc::home()
+        && let Ok(store) = crate::pull::store(&home)
+        && let Err(e) = gc::after_build(&home, &store)
+    {
+        let _ = writeln!(
+            std::io::stderr(),
+            "WARNING: the build cache was not collected: {e}"
+        );
+    }
+    if let Some(s) = stdin {
+        let _ = std::fs::remove_file(&s.path);
+    }
+    // The microVMs it named, in the machine's local image store (D216): a name the build
+    // kept no image under (an output elsewhere) the daemon finds none of, and publishes
+    // nothing. Its failure is no build's, and is said.
+    if r.is_ok()
+        && status.get() == 0
+        && let Err(e) = crate::cli::request::publish_built(parsed.many("tag"))
+    {
+        let _ = writeln!(
+            std::io::stderr(),
+            "WARNING: the image was not put in the local image store: {e}"
+        );
+    }
+    match r {
+        Ok(()) if status.get() != 0 => ExitCode::from(status.get()),
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            let code = failed(&e);
+            if EXHAUSTED.load(std::sync::atomic::Ordering::Relaxed) {
+                ExitCode::from(102)
+            } else {
+                code
+            }
+        }
+    }
+}
+
+/// What the build read of stdin (`-` as the context or the Dockerfile), once for every
+/// platform's build: a file in the home's `tmp`, removed when the build ends, its size, its
+/// digest, and its first 1024 bytes, which tell an archive from a Dockerfile.
+struct Stdin {
+    path: PathBuf,
+    size: u64,
+    digest: Digest,
+    head: Vec<u8>,
+}
+
+static STDIN: std::sync::OnceLock<Stdin> = std::sync::OnceLock::new();
+
+impl Stdin {
+    fn read() -> Result<Stdin, String> {
+        use sha2::Digest as _;
+        let dir = shards_ipc::home()?.join("tmp");
+        std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        let path = dir.join(format!("stdin-{}", std::process::id()));
+        let mut file = std::fs::File::create(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let limit = crate::pull::limits()?.bytes;
+        let mut hash = sha2::Sha256::new();
+        let (mut size, mut head) = (0u64, Vec::new());
+        let mut buf = vec![0u8; 1 << 16];
+        let mut input = std::io::stdin().lock();
+        let read = (|| -> Result<(), String> {
+            loop {
+                let n = match input.read(&mut buf) {
+                    Ok(0) => return Ok(()),
+                    Ok(n) => n,
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(e) => return Err(format!("reading stdin: {e}")),
+                };
+                let chunk = buf.get(..n).unwrap_or_default();
+                size += n as u64;
+                if size > limit {
+                    return Err(format!("stdin passes SHARDS_MAX_IMAGE_BYTES ({limit} bytes)"));
+                }
+                if head.len() < 1024 {
+                    head.extend_from_slice(chunk.get(..(1024 - head.len()).min(n)).unwrap_or_default());
+                }
+                hash.update(chunk);
+                file.write_all(chunk)
+                    .map_err(|e| format!("{}: {e}", path.display()))?;
+            }
+        })();
+        if let Err(e) = read {
+            let _ = std::fs::remove_file(&path);
+            return Err(e);
+        }
+        Ok(Stdin {
+            path,
+            size,
+            digest: Digest::from_hash(shards_image::reference::Algorithm::Sha256, &hash.finalize()),
+            head,
+        })
+    }
+}
+
+fn failed(message: &str) -> ExitCode {
+    let _ = writeln!(std::io::stderr(), "ERROR: {message}");
+    ExitCode::FAILURE
+}
+
+/// BuildKit's plain progress display, one vertex after another (progressui's printer, as
+/// each vertex completes before the next starts).
+struct Progress {
+    quiet: bool,
+    next: usize,
+    /// On a colour terminal, shards' own display in place of the plain one.
+    live: Option<RefCell<live::Live>>,
+    /// Each step's name, its last lines (the 10 progressui's printer keeps,
+    /// logsBufferSize) and whether it failed: what the build's end recaps of each step
+    /// that failed (printErrorLogs).
+    steps: RefCell<BTreeMap<usize, StepRecap>>,
+    recapped: std::cell::Cell<bool>,
+    /// The step printed last and not ended, 0 for none (the printer's `current`).
+    current: std::cell::Cell<usize>,
+    /// What follows the recap: the warnings, then the excerpt of the Dockerfile where the
+    /// failing step comes from, as buildx prints them before its error (D108).
+    epilogue: RefCell<String>,
+}
+
+impl Progress {
+    /// A display that shows nothing.
+    fn quiet() -> Progress {
+        Progress {
+            quiet: true,
+            next: 0,
+            live: None,
+            steps: RefCell::new(BTreeMap::new()),
+            recapped: std::cell::Cell::new(false),
+            current: std::cell::Cell::new(0),
+            epilogue: RefCell::new(String::new()),
+        }
+    }
+}
+
+/// A step's name, last lines and whether it failed.
+type StepRecap = (String, std::collections::VecDeque<String>, bool);
+
+/// progressui's logsBufferSize.
+const RECAP_LINES: usize = 10;
+
+struct Vertex {
+    index: usize,
+    started: Instant,
+}
+
+/// Runs `work` with `registry`, saying where the build's lines go, once, what it waits on
+/// where it waits for a credential helper's answer (D184): in the plain display, whose
+/// lines are written to stderr as they come; the live display keeps its own frame.
+fn saying_waits<T>(
+    registry: &shards_registry::registry::Registry,
+    progress: &RefCell<Progress>,
+    work: impl FnOnce() -> T,
+) -> T {
+    let plain = {
+        let p = progress.borrow();
+        p.live.is_none() && !p.quiet
+    };
+    let say = |notice: &str| {
+        if plain {
+            let _ = writeln!(std::io::stderr(), "{notice}");
+        }
+    };
+    registry.saying_waits(&say, work)
+}
+
+impl Progress {
+    fn say(&self, text: &str) {
+        self.say_bytes(text.as_bytes());
+    }
+
+    fn say_bytes(&self, bytes: &[u8]) {
+        if self.live.is_some() {
+            return;
+        }
+        if !self.quiet {
+            let _ = std::io::stderr().write_all(bytes);
+        }
+    }
+
+    /// A vertex begins: a blank line after the one before, as progressui separates them.
+    fn start(&mut self, name: &str) -> Vertex {
+        self.next += 1;
+        self.steps.borrow_mut().insert(
+            self.next,
+            (name.to_string(), std::collections::VecDeque::new(), false),
+        );
+        if let Some(live) = &self.live {
+            live.borrow_mut().start(name);
+        }
+        self.to(self.next);
+        Vertex {
+            index: self.next,
+            started: Instant::now(),
+        }
+    }
+
+    /// The printer's turn to step `index`: where another, not ended, printed last, its
+    /// `#N ...`; then a blank line and the step's name.
+    fn to(&self, index: usize) {
+        let current = self.current.get();
+        if current == index {
+            return;
+        }
+        if current != 0 {
+            self.say(&format!("#{current} ...\n"));
+        }
+        let name = self
+            .steps
+            .borrow()
+            .get(&index)
+            .map(|s| s.0.clone())
+            .unwrap_or_default();
+        self.say(&format!("\n#{index} {name}\n"));
+        self.current.set(index);
+    }
+
+    /// Step `v` has ended: the printer's turn to it, and no step current after.
+    fn ended(&self, v: &Vertex) {
+        self.to(v.index);
+        self.current.set(0);
+    }
+
+    fn line(&self, v: &Vertex, text: &str) {
+        if let Some(live) = &self.live {
+            live.borrow_mut().line(v.index, text);
+        }
+        self.to(v.index);
+        self.say(&format!("#{} {text}\n", v.index));
+    }
+
+    /// Vertex `index` begins again under its number, as progressui shows a vertex whose
+    /// digest runs again: buildx's policy step, each time a policy logs after it ended,
+    /// named `name` where this display has not shown it (another platform's build began
+    /// it).
+    fn resume(&mut self, index: usize, name: &str) -> Vertex {
+        self.steps
+            .borrow_mut()
+            .entry(index)
+            .or_insert_with(|| (name.to_string(), std::collections::VecDeque::new(), false));
+        if let Some(live) = &self.live {
+            live.borrow_mut().resume(index);
+        }
+        Vertex {
+            index,
+            started: Instant::now(),
+        }
+    }
+
+    /// Vertex `index` begins again, ended, under another name: progressui shows the vertex
+    /// of a digest that runs again by the name it runs under.
+    fn again(&mut self, index: usize, name: &str) -> Vertex {
+        if let Some(step) = self.steps.borrow_mut().get_mut(&index) {
+            step.0 = name.to_string();
+        }
+        self.resume(index, name)
+    }
+
+    /// A log line of vertex `v`, stamped as progressui stamps one: the seconds since the
+    /// vertex began, to 3 places below 10 s, 2 below 100, and 1 past.
+    fn log(&self, v: &Vertex, text: &str) {
+        let secs = v.started.elapsed().as_secs_f64();
+        let places = if secs < 10.0 {
+            3
+        } else if secs < 100.0 {
+            2
+        } else {
+            1
+        };
+        self.to(v.index);
+        for line in text.strip_suffix('\n').unwrap_or(text).split('\n') {
+            if let Some(live) = &self.live {
+                live.borrow_mut().line(v.index, line);
+            }
+            self.say(&format!("#{} {secs:.places$} {line}\n", v.index));
+            self.remember(v.index, &format!("{secs:.places$} {line}"));
+        }
+    }
+
+    /// A line of step `index`'s log, kept for the recap should it fail.
+    fn remember(&self, index: usize, line: &str) {
+        if let Some((_, lines, _)) = self.steps.borrow_mut().get_mut(&index) {
+            if lines.len() == RECAP_LINES {
+                lines.pop_front();
+            }
+            lines.push_back(line.to_string());
+        }
+    }
+
+    /// printErrorLogs, once: each failed step's name and last lines, between rules, as
+    /// the display's end shows them before the build's error.
+    fn recap(&self) {
+        if self.recapped.replace(true) {
+            return;
+        }
+        for (name, lines, failed) in self.steps.borrow().values() {
+            if !failed {
+                continue;
+            }
+            let mut out = format!("------\n > {name}:\n");
+            for l in lines {
+                out.push_str(l);
+                out.push('\n');
+            }
+            out.push_str("------\n");
+            self.say(&out);
+        }
+        let epilogue = self.epilogue.take();
+        if !epilogue.is_empty() {
+            let _ = write!(std::io::stderr(), "{epilogue}");
+        }
+    }
+
+    fn done(&self, v: &Vertex) {
+        if let Some(live) = &self.live {
+            live.borrow_mut().done(v.index);
+        }
+        let secs = v.started.elapsed().as_secs_f64();
+        self.ended(v);
+        self.say(&format!("#{} DONE {secs:.1}s\n", v.index));
+    }
+
+    fn error(&self, v: &Vertex, message: &str) {
+        if let Some(step) = self.steps.borrow_mut().get_mut(&v.index) {
+            step.2 = true;
+        }
+        if let Some(live) = &self.live {
+            live.borrow_mut().error(v.index, message);
+        }
+        self.ended(v);
+        self.say(&format!("#{} ERROR: {message}\n", v.index));
+    }
+
+    /// A vertex the build cache answered, as progressui says it.
+    fn cached(&self, v: &Vertex) {
+        if let Some(live) = &self.live {
+            live.borrow_mut().cached(v.index);
+        }
+        self.ended(v);
+        self.say(&format!("#{} CACHED\n", v.index));
+    }
+
+    /// A vertex the build's failure stopped.
+    fn canceled(&self, v: &Vertex) {
+        if let Some(live) = &self.live {
+            live.borrow_mut().canceled(v.index);
+            live.borrow_mut().leave();
+        }
+        self.ended(v);
+        self.say(&format!("#{} CANCELED\n", v.index));
+    }
+}
+
+impl Drop for Progress {
+    fn drop(&mut self) {
+        self.recap();
+    }
+}
+
+/// What a RUN step may print, as buildkitd reads BUILDKIT_STEP_LOG_MAX_SIZE and
+/// BUILDKIT_STEP_LOG_MAX_SPEED (util/progress/logs): each stream's bytes, and its bytes
+/// per second since it began, -1 for no limit.
+#[derive(Clone, Copy)]
+struct LogLimits {
+    size: i64,
+    speed: i64,
+}
+
+impl LogLimits {
+    fn from_env() -> LogLimits {
+        // strconv.ParseInt(v, 10, 32): i32's parse reads a sign and digits as it does.
+        let read = |key: &str, default: i64| {
+            std::env::var(key)
+                .ok()
+                .and_then(|v| v.parse::<i32>().ok())
+                .map_or(default, i64::from)
+        };
+        LogLimits {
+            size: read("BUILDKIT_STEP_LOG_MAX_SIZE", 2 << 20),
+            speed: read("BUILDKIT_STEP_LOG_MAX_SPEED", 200 << 10),
+        }
+    }
+}
+
+/// The last bytes of a stream, once it is clipped, for its end: armon/circbuf's Buffer
+/// of 256 KiB, as buildkitd keeps one.
+struct Tail {
+    data: Vec<u8>,
+    at: usize,
+    full: bool,
+}
+
+impl Tail {
+    const SIZE: usize = 256 << 10;
+
+    fn write(&mut self, mut bytes: &[u8]) {
+        if bytes.len() > Self::SIZE {
+            bytes = bytes.get(bytes.len() - Self::SIZE..).unwrap_or_default();
+        }
+        while !bytes.is_empty() {
+            let room = Self::SIZE - self.at;
+            let n = room.min(bytes.len());
+            if let (Some(to), Some(from)) = (self.data.get_mut(self.at..self.at + n), bytes.get(..n)) {
+                to.copy_from_slice(from);
+            }
+            self.at = (self.at + n) % Self::SIZE;
+            self.full |= self.at == 0;
+            bytes = bytes.get(n..).unwrap_or_default();
+        }
+    }
+
+    fn bytes(&self) -> Vec<u8> {
+        if self.full {
+            [go_tail(&self.data, self.at), go_head(&self.data, self.at)].concat()
+        } else {
+            go_head(&self.data, self.at).to_vec()
+        }
+    }
+}
+
+fn go_tail(b: &[u8], at: usize) -> &[u8] {
+    b.get(at..).unwrap_or_default()
+}
+
+fn go_head(b: &[u8], at: usize) -> &[u8] {
+    b.get(..at).unwrap_or_default()
+}
+
+/// One stream of a step as buildkitd passes it on: its streamWriter.
+struct Clip {
+    began: Instant,
+    size: i64,
+    clipping: bool,
+    by_speed: bool,
+    tail: Option<Tail>,
+}
+
+impl Clip {
+    fn new() -> Clip {
+        Clip {
+            began: Instant::now(),
+            size: 0,
+            clipping: false,
+            by_speed: false,
+            tail: None,
+        }
+    }
+
+    /// `checkLimit`: how much of `n` bytes more may pass.
+    fn room(&mut self, n: usize, limits: LogLimits) -> usize {
+        let old = self.size;
+        self.size = self.size.saturating_add(i64::try_from(n).unwrap_or(i64::MAX));
+        let mut max = -1;
+        if limits.speed != -1 {
+            // A second begun counts whole.
+            let secs = self.began.elapsed().as_secs_f64().ceil();
+            max = (secs as i64).saturating_mul(limits.speed);
+            self.by_speed = true;
+        }
+        if max == -1 || max > limits.size {
+            max = limits.size;
+            self.by_speed = false;
+        }
+        if max != -1 {
+            if max < old {
+                return 0;
+            }
+            if self.size > max {
+                return usize::try_from(max - old).unwrap_or(0);
+            }
+        }
+        n
+    }
+
+    /// `Write`: what of `bytes` passes, a notice where clipping begins; all of it kept in
+    /// the tail once a write is clipped.
+    fn write(&mut self, bytes: &[u8], limits: LogLimits) -> Vec<u8> {
+        let room = self.room(bytes.len(), limits);
+        if self.tail.is_none() && room < bytes.len() {
+            self.tail = Some(Tail {
+                data: vec![0; Tail::SIZE],
+                at: 0,
+                full: false,
+            });
+        }
+        if let Some(tail) = &mut self.tail {
+            tail.write(bytes);
+        }
+        let mut out = bytes.get(..room).unwrap_or_default().to_vec();
+        if self.clipping && room == bytes.len() {
+            self.clipping = false;
+        }
+        if !self.clipping && room != bytes.len() {
+            let limit = if self.by_speed {
+                format!("{}/s", units(limits.speed))
+            } else {
+                units(limits.size)
+            };
+            out.extend_from_slice(format!("\n[output clipped, log limit {limit} reached]\n").as_bytes());
+            self.clipping = true;
+        }
+        out
+    }
+}
+
+/// tonistiigi/units' `%#g` of a byte count: whole bytes below a KiB ("1000B"), else its
+/// value in the largest binary unit it reaches, as Go writes a float64 shortest.
+fn units(b: i64) -> String {
+    const UNITS: [&str; 7] = ["B", "KiB", "MiB", "GiB", "TiB", "PiB", "EiB"];
+    let mut i = 0;
+    let mut base: i64 = 1;
+    while i + 1 < UNITS.len() && b.unsigned_abs() >= base.unsigned_abs().saturating_mul(1024) {
+        base = base.saturating_mul(1024);
+        i += 1;
+    }
+    match UNITS.get(i) {
+        Some(&unit) if i > 0 => format!("{}{unit}", b as f64 / base as f64),
+        _ => format!("{b}B"),
+    }
+}
+
+/// A RUN step's output as buildkitd clips it, each stream on its own, and progressui's
+/// plain mode prints it.
+struct StepLog {
+    limits: LogLimits,
+    streams: [Clip; 2],
+    /// Whether the last line printed has not ended, so that what comes next continues it.
+    partial: bool,
+}
+
+impl StepLog {
+    fn new(limits: LogLimits) -> StepLog {
+        StepLog {
+            limits,
+            streams: [Clip::new(), Clip::new()],
+            partial: false,
+        }
+    }
+
+    /// A chunk of stream `which`.
+    fn write(&mut self, p: &Progress, v: &Vertex, which: u8, bytes: &[u8]) {
+        let stream = usize::from(which == shards_abi::run::kind::STDERR);
+        let limits = self.limits;
+        let Some(clip) = self.streams.get_mut(stream) else {
+            return;
+        };
+        let out = clip.write(bytes, limits);
+        if let Some(live) = &p.live {
+            live.borrow_mut().output(v.index, &out);
+            return;
+        }
+        p.to(v.index);
+        let shown = self.show(v, &out);
+        // Each line ended, kept for the recap should the step fail.
+        let prefix = format!("#{} ", v.index);
+        for line in String::from_utf8_lossy(&shown).split_inclusive('\n') {
+            if let Some(rest) = line.strip_prefix(&prefix).and_then(|l| l.strip_suffix('\n')) {
+                p.remember(v.index, rest);
+            }
+        }
+        p.say_bytes(&shown);
+    }
+
+    /// progressui: each line stamped with the seconds since the step began when its first
+    /// bytes came, to 3 places below 10 s, 2 below 100 and 1 past; a line not yet ended
+    /// printed as far as it goes, and the rest after it as it comes.
+    fn show(&mut self, v: &Vertex, data: &[u8]) -> Vec<u8> {
+        let mut out = Vec::new();
+        let secs = v.started.elapsed().as_secs_f64();
+        let places = if secs < 10.0 {
+            3
+        } else if secs < 100.0 {
+            2
+        } else {
+            1
+        };
+        let stamp = format!("#{} {secs:.places$} ", v.index);
+        let mut rest = data;
+        let mut first = true;
+        // `split`: no line from no bytes, and none ended.
+        let complete = loop {
+            if rest.is_empty() {
+                break !data.is_empty();
+            }
+            let end = rest.iter().position(|&b| b == b'\n');
+            if !(first && self.partial) {
+                out.extend_from_slice(stamp.as_bytes());
+            }
+            out.extend_from_slice(go_head(rest, end.unwrap_or(rest.len())));
+            let Some(end) = end else {
+                break false;
+            };
+            out.push(b'\n');
+            rest = go_tail(rest, end + 1);
+            first = false;
+        };
+        self.partial = !complete;
+        out
+    }
+
+    /// The step's end: each stream's tail, stdout's first, as flushBuffer passes them
+    /// on unclipped, and a line left open ended, as the printer ends it.
+    fn end(&mut self, p: &Progress, v: &Vertex) {
+        for i in 0..2 {
+            let tail = self
+                .streams
+                .get_mut(i)
+                .and_then(|s| s.tail.take())
+                .map(|t| t.bytes());
+            if let Some(tail) = tail {
+                p.say_bytes(&self.show(v, &tail));
+            }
+        }
+        if self.partial {
+            p.say("\n");
+            self.partial = false;
+        }
+    }
+}
+
+/// How many vCPUs a builder has: the host's, as BuildKit's steps may use them all.
+/// Step `op`'s key from what it reads of its inputs (D114): of each input it reads, the
+/// digest of what it reads ([`cache::reads`]), of the others their keys (`keys`). None where
+/// a path it reads is not there, which the step then finds as it runs.
+fn read_key(
+    op: &shards_agentfile::llb::Op,
+    reads: &[Option<Vec<cache::Selector>>],
+    inputs: &[exec::Ref],
+    keys: &[&str],
+    digests: &mut cache::Digests,
+    sources: &mut shards_build::data::Sources,
+) -> Result<Option<String>, String> {
+    let mut read: Vec<Option<String>> = Vec::with_capacity(reads.len());
+    for (sels, input) in reads.iter().zip(inputs) {
+        read.push(match sels {
+            Some(sels) => match digests.reads(&input.fs, sels, sources)? {
+                Some(d) => Some(d),
+                None => return Ok(None),
+            },
+            None => None,
+        });
+    }
+    let deps: Vec<cache::Dep<'_>> = read
+        .iter()
+        .zip(keys)
+        .map(|(d, k)| match d {
+            Some(d) => cache::Dep::Read(d),
+            None => cache::Dep::Key(k),
+        })
+        .collect();
+    Ok(Some(cache::op_key(op, &deps)))
+}
+
+fn builder_cpus() -> u32 {
+    std::thread::available_parallelism().map_or(1, |n| u32::try_from(n.get()).unwrap_or(u32::MAX))
+}
+
+/// The most memory a builder may have, in MiB: `SHARDS_BUILD_MEMORY` if set, else what
+/// [`builder_most`] makes of this host's memory, what it has available as the builder
+/// starts, and what the home's builds have needed (`needs`, [`Needed`]). Its steps and its
+/// layers share it. It boots with little of it, and the rest is plugged as the build needs
+/// it (builder::BOOT_MEMORY_MIB, D133): what it costs at boot grows with what it boots with
+/// (PM M82), not with what it may have.
+fn builder_memory_mib(needs: &Path) -> u64 {
+    if let Some(m) = std::env::var("SHARDS_BUILD_MEMORY")
+        .ok()
+        .and_then(|v| v.parse().ok())
+    {
+        return whole_blocks(m);
+    }
+    builder_most(host_memory(), host_available(), Needed::read(needs))
+}
+
+/// The most memory a builder may have, in MiB, on a host of `host` bytes that has
+/// `available` as it starts, the home's builds having needed `needed` (D133), in whole
+/// blocks:
+///
+/// - with no build recorded (a new home: the cold start), what the host has available,
+///   what its kernel says it can give a new program without taking from what runs;
+/// - with builds recorded, the most one needed where that is more: the host gave it once;
+/// - all the host's memory once a build was ended short of memory, its builder having
+///   reached its ceiling, as a run with no limit may have (`run::sizes`, D148);
+///
+/// never more than the host's memory, nor less than a builder boots with, which is all it
+/// may have where the host's memory cannot be read; all of it where what is available
+/// cannot be.
+fn builder_most(host: Option<u64>, available: Option<u64>, needed: Needed) -> u64 {
+    let Some(host) = host else {
+        return whole_blocks(builder::BOOT_MEMORY_MIB);
+    };
+    let most = if needed.short {
+        host
+    } else {
+        available.unwrap_or(host).max(needed.most)
+    };
+    whole_blocks((most.min(host) >> 20).max(builder::BOOT_MEMORY_MIB))
+}
+
+/// What a home's builds have needed of memory (D133), as their builders' guests said it as
+/// each ended (`build::kind::NEEDED`): the most one needed, in bytes, and whether any was
+/// ended short of it. Recorded in the home's `builder-memory`, one `KEY VALUE` a line.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct Needed {
+    most: u64,
+    short: bool,
+}
+
+impl Needed {
+    /// The record at `path`: none (the cold start) where there is none or it does not read.
+    fn read(path: &Path) -> Needed {
+        std::fs::read_to_string(path).map_or_else(|_| Needed::default(), |t| Needed::parse(&t))
+    }
+
+    fn parse(text: &str) -> Needed {
+        let mut needed = Needed::default();
+        for line in text.lines() {
+            match line.split_once(' ') {
+                Some(("needed", n)) => needed.most = n.trim().parse().unwrap_or(0),
+                Some(("short", s)) => needed.short = s.trim() == "yes",
+                _ => {}
+            }
+        }
+        needed
+    }
+
+    fn text(self) -> String {
+        format!(
+            "needed {}\nshort {}\n",
+            self.most,
+            if self.short { "yes" } else { "no" }
+        )
+    }
+}
+
+/// The home's record of what its builds needed of memory ([`Needed`]).
+fn needs_path(home: &Path) -> PathBuf {
+    home.join("builder-memory")
+}
+
+/// Adds a build that needed `need` bytes of memory, `short` where it was ended short of it,
+/// to the record at `path`, under the record's lock, so that builds ending together each
+/// count; unlocked before it closes (PM M244).
+fn record_need(path: &Path, need: u64, short: bool) -> Result<(), String> {
+    use std::io::{Read as _, Seek as _, Write as _};
+    let said = |e: std::io::Error| format!("{}: {e}", path.display());
+    let mut file = std::fs::File::options()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(path)
+        .map_err(said)?;
+    file.lock().map_err(said)?;
+    let mut text = String::new();
+    let written = file
+        .read_to_string(&mut text)
+        .and_then(|_| {
+            let had = Needed::parse(&text);
+            let now = Needed {
+                most: had.most.max(need),
+                short: had.short || short,
+            };
+            if now == had && !text.is_empty() {
+                return Ok(());
+            }
+            file.set_len(0)?;
+            file.rewind()?;
+            file.write_all(now.text().as_bytes())
+        })
+        .map_err(said);
+    let _ = file.unlock();
+    written
+}
+
+/// The memory this host has available, in bytes: what its kernel says a new program may
+/// have without taking from what runs. Linux's `MemAvailable` ("an estimate of how much
+/// memory is available for starting new applications, without swapping", proc_meminfo(5)).
+#[cfg(target_os = "linux")]
+fn host_available() -> Option<u64> {
+    let text = std::fs::read_to_string("/proc/meminfo").ok()?;
+    let kib: u64 = text
+        .lines()
+        .find_map(|l| l.strip_prefix("MemAvailable:"))?
+        .split_whitespace()
+        .next()?
+        .parse()
+        .ok()?;
+    kib.checked_mul(1024)
+}
+
+/// The memory this host has available, in bytes: macOS's `kern.memorystatus_level`, the
+/// percentage of its pages its pressure thread counts available
+/// (`memorystatus_get_available_page_count`, osfmk/vm/vm_pageout.c `vm_pressure_response`;
+/// the sysctl in bsd/kern/kern_memorystatus.c), of its memory.
+#[cfg(target_os = "macos")]
+fn host_available() -> Option<u64> {
+    let mut level: libc::c_int = 0;
+    let mut len = size_of::<libc::c_int>();
+    // SAFETY: sysctlbyname(3) of a NUL-terminated name into an int of the length given.
+    let rc = unsafe {
+        libc::sysctlbyname(
+            c"kern.memorystatus_level".as_ptr(),
+            (&raw mut level).cast(),
+            &raw mut len,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if rc != 0 || len != size_of::<libc::c_int>() {
+        return None;
+    }
+    let level = u64::try_from(level).ok()?.min(100);
+    Some(host_memory()? / 100 * level)
+}
+
+/// The memory this host has available, in bytes: none known on this Unix.
+#[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
+fn host_available() -> Option<u64> {
+    None
+}
+
+/// The memory this host has available, in bytes: `ullAvailPhys` (GlobalMemoryStatusEx),
+/// "the amount of physical memory that can be immediately reused without having to write
+/// its contents to disk first" (MEMORYSTATUSEX).
+#[cfg(windows)]
+fn host_available() -> Option<u64> {
+    use windows_sys::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
+    let mut status = MEMORYSTATUSEX {
+        dwLength: size_of::<MEMORYSTATUSEX>() as u32,
+        ..Default::default()
+    };
+    // SAFETY: a structure of its own length for the call to fill.
+    (unsafe { GlobalMemoryStatusEx(&raw mut status) } != 0).then_some(status.ullAvailPhys)
+}
+
+/// `mib` down to whole blocks of what a builder's memory is plugged in (virtio-mem's,
+/// D133), which a VM refuses anything but: half of a host's memory need not be (Windows
+/// keeps some of a runner's 16 GiB back, and half of it was an odd number of MiB).
+fn whole_blocks(mib: u64) -> u64 {
+    let block = (shards_vmm::devices::virtio::mem::BLOCK >> 20).max(1);
+    mib - mib % block
+}
+
+/// The host's physical memory, in bytes.
+#[cfg(unix)]
+pub(crate) fn host_memory() -> Option<u64> {
+    // SAFETY: sysconf(3) with constant arguments.
+    let (pages, size) = unsafe {
+        (
+            libc::sysconf(libc::_SC_PHYS_PAGES),
+            libc::sysconf(libc::_SC_PAGESIZE),
+        )
+    };
+    u64::try_from(pages).ok()?.checked_mul(u64::try_from(size).ok()?)
+}
+
+/// The host's physical memory, in bytes (GlobalMemoryStatusEx).
+#[cfg(windows)]
+pub(crate) fn host_memory() -> Option<u64> {
+    use windows_sys::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
+    let mut status = MEMORYSTATUSEX {
+        dwLength: size_of::<MEMORYSTATUSEX>() as u32,
+        ..Default::default()
+    };
+    // SAFETY: a structure of its own length for the call to fill.
+    (unsafe { GlobalMemoryStatusEx(&raw mut status) } != 0).then_some(status.ullTotalPhys)
+}
+
+/// A base image as the build resolved it.
+#[derive(Debug, Clone)]
+struct Base {
+    image: Image,
+    layers: Vec<Layer>,
+    /// Its image's ID, its config's digest: what a squash's history names (D177).
+    id: String,
+}
+
+/// Resolves base images from this user's store, pulling those it lacks (or every one,
+/// with `--pull`), as the docker driver prefers its local images.
+struct Bases<'a> {
+    home: &'a Path,
+    store: &'a Store,
+    pull: bool,
+    progress: &'a RefCell<Progress>,
+    /// Each base, by what the planner names its source and the platform it was resolved
+    /// for ([`base_key`]): the name it resolved, without any digest it carried, then `@`
+    /// and the digest it resolved to, which an index's platforms share.
+    resolved: RefCell<BTreeMap<String, Base>>,
+    /// The manifests of OCI layouts named contexts name, imported into the store: by the
+    /// digest the context names, the manifest for this platform.
+    layouts: BTreeMap<String, Descriptor>,
+    /// The OSI artifacts the build takes, by what the planner names their sources: their
+    /// content layers, read as image layers.
+    artifacts: RefCell<BTreeMap<String, Vec<Layer>>>,
+    /// The OSI artifacts pulled for this build, by name: `--pull` pulls each once, whether
+    /// its policies (D116) or its plan asks for it first.
+    pulled: RefCell<std::collections::BTreeSet<String>>,
+    /// The build's secrets and SSH agents, for a Git source SOURCE_DATE_EPOCH names.
+    secrets: &'a BTreeMap<String, buildflags::SecretBytes>,
+    agents: &'a Agents,
+    /// What each name resolved to for each platform: asked again, the same, and no step
+    /// of its own, as BuildKit's resolve is one vertex for its identifier and platform
+    /// (llbsolver/bridge.go resolveSourceMetadata).
+    answered: RefCell<Answered>,
+    /// The step of each source's metadata resolved, by the key BuildKit gives its vertex
+    /// ([`metadata_id`]): SOURCE_DATE_EPOCH's source keyed as a named context's load is
+    /// that step again, under its own name.
+    steps: RefCell<BTreeMap<String, usize>>,
+    /// SOURCE_DATE_EPOCH's time from each source, once a build: each platform's plan asks
+    /// again, as BuildKit's frontend asks at once for every platform (D77), one step in buildx's
+    /// display.
+    epochs: RefCell<Epochs>,
+    /// The build's policies, asked of each base before its metadata is resolved (D101),
+    /// where they log, and the refusal that stopped the build, if one did.
+    policies: Option<&'a policy::Policies>,
+    policy_log: &'a dyn policy::Log,
+    refused: RefCell<Option<policy::Refused>>,
+    /// Whether the Dockerfile is the context's, which a frontend reads again.
+    local_dockerfile: bool,
+}
+
+/// Base images as resolved, by the key BuildKit gives the step ([`metadata_id`]).
+type Answered = BTreeMap<String, Resolved>;
+
+/// SOURCE_DATE_EPOCH's times, by source.
+type Epochs = BTreeMap<EpochSource, Option<plan::Epoch>>;
+
+/// The key BuildKit gives the vertex of a source's metadata resolution (bridge.go
+/// resolveSourceMetadata): its identifier, then the platform asked, its own where none
+/// is.
+fn metadata_id(identifier: &str, platform: Option<&Platform>) -> String {
+    let platform = platform.cloned().unwrap_or_else(default_spec);
+    format!("{identifier}{}", show(&platform::format_all(&platform)))
+}
+
+impl Bases<'_> {
+    /// An image's config, `scheme` its source's kind (an image's or an OCI layout's), as
+    /// BuildKit resolves it: once for each name and platform, under a step named `log`; for
+    /// none asked, BuildKit's own, as this host's.
+    fn resolve_source(
+        &self,
+        scheme: &str,
+        name: &[u8],
+        platform: Option<&Platform>,
+        log: &[u8],
+    ) -> Result<Resolved, Vec<u8>> {
+        let mut name = String::from_utf8_lossy(name).into_owned();
+        let id = metadata_id(&format!("{scheme}{name}"), platform);
+        if let Some(r) = self.answered.borrow().get(&id) {
+            return Ok(r.clone());
+        }
+        // The policies first, as bridge.resolveSourceMetadata asks them before it resolves:
+        // a refusal resolves nothing; a source converted is resolved in its place. An OCI
+        // layout is asked of as itself, whose input buildx does not build (PM M186): never
+        // as the registry's image its stand-in name names.
+        if let Some(p) = self.policies {
+            let normalized = Reference::parse(&name)
+                .map(|r| r.to_string())
+                .map_err(|e| e.to_string().into_bytes())?;
+            let source = match scheme {
+                "oci-layout://" => policy::Source::new(format!("{scheme}{name}")),
+                _ => policy::Source::new(format!("docker-image://{normalized}")),
+            };
+            match p.evaluate(&source, platform, &PolicyMeta { bases: self }, self.policy_log) {
+                Ok(None) => {}
+                Ok(Some(to)) => {
+                    name = to
+                        .identifier
+                        .strip_prefix("docker-image://")
+                        .unwrap_or(&to.identifier)
+                        .to_string();
+                }
+                Err(r) => {
+                    let e = format!(
+                        "failed to resolve source metadata for {normalized}: could not resolve image due to policy: {}",
+                        r.error
+                    );
+                    *self.refused.borrow_mut() = Some(r);
+                    return Err(e.into_bytes());
+                }
+            }
+        }
+        let v = self.progress.borrow_mut().start(&String::from_utf8_lossy(log));
+        self.steps.borrow_mut().insert(id.clone(), v.index);
+        let r = self.fetch(&name, platform.unwrap_or(&host_platform()));
+        let progress = self.progress.borrow();
+        match &r {
+            Ok(resolved) => {
+                progress.done(&v);
+                self.answered.borrow_mut().insert(id, resolved.clone());
+            }
+            Err(e) => progress.error(&v, &String::from_utf8_lossy(e)),
+        }
+        r
+    }
+}
+
+impl Resolver for Bases<'_> {
+    fn resolve(&self, name: &[u8], platform: Option<&Platform>, log: &[u8]) -> Result<Resolved, Vec<u8>> {
+        self.resolve_source("docker-image://", name, platform, log)
+    }
+
+    fn resolve_layout(
+        &self,
+        name: &[u8],
+        _: &[u8],
+        platform: Option<&Platform>,
+        log: &[u8],
+    ) -> Result<Resolved, Vec<u8>> {
+        self.resolve_source("oci-layout://", name, platform, log)
+    }
+
+    /// The frontend the build names, as BuildKit asks its policies of it before it runs it
+    /// (measured, buildx v0.37.1 on BuildKit v0.28.1): its reference, for no platform; its
+    /// image config resolved, as a step of its own, for the digest it is pinned to; the
+    /// pinned image, for the builder's platform (not the build's); and the Dockerfile
+    /// again, as the frontend reads it; once for a build of several platforms. shards runs
+    /// its own port of the frontend, so it pulls no image of it.
+    fn frontend(&self, name: &[u8]) -> Result<(), Vec<u8>> {
+        // One frontend runs a build of several platforms: the first platform's asks.
+        let Some(p) = self
+            .policies
+            .filter(|_| multi::with(|sub| sub.first).unwrap_or(true))
+        else {
+            return Ok(());
+        };
+        let meta = PolicyMeta { bases: self };
+        let refuse = |r: policy::Refused, normalized: &str| {
+            let e = format!(
+                "failed to resolve source metadata for {normalized}: could not resolve image due to policy: {}",
+                r.error
+            );
+            *self.refused.borrow_mut() = Some(r);
+            e.into_bytes()
+        };
+        let reference =
+            Reference::parse(&String::from_utf8_lossy(name)).map_err(|e| e.to_string().into_bytes())?;
+        let normalized = reference.to_string();
+        let mut name = normalized.clone();
+        match p.evaluate(
+            &policy::Source::new(format!("docker-image://{normalized}")),
+            None,
+            &meta,
+            self.policy_log,
+        ) {
+            Ok(None) => {}
+            Ok(Some(to)) => {
+                name = to
+                    .identifier
+                    .strip_prefix("docker-image://")
+                    .unwrap_or(&to.identifier)
+                    .to_string();
+            }
+            Err(r) => return Err(refuse(r, &normalized)),
+        }
+        let reference = Reference::parse(&name).map_err(|e| e.to_string().into_bytes())?;
+        let pinned = match &reference.digest {
+            Some(_) => name.clone(),
+            None => {
+                let v = self
+                    .progress
+                    .borrow_mut()
+                    .start(&format!("resolve image config for docker-image://{name}"));
+                let top = crate::pull::registry(&reference, None, &|k| std::env::var(k).ok()).and_then(|r| {
+                    saying_waits(&r, self.progress, || {
+                        r.resolve(self.store, &reference).map_err(|e| e.to_string())
+                    })
+                });
+                let progress = self.progress.borrow();
+                match top {
+                    Ok(top) => {
+                        progress.done(&v);
+                        format!("{name}@{}", top.digest)
+                    }
+                    Err(e) => {
+                        progress.error(&v, &e);
+                        return Err(e.into_bytes());
+                    }
+                }
+            }
+        };
+        if let Err(r) = p.evaluate(
+            &policy::Source::new(format!("docker-image://{pinned}")),
+            Some(&host_platform()),
+            &meta,
+            self.policy_log,
+        ) {
+            return Err(refuse(r, &pinned));
+        }
+        if self.local_dockerfile
+            && let Err(r) = p.evaluate(
+                &policy::Source::new("local://dockerfile"),
+                None,
+                &NoMeta,
+                self.policy_log,
+            )
+        {
+            return Err(refuse(r, "dockerfile"));
+        }
+        Ok(())
+    }
+
+    /// An OSI artifact, from the store or pulled (with `--pull`, pulled again), checked:
+    /// its type, config and content (crate::agent::fetch); its content layers kept for the
+    /// source that names it.
+    fn artifact(&self, name: &[u8], kind: &[u8], log: &[u8]) -> Result<Resolved, Vec<u8>> {
+        // The policies first (D116), as a base's are asked before its metadata is
+        // resolved: a refusal takes nothing. None converts it: only an image's pin
+        // converts a source, and a pin of another is refused (`pinned`, BuildKit's
+        // `cannot pin non-image source`).
+        if let Some(p) = self.policies {
+            let normalized = Reference::parse(&String::from_utf8_lossy(name))
+                .map(|r| r.to_string())
+                .map_err(|e| e.to_string().into_bytes())?;
+            let source = policy::Source {
+                identifier: format!("osi-artifact://{normalized}"),
+                attrs: [("osi.kind".to_string(), show(kind))].into_iter().collect(),
+            };
+            match p.evaluate(&source, None, &PolicyMeta { bases: self }, self.policy_log) {
+                Ok(_) => {}
+                Err(r) => {
+                    let e = format!(
+                        "failed to resolve source metadata for {normalized}: could not resolve OSI artifact due to policy: {}",
+                        r.error
+                    );
+                    *self.refused.borrow_mut() = Some(r);
+                    return Err(e.into_bytes());
+                }
+            }
+        }
+        let v = self.progress.borrow_mut().start(&String::from_utf8_lossy(log));
+        let r = self.artifact_of(&String::from_utf8_lossy(name), kind);
+        let progress = self.progress.borrow();
+        match &r {
+            Ok(_) => progress.done(&v),
+            Err(e) => progress.error(&v, e),
+        }
+        r.map_err(String::into_bytes)
+    }
+
+    fn artifact_layout(
+        &self,
+        name: &[u8],
+        kind: &[u8],
+        store: &[u8],
+        digest: &[u8],
+        log: &[u8],
+    ) -> Result<Resolved, Vec<u8>> {
+        let _ = store;
+        let v = self.progress.borrow_mut().start(&String::from_utf8_lossy(log));
+        let r = self.artifact_in_layout(
+            &String::from_utf8_lossy(name),
+            kind,
+            &String::from_utf8_lossy(digest),
+        );
+        let progress = self.progress.borrow();
+        match &r {
+            Ok(_) => progress.done(&v),
+            Err(e) => progress.error(&v, e),
+        }
+        r.map_err(String::into_bytes)
+    }
+
+    /// Each under the name of the step BuildKit's metadata resolution shows
+    /// (dockerfile/1.27.1 epoch.go): the step of the named context's load where BuildKit
+    /// keys the two alike (an image's or an OCI layout's, both for its own platform).
+    fn epoch(&self, source: &EpochSource) -> Result<Option<plan::Epoch>, Vec<u8>> {
+        if let Some(e) = self.epochs.borrow().get(source) {
+            return Ok(*e);
+        }
+        let name = show(&source.log);
+        let again = source.op.as_ref().and_then(|op| {
+            self.steps
+                .borrow()
+                .get(&metadata_id(&show(&op.identifier), None))
+                .copied()
+        });
+        let v = match again {
+            Some(index) => self.progress.borrow_mut().again(index, &name),
+            None => self.progress.borrow_mut().start(&name),
+        };
+        let r = self.source_time(source);
+        let progress = self.progress.borrow();
+        match &r {
+            Ok(e) => {
+                progress.done(&v);
+                self.epochs.borrow_mut().insert(source.clone(), *e);
+            }
+            Err(e) => progress.error(&v, e),
+        }
+        r.map_err(String::into_bytes)
+    }
+}
+
+impl Bases<'_> {
+    /// An OSI artifact's metadata for its policies (D116): the artifact as the build takes
+    /// it (from the store, pulled where it is not, its referrers with it), the digest its
+    /// name resolves to, and, where asked for, the signature bundles among the referrers
+    /// kept with it. `name` is the source's, pinned or not: the store keeps the artifact
+    /// under the name as written, its tag's where it has one.
+    fn artifact_meta(
+        &self,
+        name: &str,
+        source: &policy::Source,
+        request: &policy::MetaRequest,
+    ) -> Result<policy::Meta, String> {
+        // Of the kind its directive names; one named on its own (`policy eval`) is of
+        // whatever kind it is.
+        let want = match source.attrs.get("osi.kind").map(String::as_str) {
+            Some("agent") => Some(shards_image::osi::Kind::Agent),
+            Some("harness") => Some(shards_image::osi::Kind::Harness),
+            Some("mcp") => Some(shards_image::osi::Kind::Mcp),
+            _ => None,
+        };
+        let mut reference = Reference::parse(name).map_err(|e| format!("{name}: {e}"))?;
+        if reference.tag.is_some() {
+            reference.digest = None;
+        }
+        let stored = reference.to_string();
+        let (desc, _, _, kind) =
+            crate::agent::take(self.store, &reference, want, self.pull_once(&stored), &|_| {})?;
+        let digest = self
+            .store
+            .resolved(&stored)
+            .map_err(|e| e.to_string())?
+            .map_or_else(|| desc.digest.clone(), |d| d.to_string());
+        let signatures = match request.image.as_ref().is_some_and(|i| i.attestation_chain) {
+            false => None,
+            true => Some(crate::agent::signature_bundles(self.store, &stored)?),
+        };
+        Ok(policy::Meta {
+            artifact: Some(policy::ArtifactMeta {
+                digest,
+                artifact_type: kind.artifact_type().to_string(),
+                signatures,
+            }),
+            ..policy::Meta::default()
+        })
+    }
+
+    /// Whether the OSI artifact the store keeps as `name` is pulled again: with `--pull`,
+    /// once a build.
+    fn pull_once(&self, name: &str) -> bool {
+        self.pull && self.pulled.borrow_mut().insert(name.to_string())
+    }
+
+    fn artifact_of(&self, name: &str, kind: &[u8]) -> Result<Resolved, String> {
+        let want = match kind {
+            b"agent" => shards_image::osi::Kind::Agent,
+            b"harness" => shards_image::osi::Kind::Harness,
+            _ => shards_image::osi::Kind::Mcp,
+        };
+        let reference = Reference::parse(name).map_err(|e| format!("{name}: {e}"))?;
+        let fresh = self.pull_once(&reference.to_string());
+        let (desc, manifest, _) = crate::agent::fetch(self.store, &reference, want, fresh, &|_| {})?;
+        self.artifact_taken(name, &reference, &desc, &manifest, want)
+    }
+
+    /// An OSI artifact from the OCI layout a named context gives it as (D113), imported
+    /// with the build's other layouts, held as one from a registry is.
+    fn artifact_in_layout(&self, name: &str, kind: &[u8], digest: &str) -> Result<Resolved, String> {
+        let want = match kind {
+            b"agent" => shards_image::osi::Kind::Agent,
+            b"harness" => shards_image::osi::Kind::Harness,
+            _ => shards_image::osi::Kind::Mcp,
+        };
+        let reference = Reference::parse(name).map_err(|e| format!("{name}: {e}"))?;
+        let desc = self
+            .layouts
+            .get(digest)
+            .cloned()
+            .ok_or_else(|| format!("{name}: {digest}: not in its build context's OCI layout"))?;
+        let (manifest, _, _) = crate::agent::checked(self.store, name, &desc, Some(want))?;
+        self.artifact_taken(name, &reference, &desc, &manifest, want)
+    }
+
+    /// An OSI artifact held: its content layers, read as an image's, for the source the
+    /// planner names it by, its reference with its manifest's digest, and its config.
+    fn artifact_taken(
+        &self,
+        name: &str,
+        reference: &Reference,
+        desc: &Descriptor,
+        manifest: &oci::Manifest,
+        want: shards_image::osi::Kind,
+    ) -> Result<Resolved, String> {
+        let diff_ids = crate::agent::diff_ids(self.store, want, manifest)?;
+        let mut layers = Vec::new();
+        for (l, diff_id) in manifest.layers.iter().zip(diff_ids) {
+            let media = crate::agent::layer_type(want, &l.media_type)
+                .ok_or_else(|| format!("{name}: a layer of type {}", l.media_type))?;
+            layers.push(Layer {
+                media_type: media.as_bytes().to_vec(),
+                digest: l.digest.as_bytes().to_vec(),
+                size: u64::try_from(l.size).map_err(|_| format!("{name}: a layer's size is negative"))?,
+                diff_id: diff_id.to_string().into_bytes(),
+                annotations: BTreeMap::new(),
+                created: None,
+                description: format!("the {} {reference}", want.word()).into_bytes(),
+            });
+        }
+        let mut bare = reference.clone();
+        bare.digest = Some(desc.digest().map_err(|e| e.to_string())?);
+        let resolved = bare.to_string();
+        self.artifacts.borrow_mut().insert(resolved.clone(), layers);
+        let config = self
+            .store
+            .content(&manifest.config, oci::MAX_CONFIG)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("{name}: its config is not here"))?;
+        Ok(Resolved {
+            reference: resolved.into_bytes(),
+            digest: Some(desc.digest.clone().into_bytes()),
+            config,
+        })
+    }
+
+    /// When `source` says it was made (resolveSourceDateEpochFromState): a local context
+    /// says nothing, BuildKit's metadata of one being neither Git's nor HTTP's; a URL
+    /// fetched without a checksum, its Last-Modified if it has one; else the newest
+    /// regular file of what it fetches, if that is an archive.
+    fn source_time(&self, source: &EpochSource) -> Result<Option<plan::Epoch>, String> {
+        // A state of no source op, or of more than one, has none to say it.
+        let Some(op) = &source.op else {
+            return Ok(None);
+        };
+        let id = op.identifier.as_slice();
+        if id.starts_with(b"git://") {
+            let when = self.git_time(&op.identifier, &op.attrs)?;
+            Ok(when.map(|(secs, offset)| plan::Epoch {
+                secs,
+                nanos: 0,
+                offset,
+            }))
+        } else if id.starts_with(b"http://") || id.starts_with(b"https://") {
+            let made = self.http_time(id, op.attrs.get(b"http.checksum".as_slice()).map(Vec::as_slice))?;
+            Ok(made.map(|(secs, nanos)| plan::Epoch {
+                secs,
+                nanos,
+                offset: 0,
+            }))
+        } else {
+            // The client's directory, an image or an OCI layout: BuildKit's metadata of
+            // such a source says no time.
+            Ok(None)
+        }
+    }
+
+    /// When an HTTP source was made: its Last-Modified where nothing pins its bytes, else
+    /// the newest regular file of the archive it is (none where it is no archive).
+    fn http_time(&self, url: &[u8], checksum: Option<&[u8]>) -> Result<Option<(i64, u32)>, String> {
+        let limits = crate::pull::limits()?;
+        // Removed, with what it holds, once the time is known.
+        let stage = self.store.stage().map_err(|e| e.to_string())?;
+        let checksum = checksum.map(show);
+        let fetched = http::fetch_now(
+            &show(url),
+            checksum.as_deref(),
+            stage.path().join("source"),
+            &limits,
+        )?;
+        if checksum.is_none()
+            && let Some(t) = fetched.last_modified
+        {
+            return Ok(Some(t));
+        }
+        let file = std::fs::File::open(&fetched.path).map_err(|e| e.to_string())?;
+        shards_build::archive::newest_file(file, &limits).map_err(|e| e.0)
+    }
+
+    /// When a Git source's commit was made: its committer's time, and the offset of the
+    /// zone it was written in.
+    fn git_time(
+        &self,
+        identifier: &[u8],
+        attrs: &BTreeMap<Vec<u8>, Vec<u8>>,
+    ) -> Result<Option<(i64, i32)>, String> {
+        let src = git::source(identifier, attrs)?;
+        let bound = usize::try_from(crate::pull::limits()?.bytes).unwrap_or(usize::MAX);
+        let limits = shards_git::remote::Limits {
+            pack: bound,
+            object: bound,
+        };
+        let auth = git::auth(&src, self.secrets);
+        git::commit_time(
+            &src,
+            limits,
+            &shards_registry::http::Cancel::new(),
+            auth.as_ref(),
+            self.agents,
+        )
+    }
+}
+
+impl Bases<'_> {
+    fn fetch(&self, name: &str, wanted: &Platform) -> Result<Resolved, Vec<u8>> {
+        let fail = |e: String| e.into_bytes();
+        let reference = Reference::parse(name).map_err(|e| fail(e.to_string()))?;
+        // An OCI layout's image, imported already: no registry is asked.
+        if let Some(d) = &reference.digest
+            && let Some(record) = self.layouts.get(&d.to_string())
+        {
+            return self.base_of(name, &reference, record.clone(), d.clone(), wanted);
+        }
+        if !ours(wanted) {
+            return self.foreign(name, &reference, wanted);
+        }
+        let limits = crate::pull::limits().map_err(fail)?;
+        // Pinned by digest: the image the store holds of that digest, whatever it is named
+        // here, the digest as asked.
+        let held = match &reference.digest {
+            Some(d) if !self.pull => self.store.holding(d).map_err(|e| fail(e.to_string()))?,
+            _ => None,
+        };
+        let guest = image_platform::guest();
+        // Here for another platform alone, as a lookup for ours finds none: pulled for ours.
+        let here = |found: Result<Option<registry_pull::Pulled>, shards_registry::Error>| match found {
+            Err(e) if e.kind() == shards_registry::ErrorKind::NotFound => Ok(None),
+            found => found.map_err(|e| fail(e.to_string())),
+        };
+        if let (Some(held), Some(d)) = (&held, &reference.digest)
+            && let Some(found) = here(registry_pull::local_base(
+                self.store,
+                held,
+                &reference.familiar(),
+                &guest,
+                &limits,
+            ))?
+        {
+            return self.base_of(name, &reference, found.descriptor, d.clone(), wanted);
+        }
+        let local = if self.pull {
+            None
+        } else {
+            here(registry_pull::local_base(
+                self.store,
+                &reference.to_string(),
+                &reference.familiar(),
+                &guest,
+                &limits,
+            ))?
+        };
+        let pulled = match local {
+            Some(p) => p,
+            None => {
+                // What its pull waits on, said where the build's plain lines go (D184).
+                let plain = {
+                    let p = self.progress.borrow();
+                    p.live.is_none() && !p.quiet
+                };
+                let report = |event: Event<'_>| {
+                    if let (true, Event::Waiting(notice)) = (plain, event) {
+                        let _ = writeln!(std::io::stderr(), "{notice}");
+                    }
+                };
+                crate::pull::fetch(
+                    self.home,
+                    &reference,
+                    &guest,
+                    &report,
+                    &|_| {},
+                    None,
+                    &|k| std::env::var(k).ok(),
+                    false,
+                )
+                .map_err(fail)?
+                .0
+            }
+        };
+        // The manifest and config as stored, for the layers' descriptors and the config's
+        // bytes.
+        self.base_of(
+            name,
+            &reference,
+            pulled.descriptor,
+            pulled.resolved.clone(),
+            wanted,
+        )
+    }
+
+    /// The root filesystem of the emulator image (D179), this host's platform's of it:
+    /// fetched as a foreign base is, untagged, the first time a build needs it, and kept as
+    /// the build cache keeps what it made.
+    fn emulators(&self, limits: &store::Limits) -> Result<PathBuf, String> {
+        let host = host_platform();
+        let reference = Reference::parse(EMULATOR_IMAGE).map_err(|e| e.to_string())?;
+        self.foreign(EMULATOR_IMAGE, &reference, &host)
+            .map_err(|e| show(&e))?;
+        let layers = self
+            .resolved
+            .borrow()
+            .get(&base_key(EMULATOR_IMAGE, &host))
+            .map(|b| b.layers.clone())
+            .ok_or_else(|| format!("{EMULATOR_IMAGE}: not resolved"))?;
+        rootfs_of(self.store, &layers, limits)
+    }
+
+    /// A base for a platform this host's microVMs do not run, or the emulator image: its
+    /// manifest for that
+    /// platform, config and layers fetched into the store with no name recorded, so that
+    /// the image a name holds stays the guests' (BuildKit's pull leaves an image store's
+    /// names be), and kept as the build cache keeps what it made, until `builder prune`.
+    /// Found there again unless `--pull`, as a guest's base is found in the store.
+    fn foreign(&self, name: &str, reference: &Reference, wanted: &Platform) -> Result<Resolved, Vec<u8>> {
+        let fail = |e: String| e.into_bytes();
+        let target = image_platform::normalize(&oci::Platform {
+            os: show(&wanted.os),
+            architecture: show(&wanted.architecture),
+            variant: (!wanted.variant.is_empty()).then(|| show(&wanted.variant)),
+            os_features: Vec::new(),
+        });
+        let key = sha256(format!("foreign base\0{reference}\0{}", base_platform(wanted)).as_bytes())
+            .hex()
+            .to_string();
+        if !self.pull
+            && let Some(body) = self.store.cache_get(&key).map_err(|e| fail(e.to_string()))?
+            && let Ok(held) = serde_json::from_slice::<ForeignBase>(&body)
+            && let Ok(resolved) = Digest::parse(&held.resolved)
+        {
+            self.store.cache_used(&key).map_err(|e| fail(e.to_string()))?;
+            return self.base_of(name, reference, held.manifest, resolved, wanted);
+        }
+        let limits = crate::pull::limits().map_err(fail)?;
+        let registry = crate::pull::registry(reference, None, &|k| std::env::var(k).ok()).map_err(fail)?;
+        let (resolved, manifest) = saying_waits(&registry, self.progress, || {
+            shards_registry::pull::fetch_untagged(&registry, self.store, reference, &[target], &limits)
+        })
+        .map_err(|e| fail(e.to_string()))?;
+        let out = self.base_of(name, reference, manifest.clone(), resolved.clone(), wanted)?;
+        // Its blobs, kept while the record is: the manifest, the config, the layers.
+        let bytes = self
+            .store
+            .content(&manifest, oci::MAX_MANIFEST)
+            .map_err(|e| fail(e.to_string()))?
+            .ok_or_else(|| fail(format!("{name}: its manifest is missing")))?;
+        let Document::Manifest(m) =
+            oci::parse_document(&bytes, &manifest.media_type).map_err(|e| fail(e.to_string()))?
+        else {
+            return Err(fail(format!("{name}: its manifest is an index")));
+        };
+        let mut blobs = vec![manifest.digest().map_err(|e| fail(e.to_string()))?];
+        let mut size = u64::try_from(manifest.size).unwrap_or(0);
+        for d in std::iter::once(&m.config).chain(&m.layers) {
+            blobs.push(d.digest().map_err(|e| fail(e.to_string()))?);
+            size = size.saturating_add(u64::try_from(d.size).unwrap_or(0));
+        }
+        let held = ForeignBase {
+            resolved: resolved.to_string(),
+            manifest,
+        };
+        let body = serde_json::to_string(&held).map_err(|e| fail(e.to_string()))?;
+        self.store
+            .cache_put(&key, &blobs, size, &body)
+            .map_err(|e| fail(e.to_string()))?;
+        Ok(out)
+    }
+
+    /// The base `record` names, a manifest the store holds, as `name` resolved to
+    /// `resolved`.
+    fn base_of(
+        &self,
+        name: &str,
+        reference: &Reference,
+        record: Descriptor,
+        resolved: Digest,
+        platform: &Platform,
+    ) -> Result<Resolved, Vec<u8>> {
+        let fail = |e: String| e.into_bytes();
+        let manifest_bytes = self
+            .store
+            .content(&record, oci::MAX_MANIFEST)
+            .map_err(|e| fail(e.to_string()))?
+            .ok_or_else(|| fail(format!("{name}: its manifest is missing")))?;
+        let Document::Manifest(manifest) =
+            oci::parse_document(&manifest_bytes, &record.media_type).map_err(|e| fail(e.to_string()))?
+        else {
+            return Err(fail(format!("{name}: its record names an index")));
+        };
+        let config = self
+            .store
+            .content(&manifest.config, oci::MAX_CONFIG)
+            .map_err(|e| fail(e.to_string()))?
+            .ok_or_else(|| fail(format!("{name}: its config is missing")))?;
+        let image = Image::from_json(&config).map_err(|e| fail(format!("{name}: {}", show(&e))))?;
+        let annotations = layer_annotations(&manifest_bytes);
+        let diff_ids = image.rootfs.diff_ids.clone().unwrap_or_default();
+        let mut layers = Vec::new();
+        for (i, l) in manifest.layers.iter().enumerate() {
+            let digest = l.digest().map_err(|e| fail(e.to_string()))?;
+            layers.push(Layer {
+                media_type: l.media_type.as_bytes().to_vec(),
+                digest: l.digest.as_bytes().to_vec(),
+                size: u64::try_from(l.size)
+                    .map_err(|_| fail(format!("{name}: a layer's size is negative")))?,
+                diff_id: diff_ids.get(i).cloned().unwrap_or_default(),
+                annotations: annotations.get(i).cloned().unwrap_or_default(),
+                // When the store first held the layer, as BuildKit's records time a pull (D114).
+                created: stored_at(&self.store.blob_path(&digest)),
+                description: format!("pulled from {reference}").into_bytes(),
+            });
+        }
+        let out = Resolved {
+            reference: reference.to_string().into_bytes(),
+            digest: Some(resolved.to_string().into_bytes()),
+            config,
+        };
+        let bare = name.rsplit_once('@').map_or(name, |(bare, _)| bare);
+        let base = Base {
+            image,
+            layers,
+            id: manifest.config.digest.clone(),
+        };
+        // A named context's image is its source by the reference alone, (D33), as BuildKit's
+        // NamedContext names it (no digest).
+        if !name.contains('@') {
+            self.resolved
+                .borrow_mut()
+                .insert(base_key(name, platform), base.clone());
+        }
+        self.resolved
+            .borrow_mut()
+            .insert(base_key(&format!("{bare}@{resolved}"), platform), base);
+        Ok(out)
+    }
+}
+
+impl Bases<'_> {
+    /// What a policy reads of the base `name` for `wanted` (D101): the digest its name
+    /// resolves to and its config, found where [`Bases::fetch`] finds the image, without
+    /// its layers, as BuildKit resolves an image's metadata (D33).
+    fn metadata(&self, name: &str, wanted: &Platform) -> Result<(String, Vec<u8>), String> {
+        let reference = Reference::parse(name).map_err(|e| e.to_string())?;
+        let config_of = |record: &Descriptor| -> Result<Vec<u8>, String> {
+            let bytes = self
+                .store
+                .content(record, oci::MAX_MANIFEST)
+                .map_err(|e| e.to_string())?
+                .ok_or_else(|| format!("{name}: its manifest is missing"))?;
+            let Document::Manifest(m) =
+                oci::parse_document(&bytes, &record.media_type).map_err(|e| e.to_string())?
+            else {
+                return Err(format!("{name}: its record names an index"));
+            };
+            self.store
+                .content(&m.config, oci::MAX_CONFIG)
+                .map_err(|e| e.to_string())?
+                .ok_or_else(|| format!("{name}: its config is missing"))
+        };
+        if let Some(d) = &reference.digest
+            && let Some(record) = self.layouts.get(&d.to_string())
+        {
+            return Ok((d.to_string(), config_of(record)?));
+        }
+        let target = image_platform::normalize(&oci::Platform {
+            os: show(&wanted.os),
+            architecture: show(&wanted.architecture),
+            variant: (!wanted.variant.is_empty()).then(|| show(&wanted.variant)),
+            os_features: Vec::new(),
+        });
+        if !self.pull {
+            if ours(wanted) {
+                let held = match &reference.digest {
+                    Some(d) => self.store.holding(d).map_err(|e| e.to_string())?,
+                    None => None,
+                };
+                let guest = image_platform::guest();
+                let shown = reference.familiar();
+                let found = |tagged: &str| {
+                    registry_pull::base_manifest(self.store, tagged, &shown, &guest)
+                        .map_err(|e| e.to_string())
+                };
+                if let (Some(held), Some(d)) = (&held, &reference.digest)
+                    && let Some(record) = found(held)?
+                {
+                    return Ok((d.to_string(), config_of(&record)?));
+                }
+                let tagged = reference.to_string();
+                if let Some(record) = found(&tagged)? {
+                    let resolved = match self.store.resolved(&tagged).map_err(|e| e.to_string())? {
+                        Some(d) => d.to_string(),
+                        None => record.digest.clone(),
+                    };
+                    return Ok((resolved, config_of(&record)?));
+                }
+            } else {
+                let key = sha256(format!("foreign base\0{reference}\0{}", base_platform(wanted)).as_bytes())
+                    .hex()
+                    .to_string();
+                if let Some(body) = self.store.cache_get(&key).map_err(|e| e.to_string())?
+                    && let Ok(held) = serde_json::from_slice::<ForeignBase>(&body)
+                {
+                    return Ok((held.resolved, config_of(&held.manifest)?));
+                }
+            }
+        }
+        let limits = crate::pull::limits()?;
+        let registry = crate::pull::registry(&reference, None, &|k| std::env::var(k).ok())?;
+        let targets = if ours(wanted) {
+            image_platform::guest()
+        } else {
+            vec![target]
+        };
+        let (resolved, config) = saying_waits(&registry, self.progress, || {
+            shards_registry::pull::metadata(&registry, self.store, &reference, &targets, &limits)
+        })
+        .map_err(|e| e.to_string())?;
+        Ok((resolved.to_string(), config))
+    }
+}
+
+impl Bases<'_> {
+    /// The image's attestation chain for `wanted`, from its registry (BuildKit fetches it
+    /// whatever its image store holds). An image that is one manifest, no index, holds no
+    /// attestation manifest and no signature to chain to it, and is answered so: a chain
+    /// of its own manifest alone, its root that manifest's digest. BuildKit v0.28.1 has no
+    /// chain to answer with and reads its root regardless, a nil dereference that ends
+    /// dockerd (source/containerimage/source.go:283, D113); and buildx, given no chain,
+    /// asks for one again until it gives up ("too many policy requests").
+    fn attestation_chain(
+        &self,
+        name: &str,
+        wanted: &Platform,
+        resolve_attestations: &[String],
+    ) -> Result<policy::AttestationChain, String> {
+        let reference = Reference::parse(name).map_err(|e| e.to_string())?;
+        let limits = crate::pull::limits()?;
+        let registry = crate::pull::registry(&reference, None, &|k| std::env::var(k).ok())?;
+        let top = saying_waits(&registry, self.progress, || {
+            registry.resolve(self.store, &reference)
+        })
+        .map_err(|e| e.to_string())?;
+        let platform = shards_sigstore::platforms::Platform {
+            os: show(&wanted.os),
+            architecture: show(&wanted.architecture),
+            variant: show(&wanted.variant),
+            ..Default::default()
+        };
+        let chain = attest::chain(
+            &registry,
+            self.store,
+            &limits,
+            &top,
+            &platform,
+            resolve_attestations,
+        )?;
+        Ok(chain.unwrap_or_else(|| policy::AttestationChain {
+            root: top.digest.clone(),
+            ..policy::AttestationChain::default()
+        }))
+    }
+}
+
+/// The digest of a file's content followed by a suffix, by the algorithm asked for:
+/// `ALGORITHM:HEX`.
+fn suffixed_digest(path: &Path, c: &policy::ChecksumRequest) -> Result<String, String> {
+    let algorithm = match c.algorithm {
+        "sha384" => &aws_lc_rs::digest::SHA384,
+        "sha512" => &aws_lc_rs::digest::SHA512,
+        _ => &aws_lc_rs::digest::SHA256,
+    };
+    let mut file = std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let mut ctx = aws_lc_rs::digest::Context::new(algorithm);
+    let mut buf = vec![0u8; 1 << 16];
+    loop {
+        let n = file
+            .read(&mut buf)
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+        if n == 0 {
+            break;
+        }
+        ctx.update(buf.get(..n).unwrap_or_default());
+    }
+    ctx.update(&c.suffix);
+    let hex: String = ctx.finish().as_ref().iter().map(|b| format!("{b:02x}")).collect();
+    Ok(format!("{}:{hex}", c.algorithm))
+}
+
+/// What answers a policy's questions of a source: a base image's digest and config.
+struct PolicyMeta<'a, 'b> {
+    bases: &'a Bases<'b>,
+}
+
+impl policy::Resolve for PolicyMeta<'_, '_> {
+    fn resolve(
+        &self,
+        source: &policy::Source,
+        request: &policy::MetaRequest,
+    ) -> Result<policy::Meta, String> {
+        let id = source.identifier.as_bytes();
+        if id.starts_with(b"git://") {
+            let attrs = source
+                .attrs
+                .iter()
+                .map(|(k, v)| (k.clone().into_bytes(), v.clone().into_bytes()))
+                .collect();
+            let src = git::source(id, &attrs)?;
+            let bound = usize::try_from(crate::pull::limits()?.bytes).unwrap_or(usize::MAX);
+            let limits = shards_git::remote::Limits {
+                pack: bound,
+                object: bound,
+            };
+            let auth = git::auth(&src, self.bases.secrets);
+            let objects = request.git.as_ref().is_some_and(|g| g.return_object);
+            let meta = git::metadata(
+                &src,
+                objects,
+                limits,
+                &shards_registry::http::Cancel::new(),
+                auth.as_ref(),
+                self.bases.agents,
+            )?;
+            return Ok(policy::Meta {
+                git: Some(meta),
+                ..policy::Meta::default()
+            });
+        }
+        if id.starts_with(b"http://") || id.starts_with(b"https://") {
+            // BuildKit resolves an HTTP source's metadata by fetching it: its digest.
+            let limits = crate::pull::limits()?;
+            let stage = self.bases.store.stage().map_err(|e| e.to_string())?;
+            let fetched = http::fetch_now(&source.identifier, None, stage.path().join("source"), &limits)?;
+            // A ChecksumRequest: the content, then the suffix, hashed as asked.
+            let signature_checksum = match &request.http_checksum {
+                None => None,
+                Some(c) => Some((suffixed_digest(&fetched.path, c)?, c.suffix.clone())),
+            };
+            return Ok(policy::Meta {
+                http: Some(policy::HttpMeta {
+                    checksum: fetched.digest.to_string(),
+                    signature_checksum,
+                }),
+                ..policy::Meta::default()
+            });
+        }
+        if let Some(name) = source.identifier.strip_prefix("osi-artifact://") {
+            return self.bases.artifact_meta(name, source, request);
+        }
+        let Some(image) = &request.image else {
+            return Ok(policy::Meta::default());
+        };
+        let name = source
+            .identifier
+            .strip_prefix("docker-image://")
+            .ok_or_else(|| format!("{}: not an image", source.identifier))?;
+        let platform = request.platform.clone().unwrap_or_else(host_platform);
+        let (digest, config) = self.bases.metadata(name, &platform)?;
+        let attestation_chain = if image.attestation_chain {
+            let chain = self
+                .bases
+                .attestation_chain(name, &platform, &image.resolve_attestations)?;
+            if chain.root != digest {
+                return Err(format!(
+                    "attestation chain root digest {} does not match image digest {digest}",
+                    chain.root
+                ));
+            }
+            Some(chain)
+        } else {
+            None
+        };
+        Ok(policy::Meta {
+            image: Some(policy::ImageMeta {
+                digest,
+                config: (!image.no_config).then_some(config),
+                attestation_chain,
+            }),
+            ..policy::Meta::default()
+        })
+    }
+}
+
+/// What answers no question: a local source's policy needs nothing resolved.
+struct NoMeta;
+
+impl policy::Resolve for NoMeta {
+    fn resolve(&self, source: &policy::Source, _: &policy::MetaRequest) -> Result<policy::Meta, String> {
+        Err(format!("{}: no metadata to resolve", source.identifier))
+    }
+}
+
+/// What a step's requests through the build's proxy came to, in the build's provenance
+/// (D110): each material an HTTP source of its, and each that is none named by the step's
+/// `vertex` and `command`, as BuildKit's provenance names them.
+fn proxy_provenance(
+    c: &proxy::capture::Capture,
+    vertex: &str,
+    command: &str,
+    materials: &mut Vec<provenance::Material>,
+    incomplete: &mut Vec<provenance::ProxyIncomplete>,
+) {
+    for m in c.materials() {
+        let (algorithm, hex) = m.digest.split_once(':').unwrap_or(("sha256", &m.digest));
+        materials.push(provenance::Material {
+            uri: m.url,
+            algorithm: algorithm.to_string(),
+            hex: hex.to_string(),
+        });
+    }
+    for i in &c.incomplete {
+        incomplete.push(provenance::ProxyIncomplete {
+            op: vertex.to_string(),
+            name: command.to_string(),
+            method: i.method.clone(),
+            uri: i.url.clone(),
+            reason: i.reason.to_string(),
+        });
+    }
+}
+
+/// buildx's main: each message of a policy's refusal, before the error
+/// (policysession.DenyMessages).
+fn policy_said(messages: &[String]) {
+    for m in messages.iter().filter(|m| !m.is_empty()) {
+        let _ = writeln!(std::io::stderr(), "Policy: {m}");
+    }
+}
+
+/// buildx's `loading policies` step (build/opt.go policyProgressLogger): begun when a
+/// policy first logs, each line stamped with the seconds since it began; done half a
+/// second after its last line, as its timer ends it, and begun again under its number
+/// by the next; failed by a policy's refusal; done when the build ends, if it is not.
+struct PolicyStep<'a> {
+    progress: &'a RefCell<Progress>,
+    /// Where the sources the policies' functions fetch are staged, and within what.
+    store: &'a Store,
+    limits: store::Limits,
+    /// The build's remote context, which its policies' files are read from (D111).
+    remote: Option<&'a exec::Reader>,
+    name: RefCell<String>,
+    index: std::cell::Cell<usize>,
+    window: RefCell<Option<(Vertex, Instant)>>,
+    closed: std::cell::Cell<bool>,
+}
+
+/// policyProgressWindow.
+const POLICY_WINDOW: std::time::Duration = std::time::Duration::from_millis(500);
+
+impl<'a> PolicyStep<'a> {
+    fn new(
+        progress: &'a RefCell<Progress>,
+        store: &'a Store,
+        limits: store::Limits,
+        remote: Option<&'a exec::Reader>,
+    ) -> PolicyStep<'a> {
+        PolicyStep {
+            progress,
+            store,
+            limits,
+            remote,
+            name: RefCell::new(String::new()),
+            // A platform's build of several logs under the step the first one began.
+            index: std::cell::Cell::new(multi::with(|sub| sub.policy_step).unwrap_or(0)),
+            window: RefCell::new(None),
+            closed: std::cell::Cell::new(false),
+        }
+    }
+
+    /// The step's window, begun (again) if it has ended.
+    fn open(&self) -> std::cell::RefMut<'_, Option<(Vertex, Instant)>> {
+        let mut w = self.window.borrow_mut();
+        if let Some((v, last)) = w.as_ref()
+            && last.elapsed() >= POLICY_WINDOW
+        {
+            self.progress.borrow().done(v);
+            *w = None;
+        }
+        if w.is_none() {
+            let name = self.name.borrow();
+            let v = match self.index.get() {
+                0 => self.progress.borrow_mut().start(&name),
+                i => self.progress.borrow_mut().resume(i, &name),
+            };
+            self.index.set(v.index);
+            *w = Some((v, Instant::now()));
+        }
+        w
+    }
+
+    /// Close(nil): the step done, as buildx ends it for every error but a denial (D101).
+    fn close(&self) {
+        if self.closed.replace(true) {
+            return;
+        }
+        if let Some((v, _)) = self.window.borrow_mut().take() {
+            self.progress.borrow().done(&v);
+        }
+    }
+
+    /// Close(err) of a denial: the step failed with the build's error.
+    fn fail(&self, error: &str) {
+        if self.closed.replace(true) || self.index.get() == 0 {
+            return;
+        }
+        let w = self.open();
+        if let Some((v, _)) = w.as_ref() {
+            self.progress.borrow().error(v, error);
+        }
+    }
+}
+
+impl policy::Log for PolicyStep<'_> {
+    fn line(&self, text: &str) {
+        if self.closed.get() {
+            return;
+        }
+        let mut w = self.open();
+        if let Some((v, last)) = w.as_mut() {
+            self.progress.borrow().log(v, text);
+            *last = Instant::now();
+        }
+    }
+
+    /// An HTTP source a function solves and reads, a step of its own: its error the
+    /// source's, and the read's the cache key's that failed to load.
+    fn fetch(&self, name: &str, url: &str, accept: Option<&str>) -> Result<Vec<u8>, String> {
+        let v = self.progress.borrow_mut().start(name);
+        let limits = store::Limits {
+            bytes: http::GATEWAY_MOST.min(self.limits.bytes),
+            ..self.limits
+        };
+        let got = self.store.stage().map_err(|e| e.to_string()).and_then(|stage| {
+            let d = http::fetch_accepting(url, None, accept, stage.path().join("source"), &limits)?;
+            std::fs::read(&d.path).map_err(|e| format!("{}: {e}", d.path.display()))
+        });
+        match got {
+            Ok(data) => {
+                self.progress.borrow().done(&v);
+                Ok(data)
+            }
+            Err(e) => {
+                self.progress.borrow().error(&v, &e);
+                Err(format!("failed to load cache key: {e}"))
+            }
+        }
+    }
+
+    /// A policy file of the build's remote context (D111), as buildx reads one through
+    /// BuildKit's gateway: refused, as its gRPC server refuses to send it, where the
+    /// ReadFileResponse holding it (the file, its field's tag and length) is larger than
+    /// its messages may be (measured: buildx v0.37.1 on BuildKit v0.28.1).
+    fn read(&self, name: &str) -> Result<Option<Vec<u8>>, String> {
+        let Some(remote) = self.remote else {
+            return Err("policy resolver is not configured".into());
+        };
+        let Some((data, size)) = remote.read(format!("/{name}").as_bytes(), http::GATEWAY_MOST)? else {
+            return Ok(None);
+        };
+        let length = (1..=10u64).find(|n| size >> (7 * n) == 0).unwrap_or(10);
+        let message = size.saturating_add(1).saturating_add(length);
+        if message > http::GATEWAY_MOST {
+            EXHAUSTED.store(true, std::sync::atomic::Ordering::Relaxed);
+            return Err(format!(
+                "ResourceExhausted: grpc: trying to send message larger than max ({message} vs. {})",
+                http::GATEWAY_MOST
+            ));
+        }
+        Ok(Some(data))
+    }
+}
+
+/// A read refused as BuildKit's gRPC refuses a message too large (D111; ResourceExhausted): a
+/// build that then fails exits 102, as buildx's main maps that code (D111); one that goes on to
+/// succeed (its policy's `load_json` undefined) exits 0.
+static EXHAUSTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+impl Drop for PolicyStep<'_> {
+    fn drop(&mut self) {
+        // The build of the next platform logs on under this step's number.
+        let index = self.index.get();
+        multi::with(|sub| sub.policy_step = index);
+        self.close();
+    }
+}
+
+/// The build's policies (configureSourcePolicy): the Dockerfile's own, `Dockerfile.rego`
+/// beside it (or `Agentfile.rego` beside an Agentfile), read where buildx reads it
+/// (loadInputs), and the flags'; each asked for its caps. None where none applies. A
+/// remote context's names are read in it (D111), as buildx reads them in the context it
+/// fetched for them.
+fn policies_of(
+    parsed: &Parsed,
+    configs: &[buildflags::PolicyConfig],
+    context: &Path,
+    remote: Option<&exec::Reader>,
+    step: &PolicyStep<'_>,
+) -> Result<Option<policy::Policies>, String> {
+    let (path, defined) = definition(parsed, context);
+    let file = parsed.string("file");
+    let from_url = file.starts_with("http://") || file.starts_with("https://");
+    let mut default = policy::Opt {
+        context_dir: remote.is_none().then(|| context.to_path_buf()),
+        remote: remote.is_some(),
+        ..policy::Opt::default()
+    };
+    if remote.is_some() {
+        // `<Dockerfile>.rego` of the context, read there, if it is there. A Dockerfile of
+        // the host's (`-f` an absolute path) names one in its own directory, which buildx
+        // looks for in the context too; stdin's and a URL's directories are buildx's own
+        // temporary ones, which no context holds.
+        if file != "-" && !from_url {
+            let name = if file.is_empty() { "Dockerfile" } else { file };
+            default.files.push(policy::FileSpec {
+                filename: format!("{name}.rego"),
+                optional: true,
+                data: None,
+            });
+        }
+    }
+    // stdin's Dockerfile, and one fetched by URL, have a directory of their own, empty.
+    else if let Some(path) = path.filter(|_| !from_url) {
+        let dir = path.parent().unwrap_or(Path::new(""));
+        let mut base = path
+            .file_name()
+            .map_or_else(|| "Dockerfile".into(), |n| n.to_string_lossy().into_owned());
+        // handleLowercaseDockerfile: `dockerfile` where only it is there.
+        if base == "Dockerfile" && !dir.join("Dockerfile").exists() && dir.join("dockerfile").exists() {
+            base = "dockerfile".into();
+        }
+        // filepath.Join's, by this host's rules: `Dockerfile.rego` of the context `.` on
+        // Windows too, the name buildx v0.37.1 gives the policy there, never
+        // `.\Dockerfile.rego`.
+        let rego = dir.join(format!("{base}.rego"));
+        let filename = shards_archive::copy::clean(&rego).to_string_lossy().into_owned();
+        match std::fs::read(&rego) {
+            Ok(data) => default.files.push(policy::FileSpec {
+                filename,
+                optional: true,
+                data: Some(data),
+            }),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                return Err(format!(
+                    "failed to read policy file {filename}: open {filename}: {}",
+                    buildflags::os_error(&e)
+                ));
+            }
+        }
+    }
+    let mut args: BTreeMap<String, Option<String>> = build_args(parsed.many("build-arg"), true)
+        .into_iter()
+        .map(|(k, v)| (show(&k), Some(show(&v))))
+        .collect();
+    if let Ok(v) = std::env::var("SOURCE_DATE_EPOCH")
+        && !v.is_empty()
+    {
+        args.entry("SOURCE_DATE_EPOCH".into()).or_insert(Some(v));
+    }
+    // policyEnvFilename: `-f`'s base name, else the definition's.
+    let filename = if file.is_empty() || file == "-" {
+        defined
+    } else {
+        let clean = show(&shards_agentfile::go::clean(file.as_bytes()));
+        match Path::new(&clean).file_name() {
+            Some(n) if clean != "." && clean != "/" => n.to_string_lossy().into_owned(),
+            _ => "Dockerfile".into(),
+        }
+    };
+    let env = policy::Env {
+        args,
+        labels: build_args(parsed.many("label"), false)
+            .into_iter()
+            .map(|(k, v)| (show(&k), show(&v)))
+            .collect(),
+        filename,
+        target: parsed.string("target").to_string(),
+        ..policy::Env::default()
+    };
+    let cwd = std::env::current_dir().map_err(|e| format!("the working directory: {e}"))?;
+    let read = |name: &str| policy::Log::read(step, name);
+    let Some(policies) = policy::Policies::configure(policy::Setup {
+        default,
+        configs,
+        env,
+        cwd,
+        default_platform: host_platform(),
+        debug: parsed.bool("debug"),
+        default_policy: true,
+        remote: remote.map(|_| &read as policy::ReadRemote<'_>),
+    })?
+    else {
+        return Ok(None);
+    };
+    *step.name.borrow_mut() = format!("loading policies {}", policies.names.join(", "));
+    let mut policies = policies;
+    policies.proxy = policies.check_caps(step)?;
+    // Said once a build, after every policy's caps, as buildx says it (build/opt.go).
+    if policies.proxy && multi::with(|sub| sub.first).unwrap_or(true) {
+        policy::Log::line(step, "policy enabled network proxy");
+    }
+    Ok(Some(policies))
+}
+
+/// A foreign base as the build cache keeps it: what its name resolved to, and the
+/// manifest chosen for its platform.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct ForeignBase {
+    resolved: String,
+    manifest: Descriptor,
+}
+
+/// Whether this host's microVMs run `p`: its OS and architecture are theirs.
+fn ours(p: &Platform) -> bool {
+    let host = host_platform();
+    p.os == host.os && p.architecture == host.architecture
+}
+
+/// Whether a builder runs `p`'s programs itself: its own platform's, and on an x86_64 host
+/// linux/386's, which its guest kernel runs (`IA32_EMULATION`), (D179), as BuildKit finds a host
+/// kernel runs them (util/archutil).
+fn native(p: &Platform) -> bool {
+    ours(p) || (p.os == b"linux" && p.architecture == b"386" && host_platform().architecture == b"amd64")
+}
+
+/// The emulator a step for `p` runs under in its builder (D179), where the builder does
+/// not run it itself and one runs it.
+fn emulated(p: &Platform) -> Option<&'static shards_abi::emulate::Emulator> {
+    if native(p) || p.os != b"linux" {
+        return None;
+    }
+    std::str::from_utf8(&p.architecture)
+        .ok()
+        .and_then(shards_abi::emulate::of)
+}
+
+/// The platform of the image whose programs a step runs: its root's, down the first
+/// inputs to the stage's FROM, as `--squash` finds its base, the base `key` names as it was
+/// resolved; none where the root comes from no image.
+fn root_platform(
+    def: &shards_agentfile::llb::Definition,
+    op: &shards_agentfile::llb::Op,
+    bases: &Bases<'_>,
+    key: &dyn Fn(&shards_agentfile::llb::Op, &str) -> String,
+) -> Option<Platform> {
+    let mut at = op.inputs.first()?.op;
+    loop {
+        let o = def.ops.get(at)?;
+        match &o.kind {
+            OpKind::Source { identifier, .. } => {
+                let reference = identifier.strip_prefix(b"docker-image://")?;
+                return bases
+                    .resolved
+                    .borrow()
+                    .get(&key(o, &show(reference)))
+                    .map(|b| b.image.platform.clone());
+            }
+            _ => at = o.inputs.first()?.op,
+        }
+    }
+}
+
+/// The emulators a build's steps for other CPUs run under (D179): Docker's builds of
+/// QEMU's user-mode emulators for BuildKit (tonistiigi/binfmt e29e7d7, QEMU 10.2.3),
+/// pinned, and never in the shards binary (QEMU is GPL-2.0).
+pub(crate) const EMULATOR_IMAGE: &str =
+    "docker.io/tonistiigi/binfmt@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0";
+
+/// The root filesystem `layers` make, as the store keeps it.
+fn rootfs_of(store: &Store, layers: &[Layer], limits: &store::Limits) -> Result<PathBuf, String> {
+    let layers = layers
+        .iter()
+        .map(|l| {
+            Ok(store::Layer {
+                blob: Digest::parse(&show(&l.digest)).map_err(|e| e.to_string())?,
+                media_type: show(&l.media_type),
+                diff_id: Digest::parse(&show(&l.diff_id)).map_err(|e| e.to_string())?,
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    store.rootfs(&layers, limits).map_err(|e| e.to_string())
+}
+
+/// A platform as a base's key names it: in full, variant and all.
+fn base_platform(p: &Platform) -> String {
+    show(&platform::format_all(p))
+}
+
+/// The key [`Bases::resolved`] keeps a base under: the source's reference, and the
+/// platform it was resolved for, which an index's platforms share the digest of.
+fn base_key(reference: &str, p: &Platform) -> String {
+    format!("{reference} {}", base_platform(p))
+}
+
+/// Each layer's annotations, from the manifest's own JSON.
+fn layer_annotations(manifest: &[u8]) -> Vec<BTreeMap<Vec<u8>, Vec<u8>>> {
+    let Ok(v) = serde_json::from_slice::<serde_json::Value>(manifest) else {
+        return Vec::new();
+    };
+    v.get("layers")
+        .and_then(|l| l.as_array())
+        .map(|layers| {
+            layers
+                .iter()
+                .map(|l| {
+                    l.get("annotations")
+                        .and_then(|a| a.as_object())
+                        .map(|a| {
+                            a.iter()
+                                .filter_map(|(k, v)| {
+                                    Some((k.as_bytes().to_vec(), v.as_str()?.as_bytes().to_vec()))
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default()
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// When `path` was last changed, in UTC: a stored blob's arrival.
+fn stored_at(path: &Path) -> Option<Time> {
+    let modified = std::fs::metadata(path).ok()?.modified().ok()?;
+    let since = modified.duration_since(std::time::UNIX_EPOCH).ok()?;
+    let mut t = Time::from_unix(i64::try_from(since.as_secs()).ok()?);
+    t.nanosecond = since.subsec_nanos();
+    Some(t)
+}
+
+/// An HTTP source's identifier: its URL.
+fn is_http(identifier: &[u8]) -> bool {
+    identifier.starts_with(b"https://") || identifier.starts_with(b"http://")
+}
+
+fn show(b: &[u8]) -> String {
+    String::from_utf8_lossy(b).into_owned()
+}
+
+/// The platforms `--platform` names, as buildx reads them (D74; util/platformutil Parse): each
+/// value a comma-separated list, each normalized, and the same platform once, as
+/// `Dedupe` keeps it, where BuildKit would build and export it twice. `local` is the
+/// platform this host's microVMs run, where buildx takes its client's own, which on a
+/// Mac is no platform a Linux build makes.
+/// The platforms a build is for, as given: `--platform`'s, else SHARDS_DEFAULT_PLATFORM's or
+/// DOCKER_DEFAULT_PLATFORM's, as buildx takes the flag's default from the latter (v0.37.1
+/// commands/build.go, platformsDefault). A flag given replaces the default whole, as pflag's
+/// first value given replaces a string array's.
+fn platforms(parsed: &flags::Parsed) -> Vec<String> {
+    if parsed.changed("platform") {
+        return parsed.many("platform").to_vec();
+    }
+    crate::cli::env_ours_first("SHARDS_DEFAULT_PLATFORM", "DOCKER_DEFAULT_PLATFORM")
+        .into_iter()
+        .collect()
+}
+
+pub(crate) fn target_platforms(given: &[String], host: &Platform) -> Result<Vec<Platform>, String> {
+    let mut out: Vec<Platform> = Vec::new();
+    for value in given {
+        for one in value.split(',') {
+            let one = one.trim();
+            let p = if one.eq_ignore_ascii_case("local") {
+                host.clone()
+            } else {
+                platform::normalize(&platform::parse(one.as_bytes(), host).map_err(|e| show(&e))?)
+            };
+            if !out
+                .iter()
+                .any(|o| platform::format_all(o) == platform::format_all(&p))
+            {
+                out.push(p);
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// The platform this host's microVMs run.
+pub(crate) fn host_platform() -> Platform {
+    let arch = match std::env::consts::ARCH {
+        "aarch64" => "arm64",
+        "x86_64" => "amd64",
+        other => other,
+    };
+    Platform::new("linux", arch)
+}
+
+/// containerd's `platforms.DefaultSpec()` of BuildKit on this host's Linux: its platform,
+/// the variant the CPU's, not normalized (`v8` on arm64).
+fn default_spec() -> Platform {
+    let host = host_platform();
+    if host.architecture == b"arm64" {
+        return Platform {
+            variant: b"v8".to_vec(),
+            ..host
+        };
+    }
+    host
+}
+
+/// `KEY=VALUE` arguments as buildx reads them (D64): a `KEY` alone takes its value from the
+/// environment, and is left out when unset (`listToMap`); a `KEY=VALUE` label alone is
+/// `KEY` with an empty value.
+pub(crate) fn build_args(list: &[String], from_env: bool) -> BTreeMap<Vec<u8>, Vec<u8>> {
+    let mut out = BTreeMap::new();
+    for item in list {
+        match item.split_once('=') {
+            Some((k, v)) => {
+                out.insert(k.as_bytes().to_vec(), v.as_bytes().to_vec());
+            }
+            None if from_env => {
+                if let Ok(v) = std::env::var(item) {
+                    out.insert(item.as_bytes().to_vec(), v.into_bytes());
+                }
+            }
+            None => {
+                out.insert(item.as_bytes().to_vec(), Vec::new());
+            }
+        }
+    }
+    out
+}
+
+/// dockerui's ReadFile: what `reader` holds, all of it. BuildKit's frontend refuses a
+/// Dockerfile or ignore file past 16 MiB, containerd's DefaultMaxRecvMsgSize, the largest
+/// message its gRPC takes from the client (dockerfile/1.27.1 frontend/dockerui/readfile.go):
+/// a limit of its transport, which shards, reading the file where it is, does not have.
+fn read_whole(mut reader: impl Read, name: &str) -> Result<Vec<u8>, String> {
+    let mut text = Vec::new();
+    reader
+        .read_to_end(&mut text)
+        .map_err(|e| format!("{name}: {e}"))?;
+    Ok(text)
+}
+
+/// A file's bytes, or none if it is not there, read as [`read_whole`] reads, `name`
+/// being what its errors call it. Unlike BuildKit, which has the client send the
+/// Dockerfile and ignore files over a session, shards reads them where they are.
+fn read_if_present(path: &Path, name: &str) -> Result<Option<Vec<u8>>, String> {
+    match std::fs::File::open(path) {
+        Ok(file) => read_whole(file, name).map(Some),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(format!("{}: {e}", path.display())),
+    }
+}
+
+/// A build file's name, its text, and the ignore file beside it, by its name.
+type BuildFile = (String, Vec<u8>, Option<(String, Vec<u8>)>);
+
+/// The ignore files' kinds, in the order they are looked for: shards' own name first,
+/// Docker's after.
+const IGNORE_KINDS: [&str; 2] = ["agentignore", "dockerignore"];
+
+/// The ignore file at `dir`, `PREFIX.agentignore`, else `PREFIX.dockerignore` (`prefix`
+/// empty for a context's own), by its name, or none.
+pub(crate) fn ignore_file(dir: &Path, prefix: &str) -> Result<Option<(String, Vec<u8>)>, String> {
+    for kind in IGNORE_KINDS {
+        let name = format!("{prefix}.{kind}");
+        if let Some(text) = read_if_present(&dir.join(&name), &name)? {
+            return Ok(Some((name, text)));
+        }
+    }
+    Ok(None)
+}
+
+/// What a file named `name` is read as: an Agentfile where it is named as one, as Docker's
+/// names a Dockerfile (`Agentfile`, `*.Agentfile`, `Agentfile.*`), else a Dockerfile (D35).
+pub(crate) fn dialect_of(name: &str) -> Dialect {
+    let lower = name.to_ascii_lowercase();
+    if lower == "agentfile" || lower.ends_with(".agentfile") || lower.starts_with("agentfile.") {
+        Dialect::Agentfile
+    } else {
+        Dialect::Dockerfile
+    }
+}
+
+/// The file a build reads: `-f`'s path, or none for stdin's; without `-f`, the context's
+/// `Agentfile` where there is one, else its `Dockerfile` (D35). Its name as the build's
+/// progress shows it.
+pub(crate) fn definition(parsed: &Parsed, context: &Path) -> (Option<PathBuf>, String) {
+    let file = parsed.string("file");
+    // stdin's, as `-f -` or as the context `-` that is no archive (its context empty).
+    if file == "-" || parsed.args.first().is_some_and(|a| a == "-") {
+        return (None, "Dockerfile".into());
+    }
+    let path = if !file.is_empty() {
+        PathBuf::from(file)
+    } else if let Some(agentfile) = ["Agentfile", "agentfile"]
+        .iter()
+        .map(|n| context.join(n))
+        .find(|p| p.is_file())
+    {
+        agentfile
+    } else {
+        context.join("Dockerfile")
+    };
+    let name = path
+        .file_name()
+        .map_or_else(|| "Dockerfile".into(), |n| n.to_string_lossy().into_owned());
+    (Some(path), name)
+}
+
+/// The Dockerfile, found as the frontend finds it (dockerui's Client.ReadEntrypoint):
+/// `-f`'s file, stdin's, or PATH's `Dockerfile`, then `dockerfile` for the default name.
+/// Its name, text, and the `<name>.agentignore` or `<name>.dockerignore` beside it, which
+/// overrides the context's own. An Agentfile is found before them (`definition`).
+fn build_file(parsed: &Parsed, context: &Path) -> Result<BuildFile, String> {
+    let read_failed = |e: String| format!("failed to read dockerfile: {e}");
+    let (path, name) = definition(parsed, context);
+    let Some(path) = path else {
+        let stdin = STDIN
+            .get()
+            .ok_or_else(|| read_failed("stdin was not read".into()))?;
+        let file = std::fs::File::open(&stdin.path).map_err(|e| read_failed(e.to_string()))?;
+        let text = read_whole(file, "Dockerfile").map_err(read_failed)?;
+        return Ok(("Dockerfile".into(), text, None));
+    };
+    let dir = path.parent().unwrap_or(Path::new("."));
+    // One too large is no reason to look for `dockerfile` instead.
+    let mut text = read_if_present(&path, &name).map_err(read_failed)?;
+    if text.is_none() && name == "Dockerfile" {
+        text = read_if_present(&dir.join("dockerfile"), "dockerfile").map_err(read_failed)?;
+    }
+    let Some(text) = text else {
+        return Err(format!(
+            "failed to read dockerfile: open {name}: no such file or directory"
+        ));
+    };
+    let beside = ignore_file(dir, &name)?;
+    Ok((name, text, beside))
+}
+
+/// BuildKit's excerpt of the Dockerfile at an error's lines (solver/errdefs Source.Print).
+fn excerpt(file: &str, text: &[u8], ranges: &[(usize, usize)]) -> String {
+    let text = String::from_utf8_lossy(text);
+    let lines: Vec<&str> = text.split('\n').collect();
+    let Some(start) = ranges.iter().map(|r| r.0).min() else {
+        return String::new();
+    };
+    let mut end = ranges.iter().map(|r| r.1.max(r.0)).max().unwrap_or(start);
+    if start > lines.len() || start < 1 {
+        return String::new();
+    }
+    end = end.min(lines.len());
+    let pad = if end == start { 4 } else { 2 };
+    let (mut first, mut p) = (start, 0);
+    while p < pad {
+        if first > 1 {
+            first -= 1;
+            p += 1;
+        }
+        if end != lines.len() {
+            end += 1;
+            p += 1;
+        }
+        p += 1;
+    }
+    let mut out = format!("{file}:{start}\n--------------------\n");
+    for i in first..=end {
+        let marked = ranges.iter().any(|r| r.0 <= i && r.1.max(r.0) >= i);
+        let pfx = if marked { ">>>" } else { "   " };
+        out.push_str(&format!(" {i:>3} | {pfx} {}\n", lines.get(i - 1).unwrap_or(&"")));
+    }
+    out.push_str("--------------------\n");
+    out
+}
+
+/// The stage BuildKit names a content checksum's failure with (solver jobs' cache key).
+const CACHE_KEY: &str = "failed to compute cache key: ";
+
+fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
+    crate::phase("start");
+    // When the build began, as its provenance says it (D71).
+    let started = unix_now();
+    // What the build is given, in the order buildx's runBuild meets it: its secrets, read
+    // now and once, each as large as a step carries; then its entitlements; its ulimits
+    // were read with its flags (shards_cmdline::buildflags).
+    // Its outputs as buildx reads them, first (D85; toOptions); checked once its agents are.
+    let familiar = |n: &str| {
+        Reference::parse_normalized(n)
+            .map(|r| r.familiar())
+            .map_err(|e| e.to_string())
+    };
+    // The policies, read as toOptions reads them before the attestations (D101).
+    let policy_configs = buildflags::parse_policies(parsed.many("policy"))?;
+    // The attestations asked for, read as buildx reads them, before the contexts (D72).
+    let (provenance_asked, sbom_asked) = provenance_of(parsed)?;
+    let named = buildflags::parse_contexts(parsed.many("build-context"), &familiar)?;
+    let exports = buildflags::parse_exports(parsed.many("output"))?;
+    buildflags::check_iidfile(&exports, parsed.string("iidfile"))?;
+    let asked = buildflags::parse_secrets(parsed.many("secret"))?;
+    // On Windows a secret its daemon gave this build at a number (`src=/dev/fd/N`, D180's
+    // machine side) is read from what it gave there, as a Unix build reads the
+    // descriptor's path (crate::synced::given_secrets).
+    #[cfg(windows)]
+    let (asked, given) = crate::synced::given_secrets(asked, u64::from(shards_abi::run::MAX_PAYLOAD))?;
+    let env = |name: &str| {
+        #[cfg(windows)]
+        if let Some(held) = given.get(name) {
+            return Some(held.bytes().to_vec());
+        }
+        std::env::var_os(name).map(os_bytes)
+    };
+    let secrets = buildflags::store(asked, &env, u64::from(shards_abi::run::MAX_PAYLOAD))?;
+    // --builder, or SHARDS_BUILDER, else BUILDX_BUILDER: shards' own builder, which
+    // `default` names too; any other is none shards has.
+    let builder_name = match parsed.string("builder") {
+        "" => crate::cli::env_ours_first("SHARDS_BUILDER", "BUILDX_BUILDER").unwrap_or_default(),
+        b => b.to_string(),
+    };
+    if !matches!(builder_name.as_str(), "" | "shards" | "default") {
+        return Err(format!(
+            "--builder {}: shards builds with a builder of its own, shards (or default)",
+            shards_cmdline::go::quote(&builder_name)
+        ));
+    }
+    let mut allowed = buildflags::parse_entitlements(parsed.many("allow"))?;
+    // The flags buildx takes and BuildKit ignores, some said so (build.go checkWarnedFlags,
+    // logrus as buildx formats it).
+    for (flag, said) in [
+        ("isolation", "isolation flag is deprecated with BuildKit."),
+        (
+            "security-opt",
+            "security-opt flag is deprecated. \"RUN --security=insecure\" should be used with BuildKit.",
+        ),
+    ] {
+        if parsed.changed(flag) {
+            let _ = writeln!(std::io::stderr(), "WARNING: {said}");
+        }
+    }
+    // --network: the frontend's force-network-mode; host grants itself (build/opt.go).
+    let network_mode = match parsed.string("network") {
+        "host" => {
+            if !allowed.grants(buildflags::NETWORK_HOST) {
+                allowed.granted.push(buildflags::NETWORK_HOST.to_string());
+            }
+            shards_agentfile::llb::NetMode::Host
+        }
+        "none" => shards_agentfile::llb::NetMode::None,
+        "" | "default" => shards_agentfile::llb::NetMode::Sandbox,
+        other => {
+            return Err(format!(
+                // buildx's own words (D64).
+                "network mode {} not supported by buildkit - you can define a custom network for your builder using the network driver-opt in buildx create",
+                shards_cmdline::go::quote(other)
+            ));
+        }
+    };
+    // --add-host: host-gateway is the builder's gateway, on the bridge it is elected.
+    let gateway = || -> Result<String, String> {
+        shards_net::bridge::elected_here(&mut |_| {})
+            .map(|b| b.gateway().to_string())
+            .ok_or_else(|| shards_net::bridge::NO_SUBNET.to_string())
+    };
+    let add_hosts = buildflags::add_hosts(parsed.many("add-host"), &gateway)?;
+    // --resource, after the legacy flags as buildx gathers them (D64).
+    let mut resources: Vec<String> = [
+        ("memory", "memory"),
+        ("memory-swap", "memory-swap"),
+        ("cpu-shares", "cpu-shares"),
+        ("cpu-period", "cpu-period"),
+        ("cpu-quota", "cpu-quota"),
+        ("cpuset-cpus", "cpuset-cpus"),
+        ("cpuset-mems", "cpuset-mems"),
+    ]
+    .iter()
+    .filter(|(flag, _)| parsed.changed(flag))
+    .map(|(flag, key)| format!("{key}={}", parsed.string(flag)))
+    .collect();
+    resources.extend(parsed.many("resource").iter().cloned());
+    let resource_attrs = buildflags::resource_attrs(&resources)?;
+    // The platforms, read as buildx reads them after the resource limits (D74).
+    let target_platforms = target_platforms(&platforms(parsed), &host_platform())?;
+    let target_platform = target_platforms.first().cloned().unwrap_or_else(host_platform);
+    let mut agents: Agents = buildflags::ssh_agents(
+        &buildflags::parse_ssh(parsed.many("ssh")),
+        &|k| std::env::var(k).ok(),
+        &sshkey::parse,
+    )?;
+    for agent in agents.values_mut() {
+        if let buildflags::Agent::Keys(keys) = agent {
+            *keys = sshkey::keyring(std::mem::take(keys));
+        }
+    }
+    let outputs = buildflags::create_exports(
+        &exports,
+        parsed.bool("push"),
+        parsed.bool("load"),
+        allowed.local_delete,
+        &|p| match std::fs::metadata(p) {
+            Ok(m) if m.is_dir() => Ok(buildflags::Found::Dir),
+            Ok(_) => Ok(buildflags::Found::File),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(buildflags::Found::Nothing),
+            Err(e) => Err(e.to_string()),
+        },
+        std::io::IsTerminal::is_terminal(&std::io::stdout()),
+        &safe_delete_dest,
+    )
+    .map_err(|e| format!("failed to build: {e}"))?;
+    check_outputs(&outputs)?;
+    let (compression, rewrite_timestamp) = compression_of(&outputs)?;
+    let (manifest_annotations, descriptor_annotations) = annotations_of(parsed, &outputs, &target_platform)?;
+    // toSolveOpt: an image pushed must have a name.
+    let pushes = outputs.iter().any(|o| {
+        o.kind == "image"
+            && o.attrs
+                .get("push")
+                .is_some_and(|p| shards_cmdline::go::parse_bool(p).unwrap_or(false))
+    });
+    if pushes && parsed.many("tag").is_empty() {
+        return Err("failed to build: tag is needed when pushing to registry".into());
+    }
+    let ulimits: Vec<shards_agentfile::llb::Ulimit> = buildflags::ulimits(parsed.many("ulimit"))?
+        .into_iter()
+        .map(|u| shards_agentfile::llb::Ulimit {
+            name: u.name.into_bytes(),
+            soft: u.soft,
+            hard: u.hard,
+        })
+        .collect();
+    // The external caches (D62), read as buildx reads them; BUILDKIT_INLINE_CACHE, a
+    // true build argument, asks for an inline one (build/opt.go).
+    let env = |k: &str| std::env::var(k).ok();
+    let cache_from = buildflags::cache_entries(parsed.many("cache-from"), &env)?;
+    let mut cache_to = buildflags::cache_entries(parsed.many("cache-to"), &env)?;
+    if build_args(parsed.many("build-arg"), true)
+        .get(b"BUILDKIT_INLINE_CACHE".as_slice())
+        .is_some_and(|v| shards_cmdline::go::parse_bool(&show(v)).unwrap_or(false))
+    {
+        cache_to.push(buildflags::CacheEntry {
+            kind: "inline".into(),
+            attrs: BTreeMap::new(),
+        });
+    }
+    remote::check(&cache_to, &env)?;
+    // dockerui's build-arg options (frontend 1.27.1's config.go): BUILDKIT_DISABLE_FILEOP
+    // refused, as BuildKit has refused it since 0.11; BUILDKIT_GIT_ADVICE read.
+    let frontend_args = build_args(parsed.many("build-arg"), true);
+    if frontend_args
+        .get(b"BUILDKIT_DISABLE_FILEOP".as_slice())
+        .is_some_and(|v| shards_cmdline::go::parse_bool(&show(v)).unwrap_or(false))
+    {
+        return Err(
+            // BuildKit's own words, which buildx prints (D92).
+            "failed to build: failed to solve: support for \"BUILDKIT_DISABLE_FILEOP\" build-arg was removed in BuildKit 0.11"
+                .into(),
+        );
+    }
+    let git_advice = match frontend_args
+        .get(b"BUILDKIT_GIT_ADVICE".as_slice())
+        .map(|v| show(v))
+        .filter(|v| !v.is_empty())
+    {
+        Some(v) => shards_cmdline::go::parse_bool(&v).map_err(|e| {
+            format!("failed to build: failed to solve: failed to parse build-arg:BUILDKIT_GIT_ADVICE: {e}")
+        })?,
+        None => false,
+    };
+    let context_arg = parsed.args.first().cloned().unwrap_or_default();
+    // A remote context, as buildx sends one (D91; the frontend's `context`): a Git URL, an HTTP(S)
+    // URL, or stdin's archive, which buildx uploads under a URL of its own and shards names
+    // by its digest; stdin's Dockerfile has an empty context.
+    let stdin = STDIN.get();
+    let remote: Option<plan::MainContext> = if context_arg == "-" {
+        let s = stdin.ok_or("stdin was not read")?;
+        shards_agentfile::run_options::is_archive(&s.head).then(|| plan::MainContext::Http {
+            url: format!("http://buildkit-session/{}", s.digest.hex()).into_bytes(),
+            archive: true,
+        })
+    } else if !matches!(
+        shards_agentfile::git::parse_git_ref(context_arg.as_bytes()),
+        shards_agentfile::git::Parsed::NotGit
+    ) {
+        let keep = build_args(parsed.many("build-arg"), true)
+            .get(b"BUILDKIT_CONTEXT_KEEP_GIT_DIR".as_slice())
+            .is_some_and(|v| shards_cmdline::go::parse_bool(&show(v)).unwrap_or(false));
+        Some(plan::MainContext::Git {
+            url: context_arg.clone().into_bytes(),
+            keep_git_dir: keep,
+        })
+    } else if context_arg.starts_with("http://") || context_arg.starts_with("https://") {
+        Some(plan::MainContext::Http {
+            url: context_arg.clone().into_bytes(),
+            archive: false,
+        })
+    } else {
+        None
+    };
+    let empty_context = context_arg == "-" && remote.is_none();
+    if remote.is_none() && !empty_context && !Path::new(&context_arg).is_dir() {
+        return Err(format!(
+            "unable to prepare context: path {context_arg:?} not found"
+        ));
+    }
+    let asked = parsed.string("progress");
+    let mode = match asked {
+        "auto" | "plain" | "tty" => "plain",
+        "quiet" | "none" => "quiet",
+        "rawjson" => return Err("--progress=rawjson is not supported by shards yet".into()),
+        other => return Err(format!("invalid progress mode {other:?}")),
+    };
+    let quiet = parsed.bool("quiet") || mode == "quiet";
+    let host = host_platform();
+    let progress = RefCell::new(Progress {
+        quiet,
+        // A platform's build of several numbers on from the one before it.
+        next: multi::with(|s| s.next).unwrap_or(0),
+        // `auto` or `tty` on a colour terminal: shards' own display.
+        live: if !quiet && matches!(asked, "auto" | "tty") {
+            live::Live::new().map(RefCell::new)
+        } else {
+            None
+        },
+        steps: RefCell::new(BTreeMap::new()),
+        recapped: std::cell::Cell::new(false),
+        current: std::cell::Cell::new(0),
+        epilogue: RefCell::new(String::new()),
+    });
+    // Said once of a build of several platforms, not again by each platform's.
+    if !multi::active() {
+        progress
+            .borrow()
+            .say("#0 building with \"shards\" instance using shards driver\n");
+    }
+
+    let home = shards_ipc::home()?;
+    let store = crate::pull::store(&home)?;
+    let _lease = store.lease().map_err(|e| e.to_string())?;
+    let limits = crate::pull::limits()?;
+    // Held to a budget, the build's own writes go outside it, its disk's pace not theirs
+    // (D188, PM M442).
+    #[cfg(target_os = "linux")]
+    outside::begin();
+    let mut exec = exec::Exec::new(&store, &limits);
+    // stdin's Dockerfile has an empty directory as its context, as buildx gives it one (D91).
+    let context = if empty_context {
+        exec.stage()?
+    } else if remote.is_some() {
+        PathBuf::new()
+    } else {
+        PathBuf::from(&context_arg)
+    };
+    // A remote context fetched now, as dockerui solves it to read the Dockerfile from it,
+    // each source's result kept for the build's own step of it.
+    let mut given: Vec<Given> = Vec::new();
+    let mut fetched_dockerfile = None;
+    // A remote context's files, which its policies are read from (D111), as buildx's
+    // loads them from the context it fetched to read them (`[internal] load git source`).
+    let mut remote_files: Option<exec::Reader> = None;
+    let mut remote = remote;
+    if let Some(main) = &mut remote {
+        let (r, sources) = fetch_context(
+            &mut exec,
+            main,
+            &target_platform,
+            &secrets,
+            &agents,
+            &limits,
+            &progress,
+        )?;
+        given = sources;
+        remote_files = Some(exec.reader(&r)?);
+        // `-f` names a file of the context, unless it is stdin's or a path of the host's
+        // (buildx's `dockerfilekey`, its directory sent as `dockerfile`).
+        let file = parsed.string("file");
+        let from_url = file.starts_with("http://") || file.starts_with("https://");
+        if file != "-" && !from_url && !Path::new(file).is_absolute() {
+            let name = match main {
+                plan::MainContext::Http { archive: false, .. } => "context".to_string(),
+                _ if file.is_empty() => "Dockerfile".to_string(),
+                _ => file.to_string(),
+            };
+            let at = |n: &str| format!("/{}", n.trim_start_matches('/'));
+            let mut text = exec.read_file(&r, at(&name).as_bytes())?;
+            if text.is_none() && Path::new(&name).file_name().is_some_and(|b| b == "Dockerfile") {
+                let lower = Path::new(&name).with_file_name("dockerfile");
+                text = exec.read_file(&r, at(&lower.to_string_lossy()).as_bytes())?;
+            }
+            let text = text.ok_or_else(|| {
+                format!("failed to build: failed to solve: failed to read dockerfile: open {name}: no such file or directory")
+            })?;
+            let shown = Path::new(&name)
+                .file_name()
+                .map_or_else(|| name.clone(), |n| n.to_string_lossy().into_owned());
+            fetched_dockerfile = Some((shown, text));
+        }
+    }
+
+    // `-f` an HTTP(S) URL: fetched as buildx fetches it (D91; createTempDockerfileFromURL), at
+    // most 2 MiB, and read as the Dockerfile.
+    let file_flag = parsed.string("file");
+    if file_flag.starts_with("http://") || file_flag.starts_with("https://") {
+        let v = progress
+            .borrow_mut()
+            .start(&format!("[internal] load {file_flag}"));
+        let fetched = http::fetch_now(file_flag, None, exec.stage()?.join("Dockerfile"), &limits);
+        let d = match fetched {
+            Ok(d) => d,
+            Err(e) => {
+                progress.borrow().error(&v, &e);
+                return Err(format!("failed to build: {e}"));
+            }
+        };
+        const MOST: u64 = 2 * 1024 * 1024;
+        if d.size > MOST {
+            let e = format!(
+                "Dockerfile {file_flag} bigger than allowed max size ({})",
+                human_size(MOST)
+            );
+            progress.borrow().error(&v, &e);
+            return Err(format!("failed to build: {e}"));
+        }
+        let text = std::fs::read(&d.path).map_err(|e| format!("{}: {e}", d.path.display()))?;
+        progress.borrow().done(&v);
+        fetched_dockerfile = Some(("Dockerfile".to_string(), text));
+    }
+
+    // The build's policies (D101), set up as it begins; the Dockerfile, loaded from its
+    // own local source, the first source they are asked of.
+    let policy_step = PolicyStep::new(&progress, &store, limits, remote_files.as_ref());
+    let policies = policies_of(
+        parsed,
+        &policy_configs,
+        &context,
+        remote_files.as_ref(),
+        &policy_step,
+    )
+    .map_err(|e| format!("failed to build: {e}"))?;
+    // A source a policy refused: a denial's step failed with the build's error (any other
+    // error's done), the failed steps recapped as the display ends, then the policy's
+    // messages, as buildx's main says them (D108).
+    let refused = |r: policy::Refused, at: &str| -> String {
+        let e = format!(
+            "failed to solve: {}",
+            r.said(format!(
+                "{at}failed to load LLB: error evaluating the source policy: {}",
+                r.error
+            ))
+        );
+        if r.denied() {
+            policy_step.fail(&e);
+        } else {
+            policy_step.close();
+        }
+        progress.borrow().recap();
+        policy_said(&r.messages);
+        format!("failed to build: {e}")
+    };
+    let beside_local = fetched_dockerfile.is_none();
+    // Loaded once for a build of several platforms, before it is split by platform.
+    if let Some(p) = &policies
+        && beside_local
+        && !multi::active()
+    {
+        let unasked = NoMeta;
+        p.evaluate(
+            &policy::Source::new("local://dockerfile"),
+            None,
+            &unasked,
+            &policy_step,
+        )
+        .map_err(|r| refused(r, "failed to read dockerfile: "))?;
+    }
+    let (name, text, beside) = if let Some((name, text)) = fetched_dockerfile {
+        (name, text, None)
+    } else {
+        let shown = definition(parsed, &context).1;
+        // A platform's build of several reads it again, said once by the build of them.
+        if multi::active() {
+            let (name, text, ignore) =
+                build_file(parsed, &context).map_err(|e| format!("failed to build: failed to solve: {e}"))?;
+            (name, text, ignore)
+        } else {
+            let v = progress
+                .borrow_mut()
+                .start(&format!("[internal] load build definition from {shown}"));
+            match build_file(parsed, &context) {
+                Ok((name, text, ignore)) => {
+                    let p = progress.borrow();
+                    p.line(&v, &format!("read {} done", human_size(text.len() as u64)));
+                    p.done(&v);
+                    (name, text, ignore)
+                }
+                Err(e) => {
+                    progress.borrow().error(&v, &e);
+                    return Err(format!("failed to build: failed to solve: {e}"));
+                }
+            }
+        }
+    };
+
+    // The context's .agentignore or .dockerignore, unless one is beside the build file;
+    // its vertex shows after the metadata, once the stages are planned. A remote context
+    // has none: nothing of it is excluded.
+    let context_ignore = match &beside {
+        Some(_) => None,
+        None if remote.is_some() => None,
+        None => Some(ignore_file(&context, "").map_err(|e| {
+            format!("failed to build: failed to solve: failed to read the ignore file's patterns: {e}")
+        })?),
+    };
+    // The ignore file beside the build file, else the context's: its name and text.
+    let ignore = beside
+        .as_ref()
+        .or(context_ignore.as_ref().and_then(Option::as_ref));
+    let excludes = ignore
+        .map(|(_, t)| shards_agentfile::ignore::read_all(t))
+        .unwrap_or_default();
+    let ignore_name = ignore.map_or(".agentignore", |(n, _)| n.as_str()).to_string();
+
+    let named = named_contexts(&named)?;
+    let imported = remote::Imported::read(&cache_from, &store, &progress, &env)?;
+    let bases = Bases {
+        home: &home,
+        store: &store,
+        pull: parsed.bool("pull"),
+        progress: &progress,
+        resolved: RefCell::new(multi::with(|sub| std::mem::take(&mut sub.bases)).unwrap_or_default()),
+        answered: RefCell::new(multi::with(|sub| std::mem::take(&mut sub.answered)).unwrap_or_default()),
+        steps: RefCell::new(BTreeMap::new()),
+        epochs: RefCell::new(multi::with(|sub| std::mem::take(&mut sub.epochs)).unwrap_or_default()),
+        artifacts: RefCell::new(BTreeMap::new()),
+        pulled: RefCell::new(std::collections::BTreeSet::new()),
+        secrets: &secrets,
+        agents: &agents,
+        layouts: named
+            .layouts
+            .iter()
+            .map(|(dir, digest)| import_layout(&store, dir, digest).map(|d| (digest.to_string(), d)))
+            .collect::<Result<_, String>>()?,
+        policies: policies.as_ref(),
+        policy_log: &policy_step,
+        refused: RefCell::new(None),
+        local_dockerfile: beside_local,
+    };
+    // A remote context's own source, asked of the policies as BuildKit asks it when the
+    // frontend reads the Dockerfile from it (D111), before anything of the Dockerfile.
+    // Only an image's pin converts a source, so a context's is allowed or refused.
+    if let (Some(p), Some(main)) = (&policies, &remote) {
+        let def = plan::context_definition(&Options {
+            target_platform: target_platform.clone(),
+            main_context: main.clone(),
+            ..Options::default()
+        })
+        .map_err(|e| format!("failed to build: failed to solve: {}", show(&e)))?;
+        for op in &def.ops {
+            let OpKind::Source { identifier, attrs } = &op.kind else {
+                continue;
+            };
+            let source = policy::Source {
+                identifier: show(identifier),
+                attrs: attrs.iter().map(|(k, v)| (show(k), show(v))).collect(),
+            };
+            match p.evaluate(&source, None, &PolicyMeta { bases: &bases }, &policy_step) {
+                Ok(None) => {}
+                Ok(Some(to)) => {
+                    return Err(format!(
+                        "failed to build: failed to solve: failed to read dockerfile: a policy converted the build's context to {}, which only an image's pin may",
+                        to.identifier
+                    ));
+                }
+                Err(r) => return Err(refused(r, "failed to read dockerfile: ")),
+            }
+        }
+    }
+    // What the build's provenance records of its request, as buildx sends it (D71).
+    let filename = Path::new(&name)
+        .file_name()
+        .map_or_else(|| "Dockerfile".to_string(), |n| n.to_string_lossy().into_owned());
+    let request_attrs = frontend_attrs(parsed, &filename, &add_hosts, &resource_attrs, &named)?;
+    // A remote context is no local of the request's, and its Dockerfile none either
+    // unless it came from the host; buildx sends its URL as `context`.
+    let mut request_locals: Vec<String> = match &remote {
+        None => vec!["context".into(), "dockerfile".into()],
+        Some(_)
+            if parsed.string("file") == "-"
+                || parsed.string("file").starts_with("http://")
+                || parsed.string("file").starts_with("https://")
+                || Path::new(parsed.string("file")).is_absolute() =>
+        {
+            vec!["dockerfile".into()]
+        }
+        Some(_) => Vec::new(),
+    };
+    let mut request_attrs = request_attrs;
+    if remote.is_some() && context_arg != "-" {
+        request_attrs.insert("context".into(), context_arg.clone());
+    }
+    request_locals.extend(named.locals.keys().map(|k| show(k)));
+    request_locals.sort();
+    let opts = Options {
+        target_platform: target_platform.clone(),
+        build_platforms: vec![host],
+        // The build's own platform, as the frontend's is BuildKit's worker's.
+        default_platform: None,
+        no_client: false,
+        inputs: BTreeMap::new(),
+        inputs_failed: None,
+        build_args: build_args(parsed.many("build-arg"), true),
+        target: parsed.string("target").as_bytes().to_vec(),
+        labels: build_args(parsed.many("label"), false),
+        hostname: Vec::new(),
+        ulimits,
+        // One platform's build of several: its steps named with its platform.
+        multi_platform: multi::active(),
+        context_id: format!("shards-{}", std::process::id()).into_bytes(),
+        excludes,
+        ignore_name: ignore_name.into_bytes(),
+        dialect: dialect_of(&name),
+        all_stages: false,
+        contexts: named.contexts,
+        context_keys: named.keys,
+        context_excludes: named.excludes,
+        // buildx's `no-cache` option: every stage with --no-cache, else --no-cache-filter's.
+        no_cache: if parsed.bool("no-cache") {
+            Some(Vec::new())
+        } else {
+            let names: Vec<Vec<u8>> = parsed
+                .many("no-cache-filter")
+                .iter()
+                .flat_map(|v| v.split(','))
+                .map(|n| n.as_bytes().to_vec())
+                .collect();
+            (!names.is_empty()).then_some(names)
+        },
+        extra_hosts: shards_agentfile::run_options::extra_hosts(&add_hosts)
+            .map_err(|e| format!("failed to parse additional hosts: {e}"))?,
+        shm_size: shards_agentfile::run_options::shm_size(parsed.string("shm-size"))
+            .map_err(|e| format!("failed to parse shm size: {e}"))?,
+        cgroup_parent: parsed.string("cgroup-parent").as_bytes().to_vec(),
+        linux_resources: shards_agentfile::run_options::linux_resources(&resource_attrs)
+            .map_err(|e| format!("failed to parse resource limits: {e}"))?,
+        network_mode,
+        // As buildx sends it (frontend_attrs): the moby driver resolves images it has.
+        image_resolve_mode: if parsed.bool("pull") {
+            b"pull".to_vec()
+        } else {
+            b"local".to_vec()
+        },
+        main_context: remote.clone().unwrap_or_default(),
+        context_subdir: None,
+        git_advice,
+        // No --platform: the first build platform, and the image its base's platform, as
+        // BuildKit's frontend plans a build buildx asks for none (dockerui's TargetPlatform
+        // nil, Dockerfile2LLB's implicitTarget), shards' frontend too (D113).
+        implicit_target: target_platforms.is_empty(),
+        // Its own builder's: no session, every capability.
+        session: Vec::new(),
+        local_sessions: BTreeMap::new(),
+        llb_caps: None,
+        cmdline: None,
+    };
+    let call = call_of(parsed)?;
+    let debug = parsed.bool("debug");
+    // A subrequest, answered as buildx prints its result (commands/build.go printValue):
+    // result.json and a newline for format=json, else the text of it; nothing built.
+    let answer = |json: bool, result: String, text: String| {
+        let out = if json { format!("{result}\n") } else { text };
+        let _ = write!(std::io::stdout(), "{out}");
+    };
+    let failed = |e: plan::Error| {
+        let mut out = String::new();
+        for loc in &e.location {
+            out.push_str(&excerpt(&name, &text, loc));
+        }
+        let _ = write!(std::io::stderr(), "{out}");
+        print_warnings(&e.warnings, quiet, debug, &name, &text);
+        format!("failed to build: failed to solve: {}", show(&e.message))
+    };
+    match call {
+        Some(Call::Outline { json }) => {
+            let o = plan::outline(&text, &opts, &bases).map_err(failed)?;
+            answer(json, o.json(), o.text());
+            return Ok(());
+        }
+        Some(Call::Targets { json }) => {
+            let t = plan::targets(&text, opts.dialect).map_err(failed)?;
+            answer(json, t.json(), t.text());
+            return Ok(());
+        }
+        // The build's checks, said as buildx says the lint subrequest's result
+        // (commands/build.go printResult): its JSON, or how many warnings, each by line,
+        // and the error that ended the planning, which fails the call; nothing built.
+        Some(Call::Check { json, ignore_status }) => {
+            let lint = plan::lint(&text, &opts, &bases).map_err(failed)?;
+            let n = lint.warnings.len();
+            let mut out = String::new();
+            if json {
+                let results = shards_agentfile::subrequests::LintResults {
+                    warnings: &lint.warnings,
+                    filename: name.as_bytes(),
+                    data: &text,
+                    language: match opts.dialect {
+                        shards_agentfile::parser::Dialect::Agentfile => b"Agentfile",
+                        shards_agentfile::parser::Dialect::Dockerfile => b"Dockerfile",
+                    },
+                    definition: None,
+                    error: lint.error.as_ref().map(|(m, loc)| (m.as_slice(), loc)),
+                };
+                out.push_str(&results.json());
+                out.push('\n');
+            } else if n > 0 {
+                let found = if n == 1 {
+                    "1 warning has been found!".to_string()
+                } else {
+                    format!("{n} warnings have been found!")
+                };
+                out.push_str(&format!("Check complete, {found}\n"));
+                out.push_str(&lint_text(&lint.warnings, &name, &text));
+            }
+            if let Some((message, loc)) = &lint.error {
+                if !json && n > 0 {
+                    out.push('\n');
+                }
+                let _ = write!(std::io::stdout(), "{out}");
+                return Err(format!("{}\n{}", show(message), excerpt(&name, &text, loc)));
+            }
+            if !json && n == 0 {
+                out.push_str("Check complete, no warnings found.\n");
+            }
+            let _ = write!(std::io::stdout(), "{out}");
+            if n > 0 && !ignore_status {
+                status.set(1);
+            }
+            return Ok(());
+        }
+        Some(Call::Describe { json }) => {
+            answer(
+                json,
+                shards_agentfile::subrequests::DESCRIBE.to_string(),
+                shards_agentfile::subrequests::describe_text(),
+            );
+            return Ok(());
+        }
+        _ => {}
+    }
+    // Several platforms: each built as one of several, then their one image (D77).
+    if target_platforms.len() > 1 && !multi::active() {
+        return multi::run(
+            parsed,
+            status,
+            &outputs,
+            &target_platforms,
+            &progress,
+            &provenance_asked,
+            &descriptor_annotations,
+            pushes,
+            policy_step.index.get(),
+        );
+    }
+    let mut plan = match plan::plan(&text, &opts, &bases) {
+        Ok(p) => p,
+        Err(e) => {
+            // A base a policy refused: a denial's step failed with the build's error (any
+            // other error's done), and the policy's messages said first, (D101), as buildx's main
+            // says them. A policy's own error is the build's as the policy said it.
+            let refusal = bases.refused.borrow_mut().take();
+            let message = match &refusal {
+                Some(r) => r.said(show(&e.message)),
+                None => show(&e.message),
+            };
+            match &refusal {
+                Some(r) if r.denied() => policy_step.fail(&format!("failed to solve: {message}")),
+                Some(_) => policy_step.close(),
+                None => {}
+            }
+            progress.borrow().recap();
+            if let Some(r) = refusal {
+                policy_said(&r.messages);
+            }
+            let mut out = String::new();
+            for loc in &e.location {
+                out.push_str(&excerpt(&name, &text, loc));
+            }
+            let _ = write!(std::io::stderr(), "{out}");
+            print_warnings(&e.warnings, quiet, debug, &name, &text);
+            return Err(format!("failed to build: failed to solve: {message}"));
+        }
+    };
+    {
+        // Said once of a build of several platforms, by its first platform's.
+        if let Some(found) = &context_ignore
+            && multi::with(|sub| sub.first).unwrap_or(true)
+        {
+            // Read from the context's own local source: the policies asked of it, as they
+            // are when dockerui reads it. A refusal here stops nothing: the frontend reads no
+            // ignore file then, and the build stops when its definition loads the context.
+            if let Some(p) = &policies {
+                let _ = p.evaluate(
+                    &policy::Source::new("local://context"),
+                    None,
+                    &NoMeta,
+                    &policy_step,
+                );
+                p.denied.borrow_mut().clear();
+            }
+            let shown = found.as_ref().map_or(".agentignore", |(n, _)| n.as_str());
+            let v = progress.borrow_mut().start(&format!("[internal] load {shown}"));
+            if let Some((_, t)) = found {
+                progress
+                    .borrow()
+                    .line(&v, &format!("read {} done", human_size(t.len() as u64)));
+            }
+            progress.borrow().done(&v);
+        }
+    }
+
+    // The steps, each after what it reads: base images and the context as snapshots,
+    // file operations and merges run here; RUN is for the steps to come.
+    // An SBOM asked for (D81): its scanner resolved for the builder's own platform, as
+    // BuildKit resolves it with no platform of its own, and run over the build's result
+    // and its extra targets after the build's steps.
+    let scan = match &sbom_asked {
+        Some(asked) => {
+            let host = host_platform();
+            let resolved = bases
+                .resolve(
+                    asked.generator.as_bytes(),
+                    None,
+                    format!("[internal] load metadata for {}", asked.generator).as_bytes(),
+                )
+                .map_err(|e| format!("failed to build: failed to solve: {}", show(&e)))?;
+            let config = shards_agentfile::image::Image::from_json(&resolved.config).map_err(|e| show(&e))?;
+            let id = show(&shards_agentfile::platform::format_all(&plan.platform));
+            let state = plan.state.clone();
+            let extras = plan.sbom_extras.clone();
+            let pin = resolved.digest.clone().unwrap_or_default();
+            let out = sbom::plan(
+                &mut plan.graph,
+                &resolved.reference,
+                &pin,
+                true,
+                &config,
+                &host,
+                &id,
+                &state,
+                &extras,
+                &asked.params,
+                plan.ignore_cache,
+            )?;
+            let identifier = if resolved.reference.contains(&b'@') || pin.is_empty() {
+                [b"docker-image://".as_slice(), &resolved.reference].concat()
+            } else {
+                [b"docker-image://".as_slice(), &resolved.reference, b"@", &pin].concat()
+            };
+            Some((out, identifier))
+        }
+        None => None,
+    };
+    let (mut def, scan_at) = match &scan {
+        Some((s, _)) => {
+            let (def, found) = plan.graph.marshal_with(&plan.state, &[s], &plan.platform);
+            (def, found.first().copied().flatten())
+        }
+        None => (plan.definition(), None),
+    };
+    // Every source of the definition, asked of the policies as BuildKit asks them when it
+    // loads the definition, before anything runs (D101): an image by its pinned name and
+    // its platform; a source converted loaded in its place.
+    if let Some(p) = &policies {
+        for op in def.ops.iter_mut() {
+            let OpKind::Source { identifier, attrs } = &mut op.kind else {
+                continue;
+            };
+            let id = show(identifier);
+            let image = id.starts_with("docker-image://");
+            let platform = image.then(|| op.platform.clone().unwrap_or_else(|| target_platform.clone()));
+            let source = policy::Source {
+                identifier: id,
+                attrs: attrs.iter().map(|(k, v)| (show(k), show(v))).collect(),
+            };
+            match p.evaluate(
+                &source,
+                platform.as_ref(),
+                &PolicyMeta { bases: &bases },
+                &policy_step,
+            ) {
+                Ok(None) => {}
+                Ok(Some(to)) => {
+                    if let (Some(name), Some(pf)) = (to.identifier.strip_prefix("docker-image://"), &platform)
+                    {
+                        bases
+                            .resolve(
+                                name.as_bytes(),
+                                Some(pf),
+                                format!("[internal] load metadata for {name}").as_bytes(),
+                            )
+                            .map_err(|e| format!("failed to build: failed to solve: {}", show(&e)))?;
+                    }
+                    *identifier = to.identifier.into_bytes();
+                    *attrs = to
+                        .attrs
+                        .into_iter()
+                        .map(|(k, v)| (k.into_bytes(), v.into_bytes()))
+                        .collect();
+                }
+                Err(r) => return Err(refused(r, "")),
+            }
+        }
+    }
+    // The base a source op names, as it was resolved for the op's platform.
+    let op_base = |op: &shards_agentfile::llb::Op, reference: &str| {
+        base_key(reference, op.platform.as_ref().unwrap_or(&opts.target_platform))
+    };
+    crate::phase("plan");
+    // The base images a RUN stands on: each a builder's pmem device, its root filesystem
+    // as the store keeps it, so that nothing of it is copied into the builder.
+    let mut run_images: std::collections::HashMap<usize, u32> = std::collections::HashMap::new();
+    let mut run_bases: Vec<PathBuf> = Vec::new();
+    {
+        let mut todo: Vec<usize> = def
+            .ops
+            .iter()
+            .enumerate()
+            .filter(|(_, op)| {
+                matches!(op.kind, OpKind::Exec { .. })
+                    && op
+                        .platform
+                        .as_ref()
+                        .is_none_or(|p| native(p) || emulated(p).is_some())
+            })
+            .map(|(i, _)| i)
+            .collect();
+        let mut seen = std::collections::HashSet::new();
+        while let Some(i) = todo.pop() {
+            if !seen.insert(i) {
+                continue;
+            }
+            let Some(op) = def.ops.get(i) else { continue };
+            if let OpKind::Source { identifier, .. } = &op.kind {
+                if let Some(reference) = identifier.strip_prefix(b"docker-image://") {
+                    let reference = show(reference);
+                    let layers = bases
+                        .resolved
+                        .borrow()
+                        .get(&op_base(op, &reference))
+                        .map(|b| b.layers.clone())
+                        .ok_or_else(|| format!("{reference}: not resolved"))?;
+                    if !layers.is_empty() {
+                        let rootfs = rootfs_of(&store, &layers, &limits)?;
+                        let n = u32::try_from(run_bases.len()).map_err(|_| "too many base images")?;
+                        run_bases.push(rootfs);
+                        run_images.insert(i, n);
+                    }
+                }
+                continue;
+            }
+            todo.extend(op.inputs.iter().map(|inp| inp.op));
+        }
+    }
+    // Every HTTP source is fetched from the start, as BuildKit's solver fetches them (D33); a
+    // step waits only for the one it reads.
+    let sources: Vec<(usize, String, Option<String>)> = def
+        .ops
+        .iter()
+        .enumerate()
+        .filter_map(|(i, op)| match &op.kind {
+            OpKind::Source { identifier, attrs }
+                if is_http(identifier) && !given.iter().any(|g| g.identifier == *identifier) =>
+            {
+                Some((
+                    i,
+                    show(identifier),
+                    attrs.get(b"http.checksum".as_slice()).map(|c| show(c)),
+                ))
+            }
+            _ => None,
+        })
+        .collect();
+    let dir = if sources.is_empty() {
+        PathBuf::new()
+    } else {
+        exec.stage()?
+    };
+    let mut downloads = http::Downloads::start(sources, &dir, limits)?;
+    // The CDI devices each step asks for (D96), found and granted before any step runs,
+    // as BuildKit's solver checks them as it loads the definition (ValidateEntitlements).
+    let mut cdi_edits: std::collections::HashMap<usize, cdi::Edits> = std::collections::HashMap::new();
+    if def
+        .ops
+        .iter()
+        .any(|op| matches!(&op.kind, OpKind::Exec { devices, .. } if !devices.is_empty()))
+    {
+        // BuildKit's `cdi.autoAllowed`, which buildkitd's configuration gives.
+        let auto: Vec<String> = std::env::var("SHARDS_CDI_AUTO_ALLOWED")
+            .map(|v| {
+                v.split(',')
+                    .filter(|d| !d.is_empty())
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default();
+        let registry = cdi::Registry::load(&cdi::spec_dirs(&|k| std::env::var(k).ok()), &auto);
+        let grant = allowed.devices();
+        for (i, op) in def.ops.iter().enumerate() {
+            let OpKind::Exec { devices, .. } = &op.kind else {
+                continue;
+            };
+            if devices.is_empty() {
+                continue;
+            }
+            let requests: Vec<(String, bool)> = devices.iter().map(|d| (show(&d.name), d.optional)).collect();
+            let names = registry.grant(&requests, grant.as_ref()).map_err(|e| {
+                let unread = if registry.errors.is_empty() {
+                    String::new()
+                } else {
+                    format!(" (CDI specs not read: {})", registry.errors.join("; "))
+                };
+                format!("failed to build: failed to solve: {e}{unread}")
+            })?;
+            if !names.is_empty() {
+                cdi_edits.insert(i, registry.edits(&names));
+            }
+        }
+    }
+    let log_limits = LogLimits::from_env();
+    // The build's proxy, where its policies ask for it (D110), made with its builder, which
+    // goes before it; each step's vertex as BuildKit's solver knows it, to name the step a
+    // request that is no material came from.
+    let proxy_cap = policies.as_ref().is_some_and(|p| p.proxy);
+    // Each request through the proxy, checked by the build's policies as an HTTP source,
+    // as BuildKit's handler asks them (D110), on the build's thread: refused where they refuse
+    // it, their denial never left for a later error. Only an image's pin converts a
+    // source, so a request is allowed or refused.
+    let check_request = |_method: &str, url: &str| -> bool {
+        let Some(p) = &policies else { return true };
+        let verdict = p.evaluate(
+            &policy::Source::new(url),
+            None,
+            &PolicyMeta { bases: &bases },
+            &policy_step,
+        );
+        p.denied.borrow_mut().clear();
+        matches!(verdict, Ok(None))
+    };
+    let mut build_proxy: Option<proxy::Proxy> = None;
+    let vertices = if proxy_cap {
+        provenance::vertex_digests(&def, true)
+    } else {
+        Vec::new()
+    };
+    let mut proxy_incomplete: Vec<provenance::ProxyIncomplete> = Vec::new();
+    let mut builder: Option<builder::Builder> = None;
+    // Its steps' seccomp filter, compiled once for the kernel the builder boots.
+    let mut step_filter: Vec<u8> = Vec::new();
+    let mut results: Vec<Vec<exec::Ref>> = Vec::with_capacity(def.ops.len());
+    // The Git and HTTP sources the build read, with what each resolved to, for its
+    // provenance.
+    let (mut git_materials, mut http_materials): (Vec<provenance::Material>, Vec<provenance::Material>) =
+        (Vec::new(), Vec::new());
+    // Each operation's cache key (D50), the one its result is known by, where it has one:
+    // none where an input has none. And the digests of what the build's steps read
+    // (D114), each taken once.
+    let mut keys: Vec<Option<String>> = Vec::with_capacity(def.ops.len());
+    let mut digests = cache::Digests::default();
+    let no_cache = parsed.bool("no-cache");
+    // The caches of each step not answered from the cache start empty: their records are
+    // let go of before any step runs, as BuildKit's solver lets them go as it loads the
+    // definition (D114; llbsolver `detectPrunedCacheID`).
+    for (op, meta) in def.ops.iter().zip(&def.metadata) {
+        let OpKind::Exec { mounts, .. } = &op.kind else {
+            continue;
+        };
+        if !no_cache && !meta.ignore_cache {
+            continue;
+        }
+        for m in mounts {
+            if let shards_agentfile::llb::OpMountKind::Cache { id, .. } = &m.kind {
+                let id = if id.is_empty() { &m.dest } else { id };
+                store
+                    .prune_mounts(&show(id), m.input != -1)
+                    .map_err(|e| e.to_string())?;
+            }
+        }
+    }
+    // What other operations read, so a base image is unpacked only when one does.
+    let read: std::collections::HashSet<usize> = def
+        .ops
+        .iter()
+        .filter(|op| !matches!(op.kind, OpKind::Source { .. }))
+        .flat_map(|op| op.inputs.iter().map(|i| i.op))
+        .collect();
+    // The Dockerfile's name, which each step's own shadows below.
+    let dockerfile_name = name.clone();
+    for (i, (op, meta)) in def.ops.iter().zip(&def.metadata).enumerate() {
+        let name = meta
+            .description
+            .get(b"llb.customname".as_slice())
+            .map(|n| show(n))
+            .unwrap_or_default();
+        let inputs = op
+            .inputs
+            .iter()
+            .map(|inp| {
+                results
+                    .get(inp.op)
+                    .and_then(|outs| outs.get(usize::try_from(inp.index).ok()?))
+                    .cloned()
+                    .ok_or_else(|| format!("input {}:{} is not ready", inp.op, inp.index))
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        // `why` on the step, and in the build's error after `stage`, what BuildKit was
+        // doing when it failed.
+        // After the recap: the warnings, then where in the Dockerfile the step comes from
+        // (BuildKit's source map, solver/errdefs Source.Print).
+        let fail_in = |v: &Vertex, stage: &str, why: &str| {
+            let p = progress.borrow();
+            p.error(v, why);
+            let mut epilogue = warnings_text(&plan.warnings, quiet, debug, &dockerfile_name, &text);
+            for loc in &meta.locations {
+                epilogue.push_str(&excerpt(&dockerfile_name, &text, loc));
+            }
+            *p.epilogue.borrow_mut() = epilogue;
+            format!("failed to build: failed to solve: {stage}{why}")
+        };
+        // A content checksum's failure is the cache key's that failed to load, which the
+        // build's error says and the step's does not (the solver wraps it).
+        let fail = |v: &Vertex, why: &str| match why.strip_prefix(CACHE_KEY) {
+            Some(rest) => fail_in(v, CACHE_KEY, rest),
+            None => fail_in(v, "", why),
+        };
+        // A fetch that failed fails the build on the step of its source.
+        let fetch_failed = |op: usize, failure: http::Failure| {
+            let named = def
+                .metadata
+                .get(op)
+                .and_then(|m| m.description.get(b"llb.customname".as_slice()))
+                .map(|n| show(n))
+                .unwrap_or_default();
+            let v = progress.borrow_mut().start(&named);
+            match failure {
+                http::Failure::CacheKey(e) => fail_in(&v, "failed to load cache key: ", &e),
+                http::Failure::Snapshot(e) => fail(&v, &e),
+            }
+        };
+        if let Some((op, failure)) = downloads.failed() {
+            return Err(fetch_failed(op, failure));
+        }
+        // A step the build cache holds is not run again: its outputs are the layers it
+        // made, as BuildKit's solver takes a vertex its cache key finds (D114).
+        let step = matches!(
+            op.kind,
+            OpKind::Exec { .. } | OpKind::File { .. } | OpKind::Merge | OpKind::Skills { .. }
+        );
+        // A step with the network under the build's proxy (D110) is keyed apart, by
+        // either of its keys.
+        let proxied = proxy_cap
+            && matches!(&op.kind, OpKind::Exec { network, .. } if *network != shards_agentfile::llb::NetMode::None);
+        let apart = |k: String| if proxied { cache::proxied_key(&k) } else { k };
+        // Its keys (D114): from each input's own key, which a build that changed nothing
+        // the step reads finds at once; and, asked only where that one finds nothing, from
+        // what it reads of each input, as BuildKit's solver asks a content checksum (D114). Its
+        // result is known by the second, where it reads any input.
+        let input_keys: Option<Vec<&str>> = op
+            .inputs
+            .iter()
+            .map(|inp| keys.get(inp.op).and_then(|k| k.as_deref()))
+            .collect();
+        let fast = match (step, &input_keys) {
+            (true, Some(ks)) => Some(apart(cache::op_key(
+                op,
+                &ks.iter().map(|k| cache::Dep::Key(k)).collect::<Vec<_>>(),
+            ))),
+            _ => None,
+        };
+        let reads = if step { cache::reads(op) } else { Vec::new() };
+        let reads_any = reads.iter().any(Option::is_some);
+        let mut slow: Option<String> = None;
+        // Its record, here or in a --cache-from cache, its layers fetched now.
+        let lookup = |k: &str| -> Result<Option<Vec<u8>>, String> {
+            match store.cache_get(k).map_err(|e| e.to_string())? {
+                None if imported.take(k, &store)? => store.cache_get(k).map_err(|e| e.to_string()),
+                held => Ok(held),
+            }
+        };
+        // A step marked IgnoreCache (--no-cache-filter's stages) is run, and its result
+        // kept, as BuildKit's solver does (D114): the cache is not asked for it.
+        let mut hit: Option<(String, Vec<u8>)> = None;
+        if !no_cache
+            && !meta.ignore_cache
+            && let Some(f) = fast.as_deref()
+        {
+            if let Some(body) = lookup(f)? {
+                hit = Some((f.to_string(), body));
+            } else if reads_any && let Some(ks) = &input_keys {
+                slow = read_key(op, &reads, &inputs, ks, &mut digests, &mut exec.sources)?.map(apart);
+                if let Some(s) = slow.as_deref()
+                    && s != f
+                    && let Some(body) = lookup(s)?
+                {
+                    hit = Some((s.to_string(), body));
+                }
+            }
+        }
+        // A proxied step's record is taken only where the build's policies still let each
+        // of its requests go (D110); one they refuse now runs the step again, its requests
+        // asked again as they come. BuildKit asks nothing of a cached step.
+        let hit = match hit {
+            Some((k, body)) if proxied => match cache::decode_proxied(&body) {
+                Ok((outputs, c)) => c
+                    .allowed
+                    .iter()
+                    .all(|(method, url)| check_request(method, url))
+                    .then_some((k, body, Ok((outputs, Some(c))))),
+                Err(e) => Some((k, body, Err(e))),
+            },
+            Some((k, body)) => {
+                let decoded = cache::decode(&body).map(|outputs| (outputs, None));
+                Some((k, body, decoded))
+            }
+            None => None,
+        };
+        if let Some((k, body, decoded)) = hit {
+            let v = progress.borrow_mut().start(&name);
+            let (outputs, captured) = decoded.map_err(|e| fail(&v, &e))?;
+            // Found by what it reads: its inputs' own keys find it next time.
+            if let Some(f) = fast.as_deref()
+                && f != k
+            {
+                let blobs = outputs
+                    .iter()
+                    .flatten()
+                    .map(|l| Digest::parse(&show(&l.digest)).map_err(|e| e.to_string()))
+                    .collect::<Result<Vec<_>, String>>()?;
+                let own = outputs.first().and_then(|o| o.last()).map_or(0, |l| l.size);
+                store
+                    .cache_put(f, &blobs, own, &String::from_utf8_lossy(&body))
+                    .map_err(|e| e.to_string())?;
+            }
+            let outs: Vec<exec::Ref> = outputs
+                .into_iter()
+                .map(|layers| exec.image(layers, None))
+                .collect::<Result<_, String>>()
+                .map_err(|e| fail(&v, &e))?;
+            progress.borrow().cached(&v);
+            guard(meta, &inputs, &outs, &plan.domains, &store).map_err(|e| fail(&v, &e))?;
+            store.cache_used(&k).map_err(|e| e.to_string())?;
+            // What its requests came to when it ran, in this build's provenance too.
+            if let (Some(c), OpKind::Exec { process, .. }) = (&captured, &op.kind) {
+                proxy_provenance(
+                    c,
+                    vertices.get(i).map_or("", String::as_str),
+                    &show(&process.args.join(&b' ')),
+                    &mut http_materials,
+                    &mut proxy_incomplete,
+                );
+            }
+            results.push(outs);
+            keys.push(Some(cache::known_as(&body).unwrap_or(k)));
+            continue;
+        }
+        // What a proxied step's requests came to, for its record.
+        let mut step_capture: Option<proxy::capture::Capture> = None;
+        let outs = match &op.kind {
+            OpKind::Source { identifier, .. }
+                if identifier.starts_with(b"docker-image://") || identifier.starts_with(b"oci-layout://") =>
+            {
+                let v = progress.borrow_mut().start(&name);
+                let reference = show(
+                    identifier
+                        .strip_prefix(b"docker-image://")
+                        .or_else(|| identifier.strip_prefix(b"oci-layout://"))
+                        .unwrap_or(identifier),
+                );
+                progress.borrow().line(&v, &format!("resolve {reference} done"));
+                let base = bases
+                    .resolved
+                    .borrow()
+                    .get(&op_base(op, &reference))
+                    .map(|b| b.layers.clone())
+                    .ok_or_else(|| format!("{reference}: not resolved"))?;
+                let r = if read.contains(&i) {
+                    exec.image(base, run_images.get(&i).copied())
+                        .map_err(|e| fail(&v, &e))?
+                } else {
+                    exec::Ref {
+                        fs: std::rc::Rc::new(shards_build::vfs::Fs::new(
+                            shards_image::layer::root(),
+                            exec::now(),
+                        )),
+                        layers: base,
+                        stack: shards_build::stack::Stack::unknown("a base image not unpacked"),
+                        origin: std::rc::Rc::new(builder::Origin::Scratch),
+                    }
+                };
+                progress.borrow().done(&v);
+                vec![r]
+            }
+            // The remote context's source, fetched before planning (fetch_context).
+            OpKind::Source { identifier, .. } if given.iter().any(|g| g.identifier == *identifier) => {
+                let at = given
+                    .iter()
+                    .position(|g| g.identifier == *identifier)
+                    .ok_or("the context's source is gone")?;
+                let g = given.remove(at);
+                match g.material {
+                    Some(Material::Git(m)) => git_materials.push(m),
+                    Some(Material::Http(m)) => http_materials.push(m),
+                    None => {}
+                }
+                vec![g.result]
+            }
+            OpKind::Source { identifier, attrs } if identifier.starts_with(b"local://") => {
+                let v = progress.borrow_mut().start(&name);
+                let list = |key: &[u8]| -> Vec<Vec<u8>> {
+                    attrs
+                        .get(key)
+                        .and_then(|j| serde_json::from_slice::<Vec<String>>(j).ok())
+                        .map(|l| l.into_iter().map(String::into_bytes).collect())
+                        .unwrap_or_default()
+                };
+                let filters = shards_build::context::Filters {
+                    include: list(b"local.includepatterns"),
+                    exclude: list(b"local.excludepatterns"),
+                    follow: list(b"local.followpaths"),
+                };
+                let local = identifier.strip_prefix(b"local://").unwrap_or_default();
+                let dir = if local == b"context" {
+                    context.clone()
+                } else {
+                    named
+                        .locals
+                        .get(local)
+                        .cloned()
+                        .ok_or_else(|| fail(&v, &format!("no local directory {}", show(local))))?
+                };
+                let r = exec.context(&dir, &filters).map_err(|e| fail(&v, &e))?;
+                let (files, bytes) = context_size(&r.fs);
+                progress
+                    .borrow()
+                    .line(&v, &format!("read {files} files, {} done", human_size(bytes)));
+                progress.borrow().done(&v);
+                vec![r]
+            }
+            OpKind::Source { identifier, attrs } if is_http(identifier) => {
+                let v = progress.borrow_mut().start(&name);
+                let download = match downloads.take(i) {
+                    Ok(d) => d,
+                    Err((op, failure)) if op == i => {
+                        return Err(match failure {
+                            http::Failure::CacheKey(e) => fail_in(&v, "failed to load cache key: ", &e),
+                            http::Failure::Snapshot(e) => fail(&v, &e),
+                        });
+                    }
+                    Err((op, failure)) => {
+                        progress.borrow().canceled(&v);
+                        return Err(fetch_failed(op, failure));
+                    }
+                };
+                let file = attrs
+                    .get(b"http.filename".as_slice())
+                    .ok_or_else(|| fail(&v, "an HTTP source without a file name"))?;
+                let pin = download.digest.to_string();
+                let (algorithm, hex) = pin.split_once(':').unwrap_or(("sha256", pin.as_str()));
+                http_materials.push(provenance::Material {
+                    uri: redact_credentials(&show(identifier)),
+                    algorithm: algorithm.to_string(),
+                    hex: hex.to_string(),
+                });
+                let r = exec.downloaded(download, file).map_err(|e| fail(&v, &e))?;
+                progress.borrow().done(&v);
+                vec![r]
+            }
+            OpKind::Source { identifier, .. } if identifier.starts_with(b"osi-artifact://") => {
+                let v = progress.borrow_mut().start(&name);
+                let reference = show(identifier.strip_prefix(b"osi-artifact://").unwrap_or(identifier));
+                let layers = bases
+                    .artifacts
+                    .borrow()
+                    .get(&reference)
+                    .cloned()
+                    .ok_or_else(|| fail(&v, &format!("{reference}: not resolved")))?;
+                let r = exec.image(layers, None).map_err(|e| fail(&v, &e))?;
+                progress.borrow().done(&v);
+                vec![r]
+            }
+            OpKind::Skills { name: came_as } => {
+                let v = progress.borrow_mut().start(&name);
+                let input = inputs
+                    .first()
+                    .cloned()
+                    .ok_or_else(|| fail(&v, "a skills step without what it checks"))?;
+                let actions =
+                    skills::layout(&input, &show(came_as), &mut exec.sources).map_err(|e| fail(&v, &e))?;
+                let outs = exec.file(&[input], &actions, &name).map_err(|e| fail(&v, &e))?;
+                progress.borrow().done(&v);
+                outs
+            }
+            // A frontend's input, given whole, is BuildKit's to run: shards build plans
+            // none.
+            OpKind::Raw { .. } => {
+                return Err(
+                    "failed to build: failed to solve: a definition given whole, which only BuildKit runs"
+                        .into(),
+                );
+            }
+            OpKind::File { actions } => {
+                let v = progress.borrow_mut().start(&name);
+                let outs = exec.file(&inputs, actions, &name).map_err(|e| fail(&v, &e))?;
+
+                progress.borrow().done(&v);
+                outs
+            }
+            OpKind::Merge => {
+                let v = (!name.is_empty()).then(|| progress.borrow_mut().start(&name));
+                let r = exec.merge(&inputs);
+                let r = match (r, &v) {
+                    (Ok(r), _) => r,
+                    (Err(e), Some(v)) => return Err(fail(v, &e)),
+                    (Err(e), None) => return Err(format!("failed to build: failed to solve: {e}")),
+                };
+                if let Some(v) = &v {
+                    progress.borrow().done(v);
+                }
+                vec![r]
+            }
+            OpKind::Source { identifier, attrs } if identifier.starts_with(b"git://") => {
+                let v = progress.borrow_mut().start(&name);
+                let src = git::source(identifier, attrs).map_err(|e| fail(&v, &e))?;
+                // A repository's pack, and each object in it, within what a build may unpack.
+                let bound = usize::try_from(limits.bytes).unwrap_or(usize::MAX);
+                let fetch_limits = shards_git::remote::Limits {
+                    pack: bound,
+                    object: bound,
+                };
+                // As BuildKit's git source logs its commands' lines: each stamped.
+                let say = |line: &str| progress.borrow().log(&v, line);
+                let cancel = shards_registry::http::Cancel::new();
+                let auth = git::auth(&src, &secrets);
+                let r = match git::snapshot(
+                    &mut exec,
+                    &src,
+                    fetch_limits,
+                    &cancel,
+                    auth.as_ref(),
+                    &agents,
+                    &say,
+                ) {
+                    Ok((r, commit)) => {
+                        // GitIdentifier.Capture: the remote, its ref after a `#`, the commit.
+                        let mut uri = redact_credentials(&src.url);
+                        if !src.reference.is_empty() {
+                            uri.push('#');
+                            uri.push_str(&src.reference);
+                        }
+                        git_materials.push(provenance::Material {
+                            uri,
+                            algorithm: if commit.len() == 64 { "sha256" } else { "sha1" }.into(),
+                            hex: commit,
+                        });
+                        r
+                    }
+                    Err(git::Failure::CacheKey(e)) => {
+                        return Err(fail_in(&v, "failed to load cache key: ", &e));
+                    }
+                    Err(git::Failure::Snapshot(e)) => return Err(fail(&v, &e)),
+                };
+                progress.borrow().done(&v);
+                vec![r]
+            }
+            OpKind::Source { .. } => {
+                let what = name.split_once("] ").map_or(name.as_str(), |(_, s)| s);
+                let v = progress.borrow_mut().start(&name);
+                return Err(fail(
+                    &v,
+                    &format!("{what}: this source is not supported by shards build yet"),
+                ));
+            }
+            OpKind::Exec {
+                process,
+                mounts,
+                network,
+                security,
+                secret_env,
+                ..
+            } => {
+                let v = progress.borrow_mut().start(&name);
+                // A step for a platform its builder neither runs nor emulates is refused
+                // here, at its turn and before a builder boots, where BuildKit starts it and
+                // fails with the kernel's "exec format error".
+                if let Some(p) = op
+                    .platform
+                    .as_ref()
+                    .filter(|p| !native(p) && emulated(p).is_none())
+                {
+                    let others: Vec<String> = shards_abi::emulate::EMULATORS
+                        .iter()
+                        .map(|e| Platform::new("linux", e.architecture))
+                        .filter(|e| emulated(e).is_some())
+                        .map(|e| show(&platform::format(&e)))
+                        .collect();
+                    let why = format!(
+                        "shards runs no steps for {}: its microVMs run {}'s, and {} under emulation; build what runs on the build platform (FROM --platform=$BUILDPLATFORM) and copy it into the {} stage",
+                        show(&platform::format(p)),
+                        show(&platform::format(&host_platform())),
+                        others.join(", "),
+                        show(&platform::format(p)),
+                    );
+                    return Err(fail(&v, &why));
+                }
+                if builder.is_none() {
+                    // Steps given a GPU by a CDI device of its render node have a builder
+                    // with the GPU, booting the kernel with its driver where none is given
+                    // (D145).
+                    let gpu = crate::run::GIVES_GPU
+                        && cdi_edits.values().any(|e| {
+                            let render = |p: &str| p == crate::run::RENDER_NODE;
+                            e.nodes.iter().any(|n| render(&n.path) || render(&n.host_path))
+                        });
+                    let guest = match (std::env::var_os("SHARDS_KERNEL"), std::env::var_os("SHARDS_INIT")) {
+                        (Some(k), Some(i)) => (PathBuf::from(k), PathBuf::from(i)),
+                        _ => {
+                            let g = match crate::guest::current(&home).map_err(|e| fail(&v, &e))? {
+                                Some(g) => g,
+                                None => {
+                                    crate::guest::default(&home, &|_| {}, None, &|k| std::env::var(k).ok())
+                                        .map_err(|e| fail(&v, &e))?
+                                }
+                            };
+                            let kernel = match gpu {
+                                true => {
+                                    crate::guest::gpu_kernel(&home, &|_| {}, None, &|k| std::env::var(k).ok())
+                                        .map_err(|e| fail(&v, &e))?
+                                }
+                                false => g.kernel,
+                            };
+                            (kernel, g.init)
+                        }
+                    };
+                    if proxy_cap {
+                        build_proxy = Some(builder::proxy(&limits).map_err(|e| fail(&v, &e))?);
+                    }
+                    // The emulators the build's steps for other CPUs run under (D179), the
+                    // emulator image's root one more of the builder's devices: each step's
+                    // platform's, and its base's CPU's, whose programs it runs, where the
+                    // two differ (a base of another CPU's lone manifest, which BuildKit's
+                    // steps run under whatever emulators the host has).
+                    let mut emulating: Vec<&'static str> = def
+                        .ops
+                        .iter()
+                        .filter(|op| matches!(op.kind, OpKind::Exec { .. }))
+                        .flat_map(|op| [op.platform.clone(), root_platform(&def, op, &bases, &op_base)])
+                        .flatten()
+                        .filter_map(|p| emulated(&p))
+                        .map(|e| e.architecture)
+                        .collect();
+                    emulating.sort_unstable();
+                    emulating.dedup();
+                    let emulators = match emulating.is_empty() {
+                        true => None,
+                        false => Some(bases.emulators(&limits).map_err(|e| fail(&v, &e))?),
+                    };
+                    let needs = needs_path(&home);
+                    let boot = builder::Boot {
+                        kernel: &guest.0,
+                        init: &guest.1,
+                        cpus: builder_cpus(),
+                        memory_mib: builder_memory_mib(&needs),
+                        bases: &run_bases,
+                        proxy: build_proxy.as_ref(),
+                        gpu,
+                        emulators: emulators.as_deref().map(|root| (root, emulating.as_slice())),
+                        needs: Some(&needs),
+                    };
+                    let kernel = crate::guest::version_of(&guest.0).map_err(|e| fail(&v, &e))?;
+                    step_filter = crate::setup::step_seccomp(kernel).map_err(|e| fail(&v, &e))?;
+                    builder = Some(builder::Builder::start(&boot).map_err(|e| fail(&v, &e))?);
+                    // Asked to give back what it holds cold as its host runs short of memory
+                    // (D188), what its builders gave back said where the plain display's
+                    // lines go.
+                    if let Some(giver) = builder.as_ref().and_then(builder::Builder::giver) {
+                        let p = progress.borrow();
+                        give::watch(giver, p.live.is_none() && !p.quiet);
+                    }
+                }
+                let Some(b) = builder.as_mut() else {
+                    return Err(fail(&v, "the builder is gone"));
+                };
+                let input_keys: Vec<Option<String>> = op
+                    .inputs
+                    .iter()
+                    .map(|inp| keys.get(inp.op).cloned().flatten())
+                    .collect();
+                // Its programs emulated (D179), its platform's or its base's: its command is
+                // then never PID 1 of its namespace (PM M251).
+                let emulated_step = [op.platform.clone(), root_platform(&def, op, &bases, &op_base)]
+                    .into_iter()
+                    .flatten()
+                    .any(|p| emulated(&p).is_some());
+                let op = exec::RunOp {
+                    process,
+                    mounts,
+                    network: *network,
+                    security: *security,
+                    secret_env,
+                    secrets: &secrets,
+                    // Granted on `--allow` alone: what BuildKit's daemon must be set up to
+                    // grant as well, a builder that is a VM of the build's own grants with
+                    // no host to guard (docs/design/architecture.md D33).
+                    insecure: allowed.grants(buildflags::SECURITY_INSECURE),
+                    network_host: allowed.grants(buildflags::NETWORK_HOST),
+                    seccomp: &step_filter,
+                    agents: &agents,
+                    resources: meta.linux_resources.as_ref(),
+                    cdi: cdi_edits.get(&i),
+                    proxy: build_proxy.as_ref(),
+                    input_keys: &input_keys,
+                    emulated: emulated_step,
+                };
+                let mut log = StepLog::new(log_limits);
+                let r = exec.run(
+                    b,
+                    &inputs,
+                    &op,
+                    &name,
+                    &mut |which, bytes| log.write(&progress.borrow(), &v, which, bytes),
+                    &mut |method, url| check_request(method, url),
+                );
+                log.end(&progress.borrow(), &v);
+                let (r, capture) = r.map_err(|e| fail(&v, &e))?;
+                progress.borrow().done(&v);
+                if let Some(c) = &capture {
+                    proxy_provenance(
+                        c,
+                        vertices.get(i).map_or("", String::as_str),
+                        &show(&process.args.join(&b' ')),
+                        &mut http_materials,
+                        &mut proxy_incomplete,
+                    );
+                }
+                step_capture = capture;
+                r
+            }
+        };
+        // A step that may write in no domain but its own (D55).
+        guard(meta, &inputs, &outs, &plan.domains, &store)
+            .map_err(|e| format!("failed to build: failed to solve: {name}: {e}"))?;
+        // Its key: a source's from what it holds; a step's, recorded with what it made where
+        // its layers make each of its outputs.
+        let key = match &op.kind {
+            OpKind::Source { identifier, .. } if identifier.starts_with(b"docker-image://") => {
+                let digests: Vec<u8> = outs
+                    .first()
+                    .map(|r| {
+                        r.layers
+                            .iter()
+                            .flat_map(|l| [l.digest.as_slice(), b"\n"].concat())
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                Some(cache::source_key(identifier, &String::from_utf8_lossy(&digests)))
+            }
+            // What it is and what it holds: its attributes include the session's own
+            // (`local.unique`), which differ from build to build where its files do not.
+            OpKind::Source { identifier, .. } => match outs.first() {
+                Some(r) => {
+                    let content = digests.root(&r.fs, &mut exec.sources)?;
+                    Some(cache::source_key(identifier, &content))
+                }
+                None => None,
+            },
+            _ => {
+                // Known by what it reads, where it reads any input.
+                if reads_any
+                    && slow.is_none()
+                    && let Some(ks) = &input_keys
+                {
+                    slow = read_key(op, &reads, &inputs, ks, &mut digests, &mut exec.sources)?.map(apart);
+                }
+                let known = slow.clone().or_else(|| fast.clone());
+                let layered = outs.iter().all(|r| {
+                    matches!(r.stack, shards_build::stack::Stack::Known(_)) && r.stack.follows(r.fs.tree())
+                });
+                if let Some(k) = known.as_deref()
+                    && layered
+                {
+                    let layers: Vec<Vec<Layer>> = outs.iter().map(|r| r.layers.clone()).collect();
+                    let blobs = layers
+                        .iter()
+                        .flatten()
+                        .map(|l| Digest::parse(&show(&l.digest)).map_err(|e| e.to_string()))
+                        .collect::<Result<Vec<_>, String>>()?;
+                    // What the step made itself: its root output's last layer.
+                    let own = outs.first().and_then(|r| r.layers.last()).map_or(0, |l| l.size);
+                    // A proxied step's record keeps its requests (D110).
+                    let body = match &step_capture {
+                        Some(c) if proxied => cache::encode_proxied(k, &layers, c)?,
+                        _ => cache::encode(k, &layers)?,
+                    };
+                    for under in [Some(k), fast.as_deref().filter(|f| *f != k)]
+                        .into_iter()
+                        .flatten()
+                    {
+                        store
+                            .cache_put(under, &blobs, own, &body)
+                            .map_err(|e| e.to_string())?;
+                    }
+                }
+                known
+            }
+        };
+        results.push(outs);
+        keys.push(key);
+        crate::phase("op");
+    }
+    // The image: the target's layers, and its stage's base image for the exporter.
+    let mut layers: Vec<Layer> = Vec::new();
+    let mut base_image: Option<Image> = None;
+    let mut target: Option<exec::Ref> = None;
+    // The stage's FROM, an image: its op, and the name the bases know it by.
+    let mut from: Option<(usize, String)> = None;
+    if let Some(root) = def.root {
+        target = results
+            .get(root.op)
+            .and_then(|outs| outs.get(usize::try_from(root.index).ok()?))
+            .cloned();
+        layers = target.as_ref().map(|r| r.layers.clone()).unwrap_or_default();
+        // Down the first inputs to the stage's FROM.
+        let mut at = root.op;
+        while let Some(op) = def.ops.get(at) {
+            match &op.kind {
+                OpKind::Source { identifier, .. } => {
+                    if let Some(reference) = identifier.strip_prefix(b"docker-image://") {
+                        let reference = show(reference);
+                        base_image = bases
+                            .resolved
+                            .borrow()
+                            .get(&op_base(op, &reference))
+                            .map(|b| b.image.clone());
+                    }
+                    from = identifier
+                        .strip_prefix(b"docker-image://")
+                        .or_else(|| identifier.strip_prefix(b"oci-layout://"))
+                        .map(|r| (at, op_base(op, &show(r))));
+                    break;
+                }
+                _ => match op.inputs.first() {
+                    Some(i) => at = i.op,
+                    None => break,
+                },
+            }
+        }
+    }
+    // --squash (D177): the build's layers past its base's as one, where an output is an
+    // image; the merge's history names the image it would have been.
+    let mut exported = plan.image.clone();
+    let to_image = outputs.is_empty()
+        || outputs
+            .iter()
+            .any(|o| matches!(o.kind.as_str(), "image" | "moby" | "oci" | "docker"));
+    if parsed.bool("squash")
+        && to_image
+        && let Some(t) = &target
+    {
+        let unsquashed = export::config(
+            &plan.image,
+            &layers,
+            plan.epoch.map(Time::from_unix),
+            base_image.as_ref(),
+        )
+        .map_err(|e| show(&e))?;
+        // Its history as the image it would have been has it, each entry's time its own,
+        // as moby's squash keeps them (D177).
+        exported.history = Image::from_json(&unsquashed).map_err(|e| show(&e))?.history;
+        let resolved = bases.resolved.borrow();
+        let base = from.as_ref().and_then(|(at, name)| {
+            let r = results.get(*at).and_then(|outs| outs.first())?;
+            Some((r, resolved.get(name)?))
+        });
+        let at = plan.epoch.map_or_else(
+            || {
+                let (s, ns) = exec::now();
+                let mut at = Time::from_unix(s);
+                at.nanosecond = ns;
+                at
+            },
+            Time::from_unix,
+        );
+        layers = squash(
+            &store,
+            &mut exec.sources,
+            base,
+            t,
+            &mut exported,
+            &sha256(&unsquashed).to_string(),
+            at,
+        )?;
+    }
+    // The SBOMs the scan wrote (D81), each a statement, the core target's first.
+    let sboms: Vec<sbom::Scanned> = match scan_at {
+        Some(at) => {
+            let r = usize::try_from(at.index)
+                .ok()
+                .and_then(|i| results.get(at.op).and_then(|outs| outs.get(i)))
+                .ok_or("the SBOM scan has no output")?;
+            sbom::read(r.fs.tree(), &mut exec.sources, limits.bytes)
+                .map_err(|e| format!("failed to build: failed to solve: {e}"))?
+        }
+        None => Vec::new(),
+    };
+    // mode=max: each step output's layers, as the build's records name them (D80).
+    let wants_max = matches!(provenance_asked, Provenance::Explicit { max: true, .. });
+    let chains: Vec<(usize, usize, Vec<Vec<u8>>)> = if wants_max {
+        results
+            .iter()
+            .enumerate()
+            .flat_map(|(op, outs)| {
+                outs.iter()
+                    .enumerate()
+                    .map(move |(i, r)| (op, i, r.layers.iter().map(|l| l.digest.clone()).collect()))
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    // Every layer is in the store now. The root filesystem is written from the target's
+    // snapshot, put in its layers' form, its files read where the build has them; the
+    // other snapshots go first. Where that cannot be done exactly, the snapshots, their
+    // sources and stages all go before the export stacks the layers again, so the two
+    // never hold memory at once.
+    drop(results);
+    // What the build's provenance says of it, where an output carries one (D71, D72):
+    // every source has resolved now.
+    let invocation = build_ref()?;
+    let mut capture = {
+        let mut materials = provenance::capture_images(&def, scan.as_ref().map(|(_, id)| id.as_slice()));
+        for mut list in [
+            std::mem::take(&mut git_materials),
+            std::mem::take(&mut http_materials),
+        ] {
+            list.sort_by(|a, b| a.uri.cmp(&b.uri));
+            list.dedup_by(|a, b| a.uri == b.uri);
+            materials.extend(list);
+        }
+        // The OSI artifacts it took, after what BuildKit records (D116).
+        materials.extend(provenance::capture_artifacts(&def));
+        let (secrets, ssh, network) = provenance::capture_mounts(&def);
+        provenance::Capture {
+            args: request_attrs.clone(),
+            materials,
+            locals: request_locals.clone(),
+            secrets,
+            ssh,
+            network,
+            // Every step with the network had the proxy's alone (D110).
+            proxy: (proxy_cap && network).then(|| std::mem::take(&mut proxy_incomplete)),
+            max: None,
+            sboms,
+        }
+    };
+    // Whether the image's attestation holds its provenance: by default where an image is
+    // stored or pushed (unless BUILDX_NO_DEFAULT_ATTESTATIONS), always where asked for.
+    let provenance_on = match &provenance_asked {
+        Provenance::Default => attests(&|k| std::env::var(k).ok())?,
+        Provenance::Off => false,
+        Provenance::Explicit { .. } => true,
+    };
+    let (builder_id, reproducible) = match &provenance_asked {
+        Provenance::Explicit {
+            builder_id,
+            reproducible,
+            ..
+        } => (builder_id.clone(), *reproducible),
+        _ => (String::new(), false),
+    };
+    let facts = |platform: &str| provenance::Run {
+        invocation_id: invocation.clone(),
+        started,
+        finished: unix_now(),
+        builder_platform: platform.to_string(),
+        builder_id: builder_id.clone(),
+        reproducible,
+    };
+    let host_platform_shown = show(&shards_agentfile::platform::format(&host_platform()));
+    // An explicit provenance, not inline-only, goes in every output.
+    let everywhere = matches!(
+        provenance_asked,
+        Provenance::Explicit {
+            inline_only: false,
+            ..
+        }
+    );
+    let everywhere_facts = facts(&host_platform_shown);
+    // mode=max (D80): the definition as steps, its source map, and the layers each step's
+    // output is, so far the bases' (a local output is written before the image's).
+    if wants_max {
+        let steps = provenance::steps(&def);
+        let agentignore = beside.as_ref().is_some_and(|(n, _)| n.ends_with(".agentignore"));
+        let info_def = provenance::build_file_definition(&filename, "dockerfile", &invocation, agentignore);
+        let info_steps = provenance::steps(&info_def);
+        capture.max = Some(provenance::Max {
+            build_config: provenance::build_config(&steps),
+            source: provenance::source(&def, &steps, (&filename, &text), &info_steps),
+            layers: step_layers(&chains, &steps, &base_layers(&bases)),
+        });
+    }
+    // What every output's attestation is made of: an explicit provenance not inline-only,
+    // or an SBOM, beside which a default provenance goes too (D81).
+    let everywhere_provenance =
+        (everywhere || !capture.sboms.is_empty()).then_some((&capture, &everywhere_facts));
+    // Each domain's isolation, before anything leaves the build (§9.2).
+    if let Some(r) = &target
+        && !plan.domains.is_empty()
+    {
+        let v = progress
+            .borrow_mut()
+            .start("[internal] checking the domains' isolation");
+        domains::check(&r.fs, &plan.domains).map_err(|e| fail_export(&progress, &v, &e))?;
+        // Its command beside them, as its run holds it (D115): none of their IDs.
+        let passwd = exec
+            .user_file(&r.fs, b"/etc/passwd")
+            .map_err(|e| fail_export(&progress, &v, &e))?;
+        let group = exec
+            .user_file(&r.fs, b"/etc/group")
+            .map_err(|e| fail_export(&progress, &v, &e))?;
+        domains::user(
+            &plan.image.config.user,
+            passwd.as_deref(),
+            group.as_deref(),
+            plan.domains.len(),
+        )
+        .map_err(|e| fail_export(&progress, &v, &e))?;
+        progress.borrow().done(&v);
+    }
+    // The filesystem outputs, from the snapshot itself: its times to the nanosecond,
+    // which its layers' headers keep to the second.
+    for o in outputs.iter().filter(|o| o.kind == "local" || o.kind == "tar") {
+        let empty;
+        let fs = match &target {
+            Some(r) => &*r.fs,
+            None => {
+                empty = shards_build::vfs::Fs::new(
+                    shards_image::erofs::Tree::new(shards_image::erofs::Meta {
+                        mode: 0o755,
+                        ..Default::default()
+                    }),
+                    exec::now(),
+                );
+                &empty
+            }
+        };
+        write_fs_output(
+            o,
+            fs,
+            &mut exec.sources,
+            plan.epoch,
+            &progress,
+            everywhere_provenance,
+            everywhere,
+        )?;
+    }
+    let flat = target.map(|r| exec.flat(r));
+    // With SHARDS_TIMING set, which way the export goes, and why, for tests and
+    // benchmarks to hold.
+    if std::env::var_os("SHARDS_TIMING").is_some() {
+        let line = match &flat {
+            Some(Ok(_)) => r#"{"from":"snapshot"}"#.to_string(),
+            Some(Err(why)) => format!(
+                r#"{{"from":"layers","why":{}}}"#,
+                serde_json::Value::from(why.as_str())
+            ),
+            None => r#"{"from":"none"}"#.to_string(),
+        };
+        let _ = writeln!(std::io::stderr(), "shards-export {line}");
+    }
+    let mut exec = match flat {
+        Some(Ok(_)) => Some(exec),
+        _ => {
+            drop(exec);
+            None
+        }
+    };
+    crate::phase("drop");
+
+    // The layers as the image holds them: those the build made compressed as its
+    // exporter asks (D75), the config naming them uncompressed, by DiffID, as ever.
+    let existing: std::collections::BTreeSet<Vec<u8>> = bases
+        .resolved
+        .borrow()
+        .values()
+        .flat_map(|b| b.layers.iter().map(|l| l.digest.clone()))
+        .chain(
+            bases
+                .artifacts
+                .borrow()
+                .values()
+                .flatten()
+                .map(|l| l.digest.clone()),
+        )
+        .collect();
+    // rewrite-timestamp, at the build's SOURCE_DATE_EPOCH or the outputs' own; without
+    // one, BuildKit's warning, which its daemon's log alone shows.
+    let rewrite_epoch = if rewrite_timestamp {
+        let at = outputs
+            .iter()
+            .find_map(|o| output::epoch(&o.attrs, plan.epoch).ok().flatten())
+            .or(plan.epoch);
+        if at.is_none() {
+            let _ = writeln!(
+                std::io::stderr(),
+                "WARNING: rewrite-timestamp is specified, but no source-date-epoch was found"
+            );
+        }
+        at
+    } else {
+        None
+    };
+    let base_diff_ids: Vec<Vec<u8>> = base_image
+        .as_ref()
+        .and_then(|b| b.rootfs.diff_ids.clone())
+        .unwrap_or_default();
+    let rewrite = rewrite_epoch.map(|epoch| compress::Rewrite {
+        epoch,
+        base: &base_diff_ids,
+    });
+    let held = compress::layers(&store, &layers, &existing, compression, rewrite, &limits)?;
+    // Each layer the image holds by the digest the build's records name it by.
+    let as_held: BTreeMap<Vec<u8>, Layer> = layers
+        .iter()
+        .zip(&held)
+        .map(|(l, h)| (l.digest.clone(), h.clone()))
+        .collect();
+    // mode=max, now that the image's layers are written: each step's layers again, the
+    // image's among them.
+    let capture = match &capture.max {
+        Some(m) => {
+            let mut known = base_layers(&bases);
+            known.extend(as_held.iter().map(|(k, v)| (k.clone(), v.clone())));
+            let mut c = capture.clone();
+            c.max = Some(provenance::Max {
+                layers: step_layers(&chains, &provenance::steps(&def), &known),
+                ..m.clone()
+            });
+            c
+        }
+        None => capture.clone(),
+    };
+    // What every output's attestation is made of: an explicit provenance not inline-only,
+    // or an SBOM, beside which a default provenance goes too (D81).
+    let everywhere_provenance =
+        (everywhere || !capture.sboms.is_empty()).then_some((&capture, &everywhere_facts));
+    let epoch = plan.epoch.map(Time::from_unix);
+    // From the layers as written: a rewrite changes their DiffIDs.
+    let config = export::config(&exported, &held, epoch, base_image.as_ref()).map_err(|e| show(&e))?;
+    // The build's records, for --cache-to, and the image's layers, which `min` and an
+    // inline cache keep to.
+    let used: Vec<String> = keys.iter().flatten().cloned().collect();
+    let image_layers: std::collections::BTreeSet<String> = layers.iter().map(|l| show(&l.digest)).collect();
+    // One platform's build of several: what the builds of them all export (D87).
+    multi::with(|sub| {
+        sub.keys.extend(used.iter().cloned());
+        sub.image_layers.extend(image_layers.iter().cloned());
+    });
+    let config = if cache_to.iter().any(|e| e.kind == "inline") {
+        remote::inline(&config, &used, &store, &image_layers, &as_held)?
+    } else {
+        config
+    };
+    let config_digest = sha256(&config);
+    // An Agentfile's image: findable by its manifest's annotations (D57).
+    // --annotation's, then the Agentfile's own, which no annotation asked for replaces.
+    let mut annotations: BTreeMap<Vec<u8>, Vec<u8>> = manifest_annotations
+        .iter()
+        .map(|(k, v)| (k.as_bytes().to_vec(), v.as_bytes().to_vec()))
+        .collect();
+    if let Some(digest) = plan
+        .image
+        .config
+        .labels
+        .get(shards_agentfile::agentfile::DIGEST_LABEL)
+    {
+        annotations.insert(shards_agentfile::agentfile::DIGEST_LABEL.to_vec(), digest.clone());
+        let names = |harness: bool| -> Vec<u8> {
+            let mut n: Vec<&[u8]> = plan
+                .domains
+                .iter()
+                .filter(|d| d.harness == harness)
+                .map(|d| d.name.as_slice())
+                .collect();
+            n.sort_unstable();
+            n.dedup();
+            n.join(&b","[..])
+        };
+        for (key, harness) in [
+            (shards_agentfile::agentfile::AGENTS_ANNOTATION, false),
+            (shards_agentfile::agentfile::HARNESSES_ANNOTATION, true),
+        ] {
+            let list = names(harness);
+            if !list.is_empty() {
+                annotations.insert(key.to_vec(), list);
+            }
+        }
+    }
+    let raw_layers = layers;
+    let layers = held;
+    // The manifest in OCI's types, which layouts name; and the stored and pushed image's,
+    // in the types its output asks for (`oci-mediatypes`), else OCI's where it is attested
+    // or annotated and Docker's otherwise, as BuildKit v0.28.1's image exporter defaults
+    // (DefaultOCITypes; measured: a stored build with --provenance=false has Docker's, D83).
+    let oci_manifest = export::manifest_annotated(
+        &config,
+        config_digest.to_string().as_bytes(),
+        &layers,
+        &annotations,
+    );
+    let oci_manifest_digest = sha256(&oci_manifest);
+    let stored_oci = match outputs
+        .iter()
+        .filter(|o| matches!(o.kind.as_str(), "image" | "moby"))
+        .find_map(|o| o.attrs.get("oci-mediatypes"))
+    {
+        Some(v) => oci_types_attr(v)?,
+        None => provenance_on || !capture.sboms.is_empty() || !annotations.is_empty(),
+    };
+    let (manifest, manifest_type) = if stored_oci {
+        (oci_manifest.clone(), oci::media::OCI_MANIFEST)
+    } else {
+        (
+            export::docker_manifest(&config, config_digest.to_string().as_bytes(), &layers),
+            "application/vnd.docker.distribution.manifest.v2+json",
+        )
+    };
+    let manifest_digest = sha256(&manifest);
+    // Each file output that compresses or rewrites its layers otherwise than the image
+    // (D85): its own layers, written as it asks (each once, the build cache's records
+    // kept), its config and its manifest.
+    let mut variants: Vec<(usize, Variant)> = Vec::new();
+    for (i, o) in outputs.iter().enumerate() {
+        if !matches!(o.kind.as_str(), "oci" | "docker") || matches!(o.dest, buildflags::Dest::Store) {
+            continue;
+        }
+        let (c, rw) = output_compression(o)?;
+        if (c, rw) == (compression, rewrite_timestamp) {
+            continue;
+        }
+        let at = if rw {
+            output::epoch(&o.attrs, plan.epoch)
+                .map_err(|e| format!("failed to build: failed to solve: {e}"))?
+                .or(plan.epoch)
+        } else {
+            None
+        };
+        let rewrite = at.map(|epoch| compress::Rewrite {
+            epoch,
+            base: &base_diff_ids,
+        });
+        let held = compress::layers(&store, &raw_layers, &existing, c, rewrite, &limits)?;
+        let config = export::config(&exported, &held, epoch, base_image.as_ref()).map_err(|e| show(&e))?;
+        let config_digest = sha256(&config);
+        let manifest =
+            export::manifest_annotated(&config, config_digest.to_string().as_bytes(), &held, &annotations);
+        let manifest_digest = sha256(&manifest);
+        variants.push((
+            i,
+            Variant {
+                layers: held,
+                config,
+                config_digest,
+                manifest,
+                manifest_digest,
+            },
+        ));
+    }
+    // Named and kept where an output loads it (the image exporter, `--load`'s docker one,
+    // or none asked for, docker build's own); an output to a file or directory alone
+    // leaves no image, as BuildKit's exporters leave none (D85).
+    let kept = outputs.is_empty()
+        || outputs.iter().any(|o| {
+            matches!(o.dest, buildflags::Dest::Store)
+                && matches!(o.kind.as_str(), "image" | "moby" | "docker")
+        });
+    // One platform's build of several attests its layout always: the build of them
+    // decides what its image carries (D77).
+    let layout_provenance = if multi::active() {
+        Some((&capture, &everywhere_facts))
+    } else {
+        everywhere_provenance
+    };
+    if !kept && !pushes {
+        drop(exec);
+        drop(flat);
+        write_image_outputs(
+            &outputs,
+            &store,
+            &output::Made {
+                config: &config,
+                config_digest: &config_digest,
+                manifest: &oci_manifest,
+                manifest_digest: &oci_manifest_digest,
+                layers: &layers,
+                descriptor_annotations: &descriptor_annotations,
+                provenance: layout_provenance,
+                provenance_in: multi::active() || everywhere || provenance_on,
+            },
+            &variants,
+            parsed.many("tag"),
+            plan.epoch,
+            &progress,
+        )?;
+        remote::export(&cache_to, &used, &store, &image_layers, &progress, &env)?;
+        // An image in an OCI or docker archive is one; a directory or tar of files none.
+        let imaged = outputs.iter().any(|o| o.kind == "oci" || o.kind == "docker");
+        let names = canonical_names(parsed.many("tag"))?;
+        // An attested image in an OCI archive is named by the index the layout holds.
+        let tagged: Vec<Reference> = parsed
+            .many("tag")
+            .iter()
+            .filter_map(|t| Reference::parse(t).ok())
+            .collect();
+        let index = output::attested_index(
+            &output::Made {
+                config: &config,
+                config_digest: &config_digest,
+                manifest: &oci_manifest,
+                manifest_digest: &oci_manifest_digest,
+                layers: &layers,
+                descriptor_annotations: &descriptor_annotations,
+                provenance: everywhere_provenance,
+                provenance_in: everywhere || provenance_on,
+            },
+            &tagged,
+        )?;
+        let (described, size, media) = match &index {
+            Some((d, n)) if imaged => (d, *n, oci::media::OCI_INDEX),
+            _ => (&oci_manifest_digest, oci_manifest.len(), oci::media::OCI_MANIFEST),
+        };
+        let info = everywhere.then(|| provenance::buildinfo(&capture, &everywhere_facts));
+        multi::with(|sub| {
+            sub.provenance = Some(provenance::buildinfo(&capture, &everywhere_facts));
+            sub.next = progress.borrow().next;
+            sub.answered = bases.answered.take();
+            sub.epochs = bases.epochs.take();
+            sub.bases = bases.resolved.take();
+        });
+        write_metadata(
+            parsed,
+            &metadata(
+                &invocation,
+                imaged.then_some((described, size, names.as_slice())),
+                &descriptor_annotations,
+                &info.iter().map(|p| (None, p)).collect::<Vec<_>>(),
+                media,
+            ),
+        )?;
+        print_warnings(&plan.warnings, quiet, debug, &name, &text);
+        return finish(parsed, &described.to_string());
+    }
+    let v = progress.borrow_mut().start("exporting to image");
+    progress.borrow().line(&v, "exporting layers done");
+    store
+        .ingest(&config_digest, config.len() as u64, &mut config.as_slice())
+        .map_err(|e| e.to_string())?;
+    store
+        .ingest(&manifest_digest, manifest.len() as u64, &mut manifest.as_slice())
+        .map_err(|e| e.to_string())?;
+    progress
+        .borrow()
+        .line(&v, &format!("writing image {manifest_digest} done"));
+    let store_layers: Vec<store::Layer> = layers
+        .iter()
+        .map(|l| {
+            Ok(store::Layer {
+                blob: Digest::parse(&show(&l.digest)).map_err(|e| e.to_string())?,
+                media_type: show(&l.media_type),
+                diff_id: Digest::parse(&show(&l.diff_id)).map_err(|e| e.to_string())?,
+            })
+        })
+        .collect::<Result<_, String>>()?;
+    match (flat, exec.as_mut()) {
+        _ if store_layers.is_empty() => {}
+        // Rewritten layers are not the snapshot's times: the root filesystem is theirs.
+        _ if rewrite_epoch.is_some() => {
+            store.rootfs(&store_layers, &limits).map_err(|e| e.to_string())?;
+            crate::phase("rootfs-from-layers");
+        }
+        (Some(Ok(flat)), Some(exec)) => {
+            exec.rootfs(flat, &store_layers)?;
+            crate::phase("rootfs-from-snapshot");
+        }
+        _ => {
+            store.rootfs(&store_layers, &limits).map_err(|e| e.to_string())?;
+            crate::phase("rootfs-from-layers");
+        }
+    }
+    drop(exec);
+    let desc = Descriptor {
+        media_type: manifest_type.into(),
+        digest: manifest_digest.to_string(),
+        size: i64::try_from(manifest.len()).map_err(|e| e.to_string())?,
+        platform: None,
+        annotations: Default::default(),
+    };
+    let mut contents = vec![manifest_digest.clone(), config_digest.clone()];
+    contents.extend(store_layers.iter().map(|l| l.blob.clone()));
+    // Its provenance (D71), as buildx asks BuildKit for it by default where an image is
+    // stored or pushed: the statement, the attestation that holds it, and the index of
+    // the image and its attestation, which the image's ID then names.
+    let attest = provenance_on;
+    let attested = if attest || !capture.sboms.is_empty() {
+        let image_config: serde_json::Value = serde_json::from_slice(&config).map_err(|e| e.to_string())?;
+        let field = |k: &str| {
+            image_config
+                .get(k)
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_string()
+        };
+        let (arch, os, variant) = (field("architecture"), field("os"), field("variant"));
+        let mut platform = format!("{os}/{arch}");
+        if !variant.is_empty() && !(arch == "arm64" && variant == "v8") {
+            platform.push_str(&format!("/{variant}"));
+        }
+        let facts = facts(&platform);
+        let subjects: Vec<(String, String)> = parsed
+            .many("tag")
+            .iter()
+            .filter_map(|t| Reference::parse(t).ok())
+            .map(|r| (provenance::image_purl(&r, &platform), manifest_digest.to_string()))
+            .collect();
+        let statements = provenance::image_statements(&capture, &facts, &subjects, attest);
+        let digests: Vec<String> = statements
+            .iter()
+            .map(|(st, _)| sha256(st.as_bytes()).to_string())
+            .collect();
+        let listed: Vec<(&str, usize, &str)> = statements
+            .iter()
+            .zip(&digests)
+            .map(|((st, kind), d)| (d.as_str(), st.len(), kind.as_str()))
+            .collect();
+        let (att_config, att_manifest) = provenance::attestation_of(&listed);
+        let att_manifest_digest = sha256(att_manifest.as_bytes());
+        let index = provenance::index(
+            (&manifest_digest.to_string(), manifest.len()),
+            (
+                &arch,
+                &os,
+                if arch == "arm64" && variant == "v8" {
+                    ""
+                } else {
+                    &variant
+                },
+            ),
+            (&att_manifest_digest.to_string(), att_manifest.len()),
+        );
+        let index_digest = sha256(index.as_bytes());
+        let mut blobs: Vec<&[u8]> = statements.iter().map(|(st, _)| st.as_bytes()).collect();
+        blobs.extend([att_config.as_bytes(), att_manifest.as_bytes(), index.as_bytes()]);
+        for blob in blobs {
+            let digest = sha256(blob);
+            store
+                .ingest(&digest, blob.len() as u64, &mut &blob[..])
+                .map_err(|e| e.to_string())?;
+            contents.push(digest);
+        }
+        Some((index_digest, index.len(), provenance::buildinfo(&capture, &facts)))
+    } else {
+        None
+    };
+    // What the image's names resolve to, and its ID: the index where it is attested.
+    let id = attested.as_ref().map_or(&manifest_digest, |(d, _, _)| d).clone();
+    let tags: &[String] = if kept { parsed.many("tag") } else { &[] };
+    for tag in tags {
+        let reference = Reference::parse(tag).map_err(|e| format!("invalid tag {tag:?}: {e}"))?;
+        store
+            .tag(&reference.to_string(), &desc, &id, &contents)
+            .map_err(|e| e.to_string())?;
+        progress.borrow().line(&v, &format!("naming to {reference} done"));
+    }
+    // Unnamed, it is kept all the same, dangling, as dockerd keeps a build it was given no
+    // name for (moby daemon/containerd/image_builder.go): `images -a` lists it, and a
+    // collection leaves it.
+    if kept && tags.is_empty() {
+        let dangling = format!("{}{id}", store::DANGLING);
+        store
+            .tag(&dangling, &desc, &id, &contents)
+            .map_err(|e| e.to_string())?;
+    }
+    // An image output that pushes: each of its names, (D85), as BuildKit's exporter pushes
+    // them (util/push): its layers, then its manifest, then the index that names it.
+    if pushes {
+        let pushed = match &attested {
+            Some((index_digest, size, _)) => Descriptor {
+                media_type: oci::media::OCI_INDEX.into(),
+                digest: index_digest.to_string(),
+                size: i64::try_from(*size).map_err(|e| e.to_string())?,
+                platform: None,
+                annotations: Default::default(),
+            },
+            None => desc.clone(),
+        };
+        for tag in parsed.many("tag") {
+            let reference = Reference::parse(tag).map_err(|e| format!("invalid tag {tag:?}: {e}"))?;
+            progress.borrow().line(&v, "pushing layers");
+            let registry =
+                crate::pull::registry_for_push(&reference, None, None, &|k| std::env::var(k).ok())?;
+            shards_registry::push::push(
+                &registry,
+                &store,
+                &pushed,
+                reference.tag.as_deref(),
+                None,
+                &|_, _| {},
+            )
+            .map_err(|e| fail_export(&progress, &v, &e.to_string()))?;
+            progress
+                .borrow()
+                .line(&v, &format!("pushing manifest for {reference}@{id} done"));
+        }
+    }
+    progress.borrow().done(&v);
+    write_image_outputs(
+        &outputs,
+        &store,
+        &output::Made {
+            config: &config,
+            config_digest: &config_digest,
+            manifest: &oci_manifest,
+            manifest_digest: &oci_manifest_digest,
+            layers: &layers,
+            descriptor_annotations: &descriptor_annotations,
+            provenance: everywhere_provenance,
+            provenance_in: everywhere || provenance_on,
+        },
+        &variants,
+        parsed.many("tag"),
+        plan.epoch,
+        &progress,
+    )?;
+    remote::export(&cache_to, &used, &store, &image_layers, &progress, &env)?;
+    let names = canonical_names(parsed.many("tag"))?;
+    let (described, size, media) = match &attested {
+        Some((d, size, _)) => (d, *size, oci::media::OCI_INDEX),
+        None => (&manifest_digest, manifest.len(), oci::media::OCI_MANIFEST),
+    };
+    write_metadata(
+        parsed,
+        &metadata(
+            &invocation,
+            Some((described, size, names.as_slice())),
+            &descriptor_annotations,
+            &attested.iter().map(|(_, _, p)| (None, p)).collect::<Vec<_>>(),
+            media,
+        ),
+    )?;
+    print_warnings(&plan.warnings, quiet, debug, &name, &text);
+    finish(parsed, &id.to_string())
+}
+
+/// The build's ID where it is asked for: in `--iidfile`, and with `-q` on stdout.
+/// BuildKit's `identity.NewID`: 17 random bytes, the first's high bit set, in base 36,
+/// its first digit dropped: 25 characters.
+/// The base images' layers, by the digest the build's records name each by.
+fn base_layers(bases: &Bases) -> BTreeMap<Vec<u8>, Layer> {
+    let mut known = BTreeMap::new();
+    for b in bases.resolved.borrow().values() {
+        for l in &b.layers {
+            known.insert(l.digest.clone(), l.clone());
+        }
+    }
+    known
+}
+
+/// `buildkit_metadata.layers` (mode=max, D80): each step output's layers, said where each
+/// is a blob the build has (`known`), as BuildKit's cache exporter finds them
+/// (CacheExportModeRemoteOnly); a step whose layers were never written, as a stage only
+/// copied from, has none. Keys in order, as Go writes a map.
+/// `--squash` (D177): `target`'s layers past its base's as one, the layer that makes its
+/// tree of its base's (diff::write_squash), and `image`'s history as moby's squash leaves
+/// it (daemon/images/image_squash.go): each entry past those of the base's layers an empty
+/// layer's, then the merge's at `at`, its comment naming `unsquashed`, the image it would
+/// have been, and the base's; with no base, every layer is the one. The image's layers:
+/// the base's, then the merge.
+fn squash(
+    store: &Store,
+    sources: &mut dyn shards_image::erofs::Source,
+    base: Option<(&exec::Ref, &Base)>,
+    target: &exec::Ref,
+    image: &mut Image,
+    unsquashed: &str,
+    at: Time,
+) -> Result<Vec<Layer>, String> {
+    let empty = shards_build::vfs::Fs::new(shards_image::layer::root(), exec::now());
+    let lower = base.map_or(&empty, |(r, _)| &*r.fs);
+    let mut w = store.writer().map_err(|e| e.to_string())?;
+    shards_build::diff::write_squash(lower, &target.fs, sources, &mut w).map_err(|e| e.0)?;
+    let (digest, size) = w.commit().map_err(|e| e.to_string())?;
+    let comment = match base {
+        Some((_, b)) => format!("merge {unsquashed} to {}", b.id),
+        None => format!("create new from {unsquashed}"),
+    };
+    let mut layers = base.map(|(r, _)| r.layers.clone()).unwrap_or_default();
+    layers.push(Layer {
+        media_type: exec::LAYER_TAR.as_bytes().to_vec(),
+        digest: digest.to_string().into_bytes(),
+        size,
+        diff_id: digest.to_string().into_bytes(),
+        annotations: BTreeMap::new(),
+        created: Some(at),
+        description: comment.clone().into_bytes(),
+    });
+    // Each of the base's layers keeps the entry the image pairs with it, the first that
+    // many entries with a layer, and every later one is an empty layer's: where the base's
+    // history names its layers, those are its own entries, (D177), as moby's squash keeps them by
+    // index; where it names fewer, BuildKit's export paired later entries with them
+    // (export::normalize), and moby's would leave the merge's layer without one.
+    let mut left = base.map_or(0, |(r, _)| r.layers.len());
+    for h in image.history.iter_mut().filter(|h| !h.empty_layer) {
+        if left > 0 {
+            left -= 1;
+        } else {
+            h.empty_layer = true;
+        }
+    }
+    image.history.push(shards_agentfile::image::History {
+        created: Some(at),
+        created_by: Vec::new(),
+        author: Vec::new(),
+        comment: comment.into_bytes(),
+        empty_layer: false,
+    });
+    image.created = Some(at);
+    Ok(layers)
+}
+
+fn step_layers(
+    chains: &[(usize, usize, Vec<Vec<u8>>)],
+    steps: &provenance::Steps,
+    known: &BTreeMap<Vec<u8>, Layer>,
+) -> Vec<(String, provenance::Json)> {
+    let mut out: Vec<(String, provenance::Json)> = Vec::new();
+    for (op, index, chain) in chains {
+        let Some(n) = steps.step_of.get(*op).copied().flatten() else {
+            continue;
+        };
+        if chain.is_empty() {
+            continue;
+        }
+        let descriptors: Option<Vec<provenance::Json>> = chain
+            .iter()
+            .map(|d| {
+                known
+                    .get(d)
+                    .map(|l| provenance::layer_descriptor(&show(&l.media_type), &show(&l.digest), l.size))
+            })
+            .collect();
+        if let Some(d) = descriptors {
+            out.push((
+                format!("step{n}:{index}"),
+                provenance::Json::Arr(vec![provenance::Json::Arr(d)]),
+            ));
+        }
+    }
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out.dedup_by(|a, b| a.0 == b.0);
+    out
+}
+
+fn build_ref() -> Result<String, String> {
+    let mut n = [0u8; 17];
+    shards_vmm::platform::fill_random(&mut n).map_err(|e| e.to_string())?;
+    if let Some(b) = n.first_mut() {
+        *b |= 0x80;
+    }
+    let mut digits = Vec::new();
+    let mut rest: Vec<u8> = n.to_vec();
+    while rest.iter().any(|&b| b != 0) {
+        let mut carry = 0u32;
+        for b in &mut rest {
+            let cur = (carry << 8) | u32::from(*b);
+            *b = u8::try_from(cur / 36).unwrap_or(0);
+            carry = cur % 36;
+        }
+        digits.push(
+            b"0123456789abcdefghijklmnopqrstuvwxyz"
+                .get(carry as usize)
+                .copied()
+                .unwrap_or(b'0'),
+        );
+    }
+    digits.reverse();
+    Ok(String::from_utf8_lossy(digits.get(1..26).unwrap_or_default()).into_owned())
+}
+
+/// What `--metadata-file` holds, as buildx writes it (commands/build.go
+/// `decodeExporterResponse`, `writeMetadataFile`): the build's reference, and for an image
+/// what Docker's image exporter answers with its containerd store, which names an image by
+/// its manifest's digest, as shards' store does: the manifest's descriptor and digest, and
+/// the image's names, and no config digest, so that the ID buildx takes of it
+/// (`getImageID`) is the image's. Keys in order, as Go's `MarshalIndent` writes a map.
+fn metadata(
+    build_ref: &str,
+    image: Option<(&Digest, usize, &[String])>,
+    annotations: &BTreeMap<String, String>,
+    provenance: &[(Option<&str>, &provenance::Json)],
+    media_type: &str,
+) -> String {
+    let q = |s: &str| serde_json::Value::from(s).to_string();
+    let mut out = String::from("{");
+    // buildx's provenance of the build (v0.2), first of the keys in order; one for each
+    // platform of several, `buildx.build.provenance/<platform>`.
+    for (platform, p) in provenance {
+        let key = match platform {
+            Some(pl) => format!("buildx.build.provenance/{pl}"),
+            None => "buildx.build.provenance".to_string(),
+        };
+        out.push_str(&format!("\n  {}: {},", q(&key), p.indented(1)));
+    }
+    out.push_str(&format!(
+        "\n  \"buildx.build.ref\": {}",
+        q(&format!("shards/shards/{build_ref}"))
+    ));
+    if let Some((manifest, size, names)) = image {
+        out.push_str(&format!(
+            ",\n  \"containerimage.descriptor\": {{\n    \"mediaType\": {},\n    \"digest\": {},\n    \"size\": {size}{}\n  }},\n  \"containerimage.digest\": {}",
+            q(media_type),
+            q(&manifest.to_string()),
+            // ocispec.Descriptor's annotations, after its size, keys in order.
+            if annotations.is_empty() {
+                String::new()
+            } else {
+                let pairs: Vec<String> = annotations
+                    .iter()
+                    .map(|(k, v)| format!("\n      {}: {}", q(k), q(v)))
+                    .collect();
+                format!(",\n    \"annotations\": {{{}\n    }}", pairs.join(","))
+            },
+            q(&manifest.to_string()),
+        ));
+        if !names.is_empty() {
+            out.push_str(&format!(",\n  \"image.name\": {}", q(&names.join(","))));
+        }
+    }
+    out.push_str("\n}");
+    out
+}
+
+/// Annotations by key.
+type Annotations = BTreeMap<String, String>;
+
+/// The annotations asked for, by `--annotation` and by an image output's `annotation…`
+/// attributes (exptypes `ParseAnnotationKey`), as BuildKit's image exporter applies them to
+/// an image of one platform (exporter/containerimage/writer.go): the manifest's and its
+/// descriptor's; an index's refused, as there. One for a platform applies where it is the
+/// image's, which BuildKit leaves out of a single platform's export (`Platform(nil)`), and
+/// one for another is refused in the words BuildKit refuses a platform the build lacks.
+fn annotations_of(
+    parsed: &Parsed,
+    outputs: &[buildflags::Output],
+    target: &Platform,
+) -> Result<(Annotations, Annotations), String> {
+    let mut all = buildflags::parse_annotations(parsed.many("annotation"))?;
+    let key_re = regex::Regex::new(r"^annotation(?:-([a-z-]+))?(?:\[([A-Za-z0-9_/-]+)\])?\.(\S+)$")
+        .map_err(|e| e.to_string())?;
+    for o in outputs
+        .iter()
+        .filter(|o| matches!(o.kind.as_str(), "image" | "moby" | "oci" | "docker"))
+    {
+        for (k, v) in &o.attrs {
+            let Some(g) = key_re.captures(k) else { continue };
+            let kind = g.get(1).map_or("", |m| m.as_str());
+            if !matches!(
+                kind,
+                "" | "index" | "index-descriptor" | "manifest" | "manifest-descriptor"
+            ) {
+                return Err(format!("unrecognized annotation type {kind}"));
+            }
+            all.push(buildflags::Annotation {
+                kind: kind.to_string(),
+                platform: g.get(2).map(|m| m.as_str().to_string()),
+                key: g.get(3).map_or("", |m| m.as_str()).to_string(),
+                value: v.clone(),
+            });
+        }
+    }
+    let host = host_platform();
+    let (mut manifest, mut descriptor) = (BTreeMap::new(), BTreeMap::new());
+    for a in all {
+        if let Some(p) = &a.platform {
+            // The platform's ID, as BuildKit finds a ref by it (D77; FindRef): normalized, in full.
+            let wanted = platform::normalize(&platform::parse(p.as_bytes(), &host).map_err(|e| show(&e))?);
+            if platform::format_all(&wanted) != platform::format_all(target) {
+                return Err(format!("invalid annotation: no platform {p} found in source"));
+            }
+        }
+        match a.kind.as_str() {
+            "" | "manifest" => {
+                manifest.insert(a.key, a.value);
+            }
+            "manifest-descriptor" => {
+                descriptor.insert(a.key, a.value);
+            }
+            _ => return Err("index annotations not supported for single platform export".into()),
+        }
+    }
+    Ok((manifest, descriptor))
+}
+
+/// The image's names as BuildKit's exporter has them (D85): each tag in full.
+fn canonical_names(tags: &[String]) -> Result<Vec<String>, String> {
+    tags.iter()
+        .map(|t| {
+            Reference::parse(t)
+                .map(|r| r.to_string())
+                .map_err(|e| format!("invalid tag {t:?}: {e}"))
+        })
+        .collect()
+}
+
+/// Writes `--metadata-file`, whole or not at all, as buildx's atomic writer does (D63).
+fn write_metadata(parsed: &Parsed, text: &str) -> Result<(), String> {
+    let path = parsed.string("metadata-file");
+    if path.is_empty() {
+        return Ok(());
+    }
+    let path = Path::new(path);
+    let tmp = path.with_file_name(format!(
+        ".{}.{}.tmp",
+        path.file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default(),
+        std::process::id()
+    ));
+    std::fs::write(&tmp, text).map_err(|e| format!("{}: {e}", tmp.display()))?;
+    std::fs::rename(&tmp, path).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+fn finish(parsed: &Parsed, id: &str) -> Result<(), String> {
+    // One platform's build of several says nothing of its own: the build of them does.
+    if multi::active() {
+        return Ok(());
+    }
+    let iidfile = parsed.string("iidfile");
+    if !iidfile.is_empty() {
+        std::fs::write(iidfile, id).map_err(|e| format!("{iidfile}: {e}"))?;
+    }
+    if parsed.bool("quiet") {
+        let _ = writeln!(std::io::stdout(), "{id}");
+    }
+    crate::phase("end");
+    Ok(())
+}
+
+/// The compression the image's layers take (D75): what the outputs that hold an image
+/// ask, BuildKit's default where none asks; outputs that ask differently are refused,
+/// named, until each is written its own way.
+/// `oci-mediatypes`, read as ImageCommitOpts.Load reads it.
+fn oci_types_attr(v: &str) -> Result<bool, String> {
+    shards_cmdline::go::parse_bool(v).map_err(|e| {
+        format!("failed to build: failed to solve: non-bool value specified for oci-mediatypes: {e}")
+    })
+}
+
+/// An image output's compression and whether it rewrites its layers' times, (D85), as BuildKit
+/// reads them (`ParseAttributes`; ImageCommitOpts.Load's parseBool, in its words).
+fn output_compression(o: &buildflags::Output) -> Result<(compress::Compression, bool), String> {
+    let solve = |e: String| format!("failed to build: failed to solve: {e}");
+    let rewrite = match o.attrs.get("rewrite-timestamp") {
+        None => false,
+        Some(v) => shards_cmdline::go::parse_bool(v)
+            .map_err(|e| solve(format!("non-bool value specified for rewrite-timestamp: {e}")))?,
+    };
+    let c = compress::Compression::of(&o.attrs).map_err(solve)?;
+    // `Validate`: eStargz is OCI's alone.
+    if c.kind == compress::Kind::Estargz
+        && let Some(v) = o.attrs.get("oci-mediatypes")
+        && !oci_types_attr(v)?
+    {
+        return Err(solve(
+            "exporter option \"compression=estargz\" conflicts with \"oci-mediatypes=false\"".into(),
+        ));
+    }
+    Ok((c, rewrite))
+}
+
+/// The image's compression and rewrite: the stored image's output's, else the first image
+/// output's; every image output's checked. Each output writes its layers as it asks
+/// (D85): one asking otherwise is given its own.
+fn compression_of(outputs: &[buildflags::Output]) -> Result<(compress::Compression, bool), String> {
+    let mut asked = Vec::new();
+    for o in outputs
+        .iter()
+        .filter(|o| matches!(o.kind.as_str(), "image" | "moby" | "docker" | "oci"))
+    {
+        asked.push((
+            matches!(o.kind.as_str(), "image" | "moby"),
+            output_compression(o)?,
+        ));
+    }
+    Ok(asked
+        .iter()
+        .find(|(stored, _)| *stored)
+        .or(asked.first())
+        .map(|(_, c)| *c)
+        .unwrap_or_default())
+}
+
+/// What BuildKit refuses of the outputs when its solve begins, before any step runs:
+/// an exporter it has none of, a `tar` attribute no bool, an epoch no number, the
+/// `docker` exporter into a directory (the moby exporter writes none), and two OCI
+/// layouts into directories (their store's key is one, `export`: buildkit
+/// client/solve.go).
+fn check_outputs(outputs: &[buildflags::Output]) -> Result<(), String> {
+    let mut layouts = 0;
+    for o in outputs {
+        let solve = |why: String| format!("failed to build: failed to solve: {why}");
+        match o.kind.as_str() {
+            "image" | "moby" | "local" | "tar" | "oci" | "docker" => {}
+            other => {
+                return Err(solve(format!(
+                    "exporter {} could not be found",
+                    shards_cmdline::go::quote(other)
+                )));
+            }
+        }
+        if matches!(o.kind.as_str(), "oci" | "docker")
+            && let Some(t) = o.attrs.get("tar")
+            && shards_cmdline::go::parse_bool(t).is_err()
+        {
+            return Err(solve(format!(
+                "non-bool value specified for tar: strconv.ParseBool: parsing {}: invalid syntax",
+                shards_cmdline::go::quote(t)
+            )));
+        }
+        output::epoch(&o.attrs, None).map_err(solve)?;
+        if let buildflags::Dest::Dir(_) = o.dest {
+            match o.kind.as_str() {
+                "docker" => {
+                    return Err("failed to build: output directory is not supported by moby exporter".into());
+                }
+                "oci" => {
+                    layouts += 1;
+                    if layouts > 1 {
+                        return Err("failed to build: oci store key \"export\" already exists".into());
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    Ok(())
+}
+
+/// A `local` or `tar` output of the snapshot `fs`.
+fn write_fs_output(
+    o: &buildflags::Output,
+    fs: &shards_build::vfs::Fs,
+    sources: &mut shards_build::data::Sources,
+    build_epoch: Option<i64>,
+    progress: &RefCell<Progress>,
+    provenance: Option<(&provenance::Capture, &provenance::Run)>,
+    explicit: bool,
+) -> Result<(), String> {
+    let epoch =
+        output::epoch(&o.attrs, build_epoch).map_err(|e| format!("failed to build: failed to solve: {e}"))?;
+    if o.kind == "local" {
+        let v = progress.borrow_mut().start("exporting to client directory");
+        let buildflags::Dest::Dir(dest) = &o.dest else {
+            return Err(fail_export(progress, &v, "a local output without a directory"));
+        };
+        let mirror = o
+            .attrs
+            .get("mode")
+            .is_some_and(|m| m.trim().eq_ignore_ascii_case("delete"));
+        let bytes =
+            output::local(fs, sources, epoch, dest, mirror).map_err(|e| fail_export(progress, &v, &e))?;
+        if let Some((capture, run)) = provenance {
+            let files = output::attestations(fs, sources, capture, run, explicit)
+                .map_err(|e| fail_export(progress, &v, &e))?;
+            output::local_attestations(dest, &files, epoch).map_err(|e| fail_export(progress, &v, &e))?;
+        }
+        progress
+            .borrow()
+            .line(&v, &format!("copying files {} done", units_bytes(bytes)));
+        progress.borrow().done(&v);
+        return Ok(());
+    }
+    let v = progress.borrow_mut().start("exporting to client tarball");
+    // Its attestations among its files, as BuildKit's tar exporter writes them (D94).
+    let attested;
+    let fs = match provenance {
+        Some((capture, run)) => {
+            let files = output::attestations(fs, sources, capture, run, explicit)
+                .map_err(|e| fail_export(progress, &v, &e))?;
+            if files.is_empty() {
+                fs
+            } else {
+                attested = output::with_attestations(fs, sources, files)
+                    .map_err(|e| fail_export(progress, &v, &e))?;
+                &attested
+            }
+        }
+        None => fs,
+    };
+    let written = match &o.dest {
+        buildflags::Dest::Stdout => {
+            let out = std::io::BufWriter::new(std::io::stdout().lock());
+            output::tar(fs, sources, epoch, out).and_then(|mut w| w.flush().map_err(|e| e.to_string()))
+        }
+        buildflags::Dest::File(path) => create_dest_file(path)
+            .and_then(|f| output::tar(fs, sources, epoch, std::io::BufWriter::new(f)))
+            .and_then(|mut w| w.flush().map_err(|e| e.to_string())),
+        _ => Err("a tar output without a file".into()),
+    };
+    written.map_err(|e| fail_export(progress, &v, &e))?;
+    progress.borrow().line(&v, "sending tarball done");
+    progress.borrow().done(&v);
+    Ok(())
+}
+
+/// A file output's file, as buildx's client makes it: its directory with
+/// `MkdirAll(dir, 0755)`, the file created or truncated (build/opt.go).
+fn create_dest_file(path: &Path) -> Result<std::fs::File, String> {
+    if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
+        let mut b = std::fs::DirBuilder::new();
+        b.recursive(true);
+        #[cfg(unix)]
+        std::os::unix::fs::DirBuilderExt::mode(&mut b, 0o755);
+        b.create(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    }
+    std::fs::File::create(path).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// The `oci` and `docker` outputs to a file, stdout or (`oci` with `tar=false`) a
+/// directory, each named by its `name` attribute or the build's tags, as buildx names
+/// them (build/opt.go).
+/// An image output's own layers, config and manifest, where it compresses or rewrites
+/// them otherwise than the image (D85).
+struct Variant {
+    layers: Vec<Layer>,
+    config: Vec<u8>,
+    config_digest: Digest,
+    manifest: Vec<u8>,
+    manifest_digest: Digest,
+}
+
+fn write_image_outputs(
+    outputs: &[buildflags::Output],
+    store: &Store,
+    image: &output::Made<'_>,
+    variants: &[(usize, Variant)],
+    tags: &[String],
+    build_epoch: Option<i64>,
+    progress: &RefCell<Progress>,
+) -> Result<(), String> {
+    // A platform's build of several writes its layout unseen: the build of them shows
+    // its one export.
+    let hushed = RefCell::new(Progress::quiet());
+    let progress = if multi::active() { &hushed } else { progress };
+    for (i, o) in outputs.iter().enumerate() {
+        if !matches!(o.kind.as_str(), "oci" | "docker") || matches!(o.dest, buildflags::Dest::Store) {
+            continue;
+        }
+        let own = variants
+            .iter()
+            .find(|(at, _)| *at == i)
+            .map(|(_, v)| output::Made {
+                config: &v.config,
+                config_digest: &v.config_digest,
+                manifest: &v.manifest,
+                manifest_digest: &v.manifest_digest,
+                layers: &v.layers,
+                ..*image
+            });
+        let made = own.as_ref().unwrap_or(image);
+        // Docker's types where `oci-mediatypes` asks for them or (the `docker` exporter's
+        // default) nothing asks, never with an attestation, for which BuildKit turns OCI's
+        // on whatever was asked (ImageWriter.Commit, EnableOCITypes; D83).
+        let asked = o
+            .attrs
+            .get("oci-mediatypes")
+            .map(String::as_str)
+            .map(oci_types_attr)
+            .transpose()?;
+        let docker = made.provenance.is_none() && asked.map_or(o.kind == "docker", |oci| !oci);
+        let v = progress
+            .borrow_mut()
+            .start(&format!("exporting to {} image format", o.kind));
+        let fail = |e: String| fail_export(progress, &v, &e);
+        let names: Vec<Reference> = match o.attrs.get("name") {
+            Some(n) => n
+                .split(',')
+                .filter(|n| !n.is_empty())
+                .map(str::to_string)
+                .collect(),
+            None => tags.to_vec(),
+        }
+        .iter()
+        .map(|n| Reference::parse(n.trim()).map_err(|e| fail(e.to_string())))
+        .collect::<Result<_, _>>()?;
+        let epoch = output::epoch(&o.attrs, build_epoch).map_err(fail)?;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(0));
+        let created = Time::from_unix(epoch.unwrap_or(now))
+            .rfc3339_nano()
+            .map_err(|e| fail(show(&e)))?;
+        progress.borrow().line(&v, "exporting layers done");
+        let manifest_digest = if docker {
+            sha256(&export::docker_manifest(
+                made.config,
+                made.config_digest.to_string().as_bytes(),
+                made.layers,
+            ))
+        } else {
+            made.manifest_digest.clone()
+        };
+        progress
+            .borrow()
+            .line(&v, &format!("exporting manifest {manifest_digest} done"));
+        progress
+            .borrow()
+            .line(&v, &format!("exporting config {} done", made.config_digest));
+        match &o.dest {
+            buildflags::Dest::Dir(dest) => {
+                output::layout_dir(store, made, &names, &created, dest).map_err(fail)?;
+            }
+            buildflags::Dest::Stdout => {
+                let out = std::io::BufWriter::new(std::io::stdout().lock());
+                output::layout(store, made, docker, o.kind == "docker", &names, &created, out)
+                    .map_err(fail)?;
+                progress.borrow().line(&v, "sending tarball done");
+            }
+            buildflags::Dest::File(path) => {
+                let f = create_dest_file(path).map_err(fail)?;
+                output::layout(
+                    store,
+                    made,
+                    docker,
+                    o.kind == "docker",
+                    &names,
+                    &created,
+                    std::io::BufWriter::new(f),
+                )
+                .map_err(fail)?;
+                progress.borrow().line(&v, "sending tarball done");
+            }
+            buildflags::Dest::Store => {}
+        }
+        progress.borrow().done(&v);
+    }
+    Ok(())
+}
+
+/// tonistiigi/units' `%.2f` of a byte count, as progressui prints one: decimal units,
+/// whole bytes below a kilobyte.
+fn units_bytes(n: u64) -> String {
+    const UNITS: [&str; 7] = ["B", "kB", "MB", "GB", "TB", "PB", "EB"];
+    let (mut i, mut base) = (0usize, 1u64);
+    while i + 1 < UNITS.len() && n >= base.saturating_mul(1000) {
+        base = base.saturating_mul(1000);
+        i += 1;
+    }
+    if i == 0 {
+        return format!("{n}B");
+    }
+    format!("{:.2}{}", n as f64 / base as f64, UNITS.get(i).unwrap_or(&"B"))
+}
+
+/// The named contexts as the frontend is given them, and the directories of the local
+/// ones.
+#[derive(Debug, Default)]
+struct NamedContexts {
+    contexts: BTreeMap<Vec<u8>, Vec<u8>>,
+    keys: BTreeMap<Vec<u8>, Vec<u8>>,
+    excludes: BTreeMap<Vec<u8>, Vec<Vec<u8>>>,
+    locals: BTreeMap<Vec<u8>, PathBuf>,
+    /// OCI layouts to import: each directory and the digest its context names.
+    layouts: Vec<(PathBuf, Digest)>,
+}
+
+/// `--build-context`'s values as buildx's loadInputs hands them to the frontend
+/// (build/opt.go, v0.37.1): a remote URL, `docker-image://` or `target:` as it is; else a
+/// directory, sent as a local of the context's name (`_context` and `_dockerfile` for
+/// those two), keyed by its base name, its `.dockerignore` read as the frontend reads it.
+fn named_contexts(named: &BTreeMap<String, String>) -> Result<NamedContexts, String> {
+    let mut out = NamedContexts::default();
+    for (k, v) in named {
+        let remote = ["http://", "https://", "git://", "github.com/", "git@"]
+            .iter()
+            .any(|p| v.starts_with(p));
+        if remote || v.starts_with("docker-image://") || v.starts_with("target:") {
+            out.contexts
+                .insert(k.clone().into_bytes(), v.clone().into_bytes());
+            continue;
+        }
+        if let Some(r) = parse_oci_layout(v)? {
+            let digest = match &r.digest {
+                Some(d) => d.clone(),
+                None => resolve_layout_digest(&r.path, &r.tag).map_err(|e| {
+                    format!("oci-layout reference {} could not be resolved: {e}", go_quote(v))
+                })?,
+            };
+            // The layout's store, named for the frontend as buildx names it (D33; a session
+            // store's ID): here the order it is given in.
+            let store = format!("layout{}", out.layouts.len());
+            let mut spec = format!("oci-layout://{store}");
+            if !r.tag.is_empty() {
+                spec.push_str(&format!(":{}", r.tag));
+            }
+            spec.push_str(&format!("@{digest}"));
+            out.contexts.insert(k.clone().into_bytes(), spec.into_bytes());
+            out.layouts.push((PathBuf::from(&r.path), digest));
+            continue;
+        }
+        let md = std::fs::metadata(v).map_err(|e| {
+            format!(
+                "failed to get build context {k}: stat {v}: {}",
+                buildflags::os_error(&e)
+            )
+        })?;
+        if !md.is_dir() {
+            return Err(format!(
+                "failed to get build context path {{{v} <nil>}}: not a directory"
+            ));
+        }
+        let local = if k == "context" || k == "dockerfile" {
+            format!("_{k}")
+        } else {
+            k.clone()
+        };
+        let dir = PathBuf::from(v);
+        let key = std::path::absolute(&dir)
+            .ok()
+            .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+            .unwrap_or_else(|| {
+                dir.file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default()
+            });
+        let ignore = ignore_file(&dir, "").map_err(|e| {
+            format!("failed to build: failed to solve: failed to read the ignore file's patterns: {e}")
+        })?;
+        out.excludes.insert(
+            local.clone().into_bytes(),
+            ignore
+                .map(|(_, t)| shards_agentfile::ignore::read_all(&t))
+                .unwrap_or_default(),
+        );
+        out.contexts
+            .insert(k.clone().into_bytes(), format!("local:{local}").into_bytes());
+        out.keys.insert(k.clone().into_bytes(), key.into_bytes());
+        out.locals.insert(local.into_bytes(), dir);
+    }
+    Ok(out)
+}
+
+fn go_quote(s: &str) -> String {
+    shards_cmdline::go::quote(s)
+}
+
+/// An `oci-layout://` reference as buildx's ocilayout.Parse reads it (D33): the directory, a
+/// tag and a digest, `latest` the tag when neither is given.
+pub(crate) struct LayoutRef {
+    pub(crate) path: String,
+    pub(crate) tag: String,
+    pub(crate) digest: Option<Digest>,
+}
+
+pub(crate) fn parse_oci_layout(s: &str) -> Result<Option<LayoutRef>, String> {
+    let Some(mut path) = s.strip_prefix("oci-layout://") else {
+        return Ok(None);
+    };
+    let mut out = LayoutRef {
+        path: String::new(),
+        tag: String::new(),
+        digest: None,
+    };
+    let digest_re =
+        regex::Regex::new(r"^[A-Za-z][A-Za-z0-9]*(?:[-_+.][A-Za-z][A-Za-z0-9]*)*:[0-9a-fA-F]{32,}$")
+            .map_err(|e| e.to_string())?;
+    let tag_re = regex::Regex::new(r"^[\w][\w.-]{0,127}$").map_err(|e| e.to_string())?;
+    if let Some(i) = path.rfind('@') {
+        let after = path.get(i + 1..).unwrap_or_default();
+        if digest_re.is_match(after) {
+            out.digest = Some(Digest::parse(after).map_err(|e| e.to_string())?);
+            path = path.get(..i).unwrap_or_default();
+        }
+    }
+    if let Some(i) = path.rfind(':') {
+        let windows_drive = i == 1
+            && path.len() >= 3
+            && matches!(path.as_bytes().get(2), Some(b'/' | b'\\'))
+            && path.as_bytes().first().is_some_and(u8::is_ascii_alphabetic);
+        let after = path.get(i + 1..).unwrap_or_default();
+        if !windows_drive && tag_re.is_match(after) {
+            out.tag = after.to_string();
+            path = path.get(..i).unwrap_or_default();
+        }
+    }
+    out.path = path.to_string();
+    if out.tag.is_empty() && out.digest.is_none() {
+        out.tag = "latest".into();
+    }
+    Ok(Some(out))
+}
+
+/// buildx's resolveDigest: the layout's index entry named `tag` (by its image name, then
+/// its reference name), else its only entry.
+fn resolve_layout_digest(dir: &str, tag: &str) -> Result<Digest, String> {
+    let path = Path::new(dir).join("index.json");
+    let bytes = std::fs::read(&path).map_err(|e| {
+        format!(
+            "could not read {}: open {}: {}",
+            path.display(),
+            path.display(),
+            buildflags::os_error(&e)
+        )
+    })?;
+    let index: serde_json::Value = serde_json::from_slice(&bytes).map_err(|e| {
+        format!(
+            "could not unmarshal {} ({}): {e}",
+            path.display(),
+            go_quote(&String::from_utf8_lossy(&bytes))
+        )
+    })?;
+    let manifests = index
+        .get("manifests")
+        .and_then(serde_json::Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let annotation = |m: &serde_json::Value, k: &str| {
+        m.get("annotations")
+            .and_then(|a| a.get(k))
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string)
+    };
+    let found = manifests
+        .iter()
+        .find(|m| annotation(m, "io.containerd.image.name").as_deref() == Some(tag))
+        .or_else(|| {
+            manifests
+                .iter()
+                .find(|m| annotation(m, "org.opencontainers.image.ref.name").as_deref() == Some(tag))
+        })
+        .or_else(|| (manifests.len() == 1).then(|| manifests.first()).flatten())
+        .ok_or("failed to resolve digest")?;
+    let d = found
+        .get("digest")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    Digest::parse(d).map_err(|e| format!("invalid digest {d}: {e}"))
+}
+
+/// Imports the image `digest` names from the OCI layout in `dir` into the store, each
+/// blob checked against its digest as it is stored: an index's manifest for this
+/// platform, its config and layers. Returns that manifest's descriptor.
+fn import_layout(store: &Store, dir: &Path, digest: &Digest) -> Result<Descriptor, String> {
+    let blob = |d: &Digest| dir.join("blobs").join(d.algorithm().name()).join(d.hex());
+    let put = |d: &Digest| -> Result<(), String> {
+        if store.has(d) {
+            return Ok(());
+        }
+        let path = blob(d);
+        let size = std::fs::metadata(&path)
+            .map_err(|e| format!("{}: {e}", path.display()))?
+            .len();
+        let mut f = std::fs::File::open(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+        store
+            .ingest(d, size, &mut f)
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+        Ok(())
+    };
+    let read = |d: &Digest| -> Result<Vec<u8>, String> {
+        put(d)?;
+        let bytes = std::fs::read(store.blob_path(d)).map_err(|e| e.to_string())?;
+        if bytes.len() as u64 > oci::MAX_MANIFEST {
+            return Err(format!("{d}: a manifest over {} bytes", oci::MAX_MANIFEST));
+        }
+        Ok(bytes)
+    };
+    let media = |bytes: &[u8]| {
+        serde_json::from_slice::<serde_json::Value>(bytes)
+            .ok()
+            .and_then(|v| v.get("mediaType").and_then(|m| m.as_str()).map(str::to_string))
+            .unwrap_or_else(|| oci::media::OCI_MANIFEST.to_string())
+    };
+    let mut d = digest.clone();
+    let mut bytes = read(&d)?;
+    let mut kind = media(&bytes);
+    if let Document::Index(index) = oci::parse_document(&bytes, &kind).map_err(|e| e.to_string())? {
+        let chosen = image_platform::select(&index, &image_platform::guest())
+            .ok_or_else(|| format!("{digest}: no manifest for this platform in the layout"))?;
+        d = chosen.digest().map_err(|e| e.to_string())?;
+        bytes = read(&d)?;
+        kind = media(&bytes);
+    }
+    let Document::Manifest(m) = oci::parse_document(&bytes, &kind).map_err(|e| e.to_string())? else {
+        return Err(format!("{d}: an index inside an index"));
+    };
+    for part in std::iter::once(&m.config).chain(&m.layers) {
+        put(&part.digest().map_err(|e| e.to_string())?)?;
+    }
+    Ok(Descriptor {
+        media_type: kind,
+        digest: d.to_string(),
+        size: i64::try_from(bytes.len()).map_err(|e| e.to_string())?,
+        platform: None,
+        annotations: Default::default(),
+    })
+}
+
+/// A guarded step's writes (D55, §9.2): what its new layers hold, read entry by entry, in
+/// no domain but the one its own directive writes, if it is one. A removal is a write.
+fn guard(
+    meta: &shards_agentfile::llb::Meta,
+    inputs: &[exec::Ref],
+    outs: &[exec::Ref],
+    domains: &[plan::DomainDir],
+    store: &Store,
+) -> Result<(), String> {
+    if domains.is_empty() || !meta.description.contains_key(plan::GUARD) {
+        return Ok(());
+    }
+    let parts = |p: &[u8]| -> Vec<Vec<u8>> {
+        p.split(|&b| b == b'/')
+            .filter(|c| !c.is_empty() && *c != b".")
+            .map(<[u8]>::to_vec)
+            .collect()
+    };
+    let mut roots: Vec<(Vec<Vec<u8>>, usize)> = Vec::new();
+    for (i, d) in domains.iter().enumerate() {
+        let dir = parts(&d.dir);
+        let mut grants = dir.clone();
+        if let Some(last) = grants.last_mut() {
+            last.extend_from_slice(b".d");
+        }
+        roots.push((dir, i));
+        roots.push((grants, i));
+    }
+    let domain_of = |p: &[Vec<u8>]| -> Option<usize> {
+        roots
+            .iter()
+            .filter(|(r, _)| p.len() >= r.len() && p.get(..r.len()) == Some(r.as_slice()))
+            .max_by_key(|(r, _)| r.len())
+            .map(|&(_, d)| d)
+    };
+    let own = meta.description.get(plan::OWN).and_then(|o| domain_of(&parts(o)));
+    let known: std::collections::HashSet<&[u8]> = inputs
+        .iter()
+        .flat_map(|r| r.layers.iter().map(|l| l.digest.as_slice()))
+        .collect();
+    for out in outs {
+        for l in out.layers.iter().filter(|l| !known.contains(l.digest.as_slice())) {
+            let digest = Digest::parse(&show(&l.digest)).map_err(|e| e.to_string())?;
+            let file = std::fs::File::open(store.blob_path(&digest)).map_err(|e| format!("{digest}: {e}"))?;
+            let mut r = shards_image::tar::Reader::seekable(std::io::BufReader::new(file))
+                .map_err(|e| format!("{digest}: {e}"))?;
+            // The directories above what changed come along in a layer; what is named is
+            // the first thing written that is no directory, where there is one.
+            let mut found: Option<(Vec<u8>, usize)> = None;
+            while let Some(e) = r.next_entry().map_err(|e| format!("{digest}: {e}"))? {
+                let mut p = parts(&e.path);
+                if let Some(last) = p.last_mut()
+                    && let Some(name) = last.strip_prefix(b".wh.")
+                {
+                    *last = name.to_vec();
+                }
+                let Some(d) = domain_of(&p) else { continue };
+                if Some(d) == own {
+                    continue;
+                }
+                let dir = matches!(e.kind, shards_image::tar::Type::Dir);
+                if found.is_none() || !dir {
+                    found = Some((p.join(&b"/"[..]), d));
+                }
+                if !dir {
+                    break;
+                }
+            }
+            if let Some((path, d)) = found {
+                let dom = domains.get(d).map_or_else(String::new, |x| {
+                    format!(
+                        "{} {}",
+                        if x.harness { "the harness" } else { "the agent" },
+                        show(&x.name)
+                    )
+                });
+                return Err(format!(
+                    "it writes /{} in {dom}'s domain, which only that domain's own directives write (AGENTFILE_ARCH.md §9.2)",
+                    show(&path)
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The export's failure `why`, on its step and as the build's error.
+fn fail_export(progress: &std::cell::RefCell<Progress>, v: &Vertex, why: &str) -> String {
+    progress.borrow().error(v, why);
+    format!("failed to build: failed to solve: {why}")
+}
+
+/// isSafeLocalDeleteDest (buildx build/opt.go): a directory under the working one, and not
+/// it, which a local output's `mode=delete` may empty without `--allow buildx.local.delete`.
+fn safe_delete_dest(dest: &Path) -> bool {
+    let Ok(wd) = std::env::current_dir().and_then(|d| d.canonicalize()) else {
+        return false;
+    };
+    // The path as far as it exists, resolved, and the rest as it is.
+    let absolute = if dest.is_absolute() {
+        dest.to_path_buf()
+    } else {
+        wd.join(dest)
+    };
+    let mut existing = absolute.clone();
+    let mut rest = Vec::new();
+    while existing.canonicalize().is_err() {
+        let Some(name) = existing.file_name().map(std::ffi::OsStr::to_os_string) else {
+            return false;
+        };
+        rest.push(name);
+        if !existing.pop() {
+            return false;
+        }
+    }
+    let Ok(mut at) = existing.canonicalize() else {
+        return false;
+    };
+    for name in rest.into_iter().rev() {
+        at.push(name);
+    }
+    at.starts_with(&wd) && at != wd
+}
+
+/// The files a context holds and their bytes, each file once however many names it has.
+/// Nothing is copied: the build reads them in place when it writes a layer.
+fn context_size(fs: &shards_build::vfs::Fs) -> (u64, u64) {
+    let mut seen = std::collections::HashSet::new();
+    let (mut files, mut bytes) = (0u64, 0u64);
+    for id in 0..fs.tree().len() {
+        if let Some(shards_image::erofs::Node {
+            kind: shards_image::erofs::Kind::File { size, data },
+            ..
+        }) = fs.node(id)
+            && seen.insert((data.source, data.offset))
+        {
+            files += 1;
+            bytes += size;
+        }
+    }
+    (files, bytes)
+}
+
+/// go-units HumanSize: decimal units, four significant digits.
+fn human_size(bytes: u64) -> String {
+    const UNITS: [&str; 9] = ["B", "kB", "MB", "GB", "TB", "PB", "EB", "ZB", "YB"];
+    let mut size = bytes as f64;
+    let mut i = 0;
+    while size >= 1000.0 && i < UNITS.len() - 1 {
+        size /= 1000.0;
+        i += 1;
+    }
+    format!("{}{}", go_g4(size), UNITS.get(i).unwrap_or(&"B"))
+}
+
+/// `strconv.FormatFloat(v, 'g', 4, 64)` for 0 <= v < 10000.
+fn go_g4(v: f64) -> String {
+    let s = format!("{v:.3e}");
+    let (mantissa, exp) = s.split_once('e').unwrap_or((&s, "0"));
+    let exp: i32 = exp.parse().unwrap_or(0);
+    let digits: String = mantissa.chars().filter(char::is_ascii_digit).collect();
+    let mut out = if exp >= 0 {
+        let int_len = (exp + 1) as usize;
+        let (int, frac) = if digits.len() > int_len {
+            (
+                digits.get(..int_len).unwrap_or("").to_string(),
+                digits.get(int_len..).unwrap_or("").to_string(),
+            )
+        } else {
+            (format!("{digits:0<int_len$}"), String::new())
+        };
+        if frac.is_empty() {
+            int
+        } else {
+            format!("{int}.{frac}")
+        }
+    } else {
+        format!("0.{}{}", "0".repeat((-exp - 1) as usize), digits)
+    };
+    if out.contains('.') {
+        while out.ends_with('0') {
+            out.pop();
+        }
+        if out.ends_with('.') {
+            out.pop();
+        }
+    }
+    out
+}
+
+fn sha256(bytes: &[u8]) -> Digest {
+    use sha2::Digest as _;
+    Digest::from_hash(Algorithm::Sha256, &sha2::Sha256::digest(bytes))
+}
+
+/// buildx's warnings after a build (commands/build.go printWarnings).
+/// `--call`'s method as buildx reads it (util/buildflags/callfunc.go `ParseCallFunc`,
+/// `--check` its shorthand): none to build; for a check, whether its status is ignored and
+/// its format. Methods shards does not serve yet are refused.
+/// The frontend's options buildx sends for a build (build/opt.go toSolveOpt and
+/// loadInputs, v0.37.1), which its provenance records as the request: build arguments
+/// and labels, the target, the cache's and network's settings, hosts, `/dev/shm`, ulimits,
+/// limits, the Dockerfile's name, and the named contexts.
+fn frontend_attrs(
+    parsed: &Parsed,
+    filename: &str,
+    add_hosts: &str,
+    resources: &BTreeMap<String, String>,
+    named: &NamedContexts,
+) -> Result<BTreeMap<String, String>, String> {
+    let mut a = BTreeMap::new();
+    let cgroup = parsed.string("cgroup-parent");
+    if !cgroup.is_empty() {
+        a.insert("cgroup-parent".into(), cgroup.to_string());
+    }
+    let args = build_args(parsed.many("build-arg"), true);
+    if args
+        .get(b"BUILDKIT_MULTI_PLATFORM".as_slice())
+        .is_some_and(|v| shards_cmdline::go::parse_bool(&show(v)).unwrap_or(false))
+    {
+        a.insert("multi-platform".into(), "true".into());
+    }
+    for (k, v) in &args {
+        a.insert(format!("build-arg:{}", show(k)), show(v));
+    }
+    for (k, v) in build_args(parsed.many("label"), false) {
+        a.insert(format!("label:{}", show(&k)), show(&v));
+    }
+    // The moby driver resolves images it has by default.
+    a.insert(
+        "image-resolve-mode".into(),
+        if parsed.bool("pull") { "pull" } else { "local" }.into(),
+    );
+    let target = parsed.string("target");
+    if !target.is_empty() {
+        a.insert("target".into(), target.to_string());
+    }
+    let filters = parsed.many("no-cache-filter");
+    if parsed.bool("no-cache") {
+        a.insert("no-cache".into(), String::new());
+    } else if !filters.is_empty() {
+        a.insert("no-cache".into(), filters.join(","));
+    }
+    let platforms = platforms(parsed);
+    if !platforms.is_empty() {
+        a.insert("platform".into(), platforms.join(","));
+    }
+    if let mode @ ("host" | "none") = parsed.string("network") {
+        a.insert("force-network-mode".into(), mode.to_string());
+    }
+    if !add_hosts.is_empty() {
+        a.insert("add-hosts".into(), add_hosts.to_string());
+    }
+    let shm = shards_agentfile::run_options::shm_size(parsed.string("shm-size")).unwrap_or(0);
+    if shm > 0 {
+        a.insert("shm-size".into(), shm.to_string());
+    }
+    let ulimits: Vec<String> = buildflags::ulimits(parsed.many("ulimit"))?
+        .iter()
+        .map(|u| format!("{}={}:{}", u.name, u.soft, u.hard))
+        .collect();
+    if !ulimits.is_empty() {
+        a.insert("ulimit".into(), ulimits.join(","));
+    }
+    a.extend(resources.iter().map(|(k, v)| (k.clone(), v.clone())));
+    a.insert("filename".into(), filename.to_string());
+    for (k, v) in &named.contexts {
+        a.insert(format!("context:{}", show(k)), show(v));
+    }
+    for (k, v) in &named.keys {
+        a.insert(format!("sharedkey:localdir:{}", show(k)), show(v));
+    }
+    if !named.contexts.is_empty() {
+        a.insert(
+            "frontend.caps".into(),
+            "moby.buildkit.frontend.contexts+forward".into(),
+        );
+    }
+    Ok(a)
+}
+
+/// [`frontend_attrs`] of a build given `flags` alone: a named context's directory taken
+/// as one, by its name, wherever it is.
+#[cfg(test)]
+fn frontend_attrs_of(flags: &[String]) -> Result<BTreeMap<String, String>, String> {
+    // The attestations' own flags are none of the request's (FilterArgs).
+    let mut argv: Vec<String> = Vec::new();
+    let mut skip = false;
+    for f in flags {
+        if skip {
+            skip = false;
+            continue;
+        }
+        if f.starts_with("--provenance") || f.starts_with("--attest") || f.starts_with("--sbom") {
+            skip = !f.contains('=');
+            continue;
+        }
+        argv.push(f.clone());
+    }
+    argv.push(".".into());
+    let parsed = match flags::parse(&BUILD, PATH, &argv, &buildflags::validate) {
+        Outcome::Run(p) => p,
+        _ => return Err(format!("{argv:?}: not parsed")),
+    };
+    let add_hosts = buildflags::add_hosts(parsed.many("add-host"), &|| Err("no gateway".into()))?;
+    let resources = buildflags::resource_attrs(parsed.many("resource"))?;
+    let mut named = NamedContexts::default();
+    for v in parsed.many("build-context") {
+        if let Some((k, dir)) = v.split_once('=') {
+            named
+                .contexts
+                .insert(k.as_bytes().to_vec(), format!("local:{k}").into_bytes());
+            let base = dir.rsplit('/').next().unwrap_or(dir);
+            named.keys.insert(k.as_bytes().to_vec(), base.as_bytes().to_vec());
+        }
+    }
+    let file = parsed.string("file");
+    let filename = if file.is_empty() {
+        "Dockerfile"
+    } else {
+        file.rsplit('/').next().unwrap_or(file)
+    };
+    frontend_attrs(&parsed, filename, &add_hosts, &resources, &named)
+}
+
+/// What a build asks of its provenance (D71, D72).
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Provenance {
+    /// Nothing: BuildKit's default where an image is stored or pushed.
+    Default,
+    /// `--provenance=false`, or `--attest type=provenance,disabled=true`.
+    Off,
+    /// Its attributes: the builder's ID, whether it says it is reproducible, and whether it
+    /// goes in an image alone (`inline-only`).
+    Explicit {
+        builder_id: String,
+        reproducible: bool,
+        inline_only: bool,
+        /// `mode=max`: the build's definition, source map and layers too (D80).
+        max: bool,
+    },
+}
+
+/// `--attest`, `--provenance` and `--sbom`, as buildx reads them (D72; toBuildOptions,
+/// ParseAttests, ToMap) and BuildKit takes the provenance's attributes
+/// (NewProvenanceCreator): `mode`, `version`, `builder-id`, `reproducible`,
+/// `inline-only`; and the SBOM's (attestations.Parse, dockerui): its generator, and every
+/// other attribute a parameter of the scanner's (D81). What shards does not make yet it
+/// refuses, named.
+fn provenance_of(parsed: &Parsed) -> Result<(Provenance, Option<sbom::Asked>), String> {
+    let mut asked: Vec<String> = parsed.many("attest").to_vec();
+    for kind in ["provenance", "sbom"] {
+        let v = parsed.string(kind);
+        if !v.is_empty() {
+            asked.push(buildflags::canonicalize_attest(kind, v));
+        }
+    }
+    let mut map = buildflags::attests_map(&buildflags::parse_attests(&asked)?);
+    // `BUILDKIT_ATTEST_<TYPE>` build arguments, (D72), as BuildKit's `attestations.Parse` reads
+    // them: the type lowercased, the value its attributes (no `type` among them); where a
+    // flag asks for the same type, the flag (BuildKit takes whichever its map yields).
+    for (k, v) in build_args(parsed.many("build-arg"), true) {
+        let Some(kind) = show(&k).strip_prefix("BUILDKIT_ATTEST_").map(str::to_lowercase) else {
+            continue;
+        };
+        if map.contains_key(&kind) {
+            continue;
+        }
+        let v = show(&v);
+        let off = shards_cmdline::go::csv_fields(v.as_bytes())
+            .unwrap_or_default()
+            .iter()
+            .any(|f| show(f) == "disabled=true");
+        map.insert(kind, (!off).then_some(v));
+    }
+    let mut out = Provenance::Default;
+    let mut sbom_asked = None;
+    for (kind, value) in map {
+        match (kind.as_str(), value) {
+            (_, None) if kind == "provenance" => out = Provenance::Off,
+            (_, None) => {}
+            ("sbom", Some(attrs)) => {
+                let fields = shards_cmdline::go::csv_fields(attrs.as_bytes()).map_err(|e| show(&e))?;
+                let mut generator = sbom::DEFAULT_GENERATOR.to_string();
+                let mut params = BTreeMap::new();
+                for f in fields {
+                    let f = show(&f);
+                    let (k, v) = f.split_once('=').unwrap_or((f.as_str(), ""));
+                    if k == "generator" {
+                        generator = v.to_string();
+                    } else {
+                        params.insert(k.to_string(), v.to_string());
+                    }
+                }
+                let named = Reference::parse(&generator)
+                    .map_err(|e| format!("failed to parse sbom scanner {generator}: {e}"))?;
+                sbom_asked = Some(sbom::Asked {
+                    generator: named.to_string(),
+                    params,
+                });
+            }
+            ("provenance", Some(attrs)) => {
+                let fields = shards_cmdline::go::csv_fields(attrs.as_bytes()).map_err(|e| show(&e))?;
+                let (mut builder_id, mut reproducible, mut inline_only, mut max) =
+                    (String::new(), false, false, false);
+                for f in fields {
+                    let f = show(&f);
+                    let Some((k, v)) = f.split_once('=') else { continue };
+                    match k {
+                        "mode" => match v {
+                            "min" => max = false,
+                            "max" | "full" => max = true,
+                            _ => return Err(format!("invalid mode {}", go_quote(v))),
+                        },
+                        "version" => match v {
+                            "v1" => {}
+                            "v0.2" => {
+                                return Err("provenance version=v0.2 is not supported by shards yet".into());
+                            }
+                            _ => return Err(format!("invalid provenance SLSA version: {v}")),
+                        },
+                        "builder-id" => builder_id = v.to_string(),
+                        "reproducible" => {
+                            reproducible = shards_cmdline::go::parse_bool(v).map_err(|e| {
+                                format!("failed to parse reproducible flag {}: {e}", go_quote(v))
+                            })?;
+                        }
+                        "inline-only" => inline_only = shards_cmdline::go::parse_bool(v).unwrap_or(false),
+                        _ => {}
+                    }
+                }
+                out = Provenance::Explicit {
+                    builder_id,
+                    reproducible,
+                    inline_only,
+                    max,
+                };
+            }
+            (other, Some(_)) => return Err(format!("attestation type {other} is not supported by shards")),
+        }
+    }
+    Ok((out, sbom_asked))
+}
+
+/// Whether an image the build stores or pushes carries its provenance by default
+/// (`attest:provenance=mode=min,inline-only=true`), unless SHARDS_NO_DEFAULT_ATTESTATIONS,
+/// else BUILDX_NO_DEFAULT_ATTESTATIONS, says not.
+fn attests(env: &dyn Fn(&str) -> Option<String>) -> Result<bool, String> {
+    let given = ["SHARDS_NO_DEFAULT_ATTESTATIONS", "BUILDX_NO_DEFAULT_ATTESTATIONS"]
+        .into_iter()
+        .find_map(|var| env(var).map(|v| (var, v)));
+    match given {
+        None => Ok(true),
+        Some((var, v)) => shards_cmdline::go::parse_bool(&v)
+            .map(|off| !off)
+            .map_err(|e| format!("invalid {var}: {e}")),
+    }
+}
+
+/// `urlutil.RedactCredentials` (BuildKit v0.28.1): a URL's user and password each said as
+/// `xxxxx` where given; what is no URL (scp's `user@host:path`) as it is.
+fn redact_credentials(url: &str) -> String {
+    let Some((scheme, rest)) = url.split_once("://") else {
+        return url.to_string();
+    };
+    let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let (authority, path) = rest.split_at(authority_end);
+    let Some((userinfo, host)) = authority.rsplit_once('@') else {
+        return url.to_string();
+    };
+    let (user, password) = match userinfo.split_once(':') {
+        Some((u, p)) => (u, Some(p)),
+        None => (userinfo, None),
+    };
+    let masked = match (user.is_empty(), password) {
+        (false, Some(_)) => "xxxxx:xxxxx".to_string(),
+        (false, None) => "xxxxx".to_string(),
+        (true, Some(_)) => ":xxxxx".to_string(),
+        (true, None) => String::new(),
+    };
+    if masked.is_empty() {
+        format!("{scheme}://@{host}{path}")
+    } else {
+        format!("{scheme}://{masked}@{host}{path}")
+    }
+}
+
+#[cfg(test)]
+mod memory_tests {
+    use super::{Needed, builder_most};
+
+    const GIB: u64 = 1 << 30;
+
+    /// A builder's ceiling comes from its host and its home (D133), in whole blocks: with
+    /// no build recorded, what the host has available as it starts; past that, the most a
+    /// build of its home needed; all the host's memory once a build was ended short of it,
+    /// as a run with no limit may have (D148); never past the host's memory nor below what
+    /// a builder boots with. Hosts: a Windows runner's 16 GiB less what Windows keeps back
+    /// (CI run 38274751000), CI's runners, a Mac Studio's, Fedora's, a size of no whole MiB.
+    #[test]
+    fn a_builders_ceiling_comes_from_its_host_and_its_homes_builds() {
+        let block = shards_vmm::devices::virtio::mem::BLOCK >> 20;
+        let whole = |bytes: u64| super::whole_blocks(bytes >> 20);
+        let unlimited = shards_ipc::Resources::default();
+        let hosts = [
+            16_368u64 << 20,
+            7 * GIB,
+            16 * GIB,
+            36 * GIB,
+            64 * GIB,
+            128 * GIB,
+            64 * GIB + 4096,
+        ];
+        for host in hosts {
+            let available = host / 3 + 4096;
+            let cold = builder_most(Some(host), Some(available), Needed::default());
+            assert_eq!(
+                cold,
+                whole(available),
+                "{host}: the cold start is what is available"
+            );
+            let less = Needed {
+                most: available / 2,
+                short: false,
+            };
+            assert_eq!(builder_most(Some(host), Some(available), less), cold, "{host}");
+            let more = Needed {
+                most: available + 2 * GIB,
+                short: false,
+            };
+            assert_eq!(
+                builder_most(Some(host), Some(available), more),
+                whole(available + 2 * GIB),
+                "{host}"
+            );
+            let past = Needed {
+                most: host + GIB,
+                short: false,
+            };
+            assert_eq!(
+                builder_most(Some(host), Some(available), past),
+                whole(host),
+                "{host}"
+            );
+            let short = Needed {
+                most: available / 2,
+                short: true,
+            };
+            let all = builder_most(Some(host), Some(available), short);
+            assert_eq!(
+                all,
+                super::whole_blocks(crate::run::sizes(&unlimited, Some(host)).2),
+                "{host}"
+            );
+            assert!(all << 20 <= host && (host >> 20) - all < block, "{host}");
+            assert_eq!(
+                builder_most(Some(host), None, Needed::default()),
+                all,
+                "{host}: none known available"
+            );
+            assert_eq!(
+                builder_most(Some(host), Some(0), Needed::default()),
+                512,
+                "{host}"
+            );
+        }
+        assert_eq!(
+            builder_most(
+                None,
+                Some(8 * GIB),
+                Needed {
+                    most: 4 * GIB,
+                    short: true
+                }
+            ),
+            512
+        );
+    }
+
+    /// A home's record of its builds' needs keeps the most any needed and whether any was
+    /// ended short, whatever order builds end in; a record that does not read is the cold
+    /// start's.
+    #[test]
+    fn a_homes_record_keeps_the_most_its_builds_needed() {
+        let dir = shards_testdir::TempDir::new("needs").unwrap();
+        let path = super::needs_path(&dir);
+        assert_eq!(Needed::read(&path), Needed::default());
+        super::record_need(&path, 3 * GIB, false).unwrap();
+        super::record_need(&path, GIB, false).unwrap();
+        assert_eq!(
+            Needed::read(&path),
+            Needed {
+                most: 3 * GIB,
+                short: false
+            }
+        );
+        super::record_need(&path, 2 * GIB, true).unwrap();
+        super::record_need(&path, 5 * GIB, false).unwrap();
+        assert_eq!(
+            Needed::read(&path),
+            Needed {
+                most: 5 * GIB,
+                short: true
+            }
+        );
+        std::fs::write(&path, "garbled").unwrap();
+        assert_eq!(Needed::read(&path), Needed::default());
+        // Builds ending together each count.
+        std::fs::remove_file(&path).unwrap();
+        std::thread::scope(|s| {
+            for i in 1..=8u64 {
+                let path = &path;
+                s.spawn(move || super::record_need(path, i * GIB, false).unwrap());
+            }
+        });
+        assert_eq!(Needed::read(&path).most, 8 * GIB);
+    }
+
+    /// What this host says it has available is some of its memory.
+    #[test]
+    fn this_hosts_available_memory_is_some_of_its_memory() {
+        let (Some(host), Some(available)) = (super::host_memory(), super::host_available()) else {
+            panic!("this host's memory reads");
+        };
+        assert!(available > 0 && available <= host, "{available} of {host}");
+    }
+
+    /// A builder's memory is whole blocks of what it is plugged in.
+    #[test]
+    fn a_builders_memory_is_whole_blocks() {
+        let block = shards_vmm::devices::virtio::mem::BLOCK >> 20;
+        for mib in [512, 513, 8191, 8192, 65_535] {
+            let whole = super::whole_blocks(mib);
+            assert_eq!(whole % block, 0, "{mib}");
+            assert!(whole <= mib && mib - whole < block, "{mib}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod redact_tests {
+    #[test]
+    fn credentials_are_redacted() {
+        let r = super::redact_credentials;
+        assert_eq!(
+            r("https://user:pw@host.tld/path.git"),
+            "https://xxxxx:xxxxx@host.tld/path.git"
+        );
+        assert_eq!(
+            r("ssh://git@github.com/o/r.git"),
+            "ssh://xxxxx@github.com/o/r.git"
+        );
+        assert_eq!(r("https://:pw@h/p"), "https://:xxxxx@h/p");
+        assert_eq!(r("https://h/p?a=b@c"), "https://h/p?a=b@c");
+        assert_eq!(r("git@github.com:o/r.git"), "git@github.com:o/r.git");
+    }
+}
+
+/// Now, as seconds and nanoseconds since 1970.
+fn unix_now() -> (i64, u32) {
+    let d = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    (i64::try_from(d.as_secs()).unwrap_or(i64::MAX), d.subsec_nanos())
+}
+
+/// What `--call` (or `--check`) asks of the frontend instead of a build.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Call {
+    /// The build's checks; `json` for `format=json`; with `ignorestatus`, exit 0
+    /// whatever they found.
+    Check {
+        json: bool,
+        ignore_status: bool,
+    },
+    /// A subrequest: the target's outline, the targets, or the subrequests; `json` for
+    /// `format=json`.
+    Outline {
+        json: bool,
+    },
+    Targets {
+        json: bool,
+    },
+    Describe {
+        json: bool,
+    },
+}
+
+/// `--call`, as buildx v0.37.1 reads it (util/buildflags/callfunc.go ParseCallFunc).
+fn call_of(parsed: &Parsed) -> Result<Option<Call>, String> {
+    let given = if parsed.bool("check") {
+        "check"
+    } else {
+        parsed.string("call")
+    };
+    if given.is_empty() {
+        return Ok(None);
+    }
+    let fields = shards_cmdline::go::csv_fields(given.as_bytes()).map_err(|e| show(&e))?;
+    let (mut name, mut format, mut ignore) = (String::new(), String::new(), false);
+    for f in fields {
+        let f = show(&f);
+        match f.split_once('=') {
+            Some(("format", v)) => format = v.to_string(),
+            Some(("ignorestatus", v)) => {
+                ignore = shards_cmdline::go::parse_bool(v)
+                    .map_err(|e| format!("invalid ignorestatus print value: {v}: {e}"))?;
+            }
+            Some(_) => return Err(format!("invalid print field: {f}")),
+            None if !name.is_empty() => return Err(format!("invalid print value: {given}")),
+            None => name = f,
+        }
+    }
+    // printValue prints result.json for json, and the text for any other format.
+    let json = format == "json";
+    match name.as_str() {
+        "build" => Ok(None),
+        "check" | "lint" => Ok(Some(Call::Check {
+            json,
+            ignore_status: ignore,
+        })),
+        "outline" => Ok(Some(Call::Outline { json })),
+        "targets" => Ok(Some(Call::Targets { json })),
+        "subrequests.describe" => Ok(Some(Call::Describe { json })),
+        other => Err(format!("--call={other} is not supported by shards yet")),
+    }
+}
+
+/// The build's checks as BuildKit's lint subrequest prints them (D73; frontend/subrequests/lint
+/// `LintResults.PrintTo`): by line, each its rule, URL, message and lines.
+pub(crate) fn lint_text(warnings: &[shards_agentfile::lint::Warning], file: &str, text: &[u8]) -> String {
+    let mut sorted: Vec<&shards_agentfile::lint::Warning> = warnings.iter().collect();
+    sorted.sort_by(|a, b| match (a.location.first(), b.location.first()) {
+        (None, None) => a.rule.cmp(b.rule),
+        (None, Some(_)) => std::cmp::Ordering::Less,
+        (Some(_), None) => std::cmp::Ordering::Greater,
+        (Some(x), Some(y)) => x.0.cmp(&y.0),
+    });
+    let mut out = String::new();
+    for w in sorted {
+        out.push_str(&format!("\nWARNING: {}", w.rule));
+        if !w.url.is_empty() {
+            out.push_str(&format!(" - {}", w.url));
+        }
+        out.push_str(&format!("\n{}\n", show(&w.message)));
+        if !w.location.is_empty() {
+            out.push_str(&excerpt(file, text, &w.location));
+        }
+    }
+    out
+}
+
+fn print_warnings(
+    warnings: &[shards_agentfile::lint::Warning],
+    quiet: bool,
+    debug: bool,
+    file: &str,
+    text: &[u8],
+) {
+    let _ = write!(
+        std::io::stderr(),
+        "{}",
+        warnings_text(warnings, quiet, debug, file, text)
+    );
+}
+
+/// What [`print_warnings`] prints.
+fn warnings_text(
+    warnings: &[shards_agentfile::lint::Warning],
+    quiet: bool,
+    debug: bool,
+    file: &str,
+    text: &[u8],
+) -> String {
+    if warnings.is_empty() || quiet {
+        return String::new();
+    }
+    let count = if warnings.len() == 1 {
+        "1 warning found".to_string()
+    } else {
+        format!("{} warnings found", warnings.len())
+    };
+    // With --debug, each in full (commands/build.go printWarnings): its description,
+    // its URL, and its lines.
+    let hint = if debug {
+        ""
+    } else {
+        " (use shards --debug to expand)"
+    };
+    let mut out = format!("\n {YELLOW}{count}{hint}:\n{RESET}");
+    for w in warnings {
+        let line = w.location.first().map_or(0, |r| r.0);
+        let mut short = format!("{}: {}", w.rule, show(&w.message));
+        if line > 0 {
+            short.push_str(&format!(" (line {line})"));
+        }
+        out.push_str(&format!(" - {short}\n"));
+        if !debug {
+            continue;
+        }
+        out.push_str(&format!("{}\n", w.description));
+        if !w.url.is_empty() {
+            out.push_str(&format!("More info: {}\n", w.url));
+        }
+        if !w.location.is_empty() {
+            out.push_str(&excerpt(file, text, &w.location));
+        }
+        out.push('\n');
+    }
+    out
+}
+
+/// An environment variable's value, its bytes as they are.
+pub(crate) fn os_bytes(v: std::ffi::OsString) -> Vec<u8> {
+    #[cfg(unix)]
+    {
+        std::os::unix::ffi::OsStringExt::into_vec(v)
+    }
+    #[cfg(not(unix))]
+    {
+        v.to_string_lossy().into_owned().into_bytes()
+    }
+}
+
+/// What reads a connection: on Unix [`shards_ipc::Polled`], whose reads wait in poll(2),
+/// where one waiting in the read can sleep through its peer's half-close (PM M236).
+#[cfg(unix)]
+fn reading(conn: &shards_vmm::platform::UnixStream) -> shards_ipc::Polled<&shards_vmm::platform::UnixStream> {
+    shards_ipc::Polled(conn)
+}
+#[cfg(windows)]
+fn reading(conn: &shards_vmm::platform::UnixStream) -> &shards_vmm::platform::UnixStream {
+    conn
+}
+
+/// Ends a connection both ways: on Unix [`shards_ipc::end`], one way at a time, where
+/// SHUT_RDWR after its peer's half-close shuts nothing (PM M236).
+fn end(conn: &shards_vmm::platform::UnixStream) {
+    #[cfg(unix)]
+    shards_ipc::end(conn);
+    #[cfg(windows)]
+    let _ = conn.shutdown(std::net::Shutdown::Both);
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    /// Byte counts as tonistiigi/units' `%#g` writes them (measured, go1.26 in BuildKit's
+    /// module).
+    #[test]
+    fn byte_counts_read() {
+        for (b, want) in [
+            (2 << 20, "2MiB"),
+            (200 << 10, "200KiB"),
+            (1000, "1000B"),
+            (1024, "1KiB"),
+            (1536, "1.5KiB"),
+            (1 << 30, "1GiB"),
+            (0, "0B"),
+            (3 << 19, "1.5MiB"),
+            (-(2 << 20), "-2MiB"),
+        ] {
+            assert_eq!(units(b), want);
+        }
+    }
+
+    /// A stream passes as much as its limit lets, a notice where clipping begins and
+    /// nothing after; the tail keeps what came from the clipped write on; within its first
+    /// second a stream may print its speed's worth.
+    #[test]
+    fn step_streams_are_clipped() {
+        let size = LogLimits { size: 10, speed: -1 };
+        let mut c = Clip::new();
+        assert_eq!(c.write(b"abcdef", size), b"abcdef");
+        assert_eq!(
+            c.write(b"ghijkl", size),
+            b"ghij\n[output clipped, log limit 10B reached]\n"
+        );
+        assert_eq!(c.write(b"mno", size), b"");
+        // From the write that was clipped on: buildkitd makes the tail then.
+        assert_eq!(c.tail.as_ref().unwrap().bytes(), b"ghijklmno");
+        let speed = LogLimits {
+            size: 2 << 20,
+            speed: 5,
+        };
+        // Begun a moment ago: the clock may not have moved since `new`, and no second
+        // begun is no budget, as in buildkitd.
+        let mut c = Clip::new();
+        c.began = Instant::now()
+            .checked_sub(std::time::Duration::from_millis(1))
+            .unwrap();
+        assert_eq!(
+            c.write(b"12345678", speed),
+            b"12345\n[output clipped, log limit 5B/s reached]\n"
+        );
+    }
+
+    /// The tail keeps the last 256 KiB, in order, however written.
+    #[test]
+    fn the_tail_keeps_the_last_bytes_in_order() {
+        let mut t = Tail {
+            data: vec![0; Tail::SIZE],
+            at: 0,
+            full: false,
+        };
+        let all: Vec<u8> = (0..Tail::SIZE * 2 + 123).map(|i| (i % 251) as u8).collect();
+        for chunk in all.chunks(7777) {
+            t.write(chunk);
+        }
+        assert_eq!(t.bytes(), all.get(all.len() - Tail::SIZE..).unwrap());
+        t.write(&all);
+        assert_eq!(t.bytes(), all.get(all.len() - Tail::SIZE..).unwrap());
+    }
+
+    /// Lines are stamped when they begin, to 3 places, 2 past 10 s and 1 past 100; a
+    /// line not ended is printed as far as it goes and continued as the rest comes.
+    #[test]
+    fn build_refs_are_ids() {
+        let r = build_ref().unwrap();
+        assert_eq!(r.len(), 25, "{r}");
+        assert!(
+            r.bytes().all(|b| b.is_ascii_digit() || b.is_ascii_lowercase()),
+            "{r}"
+        );
+        assert_ne!(r, build_ref().unwrap());
+    }
+
+    #[test]
+    fn build_metadata_is_written() {
+        let manifest = Digest::parse(&format!("sha256:{}", "b".repeat(64))).unwrap();
+        // As Go's MarshalIndent writes buildx's map: keys sorted, two spaces, the
+        // descriptor's fields in its own order.
+        assert_eq!(
+            metadata(
+                "r",
+                Some((&manifest, 481, &["docker.io/library/app:1".to_string()])),
+                &BTreeMap::new(),
+                &[],
+                oci::media::OCI_MANIFEST,
+            ),
+            format!(
+                "{{\n  \"buildx.build.ref\": \"shards/shards/r\",\n  \"containerimage.descriptor\": {{\n    \"mediaType\": \"application/vnd.oci.image.manifest.v1+json\",\n    \"digest\": \"{manifest}\",\n    \"size\": 481\n  }},\n  \"containerimage.digest\": \"{manifest}\",\n  \"image.name\": \"docker.io/library/app:1\"\n}}"
+            )
+        );
+        assert_eq!(
+            metadata("r", None, &BTreeMap::new(), &[], oci::media::OCI_MANIFEST),
+            "{\n  \"buildx.build.ref\": \"shards/shards/r\"\n}"
+        );
+    }
+
+    #[test]
+    fn lines_print_as_progressui_prints_them() {
+        let mut log = StepLog::new(LogLimits { size: -1, speed: -1 });
+        let v = Vertex {
+            index: 7,
+            started: Instant::now(),
+        };
+        let shown = |log: &mut StepLog, v: &Vertex, b: &[u8]| String::from_utf8(log.show(v, b)).unwrap();
+        let first = shown(&mut log, &v, b"ab");
+        assert!(
+            first.starts_with("#7 0.0") && first.ends_with(" ab") && first.len() == "#7 0.000 ab".len(),
+            "{first}"
+        );
+        assert_eq!(shown(&mut log, &v, b"c\n"), "c\n");
+        let next = shown(&mut log, &v, b"d\ne");
+        assert!(
+            next.starts_with("#7 0.0") && next.contains(" d\n#7 0.0") && next.ends_with(" e"),
+            "{next}"
+        );
+        for (ago, places) in [(12, 2), (150, 1)] {
+            let v = Vertex {
+                index: 1,
+                started: Instant::now()
+                    .checked_sub(std::time::Duration::from_secs(ago))
+                    .unwrap(),
+            };
+            let mut log = StepLog::new(LogLimits { size: -1, speed: -1 });
+            let line = shown(&mut log, &v, b"x\n");
+            let stamp = line.split(' ').nth(1).unwrap();
+            assert_eq!(stamp.split('.').nth(1).unwrap().len(), places, "{line}");
+        }
+    }
+}
+
+/// A source of the remote context, fetched before planning: its identifier, what it made,
+/// and what the build's provenance records of it.
+struct Given {
+    identifier: Vec<u8>,
+    result: exec::Ref,
+    material: Option<Material>,
+}
+
+enum Material {
+    Git(provenance::Material),
+    Http(provenance::Material),
+}
+
+/// The remote context `main`, fetched and made as dockerui solves it to read the
+/// Dockerfile (`ReadEntrypoint`): its sources, each shown as the build shows its own, and
+/// its unpacking. The context's snapshot, and each source's result for the build's step of
+/// it.
+#[allow(clippy::too_many_arguments)]
+fn fetch_context(
+    exec: &mut exec::Exec,
+    main: &mut plan::MainContext,
+    platform: &Platform,
+    secrets: &BTreeMap<String, buildflags::SecretBytes>,
+    agents: &Agents,
+    limits: &store::Limits,
+    progress: &RefCell<Progress>,
+) -> Result<(exec::Ref, Vec<Given>), String> {
+    let mut given: Vec<Given> = Vec::new();
+    loop {
+        let r = solve_context(
+            exec, main, platform, secrets, agents, limits, progress, &mut given,
+        )?;
+        // An HTTP download is unpacked where its first 1024 bytes are an archive's, as
+        // dockerui reads them; the download is not fetched again.
+        if let plan::MainContext::Http { archive: false, .. } = main {
+            let head = exec.read_head(&r, b"/context", 1024)?.unwrap_or_default();
+            if shards_agentfile::run_options::is_archive(&head) {
+                if let plan::MainContext::Http { archive, .. } = main {
+                    *archive = true;
+                }
+                continue;
+            }
+        }
+        return Ok((r, given));
+    }
+}
+
+/// [`fetch_context`]'s definition of `main`, solved: each source fetched unless `given`
+/// has it already.
+#[allow(clippy::too_many_arguments)]
+fn solve_context(
+    exec: &mut exec::Exec,
+    main: &plan::MainContext,
+    platform: &Platform,
+    secrets: &BTreeMap<String, buildflags::SecretBytes>,
+    agents: &Agents,
+    limits: &store::Limits,
+    progress: &RefCell<Progress>,
+    given: &mut Vec<Given>,
+) -> Result<exec::Ref, String> {
+    let opts = Options {
+        target_platform: platform.clone(),
+        main_context: main.clone(),
+        ..Options::default()
+    };
+    let def = plan::context_definition(&opts)
+        .map_err(|e| format!("failed to build: failed to solve: {}", show(&e)))?;
+    let mut results: Vec<Vec<exec::Ref>> = Vec::new();
+    for (op, meta) in def.ops.iter().zip(&def.metadata) {
+        let name = meta
+            .description
+            .get(b"llb.customname".as_slice())
+            .map(|n| show(n))
+            .unwrap_or_default();
+        let inputs = op
+            .inputs
+            .iter()
+            .map(|inp| {
+                results
+                    .get(inp.op)
+                    .and_then(|outs| outs.get(usize::try_from(inp.index).ok()?))
+                    .cloned()
+                    .ok_or_else(|| format!("input {}:{} is not ready", inp.op, inp.index))
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        let failed = |v: &Vertex, why: &str| {
+            progress.borrow().error(v, why);
+            format!("failed to build: failed to solve: {why}")
+        };
+        let outs = match &op.kind {
+            OpKind::Source { identifier, .. } if given.iter().any(|g| g.identifier == *identifier) => given
+                .iter()
+                .filter(|g| g.identifier == *identifier)
+                .map(|g| g.result.clone())
+                .collect(),
+            OpKind::Source { identifier, attrs } if identifier.starts_with(b"git://") => {
+                let v = progress.borrow_mut().start(&name);
+                let src = git::source(identifier, attrs).map_err(|e| failed(&v, &e))?;
+                let bound = usize::try_from(limits.bytes).unwrap_or(usize::MAX);
+                // As BuildKit's git source logs its commands' lines: each stamped.
+                let say = |line: &str| progress.borrow().log(&v, line);
+                let auth = git::auth(&src, secrets);
+                let (r, commit) = match git::snapshot(
+                    exec,
+                    &src,
+                    shards_git::remote::Limits {
+                        pack: bound,
+                        object: bound,
+                    },
+                    &shards_registry::http::Cancel::new(),
+                    auth.as_ref(),
+                    agents,
+                    &say,
+                ) {
+                    Ok(done) => done,
+                    Err(git::Failure::CacheKey(e)) => {
+                        progress.borrow().error(&v, &e);
+                        return Err(format!(
+                            "failed to build: failed to solve: failed to load cache key: {e}"
+                        ));
+                    }
+                    Err(git::Failure::Snapshot(e)) => return Err(failed(&v, &e)),
+                };
+                let mut uri = redact_credentials(&src.url);
+                if !src.reference.is_empty() {
+                    uri.push('#');
+                    uri.push_str(&src.reference);
+                }
+                given.push(Given {
+                    identifier: identifier.clone(),
+                    result: r.clone(),
+                    material: Some(Material::Git(provenance::Material {
+                        uri,
+                        algorithm: if commit.len() == 64 { "sha256" } else { "sha1" }.into(),
+                        hex: commit,
+                    })),
+                });
+                progress.borrow().done(&v);
+                vec![r]
+            }
+            OpKind::Source { identifier, attrs } if is_http(identifier) => {
+                let v = progress.borrow_mut().start(&name);
+                let url = show(identifier);
+                let (download, material) = match (url.strip_prefix("http://buildkit-session/"), STDIN.get()) {
+                    // stdin's archive, as buildx's upload provider serves it.
+                    (Some(_), Some(stdin)) => (
+                        http::Download {
+                            path: stdin.path.clone(),
+                            size: stdin.size,
+                            digest: stdin.digest.clone(),
+                            last_modified: None,
+                        },
+                        None,
+                    ),
+                    _ => {
+                        let path = exec.stage()?.join("context");
+                        let checksum = attrs.get(b"http.checksum".as_slice()).map(|c| show(c));
+                        let d = http::fetch_now(&url, checksum.as_deref(), path, limits)
+                            .map_err(|e| failed(&v, &e))?;
+                        let pin = d.digest.to_string();
+                        let (algorithm, hex) = pin.split_once(':').unwrap_or(("sha256", pin.as_str()));
+                        let m = provenance::Material {
+                            uri: redact_credentials(&url),
+                            algorithm: algorithm.to_string(),
+                            hex: hex.to_string(),
+                        };
+                        (d, Some(Material::Http(m)))
+                    }
+                };
+                let r = exec
+                    .downloaded(download, b"context")
+                    .map_err(|e| failed(&v, &e))?;
+                given.push(Given {
+                    identifier: identifier.clone(),
+                    result: r.clone(),
+                    material,
+                });
+                progress.borrow().done(&v);
+                vec![r]
+            }
+            OpKind::File { actions } => exec.file(&inputs, actions, &name)?,
+            // The definition's root: its one input.
+            _ => inputs,
+        };
+        results.push(outs);
+    }
+    let root = def.root.as_ref().ok_or("the context's definition has no root")?;
+    results
+        .get(root.op)
+        .and_then(|outs| outs.get(usize::try_from(root.index).ok()?))
+        .cloned()
+        .ok_or_else(|| "the context's definition has no result".to_string())
+}

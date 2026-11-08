@@ -1,12 +1,12 @@
-//! `shards run -t` and `-it`, end to end, as `docker run` has them
+//! `shards run vm -t` and `-it`, end to end, as `docker run` has them
 //! (docs/research/tty-and-interactive-runs.md): the command's stdio is a pty in the guest,
 //! and under `-it` the client's terminal goes raw, detaches on its keys, and resizes the
 //! pty. Real VMs, booted from SHARDS_KERNEL and SHARDS_INIT; the image comes from a
 //! loopback registry (tests/common, `served`), and its entrypoint is the test guest, whose
 //! `tty` mode reports what the command sees. The client runs on a pty of the test's, which
-//! plays the user's terminal.
+//! plays the user's terminal; on Windows on a pseudo console of the test's, its shell this
+//! binary's `console_shell` (common/terminal_windows.rs).
 
-#![cfg(unix)]
 #![allow(
     clippy::panic,
     clippy::unwrap_used,
@@ -17,15 +17,11 @@
 mod common;
 
 use std::ffi::OsStr;
-use std::fs::File;
-use std::io::{Read, Write};
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
-use std::os::unix::process::CommandExt;
 use std::path::Path;
-use std::process::{Child, Command, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use common::{Run, TempDir, cannot_run_vms, guest_init, kernel, run_shards_env, served, shards};
+use common::terminal::{Terminal, cooked};
+use common::{Run, TempDir, cannot_run_vms, guest_init, kernel, run_shards_env, served};
 
 const TIMEOUT: Duration = Duration::from_secs(60);
 
@@ -49,180 +45,6 @@ fn home(name: &str) -> Option<(TempDir, String)> {
     let pulled = shards_in(&home, &["pull", "-q", &image]);
     assert_eq!(pulled.status, Some(0), "{}", pulled.stderr);
     Some((home, image))
-}
-
-/// The user's terminal: a pty whose peer is a shell's controlling terminal, the session's
-/// leader, which runs the client in its foreground group as a login shell would, so that
-/// the terminal outlives the client: XNU revokes a controlling terminal when its session
-/// leader exits (bsd/kern/kern_exit.c, proc_exit: ttywait, then VNOP_REVOKE). The shell
-/// prints the client's status, then waits for a line; the test reads the master, and
-/// types into it.
-struct Terminal {
-    master: File,
-    /// The peer, kept to read its settings.
-    peer: OwnedFd,
-    shell: Child,
-    seen: String,
-    /// The settings before the client ran.
-    before: libc::termios,
-}
-
-impl Terminal {
-    /// `shards ARGS` in `home` on a terminal of `rows` by `cols`.
-    fn run(home: &Path, args: &[&str], rows: u16, cols: u16) -> Terminal {
-        let (mut master, mut peer) = (0, 0);
-        let ws = libc::winsize {
-            ws_row: rows,
-            ws_col: cols,
-            ws_xpixel: 0,
-            ws_ypixel: 0,
-        };
-        // SAFETY: openpty(3) fills both descriptors and reads `ws`.
-        let opened = unsafe {
-            libc::openpty(
-                &mut master,
-                &mut peer,
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-                (&raw const ws).cast_mut(),
-            )
-        };
-        assert_eq!(opened, 0);
-        // SAFETY: fresh descriptors nothing else owns.
-        let (master, peer) = unsafe { (File::from_raw_fd(master), OwnedFd::from_raw_fd(peer)) };
-        let before = settings(&peer);
-        let stdio = || Stdio::from(peer.try_clone().unwrap());
-        let mut command = Command::new("/bin/sh");
-        command
-            .arg("-c")
-            .arg(r#""$0" "$@"; echo "exit $?"; read done"#)
-            .arg(shards())
-            .args(args)
-            .env("SHARDS_HOME", home)
-            .env("SHARDS_KERNEL", kernel())
-            .env("SHARDS_INIT", guest_init())
-            .env_remove("NORAW")
-            .stdin(stdio())
-            .stdout(stdio())
-            .stderr(stdio());
-        // SAFETY: runs in the child between fork and exec, after its stdio is the peer,
-        // calling only setsid(2) and ioctl(2), which are async-signal-safe: the shell
-        // leads a session whose controlling terminal is the peer.
-        unsafe {
-            command.pre_exec(|| {
-                if libc::setsid() < 0 || libc::ioctl(0, libc::TIOCSCTTY as _, 0) < 0 {
-                    return Err(std::io::Error::last_os_error());
-                }
-                Ok(())
-            });
-        }
-        let shell = command.spawn().unwrap();
-        // SAFETY: fcntl(2) on our own descriptor.
-        unsafe {
-            let flags = libc::fcntl(master.as_raw_fd(), libc::F_GETFL);
-            libc::fcntl(master.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK);
-        }
-        Terminal {
-            master,
-            peer,
-            shell,
-            seen: String::new(),
-            before,
-        }
-    }
-
-    /// Reads what the terminal shows until `text` has appeared since the last wait, and
-    /// returns everything read since then.
-    fn wait_for(&mut self, text: &str) -> String {
-        let deadline = Instant::now() + TIMEOUT;
-        let mut buf = [0u8; 4096];
-        loop {
-            if let Some(at) = self.seen.find(text) {
-                let upto = at + text.len();
-                let read: String = self.seen.drain(..upto).collect();
-                return read;
-            }
-            match self.master.read(&mut buf) {
-                Ok(n) if n > 0 => self.seen.push_str(&String::from_utf8_lossy(&buf[..n])),
-                _ => {
-                    assert!(
-                        Instant::now() < deadline,
-                        "{text:?} did not come; the terminal showed {:?}",
-                        self.seen
-                    );
-                    std::thread::sleep(Duration::from_millis(5));
-                }
-            }
-        }
-    }
-
-    fn type_in(&mut self, keys: &[u8]) {
-        self.master.write_all(keys).unwrap();
-    }
-
-    /// Resizes the terminal, as a window does: the kernel signals its foreground.
-    fn resize(&self, rows: u16, cols: u16) {
-        let ws = libc::winsize {
-            ws_row: rows,
-            ws_col: cols,
-            ws_xpixel: 0,
-            ws_ypixel: 0,
-        };
-        // SAFETY: TIOCSWINSZ reads one winsize.
-        let set = unsafe { libc::ioctl(self.master.as_raw_fd(), libc::TIOCSWINSZ, &ws) };
-        assert_eq!(set, 0);
-    }
-
-    /// The terminal's settings now.
-    fn settings(&self) -> libc::termios {
-        settings(&self.peer)
-    }
-
-    /// Once the client exits: what it showed after the last wait, its status, and
-    /// whether it left the terminal's settings as it found them. XNU sets PENDIN itself
-    /// when a terminal goes back to canonical mode, to retype pending input (bsd/kern/
-    /// tty.c, ttioctl): a state, not a setting.
-    fn exit(&mut self) -> (String, i32, bool) {
-        let shown = self.wait_for("exit ");
-        let shown = shown.strip_suffix("exit ").unwrap_or_default().to_string();
-        let status = self.wait_for("\r\n");
-        let (a, b) = (self.settings(), self.before);
-        let restored = a.c_iflag == b.c_iflag
-            && a.c_oflag == b.c_oflag
-            && a.c_cflag == b.c_cflag
-            && (a.c_lflag & !libc::PENDIN) == (b.c_lflag & !libc::PENDIN)
-            && a.c_cc == b.c_cc;
-        // The shell's exit waits for its terminal's output to drain (ttywait, above), so
-        // the master is read meanwhile.
-        self.type_in(b"\n");
-        let deadline = Instant::now() + TIMEOUT;
-        let mut buf = [0u8; 4096];
-        while self.shell.try_wait().unwrap().is_none() {
-            assert!(Instant::now() < deadline, "the shell did not exit");
-            let _ = self.master.read(&mut buf);
-            std::thread::sleep(Duration::from_millis(5));
-        }
-        (shown, status.trim().parse().unwrap(), restored)
-    }
-}
-
-/// The settings of the terminal `fd` is.
-fn settings(fd: &OwnedFd) -> libc::termios {
-    // SAFETY: an all-zero termios is a valid out-parameter for tcgetattr(3).
-    let mut t: libc::termios = unsafe { std::mem::zeroed() };
-    // SAFETY: as above.
-    let got = unsafe { libc::tcgetattr(fd.as_raw_fd(), &mut t) };
-    assert_eq!(got, 0, "tcgetattr: {}", std::io::Error::last_os_error());
-    t
-}
-
-/// The settings raw mode changes (moby/term termios_unix.go).
-fn cooked(t: &libc::termios) -> (bool, bool, bool) {
-    (
-        t.c_lflag & libc::ICANON != 0,
-        t.c_lflag & libc::ECHO != 0,
-        t.c_oflag & libc::OPOST != 0,
-    )
 }
 
 #[test]
@@ -261,6 +83,93 @@ fn a_tty_is_the_commands_stdio_and_its_session() {
     assert_eq!(logs.stdout, named.stdout, "{}", logs.stderr);
 }
 
+/// A command with a terminal is told its client's terminal type where its image describes
+/// it (a terminfo entry), and xterm where not; a client whose terminal speaks 24-bit colour,
+/// or 256 colours by its own description on the host, xterm-256color where that is
+/// described. The run's own TERM is its own. An exec chooses for its own client.
+#[test]
+fn a_terminal_is_told_its_clients_type_where_its_image_describes_it() {
+    let Some((home, image)) = home("tty-term") else {
+        return;
+    };
+    // An image describing xterm-256color, and a terminal of the test's own.
+    let ctx = TempDir::new("tty-term-ctx");
+    std::fs::write(
+        ctx.join("Dockerfile"),
+        format!("FROM {image}\nCOPY terminfo /usr/share/terminfo\n"),
+    )
+    .unwrap();
+    for entry in ["x/xterm-256color", "s/shards-test-term"] {
+        let at = ctx.join("terminfo").join(entry);
+        std::fs::create_dir_all(at.parent().unwrap()).unwrap();
+        std::fs::write(at, b"an entry").unwrap();
+    }
+    let built = shards_in(
+        &home,
+        &["build", "-q", "-t", "described:1", ctx.to_str().unwrap()],
+    );
+    assert_eq!(built.status, Some(0), "{}", built.stderr);
+    let (kernel, init) = (kernel(), guest_init());
+    let told = |term: &str, colorterm: &str, args: &[&str]| {
+        let env: [(&str, &OsStr); 5] = [
+            ("SHARDS_HOME", home.as_os_str()),
+            ("SHARDS_KERNEL", kernel.as_os_str()),
+            ("SHARDS_INIT", init.as_os_str()),
+            ("TERM", term.as_ref()),
+            ("COLORTERM", colorterm.as_ref()),
+        ];
+        let r = run_shards_env(&[], args, &env, TIMEOUT);
+        assert_eq!(r.status, Some(0), "{args:?}: {}", r.stderr);
+        r.stdout
+            .lines()
+            .find_map(|l| l.strip_prefix("term "))
+            .unwrap_or_default()
+            .trim_end()
+            .to_string()
+    };
+    let run = |term: &str, colorterm: &str, image: &str, options: &[&str]| {
+        let mut args = vec!["run", "--rm", "--pull", "never", "-t"];
+        args.extend_from_slice(options);
+        args.extend([image, "tty"]);
+        told(term, colorterm, &args)
+    };
+    assert_eq!(
+        run("shards-test-term", "", "described:1", &[]),
+        "shards-test-term"
+    );
+    assert_eq!(run("xterm-256color", "", "described:1", &[]), "xterm-256color");
+    assert_eq!(run("no-such-term", "", "described:1", &[]), "xterm");
+    assert_eq!(
+        run("no-such-term", "truecolor", "described:1", &[]),
+        "xterm-256color"
+    );
+    assert_eq!(
+        run("shards-test-term", "", "described:1", &["-e", "TERM=vt100"]),
+        "vt100"
+    );
+    // An image that describes no terminal: xterm, whatever the client's.
+    assert_eq!(run("xterm-256color", "truecolor", &image, &[]), "xterm");
+    // An exec, from a client of its own.
+    let held = shards_in(
+        &home,
+        &[
+            "run",
+            "-d",
+            "--pull",
+            "never",
+            "--name",
+            "termed",
+            "described:1",
+            "sleep",
+        ],
+    );
+    assert_eq!(held.status, Some(0), "{}", held.stderr);
+    let exec = ["exec", "-t", "termed", "/bin/testguest", "tty"];
+    assert_eq!(told("shards-test-term", "", &exec), "shards-test-term");
+    assert_eq!(told("no-such-term", "", &exec), "xterm");
+    assert_eq!(shards_in(&home, &["rm", "-f", "termed"]).status, Some(0));
+}
+
 #[test]
 fn a_tty_for_stdin_needs_a_terminal_and_detach_keys_must_parse() {
     let Some((home, image)) = home("tty-refused") else {
@@ -271,7 +180,7 @@ fn a_tty_for_stdin_needs_a_terminal_and_detach_keys_must_parse() {
         (refused.status, refused.stderr.as_str()),
         (
             Some(1),
-            "cannot attach stdin to a TTY-enabled container because stdin is not a terminal\n"
+            "-it: stdin is not a terminal, so it cannot be the command's: leave out -t, or run it from a terminal\n"
         )
     );
     let keys = shards_in(
@@ -345,12 +254,21 @@ fn ctrl_c_interrupts_and_the_detach_keys_leave_it_running() {
     let Some((home, image)) = home("tty-keys") else {
         return;
     };
-    // ^C reaches the command as SIGINT from its own terminal: the client's is raw.
-    let mut term = Terminal::run(&home, &["run", "--pull", "never", "-it", &image, "sleep"], 24, 80);
+    // ^C reaches the command as SIGINT from its own terminal: the client's is raw. Under
+    // --init, where the command, which does not handle SIGINT, is not PID 1, which would
+    // not hear it, as under `docker run -it` (Docker 29.3.1: exit 130 with `--init`; with
+    // none, the ^C unheard, PM M145).
+    let mut term = Terminal::run(
+        &home,
+        &["run", "--pull", "never", "-it", "--init", &image, "sleep"],
+        24,
+        80,
+    );
     term.wait_for("ready\r\n");
     term.type_in(&[3]);
     let (_, status, restored) = term.exit();
-    assert_eq!((status, restored), (128 + libc::SIGINT, true));
+    // SIGINT's number in the guest, Linux's: 2.
+    assert_eq!((status, restored), (128 + 2, true));
 
     // The detach keys end the client, which says nothing and exits 0, and the command
     // runs on; custom keys likewise.

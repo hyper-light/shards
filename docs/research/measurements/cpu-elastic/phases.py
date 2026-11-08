@@ -1,0 +1,244 @@
+#!/usr/bin/env python3
+"""Where a run's start goes, in two builds of shards (D191, PM M292: a `--cpus 1` run on a
+contended host starts 2.2 times as slowly since slice 1), each with a home of its own that
+holds IMAGE already, rounds alternating which goes first. Each round, for each build,
+--starts runs of `run --rm --cpus N IMAGE true` (N --cpus's, 1 unless given; 0 runs
+without the flag) with SHARDS_TIMING set, whose client prints its VM's timing line: the
+VM process's clock readings, in µs since it started, and its guest's markers
+(shards_abi::control::marker). From each, besides the client's wall time:
+
+- `restore`: the VM process's start to its guest connected for a workload (CONNECTED),
+  and where the request came before that, the part of it the request waited for (`waited`);
+- `start`: the request to the workload's command executing (WORKLOAD_STARTED);
+- `command`: the command's run (WORKLOAD_STARTED to WORKLOAD_EXITED);
+- `answer`: its exit to the VM's answer (`answered_us`).
+
+With a build that writes markers 11 to 26 through init's start of a run (`markers.patch`;
+the VMM keeps a marker below its table's size alone, which the patch raises to 27), each
+step between them too, in the order they come: `m11` the request to init's taking it,
+`m17` what the microVM may still plug, reported (`report_pluggable`), `m18` its network's
+setup, `m19` its standby made again where its kind changed, then its names: `m24` eth0's
+confinement and sethostname, `m25` setdomainname and `/etc/hostname`, `m26` `/etc/hosts`
+(with `markers7.patch`, `/etc/hostname`'s own steps: `m27` its removal, `m28` its creation,
+`m29` its write, `m25` the rest; with `probe.patch` too, `m30` a file of the run's own
+written in /tmp first, or with `shmprobe.patch` one in /dev/shm; `prime.patch` writes and
+removes a file in the root as its template boots, before any snapshot),
+`m20` `/etc/resolv.conf`; `m21` its devices, then its limits (`limit_in`): `m22` its
+cgroup's files but the CPU's, `m23` `cpu.*`, `m12` `cpuset.*`; `m13` the rest of its setup
+to the orders sent to the standby, `m14` the standby's waking with them, `m15` its own
+setup to its exec, `m16` init's waking as the exec is made, `m4` its listener and agents
+to WORKLOAD_STARTED. A marker a run's path does not write (13, where its orders go another
+way) is passed over: its step is the next one's. `keys.patch` holds the CFS bandwidth
+static key on from the template (PM M292).
+
+With --load N, N busy loops run throughout, on the CPUs this runs on (run it under
+`taskset`, or give --affinity: its runs inherit them).
+
+On Windows (D191's Windows candidate, winslice.py), the same: the busy loops are Python's,
+--affinity MASK (hex, a bit a logical CPU) holds this process and so its runs, their
+daemons, VM processes and loops to those CPUs (SetProcessAffinityMask: "Process affinity is
+inherited by any child process"), and the load printed is the processor queue's length
+(\\System\\Processor Queue Length) at the start and the end, with the hypervisor's
+scheduler type, as its launch event (ID 2) gives it: 4 the root scheduler, which Windows
+clients use, where the root's NT scheduler runs guests' virtual processors as its threads,
+3 the core scheduler of Windows Server (Microsoft, Manage Hyper-V hypervisor scheduler
+types). OLD and NEW are shards.exe; a home's VM processes are the shards-vm.exe processes
+its daemon (HOME\\daemon.pid) starts.
+
+    phases.py OLD NEW --homes OLD_HOME,NEW_HOME --revs OLD_REV,NEW_REV [--rounds N]
+              [--starts N] [--warmup N] [--load N] [--image IMAGE] [--cpus N]
+              [--affinity MASK]
+
+Each home's daemon is stopped and its templates removed first and last (as ab.py does).
+Prints n, p50, p90, p99 and max of each, ms (percentiles as ab.py takes them), with host,
+OS, kernel, CPUs, load and revisions. Each build's `shards` runs with an empty
+DOCKER_CONFIG."""
+import argparse, json, os, platform, re, shutil, subprocess, sys, tempfile, time
+
+WINDOWS = os.name == "nt"
+
+p = argparse.ArgumentParser()
+p.add_argument("old")
+p.add_argument("new")
+p.add_argument("--homes", required=True)
+p.add_argument("--revs", required=True)
+p.add_argument("--rounds", type=int, default=10)
+p.add_argument("--starts", type=int, default=5)
+p.add_argument("--warmup", type=int, default=1)
+p.add_argument("--load", type=int, default=0)
+p.add_argument("--image", default="alpine")
+p.add_argument("--cpus", default="1", help="each run's --cpus; 0 for none")
+p.add_argument("--affinity", help="hex mask of the CPUs this and its runs are held to")
+a = p.parse_args()
+
+if WINDOWS:
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+    kernel32.SetProcessAffinityMask.argtypes = [wintypes.HANDLE, ctypes.c_size_t]
+    kernel32.GetProcessAffinityMask.argtypes = [wintypes.HANDLE, ctypes.POINTER(ctypes.c_size_t),
+                                                ctypes.POINTER(ctypes.c_size_t)]
+if a.affinity:
+    mask = int(a.affinity, 16)
+    if WINDOWS:
+        if not kernel32.SetProcessAffinityMask(kernel32.GetCurrentProcess(), mask):
+            sys.exit(f"SetProcessAffinityMask {a.affinity}: error {ctypes.get_last_error()}")
+    else:
+        os.sched_setaffinity(0, {c for c in range(mask.bit_length()) if mask >> c & 1})
+
+
+def own_cpus():
+    if WINDOWS:
+        process, system = ctypes.c_size_t(), ctypes.c_size_t()
+        if kernel32.GetProcessAffinityMask(kernel32.GetCurrentProcess(), ctypes.byref(process),
+                                           ctypes.byref(system)):
+            return bin(process.value).count("1")
+        return os.cpu_count()
+    return len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else os.cpu_count()
+
+
+def powershell(command):
+    try:
+        done = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", command],
+                              capture_output=True, text=True, timeout=60)
+        return done.stdout.strip() or "?"
+    except (OSError, subprocess.TimeoutExpired):
+        return "?"
+
+
+def load():
+    """The host's load: its load average on Unix, its processor queue's length on Windows."""
+    if WINDOWS:
+        q = powershell(r"(Get-Counter '\System\Processor Queue Length').CounterSamples[0].CookedValue")
+        try:
+            return float(q)
+        except ValueError:
+            return float("nan")
+    return os.getloadavg()[0]
+
+work = tempfile.mkdtemp(prefix="cpu-phases-")
+config = os.path.join(work, "docker-config")
+os.makedirs(config)
+homes = [os.path.realpath(h) for h in a.homes.split(",")]
+revs = a.revs.split(",")
+builds = {"old": (a.old, homes[0], revs[0]), "new": (a.new, homes[1], revs[1])}
+CONNECTED, STARTED, EXITED = 3, 4, 5
+PHASES = ["wall", "restore", "waited", "start", "command", "answer"]
+# The steps between markers.patch's markers, in order, where a build writes them.
+STEPS = [11, 17, 18, 19, 24, 30, 27, 28, 29, 25, 26, 20, 21, 22, 23, 12, 13, 14, 15, 16, STARTED]
+
+
+def env(home, **more):
+    return dict(os.environ, SHARDS_HOME=home, DOCKER_CONFIG=config, **more)
+
+
+def reset():
+    for binary, home, _ in builds.values():
+        subprocess.run([binary, "daemon", "stop"], env=env(home), capture_output=True)
+        templates = os.path.join(home, "templates")
+        if os.path.isdir(templates):
+            shutil.rmtree(templates)
+
+
+def once(build):
+    binary, home, _ = builds[build]
+    t = time.perf_counter()
+    cpus = ["--cpus", a.cpus] if a.cpus != "0" else []
+    done = subprocess.run([binary, "run", "--rm", *cpus, a.image, "true"],
+                          env=env(home, SHARDS_TIMING="1"), capture_output=True, text=True)
+    wall = (time.perf_counter() - t) * 1000
+    if done.returncode != 0:
+        return None, f"exit {done.returncode}: {done.stderr.strip()[-200:]}"
+    line = next((l for l in done.stderr.splitlines() if l.startswith("shards-timing ")), None)
+    if line is None:
+        return None, "no timing line"
+    j = json.loads(line.split(" ", 1)[1])
+    marks = {m: t for m, t in j.get("markers", [])}
+    if not all(k in marks for k in (CONNECTED, STARTED, EXITED)) or not j.get("request_us"):
+        return None, f"markers missing: {line[:200]}"
+    request, answered = j["request_us"], j["answered_us"]
+    # A step marker a run's path does not write is passed over, its step the next's.
+    steps = {}
+    present = [m for m in STEPS if m in marks]
+    if len(present) > 1:
+        at = request
+        for m in present:
+            steps[f"m{m}"] = (marks[m] - at) / 1000
+            at = marks[m]
+    return steps | {
+        "wall": wall,
+        "restore": marks[CONNECTED] / 1000,
+        "waited": max(0, marks[CONNECTED] - request) / 1000,
+        "start": (marks[STARTED] - request) / 1000,
+        "command": (marks[EXITED] - marks[STARTED]) / 1000,
+        "answer": (answered - marks[EXITED]) / 1000,
+    }, None
+
+
+def stats(xs):
+    xs = sorted(xs)
+    at = lambda q: xs[min(len(xs) - 1, int(q * len(xs)))]
+    return len(xs), at(0.5), at(0.9), at(0.99), xs[-1]
+
+
+def first(path, key):
+    try:
+        for line in open(path):
+            if line.startswith(key):
+                return line.split("=" if "=" in key else ":", 1)[1].strip().strip('"')
+    except OSError:
+        pass
+    return "?"
+
+
+reset()
+spin = [sys.executable, "-c", "while True: pass"] if WINDOWS else ["sh", "-c", "while :; do :; done"]
+loops = [subprocess.Popen(spin) for _ in range(a.load)]
+load0 = load()
+got = {b: {k: [] for k in PHASES + [f"m{m}" for m in STEPS]} for b in builds}
+errors = []
+try:
+    for r in range(a.warmup + a.rounds):
+        for b in (["old", "new"] if r % 2 == 0 else ["new", "old"]):
+            for _ in range(a.starts):
+                phases, err = once(b)
+                if r < a.warmup:
+                    continue
+                if err:
+                    errors.append(f"{b}: {err}")
+                    continue
+                for k, v in phases.items():
+                    got[b][k].append(v)
+finally:
+    for l in loops:
+        l.kill()
+    for l in loops:
+        l.wait()
+    reset()
+    shutil.rmtree(work, ignore_errors=True)
+
+cpus = own_cpus()
+if WINDOWS:
+    launch = powershell('(Get-WinEvent -FilterHashTable @{ProviderName="Microsoft-Windows-Hyper-V-Hypervisor"; '
+                        'ID=2} -MaxEvents 1).Message')
+    kind = re.search(r"0x[0-9a-fA-F]+", launch)
+    print(f"host: {platform.node()}, {powershell('(Get-CimInstance Win32_Processor)[0].Name')}; "
+          f"{platform.platform()}; hypervisor scheduler type {kind.group(0) if kind else '?'}; "
+          f"{cpus} CPUs this ran on; {a.load} busy loops; processor queue {load0:.0f} at the start, "
+          f"{load():.0f} at the end")
+else:
+    print(f"host: {platform.node()}, {first('/proc/cpuinfo', 'model name')}; "
+          f"{first('/etc/os-release', 'PRETTY_NAME=')}, kernel {platform.release()}; {cpus} CPUs this ran on; "
+          f"{a.load} busy loops; load {load0:.2f} at the start, {load():.2f} at the end")
+print(f"old {builds['old'][2]}, new {builds['new'][2]}; image {a.image}, --cpus {a.cpus}; {a.rounds} rounds of "
+      f"{a.starts} starts after {a.warmup} warmup, alternating")
+print(f"{'phase':9} {'build':5} {'n':>4} {'p50':>8} {'p90':>8} {'p99':>8} {'max':>8}  ms")
+for k in PHASES + [f"m{m}" for m in STEPS]:
+    for b in builds:
+        if got[b][k]:
+            n, p50, p90, p99, mx = stats(got[b][k])
+            print(f"{k:9} {b:5} {n:4} {p50:8.2f} {p90:8.2f} {p99:8.2f} {mx:8.2f}")
+for e in errors:
+    print("FAILED", e)

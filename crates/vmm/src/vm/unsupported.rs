@@ -1,7 +1,7 @@
 //! Targets without a hypervisor backend: every start fails with an explanation. The
 //! handle types hold a private uninhabited field, so no value of them can exist.
 
-use super::{Config, ExitReason, RestoreConfig};
+use super::{Config, ExitReason, RestoreConfig, Save};
 
 fn no_backend() -> String {
     format!(
@@ -19,7 +19,30 @@ pub fn restore(_cfg: &RestoreConfig) -> Result<(Handle, Running), String> {
     Err(no_backend())
 }
 
+pub fn restore_from(
+    _cfg: &RestoreConfig,
+    _pinned: crate::snapshot::Pinned,
+) -> Result<(Handle, Running), String> {
+    Err(no_backend())
+}
+
 pub fn check_host() -> Result<(), String> {
+    Err(no_backend())
+}
+
+pub fn restores_here() -> bool {
+    false
+}
+
+pub fn accept_working_set(_dir: &std::path::Path, _name: &str, _bytes: &[u8]) -> Result<usize, String> {
+    Err(no_backend())
+}
+
+pub fn keep_working_set(_dir: &std::path::Path, _handed: &[u8]) -> Result<usize, String> {
+    Err(no_backend())
+}
+
+pub fn working_set_limit(_dir: &std::path::Path) -> Result<u64, String> {
     Err(no_backend())
 }
 
@@ -33,8 +56,96 @@ enum Never {}
 #[derive(Debug, Clone)]
 pub struct Handle(Never);
 
+#[derive(Debug)]
+pub struct Saved(Never);
+
+impl Saved {
+    pub fn resume(self) -> Result<(), String> {
+        match self.0 {}
+    }
+}
+
 impl Handle {
     pub fn markers(&self) -> Vec<(u32, u128)> {
+        match self.0 {}
+    }
+
+    pub fn plug_disk(
+        &self,
+        _file: std::fs::File,
+        _read_only: bool,
+        _serial: &str,
+    ) -> Result<super::Plugged, String> {
+        match self.0 {}
+    }
+
+    pub fn plug_share(
+        &self,
+        _tag: &str,
+        _slot: crate::devices::virtio::fs::Share,
+    ) -> Result<super::Plugged, String> {
+        match self.0 {}
+    }
+
+    pub fn unplug(&self, _devfn: u8) -> Result<(), String> {
+        match self.0 {}
+    }
+
+    pub fn disk_size(&self, _index: usize) -> Option<crate::devices::virtio::block::DiskSize> {
+        match self.0 {}
+    }
+
+    pub fn guest_abi(&self) -> Option<u64> {
+        match self.0 {}
+    }
+
+    pub fn set_plug_most(&self, _bytes: u64) -> Result<(), String> {
+        match self.0 {}
+    }
+
+    pub fn hold_cpus(&self, _cpus: u32) -> Result<(), String> {
+        match self.0 {}
+    }
+
+    pub fn hold_group(&self, _group: super::group::GroupCpu) -> Result<(), String> {
+        match self.0 {}
+    }
+
+    pub fn pause(&self) -> Result<(), String> {
+        match self.0 {}
+    }
+
+    pub fn resume(&self) {
+        match self.0 {}
+    }
+
+    pub fn layer_reads_ahead(&self) {
+        match self.0 {}
+    }
+
+    pub fn stage_layer(&self, _file: std::fs::File) -> Result<(), String> {
+        match self.0 {}
+    }
+
+    pub fn attach_swap(&self, _file: std::fs::File) -> Result<Option<u64>, String> {
+        match self.0 {}
+    }
+
+    pub fn restore_swap(&self, _file: std::fs::File) -> Result<(), String> {
+        match self.0 {}
+    }
+
+    pub fn precopy(
+        &self,
+        _out: std::fs::File,
+        _most: u32,
+        _enough: u64,
+        _told: &dyn Fn(super::Precopying),
+    ) -> Result<super::Precopied, String> {
+        match self.0 {}
+    }
+
+    pub fn save(&self, _save: Save) -> Result<Saved, String> {
         match self.0 {}
     }
 
@@ -54,6 +165,14 @@ impl Handle {
         match self.0 {}
     }
 
+    pub fn console_said(&self) -> Vec<u8> {
+        match self.0 {}
+    }
+
+    pub fn wait_for_snapshot(&self) {
+        match self.0 {}
+    }
+
     pub fn release(&self) {
         match self.0 {}
     }
@@ -66,11 +185,23 @@ impl Handle {
         match self.0 {}
     }
 
-    pub fn save_working_set(&self) -> Result<usize, String> {
+    pub fn end_recording(&self) -> Result<(), String> {
+        match self.0 {}
+    }
+
+    pub fn take_working_set(&self) -> Result<Option<(String, Vec<u8>)>, String> {
         match self.0 {}
     }
 
     pub fn prefetched(&self) -> usize {
+        match self.0 {}
+    }
+
+    pub fn hotplug_held(&self) -> Option<u64> {
+        match self.0 {}
+    }
+
+    pub fn reported(&self) -> u64 {
         match self.0 {}
     }
 }
@@ -79,7 +210,11 @@ impl Handle {
 pub struct Running(Never);
 
 impl Running {
-    pub fn wait(self, _handle: Handle) -> ExitReason {
+    pub fn wait(self) -> ExitReason {
+        match self.0 {}
+    }
+
+    pub fn wait_then(self, _free: impl FnOnce()) -> ExitReason {
         match self.0 {}
     }
 }

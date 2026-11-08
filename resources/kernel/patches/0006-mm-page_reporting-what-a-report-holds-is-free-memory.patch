@@ -1,0 +1,149 @@
+mm/page_reporting: what a report holds is free memory
+
+A page reporting pass takes free pages of page_reporting_order and up off
+the free lists and holds them until the device has reported them: as many
+as PAGE_REPORTING_CAPACITY of the largest blocks at once, 128 MiB with
+4 KiB pages. For that time sysinfo(2) and /proc/meminfo show that much less
+free and available memory, though the memory is as free as it was: a
+guest's agent that set its tenants' share of memory by MemAvailable read
+it during a pass and gave them none, and a program that sizes itself by the
+memory it sees does the same. And an allocation that needs those pages
+finds none: reclaim cannot free what the pass holds, and the OOM killer
+ends a task in a guest whose memory is free. In a small guest, the first
+pass, two seconds into its life, took nearly all of it.
+
+Count the pages a pass holds as free in si_meminfo() and
+si_mem_available(), and have an allocation that would otherwise give up
+wait a tick and try again while a pass holds any (should_reclaim_retry()):
+they come back as soon as the device has reported them. The zones' own
+counts, by which the allocator and its watermarks see the pages gone until
+they are back, are as they were. The count falls before a page is put back
+and rises after it is taken, so a reader sees at most one block too little,
+never too much. Reading page_reporting.held gives the count, in pages: what
+a guest's agent reads to know that its kernel treats them so.
+
+--- a/mm/page_reporting.h
++++ b/mm/page_reporting.h
+@@ -14,6 +14,7 @@
+ DECLARE_STATIC_KEY_FALSE(page_reporting_enabled);
+ extern unsigned int page_reporting_order;
+ void __page_reporting_notify(void);
++unsigned long page_reporting_held_pages(void);
+ 
+ static inline bool page_reported(struct page *page)
+ {
+@@ -46,6 +47,11 @@
+ #else /* CONFIG_PAGE_REPORTING */
+ #define page_reported(_page)	false
+ 
++static inline unsigned long page_reporting_held_pages(void)
++{
++	return 0;
++}
++
+ static inline void page_reporting_notify_free(unsigned int order)
+ {
+ }
+--- a/mm/page_reporting.c
++++ b/mm/page_reporting.c
+@@ -48,6 +48,34 @@
+ EXPORT_SYMBOL_GPL(page_reporting_order);
+ 
+ #define PAGE_REPORTING_DELAY	(2 * HZ)
++
++/*
++ * The free pages a pass holds off the free lists until the device has reported
++ * them: free memory still, which sysinfo(2) and /proc/meminfo count as free
++ * (si_meminfo(), si_mem_available()), where the allocator's watermarks see them
++ * gone until they are back.
++ */
++static atomic_long_t page_reporting_held = ATOMIC_LONG_INIT(0);
++
++unsigned long page_reporting_held_pages(void)
++{
++	long held = atomic_long_read(&page_reporting_held);
++
++	return held > 0 ? held : 0;
++}
++
++static int page_reporting_held_get(char *buffer, const struct kernel_param *kp)
++{
++	return scnprintf(buffer, PAGE_SIZE, "%lu\n", page_reporting_held_pages());
++}
++
++static const struct kernel_param_ops page_reporting_held_ops = {
++	.get = &page_reporting_held_get,
++};
++
++module_param_cb(held, &page_reporting_held_ops, NULL, 0444);
++MODULE_PARM_DESC(held, "Free pages a pass holds until the device has reported them");
++
+ static struct page_reporting_dev_info __rcu *pr_dev_info __read_mostly;
+ 
+ enum {
+@@ -117,6 +145,8 @@
+ 		int mt = get_pageblock_migratetype(page);
+ 		unsigned int order = get_order(sg->length);
+ 
++		/* Not held before it is free again: never counted twice. */
++		atomic_long_sub(1L << order, &page_reporting_held);
+ 		__putback_isolated_page(page, order, mt);
+ 
+ 		/* If the pages were not reported due to error skip flagging */
+@@ -203,6 +233,7 @@
+ 				next = page;
+ 				break;
+ 			}
++			atomic_long_add(1L << order, &page_reporting_held);
+ 
+ 			/* Add page to scatter list */
+ 			--(*offset);
+--- a/mm/show_mem.c
++++ b/mm/show_mem.c
+@@ -17,6 +17,7 @@
+ #include <linux/vmstat.h>
+ 
+ #include "internal.h"
++#include "page_reporting.h"
+ #include "swap.h"
+ 
+ atomic_long_t _totalram_pages __read_mostly;
+@@ -45,7 +46,8 @@
+ 	 * Estimate the amount of memory available for userspace allocations,
+ 	 * without causing swapping or OOM.
+ 	 */
+-	available = global_zone_page_state(NR_FREE_PAGES) - totalreserve_pages;
++	available = global_zone_page_state(NR_FREE_PAGES) +
++		    page_reporting_held_pages() - totalreserve_pages;
+ 
+ 	/*
+ 	 * Not all the page cache can be freed, otherwise the system will
+@@ -144,7 +146,8 @@
+ {
+ 	val->totalram = totalram_pages();
+ 	val->sharedram = global_node_page_state(NR_SHMEM);
+-	val->freeram = global_zone_page_state(NR_FREE_PAGES);
++	val->freeram = global_zone_page_state(NR_FREE_PAGES) +
++		       page_reporting_held_pages();
+ 	val->bufferram = nr_blockdev_pages();
+ 	val->totalhigh = totalhigh_pages();
+ 	val->freehigh = nr_free_highpages();
+--- a/mm/page_alloc.c
++++ b/mm/page_alloc.c
+@@ -4567,6 +4567,16 @@
+ 	struct zone *zone;
+ 	struct zoneref *z;
+ 	bool ret = false;
++
++	/*
++	 * Free pages a pass of page reporting holds come back to the free lists
++	 * as soon as the device has reported them: while it holds any, wait a
++	 * tick and try again rather than give up on memory that is free.
++	 */
++	if (page_reporting_held_pages()) {
++		schedule_timeout_uninterruptible(1);
++		return true;
++	}
+ 
+ 	/*
+ 	 * Costly allocations might have made a progress but this doesn't mean

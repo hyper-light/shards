@@ -1,0 +1,759 @@
+//! A microVM's health, as dockerd keeps it (moby daemon/health.go, docker-v29.3.1):
+//! probes a configured interval apart, and the start interval within the start period
+//! while the microVM is starting; each probe's result recorded, the last five kept;
+//! failures counted in a streak that makes it unhealthy at the retries, except within the
+//! start period while it has never been healthy. Like dockerd's, it lives in the daemon's
+//! memory, not on disk: a probe a few seconds apart writes nothing.
+
+use std::cmp::Reverse;
+use std::collections::{BinaryHeap, VecDeque};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Condvar, Mutex, PoisonError};
+use std::time::Duration;
+use std::time::Instant;
+
+use std::io::Read as _;
+
+use shards_ipc::Health as Config;
+use shards_ipc::fd::AsFd as _;
+use shards_vmm::platform::Progress;
+
+use super::{RunState, TAKE_TIMEOUT, Threads, lock};
+
+/// What dockerd uses where a check leaves a setting at 0.
+const INTERVAL: Duration = Duration::from_secs(30);
+const TIMEOUT: Duration = Duration::from_secs(30);
+const START_INTERVAL: Duration = Duration::from_secs(5);
+const RETRIES: u64 = 3;
+/// The bytes of a probe's output kept, and the results kept.
+pub(super) const MAX_OUTPUT: usize = 4096;
+const MAX_LOG: usize = 5;
+
+/// How a microVM's health checks have gone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Status {
+    Starting,
+    Healthy,
+    Unhealthy,
+}
+
+impl Status {
+    /// As `docker ps` shows it after "Up ...".
+    pub(super) fn shown(self) -> &'static str {
+        match self {
+            Status::Starting => "health: starting",
+            Status::Healthy => "healthy",
+            Status::Unhealthy => "unhealthy",
+        }
+    }
+}
+
+/// When the checks of running microVMs are due, soonest first, for one thread to run
+/// them (`check_all`): a thread a microVM with a check would bound the microVMs the
+/// daemon can check to the threads a process may have (PM M89), and wake every one of
+/// them at each run's start and end.
+#[derive(Default)]
+pub(super) struct Checks {
+    due: Mutex<BinaryHeap<Reverse<(Instant, String)>>>,
+    changed: Condvar,
+    started: AtomicBool,
+    ended: AtomicBool,
+}
+
+impl Checks {
+    /// Ends the checks' thread: a test's daemon's, as its scope ends.
+    #[cfg(test)]
+    pub(super) fn end(&self) {
+        self.ended.store(true, Ordering::SeqCst);
+        let _due = lock(&self.due);
+        self.changed.notify_all();
+    }
+}
+
+/// How an exec run by the daemon itself ended: its status if it did, and whether its
+/// timeout ended it.
+pub(super) struct Ended {
+    pub status: Option<i64>,
+    pub timed_out: bool,
+}
+
+/// What an exec run by the daemon itself said ([`Daemon::exec_quietly`]): its output, cut
+/// at its limit (`more` if there was more), its status if it ended, and whether its
+/// timeout ended it.
+pub(super) struct Quiet {
+    pub output: Vec<u8>,
+    pub more: bool,
+    pub status: Option<i64>,
+    pub timed_out: bool,
+}
+
+/// One probe's result: when it ran, its exit code (-1 if it timed out or could not run),
+/// and what it wrote.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct Probe {
+    pub start_ns: u128,
+    pub end_ns: u128,
+    pub exit_code: i64,
+    pub output: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct State {
+    pub status: Status,
+    pub failing_streak: u64,
+    pub log: VecDeque<Probe>,
+}
+
+impl Default for State {
+    fn default() -> State {
+        State {
+            status: Status::Starting,
+            failing_streak: 0,
+            log: VecDeque::with_capacity(MAX_LOG),
+        }
+    }
+}
+
+/// A setting in nanoseconds, or `default` where it is 0 (timeoutWithDefault).
+fn or(ns: i64, default: Duration) -> Duration {
+    match u64::try_from(ns) {
+        Ok(0) | Err(_) => default,
+        Ok(ns) => Duration::from_nanos(ns),
+    }
+}
+
+/// The command a check runs, if it runs one: `CMD`'s words, or `CMD-SHELL`'s command in
+/// `shell`; none for `NONE`, an empty test, or a kind dockerd does not know (getProbe).
+pub(super) fn command(cfg: &Config, shell: &[String]) -> Option<Vec<String>> {
+    let (kind, rest) = cfg.test.split_first()?;
+    match kind.as_str() {
+        "CMD" => Some(rest.to_vec()),
+        "CMD-SHELL" => Some(shell.iter().chain(rest).cloned().collect()),
+        _ => None,
+    }
+}
+
+/// How long one probe may run.
+pub(super) fn timeout(cfg: &Config) -> Duration {
+    or(cfg.timeout, TIMEOUT)
+}
+
+/// How long to wait for the next probe, `since_start` after the microVM started
+/// (getInterval): the start interval within the start period while it is starting.
+pub(super) fn interval(cfg: &Config, since_start: Duration, status: Status) -> Duration {
+    let start_period = or(cfg.start_period, Duration::ZERO);
+    if since_start < start_period && status == Status::Starting {
+        or(cfg.start_interval, START_INTERVAL)
+    } else {
+        or(cfg.interval, INTERVAL)
+    }
+}
+
+impl State {
+    /// Records `probe`, which began `since_start` after the microVM started
+    /// (handleProbeResult): a success makes it healthy and ends the streak; a failure,
+    /// any code but 0, adds to the streak, unless the microVM is still starting within
+    /// its start period, and makes it unhealthy once the streak reaches the retries.
+    pub(super) fn record(&mut self, cfg: &Config, probe: Probe, since_start: Duration) {
+        if self.log.len() >= MAX_LOG {
+            self.log.pop_front();
+        }
+        let healthy = probe.exit_code == 0;
+        self.log.push_back(probe);
+        if healthy {
+            self.failing_streak = 0;
+            self.status = Status::Healthy;
+            return;
+        }
+        let start_period = or(cfg.start_period, Duration::ZERO);
+        if self.status == Status::Starting && since_start < start_period {
+            return;
+        }
+        self.failing_streak += 1;
+        let retries = u64::try_from(cfg.retries)
+            .ok()
+            .filter(|&r| r > 0)
+            .unwrap_or(RETRIES);
+        if self.failing_streak >= retries {
+            self.status = Status::Unhealthy;
+        }
+    }
+}
+
+/// A probe's output as inspect's `Health.Log` answers it (D170, moby's limitedBuffer):
+/// its first [`MAX_OUTPUT`] bytes, then `...` if it wrote more, as text.
+pub(super) fn kept_output(bytes: &[u8], more: bool) -> String {
+    let mut out = String::from_utf8_lossy(bytes).into_owned();
+    if more {
+        out.push_str("...");
+    }
+    out
+}
+
+impl<D: crate::containers::Disk> super::Daemon<D> {
+    /// Checks microVM `id`'s health while it runs: one probe at a time, so that a slow
+    /// probe never piles up beside the next, the next an interval after the last ended; on
+    /// the checks' thread, which the first starts. Nothing for a microVM without a check.
+    pub(super) fn watch_health<'s, 'e>(&'s self, threads: &'s Threads<'s, 'e>, id: &str) {
+        let Some((cfg, _)) = self.check_of(id) else {
+            return;
+        };
+        lock(&self.health).insert(id.to_string(), State::default());
+        self.due_after(id, interval(&cfg, Duration::ZERO, Status::Starting));
+        let c = &self.checks;
+        if !c.started.swap(true, Ordering::SeqCst)
+            && let Err(e) = std::thread::Builder::new()
+                .name("health".into())
+                .spawn_scoped(threads, move || self.check_all(threads))
+        {
+            c.started.store(false, Ordering::SeqCst);
+            super::log(format!("the health checks' thread: {e}"));
+        }
+    }
+
+    /// Container `id`'s check and the command it runs, while its run goes on.
+    fn check_of(&self, id: &str) -> Option<(Config, Vec<String>)> {
+        match lock(&self.runs).get(id) {
+            Some(RunState::Tracked(run)) => run
+                .base
+                .health
+                .as_ref()
+                .and_then(|(cfg, shell)| Some((cfg.clone(), command(cfg, shell)?))),
+            _ => None,
+        }
+    }
+
+    /// Makes microVM `id`'s next probe due `wait` from now.
+    fn due_after(&self, id: &str, wait: Duration) {
+        let Some(at) = Instant::now().checked_add(wait) else {
+            return;
+        };
+        lock(&self.checks.due).push(Reverse((at, id.to_string())));
+        self.checks.changed.notify_all();
+    }
+
+    /// How long ago microVM `id` started.
+    fn since_start(&self, id: &str) -> Duration {
+        let started = lock(&self.containers).get(id).and_then(|c| c.started);
+        let ns = started.map_or(0, |s| crate::spec::now().saturating_sub(s));
+        Duration::from_nanos(u64::try_from(ns).unwrap_or(u64::MAX))
+    }
+
+    /// Runs each probe as it comes due, on a thread of its own, until [`Checks::end`].
+    fn check_all<'s, 'e>(&'s self, threads: &'s Threads<'s, 'e>) {
+        let c = &self.checks;
+        loop {
+            let id = {
+                let mut due = lock(&c.due);
+                loop {
+                    if c.ended.load(Ordering::SeqCst) {
+                        return;
+                    }
+                    let now = Instant::now();
+                    due = match due.peek() {
+                        None => c.changed.wait(due).unwrap_or_else(PoisonError::into_inner),
+                        Some(Reverse((at, _))) if *at > now => {
+                            let wait = at.saturating_duration_since(now);
+                            c.changed
+                                .wait_timeout(due, wait)
+                                .unwrap_or_else(PoisonError::into_inner)
+                                .0
+                        }
+                        Some(_) => match due.pop() {
+                            Some(Reverse((_, id))) => break id,
+                            None => continue,
+                        },
+                    };
+                }
+            };
+            // A run that has ended is checked no more.
+            let Some((cfg, argv)) = self.check_of(&id) else {
+                lock(&self.health).remove(&id);
+                continue;
+            };
+            let next = interval(&cfg, self.since_start(&id), Status::Starting);
+            // A frozen microVM is not probed: dockerd stops its monitor while a container
+            // is paused (moby daemon/health.go, updateHealthMonitor).
+            if lock(&self.paused).contains(&id) {
+                self.due_after(&id, next);
+                continue;
+            }
+            let watched = id.clone();
+            if let Err(e) = std::thread::Builder::new()
+                .name("probe".into())
+                .spawn_scoped(threads, move || self.probe_once(&watched, &cfg, &argv))
+            {
+                super::log(format!("container {id}: a health probe's thread: {e}"));
+                self.due_after(&id, next);
+            }
+        }
+    }
+
+    /// One probe of microVM `id`, recorded, and the next made due an interval after it
+    /// ends; nothing of one that ends after the run did, whose result says nothing of a run
+    /// that has gone.
+    fn probe_once(&self, id: &str, cfg: &Config, argv: &[String]) {
+        let since = self.since_start(id);
+        let probe = self.probe(id, argv, cfg);
+        if !matches!(lock(&self.runs).get(id), Some(RunState::Tracked(_))) {
+            lock(&self.health).remove(id);
+            return;
+        }
+        let (was, status) = {
+            let mut health = lock(&self.health);
+            let Some(state) = health.get_mut(id) else {
+                return;
+            };
+            let was = state.status;
+            state.record(cfg, probe, since);
+            (was, state.status)
+        };
+        // moby daemon/health.go, handleProbeResult: a change of status is an event.
+        if status != was {
+            let named = match status {
+                Status::Starting => "starting",
+                Status::Healthy => "healthy",
+                Status::Unhealthy => "unhealthy",
+            };
+            self.container_event(id, format!("health_status: {named}"), &[]);
+        }
+        self.due_after(id, interval(cfg, self.since_start(id), status));
+    }
+
+    /// One probe of microVM `id`: `argv` run beside its workload as an exec without
+    /// stdin or a terminal, as the microVM's user in its working directory with its
+    /// environment (cmdProbe.run); its stdout and stderr kept together; killed at the
+    /// check's timeout, whose result is -1 and says so.
+    fn probe(&self, id: &str, argv: &[String], cfg: &Config) -> Probe {
+        let start_ns = crate::spec::now();
+        let failed = |why: String| Probe {
+            start_ns,
+            end_ns: crate::spec::now(),
+            exit_code: -1,
+            output: why,
+        };
+        let spec = {
+            let base = match lock(&self.runs).get(id) {
+                Some(RunState::Tracked(run)) => run.base.clone(),
+                _ => return failed("the container is not running".into()),
+            };
+            let base = &base.options;
+            let options = crate::spec::Options {
+                argv: argv.to_vec(),
+                env: base.env.clone(),
+                exec_env: Vec::new(),
+                workdir: base.workdir.clone(),
+                user: base.user.clone(),
+                hostname: base.hostname.clone(),
+                interactive: false,
+                tty: None,
+                terms: Vec::new(),
+            };
+            match crate::spec::spec(&options, |_| None) {
+                Ok(spec) => spec,
+                Err(e) => return failed(e),
+            }
+        };
+        let timeout = timeout(cfg);
+        let quiet = match self.exec_quietly(id, &spec, Some(argv), MAX_OUTPUT, timeout) {
+            Ok(q) => q,
+            Err(e) => return failed(format!("starting the health check: {e}")),
+        };
+        let said = kept_output(&quiet.output, quiet.more);
+        match (quiet.timed_out, quiet.status) {
+            (true, _) => {
+                let limit = shards_cmdline::gotime::format_duration(
+                    i64::try_from(timeout.as_nanos()).unwrap_or(i64::MAX),
+                );
+                failed(if said.is_empty() {
+                    format!("Health check exceeded timeout ({limit})")
+                } else {
+                    format!("Health check exceeded timeout ({limit}): {said}")
+                })
+            }
+            (false, Some(code)) => Probe {
+                start_ns,
+                end_ns: crate::spec::now(),
+                exit_code: code,
+                output: said,
+            },
+            (false, None) => failed("the microVM ended the check".into()),
+        }
+    }
+
+    /// An exec of `spec` in microVM `id`, beside its workload, without stdin or a
+    /// terminal: its stdout and stderr together, the first `limit` bytes of them kept;
+    /// killed once `timeout` has passed, then waited for, so that none outlives its
+    /// asker. An error if it could not be sent. A command (`argv`) has its exec events,
+    /// as a health probe has dockerd's; init's own work has none.
+    pub(super) fn exec_quietly(
+        &self,
+        id: &str,
+        spec: &shards_abi::run::Spec,
+        argv: Option<&[String]>,
+        limit: usize,
+        timeout: Duration,
+    ) -> std::io::Result<Quiet> {
+        self.exec_waiting(id, spec, argv, limit, Wait::For(timeout))
+    }
+
+    /// [`exec_quietly`](Self::exec_quietly), waited for as `wait` says.
+    pub(super) fn exec_waiting(
+        &self,
+        id: &str,
+        spec: &shards_abi::run::Spec,
+        argv: Option<&[String]>,
+        limit: usize,
+        wait: Wait,
+    ) -> std::io::Result<Quiet> {
+        let mut output = Vec::with_capacity(limit.min(1 << 16));
+        let mut more = false;
+        let ended = self.exec_followed(id, spec, argv, wait, &mut |chunk| {
+            let room = limit.saturating_sub(output.len());
+            output.extend_from_slice(chunk.get(..room.min(chunk.len())).unwrap_or_default());
+            more |= chunk.len() > room;
+            true
+        })?;
+        Ok(Quiet {
+            output,
+            more,
+            status: ended.status,
+            timed_out: ended.timed_out,
+        })
+    }
+
+    /// [`exec_quietly`](Self::exec_quietly), its output handed to `sink` as it comes,
+    /// unlimited; killed, then waited for, once `timeout` (if any) has passed or `sink`
+    /// wants no more.
+    pub(super) fn exec_streamed(
+        &self,
+        id: &str,
+        spec: &shards_abi::run::Spec,
+        argv: Option<&[String]>,
+        timeout: Option<Duration>,
+        sink: &mut (dyn FnMut(&[u8]) -> bool + Send),
+    ) -> std::io::Result<Ended> {
+        self.exec_followed(id, spec, argv, timeout.map_or(Wait::Ending, Wait::For), sink)
+    }
+
+    /// [`exec_streamed`](Self::exec_streamed), waited for as `wait` says.
+    fn exec_followed(
+        &self,
+        id: &str,
+        spec: &shards_abi::run::Spec,
+        argv: Option<&[String]>,
+        wait: Wait,
+        sink: &mut (dyn FnMut(&[u8]) -> bool + Send),
+    ) -> std::io::Result<Ended> {
+        let (mut out, into) = std::io::pipe()?;
+        let null = std::fs::File::open(crate::os::NULL)?;
+        let ours = self.send_exec(id, spec, argv, false, [null.as_fd(), into.as_fd(), into.as_fd()])?;
+        // The VM holds the rest: its end sees the output end.
+        drop((into, null));
+        Ok(std::thread::scope(|scope| {
+            let control = &ours;
+            let reader = scope.spawn(move || {
+                let mut buf = [0u8; 16 << 10];
+                while let Ok(n @ 1..) = out.read(&mut buf) {
+                    if !sink(buf.get(..n).unwrap_or_default()) {
+                        // Nobody wants the rest: the exec goes, and its output with it.
+                        kill(control);
+                        break;
+                    }
+                }
+            });
+            let ended = await_exit(&ours, wait);
+            let _ = reader.join();
+            ended
+        }))
+    }
+
+    /// An exec of `spec` in microVM `id` on the asker's own descriptors: what it
+    /// reads (with `input`, its stdin; else nothing), and where its output and errors
+    /// go; until it ends.
+    pub(super) fn exec_on(
+        &self,
+        id: &str,
+        spec: &shards_abi::run::Spec,
+        input: bool,
+        stdio: [shards_ipc::fd::BorrowedFd<'_>; 3],
+    ) -> std::io::Result<Ended> {
+        let ours = self.send_exec(id, spec, None, input, stdio)?;
+        Ok(await_exit(&ours, Wait::Ending))
+    }
+
+    /// Sends microVM `id`'s VM an exec of `spec` with `stdio`, logging its events if
+    /// it is a command (`argv`); returns the connection its end is told on.
+    fn send_exec(
+        &self,
+        id: &str,
+        spec: &shards_abi::run::Spec,
+        argv: Option<&[String]>,
+        input: bool,
+        stdio: [shards_ipc::fd::BorrowedFd<'_>; 3],
+    ) -> std::io::Result<shards_ipc::Stream> {
+        let (ours, theirs) = shards_ipc::Stream::pair()?;
+        let held = theirs.try_clone()?;
+        let handed = shards_ipc::handed(&theirs)?;
+        // Taken out of `runs` before the inbox is locked (commands.rs, exec).
+        let (socket, inbox) = match lock(&self.runs).get(id) {
+            Some(RunState::Tracked(run)) => (run.socket.clone(), run.inbox.clone()),
+            _ => return Err(std::io::Error::other("the container is not running")),
+        };
+        let number = self.next_exec.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let mut payload = Vec::with_capacity(9 + spec.encoded_len().unwrap_or(0));
+        payload.extend_from_slice(&number.to_be_bytes());
+        payload.push(if input { shards_ipc::EXEC_INTERACTIVE } else { 0 });
+        spec.encode_into(&mut payload);
+        let exec_id = argv.and_then(|argv| self.exec_events(id, argv));
+        {
+            let mut inbox = lock(&inbox);
+            inbox.execs_in_flight.push((number, held));
+            if let Some(exec_id) = exec_id {
+                inbox.exec_ids.push((number, exec_id));
+            }
+        }
+        let [stdin, stdout, stderr] = stdio;
+        let fds = [handed.as_fd(), stdin, stdout, stderr];
+        if let Err(e) = socket.send(shards_ipc::kind::EXEC_RUN, &payload, &fds) {
+            let mut held = lock(&inbox);
+            held.execs_in_flight.retain(|(n, _)| *n != number);
+            held.exec_ids.retain(|(n, _)| *n != number);
+            return Err(e);
+        }
+        Ok(ours)
+    }
+}
+
+/// Ends an exec run by the daemon: SIGKILL, on the connection its end is told on.
+fn kill(conn: &shards_ipc::Stream) {
+    let _ = shards_ipc::send(conn, shards_ipc::kind::SIGNAL, &9u32.to_be_bytes(), &[]);
+}
+
+/// How long the daemon waits for the end of an exec of its own.
+#[derive(Debug, Clone, Copy)]
+pub(super) enum Wait {
+    /// Until it ends.
+    Ending,
+    /// This long, then it is ended.
+    For(Duration),
+    /// As long as VM process `.0` runs ([`shards_vmm::platform::progressed`]), judged each
+    /// [`TAKE_TIMEOUT`], and ended once it has run nothing for that long: a microVM its
+    /// host holds at a `memory.high` is slowed there for as long as it is over it, and the
+    /// answer of one asked to give back what would bring it under comes as its host lets
+    /// it run (D188, D209; PM M467).
+    WhileRuns(u32),
+}
+
+/// Waits on `ours` for an exec's end, killing it as `wait` says and waiting on for that.
+fn await_exit(ours: &shards_ipc::Stream, wait: Wait) -> Ended {
+    await_exit_judged(ours, wait, TAKE_TIMEOUT)
+}
+
+/// [`await_exit`], a [`Wait::WhileRuns`] judged each `quiet`.
+fn await_exit_judged(ours: &shards_ipc::Stream, wait: Wait, quiet: Duration) -> Ended {
+    let _ = ours.set_read_timeout(match wait {
+        Wait::Ending => None,
+        Wait::For(timeout) => Some(timeout),
+        Wait::WhileRuns(_) => Some(quiet),
+    });
+    let mut progress = match wait {
+        Wait::WhileRuns(vm) => Some(Progress::of(vm)),
+        Wait::Ending | Wait::For(_) => None,
+    };
+    let mut timed_out = false;
+    let status = loop {
+        match shards_ipc::recv(ours) {
+            Ok(Some(m)) if m.kind == shards_ipc::kind::EXIT => {
+                break m.payload.first().map(|&s| i64::from(s));
+            }
+            Ok(Some(_)) => {}
+            Err(e)
+                if !timed_out
+                    && matches!(
+                        e.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                    ) =>
+            {
+                if progress.as_mut().is_some_and(|p| p.look().ran) {
+                    continue;
+                }
+                timed_out = true;
+                kill(ours);
+                let _ = ours.set_read_timeout(None);
+            }
+            Ok(None) | Err(_) => break None,
+        }
+    };
+    Ended { status, timed_out }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// An exec whose microVM's process runs is waited for past the wait's judging, and one
+    /// whose process runs nothing is ended: its exec told SIGKILL, its end still waited for
+    /// (PM M467).
+    #[cfg(unix)]
+    #[test]
+    fn an_exec_is_waited_for_as_long_as_its_microvm_runs() {
+        let quiet = Duration::from_millis(200);
+        let (ours, theirs) = shards_ipc::Stream::pair().unwrap();
+        let busy = std::sync::atomic::AtomicBool::new(true);
+        let me = std::process::id();
+        std::thread::scope(|s| {
+            s.spawn(|| {
+                while busy.load(Ordering::Relaxed) {
+                    std::hint::spin_loop();
+                }
+            });
+            s.spawn(|| {
+                std::thread::sleep(quiet * 4);
+                shards_ipc::send(&theirs, shards_ipc::kind::EXIT, &[7], &[]).unwrap();
+                busy.store(false, Ordering::Relaxed);
+            });
+            let ended = await_exit_judged(&ours, Wait::WhileRuns(me), quiet);
+            assert_eq!((ended.status, ended.timed_out), (Some(7), false));
+        });
+        let idle = Killed(
+            std::process::Command::new("/bin/sleep")
+                .arg("60")
+                .spawn()
+                .unwrap(),
+        );
+        let (ours, theirs) = shards_ipc::Stream::pair().unwrap();
+        std::thread::scope(|s| {
+            s.spawn(|| {
+                // The kill the wait sends, then the end it waits on for.
+                let said = shards_ipc::recv(&theirs).unwrap().unwrap();
+                assert_eq!(said.kind, shards_ipc::kind::SIGNAL);
+                shards_ipc::send(&theirs, shards_ipc::kind::EXIT, &[137], &[]).unwrap();
+            });
+            let ended = await_exit_judged(&ours, Wait::WhileRuns(idle.0.id()), quiet);
+            assert_eq!((ended.status, ended.timed_out), (Some(137), true));
+        });
+    }
+
+    /// A child killed as it drops.
+    struct Killed(std::process::Child);
+
+    impl Drop for Killed {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    fn probe(exit_code: i64) -> Probe {
+        Probe {
+            start_ns: 0,
+            end_ns: 0,
+            exit_code,
+            output: String::new(),
+        }
+    }
+
+    const SECOND: i64 = 1_000_000_000;
+
+    /// handleProbeResult's rules, case by case.
+    #[test]
+    fn probe_results_move_the_health_status() {
+        let cfg = Config {
+            retries: 2,
+            ..Config::default()
+        };
+        let mut s = State::default();
+        s.record(&cfg, probe(1), Duration::from_secs(1));
+        assert_eq!((s.status, s.failing_streak), (Status::Starting, 1));
+        s.record(&cfg, probe(3), Duration::from_secs(2));
+        assert_eq!((s.status, s.failing_streak), (Status::Unhealthy, 2));
+        s.record(&cfg, probe(0), Duration::from_secs(3));
+        assert_eq!((s.status, s.failing_streak), (Status::Healthy, 0));
+        // Retries 0 is dockerd's 3.
+        let mut s = State::default();
+        for _ in 0..2 {
+            s.record(&Config::default(), probe(-1), Duration::ZERO);
+        }
+        assert_eq!(s.status, Status::Starting);
+        s.record(&Config::default(), probe(-1), Duration::ZERO);
+        assert_eq!(s.status, Status::Unhealthy);
+    }
+
+    /// Failures within the start period count only once the microVM has been healthy.
+    #[test]
+    fn the_start_period_forgives_failures_until_the_first_success() {
+        let cfg = Config {
+            start_period: 10 * SECOND,
+            retries: 1,
+            ..Config::default()
+        };
+        let mut s = State::default();
+        s.record(&cfg, probe(1), Duration::from_secs(5));
+        assert_eq!((s.status, s.failing_streak), (Status::Starting, 0));
+        s.record(&cfg, probe(0), Duration::from_secs(6));
+        s.record(&cfg, probe(1), Duration::from_secs(7));
+        assert_eq!((s.status, s.failing_streak), (Status::Unhealthy, 1));
+        let mut late = State::default();
+        late.record(&cfg, probe(1), Duration::from_secs(11));
+        assert_eq!(late.status, Status::Unhealthy);
+    }
+
+    #[test]
+    fn the_last_five_results_are_kept() {
+        let mut s = State::default();
+        for code in 0..8 {
+            s.record(&Config::default(), probe(code), Duration::ZERO);
+        }
+        let kept: Vec<i64> = s.log.iter().map(|p| p.exit_code).collect();
+        assert_eq!(kept, [3, 4, 5, 6, 7]);
+    }
+
+    /// getInterval and the defaults of timeoutWithDefault.
+    #[test]
+    fn probes_come_at_their_intervals() {
+        let cfg = Config {
+            interval: 2 * SECOND,
+            start_period: 10 * SECOND,
+            start_interval: SECOND,
+            ..Config::default()
+        };
+        let at = Duration::from_secs;
+        assert_eq!(interval(&cfg, at(1), Status::Starting), at(1));
+        assert_eq!(interval(&cfg, at(1), Status::Healthy), at(2));
+        assert_eq!(interval(&cfg, at(11), Status::Starting), at(2));
+        assert_eq!(interval(&Config::default(), at(0), Status::Starting), at(30));
+        let started = Config {
+            start_period: 10 * SECOND,
+            ..Config::default()
+        };
+        assert_eq!(interval(&started, at(0), Status::Starting), at(5));
+        assert_eq!(timeout(&Config::default()), at(30));
+    }
+
+    #[test]
+    fn checks_run_their_command_or_none() {
+        let sh = ["/bin/sh".to_string(), "-c".to_string()];
+        let cfg = |t: &[&str]| Config {
+            test: t.iter().map(|s| s.to_string()).collect(),
+            ..Config::default()
+        };
+        assert_eq!(
+            command(&cfg(&["CMD", "a", "b"]), &sh),
+            Some(vec!["a".into(), "b".into()])
+        );
+        assert_eq!(
+            command(&cfg(&["CMD-SHELL", "a b"]), &sh),
+            Some(vec!["/bin/sh".into(), "-c".into(), "a b".into()])
+        );
+        for none in [&["NONE"][..], &[], &["WHAT", "x"]] {
+            assert_eq!(command(&cfg(none), &sh), None);
+        }
+    }
+
+    #[test]
+    fn output_is_kept_to_its_limit() {
+        assert_eq!(kept_output(b"ok", false), "ok");
+        assert_eq!(kept_output(b"ok", true), "ok...");
+    }
+}

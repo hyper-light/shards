@@ -230,7 +230,7 @@ fn layers() -> (Vec<Vec<u8>>, String) {
 }
 
 #[test]
-fn a_guest_sees_layers_stacked_as_containerd_stacks_them() {
+fn a_guest_sees_its_image_layers_stacked() {
     if cannot_run_vms() {
         return;
     }
@@ -241,7 +241,13 @@ fn a_guest_sees_layers_stacked_as_containerd_stacks_them() {
     for (i, bytes) in archives.iter().enumerate() {
         let path = dir.join(format!("layer-{i}.tar"));
         std::fs::write(&path, bytes).unwrap();
-        layer::apply(&mut tree, i as u32, BufReader::new(File::open(&path).unwrap())).unwrap();
+        layer::apply(
+            &mut tree,
+            i as u32,
+            BufReader::new(File::open(&path).unwrap()),
+            &mut |_| Ok(()),
+        )
+        .unwrap();
         files.push(File::open(&path).unwrap());
     }
     let image = dir.join("image.erofs");

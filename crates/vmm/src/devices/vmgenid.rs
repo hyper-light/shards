@@ -41,6 +41,8 @@ impl VmGenId {
             .host_ptr(self.addr, SIZE)
             .map_err(|e| format!("VMGenID: {e}"))?;
         self.memory
+            .access()
+            .map_err(|e| format!("VMGenID: {e}"))?
             .write(self.addr, &id)
             .map_err(|e| format!("VMGenID: {e}"))?;
         // SAFETY: `host` addresses the 16 guest bytes just written.

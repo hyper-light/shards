@@ -1,0 +1,20 @@
+slots-ab.sh and cli.py on kiln-a094a12d (Intel Core i9-14900HX, Fedora 44, Linux 6.19.10, KVM), test-release build of fd56a4eb, busybox:1.36
+host: Linux kiln-a094a12d 6.19.10-300.fc44.x86_64 #1 SMP PREEMPT_DYNAMIC Wed Mar 25 18:23:49 UTC 2026 x86_64 GNU/Linux
+revision: 9ae62d3f03dabb7675514deb78703a27cd644a4f
+load 7.17 15.31 18.30
+wall     old n 100 p50 22906 p90 34337 p99 81568 max 81568 us
+wall     new n 100 p50 22370 p90 33053 p99 72245 max 72245 us
+wall     new - old, paired: median -535 us, 95% [-2217, +1273]
+command  old n 100 p50 4304 p90 5435 p99 15271 max 15271 us
+command  new n 100 p50 4146 p90 5908 p99 10102 max 10102 us
+command  new - old, paired: median -164 us, 95% [-516, +177]
+outside  old n 100 p50 18519 p90 28034 p99 77476 max 77476 us
+outside  new n 100 p50 17790 p90 26821 p99 68517 max 68517 us
+outside  new - old, paired: median -44 us, 95% [-1950, +1822]
+== ab
+load 7.80 15.31 18.28
+plug disk     n 30 p50 36417 p90 53202 p99 61587 max 61587 us
+unplug disk   n 30 p50 82573 p90 99673 p99 107334 max 107334 us
+plug volume   n 30 p50 9084 p90 14270 p99 31033 max 31033 us
+unplug volume n 30 p50 4379 p90 6851 p99 8137 max 8137 us
+== cli

@@ -1,0 +1,13 @@
+F S UID        PID  PPID  C PRI  NI ADDR SZ WCHAN  STIME TTY          TIME CMD
+4 S root       197     1  0  80   0 -   558 hrtime 06:49 ?        00:00:00 sleep 1000
+4 S root       198     1  0  85   5 -   558 hrtime 06:49 ?        00:00:00 sleep 1001
+4 S averyve+   199     1  0  80   0 -   558 hrtime 06:49 ?        00:00:00 sleep 1002
+4 S 4321       200     1  0  80   0 -   558 hrtime 06:49 ?        00:00:00 sleep 1003
+0 S root       201     1  0  80   0 -   558 hrtime 06:49 ?        00:00:00 sleep 1004
+4 S root       202     1  0  80   0 -   567 do_sys 06:49 ?        00:00:00 script -qfc sleep 1005 /dev/null
+0 S root       203     1 64  80   0 -   558 hrtime 06:49 ?        00:00:02 sleep 1006
+0 S root       204     1  0  80   0 -   583 do_wai 06:49 ?        00:00:00 sh -c sleep 1007; : an arg with  spaces tab.here
+0 Z root       207   201  0  80   0 -     0 -      06:49 ?        00:00:00 [sleep] <defunct>
+0 S root       208   204  0  80   0 -   558 hrtime 06:49 ?        00:00:00 sleep 1007
+0 S root       209   202  0  80   0 -   583 do_wai 06:49 pts/0    00:00:00 sh -c sleep 1005
+0 S root       210   209  0  80   0 -   558 hrtime 06:49 pts/0    00:00:00 sleep 1005

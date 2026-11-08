@@ -1,0 +1,51 @@
+#!/bin/sh
+# Regenerates crates/seccomp/data/linux.csv: the syscalls of the guest kernel shards
+# boots (crates/shards/src/kernel.rs), by ABI, from that kernel's own tables at its tag:
+#
+#   x86_64  arch/x86/entry/syscalls/syscall_64.tbl, ABIs common and 64
+#   x32     the same, ABIs common and x32 (numbered there without X32_SYSCALL_BIT)
+#   x86     arch/x86/entry/syscalls/syscall_32.tbl, ABI i386
+#   aarch64 scripts/syscall.tbl, ABIs common, 64 and arch/arm64/kernel/Makefile.syscalls'
+#   arm     arch/arm64/tools/syscall_32.tbl (AArch32 under arm64), and the ARM-private
+#           calls of arch/arm/include/uapi/asm/unistd.h (__ARM_NR_BASE + n)
+#
+# Each line is ABI,NAME,NUMBER. shards' seccomp profiles read names by these, so a
+# profile's syscalls mean what the running kernel calls them (docs/design/architecture.md
+# D42), where Docker's runc reads them by libseccomp 2.5.4's tables of Linux 5.17.
+#
+#   scripts/seccomp/kernel-tables
+set -eu
+
+here=$(cd "$(dirname "$0")" && pwd)
+root=$(cd "$here/../.." && pwd)
+tag=v6.18.48
+base="https://raw.githubusercontent.com/gregkh/linux/$tag"
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+fetch() { curl -sfL "$base/$1" -o "$tmp/$2"; }
+fetch arch/x86/entry/syscalls/syscall_64.tbl x86_64.tbl
+fetch arch/x86/entry/syscalls/syscall_32.tbl x86.tbl
+fetch scripts/syscall.tbl generic.tbl
+fetch arch/arm64/kernel/Makefile.syscalls arm64.mk
+fetch arch/arm64/tools/syscall_32.tbl arm.tbl
+fetch arch/arm/include/uapi/asm/unistd.h arm-unistd.h
+
+abis64=$(sed -n 's/^syscall_abis_64 += //p' "$tmp/arm64.mk")
+pick() { # TABLE ABI... -> NUMBER NAME
+	table=$1
+	shift
+	awk -v abis=" $* " '/^[0-9]/ && index(abis, " " $2 " ") { print $1 "," $3 }' "$tmp/$table"
+}
+out="$root/crates/seccomp/data/linux.csv"
+{
+	echo "# Linux $tag syscalls, by ABI (scripts/seccomp/kernel-tables)"
+	pick x86_64.tbl common 64 | sed 's/^/x86_64,/'
+	pick x86_64.tbl common x32 | sed 's/^/x32,/'
+	pick x86.tbl i386 | sed 's/^/x86,/'
+	# shellcheck disable=SC2086
+	pick generic.tbl common 64 $abis64 | sed 's/^/aarch64,/'
+	pick arm.tbl common | sed 's/^/arm,/'
+	sed -n 's/^#define __ARM_NR_\([a-z0-9_]*\)[[:space:]]*(__ARM_NR_BASE+\([0-9]*\))$/\1 \2/p' "$tmp/arm-unistd.h" |
+		awk '{ printf "arm,%d,%s\n", 983040 + $2, $1 }'
+} | awk -F, 'NR == 1 { print; next } { print $1 "," $3 "," $2 }' >"$out"
+echo "wrote $out"

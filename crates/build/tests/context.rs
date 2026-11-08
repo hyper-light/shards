@@ -1,0 +1,779 @@
+//! Holds shards' walk of a build context to buildx's: the fixture tree of
+//! testdata/contexts.json, made here as scripts/build/generate made it, must send what
+//! fsutil sent under each case's filters (testdata/contexts-answers.json, recorded on a
+//! Unix host; contexts-answers-windows.json, on Windows). A symlink's permission bits are
+//! the host's own (0755 on macOS, 0777 on Linux) and BuildKit's receiver ignores them, so
+//! they are not compared.
+#![allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
+
+mod common;
+
+use serde_json::Value;
+use shards_build::context::{self, Filters};
+use shards_build::copy::fm;
+
+fn strings(v: &Value, key: &str) -> Vec<Vec<u8>> {
+    v.get(key)
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .map(|s| s.as_str().unwrap().as_bytes().to_vec())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn mode_of(m: u64) -> u64 {
+    if m as u32 & fm::SYMLINK != 0 {
+        m & !0o777
+    } else {
+        m
+    }
+}
+
+/// What fsutil sent on a Unix host, by case and path.
+const UNIX_ANSWERS: &str = include_str!("../testdata/contexts-answers.json");
+
+/// What fsutil sent on this host.
+#[cfg(unix)]
+const ANSWERS: &str = UNIX_ANSWERS;
+#[cfg(windows)]
+const ANSWERS: &str = include_str!("../testdata/contexts-answers-windows.json");
+
+/// The answers of `answers`, as shards sends them on this host. On Windows a file's other
+/// names go as links to its first, as fsutil sends them from a Unix host and not from
+/// Windows, whose `setUnixOpt` (stat_windows.go) records no inode to tell them by: shards
+/// tells them apart on NTFS (host.rs `lstat`, D180), so a file's link is the Unix answer's
+/// of its case and path. Elsewhere the answers as they are.
+fn as_sent_here(mut answers: Value) -> Value {
+    if cfg!(unix) {
+        return answers;
+    }
+    let unix: Value = serde_json::from_str(UNIX_ANSWERS).unwrap();
+    for case in answers.as_array_mut().unwrap() {
+        let name = case["name"].as_str().unwrap().to_string();
+        let Some(sent) = case.get_mut("sent").and_then(Value::as_array_mut) else {
+            continue;
+        };
+        let there = unix
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["name"] == name.as_str())
+            .unwrap();
+        for s in sent {
+            if s["mode"].as_u64().unwrap() as u32 & fm::SYMLINK != 0 {
+                continue;
+            }
+            let link = there["sent"]
+                .as_array()
+                .and_then(|a| a.iter().find(|u| u["path"] == s["path"]))
+                .map_or(Value::from(""), |u| u["link"].clone());
+            s["link"] = link;
+        }
+    }
+    answers
+}
+
+#[test]
+fn build_contexts_are_sent_whole() {
+    let spec: Value = serde_json::from_str(include_str!("../testdata/contexts.json")).unwrap();
+    let answers = as_sent_here(serde_json::from_str(ANSWERS).unwrap());
+    let tmp = shards_testdir::TempDir::new("context-test").unwrap();
+    if !common::make(&tmp, &spec["tree"]) {
+        use std::io::Write as _;
+        let _ = writeln!(std::io::stderr(), "SKIP: this user may make no symlinks here");
+        return;
+    }
+    let root = std::fs::canonicalize(&tmp).unwrap();
+    let mut failed = Vec::new();
+    for (case, want) in spec["cases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .zip(answers.as_array().unwrap())
+    {
+        let name = case["name"].as_str().unwrap();
+        let filters = Filters {
+            include: strings(case, "include"),
+            exclude: strings(case, "exclude"),
+            follow: strings(case, "follow"),
+        };
+        let got = match context::walk(&root, &filters) {
+            Err(e) => serde_json::json!({ "name": name, "error": e.0 }),
+            Ok(sent) => {
+                let sent: Vec<Value> = sent
+                    .iter()
+                    .map(|(p, st)| {
+                        serde_json::json!({
+                            "path": String::from_utf8_lossy(p),
+                            "mode": mode_of(u64::from(st.mode)),
+                            "size": st.size,
+                            "link": String::from_utf8_lossy(&st.link),
+                            "mtime": st.mtime.0 * 1_000_000_000 + i64::from(st.mtime.1),
+                        })
+                    })
+                    .collect();
+                let sent = if sent.is_empty() {
+                    Value::Null
+                } else {
+                    Value::Array(sent)
+                };
+                serde_json::json!({ "name": name, "sent": sent })
+            }
+        };
+        let mut want = want.clone();
+        if let Some(sent) = want.get_mut("sent").and_then(Value::as_array_mut) {
+            for s in sent {
+                let m = mode_of(s["mode"].as_u64().unwrap());
+                s["mode"] = m.into();
+            }
+        }
+        if got != want {
+            failed.push(format!("{name}:\n shards   {got}\n buildx   {want}"));
+        }
+    }
+    std::fs::remove_dir_all(&tmp).unwrap();
+    assert!(
+        failed.is_empty(),
+        "{} cases:\n{}",
+        failed.len(),
+        failed.join("\n")
+    );
+}
+
+fn tmp(name: &str) -> shards_testdir::TempDir {
+    shards_testdir::TempDir::new(name).unwrap()
+}
+
+/// The bug a build that reads in place would have: an edit after the context is read,
+/// keeping the file's size, must not reach the layer.
+#[test]
+fn an_edit_after_the_context_is_read_does_not_reach_the_build() {
+    use shards_build::data::Sources;
+    use shards_image::erofs::Source as _;
+    let ctx = tmp("snapshot-ctx");
+    let stage = tmp("snapshot-stage");
+    std::fs::write(ctx.join("f"), b"before").unwrap();
+    let mut sources = Sources::default();
+    let fs = context::load(&ctx, &Filters::default(), &mut sources, (0, 0), &stage).unwrap();
+    std::fs::write(ctx.join("f"), b"after!").unwrap();
+    let id = fs.lstat(b"/f").unwrap();
+    let shards_image::erofs::Kind::File { size, data } = fs.node(id).unwrap().kind else {
+        panic!("not a file")
+    };
+    let mut got = vec![0u8; size as usize];
+    sources.read_at(data, 0, &mut got).unwrap();
+    assert_eq!(got, b"before");
+    std::fs::remove_file(ctx.join("f")).unwrap();
+    let mut again = vec![0u8; size as usize];
+    sources.read_at(data, 0, &mut again).unwrap();
+    assert_eq!(again, b"before", "and a removal neither");
+    drop(sources);
+    std::fs::remove_dir_all(&ctx).unwrap();
+    std::fs::remove_dir_all(&stage).unwrap();
+}
+
+/// A file rewritten without pause while it is taken is a state the file was in, or
+/// refused as changing, and a refusal adds nothing to the stage. Each version is one
+/// write, so every state the file passes through is a whole version, and a snapshot
+/// mixing two could only be a torn read. Both ways of taking it, a large file cloned and
+/// a small one packed; by a writer that holds the file open, which no lease keeps off,
+/// and by one that opens it for each version, which a lease makes wait (host::Stage). On
+/// Windows a take opens the file sharing reads alone (host.rs `open`): a take is refused
+/// while the writer holds it, and the writer while a take does ([`is_refusal`], [`writable`]).
+#[test]
+fn a_file_written_while_it_is_taken_is_one_version_or_refused() {
+    for held in [true, false] {
+        race(4 << 20, held, 200);
+        race(64 << 10, held, 200);
+    }
+}
+
+/// What PM M100 counts: `race` at length, a version of 64 MiB being longer to write than
+/// a read is to make, which a file's times miss on APFS. `SNAPSHOT_TAKES` takes a size.
+#[test]
+#[ignore = "a measurement: SNAPSHOT_TAKES=… cargo test --release -p shards-build --test context -- --ignored --nocapture"]
+fn snapshots_at_length() {
+    let takes = std::env::var("SNAPSHOT_TAKES")
+        .ok()
+        .and_then(|n| n.parse().ok())
+        .unwrap_or(2000);
+    for held in [true, false] {
+        for size in [64 << 10, 4 << 20, 64 << 20] {
+            let (taken, refused) = race(size, held, if size > 4 << 20 { takes / 10 } else { takes });
+            println!("size {size} held {held}: {taken} taken, {refused} refused, none torn");
+        }
+    }
+}
+
+/// What a take of a 1 KiB file no one writes costs, n = `SNAPSHOT_TAKES` (PM M100): p50,
+/// p90, p99 and max, in microseconds.
+#[test]
+#[ignore = "a measurement: SNAPSHOT_TAKES=… cargo test --release -p shards-build --test context -- --ignored --nocapture"]
+fn a_take_costs() {
+    use shards_build::host::Stage;
+    let takes = std::env::var("SNAPSHOT_TAKES")
+        .ok()
+        .and_then(|n| n.parse().ok())
+        .unwrap_or(10_000);
+    let dir = tmp("snapshot-cost");
+    let stage_dir = dir.join("stage");
+    std::fs::create_dir(&stage_dir).unwrap();
+    let src = dir.join("f");
+    std::fs::write(&src, vec![b'a'; 1024]).unwrap();
+    // Past the coarse clock's tick of its writing, as a context's files are.
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    let mut stage = Stage::new(&stage_dir).unwrap();
+    let mut took: Vec<u128> = (0..takes)
+        .map(|_| {
+            let start = std::time::Instant::now();
+            stage.take(&src).unwrap();
+            start.elapsed().as_nanos()
+        })
+        .collect();
+    stage.finish().unwrap();
+    took.sort_unstable();
+    let at = |q: f64| took[((took.len() - 1) as f64 * q) as usize] as f64 / 1000.0;
+    println!(
+        "a take of 1 KiB, n {takes}: p50 {:.2} p90 {:.2} p99 {:.2} max {:.2} µs",
+        at(0.5),
+        at(0.9),
+        at(0.99),
+        at(1.0)
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// What a load of a context of `CONTEXT_FILES` files of 1 KiB, in directories of 100,
+/// costs, n = `SNAPSHOT_TAKES` loads (PM M242): whole, and with a directory of as many
+/// files left out, which the walk does not walk into; and the removal of its stage, as a
+/// build's end removes it. p50, p90, p99 and max, in ms.
+#[test]
+#[ignore = "a measurement: SNAPSHOT_TAKES=… CONTEXT_FILES=… cargo test --release -p shards-build --test context -- --ignored --nocapture"]
+fn a_context_load_costs() {
+    use shards_build::data::Sources;
+    let env = |k: &str, d: usize| std::env::var(k).ok().and_then(|n| n.parse().ok()).unwrap_or(d);
+    let (loads, files) = (env("SNAPSHOT_TAKES", 100), env("CONTEXT_FILES", 1000));
+    let ctx = tmp("load-cost");
+    for dir in ["", "left-out/"] {
+        for i in 0..files {
+            let d = ctx.join(format!("{dir}d{}", i / 100));
+            std::fs::create_dir_all(&d).unwrap();
+            std::fs::write(d.join(format!("f{i}")), vec![b'a'; 1024]).unwrap();
+        }
+    }
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    for (what, exclude) in [("whole", Vec::new()), ("in part", vec![b"left-out".to_vec()])] {
+        let filters = Filters {
+            exclude,
+            ..Filters::default()
+        };
+        let (mut took, mut removed): (Vec<u128>, Vec<u128>) = (0..loads)
+            .map(|i| {
+                let stage = tmp(&format!("load-cost-stage-{i}"));
+                let mut sources = Sources::default();
+                let start = std::time::Instant::now();
+                context::load(&ctx, &filters, &mut sources, (0, 0), &stage).unwrap();
+                let t = start.elapsed().as_nanos();
+                drop(sources);
+                let start = std::time::Instant::now();
+                drop(stage);
+                (t, start.elapsed().as_nanos())
+            })
+            .unzip();
+        for (part, took) in [("load", &mut took), ("its stage's removal", &mut removed)] {
+            took.sort_unstable();
+            let at = |q: f64| took[((took.len() - 1) as f64 * q) as usize] as f64 / 1e6;
+            println!(
+                "{part} of {files} files of 1 KiB, {what}, n {loads}: p50 {:.2} p90 {:.2} p99 {:.2} max {:.2} ms",
+                at(0.5),
+                at(0.9),
+                at(0.99),
+                at(1.0)
+            );
+        }
+    }
+}
+
+/// Whether `e` refuses a take: the file changed as it was read; on Windows also its writer
+/// holding it, which the take's open, sharing reads alone, is refused for
+/// (ERROR_SHARING_VIOLATION, host.rs `open`).
+fn is_refusal(e: &str) -> bool {
+    e.contains("file changed as the build read it") || (cfg!(windows) && e.contains("(os error 32)"))
+}
+
+/// `path` opened to write: on Windows once no take holds it, a take sharing reads alone
+/// (ERROR_SHARING_VIOLATION while one does, host.rs `open`).
+fn writable(path: &std::path::Path) -> std::fs::File {
+    loop {
+        match std::fs::File::options().write(true).open(path) {
+            Ok(f) => return f,
+            Err(e) if cfg!(windows) && e.raw_os_error() == Some(32) => std::thread::yield_now(),
+            Err(e) => panic!("{}: {e}", path.display()),
+        }
+    }
+}
+
+/// Takes the file `takes` times as a writer rewrites it, each version one write: `held`,
+/// through one descriptor; else opening it for each. How many were taken and refused.
+fn race(size: usize, held: bool, takes: usize) -> (usize, usize) {
+    use shards_build::host::{Stage, Taken};
+    use std::io::{Read, Seek, SeekFrom, Write};
+    let dir = tmp(&format!("snapshot-race-{size}"));
+    let stage_dir = dir.join("stage");
+    std::fs::create_dir(&stage_dir).unwrap();
+    let src = dir.join("f");
+    std::fs::write(&src, vec![b'a'; size]).unwrap();
+    let stop = std::sync::atomic::AtomicBool::new(false);
+    // Stops the writer however the checks end, a failed assertion included: the scope
+    // joins it before the panic goes on.
+    struct Stop<'a>(&'a std::sync::atomic::AtomicBool);
+    impl Drop for Stop<'_> {
+        fn drop(&mut self) {
+            self.0.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+    // A clone is checked as it is taken, and removed: kept, each would hold its own
+    // version's blocks while the writer goes on, 64 MiB a take at the largest.
+    let whole = |b: &[u8], what: &str| assert!(b.iter().all(|&c| c == b[0]), "{what} mixes versions");
+    let (mut packed, mut cloned, mut refused) = (Vec::new(), 0, 0);
+    let mut stage = Stage::new(&stage_dir).unwrap();
+    std::thread::scope(|s| {
+        let _stop = Stop(&stop);
+        s.spawn(|| {
+            let open = || writable(&src);
+            let mut f = open();
+            let mut n = 0u8;
+            while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                n = n.wrapping_add(1);
+                if !held {
+                    f = open();
+                }
+                f.seek(SeekFrom::Start(0)).unwrap();
+                let written = f.write(&vec![b'a' + n % 26; size]).unwrap();
+                assert_eq!(written, size, "one write, one version");
+            }
+        });
+        for _ in 0..takes {
+            match stage.take(&src) {
+                Ok((snap, t)) => {
+                    assert_eq!(snap.size, size as u64);
+                    match t {
+                        Taken::File(p) => {
+                            whole(&std::fs::read(&p).unwrap(), "a clone");
+                            std::fs::remove_file(&p).unwrap();
+                            cloned += 1;
+                        }
+                        Taken::Pack(at) => packed.push(at),
+                    }
+                }
+                Err(e) => {
+                    assert!(is_refusal(&e.to_string()), "{e}");
+                    refused += 1;
+                }
+            }
+        }
+    });
+    let pack_path = stage.pack_path();
+    stage.finish().unwrap();
+    let mut pack = std::fs::File::open(&pack_path).unwrap();
+    assert_eq!(
+        pack.metadata().unwrap().len(),
+        (packed.len() * size) as u64,
+        "a refusal adds nothing"
+    );
+    let mut b = vec![0u8; size];
+    for at in &packed {
+        pack.seek(SeekFrom::Start(*at)).unwrap();
+        pack.read_exact(&mut b).unwrap();
+        whole(&b, "a packed snapshot");
+    }
+    let files = std::fs::read_dir(&stage_dir).unwrap().count();
+    assert_eq!(files, 1, "the pack alone: no refused take left a file");
+    std::fs::remove_dir_all(&dir).unwrap();
+    (packed.len() + cloned, refused)
+}
+
+/// A context loaded while one of its files is rewritten without pause: each load takes a
+/// version the file had, or is refused as the file changing. On macOS the whole tree is
+/// cloned at once and its files taken from the clone; elsewhere each is taken on its own.
+/// On Windows a load is also refused while the writer holds the file ([`is_refusal`]).
+#[test]
+fn a_context_written_while_it_is_loaded_is_one_version_or_refused() {
+    use shards_build::data::Sources;
+    use shards_image::erofs::Source as _;
+    use std::io::{Seek, SeekFrom, Write};
+    for (size, held) in [(64 << 10, true), (64 << 10, false), (4 << 20, true)] {
+        let ctx = tmp(&format!("loaded-{size}-{held}"));
+        std::fs::create_dir(ctx.join("sub")).unwrap();
+        std::fs::write(ctx.join("top"), b"top").unwrap();
+        std::fs::write(ctx.join("sub/f"), vec![b'a'; size]).unwrap();
+        let stop = std::sync::atomic::AtomicBool::new(false);
+        struct Stop<'a>(&'a std::sync::atomic::AtomicBool);
+        impl Drop for Stop<'_> {
+            fn drop(&mut self) {
+                self.0.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+        let (mut taken, mut refused) = (0, 0);
+        let path = ctx.join("sub/f");
+        std::thread::scope(|s| {
+            let _stop = Stop(&stop);
+            s.spawn(|| {
+                let open = || writable(&path);
+                let mut f = open();
+                let mut n = 0u8;
+                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    n = n.wrapping_add(1);
+                    if !held {
+                        f = open();
+                    }
+                    f.seek(SeekFrom::Start(0)).unwrap();
+                    assert_eq!(
+                        f.write(&vec![b'a' + n % 26; size]).unwrap(),
+                        size,
+                        "one write, one version"
+                    );
+                }
+            });
+            for i in 0..50 {
+                let stage = tmp(&format!("loaded-stage-{size}-{held}-{i}"));
+                let mut sources = Sources::default();
+                match context::load(&ctx, &Filters::default(), &mut sources, (0, 0), &stage) {
+                    Ok(fs) => {
+                        let id = fs.lstat(b"/sub/f").unwrap();
+                        let shards_image::erofs::Kind::File { size: got, data } = fs.node(id).unwrap().kind
+                        else {
+                            panic!("not a file")
+                        };
+                        assert_eq!(got, size as u64);
+                        let mut b = vec![0u8; size];
+                        sources.read_at(data, 0, &mut b).unwrap();
+                        assert!(b.iter().all(|&c| c == b[0]), "a loaded context mixes versions");
+                        taken += 1;
+                    }
+                    Err(e) => {
+                        assert!(is_refusal(&e.0), "{}", e.0);
+                        refused += 1;
+                    }
+                }
+                drop(sources);
+                drop(stage);
+            }
+        });
+        assert_eq!(taken + refused, 50);
+        std::fs::remove_dir_all(&ctx).unwrap();
+    }
+}
+
+/// macOS: a context the filters leave part of is cloned by its whole directories, each
+/// at once, and its files taken from their clones; a directory left out without being
+/// walked is not cloned, and a file beside it is taken on its own.
+#[test]
+#[cfg(target_os = "macos")]
+fn a_context_is_cloned_by_its_whole_directories() {
+    use shards_build::data::Sources;
+    use shards_image::erofs::Source as _;
+    let ctx = tmp("cloned-ctx");
+    for d in ["keep/sub", "skip/deep"] {
+        std::fs::create_dir_all(ctx.join(d)).unwrap();
+    }
+    std::fs::write(ctx.join("top"), b"top").unwrap();
+    std::fs::write(ctx.join("keep/a"), b"a").unwrap();
+    std::fs::write(ctx.join("keep/sub/b"), b"b").unwrap();
+    std::fs::write(ctx.join("skip/deep/c"), b"c").unwrap();
+    let stage = tmp("cloned-stage");
+    let filters = Filters {
+        exclude: vec![b"skip".to_vec()],
+        ..Filters::default()
+    };
+    let mut sources = Sources::default();
+    let fs = context::load(&ctx, &filters, &mut sources, (0, 0), &stage).unwrap();
+    for (path, want) in [
+        (b"/top".as_slice(), b"top".as_slice()),
+        (b"/keep/a", b"a"),
+        (b"/keep/sub/b", b"b"),
+    ] {
+        let id = fs.lstat(path).unwrap();
+        let shards_image::erofs::Kind::File { size, data } = fs.node(id).unwrap().kind else {
+            panic!("not a file")
+        };
+        let mut got = vec![0u8; size as usize];
+        sources.read_at(data, 0, &mut got).unwrap();
+        assert_eq!(got, want);
+    }
+    assert!(fs.lstat(b"/skip").is_err(), "left out");
+    assert!(
+        stage.join("tree/keep/sub/b").is_file(),
+        "a whole directory cloned at once"
+    );
+    assert!(
+        !stage.join("tree/skip").exists(),
+        "a directory left out is not cloned"
+    );
+    assert!(!stage.join("tree/top").exists(), "nor the root, which holds it");
+    let files = std::fs::read_dir(&stage).unwrap().count();
+    assert_eq!(
+        files, 2,
+        "the pack and the tree: the file taken on its own left no clone"
+    );
+    drop(sources);
+    // All of it sent: the root cloned at once.
+    let stage = tmp("cloned-stage-whole");
+    let mut sources = Sources::default();
+    let fs = context::load(&ctx, &Filters::default(), &mut sources, (0, 0), &stage).unwrap();
+    assert!(fs.lstat(b"/skip/deep/c").is_ok());
+    for f in ["top", "keep/sub/b", "skip/deep/c"] {
+        assert!(
+            stage.join("tree").join(f).is_file(),
+            "{f}: the root cloned at once"
+        );
+    }
+    drop(sources);
+    std::fs::remove_dir_all(&ctx).unwrap();
+}
+
+/// macOS: a whole directory whose clone fails (here its clone's place is taken already) has
+/// its files taken one at a time, each with its own data, mode and time, as received, not
+/// the snapshot's.
+#[test]
+#[cfg(target_os = "macos")]
+fn a_directory_that_does_not_clone_is_taken_a_file_at_a_time() {
+    use shards_build::data::Sources;
+    use shards_image::erofs::Source as _;
+    let ctx = tmp("unclonable-ctx");
+    std::fs::create_dir(ctx.join("keep")).unwrap();
+    std::fs::write(ctx.join("keep/a"), b"a").unwrap();
+    let when = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_600_000_000);
+    std::fs::File::options()
+        .write(true)
+        .open(ctx.join("keep/a"))
+        .unwrap()
+        .set_modified(when)
+        .unwrap();
+    let stage = tmp("unclonable-stage");
+    std::fs::create_dir(stage.join("tree")).unwrap();
+    let mut sources = Sources::default();
+    let fs = context::load(
+        &ctx,
+        &Filters::default(),
+        &mut sources,
+        (2_000_000_000, 0),
+        &stage,
+    )
+    .unwrap();
+    assert_eq!(
+        std::fs::read_dir(stage.join("tree")).unwrap().count(),
+        0,
+        "no clone made"
+    );
+    let node = fs.node(fs.lstat(b"/keep/a").unwrap()).unwrap();
+    assert_eq!(node.meta.mtime, 1_600_000_000, "its own time, not the snapshot's");
+    let shards_image::erofs::Kind::File { size, data } = node.kind else {
+        panic!("not a file")
+    };
+    let mut got = vec![0u8; size as usize];
+    sources.read_at(data, 0, &mut got).unwrap();
+    assert_eq!(got, b"a");
+    drop(sources);
+}
+
+/// A file a symlink replaced since the walk is not followed out of the context: refused as
+/// a link, Unix's ELOOP (O_NOFOLLOW), Windows' ERROR_STOPPED_ON_SYMLINK (host.rs `open`).
+#[test]
+fn a_symlink_put_in_a_files_place_is_not_followed() {
+    let dir = tmp("snapshot-link");
+    std::fs::write(dir.join("outside"), b"secret").unwrap();
+    #[cfg(unix)]
+    let (made, refused) = (
+        std::os::unix::fs::symlink(dir.join("outside"), dir.join("f")),
+        libc::ELOOP,
+    );
+    #[cfg(windows)]
+    let (made, refused) = (
+        std::os::windows::fs::symlink_file(dir.join("outside"), dir.join("f")),
+        681, // ERROR_STOPPED_ON_SYMLINK
+    );
+    match made {
+        Ok(()) => {}
+        // ERROR_PRIVILEGE_NOT_HELD: no Developer Mode, not elevated.
+        Err(e) if cfg!(windows) && e.raw_os_error() == Some(1314) => {
+            use std::io::Write as _;
+            let _ = writeln!(std::io::stderr(), "SKIP: this user may make no symlinks here");
+            return;
+        }
+        Err(e) => panic!("{e}"),
+    }
+    std::fs::create_dir(dir.join("stage")).unwrap();
+    let mut stage = shards_build::host::Stage::new(&dir.join("stage")).unwrap();
+    let e = stage.take(&dir.join("f")).unwrap_err();
+    assert_eq!(e.raw_os_error(), Some(refused), "{e}");
+    let e = stage.read(&dir.join("f")).unwrap_err();
+    assert_eq!(e.raw_os_error(), Some(refused), "{e}");
+    stage.finish().unwrap();
+    assert_eq!(std::fs::metadata(dir.join("stage/pack")).unwrap().len(), 0, "{e}");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// A file Windows keeps as a reparse point that is no link, here one WOF compressed (`compact
+/// /exe`, IO_REPARSE_TAG_WOF), is taken as the bytes it holds, not refused as a link nor read
+/// as its reparse data.
+#[test]
+#[cfg(windows)]
+fn a_reparse_point_that_is_no_link_is_taken_as_its_bytes() {
+    use std::os::windows::fs::MetadataExt as _;
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+    let dir = tmp("snapshot-wof");
+    let bytes: Vec<u8> = (0..256 << 10).map(|i: u32| b"shards"[(i % 6) as usize]).collect();
+    std::fs::write(dir.join("f"), &bytes).unwrap();
+    let compacted = std::process::Command::new("compact.exe")
+        .args(["/c", "/exe:xpress4k", "/q"])
+        .arg(dir.join("f"))
+        .output();
+    let attributes = std::fs::symlink_metadata(dir.join("f"))
+        .unwrap()
+        .file_attributes();
+    if !compacted.is_ok_and(|o| o.status.success()) || attributes & FILE_ATTRIBUTE_REPARSE_POINT == 0 {
+        use std::io::Write as _;
+        let _ = writeln!(
+            std::io::stderr(),
+            "SKIP: compact.exe made no WOF reparse point here"
+        );
+        return;
+    }
+    std::fs::create_dir(dir.join("stage")).unwrap();
+    let mut stage = shards_build::host::Stage::new(&dir.join("stage")).unwrap();
+    let (snap, taken) = stage.take(&dir.join("f")).unwrap();
+    assert_eq!(snap.size, bytes.len() as u64);
+    let pack_path = stage.pack_path();
+    stage.finish().unwrap();
+    let got = match taken {
+        shards_build::host::Taken::File(p) => std::fs::read(p).unwrap(),
+        shards_build::host::Taken::Pack(at) => {
+            let pack = std::fs::read(pack_path).unwrap();
+            pack[at as usize..at as usize + bytes.len()].to_vec()
+        }
+    };
+    assert!(got == bytes, "the bytes it holds");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// How a test puts a link in a directory's place.
+#[derive(Debug, Clone, Copy)]
+enum LinkKind {
+    Symlink,
+    /// A junction, which any Windows user may make.
+    #[cfg(windows)]
+    Junction,
+}
+
+/// A link of `kind` at `at` to the directory `to`; false where this user may make none
+/// (Windows' ERROR_PRIVILEGE_NOT_HELD: no Developer Mode, not elevated).
+fn link_dir(kind: LinkKind, to: &std::path::Path, at: &std::path::Path) -> bool {
+    match kind {
+        #[cfg(unix)]
+        LinkKind::Symlink => std::os::unix::fs::symlink(to, at).unwrap(),
+        #[cfg(windows)]
+        LinkKind::Symlink => match std::os::windows::fs::symlink_dir(to, at) {
+            Ok(()) => {}
+            Err(e) if e.raw_os_error() == Some(1314) => return false,
+            Err(e) => panic!("{e}"),
+        },
+        #[cfg(windows)]
+        LinkKind::Junction => {
+            // A MountPointReparseBuffer (MS-FSCC 2.1.2.5) on an empty directory: its NT and
+            // print names' offsets and lengths, then each name NUL-terminated.
+            use std::os::windows::ffi::OsStrExt as _;
+            use std::os::windows::fs::OpenOptionsExt as _;
+            use std::os::windows::io::AsHandle as _;
+            use windows_sys::Win32::Storage::FileSystem::{
+                FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_GENERIC_WRITE,
+            };
+            const IO_REPARSE_TAG_MOUNT_POINT: u32 = 0xA000_0003;
+            std::fs::create_dir(at).unwrap();
+            let f = std::fs::File::options()
+                .access_mode(FILE_GENERIC_WRITE)
+                .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+                .open(at)
+                .unwrap();
+            let full = std::fs::canonicalize(to).unwrap();
+            // Its verbatim prefix, \\?\, left off.
+            let print: Vec<u16> = full.as_os_str().encode_wide().skip(4).collect();
+            let nt: Vec<u16> = r"\??\".encode_utf16().chain(print.iter().copied()).collect();
+            let bytes = |n: &[u16]| u16::try_from(n.len() * 2).unwrap();
+            let mut data = Vec::new();
+            for word in [0, bytes(&nt), bytes(&nt) + 2, bytes(&print)] {
+                data.extend(word.to_le_bytes());
+            }
+            for c in nt.iter().chain([&0]).chain(&print).chain([&0]) {
+                data.extend(c.to_le_bytes());
+            }
+            shards_ntfs::set_reparse(f.as_handle(), IO_REPARSE_TAG_MOUNT_POINT, &data).unwrap();
+        }
+    }
+    true
+}
+
+/// A directory of the context a link replaced since the walk is not followed out of it
+/// when a file below it is opened to be sent (host.rs `Beneath`): refused as a link,
+/// Unix's ELOOP or ENOTDIR (openat(2) O_NOFOLLOW|O_DIRECTORY), Windows'
+/// ERROR_STOPPED_ON_SYMLINK, a symlink's and a junction's alike; and one renamed away after
+/// its handle was opened is the directory opened still, its files those the walk saw.
+/// fsutil's sender, a path's `os.Open`, would send the link's target's file (D33).
+#[test]
+fn a_directory_a_link_replaced_since_the_walk_is_not_followed() {
+    use std::io::Read as _;
+    let read = |mut f: std::fs::File| {
+        let mut got = Vec::new();
+        f.read_to_end(&mut got).unwrap();
+        got
+    };
+    #[cfg(unix)]
+    let kinds = [LinkKind::Symlink];
+    #[cfg(windows)]
+    let kinds = [LinkKind::Junction, LinkKind::Symlink];
+    for kind in kinds {
+        let dir = tmp("snapshot-dir-link");
+        let (ctx, outside) = (dir.join("ctx"), dir.join("outside"));
+        for d in [ctx.join("d"), ctx.join("e"), outside.clone()] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        for name in ["f", "g"] {
+            std::fs::write(outside.join(name), b"secret").unwrap();
+            std::fs::write(ctx.join("d").join(name), b"mine").unwrap();
+        }
+        std::fs::write(ctx.join("e/x"), b"x").unwrap();
+        let tree = shards_build::host::Tree::at(&ctx);
+        let mut beneath = tree.beneath().unwrap();
+        assert_eq!(read(beneath.open(b"d/f").unwrap()), b"mine");
+        std::fs::rename(ctx.join("d"), ctx.join("moved")).unwrap();
+        if !link_dir(kind, &outside, &ctx.join("d")) {
+            use std::io::Write as _;
+            let _ = writeln!(std::io::stderr(), "SKIP: this user may make no {kind:?} here");
+            continue;
+        }
+        // The directory held since `d/f`'s open, wherever it went.
+        assert_eq!(read(beneath.open(b"d/g").unwrap()), b"mine", "{kind:?}");
+        // Another directory's file, then `d`'s again, walked anew from the root: the link.
+        assert_eq!(read(beneath.open(b"e/x").unwrap()), b"x");
+        let e = beneath.open(b"d/f").unwrap_err();
+        #[cfg(unix)]
+        assert!(
+            matches!(e.raw_os_error(), Some(libc::ELOOP | libc::ENOTDIR)),
+            "{kind:?}: {e}"
+        );
+        #[cfg(windows)]
+        assert_eq!(e.raw_os_error(), Some(681), "{kind:?}: {e}"); // ERROR_STOPPED_ON_SYMLINK
+        // And through a stage, as a context's load takes its files.
+        let stage_dir = dir.join("stage");
+        std::fs::create_dir(&stage_dir).unwrap();
+        let mut stage = shards_build::host::Stage::new(&stage_dir).unwrap();
+        let taken = beneath
+            .open(b"d/g")
+            .and_then(|f| stage.take_opened(f, &ctx.join("d/g")));
+        assert!(taken.is_err(), "{kind:?}: the link's target taken");
+        stage.finish().unwrap();
+        assert_eq!(std::fs::metadata(stage_dir.join("pack")).unwrap().len(), 0);
+    }
+}

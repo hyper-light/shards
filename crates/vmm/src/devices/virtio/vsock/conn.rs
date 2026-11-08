@@ -8,14 +8,13 @@
 use std::io::{self, Write as _};
 use std::net::Shutdown;
 use std::num::Wrapping;
-use std::os::fd::AsRawFd;
-use std::os::unix::net::UnixStream;
 use std::time::{Duration, Instant};
 
 use super::packet::{HOST_CID, Header, TYPE_STREAM, op, shutdown};
 use super::{Span, readv, writev};
 use crate::debug;
 use crate::memory::GuestMemory;
+use crate::platform::{AsRawSocket, RawSocket, UnixStream};
 
 /// Receive buffer advertised per connection (`buf_alloc`), which bounds what we hold for
 /// a host socket that is not reading. Firecracker's CONN_TX_BUF_SIZE.
@@ -88,6 +87,18 @@ impl std::fmt::Debug for Conn {
     }
 }
 
+/// A connection ends with its write side shut down, then its socket closed, as Unix's
+/// close ends it: on Windows a socket whose last reference its process's exit closes loses
+/// what its peer had not read, and one shut down and closed first keeps it (PM M199).
+#[cfg(windows)]
+impl Drop for Conn {
+    fn drop(&mut self) {
+        if !self.host_write_shut {
+            let _ = self.stream.shutdown(Shutdown::Write);
+        }
+    }
+}
+
 impl Conn {
     fn new(stream: UnixStream, guest_cid: u64, local_port: u32, peer_port: u32, phase: Phase) -> Conn {
         Conn {
@@ -137,8 +148,8 @@ impl Conn {
         c
     }
 
-    pub fn fd(&self) -> i32 {
-        self.stream.as_raw_fd()
+    pub fn fd(&self) -> RawSocket {
+        self.stream.raw_socket()
     }
 
     pub fn has_pending_rx(&self) -> bool {
@@ -148,6 +159,35 @@ impl Conn {
 
     pub fn expiry(&self) -> Option<Instant> {
         self.expiry
+    }
+
+    /// An ended connection, kept for its host socket until the socket's peer ends its side,
+    /// if it has not: on Windows a socket closed while its peer may still read loses the
+    /// peer what it had not read yet, where the closer held some of the peer's data unread
+    /// and where the peer writes after the close (PM M358). None where the peer has ended
+    /// its side, all it sent read, and the socket may close at once.
+    #[cfg(windows)]
+    pub fn linger(mut self) -> Option<Conn> {
+        if !self.host_write_shut {
+            self.host_write_shut = true;
+            let _ = self.stream.shutdown(Shutdown::Write);
+        }
+        (!self.host_eof && !self.drained()).then_some(self)
+    }
+
+    /// Reads what a lingering connection's host socket holds, and drops it: whether the
+    /// socket's peer has ended its side (end-of-stream, or an error: it is gone).
+    #[cfg(windows)]
+    pub fn drained(&mut self) -> bool {
+        let mut sink = [0u8; 4096];
+        loop {
+            match io::Read::read(&mut &self.stream, &mut sink) {
+                Ok(0) => return true,
+                Ok(_) => {}
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                Err(e) => return e.kind() != io::ErrorKind::WouldBlock,
+            }
+        }
     }
 
     /// Ends the connection: an RST goes to the guest and buffered data is dropped.
@@ -276,7 +316,7 @@ impl Conn {
             self.pending.rw = false;
             return Some(self.header(op::CREDIT_REQUEST));
         }
-        match readv(self.fd(), space, credit as usize) {
+        match readv(&self.stream, space, credit as usize) {
             Ok(0) => {
                 // A half-close: the host may still read what the guest sends.
                 self.pending.rw = false;
@@ -366,7 +406,7 @@ impl Conn {
         }
         let mut written = 0;
         if self.tx_buf.is_empty() {
-            written = match writev(self.fd(), payload, total) {
+            written = match writev(&self.stream, payload, total) {
                 Ok(n) => n,
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => 0,
                 Err(e) => return Err(e),
@@ -435,9 +475,23 @@ impl TxBuf {
             self.start = 0;
         }
         let old = self.data.len();
-        self.data.resize(old + len, 0);
+        // Doubling as it grows, but never past the credit the guest has, which bounds what
+        // it may have buffered (send_host): a Vec left to itself would double past it,
+        // 65,535 bytes to 131,070 for one more (audit D09).
+        let needed = old + len;
+        if needed > self.data.capacity() {
+            let target = needed
+                .max(2 * self.data.capacity())
+                .min((BUF_ALLOC as usize).max(needed));
+            self.data
+                .try_reserve_exact(target - old)
+                .map_err(|e| io::Error::new(io::ErrorKind::OutOfMemory, e.to_string()))?;
+        }
+        self.data.resize(needed, 0);
         let tail = self.data.get_mut(old..).unwrap_or_default();
-        mem.read(gpa, tail)
+        mem.access()
+            .map_err(io::Error::other)?
+            .read(gpa, tail)
             .map_err(|e| io::Error::other(format!("guest buffer: {e}")))
     }
 
@@ -537,12 +591,41 @@ mod tests {
         (c, host)
     }
 
+    /// What a connection buffers for the host never has room for more than the guest's
+    /// credit: filled a byte short, then to the brim, and in small pieces, its capacity
+    /// stays within BUF_ALLOC, where Vec's doubling would take it to twice that (audit
+    /// D09). The bytes are the guest's, in order.
+    #[test]
+    fn a_buffer_never_holds_room_past_the_credit() {
+        let g = Guest::new();
+        let full = BUF_ALLOC as usize;
+        g.mem
+            .access()
+            .unwrap()
+            .write(BASE, &(0..full).map(|i| i as u8).collect::<Vec<_>>())
+            .unwrap();
+        let mut b = TxBuf::default();
+        b.append(&g.mem, BASE, full - 1).unwrap();
+        b.append(&g.mem, BASE + full as u64 - 1, 1).unwrap();
+        assert!(b.data.capacity() <= full, "{} bytes of room", b.data.capacity());
+        assert!(b.data.iter().enumerate().all(|(i, &v)| v == i as u8));
+        let mut small = TxBuf::default();
+        for i in 0..full / 100 {
+            small.append(&g.mem, BASE + (100 * i) as u64, 100).unwrap();
+            assert!(
+                small.data.capacity() <= full,
+                "{} bytes of room",
+                small.data.capacity()
+            );
+        }
+    }
+
     #[test]
     fn guest_data_reaches_the_host_and_credit_flows_back() {
         let g = Guest::new();
         let (mut c, mut host) = established(&g, 256 * 1024);
         let data: Vec<u8> = (0..60_000u32).map(|i| i as u8).collect();
-        g.mem.write(BASE, &data).unwrap();
+        g.mem.access().unwrap().write(BASE, &data).unwrap();
         let h = Guest::guest_header(op::RW, data.len() as u32, 256 * 1024, 0);
         c.on_guest_packet(&h, &[g.span(BASE, data.len())], &g.mem);
         assert_eq!(pump(&mut c, &mut host, data.len()), data);
@@ -569,7 +652,7 @@ mod tests {
         let h = c.next_rx(&space).unwrap();
         assert_eq!((h.op, h.len), (op::RW, 3000));
         let mut got = vec![0u8; 3000];
-        g.mem.read(BASE + 44, &mut got).unwrap();
+        g.mem.access().unwrap().read(BASE + 44, &mut got).unwrap();
         assert!(got.iter().all(|&b| b == 7));
         // Out of credit: the connection asks rather than reads.
         let h = c.next_rx(&space).unwrap();
@@ -590,7 +673,7 @@ mod tests {
         let h = c.next_rx(&[g.span(BASE, 4096)]).unwrap();
         assert_eq!((h.op, h.flags), (op::SHUTDOWN, shutdown::SEND));
         // The guest still sends, and the host still receives.
-        g.mem.write(BASE, b"reply").unwrap();
+        g.mem.access().unwrap().write(BASE, b"reply").unwrap();
         let rw = Guest::guest_header(op::RW, 5, 256 * 1024, 0);
         c.on_guest_packet(&rw, &[g.span(BASE, 5)], &g.mem);
         let mut got = [0u8; 5];
@@ -612,7 +695,11 @@ mod tests {
         let (mut c, host) = established(&g, 256 * 1024);
         // Fill the host socket so nothing more is taken, then exceed BUF_ALLOC.
         let big = vec![1u8; 1 << 20];
-        g.mem.write(BASE, &big[..BUF_ALLOC as usize]).unwrap();
+        g.mem
+            .access()
+            .unwrap()
+            .write(BASE, &big[..BUF_ALLOC as usize])
+            .unwrap();
         let mut sent = 0usize;
         for _ in 0..64 {
             let h = Guest::guest_header(op::RW, BUF_ALLOC, 256 * 1024, 0);

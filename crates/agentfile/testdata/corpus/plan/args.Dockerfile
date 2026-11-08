@@ -1,0 +1,7 @@
+ARG BASE=alpine
+ARG V=1
+FROM $BASE
+ARG V
+ARG W=2
+RUN echo $V $W
+ENV E=$W

@@ -1,0 +1,2 @@
+FROM a
+ENV =x

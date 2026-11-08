@@ -1,0 +1,43 @@
+#!/usr/bin/env python3
+"""D113: HPACK's static table and Huffman code (RFC 7541 Appendices A and B) as Rust,
+read from golang.org/x/net/http2/hpack's own sources, so no entry is typed by hand.
+
+Usage: scripts/gateway/gen-tables HPACK_DIR crates/gateway/src/hpack_tables.rs
+HPACK_DIR is golang.org/x/net/http2/hpack, e.g. buildx v0.37.1's vendor/ copy of it.
+"""
+import re
+import sys
+
+hpack, out = sys.argv[1], sys.argv[2]
+tables = open(f"{hpack}/tables.go").read()
+static = open(f"{hpack}/static_table.go").read()
+
+
+def array(name):
+    m = re.search(name + r" = \[256\]uint(?:32|8)\{(.*?)\n\}", tables, re.S)
+    if not m:
+        raise SystemExit(f"no {name}")
+    return [int(v, 0) for v in re.findall(r"0x[0-9a-fA-F]+|\d+", m.group(1))]
+
+
+codes = array("huffmanCodes")
+lens = array("huffmanCodeLen")
+assert len(codes) == 256 and len(lens) == 256, (len(codes), len(lens))
+ents = re.findall(r'\{Name: "([^"]*)", Value: "([^"]*)", Sensitive: false\}', static)
+assert len(ents) == 61, len(ents)
+
+with open(out, "w") as f:
+    f.write("//! HPACK's static table and Huffman code (RFC 7541 Appendices A and B), as\n")
+    f.write("//! golang.org/x/net/http2/hpack holds them: generated from its sources by\n")
+    f.write("//! `scripts/gateway/gen-tables`; do not edit.\n\n")
+    f.write("/// The static table, index 1 first.\n")
+    f.write("pub const STATIC: [(&str, &str); 61] = [\n")
+    for n, v in ents:
+        f.write(f'    ("{n}", "{v}"),\n')
+    f.write("];\n\n")
+    f.write("/// Each symbol's code, right-aligned, and its length in bits; the 257th is EOS.\n")
+    f.write("pub const HUFFMAN: [(u32, u8); 257] = [\n")
+    for c, l in zip(codes, lens):
+        f.write(f"    (0x{c:x}, {l}),\n")
+    f.write("    (0x3fffffff, 30),\n")
+    f.write("];\n")

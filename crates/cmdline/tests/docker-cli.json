@@ -1,6 +1,1756 @@
 [
   {
     "argv": [
+      "stats",
+      "--help"
+    ],
+    "stdout": "Usage:  shards stats [OPTIONS] [CONTAINER...]\n\nDisplay a live stream of container(s) resource usage statistics\n\nAliases:\n  shards container stats, shards stats\n\nOptions:\n  -a, --all             Show all containers (default shows just running)\n      --format string   Format output using a custom template:\n                        'table':            Print output in table format\n                        with column headers (default)\n                        'table TEMPLATE':   Print output in table format\n                        using the given Go template\n                        'json':             Print in JSON format\n                        'TEMPLATE':         Print output using the given\n                        Go template.\n                        Refer to https://docs.docker.com/go/formatting/\n                        for more information about formatting output with\n                        templates\n      --no-stream       Disable streaming stats and only pull the first result\n      --no-trunc        Do not truncate output\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "stats",
+      "-h"
+    ],
+    "stdout": "Flag shorthand -h has been deprecated, use --help\nUsage:  shards stats [OPTIONS] [CONTAINER...]\n\nDisplay a live stream of container(s) resource usage statistics\n\nAliases:\n  shards container stats, shards stats\n\nOptions:\n  -a, --all             Show all containers (default shows just running)\n      --format string   Format output using a custom template:\n                        'table':            Print output in table format\n                        with column headers (default)\n                        'table TEMPLATE':   Print output in table format\n                        using the given Go template\n                        'json':             Print in JSON format\n                        'TEMPLATE':         Print output using the given\n                        Go template.\n                        Refer to https://docs.docker.com/go/formatting/\n                        for more information about formatting output with\n                        templates\n      --no-stream       Disable streaming stats and only pull the first result\n      --no-trunc        Do not truncate output\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "stats",
+      "--nope"
+    ],
+    "stdout": "",
+    "stderr": "unknown flag: --nope\n\nUsage:  shards stats [OPTIONS] [CONTAINER...]\n\nRun 'shards stats --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "stats",
+      "--format",
+      "x"
+    ],
+    "stdout": "RUN --format=x\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "container",
+      "stats",
+      "--help"
+    ],
+    "stdout": "Usage:  shards container stats [OPTIONS] [CONTAINER...]\n\nDisplay a live stream of container(s) resource usage statistics\n\nAliases:\n  shards container stats, shards stats\n\nOptions:\n  -a, --all             Show all containers (default shows just running)\n      --format string   Format output using a custom template:\n                        'table':            Print output in table format\n                        with column headers (default)\n                        'table TEMPLATE':   Print output in table format\n                        using the given Go template\n                        'json':             Print in JSON format\n                        'TEMPLATE':         Print output using the given\n                        Go template.\n                        Refer to https://docs.docker.com/go/formatting/\n                        for more information about formatting output with\n                        templates\n      --no-stream       Disable streaming stats and only pull the first result\n      --no-trunc        Do not truncate output\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "pause"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards pause' requires at least 1 argument\n\nUsage:  shards pause CONTAINER [CONTAINER...]\n\nSee 'shards pause --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "pause",
+      "--help"
+    ],
+    "stdout": "Usage:  shards pause CONTAINER [CONTAINER...]\n\nPause all processes within one or more containers\n\nAliases:\n  shards container pause, shards pause\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "pause",
+      "--nope",
+      "a"
+    ],
+    "stdout": "",
+    "stderr": "unknown flag: --nope\n\nUsage:  shards pause CONTAINER [CONTAINER...]\n\nRun 'shards pause --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "container",
+      "pause",
+      "-h"
+    ],
+    "stdout": "Flag shorthand -h has been deprecated, use --help\nUsage:  shards container pause CONTAINER [CONTAINER...]\n\nPause all processes within one or more containers\n\nAliases:\n  shards container pause, shards pause\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "unpause"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards unpause' requires at least 1 argument\n\nUsage:  shards unpause CONTAINER [CONTAINER...]\n\nSee 'shards unpause --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "unpause",
+      "--help"
+    ],
+    "stdout": "Usage:  shards unpause CONTAINER [CONTAINER...]\n\nUnpause all processes within one or more containers\n\nAliases:\n  shards container unpause, shards unpause\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "container",
+      "unpause",
+      "a",
+      "--nope"
+    ],
+    "stdout": "",
+    "stderr": "unknown flag: --nope\n\nUsage:  shards container unpause CONTAINER [CONTAINER...]\n\nRun 'shards container unpause --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "top"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards top' requires at least 1 argument\n\nUsage:  shards top CONTAINER [ps OPTIONS]\n\nSee 'shards top --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "top",
+      "--help"
+    ],
+    "stdout": "Usage:  shards top CONTAINER [ps OPTIONS]\n\nDisplay the running processes of a container\n\nAliases:\n  shards container top, shards top\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "top",
+      "-h"
+    ],
+    "stdout": "Flag shorthand -h has been deprecated, use --help\nUsage:  shards top CONTAINER [ps OPTIONS]\n\nDisplay the running processes of a container\n\nAliases:\n  shards container top, shards top\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "top",
+      "--nope"
+    ],
+    "stdout": "",
+    "stderr": "unknown flag: --nope\n\nUsage:  shards top CONTAINER [ps OPTIONS]\n\nRun 'shards top --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "container",
+      "top",
+      "--help"
+    ],
+    "stdout": "Usage:  shards container top CONTAINER [ps OPTIONS]\n\nDisplay the running processes of a container\n\nAliases:\n  shards container top, shards top\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "diff"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards diff' requires 1 argument\n\nUsage:  shards diff CONTAINER\n\nRun 'shards diff --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "diff",
+      "a",
+      "b"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards diff' requires 1 argument\n\nUsage:  shards diff CONTAINER\n\nRun 'shards diff --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "diff",
+      "--help"
+    ],
+    "stdout": "Usage:  shards diff CONTAINER\n\nInspect changes to files or directories on a container's filesystem\n\nAliases:\n  shards container diff, shards diff\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "container",
+      "diff",
+      "-h"
+    ],
+    "stdout": "Flag shorthand -h has been deprecated, use --help\nUsage:  shards container diff CONTAINER\n\nInspect changes to files or directories on a container's filesystem\n\nAliases:\n  shards container diff, shards diff\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "events",
+      "--help"
+    ],
+    "stdout": "Usage:  shards events [OPTIONS]\n\nGet real time events from the server\n\nAliases:\n  shards system events, shards events\n\nOptions:\n  -f, --filter filter   Filter output based on conditions provided\n      --format string   Format output using a custom template:\n                        'json':             Print in JSON format\n                        'TEMPLATE':         Print output using the given\n                        Go template.\n                        Refer to https://docs.docker.com/go/formatting/\n                        for more information about formatting output with\n                        templates\n      --since string    Show all events created since timestamp\n      --until string    Stream events until this timestamp\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "events",
+      "x"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards events' accepts no arguments\n\nUsage:  shards events [OPTIONS]\n\nRun 'shards events --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "events",
+      "--filter",
+      "nope"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"nope\" for \"-f, --filter\" flag: bad format of filter (expected name=value)\n\nUsage:  shards events [OPTIONS]\n\nRun 'shards events --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "events",
+      "-f",
+      "a=b",
+      "--since"
+    ],
+    "stdout": "",
+    "stderr": "flag needs an argument: --since\n\nUsage:  shards events [OPTIONS]\n\nRun 'shards events --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "system",
+      "events",
+      "-h"
+    ],
+    "stdout": "Flag shorthand -h has been deprecated, use --help\nUsage:  shards system events [OPTIONS]\n\nGet real time events from the server\n\nAliases:\n  shards system events, shards events\n\nOptions:\n  -f, --filter filter   Filter output based on conditions provided\n      --format string   Format output using a custom template:\n                        'json':             Print in JSON format\n                        'TEMPLATE':         Print output using the given\n                        Go template.\n                        Refer to https://docs.docker.com/go/formatting/\n                        for more information about formatting output with\n                        templates\n      --since string    Show all events created since timestamp\n      --until string    Stream events until this timestamp\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "export"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards export' requires 1 argument\n\nUsage:  shards export [OPTIONS] CONTAINER\n\nRun 'shards export --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "export",
+      "--help"
+    ],
+    "stdout": "Usage:  shards export [OPTIONS] CONTAINER\n\nExport a container's filesystem as a tar archive\n\nAliases:\n  shards container export, shards export\n\nOptions:\n  -o, --output string   Write to a file, instead of STDOUT\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "export",
+      "-o"
+    ],
+    "stdout": "",
+    "stderr": "flag needs an argument: 'o' in -o\n\nUsage:  shards export [OPTIONS] CONTAINER\n\nRun 'shards export --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "container",
+      "export",
+      "-h"
+    ],
+    "stdout": "Flag shorthand -h has been deprecated, use --help\nUsage:  shards container export [OPTIONS] CONTAINER\n\nExport a container's filesystem as a tar archive\n\nAliases:\n  shards container export, shards export\n\nOptions:\n  -o, --output string   Write to a file, instead of STDOUT\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "info",
+      "--help"
+    ],
+    "stdout": "Usage:  shards info [OPTIONS]\n\nDisplay system-wide information\n\nAliases:\n  shards system info, shards info\n\nOptions:\n  -f, --format string   Format output using a custom template:\n                        'json':             Print in JSON format\n                        'TEMPLATE':         Print output using the given\n                        Go template.\n                        Refer to https://docs.docker.com/go/formatting/\n                        for more information about formatting output with\n                        templates\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "info",
+      "x"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards info' accepts no arguments\n\nUsage:  shards info [OPTIONS]\n\nRun 'shards info --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "system",
+      "info",
+      "-h"
+    ],
+    "stdout": "Flag shorthand -h has been deprecated, use --help\nUsage:  shards system info [OPTIONS]\n\nDisplay system-wide information\n\nAliases:\n  shards system info, shards info\n\nOptions:\n  -f, --format string   Format output using a custom template:\n                        'json':             Print in JSON format\n                        'TEMPLATE':         Print output using the given\n                        Go template.\n                        Refer to https://docs.docker.com/go/formatting/\n                        for more information about formatting output with\n                        templates\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "info",
+      "--help"
+    ],
+    "stdout": "Usage:  shards info [OPTIONS]\n\nDisplay system-wide information\n\nAliases:\n  shards system info, shards info\n\nOptions:\n  -f, --format string   Format output using a custom template:\n                        'json':             Print in JSON format\n                        'TEMPLATE':         Print output using the given\n                        Go template.\n                        Refer to https://docs.docker.com/go/formatting/\n                        for more information about formatting output with\n                        templates\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "info",
+      "-f",
+      "{{.ID}}"
+    ],
+    "stdout": "RUN --format={{.ID}}\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "system",
+      "info",
+      "--format=json"
+    ],
+    "stdout": "RUN --format=json\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "system",
+      "df",
+      "--help"
+    ],
+    "stdout": "Usage:  shards system df [OPTIONS]\n\nShow docker disk usage\n\nOptions:\n      --format string   Format output using a custom template:\n                        'table':            Print output in table format\n                        with column headers (default)\n                        'table TEMPLATE':   Print output in table format\n                        using the given Go template\n                        'json':             Print in JSON format\n                        'TEMPLATE':         Print output using the given\n                        Go template.\n                        Refer to https://docs.docker.com/go/formatting/\n                        for more information about formatting output with\n                        templates\n  -v, --verbose         Show detailed information on space usage\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "system",
+      "df",
+      "-v",
+      "--format",
+      "{{.Type}}"
+    ],
+    "stdout": "RUN --format={{.Type}} --verbose=true\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "system",
+      "df",
+      "x"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards system df' accepts no arguments\n\nUsage:  shards system df [OPTIONS]\n\nRun 'shards system df --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "version",
+      "--help"
+    ],
+    "stdout": "Usage:  shards version [OPTIONS]\n\nShow the Docker version information\n\nOptions:\n  -f, --format string   Format output using a custom template:\n                        'json':             Print in JSON format\n                        'TEMPLATE':         Print output using the given\n                        Go template.\n                        Refer to https://docs.docker.com/go/formatting/\n                        for more information about formatting output with\n                        templates\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "version",
+      "extra"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards version' accepts no arguments\n\nUsage:  shards version [OPTIONS]\n\nRun 'shards version --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "version",
+      "-f"
+    ],
+    "stdout": "",
+    "stderr": "flag needs an argument: 'f' in -f\n\nUsage:  shards version [OPTIONS]\n\nRun 'shards version --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "inspect",
+      "--help"
+    ],
+    "stdout": "Usage:  shards inspect [OPTIONS] NAME|ID [NAME|ID...]\n\nReturn low-level information on Docker objects\n\nOptions:\n  -f, --format string   Format output using a custom template:\n                        'json':             Print in JSON format\n                        'TEMPLATE':         Print output using the given\n                        Go template.\n                        Refer to https://docs.docker.com/go/formatting/\n                        for more information about formatting output with\n                        templates\n  -s, --size            Display total file sizes if the type is container\n      --type string     Only inspect objects of the given type\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "inspect"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards inspect' requires at least 1 argument\n\nUsage:  shards inspect [OPTIONS] NAME|ID [NAME|ID...]\n\nSee 'shards inspect --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "inspect",
+      "--type",
+      "container",
+      "-f",
+      "{{.Id}}",
+      "x"
+    ],
+    "stdout": "RUN --format={{.Id}} --type=container \"x\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "container",
+      "inspect",
+      "-h"
+    ],
+    "stdout": "Flag shorthand -h has been deprecated, use --help\nUsage:  shards container inspect [OPTIONS] CONTAINER [CONTAINER...]\n\nDisplay detailed information on one or more containers\n\nOptions:\n  -f, --format string   Format output using a custom template:\n                        'json':             Print in JSON format\n                        'TEMPLATE':         Print output using the given\n                        Go template.\n                        Refer to https://docs.docker.com/go/formatting/\n                        for more information about formatting output with\n                        templates\n  -s, --size            Display total file sizes\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "container",
+      "inspect",
+      "-f",
+      "{{.Id}}",
+      "x",
+      "y"
+    ],
+    "stdout": "RUN --format={{.Id}} \"x\" \"y\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "container",
+      "inspect",
+      "--format=json",
+      "x"
+    ],
+    "stdout": "RUN --format=json \"x\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "container",
+      "inspect"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards container inspect' requires at least 1 argument\n\nUsage:  shards container inspect [OPTIONS] CONTAINER [CONTAINER...]\n\nSee 'shards container inspect --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "container",
+      "prune",
+      "--help"
+    ],
+    "stdout": "Usage:  shards container prune [OPTIONS]\n\nRemove all stopped containers\n\nOptions:\n      --filter filter   Provide filter values (e.g. \"until=\u003ctimestamp\u003e\")\n  -f, --force           Do not prompt for confirmation\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "container",
+      "prune",
+      "-f",
+      "--filter",
+      "until=1h"
+    ],
+    "stdout": "RUN --filter={\"until\":{\"1h\":true}} --force=true\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "image",
+      "prune",
+      "-h"
+    ],
+    "stdout": "Flag shorthand -h has been deprecated, use --help\nUsage:  shards image prune [OPTIONS]\n\nRemove unused images\n\nOptions:\n  -a, --all             Remove all unused images, not just dangling ones\n      --filter filter   Provide filter values (e.g. \"until=\u003ctimestamp\u003e\")\n  -f, --force           Do not prompt for confirmation\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "import",
+      "--help"
+    ],
+    "stdout": "Usage:  shards import [OPTIONS] file|URL|- [REPOSITORY[:TAG]]\n\nImport the contents from a tarball to create a filesystem image\n\nAliases:\n  shards image import, shards import\n\nOptions:\n  -c, --change list       Apply Dockerfile instruction to the created image\n  -m, --message string    Set commit message for imported image\n      --platform string   Set platform if server is multi-platform capable\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "image",
+      "import",
+      "-c",
+      "ENV A=1",
+      "-c",
+      "CMD x",
+      "-m",
+      "msg",
+      "--platform",
+      "linux/arm64",
+      "f.tar",
+      "repo:tag"
+    ],
+    "stdout": "RUN --change=[ENV A=1 CMD x] --message=msg --platform=linux/arm64 \"f.tar\" \"repo:tag\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "import"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards import' requires at least 1 argument\n\nUsage:  shards import [OPTIONS] file|URL|- [REPOSITORY[:TAG]]\n\nSee 'shards import --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "update",
+      "--help"
+    ],
+    "stdout": "Usage:  shards update [OPTIONS] CONTAINER [CONTAINER...]\n\nUpdate configuration of one or more containers\n\nAliases:\n  shards container update, shards update\n\nOptions:\n      --blkio-weight uint16        Block IO (relative weight), between 10\n                                   and 1000, or 0 to disable (default 0)\n      --cpu-period int             Limit CPU CFS (Completely Fair\n                                   Scheduler) period\n      --cpu-quota int              Limit CPU CFS (Completely Fair\n                                   Scheduler) quota\n  -c, --cpu-shares int             CPU shares (relative weight)\n      --cpus decimal               Number of CPUs\n      --cpuset-cpus string         CPUs in which to allow execution (0-3, 0,1)\n      --cpuset-mems string         MEMs in which to allow execution (0-3, 0,1)\n  -m, --memory bytes               Memory limit\n      --memory-reservation bytes   Memory soft limit\n      --memory-swap bytes          Swap limit equal to memory plus swap:\n                                   -1 to enable unlimited swap\n      --pids-limit int             Tune container pids limit (set -1 for\n                                   unlimited)\n      --restart string             Restart policy to apply when a\n                                   container exits\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "update",
+      "-m",
+      "64m",
+      "--memory-swap",
+      "-1",
+      "--cpus",
+      "1.5",
+      "-c",
+      "512",
+      "--blkio-weight",
+      "300",
+      "--pids-limit",
+      "50",
+      "--restart",
+      "on-failure:3",
+      "a",
+      "b"
+    ],
+    "stdout": "RUN --blkio-weight=300 --cpu-shares=512 --cpus=1.500 --memory=64MiB --memory-swap=-1B --pids-limit=50 --restart=on-failure:3 \"a\" \"b\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "update",
+      "--blkio-weight",
+      "70000",
+      "a"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"70000\" for \"--blkio-weight\" flag: strconv.ParseUint: parsing \"70000\": value out of range\n\nUsage:  shards update [OPTIONS] CONTAINER [CONTAINER...]\n\nRun 'shards update --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "update",
+      "--kernel-memory",
+      "10m",
+      "a"
+    ],
+    "stdout": "Flag --kernel-memory has been deprecated, and no longer supported by the kernel\nRUN --kernel-memory=10MiB \"a\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "container",
+      "update",
+      "--cpu-rt-period",
+      "1000",
+      "a"
+    ],
+    "stdout": "RUN --cpu-rt-period=1000 \"a\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "update"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards update' requires at least 1 argument\n\nUsage:  shards update [OPTIONS] CONTAINER [CONTAINER...]\n\nSee 'shards update --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "run",
+      "--ip",
+      "10.1.0.5",
+      "--ip6",
+      "fd00::5",
+      "--network-alias",
+      "a",
+      "--net-alias",
+      "b",
+      "--network",
+      "n",
+      "img"
+    ],
+    "stdout": "RUN --ip=10.1.0.5 --ip6=fd00::5 --net-alias=[a b] --network= --network-alias=[a b] \"img\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "--ip",
+      "bogus",
+      "img"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"bogus\" for \"--ip\" flag: failed to parse IP: \"bogus\"\n\nUsage:  shards run [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nRun 'shards run --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "run",
+      "-a",
+      "stdout",
+      "--attach",
+      "STDERR",
+      "-a",
+      "Stdin",
+      "img"
+    ],
+    "stdout": "RUN --attach=[stdout stderr stdin] \"img\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "-a",
+      "bogus",
+      "img"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"bogus\" for \"-a, --attach\" flag: valid streams are STDIN, STDOUT and STDERR\n\nUsage:  shards run [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nRun 'shards run --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "create",
+      "-a",
+      "stdout",
+      "img"
+    ],
+    "stdout": "RUN --attach=[stdout] \"img\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "--log-driver",
+      "json-file",
+      "--log-opt",
+      "max-size=10m",
+      "--log-opt",
+      "max-file=3",
+      "--log-opt",
+      "mode",
+      "img"
+    ],
+    "stdout": "RUN --log-driver=json-file --log-opt=[max-size=10m max-file=3 mode] \"img\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "--log-driver",
+      "none",
+      "--log-opt",
+      "max-size=1m",
+      "img"
+    ],
+    "stdout": "RUN --log-driver=none --log-opt=[max-size=1m] \"img\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "create",
+      "--log-opt",
+      "tag={{.Name}}",
+      "img"
+    ],
+    "stdout": "RUN --log-opt=[tag={{.Name}}] \"img\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "--cgroup-parent",
+      "agents-ci.slice",
+      "img"
+    ],
+    "stdout": "RUN --cgroup-parent=agents-ci.slice \"img\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "--cgroup-parent",
+      "/x",
+      "img"
+    ],
+    "stdout": "RUN --cgroup-parent=/x \"img\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "create",
+      "--cgroup-parent",
+      "/x",
+      "img"
+    ],
+    "stdout": "RUN --cgroup-parent=/x \"img\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "--io-maxbandwidth",
+      "10m",
+      "img"
+    ],
+    "stdout": "",
+    "stderr": "\"--io-maxbandwidth\" is only supported on a Docker daemon running on windows, but the Docker daemon is running on linux\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "run",
+      "--io-maxbandwidth",
+      "lots",
+      "img"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"lots\" for \"--io-maxbandwidth\" flag: invalid size: 'lots'\n\nUsage:  shards run [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nRun 'shards run --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "run",
+      "--io-maxiops",
+      "abc",
+      "img"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"abc\" for \"--io-maxiops\" flag: strconv.ParseUint: parsing \"abc\": invalid syntax\n\nUsage:  shards run [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nRun 'shards run --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "run",
+      "--io-maxiops",
+      "-1",
+      "img"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"-1\" for \"--io-maxiops\" flag: strconv.ParseUint: parsing \"-1\": invalid syntax\n\nUsage:  shards run [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nRun 'shards run --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "create",
+      "--io-maxiops",
+      "0",
+      "img"
+    ],
+    "stdout": "",
+    "stderr": "\"--io-maxiops\" is only supported on a Docker daemon running on windows, but the Docker daemon is running on linux\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "save",
+      "--platform",
+      "arm64",
+      "--platform",
+      "amd64",
+      "-o",
+      "f",
+      "img"
+    ],
+    "stdout": "RUN --output=f --platform=[arm64,amd64] \"img\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "network",
+      "create",
+      "--help"
+    ],
+    "stdout": "Usage:  shards network create [OPTIONS] NETWORK\n\nCreate a network\n\nOptions:\n      --attachable            Enable manual container attachment\n      --aux-address map       Auxiliary IPv4 or IPv6 addresses used by\n                              Network driver (default map[])\n      --config-from string    The network from which to copy the configuration\n      --config-only           Create a configuration only network\n  -d, --driver string         Driver to manage the Network (default \"bridge\")\n      --gateway ipSlice       IPv4 or IPv6 Gateway for the master subnet\n                              (default [])\n      --ingress               Create swarm routing-mesh network\n      --internal              Restrict external access to the network\n      --ip-range ipNetSlice   Allocate container ip from a sub-range\n                              (default [])\n      --ipam-driver string    IP Address Management Driver (default \"default\")\n      --ipam-opt map          Set IPAM driver specific options (default map[])\n      --ipv4                  Enable or disable IPv4 address assignment\n                              (default true)\n      --ipv6                  Enable or disable IPv6 address assignment\n      --label list            Set metadata on a network\n  -o, --opt map               Set driver specific options (default map[])\n      --scope string          Control the network's scope\n      --subnet strings        Subnet in CIDR format that represents a\n                              network segment\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "network",
+      "create",
+      "--subnet",
+      "10.1.0.0/16,10.2.0.0/16",
+      "--gateway",
+      "10.1.0.1",
+      "--ip-range",
+      "10.1.0.5/24",
+      "--aux-address",
+      "a=10.1.0.9",
+      "-o",
+      "k=v",
+      "--label",
+      "l",
+      "--ipv6",
+      "--internal",
+      "n1"
+    ],
+    "stdout": "RUN --aux-address=map[a:10.1.0.9] --gateway=[10.1.0.1] --internal=true --ip-range=[10.1.0.0/24] --ipv6=true --label=[l] --opt=map[k:v] --subnet=[10.1.0.0/16,10.2.0.0/16] \"n1\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "network",
+      "create",
+      "--gateway",
+      "bogus",
+      "n"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"bogus\" for \"--gateway\" flag: invalid string being converted to IP address: bogus\n\nUsage:  shards network create [OPTIONS] NETWORK\n\nRun 'shards network create --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "network",
+      "create",
+      "--ip-range",
+      "bogus",
+      "n"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"bogus\" for \"--ip-range\" flag: invalid string being converted to CIDR: bogus\n\nUsage:  shards network create [OPTIONS] NETWORK\n\nRun 'shards network create --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "network",
+      "create",
+      "--label",
+      "bad label",
+      "n"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"bad label\" for \"--label\" flag: label 'bad label' contains whitespaces\n\nUsage:  shards network create [OPTIONS] NETWORK\n\nRun 'shards network create --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "network",
+      "create",
+      "--label",
+      "=x",
+      "n"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"=x\" for \"--label\" flag: invalid label '=x': empty name\n\nUsage:  shards network create [OPTIONS] NETWORK\n\nRun 'shards network create --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "network",
+      "create"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards network create' requires 1 argument\n\nUsage:  shards network create [OPTIONS] NETWORK\n\nRun 'shards network create --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "network",
+      "create",
+      "a",
+      "b"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards network create' requires 1 argument\n\nUsage:  shards network create [OPTIONS] NETWORK\n\nRun 'shards network create --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "network",
+      "connect",
+      "--help"
+    ],
+    "stdout": "Usage:  shards network connect [OPTIONS] NETWORK CONTAINER\n\nConnect a container to a network\n\nOptions:\n      --alias strings           Add network-scoped alias for the container\n      --driver-opt strings      driver options for the network\n      --gw-priority int         Highest gw-priority provides the default\n                                gateway. Accepts positive and negative values.\n      --ip ip                   IPv4 address (e.g., \"172.30.100.104\")\n      --ip6 ip                  IPv6 address (e.g., \"2001:db8::33\")\n      --link list               Add link to another container\n      --link-local-ip ipSlice   Add a link-local address for the\n                                container (default [])\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "network",
+      "connect",
+      "--ip",
+      "10.1.0.5",
+      "--ip6",
+      "fd00::5",
+      "--alias",
+      "a,b",
+      "--driver-opt",
+      "k=v",
+      "--gw-priority",
+      "5",
+      "--link-local-ip",
+      "169.254.1.1",
+      "--link",
+      "c:d",
+      "n",
+      "c"
+    ],
+    "stdout": "RUN --alias=[a,b] --driver-opt=[k=v] --gw-priority=5 --ip=10.1.0.5 --ip6=fd00::5 --link=[c:d] --link-local-ip=[169.254.1.1] \"n\" \"c\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "network",
+      "connect",
+      "--ip",
+      "bogus",
+      "n",
+      "c"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"bogus\" for \"--ip\" flag: failed to parse IP: \"bogus\"\n\nUsage:  shards network connect [OPTIONS] NETWORK CONTAINER\n\nRun 'shards network connect --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "network",
+      "connect",
+      "--link-local-ip",
+      "bogus",
+      "n",
+      "c"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"bogus\" for \"--link-local-ip\" flag: invalid string being converted to IP address: bogus\n\nUsage:  shards network connect [OPTIONS] NETWORK CONTAINER\n\nRun 'shards network connect --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "network",
+      "connect",
+      "--link",
+      "bad:a:b",
+      "n",
+      "c"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"bad:a:b\" for \"--link\" flag: bad format for links: bad:a:b\n\nUsage:  shards network connect [OPTIONS] NETWORK CONTAINER\n\nRun 'shards network connect --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "network",
+      "connect",
+      "--gw-priority",
+      "x",
+      "n",
+      "c"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"x\" for \"--gw-priority\" flag: strconv.ParseInt: parsing \"x\": invalid syntax\n\nUsage:  shards network connect [OPTIONS] NETWORK CONTAINER\n\nRun 'shards network connect --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "network",
+      "connect",
+      "n"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards network connect' requires 2 arguments\n\nUsage:  shards network connect [OPTIONS] NETWORK CONTAINER\n\nRun 'shards network connect --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "network",
+      "disconnect",
+      "--help"
+    ],
+    "stdout": "Usage:  shards network disconnect [OPTIONS] NETWORK CONTAINER\n\nDisconnect a container from a network\n\nOptions:\n  -f, --force   Force the container to disconnect from a network\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "network",
+      "disconnect",
+      "-f",
+      "n",
+      "c"
+    ],
+    "stdout": "RUN --force=true \"n\" \"c\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "network",
+      "disconnect",
+      "n"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards network disconnect' requires 2 arguments\n\nUsage:  shards network disconnect [OPTIONS] NETWORK CONTAINER\n\nRun 'shards network disconnect --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "network",
+      "inspect",
+      "--help"
+    ],
+    "stdout": "Usage:  shards network inspect [OPTIONS] NETWORK [NETWORK...]\n\nDisplay detailed information on one or more networks\n\nOptions:\n  -f, --format string   Format output using a custom template:\n                        'json':             Print in JSON format\n                        'TEMPLATE':         Print output using the given\n                        Go template.\n                        Refer to https://docs.docker.com/go/formatting/\n                        for more information about formatting output with\n                        templates\n  -v, --verbose         Verbose output for diagnostics\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "network",
+      "inspect",
+      "-v",
+      "-f",
+      "{{.Name}}",
+      "a",
+      "b"
+    ],
+    "stdout": "RUN --format={{.Name}} --verbose=true \"a\" \"b\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "network",
+      "inspect"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards network inspect' requires at least 1 argument\n\nUsage:  shards network inspect [OPTIONS] NETWORK [NETWORK...]\n\nSee 'shards network inspect --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "network",
+      "ls",
+      "--help"
+    ],
+    "stdout": "Usage:  shards network ls [OPTIONS]\n\nList networks\n\nAliases:\n  shards network ls, shards network list\n\nOptions:\n  -f, --filter filter   Provide filter values (e.g. \"driver=bridge\")\n      --format string   Format output using a custom template:\n                        'table':            Print output in table format\n                        with column headers (default)\n                        'table TEMPLATE':   Print output in table format\n                        using the given Go template\n                        'json':             Print in JSON format\n                        'TEMPLATE':         Print output using the given\n                        Go template.\n                        Refer to https://docs.docker.com/go/formatting/\n                        for more information about formatting output with\n                        templates\n      --no-trunc        Do not truncate the output\n  -q, --quiet           Only display network IDs\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "network",
+      "list",
+      "-q",
+      "--no-trunc",
+      "-f",
+      "driver=bridge",
+      "--format",
+      "{{.Name}}"
+    ],
+    "stdout": "RUN --filter={\"driver\":{\"bridge\":true}} --format={{.Name}} --no-trunc=true --quiet=true\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "network",
+      "ls",
+      "-f",
+      "noequals"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"noequals\" for \"-f, --filter\" flag: bad format of filter (expected name=value)\n\nUsage:  shards network ls [OPTIONS]\n\nRun 'shards network ls --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "network",
+      "ls",
+      "x"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards network ls' accepts no arguments\n\nUsage:  shards network ls [OPTIONS]\n\nRun 'shards network ls --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "network",
+      "rm",
+      "--help"
+    ],
+    "stdout": "Usage:  shards network rm NETWORK [NETWORK...]\n\nRemove one or more networks\n\nAliases:\n  shards network rm, shards network remove\n\nOptions:\n  -f, --force   Do not error if the network does not exist\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "network",
+      "remove",
+      "-f",
+      "a",
+      "b"
+    ],
+    "stdout": "RUN --force=true \"a\" \"b\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "network",
+      "rm"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards network rm' requires at least 1 argument\n\nUsage:  shards network rm NETWORK [NETWORK...]\n\nSee 'shards network rm --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "network",
+      "prune",
+      "--help"
+    ],
+    "stdout": "Usage:  shards network prune [OPTIONS]\n\nRemove all unused networks\n\nOptions:\n      --filter filter   Provide filter values (e.g. \"until=\u003ctimestamp\u003e\")\n  -f, --force           Do not prompt for confirmation\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "network",
+      "prune",
+      "-f",
+      "--filter",
+      "until=1h"
+    ],
+    "stdout": "RUN --filter={\"until\":{\"1h\":true}} --force=true\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "network",
+      "prune",
+      "x"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards network prune' accepts no arguments\n\nUsage:  shards network prune [OPTIONS]\n\nRun 'shards network prune --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "checkpoint",
+      "create",
+      "--help"
+    ],
+    "stdout": "Usage:  shards checkpoint create [OPTIONS] CONTAINER CHECKPOINT\n\nCreate a checkpoint from a running container\n\nOptions:\n      --leave-running   Leave the container running after checkpoint\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "checkpoint",
+      "create",
+      "c"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards checkpoint create' requires 2 arguments\n\nUsage:  shards checkpoint create [OPTIONS] CONTAINER CHECKPOINT\n\nRun 'shards checkpoint create --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "checkpoint",
+      "create",
+      "--leave-running",
+      "c",
+      "cp"
+    ],
+    "stdout": "RUN --leave-running=true \"c\" \"cp\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "checkpoint",
+      "ls",
+      "--help"
+    ],
+    "stdout": "Usage:  shards checkpoint ls [OPTIONS] CONTAINER\n\nList checkpoints for a container\n\nAliases:\n  shards checkpoint ls, shards checkpoint list\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "checkpoint",
+      "list",
+      "c"
+    ],
+    "stdout": "RUN \"c\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "checkpoint",
+      "ls",
+      "c",
+      "d"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards checkpoint ls' requires 1 argument\n\nUsage:  shards checkpoint ls [OPTIONS] CONTAINER\n\nRun 'shards checkpoint ls --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "checkpoint",
+      "rm",
+      "--help"
+    ],
+    "stdout": "Usage:  shards checkpoint rm [OPTIONS] CONTAINER CHECKPOINT\n\nRemove a checkpoint\n\nAliases:\n  shards checkpoint rm, shards checkpoint remove\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "checkpoint",
+      "remove",
+      "c",
+      "cp"
+    ],
+    "stdout": "RUN \"c\" \"cp\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "checkpoint",
+      "rm",
+      "c"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards checkpoint rm' requires 2 arguments\n\nUsage:  shards checkpoint rm [OPTIONS] CONTAINER CHECKPOINT\n\nRun 'shards checkpoint rm --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "start",
+      "--checkpoint",
+      "cp",
+      "c"
+    ],
+    "stdout": "RUN --checkpoint=cp \"c\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "volume",
+      "create",
+      "--help"
+    ],
+    "stdout": "Usage:  shards volume create [OPTIONS] [VOLUME]\n\nCreate a volume\n\nOptions:\n  -d, --driver string   Specify volume driver name (default \"local\")\n      --label list      Set metadata for a volume\n  -o, --opt map         Set driver specific options (default map[])\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "volume",
+      "create",
+      "-d",
+      "local",
+      "--label",
+      "a=b",
+      "-o",
+      "type=tmpfs",
+      "-o",
+      "device=tmpfs",
+      "v1"
+    ],
+    "stdout": "RUN --driver=local --label=[a=b] --opt=map[device:tmpfs type:tmpfs] \"v1\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "volume",
+      "create",
+      "--name",
+      "n",
+      "v"
+    ],
+    "stdout": "RUN --name=n \"v\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "volume",
+      "create",
+      "a",
+      "b"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards volume create' requires at most 1 argument\n\nUsage:  shards volume create [OPTIONS] [VOLUME]\n\nRun 'shards volume create --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "volume",
+      "create",
+      "--scope",
+      "multi"
+    ],
+    "stdout": "RUN --scope=multi\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "volume",
+      "ls",
+      "--help"
+    ],
+    "stdout": "Usage:  shards volume ls [OPTIONS]\n\nList volumes\n\nAliases:\n  shards volume ls, shards volume list\n\nOptions:\n  -f, --filter filter   Provide filter values (e.g. \"dangling=true\")\n      --format string   Format output using a custom template:\n                        'table':            Print output in table format\n                        with column headers (default)\n                        'table TEMPLATE':   Print output in table format\n                        using the given Go template\n                        'json':             Print in JSON format\n                        'TEMPLATE':         Print output using the given\n                        Go template.\n                        Refer to https://docs.docker.com/go/formatting/\n                        for more information about formatting output with\n                        templates\n  -q, --quiet           Only display volume names\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "volume",
+      "list",
+      "-q",
+      "-f",
+      "dangling=true",
+      "--format",
+      "{{.Name}}"
+    ],
+    "stdout": "RUN --filter={\"dangling\":{\"true\":true}} --format={{.Name}} --quiet=true\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "volume",
+      "ls",
+      "x"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards volume ls' accepts no arguments\n\nUsage:  shards volume ls [OPTIONS]\n\nRun 'shards volume ls --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "volume",
+      "ls",
+      "--cluster"
+    ],
+    "stdout": "RUN --cluster=true\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "volume",
+      "inspect",
+      "--help"
+    ],
+    "stdout": "Usage:  shards volume inspect [OPTIONS] VOLUME [VOLUME...]\n\nDisplay detailed information on one or more volumes\n\nOptions:\n  -f, --format string   Format output using a custom template:\n                        'json':             Print in JSON format\n                        'TEMPLATE':         Print output using the given\n                        Go template.\n                        Refer to https://docs.docker.com/go/formatting/\n                        for more information about formatting output with\n                        templates\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "volume",
+      "inspect",
+      "-f",
+      "{{.Name}}",
+      "a",
+      "b"
+    ],
+    "stdout": "RUN --format={{.Name}} \"a\" \"b\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "volume",
+      "inspect"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards volume inspect' requires at least 1 argument\n\nUsage:  shards volume inspect [OPTIONS] VOLUME [VOLUME...]\n\nSee 'shards volume inspect --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "volume",
+      "rm",
+      "--help"
+    ],
+    "stdout": "Usage:  shards volume rm [OPTIONS] VOLUME [VOLUME...]\n\nRemove one or more volumes. You cannot remove a volume that is in use by a container.\n\nAliases:\n  shards volume rm, shards volume remove\n\nOptions:\n  -f, --force   Force the removal of one or more volumes\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "volume",
+      "remove",
+      "-f",
+      "a"
+    ],
+    "stdout": "RUN --force=true \"a\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "volume",
+      "rm"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards volume rm' requires at least 1 argument\n\nUsage:  shards volume rm [OPTIONS] VOLUME [VOLUME...]\n\nSee 'shards volume rm --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "volume",
+      "prune",
+      "--help"
+    ],
+    "stdout": "Usage:  shards volume prune [OPTIONS]\n\nRemove unused local volumes\n\nOptions:\n  -a, --all             Remove all unused volumes, not just anonymous ones\n      --filter filter   Provide filter values (e.g. \"label=\u003clabel\u003e\")\n  -f, --force           Do not prompt for confirmation\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "volume",
+      "prune",
+      "-af",
+      "--filter",
+      "label=a"
+    ],
+    "stdout": "RUN --all=true --filter={\"label\":{\"a\":true}} --force=true\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "volume",
+      "prune",
+      "x"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards volume prune' accepts no arguments\n\nUsage:  shards volume prune [OPTIONS]\n\nRun 'shards volume prune --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "image",
+      "prune",
+      "-af",
+      "--filter",
+      "label=a",
+      "--filter",
+      "label!=b"
+    ],
+    "stdout": "RUN --all=true --filter={\"label\":{\"a\":true},\"label!\":{\"b\":true}} --force=true\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "system",
+      "prune",
+      "--help"
+    ],
+    "stdout": "Usage:  shards system prune [OPTIONS]\n\nRemove unused data\n\nOptions:\n  -a, --all             Remove all unused images not just dangling ones\n      --filter filter   Provide filter values (e.g. \"label=\u003ckey\u003e=\u003cvalue\u003e\")\n  -f, --force           Do not prompt for confirmation\n      --volumes         Prune anonymous volumes\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "system",
+      "prune",
+      "--filter",
+      "nope"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"nope\" for \"--filter\" flag: bad format of filter (expected name=value)\n\nUsage:  shards system prune [OPTIONS]\n\nRun 'shards system prune --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "start"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards start' requires at least 1 argument\n\nUsage:  shards start [OPTIONS] CONTAINER [CONTAINER...]\n\nSee 'shards start --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "start",
+      "--help"
+    ],
+    "stdout": "Usage:  shards start [OPTIONS] CONTAINER [CONTAINER...]\n\nStart one or more stopped containers\n\nAliases:\n  shards container start, shards start\n\nOptions:\n  -a, --attach               Attach STDOUT/STDERR and forward signals\n      --checkpoint string    Restore from this checkpoint\n      --detach-keys string   Override the key sequence for detaching a\n                             container\n  -i, --interactive          Attach container's STDIN\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "start",
+      "-a",
+      "--nope",
+      "x"
+    ],
+    "stdout": "",
+    "stderr": "unknown flag: --nope\n\nUsage:  shards start [OPTIONS] CONTAINER [CONTAINER...]\n\nRun 'shards start --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "container",
+      "start",
+      "-h"
+    ],
+    "stdout": "Flag shorthand -h has been deprecated, use --help\nUsage:  shards container start [OPTIONS] CONTAINER [CONTAINER...]\n\nStart one or more stopped containers\n\nAliases:\n  shards container start, shards start\n\nOptions:\n  -a, --attach               Attach STDOUT/STDERR and forward signals\n      --checkpoint string    Restore from this checkpoint\n      --detach-keys string   Override the key sequence for detaching a\n                             container\n  -i, --interactive          Attach container's STDIN\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "restart",
+      "--help"
+    ],
+    "stdout": "Usage:  shards restart [OPTIONS] CONTAINER [CONTAINER...]\n\nRestart one or more containers\n\nAliases:\n  shards container restart, shards restart\n\nOptions:\n  -s, --signal string   Signal to send to the container\n  -t, --timeout int     Seconds to wait before killing the container\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "restart",
+      "-t",
+      "x",
+      "a"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"x\" for \"-t, --timeout\" flag: strconv.ParseInt: parsing \"x\": invalid syntax\n\nUsage:  shards restart [OPTIONS] CONTAINER [CONTAINER...]\n\nRun 'shards restart --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "restart",
+      "--time",
+      "1",
+      "--timeout",
+      "2",
+      "a"
+    ],
+    "stdout": "Flag --time has been deprecated, use --timeout instead\nRUN --time=2 --timeout=2 \"a\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "container",
+      "restart",
+      "-h"
+    ],
+    "stdout": "Flag shorthand -h has been deprecated, use --help\nUsage:  shards container restart [OPTIONS] CONTAINER [CONTAINER...]\n\nRestart one or more containers\n\nAliases:\n  shards container restart, shards restart\n\nOptions:\n  -s, --signal string   Signal to send to the container\n  -t, --timeout int     Seconds to wait before killing the container\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "create",
+      "--help"
+    ],
+    "stdout": "Usage:  shards create [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nCreate a new container\n\nAliases:\n  shards container create, shards create\n\nOptions:\n      --add-host list                    Add a custom host-to-IP mapping\n                                         (host:ip)\n      --annotation map                   Add an annotation to the\n                                         container (passed through to the\n                                         OCI runtime) (default map[])\n  -a, --attach list                      Attach to STDIN, STDOUT or STDERR\n      --blkio-weight uint16              Block IO (relative weight),\n                                         between 10 and 1000, or 0 to\n                                         disable (default 0)\n      --blkio-weight-device list         Block IO weight (relative device\n                                         weight) (default [])\n      --cap-add list                     Add Linux capabilities\n      --cap-drop list                    Drop Linux capabilities\n      --cgroup-parent string             Optional parent cgroup for the\n                                         container\n      --cgroupns string                  Cgroup namespace to use\n                                         (host|private)\n                                         'host':    Run the container in\n                                         the Docker host's cgroup\n                                         namespace\n                                         'private': Run the container in\n                                         its own private cgroup namespace\n                                         '':        Use the cgroup\n                                         namespace as configured by the\n                                                    default-cgroupns-mode\n                                         option on the daemon (default)\n      --cidfile string                   Write the container ID to the file\n      --cpu-period int                   Limit CPU CFS (Completely Fair\n                                         Scheduler) period\n      --cpu-quota int                    Limit CPU CFS (Completely Fair\n                                         Scheduler) quota\n      --cpu-rt-period int                Limit CPU real-time period in\n                                         microseconds\n      --cpu-rt-runtime int               Limit CPU real-time runtime in\n                                         microseconds\n  -c, --cpu-shares int                   CPU shares (relative weight)\n      --cpus decimal                     Number of CPUs\n      --cpuset-cpus string               CPUs in which to allow execution\n                                         (0-3, 0,1)\n      --cpuset-mems string               MEMs in which to allow execution\n                                         (0-3, 0,1)\n      --device list                      Add a host device to the container\n      --device-cgroup-rule list          Add a rule to the cgroup allowed\n                                         devices list\n      --device-read-bps list             Limit read rate (bytes per\n                                         second) from a device (default [])\n      --device-read-iops list            Limit read rate (IO per second)\n                                         from a device (default [])\n      --device-write-bps list            Limit write rate (bytes per\n                                         second) to a device (default [])\n      --device-write-iops list           Limit write rate (IO per second)\n                                         to a device (default [])\n      --dns list                         Set custom DNS servers\n      --dns-option list                  Set DNS options\n      --dns-search list                  Set custom DNS search domains\n      --domainname string                Container NIS domain name\n      --entrypoint string                Overwrite the default ENTRYPOINT\n                                         of the image\n  -e, --env list                         Set environment variables\n      --env-file list                    Read in a file of environment\n                                         variables\n      --expose list                      Expose a port or a range of ports\n      --gpus gpu-request                 GPU devices to add to the\n                                         container ('all' to pass all GPUs)\n      --group-add list                   Add additional groups to join\n      --health-cmd string                Command to run to check health\n      --health-interval duration         Time between running the check\n                                         (ms|s|m|h) (default 0s)\n      --health-retries int               Consecutive failures needed to\n                                         report unhealthy\n      --health-start-interval duration   Time between running the check\n                                         during the start period\n                                         (ms|s|m|h) (default 0s)\n      --health-start-period duration     Start period for the container\n                                         to initialize before starting\n                                         health-retries countdown\n                                         (ms|s|m|h) (default 0s)\n      --health-timeout duration          Maximum time to allow one check\n                                         to run (ms|s|m|h) (default 0s)\n      --help                             Print usage\n  -h, --hostname string                  Container host name\n      --init                             Run an init inside the container\n                                         that forwards signals and reaps\n                                         processes\n  -i, --interactive                      Keep STDIN open even if not attached\n      --ip ip                            IPv4 address (e.g., 172.30.100.104)\n      --ip6 ip                           IPv6 address (e.g., 2001:db8::33)\n      --ipc string                       IPC mode to use\n      --isolation string                 Container isolation technology\n  -l, --label list                       Set meta data on a container\n      --label-file list                  Read in a line delimited file of\n                                         labels\n      --link-local-ip list               Container IPv4/IPv6 link-local\n                                         addresses\n      --log-driver string                Logging driver for the container\n      --log-opt list                     Log driver options\n      --mac-address string               Container MAC address (e.g.,\n                                         92:d0:c6:0a:29:33)\n  -m, --memory bytes                     Memory limit\n      --memory-reservation bytes         Memory soft limit\n      --memory-swap bytes                Swap limit equal to memory plus\n                                         swap: '-1' to enable unlimited swap\n      --memory-swappiness int            Tune container memory swappiness\n                                         (0 to 100) (default -1)\n      --mount mount                      Attach a filesystem mount to the\n                                         container\n      --name string                      Assign a name to the container\n      --network network                  Connect a container to a network\n      --network-alias list               Add network-scoped alias for the\n                                         container\n      --no-healthcheck                   Disable any container-specified\n                                         HEALTHCHECK\n      --oom-kill-disable                 Disable OOM Killer\n      --oom-score-adj int                Tune host's OOM preferences\n                                         (-1000 to 1000)\n      --pid string                       PID namespace to use\n      --pids-limit int                   Tune container pids limit (set\n                                         -1 for unlimited)\n      --platform string                  Set platform if server is\n                                         multi-platform capable\n      --privileged                       Give extended privileges to this\n                                         container\n  -p, --publish list                     Publish a container's port(s) to\n                                         the host\n  -P, --publish-all                      Publish all exposed ports to\n                                         random ports\n      --pull string                      Pull image before creating\n                                         (\"always\", \"missing\", \"never\")\n                                         (default \"missing\")\n  -q, --quiet                            Suppress the pull output\n      --read-only                        Mount the container's root\n                                         filesystem as read only\n      --restart string                   Restart policy to apply when a\n                                         container exits (default \"no\")\n      --rm                               Automatically remove the\n                                         container and its associated\n                                         anonymous volumes when it exits\n      --runtime string                   Runtime to use for this container\n      --security-opt list                Security Options\n      --shm-size bytes                   Size of /dev/shm\n      --stop-signal string               Signal to stop the container\n      --stop-timeout int                 Timeout (in seconds) to stop a\n                                         container\n      --storage-opt list                 Storage driver options for the\n                                         container\n      --sysctl map                       Sysctl options (default map[])\n      --tmpfs list                       Mount a tmpfs directory\n  -t, --tty                              Allocate a pseudo-TTY\n      --ulimit ulimit                    Ulimit options (default [])\n      --umask umask                      Set umask for the container\n      --use-api-socket                   Bind mount Docker API socket and\n                                         required auth\n  -u, --user string                      Username or UID (format:\n                                         \u003cname|uid\u003e[:\u003cgroup|gid\u003e])\n      --userns string                    User namespace to use\n      --uts string                       UTS namespace to use\n  -v, --volume list                      Bind mount a volume\n      --volume-driver string             Optional volume driver for the\n                                         container\n      --volumes-from list                Mount volumes from the specified\n                                         container(s)\n  -w, --workdir string                   Working directory inside the\n                                         container\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "create"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards create' requires at least 1 argument\n\nUsage:  shards create [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nSee 'shards create --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "create",
+      "-d",
+      "alpine"
+    ],
+    "stdout": "",
+    "stderr": "unknown shorthand flag: 'd' in -d\n\nUsage:  shards create [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nRun 'shards create --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "container",
+      "create",
+      "-h"
+    ],
+    "stdout": "",
+    "stderr": "flag needs an argument: 'h' in -h\n\nUsage:  shards container create [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nRun 'shards container create --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "commit"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards commit' requires at least 1 and at most 2 arguments\n\nUsage:  shards commit [OPTIONS] CONTAINER [REPOSITORY[:TAG]]\n\nRun 'shards commit --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "commit",
+      "--help"
+    ],
+    "stdout": "Usage:  shards commit [OPTIONS] CONTAINER [REPOSITORY[:TAG]]\n\nCreate a new image from a container's changes\n\nAliases:\n  shards container commit, shards commit\n\nOptions:\n  -a, --author string    Author (e.g., \"John Hannibal Smith\n                         \u003channibal@a-team.com\u003e\")\n  -c, --change list      Apply Dockerfile instruction to the created image\n  -m, --message string   Commit message\n      --no-pause         Disable pausing container during commit\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "commit",
+      "a",
+      "b",
+      "c"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards commit' requires at least 1 and at most 2 arguments\n\nUsage:  shards commit [OPTIONS] CONTAINER [REPOSITORY[:TAG]]\n\nRun 'shards commit --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "commit",
+      "-p=false",
+      "x"
+    ],
+    "stdout": "Flag --pause has been deprecated, and enabled by default. Use --no-pause to disable pausing during commit.\nRUN --pause=false \"x\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "container",
+      "commit",
+      "-h"
+    ],
+    "stdout": "Flag shorthand -h has been deprecated, use --help\nUsage:  shards container commit [OPTIONS] CONTAINER [REPOSITORY[:TAG]]\n\nCreate a new image from a container's changes\n\nAliases:\n  shards container commit, shards commit\n\nOptions:\n  -a, --author string    Author (e.g., \"John Hannibal Smith\n                         \u003channibal@a-team.com\u003e\")\n  -c, --change list      Apply Dockerfile instruction to the created image\n  -m, --message string   Commit message\n      --no-pause         Disable pausing container during commit\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "cp"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards cp' requires 2 arguments\n\nUsage:  shards cp [OPTIONS] CONTAINER:SRC_PATH DEST_PATH|-\n\tdocker cp [OPTIONS] SRC_PATH|- CONTAINER:DEST_PATH\n\nRun 'shards cp --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "cp",
+      "--help"
+    ],
+    "stdout": "Usage:  shards cp [OPTIONS] CONTAINER:SRC_PATH DEST_PATH|-\n\tdocker cp [OPTIONS] SRC_PATH|- CONTAINER:DEST_PATH\n\nCopy files/folders between a container and the local filesystem\n\nUse '-' as the source to read a tar archive from stdin\nand extract it to a directory destination in a container.\nUse '-' as the destination to stream a tar archive of a\ncontainer source to stdout.\n\nAliases:\n  shards container cp, shards cp\n\nOptions:\n  -a, --archive       Archive mode (copy all uid/gid information)\n  -L, --follow-link   Always follow symlinks in SRC_PATH\n  -q, --quiet         Suppress progress output during copy. Progress\n                      output is automatically suppressed if no terminal\n                      is attached\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "cp",
+      "a",
+      "b",
+      "c"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards cp' requires 2 arguments\n\nUsage:  shards cp [OPTIONS] CONTAINER:SRC_PATH DEST_PATH|-\n\tdocker cp [OPTIONS] SRC_PATH|- CONTAINER:DEST_PATH\n\nRun 'shards cp --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "cp",
+      "-x",
+      "a:/x",
+      "b"
+    ],
+    "stdout": "",
+    "stderr": "unknown shorthand flag: 'x' in -x\n\nUsage:  shards cp [OPTIONS] CONTAINER:SRC_PATH DEST_PATH|-\n\tdocker cp [OPTIONS] SRC_PATH|- CONTAINER:DEST_PATH\n\nRun 'shards cp --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "container",
+      "cp",
+      "-h"
+    ],
+    "stdout": "Flag shorthand -h has been deprecated, use --help\nUsage:  shards container cp [OPTIONS] CONTAINER:SRC_PATH DEST_PATH|-\n\tdocker cp [OPTIONS] SRC_PATH|- CONTAINER:DEST_PATH\n\nCopy files/folders between a container and the local filesystem\n\nUse '-' as the source to read a tar archive from stdin\nand extract it to a directory destination in a container.\nUse '-' as the destination to stream a tar archive of a\ncontainer source to stdout.\n\nAliases:\n  shards container cp, shards cp\n\nOptions:\n  -a, --archive       Archive mode (copy all uid/gid information)\n  -L, --follow-link   Always follow symlinks in SRC_PATH\n  -q, --quiet         Suppress progress output during copy. Progress\n                      output is automatically suppressed if no terminal\n                      is attached\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
       "run"
     ],
     "stdout": "",
@@ -10,9 +1760,1139 @@
   {
     "argv": [
       "run",
+      "--label",
+      "a=1",
+      "-l",
+      "b",
+      "--label-file",
+      "f",
+      "alpine"
+    ],
+    "stdout": "RUN --label=[a=1 b] --label-file=[f] \"alpine\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "--label",
+      "=x",
+      "alpine"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"=x\" for \"-l, --label\" flag: invalid label '=x': empty name\n\nUsage:  shards run [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nRun 'shards run --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "run",
+      "--label",
+      "a b=1",
+      "alpine"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"a b=1\" for \"-l, --label\" flag: label 'a b' contains whitespaces\n\nUsage:  shards run [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nRun 'shards run --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "run",
+      "--dns",
+      " 1.1.1.1 ",
+      "--dns",
+      "::ffff:8.8.8.8",
+      "alpine"
+    ],
+    "stdout": "RUN --dns=[1.1.1.1 8.8.8.8] \"alpine\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "--dns",
+      "nope",
+      "alpine"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"nope\" for \"--dns\" flag: IP address is not correctly formatted: nope\n\nUsage:  shards run [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nRun 'shards run --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "run",
+      "--dns-search",
+      "example.com.",
+      "--dns-search",
+      ".",
+      "alpine"
+    ],
+    "stdout": "RUN --dns-search=[example.com .] \"alpine\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "--dns-search",
+      "-bad",
+      "alpine"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"-bad\" for \"--dns-search\" flag: -bad is not a valid domain\n\nUsage:  shards run [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nRun 'shards run --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "run",
+      "--dns-search",
+      "123",
+      "alpine"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"123\" for \"--dns-search\" flag: 123 is not a valid domain\n\nUsage:  shards run [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nRun 'shards run --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "run",
+      "--dns-option",
+      "ndots:2",
+      "--dns-opt",
+      "edns0",
+      "alpine"
+    ],
+    "stdout": "RUN --dns-opt=[ndots:2 edns0] --dns-option=[ndots:2 edns0] \"alpine\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "--add-host",
+      "a=1.2.3.4",
+      "--add-host",
+      "b:[::1]",
+      "--add-host",
+      "c:host-gateway",
+      "alpine"
+    ],
+    "stdout": "RUN --add-host=[a:1.2.3.4 b:::1 c:host-gateway] \"alpine\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "--add-host",
+      "a",
+      "alpine"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"a\" for \"--add-host\" flag: bad format for add-host: \"a\"\n\nUsage:  shards run [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nRun 'shards run --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "run",
+      "--add-host",
+      "a:nope",
+      "alpine"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"a:nope\" for \"--add-host\" flag: invalid IP address in add-host: \"nope\"\n\nUsage:  shards run [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nRun 'shards run --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "run",
+      "--domainname",
+      "example.org",
+      "--expose",
+      "80",
+      "--expose",
+      "7000-7002/udp",
+      "alpine"
+    ],
+    "stdout": "RUN --domainname=example.org --expose=[80 7000-7002/udp] \"alpine\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "--env-file",
+      "a.env",
+      "alpine"
+    ],
+    "stdout": "RUN --env-file=[a.env] \"alpine\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "-q",
+      "--sig-proxy=false",
+      "--cidfile",
+      "/tmp/cid",
+      "--platform",
+      "linux/amd64",
+      "alpine"
+    ],
+    "stdout": "RUN --cidfile=/tmp/cid --platform=linux/amd64 --quiet=true --sig-proxy=false \"alpine\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "--sig-proxy",
+      "x",
+      "alpine"
+    ],
+    "stdout": "RUN --sig-proxy=true \"x\" \"alpine\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "-m",
+      "1.5g",
+      "--memory-reservation",
+      "512m",
+      "--memory-swap",
+      "-1",
+      "--cpus",
+      "1.5",
+      "-c",
+      "512",
+      "--cpuset-cpus",
+      "0-1",
+      "--pids-limit",
+      "100",
+      "alpine"
+    ],
+    "stdout": "RUN --cpu-shares=512 --cpus=1.500 --cpuset-cpus=0-1 --memory=1.5GiB --memory-reservation=512MiB --memory-swap=-1B --pids-limit=100 \"alpine\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "--memory",
+      "32",
+      "--memory-swap",
+      "64MiB",
+      "--cpus",
+      "3/2",
+      "alpine"
+    ],
+    "stdout": "RUN --cpus=1.500 --memory=32B --memory-swap=64MiB \"alpine\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "-m",
+      "32.3 MiB",
+      "--cpus",
+      "0x1p-1",
+      "alpine"
+    ],
+    "stdout": "RUN --cpus=0.500 --memory=32.3MiB \"alpine\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "-m",
+      "0.3 MB",
+      "--cpus",
+      "1e-9",
+      "alpine"
+    ],
+    "stdout": "RUN --cpus=0.000 --memory=307.2KiB \"alpine\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "-m",
+      "1_024k",
+      "--cpus",
+      "2.5e1",
+      "alpine"
+    ],
+    "stdout": "RUN --cpus=25.000 --memory=1MiB \"alpine\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "-m",
+      "1023.99999k",
+      "alpine"
+    ],
+    "stdout": "RUN --memory=1024KiB \"alpine\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "-m",
+      "32m b",
+      "alpine"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"32m b\" for \"-m, --memory\" flag: strconv.ParseFloat: parsing \"32m\": invalid syntax\n\nUsage:  shards run [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nRun 'shards run --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "run",
+      "-m",
+      "32 mbmb",
+      "alpine"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"32 mbmb\" for \"-m, --memory\" flag: invalid suffix: 'mbmb'\n\nUsage:  shards run [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nRun 'shards run --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "run",
+      "-m",
+      "32 MBMB",
+      "alpine"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"32 MBMB\" for \"-m, --memory\" flag: invalid suffix: 'MBMB'\n\nUsage:  shards run [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nRun 'shards run --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "run",
+      "-m",
+      "32bm",
+      "alpine"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"32bm\" for \"-m, --memory\" flag: invalid suffix: 'bm'\n\nUsage:  shards run [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nRun 'shards run --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "run",
+      "-m",
+      "32Xb",
+      "alpine"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"32Xb\" for \"-m, --memory\" flag: invalid suffix: 'xb'\n\nUsage:  shards run [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nRun 'shards run --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "run",
+      "-m",
+      "-32",
+      "alpine"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"-32\" for \"-m, --memory\" flag: invalid size: '-32'\n\nUsage:  shards run [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nRun 'shards run --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "run",
+      "-m",
+      "hello",
+      "alpine"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"hello\" for \"-m, --memory\" flag: invalid size: 'hello'\n\nUsage:  shards run [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nRun 'shards run --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "run",
+      "-m",
+      "",
+      "alpine"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"\" for \"-m, --memory\" flag: invalid size: ''\n\nUsage:  shards run [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nRun 'shards run --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "run",
+      "-m",
+      "1e400",
+      "alpine"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"1e400\" for \"-m, --memory\" flag: strconv.ParseFloat: parsing \"1e400\": value out of range\n\nUsage:  shards run [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nRun 'shards run --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "run",
+      "-m",
+      "0x10",
+      "alpine"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"0x10\" for \"-m, --memory\" flag: strconv.ParseFloat: parsing \"0x10\": invalid syntax\n\nUsage:  shards run [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nRun 'shards run --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "run",
+      "-m",
+      "0x1p4k",
+      "alpine"
+    ],
+    "stdout": "RUN --memory=16KiB \"alpine\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "-m",
+      "inf b",
+      "alpine"
+    ],
+    "stdout": "RUN --memory=8EiB \"alpine\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "--memory-swap",
+      "-2",
+      "alpine"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"-2\" for \"--memory-swap\" flag: invalid size: '-2'\n\nUsage:  shards run [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nRun 'shards run --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "run",
+      "--cpus",
+      "1/3",
+      "alpine"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"1/3\" for \"--cpus\" flag: value is too precise\n\nUsage:  shards run [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nRun 'shards run --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "run",
+      "--cpus",
+      "x",
+      "alpine"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"x\" for \"--cpus\" flag: failed to parse x as a rational number\n\nUsage:  shards run [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nRun 'shards run --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "run",
+      "--cpus",
+      "1/0",
+      "alpine"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"1/0\" for \"--cpus\" flag: failed to parse 1/0 as a rational number\n\nUsage:  shards run [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nRun 'shards run --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "run",
+      "--cpus",
+      "-1",
+      "alpine"
+    ],
+    "stdout": "RUN --cpus=-1.000 \"alpine\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "--cpus",
+      "0b1.1",
+      "alpine"
+    ],
+    "stdout": "RUN --cpus=1.500 \"alpine\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "--cpus",
+      "010/2",
+      "alpine"
+    ],
+    "stdout": "RUN --cpus=4.000 \"alpine\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "--cpus",
+      "1_0",
+      "alpine"
+    ],
+    "stdout": "RUN --cpus=10.000 \"alpine\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "--cpus",
+      "1.9995",
+      "alpine"
+    ],
+    "stdout": "RUN --cpus=2.000 \"alpine\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "--cpus",
+      "0.0005",
+      "alpine"
+    ],
+    "stdout": "RUN --cpus=0.001 \"alpine\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "--cpus",
+      "1e30",
+      "alpine"
+    ],
+    "stdout": "RUN --cpus=6873995514.007 \"alpine\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "--cpus",
+      "0x1.8",
+      "alpine"
+    ],
+    "stdout": "RUN --cpus=1.500 \"alpine\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "--cpus",
+      "1p1",
+      "alpine"
+    ],
+    "stdout": "RUN --cpus=2.000 \"alpine\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "--cpus",
+      ".5",
+      "alpine"
+    ],
+    "stdout": "RUN --cpus=0.500 \"alpine\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "--cpus",
+      "5.",
+      "alpine"
+    ],
+    "stdout": "RUN --cpus=5.000 \"alpine\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "--cpus",
+      "+0",
+      "alpine"
+    ],
+    "stdout": "RUN --cpus= \"alpine\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "--cpus",
+      "1e-10",
+      "alpine"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"1e-10\" for \"--cpus\" flag: value is too precise\n\nUsage:  shards run [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nRun 'shards run --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "run",
+      "--memory-swappiness",
+      "101",
+      "alpine"
+    ],
+    "stdout": "RUN --memory-swappiness=101 \"alpine\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "--oom-kill-disable",
+      "--cpu-period",
+      "50000",
+      "--cpu-quota",
+      "25000",
+      "--cpuset-mems",
+      "0",
+      "alpine"
+    ],
+    "stdout": "RUN --cpu-period=50000 --cpu-quota=25000 --cpuset-mems=0 --oom-kill-disable=true \"alpine\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "create",
+      "-m",
+      "64m",
+      "--cpus",
+      "2",
+      "alpine"
+    ],
+    "stdout": "RUN --cpus=2.000 --memory=64MiB \"alpine\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "--read-only",
+      "--tmpfs",
+      "/run:size=1m,exec",
+      "--tmpfs",
+      "/tmp",
+      "--shm-size",
+      "128m",
+      "--ulimit",
+      "nofile=1024:2048",
+      "--ulimit",
+      "nproc=10",
+      "--sysctl",
+      "net.core.somaxconn=1024",
+      "--sysctl",
+      "kernel.shmmax=1",
+      "--sysctl",
+      "net.core.somaxconn=2048",
+      "alpine"
+    ],
+    "stdout": "RUN --read-only=true --shm-size=128MiB --sysctl=map[kernel.shmmax:1 net.core.somaxconn:2048] --tmpfs=[/run:size=1m,exec /tmp] --ulimit=[nofile=1024:2048 nproc=10:10] \"alpine\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "--sysctl",
+      "kernel.hostname=x",
+      "alpine"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"kernel.hostname=x\" for \"--sysctl\" flag: sysctl 'kernel.hostname=x' is not allowed\n\nUsage:  shards run [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nRun 'shards run --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "run",
+      "--sysctl",
+      "net",
+      "alpine"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"net\" for \"--sysctl\" flag: sysctl 'net' is not allowed\n\nUsage:  shards run [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nRun 'shards run --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "run",
+      "--sysctl",
+      "=1",
+      "alpine"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"=1\" for \"--sysctl\" flag: sysctl '=1' is not allowed\n\nUsage:  shards run [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nRun 'shards run --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "run",
+      "--sysctl",
+      "fs.mqueue.msg_max=10",
+      "--sysctl",
+      "kernel.sem=1 2 3 4",
+      "alpine"
+    ],
+    "stdout": "RUN --sysctl=map[fs.mqueue.msg_max:10 kernel.sem:1 2 3 4] \"alpine\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "--ulimit",
+      "as=1",
+      "alpine"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"as=1\" for \"--ulimit\" flag: invalid ulimit type: as\n\nUsage:  shards run [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nRun 'shards run --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "run",
+      "--gpus",
+      "all",
       "--help"
     ],
-    "stdout": "Usage:  shards run [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nCreate and run a new container from an image\n\nAliases:\n  shards container run, shards run\n\nOptions:\n  -d, --detach               Run container in background and print\n                             container ID\n      --detach-keys string   Override the key sequence for detaching a\n                             container\n      --entrypoint string    Overwrite the default ENTRYPOINT of the image\n  -e, --env list             Set environment variables\n      --help                 Print usage\n  -h, --hostname string      Container host name\n      --init                 Run an init inside the container that\n                             forwards signals and reaps processes\n  -i, --interactive          Keep STDIN open even if not attached\n      --name string          Assign a name to the container\n      --pull string          Pull image before running (\"always\",\n                             \"missing\", \"never\") (default \"missing\")\n      --rm                   Automatically remove the container and its\n                             associated anonymous volumes when it exits\n  -t, --tty                  Allocate a pseudo-TTY\n  -u, --user string          Username or UID (format:\n                             \u003cname|uid\u003e[:\u003cgroup|gid\u003e])\n  -w, --workdir string       Working directory inside the container\n",
+    "stdout": "Usage:  shards run [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nCreate and run a new container from an image\n\nAliases:\n  shards container run, shards run\n\nOptions:\n      --add-host list                    Add a custom host-to-IP mapping\n                                         (host:ip)\n      --annotation map                   Add an annotation to the\n                                         container (passed through to the\n                                         OCI runtime) (default map[])\n  -a, --attach list                      Attach to STDIN, STDOUT or STDERR\n      --blkio-weight uint16              Block IO (relative weight),\n                                         between 10 and 1000, or 0 to\n                                         disable (default 0)\n      --blkio-weight-device list         Block IO weight (relative device\n                                         weight) (default [])\n      --cap-add list                     Add Linux capabilities\n      --cap-drop list                    Drop Linux capabilities\n      --cgroup-parent string             Optional parent cgroup for the\n                                         container\n      --cgroupns string                  Cgroup namespace to use\n                                         (host|private)\n                                         'host':    Run the container in\n                                         the Docker host's cgroup\n                                         namespace\n                                         'private': Run the container in\n                                         its own private cgroup namespace\n                                         '':        Use the cgroup\n                                         namespace as configured by the\n                                                    default-cgroupns-mode\n                                         option on the daemon (default)\n      --cidfile string                   Write the container ID to the file\n      --cpu-period int                   Limit CPU CFS (Completely Fair\n                                         Scheduler) period\n      --cpu-quota int                    Limit CPU CFS (Completely Fair\n                                         Scheduler) quota\n      --cpu-rt-period int                Limit CPU real-time period in\n                                         microseconds\n      --cpu-rt-runtime int               Limit CPU real-time runtime in\n                                         microseconds\n  -c, --cpu-shares int                   CPU shares (relative weight)\n      --cpus decimal                     Number of CPUs\n      --cpuset-cpus string               CPUs in which to allow execution\n                                         (0-3, 0,1)\n      --cpuset-mems string               MEMs in which to allow execution\n                                         (0-3, 0,1)\n  -d, --detach                           Run container in background and\n                                         print container ID\n      --detach-keys string               Override the key sequence for\n                                         detaching a container\n      --device list                      Add a host device to the container\n      --device-cgroup-rule list          Add a rule to the cgroup allowed\n                                         devices list\n      --device-read-bps list             Limit read rate (bytes per\n                                         second) from a device (default [])\n      --device-read-iops list            Limit read rate (IO per second)\n                                         from a device (default [])\n      --device-write-bps list            Limit write rate (bytes per\n                                         second) to a device (default [])\n      --device-write-iops list           Limit write rate (IO per second)\n                                         to a device (default [])\n      --dns list                         Set custom DNS servers\n      --dns-option list                  Set DNS options\n      --dns-search list                  Set custom DNS search domains\n      --domainname string                Container NIS domain name\n      --entrypoint string                Overwrite the default ENTRYPOINT\n                                         of the image\n  -e, --env list                         Set environment variables\n      --env-file list                    Read in a file of environment\n                                         variables\n      --expose list                      Expose a port or a range of ports\n      --gpus gpu-request                 GPU devices to add to the\n                                         container ('all' to pass all GPUs)\n      --group-add list                   Add additional groups to join\n      --health-cmd string                Command to run to check health\n      --health-interval duration         Time between running the check\n                                         (ms|s|m|h) (default 0s)\n      --health-retries int               Consecutive failures needed to\n                                         report unhealthy\n      --health-start-interval duration   Time between running the check\n                                         during the start period\n                                         (ms|s|m|h) (default 0s)\n      --health-start-period duration     Start period for the container\n                                         to initialize before starting\n                                         health-retries countdown\n                                         (ms|s|m|h) (default 0s)\n      --health-timeout duration          Maximum time to allow one check\n                                         to run (ms|s|m|h) (default 0s)\n      --help                             Print usage\n  -h, --hostname string                  Container host name\n      --init                             Run an init inside the container\n                                         that forwards signals and reaps\n                                         processes\n  -i, --interactive                      Keep STDIN open even if not attached\n      --ip ip                            IPv4 address (e.g., 172.30.100.104)\n      --ip6 ip                           IPv6 address (e.g., 2001:db8::33)\n      --ipc string                       IPC mode to use\n      --isolation string                 Container isolation technology\n  -l, --label list                       Set meta data on a container\n      --label-file list                  Read in a line delimited file of\n                                         labels\n      --link-local-ip list               Container IPv4/IPv6 link-local\n                                         addresses\n      --log-driver string                Logging driver for the container\n      --log-opt list                     Log driver options\n      --mac-address string               Container MAC address (e.g.,\n                                         92:d0:c6:0a:29:33)\n  -m, --memory bytes                     Memory limit\n      --memory-reservation bytes         Memory soft limit\n      --memory-swap bytes                Swap limit equal to memory plus\n                                         swap: '-1' to enable unlimited swap\n      --memory-swappiness int            Tune container memory swappiness\n                                         (0 to 100) (default -1)\n      --mount mount                      Attach a filesystem mount to the\n                                         container\n      --name string                      Assign a name to the container\n      --network network                  Connect a container to a network\n      --network-alias list               Add network-scoped alias for the\n                                         container\n      --no-healthcheck                   Disable any container-specified\n                                         HEALTHCHECK\n      --oom-kill-disable                 Disable OOM Killer\n      --oom-score-adj int                Tune host's OOM preferences\n                                         (-1000 to 1000)\n      --pid string                       PID namespace to use\n      --pids-limit int                   Tune container pids limit (set\n                                         -1 for unlimited)\n      --platform string                  Set platform if server is\n                                         multi-platform capable\n      --privileged                       Give extended privileges to this\n                                         container\n  -p, --publish list                     Publish a container's port(s) to\n                                         the host\n  -P, --publish-all                      Publish all exposed ports to\n                                         random ports\n      --pull string                      Pull image before running\n                                         (\"always\", \"missing\", \"never\")\n                                         (default \"missing\")\n  -q, --quiet                            Suppress the pull output\n      --read-only                        Mount the container's root\n                                         filesystem as read only\n      --restart string                   Restart policy to apply when a\n                                         container exits (default \"no\")\n      --rm                               Automatically remove the\n                                         container and its associated\n                                         anonymous volumes when it exits\n      --runtime string                   Runtime to use for this container\n      --security-opt list                Security Options\n      --shm-size bytes                   Size of /dev/shm\n      --sig-proxy                        Proxy received signals to the\n                                         process (default true)\n      --stop-signal string               Signal to stop the container\n      --stop-timeout int                 Timeout (in seconds) to stop a\n                                         container\n      --storage-opt list                 Storage driver options for the\n                                         container\n      --sysctl map                       Sysctl options (default map[])\n      --tmpfs list                       Mount a tmpfs directory\n  -t, --tty                              Allocate a pseudo-TTY\n      --ulimit ulimit                    Ulimit options (default [])\n      --umask umask                      Set umask for the container\n      --use-api-socket                   Bind mount Docker API socket and\n                                         required auth\n  -u, --user string                      Username or UID (format:\n                                         \u003cname|uid\u003e[:\u003cgroup|gid\u003e])\n      --userns string                    User namespace to use\n      --uts string                       UTS namespace to use\n  -v, --volume list                      Bind mount a volume\n      --volume-driver string             Optional volume driver for the\n                                         container\n      --volumes-from list                Mount volumes from the specified\n                                         container(s)\n  -w, --workdir string                   Working directory inside the\n                                         container\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "--gpus",
+      "foo",
+      "alpine"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"foo\" for \"--gpus\" flag: invalid count (foo): value must be either \"all\" or an integer: invalid syntax\n\nUsage:  shards run [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nRun 'shards run --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "run",
+      "--gpus",
+      "all,count=2",
+      "alpine"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"all,count=2\" for \"--gpus\" flag: gpu request key 'count' can be specified only once\n\nUsage:  shards run [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nRun 'shards run --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "run",
+      "--gpus",
+      "x=1",
+      "alpine"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"x=1\" for \"--gpus\" flag: unexpected key 'x' in 'x=1'\n\nUsage:  shards run [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nRun 'shards run --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "run",
+      "--gpus",
+      "\"device=0",
+      "alpine"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"\\\"device=0\" for \"--gpus\" flag: parse error on line 1, column 10: extraneous or missing \" in quoted-field\n\nUsage:  shards run [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nRun 'shards run --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "create",
+      "--gpus",
+      "options=\"a",
+      "alpine"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"options=\\\"a\" for \"--gpus\" flag: parse error on line 1, column 9: bare \" in non-quoted-field\n\nUsage:  shards create [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nRun 'shards create --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "run",
+      "--ulimit",
+      "nofile=2:1",
+      "alpine"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"nofile=2:1\" for \"--ulimit\" flag: ulimit soft limit must be less than or equal to hard limit: 2 \u003e 1\n\nUsage:  shards run [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nRun 'shards run --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "run",
+      "--ulimit",
+      "nofile",
+      "alpine"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"nofile\" for \"--ulimit\" flag: invalid ulimit argument: nofile\n\nUsage:  shards run [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nRun 'shards run --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "run",
+      "--ulimit",
+      "nofile=x",
+      "alpine"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"nofile=x\" for \"--ulimit\" flag: strconv.ParseInt: parsing \"x\": invalid syntax\n\nUsage:  shards run [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nRun 'shards run --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "run",
+      "--ulimit",
+      "nofile=-1:5",
+      "alpine"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"nofile=-1:5\" for \"--ulimit\" flag: ulimit soft limit must be less than or equal to hard limit: soft: -1 (unlimited), hard: 5\n\nUsage:  shards run [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nRun 'shards run --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "run",
+      "--shm-size",
+      "x",
+      "alpine"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"x\" for \"--shm-size\" flag: invalid size: 'x'\n\nUsage:  shards run [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nRun 'shards run --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "run",
+      "--shm-size",
+      "1g",
+      "alpine"
+    ],
+    "stdout": "RUN --shm-size=1GiB \"alpine\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "--cap-add",
+      "net_admin",
+      "--cap-add",
+      "ALL",
+      "--cap-drop",
+      "chown",
+      "--group-add",
+      "audio",
+      "--group-add",
+      "1234",
+      "--oom-score-adj",
+      "-500",
+      "--privileged",
+      "alpine"
+    ],
+    "stdout": "RUN --cap-add=[net_admin ALL] --cap-drop=[chown] --group-add=[audio 1234] --oom-score-adj=-500 --privileged=true \"alpine\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "--oom-score-adj",
+      "x",
+      "alpine"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"x\" for \"--oom-score-adj\" flag: strconv.ParseInt: parsing \"x\": invalid syntax\n\nUsage:  shards run [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nRun 'shards run --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "run",
+      "-v",
+      "/h:/c:ro",
+      "-v",
+      "name:/d",
+      "-v",
+      "/anon",
+      "--mount",
+      "type=bind,src=/a,dst=/b,readonly",
+      "--mount",
+      "type=tmpfs,dst=/t,tmpfs-size=64m",
+      "--volumes-from",
+      "web:ro",
+      "--volume-driver",
+      "local",
+      "alpine"
+    ],
+    "stdout": "RUN --mount=bind /a /b, tmpfs  /t --volume=[/h:/c:ro name:/d /anon] --volume-driver=local --volumes-from=[web:ro] \"alpine\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "--mount",
+      "",
+      "alpine"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"\" for \"--mount\" flag: value is empty\n\nUsage:  shards run [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nRun 'shards run --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "run",
+      "--mount",
+      "type=bind,src",
+      "alpine"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"type=bind,src\" for \"--mount\" flag: invalid field 'src' must be a key=value pair\n\nUsage:  shards run [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nRun 'shards run --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "run",
+      "--mount",
+      "type=volume,bind-propagation=shared",
+      "alpine"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"type=volume,bind-propagation=shared\" for \"--mount\" flag: cannot mix 'bind-*' options with mount type 'volume'\n\nUsage:  shards run [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nRun 'shards run --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "run",
+      "--mount",
+      "type=bind,ro=maybe",
+      "alpine"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"type=bind,ro=maybe\" for \"--mount\" flag: invalid value for 'ro': invalid boolean value (\"maybe\"): must be one of \"true\", \"1\", \"false\", or \"0\" (default \"true\")\n\nUsage:  shards run [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nRun 'shards run --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "run",
+      "--mount",
+      "type=bind,nope=1",
+      "alpine"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"type=bind,nope=1\" for \"--mount\" flag: unknown option 'nope' in 'nope=1'\n\nUsage:  shards run [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nRun 'shards run --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "run",
+      "--mount",
+      "type=tmpfs,tmpfs-size=x",
+      "alpine"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"type=tmpfs,tmpfs-size=x\" for \"--mount\" flag: invalid value for tmpfs-size: x\n\nUsage:  shards run [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nRun 'shards run --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "run",
+      "--mount",
+      "type=tmpfs,tmpfs-mode=9",
+      "alpine"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"type=tmpfs,tmpfs-mode=9\" for \"--mount\" flag: invalid value for tmpfs-mode: 9\n\nUsage:  shards run [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nRun 'shards run --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "run",
+      "--mount",
+      "type=bind,bind-nonrecursive",
+      "alpine"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"type=bind,bind-nonrecursive\" for \"--mount\" flag: bind-nonrecursive is deprecated, use bind-recursive=disabled instead\n\nUsage:  shards run [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nRun 'shards run --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "run",
+      "--mount",
+      "type=bind,src= /a",
+      "alpine"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"type=bind,src= /a\" for \"--mount\" flag: invalid value for 'src' in 'src= /a': value should not have whitespace\n\nUsage:  shards run [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nRun 'shards run --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "run",
+      "--mount",
+      "type=bind, src=/a",
+      "alpine"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"type=bind, src=/a\" for \"--mount\" flag: invalid option 'src' in ' src=/a': option should not have whitespace\n\nUsage:  shards run [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nRun 'shards run --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "run",
+      "--mount",
+      "type=bind,bind-recursive=writable",
+      "alpine"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"type=bind,bind-recursive=writable\" for \"--mount\" flag: option 'bind-recursive=writable' requires 'readonly' to be specified in conjunction\n\nUsage:  shards run [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nRun 'shards run --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "run",
+      "--mount",
+      "type=bind,bind-recursive=readonly,readonly",
+      "alpine"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"type=bind,bind-recursive=readonly,readonly\" for \"--mount\" flag: option 'bind-recursive=readonly' requires 'bind-propagation=rprivate' to be specified in conjunction\n\nUsage:  shards run [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nRun 'shards run --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "run",
+      "--mount",
+      "type=bind,bind-recursive=nope",
+      "alpine"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"type=bind,bind-recursive=nope\" for \"--mount\" flag: invalid value for bind-recursive: nope (must be \"enabled\", \"disabled\", \"writable\", or \"readonly\")\n\nUsage:  shards run [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nRun 'shards run --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "run",
+      "--mount",
+      "type=bind,src=\"a,b\",dst=/x",
+      "alpine"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"type=bind,src=\\\"a,b\\\",dst=/x\" for \"--mount\" flag: parse error on line 1, column 15: bare \" in non-quoted-field\n\nUsage:  shards run [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nRun 'shards run --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "run",
+      "--mount",
+      "type=bind,src=\"a",
+      "alpine"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"type=bind,src=\\\"a\" for \"--mount\" flag: parse error on line 1, column 15: bare \" in non-quoted-field\n\nUsage:  shards run [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nRun 'shards run --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "run",
+      "--mount",
+      "src=/a,dst=/b,volume-label=x=1,volume-opt=o=2,volume-driver=local,volume-nocopy,volume-subpath=s",
+      "alpine"
+    ],
+    "stdout": "RUN --mount=volume /a /b \"alpine\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "--mount",
+      "type=,dst=/b",
+      "alpine"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"type=,dst=/b\" for \"--mount\" flag: invalid value for 'type': value is empty\n\nUsage:  shards run [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nRun 'shards run --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "exec",
+      "--privileged",
+      "--env-file",
+      "a.env",
+      "web",
+      "ls"
+    ],
+    "stdout": "RUN --env-file=[a.env] --privileged=true \"web\" \"ls\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "create",
+      "-q",
+      "--cidfile",
+      "c",
+      "--platform",
+      "arm64",
+      "alpine"
+    ],
+    "stdout": "RUN --cidfile=c --platform=arm64 --quiet=true \"alpine\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "--help"
+    ],
+    "stdout": "Usage:  shards run [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nCreate and run a new container from an image\n\nAliases:\n  shards container run, shards run\n\nOptions:\n      --add-host list                    Add a custom host-to-IP mapping\n                                         (host:ip)\n      --annotation map                   Add an annotation to the\n                                         container (passed through to the\n                                         OCI runtime) (default map[])\n  -a, --attach list                      Attach to STDIN, STDOUT or STDERR\n      --blkio-weight uint16              Block IO (relative weight),\n                                         between 10 and 1000, or 0 to\n                                         disable (default 0)\n      --blkio-weight-device list         Block IO weight (relative device\n                                         weight) (default [])\n      --cap-add list                     Add Linux capabilities\n      --cap-drop list                    Drop Linux capabilities\n      --cgroup-parent string             Optional parent cgroup for the\n                                         container\n      --cgroupns string                  Cgroup namespace to use\n                                         (host|private)\n                                         'host':    Run the container in\n                                         the Docker host's cgroup\n                                         namespace\n                                         'private': Run the container in\n                                         its own private cgroup namespace\n                                         '':        Use the cgroup\n                                         namespace as configured by the\n                                                    default-cgroupns-mode\n                                         option on the daemon (default)\n      --cidfile string                   Write the container ID to the file\n      --cpu-period int                   Limit CPU CFS (Completely Fair\n                                         Scheduler) period\n      --cpu-quota int                    Limit CPU CFS (Completely Fair\n                                         Scheduler) quota\n      --cpu-rt-period int                Limit CPU real-time period in\n                                         microseconds\n      --cpu-rt-runtime int               Limit CPU real-time runtime in\n                                         microseconds\n  -c, --cpu-shares int                   CPU shares (relative weight)\n      --cpus decimal                     Number of CPUs\n      --cpuset-cpus string               CPUs in which to allow execution\n                                         (0-3, 0,1)\n      --cpuset-mems string               MEMs in which to allow execution\n                                         (0-3, 0,1)\n  -d, --detach                           Run container in background and\n                                         print container ID\n      --detach-keys string               Override the key sequence for\n                                         detaching a container\n      --device list                      Add a host device to the container\n      --device-cgroup-rule list          Add a rule to the cgroup allowed\n                                         devices list\n      --device-read-bps list             Limit read rate (bytes per\n                                         second) from a device (default [])\n      --device-read-iops list            Limit read rate (IO per second)\n                                         from a device (default [])\n      --device-write-bps list            Limit write rate (bytes per\n                                         second) to a device (default [])\n      --device-write-iops list           Limit write rate (IO per second)\n                                         to a device (default [])\n      --dns list                         Set custom DNS servers\n      --dns-option list                  Set DNS options\n      --dns-search list                  Set custom DNS search domains\n      --domainname string                Container NIS domain name\n      --entrypoint string                Overwrite the default ENTRYPOINT\n                                         of the image\n  -e, --env list                         Set environment variables\n      --env-file list                    Read in a file of environment\n                                         variables\n      --expose list                      Expose a port or a range of ports\n      --gpus gpu-request                 GPU devices to add to the\n                                         container ('all' to pass all GPUs)\n      --group-add list                   Add additional groups to join\n      --health-cmd string                Command to run to check health\n      --health-interval duration         Time between running the check\n                                         (ms|s|m|h) (default 0s)\n      --health-retries int               Consecutive failures needed to\n                                         report unhealthy\n      --health-start-interval duration   Time between running the check\n                                         during the start period\n                                         (ms|s|m|h) (default 0s)\n      --health-start-period duration     Start period for the container\n                                         to initialize before starting\n                                         health-retries countdown\n                                         (ms|s|m|h) (default 0s)\n      --health-timeout duration          Maximum time to allow one check\n                                         to run (ms|s|m|h) (default 0s)\n      --help                             Print usage\n  -h, --hostname string                  Container host name\n      --init                             Run an init inside the container\n                                         that forwards signals and reaps\n                                         processes\n  -i, --interactive                      Keep STDIN open even if not attached\n      --ip ip                            IPv4 address (e.g., 172.30.100.104)\n      --ip6 ip                           IPv6 address (e.g., 2001:db8::33)\n      --ipc string                       IPC mode to use\n      --isolation string                 Container isolation technology\n  -l, --label list                       Set meta data on a container\n      --label-file list                  Read in a line delimited file of\n                                         labels\n      --link-local-ip list               Container IPv4/IPv6 link-local\n                                         addresses\n      --log-driver string                Logging driver for the container\n      --log-opt list                     Log driver options\n      --mac-address string               Container MAC address (e.g.,\n                                         92:d0:c6:0a:29:33)\n  -m, --memory bytes                     Memory limit\n      --memory-reservation bytes         Memory soft limit\n      --memory-swap bytes                Swap limit equal to memory plus\n                                         swap: '-1' to enable unlimited swap\n      --memory-swappiness int            Tune container memory swappiness\n                                         (0 to 100) (default -1)\n      --mount mount                      Attach a filesystem mount to the\n                                         container\n      --name string                      Assign a name to the container\n      --network network                  Connect a container to a network\n      --network-alias list               Add network-scoped alias for the\n                                         container\n      --no-healthcheck                   Disable any container-specified\n                                         HEALTHCHECK\n      --oom-kill-disable                 Disable OOM Killer\n      --oom-score-adj int                Tune host's OOM preferences\n                                         (-1000 to 1000)\n      --pid string                       PID namespace to use\n      --pids-limit int                   Tune container pids limit (set\n                                         -1 for unlimited)\n      --platform string                  Set platform if server is\n                                         multi-platform capable\n      --privileged                       Give extended privileges to this\n                                         container\n  -p, --publish list                     Publish a container's port(s) to\n                                         the host\n  -P, --publish-all                      Publish all exposed ports to\n                                         random ports\n      --pull string                      Pull image before running\n                                         (\"always\", \"missing\", \"never\")\n                                         (default \"missing\")\n  -q, --quiet                            Suppress the pull output\n      --read-only                        Mount the container's root\n                                         filesystem as read only\n      --restart string                   Restart policy to apply when a\n                                         container exits (default \"no\")\n      --rm                               Automatically remove the\n                                         container and its associated\n                                         anonymous volumes when it exits\n      --runtime string                   Runtime to use for this container\n      --security-opt list                Security Options\n      --shm-size bytes                   Size of /dev/shm\n      --sig-proxy                        Proxy received signals to the\n                                         process (default true)\n      --stop-signal string               Signal to stop the container\n      --stop-timeout int                 Timeout (in seconds) to stop a\n                                         container\n      --storage-opt list                 Storage driver options for the\n                                         container\n      --sysctl map                       Sysctl options (default map[])\n      --tmpfs list                       Mount a tmpfs directory\n  -t, --tty                              Allocate a pseudo-TTY\n      --ulimit ulimit                    Ulimit options (default [])\n      --umask umask                      Set umask for the container\n      --use-api-socket                   Bind mount Docker API socket and\n                                         required auth\n  -u, --user string                      Username or UID (format:\n                                         \u003cname|uid\u003e[:\u003cgroup|gid\u003e])\n      --userns string                    User namespace to use\n      --uts string                       UTS namespace to use\n  -v, --volume list                      Bind mount a volume\n      --volume-driver string             Optional volume driver for the\n                                         container\n      --volumes-from list                Mount volumes from the specified\n                                         container(s)\n  -w, --workdir string                   Working directory inside the\n                                         container\n",
     "stderr": "",
     "status": 0
   },
@@ -109,6 +2989,1142 @@
     "stdout": "",
     "stderr": "invalid argument \"=x\" for \"-e, --env\" flag: invalid environment variable: =x\n\nUsage:  shards run [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nRun 'shards run --help' for more information\n",
     "status": 125
+  },
+  {
+    "argv": [
+      "run",
+      "--network",
+      "none",
+      "alpine"
+    ],
+    "stdout": "RUN --network= \"alpine\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "--health-cmd",
+      "true",
+      "--health-interval",
+      "1m30.5s",
+      "--health-retries",
+      "2",
+      "--health-timeout=500ms",
+      "--health-start-period",
+      "1h",
+      "--health-start-interval",
+      "2s",
+      "alpine"
+    ],
+    "stdout": "RUN --health-cmd=true --health-interval=1m30.5s --health-retries=2 --health-start-interval=2s --health-start-period=1h0m0s --health-timeout=500ms \"alpine\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "--health-interval",
+      "x",
+      "alpine"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"x\" for \"--health-interval\" flag: time: invalid duration \"x\"\n\nUsage:  shards run [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nRun 'shards run --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "run",
+      "--health-interval",
+      "1",
+      "alpine"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"1\" for \"--health-interval\" flag: time: missing unit in duration \"1\"\n\nUsage:  shards run [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nRun 'shards run --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "run",
+      "--health-timeout",
+      "1q",
+      "alpine"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"1q\" for \"--health-timeout\" flag: time: unknown unit \"q\" in duration \"1q\"\n\nUsage:  shards run [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nRun 'shards run --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "run",
+      "--health-interval=-1s",
+      "alpine"
+    ],
+    "stdout": "RUN --health-interval=-1s \"alpine\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "--no-healthcheck",
+      "alpine"
+    ],
+    "stdout": "RUN --no-healthcheck=true \"alpine\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "-p",
+      "8080:80",
+      "-p",
+      "127.0.0.1::81/udp",
+      "-P",
+      "alpine"
+    ],
+    "stdout": "RUN --publish=[8080:80 127.0.0.1::81/udp] --publish-all=true \"alpine\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "--publish=80",
+      "--publish-all=false",
+      "alpine"
+    ],
+    "stdout": "RUN --publish=[80] --publish-all=false \"alpine\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "-p"
+    ],
+    "stdout": "",
+    "stderr": "flag needs an argument: 'p' in -p\n\nUsage:  shards run [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nRun 'shards run --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "rmi"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards rmi' requires at least 1 argument\n\nUsage:  shards rmi [OPTIONS] IMAGE [IMAGE...]\n\nSee 'shards rmi --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "rmi",
+      "--help"
+    ],
+    "stdout": "Usage:  shards rmi [OPTIONS] IMAGE [IMAGE...]\n\nRemove one or more images\n\nAliases:\n  shards image rm, shards image remove, shards rmi\n\nOptions:\n  -f, --force              Force removal of the image\n      --no-prune           Do not delete untagged parents\n      --platform strings   Remove only the given platform variant.\n                           Formatted as \"os[/arch[/variant]]\" (e.g.,\n                           \"linux/amd64\")\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "image",
+      "rm",
+      "-f",
+      "--no-prune",
+      "a",
+      "b"
+    ],
+    "stdout": "RUN --force=true --no-prune=true \"a\" \"b\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "image",
+      "remove",
+      "a"
+    ],
+    "stdout": "RUN \"a\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "image",
+      "rm",
+      "--help"
+    ],
+    "stdout": "Usage:  shards image rm [OPTIONS] IMAGE [IMAGE...]\n\nRemove one or more images\n\nAliases:\n  shards image rm, shards image remove, shards rmi\n\nOptions:\n  -f, --force              Force removal of the image\n      --no-prune           Do not delete untagged parents\n      --platform strings   Remove only the given platform variant.\n                           Formatted as \"os[/arch[/variant]]\" (e.g.,\n                           \"linux/amd64\")\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "image",
+      "ls",
+      "--help"
+    ],
+    "stdout": "Usage:  shards image ls [OPTIONS] [REPOSITORY[:TAG]]\n\nList images\n\nAliases:\n  shards image ls, shards image list, shards images\n\nOptions:\n  -a, --all             Show all images (default hides intermediate and\n                        dangling images)\n      --digests         Show digests\n  -f, --filter filter   Filter output based on conditions provided\n      --format string   Format output using a custom template:\n                        'table':            Print output in table format\n                        with column headers (default)\n                        'table TEMPLATE':   Print output in table format\n                        using the given Go template\n                        'json':             Print in JSON format\n                        'TEMPLATE':         Print output using the given\n                        Go template.\n                        Refer to https://docs.docker.com/go/formatting/\n                        for more information about formatting output with\n                        templates\n      --no-trunc        Don't truncate output\n  -q, --quiet           Only show image IDs\n      --tree            List multi-platform images as a tree (EXPERIMENTAL)\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "image",
+      "tag",
+      "--help"
+    ],
+    "stdout": "Usage:  shards image tag SOURCE_IMAGE[:TAG] TARGET_IMAGE[:TAG]\n\nCreate a tag TARGET_IMAGE that refers to SOURCE_IMAGE\n\nAliases:\n  shards image tag, shards tag\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "login",
+      "--help"
+    ],
+    "stdout": "Usage:  shards login [OPTIONS] [SERVER]\n\nAuthenticate to a registry.\nDefaults to Docker Hub if no server is specified.\n\nOptions:\n  -p, --password string   Password or Personal Access Token (PAT), or \"-\"\n                          to read from stdin\n      --password-stdin    Take the Password or Personal Access Token\n                          (PAT) from stdin\n  -u, --username string   Username\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "login",
+      "a",
+      "b"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards login' requires at most 1 argument\n\nUsage:  shards login [OPTIONS] [SERVER]\n\nRun 'shards login --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "login",
+      "-u",
+      "u",
+      "--password-stdin",
+      "r.example"
+    ],
+    "stdout": "RUN --password-stdin=true --username=u \"r.example\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "search",
+      "--help"
+    ],
+    "stdout": "Usage:  shards search [OPTIONS] TERM\n\nSearch Docker Hub for images\n\nOptions:\n  -f, --filter filter   Filter output based on conditions provided\n      --format string   Pretty-print search using a Go template\n      --limit int       Max number of search results\n      --no-trunc        Don't truncate output\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "search"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards search' requires 1 argument\n\nUsage:  shards search [OPTIONS] TERM\n\nRun 'shards search --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "search",
+      "a",
+      "b"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards search' requires 1 argument\n\nUsage:  shards search [OPTIONS] TERM\n\nRun 'shards search --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "search",
+      "--limit",
+      "5",
+      "-f",
+      "is-official=true",
+      "--no-trunc",
+      "--format",
+      "{{.Name}}",
+      "python"
+    ],
+    "stdout": "RUN --filter={\"is-official\":{\"true\":true}} --format={{.Name}} --limit=5 --no-trunc=true \"python\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "search",
+      "--limit",
+      "x",
+      "python"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"x\" for \"--limit\" flag: strconv.ParseInt: parsing \"x\": invalid syntax\n\nUsage:  shards search [OPTIONS] TERM\n\nRun 'shards search --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "logout",
+      "--help"
+    ],
+    "stdout": "Usage:  shards logout [SERVER]\n\nLog out from a registry.\nIf no server is specified, the default is defined by the daemon.\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "logout",
+      "a",
+      "b"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards logout' requires at most 1 argument\n\nUsage:  shards logout [SERVER]\n\nRun 'shards logout --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "pull",
+      "--help"
+    ],
+    "stdout": "Usage:  shards pull [OPTIONS] NAME[:TAG|@DIGEST]\n\nDownload an image from a registry\n\nAliases:\n  shards image pull, shards pull\n\nOptions:\n  -a, --all-tags          Download all tagged images in the repository\n      --platform string   Set platform if server is multi-platform capable\n  -q, --quiet             Suppress verbose output\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "pull"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards pull' requires 1 argument\n\nUsage:  shards pull [OPTIONS] NAME[:TAG|@DIGEST]\n\nRun 'shards pull --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "pull",
+      "a",
+      "b"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards pull' requires 1 argument\n\nUsage:  shards pull [OPTIONS] NAME[:TAG|@DIGEST]\n\nRun 'shards pull --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "image",
+      "pull",
+      "-a",
+      "-q",
+      "x"
+    ],
+    "stdout": "RUN --all-tags=true --quiet=true \"x\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "pull",
+      "--platform",
+      "linux/arm64",
+      "x"
+    ],
+    "stdout": "RUN --platform=linux/arm64 \"x\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "pull",
+      "--platform"
+    ],
+    "stdout": "",
+    "stderr": "flag needs an argument: --platform\n\nUsage:  shards pull [OPTIONS] NAME[:TAG|@DIGEST]\n\nRun 'shards pull --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "pull",
+      "--disable-content-trust",
+      "x"
+    ],
+    "stdout": "Flag --disable-content-trust has been deprecated, support for docker content trust was removed\nRUN --disable-content-trust=true \"x\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "image",
+      "pull",
+      "--help"
+    ],
+    "stdout": "Usage:  shards image pull [OPTIONS] NAME[:TAG|@DIGEST]\n\nDownload an image from a registry\n\nAliases:\n  shards image pull, shards pull\n\nOptions:\n  -a, --all-tags          Download all tagged images in the repository\n      --platform string   Set platform if server is multi-platform capable\n  -q, --quiet             Suppress verbose output\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "push",
+      "--help"
+    ],
+    "stdout": "Usage:  shards push [OPTIONS] NAME[:TAG]\n\nUpload an image to a registry\n\nAliases:\n  shards image push, shards push\n\nOptions:\n  -a, --all-tags          Push all tags of an image to the repository\n      --platform string   Push a platform-specific manifest as a\n                          single-platform image to the registry.\n                          Image index won't be pushed, meaning that other\n                          manifests, including attestations won't be\n                          preserved.\n                          'os[/arch[/variant]]': Explicit platform (eg.\n                          linux/amd64)\n  -q, --quiet             Suppress verbose output\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "push"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards push' requires 1 argument\n\nUsage:  shards push [OPTIONS] NAME[:TAG]\n\nRun 'shards push --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "push",
+      "a",
+      "b"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards push' requires 1 argument\n\nUsage:  shards push [OPTIONS] NAME[:TAG]\n\nRun 'shards push --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "image",
+      "push",
+      "-a",
+      "-q",
+      "x"
+    ],
+    "stdout": "RUN --all-tags=true --quiet=true \"x\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "push",
+      "--platform",
+      "linux/arm64",
+      "x"
+    ],
+    "stdout": "RUN --platform=linux/arm64 \"x\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "push",
+      "--disable-content-trust=false",
+      "x"
+    ],
+    "stdout": "Flag --disable-content-trust has been deprecated, support for docker content trust was removed\nRUN --disable-content-trust=false \"x\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "load",
+      "--help"
+    ],
+    "stdout": "Usage:  shards load [OPTIONS]\n\nLoad an image from a tar archive or STDIN\n\nAliases:\n  shards image load, shards load\n\nOptions:\n  -i, --input string       Read from tar archive file, instead of STDIN\n      --platform strings   Load only the given platform(s). Formatted as\n                           a comma-separated list of\n                           \"os[/arch[/variant]]\" (e.g.,\n                           \"linux/amd64,linux/arm64/v8\").\n  -q, --quiet              Suppress the load output\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "load",
+      "x"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards load' accepts no arguments\n\nUsage:  shards load [OPTIONS]\n\nRun 'shards load --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "image",
+      "load",
+      "-q",
+      "-i",
+      "a.tar"
+    ],
+    "stdout": "RUN --input=a.tar --quiet=true\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "load",
+      "--platform",
+      "linux/arm64"
+    ],
+    "stdout": "RUN --platform=[linux/arm64]\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "save"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards save' requires at least 1 argument\n\nUsage:  shards save [OPTIONS] IMAGE [IMAGE...]\n\nSee 'shards save --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "save",
+      "--help"
+    ],
+    "stdout": "Usage:  shards save [OPTIONS] IMAGE [IMAGE...]\n\nSave one or more images to a tar archive (streamed to STDOUT by default)\n\nAliases:\n  shards image save, shards save\n\nOptions:\n  -o, --output string      Write to a file, instead of STDOUT\n      --platform strings   Save only the given platform(s). Formatted as\n                           a comma-separated list of\n                           \"os[/arch[/variant]]\" (e.g.,\n                           \"linux/amd64,linux/arm64/v8\")\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "save",
+      "-o",
+      "x.tar",
+      "a",
+      "b"
+    ],
+    "stdout": "RUN --output=x.tar \"a\" \"b\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "image",
+      "save",
+      "--output=y",
+      "a"
+    ],
+    "stdout": "RUN --output=y \"a\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "save",
+      "--platform",
+      "linux/arm64",
+      "a"
+    ],
+    "stdout": "RUN --platform=[linux/arm64] \"a\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "image",
+      "inspect"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards image inspect' requires at least 1 argument\n\nUsage:  shards image inspect [OPTIONS] IMAGE [IMAGE...]\n\nSee 'shards image inspect --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "image",
+      "inspect",
+      "--help"
+    ],
+    "stdout": "Usage:  shards image inspect [OPTIONS] IMAGE [IMAGE...]\n\nDisplay detailed information on one or more images\n\nOptions:\n  -f, --format string     Format output using a custom template:\n                          'json':             Print in JSON format\n                          'TEMPLATE':         Print output using the\n                          given Go template.\n                          Refer to https://docs.docker.com/go/formatting/\n                          for more information about formatting output\n                          with templates\n      --platform string   Inspect a specific platform of the\n                          multi-platform image.\n                          If the image or the server is not\n                          multi-platform capable, the command will error\n                          out if the platform does not match.\n                          'os[/arch[/variant]]': Explicit platform (eg.\n                          linux/amd64)\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "image",
+      "inspect",
+      "a",
+      "b"
+    ],
+    "stdout": "RUN \"a\" \"b\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "image",
+      "inspect",
+      "-f",
+      "{{.Id}}",
+      "a"
+    ],
+    "stdout": "RUN --format={{.Id}} \"a\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "rmi",
+      "--platform",
+      "linux/amd64",
+      "a"
+    ],
+    "stdout": "RUN --platform=[linux/amd64] \"a\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "tag"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards tag' requires 2 arguments\n\nUsage:  shards tag SOURCE_IMAGE[:TAG] TARGET_IMAGE[:TAG]\n\nRun 'shards tag --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "tag",
+      "--help"
+    ],
+    "stdout": "Usage:  shards tag SOURCE_IMAGE[:TAG] TARGET_IMAGE[:TAG]\n\nCreate a tag TARGET_IMAGE that refers to SOURCE_IMAGE\n\nAliases:\n  shards image tag, shards tag\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "tag",
+      "a"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards tag' requires 2 arguments\n\nUsage:  shards tag SOURCE_IMAGE[:TAG] TARGET_IMAGE[:TAG]\n\nRun 'shards tag --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "tag",
+      "a",
+      "b",
+      "c"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards tag' requires 2 arguments\n\nUsage:  shards tag SOURCE_IMAGE[:TAG] TARGET_IMAGE[:TAG]\n\nRun 'shards tag --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "image",
+      "tag",
+      "a",
+      "b"
+    ],
+    "stdout": "RUN \"a\" \"b\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "tag",
+      "a",
+      "--",
+      "b"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards tag' requires 2 arguments\n\nUsage:  shards tag SOURCE_IMAGE[:TAG] TARGET_IMAGE[:TAG]\n\nRun 'shards tag --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "images",
+      "--help"
+    ],
+    "stdout": "Usage:  shards images [OPTIONS] [REPOSITORY[:TAG]]\n\nList images\n\nAliases:\n  shards image ls, shards image list, shards images\n\nOptions:\n  -a, --all             Show all images (default hides intermediate and\n                        dangling images)\n      --digests         Show digests\n  -f, --filter filter   Filter output based on conditions provided\n      --format string   Format output using a custom template:\n                        'table':            Print output in table format\n                        with column headers (default)\n                        'table TEMPLATE':   Print output in table format\n                        using the given Go template\n                        'json':             Print in JSON format\n                        'TEMPLATE':         Print output using the given\n                        Go template.\n                        Refer to https://docs.docker.com/go/formatting/\n                        for more information about formatting output with\n                        templates\n      --no-trunc        Don't truncate output\n  -q, --quiet           Only show image IDs\n      --tree            List multi-platform images as a tree (EXPERIMENTAL)\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "images",
+      "a",
+      "b"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards images' requires at most 1 argument\n\nUsage:  shards images [OPTIONS] [REPOSITORY[:TAG]]\n\nRun 'shards images --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "images",
+      "-aq",
+      "--digests",
+      "--no-trunc",
+      "--tree",
+      "alpine"
+    ],
+    "stdout": "RUN --all=true --digests=true --no-trunc=true --quiet=true --tree=true \"alpine\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "image",
+      "ls",
+      "--format",
+      "x"
+    ],
+    "stdout": "RUN --format=x\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "images",
+      "-f",
+      "dangling=true",
+      "-f",
+      "reference=alp*"
+    ],
+    "stdout": "RUN --filter={\"dangling\":{\"true\":true},\"reference\":{\"alp*\":true}}\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "images",
+      "--filter",
+      "x"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"x\" for \"-f, --filter\" flag: bad format of filter (expected name=value)\n\nUsage:  shards images [OPTIONS] [REPOSITORY[:TAG]]\n\nRun 'shards images --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "image",
+      "list",
+      "-f",
+      "dangling=true"
+    ],
+    "stdout": "RUN --filter={\"dangling\":{\"true\":true}}\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "port"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards port' requires at least 1 and at most 2 arguments\n\nUsage:  shards port CONTAINER [PRIVATE_PORT[/PROTO]]\n\nRun 'shards port --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "port",
+      "--help"
+    ],
+    "stdout": "Usage:  shards port CONTAINER [PRIVATE_PORT[/PROTO]]\n\nList port mappings or a specific mapping for the container\n\nAliases:\n  shards container port, shards port\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "port",
+      "a",
+      "b",
+      "c"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards port' requires at least 1 and at most 2 arguments\n\nUsage:  shards port CONTAINER [PRIVATE_PORT[/PROTO]]\n\nRun 'shards port --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "port",
+      "a",
+      "80/udp"
+    ],
+    "stdout": "RUN \"a\" \"80/udp\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "container",
+      "port",
+      "a"
+    ],
+    "stdout": "RUN \"a\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "port",
+      "--bogus",
+      "a"
+    ],
+    "stdout": "",
+    "stderr": "unknown flag: --bogus\n\nUsage:  shards port CONTAINER [PRIVATE_PORT[/PROTO]]\n\nRun 'shards port --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "exec"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards exec' requires at least 2 arguments\n\nUsage:  shards exec [OPTIONS] CONTAINER COMMAND [ARG...]\n\nSee 'shards exec --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "exec",
+      "web"
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards exec' requires at least 2 arguments\n\nUsage:  shards exec [OPTIONS] CONTAINER COMMAND [ARG...]\n\nSee 'shards exec --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "exec",
+      "--help"
+    ],
+    "stdout": "Usage:  shards exec [OPTIONS] CONTAINER COMMAND [ARG...]\n\nExecute a command in a running container\n\nAliases:\n  shards container exec, shards exec\n\nOptions:\n  -d, --detach               Detached mode: run command in the background\n      --detach-keys string   Override the key sequence for detaching a\n                             container\n  -e, --env list             Set environment variables\n      --env-file list        Read in a file of environment variables\n  -i, --interactive          Keep STDIN open even if not attached\n      --privileged           Give extended privileges to the command\n  -t, --tty                  Allocate a pseudo-TTY\n  -u, --user string          Username or UID (format:\n                             \"\u003cname|uid\u003e[:\u003cgroup|gid\u003e]\")\n  -w, --workdir string       Working directory inside the container\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "exec",
+      "-it",
+      "-e",
+      "A=1",
+      "-e",
+      "B",
+      "-u",
+      "1000:1000",
+      "-w",
+      "/w",
+      "web",
+      "sh",
+      "-c",
+      "env"
+    ],
+    "stdout": "RUN --env=[A=1 B=from-env] --interactive=true --tty=true --user=1000:1000 --workdir=/w \"web\" \"sh\" \"-c\" \"env\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "exec",
+      "-d",
+      "web",
+      "true",
+      "-i"
+    ],
+    "stdout": "RUN --detach=true \"web\" \"true\" \"-i\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "exec",
+      "--privileged",
+      "web",
+      "true"
+    ],
+    "stdout": "RUN --privileged=true \"web\" \"true\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "exec",
+      "--env-file",
+      "f",
+      "web",
+      "true"
+    ],
+    "stdout": "RUN --env-file=[f] \"web\" \"true\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "container",
+      "exec",
+      "-t",
+      "web",
+      "top"
+    ],
+    "stdout": "RUN --tty=true \"web\" \"top\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "exec",
+      "--nope",
+      "web",
+      "true"
+    ],
+    "stdout": "",
+    "stderr": "unknown flag: --nope\n\nUsage:  shards exec [OPTIONS] CONTAINER COMMAND [ARG...]\n\nRun 'shards exec --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "run",
+      "--stop-signal",
+      "SIGUSR1",
+      "--stop-timeout",
+      "3",
+      "alpine"
+    ],
+    "stdout": "RUN --stop-signal=SIGUSR1 --stop-timeout=3 \"alpine\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "--stop-timeout",
+      "x",
+      "alpine"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"x\" for \"--stop-timeout\" flag: strconv.ParseInt: parsing \"x\": invalid syntax\n\nUsage:  shards run [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nRun 'shards run --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "run",
+      "--stop-timeout=-1",
+      "alpine"
+    ],
+    "stdout": "RUN --stop-timeout=-1 \"alpine\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "--net=none",
+      "--network",
+      "bridge",
+      "alpine"
+    ],
+    "stdout": "RUN --net= --network= \"alpine\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "--network=name=bridge,alias=x",
+      "alpine"
+    ],
+    "stdout": "RUN --network= \"alpine\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "--network",
+      "a=b",
+      "alpine"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"a=b\" for \"--network\" flag: invalid field key a\n\nUsage:  shards run [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nRun 'shards run --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "run",
+      "--net",
+      "name=x,ip=y",
+      "alpine"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"name=x,ip=y\" for \"--net\" flag: ParseAddr(\"y\"): unable to parse IP\n\nUsage:  shards run [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nRun 'shards run --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "run",
+      "--network",
+      "\"name=a",
+      "alpine"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"\\\"name=a\" for \"--network\" flag: parse error on line 1, column 8: extraneous or missing \" in quoted-field\n\nUsage:  shards run [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nRun 'shards run --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "run",
+      "--mac-address",
+      "02:42:zz:11:00:99",
+      "alpine"
+    ],
+    "stdout": "RUN --mac-address=02:42:zz:11:00:99 \"alpine\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "--mac-address",
+      "bad",
+      "--pull",
+      "nope",
+      "alpine"
+    ],
+    "stdout": "RUN --mac-address=bad --pull=nope \"alpine\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "--network",
+      "name=bridge,mac-address=bad",
+      "alpine"
+    ],
+    "stdout": "RUN --network= \"alpine\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "--mac-address",
+      "02:42:ac:11:00:02",
+      "--network",
+      "name=bridge,mac-address=02:42:ac:11:00:03",
+      "alpine"
+    ],
+    "stdout": "RUN --mac-address=02:42:ac:11:00:02 --network= \"alpine\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "--mac-address",
+      "0242.ac11.0002",
+      "alpine"
+    ],
+    "stdout": "RUN --mac-address=0242.ac11.0002 \"alpine\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "--mac-address",
+      " 02-42-ac-11-00-02 ",
+      "alpine"
+    ],
+    "stdout": "RUN --mac-address= 02-42-ac-11-00-02  \"alpine\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "create",
+      "--mac-address",
+      "02:42:ac:11:00:99:00:01",
+      "alpine"
+    ],
+    "stdout": "RUN --mac-address=02:42:ac:11:00:99:00:01 \"alpine\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "create",
+      "--mac-address",
+      "nope",
+      "alpine"
+    ],
+    "stdout": "RUN --mac-address=nope \"alpine\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "--link-local-ip",
+      "169.254.1.1",
+      "--link-local-ip",
+      "fe80::1",
+      "alpine"
+    ],
+    "stdout": "RUN --link-local-ip=[169.254.1.1 fe80::1] \"alpine\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "--link-local-ip",
+      "nope",
+      "alpine"
+    ],
+    "stdout": "RUN --link-local-ip=[nope] \"alpine\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "--link-local-ip",
+      "169.254.9.1",
+      "--network",
+      "name=bridge,link-local-ip=169.254.9.2",
+      "alpine"
+    ],
+    "stdout": "RUN --link-local-ip=[169.254.9.1] --network= \"alpine\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "--link-local-ip",
+      "nope",
+      "--network",
+      "name=bridge,link-local-ip=169.254.9.2",
+      "alpine"
+    ],
+    "stdout": "RUN --link-local-ip=[nope] --network= \"alpine\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "create",
+      "--link-local-ip",
+      "fe80::1%eth0",
+      "--link-local-ip",
+      "::ffff:169.254.10.1",
+      "alpine"
+    ],
+    "stdout": "RUN --link-local-ip=[fe80::1%eth0 ::ffff:169.254.10.1] \"alpine\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "--network"
+    ],
+    "stdout": "",
+    "stderr": "flag needs an argument: --network\n\nUsage:  shards run [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nRun 'shards run --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "run",
+      "--network=",
+      "alpine"
+    ],
+    "stdout": "RUN --network= \"alpine\"\n",
+    "stderr": "",
+    "status": 0
   },
   {
     "argv": [
@@ -224,6 +4240,401 @@
       "alpine"
     ],
     "stdout": "RUN --init=false \"alpine\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "--pid",
+      "host",
+      "--init",
+      "alpine"
+    ],
+    "stdout": "RUN --init=true --pid=host \"alpine\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "--pid=container:web",
+      "alpine"
+    ],
+    "stdout": "RUN --pid=container:web \"alpine\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "--pid",
+      "foo",
+      "alpine"
+    ],
+    "stdout": "RUN --pid=foo \"alpine\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "--pid"
+    ],
+    "stdout": "",
+    "stderr": "flag needs an argument: --pid\n\nUsage:  shards run [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nRun 'shards run --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "create",
+      "--pid",
+      "host",
+      "alpine"
+    ],
+    "stdout": "RUN --pid=host \"alpine\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "--annotation",
+      "a=1",
+      "--annotation",
+      "b",
+      "--annotation",
+      "=x",
+      "alpine"
+    ],
+    "stdout": "RUN --annotation=map[:x a:1 b:] \"alpine\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "create",
+      "--annotation",
+      "k=v",
+      "--annotation",
+      "k=w",
+      "alpine"
+    ],
+    "stdout": "RUN --annotation=map[k:w] \"alpine\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "--cpu-count",
+      "2",
+      "alpine"
+    ],
+    "stdout": "",
+    "stderr": "\"--cpu-count\" is only supported on a Docker daemon running on windows, but the Docker daemon is running on linux\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "run",
+      "--cpu-count",
+      "0",
+      "alpine"
+    ],
+    "stdout": "",
+    "stderr": "\"--cpu-count\" is only supported on a Docker daemon running on windows, but the Docker daemon is running on linux\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "run",
+      "--cpu-count",
+      "x",
+      "alpine"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"x\" for \"--cpu-count\" flag: strconv.ParseInt: parsing \"x\": invalid syntax\n\nUsage:  shards run [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nRun 'shards run --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "run",
+      "--cpu-percent",
+      "50",
+      "--io-maxiops",
+      "5",
+      "--cpu-count",
+      "1",
+      "alpine"
+    ],
+    "stdout": "",
+    "stderr": "\"--cpu-count\" is only supported on a Docker daemon running on windows, but the Docker daemon is running on linux\n\"--cpu-percent\" is only supported on a Docker daemon running on windows, but the Docker daemon is running on linux\n\"--io-maxiops\" is only supported on a Docker daemon running on windows, but the Docker daemon is running on linux\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "run",
+      "--io-maxbandwidth",
+      "10m",
+      "alpine"
+    ],
+    "stdout": "",
+    "stderr": "\"--io-maxbandwidth\" is only supported on a Docker daemon running on windows, but the Docker daemon is running on linux\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "run",
+      "--io-maxbandwidth",
+      "x",
+      "alpine"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"x\" for \"--io-maxbandwidth\" flag: invalid size: 'x'\n\nUsage:  shards run [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nRun 'shards run --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "run",
+      "--io-maxiops",
+      "-1",
+      "alpine"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"-1\" for \"--io-maxiops\" flag: strconv.ParseUint: parsing \"-1\": invalid syntax\n\nUsage:  shards run [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nRun 'shards run --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "run",
+      "--cpu-count",
+      "2",
+      "--help"
+    ],
+    "stdout": "\"--cpu-count\" is only supported on a Docker daemon running on windows, but the Docker daemon is running on linux\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "create",
+      "--cpu-percent",
+      "1",
+      "--isolation",
+      "hyperv",
+      "alpine"
+    ],
+    "stdout": "",
+    "stderr": "\"--cpu-percent\" is only supported on a Docker daemon running on windows, but the Docker daemon is running on linux\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "run",
+      "--cpu-rt-period",
+      "1000",
+      "--cpu-rt-runtime",
+      "950",
+      "alpine"
+    ],
+    "stdout": "RUN --cpu-rt-period=1000 --cpu-rt-runtime=950 \"alpine\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "--cpu-rt-runtime",
+      "x",
+      "alpine"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"x\" for \"--cpu-rt-runtime\" flag: strconv.ParseInt: parsing \"x\": invalid syntax\n\nUsage:  shards run [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nRun 'shards run --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "run",
+      "--isolation",
+      "default",
+      "alpine"
+    ],
+    "stdout": "RUN --isolation=default \"alpine\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "--isolation",
+      "hyperv",
+      "alpine"
+    ],
+    "stdout": "RUN --isolation=hyperv \"alpine\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "--isolation="
+    ],
+    "stdout": "",
+    "stderr": "shards: 'shards run' requires at least 1 argument\n\nUsage:  shards run [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nSee 'shards run --help' for more information\n",
+    "status": 1
+  },
+  {
+    "argv": [
+      "run",
+      "--runtime",
+      "runc",
+      "alpine"
+    ],
+    "stdout": "RUN --runtime=runc \"alpine\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "create",
+      "--runtime",
+      "io.containerd.runc.v2",
+      "--isolation",
+      "process",
+      "alpine"
+    ],
+    "stdout": "RUN --isolation=process --runtime=io.containerd.runc.v2 \"alpine\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "--uts",
+      "host",
+      "--ipc",
+      "shareable",
+      "--userns",
+      "host",
+      "--cgroupns",
+      "host",
+      "alpine"
+    ],
+    "stdout": "RUN --cgroupns=host --ipc=shareable --userns=host --uts=host \"alpine\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "--ipc",
+      "container:web",
+      "alpine"
+    ],
+    "stdout": "RUN --ipc=container:web \"alpine\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "--ipc",
+      "none",
+      "--cgroupns",
+      "private",
+      "alpine"
+    ],
+    "stdout": "RUN --cgroupns=private --ipc=none \"alpine\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "--storage-opt",
+      "size=1G",
+      "--storage-opt",
+      "size=2G",
+      "alpine"
+    ],
+    "stdout": "RUN --storage-opt=[size=1G size=2G] \"alpine\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "--umask",
+      "022",
+      "alpine"
+    ],
+    "stdout": "RUN --umask=0022 \"alpine\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "--umask",
+      "0",
+      "alpine"
+    ],
+    "stdout": "RUN --umask=0000 \"alpine\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "--umask",
+      "7777",
+      "alpine"
+    ],
+    "stdout": "RUN --umask=07777 \"alpine\"\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "run",
+      "--umask",
+      "8",
+      "alpine"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"8\" for \"--umask\" flag: strconv.ParseUint: parsing \"8\": invalid syntax\n\nUsage:  shards run [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nRun 'shards run --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "run",
+      "--umask",
+      "0o22",
+      "alpine"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"0o22\" for \"--umask\" flag: strconv.ParseUint: parsing \"0o22\": invalid syntax\n\nUsage:  shards run [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nRun 'shards run --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "run",
+      "--umask",
+      "77777777777",
+      "alpine"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"77777777777\" for \"--umask\" flag: strconv.ParseUint: parsing \"77777777777\": value out of range\n\nUsage:  shards run [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nRun 'shards run --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "create",
+      "--umask=0077",
+      "alpine"
+    ],
+    "stdout": "RUN --umask=0077 \"alpine\"\n",
     "stderr": "",
     "status": 0
   },
@@ -352,7 +4763,7 @@
       "ps",
       "--help"
     ],
-    "stdout": "Usage:  shards ps [OPTIONS]\n\nList containers\n\nAliases:\n  shards container ls, shards container list, shards container ps, shards ps\n\nOptions:\n  -a, --all        Show all containers (default shows just running)\n  -n, --last int   Show n last created containers (includes all states)\n                   (default -1)\n  -l, --latest     Show the latest created container (includes all states)\n      --no-trunc   Don't truncate output\n  -q, --quiet      Only display container IDs\n",
+    "stdout": "Usage:  shards ps [OPTIONS]\n\nList containers\n\nAliases:\n  shards container ls, shards container list, shards container ps, shards ps\n\nOptions:\n  -a, --all             Show all containers (default shows just running)\n  -f, --filter filter   Filter output based on conditions provided\n      --format string   Format output using a custom template:\n                        'table':            Print output in table format\n                        with column headers (default)\n                        'table TEMPLATE':   Print output in table format\n                        using the given Go template\n                        'json':             Print in JSON format\n                        'TEMPLATE':         Print output using the given\n                        Go template.\n                        Refer to https://docs.docker.com/go/formatting/\n                        for more information about formatting output with\n                        templates\n  -n, --last int        Show n last created containers (includes all\n                        states) (default -1)\n  -l, --latest          Show the latest created container (includes all\n                        states)\n      --no-trunc        Don't truncate output\n  -q, --quiet           Only display container IDs\n  -s, --size            Display total file sizes\n",
     "stderr": "",
     "status": 0
   },
@@ -361,7 +4772,7 @@
       "ps",
       "-h"
     ],
-    "stdout": "Flag shorthand -h has been deprecated, use --help\nUsage:  shards ps [OPTIONS]\n\nList containers\n\nAliases:\n  shards container ls, shards container list, shards container ps, shards ps\n\nOptions:\n  -a, --all        Show all containers (default shows just running)\n  -n, --last int   Show n last created containers (includes all states)\n                   (default -1)\n  -l, --latest     Show the latest created container (includes all states)\n      --no-trunc   Don't truncate output\n  -q, --quiet      Only display container IDs\n",
+    "stdout": "Flag shorthand -h has been deprecated, use --help\nUsage:  shards ps [OPTIONS]\n\nList containers\n\nAliases:\n  shards container ls, shards container list, shards container ps, shards ps\n\nOptions:\n  -a, --all             Show all containers (default shows just running)\n  -f, --filter filter   Filter output based on conditions provided\n      --format string   Format output using a custom template:\n                        'table':            Print output in table format\n                        with column headers (default)\n                        'table TEMPLATE':   Print output in table format\n                        using the given Go template\n                        'json':             Print in JSON format\n                        'TEMPLATE':         Print output using the given\n                        Go template.\n                        Refer to https://docs.docker.com/go/formatting/\n                        for more information about formatting output with\n                        templates\n  -n, --last int        Show n last created containers (includes all\n                        states) (default -1)\n  -l, --latest          Show the latest created container (includes all\n                        states)\n      --no-trunc        Don't truncate output\n  -q, --quiet           Only display container IDs\n  -s, --size            Display total file sizes\n",
     "stderr": "",
     "status": 0
   },
@@ -371,7 +4782,7 @@
       "-h",
       "extra"
     ],
-    "stdout": "Flag shorthand -h has been deprecated, use --help\nUsage:  shards ps [OPTIONS]\n\nList containers\n\nAliases:\n  shards container ls, shards container list, shards container ps, shards ps\n\nOptions:\n  -a, --all        Show all containers (default shows just running)\n  -n, --last int   Show n last created containers (includes all states)\n                   (default -1)\n  -l, --latest     Show the latest created container (includes all states)\n      --no-trunc   Don't truncate output\n  -q, --quiet      Only display container IDs\n",
+    "stdout": "Flag shorthand -h has been deprecated, use --help\nUsage:  shards ps [OPTIONS]\n\nList containers\n\nAliases:\n  shards container ls, shards container list, shards container ps, shards ps\n\nOptions:\n  -a, --all             Show all containers (default shows just running)\n  -f, --filter filter   Filter output based on conditions provided\n      --format string   Format output using a custom template:\n                        'table':            Print output in table format\n                        with column headers (default)\n                        'table TEMPLATE':   Print output in table format\n                        using the given Go template\n                        'json':             Print in JSON format\n                        'TEMPLATE':         Print output using the given\n                        Go template.\n                        Refer to https://docs.docker.com/go/formatting/\n                        for more information about formatting output with\n                        templates\n  -n, --last int        Show n last created containers (includes all\n                        states) (default -1)\n  -l, --latest          Show the latest created container (includes all\n                        states)\n      --no-trunc        Don't truncate output\n  -q, --quiet           Only display container IDs\n  -s, --size            Display total file sizes\n",
     "stderr": "",
     "status": 0
   },
@@ -420,6 +4831,54 @@
       "-n=3"
     ],
     "stdout": "RUN --last=3\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "ps",
+      "-f",
+      "nope"
+    ],
+    "stdout": "",
+    "stderr": "invalid argument \"nope\" for \"-f, --filter\" flag: bad format of filter (expected name=value)\n\nUsage:  shards ps [OPTIONS]\n\nRun 'shards ps --help' for more information\n",
+    "status": 125
+  },
+  {
+    "argv": [
+      "ps",
+      "--filter",
+      "status=exited",
+      "-q"
+    ],
+    "stdout": "RUN --filter={\"status\":{\"exited\":true}} --quiet=true\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "ps",
+      "-f",
+      "name=a",
+      "-f",
+      "label=x=1"
+    ],
+    "stdout": "RUN --filter={\"label\":{\"x=1\":true},\"name\":{\"a\":true}}\n",
+    "stderr": "",
+    "status": 0
+  },
+  {
+    "argv": [
+      "ps",
+      "-f",
+      " Name = b\u003c\u0026\u003e ",
+      "-f",
+      "name=a",
+      "-f",
+      "",
+      "-a"
+    ],
+    "stdout": "RUN --all=true --filter={\"name\":{\"a\":true,\"b\\u003c\\u0026\\u003e\":true}}\n",
     "stderr": "",
     "status": 0
   },
@@ -682,7 +5141,7 @@
       "list",
       "--help"
     ],
-    "stdout": "Usage:  shards container ls [OPTIONS]\n\nList containers\n\nAliases:\n  shards container ls, shards container list, shards container ps, shards ps\n\nOptions:\n  -a, --all        Show all containers (default shows just running)\n  -n, --last int   Show n last created containers (includes all states)\n                   (default -1)\n  -l, --latest     Show the latest created container (includes all states)\n      --no-trunc   Don't truncate output\n  -q, --quiet      Only display container IDs\n",
+    "stdout": "Usage:  shards container ls [OPTIONS]\n\nList containers\n\nAliases:\n  shards container ls, shards container list, shards container ps, shards ps\n\nOptions:\n  -a, --all             Show all containers (default shows just running)\n  -f, --filter filter   Filter output based on conditions provided\n      --format string   Format output using a custom template:\n                        'table':            Print output in table format\n                        with column headers (default)\n                        'table TEMPLATE':   Print output in table format\n                        using the given Go template\n                        'json':             Print in JSON format\n                        'TEMPLATE':         Print output using the given\n                        Go template.\n                        Refer to https://docs.docker.com/go/formatting/\n                        for more information about formatting output with\n                        templates\n  -n, --last int        Show n last created containers (includes all\n                        states) (default -1)\n  -l, --latest          Show the latest created container (includes all\n                        states)\n      --no-trunc        Don't truncate output\n  -q, --quiet           Only display container IDs\n  -s, --size            Display total file sizes\n",
     "stderr": "",
     "status": 0
   },

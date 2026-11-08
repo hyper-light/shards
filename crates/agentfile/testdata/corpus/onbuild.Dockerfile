@@ -1,0 +1,6 @@
+FROM alpine
+ONBUILD RUN echo hi
+ONBUILD COPY <<EOF /x
+hello
+EOF
+ONBUILD

@@ -7,7 +7,7 @@ use std::fmt;
 use std::fs::File;
 
 use super::{Boot, Segment, layout};
-use crate::memory::{GuestMemory, OutOfBounds};
+use crate::memory::{FileSpan, GuestMemory, OutOfBounds, Reentered};
 use crate::platform;
 
 #[derive(Debug)]
@@ -15,6 +15,7 @@ pub enum BootError {
     Io(std::io::Error),
     NotAnElf(&'static str),
     Memory(OutOfBounds),
+    Access(Reentered),
     DoesNotFit { what: &'static str, at: u64, len: u64 },
 }
 
@@ -24,6 +25,7 @@ impl fmt::Display for BootError {
             BootError::Io(e) => write!(f, "reading the kernel: {e}"),
             BootError::NotAnElf(why) => write!(f, "kernel is not an x86_64 vmlinux: {why}"),
             BootError::Memory(e) => write!(f, "{e}"),
+            BootError::Access(e) => write!(f, "{e}"),
             BootError::DoesNotFit { what, at, len } => {
                 write!(f, "{what} at {at:#x}+{len:#x} does not fit guest RAM")
             }
@@ -42,6 +44,12 @@ impl From<std::io::Error> for BootError {
 impl From<OutOfBounds> for BootError {
     fn from(e: OutOfBounds) -> Self {
         BootError::Memory(e)
+    }
+}
+
+impl From<Reentered> for BootError {
+    fn from(e: Reentered) -> Self {
+        BootError::Access(e)
     }
 }
 
@@ -146,9 +154,10 @@ pub struct LoadedKernel {
     pub end: u64,
 }
 
-/// Copies each PT_LOAD to its physical address. Segments must lie in low RAM, above
-/// 1 MiB and inside the identity map, which is all `startup_64` can reach.
-pub fn load_kernel(mem: &GuestMemory, kernel: &File, low_ram_end: u64) -> Result<LoadedKernel, BootError> {
+/// Where each PT_LOAD of `kernel` goes, from its headers alone: at its physical address,
+/// in low RAM, above 1 MiB and inside the identity map, which is all `startup_64` can
+/// reach. Its segments' bytes are copied in later, as the spans of the file this gives.
+pub fn plan_kernel(kernel: &File, low_ram_end: u64) -> Result<(LoadedKernel, Vec<FileSpan>), BootError> {
     let mut header = [0u8; 64];
     platform::read_exact_at(kernel, &mut header, 0)?;
     let elf = parse_elf(&header, |offset, len| {
@@ -156,8 +165,15 @@ pub fn load_kernel(mem: &GuestMemory, kernel: &File, low_ram_end: u64) -> Result
         platform::read_exact_at(kernel, &mut table, offset)?;
         Ok(table)
     })?;
+    spans(&elf, low_ram_end)
+}
+
+/// [`plan_kernel`]'s spans of `elf`'s segments, in the file's order: where two meet in
+/// memory, the later one's bytes are the ones copied there ([`crate::vm`]'s copy).
+fn spans(elf: &Elf, low_ram_end: u64) -> Result<(LoadedKernel, Vec<FileSpan>), BootError> {
     let limit = low_ram_end.min(layout::IDENTITY_MAPPED);
     let mut end = 0u64;
+    let mut spans = Vec::with_capacity(elf.loads.len());
     for seg in &elf.loads {
         let seg_end = seg.paddr.checked_add(seg.memsz);
         if seg.paddr < layout::HIMEM || seg_end.is_none_or(|e| e > limit) {
@@ -168,40 +184,44 @@ pub fn load_kernel(mem: &GuestMemory, kernel: &File, low_ram_end: u64) -> Result
             });
         }
         let len = usize::try_from(seg.filesz).map_err(|_| BootError::NotAnElf("segment size"))?;
-        let dst = mem.host_ptr(seg.paddr, len)?;
-        // SAFETY: `dst` is valid for `len` bytes of guest RAM and no vCPU runs yet.
-        let buf = unsafe { std::slice::from_raw_parts_mut(dst, len) };
-        platform::read_exact_at(kernel, buf, seg.offset)?;
         // Fresh guest RAM is zero, so bss (memsz beyond filesz) needs no clearing.
+        spans.push(FileSpan {
+            gpa: seg.paddr,
+            len,
+            offset: seg.offset,
+        });
         end = end.max(seg_end.unwrap_or(0));
     }
     if elf.entry < layout::HIMEM || elf.entry >= end {
         return Err(BootError::NotAnElf("entry point outside the loaded image"));
     }
-    Ok(LoadedKernel {
-        entry: elf.entry,
-        end,
-    })
+    Ok((
+        LoadedKernel {
+            entry: elf.entry,
+            end,
+        },
+        spans,
+    ))
 }
 
-/// Places the initrd at the first 2 MiB boundary after the kernel, below `limit`.
-pub fn load_initrd(
-    mem: &GuestMemory,
-    initrd: &[u8],
-    after: u64,
-    limit: u64,
-) -> Result<(u64, u64), BootError> {
-    let len = initrd.len() as u64;
-    let start = after.checked_next_multiple_of(2 << 20).unwrap_or(u64::MAX);
-    if start.checked_add(len).is_none_or(|end| end > limit) {
-        return Err(BootError::DoesNotFit {
+/// The guest's page: an initrd starts on one.
+const PAGE: u64 = 0x1000;
+
+/// Where an initrd of `len` bytes starts: at the top of RAM below `limit`, page-aligned,
+/// above the kernel's end (`after`), as Firecracker and QEMU place it: beside what the
+/// guest kernel takes there from the top down early in boot (its memblock allocations),
+/// so that the two share the host's huge pages. 2 MiB above the kernel, a 3 MiB initrd
+/// held one more of them (PM M157).
+pub fn place_initrd(len: u64, after: u64, limit: u64) -> Result<u64, BootError> {
+    limit
+        .checked_sub(len)
+        .map(|s| s & !(PAGE - 1))
+        .filter(|s| *s >= after)
+        .ok_or(BootError::DoesNotFit {
             what: "initrd",
-            at: start,
+            at: after,
             len,
-        });
-    }
-    mem.write(start, initrd)?;
-    Ok((start, len))
+        })
 }
 
 const E820_RAM: u32 = 1;
@@ -230,6 +250,9 @@ pub struct ZeroPage {
     pub ram: u64,
     pub initrd: Option<(u64, u64)>,
     pub rsdp: u64,
+    /// A PCI bus's ECAM window, reserved in the e820 map: Linux uses MMCONFIG only where
+    /// the firmware reserved it (arch/x86/pci/mmconfig-shared.c, `pci_mmcfg_reserved`).
+    pub pci_ecam: Option<(u64, u64)>,
 }
 
 /// `struct boot_params` for a raw vmlinux, built from zero (arch/x86/include/uapi/asm/
@@ -256,7 +279,10 @@ pub fn zero_page(z: &ZeroPage) -> Result<[u8; 4096], BootError> {
         put(0x21c, &len.to_le_bytes())?; // hdr.ramdisk_size
     }
     put(0x228, &(layout::CMDLINE as u32).to_le_bytes())?; // hdr.cmd_line_ptr
-    let map = e820(z.ram);
+    let mut map = e820(z.ram);
+    if let Some((base, len)) = z.pci_ecam {
+        map.push((base, len, E820_RESERVED));
+    }
     put(0x1e8, &[map.len() as u8])?; // e820_entries
     for (i, (addr, size, kind)) in map.iter().enumerate() {
         let at = 0x2d0 + 20 * i;
@@ -323,18 +349,19 @@ pub fn write_boot_state(
             len: bytes.len() as u64,
         });
     }
-    mem.write(layout::CMDLINE, bytes)?;
-    mem.write(layout::ZERO_PAGE, &zero_page(z)?)?;
+    let a = mem.access()?;
+    a.write(layout::CMDLINE, bytes)?;
+    a.write(layout::ZERO_PAGE, &zero_page(z)?)?;
 
     for (i, d) in [0u64, 0, GDT_CODE64, GDT_DATA].iter().enumerate() {
-        mem.write_obj(layout::GDT + 8 * i as u64, *d)?;
+        a.write_obj(layout::GDT + 8 * i as u64, *d)?;
     }
-    mem.write_obj(layout::IDT, 0u64)?;
+    a.write_obj(layout::IDT, 0u64)?;
 
-    mem.write_obj(layout::PML4, layout::PDPT | PTE_PRESENT_RW)?;
-    mem.write_obj(layout::PDPT, layout::PD | PTE_PRESENT_RW)?;
+    a.write_obj(layout::PML4, layout::PDPT | PTE_PRESENT_RW)?;
+    a.write_obj(layout::PDPT, layout::PD | PTE_PRESENT_RW)?;
     for i in 0..512u64 {
-        mem.write_obj(layout::PD + 8 * i, (i << 21) | PDE_2M)?;
+        a.write_obj(layout::PD + 8 * i, (i << 21) | PDE_2M)?;
     }
 
     Ok(Boot {
@@ -377,6 +404,59 @@ mod tests {
         assert!(!ds.long && ds.db && ds.present);
     }
 
+    /// The initrd ends within a page of the top of low RAM, starts on a page, and is
+    /// refused where it would reach below the kernel's end.
+    #[test]
+    fn the_initrd_goes_at_the_top_of_low_ram() {
+        let len = (3 << 20) + 5;
+        let start = place_initrd(len, 40 << 20, 64 << 20).unwrap();
+        assert_eq!(start % PAGE, 0);
+        assert!(
+            start + len <= 64 << 20 && start + len > (64 << 20) - PAGE,
+            "{start:#x}"
+        );
+        assert!(matches!(
+            place_initrd(30 << 20, 40 << 20, 64 << 20),
+            Err(BootError::DoesNotFit { what: "initrd", .. })
+        ));
+    }
+
+    /// A kernel's segments are spans of its file, each where its physical address says,
+    /// in the file's order, bss left out.
+    #[test]
+    fn a_kernels_segments_are_spans_of_its_file() {
+        let seg = |paddr, filesz, memsz, offset| Segment64 {
+            offset,
+            paddr,
+            filesz,
+            memsz,
+        };
+        let elf = Elf {
+            entry: 0x100_0000,
+            loads: vec![
+                seg(0x120_0000, 0x1000, 0x8_0000, 0x30_0000),
+                seg(0x100_0000, 0x10_0000, 0x10_0000, 0x20_0000),
+            ],
+        };
+        let (kernel, got) = spans(&elf, 64 << 20).unwrap();
+        assert_eq!((kernel.entry, kernel.end), (0x100_0000, 0x128_0000));
+        assert_eq!(
+            got,
+            vec![
+                FileSpan {
+                    gpa: 0x120_0000,
+                    len: 0x1000,
+                    offset: 0x30_0000
+                },
+                FileSpan {
+                    gpa: 0x100_0000,
+                    len: 0x10_0000,
+                    offset: 0x20_0000
+                },
+            ]
+        );
+    }
+
     #[test]
     fn e820_splits_around_firmware_and_the_mmio_gap() {
         let small = e820(512 << 20);
@@ -395,6 +475,7 @@ mod tests {
             ram: 256 << 20,
             initrd: Some((0x400_0000, 0x1234)),
             rsdp: layout::RSDP,
+            pci_ecam: None,
         })
         .unwrap();
         assert_eq!(

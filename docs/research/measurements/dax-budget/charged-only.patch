@@ -1,0 +1,13 @@
+diff --git a/crates/shards/src/daemon/budget.rs b/crates/shards/src/daemon/budget.rs
+index 1b12269b..2abf0f6e 100644
+--- a/crates/shards/src/daemon/budget.rs
++++ b/crates/shards/src/daemon/budget.rs
+@@ -30,7 +30,7 @@ pub(super) fn room(dir: &Path, root: &Path) -> Option<(i64, PathBuf)> {
+     let mut at = dir;
+     while at.starts_with(root) && at != root {
+         if let Some(held) = held_at(at) {
+-            let room = held.room(files_mapped_under(at));
++            let room = held.room(0);
+             if least.as_ref().is_none_or(|(l, _)| room < *l) {
+                 least = Some((room, at.to_path_buf()));
+             }

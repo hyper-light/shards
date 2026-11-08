@@ -20,6 +20,13 @@ pub enum Kind {
     String,
     /// Text given any number of times, each kept; the name is its type in `--help`.
     Many(&'static str),
+    /// A time, read as Go's `time.ParseDuration` reads it, in nanoseconds; shown as
+    /// `Duration.String` shows it.
+    Duration,
+    /// One value of a type of docker/cli's own (a pflag `Var`); the name is its type in
+    /// `--help`: `bytes` (MemBytes, kept as the bytes) or `decimal` (NanoCPUs, kept as
+    /// billionths).
+    Value(&'static str),
 }
 
 /// A command's flag.
@@ -38,11 +45,17 @@ pub struct Flag {
     /// Left out of `--help`.
     pub hidden: bool,
     /// Whether shards does what it asks. The rest parse as `docker`'s do, are left out of
-    /// `--help` as dockerd's unsupported ones are, and refuse any value but their default.
+    /// `--help`, shards doing nothing with them, and refuse any value but their default.
     pub supported: bool,
     /// The flag whose value this one sets too: the CLI binds both to one variable
     /// (`stop --time` and `--timeout`).
     pub shares: Option<&'static str>,
+    /// One of shards' own, which `docker` does not have: `--help` lists it apart, after
+    /// `docker`'s, whose text stays the CLI's.
+    pub extension: bool,
+    /// Its value shows as nothing, whatever it holds (a pflag Value whose `String` is
+    /// empty: buildx's `--check`).
+    pub unshown: bool,
 }
 
 impl Flag {
@@ -64,6 +77,8 @@ impl Flag {
             hidden: false,
             supported: true,
             shares: None,
+            extension: false,
+            unshown: false,
         }
     }
 
@@ -87,6 +102,19 @@ impl Flag {
         usage: &'static str,
     ) -> Flag {
         Flag::new(name, short, Kind::String, default, usage)
+    }
+
+    pub const fn duration(name: &'static str, short: Option<u8>, usage: &'static str) -> Flag {
+        Flag::new(name, short, Kind::Duration, "0s", usage)
+    }
+
+    pub const fn value(
+        name: &'static str,
+        short: Option<u8>,
+        type_name: &'static str,
+        usage: &'static str,
+    ) -> Flag {
+        Flag::new(name, short, Kind::Value(type_name), "", usage)
     }
 
     pub const fn many(
@@ -117,8 +145,20 @@ impl Flag {
         self
     }
 
+    /// The flag as one of shards' own (`Flag::extension`).
+    pub const fn extension(mut self) -> Flag {
+        self.extension = true;
+        self
+    }
+
     pub const fn hidden(mut self) -> Flag {
         self.hidden = true;
+        self
+    }
+
+    /// The flag with its value shown as nothing ([`Flag::unshown`]).
+    pub const fn unshown(mut self) -> Flag {
+        self.unshown = true;
         self
     }
 
@@ -152,6 +192,8 @@ impl Flag {
             Kind::Int => self.default == "0",
             Kind::String => self.default.is_empty(),
             Kind::Many(_) => matches!(self.default, "false" | "<nil>" | "" | "0"),
+            Kind::Duration => matches!(self.default, "0" | "0s"),
+            Kind::Value(_) => matches!(self.default, "false" | "<nil>" | "" | "0"),
         }
     }
 }
@@ -163,6 +205,12 @@ pub enum Args {
     None,
     AtLeast(usize),
     Exactly(usize),
+    /// At least the first, at most the second (docker/cli RequiresRangeArgs).
+    Range(usize, usize),
+    /// At most (docker/cli RequiresMaxArgs).
+    AtMost(usize),
+    /// Exactly, as cobra's ExactArgs says it: buildx's subcommands.
+    Accepts(usize),
 }
 
 /// A command: what `--help` and the mistakes it answers say of it, and what it takes.
@@ -178,7 +226,8 @@ pub struct Command {
     pub flags: &'static [Flag],
     /// The flags `docker` takes that shards does not serve yet, which parse all the same:
     /// a line each of `NAME SHORT KIND DEFAULT SHARES`, `-` for no shorthand, an empty
-    /// default or no flag shared, and the kind `b`, `i`, `s` or `m` (`Kind`). One string
+    /// default or no flag shared, and the kind `b`, `i`, `s` or `m` (`Kind`), or the type
+    /// of a value docker/cli parses as its own (`Kind::Value`: `bytes`, `uint64`). One string
     /// rather than a table of `Flag`s, whose `&str`s filled a page of fixed-up pointers
     /// that every parse faulted in: 7 µs of the thin client's start (docs/research/
     /// platform-measurements.md M29).
@@ -186,6 +235,72 @@ pub struct Command {
     /// Whether flags may follow its arguments: pflag's `interspersed`, off for commands
     /// whose arguments are another command's (`run`).
     pub interspersed: bool,
+    /// What its errors start with, other than a flag's: `ERROR: ` for buildx's, which
+    /// its main prints so (cmd/buildx/main.go), nothing for the CLI's own.
+    pub error_prefix: &'static str,
+}
+
+impl Command {
+    /// Every flag it takes: those it serves, then those `docker` takes that it does not
+    /// serve yet.
+    pub fn every_flag(&self) -> impl Iterator<Item = Flag> {
+        self.flags
+            .iter()
+            .copied()
+            .chain(self.unserved.lines().filter_map(unserved_flag))
+    }
+}
+
+/// A CSV record's fields, as encoding/csv reads one line (pflag's readAsCSV): commas
+/// part them, a quoted field keeps its commas, and a doubled quote in it is one.
+fn csv_fields(line: &str) -> Vec<String> {
+    let mut fields = Vec::new();
+    let mut field = String::new();
+    let mut chars = line.chars().peekable();
+    let mut quoted = false;
+    while let Some(c) = chars.next() {
+        match (quoted, c) {
+            (false, ',') => fields.push(std::mem::take(&mut field)),
+            (false, '"') if field.is_empty() => quoted = true,
+            (true, '"') if chars.peek() == Some(&'"') => {
+                chars.next();
+                field.push('"');
+            }
+            (true, '"') => quoted = false,
+            (_, c) => field.push(c),
+        }
+    }
+    fields.push(field);
+    fields
+}
+
+/// `v` as Go's `encoding/csv` writes one record, without its line end (pflag's
+/// `writeAsCSV`): a field is quoted, its quotes doubled, if it holds a comma, a quote or a
+/// line break, or starts with a space.
+fn csv_record(v: &[String]) -> String {
+    let fields: Vec<String> = v
+        .iter()
+        .map(|f| {
+            let quote = f == r"\."
+                || f.contains([',', '"', '\r', '\n'])
+                || f.chars().next().is_some_and(char::is_whitespace);
+            if quote {
+                format!("\"{}\"", f.replace('"', "\"\""))
+            } else {
+                f.clone()
+            }
+        })
+        .collect();
+    fields.join(",")
+}
+
+/// Why `command` does not serve its flag `name`, where its `unserved` line says: the words
+/// after its five fields, of a flag shards does not serve by design.
+fn refusal(command: &Command, name: &str) -> Option<&'static str> {
+    command.unserved.lines().find_map(|line| {
+        let mut fields = line.splitn(6, ' ');
+        (fields.next()? == name).then(|| fields.nth(4)).flatten()
+    })
 }
 
 /// The flag an `unserved` line describes.
@@ -203,7 +318,8 @@ fn unserved_flag(line: &'static str) -> Option<Flag> {
         "b" => Kind::Bool,
         "i" => Kind::Int,
         "s" => Kind::String,
-        _ => Kind::Many("list"),
+        "m" => Kind::Many("list"),
+        go => Kind::Value(go),
     };
     let flag = Flag::new(
         name,
@@ -242,6 +358,13 @@ pub struct Parsed {
     /// What pflag said of the deprecated flags used. Cobra prints it on the command's
     /// output, which the CLI makes stdout (spf13/cobra command.go ParseFlags and Print).
     pub notices: String,
+    /// Where each value given a flag that takes one sits in the command line: the flag's
+    /// name, the word it is in, and the byte it begins at there (after `--name=` or `-n`;
+    /// 0 for a word of its own). A context's client rewrites them in place (D180).
+    pub positions: Vec<(&'static str, usize, usize)>,
+    /// The word of the command line each of `args` is, as `positions` says where flags'
+    /// values sit.
+    pub arg_words: Vec<usize>,
 }
 
 impl Parsed {
@@ -286,6 +409,41 @@ impl Parsed {
             .map_or("", |f| f.default)
     }
 
+    /// This command line with flag `name` holding `value`, or as though it were never
+    /// given: what a part of the command is asked, such as one platform's build of
+    /// several. A flag the command does not have is left as it is.
+    fn with(&self, name: &str, value: Option<Value>) -> Parsed {
+        let mut p = self.clone();
+        if let Some(i) = p.index(name) {
+            let owner = p.owner(i);
+            let set = value.is_some();
+            if let Some(v) = p.values.get_mut(owner) {
+                *v = value;
+            }
+            for at in [i, owner] {
+                if let Some(s) = p.set.get_mut(at) {
+                    *s = set;
+                }
+            }
+        }
+        p
+    }
+
+    /// [`with`](Self::with) a list flag's values; none, as though never given.
+    pub fn with_many(&self, name: &str, values: Vec<String>) -> Parsed {
+        self.with(name, (!values.is_empty()).then_some(Value::Many(values)))
+    }
+
+    /// [`with`](Self::with) a text flag's value; empty, as though never given.
+    pub fn with_text(&self, name: &str, value: &str) -> Parsed {
+        self.with(name, (!value.is_empty()).then(|| Value::Text(value.to_string())))
+    }
+
+    /// [`with`](Self::with) a bool flag's value; false, as though never given.
+    pub fn with_bool(&self, name: &str, value: bool) -> Parsed {
+        self.with(name, value.then_some(Value::Bool(true)))
+    }
+
     /// Whether the command line set flag `name`, to anything.
     pub fn changed(&self, name: &str) -> bool {
         self.index(name)
@@ -303,10 +461,57 @@ impl Parsed {
             .filter(|f| self.changed(f.name))
             .map(|f| {
                 let shown = match self.value(f.name) {
+                    _ if f.unshown => String::new(),
                     Some(Value::Bool(b)) => b.to_string(),
+                    Some(Value::Int(n)) if f.kind == Kind::Duration => crate::gotime::format_duration(*n),
                     Some(Value::Int(n)) => n.to_string(),
+                    Some(Value::Text(s)) if f.kind == Kind::Value("bytes") => {
+                        crate::resources::mem_bytes_string(s.parse().unwrap_or(0))
+                    }
+                    Some(Value::Text(s)) if f.kind == Kind::Value("decimal") => {
+                        crate::resources::nano_cpus_string(s.parse().unwrap_or(0))
+                    }
                     Some(Value::Text(s)) => s.clone(),
                     Some(Value::Many(v)) if v.is_empty() => String::new(),
+                    // NetworkOpt prints as nothing, whatever it holds.
+                    Some(Value::Many(_)) if matches!(f.kind, Kind::Many("network")) => String::new(),
+                    // pflag's IP and IP network slices print joined by commas.
+                    Some(Value::Many(v)) if matches!(f.kind, Kind::Many("ipSlice" | "ipNetSlice")) => {
+                        format!("[{}]", v.join(","))
+                    }
+                    // pflag's string slices and arrays print as one CSV record.
+                    Some(Value::Many(v)) if matches!(f.kind, Kind::Many("stringArray" | "strings")) => {
+                        format!("[{}]", csv_record(v))
+                    }
+                    // UlimitOpt keeps the last of each resource, and prints them sorted.
+                    Some(Value::Many(v)) if matches!(f.kind, Kind::Many("ulimit")) => {
+                        let mut by_name = std::collections::BTreeMap::new();
+                        // Each as go-units' Ulimit.String writes it: `name=soft:hard`.
+                        for u in v {
+                            let shown = crate::buildflags::parse_ulimit(u)
+                                .map_or_else(|_| u.clone(), |u| u.to_string());
+                            by_name.insert(u.split_once('=').map_or(u.as_str(), |(n, _)| n), shown);
+                        }
+                        let mut shown: Vec<String> = by_name.into_values().collect();
+                        shown.sort_unstable();
+                        format!("[{}]", shown.join(" "))
+                    }
+                    // MountOpt prints each mount's type, source and target.
+                    Some(Value::Many(v)) if matches!(f.kind, Kind::Many("mount")) => {
+                        crate::mounts::mounts_string(v)
+                    }
+                    // MapOpts prints its map as fmt's %v does: keys sorted, the last of each.
+                    Some(Value::Many(v)) if matches!(f.kind, Kind::Many("map")) => {
+                        let mut by_key = std::collections::BTreeMap::new();
+                        for kv in v {
+                            let (k, val) = kv.split_once('=').unwrap_or((kv.as_str(), ""));
+                            by_key.insert(k, val);
+                        }
+                        let shown: Vec<String> = by_key.iter().map(|(k, v)| format!("{k}:{v}")).collect();
+                        format!("map[{}]", shown.join(" "))
+                    }
+                    // FilterOpt prints its map as JSON, its names and values sorted.
+                    Some(Value::Many(v)) if matches!(f.kind, Kind::Many("filter")) => filter_json(v),
                     Some(Value::Many(v)) => format!("[{}]", v.join(" ")),
                     None => String::new(),
                 };
@@ -357,6 +562,7 @@ pub enum Outcome {
     Run(Parsed),
     /// Help (`help`), for stdout after `notices`; the status is 0.
     Help { notices: String },
+
     /// Nothing it can have: `notices` for stdout, then `text` and a newline for stderr,
     /// and the status to exit with.
     Fail {
@@ -391,6 +597,8 @@ pub fn parse(
         set: vec![false; command.flags.len()],
         args: Vec::new(),
         notices: String::new(),
+        positions: Vec::new(),
+        arg_words: Vec::new(),
     };
     if let Err(e) = read(&mut parsed, argv, validate) {
         return Outcome::Fail {
@@ -412,14 +620,29 @@ pub fn parse(
         Args::None if n > 0 => Some(("accepts no arguments".to_string(), "Run")),
         Args::AtLeast(k) if n < k => Some((format!("requires at least {k} {}", plural(k)), "See")),
         Args::Exactly(k) if n != k => Some((format!("requires {k} {}", plural(k)), "Run")),
+        Args::AtMost(k) if n > k => Some((format!("requires at most {k} {}", plural(k)), "Run")),
+        Args::Range(min, max) if n < min || n > max => Some((
+            format!("requires at least {min} and at most {max} {}", plural(max)),
+            "Run",
+        )),
         _ => None,
     };
+    if let Args::Accepts(k) = command.args
+        && n != k
+    {
+        return Outcome::Fail {
+            notices,
+            text: format!("{}accepts {k} arg(s), received {n}", command.error_prefix),
+            status: 1,
+        };
+    }
     if let Some((what, verb)) = wrong {
         let bin = path.split(' ').next().unwrap_or_default();
         return Outcome::Fail {
             notices,
             text: format!(
-                "{bin}: '{path}' {what}\n\nUsage:  {}\n\n{verb} '{path} --help' for more information",
+                "{}{bin}: '{path}' {what}\n\nUsage:  {}\n\n{verb} '{path} --help' for more information",
+                command.error_prefix,
                 use_line(command, path)
             ),
             status: 1,
@@ -445,7 +668,14 @@ pub fn parse(
     if !unserved.is_empty() {
         let text: Vec<String> = unserved
             .iter()
-            .map(|f| format!("\"--{}\" is not supported by shards yet", f.name))
+            .map(|f| match refusal(command, f.name) {
+                // One shards does not serve by design says why.
+                Some(why) => format!("{}\"--{}\": {why}", command.error_prefix, f.name),
+                None => format!(
+                    "{}\"--{}\" is not supported by shards yet",
+                    command.error_prefix, f.name
+                ),
+            })
             .collect();
         return Outcome::Fail {
             notices,
@@ -461,6 +691,9 @@ pub fn parse(
 fn is_default(f: &Flag, value: &Value) -> bool {
     match value {
         Value::Bool(b) => go::parse_bool(f.default).is_ok_and(|d| d == *b),
+        Value::Int(n) if f.kind == Kind::Duration => {
+            crate::gotime::duration(f.default).is_ok_and(|d| d == *n)
+        }
         Value::Int(n) => go::parse_int(f.default).is_ok_and(|d| d == *n),
         Value::Text(s) => s == f.default,
         Value::Many(v) => v.is_empty(),
@@ -476,11 +709,18 @@ fn read(
 ) -> Result<(), String> {
     let mut words = argv.iter();
     while let Some(word) = words.next() {
+        // This word's place in the command line.
+        let at = argv
+            .len()
+            .saturating_sub(words.as_slice().len())
+            .saturating_sub(1);
         let bytes = word.as_bytes();
         if bytes.len() < 2 || bytes.first() != Some(&b'-') {
             parsed.args.push(word.clone());
+            parsed.arg_words.push(at);
             if !parsed.command.interspersed {
                 parsed.args.extend(words.cloned());
+                parsed.arg_words.extend(at.saturating_add(1)..argv.len());
                 return Ok(());
             }
             continue;
@@ -488,20 +728,359 @@ fn read(
         if bytes.get(1) == Some(&b'-') {
             if bytes.len() == 2 {
                 parsed.args.extend(words.cloned());
+                parsed.arg_words.extend(at.saturating_add(1)..argv.len());
                 return Ok(());
             }
-            read_long(parsed, word, &mut words, validate)?;
+            read_long(parsed, word, at, &mut words, validate)?;
         } else {
-            read_short(parsed, word, &mut words, validate)?;
+            read_short(parsed, word, at, &mut words, validate)?;
         }
     }
     Ok(())
 }
 
-/// pflag's parseLongArg: `--name`, `--name=value`, or `--name value`.
+/// FilterOpt.String: the filters `given` (`name=value` each, as [`value`] keeps them)
+/// as `json.Marshal` writes their `map[string]map[string]bool`; nothing for none.
+fn filter_json(given: &[String]) -> String {
+    let mut by_name: std::collections::BTreeMap<&str, std::collections::BTreeSet<&str>> = Default::default();
+    for f in given {
+        if let Some((name, value)) = f.split_once('=') {
+            by_name.entry(name).or_default().insert(value);
+        }
+    }
+    if by_name.is_empty() {
+        return String::new();
+    }
+    let fields: Vec<String> = by_name
+        .iter()
+        .map(|(name, values)| {
+            let values: Vec<String> = values.iter().map(|v| format!("{}:true", go_json(v))).collect();
+            format!("{}:{{{}}}", go_json(name), values.join(","))
+        })
+        .collect();
+    format!("{{{}}}", fields.join(","))
+}
+
+/// `s` as Go's encoding/json writes a string: HTML's `<`, `>` and `&` escaped, and the
+/// line and paragraph separators.
+fn go_json(s: &str) -> String {
+    let mut out = String::from("\"");
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            '<' | '>' | '&' | '\u{2028}' | '\u{2029}' => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+/// A value of a flag that takes many, as docker/cli v29.8.1's option type takes it: a
+/// filter (opts.FilterOpt.Set) is `name=value`, its name lowered and both trimmed, or
+/// empty; a run's `--label`, `--dns`, `--dns-search` and `--add-host` as their ListOpts
+/// validate them (opts/opts.go); others are as given.
+pub fn value(flag: &Flag, value: &str) -> Result<String, String> {
+    match (flag.name, flag.kind) {
+        (_, Kind::Many("filter")) => filter(value),
+        // MemSwapBytes takes -1 as itself (docker/cli opts/opts.go).
+        ("memory-swap", Kind::Value("bytes")) if value == "-1" => Ok(value.to_string()),
+        (_, Kind::Value("bytes")) => crate::resources::ram_in_bytes(value).map(|n| n.to_string()),
+        (_, Kind::Value("decimal")) => crate::resources::parse_cpus(value).map(|n| n.to_string()),
+        // UmaskOpt: octal, shown as `%#04o` (docker/cli opts.go): its digits zero-padded to
+        // four, then a leading 0 where they do not start with one (fmt's fmtInteger).
+        (_, Kind::Value("umask")) => crate::go::parse_octal32(value)
+            .map(|n| {
+                let digits = format!("{n:04o}");
+                if digits.starts_with('0') {
+                    digits
+                } else {
+                    format!("0{digits}")
+                }
+            })
+            .map_err(|e| e.to_string()),
+        (_, Kind::Value(go @ ("uint16" | "uint64"))) => {
+            crate::go::parse_uint_bits(value, if go == "uint16" { 16 } else { 64 })
+                .map(|n| n.to_string())
+                .map_err(|e| e.to_string())
+        }
+        ("label", Kind::Many("list")) => validate_label(value),
+        ("dns", Kind::Many("list")) => validate_ip(value),
+        ("dns-search", Kind::Many("list")) => validate_dns_search(value),
+        ("add-host", Kind::Many("list")) => validate_extra_host(value),
+        ("device-cgroup-rule", Kind::Many("list")) => validate_device_cgroup_rule(value),
+        // GpuOpts.Set (opts/gpus.go): the value kept as given, once it reads.
+        ("gpus", Kind::Many("gpu-request")) => crate::gpus::gpu_request(value).map(|_| value.to_string()),
+        // pflag's IP values: an address, as Go's net.IP prints it.
+        (_, Kind::Many("ipSlice")) => go_ip(value.trim())
+            .ok_or_else(|| format!("invalid string being converted to IP address: {value}")),
+        (_, Kind::Many("ipNetSlice")) => {
+            go_cidr(value.trim()).ok_or_else(|| format!("invalid string being converted to CIDR: {value}"))
+        }
+        (_, Kind::Value("ip")) => {
+            go_ip(value.trim()).ok_or_else(|| format!("failed to parse IP: {}", crate::go::quote(value)))
+        }
+        ("link", Kind::Many("list")) => validate_link(value),
+        ("attach", Kind::Many("list")) => validate_attach(value),
+        ("device-read-bps" | "device-write-bps", Kind::Many("list")) => validate_throttle_bps(value),
+        ("device-read-iops" | "device-write-iops", Kind::Many("list")) => validate_throttle_iops(value),
+        ("blkio-weight-device", Kind::Many("list")) => validate_weight_device(value),
+        ("sysctl", Kind::Many("map")) => validate_sysctl(value),
+        // opts.MountOpt.Set.
+        (_, Kind::Many("mount")) => crate::mounts::parse_mount(value, None).map(|_| value.to_string()),
+        // UlimitOpt, through go-units' ParseUlimit, whose names leave out `as`, which
+        // shards' build alone takes (buildflags::validate).
+        (_, Kind::Many("ulimit")) => match crate::buildflags::parse_ulimit(value)? {
+            u if u.name == "as" => Err("invalid ulimit type: as".into()),
+            _ => Ok(value.to_string()),
+        },
+        _ => Ok(value.to_string()),
+    }
+}
+
+/// An address as Go's net.ParseIP takes it, as its String prints it: an IPv4-mapped one in
+/// dotted form.
+fn go_ip(s: &str) -> Option<String> {
+    let ip: std::net::IpAddr = s.parse().ok()?;
+    Some(match ip {
+        std::net::IpAddr::V6(v6) => v6
+            .to_ipv4_mapped()
+            .map_or_else(|| v6.to_string(), |v4| v4.to_string()),
+        v4 => v4.to_string(),
+    })
+}
+
+/// A CIDR as Go's net.ParseCIDR takes it, as the network it names prints: its address
+/// masked by its length.
+fn go_cidr(s: &str) -> Option<String> {
+    let (addr, bits) = s.split_once('/')?;
+    let bits: u8 = bits.parse().ok().filter(|_| !bits.starts_with('+'))?;
+    match addr.parse::<std::net::IpAddr>().ok()? {
+        std::net::IpAddr::V4(v4) if bits <= 32 => {
+            let mask = u32::MAX.checked_shl(32 - u32::from(bits)).unwrap_or(0);
+            Some(format!(
+                "{}/{bits}",
+                std::net::Ipv4Addr::from(u32::from(v4) & mask)
+            ))
+        }
+        std::net::IpAddr::V6(v6) if bits <= 128 => {
+            let mask = u128::MAX.checked_shl(128 - u32::from(bits)).unwrap_or(0);
+            Some(format!(
+                "{}/{bits}",
+                std::net::Ipv6Addr::from(u128::from(v6) & mask)
+            ))
+        }
+        _ => None,
+    }
+}
+
+/// validateAttach (cli/command/container/opts.go): a stream, in any case, kept lowercase.
+fn validate_attach(value: &str) -> Result<String, String> {
+    let stream = value.to_ascii_lowercase();
+    if ["stdin", "stdout", "stderr"].contains(&stream.as_str()) {
+        Ok(stream)
+    } else {
+        Err("valid streams are STDIN, STDOUT and STDERR".into())
+    }
+}
+
+/// opts.ValidateLink: `NAME[:ALIAS]`.
+fn validate_link(value: &str) -> Result<String, String> {
+    if value.is_empty() {
+        return Err("empty string specified for links".into());
+    }
+    if value.split(':').count() > 2 {
+        return Err(format!("bad format for links: {value}"));
+    }
+    Ok(value.to_string())
+}
+
+/// A device's path and the rest (opts/throttledevice.go and weightdevice.go): `PATH:REST`,
+/// PATH under `/dev/`.
+fn device_and(value: &str) -> Result<(&str, &str), String> {
+    match value.split_once(':') {
+        Some((k, v)) if !k.is_empty() => {
+            if k.starts_with("/dev/") {
+                Ok((k, v))
+            } else {
+                Err(format!("bad format for device path: {value}"))
+            }
+        }
+        _ => Err(format!("bad format: {value}")),
+    }
+}
+
+/// ValidateThrottleBpsDevice: `PATH:RATE`, the rate as go-units' RAMInBytes reads it; kept
+/// as `PATH:BYTES`.
+fn validate_throttle_bps(value: &str) -> Result<String, String> {
+    let (path, rate) = device_and(value)?;
+    match crate::resources::ram_in_bytes(rate) {
+        Ok(n) if n >= 0 => Ok(format!("{path}:{n}")),
+        _ => Err(format!(
+            "invalid rate for device: {value}. The correct format is <device-path>:<number>[<unit>]. Number must be a positive integer. Unit is optional and can be kb, mb, or gb"
+        )),
+    }
+}
+
+/// ValidateThrottleIOpsDevice: `PATH:RATE`, a whole number.
+fn validate_throttle_iops(value: &str) -> Result<String, String> {
+    let (path, rate) = device_and(value)?;
+    let n = crate::go::parse_uint_bits(rate, 64).map_err(|_| {
+        format!("invalid rate for device: {value}. The correct format is <device-path>:<number>. Number must be a positive integer")
+    })?;
+    Ok(format!("{path}:{n}"))
+}
+
+/// ValidateWeightDevice: `PATH:WEIGHT`, 0 or 10 to 1000.
+fn validate_weight_device(value: &str) -> Result<String, String> {
+    let (path, weight) = device_and(value)?;
+    match crate::go::parse_uint_bits(weight, 16) {
+        Ok(w) if w == 0 || (10..=1000).contains(&w) => Ok(format!("{path}:{w}")),
+        _ => Err(format!("invalid weight for device: {value}")),
+    }
+}
+
+/// validateDeviceCgroupRule (cli/command/container/opts.go): `^[acb] ([0-9]+|\*):([0-9]+|\*) [rwm]{1,3}$`.
+fn validate_device_cgroup_rule(value: &str) -> Result<String, String> {
+    let number = |s: &str| s == "*" || (!s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()));
+    let ok = (|| {
+        let (kind, rest) = value.split_once(' ')?;
+        let (numbers, access) = rest.split_once(' ')?;
+        let (major, minor) = numbers.split_once(':')?;
+        Some(
+            matches!(kind, "a" | "c" | "b")
+                && number(major)
+                && number(minor)
+                && (1..=3).contains(&access.len())
+                && access.bytes().all(|b| matches!(b, b'r' | b'w' | b'm')),
+        )
+    })()
+    .unwrap_or(false);
+    if ok {
+        Ok(value.to_string())
+    } else {
+        Err(format!("invalid device cgroup format '{value}'"))
+    }
+}
+
+fn filter(value: &str) -> Result<String, String> {
+    // An empty filter is no filter (opts.FilterOpt.Set): kept empty, and skipped.
+    if value.is_empty() {
+        return Ok(String::new());
+    }
+    let Some((name, val)) = value.split_once('=') else {
+        return Err("bad format of filter (expected name=value)".into());
+    };
+    Ok(format!("{}={}", name.trim().to_lowercase(), val.trim()))
+}
+
+/// opts.ValidateLabel.
+fn validate_label(value: &str) -> Result<String, String> {
+    let key = value.split_once('=').map_or(value, |(k, _)| k);
+    let key = key.trim_start_matches([' ', '\t']);
+    if key.is_empty() {
+        return Err(format!("invalid label '{value}': empty name"));
+    }
+    if key.contains([' ', '\t']) {
+        return Err(format!("label '{key}' contains whitespaces"));
+    }
+    Ok(value.to_string())
+}
+
+/// opts.ValidateIPAddress: net.ParseIP of the trimmed value, as IP.String writes it (an
+/// IPv4-mapped address as IPv4).
+pub fn validate_ip(value: &str) -> Result<String, String> {
+    match value.trim().parse::<std::net::IpAddr>() {
+        Ok(std::net::IpAddr::V6(v6)) if v6.to_ipv4_mapped().is_some() => {
+            Ok(v6.to_ipv4_mapped().map(|v4| v4.to_string()).unwrap_or_default())
+        }
+        Ok(ip) => Ok(ip.to_string()),
+        Err(_) => Err(format!("IP address is not correctly formatted: {value}")),
+    }
+}
+
+/// opts.ValidateDNSSearch: `.`, or a domain as validateDomain reads one.
+fn validate_dns_search(value: &str) -> Result<String, String> {
+    let value = value.trim_matches(' ');
+    if value == "." {
+        return Ok(value.to_string());
+    }
+    // alphaRegexp, then domainRegexp's first group, under 255 bytes. Its `(:?` are
+    // groups that may start with a colon, as Go reads them.
+    let invalid = || format!("{value} is not a valid domain");
+    if !value.bytes().any(|b| b.is_ascii_alphabetic()) {
+        return Err(invalid());
+    }
+    let domain = regex::Regex::new(
+        r"^(:?(:?[a-zA-Z0-9]|(:?[a-zA-Z0-9][a-zA-Z0-9\-]*[a-zA-Z0-9]))(:?\.(:?[a-zA-Z0-9]|(:?[a-zA-Z0-9][a-zA-Z0-9\-]*[a-zA-Z0-9])))*)\.?[\t\n\x0c\r ]*$",
+    )
+    .map_err(|e| e.to_string())?;
+    match domain.captures(value).and_then(|c| c.get(1)) {
+        Some(m) if m.as_str().len() < 255 => Ok(m.as_str().to_string()),
+        _ => Err(invalid()),
+    }
+}
+
+/// opts.ValidateExtraHost: `host=ip` or `host:ip`, the address bracketed or not, or
+/// `host-gateway`; given to dockerd as `host:ip`.
+fn validate_extra_host(value: &str) -> Result<String, String> {
+    let split = value.split_once('=').or_else(|| value.split_once(':'));
+    let (k, v) = match split {
+        Some((k, v)) if !k.is_empty() && !k.contains(':') => (k, v),
+        _ => return Err(format!("bad format for add-host: {}", crate::go::quote(value))),
+    };
+    if v != "host-gateway" {
+        let bare = if v.len() > 2 && v.starts_with('[') && v.ends_with(']') {
+            v.get(1..v.len() - 1).unwrap_or(v)
+        } else {
+            v
+        };
+        if validate_ip(bare).is_err() {
+            return Err(format!(
+                "invalid IP address in add-host: {}",
+                crate::go::quote(bare)
+            ));
+        }
+        return Ok(format!("{k}:{bare}"));
+    }
+    Ok(format!("{k}:{v}"))
+}
+
+/// docker/cli's opts.ValidateSysctl: the sysctls a container's namespaces hold, the IPC
+/// ones by name, the network and message queue ones by prefix.
+fn validate_sysctl(value: &str) -> Result<String, String> {
+    const NAMED: [&str; 8] = [
+        "kernel.msgmax",
+        "kernel.msgmnb",
+        "kernel.msgmni",
+        "kernel.sem",
+        "kernel.shmall",
+        "kernel.shmmax",
+        "kernel.shmmni",
+        "kernel.shm_rmid_forced",
+    ];
+    match value.split_once('=') {
+        Some((k, _))
+            if !k.is_empty()
+                && (NAMED.contains(&k) || k.starts_with("net.") || k.starts_with("fs.mqueue.")) =>
+        {
+            Ok(value.to_string())
+        }
+        _ => Err(format!("sysctl '{value}' is not allowed")),
+    }
+}
+
+/// pflag's parseLongArg: `--name`, `--name=value`, or `--name value`; `word` is the
+/// command line's `at`.
 fn read_long(
     parsed: &mut Parsed,
     word: &str,
+    at: usize,
     words: &mut std::slice::Iter<'_, String>,
     validate: &dyn Fn(&Flag, &str) -> Result<String, String>,
 ) -> Result<(), String> {
@@ -518,21 +1097,31 @@ fn read_long(
     };
     let flag = parsed.flags.get(index).copied().ok_or("no flag")?;
     let value = match inline {
-        Some(v) => v,
+        Some(v) => {
+            parsed
+                .positions
+                .push((flag.name, at, word.len().saturating_sub(v.len())));
+            v
+        }
         None if flag.kind == Kind::Bool => "true".to_string(),
-        None => words
-            .next()
-            .cloned()
-            .ok_or_else(|| format!("flag needs an argument: --{name}"))?,
+        None => {
+            let v = words
+                .next()
+                .cloned()
+                .ok_or_else(|| format!("flag needs an argument: --{name}"))?;
+            parsed.positions.push((flag.name, at.saturating_add(1), 0));
+            v
+        }
     };
     set(parsed, index, &value, validate)
 }
 
 /// pflag's parseShortArg: shorthands run together (`-aq`), the last of them perhaps
-/// taking a value (`-n3`, `-n=3`, `-n 3`).
+/// taking a value (`-n3`, `-n=3`, `-n 3`); `word` is the command line's `at`.
 fn read_short(
     parsed: &mut Parsed,
     word: &str,
+    at: usize,
     words: &mut std::slice::Iter<'_, String>,
     validate: &dyn Fn(&Flag, &str) -> Result<String, String>,
 ) -> Result<(), String> {
@@ -553,16 +1142,31 @@ fn read_short(
         let value;
         if let Some(inline) = rest.strip_prefix('=').filter(|_| shorts.len() > 2) {
             value = inline.to_string();
+            parsed
+                .positions
+                .push((flag.name, at, word.len().saturating_sub(inline.len())));
             shorts = "";
         } else if flag.kind == Kind::Bool {
             value = "true".to_string();
             shorts = rest;
         } else if !rest.is_empty() {
             value = rest.to_string();
+            parsed
+                .positions
+                .push((flag.name, at, word.len().saturating_sub(rest.len())));
             shorts = "";
         } else if let Some(next) = words.next() {
             value = next.clone();
+            parsed.positions.push((flag.name, at.saturating_add(1), 0));
             shorts = "";
+        } else if c == b'h'
+            && let Some(help) = parsed.find(|f| f.name == "help")
+        {
+            // `-h` with nothing after it is help, whatever else it is short for
+            // (`run -h`, where `-h HOST` is `--hostname`).
+            set(parsed, help, "true", validate)?;
+            shorts = "";
+            continue;
         } else {
             return Err(format!(
                 "flag needs an argument: {} in -{shorts}",
@@ -619,12 +1223,28 @@ fn set(
         (Kind::Bool, _) => Value::Bool(go::parse_bool(value).map_err(|e| invalid(e.to_string()))?),
         (Kind::Int, _) => Value::Int(go::parse_int(value).map_err(|e| invalid(e.to_string()))?),
         (Kind::String, _) => Value::Text(value.to_string()),
-        (Kind::Many(_), before) => {
+        (Kind::Duration, _) => Value::Int(crate::gotime::duration(value).map_err(invalid)?),
+        (Kind::Value(_), _) => Value::Text(validate(&flag, value).map_err(invalid)?),
+        (Kind::Many(kind), before) => {
             let mut all = match before {
                 Some(Value::Many(all)) => all,
                 _ => Vec::new(),
             };
-            all.push(validate(&flag, value).map_err(invalid)?);
+            // pflag's slices take each value's pieces (StringSlice's as a CSV record,
+            // IPSlice's and IPNetSlice's at each comma, quotes dropped), each checked.
+            match kind {
+                "strings" => {
+                    for piece in csv_fields(value) {
+                        all.push(validate(&flag, &piece).map_err(invalid)?);
+                    }
+                }
+                "ipSlice" | "ipNetSlice" => {
+                    for piece in value.replace('"', "").split(',') {
+                        all.push(validate(&flag, piece).map_err(invalid)?);
+                    }
+                }
+                _ => all.push(validate(&flag, value).map_err(invalid)?),
+            }
             Value::Many(all)
         }
     });
@@ -642,40 +1262,142 @@ pub fn help(command: &Command, path: &str, columns: u16) -> String {
     if !command.aliases.is_empty() {
         let _ = write!(text, "\n\nAliases:\n  {}", command.aliases);
     }
-    let options = options(command.flags, i64::from(columns) - 1);
+    for (heading, extension) in [("Options", false), ("Shards options", true)] {
+        let options = options(command.flags, extension, i64::from(columns) - 1);
+        let options = options.trim_end();
+        if !options.is_empty() {
+            let _ = write!(text, "\n\n{heading}:\n{options}");
+        }
+    }
+    text.push('\n');
+    text
+}
+
+/// What `--help` prints for a group of commands, which `path` names, on a terminal
+/// `columns` wide, and what it prints asked anything else (a cobra command that runs
+/// nothing): the CLI's usage template for a command with subcommands, its own flags and
+/// its commands (`rpad` to cobra's least padding, 11).
+pub fn group_help(command: &Command, path: &str, commands: &[(&str, &str)], columns: u16) -> String {
+    let mut text = format!("Usage:  {path} [OPTIONS] COMMAND\n\n{}", command.about.trim());
+    let options = options(command.flags, false, i64::from(columns) - 1);
     let options = options.trim_end();
     if !options.is_empty() {
         let _ = write!(text, "\n\nOptions:\n{options}");
+    }
+    text.push_str("\n\nCommands:");
+    for (name, about) in commands {
+        let width = name.len().max(11);
+        let _ = write!(text, "\n  {name:<width$} {about}");
+    }
+    let _ = write!(
+        text,
+        "\n\nRun '{path} COMMAND --help' for more information on a command.\n"
+    );
+    text
+}
+
+/// A flag as `--help` shows it.
+#[derive(Debug, Clone)]
+pub struct Shown {
+    /// Its shorthand, where `--help` shows one.
+    pub short: Option<char>,
+    pub name: &'static str,
+    /// The name of its value: `string`, or what its usage marks with backquotes.
+    pub value: String,
+    /// What it does, its backquotes taken out.
+    pub usage: String,
+    /// Its default, as pflag prints it, where it is not its type's zero.
+    pub default: Option<String>,
+    pub deprecated: Option<&'static str>,
+}
+
+/// The flags `--help` shows, in the order of their names: `docker`'s, or shards' own.
+pub fn shown(flags: &[Flag], extension: bool) -> Vec<Shown> {
+    let mut shown: Vec<&Flag> = flags
+        .iter()
+        .filter(|f| !f.hidden && f.extension == extension)
+        .collect();
+    shown.sort_by_key(|f| f.name);
+    shown
+        .into_iter()
+        .map(|f| {
+            let (value, usage) = unquote_usage(f);
+            Shown {
+                short: f.short.filter(|_| f.short_deprecated.is_none()).map(char::from),
+                name: f.name,
+                value,
+                usage,
+                default: (!f.default_is_zero()).then(|| {
+                    if f.kind == Kind::String {
+                        go::quote(f.default)
+                    } else {
+                        f.default.to_string()
+                    }
+                }),
+                deprecated: f.deprecated,
+            }
+        })
+        .collect()
+}
+
+/// What `--help` prints for a form of shards' grammar ([`crate::grammar::form`]) that
+/// runs `command`, on a terminal `columns` wide: each way the form is said, `[OPTIONS]`
+/// after its thing where the command has any, what it does, and the command's options as
+/// [`help`] lays them out, what each does said through `words`.
+pub fn form_help(
+    command: &Command,
+    form: &crate::grammar::Form,
+    columns: u16,
+    words: &dyn Fn(&str) -> String,
+) -> String {
+    let any = !shown(command.flags, false).is_empty() || !shown(command.flags, true).is_empty();
+    let mut text = String::from("Usage:");
+    for (i, (said, rest)) in form.usages.iter().enumerate() {
+        text.push_str(if i == 0 { "  " } else { "\n        " });
+        text.push_str(said);
+        if any {
+            text.push_str(" [OPTIONS]");
+        }
+        if let Some(rest) = rest {
+            text.push(' ');
+            text.push_str(rest);
+        }
+    }
+    let _ = write!(text, "\n\n{}", form.about);
+    for (heading, extension) in [("Options", false), ("Shards options", true)] {
+        let options = options_said(command.flags, extension, i64::from(columns) - 1, words);
+        let options = options.trim_end();
+        if !options.is_empty() {
+            let _ = write!(text, "\n\n{heading}:\n{options}");
+        }
     }
     text.push('\n');
     text
 }
 
 /// pflag's FlagUsagesWrapped: a line per flag `--help` shows, in the order of their
-/// names, the usages aligned and wrapped at `columns`.
-fn options(flags: &[Flag], columns: i64) -> String {
-    let mut shown: Vec<&Flag> = flags.iter().filter(|f| !f.hidden).collect();
-    shown.sort_by_key(|f| f.name);
+/// names, the usages aligned and wrapped at `columns`: `docker`'s flags, or shards' own.
+fn options(flags: &[Flag], extension: bool, columns: i64) -> String {
+    options_said(flags, extension, columns, &|usage| usage.to_string())
+}
+
+/// [`options`], what each flag does said through `words`.
+fn options_said(flags: &[Flag], extension: bool, columns: i64, words: &dyn Fn(&str) -> String) -> String {
     let mut lines = Vec::new();
     let mut widest = 0;
-    for f in shown {
+    for f in shown(flags, extension) {
         let mut line = match f.short {
-            Some(s) if f.short_deprecated.is_none() => format!("  -{}, --{}", char::from(s), f.name),
-            _ => format!("      --{}", f.name),
+            Some(s) => format!("  -{s}, --{}", f.name),
+            None => format!("      --{}", f.name),
         };
-        let (type_name, usage) = unquote_usage(f);
-        if !type_name.is_empty() {
-            let _ = write!(line, " {type_name}");
+        if !f.value.is_empty() {
+            let _ = write!(line, " {}", f.value);
         }
         // pflag counts the separator it puts here.
         widest = widest.max(line.len() + 1);
-        let mut usage = usage;
-        if !f.default_is_zero() {
-            if f.kind == Kind::String {
-                let _ = write!(usage, " (default {})", go::quote(f.default));
-            } else {
-                let _ = write!(usage, " (default {})", f.default);
-            }
+        let mut usage = words(&f.usage);
+        if let Some(default) = f.default {
+            let _ = write!(usage, " (default {default})");
         }
         if let Some(why) = f.deprecated {
             let _ = write!(usage, " (DEPRECATED: {why})");
@@ -703,7 +1425,8 @@ fn unquote_usage(f: &Flag) -> (String, String) {
         Kind::Bool => "",
         Kind::Int => "int",
         Kind::String => "string",
-        Kind::Many(t) => t,
+        Kind::Many(t) | Kind::Value(t) => t,
+        Kind::Duration => "duration",
     };
     (type_name.to_string(), usage.to_string())
 }

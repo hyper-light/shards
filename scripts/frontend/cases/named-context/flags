@@ -1,0 +1,4 @@
+--build-context
+base=docker-image://alpine:3.20
+--build-context
+extra=$CASE/extra

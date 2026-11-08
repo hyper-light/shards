@@ -1,0 +1,261 @@
+[
+  {
+    "name": "one block",
+    "input": "LS0tLS1CRUdJTiBTU0ggU0lHTkFUVVJFLS0tLS0KVTFOSVUwbEgKLS0tLS1FTkQgU1NIIFNJR05BVFVSRS0tLS0tCg==",
+    "found": true,
+    "type": "SSH SIGNATURE",
+    "bytes": "U1NIU0lH"
+  },
+  {
+    "name": "preamble and rest",
+    "input": "anVuawotLS0tLUJFR0lOIEEtLS0tLQpRVUpECi0tLS0tRU5EIEEtLS0tLQptb3Jl",
+    "found": true,
+    "type": "A",
+    "bytes": "QUJD"
+  },
+  {
+    "name": "two BEGIN lines, the last's END",
+    "input": "LS0tLS1CRUdJTiBBLS0tLS0KLS0tLS1CRUdJTiBCLS0tLS0KUVVKRAotLS0tLUVORCBCLS0tLS0K",
+    "found": true,
+    "type": "B",
+    "bytes": "QUJD"
+  },
+  {
+    "name": "a BEGIN with no END, then a block",
+    "input": "LS0tLS1CRUdJTiBBLS0tLS0KUVVKRAotLS0tLUJFR0lOIEItLS0tLQpSRVZHCi0tLS0tRU5EIEItLS0tLQo=",
+    "found": true,
+    "type": "B",
+    "bytes": "REVG"
+  },
+  {
+    "name": "crlf",
+    "input": "LS0tLS1CRUdJTiBBLS0tLS0NClFVSkQNCi0tLS0tRU5EIEEtLS0tLQ0K",
+    "found": true,
+    "type": "A",
+    "bytes": "QUJD"
+  },
+  {
+    "name": "two carriage returns",
+    "input": "LS0tLS1CRUdJTiBBLS0tLS0NDQpRVUpECi0tLS0tRU5EIEEtLS0tLQo=",
+    "found": false
+  },
+  {
+    "name": "spaces and tabs after the type",
+    "input": "LS0tLS1CRUdJTiBBLS0tLS0gCQpRVUpECi0tLS0tRU5EIEEtLS0tLQo=",
+    "found": true,
+    "type": "A",
+    "bytes": "QUJD"
+  },
+  {
+    "name": "a carriage return then a space",
+    "input": "LS0tLS1CRUdJTiBBLS0tLS0NIApRVUpECi0tLS0tRU5EIEEtLS0tLQo=",
+    "found": false
+  },
+  {
+    "name": "headers",
+    "input": "LS0tLS1CRUdJTiBBLS0tLS0KUHJvYy1UeXBlOiA0LEVOQ1JZUFRFRApERUstSW5mbzogQUVTLTEyOC1DQkMsMDAKClFVSkQKLS0tLS1FTkQgQS0tLS0tCg==",
+    "found": true,
+    "type": "A",
+    "headers": [
+      [
+        "DEK-Info",
+        "AES-128-CBC,00"
+      ],
+      [
+        "Proc-Type",
+        "4,ENCRYPTED"
+      ]
+    ],
+    "bytes": "QUJD"
+  },
+  {
+    "name": "a header repeated",
+    "input": "LS0tLS1CRUdJTiBBLS0tLS0KSzogb25lCks6IHR3bwoKUVVKRAotLS0tLUVORCBBLS0tLS0K",
+    "found": true,
+    "type": "A",
+    "headers": [
+      [
+        "K",
+        "two"
+      ]
+    ],
+    "bytes": "QUJD"
+  },
+  {
+    "name": "unicode spaces about a header",
+    "input": "LS0tLS1CRUdJTiBBLS0tLS0KwqBQcm9jLVR5cGXCoDog4oCANCxFTkNSWVBURUTjgIAKClFVSkQKLS0tLS1FTkQgQS0tLS0tCg==",
+    "found": true,
+    "type": "A",
+    "headers": [
+      [
+        "Proc-Type",
+        "4,ENCRYPTED"
+      ]
+    ],
+    "bytes": "QUJD"
+  },
+  {
+    "name": "a vertical tab about a header",
+    "input": "LS0tLS1CRUdJTiBBLS0tLS0KC0sLOiALdgsKClFVSkQKLS0tLS1FTkQgQS0tLS0tCg==",
+    "found": true,
+    "type": "A",
+    "headers": [
+      [
+        "K",
+        "v"
+      ]
+    ],
+    "bytes": "QUJD"
+  },
+  {
+    "name": "invalid utf-8 about a header",
+    "input": "LS0tLS1CRUdJTiBBLS0tLS0K/0sgOiB2/woKUVVKRAotLS0tLUVORCBBLS0tLS0K",
+    "found": true,
+    "type": "A",
+    "headers": [
+      [
+        "\ufffdK",
+        "v\ufffd"
+      ]
+    ],
+    "bytes": "QUJD"
+  },
+  {
+    "name": "headers then END at once",
+    "input": "LS0tLS1CRUdJTiBBLS0tLS0KSzogdgotLS0tLUVORCBBLS0tLS0K",
+    "found": false
+  },
+  {
+    "name": "empty body",
+    "input": "LS0tLS1CRUdJTiBBLS0tLS0KLS0tLS1FTkQgQS0tLS0tCg==",
+    "found": true,
+    "type": "A"
+  },
+  {
+    "name": "empty body, a blank line",
+    "input": "LS0tLS1CRUdJTiBBLS0tLS0KCi0tLS0tRU5EIEEtLS0tLQo=",
+    "found": true,
+    "type": "A"
+  },
+  {
+    "name": "a one-byte body",
+    "input": "LS0tLS1CRUdJTiBBLS0tLS0KUQotLS0tLUVORCBBLS0tLS0K",
+    "found": false
+  },
+  {
+    "name": "a one-byte body of a space",
+    "input": "LS0tLS1CRUdJTiBBLS0tLS0KIAotLS0tLUVORCBBLS0tLS0K",
+    "found": true,
+    "type": "A"
+  },
+  {
+    "name": "junk after END",
+    "input": "LS0tLS1CRUdJTiBBLS0tLS0KUVVKRAotLS0tLUVORCBBLS0tLS0geAo=",
+    "found": false
+  },
+  {
+    "name": "END of another type",
+    "input": "LS0tLS1CRUdJTiBBLS0tLS0KUVVKRAotLS0tLUVORCBCLS0tLS0K",
+    "found": false
+  },
+  {
+    "name": "END of another type, then a block",
+    "input": "LS0tLS1CRUdJTiBBLS0tLS0KUVVKRAotLS0tLUVORCBCLS0tLS0KLS0tLS1CRUdJTiBDLS0tLS0KUkVWRwotLS0tLUVORCBDLS0tLS0K",
+    "found": true,
+    "type": "C",
+    "bytes": "REVG"
+  },
+  {
+    "name": "bad base64, then a block",
+    "input": "LS0tLS1CRUdJTiBBLS0tLS0KUVUhRAotLS0tLUVORCBBLS0tLS0KLS0tLS1CRUdJTiBDLS0tLS0KUkVWRwotLS0tLUVORCBDLS0tLS0K",
+    "found": true,
+    "type": "C",
+    "bytes": "REVG"
+  },
+  {
+    "name": "spaces and tabs in the body",
+    "input": "LS0tLS1CRUdJTiBBLS0tLS0KUVUgSkQJUkVWRwotLS0tLUVORCBBLS0tLS0K",
+    "found": true,
+    "type": "A",
+    "bytes": "QUJDREVG"
+  },
+  {
+    "name": "padding",
+    "input": "LS0tLS1CRUdJTiBBLS0tLS0KUVVJPQotLS0tLUVORCBBLS0tLS0K",
+    "found": true,
+    "type": "A",
+    "bytes": "QUI="
+  },
+  {
+    "name": "padding split by a line break",
+    "input": "LS0tLS1CRUdJTiBBLS0tLS0KUVE9Cj0KLS0tLS1FTkQgQS0tLS0tCg==",
+    "found": true,
+    "type": "A",
+    "bytes": "QQ=="
+  },
+  {
+    "name": "trailing bits",
+    "input": "LS0tLS1CRUdJTiBBLS0tLS0KUVVKRQpRUj09Ci0tLS0tRU5EIEEtLS0tLQo=",
+    "found": true,
+    "type": "A",
+    "bytes": "QUJEQQ=="
+  },
+  {
+    "name": "missing padding",
+    "input": "LS0tLS1CRUdJTiBBLS0tLS0KUVEKLS0tLS1FTkQgQS0tLS0tCg==",
+    "found": false
+  },
+  {
+    "name": "no END",
+    "input": "LS0tLS1CRUdJTiBBLS0tLS0KUVVKRAo=",
+    "found": false
+  },
+  {
+    "name": "BEGIN not at a line's start",
+    "input": "eC0tLS0tQkVHSU4gQS0tLS0tClFVSkQKLS0tLS1FTkQgQS0tLS0tCg==",
+    "found": false
+  },
+  {
+    "name": "no type line end",
+    "input": "LS0tLS1CRUdJTiBBClFVSkQKLS0tLS1FTkQgQS0tLS0tCg==",
+    "found": false
+  },
+  {
+    "name": "END without a line end",
+    "input": "LS0tLS1CRUdJTiBBLS0tLS0KUVVKRAotLS0tLUVORCBBLS0tLS0=",
+    "found": true,
+    "type": "A",
+    "bytes": "QUJD"
+  },
+  {
+    "name": "nothing",
+    "found": false
+  },
+  {
+    "name": "BEGIN lines, no END",
+    "unit": "Ci0tLS0tQkVHSU4gQS0tLS0t",
+    "repeat": 50000,
+    "sha256": "6f83eed1424999b71374589a0fb260fee728360987081a73faa9653c4a922a0c",
+    "found": false
+  },
+  {
+    "name": "BEGIN lines, then a block",
+    "unit": "Ci0tLS0tQkVHSU4gQS0tLS0t",
+    "repeat": 50000,
+    "tail": "Ci0tLS0tQkVHSU4gQi0tLS0tClFVSkQKLS0tLS1FTkQgQi0tLS0tCg==",
+    "sha256": "3b83f2ee340f67bbd45ef4c47a346e17d4c48d0c753c7838229429a877c7171c",
+    "found": true,
+    "type": "B",
+    "bytes": "QUJD"
+  },
+  {
+    "name": "END lines of another type",
+    "unit": "Ci0tLS0tQkVHSU4gQS0tLS0tClFVSkQKLS0tLS1FTkQgQi0tLS0t",
+    "repeat": 30000,
+    "tail": "Ci0tLS0tQkVHSU4gQy0tLS0tClFVSkQKLS0tLS1FTkQgQy0tLS0tCg==",
+    "sha256": "f59edde76ce27e9259b60a56f5a39a86cead40a31296790fdae4506fd6fef2b0",
+    "found": true,
+    "type": "C",
+    "bytes": "QUJD"
+  }
+]

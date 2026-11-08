@@ -1,0 +1,796 @@
+//! The build protocol: how `shards build image` runs `RUN` steps in a builder guest
+//! (docs/design/architecture.md D34). The guest dials the host on [`PORT`] once it is up,
+//! and the one connection carries everything, in the run protocol's frames
+//! ([`crate::run::header`]).
+//!
+//! The guest holds layers: directories of changes overlayfs stacks, each made once and
+//! never changed, named by the host. The host sends a layer as a stream of changes
+//! ([`crate::changes`]) in [`kind::LAYER`] frames; each step names its trees as stacks of
+//! layers over a base image, so the guest keeps no tree of its own. A step's output is
+//! its stdout and stderr ([`crate::run::kind`]), its status, and, if it succeeded, what it
+//! changed, which the guest keeps as the layer the step names; and, whatever its status,
+//! what it changed in the mounts it keeps, its caches.
+
+use alloc::vec::Vec;
+
+/// The host port the guest dials.
+pub const PORT: u32 = 1026;
+
+/// The host port a step's SSH agent socket is relayed to (`RUN --mount=type=ssh`): each
+/// connection opens with the step's token for the mount and the agent's id, which the host
+/// checks before it reaches the agent, so that no process of the guest's reaches it by
+/// the port alone.
+pub const SSH_PORT: u32 = 1028;
+
+/// The host port the guest dials before [`PORT`], over which its host asks it to give back
+/// what it holds cold and tells it its budget's room (D188 for builders): [`kind::GIVE_BACK`]
+/// and [`kind::ROOM`] ask, [`kind::GAVE`] and [`kind::HELD`] answer, one at a time, on a
+/// connection of their own, so that an ask is answered while a step runs. Dialed before
+/// [`PORT`], it waits for the host as the build's connection is taken, which no step
+/// precedes: the host takes it then or never, its first connection alone, so that no
+/// process of a step's reaches it.
+pub const GIVE_PORT: u32 = 1030;
+
+/// Frame kinds, beside the run protocol's `STDOUT`, `STDERR`, `SYSTEM_ERR` and `EXIT`.
+pub mod kind {
+    /// Host to guest: a big-endian u32 layer id, then the next bytes of that layer's
+    /// stream. A layer's frames come together, and its stream ends it.
+    pub const LAYER: u8 = 32;
+    /// Host to guest: a [`Step`](super::Step).
+    pub const STEP: u8 = 33;
+    /// Guest to host, after a step's `EXIT` of 0: the next bytes of what the step
+    /// changed, as a stream that ends it.
+    pub const CHANGES: u8 = 34;
+    /// Guest to host: the layer whose stream just ended is written.
+    pub const LAYERED: u8 = 35;
+    /// Guest to host, after a step's `CHANGES`: the next bytes of what it changed in its
+    /// next output mount (`Step::outputs`, in order), as a stream that `MOUNT_END` ends.
+    pub const MOUNT_CHANGES: u8 = 36;
+    /// Guest to host: the output mount's changes are all sent. Then, whatever the step's
+    /// status, one for each cache it writes (`Step::caches`, in order), once its changes are
+    /// written to its `out` range: what they came to, a [`Kept`](super::Kept).
+    pub const MOUNT_END: u8 = 37;
+    /// Host to guest, before any step: the emulators its steps' platforms need (D179), a
+    /// big-endian u32 pmem device that holds the emulator image's root, then each OCI
+    /// architecture to emulate, NUL-terminated ([`crate::emulate`]).
+    pub const EMULATE: u8 = 38;
+    /// Guest to host: the emulators are registered, or, as its payload, why not.
+    pub const EMULATED: u8 = 39;
+    /// Host to guest, on [`GIVE_PORT`](super::GIVE_PORT): give back what the build holds
+    /// cold of its files and what the builder holds plugged past what it keeps, as a run's
+    /// init does at `RECLAIM` (D188). No payload.
+    pub const GIVE_BACK: u8 = 40;
+    /// Guest to host, on [`GIVE_PORT`](super::GIVE_PORT), a `GIVE_BACK`'s answer: the bytes
+    /// the build's cgroup holds less of its files, and the bytes it asked to be unplugged,
+    /// in decimal, a space between, as `RECLAIM` answers; else why it gave nothing back.
+    pub const GAVE: u8 = 41;
+    /// Host to guest, on [`GIVE_PORT`](super::GIVE_PORT): the room the build's budget leaves
+    /// its builder, the bytes past what it uses in signed decimal, or nothing where it has no
+    /// budget; the builder holds its build within it, as a run's init holds its run at `ROOM`
+    /// (D188).
+    pub const ROOM: u8 = 42;
+    /// Guest to host, on [`GIVE_PORT`](super::GIVE_PORT), a `ROOM`'s answer: the bytes the
+    /// build is held within past what it uses, in decimal, or nothing with no budget; else
+    /// why it is not held.
+    pub const HELD: u8 = 43;
+    /// Host to guest, between steps: what has the build needed of memory so far? No
+    /// payload. Its home records it, and the next builders' ceilings come from it (D133).
+    pub const NEEDS: u8 = 44;
+    /// Guest to host, a `NEEDS`'s answer: the bytes of memory the builder needed for its
+    /// build's peak to fit under its `memory.high`, and the processes of the build ended
+    /// for want of memory, in decimal, a space between; else why it cannot say.
+    pub const NEEDED: u8 = 45;
+}
+
+/// A cache's root directory: what overlayfs shows of the directory its upper layer is,
+/// which no layer records.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Root {
+    pub mode: u32,
+    pub uid: u32,
+    pub gid: u32,
+}
+
+impl Root {
+    pub fn encode(&self) -> [u8; 12] {
+        let mut out = Vec::with_capacity(12);
+        for v in [self.mode, self.uid, self.gid] {
+            put_u32(&mut out, v);
+        }
+        out.try_into().unwrap_or([0; 12])
+    }
+
+    pub fn decode(bytes: &[u8]) -> Option<Root> {
+        let mut r = Cursor(bytes);
+        let root = Root {
+            mode: r.u32()?,
+            uid: r.u32()?,
+            gid: r.u32()?,
+        };
+        r.0.is_empty().then_some(root)
+    }
+}
+
+/// What a step's changes to a cache came to (`MOUNT_END`, D134): the root they left it, the
+/// length of the image they are, from the start of its `out` range (0 where nothing
+/// changed), the bytes of the files below them that they hide (each a whole number of
+/// blocks), and, where they could not be written, why.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Kept {
+    pub root: Root,
+    pub len: u64,
+    pub hidden: u64,
+    pub failed: Vec<u8>,
+}
+
+impl Kept {
+    pub fn encode(&self) -> Vec<u8> {
+        let mut out = self.root.encode().to_vec();
+        out.extend_from_slice(&self.len.to_be_bytes());
+        out.extend_from_slice(&self.hidden.to_be_bytes());
+        out.extend_from_slice(&self.failed);
+        out
+    }
+
+    pub fn decode(bytes: &[u8]) -> Option<Kept> {
+        let mut r = Cursor(bytes);
+        let root = Root::decode(r.take(12)?)?;
+        let len = r.u64()?;
+        let hidden = r.u64()?;
+        Some(Kept {
+            root,
+            len,
+            hidden,
+            failed: r.0.to_vec(),
+        })
+    }
+}
+
+/// A cache a step mounts (D114): its content, mounted once for the step however many of its
+/// mounts name it, as BuildKit gives an exec one ref for a cache; and, if any of them
+/// writes, where its changes go, kept whatever the step's status, as a cache's writes are
+/// BuildKit's whether or not its step succeeds, over the root it starts with. Its content
+/// and its changes are EROFS images on the builder's join disk (D134), which the host
+/// attaches for the step: the guest reads the one and writes the other, and neither
+/// crosses the build's connection.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Cache {
+    /// Its content: the record's layers, each an EROFS image at a range of the join disk
+    /// (where it starts and its length, in bytes), the bottom first.
+    pub layers: Vec<(u64, u64)>,
+    /// Where its changes go, if a mount writes it: a writable range of the join disk, which
+    /// the guest writes them to as an EROFS image, its length said with `MOUNT_END`.
+    pub out: Option<(u64, u64)>,
+    pub root: Root,
+}
+
+/// A tree: layers stacked over a base image, the last layer on top.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Tree {
+    /// Which virtio-pmem device holds the base image, as booted (`/dev/pmem<n>`); `None`
+    /// for an empty base.
+    pub base: Option<u32>,
+    pub layers: Vec<u32>,
+}
+
+/// What a step mounts where.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Mount {
+    /// A tree, or the directory `subpath` of it. Writable only if `writable`, its writes
+    /// then discarded with the step.
+    Tree {
+        tree: Tree,
+        subpath: Vec<u8>,
+        writable: bool,
+    },
+    /// A tmpfs of `size` bytes, or the kernel's default with 0.
+    Tmpfs { size: u64, readonly: bool },
+    /// A file holding `data`, of mode `mode` owned `uid:gid`, read-only.
+    Secret {
+        data: Vec<u8>,
+        mode: u32,
+        uid: u32,
+        gid: u32,
+    },
+    /// The directory `subpath` of the step's cache `cache` (`Step::caches`), read-only if
+    /// `readonly`.
+    Cache {
+        cache: u32,
+        subpath: Vec<u8>,
+        readonly: bool,
+    },
+    /// A socket of mode `mode` owned `uid:gid`, relayed to the client's SSH agent `id` with
+    /// `token`, the host's for this mount of this step.
+    Ssh {
+        id: Vec<u8>,
+        mode: u32,
+        uid: u32,
+        gid: u32,
+        token: [u8; 16],
+    },
+}
+
+/// Where a step's process may reach.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Network {
+    /// Its own loopback alone.
+    #[default]
+    None,
+    /// The builder's network: a step's `--network=default`, where BuildKit's steps have their
+    /// host's.
+    Default,
+}
+
+/// A step: what to run, as whom, where, on what.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Step {
+    pub root: Tree,
+    /// The layer the step's changes become, if it succeeds.
+    pub upper: u32,
+    pub argv: Vec<Vec<u8>>,
+    /// `KEY=value` entries, final: the host has applied every default.
+    pub env: Vec<Vec<u8>>,
+    /// Absolute.
+    pub cwd: Vec<u8>,
+    pub uid: u32,
+    pub gid: u32,
+    /// Supplementary groups, the primary among them.
+    pub groups: Vec<u32>,
+    pub hostname: Vec<u8>,
+    /// The bytes of `/etc/hosts` and `/etc/resolv.conf`, mounted read-only over the tree's.
+    pub hosts: Vec<u8>,
+    pub resolv: Vec<u8>,
+    pub network: Network,
+    /// `--security=insecure`: every capability, nothing masked.
+    pub insecure: bool,
+    /// Absolute targets, and what is mounted there, in order.
+    pub mounts: Vec<(Vec<u8>, Mount)>,
+    /// `--ulimit`s: Linux's resource number (the same on every architecture shards runs),
+    /// the soft and the hard limit; the rest are inherited.
+    pub rlimits: Vec<(u32, u64, u64)>,
+    /// The seccomp filter it runs under, as a run's `seccomp=` setup entry holds one (its
+    /// seccomp(2) flags, little-endian, then its `struct sock_filter`s); empty for none.
+    pub seccomp: Vec<u8>,
+    /// Its limits, as cgroup v2 files and what each holds, in the order written; where
+    /// any, it runs in a cgroup of its own.
+    pub cgroup: Vec<(Vec<u8>, Vec<u8>)>,
+    /// The writable tree mounts whose changes are outputs of the step's, as LLB's a bind
+    /// mount's can be (an SBOM scan's `/run/out`, D81): each its index in `mounts` and the
+    /// layer its changes become.
+    pub outputs: Vec<(u32, u32)>,
+    /// The caches its mounts name.
+    pub caches: Vec<Cache>,
+    /// The device nodes its CDI devices bring (D96), made in its `/dev`.
+    pub devices: Vec<Device>,
+    /// The build's proxy's CA (D110), PEM, added to its root's trust bundle while it runs
+    /// and taken out after, as BuildKit's executor adds it (InjectProxyCA); empty where its
+    /// network is not the proxy's.
+    pub proxy_ca: Vec<u8>,
+    /// Its programs run under another CPU's emulator (D179): its command is then its
+    /// namespace's first process's child, never PID 1 itself (PM M251).
+    pub emulated: bool,
+}
+
+/// A device node a step is given: its path in the step, the guest's device it is (`from`,
+/// the path itself where empty; never a host's numbers, which name nothing in a guest),
+/// the kind it must be (`c`, `b`, a FIFO `p`, or 0 for the guest device's own), and its
+/// mode (the guest device's where `None`) and owner; and the access its device rule
+/// allows (D44: CDI's `permissions`, read 2, write 4 and mknod 1 as BPF_DEVCG_ACC_* are;
+/// 0, a FIFO's, for none).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Device {
+    pub path: Vec<u8>,
+    pub from: Vec<u8>,
+    pub kind: u8,
+    pub mode: Option<u32>,
+    pub uid: u32,
+    pub gid: u32,
+    pub access: u8,
+}
+
+fn put_u32(out: &mut Vec<u8>, n: u32) {
+    out.extend_from_slice(&n.to_be_bytes());
+}
+
+fn put_len(out: &mut Vec<u8>, n: usize) {
+    put_u32(out, u32::try_from(n).unwrap_or(u32::MAX));
+}
+
+fn put_bytes(out: &mut Vec<u8>, s: &[u8]) {
+    put_len(out, s.len());
+    out.extend_from_slice(s);
+}
+
+fn put_tree(out: &mut Vec<u8>, t: &Tree) {
+    match t.base {
+        Some(n) => {
+            out.push(1);
+            put_u32(out, n);
+        }
+        None => out.push(0),
+    }
+    put_len(out, t.layers.len());
+    for &l in &t.layers {
+        put_u32(out, l);
+    }
+}
+
+impl Step {
+    /// Big-endian u32s; byte strings and lists are a u32 length, then their items.
+    pub fn encode(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        put_tree(&mut out, &self.root);
+        put_u32(&mut out, self.upper);
+        for list in [&self.argv, &self.env] {
+            put_len(&mut out, list.len());
+            for s in list {
+                put_bytes(&mut out, s);
+            }
+        }
+        put_bytes(&mut out, &self.cwd);
+        put_u32(&mut out, self.uid);
+        put_u32(&mut out, self.gid);
+        put_len(&mut out, self.groups.len());
+        for &g in &self.groups {
+            put_u32(&mut out, g);
+        }
+        for s in [&self.hostname, &self.hosts, &self.resolv] {
+            put_bytes(&mut out, s);
+        }
+        out.push(match self.network {
+            Network::None => 0,
+            Network::Default => 1,
+        });
+        out.push(u8::from(self.insecure));
+        put_len(&mut out, self.mounts.len());
+        for (target, m) in &self.mounts {
+            put_bytes(&mut out, target);
+            match m {
+                Mount::Tree {
+                    tree,
+                    subpath,
+                    writable,
+                } => {
+                    out.push(0);
+                    put_tree(&mut out, tree);
+                    put_bytes(&mut out, subpath);
+                    out.push(u8::from(*writable));
+                }
+                Mount::Tmpfs { size, readonly } => {
+                    out.push(1);
+                    out.extend_from_slice(&size.to_be_bytes());
+                    out.push(u8::from(*readonly));
+                }
+                Mount::Secret { data, mode, uid, gid } => {
+                    out.push(2);
+                    put_bytes(&mut out, data);
+                    put_u32(&mut out, *mode);
+                    put_u32(&mut out, *uid);
+                    put_u32(&mut out, *gid);
+                }
+                Mount::Cache {
+                    cache,
+                    subpath,
+                    readonly,
+                } => {
+                    out.push(3);
+                    put_u32(&mut out, *cache);
+                    put_bytes(&mut out, subpath);
+                    out.push(u8::from(*readonly));
+                }
+                Mount::Ssh {
+                    id,
+                    mode,
+                    uid,
+                    gid,
+                    token,
+                } => {
+                    out.push(4);
+                    put_bytes(&mut out, id);
+                    put_u32(&mut out, *mode);
+                    put_u32(&mut out, *uid);
+                    put_u32(&mut out, *gid);
+                    out.extend_from_slice(token);
+                }
+            }
+        }
+        put_len(&mut out, self.rlimits.len());
+        for &(resource, soft, hard) in &self.rlimits {
+            put_u32(&mut out, resource);
+            out.extend_from_slice(&soft.to_be_bytes());
+            out.extend_from_slice(&hard.to_be_bytes());
+        }
+        put_bytes(&mut out, &self.seccomp);
+        put_len(&mut out, self.cgroup.len());
+        for (file, value) in &self.cgroup {
+            put_bytes(&mut out, file);
+            put_bytes(&mut out, value);
+        }
+        put_len(&mut out, self.outputs.len());
+        for &(mount, layer) in &self.outputs {
+            put_u32(&mut out, mount);
+            put_u32(&mut out, layer);
+        }
+        put_len(&mut out, self.caches.len());
+        for c in &self.caches {
+            put_len(&mut out, c.layers.len());
+            for (start, len) in &c.layers {
+                out.extend_from_slice(&start.to_be_bytes());
+                out.extend_from_slice(&len.to_be_bytes());
+            }
+            let (writes, (start, len)) = match c.out {
+                Some(range) => (true, range),
+                None => (false, (0, 0)),
+            };
+            out.push(u8::from(writes));
+            out.extend_from_slice(&start.to_be_bytes());
+            out.extend_from_slice(&len.to_be_bytes());
+            out.extend_from_slice(&c.root.encode());
+        }
+        put_len(&mut out, self.devices.len());
+        for d in &self.devices {
+            put_bytes(&mut out, &d.path);
+            put_bytes(&mut out, &d.from);
+            out.push(d.kind);
+            out.push(u8::from(d.mode.is_some()));
+            put_u32(&mut out, d.mode.unwrap_or(0));
+            put_u32(&mut out, d.uid);
+            put_u32(&mut out, d.gid);
+            out.push(d.access);
+        }
+        put_bytes(&mut out, &self.proxy_ca);
+        out.push(u8::from(self.emulated));
+        out
+    }
+
+    /// The step in `bytes`, or `None` unless they hold exactly one.
+    pub fn decode(bytes: &[u8]) -> Option<Step> {
+        let mut r = Cursor(bytes);
+        let root = r.tree()?;
+        let upper = r.u32()?;
+        let argv = r.list()?;
+        let env = r.list()?;
+        let cwd = r.bytes()?;
+        let uid = r.u32()?;
+        let gid = r.u32()?;
+        let n = r.count(4)?;
+        let mut groups = Vec::with_capacity(n);
+        for _ in 0..n {
+            groups.push(r.u32()?);
+        }
+        let hostname = r.bytes()?;
+        let hosts = r.bytes()?;
+        let resolv = r.bytes()?;
+        let network = match r.u8()? {
+            0 => Network::None,
+            1 => Network::Default,
+            _ => return None,
+        };
+        let insecure = r.flag()?;
+        let n = r.count(5)?;
+        let mut mounts = Vec::with_capacity(n);
+        for _ in 0..n {
+            let target = r.bytes()?;
+            let m = match r.u8()? {
+                0 => Mount::Tree {
+                    tree: r.tree()?,
+                    subpath: r.bytes()?,
+                    writable: r.flag()?,
+                },
+                1 => Mount::Tmpfs {
+                    size: u64::from_be_bytes(r.take(8)?.try_into().ok()?),
+                    readonly: r.flag()?,
+                },
+                2 => Mount::Secret {
+                    data: r.bytes()?,
+                    mode: r.u32()?,
+                    uid: r.u32()?,
+                    gid: r.u32()?,
+                },
+                3 => Mount::Cache {
+                    cache: r.u32()?,
+                    subpath: r.bytes()?,
+                    readonly: r.flag()?,
+                },
+                4 => Mount::Ssh {
+                    id: r.bytes()?,
+                    mode: r.u32()?,
+                    uid: r.u32()?,
+                    gid: r.u32()?,
+                    token: r.take(16)?.try_into().ok()?,
+                },
+                _ => return None,
+            };
+            mounts.push((target, m));
+        }
+        let n = r.count(20)?;
+        let mut rlimits = Vec::with_capacity(n);
+        for _ in 0..n {
+            let resource = r.u32()?;
+            let soft = u64::from_be_bytes(r.take(8)?.try_into().ok()?);
+            let hard = u64::from_be_bytes(r.take(8)?.try_into().ok()?);
+            rlimits.push((resource, soft, hard));
+        }
+        let seccomp = r.bytes()?;
+        let n = r.count(8)?;
+        let mut cgroup = Vec::with_capacity(n);
+        for _ in 0..n {
+            cgroup.push((r.bytes()?, r.bytes()?));
+        }
+        let n = r.count(8)?;
+        let mut outputs = Vec::with_capacity(n);
+        for _ in 0..n {
+            outputs.push((r.u32()?, r.u32()?));
+        }
+        let n = r.count(33)?;
+        let mut caches = Vec::with_capacity(n);
+        for _ in 0..n {
+            let layers = r.count(16)?;
+            let mut ranges = Vec::with_capacity(layers);
+            for _ in 0..layers {
+                ranges.push((r.u64()?, r.u64()?));
+            }
+            let writes = r.flag()?;
+            let out = (r.u64()?, r.u64()?);
+            caches.push(Cache {
+                layers: ranges,
+                out: writes.then_some(out),
+                root: Root::decode(r.take(12)?)?,
+            });
+        }
+        let n = r.count(20)?;
+        let mut devices = Vec::with_capacity(n);
+        for _ in 0..n {
+            let path = r.bytes()?;
+            let from = r.bytes()?;
+            let kind = r.u8()?;
+            let has_mode = r.flag()?;
+            let mode = r.u32()?;
+            devices.push(Device {
+                path,
+                from,
+                kind,
+                mode: has_mode.then_some(mode),
+                uid: r.u32()?,
+                gid: r.u32()?,
+                access: r.u8()?,
+            });
+        }
+        let proxy_ca = r.bytes()?;
+        let emulated = r.flag()?;
+        r.0.is_empty().then_some(Step {
+            root,
+            upper,
+            argv,
+            env,
+            cwd,
+            uid,
+            gid,
+            groups,
+            hostname,
+            hosts,
+            resolv,
+            network,
+            insecure,
+            mounts,
+            rlimits,
+            seccomp,
+            cgroup,
+            outputs,
+            caches,
+            devices,
+            proxy_ca,
+            emulated,
+        })
+    }
+}
+
+struct Cursor<'a>(&'a [u8]);
+
+impl Cursor<'_> {
+    fn take(&mut self, n: usize) -> Option<&[u8]> {
+        let (head, rest) = self.0.split_at_checked(n)?;
+        self.0 = rest;
+        Some(head)
+    }
+
+    fn u8(&mut self) -> Option<u8> {
+        self.take(1)?.first().copied()
+    }
+
+    fn flag(&mut self) -> Option<bool> {
+        match self.u8()? {
+            0 => Some(false),
+            1 => Some(true),
+            _ => None,
+        }
+    }
+
+    fn u32(&mut self) -> Option<u32> {
+        Some(u32::from_be_bytes(self.take(4)?.try_into().ok()?))
+    }
+
+    fn u64(&mut self) -> Option<u64> {
+        Some(u64::from_be_bytes(self.take(8)?.try_into().ok()?))
+    }
+
+    /// A count of items each at least `min` bytes long: one beyond what is left is a lie.
+    fn count(&mut self, min: usize) -> Option<usize> {
+        let n = usize::try_from(self.u32()?).ok()?;
+        (n <= self.0.len() / min).then_some(n)
+    }
+
+    fn bytes(&mut self) -> Option<Vec<u8>> {
+        let n = usize::try_from(self.u32()?).ok()?;
+        self.take(n).map(<[u8]>::to_vec)
+    }
+
+    fn list(&mut self) -> Option<Vec<Vec<u8>>> {
+        let n = self.count(4)?;
+        let mut out = Vec::with_capacity(n);
+        for _ in 0..n {
+            out.push(self.bytes()?);
+        }
+        Some(out)
+    }
+
+    fn tree(&mut self) -> Option<Tree> {
+        let base = match self.u8()? {
+            0 => None,
+            1 => Some(self.u32()?),
+            _ => return None,
+        };
+        let n = self.count(4)?;
+        let mut layers = Vec::with_capacity(n);
+        for _ in 0..n {
+            layers.push(self.u32()?);
+        }
+        Some(Tree { base, layers })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::vec;
+
+    #[test]
+    fn what_a_cache_kept_reads_back_as_written() {
+        let kept = Kept {
+            root: Root {
+                mode: 0o700,
+                uid: 7,
+                gid: 8,
+            },
+            len: 1 << 33,
+            hidden: 12_288,
+            failed: b"no room".to_vec(),
+        };
+        assert_eq!(Kept::decode(&kept.encode()), Some(kept.clone()));
+        let none = Kept {
+            failed: Vec::new(),
+            ..kept
+        };
+        assert_eq!(Kept::decode(&none.encode()), Some(none.clone()));
+        assert_eq!(Kept::decode(&none.encode()[..27]), None);
+    }
+
+    #[test]
+    fn a_step_reads_back_as_written_and_nothing_else_does() {
+        let step = Step {
+            root: Tree {
+                base: Some(0),
+                layers: vec![1, 2, 7],
+            },
+            upper: 8,
+            argv: vec![b"/bin/sh".to_vec(), b"-c".to_vec(), b"echo hi".to_vec()],
+            env: vec![b"PATH=/bin".to_vec()],
+            cwd: b"/src".to_vec(),
+            uid: 1000,
+            gid: 1000,
+            groups: vec![1000, 27],
+            hostname: b"buildkitsandbox".to_vec(),
+            hosts: b"127.0.0.1\tlocalhost buildkitsandbox\n".to_vec(),
+            resolv: b"nameserver 8.8.8.8\n".to_vec(),
+            network: Network::None,
+            insecure: false,
+            mounts: vec![
+                (
+                    b"/ctx".to_vec(),
+                    Mount::Tree {
+                        tree: Tree {
+                            base: None,
+                            layers: vec![3],
+                        },
+                        subpath: b"/sub".to_vec(),
+                        writable: true,
+                    },
+                ),
+                (
+                    b"/tmp".to_vec(),
+                    Mount::Tmpfs {
+                        size: 1 << 20,
+                        readonly: false,
+                    },
+                ),
+                (
+                    b"/run/secrets/token".to_vec(),
+                    Mount::Secret {
+                        data: b"s3cr3t".to_vec(),
+                        mode: 0o400,
+                        uid: 0,
+                        gid: 0,
+                    },
+                ),
+                (
+                    b"/run/buildkit/ssh_agent.0".to_vec(),
+                    Mount::Ssh {
+                        id: b"default".to_vec(),
+                        mode: 0o600,
+                        uid: 0,
+                        gid: 0,
+                        token: [7; 16],
+                    },
+                ),
+                (
+                    b"/root/.cache".to_vec(),
+                    Mount::Cache {
+                        cache: 0,
+                        subpath: b"/sub".to_vec(),
+                        readonly: true,
+                    },
+                ),
+            ],
+            rlimits: vec![(7, 1024, 4096)],
+            seccomp: vec![0, 0, 0, 0, 6, 0, 0, 0, 0, 0, 255, 127],
+            cgroup: vec![(b"memory.max".to_vec(), b"67108864".to_vec())],
+            outputs: vec![(1, 9)],
+            caches: vec![
+                Cache {
+                    layers: vec![(0, 4096), (1 << 20, 8192)],
+                    out: Some((2 << 20, 1 << 30)),
+                    root: Root {
+                        mode: 0o700,
+                        uid: 1000,
+                        gid: 50,
+                    },
+                },
+                Cache {
+                    layers: Vec::new(),
+                    out: None,
+                    root: Root::default(),
+                },
+            ],
+            devices: vec![
+                Device {
+                    path: b"/dev/fuse".to_vec(),
+                    from: Vec::new(),
+                    kind: 0,
+                    mode: None,
+                    uid: 0,
+                    gid: 0,
+                    access: 7,
+                },
+                Device {
+                    path: b"/dev/vendor0".to_vec(),
+                    from: b"/dev/null".to_vec(),
+                    kind: b'c',
+                    mode: Some(0o660),
+                    uid: 1000,
+                    gid: 44,
+                    access: 6,
+                },
+            ],
+            proxy_ca: b"-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n".to_vec(),
+            emulated: true,
+        };
+        let bytes = step.encode();
+        assert_eq!(Step::decode(&bytes), Some(step));
+        for cut in 0..bytes.len() {
+            assert_eq!(Step::decode(&bytes[..cut]), None, "cut at {cut}");
+        }
+        let mut longer = bytes.clone();
+        longer.push(0);
+        assert_eq!(Step::decode(&longer), None);
+    }
+}

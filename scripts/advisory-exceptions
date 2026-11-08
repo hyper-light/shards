@@ -1,0 +1,28 @@
+#!/usr/bin/env python3
+"""Fails if an advisory exception in deny.toml has lapsed, or says no date it lapses.
+
+Python 3.11 or later (tomllib). Each entry of [advisories] ignore is an inline table whose reason ends in
+"Expires YYYY-MM-DD." (deny.toml): an exception is a decision to look at again.
+
+    scripts/advisory-exceptions [deny.toml]
+"""
+import datetime, re, sys, tomllib
+
+path = sys.argv[1] if len(sys.argv) > 1 else "deny.toml"
+with open(path, "rb") as f:
+    ignore = tomllib.load(f).get("advisories", {}).get("ignore", [])
+today = datetime.date.today()
+failed = False
+for entry in ignore:
+    if not isinstance(entry, dict):
+        print(f"{path}: {entry!r}: an exception names its reason and expiry")
+        failed = True
+        continue
+    found = re.search(r"Expires (\d{4}-\d{2}-\d{2})\.$", entry.get("reason", ""))
+    if not found:
+        print(f"{path}: {entry.get('id')}: its reason does not end in 'Expires YYYY-MM-DD.'")
+        failed = True
+    elif datetime.date.fromisoformat(found.group(1)) < today:
+        print(f"{path}: {entry.get('id')}: its exception lapsed on {found.group(1)}")
+        failed = True
+sys.exit(1 if failed else 0)

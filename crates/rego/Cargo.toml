@@ -1,0 +1,37 @@
+[package]
+name = "shards-rego"
+version = "0.1.0"
+description = "Rego as OPA v1.14.1 runs it, for buildx's build policies"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+num-bigint = "0.4.8"
+regex = "1.13.1"
+serde_json = "1"
+shards-template = { path = "../template" }
+
+# src/stack.rs reads where the thread's stack ends (pthread_get_stackaddr_np,
+# pthread_getattr_np); benches/policy.rs, the process's peak memory (getrusage).
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+
+# src/stack.rs reads where the thread's stack ends (VirtualQuery).
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true }
+
+[dev-dependencies]
+serde_json = "1"
+
+[[bench]]
+name = "policy"
+harness = false
+
+[[bench]]
+name = "nesting"
+harness = false

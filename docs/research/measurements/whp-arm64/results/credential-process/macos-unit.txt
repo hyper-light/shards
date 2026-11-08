@@ -1,0 +1,9 @@
+SHARDS_HELPERS=skip cargo test --locked -p shards --bin shards --profile test-release aws::credentials::tests::credential_processes_give_their_credentials -- --exact --nocapture
+     Running unittests src/main.rs (target/test-release/deps/shards-15505dcf1782343f)
+
+running 1 test
+no
+test aws::credentials::tests::credential_processes_give_their_credentials ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 570 filtered out; finished in 0.02s
+

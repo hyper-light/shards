@@ -1,0 +1,8 @@
+2026-11-03T16:45:07.2527974-08:00
+user=WINARM\runner SID=S-1-5-21-4187853375-3986741409-3176094604-1002 elevated=False session=0
+
+running 1 test
+test windows_sees_a_files_users_until_its_last_mapping_is_closed ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 40 filtered out; finished in 0.10s
+

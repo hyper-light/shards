@@ -5,11 +5,9 @@
 
 use crate::flags::{Args, Command, Flag};
 
-/// The root's help flag, which every command inherits with its shorthand deprecated and
-/// itself hidden (docker/cli cli/cobra.go setupCommonRootCommand).
-const HELP: Flag = Flag::bool("help", Some(b'h'), "Print usage")
-    .short_deprecated("use --help")
-    .hidden();
+/// The root's help flag, which every command inherits, hidden (docker/cli cli/cobra.go
+/// setupCommonRootCommand). docker/cli deprecates its shorthand; shards keeps `-h`.
+const HELP: Flag = Flag::bool("help", Some(b'h'), "Print usage").hidden();
 
 /// `shards run`, whose `-h` is the hostname, so its own `--help` has no shorthand.
 pub static RUN: Command = Command {
@@ -18,6 +16,7 @@ pub static RUN: Command = Command {
     aliases: "shards container run, shards run",
     args: Args::AtLeast(1),
     flags: &[
+        Flag::many("attach", Some(b'a'), "list", "Attach to STDIN, STDOUT or STDERR"),
         Flag::bool(
             "detach",
             Some(b'd'),
@@ -44,10 +43,36 @@ pub static RUN: Command = Command {
             "Overwrite the default ENTRYPOINT of the image",
         ),
         Flag::many("env", Some(b'e'), "list", "Set environment variables"),
+        Flag::string("health-cmd", None, "", "Command to run to check health"),
+        Flag::duration(
+            "health-interval",
+            None,
+            "Time between running the check (ms|s|m|h) (default 0s)",
+        ),
+        Flag::int(
+            "health-retries",
+            None,
+            "0",
+            "Consecutive failures needed to report unhealthy",
+        ),
+        Flag::duration(
+            "health-start-interval",
+            None,
+            "Time between running the check during the start period (ms|s|m|h) (default 0s)",
+        ),
+        Flag::duration(
+            "health-start-period",
+            None,
+            "Start period for the container to initialize before starting health-retries countdown (ms|s|m|h) (default 0s)",
+        ),
+        Flag::duration(
+            "health-timeout",
+            None,
+            "Maximum time to allow one check to run (ms|s|m|h) (default 0s)",
+        ),
         Flag::bool("help", None, "Print usage"),
         Flag::string("hostname", Some(b'h'), "", "Container host name"),
-        // shards-init is every guest's PID 1, and does what docker-init does: it forwards
-        // signals to the command and reaps orphans.
+        // A reaper as PID 1 of the command's PID namespace, docker-init's part (D115).
         Flag::bool(
             "init",
             None,
@@ -58,6 +83,27 @@ pub static RUN: Command = Command {
         Flag::string("kernel-memory", None, "0", "Kernel memory limit (deprecated)")
             .deprecated("and no longer supported by the kernel"),
         Flag::string("name", None, "", "Assign a name to the container"),
+        // One value, `--net` and `--network` alike (docker/cli opts.go addFlags).
+        Flag::many("net", None, "network", "Connect a container to a network")
+            .sharing("network")
+            .hidden(),
+        Flag::many("network", None, "network", "Connect a container to a network"),
+        Flag::bool(
+            "no-healthcheck",
+            None,
+            "Disable any container-specified HEALTHCHECK",
+        ),
+        Flag::many(
+            "publish",
+            Some(b'p'),
+            "list",
+            "Publish a container's port(s) to the host",
+        ),
+        Flag::bool(
+            "publish-all",
+            Some(b'P'),
+            "Publish all exposed ports to random ports",
+        ),
         Flag::string(
             "pull",
             None,
@@ -68,6 +114,19 @@ pub static RUN: Command = Command {
             "rm",
             None,
             "Automatically remove the container and its associated anonymous volumes when it exits",
+        ),
+        Flag::string(
+            "restart",
+            None,
+            "no",
+            "Restart policy to apply when a container exits",
+        ),
+        Flag::string("stop-signal", None, "", "Signal to stop the container"),
+        Flag::int(
+            "stop-timeout",
+            None,
+            "0",
+            "Timeout (in seconds) to stop a container",
         ),
         Flag::bool("tty", Some(b't'), "Allocate a pseudo-TTY"),
         Flag::string(
@@ -82,101 +141,922 @@ pub static RUN: Command = Command {
             "",
             "Working directory inside the container",
         ),
+        Flag::many(
+            "add-host",
+            None,
+            "list",
+            "Add a custom host-to-IP mapping (host:ip)",
+        ),
+        Flag::many("dns", None, "list", "Set custom DNS servers"),
+        Flag::many("dns-opt", None, "list", "Set DNS options")
+            .sharing("dns-option")
+            .hidden(),
+        Flag::many("dns-option", None, "list", "Set DNS options"),
+        Flag::value("ip", None, "ip", "IPv4 address (e.g., 172.30.100.104)").defaulting("<nil>"),
+        Flag::value("ip6", None, "ip", "IPv6 address (e.g., 2001:db8::33)").defaulting("<nil>"),
+        Flag::many(
+            "link-local-ip",
+            None,
+            "list",
+            "Container IPv4/IPv6 link-local addresses",
+        ),
+        Flag::string(
+            "mac-address",
+            None,
+            "",
+            "Container MAC address (e.g., 92:d0:c6:0a:29:33)",
+        ),
+        Flag::many(
+            "net-alias",
+            None,
+            "list",
+            "Add network-scoped alias for the container",
+        )
+        .sharing("network-alias")
+        .hidden(),
+        Flag::many(
+            "network-alias",
+            None,
+            "list",
+            "Add network-scoped alias for the container",
+        ),
+        Flag::many("dns-search", None, "list", "Set custom DNS search domains"),
+        Flag::string("domainname", None, "", "Container NIS domain name"),
+        Flag::string("cidfile", None, "", "Write the container ID to the file"),
+        Flag::many(
+            "mount",
+            None,
+            "mount",
+            "Attach a filesystem mount to the container",
+        ),
+        Flag::many("volume", Some(b'v'), "list", "Bind mount a volume"),
+        Flag::string(
+            "volume-driver",
+            None,
+            "",
+            "Optional volume driver for the container",
+        ),
+        Flag::many(
+            "volumes-from",
+            None,
+            "list",
+            "Mount volumes from the specified container(s)",
+        ),
+        Flag::many("cap-add", None, "list", "Add Linux capabilities"),
+        Flag::many("cap-drop", None, "list", "Drop Linux capabilities"),
+        Flag::many("group-add", None, "list", "Add additional groups to join"),
+        Flag::int(
+            "oom-score-adj",
+            None,
+            "0",
+            "Tune host's OOM preferences (-1000 to 1000)",
+        ),
+        Flag::string("pid", None, "", "PID namespace to use"),
+        Flag::bool("privileged", None, "Give extended privileges to this container"),
+        Flag::many("security-opt", None, "list", "Security Options"),
+        Flag::many("device", None, "list", "Add a host device to the container"),
+        Flag::many(
+            "gpus",
+            None,
+            "gpu-request",
+            "GPU devices to add to the container ('all' to pass all GPUs)",
+        ),
+        Flag::many(
+            "device-cgroup-rule",
+            None,
+            "list",
+            "Add a rule to the cgroup allowed devices list",
+        ),
+        Flag::many(
+            "blkio-weight-device",
+            None,
+            "list",
+            "Block IO weight (relative device weight)",
+        )
+        .defaulting("[]"),
+        Flag::many(
+            "device-read-bps",
+            None,
+            "list",
+            "Limit read rate (bytes per second) from a device",
+        )
+        .defaulting("[]"),
+        Flag::many(
+            "device-read-iops",
+            None,
+            "list",
+            "Limit read rate (IO per second) from a device",
+        )
+        .defaulting("[]"),
+        Flag::many(
+            "device-write-bps",
+            None,
+            "list",
+            "Limit write rate (bytes per second) to a device",
+        )
+        .defaulting("[]"),
+        Flag::many(
+            "device-write-iops",
+            None,
+            "list",
+            "Limit write rate (IO per second) to a device",
+        )
+        .defaulting("[]"),
+        Flag::bool(
+            "read-only",
+            None,
+            "Mount the container's root filesystem as read only",
+        ),
+        Flag::value("shm-size", None, "bytes", "Size of /dev/shm"),
+        Flag::many("sysctl", None, "map", "Sysctl options").defaulting("map[]"),
+        Flag::many("tmpfs", None, "list", "Mount a tmpfs directory"),
+        Flag::many("ulimit", None, "ulimit", "Ulimit options").defaulting("[]"),
+        Flag::int(
+            "cpu-period",
+            None,
+            "0",
+            "Limit CPU CFS (Completely Fair Scheduler) period",
+        ),
+        Flag::int(
+            "cpu-quota",
+            None,
+            "0",
+            "Limit CPU CFS (Completely Fair Scheduler) quota",
+        ),
+        Flag::int(
+            "cpu-rt-period",
+            None,
+            "0",
+            "Limit CPU real-time period in microseconds",
+        ),
+        Flag::int(
+            "cpu-rt-runtime",
+            None,
+            "0",
+            "Limit CPU real-time runtime in microseconds",
+        ),
+        // Docker's flags for its VM-isolated containers, as every run is a microVM.
+        Flag::int("cpu-count", None, "0", "vCPUs of the microVM"),
+        // Its microVM's I/O to the host's storage, which its VMM keeps (D178).
+        Flag::value(
+            "io-maxbandwidth",
+            None,
+            "bytes",
+            "Most bytes a second of the microVM's I/O to its volumes and disks",
+        )
+        .defaulting("0"),
+        Flag::value(
+            "io-maxiops",
+            None,
+            "uint64",
+            "Most requests a second of the microVM's I/O to its volumes and disks",
+        )
+        .defaulting("0"),
+        Flag::int(
+            "cpu-percent",
+            None,
+            "0",
+            "Most of the host's CPU time the microVM may use, in percent",
+        ),
+        Flag::many(
+            "annotation",
+            None,
+            "map",
+            "Add an annotation to the container (passed through to the OCI runtime)",
+        )
+        .defaulting("map[]"),
+        Flag::string("isolation", None, "", "Container isolation technology"),
+        Flag::string("runtime", None, "", "Runtime to use for this container"),
+        // Namespaces as the microVM has them (D156): its own `--ipc` and `--userns`, as
+        // Docker's are; `--uts host` its host's hostname, `--cgroupns host` its microVM's
+        // cgroups, `--storage-opt size` its writable layer's: shards' own words.
+        Flag::string("ipc", None, "", "IPC mode to use"),
+        Flag::string("userns", None, "", "User namespace to use"),
+        Flag::string(
+            "uts",
+            None,
+            "",
+            "UTS namespace to use ('host': the host's hostname)",
+        ),
+        Flag::string(
+            "cgroup-parent",
+            None,
+            "",
+            "Run the microVM's processes under this slice of the user's systemd manager (NAME.slice)",
+        ),
+        Flag::string(
+            "cgroupns",
+            None,
+            "",
+            "Cgroup namespace to use (host|private)\n'host':    Run the workload in its microVM's cgroup namespace\n'private': Run the workload in a cgroup namespace of its own (default)",
+        ),
+        Flag::many(
+            "storage-opt",
+            None,
+            "list",
+            "Writable layer options (size: its most bytes)",
+        ),
+        Flag::value("umask", None, "umask", "Set umask for the container").defaulting("<nil>"),
+        Flag::bool(
+            "use-api-socket",
+            None,
+            "Bind mount Docker API socket and required auth",
+        ),
+        // shards' grammar's `run container` and `create container`: IMAGE is to be a
+        // container image, made a microVM as it runs; a shards microVM is refused.
+        Flag::bool(
+            "container-image",
+            None,
+            "Refuse an image that is a shards microVM already",
+        )
+        .extension()
+        .hidden(),
+        Flag::value(
+            "blkio-weight",
+            None,
+            "uint16",
+            "Block IO (relative weight), between 10 and 1000, or 0 to disable (default 0)",
+        ),
+        Flag::int("cpu-shares", Some(b'c'), "0", "CPU shares (relative weight)"),
+        Flag::value("cpus", None, "decimal", "Number of CPUs"),
+        Flag::string(
+            "cpuset-cpus",
+            None,
+            "",
+            "CPUs in which to allow execution (0-3, 0,1)",
+        ),
+        Flag::string(
+            "cpuset-mems",
+            None,
+            "",
+            "MEMs in which to allow execution (0-3, 0,1)",
+        ),
+        Flag::value("memory", Some(b'm'), "bytes", "Memory limit"),
+        Flag::value("memory-reservation", None, "bytes", "Memory soft limit"),
+        Flag::value(
+            "memory-swap",
+            None,
+            "bytes",
+            "Swap limit equal to memory plus swap: '-1' to enable unlimited swap",
+        ),
+        Flag::int(
+            "memory-swappiness",
+            None,
+            "-1",
+            "Tune container memory swappiness (0 to 100)",
+        ),
+        Flag::bool("oom-kill-disable", None, "Disable OOM Killer"),
+        Flag::int(
+            "pids-limit",
+            None,
+            "0",
+            "Tune container pids limit (set -1 for unlimited)",
+        ),
+        Flag::string(
+            "platform",
+            None,
+            "",
+            "Set platform if server is multi-platform capable",
+        ),
+        Flag::bool("quiet", Some(b'q'), "Suppress the pull output"),
+        Flag::bool("sig-proxy", None, "Proxy received signals to the process").defaulting("true"),
+        Flag::many(
+            "env-file",
+            None,
+            "list",
+            "Read in a file of environment variables",
+        ),
+        Flag::many("expose", None, "list", "Expose a port or a range of ports"),
+        Flag::many("label", Some(b'l'), "list", "Set meta data on a container"),
+        Flag::many(
+            "label-file",
+            None,
+            "list",
+            "Read in a line delimited file of labels",
+        ),
+        Flag::string("log-driver", None, "", "Logging driver for the container"),
+        Flag::many("log-opt", None, "list", "Log driver options"),
     ],
-    unserved: "\
-add-host - m - -\n\
-annotation - m - -\n\
-attach a m - -\n\
-blkio-weight - s 0 -\n\
-blkio-weight-device - m - -\n\
-cap-add - m - -\n\
-cap-drop - m - -\n\
-cgroup-parent - s - -\n\
-cgroupns - s - -\n\
-cidfile - s - -\n\
-cpu-count - i 0 -\n\
-cpu-percent - i 0 -\n\
-cpu-period - i 0 -\n\
-cpu-quota - i 0 -\n\
-cpu-rt-period - i 0 -\n\
-cpu-rt-runtime - i 0 -\n\
-cpu-shares c i 0 -\n\
-cpus - s - -\n\
-cpuset-cpus - s - -\n\
-cpuset-mems - s - -\n\
-device - m - -\n\
-device-cgroup-rule - m - -\n\
-device-read-bps - m - -\n\
-device-read-iops - m - -\n\
-device-write-bps - m - -\n\
-device-write-iops - m - -\n\
-dns - m - -\n\
-dns-opt - m - dns-option\n\
-dns-option - m - -\n\
-dns-search - m - -\n\
-domainname - s - -\n\
-env-file - m - -\n\
-expose - m - -\n\
-gpus - m - -\n\
-group-add - m - -\n\
-health-cmd - s - -\n\
-health-interval - s 0s -\n\
-health-retries - i 0 -\n\
-health-start-interval - s 0s -\n\
-health-start-period - s 0s -\n\
-health-timeout - s 0s -\n\
-io-maxbandwidth - s 0 -\n\
-io-maxiops - s 0 -\n\
-ip - s <nil> -\n\
-ip6 - s <nil> -\n\
-ipc - s - -\n\
-isolation - s - -\n\
-label l m - -\n\
-label-file - m - -\n\
-link - m - -\n\
-link-local-ip - m - -\n\
-log-driver - s - -\n\
-log-opt - m - -\n\
-mac-address - s - -\n\
-memory m s 0 -\n\
-memory-reservation - s 0 -\n\
-memory-swap - s 0 -\n\
-memory-swappiness - i -1 -\n\
-mount - m - -\n\
-net - m - network\n\
-net-alias - m - network-alias\n\
-network - m - -\n\
-network-alias - m - -\n\
-no-healthcheck - b false -\n\
-oom-kill-disable - b false -\n\
-oom-score-adj - i 0 -\n\
-pid - s - -\n\
-pids-limit - i 0 -\n\
-platform - s - -\n\
-privileged - b false -\n\
-publish p m - -\n\
-publish-all P b false -\n\
-quiet q b false -\n\
-read-only - b false -\n\
-restart - s no -\n\
-runtime - s - -\n\
-security-opt - m - -\n\
-shm-size - s 0 -\n\
-sig-proxy - b true -\n\
-stop-signal - s - -\n\
-stop-timeout - i 0 -\n\
-storage-opt - m - -\n\
-sysctl - m - -\n\
-tmpfs - m - -\n\
-ulimit - m - -\n\
-umask - s - -\n\
-use-api-socket - b false -\n\
-userns - s - -\n\
-uts - s - -\n\
-volume v m - -\n\
-volume-driver - s - -\n\
-volumes-from - m - -",
+    unserved: "link - m - -",
     interspersed: false,
+    error_prefix: "",
+};
+
+/// `shards create` (docker/cli cli/command/container/create.go): `run`'s flags for its microVM,
+/// without what only `run` has.
+pub static CREATE: Command = Command {
+    usage: "[OPTIONS] IMAGE [COMMAND] [ARG...]",
+    about: "Create a new container",
+    aliases: "shards container create, shards create",
+    args: Args::AtLeast(1),
+    flags: &[
+        Flag::many("attach", Some(b'a'), "list", "Attach to STDIN, STDOUT or STDERR"),
+        // Content trust is gone from the CLI; the flag only says so.
+        Flag::bool(
+            "disable-content-trust",
+            None,
+            "Skip image verification (deprecated)",
+        )
+        .defaulting("true")
+        .deprecated("support for docker content trust was removed"),
+        Flag::string(
+            "entrypoint",
+            None,
+            "",
+            "Overwrite the default ENTRYPOINT of the image",
+        ),
+        Flag::many("env", Some(b'e'), "list", "Set environment variables"),
+        Flag::string("health-cmd", None, "", "Command to run to check health"),
+        Flag::duration(
+            "health-interval",
+            None,
+            "Time between running the check (ms|s|m|h) (default 0s)",
+        ),
+        Flag::int(
+            "health-retries",
+            None,
+            "0",
+            "Consecutive failures needed to report unhealthy",
+        ),
+        Flag::duration(
+            "health-start-interval",
+            None,
+            "Time between running the check during the start period (ms|s|m|h) (default 0s)",
+        ),
+        Flag::duration(
+            "health-start-period",
+            None,
+            "Start period for the container to initialize before starting health-retries countdown (ms|s|m|h) (default 0s)",
+        ),
+        Flag::duration(
+            "health-timeout",
+            None,
+            "Maximum time to allow one check to run (ms|s|m|h) (default 0s)",
+        ),
+        Flag::bool("help", None, "Print usage"),
+        Flag::string("hostname", Some(b'h'), "", "Container host name"),
+        // A reaper as PID 1 of the command's PID namespace, docker-init's part (D115).
+        Flag::bool(
+            "init",
+            None,
+            "Run an init inside the container that forwards signals and reaps processes",
+        ),
+        Flag::bool("interactive", Some(b'i'), "Keep STDIN open even if not attached"),
+        // Kernels no longer have the limit; the flag only says so.
+        Flag::string("kernel-memory", None, "0", "Kernel memory limit (deprecated)")
+            .deprecated("and no longer supported by the kernel"),
+        Flag::string("name", None, "", "Assign a name to the container"),
+        // One value, `--net` and `--network` alike (docker/cli opts.go addFlags).
+        Flag::many("net", None, "network", "Connect a container to a network")
+            .sharing("network")
+            .hidden(),
+        Flag::many("network", None, "network", "Connect a container to a network"),
+        Flag::bool(
+            "no-healthcheck",
+            None,
+            "Disable any container-specified HEALTHCHECK",
+        ),
+        Flag::many(
+            "publish",
+            Some(b'p'),
+            "list",
+            "Publish a container's port(s) to the host",
+        ),
+        Flag::bool(
+            "publish-all",
+            Some(b'P'),
+            "Publish all exposed ports to random ports",
+        ),
+        Flag::string(
+            "pull",
+            None,
+            "missing",
+            "Pull image before creating (\"always\", \"missing\", \"never\")",
+        ),
+        Flag::bool(
+            "rm",
+            None,
+            "Automatically remove the container and its associated anonymous volumes when it exits",
+        ),
+        Flag::string(
+            "restart",
+            None,
+            "no",
+            "Restart policy to apply when a container exits",
+        ),
+        Flag::string("stop-signal", None, "", "Signal to stop the container"),
+        Flag::int(
+            "stop-timeout",
+            None,
+            "0",
+            "Timeout (in seconds) to stop a container",
+        ),
+        Flag::bool("tty", Some(b't'), "Allocate a pseudo-TTY"),
+        Flag::string(
+            "user",
+            Some(b'u'),
+            "",
+            "Username or UID (format: <name|uid>[:<group|gid>])",
+        ),
+        Flag::string(
+            "workdir",
+            Some(b'w'),
+            "",
+            "Working directory inside the container",
+        ),
+        Flag::many(
+            "add-host",
+            None,
+            "list",
+            "Add a custom host-to-IP mapping (host:ip)",
+        ),
+        Flag::many("dns", None, "list", "Set custom DNS servers"),
+        Flag::many("dns-opt", None, "list", "Set DNS options")
+            .sharing("dns-option")
+            .hidden(),
+        Flag::many("dns-option", None, "list", "Set DNS options"),
+        Flag::value("ip", None, "ip", "IPv4 address (e.g., 172.30.100.104)").defaulting("<nil>"),
+        Flag::value("ip6", None, "ip", "IPv6 address (e.g., 2001:db8::33)").defaulting("<nil>"),
+        Flag::many(
+            "link-local-ip",
+            None,
+            "list",
+            "Container IPv4/IPv6 link-local addresses",
+        ),
+        Flag::string(
+            "mac-address",
+            None,
+            "",
+            "Container MAC address (e.g., 92:d0:c6:0a:29:33)",
+        ),
+        Flag::many(
+            "net-alias",
+            None,
+            "list",
+            "Add network-scoped alias for the container",
+        )
+        .sharing("network-alias")
+        .hidden(),
+        Flag::many(
+            "network-alias",
+            None,
+            "list",
+            "Add network-scoped alias for the container",
+        ),
+        Flag::many("dns-search", None, "list", "Set custom DNS search domains"),
+        Flag::string("domainname", None, "", "Container NIS domain name"),
+        Flag::string("cidfile", None, "", "Write the container ID to the file"),
+        Flag::many(
+            "mount",
+            None,
+            "mount",
+            "Attach a filesystem mount to the container",
+        ),
+        Flag::many("volume", Some(b'v'), "list", "Bind mount a volume"),
+        Flag::string(
+            "volume-driver",
+            None,
+            "",
+            "Optional volume driver for the container",
+        ),
+        Flag::many(
+            "volumes-from",
+            None,
+            "list",
+            "Mount volumes from the specified container(s)",
+        ),
+        Flag::many("cap-add", None, "list", "Add Linux capabilities"),
+        Flag::many("cap-drop", None, "list", "Drop Linux capabilities"),
+        Flag::many("group-add", None, "list", "Add additional groups to join"),
+        Flag::int(
+            "oom-score-adj",
+            None,
+            "0",
+            "Tune host's OOM preferences (-1000 to 1000)",
+        ),
+        Flag::string("pid", None, "", "PID namespace to use"),
+        Flag::bool("privileged", None, "Give extended privileges to this container"),
+        Flag::many("security-opt", None, "list", "Security Options"),
+        Flag::many("device", None, "list", "Add a host device to the container"),
+        Flag::many(
+            "gpus",
+            None,
+            "gpu-request",
+            "GPU devices to add to the container ('all' to pass all GPUs)",
+        ),
+        Flag::many(
+            "device-cgroup-rule",
+            None,
+            "list",
+            "Add a rule to the cgroup allowed devices list",
+        ),
+        Flag::many(
+            "blkio-weight-device",
+            None,
+            "list",
+            "Block IO weight (relative device weight)",
+        )
+        .defaulting("[]"),
+        Flag::many(
+            "device-read-bps",
+            None,
+            "list",
+            "Limit read rate (bytes per second) from a device",
+        )
+        .defaulting("[]"),
+        Flag::many(
+            "device-read-iops",
+            None,
+            "list",
+            "Limit read rate (IO per second) from a device",
+        )
+        .defaulting("[]"),
+        Flag::many(
+            "device-write-bps",
+            None,
+            "list",
+            "Limit write rate (bytes per second) to a device",
+        )
+        .defaulting("[]"),
+        Flag::many(
+            "device-write-iops",
+            None,
+            "list",
+            "Limit write rate (IO per second) to a device",
+        )
+        .defaulting("[]"),
+        Flag::bool(
+            "read-only",
+            None,
+            "Mount the container's root filesystem as read only",
+        ),
+        Flag::value("shm-size", None, "bytes", "Size of /dev/shm"),
+        Flag::many("sysctl", None, "map", "Sysctl options").defaulting("map[]"),
+        Flag::many("tmpfs", None, "list", "Mount a tmpfs directory"),
+        Flag::many("ulimit", None, "ulimit", "Ulimit options").defaulting("[]"),
+        Flag::int(
+            "cpu-period",
+            None,
+            "0",
+            "Limit CPU CFS (Completely Fair Scheduler) period",
+        ),
+        Flag::int(
+            "cpu-quota",
+            None,
+            "0",
+            "Limit CPU CFS (Completely Fair Scheduler) quota",
+        ),
+        Flag::int(
+            "cpu-rt-period",
+            None,
+            "0",
+            "Limit CPU real-time period in microseconds",
+        ),
+        Flag::int(
+            "cpu-rt-runtime",
+            None,
+            "0",
+            "Limit CPU real-time runtime in microseconds",
+        ),
+        // Docker's flags for its VM-isolated containers, as every run is a microVM.
+        Flag::int("cpu-count", None, "0", "vCPUs of the microVM"),
+        // Its microVM's I/O to the host's storage, which its VMM keeps (D178).
+        Flag::value(
+            "io-maxbandwidth",
+            None,
+            "bytes",
+            "Most bytes a second of the microVM's I/O to its volumes and disks",
+        )
+        .defaulting("0"),
+        Flag::value(
+            "io-maxiops",
+            None,
+            "uint64",
+            "Most requests a second of the microVM's I/O to its volumes and disks",
+        )
+        .defaulting("0"),
+        Flag::int(
+            "cpu-percent",
+            None,
+            "0",
+            "Most of the host's CPU time the microVM may use, in percent",
+        ),
+        Flag::many(
+            "annotation",
+            None,
+            "map",
+            "Add an annotation to the container (passed through to the OCI runtime)",
+        )
+        .defaulting("map[]"),
+        Flag::string("isolation", None, "", "Container isolation technology"),
+        Flag::string("runtime", None, "", "Runtime to use for this container"),
+        // Namespaces as the microVM has them (D156): its own `--ipc` and `--userns`, as
+        // Docker's are; `--uts host` its host's hostname, `--cgroupns host` its microVM's
+        // cgroups, `--storage-opt size` its writable layer's: shards' own words.
+        Flag::string("ipc", None, "", "IPC mode to use"),
+        Flag::string("userns", None, "", "User namespace to use"),
+        Flag::string(
+            "uts",
+            None,
+            "",
+            "UTS namespace to use ('host': the host's hostname)",
+        ),
+        Flag::string(
+            "cgroup-parent",
+            None,
+            "",
+            "Run the microVM's processes under this slice of the user's systemd manager (NAME.slice)",
+        ),
+        Flag::string(
+            "cgroupns",
+            None,
+            "",
+            "Cgroup namespace to use (host|private)\n'host':    Run the workload in its microVM's cgroup namespace\n'private': Run the workload in a cgroup namespace of its own (default)",
+        ),
+        Flag::many(
+            "storage-opt",
+            None,
+            "list",
+            "Writable layer options (size: its most bytes)",
+        ),
+        Flag::value("umask", None, "umask", "Set umask for the container").defaulting("<nil>"),
+        Flag::bool(
+            "use-api-socket",
+            None,
+            "Bind mount Docker API socket and required auth",
+        ),
+        // shards' grammar's `run container` and `create container`: IMAGE is to be a
+        // container image, made a microVM as it runs; a shards microVM is refused.
+        Flag::bool(
+            "container-image",
+            None,
+            "Refuse an image that is a shards microVM already",
+        )
+        .extension()
+        .hidden(),
+        Flag::value(
+            "blkio-weight",
+            None,
+            "uint16",
+            "Block IO (relative weight), between 10 and 1000, or 0 to disable (default 0)",
+        ),
+        Flag::int("cpu-shares", Some(b'c'), "0", "CPU shares (relative weight)"),
+        Flag::value("cpus", None, "decimal", "Number of CPUs"),
+        Flag::string(
+            "cpuset-cpus",
+            None,
+            "",
+            "CPUs in which to allow execution (0-3, 0,1)",
+        ),
+        Flag::string(
+            "cpuset-mems",
+            None,
+            "",
+            "MEMs in which to allow execution (0-3, 0,1)",
+        ),
+        Flag::value("memory", Some(b'm'), "bytes", "Memory limit"),
+        Flag::value("memory-reservation", None, "bytes", "Memory soft limit"),
+        Flag::value(
+            "memory-swap",
+            None,
+            "bytes",
+            "Swap limit equal to memory plus swap: '-1' to enable unlimited swap",
+        ),
+        Flag::int(
+            "memory-swappiness",
+            None,
+            "-1",
+            "Tune container memory swappiness (0 to 100)",
+        ),
+        Flag::bool("oom-kill-disable", None, "Disable OOM Killer"),
+        Flag::int(
+            "pids-limit",
+            None,
+            "0",
+            "Tune container pids limit (set -1 for unlimited)",
+        ),
+        Flag::string(
+            "platform",
+            None,
+            "",
+            "Set platform if server is multi-platform capable",
+        ),
+        Flag::bool("quiet", Some(b'q'), "Suppress the pull output"),
+        Flag::many(
+            "env-file",
+            None,
+            "list",
+            "Read in a file of environment variables",
+        ),
+        Flag::many("expose", None, "list", "Expose a port or a range of ports"),
+        Flag::many("label", Some(b'l'), "list", "Set meta data on a container"),
+        Flag::many(
+            "label-file",
+            None,
+            "list",
+            "Read in a line delimited file of labels",
+        ),
+        Flag::string("log-driver", None, "", "Logging driver for the container"),
+        Flag::many("log-opt", None, "list", "Log driver options"),
+    ],
+    unserved: "link - m - -",
+    interspersed: false,
+    error_prefix: "",
+};
+
+/// `shards commit` (docker/cli cli/command/container/commit.go).
+pub static COMMIT: Command = Command {
+    usage: "[OPTIONS] CONTAINER [REPOSITORY[:TAG]]",
+    about: "Create a new image from a container's changes",
+    aliases: "shards container commit, shards commit",
+    args: Args::Range(1, 2),
+    flags: &[
+        Flag::string(
+            "author",
+            Some(b'a'),
+            "",
+            "Author (e.g., \"John Hannibal Smith <hannibal@a-team.com>\")",
+        ),
+        Flag::many(
+            "change",
+            Some(b'c'),
+            "list",
+            "Apply Dockerfile instruction to the created image",
+        ),
+        HELP,
+        Flag::string("message", Some(b'm'), "", "Commit message"),
+        Flag::bool("no-pause", None, "Disable pausing container during commit"),
+        Flag::bool(
+            "pause",
+            Some(b'p'),
+            "Pause container during commit (deprecated: use --no-pause instead)",
+        )
+        .defaulting("true")
+        .deprecated("and enabled by default. Use --no-pause to disable pausing during commit."),
+    ],
+    unserved: "",
+    interspersed: false,
+    error_prefix: "",
+};
+
+/// docker/cli's flags.InspectFormatHelp (cli/flags/options.go).
+const INSPECT_FORMAT_HELP: &str = "Format output using a custom template:\n'json':             Print in JSON format\n'TEMPLATE':         Print output using the given Go template.\nRefer to https://docs.docker.com/go/formatting/ for more information about formatting output with templates";
+
+/// `shards version` (docker/cli cli/command/system/version.go).
+pub static VERSION: Command = Command {
+    usage: "[OPTIONS]",
+    about: "Show the Docker version information",
+    aliases: "",
+    args: Args::None,
+    flags: &[Flag::string("format", Some(b'f'), "", INSPECT_FORMAT_HELP), HELP],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "",
+};
+
+/// `shards inspect` (docker/cli cli/command/system/inspect.go).
+pub static INSPECT: Command = Command {
+    usage: "[OPTIONS] NAME|ID [NAME|ID...]",
+    about: "Return low-level information on Docker objects",
+    aliases: "",
+    args: Args::AtLeast(1),
+    flags: &[
+        Flag::string("format", Some(b'f'), "", INSPECT_FORMAT_HELP),
+        HELP,
+        Flag::bool(
+            "size",
+            Some(b's'),
+            "Display total file sizes if the type is container",
+        ),
+        Flag::string("type", None, "", "Only inspect objects of the given type"),
+    ],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "",
+};
+
+/// `shards cp` (docker/cli cli/command/container/cp.go): its Long, which its help shows.
+pub static COPY: Command = Command {
+    usage: "[OPTIONS] CONTAINER:SRC_PATH DEST_PATH|-\n\tdocker cp [OPTIONS] SRC_PATH|- CONTAINER:DEST_PATH",
+    about: "Copy files/folders between a container and the local filesystem\n\nUse '-' as the source to read a tar archive from stdin\nand extract it to a directory destination in a container.\nUse '-' as the destination to stream a tar archive of a\ncontainer source to stdout.",
+    aliases: "shards container cp, shards cp",
+    args: Args::Exactly(2),
+    flags: &[
+        Flag::bool(
+            "archive",
+            Some(b'a'),
+            "Archive mode (copy all uid/gid information)",
+        ),
+        Flag::bool("follow-link", Some(b'L'), "Always follow symlinks in SRC_PATH"),
+        HELP,
+        Flag::bool(
+            "quiet",
+            Some(b'q'),
+            "Suppress progress output during copy. Progress output is automatically suppressed if no terminal is attached",
+        ),
+    ],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "",
+};
+
+/// `shards start` (docker/cli cli/command/container/start.go).
+pub static START: Command = Command {
+    usage: "[OPTIONS] CONTAINER [CONTAINER...]",
+    about: "Start one or more stopped containers",
+    aliases: "shards container start, shards start",
+    args: Args::AtLeast(1),
+    flags: &[
+        Flag::bool("attach", Some(b'a'), "Attach STDOUT/STDERR and forward signals"),
+        // A microVM's snapshot (D176), which docker/cli shows of an experimental daemon.
+        Flag::string("checkpoint", None, "", "Restore from this checkpoint"),
+        Flag::string(
+            "detach-keys",
+            None,
+            "",
+            "Override the key sequence for detaching a container",
+        ),
+        HELP,
+        Flag::bool("interactive", Some(b'i'), "Attach container's STDIN"),
+    ],
+    unserved: "checkpoint-dir - s - - shards keeps a microVM's checkpoints with it, and restores from no other directory",
+    interspersed: true,
+    error_prefix: "",
+};
+
+/// `shards checkpoint create` (docker/cli cli/command/checkpoint/create.go): `save vm`
+/// (D176).
+pub static CHECKPOINT_CREATE: Command = Command {
+    usage: "[OPTIONS] CONTAINER CHECKPOINT",
+    about: "Create a checkpoint from a running container",
+    aliases: "",
+    args: Args::Exactly(2),
+    flags: &[
+        HELP,
+        Flag::bool(
+            "leave-running",
+            None,
+            "Leave the container running after checkpoint",
+        ),
+    ],
+    unserved: "checkpoint-dir - s - - shards keeps a microVM's checkpoints with it, and restores from no other directory",
+    interspersed: true,
+    error_prefix: "",
+};
+
+/// `shards checkpoint ls` (docker/cli cli/command/checkpoint/list.go): `list snapshots`
+/// (D176).
+pub static CHECKPOINT_LS: Command = Command {
+    usage: "[OPTIONS] CONTAINER",
+    about: "List checkpoints for a container",
+    aliases: "shards checkpoint ls, shards checkpoint list",
+    args: Args::Exactly(1),
+    flags: &[HELP],
+    unserved: "checkpoint-dir - s - - shards keeps a microVM's checkpoints with it, and restores from no other directory",
+    interspersed: true,
+    error_prefix: "",
+};
+
+/// `shards checkpoint rm` (docker/cli cli/command/checkpoint/remove.go): `remove
+/// snapshot` (D176).
+pub static CHECKPOINT_RM: Command = Command {
+    usage: "[OPTIONS] CONTAINER CHECKPOINT",
+    about: "Remove a checkpoint",
+    aliases: "shards checkpoint rm, shards checkpoint remove",
+    args: Args::Exactly(2),
+    flags: &[HELP],
+    unserved: "checkpoint-dir - s - - shards keeps a microVM's checkpoints with it, and restores from no other directory",
+    interspersed: true,
+    error_prefix: "",
+};
+
+/// `shards restart` (docker/cli cli/command/container/restart.go).
+pub static RESTART: Command = Command {
+    usage: "[OPTIONS] CONTAINER [CONTAINER...]",
+    about: "Restart one or more containers",
+    aliases: "shards container restart, shards restart",
+    args: Args::AtLeast(1),
+    flags: &[
+        HELP,
+        Flag::string("signal", Some(b's'), "", "Signal to send to the container"),
+        Flag::int(
+            "time",
+            None,
+            "0",
+            "Seconds to wait before killing the container (deprecated: use --timeout)",
+        )
+        .sharing("timeout")
+        .deprecated("use --timeout instead"),
+        Flag::int(
+            "timeout",
+            Some(b't'),
+            "0",
+            "Seconds to wait before killing the container",
+        ),
+    ],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "",
 };
 
 /// A container that did not start, as dockerd takes it (moby daemon/errors.go,
@@ -184,6 +1064,17 @@ volumes-from - m - -",
 /// the exit code the container keeps: 126 when the command could not be invoked, 127
 /// when it was not found, 128 for anything else.
 pub fn start_failed(why: &str) -> (String, u8) {
+    // What dockerd refuses as it makes the spec, before the runtime: its code, untranslated.
+    const DAEMONS: [&str; 5] = [
+        "error gathering device information while adding custom device ",
+        "invalid device cgroup rule format: ",
+        "invalid major value in device cgroup rule format: ",
+        "invalid minor value in device cgroup rule format: ",
+        "CDI device injection failed: ",
+    ];
+    if DAEMONS.iter().any(|d| why.starts_with(d)) {
+        return (why.to_string(), 128);
+    }
     let lower = why.to_lowercase();
     if lower.contains("permission denied") {
         return (why.to_string(), 126);
@@ -245,6 +1136,18 @@ pub static PS: Command = Command {
             Some(b'a'),
             "Show all containers (default shows just running)",
         ),
+        Flag::many(
+            "filter",
+            Some(b'f'),
+            "filter",
+            "Filter output based on conditions provided",
+        ),
+        Flag::string(
+            "format",
+            None,
+            "",
+            "Format output using a custom template:\n'table':            Print output in table format with column headers (default)\n'table TEMPLATE':   Print output in table format using the given Go template\n'json':             Print in JSON format\n'TEMPLATE':         Print output using the given Go template.\nRefer to https://docs.docker.com/go/formatting/ for more information about formatting output with templates",
+        ),
         HELP,
         Flag::int(
             "last",
@@ -259,12 +1162,867 @@ pub static PS: Command = Command {
         ),
         Flag::bool("no-trunc", None, "Don't truncate output"),
         Flag::bool("quiet", Some(b'q'), "Only display container IDs"),
+        Flag::bool("size", Some(b's'), "Display total file sizes"),
+    ],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "",
+};
+
+/// `shards images`.
+pub static IMAGES: Command = Command {
+    usage: "[OPTIONS] [REPOSITORY[:TAG]]",
+    about: "List images",
+    aliases: "shards image ls, shards image list, shards images",
+    args: Args::AtMost(1),
+    flags: &[
+        Flag::bool(
+            "all",
+            Some(b'a'),
+            "Show all images (default hides intermediate and dangling images)",
+        ),
+        Flag::bool("digests", None, "Show digests"),
+        Flag::many(
+            "filter",
+            Some(b'f'),
+            "filter",
+            "Filter output based on conditions provided",
+        ),
+        Flag::string(
+            "format",
+            None,
+            "",
+            "Format output using a custom template:\n'table':            Print output in table format with column headers (default)\n'table TEMPLATE':   Print output in table format using the given Go template\n'json':             Print in JSON format\n'TEMPLATE':         Print output using the given Go template.\nRefer to https://docs.docker.com/go/formatting/ for more information about formatting output with templates",
+        ),
+        HELP,
+        Flag::bool("no-trunc", None, "Don't truncate output"),
+        Flag::bool("quiet", Some(b'q'), "Only show image IDs"),
+        Flag::bool(
+            "tree",
+            None,
+            "List multi-platform images as a tree (EXPERIMENTAL)",
+        ),
+    ],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "",
+};
+
+/// `shards rmi`.
+pub static RMI: Command = Command {
+    usage: "[OPTIONS] IMAGE [IMAGE...]",
+    about: "Remove one or more images",
+    aliases: "shards image rm, shards image remove, shards rmi",
+    args: Args::AtLeast(1),
+    flags: &[
+        Flag::bool("force", Some(b'f'), "Force removal of the image"),
+        HELP,
+        Flag::bool("no-prune", None, "Do not delete untagged parents"),
+        Flag::many(
+            "platform",
+            None,
+            "strings",
+            "Remove only the given platform variant. Formatted as \"os[/arch[/variant]]\" (e.g., \"linux/amd64\")",
+        ),
+        Flag::bool("vms", None, "Remove stopped microVMs").extension(),
+    ],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "",
+};
+
+/// `shards image inspect`.
+pub static IMAGE_INSPECT: Command = Command {
+    usage: "[OPTIONS] IMAGE [IMAGE...]",
+    about: "Display detailed information on one or more images",
+    aliases: "",
+    args: Args::AtLeast(1),
+    flags: &[
+        Flag::bool(
+            "convert",
+            None,
+            "Convert an image that is not a microVM yet, first",
+        )
+        .extension(),
+        Flag::string("format", Some(b'f'), "", INSPECT_FORMAT_HELP),
+        HELP,
+        Flag::string(
+            "platform",
+            None,
+            "",
+            "Inspect a specific platform of the multi-platform image.\nIf the image or the server is not multi-platform capable, the command will error out if the platform does not match.\n'os[/arch[/variant]]': Explicit platform (eg. linux/amd64)",
+        ),
+    ],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "",
+};
+
+/// `shards container inspect`, `shards inspect vm`: a microVM's document, Docker's
+/// container fields and its microVM's own.
+pub static CONTAINER_INSPECT: Command = Command {
+    usage: "[OPTIONS] CONTAINER [CONTAINER...]",
+    about: "Display detailed information on one or more containers",
+    aliases: "",
+    args: Args::AtLeast(1),
+    flags: &[
+        Flag::bool(
+            "convert",
+            None,
+            "Convert an image that is not a microVM yet, first",
+        )
+        .extension(),
+        Flag::string("format", Some(b'f'), "", INSPECT_FORMAT_HELP),
+        HELP,
+        Flag::bool("size", Some(b's'), "Display total file sizes"),
+    ],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "",
+};
+
+/// `shards history` (docker/cli cli/command/image/history.go): an image's layers and
+/// how each was made, newest first.
+pub static HISTORY: Command = Command {
+    usage: "[OPTIONS] IMAGE",
+    about: "Show the history of an image",
+    aliases: "shards image history, shards history",
+    args: Args::Exactly(1),
+    flags: &[
+        Flag::bool(
+            "convert",
+            None,
+            "Convert an image that is not a microVM yet, first",
+        )
+        .extension(),
+        Flag::string(
+            "format",
+            None,
+            "",
+            "Format output using a custom template:\n'table':            Print output in table format with column headers (default)\n'table TEMPLATE':   Print output in table format using the given Go template\n'json':             Print in JSON format\n'TEMPLATE':         Print output using the given Go template.\nRefer to https://docs.docker.com/go/formatting/ for more information about formatting output with templates",
+        ),
+        HELP,
+        Flag::bool(
+            "human",
+            Some(b'H'),
+            "Print sizes and dates in human readable format",
+        )
+        .defaulting("true"),
+        Flag::bool("no-trunc", None, "Don't truncate output"),
+        Flag::string(
+            "platform",
+            None,
+            "",
+            "Show history for the given platform. Formatted as \"os[/arch[/variant]]\" (e.g., \"linux/amd64\")",
+        ),
+        Flag::bool("quiet", Some(b'q'), "Only show image IDs"),
+    ],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "",
+};
+
+/// `shards rename` (docker/cli cli/command/container/rename.go).
+pub static RENAME: Command = Command {
+    usage: "CONTAINER NEW_NAME",
+    about: "Rename a container",
+    aliases: "shards container rename, shards rename",
+    args: Args::Exactly(2),
+    flags: &[HELP],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "",
+};
+
+/// `shards system df` (docker/cli cli/command/system/df.go): what the store and the
+/// microVMs take on disk.
+pub static SYSTEM_DF: Command = Command {
+    usage: "[OPTIONS]",
+    about: "Show docker disk usage",
+    aliases: "",
+    args: Args::None,
+    flags: &[
+        Flag::string(
+            "format",
+            None,
+            "",
+            "Format output using a custom template:\n'table':            Print output in table format with column headers (default)\n'table TEMPLATE':   Print output in table format using the given Go template\n'json':             Print in JSON format\n'TEMPLATE':         Print output using the given Go template.\nRefer to https://docs.docker.com/go/formatting/ for more information about formatting output with templates",
+        ),
+        HELP,
+        Flag::bool("verbose", Some(b'v'), "Show detailed information on space usage"),
+    ],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "",
+};
+
+/// `shards container prune` (docker/cli cli/command/container/prune.go).
+pub static CONTAINER_PRUNE: Command = Command {
+    usage: "[OPTIONS]",
+    about: "Remove all stopped containers",
+    aliases: "",
+    args: Args::None,
+    flags: &[
+        Flag::many(
+            "filter",
+            None,
+            "filter",
+            "Provide filter values (e.g. \"until=<timestamp>\")",
+        ),
+        Flag::bool("force", Some(b'f'), "Do not prompt for confirmation"),
+        HELP,
+    ],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "",
+};
+
+/// `shards image prune` (docker/cli cli/command/image/prune.go).
+pub static IMAGE_PRUNE: Command = Command {
+    usage: "[OPTIONS]",
+    about: "Remove unused images",
+    aliases: "",
+    args: Args::None,
+    flags: &[
+        Flag::bool(
+            "all",
+            Some(b'a'),
+            "Remove all unused images, not just dangling ones",
+        ),
+        Flag::many(
+            "filter",
+            None,
+            "filter",
+            "Provide filter values (e.g. \"until=<timestamp>\")",
+        ),
+        Flag::bool("force", Some(b'f'), "Do not prompt for confirmation"),
+        HELP,
+    ],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "",
+};
+
+/// `shards import` (docker/cli cli/command/image/import.go).
+pub static IMPORT: Command = Command {
+    usage: "[OPTIONS] file|URL|- [REPOSITORY[:TAG]]",
+    about: "Import the contents from a tarball to create a filesystem image",
+    aliases: "shards image import, shards import",
+    args: Args::AtLeast(1),
+    flags: &[
+        Flag::many(
+            "change",
+            Some(b'c'),
+            "list",
+            "Apply Dockerfile instruction to the created image",
+        ),
+        HELP,
+        Flag::string("message", Some(b'm'), "", "Set commit message for imported image"),
+        Flag::string(
+            "platform",
+            None,
+            "",
+            "Set platform if server is multi-platform capable",
+        ),
+    ],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "",
+};
+
+/// `shards update` (docker/cli cli/command/container/update.go): a running microVM's
+/// limits change as it runs.
+pub static UPDATE: Command = Command {
+    usage: "[OPTIONS] CONTAINER [CONTAINER...]",
+    about: "Update configuration of one or more containers",
+    aliases: "shards container update, shards update",
+    args: Args::AtLeast(1),
+    flags: &[
+        Flag::value(
+            "blkio-weight",
+            None,
+            "uint16",
+            "Block IO (relative weight), between 10 and 1000, or 0 to disable (default 0)",
+        ),
+        Flag::int(
+            "cpu-period",
+            None,
+            "0",
+            "Limit CPU CFS (Completely Fair Scheduler) period",
+        ),
+        Flag::int(
+            "cpu-quota",
+            None,
+            "0",
+            "Limit CPU CFS (Completely Fair Scheduler) quota",
+        ),
+        Flag::int("cpu-shares", Some(b'c'), "0", "CPU shares (relative weight)"),
+        Flag::value("cpus", None, "decimal", "Number of CPUs"),
+        Flag::string(
+            "cpuset-cpus",
+            None,
+            "",
+            "CPUs in which to allow execution (0-3, 0,1)",
+        ),
+        Flag::string(
+            "cpuset-mems",
+            None,
+            "",
+            "MEMs in which to allow execution (0-3, 0,1)",
+        ),
+        HELP,
+        // Kernels no longer have the limit; the flag only says so.
+        Flag::value("kernel-memory", None, "bytes", "Kernel memory limit (deprecated)")
+            .deprecated("and no longer supported by the kernel"),
+        Flag::value("memory", Some(b'm'), "bytes", "Memory limit"),
+        Flag::value("memory-reservation", None, "bytes", "Memory soft limit"),
+        Flag::value(
+            "memory-swap",
+            None,
+            "bytes",
+            "Swap limit equal to memory plus swap: -1 to enable unlimited swap",
+        ),
+        Flag::int(
+            "pids-limit",
+            None,
+            "0",
+            "Tune container pids limit (set -1 for unlimited)",
+        ),
+        Flag::string(
+            "restart",
+            None,
+            "",
+            "Restart policy to apply when a container exits",
+        ),
     ],
     unserved: "\
-filter f m - -\n\
-format - s - -\n\
-size s b false -",
+cpu-rt-period - i 0 -
+cpu-rt-runtime - i 0 -",
     interspersed: true,
+    error_prefix: "",
+};
+
+/// `shards volume create` (docker/cli cli/command/volume/create.go): its cluster volume
+/// flags are swarm's, which shards does not serve.
+pub static VOLUME_CREATE: Command = Command {
+    usage: "[OPTIONS] [VOLUME]",
+    about: "Create a volume",
+    aliases: "",
+    args: Args::AtMost(1),
+    flags: &[
+        Flag::string("driver", Some(b'd'), "local", "Specify volume driver name"),
+        HELP,
+        Flag::many("label", None, "list", "Set metadata for a volume"),
+        Flag::string("name", None, "", "Specify volume name").hidden(),
+        Flag::many("opt", Some(b'o'), "map", "Set driver specific options").defaulting("map[]"),
+    ],
+    unserved: "\
+availability - s active -
+group - s - -
+limit-bytes - s 0 -
+required-bytes - s 0 -
+scope - s single -
+secret - m - -
+sharing - s none -
+topology-preferred - m - -
+topology-required - m - -
+type - s block -",
+    interspersed: true,
+    error_prefix: "",
+};
+
+/// `shards network create` (docker/cli cli/command/network/create.go).
+pub static NETWORK_CREATE: Command = Command {
+    usage: "[OPTIONS] NETWORK",
+    about: "Create a network",
+    aliases: "",
+    args: Args::Exactly(1),
+    flags: &[
+        Flag::bool("attachable", None, "Enable manual container attachment"),
+        Flag::many(
+            "aux-address",
+            None,
+            "map",
+            "Auxiliary IPv4 or IPv6 addresses used by Network driver",
+        )
+        .defaulting("map[]"),
+        Flag::string(
+            "config-from",
+            None,
+            "",
+            "The network from which to copy the configuration",
+        ),
+        Flag::bool("config-only", None, "Create a configuration only network"),
+        Flag::string("driver", Some(b'd'), "bridge", "Driver to manage the Network"),
+        Flag::many(
+            "gateway",
+            None,
+            "ipSlice",
+            "IPv4 or IPv6 Gateway for the master subnet",
+        )
+        .defaulting("[]"),
+        HELP,
+        Flag::bool("ingress", None, "Create swarm routing-mesh network"),
+        Flag::bool("internal", None, "Restrict external access to the network"),
+        Flag::many(
+            "ip-range",
+            None,
+            "ipNetSlice",
+            "Allocate container ip from a sub-range",
+        )
+        .defaulting("[]"),
+        Flag::string("ipam-driver", None, "default", "IP Address Management Driver"),
+        Flag::many("ipam-opt", None, "map", "Set IPAM driver specific options").defaulting("map[]"),
+        Flag::bool("ipv4", None, "Enable or disable IPv4 address assignment").defaulting("true"),
+        Flag::bool("ipv6", None, "Enable or disable IPv6 address assignment"),
+        Flag::many("label", None, "list", "Set metadata on a network"),
+        Flag::many("opt", Some(b'o'), "map", "Set driver specific options").defaulting("map[]"),
+        Flag::string("scope", None, "", "Control the network's scope"),
+        Flag::many(
+            "subnet",
+            None,
+            "strings",
+            "Subnet in CIDR format that represents a network segment",
+        ),
+    ],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "",
+};
+
+/// `shards network connect` (docker/cli cli/command/network/connect.go).
+pub static NETWORK_CONNECT: Command = Command {
+    usage: "[OPTIONS] NETWORK CONTAINER",
+    about: "Connect a container to a network",
+    aliases: "",
+    args: Args::Exactly(2),
+    flags: &[
+        Flag::many(
+            "alias",
+            None,
+            "strings",
+            "Add network-scoped alias for the container",
+        ),
+        Flag::many("driver-opt", None, "strings", "driver options for the network"),
+        Flag::int(
+            "gw-priority",
+            None,
+            "0",
+            "Highest gw-priority provides the default gateway. Accepts positive and negative values.",
+        ),
+        HELP,
+        Flag::value("ip", None, "ip", "IPv4 address (e.g., \"172.30.100.104\")"),
+        Flag::value("ip6", None, "ip", "IPv6 address (e.g., \"2001:db8::33\")"),
+        Flag::many("link", None, "list", "Add link to another container"),
+        Flag::many(
+            "link-local-ip",
+            None,
+            "ipSlice",
+            "Add a link-local address for the container",
+        )
+        .defaulting("[]"),
+    ],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "",
+};
+
+/// `shards network disconnect` (docker/cli cli/command/network/disconnect.go).
+pub static NETWORK_DISCONNECT: Command = Command {
+    usage: "[OPTIONS] NETWORK CONTAINER",
+    about: "Disconnect a container from a network",
+    aliases: "",
+    args: Args::Exactly(2),
+    flags: &[
+        Flag::bool(
+            "force",
+            Some(b'f'),
+            "Force the container to disconnect from a network",
+        ),
+        HELP,
+    ],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "",
+};
+
+/// `shards network inspect` (docker/cli cli/command/network/inspect.go).
+pub static NETWORK_INSPECT: Command = Command {
+    usage: "[OPTIONS] NETWORK [NETWORK...]",
+    about: "Display detailed information on one or more networks",
+    aliases: "",
+    args: Args::AtLeast(1),
+    flags: &[
+        Flag::string("format", Some(b'f'), "", INSPECT_FORMAT_HELP),
+        HELP,
+        Flag::bool("verbose", Some(b'v'), "Verbose output for diagnostics"),
+    ],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "",
+};
+
+/// `shards network ls` (docker/cli cli/command/network/list.go).
+pub static NETWORK_LS: Command = Command {
+    usage: "[OPTIONS]",
+    about: "List networks",
+    aliases: "shards network ls, shards network list",
+    args: Args::None,
+    flags: &[
+        Flag::many(
+            "filter",
+            Some(b'f'),
+            "filter",
+            "Provide filter values (e.g. \"driver=bridge\")",
+        ),
+        Flag::string(
+            "format",
+            None,
+            "",
+            "Format output using a custom template:\n'table':            Print output in table format with column headers (default)\n'table TEMPLATE':   Print output in table format using the given Go template\n'json':             Print in JSON format\n'TEMPLATE':         Print output using the given Go template.\nRefer to https://docs.docker.com/go/formatting/ for more information about formatting output with templates",
+        ),
+        HELP,
+        Flag::bool("no-trunc", None, "Do not truncate the output"),
+        Flag::bool("quiet", Some(b'q'), "Only display network IDs"),
+    ],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "",
+};
+
+/// `shards network prune` (docker/cli cli/command/network/prune.go).
+pub static NETWORK_PRUNE: Command = Command {
+    usage: "[OPTIONS]",
+    about: "Remove all unused networks",
+    aliases: "",
+    args: Args::None,
+    flags: &[
+        Flag::many(
+            "filter",
+            None,
+            "filter",
+            "Provide filter values (e.g. \"until=<timestamp>\")",
+        ),
+        Flag::bool("force", Some(b'f'), "Do not prompt for confirmation"),
+        HELP,
+    ],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "",
+};
+
+/// `shards network rm` (docker/cli cli/command/network/remove.go).
+pub static NETWORK_RM: Command = Command {
+    usage: "NETWORK [NETWORK...]",
+    about: "Remove one or more networks",
+    aliases: "shards network rm, shards network remove",
+    args: Args::AtLeast(1),
+    flags: &[
+        Flag::bool("force", Some(b'f'), "Do not error if the network does not exist"),
+        HELP,
+    ],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "",
+};
+
+/// `shards volume ls` (docker/cli cli/command/volume/list.go).
+pub static VOLUME_LS: Command = Command {
+    usage: "[OPTIONS]",
+    about: "List volumes",
+    aliases: "shards volume ls, shards volume list",
+    args: Args::None,
+    flags: &[
+        Flag::many(
+            "filter",
+            Some(b'f'),
+            "filter",
+            "Provide filter values (e.g. \"dangling=true\")",
+        ),
+        Flag::string(
+            "format",
+            None,
+            "",
+            "Format output using a custom template:\n'table':            Print output in table format with column headers (default)\n'table TEMPLATE':   Print output in table format using the given Go template\n'json':             Print in JSON format\n'TEMPLATE':         Print output using the given Go template.\nRefer to https://docs.docker.com/go/formatting/ for more information about formatting output with templates",
+        ),
+        HELP,
+        Flag::bool("quiet", Some(b'q'), "Only display volume names"),
+    ],
+    unserved: "\
+cluster - b false -",
+    interspersed: true,
+    error_prefix: "",
+};
+
+/// `shards volume inspect` (docker/cli cli/command/volume/inspect.go).
+pub static VOLUME_INSPECT: Command = Command {
+    usage: "[OPTIONS] VOLUME [VOLUME...]",
+    about: "Display detailed information on one or more volumes",
+    aliases: "",
+    args: Args::AtLeast(1),
+    flags: &[Flag::string("format", Some(b'f'), "", INSPECT_FORMAT_HELP), HELP],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "",
+};
+
+/// `shards volume rm` (docker/cli cli/command/volume/remove.go).
+pub static VOLUME_RM: Command = Command {
+    usage: "[OPTIONS] VOLUME [VOLUME...]",
+    about: "Remove one or more volumes. You cannot remove a volume that is in use by a container.",
+    aliases: "shards volume rm, shards volume remove",
+    args: Args::AtLeast(1),
+    flags: &[
+        Flag::bool("force", Some(b'f'), "Force the removal of one or more volumes"),
+        HELP,
+    ],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "",
+};
+
+/// `shards volume prune` (docker/cli cli/command/volume/prune.go).
+pub static VOLUME_PRUNE: Command = Command {
+    usage: "[OPTIONS]",
+    about: "Remove unused local volumes",
+    aliases: "",
+    args: Args::None,
+    flags: &[
+        Flag::bool(
+            "all",
+            Some(b'a'),
+            "Remove all unused volumes, not just anonymous ones",
+        ),
+        Flag::many(
+            "filter",
+            None,
+            "filter",
+            "Provide filter values (e.g. \"label=<label>\")",
+        ),
+        Flag::bool("force", Some(b'f'), "Do not prompt for confirmation"),
+        HELP,
+    ],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "",
+};
+
+/// `shards system prune` (docker/cli cli/command/system/prune.go).
+pub static SYSTEM_PRUNE: Command = Command {
+    usage: "[OPTIONS]",
+    about: "Remove unused data",
+    aliases: "",
+    args: Args::None,
+    flags: &[
+        Flag::bool(
+            "all",
+            Some(b'a'),
+            "Remove all unused images not just dangling ones",
+        ),
+        Flag::many(
+            "filter",
+            None,
+            "filter",
+            "Provide filter values (e.g. \"label=<key>=<value>\")",
+        ),
+        Flag::bool("force", Some(b'f'), "Do not prompt for confirmation"),
+        HELP,
+        Flag::bool("volumes", None, "Prune anonymous volumes"),
+    ],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "",
+};
+
+/// `shards stats` (docker/cli cli/command/container/stats.go).
+pub static STATS: Command = Command {
+    usage: "[OPTIONS] [CONTAINER...]",
+    about: "Display a live stream of container(s) resource usage statistics",
+    aliases: "shards container stats, shards stats",
+    args: Args::Any,
+    flags: &[
+        Flag::bool(
+            "all",
+            Some(b'a'),
+            "Show all containers (default shows just running)",
+        ),
+        Flag::string(
+            "format",
+            None,
+            "",
+            "Format output using a custom template:\n'table':            Print output in table format with column headers (default)\n'table TEMPLATE':   Print output in table format using the given Go template\n'json':             Print in JSON format\n'TEMPLATE':         Print output using the given Go template.\nRefer to https://docs.docker.com/go/formatting/ for more information about formatting output with templates",
+        ),
+        HELP,
+        Flag::bool(
+            "no-stream",
+            None,
+            "Disable streaming stats and only pull the first result",
+        ),
+        Flag::bool("no-trunc", None, "Do not truncate output"),
+    ],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "",
+};
+
+/// `shards save`.
+pub static SAVE: Command = Command {
+    usage: "[OPTIONS] IMAGE [IMAGE...]",
+    about: "Save one or more images to a tar archive (streamed to STDOUT by default)",
+    aliases: "shards image save, shards save",
+    args: Args::AtLeast(1),
+    flags: &[
+        Flag::bool(
+            "convert",
+            None,
+            "Convert an image that is not a microVM yet, first",
+        )
+        .extension(),
+        HELP,
+        Flag::string("output", Some(b'o'), "", "Write to a file, instead of STDOUT"),
+        Flag::many(
+            "platform",
+            None,
+            "strings",
+            "Save only the given platform(s). Formatted as a comma-separated list of \"os[/arch[/variant]]\" (e.g., \"linux/amd64,linux/arm64/v8\")",
+        ),
+    ],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "",
+};
+
+/// `shards load`.
+pub static LOAD: Command = Command {
+    usage: "[OPTIONS]",
+    about: "Load an image from a tar archive or STDIN",
+    aliases: "shards image load, shards load",
+    args: Args::None,
+    flags: &[
+        HELP,
+        Flag::string(
+            "input",
+            Some(b'i'),
+            "",
+            "Read from tar archive file, instead of STDIN",
+        ),
+        Flag::many(
+            "platform",
+            None,
+            "strings",
+            "Load only the given platform(s). Formatted as a comma-separated list of \"os[/arch[/variant]]\" (e.g., \"linux/amd64,linux/arm64/v8\").",
+        ),
+        Flag::bool("quiet", Some(b'q'), "Suppress the load output"),
+    ],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "",
+};
+
+/// `shards pull`. Beyond docker/cli's flags, `--output-agentfile` writes the image's
+/// Agentfile (docs/architecture/AGENTFILE_ARCH.md §10).
+pub static PULL: Command = Command {
+    usage: "[OPTIONS] NAME[:TAG|@DIGEST]",
+    about: "Download an image from a registry",
+    aliases: "shards image pull, shards pull",
+    args: Args::Exactly(1),
+    flags: &[
+        Flag::bool(
+            "all-tags",
+            Some(b'a'),
+            "Download all tagged images in the repository",
+        ),
+        Flag::bool(
+            "disable-content-trust",
+            None,
+            "Skip image verification (deprecated)",
+        )
+        .defaulting("true")
+        .deprecated("support for docker content trust was removed"),
+        HELP,
+        Flag::bool(
+            "no-cache",
+            None,
+            "Fetch every layer again, though stored, and build its microVM again",
+        )
+        .extension(),
+        Flag::string(
+            "output-agentfile",
+            None,
+            "",
+            "Write the image's Agentfile to this file, or into this directory",
+        )
+        .extension(),
+        Flag::string(
+            "platform",
+            None,
+            "",
+            "Set platform if server is multi-platform capable",
+        ),
+        Flag::bool("quiet", Some(b'q'), "Suppress verbose output"),
+    ],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "",
+};
+
+/// `shards push`.
+pub static PUSH: Command = Command {
+    usage: "[OPTIONS] NAME[:TAG]",
+    about: "Upload an image to a registry",
+    aliases: "shards image push, shards push",
+    args: Args::Exactly(1),
+    flags: &[
+        Flag::bool(
+            "convert",
+            None,
+            "Convert an image that is not a microVM yet, first",
+        )
+        .extension(),
+        Flag::bool(
+            "all-tags",
+            Some(b'a'),
+            "Push all tags of an image to the repository",
+        ),
+        Flag::bool(
+            "disable-content-trust",
+            None,
+            "Skip image verification (deprecated)",
+        )
+        .defaulting("true")
+        .deprecated("support for docker content trust was removed"),
+        HELP,
+        Flag::string(
+            "platform",
+            None,
+            "",
+            "Push a platform-specific manifest as a single-platform image to the registry.\nImage index won't be pushed, meaning that other manifests, including attestations won't be preserved.\n'os[/arch[/variant]]': Explicit platform (eg. linux/amd64)",
+        ),
+        Flag::bool("quiet", Some(b'q'), "Suppress verbose output"),
+    ],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "",
+};
+
+/// `shards tag`.
+pub static TAG: Command = Command {
+    usage: "SOURCE_IMAGE[:TAG] TARGET_IMAGE[:TAG]",
+    about: "Create a tag TARGET_IMAGE that refers to SOURCE_IMAGE",
+    aliases: "shards image tag, shards tag",
+    args: Args::Exactly(2),
+    flags: &[
+        Flag::bool(
+            "convert",
+            None,
+            "Convert an image that is not a microVM yet, first",
+        )
+        .extension(),
+        HELP,
+    ],
+    unserved: "",
+    interspersed: false,
+    error_prefix: "",
 };
 
 /// `shards wait`.
@@ -276,6 +2034,331 @@ pub static WAIT: Command = Command {
     flags: &[HELP],
     unserved: "",
     interspersed: true,
+    error_prefix: "",
+};
+
+/// `shards pause` (docker/cli cli/command/container/pause.go).
+pub static PAUSE: Command = Command {
+    usage: "CONTAINER [CONTAINER...]",
+    about: "Pause all processes within one or more containers",
+    aliases: "shards container pause, shards pause",
+    args: Args::AtLeast(1),
+    flags: &[HELP],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "",
+};
+
+/// `shards unpause` (docker/cli cli/command/container/unpause.go).
+pub static UNPAUSE: Command = Command {
+    usage: "CONTAINER [CONTAINER...]",
+    about: "Unpause all processes within one or more containers",
+    aliases: "shards container unpause, shards unpause",
+    args: Args::AtLeast(1),
+    flags: &[HELP],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "",
+};
+
+/// `shards top` (docker/cli cli/command/container/top.go): ps's options follow the
+/// microVM, as they are.
+pub static TOP: Command = Command {
+    usage: "CONTAINER [ps OPTIONS]",
+    about: "Display the running processes of a container",
+    aliases: "shards container top, shards top",
+    args: Args::AtLeast(1),
+    flags: &[HELP],
+    unserved: "",
+    interspersed: false,
+    error_prefix: "",
+};
+
+/// `shards diff` (docker/cli cli/command/container/diff.go).
+pub static DIFF: Command = Command {
+    usage: "CONTAINER",
+    about: "Inspect changes to files or directories on a container's filesystem",
+    aliases: "shards container diff, shards diff",
+    args: Args::Exactly(1),
+    flags: &[HELP],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "",
+};
+
+/// `shards events` (docker/cli cli/command/system/events.go).
+pub static EVENTS: Command = Command {
+    usage: "[OPTIONS]",
+    about: "Get real time events from the server",
+    aliases: "shards system events, shards events",
+    args: Args::None,
+    flags: &[
+        Flag::many(
+            "filter",
+            Some(b'f'),
+            "filter",
+            "Filter output based on conditions provided",
+        ),
+        Flag::string(
+            "format",
+            None,
+            "",
+            "Format output using a custom template:\n'json':             Print in JSON format\n'TEMPLATE':         Print output using the given Go template.\nRefer to https://docs.docker.com/go/formatting/ for more information about formatting output with templates",
+        ),
+        HELP,
+        Flag::string("since", None, "", "Show all events created since timestamp"),
+        Flag::string("until", None, "", "Stream events until this timestamp"),
+    ],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "",
+};
+
+/// `shards info` (docker/cli cli/command/system/info.go).
+pub static INFO: Command = Command {
+    usage: "[OPTIONS]",
+    about: "Display system-wide information",
+    aliases: "shards system info, shards info",
+    args: Args::None,
+    flags: &[Flag::string("format", Some(b'f'), "", INSPECT_FORMAT_HELP), HELP],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "",
+};
+
+/// `shards export` (docker/cli cli/command/container/export.go).
+pub static EXPORT: Command = Command {
+    usage: "[OPTIONS] CONTAINER",
+    about: "Export a container's filesystem as a tar archive",
+    aliases: "shards container export, shards export",
+    args: Args::Exactly(1),
+    flags: &[
+        HELP,
+        Flag::string("output", Some(b'o'), "", "Write to a file, instead of STDOUT"),
+    ],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "",
+};
+
+/// `shards port`.
+pub static PORT: Command = Command {
+    usage: "CONTAINER [PRIVATE_PORT[/PROTO]]",
+    about: "List port mappings or a specific mapping for the container",
+    aliases: "shards container port, shards port",
+    args: Args::Range(1, 2),
+    flags: &[HELP],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "",
+};
+
+/// `shards read ports` (D122): which member of a microVM each published port reaches.
+pub static READ_PORTS: Command = Command {
+    usage: "MICROVM",
+    about: "Show which agent, harness or command each published port of a microVM reaches",
+    aliases: "shards read ports",
+    args: Args::Exactly(1),
+    flags: &[HELP],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "",
+};
+
+/// `shards read processes` (D123): the processes a microVM's members started and ended.
+pub static READ_PROCESSES: Command = Command {
+    usage: "MICROVM",
+    about: "Show the processes a microVM's command, agents and harnesses started and ended",
+    aliases: "shards read processes",
+    args: Args::Exactly(1),
+    flags: &[HELP],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "",
+};
+
+/// `shards save vm` (D176): a running microVM saved whole, as a snapshot of it to restore.
+pub static SAVE_VM: Command = Command {
+    usage: "[OPTIONS] MICROVM [SNAPSHOT]",
+    about: "Save a running microVM whole, its memory, processes and devices as they are, to restore later",
+    aliases: "shards save vm",
+    args: Args::Range(1, 2),
+    flags: &[
+        HELP,
+        Flag::bool(
+            "leave-running",
+            None,
+            "Leave the microVM running once it is saved, rather than stopping it",
+        ),
+    ],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "",
+};
+
+/// `shards move vm` (D176 part 6): a microVM saved whole, moved to the machine a context
+/// reaches (D180), and resumed there, where it was saved.
+pub static MOVE_VM: Command = Command {
+    usage: "MICROVM CONTEXT",
+    about: "Move a microVM to the machine a context reaches: saved whole here, and resumed there where it was",
+    aliases: "shards move vm",
+    args: Args::Exactly(2),
+    flags: &[
+        HELP,
+        Flag::bool(
+            "live",
+            None,
+            "Move it as it runs: its memory copied while it runs on, and it held only for what it wrote last",
+        ),
+    ],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "",
+};
+
+/// `shards restore vm` (D176): a stopped microVM resumed from a snapshot of its own, where
+/// it was saved. `shards restore DIR`, a directory holding a snapshot, is the VM process's
+/// (`shards run vm --kernel`'s, D25).
+pub static RESTORE_VM: Command = Command {
+    usage: "MICROVM [SNAPSHOT]",
+    about: "Resume a stopped microVM from a snapshot of its own, its newest unless named",
+    aliases: "shards restore vm",
+    args: Args::Range(1, 2),
+    flags: &[HELP],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "",
+};
+
+/// `shards list snapshots` (D176): a microVM's snapshots.
+pub static SNAPSHOT_LS: Command = Command {
+    usage: "MICROVM",
+    about: "List a microVM's snapshots, newest first",
+    aliases: "shards list snapshots",
+    args: Args::Exactly(1),
+    flags: &[HELP],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "",
+};
+
+/// `shards plug disk` (D214): a disk plugged into a running microVM, its file system
+/// mounted at PATH in it.
+pub static PLUG_DISK: Command = Command {
+    usage: "[OPTIONS] MICROVM FILE:PATH[:ro]",
+    about: "Plug a disk into a running microVM, its file system mounted at PATH",
+    aliases: "shards plug disk",
+    args: Args::Exactly(2),
+    flags: &[
+        HELP,
+        Flag::string(
+            "size",
+            None,
+            "",
+            "Make FILE an empty ext4 file system of this size where it is not there (as 4g)",
+        ),
+    ],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "",
+};
+
+/// `shards plug volume` (D214): a host directory or a named volume plugged into a running
+/// microVM, mounted at PATH in it.
+pub static PLUG_VOLUME: Command = Command {
+    usage: "MICROVM SOURCE:PATH[:ro]",
+    about: "Plug a host directory or a volume into a running microVM, mounted at PATH",
+    aliases: "shards plug volume",
+    args: Args::Exactly(2),
+    flags: &[HELP],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "",
+};
+
+/// `shards plug function` (D214): a host's PCI function plugged into a running microVM,
+/// behind its IOMMU, for its workload to take through VFIO (Linux).
+pub static PLUG_FUNCTION: Command = Command {
+    usage: "MICROVM FUNCTION",
+    about: "Plug a host's PCI function, bound to vfio-pci, into a running microVM, for its workload to take through VFIO",
+    aliases: "shards plug function",
+    args: Args::Exactly(2),
+    flags: &[HELP],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "",
+};
+
+/// `shards unplug function` (D214).
+pub static UNPLUG_FUNCTION: Command = Command {
+    usage: "MICROVM FUNCTION",
+    about: "Unplug a host's PCI function from a running microVM, refused while its workload holds it open",
+    aliases: "shards unplug function",
+    args: Args::Exactly(2),
+    flags: &[HELP],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "",
+};
+
+/// `shards unplug disk` (D214).
+pub static UNPLUG_DISK: Command = Command {
+    usage: "MICROVM PATH",
+    about: "Unmount the disk plugged into a running microVM at PATH, and unplug it",
+    aliases: "shards unplug disk",
+    args: Args::Exactly(2),
+    flags: &[HELP],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "",
+};
+
+/// `shards unplug volume` (D214).
+pub static UNPLUG_VOLUME: Command = Command {
+    usage: "MICROVM PATH",
+    about: "Unmount the volume plugged into a running microVM at PATH, and unplug it",
+    aliases: "shards unplug volume",
+    args: Args::Exactly(2),
+    flags: &[HELP],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "",
+};
+
+/// `shards grow disk` (D214): a plugged disk grown online, its file system with it.
+pub static GROW_DISK: Command = Command {
+    usage: "MICROVM PATH SIZE",
+    about: "Grow the disk plugged into a running microVM at PATH, and its ext4 file system, as it runs",
+    aliases: "shards grow disk",
+    args: Args::Exactly(3),
+    flags: &[HELP],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "",
+};
+
+/// `shards remove snapshot` (D176): snapshots of a microVM, removed.
+pub static SNAPSHOT_RM: Command = Command {
+    usage: "MICROVM SNAPSHOT [SNAPSHOT...]",
+    about: "Remove snapshots of a microVM",
+    aliases: "shards remove snapshot",
+    args: Args::AtLeast(2),
+    flags: &[HELP],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "",
+};
+
+/// `shards watch processes` (D123): [`READ_PROCESSES`], then each as it comes.
+pub static WATCH_PROCESSES: Command = Command {
+    usage: "MICROVM",
+    about: "Follow the processes a microVM's command, agents and harnesses start and end",
+    aliases: "shards watch processes",
+    args: Args::Exactly(1),
+    flags: &[HELP],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "",
 };
 
 /// `shards logs`.
@@ -312,6 +2395,7 @@ pub static LOGS: Command = Command {
     ],
     unserved: "",
     interspersed: true,
+    error_prefix: "",
 };
 
 /// `shards rm`, and `shards container rm`.
@@ -327,7 +2411,6 @@ pub static RM: Command = Command {
             "Force the removal of a running container (uses SIGKILL)",
         ),
         HELP,
-        // A container has no anonymous volumes in shards: there is nothing more to remove.
         Flag::bool(
             "volumes",
             Some(b'v'),
@@ -337,6 +2420,7 @@ pub static RM: Command = Command {
     unserved: "\
 link l b false -",
     interspersed: true,
+    error_prefix: "",
 };
 
 /// `shards stop`.
@@ -365,6 +2449,76 @@ pub static STOP: Command = Command {
     ],
     unserved: "",
     interspersed: true,
+    error_prefix: "",
+};
+
+/// `shards exec`, and `shards container exec`.
+pub static EXEC: Command = Command {
+    usage: "[OPTIONS] CONTAINER COMMAND [ARG...]",
+    about: "Execute a command in a running container",
+    aliases: "shards container exec, shards exec",
+    args: Args::AtLeast(2),
+    flags: &[
+        Flag::bool(
+            "detach",
+            Some(b'd'),
+            "Detached mode: run command in the background",
+        ),
+        Flag::string(
+            "detach-keys",
+            None,
+            "",
+            "Override the key sequence for detaching a container",
+        ),
+        Flag::many("env", Some(b'e'), "list", "Set environment variables"),
+        Flag::many(
+            "env-file",
+            None,
+            "list",
+            "Read in a file of environment variables",
+        ),
+        HELP,
+        Flag::bool("interactive", Some(b'i'), "Keep STDIN open even if not attached"),
+        Flag::bool("privileged", None, "Give extended privileges to the command"),
+        Flag::bool("tty", Some(b't'), "Allocate a pseudo-TTY"),
+        Flag::string(
+            "user",
+            Some(b'u'),
+            "",
+            "Username or UID (format: \"<name|uid>[:<group|gid>]\")",
+        ),
+        Flag::string(
+            "workdir",
+            Some(b'w'),
+            "",
+            "Working directory inside the container",
+        ),
+    ],
+    unserved: "",
+    interspersed: false,
+    error_prefix: "",
+};
+
+/// `shards attach`.
+pub static ATTACH: Command = Command {
+    usage: "[OPTIONS] CONTAINER",
+    about: "Attach local standard input, output, and error streams to a running container",
+    aliases: "shards container attach, shards attach",
+    args: Args::Exactly(1),
+    flags: &[
+        Flag::string(
+            "detach-keys",
+            None,
+            "",
+            "Override the key sequence for detaching a container",
+        ),
+        HELP,
+        Flag::bool("no-stdin", None, "Do not attach STDIN"),
+        Flag::bool("sig-proxy", None, "Proxy all received signals to the process").defaulting("true"),
+    ],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "",
 };
 
 /// `shards kill`.
@@ -379,6 +2533,452 @@ pub static KILL: Command = Command {
     ],
     unserved: "",
     interspersed: true,
+    error_prefix: "",
+};
+
+/// `shards build`: buildx v0.37.1's `build` (commands/build.go), which `docker build` runs
+/// as the CLI's plugin. Its words name `shards buildx build`, as buildx's name `docker
+/// buildx build`. The flags its root adds (`--builder`, `--debug`) are its too.
+pub static BUILD: Command = Command {
+    usage: "[OPTIONS] PATH | URL | -",
+    about: "Start a build",
+    aliases: "shards build, shards builder build, shards image build, shards buildx b",
+    args: Args::Exactly(1),
+    flags: &[
+        Flag::many(
+            "allow",
+            None,
+            "stringArray",
+            "Allow extra privileged entitlement (e.g., \"network.host\", \"security.insecure\", \"device\", \"buildx.local.delete\")",
+        ),
+        Flag::many("build-arg", None, "stringArray", "Set build-time variables"),
+        Flag::string(
+            "file",
+            Some(b'f'),
+            "",
+            "Name of the Dockerfile (default: \"PATH/Dockerfile\")",
+        ),
+        HELP,
+        Flag::string("iidfile", None, "", "Write the image ID to a file"),
+        Flag::many("label", None, "stringArray", "Set metadata for an image"),
+        Flag::bool("load", None, "Shorthand for \"--output=type=docker\""),
+        Flag::string("metadata-file", None, "", "Write build result metadata to a file"),
+        Flag::bool("no-cache", None, "Do not use cache when building the image"),
+        Flag::many(
+            "cache-from",
+            None,
+            "stringArray",
+            "External cache sources (e.g., \"user/app:cache\", \"type=local,src=path/to/dir\")",
+        ),
+        Flag::many(
+            "cache-to",
+            None,
+            "stringArray",
+            "Cache export destinations (e.g., \"user/app:cache\", \"type=local,dest=path/to/dir\")",
+        ),
+        Flag::many(
+            "no-cache-filter",
+            None,
+            "stringArray",
+            "Do not cache specified stages",
+        ),
+        Flag::many(
+            "add-host",
+            None,
+            "strings",
+            "Add a custom host-to-IP mapping (format: \"host:ip\")",
+        ),
+        Flag::string(
+            "cgroup-parent",
+            None,
+            "",
+            "Set the parent cgroup for the \"RUN\" instructions during build",
+        ),
+        Flag::string(
+            "network",
+            None,
+            "default",
+            "Set the networking mode for the \"RUN\" instructions during build",
+        ),
+        Flag::many(
+            "resource",
+            None,
+            "stringArray",
+            "Resource limits for build containers (format: \"memory=2g\", \"cpu-quota=50000\")",
+        ),
+        Flag::value(
+            "shm-size",
+            None,
+            "bytes",
+            "Shared memory size for build containers",
+        ),
+        Flag::many("annotation", None, "stringArray", "Add annotation to the image"),
+        Flag::many(
+            "attest",
+            None,
+            "stringArray",
+            "Attestation parameters (format: \"type=sbom,generator=image\")",
+        ),
+        Flag::string(
+            "provenance",
+            None,
+            "",
+            "Shorthand for \"--attest=type=provenance\"",
+        ),
+        Flag::string("sbom", None, "", "Shorthand for \"--attest=type=sbom\""),
+        Flag::string(
+            "call",
+            None,
+            "build",
+            "Set method for evaluating build (\"check\", \"outline\", \"targets\")",
+        ),
+        Flag::bool("check", None, "Shorthand for \"--call=check\"").unshown(),
+        Flag::string(
+            "print",
+            None,
+            "",
+            "Print result of information request (e.g., outline, targets)",
+        )
+        .hidden(),
+        // buildx's root flags.
+        Flag::string("builder", None, "", "Override the configured builder instance"),
+        Flag::bool("debug", Some(b'D'), "Enable debug logging"),
+        // Hidden, as buildx v0.37.1 hides them: the legacy resource flags, which --resource supersedes, and
+        // the classic builder's, which BuildKit ignores, some with a warning.
+        Flag::string("memory", Some(b'm'), "", "Memory limit").hidden(),
+        Flag::string(
+            "memory-swap",
+            None,
+            "",
+            "Swap limit equal to memory plus swap: \"-1\" to enable unlimited swap",
+        )
+        .hidden(),
+        Flag::string("cpu-shares", Some(b'c'), "", "CPU shares (relative weight)").hidden(),
+        Flag::string(
+            "cpu-period",
+            None,
+            "",
+            "Limit the CPU CFS (Completely Fair Scheduler) period",
+        )
+        .hidden(),
+        Flag::string(
+            "cpu-quota",
+            None,
+            "",
+            "Limit the CPU CFS (Completely Fair Scheduler) quota",
+        )
+        .hidden(),
+        Flag::string(
+            "cpuset-cpus",
+            None,
+            "",
+            "CPUs in which to allow execution (\"0-3\", \"0,1\")",
+        )
+        .hidden(),
+        Flag::string(
+            "cpuset-mems",
+            None,
+            "",
+            "MEMs in which to allow execution (\"0-3\", \"0,1\")",
+        )
+        .hidden(),
+        Flag::bool("compress", None, "Compress the build context using gzip").hidden(),
+        Flag::string("isolation", None, "", "Container isolation technology").hidden(),
+        Flag::many("security-opt", None, "strings", "Security options").hidden(),
+        Flag::bool(
+            "squash",
+            None,
+            "Squash newly built layers into a single new layer",
+        )
+        .hidden(),
+        Flag::bool(
+            "rm",
+            None,
+            "Remove intermediate containers after a successful build",
+        )
+        .defaulting("true")
+        .hidden(),
+        Flag::bool("force-rm", None, "Always remove intermediate containers").hidden(),
+        Flag::many("platform", None, "stringArray", "Set target platform for build"),
+        Flag::many(
+            "policy",
+            None,
+            "stringArray",
+            "Policy configuration (format: \"filename=path[,filename=path][,reset=true|false][,disabled=true|false][,strict=true|false][,log-level=level]\")",
+        ),
+        Flag::string(
+            "progress",
+            None,
+            "auto",
+            "Set type of progress output (\"auto\", \"none\",  \"plain\", \"quiet\", \"rawjson\", \"tty\"). Use plain to show container output",
+        ),
+        Flag::bool("pull", None, "Always attempt to pull all referenced images"),
+        Flag::bool(
+            "quiet",
+            Some(b'q'),
+            "Suppress the build output and print image ID on success",
+        ),
+        Flag::many(
+            "tag",
+            Some(b't'),
+            "stringArray",
+            "Image identifier (format: \"[registry/]repository[:tag]\")",
+        ),
+        Flag::many(
+            "secret",
+            None,
+            "stringArray",
+            "Secret to expose to the build (format: \"id=mysecret[,src=/local/secret]\")",
+        ),
+        Flag::many(
+            "build-context",
+            None,
+            "stringArray",
+            "Additional build contexts (e.g., name=path)",
+        ),
+        Flag::many(
+            "output",
+            Some(b'o'),
+            "stringArray",
+            "Output destination (format: \"type=local,dest=path\")",
+        ),
+        Flag::bool(
+            "push",
+            None,
+            "Shorthand for \"--output=type=registry,unpack=false\"",
+        ),
+        Flag::many(
+            "ssh",
+            None,
+            "stringArray",
+            "SSH agent socket or keys to expose to the build (format: \"default|<id>[=<socket>|<key>[,<key>]]\")",
+        ),
+        Flag::string("target", None, "", "Set the target build stage to build"),
+        Flag::many("ulimit", None, "ulimit", "Ulimit options").defaulting("[]"),
+    ],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "ERROR: ",
+};
+
+/// `shards buildx policy`: buildx v0.37.1's policy command (commands/policy/root.go), a
+/// group that runs nothing: asked anything but a flag it does not know, it prints its help
+/// ([`POLICY_COMMANDS`], `flags::group_help`).
+pub static POLICY: Command = Command {
+    usage: "",
+    about: "Commands for working with build policies",
+    aliases: "",
+    args: Args::Any,
+    flags: &[
+        Flag::string("builder", None, "", "Override the configured builder instance"),
+        Flag::bool("debug", Some(b'D'), "Enable debug logging"),
+        HELP,
+    ],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "ERROR: ",
+};
+
+/// The commands `shards buildx policy` lists (its `json-schema` is a TODO in buildx v0.37.1).
+pub const POLICY_COMMANDS: &[(&str, &str)] = &[
+    ("eval", "Evaluate policy for a source"),
+    ("test", "Run policy tests"),
+];
+
+/// `shards buildx policy eval`: buildx v0.37.1's (commands/policy/eval.go), its hidden
+/// `--filename` bound to `--file`'s value.
+pub static POLICY_EVAL: Command = Command {
+    usage: "[OPTIONS] source",
+    about: "Evaluate policy for a source",
+    aliases: "",
+    args: Args::Accepts(1),
+    flags: &[
+        Flag::string("builder", None, "", "Override the configured builder instance"),
+        Flag::bool("debug", Some(b'D'), "Enable debug logging"),
+        Flag::many("fields", None, "strings", "Fields to evaluate"),
+        Flag::string("file", Some(b'f'), "Dockerfile", "Policy filename to evaluate"),
+        Flag::string("filename", None, "Dockerfile", "Policy filename to evaluate")
+            .hidden()
+            .sharing("file"),
+        Flag::string("platform", None, "", "Target platform for policy evaluation"),
+        Flag::bool("print", None, "Print policy output"),
+        HELP,
+    ],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "ERROR: ",
+};
+
+/// `shards buildx policy test`: buildx v0.37.1's (commands/policy/test.go).
+pub static POLICY_TEST: Command = Command {
+    usage: "<path>",
+    about: "Run policy tests",
+    aliases: "",
+    args: Args::Accepts(1),
+    flags: &[
+        Flag::string("builder", None, "", "Override the configured builder instance"),
+        Flag::bool("debug", Some(b'D'), "Enable debug logging"),
+        Flag::string(
+            "filename",
+            None,
+            "Dockerfile",
+            "Name of the Dockerfile to validate",
+        ),
+        Flag::string(
+            "run",
+            None,
+            "",
+            "Run only tests with name containing this substring",
+        ),
+        HELP,
+    ],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "ERROR: ",
+};
+
+/// `shards builder du` and `shards buildx du`: buildx v0.37.1's du
+/// (commands/diskusage.go), with its root's `--builder` and `--debug`, as `docker builder`
+/// runs buildx.
+pub static BUILDER_DU: Command = Command {
+    usage: "",
+    about: "Disk usage",
+    aliases: "",
+    args: Args::None,
+    flags: &[
+        Flag::string("builder", None, "", "Override the configured builder instance"),
+        Flag::bool("debug", Some(b'D'), "Enable debug logging"),
+        Flag::many("filter", None, "filter", "Provide filter values"),
+        Flag::string("format", None, "", "Format the output"),
+        Flag::duration(
+            "timeout",
+            None,
+            "Override the default timeout for loading builder status",
+        )
+        .defaulting("20s"),
+        Flag::bool("verbose", None, "Shorthand for \"--format=pretty\""),
+        HELP,
+    ],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "ERROR: ",
+};
+
+/// `shards builder prune` and `shards buildx prune`: buildx v0.37.1's prune
+/// (commands/prune.go), with its root's `--builder` and `--debug`, as `docker builder`
+/// runs buildx.
+pub static BUILDER_PRUNE: Command = Command {
+    usage: "",
+    about: "Remove build cache",
+    aliases: "",
+    args: Args::None,
+    flags: &[
+        Flag::bool("all", Some(b'a'), "Include internal/frontend images"),
+        Flag::string("builder", None, "", "Override the configured builder instance"),
+        Flag::bool("debug", Some(b'D'), "Enable debug logging"),
+        Flag::many("filter", None, "filter", "Provide filter values"),
+        Flag::bool("force", Some(b'f'), "Do not prompt for confirmation"),
+        Flag::value(
+            "keep-storage",
+            None,
+            "bytes",
+            "Amount of disk space to keep for cache",
+        )
+        .deprecated("keep-storage flag has been changed to reserved-space"),
+        Flag::value(
+            "max-used-space",
+            None,
+            "bytes",
+            "Maximum amount of disk space allowed to keep for cache",
+        ),
+        Flag::value(
+            "min-free-space",
+            None,
+            "bytes",
+            "Target amount of free disk space after pruning",
+        ),
+        Flag::value(
+            "reserved-space",
+            None,
+            "bytes",
+            "Amount of disk space always allowed to keep for cache",
+        ),
+        Flag::duration(
+            "timeout",
+            None,
+            "Override the default timeout for loading builder status",
+        )
+        .defaulting("20s"),
+        Flag::bool("verbose", None, "Provide a more verbose output"),
+        HELP,
+    ],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "ERROR: ",
+};
+
+/// `shards login` (docker/cli cli/command/registry/login.go): a registry's credentials,
+/// checked with it and kept as the Docker CLI keeps them.
+pub static LOGIN: Command = Command {
+    usage: "[OPTIONS] [SERVER]",
+    about: "Authenticate to a registry.\nDefaults to Docker Hub if no server is specified.",
+    aliases: "",
+    args: Args::AtMost(1),
+    flags: &[
+        HELP,
+        Flag::string(
+            "password",
+            Some(b'p'),
+            "",
+            "Password or Personal Access Token (PAT), or \"-\" to read from stdin",
+        ),
+        Flag::bool(
+            "password-stdin",
+            None,
+            "Take the Password or Personal Access Token (PAT) from stdin",
+        ),
+        Flag::string("username", Some(b'u'), "", "Username"),
+    ],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "",
+};
+
+/// `shards logout` (docker/cli cli/command/registry/logout.go): a registry's credentials
+/// forgotten.
+pub static LOGOUT: Command = Command {
+    usage: "[SERVER]",
+    about: "Log out from a registry.\nIf no server is specified, the default is defined by the daemon.",
+    aliases: "",
+    args: Args::AtMost(1),
+    flags: &[HELP],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "",
+};
+
+/// `shards search` (docker/cli cli/command/registry/search.go): images found in a
+/// registry, Docker Hub's unless the term names another (D172).
+pub static SEARCH: Command = Command {
+    usage: "[OPTIONS] TERM",
+    about: "Search Docker Hub for images",
+    aliases: "",
+    args: Args::Exactly(1),
+    flags: &[
+        Flag::many(
+            "filter",
+            Some(b'f'),
+            "filter",
+            "Filter output based on conditions provided",
+        ),
+        Flag::string("format", None, "", "Pretty-print search using a Go template"),
+        HELP,
+        Flag::int("limit", None, "0", "Max number of search results"),
+        Flag::bool("no-trunc", None, "Don't truncate output"),
+    ],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "",
 };
 
 /// The container command the start of `words` names, its path (`shards ps`, `shards
@@ -398,7 +2998,114 @@ pub fn find(words: &[&str]) -> Option<(&'static Command, &'static str, usize)> {
         ["stop", ..] => (&STOP, "shards stop", 1),
         ["container", "stop", ..] => (&STOP, "shards container stop", 2),
         ["kill", ..] => (&KILL, "shards kill", 1),
+        ["attach", ..] => (&ATTACH, "shards attach", 1),
+        ["container", "attach", ..] => (&ATTACH, "shards container attach", 2),
+        ["exec", ..] => (&EXEC, "shards exec", 1),
+        ["container", "exec", ..] => (&EXEC, "shards container exec", 2),
         ["container", "kill", ..] => (&KILL, "shards container kill", 2),
+        ["port", ..] => (&PORT, "shards port", 1),
+        ["read", "ports", ..] => (&READ_PORTS, "shards read ports", 2),
+        ["read", "processes", ..] => (&READ_PROCESSES, "shards read processes", 2),
+        ["watch", "processes", ..] => (&WATCH_PROCESSES, "shards watch processes", 2),
+        ["images", ..] => (&IMAGES, "shards images", 1),
+        ["tag", ..] => (&TAG, "shards tag", 1),
+        ["save", "vm", ..] => (&SAVE_VM, "shards save vm", 2),
+        ["move", "vm", ..] => (&MOVE_VM, "shards move vm", 2),
+        ["checkpoint", "create", ..] => (&CHECKPOINT_CREATE, "shards checkpoint create", 2),
+        ["checkpoint", "ls" | "list", ..] => (&CHECKPOINT_LS, "shards checkpoint ls", 2),
+        ["checkpoint", "rm" | "remove", ..] => (&CHECKPOINT_RM, "shards checkpoint rm", 2),
+        ["snapshot", "ls" | "list", ..] => (&SNAPSHOT_LS, "shards list snapshots", 2),
+        ["plug", "disk", ..] => (&PLUG_DISK, "shards plug disk", 2),
+        ["plug", "volume", ..] => (&PLUG_VOLUME, "shards plug volume", 2),
+        ["plug", "function", ..] => (&PLUG_FUNCTION, "shards plug function", 2),
+        ["unplug", "function", ..] => (&UNPLUG_FUNCTION, "shards unplug function", 2),
+        ["unplug", "disk", ..] => (&UNPLUG_DISK, "shards unplug disk", 2),
+        ["unplug", "volume", ..] => (&UNPLUG_VOLUME, "shards unplug volume", 2),
+        ["grow", "disk", ..] => (&GROW_DISK, "shards grow disk", 2),
+        ["snapshot", "rm" | "remove", ..] => (&SNAPSHOT_RM, "shards remove snapshot", 2),
+        ["save", ..] => (&SAVE, "shards save", 1),
+        ["load", ..] => (&LOAD, "shards load", 1),
+        ["pull", ..] => (&PULL, "shards pull", 1),
+        ["image", "pull", ..] => (&PULL, "shards image pull", 2),
+        ["push", ..] => (&PUSH, "shards push", 1),
+        ["image", "push", ..] => (&PUSH, "shards image push", 2),
+        ["image", "load", ..] => (&LOAD, "shards image load", 2),
+        ["image", "save", ..] => (&SAVE, "shards image save", 2),
+        ["rmi", ..] => (&RMI, "shards rmi", 1),
+        ["image", "rm" | "remove", ..] => (&RMI, "shards image rm", 2),
+        ["image", "tag", ..] => (&TAG, "shards image tag", 2),
+        ["image", "inspect", ..] => (&IMAGE_INSPECT, "shards image inspect", 2),
+        ["history", ..] => (&HISTORY, "shards history", 1),
+        ["system", "df", ..] => (&SYSTEM_DF, "shards system df", 2),
+        ["stats", ..] => (&STATS, "shards stats", 1),
+        ["pause", ..] => (&PAUSE, "shards pause", 1),
+        ["top", ..] => (&TOP, "shards top", 1),
+        ["diff", ..] => (&DIFF, "shards diff", 1),
+        ["events", ..] => (&EVENTS, "shards events", 1),
+        ["start", ..] => (&START, "shards start", 1),
+        ["commit", ..] => (&COMMIT, "shards commit", 1),
+        ["cp", ..] => (&COPY, "shards cp", 1),
+        ["inspect", ..] => (&INSPECT, "shards inspect", 1),
+        ["version", ..] => (&VERSION, "shards version", 1),
+        ["container", "cp", ..] => (&COPY, "shards container cp", 2),
+        ["container", "commit", ..] => (&COMMIT, "shards container commit", 2),
+        ["container", "start", ..] => (&START, "shards container start", 2),
+        ["restart", ..] => (&RESTART, "shards restart", 1),
+        ["container", "restart", ..] => (&RESTART, "shards container restart", 2),
+        ["create", ..] => (&CREATE, "shards create", 1),
+        ["container", "create", ..] => (&CREATE, "shards container create", 2),
+        ["info", ..] => (&INFO, "shards info", 1),
+        ["export", ..] => (&EXPORT, "shards export", 1),
+        ["container", "export", ..] => (&EXPORT, "shards container export", 2),
+        ["system", "info", ..] => (&INFO, "shards system info", 2),
+        ["system", "events", ..] => (&EVENTS, "shards system events", 2),
+        ["container", "diff", ..] => (&DIFF, "shards container diff", 2),
+        ["container", "top", ..] => (&TOP, "shards container top", 2),
+        ["container", "pause", ..] => (&PAUSE, "shards container pause", 2),
+        ["unpause", ..] => (&UNPAUSE, "shards unpause", 1),
+        ["container", "unpause", ..] => (&UNPAUSE, "shards container unpause", 2),
+        ["container", "stats", ..] => (&STATS, "shards container stats", 2),
+        ["system", "prune", ..] => (&SYSTEM_PRUNE, "shards system prune", 2),
+        ["container", "prune", ..] => (&CONTAINER_PRUNE, "shards container prune", 2),
+        ["image", "prune", ..] => (&IMAGE_PRUNE, "shards image prune", 2),
+        ["builder" | "buildx", "prune", ..] => (&BUILDER_PRUNE, "shards buildx prune", 2),
+        ["builder" | "buildx", "du", ..] => (&BUILDER_DU, "shards buildx du", 2),
+        ["buildx", "policy", "eval", ..] => (&POLICY_EVAL, "shards buildx policy eval", 3),
+        ["buildx", "policy", "test", ..] => (&POLICY_TEST, "shards buildx policy test", 3),
+        ["buildx", "policy", ..] => (&POLICY, "shards buildx policy", 2),
+        ["rename", ..] => (&RENAME, "shards rename", 1),
+        ["container", "rename", ..] => (&RENAME, "shards container rename", 2),
+        ["image", "history", ..] => (&HISTORY, "shards image history", 2),
+        ["container", "inspect", ..] => (&CONTAINER_INSPECT, "shards container inspect", 2),
+        ["image", "ls" | "list", ..] => (&IMAGES, "shards image ls", 2),
+        ["container", "port", ..] => (&PORT, "shards container port", 2),
+        ["update", ..] => (&UPDATE, "shards update", 1),
+        ["import", ..] => (&IMPORT, "shards import", 1),
+        ["image", "import", ..] => (&IMPORT, "shards image import", 2),
+        ["container", "update", ..] => (&UPDATE, "shards container update", 2),
+        ["network", "create", ..] => (&NETWORK_CREATE, "shards network create", 2),
+        ["network", "connect", ..] => (&NETWORK_CONNECT, "shards network connect", 2),
+        ["network", "disconnect", ..] => (&NETWORK_DISCONNECT, "shards network disconnect", 2),
+        ["network", "inspect", ..] => (&NETWORK_INSPECT, "shards network inspect", 2),
+        ["network", "ls" | "list", ..] => (&NETWORK_LS, "shards network ls", 2),
+        ["network", "prune", ..] => (&NETWORK_PRUNE, "shards network prune", 2),
+        ["network", "rm" | "remove", ..] => (&NETWORK_RM, "shards network rm", 2),
+        ["volume", "create", ..] => (&VOLUME_CREATE, "shards volume create", 2),
+        ["volume", "ls" | "list", ..] => (&VOLUME_LS, "shards volume ls", 2),
+        ["volume", "inspect", ..] => (&VOLUME_INSPECT, "shards volume inspect", 2),
+        ["volume", "rm" | "remove", ..] => (&VOLUME_RM, "shards volume rm", 2),
+        ["volume", "prune", ..] => (&VOLUME_PRUNE, "shards volume prune", 2),
         _ => return None,
     })
+}
+
+/// `build` if the start of `words` names it, and how many words do: `build`, `builder
+/// build`, `image build`, `buildx build` or `buildx b`. Its path is always `shards buildx
+/// build`, as buildx v0.37.1's is `docker buildx build` however the CLI was asked.
+pub fn build(words: &[&str]) -> Option<usize> {
+    match words {
+        ["build", ..] => Some(1),
+        ["builder" | "image", "build", ..] | ["buildx", "build" | "b", ..] => Some(2),
+        _ => None,
+    }
 }

@@ -1,0 +1,1482 @@
+//! `shards run vm [OPTIONS] IMAGE [COMMAND] [ARG...]`: runs a command in a new microVM booted
+//! into an image, as `docker run` runs one in a new container (docs/design/architecture.md
+//! D16, D24–D27). The command line, read as the Docker CLI reads it (shards_cmdline),
+//! becomes a request (`shards_ipc::Run`), completed with what only this process knows, for
+//! the daemon to serve (client.rs). SHARDS_KERNEL and SHARDS_INIT boot those instead of
+//! the guest `shards guest use` recorded; only the recorded guest's runs are kept as
+//! templates.
+
+use std::ffi::OsString;
+use std::io::{IsTerminal as _, Write};
+use std::path::PathBuf;
+use std::process::ExitCode;
+
+use shards_ipc::Identity;
+use shards_ipc::{Endpoint, Pull, Run};
+
+use shards_cmdline::commands::RUN;
+use shards_cmdline::flags::{Flag, Parsed};
+use shards_cmdline::network;
+use shards_cmdline::term;
+
+use crate::cli::NOT_RUN;
+
+/// Runs the command line `args`, the words after `path` (`shards run vm`).
+pub fn run(path: &str, args: &[OsString]) -> ExitCode {
+    let argv = match crate::cli::utf8(args) {
+        Ok(argv) => argv,
+        Err(e) => return crate::cli::failed(&e),
+    };
+    let parsed = match crate::cli::read(&RUN, path, &argv, &validate) {
+        Ok(parsed) => parsed,
+        Err(answered) => return answered,
+    };
+    let _ = std::io::stdout().write_all(parsed.notices.as_bytes());
+    let mut request = match request(&parsed) {
+        Ok(request) => request,
+        Err(e) => {
+            // Piped, as a `docker` script reads it (docker/cli run.go withHelp).
+            if !refused_on_terminal("run", &e) {
+                let _ = writeln!(
+                    std::io::stderr(),
+                    "shards: {e}\n\nRun 'shards run --help' for more information"
+                );
+            }
+            return ExitCode::from(NOT_RUN);
+        }
+    };
+    // Checked before anything is created, in the CLI's order, and said as plain errors:
+    // exit 1, no prefix (docker/cli run.go runContainer, streams/in.go CheckTty).
+    if request.tty.is_some() && request.interactive && !request.detach && !std::io::stdin().is_terminal() {
+        return refuse(
+            "-it: stdin is not a terminal, so it cannot be the command's: leave out -t, or run it from a terminal",
+        );
+    }
+    let keys = parsed.string("detach-keys");
+    let detach_keys = if keys.is_empty() {
+        term::DETACH_KEYS.to_vec()
+    } else {
+        match term::to_bytes(keys) {
+            Ok(bytes) => bytes,
+            Err(e) => return refuse(&format!("invalid detach keys ({keys}): {e}")),
+        }
+    };
+    let mut cid = match before_create(&request) {
+        Ok(cid) => cid,
+        Err(e) => {
+            if !refused_on_terminal("run", &e) {
+                let _ = writeln!(
+                    std::io::stderr(),
+                    "shards: {e}\n\nRun 'shards run --help' for more information"
+                );
+            }
+            return ExitCode::from(run_status(&e));
+        }
+    };
+    let sig_proxy = parsed.bool("sig-proxy");
+    match resolve(&mut request) {
+        Ok((home, daemon)) => {
+            crate::cli::client::run(&home, &daemon, &request, &detach_keys, sig_proxy, &mut cid)
+        }
+        Err(e) => {
+            let _ = writeln!(std::io::stderr(), "shards: {e}");
+            ExitCode::from(NOT_RUN)
+        }
+    }
+}
+
+/// Makes a microVM as the command line `args` says, the words after `path` (`shards
+/// create`), as `docker create` makes one: as `run` would, and not started; its ID said.
+pub fn create(path: &str, args: &[OsString]) -> ExitCode {
+    let argv = match crate::cli::utf8(args) {
+        Ok(argv) => argv,
+        Err(e) => return crate::cli::failed(&e),
+    };
+    let parsed = match crate::cli::read(&shards_cmdline::commands::CREATE, path, &argv, &validate) {
+        Ok(parsed) => parsed,
+        Err(answered) => return answered,
+    };
+    let _ = std::io::stdout().write_all(parsed.notices.as_bytes());
+    let mut request = match request(&parsed) {
+        Ok(request) => request,
+        Err(e) => {
+            if !refused_on_terminal("create", &e) {
+                let _ = writeln!(
+                    std::io::stderr(),
+                    "shards: {e}\n\nRun 'shards create --help' for more information"
+                );
+            }
+            return ExitCode::from(NOT_RUN);
+        }
+    };
+    request.create = true;
+    request.detach = true;
+    // A plain error, as a `docker` script reads it (docker/cli create.go runCreate).
+    let mut cid = match before_create(&request) {
+        Ok(cid) => cid,
+        Err(e) if refused_on_terminal("create", &e) => return ExitCode::FAILURE,
+        Err(e) => return refuse(&e),
+    };
+    // docker/cli's create passes no signal on: SIGINT and SIGTERM end it.
+    send(&mut request, term::DETACH_KEYS, &mut cid, false)
+}
+
+/// Starts the microVMs the command line `args` names, the words after `path` (`shards
+/// start`), as `docker start` does (docker/cli container/start.go): each run again as it
+/// was made, its files as it left them (D37), named once it is; with `-a` or `-i`, one,
+/// attached.
+pub fn start(path: &str, args: &[OsString]) -> ExitCode {
+    let argv = match crate::cli::utf8(args) {
+        Ok(argv) => argv,
+        Err(e) => return crate::cli::failed(&e),
+    };
+    let parsed = match crate::cli::read(&shards_cmdline::commands::START, path, &argv, &validate) {
+        Ok(parsed) => parsed,
+        Err(answered) => return answered,
+    };
+    let _ = std::io::stdout().write_all(parsed.notices.as_bytes());
+    let keys = parsed.string("detach-keys");
+    let detach_keys = if keys.is_empty() {
+        term::DETACH_KEYS.to_vec()
+    } else {
+        match term::to_bytes(keys) {
+            Ok(bytes) => bytes,
+            Err(e) => return refuse(&format!("invalid detach keys ({keys}): {e}")),
+        }
+    };
+    let (attach, interactive) = (parsed.bool("attach"), parsed.bool("interactive"));
+    // A microVM resumed from a checkpoint of its own, a microVM's snapshot (D176).
+    let checkpoint = Some(parsed.string("checkpoint").to_string()).filter(|c| !c.is_empty());
+    if attach || interactive {
+        if parsed.args.len() > 1 {
+            return refuse("you cannot start and attach multiple containers at once");
+        }
+        let Some(container) = parsed.args.first().cloned() else {
+            return crate::cli::failed("a container is required");
+        };
+        // Inspected first: the microVM's terminal,
+        // which takes the client's raw input and size, and with which signals are not
+        // passed on (the terminal's own keys are); and whether it reads a stdin, which `-i`
+        // attaches.
+        let (tty, open_stdin) = match inspected(&container) {
+            Ok((_, _, _, tty, open_stdin)) => (tty, open_stdin),
+            Err(answered) => return answered,
+        };
+        let mut request = Run {
+            again: Some(container),
+            interactive: interactive && open_stdin,
+            tty: tty.then(stdout_size),
+            resume: checkpoint,
+            ..Run::default()
+        };
+        return send(&mut request, &detach_keys, &mut None, !tty);
+    }
+    // One, which says nothing once it runs (docker/cli container/start.go).
+    if let Some(checkpoint) = checkpoint {
+        let [container] = parsed.args.as_slice() else {
+            return refuse("you cannot restore multiple containers at once");
+        };
+        let mut request = Run {
+            again: Some(container.clone()),
+            resume: Some(checkpoint),
+            detach: true,
+            silent: true,
+            ..Run::default()
+        };
+        return send(&mut request, &detach_keys, &mut None, false);
+    }
+    // startContainersWithoutAttachments: each named as it starts, the others' errors
+    // said, and their names after.
+    let mut failed = Vec::new();
+    for container in &parsed.args {
+        let mut request = Run {
+            again: Some(container.clone()),
+            detach: true,
+            ..Run::default()
+        };
+        // Started alone: `start` passes no signal on to it.
+        if send(&mut request, &detach_keys, &mut None, false) != ExitCode::SUCCESS {
+            failed.push(container.as_str());
+        }
+    }
+    if failed.is_empty() {
+        return ExitCode::SUCCESS;
+    }
+    refuse(&format!("failed to start containers: {}", failed.join(", ")))
+}
+
+/// Restarts the microVMs the command line `args` names, the words after `path`
+/// (`shards restart vm`), as `docker restart` does (docker/cli container/restart.go): each
+/// stopped, by `-s` and `-t` where given, then started again, and named.
+pub fn restart(path: &str, args: &[OsString]) -> ExitCode {
+    let argv = match crate::cli::utf8(args) {
+        Ok(argv) => argv,
+        Err(e) => return crate::cli::failed(&e),
+    };
+    let parsed = match crate::cli::read(&shards_cmdline::commands::RESTART, path, &argv, &validate) {
+        Ok(parsed) => parsed,
+        Err(answered) => return answered,
+    };
+    let _ = std::io::stdout().write_all(parsed.notices.as_bytes());
+    if parsed.changed("time") && parsed.changed("timeout") {
+        return refuse("--timeout and --time each give the grace: give one");
+    }
+    let signal = parsed.string("signal");
+    let timeout = (parsed.changed("timeout") || parsed.changed("time")).then(|| parsed.int("timeout"));
+    // A name of no microVM but of an image reaches the microVMs running from it, as `stop`
+    // does (D216).
+    let named = match reached(&parsed.args) {
+        Ok(named) => named,
+        Err(e) => return crate::cli::failed(&e),
+    };
+    let mut status = ExitCode::SUCCESS;
+    for container in &named {
+        let mut request = Run {
+            again: Some(container.clone()),
+            restart: true,
+            detach: true,
+            stop_signal: (!signal.is_empty()).then(|| signal.to_string()),
+            stop_timeout: timeout,
+            ..Run::default()
+        };
+        // docker/cli's restart passes no signal on.
+        if send(&mut request, term::DETACH_KEYS, &mut None, false) != ExitCode::SUCCESS {
+            status = ExitCode::FAILURE;
+        }
+    }
+    status
+}
+
+/// Sends `request` to the daemon as a run, answered as one, the signals this process gets
+/// passed on to its command with `sig_proxy`.
+fn send(request: &mut Run, detach_keys: &[u8], cid: &mut Option<CidFile>, sig_proxy: bool) -> ExitCode {
+    match resolve(request) {
+        Ok((home, daemon)) => crate::cli::client::run(&home, &daemon, request, detach_keys, sig_proxy, cid),
+        Err(e) => {
+            let _ = writeln!(std::io::stderr(), "shards: {e}");
+            ExitCode::from(NOT_RUN)
+        }
+    }
+}
+
+/// Runs the command line `args`, the words after `path` (`shards exec vm`), as `docker exec`
+/// runs it: in a running microVM, attached unless `-d` (docker/cli
+/// cli/command/container/exec.go).
+pub fn exec(path: &str, args: &[OsString]) -> ExitCode {
+    let argv = match crate::cli::utf8(args) {
+        Ok(argv) => argv,
+        Err(e) => return crate::cli::failed(&e),
+    };
+    let parsed = match crate::cli::read(&shards_cmdline::commands::EXEC, path, &argv, &validate) {
+        Ok(parsed) => parsed,
+        Err(answered) => return answered,
+    };
+    let _ = std::io::stdout().write_all(parsed.notices.as_bytes());
+    let Some((container, cmd)) = parsed.args.split_first() else {
+        return crate::cli::failed("a container is required");
+    };
+    // opts.ReadKVEnvStrings: the files' lines first, the flags' after (exec.go parseExec).
+    let mut env = Vec::new();
+    for file in parsed.many("env-file") {
+        match kv_file(file, true) {
+            Ok(lines) => env.extend(lines),
+            Err(e) => return refuse(&e),
+        }
+    }
+    env.extend(parsed.many("env").iter().cloned());
+    let request = shards_ipc::Exec {
+        container: container.clone(),
+        cmd: cmd.to_vec(),
+        env,
+        privileged: parsed.bool("privileged"),
+        user: parsed.string("user").to_string(),
+        workdir: parsed.string("workdir").to_string(),
+        interactive: parsed.bool("interactive"),
+        detach: parsed.bool("detach"),
+        tty: parsed.bool("tty").then(stdout_size),
+        terms: if parsed.bool("tty") {
+            super::terms::terms()
+        } else {
+            Vec::new()
+        },
+        // `-it` without a terminal is refused by the daemon, once it has found the
+        // microVM: the CLI inspects it first, so that "No such container" comes first
+        // (docker/cli exec.go RunExec).
+        stdin_terminal: std::io::stdin().is_terminal(),
+        ..shards_ipc::Exec::default()
+    };
+    // Before the microVM is looked for, as the CLI checks them (exec.go parseExec).
+    let keys = parsed.string("detach-keys");
+    let detach_keys = if keys.is_empty() {
+        term::DETACH_KEYS.to_vec()
+    } else {
+        match term::to_bytes(keys) {
+            Ok(bytes) => bytes,
+            Err(e) => return refuse(&format!("invalid detach keys ({keys}): {e}")),
+        }
+    };
+    let daemon = match crate::cli::shardsd() {
+        Ok(daemon) => daemon,
+        Err(e) => return crate::cli::failed(&e),
+    };
+    let mut request = request;
+    request.daemon = match Identity::of_build(&daemon) {
+        Ok(identity) => identity,
+        Err(e) => return crate::cli::failed(&format!("{}: {e}", daemon.display())),
+    };
+    match shards_ipc::home() {
+        Ok(home) => crate::cli::client::exec(&home, &daemon, &request, &detach_keys),
+        Err(e) => crate::cli::failed(&e),
+    }
+}
+
+/// Container `container`, inspected before attaching to it: the
+/// home and daemon asked, the daemon's identity, and whether it has a terminal and reads a
+/// stdin (`Config.Tty`, `Config.OpenStdin`); or the answer given, its status.
+fn inspected(container: &str) -> Result<(PathBuf, PathBuf, Identity, bool, bool), ExitCode> {
+    let daemon = crate::cli::shardsd().map_err(|e| crate::cli::failed(&e))?;
+    let identity =
+        Identity::of_build(&daemon).map_err(|e| crate::cli::failed(&format!("{}: {e}", daemon.display())))?;
+    let home = shards_ipc::home().map_err(|e| crate::cli::failed(&e))?;
+    let probe = shards_ipc::Command {
+        argv: [
+            "inspect",
+            "--type",
+            "container",
+            "--format",
+            "{{.Config.Tty}} {{.Config.OpenStdin}}",
+            container,
+        ]
+        .map(String::from)
+        .to_vec(),
+        daemon: identity,
+        ..shards_ipc::Command::default()
+    };
+    match crate::cli::client::ask(&home, &daemon, &probe, &[]) {
+        Ok((0, out, _)) => {
+            let out = String::from_utf8_lossy(&out);
+            let mut words = out.split_whitespace();
+            let (tty, open_stdin) = (words.next() == Some("true"), words.next() == Some("true"));
+            Ok((home, daemon, identity, tty, open_stdin))
+        }
+        Ok(_) => Err(refuse(&format!("shards: No such container: {container}"))),
+        Err(e) => Err(crate::cli::failed(&e)),
+    }
+}
+
+/// The microVMs `names` reach, as the daemon says (`NAMES_STEP`): each name of a microVM
+/// itself, and each name of an image the microVMs running from it; a name of neither is
+/// itself, to fail as a name does.
+fn reached(names: &[String]) -> Result<Vec<String>, String> {
+    let daemon = crate::cli::shardsd()?;
+    let identity = Identity::of_build(&daemon).map_err(|e| format!("{}: {e}", daemon.display()))?;
+    let home = shards_ipc::home()?;
+    let command = shards_ipc::Command {
+        argv: std::iter::once(shards_ipc::NAMES_STEP.to_string())
+            .chain(names.iter().cloned())
+            .collect(),
+        daemon: identity,
+        ..shards_ipc::Command::default()
+    };
+    match crate::cli::client::ask(&home, &daemon, &command, &[])? {
+        (0, out, _) => Ok(String::from_utf8_lossy(&out)
+            .lines()
+            .map(str::to_string)
+            .collect()),
+        (_, _, err) => Err(String::from_utf8_lossy(&err).trim().to_string()),
+    }
+}
+
+/// Asks the daemon to put the microVMs a build named `names` in the machine's local image
+/// store, as a pull's are (D216): its publisher outlives the build, which so neither waits
+/// for an upload nor cuts one off by ending. Nothing is asked where nothing would be
+/// published (`SHARDS_LOCAL_STORE=none`, or no local store here), so no daemon is started
+/// for it then.
+pub(crate) fn publish_built(names: &[String]) -> Result<(), String> {
+    let env = |k: &str| std::env::var(k).ok();
+    if names.is_empty()
+        || env("SHARDS_LOCAL_STORE").is_some_and(|v| v == "none")
+        || crate::local_store::engine(&env).is_none()
+    {
+        return Ok(());
+    }
+    let daemon = crate::cli::shardsd()?;
+    let identity = Identity::of_build(&daemon).map_err(|e| format!("{}: {e}", daemon.display()))?;
+    let home = shards_ipc::home()?;
+    let command = shards_ipc::Command {
+        argv: std::iter::once(shards_ipc::PUBLISH_STEP.to_string())
+            .chain(names.iter().cloned())
+            .collect(),
+        registry_env: shards_ipc::registry_env(),
+        daemon: identity,
+        ..shards_ipc::Command::default()
+    };
+    match crate::cli::client::ask(&home, &daemon, &command, &[])? {
+        (0, _, _) => Ok(()),
+        (_, _, err) => Err(String::from_utf8_lossy(&err).trim().to_string()),
+    }
+}
+
+/// Runs the command line `args`, the words after `path` (`shards attach`), as `docker
+/// attach` does (docker/cli cli/command/container/attach.go): the microVM inspected for
+/// its terminal and its stdin, refused as the CLI refuses it, then attached until its
+/// command ends, whose status is this one's, or until the detach keys.
+pub fn attach(path: &str, args: &[OsString]) -> ExitCode {
+    let argv = match crate::cli::utf8(args) {
+        Ok(argv) => argv,
+        Err(e) => return crate::cli::failed(&e),
+    };
+    let parsed = match crate::cli::read(&shards_cmdline::commands::ATTACH, path, &argv, &validate) {
+        Ok(parsed) => parsed,
+        Err(answered) => return answered,
+    };
+    let _ = std::io::stdout().write_all(parsed.notices.as_bytes());
+    let Some(container) = parsed.args.first().cloned() else {
+        return crate::cli::failed("a container is required");
+    };
+    let keys = parsed.string("detach-keys");
+    let detach_keys = if keys.is_empty() {
+        term::DETACH_KEYS.to_vec()
+    } else {
+        match term::to_bytes(keys) {
+            Ok(bytes) => bytes,
+            Err(e) => return refuse(&format!("invalid detach keys ({keys}): {e}")),
+        }
+    };
+    let (no_stdin, sig_proxy) = (parsed.bool("no-stdin"), parsed.bool("sig-proxy"));
+    // ContainerInspect first: its terminal, and whether it reads a stdin.
+    let (home, daemon, identity, tty, open_stdin) = match inspected(&container) {
+        Ok(inspected) => inspected,
+        Err(answered) => return answered,
+    };
+    // In().CheckTty(!NoStdin, Tty).
+    if tty && !no_stdin && !std::io::stdin().is_terminal() {
+        return refuse(
+            "-it: stdin is not a terminal, so it cannot be the command's: leave out -t, or run it from a terminal",
+        );
+    }
+    let request = shards_ipc::Attach {
+        container,
+        stdin: !no_stdin && open_stdin,
+        daemon: identity,
+    };
+    crate::cli::client::attach(&home, &daemon, &request, tty, sig_proxy && !tty, &detach_keys)
+}
+
+/// Says `why` as the CLI says a plain error, and exits 1 (docker/cli cmd/docker/docker.go).
+/// `shards restore vm MICROVM [SNAPSHOT]` (D176): a stopped microVM resumed by its daemon
+/// from a snapshot of its own, its newest unless named, as `shards start vm` starts one:
+/// named once it runs.
+pub fn restore(path: &str, args: &[OsString]) -> ExitCode {
+    let argv = match crate::cli::utf8(args) {
+        Ok(argv) => argv,
+        Err(e) => return crate::cli::failed(&e),
+    };
+    let parsed = match crate::cli::read(&shards_cmdline::commands::RESTORE_VM, path, &argv, &validate) {
+        Ok(parsed) => parsed,
+        Err(answered) => return answered,
+    };
+    let Some(microvm) = parsed.args.first().cloned() else {
+        return crate::cli::failed("a microVM is required");
+    };
+    let mut request = Run {
+        again: Some(microvm),
+        resume: Some(parsed.args.get(1).cloned().unwrap_or_default()),
+        detach: true,
+        ..Run::default()
+    };
+    send(&mut request, term::DETACH_KEYS, &mut None, false)
+}
+
+/// `why`, a refusal of `action`'s, in a panel on a colour terminal, in shards' words;
+/// whether it was shown there.
+pub(crate) fn refused_on_terminal(action: &str, why: &str) -> bool {
+    if let Some(p) = crate::cli::look::styled_err() {
+        let hint = format!("shards {action} --help shows its options");
+        crate::cli::look::error(&p, action, &crate::cli::look::ours(why), &[&hint]);
+        return true;
+    }
+    let _ = (action, why);
+    false
+}
+
+fn refuse(why: &str) -> ExitCode {
+    let _ = writeln!(std::io::stderr(), "{why}");
+    ExitCode::FAILURE
+}
+
+/// Flag values the CLI checks as it reads them: `--network`'s as `NetworkOpt.Set` reads
+/// them (docker/cli opts/network.go), and `-e`'s as `opts.ValidateEnv` takes them:
+/// `NAME=VALUE` as given, and `NAME` alone with its value here, if it has one
+/// (docker/cli opts/env.go).
+fn validate(flag: &Flag, value: &str) -> Result<String, String> {
+    if matches!(flag.name, "network" | "net") {
+        return network::attachment(value).map(|_| value.to_string());
+    }
+
+    if flag.name != "env" {
+        return shards_cmdline::flags::value(flag, value);
+    }
+    let (name, given) = match value.split_once('=') {
+        Some((name, _)) => (name, true),
+        None => (value, false),
+    };
+    if name.is_empty() {
+        return Err(format!("invalid environment variable: {value}"));
+    }
+    if given {
+        return Ok(value.to_string());
+    }
+    match std::env::var(name) {
+        Ok(here) => Ok(format!("{name}={here}")),
+        Err(std::env::VarError::NotPresent) => Ok(value.to_string()),
+        Err(std::env::VarError::NotUnicode(_)) => {
+            Err(format!("environment variable {name} is not valid UTF-8"))
+        }
+    }
+}
+
+/// The request `parsed` asks for, or what the CLI objects to before it asks the daemon
+/// (docker/cli run.go runRun, validatePullOpt).
+fn request(parsed: &Parsed) -> Result<Run, String> {
+    let pull = match parsed.string("pull") {
+        "missing" | "" => Pull::Missing,
+        "always" => Pull::Always,
+        "never" => Pull::Never,
+        other => {
+            return Err(format!(
+                "invalid pull option: '{other}': must be one of \"always\", \"missing\" or \"never\""
+            ));
+        }
+    };
+    // parse's first check (docker/cli container/opts.go).
+    let mac = parsed.string("mac-address");
+    if !mac.is_empty() && !shards_cmdline::network::parse_mac(mac.trim()) {
+        return Err(format!("{mac} is not a valid mac address"));
+    }
+    let (image, cmd) = parsed.args.split_first().ok_or("an image is required")?;
+    let health = health(parsed)?;
+    let (_, bindings) = shards_cmdline::ports::publish(parsed.many("publish"))?;
+    let attachments = parsed
+        .many("network")
+        .iter()
+        .map(|v| network::attachment(v))
+        .collect::<Result<Vec<_>, _>>()?;
+    let address = |name: &str| {
+        let v = parsed.string(name);
+        (!v.is_empty() && v != "<nil>")
+            .then(|| shards_cmdline::network::parse_addr(v))
+            .transpose()
+    };
+    let top = network::TopLevel {
+        aliases: parsed.many("network-alias").to_vec(),
+        ipv4: address("ip")?,
+        ipv6: address("ip6")?,
+        mac: mac.to_string(),
+        link_local: parsed.many("link-local-ip").to_vec(),
+    };
+    let endpoints = network::endpoints(&attachments, &top)?
+        .into_iter()
+        .map(|a| Endpoint {
+            network: a.target,
+            aliases: a.aliases,
+            ipv4: a.ipv4.map(|a| a.to_string()).unwrap_or_default(),
+            ipv6: a.ipv6.map(|a| a.to_string()).unwrap_or_default(),
+            link_local: a.link_local.iter().map(ToString::to_string).collect(),
+            mac: a.mac,
+            driver_opts: a.driver_opts,
+            gw_priority: a.gw_priority,
+        })
+        .collect();
+    let given = |name: &str| Some(parsed.string(name).to_string()).filter(|v| !v.is_empty());
+    // opts.ReadKVEnvStrings and ReadKVStrings: the files' lines first, the flags' after.
+    let mut env = Vec::new();
+    for file in parsed.many("env-file") {
+        env.extend(kv_file(file, true)?);
+    }
+    env.extend(parsed.many("env").iter().cloned());
+    let mut labels = Vec::new();
+    for file in parsed.many("label-file") {
+        labels.extend(kv_file(file, false)?);
+    }
+    labels.extend(parsed.many("label").iter().cloned());
+    let (pid, ipc, uts, userns, cgroupns) = (
+        parsed.string("pid"),
+        parsed.string("ipc"),
+        parsed.string("uts"),
+        parsed.string("userns"),
+        parsed.string("cgroupns"),
+    );
+    namespace_modes([
+        (pid, "--pid"),
+        (ipc, "--ipc"),
+        (uts, "--uts"),
+        (userns, "--userns"),
+        (cgroupns, "--cgroupns"),
+    ])?;
+    let swappiness = parsed.int("memory-swappiness");
+    check_swappiness(swappiness, "--memory-swappiness")?;
+    let number = |name: &str| parsed.string(name).parse::<i64>().unwrap_or(0);
+    let resources = shards_ipc::Resources {
+        memory: number("memory"),
+        memory_reservation: number("memory-reservation"),
+        memory_swap: number("memory-swap"),
+        memory_swappiness: (swappiness != -1).then_some(swappiness),
+        oom_kill_disable: parsed.bool("oom-kill-disable"),
+        nano_cpus: number("cpus"),
+        cpu_shares: parsed.int("cpu-shares"),
+        cpu_period: parsed.int("cpu-period"),
+        cpu_quota: parsed.int("cpu-quota"),
+        cpuset_cpus: parsed.string("cpuset-cpus").to_string(),
+        cpuset_mems: parsed.string("cpuset-mems").to_string(),
+        pids_limit: parsed.int("pids-limit"),
+        blkio_weight: parsed.string("blkio-weight").parse().unwrap_or(0),
+        cpu_realtime_period: parsed.int("cpu-rt-period"),
+        cpu_realtime_runtime: parsed.int("cpu-rt-runtime"),
+        cpu_count: parsed.int("cpu-count"),
+        cpu_percent: parsed.int("cpu-percent"),
+        io_maximum_bandwidth: parsed.string("io-maxbandwidth").parse().unwrap_or(0),
+        io_maximum_iops: parsed.string("io-maxiops").parse().unwrap_or(0),
+    };
+    let (cap_add, cap_drop) = effective_caps(parsed.many("cap-add"), parsed.many("cap-drop"));
+    let (security_opt, system_paths) = security_opts(parsed.many("security-opt"))?;
+    // Each KEY=VALUE, which the daemon reads (D156).
+    let storage_opt = parsed.many("storage-opt").to_vec();
+    if let Some(o) = storage_opt.iter().find(|o| !o.contains('=')) {
+        return Err(format!("--storage-opt {o}: an option is KEY=VALUE, as size=10G"));
+    }
+    let (devices, cdi_devices) = devices(parsed.many("device"))?;
+    let (binds, volumes, mounts) = volumes(parsed)?;
+    // Each range a port at a time, as the CLI exposes them (container/opts.go).
+    let mut expose = Vec::new();
+    for e in parsed.many("expose") {
+        let (first, last, proto) = shards_cmdline::ports::parse_port_range(e)
+            .map_err(|why| format!("invalid range format for --expose: {why}"))?;
+        expose.extend((first..=last).map(|p| format!("{p}/{proto}")));
+    }
+    let restart_policy = restart_policy(parsed.string("restart"))?;
+    // A policy other than none restarts what --rm removes (opts.go parse).
+    // `-a`'s streams, the client's to attach: none to a run its client leaves (run.go).
+    let attach = parsed.many("attach").to_vec();
+    // Its log (D161): options for none refused, as the CLI refuses them (opts.go,
+    // parseLoggingOpts); the rest the daemon's to check.
+    let log_driver = parsed.string("log-driver").to_string();
+    let log_opts = parsed.many("log-opt").to_vec();
+    if log_driver == "none" && !log_opts.is_empty() {
+        return Err("--log-opt with --log-driver none: a run with no log takes no log options".into());
+    }
+    if !attach.is_empty() && parsed.bool("detach") {
+        return Err("--attach and --detach: a detached run's streams go to its log alone: give one".into());
+    }
+    if parsed.bool("rm") && !matches!(restart_policy.0.as_str(), "" | "no") {
+        return Err("--restart and --rm: a run removed as it ends is not restarted: give one".into());
+    }
+    Ok(Run {
+        image: image.clone(),
+        cmd: cmd.to_vec(),
+        env,
+        labels,
+        expose,
+        add_hosts: parsed.many("add-host").to_vec(),
+        dns: parsed.many("dns").to_vec(),
+        dns_search: parsed.many("dns-search").to_vec(),
+        dns_options: parsed.many("dns-option").to_vec(),
+        domainname: parsed.string("domainname").to_string(),
+        workdir: parsed.string("workdir").to_string(),
+        user: parsed.string("user").to_string(),
+        hostname: given("hostname"),
+        interactive: parsed.bool("interactive"),
+        // Given, the entrypoint is one word, and "" clears the image's (docker/cli
+        // cli/command/container/opts.go).
+        entrypoint: parsed
+            .changed("entrypoint")
+            .then(|| given("entrypoint").into_iter().collect()),
+        pull,
+        name: given("name"),
+        detach: parsed.bool("detach"),
+        remove: parsed.bool("rm"),
+        // Sized as the CLI's stdout is, even detached (docker/cli create.go, ConsoleSize),
+        // and told what this terminal is.
+        tty: parsed.bool("tty").then(stdout_size),
+        terms: if parsed.bool("tty") {
+            super::terms::terms()
+        } else {
+            Vec::new()
+        },
+        network: network::mode(&attachments).to_string(),
+        endpoints,
+        stop_signal: parsed
+            .changed("stop-signal")
+            .then(|| parsed.string("stop-signal").to_string()),
+        stop_timeout: parsed.changed("stop-timeout").then(|| parsed.int("stop-timeout")),
+        health,
+        publish: bindings
+            .into_iter()
+            .map(|b| shards_ipc::Publish {
+                port: b.port.number,
+                proto: b.port.proto,
+                host_ip: b.host_ip,
+                host_port: b.host_port,
+            })
+            .collect(),
+        publish_all: parsed.bool("publish-all"),
+        registry_env: shards_ipc::registry_env(),
+        cloud_env: crate::cloud_environment(),
+        cidfile: match parsed.string("cidfile") {
+            "" => String::new(),
+            // A client's over a context, whose own path it is (`context::CIDFILE`).
+            path if told_cidfile() => path.to_string(),
+            path => absolute_as_given(path)
+                .map_err(|e| format!("failed to create the container ID file: {e}"))?
+                .to_string_lossy()
+                .into_owned(),
+        },
+        quiet: parsed.bool("quiet"),
+        resources,
+        read_only: parsed.bool("read-only"),
+        tmpfs: parsed.many("tmpfs").to_vec(),
+        shm_size: parsed.string("shm-size").parse().unwrap_or(0),
+        ulimits: parsed.many("ulimit").to_vec(),
+        sysctls: parsed.many("sysctl").to_vec(),
+        cap_add,
+        security_opt,
+        system_paths,
+        devices,
+        device_cgroup_rules: parsed.many("device-cgroup-rule").to_vec(),
+        cdi_devices,
+        gpus: parsed.many("gpus").to_vec(),
+        blkio_weight_device: parsed.many("blkio-weight-device").to_vec(),
+        device_read_bps: parsed.many("device-read-bps").to_vec(),
+        device_write_bps: parsed.many("device-write-bps").to_vec(),
+        device_read_iops: parsed.many("device-read-iops").to_vec(),
+        device_write_iops: parsed.many("device-write-iops").to_vec(),
+        cap_drop,
+        group_add: parsed.many("group-add").to_vec(),
+        oom_score_adj: parsed.int("oom-score-adj"),
+        privileged: parsed.bool("privileged"),
+        use_api_socket: parsed.bool("use-api-socket"),
+        container_image: parsed.bool("container-image"),
+        binds,
+        volumes,
+        mounts,
+        volumes_from: parsed.many("volumes-from").to_vec(),
+        volume_driver: parsed.string("volume-driver").to_string(),
+        restart_policy,
+        // HostConfig.Init, set where the flag is given (container/opts.go parse).
+        init_process: parsed.changed("init").then(|| parsed.bool("init")),
+        pid: pid.to_string(),
+        annotations: parsed.many("annotation").to_vec(),
+        isolation: parsed.string("isolation").to_string(),
+        runtime: parsed.string("runtime").to_string(),
+        ipc: ipc.to_string(),
+        uts: uts.to_string(),
+        userns: userns.to_string(),
+        cgroupns: cgroupns.to_string(),
+        // Where its microVM's processes are made on the host (D183), the daemon's to judge.
+        cgroup_parent: parsed.string("cgroup-parent").to_string(),
+        // The permission bits it clears, at most all nine.
+        umask: match parsed.string("umask") {
+            "<nil>" | "" => None,
+            octal => match u32::from_str_radix(octal, 8) {
+                Ok(mask) if mask <= 0o777 => Some(mask),
+                _ => {
+                    return Err(format!(
+                        "--umask {octal}: a umask is at most 0777, the nine permission bits it clears"
+                    ));
+                }
+            },
+        },
+        storage_opt,
+        attach,
+        log_driver,
+        log_opts,
+        // The flag's default is SHARDS_DEFAULT_PLATFORM's, else DOCKER_DEFAULT_PLATFORM's.
+        platform: if parsed.changed("platform") {
+            parsed.string("platform").to_string()
+        } else {
+            crate::cli::env_ours_first("SHARDS_DEFAULT_PLATFORM", "DOCKER_DEFAULT_PLATFORM")
+                .unwrap_or_default()
+        },
+        // The client this command runs for through its context (D228), which the daemon
+        // gives what its owner granted it alone.
+        client: crate::client_grants::client_here(),
+        ..Run::default()
+    })
+}
+
+/// What `createContainer` checks and makes before it asks for the microVM (docker/cli
+/// create.go): the platform, read as containerd reads it, and then the CID file. A
+/// platform that parses but that this host's microVMs cannot run is refused here, before
+/// anything is pulled: Docker would pull it and fail as it starts, or start it under
+/// emulation, which a microVM has none of.
+fn before_create(request: &Run) -> Result<Option<CidFile>, String> {
+    check_platform(&request.platform)?;
+    if request.cidfile.is_empty() {
+        return Ok(None);
+    }
+    if let Some(file) = crate::context::told_cidfile() {
+        return Ok(Some(CidFile {
+            path: PathBuf::from(&request.cidfile),
+            file: Some(file),
+            written: false,
+            told: true,
+        }));
+    }
+    CidFile::new(&request.cidfile).map(Some)
+}
+
+/// Whether this command's `--cidfile` is a client's over a context, whose ID goes to it
+/// (`context::take_cidfile`).
+fn told_cidfile() -> bool {
+    crate::context::tells_cidfile()
+}
+
+/// A platform a run asks for, read as containerd reads it, that this host's microVMs run,
+/// themselves or under its CPU's emulator (D179); none asked for is theirs.
+pub(crate) fn check_platform(platform: &str) -> Result<(), String> {
+    if platform.is_empty() {
+        return Ok(());
+    }
+    let wanted = crate::pull::targets(platform)?;
+    let runs = shards_image::platform::guest();
+    let emulated = |t: &shards_image::platform::Target| {
+        t.os == "linux" && shards_abi::emulate::of(&t.architecture).is_some()
+    };
+    if let Some(other) = wanted.iter().find(|t| !runs.contains(t) && !emulated(t)) {
+        let name = |t: &shards_image::platform::Target| {
+            [t.os.as_str(), t.architecture.as_str(), t.variant.as_str()]
+                .iter()
+                .filter(|p| !p.is_empty())
+                .copied()
+                .collect::<Vec<_>>()
+                .join("/")
+        };
+        let ours: Vec<String> = runs.iter().map(name).collect();
+        let others: Vec<String> = shards_abi::emulate::EMULATORS
+            .iter()
+            .map(|e| format!("linux/{}", e.architecture))
+            .filter(|p| !ours.contains(p))
+            .collect();
+        return Err(format!(
+            "this host's microVMs run {}, and {} under emulation, not {}",
+            ours.join(" and "),
+            others.join(", "),
+            name(other)
+        ));
+    }
+    Ok(())
+}
+
+/// `path` absolute, joined to the working directory where it is relative, its own text
+/// kept, so that what an open of it says says it as it was given: std's `absolute` rewrites
+/// a Windows path's every separator a backslash (GetFullPathNameW).
+fn absolute_as_given(path: &str) -> std::io::Result<PathBuf> {
+    let given = std::path::Path::new(path);
+    if given.is_absolute() {
+        return Ok(given.to_path_buf());
+    }
+    Ok(std::env::current_dir()?.join(given))
+}
+
+/// `--cidfile`'s file: made before the microVM, its ID
+/// written once there is one, and removed if none was; or, a client's over a context, the
+/// descriptor its daemon tells the client the ID through, the file being the client's.
+pub(crate) struct CidFile {
+    path: PathBuf,
+    file: Option<std::fs::File>,
+    written: bool,
+    told: bool,
+}
+
+impl CidFile {
+    pub(crate) fn new(path: &str) -> Result<CidFile, String> {
+        // Made only where nothing is, in one step: two runs naming one file cannot both take
+        // it, where a check and then a create (docker/cli newCIDFile) let both through, and
+        // a link there is not followed.
+        let made = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path);
+        let file = match made {
+            Ok(file) => file,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                return Err(format!(
+                    "container ID file found, make sure the other container isn't running or delete {path}"
+                ));
+            }
+            Err(e) => {
+                return Err(format!(
+                    "failed to create the container ID file: open {path}: {}",
+                    shards_cmdline::buildflags::os_error(&e)
+                ));
+            }
+        };
+        Ok(CidFile {
+            path: PathBuf::from(path),
+            file: Some(file),
+            written: false,
+            told: false,
+        })
+    }
+
+    /// Writes the microVM's ID, once, and closes the file, as createContainer closes its
+    /// own once the container is made (docker/cli create.go): a client's over a context is
+    /// told the ID as it closes (`context::CIDFILE`), not as the run ends.
+    pub(crate) fn write(&mut self, id: &str) -> Result<(), String> {
+        let (Some(file), false) = (&mut self.file, self.written) else {
+            return Ok(());
+        };
+        file.write_all(id.as_bytes()).map_err(|e| {
+            format!(
+                "failed to write the container ID ({id}) to file: write {}: {}",
+                self.path.display(),
+                shards_cmdline::buildflags::os_error(&e)
+            )
+        })?;
+        self.written = true;
+        self.file = None;
+        Ok(())
+    }
+}
+
+impl Drop for CidFile {
+    fn drop(&mut self) {
+        drop(self.file.take());
+        if !self.written && !self.told {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+}
+
+/// The status `docker run` exits with for an error before its container runs
+/// (docker/cli run.go toStatusError): 127 for what was not found, 126 for what may not be
+/// run, else 125.
+pub(crate) fn run_status(error: &str) -> u8 {
+    if [
+        "executable file not found",
+        "no such file or directory",
+        "system cannot find the file specified",
+    ]
+    .iter()
+    .any(|s| error.contains(s))
+    {
+        127
+    } else if ["permission denied", "is a directory"]
+        .iter()
+        .any(|s| error.contains(s))
+    {
+        126
+    } else {
+        NOT_RUN
+    }
+}
+
+/// The request `args` (`run`'s words) make, as `run` makes it: for tests that hold what a
+/// request becomes to what Docker makes of the same words.
+#[cfg(test)]
+pub(crate) fn for_test(args: &[String]) -> Result<Run, String> {
+    match shards_cmdline::flags::parse(&RUN, "shards run", args, &validate) {
+        shards_cmdline::flags::Outcome::Run(parsed) => request(&parsed),
+        _ => Err(format!("{args:?} is no run")),
+    }
+}
+
+/// pkg/kvfile's Parse: the `KEY=VALUE` lines of file `path`, blank lines and `#` comments
+/// skipped, leading space trimmed, a byte-order mark dropped; a line of a key alone is
+/// the environment's value of it with `lookup` (`--env-file`), and dropped without it
+/// (`--label-file`), or where it is not set.
+pub(crate) fn kv_file(path: &str, lookup: bool) -> Result<Vec<String>, String> {
+    let bytes = std::fs::read(path)
+        .map_err(|e| format!("open {path}: {}", shards_cmdline::buildflags::os_error(&e)))?;
+    let invalid = |why: String| format!("invalid env file ({path}): {why}");
+    let mut out = Vec::new();
+    // bufio.ScanLines: a last line without its newline is a line; a \r before one goes.
+    let mut lines: Vec<&[u8]> = bytes.split(|&b| b == b'\n').collect();
+    if lines.last().is_some_and(|l| l.is_empty()) {
+        lines.pop();
+    }
+    for (n, raw) in lines.into_iter().enumerate() {
+        let raw = raw.strip_suffix(b"\r").unwrap_or(raw);
+        let Ok(text) = std::str::from_utf8(raw) else {
+            let shown: Vec<String> = raw.iter().map(u8::to_string).collect();
+            return Err(invalid(format!(
+                "invalid utf8 bytes at line {}: [{}]",
+                n + 1,
+                shown.join(" ")
+            )));
+        };
+        let text = if n == 0 {
+            text.strip_prefix('\u{feff}').unwrap_or(text)
+        } else {
+            text
+        };
+        let line = text.trim_start();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let (key, has_value) = match line.split_once('=') {
+            Some((k, _)) => (k, true),
+            None => (line, false),
+        };
+        if key.is_empty() {
+            return Err(invalid(format!("no variable name on line '{line}'")));
+        }
+        if key.contains([' ', '\t']) {
+            return Err(invalid(format!("variable '{key}' contains whitespaces")));
+        }
+        if has_value {
+            out.push(line.to_string());
+        } else if lookup && let Ok(value) = std::env::var(line) {
+            out.push(format!("{key}={value}"));
+        }
+    }
+    Ok(out)
+}
+
+/// `-v` and `--mount` as docker/cli sends them (container/opts.go parse): `-v`'s values
+/// each once, those with a source binds (a relative host path made absolute), the rest
+/// anonymous volumes; `--mount`'s with their relative sources made absolute.
+/// `-v`'s binds, its anonymous volumes, and `--mount`'s, encoded.
+type Volumes = (Vec<String>, Vec<String>, Vec<String>);
+
+fn volumes(parsed: &Parsed) -> Result<Volumes, String> {
+    let cwd = std::env::current_dir().ok();
+    let mut seen = std::collections::BTreeSet::new();
+    let (mut binds, mut anonymous) = (Vec::new(), Vec::new());
+    for v in parsed.many("volume") {
+        if !seen.insert(v.clone()) {
+            continue;
+        }
+        let spec = shards_cmdline::mounts::parse_volume(v)?;
+        if spec.source.is_empty() {
+            anonymous.push(v.clone());
+            continue;
+        }
+        let mut bind = v.clone();
+        if spec.kind == "bind"
+            && let Some((host, target)) = v.split_once(':')
+        {
+            // filepath.Abs: joined and cleaned as paths are on this host, `\` on Windows.
+            let host = match &cwd {
+                Some(cwd) if !host.starts_with('/') && host.starts_with('.') => {
+                    shards_cmdline::mounts::host_clean(&cwd.join(host))
+                }
+                _ => host.to_string(),
+            };
+            bind = format!("{host}:{target}");
+        }
+        binds.push(bind);
+    }
+    let mut mounts = Vec::new();
+    for m in parsed.many("mount") {
+        let m = shards_cmdline::mounts::parse_mount(m, cwd.as_deref())?;
+        mounts.push(shards_cmdline::mounts::encode(&m));
+    }
+    Ok((binds, anonymous, mounts))
+}
+
+/// A run's namespaces in its microVM (D115, D156), its PID, IPC, UTS, user and cgroup
+/// modes, each with how it was given: each mode it may have, said where one given is
+/// not.
+pub(crate) fn namespace_modes(modes: [(&str, &str); 5]) -> Result<(), String> {
+    let [
+        (pid, pid_by),
+        (ipc, ipc_by),
+        (uts, uts_by),
+        (userns, userns_by),
+        (cgroupns, cgroupns_by),
+    ] = modes;
+    if !(pid.is_empty() || pid == "host" || pid.strip_prefix("container:").is_some_and(|c| !c.is_empty())) {
+        return Err(format!(
+            "{pid_by} {pid}: give host (the microVM's PID namespace) or container:NAME (that of a run whose microVM it joins), or leave it out for one of its own"
+        ));
+    }
+    if !(ipc.is_empty()
+        || matches!(ipc, "private" | "shareable" | "none" | "host")
+        || ipc.strip_prefix("container:").is_some_and(|c| !c.is_empty()))
+    {
+        return Err(format!(
+            "{ipc_by} {ipc}: give private (its own, the default), shareable (its own, which runs joining its microVM may share), none (its own, with no /dev/shm), host (the microVM's) or container:NAME (that of a run whose microVM it joins)"
+        ));
+    }
+    if !(uts.is_empty() || uts == "host") {
+        return Err(format!(
+            "{uts_by} {uts}: give host (its host's hostname), or leave it out for the microVM's own"
+        ));
+    }
+    if !(userns.is_empty() || userns == "host") {
+        return Err(format!(
+            "{userns_by} {userns}: give host, or leave it out: a run's users are its microVM's own either way"
+        ));
+    }
+    if !(cgroupns.is_empty() || cgroupns == "host" || cgroupns == "private") {
+        return Err(format!(
+            "{cgroupns_by} {cgroupns}: give private (a cgroup namespace of its own, the default) or host (the microVM's whole tree)"
+        ));
+    }
+    Ok(())
+}
+
+/// Swappiness, given as `by` says: 0 to 100, the microVM's own (D159), or -1 to leave it
+/// its kernel's.
+pub(crate) fn check_swappiness(swappiness: i64, by: &str) -> Result<(), String> {
+    if swappiness != -1 && !(0..=100).contains(&swappiness) {
+        return Err(format!(
+            "{by} {swappiness}: from 0 to 100, or -1 to leave the microVM's own"
+        ));
+    }
+    Ok(())
+}
+
+/// `--restart` as the CLI's input means it (opts.ParseRestartPolicy): `NAME[:COUNT]`, an empty
+/// value none at all; the name checked by the daemon.
+fn restart_policy(policy: &str) -> Result<(String, i64), String> {
+    if policy.is_empty() {
+        return Ok((String::new(), 0));
+    }
+    let (name, count) = policy.split_once(':').unwrap_or((policy, ""));
+    if policy.contains(':') && name.is_empty() {
+        return Err("invalid restart policy format: no policy provided before colon".into());
+    }
+    let count = if count.is_empty() {
+        0
+    } else {
+        // strconv.Atoi: ParseInt in base 10 of a 64-bit int.
+        shards_cmdline::go::parse_int10(count).map_err(|_| {
+            "invalid restart policy format: maximum retry count must be an integer".to_string()
+        })?
+    };
+    Ok((name.to_string(), count))
+}
+
+/// `--cap-add` and `--cap-drop` as `inspect` reports them (moby daemon/pkg/oci/caps,
+/// NormalizeLegacyCapabilities): upper case, `CAP_` before each but `ALL`, in the order
+/// given, duplicates and all; docker/cli sends them as given.
+pub(crate) fn effective_caps(add: &[String], drop: &[String]) -> (Vec<String>, Vec<String>) {
+    let normalize = |list: &[String]| -> Vec<String> {
+        list.iter()
+            .map(|c| {
+                let c = c.to_uppercase();
+                if c == "ALL" || c.starts_with("CAP_") {
+                    c
+                } else {
+                    format!("CAP_{c}")
+                }
+            })
+            .collect()
+    };
+    (normalize(add), normalize(drop))
+}
+
+/// `--security-opt`, as docker/cli reads it (cli/command/container/opts.go,
+/// parseSecurityOpts then parseSystemPaths): each `KEY=VALUE` or `KEY:VALUE` but
+/// `no-new-privileges`, which needs none; a seccomp profile's file, but `builtin` and
+/// `unconfined`, read here and sent as its JSON compacted; and `systempaths=unconfined`
+/// taken out, for no paths masked.
+fn security_opts(opts: &[String]) -> Result<(Vec<String>, bool), String> {
+    let mut out = Vec::with_capacity(opts.len());
+    for opt in opts {
+        let (k, v, ok) = match opt.split_once('=') {
+            Some((k, v)) => (k, v, true),
+            None if opt == "no-new-privileges" => (opt.as_str(), "", false),
+            None => match opt.split_once(':') {
+                Some((k, v)) => (k, v, true),
+                None => (opt.as_str(), "", false),
+            },
+        };
+        if (!ok || v.is_empty()) && k != "no-new-privileges" {
+            return Err(format!(
+                "invalid --security-opt: {}",
+                shards_cmdline::go::quote(opt)
+            ));
+        }
+        if k == "seccomp" && v != "builtin" && v != "unconfined" {
+            out.push(format!("seccomp={}", seccomp_profile(v)?));
+            continue;
+        }
+        out.push(opt.clone());
+    }
+    let system_paths = out.iter().any(|o| o == "systempaths=unconfined");
+    out.retain(|o| o != "systempaths=unconfined");
+    Ok((out, system_paths))
+}
+
+/// The seccomp profile `--security-opt seccomp=V` names, its JSON compacted, as the CLI's
+/// input means it (parseSecurityOpts): the file `V`, read here; or, where no file is read
+/// by that name, `V` itself where it is a profile's JSON, as a context's client sends the
+/// profile its own file holds (D180), and as the Engine API takes one. Docker's CLI refuses
+/// that, with the file it could not open; shards refuses what is neither a file nor JSON
+/// so.
+pub(crate) fn seccomp_profile(v: &str) -> Result<String, String> {
+    let text = match std::fs::read(v) {
+        Ok(text) => text,
+        Err(e) => match shards_agentfile::json_compact(v.as_bytes()) {
+            Ok(compacted) if v.starts_with('{') => {
+                return Ok(String::from_utf8_lossy(&compacted).into_owned());
+            }
+            _ => {
+                return Err(format!(
+                    "opening seccomp profile ({v}) failed: open {v}: {}",
+                    shards_cmdline::buildflags::os_error(&e)
+                ));
+            }
+        },
+    };
+    let compacted = shards_agentfile::json_compact(&text)
+        .map_err(|e| format!("compacting json for seccomp profile ({v}) failed: {e}"))?;
+    Ok(String::from_utf8_lossy(&compacted).into_owned())
+}
+
+/// `--device`, as docker/cli reads it for a Linux daemon (cli/command/container/opts.go):
+/// a CDI device's qualified name kept apart, for its device request; each other checked
+/// (validateLinuxPath) and parsed (parseLinuxDevice) into `HOST:CONTAINER:PERMISSIONS`.
+pub(crate) fn devices(given: &[String]) -> Result<(Vec<String>, Vec<String>), String> {
+    let (mut devices, mut cdi) = (Vec::new(), Vec::new());
+    for device in given {
+        if is_cdi_name(device) {
+            cdi.push(device.clone());
+            continue;
+        }
+        let validated = validate_linux_path(device)?;
+        let arr: Vec<&str> = validated.splitn(4, ':').collect();
+        let (src, mut dst, mut permissions) = (arr.first().copied().unwrap_or_default(), "", "rwm");
+        match arr[..] {
+            [_, d, p] => {
+                (dst, permissions) = (d, p);
+            }
+            [_, d] if valid_device_mode(d) => permissions = d,
+            [_, d] => dst = d,
+            [_] => {}
+            _ => return Err(format!("invalid device specification: {device}")),
+        }
+        if dst.is_empty() {
+            dst = src;
+        }
+        devices.push(format!("{src}:{dst}:{permissions}"));
+    }
+    Ok((devices, cdi))
+}
+
+/// validDeviceMode: r, w and m, each at most once.
+fn valid_device_mode(mode: &str) -> bool {
+    let mut seen = [false; 3];
+    !mode.is_empty()
+        && mode.bytes().all(|b| {
+            let i = match b {
+                b'r' => 0,
+                b'w' => 1,
+                b'm' => 2,
+                _ => return false,
+            };
+            seen.get_mut(i).is_some_and(|s| !std::mem::replace(s, true))
+        })
+}
+
+/// validateLinuxPath(val, validDeviceMode): `[host-dir:]container-path[:mode]`, its
+/// container path cleaned and absolute.
+fn validate_linux_path(val: &str) -> Result<String, String> {
+    use shards_cmdline::mounts::clean;
+    if val.matches(':').count() > 2 {
+        return Err(format!("bad format for path: {val}"));
+    }
+    let split: Vec<&str> = val.splitn(3, ':').collect();
+    if split.first().is_none_or(|s| s.is_empty()) {
+        return Err(format!("bad format for path: {val}"));
+    }
+    let (container_path, out) = match split[..] {
+        [c] => (c, clean(c)),
+        [c, mode] if valid_device_mode(mode) => (c, format!("{}:{mode}", clean(c))),
+        [host, c] => (c, format!("{host}:{}", clean(c))),
+        [host, c, mode] => {
+            if !valid_device_mode(mode) {
+                return Err(format!("bad mode specified: {mode}"));
+            }
+            (c, format!("{host}:{c}:{mode}"))
+        }
+        _ => return Err(format!("bad format for path: {val}")),
+    };
+    if !container_path.starts_with('/') {
+        return Err(format!("{container_path} is not an absolute path"));
+    }
+    Ok(out)
+}
+
+/// A CDI device's fully qualified name, `VENDOR/CLASS=NAME` (container-device-interface
+/// pkg/parser IsQualifiedName).
+fn is_cdi_name(device: &str) -> bool {
+    let letter = |c: char| c.is_ascii_alphabetic();
+    let alnum = |c: char| c.is_ascii_alphanumeric();
+    // A vendor's or class's: a letter, then letters, digits, `_`, `-` and `.`, ending in
+    // a letter or digit; a device's: from a letter or digit, `:` too.
+    let name_ok = |name: &str, first: &dyn Fn(char) -> bool, colon: bool| {
+        let mut chars = name.chars();
+        let Some(c0) = chars.next() else { return false };
+        if !first(c0) {
+            return false;
+        }
+        let rest: Vec<char> = chars.collect();
+        let Some((last, middle)) = rest.split_last() else {
+            return true;
+        };
+        middle
+            .iter()
+            .all(|&c| alnum(c) || matches!(c, '_' | '-' | '.') || (colon && c == ':'))
+            && alnum(*last)
+    };
+    if device.is_empty() || device.starts_with('/') {
+        return false;
+    }
+    let Some((qualifier, name)) = device.split_once('=') else {
+        return false;
+    };
+    let Some((vendor, class)) = qualifier.split_once('/') else {
+        return false;
+    };
+    !vendor.is_empty()
+        && !class.is_empty()
+        && !name.is_empty()
+        && name_ok(vendor, &letter, false)
+        && name_ok(class, &letter, false)
+        && name_ok(name, &alnum, true)
+}
+
+/// The health check the command line sets, as the CLI reads it (docker/cli
+/// cli/command/container/opts.go, parse): `NONE` for `--no-healthcheck`, which no other
+/// `--health-*` may join; otherwise what the `--health-*` flags say, none negative, and
+/// `--health-cmd` as `CMD-SHELL`; or nothing, for the image's.
+fn health(parsed: &Parsed) -> Result<Option<shards_ipc::Health>, String> {
+    let given = shards_ipc::Health {
+        test: match parsed.string("health-cmd") {
+            "" => Vec::new(),
+            cmd => vec!["CMD-SHELL".into(), cmd.into()],
+        },
+        interval: parsed.int("health-interval"),
+        timeout: parsed.int("health-timeout"),
+        start_period: parsed.int("health-start-period"),
+        start_interval: parsed.int("health-start-interval"),
+        retries: parsed.int("health-retries"),
+    };
+    let any = given != shards_ipc::Health::default();
+    if parsed.bool("no-healthcheck") {
+        if any {
+            return Err("--no-healthcheck conflicts with --health-* options".into());
+        }
+        return Ok(Some(shards_ipc::Health {
+            test: vec!["NONE".into()],
+            ..shards_ipc::Health::default()
+        }));
+    }
+    if !any {
+        return Ok(None);
+    }
+    for (value, flag) in [
+        (given.interval, "--health-interval"),
+        (given.timeout, "--health-timeout"),
+        (given.retries, "--health-retries"),
+        (given.start_period, "--health-start-period"),
+        (given.start_interval, "--health-start-interval"),
+    ] {
+        if value < 0 {
+            return Err(format!("{flag} cannot be negative"));
+        }
+    }
+    Ok(Some(given))
+}
+
+/// Rows and columns of this process's stdout, or 0×0 if it is not a terminal.
+fn stdout_size() -> (u16, u16) {
+    crate::cli::terminal::size(1)
+}
+
+/// Completes the request with what only this process knows:
+/// - SHARDS_KERNEL and SHARDS_INIT, made absolute;
+/// - SHARDS_TIMING;
+/// - the daemon binary it would start: `shardsd`, beside this one.
+///
+/// Returns the home and that binary.
+fn resolve(request: &mut Run) -> Result<(PathBuf, PathBuf), String> {
+    let from_env = |name: &str| {
+        std::env::var_os(name)
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from)
+    };
+    let absolute = |path: PathBuf| -> Result<String, String> {
+        let full = std::path::absolute(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+        full.into_os_string()
+            .into_string()
+            .map_err(|p| format!("{p:?} is not valid UTF-8"))
+    };
+    request.kernel = from_env("SHARDS_KERNEL").map(absolute).transpose()?;
+    request.init = from_env("SHARDS_INIT").map(absolute).transpose()?;
+    if request.kernel.is_some() != request.init.is_some() {
+        return Err("SHARDS_KERNEL and SHARDS_INIT go together".into());
+    }
+    request.timing = std::env::var_os("SHARDS_TIMING").is_some();
+    let daemon = crate::cli::shardsd()?;
+    request.daemon = Identity::of_build(&daemon).map_err(|e| format!("{}: {e}", daemon.display()))?;
+    Ok((shards_ipc::home()?, daemon))
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+    use shards_cmdline::flags::{self, Outcome};
+
+    fn asked(argv: &[&str]) -> Result<Run, String> {
+        let argv: Vec<String> = argv.iter().map(|s| s.to_string()).collect();
+        match flags::parse(&RUN, "shards run", &argv, &validate) {
+            Outcome::Run(parsed) => request(&parsed),
+            Outcome::Fail { text, .. } => Err(text),
+            Outcome::Help { .. } => Err("help".into()),
+        }
+    }
+
+    fn strings(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn a_command_line_becomes_a_request() {
+        let asked = asked(&["-e", "A=1", "--entrypoint", "", "--rm", "alpine", "ls", "-e", "/"]).unwrap();
+        assert_eq!(asked.image, "alpine");
+        assert_eq!(asked.env, strings(&["A=1"]));
+        assert_eq!(asked.entrypoint, Some(Vec::new()));
+        assert_eq!(
+            asked.cmd,
+            strings(&["ls", "-e", "/"]),
+            "what follows the image is the command's"
+        );
+        assert!(asked.remove);
+        let combined = self::asked(&["-di", "-eA=1", "--name=web", "--pull=never", "alpine"]).unwrap();
+        assert!(combined.detach && combined.interactive);
+        assert_eq!(
+            (combined.name.as_deref(), combined.pull),
+            (Some("web"), Pull::Never)
+        );
+        let given = self::asked(&["-h", "box", "--entrypoint", "/bin/sh", "alpine"]).unwrap();
+        assert_eq!(given.hostname.as_deref(), Some("box"));
+        assert_eq!(given.entrypoint, Some(strings(&["/bin/sh"])));
+        assert_eq!(
+            self::asked(&["--pull", "sometimes", "alpine"]).unwrap_err(),
+            "invalid pull option: 'sometimes': must be one of \"always\", \"missing\" or \"never\""
+        );
+        let tty = self::asked(&["-t", "alpine"]).unwrap();
+        assert!(tty.tty.is_some(), "a terminal, as big as stdout");
+        let published = self::asked(&["-p", "127.0.0.1:8080:80/udp", "-P", "alpine"]).unwrap();
+        assert_eq!(
+            published.publish,
+            [shards_ipc::Publish {
+                port: 80,
+                proto: "udp".into(),
+                host_ip: "127.0.0.1".into(),
+                host_port: "8080".into(),
+            }]
+        );
+        assert!(published.publish_all);
+        assert_eq!(
+            self::asked(&["-p", "x", "alpine"]).unwrap_err(),
+            "invalid containerPort: x"
+        );
+    }
+}

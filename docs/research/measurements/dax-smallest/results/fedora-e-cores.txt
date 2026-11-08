@@ -1,0 +1,196 @@
+load at each run's start: median 11.5, range [5.1, 62.4]
+size phase cache arm: n; p50 median [range]; p90 median; p99 median [range]; max (µs)
+    4k again     cold fuse  : n 5000; p50 237.0 [211.7, 274.0]; p90 250.6; p99 286.7 [251.7, 508.5]; max 1253.4
+    4k again     cold window: n 5000; p50 157.0 [154.7, 184.4]; p90 170.1; p99 235.0 [213.5, 299.1]; max 1452.9
+    4k again     warm fuse  : n 5000; p50 220.1 [211.0, 248.3]; p90 234.1; p99 362.8 [254.6, 417.3]; max 1351.8
+    4k again     warm window: n 5000; p50 173.4 [154.5, 199.0]; p90 190.6; p99 248.5 [170.9, 456.0]; max 1206.1
+    4k first     cold fuse  : n 5000; p50 344.6 [301.4, 429.7]; p90 398.3; p99 763.4 [555.3, 1859.9]; max 2306.2
+    4k first     cold window: n 5000; p50 328.1 [326.0, 393.4]; p90 364.5; p99 1046.5 [874.2, 1244.7]; max 21856.6
+    4k first     warm fuse  : n 5000; p50 287.2 [266.5, 318.2]; p90 310.7; p99 493.6 [394.0, 688.6]; max 2860.0
+    4k first     warm window: n 5000; p50 353.1 [324.5, 451.6]; p90 380.8; p99 764.9 [577.9, 2256.6]; max 22282.2
+    4k overwrite cold fuse  : n 5000; p50 296.8 [263.8, 326.1]; p90 311.7; p99 501.7 [395.7, 775.8]; max 2040.7
+    4k overwrite cold window: n 5000; p50 314.0 [312.4, 368.0]; p90 355.2; p99 625.7 [565.7, 725.6]; max 1781.7
+    4k overwrite warm fuse  : n 5000; p50 283.7 [266.0, 310.0]; p90 320.2; p99 558.8 [390.7, 748.6]; max 1592.7
+    4k overwrite warm window: n 5000; p50 340.3 [307.3, 412.8]; p90 358.7; p99 574.4 [439.8, 1356.8]; max 2399.6
+    4k rewrite   cold fuse  : n 5000; p50 366.7 [332.3, 490.3]; p90 394.4; p99 626.3 [494.3, 902.8]; max 3064.7
+    4k rewrite   cold window: n 5000; p50 371.4 [351.9, 482.0]; p90 410.4; p99 837.2 [580.4, 944.0]; max 434646.4
+    4k rewrite   warm fuse  : n 5000; p50 346.3 [324.5, 412.7]; p90 411.3; p99 680.2 [522.9, 1731.4]; max 2758.9
+    4k rewrite   warm window: n 5000; p50 387.8 [345.9, 595.6]; p90 411.8; p99 765.9 [435.4, 3052.7]; max 18547.8
+    4k stat      cold fuse  : n 5000; p50 63.7 [56.0, 83.3]; p90 69.4; p99 80.8 [67.1, 203.4]; max 612.7
+    4k stat      cold window: n 5000; p50 58.6 [55.8, 63.5]; p90 67.7; p99 118.8 [74.1, 310.6]; max 1654.0
+    4k stat      warm fuse  : n 5000; p50 58.2 [56.2, 94.7]; p90 63.2; p99 107.2 [81.5, 1038.2]; max 1871.8
+    4k stat      warm window: n 5000; p50 62.1 [56.8, 103.1]; p90 66.4; p99 98.1 [76.0, 765.5]; max 1172.3
+   16k again     cold fuse  : n 5000; p50 238.6 [220.5, 277.6]; p90 256.1; p99 401.6 [296.8, 469.5]; max 1242.0
+   16k again     cold window: n 5000; p50 191.2 [170.2, 210.4]; p90 218.3; p99 416.2 [234.8, 1024.9]; max 2411.8
+   16k again     warm fuse  : n 5000; p50 239.3 [222.4, 277.1]; p90 273.5; p99 404.6 [366.7, 554.6]; max 1446.9
+   16k again     warm window: n 5000; p50 196.3 [167.2, 260.4]; p90 213.6; p99 292.9 [269.1, 2445.8]; max 4123.9
+   16k first     cold fuse  : n 5000; p50 365.2 [308.9, 367.8]; p90 390.5; p99 615.3 [542.0, 681.7]; max 2457.6
+   16k first     cold window: n 5000; p50 416.0 [363.8, 549.5]; p90 475.1; p99 884.9 [657.5, 4847.2]; max 21645.8
+   16k first     warm fuse  : n 5000; p50 306.3 [295.8, 373.3]; p90 355.4; p99 528.2 [494.3, 801.7]; max 2426.4
+   16k first     warm window: n 5000; p50 403.0 [356.5, 767.1]; p90 467.3; p99 1011.6 [596.4, 7592.7]; max 24739.4
+   16k overwrite cold fuse  : n 5000; p50 304.4 [274.6, 351.4]; p90 332.3; p99 581.5 [356.4, 946.6]; max 1918.2
+   16k overwrite cold window: n 5000; p50 399.6 [345.3, 525.9]; p90 450.6; p99 663.9 [565.4, 7090.7]; max 12590.8
+   16k overwrite warm fuse  : n 5000; p50 300.3 [289.0, 350.1]; p90 325.1; p99 563.5 [509.1, 968.6]; max 2675.0
+   16k overwrite warm window: n 5000; p50 410.4 [340.8, 520.9]; p90 452.2; p99 629.4 [579.7, 4970.1]; max 7982.2
+   16k rewrite   cold fuse  : n 5000; p50 391.9 [341.4, 508.2]; p90 438.3; p99 681.6 [457.1, 931.2]; max 1973.2
+   16k rewrite   cold window: n 5000; p50 508.8 [390.2, 554.7]; p90 618.3; p99 735.4 [625.8, 3925.1]; max 5288.8
+   16k rewrite   warm fuse  : n 5000; p50 390.3 [353.0, 498.7]; p90 511.2; p99 710.3 [669.2, 2484.0]; max 5021.9
+   16k rewrite   warm window: n 5000; p50 498.9 [381.6, 549.9]; p90 597.1; p99 701.8 [688.6, 1284.9]; max 2949.8
+   16k stat      cold fuse  : n 5000; p50 60.1 [55.8, 70.1]; p90 64.9; p99 85.2 [68.0, 119.6]; max 597.5
+   16k stat      cold window: n 5000; p50 71.1 [59.8, 86.1]; p90 76.7; p99 120.9 [103.4, 722.2]; max 2979.4
+   16k stat      warm fuse  : n 5000; p50 69.2 [58.5, 103.1]; p90 75.1; p99 120.7 [80.9, 2041.9]; max 3653.4
+   16k stat      warm window: n 5000; p50 67.3 [58.4, 74.3]; p90 77.3; p99 165.6 [84.9, 360.8]; max 2763.9
+   32k again     cold fuse  : n 5000; p50 287.7 [239.1, 699.6]; p90 314.4; p99 484.1 [410.8, 7070.8]; max 9822.4
+   32k again     cold window: n 5000; p50 188.4 [165.9, 568.3]; p90 217.1; p99 269.8 [215.3, 4338.4]; max 7548.1
+   32k again     warm fuse  : n 5000; p50 278.2 [246.3, 2089.9]; p90 333.6; p99 506.3 [349.4, 16206.6]; max 35383.1
+   32k again     warm window: n 5000; p50 182.1 [166.4, 194.1]; p90 207.3; p99 449.6 [307.0, 866.0]; max 1756.6
+   32k first     cold fuse  : n 5000; p50 396.9 [333.8, 1714.1]; p90 460.4; p99 972.2 [559.6, 9952.7]; max 17947.5
+   32k first     cold window: n 5000; p50 420.3 [383.7, 773.0]; p90 474.9; p99 729.8 [634.3, 4183.1]; max 26577.7
+   32k first     warm fuse  : n 5000; p50 368.8 [335.9, 1641.6]; p90 429.0; p99 585.0 [487.8, 16674.2]; max 39752.8
+   32k first     warm window: n 5000; p50 404.4 [384.4, 441.6]; p90 459.8; p99 878.7 [727.0, 1299.6]; max 24222.2
+   32k overwrite cold fuse  : n 5000; p50 354.9 [304.0, 1435.8]; p90 383.7; p99 691.3 [485.2, 6335.9]; max 10864.3
+   32k overwrite cold window: n 5000; p50 409.0 [354.1, 578.6]; p90 478.5; p99 668.9 [550.7, 11985.0]; max 25054.6
+   32k overwrite warm fuse  : n 5000; p50 357.0 [325.6, 856.3]; p90 427.2; p99 1008.7 [492.6, 8290.0]; max 47422.2
+   32k overwrite warm window: n 5000; p50 411.6 [362.1, 482.5]; p90 454.4; p99 844.1 [602.9, 3917.0]; max 7728.8
+   32k rewrite   cold fuse  : n 5000; p50 480.8 [380.2, 1290.8]; p90 557.0; p99 801.2 [548.7, 8403.9]; max 12950.7
+   32k rewrite   cold window: n 5000; p50 520.6 [415.5, 568.4]; p90 624.4; p99 1246.8 [579.1, 2463.2]; max 5920.4
+   32k rewrite   warm fuse  : n 5000; p50 495.9 [364.5, 976.9]; p90 608.0; p99 1245.5 [713.2, 25428.8]; max 46971.2
+   32k rewrite   warm window: n 5000; p50 538.5 [441.3, 553.3]; p90 611.2; p99 835.0 [651.5, 1698.6]; max 2413.7
+   32k stat      cold fuse  : n 5000; p50 65.5 [59.8, 322.0]; p90 77.9; p99 121.4 [71.8, 2961.1]; max 6239.8
+   32k stat      cold window: n 5000; p50 66.8 [61.7, 71.1]; p90 74.8; p99 130.2 [93.8, 145.7]; max 450.9
+   32k stat      warm fuse  : n 5000; p50 66.8 [60.3, 153.6]; p90 72.5; p99 120.5 [85.6, 1643.9]; max 5136.3
+   32k stat      warm window: n 5000; p50 67.9 [57.8, 70.6]; p90 75.3; p99 103.0 [93.5, 193.2]; max 314.2
+   64k again     cold fuse  : n 5000; p50 299.9 [278.7, 392.6]; p90 332.9; p99 649.4 [497.3, 4552.2]; max 9787.3
+   64k again     cold window: n 5000; p50 193.3 [170.3, 220.2]; p90 209.1; p99 367.9 [248.0, 2039.5]; max 3287.6
+   64k again     warm fuse  : n 5000; p50 290.8 [268.6, 309.2]; p90 396.0; p99 681.8 [458.7, 1254.2]; max 2118.5
+   64k again     warm window: n 5000; p50 199.5 [169.2, 235.3]; p90 229.4; p99 536.3 [257.6, 1067.3]; max 2353.1
+   64k first     cold fuse  : n 5000; p50 485.9 [426.4, 699.0]; p90 595.5; p99 1070.3 [677.6, 4028.5]; max 5774.8
+   64k first     cold window: n 5000; p50 445.4 [392.4, 697.8]; p90 508.5; p99 1183.2 [763.8, 2316.1]; max 111943.5
+   64k first     warm fuse  : n 5000; p50 429.1 [388.0, 500.3]; p90 572.1; p99 991.3 [650.2, 1604.2]; max 3755.5
+   64k first     warm window: n 5000; p50 450.0 [406.6, 567.2]; p90 554.5; p99 1321.3 [888.3, 2323.0]; max 21487.3
+   64k overwrite cold fuse  : n 5000; p50 363.3 [343.4, 577.1]; p90 411.4; p99 913.9 [626.5, 2869.9]; max 7347.8
+   64k overwrite cold window: n 5000; p50 441.8 [387.8, 563.0]; p90 544.1; p99 1139.0 [658.1, 1669.8]; max 4676.6
+   64k overwrite warm fuse  : n 5000; p50 361.6 [354.2, 378.2]; p90 470.7; p99 970.8 [665.3, 1196.3]; max 3446.7
+   64k overwrite warm window: n 5000; p50 460.3 [411.9, 616.1]; p90 610.0; p99 797.2 [701.5, 2836.0]; max 6581.3
+   64k rewrite   cold fuse  : n 5000; p50 509.2 [487.6, 1111.6]; p90 581.5; p99 931.9 [805.5, 46774.6]; max 398676.0
+   64k rewrite   cold window: n 5000; p50 560.8 [510.4, 741.9]; p90 744.3; p99 1288.0 [753.2, 1999.9]; max 7476.9
+   64k rewrite   warm fuse  : n 5000; p50 504.9 [455.6, 541.1]; p90 582.5; p99 1090.4 [899.7, 1336.8]; max 2765.1
+   64k rewrite   warm window: n 5000; p50 559.3 [494.9, 733.2]; p90 762.6; p99 1223.5 [714.8, 1544.1]; max 14784.1
+   64k stat      cold fuse  : n 5000; p50 63.8 [60.6, 164.0]; p90 74.3; p99 282.4 [152.6, 2017.3]; max 2870.1
+   64k stat      cold window: n 5000; p50 70.0 [63.0, 73.2]; p90 81.3; p99 150.2 [108.1, 255.7]; max 568.6
+   64k stat      warm fuse  : n 5000; p50 64.1 [60.0, 66.2]; p90 71.7; p99 176.3 [94.1, 291.1]; max 911.4
+   64k stat      warm window: n 5000; p50 68.6 [64.5, 79.8]; p90 83.7; p99 147.2 [106.8, 249.0]; max 1835.1
+  256k again     cold fuse  : n 5000; p50 478.3 [437.9, 573.3]; p90 735.8; p99 1853.4 [1139.3, 7872.0]; max 137595.2
+  256k again     cold window: n 5000; p50 203.4 [181.3, 221.2]; p90 216.4; p99 301.2 [251.1, 514.3]; max 805.6
+  256k again     warm fuse  : n 5000; p50 519.6 [416.4, 632.5]; p90 833.4; p99 1992.5 [827.9, 12675.4]; max 141850.8
+  256k again     warm window: n 5000; p50 223.1 [197.3, 230.7]; p90 240.2; p99 355.4 [321.4, 400.4]; max 5556.2
+  256k first     cold fuse  : n 5000; p50 888.1 [654.1, 1027.7]; p90 1082.4; p99 1812.7 [1425.8, 6601.0]; max 53702.2
+  256k first     cold window: n 5000; p50 576.0 [491.2, 818.5]; p90 628.6; p99 1146.2 [959.5, 2487.2]; max 22358.0
+  256k first     warm fuse  : n 5000; p50 690.7 [625.8, 752.7]; p90 799.9; p99 1535.3 [1143.6, 1940.5]; max 28750.1
+  256k first     warm window: n 5000; p50 580.3 [496.6, 645.3]; p90 643.9; p99 1124.7 [974.8, 1715.0]; max 22035.1
+  256k overwrite cold fuse  : n 5000; p50 599.9 [552.8, 744.7]; p90 759.3; p99 1217.9 [788.9, 1816.9]; max 10165.6
+  256k overwrite cold window: n 5000; p50 591.1 [577.3, 648.5]; p90 675.1; p99 1002.5 [851.6, 1359.8]; max 2470.2
+  256k overwrite warm fuse  : n 5000; p50 652.4 [517.7, 722.5]; p90 770.7; p99 1163.3 [811.9, 1314.8]; max 10935.8
+  256k overwrite warm window: n 5000; p50 718.2 [617.4, 771.3]; p90 847.0; p99 1190.5 [930.7, 2090.2]; max 15852.8
+  256k rewrite   cold fuse  : n 5000; p50 684.9 [628.8, 830.9]; p90 770.4; p99 1231.4 [928.1, 1907.2]; max 11214.6
+  256k rewrite   cold window: n 5000; p50 719.3 [680.0, 747.6]; p90 761.2; p99 1096.5 [977.5, 1206.0]; max 3790.1
+  256k rewrite   warm fuse  : n 5000; p50 707.0 [601.6, 950.8]; p90 767.3; p99 1053.5 [857.0, 1956.3]; max 10659.7
+  256k rewrite   warm window: n 5000; p50 712.6 [621.6, 853.0]; p90 781.9; p99 1302.0 [913.1, 1762.1]; max 94740.2
+  256k stat      cold fuse  : n 5000; p50 64.7 [63.0, 86.8]; p90 73.1; p99 129.8 [122.7, 413.6]; max 6653.3
+  256k stat      cold window: n 5000; p50 67.6 [61.2, 72.8]; p90 76.1; p99 124.0 [105.9, 333.1]; max 3059.5
+  256k stat      warm fuse  : n 5000; p50 66.5 [57.5, 78.5]; p90 71.0; p99 117.7 [78.6, 140.6]; max 8292.7
+  256k stat      warm window: n 5000; p50 64.1 [56.9, 69.6]; p90 68.6; p99 88.7 [82.9, 167.7]; max 2213.8
+    1m again     cold fuse  : n 5000; p50 1495.2 [1132.5, 2038.7]; p90 2333.8; p99 6201.2 [2179.2, 33428.2]; max 137452.6
+    1m again     cold window: n 5000; p50 328.9 [301.8, 549.4]; p90 402.7; p99 677.5 [471.7, 11017.0]; max 13977.7
+    1m again     warm fuse  : n 5000; p50 1296.7 [1216.8, 1423.1]; p90 2513.3; p99 9514.3 [2437.5, 15491.4]; max 131870.7
+    1m again     warm window: n 5000; p50 312.7 [298.3, 316.9]; p90 383.4; p99 641.0 [439.8, 1025.8]; max 2793.4
+    1m first     cold fuse  : n 5000; p50 2351.3 [1496.0, 2755.8]; p90 3723.3; p99 29660.9 [3260.8, 61584.3]; max 202337.4
+    1m first     cold window: n 5000; p50 1179.5 [1098.0, 2403.8]; p90 1431.6; p99 2698.7 [1426.4, 13880.2]; max 30713.6
+    1m first     warm fuse  : n 5000; p50 1659.2 [1177.9, 2272.9]; p90 2504.5; p99 16183.5 [2566.9, 29757.2]; max 150254.0
+    1m first     warm window: n 5000; p50 1153.3 [1114.3, 1222.5]; p90 1264.5; p99 2123.6 [1502.7, 2633.5]; max 24601.6
+    1m overwrite cold fuse  : n 5000; p50 1482.8 [1264.6, 1925.6]; p90 1727.4; p99 2054.7 [1917.6, 24645.8]; max 43213.5
+    1m overwrite cold window: n 5000; p50 1531.3 [1484.0, 1756.4]; p90 1725.8; p99 2358.9 [1964.6, 5559.4]; max 11043.7
+    1m overwrite warm fuse  : n 5000; p50 1425.2 [1238.4, 1575.6]; p90 1886.9; p99 3068.2 [1827.6, 4017.2]; max 86185.6
+    1m overwrite warm window: n 5000; p50 1828.2 [1446.1, 1912.2]; p90 3264.8; p99 4472.4 [1711.6, 7848.3]; max 19407.6
+    1m rewrite   cold fuse  : n 5000; p50 1850.7 [1609.1, 2258.5]; p90 2006.7; p99 2421.6 [2292.8, 34418.2]; max 92269.4
+    1m rewrite   cold window: n 5000; p50 1555.8 [1459.2, 1767.0]; p90 1771.6; p99 2681.0 [2245.8, 3408.7]; max 22362.6
+    1m rewrite   warm fuse  : n 5000; p50 1634.5 [1619.3, 1991.7]; p90 1997.5; p99 2993.9 [1962.3, 4152.1]; max 9044.3
+    1m rewrite   warm window: n 5000; p50 1587.5 [1499.6, 2213.6]; p90 2492.7; p99 3130.7 [1944.0, 13128.7]; max 49920.0
+    1m stat      cold fuse  : n 5000; p50 67.0 [59.4, 152.9]; p90 72.1; p99 133.0 [99.4, 2775.0]; max 8350.6
+    1m stat      cold window: n 5000; p50 63.5 [62.4, 68.1]; p90 72.4; p99 147.2 [79.6, 168.2]; max 1273.4
+    1m stat      warm fuse  : n 5000; p50 63.9 [57.2, 71.1]; p90 72.4; p99 124.0 [101.8, 427.0]; max 590.3
+    1m stat      warm window: n 5000; p50 66.7 [64.3, 72.2]; p90 72.9; p99 153.8 [76.5, 316.5]; max 655.2
+ 2044k again     cold fuse  : n 5000; p50 3523.3 [2634.4, 4703.2]; p90 6010.4; p99 43799.3 [31530.7, 57954.7]; max 314694.3
+ 2044k again     cold window: n 5000; p50 527.3 [511.0, 723.5]; p90 596.5; p99 862.7 [745.2, 1755.2]; max 3830.1
+ 2044k again     warm fuse  : n 5000; p50 3014.8 [2119.8, 4861.6]; p90 5557.1; p99 28772.6 [24967.2, 66637.4]; max 207380.7
+ 2044k again     warm window: n 5000; p50 520.8 [513.2, 800.4]; p90 622.7; p99 1150.3 [690.5, 2283.2]; max 4236.9
+ 2044k first     cold fuse  : n 5000; p50 4379.1 [3440.3, 6170.7]; p90 8494.4; p99 48087.3 [36776.4, 80147.2]; max 593552.6
+ 2044k first     cold window: n 5000; p50 2753.4 [2542.5, 3158.6]; p90 3132.2; p99 4155.8 [3803.2, 5964.3]; max 23124.0
+ 2044k first     warm fuse  : n 5000; p50 3894.4 [2217.0, 5277.5]; p90 8091.1; p99 50570.0 [4879.3, 84085.1]; max 292434.8
+ 2044k first     warm window: n 5000; p50 1935.3 [1791.6, 2835.9]; p90 2164.2; p99 3449.7 [2648.1, 15452.5]; max 45050.0
+ 2044k overwrite cold fuse  : n 5000; p50 2887.7 [2760.3, 5446.0]; p90 7489.2; p99 33906.9 [6867.5, 43648.8]; max 279011.0
+ 2044k overwrite cold window: n 5000; p50 2640.0 [2510.3, 3874.3]; p90 2944.7; p99 7032.4 [3137.2, 10978.5]; max 31622.7
+ 2044k overwrite warm fuse  : n 5000; p50 2721.5 [2454.3, 4911.7]; p90 6170.5; p99 33950.1 [4593.0, 62002.2]; max 365105.2
+ 2044k overwrite warm window: n 5000; p50 2614.4 [2432.6, 3839.9]; p90 3133.7; p99 9131.4 [5732.3, 9949.2]; max 18013.4
+ 2044k rewrite   cold fuse  : n 5000; p50 3397.9 [2837.7, 6322.8]; p90 10304.3; p99 30799.1 [15609.2, 61089.7]; max 452454.9
+ 2044k rewrite   cold window: n 5000; p50 2709.8 [2615.3, 3233.2]; p90 3995.1; p99 5374.9 [4901.8, 12075.6]; max 72599.6
+ 2044k rewrite   warm fuse  : n 5000; p50 5656.3 [2877.2, 5968.7]; p90 7992.7; p99 41623.5 [3798.2, 67818.0]; max 182525.3
+ 2044k rewrite   warm window: n 5000; p50 2636.0 [2570.5, 5482.0]; p90 3920.9; p99 4581.0 [4101.9, 53182.8]; max 120136.3
+ 2044k stat      cold fuse  : n 5000; p50 68.1 [60.7, 74.8]; p90 96.5; p99 128.7 [109.1, 972.1]; max 7972.1
+ 2044k stat      cold window: n 5000; p50 66.5 [60.2, 72.3]; p90 74.0; p99 122.0 [72.2, 135.4]; max 407.2
+ 2044k stat      warm fuse  : n 5000; p50 66.5 [62.2, 77.5]; p90 90.6; p99 140.2 [81.7, 266.7]; max 2010.4
+ 2044k stat      warm window: n 5000; p50 66.7 [63.3, 98.3]; p90 72.7; p99 114.4 [72.9, 336.8]; max 3307.1
+    2m again     cold fuse  : n 5000; p50 2114.5 [1755.0, 6574.6]; p90 2609.7; p99 4142.0 [2328.1, 30985.2]; max 257534.0
+    2m again     cold window: n 5000; p50 524.4 [473.4, 1063.3]; p90 602.0; p99 948.0 [739.7, 7468.0]; max 25848.6
+    2m again     warm fuse  : n 5000; p50 2082.9 [1697.2, 9005.4]; p90 2569.4; p99 3813.0 [2328.4, 178437.9]; max 1048098.5
+    2m again     warm window: n 5000; p50 533.8 [462.2, 581.0]; p90 598.0; p99 876.6 [675.9, 1003.2]; max 2663.4
+    2m first     cold fuse  : n 5000; p50 3199.5 [2829.5, 5387.5]; p90 5019.9; p99 33478.7 [6967.9, 50254.9]; max 228246.7
+    2m first     cold window: n 5000; p50 2642.0 [1888.0, 2801.0]; p90 3255.6; p99 4441.2 [3649.8, 4762.9]; max 21170.5
+    2m first     warm fuse  : n 5000; p50 2204.6 [1969.6, 12462.0]; p90 3660.6; p99 10876.6 [4473.2, 89862.1]; max 300895.9
+    2m first     warm window: n 5000; p50 1872.6 [1755.9, 2061.9]; p90 2045.0; p99 2829.0 [2508.5, 3346.8]; max 37551.9
+    2m overwrite cold fuse  : n 5000; p50 2304.0 [1998.2, 5043.9]; p90 4739.5; p99 19739.9 [5294.6, 101017.8]; max 532272.1
+    2m overwrite cold window: n 5000; p50 2464.0 [2394.4, 4566.2]; p90 3045.1; p99 8405.7 [3363.6, 17065.5]; max 32513.6
+    2m overwrite warm fuse  : n 5000; p50 2218.1 [2187.0, 5828.7]; p90 4499.5; p99 8986.8 [5343.7, 69407.4]; max 262063.4
+    2m overwrite warm window: n 5000; p50 2622.9 [2555.0, 2703.2]; p90 3076.9; p99 4602.0 [3247.1, 8343.9]; max 10130.2
+    2m rewrite   cold fuse  : n 5000; p50 2969.1 [2731.2, 6389.5]; p90 4115.8; p99 7248.2 [4386.4, 77982.9]; max 191643.3
+    2m rewrite   cold window: n 5000; p50 2499.7 [2475.6, 4799.7]; p90 3993.5; p99 5040.1 [3911.0, 36174.5]; max 72272.5
+    2m rewrite   warm fuse  : n 5000; p50 3144.0 [3023.4, 3428.1]; p90 3712.5; p99 5066.1 [4064.4, 53165.9]; max 126143.5
+    2m rewrite   warm window: n 5000; p50 2989.7 [2309.7, 3217.8]; p90 3803.0; p99 5696.6 [3169.3, 6011.0]; max 11037.0
+    2m stat      cold fuse  : n 5000; p50 104.8 [62.3, 155.0]; p90 193.3; p99 301.1 [179.4, 1478.0]; max 2704.1
+    2m stat      cold window: n 5000; p50 64.9 [60.4, 137.5]; p90 71.3; p99 163.6 [73.8, 3248.4]; max 9034.1
+    2m stat      warm fuse  : n 5000; p50 65.9 [62.3, 91.8]; p90 75.9; p99 231.1 [159.1, 475.6]; max 761.2
+    2m stat      warm window: n 5000; p50 67.9 [60.9, 73.0]; p90 73.2; p99 125.4 [73.1, 317.2]; max 598.3
+size arm: VM memory KiB, host mappings, descriptors at a run's end (medians); window's maps, removes
+    4k fuse  : memory_kib 22420, host_mappings 270, descriptors 54; maps 0, removes 0, peak 0
+    4k window: memory_kib 50908, host_mappings 2279, descriptors 1057; maps 2001, removes 0, peak 1001
+   16k fuse  : memory_kib 34803, host_mappings 270, descriptors 54; maps 0, removes 0, peak 0
+   16k window: memory_kib 51624, host_mappings 2279, descriptors 1057; maps 2001, removes 0, peak 1001
+   32k fuse  : memory_kib 52099, host_mappings 270, descriptors 54; maps 0, removes 0, peak 0
+   32k window: memory_kib 51782, host_mappings 2280, descriptors 1057; maps 2001, removes 0, peak 1001
+   64k fuse  : memory_kib 84546, host_mappings 270, descriptors 54; maps 0, removes 0, peak 0
+   64k window: memory_kib 51418, host_mappings 2279, descriptors 1057; maps 2001, removes 0, peak 1001
+  256k fuse  : memory_kib 298970, host_mappings 271, descriptors 54; maps 0, removes 0, peak 0
+  256k window: memory_kib 51676, host_mappings 2280, descriptors 1057; maps 2001, removes 0, peak 1001
+    1m fuse  : memory_kib 1103402, host_mappings 271, descriptors 54; maps 0, removes 0, peak 0
+    1m window: memory_kib 53499, host_mappings 2280, descriptors 1057; maps 2001, removes 0, peak 1001
+ 2044k fuse  : memory_kib 1622267, host_mappings 272, descriptors 54; maps 0, removes 0, peak 0
+ 2044k window: memory_kib 53918, host_mappings 2280, descriptors 1057; maps 2001, removes 0, peak 1001
+    2m fuse  : memory_kib 1153988, host_mappings 272, descriptors 54; maps 0, removes 0, peak 0
+    2m window: memory_kib 53390, host_mappings 1280, descriptors 1057; maps 2001, removes 0, peak 1001
+set window arm smallest: runs; run s median [range]; first p50, p99, max (µs) medians; window's figures
+mix      1024 fuse          -: 3; 31.94 [27.31, 41.96]; 339.9, 1545.7, 55626.6; dax 0 of 66357; setups 0 refused 0 removes 0 p50s: -; end: windows_mib 0 ranges 0 peak 0 maps 0 removes 0 host_mappings 272 descriptors 54 | memory_kib 1012234; daemon fds_peak 86 inotify_watches_peak 14
+mix      1024 window        0: 3; 37.23 [34.66, 41.29]; 428.5, 1519.9, 22934.2; dax 66357 of 66357; setups 66147 refused 0 removes 65740 p50s: descriptor_us 12 total_us 34 mmap_us 12 stage2_us 0 held_us 0; end: windows_mib 2048 ranges 407 peak 411 maps 66147 removes 65740 host_mappings 1094 descriptors 463 | memory_kib 133532; daemon fds_peak 497 inotify_watches_peak 425
+mix      1024 window   262144: 3; 32.14 [27.37, 35.10]; 355.4, 1419.6, 20086.7; dax 527 of 66357; setups 529 refused 0 removes 123 p50s: descriptor_us 14 total_us 54 mmap_us 17 stage2_us 0 held_us 0; end: windows_mib 2048 ranges 406 peak 411 maps 529 removes 123 host_mappings 1093 descriptors 462 | memory_kib 1107624; daemon fds_peak 496 inotify_watches_peak 424
+mix      1024 window  1048576: 3; 29.37 [27.90, 33.02]; 336.7, 983.9, 22876.9; dax 25 of 66357; setups 26 refused 0 removes 10 p50s: descriptor_us 16 total_us 70 mmap_us 22 stage2_us 0 held_us 0; end: windows_mib 2048 ranges 16 peak 16 maps 26 removes 10 host_mappings 312 descriptors 72 | memory_kib 823646; daemon fds_peak 102 inotify_watches_peak 30
+mix   default fuse          -: 3; 32.31 [26.93, 75.01]; 351.2, 1647.7, 526149.8; dax 0 of 66357; setups 0 refused 0 removes 0 p50s: -; end: windows_mib 0 ranges 0 peak 0 maps 0 removes 0 host_mappings 272 descriptors 54 | memory_kib 1366224; daemon fds_peak 86 inotify_watches_peak 14
+mix   default window        0: 3; 40.78 [40.24, 52.31]; 464.7, 1319.1, 279883.7; dax 66357 of 66357; setups 65988 refused 0 removes 40380 p50s: descriptor_us 12 total_us 60 mmap_us 37 stage2_us 0 held_us 0; end: windows_mib 128036 ranges 25608 peak 25609 maps 65988 removes 40380 host_mappings 51497 descriptors 25664 | memory_kib 1411143; daemon fds_peak 25698 inotify_watches_peak 25623
+mix   default window   262144: 3; 28.62 [27.96, 35.80]; 333.8, 1022.7, 26101.8; dax 527 of 66357; setups 528 refused 0 removes 49 p50s: descriptor_us 14 total_us 47 mmap_us 15 stage2_us 0 held_us 0; end: windows_mib 128036 ranges 479 peak 479 maps 528 removes 49 host_mappings 1239 descriptors 535 | memory_kib 1118262; daemon fds_peak 565 inotify_watches_peak 493
+mix   default window  1048576: 3; 29.88 [28.39, 32.01]; 338.8, 1198.0, 27139.5; dax 25 of 66357; setups 26 refused 0 removes 0 p50s: descriptor_us 16 total_us 66 mmap_us 19 stage2_us 0 held_us 0; end: windows_mib 128036 ranges 26 peak 26 maps 26 removes 0 host_mappings 333 descriptors 82 | memory_kib 1320326; daemon fds_peak 112 inotify_watches_peak 40
+small    1024 fuse          -: 3; 34.62 [32.68, 35.51]; 373.0, 1215.3, 134196.6; dax 0 of 70000; setups 0 refused 0 removes 0 p50s: -; end: windows_mib 0 ranges 0 peak 0 maps 0 removes 0 host_mappings 270 descriptors 54 | memory_kib 395604; daemon fds_peak 86 inotify_watches_peak 14
+small    1024 window        0: 3; 37.13 [35.85, 41.34]; 418.6, 1094.1, 22054.1; dax 70000 of 70000; setups 70172 refused 0 removes 69770 p50s: descriptor_us 15 total_us 44 mmap_us 16 stage2_us 0 held_us 0; end: windows_mib 2048 ranges 402 peak 411 maps 70172 removes 69770 host_mappings 1083 descriptors 458 | memory_kib 133685; daemon fds_peak 497 inotify_watches_peak 425
+small    1024 window   262144: 3; 33.12 [30.66, 35.63]; 339.6, 1165.9, 20101.0; dax 0 of 70000; setups 1 refused 0 removes 0 p50s: descriptor_us 17 total_us 66 mmap_us 17 stage2_us 0 held_us 5; end: windows_mib 2048 ranges 1 peak 1 maps 1 removes 0 host_mappings 281 descriptors 57 | memory_kib 317566; daemon fds_peak 89 inotify_watches_peak 15
+small    1024 window  1048576: 3; 35.55 [32.15, 42.78]; 373.4, 1168.3, 28024.4; dax 0 of 70000; setups 1 refused 0 removes 0 p50s: descriptor_us 37 total_us 92 mmap_us 20 stage2_us 0 held_us 5; end: windows_mib 2048 ranges 1 peak 1 maps 1 removes 0 host_mappings 281 descriptors 57 | memory_kib 283830; daemon fds_peak 89 inotify_watches_peak 15
+small default fuse          -: 3; 33.85 [27.99, 36.02]; 359.4, 1258.3, 75623.6; dax 0 of 70000; setups 0 refused 0 removes 0 p50s: -; end: windows_mib 0 ranges 0 peak 0 maps 0 removes 0 host_mappings 271 descriptors 54 | memory_kib 393597; daemon fds_peak 86 inotify_watches_peak 14
+small default window        0: 3; 51.94 [47.21, 54.46]; 524.8, 1767.7, 106673.2; dax 70000 of 70000; setups 70003 refused 0 removes 44400 p50s: descriptor_us 15 total_us 88 mmap_us 55 stage2_us 0 held_us 0; end: windows_mib 128036 ranges 25603 peak 25609 maps 70003 removes 44400 host_mappings 51487 descriptors 25659 | memory_kib 1053036; daemon fds_peak 25695 inotify_watches_peak 25623
+small default window   262144: 3; 35.19 [29.72, 35.99]; 361.0, 1200.6, 24092.5; dax 0 of 70000; setups 1 refused 0 removes 0 p50s: descriptor_us 17 total_us 62 mmap_us 16 stage2_us 0 held_us 4; end: windows_mib 128036 ranges 1 peak 1 maps 1 removes 0 host_mappings 285 descriptors 57 | memory_kib 227659; daemon fds_peak 89 inotify_watches_peak 15
+small default window  1048576: 3; 32.08 [28.41, 35.77]; 333.8, 1139.2, 18931.0; dax 0 of 70000; setups 1 refused 0 removes 0 p50s: descriptor_us 16 total_us 66 mmap_us 20 stage2_us 0 held_us 5; end: windows_mib 128036 ranges 1 peak 1 maps 1 removes 0 host_mappings 281 descriptors 57 | memory_kib 401190; daemon fds_peak 87 inotify_watches_peak 15

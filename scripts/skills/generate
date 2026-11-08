@@ -1,0 +1,51 @@
+#!/bin/sh
+# Regenerates what crates/build takes from the Agent Skills reference validator:
+# - crates/build/testdata/skills/real/, the SKILL.md of each Apache-2.0 skill of
+#   anthropics/skills at a pinned commit, copied unmodified under its licence (LICENSE);
+# - crates/build/testdata/skills-answers.json, what skills-ref's `validate` (agentskills,
+#   pinned) makes of each skill in testdata/skills/real and testdata/skills/cases, which
+#   crates/build/tests/skills.rs expects shards' validator to make of them;
+# - crates/build/src/skill_tables.rs, Python's str.isalnum, which names are read with.
+# skills-ref runs from its own lockfile, by uv, on the Python pinned here.
+#
+#   scripts/skills/generate
+set -eu
+
+here=$(cd "$(dirname "$0")" && pwd)
+root=$(cd "$here/../.." && pwd)
+data="$root/crates/build/testdata"
+python=3.14.3
+agentskills=69ef37e9424c0a7ea9dd2293b559e43ec8176379
+anthropic=683bc88e56f3e09ba94f7055977f3d3aa499f202
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+
+git clone --quiet https://github.com/agentskills/agentskills "$work/agentskills"
+git -C "$work/agentskills" checkout --quiet "$agentskills"
+git clone --quiet https://github.com/anthropics/skills "$work/skills"
+git -C "$work/skills" checkout --quiet "$anthropic"
+
+rm -rf "$data/skills/real"
+mkdir -p "$data/skills/real"
+apache=""
+for dir in "$work/skills/skills"/*/; do
+	name=$(basename "$dir")
+	if [ -f "$dir/LICENSE.txt" ] && head -5 "$dir/LICENSE.txt" | grep -q "Apache License"; then
+		mkdir -p "$data/skills/real/$name"
+		cp "$dir/SKILL.md" "$data/skills/real/$name/SKILL.md"
+		apache="$dir/LICENSE.txt"
+	fi
+done
+cp "$apache" "$data/skills/real/LICENSE"
+cat >"$data/skills/real/README.md" <<NOTE
+# Real skills
+
+Each directory holds the \`SKILL.md\` of the skill of that name in anthropics/skills at
+$anthropic, unmodified, for each skill there under the Apache License 2.0 (\`LICENSE\`).
+Regenerate with \`scripts/skills/generate\`.
+NOTE
+
+cd "$work/agentskills/skills-ref"
+uv run --quiet --python "$python" python "$here/oracle.py" \
+	"$data/skills-answers.json" "$root/crates/build/src/skill_tables.rs" \
+	"$data/skills/real" "$data/skills/cases"

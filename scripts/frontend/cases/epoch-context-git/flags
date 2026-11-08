@@ -1,0 +1,4 @@
+-f
+$CASE/Dockerfile
+--build-arg
+SOURCE_DATE_EPOCH=context

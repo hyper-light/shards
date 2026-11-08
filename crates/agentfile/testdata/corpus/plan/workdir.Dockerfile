@@ -1,0 +1,7 @@
+FROM alpine
+WORKDIR /a
+WORKDIR b
+WORKDIR ../c
+WORKDIR /
+USER u
+WORKDIR /d

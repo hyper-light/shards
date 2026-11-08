@@ -1,0 +1,94 @@
+virtiofs: a DAX window's page structures in a region of the device's own
+
+Linux describes a virtiofs DAX window's pages as it probes the device
+(virtio_fs_setup_dax(), devm_memremap_pages() of MEMORY_DEVICE_FS_DAX), with
+page structures it takes from the guest's memory: a 64th of the window, 18
+MiB for a 1 GiB window and 73.7 for 4 GiB (shards' PM M269). A guest given
+its memory as it needs it (virtio-mem) boots with little of it, and a window
+takes a large part of that.
+
+Where the device gives a region of its own right before its cache (shared
+memory region 0xfe), those page structures go there instead, as a pmem
+device keeps its own in a region of its own (nvdimm_setup_pfn(), its
+vmem_altmap): the whole of head and cache is mapped as one range with an
+altmap over the head, and the window is the cache that follows it, as
+before. The device keeps the head's memory, and a snapshot of the machine
+keeps it as it keeps the guest's. A device without one, or with one not
+right before its cache, is mapped as before.
+
+--- a/fs/fuse/virtio_fs.c
++++ b/fs/fuse/virtio_fs.c
+@@ -1049,12 +1049,21 @@
+ 
+ DEFINE_FREE(cleanup_dax, struct dax_dev *, if (!IS_ERR_OR_NULL(_T)) virtio_fs_cleanup_dax(_T))
+ 
++/*
++ * shards: a region of the device's own right before its cache, which holds the cache's
++ * page structures, where the device gives one: a 64th of the cache, which a guest given
++ * its memory as it needs it (virtio-mem) would otherwise take from the little it booted
++ * with. The device keeps it, and a snapshot of the machine keeps it as it keeps memory.
++ */
++#define VIRTIO_FS_SHMCAP_ID_SHARDS_HEAD 0xfe
++
+ static int virtio_fs_setup_dax(struct virtio_device *vdev, struct virtio_fs *fs)
+ {
+ 	struct dax_device *dax_dev __free(cleanup_dax) = NULL;
+-	struct virtio_shm_region cache_reg;
++	struct virtio_shm_region cache_reg, head_reg;
+ 	struct dev_pagemap *pgmap;
+-	bool have_cache;
++	bool have_cache, have_head;
++	void *kaddr;
+ 
+ 	if (!IS_ENABLED(CONFIG_FUSE_DAX))
+ 		return 0;
+@@ -1080,6 +1089,16 @@
+ 		return -EBUSY;
+ 	}
+ 
++	have_head = virtio_get_shm_region(vdev, &head_reg,
++					  (u8)VIRTIO_FS_SHMCAP_ID_SHARDS_HEAD) &&
++		    head_reg.len && head_reg.addr + head_reg.len == cache_reg.addr;
++	if (have_head && !devm_request_mem_region(&vdev->dev, head_reg.addr,
++						  head_reg.len, dev_name(&vdev->dev))) {
++		dev_warn(&vdev->dev, "could not reserve region addr=0x%llx len=0x%llx\n",
++			 head_reg.addr, head_reg.len);
++		return -EBUSY;
++	}
++
+ 	dev_notice(&vdev->dev, "Cache len: 0x%llx @ 0x%llx\n", cache_reg.len,
+ 		   cache_reg.addr);
+ 
+@@ -1095,14 +1114,28 @@
+ 	 * and end fields will be used).
+ 	 */
+ 	pgmap->range = (struct range) {
+-		.start = (phys_addr_t) cache_reg.addr,
++		.start = (phys_addr_t) (have_head ? head_reg.addr : cache_reg.addr),
+ 		.end = (phys_addr_t) cache_reg.addr + cache_reg.len - 1,
+ 	};
+ 	pgmap->nr_range = 1;
++	if (have_head) {
++		/* The cache's page structures in the head, as a pmem device's
++		 * in its own (nvdimm_setup_pfn()): none of the guest's memory. */
++		struct vmem_altmap altmap = {
++			.base_pfn = PHYS_PFN(head_reg.addr),
++			.end_pfn = PHYS_PFN(cache_reg.addr + cache_reg.len - 1),
++		};
+ 
+-	fs->window_kaddr = devm_memremap_pages(&vdev->dev, pgmap);
+-	if (IS_ERR(fs->window_kaddr))
+-		return PTR_ERR(fs->window_kaddr);
++		memcpy(&pgmap->altmap, &altmap, sizeof(altmap));
++		pgmap->altmap.free = PHYS_PFN(head_reg.len);
++		pgmap->altmap.alloc = 0;
++		pgmap->flags |= PGMAP_ALTMAP_VALID;
++	}
++
++	kaddr = devm_memremap_pages(&vdev->dev, pgmap);
++	if (IS_ERR(kaddr))
++		return PTR_ERR(kaddr);
++	fs->window_kaddr = kaddr + (have_head ? head_reg.len : 0);
+ 
+ 	fs->window_phys_addr = (phys_addr_t) cache_reg.addr;
+ 	fs->window_len = (phys_addr_t) cache_reg.len;

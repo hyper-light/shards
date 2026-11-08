@@ -1,0 +1,635 @@
+[
+ {
+  "name": "gpg rsa sha256",
+  "version": 4,
+  "algo": 1,
+  "hash": 8,
+  "created": 1791560593,
+  "keyID": "8c41a6a8fe1daddf",
+  "fingerprint": "6c082b3ed77ff915acab3a3b8c41a6a8fe1daddf",
+  "hashSuffix": "0400010800511621046c082b3ed77ff915acab3a3b8c41a6a8fe1daddf05026ac90b911b14800000000004000e6d616e75322c322e352b312e31322c302c33171c72736132303438407368617264732e696e76616c696404ff00000057",
+  "hashTag": "ed4f",
+  "summary": "pgp v4 8c41a6a8fe1daddf"
+ },
+ {
+  "name": "gpg rsa sha512",
+  "version": 4,
+  "algo": 1,
+  "hash": 10,
+  "created": 1791560594,
+  "keyID": "8c41a6a8fe1daddf",
+  "fingerprint": "6c082b3ed77ff915acab3a3b8c41a6a8fe1daddf",
+  "hashSuffix": "0400010a00511621046c082b3ed77ff915acab3a3b8c41a6a8fe1daddf05026ac90b921b14800000000004000e6d616e75322c322e352b312e31322c302c33171c72736132303438407368617264732e696e76616c696404ff00000057",
+  "hashTag": "cc26",
+  "summary": "pgp v4 8c41a6a8fe1daddf"
+ },
+ {
+  "name": "gpg rsa sha1",
+  "version": 4,
+  "algo": 1,
+  "hash": 2,
+  "created": 1791560594,
+  "keyID": "8c41a6a8fe1daddf",
+  "fingerprint": "6c082b3ed77ff915acab3a3b8c41a6a8fe1daddf",
+  "hashSuffix": "0400010200511621046c082b3ed77ff915acab3a3b8c41a6a8fe1daddf05026ac90b921b14800000000004000e6d616e75322c322e352b312e31322c302c33171c72736132303438407368617264732e696e76616c696404ff00000057",
+  "hashTag": "6b8d",
+  "summary": "pgp v4 8c41a6a8fe1daddf"
+ },
+ {
+  "name": "gpg ed25519 sha256",
+  "version": 4,
+  "algo": 22,
+  "hash": 8,
+  "created": 1791560594,
+  "keyID": "b096512590e578e3",
+  "fingerprint": "d3f096e96468d3bcaeac7b38b096512590e578e3",
+  "hashSuffix": "040016080051162104d3f096e96468d3bcaeac7b38b096512590e578e305026ac90b921b14800000000004000e6d616e75322c322e352b312e31322c302c33171c65643235353139407368617264732e696e76616c696404ff00000057",
+  "hashTag": "7f42",
+  "summary": "pgp v4 b096512590e578e3"
+ },
+ {
+  "name": "gpg ed25519 sha512",
+  "version": 4,
+  "algo": 22,
+  "hash": 10,
+  "created": 1791560594,
+  "keyID": "b096512590e578e3",
+  "fingerprint": "d3f096e96468d3bcaeac7b38b096512590e578e3",
+  "hashSuffix": "0400160a0051162104d3f096e96468d3bcaeac7b38b096512590e578e305026ac90b921b14800000000004000e6d616e75322c322e352b312e31322c302c33171c65643235353139407368617264732e696e76616c696404ff00000057",
+  "hashTag": "bba4",
+  "summary": "pgp v4 b096512590e578e3"
+ },
+ {
+  "name": "gpg nistp256 sha256",
+  "version": 4,
+  "algo": 19,
+  "hash": 8,
+  "created": 1791560594,
+  "keyID": "0a60233cab53daf4",
+  "fingerprint": "a6453df19aab05308cf5d5d40a60233cab53daf4",
+  "hashSuffix": "040013080052162104a6453df19aab05308cf5d5d40a60233cab53daf405026ac90b921b14800000000004000e6d616e75322c322e352b312e31322c302c33181c6e69737470323536407368617264732e696e76616c696404ff00000058",
+  "hashTag": "4498",
+  "summary": "pgp v4 0a60233cab53daf4"
+ },
+ {
+  "name": "gpg nistp384 sha384",
+  "version": 4,
+  "algo": 19,
+  "hash": 9,
+  "created": 1791560594,
+  "keyID": "053611157c25651f",
+  "fingerprint": "c5d7bc9331d942028d1433c7053611157c25651f",
+  "hashSuffix": "040013090052162104c5d7bc9331d942028d1433c7053611157c25651f05026ac90b921b14800000000004000e6d616e75322c322e352b312e31322c302c33181c6e69737470333834407368617264732e696e76616c696404ff00000058",
+  "hashTag": "bf72",
+  "summary": "pgp v4 053611157c25651f"
+ },
+ {
+  "name": "gpg nistp521 sha512",
+  "version": 4,
+  "algo": 19,
+  "hash": 10,
+  "created": 1791560594,
+  "keyID": "52a57db5ea9a1e7e",
+  "fingerprint": "688f28a18474411cebb6cce452a57db5ea9a1e7e",
+  "hashSuffix": "0400130a0052162104688f28a18474411cebb6cce452a57db5ea9a1e7e05026ac90b921b14800000000004000e6d616e75322c322e352b312e31322c302c33181c6e69737470353231407368617264732e696e76616c696404ff00000058",
+  "hashTag": "d02e",
+  "summary": "pgp v4 52a57db5ea9a1e7e"
+ },
+ {
+  "name": "gpg ssh ed25519",
+  "error": "failed to decode armored signature: EOF",
+  "summary": "ssh v1 SHA256:X7b+5zJQRbXup+w6hN31QP5OZAa7f6UrSM7D8/LDQkQ"
+ },
+ {
+  "name": "gpg ssh ecdsa 256",
+  "error": "failed to decode armored signature: EOF",
+  "summary": "ssh v1 SHA256:b4wtlv28hmNcRlSE00d3wMqpU7pTKZg/bo2KDLFyJ4w"
+ },
+ {
+  "name": "gpg ssh ecdsa 384",
+  "error": "failed to decode armored signature: EOF",
+  "summary": "ssh v1 SHA256:l0bkUxAmqJJVX/aVb/gZN9AiGqiGNhzxa9GoXVb5aJY"
+ },
+ {
+  "name": "gpg ssh ecdsa 521",
+  "error": "failed to decode armored signature: EOF",
+  "summary": "ssh v1 SHA256:KBt4WfVWXRbSLOEJrJQQmxJ+vjvrWsjpJ42t33R0UqQ"
+ },
+ {
+  "name": "gpg ssh rsa 2048",
+  "error": "failed to decode armored signature: EOF",
+  "summary": "ssh v1 SHA256:Xo8iH34cyCGeCEDWJzZy6uJFvVQ4JvmVIQR2q07+caI"
+ },
+ {
+  "name": "git v0.37.1",
+  "version": 4,
+  "algo": 1,
+  "hash": 8,
+  "created": 1789140049,
+  "keyID": "ade44d8c9d44fbe4",
+  "fingerprint": "cb73f06483432e94892fd8e1ade44d8c9d44fbe4",
+  "hashSuffix": "04000108001d162104cb73f06483432e94892fd8e1ade44d8c9d44fbe405026aa41c5104ff00000023",
+  "hashTag": "35ae",
+  "summary": "pgp v4 ade44d8c9d44fbe4"
+ },
+ {
+  "name": "git HEAD",
+  "version": 4,
+  "algo": 1,
+  "hash": 8,
+  "created": 1789138210,
+  "keyID": "b5690eeebb952194",
+  "hashSuffix": "04000108001005026aa415220910b5690eeebb95219404ff00000016",
+  "hashTag": "7c95",
+  "summary": "pgp v4 b5690eeebb952194"
+ },
+ {
+  "name": "rebuilt",
+  "version": 4,
+  "algo": 1,
+  "hash": 8,
+  "created": 1791560593,
+  "keyID": "8c41a6a8fe1daddf",
+  "fingerprint": "6c082b3ed77ff915acab3a3b8c41a6a8fe1daddf",
+  "hashSuffix": "0400010800511621046c082b3ed77ff915acab3a3b8c41a6a8fe1daddf05026ac90b911b14800000000004000e6d616e75322c322e352b312e31322c302c33171c72736132303438407368617264732e696e76616c696404ff00000057",
+  "hashTag": "ed4f",
+  "summary": "pgp v4 8c41a6a8fe1daddf"
+ },
+ {
+  "name": "version 3",
+  "error": "no signature packet found",
+  "summary": "none"
+ },
+ {
+  "name": "version 5",
+  "error": "no signature packet found",
+  "summary": "none"
+ },
+ {
+  "name": "pubkey algorithm 99",
+  "error": "no signature packet found",
+  "summary": "none"
+ },
+ {
+  "name": "hash md5",
+  "error": "no signature packet found",
+  "summary": "none"
+ },
+ {
+  "name": "hash sha1",
+  "version": 4,
+  "algo": 1,
+  "hash": 2,
+  "created": 1791560593,
+  "keyID": "8c41a6a8fe1daddf",
+  "fingerprint": "6c082b3ed77ff915acab3a3b8c41a6a8fe1daddf",
+  "hashSuffix": "0400010200511621046c082b3ed77ff915acab3a3b8c41a6a8fe1daddf05026ac90b911b14800000000004000e6d616e75322c322e352b312e31322c302c33171c72736132303438407368617264732e696e76616c696404ff00000057",
+  "hashTag": "ed4f",
+  "summary": "pgp v4 8c41a6a8fe1daddf"
+ },
+ {
+  "name": "hash unknown",
+  "error": "no signature packet found",
+  "summary": "none"
+ },
+ {
+  "name": "truncated at 1",
+  "error": "failed to read next packet: unexpected EOF",
+  "summary": "none"
+ },
+ {
+  "name": "truncated at 3",
+  "error": "failed to read next packet: unexpected EOF",
+  "summary": "none"
+ },
+ {
+  "name": "truncated at 5",
+  "error": "failed to read next packet: unexpected EOF",
+  "summary": "none"
+ },
+ {
+  "name": "truncated at 7",
+  "error": "failed to read next packet: unexpected EOF",
+  "summary": "none"
+ },
+ {
+  "name": "truncated at 356",
+  "error": "failed to read next packet: unexpected EOF",
+  "summary": "none"
+ },
+ {
+  "name": "truncated at 358",
+  "error": "failed to read next packet: unexpected EOF",
+  "summary": "none"
+ },
+ {
+  "name": "no creation time",
+  "error": "failed to read next packet: openpgp: invalid data: no creation time in signature",
+  "summary": "none"
+ },
+ {
+  "name": "unknown critical subpacket",
+  "error": "no signature packet found",
+  "summary": "none"
+ },
+ {
+  "name": "unknown subpacket",
+  "version": 4,
+  "algo": 1,
+  "hash": 8,
+  "created": 1791560593,
+  "keyID": "8c41a6a8fe1daddf",
+  "fingerprint": "6c082b3ed77ff915acab3a3b8c41a6a8fe1daddf",
+  "hashSuffix": "0400010800541621046c082b3ed77ff915acab3a3b8c41a6a8fe1daddf05026ac90b911b14800000000004000e6d616e75322c322e352b312e31322c302c33171c72736132303438407368617264732e696e76616c696402647804ff0000005a",
+  "hashTag": "ed4f",
+  "summary": "pgp v4 8c41a6a8fe1daddf"
+ },
+ {
+  "name": "bad creation time",
+  "error": "failed to read next packet: openpgp: invalid data: signature creation time not four bytes",
+  "summary": "none"
+ },
+ {
+  "name": "issuer in unhashed only",
+  "version": 4,
+  "algo": 1,
+  "hash": 8,
+  "created": 1791560593,
+  "keyID": "0102030405060708",
+  "fingerprint": "6c082b3ed77ff915acab3a3b8c41a6a8fe1daddf",
+  "hashSuffix": "0400010800511621046c082b3ed77ff915acab3a3b8c41a6a8fe1daddf05026ac90b911b14800000000004000e6d616e75322c322e352b312e31322c302c33171c72736132303438407368617264732e696e76616c696404ff00000057",
+  "hashTag": "ed4f",
+  "summary": "pgp v4 0102030405060708"
+ },
+ {
+  "name": "issuer bad length",
+  "error": "failed to read next packet: openpgp: invalid data: issuer subpacket with bad length",
+  "summary": "none"
+ },
+ {
+  "name": "fingerprint v4",
+  "version": 4,
+  "algo": 1,
+  "hash": 8,
+  "created": 1791560593,
+  "keyID": "0c0d0e0f10111213",
+  "fingerprint": "000102030405060708090a0b0c0d0e0f10111213",
+  "hashSuffix": "0400010800681621046c082b3ed77ff915acab3a3b8c41a6a8fe1daddf05026ac90b911b14800000000004000e6d616e75322c322e352b312e31322c302c33171c72736132303438407368617264732e696e76616c6964162104000102030405060708090a0b0c0d0e0f1011121304ff0000006e",
+  "hashTag": "ed4f",
+  "summary": "pgp v4 0c0d0e0f10111213"
+ },
+ {
+  "name": "fingerprint v5",
+  "version": 4,
+  "algo": 1,
+  "hash": 8,
+  "created": 1791560593,
+  "keyID": "0001020304050607",
+  "fingerprint": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+  "hashSuffix": "0400010800741621046c082b3ed77ff915acab3a3b8c41a6a8fe1daddf05026ac90b911b14800000000004000e6d616e75322c322e352b312e31322c302c33171c72736132303438407368617264732e696e76616c6964222105000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f04ff0000007a",
+  "hashTag": "ed4f",
+  "summary": "pgp v4 0001020304050607"
+ },
+ {
+  "name": "fingerprint bad length",
+  "error": "failed to read next packet: openpgp: invalid data: bad fingerprint length",
+  "summary": "none"
+ },
+ {
+  "name": "non-exportable",
+  "error": "no signature packet found",
+  "summary": "none"
+ },
+ {
+  "name": "notation",
+  "version": 4,
+  "algo": 1,
+  "hash": 8,
+  "created": 1791560593,
+  "keyID": "8c41a6a8fe1daddf",
+  "fingerprint": "6c082b3ed77ff915acab3a3b8c41a6a8fe1daddf",
+  "hashSuffix": "0400010800601621046c082b3ed77ff915acab3a3b8c41a6a8fe1daddf05026ac90b911b14800000000004000e6d616e75322c322e352b312e31322c302c33171c72736132303438407368617264732e696e76616c69640e148000000000030002616263787904ff00000066",
+  "hashTag": "ed4f",
+  "summary": "pgp v4 8c41a6a8fe1daddf"
+ },
+ {
+  "name": "notation bad length",
+  "error": "failed to read next packet: openpgp: invalid data: notation data subpacket with bad length",
+  "summary": "none"
+ },
+ {
+  "name": "embedded wrong type",
+  "error": "failed to read next packet: openpgp: invalid data: cross-signature has unexpected type 0",
+  "summary": "none"
+ },
+ {
+  "name": "zero length subpacket",
+  "error": "failed to read next packet: openpgp: invalid data: zero length signature subpacket",
+  "summary": "none"
+ },
+ {
+  "name": "subpacket truncated",
+  "error": "failed to read next packet: openpgp: invalid data: signature subpacket truncated",
+  "summary": "none"
+ },
+ {
+  "name": "rest garbage",
+  "version": 4,
+  "algo": 1,
+  "hash": 8,
+  "created": 1791560593,
+  "keyID": "8c41a6a8fe1daddf",
+  "fingerprint": "6c082b3ed77ff915acab3a3b8c41a6a8fe1daddf",
+  "hashSuffix": "0400010800511621046c082b3ed77ff915acab3a3b8c41a6a8fe1daddf05026ac90b911b14800000000004000e6d616e75322c322e352b312e31322c302c33171c72736132303438407368617264732e696e76616c696404ff00000057",
+  "hashTag": "ed4f",
+  "summary": "pgp v4 8c41a6a8fe1daddf"
+ },
+ {
+  "name": "old format header",
+  "version": 4,
+  "algo": 1,
+  "hash": 8,
+  "created": 1791560593,
+  "keyID": "8c41a6a8fe1daddf",
+  "fingerprint": "6c082b3ed77ff915acab3a3b8c41a6a8fe1daddf",
+  "hashSuffix": "0400010800511621046c082b3ed77ff915acab3a3b8c41a6a8fe1daddf05026ac90b911b14800000000004000e6d616e75322c322e352b312e31322c302c33171c72736132303438407368617264732e696e76616c696404ff00000057",
+  "hashTag": "ed4f",
+  "summary": "pgp v4 8c41a6a8fe1daddf"
+ },
+ {
+  "name": "old format indeterminate",
+  "version": 4,
+  "algo": 1,
+  "hash": 8,
+  "created": 1791560593,
+  "keyID": "8c41a6a8fe1daddf",
+  "fingerprint": "6c082b3ed77ff915acab3a3b8c41a6a8fe1daddf",
+  "hashSuffix": "0400010800511621046c082b3ed77ff915acab3a3b8c41a6a8fe1daddf05026ac90b911b14800000000004000e6d616e75322c322e352b312e31322c302c33171c72736132303438407368617264732e696e76616c696404ff00000057",
+  "hashTag": "ed4f",
+  "summary": "pgp v4 8c41a6a8fe1daddf"
+ },
+ {
+  "name": "partial lengths",
+  "version": 4,
+  "algo": 1,
+  "hash": 8,
+  "created": 1791560593,
+  "keyID": "8c41a6a8fe1daddf",
+  "fingerprint": "6c082b3ed77ff915acab3a3b8c41a6a8fe1daddf",
+  "hashSuffix": "0400010800511621046c082b3ed77ff915acab3a3b8c41a6a8fe1daddf05026ac90b911b14800000000004000e6d616e75322c322e352b312e31322c302c33171c72736132303438407368617264732e696e76616c696404ff00000057",
+  "hashTag": "ed4f",
+  "summary": "pgp v4 8c41a6a8fe1daddf"
+ },
+ {
+  "name": "marker first",
+  "version": 4,
+  "algo": 1,
+  "hash": 8,
+  "created": 1791560593,
+  "keyID": "8c41a6a8fe1daddf",
+  "fingerprint": "6c082b3ed77ff915acab3a3b8c41a6a8fe1daddf",
+  "hashSuffix": "0400010800511621046c082b3ed77ff915acab3a3b8c41a6a8fe1daddf05026ac90b911b14800000000004000e6d616e75322c322e352b312e31322c302c33171c72736132303438407368617264732e696e76616c696404ff00000057",
+  "hashTag": "ed4f",
+  "summary": "pgp v4 8c41a6a8fe1daddf"
+ },
+ {
+  "name": "unknown tag first",
+  "version": 4,
+  "algo": 1,
+  "hash": 8,
+  "created": 1791560593,
+  "keyID": "8c41a6a8fe1daddf",
+  "fingerprint": "6c082b3ed77ff915acab3a3b8c41a6a8fe1daddf",
+  "hashSuffix": "0400010800511621046c082b3ed77ff915acab3a3b8c41a6a8fe1daddf05026ac90b911b14800000000004000e6d616e75322c322e352b312e31322c302c33171c72736132303438407368617264732e696e76616c696404ff00000057",
+  "hashTag": "ed4f",
+  "summary": "pgp v4 8c41a6a8fe1daddf"
+ },
+ {
+  "name": "critical unknown tag first",
+  "error": "failed to read next packet: openpgp: unknown critical packet type: 30",
+  "summary": "none"
+ },
+ {
+  "name": "trust first",
+  "version": 4,
+  "algo": 1,
+  "hash": 8,
+  "created": 1791560593,
+  "keyID": "8c41a6a8fe1daddf",
+  "fingerprint": "6c082b3ed77ff915acab3a3b8c41a6a8fe1daddf",
+  "hashSuffix": "0400010800511621046c082b3ed77ff915acab3a3b8c41a6a8fe1daddf05026ac90b911b14800000000004000e6d616e75322c322e352b312e31322c302c33171c72736132303438407368617264732e696e76616c696404ff00000057",
+  "hashTag": "ed4f",
+  "summary": "pgp v4 8c41a6a8fe1daddf"
+ },
+ {
+  "name": "two signatures",
+  "version": 4,
+  "algo": 1,
+  "hash": 8,
+  "created": 1791560593,
+  "keyID": "8c41a6a8fe1daddf",
+  "fingerprint": "6c082b3ed77ff915acab3a3b8c41a6a8fe1daddf",
+  "hashSuffix": "0400010800511621046c082b3ed77ff915acab3a3b8c41a6a8fe1daddf05026ac90b911b14800000000004000e6d616e75322c322e352b312e31322c302c33171c72736132303438407368617264732e696e76616c696404ff00000057",
+  "hashTag": "ed4f",
+  "summary": "pgp v4 8c41a6a8fe1daddf"
+ },
+ {
+  "name": "no msb",
+  "error": "failed to read next packet: openpgp: invalid data: tag byte does not have MSB set",
+  "summary": "none"
+ },
+ {
+  "name": "empty",
+  "error": "no signature packet found",
+  "summary": "none"
+ },
+ {
+  "name": "headers",
+  "version": 4,
+  "algo": 1,
+  "hash": 8,
+  "created": 1791560593,
+  "keyID": "8c41a6a8fe1daddf",
+  "fingerprint": "6c082b3ed77ff915acab3a3b8c41a6a8fe1daddf",
+  "hashSuffix": "0400010800511621046c082b3ed77ff915acab3a3b8c41a6a8fe1daddf05026ac90b911b14800000000004000e6d616e75322c322e352b312e31322c302c33171c72736132303438407368617264732e696e76616c696404ff00000057",
+  "hashTag": "ed4f",
+  "summary": "pgp v4 8c41a6a8fe1daddf"
+ },
+ {
+  "name": "crlf",
+  "version": 4,
+  "algo": 1,
+  "hash": 8,
+  "created": 1791560593,
+  "keyID": "8c41a6a8fe1daddf",
+  "fingerprint": "6c082b3ed77ff915acab3a3b8c41a6a8fe1daddf",
+  "hashSuffix": "0400010800511621046c082b3ed77ff915acab3a3b8c41a6a8fe1daddf05026ac90b911b14800000000004000e6d616e75322c322e352b312e31322c302c33171c72736132303438407368617264732e696e76616c696404ff00000057",
+  "hashTag": "ed4f",
+  "summary": "pgp v4 8c41a6a8fe1daddf"
+ },
+ {
+  "name": "no crc",
+  "version": 4,
+  "algo": 1,
+  "hash": 8,
+  "created": 1791560593,
+  "keyID": "8c41a6a8fe1daddf",
+  "fingerprint": "6c082b3ed77ff915acab3a3b8c41a6a8fe1daddf",
+  "hashSuffix": "0400010800511621046c082b3ed77ff915acab3a3b8c41a6a8fe1daddf05026ac90b911b14800000000004000e6d616e75322c322e352b312e31322c302c33171c72736132303438407368617264732e696e76616c696404ff00000057",
+  "hashTag": "ed4f",
+  "summary": "pgp v4 8c41a6a8fe1daddf"
+ },
+ {
+  "name": "no end",
+  "version": 4,
+  "algo": 1,
+  "hash": 8,
+  "created": 1791560593,
+  "keyID": "8c41a6a8fe1daddf",
+  "fingerprint": "6c082b3ed77ff915acab3a3b8c41a6a8fe1daddf",
+  "hashSuffix": "0400010800511621046c082b3ed77ff915acab3a3b8c41a6a8fe1daddf05026ac90b911b14800000000004000e6d616e75322c322e352b312e31322c302c33171c72736132303438407368617264732e696e76616c696404ff00000057",
+  "hashTag": "ed4f",
+  "summary": "pgp v4 8c41a6a8fe1daddf"
+ },
+ {
+  "name": "line of 97",
+  "error": "failed to read armored signature body: openpgp: invalid data: armor invalid",
+  "summary": "none"
+ },
+ {
+  "name": "line of 96",
+  "version": 4,
+  "algo": 1,
+  "hash": 8,
+  "created": 1791560593,
+  "keyID": "8c41a6a8fe1daddf",
+  "fingerprint": "6c082b3ed77ff915acab3a3b8c41a6a8fe1daddf",
+  "hashSuffix": "0400010800511621046c082b3ed77ff915acab3a3b8c41a6a8fe1daddf05026ac90b911b14800000000004000e6d616e75322c322e352b312e31322c302c33171c72736132303438407368617264732e696e76616c696404ff00000057",
+  "hashTag": "ed4f",
+  "summary": "pgp v4 8c41a6a8fe1daddf"
+ },
+ {
+  "name": "bad base64",
+  "error": "failed to read armored signature body: illegal base64 data at input byte 0",
+  "summary": "none"
+ },
+ {
+  "name": "text before",
+  "version": 4,
+  "algo": 1,
+  "hash": 8,
+  "created": 1791560593,
+  "keyID": "8c41a6a8fe1daddf",
+  "fingerprint": "6c082b3ed77ff915acab3a3b8c41a6a8fe1daddf",
+  "hashSuffix": "0400010800511621046c082b3ed77ff915acab3a3b8c41a6a8fe1daddf05026ac90b911b14800000000004000e6d616e75322c322e352b312e31322c302c33171c72736132303438407368617264732e696e76616c696404ff00000057",
+  "hashTag": "ed4f",
+  "summary": "none"
+ },
+ {
+  "name": "public key block",
+  "version": 4,
+  "algo": 1,
+  "hash": 8,
+  "created": 1791560593,
+  "keyID": "8c41a6a8fe1daddf",
+  "fingerprint": "6c082b3ed77ff915acab3a3b8c41a6a8fe1daddf",
+  "hashSuffix": "0400010800511621046c082b3ed77ff915acab3a3b8c41a6a8fe1daddf05026ac90b911b14800000000004000e6d616e75322c322e352b312e31322c302c33171c72736132303438407368617264732e696e76616c696404ff00000057",
+  "hashTag": "ed4f",
+  "summary": "none"
+ },
+ {
+  "name": "not armored",
+  "error": "failed to decode armored signature: EOF",
+  "summary": "none"
+ },
+ {
+  "name": "ssh rebuilt",
+  "error": "failed to decode armored signature: EOF",
+  "summary": "ssh v1 SHA256:X7b+5zJQRbXup+w6hN31QP5OZAa7f6UrSM7D8/LDQkQ"
+ },
+ {
+  "name": "ssh bad magic",
+  "error": "failed to decode armored signature: EOF",
+  "summary": "none"
+ },
+ {
+  "name": "ssh version 2",
+  "error": "failed to decode armored signature: EOF",
+  "summary": "none"
+ },
+ {
+  "name": "ssh hash sha1",
+  "error": "failed to decode armored signature: EOF",
+  "summary": "none"
+ },
+ {
+  "name": "ssh trailing",
+  "error": "failed to decode armored signature: EOF",
+  "summary": "none"
+ },
+ {
+  "name": "ssh short key",
+  "error": "failed to decode armored signature: EOF",
+  "summary": "none"
+ },
+ {
+  "name": "ssh key junk",
+  "error": "failed to decode armored signature: EOF",
+  "summary": "none"
+ },
+ {
+  "name": "ssh unknown key",
+  "error": "failed to decode armored signature: EOF",
+  "summary": "none"
+ },
+ {
+  "name": "ssh rsa-sha2 as key",
+  "error": "failed to decode armored signature: EOF",
+  "summary": "none"
+ },
+ {
+  "name": "ssh namespace file",
+  "error": "failed to decode armored signature: EOF",
+  "summary": "ssh v1 SHA256:X7b+5zJQRbXup+w6hN31QP5OZAa7f6UrSM7D8/LDQkQ"
+ },
+ {
+  "name": "ssh truncated",
+  "error": "failed to decode armored signature: EOF",
+  "summary": "none"
+ },
+ {
+  "name": "ssh rsa format ssh-rsa",
+  "error": "failed to decode armored signature: EOF",
+  "summary": "none"
+ },
+ {
+  "name": "ssh rsa padded modulus",
+  "error": "failed to decode armored signature: EOF",
+  "summary": "ssh v1 SHA256:Xo8iH34cyCGeCEDWJzZy6uJFvVQ4JvmVIQR2q07+caI"
+ },
+ {
+  "name": "ssh rsa even exponent",
+  "error": "failed to decode armored signature: EOF",
+  "summary": "none"
+ },
+ {
+  "name": "ssh ecdsa off curve",
+  "error": "failed to decode armored signature: EOF",
+  "summary": "none"
+ },
+ {
+  "name": "ssh ecdsa compressed",
+  "error": "failed to decode armored signature: EOF",
+  "summary": "none"
+ },
+ {
+  "name": "ssh ecdsa curve mismatch",
+  "error": "failed to decode armored signature: EOF",
+  "summary": "none"
+ },
+ {
+  "name": "ssh pem other type",
+  "error": "failed to decode armored signature: EOF",
+  "summary": "none"
+ }
+]

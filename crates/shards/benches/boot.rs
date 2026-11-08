@@ -49,7 +49,6 @@ fn main() {
         return;
     }
     let args: Vec<String> = [
-        "vm",
         "run",
         "--kernel",
         common::kernel().to_str().unwrap(),

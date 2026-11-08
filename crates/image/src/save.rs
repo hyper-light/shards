@@ -1,0 +1,510 @@
+//! Images as `docker save` writes them (dockerd 29.3.1, its containerd store, measured
+//! 2026-10-02): an OCI image layout in a tar, with Docker's `manifest.json` beside it.
+//!
+//! - `index.json` names each image asked for, in the order asked: what its name resolved
+//!   to, annotated with its name and tag and the repository it was pulled from.
+//! - `manifest.json` lists each image once, for the Docker tools that read it: our
+//!   platform's config and layers, and the names asked for it (`null` for none).
+//! - `blobs/<algorithm>/<hex>` holds what is here of each image: its index, and each
+//!   manifest of it here with its config and layers, attestations included.
+//! - Of an image saved for some of its platforms (D179), only theirs: each one's manifest,
+//!   config and layers, and its attestations. Saved for one, the archive is that
+//!   platform's microVM alone: `index.json` names its manifest, labelled with its
+//!   platform, and holds no index, so that a load anywhere takes it as the one image it
+//!   is. Saved for several, `index.json` names the index, its other platforms not here,
+//!   as a pull of some of an index's platforms leaves it.
+//!
+//! The tar is Go's archive/tar's, as containerd's exporter writes it: USTAR headers,
+//! every time 0 and owner 0, directories 0755, `index.json` and `manifest.json` 0644,
+//! the rest 0444, records in their names' order, and two zero blocks to end.
+
+use std::collections::BTreeMap;
+use std::fs::File;
+use std::io::Write;
+use std::path::PathBuf;
+
+use crate::oci::{self, Document};
+use crate::reference::{Digest, Reference};
+use crate::store::{Held, Image, Store};
+use crate::{Error, bad};
+
+/// An image asked for, and the name it was asked by, if a name: a reference's record
+/// name (`docker.io/library/alpine:3.22`); and the manifests of the platforms asked for,
+/// none for all of them here. `image` is read as one of those.
+#[derive(Debug)]
+pub struct Asked<'a> {
+    pub image: &'a Image,
+    pub name: Option<String>,
+    pub manifests: Vec<oci::Descriptor>,
+}
+
+/// What a record holds.
+enum Content {
+    Dir,
+    Bytes(Vec<u8>),
+    File(PathBuf, u64),
+}
+
+/// Writes the images `asked` names to `out`.
+pub fn save<W: Write>(store: &Store, asked: &[Asked<'_>], out: W) -> Result<(), Error> {
+    let mut records: BTreeMap<String, (u32, Content)> = BTreeMap::new();
+    let mut index_entries = Vec::with_capacity(asked.len());
+    // Each image once, with the names asked for it, in order of first asking.
+    let mut listed: Vec<(&Image, &[oci::Descriptor], Vec<String>)> = Vec::new();
+    for a in asked {
+        index_entries.push(index_entry(a)?);
+        let familiar = a
+            .name
+            .as_deref()
+            .and_then(|n| Reference::parse_normalized(n).ok())
+            .map(|r| r.familiar());
+        match listed.iter_mut().find(|(i, _, _)| i.id == a.image.id) {
+            Some((_, _, names)) => names.extend(familiar),
+            None => listed.push((a.image, &a.manifests, familiar.into_iter().collect())),
+        }
+    }
+    let mut manifests = Vec::with_capacity(listed.len());
+    for (image, platforms, names) in &listed {
+        for digest in present(store, image, platforms)? {
+            let path = store.blob_path(&digest);
+            let len = std::fs::metadata(&path)?.len();
+            records.insert(blob_name(&digest), (0o444, Content::File(path, len)));
+            records.insert(
+                format!("blobs/{}/", digest.algorithm().name()),
+                (0o755, Content::Dir),
+            );
+        }
+        manifests.push(archive_manifest(store, image, names)?);
+    }
+    records.insert("blobs/".into(), (0o755, Content::Dir));
+    let index = format!(
+        r#"{{"schemaVersion":2,"mediaType":"{}","manifests":[{}]}}"#,
+        oci::media::OCI_INDEX,
+        index_entries.join(",")
+    );
+    records.insert("index.json".into(), (0o644, Content::Bytes(index.into_bytes())));
+    records.insert(
+        "manifest.json".into(),
+        (
+            0o644,
+            Content::Bytes(format!("[{}]", manifests.join(",")).into_bytes()),
+        ),
+    );
+    records.insert(
+        "oci-layout".into(),
+        (
+            0o444,
+            Content::Bytes(br#"{"imageLayoutVersion":"1.0.0"}"#.to_vec()),
+        ),
+    );
+    let mut tar = crate::tar::writer::Writer::new(out);
+    for (name, (mode, content)) in &records {
+        let (typeflag, size) = match content {
+            Content::Dir => (crate::tar::writer::DIR, 0),
+            Content::Bytes(b) => (crate::tar::writer::REG, b.len() as u64),
+            Content::File(_, len) => (crate::tar::writer::REG, *len),
+        };
+        tar.header(&crate::tar::writer::Header {
+            name: name.clone().into_bytes(),
+            typeflag,
+            mode: i64::from(*mode),
+            size: i64::try_from(size).map_err(|e| Error(e.to_string()))?,
+            ..Default::default()
+        })?;
+        match content {
+            Content::Dir => {}
+            Content::Bytes(b) => tar.write(b)?,
+            Content::File(path, _) => {
+                tar.copy(File::open(path)?)?;
+            }
+        }
+    }
+    tar.finish()?.flush()?;
+    Ok(())
+}
+
+fn blob_name(d: &Digest) -> String {
+    format!("blobs/{}/{}", d.algorithm().name(), d.hex())
+}
+
+/// What is here of `image`, walked from what its references resolved to (containerd's
+/// walk of present children): its index, and each manifest here, with its config and
+/// layers here. Where `platforms` names some of its manifests, those alone and their
+/// attestations, and its index only where they are more than one.
+fn present(store: &Store, image: &Image, platforms: &[oci::Descriptor]) -> Result<Vec<Digest>, Error> {
+    let mut found = Vec::new();
+    let manifests = if let [one] = platforms {
+        let mut chosen = vec![one.clone()];
+        chosen.extend(attestations_of(store, image, platforms)?);
+        chosen
+    } else if !platforms.is_empty() {
+        found.push(image.id.clone());
+        let mut chosen = platforms.to_vec();
+        chosen.extend(attestations_of(store, image, platforms)?);
+        chosen
+    } else if image.target.digest == image.manifest.to_string() {
+        vec![image.target.clone()]
+    } else {
+        match store.held(&image.target, oci::MAX_MANIFEST)? {
+            Held::Invalid(why) => return bad(why),
+            Held::Whole(bytes) => {
+                found.push(image.id.clone());
+                match serde_json::from_slice::<oci::Index>(&bytes) {
+                    Ok(index) => index.manifests,
+                    Err(e) => return bad(format!("{}: {e}", image.id)),
+                }
+            }
+            _ => return bad(format!("{}: its index is not here", image.id)),
+        }
+    };
+    for desc in manifests {
+        let Held::Whole(bytes) = store.held(&desc, oci::MAX_MANIFEST)? else {
+            continue;
+        };
+        found.push(desc.digest()?);
+        if let Document::Manifest(m) = oci::parse_document(&bytes, &desc.media_type)? {
+            for part in std::iter::once(&m.config).chain(&m.layers) {
+                let d = part.digest()?;
+                if store.has(&d) {
+                    found.push(d);
+                }
+            }
+        }
+    }
+    Ok(found)
+}
+
+/// The attestations `image`'s index lists of the manifests `platforms` describes.
+fn attestations_of(
+    store: &Store,
+    image: &Image,
+    platforms: &[oci::Descriptor],
+) -> Result<Vec<oci::Descriptor>, Error> {
+    let Some((_, index)) = store.index(&image.id) else {
+        return Ok(Vec::new());
+    };
+    Ok(index
+        .manifests
+        .into_iter()
+        .filter(|d| {
+            d.annotations.get("vnd.docker.reference.type").map(String::as_str) == Some("attestation-manifest")
+                && d.annotations
+                    .get("vnd.docker.reference.digest")
+                    .is_some_and(|of| platforms.iter().any(|p| p.digest == *of))
+        })
+        .collect())
+}
+
+/// `index.json`'s entry for `asked`: what its name resolved to, annotated with the name
+/// and its tag, and the repository it was pulled from (containerd's
+/// `containerd.io/distribution.source.<registry>`), keys sorted as Go writes a map.
+fn index_entry(asked: &Asked<'_>) -> Result<String, Error> {
+    // Saved for one platform, that platform's manifest.
+    let t = match asked.manifests.as_slice() {
+        [one] => one,
+        _ => &asked.image.target,
+    };
+    let mut annotations: BTreeMap<String, String> = BTreeMap::new();
+    // Each registry's repositories, comma-separated, as containerd v2.4.1 labels them.
+    let mut sources: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for s in &asked.image.sources {
+        if let Some((host, path)) = s.split_once('/') {
+            sources
+                .entry(host.to_string())
+                .or_default()
+                .push(path.to_string());
+        }
+    }
+    for (host, paths) in sources {
+        annotations.insert(
+            format!("containerd.io/distribution.source.{host}"),
+            paths.join(","),
+        );
+    }
+    if let Some(name) = &asked.name {
+        annotations.insert("io.containerd.image.name".into(), name.clone());
+        if let Ok(r) = Reference::parse_normalized(name)
+            && let Some(tag) = r.tag
+        {
+            annotations.insert("org.opencontainers.image.ref.name".into(), tag);
+        }
+    }
+    let json = |s: &str| serde_json::to_string(s).map_err(|e| Error(e.to_string()));
+    let mut entry = format!(
+        r#"{{"mediaType":{},"digest":{},"size":{}"#,
+        json(&t.media_type)?,
+        json(&t.digest)?,
+        t.size
+    );
+    if !annotations.is_empty() {
+        let pairs: Result<Vec<String>, Error> = annotations
+            .iter()
+            .map(|(k, v)| Ok(format!("{}:{}", json(k)?, json(v)?)))
+            .collect();
+        entry.push_str(&format!(r#","annotations":{{{}}}"#, pairs?.join(",")));
+    }
+    // A platform's manifest saved alone says its platform, after its annotations as Go's
+    // ocispec.Descriptor orders them.
+    if let Some(p) = t.platform.as_ref().filter(|_| asked.manifests.len() == 1) {
+        entry.push_str(&format!(
+            r#","platform":{}"#,
+            serde_json::to_string(p).map_err(|e| Error(e.to_string()))?
+        ));
+    }
+    entry.push('}');
+    Ok(entry)
+}
+
+/// `manifest.json`'s entry for `image`: our platform's config and layers, and `names`.
+fn archive_manifest(store: &Store, image: &Image, names: &[String]) -> Result<String, Error> {
+    let desc = oci::Descriptor {
+        media_type: oci::media::OCI_MANIFEST.into(),
+        digest: image.manifest.to_string(),
+        size: i64::try_from(std::fs::metadata(store.blob_path(&image.manifest))?.len())
+            .map_err(|e| Error(e.to_string()))?,
+        platform: None,
+        annotations: BTreeMap::new(),
+    };
+    let bytes = match store.held(&desc, oci::MAX_MANIFEST)? {
+        Held::Whole(bytes) => bytes,
+        Held::Invalid(why) => return bad(why),
+        Held::Missing | Held::Changed(_) => return bad(format!("{}: its manifest is not here", image.id)),
+    };
+    let manifest = match serde_json::from_slice::<oci::Manifest>(&bytes) {
+        Ok(m) => m,
+        Err(e) => return bad(format!("{}: {e}", image.manifest)),
+    };
+    let json = |s: &str| serde_json::to_string(s).map_err(|e| Error(e.to_string()));
+    let tags = if names.is_empty() {
+        "null".to_string()
+    } else {
+        let tags: Result<Vec<String>, Error> = names.iter().map(|n| json(n)).collect();
+        format!("[{}]", tags?.join(","))
+    };
+    let layers: Result<Vec<String>, Error> = manifest
+        .layers
+        .iter()
+        .map(|l| json(&blob_name(&l.digest()?)))
+        .collect();
+    Ok(format!(
+        r#"{{"Config":{},"RepoTags":{tags},"Layers":[{}]}}"#,
+        json(&blob_name(&manifest.config.digest()?))?,
+        layers?.join(",")
+    ))
+}
+
+/// What a microVM is, as an OCI artifact: its type, and its disk's.
+pub const MICROVM: &str = "application/vnd.shards.microvm.v1";
+pub const MICROVM_DISK: &str = "application/vnd.shards.erofs.v1";
+/// The image config the microVM was made from: what runs, as which user, with what, where
+/// the disk is only its files. A microVM keeps it, so that it runs as the image did.
+pub const MICROVM_CONFIG: &str = "application/vnd.shards.microvm.config.v1+json";
+
+/// A microVM as an OCI image layout in a tar, for a local image store to load (`docker
+/// load`) or `shards import` to take whole: one artifact manifest, of type [`MICROVM`],
+/// whose layers are its EROFS disk `disk` and the image config `config` it was made from,
+/// named `name` (`shards.local/ubuntu:latest`), for `platform` (`linux/arm64`), made from
+/// the image `source` (its ID). An artifact, not an image, its own config empty: a
+/// container engine lists it and will not run it (Docker 29.3.1, measured).
+pub fn microvm<W: Write>(
+    name: &str,
+    disk: &std::path::Path,
+    config: &[u8],
+    source: &Digest,
+    platform: &str,
+    out: W,
+) -> Result<(), Error> {
+    MicroVm::of(name, disk, config, source, platform)?.write(out)
+}
+
+/// A microVM's OCI image layout ([`microvm`]), its documents made and its disk's digest
+/// taken, before any of it is written: what an engine names it by is known first.
+#[derive(Debug)]
+pub struct MicroVm {
+    disk: std::path::PathBuf,
+    disk_digest: String,
+    size: u64,
+    config: Vec<u8>,
+    config_digest: String,
+    manifest: Vec<u8>,
+    manifest_digest: String,
+    index: Vec<u8>,
+}
+
+impl MicroVm {
+    /// [`microvm`]'s layout of these.
+    pub fn of(
+        name: &str,
+        disk: &std::path::Path,
+        config: &[u8],
+        source: &Digest,
+        platform: &str,
+    ) -> Result<MicroVm, Error> {
+        use sha2::{Digest as _, Sha256};
+        let hex = |b: &[u8]| -> String { b.iter().map(|x| format!("{x:02x}")).collect() };
+        // The disk's digest, read through once: the blob is named by it.
+        let mut hasher = Sha256::new();
+        let mut file = File::open(disk)?;
+        let mut buf = vec![0u8; 1 << 20];
+        let mut size = 0u64;
+        loop {
+            let n = match std::io::Read::read(&mut file, &mut buf) {
+                Ok(0) => break,
+                Ok(n) => n,
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(e) => return Err(e.into()),
+            };
+            hasher.update(buf.get(..n).unwrap_or_default());
+            size += n as u64;
+        }
+        let disk_digest = format!("sha256:{}", hex(&hasher.finalize()));
+        let empty = b"{}".to_vec();
+        let empty_digest = format!("sha256:{}", hex(&Sha256::digest(&empty)));
+        let config_digest = format!("sha256:{}", hex(&Sha256::digest(config)));
+        let (os, rest) = platform.split_once('/').unwrap_or(("linux", platform));
+        let (architecture, variant) = match rest.split_once('/') {
+            Some((a, v)) => (a, Some(v)),
+            None => (rest, None),
+        };
+        let annotations = serde_json::json!({
+            "org.opencontainers.image.ref.name": name,
+            "io.containerd.image.name": name,
+            "dev.shards.microvm.source": source.to_string(),
+        });
+        let manifest = serde_json::json!({
+        "schemaVersion": 2,
+        "mediaType": oci::media::OCI_MANIFEST,
+        "artifactType": MICROVM,
+        "config": {"mediaType": "application/vnd.oci.empty.v1+json", "digest": empty_digest, "size": empty.len()},
+        "layers": [
+            {"mediaType": MICROVM_DISK, "digest": disk_digest, "size": size},
+            {"mediaType": MICROVM_CONFIG, "digest": config_digest, "size": config.len()},
+        ],
+        "annotations": annotations,
+    })
+    .to_string()
+    .into_bytes();
+        let manifest_digest = format!("sha256:{}", hex(&Sha256::digest(&manifest)));
+        let mut platform_json = serde_json::json!({"os": os, "architecture": architecture});
+        if let (Some(v), Some(fields)) = (variant, platform_json.as_object_mut()) {
+            fields.insert("variant".into(), serde_json::Value::from(v));
+        }
+        let index = serde_json::json!({
+            "schemaVersion": 2,
+            "mediaType": oci::media::OCI_INDEX,
+            "manifests": [{
+                "mediaType": oci::media::OCI_MANIFEST,
+                "artifactType": MICROVM,
+                "digest": manifest_digest,
+                "size": manifest.len(),
+                "annotations": annotations,
+                "platform": platform_json,
+            }],
+        })
+        .to_string()
+        .into_bytes();
+        Ok(MicroVm {
+            disk: disk.to_path_buf(),
+            disk_digest,
+            size,
+            config: config.to_vec(),
+            config_digest,
+            manifest,
+            manifest_digest,
+            index,
+        })
+    }
+
+    /// The digest of its manifest: the ID an engine with containerd's store gives it.
+    pub fn id(&self) -> &str {
+        &self.manifest_digest
+    }
+
+    /// The layout, as a tar, to `out`.
+    pub fn write<W: Write>(&self, out: W) -> Result<(), Error> {
+        let (disk, size, config) = (&self.disk, self.size, self.config.as_slice());
+        let (disk_digest, config_digest) = (&self.disk_digest, &self.config_digest);
+        let (manifest, manifest_digest, index) = (&self.manifest, &self.manifest_digest, &self.index);
+        let empty = b"{}".to_vec();
+        let empty_digest = format!("sha256:{}", {
+            use sha2::{Digest as _, Sha256};
+            Sha256::digest(&empty)
+                .iter()
+                .map(|x| format!("{x:02x}"))
+                .collect::<String>()
+        });
+        let blob = |d: &str| format!("blobs/sha256/{}", d.trim_start_matches("sha256:"));
+        let mut tar = crate::tar::writer::Writer::new(out);
+        let put = |tar: &mut crate::tar::writer::Writer<W>,
+                   name: String,
+                   mode: i64,
+                   bytes: &[u8]|
+         -> Result<(), Error> {
+            tar.header(&crate::tar::writer::Header {
+                name: name.into_bytes(),
+                typeflag: crate::tar::writer::REG,
+                mode,
+                size: i64::try_from(bytes.len()).map_err(|e| Error(e.to_string()))?,
+                ..Default::default()
+            })?;
+            tar.write(bytes)?;
+            Ok(())
+        };
+        put(
+            &mut tar,
+            "oci-layout".into(),
+            0o444,
+            br#"{"imageLayoutVersion":"1.0.0"}"#,
+        )?;
+        put(&mut tar, "index.json".into(), 0o644, index)?;
+        put(&mut tar, blob(&empty_digest), 0o444, &empty)?;
+        put(&mut tar, blob(manifest_digest), 0o444, manifest)?;
+        if *config_digest != empty_digest {
+            put(&mut tar, blob(config_digest), 0o444, config)?;
+        }
+        tar.header(&crate::tar::writer::Header {
+            name: blob(disk_digest).into_bytes(),
+            typeflag: crate::tar::writer::REG,
+            mode: 0o444,
+            size: i64::try_from(size).map_err(|e| Error(e.to_string()))?,
+            ..Default::default()
+        })?;
+        tar.copy(File::open(disk)?)?;
+        tar.finish()?.flush()?;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+
+    /// A header as Go's archive/tar writes it, by the first one of an archive `docker
+    /// save` wrote (dockerd 29.3.1, 2026-10-02): `blobs/`, a directory, mode 0755.
+    #[test]
+    fn headers_are_written_as_go_writes_them() {
+        let mut tar = crate::tar::writer::Writer::new(Vec::new());
+        tar.header(&crate::tar::writer::Header {
+            name: b"blobs/".to_vec(),
+            typeflag: crate::tar::writer::DIR,
+            mode: 0o755,
+            ..Default::default()
+        })
+        .unwrap();
+        let h = tar.finish().unwrap();
+        let mut want = [0u8; 512];
+        let mut put = |at: usize, bytes: &[u8]| want[at..at + bytes.len()].copy_from_slice(bytes);
+        put(0, b"blobs/");
+        put(100, b"0000755\0");
+        put(108, b"0000000\0");
+        put(116, b"0000000\0");
+        put(124, b"00000000000\0");
+        put(136, b"00000000000\0");
+        put(148, b"010306\0 ");
+        put(156, b"5");
+        put(257, b"ustar\x0000");
+        put(329, b"0000000\0");
+        put(337, b"0000000\0");
+        assert_eq!(&h[..512], &want[..]);
+    }
+}

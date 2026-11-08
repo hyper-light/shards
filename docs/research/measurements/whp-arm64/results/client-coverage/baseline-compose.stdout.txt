@@ -1,0 +1,10 @@
+
+running 5 tests
+test a_compose_project_runs_as_microvms ... ok
+test a_compose_projects_services_get_what_it_says ... ok
+test a_compose_service_is_built_and_run_attached ... ok
+test common::port_probe ... ignored, a process of its own for port_free and hold_port, which run it
+test common::terminal::console_shell ... ignored, the shell of a terminal a test holds, which runs it
+
+test result: ok. 3 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.02s
+

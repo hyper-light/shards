@@ -1,0 +1,14 @@
+[
+  {
+    "case": "wide",
+    "exit": 0
+  },
+  {
+    "case": "deep",
+    "exit": 0
+  },
+  {
+    "case": "unit",
+    "exit": 0
+  }
+]

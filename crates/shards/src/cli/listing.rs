@@ -1,0 +1,593 @@
+//! Listings, in the text scripts read (held to docker/cli's answers, D157): the daemon
+//! sends what it lists as data, and the client lays it out with `--format`
+//! (shards_cmdline::format), in its own clock, zone and locale, so that times read as its
+//! user's.
+
+use std::sync::OnceLock;
+
+use shards_cmdline::format::{self, Clock, Context, Zone};
+
+/// How the command line asked for its listing: `--format`, `-q`, and `--no-trunc`.
+#[derive(Debug, Clone, Default)]
+pub struct Asked {
+    pub format: String,
+    pub quiet: bool,
+    pub trunc: bool,
+    /// `images --digests`.
+    pub digests: bool,
+    /// `history --human`.
+    pub human: bool,
+    /// `system df -v`.
+    pub verbose: bool,
+    /// `ps --size`.
+    pub size: bool,
+    /// `buildx du`: a filter was given, which leaves its totals out.
+    pub filtered: bool,
+}
+
+static ASKED: OnceLock<Asked> = OnceLock::new();
+
+/// Records how this process's listing is to be laid out, before the daemon answers.
+pub fn ask(asked: Asked) {
+    let _ = ASKED.set(asked);
+}
+
+/// The zone at `secs` seconds since the epoch, as Go's `time.Local` has it: the C
+/// library's, which reads `TZ` as Go does.
+pub(crate) fn local(secs: i64) -> Zone {
+    #[cfg(unix)]
+    {
+        // A 64-bit time_t on every target shards builds for, which libc's alias, deprecated
+        // on musl, need not name.
+        let t = secs;
+        // SAFETY: a zeroed tm is a valid out-parameter for localtime_r(3).
+        let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+        // SAFETY: localtime_r(3) reads one time_t and fills one tm.
+        if !unsafe { libc::localtime_r(&t, &mut tm) }.is_null() {
+            let name = if tm.tm_zone.is_null() {
+                String::new()
+            } else {
+                // SAFETY: tm_zone points at a NUL-terminated abbreviation the C library
+                // keeps.
+                unsafe { std::ffi::CStr::from_ptr(tm.tm_zone) }
+                    .to_string_lossy()
+                    .into_owned()
+            };
+            return Zone {
+                offset: tm.tm_gmtoff,
+                name,
+            };
+        }
+    }
+    #[cfg(windows)]
+    if let Some(zone) = windows_local(secs) {
+        return zone;
+    }
+    format::utc(secs)
+}
+
+/// The system's zone at `secs` seconds since the epoch, as Go's `time.Local` has it on
+/// Windows (src/time/zoneinfo_windows.go): the dynamic zone's rules
+/// (GetDynamicTimeZoneInformation), its offset that instant's, standard or daylight
+/// (SystemTimeToTzSpecificLocalTimeEx); its name the abbreviation Go gives it (`abbrev`): from
+/// Go's table ([`super::zones`]) by the zone's standard name, else by its English name, which
+/// Go finds in the registry by the zone's names and Windows gives as its key's
+/// (TimeZoneKeyName); else the capitals of its own name (`extractCAPS`).
+#[cfg(windows)]
+fn windows_local(secs: i64) -> Option<Zone> {
+    use windows_sys::Win32::Foundation::{FILETIME, SYSTEMTIME};
+    use windows_sys::Win32::System::Time::{
+        DYNAMIC_TIME_ZONE_INFORMATION, FileTimeToSystemTime, GetDynamicTimeZoneInformation,
+        SystemTimeToFileTime, SystemTimeToTzSpecificLocalTimeEx, TIME_ZONE_ID_INVALID,
+    };
+    /// Seconds from 1601-01-01, FILETIME's epoch, to 1970-01-01.
+    const FROM_1601: i64 = 11_644_473_600;
+    let mut tz = DYNAMIC_TIME_ZONE_INFORMATION::default();
+    // SAFETY: a structure for the call to fill.
+    if unsafe { GetDynamicTimeZoneInformation(&mut tz) } == TIME_ZONE_ID_INVALID {
+        return None;
+    }
+    let ticks = u64::try_from(secs.checked_add(FROM_1601)?.checked_mul(10_000_000)?).ok()?;
+    let at = FILETIME {
+        dwLowDateTime: (ticks & 0xFFFF_FFFF) as u32,
+        dwHighDateTime: (ticks >> 32) as u32,
+    };
+    let (mut utc, mut local, mut back) = (SYSTEMTIME::default(), SYSTEMTIME::default(), FILETIME::default());
+    // SAFETY: each call reads one structure and fills another, all on this stack.
+    let converted = unsafe {
+        FileTimeToSystemTime(&at, &mut utc) != 0
+            && SystemTimeToTzSpecificLocalTimeEx(&tz, &utc, &mut local) != 0
+            && SystemTimeToFileTime(&local, &mut back) != 0
+    };
+    if !converted {
+        return None;
+    }
+    let local_ticks = (u64::from(back.dwHighDateTime) << 32) | u64::from(back.dwLowDateTime);
+    let offset = (i128::from(local_ticks) - i128::from(ticks)) / 10_000_000;
+    let offset = i64::try_from(offset).ok()?;
+    let daylight = tz.DaylightBias != 0 && offset == -i64::from(tz.Bias + tz.DaylightBias) * 60;
+    let text = |units: &[u16]| {
+        let len = units.iter().position(|&c| c == 0).unwrap_or(units.len());
+        String::from_utf16_lossy(units.get(..len).unwrap_or_default())
+    };
+    let (standard, summer, key) = (
+        text(&tz.StandardName),
+        text(&tz.DaylightName),
+        text(&tz.TimeZoneKeyName),
+    );
+    let known = |name: &str| {
+        super::zones::ABBRS
+            .iter()
+            .find(|(n, ..)| *n == name)
+            .map(|&(_, std, dst)| (std.to_string(), dst.to_string()))
+    };
+    let caps = |name: &str| name.chars().filter(char::is_ascii_uppercase).collect::<String>();
+    let (std, dst) = known(&standard)
+        .or_else(|| known(&key))
+        .unwrap_or_else(|| (caps(&standard), caps(&summer)));
+    Some(Zone {
+        offset,
+        name: if daylight { dst } else { std },
+    })
+}
+
+/// Now, in nanoseconds since the epoch.
+fn now() -> i128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| i128::try_from(d.as_nanos()).unwrap_or(i128::MAX))
+}
+
+/// Writes the listing in `sheet` (`ps-rows`, `images-rows`: one record, its rows as JSON)
+/// to stdout; whether it was one.
+pub fn show(sheet: &shards_ipc::Sheet) -> Result<bool, String> {
+    use std::io::Write as _;
+    let asked = ASKED.get().cloned().unwrap_or_default();
+    let zone = local;
+    let clock = Clock {
+        now: now(),
+        zone: &zone,
+    };
+    match render(sheet, &asked, &clock)? {
+        Some(out) => {
+            let _ = std::io::stdout().write_all(out.as_bytes());
+            Ok(true)
+        }
+        None => Ok(false),
+    }
+}
+
+/// The listing in `sheet` laid out as `asked`, at `clock`; none if it is not one.
+pub fn render(sheet: &shards_ipc::Sheet, asked: &Asked, clock: &Clock<'_>) -> Result<Option<String>, String> {
+    let rows: serde_json::Value = match sheet.get(0, "rows") {
+        Some(json) => serde_json::from_str(json).map_err(|e| e.to_string())?,
+        None => return Ok(None),
+    };
+    let mut out = String::new();
+    match sheet.name.as_str() {
+        "ps-rows" => {
+            let containers: Vec<format::container::Container> = rows
+                .as_array()
+                .map(Vec::as_slice)
+                .unwrap_or_default()
+                .iter()
+                .map(container)
+                .collect();
+            let ctx = Context {
+                format: &format::container::format(&asked.format, asked.quiet, asked.size),
+                trunc: asked.trunc,
+                east_asian: shards_cmdline::width::east_asian(|name| std::env::var(name).ok()),
+                clock,
+            };
+            format::container::write(&ctx, &containers, &mut out)?;
+        }
+        "images-rows" => {
+            let images: Vec<format::image::Image> = rows
+                .as_array()
+                .map(Vec::as_slice)
+                .unwrap_or_default()
+                .iter()
+                .map(image)
+                .collect();
+            // The CLI's default where no format is given (image/list.go).
+            let source = if asked.format.is_empty() {
+                format::TABLE
+            } else {
+                &asked.format
+            };
+            let ctx = Context {
+                format: &format::image::format(source, asked.quiet, asked.digests),
+                trunc: asked.trunc,
+                east_asian: shards_cmdline::width::east_asian(|name| std::env::var(name).ok()),
+                clock,
+            };
+            format::image::write(&ctx, asked.digests, &images, &mut out)?;
+        }
+        "volumes-rows" => {
+            let mut volumes: Vec<format::volume::Volume> = rows
+                .as_array()
+                .map(Vec::as_slice)
+                .unwrap_or_default()
+                .iter()
+                .map(volume)
+                .collect();
+            // runList: by name, in natural order.
+            volumes.sort_by(|a, b| shards_cmdline::ports::natural_compare(&a.name, &b.name));
+            let source = if asked.format.is_empty() {
+                format::TABLE
+            } else {
+                &asked.format
+            };
+            let ctx = Context {
+                format: &format::volume::format(source, asked.quiet),
+                trunc: false,
+                east_asian: shards_cmdline::width::east_asian(|name| std::env::var(name).ok()),
+                clock,
+            };
+            format::volume::write(&ctx, &volumes, &mut out)?;
+        }
+        "networks-rows" => {
+            let mut networks: Vec<format::network::Network> = rows
+                .as_array()
+                .map(Vec::as_slice)
+                .unwrap_or_default()
+                .iter()
+                .map(network)
+                .collect();
+            // runList: by name, in natural order.
+            networks.sort_by(|a, b| shards_cmdline::ports::natural_compare(&a.name, &b.name));
+            let source = if asked.format.is_empty() {
+                format::TABLE
+            } else {
+                &asked.format
+            };
+            let ctx = Context {
+                format: &format::network::format(source, asked.quiet),
+                trunc: asked.trunc,
+                east_asian: shards_cmdline::width::east_asian(|name| std::env::var(name).ok()),
+                clock,
+            };
+            format::network::write(&ctx, &networks, &mut out)?;
+        }
+        "history-rows" => {
+            let steps: Vec<format::history::History> = rows
+                .as_array()
+                .map(Vec::as_slice)
+                .unwrap_or_default()
+                .iter()
+                .map(|r| format::history::History {
+                    id: r
+                        .get("id")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("")
+                        .to_string(),
+                    created: r.get("created").and_then(serde_json::Value::as_i64).unwrap_or(0),
+                    created_by: r
+                        .get("created_by")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("")
+                        .to_string(),
+                    size: r.get("size").and_then(serde_json::Value::as_i64).unwrap_or(0),
+                    comment: r
+                        .get("comment")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("")
+                        .to_string(),
+                })
+                .collect();
+            let source = if asked.format.is_empty() {
+                format::TABLE
+            } else {
+                &asked.format
+            };
+            let ctx = Context {
+                format: &format::history::format(source, asked.quiet, asked.human),
+                trunc: asked.trunc,
+                east_asian: shards_cmdline::width::east_asian(|name| std::env::var(name).ok()),
+                clock,
+            };
+            format::history::write(&ctx, asked.human, &steps, &mut out)?;
+        }
+        "df-rows" => {
+            let items = |k: &str| -> Vec<serde_json::Value> {
+                rows.get(k)
+                    .and_then(|u| u.get("items"))
+                    .and_then(serde_json::Value::as_array)
+                    .cloned()
+                    .unwrap_or_default()
+            };
+            let kind = |k: &str| counts(&rows, k);
+            let (it, ia, is, ir) = kind("images");
+            let (ct, ca, cs, cr) = kind("containers");
+            let (vt, va, vs, vr) = kind("volumes");
+            let (bt, ba, bs, br) = kind("build_cache");
+            let du = format::disk::DiskUsage {
+                images: format::disk::Usage {
+                    total_count: it,
+                    active_count: ia,
+                    total_size: is,
+                    reclaimable: ir,
+                    items: items("images").iter().map(image).collect(),
+                },
+                containers: format::disk::Usage {
+                    total_count: ct,
+                    active_count: ca,
+                    total_size: cs,
+                    reclaimable: cr,
+                    items: items("containers")
+                        .iter()
+                        .map(|r| format::container::Container {
+                            size_rw: r.get("size").and_then(serde_json::Value::as_i64).unwrap_or(0),
+                            ..container(r)
+                        })
+                        .collect(),
+                },
+                volumes: format::disk::Usage {
+                    total_count: vt,
+                    active_count: va,
+                    total_size: vs,
+                    reclaimable: vr,
+                    items: items("volumes").iter().map(volume).collect(),
+                },
+                build_cache: format::disk::Usage {
+                    total_count: bt,
+                    active_count: ba,
+                    total_size: bs,
+                    reclaimable: br,
+                    items: items("build_cache")
+                        .iter()
+                        .map(|r| {
+                            let text =
+                                |k: &str| r.get(k).and_then(serde_json::Value::as_str).unwrap_or_default();
+                            let ns = |k: &str| text(k).parse::<i128>().unwrap_or(0);
+                            let flag =
+                                |k: &str| r.get(k).and_then(serde_json::Value::as_bool).unwrap_or(false);
+                            format::disk::BuildCache {
+                                id: text("id").to_string(),
+                                kind: text("type").to_string(),
+                                description: text("description").to_string(),
+                                in_use: flag("in_use"),
+                                shared: flag("shared"),
+                                size: r.get("size").and_then(serde_json::Value::as_i64).unwrap_or(0),
+                                created_at: ns("created"),
+                                last_used_at: Some(ns("last_used")),
+                                usage_count: r.get("usage").and_then(serde_json::Value::as_i64).unwrap_or(0),
+                                ..format::disk::BuildCache::default()
+                            }
+                        })
+                        .collect(),
+                },
+            };
+            // runDiskUsage: `table` where no format is given.
+            let source = if asked.format.is_empty() {
+                format::TABLE
+            } else {
+                &asked.format
+            };
+            let ctx = Context {
+                format: &format::disk::format(source, asked.verbose),
+                trunc: false,
+                east_asian: shards_cmdline::width::east_asian(|name| std::env::var(name).ok()),
+                clock,
+            };
+            format::disk::write(&ctx, asked.verbose, &du, &mut out)?;
+        }
+        "du-rows" => {
+            let records: Vec<format::du::Usage> = rows
+                .as_array()
+                .map(Vec::as_slice)
+                .unwrap_or_default()
+                .iter()
+                .map(|r| {
+                    let text = |k: &str| r.get(k).and_then(serde_json::Value::as_str).unwrap_or_default();
+                    let ns = |k: &str| text(k).parse::<i128>().ok();
+                    let flag = |k: &str| r.get(k).and_then(serde_json::Value::as_bool).unwrap_or(false);
+                    format::du::Usage {
+                        id: text("id").to_string(),
+                        parents: r
+                            .get("parents")
+                            .and_then(serde_json::Value::as_array)
+                            .map(|p| p.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+                            .unwrap_or_default(),
+                        created_at: ns("created").unwrap_or(0),
+                        mutable: flag("mutable"),
+                        in_use: flag("in_use"),
+                        shared: flag("shared"),
+                        size: r.get("size").and_then(serde_json::Value::as_i64).unwrap_or(0),
+                        description: text("description").to_string(),
+                        usage_count: r.get("usage").and_then(serde_json::Value::as_i64).unwrap_or(0),
+                        last_used_at: ns("last_used"),
+                        kind: text("type").to_string(),
+                    }
+                })
+                .collect();
+            // buildx's errors, as its main prints them.
+            let format =
+                format::du::format(&asked.format, asked.verbose).map_err(|e| format!("ERROR: {e}"))?;
+            let ctx = Context {
+                format: &format,
+                trunc: false,
+                east_asian: shards_cmdline::width::east_asian(|name| std::env::var(name).ok()),
+                clock,
+            };
+            if let Err(e) = format::du::write(&ctx, &records, asked.filtered, &mut out) {
+                // What was written before the error, the totals, then the error.
+                use std::io::Write as _;
+                let _ = std::io::stdout().write_all(out.as_bytes());
+                return Err(format!("ERROR: {e}"));
+            }
+        }
+        _ => return Ok(None),
+    }
+    Ok(Some(out))
+}
+
+/// A network of a `networks-rows` sheet.
+fn network(row: &serde_json::Value) -> format::network::Network {
+    let text = |k: &str| {
+        row.get(k)
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_string()
+    };
+    let flag = |k: &str| row.get(k).and_then(serde_json::Value::as_bool).unwrap_or(false);
+    format::network::Network {
+        id: text("Id"),
+        name: text("Name"),
+        driver: text("Driver"),
+        scope: text("Scope"),
+        ipv4: flag("EnableIPv4"),
+        ipv6: flag("EnableIPv6"),
+        internal: flag("Internal"),
+        labels: row
+            .get("Labels")
+            .and_then(serde_json::Value::as_object)
+            .map(|m| {
+                m.iter()
+                    .map(|(k, v)| (k.clone(), v.as_str().unwrap_or_default().to_string()))
+                    .collect()
+            })
+            .unwrap_or_default(),
+        created: text("Created").parse().unwrap_or(0),
+    }
+}
+
+/// A volume of a `volumes-rows` sheet.
+fn volume(row: &serde_json::Value) -> format::volume::Volume {
+    let text = |k: &str| {
+        row.get(k)
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_string()
+    };
+    format::volume::Volume {
+        name: text("Name"),
+        driver: text("Driver"),
+        scope: text("Scope"),
+        mountpoint: text("Mountpoint"),
+        labels: row
+            .get("Labels")
+            .and_then(serde_json::Value::as_object)
+            .map(|m| {
+                m.iter()
+                    .map(|(k, v)| (k.clone(), v.as_str().unwrap_or_default().to_string()))
+                    .collect()
+            })
+            .unwrap_or_default(),
+        usage: row
+            .get("UsageData")
+            .and_then(|u| Some((u.get("RefCount")?.as_i64()?, u.get("Size")?.as_i64()?))),
+    }
+}
+
+/// A kind's counts in a `df-rows` sheet: total, active, size and reclaimable.
+fn counts(rows: &serde_json::Value, kind: &str) -> (i64, i64, i64, i64) {
+    let n = |f: &str| {
+        rows.get(kind)
+            .and_then(|u| u.get(f))
+            .and_then(serde_json::Value::as_i64)
+            .unwrap_or(0)
+    };
+    (n("total"), n("active"), n("size"), n("reclaimable"))
+}
+
+/// An image from the daemon's row.
+fn image(row: &serde_json::Value) -> format::image::Image {
+    let list = |k: &str| -> Vec<String> {
+        row.get(k)
+            .and_then(serde_json::Value::as_array)
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|v| v.as_str().map(str::to_string))
+            .collect()
+    };
+    let int = |k: &str| row.get(k).and_then(serde_json::Value::as_i64).unwrap_or(0);
+    format::image::Image {
+        id: row
+            .get("id")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("")
+            .to_string(),
+        repo_tags: list("tags"),
+        repo_digests: list("digests"),
+        created: int("created"),
+        size: int("size"),
+        // What another image holds too, where the daemon worked it out (`system df -v`).
+        shared_size: row
+            .get("shared")
+            .and_then(serde_json::Value::as_i64)
+            .unwrap_or(-1),
+        containers: int("containers"),
+    }
+}
+
+/// A microVM from the daemon's row.
+fn container(row: &serde_json::Value) -> format::container::Container {
+    let text = |k: &str| {
+        row.get(k)
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("")
+            .to_string()
+    };
+    format::container::Container {
+        id: text("id"),
+        names: vec![format!("/{}", text("name"))],
+        image: text("image"),
+        image_id: text("image_id"),
+        command: text("command"),
+        created: row
+            .get("created")
+            .and_then(serde_json::Value::as_i64)
+            .unwrap_or(0),
+        ports: row
+            .get("ports")
+            .and_then(serde_json::Value::as_array)
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+            .iter()
+            .map(|p| format::container::Port {
+                ip: p
+                    .get("ip")
+                    .and_then(serde_json::Value::as_str)
+                    .and_then(|s| s.parse().ok()),
+                private: p
+                    .get("private")
+                    .and_then(serde_json::Value::as_u64)
+                    .and_then(|n| u16::try_from(n).ok())
+                    .unwrap_or(0),
+                public: p
+                    .get("public")
+                    .and_then(serde_json::Value::as_u64)
+                    .and_then(|n| u16::try_from(n).ok())
+                    .unwrap_or(0),
+                kind: p
+                    .get("type")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("tcp")
+                    .to_string(),
+            })
+            .collect(),
+        state: text("state"),
+        status: text("status"),
+        health: text("health"),
+        labels: row
+            .get("labels")
+            .and_then(serde_json::Value::as_object)
+            .map(|m| {
+                m.iter()
+                    .map(|(k, v)| (k.clone(), v.as_str().unwrap_or("").to_string()))
+                    .collect()
+            })
+            .unwrap_or_default(),
+        size_rw: row
+            .get("size_rw")
+            .and_then(serde_json::Value::as_i64)
+            .unwrap_or(0),
+        size_root_fs: row
+            .get("size_root_fs")
+            .and_then(serde_json::Value::as_i64)
+            .unwrap_or(0),
+        ..Default::default()
+    }
+}

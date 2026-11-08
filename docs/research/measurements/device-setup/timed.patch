@@ -1,0 +1,71 @@
+PM M223: shards-init, over preload.patch, writing to /dev/.timed what a run's devices
+cost it: the lookup (`prepare`), its limits and filter (`limit`), and the filter's
+compiling, a load of it as a run without the preload loads it, and its attaching. A
+run's command reads them (`shards run --rm --gpus all IMAGE cat /dev/.timed`). Never
+for shards itself: it writes into the workload's /dev.
+
+--- a/crates/init/src/devices.rs
++++ b/crates/init/src/devices.rs
+@@ -602,15 +602,35 @@
+                 None => Ok(()),
+             };
+         };
++        let t0 = std::time::Instant::now();
+         let program = dc::compile(rules)?;
+-        match (default, GPU.get()) {
++        let t1 = std::time::Instant::now();
++        // A load of the run's filter, timed, as a run without the preload loads it.
++        drop(load(&program)?);
++        let t2 = std::time::Instant::now();
++        let r = match (default, GPU.get()) {
+             (Some((bytes, _)), _) if *bytes == program => Ok(()),
+             (Some((_, fd)), Some((gpu, loaded))) if *gpu == program => {
+                 attach_loaded(loaded, cgroup, Some(fd))
+             }
+             (Some((_, fd)), _) => attach(&program, cgroup, Some(fd)).map(drop),
+             (None, _) => attach(&program, cgroup, None).map(drop),
++        };
++        let t3 = std::time::Instant::now();
++        {
++            use std::io::Write as _;
++            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/dev/.timed") {
++                let _ = writeln!(
++                    f,
++                    "compile {:?} load {:?} attach {:?} preloaded {}",
++                    t1 - t0,
++                    t2 - t1,
++                    t3 - t2,
++                    GPU.get().is_some_and(|g| g.0 == program)
++                );
++            }
+         }
++        r
+     }
+ }
+ 
+--- a/crates/init/src/run.rs
++++ b/crates/init/src/run.rs
+@@ -2360,6 +2360,7 @@
+             user::resolve(&spec.user, standby.passwd.as_deref(), standby.group.as_deref())
+                 .map(|u| (u.uid, u.gid))
+         };
++        let t0 = std::time::Instant::now();
+         let devices = spec
+             .setup
+             .iter()
+@@ -2367,7 +2368,15 @@
+             .map(|e| crate::devices::prepare(e, &owner))
+             .transpose()
+             .map_err(setup_failed)?;
++        let t1 = std::time::Instant::now();
+         limit(&spec.cgroup, devices.as_ref())?;
++        let t2 = std::time::Instant::now();
++        {
++            use std::io::Write as _;
++            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/dev/.timed") {
++                let _ = writeln!(f, "prepare {:?} limit {:?}", t1 - t0, t2 - t1);
++            }
++        }
+         // A joiner's volumes are its own (D119): the microVM's own run mounts none.
+         if spec.setup.iter().any(|e| e.starts_with(b"join-volume=")) {
+             return Err(setup_failed(

@@ -1,0 +1,13 @@
+diff --git a/crates/init/src/plug.rs b/crates/init/src/plug.rs
+index 9e653f6e..cf9a1150 100644
+--- a/crates/init/src/plug.rs
++++ b/crates/init/src/plug.rs
+@@ -562,7 +562,7 @@ pub fn hold_within(cgroup: &str, room: Option<i64>) -> io::Result<Option<u64>> {
+ fn working_room() -> u64 {
+     // SAFETY: sysconf(3) reads a value of the running kernel's.
+     let cpus = u64::try_from(unsafe { libc::sysconf(libc::_SC_NPROCESSORS_ONLN) }).map_or(1, |c| c.max(1));
+-    working_room_of(cpus, page_size())
++    working_room_of(cpus, page_size()).saturating_mul(2)
+ }
+ 
+ /// [`working_room`] of a guest with `cpus` CPUs online and pages of `page` bytes.

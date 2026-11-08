@@ -1,0 +1,15 @@
+# What a build's steps cost in their snapshots (review 4.2, 4.3): each step's clone of the
+# file tree, its whole-tree pass for links, and the heap the snapshots hold, over an
+# image's layers. Not a workspace member:
+#   cargo run --release --manifest-path .../Cargo.toml -- STEPS LAYER.tar...
+[package]
+name = "build-steps"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+shards-image = { path = "../../../../crates/image" }
+shards-build = { path = "../../../../crates/build" }

@@ -90,6 +90,17 @@ impl Algorithm {
     }
 }
 
+/// go-digest's `DigestRegexp` for a digest split at its first `:`: components of
+/// lowercase letters and digits joined by single `.+_-`, then `[a-zA-Z0-9=_-]+`.
+fn well_formed(algorithm: &str, encoded: &str) -> bool {
+    algorithm
+        .split(['.', '+', '_', '-'])
+        .all(|c| !c.is_empty() && c.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit()))
+        && encoded
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'=' | b'_' | b'-'))
+}
+
 impl Digest {
     /// go-digest's `Parse`: `algorithm:hex`.
     pub fn parse(s: &str) -> Result<Digest, Error> {
@@ -100,7 +111,10 @@ impl Digest {
             "sha256" => Algorithm::Sha256,
             "sha384" => Algorithm::Sha384,
             "sha512" => Algorithm::Sha512,
-            _ => return bad("unsupported digest algorithm"),
+            // An unknown algorithm is unsupported only when the digest is well formed:
+            // `DigestRegexpAnchored`, `[a-z0-9]+(?:[.+_-][a-z0-9]+)*:[a-zA-Z0-9=_-]+`.
+            _ if well_formed(algorithm, hex) => return bad("unsupported digest algorithm"),
+            _ => return bad("invalid checksum digest format"),
         };
         if hex.len() != 2 * algorithm.size() {
             return bad("invalid checksum digest length");
@@ -140,6 +154,26 @@ impl fmt::Display for Digest {
     }
 }
 
+/// What `ParseAnyReference` reads (distribution/reference normalize.go): a digest alone,
+/// as 64 hex digits or `algorithm:hex`, or a reference.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AnyReference {
+    Digest(Digest),
+    Named(Reference),
+}
+
+impl AnyReference {
+    pub fn parse(s: &str) -> Result<AnyReference, Error> {
+        if regex(&IDENTIFIER)?.is_match(s) {
+            return Digest::parse(&format!("sha256:{s}")).map(AnyReference::Digest);
+        }
+        if let Ok(digest) = Digest::parse(s) {
+            return Ok(AnyReference::Digest(digest));
+        }
+        Reference::parse_normalized(s).map(AnyReference::Named)
+    }
+}
+
 /// A normalized reference: a domain and path, a tag (`latest` when neither a tag nor a
 /// digest was given), and maybe a digest, which wins over the tag.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -153,11 +187,22 @@ pub struct Reference {
 impl Reference {
     /// Parses a reference as `docker pull` does: `latest` when it names no tag or digest.
     pub fn parse(s: &str) -> Result<Reference, Error> {
-        let mut reference = Reference::parse_normalized(s)?;
-        if reference.tag.is_none() && reference.digest.is_none() {
-            reference.tag = Some(DEFAULT_TAG.into());
+        Reference::parse_normalized(s).map(Reference::tag_name_only)
+    }
+
+    /// `TagNameOnly`: `latest` as the tag of a reference that names neither tag nor digest.
+    #[must_use]
+    pub fn tag_name_only(mut self) -> Reference {
+        if self.tag.is_none() && self.digest.is_none() {
+            self.tag = Some(DEFAULT_TAG.into());
         }
-        Ok(reference)
+        self
+    }
+
+    /// Parses a reference as distribution's `Parse` does: as written, its domain not
+    /// filled in, its tag and digest only those it names.
+    pub fn parse_as_written(s: &str) -> Result<Reference, Error> {
+        parse(s)
     }
 
     /// Parses a reference as `ParseNormalizedNamed` does, with the tag or digest it names
@@ -168,7 +213,7 @@ impl Reference {
                 "invalid repository name ({s}), cannot specify 64-byte hexadecimal strings"
             ));
         }
-        let (domain, remainder) = split_docker_domain(s);
+        let (domain, remainder) = split_domain(s);
         let remote = remainder.split_once(':').map_or(remainder.as_str(), |(r, _)| r);
         if remote.to_lowercase() != remote {
             return bad(format!(
@@ -178,9 +223,22 @@ impl Reference {
         parse(&format!("{domain}/{remainder}"))
     }
 
-    /// The name alone: `docker.io/library/alpine`.
+    /// The name alone: `docker.io/library/alpine`; the path alone for a name with no
+    /// domain, as `repository.Name` prints it (distribution/reference reference.go).
     pub fn name(&self) -> String {
+        if self.domain.is_empty() {
+            return self.path.clone();
+        }
         format!("{}/{}", self.domain, self.path)
+    }
+
+    /// `FamiliarName`: the name alone as users write it, `alpine` for
+    /// `docker.io/library/alpine:3.20`.
+    pub fn familiar_name(&self) -> String {
+        let mut name = self.clone();
+        name.tag = None;
+        name.digest = None;
+        name.familiar()
     }
 
     /// `FamiliarString`: the name as users write it, `alpine:3.20` for
@@ -194,7 +252,7 @@ impl Reference {
             {
                 path = rest;
             }
-        } else {
+        } else if !self.domain.is_empty() {
             out.push_str(&self.domain);
             out.push('/');
         }
@@ -258,7 +316,7 @@ fn parse(s: &str) -> Result<Reference, Error> {
 
 /// `splitDockerDomain`: the domain, if the first component names one, else Docker Hub,
 /// where one-component names are official images.
-fn split_docker_domain(name: &str) -> (String, String) {
+fn split_domain(name: &str) -> (String, String) {
     let Some((first, rest)) = name.split_once('/') else {
         return (DOCKER_HUB.into(), format!("{OFFICIAL_PREFIX}{name}"));
     };
@@ -288,7 +346,7 @@ mod tests {
     /// From normalize_test.go (TestParseRepositoryInfo, TestParseDockerRef): input →
     /// (domain, path, tag, familiar form).
     #[test]
-    fn references_normalize_as_docker_normalizes_them() {
+    fn references_normalize_to_their_familiar_forms() {
         for (input, domain, path, tag, familiar) in [
             (
                 "fooo/bar",
@@ -478,6 +536,18 @@ mod tests {
         ] {
             assert!(Reference::parse(input).is_err(), "{input:?} parsed");
         }
+    }
+
+    /// A first component with a dot but not a domain's characters is a path component,
+    /// as distribution/reference's regexp takes it: the name has no domain, and prints as
+    /// its path alone, which parses to the same (found by fuzz/fuzz_targets/reference.rs).
+    #[test]
+    fn a_name_without_a_domain_prints_as_its_path() {
+        let r = Reference::parse("zz-zz-4z.z4_zz/9").unwrap();
+        assert_eq!((r.domain.as_str(), r.path.as_str()), ("", "zz-zz-4z.z4_zz/9"));
+        assert_eq!(r.to_string(), "zz-zz-4z.z4_zz/9:latest");
+        assert_eq!(r.familiar(), "zz-zz-4z.z4_zz/9:latest");
+        assert_eq!(Reference::parse(&r.to_string()).unwrap(), r);
     }
 
     #[test]

@@ -1,0 +1,15 @@
+diff --git a/hw/arm/virt-acpi-build.c b/hw/arm/virt-acpi-build.c
+index f638608..f3497be 100644
+--- a/hw/arm/virt-acpi-build.c
++++ b/hw/arm/virt-acpi-build.c
+@@ -1134,7 +1134,9 @@ static void build_fadt_rev6(GArray *table_data, BIOSLinker *linker,
+ 
+     switch (vms->psci_conduit) {
+     case QEMU_PSCI_CONDUIT_DISABLED:
+-        fadt.arm_boot_arch = 0;
++        /* M414 fixture: TF-A implements PSCI over SMC at EL3. This enum
++         * disables QEMU's own handler; describe the firmware's handler. */
++        fadt.arm_boot_arch = ACPI_FADT_ARM_PSCI_COMPLIANT;
+         break;
+     case QEMU_PSCI_CONDUIT_HVC:
+         fadt.arm_boot_arch = ACPI_FADT_ARM_PSCI_COMPLIANT |

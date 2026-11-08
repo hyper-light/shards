@@ -1,7 +1,14 @@
 #!/bin/sh
-# Cargo runner for macOS: ad-hoc sign with the hypervisor entitlement, then exec.
+# Cargo runner for macOS: ad-hoc sign, then exec. shards-vm runs in App Sandbox, with the
+# hypervisor entitlement and Hardened Runtime (resources/vm.entitlements); everything else
+# gets the hypervisor entitlement alone (resources/hvf.entitlements), since a test binary
+# that creates VMs is no VM process.
 set -eu
 bin=$1
 shift
-codesign --entitlements "$(dirname "$0")/../resources/hvf.entitlements" --force -s - "$bin" 2>/dev/null
+resources=$(dirname "$0")/../resources
+case $(basename "$bin") in
+shards-vm) codesign --entitlements "$resources/vm.entitlements" -o runtime --force -s - "$bin" 2>/dev/null ;;
+*) codesign --entitlements "$resources/hvf.entitlements" --force -s - "$bin" 2>/dev/null ;;
+esac
 exec "$bin" "$@"

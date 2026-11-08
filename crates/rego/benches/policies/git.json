@@ -1,0 +1,16 @@
+{
+  "env": {"filename": "Dockerfile", "depth": 0},
+  "git": {
+    "schema": "https",
+    "host": "github.com",
+    "remote": "https://github.com/moby/buildkit.git",
+    "fullURL": "https://github.com/moby/buildkit.git#v0.28.1",
+    "ref": "v0.28.1",
+    "tag": "v0.28.1",
+    "tagName": "v0.28.1",
+    "isAnnotatedTag": true,
+    "isSHA256": false,
+    "checksum": "45b038cd0b2ec2d34013ce0f085522276f7ee0d8",
+    "commitChecksum": "45b038cd0b2ec2d34013ce0f085522276f7ee0d8"
+  }
+}

@@ -1,6 +1,7 @@
 //! vCPU power states for PSCI (Arm DEN0022 PSCI 1.1). KVM keeps these in the kernel;
 //! Hypervisor.framework leaves them to the VMM (ground-truth doc §5 row 4).
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Condvar, Mutex};
 
 use crate::arch::aarch64::state::Power;
@@ -8,16 +9,12 @@ use crate::arch::aarch64::{Entry, psci};
 use crate::sync::{lock, wait};
 
 #[derive(Debug)]
-struct State {
-    power: Power,
-    /// A kick that has not yet returned `Canceled` to the caller.
-    kicked: bool,
-}
-
-#[derive(Debug)]
 struct Slot {
     mpidr: u64,
-    state: Mutex<State>,
+    power: Mutex<Power>,
+    /// A kick that has not yet returned `Canceled` to the caller. The run loop reads it
+    /// before every entry to the guest, without a lock.
+    kicked: AtomicBool,
     wake: Condvar,
 }
 
@@ -47,10 +44,8 @@ impl Table {
                 .iter()
                 .map(|&mpidr| Slot {
                     mpidr,
-                    state: Mutex::new(State {
-                        power: Power::Off,
-                        kicked: false,
-                    }),
+                    power: Mutex::new(Power::Off),
+                    kicked: AtomicBool::new(false),
                     wake: Condvar::new(),
                 })
                 .collect(),
@@ -65,7 +60,7 @@ impl Table {
     /// Powers `index` on at `entry` (the boot vCPU).
     pub fn boot(&self, index: usize, entry: Entry) {
         if let Some(slot) = self.slots.get(index) {
-            lock(&slot.state).power = Power::Pending(entry);
+            *lock(&slot.power) = Power::Pending(entry);
         }
     }
 
@@ -75,54 +70,64 @@ impl Table {
         let Some(slot) = self.slots.get(index) else {
             return Wake::Kicked;
         };
-        let mut s = lock(&slot.state);
+        let mut power = lock(&slot.power);
         loop {
-            if s.kicked {
-                s.kicked = false;
+            if slot.kicked.swap(false, Ordering::AcqRel) {
                 return Wake::Kicked;
             }
-            match s.power {
+            match *power {
                 Power::On => return Wake::Running,
                 Power::Pending(entry) => {
-                    s.power = Power::On;
+                    *power = Power::On;
                     return Wake::Start(entry);
                 }
-                Power::Off => s = wait(&slot.wake, s),
+                Power::Off => power = wait(&slot.wake, power),
             }
         }
     }
 
     /// vCPU `index`'s power state, for a snapshot.
     pub fn state(&self, index: usize) -> Option<Power> {
-        self.slots.get(index).map(|slot| lock(&slot.state).power)
+        self.slots.get(index).map(|slot| *lock(&slot.power))
     }
 
     /// Sets vCPU `index`'s power state, on restore.
     pub fn set_state(&self, index: usize, power: Power) {
         if let Some(slot) = self.slots.get(index) {
-            lock(&slot.state).power = power;
+            *lock(&slot.power) = power;
         }
     }
 
     /// PSCI CPU_OFF by the calling vCPU.
     pub fn off(&self, index: usize) {
         if let Some(slot) = self.slots.get(index) {
-            lock(&slot.state).power = Power::Off;
+            *lock(&slot.power) = Power::Off;
         }
     }
 
-    /// Records a kick and wakes the vCPU if it is parked.
+    /// Records a kick and wakes the vCPU if it is parked. The caller cancels its run
+    /// after this (hv_vcpus_exit), so a vCPU checking before it enters the guest, or
+    /// leaving the guest for another reason as the cancel arrives, still sees the kick.
     pub fn kick(&self, index: usize) {
         if let Some(slot) = self.slots.get(index) {
-            lock(&slot.state).kicked = true;
+            slot.kicked.store(true, Ordering::Release);
+            // Taking the lock orders the wakeup after a parked vCPU's look at `kicked`.
+            drop(lock(&slot.power));
             slot.wake.notify_all();
         }
     }
 
-    /// The vCPU returned `Canceled` from the guest, which consumes any pending kick.
+    /// Takes a kick not yet delivered: the run loop's check before each entry.
+    pub fn take_kick(&self, index: usize) -> bool {
+        self.slots
+            .get(index)
+            .is_some_and(|slot| slot.kicked.swap(false, Ordering::AcqRel))
+    }
+
+    /// The vCPU returned `Canceled` from the guest, which delivers any pending kick.
     pub fn kick_delivered(&self, index: usize) {
         if let Some(slot) = self.slots.get(index) {
-            lock(&slot.state).kicked = false;
+            slot.kicked.store(false, Ordering::Release);
         }
     }
 
@@ -139,12 +144,12 @@ impl Table {
         if !in_ram {
             return psci::INVALID_ADDRESS;
         }
-        let mut s = lock(&slot.state);
-        match s.power {
+        let mut power = lock(&slot.power);
+        match *power {
             Power::On => psci::ALREADY_ON,
             Power::Pending(_) => psci::ON_PENDING,
             Power::Off => {
-                s.power = Power::Pending(Entry {
+                *power = Power::Pending(Entry {
                     pc: entry,
                     x0: context,
                 });
@@ -157,7 +162,7 @@ impl Table {
     pub fn affinity_info(&self, target: u64) -> i64 {
         match self.slots.iter().find(|s| s.mpidr == target) {
             None => psci::INVALID_PARAMETERS,
-            Some(slot) => match lock(&slot.state).power {
+            Some(slot) => match *lock(&slot.power) {
                 Power::Off => psci::AFF_OFF,
                 Power::Pending(_) => psci::AFF_ON_PENDING,
                 Power::On => psci::AFF_ON,

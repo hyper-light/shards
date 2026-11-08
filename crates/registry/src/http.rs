@@ -13,29 +13,55 @@
 //! Connections follow containerd's transport (`core/remotes/docker/registry.go`):
 //! - 30 s to connect, racing addresses 300 ms apart (RFC 8305);
 //! - 10 s for the TLS handshake, 30 s for the response head;
-//! - at most 10 idle connections, each kept for 30 s.
+//! - at most 10 idle connections.
+//!
+//! A registry's client waits instead as long as each wait of its path has shown (D222,
+//! crate::patience): to connect, for its handshake, for an answer and through a body's
+//! silence. An idle connection is kept until its server closes it, which is seen as it is
+//! taken ([`Conn::quiet`]), or until RFC 5382's least idle time a NAT keeps it for.
 //!
 //! A body that makes no progress for 30 s fails too, where Go would wait on its context.
+//! That context's cancellation is a [`Cancel`]: every request of a client it cancels
+//! fails, at once.
 
+use std::collections::HashMap;
 use std::io::{self, BufRead, BufReader, Read, Write};
-use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
+use std::net::{Shutdown, SocketAddr, TcpStream, ToSocketAddrs};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, mpsc};
 use std::time::{Duration, Instant};
 
 use rustls::pki_types::ServerName;
-use rustls::{ClientConfig, ClientConnection, StreamOwned};
+use rustls::{ClientConfig, ClientConnection};
 
+use crate::patience::{Paths, Silenced, Sketch, Wait, path_of};
+use crate::proxy::{Proxies, Proxy};
+use crate::registries::Registries;
 use crate::url::{Scheme, Url};
 use crate::{Error, ErrorKind};
 
+/// How long a client that does not learn its waits (not a registry's) takes to connect:
+/// Go's dialer's, as containerd's transport gives it.
 const CONNECT: Duration = Duration::from_secs(30);
 const RACE: Duration = Duration::from_millis(300);
+/// How often a dial waiting on its attempts looks for a cancel.
+const DIAL_POLL: Duration = Duration::from_millis(100);
+/// How long a client that does not learn its waits gives a TLS handshake: Go's
+/// transport's `TLSHandshakeTimeout`, as containerd's gives it.
 const HANDSHAKE: Duration = Duration::from_secs(10);
-const HEAD: Duration = Duration::from_secs(30);
+/// How long a request waits for its response's head.
+pub const HEAD: Duration = Duration::from_secs(30);
 const STALL: Duration = Duration::from_secs(30);
-const IDLE: Duration = Duration::from_secs(30);
+/// How long an idle connection is kept, its server not having closed it: no wait (nothing
+/// waits on it, and the time a server keeps one is the server's, RFC 9112 §9.5), but the
+/// least a NAT on its path keeps an idle connection's mapping for, 2 h 4 min (RFC 5382
+/// §5, REQ-5); past it a NAT may forget it without a word, and a request on it would wait
+/// for an answer that never comes.
+const IDLE: Duration = Duration::from_secs((2 * 60 + 4) * 60);
 const MAX_IDLE: usize = 10;
 const MAX_HEAD: usize = 10 << 20;
+/// The most of a proxy's answer to CONNECT read.
+const MAX_TUNNEL_HEAD: usize = 64 << 10;
 const MAX_CHUNK_LINE: usize = 4096;
 const MAX_TRAILER: usize = 4096;
 const MAX_REDIRECTS: usize = 10;
@@ -48,8 +74,209 @@ pub type TlsFor = dyn Fn(&Url) -> Result<Arc<ClientConfig>, Error> + Send + Sync
 
 pub struct Client {
     tls: Box<TlsFor>,
-    pool: Arc<Pool>,
+    /// Idle connections, which responses borrowing the client hand back.
+    pool: Pool,
     user_agent: String,
+    cancel: Option<Cancel>,
+    proxies: Proxies,
+    patience: Patience,
+    /// The addresses a connection may go to, where not all may (a build's proxy, D110).
+    reach: Option<fn(std::net::IpAddr) -> bool>,
+    /// The name its servers' certificates are verified for, and TLS names them by, where
+    /// not each URL's host.
+    server_name: Option<String>,
+    /// What Docker's daemon configuration says of registries, for the registries it asks
+    /// (D194).
+    registries: Registries,
+    /// Whether its waits on a server are what that server's path has shown (D222,
+    /// crate::patience), where the patience it was given bounds them: a registry's.
+    learning: bool,
+    /// What each path it asked has shown.
+    paths: Paths,
+    /// How long a trouble is ridden out, where a test says, in place of what its path has
+    /// shown.
+    moment: Option<Duration>,
+}
+
+/// How long a request waits on its server: to connect, its name's lookup included; for
+/// its response's head; and on any read or write that makes no progress. `None` waits
+/// for as long as it takes, until the request is cancelled. By default 30 s, [`HEAD`] and
+/// 30 s, Go's transport's; a registry's client waits instead as long as its path has shown
+/// (D222: connects, handshakes, lookups' answers and silences, where its patience bounds
+/// them at all); a build's proxy waits as long as the step it serves does, as Go's
+/// transport has no bound of its own (D110); EC2's instance metadata is given 250 ms to
+/// connect, as the AWS SDK gives it (D168).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Patience {
+    pub connect: Duration,
+    pub head: Option<Duration>,
+    pub stall: Option<Duration>,
+}
+
+impl Default for Patience {
+    fn default() -> Patience {
+        Patience {
+            connect: CONNECT,
+            head: Some(HEAD),
+            stall: Some(STALL),
+        }
+    }
+}
+
+/// Stops a client's requests from another thread, as cancelling Go's request context
+/// does: once cancelled, a request fails before it is sent, and every connection in use
+/// is shut down, so that a read or write waiting on one fails at once (audit A07).
+#[derive(Debug, Clone, Default)]
+pub struct Cancel(Arc<Cancelling>);
+
+#[derive(Debug, Default)]
+struct Cancelling {
+    /// Set under `live`'s lock, so a connection is watched or sees it.
+    cancelled: AtomicBool,
+    /// The connections in use, by number, and the next number.
+    live: Mutex<(u64, HashMap<u64, TcpStream>)>,
+    /// Rung once, under `live`'s lock, as the cancel is made: what waits on it before
+    /// asking a registry again ([`Client::pause`]) waits no more.
+    rung: std::sync::Condvar,
+    /// The credential helpers asked for this client's registry, by number, and the next
+    /// number: a cancel ends each, and so a wait for its answer (credentials.rs).
+    helpers: Mutex<(u64, HashMap<u64, Helper>)>,
+}
+
+/// A credential helper as a cancel ends it: the process group it leads.
+#[cfg(unix)]
+pub(crate) type Helper = Arc<shards_ipc::Child>;
+/// A credential helper as a cancel ends it: its process, by a handle of its own.
+#[cfg(windows)]
+pub(crate) type Helper = std::os::windows::io::OwnedHandle;
+
+/// Ends `helper` at once, whatever its threads wait in.
+fn end_helper(helper: &Helper) {
+    #[cfg(unix)]
+    let _ = helper.kill_group(libc::SIGKILL);
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawHandle as _;
+        // SAFETY: TerminateProcess on the handle `helper` holds open: of a process that has
+        // ended, it fails and ends nothing.
+        unsafe {
+            windows_sys::Win32::System::Threading::TerminateProcess(helper.as_raw_handle(), 1);
+        }
+    }
+}
+
+impl Cancel {
+    pub fn new() -> Cancel {
+        Cancel::default()
+    }
+
+    pub fn cancel(&self) {
+        let live = self.0.live.lock().unwrap_or_else(PoisonError::into_inner);
+        self.0.cancelled.store(true, Ordering::SeqCst);
+        for tcp in live.1.values() {
+            end(tcp);
+        }
+        self.0.rung.notify_all();
+        drop(live);
+        let helpers = self.0.helpers.lock().unwrap_or_else(PoisonError::into_inner);
+        for helper in helpers.1.values() {
+            end_helper(helper);
+        }
+    }
+
+    /// Ends `helper` at a cancel, as it does at once one already made, until
+    /// [`Cancel::forget_helper`] is told the number this gives it.
+    pub(crate) fn watch_helper(&self, helper: Helper) -> u64 {
+        let mut helpers = self.0.helpers.lock().unwrap_or_else(PoisonError::into_inner);
+        if self.is_cancelled() {
+            end_helper(&helper);
+        }
+        let n = helpers.0;
+        helpers.0 = n.wrapping_add(1);
+        helpers.1.insert(n, helper);
+        n
+    }
+
+    /// Ends helper `n` at a cancel no more: reaped, or about to be.
+    pub(crate) fn forget_helper(&self, n: u64) {
+        self.0
+            .helpers
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .1
+            .remove(&n);
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.0.cancelled.load(Ordering::SeqCst)
+    }
+
+    fn check(&self) -> Result<(), Error> {
+        if self.is_cancelled() {
+            return Err(Error::of(ErrorKind::Cancelled, "cancelled"));
+        }
+        Ok(())
+    }
+
+    /// Watches `tcp` while the returned guard lives: a cancel shuts it down, as it does at
+    /// once one already made. A connection that cannot be watched still fails within
+    /// [`STALL`].
+    fn watch(&self, tcp: &TcpStream) -> Watch {
+        let mut live = self.0.live.lock().unwrap_or_else(PoisonError::into_inner);
+        if self.is_cancelled() {
+            end(tcp);
+            return Watch(None);
+        }
+        let Ok(copy) = tcp.try_clone() else {
+            return Watch(None);
+        };
+        let n = live.0;
+        live.0 = n.wrapping_add(1);
+        live.1.insert(n, copy);
+        Watch(Some((self.clone(), n)))
+    }
+}
+
+/// Ends `tcp`'s reads and writes, whichever thread waits in them. A shutdown wakes a read
+/// another thread waits in on Linux and macOS, where Winsock's leaves it waiting (the
+/// cancel test took the 30 s read timeout on Windows), so there the socket's I/O is
+/// cancelled too: `CancelIoEx` cancels a handle's I/O whichever thread issued it, and a
+/// base provider's socket handle is a file handle. One way at a time: XNU shuts both at
+/// once or neither, and neither once the server has sent its FIN (ENOTCONN, PM M236), when
+/// a write waiting for room would wait on.
+fn end(tcp: &TcpStream) {
+    let _ = tcp.shutdown(Shutdown::Write);
+    let _ = tcp.shutdown(Shutdown::Read);
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawSocket;
+        // SAFETY: CancelIoEx on a socket handle `tcp` holds open, with no OVERLAPPED:
+        // it only marks the I/O pending on it cancelled.
+        unsafe {
+            windows_sys::Win32::System::IO::CancelIoEx(
+                tcp.as_raw_socket() as windows_sys::Win32::Foundation::HANDLE,
+                std::ptr::null(),
+            );
+        }
+    }
+}
+
+/// A connection a [`Cancel`] watches, until this drops.
+#[derive(Debug)]
+struct Watch(Option<(Cancel, u64)>);
+
+impl Drop for Watch {
+    fn drop(&mut self) {
+        if let Some((cancel, n)) = self.0.take() {
+            cancel
+                .0
+                .live
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .1
+                .remove(&n);
+        }
+    }
 }
 
 impl std::fmt::Debug for Client {
@@ -60,12 +287,24 @@ impl std::fmt::Debug for Client {
     }
 }
 
+/// Where [`Client::follow`] may go.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Redirects {
+    /// Wherever a redirect points; each hop's credentials come from `authorize`.
+    Anywhere,
+    /// Only within the first URL's origin: scheme, host and port.
+    SameOrigin,
+}
+
 pub struct Request<'a> {
     pub method: &'a str,
     pub url: &'a Url,
     /// Fields besides `Host`, `User-Agent` and `Content-Length`, which the client writes.
     pub headers: &'a [(&'a str, &'a str)],
     pub body: &'a [u8],
+    /// A body read from a file instead: so many bytes of it from an offset, a blob
+    /// uploaded or a part of one. Read again from there whenever the request is sent again.
+    pub file: Option<(&'a std::fs::File, u64, u64)>,
 }
 
 /// Shows no fields, body or query: they can carry credentials.
@@ -78,14 +317,35 @@ impl std::fmt::Debug for Request<'_> {
 
 /// A response. Reading it reads the body; once the body ends, the connection is reused.
 #[derive(Debug)]
-pub struct Response {
+pub struct Response<'c> {
     pub status: u16,
+    reason: String,
     url: Url,
     headers: Vec<(String, String)>,
-    body: Body,
+    body: Body<'c>,
+    ahead: Ahead,
 }
 
-impl Response {
+/// The body's first bytes, read ahead ([`Response::peek`]): reads give them before the
+/// rest. `given`, how many a read has given; `past`, whether a read has gone past them.
+#[derive(Debug, Default)]
+struct Ahead {
+    bytes: Vec<u8>,
+    given: usize,
+    past: bool,
+}
+
+impl Response<'_> {
+    /// The status as Go's client keeps it (`Response.Status`): its code, and the reason
+    /// phrase if the server gave one.
+    pub fn status_text(&self) -> String {
+        if self.reason.is_empty() {
+            self.status.to_string()
+        } else {
+            format!("{} {}", self.status, self.reason)
+        }
+    }
+
     /// The URL that answered: after redirects, the last one.
     pub fn url(&self) -> &Url {
         &self.url
@@ -99,6 +359,16 @@ impl Response {
             .map(|(_, v)| v.as_str())
     }
 
+    /// Its fields, as the server sent them, in order.
+    pub fn fields(&self) -> &[(String, String)] {
+        &self.headers
+    }
+
+    /// Its reason phrase, empty where the server gave none.
+    pub fn reason(&self) -> &str {
+        &self.reason
+    }
+
     /// Every value of the field `name`, in order.
     pub fn headers<'a>(&'a self, name: &'a str) -> impl Iterator<Item = &'a str> + 'a {
         self.headers
@@ -106,10 +376,47 @@ impl Response {
             .filter(move |(n, _)| n.eq_ignore_ascii_case(name))
             .map(|(_, v)| v.as_str())
     }
+
+    /// Up to `most` bytes of the body from its start, read ahead of any read and kept, so
+    /// that reads still give them: what a refusal says, looked at before it is passed on.
+    /// Fewer where the body ends sooner; none once a read has begun it.
+    pub fn peek(&mut self, most: usize) -> io::Result<&[u8]> {
+        let a = &mut self.ahead;
+        if a.given == 0 && !a.past {
+            let mut chunk = [0u8; 512];
+            while a.bytes.len() < most {
+                let want = (most - a.bytes.len()).min(chunk.len());
+                let n = match chunk.get_mut(..want) {
+                    Some(buf) => self.body.read(buf)?,
+                    None => 0,
+                };
+                if n == 0 {
+                    break;
+                }
+                a.bytes.extend_from_slice(chunk.get(..n).unwrap_or_default());
+            }
+        }
+        if a.given > 0 || a.past {
+            return Ok(&[]);
+        }
+        Ok(&a.bytes)
+    }
 }
 
-impl Read for Response {
+impl Read for Response<'_> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let a = &mut self.ahead;
+        if let Some(left) = a.bytes.get(a.given..)
+            && !left.is_empty()
+        {
+            let n = left.len().min(buf.len());
+            if let (Some(to), Some(from)) = (buf.get_mut(..n), left.get(..n)) {
+                to.copy_from_slice(from);
+            }
+            a.given += n;
+            return Ok(n);
+        }
+        a.past = true;
         self.body.read(buf)
     }
 }
@@ -118,26 +425,198 @@ impl Client {
     pub fn new(tls: Box<TlsFor>, user_agent: &str) -> Client {
         Client {
             tls,
-            pool: Arc::new(Pool::default()),
+            pool: Pool::default(),
+            proxies: Proxies::default(),
             user_agent: user_agent.to_string(),
+            cancel: None,
+            patience: Patience::default(),
+            reach: None,
+            server_name: None,
+            registries: Registries::default(),
+            learning: false,
+            paths: Paths::default(),
+            moment: None,
         }
+    }
+
+    /// This client, every wait it draws drawn as `u` in [0, 1) says (crate::patience).
+    #[cfg(test)]
+    pub(crate) fn drawing(mut self, u: f64) -> Client {
+        self.paths.draw_as(u);
+        self
+    }
+
+    /// This client, its waits on each server the ones that server's path has shown
+    /// (D222), within its patience: an answer to a lookup (a GET or HEAD without a body)
+    /// waited for as long as the path's answers say, and a body's silence as long as its
+    /// silences say.
+    pub(crate) fn learning(mut self) -> Client {
+        self.learning = true;
+        self
+    }
+
+    /// How long a trouble of `url`'s server is ridden out before it is said as the
+    /// server's failure (registry.rs `Trouble`): as long as its path's troubles say.
+    pub(crate) fn budget(&self, url: &Url) -> Duration {
+        self.moment.unwrap_or_else(|| self.paths.budget(&path_of(url)))
+    }
+
+    /// A trouble of `url`'s server that lasted `lasted` passed.
+    pub(crate) fn passed(&self, url: &Url, lasted: Duration) {
+        self.paths.passed(&path_of(url), lasted);
+    }
+
+    /// What the path to `host`:`port` has shown.
+    #[cfg(test)]
+    pub(crate) fn shown(&self, host: &str, port: u16) -> crate::patience::Shown {
+        self.paths.shown(&format!("{host}:{port}"))
+    }
+
+    /// Keeps what its paths show in `root`, an image store's directory, and starts them
+    /// from what they showed before there (crate::patience).
+    pub(crate) fn keep_in(&self, root: &std::path::Path) {
+        self.paths.keep_in(root);
+    }
+
+    /// This client, riding out a registry's trouble for `moment`: tests of a registry
+    /// that stays down, ended within it.
+    #[cfg(test)]
+    pub(crate) fn with_moment(mut self, moment: Duration) -> Client {
+        self.moment = Some(moment);
+        self
+    }
+
+    /// Waits `wait` before asking a registry again, or until the client is cancelled,
+    /// which it then says.
+    pub(crate) fn pause(&self, wait: Duration) -> Result<(), Error> {
+        let Some(cancel) = &self.cancel else {
+            std::thread::sleep(wait);
+            return Ok(());
+        };
+        let deadline = after(wait);
+        let mut live = cancel.0.live.lock().unwrap_or_else(PoisonError::into_inner);
+        loop {
+            cancel.check()?;
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return Ok(());
+            }
+            live = cancel
+                .0
+                .rung
+                .wait_timeout(live, left)
+                .unwrap_or_else(PoisonError::into_inner)
+                .0;
+        }
+    }
+
+    /// This client, asking registries as `registries` says (D194).
+    pub fn with_registries(mut self, registries: Registries) -> Client {
+        self.registries = registries;
+        self
+    }
+
+    /// What Docker's daemon configuration says of the registries this client asks.
+    pub(crate) fn registries(&self) -> &Registries {
+        &self.registries
+    }
+
+    /// This client, verifying its servers' certificates for `name`, and naming them so to
+    /// TLS (SNI), where not each URL's host: Go's tls.Config.ServerName (a splunk log
+    /// driver's `splunk-caname`, D167).
+    pub fn with_server_name(mut self, name: &str) -> Client {
+        self.server_name = Some(name.to_string());
+        self
+    }
+
+    /// This client, its requests waiting on their servers as `patience` says.
+    pub fn with_patience(mut self, patience: Patience) -> Client {
+        self.patience = patience;
+        self
+    }
+
+    /// This client, connecting only to addresses `reach` allows: a name none of whose
+    /// addresses it allows, or an address it does not, fails to connect. A proxy the
+    /// environment names is reached whatever its address; a URL that names an address
+    /// `reach` refuses is refused before any proxy is asked for it.
+    pub fn reaching(mut self, reach: fn(std::net::IpAddr) -> bool) -> Client {
+        self.reach = Some(reach);
+        self
+    }
+
+    /// This client, its requests failing once `cancel` is cancelled.
+    pub fn cancelled_by(mut self, cancel: Cancel) -> Client {
+        self.cancel = Some(cancel);
+        self
+    }
+
+    /// This client, its requests going through `proxies` (crate::proxy).
+    pub fn with_proxies(mut self, proxies: Proxies) -> Client {
+        self.proxies = proxies;
+        self
     }
 
     /// Sends `req` and reads the response head. A GET or HEAD that fails on a reused
     /// connection before any response arrived is sent once more on a new one, as Go
-    /// retries replayable requests.
-    pub fn send(&self, req: &Request<'_>) -> Result<Response, Error> {
-        let head = self.head(req)?;
-        let key = Key::of(req.url);
-        if let Some(conn) = self.pool.take(&key) {
-            match self.exchange(conn, req, &head) {
+    /// retries replayable requests; so is any request a reused connection answers with
+    /// 408, which says the server never had it whole.
+    pub fn send(&self, req: &Request<'_>) -> Result<Response<'_>, Error> {
+        self.checked(self.send_now(req, None))
+    }
+
+    /// `result`, unless the client was cancelled: then that, whatever the failure it made.
+    fn checked<T>(&self, result: Result<T, Error>) -> Result<T, Error> {
+        match (&self.cancel, result) {
+            (Some(cancel), Err(e)) if cancel.is_cancelled() => {
+                Err(Error::of(ErrorKind::Cancelled, format!("cancelled: {e}")))
+            }
+            (_, result) => result,
+        }
+    }
+
+    /// This host's address on its route to `url`, or to the proxy that reaches it: the
+    /// local address of a TCP connection dialled there, as the client dials its own, and
+    /// let go (one handshake). Each host's system gives a connected socket the source its
+    /// route chose, and says it: Linux's (net/ipv4/tcp_ipv4.c `tcp_v4_connect`, the source
+    /// from `ip_route_connect`), XNU's (bsd/netinet/in_pcb.c `in_pcbconnect`, from
+    /// `in_pcbladdr`'s route), and Windows' ("the local association that has been set by
+    /// the system" once connected: Microsoft Learn, winsock `getsockname`), which may not
+    /// say a UDP socket's before I/O. `None` where it cannot be reached.
+    pub(crate) fn route(&self, url: &Url) -> Option<std::net::IpAddr> {
+        let proxy = self.proxies.for_url(url).ok()?;
+        let first = proxy.map_or(url, |p| &p.url);
+        let reach = match proxy {
+            Some(_) => None,
+            None => self.reach,
+        };
+        let tcp = self.dial(url, first, reach).ok()?;
+        let from = tcp.local_addr().ok()?.ip();
+        self.paths.located(&path_of(url), from);
+        Some(from)
+    }
+
+    /// [`send`](Self::send), counting into `sent` each byte of a file's body as it goes.
+    fn send_now(&self, req: &Request<'_>, sent: Option<&AtomicU64>) -> Result<Response<'_>, Error> {
+        if let Some(cancel) = &self.cancel {
+            cancel.check()?;
+        }
+        let proxy = self.proxies.for_url(req.url)?;
+        let head = self.head(req, proxy)?;
+        let key = Key::of(req.url, proxy);
+        if let Some(mut conn) = self.pool.take(&key) {
+            conn.watch = self.cancel.as_ref().map(|c| c.watch(conn.io.get_ref().tcp()));
+            match self.exchange(conn, req, &head, sent) {
                 // The server may have closed it while it sat idle.
                 Err(Failure::BeforeResponse(_)) if matches!(req.method, "GET" | "HEAD") => {}
+                // Or said so, its 408 crossing the request: a request in transit may be
+                // repeated, on a new connection (RFC 9110 §15.5.9), whatever its method,
+                // as Chromium repeats it (net/http/http_network_transaction.cc, 687b43f).
+                Ok(response) if response.status == 408 => {}
                 result => return result.map_err(Failure::into_error),
             }
         }
-        let conn = self.connect(req.url, key)?;
-        self.exchange(conn, req, &head).map_err(Failure::into_error)
+        let conn = self.connect(req.url, key, proxy)?;
+        self.exchange(conn, req, &head, sent).map_err(Failure::into_error)
     }
 
     /// Sends `req` and follows redirects as Go's client does (go1.27.1
@@ -147,27 +626,47 @@ impl Client {
     ///
     /// Each hop's `Authorization` comes from `authorize` for that hop's URL, so credentials
     /// go only where the caller allows. Go instead copies them to the same host and its
-    /// subdomains.
+    /// subdomains. A body `authorize` cannot withhold, one that carries credentials, stays
+    /// with `redirects`: [`Redirects::SameOrigin`] refuses a redirect to any other origin,
+    /// a switch from TLS to plain HTTP included, before anything is sent there.
     pub fn follow(
         &self,
         req: &Request<'_>,
         authorize: &dyn Fn(&Url) -> Result<Option<String>, Error>,
-    ) -> Result<Response, Error> {
+        redirects: Redirects,
+    ) -> Result<Response<'_>, Error> {
+        self.follow_counting(req, authorize, redirects, None)
+    }
+
+    /// [`follow`](Self::follow), counting into `sent` each byte of a file's body as it goes:
+    /// what a push measures its uploads by (push.rs).
+    pub(crate) fn follow_counting(
+        &self,
+        req: &Request<'_>,
+        authorize: &dyn Fn(&Url) -> Result<Option<String>, Error>,
+        redirects: Redirects,
+        sent: Option<&AtomicU64>,
+    ) -> Result<Response<'_>, Error> {
         let mut url = req.url.clone();
         let mut method = req.method;
         let mut body = req.body;
+        let mut file = req.file;
         for _ in 0..=MAX_REDIRECTS {
             let authorization = authorize(&url)?;
             let mut headers = req.headers.to_vec();
             if let Some(value) = &authorization {
                 headers.push(("Authorization", value));
             }
-            let mut response = self.send(&Request {
-                method,
-                url: &url,
-                headers: &headers,
-                body,
-            })?;
+            let mut response = self.checked(self.send_now(
+                &Request {
+                    method,
+                    url: &url,
+                    headers: &headers,
+                    body,
+                    file,
+                },
+                sent,
+            ))?;
             let location = match response.status {
                 301 | 302 | 303 | 307 | 308 => response.header("location").map(str::to_string),
                 _ => None,
@@ -181,21 +680,49 @@ impl Client {
                     method = "GET";
                 }
                 body = &[];
+                file = None;
             }
-            url = url.join(&location)?;
+            let next = url.join(&location)?;
+            if redirects == Redirects::SameOrigin && !next.same_origin(req.url) {
+                return Err(Error::new(format!(
+                    "{}: redirected to {}, another origin, which a request carrying credentials may not follow",
+                    req.url.origin(),
+                    next.origin()
+                )));
+            }
+            url = next;
         }
         Err(Error::new(format!("{}: stopped after 10 redirects", req.url)))
     }
 
     /// The request line and fields, refusing any value that could split them.
-    fn head(&self, req: &Request<'_>) -> Result<Vec<u8>, Error> {
-        let mut head = format!("{} {} HTTP/1.1\r\n", req.method, req.url.target());
-        let mut fields: Vec<(&str, String)> = vec![
-            ("Host", req.url.authority()),
-            ("User-Agent", self.user_agent.clone()),
-        ];
+    fn head(&self, req: &Request<'_>, proxy: Option<&Proxy>) -> Result<Vec<u8>, Error> {
+        // To a proxy, plain HTTP names its whole URL (RFC 9112 §3.2.2), with the proxy's
+        // credentials; HTTPS goes through a tunnel (`tunnel`) as it would direct.
+        let forwarded = proxy.filter(|_| req.url.scheme() == Scheme::Http);
+        let target = match forwarded {
+            // As the URL is written, a default port left out: Go writes URL.String().
+            Some(_) => format!("http://{}{}", req.url.authority(), req.url.target()),
+            None => req.url.target().to_string(),
+        };
+        let mut head = format!("{} {target} HTTP/1.1\r\n", req.method);
+        let mut fields: Vec<(&str, String)> = vec![("Host", req.url.authority())];
+        // The request's own User-Agent where it brings one, else the client's, if any.
+        if !self.user_agent.is_empty()
+            && !req
+                .headers
+                .iter()
+                .any(|(n, _)| n.eq_ignore_ascii_case("user-agent"))
+        {
+            fields.push(("User-Agent", self.user_agent.clone()));
+        }
+        if let Some(authorization) = forwarded.and_then(|p| p.authorization.clone()) {
+            fields.push(("Proxy-Authorization", authorization));
+        }
         fields.extend(req.headers.iter().map(|(n, v)| (*n, v.to_string())));
-        if !req.body.is_empty() || req.method == "POST" {
+        if let Some((_, _, len)) = req.file {
+            fields.push(("Content-Length", len.to_string()));
+        } else if !req.body.is_empty() || req.method == "POST" || req.method == "PUT" {
             fields.push(("Content-Length", req.body.len().to_string()));
         }
         for (name, value) in fields {
@@ -213,23 +740,81 @@ impl Client {
         Ok(head)
     }
 
-    fn exchange(&self, mut conn: Conn, req: &Request<'_>, head: &[u8]) -> Result<Response, Failure> {
-        let written = conn
-            .io
-            .get_mut()
-            .write_all(head)
-            .and_then(|()| conn.io.get_mut().flush());
-        if let Err(e) = written {
-            return Err(Failure::BeforeResponse(Error::new(format!(
-                "{}: sending: {e}",
-                req.url
-            ))));
-        }
+    fn exchange(
+        &self,
+        mut conn: Conn,
+        req: &Request<'_>,
+        head: &[u8],
+        sent: Option<&AtomicU64>,
+    ) -> Result<Response<'_>, Failure> {
+        let path = path_of(req.url);
+        // A lookup, a GET or HEAD without a body, is answered as fast as its path answers,
+        // and asked again where it is not, as it may be (a safe method, RFC 9110 §9.2.1):
+        // anything else waits on its server's work with it (an upload begun, or committed,
+        // its digest checked), as long as its patience says.
+        let lookup = matches!(req.method, "GET" | "HEAD") && req.file.is_none() && req.body.is_empty();
+        let answer = match self.patience.head {
+            Some(_) if self.learning && lookup => Some(self.paths.timeout(&path, Wait::Answer)),
+            patience => patience,
+        };
+        let written = conn.io.get_mut().write_all(head).and_then(|()| match req.file {
+            Some((file, from, len)) => send_body(&mut conn, file, from, len, self.patience.stall, sent),
+            None => conn.io.get_mut().flush().map(|()| true),
+        });
+        let asked = Instant::now();
+        // An answer its wait cut is said overdue: asked again at once, its wait having
+        // been drawn to end where the trouble's pause would (crate::patience `Cutoff`).
+        let learned = |read: Result<Head, Failure>| {
+            if !(self.learning && lookup) {
+                return read;
+            }
+            let took = asked.elapsed();
+            match read {
+                Ok(head) => {
+                    self.paths.waited(&path, Wait::Answer, took);
+                    Ok(head)
+                }
+                Err(failure) if answer.is_some_and(|a| took >= a) => {
+                    self.paths.timed_out(&path, Wait::Answer, took);
+                    Err(failure.overdue())
+                }
+                Err(failure) => Err(failure),
+            }
+        };
+        // A server may answer before it has read the whole request, then close: a 413 or a
+        // 401 to an upload. Its answer is taken as it comes (`send_body`), or where a
+        // write fails as the server leaves, from what it left.
+        let (head, early) = match written {
+            Ok(whole) => (learned(read_head(&mut conn, req.url, answer))?, !whole),
+            Err(e) => {
+                let left = matches!(
+                    e.kind(),
+                    io::ErrorKind::BrokenPipe
+                        | io::ErrorKind::ConnectionReset
+                        | io::ErrorKind::ConnectionAborted
+                );
+                // A send cut short is the link's failure, not the request's: sent again.
+                let sending = || {
+                    Failure::BeforeResponse(Error::of(
+                        ErrorKind::Transient,
+                        format!("{}: sending: {e}", req.url),
+                    ))
+                };
+                if !left {
+                    return Err(sending());
+                }
+                (
+                    learned(read_head(&mut conn, req.url, answer)).map_err(|_| sending())?,
+                    true,
+                )
+            }
+        };
         let Head {
             status,
+            reason,
             version,
             fields: headers,
-        } = read_head(&mut conn, req.url)?;
+        } = head;
         let framing = framing(req.method, status, version, &headers).map_err(Failure::Other)?;
         let close = match version {
             0 => {
@@ -244,57 +829,506 @@ impl Client {
             && headers
                 .iter()
                 .any(|(n, _)| n.eq_ignore_ascii_case("content-length"));
-        conn.stall().map_err(|e| Failure::Other(e.into()))?;
+        // A body's silence is cut where its path's silences say it has gone on too long.
+        let paced = match self.patience.stall {
+            Some(_) if self.learning => {
+                let timeout = self.paths.silence(&path);
+                let now = Instant::now();
+                Some(Paced {
+                    paths: &self.paths,
+                    path,
+                    timeout,
+                    last: now,
+                    body: Silenced {
+                        seen: Sketch::default(),
+                        began: now,
+                        first: None,
+                        timed_out: None,
+                        waited: timeout,
+                        cut: None,
+                    },
+                })
+            }
+            _ => None,
+        };
+        conn.stall(paced.as_ref().map_or(self.patience.stall, |p| Some(p.timeout)))
+            .map_err(|e| Failure::Other(e.into()))?;
         let mut body = Body {
             conn: Some(conn),
+            paced,
             framing,
-            reuse: !close && !both,
-            pool: self.pool.clone(),
+            // A 408's server stopped waiting for a request there, and may hold part of
+            // one: where it ends is lost (RFC 9110 §15.5.9).
+            reuse: !close && !both && !early && status != 408,
+            pool: &self.pool,
         };
         body.finish_if_done();
         Ok(Response {
             status,
+            reason,
             url: req.url.clone(),
             headers,
             body,
+            ahead: Ahead::default(),
         })
     }
 
-    fn connect(&self, url: &Url, key: Key) -> Result<Conn, Error> {
-        let tcp = dial(url)?;
-        let _ = tcp.set_nodelay(true);
-        let stream = match url.scheme() {
-            Scheme::Http => Stream::Plain(tcp),
-            Scheme::Https => {
-                let config = (self.tls)(url)?;
+    fn connect(&self, url: &Url, key: Key, proxy: Option<&Proxy>) -> Result<Conn, Error> {
+        // The first hop: the proxy, when there is one, else the server.
+        let first = proxy.map_or(url, |p| &p.url);
+        // An address the client may not reach is refused before a proxy is asked for it;
+        // the proxy is reached wherever it is, and a name it resolves is its own.
+        let reach = match proxy {
+            Some(_) => {
                 let host = url.host().trim_start_matches('[').trim_end_matches(']');
-                let name =
-                    ServerName::try_from(host.to_string()).map_err(|e| Error::new(format!("{url}: {e}")))?;
-                let mut tls = ClientConnection::new(config, name)?;
-                let mut tcp = tcp;
-                let deadline = Instant::now() + HANDSHAKE;
-                while tls.is_handshaking() {
-                    let left = deadline
-                        .checked_duration_since(Instant::now())
-                        .filter(|d| !d.is_zero())
-                        .ok_or_else(|| {
-                            Error::of(
-                                ErrorKind::Transient,
-                                format!("{url}: the TLS handshake timed out"),
-                            )
-                        })?;
-                    tcp.set_read_timeout(Some(left))?;
-                    tcp.set_write_timeout(Some(left))?;
-                    tls.complete_io(&mut tcp)
-                        .map_err(|e| Error::from(e).context(format!("{url}: TLS handshake")))?;
+                if let (Some(reach), Ok(ip)) = (self.reach, host.parse::<std::net::IpAddr>())
+                    && !reach(ip)
+                {
+                    return Err(unreachable(url));
                 }
-                Stream::Tls(Box::new(StreamOwned::new(tls, tcp)))
+                None
             }
+            None => self.reach,
         };
-        Ok(Conn {
+        let tcp = self.dial(url, first, reach).map_err(|e| match proxy {
+            Some(p) => e.context(format!("proxyconnect {}", p.url.authority())),
+            None => e,
+        })?;
+        let _ = tcp.set_nodelay(true);
+        // The route it went by keys the path's record (crate::links).
+        if let Ok(local) = tcp.local_addr() {
+            self.paths.located(&path_of(url), local.ip());
+        }
+        // Watched from here, the handshakes and tunnel included.
+        let watch = self.cancel.as_ref().map(|c| c.watch(&tcp));
+        let path = path_of(url);
+        let mut hop = match (proxy, first.scheme()) {
+            (Some(_), Scheme::Https) => Hop::Tls(Box::new(self.handshake(first, tcp, &path)?)),
+            _ => Hop::Tcp(tcp),
+        };
+        if let Some(proxy) = proxy
+            && url.scheme() == Scheme::Https
+        {
+            tunnel(&mut hop, url, proxy, &self.user_agent, self.patience.head)?;
+        }
+        let stream = match url.scheme() {
+            Scheme::Http => Stream::Plain(hop),
+            Scheme::Https => Stream::Tls(Box::new(self.handshake(url, hop, &path)?)),
+        };
+        let conn = Conn {
             key,
             io: BufReader::with_capacity(64 << 10, stream),
-        })
+            watch,
+        };
+        // The request's writes are bounded too: a fresh connection would otherwise have
+        // none, or what was left of the handshake's.
+        conn.stall(self.patience.stall)?;
+        Ok(conn)
+    }
+
+    /// `first`, the first hop to `url` (its proxy, or it), dialled: within the connections
+    /// of `url`'s path take ([`Wait::Connect`]) where the client learns its waits (D222),
+    /// which learns from how long it took, else within its patience.
+    fn dial(
+        &self,
+        url: &Url,
+        first: &Url,
+        reach: Option<fn(std::net::IpAddr) -> bool>,
+    ) -> Result<TcpStream, Error> {
+        if !self.learning {
+            return dial(first, self.cancel.as_ref(), reach, self.patience.connect);
+        }
+        let path = path_of(url);
+        let within = self.paths.timeout(&path, Wait::Connect);
+        let began = Instant::now();
+        let dialled = dial(first, self.cancel.as_ref(), reach, within);
+        self.learned(&path, Wait::Connect, began, within, dialled.is_ok());
+        dialled
+    }
+
+    /// The path `path`'s `wait`, begun at `began` and given `within`, ended, in time where
+    /// `ok`: learned from, or counted as a timeout where its time ran out.
+    fn learned(&self, path: &str, wait: Wait, began: Instant, within: Duration, ok: bool) {
+        let took = began.elapsed();
+        if ok {
+            self.paths.waited(path, wait, took);
+        } else if took >= within {
+            self.paths.timed_out(path, wait, took);
+        }
+    }
+
+    /// A TLS session with `url`'s host over `io`, its handshake done as quickly as the
+    /// handshakes of `path`, the path it is on, take ([`Wait::Handshake`]) where the client
+    /// learns its waits (D222), which learns from how long it took; else within Go's
+    /// transport's `TLSHandshakeTimeout`, 10 s, as containerd's transport gives it.
+    fn handshake<T: Wire>(&self, url: &Url, io: T, path: &str) -> Result<Tls<T>, Error> {
+        if !self.learning {
+            return self.shake(url, io, HANDSHAKE);
+        }
+        let within = self.paths.timeout(path, Wait::Handshake);
+        let began = Instant::now();
+        let shaken = self.shake(url, io, within);
+        self.learned(path, Wait::Handshake, began, within, shaken.is_ok());
+        shaken
+    }
+
+    /// A TLS session with `url`'s host over `io`, its handshake done `within`.
+    fn shake<T: Wire>(&self, url: &Url, mut io: T, within: Duration) -> Result<Tls<T>, Error> {
+        let config = (self.tls)(url)?;
+        let host = match &self.server_name {
+            Some(name) => name.as_str(),
+            None => url.host().trim_start_matches('[').trim_end_matches(']'),
+        };
+        let name = ServerName::try_from(host.to_string()).map_err(|e| Error::new(format!("{url}: {e}")))?;
+        let mut tls = ClientConnection::new(config, name)?;
+        let deadline = after(within);
+        let mut heard = Heard::default();
+        while tls.is_handshaking() {
+            let left = deadline
+                .checked_duration_since(Instant::now())
+                .filter(|d| !d.is_zero())
+                .ok_or_else(|| {
+                    Error::of(
+                        ErrorKind::Transient,
+                        format!("{url}: the TLS handshake timed out"),
+                    )
+                    .not_tls()
+                })?;
+            io.tcp().set_read_timeout(Some(left))?;
+            io.tcp().set_write_timeout(Some(left))?;
+            tls.complete_io(&mut Hearing {
+                io: &mut io,
+                heard: &mut heard,
+            })
+            .map_err(|e| match heard.first() {
+                // What Go's TLS client finds as a RecordHeaderError, and says so.
+                b"HTTP/" => {
+                    Error::new(format!("{url}: http: server gave HTTP response to HTTPS client")).not_tls()
+                }
+                // The socket's timeout is the deadline's: the handshake ran out of time.
+                _ if matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut) => Error::of(
+                    ErrorKind::Transient,
+                    format!("{url}: the TLS handshake timed out"),
+                )
+                .not_tls(),
+                _ => Error::from(e).context(format!("{url}: TLS handshake")),
+            })?;
+        }
+        Ok(Tls { conn: tls, sock: io })
+    }
+}
+
+/// The first bytes a handshake heard, which say whether a plain HTTP server answered.
+#[derive(Default)]
+struct Heard {
+    first: [u8; 5],
+    len: usize,
+}
+
+impl Heard {
+    fn first(&self) -> &[u8] {
+        self.first.get(..self.len).unwrap_or_default()
+    }
+}
+
+/// A stream whose first bytes read are kept in a [`Heard`].
+struct Hearing<'a, T> {
+    io: &'a mut T,
+    heard: &'a mut Heard,
+}
+
+impl<T: Read> Read for Hearing<'_, T> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let n = self.io.read(buf)?;
+        let h = &mut *self.heard;
+        for &b in buf.get(..n).unwrap_or_default() {
+            match h.first.get_mut(h.len) {
+                Some(slot) => {
+                    *slot = b;
+                    h.len += 1;
+                }
+                None => break,
+            }
+        }
+        Ok(n)
+    }
+}
+
+impl<T: Write> Write for Hearing<'_, T> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.io.write(buf)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.io.flush()
+    }
+}
+
+/// Asks `proxy`, over `hop`, for a tunnel to `url`'s host (RFC 9110 §9.3.6), as Go's
+/// transport asks: `CONNECT host:port`, with the proxy's credentials, its answer awaited
+/// for `patience` (30 s for a registry). Anything but 200 is refused, in its status line's
+/// words, as Go's error says.
+fn tunnel(
+    hop: &mut Hop,
+    url: &Url,
+    proxy: &Proxy,
+    user_agent: &str,
+    patience: Option<Duration>,
+) -> Result<(), Error> {
+    let target = format!("{}:{}", url.host(), url.port());
+    let proxying = |what: &dyn std::fmt::Display| {
+        Error::new(format!(
+            "proxyconnect {}: CONNECT {target}: {what}",
+            proxy.url.authority()
+        ))
+    };
+    let mut head = format!("CONNECT {target} HTTP/1.1\r\nHost: {target}\r\n");
+    if !user_agent.is_empty() {
+        head.push_str("User-Agent: ");
+        head.push_str(user_agent);
+        head.push_str("\r\n");
+    }
+    if let Some(authorization) = &proxy.authorization {
+        head.push_str("Proxy-Authorization: ");
+        head.push_str(authorization);
+        head.push_str("\r\n");
+    }
+    head.push_str("\r\n");
+    hop.tcp().set_write_timeout(patience)?;
+    hop.tcp().set_read_timeout(patience)?;
+    hop.write_all(head.as_bytes())
+        .and_then(|()| hop.flush())
+        .map_err(|e| proxying(&e))?;
+    // Its head, a byte at a time: what follows is the tunnel's.
+    let mut answer = Vec::new();
+    let mut byte = [0u8; 1];
+    while !answer.ends_with(b"\r\n\r\n") {
+        if answer.len() > MAX_TUNNEL_HEAD {
+            return Err(proxying(&"an answer past 64 KiB"));
+        }
+        match hop.read(&mut byte) {
+            Ok(0) => return Err(proxying(&"the proxy closed the connection")),
+            Ok(_) => answer.extend_from_slice(&byte),
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+            Err(e) => return Err(proxying(&e)),
+        }
+    }
+    let mut fields = [httparse::EMPTY_HEADER; 64];
+    let mut response = httparse::Response::new(&mut fields);
+    match response.parse(&answer) {
+        Ok(httparse::Status::Complete(_)) if response.code == Some(200) => Ok(()),
+        Ok(httparse::Status::Complete(_)) => Err(proxying(&format!(
+            "{} {}",
+            response.code.unwrap_or_default(),
+            response.reason.unwrap_or_default()
+        ))),
+        Ok(httparse::Status::Partial) => Err(proxying(&"an answer cut short")),
+        Err(e) => Err(proxying(&e)),
+    }
+}
+
+/// Sends `len` bytes of `file`, from `from`, as the request's body, watching for the server's answer
+/// as it goes: whether all of it was sent before one came. A server may answer an upload
+/// before it has read it, a 413 or a 401, then close, resetting the connection over what
+/// it never read: Windows then discards what it had received (WSAECONNRESET), and a write
+/// waiting for room the server will never make waits until it does. So the socket waits
+/// only to be readable or writable, and an answer is taken as soon as it comes, as Go's
+/// transport reads a response while it writes the request (net/http transport.go,
+/// persistConn's readLoop and writeLoop).
+fn send_body(
+    conn: &mut Conn,
+    file: &std::fs::File,
+    from: u64,
+    len: u64,
+    stall: Option<Duration>,
+    counted: Option<&AtomicU64>,
+) -> io::Result<bool> {
+    conn.io.get_ref().tcp().set_nonblocking(true)?;
+    let sent = sending(conn, file, from, len, stall, counted);
+    let restored = conn.io.get_ref().tcp().set_nonblocking(false);
+    let sent = sent?;
+    restored?;
+    Ok(sent)
+}
+
+/// [`send_body`]'s writes: on Linux a plain connection takes the body by sendfile(2), as
+/// std copies a file to a socket; otherwise in 64 KiB writes, four TLS records each, where
+/// io::copy's 8 KiB writes make a record and a send of each. Each byte the socket, or TLS,
+/// takes is added to `counted`.
+fn sending(
+    conn: &mut Conn,
+    mut file: &std::fs::File,
+    from: u64,
+    len: u64,
+    stall: Option<Duration>,
+    counted: Option<&AtomicU64>,
+) -> io::Result<bool> {
+    use std::io::{BufRead as _, Seek as _, SeekFrom};
+    // The server has left: what it said is read next.
+    let gone = |e: &io::Error| {
+        matches!(
+            e.kind(),
+            io::ErrorKind::BrokenPipe | io::ErrorKind::ConnectionReset | io::ErrorKind::ConnectionAborted
+        )
+    };
+    let again = |e: &io::Error| matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted);
+    let short = |sent: u64| io::Error::other(format!("{sent} of the body's {len} bytes"));
+    let count = |n: u64| {
+        if let Some(c) = counted {
+            c.fetch_add(n, Ordering::Relaxed);
+        }
+    };
+    file.seek(SeekFrom::Start(from))?;
+    let mut buf = vec![0u8; 64 << 10];
+    let (mut at, mut end, mut sent) = (0usize, 0usize, 0u64);
+    loop {
+        let (readable, writable) = ready(conn.io.get_ref().tcp(), stall)?;
+        if readable {
+            match conn.io.fill_buf() {
+                // An answer, or the server's end: read next, either.
+                Ok(_) => return Ok(false),
+                Err(e) if again(&e) => {}
+                Err(e) if gone(&e) => return Ok(false),
+                Err(e) => return Err(e),
+            }
+        }
+        if !writable {
+            continue;
+        }
+        #[cfg(target_os = "linux")]
+        if let Stream::Plain(Hop::Tcp(tcp)) = conn.io.get_mut() {
+            if sent == len {
+                return Ok(true);
+            }
+            match send_from(tcp, file, from + sent, len - sent) {
+                Ok(0) => return Err(short(sent)),
+                Ok(n) => {
+                    sent += n;
+                    count(n);
+                }
+                Err(e) if again(&e) => {}
+                Err(e) if gone(&e) => return Ok(false),
+                Err(e) => return Err(e),
+            }
+            continue;
+        }
+        if at == end && sent < len {
+            let want = usize::try_from(len - sent).unwrap_or(usize::MAX).min(buf.len());
+            end = match file.read(buf.get_mut(..want).unwrap_or_default()) {
+                Ok(0) => return Err(short(sent)),
+                Ok(n) => n,
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                Err(e) => return Err(e),
+            };
+            at = 0;
+            sent += end as u64;
+        }
+        let stream = conn.io.get_mut();
+        let wrote = if at < end {
+            stream.write(buf.get(at..end).unwrap_or_default()).map(|n| {
+                at += n;
+                count(n as u64);
+            })
+        } else {
+            // All handed over: what TLS still holds goes out.
+            match stream.flush() {
+                Ok(()) => return Ok(true),
+                Err(e) => Err(e),
+            }
+        };
+        match wrote {
+            Ok(()) => {}
+            Err(e) if again(&e) => {}
+            Err(e) if gone(&e) => return Ok(false),
+            Err(e) => return Err(e),
+        }
+    }
+}
+
+/// sendfile(2) of up to `left` bytes of `file` from `at` to `tcp`: how many it took.
+#[cfg(target_os = "linux")]
+fn send_from(tcp: &TcpStream, file: &std::fs::File, at: u64, left: u64) -> io::Result<u64> {
+    use std::os::fd::AsRawFd;
+    let mut offset = libc::off_t::try_from(at).map_err(|_| io::Error::other("a body past off_t"))?;
+    let count = usize::try_from(left).unwrap_or(usize::MAX).min(1 << 30);
+    // SAFETY: sendfile(2) between two descriptors held open, from an offset of ours.
+    let n = unsafe { libc::sendfile(tcp.as_raw_fd(), file.as_raw_fd(), &mut offset, count) };
+    u64::try_from(n).map_err(|_| io::Error::last_os_error())
+}
+
+/// Waits up to `d` (without end where `None`) until `tcp` has something to read, or has
+/// ended, or has room to write: (readable, writable), an error or hangup both. `TimedOut`
+/// past `d`.
+#[cfg(unix)]
+fn ready(tcp: &TcpStream, d: Option<Duration>) -> io::Result<(bool, bool)> {
+    use std::os::fd::AsRawFd;
+    let deadline = d.map(after);
+    loop {
+        let ms = match deadline {
+            Some(deadline) => {
+                let left = deadline.saturating_duration_since(Instant::now());
+                libc::c_int::try_from(left.as_micros().div_ceil(1000).max(1)).unwrap_or(libc::c_int::MAX)
+            }
+            None => -1,
+        };
+        let mut p = libc::pollfd {
+            fd: tcp.as_raw_fd(),
+            events: libc::POLLIN | libc::POLLOUT,
+            revents: 0,
+        };
+        // SAFETY: poll(2) on one pollfd of ours.
+        match unsafe { libc::poll(&mut p, 1, ms) } {
+            n if n > 0 => {
+                let (end, r) = (libc::POLLHUP | libc::POLLERR, p.revents);
+                return Ok((r & (libc::POLLIN | end) != 0, r & (libc::POLLOUT | end) != 0));
+            }
+            0 if deadline.is_some_and(|d| Instant::now() >= d) => {
+                return Err(io::Error::new(io::ErrorKind::TimedOut, "no progress in 30 s"));
+            }
+            0 => {}
+            _ => {
+                let e = io::Error::last_os_error();
+                if e.kind() != io::ErrorKind::Interrupted {
+                    return Err(e);
+                }
+            }
+        }
+    }
+}
+
+/// [`ready`] on Windows: WSAPoll.
+#[cfg(windows)]
+fn ready(tcp: &TcpStream, d: Option<Duration>) -> io::Result<(bool, bool)> {
+    use std::os::windows::io::AsRawSocket;
+    use windows_sys::Win32::Networking::WinSock::{
+        POLLERR, POLLHUP, POLLRDNORM, POLLWRNORM, WSAPOLLFD, WSAPoll,
+    };
+    let deadline = d.map(after);
+    loop {
+        let ms = match deadline {
+            Some(deadline) => {
+                let left = deadline.saturating_duration_since(Instant::now());
+                i32::try_from(left.as_micros().div_ceil(1000).max(1)).unwrap_or(i32::MAX)
+            }
+            None => -1,
+        };
+        let mut p = WSAPOLLFD {
+            fd: tcp.as_raw_socket() as usize,
+            events: POLLRDNORM | POLLWRNORM,
+            revents: 0,
+        };
+        // SAFETY: WSAPoll on one WSAPOLLFD of ours.
+        match unsafe { WSAPoll(&mut p, 1, ms) } {
+            n if n > 0 => {
+                let (end, r) = (POLLHUP | POLLERR, p.revents);
+                return Ok((r & (POLLRDNORM | end) != 0, r & (POLLWRNORM | end) != 0));
+            }
+            0 if deadline.is_some_and(|d| Instant::now() >= d) => {
+                return Err(io::Error::new(io::ErrorKind::TimedOut, "no progress in 30 s"));
+            }
+            0 => {}
+            _ => return Err(io::Error::last_os_error()),
+        }
     }
 }
 
@@ -310,18 +1344,108 @@ impl Failure {
             Failure::BeforeResponse(e) | Failure::Other(e) => e,
         }
     }
+
+    /// The same failure, of an answer its path's wait cut.
+    fn overdue(self) -> Failure {
+        match self {
+            Failure::BeforeResponse(e) => Failure::BeforeResponse(e.overdue()),
+            Failure::Other(e) => Failure::Other(e.overdue()),
+        }
+    }
 }
 
 /// Connects to `url`'s host, racing its addresses as RFC 8305 §5 describes: families
 /// interleaved, the next attempt started 300 ms after the last or as soon as it fails.
-fn dial(url: &Url) -> Result<TcpStream, Error> {
+/// Gives up at once if `cancel` is cancelled; the attempts under way end on their own.
+/// The addresses `url`'s host names: at once for an address, and for a name looked up on a
+/// thread of its own, waited for until `deadline` or a cancel. getaddrinfo(3) takes no
+/// deadline; a lookup given up on ends on its own, its answer unread.
+/// `url`'s host's addresses at its port, looked up by `deadline` unless `cancel` is
+/// cancelled first.
+pub(crate) fn resolve(
+    url: &Url,
+    deadline: Instant,
+    cancel: Option<&Cancel>,
+) -> Result<Vec<SocketAddr>, Error> {
     let host = url.host().trim_start_matches('[').trim_end_matches(']');
-    let found: Vec<SocketAddr> = (host, url.port())
-        .to_socket_addrs()
-        .map_err(|e| Error::new(format!("{}: resolving: {e}", url.host())))?
-        .collect();
-    let addrs = interleave(found);
-    let deadline = Instant::now() + CONNECT;
+    let port = url.port();
+    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+        return Ok(vec![SocketAddr::new(ip, port)]);
+    }
+    let resolving = |e: &dyn std::fmt::Display| Error::new(format!("{}: resolving: {e}", url.host()));
+    let (tx, rx) = mpsc::channel();
+    let name = host.to_string();
+    std::thread::Builder::new()
+        .name("shards-resolve".into())
+        .spawn(move || {
+            let _ = tx.send(
+                (name.as_str(), port)
+                    .to_socket_addrs()
+                    .map(Iterator::collect::<Vec<_>>),
+            );
+        })
+        .map_err(|e| resolving(&e))?;
+    loop {
+        let left = deadline
+            .checked_duration_since(Instant::now())
+            .filter(|d| !d.is_zero())
+            .ok_or_else(|| {
+                Error::of(
+                    ErrorKind::Transient,
+                    format!("{}: resolving: timed out", url.host()),
+                )
+            })?;
+        match rx.recv_timeout(left.min(DIAL_POLL)) {
+            Ok(found) => return found.map_err(|e| resolving(&e)),
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                if let Some(cancel) = cancel {
+                    cancel.check()?;
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                return Err(resolving(&"the lookup ended unanswered"));
+            }
+        }
+    }
+}
+
+/// The instant `d` from now, or the furthest this host's clock holds where that is past
+/// it: a wait learned so long (a timeout doubled many times, §5.5) is one without end.
+fn after(d: Duration) -> Instant {
+    let now = Instant::now();
+    let mut d = d;
+    loop {
+        if let Some(at) = now.checked_add(d) {
+            return at;
+        }
+        d /= 2;
+    }
+}
+
+/// What a client [`Client::reaching`] some addresses alone says of a URL it may not reach.
+fn unreachable(url: &Url) -> Error {
+    Error::new(format!(
+        "{}: no address a build step may reach (the host's own, link-local or multicast)",
+        url.authority()
+    ))
+}
+
+fn dial(
+    url: &Url,
+    cancel: Option<&Cancel>,
+    reach: Option<fn(std::net::IpAddr) -> bool>,
+    within: Duration,
+) -> Result<TcpStream, Error> {
+    // The name's lookup is within the dial's time, as Go's Dialer counts it.
+    let deadline = after(within);
+    let mut addrs = resolve(url, deadline, cancel)?;
+    if let Some(reach) = reach {
+        addrs.retain(|a| reach(a.ip()));
+        if addrs.is_empty() {
+            return Err(unreachable(url));
+        }
+    }
+    let addrs = interleave(addrs);
     let (tx, rx) = mpsc::channel();
     let mut pending = 0usize;
     let mut last = None;
@@ -355,8 +1479,11 @@ fn dial(url: &Url) -> Result<TcpStream, Error> {
         let started = Instant::now();
         while let Some(limit) = RACE.checked_sub(started.elapsed()) {
             let before = pending;
-            if let Some(stream) = wait(&mut pending, &mut last, limit) {
+            if let Some(stream) = wait(&mut pending, &mut last, limit.min(DIAL_POLL)) {
                 return Ok(stream);
+            }
+            if let Some(cancel) = cancel {
+                cancel.check()?;
             }
             // An attempt failed: start the next one now.
             if pending < before {
@@ -368,11 +1495,17 @@ fn dial(url: &Url) -> Result<TcpStream, Error> {
         let Some(left) = deadline.checked_duration_since(Instant::now()) else {
             break;
         };
-        if let Some(stream) = wait(&mut pending, &mut last, left) {
+        if let Some(stream) = wait(&mut pending, &mut last, left.min(DIAL_POLL)) {
             return Ok(stream);
+        }
+        if let Some(cancel) = cancel {
+            cancel.check()?;
         }
     }
     Err(match last {
+        Some(e) if e.kind() == io::ErrorKind::ConnectionRefused => Error::from(e)
+            .context(format!("{}: connecting", url.authority()))
+            .refused(),
         Some(e) => Error::from(e).context(format!("{}: connecting", url.authority())),
         None => Error::of(
             ErrorKind::Transient,
@@ -400,27 +1533,39 @@ fn interleave(addrs: Vec<SocketAddr>) -> Vec<SocketAddr> {
 /// A response head: the status, the minor HTTP version, and the fields.
 struct Head {
     status: u16,
+    /// As httparse reads it: empty where the server gave none, or one it holds invalid.
+    reason: String,
     version: u8,
     fields: Vec<(String, String)>,
 }
 
-/// Reads a response head, skipping 1xx ones, within 10 MiB and 30 s in all.
-fn read_head(conn: &mut Conn, url: &Url) -> Result<Head, Failure> {
-    let deadline = Instant::now() + HEAD;
+/// Reads a response head, skipping 1xx ones, within 10 MiB and `patience` in all (30 s
+/// for a registry; without end where `None`).
+fn read_head(conn: &mut Conn, url: &Url, patience: Option<Duration>) -> Result<Head, Failure> {
+    let deadline = patience.map(after);
     let mut budget = MAX_HEAD;
     let mut first = true;
     loop {
         let mut buf = Vec::new();
+        let mut lines = 0;
         let parsed = loop {
-            let left = deadline
-                .checked_duration_since(Instant::now())
-                .filter(|d| !d.is_zero())
-                .ok_or_else(|| {
-                    Failure::Other(Error::of(
-                        ErrorKind::Transient,
-                        format!("{url}: no response within 30 s"),
-                    ))
-                })?;
+            let left = match deadline {
+                Some(deadline) => Some(
+                    deadline
+                        .checked_duration_since(Instant::now())
+                        .filter(|d| !d.is_zero())
+                        .ok_or_else(|| {
+                            Failure::Other(Error::of(
+                                ErrorKind::Transient,
+                                format!(
+                                    "{url}: no response within {:.1} s",
+                                    patience.unwrap_or_default().as_secs_f64()
+                                ),
+                            ))
+                        })?,
+                ),
+                None => None,
+            };
             conn.set_timeout(left).map_err(|e| Failure::Other(e.into()))?;
             let available = match conn.io.fill_buf() {
                 Ok(bytes) => bytes,
@@ -447,14 +1592,29 @@ fn read_head(conn: &mut Conn, url: &Url) -> Result<Head, Failure> {
             }
             let old = buf.len();
             let take = available.len().min(budget.saturating_sub(old).saturating_add(1));
-            buf.extend_from_slice(available.get(..take).unwrap_or_default());
-            let slots = buf.iter().filter(|&&b| b == b'\n').count().max(1);
-            let mut fields = vec![httparse::EMPTY_HEADER; slots];
+            let new = available.get(..take).unwrap_or_default();
+            lines += new.iter().filter(|&&b| b == b'\n').count();
+            buf.extend_from_slice(new);
+            // A head ends with an empty line: parsed once one may have come, and as its
+            // first bytes come, so a malformed start fails at once. Parsing it again on
+            // each read would be quadratic in a head sent a byte at a time.
+            let tail = buf.get(old.saturating_sub(2)..).unwrap_or_default();
+            if old > 0 && !tail.windows(2).any(|w| w == b"\n\n") && !tail.windows(3).any(|w| w == b"\n\r\n") {
+                conn.io.consume(take);
+                if buf.len() > budget {
+                    return Err(Failure::Other(Error::new(format!(
+                        "{url}: the response head passes 10 MiB"
+                    ))));
+                }
+                continue;
+            }
+            let mut fields = vec![httparse::EMPTY_HEADER; lines.max(1)];
             let mut response = httparse::Response::new(&mut fields);
             match response.parse(&buf) {
                 Ok(httparse::Status::Complete(len)) => {
                     conn.io.consume(len.saturating_sub(old));
                     let status = response.code.unwrap_or_default();
+                    let reason = response.reason.unwrap_or_default().to_string();
                     let version = response.version.unwrap_or_default();
                     let fields = response
                         .headers
@@ -464,6 +1624,7 @@ fn read_head(conn: &mut Conn, url: &Url) -> Result<Head, Failure> {
                     budget = budget.saturating_sub(len);
                     break Head {
                         status,
+                        reason,
                         version,
                         fields,
                     };
@@ -580,14 +1741,35 @@ struct Chunked {
 }
 
 #[derive(Debug)]
-struct Body {
+struct Body<'c> {
     conn: Option<Conn>,
+    /// Its silences, where they are its path's to learn (D222).
+    paced: Option<Paced<'c>>,
     framing: Framing,
     reuse: bool,
-    pool: Arc<Pool>,
+    pool: &'c Pool,
 }
 
-impl Body {
+/// A body's silences, the times between its reads that brought bytes, counted as it goes
+/// and added to its path's ([`Paths::silenced`]) as the body is let go of.
+#[derive(Debug)]
+struct Paced<'c> {
+    paths: &'c Paths,
+    path: String,
+    /// How long a read may wait.
+    timeout: Duration,
+    /// When the last read that brought bytes returned, or the body began.
+    last: Instant,
+    body: Silenced,
+}
+
+impl Drop for Paced<'_> {
+    fn drop(&mut self) {
+        self.paths.silenced(&self.path, &self.body);
+    }
+}
+
+impl Body<'_> {
     /// Hands the connection back to the pool once the body is over, if it may be reused.
     fn finish_if_done(&mut self) {
         let done = match &self.framing {
@@ -607,6 +1789,27 @@ impl Body {
     }
 
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let read = self.read_framed(buf);
+        if let Some(p) = self.paced.as_mut() {
+            match &read {
+                Ok(n) if *n > 0 => {
+                    let now = Instant::now();
+                    p.body.seen.add(now.duration_since(p.last));
+                    p.body.first.get_or_insert(now);
+                    p.last = now;
+                    p.body.timed_out = Some(false);
+                }
+                Err(e) if matches!(e.kind(), io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock) => {
+                    p.body.timed_out = Some(true);
+                    p.body.cut = Some(Instant::now());
+                }
+                _ => {}
+            }
+        }
+        read
+    }
+
+    fn read_framed(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         let Some(conn) = self.conn.as_mut() else {
             return Ok(0);
         };
@@ -762,29 +1965,141 @@ struct Key {
     scheme: Scheme,
     host: String,
     port: u16,
+    /// The proxy it goes through, if any.
+    proxy: Option<String>,
 }
 
 impl Key {
-    fn of(url: &Url) -> Key {
+    fn of(url: &Url, proxy: Option<&Proxy>) -> Key {
         Key {
             scheme: url.scheme(),
             host: url.host().to_string(),
             port: url.port(),
+            proxy: proxy.map(|p| p.url.to_string()),
+        }
+    }
+}
+
+/// TLS over `sock`. A read takes the records that have come and the plaintext they hold,
+/// and sends nothing: rustls' Stream sends what is pending before it reads, and a server
+/// that answered before reading the whole request reads no more of it, so its answer
+/// would wait behind records it never takes (`send_body`). A write sends what is pending
+/// first, so that a socket with no room takes no more of it.
+#[derive(Debug)]
+struct Tls<T> {
+    conn: ClientConnection,
+    sock: T,
+}
+
+impl<T: Wire> Tls<T> {
+    /// Sends the records pending, as far as the socket takes them.
+    fn send_pending(&mut self) -> io::Result<()> {
+        while self.conn.wants_write() {
+            self.conn.write_tls(&mut self.sock)?;
+        }
+        Ok(())
+    }
+}
+
+impl<T: Wire> Read for Tls<T> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        loop {
+            match self.conn.reader().read(buf) {
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
+                done => return done,
+            }
+            let ended = self.conn.read_tls(&mut self.sock)? == 0;
+            self.conn
+                .process_new_packets()
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+            if ended {
+                // A close_notify ends it; anything else is cut short (UnexpectedEof).
+                return self.conn.reader().read(buf);
+            }
+        }
+    }
+}
+
+impl<T: Wire> Write for Tls<T> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.send_pending()?;
+        let n = self.conn.writer().write(buf)?;
+        // As far as the socket takes them now: the rest goes with the next write or
+        // flush, which also says what stopped it.
+        let _ = self.send_pending();
+        Ok(n)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.conn.writer().flush()?;
+        self.send_pending()?;
+        self.sock.flush()
+    }
+}
+
+/// A connection's first hop: TCP to the server or its proxy, or TLS to an https proxy.
+#[derive(Debug)]
+enum Hop {
+    Tcp(TcpStream),
+    Tls(Box<Tls<TcpStream>>),
+}
+
+/// What TLS runs over, and the socket beneath it, for its timeouts.
+trait Wire: Read + Write {
+    fn tcp(&self) -> &TcpStream;
+}
+
+impl Wire for TcpStream {
+    fn tcp(&self) -> &TcpStream {
+        self
+    }
+}
+
+impl Wire for Hop {
+    fn tcp(&self) -> &TcpStream {
+        match self {
+            Hop::Tcp(s) => s,
+            Hop::Tls(s) => &s.sock,
+        }
+    }
+}
+
+impl Read for Hop {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        match self {
+            Hop::Tcp(s) => s.read(buf),
+            Hop::Tls(s) => s.read(buf),
+        }
+    }
+}
+
+impl Write for Hop {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        match self {
+            Hop::Tcp(s) => s.write(buf),
+            Hop::Tls(s) => s.write(buf),
+        }
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        match self {
+            Hop::Tcp(s) => s.flush(),
+            Hop::Tls(s) => s.flush(),
         }
     }
 }
 
 #[derive(Debug)]
 enum Stream {
-    Plain(TcpStream),
-    Tls(Box<StreamOwned<ClientConnection, TcpStream>>),
+    Plain(Hop),
+    Tls(Box<Tls<Hop>>),
 }
 
 impl Stream {
     fn tcp(&self) -> &TcpStream {
         match self {
-            Stream::Plain(s) => s,
-            Stream::Tls(s) => &s.sock,
+            Stream::Plain(s) => s.tcp(),
+            Stream::Tls(s) => s.sock.tcp(),
         }
     }
 }
@@ -818,17 +2133,31 @@ impl Write for Stream {
 struct Conn {
     key: Key,
     io: BufReader<Stream>,
+    /// While the connection is in use: idle, it is no request's to cancel.
+    watch: Option<Watch>,
 }
 
 impl Conn {
-    fn set_timeout(&self, d: Duration) -> io::Result<()> {
-        self.io.get_ref().tcp().set_read_timeout(Some(d))?;
-        self.io.get_ref().tcp().set_write_timeout(Some(d))
+    /// Bounds each read and write by `d`. macOS refuses any option on a socket shut down
+    /// both ways, as one the server has reset is, with EINVAL (xnu-11417.101.15
+    /// bsd/kern/uipc_socket.c, sosetoptlock): its reads return what is buffered, then its
+    /// end, and its writes fail, at once, so it needs no bound, and the exchange goes on
+    /// to find out what the server sent.
+    fn set_timeout(&self, d: Option<Duration>) -> io::Result<()> {
+        let tcp = self.io.get_ref().tcp();
+        for set in [TcpStream::set_read_timeout, TcpStream::set_write_timeout] {
+            match set(tcp, d) {
+                Err(e) if e.kind() == io::ErrorKind::InvalidInput && e.raw_os_error().is_some() => {}
+                result => result?,
+            }
+        }
+        Ok(())
     }
 
-    /// From here on, any read or write that makes no progress for 30 s fails.
-    fn stall(&self) -> io::Result<()> {
-        self.set_timeout(STALL)
+    /// From here on, any read or write that makes no progress for `d` (30 s for a
+    /// registry) fails; none does where `None`.
+    fn stall(&self, d: Option<Duration>) -> io::Result<()> {
+        self.set_timeout(d)
     }
 
     /// Whether an idle connection can carry a request: the server has sent nothing since,
@@ -851,14 +2180,23 @@ struct Pool {
 }
 
 impl Pool {
+    /// The newest idle connection to `key`'s origin that the server has neither closed
+    /// nor sent anything on: only those taken are looked at, each look three system calls
+    /// under the pool's lock.
     fn take(&self, key: &Key) -> Option<Conn> {
         let mut idle = self.idle.lock().unwrap_or_else(PoisonError::into_inner);
-        idle.retain(|(since, conn)| since.elapsed() < IDLE && conn.quiet());
-        let i = idle.iter().rposition(|(_, c)| c.key == *key)?;
-        Some(idle.remove(i).1)
+        idle.retain(|(since, _)| since.elapsed() < IDLE);
+        while let Some(i) = idle.iter().rposition(|(_, c)| c.key == *key) {
+            let (_, conn) = idle.remove(i);
+            if conn.quiet() {
+                return Some(conn);
+            }
+        }
+        None
     }
 
-    fn put(&self, conn: Conn) {
+    fn put(&self, mut conn: Conn) {
+        conn.watch = None;
         let mut idle = self.idle.lock().unwrap_or_else(PoisonError::into_inner);
         idle.push((Instant::now(), conn));
         if idle.len() > MAX_IDLE {
@@ -873,12 +2211,12 @@ mod tests {
     use super::*;
     use std::net::{Ipv4Addr, Ipv6Addr};
 
-    use crate::testing::{After, registry, serve};
+    use crate::testing::{After, registry, route, serve};
     use crate::tls::client_config;
 
     fn plain() -> Client {
         Client::new(
-            Box::new(|url| Err(Error::new(format!("{url}: no TLS here")))),
+            Box::new(|_| crate::tls::client_config(Vec::new(), None)),
             "shards-test",
         )
     }
@@ -889,6 +2227,7 @@ mod tests {
             url,
             headers: &[],
             body: &[],
+            file: None,
         })?;
         let mut body = Vec::new();
         response
@@ -952,53 +2291,381 @@ mod tests {
         let chunked = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n";
         let long_line = format!("{chunked}5;{}\r\nhello\r\n0\r\n\r\n", "x".repeat(5000));
         let long_trailer = format!("{chunked}0\r\nT: {}\r\n\r\n", "y".repeat(5000));
-        for (response, why) in [
+        // Each refused for its own reason, not for any failure at all.
+        for (response, said) in [
             (
                 "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nContent-Length: 3\r\n\r\nok",
-                "conflicting lengths",
+                "conflicting Content-Length fields",
             ),
             (
                 "HTTP/1.1 200 OK\r\nContent-Length: +2\r\n\r\nok",
-                "a signed length",
+                "a bad Content-Length \"+2\"",
             ),
-            ("HTTP/1.1 200 OK\r\nContent-Length: \r\n\r\nok", "an empty length"),
+            (
+                "HTTP/1.1 200 OK\r\nContent-Length: \r\n\r\nok",
+                "a bad Content-Length \"\"",
+            ),
             (
                 "HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\nshort",
-                "a short body",
+                "the body ended early",
             ),
             (
                 "HTTP/1.1 200 OK\r\nTransfer-Encoding: gzip, chunked\r\n\r\n",
-                "a coding besides chunked",
+                "unsupported transfer encoding",
             ),
             (
                 "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nTransfer-Encoding: chunked\r\n\r\n",
-                "two Transfer-Encoding fields",
+                "unsupported transfer encoding [\"chunked\", \"chunked\"]",
             ),
-            (&format!("{chunked}5\nhello\r\n0\r\n\r\n"), "a bare LF"),
-            (&format!("{chunked}5\r\r\nhello\r\n0\r\n\r\n"), "a stray CR"),
+            (
+                &format!("{chunked}5\nhello\r\n0\r\n\r\n"),
+                "a chunk line must end in CRLF",
+            ),
+            (
+                &format!("{chunked}5\r\r\nhello\r\n0\r\n\r\n"),
+                "a chunk line must end in CRLF",
+            ),
             (
                 &format!("{chunked}00000000000000005\r\nhello\r\n0\r\n\r\n"),
-                "17 hex digits",
+                "a bad chunk size",
             ),
             (
                 &format!("{chunked}5 ;x\r\nhello\r\n0\r\n\r\n"),
-                "space before an extension",
+                "a bad chunk size",
             ),
             (
                 &format!("{chunked}5\r\nhelloXX0\r\n\r\n"),
-                "no CRLF after the data",
+                "malformed chunked encoding",
             ),
-            (&format!("{chunked}5\r\nhel"), "a cut chunk"),
-            (&long_line, "a 5000-byte chunk line"),
-            (&long_trailer, "a 5000-byte trailer"),
-            ("HTTP/1.1 101 Switching Protocols\r\n\r\n", "a protocol switch"),
-            ("HTTP/1.1 2000 OK\r\n\r\n", "a malformed status line"),
+            (&format!("{chunked}5\r\nhel"), "the chunked body ended early"),
+            (&long_line, "a line is too long"),
+            (&long_trailer, "a line is too long"),
+            (
+                "HTTP/1.1 101 Switching Protocols\r\n\r\n",
+                "an unexpected protocol switch",
+            ),
+            ("HTTP/1.1 2000 OK\r\n\r\n", "a malformed response head"),
         ] {
-            assert!(outcome(response).is_err(), "{why}");
+            let e = outcome(response).unwrap_err().to_string();
+            assert!(e.contains(said), "{said}: {e}");
         }
         // Go takes both framings, and the chunks win.
         let both = "HTTP/1.1 200 OK\r\nContent-Length: 3\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n";
         assert_eq!(outcome(both).unwrap(), b"hello");
+    }
+
+    /// A cancel ends a request at once, whatever it waits for: a head that never comes, a
+    /// body that stops halfway; and a cancelled client connects nowhere (audit A07). Each
+    /// wait would otherwise last 30 s.
+    #[test]
+    fn a_cancel_ends_requests_at_once() {
+        use std::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let url = at("http", "127.0.0.1", port);
+        let server = std::thread::spawn(move || {
+            // The first says nothing; the second sends a head and 10 of its 1000 bytes.
+            let (silent, _) = listener.accept().unwrap();
+            let (mut halfway, _) = listener.accept().unwrap();
+            let mut request = [0u8; 1024];
+            let _ = halfway.read(&mut request);
+            halfway
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 1000\r\n\r\n0123456789")
+                .unwrap();
+            listener.set_nonblocking(true).unwrap();
+            (silent, halfway, listener)
+        });
+        let cancelled_within = |client: &Client, cancel: &Cancel| {
+            std::thread::scope(|scope| {
+                let asked = scope.spawn(|| fetch(client, "GET", &url));
+                std::thread::sleep(Duration::from_millis(100));
+                let t0 = Instant::now();
+                cancel.cancel();
+                let e = asked.join().unwrap().unwrap_err();
+                (e, t0.elapsed())
+            })
+        };
+        let cancel = Cancel::new();
+        let (e, took) = cancelled_within(&plain().cancelled_by(cancel.clone()), &cancel);
+        assert_eq!(e.kind(), ErrorKind::Cancelled, "{e}");
+        assert!(took < Duration::from_secs(2), "{took:?}");
+        let cancel = Cancel::new();
+        let (e, took) = cancelled_within(&plain().cancelled_by(cancel.clone()), &cancel);
+        assert!(took < Duration::from_secs(2), "{took:?}: {e}");
+        let (_silent, _halfway, listener) = server.join().unwrap();
+        // Cancelled already: nothing is sent, and no connection made.
+        let e = fetch(&plain().cancelled_by(cancel), "GET", &url).unwrap_err();
+        assert_eq!(e.kind(), ErrorKind::Cancelled, "{e}");
+        assert!(listener.accept().is_err(), "a cancelled client connected");
+    }
+
+    /// A connection the server has reset takes its timeouts without error, and its reads
+    /// end at once: macOS refused them with EINVAL, which failed a request that should have
+    /// been sent again on a new connection (the flaky `a_stale_pooled_connection_is_replaced`).
+    #[test]
+    fn a_reset_connection_takes_its_timeouts() {
+        use std::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let mut tcp = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let (server, _) = listener.accept().unwrap();
+        // Closing with bytes it never read, the server resets the connection.
+        tcp.write_all(b"GET / HTTP/1.1\r\n\r\n").unwrap();
+        std::thread::sleep(Duration::from_millis(50));
+        drop(server);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let mut byte = [0u8; 1];
+            tcp.set_nonblocking(true).unwrap();
+            let seen = tcp.peek(&mut byte);
+            tcp.set_nonblocking(false).unwrap();
+            if !matches!(&seen, Err(e) if e.kind() == io::ErrorKind::WouldBlock) {
+                break;
+            }
+            assert!(Instant::now() < deadline, "the reset never arrived");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let conn = Conn {
+            key: Key::of(&at("http", "127.0.0.1", port), None),
+            io: BufReader::new(Stream::Plain(Hop::Tcp(tcp))),
+            watch: None,
+        };
+        conn.set_timeout(Some(Duration::from_secs(30))).unwrap();
+        conn.stall(Some(STALL)).unwrap();
+        let t0 = Instant::now();
+        let mut conn = conn;
+        let mut rest = Vec::new();
+        let _ = conn.io.read_to_end(&mut rest);
+        assert!(t0.elapsed() < Duration::from_secs(5), "{:?}", t0.elapsed());
+    }
+
+    /// A name's lookup is within the dial's deadline, which an address needs none of.
+    #[test]
+    fn names_are_looked_up_within_the_dials_deadline() {
+        let spent = Instant::now();
+        let named = resolve(&at("http", "localhost", 5000), spent, None).unwrap_err();
+        assert_eq!(named.kind(), ErrorKind::Transient, "{named}");
+        assert!(named.to_string().contains("resolving: timed out"), "{named}");
+        let addressed = resolve(&at("http", "127.0.0.1", 5000), spent, None).unwrap();
+        assert_eq!(addressed, vec![SocketAddr::from(([127, 0, 0, 1], 5000))]);
+        let found = resolve(
+            &at("http", "localhost", 5000),
+            Instant::now() + Duration::from_secs(10),
+            None,
+        )
+        .unwrap();
+        assert!(
+            found.iter().all(|a| a.ip().is_loopback() && a.port() == 5000),
+            "{found:?}"
+        );
+    }
+
+    /// A fresh connection's reads and writes are bounded from the start: the request is
+    /// written within them too, which nothing bounded before its response's head. A
+    /// client without that patience bounds neither.
+    #[test]
+    fn fresh_connections_bound_their_writes() {
+        let server = serve(None, vec![]);
+        let url = at("http", "127.0.0.1", server.port);
+        let conn = plain().connect(&url, Key::of(&url, None), None).unwrap();
+        let tcp = conn.io.get_ref().tcp();
+        assert_eq!(tcp.write_timeout().unwrap(), Some(STALL));
+        assert_eq!(tcp.read_timeout().unwrap(), Some(STALL));
+        let patient = plain().with_patience(Patience {
+            head: None,
+            stall: None,
+            ..Patience::default()
+        });
+        let conn = patient.connect(&url, Key::of(&url, None), None).unwrap();
+        let tcp = conn.io.get_ref().tcp();
+        assert_eq!(
+            (tcp.write_timeout().unwrap(), tcp.read_timeout().unwrap()),
+            (None, None)
+        );
+    }
+
+    /// A client reaching some addresses alone refuses the others, directly and through a
+    /// proxy, and reaches what it allows.
+    #[test]
+    fn a_client_reaches_what_it_may_alone() {
+        let server = serve(
+            None,
+            vec![(
+                b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok".to_vec(),
+                After::Close,
+            )],
+        );
+        let url = at("http", "127.0.0.1", server.port);
+        let refusing = plain().reaching(|ip| !ip.is_loopback());
+        let e = fetch(&refusing, "GET", &url).unwrap_err().to_string();
+        assert!(e.contains("no address a build step may reach"), "{e}");
+        let proxied = plain()
+            .reaching(|ip| !ip.is_loopback())
+            .with_proxies(crate::proxy::Proxies::from_env(&|k| {
+                (k == "HTTP_PROXY").then(|| "http://proxy.invalid:3128".to_string())
+            }));
+        let e = fetch(&proxied, "GET", &at("http", "127.0.0.2", 80))
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("no address a build step may reach"), "{e}");
+        let allowing = plain().reaching(|ip| ip.is_loopback());
+        assert_eq!(fetch(&allowing, "GET", &url).unwrap(), (200, b"ok".to_vec()));
+    }
+
+    /// A request's own User-Agent goes in the client's place, and a client without one
+    /// sends none.
+    #[test]
+    fn a_requests_own_user_agent_is_sent() {
+        let agent = |client: &Client, headers: &[(&str, &str)]| {
+            let server = serve(
+                None,
+                vec![(b"HTTP/1.1 204 No Content\r\n\r\n".to_vec(), After::Close)],
+            );
+            let url = at("http", "127.0.0.1", server.port);
+            client
+                .send(&Request {
+                    method: "GET",
+                    url: &url,
+                    headers,
+                    body: &[],
+                    file: None,
+                })
+                .unwrap();
+            let asked = server.requests();
+            let head = asked.first().unwrap().clone();
+            head.lines()
+                .filter(|l| l.to_ascii_lowercase().starts_with("user-agent:"))
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(agent(&plain(), &[]), ["User-Agent: shards-test"]);
+        assert_eq!(
+            agent(&plain(), &[("user-agent", "curl/8")]),
+            ["user-agent: curl/8"]
+        );
+        let bare = Client::new(Box::new(|_| crate::tls::client_config(Vec::new(), None)), "");
+        assert!(agent(&bare, &[]).is_empty());
+    }
+
+    /// A server that answers an upload before reading it, then leaves, is heard: its 413,
+    /// not the broken pipe, as Go's transport reads an answer while it writes.
+    #[test]
+    fn an_answer_before_the_body_is_read_is_heard() {
+        use std::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let (mut tcp, _) = listener.accept().unwrap();
+            let mut head = Vec::new();
+            let mut byte = [0u8; 1];
+            while !head.ends_with(b"\r\n\r\n") {
+                tcp.read_exact(&mut byte).unwrap();
+                head.push(byte[0]);
+            }
+            tcp.write_all(b"HTTP/1.1 413 Request Entity Too Large\r\nContent-Length: 0\r\n\r\n")
+                .unwrap();
+            // Gone with the body unread, as Go's server leaves (net/http server.go,
+            // closeWriteAndWait): its end sent after its answer, a pause for the client to
+            // read them, then a close that resets the connection over what it never read.
+            tcp.shutdown(Shutdown::Write).unwrap();
+            std::thread::sleep(Duration::from_millis(500));
+        });
+        let path_dir = shards_testdir::TempDir::new("early").unwrap();
+        let path = path_dir.join("early");
+        std::fs::write(&path, vec![0u8; 64 << 20]).unwrap();
+        let file = std::fs::File::open(&path).unwrap();
+        let url = at("http", "127.0.0.1", port);
+        let client = plain();
+        let status = client
+            .send(&Request {
+                method: "PUT",
+                url: &url,
+                headers: &[],
+                body: &[],
+                file: Some((&file, 0, 64 << 20)),
+            })
+            .map(|r| r.status);
+        let _ = std::fs::remove_file(&path);
+        server.join().unwrap();
+        assert_eq!(status.unwrap(), 413);
+    }
+
+    /// An answer before the body is read is heard over TLS too, 1.3 and 1.2: a read there
+    /// sends nothing first, so the records the server never takes do not hold it back.
+    #[test]
+    fn an_answer_before_the_body_is_read_is_heard_over_tls() {
+        use std::net::TcpListener;
+        for version in [&rustls::version::TLS13, &rustls::version::TLS12] {
+            let (ca, config) = registry(&[version]);
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let server = std::thread::spawn(move || {
+                let (tcp, _) = listener.accept().unwrap();
+                let mut tls = rustls::StreamOwned::new(rustls::ServerConnection::new(config).unwrap(), tcp);
+                let mut head = Vec::new();
+                let mut byte = [0u8; 1];
+                while !head.ends_with(b"\r\n\r\n") {
+                    tls.read_exact(&mut byte).unwrap();
+                    head.push(byte[0]);
+                }
+                tls.write_all(b"HTTP/1.1 413 Request Entity Too Large\r\nContent-Length: 0\r\n\r\n")
+                    .unwrap();
+                // Gone with the body unread, as Go's server leaves a TLS connection: a
+                // close_notify after its answer (crypto/tls Conn.CloseWrite), a pause, then
+                // a close that resets the connection over what it never read.
+                tls.conn.send_close_notify();
+                tls.flush().unwrap();
+                std::thread::sleep(Duration::from_millis(500));
+            });
+            let path_dir = shards_testdir::TempDir::new("early-tls").unwrap();
+            let path = path_dir.join("early-tls");
+            std::fs::write(&path, vec![0u8; 64 << 20]).unwrap();
+            let file = std::fs::File::open(&path).unwrap();
+            let client = Client::new(
+                Box::new(move |_| client_config(vec![ca.clone()], None)),
+                "shards-test",
+            );
+            // localhost may resolve to ::1 first, where nothing listens: the race moves on.
+            let url = at("https", "localhost", port);
+            let status = client
+                .send(&Request {
+                    method: "PUT",
+                    url: &url,
+                    headers: &[],
+                    body: &[],
+                    file: Some((&file, 0, 64 << 20)),
+                })
+                .map(|r| r.status);
+            let _ = std::fs::remove_file(&path);
+            server.join().unwrap();
+            assert_eq!(status.unwrap(), 413, "{version:?}");
+        }
+    }
+
+    /// A head sent a byte at a time, its lines ended by LF alone, reads as one sent whole.
+    #[test]
+    fn a_head_in_pieces_is_read_whole() {
+        use std::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let (mut tcp, _) = listener.accept().unwrap();
+            let _ = tcp.set_nodelay(true);
+            let mut head = Vec::new();
+            let mut byte = [0u8; 1];
+            while !head.ends_with(b"\r\n\r\n") {
+                tcp.read_exact(&mut byte).unwrap();
+                head.push(byte[0]);
+            }
+            for b in b"HTTP/1.1 200 OK\nX-One: 1\nContent-Length: 2\n\nhi" {
+                tcp.write_all(&[*b]).unwrap();
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        });
+        let url = at("http", "127.0.0.1", port);
+        let (status, body) = fetch(&plain(), "GET", &url).unwrap();
+        server.join().unwrap();
+        assert_eq!((status, body.as_slice()), (200, &b"hi"[..]));
     }
 
     #[test]
@@ -1023,6 +2690,134 @@ mod tests {
         assert_eq!(server.accepted(), 2);
     }
 
+    /// An idle connection the server has sent something on unasked, a 408 before it
+    /// closes, is never taken: the next request would read it as its answer, which Go's
+    /// transport guards against in the same way. A 408 not yet come as the connection is
+    /// taken crosses the request, which is then repeated (below).
+    #[test]
+    fn a_connection_with_an_unasked_answer_is_not_reused() {
+        use std::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (sent, unasked) = std::sync::mpsc::channel();
+        let server = std::thread::spawn(move || {
+            let head = |tcp: &mut TcpStream| {
+                let mut head = Vec::new();
+                let mut byte = [0u8; 1];
+                while !head.ends_with(b"\r\n\r\n") {
+                    tcp.read_exact(&mut byte).unwrap();
+                    head.push(byte[0]);
+                }
+            };
+            let (mut first, _) = listener.accept().unwrap();
+            head(&mut first);
+            first
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
+                .unwrap();
+            // Once the client has put the connection back: no read of the answer takes
+            // this with it.
+            std::thread::sleep(Duration::from_millis(50));
+            first
+                .write_all(b"HTTP/1.1 408 Request Timeout\r\nContent-Length: 0\r\n\r\n")
+                .unwrap();
+            // On its way: macOS queues loopback's packets for its main input thread
+            // (xnu-11417.101.15 bsd/net/dlil_input.c, `dlil_input_async`), so it may come
+            // only after the client has taken the connection.
+            sent.send(()).unwrap();
+            let (mut second, _) = listener.accept().unwrap();
+            head(&mut second);
+            second
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nnew")
+                .unwrap();
+            // The first is held open, as a server about to close it would.
+            drop((first, second));
+        });
+        let url = at("http", "127.0.0.1", port);
+        let client = plain();
+        assert_eq!(fetch(&client, "GET", &url).unwrap(), (200, b"ok".to_vec()));
+        unasked.recv().unwrap();
+        assert_eq!(fetch(&client, "GET", &url).unwrap(), (200, b"new".to_vec()));
+        server.join().unwrap();
+    }
+
+    /// A request a reused connection answers with 408, the server's idle timeout having
+    /// crossed it, is repeated on a new connection, whatever its method, body and all
+    /// (RFC 9110 §15.5.9); a new connection's 408 is the answer, and neither connection is
+    /// reused.
+    #[test]
+    fn a_408_on_a_reused_connection_has_the_request_repeated() {
+        use std::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        // A request's head, then its body, as long as it says.
+        let request = |tcp: &mut TcpStream| -> Vec<u8> {
+            let mut head = Vec::new();
+            let mut byte = [0u8; 1];
+            while !head.ends_with(b"\r\n\r\n") {
+                tcp.read_exact(&mut byte).unwrap();
+                head.push(byte[0]);
+            }
+            let head = String::from_utf8(head).unwrap();
+            let len = head
+                .lines()
+                .find_map(|l| {
+                    l.to_ascii_lowercase()
+                        .strip_prefix("content-length: ")
+                        .map(str::to_string)
+                })
+                .map_or(0, |n| n.trim().parse().unwrap());
+            let mut body = vec![0u8; len];
+            tcp.read_exact(&mut body).unwrap();
+            body
+        };
+        let server = std::thread::spawn(move || {
+            let (mut first, _) = listener.accept().unwrap();
+            request(&mut first);
+            first
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
+                .unwrap();
+            assert_eq!(request(&mut first), b"put");
+            first
+                .write_all(b"HTTP/1.1 408 Request Timeout\r\nContent-Length: 0\r\n\r\n")
+                .unwrap();
+            let (mut second, _) = listener.accept().unwrap();
+            assert_eq!(request(&mut second), b"put");
+            second
+                .write_all(b"HTTP/1.1 201 Created\r\nContent-Length: 0\r\n\r\n")
+                .unwrap();
+            let (mut third, _) = listener.accept().unwrap();
+            request(&mut third);
+            third
+                .write_all(b"HTTP/1.1 408 Request Timeout\r\nContent-Length: 0\r\n\r\n")
+                .unwrap();
+            // Closed once answered: the next request comes on a new connection.
+            third.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            let mut rest = Vec::new();
+            third.read_to_end(&mut rest).unwrap();
+            assert!(rest.is_empty());
+            let (mut fourth, _) = listener.accept().unwrap();
+            request(&mut fourth);
+            fourth
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nnew")
+                .unwrap();
+        });
+        let url = at("http", "127.0.0.1", port);
+        let client = plain();
+        assert_eq!(fetch(&client, "GET", &url).unwrap(), (200, b"ok".to_vec()));
+        let put = Request {
+            method: "PUT",
+            url: &url,
+            headers: &[],
+            body: b"put",
+            file: None,
+        };
+        assert_eq!(client.send(&put).unwrap().status, 201);
+        let other = plain();
+        assert_eq!(fetch(&other, "GET", &url).unwrap(), (408, Vec::new()));
+        assert_eq!(fetch(&other, "GET", &url).unwrap(), (200, b"new".to_vec()));
+        server.join().unwrap();
+    }
+
     #[test]
     fn fields_that_could_split_the_head_are_refused() {
         let url = at("http", "127.0.0.1", 9);
@@ -1036,6 +2831,7 @@ mod tests {
                 url: &url,
                 headers: &headers,
                 body: &[],
+                file: None,
             };
             let e = plain().send(&request).unwrap_err();
             assert!(e.to_string().contains("invalid"), "{e}");
@@ -1056,6 +2852,251 @@ mod tests {
         assert_eq!(fetch(&client, "GET", &url).unwrap(), (200, b"ok".to_vec()));
         assert_eq!(fetch(&client, "GET", &url).unwrap(), (200, b"ok".to_vec()));
         assert_eq!(listening.accepted(), 1);
+    }
+
+    /// A client that learns its waits learns its path's connects and handshakes as it
+    /// makes them, and its answers: one each over a connection used twice (D222).
+    #[test]
+    fn a_learning_client_learns_its_connects_and_handshakes() {
+        let (ca, server) = registry(&[&rustls::version::TLS13]);
+        let ok = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok".to_vec();
+        let listening = serve(Some(server), vec![(ok.clone(), After::Keep), (ok, After::Keep)]);
+        let client = Client::new(
+            Box::new(move |_| client_config(vec![ca.clone()], None)),
+            "shards-test",
+        )
+        .learning();
+        let url = at("https", "localhost", listening.port);
+        assert_eq!(fetch(&client, "GET", &url).unwrap(), (200, b"ok".to_vec()));
+        assert_eq!(fetch(&client, "GET", &url).unwrap(), (200, b"ok".to_vec()));
+        assert_eq!(listening.accepted(), 1);
+        let shown = client.shown("localhost", listening.port);
+        assert_eq!(
+            (shown.connect.n, shown.handshake.n, shown.answers.answered.total()),
+            (1, 1, 2),
+            "{shown:?}"
+        );
+        assert!(shown.connect.at_us > 0 && shown.handshake.at_us >= shown.connect.at_us);
+        // Loopback's: well under RFC 6298's least, which is then the wait.
+        let path = format!("localhost:{}", listening.port);
+        assert_eq!(client.paths.timeout(&path, Wait::Connect), crate::patience::FIRST);
+        assert_eq!(
+            client.paths.timeout(&path, Wait::Handshake),
+            crate::patience::FIRST
+        );
+    }
+
+    /// An answer its path's wait cut is said overdue, so it is asked again at once
+    /// (crate::patience `Cutoff`): a learning client's, past its first second; another
+    /// client's wait is its patience, and a failure past it is not overdue.
+    #[test]
+    fn an_answer_cut_by_its_wait_is_overdue() {
+        let server = route(None, |_| {
+            std::thread::sleep(Duration::from_millis(1300));
+            Some((
+                b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n".to_vec(),
+                After::Keep,
+            ))
+        });
+        let url = at("http", "127.0.0.1", server.port);
+        let e = fetch(&plain().learning().drawing(0.0), "GET", &url).unwrap_err();
+        assert!(e.is_overdue() && e.kind() == ErrorKind::Transient, "{e}");
+        let impatient = plain().with_patience(Patience {
+            head: Some(Duration::from_millis(500)),
+            ..Patience::default()
+        });
+        let e = fetch(&impatient, "GET", &url).unwrap_err();
+        assert!(!e.is_overdue(), "{e}");
+    }
+
+    /// A proxy on loopback: each connection's request head is kept; a CONNECT answered
+    /// `connect` and, on 200, tunnelled to `upstream`; anything else answered `plain`.
+    fn test_proxy(
+        upstream: u16,
+        connect: &'static [u8],
+        plain: &'static [u8],
+    ) -> (u16, Arc<Mutex<Vec<String>>>) {
+        use std::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let heads = Arc::new(Mutex::new(Vec::new()));
+        let seen = heads.clone();
+        std::thread::spawn(move || {
+            for client in listener.incoming() {
+                let Ok(mut client) = client else { return };
+                let seen = seen.clone();
+                std::thread::spawn(move || {
+                    let mut head = Vec::new();
+                    let mut byte = [0u8; 1];
+                    while !head.ends_with(b"\r\n\r\n") {
+                        if client.read_exact(&mut byte).is_err() {
+                            return;
+                        }
+                        head.push(byte[0]);
+                    }
+                    let text = String::from_utf8_lossy(&head).into_owned();
+                    seen.lock().unwrap().push(text.clone());
+                    if !text.starts_with("CONNECT ") {
+                        let _ = client.write_all(plain);
+                        return;
+                    }
+                    let _ = client.write_all(connect);
+                    if !connect.starts_with(b"HTTP/1.1 200") {
+                        return;
+                    }
+                    let server = TcpStream::connect(("127.0.0.1", upstream)).unwrap();
+                    let (mut up, mut down) = (server.try_clone().unwrap(), client.try_clone().unwrap());
+                    let relay = std::thread::spawn(move || {
+                        let _ = io::copy(&mut down, &mut up);
+                        let _ = up.shutdown(Shutdown::Write);
+                    });
+                    let (mut from, mut to) = (server, client);
+                    let _ = io::copy(&mut from, &mut to);
+                    let _ = to.shutdown(Shutdown::Write);
+                    let _ = relay.join();
+                });
+            }
+        });
+        (port, heads)
+    }
+
+    /// HTTPS goes through an HTTP proxy's tunnel, as Go's transport asks for one: CONNECT
+    /// to the server's name, with the proxy's credentials, then TLS to the server through
+    /// it, and the tunnel used again.
+    #[test]
+    fn https_goes_through_a_proxys_tunnel() {
+        let (ca, server) = crate::testing::registry_named("registry.test", &[&rustls::version::TLS13]);
+        let ok = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok".to_vec();
+        let upstream = serve(Some(server), vec![(ok.clone(), After::Keep), (ok, After::Keep)]);
+        let (proxy, heads) = test_proxy(upstream.port, b"HTTP/1.1 200 Connection established\r\n\r\n", b"");
+        let client = Client::new(
+            Box::new(move |_| client_config(vec![ca.clone()], None)),
+            "shards-test",
+        )
+        .with_proxies(Proxies::from_env(&|k| {
+            (k == "HTTPS_PROXY").then(|| format!("http://us:pw@127.0.0.1:{proxy}"))
+        }));
+        let url = Url::parse("https://registry.test/v2/").unwrap();
+        assert_eq!(fetch(&client, "GET", &url).unwrap(), (200, b"ok".to_vec()));
+        assert_eq!(fetch(&client, "GET", &url).unwrap(), (200, b"ok".to_vec()));
+        let heads = heads.lock().unwrap().clone();
+        assert_eq!(heads.len(), 1, "one tunnel: {heads:?}");
+        assert!(
+            heads[0].starts_with("CONNECT registry.test:443 HTTP/1.1\r\nHost: registry.test:443\r\n"),
+            "{heads:?}"
+        );
+        assert!(
+            heads[0].contains("Proxy-Authorization: Basic dXM6cHc=\r\n"),
+            "{heads:?}"
+        );
+        assert_eq!(upstream.accepted(), 1);
+    }
+
+    /// Plain HTTP goes to the proxy whole: its URL as the request target, with the
+    /// proxy's credentials (RFC 9112 §3.2.2).
+    #[test]
+    fn http_goes_to_a_proxy_whole() {
+        let (proxy, heads) = test_proxy(9, b"", b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nhi");
+        let client = plain().with_proxies(Proxies::from_env(&|k| {
+            (k == "HTTP_PROXY").then(|| format!("127.0.0.1:{proxy}"))
+        }));
+        let url = Url::parse("http://registry.test/v2/x?y=1").unwrap();
+        assert_eq!(fetch(&client, "GET", &url).unwrap(), (200, b"hi".to_vec()));
+        let heads = heads.lock().unwrap().clone();
+        assert!(
+            heads[0].starts_with("GET http://registry.test/v2/x?y=1 HTTP/1.1\r\nHost: registry.test\r\n"),
+            "{heads:?}"
+        );
+        assert!(!heads[0].contains("Proxy-Authorization"), "{heads:?}");
+    }
+
+    /// An https proxy is reached over TLS, and the server's TLS runs inside it.
+    #[test]
+    fn https_goes_through_an_https_proxy() {
+        use std::net::TcpListener;
+        let (registry_ca, server) =
+            crate::testing::registry_named("registry.test", &[&rustls::version::TLS13]);
+        let ok = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok".to_vec();
+        let upstream = serve(Some(server), vec![(ok, After::Keep)]);
+        let (proxy_ca, proxy_tls) = crate::testing::registry_named("127.0.0.1", &[&rustls::version::TLS13]);
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let proxy = listener.local_addr().unwrap().port();
+        let upstream_port = upstream.port;
+        let relaying = std::thread::spawn(move || {
+            let (tcp, _) = listener.accept().unwrap();
+            let mut tls = rustls::StreamOwned::new(rustls::ServerConnection::new(proxy_tls).unwrap(), tcp);
+            let mut head = Vec::new();
+            let mut byte = [0u8; 1];
+            while !head.ends_with(b"\r\n\r\n") {
+                tls.read_exact(&mut byte).unwrap();
+                head.push(byte[0]);
+            }
+            tls.write_all(b"HTTP/1.1 200 Connection established\r\n\r\n")
+                .unwrap();
+            tls.flush().unwrap();
+            let mut up = TcpStream::connect(("127.0.0.1", upstream_port)).unwrap();
+            // One stream each way, taken in turn: a TLS stream cannot be split.
+            let short = Some(Duration::from_millis(5));
+            tls.sock.set_read_timeout(short).unwrap();
+            up.set_read_timeout(short).unwrap();
+            let mut buf = [0u8; 16 << 10];
+            let deadline = Instant::now() + Duration::from_secs(10);
+            let waiting =
+                |e: &io::Error| matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut);
+            while Instant::now() < deadline {
+                match tls.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => up.write_all(&buf[..n]).unwrap(),
+                    Err(e) if waiting(&e) => {}
+                    // The client gone, without a close_notify.
+                    Err(_) => break,
+                }
+                match up.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        tls.write_all(&buf[..n]).unwrap();
+                        tls.flush().unwrap();
+                    }
+                    Err(e) if waiting(&e) => {}
+                    Err(_) => break,
+                }
+            }
+            String::from_utf8_lossy(&head).into_owned()
+        });
+        let client = Client::new(
+            Box::new(move |_| client_config(vec![registry_ca.clone(), proxy_ca.clone()], None)),
+            "shards-test",
+        )
+        .with_proxies(Proxies::from_env(&|k| {
+            (k == "HTTPS_PROXY").then(|| format!("https://127.0.0.1:{proxy}"))
+        }));
+        let url = Url::parse("https://registry.test/v2/").unwrap();
+        assert_eq!(fetch(&client, "GET", &url).unwrap(), (200, b"ok".to_vec()));
+        drop(client);
+        let head = relaying.join().unwrap();
+        assert!(
+            head.starts_with("CONNECT registry.test:443 HTTP/1.1\r\n"),
+            "{head}"
+        );
+    }
+
+    /// A tunnel the proxy refuses fails in the words of its status line.
+    #[test]
+    fn a_refused_tunnel_says_why() {
+        let (proxy, _) = test_proxy(
+            9,
+            b"HTTP/1.1 407 Proxy Authentication Required\r\nContent-Length: 0\r\n\r\n",
+            b"",
+        );
+        let client = plain().with_proxies(Proxies::from_env(&|k| {
+            (k == "HTTPS_PROXY").then(|| format!("127.0.0.1:{proxy}"))
+        }));
+        let e = fetch(&client, "GET", &Url::parse("https://registry.test/v2/").unwrap()).unwrap_err();
+        assert!(
+            e.to_string()
+                .contains("CONNECT registry.test:443: 407 Proxy Authentication Required"),
+            "{e}"
+        );
     }
 
     #[test]

@@ -1,0 +1,6 @@
+FROM alpine
+CMD echo first
+CMD echo second
+ENTRYPOINT run me
+HEALTHCHECK NONE
+STOPSIGNAL 9

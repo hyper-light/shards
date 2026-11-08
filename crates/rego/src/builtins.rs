@@ -1,0 +1,63 @@
+//! OPA v1.14.1's builtins (src/builtins.json, written by scripts/rego/generate from
+//! `ast.Builtins`): their names, infix operators, declarations, whether buildx's
+//! policies may call them (buildx policy/builtins.go), and whether they are
+//! nondeterministic.
+
+use std::collections::HashMap;
+use std::sync::OnceLock;
+
+use crate::types::Type;
+
+#[derive(Debug, Clone)]
+pub struct Builtin {
+    pub name: String,
+    pub infix: Option<String>,
+    pub relation: bool,
+    pub deprecated: bool,
+    pub allowed: bool,
+    /// Partial evaluation leaves nondeterministic builtins' calls for later.
+    pub nondeterministic: bool,
+    /// The declaration, a function type, as OPA marshals it: made a [`Type`] for each
+    /// compile (`Type::from_json`), whose parts it shares within its thread.
+    pub decl: serde_json::Value,
+    /// The declaration's arguments, and whether it has no result (a void function).
+    pub arity: usize,
+    pub void: bool,
+}
+
+/// Every OPA builtin by name. Empty only if the embedded data failed to read, which
+/// the crate's tests rule out.
+pub fn registry() -> &'static HashMap<String, Builtin> {
+    static REGISTRY: OnceLock<HashMap<String, Builtin>> = OnceLock::new();
+    REGISTRY.get_or_init(|| read(include_str!("builtins.json")).unwrap_or_default())
+}
+
+fn read(text: &str) -> Option<HashMap<String, Builtin>> {
+    let list: serde_json::Value = serde_json::from_str(text).ok()?;
+    let mut out = HashMap::new();
+    for e in list.as_array()? {
+        let name = e.get("name")?.as_str()?.to_string();
+        let flag = |k: &str| e.get(k).and_then(serde_json::Value::as_bool).unwrap_or(false);
+        let b = Builtin {
+            name: name.clone(),
+            infix: e.get("infix").and_then(|v| v.as_str()).map(str::to_string),
+            relation: flag("relation"),
+            deprecated: flag("deprecated"),
+            allowed: flag("allowed"),
+            nondeterministic: flag("nondeterministic"),
+            decl: e.get("decl")?.clone(),
+            arity: 0,
+            void: false,
+        };
+        let Type::Function { args, result, .. } = Type::from_json(&b.decl)? else {
+            return None;
+        };
+        let b = Builtin {
+            arity: args.len(),
+            void: result.is_none(),
+            ..b
+        };
+        out.insert(name, b);
+    }
+    Some(out)
+}

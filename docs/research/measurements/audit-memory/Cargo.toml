@@ -1,0 +1,18 @@
+[package]
+name = "audit-memory"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+libc = "0.2.189"
+shards-vmm = { path = "../../../../crates/vmm" }
+shards-image = { path = "../../../../crates/image" }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "abort"

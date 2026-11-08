@@ -21,7 +21,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 pub use sys::{Gic, GicLayout, GicParams, MsiFrame};
 
 use super::{Exit, Io, Touch};
-use crate::arch::aarch64::{self, Entry, esr, layout, psci, sysreg};
+use crate::arch::aarch64::{self, Entry, esr, layout, prefetch, psci, sysreg};
 use crate::debug;
 use crate::devices::get_le;
 use crate::sync::lock;
@@ -70,6 +70,12 @@ pub fn check_host() -> std::result::Result<(), String> {
     }
 }
 
+/// Whether this host sets a vCPU's state back as a restore does: Hypervisor.framework
+/// sets every vCPU's.
+pub fn restores() -> bool {
+    true
+}
+
 pub fn max_vcpus() -> Result<u32> {
     Ok(sys::max_vcpus()?)
 }
@@ -89,6 +95,123 @@ pub struct VmConfig {
     pub ipa_bits: u32,
     /// MPIDR of each vCPU, by index.
     pub mpidrs: Vec<u64>,
+    /// Whether the vCPUs have EL2, entered there: the guest's kernel may be a hypervisor
+    /// (nested virtualization; [`el2_supported`]).
+    pub el2: bool,
+}
+
+/// Whether this Mac gives a guest EL2: nested virtualization, from the M3 on macOS 15.
+pub fn el2_supported() -> bool {
+    sys::el2_supported()
+}
+
+/// Whether a PCI bus's MSIs go to an ITS: the framework's GIC has none, but a GICv2m frame
+/// of its own, which takes the guest's writes to its doorbell
+/// (hv_gic_config_set_msi_region_base).
+pub const ITS: bool = false;
+
+/// Why a guest is given no EL2 here.
+pub const NO_EL2: &str = "this Mac gives a guest no EL2: virtualization of a guest's own needs an M3 or later, on macOS 15 or later";
+
+/// Maps the memory a virtio-mem device plugs into the guest and unmaps it, from whichever
+/// thread plugs it, while the VM lives ([`Vm::add_hotplug`]). The pages it maps are the
+/// VM's until it unmaps them: replaced in the host while mapped, the guest kept the old
+/// ones and its writes no longer reached the host's (PM M193).
+#[derive(Debug, Clone)]
+pub struct Stage2(Arc<Watch>);
+
+impl Stage2 {
+    /// Maps `len` bytes of host memory at `host` as guest RAM at `gpa`.
+    ///
+    /// # Safety
+    /// `host..host+len` must stay mapped in this process until unmapped here or the VM is
+    /// destroyed.
+    pub unsafe fn map(&self, host: *mut u8, gpa: u64, len: usize) -> Result<()> {
+        // SAFETY: forwarded caller contract; the handle exists only while the VM does.
+        unsafe { sys::map(host, gpa, len, sys::Perms::RWX) }?;
+        // Memory plugged is the guest's RAM, whose writes a live move watches (D176 part 7).
+        self.0.mapped(Region {
+            gpa,
+            len: len as u64,
+            perms: sys::Perms::RWX,
+        })
+    }
+
+    /// Maps `len` bytes of a file's mapping at `host` at `gpa`, in a share's DAX window
+    /// (D189): writable by the guest only if `writable`, as the host maps it, and
+    /// executable, as a guest runs programs from its volumes.
+    ///
+    /// # Safety
+    /// As for [`map`](Self::map).
+    pub unsafe fn map_file(&self, host: *mut u8, gpa: u64, len: usize, writable: bool) -> Result<()> {
+        let perms = if writable { sys::Perms::RWX } else { sys::Perms::RX };
+        // SAFETY: forwarded caller contract; the handle exists only while the VM does.
+        Ok(unsafe { sys::map(host, gpa, len, perms) }?)
+    }
+
+    /// Unmaps `len` bytes at `gpa`: the guest's accesses there exit as MMIO to nothing.
+    pub fn unmap(&self, gpa: u64, len: usize) -> Result<()> {
+        self.0.unmapped(gpa, len as u64);
+        Ok(sys::unmap(gpa, len)?)
+    }
+}
+
+/// Maps the host memory of a GPU's blobs into its device's window and unmaps it, from the
+/// device's worker, while the VM lives (D144): data the guest reads and writes, and never
+/// executes.
+#[derive(Debug, Clone, Copy)]
+pub struct Window(());
+
+impl Window {
+    /// Maps `len` bytes of host memory at `host` at `gpa`.
+    ///
+    /// # Safety
+    /// `host..host+len` must stay mapped in this process until unmapped here or the VM is
+    /// destroyed.
+    pub unsafe fn map(&self, host: *mut u8, gpa: u64, len: usize) -> Result<()> {
+        // SAFETY: forwarded caller contract; the handle exists only while the VM does.
+        Ok(unsafe { sys::map(host, gpa, len, sys::Perms::RW) }?)
+    }
+
+    /// Unmaps `len` bytes at `gpa`: the guest's accesses there exit as MMIO to nothing.
+    pub fn unmap(&self, gpa: u64, len: usize) -> Result<()> {
+        Ok(sys::unmap(gpa, len)?)
+    }
+}
+
+/// Device memory a device maps into the guest and unmaps, while the VM lives: a swap
+/// window's (D159). Slots are KVM's notion; the framework maps by address, so the index
+/// names nothing here.
+#[derive(Debug, Clone)]
+pub struct DeviceSlots(Arc<Watch>);
+
+impl DeviceSlots {
+    /// Maps `len` bytes of host memory at `host` at `gpa`, read-only to the guest unless
+    /// `writable`, never executable.
+    ///
+    /// # Safety
+    /// `host..host+len` must stay mapped in this process until unmapped here or the VM is
+    /// destroyed.
+    pub unsafe fn map(&self, _i: u32, host: *mut u8, gpa: u64, len: usize, writable: bool) -> Result<()> {
+        let perms = if writable { sys::Perms::RW } else { sys::Perms::R };
+        // SAFETY: forwarded caller contract; the handle exists only while the VM does.
+        unsafe { sys::map(host, gpa, len, perms) }?;
+        // What the guest writes there, a run's swap, a live move watches (D176 part 7).
+        if writable {
+            self.0.mapped(Region {
+                gpa,
+                len: len as u64,
+                perms,
+            })?;
+        }
+        Ok(())
+    }
+
+    /// Unmaps `len` bytes at `gpa`: the guest's accesses there exit as MMIO to nothing.
+    pub fn unmap(&self, _i: u32, gpa: u64, len: usize) -> Result<()> {
+        self.0.unmapped(gpa, len as u64);
+        Ok(sys::unmap(gpa, len)?)
+    }
 }
 
 /// The process's VM. It must outlive every [`Vcpu`], and guest memory must outlive it.
@@ -98,6 +221,7 @@ pub struct Vm {
     power: Arc<power::Table>,
     mpidrs: Vec<u64>,
     ipa_bits: u32,
+    el2: bool,
     /// Base and per-vCPU size of the redistributor frames, once the GIC exists.
     redist: OnceLock<(u64, u64)>,
     watch: Arc<Watch>,
@@ -107,12 +231,14 @@ impl Vm {
     pub fn new(config: VmConfig) -> Result<Vm> {
         let sys = sys::Vm::new(sys::VmConfig {
             ipa_bits: (config.ipa_bits > 36).then_some(config.ipa_bits),
+            el2: config.el2,
         })?;
         Ok(Vm {
             sys,
             power: Arc::new(power::Table::new(&config.mpidrs)),
             mpidrs: config.mpidrs,
             ipa_bits: config.ipa_bits,
+            el2: config.el2,
             redist: OnceLock::new(),
             watch: Arc::new(Watch::default()),
         })
@@ -121,6 +247,23 @@ impl Vm {
     /// What records this VM's working set.
     pub fn watch(&self) -> Arc<Watch> {
         self.watch.clone()
+    }
+
+    /// Watches the guest's writes for a live move (D176 part 7): its writable memory taken
+    /// away for writing at stage 2, each page given back as it is written ([`Watch`]).
+    pub fn watch_writes(&self) -> Result<()> {
+        self.watch.watch_writes()
+    }
+
+    /// The pages written since the watch began or was last asked, each taken away for
+    /// writing again first, in order of their addresses.
+    pub fn written(&self) -> Result<Vec<u64>> {
+        self.watch.written()
+    }
+
+    /// Stops watching the guest's writes.
+    pub fn unwatch_writes(&self) {
+        self.watch.unwatch_writes();
     }
 
     /// Maps `len` bytes of host memory at `host` as guest RAM at `gpa`.
@@ -138,6 +281,34 @@ impl Vm {
         });
         self.power.add_ram(gpa, gpa.saturating_add(len as u64));
         Ok(())
+    }
+
+    /// What takes guest RAM from the guest and gives it back, from whichever thread gives
+    /// its pages back to the host as the guest reports them free (D151).
+    pub fn stage2(&self) -> Stage2 {
+        Stage2(self.watch.clone())
+    }
+
+    /// Gives the guest the memory a virtio-mem device plugs, `len` bytes at `host` seen at
+    /// `gpa` (D133): none of it yet. Hypervisor.framework's stage 2 holds the pages it maps
+    /// (PM M193), so each range is mapped as it is plugged, and unmapped before its pages
+    /// are given back, through the [`Stage2`] this returns.
+    ///
+    /// # Safety
+    /// `host..host+len` must stay mapped in this process until the VM is destroyed.
+    pub unsafe fn add_hotplug(&self, _host: *mut u8, _gpa: u64, _len: usize) -> Result<Stage2> {
+        Ok(Stage2(self.watch.clone()))
+    }
+
+    /// What maps a GPU's blobs into its window (D144).
+    pub fn window(&self) -> Window {
+        Window(())
+    }
+
+    /// What maps a device's memory into the guest while the VM lives, `count` slots of it
+    /// on KVM; here the framework's mappings, by address.
+    pub fn device_slots(&self, _count: u32) -> DeviceSlots {
+        DeviceSlots(self.watch.clone())
     }
 
     /// Maps device memory (a virtio-pmem region) at `gpa`, writable by the guest only if
@@ -164,8 +335,18 @@ impl Vm {
         Ok(())
     }
 
+    /// Nothing to complete once every vCPU exists: HVF's GIC was whole as it was made.
+    pub fn vcpus_created(&self) -> Result<()> {
+        Ok(())
+    }
+
     /// Creates the in-kernel GICv3. HVF requires it before any vCPU exists.
     pub fn create_gic(&self, layout: &GicLayout) -> Result<Gic> {
+        if layout.its.is_some() {
+            return Err(Error::Guest(
+                "the framework's GIC has no ITS: a PCI bus's MSIs go to its GICv2m frame".into(),
+            ));
+        }
         let redist_size = sys::gic_params()?.redist_size;
         let gic = self.sys.create_gic(layout)?;
         let _ = self.redist.set((layout.redist_base, redist_size));
@@ -216,12 +397,29 @@ impl Vm {
                 );
             }
         }
+        // Where it has EL2, its SCTLR_EL2 as the framework resets it, MMU and caches off,
+        // which each entry puts back; and no SME: the framework leaves SMCR_EL2 undefined
+        // at the guest's EL2, where Linux's `__finalise_el2` sets its vector length, and
+        // faults there for ever (M5 Max, macOS 26.4.1).
+        let el2 = if self.el2 {
+            let pfr1 = vcpu.sys_reg(sysreg::ID_AA64PFR1_EL1)?;
+            if pfr1 & sysreg::ID_AA64PFR1_SME != 0 {
+                vcpu.set_sys_reg(sysreg::ID_AA64PFR1_EL1, pfr1 & !sysreg::ID_AA64PFR1_SME)?;
+                if vcpu.sys_reg(sysreg::ID_AA64PFR1_EL1)? & sysreg::ID_AA64PFR1_SME != 0 {
+                    return Err(guest("a vCPU at EL2 keeps SME, which it cannot use there".into()));
+                }
+            }
+            Some(vcpu.sys_reg(sysreg::SCTLR_EL2)?)
+        } else {
+            None
+        };
         Ok(Vcpu {
             kicker: Kicker {
                 sys: vcpu.kicker(),
                 power: self.power.clone(),
                 index,
             },
+            el2,
             sys: vcpu,
             power: self.power.clone(),
             index,
@@ -253,6 +451,11 @@ impl Region {
 pub struct Watch {
     regions: Mutex<Vec<Region>>,
     recording: Mutex<Option<Recording>>,
+    /// The pages the guest wrote since they were last taken ([`Watch::written`]), while the
+    /// guest's writes are watched for a live move (D176 part 7): its writable memory taken
+    /// away for writing at stage 2 (`hv_vm_protect`), and each page given back whole as the
+    /// guest writes it, noted. Under the recording's lock's order: this one after it.
+    dirty: Mutex<Option<std::collections::BTreeSet<u64>>>,
 }
 
 #[derive(Debug, Default)]
@@ -265,6 +468,28 @@ struct Recording {
 impl Watch {
     fn add(&self, region: Region) {
         lock(&self.regions).push(region);
+    }
+
+    /// Notes `region`, mapped while the VM runs (memory plugged, a run's swap), taken away
+    /// for writing at once where the guest's writes are watched.
+    fn mapped(&self, region: Region) -> Result<()> {
+        let dirty = lock(&self.dirty);
+        lock(&self.regions).push(region);
+        if dirty.is_some() && region.perms.writes() {
+            sys::protect(region.gpa, region.len, region.perms.read_only())?;
+        }
+        Ok(())
+    }
+
+    /// Forgets the regions within `len` bytes at `gpa`, unmapped.
+    fn unmapped(&self, gpa: u64, len: u64) {
+        let end = gpa.saturating_add(len);
+        lock(&self.regions).retain(|r| r.gpa < gpa || r.gpa.saturating_add(r.len) > end);
+    }
+
+    /// The region that holds `gpa`, where one does.
+    fn region_of(&self, gpa: u64) -> Option<Region> {
+        lock(&self.regions).iter().find(|r| r.holds(gpa)).copied()
     }
 
     /// Takes all guest memory away and starts recording. Call with every vCPU out of the
@@ -284,40 +509,143 @@ impl Watch {
     /// Stops recording and gives the guest all its memory back. Returns the pages touched
     /// since [`Watch::start`], in the order of their first touch; none if it never started.
     /// Callable from any thread, while vCPUs run: a vCPU that faulted before the memory
-    /// came back gets its page back in [`Vcpu::run`].
+    /// came back gets its page back in [`Vcpu::run`]. Under the recording's lock, as each
+    /// page a vCPU gets back ([`Watch::give`]).
     pub fn stop(&self) -> Vec<Touch> {
-        let recorded = lock(&self.recording).take();
+        let mut recording = lock(&self.recording);
+        let recorded = recording.take();
         if recorded.is_some() {
             for r in lock(&self.regions).iter() {
                 // It fails only once the VM is gone, with nothing left to give back.
                 let _ = sys::protect(r.gpa, r.len, r.perms);
             }
         }
+        drop(recording);
         recorded.map(|r| r.touches).unwrap_or_default()
     }
 
-    /// Notes a fault on `page`, in memory the guest may access with `full`; returns the
-    /// access it gets back.
-    fn touched(&self, page: u64, write: bool, full: sys::Perms) -> sys::Perms {
-        let mut recording = lock(&self.recording);
-        let Some(r) = recording.as_mut() else {
-            return full;
-        };
-        match r.seen.entry(page) {
-            Slot::Occupied(at) => {
-                if let Some(t) = r.touches.get_mut(*at.get()) {
-                    t.written |= write;
-                }
+    /// Watches the guest's writes to its writable memory (D176 part 7): each such region
+    /// taken away for writing, and every page written from now on noted, until
+    /// [`unwatch_writes`](Self::unwatch_writes). Callable while vCPUs run.
+    pub fn watch_writes(&self) -> Result<()> {
+        let mut dirty = lock(&self.dirty);
+        *dirty = Some(std::collections::BTreeSet::new());
+        for r in lock(&self.regions).iter().filter(|r| r.perms.writes()) {
+            if let Err(e) = sys::protect(r.gpa, r.len, r.perms.read_only()) {
+                *dirty = None;
+                drop(dirty);
+                self.unwatch_writes();
+                return Err(e.into());
             }
+        }
+        Ok(())
+    }
+
+    /// The pages written since the watch began or since this was last asked, each taken away
+    /// for writing again before it is said: a write after it faults and is noted for the
+    /// next ask, and the page's bytes read after this returns hold every write before it.
+    /// In order of their addresses.
+    pub fn written(&self) -> Result<Vec<u64>> {
+        let mut dirty = lock(&self.dirty);
+        let Some(set) = dirty.as_mut() else {
+            return Ok(Vec::new());
+        };
+        let pages: Vec<u64> = std::mem::take(set).into_iter().collect();
+        let regions = lock(&self.regions).clone();
+        // Each run of neighbouring pages of one region taken away at once.
+        let mut at = 0;
+        while let Some(&first) = pages.get(at) {
+            let region = regions.iter().find(|r| r.holds(first));
+            let mut n = 1u64;
+            while pages.get(at + n as usize) == Some(&(first + n * PAGE))
+                && region.is_some_and(|r| r.holds(first + n * PAGE))
+            {
+                n += 1;
+            }
+            // A page of a region since unmapped has nothing to take away.
+            if let Some(r) = region {
+                sys::protect(first, n * PAGE, r.perms.read_only())?;
+            }
+            at += n as usize;
+        }
+        Ok(pages)
+    }
+
+    /// Stops watching the guest's writes, and gives it all its memory back.
+    pub fn unwatch_writes(&self) {
+        let recording = lock(&self.recording);
+        let mut dirty = lock(&self.dirty);
+        *dirty = None;
+        if recording.is_none() {
+            for r in lock(&self.regions).iter() {
+                // It fails only once the VM is gone, with nothing left to give back.
+                let _ = sys::protect(r.gpa, r.len, r.perms);
+            }
+        }
+    }
+
+    /// Gives `page` back after a fault on it, `write` if a write, in memory the guest may
+    /// access with `full`: what it gets back ([`Recording::touched`]), given under the
+    /// recording's lock, so that the access each vCPU is given lands in the order it was
+    /// decided. A page given back read-only for one vCPU's read, after another's write had
+    /// it back writable, took the write away again, and the writer faulted on a page it had
+    /// just had back whole (PM M183). `again`: the faulting vCPU had this page back whole
+    /// at its last exit, so that a fault on it now, still whole, is no taking away of the
+    /// watch's: none is given then.
+    fn give(&self, page: u64, write: bool, full: sys::Perms, again: bool) -> Result<Option<sys::Perms>> {
+        let mut recording = lock(&self.recording);
+        let mut dirty = lock(&self.dirty);
+        let perms = match recording.as_mut() {
+            Some(r) => r.touched(page, write, full),
+            None => full,
+        };
+        // Watched for a live move, a page taken away again since this vCPU had it whole
+        // faults again, rightly: only a write gets it back whole, noted.
+        let watched = match dirty.as_mut() {
+            Some(set) => {
+                if write {
+                    set.insert(page);
+                }
+                true
+            }
+            None => false,
+        };
+        let perms = if watched && !write && perms == full {
+            full.read_only()
+        } else {
+            perms
+        };
+        if perms == full && again && !watched {
+            return Ok(None);
+        }
+        sys::protect(page, PAGE, perms)?;
+        Ok(Some(perms))
+    }
+}
+
+impl Recording {
+    /// Notes a fault on `page`, `write` if a write: the access the page gets back, the most
+    /// it may have (`full`) once any vCPU has written it, and read-only before, so that a
+    /// later write is noted.
+    fn touched(&mut self, page: u64, write: bool, full: sys::Perms) -> sys::Perms {
+        let written = match self.seen.entry(page) {
+            Slot::Occupied(at) => match self.touches.get_mut(*at.get()) {
+                Some(t) => {
+                    t.written |= write;
+                    t.written
+                }
+                None => write,
+            },
             Slot::Vacant(at) => {
-                at.insert(r.touches.len());
-                r.touches.push(Touch {
+                at.insert(self.touches.len());
+                self.touches.push(Touch {
                     gpa: page,
                     written: write,
                 });
+                write
             }
-        }
-        if write { full } else { sys::Perms::RX }
+        };
+        if written { full } else { sys::Perms::RX }
     }
 }
 
@@ -328,6 +656,8 @@ pub struct Vcpu {
     power: Arc<power::Table>,
     kicker: Kicker,
     index: usize,
+    /// Where the VM has EL2: the SCTLR_EL2 an entry puts back.
+    el2: Option<u64>,
     /// Powered on. Only a powered-off vCPU consults the shared power table, so exits
     /// in the running guest take no lock.
     on: bool,
@@ -344,8 +674,9 @@ impl Vcpu {
 
     /// Makes this the boot vCPU: it enters at `entry` on its first `run`. Others stay
     /// off until PSCI CPU_ON.
-    pub fn boot(&mut self, entry: Entry) {
+    pub fn boot(&mut self, entry: Entry) -> Result<()> {
         self.power.boot(self.index, entry);
+        Ok(())
     }
 
     /// Runs the guest until it powers off, resets, or a kick arrives. Returns an error for
@@ -361,6 +692,13 @@ impl Vcpu {
                     Wake::Running => {}
                 }
                 self.on = true;
+            }
+            // A kick may arrive as the vCPU leaves the guest for another exit, which HVF
+            // then reports in its place, dropping the cancel: a snapshot's barrier waited
+            // on a vCPU idle in the guest forever (the storm E2E test). Every entry
+            // checks for one first, as KVM checks a vCPU's requests before entering.
+            if self.power.take_kick(self.index) {
+                return Ok(Exit::Canceled);
             }
             let (syndrome, ipa) = match self.sys.run()? {
                 sys::Exit::Canceled => {
@@ -381,6 +719,13 @@ impl Vcpu {
                 ec @ (esr::EC_DABT_LOW | esr::EC_IABT_LOW) if self.memory.iter().any(|r| r.holds(ipa)) => {
                     given_back = self.give_back(io, ec, syndrome, ipa, returned)?;
                 }
+                // A cache maintenance instruction on no guest memory: nothing to keep
+                // coherent, as KVM has it (esr::cache_maintenance).
+                esr::EC_DABT_LOW if esr::cache_maintenance(syndrome) => self.advance_pc(syndrome)?,
+                // Memory the host could not give: a share's DAX window's range past its
+                // file's end, the file cut short on the host under the guest (D189, PM
+                // M271). Given now, the access runs again.
+                esr::EC_DABT_LOW | esr::EC_IABT_LOW if io.memory_fault(Some(ipa)) => {}
                 esr::EC_DABT_LOW => self.mmio(io, syndrome, ipa)?,
                 esr::EC_HVC64 | esr::EC_SMC64 => {
                     // HVC exits with PC already past the instruction; a trapped SMC does not
@@ -411,30 +756,47 @@ impl Vcpu {
         ipa: u64,
         last: Option<u64>,
     ) -> Result<Option<u64>> {
-        let Some(region) = self.memory.iter().find(|r| r.holds(ipa)).copied() else {
+        // Memory mapped since this vCPU was made (plugged, a run's swap) is the watch's to
+        // say.
+        let Some(region) = self
+            .memory
+            .iter()
+            .find(|r| r.holds(ipa))
+            .copied()
+            .or_else(|| self.watch.region_of(ipa))
+        else {
             return Err(Error::Guest(self.describe_fault(ec, syndrome, ipa)));
         };
-        let write = ec == esr::EC_DABT_LOW && esr::writes(syndrome);
-        if write && region.perms != sys::Perms::RWX {
+        // Cache maintenance reports a write, and needs only to read: it goes on once the
+        // page is back, read-only or not (esr::cache_maintenance).
+        let write = ec == esr::EC_DABT_LOW && esr::writes(syndrome) && !esr::cache_maintenance(syndrome);
+        if write && !region.perms.writes() {
             // Dropped, like a write to no device (map_device_memory).
             self.mmio(io, syndrome, ipa)?;
             return Ok(None);
         }
         let page = ipa & !(PAGE - 1);
-        let perms = self.watch.touched(page, write, region.perms);
-        if perms == region.perms && last == Some(page) {
+        let Some(perms) = self.watch.give(page, write, region.perms, last == Some(page))? else {
             return Err(Error::Guest(format!(
                 "guest memory at {ipa:#x} faults with its access given back"
             )));
-        }
-        sys::protect(page, PAGE, perms)?;
+        };
         Ok((perms == region.perms).then_some(page))
     }
 
     /// Architectural entry state for boot and CPU_ON: EL1h with DAIF masked, MMU and
-    /// caches off, X0 as given, other GPRs zero (Linux booting.rst; PSCI 1.1 §6.4).
+    /// caches off, X0 as given, other GPRs zero (Linux booting.rst; PSCI 1.1 §6.4). Where
+    /// the VM has EL2, EL2h instead, its MMU and caches off as the framework reset them.
     fn enter(&mut self, entry: Entry) -> Result<()> {
-        self.sys.set_reg(sys::Reg::CPSR, sysreg::PSTATE_EL1H_DAIF)?;
+        match self.el2 {
+            Some(sctlr) => {
+                self.sys.set_reg(sys::Reg::CPSR, sysreg::PSTATE_EL2H_DAIF)?;
+                self.sys.set_sys_reg(sysreg::SCTLR_EL2, sctlr)?;
+            }
+            None => {
+                self.sys.set_reg(sys::Reg::CPSR, sysreg::PSTATE_EL1H_DAIF)?;
+            }
+        }
         self.sys.set_sys_reg(sysreg::SCTLR_EL1, sysreg::SCTLR_EL1_RESET)?;
         self.sys.set_x(0, entry.x0)?;
         for n in 1..=30 {
@@ -489,7 +851,10 @@ impl Vcpu {
             } => self.power.cpu_on(target, entry, context),
             psci::Call::AffinityInfo { target } => self.power.affinity_info(target),
             psci::Call::SystemOff => return Ok(Some(Exit::Shutdown)),
-            psci::Call::SystemReset => return Ok(Some(Exit::Reset)),
+            psci::Call::SystemReset => {
+                crate::warn!("the guest asked to be reset (PSCI SYSTEM_RESET)");
+                return Ok(Some(Exit::Reset));
+            }
         };
         self.sys.set_x(0, ret as u64)?;
         Ok(None)
@@ -504,6 +869,18 @@ impl Vcpu {
             if a.read { "read" } else { "write" },
             a.encoding
         );
+        // At EL2, an EL2 register the framework holds traps to be read or written there:
+        // the guest's own hypervisor programs it (its timers, CNTHCTL_EL2 first).
+        if self.el2.is_some() && sysreg::EL2_HELD.contains(&a.encoding) {
+            if a.read {
+                let value = self.sys.sys_reg(a.encoding)?;
+                self.sys.set_x(a.reg, value)?;
+            } else {
+                let value = self.sys.x(a.reg)?;
+                self.sys.set_sys_reg(a.encoding, value)?;
+            }
+            return self.advance_pc(syndrome);
+        }
         if a.read {
             self.sys.set_x(a.reg, 0)?;
         }
@@ -535,7 +912,8 @@ impl Kicker {
 
 // ---- snapshots ---------------------------------------------------------------------
 
-use crate::arch::aarch64::state::{Power, VcpuState};
+use crate::arch::aarch64::state::Power;
+pub use crate::arch::aarch64::state::VcpuState;
 
 /// EL1/EL0 system registers a snapshot carries: all the guest-changeable state HVF
 /// exposes (hv_vcpu_types.h:257-420). SP_EL0/SP_EL1/ELR_EL1/SPSR_EL1 are system
@@ -555,32 +933,21 @@ const SYSREGS: &[u16] = &[
 /// macOS 15.2 additions (SCXTNUM_EL1, SCXTNUM_EL0): saved where the host has them.
 const SYSREGS_15_2: &[u16] = &[0xc687, 0xde87];
 
-/// ID registers that define the guest's CPU. A restore on a CPU that reports different
-/// values is refused.
+/// ID registers that define the guest's CPU, each one Hypervisor.framework says and lets a
+/// VMM set: MIDR, PFR0 and 1, ZFR0, SMFR0, DFR0 and 1, ISAR0 and 1, MMFR0 to 2. It says
+/// none of ISAR2, ISAR3, PFR2, MMFR3 or MMFR4 (HV_BAD_ARGUMENT, M5 Max, macOS 26.5.2, PM
+/// M460). A restore on a CPU short of what they say is refused, and one that has it all is
+/// told them (D176 part 6).
 const ID_REGS: &[u16] = &[
-    0xc000, 0xc020, 0xc021, 0xc028, 0xc029, 0xc030, 0xc031, 0xc038, 0xc039, 0xc03a,
+    0xc000, 0xc020, 0xc021, 0xc024, 0xc025, 0xc028, 0xc029, 0xc030, 0xc031, 0xc038, 0xc039, 0xc03a,
 ];
 const ID_AA64DFR0_EL1: u16 = 0xc028;
-
-/// Redistributor SGI/PPI state by GICR offset. The set-views carry the state; the
-/// clear-views (ICENABLER, ICPENDR, ICACTIVER) are the same bits.
-const REDIST_REGS: &[u32] = &[
-    0x1_0080, 0x1_0100, 0x1_0200, 0x1_0300, // IGROUPR0, ISENABLER0, ISPENDR0, ISACTIVER0
-    0x1_0400, 0x1_0404, 0x1_0408, 0x1_040c, 0x1_0410, 0x1_0414, 0x1_0418, 0x1_041c, // IPRIORITYR0-7
-    0x1_0c00, 0x1_0c04, // ICFGR0-1
-];
 
 /// GIC CPU interface registers, in restore order: SRE and CTLR before the priority
 /// state, group enables last. RPR is read-only.
 const ICC_REGS: &[u16] = &[
     0xc665, 0xc664, 0xc230, 0xc643, 0xc663, 0xc644, 0xc648, 0xc666, 0xc667,
 ];
-
-const GICD_CTLR: u16 = 0x0000;
-/// GICD_CTLR.RWP is read-only; ARE_NS (bit 4) must be set before routing registers mean
-/// anything.
-const GICD_CTLR_RWP: u64 = 1 << 31;
-const GICD_CTLR_ARE: u64 = 1 << 4;
 
 /// The breakpoint and watchpoint registers ID_AA64DFR0_EL1 says exist.
 fn debug_regs(dfr0: u64) -> Vec<u16> {
@@ -599,47 +966,23 @@ fn debug_regs(dfr0: u64) -> Vec<u16> {
     regs
 }
 
-/// Distributor registers covering INTIDs 32..`nint`: groups, enables, pending, active,
-/// priorities, configuration and routing.
-fn dist_regs(nint: u32) -> Vec<u16> {
-    let mut regs = vec![GICD_CTLR];
-    for base in [0x0080u32, 0x0100, 0x0200, 0x0300] {
-        regs.extend((1..nint.div_ceil(32)).map(|i| (base + 4 * i) as u16));
-    }
-    regs.extend((8..nint.div_ceil(4)).map(|i| (0x0400 + 4 * i) as u16));
-    regs.extend((2..nint.div_ceil(16)).map(|i| (0x0c00 + 4 * i) as u16));
-    regs.extend((32..nint).map(|id| (0x6000 + 8 * id) as u16));
-    regs
-}
-
 /// The host counter guest counters are offset from, now.
 pub fn host_counter() -> u64 {
     sys::host_counter()
 }
 
 impl Vm {
-    /// Distributor state. Every vCPU must be stopped.
-    pub fn save_gic(&self) -> Result<Vec<(u32, u64)>> {
-        let p = sys::gic_params()?;
-        dist_regs(p.spi_base.saturating_add(p.spi_count).min(1020))
-            .into_iter()
-            .map(|r| Ok((u32::from(r), sys::dist_reg(r)?)))
-            .collect()
+    /// The GIC device's state, distributor, redistributors and the interrupts HVF holds
+    /// on their way to a vCPU, which no register shows: Hypervisor.framework's own
+    /// serialization (hv_gic_state.h). Every vCPU must be stopped.
+    pub fn save_gic(&self) -> Result<Vec<u8>> {
+        Ok(sys::gic_state()?)
     }
 
-    /// Restores distributor state into a fresh GIC: routing needs ARE first; the group
-    /// enables come last, so nothing is delivered from a half-restored distributor.
-    pub fn restore_gic(&self, regs: &[(u32, u64)]) -> Result<()> {
-        let reg = |r: u32| u16::try_from(r).map_err(|_| Error::Guest(format!("GICD offset {r:#x}")));
-        let ctlr = regs
-            .iter()
-            .find(|&&(r, _)| r == u32::from(GICD_CTLR))
-            .map_or(0, |&(_, v)| v & !GICD_CTLR_RWP);
-        sys::set_dist_reg(GICD_CTLR, ctlr & GICD_CTLR_ARE)?;
-        for &(r, v) in regs.iter().filter(|&&(r, _)| r != u32::from(GICD_CTLR)) {
-            sys::set_dist_reg(reg(r)?, v)?;
-        }
-        Ok(sys::set_dist_reg(GICD_CTLR, ctlr)?)
+    /// Restores [`save_gic`](Self::save_gic)'s state into this VM's GIC, once every vCPU
+    /// exists and before any runs (hv_gic.h).
+    pub fn restore_gic(&self, state: &[u8]) -> Result<()> {
+        Ok(sys::set_gic_state(state)?)
     }
 }
 
@@ -647,6 +990,23 @@ impl Vcpu {
     /// The CPU identity the guest sees: ID registers by encoding.
     pub fn cpu_id(&self) -> Result<Vec<(u16, u64)>> {
         ID_REGS.iter().map(|&r| Ok((r, self.sys.sys_reg(r)?))).collect()
+    }
+
+    /// Tells the guest the CPU `id` describes, each ID register set and read back: a guest
+    /// resumed on another CPU than its snapshot's goes on with the one it found (D176 part
+    /// 6). A register the framework keeps as it is fails it.
+    pub fn set_cpu_id(&mut self, id: &[(u16, u64)]) -> Result<()> {
+        for &(r, v) in id {
+            self.sys.set_sys_reg(r, v)?;
+            let now = self.sys.sys_reg(r)?;
+            if now != v {
+                return Err(Error::Guest(format!(
+                    "{} stays {now:#x} where its guest's is {v:#x}",
+                    crate::arch::aarch64::cpu::name(r)
+                )));
+            }
+        }
+        Ok(())
     }
 
     /// Sets `CNTVCT_EL0 = host_counter() - offset`. Every vCPU of a VM gets the same
@@ -691,10 +1051,6 @@ impl Vcpu {
             fpcr: s.reg(sys::Reg::FPCR)?,
             fpsr: s.reg(sys::Reg::FPSR)?,
             sys,
-            redist: REDIST_REGS
-                .iter()
-                .map(|&r| Ok((r, s.redist_reg(r)?)))
-                .collect::<Result<_>>()?,
             icc: ICC_REGS
                 .iter()
                 .map(|&r| Ok((r, s.icc_reg(r)?)))
@@ -723,9 +1079,6 @@ impl Vcpu {
         for &(r, v) in &st.sys {
             s.set_sys_reg(r, v)?;
         }
-        for &(r, v) in &st.redist {
-            s.set_redist_reg(r, v)?;
-        }
         for &(r, v) in &st.icc {
             s.set_icc_reg(r, v)?;
         }
@@ -741,86 +1094,84 @@ impl Vcpu {
     /// writes to read-only memory and pages listed twice, so a damaged list costs no more
     /// than touching guest memory once. Returns how many pages it touched.
     ///
-    /// For a fresh vCPU, before its state is restored: it runs [`PREFETCH_CODE`] at EL1
-    /// with its own MMU state, all of which the restore sets again.
+    /// For a fresh vCPU, before its state is restored: it runs the prefetch program
+    /// ([`prefetch`](crate::arch::aarch64::prefetch)) at EL1 with its own MMU state, all of
+    /// which the restore sets again; HVF returns its `hvc #0` as the loop's end.
     pub fn prefetch(&mut self, vm: &Vm, pages: &[Touch]) -> Result<usize> {
-        const TABLE: usize = 4 << 10;
-        // Atomic instructions (FEAT_LSE): ID_AA64ISAR0_EL1.Atomic is 2 or more.
-        let lse = (self.sys.sys_reg(sysreg::ID_AA64ISAR0_EL1)? >> 20) & 0xf >= 2;
-        let mut listed = std::collections::HashSet::new();
-        let list: Vec<u64> = pages
-            .iter()
-            .filter_map(|t| {
-                let page = t.gpa & !(PAGE - 1);
-                let r = self.memory.iter().find(|r| r.holds(page))?;
-                let write = t.written && lse && r.perms == sys::Perms::RWX;
-                (page < PREFETCH_REACH && listed.insert(page)).then_some(page | u64::from(write))
-            })
-            .collect();
+        let lse = prefetch::lse(self.sys.sys_reg(sysreg::ID_AA64ISAR0_EL1)?);
+        let list = prefetch::entries(pages, PAGE, lse, |page| {
+            let r = self.memory.iter().find(|r| r.holds(page))?;
+            Some(r.perms == sys::Perms::RWX)
+        });
         if list.is_empty() {
             return Ok(0);
         }
         let size = (PAGE as usize).saturating_add((list.len() * 8).next_multiple_of(PAGE as usize));
-        let mut table = [0u64; 512];
-        let gib = |gpa: u64| (gpa >> 30) as usize;
-        let block = |gpa: u64, code: bool| {
-            // Normal memory (MAIR attribute 0), inner shareable, accessed, EL1 read-write;
-            // never executable at EL0, nor at EL1 unless it holds the code.
-            let never = if code { 1 << 54 } else { 3 << 53 };
-            (gpa & !((1 << 30) - 1)) | never | (1 << 10) | (3 << 8) | 0b01
-        };
-        for &entry in &list {
-            if let Some(slot) = table.get_mut(gib(entry)) {
-                *slot = block(entry, false);
-            }
-        }
-        if let Some(slot) = table.get_mut(gib(layout::PREFETCH)) {
-            *slot = block(layout::PREFETCH, true);
-        }
+        let table = prefetch::table(&list);
         let scratch = Scratch::new(size)?;
         scratch.put(
             0,
-            &PREFETCH_CODE
+            &prefetch::LOOP
                 .iter()
+                .chain([&HVC])
                 .flat_map(|w| w.to_le_bytes())
                 .collect::<Vec<u8>>(),
         );
         scratch.put(
-            TABLE,
+            prefetch::TABLE as usize,
             &table.iter().flat_map(|e| e.to_le_bytes()).collect::<Vec<u8>>(),
         );
         scratch.put(
             PAGE as usize,
             &list.iter().flat_map(|e| e.to_le_bytes()).collect::<Vec<u8>>(),
         );
+        let began = crate::log::uptime_us();
         // SAFETY: `scratch` stays mapped until after the unmap below.
         unsafe { vm.sys.map(scratch.host, layout::PREFETCH, size, sys::Perms::RX) }?;
+        let mapped = crate::log::uptime_us();
+        // What the loop takes from its host: its thread's CPU time, the guest's included
+        // (PM M288), and the process's faults, page-ins and context switches.
+        let clock = crate::platform::ThreadClock::current().ok();
+        let (cpu, events) = (clock.and_then(|c| c.read().ok()), crate::platform::task_events());
         let ran = self.run_prefetch(
-            layout::PREFETCH + TABLE as u64,
+            layout::PREFETCH + prefetch::TABLE,
             layout::PREFETCH + PAGE,
             list.len(),
         );
+        let looped = crate::log::uptime_us();
+        let cpu = cpu
+            .zip(clock.and_then(|c| c.read().ok()))
+            .map(|(a, b)| b.saturating_sub(a) / 1000);
+        // Each a 32-bit counter, which may have wrapped between the two.
+        let events = events.zip(crate::platform::task_events()).map(|(a, b)| {
+            a.iter()
+                .zip(b)
+                .map(|(a, b)| b.wrapping_sub(*a) & u64::from(u32::MAX))
+                .collect::<Vec<_>>()
+        });
         if let Err(e) = vm.sys.unmap(layout::PREFETCH, size) {
             // The guest still maps it: it must outlive the VM.
             std::mem::forget(scratch);
             return Err(e.into());
         }
+        debug!(
+            "the prefetch's loop mapped in {} us, ran over {} pages in {} us ({cpu:?} us of it \
+             on its CPU; the process's faults, page-ins, copy-on-write faults and context \
+             switches meanwhile {events:?}), unmapped in {} us",
+            mapped.saturating_sub(began),
+            list.len(),
+            looped.saturating_sub(mapped),
+            crate::log::uptime_us().saturating_sub(looped)
+        );
         ran.map(|()| list.len())
     }
 
     fn run_prefetch(&mut self, table: u64, list: u64, n: usize) -> Result<()> {
         let s = &mut self.sys;
-        let parange = s.sys_reg(sysreg::ID_AA64MMFR0_EL1)? & 0xf;
-        // A 39-bit space from TTBR0 at 4 KiB granules, whose first level maps 1 GiB blocks;
-        // walks write-back cacheable and inner shareable; no TTBR1 walks; IPS = PARange.
-        let tcr = 25 | (1 << 8) | (1 << 10) | (3 << 12) | (25 << 16) | (1 << 23) | (parange << 32);
-        s.set_sys_reg(sysreg::MAIR_EL1, 0xff)?;
-        s.set_sys_reg(sysreg::TCR_EL1, tcr)?;
-        s.set_sys_reg(sysreg::TTBR0_EL1, table)?;
-        s.set_sys_reg(
-            sysreg::SCTLR_EL1,
-            sysreg::SCTLR_EL1_RESET | sysreg::SCTLR_EL1_MMU_CACHES,
-        )?;
+        let parange = s.sys_reg(sysreg::ID_AA64MMFR0_EL1)?;
+        for (r, value) in prefetch::registers(parange, table) {
+            s.set_sys_reg(r, value)?;
+        }
         s.set_reg(sys::Reg::CPSR, sysreg::PSTATE_EL1H_DAIF)?;
         s.set_x(0, list)?;
         s.set_x(1, n as u64)?;
@@ -836,43 +1187,8 @@ impl Vcpu {
     }
 }
 
-/// The first 512 GiB of guest memory, which [`PREFETCH_CODE`]'s one level of 1 GiB blocks
-/// can map.
-const PREFETCH_REACH: u64 = 512 << 30;
-
-/// Touches the list at X0, X1 entries long, then `hvc #0`. The MMU is on, over an identity
-/// map of 1 GiB Normal write-back blocks, so the writes are coherent with the host's view
-/// of the memory. An entry is a page's address, with bit 0 set for a write: an atomic add
-/// of zero, a write for permission purposes that cannot change the data (Arm ARM, LDADD).
-/// `tlbi vmalle1is` last, so that no translation of the map outlives it on any core.
-///
-/// ```text
-///     cbz  x1, 3f            2:  and  x2, x2, #~1
-/// 1:  ldr  x2, [x0], #8          staddb wzr, [x2]
-///     tbnz x2, #0, 2f            subs x1, x1, #1
-///     ldrb w3, [x2]              b.ne 1b
-///     subs x1, x1, #1        3:  tlbi vmalle1is
-///     b.ne 1b                    dsb  ish
-///     b    3f                    isb
-///                                hvc  #0
-/// ```
-const PREFETCH_CODE: [u32; 15] = [
-    0xb400_0161,
-    0xf840_8402,
-    0x3700_00a2,
-    0x3940_0043,
-    0xf100_0421,
-    0x54ff_ff81,
-    0x1400_0005,
-    0x927f_f842,
-    0x383f_005f,
-    0xf100_0421,
-    0x54ff_fee1,
-    0xd508_831f,
-    0xd503_3b9f,
-    0xd503_3fdf,
-    0xd400_0002,
-];
+/// The prefetch loop's end here: `hvc #0`, which HVF returns as an exception.
+const HVC: u32 = 0xd400_0002;
 
 /// Anonymous host memory for the prefetch loop, unmapped on drop.
 struct Scratch {
@@ -929,6 +1245,26 @@ mod tests {
     use super::*;
     use std::sync::mpsc;
 
+    /// A page any vCPU has written is given back writable to every vCPU that faults on it
+    /// after, a reader's too: one given back read-only after a write took the write away
+    /// from the writer (PM M183).
+    #[test]
+    fn a_page_written_stays_writable_for_every_vcpu() {
+        let full = sys::Perms::RWX;
+        let mut r = Recording::default();
+        assert_eq!(r.touched(0x1000, false, full), sys::Perms::RX);
+        assert_eq!(r.touched(0x1000, true, full), full);
+        assert_eq!(r.touched(0x1000, false, full), full, "a read after the write");
+        assert_eq!(r.touched(0x2000, true, full), full);
+        assert_eq!(
+            r.touched(0x2000, false, full),
+            full,
+            "a read after the first write"
+        );
+        assert_eq!(r.touches.len(), 2);
+        assert!(r.touches.iter().all(|t| t.written));
+    }
+
     /// Real HVF, one VM (the per-process limit): this is the crate's only test that
     /// creates one.
     #[test]
@@ -948,27 +1284,38 @@ mod tests {
         let vm = Vm::new(VmConfig {
             ipa_bits: 36,
             mpidrs: vec![0, 1],
+            el2: false,
         })
         .unwrap();
         // SAFETY: the reservation is never unmapped.
         unsafe { vm.map_ram(ram, RAM, ram_len) }.unwrap();
-        vm.create_gic(&GicLayout {
-            dist_base: 0x0800_0000,
-            redist_base: 0x080a_0000,
-            msi: None,
-        })
-        .unwrap();
+        let gic = vm
+            .create_gic(&GicLayout {
+                dist_base: 0x0800_0000,
+                redist_base: 0x080a_0000,
+                msi: None,
+                its: None,
+            })
+            .unwrap();
 
-        // Distributor: perturb through the clear-views, restore, compare.
+        // The GIC's state, a pending edge on an SPI among it: perturb it all through the
+        // clear-views, restore the state, and read it all back.
         sys::set_dist_reg(0x0104, 0b1010).unwrap(); // ISENABLER1: SPIs 33, 35
         sys::set_dist_reg(0x0420, 0xa0b0_c0d0).unwrap(); // IPRIORITYR8
         sys::set_dist_reg(0x0c08, 0x8).unwrap(); // ICFGR2: SPI 33 edge
+        gic.set_spi(33, true).unwrap();
+        // ISENABLER1, IPRIORITYR8, ICFGR2, ISPENDR1.
+        let regs = || [0x0104, 0x0420, 0x0c08, 0x0204].map(|r| sys::dist_reg(r).unwrap());
+        let before = regs();
+        assert_eq!(before, [0b1010, 0xa0b0_c0d0, 0x8, 0b10]);
         let saved = vm.save_gic().unwrap();
         sys::set_dist_reg(0x0184, u64::from(u32::MAX)).unwrap(); // ICENABLER1
         sys::set_dist_reg(0x0420, 0).unwrap();
         sys::set_dist_reg(0x0c08, 0).unwrap();
+        sys::set_dist_reg(0x0284, u64::from(u32::MAX)).unwrap(); // ICPENDR1
+        assert_eq!(regs(), [0; 4]);
         vm.restore_gic(&saved).unwrap();
-        assert_eq!(vm.save_gic().unwrap(), saved);
+        assert_eq!(regs(), before);
 
         // vCPU 0 gets distinctive state and is captured; vCPU 1 (the next redistributor
         // frame, so vCPU 0 stays alive meanwhile) restores it and must capture the same.
@@ -978,6 +1325,19 @@ mod tests {
         std::thread::scope(|s| {
             s.spawn(move || {
                 let mut a = vm.create_vcpu(0).unwrap();
+                // Every ID register a snapshot keeps is one the framework says and lets a
+                // VMM set, as a restore on another CPU tells its guest the CPU it found (D176
+                // part 6): read back as set, a field lowered, and as it was.
+                let id = a.cpu_id().unwrap();
+                assert_eq!(id.len(), ID_REGS.len());
+                let lowered: Vec<(u16, u64)> = id
+                    .iter()
+                    .map(|&(r, v)| (r, if r == 0xc000 { v } else { v & !0xf0 }))
+                    .collect();
+                a.set_cpu_id(&lowered).unwrap();
+                assert_eq!(a.cpu_id().unwrap(), lowered);
+                a.set_cpu_id(&id).unwrap();
+                assert_eq!(a.cpu_id().unwrap(), id);
 
                 // The prefetch touches a page read and a page written, leaves out a page
                 // outside guest memory and a page listed twice, and changes no byte. A
@@ -1018,7 +1378,6 @@ mod tests {
                 a.sys.set_sys_reg(0xc684, 0x8888).unwrap(); // TPIDR_EL1
                 a.sys.set_sys_reg(0xc510, 0x04ff).unwrap(); // MAIR_EL1
                 a.sys.set_icc_reg(0xc230, 0xf0).unwrap(); // ICC_PMR_EL1
-                a.sys.set_redist_reg(0x1_0400, 0x8080_8080).unwrap(); // GICR_IPRIORITYR0
                 let st = a.save_state().unwrap();
                 assert_eq!(st.x[5], 0x1111_0005);
                 assert_eq!(st.v[31], (31u128 << 64) | 0xdead_beef);
@@ -1049,9 +1408,11 @@ mod tests {
         let vm = Vm::new(VmConfig {
             ipa_bits: 36,
             mpidrs: vec![0],
+            el2: false,
         })
         .unwrap();
-        let path = std::env::temp_dir().join(format!("shards-m17-{}.img", std::process::id()));
+        let path_dir = shards_testdir::TempDir::new("m17.img").unwrap();
+        let path = path_dir.join("m17.img");
         std::fs::write(&path, vec![1u8; 2 << 20]).unwrap();
         let file = std::fs::File::open(&path).unwrap();
         let len = 2usize << 20;
@@ -1084,5 +1445,168 @@ mod tests {
             );
         }
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// Which mappings of a sparse file keep APFS from saying where its holes are
+    /// (lseek(2) SEEK_DATA and SEEK_HOLE): the host's shared writable one, and the guest's
+    /// through hv_vm_map of it. Ignored because HVF allows one VM per process: run it alone
+    /// with `--ignored --exact`.
+    #[test]
+    #[ignore]
+    fn which_mappings_hide_a_files_holes() {
+        use std::os::fd::AsRawFd;
+        let vm = Vm::new(VmConfig {
+            ipa_bits: 36,
+            mpidrs: vec![0],
+            el2: false,
+        })
+        .unwrap();
+        let dir = shards_testdir::TempDir::new("holes").unwrap();
+        let len = 64usize << 20;
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(dir.join("sparse"))
+            .unwrap();
+        file.set_len(len as u64).unwrap();
+        crate::platform::write_all_at(&file, &[1; 16 << 10], 32 << 20).unwrap();
+        file.sync_all().unwrap();
+        let data = || crate::platform::data_ranges(&file, len as u64).unwrap();
+        let alone = data();
+        assert_eq!(alone, [(32 << 20, 16 << 10)]);
+        // SAFETY: a fresh shared mapping of our own file, which only this test uses.
+        let host = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                len,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_SHARED,
+                file.as_raw_fd(),
+                0,
+            )
+        };
+        assert_ne!(host, libc::MAP_FAILED);
+        let hosts = data();
+        let gpa = 0x1_0000_0000u64;
+        // SAFETY: the mapping stays, or memory of the process's own over it, until the VM goes.
+        unsafe { vm.sys.map(host.cast(), gpa, len, sys::Perms::RW) }.unwrap();
+        let both = data();
+        // The host's mapping replaced by memory of its own, the guest's kept.
+        // SAFETY: MAP_FIXED over the test's own mapping, which nothing touches.
+        let replaced = unsafe {
+            libc::mmap(
+                host,
+                len,
+                libc::PROT_NONE,
+                libc::MAP_PRIVATE | libc::MAP_ANON | libc::MAP_FIXED,
+                -1,
+                0,
+            )
+        };
+        assert_eq!(replaced, host);
+        let guests = data();
+        sys::unmap(gpa, len).unwrap();
+        let neither = data();
+        eprintln!(
+            "none {alone:?}; the host's {hosts:?}; both {both:?}; the guest's alone {guests:?}; neither {neither:?}"
+        );
+        assert_eq!(neither, alone);
+    }
+
+    /// What a vCPU thread's CPU time says, read from another thread, while its guest runs
+    /// with no exit (D191's hold from the host): a guest spinning on `b .`, its timer never
+    /// armed, read each 10 ms for a second by thread_info(THREAD_EXTENDED_INFO); and what a
+    /// read costs. Ignored because HVF allows one VM per process: run it alone with
+    /// `--ignored --exact`.
+    #[test]
+    #[ignore]
+    fn a_vcpu_threads_cpu_time_counts_its_guest() {
+        use std::time::{Duration, Instant};
+        const RAM: u64 = 0x8000_0000;
+        let ram_len = 1usize << 20;
+        let ram = crate::platform::reserve(ram_len).unwrap().as_ptr();
+        // SAFETY: within the fresh reservation: `b .`.
+        unsafe { ram.cast::<u32>().write(0x1400_0000) };
+        let vm = Vm::new(VmConfig {
+            ipa_bits: 36,
+            mpidrs: vec![0],
+            el2: false,
+        })
+        .unwrap();
+        // SAFETY: the reservation is never unmapped.
+        unsafe { vm.map_ram(ram, RAM, ram_len) }.unwrap();
+        let _gic = vm
+            .create_gic(&GicLayout {
+                dist_base: 0x0800_0000,
+                redist_base: 0x080a_0000,
+                msi: None,
+                its: None,
+            })
+            .unwrap();
+        let (tx, rx) = mpsc::channel();
+        let vm = &vm;
+        std::thread::scope(|s| {
+            let spinning = s.spawn(move || {
+                let mut a = vm.create_vcpu(0).unwrap();
+                a.sys.set_reg(sys::Reg::PC, RAM).unwrap();
+                a.sys.set_reg(sys::Reg::CPSR, 0x3c5).unwrap();
+                // SAFETY: this thread's own port, which lives as long as it.
+                let port = unsafe { libc::pthread_mach_thread_np(libc::pthread_self()) };
+                tx.send((port, a.sys.kicker())).unwrap();
+                let mut exits = 0u64;
+                loop {
+                    match a.sys.run().unwrap() {
+                        sys::Exit::Canceled => break,
+                        _ => exits += 1,
+                    }
+                }
+                exits
+            });
+            let (port, kicker) = rx.recv().unwrap();
+            let cpu = || {
+                // SAFETY: zeroed plain data, which thread_info fills.
+                let mut info: libc::thread_extended_info = unsafe { std::mem::zeroed() };
+                let mut count = libc::THREAD_EXTENDED_INFO_COUNT;
+                // SAFETY: a live thread's port, a buffer of `count` words.
+                let r = unsafe {
+                    libc::thread_info(
+                        port,
+                        libc::THREAD_EXTENDED_INFO as libc::thread_flavor_t,
+                        (&raw mut info).cast(),
+                        &mut count,
+                    )
+                };
+                assert_eq!(r, libc::KERN_SUCCESS);
+                info.pth_user_time + info.pth_system_time
+            };
+            let (t0, c0) = (Instant::now(), cpu());
+            let mut samples = Vec::new();
+            let mut reads = Vec::new();
+            for _ in 0..100 {
+                std::thread::sleep(Duration::from_millis(10));
+                let r0 = Instant::now();
+                let c = cpu();
+                reads.push(r0.elapsed().as_nanos());
+                samples.push((t0.elapsed().as_nanos(), u128::from(c - c0)));
+            }
+            kicker.kick().unwrap();
+            let exits = spinning.join().unwrap();
+            // How far behind the wall the thread's time ever fell, and its steps.
+            let lag = samples.iter().map(|&(w, c)| w.saturating_sub(c)).max().unwrap();
+            let steps: Vec<u128> = samples.windows(2).map(|w| w[1].1 - w[0].1).collect();
+            reads.sort_unstable();
+            let (w, c) = samples[samples.len() - 1];
+            eprintln!(
+                "wall {w} ns, cpu {c} ns ({:.4}), {exits} exits; most behind {lag} ns; steps min {} \
+                 max {} ns; a read p50 {} p99 {} max {} ns",
+                c as f64 / w as f64,
+                steps.iter().min().unwrap(),
+                steps.iter().max().unwrap(),
+                reads[reads.len() / 2],
+                reads[reads.len() * 99 / 100],
+                reads[reads.len() - 1],
+            );
+        });
     }
 }

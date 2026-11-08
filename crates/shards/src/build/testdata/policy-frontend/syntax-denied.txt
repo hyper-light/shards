@@ -1,0 +1,4 @@
+checking policy for source local://dockerfile
+policy decision for source local://dockerfile: ALLOW
+checking policy for source docker-image://docker.io/docker/dockerfile:1
+policy decision for source docker-image://docker.io/docker/dockerfile:1: DENY

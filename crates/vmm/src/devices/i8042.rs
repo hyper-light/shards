@@ -33,6 +33,7 @@ impl MmioDevice for I8042 {
 
     fn write(&self, offset: u64, data: &[u8]) {
         if offset == COMMAND && data.first() == Some(&CMD_RESET) {
+            crate::warn!("the guest reset its machine through its keyboard controller (i8042)");
             self.power.request(PowerEvent::Reset);
         }
     }

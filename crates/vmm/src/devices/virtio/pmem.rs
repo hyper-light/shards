@@ -4,17 +4,24 @@
 //!
 //! Read-only: images are immutable, so a flush has nothing to write back, and every VM
 //! that maps one file, restored copies included, shares one copy in the host page cache.
+//! Two kinds are writable: a guest's swap window ([`SwapWindow`]), a run's swap, and a
+//! run's writable layer ([`Layer`]).
 
 use std::fs::File;
 use std::path::Path;
 use std::ptr::NonNull;
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 
-use super::queue::{Chain, Queue, QueueError};
+use super::head::Head;
+use super::mem::Mapper;
+use super::queue::{Chain, Queue};
+use super::worker::Worker;
 use super::{Activation, DeviceInterrupt, VirtioDevice, feature};
-use crate::memory::GuestMemory;
+use crate::memory::{Access, GuestMemory};
+use crate::platform;
+use crate::snapshot::codec::{self, Reader, Writer};
 use crate::sync::lock;
-use crate::{platform, warn};
 
 pub const DEVICE_ID: u32 = 27;
 const QUEUE_SIZE: u16 = 64;
@@ -28,6 +35,9 @@ const REQ_FLUSH: u32 = 0;
 /// rounded up to `ALIGN`; past the end of the file the region reads as zeros.
 pub struct Region {
     host: NonNull<u8>,
+    /// The bytes of it that are a mapping of the file: past them, zeros, and on Windows the
+    /// file's last partial page copied (platform::map_file_padded).
+    viewed: usize,
     len: usize,
     _file: File,
 }
@@ -49,7 +59,7 @@ impl std::fmt::Debug for Region {
 impl Region {
     pub fn open(path: &Path) -> Result<Region, String> {
         let err = |e: std::io::Error| format!("{}: {e}", path.display());
-        let file = File::open(path).map_err(err)?;
+        let file = crate::platform::open_input(path, false).map_err(err)?;
         let size = file.metadata().map_err(err)?.len();
         if size == 0 {
             return Err(format!("{}: an empty file cannot back pmem", path.display()));
@@ -58,18 +68,10 @@ impl Region {
             .checked_next_multiple_of(ALIGN)
             .and_then(|l| usize::try_from(l).ok())
             .ok_or_else(|| format!("{}: {size} bytes is too large", path.display()))?;
-        let page = platform::page_size().map_err(err)? as u64;
-        let mapped = size.next_multiple_of(page) as usize;
-        let host = platform::reserve(len).map_err(err)?;
-        // SAFETY: `host..host+len` is a fresh reservation nothing references; `mapped`
-        // is page-aligned and within it.
-        if let Err(e) = unsafe { platform::map_file_readonly(&file, mapped, host) } {
-            // SAFETY: our own reservation, never handed out.
-            unsafe { platform::release(host, len) };
-            return Err(err(e));
-        }
+        let (host, viewed) = platform::map_file_padded(&file, size, len).map_err(err)?;
         Ok(Region {
             host,
+            viewed,
             len,
             _file: file,
         })
@@ -90,31 +92,1055 @@ impl Region {
 
 impl Drop for Region {
     fn drop(&mut self) {
-        // SAFETY: the reservation `open` made; the VM that mapped it is gone
-        // (`Running` drops the VM before the devices).
+        // SAFETY: the mapping `open` made; the VM that mapped it is gone (`Running` drops
+        // the VM before the devices).
+        unsafe { platform::unmap_file_padded(self.host, self.viewed, self.len) };
+    }
+}
+
+/// What maps a swap window's memory into the guest while the VM lives (D159): slots of
+/// its own, each mapped or unmapped by its index, as KVM numbers them (other hypervisors
+/// map by address).
+pub trait Slots: Send + Sync {
+    /// Maps `len` bytes at `host` at `gpa`, as slot `i`, writable by the guest only if
+    /// `writable`.
+    ///
+    /// # Safety
+    /// `host..host+len` must stay mapped in this process until slot `i` is unmapped or the
+    /// VM is destroyed.
+    unsafe fn map(&self, i: u32, host: *mut u8, gpa: u64, len: usize, writable: bool) -> Result<(), String>;
+
+    /// Unmaps slot `i`, mapped at `gpa` for `len` bytes.
+    fn unmap(&self, i: u32, gpa: u64, len: usize) -> Result<(), String>;
+}
+
+/// The slots of a swap window: its head's zeros, and a run's file.
+pub const SWAP_SLOTS: u32 = 2;
+const HEAD_SLOT: u32 = 0;
+const RUN_SLOT: u32 = 1;
+/// The window's head, zeros until a run's file is mapped over it: what the guest's kernel
+/// reads of the disk as it adds it, its partition scan reading the first sectors
+/// (block/partitions/core.c, read_part_sector), whose reads of nothing would fail.
+const HEAD: usize = ALIGN as usize;
+
+/// A guest's swap window (D159): a virtio-pmem device each run's swap file is mapped
+/// into at its start, as long as the most swap a run of the VM may have. The guest's CPUs
+/// read and write it as memory, so its kernel completes each swap write before reclaim
+/// goes on, and frees what it wrote at once (pmem is BLK_FEAT_SYNCHRONOUS; mm/vmscan.c,
+/// shrink_folio_list, "a synchronous write"): reclaim under a memory limit never waits on
+/// a host thread. A virtio-blk device's writes complete on the VMM's worker, and reclaim
+/// under a cgroup's limit does not wait for them: anonymous folios under writeback are
+/// passed over, and 16 rounds without progress call the OOM killer (mm/vmscan.c,
+/// folio_check_dirty_writeback; mm/memcontrol.c, try_charge_memcg), which killed a
+/// workload within its swap (PM M230).
+///
+/// Its head reads as zeros until a run's file is mapped; past it nothing is mapped, and
+/// nothing reaches there: swap writes no further than its area's header says.
+pub struct SwapWindow {
+    gpa: u64,
+    len: u64,
+    /// Whether the guest has been shown the device (`control::SHOW_SWAP`).
+    shown: AtomicBool,
+    slots: Box<dyn Slots>,
+    /// The head's zeros, mapped while no run's file is over them: the window's for its
+    /// life, a reservation never touched.
+    head: Zeros,
+    /// A run's file, mapped at the window's start, once given.
+    run: Mutex<Option<Shared>>,
+    /// The length of the run's file a snapshot of a run kept (D176), which its restore maps
+    /// back before any vCPU runs; 0 for none.
+    kept: AtomicU64,
+}
+
+impl std::fmt::Debug for SwapWindow {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SwapWindow")
+            .field("gpa", &self.gpa)
+            .field("len", &self.len)
+            .finish_non_exhaustive()
+    }
+}
+
+impl SwapWindow {
+    /// A window of `len` bytes at `gpa`, whole multiples of [`ALIGN`], its head mapped
+    /// read-only zeros through `slots`, [`SWAP_SLOTS`] of them.
+    pub fn new(gpa: u64, len: u64, slots: Box<dyn Slots>) -> Result<SwapWindow, String> {
+        if len < HEAD as u64 || !len.is_multiple_of(ALIGN) || !gpa.is_multiple_of(ALIGN) {
+            return Err(format!(
+                "a swap window of {len} bytes at {gpa:#x}: whole {} MiB at a {} MiB boundary",
+                ALIGN >> 20,
+                ALIGN >> 20
+            ));
+        }
+        let head = Zeros::new(HEAD).map_err(|e| format!("a swap window's head: {e}"))?;
+        // SAFETY: the zeros stay mapped until unmapped here, or until the window drops
+        // after the VM (`Running` drops the VM before the devices).
+        unsafe { slots.map(HEAD_SLOT, head.host(), gpa, HEAD, false) }?;
+        Ok(SwapWindow {
+            gpa,
+            len,
+            shown: AtomicBool::new(false),
+            slots,
+            head,
+            run: Mutex::new(None),
+            kept: AtomicU64::new(0),
+        })
+    }
+
+    pub fn len(&self) -> u64 {
+        self.len
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    /// Shows the guest the device: its transport has one from here on.
+    pub fn show(&self) {
+        self.shown.store(true, Ordering::Release);
+    }
+
+    pub fn shown(&self) -> bool {
+        self.shown.load(Ordering::Acquire)
+    }
+
+    /// Maps `file`, a run's swap, at the window's start in place of its head, writable by
+    /// the guest; returns its length. It is whole multiples of [`ALIGN`], at least the head;
+    /// one longer than the window is cut to it, all the guest can reach (`vm::swap_layout`).
+    /// Where a run's is mapped already, nothing: the microVM's members share its swap, as a
+    /// host's containers share its own, each held to its allowance by its cgroup.
+    pub fn attach(&self, file: File) -> Result<Option<u64>, String> {
+        let mut run = lock(&self.run);
+        if run.is_some() {
+            return Ok(None);
+        }
+        let size = self.fit(&file)?;
+        // Its first page written here, through the file's own path, where the guest writes
+        // the swap area's header: written first through the mapping, a page of the sparse
+        // file took the host's fault path to be made, 3.4 ms at p90 and 80 ms at worst (PM
+        // M230). 64 KiB, the largest page a guest has.
+        platform::write_all_at(&file, &vec![0; FIRST_PAGE], 0).map_err(|e| format!("its swap file: {e}"))?;
+        self.map_run(&mut run, file, size).map(Some)
+    }
+
+    /// Maps `file`, the run's swap a snapshot of the run kept (D176), back where its guest
+    /// had it, before any vCPU runs: the length the snapshot kept, exactly, whose every
+    /// page the guest may have written. A snapshot that kept none takes none.
+    pub fn restore_run(&self, file: Option<File>) -> Result<(), String> {
+        let kept = self.kept.load(Ordering::Acquire);
+        let file = match (kept, file) {
+            (0, None) => return Ok(()),
+            (0, Some(_)) => return Err("a run's swap for a snapshot that kept none".into()),
+            (_, None) => {
+                return Err(format!(
+                    "the snapshot kept {kept} bytes of its run's swap, which the restore was not given"
+                ));
+            }
+            (_, Some(file)) => file,
+        };
+        let size = file.metadata().map_err(|e| format!("its swap file: {e}"))?.len();
+        if size != kept {
+            return Err(format!(
+                "a swap file of {size} bytes for a snapshot that kept {kept}"
+            ));
+        }
+        let size = self.fit(&file)?;
+        let mut run = lock(&self.run);
+        if run.is_some() {
+            return Err("a restored swap window with a run's file mapped already".into());
+        }
+        self.map_run(&mut run, file, size).map(|_| ())
+    }
+
+    /// Where the run's swap is in its guest, its address and length, where one is mapped:
+    /// what a live move sends of it (D176 part 7).
+    pub fn run_at(&self) -> Option<(u64, u64)> {
+        lock(&self.run).as_ref().map(|m| (self.gpa, m.len as u64))
+    }
+
+    /// The runs of the run's swap that hold data, for a live move's first round (D176 part
+    /// 7), as a save finds them.
+    ///
+    /// # Safety
+    /// Its machine is paused, as a save's is: its mapping may be taken from its guest.
+    pub unsafe fn run_data(&self) -> Result<Vec<(u64, u64)>, String> {
+        let run = lock(&self.run);
+        let Some(mapped) = run.as_ref() else {
+            return Ok(Vec::new());
+        };
+        // SAFETY: the mapping `mapped` holds, which stays while its lock is held.
+        unsafe { platform::flush_shared(mapped.host, mapped.len) }.map_err(|e| format!("its swap: {e}"))?;
+        let unmap = || self.slots.unmap(RUN_SLOT, self.gpa, mapped.len);
+        // SAFETY: the mapping stays until the window drops, after the VM.
+        let map = || unsafe {
+            self.slots
+                .map(RUN_SLOT, mapped.host(), self.gpa, mapped.len, true)
+        };
+        // SAFETY: the caller's.
+        unsafe { mapped.data_ranges(&unmap, &map) }.map_err(|e| format!("its swap: {e}"))
+    }
+
+    /// Copies `len` bytes at `off` of the run's swap into `buf`.
+    pub fn read_run(&self, off: u64, buf: &mut [u8]) -> Result<(), String> {
+        let run = lock(&self.run);
+        let mapped = run.as_ref().ok_or("no run's swap is mapped")?;
+        mapped.read(off, buf).map_err(|e| format!("its swap: {e}"))
+    }
+
+    /// [`save_run`](Self::save_run) of none of its pages, which a live move's stream holds
+    /// (D176 part 7): `to` as long as the run's swap, all holes.
+    pub fn save_run_length(&self, to: &File) -> Result<u64, String> {
+        let run = lock(&self.run);
+        let at = |e: std::io::Error| format!("its swap: {e}");
+        let Some(mapped) = run.as_ref() else {
+            to.set_len(0).map_err(at)?;
+            return Ok(0);
+        };
+        mapped.write_runs(to, &[]).map_err(at)?;
+        Ok(mapped.len as u64)
+    }
+
+    /// Copies the run's swap into `to` (D176), the guest's every write to it flushed to its
+    /// file first: the ranges the file holds data in, of them the blocks not all zeros, and
+    /// `to` as long as it after. Returns its length, 0 where no run's is mapped. The machine
+    /// is paused: nothing writes it meanwhile.
+    pub fn save_run(&self, to: &File) -> Result<u64, String> {
+        let run = lock(&self.run);
+        let at = |e: std::io::Error| format!("its swap: {e}");
+        let Some(mapped) = run.as_ref() else {
+            to.set_len(0).map_err(at)?;
+            return Ok(0);
+        };
+        // Flushed first. APFS and Linux's own file systems count a page written through
+        // the mapping as data before it is written back (APFS on M5 Max, the test below
+        // without this; ext4 and XFS reserve its block as it is dirtied,
+        // ext4_da_get_block_prep, xfs_buffered_write_iomap_begin), but one that gives it a
+        // block only as it writes it back would count none, and the copy would lose it.
+        // SAFETY: the mapping `mapped` holds, which stays while its lock is held.
+        unsafe { platform::flush_shared(mapped.host, mapped.len) }.map_err(at)?;
+        let unmap = || self.slots.unmap(RUN_SLOT, self.gpa, mapped.len);
+        // SAFETY: the mapping stays until the window drops, after the VM.
+        let map = || unsafe {
+            self.slots
+                .map(RUN_SLOT, mapped.host(), self.gpa, mapped.len, true)
+        };
+        // SAFETY: a save's machine is paused, its devices quiet.
+        let ranges = unsafe { mapped.data_ranges(&unmap, &map) }.map_err(|e| format!("its swap: {e}"))?;
+        crate::debug!(
+            "its swap: {} ranges of data, {} bytes of {}",
+            ranges.len(),
+            ranges.iter().map(|r| r.1).sum::<u64>(),
+            mapped.len
+        );
+        mapped.copy_ranges_to(to, &ranges).map_err(at)?;
+        Ok(mapped.len as u64)
+    }
+
+    /// Whether its guest has lost the run's swap: a mapping taken from it for its file's
+    /// ranges that could not be given back ([`Shared::data_ranges`]).
+    pub fn lost(&self) -> bool {
+        lock(&self.run).as_ref().is_some_and(Shared::lost)
+    }
+
+    /// Whether its snapshot kept a run's swap that is not mapped back yet (D176).
+    pub fn wants_run(&self) -> bool {
+        self.kept.load(Ordering::Acquire) > 0 && !self.attached()
+    }
+
+    /// The length of the run's file mapped, which a snapshot keeps; 0 for none.
+    fn mapped_len(&self) -> u64 {
+        lock(&self.run).as_ref().map_or(0, |mapped| mapped.len as u64)
+    }
+
+    /// The length of `file` the window maps: whole multiples of [`ALIGN`], at least the
+    /// head; one longer than the window is cut to it, all the guest can reach.
+    fn fit(&self, file: &File) -> Result<u64, String> {
+        let mut size = file.metadata().map_err(|e| format!("its swap file: {e}"))?.len();
+        if size > self.len {
+            file.set_len(self.len)
+                .map_err(|e| format!("its swap file: {e}"))?;
+            size = self.len;
+        }
+        if size < HEAD as u64 || !size.is_multiple_of(ALIGN) {
+            return Err(format!(
+                "a swap file of {size} bytes for a window of {}: whole {} MiB, from {} MiB",
+                self.len,
+                ALIGN >> 20,
+                HEAD >> 20
+            ));
+        }
+        Ok(size)
+    }
+
+    /// Maps `file`, `size` bytes of it ([`fit`](Self::fit)), in place of the head; returns
+    /// its length.
+    fn map_run(&self, run: &mut Option<Shared>, file: File, size: u64) -> Result<u64, String> {
+        let len = usize::try_from(size).map_err(|_| format!("a swap file of {size} bytes"))?;
+        let mapped = Shared::map(file, len).map_err(|e| format!("its swap file: {e}"))?;
+        self.slots.unmap(HEAD_SLOT, self.gpa, HEAD)?;
+        // SAFETY: the mapping stays until the window drops, after the VM.
+        if let Err(e) = unsafe { self.slots.map(RUN_SLOT, mapped.host(), self.gpa, len, true) } {
+            // The head again, so that the disk reads as it did.
+            // SAFETY: as in `new`.
+            let _ = unsafe { self.slots.map(HEAD_SLOT, self.head.host(), self.gpa, HEAD, false) };
+            return Err(e);
+        }
+        *run = Some(mapped);
+        Ok(size)
+    }
+
+    /// Whether a run's file is mapped: a template keeps no run's swap.
+    pub fn attached(&self) -> bool {
+        lock(&self.run).is_some()
+    }
+}
+
+/// The most of a run's swap file written before it is mapped: the largest page a guest
+/// kernel has (arm64's 64 KiB), which holds its swap area's header.
+const FIRST_PAGE: usize = 64 << 10;
+
+/// Read-only zeros for a window's head: an anonymous reservation never written.
+struct Zeros {
+    host: NonNull<u8>,
+    len: usize,
+}
+
+// SAFETY: the reservation is owned by this value and only ever read, by the hypervisor.
+unsafe impl Send for Zeros {}
+// SAFETY: as above.
+unsafe impl Sync for Zeros {}
+
+impl Zeros {
+    fn new(len: usize) -> std::io::Result<Zeros> {
+        Ok(Zeros {
+            host: platform::reserve(len)?,
+            len,
+        })
+    }
+
+    fn host(&self) -> *mut u8 {
+        self.host.as_ptr()
+    }
+}
+
+impl Drop for Zeros {
+    fn drop(&mut self) {
+        // SAFETY: the reservation `new` made; the VM that mapped it is gone.
         unsafe { platform::release(self.host, self.len) };
     }
 }
 
-struct Active {
-    queue: Queue,
-    memory: Arc<GuestMemory>,
-    interrupt: Arc<DeviceInterrupt>,
+/// A run's swap file, or its writable layer's, mapped shared and writable into this
+/// process.
+struct Shared {
+    host: NonNull<u8>,
+    len: usize,
+    /// Its file, until [`release`](Self::release) lets go of it.
+    file: Mutex<Option<File>>,
+    /// Unmapped before it drops ([`release`](Self::release)).
+    released: AtomicBool,
+    /// Whether a mapping of it taken away for its file's ranges could not be put back
+    /// ([`data_ranges`](Self::data_ranges)): its machine cannot go on.
+    lost: AtomicBool,
+}
+
+// SAFETY: the mapping is owned by this value; the guest writes it, through the
+// hypervisor, and this process only flushes it to its file (`save_run`).
+unsafe impl Send for Shared {}
+// SAFETY: as above.
+unsafe impl Sync for Shared {}
+
+impl Shared {
+    /// Copies `len` bytes at `off` of it into `buf`, from its mapping (D176 part 7).
+    fn read(&self, off: u64, buf: &mut [u8]) -> std::io::Result<()> {
+        let end = off
+            .checked_add(buf.len() as u64)
+            .filter(|&end| end <= self.len as u64);
+        if self.released() || end.is_none() {
+            return Err(std::io::ErrorKind::InvalidInput.into());
+        }
+        // SAFETY: within the mapping, which stays until it is released (checked above); the
+        // guest may write it meanwhile, as a live move's rounds expect.
+        unsafe { platform::copy_in(self.host.as_ptr().add(off as usize), buf.as_mut_ptr(), buf.len()) };
+        Ok(())
+    }
+
+    /// Writes `runs` of it, each its offset and length, from its mapping into `to`, zeros
+    /// and all, `to` as long as it after: the pages a live move's guest wrote since its last
+    /// round (D176 part 7).
+    fn write_runs(&self, to: &File, runs: &[(u64, u64)]) -> std::io::Result<()> {
+        to.set_len(0)?;
+        platform::sparse(to)?;
+        let mut buf = vec![0u8; 1 << 20];
+        for &(off, len) in runs {
+            let mut at = off;
+            let end = off.saturating_add(len).min(self.len as u64);
+            while at < end {
+                let n = usize::try_from(end - at).map_or(buf.len(), |rest| rest.min(buf.len()));
+                let chunk = buf.get_mut(..n).ok_or(std::io::ErrorKind::InvalidInput)?;
+                self.read(at, chunk)?;
+                platform::write_all_at(to, chunk, at)?;
+                at += n as u64;
+            }
+        }
+        to.set_len(self.len as u64)
+    }
+
+    fn map(file: File, len: usize) -> std::io::Result<Shared> {
+        let host = platform::map_file_shared(&file, len)?;
+        Ok(Shared {
+            host,
+            len,
+            file: Mutex::new(Some(file)),
+            released: AtomicBool::new(false),
+            lost: AtomicBool::new(false),
+        })
+    }
+
+    fn host(&self) -> *mut u8 {
+        self.host.as_ptr()
+    }
+
+    /// The ranges of its file that hold data ([`platform::data_ranges`]). Where a mapping of
+    /// a file hides them ([`platform::MAPPED_HIDES_HOLES`], APFS), asked with no mapping of
+    /// it left: `unmap` takes it from the guest, this process's mapping is withheld
+    /// meanwhile and mapped again after, and `map` gives the guest's back. Where the guest
+    /// would not give it up, or this process's could not be withheld, all of it, which a
+    /// copy then reads whole, as a save did before (a 10 GiB layer's on the Mac, 3 to 12 s,
+    /// PM M284, M285). One that could not be put back is lost ([`lost`](Self::lost)).
+    ///
+    /// # Safety
+    /// Its machine is paused and its devices quiet: nothing touches the mapping meanwhile.
+    unsafe fn data_ranges(
+        &self,
+        unmap: &dyn Fn() -> Result<(), String>,
+        map: &dyn Fn() -> Result<(), String>,
+    ) -> Result<Vec<(u64, u64)>, String> {
+        let file = lock(&self.file);
+        let file = file.as_ref().ok_or(RELEASED)?;
+        let len = self.len as u64;
+        if !platform::MAPPED_HIDES_HOLES {
+            return platform::data_ranges(file, len).map_err(|e| e.to_string());
+        }
+        let whole = vec![(0, len)];
+        if let Err(e) = unmap() {
+            crate::warn!("its file is read whole, its guest's mapping not given up: {e}");
+            return Ok(whole);
+        }
+        // SAFETY: the mapping `map` made, which nothing touches meanwhile (the caller's
+        // contract) and no hypervisor maps now.
+        if let Err(e) = unsafe { platform::withhold(self.host, self.len) } {
+            crate::warn!("its file is read whole, its mapping not withheld: {e}");
+            return map().map(|()| whole).map_err(|e| self.lose(&e));
+        }
+        let ranges = platform::data_ranges(file, len).map_err(|e| e.to_string());
+        // SAFETY: the range withheld above, mapped as `map` mapped it.
+        if let Err(e) = unsafe { platform::map_file_shared_at(file, self.len, self.host) } {
+            return Err(self.lose(&e.to_string()));
+        }
+        map().map_err(|e| self.lose(&e))?;
+        ranges
+    }
+
+    /// Says that a mapping of it taken away could not be put back: `e`, why.
+    fn lose(&self, e: &str) -> String {
+        self.lost.store(true, Ordering::Release);
+        format!("its mapping could not be put back: {e}")
+    }
+
+    /// Whether a mapping of it taken away could not be put back ([`data_ranges`](Self::data_ranges)).
+    fn lost(&self) -> bool {
+        self.lost.load(Ordering::Acquire)
+    }
+
+    /// Copies `ranges` of its file, as [`data_ranges`](Self::data_ranges) gave them, into
+    /// `to` ([`platform::copy_ranges`]).
+    fn copy_ranges_to(&self, to: &File, ranges: &[(u64, u64)]) -> std::io::Result<()> {
+        let file = lock(&self.file);
+        let file = file.as_ref().ok_or_else(|| std::io::Error::other(RELEASED))?;
+        platform::copy_ranges(file, to, self.len as u64, ranges)
+    }
+
+    /// Makes what was written through it durable in its file ([`platform::sync_mapped`]:
+    /// fdatasync on Linux, F_FULLFSYNC on macOS). Under its file's lock, which
+    /// [`release`](Self::release) takes to let go of both.
+    fn flush(&self) -> std::io::Result<()> {
+        let file = lock(&self.file);
+        let file = file.as_ref().ok_or_else(|| std::io::Error::other(RELEASED))?;
+        // SAFETY: the mapping `map` made of `file`, which stays while its file is held here.
+        unsafe { platform::sync_mapped(file, self.host, self.len) }
+    }
+
+    /// Unmaps it and closes its file now, rather than as it drops; once. Under its file's
+    /// lock, so that no [`flush`](Self::flush) is at the mapping as it goes.
+    ///
+    /// # Safety
+    /// No VM maps it any more, and nothing uses [`host`](Self::host) after.
+    unsafe fn release(&self) {
+        if !self.released.swap(true, Ordering::AcqRel) {
+            let mut file = lock(&self.file);
+            // SAFETY: the mapping `map` made, which the caller says nothing uses.
+            unsafe { platform::unmap_file_shared(self.host, self.len) };
+            drop(file.take());
+        }
+    }
+
+    fn released(&self) -> bool {
+        self.released.load(Ordering::Acquire)
+    }
+
+    /// Maps `file`, as long as its own, where its own was, in its place: the mapping's
+    /// address stays, so that what maps it there (KVM's memslot, which follows the host's
+    /// mapping) need not change, and its own file is let go of: `mmap(MAP_FIXED)` on Unix, on
+    /// Windows a view in place of its own, the range held by a placeholder meanwhile
+    /// ([`platform::map_file_shared_at`]). Where the new could not be
+    /// mapped, its own is mapped back. Under its file's lock, as [`flush`](Self::flush) and
+    /// [`release`](Self::release) take it.
+    ///
+    /// # Safety
+    /// Nothing touches the mapping meanwhile: no hypervisor maps it, or its guest uses
+    /// none of it.
+    unsafe fn replace(&self, file: File) -> std::io::Result<()> {
+        let mut held = lock(&self.file);
+        if held.is_none() || self.released() {
+            return Err(std::io::Error::other(RELEASED));
+        }
+        if file.metadata()?.len() != self.len as u64 {
+            return Err(std::io::Error::other(format!(
+                "a file of {} bytes for a mapping of {}",
+                file.metadata()?.len(),
+                self.len
+            )));
+        }
+        // SAFETY: the caller's contract; the mapping this value made, whose length stays.
+        if let Err(e) = unsafe { platform::map_file_shared_at(&file, self.len, self.host) } {
+            if let Some(own) = held.as_ref() {
+                // SAFETY: as above, its own file again.
+                if let Err(back) = unsafe { platform::map_file_shared_at(own, self.len, self.host) } {
+                    self.lost.store(true, Ordering::Release);
+                    return Err(std::io::Error::other(format!(
+                        "{e}; its own not mapped back: {back}"
+                    )));
+                }
+            }
+            return Err(e);
+        }
+        // Read at random until its run's command runs, as its own was ([`Layer::read_ahead`],
+        // PM M297): a mapping made anew reads ahead, and the run's first writes into holes of
+        // the file had its host read 4 MiB around each.
+        platform::reads_at_random(self.host, self.len);
+        *held = Some(file);
+        Ok(())
+    }
+
+    /// Its faults read ahead again ([`platform::reads_ahead`]), while it is mapped: under
+    /// the lock [`release`](Self::release) unmaps it under, so that no other mapping that
+    /// took its place is advised.
+    fn read_ahead(&self) {
+        let file = lock(&self.file);
+        if file.is_some() && !self.released() {
+            platform::reads_ahead(self.host, self.len);
+        }
+    }
+}
+
+impl Drop for Shared {
+    fn drop(&mut self) {
+        if !*self.released.get_mut() {
+            // SAFETY: the mapping `map` made; the VM that mapped it is gone.
+            unsafe { platform::unmap_file_shared(self.host, self.len) };
+        }
+    }
+}
+
+/// A Linux memory section (SECTION_SIZE_BITS 27 on x86_64, and on arm64 with 4 KiB pages):
+/// a layer starts at one, so that each of its whole sections' page structures is one 2 MiB
+/// block.
+pub const SECTION: u64 = 128 << 20;
+
+/// The bytes of a layer's head before its file system, for one of `data` bytes, and the
+/// NVDIMM pfn info block it holds at 4 KiB (drivers/nvdimm/pfn.h, struct nd_pfn_sb, Linux
+/// 6.18): its kernel's libnvdimm finds the block as it probes the device, and keeps the
+/// device's page structures in the device itself (PFN_MODE_PMEM, a vmem_altmap), in the
+/// head, which the block says ends where the file system starts (`dataoff`).
+///
+/// Sized as the kernel fills it, for a device at a section's start: each section of the
+/// device takes a 2 MiB block of page structures (64 bytes for each 4 KiB page), placed at
+/// a 2 MiB boundary of the head (mm/sparse-vmemmap.c, vmemmap_populate_hugepages and
+/// altmap_alloc_block_buf), the first past the info block's 8 KiB; a section the device
+/// ends inside is taken as whole, the most it may take. For a device a whole number of
+/// sections long, that is the head libnvdimm gives one it makes itself (pfn_devs.c,
+/// nd_pfn_init).
+pub fn layer_head(data: u64) -> Result<(u64, [u8; 4096]), String> {
+    const PAGE: u64 = 4 << 10;
+    /// MAX_STRUCT_PAGE_SIZE.
+    const STRUCT_PAGE: u64 = 64;
+    /// PFN_MODE_PMEM.
+    const MODE_PMEM: u32 = 2;
+    if data == 0 || !data.is_multiple_of(ALIGN) {
+        return Err(format!("a layer of {data} bytes: whole {} MiB", ALIGN >> 20));
+    }
+    let too_large = || format!("a layer of {data} bytes is past any guest's addresses");
+    // The head is a function of the whole device's size, its own included: from none, the
+    // least that holds its own sections' structures too.
+    let mut head = 0u64;
+    loop {
+        let size = head.checked_add(data).ok_or_else(too_large)?;
+        let want = size
+            .div_ceil(SECTION)
+            .checked_add(1)
+            .and_then(|blocks| blocks.checked_mul(ALIGN))
+            .ok_or_else(too_large)?;
+        if want == head {
+            break;
+        }
+        head = want;
+    }
+    fn put(block: &mut [u8; 4096], at: usize, bytes: &[u8]) {
+        if let Some(field) = block.get_mut(at..at + bytes.len()) {
+            field.copy_from_slice(bytes);
+        }
+    }
+    let mut block = [0u8; 4096];
+    put(&mut block, 0, b"NVDIMM_PFN_INFO\0");
+    // Its own UUID, any but none (nd_pfn_validate keeps the one it finds); its parent's is
+    // none, the UUID of an io namespace, which a virtio-pmem device's is
+    // (nd_dev_to_uuid).
+    put(&mut block, 16, b"shards-layer-pfn");
+    put(&mut block, 52, &1u16.to_le_bytes()); // version_major
+    put(&mut block, 54, &4u16.to_le_bytes()); // version_minor: page and struct page sizes recorded
+    put(&mut block, 56, &head.to_le_bytes()); // dataoff
+    put(&mut block, 64, &(data / PAGE).to_le_bytes()); // npfns
+    put(&mut block, 72, &MODE_PMEM.to_le_bytes());
+    put(&mut block, 84, &(ALIGN as u32).to_le_bytes()); // align: 2 MiB, for DAX's PMD mappings
+    put(&mut block, 88, &(PAGE as u32).to_le_bytes()); // page_size
+    put(&mut block, 92, &(STRUCT_PAGE as u16).to_le_bytes()); // page_struct_size
+    // nd_sb_checksum: Fletcher-64 over all the block's little-endian 32-bit words, its own
+    // field, not yet written, as zeros (nd_fletcher64).
+    let (mut lo, mut hi) = (0u32, 0u64);
+    for word in block.as_chunks::<4>().0 {
+        lo = lo.wrapping_add(u32::from_le_bytes(*word));
+        hi = hi.wrapping_add(u64::from(lo));
+    }
+    let checksum = (hi << 32) | u64::from(lo);
+    put(&mut block, 4088, &checksum.to_le_bytes());
+    Ok((head, block))
+}
+
+/// A run's writable layer (D190): an ext4 file system its guest mounts with DAX, so that
+/// what the run writes is the host's page cache of the run's file, which the host writes
+/// back and takes back as it would any file's, and the guest keeps metadata alone. The
+/// device is a head and the file system after it: the head holds the pfn info block
+/// ([`layer_head`]) and the page structures the guest's kernel writes there as it probes the
+/// device, which a snapshot keeps as it keeps memory; the file system is the run's file,
+/// mapped shared and writable.
+pub struct Layer {
+    head: Head,
+    data: Shared,
+    /// Where its guest has it, and what maps it there, once its VM has mapped it
+    /// ([`placed`](Self::placed)).
+    guest: OnceLock<(u64, Box<dyn Mapper>)>,
+    /// Whether its guest was not given back a mapping taken from it ([`lost`](Self::lost)).
+    lost: AtomicBool,
+    /// A file its run readied to go under the device in place of its own ([`stage`](Self::stage)),
+    /// until its guest asks for it.
+    staged: Mutex<Option<File>>,
+    /// Whether a readied file went under the device ([`swap_staged`](Self::swap_staged)).
+    swapped: AtomicBool,
+}
+
+/// Why a layer's mapping is not there to use: let go of as its machine stopped.
+const RELEASED: &str = "its writable layer was let go of as its machine stopped";
+
+impl std::fmt::Debug for Layer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Layer")
+            .field("head", &self.head.len())
+            .field("data", &self.data.len)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Layer {
+    /// A layer over `file`, the run's ext4 file system, whole multiples of [`ALIGN`], as a
+    /// boot gives it: its head the VM's own memory, the info block written.
+    pub fn boot(file: File) -> Result<Layer, String> {
+        let data = file.metadata().map_err(|e| format!("its layer: {e}"))?.len();
+        let (head_len, block) = layer_head(data)?;
+        let len = usize::try_from(head_len).map_err(|_| format!("a layer head of {head_len} bytes"))?;
+        let head = Head::new(len).map_err(|e| format!("its layer's head: {e}"))?;
+        // SAFETY: the head is `len` bytes, more than 8 KiB, and only this value holds it yet.
+        unsafe {
+            std::ptr::copy_nonoverlapping(block.as_ptr(), head.host().as_ptr().add(4096), block.len());
+        }
+        Layer::over(head, file, data)
+    }
+
+    /// A layer as a snapshot kept it: its head mapped privately from `kept`, the
+    /// snapshot's copy ([`save`](Self::save)), each 2 MiB block where the head had it, and
+    /// `file`, the run's copy of its file system as the snapshot kept it, mapped shared.
+    pub fn restore(kept: File, file: File) -> Result<Layer, String> {
+        let data = file.metadata().map_err(|e| format!("its layer: {e}"))?.len();
+        let (head_len, _) = layer_head(data)?;
+        let len = usize::try_from(head_len).map_err(|_| format!("a layer head of {head_len} bytes"))?;
+        let head = Head::restore(kept, len).map_err(|e| format!("its layer's head: {e}"))?;
+        Layer::over(head, file, data)
+    }
+
+    fn over(head: Head, file: File, data: u64) -> Result<Layer, String> {
+        let len = usize::try_from(data).map_err(|_| format!("a layer of {data} bytes"))?;
+        let data = Shared::map(file, len).map_err(|e| format!("its layer: {e}"))?;
+        // Read without readahead until its run's command runs ([`read_ahead`]): the run's
+        // first write into its file lands in a hole of a clone whose pages its host holds
+        // none of, and readahead there filled 4 MiB on Btrfs, 2.4 ms of a 5 ms start
+        // (PM M297).
+        platform::reads_at_random(data.host, data.len);
+        Ok(Layer {
+            head,
+            data,
+            guest: OnceLock::new(),
+            lost: AtomicBool::new(false),
+            staged: Mutex::new(None),
+            swapped: AtomicBool::new(false),
+        })
+    }
+
+    /// Readies `file`, a stopped microVM's writable layer kept in its own file (D190), to
+    /// go under the device in place of the file it has, the one its template mounted, once
+    /// its guest has let go of that ([`swap_staged`](Self::swap_staged)): as long as the
+    /// device's file system, whose page structures its guest made as it probed the device
+    /// for that length. One readied before is let go of.
+    pub fn stage(&self, file: File) -> Result<(), String> {
+        let len = file.metadata().map_err(|e| format!("its kept layer: {e}"))?.len();
+        if len != self.data.len as u64 {
+            return Err(format!(
+                "a kept layer of {len} bytes for a writable layer of {}",
+                self.data.len
+            ));
+        }
+        if self.data.released() {
+            return Err(RELEASED.into());
+        }
+        *lock(&self.staged) = Some(file);
+        Ok(())
+    }
+
+    /// Puts the file readied for it ([`stage`](Self::stage)) under the device in place of its
+    /// own, as its guest asks (`control::LAYER_SWAP`) once it has let go of the layer's file
+    /// system: its file system's mapping replaced where it was ([`Shared::replace`]), taken
+    /// from the guest meanwhile where the hypervisor's stage 2 holds the pages it maps
+    /// (HVF, PM M193) or maps a range of host addresses (WHP's WHvUnmapGpaRange and
+    /// WHvMapGpaRange), and given back after; KVM's follows the host's mapping. From here on
+    /// the guest's writes are the readied file's, which a keep, a save and a flush take,
+    /// and its own is let go of. A guest that could not be given the mapping back has lost
+    /// the layer ([`lost`](Self::lost)).
+    ///
+    /// # Safety
+    /// The guest uses none of the file system's mapping until this returns: it mounts
+    /// nothing of the device, and holds nothing of it open, as it says it has let go.
+    pub unsafe fn swap_staged(&self) -> Result<(), String> {
+        let file = lock(&self.staged)
+            .take()
+            .ok_or("no kept layer was readied for it")?;
+        let guest = self
+            .guest
+            .get()
+            .map(|(gpa, mapper)| (gpa + self.head.len() as u64, mapper));
+        if let Some((gpa, mapper)) = &guest {
+            mapper.unmap(*gpa, self.data.len)?;
+        }
+        // SAFETY: the caller's contract, and no hypervisor maps it now.
+        let replaced = unsafe { self.data.replace(file) }.map_err(|e| format!("its kept layer: {e}"));
+        if let Some((gpa, mapper)) = &guest {
+            // SAFETY: the mapping stays for the layer's life, which outlives the VM.
+            if let Err(e) = unsafe { mapper.map(self.data.host(), *gpa, self.data.len) } {
+                self.lost.store(true, Ordering::Release);
+                return Err(e);
+            }
+        }
+        replaced?;
+        self.swapped.store(true, Ordering::Release);
+        Ok(())
+    }
+
+    /// Whether a readied file went under the device ([`swap_staged`](Self::swap_staged)).
+    pub fn swapped(&self) -> bool {
+        self.swapped.load(Ordering::Acquire)
+    }
+
+    /// Says where its VM's guest has it, at `gpa` as [`mappings`](Self::mappings) gave
+    /// it, and what maps it there: what takes its head from the guest and gives it back as
+    /// it is mapped back ([`remap_head`](Self::remap_head)), where the hypervisor's stage 2
+    /// holds the pages it maps (`hv::Stage2`, PM M193). Once.
+    pub fn placed(&self, gpa: u64, mapper: Box<dyn Mapper>) {
+        let _ = self.guest.set((gpa, mapper));
+    }
+
+    /// Has its file read ahead again, as its run's command runs: its start's few writes
+    /// are made, and a sequential read of what the file holds, cold, read 5,089 MiB/s
+    /// with readahead and 86 without (PM M297). Once its mapping is let go of, nothing.
+    pub fn read_ahead(&self) {
+        self.data.read_ahead();
+    }
+
+    /// Whether its guest has lost it: a mapping taken from the guest that could not be given
+    /// back ([`remap_head`](Self::remap_head), [`save`](Self::save)), so that its machine
+    /// cannot go on.
+    pub fn lost(&self) -> bool {
+        self.lost.load(Ordering::Acquire) || self.data.lost()
+    }
+
+    /// The device's length: its head and its file system.
+    pub fn len(&self) -> u64 {
+        (self.head.len() + self.data.len) as u64
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// The file system's length, the run's file's.
+    pub fn data_len(&self) -> u64 {
+        self.data.len as u64
+    }
+
+    /// Its two mappings for a guest that sees it at `gpa`, `(gpa, host, len)`: the head,
+    /// then the file system, both writable by the guest. `gpa` must be a section's start
+    /// ([`SECTION`]), where the head is sized for.
+    pub fn mappings(&self, gpa: u64) -> Result<[(u64, *mut u8, usize); 2], String> {
+        if self.data.released() {
+            return Err(RELEASED.into());
+        }
+        if !gpa.is_multiple_of(SECTION) {
+            return Err(format!("a layer at {gpa:#x}: a {} MiB boundary", SECTION >> 20));
+        }
+        let data_gpa = gpa
+            .checked_add(self.head.len() as u64)
+            .filter(|at| at.checked_add(self.data.len as u64).is_some())
+            .ok_or_else(|| format!("a layer at {gpa:#x} overflows the address space"))?;
+        Ok([
+            (gpa, self.head.host().as_ptr(), self.head.len()),
+            (data_gpa, self.data.host(), self.data.len),
+        ])
+    }
+
+    /// Writes the head into `head` and copies the file system into `data`, as a paused
+    /// machine's guest left them, for a snapshot (D190). The head, its 2 MiB blocks each
+    /// once: all but a few hold the page structures of a section none of whose pages is in
+    /// use, which are alike, the 64 bytes of each page the same (mm_init.c,
+    /// __init_zone_device_page), so that a 10 GiB layer's head of 85 blocks is kept in
+    /// five (PM M277). An index first, block by block: which of those it is, or none for
+    /// zeros.
+    /// The file system, flushed to its file first: the blocks not all zeros of the ranges
+    /// its file holds data in, asked with its guest's mapping and this process's taken away
+    /// where a mapping hides them ([`Shared::data_ranges`]).
+    pub fn save(&self, head: &File, data: &File) -> Result<(), String> {
+        self.save_with(head, data, false)
+    }
+
+    /// Where its file system is in its guest, its address and length, once placed: what a
+    /// live move sends of it (D176 part 7).
+    pub fn data_at(&self) -> Option<(u64, u64)> {
+        self.guest
+            .get()
+            .map(|(gpa, _)| (gpa + self.head.len() as u64, self.data.len as u64))
+    }
+
+    /// The runs of its file system that hold data, for a live move's first round (D176
+    /// part 7), as a save finds them.
+    ///
+    /// # Safety
+    /// Its machine is paused, as a save's is: its mapping may be taken from its guest.
+    pub unsafe fn data(&self) -> Result<Vec<(u64, u64)>, String> {
+        let at = |e: std::io::Error| format!("its layer: {e}");
+        // SAFETY: the mapping `data` holds, for the layer's life.
+        unsafe { platform::flush_shared(self.data.host, self.data.len) }.map_err(at)?;
+        let guest = self
+            .guest
+            .get()
+            .map(|(gpa, mapper)| (gpa + self.head.len() as u64, mapper));
+        let unmap = || {
+            guest
+                .as_ref()
+                .map_or(Ok(()), |(gpa, mapper)| mapper.unmap(*gpa, self.data.len))
+        };
+        let map = || {
+            guest.as_ref().map_or(Ok(()), |(gpa, mapper)| {
+                // SAFETY: the mapping stays for the layer's life, which outlives the VM.
+                unsafe { mapper.map(self.data.host(), *gpa, self.data.len) }
+            })
+        };
+        // SAFETY: the caller's.
+        unsafe { self.data.data_ranges(&unmap, &map) }.map_err(|e| format!("its layer: {e}"))
+    }
+
+    /// Copies `len` bytes at `off` of its file system into `buf`.
+    pub fn read_data(&self, off: u64, buf: &mut [u8]) -> Result<(), String> {
+        self.data.read(off, buf).map_err(|e| format!("its layer: {e}"))
+    }
+
+    /// [`save`](Self::save) of its head alone, whole: its file system's pages a live move's
+    /// stream holds (D176 part 7), `data` as long as it and all holes.
+    pub fn save_head(&self, head: &File, data: &File) -> Result<(), String> {
+        self.save_with(head, data, true)
+    }
+
+    fn save_with(&self, head: &File, data: &File, head_alone: bool) -> Result<(), String> {
+        if self.data.released() {
+            return Err(RELEASED.into());
+        }
+        let at = |e: std::io::Error| format!("its layer: {e}");
+        self.head.save(head).map_err(at)?;
+        if head_alone {
+            return self.data.write_runs(data, &[]).map_err(at);
+        }
+        // SAFETY: the mapping `data` holds, for the layer's life.
+        unsafe { platform::flush_shared(self.data.host, self.data.len) }.map_err(at)?;
+        // The file system's part of the guest's mapping, after the head.
+        let guest = self
+            .guest
+            .get()
+            .map(|(gpa, mapper)| (gpa + self.head.len() as u64, mapper));
+        let unmap = || {
+            guest
+                .as_ref()
+                .map_or(Ok(()), |(gpa, mapper)| mapper.unmap(*gpa, self.data.len))
+        };
+        let map = || {
+            guest.as_ref().map_or(Ok(()), |(gpa, mapper)| {
+                // SAFETY: the mapping stays for the layer's life, which outlives the VM.
+                unsafe { mapper.map(self.data.host(), *gpa, self.data.len) }
+            })
+        };
+        // SAFETY: a save's machine is paused and its devices quiet (`Cut::take`).
+        let ranges = unsafe { self.data.data_ranges(&unmap, &map) }.map_err(|e| format!("its layer: {e}"))?;
+        crate::debug!(
+            "its layer: {} ranges of data, {} bytes of {}",
+            ranges.len(),
+            ranges.iter().map(|r| r.1).sum::<u64>(),
+            self.data.len
+        );
+        self.data.copy_ranges_to(data, &ranges).map_err(at)
+    }
+
+    /// Makes what its guest has written to its file system durable, as the guest's flush
+    /// asks (VIRTIO_PMEM_REQ_TYPE_FLUSH, virtio 1.3 §5.19): the guest's fsync of a file on it
+    /// waits for the device's answer (drivers/nvdimm/nd_virtio.c, `virtio_pmem_flush`), and
+    /// the guest's writes are the host's page cache of the run's file until the host writes
+    /// them back. Written back and synced to stable storage ([`Shared::flush`]), as
+    /// Firecracker's flush msyncs its device's whole file (docs/pmem.md) and QEMU's fsyncs
+    /// it. The guest's root overlay passes its fsyncs on to the layer (init `run.rs`).
+    ///
+    /// Answered at once while a file is readied to go under the device in place of its own
+    /// ([`stage`](Self::stage)): its own, the template's layer, goes as its guest lets go of
+    /// it, and nothing written to it outlives the run, where each flush cost a restart 2.2
+    /// to 11.2 ms of the host's fdatasync (PM M443).
+    pub fn flush(&self) -> Result<(), String> {
+        if lock(&self.staged).is_some() {
+            return Ok(());
+        }
+        self.data.flush().map_err(|e| format!("its layer: {e}"))
+    }
+
+    /// Maps its head back from `kept`, the copy a save has just written of it
+    /// ([`save`](Self::save)), as a restore maps one ([`restore`](Self::restore)): each
+    /// block privately from the copy where the head had it, fresh memory where it had
+    /// zeros. A booted machine's head is its own memory, written whole as its guest's
+    /// kernel probed the device, and resident for the machine's life: the template's
+    /// microVM, which goes on as its image's first run, held 282 MiB of physical footprint
+    /// on the Mac with a 10 GiB layer, 170 of them its head, where a warm microVM restored
+    /// from its template held 14 (PM M284). Mapped back, it holds what its guest goes on
+    /// to write alone, and its alike blocks are one copy in the host's page cache, its
+    /// restores' too. The guest has the head no more meanwhile, where it is placed
+    /// ([`placed`](Self::placed)). One that fails partway leaves each block the copy's or
+    /// the guest's own memory, which hold the same; one whose guest could not be given the
+    /// head back leaves the layer [`lost`](Self::lost). Where no file maps over part of a
+    /// reservation (Windows), the head stays the guest's own memory.
+    ///
+    /// # Safety
+    /// The machine is paused and the head saved into `kept` since: no vCPU runs and no host
+    /// thread touches the head until this returns.
+    pub unsafe fn remap_head(&self, kept: &File) -> Result<(), String> {
+        let Some((gpa, mapper)) = self.guest.get() else {
+            // SAFETY: the caller's contract; no guest has the head.
+            return unsafe { self.head.map_back(kept) }.map_err(|e| format!("its layer's head: {e}"));
+        };
+        let host = self.head.host().as_ptr();
+        let whole = [(*gpa, host, self.head.len())];
+        // What the map-back changes alone, taken from the guest meanwhile.
+        let taken = match self.head.changing() {
+            Some(ranges) => super::head::parts_of(&whole, host, &ranges),
+            None => whole.to_vec(),
+        };
+        let give_back = |taken: &[(u64, *mut u8, usize)]| -> Result<(), String> {
+            for &(gpa, host, len) in taken {
+                // SAFETY: the head stays mapped in this process for the layer's life, which
+                // outlives the VM (`Running` drops the VM before the devices).
+                if let Err(e) = unsafe { mapper.map(host, gpa, len) } {
+                    self.lost.store(true, Ordering::Release);
+                    return Err(e);
+                }
+            }
+            Ok(())
+        };
+        for (n, &(gpa, _, len)) in taken.iter().enumerate() {
+            if let Err(e) = mapper.unmap(gpa, len) {
+                give_back(taken.get(..n).unwrap_or_default())?;
+                return Err(e);
+            }
+        }
+        // SAFETY: the caller's contract; the guest has the parts it changes no more
+        // meanwhile.
+        let remapped = unsafe { self.head.map_back(kept) }.map_err(|e| format!("its layer's head: {e}"));
+        give_back(&taken)?;
+        remapped
+    }
+
+    /// Lets go of its file system's mapping and file once its machine is gone, rather than
+    /// as the process ends: the file holds what the guest wrote, and its host reads it
+    /// with nothing of this process's still at it. On macOS the last writer to let go of a
+    /// file written through a shared mapping writes it back before it returns, and a reader
+    /// of the file meanwhile waits behind it (PM M278).
+    ///
+    /// # Safety
+    /// No VM maps it any more (`Running::teardown` destroys the VM first).
+    pub unsafe fn release(&self) {
+        // SAFETY: forwarded caller contract; `mappings` and `save` refuse it after.
+        unsafe { self.data.release() }
+    }
+}
+
+/// What a virtio-pmem device is backed by.
+enum Backing {
+    /// An image file, read-only.
+    File(Arc<Region>),
+    /// A guest's swap window (D159).
+    Swap(Arc<SwapWindow>),
+    /// A run's writable layer (D190).
+    Layer(Arc<Layer>),
 }
 
 pub struct Pmem {
-    region: Arc<Region>,
+    backing: Backing,
     /// Where the guest sees the region.
     gpa: u64,
-    active: Mutex<Option<Active>>,
+    /// What a worker needs besides its queue, from activation until reset.
+    context: Option<(Arc<GuestMemory>, Arc<DeviceInterrupt>)>,
+    worker: Option<Worker>,
+    /// The queue while paused.
+    paused: Option<Queue>,
 }
 
 impl std::fmt::Debug for Pmem {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Pmem")
-            .field("gpa", &self.gpa)
-            .field("region", &self.region)
-            .finish_non_exhaustive()
+        let mut d = f.debug_struct("Pmem");
+        d.field("gpa", &self.gpa);
+        match &self.backing {
+            Backing::File(region) => d.field("region", region),
+            Backing::Swap(window) => d.field("swap", window),
+            Backing::Layer(layer) => d.field("layer", layer),
+        };
+        d.finish_non_exhaustive()
     }
 }
 
@@ -122,20 +1148,100 @@ impl Pmem {
     /// A device for `region`, which the machine has mapped at `gpa`.
     pub fn new(region: Arc<Region>, gpa: u64) -> Pmem {
         Pmem {
-            region,
+            backing: Backing::File(region),
             gpa,
-            active: Mutex::new(None),
+            context: None,
+            worker: None,
+            paused: None,
         }
+    }
+
+    /// The device of a guest's swap window (D159).
+    pub fn swap(window: Arc<SwapWindow>) -> Pmem {
+        Pmem {
+            gpa: window.gpa,
+            backing: Backing::Swap(window),
+            context: None,
+            worker: None,
+            paused: None,
+        }
+    }
+
+    /// The device of a run's writable layer (D190), which the machine has mapped at `gpa`.
+    pub fn layer(layer: Arc<Layer>, gpa: u64) -> Pmem {
+        Pmem {
+            gpa,
+            backing: Backing::Layer(layer),
+            context: None,
+            worker: None,
+            paused: None,
+        }
+    }
+
+    /// The length the guest sees.
+    fn len(&self) -> u64 {
+        match &self.backing {
+            Backing::File(region) => region.len() as u64,
+            Backing::Swap(window) => window.len(),
+            Backing::Layer(layer) => layer.len(),
+        }
+    }
+
+    /// Starts the worker on `queue`; if it cannot, the queue waits paused, as a snapshot's
+    /// pause leaves it, for a resume or a reset.
+    fn start(&mut self, queue: Queue) -> Result<(), String> {
+        let Some((memory, interrupt)) = self.context.clone() else {
+            self.paused = Some(queue);
+            return Err("virtio-pmem started before activation".into());
+        };
+        let mem = memory.clone();
+        let layer = match &self.backing {
+            Backing::Layer(layer) => Some(layer.clone()),
+            Backing::File(_) | Backing::Swap(_) => None,
+        };
+        let answering = move |chain: &Chain| answer(chain, &mem, layer.as_deref());
+        match Worker::start("virtio-pmem", queue, memory, interrupt, answering) {
+            Ok(worker) => {
+                self.worker = Some(worker);
+                Ok(())
+            }
+            Err((e, queue)) => {
+                self.paused = Some(queue);
+                Err(e)
+            }
+        }
+    }
+
+    /// Stops the worker after the request it is answering; returns its queue.
+    fn stop(&mut self) -> Option<Queue> {
+        self.worker.take()?.stop()
     }
 }
 
 impl VirtioDevice for Pmem {
+    /// A swap window's is no device (0) until the guest is shown it (`control::SHOW_SWAP`).
     fn device_id(&self) -> u32 {
-        DEVICE_ID
+        match &self.backing {
+            Backing::Swap(window) if !window.shown() => 0,
+            _ => DEVICE_ID,
+        }
     }
 
     fn features(&self) -> u64 {
         feature::VERSION_1
+    }
+
+    /// An image's file, or a writable layer's file system, which its guest maps files
+    /// from: not a swap window, nor a layer's head, whose pages no file of the guest's is.
+    fn device_memory(&self) -> Vec<(u64, *mut u8, usize)> {
+        match &self.backing {
+            Backing::File(region) => vec![(self.gpa, region.host(), region.len())],
+            Backing::Layer(layer) => layer
+                .mappings(self.gpa)
+                .map(|[_, data]| vec![data])
+                .unwrap_or_default(),
+            Backing::Swap(_) => Vec::new(),
+        }
     }
 
     fn queue_max_sizes(&self) -> &[u16] {
@@ -147,7 +1253,7 @@ impl VirtioDevice for Pmem {
         let mut config = [0u8; 16];
         let (start, size) = config.split_at_mut(8);
         start.copy_from_slice(&self.gpa.to_le_bytes());
-        size.copy_from_slice(&(self.region.len() as u64).to_le_bytes());
+        size.copy_from_slice(&self.len().to_le_bytes());
         let at = offset as usize;
         for (i, b) in data.iter_mut().enumerate() {
             *b = at
@@ -168,69 +1274,752 @@ impl VirtioDevice for Pmem {
             ..
         } = activation;
         let queue = queues.pop().ok_or("virtio-pmem activated without a queue")?;
-        *lock(&self.active) = Some(Active {
-            queue,
-            memory,
-            interrupt,
-        });
-        Ok(())
+        self.context = Some((memory, interrupt));
+        // An activation that fails leaves its queue: the driver sets the device up anew.
+        self.start(queue).inspect_err(|_| self.paused = None)
     }
 
-    /// Flushes of a read-only region complete at once, on the notifying vCPU thread:
-    /// there is nothing to write back, so nothing can block.
+    /// Flushes are answered on the device's worker, never on the notifying vCPU's thread,
+    /// which a driver refilling the queue from another CPU could otherwise keep from the
+    /// guest and from stopping (audit A09).
     fn notify(&self, _queue: u16) {
-        let mut active = lock(&self.active);
-        let Some(a) = active.as_mut() else {
-            return;
-        };
-        if let Err(e) = drain(&mut a.queue, &a.memory, &a.interrupt) {
-            warn!("virtio-pmem: {e}; device needs reset");
-            a.interrupt.fail();
-            *active = None;
+        if let Some(w) = &self.worker {
+            w.notify();
         }
     }
 
     fn reset(&mut self) {
-        *lock(&self.active) = None;
+        self.stop();
+        self.paused = None;
+        self.context = None;
     }
 
+    /// As block's: the worker stops after the request it is answering, and what it left
+    /// stays in the ring for the worker that resumes.
     fn pause(&mut self) -> Vec<super::QueueState> {
-        lock(&self.active).iter().map(|a| a.queue.state()).collect()
+        if let Some(queue) = self.stop() {
+            self.paused = Some(queue);
+        }
+        self.paused.iter().map(Queue::state).collect()
     }
 
     fn resume(&mut self) -> Result<(), String> {
+        match self.paused.take() {
+            Some(queue) => self.start(queue),
+            None => Ok(()),
+        }
+    }
+
+    /// A swap window's: whether the guest was shown it, and the length of the run's swap
+    /// mapped, whose bytes a snapshot of the run keeps beside it (D176).
+    fn save(&self, w: &mut Writer) {
+        if let Backing::Swap(window) = &self.backing {
+            w.bool(window.shown());
+            w.u64(window.mapped_len());
+        }
+    }
+
+    fn restore(&mut self, r: &mut Reader<'_>) -> codec::Result<()> {
+        if let Backing::Swap(window) = &self.backing {
+            if r.bool()? {
+                window.show();
+            }
+            let kept = r.u64()?;
+            if kept > window.len() || !kept.is_multiple_of(ALIGN) {
+                return Err(codec::DecodeError(format!(
+                    "a run's swap of {kept} bytes kept for a window of {}",
+                    window.len()
+                )));
+            }
+            window.kept.store(kept, Ordering::Release);
+        }
         Ok(())
     }
 }
 
-fn drain(queue: &mut Queue, mem: &GuestMemory, irq: &DeviceInterrupt) -> Result<(), QueueError> {
-    let mut used = false;
-    while let Some(chain) = queue.pop(mem)? {
-        let written = answer(&chain, mem);
-        queue.add_used(mem, chain.head, written)?;
-        used = true;
+impl Drop for Pmem {
+    fn drop(&mut self) {
+        self.reset();
     }
-    if used && queue.needs_interrupt(mem)? {
-        irq.used_buffer();
-    }
-    Ok(())
 }
 
-/// Reads `struct virtio_pmem_req { le32 type; }` and writes `struct virtio_pmem_resp
-/// { le32 ret; }`: 0 for a flush, 1 for anything else. Returns the bytes written.
-fn answer(chain: &Chain, mem: &GuestMemory) -> u32 {
-    let (Some(req), Some(resp)) = (chain.readable().next(), chain.writable().next()) else {
+/// Answers a request, `struct virtio_pmem_req { le32 type; }`, with `struct virtio_pmem_resp
+/// { le32 ret; }`: 0 for a flush done, 1 for one that failed or anything else; returns the
+/// bytes written. A writable layer's flush is the host's ([`Layer::flush`]), outside guest
+/// memory's access, which other devices' workers go on taking meanwhile; an image has
+/// nothing to write back, and a run's swap holds nothing past its run (D159): theirs are
+/// done as asked.
+fn answer(chain: &Chain, mem: &GuestMemory, layer: Option<&Layer>) -> u32 {
+    let Some(asked) = mem.access().ok().and_then(|a| asked(chain, &a)) else {
         return 0;
     };
-    if req.len < 4 || resp.len < 4 {
-        return 0;
-    }
-    let ret: u32 = match mem.read_obj::<u32>(req.addr) {
-        Ok(t) if u32::from_le(t) == REQ_FLUSH => 0,
+    let t0 = crate::log::uptime_us();
+    let ret = match (asked, layer) {
+        (REQ_FLUSH, Some(layer)) => match layer.flush() {
+            Ok(()) => {
+                crate::debug!(
+                    "a guest's flush of its writable layer in {} us",
+                    crate::log::uptime_us().saturating_sub(t0)
+                );
+                0
+            }
+            Err(e) => {
+                crate::warn!("a guest's flush of its writable layer: {e}");
+                1
+            }
+        },
+        (REQ_FLUSH, None) => 0,
         _ => 1,
+    };
+    mem.access().map_or(0, |a| respond(chain, &a, ret))
+}
+
+/// What a request asks, the type of its `struct virtio_pmem_req { le32 type; }`; none for
+/// a chain with no room for its request or its answer.
+fn asked(chain: &Chain, mem: &Access<'_>) -> Option<u32> {
+    let (Some(req), Some(resp)) = (chain.readable().next(), chain.writable().next()) else {
+        return None;
+    };
+    if req.len < 4 || resp.len < 4 {
+        return None;
+    }
+    // One that cannot be read asks what no device does.
+    Some(mem.read_obj::<u32>(req.addr).map_or(u32::MAX, u32::from_le))
+}
+
+/// Writes `struct virtio_pmem_resp { le32 ret; }`, `ret` 0 for a request done; returns the
+/// bytes written.
+fn respond(chain: &Chain, mem: &Access<'_>, ret: u32) -> u32 {
+    let Some(resp) = chain.writable().next() else {
+        return 0;
     };
     match mem.write_obj(resp.addr, ret.to_le()) {
         Ok(()) => 4,
         Err(_) => 0,
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::indexing_slicing)]
+mod tests {
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    use super::super::head::kept_block_at;
+    use super::super::head::{HEAD_BLOCK, read_head_index, save_head, words_equal};
+    use super::*;
+
+    /// Slots no hypervisor maps: whatever a window asks of them is done.
+    struct Unmapped;
+
+    impl Slots for Unmapped {
+        unsafe fn map(&self, _: u32, _: *mut u8, _: u64, _: usize, _: bool) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn unmap(&self, _: u32, _: u64, _: usize) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    fn window() -> Arc<SwapWindow> {
+        Arc::new(SwapWindow::new(1 << 32, 8 * ALIGN, Box::new(Unmapped)).unwrap())
+    }
+
+    fn file(dir: &Path, name: &str, len: u64) -> File {
+        let f = File::options()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(dir.join(name))
+            .unwrap();
+        f.set_len(len).unwrap();
+        f
+    }
+
+    /// A layer's head holds a 2 MiB block of page structures for each section of the
+    /// device, its own included, past the info block's first 2 MiB: for a device of whole
+    /// sections, libnvdimm's own (nd_pfn_init: ALIGN(8 KiB + 64 bytes a page past 8 KiB,
+    /// 2 MiB)); and its info block is one libnvdimm takes (nd_pfn_validate).
+    #[test]
+    fn a_layers_head_holds_its_sections_page_structures() {
+        let mib = 1u64 << 20;
+        let (head, _) = layer_head(10 << 30).unwrap();
+        assert_eq!(head, 166 * mib);
+        for sections in [1u64, 8, 82, 512] {
+            let size = sections * SECTION;
+            let kernels = (8192 + 64 * ((size - 8192) / 4096)).next_multiple_of(ALIGN);
+            let (head, _) = layer_head(size - kernels).unwrap();
+            assert_eq!(head, kernels, "{sections} sections");
+        }
+        // A device ending inside a section takes that section's block whole.
+        let (head, _) = layer_head(SECTION - 4 * mib + 2 * mib).unwrap();
+        assert_eq!(head, 6 * mib);
+        assert!(layer_head(0).is_err());
+        assert!(layer_head(ALIGN + 4096).is_err());
+        assert!(layer_head(u64::MAX - ALIGN + 1).is_err());
+
+        let data = 10u64 << 30;
+        let (head, block) = layer_head(data).unwrap();
+        assert_eq!(&block[..16], b"NVDIMM_PFN_INFO\0");
+        assert_eq!(&block[32..48], &[0; 16], "an io namespace's parent UUID");
+        let u64_at = |at: usize| u64::from_le_bytes(block[at..at + 8].try_into().unwrap());
+        let u32_at = |at: usize| u32::from_le_bytes(block[at..at + 4].try_into().unwrap());
+        assert_eq!((u64_at(56), u64_at(64)), (head, data / 4096));
+        assert_eq!((u32_at(72), u32_at(84), u32_at(88)), (2, ALIGN as u32, 4096));
+        // nd_fletcher64 of the block, its checksum zeroed, is its checksum.
+        let mut zeroed = block;
+        zeroed[4088..].fill(0);
+        let (mut lo, mut hi) = (0u64, 0u64);
+        for w in zeroed.chunks(4) {
+            lo = (lo + u64::from(u32::from_le_bytes(w.try_into().unwrap()))) & 0xFFFF_FFFF;
+            hi = hi.wrapping_add(lo);
+        }
+        assert_eq!(u64_at(4088), (hi << 32) | lo);
+    }
+
+    /// A layer's file is read without readahead until its run's command runs, then with it
+    /// (PM M297): its mapping advised random, `rr` among its VmFlags in /proc/self/smaps
+    /// (fs/proc/task_mmu.c, show_smap_vma_flags), and then not; so too a file gone under
+    /// it in place of its own (D190, `run::kind::OVER`).
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_layer_reads_ahead_once_its_command_runs() {
+        let dir = shards_testdir::TempDir::new("layer-ahead").unwrap();
+        let booted = Layer::boot(file(&dir, "fs", 8 * ALIGN)).unwrap();
+        let [_, (_, data, _)] = booted.mappings(SECTION).unwrap();
+        let random = || {
+            let smaps = std::fs::read_to_string("/proc/self/smaps").unwrap();
+            let start = format!("{:x}-", data as usize);
+            let flags = smaps
+                .lines()
+                .skip_while(|l| !l.starts_with(&start))
+                .find_map(|l| l.strip_prefix("VmFlags:").map(str::to_string))
+                .unwrap();
+            flags.split_whitespace().any(|f| f == "rr")
+        };
+        assert!(random(), "a layer's mapping reads ahead before its command runs");
+        // A file readied for it, gone under the device, read at random as the one before.
+        booted.read_ahead();
+        booted.stage(file(&dir, "kept", 8 * ALIGN)).unwrap();
+        // SAFETY: nothing touches the mapping meanwhile; no hypervisor maps it.
+        unsafe { booted.swap_staged() }.unwrap();
+        assert!(
+            random(),
+            "a kept layer's mapping reads ahead before its command runs"
+        );
+        booted.read_ahead();
+        assert!(
+            !random(),
+            "a layer's mapping still reads at random once its command runs"
+        );
+    }
+
+    /// What the guest wrote to a layer's head and file system a save keeps, the head as
+    /// memory, holes where it is zeros; a restore maps the head back privately, its writes
+    /// its own, and the run's copy of the file system shared (D190).
+    #[test]
+    fn a_layer_is_kept_by_a_save_and_mapped_back_by_its_restore() {
+        let dir = shards_testdir::TempDir::new("layer-save").unwrap();
+        let data_len = 8 * ALIGN;
+        let booted = Layer::boot(file(&dir, "fs", data_len)).unwrap();
+        let [(gpa, head, head_len), (data_gpa, data, len)] = booted.mappings(SECTION).unwrap();
+        assert_eq!((gpa, head_len as u64, len as u64), (SECTION, 2 * ALIGN, data_len));
+        assert_eq!(data_gpa, SECTION + 2 * ALIGN);
+        assert_eq!(booted.len(), 2 * ALIGN + data_len);
+        // SAFETY: within the mappings, which the layer holds.
+        unsafe {
+            assert_eq!(
+                std::slice::from_raw_parts(head.add(4096), 16),
+                b"NVDIMM_PFN_INFO\0"
+            );
+            head.add(ALIGN as usize).write_bytes(0x5a, 8192);
+            data.add(3 << 20).write_bytes(0xa5, 4096);
+        }
+        let (kept_head, kept_data) = (file(&dir, "head", 0), file(&dir, "data", 0));
+        booted.save(&kept_head, &kept_data).unwrap();
+        // Its index's block, then its two blocks, unlike.
+        assert_eq!(kept_head.metadata().unwrap().len(), 3 * ALIGN);
+        assert_eq!(kept_data.metadata().unwrap().len(), data_len);
+
+        let copy = file(&dir, "data2", 0);
+        platform::copy_used(&kept_data, &copy, data_len).unwrap();
+        let restored = Layer::restore(kept_head.try_clone().unwrap(), kept_data).unwrap();
+        let [(_, head, _), (_, data, _)] = restored.mappings(SECTION).unwrap();
+        // SAFETY: within the mappings, which the layer holds.
+        unsafe {
+            assert_eq!(
+                std::slice::from_raw_parts(head.add(4096), 16),
+                b"NVDIMM_PFN_INFO\0"
+            );
+            assert_eq!(*head.add(ALIGN as usize + 8191), 0x5a);
+            assert_eq!(*head.add(ALIGN as usize + 8192), 0);
+            assert_eq!(*data.add((3 << 20) + 4095), 0xa5);
+            assert_eq!(*data.add(4 << 20), 0);
+            // Its head's writes are its own: the snapshot's copy keeps what it held.
+            head.add(ALIGN as usize).write_bytes(0x11, 4096);
+        }
+        let again = Layer::restore(kept_head.try_clone().unwrap(), copy).unwrap();
+        let [(_, head, _), _] = again.mappings(SECTION).unwrap();
+        // SAFETY: within the mapping, which the layer holds.
+        unsafe { assert_eq!(*head.add(ALIGN as usize), 0x5a) };
+
+        // What is no kept head is refused.
+        let e = Layer::restore(file(&dir, "short", ALIGN), file(&dir, "fs2", data_len)).unwrap_err();
+        assert!(e.contains("not a head shards kept"), "{e}");
+        let e = restored.mappings(ALIGN).unwrap_err();
+        assert!(e.contains("boundary"), "{e}");
+    }
+
+    /// A head's alike blocks are kept once each, and every place that had one has it back:
+    /// a head of nine sections' blocks, eight alike, is kept in an index and three blocks.
+    #[test]
+    fn a_heads_alike_blocks_are_kept_once() {
+        let dir = shards_testdir::TempDir::new("layer-head").unwrap();
+        let data_len = 1 << 30;
+        let booted = Layer::boot(file(&dir, "fs", data_len)).unwrap();
+        let [(_, head, head_len), _] = booted.mappings(SECTION).unwrap();
+        let blocks = head_len / HEAD_BLOCK;
+        assert_eq!(blocks, 10);
+        // SAFETY: within the head, which the layer holds.
+        unsafe {
+            for i in 1..blocks - 1 {
+                head.add(i * HEAD_BLOCK).write_bytes(0x40, HEAD_BLOCK);
+            }
+            head.add((blocks - 1) * HEAD_BLOCK + 64).write_bytes(0x41, 64);
+        }
+        let kept = file(&dir, "head", 0);
+        save_head(&kept, NonNull::new(head).unwrap(), head_len, None).unwrap();
+        assert_eq!(kept.metadata().unwrap().len(), ALIGN + 3 * ALIGN);
+        let index = read_head_index(&kept, blocks).unwrap();
+        assert_eq!(
+            index,
+            [
+                Some(0),
+                Some(1),
+                Some(1),
+                Some(1),
+                Some(1),
+                Some(1),
+                Some(1),
+                Some(1),
+                Some(1),
+                Some(2)
+            ]
+        );
+        let restored = Layer::restore(kept, file(&dir, "fs2", data_len)).unwrap();
+        let [(_, back, _), _] = restored.mappings(SECTION).unwrap();
+        // SAFETY: within both heads, which their layers hold.
+        unsafe {
+            for i in 0..blocks {
+                assert!(
+                    words_equal(head.add(i * HEAD_BLOCK), back.add(i * HEAD_BLOCK), HEAD_BLOCK),
+                    "block {i}"
+                );
+            }
+        }
+        // A kept head of another count of blocks, or naming a block it does not keep, is refused.
+        let short = file(&dir, "short", 0);
+        save_head(&short, NonNull::new(head).unwrap(), 2 * HEAD_BLOCK, None).unwrap();
+        assert!(
+            read_head_index(&short, blocks)
+                .unwrap_err()
+                .contains("blocks kept")
+        );
+        short.set_len(ALIGN + ALIGN).unwrap();
+        platform::write_all_at(&short, &[9, 0, 0, 0], 12 + 4).unwrap();
+        assert!(read_head_index(&short, 2).unwrap_err().contains("past the"));
+    }
+
+    /// A booted head mapped back from the copy its save kept holds what its guest wrote,
+    /// as the copy's pages rather than memory of its own, its zeros fresh memory; its writes
+    /// stay its own (D190). Where files map over part of a reservation.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn a_booted_head_is_mapped_back_from_its_saved_copy() {
+        let dir = shards_testdir::TempDir::new("layer-remap").unwrap();
+        let data_len = 1 << 30;
+        let booted = Layer::boot(file(&dir, "fs", data_len)).unwrap();
+        let [(_, head, head_len), _] = booted.mappings(SECTION).unwrap();
+        let blocks = head_len / HEAD_BLOCK;
+        assert_eq!(blocks, 10);
+        // As a guest's kernel writes them: alike blocks, one of its own, one of zeros.
+        // SAFETY: within the head, which the layer holds.
+        unsafe {
+            for i in 1..blocks - 2 {
+                head.add(i * HEAD_BLOCK).write_bytes(0x40, HEAD_BLOCK);
+            }
+            head.add((blocks - 2) * HEAD_BLOCK + 64).write_bytes(0x41, 64);
+            head.add((blocks - 1) * HEAD_BLOCK).write_bytes(0, HEAD_BLOCK);
+        }
+        // SAFETY: as above.
+        let wrote = unsafe { std::slice::from_raw_parts(head, head_len) }.to_vec();
+        let page = platform::page_size().unwrap();
+        let kept_blocks = (blocks - 1) * HEAD_BLOCK;
+        // Each page the process's own: written, or read as it was copied.
+        assert_eq!(own_pages(head, head_len), head_len / page);
+        let kept = file(&dir, "head", 0);
+        booted.save(&kept, &file(&dir, "data", 0)).unwrap();
+        // SAFETY: nothing else touches the head, which no hypervisor maps.
+        unsafe { booted.remap_head(&kept) }.unwrap();
+        assert_eq!(own_pages(head, head_len), 0, "the head's own memory, given back");
+        // SAFETY: as above.
+        assert!(unsafe { std::slice::from_raw_parts(head, kept_blocks) } == &wrote[..kept_blocks]);
+        assert_eq!(own_pages(head, kept_blocks), 0, "read, the copy's pages");
+        // SAFETY: as above.
+        let zeros = unsafe { std::slice::from_raw_parts(head.add(kept_blocks), HEAD_BLOCK) };
+        assert!(zeros == &wrote[kept_blocks..]);
+
+        // Its writes its own: the copy's, and the other alike blocks', as they were.
+        // SAFETY: as above.
+        unsafe { head.add(HEAD_BLOCK).write_bytes(0x11, page) };
+        assert_eq!(own_pages(head, kept_blocks), 1);
+        let alike = kept_block_at(read_head_index(&kept, blocks).unwrap()[1].unwrap(), blocks).unwrap();
+        let mut byte = [0u8; 1];
+        platform::read_exact_at(&kept, &mut byte, alike).unwrap();
+        assert_eq!(byte, [0x40]);
+        // SAFETY: as above.
+        assert_eq!(unsafe { *head.add(2 * HEAD_BLOCK) }, 0x40);
+    }
+
+    /// A placed head's blocks its map-back changes are taken from its guest while it is
+    /// mapped back, and given back after whatever came between, its untouched blocks left
+    /// with the guest; one its guest would not give up stays its own memory, and one its
+    /// guest could not be given back is lost to it (D190).
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn a_placed_heads_guest_gives_it_up_while_it_is_mapped_back() {
+        type Calls = Arc<Mutex<Vec<(&'static str, u64, usize)>>>;
+        struct Guest {
+            calls: Calls,
+            unmaps: bool,
+            maps: bool,
+        }
+        impl Mapper for Guest {
+            unsafe fn map(&self, _: *mut u8, gpa: u64, len: usize) -> Result<(), String> {
+                lock(&self.calls).push(("map", gpa, len));
+                if self.maps { Ok(()) } else { Err("no map".into()) }
+            }
+            fn unmap(&self, gpa: u64, len: usize) -> Result<(), String> {
+                lock(&self.calls).push(("unmap", gpa, len));
+                if self.unmaps {
+                    Ok(())
+                } else {
+                    Err("no unmap".into())
+                }
+            }
+        }
+        let dir = shards_testdir::TempDir::new("layer-placed").unwrap();
+        let page = platform::page_size().unwrap();
+        for (n, (unmaps, maps)) in [(true, true), (false, true), (true, false)]
+            .into_iter()
+            .enumerate()
+        {
+            let booted = Layer::boot(file(&dir, &format!("fs-{n}"), 8 * ALIGN)).unwrap();
+            let [(_, head, head_len), _] = booted.mappings(SECTION).unwrap();
+            // SAFETY: within the head, which the layer holds.
+            unsafe { head.add(HEAD_BLOCK).write_bytes(0x40, HEAD_BLOCK) };
+            let kept = file(&dir, &format!("head-{n}"), 0);
+            booted.save(&kept, &file(&dir, &format!("data-{n}"), 0)).unwrap();
+            let calls = Calls::default();
+            booted.placed(
+                SECTION,
+                Box::new(Guest {
+                    calls: calls.clone(),
+                    unmaps,
+                    maps,
+                }),
+            );
+            // SAFETY: nothing else touches the head, which no hypervisor maps.
+            let remapped = unsafe { booted.remap_head(&kept) };
+            // Its written blocks alone, which the map-back changes, the label its boot wrote
+            // and the test's: the rest, untouched, stays with the guest.
+            let at = |what| (what, SECTION, 2 * HEAD_BLOCK);
+            match (unmaps, maps) {
+                (true, true) => {
+                    assert_eq!(remapped, Ok(()));
+                    assert_eq!(*lock(&calls), [at("unmap"), at("map")]);
+                    assert_eq!(own_pages(head, head_len), 0);
+                }
+                (false, _) => {
+                    assert_eq!(remapped, Err("no unmap".into()));
+                    assert_eq!(*lock(&calls), [at("unmap")]);
+                    assert_eq!(
+                        own_pages(head.wrapping_add(HEAD_BLOCK), HEAD_BLOCK),
+                        HEAD_BLOCK / page
+                    );
+                }
+                (true, false) => {
+                    assert_eq!(remapped, Err("no map".into()));
+                    assert_eq!(*lock(&calls), [at("unmap"), at("map")]);
+                }
+            }
+            assert_eq!(booted.lost(), !maps);
+            // SAFETY: as above.
+            assert_eq!(unsafe { *head.add(HEAD_BLOCK + HEAD_BLOCK - 1) }, 0x40);
+        }
+    }
+
+    /// A file readied for a layer goes under its device where its own was once its guest
+    /// asks (D190, `run::kind::OVER`): the mapping's address the same, taken from its
+    /// guest and given back around it; what the mapping holds is the readied file's, both
+    /// ways, and its own file is untouched after. One of another length is refused, and
+    /// none readied swaps nothing.
+    #[test]
+    fn a_readied_file_goes_under_a_layers_device_in_place_of_its_own() {
+        type Calls = Arc<Mutex<Vec<(&'static str, u64, usize)>>>;
+        struct Guest(Calls);
+        impl Mapper for Guest {
+            unsafe fn map(&self, _: *mut u8, gpa: u64, len: usize) -> Result<(), String> {
+                lock(&self.0).push(("map", gpa, len));
+                Ok(())
+            }
+            fn unmap(&self, gpa: u64, len: usize) -> Result<(), String> {
+                lock(&self.0).push(("unmap", gpa, len));
+                Ok(())
+            }
+        }
+        let dir = shards_testdir::TempDir::new("layer-over").unwrap();
+        let len = 8 * ALIGN;
+        let booted = Layer::boot(file(&dir, "template", len)).unwrap();
+        let [(_, _, head_len), (data_gpa, data, data_len)] = booted.mappings(SECTION).unwrap();
+        let calls = Calls::default();
+        booted.placed(SECTION, Box::new(Guest(calls.clone())));
+        // SAFETY: within the file system's mapping, which the layer holds.
+        unsafe { data.write_bytes(0x11, 4096) };
+        // SAFETY: nothing touches the mapping meanwhile.
+        assert!(unsafe { booted.swap_staged() }.is_err());
+        assert!(booted.stage(file(&dir, "short", len - ALIGN)).is_err());
+        let kept = file(&dir, "kept", len);
+        platform::write_all_at(&kept, &[0x22; 4096], 4096).unwrap();
+        booted.stage(kept).unwrap();
+        assert!(!booted.swapped() && lock(&calls).is_empty());
+        // SAFETY: as above.
+        unsafe { booted.swap_staged() }.unwrap();
+        assert!(booted.swapped());
+        assert_eq!(data_gpa, SECTION + head_len as u64);
+        assert_eq!(
+            *lock(&calls),
+            [("unmap", data_gpa, data_len), ("map", data_gpa, data_len)]
+        );
+        assert_eq!(booted.mappings(SECTION).unwrap()[1].1, data);
+        // SAFETY: as above.
+        unsafe {
+            assert_eq!((*data, *data.add(4096)), (0, 0x22));
+            data.add(8192).write_bytes(0x33, 4096);
+        }
+        booted.flush().unwrap();
+        let mut byte = [0u8; 1];
+        platform::read_exact_at(&std::fs::File::open(dir.join("kept")).unwrap(), &mut byte, 8192).unwrap();
+        assert_eq!(byte, [0x33]);
+        let template = std::fs::read(dir.join("template")).unwrap();
+        assert!(template[..4096].iter().all(|&b| b == 0x11));
+        assert!(template[4096..3 * 4096].iter().all(|&b| b == 0));
+    }
+
+    /// A layer's save asks where its file holds data with no mapping of the file left
+    /// where a mapping hides that (APFS, PM M285): its guest's taken away and given back,
+    /// its own withheld and mapped again, both the file's still after; its copy holds what
+    /// was written through the mapping, and the ranges asked are the file's own.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn a_layers_save_asks_where_its_file_holds_data_with_its_mappings_away() {
+        type Calls = Arc<Mutex<Vec<(&'static str, u64, usize)>>>;
+        struct Guest {
+            calls: Calls,
+        }
+        impl Mapper for Guest {
+            unsafe fn map(&self, _: *mut u8, gpa: u64, len: usize) -> Result<(), String> {
+                lock(&self.calls).push(("map", gpa, len));
+                Ok(())
+            }
+            fn unmap(&self, gpa: u64, len: usize) -> Result<(), String> {
+                lock(&self.calls).push(("unmap", gpa, len));
+                Ok(())
+            }
+        }
+        let dir = shards_testdir::TempDir::new("layer-holes").unwrap();
+        let data_len = 1u64 << 30;
+        let booted = Layer::boot(file(&dir, "fs", data_len)).unwrap();
+        let [(_, _, head_len), (_, data, len)] = booted.mappings(SECTION).unwrap();
+        let calls = Calls::default();
+        booted.placed(SECTION, Box::new(Guest { calls: calls.clone() }));
+        // SAFETY: within the file system's mapping, which the layer holds.
+        unsafe { data.add(512 << 20).write_bytes(0x5a, 16 << 10) };
+        let copy = file(&dir, "copy", 0);
+        booted.save(&file(&dir, "head", 0), &copy).unwrap();
+        let data_gpa = SECTION + head_len as u64;
+        if platform::MAPPED_HIDES_HOLES {
+            assert_eq!(*lock(&calls), [("unmap", data_gpa, len), ("map", data_gpa, len)]);
+        } else {
+            assert!(lock(&calls).is_empty(), "{:?}", lock(&calls));
+        }
+        assert!(!booted.lost());
+        let mut byte = [0u8; 1];
+        platform::read_exact_at(&copy, &mut byte, (512 << 20) + 100).unwrap();
+        assert_eq!(byte, [0x5a]);
+        // Asked so, the ranges are the file's own, not all of it.
+        // SAFETY: nothing touches the mapping meanwhile; no hypervisor maps it.
+        let ranges = unsafe { booted.data.data_ranges(&|| Ok(()), &|| Ok(())) }.unwrap();
+        assert!(ranges.iter().map(|(_, n)| n).sum::<u64>() < 1 << 20, "{ranges:?}");
+        // The mapping is the file's still, both ways: what it held reads back, and what it
+        // takes now the next save's copy holds.
+        // SAFETY: as above.
+        unsafe {
+            assert_eq!(*data.add((512 << 20) + 1), 0x5a);
+            data.add(256 << 20).write_bytes(0x33, 4096);
+        }
+        let again = file(&dir, "copy-2", 0);
+        booted.save(&file(&dir, "head-2", 0), &again).unwrap();
+        platform::read_exact_at(&again, &mut byte, (256 << 20) + 4095).unwrap();
+        assert_eq!(byte, [0x33]);
+    }
+
+    /// A guest's flush of its writable layer is answered 0 once what it wrote through the
+    /// mapping is its file's and synced; one of a layer let go of, and a request no device
+    /// knows, 1; an image's flush, with nothing to write back, 0.
+    #[test]
+    fn a_layers_flush_is_answered_once_its_writes_are_its_files() {
+        let page = platform::page_size().unwrap();
+        let base = 0x1000_0000u64;
+        let mem = GuestMemory::anonymous(&[(base, 4 * page)]).unwrap();
+        let (req, resp) = (base, base + 64);
+        let chain = Chain {
+            head: 0,
+            descriptors: vec![
+                super::super::queue::Descriptor {
+                    addr: req,
+                    len: 4,
+                    writable: false,
+                },
+                super::super::queue::Descriptor {
+                    addr: resp,
+                    len: 4,
+                    writable: true,
+                },
+            ],
+        };
+        let ask = |kind: u32| mem.access().unwrap().write_obj(req, kind.to_le()).unwrap();
+        let said = || u32::from_le(mem.access().unwrap().read_obj::<u32>(resp).unwrap());
+        let dir = shards_testdir::TempDir::new("layer-flush").unwrap();
+        let booted = Layer::boot(file(&dir, "fs", 8 * ALIGN)).unwrap();
+        let [_, (_, data, _)] = booted.mappings(SECTION).unwrap();
+        // SAFETY: within the file system's mapping, which the layer holds.
+        unsafe { data.add(3 << 20).write_bytes(0x5a, 4096) };
+        ask(REQ_FLUSH);
+        assert_eq!(answer(&chain, &mem, Some(&booted)), 4);
+        assert_eq!(said(), 0);
+        let mut byte = [0u8; 1];
+        let fs = File::open(dir.join("fs")).unwrap();
+        platform::read_exact_at(&fs, &mut byte, (3 << 20) + 4095).unwrap();
+        assert_eq!(byte, [0x5a]);
+        ask(7);
+        assert_eq!(answer(&chain, &mem, Some(&booted)), 4);
+        assert_eq!(said(), 1);
+        ask(REQ_FLUSH);
+        assert_eq!(answer(&chain, &mem, None), 4);
+        assert_eq!(said(), 0);
+        // SAFETY: no VM maps it.
+        unsafe { booted.release() };
+        assert_eq!(answer(&chain, &mem, Some(&booted)), 4);
+        assert_eq!(said(), 1);
+    }
+
+    /// How many of the pages of the `len` bytes at `ptr` this process holds as memory of
+    /// its own, rather than a mapped file's: Linux's /proc/self/pagemap
+    /// ([`platform::mapped_pages`]), macOS's mincore(2), whose MINCORE_ANONYMOUS
+    /// (<sys/mman.h>) marks a page of an anonymous object.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn own_pages(ptr: *const u8, len: usize) -> usize {
+        #[cfg(target_os = "linux")]
+        {
+            platform::mapped_pages(ptr, len)
+                .unwrap()
+                .iter()
+                .filter(|(_, own)| *own)
+                .count()
+        }
+        #[cfg(target_os = "macos")]
+        {
+            const MINCORE_INCORE: libc::c_char = 0x1;
+            const MINCORE_ANONYMOUS: libc::c_char = 0x80u8 as libc::c_char;
+            let mut pages = vec![0 as libc::c_char; len / platform::page_size().unwrap()];
+            // SAFETY: mincore(2) writes a byte for each page of the range into `pages`.
+            assert_eq!(unsafe { libc::mincore(ptr.cast(), len, pages.as_mut_ptr()) }, 0);
+            pages
+                .iter()
+                .filter(|&&p| p & MINCORE_INCORE != 0 && p & MINCORE_ANONYMOUS != 0)
+                .count()
+        }
+    }
+
+    /// What the guest wrote to a run's swap through its mapping, never flushed, a save
+    /// copies into the snapshot's swap, holes where it wrote nothing; the device's state
+    /// keeps its length, and a restore maps the copy back at that length alone, before any
+    /// vCPU runs (D176).
+    #[test]
+    fn a_runs_swap_is_kept_by_a_save_and_mapped_back_by_its_restore() {
+        let dir = shards_testdir::TempDir::new("swap-save").unwrap();
+        let len = 4 * ALIGN;
+        let saved = window();
+        assert_eq!(saved.attach(file(&dir, "run", len)).unwrap(), Some(len));
+        let host = lock(&saved.run).as_ref().unwrap().host();
+        // SAFETY: within the mapping, which the window holds.
+        unsafe {
+            host.add(4096).write_bytes(7, 4096);
+            host.add(3 << 20).write_bytes(9, 100);
+        }
+        let device = Pmem::swap(saved.clone());
+        let mut w = Writer::default();
+        device.save(&mut w);
+        let kept = file(&dir, "kept", 0);
+        assert_eq!(saved.save_run(&kept).unwrap(), len);
+        assert_eq!(kept.metadata().unwrap().len(), len);
+        let mut bytes = vec![0u8; len as usize];
+        platform::read_exact_at(&kept, &mut bytes, 0).unwrap();
+        assert!(bytes[4096..8192].iter().all(|&b| b == 7));
+        assert!(bytes[3 << 20..(3 << 20) + 100].iter().all(|&b| b == 9));
+        assert_eq!(bytes.iter().filter(|&&b| b != 0).count(), 4096 + 100);
+        // No more of a disk than the run's own file takes, both written back first: what
+        // a file system allocates of a sparse file is its own, and APFS fills a hole shorter
+        // than 16 MiB between two written blocks as it writes them back (PM M277), which a
+        // count taken before the write-back missed.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt as _;
+            let run = File::open(dir.join("run")).unwrap();
+            run.sync_all().unwrap();
+            kept.sync_all().unwrap();
+            let on_disk = |f: &File| f.metadata().unwrap().blocks() * 512;
+            assert!(
+                on_disk(&kept) <= on_disk(&run),
+                "{} bytes on disk against the run's {}",
+                on_disk(&kept),
+                on_disk(&run)
+            );
+        }
+
+        let restored = window();
+        let mut device = Pmem::swap(restored.clone());
+        let state = w.into_bytes();
+        device.restore(&mut Reader::new(&state)).unwrap();
+        let e = restored.restore_run(None).unwrap_err();
+        assert!(e.contains("which the restore was not given"), "{e}");
+        let e = restored
+            .restore_run(Some(file(&dir, "short", 2 * ALIGN)))
+            .unwrap_err();
+        assert!(e.contains("for a snapshot that kept"), "{e}");
+        restored.restore_run(Some(kept)).unwrap();
+        let host = lock(&restored.run).as_ref().unwrap().host();
+        // SAFETY: within the mapping, which the window holds.
+        unsafe {
+            assert_eq!(*host.add(4096), 7);
+            assert_eq!(*host.add((3 << 20) + 99), 9);
+            assert_eq!(*host.add(1 << 20), 0);
+        }
+
+        // A window that kept none takes none.
+        let none = window();
+        none.restore_run(None).unwrap();
+        let e = none.restore_run(Some(file(&dir, "stray", len))).unwrap_err();
+        assert!(e.contains("kept none"), "{e}");
     }
 }

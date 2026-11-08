@@ -1,0 +1,79 @@
+--- a/crates/vmm/src/devices/virtio/fs/mod.rs
++++ b/crates/vmm/src/devices/virtio/fs/mod.rs
+@@ -638,8 +638,17 @@
+                 // hundred misses, and the window's 1 MiB writes after a page of each range
+                 // was written took 1,285 µs at p50 where they took 682 (PM M302). The window
+                 // keeps one a file, not one a range.
+-                slot.descriptor(node, writable)
+-                    .and_then(|fd| window.map(fd, node, foffset, moffset, len, writable))
++                let t = std::time::Instant::now();
++                let fd = slot.descriptor(node, writable);
++                let got = t.elapsed();
++                let done = fd.and_then(|fd| window.map(fd, node, foffset, moffset, len, writable));
++                crate::warn!(
++                    "SETUP-COST node {node} write {} descriptor {} total {}",
++                    u8::from(writable),
++                    got.as_micros(),
++                    t.elapsed().as_micros()
++                );
++                done
+             }
+             _ => Err(libc::EINVAL),
+         }
+--- a/crates/vmm/src/devices/virtio/fs/window.rs
++++ b/crates/vmm/src/devices/virtio/fs/window.rs
+@@ -530,10 +530,12 @@
+         len: u64,
+         writable: bool,
+     ) -> Result<(), i32> {
++        let t0 = std::time::Instant::now();
+         let (host, size) = self.place(moffset, len).ok_or(libc::EINVAL)?;
+         let gpa = self.gpa.checked_add(moffset).ok_or(libc::EINVAL)?;
+         let page = page().ok_or(libc::EINVAL)?;
+         let file_size = size_of(&file).ok_or(libc::EIO)?;
++        let t_size = t0.elapsed();
+         let file_to = file_end(file_size, foffset, len, page);
+         let mut mapped = self.lock();
+         let watched = mapped.maps(node);
+@@ -549,6 +551,7 @@
+             }
+             Ok(())
+         })();
++        let t_mmap = t0.elapsed();
+         let staged = backed.and_then(|()| {
+             // SAFETY: the file's mapping and the zeros stay until this window replaces them,
+             // or the VM, which goes before its devices, is destroyed.
+@@ -563,6 +566,7 @@
+             self.settle(mapped, gone, None);
+             return Err(errno);
+         }
++        let t_stage2 = t0.elapsed();
+         let watch = (!watched)
+             .then(|| file.try_clone().ok())
+             .flatten()
+@@ -590,12 +594,25 @@
+         // mapped a range to be written, upgrading one mapped to be read alone first (patch
+         // 0009); for one to be read, the record's mincore(2) would cost it 52 µs at p50 of
+         // 77 where its host holds the range (Fedora, PM M302), for nothing.
++        let t_insert = t0.elapsed();
+         if writable {
+             self.record_held(moffset, host, size);
+         } else {
+             self.clear_held(moffset, size);
+         }
++        let t_held = t0.elapsed();
++        let watching = watch.is_some();
+         self.settle(mapped, gone, watch);
++        crate::warn!(
++            "MAP-COST node {node} size {} mmap {} stage2 {} insert {} held {} settle {} watch {}",
++            t_size.as_micros(),
++            (t_mmap - t_size).as_micros(),
++            (t_stage2 - t_mmap).as_micros(),
++            (t_insert - t_stage2).as_micros(),
++            (t_held - t_insert).as_micros(),
++            (t0.elapsed() - t_held).as_micros(),
++            u8::from(watching)
++        );
+         Ok(())
+     }
+ 

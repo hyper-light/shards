@@ -1,0 +1,22 @@
+#!/bin/sh
+# Regenerates crates/shards/src/build/testdata/estargz.json: what stargz-snapshotter's
+# estargz writer v0.18.2 (BuildKit v0.28.1's) makes of the tars the tests build again,
+# run by Go 1.25.8, the Go Docker 29.3.1 is built with (D82).
+#
+#   scripts/estargz/generate
+set -eu
+here=$(cd "$(dirname "$0")" && pwd)
+root=$(cd "$here/../.." && pwd)
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+cp "$here/oracle/main.go" "$work/main.go"
+cd "$work"
+cat >go.mod <<'MOD'
+module shards.dev/estargz-oracle
+
+go 1.25
+
+require github.com/containerd/stargz-snapshotter/estargz v0.18.2
+MOD
+GOTOOLCHAIN=go1.25.8 GOFLAGS=-mod=mod go mod tidy >/dev/null 2>&1
+GOTOOLCHAIN=go1.25.8 GOFLAGS=-mod=mod go run . "$root/crates/shards/src/build/testdata/estargz.json"

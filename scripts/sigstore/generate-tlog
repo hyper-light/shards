@@ -1,0 +1,18 @@
+#!/bin/sh
+# Regenerates crates/sigstore/testdata/tlog.json: transparency log entries built with
+# test Rekor keys (v1 bodies, SETs, RFC 6962 proofs, signed checkpoints; v2 entries and
+# notes) and mutated, each with what sigstore-go v1.2.2's tlog package, as buildx
+# v0.37.1 vendors it, makes of it.
+#
+#   scripts/sigstore/generate-tlog BUILDX_V0.37.1_CHECKOUT
+set -eu
+here=$(cd "$(dirname "$0")" && pwd)
+root=$(cd "$here/../.." && pwd)
+bx=$1
+dir="$bx/cmd/zz_shards_tlog"
+trap 'rm -rf "$dir"' EXIT
+mkdir -p "$dir" "$root/crates/sigstore/testdata"
+cp "$here/tlog_oracle_test.go" "$dir/oracle_test.go"
+cd "$bx"
+TZ=UTC SHARDS_TLOG_OUT="$root/crates/sigstore/testdata/tlog.json" \
+	go test -mod=vendor -count=1 -run '^TestShardsTlogOracle$' ./cmd/zz_shards_tlog/

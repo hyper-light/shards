@@ -1,0 +1,123 @@
+# Confining a VM process on macOS with supported APIs only
+
+Research note, 2026-09-30. It replaces D30's use of `sandbox_init`: the SDK's header marks it
+`API_DEPRECATED("No longer supported", macos(10.5, 10.8))` and says "This header is
+deprecated and may be removed in a future release" [SDK usr/include/sandbox.h:7,45], and its
+manual page says developers "should instead adopt the App Sandbox feature"
+[man: sandbox_init(3)]. shards uses no deprecated or unsupported API.
+
+Tags: `[Apple: …]` is developer.apple.com documentation, `[SDK …]` a header of the macOS 26.4
+SDK, `[man: …]` a manual page, `[PM Mn]` our measurement in platform-measurements.md.
+
+## 1. What Apple supports
+
+- **App Sandbox is the supported sandbox, and command-line tools adopt it.** A tool gets a
+  bundle identifier, which becomes its code-signing identifier, and the App Sandbox
+  capability, which is the `com.apple.security.app-sandbox` entitlement
+  [Apple: Embedding a command-line tool in a sandboxed app; Apple: App Sandbox Entitlement].
+  A standalone tool carries its bundle information in an Info.plist linked into its
+  `__TEXT,__info_plist` section; without one, the probe below is killed at launch (§2).
+- **The hypervisor entitlement works in any process.** "The entitlement is required to use
+  the Hypervisor APIs in any process" [Apple: com.apple.security.hypervisor].
+- **A sandboxed process gets its own container**, `~/Library/Containers/<identifier>`, with
+  full access to it; since macOS 14 the container is tied to the process's code signature
+  [Apple: Accessing files from the macOS App Sandbox, "Use files in your app's container"].
+- **Another process can grant it files, one by one.** "Share file access between processes
+  with URL bookmarks": a bookmark made with options 0 "grants access to the resource to a
+  process that resolves the bookmark", and "the receiving process automatically attempts to
+  extend its sandbox to include the bookmarked resource" [same page]. A bookmark to a folder
+  extends the sandbox "to items within that folder, and recursively in nested folders"
+  (stated there for user-selected folders).
+- **Restrictions are enforced when a resource is acquired** [man: sandbox_init(3), "Keep in
+  mind that sandbox(7) restrictions are typically enforced at resource acquisition time"]:
+  a descriptor opened before, or received, is used as it is.
+- **Hardened Runtime** protects runtime integrity (code injection, library hijacking) and is
+  best practice for new code, required for notarization [Apple: Hardened Runtime]. It does
+  not confine files; it goes beside App Sandbox.
+- **Not confinement:** Endpoint Security observes rather than confines, and needs its own
+  restricted entitlement; the Virtualization framework's own sandboxing is for VZ's
+  process, not ours.
+
+## 2. What a sandboxed tool can do: measured
+
+`docs/research/measurements/app-sandbox/` (`probe.c`, `bookmark.c`, `entitlements.plist`,
+`Info.plist`, `cost.py`): a C probe signed ad hoc with App Sandbox and the hypervisor
+entitlement, Hardened Runtime on, its Info.plist embedded; each trial prints ok or refused.
+macOS 26.4.1, Apple M5 Max, 2026-09-30 [PM M67].
+
+| Trial | Result |
+|---|---|
+| Launch without an embedded Info.plist | killed at launch (SIGTRAP, exit 133) |
+| Launch with one | runs; `HOME` is `~/Library/Containers/dev.shards.probe/Data` |
+| `hv_vm_create` / `hv_vm_destroy` | ok |
+| Read, write or create a file it was not given | refused (EPERM) |
+| TCP bind on 127.0.0.1 | refused |
+| Unix `connect` to a socket outside its container | refused |
+| Read and write descriptors inherited from its parent | ok |
+| `openat` under a directory passed as a descriptor | refused: the check is on the path |
+| A file granted by bookmark | read ok; a file beside it still refused |
+| A directory granted by bookmark | files made in it (`state`, `memory`) ok |
+| Unix `bind` or `connect` in a directory granted by bookmark | refused |
+| Unix `bind` and `connect` inside its own container | ok |
+| `accept` on a listening socket its parent bound and passed | ok |
+| A rebuild, re-signed ad hoc (another CDHash), using the same container | ok, no prompt |
+
+Launch to exit, creating and destroying a VM, alternating, n = 200 each, load average about
+16: sandboxed p50 7,200 / p90 8,106 / p99 8,594 / max 8,867 µs; the same binary without
+App Sandbox 4,115 / 4,793 / 5,075 / 5,501 µs. App Sandbox costs a launch about 3.1 ms at
+the median, as the Seatbelt profile's compiling cost 3.7 ms [PM M53].
+
+## 3. The design this gives (D30, macOS)
+
+- `shards-vm` is signed with App Sandbox, the hypervisor entitlement and Hardened Runtime,
+  its identifier `dev.shards.vm` and Info.plist linked in. `scripts/hvf-run` and releases
+  sign it so; `shards` and `shardsd` stay outside the sandbox, as the brokers.
+- **Files it reads, by descriptor; directories it writes in, by bookmark.** A bookmark
+  passed between processes grants read and write or nothing: a read-only one grants
+  nothing [PM M70]. A VM only reads most of what it is given, and a template is shared,
+  so a read-write grant there would let one VM change every run restored from it. So the
+  VM asks its spawner, before it opens anything, for each path its arguments name
+  (`kind::GRANT`); each file it reads or writes is answered with a descriptor the spawner
+  opened read-only or read-write, which the VM opens again as itself (a registry in the
+  VMM from path to descriptor, which every open of an input goes through), and the
+  directory a template it saves goes in, its own, with a read-write bookmark, made first by
+  the spawner. A warm VM's container log comes open in its request, and the daemon makes
+  each next segment for it [PM M73]: resolving a bookmark is a VM process's first use of
+  CoreFoundation, 4 ms. A restore asks for its template's
+  pointer, then the generation's state, memory and working set, then the files the
+  state names: no directory of a template is ever granted. The descriptors pin what they
+  open, as the generation's directory does where a VM opens by path (Linux).
+- **No socket files for the run.** The run's own ports are served in the VM process, by
+  socket pair, with no file (D30), so a warm VM or `shards run` needs no socket grant.
+- **Sockets by descriptor, for `--vsock PATH` only.** A Unix socket cannot be bound or
+  dialled outside the container, even in a granted directory. Every VM process shares one
+  container, since they share one identity, so sockets there would be reachable by every
+  other VM: they are not used. Instead the spawner binds the vsock device's socket and
+  passes it, and the VM listens on it and accepts (both work in the sandbox); a guest's
+  connection to another host port, `<path>_<port>` alone, is dialled by the spawner and
+  the connected descriptor passed back over the socket the VM asks for its grants on,
+  which stays open for this.
+- **Who answers.** The daemon answers its own VMs, on the thread that watches each;
+  `shards vm`, which becomes the VM by exec, starts a broker (`shardsd grants`) that
+  answers and exits when the VM closes the socket. A broker per daemon VM would cost
+  each warm VM's start 3.9 ms, a directory's bookmark made in a fresh process [PM M71].
+  The spawner holds each descriptor it sends until the VM's next message, as XNU flushes
+  a socket in flight that no process holds [PM M24]. A VM not in App Sandbox, or given
+  no socket to ask on, starts no VM.
+- **Cost:** about 3.1 ms at launch, before a warm VM's request; on a cold `shards vm
+  restore`, on its way, as Seatbelt's was.
+- **Open, to measure before relying on it:** that a guest-initiated vsock connection brokered
+  by descriptor meets the latency of a direct `connect`; how the container prompt behaves
+  for a binary signed by another identity than the last (an upgrade from a release to a
+  local build). No prompt appears between ad-hoc builds, but a launch after another
+  build's pays about 100 ms [PM M72]; whether one Developer ID's releases do is
+  unmeasured. A working set is no longer the VM's to write: the VM sends it to the
+  daemon, which writes it with the template, so no grant for the template's final name is
+  needed (D30).
+
+## 4. What Linux has, for comparison
+
+Landlock is a supported kernel interface; D30's Linux confinement (seccomp, Landlock at ABI
+v5 or later, failing closed) uses no deprecated interface. `tkill(2)`, which the kernel
+documents as obsolete beside `tgkill(2)` [man: tkill(2)], is refused by the filter; shards
+calls `tgkill`.

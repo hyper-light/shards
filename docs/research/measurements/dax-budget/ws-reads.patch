@@ -1,0 +1,16 @@
+diff --git a/crates/vmm/src/vm/runtime.rs b/crates/vmm/src/vm/runtime.rs
+index 83eea2cc..73a0d287 100644
+--- a/crates/vmm/src/vm/runtime.rs
++++ b/crates/vmm/src/vm/runtime.rs
+@@ -676,6 +686,11 @@ pub fn restore_from(cfg: &RestoreConfig, pinned: snapshot::Pinned) -> Result<(Ha
+     };
+     if let Some(ws) = &mut working_set {
+         let private = cfg.prefetch_private.min(hv::PREFETCH_PRIVATE);
++        // None copied ahead (a pool under a budget, D188): the pages written as the working
++        // set was recorded left to the guest's own writes, not mapped ahead as reads.
++        if private == 0 {
++            ws.retain(|t| !t.written);
++        }
+         let cleared = hv::budget_writes(ws, machine::PAGE, private);
+         if cleared > 0 {
+             debug!("{cleared} written pages past the prefetch's private budget are read instead");

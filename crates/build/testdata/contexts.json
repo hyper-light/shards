@@ -1,0 +1,477 @@
+{
+ "tree": [
+  {
+   "path": "/Dockerfile",
+   "type": "file",
+   "data": "FROM scratch\n"
+  },
+  {
+   "path": "/Dockerfile.dockerignore",
+   "type": "file",
+   "data": "*.log\n"
+  },
+  {
+   "path": "/.dockerignore",
+   "type": "file",
+   "data": "node_modules\n"
+  },
+  {
+   "path": "/a.txt",
+   "type": "file",
+   "data": "a",
+   "mtime": [
+    1650000000,
+    123456789
+   ]
+  },
+  {
+   "path": "/b.log",
+   "type": "file",
+   "data": "log"
+  },
+  {
+   "path": "/c.tmp",
+   "type": "file",
+   "data": ""
+  },
+  {
+   "path": "/exec.sh",
+   "type": "file",
+   "data": "#!/bin/sh\n",
+   "mode": 493
+  },
+  {
+   "path": "/suid",
+   "type": "file",
+   "data": "s",
+   "mode": 2541
+  },
+  {
+   "path": "/sp ace.txt",
+   "type": "file",
+   "data": "space"
+  },
+  {
+   "path": "/weird[1].txt",
+   "type": "file",
+   "data": "w"
+  },
+  {
+   "path": "/src",
+   "type": "dir"
+  },
+  {
+   "path": "/src/main.go",
+   "type": "file",
+   "data": "package main"
+  },
+  {
+   "path": "/src/util",
+   "type": "dir",
+   "mode": 488
+  },
+  {
+   "path": "/src/util/u.go",
+   "type": "file",
+   "data": "package util"
+  },
+  {
+   "path": "/src/util/u_test.go",
+   "type": "file",
+   "data": "package util"
+  },
+  {
+   "path": "/src/vendor",
+   "type": "dir"
+  },
+  {
+   "path": "/src/vendor/v.go",
+   "type": "file",
+   "data": "package v"
+  },
+  {
+   "path": "/docs",
+   "type": "dir"
+  },
+  {
+   "path": "/docs/readme.md",
+   "type": "file",
+   "data": "# docs"
+  },
+  {
+   "path": "/docs/img",
+   "type": "dir"
+  },
+  {
+   "path": "/docs/img/logo.png",
+   "type": "file",
+   "data": "png"
+  },
+  {
+   "path": "/node_modules",
+   "type": "dir"
+  },
+  {
+   "path": "/node_modules/pkg",
+   "type": "dir"
+  },
+  {
+   "path": "/node_modules/pkg/index.js",
+   "type": "file",
+   "data": "js"
+  },
+  {
+   "path": "/.git",
+   "type": "dir"
+  },
+  {
+   "path": "/.git/HEAD",
+   "type": "file",
+   "data": "ref: refs/heads/main\n"
+  },
+  {
+   "path": "/deep",
+   "type": "dir"
+  },
+  {
+   "path": "/deep/a",
+   "type": "dir"
+  },
+  {
+   "path": "/deep/a/b",
+   "type": "dir"
+  },
+  {
+   "path": "/deep/a/b/c",
+   "type": "dir"
+  },
+  {
+   "path": "/deep/a/b/c/d.txt",
+   "type": "file",
+   "data": "d"
+  },
+  {
+   "path": "/deep/a/b/e.txt",
+   "type": "file",
+   "data": "e"
+  },
+  {
+   "path": "/sticky",
+   "type": "dir",
+   "mode": 1023
+  },
+  {
+   "path": "/sticky/f",
+   "type": "file",
+   "data": "f"
+  },
+  {
+   "path": "/link-to-src",
+   "type": "symlink",
+   "target": "src"
+  },
+  {
+   "path": "/link-to-a",
+   "type": "symlink",
+   "target": "a.txt"
+  },
+  {
+   "path": "/abs-link",
+   "type": "symlink",
+   "target": "/etc/passwd"
+  },
+  {
+   "path": "/dangling",
+   "type": "symlink",
+   "target": "nope"
+  },
+  {
+   "path": "/loop1",
+   "type": "symlink",
+   "target": "loop2"
+  },
+  {
+   "path": "/loop2",
+   "type": "symlink",
+   "target": "loop1"
+  },
+  {
+   "path": "/chain",
+   "type": "symlink",
+   "target": "link-to-src/util"
+  },
+  {
+   "path": "/hard1",
+   "type": "file",
+   "data": "hard"
+  },
+  {
+   "path": "/hard2",
+   "type": "hardlink",
+   "target": "/hard1"
+  },
+  {
+   "path": "/src/hard3",
+   "type": "hardlink",
+   "target": "/hard1"
+  },
+  {
+   "path": "/fifo",
+   "type": "fifo",
+   "mode": 416
+  },
+  {
+   "path": "/etc",
+   "type": "dir"
+  },
+  {
+   "path": "/etc/hosts",
+   "type": "file",
+   "data": "hosts"
+  },
+  {
+   "path": "/docs/abs",
+   "type": "symlink",
+   "target": "/etc/hosts"
+  },
+  {
+   "path": "/sock",
+   "type": "socket",
+   "mode": 493
+  }
+ ],
+ "cases": [
+  {
+   "name": "everything"
+  },
+  {
+   "name": "excludes",
+   "exclude": [
+    "*.log",
+    "node_modules",
+    ".git"
+   ]
+  },
+  {
+   "name": "exclude with exception",
+   "exclude": [
+    "**/*.go",
+    "!src/main.go"
+   ]
+  },
+  {
+   "name": "exception inside an excluded dir",
+   "exclude": [
+    "docs",
+    "!docs/img"
+   ]
+  },
+  {
+   "name": "exclude all but",
+   "exclude": [
+    "*",
+    "!src"
+   ]
+  },
+  {
+   "name": "exclude all but a file deep",
+   "exclude": [
+    "*",
+    "!deep/a/b/c/d.txt"
+   ]
+  },
+  {
+   "name": "exception with a wildcard",
+   "exclude": [
+    "src",
+    "!src/*.go"
+   ]
+  },
+  {
+   "name": "exclude a dir by trailing slash",
+   "exclude": [
+    "src/"
+   ]
+  },
+  {
+   "name": "exclude double star dir",
+   "exclude": [
+    "**/util"
+   ]
+  },
+  {
+   "name": "only an exception",
+   "exclude": [
+    "!a.txt"
+   ]
+  },
+  {
+   "name": "exclude a bracket name",
+   "exclude": [
+    "weird[1].txt"
+   ]
+  },
+  {
+   "name": "exclude bad pattern",
+   "exclude": [
+    "["
+   ]
+  },
+  {
+   "name": "exclude lone bang",
+   "exclude": [
+    "!"
+   ]
+  },
+  {
+   "name": "include a dir",
+   "include": [
+    "src"
+   ]
+  },
+  {
+   "name": "include with wildcard",
+   "include": [
+    "src/*.go"
+   ]
+  },
+  {
+   "name": "include and exclude",
+   "include": [
+    "src",
+    "docs"
+   ],
+   "exclude": [
+    "**/util"
+   ]
+  },
+  {
+   "name": "include deep file",
+   "include": [
+    "deep/a/b/c/d.txt"
+   ]
+  },
+  {
+   "name": "include through glob star",
+   "include": [
+    "**/*.md"
+   ]
+  },
+  {
+   "name": "follow a file",
+   "follow": [
+    "a.txt"
+   ]
+  },
+  {
+   "name": "follow through a symlinked dir",
+   "follow": [
+    "link-to-src/main.go"
+   ]
+  },
+  {
+   "name": "follow a symlink to a file",
+   "follow": [
+    "link-to-a"
+   ]
+  },
+  {
+   "name": "follow an absolute symlink",
+   "follow": [
+    "abs-link"
+   ]
+  },
+  {
+   "name": "follow a wildcard",
+   "follow": [
+    "*.txt"
+   ]
+  },
+  {
+   "name": "follow a wildcard of symlinks",
+   "follow": [
+    "link-*"
+   ]
+  },
+  {
+   "name": "follow a wildcard matching nothing",
+   "follow": [
+    "nothing*/x"
+   ]
+  },
+  {
+   "name": "follow dangling and loops",
+   "follow": [
+    "dangling",
+    "loop1"
+   ]
+  },
+  {
+   "name": "follow a chain",
+   "follow": [
+    "chain/u.go"
+   ]
+  },
+  {
+   "name": "follow everything",
+   "follow": [
+    "."
+   ]
+  },
+  {
+   "name": "follow the dockerfile",
+   "follow": [
+    "Dockerfile",
+    "Dockerfile.dockerignore",
+    "dockerfile"
+   ]
+  },
+  {
+   "name": "follow dockerignore",
+   "follow": [
+    ".dockerignore"
+   ]
+  },
+  {
+   "name": "follow and exclude",
+   "follow": [
+    "deep/a/b"
+   ],
+   "exclude": [
+    "deep/a/b/c"
+   ]
+  },
+  {
+   "name": "follow up and back",
+   "follow": [
+    "src/../a.txt"
+   ]
+  },
+  {
+   "name": "follow nested and parent",
+   "follow": [
+    "deep/a/b/c",
+    "deep/a"
+   ]
+  },
+  {
+   "name": "follow hard links",
+   "follow": [
+    "hard2",
+    "src/hard3"
+   ]
+  },
+  {
+   "name": "follow a wildcard dir to a file",
+   "follow": [
+    "sr*/main.go"
+   ]
+  },
+  {
+   "name": "follow an absolute symlink below the root",
+   "follow": [
+    "docs/abs"
+   ]
+  }
+ ]
+}

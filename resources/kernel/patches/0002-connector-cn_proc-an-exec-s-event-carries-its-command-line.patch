@@ -1,0 +1,129 @@
+connector/cn_proc: an exec's event carries its command line
+
+An exec's event names the process by its PIDs alone. A listener that wants
+its command line reads /proc/PID/cmdline, and a short-lived process has
+often ended by then: its mm is gone once it exits, and its /proc once it
+is reaped. Of 201 processes a shell in a shards guest started in a loop
+(/bin/true, 200 times), a listener recorded 148 to 159, and 33 to 38 of
+those without a command line (shards, docs/research/platform-measurements.md
+M176).
+
+Send the command line after the event: the arguments' whole length as a
+__u32, then as many of their bytes as a page holds, NUL-terminated as
+/proc/PID/cmdline gives them. The exec has just laid them out on the new
+stack, and the new program has not run, so they are what the exec was
+given, whatever the program writes over them later. Where there is no
+memory for the longer message (GFP_NOWAIT, which does not warn), the event
+goes as before, and its listener reads /proc as it would have.
+
+A listener that reads the fixed-size event alone is unaffected: msg->len
+says how much follows it.
+
+--- a/drivers/connector/cn_proc.c
++++ b/drivers/connector/cn_proc.c
+@@ -19,6 +19,8 @@
+ 
+ #include <linux/cn_proc.h>
+ #include <linux/local_lock.h>
++#include <linux/slab.h>
++#include <linux/uaccess.h>
+ 
+ /*
+  * Size of a cn_msg followed by a proc_event structure.  Since the
+@@ -85,9 +87,10 @@
+ 	return 1;
+ }
+ 
+-static inline void send_msg(struct cn_msg *msg)
++static inline int send_msg(struct cn_msg *msg)
+ {
+ 	__u32 filter_data[2];
++	int err;
+ 
+ 	local_lock(&local_event.lock);
+ 
+@@ -108,10 +111,11 @@
+ 		filter_data[1] = 0;
+ 	}
+ 
+-	cn_netlink_send_mult(msg, msg->len, 0, CN_IDX_PROC, GFP_NOWAIT,
+-			     cn_filter, (void *)filter_data);
++	err = cn_netlink_send_mult(msg, msg->len, 0, CN_IDX_PROC, GFP_NOWAIT,
++				   cn_filter, (void *)filter_data);
+ 
+ 	local_unlock(&local_event.lock);
++	return err;
+ }
+ 
+ void proc_fork_connector(struct task_struct *task)
+@@ -142,6 +146,49 @@
+ 	msg->len = sizeof(*ev);
+ 	msg->flags = 0; /* not used */
+ 	send_msg(msg);
++}
++
++/*
++ * The most of an exec's command line its event carries: a page, as much as
++ * /proc/PID/cmdline gave before Linux 4.2.
++ */
++#define CN_PROC_EXEC_ARGS 4096
++
++/*
++ * Exec event @msg, followed by the command line the exec laid out: the
++ * arguments' whole length as a __u32, then as many of their bytes as
++ * CN_PROC_EXEC_ARGS holds, NUL-terminated as /proc/PID/cmdline gives them.
++ * A listener reading /proc/PID/cmdline instead races the process, which may
++ * have exited and been reaped by then. In a buffer to kfree(), NULL where
++ * there is no command line or no memory for it.
++ */
++static __u8 *exec_args(struct task_struct *task, struct cn_msg *msg)
++{
++	unsigned long start, end, len;
++	struct cn_msg *with;
++	__u8 *buffer;
++	__u32 whole;
++
++	if (task != current || !task->mm)
++		return NULL;
++	spin_lock(&task->mm->arg_lock);
++	start = task->mm->arg_start;
++	end = task->mm->arg_end;
++	spin_unlock(&task->mm->arg_lock);
++	if (end <= start)
++		return NULL;
++	len = min(end - start, (unsigned long)CN_PROC_EXEC_ARGS);
++	buffer = kmalloc(CN_PROC_MSG_SIZE + sizeof(whole) + len, GFP_KERNEL);
++	if (!buffer)
++		return NULL;
++	with = buffer_to_cn_msg(buffer);
++	memcpy(with, msg, sizeof(*msg) + msg->len);
++	whole = min(end - start, (unsigned long)U32_MAX);
++	memcpy(with->data + msg->len, &whole, sizeof(whole));
++	len -= copy_from_user(with->data + msg->len + sizeof(whole),
++			      (const void __user *)start, len);
++	with->len = msg->len + sizeof(whole) + len;
++	return buffer;
+ }
+ 
+ void proc_exec_connector(struct task_struct *task)
+@@ -149,6 +196,7 @@
+ 	struct cn_msg *msg;
+ 	struct proc_event *ev;
+ 	__u8 buffer[CN_PROC_MSG_SIZE] __aligned(8);
++	__u8 *args;
+ 
+ 	if (atomic_read(&proc_event_num_listeners) < 1)
+ 		return;
+@@ -165,7 +213,11 @@
+ 	msg->ack = 0; /* not used */
+ 	msg->len = sizeof(*ev);
+ 	msg->flags = 0; /* not used */
+-	send_msg(msg);
++	args = exec_args(task, msg);
++	/* Without its command line where there is no memory for it. */
++	if (!args || send_msg(buffer_to_cn_msg(args)) == -ENOMEM)
++		send_msg(msg);
++	kfree(args);
+ }
+ 
+ void proc_id_connector(struct task_struct *task, int which_id)

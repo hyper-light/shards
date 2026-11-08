@@ -1,0 +1,590 @@
+[
+ {
+  "config": "{\"created\":\"2024-01-01T00:00:00Z\",\"architecture\":\"amd64\",\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:01\"]},\"history\":[{\"created\":\"2024-01-02T03:04:05.5+01:00\",\"created_by\":\"x \\u003c\\u0026\\u003e\",\"empty_layer\":true}],\"config\":{\"Env\":[\"PATH=/bin\"],\"Cmd\":[\"/bin/sh\"]}}",
+  "input": "{\"architecture\":\"amd64\",\"os\":\"linux\",\"config\":{\"Env\":[\"PATH=/bin\"],\"Cmd\":[\"/bin/sh\"]},\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:01\"]},\"history\":[{\"created\":\"2024-01-02T03:04:05.5+01:00\",\"created_by\":\"x \u003c\u0026\u003e\",\"empty_layer\":true}],\"created\":\"2024-01-01T00:00:00Z\",\"container_config\":{\"x\":1}}"
+ },
+ {
+  "config": "{\"architecture\":\"\",\"os\":\"\",\"rootfs\":{\"type\":\"\",\"diff_ids\":null},\"config\":{}}",
+  "input": "{}"
+ },
+ {
+  "config": "{\"architecture\":\"\",\"os\":\"\",\"rootfs\":{\"type\":\"\",\"diff_ids\":null},\"config\":{}}",
+  "input": "null"
+ },
+ {
+  "error": "\"json: cannot unmarshal array into Go value of type v1.DockerOCIImage\"",
+  "input": "[]"
+ },
+ {
+  "config": "{\"architecture\":\"\",\"os\":\"linux\",\"rootfs\":{\"type\":\"\",\"diff_ids\":null},\"config\":{\"User\":\"u\",\"ExposedPorts\":{\"53/udp\":{},\"80/tcp\":{}},\"Labels\":{\"a\":\"\",\"b\":\"2\",\"c\":\"3\"}}}",
+  "input": "{\"CONFIG\":{\"user\":\"u\",\"exposedports\":{\"80/tcp\":{},\"53/udp\":null},\"Labels\":{\"b\":\"2\",\"a\":null},\"labels\":{\"c\":\"3\"}},\"OS\":\"linux\"}"
+ },
+ {
+  "config": "{\"architecture\":\"\",\"os\":\"\",\"rootfs\":{\"type\":\"\",\"diff_ids\":null},\"config\":{\"Entrypoint\":[\"e\"],\"Volumes\":{\"/v\":{}},\"WorkingDir\":\"/w\",\"StopSignal\":\"SIGTERM\",\"ArgsEscaped\":true,\"Healthcheck\":{\"Test\":[\"CMD\",\"x\"],\"Interval\":1000000000,\"Retries\":3},\"OnBuild\":[\"RUN x\"],\"Shell\":[\"/bin/bash\",\"-c\"]}}",
+  "input": "{\"config\":{\"Healthcheck\":{\"Test\":[\"CMD\",\"x\"],\"Interval\":1000000000,\"Retries\":3},\"ArgsEscaped\":true,\"Volumes\":{\"/v\":{}},\"OnBuild\":[\"RUN x\"],\"Shell\":[\"/bin/bash\",\"-c\"],\"StopSignal\":\"SIGTERM\",\"WorkingDir\":\"/w\",\"Entrypoint\":[\"e\"]}}"
+ },
+ {
+  "error": "\"json: cannot unmarshal number into Go struct field DockerOCIImageConfig.config.ImageConfig.User of type string\"",
+  "input": "{\"config\":{\"User\":1}}"
+ },
+ {
+  "error": "\"json: cannot unmarshal string into Go struct field DockerOCIImageConfig.config.ImageConfig.Env of type []string\"",
+  "input": "{\"config\":{\"Env\":\"x\"}}"
+ },
+ {
+  "error": "\"json: cannot unmarshal number into Go struct field DockerOCIImageConfig.config.ImageConfig.Env of type string\"",
+  "input": "{\"config\":{\"Env\":[1,\"a\"]}}"
+ },
+ {
+  "error": "\"json: cannot unmarshal number 1.5 into Go struct field HealthcheckConfig.config.DockerOCIImageConfigExt.Healthcheck.Interval of type time.Duration\"",
+  "input": "{\"config\":{\"Healthcheck\":{\"Interval\":1.5}}}"
+ },
+ {
+  "error": "\"json: cannot unmarshal string into Go struct field HealthcheckConfig.config.DockerOCIImageConfigExt.Healthcheck.Retries of type int\"",
+  "input": "{\"config\":{\"Healthcheck\":{\"Retries\":\"3\"}}}"
+ },
+ {
+  "error": "\"json: cannot unmarshal array into Go struct field DockerOCIImageConfig.config.DockerOCIImageConfigExt.Healthcheck of type v1.HealthcheckConfig\"",
+  "input": "{\"config\":{\"Healthcheck\":[]}}"
+ },
+ {
+  "config": "{\"architecture\":\"\",\"os\":\"\",\"rootfs\":{\"type\":\"\",\"diff_ids\":null},\"config\":{}}",
+  "input": "{\"config\":{\"Healthcheck\":null}}"
+ },
+ {
+  "error": "\"json: cannot unmarshal number into Go struct field DockerOCIImageConfig.config.ImageConfig.ExposedPorts of type struct {}\"",
+  "input": "{\"config\":{\"ExposedPorts\":{\"80\":1}}}"
+ },
+ {
+  "error": "\"json: cannot unmarshal number into Go struct field DockerOCIImageConfig.config.ImageConfig.Labels of type string\"",
+  "input": "{\"config\":{\"Labels\":{\"a\":1}}}"
+ },
+ {
+  "error": "\"json: cannot unmarshal string into Go struct field DockerOCIImageConfig.config.ImageConfig.ArgsEscaped of type bool\"",
+  "input": "{\"config\":{\"ArgsEscaped\":\"yes\"}}"
+ },
+ {
+  "error": "\"json: cannot unmarshal array into Go struct field DockerOCIImage.config of type v1.DockerOCIImageConfig\"",
+  "input": "{\"config\":[]}"
+ },
+ {
+  "config": "{\"architecture\":\"\",\"os\":\"\",\"rootfs\":{\"type\":\"\",\"diff_ids\":null},\"config\":{}}",
+  "input": "{\"rootfs\":{\"diff_ids\":null}}"
+ },
+ {
+  "error": "\"json: cannot unmarshal string into Go struct field RootFS.Image.rootfs.diff_ids of type []digest.Digest\"",
+  "input": "{\"rootfs\":{\"diff_ids\":\"x\"}}"
+ },
+ {
+  "error": "\"json: cannot unmarshal array into Go struct field DockerOCIImage.Image.rootfs of type v1.RootFS\"",
+  "input": "{\"rootfs\":[]}"
+ },
+ {
+  "error": "\"json: cannot unmarshal object into Go struct field DockerOCIImage.Image.history of type []v1.History\"",
+  "input": "{\"history\":{}}"
+ },
+ {
+  "error": "\"Time.UnmarshalJSON: input is not a JSON string\"",
+  "input": "{\"history\":[{\"created\":5}]}"
+ },
+ {
+  "error": "\"parsing time \\\"bad\\\" as \\\"2006-01-02T15:04:05Z07:00\\\": cannot parse \\\"bad\\\" as \\\"2006\\\"\"",
+  "input": "{\"history\":[{\"created\":\"bad\"}]}"
+ },
+ {
+  "config": "{\"architecture\":\"\",\"os\":\"\",\"rootfs\":{\"type\":\"\",\"diff_ids\":null},\"history\":[{},{\"author\":\"a\",\"comment\":\"c\"}],\"config\":{}}",
+  "input": "{\"history\":[null,{\"author\":\"a\",\"comment\":\"c\"}]}"
+ },
+ {
+  "error": "\"json: cannot unmarshal number into Go struct field History.Image.history.empty_layer of type bool\"",
+  "input": "{\"history\":[{\"empty_layer\":1}]}"
+ },
+ {
+  "input": "{\"created\":\"2024-01-02T03:04:05+24:00\"}",
+  "marshal_error": "\"json: error calling MarshalJSON for type *time.Time: Time.MarshalJSON: timezone hour outside of range [0,23]\""
+ },
+ {
+  "config": "{\"created\":\"2024-01-02T03:04:05Z\",\"architecture\":\"\",\"os\":\"\",\"rootfs\":{\"type\":\"\",\"diff_ids\":null},\"config\":{}}",
+  "input": "{\"created\":\"2024-01-02T03:04:05Z\"}"
+ },
+ {
+  "error": "\"json: cannot unmarshal number into Go struct field DockerOCIImage.Image.Platform.os of type string\"",
+  "input": "{\"os\":1,\"config\":{\"User\":2}}"
+ },
+ {
+  "config": "{\"author\":\"me\",\"architecture\":\"\",\"os\":\"\",\"os.version\":\"10\",\"os.features\":[\"b\",\"a\"],\"variant\":\"v8\",\"rootfs\":{\"type\":\"\",\"diff_ids\":null},\"config\":{}}",
+  "input": "{\"os.features\":[\"b\",\"a\"],\"os.version\":\"10\",\"variant\":\"v8\",\"author\":\"me\"}"
+ },
+ {
+  "config": "{\"architecture\":\"\",\"os\":\"\",\"rootfs\":{\"type\":\"\",\"diff_ids\":null},\"config\":{}}",
+  "input": "{\"ſtopsignal\":1}"
+ },
+ {
+  "config": "{\"architecture\":\"\",\"os\":\"\",\"rootfs\":{\"type\":\"\",\"diff_ids\":null},\"config\":{\"StopSignal\":\"X\"}}",
+  "input": "{\"config\":{\"ſtopſignal\":\"X\",\"Key\":1}}"
+ },
+ {
+  "config": "{\"architecture\":\"\",\"os\":\"\",\"rootfs\":{\"type\":\"\",\"diff_ids\":null},\"config\":{\"StopSignal\":\"Y\"}}",
+  "input": "{\"config\":{\"\\u017ftopsignal\":\"Y\",\"\\u212aey\":1}}"
+ },
+ {
+  "config": "{\"architecture\":\"\",\"os\":\"\",\"rootfs\":{\"type\":\"\",\"diff_ids\":null},\"config\":{\"Env\":[\"b\"]}}",
+  "input": "{\"config\":{\"Cmd\":null,\"Env\":[\"a\"],\"Env\":[\"b\"]}}"
+ },
+ {
+  "config": "{\"architecture\":\"\",\"os\":\"\",\"rootfs\":{\"type\":\"\",\"diff_ids\":null},\"config\":{\"Labels\":{\"b\":\"2\"}}}",
+  "input": "{\"config\":{\"Labels\":{\"a\":\"1\"},\"Labels\":null,\"Labels\":{\"b\":\"2\"}}}"
+ },
+ {
+  "config": "{\"architecture\":\"\",\"os\":\"\",\"rootfs\":{\"type\":\"\",\"diff_ids\":null},\"config\":{\"Healthcheck\":{\"Test\":[\"a\"],\"Retries\":2}}}",
+  "input": "{\"config\":{\"Healthcheck\":{\"Test\":[\"a\"]},\"Healthcheck\":{\"Retries\":2}}}"
+ },
+ {
+  "error": "\"json: cannot unmarshal number 9223372036854775808 into Go struct field HealthcheckConfig.config.DockerOCIImageConfigExt.Healthcheck.Interval of type time.Duration\"",
+  "input": "{\"config\":{\"Healthcheck\":{\"Interval\":9223372036854775808}}}"
+ },
+ {
+  "config": "{\"architecture\":\"\",\"os\":\"\",\"rootfs\":{\"type\":\"\",\"diff_ids\":null},\"config\":{\"Healthcheck\":{\"Interval\":-5}}}",
+  "input": "{\"config\":{\"Healthcheck\":{\"Interval\":-5}}}"
+ },
+ {
+  "error": "\"json: cannot unmarshal number 1e3 into Go struct field HealthcheckConfig.config.DockerOCIImageConfigExt.Healthcheck.Interval of type time.Duration\"",
+  "input": "{\"config\":{\"Healthcheck\":{\"Interval\":1e3}}}"
+ },
+ {
+  "config": "{\"architecture\":\"\",\"os\":\"\",\"rootfs\":{\"type\":\"\",\"diff_ids\":null},\"history\":[{\"created_by\":\"\\u2028\\u003c�\\u003e\\u2028\"}],\"config\":{}}",
+  "input": "{\"history\":[{\"created_by\":\"\\u2028\u003c\\ud800\u003e\u2028\"}]}"
+ },
+ {
+  "config": "{\"architecture\":\"\",\"os\":\"\",\"rootfs\":{\"type\":\"\",\"diff_ids\":null},\"config\":{\"User\":\"a\"}}",
+  "input": "{\"config\":{\"User\":\"a\",\"User\":null}}"
+ },
+ {
+  "config": "{\"architecture\":\"\",\"os\":\"\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":null},\"config\":{}}",
+  "input": "{\"rootfs\":{\"type\":\"layers\"}}"
+ },
+ {
+  "config": "{\"architecture\":\"\",\"os\":\"\",\"rootfs\":{\"type\":\"\",\"diff_ids\":null},\"config\":{\"Env\":[\"a\"],\"Cmd\":[\"c\"]}}",
+  "input": "{\"config\":{\"Env\":[\"a\"]},\"config\":{\"Cmd\":[\"c\"]}}"
+ },
+ {
+  "error": "\"json: cannot unmarshal number into Go value of type v1.DockerOCIImage\"",
+  "input": "5"
+ },
+ {
+  "error": "\"parsing time \\\"\\\\\\\\u0032024-01-02T03:04:05Z\\\" as \\\"2006-01-02T15:04:05Z07:00\\\": cannot parse \\\"\\\\\\\\u0032024-01-02T03:04:05Z\\\" as \\\"2006\\\"\"",
+  "input": "{\"created\":\"\\u0032024-01-02T03:04:05Z\"}"
+ },
+ {
+  "error": "\"parsing time \\\"2024-01-02T03:04:05\\\\\\\\u005a\\\" as \\\"2006-01-02T15:04:05Z07:00\\\": cannot parse \\\"\\\\\\\\u005a\\\" as \\\"Z07:00\\\"\"",
+  "input": "{\"created\":\"2024-01-02T03:04:05\\u005a\"}"
+ },
+ {
+  "config": "{\"architecture\":\"\",\"os\":\"\",\"rootfs\":{\"type\":\"\",\"diff_ids\":null},\"history\":[{\"created_by\":\"a\\u0000b\\u001f\\\"\\\\/\"}],\"config\":{}}",
+  "input": "{\"history\":[{\"created_by\":\"a\\u0000b\\u001f\\\"\\\\/\"}]}"
+ },
+ {
+  "config": "{\"architecture\":\"\",\"os\":\"\",\"rootfs\":{\"type\":\"\",\"diff_ids\":null},\"config\":{\"Labels\":{\"A\":\"3\",\"z\":\"1\",\"é\":\"2\"}}}",
+  "input": "{\"config\":{\"Labels\":{\"z\":\"1\",\"\\u00e9\":\"2\",\"A\":\"3\"}}}"
+ },
+ {
+  "config": "{\"architecture\":\"\",\"os\":\"\",\"rootfs\":{\"type\":\"\",\"diff_ids\":null},\"history\":[{}],\"config\":{}}",
+  "input": "{\"created\":null,\"history\":[{\"created\":null}]}"
+ },
+ {
+  "config": "{\"architecture\":\"\",\"os\":\"\",\"rootfs\":{\"type\":\"\",\"diff_ids\":null},\"config\":{}}",
+  "input": "{\"config\":{\"Env\":null},\"rootfs\":null,\"history\":null}"
+ },
+ {
+  "config": "{\"architecture\":\"\",\"os\":\"\",\"rootfs\":{\"type\":\"\",\"diff_ids\":null},\"config\":{\"Volumes\":{\"/a\":{}}}}",
+  "input": "{\"config\":{\"Volumes\":{\"/a\":{\"x\":1}},\"ExposedPorts\":null}}"
+ },
+ {
+  "error": "\"json: cannot unmarshal array into Go struct field DockerOCIImageConfig.config.ImageConfig.Volumes of type map[string]struct {}\"",
+  "input": "{\"config\":{\"Volumes\":[]}}"
+ },
+ {
+  "config": "{\"architecture\":\"\",\"os\":\"\",\"rootfs\":{\"type\":\"\",\"diff_ids\":null},\"config\":{\"Healthcheck\":{}}}",
+  "input": "{\"config\":{\"Healthcheck\":{\"Test\":null,\"Retries\":null}}}"
+ },
+ {
+  "error": "\"json: cannot unmarshal string into Go struct field HealthcheckConfig.config.DockerOCIImageConfigExt.Healthcheck.Test of type []string\"",
+  "input": "{\"config\":{\"Healthcheck\":{\"Test\":\"x\"}}}"
+ },
+ {
+  "error": "\"Time.UnmarshalJSON: input is not a JSON string\"",
+  "input": "{\"history\":[{\"created\":\"2024-01-02T03:04:05Z\",\"created_by\":1},{\"created\":true}]}"
+ },
+ {
+  "config": "{\"created\":\"2024-01-02T03:04:05.12Z\",\"architecture\":\"\",\"os\":\"\",\"rootfs\":{\"type\":\"\",\"diff_ids\":null},\"config\":{}}",
+  "input": "{\"created\":\"2024-01-02T03:04:05.120000000Z\"}"
+ },
+ {
+  "config": "{\"created\":\"2024-01-02T03:04:05Z\",\"architecture\":\"\",\"os\":\"\",\"rootfs\":{\"type\":\"\",\"diff_ids\":null},\"config\":{}}",
+  "input": "{\"created\":\"2024-01-02T3:04:05Z\"}"
+ },
+ {
+  "config": "{\"created\":\"2024-01-02T03:04:05.5+01:30\",\"architecture\":\"\",\"os\":\"\",\"rootfs\":{\"type\":\"\",\"diff_ids\":null},\"config\":{}}",
+  "input": "{\"created\":\"2024-01-02T03:04:05,5+01:30\"}"
+ },
+ {
+  "config": "{\"created\":\"2024-01-02T03:04:05Z\",\"architecture\":\"\",\"os\":\"\",\"rootfs\":{\"type\":\"\",\"diff_ids\":null},\"config\":{}}",
+  "input": "{\"created\":\"2024-01-02T03:04:05-00:00\"}"
+ },
+ {
+  "input": "{\"created\":\"2024-01-02T03:04:05+23:60\"}",
+  "marshal_error": "\"json: error calling MarshalJSON for type *time.Time: Time.MarshalJSON: timezone hour outside of range [0,23]\""
+ },
+ {
+  "error": "\"parsing time \\\"2024-01-02T03:04:05+25:00\\\": time zone offset hour out of range\"",
+  "input": "{\"created\":\"2024-01-02T03:04:05+25:00\"}"
+ },
+ {
+  "error": "\"parsing time \\\"2024-01-02T03:04:05+01:61\\\": time zone offset minute out of range\"",
+  "input": "{\"created\":\"2024-01-02T03:04:05+01:61\"}"
+ },
+ {
+  "error": "\"parsing time \\\"2024-01-02T03:04:05+x1:00\\\" as \\\"2006-01-02T15:04:05Z07:00\\\": cannot parse \\\"+x1:00\\\" as \\\"Z07:00\\\"\"",
+  "input": "{\"created\":\"2024-01-02T03:04:05+x1:00\"}"
+ },
+ {
+  "error": "\"parsing time \\\"2024-01-02T03:04:05*01:00\\\" as \\\"2006-01-02T15:04:05Z07:00\\\": cannot parse \\\"*01:00\\\" as \\\"Z07:00\\\"\"",
+  "input": "{\"created\":\"2024-01-02T03:04:05*01:00\"}"
+ },
+ {
+  "error": "\"parsing time \\\"2024-02-30T00:00:00Z\\\": day out of range\"",
+  "input": "{\"created\":\"2024-02-30T00:00:00Z\"}"
+ },
+ {
+  "error": "\"parsing time \\\"2023-02-29T00:00:00Z\\\": day out of range\"",
+  "input": "{\"created\":\"2023-02-29T00:00:00Z\"}"
+ },
+ {
+  "config": "{\"created\":\"2024-02-29T00:00:00Z\",\"architecture\":\"\",\"os\":\"\",\"rootfs\":{\"type\":\"\",\"diff_ids\":null},\"config\":{}}",
+  "input": "{\"created\":\"2024-02-29T00:00:00Z\"}"
+ },
+ {
+  "error": "\"parsing time \\\"2024-13-01T00:00:00Z\\\": month out of range\"",
+  "input": "{\"created\":\"2024-13-01T00:00:00Z\"}"
+ },
+ {
+  "error": "\"parsing time \\\"2024-1-01T00:00:00Z\\\" as \\\"2006-01-02T15:04:05Z07:00\\\": cannot parse \\\"1-01T00:00:00Z\\\" as \\\"01\\\"\"",
+  "input": "{\"created\":\"2024-1-01T00:00:00Z\"}"
+ },
+ {
+  "error": "\"parsing time \\\"2024-01-02T24:00:00Z\\\": hour out of range\"",
+  "input": "{\"created\":\"2024-01-02T24:00:00Z\"}"
+ },
+ {
+  "error": "\"parsing time \\\"2024-01-02T03:60:00Z\\\": minute out of range\"",
+  "input": "{\"created\":\"2024-01-02T03:60:00Z\"}"
+ },
+ {
+  "error": "\"parsing time \\\"2024-01-02T03:04:60Z\\\": second out of range\"",
+  "input": "{\"created\":\"2024-01-02T03:04:60Z\"}"
+ },
+ {
+  "error": "\"parsing time \\\"2024-01-02T03:04:05\\\" as \\\"2006-01-02T15:04:05Z07:00\\\": cannot parse \\\"\\\" as \\\"Z07:00\\\"\"",
+  "input": "{\"created\":\"2024-01-02T03:04:05\"}"
+ },
+ {
+  "error": "\"parsing time \\\"2024-01-02T03:04:05Zjunk\\\": extra text: \\\"junk\\\"\"",
+  "input": "{\"created\":\"2024-01-02T03:04:05Zjunk\"}"
+ },
+ {
+  "error": "\"parsing time \\\"24-01-02T03:04:05Z\\\" as \\\"2006-01-02T15:04:05Z07:00\\\": cannot parse \\\"24-01-02T03:04:05Z\\\" as \\\"2006\\\"\"",
+  "input": "{\"created\":\"24-01-02T03:04:05Z\"}"
+ },
+ {
+  "error": "\"parsing time \\\"2024-01-02t03:04:05Z\\\" as \\\"2006-01-02T15:04:05Z07:00\\\": cannot parse \\\"t03:04:05Z\\\" as \\\"T\\\"\"",
+  "input": "{\"created\":\"2024-01-02t03:04:05Z\"}"
+ },
+ {
+  "config": "{\"created\":\"2024-01-02T03:04:05.123456789Z\",\"architecture\":\"\",\"os\":\"\",\"rootfs\":{\"type\":\"\",\"diff_ids\":null},\"config\":{}}",
+  "input": "{\"created\":\"2024-01-02T03:04:05.1234567891Z\"}"
+ },
+ {
+  "error": "\"parsing time \\\"2024-01-02T03:04:05.Z\\\" as \\\"2006-01-02T15:04:05Z07:00\\\": cannot parse \\\".Z\\\" as \\\"Z07:00\\\"\"",
+  "input": "{\"created\":\"2024-01-02T03:04:05.Z\"}"
+ },
+ {
+  "error": "\"parsing time \\\"2024-01-02T03:04:05z\\\" as \\\"2006-01-02T15:04:05Z07:00\\\": cannot parse \\\"z\\\" as \\\"Z07:00\\\"\"",
+  "input": "{\"created\":\"2024-01-02T03:04:05z\"}"
+ },
+ {
+  "error": "\"parsing time \\\"\\\" as \\\"2006-01-02T15:04:05Z07:00\\\": cannot parse \\\"\\\" as \\\"2006\\\"\"",
+  "input": "{\"created\":\"\"}"
+ },
+ {
+  "config": "{\"created\":\"0000-01-01T00:00:00Z\",\"architecture\":\"\",\"os\":\"\",\"rootfs\":{\"type\":\"\",\"diff_ids\":null},\"config\":{}}",
+  "input": "{\"created\":\"0000-01-01T00:00:00Z\"}"
+ },
+ {
+  "config": "{\"created\":\"9999-12-31T23:59:59-23:59\",\"architecture\":\"\",\"os\":\"\",\"rootfs\":{\"type\":\"\",\"diff_ids\":null},\"config\":{}}",
+  "input": "{\"created\":\"9999-12-31T23:59:59-23:59\"}"
+ },
+ {
+  "error": "\"parsing time \\\"2024-01-02T03:04:05+1:00\\\" as \\\"2006-01-02T15:04:05Z07:00\\\": cannot parse \\\"+1:00\\\" as \\\"Z07:00\\\"\"",
+  "input": "{\"created\":\"2024-01-02T03:04:05+1:00\"}"
+ },
+ {
+  "error": "\"parsing time \\\"2024-01-02T03:04:05+01:0\\\" as \\\"2006-01-02T15:04:05Z07:00\\\": cannot parse \\\"+01:0\\\" as \\\"Z07:00\\\"\"",
+  "input": "{\"created\":\"2024-01-02T03:04:05+01:0\"}"
+ },
+ {
+  "error": "\"parsing time \\\"2024-01-02T03:04:05\\\\xff\\\" as \\\"2006-01-02T15:04:05Z07:00\\\": cannot parse \\\"\\\\xff\\\" as \\\"Z07:00\\\"\"",
+  "input": {
+   "base64": "eyJjcmVhdGVkIjoiMjAyNC0wMS0wMlQwMzowNDowNf8ifQ=="
+  }
+ },
+ {
+  "error": "\"parsing time \\\"2024-01-02T03:04:05+25:61\\\": time zone offset minute out of range\"",
+  "input": "{\"created\":\"2024-01-02T03:04:05+25:61\"}"
+ },
+ {
+  "error": "\"invalid character '1' after object key\"",
+  "input": "{\"a\" 1}"
+ },
+ {
+  "error": "\"invalid character '}' looking for beginning of object key string\"",
+  "input": "{\"a\":1,}"
+ },
+ {
+  "error": "\"invalid character ']' looking for beginning of value\"",
+  "input": "[1,]"
+ },
+ {
+  "error": "\"invalid character '1' after array element\"",
+  "input": "[01]"
+ },
+ {
+  "error": "\"invalid character '1' looking for beginning of object key string\"",
+  "input": "{1:2}"
+ },
+ {
+  "error": "\"invalid character '\\\\n' in string literal\"",
+  "input": "\"a\nb\""
+ },
+ {
+  "error": "\"invalid character '2' after top-level value\"",
+  "input": "[1] 2"
+ },
+ {
+  "error": "\"unexpected end of JSON input\"",
+  "input": ""
+ },
+ {
+  "error": "\"unexpected end of JSON input\"",
+  "input": "   "
+ },
+ {
+  "error": "\"invalid character '}' looking for beginning of value\"",
+  "input": "{\"a\":}"
+ },
+ {
+  "error": "\"invalid character ']' in literal true (expecting 'e')\"",
+  "input": "[tru]"
+ },
+ {
+  "error": "\"invalid character ' ' in literal null (expecting 'l')\"",
+  "input": "[nul"
+ },
+ {
+  "error": "\"invalid character 'x' in literal false (expecting 'a')\"",
+  "input": "[fx]"
+ },
+ {
+  "error": "\"invalid character ' ' in numeric literal\"",
+  "input": "-"
+ },
+ {
+  "error": "\"invalid character 'a' in numeric literal\"",
+  "input": "-a"
+ },
+ {
+  "error": "\"invalid character ' ' after decimal point in numeric literal\"",
+  "input": "1."
+ },
+ {
+  "error": "\"invalid character 'x' after decimal point in numeric literal\"",
+  "input": "1.x"
+ },
+ {
+  "error": "\"invalid character ' ' in exponent of numeric literal\"",
+  "input": "1e"
+ },
+ {
+  "error": "\"invalid character ' ' in exponent of numeric literal\"",
+  "input": "1e+"
+ },
+ {
+  "error": "\"invalid character 'x' in exponent of numeric literal\"",
+  "input": "1ex"
+ },
+ {
+  "error": "\"invalid character 'x' in string escape code\"",
+  "input": "\"\\x\""
+ },
+ {
+  "error": "\"invalid character 'g' in \\\\u hexadecimal character escape\"",
+  "input": "\"\\u12g4\""
+ },
+ {
+  "error": "\"invalid character '\\\"' after array element\"",
+  "input": "[\"a\" \"b\"]"
+ },
+ {
+  "error": "\"invalid character '\\\"' after object key:value pair\"",
+  "input": "{\"a\":1 \"b\":2}"
+ },
+ {
+  "error": "\"invalid character '\\\\'' looking for beginning of value\"",
+  "input": "'a'"
+ },
+ {
+  "error": "\"invalid character 'ÿ' looking for beginning of value\"",
+  "input": {
+   "base64": "/w=="
+  }
+ },
+ {
+  "error": "\"invalid character '}' after array element\"",
+  "input": "[1}"
+ },
+ {
+  "error": "\"invalid character ']' after object key:value pair\"",
+  "input": "{\"a\":1]"
+ },
+ {
+  "error": "\"unexpected end of JSON input\"",
+  "input": "\"abc"
+ },
+ {
+  "error": "\"unexpected end of JSON input\"",
+  "input": "["
+ },
+ {
+  "error": "\"unexpected end of JSON input\"",
+  "input": "{"
+ },
+ {
+  "error": "\"unexpected end of JSON input\"",
+  "input": "{\"a\""
+ },
+ {
+  "error": "\"invalid character ']' looking for beginning of value\"",
+  "input": "]"
+ },
+ {
+  "error": "\"invalid character 'x' after top-level value\"",
+  "input": "[1,2,3]x"
+ },
+ {
+  "config": "{\"architecture\":\"\",\"os\":\"\",\"rootfs\":{\"type\":\"\",\"diff_ids\":null},\"config\":{}}",
+  "input": "{\"é\":\"\\ud800\"}"
+ },
+ {
+  "error": "\"invalid character '\\\\x01' in string literal\"",
+  "input": "\"\u0001\""
+ },
+ {
+  "error": "\"json: cannot unmarshal string into Go struct field DockerOCIImageConfig.config.DockerOCIImageConfigExt.Shell of type []string\"",
+  "input": "{\"config\":{\"Shell\":\"x\"}}"
+ },
+ {
+  "error": "\"json: cannot unmarshal number into Go struct field DockerOCIImageConfig.config.DockerOCIImageConfigExt.OnBuild of type []string\"",
+  "input": "{\"config\":{\"OnBuild\":1}}"
+ },
+ {
+  "error": "\"json: cannot unmarshal object into Go struct field DockerOCIImageConfig.config.ImageConfig.Entrypoint of type []string\"",
+  "input": "{\"config\":{\"Entrypoint\":{}}}"
+ },
+ {
+  "error": "\"json: cannot unmarshal bool into Go struct field DockerOCIImageConfig.config.ImageConfig.Cmd of type []string\"",
+  "input": "{\"config\":{\"Cmd\":true}}"
+ },
+ {
+  "error": "\"json: cannot unmarshal array into Go struct field DockerOCIImageConfig.config.ImageConfig.WorkingDir of type string\"",
+  "input": "{\"config\":{\"WorkingDir\":[]}}"
+ },
+ {
+  "error": "\"json: cannot unmarshal bool into Go struct field DockerOCIImageConfig.config.ImageConfig.StopSignal of type string\"",
+  "input": "{\"config\":{\"StopSignal\":false}}"
+ },
+ {
+  "error": "\"json: cannot unmarshal number into Go struct field DockerOCIImage.Image.author of type string\"",
+  "input": "{\"author\":1}"
+ },
+ {
+  "error": "\"json: cannot unmarshal array into Go struct field DockerOCIImage.Image.Platform.variant of type string\"",
+  "input": "{\"variant\":[]}"
+ },
+ {
+  "error": "\"json: cannot unmarshal object into Go struct field DockerOCIImage.Image.Platform.os.version of type string\"",
+  "input": "{\"os.version\":{}}"
+ },
+ {
+  "error": "\"json: cannot unmarshal string into Go struct field DockerOCIImage.Image.Platform.os.features of type []string\"",
+  "input": "{\"os.features\":\"a\"}"
+ },
+ {
+  "error": "\"json: cannot unmarshal bool into Go struct field DockerOCIImage.Image.Platform.architecture of type string\"",
+  "input": "{\"architecture\":true}"
+ },
+ {
+  "error": "\"json: cannot unmarshal number into Go struct field RootFS.Image.rootfs.type of type string\"",
+  "input": "{\"rootfs\":{\"type\":1}}"
+ },
+ {
+  "error": "\"json: cannot unmarshal number into Go struct field History.Image.history.comment of type string\"",
+  "input": "{\"history\":[{\"comment\":1}]}"
+ },
+ {
+  "error": "\"json: cannot unmarshal array into Go struct field History.Image.history.author of type string\"",
+  "input": "{\"history\":[{\"author\":[]}]}"
+ },
+ {
+  "error": "\"json: cannot unmarshal number into Go struct field DockerOCIImage.Image.history of type v1.History\"",
+  "input": "{\"history\":[5]}"
+ },
+ {
+  "error": "\"json: cannot unmarshal string into Go struct field HealthcheckConfig.config.DockerOCIImageConfigExt.Healthcheck.Timeout of type time.Duration\"",
+  "input": "{\"config\":{\"Healthcheck\":{\"Timeout\":\"1\"}}}"
+ },
+ {
+  "error": "\"json: cannot unmarshal bool into Go struct field HealthcheckConfig.config.DockerOCIImageConfigExt.Healthcheck.StartPeriod of type time.Duration\"",
+  "input": "{\"config\":{\"Healthcheck\":{\"StartPeriod\":true}}}"
+ },
+ {
+  "error": "\"json: cannot unmarshal array into Go struct field HealthcheckConfig.config.DockerOCIImageConfigExt.Healthcheck.StartInterval of type time.Duration\"",
+  "input": "{\"config\":{\"Healthcheck\":{\"StartInterval\":[]}}}"
+ },
+ {
+  "error": "\"parsing time \\\"bad\\\" as \\\"2006-01-02T15:04:05Z07:00\\\": cannot parse \\\"bad\\\" as \\\"2006\\\"\"",
+  "input": "{\"created\":\"bad\"}"
+ },
+ {
+  "error": "\"json: cannot unmarshal number into Go struct field DockerOCIImageConfig.config.ImageConfig.Env of type []string\"",
+  "input": "{\"config\":{\"Env\":[\"a\"],\"Env\":1}}"
+ },
+ {
+  "error": "\"json: cannot unmarshal string into Go struct field DockerOCIImageConfig.config.ImageConfig.Volumes of type struct {}\"",
+  "input": "{\"config\":{\"Volumes\":{\"/a\":\"x\"}}}"
+ },
+ {
+  "error": "\"json: cannot unmarshal number into Go struct field DockerOCIImageConfig.config.DockerOCIImageConfigExt.Shell of type string\"",
+  "input": "{\"config\":{\"Shell\":[\"/bin/sh\",2]}}"
+ },
+ {
+  "config": "{\"architecture\":\"\",\"os\":\"\",\"rootfs\":{\"type\":\"\",\"diff_ids\":null},\"config\":{}}",
+  "input": "{\"config\":{\"OnBuild\":[\"a\"]},\"config\":{\"OnBuild\":null}}"
+ },
+ {
+  "config": "{\"architecture\":\"\",\"os\":\"\",\"rootfs\":{\"type\":\"\",\"diff_ids\":null},\"history\":[{\"created_by\":\"b\"}],\"config\":{}}",
+  "input": "{\"history\":[{\"created_by\":\"a\"}],\"history\":[{\"created_by\":\"b\"}]}"
+ },
+ {
+  "error": "\"json: cannot unmarshal string into Go struct field RootFS.Image.rootfs.diff_ids of type []digest.Digest\"",
+  "input": "{\"rootfs\":{\"diff_ids\":[\"a\"]},\"rootfs\":{\"diff_ids\":\"x\"}}"
+ }
+]

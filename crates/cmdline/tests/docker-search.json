@@ -1,0 +1,1346 @@
+[
+	{
+		"results": [
+			{
+				"name": "alpine",
+				"description": "A minimal Docker image based on Alpine Linux with a complete package index and only 5 MB in size!",
+				"star_count": 11563,
+				"is_official": true
+			},
+			{
+				"name": "alpine/git",
+				"description": "A  simple git container running in alpine linux, especially for tiny linux distro.",
+				"star_count": 252,
+				"is_official": false
+			},
+			{
+				"name": "team/日本語",
+				"description": "日本語の説明は四十五列を越えると切られます。日本語の説明は四十五列を越えると切られます。",
+				"star_count": 0,
+				"is_official": false
+			},
+			{
+				"name": "lines",
+				"description": "first line\nsecond line\r\nthird",
+				"star_count": 3,
+				"is_official": false
+			},
+			{
+				"name": "marks",
+				"description": "\u003cb\u003e\u0026amp;\u003c/b\u003e \"quoted\" 'single' \t tab",
+				"star_count": 1,
+				"is_official": false
+			},
+			{
+				"name": "exactly45",
+				"description": "123456789012345678901234567890123456789012345",
+				"star_count": 0,
+				"is_official": true
+			},
+			{
+				"name": "exactly46",
+				"description": "1234567890123456789012345678901234567890123456",
+				"star_count": 0,
+				"is_official": false
+			},
+			{
+				"name": "short",
+				"description": "",
+				"star_count": 0,
+				"is_official": true
+			}
+		],
+		"format": "",
+		"trunc": true,
+		"output": "NAME          DESCRIPTION                                     STARS     OFFICIAL\nalpine        A minimal Docker image based on Alpine Linux…   11563     [OK]\nalpine/git    A  simple git container running in alpine li…   252       \nteam/日本語   日本語の説明は四十五列を越えると切られます。…   0         \nlines         first line second line  third                   3         \nmarks         \u003cb\u003e\u0026amp;\u003c/b\u003e \"quoted\" 'single'                   tab      1         \nexactly45     123456789012345678901234567890123456789012345   0         [OK]\nexactly46     12345678901234567890123456789012345678901234…   0         \nshort                                                         0         [OK]\n"
+	},
+	{
+		"results": [
+			{
+				"name": "alpine",
+				"description": "A minimal Docker image based on Alpine Linux with a complete package index and only 5 MB in size!",
+				"star_count": 11563,
+				"is_official": true
+			},
+			{
+				"name": "alpine/git",
+				"description": "A  simple git container running in alpine linux, especially for tiny linux distro.",
+				"star_count": 252,
+				"is_official": false
+			},
+			{
+				"name": "team/日本語",
+				"description": "日本語の説明は四十五列を越えると切られます。日本語の説明は四十五列を越えると切られます。",
+				"star_count": 0,
+				"is_official": false
+			},
+			{
+				"name": "lines",
+				"description": "first line\nsecond line\r\nthird",
+				"star_count": 3,
+				"is_official": false
+			},
+			{
+				"name": "marks",
+				"description": "\u003cb\u003e\u0026amp;\u003c/b\u003e \"quoted\" 'single' \t tab",
+				"star_count": 1,
+				"is_official": false
+			},
+			{
+				"name": "exactly45",
+				"description": "123456789012345678901234567890123456789012345",
+				"star_count": 0,
+				"is_official": true
+			},
+			{
+				"name": "exactly46",
+				"description": "1234567890123456789012345678901234567890123456",
+				"star_count": 0,
+				"is_official": false
+			},
+			{
+				"name": "short",
+				"description": "",
+				"star_count": 0,
+				"is_official": true
+			}
+		],
+		"format": "",
+		"trunc": false,
+		"output": "NAME          DESCRIPTION                                                                                         STARS     OFFICIAL\nalpine        A minimal Docker image based on Alpine Linux with a complete package index and only 5 MB in size!   11563     [OK]\nalpine/git    A  simple git container running in alpine linux, especially for tiny linux distro.                  252       \nteam/日本語   日本語の説明は四十五列を越えると切られます。日本語の説明は四十五列を越えると切られます。            0         \nlines         first line second line  third                                                                       3         \nmarks         \u003cb\u003e\u0026amp;\u003c/b\u003e \"quoted\" 'single'                                                                       tab      1         \nexactly45     123456789012345678901234567890123456789012345                                                       0         [OK]\nexactly46     1234567890123456789012345678901234567890123456                                                      0         \nshort                                                                                                             0         [OK]\n"
+	},
+	{
+		"results": [
+			{
+				"name": "alpine",
+				"description": "A minimal Docker image based on Alpine Linux with a complete package index and only 5 MB in size!",
+				"star_count": 11563,
+				"is_official": true
+			},
+			{
+				"name": "alpine/git",
+				"description": "A  simple git container running in alpine linux, especially for tiny linux distro.",
+				"star_count": 252,
+				"is_official": false
+			},
+			{
+				"name": "team/日本語",
+				"description": "日本語の説明は四十五列を越えると切られます。日本語の説明は四十五列を越えると切られます。",
+				"star_count": 0,
+				"is_official": false
+			},
+			{
+				"name": "lines",
+				"description": "first line\nsecond line\r\nthird",
+				"star_count": 3,
+				"is_official": false
+			},
+			{
+				"name": "marks",
+				"description": "\u003cb\u003e\u0026amp;\u003c/b\u003e \"quoted\" 'single' \t tab",
+				"star_count": 1,
+				"is_official": false
+			},
+			{
+				"name": "exactly45",
+				"description": "123456789012345678901234567890123456789012345",
+				"star_count": 0,
+				"is_official": true
+			},
+			{
+				"name": "exactly46",
+				"description": "1234567890123456789012345678901234567890123456",
+				"star_count": 0,
+				"is_official": false
+			},
+			{
+				"name": "short",
+				"description": "",
+				"star_count": 0,
+				"is_official": true
+			}
+		],
+		"format": "table",
+		"trunc": true,
+		"output": "NAME          DESCRIPTION                                     STARS     OFFICIAL\nalpine        A minimal Docker image based on Alpine Linux…   11563     [OK]\nalpine/git    A  simple git container running in alpine li…   252       \nteam/日本語   日本語の説明は四十五列を越えると切られます。…   0         \nlines         first line second line  third                   3         \nmarks         \u003cb\u003e\u0026amp;\u003c/b\u003e \"quoted\" 'single'                   tab      1         \nexactly45     123456789012345678901234567890123456789012345   0         [OK]\nexactly46     12345678901234567890123456789012345678901234…   0         \nshort                                                         0         [OK]\n"
+	},
+	{
+		"results": [
+			{
+				"name": "alpine",
+				"description": "A minimal Docker image based on Alpine Linux with a complete package index and only 5 MB in size!",
+				"star_count": 11563,
+				"is_official": true
+			},
+			{
+				"name": "alpine/git",
+				"description": "A  simple git container running in alpine linux, especially for tiny linux distro.",
+				"star_count": 252,
+				"is_official": false
+			},
+			{
+				"name": "team/日本語",
+				"description": "日本語の説明は四十五列を越えると切られます。日本語の説明は四十五列を越えると切られます。",
+				"star_count": 0,
+				"is_official": false
+			},
+			{
+				"name": "lines",
+				"description": "first line\nsecond line\r\nthird",
+				"star_count": 3,
+				"is_official": false
+			},
+			{
+				"name": "marks",
+				"description": "\u003cb\u003e\u0026amp;\u003c/b\u003e \"quoted\" 'single' \t tab",
+				"star_count": 1,
+				"is_official": false
+			},
+			{
+				"name": "exactly45",
+				"description": "123456789012345678901234567890123456789012345",
+				"star_count": 0,
+				"is_official": true
+			},
+			{
+				"name": "exactly46",
+				"description": "1234567890123456789012345678901234567890123456",
+				"star_count": 0,
+				"is_official": false
+			},
+			{
+				"name": "short",
+				"description": "",
+				"star_count": 0,
+				"is_official": true
+			}
+		],
+		"format": "table",
+		"trunc": false,
+		"output": "NAME          DESCRIPTION                                                                                         STARS     OFFICIAL\nalpine        A minimal Docker image based on Alpine Linux with a complete package index and only 5 MB in size!   11563     [OK]\nalpine/git    A  simple git container running in alpine linux, especially for tiny linux distro.                  252       \nteam/日本語   日本語の説明は四十五列を越えると切られます。日本語の説明は四十五列を越えると切られます。            0         \nlines         first line second line  third                                                                       3         \nmarks         \u003cb\u003e\u0026amp;\u003c/b\u003e \"quoted\" 'single'                                                                       tab      1         \nexactly45     123456789012345678901234567890123456789012345                                                       0         [OK]\nexactly46     1234567890123456789012345678901234567890123456                                                      0         \nshort                                                                                                             0         [OK]\n"
+	},
+	{
+		"results": [
+			{
+				"name": "alpine",
+				"description": "A minimal Docker image based on Alpine Linux with a complete package index and only 5 MB in size!",
+				"star_count": 11563,
+				"is_official": true
+			},
+			{
+				"name": "alpine/git",
+				"description": "A  simple git container running in alpine linux, especially for tiny linux distro.",
+				"star_count": 252,
+				"is_official": false
+			},
+			{
+				"name": "team/日本語",
+				"description": "日本語の説明は四十五列を越えると切られます。日本語の説明は四十五列を越えると切られます。",
+				"star_count": 0,
+				"is_official": false
+			},
+			{
+				"name": "lines",
+				"description": "first line\nsecond line\r\nthird",
+				"star_count": 3,
+				"is_official": false
+			},
+			{
+				"name": "marks",
+				"description": "\u003cb\u003e\u0026amp;\u003c/b\u003e \"quoted\" 'single' \t tab",
+				"star_count": 1,
+				"is_official": false
+			},
+			{
+				"name": "exactly45",
+				"description": "123456789012345678901234567890123456789012345",
+				"star_count": 0,
+				"is_official": true
+			},
+			{
+				"name": "exactly46",
+				"description": "1234567890123456789012345678901234567890123456",
+				"star_count": 0,
+				"is_official": false
+			},
+			{
+				"name": "short",
+				"description": "",
+				"star_count": 0,
+				"is_official": true
+			}
+		],
+		"format": "json",
+		"trunc": true,
+		"output": "{\"Description\":\"A minimal Docker image based on Alpine Linux…\",\"IsOfficial\":\"true\",\"Name\":\"alpine\",\"StarCount\":\"11563\"}\n{\"Description\":\"A  simple git container running in alpine li…\",\"IsOfficial\":\"false\",\"Name\":\"alpine/git\",\"StarCount\":\"252\"}\n{\"Description\":\"日本語の説明は四十五列を越えると切られます。…\",\"IsOfficial\":\"false\",\"Name\":\"team/日本語\",\"StarCount\":\"0\"}\n{\"Description\":\"first line second line  third\",\"IsOfficial\":\"false\",\"Name\":\"lines\",\"StarCount\":\"3\"}\n{\"Description\":\"\\u003cb\\u003e\\u0026amp;\\u003c/b\\u003e \\\"quoted\\\" 'single' \\t tab\",\"IsOfficial\":\"false\",\"Name\":\"marks\",\"StarCount\":\"1\"}\n{\"Description\":\"123456789012345678901234567890123456789012345\",\"IsOfficial\":\"true\",\"Name\":\"exactly45\",\"StarCount\":\"0\"}\n{\"Description\":\"12345678901234567890123456789012345678901234…\",\"IsOfficial\":\"false\",\"Name\":\"exactly46\",\"StarCount\":\"0\"}\n{\"Description\":\"\",\"IsOfficial\":\"true\",\"Name\":\"short\",\"StarCount\":\"0\"}\n"
+	},
+	{
+		"results": [
+			{
+				"name": "alpine",
+				"description": "A minimal Docker image based on Alpine Linux with a complete package index and only 5 MB in size!",
+				"star_count": 11563,
+				"is_official": true
+			},
+			{
+				"name": "alpine/git",
+				"description": "A  simple git container running in alpine linux, especially for tiny linux distro.",
+				"star_count": 252,
+				"is_official": false
+			},
+			{
+				"name": "team/日本語",
+				"description": "日本語の説明は四十五列を越えると切られます。日本語の説明は四十五列を越えると切られます。",
+				"star_count": 0,
+				"is_official": false
+			},
+			{
+				"name": "lines",
+				"description": "first line\nsecond line\r\nthird",
+				"star_count": 3,
+				"is_official": false
+			},
+			{
+				"name": "marks",
+				"description": "\u003cb\u003e\u0026amp;\u003c/b\u003e \"quoted\" 'single' \t tab",
+				"star_count": 1,
+				"is_official": false
+			},
+			{
+				"name": "exactly45",
+				"description": "123456789012345678901234567890123456789012345",
+				"star_count": 0,
+				"is_official": true
+			},
+			{
+				"name": "exactly46",
+				"description": "1234567890123456789012345678901234567890123456",
+				"star_count": 0,
+				"is_official": false
+			},
+			{
+				"name": "short",
+				"description": "",
+				"star_count": 0,
+				"is_official": true
+			}
+		],
+		"format": "json",
+		"trunc": false,
+		"output": "{\"Description\":\"A minimal Docker image based on Alpine Linux with a complete package index and only 5 MB in size!\",\"IsOfficial\":\"true\",\"Name\":\"alpine\",\"StarCount\":\"11563\"}\n{\"Description\":\"A  simple git container running in alpine linux, especially for tiny linux distro.\",\"IsOfficial\":\"false\",\"Name\":\"alpine/git\",\"StarCount\":\"252\"}\n{\"Description\":\"日本語の説明は四十五列を越えると切られます。日本語の説明は四十五列を越えると切られます。\",\"IsOfficial\":\"false\",\"Name\":\"team/日本語\",\"StarCount\":\"0\"}\n{\"Description\":\"first line second line  third\",\"IsOfficial\":\"false\",\"Name\":\"lines\",\"StarCount\":\"3\"}\n{\"Description\":\"\\u003cb\\u003e\\u0026amp;\\u003c/b\\u003e \\\"quoted\\\" 'single' \\t tab\",\"IsOfficial\":\"false\",\"Name\":\"marks\",\"StarCount\":\"1\"}\n{\"Description\":\"123456789012345678901234567890123456789012345\",\"IsOfficial\":\"true\",\"Name\":\"exactly45\",\"StarCount\":\"0\"}\n{\"Description\":\"1234567890123456789012345678901234567890123456\",\"IsOfficial\":\"false\",\"Name\":\"exactly46\",\"StarCount\":\"0\"}\n{\"Description\":\"\",\"IsOfficial\":\"true\",\"Name\":\"short\",\"StarCount\":\"0\"}\n"
+	},
+	{
+		"results": [
+			{
+				"name": "alpine",
+				"description": "A minimal Docker image based on Alpine Linux with a complete package index and only 5 MB in size!",
+				"star_count": 11563,
+				"is_official": true
+			},
+			{
+				"name": "alpine/git",
+				"description": "A  simple git container running in alpine linux, especially for tiny linux distro.",
+				"star_count": 252,
+				"is_official": false
+			},
+			{
+				"name": "team/日本語",
+				"description": "日本語の説明は四十五列を越えると切られます。日本語の説明は四十五列を越えると切られます。",
+				"star_count": 0,
+				"is_official": false
+			},
+			{
+				"name": "lines",
+				"description": "first line\nsecond line\r\nthird",
+				"star_count": 3,
+				"is_official": false
+			},
+			{
+				"name": "marks",
+				"description": "\u003cb\u003e\u0026amp;\u003c/b\u003e \"quoted\" 'single' \t tab",
+				"star_count": 1,
+				"is_official": false
+			},
+			{
+				"name": "exactly45",
+				"description": "123456789012345678901234567890123456789012345",
+				"star_count": 0,
+				"is_official": true
+			},
+			{
+				"name": "exactly46",
+				"description": "1234567890123456789012345678901234567890123456",
+				"star_count": 0,
+				"is_official": false
+			},
+			{
+				"name": "short",
+				"description": "",
+				"star_count": 0,
+				"is_official": true
+			}
+		],
+		"format": "raw",
+		"trunc": true,
+		"output": "raw\nraw\nraw\nraw\nraw\nraw\nraw\nraw\n"
+	},
+	{
+		"results": [
+			{
+				"name": "alpine",
+				"description": "A minimal Docker image based on Alpine Linux with a complete package index and only 5 MB in size!",
+				"star_count": 11563,
+				"is_official": true
+			},
+			{
+				"name": "alpine/git",
+				"description": "A  simple git container running in alpine linux, especially for tiny linux distro.",
+				"star_count": 252,
+				"is_official": false
+			},
+			{
+				"name": "team/日本語",
+				"description": "日本語の説明は四十五列を越えると切られます。日本語の説明は四十五列を越えると切られます。",
+				"star_count": 0,
+				"is_official": false
+			},
+			{
+				"name": "lines",
+				"description": "first line\nsecond line\r\nthird",
+				"star_count": 3,
+				"is_official": false
+			},
+			{
+				"name": "marks",
+				"description": "\u003cb\u003e\u0026amp;\u003c/b\u003e \"quoted\" 'single' \t tab",
+				"star_count": 1,
+				"is_official": false
+			},
+			{
+				"name": "exactly45",
+				"description": "123456789012345678901234567890123456789012345",
+				"star_count": 0,
+				"is_official": true
+			},
+			{
+				"name": "exactly46",
+				"description": "1234567890123456789012345678901234567890123456",
+				"star_count": 0,
+				"is_official": false
+			},
+			{
+				"name": "short",
+				"description": "",
+				"star_count": 0,
+				"is_official": true
+			}
+		],
+		"format": "raw",
+		"trunc": false,
+		"output": "raw\nraw\nraw\nraw\nraw\nraw\nraw\nraw\n"
+	},
+	{
+		"results": [
+			{
+				"name": "alpine",
+				"description": "A minimal Docker image based on Alpine Linux with a complete package index and only 5 MB in size!",
+				"star_count": 11563,
+				"is_official": true
+			},
+			{
+				"name": "alpine/git",
+				"description": "A  simple git container running in alpine linux, especially for tiny linux distro.",
+				"star_count": 252,
+				"is_official": false
+			},
+			{
+				"name": "team/日本語",
+				"description": "日本語の説明は四十五列を越えると切られます。日本語の説明は四十五列を越えると切られます。",
+				"star_count": 0,
+				"is_official": false
+			},
+			{
+				"name": "lines",
+				"description": "first line\nsecond line\r\nthird",
+				"star_count": 3,
+				"is_official": false
+			},
+			{
+				"name": "marks",
+				"description": "\u003cb\u003e\u0026amp;\u003c/b\u003e \"quoted\" 'single' \t tab",
+				"star_count": 1,
+				"is_official": false
+			},
+			{
+				"name": "exactly45",
+				"description": "123456789012345678901234567890123456789012345",
+				"star_count": 0,
+				"is_official": true
+			},
+			{
+				"name": "exactly46",
+				"description": "1234567890123456789012345678901234567890123456",
+				"star_count": 0,
+				"is_official": false
+			},
+			{
+				"name": "short",
+				"description": "",
+				"star_count": 0,
+				"is_official": true
+			}
+		],
+		"format": "{{.Name}}",
+		"trunc": true,
+		"output": "alpine\nalpine/git\nteam/日本語\nlines\nmarks\nexactly45\nexactly46\nshort\n"
+	},
+	{
+		"results": [
+			{
+				"name": "alpine",
+				"description": "A minimal Docker image based on Alpine Linux with a complete package index and only 5 MB in size!",
+				"star_count": 11563,
+				"is_official": true
+			},
+			{
+				"name": "alpine/git",
+				"description": "A  simple git container running in alpine linux, especially for tiny linux distro.",
+				"star_count": 252,
+				"is_official": false
+			},
+			{
+				"name": "team/日本語",
+				"description": "日本語の説明は四十五列を越えると切られます。日本語の説明は四十五列を越えると切られます。",
+				"star_count": 0,
+				"is_official": false
+			},
+			{
+				"name": "lines",
+				"description": "first line\nsecond line\r\nthird",
+				"star_count": 3,
+				"is_official": false
+			},
+			{
+				"name": "marks",
+				"description": "\u003cb\u003e\u0026amp;\u003c/b\u003e \"quoted\" 'single' \t tab",
+				"star_count": 1,
+				"is_official": false
+			},
+			{
+				"name": "exactly45",
+				"description": "123456789012345678901234567890123456789012345",
+				"star_count": 0,
+				"is_official": true
+			},
+			{
+				"name": "exactly46",
+				"description": "1234567890123456789012345678901234567890123456",
+				"star_count": 0,
+				"is_official": false
+			},
+			{
+				"name": "short",
+				"description": "",
+				"star_count": 0,
+				"is_official": true
+			}
+		],
+		"format": "{{.Name}}",
+		"trunc": false,
+		"output": "alpine\nalpine/git\nteam/日本語\nlines\nmarks\nexactly45\nexactly46\nshort\n"
+	},
+	{
+		"results": [
+			{
+				"name": "alpine",
+				"description": "A minimal Docker image based on Alpine Linux with a complete package index and only 5 MB in size!",
+				"star_count": 11563,
+				"is_official": true
+			},
+			{
+				"name": "alpine/git",
+				"description": "A  simple git container running in alpine linux, especially for tiny linux distro.",
+				"star_count": 252,
+				"is_official": false
+			},
+			{
+				"name": "team/日本語",
+				"description": "日本語の説明は四十五列を越えると切られます。日本語の説明は四十五列を越えると切られます。",
+				"star_count": 0,
+				"is_official": false
+			},
+			{
+				"name": "lines",
+				"description": "first line\nsecond line\r\nthird",
+				"star_count": 3,
+				"is_official": false
+			},
+			{
+				"name": "marks",
+				"description": "\u003cb\u003e\u0026amp;\u003c/b\u003e \"quoted\" 'single' \t tab",
+				"star_count": 1,
+				"is_official": false
+			},
+			{
+				"name": "exactly45",
+				"description": "123456789012345678901234567890123456789012345",
+				"star_count": 0,
+				"is_official": true
+			},
+			{
+				"name": "exactly46",
+				"description": "1234567890123456789012345678901234567890123456",
+				"star_count": 0,
+				"is_official": false
+			},
+			{
+				"name": "short",
+				"description": "",
+				"star_count": 0,
+				"is_official": true
+			}
+		],
+		"format": "table {{.Name}}\t{{.IsOfficial}}",
+		"trunc": true,
+		"output": "NAME          OFFICIAL\nalpine        [OK]\nalpine/git    \nteam/日本語   \nlines         \nmarks         \nexactly45     [OK]\nexactly46     \nshort         [OK]\n"
+	},
+	{
+		"results": [
+			{
+				"name": "alpine",
+				"description": "A minimal Docker image based on Alpine Linux with a complete package index and only 5 MB in size!",
+				"star_count": 11563,
+				"is_official": true
+			},
+			{
+				"name": "alpine/git",
+				"description": "A  simple git container running in alpine linux, especially for tiny linux distro.",
+				"star_count": 252,
+				"is_official": false
+			},
+			{
+				"name": "team/日本語",
+				"description": "日本語の説明は四十五列を越えると切られます。日本語の説明は四十五列を越えると切られます。",
+				"star_count": 0,
+				"is_official": false
+			},
+			{
+				"name": "lines",
+				"description": "first line\nsecond line\r\nthird",
+				"star_count": 3,
+				"is_official": false
+			},
+			{
+				"name": "marks",
+				"description": "\u003cb\u003e\u0026amp;\u003c/b\u003e \"quoted\" 'single' \t tab",
+				"star_count": 1,
+				"is_official": false
+			},
+			{
+				"name": "exactly45",
+				"description": "123456789012345678901234567890123456789012345",
+				"star_count": 0,
+				"is_official": true
+			},
+			{
+				"name": "exactly46",
+				"description": "1234567890123456789012345678901234567890123456",
+				"star_count": 0,
+				"is_official": false
+			},
+			{
+				"name": "short",
+				"description": "",
+				"star_count": 0,
+				"is_official": true
+			}
+		],
+		"format": "table {{.Name}}\t{{.IsOfficial}}",
+		"trunc": false,
+		"output": "NAME          OFFICIAL\nalpine        [OK]\nalpine/git    \nteam/日本語   \nlines         \nmarks         \nexactly45     [OK]\nexactly46     \nshort         [OK]\n"
+	},
+	{
+		"results": [
+			{
+				"name": "alpine",
+				"description": "A minimal Docker image based on Alpine Linux with a complete package index and only 5 MB in size!",
+				"star_count": 11563,
+				"is_official": true
+			},
+			{
+				"name": "alpine/git",
+				"description": "A  simple git container running in alpine linux, especially for tiny linux distro.",
+				"star_count": 252,
+				"is_official": false
+			},
+			{
+				"name": "team/日本語",
+				"description": "日本語の説明は四十五列を越えると切られます。日本語の説明は四十五列を越えると切られます。",
+				"star_count": 0,
+				"is_official": false
+			},
+			{
+				"name": "lines",
+				"description": "first line\nsecond line\r\nthird",
+				"star_count": 3,
+				"is_official": false
+			},
+			{
+				"name": "marks",
+				"description": "\u003cb\u003e\u0026amp;\u003c/b\u003e \"quoted\" 'single' \t tab",
+				"star_count": 1,
+				"is_official": false
+			},
+			{
+				"name": "exactly45",
+				"description": "123456789012345678901234567890123456789012345",
+				"star_count": 0,
+				"is_official": true
+			},
+			{
+				"name": "exactly46",
+				"description": "1234567890123456789012345678901234567890123456",
+				"star_count": 0,
+				"is_official": false
+			},
+			{
+				"name": "short",
+				"description": "",
+				"star_count": 0,
+				"is_official": true
+			}
+		],
+		"format": "{{json .}} {{.IsOfficial}}",
+		"trunc": true,
+		"output": "{\"Description\":\"A minimal Docker image based on Alpine Linux…\",\"IsOfficial\":\"true\",\"Name\":\"alpine\",\"StarCount\":\"11563\"} true\n{\"Description\":\"A  simple git container running in alpine li…\",\"IsOfficial\":\"false\",\"Name\":\"alpine/git\",\"StarCount\":\"252\"} false\n{\"Description\":\"日本語の説明は四十五列を越えると切られます。…\",\"IsOfficial\":\"false\",\"Name\":\"team/日本語\",\"StarCount\":\"0\"} false\n{\"Description\":\"first line second line  third\",\"IsOfficial\":\"false\",\"Name\":\"lines\",\"StarCount\":\"3\"} false\n{\"Description\":\"\\u003cb\\u003e\\u0026amp;\\u003c/b\\u003e \\\"quoted\\\" 'single' \\t tab\",\"IsOfficial\":\"false\",\"Name\":\"marks\",\"StarCount\":\"1\"} false\n{\"Description\":\"123456789012345678901234567890123456789012345\",\"IsOfficial\":\"true\",\"Name\":\"exactly45\",\"StarCount\":\"0\"} true\n{\"Description\":\"12345678901234567890123456789012345678901234…\",\"IsOfficial\":\"false\",\"Name\":\"exactly46\",\"StarCount\":\"0\"} false\n{\"Description\":\"\",\"IsOfficial\":\"true\",\"Name\":\"short\",\"StarCount\":\"0\"} true\n"
+	},
+	{
+		"results": [
+			{
+				"name": "alpine",
+				"description": "A minimal Docker image based on Alpine Linux with a complete package index and only 5 MB in size!",
+				"star_count": 11563,
+				"is_official": true
+			},
+			{
+				"name": "alpine/git",
+				"description": "A  simple git container running in alpine linux, especially for tiny linux distro.",
+				"star_count": 252,
+				"is_official": false
+			},
+			{
+				"name": "team/日本語",
+				"description": "日本語の説明は四十五列を越えると切られます。日本語の説明は四十五列を越えると切られます。",
+				"star_count": 0,
+				"is_official": false
+			},
+			{
+				"name": "lines",
+				"description": "first line\nsecond line\r\nthird",
+				"star_count": 3,
+				"is_official": false
+			},
+			{
+				"name": "marks",
+				"description": "\u003cb\u003e\u0026amp;\u003c/b\u003e \"quoted\" 'single' \t tab",
+				"star_count": 1,
+				"is_official": false
+			},
+			{
+				"name": "exactly45",
+				"description": "123456789012345678901234567890123456789012345",
+				"star_count": 0,
+				"is_official": true
+			},
+			{
+				"name": "exactly46",
+				"description": "1234567890123456789012345678901234567890123456",
+				"star_count": 0,
+				"is_official": false
+			},
+			{
+				"name": "short",
+				"description": "",
+				"star_count": 0,
+				"is_official": true
+			}
+		],
+		"format": "{{json .}} {{.IsOfficial}}",
+		"trunc": false,
+		"output": "{\"Description\":\"A minimal Docker image based on Alpine Linux with a complete package index and only 5 MB in size!\",\"IsOfficial\":\"true\",\"Name\":\"alpine\",\"StarCount\":\"11563\"} true\n{\"Description\":\"A  simple git container running in alpine linux, especially for tiny linux distro.\",\"IsOfficial\":\"false\",\"Name\":\"alpine/git\",\"StarCount\":\"252\"} false\n{\"Description\":\"日本語の説明は四十五列を越えると切られます。日本語の説明は四十五列を越えると切られます。\",\"IsOfficial\":\"false\",\"Name\":\"team/日本語\",\"StarCount\":\"0\"} false\n{\"Description\":\"first line second line  third\",\"IsOfficial\":\"false\",\"Name\":\"lines\",\"StarCount\":\"3\"} false\n{\"Description\":\"\\u003cb\\u003e\\u0026amp;\\u003c/b\\u003e \\\"quoted\\\" 'single' \\t tab\",\"IsOfficial\":\"false\",\"Name\":\"marks\",\"StarCount\":\"1\"} false\n{\"Description\":\"123456789012345678901234567890123456789012345\",\"IsOfficial\":\"true\",\"Name\":\"exactly45\",\"StarCount\":\"0\"} true\n{\"Description\":\"1234567890123456789012345678901234567890123456\",\"IsOfficial\":\"false\",\"Name\":\"exactly46\",\"StarCount\":\"0\"} false\n{\"Description\":\"\",\"IsOfficial\":\"true\",\"Name\":\"short\",\"StarCount\":\"0\"} true\n"
+	},
+	{
+		"results": [
+			{
+				"name": "alpine",
+				"description": "A minimal Docker image based on Alpine Linux with a complete package index and only 5 MB in size!",
+				"star_count": 11563,
+				"is_official": true
+			},
+			{
+				"name": "alpine/git",
+				"description": "A  simple git container running in alpine linux, especially for tiny linux distro.",
+				"star_count": 252,
+				"is_official": false
+			},
+			{
+				"name": "team/日本語",
+				"description": "日本語の説明は四十五列を越えると切られます。日本語の説明は四十五列を越えると切られます。",
+				"star_count": 0,
+				"is_official": false
+			},
+			{
+				"name": "lines",
+				"description": "first line\nsecond line\r\nthird",
+				"star_count": 3,
+				"is_official": false
+			},
+			{
+				"name": "marks",
+				"description": "\u003cb\u003e\u0026amp;\u003c/b\u003e \"quoted\" 'single' \t tab",
+				"star_count": 1,
+				"is_official": false
+			},
+			{
+				"name": "exactly45",
+				"description": "123456789012345678901234567890123456789012345",
+				"star_count": 0,
+				"is_official": true
+			},
+			{
+				"name": "exactly46",
+				"description": "1234567890123456789012345678901234567890123456",
+				"star_count": 0,
+				"is_official": false
+			},
+			{
+				"name": "short",
+				"description": "",
+				"star_count": 0,
+				"is_official": true
+			}
+		],
+		"format": "{{.IsOfficial}} {{json .}}",
+		"trunc": true,
+		"output": "[OK] {\"Description\":\"A minimal Docker image based on Alpine Linux…\",\"IsOfficial\":\"true\",\"Name\":\"alpine\",\"StarCount\":\"11563\"}\n {\"Description\":\"A  simple git container running in alpine li…\",\"IsOfficial\":\"false\",\"Name\":\"alpine/git\",\"StarCount\":\"252\"}\n {\"Description\":\"日本語の説明は四十五列を越えると切られます。…\",\"IsOfficial\":\"false\",\"Name\":\"team/日本語\",\"StarCount\":\"0\"}\n {\"Description\":\"first line second line  third\",\"IsOfficial\":\"false\",\"Name\":\"lines\",\"StarCount\":\"3\"}\n {\"Description\":\"\\u003cb\\u003e\\u0026amp;\\u003c/b\\u003e \\\"quoted\\\" 'single' \\t tab\",\"IsOfficial\":\"false\",\"Name\":\"marks\",\"StarCount\":\"1\"}\n[OK] {\"Description\":\"123456789012345678901234567890123456789012345\",\"IsOfficial\":\"true\",\"Name\":\"exactly45\",\"StarCount\":\"0\"}\n {\"Description\":\"12345678901234567890123456789012345678901234…\",\"IsOfficial\":\"false\",\"Name\":\"exactly46\",\"StarCount\":\"0\"}\n[OK] {\"Description\":\"\",\"IsOfficial\":\"true\",\"Name\":\"short\",\"StarCount\":\"0\"}\n"
+	},
+	{
+		"results": [
+			{
+				"name": "alpine",
+				"description": "A minimal Docker image based on Alpine Linux with a complete package index and only 5 MB in size!",
+				"star_count": 11563,
+				"is_official": true
+			},
+			{
+				"name": "alpine/git",
+				"description": "A  simple git container running in alpine linux, especially for tiny linux distro.",
+				"star_count": 252,
+				"is_official": false
+			},
+			{
+				"name": "team/日本語",
+				"description": "日本語の説明は四十五列を越えると切られます。日本語の説明は四十五列を越えると切られます。",
+				"star_count": 0,
+				"is_official": false
+			},
+			{
+				"name": "lines",
+				"description": "first line\nsecond line\r\nthird",
+				"star_count": 3,
+				"is_official": false
+			},
+			{
+				"name": "marks",
+				"description": "\u003cb\u003e\u0026amp;\u003c/b\u003e \"quoted\" 'single' \t tab",
+				"star_count": 1,
+				"is_official": false
+			},
+			{
+				"name": "exactly45",
+				"description": "123456789012345678901234567890123456789012345",
+				"star_count": 0,
+				"is_official": true
+			},
+			{
+				"name": "exactly46",
+				"description": "1234567890123456789012345678901234567890123456",
+				"star_count": 0,
+				"is_official": false
+			},
+			{
+				"name": "short",
+				"description": "",
+				"star_count": 0,
+				"is_official": true
+			}
+		],
+		"format": "{{.IsOfficial}} {{json .}}",
+		"trunc": false,
+		"output": "[OK] {\"Description\":\"A minimal Docker image based on Alpine Linux with a complete package index and only 5 MB in size!\",\"IsOfficial\":\"true\",\"Name\":\"alpine\",\"StarCount\":\"11563\"}\n {\"Description\":\"A  simple git container running in alpine linux, especially for tiny linux distro.\",\"IsOfficial\":\"false\",\"Name\":\"alpine/git\",\"StarCount\":\"252\"}\n {\"Description\":\"日本語の説明は四十五列を越えると切られます。日本語の説明は四十五列を越えると切られます。\",\"IsOfficial\":\"false\",\"Name\":\"team/日本語\",\"StarCount\":\"0\"}\n {\"Description\":\"first line second line  third\",\"IsOfficial\":\"false\",\"Name\":\"lines\",\"StarCount\":\"3\"}\n {\"Description\":\"\\u003cb\\u003e\\u0026amp;\\u003c/b\\u003e \\\"quoted\\\" 'single' \\t tab\",\"IsOfficial\":\"false\",\"Name\":\"marks\",\"StarCount\":\"1\"}\n[OK] {\"Description\":\"123456789012345678901234567890123456789012345\",\"IsOfficial\":\"true\",\"Name\":\"exactly45\",\"StarCount\":\"0\"}\n {\"Description\":\"1234567890123456789012345678901234567890123456\",\"IsOfficial\":\"false\",\"Name\":\"exactly46\",\"StarCount\":\"0\"}\n[OK] {\"Description\":\"\",\"IsOfficial\":\"true\",\"Name\":\"short\",\"StarCount\":\"0\"}\n"
+	},
+	{
+		"results": [
+			{
+				"name": "alpine",
+				"description": "A minimal Docker image based on Alpine Linux with a complete package index and only 5 MB in size!",
+				"star_count": 11563,
+				"is_official": true
+			},
+			{
+				"name": "alpine/git",
+				"description": "A  simple git container running in alpine linux, especially for tiny linux distro.",
+				"star_count": 252,
+				"is_official": false
+			},
+			{
+				"name": "team/日本語",
+				"description": "日本語の説明は四十五列を越えると切られます。日本語の説明は四十五列を越えると切られます。",
+				"star_count": 0,
+				"is_official": false
+			},
+			{
+				"name": "lines",
+				"description": "first line\nsecond line\r\nthird",
+				"star_count": 3,
+				"is_official": false
+			},
+			{
+				"name": "marks",
+				"description": "\u003cb\u003e\u0026amp;\u003c/b\u003e \"quoted\" 'single' \t tab",
+				"star_count": 1,
+				"is_official": false
+			},
+			{
+				"name": "exactly45",
+				"description": "123456789012345678901234567890123456789012345",
+				"star_count": 0,
+				"is_official": true
+			},
+			{
+				"name": "exactly46",
+				"description": "1234567890123456789012345678901234567890123456",
+				"star_count": 0,
+				"is_official": false
+			},
+			{
+				"name": "short",
+				"description": "",
+				"star_count": 0,
+				"is_official": true
+			}
+		],
+		"format": "{{.Description}}|",
+		"trunc": true,
+		"output": "A minimal Docker image based on Alpine Linux…|\nA  simple git container running in alpine li…|\n日本語の説明は四十五列を越えると切られます。…|\nfirst line second line  third|\n\u003cb\u003e\u0026amp;\u003c/b\u003e \"quoted\" 'single' \t tab|\n123456789012345678901234567890123456789012345|\n12345678901234567890123456789012345678901234…|\n|\n"
+	},
+	{
+		"results": [
+			{
+				"name": "alpine",
+				"description": "A minimal Docker image based on Alpine Linux with a complete package index and only 5 MB in size!",
+				"star_count": 11563,
+				"is_official": true
+			},
+			{
+				"name": "alpine/git",
+				"description": "A  simple git container running in alpine linux, especially for tiny linux distro.",
+				"star_count": 252,
+				"is_official": false
+			},
+			{
+				"name": "team/日本語",
+				"description": "日本語の説明は四十五列を越えると切られます。日本語の説明は四十五列を越えると切られます。",
+				"star_count": 0,
+				"is_official": false
+			},
+			{
+				"name": "lines",
+				"description": "first line\nsecond line\r\nthird",
+				"star_count": 3,
+				"is_official": false
+			},
+			{
+				"name": "marks",
+				"description": "\u003cb\u003e\u0026amp;\u003c/b\u003e \"quoted\" 'single' \t tab",
+				"star_count": 1,
+				"is_official": false
+			},
+			{
+				"name": "exactly45",
+				"description": "123456789012345678901234567890123456789012345",
+				"star_count": 0,
+				"is_official": true
+			},
+			{
+				"name": "exactly46",
+				"description": "1234567890123456789012345678901234567890123456",
+				"star_count": 0,
+				"is_official": false
+			},
+			{
+				"name": "short",
+				"description": "",
+				"star_count": 0,
+				"is_official": true
+			}
+		],
+		"format": "{{.Description}}|",
+		"trunc": false,
+		"output": "A minimal Docker image based on Alpine Linux with a complete package index and only 5 MB in size!|\nA  simple git container running in alpine linux, especially for tiny linux distro.|\n日本語の説明は四十五列を越えると切られます。日本語の説明は四十五列を越えると切られます。|\nfirst line second line  third|\n\u003cb\u003e\u0026amp;\u003c/b\u003e \"quoted\" 'single' \t tab|\n123456789012345678901234567890123456789012345|\n1234567890123456789012345678901234567890123456|\n|\n"
+	},
+	{
+		"results": [
+			{
+				"name": "alpine",
+				"description": "A minimal Docker image based on Alpine Linux with a complete package index and only 5 MB in size!",
+				"star_count": 11563,
+				"is_official": true
+			},
+			{
+				"name": "alpine/git",
+				"description": "A  simple git container running in alpine linux, especially for tiny linux distro.",
+				"star_count": 252,
+				"is_official": false
+			},
+			{
+				"name": "team/日本語",
+				"description": "日本語の説明は四十五列を越えると切られます。日本語の説明は四十五列を越えると切られます。",
+				"star_count": 0,
+				"is_official": false
+			},
+			{
+				"name": "lines",
+				"description": "first line\nsecond line\r\nthird",
+				"star_count": 3,
+				"is_official": false
+			},
+			{
+				"name": "marks",
+				"description": "\u003cb\u003e\u0026amp;\u003c/b\u003e \"quoted\" 'single' \t tab",
+				"star_count": 1,
+				"is_official": false
+			},
+			{
+				"name": "exactly45",
+				"description": "123456789012345678901234567890123456789012345",
+				"star_count": 0,
+				"is_official": true
+			},
+			{
+				"name": "exactly46",
+				"description": "1234567890123456789012345678901234567890123456",
+				"star_count": 0,
+				"is_official": false
+			},
+			{
+				"name": "short",
+				"description": "",
+				"star_count": 0,
+				"is_official": true
+			}
+		],
+		"format": "table {{.StarCount}}",
+		"trunc": true,
+		"output": "STARS\n11563\n252\n0\n3\n1\n0\n0\n0\n"
+	},
+	{
+		"results": [
+			{
+				"name": "alpine",
+				"description": "A minimal Docker image based on Alpine Linux with a complete package index and only 5 MB in size!",
+				"star_count": 11563,
+				"is_official": true
+			},
+			{
+				"name": "alpine/git",
+				"description": "A  simple git container running in alpine linux, especially for tiny linux distro.",
+				"star_count": 252,
+				"is_official": false
+			},
+			{
+				"name": "team/日本語",
+				"description": "日本語の説明は四十五列を越えると切られます。日本語の説明は四十五列を越えると切られます。",
+				"star_count": 0,
+				"is_official": false
+			},
+			{
+				"name": "lines",
+				"description": "first line\nsecond line\r\nthird",
+				"star_count": 3,
+				"is_official": false
+			},
+			{
+				"name": "marks",
+				"description": "\u003cb\u003e\u0026amp;\u003c/b\u003e \"quoted\" 'single' \t tab",
+				"star_count": 1,
+				"is_official": false
+			},
+			{
+				"name": "exactly45",
+				"description": "123456789012345678901234567890123456789012345",
+				"star_count": 0,
+				"is_official": true
+			},
+			{
+				"name": "exactly46",
+				"description": "1234567890123456789012345678901234567890123456",
+				"star_count": 0,
+				"is_official": false
+			},
+			{
+				"name": "short",
+				"description": "",
+				"star_count": 0,
+				"is_official": true
+			}
+		],
+		"format": "table {{.StarCount}}",
+		"trunc": false,
+		"output": "STARS\n11563\n252\n0\n3\n1\n0\n0\n0\n"
+	},
+	{
+		"results": [
+			{
+				"name": "alpine",
+				"description": "A minimal Docker image based on Alpine Linux with a complete package index and only 5 MB in size!",
+				"star_count": 11563,
+				"is_official": true
+			},
+			{
+				"name": "alpine/git",
+				"description": "A  simple git container running in alpine linux, especially for tiny linux distro.",
+				"star_count": 252,
+				"is_official": false
+			},
+			{
+				"name": "team/日本語",
+				"description": "日本語の説明は四十五列を越えると切られます。日本語の説明は四十五列を越えると切られます。",
+				"star_count": 0,
+				"is_official": false
+			},
+			{
+				"name": "lines",
+				"description": "first line\nsecond line\r\nthird",
+				"star_count": 3,
+				"is_official": false
+			},
+			{
+				"name": "marks",
+				"description": "\u003cb\u003e\u0026amp;\u003c/b\u003e \"quoted\" 'single' \t tab",
+				"star_count": 1,
+				"is_official": false
+			},
+			{
+				"name": "exactly45",
+				"description": "123456789012345678901234567890123456789012345",
+				"star_count": 0,
+				"is_official": true
+			},
+			{
+				"name": "exactly46",
+				"description": "1234567890123456789012345678901234567890123456",
+				"star_count": 0,
+				"is_official": false
+			},
+			{
+				"name": "short",
+				"description": "",
+				"star_count": 0,
+				"is_official": true
+			}
+		],
+		"format": "{{.Nope}}",
+		"trunc": true,
+		"output": "",
+		"error": "template parsing error: template: :1:2: executing \"\" at \u003c.Nope\u003e: can't evaluate field Nope in type *registry.searchContext"
+	},
+	{
+		"results": [
+			{
+				"name": "alpine",
+				"description": "A minimal Docker image based on Alpine Linux with a complete package index and only 5 MB in size!",
+				"star_count": 11563,
+				"is_official": true
+			},
+			{
+				"name": "alpine/git",
+				"description": "A  simple git container running in alpine linux, especially for tiny linux distro.",
+				"star_count": 252,
+				"is_official": false
+			},
+			{
+				"name": "team/日本語",
+				"description": "日本語の説明は四十五列を越えると切られます。日本語の説明は四十五列を越えると切られます。",
+				"star_count": 0,
+				"is_official": false
+			},
+			{
+				"name": "lines",
+				"description": "first line\nsecond line\r\nthird",
+				"star_count": 3,
+				"is_official": false
+			},
+			{
+				"name": "marks",
+				"description": "\u003cb\u003e\u0026amp;\u003c/b\u003e \"quoted\" 'single' \t tab",
+				"star_count": 1,
+				"is_official": false
+			},
+			{
+				"name": "exactly45",
+				"description": "123456789012345678901234567890123456789012345",
+				"star_count": 0,
+				"is_official": true
+			},
+			{
+				"name": "exactly46",
+				"description": "1234567890123456789012345678901234567890123456",
+				"star_count": 0,
+				"is_official": false
+			},
+			{
+				"name": "short",
+				"description": "",
+				"star_count": 0,
+				"is_official": true
+			}
+		],
+		"format": "{{.Nope}}",
+		"trunc": false,
+		"output": "",
+		"error": "template parsing error: template: :1:2: executing \"\" at \u003c.Nope\u003e: can't evaluate field Nope in type *registry.searchContext"
+	},
+	{
+		"results": [],
+		"format": "",
+		"trunc": true,
+		"output": "NAME      DESCRIPTION   STARS     OFFICIAL\n"
+	},
+	{
+		"results": [],
+		"format": "",
+		"trunc": false,
+		"output": "NAME      DESCRIPTION   STARS     OFFICIAL\n"
+	},
+	{
+		"results": [],
+		"format": "table",
+		"trunc": true,
+		"output": "NAME      DESCRIPTION   STARS     OFFICIAL\n"
+	},
+	{
+		"results": [],
+		"format": "table",
+		"trunc": false,
+		"output": "NAME      DESCRIPTION   STARS     OFFICIAL\n"
+	},
+	{
+		"results": [],
+		"format": "json",
+		"trunc": true,
+		"output": ""
+	},
+	{
+		"results": [],
+		"format": "json",
+		"trunc": false,
+		"output": ""
+	},
+	{
+		"results": [],
+		"format": "raw",
+		"trunc": true,
+		"output": ""
+	},
+	{
+		"results": [],
+		"format": "raw",
+		"trunc": false,
+		"output": ""
+	},
+	{
+		"results": [],
+		"format": "{{.Name}}",
+		"trunc": true,
+		"output": ""
+	},
+	{
+		"results": [],
+		"format": "{{.Name}}",
+		"trunc": false,
+		"output": ""
+	},
+	{
+		"results": [],
+		"format": "table {{.Name}}\t{{.IsOfficial}}",
+		"trunc": true,
+		"output": "NAME      OFFICIAL\n"
+	},
+	{
+		"results": [],
+		"format": "table {{.Name}}\t{{.IsOfficial}}",
+		"trunc": false,
+		"output": "NAME      OFFICIAL\n"
+	},
+	{
+		"results": [],
+		"format": "{{json .}} {{.IsOfficial}}",
+		"trunc": true,
+		"output": ""
+	},
+	{
+		"results": [],
+		"format": "{{json .}} {{.IsOfficial}}",
+		"trunc": false,
+		"output": ""
+	},
+	{
+		"results": [],
+		"format": "{{.IsOfficial}} {{json .}}",
+		"trunc": true,
+		"output": ""
+	},
+	{
+		"results": [],
+		"format": "{{.IsOfficial}} {{json .}}",
+		"trunc": false,
+		"output": ""
+	},
+	{
+		"results": [],
+		"format": "{{.Description}}|",
+		"trunc": true,
+		"output": ""
+	},
+	{
+		"results": [],
+		"format": "{{.Description}}|",
+		"trunc": false,
+		"output": ""
+	},
+	{
+		"results": [],
+		"format": "table {{.StarCount}}",
+		"trunc": true,
+		"output": "STARS\n"
+	},
+	{
+		"results": [],
+		"format": "table {{.StarCount}}",
+		"trunc": false,
+		"output": "STARS\n"
+	},
+	{
+		"results": [],
+		"format": "{{.Nope}}",
+		"trunc": true,
+		"output": ""
+	},
+	{
+		"results": [],
+		"format": "{{.Nope}}",
+		"trunc": false,
+		"output": ""
+	}
+]

@@ -1,0 +1,39 @@
+host fedora.attlocal.net; Fedora Linux 44 (KDE Plasma Desktop Edition); kernel 6.19.10-300.fc44.x86_64; x86_64; Intel(R) Core(TM) i9-14900HX; shards f9364970 + smallest.patch at /home/adalundhe/dax-smallest/shards; CPUs [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+arms (SHARDS_DAX_SMALLEST) [2097152, 1048576]; cells ['npm', 'cargo'] on a volume; 5 rounds
+round 0 arm 2097152 npm load 7.27 total 10.65s work 10.55s vm_peak 1253 MiB guest_peak 983 MiB; windows_mib 128036 ranges 0 peak 0 maps 0 removes 0 host_mappings 283 descriptors 56 | memory_kib 1287480
+round 0 arm 2097152 cargo load 6.86 total 84.79s work 84.69s vm_peak 3101 MiB guest_peak 2531 MiB; windows_mib 128036 ranges 261 peak 261 maps 303 removes 42 host_mappings 621 descriptors 129 | memory_kib 3171632
+round 0 arm 1048576 npm load 10.03 total 13.51s work 13.40s vm_peak 1120 MiB guest_peak 815 MiB; windows_mib 128036 ranges 0 peak 0 maps 0 removes 0 host_mappings 284 descriptors 56 | memory_kib 1002828
+round 0 arm 1048576 cargo load 12.39 total 85.88s work 85.79s vm_peak 3098 MiB guest_peak 2397 MiB; windows_mib 128036 ranges 296 peak 296 maps 380 removes 84 host_mappings 690 descriptors 164 | memory_kib 3142410
+round 1 arm 2097152 npm load 11.26 total 10.36s work 10.28s vm_peak 1131 MiB guest_peak 838 MiB; windows_mib 128036 ranges 0 peak 0 maps 0 removes 0 host_mappings 281 descriptors 56 | memory_kib 1135528
+round 1 arm 1048576 cargo load 10.52 total 71.42s work 71.35s vm_peak 3311 MiB guest_peak 2562 MiB; windows_mib 128036 ranges 304 peak 304 maps 409 removes 105 host_mappings 699 descriptors 167 | memory_kib 3365664
+round 1 arm 1048576 npm load 8.43 total 11.15s work 11.04s vm_peak 1260 MiB guest_peak 972 MiB; windows_mib 128036 ranges 0 peak 0 maps 0 removes 0 host_mappings 282 descriptors 56 | memory_kib 1270798
+round 1 arm 2097152 cargo load 8.52 total 84.33s work 84.26s vm_peak 3306 MiB guest_peak 2658 MiB; windows_mib 128036 ranges 261 peak 261 maps 319 removes 58 host_mappings 619 descriptors 129 | memory_kib 3359172
+round 2 arm 1048576 npm load 9.22 total 9.55s work 9.45s vm_peak 1253 MiB guest_peak 976 MiB; windows_mib 128036 ranges 0 peak 0 maps 0 removes 0 host_mappings 282 descriptors 56 | memory_kib 1275632
+round 2 arm 1048576 cargo load 8.11 total 89.35s work 89.28s vm_peak 3462 MiB guest_peak 2666 MiB; windows_mib 128036 ranges 296 peak 296 maps 393 removes 97 host_mappings 690 descriptors 164 | memory_kib 3519708
+round 2 arm 2097152 npm load 15.21 total 10.69s work 10.59s vm_peak 1229 MiB guest_peak 944 MiB; windows_mib 128036 ranges 0 peak 0 maps 0 removes 0 host_mappings 283 descriptors 56 | memory_kib 1249492
+round 2 arm 2097152 cargo load 12.72 total 86.57s work 86.50s vm_peak 3274 MiB guest_peak 2615 MiB; windows_mib 128036 ranges 261 peak 261 maps 302 removes 41 host_mappings 619 descriptors 129 | memory_kib 3315560
+round 3 arm 1048576 npm load 12.01 total 10.27s work 10.19s vm_peak 1201 MiB guest_peak 915 MiB; windows_mib 128036 ranges 0 peak 0 maps 0 removes 0 host_mappings 283 descriptors 56 | memory_kib 1207012
+round 3 arm 2097152 cargo load 11.55 total 86.40s work 86.30s vm_peak 3420 MiB guest_peak 2655 MiB; windows_mib 128036 ranges 267 peak 267 maps 310 removes 43 host_mappings 627 descriptors 130 | memory_kib 3385936
+round 3 arm 2097152 npm load 10.52 total 12.14s work 12.01s vm_peak 1262 MiB guest_peak 972 MiB; windows_mib 128036 ranges 0 peak 0 maps 0 removes 0 host_mappings 282 descriptors 56 | memory_kib 1266130
+round 3 arm 1048576 cargo load 10.90 total 100.26s work 100.17s vm_peak 3393 MiB guest_peak 2625 MiB; windows_mib 128036 ranges 303 peak 303 maps 398 removes 95 host_mappings 700 descriptors 166 | memory_kib 3448506
+round 4 arm 2097152 npm load 14.96 total 16.24s work 16.18s vm_peak 1288 MiB guest_peak 997 MiB; windows_mib 128036 ranges 0 peak 0 maps 0 removes 0 host_mappings 288 descriptors 56 | memory_kib 1055216
+round 4 arm 2097152 cargo load 12.99 total 77.61s work 77.53s vm_peak 3279 MiB guest_peak 2575 MiB; windows_mib 128036 ranges 261 peak 261 maps 303 removes 42 host_mappings 619 descriptors 129 | memory_kib 3332698
+round 4 arm 1048576 npm load 10.21 total 9.42s work 9.33s vm_peak 1273 MiB guest_peak 981 MiB; windows_mib 128036 ranges 0 peak 0 maps 0 removes 0 host_mappings 281 descriptors 56 | memory_kib 1278340
+round 4 arm 1048576 cargo load 9.94 total 71.25s work 71.18s vm_peak 3361 MiB guest_peak 2573 MiB; windows_mib 128036 ranges 296 peak 296 maps 396 removes 100 host_mappings 691 descriptors 164 | memory_kib 3416914
+load 8.25 at the end; runs failed 0: -
+cargo arm  1048576 total          n 5: p50 85.88 p90 100.26 p99 100.26 max 100.26 min 71.25
+cargo arm  1048576 work           n 5: p50 85.79 p90 100.17 p99 100.17 max 100.17 min 71.18
+cargo arm  1048576 peak_mib       n 5: p50 3361.32 p90 3462.50 p99 3462.50 max 3462.50 min 3098.20
+cargo arm  1048576 guest_peak_mib n 5: p50 2573.04 p90 2666.02 p99 2666.02 max 2666.02 min 2396.62
+npm   arm  1048576 total          n 5: p50 10.27 p90 13.51 p99 13.51 max 13.51 min 9.42
+npm   arm  1048576 work           n 5: p50 10.19 p90 13.40 p99 13.40 max 13.40 min 9.33
+npm   arm  1048576 peak_mib       n 5: p50 1253.34 p90 1273.48 p99 1273.48 max 1273.48 min 1120.34
+npm   arm  1048576 guest_peak_mib n 5: p50 972.07 p90 981.44 p99 981.44 max 981.44 min 815.02
+cargo arm  2097152 total          n 5: p50 84.79 p90 86.57 p99 86.57 max 86.57 min 77.61
+cargo arm  2097152 work           n 5: p50 84.69 p90 86.50 p99 86.50 max 86.50 min 77.53
+cargo arm  2097152 peak_mib       n 5: p50 3279.44 p90 3420.29 p99 3420.29 max 3420.29 min 3101.27
+cargo arm  2097152 guest_peak_mib n 5: p50 2614.57 p90 2658.00 p99 2658.00 max 2658.00 min 2530.87
+npm   arm  2097152 total          n 5: p50 10.69 p90 16.24 p99 16.24 max 16.24 min 10.36
+npm   arm  2097152 work           n 5: p50 10.59 p90 16.18 p99 16.18 max 16.18 min 10.28
+npm   arm  2097152 peak_mib       n 5: p50 1252.54 p90 1288.46 p99 1288.46 max 1288.46 min 1130.54
+npm   arm  2097152 guest_peak_mib n 5: p50 972.20 p90 997.14 p99 997.14 max 997.14 min 837.76

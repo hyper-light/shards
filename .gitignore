@@ -22,3 +22,8 @@ target
 
 # Built research harnesses
 docs/research/measurements/hvf/hvfbench
+# cargo-fuzz's build, corpora and crashes (fuzz/Cargo.toml).
+/fuzz/target
+/fuzz/corpus
+/fuzz/artifacts
+/fuzz/coverage

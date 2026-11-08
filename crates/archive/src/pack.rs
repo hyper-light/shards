@@ -1,0 +1,513 @@
+//! go-archive's TarWithOptions (archive.go: Tarballer.Do, tarAppender.addTarFile,
+//! FileInfoHeader), with tarheader.FileInfoHeaderNoLookups and Go's tar.FileInfoHeader:
+//! the files under a directory, walked in lexical order as filepath.WalkDir walks them,
+//! each named relative to it with `/` separators and a trailing `/` for directories,
+//! owners as numbers without names, modification times in whole seconds, no access or
+//! change times, hard links to the first name of an inode, and security.capability as a
+//! PAX record.
+//!
+//! Where go-archive logs an error and goes on, so does this, skipping the file: one that
+//! vanished, a socket. Where go-archive would leave a broken archive behind a log line (a
+//! file that shrank or could not be opened after its header was written, an unreadable
+//! source directory, a pattern that cannot be matched), this fails instead.
+
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::io::{self, Read, Write};
+use std::path::Path;
+
+use crate::error::Error;
+use crate::gopath::{self, NATIVE, Os};
+use crate::patterns::{MatchInfo, PatternMatcher};
+use crate::sys::{self, FileKind, Stat};
+use crate::tar::{
+    Format, Header, PAX_SCHILY_XATTR, TYPE_BLOCK, TYPE_CHAR, TYPE_DIR, TYPE_FIFO, TYPE_LINK, TYPE_REG,
+    TYPE_SYMLINK, Time, Writer,
+};
+use crate::whiteout::{self, Overlay, WhiteoutFormat};
+
+/// TarOptions' fields that making an archive reads.
+#[derive(Debug, Clone, Default)]
+pub struct PackOptions {
+    /// IncludeFiles: paths under the source to archive, `.` for all of it (the default).
+    pub include_files: Vec<Vec<u8>>,
+    /// ExcludePatterns, read as patternmatcher v0.6.1 reads them (the archive oracle's);
+    /// `!` makes an exception.
+    pub exclude_patterns: Vec<Vec<u8>>,
+    /// ChownOpts: the owner every header gets instead of the file's.
+    pub chown: Option<(i64, i64)>,
+    /// IncludeSourceDir: the source directory itself is an entry, `./` with `.` included.
+    pub include_source_dir: bool,
+    /// RebaseNames: for an include, what its first occurrence in each name becomes.
+    pub rebase_names: BTreeMap<Vec<u8>, Vec<u8>>,
+    /// WhiteoutFormat: with Overlay, an overlayfs upper directory's whiteouts and opaque
+    /// directories are archived as `.wh.` files.
+    pub whiteout: WhiteoutFormat,
+}
+
+/// The files a pack reads, where go-archive reads its host's: what each is, the names in
+/// each directory, links' targets, attributes and bytes, each named by its path. [`pack`]
+/// reads its host's own; [`pack_from`], those of a Linux file system read some other way,
+/// a stopped microVM's writable layer from its file (shards-ext4).
+pub trait Files {
+    /// os.Lstat.
+    fn lstat(&mut self, path: &[u8]) -> io::Result<Stat>;
+    /// os.ReadDir: the names in a directory, sorted, each with whether it is a directory
+    /// as its directory says (d_type, which filepath.WalkDir takes).
+    fn read_dir(&mut self, path: &[u8]) -> io::Result<Vec<(Vec<u8>, bool)>>;
+    /// os.Readlink.
+    fn readlink(&mut self, path: &[u8]) -> io::Result<Vec<u8>>;
+    /// lgetxattr(2): an attribute's value, None where it is unset.
+    fn xattr(&mut self, path: &[u8], name: &[u8]) -> io::Result<Option<Vec<u8>>>;
+    /// A regular file's bytes.
+    fn open(&mut self, path: &[u8]) -> io::Result<Box<dyn Read + '_>>;
+}
+
+/// This host's own files, through its system calls.
+struct Host;
+
+impl Files for Host {
+    fn lstat(&mut self, path: &[u8]) -> io::Result<Stat> {
+        sys::lstat(path)
+    }
+
+    fn read_dir(&mut self, path: &[u8]) -> io::Result<Vec<(Vec<u8>, bool)>> {
+        sys::read_dir(path)
+    }
+
+    fn readlink(&mut self, path: &[u8]) -> io::Result<Vec<u8>> {
+        sys::readlink(path)
+    }
+
+    fn xattr(&mut self, path: &[u8], name: &[u8]) -> io::Result<Option<Vec<u8>>> {
+        sys::lgetxattr(path, name)
+    }
+
+    fn open(&mut self, path: &[u8]) -> io::Result<Box<dyn Read + '_>> {
+        Ok(Box::new(std::fs::File::open(sys::os_path(path))?))
+    }
+}
+
+/// Writes the archive of `src` to `out`: TarWithOptions. A source that is not a directory
+/// is archived as itself, under its base name.
+pub fn pack<W: Write>(src: &Path, opts: &PackOptions, out: W) -> Result<W, Error> {
+    let conv = whiteout::converter(opts.whiteout);
+    pack_in(&mut Host, NATIVE, conv, sys::path_bytes(src), opts, out)
+}
+
+/// [`pack`] of `files`, a Linux file system's read through them, from `src`, its path in
+/// it: archived as go-archive archives a Linux host's files, whatever this host is; with
+/// [`WhiteoutFormat::Overlay`], an upper directory's whiteouts and opaque directories are
+/// those of an overlay mounted by a root of its own, as a microVM's guest mounts its root,
+/// its opaque directories marked `trusted.overlay.opaque`.
+pub fn pack_from<W: Write>(
+    files: &mut dyn Files,
+    src: &[u8],
+    opts: &PackOptions,
+    out: W,
+) -> Result<W, Error> {
+    let conv = (opts.whiteout == WhiteoutFormat::Overlay).then(Overlay::trusted);
+    pack_in(files, Os::Unix, conv, src.to_vec(), opts, out)
+}
+
+fn pack_in<W: Write>(
+    files: &mut dyn Files,
+    os: Os,
+    whiteout: Option<Overlay>,
+    mut src_path: Vec<u8>,
+    opts: &PackOptions,
+    out: W,
+) -> Result<W, Error> {
+    let pm = PatternMatcher::new(&opts.exclude_patterns)?;
+    let mut includes = opts.include_files.clone();
+    let st = files
+        .lstat(&src_path)
+        .map_err(|e| Error::path("lstat", &src_path, &e))?;
+    if st.kind != FileKind::Dir {
+        let (dir, base) = crate::copy::split_path_dir_entry_os(os, &src_path);
+        src_path = dir;
+        includes = vec![base];
+    }
+    if includes.is_empty() {
+        includes = vec![b".".to_vec()];
+    }
+    let mut packer = Packer {
+        tw: Writer::new(out),
+        seen_inodes: HashMap::new(),
+        chown: opts.chown,
+        whiteout,
+        nanos: false,
+        os,
+    };
+    let mut seen: HashSet<Vec<u8>> = HashSet::new();
+    let sep = os.sep();
+    for include in &includes {
+        let rebase = opts.rebase_names.get(include).filter(|r| !r.is_empty());
+        let mut parent_dirs: Vec<Vec<u8>> = Vec::new();
+        let mut parent_info: Vec<MatchInfo> = Vec::new();
+        let walk_root = walk_root(os, &src_path, include);
+        walk_dir(&mut *files, os, &walk_root, &mut |files: &mut dyn Files,
+                                                    file_path: &[u8],
+                                                    is_dir: bool|
+         -> Result<Flow, Error> {
+            let Some(mut rel) = gopath::rel(os, &src_path, file_path) else {
+                return Ok(Flow::Continue);
+            };
+            if !opts.include_source_dir && rel == b"." && is_dir {
+                return Ok(Flow::Continue);
+            }
+            if opts.include_source_dir && include == b"." && rel != b"." {
+                rel = [b".".as_slice(), &[sep], &rel].concat();
+            }
+            let mut skip = false;
+            if *include != rel {
+                while let Some(last) = parent_dirs.last() {
+                    if rel.starts_with(&[last.as_slice(), &[sep]].concat()) {
+                        break;
+                    }
+                    parent_dirs.pop();
+                    parent_info.pop();
+                }
+                let parent = parent_info.last().cloned().unwrap_or_default();
+                let (excluded, info) = pm.matches_using_parent_results(&rel, &parent)?;
+                skip = excluded;
+                if is_dir {
+                    parent_dirs.push(rel.clone());
+                    parent_info.push(info);
+                }
+            }
+            if skip {
+                if !is_dir {
+                    return Ok(Flow::Continue);
+                }
+                if !pm.exclusions() {
+                    return Ok(Flow::SkipDir);
+                }
+                let dir_slash = [rel.as_slice(), &[sep]].concat();
+                for pat in pm.patterns() {
+                    if pat.exclusion() && [pat.text(), &[sep]].concat().starts_with(&dir_slash) {
+                        return Ok(Flow::Continue);
+                    }
+                }
+                return Ok(Flow::SkipDir);
+            }
+            if !seen.insert(rel.clone()) {
+                return Ok(Flow::Continue);
+            }
+            if let Some(rebase) = rebase {
+                let replacement: &[u8] = if rebase.as_slice() == [sep] { b"" } else { rebase };
+                rel = replace_first(&rel, include, replacement);
+            }
+            packer.add(files, file_path, &rel)?;
+            Ok(Flow::Continue)
+        })?;
+    }
+    packer.tw.finish()
+}
+
+/// A layer of what changed under `root` since a copy of it was made, for [`apply_layer`] to
+/// bring that copy in step (shards' contexts, D180): each of `changed`, a path relative to
+/// `root` with `/` between its names, archived as itself alone, a directory's entry without
+/// what it holds, its time to the nanosecond, which go-archive's headers drop and a copy
+/// told apart by its times needs; hard links among them linked again, and to `linked`,
+/// files the copy holds already that one of them is a hard link of, as no byte of those
+/// need go again; then a whiteout, as go-archive's ExportChanges writes one, for each of
+/// `removed`.
+pub fn pack_changes<W: Write>(
+    root: &Path,
+    changed: &[Vec<u8>],
+    linked: &[Vec<u8>],
+    removed: &[Vec<u8>],
+    out: W,
+) -> Result<W, Error> {
+    let root = sys::path_bytes(root);
+    let mut packer = Packer {
+        tw: Writer::new(out),
+        seen_inodes: HashMap::new(),
+        chown: None,
+        whiteout: None,
+        nanos: true,
+        os: NATIVE,
+    };
+    for rel in linked {
+        let src = gopath::join(NATIVE, &[&root, &gopath::from_slash(NATIVE, rel)]);
+        if let Ok(st) = sys::lstat(&src)
+            && st.kind != FileKind::Dir
+            && has_hardlinks(&st)
+        {
+            packer
+                .seen_inodes
+                .entry((st.dev, st.ino))
+                .or_insert_with(|| rel.clone());
+        }
+    }
+    for rel in changed {
+        let src = gopath::join(NATIVE, &[&root, &gopath::from_slash(NATIVE, rel)]);
+        packer.add(&mut Host, &src, rel)?;
+    }
+    for rel in removed {
+        let (dir, base) = gopath::posix::split(rel);
+        let hdr = Header {
+            name: [dir, crate::whiteout::WHITEOUT_PREFIX, base].concat(),
+            typeflag: TYPE_REG,
+            ..Header::default()
+        };
+        packer.tw.write_header(&hdr)?;
+    }
+    packer.tw.finish()
+}
+
+/// What the walk does after a file: go on, or skip the rest of a directory.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Flow {
+    Continue,
+    SkipDir,
+}
+
+/// A directory being walked, and its entries left to visit.
+type Listing = (Vec<u8>, std::vec::IntoIter<(Vec<u8>, bool)>);
+
+/// What a walk does with each file it comes to: given the files it walks.
+type Visit<'a> = dyn FnMut(&mut dyn Files, &[u8], bool) -> Result<Flow, Error> + 'a;
+
+/// filepath.WalkDir: `root`, then, for a directory, its entries in lexical order, never
+/// following symlinks. Errors listing or stating a file skip it, as go-archive's callback
+/// logs them and goes on.
+fn walk_dir(files: &mut dyn Files, os: Os, root: &[u8], f: &mut Visit<'_>) -> Result<(), Error> {
+    let Ok(st) = files.lstat(root) else {
+        return Ok(());
+    };
+    // Directories still to list, deepest last, each with the entries left to visit.
+    let is_dir = st.kind == FileKind::Dir;
+    if f(files, root, is_dir)? == Flow::SkipDir || !is_dir {
+        return Ok(());
+    }
+    let mut stack: Vec<Listing> = Vec::new();
+    stack.push((
+        root.to_vec(),
+        files.read_dir(root).unwrap_or_default().into_iter(),
+    ));
+    while let Some((dir, entries)) = stack.last_mut() {
+        let Some((name, is_dir)) = entries.next() else {
+            stack.pop();
+            continue;
+        };
+        let path = gopath::join(os, &[dir, &name]);
+        match f(files, &path, is_dir)? {
+            Flow::SkipDir if !is_dir => {
+                // A file's SkipDir skips the rest of its directory.
+                stack.pop();
+            }
+            Flow::SkipDir => {}
+            Flow::Continue if is_dir => {
+                let entries = files.read_dir(&path).unwrap_or_default();
+                stack.push((path, entries.into_iter()));
+            }
+            Flow::Continue => {}
+        }
+    }
+    Ok(())
+}
+
+/// getWalkRoot: on Unix the source with one trailing separator trimmed, a separator and
+/// the include, uncleaned, so a trailing `.` or `/` survives; on Windows joined.
+fn walk_root(os: Os, src: &[u8], include: &[u8]) -> Vec<u8> {
+    match os {
+        Os::Unix => {
+            let src = src.strip_suffix(b"/").unwrap_or(src);
+            [src, b"/", include].concat()
+        }
+        Os::Windows => gopath::join(Os::Windows, &[src, include]),
+    }
+}
+
+/// strings.Replace(s, old, new, 1).
+fn replace_first(s: &[u8], old: &[u8], new: &[u8]) -> Vec<u8> {
+    if old.is_empty() {
+        return [new, s].concat();
+    }
+    match s.windows(old.len()).position(|w| w == old) {
+        Some(i) => [
+            s.get(..i).unwrap_or_default(),
+            new,
+            s.get(i + old.len()..).unwrap_or_default(),
+        ]
+        .concat(),
+        None => s.to_vec(),
+    }
+}
+
+/// tarAppender.
+struct Packer<W: Write> {
+    tw: Writer<W>,
+    /// The first name of each inode with more than one link. Keyed by device and inode,
+    /// where go-archive keys by inode alone and so links files of two filesystems that
+    /// share an inode number; within one filesystem the archives are the same. On Windows
+    /// by volume and file ID ([`Stat::ino`]).
+    seen_inodes: HashMap<(u64, u128), Vec<u8>>,
+    chown: Option<(i64, i64)>,
+    whiteout: Option<Overlay>,
+    /// Times kept to the nanosecond, where go-archive keeps seconds ([`pack_changes`]).
+    nanos: bool,
+    /// The system whose files these are, as go-archive on it would archive them.
+    os: Os,
+}
+
+impl<W: Write> Packer<W> {
+    /// addTarFile: `src` as `name`. A file that cannot be stated, read as a link, or put in
+    /// a header is skipped, as go-archive logs it and goes on; writing errors end it.
+    fn add(&mut self, files: &mut dyn Files, src: &[u8], name: &[u8]) -> Result<(), Error> {
+        let os = self.os;
+        let name = gopath::to_slash(os, name);
+        let Ok(st) = files.lstat(src) else {
+            return Ok(());
+        };
+        let mut link = Vec::new();
+        if st.kind == FileKind::Symlink {
+            let Ok(target) = files.readlink(src) else {
+                return Ok(());
+            };
+            link = target;
+        }
+        let Some(mut hdr) = file_info_header(os, &name, &st, &link) else {
+            return Ok(());
+        };
+        if self.nanos {
+            hdr.mtime = st.mtime;
+        }
+        // security.capability, unset where it cannot be read, as go-archive ignores the
+        // error (ReadSecurityXattrToTarHeader).
+        if let Some(mut cap) = files.xattr(src, b"security.capability").ok().flatten() {
+            // VFS_CAP_REVISION_3 becomes revision 2, its root id dropped: it means nothing
+            // outside the user namespace the archive was made in.
+            if cap.get(3) == Some(&3) {
+                if let Some(v) = cap.get_mut(3) {
+                    *v = 2;
+                }
+                cap.truncate(20);
+            }
+            hdr.pax
+                .insert([PAX_SCHILY_XATTR, b"security.capability"].concat(), cap);
+        }
+        if st.kind != FileKind::Dir && has_hardlinks(&st) {
+            match self.seen_inodes.get(&(st.dev, st.ino)) {
+                Some(first) => {
+                    hdr.typeflag = TYPE_LINK;
+                    hdr.linkname = first.clone();
+                    hdr.size = 0;
+                }
+                None => {
+                    self.seen_inodes.insert((st.dev, st.ino), hdr.name.clone());
+                }
+            }
+        }
+        if let Some((uid, gid)) = self.chown {
+            hdr.uid = uid;
+            hdr.gid = gid;
+        }
+        if let Some(conv) = &self.whiteout {
+            // A converted directory's header goes first, its opaque marker after it.
+            let Ok(marker) = conv.convert_write(&mut *files, &mut hdr, src, &st) else {
+                return Ok(());
+            };
+            if let Some(marker) = marker {
+                // go-archive's "tar: cannot use whiteout for non-empty file", logged.
+                if hdr.typeflag == TYPE_REG && hdr.size > 0 {
+                    return Ok(());
+                }
+                if crate::tar::allowed(&hdr).is_none() {
+                    return Ok(());
+                }
+                self.tw.write_header(&hdr)?;
+                hdr = marker;
+            }
+        }
+        if crate::tar::allowed(&hdr).is_none() {
+            return Ok(());
+        }
+        self.tw.write_header(&hdr)?;
+        if hdr.typeflag == TYPE_REG && hdr.size > 0 {
+            let file = files.open(src).map_err(|e| Error::path("open", src, &e))?;
+            self.tw.copy_from(file)?;
+        }
+        Ok(())
+    }
+}
+
+/// Whether a file has other names: more than one link. go-archive finds none on Windows
+/// (hasHardlinks, changes_windows.go), where NTFS and ReFS keep them as Unix does, and a
+/// Windows client sent each name of a file whole, its bytes again, and the tree its copy
+/// was made of no longer the client's (D180): a Windows host's files are linked as a Unix
+/// host's are, by their volume and file ID (`sys::lstat`), the archive the bytes a Unix
+/// host's of the same tree would be.
+fn has_hardlinks(st: &Stat) -> bool {
+    st.nlink > 1
+}
+
+/// FileInfoHeader: Go's tar.FileInfoHeader without name lookups, then go-archive's
+/// format, times, mode and name. None where Go errs: a socket, an irregular file.
+pub(crate) fn file_info_header(os: Os, name: &[u8], st: &Stat, link: &[u8]) -> Option<Header> {
+    // Go's FileMode's permission, set-id and sticky bits: `st_mode`'s on Unix.
+    let perm = match os {
+        Os::Unix => i64::from(st.mode & 0o7777),
+        Os::Windows => sys::perm(st),
+    };
+    let mut hdr = Header {
+        mode: perm,
+        mtime: Time {
+            sec: st.mtime.sec,
+            nsec: 0,
+        },
+        format: Format::PAX,
+        ..Header::default()
+    };
+    match st.kind {
+        FileKind::File => {
+            hdr.typeflag = TYPE_REG;
+            hdr.size = i64::try_from(st.size).ok()?;
+        }
+        FileKind::Dir => hdr.typeflag = TYPE_DIR,
+        FileKind::Symlink => {
+            hdr.typeflag = TYPE_SYMLINK;
+            hdr.linkname = link.to_vec();
+        }
+        FileKind::Char => hdr.typeflag = TYPE_CHAR,
+        FileKind::Block => hdr.typeflag = TYPE_BLOCK,
+        FileKind::Fifo => hdr.typeflag = TYPE_FIFO,
+        FileKind::Socket | FileKind::Other => return None,
+    }
+    sys_stat(os, st, &mut hdr);
+    hdr.mode = chmod_tar_entry(os, hdr.mode);
+    hdr.name = name.to_vec();
+    if st.kind == FileKind::Dir && !hdr.name.ends_with(b"/") {
+        hdr.name.push(b'/');
+    }
+    Some(hdr)
+}
+
+/// tarheader's sysStat (tarheader_unix.go): owner ids, and device numbers when
+/// `st_mode` has either S_IFBLK or S_IFCHR bit, which go-archive tests bit by bit, so
+/// directories and symlinks take theirs from `st_rdev` too; tarheader_windows.go's
+/// nothing.
+fn sys_stat(os: Os, st: &Stat, hdr: &mut Header) {
+    /// S_IFBLK and S_IFCHR, POSIX's.
+    const S_IFBLK: u32 = 0o060_000;
+    const S_IFCHR: u32 = 0o020_000;
+    if os == Os::Windows {
+        return;
+    }
+    hdr.uid = i64::from(st.uid);
+    hdr.gid = i64::from(st.gid);
+    if st.mode & S_IFBLK != 0 || st.mode & S_IFCHR != 0 {
+        hdr.devmajor = st.major;
+        hdr.devminor = st.minor;
+    }
+}
+
+/// chmodTarEntry: Unix modes as they are; on Windows (archive_windows.go), no group or
+/// other write, and everything executable.
+fn chmod_tar_entry(os: Os, mode: i64) -> i64 {
+    match os {
+        Os::Unix => mode,
+        Os::Windows => (mode & 0o755) | 0o111,
+    }
+}

@@ -1,6 +1,6 @@
 [package]
 name = "shards"
-version = "0.1.0"
+version = "0.7.0"
 description = "shards: microVMs for agents, designed for home or at scale"
 edition.workspace = true
 license.workspace = true
@@ -8,39 +8,125 @@ repository.workspace = true
 rust-version.workspace = true
 autobins = false
 
-# The command, which links only the standard library, shards-ipc and shards-cmdline, so it
-# starts fast.
+# The one binary: every command, the daemon included. It links no framework that loads
+# at launch, so it starts as fast as a command alone would (PM M113).
 [[bin]]
 name = "shards"
-path = "src/bin/shards/main.rs"
-
-# Everything that runs microVMs: the daemon, the VMM, pulls and the guest.
-[[bin]]
-name = "shardsd"
 path = "src/main.rs"
 
 [lints]
 workspace = true
 
+[features]
+# Counts the heap and page faults of each phase of a build, printed to stderr as it ends
+# (src/alloc_count.rs; docs/research/measurements/build-memory). For measurements only.
+alloc-count = []
+
 [dependencies]
 shards-abi = { path = "../abi" }
+shards-net = { path = "../net" }
+shards-netring = { path = "../netring" }
+shards-user = { path = "../user" }
+shards-template = { path = "../template" }
+shards-build = { path = "../build" }
 shards-cmdline = { path = "../cmdline" }
+shards-agentfile = { path = "../agentfile" }
+shards-gateway = { path = "../gateway" }
+shards-flate = { path = "../flate" }
+shards-zstd = { path = "../zstd" }
+shards-git = { path = "../git" }
+shards-seccomp = { path = "../seccomp" }
+shards-ext4 = { path = "../ext4" }
 shards-image = { path = "../image" }
+regex = "1"
 shards-ipc = { path = "../ipc" }
+shards-tui = { path = "../tui" }
 shards-registry = { path = "../registry" }
+shards-remote = { path = "../remote" }
 shards-vmm = { path = "../vmm" }
 sha2 = "0.11"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+shards-archive = { path = "../archive" }
+shards-rego = { path = "../rego" }
+shards-gitsign = { path = "../gitsign" }
+shards-sigstore = { path = "../sigstore" }
+shards-tuf = { path = "../tuf" }
+# The keys `build --ssh ID=FILE` serves its steps, signed with (build/sshkey.rs).
+aws-lc-rs = { version = "1.18.1", default-features = false, features = ["aws-lc-sys"] }
+# A build's proxy (D110): its CA and each host's certificate, and the TLS it speaks to a
+# step's clients, with AWS-LC as everything else's.
+rcgen = { version = "0.14.10", default-features = false, features = ["aws_lc_rs", "pem"] }
+# GELF's UDP messages, gzipped or zlib'd (D164); built layers, read back in tests.
+flate2 = { version = "1", default-features = false, features = ["zlib-rs", "runtime_detection"] }
+rustls = { version = "0.23.45", default-features = false, features = ["std", "tls12", "aws_lc_rs", "prefer-post-quantum"] }
+base64 = "0.23.1"
+zeroize = "1"
+yaml-rust2 = "0.13.0"
+time = { version = "0.3.55", features = ["parsing"] }
+# lgamma, for the t test that ages a home's restart records (D190): musl's, in Rust.
+libm = "0.2.16"
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+shards-apple = { path = "../apple" }
+
+# A run's microVM placed under a slice of the user's systemd manager (D183).
+[target.'cfg(target_os = "linux")'.dependencies]
+shards-bus = { path = "../bus" }
+
 [target.'cfg(windows)'.dependencies]
-windows-sys = { workspace = true }
+windows-sys = { workspace = true, features = [
+  "Win32_Networking_WinSock",
+  "Win32_System_Diagnostics_Etw",
+  "Win32_System_Pipes",
+  "Win32_System_Threading",
+  "Win32_System_Time",
+] }
+
+[build-dependencies]
+# The helpers' digests (build.rs).
+sha2 = "0.11"
+# The oslog driver's shim of os_log's macros (build.rs `oslog`, D199), on macOS.
+cc = "1.5"
+
+[target.'cfg(windows)'.dev-dependencies]
+# What tests/confined.rs reads of a running VM process; how tests/daemon.rs interrupts a
+# client (Console), takes a slot (Storage_FileSystem), reads the daemon's threads' cycles
+# (WindowsProgramming) and the files it holds (FileProcessIdsUsingFileInformation); how
+# tests/containers.rs holds a run pending (Ioctl's oplocks); how tests/common reads a
+# process's command line (Wdk_System_Threading's NtQueryInformationProcess).
+windows-sys = { workspace = true, features = [
+  "Wdk_Storage_FileSystem",
+  "Wdk_System_Threading",
+  "Win32_Security",
+  "Win32_Security_Authorization",
+  "Win32_Security_Isolation",
+  "Win32_Storage_FileSystem",
+  "Win32_System_Console",
+  "Win32_System_Diagnostics_ToolHelp",
+  "Win32_System_IO",
+  "Win32_System_Ioctl",
+  "Win32_System_JobObjects",
+  "Win32_System_Memory",
+  "Win32_System_Pipes",
+  "Win32_System_ProcessStatus",
+  "Win32_System_SystemInformation",
+  "Win32_System_Threading",
+  "Win32_System_WindowsProgramming",
+] }
 
 [dev-dependencies]
+# shards-api's conformance suite, run on real guests this binary boots (tests/boot.rs).
+shards-api = { path = "../api" }
+shards-testdir = { path = "../testdir" }
 shards-testguest = { path = "../testguest" }
+# `load`'s archives of every compression (tests/containers.rs), written in-process.
+bzip2 = "0.6"
+lzma-rust2 = { version = "0.21", default-features = false, features = ["std", "xz", "encoder"] }
+ruzstd = "0.9"
 
 [[bench]]
 name = "boot"
@@ -60,4 +146,16 @@ harness = false
 
 [[bench]]
 name = "image"
+harness = false
+
+[[bench]]
+name = "workloads"
+harness = false
+
+[[bench]]
+name = "arrival"
+harness = false
+
+[[bench]]
+name = "net_memory"
 harness = false

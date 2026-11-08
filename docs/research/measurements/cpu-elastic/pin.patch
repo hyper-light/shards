@@ -1,0 +1,18 @@
+--- a/crates/init/src/run.rs
++++ b/crates/init/src/run.rs
+@@ -1011,6 +1011,15 @@
+     if mkdir(&keys).is_ok() {
+         let _ = std::fs::write(format!("{keys}/cpu.max"), "1000 100000");
+     }
++    // Experiment (docs/research/measurements/cpu-elastic, pin): init, and what it starts
++    // before each moves to its own cgroup, on the first CPU, where every run's cpuset
++    // begins, from the template on: a start's wakeups between init and its standby stay
++    // on one vCPU. A cgroup's cpuset, not an affinity, which a process moved on keeps.
++    let pinned = "/sys/fs/cgroup/init";
++    if mkdir(pinned).is_ok() {
++        let _ = std::fs::write(format!("{pinned}/cpuset.cpus"), "0");
++        let _ = std::fs::write(format!("{pinned}/cgroup.procs"), "0");
++    }
+     mount("", "/", "", libc::MS_REC | libc::MS_SHARED, "")
+ }
+ 

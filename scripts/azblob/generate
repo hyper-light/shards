@@ -1,0 +1,25 @@
+#!/bin/sh
+# Regenerates crates/shards/src/build/testdata/azblob.json: every request
+# azure-sdk-for-go's azblob v1.5.0 (BuildKit v0.28.1's) sends for what BuildKit's azblob
+# cache does, signed with a shared key, run by Go 1.25.8 (D89).
+#
+#   scripts/azblob/generate
+set -eu
+here=$(cd "$(dirname "$0")" && pwd)
+root=$(cd "$here/../.." && pwd)
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+cp "$here/oracle/main.go" "$work/main.go"
+cd "$work"
+cat >go.mod <<'MOD'
+module shards.dev/azblob-oracle
+
+go 1.25
+
+require (
+	github.com/Azure/azure-sdk-for-go/sdk/azcore v1.20.0
+	github.com/Azure/azure-sdk-for-go/sdk/storage/azblob v1.5.0
+)
+MOD
+GOTOOLCHAIN=go1.25.8 GOFLAGS=-mod=mod go mod tidy >/dev/null 2>&1
+GOTOOLCHAIN=go1.25.8 GOFLAGS=-mod=mod go run . "$root/crates/shards/src/build/testdata/azblob.json"

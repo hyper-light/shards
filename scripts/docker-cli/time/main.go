@@ -22,6 +22,24 @@ type since struct {
 	Error  string `json:"error,omitempty"`
 }
 
+// time.ParseDuration of a value, as pflag reads a duration flag, and what the duration
+// prints as (Duration.String, which pflag shows for one).
+type duration struct {
+	Value  string `json:"value"`
+	Ns     int64  `json:"ns"`
+	Shown  string `json:"shown,omitempty"`
+	Error  string `json:"error,omitempty"`
+}
+
+// What dockerd makes of a filter's time (daemon timestamp.Parse: `images --filter
+// until`, the prunes' `until`), at the instant in a zone, as seconds.nanoseconds.
+type parsed struct {
+	Value  string `json:"value"`
+	Offset int    `json:"offset"`
+	Result string `json:"result,omitempty"`
+	Error  string `json:"error,omitempty"`
+}
+
 type unix struct {
 	Value string `json:"value"`
 	Ns    *int64 `json:"ns,omitempty"`
@@ -81,6 +99,21 @@ func main() {
 			sinces = append(sinces, s)
 		}
 	}
+	var parses []parsed
+	for _, zone := range zones {
+		reference := now.In(zone)
+		_, offset := reference.Zone()
+		for _, v := range append(values, timestamps...) {
+			t, err := daemon.Parse(v, reference)
+			p := parsed{Value: v, Offset: offset}
+			if err != nil {
+				p.Error = err.Error()
+			} else {
+				p.Result = fmt.Sprintf("%d.%09d", t.Unix(), t.Nanosecond())
+			}
+			parses = append(parses, p)
+		}
+	}
 	var unixes []unix
 	for _, v := range timestamps {
 		t, err := daemon.ParseUnixTimestamp(v)
@@ -93,8 +126,23 @@ func main() {
 		}
 		unixes = append(unixes, u)
 	}
+	var durations []duration
+	for _, v := range values {
+		d, err := time.ParseDuration(v)
+		r := duration{Value: v, Ns: int64(d), Shown: d.String()}
+		if err != nil {
+			r.Ns, r.Shown, r.Error = 0, "", err.Error()
+		}
+		durations = append(durations, r)
+	}
+	for _, ns := range []int64{0, 1, 999, 1000, 1500, 999999, 1000000, 1234567, 999999999, 1000000000,
+		1500000000, 59999999999, 60000000000, 90000000000, 3599999999999, 3600000000000,
+		3661001000000, 86400000000000, -1, -1500000000, -3661001000000, 9223372036854775807,
+		-9223372036854775808} {
+		durations = append(durations, duration{Value: "", Ns: ns, Shown: time.Duration(ns).String()})
+	}
 	out, err := json.MarshalIndent(map[string]any{
-		"now_ns": now.UnixNano(), "since": sinces, "unix": unixes,
+		"now_ns": now.UnixNano(), "since": sinces, "parse": parses, "unix": unixes, "durations": durations,
 	}, "", "  ")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)

@@ -12,23 +12,32 @@
 //! Stricter than containerd:
 //! - A realm must be `https`, unless it and the registry are both plain HTTP on loopback.
 //!   containerd sends credentials to any realm a registry names.
+//! - Challenges are answered per origin: scheme, host and port. containerd keys them by
+//!   host, so a credential a registry asked for over TLS would go to the same host over
+//!   plain HTTP.
+//! - An OAuth2 POST, whose body carries the secret, follows redirects only within its
+//!   realm's origin. Go's client replays a 307 or 308 body wherever it points.
 //! - A token lasts `expires_in`, and at least 60 s, from `issued_at` or its receipt, as
-//!   distribution's client counts. containerd keeps a token without `expires_in` forever.
+//!   distribution's client counts (token.md). containerd keeps a token without
+//!   `expires_in` forever. `issued_at` is the server's clock, so it is measured against
+//!   the token response's `Date`, also the server's: no skew between that clock and ours
+//!   counts, and what is left is counted on a monotonic clock from receipt.
 //! - A request refused twice in a row is not retried again.
 
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::io::Read;
-use std::sync::{Arc, Mutex, PoisonError};
-use std::time::{Duration, SystemTime};
+use std::sync::{Condvar, Mutex, MutexGuard, OnceLock, PoisonError};
+use std::time::{Duration, Instant, SystemTime};
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use serde::Deserialize;
 
-use crate::Error;
-use crate::http::{Client, Request, Response};
+use crate::credentials::{Asked, Found};
+use crate::http::{Client, Redirects, Request, Response};
 use crate::url::{Scheme as UrlScheme, Url};
+use crate::{Error, ErrorKind, printable};
 
 /// What shards names itself to token servers (`client_id`; distribution's oauth.md asks
 /// for "a meaningful value").
@@ -38,7 +47,8 @@ const MAX_TOKEN_RESPONSE: u64 = 1 << 20;
 /// distribution's `minimumTokenLifetimeSeconds`, and the spec's default.
 const MIN_LIFETIME: Duration = Duration::from_secs(60);
 
-/// A challenge's scheme, in containerd's order of preference: bearer, digest, basic.
+/// A challenge's scheme, best first: bearer (a scoped token that expires), digest, basic
+/// (the secret itself, with each request).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Scheme {
     Basic,
@@ -51,6 +61,11 @@ pub enum Scheme {
 pub struct Challenge {
     pub scheme: Scheme,
     pub params: BTreeMap<String, String>,
+}
+
+/// An `Authorization` value of the Basic scheme (RFC 7617): `user:secret` in base64.
+pub fn basic(user: &[u8], secret: &[u8]) -> String {
+    format!("Basic {}", BASE64.encode([user, b":", secret].concat()))
 }
 
 /// The challenges in `values`, one per field line, best first (`ParseAuthHeader`).
@@ -172,8 +187,94 @@ impl Credentials {
 /// alone, and every other host is answered anonymously.
 pub struct Authorizer {
     registry: Url,
-    credentials: Credentials,
-    hosts: Mutex<HashMap<String, Arc<Handler>>>,
+    /// Where the registry is also reached in plain HTTP, at its host: the port, and
+    /// whether its credentials go there too. A loopback registry that answered HTTPS so
+    /// (registry.rs) is given them, as containerd keys them by host alone
+    /// (`dockerAuthorizer`); one Docker's daemon configuration names insecure (D194) never
+    /// is, as no credentials leave this machine unencrypted.
+    plain: Option<(u16, bool)>,
+    /// The registry's credentials, or the helper asked for them.
+    credentials: Source,
+    /// How each host asked to be answered, and the tokens fetched for it.
+    hosts: Mutex<Hosts>,
+    /// Signalled when a token fetch ends, or a host's way of answering changes, for
+    /// requests waiting on a fetch in progress.
+    fetched: Condvar,
+    /// Whether a token is asked for with a refresh token as well (containerd's
+    /// FetchRefreshToken), as `docker login` asks; and the last one given.
+    offline: bool,
+    refresh: Mutex<Option<String>>,
+}
+
+/// The credentials a registry's host is answered with: known as the pull begins, or a
+/// credential helper's answer, read the first time that host challenges and never where it
+/// does not, so that a helper that never answers holds nothing that needs no credentials
+/// (credentials.rs, [`Found`]; D184).
+enum Source {
+    Known(Credentials),
+    Asked(Box<Pending>),
+}
+
+struct Pending {
+    /// The helper, until a challenge takes it to read its answer.
+    helper: Mutex<Option<Asked>>,
+    /// Its answer, read once: every challenge that comes meanwhile waits for the same.
+    answer: OnceLock<Result<Credentials, (ErrorKind, String)>>,
+    /// Whether the pull waits on the helper, for what says so ([`Authorizer::waits`]).
+    wait: Mutex<Wait>,
+    told: Condvar,
+}
+
+#[derive(Clone)]
+enum Wait {
+    Not,
+    /// Waiting: the helper's notice.
+    On(String),
+    /// Its answer in, or the pull over.
+    Over,
+}
+
+impl Pending {
+    fn tell(&self, wait: Wait) {
+        *self.wait.lock().unwrap_or_else(PoisonError::into_inner) = wait;
+        self.told.notify_all();
+    }
+}
+
+impl fmt::Debug for Source {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Source::Known(credentials) => credentials.fmt(f),
+            Source::Asked(_) => f.write_str("Asked"),
+        }
+    }
+}
+
+impl From<Found> for Source {
+    fn from(found: Found) -> Source {
+        match found {
+            Found::Known(credentials) => Source::Known(credentials),
+            Found::Asked(asked) => Source::Asked(Box::new(Pending {
+                helper: Mutex::new(Some(asked)),
+                answer: OnceLock::new(),
+                wait: Mutex::new(Wait::Not),
+                told: Condvar::new(),
+            })),
+        }
+    }
+}
+
+#[derive(Default)]
+struct Hosts {
+    by_origin: HashMap<String, Host>,
+    /// The next host's generation: a fetch that ends after its host's challenge was
+    /// replaced keeps its token to itself.
+    next: u64,
+}
+
+struct Host {
+    generation: u64,
+    handler: Handler,
 }
 
 impl fmt::Debug for Authorizer {
@@ -187,35 +288,184 @@ impl fmt::Debug for Authorizer {
 
 enum Handler {
     Basic(String),
-    Bearer(Box<Bearer>),
+    /// The challenge's terms, and a slot per set of scopes asked for.
+    Bearer(Box<Bearer>, HashMap<String, Slot>),
 }
 
+/// A set of scopes' token: being fetched by one request, which the others wait for, or
+/// fetched.
+enum Slot {
+    Fetching,
+    Ready(Token),
+}
+
+#[derive(Clone)]
 struct Bearer {
     realm: Url,
     service: String,
     scopes: Vec<String>,
     username: String,
     secret: String,
-    /// One slot per set of scopes; whoever holds a slot's lock fetches for it.
-    tokens: Mutex<HashMap<String, Arc<Mutex<Option<Token>>>>>,
+    /// Whether a refresh token is asked for too.
+    offline: bool,
 }
 
+#[derive(Clone)]
 struct Token {
     value: String,
-    expires: SystemTime,
+    expires: Instant,
+    /// The refresh token the server gave with it, where it gave one.
+    refresh: Option<String>,
+}
+
+impl Hosts {
+    /// Answers `host` with `handler` from here on, as a new generation.
+    fn add(&mut self, host: String, handler: Handler) {
+        let generation = self.next;
+        self.next = self.next.wrapping_add(1);
+        self.by_origin.insert(host, Host { generation, handler });
+    }
 }
 
 impl Authorizer {
-    pub fn new(registry: &Url, credentials: Credentials) -> Authorizer {
+    pub fn new(registry: &Url, credentials: impl Into<Found>) -> Authorizer {
         Authorizer {
             registry: registry.clone(),
-            credentials,
-            hosts: Mutex::new(HashMap::new()),
+            plain: None,
+            credentials: Source::from(credentials.into()),
+            hosts: Mutex::default(),
+            fetched: Condvar::new(),
+            offline: false,
+            refresh: Mutex::default(),
         }
     }
 
+    /// An authorizer for `credentials`, its registry to come: what [`Registry`]'s
+    /// constructors take, which find the registry's URL.
+    ///
+    /// [`Registry`]: crate::registry::Registry
+    pub(crate) fn new_for(credentials: impl Into<Found>) -> impl FnOnce(&Url) -> Authorizer {
+        let credentials = credentials.into();
+        move |registry| Authorizer::new(registry, credentials)
+    }
+
+    /// The registry's credentials: a helper's answer waited for, where one was asked, the
+    /// wait said where its answer is not in yet.
+    fn credentials(&self) -> Result<Credentials, Error> {
+        let pending = match &self.credentials {
+            Source::Known(credentials) => return Ok(credentials.clone()),
+            Source::Asked(pending) => pending,
+        };
+        let answer = pending.answer.get_or_init(|| {
+            let helper = pending
+                .helper
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .take();
+            let Some(helper) = helper else {
+                return Err((ErrorKind::Other, "the credential helper's answer was lost".into()));
+            };
+            if !helper.answered() {
+                pending.tell(Wait::On(helper.notice()));
+            }
+            let answer = helper.answer().map_err(|e| (e.kind(), e.to_string()));
+            pending.tell(Wait::Over);
+            answer
+        });
+        answer.clone().map_err(|(kind, why)| Error::of(kind, why))
+    }
+
+    /// Whether a credential helper's answer may yet be waited for.
+    pub(crate) fn asks(&self) -> bool {
+        matches!(&self.credentials, Source::Asked(p) if p.answer.get().is_none())
+    }
+
+    /// Blocks until the pull waits on its credential helper, then says what it waits on;
+    /// or until it no longer can, its answer in or [`Authorizer::done`] told (None).
+    pub(crate) fn waits(&self) -> Option<String> {
+        let Source::Asked(pending) = &self.credentials else {
+            return None;
+        };
+        let mut wait = pending.wait.lock().unwrap_or_else(PoisonError::into_inner);
+        loop {
+            match &*wait {
+                Wait::On(notice) => return Some(notice.clone()),
+                Wait::Over => return None,
+                Wait::Not => wait = pending.told.wait(wait).unwrap_or_else(PoisonError::into_inner),
+            }
+        }
+    }
+
+    /// What may wait from here on is watched anew: a wait over before a helper's answer
+    /// came is a wait no more.
+    pub(crate) fn watch(&self) {
+        if let Source::Asked(pending) = &self.credentials
+            && pending.answer.get().is_none()
+        {
+            let mut wait = pending.wait.lock().unwrap_or_else(PoisonError::into_inner);
+            if matches!(*wait, Wait::Over) {
+                *wait = Wait::Not;
+            }
+        }
+    }
+
+    /// What it did is over: what waits in [`Authorizer::waits`] returns.
+    pub(crate) fn done(&self) {
+        if let Source::Asked(pending) = &self.credentials {
+            pending.tell(Wait::Over);
+        }
+    }
+
+    /// The same, asking each token server for a refresh token too (containerd's
+    /// FetchRefreshToken: OAuth2's `access_type=offline`, a GET's `offline_token=true`), as
+    /// dockerd's login asks (daemon/pkg/registry/auth.go, loginV2).
+    pub(crate) fn offline(self) -> Authorizer {
+        Authorizer {
+            offline: true,
+            ..self
+        }
+    }
+
+    /// The refresh token a token server last gave, where one did: the identity token
+    /// `docker login` keeps in place of a password.
+    pub(crate) fn refresh_token(&self) -> Option<String> {
+        self.refresh
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    fn hosts(&self) -> MutexGuard<'_, Hosts> {
+        self.hosts.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The same, also answering for the registry at its host and `port` in plain HTTP.
+    pub(crate) fn plain_too(self, port: u16) -> Authorizer {
+        Authorizer {
+            plain: Some((port, true)),
+            ..self
+        }
+    }
+
+    /// The same, the registry also reached at its host and `port` in plain HTTP, where
+    /// its credentials never go.
+    pub(crate) fn plain_without(self, port: u16) -> Authorizer {
+        Authorizer {
+            plain: Some((port, false)),
+            ..self
+        }
+    }
+
+    /// Whether `url` is the registry's in plain HTTP: `Some` of whether its credentials go
+    /// there.
+    fn plain_twin(&self, url: &Url) -> Option<bool> {
+        let (port, credentials) = self.plain?;
+        (url.scheme() == crate::url::Scheme::Http && url.host() == self.registry.host() && url.port() == port)
+            .then_some(credentials)
+    }
+
     fn is_registry(&self, url: &Url) -> bool {
-        url.scheme() == self.registry.scheme() && url.authority() == self.registry.authority()
+        url.same_origin(&self.registry) || self.plain_twin(url) == Some(true)
     }
 
     /// The `Authorization` value for a request to `url` that needs `scopes`, fetching a
@@ -226,61 +476,154 @@ impl Authorizer {
         url: &Url,
         scopes: &[String],
     ) -> Result<Option<String>, Error> {
-        if let Credentials::RegistryToken(token) = &self.credentials {
+        if let Source::Known(Credentials::RegistryToken(token)) = &self.credentials {
             return Ok(self.is_registry(url).then(|| format!("Bearer {token}")));
         }
-        let handler = {
-            let hosts = self.hosts.lock().unwrap_or_else(PoisonError::into_inner);
-            hosts.get(&url.authority()).cloned()
-        };
-        match handler.as_deref() {
-            None => Ok(None),
-            Some(Handler::Basic(value)) => Ok(Some(value.clone())),
-            Some(Handler::Bearer(bearer)) => bearer.authorization(http, scopes).map(Some),
+        /// What a request does, decided under the lock.
+        enum Next {
+            Answer(Option<String>),
+            Wait,
+            Fetch(Box<Bearer>, Vec<String>, String, u64),
         }
+        let origin = url.origin();
+        let mut hosts = self.hosts();
+        let (bearer, scopes, key, generation) = loop {
+            let next = match hosts.by_origin.get_mut(&origin) {
+                None => Next::Answer(None),
+                Some(Host {
+                    handler: Handler::Basic(value),
+                    ..
+                }) => Next::Answer(Some(value.clone())),
+                Some(Host {
+                    generation,
+                    handler: Handler::Bearer(bearer, tokens),
+                }) => {
+                    let scopes = bearer.scopes_with(scopes);
+                    let key = scopes.join(" ");
+                    match tokens.get(&key) {
+                        Some(Slot::Ready(token)) if Instant::now() < token.expires => {
+                            Next::Answer(Some(format!("Bearer {}", token.value)))
+                        }
+                        Some(Slot::Fetching) => Next::Wait,
+                        _ => {
+                            tokens.insert(key.clone(), Slot::Fetching);
+                            Next::Fetch(bearer.clone(), scopes, key, *generation)
+                        }
+                    }
+                }
+            };
+            match next {
+                Next::Answer(answer) => return Ok(answer),
+                Next::Wait => hosts = self.fetched.wait(hosts).unwrap_or_else(PoisonError::into_inner),
+                Next::Fetch(bearer, scopes, key, generation) => break (bearer, scopes, key, generation),
+            }
+        };
+        drop(hosts);
+        // Fetched without the lock: other hosts' requests, and this host's for other
+        // scopes, go on meanwhile.
+        let fetched = bearer.fetch(http, &scopes);
+        let mut hosts = self.hosts();
+        if let Some(Host {
+            generation: current,
+            handler: Handler::Bearer(_, tokens),
+        }) = hosts.by_origin.get_mut(&origin)
+            && *current == generation
+        {
+            match &fetched {
+                Ok(token) => {
+                    tokens.insert(key, Slot::Ready(token.clone()));
+                }
+                // Those waiting fetch for themselves, as a request after this one would.
+                Err(_) => {
+                    tokens.remove(&key);
+                }
+            }
+        }
+        drop(hosts);
+        self.fetched.notify_all();
+        if let Ok(Token {
+            refresh: Some(refresh),
+            ..
+        }) = &fetched
+        {
+            *self.refresh.lock().unwrap_or_else(PoisonError::into_inner) = Some(refresh.clone());
+        }
+        fetched.map(|token| Some(format!("Bearer {}", token.value)))
     }
 
     /// Takes in a 401 from `url` and says whether to send the request again. `repeated`
     /// says whether the same request was just refused as well.
     pub fn challenged(&self, url: &Url, response: &Response, repeated: bool) -> Result<bool, Error> {
         // dockerd never retries a registry token (`bearerAuthorizer.AddResponses`).
-        if matches!(self.credentials, Credentials::RegistryToken(_)) || repeated {
+        if matches!(self.credentials, Source::Known(Credentials::RegistryToken(_))) {
             return Ok(false);
         }
-        let host = url.authority();
-        let mut hosts = self.hosts.lock().unwrap_or_else(PoisonError::into_inner);
-        for c in challenges(response.headers("www-authenticate")) {
+        let challenges = challenges(response.headers("www-authenticate"));
+        let why = |c: &Challenge| c.params.get("error").filter(|why| !why.is_empty()).cloned();
+        if repeated {
+            // Refused again, by a token server that says why: containerd's
+            // ErrInvalidAuthorization (authorizer.go, invalidAuthorization). The first
+            // challenge it answers decides, as there.
+            let answered = challenges
+                .iter()
+                .find(|c| matches!(c.scheme, Scheme::Bearer | Scheme::Basic));
+            return match answered.filter(|c| c.scheme == Scheme::Bearer).and_then(why) {
+                Some(why) => Err(Error::of(
+                    ErrorKind::Unauthorized,
+                    format!("server message: {}: authorization failed", printable(&why)),
+                )),
+                None => Ok(false),
+            };
+        }
+        // The registry's own host is answered with its credentials, a helper's answer waited
+        // for where one was asked: before the hosts' lock is taken, so that no request of
+        // another host waits behind it (D184).
+        let answers = challenges
+            .iter()
+            .any(|c| matches!(c.scheme, Scheme::Bearer | Scheme::Basic));
+        let credentials = match answers && self.is_registry(url) {
+            true => self.credentials()?,
+            false => Credentials::Anonymous,
+        };
+        let (username, secret) = credentials.pair();
+        let host = url.origin();
+        let mut hosts = self.hosts();
+        for c in challenges {
             match c.scheme {
                 Scheme::Bearer => {
                     // `error=` means the token itself was refused: start again.
-                    if c.params.contains_key("error") {
-                        hosts.remove(&host);
+                    if why(&c).is_some() && hosts.by_origin.remove(&host).is_some() {
+                        // Waiters on its fetches find it gone.
+                        self.fetched.notify_all();
                     }
-                    if hosts.contains_key(&host) {
+                    if hosts.by_origin.contains_key(&host) {
                         return Ok(true);
                     }
-                    let (username, secret) = if self.is_registry(url) {
-                        self.credentials.pair()
-                    } else {
-                        ("", "")
-                    };
-                    let bearer = Bearer::new(url, &c, username, secret)?;
-                    hosts.insert(host, Arc::new(Handler::Bearer(Box::new(bearer))));
+                    let bearer = Bearer::new(url, &c, username, secret, self.offline)?;
+                    hosts.add(host, Handler::Bearer(Box::new(bearer), HashMap::new()));
                     return Ok(true);
                 }
                 Scheme::Basic => {
-                    let (username, secret) = if self.is_registry(url) {
-                        self.credentials.pair()
-                    } else {
-                        ("", "")
-                    };
-                    if username.is_empty() || secret.is_empty() {
-                        return Err(Error::new(format!(
-                            "{host} asks for credentials, and there are none"
-                        )));
+                    if self.plain_twin(url) == Some(false) {
+                        return Err(Error::of(
+                            ErrorKind::Unauthorized,
+                            format!(
+                                "{} asks for credentials in plain HTTP: shards sends a registry's credentials off this machine in HTTPS alone; serve it in HTTPS, its CA certificate in certs.d if no system trusts it",
+                                url.authority()
+                            ),
+                        ));
                     }
-                    let basic = format!("Basic {}", BASE64.encode(format!("{username}:{secret}")));
-                    hosts.insert(host, Arc::new(Handler::Basic(basic)));
+                    // containerd's words (core/remotes/docker/authorizer.go).
+                    if username.is_empty() || secret.is_empty() {
+                        return Err(Error::of(
+                            ErrorKind::Unauthorized,
+                            "authorization failed: no basic auth credentials",
+                        ));
+                    }
+                    hosts.add(
+                        host,
+                        Handler::Basic(basic(username.as_bytes(), secret.as_bytes())),
+                    );
                     return Ok(true);
                 }
                 Scheme::Digest => {}
@@ -293,7 +636,13 @@ impl Authorizer {
 impl Bearer {
     /// containerd's `GenerateTokenOptions`, refusing a realm that would take the token
     /// exchange off TLS.
-    fn new(registry: &Url, c: &Challenge, username: &str, secret: &str) -> Result<Bearer, Error> {
+    fn new(
+        registry: &Url,
+        c: &Challenge,
+        username: &str,
+        secret: &str,
+        offline: bool,
+    ) -> Result<Bearer, Error> {
         let realm = c
             .params
             .get("realm")
@@ -316,49 +665,82 @@ impl Bearer {
                 .unwrap_or_default(),
             username: username.to_string(),
             secret: secret.to_string(),
-            tokens: Mutex::new(HashMap::new()),
+            offline,
         })
     }
 
-    fn authorization(&self, http: &Client, request_scopes: &[String]) -> Result<String, Error> {
-        // containerd's GetTokenScopes: the request's and the challenge's, sorted, deduplicated.
+    /// containerd's GetTokenScopes: the request's and the challenge's, sorted, deduplicated.
+    fn scopes_with(&self, request_scopes: &[String]) -> Vec<String> {
         let mut scopes: Vec<String> = request_scopes.iter().chain(&self.scopes).cloned().collect();
         scopes.sort();
         scopes.dedup();
-        let slot = {
-            let mut tokens = self.tokens.lock().unwrap_or_else(PoisonError::into_inner);
-            tokens.entry(scopes.join(" ")).or_default().clone()
-        };
-        let mut slot = slot.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Some(token) = slot.as_ref()
-            && SystemTime::now() < token.expires
-        {
-            return Ok(format!("Bearer {}", token.value));
-        }
-        let token = self.fetch(http, &scopes)?;
-        let value = format!("Bearer {}", token.value);
-        *slot = Some(token);
-        Ok(value)
+        scopes
     }
 
-    /// containerd's `doBearerAuth`: OAuth2 when there is a secret, falling back to GET
-    /// where the server has no OAuth2 endpoint; else an anonymous GET.
+    /// containerd's `doBearerAuth`, tried again as the registry's own requests are
+    /// (registry.rs `send_here`, D222): a timeout, a cut connection, a 408, 502, 503 or
+    /// 504 ridden out within the token server's budget (crate::patience), and a 500 asked again once, unless
+    /// it repeats. Docker Hub's token server answered a pull with a 502, which the next
+    /// asking passed (dev 3c2e3cd3's CI), and twice within 50 ms, which failed a build of
+    /// CI's job 117733752147 (2026-10-18) past the five quick attempts this took before.
     fn fetch(&self, http: &Client, scopes: &[String]) -> Result<Token, Error> {
-        let context = |e: Error| Error::new(format!("fetching a token from {}: {e}", self.realm));
-        if self.secret.is_empty() {
-            return self.get(http, scopes).map_err(context);
+        let mut last: Option<u16> = None;
+        let mut trouble = crate::registry::Trouble::default();
+        loop {
+            let asked = std::time::Instant::now();
+            let failed = match self.fetch_once(http, scopes) {
+                Ok(token) => {
+                    trouble.over(http, &self.realm);
+                    return Ok(token);
+                }
+                Err(failed) => failed,
+            };
+            let passing = match failed.status {
+                None => failed.error.kind() == ErrorKind::Transient,
+                Some(408 | 502 | 503 | 504) => true,
+                Some(500) => last != Some(500),
+                Some(_) => false,
+            };
+            let wait = passing
+                .then(|| trouble.wait(asked, http.budget(&self.realm), None))
+                .flatten();
+            let Some(wait) = wait else {
+                // The credentials' refusal stays one, for a login to say so; anything else
+                // is tried no more, as before.
+                let kind = match failed.error.kind() {
+                    ErrorKind::Refused => ErrorKind::Refused,
+                    _ => ErrorKind::Other,
+                };
+                return Err(Error::of(
+                    kind,
+                    format!("fetching a token from {}: {}", self.realm, failed.error),
+                ));
+            };
+            last = failed.status;
+            // An overdue answer is asked again at once (crate::patience `Cutoff`).
+            if !failed.error.is_overdue() {
+                http.pause(wait)?;
+            }
         }
-        let mut response = self.post(http, scopes).map_err(context)?;
+    }
+
+    /// One asking: OAuth2 when there is a secret, falling back to GET where the server
+    /// has no OAuth2 endpoint; else an anonymous GET.
+    fn fetch_once(&self, http: &Client, scopes: &[String]) -> Result<Token, Failed> {
+        if self.secret.is_empty() {
+            return self.get(http, scopes);
+        }
+        let mut response = self.post(http, scopes).map_err(Failed::from)?;
         match response.status {
             // Registries without OAuth2: GCR answers 404, Artifactory 401, ACR 400.
-            405 if !self.username.is_empty() => self.get(http, scopes).map_err(context),
-            404 | 401 | 400 => self.get(http, scopes).map_err(context),
-            _ => read_token(&mut response, true).map_err(context),
+            405 if !self.username.is_empty() => self.get(http, scopes),
+            404 | 401 | 400 => self.get(http, scopes),
+            _ => answer(&mut response, true),
         }
     }
 
     /// `FetchTokenWithOAuth`: a form POST, fields in Go's sorted order.
-    fn post(&self, http: &Client, scopes: &[String]) -> Result<Response, Error> {
+    fn post<'c>(&self, http: &'c Client, scopes: &[String]) -> Result<Response<'c>, Error> {
         let mut form: Vec<(&str, String)> = vec![("client_id", CLIENT_ID.to_string())];
         if self.username.is_empty() {
             form.push(("grant_type", "refresh_token".into()));
@@ -370,6 +752,9 @@ impl Bearer {
         }
         if !scopes.is_empty() {
             form.push(("scope", scopes.join(" ")));
+        }
+        if self.offline {
+            form.push(("access_type", "offline".into()));
         }
         form.push(("service", self.service.clone()));
         form.sort_by(|a, b| a.0.cmp(b.0));
@@ -383,14 +768,16 @@ impl Bearer {
                 url: realm,
                 headers: &[("Content-Type", "application/x-www-form-urlencoded; charset=utf-8")],
                 body: body.as_bytes(),
+                file: None,
             },
             &|_| Ok(None),
+            Redirects::SameOrigin,
         )
     }
 
     /// `FetchToken`: a GET with `service` and each scope added to the realm's query, and
     /// Basic authentication when there is a secret, sent to the realm's origin only.
-    fn get(&self, http: &Client, scopes: &[String]) -> Result<Token, Error> {
+    fn get(&self, http: &Client, scopes: &[String]) -> Result<Token, Failed> {
         let (base, query) = match self.realm.as_str().split_once('?') {
             Some((base, query)) => (base, query),
             None => (self.realm.as_str(), ""),
@@ -401,34 +788,58 @@ impl Bearer {
             pairs.push(("service".into(), self.service.clone()));
         }
         pairs.extend(scopes.iter().map(|s| ("scope".to_string(), s.clone())));
+        if self.offline {
+            pairs.push(("offline_token".into(), "true".into()));
+        }
         // Go's url.Values.Encode: sorted by key, values in order.
         pairs.sort_by(|a, b| a.0.cmp(&b.0));
         let query = form_urlencoded::Serializer::new(String::new())
             .extend_pairs(&pairs)
             .finish();
         let url = if query.is_empty() {
-            Url::parse(base)?
+            Url::parse(base).map_err(Failed::from)?
         } else {
-            Url::parse(&format!("{base}?{query}"))?
+            Url::parse(&format!("{base}?{query}")).map_err(Failed::from)?
         };
-        let basic = (!self.secret.is_empty()).then(|| {
-            format!(
-                "Basic {}",
-                BASE64.encode(format!("{}:{}", self.username, self.secret))
-            )
-        });
+        let basic =
+            (!self.secret.is_empty()).then(|| basic(self.username.as_bytes(), self.secret.as_bytes()));
         let realm = &self.realm;
-        let mut response = http.follow(
-            &Request {
-                method: "GET",
-                url: &url,
-                headers: &[],
-                body: &[],
-            },
-            &|hop| Ok(basic.clone().filter(|_| hop.same_origin(realm))),
-        )?;
-        read_token(&mut response, false)
+        let mut response = http
+            .follow(
+                &Request {
+                    method: "GET",
+                    url: &url,
+                    headers: &[],
+                    body: &[],
+                    file: None,
+                },
+                &|hop| Ok(basic.clone().filter(|_| hop.same_origin(realm))),
+                Redirects::Anywhere,
+            )
+            .map_err(Failed::from)?;
+        answer(&mut response, false)
     }
+}
+
+/// A token not fetched: why, and the status the token server answered with, if it did.
+struct Failed {
+    error: Error,
+    status: Option<u16>,
+}
+
+impl From<Error> for Failed {
+    fn from(error: Error) -> Failed {
+        Failed { error, status: None }
+    }
+}
+
+/// [`read_token`] of `response`, its status kept where it was no answer.
+fn answer(response: &mut Response, oauth: bool) -> Result<Token, Failed> {
+    let status = response.status;
+    read_token(response, oauth).map_err(|error| Failed {
+        error,
+        status: (!(200..400).contains(&status)).then_some(status),
+    })
 }
 
 /// The fields of a token server's answer (distribution's token.md and oauth.md).
@@ -436,17 +847,25 @@ impl Bearer {
 struct TokenResponse {
     token: Option<String>,
     access_token: Option<String>,
+    refresh_token: Option<String>,
     expires_in: Option<i64>,
     issued_at: Option<String>,
 }
 
 /// Reads a token server's answer. An OAuth2 answer must carry `access_token`; a GET's
-/// carries `token` or `access_token`, and `access_token` wins, as containerd has it.
+/// carries `token` or `access_token`, and `access_token` wins, as containerd v2.4.1 has it.
 fn read_token(response: &mut Response, oauth: bool) -> Result<Token, Error> {
     if !(200..400).contains(&response.status) {
-        return Err(Error::new(format!("unexpected status {}", response.status)));
+        return Err(refused(response));
     }
-    let received = SystemTime::now();
+    let received = Instant::now();
+    // The server's clock as it answered (RFC 9110 §6.6.1): IMF-fixdate, which RFC 2822's
+    // grammar reads, `GMT` among its zones.
+    let answered = response.header("date").and_then(|d| {
+        time::OffsetDateTime::parse(d.trim(), &time::format_description::well_known::Rfc2822)
+            .ok()
+            .map(SystemTime::from)
+    });
     let mut body = Vec::new();
     response
         .take(MAX_TOKEN_RESPONSE + 1)
@@ -467,26 +886,75 @@ fn read_token(response: &mut Response, oauth: bool) -> Result<Token, Error> {
         _ => return Err(Error::new("the token server did not include a token")),
     };
     let issued = match parsed.issued_at {
-        None => received,
-        Some(at) => {
-            let at = time::OffsetDateTime::parse(&at, &time::format_description::well_known::Rfc3339)
-                .map_err(|e| Error::new(format!("a bad issued_at {at:?}: {e}")))?;
-            SystemTime::from(at)
-        }
+        None => None,
+        Some(at) => Some(SystemTime::from(
+            time::OffsetDateTime::parse(&at, &time::format_description::well_known::Rfc3339)
+                .map_err(|e| Error::new(format!("a bad issued_at {at:?}: {e}")))?,
+        )),
     };
     let lifetime = parsed
         .expires_in
         .and_then(|s| u64::try_from(s).ok())
         .map_or(MIN_LIFETIME, |s| Duration::from_secs(s).max(MIN_LIFETIME));
+    // What is left of it when it came: all of it, unless the server's own clock says it
+    // was issued a while before it answered.
+    let left = match (issued, answered) {
+        (Some(issued), Some(answered)) => issued
+            .checked_add(lifetime)
+            .and_then(|end| end.duration_since(answered).ok())
+            .map_or(Duration::ZERO, |left| left.min(lifetime)),
+        _ => lifetime,
+    };
     Ok(Token {
         value,
-        expires: issued.checked_add(lifetime).unwrap_or(issued),
+        expires: received.checked_add(left).unwrap_or(received),
+        refresh: parsed.refresh_token.filter(|t| !t.is_empty()),
     })
+}
+
+/// A token server's refusal, in its own words where it gives some (the first 4 KiB of its
+/// answer): OAuth2's `error_description` or `error` (RFC 6749 §5.2), Docker Hub's
+/// `details`, or distribution's `errors` (spec.md, Error Codes). A 401 or 403 is the
+/// credentials' refusal ([`ErrorKind::Refused`]).
+fn refused(response: &mut Response) -> Error {
+    let status = response.status;
+    let mut body = Vec::new();
+    let _ = response.take(4 << 10).read_to_end(&mut body);
+    let said = serde_json::from_slice::<serde_json::Value>(&body)
+        .ok()
+        .and_then(|v| {
+            let text = |k: &str| {
+                v.get(k)
+                    .and_then(serde_json::Value::as_str)
+                    .filter(|t| !t.is_empty())
+            };
+            text("error_description")
+                .or_else(|| text("details"))
+                .or_else(|| text("error"))
+                .or_else(|| text("message"))
+                .map(str::to_string)
+                .or_else(|| {
+                    v.get("errors")?
+                        .as_array()?
+                        .first()?
+                        .get("message")?
+                        .as_str()
+                        .map(str::to_string)
+                })
+        });
+    let words = match said {
+        Some(said) => format!("unexpected status {status}: {}", printable(&said)),
+        None => format!("unexpected status {status}"),
+    };
+    match status {
+        401 | 403 => Error::of(ErrorKind::Refused, words),
+        _ => Error::new(words),
+    }
 }
 
 /// Hosts containerd serves over plain HTTP by default: `localhost`, 127.0.0.0/8 and ::1
 /// (`core/remotes/docker/registry.go`).
-pub(crate) fn loopback(url: &Url) -> bool {
+pub fn loopback(url: &Url) -> bool {
     let host = url.host().trim_start_matches('[').trim_end_matches(']');
     host == "localhost" || host.parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback())
 }
@@ -495,11 +963,11 @@ pub(crate) fn loopback(url: &Url) -> bool {
 #[allow(clippy::unwrap_used, clippy::indexing_slicing)]
 mod tests {
     use super::*;
-    use crate::testing::{After, Server, serve};
+    use crate::testing::{After, Server, route, serve};
 
     fn plain() -> Client {
         Client::new(
-            Box::new(|url| Err(Error::new(format!("{url}: no TLS here")))),
+            Box::new(|_| crate::tls::client_config(Vec::new(), None)),
             "shards-test",
         )
     }
@@ -509,6 +977,41 @@ mod tests {
             .iter()
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect()
+    }
+
+    /// A token from a server whose clock is years behind ours lasts its whole lifetime:
+    /// its `issued_at` is measured against its own `Date`, not our clock.
+    #[test]
+    fn a_servers_clock_skew_does_not_shorten_its_tokens() {
+        let tokens = serve(
+            None,
+            vec![(
+                http(
+                    "200 OK",
+                    "Date: Wed, 01 Jan 2020 00:00:30 GMT\r\n",
+                    r#"{"access_token":"t1","expires_in":300,"issued_at":"2020-01-01T00:00:00Z"}"#,
+                ),
+                After::Keep,
+            )],
+        );
+        let auth = Authorizer::new(&registry(), Credentials::IdentityToken("idt".into()));
+        let challenge = format!(
+            r#"Bearer realm="http://127.0.0.1:{}/token",service="svc""#,
+            tokens.port
+        );
+        assert!(
+            auth.challenged(&registry(), &refusal(&plain(), &challenge), false)
+                .unwrap()
+        );
+        let client = plain();
+        let get = || auth.authorization(&client, &registry(), &pull("a/b")).unwrap();
+        assert_eq!(get().as_deref(), Some("Bearer t1"));
+        assert_eq!(
+            get().as_deref(),
+            Some("Bearer t1"),
+            "270 s of it left by its clock"
+        );
+        assert_eq!(tokens.requests().len(), 1);
     }
 
     fn http(status: &str, fields: &str, body: &str) -> Vec<u8> {
@@ -530,8 +1033,8 @@ mod tests {
         )
     }
 
-    /// A response carrying `challenge`, as a registry's 401 would.
-    fn refusal(challenge: &str) -> Response {
+    /// A response carrying `challenge`, as a registry's 401 would, from `client`.
+    fn refusal<'c>(client: &'c Client, challenge: &str) -> Response<'c> {
         let server = serve(
             None,
             vec![(
@@ -544,12 +1047,13 @@ mod tests {
             )],
         );
         let url = Url::parse(&format!("http://127.0.0.1:{}/v2/", server.port)).unwrap();
-        plain()
+        client
             .send(&Request {
                 method: "GET",
                 url: &url,
                 headers: &[],
                 body: &[],
+                file: None,
             })
             .unwrap()
     }
@@ -562,9 +1066,120 @@ mod tests {
         vec![format!("repository:{repo}:pull")]
     }
 
+    /// A credential answers the origin that asked for it: not its host under another scheme
+    /// or port, where containerd, keying by host, would send it (audit A05).
+    #[test]
+    fn credentials_answer_the_origin_that_asked_for_them() {
+        let credentials = Credentials::Password {
+            username: "u".into(),
+            password: "p".into(),
+        };
+        let https = Url::parse("https://registry.example/v2/").unwrap();
+        let auth = Authorizer::new(&https, credentials);
+        assert!(
+            auth.challenged(&https, &refusal(&plain(), r#"Basic realm="r""#), false)
+                .unwrap()
+        );
+        let client = plain();
+        let ask = |url: &str| {
+            auth.authorization(&client, &Url::parse(url).unwrap(), &[])
+                .unwrap()
+        };
+        assert_eq!(
+            ask("https://registry.example/v2/a").as_deref(),
+            Some("Basic dTpw")
+        );
+        assert_eq!(
+            ask("https://registry.example:443/v2/a").as_deref(),
+            Some("Basic dTpw")
+        );
+        for other in [
+            "http://registry.example/v2/a",
+            "http://registry.example:443/v2/a",
+            "https://registry.example:5000/v2/a",
+        ] {
+            assert_eq!(ask(other), None, "{other}");
+        }
+    }
+
+    /// A password in an OAuth2 POST goes to the realm's origin and no further: whatever
+    /// the redirect, the other origin gets nothing and the fetch fails (audit A05).
+    #[test]
+    fn oauth2_secrets_follow_no_redirect_to_another_origin() {
+        let elsewhere = token_server(&[r#"{"access_token":"stolen","expires_in":300}"#]);
+        let credentials = || Credentials::Password {
+            username: "u".into(),
+            password: "secret".into(),
+        };
+        for status in [
+            "301 Moved Permanently",
+            "302 Found",
+            "303 See Other",
+            "307 Temporary Redirect",
+            "308 Permanent Redirect",
+        ] {
+            let location = format!("Location: http://127.0.0.1:{}/token\r\n", elsewhere.port);
+            let realm = serve(None, vec![(http(status, &location, ""), After::Keep)]);
+            let auth = Authorizer::new(&registry(), credentials());
+            let challenge = format!(
+                r#"Bearer realm="http://127.0.0.1:{}/token",service="svc""#,
+                realm.port
+            );
+            assert!(
+                auth.challenged(&registry(), &refusal(&plain(), &challenge), false)
+                    .unwrap()
+            );
+            let fetched = auth.authorization(&plain(), &registry(), &pull("a/b"));
+            let e = fetched.expect_err(status).to_string();
+            assert!(e.contains("another origin"), "{status}: {e}");
+            assert_eq!(realm.requests().len(), 1, "{status}");
+        }
+        assert_eq!(elsewhere.accepted(), 0, "{:?}", elsewhere.requests());
+    }
+
+    /// Within its origin, an OAuth2 POST follows a 307 with its body, as Go's client does.
+    #[test]
+    fn oauth2_follows_a_redirect_within_its_origin() {
+        let realm = serve(
+            None,
+            vec![
+                (
+                    http("307 Temporary Redirect", "Location: /token2\r\n", ""),
+                    After::Keep,
+                ),
+                (
+                    http("200 OK", "", r#"{"access_token":"t3","expires_in":300}"#),
+                    After::Keep,
+                ),
+            ],
+        );
+        let credentials = Credentials::Password {
+            username: "u".into(),
+            password: "p".into(),
+        };
+        let auth = Authorizer::new(&registry(), credentials);
+        let challenge = format!(
+            r#"Bearer realm="http://127.0.0.1:{}/token",service="svc""#,
+            realm.port
+        );
+        assert!(
+            auth.challenged(&registry(), &refusal(&plain(), &challenge), false)
+                .unwrap()
+        );
+        let value = auth.authorization(&plain(), &registry(), &pull("a/b")).unwrap();
+        assert_eq!(value.as_deref(), Some("Bearer t3"));
+        let requests = realm.requests();
+        assert!(
+            requests[1].starts_with("POST /token2 HTTP/1.1\r\n"),
+            "{}",
+            requests[1]
+        );
+        assert!(requests[1].contains("password=p"), "{}", requests[1]);
+    }
+
     /// containerd's TestParseAuthHeaderBearer and TestParseAuthHeader.
     #[test]
-    fn challenges_parse_as_containerd_parses_them() {
+    fn auth_challenges_parse() {
         for scope in [
             "repository:foo/bar:pull,push",
             "repository:foo/bar:pull,push repository:foo/baz:pull repository:foo/foo:push",
@@ -620,7 +1235,10 @@ mod tests {
             r#"Bearer realm="http://127.0.0.1:{}/token?x=1",service="svc",scope="repository:a/b:pull""#,
             tokens.port
         );
-        assert!(auth.challenged(&registry(), &refusal(&challenge), false).unwrap());
+        assert!(
+            auth.challenged(&registry(), &refusal(&plain(), &challenge), false)
+                .unwrap()
+        );
         let client = plain();
         for _ in 0..2 {
             let value = auth
@@ -639,6 +1257,38 @@ mod tests {
             requests[0]
         );
         assert!(!requests[0].to_ascii_lowercase().contains("authorization:"));
+    }
+
+    /// Requests that need the same token at once fetch it once: the first fetches, with no
+    /// lock held, and the others wait for its answer.
+    #[test]
+    fn concurrent_requests_fetch_a_token_once() {
+        let answer = http("200 OK", "", r#"{"token":"t1","expires_in":300}"#);
+        let tokens = route(None, move |_| {
+            // Slow enough that every request arrives while the first fetch is out.
+            std::thread::sleep(Duration::from_millis(200));
+            Some((answer.clone(), After::Keep))
+        });
+        let auth = Authorizer::new(&registry(), Credentials::Anonymous);
+        let challenge = format!(r#"Bearer realm="http://127.0.0.1:{}/token""#, tokens.port);
+        assert!(
+            auth.challenged(&registry(), &refusal(&plain(), &challenge), false)
+                .unwrap()
+        );
+        std::thread::scope(|scope| {
+            let asking: Vec<_> = (0..8)
+                .map(|_| {
+                    scope.spawn(|| {
+                        auth.authorization(&plain(), &registry(), &pull("library/alpine"))
+                            .unwrap()
+                    })
+                })
+                .collect();
+            for asked in asking {
+                assert_eq!(asked.join().unwrap().as_deref(), Some("Bearer t1"));
+            }
+        });
+        assert_eq!(tokens.requests().len(), 1, "one fetch for all eight");
     }
 
     #[test]
@@ -662,7 +1312,10 @@ mod tests {
             r#"Bearer realm="http://127.0.0.1:{}/token",service="svc""#,
             tokens.port
         );
-        assert!(auth.challenged(&registry(), &refusal(&challenge), false).unwrap());
+        assert!(
+            auth.challenged(&registry(), &refusal(&plain(), &challenge), false)
+                .unwrap()
+        );
         let value = auth.authorization(&plain(), &registry(), &pull("a/b")).unwrap();
         assert_eq!(value.as_deref(), Some("Bearer t2"));
         let requests = tokens.requests();
@@ -686,16 +1339,33 @@ mod tests {
 
     #[test]
     fn identity_tokens_refresh_and_lifetimes_count_from_issued_at() {
-        let tokens = token_server(&[
-            r#"{"access_token":"old","expires_in":60,"issued_at":"2020-01-01T00:00:00Z"}"#,
-            r#"{"access_token":"new","expires_in":600}"#,
-        ]);
+        // The server answers years after it issued the first token, by its own clock.
+        let tokens = serve(
+            None,
+            vec![
+                (
+                    http(
+                        "200 OK",
+                        "Date: Thu, 01 Jan 2026 00:00:00 GMT\r\n",
+                        r#"{"access_token":"old","expires_in":60,"issued_at":"2020-01-01T00:00:00Z"}"#,
+                    ),
+                    After::Keep,
+                ),
+                (
+                    http("200 OK", "", r#"{"access_token":"new","expires_in":600}"#),
+                    After::Keep,
+                ),
+            ],
+        );
         let auth = Authorizer::new(&registry(), Credentials::IdentityToken("idt".into()));
         let challenge = format!(
             r#"Bearer realm="http://127.0.0.1:{}/token",service="svc""#,
             tokens.port
         );
-        assert!(auth.challenged(&registry(), &refusal(&challenge), false).unwrap());
+        assert!(
+            auth.challenged(&registry(), &refusal(&plain(), &challenge), false)
+                .unwrap()
+        );
         let client = plain();
         let get = || auth.authorization(&client, &registry(), &pull("a/b")).unwrap();
         assert_eq!(get().as_deref(), Some("Bearer old"));
@@ -725,7 +1395,8 @@ mod tests {
             let tokens = token_server(&[answer]);
             let auth = Authorizer::new(&registry(), Credentials::Anonymous);
             let challenge = format!(r#"Bearer realm="http://127.0.0.1:{}/token""#, tokens.port);
-            auth.challenged(&registry(), &refusal(&challenge), false).unwrap();
+            auth.challenged(&registry(), &refusal(&plain(), &challenge), false)
+                .unwrap();
             assert!(
                 auth.authorization(&plain(), &registry(), &pull("a/b")).is_err(),
                 "{why}"
@@ -735,8 +1406,66 @@ mod tests {
         let tokens = token_server(&[r#"{"token":"t"}"#]);
         let auth = Authorizer::new(&registry(), Credentials::IdentityToken("idt".into()));
         let challenge = format!(r#"Bearer realm="http://127.0.0.1:{}/token""#, tokens.port);
-        auth.challenged(&registry(), &refusal(&challenge), false).unwrap();
+        auth.challenged(&registry(), &refusal(&plain(), &challenge), false)
+            .unwrap();
         assert!(auth.authorization(&plain(), &registry(), &pull("a/b")).is_err());
+    }
+
+    /// A token server's 502, 503 or 504 is ridden out, as a registry's own are (D222), its
+    /// 500 asked again once unless it repeats, and its 400 not: a token fetched past a
+    /// gateway's failure.
+    #[test]
+    fn a_token_servers_passing_failure_is_asked_again() {
+        let answers = |statuses: &[&str]| -> Vec<(Vec<u8>, After)> {
+            statuses
+                .iter()
+                .map(|s| {
+                    let body = if s.starts_with("200") {
+                        r#"{"token":"t"}"#
+                    } else {
+                        ""
+                    };
+                    (http(s, "", body), After::Keep)
+                })
+                .collect()
+        };
+        for (statuses, fetched) in [
+            (&["502 Bad Gateway", "200 OK"][..], true),
+            (
+                &["503 Service Unavailable", "502 Bad Gateway", "200 OK"][..],
+                true,
+            ),
+            (
+                &["408 Request Timeout", "408 Request Timeout", "200 OK"][..],
+                true,
+            ),
+            // A gateway's failure, however many times in a row, within a moment (D222):
+            // Docker Hub's token server answered 502 twice within 50 ms (job 117733752147).
+            (
+                &[
+                    "502 Bad Gateway",
+                    "502 Bad Gateway",
+                    "504 Gateway Timeout",
+                    "502 Bad Gateway",
+                    "200 OK",
+                ][..],
+                true,
+            ),
+            (&["500 Internal Server Error", "200 OK"][..], true),
+            (
+                &["500 Internal Server Error", "500 Internal Server Error", "200 OK"][..],
+                false,
+            ),
+            (&["400 Bad Request", "200 OK"][..], false),
+        ] {
+            let tokens = serve(None, answers(statuses));
+            let auth = Authorizer::new(&registry(), Credentials::Anonymous);
+            let challenge = format!(r#"Bearer realm="http://127.0.0.1:{}/token""#, tokens.port);
+            auth.challenged(&registry(), &refusal(&plain(), &challenge), false)
+                .unwrap();
+            let got = auth.authorization(&plain(), &registry(), &pull("a/b"));
+            assert_eq!(got.is_ok(), fetched, "{statuses:?}: {got:?}");
+        }
     }
 
     #[test]
@@ -746,7 +1475,7 @@ mod tests {
                 scheme: Scheme::Bearer,
                 params: params(&[("realm", realm)]),
             };
-            Bearer::new(&Url::parse(registry).unwrap(), &c, "u", "p").map(|_| ())
+            Bearer::new(&Url::parse(registry).unwrap(), &c, "u", "p", false).map(|_| ())
         };
         assert!(bearer("https://registry.example/v2/", "https://auth.example/token").is_ok());
         assert!(bearer("https://registry.example/v2/", "http://auth.example/token").is_err());
@@ -770,14 +1499,19 @@ mod tests {
         assert_eq!(auth.authorization(&client, &other, &[]).unwrap(), None);
         assert!(
             !auth
-                .challenged(&registry(), &refusal(r#"Bearer realm="https://a/t""#), false)
+                .challenged(
+                    &registry(),
+                    &refusal(&plain(), r#"Bearer realm="https://a/t""#),
+                    false
+                )
                 .unwrap()
         );
     }
 
     #[test]
     fn basic_challenges_need_credentials() {
-        let refused = refusal(r#"Basic realm="registry""#);
+        let client = plain();
+        let refused = refusal(&client, r#"Basic realm="registry""#);
         let credentials = Credentials::Password {
             username: "u".into(),
             password: "p".into(),
@@ -799,16 +1533,110 @@ mod tests {
         let auth = Authorizer::new(&registry(), Credentials::Anonymous);
         let challenge = format!(r#"Bearer realm="http://127.0.0.1:{}/token""#, tokens.port);
         let client = plain();
-        assert!(auth.challenged(&registry(), &refusal(&challenge), false).unwrap());
+        assert!(
+            auth.challenged(&registry(), &refusal(&plain(), &challenge), false)
+                .unwrap()
+        );
         let get = || auth.authorization(&client, &registry(), &pull("a/b")).unwrap();
         assert_eq!(get().as_deref(), Some("Bearer first"));
         let invalid = format!(r#"{challenge},error="invalid_token""#);
-        assert!(auth.challenged(&registry(), &refusal(&invalid), false).unwrap());
-        assert_eq!(get().as_deref(), Some("Bearer second"));
         assert!(
-            !auth.challenged(&registry(), &refusal(&invalid), true).unwrap(),
-            "refused twice"
+            auth.challenged(&registry(), &refusal(&plain(), &invalid), false)
+                .unwrap()
         );
+        assert_eq!(get().as_deref(), Some("Bearer second"));
+        // Refused twice, saying why: containerd's ErrInvalidAuthorization, in its words.
+        let e = auth
+            .challenged(&registry(), &refusal(&plain(), &invalid), true)
+            .unwrap_err();
+        assert_eq!(e.kind(), ErrorKind::Unauthorized);
+        assert_eq!(
+            e.to_string(),
+            "server message: invalid_token: authorization failed"
+        );
+        // Refused twice without a reason, or with an empty one: no answer, and no error.
+        let silent = format!(r#"{challenge},error="""#);
+        for refused in [&challenge, &silent] {
+            assert!(
+                !auth
+                    .challenged(&registry(), &refusal(&plain(), refused), true)
+                    .unwrap(),
+                "{refused}"
+            );
+        }
+        // An empty reason is none: the token in hand is kept.
+        assert!(
+            auth.challenged(&registry(), &refusal(&plain(), &silent), false)
+                .unwrap()
+        );
+        assert_eq!(get().as_deref(), Some("Bearer second"));
+    }
+
+    /// A credential helper, `docker-credential-NAME` in `dir` running `script`, which a config
+    /// there names the registry's store: found for the registry, asked as a pull asks it.
+    #[cfg(unix)]
+    fn helper(dir: &std::path::Path, name: &str, script: &str) -> Found {
+        use std::io::Write as _;
+        // Written by a child, as credentials.rs's tests write theirs: an exec of a file this
+        // process holds open to write fails (ETXTBSY, Linux).
+        let path = dir.join(format!("docker-credential-{name}"));
+        let mut writer = std::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg(r#"cat > "$0" && chmod 755 "$0""#)
+            .arg(&path)
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        writer.stdin.take().unwrap().write_all(script.as_bytes()).unwrap();
+        assert!(writer.wait().unwrap().success());
+        std::fs::write(dir.join("config.json"), format!(r#"{{"credsStore":"{name}"}}"#)).unwrap();
+        let vars = HashMap::from([
+            ("DOCKER_CONFIG".to_string(), dir.to_string_lossy().into_owned()),
+            ("PATH".to_string(), format!("{}:/bin:/usr/bin", dir.display())),
+        ]);
+        let env = |k: &str| vars.get(k).cloned();
+        let (found, _) = crate::credentials::find("127.0.0.1:5000", &env, None).unwrap();
+        assert!(matches!(found, Found::Asked(_)), "{found:?}");
+        found
+    }
+
+    /// No anonymous fallback (D184): a Bearer challenge of the registry's own, its helper
+    /// still to answer, waits for the helper, as a user may be answering its prompt, and asks
+    /// for its token with what the user configured, never anonymously in its place.
+    #[cfg(unix)]
+    #[test]
+    fn a_bearer_challenge_waits_for_the_helper_the_user_configured() {
+        let dir = shards_testdir::TempDir::new("auth-late").unwrap();
+        let release = dir.join("release");
+        let found = helper(
+            &dir,
+            "late",
+            &format!(
+                "#!/bin/sh\nwhile [ ! -e '{}' ]; do /bin/sleep 0.01; done\necho '{{\"ServerURL\":\"127.0.0.1:5000\",\"Username\":\"u\",\"Secret\":\"s\"}}'\n",
+                release.display()
+            ),
+        );
+        let tokens = token_server(&[r#"{"access_token":"theirs"}"#]);
+        let challenge = format!(
+            r#"Bearer realm="http://127.0.0.1:{}/token",service="svc""#,
+            tokens.port
+        );
+        let auth = Authorizer::new(&registry(), found);
+        std::thread::scope(|s| {
+            let challenged = s.spawn(|| auth.challenged(&registry(), &refusal(&plain(), &challenge), false));
+            // Still waiting on the helper: the challenge is not answered without it.
+            std::thread::sleep(Duration::from_millis(300));
+            assert!(!challenged.is_finished(), "answered without the helper's answer");
+            std::fs::write(&release, "").unwrap();
+            assert!(challenged.join().unwrap().unwrap());
+        });
+        let value = auth.authorization(&plain(), &registry(), &pull("a/b")).unwrap();
+        assert_eq!(value.as_deref(), Some("Bearer theirs"));
+        let requests = tokens.requests();
+        assert_eq!(requests.len(), 1, "no anonymous token asked for first");
+        // With a secret, an OAuth2 POST whose body carries it.
+        assert!(requests[0].starts_with("POST /token"), "{}", requests[0]);
+        assert!(requests[0].contains("password=s"), "{}", requests[0]);
     }
 
     #[test]

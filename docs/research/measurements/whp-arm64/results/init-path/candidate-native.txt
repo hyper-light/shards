@@ -1,0 +1,55 @@
+2026-11-03T19:07:20.1232182-08:00
+FILE engine-path-green01-controller.txt
+2026-11-03T19:05:26.0446692-08:00
+Standard user=WINARM\shards-e2e SID=S-1-5-21-4187853375-3986741409-3176094604-1003; elevated=False; trace group present; Developer Mode=1
+Unprivileged CreateSymbolicLinkW and read through its link passed
+The command completed successfully.
+The command completed successfully.
+Native ETW session create/enable/stop passed as the standard user
+WHvGetCapability: hr=0x00000000 present=1
+WHvCreatePartition: hr=0x00000000
+MANIFEST binaries=142
+START 84/142 path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/shards#0.6.0 daemon 2026-11-04T03:05:36.5841882Z
+running 1 test
+test windows_sees_a_files_users_until_its_last_mapping_is_closed ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 40 filtered out; finished in 0.13s
+
+END 084-daemon exit=0 elapsed=1.975733
+COMPLETE binaries=1 manifest=142 failed=0 filter=daemon/windows_sees_a_files_users_until_its_last_mapping_is_closed start=0
+MANIFEST binaries=142
+START 85/142 path+file:///Users/adalundhe/Projects/shards/.claude/worktrees/g121-wa64/crates/shards#0.6.0 engine 2026-11-04T03:05:39.0365522Z
+running 1 test
+test a_command_runs_in_a_running_container_by_exec ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 28 filtered out; finished in 29.25s
+
+END 085-engine exit=0 elapsed=30.481885
+COMPLETE binaries=1 manifest=142 failed=0 filter=engine/a_command_runs_in_a_running_container_by_exec start=0
+SELECTED NORMAL-USER CHECKS PASSED; full142 still outstanding.
+FILE engine-path-green01-child.exit
+0
+FILE engine-path-green01-broker.txt
+2026-11-03T19:05:17.9653982-08:00
+FILE engine-path-green01-broker.exit
+0
+2026-11-04T03:00:36.0158612Z BROKER=NT AUTHORITY\SYSTEM RedirectionTrust flags=0x00000002
+2026-11-04T03:00:36.2150822Z TEST TOKEN=WINARM\shards-e2e SID=S-1-5-21-4187853375-3986741409-3176094604-1003 Administrator=False
+2026-11-04T03:00:42.4189172Z CHILD PID=6604
+2026-11-04T03:01:01.8247872Z CHILD EXIT=0
+2026-11-04T03:05:21.1580232Z BROKER=NT AUTHORITY\SYSTEM RedirectionTrust flags=0x00000002
+2026-11-04T03:05:21.3089792Z TEST TOKEN=WINARM\shards-e2e SID=S-1-5-21-4187853375-3986741409-3176094604-1003 Administrator=False
+2026-11-04T03:05:22.0299382Z CHILD PID=5636
+2026-11-04T03:06:10.1481532Z CHILD EXIT=0
+TASK state=3 result=0 priority=7 lastRun=2026-11-03T19:05:14.0000000
+
+running 1 test
+test windows_sees_a_files_users_until_its_last_mapping_is_closed ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 40 filtered out; finished in 0.13s
+
+
+running 1 test
+test a_command_runs_in_a_running_container_by_exec ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 28 filtered out; finished in 29.25s

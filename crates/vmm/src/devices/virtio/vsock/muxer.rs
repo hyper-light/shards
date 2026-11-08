@@ -4,6 +4,11 @@
 //!   `OK <host port>\n` once the guest accepts. Then the socket is the stream.
 //! - A guest connection to host port P reaches the socket `<path>_P`.
 //!
+//! Host ports the VM's own process serves ([`VsockHost::ports`]) are reached without a
+//! socket file: a guest connection to one is one end of a socket pair, and the other end
+//! goes to the port's sender. Each takes one connection; later ones are refused. Without a path, the device takes no host clients and other
+//! host ports refuse.
+//!
 //! A snapshot keeps the streams the guest may still hold ([`Saved`]). The restored copy
 //! resets each with an RST, ahead of every other packet on the RX queue, which the
 //! Linux driver handles in order. A TRANSPORT_RESET event would come on the event queue
@@ -14,10 +19,12 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::OsString;
 use std::io::{self, Read as _};
-use std::os::fd::{AsRawFd, FromRawFd};
+#[cfg(unix)]
+use std::os::fd::FromRawFd;
+#[cfg(unix)]
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::Sender;
 use std::time::{Duration, Instant};
 
 use super::Span;
@@ -26,12 +33,20 @@ use super::packet::{HOST_CID, Header, TYPE_STREAM, op};
 use super::poll::{Interest, Ready};
 use crate::debug;
 use crate::memory::GuestMemory;
+use crate::platform::{AsRawSocket, UnixListener, UnixStream};
 use crate::snapshot::codec::{self, Reader, Writer};
+use crate::vm::VsockHost;
 
 /// Open connections and pending handshakes together (Firecracker's MAX_CONNECTIONS).
 const MAX_CONNECTIONS: usize = 1023;
 /// RSTs owed for packets that matched no connection, beyond which more are dropped.
 const MAX_STRAY_RSTS: usize = 256;
+/// Streams a snapshot holds the ports of, at most (review 1.15): a muxer's connections and
+/// owed resets, and a restored one's are all owed resets, which a save made before they
+/// go out holds again beside its own connections. So the bound is that of 64 saves in a
+/// row with none sent between, not of one; past it the oldest owed go unsaid, and a
+/// stream of theirs is reset as its next packet finds no connection.
+const MAX_SAVED: usize = 64 * (MAX_CONNECTIONS + MAX_STRAY_RSTS);
 /// The shortest handshake line, `CONNECT 0\n`. Reading this much first, then a byte at a
 /// time, never consumes data a client sends after its line.
 const MIN_HANDSHAKE: usize = 10;
@@ -52,6 +67,8 @@ pub enum Token {
     Listener,
     Handshake(usize),
     Conn(Key),
+    #[cfg(windows)]
+    Lingering(usize),
 }
 
 struct Handshake {
@@ -79,7 +96,7 @@ impl Saved {
     }
 
     pub fn read(r: &mut Reader<'_>) -> codec::Result<Saved> {
-        let ports = r.seq(MAX_CONNECTIONS + MAX_STRAY_RSTS, |r| Ok((r.u32()?, r.u32()?)))?;
+        let ports = r.seq(MAX_SAVED, 8, |r| Ok((r.u32()?, r.u32()?)))?;
         Ok(Saved {
             ports,
             last_local_port: r.u32()?,
@@ -89,10 +106,18 @@ impl Saved {
 
 pub struct Muxer {
     guest_cid: u64,
-    path: PathBuf,
-    listener: UnixListener,
+    /// The device's socket, where host clients dial, if it has one.
+    listener: Option<(PathBuf, UnixListener)>,
+    /// Host ports served in this process, each for its first connection.
+    served: HashMap<u32, Sender<UnixStream>>,
+    /// Host ports served in this process for every connection.
+    every: HashMap<u32, Sender<UnixStream>>,
     handshakes: Vec<Handshake>,
     conns: HashMap<Key, Conn>,
+    /// Ended connections whose host sockets are held until their peers end their sides
+    /// ([`Conn::linger`]).
+    #[cfg(windows)]
+    lingering: Vec<Conn>,
     /// Connections with packets for the guest, served in turn.
     rxq: VecDeque<Key>,
     /// RSTs for packets that matched no connection: (host port, guest port).
@@ -104,24 +129,35 @@ pub struct Muxer {
 impl std::fmt::Debug for Muxer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Muxer")
-            .field("path", &self.path)
+            .field("path", &self.listener.as_ref().map(|(path, _)| path))
             .field("conns", &self.conns.len())
             .finish_non_exhaustive()
     }
 }
 
 impl Muxer {
-    /// Listens for host clients at `path`, which must not exist yet.
-    pub fn bind(path: &Path, guest_cid: u64) -> io::Result<Muxer> {
-        let listener = UnixListener::bind(path)
-            .map_err(|e| io::Error::new(e.kind(), format!("{}: {e}", path.display())))?;
-        listener.set_nonblocking(true)?;
+    /// Serves `host`'s ports, and listens for host clients at its path, which must not
+    /// exist yet.
+    pub fn new(host: VsockHost, guest_cid: u64) -> io::Result<Muxer> {
+        let listener = match host.path {
+            Some(path) => {
+                // Bound here, or by the spawner where this process may not (App Sandbox).
+                let listener = crate::platform::listen_unix(&path)
+                    .map_err(|e| io::Error::new(e.kind(), format!("{}: {e}", path.display())))?;
+                listener.set_nonblocking(true)?;
+                Some((path, listener))
+            }
+            None => None,
+        };
         Ok(Muxer {
             guest_cid,
-            path: path.to_path_buf(),
             listener,
+            served: host.ports.into_iter().collect(),
+            every: host.every.into_iter().collect(),
             handshakes: Vec::new(),
             conns: HashMap::new(),
+            #[cfg(windows)]
+            lingering: Vec::new(),
             rxq: VecDeque::new(),
             stray_rsts: VecDeque::new(),
             local_ports: HashSet::new(),
@@ -133,16 +169,22 @@ impl Muxer {
     pub fn reset(&mut self) {
         self.handshakes.clear();
         self.conns.clear();
+        #[cfg(windows)]
+        self.lingering.clear();
         self.rxq.clear();
         self.stray_rsts.clear();
         self.local_ports.clear();
     }
 
-    /// The streams the guest may hold, for a snapshot.
+    /// The streams the guest may hold, for a snapshot: its connections, then the resets
+    /// owed, newest first, as many as a restore reads.
     pub fn saved(&self) -> Saved {
         let conns = self.conns.keys().map(|k| (k.local_port, k.peer_port));
         Saved {
-            ports: self.stray_rsts.iter().copied().chain(conns).collect(),
+            ports: conns
+                .chain(self.stray_rsts.iter().rev().copied())
+                .take(MAX_SAVED)
+                .collect(),
             last_local_port: self.last_local_port,
         }
     }
@@ -184,10 +226,15 @@ impl Muxer {
     }
 
     fn remove(&mut self, key: Key) {
-        if let Some(c) = self.conns.remove(&key)
-            && c.allocated_port
-        {
+        let Some(c) = self.conns.remove(&key) else {
+            return;
+        };
+        if c.allocated_port {
             self.local_ports.remove(&key.local_port);
+        }
+        #[cfg(windows)]
+        if let Some(c) = c.linger() {
+            self.lingering.push(c);
         }
     }
 
@@ -224,7 +271,8 @@ impl Muxer {
         self.enqueue(key);
     }
 
-    /// The guest connects to host port `key.local_port`: the socket `<path>_<port>`.
+    /// The guest connects to host port `key.local_port`: one this process serves, or the
+    /// socket `<path>_<port>`.
     fn guest_connect(&mut self, key: Key, request: &Header) {
         if self.open() >= MAX_CONNECTIONS {
             debug!(
@@ -234,16 +282,38 @@ impl Muxer {
             self.stray_rst(key.local_port, key.peer_port);
             return;
         }
-        let mut target = OsString::from(self.path.as_os_str());
-        target.push(format!("_{}", key.local_port));
-        match connect_nonblocking(Path::new(&target)) {
+        // A served port takes one connection: its owner dials it before anything else in
+        // the guest runs, and a later dial, by a workload, is refused (AGENTFILE_ARCH.md
+        // §9.7).
+        let served = self.served.remove(&key.local_port);
+        let connected = match served.as_ref().or_else(|| self.every.get(&key.local_port)) {
+            Some(port) => serve(port),
+            None => match &self.listener {
+                Some((path, _)) => {
+                    let mut target = OsString::from(path.as_os_str());
+                    target.push(format!("_{}", key.local_port));
+                    let target = Path::new(&target);
+                    // Dialled here, or by the spawner where this process may not.
+                    match crate::platform::dial_unix(target) {
+                        Some(dialled) => dialled.and_then(|s| s.set_nonblocking(true).map(|()| s)),
+                        None => connect_nonblocking(target),
+                    }
+                    .map_err(|e| io::Error::new(e.kind(), format!("{}: {e}", target.display())))
+                }
+                None => Err(io::Error::new(
+                    io::ErrorKind::ConnectionRefused,
+                    "no such host port",
+                )),
+            },
+        };
+        match connected {
             Ok(stream) => {
                 self.conns
                     .insert(key, Conn::guest_initiated(stream, self.guest_cid, request));
                 self.enqueue(key);
             }
             Err(e) => {
-                debug!("vsock: guest connect to {}: {e}", Path::new(&target).display());
+                debug!("vsock: guest connect to host port {}: {e}", key.local_port);
                 self.stray_rst(key.local_port, key.peer_port);
             }
         }
@@ -288,7 +358,7 @@ impl Muxer {
 
     /// Adds what the sockets wait for.
     pub fn interests(&self, out: &mut Vec<Interest<Option<Token>>>) {
-        let mut add = |fd: i32, read: bool, write: bool, token: Token| {
+        let mut add = |fd: crate::platform::RawSocket, read: bool, write: bool, token: Token| {
             out.push(Interest {
                 fd,
                 read,
@@ -296,11 +366,13 @@ impl Muxer {
                 token: Some(token),
             });
         };
-        if self.open() < MAX_CONNECTIONS {
-            add(self.listener.as_raw_fd(), true, false, Token::Listener);
+        if let Some((_, listener)) = &self.listener
+            && self.open() < MAX_CONNECTIONS
+        {
+            add(listener.raw_socket(), true, false, Token::Listener);
         }
         for (i, h) in self.handshakes.iter().enumerate() {
-            add(h.stream.as_raw_fd(), true, false, Token::Handshake(i));
+            add(h.stream.raw_socket(), true, false, Token::Handshake(i));
         }
         for (key, c) in &self.conns {
             let (read, write) = c.interest();
@@ -308,16 +380,24 @@ impl Muxer {
                 add(c.fd(), read, write, Token::Conn(*key));
             }
         }
+        #[cfg(windows)]
+        for (i, c) in self.lingering.iter().enumerate() {
+            add(c.fd(), true, false, Token::Lingering(i));
+        }
     }
 
     /// Acts on what became ready.
     pub fn on_events(&mut self, events: &[Ready<Option<Token>>]) {
         let mut ready_handshakes = Vec::new();
+        #[cfg(windows)]
+        let mut ready_lingering = Vec::new();
         for e in events {
             match e.token {
                 None => {}
                 Some(Token::Listener) => self.accept(),
                 Some(Token::Handshake(i)) => ready_handshakes.push(i),
+                #[cfg(windows)]
+                Some(Token::Lingering(i)) => ready_lingering.push(i),
                 Some(Token::Conn(key)) => {
                     let Some(c) = self.conns.get_mut(&key) else {
                         continue;
@@ -337,11 +417,23 @@ impl Muxer {
         for i in ready_handshakes {
             self.handshake(i);
         }
+        #[cfg(windows)]
+        {
+            ready_lingering.sort_unstable_by(|a, b| b.cmp(a));
+            for i in ready_lingering {
+                if self.lingering.get_mut(i).is_some_and(Conn::drained) {
+                    self.lingering.swap_remove(i);
+                }
+            }
+        }
     }
 
     fn accept(&mut self) {
-        while self.open() < MAX_CONNECTIONS {
-            match self.listener.accept() {
+        let Some((_, listener)) = &self.listener else {
+            return;
+        };
+        while self.handshakes.len() + self.conns.len() < MAX_CONNECTIONS {
+            match listener.accept() {
                 Ok((stream, _)) => {
                     if let Err(e) = stream.set_nonblocking(true) {
                         debug!("vsock: host connection: {e}");
@@ -424,8 +516,20 @@ impl Muxer {
 
 impl Drop for Muxer {
     fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.path);
+        if let Some((path, _)) = &self.listener {
+            let _ = std::fs::remove_file(path);
+        }
     }
+}
+
+/// A connection to a port this process serves: the muxer's end of a socket pair, whose
+/// other end goes to the port's sender. Refused once nothing receives there.
+fn serve(port: &Sender<UnixStream>) -> io::Result<UnixStream> {
+    let (ours, theirs) = UnixStream::pair()?;
+    ours.set_nonblocking(true)?;
+    port.send(theirs)
+        .map_err(|_| io::Error::new(io::ErrorKind::ConnectionRefused, "no longer served"))?;
+    Ok(ours)
 }
 
 /// Reads a handshake line without consuming anything after it. `Some(port)` once the line
@@ -472,6 +576,14 @@ fn parse_connect(line: &[u8]) -> Option<u32> {
 
 /// Connects without blocking: a host listener whose backlog is full refuses at once
 /// instead of stalling the device.
+#[cfg(windows)]
+fn connect_nonblocking(path: &Path) -> io::Result<UnixStream> {
+    UnixStream::connect_nonblocking(path)
+}
+
+/// Connects without blocking: a host listener whose backlog is full refuses at once
+/// instead of stalling the device.
+#[cfg(unix)]
 fn connect_nonblocking(path: &Path) -> io::Result<UnixStream> {
     let bytes = path.as_os_str().as_bytes();
     // SAFETY: an all-zero sockaddr_un is a valid value.
@@ -562,8 +674,9 @@ mod tests {
     /// host ports past the snapshot's without reusing a held one.
     #[test]
     fn restores_reset_held_streams_first_and_keep_their_ports() {
-        let dir = std::env::temp_dir().join(format!("shards-vsock-restore-{}", std::process::id()));
-        let mut m = Muxer::bind(&dir, 3).unwrap();
+        let dir_guard = shards_testdir::TempDir::new("vsock-restore").unwrap();
+        let dir = dir_guard.join("v");
+        let mut m = Muxer::new(VsockHost::at(dir.clone()), 3).unwrap();
         let mut target = dir.clone().into_os_string();
         target.push("_5000");
         let host = UnixListener::bind(&target).unwrap();
@@ -605,6 +718,224 @@ mod tests {
         let _ = std::fs::remove_file(&target);
     }
 
+    /// A guest's request for host `port`, from guest port `from`.
+    fn request(port: u32, from: u32) -> Header {
+        Header {
+            src_cid: 3,
+            dst_cid: HOST_CID,
+            src_port: from,
+            dst_port: port,
+            len: 0,
+            kind: TYPE_STREAM,
+            op: op::REQUEST,
+            flags: 0,
+            buf_alloc: 1 << 16,
+            fwd_cnt: 0,
+        }
+    }
+
+    /// A port this process serves gets the guest's connection as a connected socket, with
+    /// no socket file; a port nothing serves, with no path to dial, a served port whose
+    /// receiver is gone, and a second connection to a served port, are refused with an RST.
+    #[test]
+    fn served_ports_get_connections_without_socket_files() {
+        let (sender, arrived) = std::sync::mpsc::channel();
+        let (gone, dropped) = std::sync::mpsc::channel();
+        drop(dropped);
+        let host = VsockHost {
+            path: None,
+            ports: vec![(52, sender), (53, gone)],
+            every: Vec::new(),
+        };
+        let mut m = Muxer::new(host, 3).unwrap();
+        let mem = GuestMemory::anonymous(&[(0x8000_0000, 1 << 16)]).unwrap();
+        for (port, from) in [(52, 49_152), (7, 49_153), (53, 49_154), (52, 49_155)] {
+            m.on_guest_packet(&request(port, from), &[], &mem);
+        }
+        let mut sent = Vec::new();
+        while let Some(h) = m.next_rx(&[]) {
+            sent.push((h.op, h.src_port, h.dst_port));
+        }
+        sent.sort_unstable();
+        let mut expected = vec![
+            (op::RESPONSE, 52, 49_152),
+            (op::RST, 7, 49_153),
+            (op::RST, 53, 49_154),
+            (op::RST, 52, 49_155),
+        ];
+        expected.sort_unstable();
+        assert_eq!(sent, expected);
+        let mut theirs = arrived.try_recv().unwrap();
+        assert!(arrived.try_recv().is_err(), "one connection, one socket");
+        // The pair is connected: what the host writes is the muxer's to read.
+        theirs.write_all(b"x").unwrap();
+        let key = Key {
+            local_port: 52,
+            peer_port: 49_152,
+        };
+        assert!(m.conns.contains_key(&key));
+        let mut interests = Vec::new();
+        m.interests(&mut interests);
+        assert!(
+            !interests.iter().any(|i| matches!(i.token, Some(Token::Listener))),
+            "no path, nothing to listen on"
+        );
+    }
+
+    /// A port served for every connection gets each, apart, as its own socket.
+    #[test]
+    fn ports_served_for_every_connection_get_each() {
+        let (sender, arrived) = std::sync::mpsc::channel();
+        let host = VsockHost {
+            path: None,
+            ports: Vec::new(),
+            every: vec![(54, sender)],
+        };
+        let mut m = Muxer::new(host, 3).unwrap();
+        let mem = GuestMemory::anonymous(&[(0x8000_0000, 1 << 16)]).unwrap();
+        for from in [49_152, 49_153, 49_154] {
+            m.on_guest_packet(&request(54, from), &[], &mem);
+        }
+        let mut sent = Vec::new();
+        while let Some(h) = m.next_rx(&[]) {
+            sent.push((h.op, h.dst_port));
+        }
+        sent.sort_unstable();
+        assert_eq!(
+            sent,
+            [
+                (op::RESPONSE, 49_152),
+                (op::RESPONSE, 49_153),
+                (op::RESPONSE, 49_154)
+            ]
+        );
+        assert_eq!(arrived.try_iter().count(), 3);
+    }
+
+    /// What the guest sent before it ended a connection is the host's to read whole, then
+    /// end-of-stream, though the host had sent data the guest took none of and writes again
+    /// after the guest's end, as an exec's stdin's end can come after a command that ended
+    /// at once: on Windows a socket closed while its peer may still read loses the peer what
+    /// it had not read (PM M358), so the muxer holds its end until the host ends its own.
+    #[test]
+    fn what_the_guest_sent_before_its_end_is_read_whole_whatever_the_host_writes() {
+        use super::super::packet::shutdown;
+        let (sender, arrived) = std::sync::mpsc::channel();
+        let host = VsockHost {
+            path: None,
+            ports: Vec::new(),
+            every: vec![(54, sender)],
+        };
+        let mut m = Muxer::new(host, 3).unwrap();
+        let mem = GuestMemory::anonymous(&[(0x8000_0000, 1 << 16)]).unwrap();
+        m.on_guest_packet(&request(54, 49_152), &[], &mem);
+        assert_eq!(m.next_rx(&[]).map(|h| h.op), Some(op::RESPONSE));
+        let mut theirs = arrived.try_recv().unwrap();
+        theirs.write_all(b"stdin").unwrap();
+        let said = b"the command's output, then its exit status";
+        mem.access().unwrap().write(0x8000_0000, said).unwrap();
+        let output = Span {
+            gpa: 0x8000_0000,
+            ptr: mem.host_ptr(0x8000_0000, said.len()).unwrap(),
+            len: said.len(),
+        };
+        let rw = Header {
+            op: op::RW,
+            len: said.len() as u32,
+            ..request(54, 49_152)
+        };
+        m.on_guest_packet(&rw, &[output], &mem);
+        let ended = Header {
+            op: op::SHUTDOWN,
+            flags: shutdown::RCV | shutdown::SEND,
+            ..request(54, 49_152)
+        };
+        m.on_guest_packet(&ended, &[], &mem);
+        assert_eq!(m.next_rx(&[]).map(|h| h.op), Some(op::RST));
+        assert!(m.conns.is_empty(), "the guest's connection is over");
+        let _ = theirs.write_all(b" and more");
+        let mut got = Vec::new();
+        let mut buf = [0u8; 256];
+        let end = loop {
+            match theirs.read(&mut buf) {
+                Ok(0) => break None,
+                Ok(n) => got.extend_from_slice(&buf[..n]),
+                Err(e) => break Some(e.kind()),
+            }
+        };
+        assert_eq!(got, said, "what the guest sent, whole");
+        // End-of-stream; on Linux, whose muxer closed its end holding what the host sent
+        // unread, a reset after it (unix_release_sock).
+        assert!(
+            end.is_none() || cfg!(target_os = "linux") && end == Some(io::ErrorKind::ConnectionReset),
+            "{end:?}"
+        );
+        #[cfg(windows)]
+        {
+            assert_eq!(m.lingering.len(), 1, "held while the host's end is open");
+            drop(theirs);
+            // The host's end reads as its socket's end (poll.rs): the muxer's goes then.
+            let mut interests = Vec::new();
+            m.interests(&mut interests);
+            let ready: Vec<Ready<Option<Token>>> = interests
+                .iter()
+                .filter(|i| matches!(i.token, Some(Token::Lingering(_))))
+                .map(|i| Ready {
+                    token: i.token,
+                    read: true,
+                    write: false,
+                })
+                .collect();
+            assert_eq!(ready.len(), 1);
+            m.on_events(&ready);
+            assert!(m.lingering.is_empty(), "let go once the host's end is gone");
+        }
+    }
+
+    /// A restored muxer saved again before it has sent the resets it owes saves them
+    /// beside its own, and a restore reads them all (review 1.15): a full snapshot's, saved
+    /// again, round-trips.
+    #[test]
+    fn a_save_before_a_restores_resets_go_out_reads_back() {
+        let dir_guard = shards_testdir::TempDir::new("vsock-resave").unwrap();
+        let dir = dir_guard.join("v");
+        let mut m = Muxer::new(VsockHost::at(dir), 3).unwrap();
+        let full = MAX_CONNECTIONS + MAX_STRAY_RSTS;
+        let ports: Vec<(u32, u32)> = (0..full as u32)
+            .map(|i| (LOCAL_PORT_BASE + i, 1000 + i))
+            .collect();
+        m.restore(Saved {
+            ports: ports.clone(),
+            last_local_port: LOCAL_PORT_BASE + full as u32,
+        });
+        // As many streams again as its own connections would hold (which a save holds
+        // beside the resets owed): past what one snapshot holds.
+        let own: Vec<(u32, u32)> = (0..MAX_CONNECTIONS as u32)
+            .map(|i| (LOCAL_PORT_BASE + 10_000 + i, 1))
+            .collect();
+        m.stray_rsts.extend(own.iter().copied());
+        let saved = m.saved();
+        assert_eq!(saved.ports.len(), full + MAX_CONNECTIONS);
+        let mut w = Writer::default();
+        saved.write(&mut w);
+        let bytes = w.into_bytes();
+        let mut r = Reader::new(&bytes);
+        let read = Saved::read(&mut r).unwrap();
+        assert!(read.ports.iter().all(|p| ports.contains(p) || own.contains(p)));
+        assert_eq!(read.ports.len(), full + MAX_CONNECTIONS);
+        // Saved more than a restore reads, it keeps the newest.
+        let big_dir = shards_testdir::TempDir::new("vsock-big").unwrap();
+        let mut big = Muxer::new(VsockHost::at(big_dir.join("v")), 3).unwrap();
+        let many: Vec<(u32, u32)> = (0..(MAX_SAVED + 5) as u32).map(|i| (i, i)).collect();
+        big.stray_rsts.extend(many);
+        let saved = big.saved();
+        assert_eq!(saved.ports.len(), MAX_SAVED);
+        assert_eq!(
+            saved.ports.first(),
+            Some(&((MAX_SAVED + 4) as u32, (MAX_SAVED + 4) as u32))
+        );
+    }
+
     #[test]
     fn saved_streams_round_trip() {
         let saved = Saved {
@@ -621,8 +952,9 @@ mod tests {
 
     #[test]
     fn local_ports_stay_in_range_and_unique() {
-        let dir = std::env::temp_dir().join(format!("shards-vsock-ports-{}", std::process::id()));
-        let mut m = Muxer::bind(&dir, 3).unwrap();
+        let dir_guard = shards_testdir::TempDir::new("vsock-ports").unwrap();
+        let dir = dir_guard.join("v");
+        let mut m = Muxer::new(VsockHost::at(dir.clone()), 3).unwrap();
         m.last_local_port = u32::MAX - 1;
         let a = m.allocate_local_port();
         let b = m.allocate_local_port();

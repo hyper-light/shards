@@ -1,0 +1,12 @@
+{
+ "about": "cosign v3.1.3's signature of an OSI agent artifact, key-signed with an empty signing config, as zot v2.1.22 served it (PM M135)",
+ "public_key": "-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEadp7y+mg4y/hVUaL2WTDqH4CQFYx\nG2W/S5Tzh2tIWBbCMNwzQGDn/cySKxQhINwLz4hnoIAFVrgiMGslN3HnDQ==\n-----END PUBLIC KEY-----\n",
+ "subject": {
+  "mediaType": "application/vnd.oci.image.manifest.v1+json",
+  "size": 445,
+  "digest": "sha256:da41a93758ed80c4185f3e8ae4bd3630ff53abd33813412d8c73d15ec231b61c"
+ },
+ "manifest_digest": "sha256:cff0f8d557b11bbf36af25214ceb54db3956cec2576084bb3baaf0610d964d1b",
+ "manifest": "{\"schemaVersion\":2,\"mediaType\":\"application/vnd.oci.image.manifest.v1+json\",\"config\":{\"mediaType\":\"application/vnd.oci.empty.v1+json\",\"size\":2,\"digest\":\"sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a\",\"artifactType\":\"application/vnd.dev.sigstore.bundle.v0.3+json\"},\"layers\":[{\"mediaType\":\"application/vnd.dev.sigstore.bundle.v0.3+json\",\"size\":659,\"digest\":\"sha256:5e68c28062c73ad4015e5af9cacc11ccf12d85f7aefcecec1122a711a1327402\"}],\"annotations\":{\"dev.sigstore.bundle.content\":\"dsse-envelope\",\"dev.sigstore.bundle.predicateType\":\"https://sigstore.dev/cosign/sign/v1\",\"org.opencontainers.image.created\":\"2026-10-10T05:09:05Z\"},\"subject\":{\"mediaType\":\"application/vnd.oci.image.manifest.v1+json\",\"size\":445,\"digest\":\"sha256:da41a93758ed80c4185f3e8ae4bd3630ff53abd33813412d8c73d15ec231b61c\"},\"artifactType\":\"application/vnd.dev.sigstore.bundle.v0.3+json\"}",
+ "bundle": "{\"mediaType\":\"application/vnd.dev.sigstore.bundle.v0.3+json\",\"verificationMaterial\":{\"publicKey\":{\"hint\":\"0/dBRaL2vI5QIqrqYopZKmtlxRINLuE4vhpRj2nyuY0=\"}},\"dsseEnvelope\":{\"payload\":\"eyJfdHlwZSI6Imh0dHBzOi8vaW4tdG90by5pby9TdGF0ZW1lbnQvdjEiLCJzdWJqZWN0IjpbeyJkaWdlc3QiOnsic2hhMjU2IjoiZGE0MWE5Mzc1OGVkODBjNDE4NWYzZThhZTRiZDM2MzBmZjUzYWJkMzM4MTM0MTJkOGM3M2QxNWVjMjMxYjYxYyJ9LCJhbm5vdGF0aW9ucyI6e319XSwicHJlZGljYXRlVHlwZSI6Imh0dHBzOi8vc2lnc3RvcmUuZGV2L2Nvc2lnbi9zaWduL3YxIiwicHJlZGljYXRlIjp7fX0=\",\"payloadType\":\"application/vnd.in-toto+json\",\"signatures\":[{\"sig\":\"MEUCIHKPseWetIYrX7TVaQ9ikjEV5Z453MHONX9i9RlKnKXVAiEAuQRICclJsXSM5e6B2NKIWwUUbV5ZaMXTD25ThxnTf+c=\"}]}}"
+}

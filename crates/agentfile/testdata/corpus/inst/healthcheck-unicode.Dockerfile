@@ -1,0 +1,3 @@
+FROM a
+HEALTHCHECK nöne
+HEALTHCHECK --interval=1µs CMD x

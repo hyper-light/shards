@@ -1,0 +1,18 @@
+diff --git a/crates/vmm/src/devices/virtio/fs/server.rs b/crates/vmm/src/devices/virtio/fs/server.rs
+index c59382bf..d4bb0c71 100644
+--- a/crates/vmm/src/devices/virtio/fs/server.rs
++++ b/crates/vmm/src/devices/virtio/fs/server.rs
+@@ -1713,6 +1713,13 @@ impl Server {
+                 r.0.resize(at.saturating_add(size as usize), 0);
+                 let n = pread(fd, r.0.get_mut(at..).unwrap_or_default(), offset)?;
+                 r.0.truncate(at.saturating_add(n));
++                // The experiment (share-dontneed.patch): the host's copy of what was read
++                // dropped as its guest takes it, so that it never crowds a held run's RAM.
++                #[cfg(target_os = "linux")]
++                // SAFETY: advice on a range of a descriptor of ours.
++                unsafe {
++                    libc::posix_fadvise(fd, offset as libc::off_t, n as libc::off_t, libc::POSIX_FADV_DONTNEED);
++                }
+             }
+             op::WRITE => {
+                 self.writable(s, nodeid)?;

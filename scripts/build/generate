@@ -1,0 +1,85 @@
+#!/bin/sh
+# Regenerates, from moby/buildkit dockerfile/1.27.1 built by the Go its go.mod names:
+# - crates/build/testdata/ops-answers.json: what BuildKit's own file backend and overlay
+#   differ make of each case in crates/build/testdata/ops.json (oracle_test.go);
+# - crates/build/testdata/contexts-answers.json: what buildx's client sends of the
+#   fixture tree in contexts.json under each case's filters (context/*.go), run on
+#   this host, as buildx runs on the user's; on Windows, contexts-answers-windows.json.
+#
+# The oracle mounts overlayfs and chowns, mknods and sets security.* xattrs as BuildKit's
+# daemon does, so it runs as root in a privileged Linux container (Docker's), on an
+# ext4 volume as BuildKit's snapshots sit on one, with `xz` installed, which BuildKit runs
+# to unpack .tar.xz (moby/go-archive). Only this generator needs Docker; the tests replay
+# its answers.
+#
+# --contexts records the contexts' answers alone, without Docker: on Windows (Git for
+# Windows' sh), it is the one step there is, and it needs symlinks this user may make
+# (Developer Mode, or an elevated shell).
+#
+#   scripts/build/generate [--contexts] [BUILDKIT_CHECKOUT]
+set -eu
+
+contexts_only=
+if [ "${1:-}" = --contexts ]; then
+	contexts_only=1
+	shift
+fi
+
+here=$(cd "$(dirname "$0")" && pwd)
+root=$(cd "$here/../.." && pwd)
+data="$root/crates/build/testdata"
+tag=dockerfile/1.27.1
+commit=08f4630c67a49ff3158f218e99fd93ad97a90747
+# alpine:3.22, which only hosts the static test binary.
+image=alpine@sha256:5291449c3df73caf6ed85e649dec1b9e818b39a5d8c871e97afc13e9cd5e8fa8
+bk=${1:-}
+own=
+if [ -z "$bk" ]; then
+	bk=$(mktemp -d)
+	own=1
+	# core.longpaths: Git for Windows's, for the vendor tree's paths past MAX_PATH; other gits ignore it.
+	git -c core.longpaths=true clone --quiet --depth 1 --branch "$tag" https://github.com/moby/buildkit "$bk"
+fi
+if [ "$(git -C "$bk" rev-parse HEAD)" != "$commit" ]; then
+	echo "$bk is not moby/buildkit $tag ($commit)" >&2
+	exit 1
+fi
+
+pkg="$bk/solver/llbsolver/file"
+out=$(mktemp -d)
+cleanup() {
+	rm -f "$pkg/zz_shards_oracle_test.go" "$pkg/zz_shards_user_test.go"
+	rm -rf "$bk/shards-context"
+	rm -rf "$out"
+	if [ -n "$own" ]; then rm -rf "$bk"; fi
+}
+trap cleanup EXIT
+
+mkdir -p "$bk/shards-context"
+cp "$here"/context/*.go "$bk/shards-context/"
+answers=contexts-answers.json
+if [ "$(cd "$bk" && go env GOOS)" = windows ]; then
+	answers=contexts-answers-windows.json
+fi
+(cd "$bk" && go run -mod=vendor ./shards-context "$data/contexts.json" "$data/$answers")
+if [ -n "$contexts_only" ]; then
+	exit 0
+fi
+
+cp "$here/oracle_test.go" "$pkg/zz_shards_oracle_test.go"
+# readUser, as ops/user_linux.go has it, beside the backend: the package and the worker
+# hook it needs aside.
+sed -e 's/^package ops$/package file/' \
+	-e '/"github.com\/moby\/buildkit\/worker"/d' \
+	-e '/^func getReadUserFn/,/^}/d' \
+	"$bk/solver/llbsolver/ops/user_linux.go" >"$pkg/zz_shards_user_test.go"
+
+arch=$(go env GOARCH)
+(cd "$bk" && GOOS=linux GOARCH="$arch" CGO_ENABLED=0 GOFLAGS=-mod=vendor \
+	go test -c -o "$out/oracle.test" ./solver/llbsolver/file)
+
+docker run --rm --privileged --platform "linux/$arch" \
+	-v "$out:/oracle:ro" -v "$data:/data" --mount type=volume,dst=/work \
+	-e SHARDS_OPS=/data/ops.json -e SHARDS_OPS_OUT=/data/ops-answers.json \
+	-e SHARDS_WORK=/work \
+	"$image" sh -c "apk add --no-cache --quiet xz && exec /oracle/oracle.test -test.run '^TestShardsOracle\$' -test.count=1"

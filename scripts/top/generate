@@ -1,0 +1,41 @@
+#!/bin/sh
+# Regenerates crates/shards/src/daemon/testdata/procps/: what procps-ng 4.0.2's `ps`
+# (Debian bookworm's, which Docker Desktop 4.x's dockerd runs for `docker top`) prints
+# for each line of `cases`, beside shards-init's dump of the same processes
+# (crates/init/src/procs.rs), which daemon/top.rs's tests lay out as ps would and hold
+# to it.
+#
+# A Linux container (Docker's) holds the processes: plain, niced, of a user with a long
+# name, of a uid with none, a zombie, one on a terminal, one that has used CPU, one with
+# spaces and a tab in its arguments. Its driver holds /proc/uptime still (a bind mount,
+# so the container is privileged), so that ps and the dump count time from one instant.
+#
+#   scripts/top/generate
+set -eu
+
+here=$(cd "$(dirname "$0")" && pwd)
+root=$(cd "$here/../.." && pwd)
+data="$root/crates/shards/src/daemon/testdata/procps"
+image=debian@sha256:f37a335e82bca302e955fa39f9dfe28f1be618f016f8a2b56318e5a5111afc26
+procps=2:4.0.2-3
+
+case $(uname -m) in
+arm64 | aarch64) arch=aarch64 ;;
+x86_64 | amd64) arch=x86_64 ;;
+*) echo "unknown architecture $(uname -m)" >&2; exit 1 ;;
+esac
+# The rustup proxy, without the DYLD_* that keep rust-lld from loading libLLVM.
+env -u DYLD_LIBRARY_PATH -u DYLD_FALLBACK_LIBRARY_PATH \
+	cargo build --quiet --manifest-path "$root/Cargo.toml" -p shards-init --profile guest \
+	--target "$arch-unknown-linux-musl"
+init="$root/target/$arch-unknown-linux-musl/guest/shards-init"
+
+out=$(mktemp -d)
+trap 'rm -rf "$out"' EXIT
+cp "$init" "$out/shards-init"
+cp "$data/cases" "$out/cases"
+cp "$here/inside.sh" "$out/inside.sh"
+docker run --rm --privileged -v "$out:/top" "$image" sh /top/inside.sh "$procps"
+rm -f "$data"/*.out
+cp "$out"/dump "$out"/pids "$out"/*.out "$data/"
+echo "wrote $data"

@@ -1,0 +1,2013 @@
+[
+ {
+  "name": "eq-string",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nallow if input.x == \"a\"\n\nallow if input.x == \"b\"\n\nallow if input.y == \"a\"\n"
+   ]
+  ],
+  "lookups": [
+   {
+    "path": "data.docker.allow",
+    "input": {
+     "x": "a"
+    }
+   },
+   {
+    "path": "data.docker.allow",
+    "input": {
+     "x": "b",
+     "y": "a"
+    }
+   },
+   {
+    "path": "data.docker.allow",
+    "input": {
+     "x": "c"
+    }
+   },
+   {
+    "path": "data.docker.allow"
+   },
+   {
+    "path": "data.docker.allow",
+    "input": {}
+   }
+  ]
+ },
+ {
+  "name": "eq-number",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\np := 1 if input.n == 1\n\np := 2 if input.n == 2.0\n\np := 3 if input.n == 1e2\n"
+   ]
+  ],
+  "lookups": [
+   {
+    "path": "data.docker.p",
+    "input": {
+     "n": 1
+    }
+   },
+   {
+    "path": "data.docker.p",
+    "input": {
+     "n": 1.0
+    }
+   },
+   {
+    "path": "data.docker.p",
+    "input": {
+     "n": 2
+    }
+   },
+   {
+    "path": "data.docker.p",
+    "input": {
+     "n": 100
+    }
+   },
+   {
+    "path": "data.docker.p",
+    "input": {
+     "n": "1"
+    }
+   },
+   {
+    "path": "data.docker.p",
+    "input": {
+     "n": 3
+    }
+   }
+  ]
+ },
+ {
+  "name": "eq-bool-null",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\np := \"t\" if input.b == true\n\np := \"f\" if input.b == false\n\np := \"n\" if input.b == null\n"
+   ]
+  ],
+  "lookups": [
+   {
+    "path": "data.docker.p",
+    "input": {
+     "b": true
+    }
+   },
+   {
+    "path": "data.docker.p",
+    "input": {
+     "b": false
+    }
+   },
+   {
+    "path": "data.docker.p",
+    "input": {
+     "b": null
+    }
+   },
+   {
+    "path": "data.docker.p",
+    "input": {
+     "b": 0
+    }
+   },
+   {
+    "path": "data.docker.p",
+    "input": {}
+   }
+  ]
+ },
+ {
+  "name": "eq-array",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nr contains \"exact\" if input.a == [1, \"x\"]\n\nr contains \"wild\" if input.a = [1, _]\n\nr contains \"empty\" if input.a == []\n\nr contains \"one\" if input.a == [true]\n"
+   ]
+  ],
+  "lookups": [
+   {
+    "path": "data.docker.r",
+    "input": {
+     "a": [
+      1,
+      "x"
+     ]
+    }
+   },
+   {
+    "path": "data.docker.r",
+    "input": {
+     "a": [
+      1,
+      2
+     ]
+    }
+   },
+   {
+    "path": "data.docker.r",
+    "input": {
+     "a": []
+    }
+   },
+   {
+    "path": "data.docker.r",
+    "input": {
+     "a": [
+      true
+     ]
+    }
+   },
+   {
+    "path": "data.docker.r",
+    "input": {
+     "a": [
+      1,
+      "x",
+      3
+     ]
+    }
+   },
+   {
+    "path": "data.docker.r",
+    "input": {
+     "a": [
+      [
+       1
+      ],
+      "x"
+     ]
+    }
+   },
+   {
+    "path": "data.docker.r",
+    "input": {
+     "a": "x"
+    }
+   }
+  ]
+ },
+ {
+  "name": "eq-object-not-indexed",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nallow if input.o == {\"a\": 1}\n\nallow if input.p == {1, 2}\n\nallow if input.q == [{\"a\": 1}]\n"
+   ]
+  ],
+  "lookups": [
+   {
+    "path": "data.docker.allow",
+    "input": {
+     "o": {
+      "a": 1
+     }
+    }
+   },
+   {
+    "path": "data.docker.allow",
+    "input": {}
+   }
+  ]
+ },
+ {
+  "name": "var-vs-scalar",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nallow if {\n\tx := 1\n\tinput.x == x\n}\n\nallow if input.x == 2\n"
+   ]
+  ],
+  "lookups": [
+   {
+    "path": "data.docker.allow",
+    "input": {
+     "x": 1
+    }
+   },
+   {
+    "path": "data.docker.allow",
+    "input": {
+     "x": 2
+    }
+   },
+   {
+    "path": "data.docker.allow",
+    "input": {
+     "x": 3
+    }
+   },
+   {
+    "path": "data.docker.allow",
+    "input": {}
+   }
+  ]
+ },
+ {
+  "name": "multiple-refs",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nallow if {\n\tinput.a == 1\n\tinput.b == 2\n}\n\nallow if input.a == 1\n\nallow if input.b == 3\n\nallow if true\n"
+   ]
+  ],
+  "lookups": [
+   {
+    "path": "data.docker.allow",
+    "input": {
+     "a": 1,
+     "b": 2
+    }
+   },
+   {
+    "path": "data.docker.allow",
+    "input": {
+     "a": 1,
+     "b": 3
+    }
+   },
+   {
+    "path": "data.docker.allow",
+    "input": {
+     "b": 3
+    }
+   },
+   {
+    "path": "data.docker.allow",
+    "input": {
+     "a": 2
+    }
+   },
+   {
+    "path": "data.docker.allow",
+    "input": {}
+   }
+  ]
+ },
+ {
+  "name": "frequency-order",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\np contains \"c1\" if input.c == 1\n\np contains \"b1\" if input.b == 1\n\np contains \"b2\" if input.b == 2\n\np contains \"a1\" if input.a == 1\n\np contains \"a2\" if input.a == 2\n\np contains \"a3\" if input.a == 3\n\np contains \"abc\" if {\n\tinput.a == 1\n\tinput.b == 1\n\tinput.c == 1\n}\n"
+   ]
+  ],
+  "lookups": [
+   {
+    "path": "data.docker.p",
+    "input": {
+     "a": 1,
+     "b": 1,
+     "c": 1
+    }
+   },
+   {
+    "path": "data.docker.p",
+    "input": {
+     "a": 2,
+     "b": 2
+    }
+   },
+   {
+    "path": "data.docker.p",
+    "input": {
+     "c": 1
+    }
+   },
+   {
+    "path": "data.docker.p",
+    "input": {}
+   }
+  ]
+ },
+ {
+  "name": "frequency-order-mixed",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\np contains \"z\" if input.z == 1\n\np contains \"y1\" if input.y == 1\n\np contains \"y2\" if input.y == 2\n\np contains \"x1\" if input.x == 1\n\np contains \"x2\" if input.x == 2\n\np contains \"x3\" if input.x == 3\n\np contains \"w1\" if input.w == 1\n\np contains \"w2\" if input.w == 2\n\np contains \"w3\" if input.w == 3\n\np contains \"w4\" if input.w == 4\n"
+   ]
+  ],
+  "lookups": [
+   {
+    "path": "data.docker.p",
+    "input": {
+     "w": 1,
+     "x": 1,
+     "y": 1,
+     "z": 1
+    }
+   },
+   {
+    "path": "data.docker.p",
+    "input": {
+     "w": 4,
+     "x": 3
+    }
+   },
+   {
+    "path": "data.docker.p",
+    "input": {}
+   }
+  ]
+ },
+ {
+  "name": "frequency-sort-quirk",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\np contains \"x1\" if input.x == 1\n\np contains \"y1\" if input.y == 1\n\np contains \"y2\" if input.y == 2\n\np contains \"y3\" if input.y == 3\n\np contains \"z1\" if input.z == 1\n\np contains \"z2\" if input.z == 2\n"
+   ]
+  ],
+  "lookups": [
+   {
+    "path": "data.docker.p",
+    "input": {
+     "x": 1,
+     "y": 1,
+     "z": 1
+    }
+   },
+   {
+    "path": "data.docker.p",
+    "input": {
+     "x": 1,
+     "z": 2
+    }
+   }
+  ]
+ },
+ {
+  "name": "ref-through-var",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nallow if {\n\tx := input.a\n\tx == 1\n}\n\nallow if {\n\ty := input.b\n\ty == \"q\"\n}\n"
+   ]
+  ],
+  "lookups": [
+   {
+    "path": "data.docker.allow",
+    "input": {
+     "a": 1
+    }
+   },
+   {
+    "path": "data.docker.allow",
+    "input": {
+     "b": "q"
+    }
+   },
+   {
+    "path": "data.docker.allow",
+    "input": {}
+   },
+   {
+    "path": "data.docker.allow",
+    "input": {
+     "a": 2,
+     "b": "r"
+    }
+   }
+  ]
+ },
+ {
+  "name": "ref-through-var-glob",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nallow if {\n\th := input.host\n\tglob.match(\"*.example.com\", [\".\"], h)\n}\n\nallow if {\n\th := input.host\n\tglob.match(\"docker.io\", [\".\"], h)\n}\n\nallow if input.host == \"localhost\"\n"
+   ]
+  ],
+  "lookups": [
+   {
+    "path": "data.docker.allow",
+    "input": {
+     "host": "a.example.com"
+    }
+   },
+   {
+    "path": "data.docker.allow",
+    "input": {
+     "host": "docker.io"
+    }
+   },
+   {
+    "path": "data.docker.allow",
+    "input": {
+     "host": "localhost"
+    }
+   },
+   {
+    "path": "data.docker.allow",
+    "input": {
+     "host": "a.b.example.com"
+    }
+   },
+   {
+    "path": "data.docker.allow",
+    "input": {
+     "host": 7
+    }
+   },
+   {
+    "path": "data.docker.allow",
+    "input": {}
+   }
+  ]
+ },
+ {
+  "name": "negation",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nallow if not input.x == 1\n\nallow if input.y == 2\n\ndeny if not input.z\n"
+   ]
+  ],
+  "lookups": [
+   {
+    "path": "data.docker.allow",
+    "input": {
+     "x": 1,
+     "y": 2
+    }
+   },
+   {
+    "path": "data.docker.allow",
+    "input": {
+     "x": 2
+    }
+   },
+   {
+    "path": "data.docker.deny",
+    "input": {
+     "z": true
+    }
+   },
+   {
+    "path": "data.docker.deny",
+    "input": {}
+   }
+  ]
+ },
+ {
+  "name": "naked-ref",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nallow if input.flag\n\nallow if input.other\n\nallow if input.x == 1\n"
+   ]
+  ],
+  "lookups": [
+   {
+    "path": "data.docker.allow",
+    "input": {
+     "flag": true
+    }
+   },
+   {
+    "path": "data.docker.allow",
+    "input": {
+     "flag": false
+    }
+   },
+   {
+    "path": "data.docker.allow",
+    "input": {
+     "other": null
+    }
+   },
+   {
+    "path": "data.docker.allow",
+    "input": {
+     "x": 1
+    }
+   },
+   {
+    "path": "data.docker.allow",
+    "input": {}
+   }
+  ]
+ },
+ {
+  "name": "glob-direct-ref",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nallow if glob.match(\"docker.io/*\", [\"/\"], input.image.ref)\n\nallow if glob.match(\"ghcr.io/*/*\", [\"/\"], input.image.ref)\n"
+   ]
+  ],
+  "lookups": [
+   {
+    "path": "data.docker.allow",
+    "input": {
+     "image": {
+      "ref": "docker.io/alpine"
+     }
+    }
+   },
+   {
+    "path": "data.docker.allow",
+    "input": {
+     "image": {
+      "ref": "ghcr.io/a/b"
+     }
+    }
+   },
+   {
+    "path": "data.docker.allow",
+    "input": {}
+   }
+  ]
+ },
+ {
+  "name": "glob-delimiters",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\np contains \"dot\" if {\n\tv := input.v\n\tglob.match(\"a.*\", [], v)\n}\n\np contains \"slash-colon\" if {\n\tv := input.v\n\tglob.match(\"a/*:*\", [\"/\", \":\"], v)\n}\n\np contains \"word\" if {\n\tv := input.v\n\tglob.match(\"a*b\", [\"*\"], v)\n}\n"
+   ]
+  ],
+  "lookups": [
+   {
+    "path": "data.docker.p",
+    "input": {
+     "v": "a.b"
+    }
+   },
+   {
+    "path": "data.docker.p",
+    "input": {
+     "v": "a/x:y"
+    }
+   },
+   {
+    "path": "data.docker.p",
+    "input": {
+     "v": "a*b"
+    }
+   },
+   {
+    "path": "data.docker.p",
+    "input": {
+     "v": "a"
+    }
+   },
+   {
+    "path": "data.docker.p",
+    "input": {
+     "v": [
+      "a",
+      "b"
+     ]
+    }
+   },
+   {
+    "path": "data.docker.p",
+    "input": {}
+   }
+  ]
+ },
+ {
+  "name": "glob-not-indexed",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\np contains \"super\" if {\n\tv := input.v\n\tglob.match(\"a.**\", [\".\"], v)\n}\n\np contains \"question\" if {\n\tv := input.v\n\tglob.match(\"a.?\", [\".\"], v)\n}\n\np contains \"class\" if {\n\tv := input.v\n\tglob.match(\"a.[bc]\", [\".\"], v)\n}\n\np contains \"alt\" if {\n\tv := input.v\n\tglob.match(\"a.{b,c}\", [\".\"], v)\n}\n\np contains \"star-in-part\" if {\n\tv := input.v\n\tglob.match(\"a.b*\", [\".\"], v)\n}\n\np contains \"captured\" if {\n\tv := input.v\n\tr := glob.match(\"a.b\", [\".\"], v)\n\tr\n}\n\np contains \"plain\" if {\n\tv := input.v\n\tglob.match(\"a.b\", [\".\"], v)\n}\n"
+   ]
+  ],
+  "lookups": [
+   {
+    "path": "data.docker.p",
+    "input": {
+     "v": "a.b"
+    }
+   },
+   {
+    "path": "data.docker.p",
+    "input": {
+     "v": "x"
+    }
+   },
+   {
+    "path": "data.docker.p",
+    "input": {}
+   }
+  ]
+ },
+ {
+  "name": "glob-escaped",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\np contains \"esc-dot\" if {\n\tv := input.v\n\tglob.match(`a\\.b.*`, [\".\"], v)\n}\n\np contains \"esc-star\" if {\n\tv := input.v\n\tglob.match(`a.\\*`, [\".\"], v)\n}\n\np contains \"esc-bs\" if {\n\tv := input.v\n\tglob.match(`a\\\\.c`, [\".\"], v)\n}\n"
+   ]
+  ],
+  "lookups": [
+   {
+    "path": "data.docker.p",
+    "input": {
+     "v": "a\\.b.c"
+    }
+   },
+   {
+    "path": "data.docker.p",
+    "input": {
+     "v": "a.*"
+    }
+   },
+   {
+    "path": "data.docker.p",
+    "input": {
+     "v": "a.\\*"
+    }
+   },
+   {
+    "path": "data.docker.p",
+    "input": {
+     "v": "a\\\\.c"
+    }
+   },
+   {
+    "path": "data.docker.p",
+    "input": {
+     "v": "a\\.c"
+    }
+   }
+  ]
+ },
+ {
+  "name": "glob-function-arg",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nregistry(ref) := \"docker\" if glob.match(\"docker.io/*\", [\"/\"], ref)\n\nregistry(ref) := \"ghcr\" if glob.match(\"ghcr.io/*/*\", [\"/\"], ref)\n\nregistry(ref) := \"other\" if ref == \"local\"\n"
+   ]
+  ],
+  "lookups": [
+   {
+    "path": "data.docker.registry",
+    "args": [
+     "docker.io/alpine"
+    ]
+   },
+   {
+    "path": "data.docker.registry",
+    "args": [
+     "ghcr.io/a/b"
+    ]
+   },
+   {
+    "path": "data.docker.registry",
+    "args": [
+     "local"
+    ]
+   },
+   {
+    "path": "data.docker.registry",
+    "args": [
+     "x"
+    ]
+   },
+   {
+    "path": "data.docker.registry",
+    "args": [
+     1
+    ]
+   },
+   {
+    "path": "data.docker.registry",
+    "args": []
+   }
+  ]
+ },
+ {
+  "name": "glob-two-mappers",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\np contains \"slash\" if {\n\tv := input.v\n\tglob.match(\"a/*\", [\"/\"], v)\n}\n\np contains \"dot\" if {\n\tv := input.v\n\tglob.match(\"a.*\", [\".\"], v)\n}\n\np contains \"eq\" if input.v == \"a.b\"\n"
+   ]
+  ],
+  "lookups": [
+   {
+    "path": "data.docker.p",
+    "input": {
+     "v": "a/b"
+    }
+   },
+   {
+    "path": "data.docker.p",
+    "input": {
+     "v": "a.b"
+    }
+   },
+   {
+    "path": "data.docker.p",
+    "input": {
+     "v": "a/b.c"
+    }
+   },
+   {
+    "path": "data.docker.p",
+    "input": {
+     "v": "b"
+    }
+   }
+  ]
+ },
+ {
+  "name": "else-chain",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\np := 1 if input.x == 1\nelse := 2 if input.x == 2\nelse := 3\n\nq := \"a\" if input.y == \"a\"\nelse := \"b\" if input.z == \"b\"\n"
+   ]
+  ],
+  "lookups": [
+   {
+    "path": "data.docker.p",
+    "input": {
+     "x": 1
+    }
+   },
+   {
+    "path": "data.docker.p",
+    "input": {
+     "x": 2
+    }
+   },
+   {
+    "path": "data.docker.p",
+    "input": {
+     "x": 9
+    }
+   },
+   {
+    "path": "data.docker.q",
+    "input": {
+     "y": "a"
+    }
+   },
+   {
+    "path": "data.docker.q",
+    "input": {
+     "z": "b"
+    }
+   },
+   {
+    "path": "data.docker.q",
+    "input": {}
+   }
+  ]
+ },
+ {
+  "name": "else-chains-several",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\np := 1 if input.x == 1\nelse := 2 if input.y == 2\n\np := 1 if input.x == 3\nelse := 2 if input.x == 4\nelse := 2\n\np := 1 if input.w == 5\n"
+   ]
+  ],
+  "lookups": [
+   {
+    "path": "data.docker.p",
+    "input": {
+     "x": 1,
+     "y": 2
+    }
+   },
+   {
+    "path": "data.docker.p",
+    "input": {
+     "x": 4
+    }
+   },
+   {
+    "path": "data.docker.p",
+    "input": {
+     "w": 5
+    }
+   },
+   {
+    "path": "data.docker.p",
+    "input": {}
+   }
+  ]
+ },
+ {
+  "name": "default-rule",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndefault allow := false\n\nallow if input.x == 1\n\nallow if input.y == 1\n\ndefault level := \"low\"\n\nlevel := \"high\" if input.risk == \"high\"\n"
+   ]
+  ],
+  "lookups": [
+   {
+    "path": "data.docker.allow",
+    "input": {
+     "x": 1
+    }
+   },
+   {
+    "path": "data.docker.allow",
+    "input": {}
+   },
+   {
+    "path": "data.docker.level",
+    "input": {
+     "risk": "high"
+    }
+   },
+   {
+    "path": "data.docker.level",
+    "input": {
+     "risk": "low"
+    }
+   }
+  ]
+ },
+ {
+  "name": "default-only",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndefault allow := false\n"
+   ]
+  ],
+  "lookups": [
+   {
+    "path": "data.docker.allow",
+    "input": {
+     "x": 1
+    }
+   }
+  ]
+ },
+ {
+  "name": "function-args",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nf(x) := 1 if x == \"a\"\n\nf(x) := 2 if x == \"b\"\n\nf(x) := 3 if x == 1\n\nf(x) := 4 if true\n"
+   ]
+  ],
+  "lookups": [
+   {
+    "path": "data.docker.f",
+    "args": [
+     "a"
+    ]
+   },
+   {
+    "path": "data.docker.f",
+    "args": [
+     "b"
+    ]
+   },
+   {
+    "path": "data.docker.f",
+    "args": [
+     1
+    ]
+   },
+   {
+    "path": "data.docker.f",
+    "args": [
+     1.0
+    ]
+   },
+   {
+    "path": "data.docker.f",
+    "args": [
+     "c"
+    ]
+   },
+   {
+    "path": "data.docker.f",
+    "args": []
+   },
+   {
+    "path": "data.docker.f",
+    "args": [
+     [
+      "a"
+     ]
+    ]
+   }
+  ]
+ },
+ {
+  "name": "function-two-args",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ng(x, y) if {\n\tx == 1\n\ty == 2\n}\n\ng(x, y) if y == 3\n\ng(x, y) if x == 4\n"
+   ]
+  ],
+  "lookups": [
+   {
+    "path": "data.docker.g",
+    "args": [
+     1,
+     2
+    ]
+   },
+   {
+    "path": "data.docker.g",
+    "args": [
+     0,
+     3
+    ]
+   },
+   {
+    "path": "data.docker.g",
+    "args": [
+     4,
+     0
+    ]
+   },
+   {
+    "path": "data.docker.g",
+    "args": [
+     1,
+     3
+    ]
+   },
+   {
+    "path": "data.docker.g",
+    "args": [
+     9,
+     9
+    ]
+   }
+  ]
+ },
+ {
+  "name": "function-constant-args",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nh(1) := \"one\"\n\nh(2) := \"two\"\n\nh(x) := \"many\" if x > 2\n"
+   ]
+  ],
+  "lookups": [
+   {
+    "path": "data.docker.h",
+    "args": [
+     1
+    ]
+   },
+   {
+    "path": "data.docker.h",
+    "args": [
+     2
+    ]
+   },
+   {
+    "path": "data.docker.h",
+    "args": [
+     3
+    ]
+   }
+  ]
+ },
+ {
+  "name": "function-arg-ref-not-indexed",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nk(img) if img.repo == \"alpine\"\n\nk(img) if img == \"busybox\"\n"
+   ]
+  ],
+  "lookups": [
+   {
+    "path": "data.docker.k",
+    "args": [
+     {
+      "repo": "alpine"
+     }
+    ]
+   },
+   {
+    "path": "data.docker.k",
+    "args": [
+     "busybox"
+    ]
+   }
+  ]
+ },
+ {
+  "name": "function-else",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nf(x) := 1 if x == 1\nelse := 2 if x == 2\nelse := 3\n"
+   ]
+  ],
+  "lookups": [
+   {
+    "path": "data.docker.f",
+    "args": [
+     1
+    ]
+   },
+   {
+    "path": "data.docker.f",
+    "args": [
+     2
+    ]
+   },
+   {
+    "path": "data.docker.f",
+    "args": [
+     5
+    ]
+   }
+  ]
+ },
+ {
+  "name": "multi-value",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndeny contains \"a\" if input.x == 1\n\ndeny contains \"b\" if input.x == 2\n\ndeny contains msg if {\n\tinput.y == 1\n\tmsg := \"c\"\n}\n"
+   ]
+  ],
+  "lookups": [
+   {
+    "path": "data.docker.deny",
+    "input": {
+     "x": 1
+    }
+   },
+   {
+    "path": "data.docker.deny",
+    "input": {
+     "x": 2,
+     "y": 1
+    }
+   },
+   {
+    "path": "data.docker.deny",
+    "input": {}
+   }
+  ]
+ },
+ {
+  "name": "print-not-indexed",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nallow if {\n\tprint(\"checking\", input.x)\n\tinput.x == 1\n}\n\nallow if input.x == 2\n\nallow if input.x == 3\n"
+   ]
+  ],
+  "lookups": [
+   {
+    "path": "data.docker.allow",
+    "input": {
+     "x": 1
+    }
+   },
+   {
+    "path": "data.docker.allow",
+    "input": {
+     "x": 2
+    }
+   },
+   {
+    "path": "data.docker.allow",
+    "input": {
+     "x": 9
+    }
+   }
+  ]
+ },
+ {
+  "name": "early-exit-same-values",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nallow if input.x == 1\n\nallow if input.y == 2\n\nallow := true if input.z == 3\n"
+   ]
+  ],
+  "lookups": [
+   {
+    "path": "data.docker.allow",
+    "input": {
+     "x": 1,
+     "y": 2,
+     "z": 3
+    }
+   },
+   {
+    "path": "data.docker.allow",
+    "input": {
+     "x": 1
+    }
+   }
+  ]
+ },
+ {
+  "name": "early-exit-different-values",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\np := 1 if input.x == 1\n\np := 2 if input.y == 1\n\np := 1 if input.z == 1\n"
+   ]
+  ],
+  "lookups": [
+   {
+    "path": "data.docker.p",
+    "input": {
+     "x": 1,
+     "y": 1
+    }
+   },
+   {
+    "path": "data.docker.p",
+    "input": {
+     "x": 1,
+     "z": 1
+    }
+   },
+   {
+    "path": "data.docker.p",
+    "input": {
+     "y": 1
+    }
+   },
+   {
+    "path": "data.docker.p",
+    "input": {}
+   }
+  ]
+ },
+ {
+  "name": "early-exit-non-ground-value",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\np := input.v if input.x == 1\n\np := input.w if input.x == 1\n\nq := [x | x := input.l[_]] if input.y == 1\n\nr := [1 | true] if input.y == 1\n"
+   ]
+  ],
+  "lookups": [
+   {
+    "path": "data.docker.p",
+    "input": {
+     "x": 1
+    }
+   },
+   {
+    "path": "data.docker.q",
+    "input": {
+     "y": 1
+    }
+   },
+   {
+    "path": "data.docker.r",
+    "input": {
+     "y": 1
+    }
+   }
+  ]
+ },
+ {
+  "name": "early-exit-same-node-different-values",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\np := 1 if input.x == 1\n\np := 2 if input.x == 1\n\nq := 1 if input.x == 1\n\nq := 1 if input.x == 2\n"
+   ]
+  ],
+  "lookups": [
+   {
+    "path": "data.docker.p",
+    "input": {
+     "x": 1
+    }
+   },
+   {
+    "path": "data.docker.q",
+    "input": {
+     "x": 1
+    }
+   },
+   {
+    "path": "data.docker.q",
+    "input": {
+     "x": 2
+    }
+   }
+  ]
+ },
+ {
+  "name": "partial-object",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nobj[k] := 1 if {\n\tinput.x == 1\n\tk := \"a\"\n}\n\nobj[k] := 2 if {\n\tk := input.k\n}\n\nobj.fixed := 3 if input.x == 2\n"
+   ]
+  ],
+  "lookups": [
+   {
+    "path": "data.docker.obj",
+    "input": {
+     "x": 1,
+     "k": "b"
+    }
+   },
+   {
+    "path": "data.docker.obj",
+    "input": {
+     "x": 2
+    }
+   },
+   {
+    "path": "data.docker.obj.fixed",
+    "input": {
+     "x": 2
+    }
+   }
+  ]
+ },
+ {
+  "name": "non-ground-head",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nb.c[x].e := 1 if x := input.x\n\nb.c.d := 2 if input.y == 2\n\nb.c.d2.e[x] := 3 if {\n\tx := input.x\n\tinput.y == 3\n}\n"
+   ]
+  ],
+  "lookups": [
+   {
+    "path": "data.docker.b.c",
+    "input": {
+     "x": "q",
+     "y": 2
+    }
+   },
+   {
+    "path": "data.docker.b.c",
+    "input": {
+     "y": 3
+    }
+   },
+   {
+    "path": "data.docker.b.c.d",
+    "input": {
+     "y": 2
+    }
+   },
+   {
+    "path": "data.docker.b",
+    "input": {}
+   }
+  ]
+ },
+ {
+  "name": "ground-ref-heads",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\na.b := 1 if input.x == 1\n\na.c := 2 if input.x == 2\n\na.b2.c := 3 if input.x == 3\n"
+   ]
+  ],
+  "lookups": [
+   {
+    "path": "data.docker.a.b",
+    "input": {
+     "x": 1
+    }
+   },
+   {
+    "path": "data.docker.a.c",
+    "input": {
+     "x": 2
+    }
+   },
+   {
+    "path": "data.docker.a.b2.c",
+    "input": {
+     "x": 3
+    }
+   },
+   {
+    "path": "data.docker.a",
+    "input": {
+     "x": 1
+    }
+   }
+  ]
+ },
+ {
+  "name": "unknowns",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nallow if input.x == \"a\"\n\nallow if {\n\tinput.x == \"b\"\n\tinput.y == 1\n}\n\nallow if input.y == 2\n\nallow if input.z == 3\n"
+   ]
+  ],
+  "lookups": [
+   {
+    "path": "data.docker.allow",
+    "input": {
+     "x": "a"
+    },
+    "unknowns": [
+     "input.x"
+    ]
+   },
+   {
+    "path": "data.docker.allow",
+    "input": {
+     "y": 2
+    },
+    "unknowns": [
+     "input.y"
+    ]
+   },
+   {
+    "path": "data.docker.allow",
+    "input": {},
+    "unknowns": [
+     "input"
+    ]
+   },
+   {
+    "path": "data.docker.allow",
+    "input": {
+     "z": 3
+    },
+    "unknowns": [
+     "input.z"
+    ]
+   }
+  ]
+ },
+ {
+  "name": "unknown-args",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nf(x) := 1 if x == \"a\"\n\nf(x) := 2 if x == \"b\"\n\nf(x) := 3 if x == \"c\"\n"
+   ]
+  ],
+  "lookups": [
+   {
+    "path": "data.docker.f",
+    "args": [
+     "a"
+    ],
+    "unknowns": [
+     "args"
+    ]
+   },
+   {
+    "path": "data.docker.f",
+    "args": []
+   },
+   {
+    "path": "data.docker.f",
+    "args": [
+     "b"
+    ]
+   }
+  ]
+ },
+ {
+  "name": "data-base-ref",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nallow if data.config.mode == \"strict\"\n\nallow if data.config.level == 2\n"
+   ]
+  ],
+  "lookups": [
+   {
+    "path": "data.docker.allow",
+    "data": {
+     "config": {
+      "mode": "strict"
+     }
+    }
+   },
+   {
+    "path": "data.docker.allow",
+    "data": {
+     "config": {
+      "level": 2
+     }
+    }
+   },
+   {
+    "path": "data.docker.allow"
+   }
+  ]
+ },
+ {
+  "name": "data-virtual-not-indexed",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nmode := \"strict\"\n\nallow if data.docker.mode == \"strict\"\n\nallow if data.docker.nothing == 1\n\nallow if data.other.thing == 1\n"
+   ]
+  ],
+  "lookups": [
+   {
+    "path": "data.docker.allow",
+    "data": {
+     "other": {
+      "thing": 1
+     }
+    }
+   },
+   {
+    "path": "data.docker.allow"
+   }
+  ]
+ },
+ {
+  "name": "with-not-indexed",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nallow if input.x == 1 with input.x as 1\n\nallow if input.x == 2\n"
+   ]
+  ],
+  "lookups": [
+   {
+    "path": "data.docker.allow",
+    "input": {
+     "x": 1
+    }
+   },
+   {
+    "path": "data.docker.allow",
+    "input": {
+     "x": 2
+    }
+   }
+  ]
+ },
+ {
+  "name": "equal-captured",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nallow if {\n\tr := equal(input.x, 1)\n\tr\n}\n\nallow if equal(input.x, 2)\n\nallow if input.x = 3\n\nallow if 4 == input.x\n"
+   ]
+  ],
+  "lookups": [
+   {
+    "path": "data.docker.allow",
+    "input": {
+     "x": 1
+    }
+   },
+   {
+    "path": "data.docker.allow",
+    "input": {
+     "x": 2
+    }
+   },
+   {
+    "path": "data.docker.allow",
+    "input": {
+     "x": 3
+    }
+   },
+   {
+    "path": "data.docker.allow",
+    "input": {
+     "x": 4
+    }
+   }
+  ]
+ },
+ {
+  "name": "non-ground-refs-in-body",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nallow if input.a[_] == 1\n\nallow if input.b[input.c] == 1\n\nallow if {\n\tsome i\n\tinput.d[i] == 1\n}\n\nallow if input.e[0] == 1\n\nallow if input[\"f-g\"] == 1\n"
+   ]
+  ],
+  "lookups": [
+   {
+    "path": "data.docker.allow",
+    "input": {
+     "a": [
+      1
+     ],
+     "e": [
+      1
+     ],
+     "f-g": 1
+    }
+   },
+   {
+    "path": "data.docker.allow",
+    "input": {
+     "e": [
+      2
+     ]
+    }
+   },
+   {
+    "path": "data.docker.allow",
+    "input": {
+     "f-g": 1
+    }
+   },
+   {
+    "path": "data.docker.allow",
+    "input": {}
+   }
+  ]
+ },
+ {
+  "name": "some-in-every",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nallow if {\n\tsome x in input.list\n\tx == \"a\"\n}\n\nallow if {\n\tevery x in input.list {\n\t\tx == \"b\"\n\t}\n}\n\nallow if input.k == \"c\"\n"
+   ]
+  ],
+  "lookups": [
+   {
+    "path": "data.docker.allow",
+    "input": {
+     "list": [
+      "a"
+     ],
+     "k": "c"
+    }
+   },
+   {
+    "path": "data.docker.allow",
+    "input": {
+     "k": "d"
+    }
+   }
+  ]
+ },
+ {
+  "name": "value-kinds",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\np contains \"s\" if input.v == \"1\"\n\np contains \"n\" if input.v == 1\n\np contains \"arr\" if input.v == [\"1\"]\n"
+   ]
+  ],
+  "lookups": [
+   {
+    "path": "data.docker.p",
+    "input": {
+     "v": "1"
+    }
+   },
+   {
+    "path": "data.docker.p",
+    "input": {
+     "v": 1
+    }
+   },
+   {
+    "path": "data.docker.p",
+    "input": {
+     "v": [
+      "1"
+     ]
+    }
+   },
+   {
+    "path": "data.docker.p",
+    "input": {
+     "v": {
+      "1": 1
+     }
+    }
+   },
+   {
+    "path": "data.docker.p",
+    "input": {
+     "v": [
+      1
+     ]
+    }
+   }
+  ]
+ },
+ {
+  "name": "modules-same-package",
+  "modules": [
+   [
+    "b.rego",
+    "package docker\n\nallow if input.x == 1\n\nallow if input.y == 2\n"
+   ],
+   [
+    "a.rego",
+    "package docker\n\nallow if input.y == 1\n"
+   ],
+   [
+    "c.rego",
+    "package docker\n\nallow if input.x == 2\n"
+   ]
+  ],
+  "lookups": [
+   {
+    "path": "data.docker.allow",
+    "input": {
+     "x": 1
+    }
+   },
+   {
+    "path": "data.docker.allow",
+    "input": {
+     "y": 1
+    }
+   },
+   {
+    "path": "data.docker.allow",
+    "input": {}
+   }
+  ]
+ },
+ {
+  "name": "modules-two-packages-one-path",
+  "modules": [
+   [
+    "a.rego",
+    "package x.y\n\nz if input.a == 1\n"
+   ],
+   [
+    "b.rego",
+    "package x\n\ny.z if input.b == 1\n"
+   ],
+   [
+    "c.rego",
+    "package x.y\n\nz if input.c == 1\n"
+   ]
+  ],
+  "lookups": [
+   {
+    "path": "data.x.y.z",
+    "input": {
+     "a": 1
+    }
+   },
+   {
+    "path": "data.x.y.z",
+    "input": {
+     "b": 1
+    }
+   },
+   {
+    "path": "data.x.y.z",
+    "input": {}
+   }
+  ]
+ },
+ {
+  "name": "no-index-paths",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nallow if input.x == 1\n"
+   ]
+  ],
+  "lookups": [
+   {
+    "path": "data.docker",
+    "input": {
+     "x": 1
+    }
+   },
+   {
+    "path": "data.nothing",
+    "input": {
+     "x": 1
+    }
+   },
+   {
+    "path": "data.docker.allow.deeper",
+    "input": {
+     "x": 1
+    }
+   }
+  ]
+ },
+ {
+  "name": "buildx-defaults-functions",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\nallow if docker_github_builder(input.image, \"docker/buildx\")\n"
+   ]
+  ],
+  "lookups": [
+   {
+    "path": "data.docker.docker_github_builder",
+    "args": [
+     {
+      "hasProvenance": true
+     },
+     "docker/buildx"
+    ]
+   },
+   {
+    "path": "data.docker.docker_github_builder_signature",
+    "args": [
+     {},
+     "x"
+    ]
+   },
+   {
+    "path": "data.docker.allow",
+    "input": {}
+   }
+  ]
+ },
+ {
+  "name": "buildx-image",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndefault allow := false\n\nallow if input.image.repo == \"library/alpine\"\n\nallow if {\n\tinput.image.host == \"docker.io\"\n\tinput.image.repo == \"library/busybox\"\n}\n\nallow if {\n\tref := input.image.ref\n\tglob.match(\"ghcr.io/myorg/*\", [\"/\"], ref)\n}\n\nallow if input.image.hasProvenance\n\ndecision := {\"allow\": allow}\n"
+   ]
+  ],
+  "lookups": [
+   {
+    "path": "data.docker.allow",
+    "input": {
+     "image": {
+      "repo": "library/alpine",
+      "host": "docker.io",
+      "ref": "docker.io/library/alpine"
+     }
+    }
+   },
+   {
+    "path": "data.docker.allow",
+    "input": {
+     "image": {
+      "repo": "library/busybox",
+      "host": "docker.io"
+     }
+    }
+   },
+   {
+    "path": "data.docker.allow",
+    "input": {
+     "image": {
+      "ref": "ghcr.io/myorg/app",
+      "hasProvenance": false
+     }
+    }
+   },
+   {
+    "path": "data.docker.allow",
+    "input": {
+     "image": {
+      "ref": "ghcr.io/other/app"
+     }
+    }
+   },
+   {
+    "path": "data.docker.allow",
+    "input": {}
+   },
+   {
+    "path": "data.docker.decision",
+    "input": {}
+   }
+  ]
+ },
+ {
+  "name": "buildx-git",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndefault allow := false\n\nallow if {\n\tinput.git.remote == \"https://github.com/docker/buildx.git\"\n\tinput.git.tag == \"v0.37.1\"\n}\n\nallow if {\n\tinput.git.remote == \"https://github.com/docker/buildx.git\"\n\tinput.git.branch == \"master\"\n}\n\nallow if input.git.isAnnotatedTag == true\n\ndeny contains \"unsigned\" if not input.git.commit.signature\n\ndecision := {\"allow\": allow, \"deny_msg\": deny}\n"
+   ]
+  ],
+  "lookups": [
+   {
+    "path": "data.docker.allow",
+    "input": {
+     "git": {
+      "remote": "https://github.com/docker/buildx.git",
+      "tag": "v0.37.1"
+     }
+    }
+   },
+   {
+    "path": "data.docker.allow",
+    "input": {
+     "git": {
+      "remote": "https://github.com/docker/buildx.git",
+      "branch": "master"
+     }
+    }
+   },
+   {
+    "path": "data.docker.allow",
+    "input": {
+     "git": {
+      "isAnnotatedTag": true
+     }
+    }
+   },
+   {
+    "path": "data.docker.allow",
+    "input": {
+     "git": {}
+    }
+   },
+   {
+    "path": "data.docker.deny",
+    "input": {
+     "git": {}
+    }
+   }
+  ]
+ },
+ {
+  "name": "buildx-http",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndefault allow := false\n\nallow if input.http.url == \"https://example.com/file.tar.gz\"\n\nallow if {\n\tinput.http.schema == \"https\"\n\tinput.http.host == \"downloads.example.com\"\n}\n\nallow if {\n\th := input.http.host\n\tglob.match(\"*.trusted.org\", [\".\"], h)\n}\n\nallow if {\n\tinput.http.schema == \"https\"\n\tinput.http.checksum == \"sha256:abc\"\n}\n"
+   ]
+  ],
+  "lookups": [
+   {
+    "path": "data.docker.allow",
+    "input": {
+     "http": {
+      "url": "https://example.com/file.tar.gz",
+      "schema": "https"
+     }
+    }
+   },
+   {
+    "path": "data.docker.allow",
+    "input": {
+     "http": {
+      "schema": "https",
+      "host": "downloads.example.com"
+     }
+    }
+   },
+   {
+    "path": "data.docker.allow",
+    "input": {
+     "http": {
+      "schema": "http",
+      "host": "a.trusted.org"
+     }
+    }
+   },
+   {
+    "path": "data.docker.allow",
+    "input": {
+     "http": {
+      "schema": "https",
+      "checksum": "sha256:abc"
+     }
+    }
+   },
+   {
+    "path": "data.docker.allow",
+    "input": {}
+   }
+  ]
+ },
+ {
+  "name": "buildx-decision-else",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndecision := {\"allow\": true} if input.image.repo == \"library/alpine\"\nelse := {\"allow\": false, \"deny_msg\": [\"git not allowed\"]} if input.git\nelse := {\"allow\": false}\n\ndefault decision := {\"allow\": false}\n"
+   ]
+  ],
+  "lookups": [
+   {
+    "path": "data.docker.decision",
+    "input": {
+     "image": {
+      "repo": "library/alpine"
+     }
+    }
+   },
+   {
+    "path": "data.docker.decision",
+    "input": {
+     "git": {
+      "remote": "x"
+     }
+    }
+   },
+   {
+    "path": "data.docker.decision",
+    "input": {}
+   }
+  ]
+ },
+ {
+  "name": "buildx-mixed-sources",
+  "modules": [
+   [
+    "policy.rego",
+    "package docker\n\ndefault allow := false\n\nallow if input.local\n\nallow if input.image.repo == \"library/alpine\"\n\nallow if input.git.remote == \"https://github.com/docker/buildx.git\"\n\nallow if input.http.host == \"example.com\"\n\nallow if input.image.repo == \"library/busybox\"\n"
+   ]
+  ],
+  "lookups": [
+   {
+    "path": "data.docker.allow",
+    "input": {
+     "image": {
+      "repo": "library/busybox"
+     }
+    }
+   },
+   {
+    "path": "data.docker.allow",
+    "input": {
+     "local": {
+      "name": "context"
+     }
+    }
+   },
+   {
+    "path": "data.docker.allow",
+    "input": {
+     "git": {
+      "remote": "https://github.com/docker/buildx.git"
+     },
+     "http": {
+      "host": "example.com"
+     }
+    }
+   },
+   {
+    "path": "data.docker.allow",
+    "input": {
+     "image": {
+      "repo": "x"
+     }
+    },
+    "unknowns": [
+     "input.image"
+    ]
+   }
+  ]
+ }
+]

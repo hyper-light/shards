@@ -1,0 +1,10 @@
+{
+  "env": {"filename": "Dockerfile", "depth": 0},
+  "http": {
+    "url": "https://github.com/cli/cli/releases/download/v2.102.0/gh_2.102.0_linux_arm64.tar.gz",
+    "schema": "https",
+    "host": "github.com",
+    "path": "/cli/cli/releases/download/v2.102.0/gh_2.102.0_linux_arm64.tar.gz",
+    "checksum": "sha256:7862c86c72f43df3a2d93ddde6f473285b4e2af61b494849846827e513ef6484"
+  }
+}

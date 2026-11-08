@@ -5,18 +5,72 @@
 
 extern crate alloc;
 
+/// The first agent's or harness's uid and gid in a microVM (D59): the n-th domain, agents
+/// first in the order the Agentfile declares them and then harnesses, runs as this plus
+/// n, and the build checks that no file outside a domain is its user's (§9.2).
+pub const DOMAIN_FIRST_ID: u32 = 200_000;
+
+/// The first in-VM server instance's uid and gid (D60): the n-th domain's instance runs as
+/// this plus n. Past every domain's: each domain has a process, so there are no more
+/// domains than a 64-bit kernel's PIDs, `PID_MAX_LIMIT` (include/linux/threads.h,
+/// 4 * 1024 * 1024).
+pub const SERVER_FIRST_ID: u32 = DOMAIN_FIRST_ID + 4 * 1024 * 1024;
+
+/// The join disk's virtio-blk serial (D119), which init finds it by: the read-only disk
+/// whose ranges are the images of runs joining the microVM's network.
+pub const JOIN_DISK_SERIAL: &str = "shards-join";
+
+/// The tag of a microVM's join share (D119): the virtio-fs device, served by no directory
+/// until a run joining its network brings volumes, which init mounts then.
+pub const JOIN_SHARE_TAG: &str = "shards-join-share";
+
+/// The attribute init sets on a share's root, or a join share's volume, as it mounts it
+/// (D38): its value `UID:GID`, the owner the share's server gives the guest of each file
+/// there that holds no owner of the guest's (the host made it). Its server takes it of the
+/// guest's root alone, as the guest's kernel lets no process without CAP_SYS_ADMIN set a
+/// `trusted.` attribute (fs/xattr.c `xattr_permission`), and keeps it on no file.
+pub const SHARE_OWNER_XATTR: &str = "trusted.shards.owner";
+
+/// The most a share's server reads or writes in one FUSE request, in pages (its INIT
+/// reply's `max_pages`), which the guest's kernel sends no more than: 256, a mebibyte of
+/// 4 KiB pages.
+pub const SHARE_MAX_PAGES: u16 = 256;
+
+/// The MAC of a guest's gateway, made of its IPv4 address: 02:42, a locally administered
+/// prefix (its first byte's bit 1 set; Docker's bridge took the same), then the address's
+/// four bytes: what the guest's network process answers every ARP request and neighbor
+/// solicitation with, and what the guest's init gives its gateway's neighbor entry, so
+/// that the guest never asks.
+pub const fn gateway_mac(gateway: [u8; 4]) -> [u8; 6] {
+    let [a, b, c, d] = gateway;
+    [0x02, 0x42, a, b, c, d]
+}
+
+/// The window its host's memory pressure is measured over (D188; `vmm` platform/pressure.rs,
+/// its PSI trigger's and its other hosts' repeat): a guest that grew less than this ago is
+/// taken for one growing, whatever its host says meanwhile (init plug.rs, PM M466).
+pub const PRESSURE_WINDOW_US: u64 = 2_000_000;
+
+pub mod build;
+pub mod changes;
+pub mod emulate;
 pub mod run;
 
-/// Guest-physical address of the control page. Guests share the host's architecture,
-/// so the VMM and the guest build of this crate always agree.
+include!(concat!(env!("OUT_DIR"), "/identity.rs"));
+
+/// Guest-physical address of the control page ([`control`]). Guests share the host's
+/// architecture, so the VMM and the guest build of this crate always agree. On aarch64,
+/// the 64 KiB slot after the RTC's.
 #[cfg(target_arch = "aarch64")]
 pub const CONTROL_PAGE: u64 = 0x0902_0000;
-/// On x86_64, the first page of the 32-bit MMIO gap, where Firecracker's boot timer is
+/// Guest-physical address of the control page ([`control`]). Guests share the host's
+/// architecture, so the VMM and the guest build of this crate always agree. On x86_64,
+/// the first page of the 32-bit MMIO gap, where Firecracker's boot timer is
 /// (docs/research/kvm-x86_64-ground-truth.md §6.4).
 #[cfg(target_arch = "x86_64")]
 pub const CONTROL_PAGE: u64 = 0xc000_0000;
 
-/// Registers of the control page: 32-bit, little-endian.
+/// Registers of the control page, little-endian: 32 bits, or 64 where one says so.
 pub mod control {
     /// Write: a boot-phase marker (see [`super::marker`]); the VMM timestamps it.
     pub const MARKER: u64 = 0x00;
@@ -31,8 +85,45 @@ pub mod control {
     /// since the Unix epoch. A booted guest's clock comes from the RTC in whole seconds, and
     /// a restored guest's is its snapshot's; shards-init sets CLOCK_REALTIME from this.
     pub const HOST_TIME: u64 = 0x10;
+    /// Write, 64 bits in one access: the [`IDENTITY`](super::IDENTITY) of the contract the
+    /// guest's init was built with. shards-init writes it as it starts, a snapshot keeps it,
+    /// and the host hands a workload only to a guest whose init wrote the host's own.
+    pub const ABI: u64 = 0x18;
+    /// Read, 64 bits in one access: the most memory the guest may have plugged beyond the
+    /// RAM it booted with, in bytes, through its virtio-mem device (D133); 0 where it has
+    /// none.
+    pub const HOTPLUG_SIZE: u64 = 0x20;
+    /// Write, 64 bits in one access: how much memory the guest asks to have plugged, in
+    /// bytes. The VMM rounds it up to the device's blocks, at most [`HOTPLUG_SIZE`], and asks
+    /// the guest's driver to plug or unplug to it (the device's `requested_size`, VIRTIO 1.3
+    /// §5.15). Read: what is asked for now.
+    pub const HOTPLUG_REQUEST: u64 = 0x28;
+    /// Read, 64 bits in one access: the MAC the VMM was given for the guest's network
+    /// device, its six octets in the low 48 bits, the first lowest; 0 where it has none. A
+    /// VM restored from a template is given its own as it is made, which its guest takes
+    /// as it resumes, so that no run waits for it (D31, E1).
+    pub const MAC: u64 = 0x30;
+    /// Read, 64 bits in one access: the length of the guest's swap window (D159), the
+    /// virtio-pmem device a run's swap file is mapped into, in bytes; 0 where it has none.
+    /// Write [`SHOW_SWAP`]: the guest is shown the device. Until then its transport reads as
+    /// no device (DeviceID 0, which a driver passes over: virtio 1.3 §4.2.3.1.1), so that
+    /// the kernel, probing devices as it boots, does not give the window page structures
+    /// (a 64th of it in memory, drivers/nvdimm/pmem.c, pmem_should_map_pages) that init
+    /// then has it probed without (`force_raw`).
+    pub const SWAP: u64 = 0x38;
+    /// Read, 64 bits in one access: the guest address of the run's writable layer (D190),
+    /// the virtio-pmem device whose ext4 file system init mounts with DAX under the root's
+    /// overlay; 0 where it has none. Init finds the device's region by it.
+    pub const LAYER: u64 = 0x40;
+    /// Write [`SWAP_LAYER`]: the guest has let go of its writable layer's file system
+    /// (D190), nothing of it mounted or open, and the VMM puts the file its host readied for
+    /// the run under the device in its place, a stopped microVM's own (`run::kind::OVER`).
+    /// Read: 1 once one was put there, else 0.
+    pub const LAYER_SWAP: u64 = 0x48;
 
     pub const SNAPSHOT_NOW: u32 = 1;
+    pub const SHOW_SWAP: u32 = 1;
+    pub const SWAP_LAYER: u32 = 1;
 }
 
 /// Boot-phase markers written to the control page.

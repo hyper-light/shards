@@ -1,0 +1,2 @@
+EXPECTED PREFLIGHT REJECTION: Missing qualification client: docker.exe
+PASS: missing clients rejected before manifest access or test launch; no fixture path created.

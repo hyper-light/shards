@@ -1,0 +1,17 @@
+# AF_UNIX stream sockets on real Windows hosts (PM M199), before shards' Windows transport
+# is built on them: what WSAPoll reports of them, half-close, scatter-gather, a pair's
+# cost, inheritance into a child process, and throughput and latency beside loopback TCP.
+[package]
+name = "windows-afunix"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+windows-sys = { version = "=0.61.2", features = [
+  "Win32_Foundation",
+  "Win32_Networking_WinSock",
+  "Win32_System_IO",
+] }

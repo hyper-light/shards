@@ -1,0 +1,49 @@
+fs/dax: look up an entry's folio only when it has one
+
+dax_disassociate_entry() and dax_busy_page() compute dax_to_folio(entry)
+before they return early for zero and empty entries. dax_to_folio() is
+page_folio(pfn_to_page(dax_to_pfn(entry))), and page_folio() reads the
+page's compound_head. An empty entry's pfn is 0, so the lookup reads the
+struct page of physical page 0.
+
+Where page 0 has no struct page, that read faults. An arm64 guest whose RAM
+starts at 0x80000000 oopses on its first DAX fault that replaces an empty
+entry, as when it execs a binary from an EROFS image mounted with
+dax=always over virtio-pmem (shards guests):
+
+  Unable to handle kernel paging request at virtual address fffffdffbe000008
+  pc : dax_disassociate_entry.isra.0+0x20/0x50
+  lr : dax_insert_entry+0xc0/0x230
+  Call trace: dax_disassociate_entry <- dax_fault_iter <- dax_iomap_pte_fault
+    <- dax_iomap_fault <- erofs_dax_fault <- __do_fault <- do_read_fault
+
+Check the entry first, as both functions mean to. Mainline has the same
+code at v7.2-rc4.
+
+--- a/fs/dax.c
++++ b/fs/dax.c
+@@ -468,21 +468,20 @@
+ static void dax_disassociate_entry(void *entry, struct address_space *mapping,
+ 				bool trunc)
+ {
+-	struct folio *folio = dax_to_folio(entry);
+-
+ 	if (dax_is_zero_entry(entry) || dax_is_empty_entry(entry))
+ 		return;
+ 
+-	dax_folio_put(folio);
++	dax_folio_put(dax_to_folio(entry));
+ }
+ 
+ static struct page *dax_busy_page(void *entry)
+ {
+-	struct folio *folio = dax_to_folio(entry);
++	struct folio *folio;
+ 
+ 	if (dax_is_zero_entry(entry) || dax_is_empty_entry(entry))
+ 		return NULL;
+ 
++	folio = dax_to_folio(entry);
+ 	if (folio_ref_count(folio) - folio_mapcount(folio))
+ 		return &folio->page;
+ 	else

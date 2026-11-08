@@ -17,13 +17,41 @@ pub fn main() {
             "blk" => blk(),
             "blk_stress" => blk_stress(),
             "snapshot" => snapshot(),
+            "storm" => storm(),
             "resume" => resume(),
             "idle" => idle(),
+            "walk" => memory_walk(),
+            "work" => work(),
+            "kmsg" => kmsg(),
+            "beat" => beat(),
             "vsock" => vsock(),
+            // Serves the echo alone, until stopped: shards-api's conformance suite.
+            "echo" => vsock_listen(ECHO_PORT).and_then(|l| serve_echo(&l)),
             "vsock_snapshot" => vsock_snapshot(),
             "vsock_snapshot_held" => vsock_snapshot_held(),
             "pmem" => pmem(),
             "erofs" => erofs(),
+            "layer" => layer(),
+            "hotplug" => hotplug(),
+            "snapshot-plug" => snapshot_plug(),
+            "plug-snapshot" => plug_snapshot(),
+            "unplug-cost" => unplug_cost(),
+            "memory" => memory_report(),
+            "profile" => profile_report(),
+            "limits" => limits(),
+            "pci" => pci(),
+            "pci-plug" => pci_plug(),
+            "pci-irq" => pci_irq(),
+            "pci-dma" => pci_dma(),
+            "pci-host" => pci_host(),
+            "host" => host(),
+            "daemon" => daemon(),
+            "e2e" => e2e(),
+            "slates_fs" => slates_fs(),
+            "share" => share(),
+            "slates_fs_dax" => slates_fs_dax(),
+            "bpf" => bpf_costs(),
+            "stepcgroup" => step_cgroup_costs(),
             other => Err(format!("unknown test {other:?}")),
         },
     );
@@ -31,11 +59,28 @@ pub fn main() {
         Ok(()) => "SHARDS-TEST PASS".to_string(),
         Err(e) => format!("SHARDS-TEST FAIL {e}"),
     };
-    let _ = writeln!(io::stdout(), "{line}");
-    // SAFETY: PID 1 flushing and powering off.
+    if let Err(e) = report(format_args!("{line}")) {
+        let _ = writeln!(io::stdout(), "SHARDS-TEST FAIL reporting the verdict: {e}");
+    }
+    // SAFETY: PID 1 waiting for its console to send what it wrote, flushing and powering
+    // off. The console's tty holds a write until its UART has sent it, and the kernel's
+    // own lines as it powers off go past it: powering off at once can drop the last line.
     unsafe {
+        libc::tcdrain(1);
         libc::sync();
         libc::reboot(libc::RB_POWER_OFF);
+    }
+}
+
+/// A protocol line the host reads. A storm's kernel diagnostics can interrupt a tty
+/// write even inside a word. Give printk the whole record so it serializes it with
+/// those diagnostics; LOG_USER/ERR keeps it visible with the test kernel's `quiet`.
+fn report(line: std::fmt::Arguments<'_>) -> Result<(), String> {
+    if std::env::var("shards_test").is_ok_and(|test| test == "storm") {
+        std::fs::write("/dev/kmsg", format!("<11>{line}\n"))
+            .map_err(|e| format!("writing the test record to /dev/kmsg: {e}"))
+    } else {
+        writeln!(io::stdout(), "{line}").map_err(|e| format!("writing the test record: {e}"))
     }
 }
 
@@ -55,11 +100,226 @@ fn setup() -> Result<(), String> {
     Ok(())
 }
 
+/// Mounts the share a slates daemon serves (tag `shards0`, `run --kernel … --slates-fs-fd N`,
+/// D38), reads `/hello` from it, then writes `/from-guest`, syncs it and reads it back: a
+/// microVM reaching a slates volume through virtio-fs with no host mount and no DAX window.
+fn slates_fs() -> Result<(), String> {
+    std::fs::create_dir_all("/mnt").map_err(|e| format!("mkdir /mnt: {e}"))?;
+    let (src, target, fs) = (cstr("shards0")?, cstr("/mnt")?, cstr("virtiofs")?);
+    // SAFETY: NUL-terminated strings and no data argument, as setup() mounts the
+    // pseudo-filesystems.
+    if unsafe { libc::mount(src.as_ptr(), target.as_ptr(), fs.as_ptr(), 0, std::ptr::null()) } != 0 {
+        return Err(format!(
+            "mount shards0 (virtiofs): {}",
+            io::Error::last_os_error()
+        ));
+    }
+    let got = std::fs::read_to_string("/mnt/hello").map_err(|e| format!("read /mnt/hello: {e}"))?;
+    let want = "hello from slates over shards virtio-fs\n";
+    if got != want {
+        return Err(format!("slates served {got:?}, expected {want:?}"));
+    }
+    // What the host reads back through slates' own read once the VM is gone: written,
+    // synced, and read here first through the guest's own mount.
+    let wrote = "written by a shards guest through its slates share\n";
+    {
+        let mut file =
+            std::fs::File::create("/mnt/from-guest").map_err(|e| format!("create /mnt/from-guest: {e}"))?;
+        file.write_all(wrote.as_bytes())
+            .map_err(|e| format!("write /mnt/from-guest: {e}"))?;
+        file.sync_all()
+            .map_err(|e| format!("fsync /mnt/from-guest: {e}"))?;
+    }
+    let back =
+        std::fs::read_to_string("/mnt/from-guest").map_err(|e| format!("read /mnt/from-guest: {e}"))?;
+    if back != wrote {
+        return Err(format!("the share read back {back:?} after writing {wrote:?}"));
+    }
+    Ok(())
+}
+
+/// Mounts `shards run --kernel … --share`'s two shares: `shards0` writable, `shards1`
+/// read-only. Reads `hello` in each, writes `from-guest` through the first and reads it back,
+/// and is refused creating a file through the second. The bytes are
+/// crates/shards/tests/boot.rs's.
+fn share() -> Result<(), String> {
+    let want = "hello through --share\n";
+    for (tag, at) in [("shards0", "/mnt0"), ("shards1", "/mnt1")] {
+        std::fs::create_dir_all(at).map_err(|e| format!("mkdir {at}: {e}"))?;
+        let (src, target, fs) = (cstr(tag)?, cstr(at)?, cstr("virtiofs")?);
+        // SAFETY: NUL-terminated strings and no data argument, as setup() mounts the
+        // pseudo-filesystems.
+        if unsafe { libc::mount(src.as_ptr(), target.as_ptr(), fs.as_ptr(), 0, std::ptr::null()) } != 0 {
+            return Err(format!("mount {tag} (virtiofs): {}", io::Error::last_os_error()));
+        }
+        let got =
+            std::fs::read_to_string(format!("{at}/hello")).map_err(|e| format!("read {at}/hello: {e}"))?;
+        if got != want {
+            return Err(format!("{tag} served {got:?}, expected {want:?}"));
+        }
+    }
+    let wrote = "written by a shards guest through --share\n";
+    {
+        let mut file =
+            std::fs::File::create("/mnt0/from-guest").map_err(|e| format!("create /mnt0/from-guest: {e}"))?;
+        file.write_all(wrote.as_bytes())
+            .map_err(|e| format!("write /mnt0/from-guest: {e}"))?;
+        file.sync_all()
+            .map_err(|e| format!("fsync /mnt0/from-guest: {e}"))?;
+    }
+    match std::fs::File::create("/mnt1/from-guest") {
+        Ok(_) => Err("created /mnt1/from-guest through the read-only share".into()),
+        Err(e) => {
+            let _ = writeln!(io::stdout(), "SHARE READ-ONLY {e}");
+            Ok(())
+        }
+    }
+}
+
+/// Maps a slates file with DAX through the slates-backed share (slates' Shards part 3,
+/// `docs/wip/shards/dax-protocol.md`). Mounts tag `shards0` with `dax=inode`, the mode slates'
+/// answers steer: slates marks a regular file of 2 MiB or more `FUSE_ATTR_DAX`, so `/mnt/big`
+/// (3 MiB, byte `i` being `i mod 251`, as the host wrote it) must be DAX. Maps its first 2 MiB
+/// shared and writable, checks the bytes through the map, stores through it and fsyncs: slates
+/// writes the store into the volume before the fsync returns. Says so on the console
+/// (`SLATES-DAX STORED`); the host then reads the volume and rewrites the file through another
+/// path, keeping the store and changing other bytes, and slates writes that change into the map
+/// before the host's write returns. So the guest waits, with no deadline of its own (the host
+/// bounds the test), for both to show in its same map. It then says so (`SLATES-DAX SEEN`), the
+/// host cuts the file inside this range at a length no page ends at, and the rest of the page that
+/// holds the new end must read zeros through the same map, the store and the change before it kept:
+/// a file's tail past its end, as every host's window shows it (slates zeroes what a cut takes). Pages
+/// wholly past the end are not touched, since the guest's own kernel answers those `SIGBUS` (POSIX's
+/// rule, not the window's). The bytes and offsets are those of crates/shards/tests/slates_fs.rs.
+fn slates_fs_dax() -> Result<(), String> {
+    use std::os::fd::AsRawFd;
+    const BIG: &str = "/mnt/big";
+    // The first DAX range of the file: what a guest's window maps at once (FUSE_DAX_SZ).
+    const RANGE: usize = 2 << 20;
+    const GUEST_AT: usize = 4096;
+    const GUEST: &[u8] = b"stored by a shards guest through its DAX map\n";
+    const HOST_AT: usize = 1 << 20;
+    const HOST: &[u8] = b"written by the host through slates while the guest held its map\n";
+    // Where the host cuts the file: past the change, inside the first range, at no page's end.
+    const CUT: usize = (3 << 19) + 100;
+    std::fs::create_dir_all("/mnt").map_err(|e| format!("mkdir /mnt: {e}"))?;
+    let (src, target, fs, opts) = (
+        cstr("shards0")?,
+        cstr("/mnt")?,
+        cstr("virtiofs")?,
+        cstr("dax=inode")?,
+    );
+    // SAFETY: NUL-terminated strings, the options as the data argument, as erofs() mounts.
+    if unsafe {
+        libc::mount(
+            src.as_ptr(),
+            target.as_ptr(),
+            fs.as_ptr(),
+            0,
+            opts.as_ptr().cast(),
+        )
+    } != 0
+    {
+        return Err(format!(
+            "mount shards0 (virtiofs, dax=inode): {}",
+            io::Error::last_os_error()
+        ));
+    }
+    if !is_dax(BIG)? {
+        return Err(format!("{BIG} is not DAX"));
+    }
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(BIG)
+        .map_err(|e| format!("open {BIG}: {e}"))?;
+    // SAFETY: a fresh shared mapping of the file's first range, read and write, reached below
+    // only by volatile accesses inside it and unmapped at the end.
+    let map = unsafe {
+        libc::mmap(
+            std::ptr::null_mut(),
+            RANGE,
+            libc::PROT_READ | libc::PROT_WRITE,
+            libc::MAP_SHARED,
+            file.as_raw_fd(),
+            0,
+        )
+    };
+    if map == libc::MAP_FAILED {
+        return Err(format!("mmap {BIG}: {}", io::Error::last_os_error()));
+    }
+    let map = map.cast::<u8>();
+    let read = |at: usize, len: usize| -> Vec<u8> {
+        (at..at + len)
+            // SAFETY: every caller's span lies inside the mapping (constants within RANGE).
+            .map(|i| unsafe { map.add(i).read_volatile() })
+            .collect()
+    };
+    let written: Vec<u8> = (0..4096).map(|i: usize| (i % 251) as u8).collect();
+    if read(0, written.len()) != written {
+        return Err("the map does not hold the file's bytes".into());
+    }
+    for (i, byte) in GUEST.iter().enumerate() {
+        // SAFETY: inside the mapping (GUEST_AT + GUEST.len() < RANGE).
+        unsafe { map.add(GUEST_AT + i).write_volatile(*byte) };
+    }
+    file.sync_all().map_err(|e| format!("fsync {BIG}: {e}"))?;
+    let _ = writeln!(io::stdout(), "SLATES-DAX STORED");
+    waiting("the host's change in the map", || {
+        let (host, own) = (read(HOST_AT, HOST.len()), read(GUEST_AT, GUEST.len()));
+        if host == HOST && own == GUEST {
+            Ok(())
+        } else {
+            Err(format!(
+                "host bytes {:?}, own store {:?}",
+                String::from_utf8_lossy(&host),
+                String::from_utf8_lossy(&own)
+            ))
+        }
+    });
+    let _ = writeln!(io::stdout(), "SLATES-DAX SEEN");
+    // SAFETY: a pure query of the page size.
+    let page = usize::try_from(unsafe { libc::sysconf(libc::_SC_PAGESIZE) })
+        .map_err(|_| "the page size".to_string())?;
+    let tail_end = CUT.div_ceil(page) * page;
+    waiting("the cut's tail to read zeros", || {
+        let tail = read(CUT, tail_end - CUT);
+        let (host, own) = (read(HOST_AT, HOST.len()), read(GUEST_AT, GUEST.len()));
+        if tail.iter().all(|byte| *byte == 0) && host == HOST && own == GUEST {
+            Ok(())
+        } else {
+            Err(format!(
+                "{} of the tail's {} bytes not zero, host bytes kept {}, own store kept {}",
+                tail.iter().filter(|byte| **byte != 0).count(),
+                tail.len(),
+                host == HOST,
+                own == GUEST
+            ))
+        }
+    });
+    // SAFETY: the mapping made above, unmapped once.
+    unsafe { libc::munmap(map.cast(), RANGE) };
+    Ok(())
+}
+
 fn env_u64(name: &str) -> Result<u64, String> {
     std::env::var(name)
         .map_err(|_| format!("{name} not set"))?
         .parse()
         .map_err(|e| format!("{name}: {e}"))
+}
+
+/// Waits until `done` is `Ok`, with no deadline of its own (the host bounds the test),
+/// reporting every 5 s what is awaited and `done`'s account of where it stands.
+fn waiting(what: &str, mut done: impl FnMut() -> Result<(), String>) {
+    let mut report = Instant::now() + Duration::from_secs(5);
+    while let Err(state) = done() {
+        if Instant::now() >= report {
+            let _ = writeln!(io::stdout(), "SHARDS-TEST INFO waiting for {what}: {state}");
+            report += Duration::from_secs(5);
+        }
+        thread::sleep(Duration::from_millis(1));
+    }
 }
 
 fn sysfs(path: &str) -> Result<String, String> {
@@ -97,6 +357,9 @@ impl Aligned {
         unsafe { std::slice::from_raw_parts_mut(self.ptr, len.min(self.len)) }
     }
 }
+
+// SAFETY: the mapping belongs to this value alone, so it may move to another thread.
+unsafe impl Send for Aligned {}
 
 impl Drop for Aligned {
     fn drop(&mut self) {
@@ -285,6 +548,10 @@ struct ControlPage {
     regs: *mut u32,
 }
 
+// SAFETY: `regs` is a page of the control device mapped shared for the whole process, whose
+// volatile writes need no thread of their own.
+unsafe impl Send for ControlPage {}
+
 impl ControlPage {
     const LEN: usize = 4096;
 
@@ -320,6 +587,23 @@ impl ControlPage {
     fn read(&self, offset: u64) -> u32 {
         // SAFETY: an aligned register inside the mapped page.
         unsafe { self.regs.add(offset as usize / 4).read_volatile() }
+    }
+
+    /// A 64-bit register, in one access.
+    fn write64(&self, offset: u64, value: u64) {
+        // SAFETY: an aligned 64-bit register inside the mapped page.
+        unsafe {
+            self.regs
+                .add(offset as usize / 4)
+                .cast::<u64>()
+                .write_volatile(value)
+        };
+    }
+
+    /// A 64-bit register, in one access.
+    fn read64(&self, offset: u64) -> u64 {
+        // SAFETY: an aligned 64-bit register inside the mapped page.
+        unsafe { self.regs.add(offset as usize / 4).cast::<u64>().read_volatile() }
     }
 }
 
@@ -373,6 +657,9 @@ fn snapshot() -> Result<(), String> {
     let generation = control.read(shards_abi::control::GENERATION);
     let after = monotonic_ns();
     let _ = writeln!(io::stdout(), "SHARDS-TEST INFO generation={generation}");
+    // A second request is passed by: a VM serves one snapshot, so a clone of this one
+    // still begins above, and says generation=1.
+    control.write(shards_abi::control::SNAPSHOT, shards_abi::control::SNAPSHOT_NOW);
 
     if after < before {
         return Err(format!("CLOCK_MONOTONIC went backwards: {before} -> {after}"));
@@ -415,6 +702,805 @@ fn snapshot() -> Result<(), String> {
     Ok(())
 }
 
+/// What a storm's threads share.
+struct Storm {
+    stop: std::sync::atomic::AtomicBool,
+    failure: std::sync::Mutex<Option<String>>,
+    /// Per worker, the rounds it has finished.
+    progress: Vec<std::sync::atomic::AtomicU64>,
+    /// Per worker, the longest time between two of its rounds, in µs.
+    longest: Vec<std::sync::atomic::AtomicU64>,
+    /// Per paired worker, the longest it took to take its turn once the other gave it, in
+    /// µs: a wakeup between CPUs, from the notify to the waiter running.
+    late: Vec<std::sync::atomic::AtomicU64>,
+    /// Records the writer has written, each completed.
+    written: std::sync::atomic::AtomicU64,
+    /// Where the writer is: 1 reading slot `written`, 2 writing it, 0 between.
+    writer_at: std::sync::atomic::AtomicU64,
+}
+
+impl Storm {
+    fn fail(&self, what: String) {
+        let mut f = self
+            .failure
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if f.is_none() {
+            *f = Some(what);
+        }
+    }
+
+    fn stopping(&self) -> bool {
+        self.stop.load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+/// One round of a storm's worker; an error stops the storm.
+type Round = Box<dyn FnMut(&Storm) -> Result<(), String> + Send>;
+
+const RECORD: usize = 4096;
+
+/// The workers' longest gaps between rounds: the median and the three longest, with their
+/// workers, in µs. `reset` starts them over.
+fn gaps(storm: &Storm, reset: bool) -> String {
+    spread(&storm.longest, reset)
+}
+
+/// The median of `values`, and the three largest, by worker; zeroed with `reset`.
+fn spread(values: &[std::sync::atomic::AtomicU64], reset: bool) -> String {
+    use std::sync::atomic::Ordering;
+    let mut all: Vec<(u64, usize)> = values
+        .iter()
+        .enumerate()
+        .map(|(i, l)| {
+            (
+                if reset {
+                    l.swap(0, Ordering::Relaxed)
+                } else {
+                    l.load(Ordering::Relaxed)
+                },
+                i,
+            )
+        })
+        .collect();
+    all.sort_unstable();
+    let median = all.get(all.len() / 2).map_or(0, |g| g.0);
+    let top: Vec<String> = all
+        .iter()
+        .rev()
+        .take(3)
+        .map(|(g, i)| format!("{g} (worker {i})"))
+        .collect();
+    format!("median {median}, longest {}", top.join(", "))
+}
+
+/// The record the writer puts in slot `k`: its number, then the writable disk's pattern.
+fn record(k: u64, buf: &mut [u8]) {
+    fill(RW_SALT, k * RECORD as u64, buf);
+    for (b, n) in buf.iter_mut().zip(k.to_le_bytes()) {
+        *b = n;
+    }
+}
+
+fn pin(cpu: usize) -> Result<(), String> {
+    // SAFETY: a zeroed cpu_set_t is the empty set.
+    let mut set: libc::cpu_set_t = unsafe { std::mem::zeroed() };
+    // SAFETY: CPU_SET ignores a CPU past the set's end.
+    unsafe { libc::CPU_SET(cpu, &mut set) };
+    // SAFETY: sched_setaffinity(2) for this thread, with a set of its size.
+    if unsafe { libc::sched_setaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), &set) } != 0 {
+        return Err(format!("pinning to CPU {cpu}: {}", io::Error::last_os_error()));
+    }
+    Ok(())
+}
+
+/// Reads CLOCK_MONOTONIC on every CPU for `window`, one read at a time under one lock, so
+/// that the reads are ordered in real time, as the kernel orders its own TSC warp check
+/// (arch/x86/kernel/tsc_sync.c, check_tsc_warp): a read below the one before it, from
+/// whichever CPU, is the clock going backwards between CPUs. How many reads there were,
+/// and how far back the worst went, in nanoseconds.
+fn clock_warps(cpus: usize, window: Duration) -> Result<(u64, u64), String> {
+    warps(cpus, window, monotonic_ns)
+}
+
+/// The time-stamp counter of the CPU it runs on.
+#[cfg(target_arch = "x86_64")]
+fn tsc() -> u128 {
+    // SAFETY: RDTSC reads the time-stamp counter, which the guest's user mode may read.
+    u128::from(unsafe { core::arch::x86_64::_rdtsc() })
+}
+
+/// [`clock_warps`] of any counter `read` gives: how many reads, and the worst step back in
+/// its own units.
+fn warps(cpus: usize, window: Duration, read: fn() -> u128) -> Result<(u64, u64), String> {
+    use std::sync::{Arc, Mutex, PoisonError};
+    // The last read, how many there were, and the worst step back.
+    let last = Arc::new(Mutex::new((0u128, 0u64, 0u64)));
+    // The window opens once every reader is on its CPU: dozens of vCPUs sharing a few
+    // host cores take a while to start them all.
+    let ready = Arc::new(std::sync::Barrier::new(cpus));
+    let readers: Vec<_> = (0..cpus)
+        .map(|cpu| {
+            let (last, ready) = (last.clone(), ready.clone());
+            thread::spawn(move || {
+                let pinned = pin(cpu);
+                ready.wait();
+                pinned?;
+                let until = Instant::now() + window;
+                while Instant::now() < until {
+                    let mut l = last.lock().unwrap_or_else(PoisonError::into_inner);
+                    let now = read();
+                    if now < l.0 {
+                        l.2 = l.2.max(u64::try_from(l.0 - now).unwrap_or(u64::MAX));
+                    }
+                    l.0 = now;
+                    l.1 += 1;
+                }
+                Ok::<(), String>(())
+            })
+        })
+        .collect();
+    for r in readers {
+        r.join().map_err(|_| "a clock reader panicked".to_string())??;
+    }
+    let (_, reads, worst) = *last.lock().unwrap_or_else(PoisonError::into_inner);
+    Ok((reads, worst))
+}
+
+/// [`clock_warps`], as a verdict: `when` names the moment for the log.
+fn clock_in_step(cpus: usize, when: &str) -> Result<(), String> {
+    let (reads, worst) = clock_warps(cpus, Duration::from_millis(100))?;
+    report(format_args!(
+        "SHARDS-TEST INFO clock {when}: {reads} reads in turn on {cpus} CPUs, worst step back {worst} ns"
+    ))?;
+    if worst > 0 {
+        // What keeps the guest's time, and whether the CPUs' own counters disagree: a TSC
+        // restored out of step with the others, or a clock's parameters out of step.
+        let source = sysfs("/sys/devices/system/clocksource/clocksource0/current_clocksource")
+            .unwrap_or_else(|e| format!("unread: {e}"));
+        report(format_args!("SHARDS-TEST INFO clocksource {when}: {source}"))?;
+        #[cfg(target_arch = "x86_64")]
+        if let Ok((reads, back)) = warps(cpus, Duration::from_millis(100), tsc) {
+            report(format_args!(
+                "SHARDS-TEST INFO tsc {when}: {reads} reads in turn on {cpus} CPUs, worst step back {back} cycles"
+            ))?;
+        }
+        return Err(format!(
+            "CLOCK_MONOTONIC went back {worst} ns from one CPU to another {when}"
+        ));
+    }
+    Ok(())
+}
+
+/// A machine busy in every way at once when it asks for a snapshot (audit A02): pairs of
+/// threads on neighbouring CPUs wake each other in turn (interrupts between CPUs), one
+/// thread sleeps in short timer ticks, one reads the read-only disk and checks it, one
+/// numbers 4 KiB records onto the writable disk, and the vsock echo serves the host, which
+/// streams through it. The guest asks for the snapshot once the storm is up and the echo
+/// has carried a MiB.
+///
+/// Whatever continues past the snapshot, the original or a restore, must see every worker
+/// keep going: a lost interrupt stalls one. A pair's threads wait for their turns without
+/// a timeout, which would wake a CPU whose wakeup was lost and hide the loss; a lost
+/// wakeup leaves its waiter asleep, and the progress check sees the stall. How long each
+/// took to take its turn is reported: after a restore, the time until every vCPU runs
+/// again. The writer reads each slot before it writes it, and finds it empty unless some
+/// request of its own was carried out without its completion reaching the guest: every
+/// record is written exactly once.
+///
+/// Its checks done, it says `storm checked`, and gives its verdict once the host has
+/// connected to port 1235 and sent a byte: the host stops streaming first, so every round
+/// ends with the guest alive.
+fn storm() -> Result<(), String> {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+    let ro_bytes = env_u64("shards_vda_bytes")?;
+    let rw_bytes = env_u64("shards_vdb_bytes")?;
+    // SAFETY: sysconf(3) takes no pointers.
+    let cpus = usize::try_from(unsafe { libc::sysconf(libc::_SC_NPROCESSORS_ONLN) }).unwrap_or(1);
+    if cpus < 2 {
+        return Err(format!("a storm needs two CPUs; this guest has {cpus}"));
+    }
+    let pairs: Vec<(usize, usize)> = (0..cpus).step_by(2).map(|a| (a, (a + 1) % cpus)).collect();
+    // Workers: both threads of each pair, then the timer, the reader and the writer.
+    let workers = 2 * pairs.len() + 3;
+    let storm = Arc::new(Storm {
+        stop: AtomicBool::new(false),
+        failure: std::sync::Mutex::new(None),
+        progress: (0..workers).map(|_| AtomicU64::new(0)).collect(),
+        longest: (0..workers).map(|_| AtomicU64::new(0)).collect(),
+        late: (0..2 * pairs.len()).map(|_| AtomicU64::new(0)).collect(),
+        written: AtomicU64::new(0),
+        writer_at: AtomicU64::new(0),
+    });
+    let mut threads = Vec::new();
+    let mut spawn = |slot: usize, cpu: Option<usize>, name: String, mut round: Round| {
+        let storm = storm.clone();
+        threads.push(thread::spawn(move || {
+            if let Some(cpu) = cpu
+                && let Err(e) = pin(cpu)
+            {
+                return storm.fail(e);
+            }
+            let mut last = monotonic_ns();
+            while !storm.stopping() {
+                match round(&storm) {
+                    Ok(()) => {
+                        let now = monotonic_ns();
+                        let gap = u64::try_from(now.saturating_sub(last) / 1000).unwrap_or(u64::MAX);
+                        last = now;
+                        if let Some(l) = storm.longest.get(slot) {
+                            l.fetch_max(gap, Ordering::Relaxed);
+                        }
+                        if let Some(p) = storm.progress.get(slot) {
+                            p.fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
+                    Err(e) => return storm.fail(format!("{name}: {e}")),
+                }
+            }
+        }));
+    };
+
+    // Whose turn it is in each pair, and since when.
+    let mut balls = Vec::new();
+    for (i, &(a, b)) in pairs.iter().enumerate() {
+        let ball = Arc::new((
+            std::sync::Mutex::new((0u8, monotonic_ns())),
+            std::sync::Condvar::new(),
+        ));
+        balls.push(ball.clone());
+        for (side, cpu, other) in [(0u8, a, b), (1u8, b, a)] {
+            let ball = ball.clone();
+            let slot = 2 * i + usize::from(side);
+            spawn(
+                slot,
+                Some(cpu),
+                format!("CPU {cpu}'s turn with CPU {other}"),
+                Box::new(move |storm| {
+                    let (turn, cv) = &*ball;
+                    let mut t = turn.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                    while t.0 != side {
+                        if storm.stopping() {
+                            return Ok(());
+                        }
+                        t = cv.wait(t).unwrap_or_else(std::sync::PoisonError::into_inner);
+                    }
+                    let now = monotonic_ns();
+                    if let Some(l) = storm.late.get(slot) {
+                        let late = u64::try_from(now.saturating_sub(t.1) / 1000).unwrap_or(u64::MAX);
+                        l.fetch_max(late, Ordering::Relaxed);
+                    }
+                    *t = (1 - side, now);
+                    cv.notify_all();
+                    Ok(())
+                }),
+            );
+        }
+    }
+    // Waiters without a timeout hear of the end only this way; the lock orders it after
+    // any waiter's look at `stop`.
+    let stop = |storm: &Storm| {
+        storm.stop.store(true, Ordering::Relaxed);
+        for ball in &balls {
+            let _held = ball.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            ball.1.notify_all();
+        }
+    };
+    let timer = 2 * pairs.len();
+    let mut last = monotonic_ns();
+    spawn(
+        timer,
+        None,
+        "the timer".into(),
+        Box::new(move |_| {
+            thread::sleep(Duration::from_micros(200));
+            let now = monotonic_ns();
+            if now < last {
+                return Err(format!("CLOCK_MONOTONIC went backwards: {last} -> {now}"));
+            }
+            last = now;
+            Ok(())
+        }),
+    );
+    let ro = open("/dev/vda", libc::O_RDONLY | libc::O_DIRECT)?;
+    let mut read_buf = Aligned::new(64 << 10)?;
+    let mut seed = 0x5eed_u64;
+    spawn(
+        timer + 1,
+        None,
+        "the reader".into(),
+        Box::new(move |_| {
+            let blocks = (ro_bytes / 4096).saturating_sub(16).max(1);
+            let offset = next(&mut seed) % blocks * 4096;
+            verify(ro, RO_SALT, offset, 64 << 10, &mut read_buf)
+        }),
+    );
+    let rw = open("/dev/vdb", libc::O_RDWR | libc::O_DIRECT)?;
+    let mut write_buf = Aligned::new(RECORD)?;
+    let slots = rw_bytes / RECORD as u64;
+    spawn(
+        timer + 2,
+        None,
+        "the writer".into(),
+        Box::new(move |storm| {
+            let k = storm.written.load(Ordering::Relaxed);
+            if k >= slots {
+                // The disk is full: rest, still counting.
+                thread::sleep(Duration::from_millis(1));
+                return Ok(());
+            }
+            let b = write_buf.slice(RECORD);
+            storm.writer_at.store(1, Ordering::Relaxed);
+            pread_exact(rw, b, k * RECORD as u64)?;
+            if b.iter().any(|&x| x != 0) {
+                return Err(format!(
+                    "slot {k} was written already, by a request whose completion never reached the guest"
+                ));
+            }
+            record(k, b);
+            storm.writer_at.store(2, Ordering::Relaxed);
+            pwrite_exact(rw, b, k * RECORD as u64)?;
+            storm.written.store(k + 1, Ordering::Relaxed);
+            storm.writer_at.store(0, Ordering::Relaxed);
+            Ok(())
+        }),
+    );
+    let listener = vsock_listen(ECHO_PORT)?;
+    thread::spawn(move || serve_echo(&listener));
+    let done = vsock_listen(DONE_PORT)?;
+    let _ = writeln!(io::stdout(), "SHARDS-TEST READY");
+
+    // The snapshot lands in the thick of it: after the storm is up and the host's stream is.
+    // No deadline of the guest's own: a busy host may be slow to stream, and the host's
+    // wait for the verdict bounds the test. What it waits on is reported as it waits.
+    thread::sleep(Duration::from_millis(50));
+    waiting("the host's stream through the echo", || {
+        (ECHOED.load(Ordering::Relaxed) >= 1 << 20)
+            .then_some(())
+            .ok_or_else(|| format!("{} bytes echoed", ECHOED.load(Ordering::Relaxed)))
+    });
+    // The storm in its steady state, for `shards_storm_ms`, with nothing paused.
+    gaps(&storm, true);
+    thread::sleep(Duration::from_millis(env_u64("shards_storm_ms").unwrap_or(0)));
+    report(format_args!(
+        "SHARDS-TEST INFO longest gaps steady: {}; longest turns taken: {}",
+        gaps(&storm, true),
+        spread(&storm.late, true)
+    ))?;
+    clock_in_step(cpus, "before the snapshot")?;
+    let control = ControlPage::map()?;
+    control.write(shards_abi::control::SNAPSHOT, shards_abi::control::SNAPSHOT_NOW);
+    // A restored copy continues here, as does the original, if it resumed.
+    let generation = control.read(shards_abi::control::GENERATION);
+    let echoed_at = ECHOED.load(Ordering::Relaxed);
+    let beats = watch_main_thread(cpus);
+    report(format_args!("SHARDS-TEST INFO generation={generation}"))?;
+
+    report(format_args!(
+        "SHARDS-TEST INFO longest gaps before: {}; longest turns taken: {}",
+        gaps(&storm, true),
+        spread(&storm.late, true)
+    ))?;
+    // Every CPU's clock goes on from the snapshot in step with the others'.
+    beats.fetch_add(1, Ordering::Relaxed);
+    clock_in_step(cpus, "after the snapshot")?;
+    beats.fetch_add(1, Ordering::Relaxed);
+    let seen: Vec<u64> = storm.progress.iter().map(|p| p.load(Ordering::Relaxed)).collect();
+    // Every worker goes on from the snapshot. A lost completion or timer never ends; a
+    // worker a loaded host gave no turn does (one waited 0.98 s on a Mac at a load of 20,
+    // and a verdict at 1 s failed the test): only the host's bound tells them apart, so the
+    // guest waits, saying which have not gone on and what is in flight, read once a second.
+    let mut failed = None;
+    let mut said = (Instant::now(), String::new());
+    waiting("every worker's progress after the snapshot", || {
+        beats.fetch_add(1, Ordering::Relaxed);
+        if let Some(e) = storm
+            .failure
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+        {
+            failed = Some(e);
+            return Ok(());
+        }
+        let still: Vec<usize> = storm
+            .progress
+            .iter()
+            .zip(&seen)
+            .enumerate()
+            .filter(|(_, (p, before))| p.load(Ordering::Relaxed) == **before)
+            .map(|(i, _)| i)
+            .collect();
+        if still.is_empty() {
+            return Ok(());
+        }
+        if said.1.is_empty() || said.0.elapsed() >= Duration::from_secs(1) {
+            let at = match storm.writer_at.load(Ordering::Relaxed) {
+                1 => "reading",
+                2 => "writing",
+                _ => "between requests",
+            };
+            let interrupts = std::fs::read_to_string("/proc/interrupts").unwrap_or_default();
+            let virtio: Vec<&str> = interrupts.lines().filter(|l| l.contains("virtio")).collect();
+            said = (
+                Instant::now(),
+                format!(
+                    "longest gaps since: {}; the writer is {at} slot {}; in flight (reads writes): vda {}, vdb {}; {}",
+                    gaps(&storm, false),
+                    storm.written.load(Ordering::Relaxed),
+                    sysfs("/sys/block/vda/inflight").unwrap_or_default(),
+                    sysfs("/sys/block/vdb/inflight").unwrap_or_default(),
+                    virtio.join(" | ")
+                ),
+            );
+        }
+        Err(format!("workers {still:?} of {workers} have not; {}", said.1))
+    });
+    if let Some(e) = failed {
+        return Err(e);
+    }
+    stop(&storm);
+    // A lost completion never ends, a slow one does: only the host's bound tells them
+    // apart, so the guest waits, saying which workers are still in their rounds.
+    waiting("the workers' last rounds", || {
+        beats.fetch_add(1, Ordering::Relaxed);
+        let left: Vec<usize> = threads
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| !t.is_finished())
+            .map(|(i, _)| i)
+            .collect();
+        if left.is_empty() {
+            return Ok(());
+        }
+        Err(format!(
+            "workers {left:?} still in theirs; in flight (reads writes): vda {}, vdb {}",
+            sysfs("/sys/block/vda/inflight").unwrap_or_default(),
+            sysfs("/sys/block/vdb/inflight").unwrap_or_default()
+        ))
+    });
+    if let Some(e) = storm
+        .failure
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take()
+    {
+        return Err(e);
+    }
+    // Exactly the records the writer completed, each whole, and nothing after them.
+    beats.fetch_add(1, Ordering::Relaxed);
+    let written = storm.written.load(Ordering::Relaxed);
+    let mut got = Aligned::new(RECORD)?;
+    let mut want = vec![0u8; RECORD];
+    for k in 0..written.saturating_add(1).min(slots) {
+        let b = got.slice(RECORD);
+        pread_exact(rw, b, k * RECORD as u64)?;
+        if k < written {
+            record(k, &mut want);
+            if b != want.as_slice() {
+                return Err(format!("record {k} of {written} is not what the writer wrote"));
+            }
+        } else if b.iter().any(|&x| x != 0) {
+            return Err(format!("slot {k}, after the {written} written, holds data"));
+        }
+    }
+    report(format_args!("SHARDS-TEST INFO records={written}"))?;
+    report(format_args!(
+        "SHARDS-TEST INFO longest gaps after: {}; longest turns taken: {}",
+        gaps(&storm, false),
+        spread(&storm.late, false)
+    ))?;
+    // A machine that went on carries the host's stream on past its snapshot: two rounds'
+    // worth (the host's rounds are 4 MiB), so the round the snapshot cut through ends and
+    // another runs whole after it, however slowly a loaded host streams: for as long as
+    // the stream carries bytes ([`STREAM_QUIET`]).
+    if generation == 0 {
+        let mut stream = Streaming::new();
+        while ECHOED.load(Ordering::Relaxed).saturating_sub(echoed_at) < 8 << 20 {
+            beats.fetch_add(1, Ordering::Relaxed);
+            if !stream.carries() {
+                return Err(format!(
+                    "the host streamed {} bytes after the snapshot, then nothing for {STREAM_QUIET:?}",
+                    ECHOED.load(Ordering::Relaxed).saturating_sub(echoed_at)
+                ));
+            }
+            thread::sleep(Duration::from_millis(1));
+        }
+    }
+    // The verdict waits for the host to say it has stopped streaming, so every round the
+    // host streamed ended with the guest alive: its main thread watched no more.
+    beats.store(u64::MAX, Ordering::Relaxed);
+    report(format_args!("SHARDS-TEST INFO storm checked"))?;
+    // The host's side of the connection is up only once it has read its OK, after this
+    // side's accept: its byte, or its close, says so. The host connects once the round it
+    // streams ends, waited for while its stream carries bytes.
+    let mut host = accept_while_streaming(&done)?;
+    let mut byte = [0u8; 1];
+    std::io::Read::read(&mut host, &mut byte)
+        .map(drop)
+        .map_err(|e| format!("waiting for the host's word: {e}"))
+}
+
+/// How long the storm's main thread stands still before a watcher says so, in one line
+/// ([`standing_still`]): well inside the host's `DAEMON_QUIET`, so that the host, which
+/// waits a minute past its deadline for something new, hears of a stall before it gives up.
+const STOOD_STILL: Duration = Duration::from_secs(15);
+
+/// Watches the storm's main thread from its snapshot on, by the count it adds to at each
+/// step and each look at what it waits for. Once the count has stood still [`STOOD_STILL`],
+/// a watcher says so in a line ([`standing_still`]), once for each beat it stands still at;
+/// once it has stood still [`STREAM_QUIET`], the storm's own bound for a stream that has
+/// stopped, past which the host gives up on it too, the kernel says all it can of it
+/// ([`stood_still`]), once. What stops the main thread past the snapshot stops what it
+/// says too, a lost timer and a stuck console alike; printk's console polls the UART,
+/// needing none of its interrupts, so the kernel's word reaches the host either way.
+///
+/// The kernel's whole account waits for the longer bound because it is no cheap read
+/// (PM M427): on the nested arm64 Windows host (QEMU's TCG, 4 CPUs) a 64-vCPU storm's
+/// main thread stood 26 and 56 s at its clock check after the snapshot, as the same check
+/// took 20 s before it, and the account given after 15 s, some 6,000 lines of timers
+/// alone, held the console for 172 s at milliseconds a byte, on CPU 0, which every device
+/// interrupt goes to: its echo carried nothing for 60 s and the guest failed itself; the
+/// other storm's CPU 0 left its tasks unrun for 750 s, its disk completions with them.
+/// A storm that stalls for good still has the account, a minute in.
+///
+/// Four watchers, each pinned to its own of the guest's `cpus`, spread across them: a CPU
+/// whose timer stopped stops the one there, whose sleeps never end, and not the rest. None
+/// says anything after the count is `u64::MAX`, which ends the watch.
+fn watch_main_thread(cpus: usize) -> std::sync::Arc<std::sync::atomic::AtomicU64> {
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    let beats = std::sync::Arc::new(AtomicU64::new(0));
+    // The beat a stall was last said at, and whether the kernel's account was given.
+    let told = std::sync::Arc::new(AtomicU64::new(u64::MAX));
+    let accounted = std::sync::Arc::new(AtomicBool::new(false));
+    let watchers = cpus.clamp(1, 4);
+    for w in 0..watchers {
+        let (watched, told, accounted) = (beats.clone(), told.clone(), accounted.clone());
+        thread::spawn(move || {
+            if pin(w * cpus / watchers).is_err() {
+                return;
+            }
+            let (mut last, mut since) = (0, Instant::now());
+            loop {
+                thread::sleep(Duration::from_secs(1));
+                let now = watched.load(Ordering::Relaxed);
+                if now == u64::MAX || accounted.load(Ordering::Relaxed) {
+                    return;
+                }
+                if now != last {
+                    (last, since) = (now, Instant::now());
+                    continue;
+                }
+                let still = since.elapsed();
+                if still >= STREAM_QUIET {
+                    if !accounted.swap(true, Ordering::Relaxed) {
+                        stood_still(now);
+                    }
+                    return;
+                }
+                if still >= STOOD_STILL && told.swap(now, Ordering::Relaxed) != now {
+                    standing_still(now);
+                }
+            }
+        });
+    }
+    beats
+}
+
+/// A line of the storm's watch on its console, at LOG_USER/ERR, which the test kernel's
+/// `quiet` shows ([`report`]).
+fn say(line: &str) {
+    let _ = std::fs::write("/dev/kmsg", format!("<11>storm: {line}\n"));
+}
+
+/// The CPU the main thread last ran on: /proc/PID/stat's field 39, the 37th after its
+/// command's ")".
+fn main_thread_cpu() -> String {
+    std::fs::read_to_string("/proc/1/stat")
+        .ok()
+        .and_then(|s| {
+            s.rsplit(')')
+                .next()
+                .and_then(|rest| rest.split_whitespace().nth(36))
+                .map(str::to_string)
+        })
+        .unwrap_or_default()
+}
+
+/// That the main thread has stood still [`STOOD_STILL`] at `beat`, and where it last ran,
+/// in one line ([`watch_main_thread`]).
+fn standing_still(beat: u64) {
+    // SAFETY: sched_getcpu(3) takes no arguments.
+    let here = unsafe { libc::sched_getcpu() };
+    say(&format!(
+        "the main thread stood still {} s at beat {beat} (seen from CPU {here}); it last ran on CPU {}",
+        STOOD_STILL.as_secs(),
+        main_thread_cpu()
+    ));
+}
+
+/// What the kernel can say of a main thread that stood still [`STREAM_QUIET`]
+/// ([`watch_main_thread`]), on its console at a log level that shows it: what it logged
+/// that the console's level kept off it (notices and worse), the CPU the main thread last
+/// ran on, the CPUs whose local timer took no interrupt in a second, each CPU's timers and
+/// clock event device (sysrq `q`), and every task's stack (sysrq `t`).
+fn stood_still(beat: u64) {
+    let _ = std::fs::write("/proc/sys/kernel/printk", "7");
+    let logged = kernel_log(5);
+    // SAFETY: sched_getcpu(3) takes no arguments.
+    let here = unsafe { libc::sched_getcpu() };
+    say(&format!(
+        "the main thread stood still {} s at beat {beat} (seen from CPU {here})",
+        STREAM_QUIET.as_secs()
+    ));
+    for line in logged {
+        say(&format!("log: {line}"));
+    }
+    say(&format!("the main thread last ran on CPU {}", main_thread_cpu()));
+    if let Some(before) = local_timer_interrupts() {
+        thread::sleep(Duration::from_secs(1));
+        if let Some(after) = local_timer_interrupts() {
+            let none: Vec<String> = before
+                .iter()
+                .zip(&after)
+                .enumerate()
+                .filter(|(_, (b, a))| a <= b)
+                .map(|(cpu, _)| cpu.to_string())
+                .collect();
+            say(&format!(
+                "CPUs whose local timer took no interrupt in 1 s: [{}]",
+                none.join(" ")
+            ));
+        }
+    }
+    say("each CPU's timers follow, then every task's stack");
+    let _ = std::fs::write("/proc/sysrq-trigger", "q");
+    let _ = std::fs::write("/proc/sysrq-trigger", "t");
+}
+
+/// Each CPU's count of local timer interrupts: /proc/interrupts' `LOC` line on x86_64, and
+/// on arm64, which has none, the architected timer's (`arch_timer`, its PPI): reading
+/// `LOC` alone, a 64-vCPU storm on arm64 said nothing of its timers (PM M427).
+fn local_timer_interrupts() -> Option<Vec<u64>> {
+    let text = std::fs::read_to_string("/proc/interrupts").ok()?;
+    let cpus = text.lines().next()?.split_whitespace().count();
+    let line = text.lines().map(str::trim_start).find_map(|l| {
+        if let Some(rest) = l.strip_prefix("LOC:") {
+            return Some(rest);
+        }
+        if l.trim_end().ends_with(" arch_timer") {
+            return l.split_once(':').map(|(_, rest)| rest);
+        }
+        None
+    })?;
+    Some(
+        line.split_whitespace()
+            .take(cpus)
+            .map(|n| n.parse().unwrap_or(0))
+            .collect(),
+    )
+}
+
+/// The messages the kernel has logged at `at_most` or more urgent (syslog levels: 5 is a
+/// notice), read from /dev/kmsg's start without waiting for more.
+fn kernel_log(at_most: u32) -> Vec<String> {
+    use std::io::Read as _;
+    use std::os::unix::fs::OpenOptionsExt as _;
+    let Ok(mut kmsg) = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open("/dev/kmsg")
+    else {
+        return Vec::new();
+    };
+    let mut said = Vec::new();
+    let mut buf = vec![0u8; 8192];
+    loop {
+        match kmsg.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => {
+                // "PRIORITY,SEQUENCE,MICROSECONDS,FLAGS;MESSAGE": the level is the
+                // priority's low three bits, the facility the rest. Replay only kernel
+                // records, never the storm's own LOG_USER protocol lines.
+                let record = String::from_utf8_lossy(buf.get(..n).unwrap_or_default()).into_owned();
+                let Some((head, message)) = record.split_once(';') else {
+                    continue;
+                };
+                let priority = head.split(',').next().and_then(|p| p.parse::<u32>().ok());
+                if priority.is_some_and(|p| p >> 3 == 0 && p & 7 <= at_most) {
+                    said.push(message.lines().next().unwrap_or_default().to_string());
+                }
+            }
+            // Records overwritten before they were read: the next are there.
+            Err(e) if e.raw_os_error() == Some(libc::EPIPE) => {}
+            Err(_) => break,
+        }
+    }
+    said
+}
+
+/// How long the host's stream through the echo may carry nothing before a storm takes it
+/// for stopped: the host's own `DAEMON_QUIET` (crates/shards/tests/common), a minute,
+/// after which its reads of the stream fail. A stream that carries anything is waited on
+/// however slowly its host runs it (the parity plan's step 10: 196,608 bytes in 120 s).
+const STREAM_QUIET: Duration = Duration::from_secs(60);
+
+/// Whether the host's stream through the echo ([`ECHOED`]) has carried bytes within
+/// [`STREAM_QUIET`], or since it began watching.
+struct Streaming {
+    echoed: u64,
+    since: Instant,
+}
+
+impl Streaming {
+    fn new() -> Streaming {
+        Streaming {
+            echoed: ECHOED.load(std::sync::atomic::Ordering::Relaxed),
+            since: Instant::now(),
+        }
+    }
+
+    fn carries(&mut self) -> bool {
+        let echoed = ECHOED.load(std::sync::atomic::Ordering::Relaxed);
+        if echoed != self.echoed {
+            (self.echoed, self.since) = (echoed, Instant::now());
+        }
+        self.since.elapsed() < STREAM_QUIET
+    }
+}
+
+/// A connection to `listener`, waited for while the host's stream through the echo carries
+/// bytes ([`Streaming`]): the host connects once it has stopped streaming, at the end of a
+/// round however long its host takes over it.
+fn accept_while_streaming(listener: &std::fs::File) -> Result<std::fs::File, String> {
+    use std::os::fd::{AsRawFd, FromRawFd};
+    // Each accept(2) gives up after a second, for a look at the stream.
+    let wait = libc::timeval {
+        tv_sec: 1,
+        tv_usec: 0,
+    };
+    // SAFETY: setsockopt(2) on our own socket, with a timeval of its size.
+    let set = unsafe {
+        libc::setsockopt(
+            listener.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_RCVTIMEO,
+            (&raw const wait).cast(),
+            std::mem::size_of::<libc::timeval>() as libc::socklen_t,
+        )
+    };
+    if set != 0 {
+        return Err(format!("SO_RCVTIMEO: {}", io::Error::last_os_error()));
+    }
+    let mut stream = Streaming::new();
+    loop {
+        // SAFETY: accept(2) on our listening socket, without the peer address.
+        let fd = unsafe {
+            libc::accept4(
+                listener.as_raw_fd(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                libc::SOCK_CLOEXEC,
+            )
+        };
+        if fd >= 0 {
+            // SAFETY: a fresh descriptor nothing else owns.
+            return Ok(unsafe { std::fs::File::from_raw_fd(fd) });
+        }
+        let e = io::Error::last_os_error();
+        if !matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted) {
+            return Err(format!("accepting the host's connection: {e}"));
+        }
+        if !stream.carries() {
+            return Err(format!(
+                "no host connection, and nothing through the echo, for {STREAM_QUIET:?}"
+            ));
+        }
+    }
+}
+
 /// The benchmark guest: asks for a snapshot; a restored clone marks that it runs again
 /// and powers off at once, so restore timings contain no guest work.
 fn resume() -> Result<(), String> {
@@ -424,19 +1510,1998 @@ fn resume() -> Result<(), String> {
     Ok(())
 }
 
+/// Prints the kernel's log, each record as /dev/kmsg gives it (`level,seq,usecs,flags;text`,
+/// Documentation/ABI/testing/dev-kmsg): with `quiet`, a boot's log costs it no console
+/// output, and is read only once the boot has been measured.
+fn kmsg() -> Result<(), String> {
+    let fd = open("/dev/kmsg", libc::O_RDONLY | libc::O_NONBLOCK)?;
+    let mut record = vec![0u8; 8192];
+    let mut out = io::stdout().lock();
+    loop {
+        // SAFETY: `record` is valid for writes of its length; each read is one record.
+        let n = unsafe { libc::read(fd, record.as_mut_ptr().cast(), record.len()) };
+        if n < 0 {
+            let e = io::Error::last_os_error();
+            match e.raw_os_error() {
+                Some(libc::EAGAIN) => break,
+                // A record overwritten before it was read.
+                Some(libc::EPIPE) => continue,
+                _ => return Err(format!("reading /dev/kmsg: {e}")),
+            }
+        }
+        let _ = out.write_all(record.get(..n as usize).unwrap_or_default());
+    }
+    // SAFETY: closing our own descriptor.
+    unsafe { libc::close(fd) };
+    Ok(())
+}
+
+/// A fixed amount of work: `shards_work_mib` MiB of the test pattern hashed, on the boot
+/// CPU, then the hash printed. Its host CPU time, beside a run with none, is what the work
+/// cost, ticks included (PM M66).
+fn work() -> Result<(), String> {
+    let mib: u64 = std::env::var("shards_work_mib")
+        .unwrap_or_else(|_| "0".into())
+        .parse()
+        .map_err(|e| format!("shards_work_mib: {e}"))?;
+    let hash = shards_testguest::pattern_hash(1, mib << 20);
+    let _ = writeln!(io::stdout(), "SHARDS-TEST HASH {hash:016x}");
+    Ok(())
+}
+
+/// Devices plugged into the running microVM (D214), each as its host's test says on the
+/// console, a line at a time, after the guest asks for it (`SHARDS-PLUG WAIT n`):
+///
+/// - `disk ADDR SALT`: rescans the bus as shards-init does, waits for the disk at PCI
+///   address ADDR to have a block device, reads its first MiB, which must hold pattern
+///   SALT, writes pattern SALT+1 over its second, synced, and says `SHARDS-PLUG DISK NAME
+///   RESCAN_US READY_US`: the rescan's time, and from its start to the disk read.
+/// - `grow NAME SECTORS`: waits for the disk's size to read SECTORS, its driver told by a
+///   configuration change, reads its last sector, and says `SHARDS-PLUG GREW NAME US`.
+/// - `share ADDR TAG`: rescans, mounts virtiofs TAG once its driver has the function,
+///   reads `/hello`, writes `/from-guest` synced, unmounts, says `SHARDS-PLUG SHARE US`.
+/// - `vfio ADDR`: rescans, and reads the host's QEMU edu function passed through at ADDR
+///   through its BAR 0, mapped from sysfs, and says `SHARDS-PLUG VFIO US`.
+/// - `remove ADDR`: lets the function go as shards-init does, its `remove` written, and
+///   says `SHARDS-PLUG REMOVED US`.
+/// - `done`: the test passes.
+fn pci_plug() -> Result<(), String> {
+    use std::io::BufRead as _;
+    const MIB: usize = 1 << 20;
+    // Its PID 1 runs: what its host times its boot to, with a PCI bus and without.
+    ControlPage::map()?.write(shards_abi::control::MARKER, shards_abi::marker::INIT_STARTED);
+    let stdin = io::stdin();
+    let mut lines = stdin.lock().lines();
+    let rescan = || std::fs::write("/sys/bus/pci/rescan", "1").map_err(|e| format!("rescan: {e}"));
+    let us = |since: u128| (monotonic_ns() - since) / 1000;
+    for round in 0.. {
+        let _ = writeln!(io::stdout(), "SHARDS-PLUG WAIT {round}");
+        let line = lines
+            .next()
+            .ok_or("the console ended")?
+            .map_err(|e| format!("the console: {e}"))?;
+        let words: Vec<&str> = line.split_whitespace().collect();
+        match words.as_slice() {
+            ["disk", addr, salt] => {
+                let salt: u64 = salt.parse().map_err(|e| format!("salt {salt:?}: {e}"))?;
+                let t0 = monotonic_ns();
+                rescan()?;
+                let rescanned = us(t0);
+                // Its block device, under its virtio device's directory.
+                let dir = format!("/sys/bus/pci/devices/{addr}");
+                let name = wait_for(Duration::from_secs(10), || {
+                    let virtio = std::fs::read_dir(&dir).ok()?.flatten().find_map(|e| {
+                        let n = e.file_name().into_string().ok()?;
+                        n.starts_with("virtio").then_some(n)
+                    })?;
+                    std::fs::read_dir(format!("{dir}/{virtio}/block"))
+                        .ok()?
+                        .flatten()
+                        .find_map(|e| e.file_name().into_string().ok())
+                })
+                .ok_or_else(|| format!("no block device at {addr} after a rescan"))?;
+                let mut disk = std::fs::OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .open(format!("/dev/{name}"))
+                    .map_err(|e| format!("/dev/{name}: {e}"))?;
+                let mut buf = vec![0u8; MIB];
+                use std::io::{Read as _, Seek as _};
+                disk.read_exact(&mut buf)
+                    .map_err(|e| format!("reading {name}: {e}"))?;
+                let ready = us(t0);
+                if let Some(at) = first_mismatch(salt, 0, &buf) {
+                    return Err(format!("{name} differs from pattern {salt} at byte {at}"));
+                }
+                fill(salt + 1, MIB as u64, &mut buf);
+                disk.seek(io::SeekFrom::Start(MIB as u64))
+                    .map_err(|e| e.to_string())?;
+                disk.write_all(&buf).map_err(|e| format!("writing {name}: {e}"))?;
+                disk.sync_all().map_err(|e| format!("syncing {name}: {e}"))?;
+                let _ = writeln!(io::stdout(), "SHARDS-PLUG DISK {name} {rescanned} {ready}");
+            }
+            ["grow", name, sectors] => {
+                let t0 = monotonic_ns();
+                let size = format!("/sys/block/{name}/size");
+                wait_for(Duration::from_secs(10), || {
+                    (std::fs::read_to_string(&size).ok()?.trim() == *sectors).then_some(())
+                })
+                .ok_or_else(|| {
+                    format!(
+                        "{name} reads {:?} sectors, not {sectors}",
+                        std::fs::read_to_string(&size).unwrap_or_default().trim()
+                    )
+                })?;
+                let grew = us(t0);
+                let sectors: u64 = sectors.parse().map_err(|e| format!("{sectors:?}: {e}"))?;
+                let disk =
+                    std::fs::File::open(format!("/dev/{name}")).map_err(|e| format!("/dev/{name}: {e}"))?;
+                use std::os::fd::AsRawFd as _;
+                let mut last = [0u8; 512];
+                pread_exact(disk.as_raw_fd(), &mut last, (sectors - 1) * 512)?;
+                let _ = writeln!(io::stdout(), "SHARDS-PLUG GREW {name} {grew}");
+            }
+            ["share", addr, tag] => {
+                let t0 = monotonic_ns();
+                rescan()?;
+                let driver = format!("/sys/bus/pci/devices/{addr}/driver");
+                wait_for(Duration::from_secs(10), || {
+                    std::fs::metadata(&driver).ok().map(|_| ())
+                })
+                .ok_or_else(|| format!("no driver has {addr} after a rescan"))?;
+                std::fs::create_dir_all("/mnt").map_err(|e| format!("mkdir /mnt: {e}"))?;
+                let (src, target, fs) = (cstr(tag)?, cstr("/mnt")?, cstr("virtiofs")?);
+                // The tag's virtio device comes as its driver probes it: retried a while.
+                wait_for(Duration::from_secs(10), || {
+                    // SAFETY: NUL-terminated strings and no data argument.
+                    (unsafe { libc::mount(src.as_ptr(), target.as_ptr(), fs.as_ptr(), 0, std::ptr::null()) }
+                        == 0)
+                        .then_some(())
+                })
+                .ok_or_else(|| format!("mount {tag} (virtiofs): {}", io::Error::last_os_error()))?;
+                let hello = std::fs::read_to_string("/mnt/hello").map_err(|e| format!("/mnt/hello: {e}"))?;
+                if hello != "hello from a plugged share\n" {
+                    return Err(format!("/mnt/hello read {hello:?}"));
+                }
+                let mut file =
+                    std::fs::File::create("/mnt/from-guest").map_err(|e| format!("/mnt/from-guest: {e}"))?;
+                file.write_all(b"written through a plugged share\n")
+                    .and_then(|()| file.sync_all())
+                    .map_err(|e| format!("/mnt/from-guest: {e}"))?;
+                drop(file);
+                let target = cstr("/mnt")?;
+                // SAFETY: a NUL-terminated path.
+                if unsafe { libc::umount(target.as_ptr()) } != 0 {
+                    return Err(format!("umount /mnt: {}", io::Error::last_os_error()));
+                }
+                let _ = writeln!(io::stdout(), "SHARDS-PLUG SHARE {}", us(t0));
+            }
+            ["vfio", addr] => {
+                // QEMU edu's IDs, its identification register 0x010000ed and its liveness
+                // check's inverse through its BAR 0, as `pci` reads the test function's.
+                let t0 = monotonic_ns();
+                rescan()?;
+                let dir = format!("/sys/bus/pci/devices/{addr}");
+                let ids = wait_for(Duration::from_secs(10), || {
+                    let read = |f: &str| std::fs::read_to_string(format!("{dir}/{f}")).ok();
+                    Some((
+                        read("vendor")?.trim().to_string(),
+                        read("device")?.trim().to_string(),
+                    ))
+                })
+                .ok_or_else(|| format!("no function at {addr} after a rescan"))?;
+                if ids != ("0x1234".to_string(), "0x11e8".to_string()) {
+                    return Err(format!("{addr} is {ids:?}"));
+                }
+                std::fs::write(format!("{dir}/enable"), "1").map_err(|e| format!("{dir}/enable: {e}"))?;
+                let bar = std::fs::OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .open(format!("{dir}/resource0"))
+                    .map_err(|e| format!("{dir}/resource0: {e}"))?;
+                use std::os::fd::AsRawFd as _;
+                // SAFETY: a fresh shared mapping of the BAR's first page, which nothing else maps.
+                let regs = unsafe {
+                    libc::mmap(
+                        std::ptr::null_mut(),
+                        4096,
+                        libc::PROT_READ | libc::PROT_WRITE,
+                        libc::MAP_SHARED,
+                        bar.as_raw_fd(),
+                        0,
+                    )
+                };
+                if regs == libc::MAP_FAILED {
+                    return Err(format!("mapping {addr}'s BAR 0: {}", io::Error::last_os_error()));
+                }
+                let regs = regs.cast::<u32>();
+                // SAFETY: volatile accesses of the mapping's first two registers, a device's.
+                let (identification, live) = unsafe {
+                    let identification = regs.read_volatile();
+                    regs.add(1).write_volatile(0x1234_5678);
+                    (identification, regs.add(1).read_volatile())
+                };
+                // SAFETY: the mapping made above.
+                unsafe { libc::munmap(regs.cast(), 4096) };
+                std::fs::write(format!("{dir}/enable"), "0").map_err(|e| format!("{dir}/enable: {e}"))?;
+                if identification != 0x0100_00ed || live != !0x1234_5678 {
+                    return Err(format!(
+                        "{addr}'s BAR 0 said identification {identification:#x}, liveness {live:#x}"
+                    ));
+                }
+                let _ = writeln!(io::stdout(), "SHARDS-PLUG VFIO {}", us(t0));
+            }
+            ["remove", addr] => {
+                let t0 = monotonic_ns();
+                std::fs::write(format!("/sys/bus/pci/devices/{addr}/remove"), "1")
+                    .map_err(|e| format!("removing {addr}: {e}"))?;
+                let _ = writeln!(io::stdout(), "SHARDS-PLUG REMOVED {}", us(t0));
+            }
+            ["done"] => return Ok(()),
+            other => return Err(format!("unknown step {other:?}")),
+        }
+    }
+    Ok(())
+}
+
+/// What `found` finds, asked again every millisecond until `within` has passed.
+fn wait_for<T>(within: Duration, mut found: impl FnMut() -> Option<T>) -> Option<T> {
+    let end = Instant::now() + within;
+    loop {
+        if let Some(t) = found() {
+            return Some(t);
+        }
+        if Instant::now() >= end {
+            return None;
+        }
+        thread::sleep(Duration::from_millis(1));
+    }
+}
+
+/// A PCI bus's test function (D153): QEMU edu's IDs at 0000:00:01.0, and through its BAR
+/// 0, mapped from sysfs as a driver in user space maps one, its identification register
+/// and its liveness check, which reads back the inverse of what was written. With its
+/// memory space disabled through its configuration space, the function decodes nothing,
+/// so a read of BAR 0 is all ones, as an access no function claims (PCI 3.0 §6.2.2); enabled
+/// again, BAR 0 reads as before. Passed through, its BAR leaves the guest's memory and
+/// comes back (D154). Its BAR 4, 64-bit, lies past 4 GiB, its first page a scratch that
+/// reads back what was written.
+fn pci() -> Result<(), String> {
+    const DIR: &str = "/sys/bus/pci/devices/0000:00:01.0";
+    let read = |f: &str| {
+        std::fs::read_to_string(format!("{DIR}/{f}"))
+            .map(|s| s.trim().to_string())
+            .map_err(|e| format!("{DIR}/{f}: {e}"))
+    };
+    let (vendor, device) = (read("vendor")?, read("device")?);
+    if (vendor.as_str(), device.as_str()) != ("0x1234", "0x11e8") {
+        return Err(format!("00:01.0 is {vendor}:{device}"));
+    }
+    std::fs::write(format!("{DIR}/enable"), "1").map_err(|e| format!("{DIR}/enable: {e}"))?;
+    let bar = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(format!("{DIR}/resource0"))
+        .map_err(|e| format!("{DIR}/resource0: {e}"))?;
+    use std::os::fd::AsRawFd as _;
+    // SAFETY: a fresh shared mapping of the BAR's first page, which nothing else maps.
+    let regs = unsafe {
+        libc::mmap(
+            std::ptr::null_mut(),
+            4096,
+            libc::PROT_READ | libc::PROT_WRITE,
+            libc::MAP_SHARED,
+            bar.as_raw_fd(),
+            0,
+        )
+    };
+    if regs == libc::MAP_FAILED {
+        return Err(format!("mapping BAR 0: {}", io::Error::last_os_error()));
+    }
+    let regs = regs.cast::<u32>();
+    // SAFETY: volatile accesses of the mapping's first two registers, a device's.
+    let (identification, live) = unsafe {
+        let identification = regs.read_volatile();
+        regs.add(1).write_volatile(0x1234_5678);
+        (identification, regs.add(1).read_volatile())
+    };
+    let decoding = |on: bool| -> Result<u32, String> {
+        let config = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(format!("{DIR}/config"))
+            .map_err(|e| format!("{DIR}/config: {e}"))?;
+        let mut command = [0u8; 2];
+        pread_exact(config.as_raw_fd(), &mut command, 4)?;
+        let command = u16::from_le_bytes(command);
+        let command = if on { command | 2 } else { command & !2 };
+        pwrite_exact(config.as_raw_fd(), &command.to_le_bytes(), 4)?;
+        // SAFETY: a volatile read of the mapping's first register.
+        Ok(unsafe { regs.read_volatile() })
+    };
+    let (off, on) = (decoding(false), decoding(true));
+    // SAFETY: the mapping made above.
+    unsafe { libc::munmap(regs.cast(), 4096) };
+    if identification != 0x0100_00ed || live != !0x1234_5678 {
+        return Err(format!(
+            "BAR 0 said identification {identification:#x}, liveness {live:#x}"
+        ));
+    }
+    let (off, on) = (off?, on?);
+    if off != u32::MAX || on != 0x0100_00ed {
+        return Err(format!(
+            "BAR 0 read {off:#x} with memory space off, {on:#x} with it on again"
+        ));
+    }
+    // BAR 4, 64-bit, in the bus's 64-bit window past 4 GiB (D154): its first page reads
+    // back what was written to it.
+    let resources = read("resource")?;
+    let bar4 = resources
+        .lines()
+        .nth(4)
+        .and_then(|l| l.split_whitespace().next())
+        .and_then(|a| u64::from_str_radix(a.trim_start_matches("0x"), 16).ok())
+        .ok_or_else(|| format!("{DIR}/resource: no BAR 4 in {resources:?}"))?;
+    if bar4 < 1 << 32 {
+        return Err(format!("BAR 4 at {bar4:#x}, under 4 GiB"));
+    }
+    let bar = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(format!("{DIR}/resource4"))
+        .map_err(|e| format!("{DIR}/resource4: {e}"))?;
+    // SAFETY: a fresh shared mapping of BAR 4's first page, which nothing else maps.
+    let scratch = unsafe {
+        libc::mmap(
+            std::ptr::null_mut(),
+            4096,
+            libc::PROT_READ | libc::PROT_WRITE,
+            libc::MAP_SHARED,
+            bar.as_raw_fd(),
+            0,
+        )
+    };
+    if scratch == libc::MAP_FAILED {
+        return Err(format!("mapping BAR 4: {}", io::Error::last_os_error()));
+    }
+    let scratch = scratch.cast::<u32>();
+    // SAFETY: volatile accesses of the mapping's registers, in its first page.
+    let (first, last) = unsafe {
+        scratch.write_volatile(0x5ca7_c400);
+        scratch.add(1023).write_volatile(0x0dd_ba11);
+        (scratch.read_volatile(), scratch.add(1023).read_volatile())
+    };
+    // SAFETY: the mapping made above.
+    unsafe { libc::munmap(scratch.cast(), 4096) };
+    if (first, last) != (0x5ca7_c400, 0x0dd_ba11) {
+        return Err(format!("BAR 4 read back {first:#x} and {last:#x}"));
+    }
+    Ok(())
+}
+
+/// A host's PCI function its hypervisor assigns (D154; boot.rs's
+/// `a_hosts_pci_function_is_assigned_where_its_hypervisor_assigns_one`): at 0000:00:01.0
+/// with the IDs `shards_pci_ids` names (`0xVVVV:0xDDDD`). With `shards_pci_driver`, the
+/// guest kernel's driver of that name has taken it. Else its first memory BAR, mapped from
+/// sysfs, reads other than all ones while its memory decoding is on, and all ones while it
+/// is off, as an access no function claims (PCI 3.0 §6.2.2), then as before once it is on
+/// again.
+fn pci_host() -> Result<(), String> {
+    const DIR: &str = "/sys/bus/pci/devices/0000:00:01.0";
+    let read = |f: &str| {
+        std::fs::read_to_string(format!("{DIR}/{f}"))
+            .map(|s| s.trim().to_string())
+            .map_err(|e| format!("{DIR}/{f}: {e}"))
+    };
+    let want = std::env::var("shards_pci_ids").map_err(|_| "no shards_pci_ids".to_string())?;
+    let ids = format!("{}:{}", read("vendor")?, read("device")?);
+    if ids != want {
+        return Err(format!("00:01.0 is {ids}, not {want}"));
+    }
+    if let Ok(driver) = std::env::var("shards_pci_driver") {
+        let bound = wait_for(Duration::from_secs(10), || {
+            std::fs::read_link(format!("{DIR}/driver")).ok()
+        });
+        let name = bound
+            .as_deref()
+            .and_then(Path::file_name)
+            .and_then(|n| n.to_str())
+            .map(str::to_string);
+        if name.as_deref() != Some(driver.as_str()) {
+            return Err(format!("00:01.0's driver is {name:?}, not {driver}"));
+        }
+        return Ok(());
+    }
+    // Each BAR's start, end and flags; IORESOURCE_MEM (include/linux/ioport.h) a memory
+    // BAR's.
+    let hex = |v: &str| u64::from_str_radix(v.trim_start_matches("0x"), 16).unwrap_or(0);
+    let resources = read("resource")?;
+    let (index, start) = resources
+        .lines()
+        .take(6)
+        .enumerate()
+        .find_map(|(i, line)| {
+            let fields: Vec<u64> = line.split_whitespace().map(hex).collect();
+            match fields.as_slice() {
+                [start, _, flags] if *start != 0 && flags & 0x200 != 0 => Some((i, *start)),
+                _ => None,
+            }
+        })
+        .ok_or_else(|| format!("{DIR}/resource: no memory BAR in {resources:?}"))?;
+    std::fs::write(format!("{DIR}/enable"), "1").map_err(|e| format!("{DIR}/enable: {e}"))?;
+    let bar = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(format!("{DIR}/resource{index}"))
+        .map_err(|e| format!("{DIR}/resource{index}: {e}"))?;
+    use std::os::fd::AsRawFd as _;
+    // SAFETY: a fresh shared mapping of the page that holds the BAR's start, which nothing
+    // else maps.
+    let page = unsafe {
+        libc::mmap(
+            std::ptr::null_mut(),
+            4096,
+            libc::PROT_READ,
+            libc::MAP_SHARED,
+            bar.as_raw_fd(),
+            0,
+        )
+    };
+    if page == libc::MAP_FAILED {
+        return Err(format!("mapping BAR {index}: {}", io::Error::last_os_error()));
+    }
+    // SAFETY: the BAR's first register, in the page mapped, 4-aligned as a BAR is.
+    let register = unsafe { page.cast::<u8>().add((start % 4096) as usize).cast::<u32>() };
+    let config = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(format!("{DIR}/config"))
+        .map_err(|e| format!("{DIR}/config: {e}"))?;
+    let decoding = |on: bool| -> Result<u32, String> {
+        let mut command = [0u8; 2];
+        pread_exact(config.as_raw_fd(), &mut command, 4)?;
+        let command = u16::from_le_bytes(command);
+        let command = if on { command | 2 } else { command & !2 };
+        pwrite_exact(config.as_raw_fd(), &command.to_le_bytes(), 4)?;
+        // SAFETY: a volatile read of the BAR's first register.
+        Ok(unsafe { register.read_volatile() })
+    };
+    // SAFETY: a volatile read of the BAR's first register.
+    let first = unsafe { register.read_volatile() };
+    let (off, on) = (decoding(false), decoding(true));
+    // SAFETY: the mapping made above.
+    unsafe { libc::munmap(page, 4096) };
+    let (off, on) = (off?, on?);
+    if first == u32::MAX || off != u32::MAX || on == u32::MAX {
+        return Err(format!(
+            "BAR {index} read {first:#x}, {off:#x} with memory space off, {on:#x} with it on again"
+        ));
+    }
+    Ok(())
+}
+
+/// The test function's interrupts (D154): bound to vfio-pci in a no-IOMMU group (the
+/// kernel's `vfio.enable_unsafe_noiommu_mode=1`), it raises INTA# through its BAR's raise
+/// register, which VFIO signals on an eventfd, twice, the second after acknowledging and
+/// unmasking the first; then, INTx's eventfd taken away, one MSI; then MSI-X, raise bit k
+/// sending vector k. Its two vectors start with no eventfd, so the kernel leaves them
+/// masked: a raise of vector 0 is held, its pending bit set, and sent as VFIO is given
+/// its eventfd, which unmasks it; vector 1 is sent at once, and again held, masked as
+/// VFIO frees it, and sent as it is given its eventfd again.
+fn pci_irq() -> Result<(), String> {
+    const NAME: &str = "0000:00:01.0";
+    let (device, _) = vfio::take(NAME)?;
+    let bar = vfio::region(device, 0)?;
+    let raise = |value: u32| pwrite_exact(device, &value.to_le_bytes(), bar + 0x60);
+    let ack = |value: u32| pwrite_exact(device, &value.to_le_bytes(), bar + 0x64);
+    let status = || {
+        let mut b = [0u8; 4];
+        pread_exact(device, &mut b, bar + 0x24).map(|()| u32::from_le_bytes(b))
+    };
+    let intx = vfio::eventfd()?;
+    vfio::trigger(device, vfio::INTX, &[intx]).map_err(|e| format!("INTx on: {e}"))?;
+    for round in 1..=2u32 {
+        raise(round)?;
+        vfio::wait(intx).map_err(|e| format!("INTx {round}: {e}"))?;
+        if status()? != round {
+            return Err(format!("INTx {round}: status {:#x}", status()?));
+        }
+        ack(round)?;
+        vfio::unmask_intx(device).map_err(|e| format!("INTx unmasked: {e}"))?;
+    }
+    vfio::trigger(device, vfio::INTX, &[]).map_err(|e| format!("INTx off: {e}"))?;
+    let msi = vfio::eventfd()?;
+    vfio::trigger(device, vfio::MSI, &[msi]).map_err(|e| format!("MSI on: {e}"))?;
+    raise(4)?;
+    vfio::wait(msi).map_err(|e| format!("MSI: {e}"))?;
+    ack(4)?;
+    vfio::trigger(device, vfio::MSI, &[])?;
+    // MSI-X: its table and pending bits in BAR 2, the pending bits at 0x800.
+    let pba = vfio::region(device, 2)? + 0x800;
+    let pending = |vector: u32| {
+        let mut b = [0u8; 4];
+        pread_exact(device, &mut b, pba).map(|()| u32::from_le_bytes(b) & (1 << vector) != 0)
+    };
+    // Held while masked: its pending bit set as the host has the raise (VFIO's host
+    // takes it as an interrupt first, where the function is passed through again).
+    let held = |vector: u32| -> Result<(), String> {
+        raise(1 << vector)?;
+        let start = std::time::Instant::now();
+        while !pending(vector)? {
+            if start.elapsed() > std::time::Duration::from_secs(10) {
+                return Err(format!("MSI-X vector {vector}: masked, nothing pending in 10 s"));
+            }
+            std::thread::yield_now();
+        }
+        Ok(())
+    };
+    let vectors = [vfio::eventfd()?, vfio::eventfd()?];
+    vfio::msix(device, 0, &[-1, -1]).map_err(|e| format!("MSI-X on: {e}"))?;
+    held(0)?;
+    vfio::msix(device, 0, &vectors[..1])?;
+    vfio::wait(vectors[0]).map_err(|e| format!("MSI-X vector 0, held: {e}"))?;
+    if pending(0)? {
+        return Err("MSI-X vector 0: still pending, sent".into());
+    }
+    vfio::msix(device, 1, &vectors[1..])?;
+    raise(2)?;
+    vfio::wait(vectors[1]).map_err(|e| format!("MSI-X vector 1: {e}"))?;
+    vfio::msix(device, 1, &[-1])?;
+    held(1)?;
+    vfio::msix(device, 1, &vectors[1..])?;
+    vfio::wait(vectors[1]).map_err(|e| format!("MSI-X vector 1, held: {e}"))?;
+    ack(3)?;
+    vfio::trigger(device, vfio::MSIX, &[])?;
+    let _ = writeln!(
+        io::stdout(),
+        "SHARDS-TEST INFO interrupts: INTx 2, MSI 1, MSI-X 3, 2 of them held"
+    );
+    Ok(())
+}
+
+/// The test function's DMA (D154): taken through vfio-pci, its DMA engine (edu's: source,
+/// destination, length and command at 0x80 of BAR 0, its buffer at 0x40000 of its DMA
+/// addresses) moves a page of a pattern from memory into its buffer, and back to another
+/// page. Where the function's group has an IOMMU, the pages are mapped for it at I/O
+/// addresses of the test's own (VFIO_IOMMU_MAP_DMA), and a transfer to one unmapped moves
+/// nothing; where it has none, the function is given the pages' guest-physical addresses
+/// (/proc/self/pagemap).
+fn pci_dma() -> Result<(), String> {
+    const NAME: &str = "0000:00:01.0";
+    let (device, iommu) = vfio::take(NAME)?;
+    let map = iommu.map(|c| move |vaddr, iova, len| vfio::map_dma(c, vaddr, iova, len));
+    let through = edu_dma(device, map.as_ref().map(|m| m as &Map), 0x10_0000)?;
+    let _ = writeln!(io::stdout(), "{}", dma_line(through));
+    Ok(())
+}
+
+/// What a test of the function's DMA says it moved, and through what.
+fn dma_line(through: &str) -> String {
+    format!("SHARDS-TEST INFO dma: 4096 bytes into the function and back, through {through}")
+}
+
+/// A workload's DMA through each function at `names` it was given by their group,
+/// `--device /dev/vfio/N` (D154): their group found as DPDK finds a
+/// function's, by its address in sysfs (/sys/bus/pci/devices/NAME/iommu_group; DPDK's
+/// rte_vfio_get_group_num), its node the one at that number in `/dev/vfio`, which the
+/// workload must have been given there; the functions bound to vfio-pci already, as a
+/// host's are. One container, the group's, maps each function's pages at I/O addresses of
+/// its own.
+pub(crate) fn vfio_dma(names: &[String]) -> Result<(), String> {
+    let first = names.first().map(String::as_str).ok_or("no function named")?;
+    let group = vfio::group_of(first)?;
+    let (container, fd) = vfio::open(first)?;
+    for (k, name) in (0u64..).zip(names) {
+        let theirs = vfio::group_of(name)?;
+        if theirs != group {
+            return Err(format!("{name} is in group {theirs}, not {first}'s {group}"));
+        }
+        let device = vfio::device(fd, name)?;
+        let map = container.map(|c| move |vaddr, iova, len| vfio::map_dma(c, vaddr, iova, len));
+        let through = edu_dma(
+            device,
+            map.as_ref().map(|m| m as &Map),
+            0x10_0000 + k * 0x100_0000,
+        )?;
+        let _ = writeln!(io::stdout(), "{}", dma_line(through));
+    }
+    Ok(())
+}
+
+/// A workload's DMA through each function at `names` it was given by its VFIO device
+/// node and iommufd (`/dev/vfio/devices/vfioN`, `/dev/iommu`; D154): each node found by
+/// its address in sysfs (vfio-dev), all of them bound to one iommufd and attached to one
+/// I/O address space, as their group's must be, which maps each one's pages at addresses
+/// of its own (vfio.rst, "Device cdev Example").
+pub(crate) fn vfio_dma_cdev(names: &[String]) -> Result<(), String> {
+    let iommufd = open("/dev/iommu", libc::O_RDWR)?;
+    let mut ioas = None;
+    for (k, name) in (0u64..).zip(names) {
+        let node = vfio::cdev_of(name)?;
+        let device = open(&node, libc::O_RDWR)?;
+        vfio::bind_iommufd(device, iommufd)?;
+        let id = match ioas {
+            Some(id) => id,
+            None => *ioas.insert(vfio::ioas_alloc(iommufd)?),
+        };
+        vfio::attach(device, id)?;
+        let map = move |vaddr, iova, len| vfio::ioas_map(iommufd, id, vaddr, iova, len);
+        let through = edu_dma(device, Some(&map), 0x10_0000 + k * 0x100_0000)?;
+        let _ = writeln!(io::stdout(), "{}", dma_line(through));
+    }
+    Ok(())
+}
+
+/// How a page of this process is mapped for a function's DMA: at an I/O address, `len`
+/// bytes at `vaddr`.
+type Map = dyn Fn(u64, u64, u64) -> Result<(), String>;
+
+/// edu's DMA engine at `device`, its pages mapped by `map` from I/O address `base` where
+/// its group has an IOMMU, else given it by their guest-physical addresses: a page into its
+/// buffer and back, through what it was reached by.
+fn edu_dma(device: libc::c_int, map: Option<&Map>, base: u64) -> Result<&'static str, String> {
+    const PAGE: usize = 4096;
+    const BUFFER: u64 = 0x40000;
+    const RUN: u64 = 1;
+    const TO_MEMORY: u64 = 2;
+    let bar = vfio::region(device, 0)?;
+    let page = || -> Result<*mut u8, String> {
+        // SAFETY: a fresh anonymous mapping of a page, locked in memory: its address is the
+        // function's for as long as the test runs.
+        let p = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                PAGE,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_LOCKED | libc::MAP_POPULATE,
+                -1,
+                0,
+            )
+        };
+        if p == libc::MAP_FAILED {
+            return Err(format!("mmap: {}", io::Error::last_os_error()));
+        }
+        Ok(p.cast())
+    };
+    let (from, to) = (page()?, page()?);
+    // Where the function reaches each page: an I/O address mapped for it, or its own.
+    let addresses = match map {
+        Some(map) => {
+            map(from as u64, base, PAGE as u64)?;
+            map(to as u64, base + 0x10_0000, PAGE as u64)?;
+            (base, base + 0x10_0000)
+        }
+        None => (physical(from)?, physical(to)?),
+    };
+    for i in 0..PAGE {
+        // SAFETY: within the page mapped above.
+        unsafe { from.add(i).write_volatile((i * 7 + 3) as u8) };
+    }
+    let transfer = |source: u64, destination: u64, command: u64| -> Result<(), String> {
+        for (offset, value) in [
+            (0x80, source),
+            (0x88, destination),
+            (0x90, PAGE as u64),
+            (0x98, command),
+        ] {
+            pwrite_exact(device, &value.to_le_bytes(), bar + offset)?;
+        }
+        let start = std::time::Instant::now();
+        loop {
+            let mut c = [0u8; 8];
+            pread_exact(device, &mut c, bar + 0x98)?;
+            if u64::from_le_bytes(c) & RUN == 0 {
+                return Ok(());
+            }
+            if start.elapsed() > std::time::Duration::from_secs(10) {
+                return Err("a DMA still running after 10 s".into());
+            }
+            std::thread::yield_now();
+        }
+    };
+    transfer(addresses.0, BUFFER, RUN)?;
+    transfer(BUFFER, addresses.1, RUN | TO_MEMORY)?;
+    for i in 0..PAGE {
+        // SAFETY: within the page mapped above.
+        let b = unsafe { to.add(i).read_volatile() };
+        if b != (i * 7 + 3) as u8 {
+            return Err(format!("byte {i} came back {b:#x}"));
+        }
+    }
+    if map.is_some() {
+        // To an I/O address nothing is mapped at: nothing moves, and the transfer ends.
+        transfer(BUFFER, base + 0x20_0000, RUN | TO_MEMORY)?;
+        Ok("its IOMMU")
+    } else {
+        Ok("guest-physical addresses")
+    }
+}
+
+/// The guest-physical address of the page at `virt`, resident and locked: its frame in
+/// /proc/self/pagemap (Documentation/admin-guide/mm/pagemap.rst: bits 0-54, bit 63
+/// present).
+fn physical(virt: *mut u8) -> Result<u64, String> {
+    let fd = open("/proc/self/pagemap", libc::O_RDONLY)?;
+    let mut entry = [0u8; 8];
+    let read = pread_exact(fd, &mut entry, (virt as u64 / 4096) * 8);
+    // SAFETY: closing our own descriptor.
+    unsafe { libc::close(fd) };
+    read?;
+    let entry = u64::from_le_bytes(entry);
+    if entry & (1 << 63) == 0 || entry & ((1 << 55) - 1) == 0 {
+        return Err(format!("page {virt:?}: no frame in pagemap ({entry:#x})"));
+    }
+    Ok((entry & ((1 << 55) - 1)) * 4096)
+}
+
+/// The VFIO a test guest makes of its PCI function (include/uapi/linux/vfio.h).
+mod vfio {
+    use std::io;
+
+    const fn io(n: u64) -> u64 {
+        ((b';' as u64) << 8) | (100 + n)
+    }
+    const GROUP_SET_CONTAINER: u64 = io(4);
+    const SET_IOMMU: u64 = io(2);
+    const GROUP_GET_DEVICE_FD: u64 = io(6);
+    const DEVICE_GET_REGION_INFO: u64 = io(8);
+    const DEVICE_SET_IRQS: u64 = io(10);
+    const NOIOMMU_IOMMU: u64 = 8;
+    const TYPE1V2_IOMMU: u64 = 3;
+    const IOMMU_MAP_DMA: u64 = io(13);
+    const DEVICE_BIND_IOMMUFD: u64 = io(18);
+    const DEVICE_ATTACH_IOMMUFD_PT: u64 = io(19);
+    /// iommufd's (iommufd.h): `_IO(';', n)`.
+    const IOAS_ALLOC: u64 = ((b';' as u64) << 8) | 0x81;
+    const IOAS_MAP: u64 = ((b';' as u64) << 8) | 0x85;
+    pub const INTX: u32 = 0;
+    pub const MSI: u32 = 1;
+    pub const MSIX: u32 = 2;
+    const DATA_NONE: u32 = 1 << 0;
+    const DATA_EVENTFD: u32 = 1 << 2;
+    const ACTION_UNMASK: u32 = 1 << 4;
+    const ACTION_TRIGGER: u32 = 1 << 5;
+
+    fn ioctl(fd: libc::c_int, request: u64, arg: usize) -> Result<libc::c_int, String> {
+        // SAFETY: each caller passes what its request reads and writes.
+        let r = unsafe { libc::ioctl(fd, request as _, arg) };
+        if r < 0 {
+            return Err(format!("ioctl {request:#x}: {}", io::Error::last_os_error()));
+        }
+        Ok(r)
+    }
+
+    /// The PCI function `name`, bound to vfio-pci, and the container of its group where
+    /// the group has an IOMMU (type 1), none where it has not (no-IOMMU).
+    pub fn take(name: &str) -> Result<(libc::c_int, Option<libc::c_int>), String> {
+        bind(name)?;
+        open_group(name)
+    }
+
+    /// Binds the PCI function `name` to vfio-pci.
+    pub fn bind(name: &str) -> Result<(), String> {
+        let dir = format!("/sys/bus/pci/devices/{name}");
+        std::fs::write(format!("{dir}/driver_override"), "vfio-pci")
+            .map_err(|e| format!("{dir}/driver_override: {e}"))?;
+        std::fs::write("/sys/bus/pci/drivers_probe", name).map_err(|e| format!("binding {name}: {e}"))
+    }
+
+    /// The number of the IOMMU group of the PCI function `name`, as sysfs gives it.
+    pub fn group_of(name: &str) -> Result<String, String> {
+        let dir = format!("/sys/bus/pci/devices/{name}");
+        let group = std::fs::read_link(format!("{dir}/iommu_group"))
+            .map_err(|e| format!("{dir}/iommu_group: {e}"))?;
+        group
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(str::to_string)
+            .ok_or_else(|| "an IOMMU group without a number".into())
+    }
+
+    /// The PCI function `name`, bound to vfio-pci already, through its group: and the
+    /// group's container where it has an IOMMU (type 1), none where it has not.
+    pub fn open_group(name: &str) -> Result<(libc::c_int, Option<libc::c_int>), String> {
+        let (container, group) = open(name)?;
+        Ok((device(group, name)?, container))
+    }
+
+    /// The group of the PCI function `name`, bound to vfio-pci already, set in a container
+    /// of its own: the container where the group has an IOMMU (type 1), none where it has
+    /// not, and the group.
+    pub fn open(name: &str) -> Result<(Option<libc::c_int>, libc::c_int), String> {
+        let group = group_of(name)?;
+        let plain = format!("/dev/vfio/{group}");
+        let (path, iommu) = if std::path::Path::new(&plain).exists() {
+            (plain, TYPE1V2_IOMMU)
+        } else {
+            (format!("/dev/vfio/noiommu-{group}"), NOIOMMU_IOMMU)
+        };
+        let container = super::open("/dev/vfio/vfio", libc::O_RDWR)?;
+        let group = super::open(&path, libc::O_RDWR)?;
+        ioctl(group, GROUP_SET_CONTAINER, (&raw const container) as usize)?;
+        ioctl(container, SET_IOMMU, iommu as usize)?;
+        Ok(((iommu == TYPE1V2_IOMMU).then_some(container), group))
+    }
+
+    /// The device of the group `group`'s function `name`.
+    pub fn device(group: libc::c_int, name: &str) -> Result<libc::c_int, String> {
+        let cname = std::ffi::CString::new(name).map_err(|e| e.to_string())?;
+        ioctl(group, GROUP_GET_DEVICE_FD, cname.as_ptr() as usize)
+    }
+
+    /// The VFIO device node of the PCI function `name`, bound to vfio-pci already
+    /// (/sys/bus/pci/devices/NAME/vfio-dev/vfioN).
+    pub fn cdev_of(name: &str) -> Result<String, String> {
+        let dir = format!("/sys/bus/pci/devices/{name}/vfio-dev");
+        let mut nodes: Vec<String> = std::fs::read_dir(&dir)
+            .map_err(|e| format!("{dir}: {e}"))?
+            .filter_map(|e| e.ok()?.file_name().into_string().ok())
+            .collect();
+        match (nodes.pop(), nodes.is_empty()) {
+            (Some(node), true) => Ok(format!("/dev/vfio/devices/{node}")),
+            _ => Err(format!("{dir}: not one VFIO device node")),
+        }
+    }
+
+    /// Binds the VFIO device `device`, opened by its node, to `iommufd`
+    /// (struct vfio_device_bind_iommufd, as Linux 6.6 has it).
+    pub fn bind_iommufd(device: libc::c_int, iommufd: libc::c_int) -> Result<(), String> {
+        let mut bind = [0u32; 4];
+        bind[0] = 16;
+        bind[2] = iommufd as u32;
+        ioctl(device, DEVICE_BIND_IOMMUFD, bind.as_mut_ptr() as usize).map(drop)
+    }
+
+    /// A new I/O address space of `iommufd`'s, its ID (struct iommu_ioas_alloc).
+    pub fn ioas_alloc(iommufd: libc::c_int) -> Result<u32, String> {
+        let mut alloc = [12u32, 0, 0];
+        ioctl(iommufd, IOAS_ALLOC, alloc.as_mut_ptr() as usize)?;
+        Ok(alloc[2])
+    }
+
+    /// Attaches `device`, bound to iommufd, to its I/O address space `ioas`
+    /// (struct vfio_device_attach_iommufd_pt, as Linux 6.6 has it).
+    pub fn attach(device: libc::c_int, ioas: u32) -> Result<(), String> {
+        let mut attach = [12u32, 0, ioas];
+        ioctl(device, DEVICE_ATTACH_IOMMUFD_PT, attach.as_mut_ptr() as usize).map(drop)
+    }
+
+    /// Maps `len` bytes of this process at `vaddr` at I/O address `iova` of iommufd's I/O
+    /// address space `ioas`, for the function to read and write (struct iommu_ioas_map:
+    /// FIXED_IOVA, WRITEABLE, READABLE).
+    pub fn ioas_map(iommufd: libc::c_int, ioas: u32, vaddr: u64, iova: u64, len: u64) -> Result<(), String> {
+        let mut map = [0u8; 40];
+        map[0..4].copy_from_slice(&40u32.to_le_bytes());
+        map[4..8].copy_from_slice(&7u32.to_le_bytes());
+        map[8..12].copy_from_slice(&ioas.to_le_bytes());
+        map[16..24].copy_from_slice(&vaddr.to_le_bytes());
+        map[24..32].copy_from_slice(&len.to_le_bytes());
+        map[32..40].copy_from_slice(&iova.to_le_bytes());
+        ioctl(iommufd, IOAS_MAP, map.as_mut_ptr() as usize).map(drop)
+    }
+
+    /// Maps `len` bytes of this process at `vaddr` at I/O address `iova` of the
+    /// container's IOMMU, for the function to read and write (struct
+    /// vfio_iommu_type1_dma_map).
+    pub fn map_dma(container: libc::c_int, vaddr: u64, iova: u64, len: u64) -> Result<(), String> {
+        let mut map = [0u8; 32];
+        map[0..4].copy_from_slice(&32u32.to_le_bytes());
+        map[4..8].copy_from_slice(&3u32.to_le_bytes());
+        map[8..16].copy_from_slice(&vaddr.to_le_bytes());
+        map[16..24].copy_from_slice(&iova.to_le_bytes());
+        map[24..32].copy_from_slice(&len.to_le_bytes());
+        ioctl(container, IOMMU_MAP_DMA, map.as_ptr() as usize).map(drop)
+    }
+
+    /// Where region `index` (a BAR) is in the device's descriptor.
+    pub fn region(device: libc::c_int, index: u32) -> Result<u64, String> {
+        // struct vfio_region_info: argsz, flags, index, cap_offset, size, offset.
+        let mut info = [0u32; 8];
+        info[0] = 32;
+        info[2] = index;
+        ioctl(device, DEVICE_GET_REGION_INFO, info.as_mut_ptr() as usize)?;
+        Ok(u64::from(info[6]) | (u64::from(info[7]) << 32))
+    }
+
+    /// struct vfio_irq_set: argsz, flags, index, start, count, then the data.
+    fn set_irqs(
+        device: libc::c_int,
+        flags: u32,
+        index: u32,
+        start: u32,
+        fds: &[libc::c_int],
+    ) -> Result<(), String> {
+        let mut set: Vec<u32> = vec![(20 + 4 * fds.len()) as u32, flags, index, start, fds.len() as u32];
+        set.extend(fds.iter().map(|&fd| fd as u32));
+        match ioctl(device, DEVICE_SET_IRQS, set.as_ptr() as usize)? {
+            0 => Ok(()),
+            could => Err(format!("{could} of {} interrupts", fds.len())),
+        }
+    }
+
+    /// Signals `fds` for interrupts `0..` of `index`; none, its interrupts off.
+    pub fn trigger(device: libc::c_int, index: u32, fds: &[libc::c_int]) -> Result<(), String> {
+        match fds {
+            [] => set_irqs(device, ACTION_TRIGGER | DATA_NONE, index, 0, &[]),
+            fds => set_irqs(device, ACTION_TRIGGER | DATA_EVENTFD, index, 0, fds),
+        }
+    }
+
+    /// Signals MSI-X vectors `start..` on `fds`, -1 for a vector signalled on nothing,
+    /// which the kernel leaves masked.
+    pub fn msix(device: libc::c_int, start: u32, fds: &[libc::c_int]) -> Result<(), String> {
+        set_irqs(device, ACTION_TRIGGER | DATA_EVENTFD, MSIX, start, fds)
+    }
+
+    /// Unmasks INTx, which VFIO masked as it signalled it.
+    pub fn unmask_intx(device: libc::c_int) -> Result<(), String> {
+        // One interrupt, no data: count 1.
+        let set: [u32; 5] = [20, ACTION_UNMASK | DATA_NONE, INTX, 0, 1];
+        ioctl(device, DEVICE_SET_IRQS, set.as_ptr() as usize).map(drop)
+    }
+
+    pub fn eventfd() -> Result<libc::c_int, String> {
+        // SAFETY: eventfd(2) with flags.
+        let fd = unsafe { libc::eventfd(0, libc::EFD_CLOEXEC) };
+        if fd < 0 {
+            return Err(format!("eventfd: {}", io::Error::last_os_error()));
+        }
+        Ok(fd)
+    }
+
+    /// Waits up to 10 s for `fd` to be signalled, and takes its count.
+    pub fn wait(fd: libc::c_int) -> Result<u64, String> {
+        let mut p = libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        // SAFETY: one pollfd of ours.
+        match unsafe { libc::poll(&raw mut p, 1, 10_000) } {
+            1 => {}
+            0 => return Err("no interrupt in 10 s".into()),
+            _ => return Err(format!("poll: {}", io::Error::last_os_error())),
+        }
+        let mut count = [0u8; 8];
+        // SAFETY: eight bytes of ours.
+        if unsafe { libc::read(fd, count.as_mut_ptr().cast(), 8) } != 8 {
+            return Err(format!("reading the eventfd: {}", io::Error::last_os_error()));
+        }
+        Ok(u64::from_ne_bytes(count))
+    }
+}
+
+/// A guest that is itself a host (D132): it boots a VM of its own with shards' VM process
+/// for this architecture's Linux, `/vm` in its initramfs, the kernel `/l2` and itself as
+/// that VM's init, whose test is `shards_l2`, and `shards_l2_args`' arguments (comma
+/// separated) besides, having given vfio-pci the PCI function `shards_l1_vfio` names, if
+/// any. Each line of the inner VM's console is printed after `L2: `, and
+/// the test passes where the inner VM ended well and its guest passed.
+fn host() -> Result<(), String> {
+    let test = std::env::var("shards_l2").map_err(|_| "shards_l2 not set".to_string())?;
+    let args = std::env::var("shards_l2_args").unwrap_or_default();
+    if !Path::new("/dev/kvm").exists() {
+        return Err("no /dev/kvm: this guest's kernel is no KVM host".into());
+    }
+    // A PCI function of this guest's own, given to vfio-pci (`shards_l1_vfio`), for the
+    // inner VM to be given in turn (D154).
+    if let Ok(name) = std::env::var("shards_l1_vfio") {
+        let dir = format!("/sys/bus/pci/devices/{name}");
+        std::fs::write(format!("{dir}/driver_override"), "vfio-pci")
+            .map_err(|e| format!("{dir}/driver_override: {e}"))?;
+        std::fs::write("/sys/bus/pci/drivers_probe", &name)
+            .map_err(|e| format!("binding {name} to vfio-pci: {e}"))?;
+    }
+    let mut vm = std::process::Command::new("/vm");
+    // The inner VM process's log, at `shards_l1_log`'s level where one is asked.
+    if let Ok(level) = std::env::var("shards_l1_log") {
+        vm.env("SHARDS_LOG", level);
+    }
+    let out = vm
+        .args(["run", "--kernel", "/l2", "--init", "/init", "--cpus", "2"])
+        .args(["--memory", "256", "--cmdline"])
+        // A function the inner guest is given it takes through VFIO: in a no-IOMMU group,
+        // or behind the inner machine's IOMMU, KVM's, whose ITS isolates its MSIs, which
+        // VFIO's type 1 then needs no leave to take.
+        .arg(format!(
+            "console=ttyS0 panic=-1 vfio.enable_unsafe_noiommu_mode=1 shards_test={test}"
+        ))
+        .args(args.split(',').filter(|a| !a.is_empty()))
+        .output()
+        .map_err(|e| format!("/vm: {e}"))?;
+    let mut stdout = io::stdout().lock();
+    for (stream, bytes) in [("L2", &out.stdout), ("L2 stderr", &out.stderr)] {
+        for line in String::from_utf8_lossy(bytes).lines() {
+            let _ = writeln!(stdout, "{stream}: {}", line.trim_end());
+        }
+    }
+    if !out.status.success() {
+        return Err(format!("the inner VM ended with {}", out.status));
+    }
+    let passed = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .any(|l| l.trim_end() == "SHARDS-TEST PASS");
+    if !passed {
+        return Err("the inner guest did not pass".into());
+    }
+    Ok(())
+}
+
+/// A guest that is a KVM host running shards (D154): its PCI functions
+/// `shards_l1_vfio` (comma-separated) given vfio-pci, as a host gives one a run is to be
+/// given, the image in /image.tar loaded, and a run of it given their group, by its node
+/// (`--device /dev/vfio/N`) and then by a CDI device whose node it is (D146), its command
+/// `shards_l2` (comma-separated), by shards' daemon, which the first run starts: what each
+/// says, as `L1: ` lines, and the runs' as `L2: ` lines.
+fn daemon() -> Result<(), String> {
+    if !Path::new("/dev/kvm").exists() {
+        return Err("no /dev/kvm: this guest's kernel is no KVM host".into());
+    }
+    let functions = std::env::var("shards_l1_vfio").map_err(|_| "shards_l1_vfio not set".to_string())?;
+    let command = std::env::var("shards_l2").map_err(|_| "shards_l2 not set".to_string())?;
+    let mut group = None;
+    for name in functions.split(',') {
+        vfio::bind(name)?;
+        let this = vfio::group_of(name)?;
+        if group.get_or_insert_with(|| this.clone()) != &this {
+            return Err(format!("{functions}: in groups {group:?} and {this}"));
+        }
+    }
+    let group = group.ok_or("shards_l1_vfio names no function")?;
+    for dir in ["/tmp/home", "/tmp/cache"] {
+        std::fs::create_dir_all(dir).map_err(|e| format!("{dir}: {e}"))?;
+    }
+    // The daemon's and its VM processes' log at `shards_l1_log`'s level where one is asked.
+    let level = std::env::var("shards_l1_log").ok();
+    let shards = |args: &[&str]| {
+        let mut command = std::process::Command::new("/shards");
+        command
+            .args(args)
+            .env("HOME", "/tmp/home")
+            .env("SHARDS_HOME", "/tmp/shards")
+            .env("XDG_CACHE_HOME", "/tmp/cache")
+            .env("SHARDS_KERNEL", "/l2")
+            .env("SHARDS_INIT", "/shards-init")
+            .stdin(std::process::Stdio::null());
+        if let Some(level) = &level {
+            command.env("SHARDS_LOG", level);
+        }
+        command.output().map_err(|e| format!("/shards: {e}"))
+    };
+    let said = |who: &str, out: &std::process::Output| {
+        let mut stdout = io::stdout().lock();
+        for (stream, bytes) in [
+            (who.to_string(), &out.stdout),
+            (format!("{who} stderr"), &out.stderr),
+        ] {
+            for line in String::from_utf8_lossy(bytes).lines() {
+                let _ = writeln!(stdout, "{stream}: {}", line.trim_end());
+            }
+        }
+    };
+    let loaded = shards(&["load", "-i", "/image.tar"])?;
+    said("L1", &loaded);
+    if !loaded.status.success() {
+        return Err(format!("shards load ended with {}", loaded.status));
+    }
+    let node = format!("/dev/vfio/{group}");
+    let spec = format!(
+        r#"{{"cdiVersion":"0.6.0","kind":"shards.test/vfio","devices":[{{"name":"group","containerEdits":{{"deviceNodes":[{{"path":"{node}"}}]}}}}]}}"#
+    );
+    std::fs::create_dir_all("/etc/cdi").map_err(|e| format!("/etc/cdi: {e}"))?;
+    std::fs::write("/etc/cdi/shards-test-vfio.json", spec).map_err(|e| format!("the CDI spec: {e}"))?;
+    let words: Vec<&str> = command.split(',').filter(|a| !a.is_empty()).collect();
+    // The runs: given the group by its node, then by a CDI device, then by the directory
+    // of VFIO's nodes, every group in it (D154); then, where this guest's kernel makes them
+    // (VFIO_DEVICE_CDEV), each function by its device node and iommufd, and by the
+    // directory of the device nodes, its workload taking them so too.
+    let cdevs: Vec<String> = functions
+        .split(',')
+        .filter_map(|n| vfio::cdev_of(n).ok())
+        .collect();
+    let mut runs: Vec<(Vec<String>, Vec<&str>)> = vec![
+        (vec!["/dev/vfio/vfio".into(), node.clone()], words.clone()),
+        (
+            vec!["/dev/vfio/vfio".into(), "shards.test/vfio=group".into()],
+            words.clone(),
+        ),
+        (vec!["/dev/vfio".into()], words.clone()),
+    ];
+    if !cdevs.is_empty() {
+        let mut by_node = words.clone();
+        if let Some(first) = by_node.first_mut() {
+            *first = "vfio-dma-cdev";
+        }
+        runs.push((
+            std::iter::once("/dev/iommu".to_string()).chain(cdevs).collect(),
+            by_node.clone(),
+        ));
+        runs.push((vec!["/dev/iommu".into(), "/dev/vfio/devices".into()], by_node));
+    } else {
+        let _ = writeln!(
+            io::stdout(),
+            "L1: no VFIO device nodes: this kernel lacks VFIO_DEVICE_CDEV"
+        );
+    }
+    for (devices, workload) in &runs {
+        let mut args = vec!["run", "--rm", "--network", "none", "--user", "root"];
+        for d in devices {
+            args.extend(["--device", d.as_str()]);
+        }
+        args.push("vfio-test");
+        args.extend(workload.iter().copied());
+        let ran = shards(&args)?;
+        said("L2", &ran);
+        if ran.status.success() {
+            continue;
+        }
+        let device = devices.join(" ");
+        // Where the daemon says why, and the VM processes it ran, once all have ended.
+        said("L1", &shards(&["stop", "daemon"])?);
+        if let Ok(log) = std::fs::read_to_string("/tmp/shards/daemon.log") {
+            let mut stdout = io::stdout().lock();
+            for line in log.lines() {
+                let _ = writeln!(stdout, "L1 daemon: {line}");
+            }
+        }
+        return Err(format!("the run given {device} ended with {}", ran.status));
+    }
+    Ok(())
+}
+
+/// A guest that is a KVM host of its architecture's Linux running shards' own E2E test
+/// binaries (D154's test path, boot.rs `snapshot_tests_pass_on_a_kvm_host_of_this_architecture`):
+/// a host as Linux has one, its pseudo-terminals, cgroups and loopback up, where each line
+/// of /e2e/run names a binary and its arguments, run in turn with /e2e/env's variables
+/// (`KEY=VALUE` lines) and no others. Each line a binary writes is printed as it comes,
+/// after `E2E: ` (its stderr's after `E2E stderr: `), then its status, `E2E STATUS
+/// <binary> <status>`; the test passes where every binary ended well.
+fn e2e() -> Result<(), String> {
+    if !Path::new("/dev/kvm").exists() {
+        return Err("no /dev/kvm: this guest's kernel is no KVM host".into());
+    }
+    // KVM's counters of each VM, which tests read for evidence (`common::kvm_counters`),
+    // where the kernel has debugfs: no test needs them to pass.
+    for (src, target, fs, data, needed) in [
+        ("devpts", "/dev/pts", "devpts", "ptmxmode=0666", true),
+        ("cgroup2", "/sys/fs/cgroup", "cgroup2", "", true),
+        ("debugfs", "/sys/kernel/debug", "debugfs", "", false),
+    ] {
+        let mounted = std::fs::create_dir_all(target)
+            .map_err(|e| format!("{target}: {e}"))
+            .and_then(|()| {
+                let c = |s: &str| CString::new(s).map_err(|e| e.to_string());
+                let (src, at, fs, data) = (c(src)?, c(target)?, c(fs)?, c(data)?);
+                // SAFETY: NUL-terminated strings, a data string of the file system's options.
+                match unsafe { libc::mount(src.as_ptr(), at.as_ptr(), fs.as_ptr(), 0, data.as_ptr().cast()) }
+                {
+                    0 => Ok(()),
+                    _ => Err(format!("mount {target}: {}", io::Error::last_os_error())),
+                }
+            });
+        if let Err(e) = mounted
+            && needed
+        {
+            return Err(e);
+        }
+    }
+    loopback_up()?;
+    // As a host's init, PID 1 reaps every process orphaned to it: a daemon that detached and
+    // has ended is then gone, not a zombie its test takes for alive, as kill(2) finds one.
+    // The reaper takes the test binaries' statuses too, and hands them on.
+    let (reaped, statuses) = std::sync::mpsc::channel::<(libc::pid_t, libc::c_int)>();
+    thread::Builder::new()
+        .name("reaper".into())
+        .spawn(move || {
+            loop {
+                let mut status = 0;
+                // SAFETY: waitpid(2) into a local.
+                let pid = unsafe { libc::waitpid(-1, &mut status, 0) };
+                if pid > 0 {
+                    if reaped.send((pid, status)).is_err() {
+                        return;
+                    }
+                } else if io::Error::last_os_error().raw_os_error() == Some(libc::ECHILD) {
+                    // No child yet, or none between binaries.
+                    thread::sleep(Duration::from_millis(10));
+                }
+            }
+        })
+        .map_err(|e| format!("the reaper: {e}"))?;
+    let read = |path: &str| std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}"));
+    let env: Vec<(String, String)> = read("/e2e/env")?
+        .lines()
+        .filter_map(|l| l.split_once('='))
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+    let mut failed = Vec::new();
+    for line in read("/e2e/run")?.lines() {
+        let mut words = line.split_whitespace();
+        let Some(binary) = words.next() else {
+            continue;
+        };
+        let spawned = std::process::Command::new(binary)
+            .args(words)
+            .env_clear()
+            .envs(env.iter().map(|(k, v)| (k, v)))
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn();
+        let mut child = match spawned {
+            Ok(child) => child,
+            Err(e) => {
+                let _ = writeln!(io::stdout(), "E2E STATUS {binary} not started: {e}");
+                failed.push(binary.to_string());
+                continue;
+            }
+        };
+        let relay = |from: Option<Box<dyn io::Read + Send>>, prefix: &'static str| {
+            move || {
+                let Some(from) = from else {
+                    return;
+                };
+                for line in io::BufRead::lines(io::BufReader::new(from)).map_while(Result::ok) {
+                    let _ = writeln!(io::stdout().lock(), "{prefix}{line}");
+                }
+            }
+        };
+        let out = child
+            .stdout
+            .take()
+            .map(|o| Box::new(o) as Box<dyn io::Read + Send>);
+        let err = child
+            .stderr
+            .take()
+            .map(|e| Box::new(e) as Box<dyn io::Read + Send>);
+        let pid = libc::pid_t::try_from(child.id()).map_err(|e| format!("{binary}: {e}"))?;
+        let status = thread::scope(|s| {
+            s.spawn(relay(out, "E2E: "));
+            s.spawn(relay(err, "E2E stderr: "));
+            statuses
+                .iter()
+                .find(|&(reaped, _)| reaped == pid)
+                .map(|(_, status)| status)
+        })
+        .ok_or_else(|| format!("{binary}: the reaper ended"))?;
+        let said = if libc::WIFEXITED(status) {
+            format!("exit status: {}", libc::WEXITSTATUS(status))
+        } else if libc::WIFSIGNALED(status) {
+            format!("signal: {}", libc::WTERMSIG(status))
+        } else {
+            format!("status {status:#x}")
+        };
+        let _ = writeln!(io::stdout(), "E2E STATUS {binary} {said}");
+        if !(libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0) {
+            failed.push(binary.to_string());
+        }
+        // What it left running ends before the next starts, as its runner's would with
+        // it: a daemon idling, a microVM it left going, which would take the next binary's
+        // CPUs, and the guest's power-off with KVM's vCPUs in it.
+        end_the_rest();
+        // What the binaries before left of this host's memory, its tmpfs's among it: what
+        // the next one runs with.
+        let meminfo = std::fs::read_to_string("/proc/meminfo").unwrap_or_default();
+        let fields: Vec<&str> = meminfo
+            .lines()
+            .filter(|l| {
+                ["MemFree:", "MemAvailable:", "Shmem:", "AnonPages:"]
+                    .iter()
+                    .any(|k| l.starts_with(k))
+            })
+            .collect();
+        let _ = writeln!(io::stdout(), "E2E MEMORY after {binary}: {}", fields.join(", "));
+    }
+    if failed.is_empty() {
+        Ok(())
+    } else {
+        Err(format!("these failed: {}", failed.join(" ")))
+    }
+}
+
+/// Ends every process but PID 1 (kill(2) of -1) and waits, ten seconds at most, until none
+/// is left running: a process's /proc entry with a command line, which a kernel thread's
+/// and a zombie's lack.
+fn end_the_rest() {
+    // SAFETY: kill(2) of every process PID 1 may signal, which is all but itself.
+    unsafe { libc::kill(-1, libc::SIGKILL) };
+    let running = || {
+        std::fs::read_dir("/proc")
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter(|e| {
+                e.file_name()
+                    .to_str()
+                    .is_some_and(|n| n != "1" && n.parse::<u32>().is_ok())
+            })
+            .any(|e| std::fs::read(e.path().join("cmdline")).is_ok_and(|c| !c.is_empty()))
+    };
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while running() && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// Brings the loopback interface up, as a host has it, with 127.0.0.1/8 and ::1
+/// (netdevice(7), SIOCSIFFLAGS).
+fn loopback_up() -> Result<(), String> {
+    use std::os::fd::{AsRawFd as _, FromRawFd as _};
+    let failed = |what: &str| format!("bringing up lo: {what}: {}", io::Error::last_os_error());
+    // SAFETY: socket(2) with constant arguments.
+    let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_DGRAM | libc::SOCK_CLOEXEC, 0) };
+    if fd < 0 {
+        return Err(failed("socket"));
+    }
+    // SAFETY: a descriptor just opened, owned from here on.
+    let sock = unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) };
+    // SAFETY: ifreq is plain data, for which all zeroes is valid.
+    let mut req: libc::ifreq = unsafe { std::mem::zeroed() };
+    for (dst, src) in req.ifr_name.iter_mut().zip(b"lo") {
+        *dst = *src as libc::c_char;
+    }
+    // SAFETY: an ifreq naming an interface, which the kernel fills in.
+    if unsafe { libc::ioctl(sock.as_raw_fd(), libc::SIOCGIFFLAGS as libc::Ioctl, &mut req) } != 0 {
+        return Err(failed("SIOCGIFFLAGS"));
+    }
+    // SAFETY: SIOCGIFFLAGS filled the flags member of the union.
+    unsafe {
+        req.ifr_ifru.ifru_flags |= libc::IFF_UP as libc::c_short;
+    }
+    // SAFETY: the ifreq as read, with IFF_UP added.
+    if unsafe { libc::ioctl(sock.as_raw_fd(), libc::SIOCSIFFLAGS as libc::Ioctl, &req) } != 0 {
+        return Err(failed("SIOCSIFFLAGS"));
+    }
+    Ok(())
+}
+
 /// A booted guest at rest, for measuring any VMM that holds it (the Firecracker
-/// comparison): prints `SHARDS-TEST READY` and waits for the host to end the VM. It uses
-/// nothing shards-specific, so every VMM runs the same guest.
+/// comparison): prints `SHARDS-TEST READY` and its monotonic clock in microseconds, its
+/// time since its kernel started keeping time, and waits for the host to end the VM. It
+/// uses nothing shards-specific, so every VMM runs the same guest.
 fn idle() -> Result<(), String> {
-    let _ = writeln!(io::stdout(), "SHARDS-TEST READY");
+    let _ = writeln!(io::stdout(), "SHARDS-TEST READY {}", monotonic_ns() / 1000);
     loop {
         // SAFETY: pause(2) takes no arguments; it returns only after a signal handler ran.
         unsafe { libc::pause() };
     }
 }
 
+/// A guest at work over its memory, for measuring what the host's pages cost it (THP's
+/// A/B, PM M157): prints `SHARDS-TEST READY`, writes a byte to each page of
+/// `shards_walk_mib` MiB, reads a byte at each of `shards_walk_reads` places in it, spread
+/// by an LCG (a TLB miss nearly every read), then prints `SHARDS-TEST WALK TOUCH_NS
+/// READ_NS` and idles.
+fn memory_walk() -> Result<(), String> {
+    let number = |name: &str, default: u64| {
+        std::env::var(name)
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(default)
+    };
+    let mib = usize::try_from(number("shards_walk_mib", 512)).map_err(|e| e.to_string())?;
+    let reads = number("shards_walk_reads", 20_000_000);
+    // Its PID 1 runs, as shards-init says first thing: the VMM puts what the boot left
+    // untouched on huge pages for what comes after it (D29, PM M279). Shards' alone runs
+    // this test, whose control page Firecracker has not.
+    ControlPage::map()?.write(shards_abi::control::MARKER, shards_abi::marker::INIT_STARTED);
+    let _ = writeln!(io::stdout(), "SHARDS-TEST READY");
+    let began = Instant::now();
+    let mut buf = vec![0u8; mib << 20];
+    for page in buf.chunks_mut(4096) {
+        if let Some(b) = page.first_mut() {
+            *b = 1;
+        }
+    }
+    let touched = began.elapsed();
+    let began = Instant::now();
+    let (mut x, mut sum) = (0x9e37_79b9_7f4a_7c15u64, 0u64);
+    let len = buf.len() as u64;
+    for _ in 0..reads {
+        x = x
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        let at = usize::try_from((x >> 11) % len.max(1)).unwrap_or(0);
+        sum = sum.wrapping_add(u64::from(buf.get(at).copied().unwrap_or(0)));
+    }
+    let read = began.elapsed();
+    std::hint::black_box(sum);
+    let _ = writeln!(
+        io::stdout(),
+        "SHARDS-TEST WALK {} {}",
+        touched.as_nanos(),
+        read.as_nanos()
+    );
+    idle()
+}
+
+/// `MemTotal` of /proc/meminfo, in bytes: the RAM the kernel has, plugged memory as it
+/// comes online included.
+fn mem_total() -> Result<u64, String> {
+    let meminfo = std::fs::read_to_string("/proc/meminfo").map_err(|e| format!("/proc/meminfo: {e}"))?;
+    meminfo
+        .lines()
+        .find_map(|l| l.strip_prefix("MemTotal:"))
+        .and_then(|v| v.trim().strip_suffix("kB"))
+        .and_then(|kb| kb.trim().parse::<u64>().ok())
+        .map(|kb| kb << 10)
+        .ok_or_else(|| "/proc/meminfo: no MemTotal".to_string())
+}
+
+/// Waits for a line from the host on the console: its turn, at a point the guest names.
+fn host_turn() -> Result<(), String> {
+    let mut byte = [0u8; 1];
+    loop {
+        // SAFETY: read(2) of one byte from the console, init's stdin.
+        match unsafe { libc::read(0, byte.as_mut_ptr().cast(), 1) } {
+            1 if byte == *b"\n" => return Ok(()),
+            1 => {}
+            0 => return Err("the console closed".into()),
+            _ if io::Error::last_os_error().kind() == io::ErrorKind::Interrupted => {}
+            _ => return Err(format!("the console: {}", io::Error::last_os_error())),
+        }
+    }
+}
+
+/// Memory to plug across a snapshot (D148): asks the VMM for a snapshot with none of it
+/// plugged; then, in the VM that booted and in every VM restored from it, asks for
+/// `shards_plug_mib` MiB, waits until the kernel has it all (`MemTotal`), writes and checks
+/// seven eighths of it, and says `SHARDS-TEST PLUGGED <ms>`, the time from asking to having.
+fn snapshot_plug() -> Result<(), String> {
+    use shards_abi::control::{HOTPLUG_REQUEST, HOTPLUG_SIZE};
+    let control = ControlPage::map()?;
+    control.write(shards_abi::control::SNAPSHOT, shards_abi::control::SNAPSHOT_NOW);
+    // A restored guest continues here.
+    control.write(shards_abi::control::MARKER, shards_abi::marker::RESUMED);
+    let most = control.read64(HOTPLUG_SIZE);
+    let want = env_u64("shards_plug_mib")? << 20;
+    if most < want {
+        return Err(format!("{want} bytes asked for; the guest may plug {most}"));
+    }
+    let before = mem_total()?;
+    let began = Instant::now();
+    control.write64(HOTPLUG_REQUEST, want);
+    waiting("the memory asked for", || match mem_total()? {
+        now if now >= before + want => Ok(()),
+        now => Err(format!("MemTotal {now}, {before} before")),
+    });
+    let plugged = began.elapsed();
+    let used = usize::try_from(want - want / 8).map_err(|e| e.to_string())?;
+    let mut buf = Aligned::new(used)?;
+    for (i, page) in buf.slice(used).chunks_mut(4096).enumerate() {
+        page.fill(i as u8);
+    }
+    if let Some(i) = buf
+        .slice(used)
+        .chunks(4096)
+        .enumerate()
+        .find_map(|(i, page)| page.iter().any(|&b| b != i as u8).then_some(i))
+    {
+        return Err(format!("page {i} of the plugged memory lost what was written"));
+    }
+    let _ = writeln!(io::stdout(), "SHARDS-TEST PLUGGED {}", plugged.as_millis());
+    Ok(())
+}
+
+/// Memory plugged before a snapshot (D176): asks for `shards_plug_mib` MiB, waits until the
+/// kernel has it all, writes seven eighths of it, more than the guest booted with, and only
+/// then asks for a snapshot. In the VM that booted and in every VM restored from it, it
+/// checks what it wrote, and says `SHARDS-TEST KEPT <MiB>`.
+fn plug_snapshot() -> Result<(), String> {
+    use shards_abi::control::{HOTPLUG_REQUEST, HOTPLUG_SIZE};
+    let control = ControlPage::map()?;
+    let most = control.read64(HOTPLUG_SIZE);
+    let want = env_u64("shards_plug_mib")? << 20;
+    if most < want {
+        return Err(format!("{want} bytes asked for; the guest may plug {most}"));
+    }
+    let before = mem_total()?;
+    control.write64(HOTPLUG_REQUEST, want);
+    waiting("the memory asked for", || match mem_total()? {
+        now if now >= before + want => Ok(()),
+        now => Err(format!("MemTotal {now}, {before} before")),
+    });
+    let used = usize::try_from(want - want / 8).map_err(|e| e.to_string())?;
+    let mut buf = Aligned::new(used)?;
+    for (i, page) in buf.slice(used).chunks_mut(4096).enumerate() {
+        page.fill(i as u8);
+    }
+    control.write(shards_abi::control::SNAPSHOT, shards_abi::control::SNAPSHOT_NOW);
+    // A restored guest continues here, with what it wrote.
+    control.write(shards_abi::control::MARKER, shards_abi::marker::RESUMED);
+    if let Some(i) = buf
+        .slice(used)
+        .chunks(4096)
+        .enumerate()
+        .find_map(|(i, page)| page.iter().any(|&b| b != i as u8).then_some(i))
+    {
+        return Err(format!(
+            "page {i} of what was written lost it across the snapshot"
+        ));
+    }
+    let _ = writeln!(io::stdout(), "SHARDS-TEST KEPT {}", used >> 20);
+    Ok(())
+}
+
+/// Memory plugged as the guest asks for it (D133): asks the control page for
+/// `shards_plug_mib` MiB, waits until the kernel has it all (`MemTotal`), writes and checks
+/// seven eighths of it, more than the guest booted with, and says `SHARDS-TEST PLUGGED
+/// <ms>`, the time from asking to having; the host looks at its memory and sends a line.
+/// Then frees it, asks for none, waits until the kernel has given it all back, says
+/// `SHARDS-TEST UNPLUGGED <ms>`, and waits for the host again. Last, it asks for more than
+/// it may have, is given what it may, and asks for none again, until it has none.
+fn hotplug() -> Result<(), String> {
+    use shards_abi::control::{HOTPLUG_REQUEST, HOTPLUG_SIZE};
+    let control = ControlPage::map()?;
+    let most = control.read64(HOTPLUG_SIZE);
+    let want = env_u64("shards_plug_mib")? << 20;
+    if most < want {
+        return Err(format!("{want} bytes asked for; the guest may plug {most}"));
+    }
+    let before = mem_total()?;
+    let began = Instant::now();
+    control.write64(HOTPLUG_REQUEST, want);
+    waiting("the memory asked for", || match mem_total()? {
+        now if now >= before + want => Ok(()),
+        now => Err(format!("MemTotal {now}, {before} before")),
+    });
+    let plugged = began.elapsed();
+    let used = usize::try_from(want - want / 8).map_err(|e| e.to_string())?;
+    let mut buf = Aligned::new(used)?;
+    for (i, page) in buf.slice(used).chunks_mut(4096).enumerate() {
+        page.fill(i as u8);
+    }
+    if let Some(i) = buf
+        .slice(used)
+        .chunks(4096)
+        .enumerate()
+        .find_map(|(i, page)| page.iter().any(|&b| b != i as u8).then_some(i))
+    {
+        return Err(format!("page {i} of the plugged memory lost what was written"));
+    }
+    let _ = writeln!(io::stdout(), "SHARDS-TEST PLUGGED {}", plugged.as_millis());
+    host_turn()?;
+    drop(buf);
+    let began = Instant::now();
+    control.write64(HOTPLUG_REQUEST, 0);
+    waiting("the memory to go back", || match mem_total()? {
+        now if now <= before => Ok(()),
+        now => Err(format!("MemTotal {now}, {before} before")),
+    });
+    let _ = writeln!(
+        io::stdout(),
+        "SHARDS-TEST UNPLUGGED {}",
+        began.elapsed().as_millis()
+    );
+    host_turn()?;
+    control.write64(HOTPLUG_REQUEST, u64::MAX);
+    let given = control.read64(HOTPLUG_REQUEST);
+    control.write64(HOTPLUG_REQUEST, 0);
+    if given != most {
+        return Err(format!("asked for everything, given {given} of {most}"));
+    }
+    waiting("the memory to go back again", || match mem_total()? {
+        now if now <= before => Ok(()),
+        now => Err(format!("MemTotal {now}, {before} before")),
+    });
+    Ok(())
+}
+
+/// What the virtio-mem driver gives back of memory a guest plugged, used and freed, as that
+/// memory came online (its command line's `memhp_default_state` and
+/// `memory_hotplug.online_policy`): plugs `shards_plug_mib` MiB; fills seven eighths of it
+/// with its own pages and, between them, the kernel's (`shards_files` files of a page each
+/// in a tmpfs: their pages, inodes and dentries), as a session's are mixed; frees all of it
+/// and drops the kernel's caches; then asks for none, and says how much is still plugged
+/// 0.1, 0.5, 1, 2, 5, 10 and 30 s after, and how many memory blocks of it are still
+/// online: `SHARDS-TEST UNPLUG <plugged> <ms>:<left>... blocks:<n>`.
+fn unplug_cost() -> Result<(), String> {
+    use shards_abi::control::{HOTPLUG_REQUEST, HOTPLUG_SIZE};
+    let control = ControlPage::map()?;
+    let most = control.read64(HOTPLUG_SIZE);
+    let want = env_u64("shards_plug_mib")? << 20;
+    if most < want {
+        return Err(format!("{want} bytes asked for; the guest may plug {most}"));
+    }
+    let files = env_u64("shards_files").unwrap_or(65_536);
+    let before = mem_total()?;
+    let blocks_before = blocks_online()?;
+    control.write64(HOTPLUG_REQUEST, want);
+    waiting("the memory asked for", || match mem_total()? {
+        now if now >= before + want => Ok(()),
+        now => Err(format!("MemTotal {now}, {before} before")),
+    });
+    std::fs::create_dir_all("/scratch").map_err(|e| format!("/scratch: {e}"))?;
+    // SAFETY: mount(2) of NUL-terminated literals.
+    if unsafe {
+        libc::mount(
+            c"tmpfs".as_ptr(),
+            c"/scratch".as_ptr(),
+            c"tmpfs".as_ptr(),
+            0,
+            std::ptr::null(),
+        )
+    } != 0
+    {
+        return Err(format!("/scratch: {}", io::Error::last_os_error()));
+    }
+    let used = usize::try_from(want - want / 8).map_err(|e| e.to_string())?;
+    let rounds = 16usize;
+    let mut held = Vec::with_capacity(rounds);
+    let page = [7u8; 4096];
+    for r in 0..rounds {
+        let mut buf = Aligned::new(used / rounds)?;
+        for p in buf.slice(used / rounds).chunks_mut(4096) {
+            p.fill(1);
+        }
+        held.push(buf);
+        for f in 0..files / rounds as u64 {
+            let path = format!("/scratch/{r}-{f}");
+            std::fs::write(&path, page).map_err(|e| format!("{path}: {e}"))?;
+        }
+    }
+    drop(held);
+    for r in 0..rounds {
+        for f in 0..files / rounds as u64 {
+            let _ = std::fs::remove_file(format!("/scratch/{r}-{f}"));
+        }
+    }
+    let _ = std::fs::write("/proc/sys/vm/drop_caches", "3");
+    let plugged = mem_total()?.saturating_sub(before);
+    let began = Instant::now();
+    control.write64(HOTPLUG_REQUEST, 0);
+    let mut said = format!("SHARDS-TEST UNPLUG {plugged}");
+    for at in [100u64, 500, 1_000, 2_000, 5_000, 10_000, 30_000] {
+        let due = Duration::from_millis(at);
+        if let Some(wait) = due.checked_sub(began.elapsed()) {
+            std::thread::sleep(wait);
+        }
+        said.push_str(&format!(" {at}:{}", mem_total()?.saturating_sub(before)));
+    }
+    // The memory blocks still online of what was plugged: each keeps its page structures.
+    said.push_str(&format!(
+        " blocks:{}",
+        blocks_online()?.saturating_sub(blocks_before)
+    ));
+    let _ = writeln!(io::stdout(), "{said}");
+    Ok(())
+}
+
+/// The memory the kernel has as PID 1 begins, as /proc/meminfo says it, in bytes: what
+/// devices took of it as they were probed, a DAX window's page structures among them
+/// (D189), and how long the kernel took to come to it (/proc/uptime, in seconds); then the
+/// free pages its CPUs' lists hold (/proc/zoneinfo, each pageset's `count`), which MemFree
+/// leaves out and which held 2 to 16 MiB at a boot's start (PM M300):
+/// `SHARDS-TEST MEMORY <MemTotal> <MemFree> <MemAvailable> <uptime> <listed free>`.
+/// Where the kernel's CPUs spent their ticks from its boot to now (`profile=N` on its
+/// command line, kernel/profile.c; PM M376): /proc/profile's counts, a bucket of 2^N bytes
+/// of kernel text each from `_stext`, summed by the text symbol holding each
+/// (/proc/kallsyms), the most first: `SHARDS-TEST PROFILE <ticks> <symbol>`, then
+/// `SHARDS-TEST PROFILE-TOTAL <ticks> <uptime>`.
+fn profile_report() -> Result<(), String> {
+    online_cpus()?;
+    let raw = std::fs::read("/proc/profile").map_err(|e| format!("/proc/profile: {e}"))?;
+    let words: Vec<u32> = raw
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|c| u32::from_ne_bytes(*c))
+        .collect();
+    let (step, counts) = words.split_first().ok_or("/proc/profile: empty")?;
+    let syms = std::fs::read_to_string("/proc/kallsyms").map_err(|e| format!("/proc/kallsyms: {e}"))?;
+    let mut text: Vec<(u64, &str)> = syms
+        .lines()
+        .filter_map(|l| {
+            let mut parts = l.split_whitespace();
+            let at = u64::from_str_radix(parts.next()?, 16).ok()?;
+            let kind = parts.next()?;
+            let name = parts.next()?;
+            matches!(kind, "t" | "T").then_some((at, name))
+        })
+        .collect();
+    text.sort_unstable();
+    let stext = text
+        .iter()
+        .find(|(_, name)| *name == "_stext")
+        .map(|(at, _)| *at)
+        .ok_or("/proc/kallsyms: no _stext")?;
+    let mut by: std::collections::HashMap<&str, u64> = std::collections::HashMap::new();
+    let mut total = 0u64;
+    for (i, &ticks) in counts.iter().enumerate() {
+        if ticks == 0 {
+            continue;
+        }
+        total += u64::from(ticks);
+        let at = stext + i as u64 * u64::from(*step);
+        let name = text
+            .partition_point(|(a, _)| *a <= at)
+            .checked_sub(1)
+            .and_then(|n| text.get(n))
+            .map_or("?", |(_, name)| *name);
+        *by.entry(name).or_default() += u64::from(ticks);
+    }
+    let mut ranked: Vec<(&str, u64)> = by.into_iter().collect();
+    ranked.sort_by_key(|r| std::cmp::Reverse(r.1));
+    let mut out = io::stdout();
+    for (name, ticks) in ranked.iter().take(30) {
+        let _ = writeln!(out, "SHARDS-TEST PROFILE {ticks} {name}");
+    }
+    let uptime = std::fs::read_to_string("/proc/uptime").map_err(|e| format!("/proc/uptime: {e}"))?;
+    let up = uptime.split_whitespace().next().unwrap_or("?");
+    let _ = writeln!(out, "SHARDS-TEST PROFILE-TOTAL {total} {up}");
+    boot_log_report(&mut out)
+}
+
+/// Brings each CPU the kernel has and has not brought up online, one after another, as a
+/// guest booted with `maxcpus=1` is to be: `SHARDS-TEST ONLINE <cpus> <us>`, the CPUs
+/// brought up and the time it took them, said where any were.
+fn online_cpus() -> Result<(), String> {
+    let list = |name: &str| -> Result<Vec<u32>, String> {
+        let path = format!("/sys/devices/system/cpu/{name}");
+        let text = std::fs::read_to_string(&path).map_err(|e| format!("{path}: {e}"))?;
+        let mut cpus = Vec::new();
+        for part in text.trim().split(',').filter(|p| !p.is_empty()) {
+            let (from, to) = part.split_once('-').unwrap_or((part, part));
+            let (from, to) = (
+                from.parse::<u32>().map_err(|e| format!("{path}: {part}: {e}"))?,
+                to.parse::<u32>().map_err(|e| format!("{path}: {part}: {e}"))?,
+            );
+            cpus.extend(from..=to);
+        }
+        Ok(cpus)
+    };
+    let online = list("online")?;
+    let offline: Vec<u32> = list("present")?
+        .into_iter()
+        .filter(|c| !online.contains(c))
+        .collect();
+    if offline.is_empty() {
+        return Ok(());
+    }
+    let started = Instant::now();
+    for cpu in &offline {
+        let path = format!("/sys/devices/system/cpu/cpu{cpu}/online");
+        std::fs::write(&path, b"1").map_err(|e| format!("{path}: {e}"))?;
+    }
+    let _ = writeln!(
+        io::stdout(),
+        "SHARDS-TEST ONLINE {} {}",
+        offline.len(),
+        started.elapsed().as_micros()
+    );
+    Ok(())
+}
+
+/// What the kernel's log says of where its boot's time went, read from /dev/kmsg's start:
+/// the initcalls that took longest (`initcall_debug`'s `initcall FN returned N after US
+/// usecs`), and the longest gaps between one record and the next, with both, the time each
+/// record's own.
+fn boot_log_report(out: &mut io::Stdout) -> Result<(), String> {
+    let fd = open("/dev/kmsg", libc::O_RDONLY | libc::O_NONBLOCK)?;
+    let mut record = vec![0u8; 8192];
+    let mut log: Vec<(u64, String)> = Vec::new();
+    loop {
+        // SAFETY: `record` is valid for writes of its length; each read is one record.
+        let n = unsafe { libc::read(fd, record.as_mut_ptr().cast(), record.len()) };
+        if n < 0 {
+            let e = io::Error::last_os_error();
+            match e.raw_os_error() {
+                Some(libc::EAGAIN) => break,
+                // A record overwritten before it was read.
+                Some(libc::EPIPE) => continue,
+                _ => {
+                    // SAFETY: closing our own descriptor.
+                    unsafe { libc::close(fd) };
+                    return Err(format!("reading /dev/kmsg: {e}"));
+                }
+            }
+        }
+        // "PRIORITY,SEQUENCE,MICROSECONDS,FLAGS;MESSAGE" (Documentation/ABI/testing/dev-kmsg).
+        let text = String::from_utf8_lossy(record.get(..n as usize).unwrap_or_default()).into_owned();
+        let Some((head, message)) = text.split_once(';') else {
+            continue;
+        };
+        if let Some(at) = head.split(',').nth(2).and_then(|us| us.parse::<u64>().ok()) {
+            log.push((at, message.lines().next().unwrap_or_default().to_string()));
+        }
+    }
+    // SAFETY: closing our own descriptor.
+    unsafe { libc::close(fd) };
+    // Each initcall's time from its records' own times, `calling  FN @ PID` to `initcall FN
+    // returned`: what it says itself (`after US usecs`) is of the timekeeper's clock, jiffies
+    // until the clocksource's switch (clocksource_done_booting), where a record's time is
+    // the scheduler's clock.
+    let mut began: std::collections::HashMap<&str, u64> = std::collections::HashMap::new();
+    let mut calls: Vec<(u64, &str)> = Vec::new();
+    for (at, m) in &log {
+        if let Some((name, _)) = m.strip_prefix("calling  ").and_then(|r| r.split_once(" @ ")) {
+            began.insert(name, *at);
+        } else if let Some((name, start)) = m
+            .strip_prefix("initcall ")
+            .and_then(|r| r.split_once(" returned "))
+            .and_then(|(name, _)| Some((name, began.get(name)?)))
+        {
+            calls.push((at.saturating_sub(*start), name));
+        }
+    }
+    calls.sort_by_key(|c| std::cmp::Reverse(c.0));
+    for (us, name) in calls.iter().take(15) {
+        let _ = writeln!(out, "SHARDS-TEST INITCALL {us} {name}");
+    }
+    // What its hypervisor offers it, and when its boot's steps came.
+    const STEPS: [&str; 5] = [
+        "smp: Bringing up secondary CPUs",
+        "smp: Brought up",
+        "clocksource: Switched to clocksource",
+        "Freeing unused kernel image",
+        "Run /init as init process",
+    ];
+    for (at, m) in &log {
+        if m.starts_with("Hyper-V:") {
+            let _ = writeln!(out, "SHARDS-TEST HV {m}");
+        } else if STEPS.iter().any(|s| m.starts_with(s)) {
+            let _ = writeln!(out, "SHARDS-TEST AT {at} {m}");
+        }
+    }
+    let mut gaps: Vec<(u64, &str, &str)> = log
+        .windows(2)
+        .filter_map(|w| match w {
+            [(a, before), (b, after)] => Some((b.saturating_sub(*a), before.as_str(), after.as_str())),
+            _ => None,
+        })
+        .collect();
+    gaps.sort_by_key(|g| std::cmp::Reverse(g.0));
+    let short = |m: &str| m.chars().take(90).collect::<String>();
+    for (us, before, after) in gaps.iter().take(8) {
+        let _ = writeln!(out, "SHARDS-TEST GAP {us} {} => {}", short(before), short(after));
+    }
+    let _ = writeln!(out, "SHARDS-TEST LOG {} records", log.len());
+    Ok(())
+}
+
+fn memory_report() -> Result<(), String> {
+    let meminfo = std::fs::read_to_string("/proc/meminfo").map_err(|e| format!("/proc/meminfo: {e}"))?;
+    let field = |name: &str| -> Result<u64, String> {
+        meminfo
+            .lines()
+            .find_map(|l| l.strip_prefix(name))
+            .and_then(|v| v.trim().strip_suffix("kB"))
+            .and_then(|kb| kb.trim().parse::<u64>().ok())
+            .map(|kb| kb << 10)
+            .ok_or_else(|| format!("/proc/meminfo: no {name}"))
+    };
+    let uptime = std::fs::read_to_string("/proc/uptime").map_err(|e| format!("/proc/uptime: {e}"))?;
+    let zones = std::fs::read_to_string("/proc/zoneinfo").map_err(|e| format!("/proc/zoneinfo: {e}"))?;
+    let listed: u64 = zones
+        .lines()
+        .filter_map(|l| l.trim().strip_prefix("count:"))
+        .map(|n| {
+            n.trim()
+                .parse::<u64>()
+                .map_err(|e| format!("/proc/zoneinfo: count {n:?}: {e}"))
+        })
+        .sum::<Result<u64, String>>()?;
+    // SAFETY: sysconf(3) reads a constant of the system's.
+    let page =
+        u64::try_from(unsafe { libc::sysconf(libc::_SC_PAGESIZE) }).map_err(|e| format!("page size: {e}"))?;
+    let _ = writeln!(
+        io::stdout(),
+        "SHARDS-TEST MEMORY {} {} {} {} {}",
+        field("MemTotal:")?,
+        field("MemFree:")?,
+        field("MemAvailable:")?,
+        uptime.split_whitespace().next().unwrap_or("?"),
+        listed.saturating_mul(page)
+    );
+    Ok(())
+}
+
+/// How many memory blocks the kernel has online (/sys/devices/system/memory, its
+/// `memoryN/online`).
+fn blocks_online() -> Result<u64, String> {
+    let dir = "/sys/devices/system/memory";
+    let entries = std::fs::read_dir(dir).map_err(|e| format!("{dir}: {e}"))?;
+    Ok(entries
+        .flatten()
+        .filter(|e| e.file_name().to_string_lossy().starts_with("memory"))
+        .filter(|e| std::fs::read_to_string(e.path().join("online")).is_ok_and(|v| v.trim() == "1"))
+        .count() as u64)
+}
+
+/// The limits the kernel sized by the memory it booted with (shards_testguest::LIMITS)
+/// and its MemTotal: what a builder's init raises to the memory it may have (D133),
+/// checked against a guest booted with all of it.
+fn limits() -> Result<(), String> {
+    crate::workload::limits()?;
+    let _ = writeln!(io::stdout(), "SHARDS-TEST LIMIT MemTotal {}", mem_total()?);
+    Ok(())
+}
+
+/// A running guest, for measuring any VMM that restores it (the Firecracker comparison):
+/// prints `SHARDS-TEST READY`, then a `.` every millisecond, so the first `.` a restore
+/// prints is the guest running again. It uses nothing shards-specific but, with
+/// `shards_snapshot=N`, the control page, to ask shards for a snapshot after N beats, as
+/// init asks for a template's; other VMMs snapshot it from the host.
+///
+/// It asks from a thread of its own, at a point within the beat after the Nth that its
+/// clock picks, as a host pausing a VMM catches its guest wherever its beat's sleep has
+/// reached: asked right after a beat, every restore slept a whole beat after RESUMED that
+/// Firecracker's, paused mid-sleep, never waited, 673 to 873 µs halted on some runners
+/// (PM M310).
+fn beat() -> Result<(), String> {
+    let snapshot_after: Option<u64> = std::env::var("shards_snapshot")
+        .ok()
+        .map(|n| n.parse())
+        .transpose()
+        .map_err(|e| format!("shards_snapshot: {e}"))?;
+    let control = snapshot_after.map(|_| ControlPage::map()).transpose()?;
+    // A quiet guest, as shards-init leaves a template: the kernel's crypto self-tests run
+    // in threads after boot, and a snapshot taken before they end hands the rest to every
+    // restore (docs/research/platform-measurements.md M21, M38).
+    await_crypto_selftests()?;
+    let _ = writeln!(io::stdout(), "SHARDS-TEST READY");
+    let (beaten, nth) = std::sync::mpsc::channel::<()>();
+    if let Some(control) = control {
+        thread::Builder::new()
+            .name("snapshot".into())
+            .spawn(move || {
+                if nth.recv().is_err() {
+                    return;
+                }
+                // Within the beat: the clock's nanoseconds, a millisecond's worth.
+                let within = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |t| t.subsec_nanos() % 1_000_000);
+                thread::sleep(Duration::from_nanos(u64::from(within)));
+                control.write(shards_abi::control::SNAPSHOT, shards_abi::control::SNAPSHOT_NOW);
+                // A restore of it goes on from here: said by the VMM's clock (its log's
+                // guest marker), where the Firecracker comparison looks for its restores'
+                // `resumed`.
+                control.write(shards_abi::control::MARKER, shards_abi::marker::RESUMED);
+            })
+            .map_err(|e| format!("the snapshot's thread: {e}"))?;
+    }
+    let mut beats = 0u64;
+    loop {
+        thread::sleep(Duration::from_millis(1));
+        let mut out = io::stdout().lock();
+        let _ = out.write_all(b".").and_then(|()| out.flush());
+        beats += 1;
+        if snapshot_after == Some(beats) {
+            let _ = beaten.send(());
+        }
+    }
+}
+
+/// Waits, for up to 2 s, until /proc/crypto lists no algorithm under test (a larval) or not
+/// yet tested (crypto/proc.c, `c_show`), as shards-init's `await_crypto_selftests` does.
+fn await_crypto_selftests() -> Result<(), String> {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        let text = std::fs::read_to_string("/proc/crypto").map_err(|e| format!("/proc/crypto: {e}"))?;
+        let running = text.lines().any(|line| {
+            let mut field = line.splitn(2, ':').map(str::trim);
+            matches!(
+                (field.next(), field.next()),
+                (Some("selftest"), Some("unknown")) | (Some("type"), Some("larval"))
+            )
+        });
+        if !running {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return Err("crypto self-tests still running after 2 s".into());
+        }
+        thread::sleep(Duration::from_millis(1));
+    }
+}
+
 /// The vsock port the guest serves an echo on.
 const ECHO_PORT: u32 = 1234;
+/// Where the host tells a storm it has stopped streaming.
+const DONE_PORT: u32 = 1235;
+/// Bytes the echo has sent back, over every connection.
+static ECHOED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 /// The host port the guest dials first.
 const HOST_PORT: u32 = 5000;
 
@@ -518,6 +3583,7 @@ fn serve_echo(listener: &std::fs::File) -> Result<(), String> {
                         if conn.write_all(buf.get(..n).unwrap_or_default()).is_err() {
                             return;
                         }
+                        ECHOED.fetch_add(n as u64, std::sync::atomic::Ordering::Relaxed);
                     }
                 }
             }
@@ -687,6 +3753,247 @@ fn check_pmem(i: usize, len: u64, salt: u64) -> Result<(), String> {
     Ok(())
 }
 
+/// A writable layer's costs (D190, PM M277): `/dev/pmem0` the ext4 file system `run vm
+/// --layer` gives it, its page structures in the device's head. Says, one `LAYER` line
+/// each: MemFree as it starts and once the NVDIMM buses' probes are done, and when they
+/// were; a DAX mount's time, an overlay's over it, 64 MiB written and synced, 1,000 small
+/// files, 8 MiB written through a mapping; and three mounts again. Without the device,
+/// MemFree alone, for a boot without one to set beside it.
+fn layer() -> Result<(), String> {
+    let now = || {
+        let mut ts = libc::timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        };
+        // SAFETY: a valid timespec to fill.
+        unsafe { libc::clock_gettime(libc::CLOCK_BOOTTIME, &raw mut ts) };
+        ts.tv_sec as f64 * 1e3 + ts.tv_nsec as f64 / 1e6
+    };
+    let free = || -> Result<u64, String> {
+        let info = std::fs::read_to_string("/proc/meminfo").map_err(|e| format!("/proc/meminfo: {e}"))?;
+        info.lines()
+            .find_map(|l| l.strip_prefix("MemFree:"))
+            .and_then(|v| v.trim().trim_end_matches("kB").trim().parse().ok())
+            .ok_or_else(|| "no MemFree".to_string())
+    };
+    let mut out = io::stdout().lock();
+    let started = now();
+    let _ = writeln!(out, "LAYER start_ms={started:.3} free_kib={}", free()?);
+    for bus in std::fs::read_dir("/sys/bus/nd/devices")
+        .into_iter()
+        .flatten()
+        .flatten()
+    {
+        if bus.file_name().as_encoded_bytes().starts_with(b"ndbus") {
+            let _ = std::fs::read(bus.path().join("wait_probe"));
+        }
+    }
+    let _ = writeln!(out, "LAYER probed_ms={:.3} free_kib={}", now(), free()?);
+    if !std::path::Path::new("/dev/pmem0").exists() {
+        return Ok(());
+    }
+    let pfn = std::fs::read_dir("/sys/bus/nd/devices")
+        .into_iter()
+        .flatten()
+        .flatten()
+        .any(|e| {
+            let name = e.file_name();
+            name.as_encoded_bytes().starts_with(b"pfn") && e.path().join("block").exists()
+        });
+    let _ = writeln!(
+        out,
+        "LAYER pfn={pfn} dax={}",
+        sysfs("/sys/block/pmem0/queue/dax").unwrap_or_default()
+    );
+    let c = |s: &str| CString::new(s).map_err(|e| e.to_string());
+    let mount = |src: &str, target: &str, fs: &str, data: &str| -> Result<f64, String> {
+        std::fs::create_dir_all(target).map_err(|e| format!("{target}: {e}"))?;
+        let (src, target_c, fs, data) = (c(src)?, c(target)?, c(fs)?, c(data)?);
+        let t = now();
+        // SAFETY: NUL-terminated strings.
+        if unsafe {
+            libc::mount(
+                src.as_ptr(),
+                target_c.as_ptr(),
+                fs.as_ptr(),
+                0,
+                data.as_ptr().cast(),
+            )
+        } != 0
+        {
+            return Err(format!("mount {target:?}: {}", io::Error::last_os_error()));
+        }
+        Ok((now() - t) * 1e3)
+    };
+    let umount = |target: &str| -> Result<(), String> {
+        let target = c(target)?;
+        // SAFETY: a NUL-terminated path.
+        if unsafe { libc::umount(target.as_ptr()) } != 0 {
+            return Err(format!("umount: {}", io::Error::last_os_error()));
+        }
+        Ok(())
+    };
+    const OPTS: &str = "dax=always,noinit_itable";
+    const OVERLAY: &str = "lowerdir=/lower,upperdir=/l/upper,workdir=/l/work,volatile,xino=on";
+    let first = mount("/dev/pmem0", "/l", "ext4", OPTS)?;
+    for d in ["/l/upper", "/l/work", "/lower"] {
+        std::fs::create_dir_all(d).map_err(|e| format!("{d}: {e}"))?;
+    }
+    let overlay = mount("overlay", "/merged", "overlay", OVERLAY)?;
+    let mounts = std::fs::read_to_string("/proc/mounts").map_err(|e| e.to_string())?;
+    let dax = mounts
+        .lines()
+        .any(|l| l.contains(" /l ext4 ") && l.contains("dax=always"));
+    let _ = writeln!(
+        out,
+        "LAYER mount_us={first:.1} overlay_us={overlay:.1} mounted_dax={dax}"
+    );
+    let before = free()?;
+    let chunk = vec![0x5au8; 1 << 20];
+    let t = now();
+    let mut big = std::fs::File::create("/merged/big").map_err(|e| e.to_string())?;
+    for _ in 0..64 {
+        big.write_all(&chunk).map_err(|e| e.to_string())?;
+    }
+    big.sync_all().map_err(|e| e.to_string())?;
+    let wrote = now() - t;
+    drop(big);
+    let t = now();
+    for i in 0..1000 {
+        std::fs::write(format!("/merged/small{i}"), b"hello").map_err(|e| e.to_string())?;
+    }
+    let small = now() - t;
+    let t = now();
+    {
+        use std::os::fd::AsRawFd as _;
+        let len = 8 << 20;
+        let f = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open("/l/mapped")
+            .map_err(|e| e.to_string())?;
+        f.set_len(len as u64).map_err(|e| e.to_string())?;
+        // SAFETY: a fresh shared mapping of our own file, unmapped below.
+        let p = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                len,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_SHARED,
+                f.as_raw_fd(),
+                0,
+            )
+        };
+        if p == libc::MAP_FAILED {
+            return Err(format!("mmap: {}", io::Error::last_os_error()));
+        }
+        for page in (0..len).step_by(4096) {
+            // SAFETY: within the mapping.
+            unsafe { *p.cast::<u8>().add(page) = 1 };
+        }
+        // SAFETY: the mapping made above.
+        unsafe {
+            libc::msync(p, len, libc::MS_SYNC);
+            libc::munmap(p, len);
+        }
+    }
+    let mapped = now() - t;
+    let _ = writeln!(
+        out,
+        "LAYER write_64mib_ms={wrote:.3} small_1000_ms={small:.3} mapped_8mib_ms={mapped:.3} free_kib_spent={}",
+        before.saturating_sub(free()?)
+    );
+    // What keeping the layer costs as a run ends (D190), each after 100 more files, as a
+    // run leaves its last changes: its journal written in place as init's KEEP writes it
+    // (sync, syncfs, then EXT4_IOC_CHECKPOINT), the file system frozen (FIFREEZE, then
+    // FITHAW), or remounted read-only (then writable again). The first round's are the
+    // first of each in the microVM, as a run's KEEP is.
+    {
+        use std::os::fd::AsRawFd as _;
+        /// FIFREEZE and FITHAW, `_IOWR('X', 119, int)` and `_IOWR('X', 120, int)`.
+        const FIFREEZE: u32 = 0xC004_5877;
+        const FITHAW: u32 = 0xC004_5878;
+        /// EXT4_IOC_CHECKPOINT, `_IOW('f', 43, __u32)` (include/uapi/linux/ext4.h).
+        const CHECKPOINT: u32 = 0x4004_662B;
+        let root = std::fs::File::open("/l").map_err(|e| format!("/l: {e}"))?;
+        let fd = root.as_raw_fd();
+        let layer = c("/l")?;
+        let ioctl = |name: &str, request: u32, arg: *const u32| -> Result<f64, String> {
+            let t = now();
+            // SAFETY: an ioctl of a descriptor this holds, its argument null or a u32 that
+            // outlives the call.
+            if unsafe { libc::ioctl(fd, request as _, arg) } != 0 {
+                return Err(format!("{name}: {}", io::Error::last_os_error()));
+            }
+            Ok((now() - t) * 1e3)
+        };
+        let remount = |flags: libc::c_ulong| -> Result<f64, String> {
+            let t = now();
+            // SAFETY: a NUL-terminated mount point; a remount takes no source, type or data.
+            let r = unsafe {
+                libc::mount(
+                    std::ptr::null(),
+                    layer.as_ptr(),
+                    std::ptr::null(),
+                    libc::MS_REMOUNT | flags,
+                    std::ptr::null(),
+                )
+            };
+            if r != 0 {
+                return Err(format!("remount /l {flags:#x}: {}", io::Error::last_os_error()));
+            }
+            Ok((now() - t) * 1e3)
+        };
+        for round in 0..3 {
+            let more = |tag: &str| -> Result<(), String> {
+                for i in 0..100 {
+                    std::fs::write(format!("/merged/{tag}{round}-{i}"), b"more")
+                        .map_err(|e| e.to_string())?;
+                }
+                Ok(())
+            };
+            more("k")?;
+            let t = now();
+            // SAFETY: sync(2) takes nothing.
+            unsafe { libc::sync() };
+            let all = (now() - t) * 1e3;
+            let t = now();
+            // SAFETY: syncfs(2) of a descriptor this holds.
+            if unsafe { libc::syncfs(fd) } != 0 {
+                return Err(format!("syncfs: {}", io::Error::last_os_error()));
+            }
+            let synced = (now() - t) * 1e3;
+            let flags: u32 = 0;
+            let checkpointed = ioctl("EXT4_IOC_CHECKPOINT", CHECKPOINT, &raw const flags)?;
+            more("f")?;
+            let frozen = ioctl("FIFREEZE", FIFREEZE, std::ptr::null())?;
+            let thawed = ioctl("FITHAW", FITHAW, std::ptr::null())?;
+            more("r")?;
+            let read_only = remount(libc::MS_RDONLY)?;
+            let writable = remount(0)?;
+            let _ = writeln!(
+                out,
+                "LAYER keep{round} sync_us={all:.1} syncfs_us={synced:.1} checkpoint_us={checkpointed:.1} keep_us={:.1} freeze_us={frozen:.1} thaw_us={thawed:.1} remount_ro_us={read_only:.1} remount_rw_us={writable:.1}",
+                all + synced + checkpointed
+            );
+        }
+    }
+    umount("/merged")?;
+    umount("/l")?;
+    for i in 0..3 {
+        let again = mount("/dev/pmem0", "/l", "ext4", OPTS)?;
+        // A volatile overlay's mark refuses the next mount of its directories (overlayfs.rst).
+        let _ = std::fs::remove_dir_all("/l/work/work");
+        let overlay = mount("overlay", "/merged", "overlay", OVERLAY)?;
+        umount("/merged")?;
+        umount("/l")?;
+        let _ = writeln!(out, "LAYER again{i} mount_us={again:.1} overlay_us={overlay:.1}");
+    }
+    Ok(())
+}
+
 fn cstr(s: &str) -> Result<CString, String> {
     CString::new(s).map_err(|e| e.to_string())
 }
@@ -702,18 +4009,42 @@ fn erofs() -> Result<(), String> {
         cstr("erofs")?,
         cstr("dax=always")?,
     );
-    // SAFETY: NUL-terminated strings.
-    if unsafe {
-        libc::mount(
-            src.as_ptr(),
-            target.as_ptr(),
-            fs.as_ptr(),
-            libc::MS_RDONLY,
-            opts.as_ptr().cast(),
-        )
-    } != 0
-    {
-        return Err(format!("mount erofs: {}", io::Error::last_os_error()));
+    let mount = || {
+        // SAFETY: NUL-terminated strings.
+        if unsafe {
+            libc::mount(
+                src.as_ptr(),
+                target.as_ptr(),
+                fs.as_ptr(),
+                libc::MS_RDONLY,
+                opts.as_ptr().cast(),
+            )
+        } != 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    };
+    // libnvdimm makes a pmem device's node asynchronously, in a domain the kernel does not
+    // wait for before init runs (crates/init/src/pmem.rs): where it is not there yet, once
+    // its buses' probing is done.
+    let mounted = mount().or_else(|e| match e.raw_os_error() {
+        Some(libc::ENOENT | libc::ENXIO) => {
+            for bus in std::fs::read_dir("/sys/bus/nd/devices")
+                .into_iter()
+                .flatten()
+                .flatten()
+            {
+                if bus.file_name().as_encoded_bytes().starts_with(b"ndbus") {
+                    let _ = std::fs::read(bus.path().join("wait_probe"));
+                }
+            }
+            mount()
+        }
+        _ => Err(e),
+    });
+    if let Err(e) = mounted {
+        return Err(format!("mount erofs: {e}"));
     }
     let mounts = std::fs::read_to_string("/proc/mounts").map_err(|e| e.to_string())?;
     let line = mounts.lines().find(|l| l.contains(" /mnt ")).unwrap_or_default();
@@ -775,6 +4106,35 @@ fn num<T: std::str::FromStr>(field: Option<&str>) -> Result<T, String> {
         .map_err(|_| "bad number".to_string())
 }
 
+/// Whether the kernel serves `path` with DAX: `STATX_ATTR_DAX` in statx(2)'s attributes
+/// (include/uapi/linux/stat.h), which it must also report it can say.
+fn is_dax(path: &str) -> Result<bool, String> {
+    const STATX_BASIC_STATS: u32 = 0x07ff;
+    const STATX_ATTR_DAX: u64 = 0x0020_0000;
+    let c = cstr(path)?;
+    // struct statx: 256 bytes, with stx_attributes at 0x08 and stx_attributes_mask at 0x38.
+    let mut buf = [0u64; 32];
+    // SAFETY: a NUL-terminated path, and a buffer of the size and alignment statx writes.
+    let r = unsafe {
+        libc::syscall(
+            libc::SYS_statx,
+            libc::AT_FDCWD,
+            c.as_ptr(),
+            libc::AT_SYMLINK_NOFOLLOW,
+            STATX_BASIC_STATS,
+            buf.as_mut_ptr(),
+        )
+    };
+    if r != 0 {
+        return Err(format!("statx: {}", io::Error::last_os_error()));
+    }
+    let [_, attributes, _, _, _, _, _, mask, ..] = buf;
+    if mask & STATX_ATTR_DAX == 0 {
+        return Err("statx does not report DAX".into());
+    }
+    Ok(attributes & STATX_ATTR_DAX != 0)
+}
+
 /// One manifest line: `<kind> <path> ...` (see crates/shards/tests/erofs.rs).
 fn check_entry(line: &str) -> Result<(), String> {
     let mut f = line.split(' ');
@@ -812,10 +4172,14 @@ fn check_entry(line: &str) -> Result<(), String> {
             if data.len() as u64 != size {
                 return Err(format!("{} bytes", data.len()));
             }
-            match first_mismatch(salt, 0, &data) {
-                Some(at) => Err(format!("byte {at} differs")),
-                None => Ok(()),
+            if let Some(at) = first_mismatch(salt, 0, &data) {
+                return Err(format!("byte {at} differs"));
             }
+            // Mapped straight from pmem, not copied through the page cache.
+            if !is_dax(&path)? {
+                return Err("not served with DAX".into());
+            }
+            Ok(())
         }
         "l" => {
             let target = std::fs::read_link(&path).map_err(|e| e.to_string())?;
@@ -868,4 +4232,534 @@ fn check_entry(line: &str) -> Result<(), String> {
         }
         _ => Err(format!("kind {kind} with type {file_type:o}")),
     }
+}
+
+/// PM M489 (D227): what the guest's BPF programs cost, run by its kernel's JIT or by its
+/// interpreter as the kernel was built. Docker's default seccomp profile is compiled as
+/// shards compiles a run's (D42: a container's default capabilities, this kernel's
+/// version) and loaded as shards-init loads it, and Docker's default device filter (D44)
+/// attached to a cgroup as init attaches it. Each arm runs in a child of its own: untimed
+/// warm-up batches, then `shards_bpf_n` batches of `shards_bpf_batch` calls (10,000 of 16
+/// by default), the clock read once a batch.
+///
+/// - `clock`: an empty batch, the clock's own cost.
+/// - `{none,root,nnp}/getppid`: a syscall the profile allows whatever its arguments, which
+///   seccomp's action cache answers without running the filter where it can prove so
+///   (kernel/seccomp.c `seccomp_cache_check_allow`).
+/// - `{none,root,nnp}/personality`: personality(0xffffffff), allowed by its argument, so
+///   the filter runs on each call.
+/// - `{root,nnp}/denied`: acct(NULL), refused (EPERM) to a container's capabilities: the
+///   filter's whole path to its default.
+/// - `root/load`, `nnp/load`: one seccomp(2) load into a fresh child, `shards_bpf_loads`
+///   children (10,000 by default), as each workload's start pays it.
+/// - `dev/open`, `nodev/open`: open(2) and close(2) of /dev/null in a cgroup with the
+///   device filter and in one without.
+/// - `device/load`: the device filter's load and attach, once a boot, as init's at boot.
+///
+/// `root` loads the filter with init's capabilities, as init does for a run without
+/// `no-new-privileges`; `nnp` as user 65534 with no capabilities and no_new_privs, as init
+/// does with it. arm64's JIT ends a classic program loaded without CAP_SYS_ADMIN with a
+/// Spectre-BHB sequence (arch/arm64/net/bpf_jit_comp.c `build_bhb_mitigation`).
+///
+/// The record, text, goes to /dev/vda for the host (docs/research/measurements/bpf-jit/
+/// ab.py): `jit`, the release, the Spectre verdicts, MemFree and MemAvailable (KiB) at four
+/// points, the JIT's vmalloc areas, and `arm NAME BATCH NS...`, a batch's nanoseconds each.
+fn bpf_costs() -> Result<(), String> {
+    use std::fmt::Write as _;
+    let setting = |name: &str, default: u64| -> Result<usize, String> {
+        let v = std::env::var(name).map_or(Ok(default), |v| v.parse().map_err(|e| format!("{name}: {e}")))?;
+        usize::try_from(v).map_err(|e| format!("{name}: {e}"))
+    };
+    let (n, batch, loads) = (
+        setting("shards_bpf_n", 10_000)?,
+        setting("shards_bpf_batch", 16)?,
+        setting("shards_bpf_loads", 10_000)?,
+    );
+    let mut rec = String::new();
+    let jit = sysfs("/proc/sys/net/core/bpf_jit_enable").unwrap_or_else(|_| "absent".into());
+    let release = sysfs("/proc/sys/kernel/osrelease")?;
+    let _ = writeln!(rec, "jit {jit}\nkernel {release}");
+    for v in ["spectre_v1", "spectre_v2", "spec_store_bypass"] {
+        let said = sysfs(&format!("/sys/devices/system/cpu/vulnerabilities/{v}")).unwrap_or_default();
+        let _ = writeln!(rec, "vuln {v} {said}");
+    }
+    let mem = |rec: &mut String, at: &str| {
+        let meminfo = std::fs::read_to_string("/proc/meminfo").unwrap_or_default();
+        let field = |name: &str| {
+            meminfo
+                .lines()
+                .find_map(|l| l.strip_prefix(name))
+                .and_then(|v| v.trim().strip_suffix("kB"))
+                .map_or("?", str::trim)
+                .to_string()
+        };
+        let _ = writeln!(rec, "mem {at} {} {}", field("MemFree:"), field("MemAvailable:"));
+    };
+    mem(&mut rec, "boot");
+
+    // Docker's default profile, compiled for a container's capabilities on this kernel.
+    let caps: Vec<String> = shards_abi::run::CAPS
+        .iter()
+        .filter_map(|&c| shards_abi::run::CAP_NAMES.get(usize::try_from(c).ok()?))
+        .map(|n| (*n).to_string())
+        .collect();
+    let mut version = release.split(['.', '-']).map(|p| p.parse::<u64>().unwrap_or(0));
+    let kernel = shards_seccomp::Kernel(version.next().unwrap_or(0), version.next().unwrap_or(0));
+    let arch = shards_seccomp::Arch::host().ok_or("seccomp needs an amd64 or arm64 guest")?;
+    let c = shards_seccomp::Container {
+        arch,
+        caps: &caps,
+        kernel,
+    };
+    let program = shards_seccomp::compile(shards_seccomp::DEFAULT, &c)?
+        .ok_or("Docker's default profile compiled to no filter")?;
+    let filter: Vec<libc::sock_filter> = program
+        .insns
+        .iter()
+        .map(|i| libc::sock_filter {
+            code: i.code,
+            jt: i.jt,
+            jf: i.jf,
+            k: i.k,
+        })
+        .collect();
+    let fprog = libc::sock_fprog {
+        len: u16::try_from(filter.len()).map_err(|_| "a seccomp filter too long")?,
+        filter: filter.as_ptr().cast_mut(),
+    };
+    let flags = libc::c_long::from(program.flags);
+    let _ = writeln!(rec, "filter {} {:#x}", filter.len(), program.flags);
+
+    // Docker's default device filter, attached to a cgroup of its own; another has none.
+    let cgroups = "/sys/fs/cgroup";
+    let (src, target, fs) = (cstr("cgroup2")?, cstr(cgroups)?, cstr("cgroup2")?);
+    // SAFETY: NUL-terminated strings and no data argument.
+    if unsafe { libc::mount(src.as_ptr(), target.as_ptr(), fs.as_ptr(), 0, std::ptr::null()) } != 0 {
+        return Err(format!("mount cgroup2: {}", io::Error::last_os_error()));
+    }
+    for dir in ["dev", "nodev"] {
+        std::fs::create_dir(format!("{cgroups}/{dir}")).map_err(|e| format!("mkdir {cgroups}/{dir}: {e}"))?;
+    }
+    let device = shards_devcgroup::compile(&shards_devcgroup::container(&[], &[], false))?;
+    let _ = writeln!(rec, "device {}", device.len() / 8);
+    let started = now_ns();
+    let _device = attach_device_filter(&device, &format!("{cgroups}/dev"))?;
+    let _ = writeln!(rec, "arm device/load 1 {}", now_ns().saturating_sub(started));
+    mem(&mut rec, "device");
+
+    // Each child's samples, in memory it shares with this process.
+    let len = n.max(loads).max(1);
+    let bytes = len.checked_mul(4).ok_or("too many samples")?;
+    // SAFETY: a new anonymous shared mapping, checked below.
+    let at = unsafe {
+        libc::mmap(
+            std::ptr::null_mut(),
+            bytes,
+            libc::PROT_READ | libc::PROT_WRITE,
+            libc::MAP_SHARED | libc::MAP_ANONYMOUS,
+            -1,
+            0,
+        )
+    };
+    if at == libc::MAP_FAILED {
+        return Err(format!("mmap: {}", io::Error::last_os_error()));
+    }
+    // SAFETY: the mapping just made, `len` u32s, page-aligned, which only this process and
+    // the child it waits for touch, and unmapped only below, after its last use.
+    let samples: &mut [u32] = unsafe { std::slice::from_raw_parts_mut(at.cast::<u32>(), len) };
+
+    let load = move || {
+        // SAFETY: seccomp(2) with a program that outlives the call.
+        unsafe {
+            libc::syscall(
+                libc::SYS_seccomp,
+                libc::SECCOMP_SET_MODE_FILTER,
+                flags,
+                &raw const fprog,
+            ) == 0
+        }
+    };
+    // As init with no-new-privileges: no capabilities, no new privileges.
+    let unprivileged = || {
+        // SAFETY: setgroups(2), setgid(2), setuid(2) and prctl(2), of this child alone.
+        unsafe {
+            libc::setgroups(0, std::ptr::null()) == 0
+                && libc::setgid(65534) == 0
+                && libc::setuid(65534) == 0
+                && libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) == 0
+        }
+    };
+    let getppid = || {
+        // SAFETY: getppid(2) takes nothing.
+        unsafe { libc::syscall(libc::SYS_getppid) == 1 }
+    };
+    let personality = || {
+        // SAFETY: personality(0xffffffff) only reads the persona.
+        unsafe { libc::syscall(libc::SYS_personality, libc::c_long::from(u32::MAX)) >= 0 }
+    };
+    let denied = || {
+        // SAFETY: acct(NULL), which the filter refuses.
+        let r = unsafe { libc::syscall(libc::SYS_acct, std::ptr::null::<libc::c_char>()) };
+        r == -1 && io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+    };
+    let open_close = || {
+        // SAFETY: open(2) of a NUL-terminated path, and close(2) of what it opened.
+        unsafe {
+            let fd = libc::open(c"/dev/null".as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC);
+            fd >= 0 && libc::close(fd) == 0
+        }
+    };
+    let join = |cgroup: &str| std::fs::write(format!("{cgroups}/{cgroup}/cgroup.procs"), b"0").is_ok();
+    let timed = |out: &mut [u32], call: &dyn Fn() -> bool| -> bool {
+        for _ in 0..(n / 10).max(1) * batch {
+            if !call() {
+                return false;
+            }
+        }
+        for slot in out.iter_mut() {
+            let t0 = now_ns();
+            for _ in 0..batch {
+                if !call() {
+                    return false;
+                }
+            }
+            *slot = u32::try_from(now_ns().saturating_sub(t0)).unwrap_or(u32::MAX);
+        }
+        true
+    };
+    let nothing = || true;
+    let nnp = || unprivileged() && load();
+    // An arm: its name, what readies it, and the call it times.
+    type Arm<'a> = (&'a str, &'a dyn Fn() -> bool, &'a dyn Fn() -> bool);
+    let arms: [Arm<'_>; 11] = [
+        ("clock", &nothing, &nothing),
+        ("none/getppid", &nothing, &getppid),
+        ("none/personality", &nothing, &personality),
+        ("root/getppid", &load, &getppid),
+        ("root/personality", &load, &personality),
+        ("root/denied", &load, &denied),
+        ("nnp/getppid", &nnp, &getppid),
+        ("nnp/personality", &nnp, &personality),
+        ("nnp/denied", &nnp, &denied),
+        ("dev/open", &|| join("dev"), &open_close),
+        ("nodev/open", &|| join("nodev"), &open_close),
+    ];
+    for (name, setup, call) in arms {
+        let out = samples.get_mut(..n).ok_or("no room for the samples")?;
+        in_child(name, || setup() && timed(out, call))?;
+        let _ = write!(rec, "arm {name} {batch}");
+        for v in samples.get(..n).unwrap_or_default() {
+            let _ = write!(rec, " {v}");
+        }
+        rec.push('\n');
+    }
+    mem(&mut rec, "filters");
+    let loaders: [(&str, &dyn Fn() -> bool); 2] = [("root/load", &nothing), ("nnp/load", &unprivileged)];
+    for (name, setup) in loaders {
+        for slot in samples.iter_mut().take(loads) {
+            in_child(name, || {
+                if !setup() {
+                    return false;
+                }
+                let t0 = now_ns();
+                let loaded = load();
+                *slot = u32::try_from(now_ns().saturating_sub(t0)).unwrap_or(u32::MAX);
+                loaded
+            })?;
+        }
+        let _ = write!(rec, "arm {name} 1");
+        for v in samples.get(..loads).unwrap_or_default() {
+            let _ = write!(rec, " {v}");
+        }
+        rec.push('\n');
+    }
+    mem(&mut rec, "end");
+    // SAFETY: the mapping made above, unmapped once; `samples` is not used after.
+    unsafe { libc::munmap(at, bytes) };
+    // The JIT's executable memory, by the function that asked for it.
+    let mut areas: std::collections::BTreeMap<String, u64> = std::collections::BTreeMap::new();
+    let vmalloc = std::fs::read_to_string("/proc/vmallocinfo").unwrap_or_default();
+    for line in vmalloc.lines() {
+        let mut f = line.split_whitespace().skip(1);
+        let (Some(size), Some(caller)) = (f.next().and_then(|s| s.parse::<u64>().ok()), f.next()) else {
+            continue;
+        };
+        let caller = caller.split('+').next().unwrap_or(caller);
+        if caller.contains("bpf") || caller.contains("execmem") {
+            *areas.entry(caller.to_string()).or_default() += size;
+        }
+    }
+    for (caller, size) in areas {
+        let _ = writeln!(rec, "vmalloc {caller} {size}");
+    }
+    rec.push_str("end\n");
+
+    let room = sysfs("/sys/block/vda/size")?
+        .parse::<u64>()
+        .map_err(|e| format!("/sys/block/vda/size: {e}"))?
+        .saturating_mul(512);
+    if rec.len() as u64 > room {
+        return Err(format!("a record of {} bytes, a disk of {room}", rec.len()));
+    }
+    let mut disk = std::fs::OpenOptions::new()
+        .write(true)
+        .open("/dev/vda")
+        .map_err(|e| format!("/dev/vda: {e}"))?;
+    disk.write_all(rec.as_bytes())
+        .map_err(|e| format!("writing /dev/vda: {e}"))?;
+    disk.sync_all().map_err(|e| format!("syncing /dev/vda: {e}"))
+}
+
+/// What a build step's devices cost its start (D44, PM M498): init's step_cgroup as it
+/// starts a `RUN` step (crates/init/src/build.rs), against a step started as before, with
+/// no cgroup of its own; `shards_step_n` starts of each (1,000 by default), interleaved,
+/// each its own child, started with clone3(2) and waited for. The arms:
+///
+/// - `fork`: clone3 alone, as a step without limits started before.
+/// - `steps`: a cgroup of its own under `steps` (mkdir, opened), which BuildKit's default
+///   device rules confine once, the child cloned into it (CLONE_INTO_CGROUP), its cgroup
+///   removed once it is reaped: a step of the default rules.
+/// - `devices`: the same under `devices`, its own program (BuildKit's rules with one CDI
+///   node's) loaded and attached first: a step of rules of its own.
+/// - `confine`: the default program's load and attach on `steps`, once a boot.
+///
+/// The record goes to /dev/vda (docs/research/measurements/step-devices/run.py): `arm NAME
+/// 1 NS...`, each start's nanoseconds.
+fn step_cgroup_costs() -> Result<(), String> {
+    use std::fmt::Write as _;
+    use std::os::fd::AsRawFd as _;
+    let n =
+        std::env::var("shards_step_n").map_or(Ok(1000), |v| v.parse::<usize>().map_err(|e| e.to_string()))?;
+    let cgroups = "/sys/fs/cgroup";
+    let (src, target, fs) = (cstr("cgroup2")?, cstr(cgroups)?, cstr("cgroup2")?);
+    // SAFETY: NUL-terminated strings and no data argument.
+    if unsafe { libc::mount(src.as_ptr(), target.as_ptr(), fs.as_ptr(), 0, std::ptr::null()) } != 0 {
+        return Err(format!("mount cgroup2: {}", io::Error::last_os_error()));
+    }
+    for dir in ["steps", "devices"] {
+        std::fs::create_dir(format!("{cgroups}/{dir}")).map_err(|e| format!("mkdir {cgroups}/{dir}: {e}"))?;
+    }
+    let mut rec = String::new();
+    let release = sysfs("/proc/sys/kernel/osrelease")?;
+    let _ = writeln!(rec, "kernel {release}");
+    let default = shards_devcgroup::compile(&shards_devcgroup::build_step(&[], false))?;
+    let kvm = shards_devcgroup::Given {
+        path: "/dev/kvm".into(),
+        rule: shards_devcgroup::Rule {
+            kind: shards_devcgroup::Kind::Char,
+            major: 10,
+            minor: 232,
+            perms: shards_devcgroup::READ | shards_devcgroup::WRITE,
+            allow: true,
+        },
+    };
+    let own = shards_devcgroup::compile(&shards_devcgroup::build_step(&[kvm], false))?;
+    let started = now_ns();
+    let _confined = attach_device_filter(&default, &format!("{cgroups}/steps"))?;
+    let _ = writeln!(rec, "arm confine 1 {}", now_ns().saturating_sub(started));
+    /// `struct clone_args`, to `cgroup`.
+    #[repr(C)]
+    #[derive(Default)]
+    struct CloneArgs {
+        flags: u64,
+        pidfd: u64,
+        child_tid: u64,
+        parent_tid: u64,
+        exit_signal: u64,
+        stack: u64,
+        stack_size: u64,
+        tls: u64,
+        set_tid: u64,
+        set_tid_size: u64,
+        cgroup: u64,
+    }
+    const CLONE_INTO_CGROUP: u64 = 0x2_0000_0000;
+    // A child started, into `cgroup` where one is given, and reaped.
+    let start = |cgroup: Option<i32>| -> Result<(), String> {
+        let mut args = CloneArgs {
+            exit_signal: libc::SIGCHLD as u64,
+            ..CloneArgs::default()
+        };
+        if let Some(fd) = cgroup {
+            args.flags = CLONE_INTO_CGROUP;
+            args.cgroup = u64::try_from(fd).map_err(|_| "a negative descriptor")?;
+        }
+        // SAFETY: clone3(2) as fork(2): the child calls _exit(2) alone.
+        let pid = unsafe { libc::syscall(libc::SYS_clone3, &raw mut args, size_of::<CloneArgs>()) };
+        if pid == 0 {
+            // SAFETY: _exit(2), the child's end.
+            unsafe { libc::_exit(0) };
+        }
+        let pid = libc::pid_t::try_from(pid)
+            .ok()
+            .filter(|&p| p > 0)
+            .ok_or_else(|| format!("clone3: {}", io::Error::last_os_error()))?;
+        // SAFETY: waitpid(2) of the child just started.
+        unsafe { libc::waitpid(pid, std::ptr::null_mut(), 0) };
+        Ok(())
+    };
+    let into = |parent: &str, i: usize, program: Option<&[u8]>| -> Result<(), String> {
+        let dir = format!("{cgroups}/{parent}/{i}");
+        std::fs::create_dir(&dir).map_err(|e| format!("mkdir {dir}: {e}"))?;
+        let fd = std::fs::File::open(&dir).map_err(|e| format!("{dir}: {e}"))?;
+        let attached = program.map(|p| attach_device_filter(p, &dir)).transpose()?;
+        start(Some(fd.as_raw_fd()))?;
+        drop((attached, fd));
+        std::fs::remove_dir(&dir).map_err(|e| format!("rmdir {dir}: {e}"))
+    };
+    let mut arms: [(&str, Vec<u64>); 3] = [
+        ("fork", Vec::new()),
+        ("steps", Vec::new()),
+        ("devices", Vec::new()),
+    ];
+    for i in 0..n {
+        for (k, (_, took)) in arms.iter_mut().enumerate() {
+            let at = now_ns();
+            match k {
+                0 => start(None)?,
+                1 => into("steps", i, None)?,
+                _ => into("devices", i, Some(&own))?,
+            }
+            took.push(now_ns().saturating_sub(at));
+        }
+    }
+    for (name, took) in &arms {
+        let _ = write!(rec, "arm {name} 1");
+        for v in took {
+            let _ = write!(rec, " {v}");
+        }
+        rec.push('\n');
+    }
+    rec.push_str("end\n");
+    let mut disk = std::fs::OpenOptions::new()
+        .write(true)
+        .open("/dev/vda")
+        .map_err(|e| format!("/dev/vda: {e}"))?;
+    disk.write_all(rec.as_bytes())
+        .map_err(|e| format!("writing /dev/vda: {e}"))?;
+    disk.sync_all().map_err(|e| format!("syncing /dev/vda: {e}"))
+}
+
+/// CLOCK_MONOTONIC, in nanoseconds.
+fn now_ns() -> u64 {
+    let mut ts = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: clock_gettime(2) writes `ts`.
+    unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts) };
+    u64::try_from(ts.tv_sec)
+        .unwrap_or(0)
+        .saturating_mul(1_000_000_000)
+        .saturating_add(u64::try_from(ts.tv_nsec).unwrap_or(0))
+}
+
+/// Runs `work` in a child of this single-threaded process, which exits 0 where it returns
+/// true; an error naming `what` where it does not.
+fn in_child(what: &str, work: impl FnOnce() -> bool) -> Result<(), String> {
+    // SAFETY: fork(2) of a process of one thread; the child runs `work` and exits.
+    let pid = unsafe { libc::fork() };
+    if pid < 0 {
+        return Err(format!("{what}: fork: {}", io::Error::last_os_error()));
+    }
+    if pid == 0 {
+        let ok = work();
+        // SAFETY: _exit(2), the child's end.
+        unsafe { libc::_exit(if ok { 0 } else { 1 }) };
+    }
+    let mut status = 0;
+    // SAFETY: waitpid(2) of our own child, writing `status`.
+    if unsafe { libc::waitpid(pid, &mut status, 0) } != pid {
+        return Err(format!("{what}: waitpid: {}", io::Error::last_os_error()));
+    }
+    if libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0 {
+        Ok(())
+    } else {
+        Err(format!(
+            "{what}: its child failed (wait status {status:#x}): a call did not answer as the profile and rules say"
+        ))
+    }
+}
+
+/// `program` loaded as a BPF_PROG_TYPE_CGROUP_DEVICE program and attached to `cgroup` with
+/// BPF_F_ALLOW_MULTI, as shards-init attaches the default filter at boot
+/// (crates/init/src/devices.rs `attach`). Its descriptor.
+fn attach_device_filter(program: &[u8], cgroup: &str) -> Result<std::os::fd::OwnedFd, String> {
+    use std::os::fd::{AsRawFd as _, FromRawFd as _, OwnedFd};
+    /// `union bpf_attr` for BPF_PROG_LOAD, to `expected_attach_type`.
+    #[repr(C)]
+    #[derive(Default)]
+    struct ProgLoad {
+        prog_type: u32,
+        insn_cnt: u32,
+        insns: u64,
+        license: u64,
+        log_level: u32,
+        log_size: u32,
+        log_buf: u64,
+        kern_version: u32,
+        prog_flags: u32,
+        prog_name: [u8; 16],
+        prog_ifindex: u32,
+        expected_attach_type: u32,
+    }
+    /// `union bpf_attr` for BPF_PROG_ATTACH.
+    #[repr(C)]
+    #[derive(Default)]
+    struct ProgAttach {
+        target_fd: u32,
+        attach_bpf_fd: u32,
+        attach_type: u32,
+        attach_flags: u32,
+        replace_bpf_fd: u32,
+    }
+    const BPF_PROG_LOAD: libc::c_long = 5;
+    const BPF_PROG_ATTACH: libc::c_long = 8;
+    const BPF_PROG_TYPE_CGROUP_DEVICE: u32 = 15;
+    const BPF_CGROUP_DEVICE: u32 = 6;
+    const BPF_F_ALLOW_MULTI: u32 = 2;
+    let license = cstr(shards_devcgroup::LICENSE)?;
+    let load = ProgLoad {
+        prog_type: BPF_PROG_TYPE_CGROUP_DEVICE,
+        insn_cnt: u32::try_from(program.len() / 8).map_err(|_| "a program too long")?,
+        insns: program.as_ptr() as u64,
+        license: license.as_ptr() as u64,
+        ..ProgLoad::default()
+    };
+    // SAFETY: bpf(2) BPF_PROG_LOAD of a program and license that outlive the call.
+    let prog = unsafe {
+        libc::syscall(
+            libc::SYS_bpf,
+            BPF_PROG_LOAD,
+            &raw const load,
+            std::mem::size_of::<ProgLoad>(),
+        )
+    };
+    let prog = i32::try_from(prog)
+        .ok()
+        .filter(|fd| *fd >= 0)
+        .ok_or_else(|| format!("BPF_PROG_LOAD: {}", io::Error::last_os_error()))?;
+    // SAFETY: the descriptor bpf(2) just returned, ours alone.
+    let prog = unsafe { OwnedFd::from_raw_fd(prog) };
+    let dir = std::fs::File::open(cgroup).map_err(|e| format!("{cgroup}: {e}"))?;
+    let at = ProgAttach {
+        target_fd: u32::try_from(dir.as_raw_fd()).map_err(|_| "a descriptor out of range")?,
+        attach_bpf_fd: u32::try_from(prog.as_raw_fd()).map_err(|_| "a descriptor out of range")?,
+        attach_type: BPF_CGROUP_DEVICE,
+        attach_flags: BPF_F_ALLOW_MULTI,
+        ..ProgAttach::default()
+    };
+    // SAFETY: bpf(2) BPF_PROG_ATTACH of descriptors held open over the call.
+    let attached = unsafe {
+        libc::syscall(
+            libc::SYS_bpf,
+            BPF_PROG_ATTACH,
+            &raw const at,
+            std::mem::size_of::<ProgAttach>(),
+        )
+    };
+    if attached != 0 {
+        return Err(format!("BPF_PROG_ATTACH: {}", io::Error::last_os_error()));
+    }
+    Ok(prog)
 }

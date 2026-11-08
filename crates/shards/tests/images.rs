@@ -1,11 +1,9 @@
-//! Images from a registry, end to end: `shards run IMAGE` pulls the image from a registry
+//! Images from a registry, end to end: `shards run vm IMAGE` pulls the image from a registry
 //! (a loopback one here, which containerd's rules reach over plain HTTP), builds its root
 //! filesystem, boots a real VM into it, and runs the image's command as `docker run`
 //! would, through the daemon each test's first run starts. The image's program is the
-//! test guest (crates/testguest/src/workload.rs). Runs need vsock, which shards has on
-//! Unix hosts.
+//! test guest (crates/testguest/src/workload.rs).
 
-#![cfg(unix)]
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 mod common;
@@ -13,7 +11,10 @@ mod common;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use common::{TempDir, cannot_run_vms, guest_init, kernel, run_shards_env, served};
+use common::{
+    TempDir, cannot_run_vms, guest_init, kernel, rootfs_dir, run_shards_env, served, served_counting,
+    sha256_digest, test_image,
+};
 
 const TIMEOUT: Duration = Duration::from_secs(120);
 
@@ -34,12 +35,12 @@ fn now_ns() -> u128 {
 }
 
 #[test]
-fn images_run_from_a_registry_as_docker_run_runs_them() {
+fn images_run_from_a_registry() {
     if cannot_run_vms() {
         eprintln!("SKIP: this host cannot run VMs");
         return;
     }
-    let (image, served) = served();
+    let (image, served) = served_counting();
     let home = TempDir::new("images");
     let env = [
         ("SHARDS_HOME", home.as_os_str()),
@@ -86,6 +87,633 @@ fn images_run_from_a_registry_as_docker_run_runs_them() {
         asked,
         "the stored image served the second run"
     );
+
+    // Named by the digest its tag resolved to, the store keeping that digest beside its
+    // tag: the stored image, whether the run may pull or not, nothing fetched.
+    let digests = run_shards_env(
+        &["image"],
+        &["inspect", "--format", "{{index .RepoDigests 0}}", image.as_str()],
+        &env,
+        TIMEOUT,
+    );
+    assert_eq!(digests.status, Some(0), "{}", digests.stderr);
+    let pinned = digests.stdout.trim().to_string();
+    assert!(pinned.contains("@sha256:"), "{pinned}");
+    for pull in ["never", "missing"] {
+        let run = run_shards_env(&["run"], &["--pull", pull, pinned.as_str()], &env, TIMEOUT);
+        let shown = format!("--- stdout\n{}\n--- stderr\n{}", run.stdout, run.stderr);
+        assert_eq!(run.status, Some(0), "--pull {pull}\n{shown}");
+        assert!(
+            run.stdout.lines().any(|l| l == "uid 1000"),
+            "--pull {pull}\n{shown}"
+        );
+        assert!(
+            !run.stderr.contains("Unable to find image"),
+            "--pull {pull}\n{shown}"
+        );
+    }
+    assert_eq!(
+        served.load(Ordering::SeqCst),
+        asked,
+        "runs by the digest fetched nothing"
+    );
+
+    // The stored config changed under its digest, to run `exit 9`: a run that may not
+    // pull refuses it rather than run a spec nobody pulled; one that may pulls it again,
+    // and runs what was pulled (audit A11).
+    let (_, blobs) = test_image();
+    let config = &blobs[0];
+    let digest = sha256_digest(config);
+    let stored = home
+        .join("images/blobs/sha256")
+        .join(digest.trim_start_matches("sha256:"));
+    assert_eq!(&std::fs::read(&stored).unwrap(), config);
+    let text = String::from_utf8(config.clone()).unwrap();
+    let changed = text.replace(r#""Cmd":["report"]"#, r#""Cmd":["exit","9"]"#);
+    assert_ne!(changed, text);
+    std::fs::write(&stored, changed).unwrap();
+    let refused = run_shards_env(&["run"], &["--pull", "never", image.as_str()], &env, TIMEOUT);
+    let shown = format!("--- stdout\n{}\n--- stderr\n{}", refused.stdout, refused.stderr);
+    assert_eq!(refused.status, Some(125), "{shown}");
+    assert!(
+        refused.stderr.contains(&format!(
+            "the stored copy has changed; pull '{image}' again to mend it"
+        )),
+        "{shown}"
+    );
+    let mended = run_shards_env(&["run"], &["--pull", "missing", image.as_str()], &env, TIMEOUT);
+    let shown = format!("--- stdout\n{}\n--- stderr\n{}", mended.stdout, mended.stderr);
+    assert_eq!(mended.status, Some(0), "{shown}");
+    assert!(
+        mended.stdout.lines().any(|l| l == "uid 1000"),
+        "the pulled command ran\n{shown}"
+    );
+    assert!(
+        mended
+            .stderr
+            .contains(&format!("the stored copy has changed; pulling '{image}' again")),
+        "{shown}"
+    );
+    assert!(!mended.stderr.contains("Unable to find image"), "{shown}");
+    assert_eq!(&std::fs::read(&stored).unwrap(), config, "the stored copy mended");
+}
+
+/// An image whose root filesystem would take more than the daemon's limits allow is
+/// refused, as `docker run` refuses what its daemon cannot do, and nothing of it is built
+/// (audit A10): here it has more entries than `SHARDS_MAX_IMAGE_ENTRIES`.
+#[test]
+fn an_image_past_its_limits_is_refused() {
+    if cannot_run_vms() {
+        eprintln!("SKIP: this host cannot run VMs");
+        return;
+    }
+    let (image, _) = served();
+    let home = TempDir::new("images-limits");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+        ("SHARDS_MAX_IMAGE_ENTRIES", "3".as_ref()),
+    ];
+    let refused = run_shards_env(&["run"], &[image.as_str()], &env, TIMEOUT);
+    let shown = format!("--- stdout\n{}\n--- stderr\n{}", refused.stdout, refused.stderr);
+    assert_eq!(refused.status, Some(125), "{shown}");
+    assert!(
+        refused
+            .stderr
+            .contains("more than 3 entries (SHARDS_MAX_IMAGE_ENTRIES)"),
+        "{shown}"
+    );
+    let built = std::fs::read_dir(home.join(rootfs_dir()))
+        .unwrap()
+        .filter(|e| !e.as_ref().unwrap().file_name().to_string_lossy().starts_with('.'))
+        .count();
+    assert_eq!(built, 0, "{shown}");
+    let stopped = run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT);
+    assert_eq!(stopped.status, Some(0));
+}
+
+/// A pull's platform is `--platform`'s, else SHARDS_DEFAULT_PLATFORM's, else
+/// DOCKER_DEFAULT_PLATFORM's, as docker/cli defaults the flag (v29.8.1
+/// cli/command/image/pull.go): an index of two platforms, pulled into a home of its own
+/// each time, is stored for the one the defaults say, and for the one a pull names whatever
+/// they say.
+#[test]
+fn a_pulls_platform_defaults_to_the_default_platforms() {
+    let (index, blobs, _) = common::two_platform_image();
+    let (port, _) = common::registry(index, blobs);
+    let image = format!("127.0.0.1:{port}/test/image:v1");
+    let (arch, other) = if cfg!(target_arch = "aarch64") {
+        ("arm64", "amd64")
+    } else {
+        ("amd64", "arm64")
+    };
+    let (ours, theirs) = (format!("linux/{arch}"), format!("linux/{other}"));
+    for (defaults, named, want) in [
+        (vec![("DOCKER_DEFAULT_PLATFORM", theirs.as_str())], None, other),
+        (
+            vec![
+                ("SHARDS_DEFAULT_PLATFORM", theirs.as_str()),
+                ("DOCKER_DEFAULT_PLATFORM", ours.as_str()),
+            ],
+            None,
+            other,
+        ),
+        (
+            vec![("DOCKER_DEFAULT_PLATFORM", theirs.as_str())],
+            Some(ours.as_str()),
+            arch,
+        ),
+        (vec![], None, arch),
+    ] {
+        let home = TempDir::new("pull-platform");
+        let mut env = vec![("SHARDS_HOME", home.as_os_str())];
+        env.extend(defaults.iter().map(|(k, v)| (*k, std::ffi::OsStr::new(*v))));
+        let mut args = Vec::new();
+        if let Some(p) = named {
+            args.extend(["--platform", p]);
+        }
+        args.extend(["-q", image.as_str()]);
+        let pulled = run_shards_env(&["pull"], &args, &env, TIMEOUT);
+        assert_eq!(pulled.status, Some(0), "{defaults:?} {named:?}: {pulled}");
+        let inspected = run_shards_env(
+            &["image", "inspect"],
+            &["--format", "{{.Architecture}}", image.as_str()],
+            &env,
+            TIMEOUT,
+        );
+        assert_eq!(inspected.status, Some(0), "{inspected}");
+        assert_eq!(inspected.stdout.trim(), want, "{defaults:?} {named:?}");
+    }
+}
+
+/// A registry off loopback that speaks plain HTTP is pulled from once Docker's daemon
+/// configuration names it insecure (D194), as dockerd pulls from one: the rootless
+/// engine's daemon.json, under `XDG_CONFIG_HOME` (the native one's on Windows, under
+/// `PROGRAMDATA`). Not named, it is asked in HTTPS alone, and its plain answer is the
+/// pull's failure.
+#[test]
+fn a_registry_daemon_json_names_insecure_is_pulled_from_in_plain_http() {
+    let Some(ip) = common::routable_v4() else {
+        eprintln!("SKIP: this host has no IPv4 route to reach itself off loopback at");
+        return;
+    };
+    let (manifest, blobs) = test_image();
+    let (port, _) = common::registry_at(ip.into(), manifest, blobs);
+    let image = format!("{ip}:{port}/test/image:v1");
+    let home = TempDir::new("insecure");
+    let config = home.join("config");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("XDG_CONFIG_HOME", config.as_os_str()),
+        ("PROGRAMDATA", config.as_os_str()),
+    ];
+    let unnamed = run_shards_env(&["pull"], &["-q", image.as_str()], &env, TIMEOUT);
+    assert_ne!(unnamed.status, Some(0), "{unnamed}");
+    assert!(
+        unnamed
+            .stderr
+            .contains("server gave HTTP response to HTTPS client"),
+        "{unnamed}"
+    );
+    let file = if cfg!(windows) {
+        config.join("docker").join("config").join("daemon.json")
+    } else {
+        config.join("docker").join("daemon.json")
+    };
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    std::fs::write(&file, format!(r#"{{"insecure-registries": ["{ip}:{port}"]}}"#)).unwrap();
+    let pulled = run_shards_env(&["pull"], &["-q", image.as_str()], &env, TIMEOUT);
+    assert_eq!(pulled.status, Some(0), "{pulled}");
+    assert_eq!(pulled.stdout.trim(), image, "{pulled}");
+    // A configuration dockerd would not start with fails the pull, saying where it is.
+    std::fs::write(&file, r#"{"insecure-registries": ["ftp://a"]}"#).unwrap();
+    let refused = run_shards_env(&["pull"], &["-q", image.as_str()], &env, TIMEOUT);
+    assert_ne!(refused.status, Some(0), "{refused}");
+    assert!(refused.stderr.contains("should not contain '://'"), "{refused}");
+    let stopped = run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT);
+    assert_eq!(stopped.status, Some(0), "{stopped}");
+}
+
+/// Docker Hub's mirrors (D194): a pull of a Docker Hub repository asks the mirror Docker's
+/// daemon configuration names first, as dockerd does, and an image the mirror holds is
+/// the one pulled: the test image, at a Docker Hub name it is not at, served by a
+/// registry on loopback. Its digest is the test image's, which Docker Hub has not.
+#[test]
+fn a_mirror_daemon_json_names_serves_docker_hubs_pull() {
+    let (manifest, blobs) = test_image();
+    let digest = sha256_digest(&manifest);
+    let (port, served) = common::registry(manifest, blobs);
+    let home = TempDir::new("mirror");
+    let config = home.join("config");
+    let file = if cfg!(windows) {
+        config.join("docker").join("config").join("daemon.json")
+    } else {
+        config.join("docker").join("daemon.json")
+    };
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    std::fs::write(
+        &file,
+        format!(r#"{{"registry-mirrors": ["http://127.0.0.1:{port}"]}}"#),
+    )
+    .unwrap();
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("XDG_CONFIG_HOME", config.as_os_str()),
+        ("PROGRAMDATA", config.as_os_str()),
+    ];
+    let pulled = run_shards_env(&["pull"], &["-q", "test/image:v1"], &env, TIMEOUT);
+    assert_eq!(pulled.status, Some(0), "{pulled}");
+    assert_eq!(pulled.stdout.trim(), "docker.io/test/image:v1", "{pulled}");
+    assert!(served.load(Ordering::SeqCst) > 0, "the mirror served it");
+    let digests = run_shards_env(
+        &["image", "inspect"],
+        &["--format", "{{json .RepoDigests}}", "test/image:v1"],
+        &env,
+        TIMEOUT,
+    );
+    assert_eq!(digests.status, Some(0), "{digests}");
+    assert!(digests.stdout.contains(&digest), "{digests}");
+    let stopped = run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT);
+    assert_eq!(stopped.status, Some(0), "{stopped}");
+}
+
+/// `pull --output-agentfile` writes the Agentfile of the image it pulled once it is
+/// through, as `make agentfile` writes one: into a directory as its `Agentfile`, where
+/// `shards build DIR` finds one, or to the file named; of the platform pulled. A pull that
+/// fails writes nothing, and `-a`, which names no one image, is refused before it pulls.
+#[test]
+fn a_pull_writes_its_images_agentfile_where_asked() {
+    let (index, blobs, _) = common::two_platform_image();
+    let (port, _) = common::registry(index, blobs);
+    let image = format!("127.0.0.1:{port}/test/image:v1");
+    let theirs = if cfg!(target_arch = "aarch64") {
+        "linux/amd64"
+    } else {
+        "linux/arm64"
+    };
+    let home = TempDir::new("pull-agentfile");
+    let out = home.join("out");
+    std::fs::create_dir_all(&out).unwrap();
+    let env = [("SHARDS_HOME", home.as_os_str())];
+    let shards = |command: &[&str], args: &[&str]| run_shards_env(command, args, &env, TIMEOUT);
+    let names = || {
+        let mut names: Vec<String> = std::fs::read_dir(&out)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    };
+    let made = |platform: &[&str]| {
+        let mut args = platform.to_vec();
+        args.push(image.as_str());
+        let made = shards(&["make", "agentfile"], &args);
+        assert_eq!(made.status, Some(0), "{made}");
+        made.stdout
+    };
+    let dir = out.to_str().unwrap();
+    let pulled = shards(
+        &["pull"],
+        &[
+            "-q",
+            "--platform",
+            theirs,
+            "--output-agentfile",
+            dir,
+            image.as_str(),
+        ],
+    );
+    assert_eq!(pulled.status, Some(0), "{pulled}");
+    let their_agentfile = std::fs::read_to_string(out.join("Agentfile")).unwrap();
+    assert!(
+        their_agentfile.contains(&format!("\nFROM {image}@sha256:")),
+        "{their_agentfile}"
+    );
+    assert_eq!(their_agentfile, made(&["--platform", theirs]));
+    let ours = out.join("ours");
+    let pulled = shards(
+        &["pull"],
+        &["-q", "--output-agentfile", ours.to_str().unwrap(), image.as_str()],
+    );
+    assert_eq!(pulled.status, Some(0), "{pulled}");
+    let our_agentfile = std::fs::read_to_string(&ours).unwrap();
+    assert_eq!(our_agentfile, made(&[]));
+    assert_ne!(our_agentfile, their_agentfile, "each platform's own");
+    assert_eq!(names(), ["Agentfile", "ours"]);
+    let missing = format!("127.0.0.1:{port}/test/missing:1");
+    let none = out.join("none");
+    let failed = shards(
+        &["pull"],
+        &[
+            "-q",
+            "--output-agentfile",
+            none.to_str().unwrap(),
+            missing.as_str(),
+        ],
+    );
+    assert_ne!(failed.status, Some(0), "{failed}");
+    let repository = format!("127.0.0.1:{port}/test/image");
+    let all = shards(
+        &["pull"],
+        &[
+            "-a",
+            "--output-agentfile",
+            none.to_str().unwrap(),
+            repository.as_str(),
+        ],
+    );
+    assert_eq!(all.status, Some(1), "{all}");
+    assert!(all.stderr.contains("--all-tags does not name"), "{all}");
+    assert_eq!(names(), ["Agentfile", "ours"]);
+}
+
+/// A run of another CPU's image runs under its CPU's emulator (D179), which its microVM's
+/// own kernel registers as it boots: from a cold boot, which saves its template, then from a
+/// copy of the template, which keeps it registered. Asked for by `--platform`, it is not
+/// warned of; named by its lone manifest and no platform, it runs too, warned of as dockerd
+/// warns of it (moby docker-v29.3.1 daemon/create.go), as does an index of its CPU's alone
+/// (PM M250). An image keeps each platform pulled, as dockerd's does (M243): pulled for
+/// another platform where this host's is here, it is up to date, and a run that asks no
+/// platform runs this host's still. A platform not here is refused where the run may not
+/// pull; a lone manifest of another platform than the one asked, once pulled; an ID's, as
+/// dockerd refuses it, where Docker's CLI would pull the ID as a repository's name.
+#[test]
+fn a_run_of_another_cpus_image_runs_under_its_emulator() {
+    if cannot_run_vms() {
+        eprintln!("SKIP: this host cannot run VMs");
+        return;
+    }
+    let home = TempDir::new("emulated-runs");
+    let env = [("SHARDS_HOME", home.as_os_str())];
+    let args = [
+        "use".as_ref(),
+        "--kernel".as_ref(),
+        kernel().as_os_str(),
+        "--init".as_ref(),
+        guest_init().as_os_str(),
+    ];
+    let recorded = run_shards_env(&["guest"], &args, &env, TIMEOUT);
+    assert_eq!(recorded.status, Some(0), "{}", recorded.stderr);
+    let booted = |run: &common::Run| run.marker_us(shards_abi::marker::INIT_STARTED).is_some();
+    // alpine:3.22's index and its 64-bit manifests (Docker Hub, 2026-10-15).
+    const INDEX: &str = "alpine:3.22@sha256:5291449c3df73caf6ed85e649dec1b9e818b39a5d8c871e97afc13e9cd5e8fa8";
+    let (other, machine, lone, lone_platform) = if cfg!(target_arch = "aarch64") {
+        (
+            "amd64",
+            "x86_64",
+            "alpine@sha256:3e9b4b680bfc9fb5269227cffbd6d42be39fbf7c0b908123913864aa4447e764",
+            "linux/amd64",
+        )
+    } else {
+        (
+            "arm64",
+            "aarch64",
+            "alpine@sha256:2e1a7aa4cbc4e9e5222bb4c24a839aa1a6170ea5492d644777ce7b178824e44f",
+            "linux/arm64/v8",
+        )
+    };
+    let platform = format!("linux/{other}");
+    let ours = if cfg!(target_arch = "aarch64") {
+        "arm64"
+    } else {
+        "amd64"
+    };
+    let run = |args: &[&str]| run_shards_env(&["run"], args, &env, TIMEOUT);
+    let shown = |r: &common::Run| format!("--- stdout\n{}\n--- stderr\n{}", r.stdout, r.stderr);
+    let pulled = run_shards_env(&["pull"], &[INDEX], &env, TIMEOUT);
+    assert_eq!(pulled.status, Some(0), "{}", shown(&pulled));
+    // By its digest alone: here by another name of its repository, so up to date.
+    let digest_only = INDEX.replace(":3.22@", "@");
+    let again = run_shards_env(&["pull"], &[&digest_only], &env, TIMEOUT);
+    let shown_again = shown(&again);
+    assert_eq!(again.status, Some(0), "{shown_again}");
+    assert!(
+        shown_again.contains(&format!("Status: Image is up to date for {digest_only}")),
+        "{shown_again}"
+    );
+    let first = run(&["--rm", "--platform", &platform, INDEX, "uname", "-m"]);
+    let shown_first = shown(&first);
+    assert_eq!(first.status, Some(0), "{shown_first}");
+    assert_eq!(first.stdout.trim(), machine, "{shown_first}");
+    assert!(booted(&first), "{shown_first}");
+    assert!(
+        !first.stderr.contains("WARNING"),
+        "asked for, not warned of: {shown_first}"
+    );
+    assert!(
+        first
+            .stderr
+            .contains(&format!("Unable to find image '{INDEX}' locally"))
+            && first
+                .stderr
+                .contains(&format!("Status: Image is up to date for {INDEX}")),
+        "another platform of an image here: {shown_first}"
+    );
+    if common::pools() {
+        let second = run(&[
+            "--rm",
+            "--pull",
+            "never",
+            "--platform",
+            &platform,
+            INDEX,
+            "uname",
+            "-m",
+        ]);
+        let shown = format!("--- stdout\n{}\n--- stderr\n{}", second.stdout, second.stderr);
+        assert_eq!(second.status, Some(0), "{shown}");
+        assert_eq!(
+            second.stdout.trim(),
+            machine,
+            "its emulator kept in the template: {shown}"
+        );
+        assert!(!booted(&second), "restored, not booted: {shown}");
+    }
+    // This host's still, where no platform is asked.
+    let native = run(&["--rm", INDEX, "uname", "-m"]);
+    let shown_native = shown(&native);
+    assert_eq!(native.status, Some(0), "{shown_native}");
+    assert_eq!(native.stdout.trim(), std::env::consts::ARCH, "{shown_native}");
+    assert!(
+        !native.stderr.contains("WARNING") && !native.stderr.contains("Unable to find"),
+        "{shown_native}"
+    );
+    let never = run(&[
+        "--rm",
+        "--pull",
+        "never",
+        "--platform",
+        "linux/s390x",
+        INDEX,
+        "true",
+    ]);
+    let shown_never = shown(&never);
+    assert_eq!(never.status, Some(125), "{shown_never}");
+    assert!(
+        never.stderr.contains(&format!(
+            "image with reference {INDEX} was found but does not provide the specified platform (linux/s390x)"
+        )),
+        "{shown_never}"
+    );
+    // By an ID: refused, no repository of its name pulled.
+    let id = INDEX.rsplit(':').next().and_then(|hex| hex.get(..12)).unwrap();
+    let by_id = run(&["--rm", "--platform", "linux/s390x", id, "true"]);
+    let shown_id = shown(&by_id);
+    assert_eq!(by_id.status, Some(125), "{shown_id}");
+    assert!(
+        by_id.stderr.contains(&format!(
+            "image with reference {INDEX} was found but does not provide the specified platform (linux/s390x)"
+        )) && !by_id.stderr.contains("Unable to find"),
+        "{shown_id}"
+    );
+    let warned = run(&["--rm", lone, "uname", "-m"]);
+    let shown_warned = shown(&warned);
+    assert_eq!(warned.status, Some(0), "{shown_warned}");
+    assert_eq!(warned.stdout.trim(), machine, "{shown_warned}");
+    assert!(
+        warned.stderr.contains(&format!(
+            "WARNING: The requested image's platform ({lone_platform}) does not match the detected host platform (linux/"
+        )) && warned
+            .stderr
+            .contains(") and no specific platform was requested"),
+        "{shown_warned}"
+    );
+    // Its content here as the index's, but no name of its repository resolved to it.
+    assert!(
+        warned
+            .stderr
+            .contains(&format!("Status: Downloaded newer image for {lone}")),
+        "{shown_warned}"
+    );
+    // An index of the other CPU's alone (Docker Hub's per-CPU alpine:3.22, 2026-10-17, whose
+    // one manifest is `lone`): its manifest runs, as `lone` does, where shards found none to
+    // pull (PM M250).
+    let alone = if cfg!(target_arch = "aarch64") {
+        "amd64/alpine:3.22@sha256:33e4ce3b40f4bd419050b3b78101fa58b44c20c5288c0a50ce400e99a3768fc7"
+    } else {
+        "arm64v8/alpine:3.22@sha256:9a5c524dcd9acdcdb0683f7706045be0a6c464cc40ebad5708a5912c6c17eeda"
+    };
+    let foreign = run(&["--rm", alone, "uname", "-m"]);
+    let shown_foreign = shown(&foreign);
+    assert_eq!(foreign.status, Some(0), "{shown_foreign}");
+    assert_eq!(foreign.stdout.trim(), machine, "{shown_foreign}");
+    assert!(
+        foreign.stderr.contains(&format!("Unable to find image '{alone}' locally"))
+            && foreign.stderr.contains(&format!(
+                "WARNING: The requested image's platform ({lone_platform}) does not match the detected host platform (linux/"
+            )),
+        "{shown_foreign}"
+    );
+    // 32-bit Arm's, which no guest runs itself (PM M250), on either host: emulated, and
+    // warned of where no platform was asked (Docker Hub's arm32v7/alpine:3.22, 2026-10-18,
+    // whose one manifest is arm/v7's).
+    const ARM32: &str =
+        "arm32v7/alpine:3.22@sha256:f7d3e5b6884ca6ad7154b91c3c9734db235bad4213092e7eba04dd96d4d61d3e";
+    let arm32 = run(&["--rm", ARM32, "uname", "-m"]);
+    let shown_arm32 = shown(&arm32);
+    assert_eq!(arm32.status, Some(0), "{shown_arm32}");
+    assert_eq!(arm32.stdout.trim(), "armv7l", "{shown_arm32}");
+    assert!(
+        arm32.stderr.contains(
+            "WARNING: The requested image's platform (linux/arm/v7) does not match the detected host platform (linux/"
+        ),
+        "{shown_arm32}"
+    );
+    // A program the emulator runs that dies of a fault ends its run as a native one's does,
+    // 132 for SIGILL: the emulator sends itself the signal to die by, which a namespace's
+    // PID 1 is never sent, so the command runs under shards' reaper (PM M251), where as PID
+    // 1 its run never ended.
+    // Bound from a host's directory, which Windows shares with the platform parity plan's
+    // step 6.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let crashing = TempDir::new("emulated-crash");
+        let crash = crashing.join("crash");
+        std::fs::write(&crash, common::crashing_program(other)).unwrap();
+        std::fs::set_permissions(&crash, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let bound = format!("{}:/t:ro", crashing.display());
+        let crashed = run(&["--rm", "-v", &bound, lone, "/t/crash"]);
+        assert_eq!(crashed.status, Some(132), "{}", shown(&crashed));
+    }
+    // A lone manifest is pulled whatever its platform, and run for its own alone.
+    let asked = format!("linux/{ours}");
+    let strict = run(&["--rm", "--platform", &asked, lone, "true"]);
+    let shown_strict = shown(&strict);
+    assert_eq!(strict.status, Some(125), "{shown_strict}");
+    assert!(
+        strict
+            .stderr
+            .contains(&format!("Unable to find image '{lone}' locally"))
+            && strict.stderr.contains(&format!(
+                "image with reference {lone} was found but does not provide the specified platform ({asked})"
+            )),
+        "{shown_strict}"
+    );
+    let lenient = run_shards_env(&["pull"], &["--platform", &asked, lone], &env, TIMEOUT);
+    assert_eq!(lenient.status, Some(0), "{}", shown(&lenient));
+    let stopped = run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT);
+    assert_eq!(stopped.status, Some(0), "{}", stopped.stderr);
+}
+
+/// A guest runs its host's x86-64 level: the flags its own kernel reads of its CPU hold
+/// every feature of the level the host's CPU reaches (the x86-64 psABI's levels, as
+/// go-archvariant reads them), the basis on which an x86_64 host's guests take amd64's
+/// levelled builds as their own (shards_image::platform::guest). x86_64 hosts alone.
+#[test]
+fn a_guest_runs_its_hosts_x86_64_level() {
+    if !cfg!(target_arch = "x86_64") {
+        eprintln!("SKIP: an x86_64 host's");
+        return;
+    }
+    if cannot_run_vms() {
+        eprintln!("SKIP: this host cannot run VMs");
+        return;
+    }
+    let home = TempDir::new("guest-level");
+    let env = [("SHARDS_HOME", home.as_os_str())];
+    let args = [
+        "use".as_ref(),
+        "--kernel".as_ref(),
+        kernel().as_os_str(),
+        "--init".as_ref(),
+        guest_init().as_os_str(),
+    ];
+    let recorded = run_shards_env(&["guest"], &args, &env, TIMEOUT);
+    assert_eq!(recorded.status, Some(0), "{}", recorded.stderr);
+    // Docker Hub's alpine:3.22, amd64's manifest (2026-10-15).
+    let alpine = "alpine@sha256:3e9b4b680bfc9fb5269227cffbd6d42be39fbf7c0b908123913864aa4447e764";
+    let read = run_shards_env(&["run"], &["--rm", alpine, "cat", "/proc/cpuinfo"], &env, TIMEOUT);
+    assert_eq!(read.status, Some(0), "{}", read.stderr);
+    let flags = read
+        .stdout
+        .lines()
+        .find_map(|l| {
+            l.strip_prefix("flags")
+                .and_then(|r| r.split_once(':'))
+                .map(|(_, f)| f)
+        })
+        .expect("the guest's flags");
+    let has = |all: &[&str]| all.iter().all(|f| flags.split_whitespace().any(|g| g == *f));
+    let level = if !has(&["cx16", "lahf_lm", "popcnt", "pni", "sse4_1", "sse4_2", "ssse3"]) {
+        1
+    } else if !has(&[
+        "avx", "avx2", "bmi1", "bmi2", "f16c", "fma", "abm", "movbe", "xsave",
+    ]) {
+        2
+    } else if !has(&["avx512f", "avx512bw", "avx512cd", "avx512dq", "avx512vl"]) {
+        3
+    } else {
+        4
+    };
+    assert_eq!(
+        format!("v{level}"),
+        shards_image::platform::maximum().variant,
+        "the guest's flags: {flags}"
+    );
+    let stopped = run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT);
+    assert_eq!(stopped.status, Some(0), "{}", stopped.stderr);
 }
 
 /// With the recorded guest, the first run of an image boots and saves a template, and the
@@ -110,10 +738,13 @@ fn repeat_runs_restore_a_template_of_the_image() {
     let recorded = run_shards_env(&["guest"], &args, &env, TIMEOUT);
     assert_eq!(recorded.status, Some(0), "{}", recorded.stderr);
     let booted = |run: &common::Run| run.marker_us(shards_abi::marker::INIT_STARTED).is_some();
+    // The templates, each a directory: the daemon's record of each is a file beside it.
     let templates = || -> Vec<String> {
         std::fs::read_dir(home.join("templates"))
             .map(|d| {
-                d.map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+                d.map(|e| e.unwrap())
+                    .filter(|e| e.path().is_dir())
+                    .map(|e| e.file_name().to_string_lossy().into_owned())
                     .collect()
             })
             .unwrap_or_default()
@@ -122,7 +753,7 @@ fn repeat_runs_restore_a_template_of_the_image() {
     let first = run_shards_env(&["run"], &[image.as_str()], &env, TIMEOUT);
     assert_eq!(first.status, Some(0), "{}", first.stderr);
     assert!(booted(&first), "{}", first.stderr);
-    if !shards_vmm::vm::SNAPSHOTS {
+    if !common::pools() {
         assert!(templates().is_empty(), "no snapshots here: {:?}", templates());
         return;
     }
@@ -140,18 +771,16 @@ fn repeat_runs_restore_a_template_of_the_image() {
         assert!(!booted(&recording), "{}", recording.stderr);
         assert_eq!(recording.prefetched(), Some(0), "{}", recording.stderr);
     }
-    let working_set = home.join("templates").join(&saved[0]).join("working-set");
-    let deadline = std::time::Instant::now() + TIMEOUT;
-    while shards_vmm::vm::WORKING_SETS && !working_set.exists() && std::time::Instant::now() < deadline {
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
+    // Stopped at once, the daemon writes it before it exits, which `daemon stop` waits
+    // for: no restore here records it again where restores record none.
+    let stopped = run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT);
+    assert_eq!(stopped.status, Some(0), "{}", stopped.stderr);
+    let working_set = common::snapshot_file(&home.join("templates").join(&saved[0]), "working-set");
     let recorded = std::fs::metadata(&working_set).map(|m| m.len()).unwrap_or(0);
     assert!(
         recorded > 1024 || !shards_vmm::vm::WORKING_SETS,
         "a working set of {recorded} bytes"
     );
-    let stopped = run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT);
-    assert_eq!(stopped.status, Some(0), "{}", stopped.stderr);
 
     let before = now_ns();
     let second = run_shards_env(&["run"], &["--pull", "never", image.as_str()], &env, TIMEOUT);
@@ -194,7 +823,7 @@ fn repeat_runs_restore_a_template_of_the_image() {
     // again. The daemon's pool holds VMs restored before the damage, so a new daemon, with
     // none, has to find out.
     std::fs::write(
-        home.join("templates").join(&saved[0]).join("state"),
+        common::snapshot_file(&home.join("templates").join(&saved[0]), "state"),
         b"not a snapshot",
     )
     .unwrap();
@@ -216,4 +845,629 @@ fn repeat_runs_restore_a_template_of_the_image() {
         "restored from the template saved again: {}",
         fourth.stderr
     );
+}
+
+/// An Agentfile's image restores its template as any image does. Its template is saved
+/// with the in-VM server's device after its root filesystem (D60), and each restore is
+/// given that device too: given its root filesystem alone, every restore was refused ("the
+/// template names files it was not given") and each run booted. The guest is recorded
+/// here, as users run, where `SHARDS_KERNEL` and `SHARDS_INIT` would boot every run.
+#[test]
+fn an_agentfiles_image_restores_its_template_too() {
+    if cannot_run_vms() {
+        eprintln!("SKIP: this host cannot run VMs");
+        return;
+    }
+    let (image, _) = served();
+    let home = TempDir::new("agentfile-templates");
+    let env = [("SHARDS_HOME", home.as_os_str())];
+    let args = [
+        "use".as_ref(),
+        "--kernel".as_ref(),
+        kernel().as_os_str(),
+        "--init".as_ref(),
+        guest_init().as_os_str(),
+    ];
+    let recorded = run_shards_env(&["guest"], &args, &env, TIMEOUT);
+    assert_eq!(recorded.status, Some(0), "{}", recorded.stderr);
+    let ctx = TempDir::new("agentfile-templates-ctx");
+    std::fs::create_dir_all(ctx.join("agent")).unwrap();
+    std::fs::write(ctx.join("agent/agent.json"), r#"{"name":"main"}"#).unwrap();
+    std::fs::write(
+        ctx.join("Agentfile"),
+        format!("FROM {image}\nAGENT main FROM ./agent\n"),
+    )
+    .unwrap();
+    let built = run_shards_env(
+        &["build"],
+        &["-t", "agents:1", ctx.to_str().unwrap()],
+        &env,
+        TIMEOUT,
+    );
+    assert_eq!(built.status, Some(0), "{}", built.stderr);
+    let booted = |run: &common::Run| run.marker_us(shards_abi::marker::INIT_STARTED).is_some();
+    let first = run_shards_env(&["run"], &["agents:1"], &env, TIMEOUT);
+    assert_eq!(first.status, Some(0), "{}", first.stderr);
+    assert!(booted(&first), "{}", first.stderr);
+    if !common::pools() {
+        return;
+    }
+    for _ in 0..2 {
+        let again = run_shards_env(&["run"], &["agents:1"], &env, TIMEOUT);
+        let log = std::fs::read_to_string(home.join("daemon.log")).unwrap_or_default();
+        let shown = format!(
+            "--- stdout\n{}\n--- stderr\n{}\n--- daemon.log\n{log}",
+            again.stdout, again.stderr
+        );
+        assert_eq!(again.status, Some(0), "{shown}");
+        assert!(!again.stderr.contains("does not restore"), "{shown}");
+        assert!(!booted(&again), "restored, not booted: {shown}");
+        assert!(again.marker_us(shards_abi::marker::RESUMED).is_some(), "{shown}");
+    }
+    let log = std::fs::read_to_string(home.join("daemon.log")).unwrap_or_default();
+    assert!(!log.contains("names files it was not given"), "{log}");
+    let stopped = run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT);
+    assert_eq!(stopped.status, Some(0), "{}", stopped.stderr);
+}
+
+/// The guest `kernel()` and `guest_init()` recorded in `home`, as users run, so that runs
+/// save and restore templates.
+#[cfg(unix)]
+fn record_guest(env: &[(&str, &std::ffi::OsStr)]) {
+    let args = [
+        "use".as_ref(),
+        "--kernel".as_ref(),
+        kernel().as_os_str(),
+        "--init".as_ref(),
+        guest_init().as_os_str(),
+    ];
+    let recorded = run_shards_env(&["guest"], &args, env, TIMEOUT);
+    assert_eq!(recorded.status, Some(0), "{}", recorded.stderr);
+}
+
+/// The one template in `home`.
+#[cfg(unix)]
+fn the_template(home: &std::path::Path) -> std::path::PathBuf {
+    let dirs: Vec<std::path::PathBuf> = std::fs::read_dir(home.join("templates"))
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.is_dir())
+        .collect();
+    assert_eq!(dirs.len(), 1, "{dirs:?}");
+    dirs.into_iter().next().unwrap()
+}
+
+/// A VM taken over while it saves a template leaves what it likes in the directory it was
+/// granted, which every later run restores (PM M165); here, as one would, a link named for
+/// the daemon's record to a file of the user's (a VM process wrapped by
+/// `SHARDS_VM_BINARY`, which plants it and becomes this build's). The daemon writes its
+/// record beside the template, through nothing the VM left: the file is untouched, and the
+/// template still restores. Unix's: its wrapper is a script that execs the VM process, and
+/// on Windows a VM writes nothing of the template it saves, which its spawner stages and
+/// commits on its word, then gives up (D196): a VM taken over leaves nothing there.
+#[cfg(unix)]
+#[test]
+fn a_templates_saver_leaves_nothing_the_daemon_writes_through() {
+    if cannot_run_vms() || !common::pools() {
+        eprintln!("SKIP: this host saves no templates");
+        return;
+    }
+    let (image, _) = served();
+    let home = TempDir::new("saver-plants");
+    let victim = TempDir::new("saver-plants-victim");
+    let canary = victim.join("canary");
+    std::fs::write(&canary, b"the user's\n").unwrap();
+    let wrapper = victim.join("shards-vm");
+    // Exec'd by the daemon's spawner.
+    common::program(
+        &wrapper,
+        &format!(
+            "#!/bin/sh\nprev=\nfor a in \"$@\"; do\n  if [ \"$prev\" = --snapshot-dir ]; then mkdir -p \"$a\" && ln -s '{canary}' \"$a/origin.json\"; fi\n  prev=$a\ndone\nexec '{vm}' \"$@\"\n",
+            canary = canary.display(),
+            vm = common::shards_vm().display()
+        ),
+    );
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_VM_BINARY", wrapper.as_os_str()),
+    ];
+    record_guest(&env);
+    let booted = |run: &common::Run| run.marker_us(shards_abi::marker::INIT_STARTED).is_some();
+    let first = run_shards_env(&["run"], &[image.as_str()], &env, TIMEOUT);
+    assert_eq!(first.status, Some(0), "{}", first.stderr);
+    assert!(booted(&first), "{}", first.stderr);
+    let template = the_template(&home);
+    assert!(
+        std::fs::symlink_metadata(template.join("origin.json")).is_ok_and(|m| m.file_type().is_symlink()),
+        "the wrapped VM planted its link"
+    );
+    assert_eq!(
+        std::fs::read(&canary).unwrap(),
+        b"the user's\n",
+        "written through the link"
+    );
+    let second = run_shards_env(&["run"], &["--pull", "never", image.as_str()], &env, TIMEOUT);
+    assert_eq!(second.status, Some(0), "{}", second.stderr);
+    assert!(!booted(&second), "restored, not booted: {}", second.stderr);
+    assert_eq!(std::fs::read(&canary).unwrap(), b"the user's\n");
+    let stopped = run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT);
+    assert_eq!(stopped.status, Some(0), "{}", stopped.stderr);
+}
+
+/// What a VM taken over while it saved a template could have left in it, for every later
+/// restore to meet (PM M165): its memory a link to a FIFO outside the template, and its
+/// working set a FIFO. A restore opens neither, nor waits on either: no reader ever holds
+/// either FIFO while the next run happens, which boots instead, the template refused.
+/// Unix's: FIFOs are, and on Windows a VM writes nothing of the template it saves, which its
+/// spawner stages (D196).
+#[cfg(unix)]
+#[test]
+fn a_restore_reaches_nothing_its_saver_left_in_its_template() {
+    use std::os::unix::fs::OpenOptionsExt as _;
+    if cannot_run_vms() || !common::pools() {
+        eprintln!("SKIP: this host saves no templates");
+        return;
+    }
+    let (image, _) = served();
+    let home = TempDir::new("saver-left");
+    let outside = TempDir::new("saver-left-outside");
+    let env = [("SHARDS_HOME", home.as_os_str())];
+    record_guest(&env);
+    let first = run_shards_env(&["run"], &[image.as_str()], &env, TIMEOUT);
+    assert_eq!(first.status, Some(0), "{}", first.stderr);
+    let stopped = run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT);
+    assert_eq!(stopped.status, Some(0), "{}", stopped.stderr);
+    let template = the_template(&home);
+    let fifo = |path: &std::path::Path| {
+        let _ = std::fs::remove_file(path);
+        let c = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
+        // SAFETY: mkfifo(2) of a NUL-terminated path.
+        let made = unsafe { libc::mkfifo(c.as_ptr(), 0o600) };
+        assert_eq!(made, 0, "{}", path.display());
+    };
+    let target = outside.join("memory");
+    fifo(&target);
+    let memory = common::snapshot_file(&template, "memory");
+    std::fs::remove_file(&memory).unwrap();
+    std::os::unix::fs::symlink(&target, &memory).unwrap();
+    let working_set = common::snapshot_file(&template, "working-set");
+    fifo(&working_set);
+
+    let (again, home_path) = (image.clone(), home.to_path_buf());
+    let runner = std::thread::spawn(move || {
+        let env = [("SHARDS_HOME", home_path.as_os_str())];
+        run_shards_env(&["run"], &["--pull", "never", again.as_str()], &env, TIMEOUT)
+    });
+    // A FIFO opened for writing without waiting is opened only while a reader holds it.
+    let mut held: Vec<String> = Vec::new();
+    while !runner.is_finished() {
+        for path in [&target, &working_set] {
+            let opened = std::fs::OpenOptions::new()
+                .write(true)
+                .custom_flags(libc::O_NONBLOCK)
+                .open(path);
+            if opened.is_ok() {
+                held.push(path.display().to_string());
+            }
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let second = runner.join().unwrap();
+    assert!(held.is_empty(), "read by a restore: {held:?}");
+    assert_eq!(second.status, Some(0), "{}", second.stderr);
+    assert!(
+        second.stderr.contains("does not restore; booting instead"),
+        "{}",
+        second.stderr
+    );
+    let stopped = run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT);
+    assert_eq!(stopped.status, Some(0), "{}", stopped.stderr);
+}
+
+/// shards' grammar makes an image a microVM before any action but its removal, as `run`
+/// does: `inspect vm`, `inspect image`, `history image` and `tag image` of an image not
+/// here pull and convert it first. Docker's own order (`image inspect`) answers as
+/// Docker's does, and removal fetches nothing.
+#[test]
+fn actions_on_an_image_not_here_convert_it_first() {
+    if cannot_run_vms() {
+        eprintln!("SKIP: this host cannot run VMs");
+        return;
+    }
+    let (image, served) = served_counting();
+    let home = TempDir::new("convert");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let shards = |args: &[&str]| {
+        let (command, rest) = args.split_first().unwrap();
+        run_shards_env(&[command], rest, &env, TIMEOUT)
+    };
+    let shown = |r: &common::Run| format!("--- stdout\n{}\n--- stderr\n{}", r.stdout, r.stderr);
+    let rmi = || {
+        let r = shards(&["rmi", image.as_str()]);
+        assert_eq!(r.status, Some(0), "{}", shown(&r));
+    };
+
+    // Neither the image-first order nor removal fetches anything.
+    let inspected = shards(&["image", "inspect", image.as_str()]);
+    assert_eq!(inspected.status, Some(1), "{}", shown(&inspected));
+    assert!(
+        inspected.stderr.contains("No such image"),
+        "{}",
+        shown(&inspected)
+    );
+    let removed = shards(&["remove", "image", image.as_str()]);
+    assert_ne!(removed.status, Some(0), "{}", shown(&removed));
+    assert_eq!(served.load(Ordering::SeqCst), 0, "nothing was fetched");
+
+    // `inspect vm IMAGE`: converted, and its microVM described.
+    let vm = shards(&[
+        "inspect",
+        "vm",
+        "--format",
+        "{{.Id}} {{.Config.Cmd}}",
+        image.as_str(),
+    ]);
+    assert_eq!(vm.status, Some(0), "{}", shown(&vm));
+    assert!(
+        vm.stderr
+            .contains(&format!("Unable to find image '{image}' locally")),
+        "{}",
+        shown(&vm)
+    );
+    assert!(
+        vm.stdout.starts_with("sha256:") && vm.stdout.trim_end().ends_with("[report]"),
+        "{}",
+        shown(&vm)
+    );
+    rmi();
+
+    let inspected = shards(&["inspect", "image", "--format", "{{.Id}}", image.as_str()]);
+    assert_eq!(inspected.status, Some(0), "{}", shown(&inspected));
+    assert_eq!(
+        inspected.stdout,
+        vm.stdout.split(' ').next().unwrap().to_string() + "\n"
+    );
+    rmi();
+
+    let history = shards(&["read", "history", "-q", image.as_str()]);
+    assert_eq!(history.status, Some(0), "{}", shown(&history));
+    // The test image's config records no history, so none is listed; it is stored now.
+    let stored = shards(&["images", "-q"]);
+    assert!(!stored.stdout.trim().is_empty(), "{}", shown(&stored));
+    rmi();
+
+    let tagged = shards(&["tag", "image", image.as_str(), "mine:converted"]);
+    assert_eq!(tagged.status, Some(0), "{}", shown(&tagged));
+    let listed = shards(&["images", "--format", "{{.Repository}}:{{.Tag}}"]);
+    assert!(
+        listed.stdout.lines().any(|l| l == "mine:converted"),
+        "{}",
+        shown(&listed)
+    );
+    let _ = shards(&["stop", "daemon"]);
+}
+
+/// The names and contents of a plain tar's regular files, in order.
+fn tar_files(bytes: &[u8]) -> Vec<(String, Vec<u8>)> {
+    let mut files = Vec::new();
+    let mut at = 0;
+    while at + 512 <= bytes.len() && bytes[at] != 0 {
+        let header = &bytes[at..at + 512];
+        let name = String::from_utf8_lossy(&header[..100])
+            .trim_end_matches('\0')
+            .to_string();
+        let size_field = String::from_utf8_lossy(&header[124..136]);
+        let size =
+            usize::from_str_radix(size_field.trim_matches(|c: char| c == '\0' || c == ' '), 8).unwrap();
+        let body = &bytes[at + 512..at + 512 + size];
+        if header[156] == b'0' || header[156] == 0 {
+            files.push((name, body.to_vec()));
+        }
+        at += 512 + size.div_ceil(512) * 512;
+    }
+    files
+}
+
+/// One platform's microVM of a multi-platform image, chosen wherever a command names it
+/// (`--platform`, D179), on real microVMs: an image of this host's CPU (the test guest)
+/// and of the other 64-bit CPU (a program of that CPU's that prints its name), with an
+/// attestation of the other's, pulled for both from a registry that takes pushes too.
+/// Inspection and history read the platform named; a run of the other platform runs it
+/// under its emulator; a save of it alone is that platform's microVM alone, and a push of
+/// it pushes its manifest alone; a removal of it, refused while a microVM made of it
+/// stays, takes it and its attestation alone, the image's name then naming this host's,
+/// which runs natively still; a load of the other platform alone from an archive of both
+/// keeps that one alone, which a run then runs emulated. A platform the image has not is
+/// refused by each, in the words a script reads.
+#[test]
+fn one_platforms_microvm_of_an_image_is_chosen_wherever_a_command_names_it() {
+    if cannot_run_vms() {
+        eprintln!("SKIP: this host cannot run VMs");
+        return;
+    }
+    let (ours, other) = if cfg!(target_arch = "aarch64") {
+        ("arm64", "amd64")
+    } else {
+        ("amd64", "arm64")
+    };
+    let (ours_platform, other_platform) = (format!("linux/{ours}"), format!("linux/{other}"));
+    // This host's platform: the test image. The other's: its CPU's program, and its history.
+    let (our_manifest, our_blobs) = test_image();
+    let program = common::printing_program(other, b"other-cpu\n");
+    let passwd = b"root:x:0:0:root:/root:/bin/sh\n";
+    let other_layer = common::tar(&[
+        ("bin", 0o755, 0, None),
+        ("bin/other", 0o755, 0, Some(&program[..])),
+        ("etc", 0o755, 0, None),
+        ("etc/passwd", 0o644, 0, Some(&passwd[..])),
+        ("tmp", 0o1777, 0, None),
+    ]);
+    let other_config = format!(
+        r#"{{"architecture":"{other}","os":"linux","config":{{"Entrypoint":["/bin/other"]}},"history":[{{"created_by":"the other CPU's step"}}],"rootfs":{{"type":"layers","diff_ids":["{}"]}}}}"#,
+        sha256_digest(&other_layer)
+    )
+    .into_bytes();
+    let other_manifest = format!(
+        r#"{{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{{"mediaType":"application/vnd.oci.image.config.v1+json","digest":"{}","size":{}}},"layers":[{{"mediaType":"application/vnd.oci.image.layer.v1.tar","digest":"{}","size":{}}}]}}"#,
+        sha256_digest(&other_config),
+        other_config.len(),
+        sha256_digest(&other_layer),
+        other_layer.len()
+    )
+    .into_bytes();
+    let statement = br#"{"_type":"https://in-toto.io/Statement/v0.1"}"#.to_vec();
+    let att_config = b"{}".to_vec();
+    let attestation = format!(
+        r#"{{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{{"mediaType":"application/vnd.oci.image.config.v1+json","digest":"{}","size":{}}},"layers":[{{"mediaType":"application/vnd.in-toto+json","digest":"{}","size":{}}}]}}"#,
+        sha256_digest(&att_config),
+        att_config.len(),
+        sha256_digest(&statement),
+        statement.len()
+    )
+    .into_bytes();
+    let (our_digest, other_digest) = (sha256_digest(&our_manifest), sha256_digest(&other_manifest));
+    let index = format!(
+        r#"{{"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[{{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"{our_digest}","size":{},"platform":{{"architecture":"{ours}","os":"linux"}}}},{{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"{other_digest}","size":{},"platform":{{"architecture":"{other}","os":"linux"}}}},{{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"{}","size":{},"annotations":{{"vnd.docker.reference.digest":"{other_digest}","vnd.docker.reference.type":"attestation-manifest"}},"platform":{{"architecture":"unknown","os":"unknown"}}}}]}}"#,
+        our_manifest.len(),
+        other_manifest.len(),
+        sha256_digest(&attestation),
+        attestation.len()
+    )
+    .into_bytes();
+    let (port, repos) = common::writable_registry();
+    {
+        let mut repos = repos.lock().unwrap();
+        let oci_manifest = "application/vnd.oci.image.manifest.v1+json".to_string();
+        let manifests = repos.manifests.entry("test/multi".into()).or_default();
+        let index_kind = "application/vnd.oci.image.index.v1+json".to_string();
+        manifests.insert("v1".into(), (index_kind.clone(), index.clone()));
+        manifests.insert(sha256_digest(&index), (index_kind, index.clone()));
+        for m in [&our_manifest, &other_manifest, &attestation] {
+            manifests.insert(sha256_digest(m), (oci_manifest.clone(), m.clone()));
+        }
+        let blobs = repos.blobs.entry("test/multi".into()).or_default();
+        for b in our_blobs
+            .iter()
+            .chain([&other_config, &other_layer, &att_config, &statement])
+        {
+            blobs.insert(sha256_digest(b), b.clone());
+        }
+    }
+    let home = TempDir::new("one-platform-home");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let shown = |r: &common::Run| format!("--- stdout\n{}\n--- stderr\n{}", r.stdout, r.stderr);
+    let image = format!("127.0.0.1:{port}/test/multi:v1");
+    let absent = |r: &common::Run, platform: &str| {
+        r.stderr.contains(&format!(
+            "image with reference {image} was found but does not provide the specified platform ({platform})"
+        ))
+    };
+    for platform in [None, Some(other_platform.as_str())] {
+        let mut args = vec!["pull", "-q"];
+        args.extend(platform.iter().flat_map(|p| ["--platform", p]));
+        args.push(&image);
+        let pulled = shards(&args);
+        assert_eq!(pulled.status, Some(0), "{}", shown(&pulled));
+    }
+    // Inspection: each platform's config, and its manifest as the descriptor; the ID the
+    // image's.
+    let id = |platform: &str| {
+        let r = shards(&[
+            "image",
+            "inspect",
+            "--platform",
+            platform,
+            "-f",
+            "{{.Id}} {{.Architecture}}\n{{json .Descriptor}}",
+            &image,
+        ]);
+        assert_eq!(r.status, Some(0), "{}", shown(&r));
+        let (facts, descriptor) = r.stdout.trim().split_once('\n').unwrap();
+        let descriptor: serde_json::Value = serde_json::from_str(descriptor).unwrap();
+        format!(
+            "{facts} {} {}",
+            descriptor["digest"].as_str().unwrap_or_default(),
+            descriptor["platform"]["architecture"]
+                .as_str()
+                .unwrap_or_default()
+        )
+    };
+    let index_id = sha256_digest(&index);
+    assert_eq!(
+        id(&ours_platform),
+        format!("{index_id} {ours} {our_digest} {ours}")
+    );
+    assert_eq!(
+        id(&other_platform),
+        format!("{index_id} {other} {other_digest} {other}")
+    );
+    let none = shards(&["image", "inspect", "--platform", "linux/s390x", &image]);
+    assert_eq!(none.status, Some(1), "{}", shown(&none));
+    assert!(absent(&none, "linux/s390x"), "{}", shown(&none));
+    // History: the platform named's.
+    let history = |platform: &str| {
+        let r = shards(&[
+            "history",
+            "--platform",
+            platform,
+            "--no-trunc",
+            "--format",
+            "{{.CreatedBy}}",
+            &image,
+        ]);
+        assert_eq!(r.status, Some(0), "{}", shown(&r));
+        r.stdout.trim().to_string()
+    };
+    assert_eq!(history(&other_platform), "the other CPU's step");
+    assert_eq!(history(&ours_platform), "");
+    // A run of each: the other's under its emulator, this host's natively.
+    let emulated = shards(&["run", "--rm", "--platform", &other_platform, &image]);
+    assert_eq!(emulated.status, Some(0), "{}", shown(&emulated));
+    assert_eq!(emulated.stdout, "other-cpu\n", "{}", shown(&emulated));
+    let native = shards(&["run", "--rm", &image, "exit", "7"]);
+    assert_eq!(native.status, Some(7), "{}", shown(&native));
+    // A save of the other platform alone: its microVM alone, named by its manifest.
+    let saves = TempDir::new("one-platform-saves");
+    let (one, both) = (saves.join("one.tar"), saves.join("both.tar"));
+    let saved = shards(&[
+        "save",
+        "--platform",
+        &other_platform,
+        "-o",
+        one.to_str().unwrap(),
+        &image,
+    ]);
+    assert_eq!(saved.status, Some(0), "{}", shown(&saved));
+    let files = tar_files(&std::fs::read(&one).unwrap());
+    let blob = |b: &[u8]| format!("blobs/sha256/{}", sha256_digest(b).trim_start_matches("sha256:"));
+    let names: Vec<&str> = files.iter().map(|(n, _)| n.as_str()).collect();
+    for b in [
+        &other_manifest,
+        &other_config,
+        &other_layer,
+        &attestation,
+        &statement,
+    ] {
+        assert!(names.contains(&blob(b).as_str()), "{names:?}");
+    }
+    for b in [&our_manifest, &index, &our_blobs[1]] {
+        assert!(!names.contains(&blob(b).as_str()), "{names:?}");
+    }
+    let saved_index: serde_json::Value =
+        serde_json::from_slice(&files.iter().find(|(n, _)| n == "index.json").unwrap().1).unwrap();
+    let entries = saved_index["manifests"].as_array().unwrap();
+    assert_eq!(entries.len(), 1, "{saved_index}");
+    assert_eq!(entries[0]["digest"], other_digest.as_str(), "{saved_index}");
+    assert_eq!(entries[0]["platform"]["architecture"], other, "{saved_index}");
+    let refused = shards(&[
+        "save",
+        "--platform",
+        "linux/s390x",
+        "-o",
+        one.to_str().unwrap(),
+        &image,
+    ]);
+    assert_eq!(refused.status, Some(1), "{}", shown(&refused));
+    assert!(absent(&refused, "linux/s390x"), "{}", shown(&refused));
+    let saved = shards(&["save", "-o", both.to_str().unwrap(), &image]);
+    assert_eq!(saved.status, Some(0), "{}", shown(&saved));
+    // A push of the other platform: its manifest alone, under the tag.
+    let pushed_as = format!("127.0.0.1:{port}/test/pushed:v1");
+    let tagged = shards(&["tag", &image, &pushed_as]);
+    assert_eq!(tagged.status, Some(0), "{}", shown(&tagged));
+    let pushed = shards(&["push", "--platform", &other_platform, &pushed_as]);
+    assert_eq!(pushed.status, Some(0), "{}", shown(&pushed));
+    assert!(
+        pushed.stdout.contains(&format!(
+            "v1: digest: {other_digest} size: {}",
+            other_manifest.len()
+        )),
+        "{}",
+        shown(&pushed)
+    );
+    {
+        let repos = repos.lock().unwrap();
+        assert_eq!(repos.manifests["test/pushed"]["v1"].1, other_manifest);
+        let blobs = &repos.blobs["test/pushed"];
+        assert!(blobs.contains_key(&sha256_digest(&other_layer)));
+        assert!(
+            !blobs.contains_key(&sha256_digest(&our_blobs[1])),
+            "this host's layer stays"
+        );
+    }
+    let untagged = shards(&["rmi", &pushed_as]);
+    assert_eq!(untagged.status, Some(0), "{}", shown(&untagged));
+    // A removal of the other platform: refused while a microVM made of it stays.
+    let created = shards(&[
+        "create",
+        "--name",
+        "of-other",
+        "--platform",
+        &other_platform,
+        &image,
+    ]);
+    assert_eq!(created.status, Some(0), "{}", shown(&created));
+    let held = shards(&["rmi", "--platform", &other_platform, &image]);
+    assert_eq!(held.status, Some(1), "{}", shown(&held));
+    assert!(
+        held.stderr.contains(&format!(
+            "cannot remove image {image}'s {other_platform}: microVM"
+        )) && held.stderr.contains("was made of it: -f removes it anyway"),
+        "{}",
+        shown(&held)
+    );
+    let removed = shards(&["rm", "of-other"]);
+    assert_eq!(removed.status, Some(0), "{}", shown(&removed));
+    let taken = shards(&["rmi", "--platform", &other_platform, &image]);
+    assert_eq!(taken.status, Some(0), "{}", shown(&taken));
+    assert_eq!(
+        taken.stdout,
+        format!("Deleted: {other_digest}\n"),
+        "{}",
+        shown(&taken)
+    );
+    let gone = shards(&["image", "inspect", "--platform", &other_platform, &image]);
+    assert!(absent(&gone, &other_platform), "{}", shown(&gone));
+    assert_eq!(
+        id(&ours_platform),
+        format!("{index_id} {ours} {our_digest} {ours}")
+    );
+    let native = shards(&["run", "--rm", "--pull", "never", &image, "exit", "7"]);
+    assert_eq!(native.status, Some(7), "{}", shown(&native));
+    let again = shards(&["rmi", "--platform", &other_platform, &image]);
+    assert_eq!(again.status, Some(1), "{}", shown(&again));
+    assert!(absent(&again, &other_platform), "{}", shown(&again));
+    // A load of the other platform alone, from the archive of both: that one alone here,
+    // which a run then runs emulated.
+    let removed = shards(&["rmi", &image]);
+    assert_eq!(removed.status, Some(0), "{}", shown(&removed));
+    let refused = shards(&["load", "--platform", "linux/s390x", "-i", both.to_str().unwrap()]);
+    assert_eq!(refused.status, Some(1), "{}", shown(&refused));
+    assert!(absent(&refused, "linux/s390x"), "{}", shown(&refused));
+    let loaded = shards(&[
+        "load",
+        "--platform",
+        &other_platform,
+        "-i",
+        both.to_str().unwrap(),
+    ]);
+    assert_eq!(loaded.status, Some(0), "{}", shown(&loaded));
+    assert_eq!(
+        id(&other_platform),
+        format!("{index_id} {other} {other_digest} {other}")
+    );
+    let mine = shards(&["image", "inspect", "--platform", &ours_platform, &image]);
+    assert!(absent(&mine, &ours_platform), "{}", shown(&mine));
+    let emulated = shards(&["run", "--rm", "--pull", "never", &image]);
+    assert_eq!(emulated.status, Some(0), "{}", shown(&emulated));
+    assert_eq!(emulated.stdout, "other-cpu\n", "{}", shown(&emulated));
 }

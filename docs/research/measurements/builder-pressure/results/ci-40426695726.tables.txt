@@ -1,0 +1,27 @@
+== docs/research/measurements/builder-pressure/results/ci-40426695726-a-epyc-7763.out.txt + docs/research/measurements/builder-pressure/results/ci-40426695726-b-xeon-8370c.out.txt + docs/research/measurements/builder-pressure/results/ci-40426695726-c-epyc-9v45.out.txt + docs/research/measurements/builder-pressure/results/ci-40426695726-d-epyc-7763.out.txt
+host runnervmtai0g; Ubuntu 24.04.5 LTS; kernel 6.17.0-1022-azure; x86_64; AMD EPYC 7763 64-Core Processor; shards 3ac4ee5; memory 15989 MiB; cpus 4
+builds rust,npm,apt; rounds 5; home /home/runner/work/_temp/home; bases docker.io/library
+host runnervmtai0g; Ubuntu 24.04.5 LTS; kernel 6.17.0-1022-azure; x86_64; Intel(R) Xeon(R) Platinum 8370C CPU @ 2.80GHz; shards 3ac4ee5; memory 15988 MiB; cpus 4
+builds rust,npm,apt; rounds 5; home /home/runner/work/_temp/home; bases docker.io/library
+host runnervmtai0g; Ubuntu 24.04.5 LTS; kernel 6.17.0-1022-azure; x86_64; AMD EPYC 9V45 96-Core Processor; shards 3ac4ee5; memory 15989 MiB; cpus 4
+builds rust,npm,apt; rounds 5; home /home/runner/work/_temp/home; bases docker.io/library
+host runnervmtai0g; Ubuntu 24.04.5 LTS; kernel 6.17.0-1022-azure; x86_64; AMD EPYC 7763 64-Core Processor; shards 3ac4ee5; memory 15989 MiB; cpus 4
+builds rust,npm,apt; rounds 5; home /home/runner/work/_temp/home; bases docker.io/library
+-- apt free: rounds 2+ 16, failed 0
+   build time        n 16 p50 35.6 p90 36.8 p99 37.8 max 37.8 s
+-- apt held: rounds 2+ 16, failed 0
+   build time        n 16 p50 36.3 p90 37.5 p99 37.5 max 37.5 s
+   budget            n 16 p50 2449.2 p90 2470.8 p99 2470.8 max 2470.8 MiB
+   rule: held slower than free beyond the rounds' spread: no (held's fastest 28.2 s, free's slowest 37.8 s)
+-- npm free: rounds 2+ 16, failed 0
+   build time        n 16 p50 10.7 p90 11.4 p99 11.6 max 11.6 s
+-- npm held: rounds 2+ 16, failed 0
+   build time        n 16 p50 11.9 p90 12.8 p99 12.9 max 12.9 s
+   budget            n 16 p50 1590.7 p90 1814.2 p99 1814.2 max 1814.2 MiB
+   rule: held slower than free beyond the rounds' spread: no (held's fastest 9.7 s, free's slowest 11.6 s)
+-- rust free: rounds 2+ 16, failed 0
+   build time        n 16 p50 8.2 p90 9.6 p99 9.7 max 9.7 s
+-- rust held: rounds 2+ 16, failed 0
+   build time        n 16 p50 9.8 p90 13.0 p99 13.7 max 13.7 s
+   budget            n 16 p50 2148.1 p90 3634.2 p99 3864.5 max 3864.5 MiB
+   rule: held slower than free beyond the rounds' spread: no (held's fastest 7.7 s, free's slowest 9.7 s)

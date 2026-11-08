@@ -1,0 +1,97 @@
+diff --git a/crates/init/src/plug.rs b/crates/init/src/plug.rs
+index ef8f442a9..24bda0b51 100644
+--- a/crates/init/src/plug.rs
++++ b/crates/init/src/plug.rs
+@@ -541,6 +541,7 @@ pub fn hold_within(cgroup: &str, room: Option<i64>) -> io::Result<Option<u64>> {
+     let used = number(&format!("{cgroup}/memory.current"))
+         .ok_or_else(|| err(format!("{cgroup}/memory.current unread")))?;
+     set_cap(room.map_or(u64::MAX, |r| within(used, r, working_room(), cap())));
++    note_hold(&format!("room {room:?} used {used} cap {}", cap()));
+     set_high(cgroup, grown_hold(cgroup)?)?;
+     crate::run::flush_page_reports();
+     Ok(room.map(|_| cap().saturating_sub(used)))
+@@ -713,6 +714,9 @@ pub fn shrink_run(cgroup: &str) -> io::Result<u64> {
+         .ok_or_else(|| err(format!("{cgroup}/memory.current unread")))?;
+     // Of what stays: what a give-back before asked its driver to unplug goes already.
+     let stays = staying(boot, total);
++    note_hold(&format!(
++        "shrink used {used} plugged {plugged} asked {asked} stays {stays}"
++    ));
+     let Some(keep) = to_keep(boot, most, stays, asked, used, peak_since(used)) else {
+         return Ok(0);
+     };
+@@ -881,6 +885,25 @@ fn staying(boot: u64, total: u64) -> u64 {
+ 
+ /// Sets `cgroup`'s `memory.high` to `high`, never past what its host's budget leaves it
+ /// ([`CAP`]): `max` for no hold at all.
++/// Appends `what` to /tmp/.shards-holds in the run's root, with the seconds since boot:
++/// the DAX budget job's hold-notes arm, which its guest's sampler reads.
++fn note_hold(what: &str) {
++    use std::io::Write as _;
++    let mut t = libc::timespec {
++        tv_sec: 0,
++        tv_nsec: 0,
++    };
++    // SAFETY: clock_gettime(2) into a timespec this function owns.
++    unsafe { libc::clock_gettime(libc::CLOCK_BOOTTIME, &mut t) };
++    if let Ok(mut f) = std::fs::OpenOptions::new()
++        .create(true)
++        .append(true)
++        .open("/tmp/.shards-holds")
++    {
++        let _ = writeln!(f, "{}.{:03} {what}", t.tv_sec, t.tv_nsec / 1_000_000);
++    }
++}
++
+ fn set_high(cgroup: &str, high: u64) -> io::Result<()> {
+     let high = high.min(cap());
+     let text = if high == u64::MAX {
+@@ -888,6 +911,14 @@ fn set_high(cgroup: &str, high: u64) -> io::Result<()> {
+     } else {
+         high.to_string()
+     };
++    note_hold(&format!(
++        "high {text} cap {} total {} free {} current {} request {}",
++        cap(),
++        memory().map_or(0, |m| m.0),
++        memory().map_or(0, |m| m.1),
++        number(&format!("{cgroup}/memory.current")).unwrap_or(0),
++        control_read64(control::HOTPLUG_REQUEST).unwrap_or(0)
++    ));
+     std::fs::write(format!("{cgroup}/memory.high"), text)
+         .map_err(|e| err(format!("{cgroup}/memory.high: {e}")))
+ }
+@@ -1007,10 +1038,12 @@ impl Grows for Builder<'_> {
+     }
+ 
+     fn ask(&mut self, bytes: u64) -> io::Result<()> {
++        note_hold(&format!("ask {bytes}"));
+         control_write64(control::HOTPLUG_REQUEST, bytes)
+     }
+ 
+     fn raise(&mut self, plugged: u64) {
++        note_hold(&format!("came {plugged}"));
+         let cgroup = self.plug.cgroup;
+         if let Err(e) = high(cgroup, self.plug.most, plugged).and_then(|h| set_high(cgroup, h)) {
+             say(self.notes, self.plug.whose, &e.to_string());
+@@ -1229,6 +1262,7 @@ fn grow(plug: Plug, events: &OwnedFd, notes: &OwnedFd) -> ! {
+     let cgroup = plug.cgroup;
+     // No hold but what its host's budget leaves it (D188).
+     let lift = || {
++        note_hold("lift");
+         if let Err(e) = set_high(cgroup, u64::MAX) {
+             say(notes, plug.whose, &e.to_string());
+         }
+@@ -1268,6 +1302,12 @@ fn grow(plug: Plug, events: &OwnedFd, notes: &OwnedFd) -> ! {
+             ),
+             ..plug
+         };
++        note_hold(&format!(
++            "event current {current} high {high_now} cap {} most {} plugged {}",
++            cap(),
++            plug.most,
++            mem_total().unwrap_or(0).saturating_sub(plug.boot)
++        ));
+         if current < high_now {
+             continue;
+         }

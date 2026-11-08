@@ -9,7 +9,10 @@ mod workload;
 
 fn main() {
     #[cfg(target_os = "linux")]
-    if std::process::id() == 1 {
+    // The VM's init, which the kernel starts with `shards_test=` from its command line in
+    // its environment; anything else, PID 1 of a build step's namespace included, is a
+    // workload.
+    if std::process::id() == 1 && std::env::var_os("shards_test").is_some() {
         linux::main();
     } else {
         workload::main();

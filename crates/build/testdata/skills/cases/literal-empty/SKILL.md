@@ -1,0 +1,4 @@
+---
+name: literal-empty
+description: |
+---

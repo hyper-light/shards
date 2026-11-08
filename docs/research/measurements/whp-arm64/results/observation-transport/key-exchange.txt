@@ -1,0 +1,6 @@
+debug1: Connecting to 127.0.0.1 [127.0.0.1] port 2222.
+debug1: Connection established.
+debug1: Local version string SSH-2.0-OpenSSH_10.2
+debug1: Remote protocol version 2.0, remote software version OpenSSH_for_Windows_9.5
+debug1: SSH2_MSG_KEXINIT sent
+Connection to 127.0.0.1 port 2222 timed out

@@ -4,9 +4,21 @@
 # - crates/cmdline/src/tables.rs, the character classes the CLI formats text with
 #   (tables/main.go);
 # - crates/cmdline/tests/docker-cli.json, the CLI's answers to the command lines in
-#   oracle_test.go, which crates/cmdline/tests/docker_cli.rs expects shards to give;
+#   oracle_test.go, which crates/cmdline/tests/command_lines.rs expects shards to give;
+# - crates/cmdline/tests/docker-flags.json, every flag of the CLI's commands that shards
+#   has (oracle_test.go, TestShardsFlags), which crates/cmdline/tests/flags.rs
+#   expects shards' commands to take, served or not;
 # - crates/shards/src/daemon/docker-ps.json, the CLI's `ps` tables of the containers in
 #   ps_test.go, which daemon/commands.rs's tests expect shards to print;
+# - crates/cmdline/tests/go-network.json, what the CLI makes of `--network` values
+#   (network_test.go): Go's address and MAC parsers, NetworkOpt.Set and run's parse, which
+#   crates/cmdline/tests/network.rs expects shards_cmdline::network to make of them;
+# - crates/shards/src/daemon/engine/testdata/create-bodies.json, the Engine API's create bodies
+#   the CLI's `run` makes of command lines (engine_test.go: its own addFlags and parse),
+#   which crates/shards/src/daemon/engine's tests expect to become the runs shards' CLI makes of
+#   the same command lines (D170);
+# - crates/cmdline/tests/docker-search.json, the CLI's `search` output of the results in
+#   search_test.go, which crates/cmdline/tests/search.rs expects shards to print;
 # - crates/cmdline/tests/docker-time.json, what the client sends dockerd for `logs
 #   --since` and `--until` and what dockerd makes of it (time/main.go), for
 #   crates/cmdline/src/gotime.rs's tests. dockerd's side is moby's, fetched at the tag the
@@ -48,9 +60,17 @@ curl -fsSL -A shards-dev -o "$cli/shards-time/daemon/timestamp.go" \
 	"https://raw.githubusercontent.com/moby/moby/$moby/daemon/internal/timestamp/timestamp.go"
 cp "$here/oracle_test.go" "$cli/cmd/docker/zz_shards_oracle_test.go"
 cp "$here/ps_test.go" "$cli/cli/command/formatter/zz_shards_ps_test.go"
+cp "$here/network_test.go" "$cli/cli/command/container/zz_shards_network_test.go"
+cp "$here/engine_test.go" "$cli/cli/command/container/zz_shards_engine_test.go"
+cp "$here/images_test.go" "$cli/cli/command/image/zz_shards_images_test.go"
+cp "$here/search_test.go" "$cli/cli/command/registry/zz_shards_search_test.go"
 cleanup() {
 	rm -rf "$cli/shards-tables" "$cli/shards-time" "$cli/cmd/docker/zz_shards_oracle_test.go" \
-		"$cli/cli/command/formatter/zz_shards_ps_test.go"
+		"$cli/cli/command/formatter/zz_shards_ps_test.go" \
+		"$cli/cli/command/container/zz_shards_network_test.go" \
+		"$cli/cli/command/container/zz_shards_engine_test.go" \
+		"$cli/cli/command/image/zz_shards_images_test.go" \
+		"$cli/cli/command/registry/zz_shards_search_test.go"
 }
 trap 'cleanup; [ -z "${1:-}" ] && rm -rf "$cli"' EXIT
 cd "$cli"
@@ -58,5 +78,16 @@ cd "$cli"
 ./scripts/with-go-mod.sh go run -mod=vendor ./shards-time >"$root/crates/cmdline/tests/docker-time.json"
 SHARDS_ORACLE_OUT="$root/crates/cmdline/tests/docker-cli.json" \
 	./scripts/with-go-mod.sh go test -mod=vendor -count=1 -run '^TestShardsOracle$' ./cmd/docker/
+SHARDS_FLAGS_OUT="$root/crates/cmdline/tests/docker-flags.json" \
+	./scripts/with-go-mod.sh go test -mod=vendor -count=1 -run '^TestShardsFlags$' ./cmd/docker/
 SHARDS_PS_OUT="$root/crates/shards/src/daemon/docker-ps.json" \
 	./scripts/with-go-mod.sh go test -mod=vendor -count=1 -run '^TestShardsPs$' ./cli/command/formatter/
+SHARDS_NETWORK_OUT="$root/crates/cmdline/tests/go-network.json" \
+	./scripts/with-go-mod.sh go test -mod=vendor -count=1 -run '^TestShardsNetwork$' ./cli/command/container/
+mkdir -p "$root/crates/shards/src/daemon/engine/testdata"
+SHARDS_ENGINE_OUT="$root/crates/shards/src/daemon/engine/testdata/create-bodies.json" \
+	./scripts/with-go-mod.sh go test -mod=vendor -count=1 -run '^TestShardsEngineBodies$' ./cli/command/container/
+SHARDS_IMAGES_OUT="$root/crates/shards/src/daemon/docker-images.json" \
+	./scripts/with-go-mod.sh go test -mod=vendor -count=1 -run '^TestShardsImages$' ./cli/command/image/
+SHARDS_SEARCH_OUT="$root/crates/cmdline/tests/docker-search.json" \
+	./scripts/with-go-mod.sh go test -mod=vendor -count=1 -run '^TestShardsSearch$' ./cli/command/registry/

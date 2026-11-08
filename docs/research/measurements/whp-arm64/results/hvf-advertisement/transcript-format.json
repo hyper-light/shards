@@ -1,0 +1,22 @@
+{
+  "A/launch.txt": {
+    "capture_sha256": "557699c1215d1031669de7df7447a4b5d37a0e5dacfa65c76ffa52ea8873ff9c",
+    "display_sha256": "557699c1215d1031669de7df7447a4b5d37a0e5dacfa65c76ffa52ea8873ff9c"
+  },
+  "A/windows.txt": {
+    "capture_sha256": "86eba49a89dfe5c80aba3fd91914421f190651e843790a1d16fc0b9e78de9f0c",
+    "display_sha256": "02e7c87a90067d4c9a3b6ba446c721a0e9ccdb677f07625c8c3d41cd30389c98"
+  },
+  "B/launch.txt": {
+    "capture_sha256": "58d3f7fde82959916460688a8301d4f7fe128def32ccae0d1f2ab8abe794352e",
+    "display_sha256": "58d3f7fde82959916460688a8301d4f7fe128def32ccae0d1f2ab8abe794352e"
+  },
+  "B/windows.txt": {
+    "capture_sha256": "750e65df63e7be176eca3436581565f6a091f8971b5a1a634305c887d6a888d6",
+    "display_sha256": "98948c2179fd699ece1155eadd3344efc67c8abae2ed22a2775f52f4906c3d61"
+  },
+  "framework-config.txt": {
+    "capture_sha256": "7ffee989de1331597ff4b9b1321ef0187977549626512b3fe2df94589f34ecd1",
+    "display_sha256": "7ffee989de1331597ff4b9b1321ef0187977549626512b3fe2df94589f34ecd1"
+  }
+}

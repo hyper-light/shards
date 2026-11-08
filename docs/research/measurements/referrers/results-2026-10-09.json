@@ -1,0 +1,99 @@
+{
+ "registries": {
+  "distribution v3.1.2": {
+   "shards push": [
+    "127.0.0.1:15600/m130/agent:1: pushed signature sha256:432cbfaf31c5de4aeaee4a4fab0737d4b3212882873c9061bd65dc55c779c8b7 (listed under the referrers tag schema)"
+   ],
+   "requests of the signature's push": [
+    "2026-10-09T23:10:07.865873-07:00",
+    "HEAD /v2/m130/agent/blobs/sha256:af3546dcecfc6b360d9134459e9865e29e5dfaeabdf8413ad017ea8bf7e23683 HTTP/1.1",
+    "2026-10-09T23:10:07.865894-07:00",
+    "HEAD /v2/m130/agent/blobs/sha256:3031d9e8e5287e576b8388b66de4d4cbf8d157cb187218a65e6e68bf5cdabf38 HTTP/1.1",
+    "2026-10-09T23:10:07.866282-07:00",
+    "HEAD /v2/m130/agent/manifests/1 HTTP/1.1",
+    "2026-10-09T23:10:07.866917-07:00",
+    "HEAD /v2/m130/agent/blobs/sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a HTTP/1.1",
+    "2026-10-09T23:10:07.86696-07:00",
+    "HEAD /v2/m130/agent/blobs/sha256:0a2c4d5317b19b2ca5c251f51dac7fd9a514410bf19afdd6f72cbac2f6083e31 HTTP/1.1",
+    "2026-10-09T23:10:07.919612-07:00",
+    "POST /v2/m130/agent/blobs/uploads/ HTTP/1.1",
+    "2026-10-09T23:10:07.927809-07:00",
+    "POST /v2/m130/agent/blobs/uploads/ HTTP/1.1",
+    "2026-10-09T23:10:07.964666-07:00",
+    "PUT /v2/m130/agent/blobs/uploads/01a1246e-dd7b-711d-8cb1-a6859f7b037a?_state=DV5CbB68-SqhxokSL-XO9XMXOelITRQyk1zdmxgNBN17Ik5hbWUiOiJtMTMwL2FnZW50IiwiVVVJRCI6IjAxYTEyNDZlLWRkN2ItNzExZC04Y2IxLWE2ODU5ZjdiMDM3YSIsIk9mZnNldCI6MCwiU3RhcnRlZEF0IjoiMjAyNi0xMC0xMFQwNjoxMDowNy44NjcwNzNaIn0%3D&digest=sha256%3A44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a HTTP/1.1",
+    "2026-10-09T23:10:07.974258-07:00",
+    "PUT /v2/m130/agent/blobs/uploads/01a1246e-dd7b-71e0-b11b-9daddce72d5c?_state=-TtW54fYFKru_tjBYF06zCgZLWberhh2A0bWSp1cvUZ7Ik5hbWUiOiJtMTMwL2FnZW50IiwiVVVJRCI6IjAxYTEyNDZlLWRkN2ItNzFlMC1iMTFiLTlkYWRkY2U3MmQ1YyIsIk9mZnNldCI6MCwiU3RhcnRlZEF0IjoiMjAyNi0xMC0xMFQwNjoxMDowNy44NjcxMjNaIn0%3D&digest=sha256%3A0a2c4d5317b19b2ca5c251f51dac7fd9a514410bf19afdd6f72cbac2f6083e31 HTTP/1.1",
+    "2026-10-09T23:10:07.982532-07:00",
+    "HEAD /v2/m130/agent/manifests/sha256:432cbfaf31c5de4aeaee4a4fab0737d4b3212882873c9061bd65dc55c779c8b7 HTTP/1.1",
+    "2026-10-09T23:10:08.010198-07:00",
+    "PUT /v2/m130/agent/manifests/sha256:432cbfaf31c5de4aeaee4a4fab0737d4b3212882873c9061bd65dc55c779c8b7 HTTP/1.1",
+    "GET /v2/m130/agent/referrers/sha256:4ba77c3ba052a2dd6e51481492d30e3e705ca165280ab9bf94ccad7b1b6506f8 HTTP/1.1",
+    "2026-10-09T23:10:08.010728-07:00",
+    "GET /v2/m130/agent/manifests/sha256-4ba77c3ba052a2dd6e51481492d30e3e705ca165280ab9bf94ccad7b1b6506f8 HTTP/1.1",
+    "2026-10-09T23:10:08.068075-07:00",
+    "PUT /v2/m130/agent/manifests/sha256-4ba77c3ba052a2dd6e51481492d30e3e705ca165280ab9bf94ccad7b1b6506f8 HTTP/1.1"
+   ],
+   "cosign verify of shards' signature": {
+    "exit": 0,
+    "checks": [
+     "- The cosign claims were validated",
+     "- Existence of the claims in the transparency log was verified offline",
+     "- The signatures were verified against the specified public key"
+    ]
+   },
+   "signatures shards pulled": 2,
+   "cosign verify, cosign's deleted by shards": 0,
+   "cosign verify, both deleted": {
+    "exit": 10,
+    "said": [
+     "error during command execution: no signatures found"
+    ]
+   }
+  },
+  "zot v2.1.22": {
+   "shards push": [
+    "127.0.0.1:15601/m130/agent:1: pushed signature sha256:5ab8a46aa3e04420e26355d8aac4dc43804db2d0f5ce915879d2350a7c94fe8e (the registry lists it)"
+   ],
+   "cosign verify of shards' signature": {
+    "exit": 0,
+    "checks": [
+     "- The cosign claims were validated",
+     "- Existence of the claims in the transparency log was verified offline",
+     "- The signatures were verified against the specified public key"
+    ]
+   },
+   "signatures shards pulled": 2,
+   "cosign verify, cosign's deleted by shards": 0,
+   "cosign verify, both deleted": {
+    "exit": 10,
+    "said": [
+     "error during command execution: no signatures found"
+    ]
+   }
+  }
+ },
+ "shards sign (scrypt N=2^16 included)": {
+  "n": 20,
+  "p50_ms": 195.15979100000004,
+  "p90_ms": 236.22566700000112,
+  "p99_ms": 263.8858329999998,
+  "max_ms": 263.8858329999998,
+  "mean_ms": 190.50026250000036
+ },
+ "cosign sign, signing and pushing": {
+  "n": 20,
+  "p50_ms": 1198.1793749999988,
+  "p90_ms": 1328.1272079999997,
+  "p99_ms": 1466.2009170000001,
+  "max_ms": 1466.2009170000001,
+  "mean_ms": 1176.50428125
+ },
+ "host": {
+  "uname": "Darwin Adas-MacBook-Pro-2.local 25.4.0 Darwin Kernel Version 25.4.0: Thu Mar 19 19:33:50 PDT 2026; root:xnu-12377.101.15~1/RELEASE_ARM64_T6050 arm64",
+  "cpus": 18
+ },
+ "versions": {
+  "shards": "Client:\n Version:           0.5.0\n API version:       none\n Go version:        rustc 1.98.0 (88d9e12ae 2026-08-18)\n Git commit:        unknown-commit\n Built:             unknown-buildtime\n OS/Arch:   ",
+  "cosign": "v3.1.3"
+ }
+}

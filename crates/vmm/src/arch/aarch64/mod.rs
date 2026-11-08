@@ -1,7 +1,9 @@
 //! AArch64 guest platform: physical memory map, CPU identity, and boot protocol.
 
 pub mod boot;
+pub mod cpu;
 pub mod esr;
+pub mod prefetch;
 pub mod psci;
 pub mod state;
 
@@ -9,8 +11,13 @@ pub mod state;
 pub mod layout {
     /// GICv3 distributor (64 KiB).
     pub const GIC_DIST: u64 = 0x0800_0000;
-    /// GICv2m-style MSI frame (64 KiB), reserved for PCI MSI.
+    /// A GICv2m frame (64 KiB), its doorbell taking the MSIs of a PCI bus's functions
+    /// (D154), where the GIC has no ITS.
     pub const GIC_MSI: u64 = 0x0802_0000;
+    /// An ITS's register frame (128 KiB, on a 64 KiB boundary), taking the MSIs of a PCI
+    /// bus's functions where the GIC has one (D154): QEMU virt's place.
+    pub const GIC_ITS: u64 = 0x0808_0000;
+    pub const GIC_ITS_SIZE: u64 = 0x2_0000;
     /// Redistributors: one 128 KiB frame per vCPU, contiguous.
     pub const GIC_REDIST: u64 = 0x080a_0000;
     pub const GIC_REDIST_MAX_END: u64 = 0x0900_0000;
@@ -18,7 +25,7 @@ pub mod layout {
     pub const UART: u64 = 0x0900_0000;
     /// PL031 RTC (4 KiB).
     pub const RTC: u64 = 0x0901_0000;
-    /// shards control page: boot-time markers written by the guest.
+    /// The shards control page ([`shards_abi::control`]).
     pub const CONTROL: u64 = shards_abi::CONTROL_PAGE;
     /// virtio-mmio transports, `VIRTIO_MMIO_STRIDE` apart.
     pub const VIRTIO_MMIO: u64 = 0x0a00_0000;
@@ -28,6 +35,11 @@ pub mod layout {
     /// does (hv::Vcpu::prefetch): 1 GiB between the devices and RAM that nothing else uses.
     pub const PREFETCH: u64 = 0x4000_0000;
     pub const DRAM_BASE: u64 = 0x8000_0000;
+    /// A PCI bus's 32-bit memory window, where its functions' BARs are placed, and its
+    /// ECAM window above it, bus 0 alone (D153): QEMU virt's places.
+    pub const PCI_MEM32: u64 = 0x1000_0000;
+    pub const PCI_MEM32_SIZE: u64 = 0x2f00_0000;
+    pub const PCI_ECAM: u64 = PCI_MEM32 + PCI_MEM32_SIZE;
     /// The first 2 MiB of DRAM hold data the VMM writes for guest drivers that map it as
     /// a device (VMGenID). Left out of the devicetree's memory node, so Linux can
     /// ioremap it; the kernel loads above it, 2 MiB aligned (Firecracker's layout:
@@ -44,6 +56,14 @@ pub mod layout {
     pub const SPI_RTC: u32 = 2;
     pub const SPI_VMGENID: u32 = 3;
     pub const SPI_VIRTIO_MMIO: u32 = 16;
+    /// The INTx line of PCI device `n` (1 to 31) on bus 0 is SPI `SPI_PCI + n - 1`: one
+    /// line for each device, none shared (D154).
+    pub const SPI_PCI: u32 = SPI_VIRTIO_MMIO + VIRTIO_MMIO_MAX as u32;
+    /// The SPIs the GICv2m frame raises for MSIs, `MSI_SPIS` of them from `SPI_MSI`.
+    pub const SPI_MSI: u32 = SPI_PCI + 32;
+    pub const MSI_SPIS: u32 = 64;
+    /// One more than the highest SPI the machine uses.
+    pub const SPIS: u32 = SPI_MSI + MSI_SPIS;
 }
 
 /// Where a vCPU enters the guest: the kernel entry with X0 = DTB address for the boot
@@ -83,6 +103,21 @@ pub mod sysreg {
     pub const SCTLR_EL1_MMU_CACHES: u64 = 1 | (1 << 2) | (1 << 12);
     /// PSTATE for entry at EL1h with D, A, I, F masked (Linux booting.rst).
     pub const PSTATE_EL1H_DAIF: u64 = 0x3c5;
+    /// PSTATE for entry at EL2h with D, A, I, F masked, where the guest has EL2: the
+    /// level booting.rst recommends, the kernel then a hypervisor.
+    pub const PSTATE_EL2H_DAIF: u64 = 0x3c9;
+    pub const SCTLR_EL2: u16 = enc(3, 4, 1, 0, 0);
+    /// ID_AA64PFR1_EL1.SME, bits 27:24: whether the CPU has the Scalable Matrix Extension.
+    pub const ID_AA64PFR1_SME: u64 = 0xf << 24;
+    /// The EL2 registers Hypervisor.framework holds for a guest that has EL2
+    /// (hv_vcpu_types.h, macOS 15): CNTHCTL, CNTHP_CTL, CNTHP_CVAL, CNTHP_TVAL, CNTVOFF,
+    /// CPTR, ELR, ESR, FAR, HCR, HPFAR, MAIR, MDCR, SCTLR, SPSR, SP, TCR, TPIDR, TTBR0,
+    /// TTBR1, VBAR, VMPIDR, VPIDR, VTCR and VTTBR, each `_EL2`.
+    pub const EL2_HELD: [u16; 25] = [
+        0xe708, 0xe711, 0xe712, 0xe710, 0xe703, 0xe08a, 0xe201, 0xe290, 0xe300, 0xe088, 0xe304, 0xe510,
+        0xe089, 0xe080, 0xe200, 0xf208, 0xe102, 0xe682, 0xe100, 0xe101, 0xe600, 0xe005, 0xe000, 0xe10a,
+        0xe108,
+    ];
 }
 
 /// ID_AA64MMFR0_EL1.PARange encoding for a physical address width, if architected.

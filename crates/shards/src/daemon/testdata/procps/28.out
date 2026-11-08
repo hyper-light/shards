@@ -1,0 +1,13 @@
+  PID TT       S TTY          TIME COMMAND
+  197 ?        S ?        00:00:00 sleep 1000
+  198 ?        S ?        00:00:00 sleep 1001
+  199 ?        S ?        00:00:00 sleep 1002
+  200 ?        S ?        00:00:00 sleep 1003
+  201 ?        S ?        00:00:00 sleep 1004
+  202 ?        S ?        00:00:00 script -qfc sleep 1005 /dev/null
+  203 ?        S ?        00:00:02 sleep 1006
+  204 ?        S ?        00:00:00 sh -c sleep 1007; : an arg with  spaces tab.here
+  207 ?        Z ?        00:00:00 [sleep] <defunct>
+  208 ?        S ?        00:00:00 sleep 1007
+  209 pts/0    S pts/0    00:00:00 sh -c sleep 1005
+  210 pts/0    S pts/0    00:00:00 sleep 1005

@@ -1,0 +1,34 @@
+[package]
+name = "shards-net"
+version = "0.1.0"
+description = "A microVM's network process: its guest's frames to the host's sockets"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+shards-abi = { path = "../abi" }
+shards-dns = { path = "../dns" }
+shards-netring = { path = "../netring" }
+shards-ipc = { path = "../ipc" }
+
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+shards-syscall-filter = { path = "../syscall-filter" }
+
+[target.'cfg(windows)'.dependencies]
+shards-afunix = { path = "../afunix" }
+windows-sys = { workspace = true, features = [
+  "Win32_NetworkManagement_IpHelper",
+  "Win32_NetworkManagement_Ndis",
+  "Win32_System_Threading",
+] }
+
+[dev-dependencies]
+shards-testdir = { path = "../testdir" }

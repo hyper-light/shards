@@ -1,0 +1,35 @@
+#!/bin/sh
+# Regenerates crates/template/tests/oracle.json: what Go's text/template, with the
+# functions docker/cli v29.8.1 adds (templates/templates.go, fetched at that tag and
+# checked against its SHA-256), makes of the corpus in oracle_test.go, which
+# crates/template/tests/oracle.rs expects shards-template to make byte for byte. Run with
+# the Go release that builds that docker/cli (1.26).
+#
+#   scripts/template/generate
+set -eu
+
+here=$(cd "$(dirname "$0")" && pwd)
+root=$(cd "$here/../.." && pwd)
+tag=v29.8.1
+sha=3af6a6e84eb84297f91f7169c07e9bab0ca88b52127b015efc166e6668d02ce2
+case $(go env GOVERSION) in
+go1.26 | go1.26.*) ;;
+*)
+	echo "Go 1.26 builds docker/cli $tag; this is $(go env GOVERSION)" >&2
+	exit 1
+	;;
+esac
+
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+mkdir "$work/templates"
+curl -fsSL -A shards-dev -o "$work/templates/templates.go" \
+	"https://raw.githubusercontent.com/docker/cli/$tag/templates/templates.go"
+if [ "$(shasum -a 256 "$work/templates/templates.go" | cut -d' ' -f1)" != "$sha" ]; then
+	echo "docker/cli $tag templates/templates.go is not the file pinned ($sha)" >&2
+	exit 1
+fi
+printf 'module shards.oracle\n\ngo 1.26\n' >"$work/go.mod"
+cp "$here/oracle_test.go" "$work/oracle_test.go"
+cd "$work"
+SHARDS_TEMPLATE_OUT="$root/crates/template/tests/oracle.json" go test -count=1 -run '^TestShardsTemplate$' .

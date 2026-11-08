@@ -1,0 +1,6 @@
+--platform
+linux/amd64,linux/arm64
+--build-context
+src=docker-image://alpine:3.20
+--build-arg
+SOURCE_DATE_EPOCH=src

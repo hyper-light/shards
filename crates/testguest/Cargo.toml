@@ -18,3 +18,8 @@ shards-abi = { path = "../abi" }
 [[bin]]
 name = "shards-testguest"
 path = "src/main.rs"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+rustls = { version = "0.23.45", default-features = false, features = ["std", "aws_lc_rs"] }
+shards-devcgroup = { path = "../devcgroup" }
+shards-seccomp = { path = "../seccomp" }

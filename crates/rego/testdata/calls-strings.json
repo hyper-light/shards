@@ -1,0 +1,8550 @@
+[
+ {
+  "name": "contains",
+  "args": [
+   1,
+   "a"
+  ]
+ },
+ {
+  "name": "contains",
+  "args": [
+   "a",
+   1
+  ]
+ },
+ {
+  "name": "contains",
+  "args": [
+   null,
+   "a"
+  ]
+ },
+ {
+  "name": "contains",
+  "args": [
+   "a",
+   null
+  ]
+ },
+ {
+  "name": "contains",
+  "args": [
+   [
+    "a"
+   ],
+   "a"
+  ]
+ },
+ {
+  "name": "contains",
+  "args": [
+   "a",
+   [
+    "a"
+   ]
+  ]
+ },
+ {
+  "name": "contains",
+  "args": [
+   {
+    "$set": []
+   },
+   "a"
+  ]
+ },
+ {
+  "name": "contains",
+  "args": [
+   "a",
+   {
+    "$set": []
+   }
+  ]
+ },
+ {
+  "name": "contains",
+  "args": [
+   2,
+   null
+  ]
+ },
+ {
+  "name": "endswith",
+  "args": [
+   1,
+   "a"
+  ]
+ },
+ {
+  "name": "endswith",
+  "args": [
+   "a",
+   1
+  ]
+ },
+ {
+  "name": "endswith",
+  "args": [
+   null,
+   "a"
+  ]
+ },
+ {
+  "name": "endswith",
+  "args": [
+   "a",
+   null
+  ]
+ },
+ {
+  "name": "endswith",
+  "args": [
+   [
+    "a"
+   ],
+   "a"
+  ]
+ },
+ {
+  "name": "endswith",
+  "args": [
+   "a",
+   [
+    "a"
+   ]
+  ]
+ },
+ {
+  "name": "endswith",
+  "args": [
+   {
+    "$set": []
+   },
+   "a"
+  ]
+ },
+ {
+  "name": "endswith",
+  "args": [
+   "a",
+   {
+    "$set": []
+   }
+  ]
+ },
+ {
+  "name": "endswith",
+  "args": [
+   2,
+   null
+  ]
+ },
+ {
+  "name": "startswith",
+  "args": [
+   1,
+   "a"
+  ]
+ },
+ {
+  "name": "startswith",
+  "args": [
+   "a",
+   1
+  ]
+ },
+ {
+  "name": "startswith",
+  "args": [
+   null,
+   "a"
+  ]
+ },
+ {
+  "name": "startswith",
+  "args": [
+   "a",
+   null
+  ]
+ },
+ {
+  "name": "startswith",
+  "args": [
+   [
+    "a"
+   ],
+   "a"
+  ]
+ },
+ {
+  "name": "startswith",
+  "args": [
+   "a",
+   [
+    "a"
+   ]
+  ]
+ },
+ {
+  "name": "startswith",
+  "args": [
+   {
+    "$set": []
+   },
+   "a"
+  ]
+ },
+ {
+  "name": "startswith",
+  "args": [
+   "a",
+   {
+    "$set": []
+   }
+  ]
+ },
+ {
+  "name": "startswith",
+  "args": [
+   2,
+   null
+  ]
+ },
+ {
+  "name": "indexof",
+  "args": [
+   1,
+   "a"
+  ]
+ },
+ {
+  "name": "indexof",
+  "args": [
+   "a",
+   1
+  ]
+ },
+ {
+  "name": "indexof",
+  "args": [
+   null,
+   "a"
+  ]
+ },
+ {
+  "name": "indexof",
+  "args": [
+   "a",
+   null
+  ]
+ },
+ {
+  "name": "indexof",
+  "args": [
+   [
+    "a"
+   ],
+   "a"
+  ]
+ },
+ {
+  "name": "indexof",
+  "args": [
+   "a",
+   [
+    "a"
+   ]
+  ]
+ },
+ {
+  "name": "indexof",
+  "args": [
+   {
+    "$set": []
+   },
+   "a"
+  ]
+ },
+ {
+  "name": "indexof",
+  "args": [
+   "a",
+   {
+    "$set": []
+   }
+  ]
+ },
+ {
+  "name": "indexof",
+  "args": [
+   2,
+   null
+  ]
+ },
+ {
+  "name": "indexof_n",
+  "args": [
+   1,
+   "a"
+  ]
+ },
+ {
+  "name": "indexof_n",
+  "args": [
+   "a",
+   1
+  ]
+ },
+ {
+  "name": "indexof_n",
+  "args": [
+   null,
+   "a"
+  ]
+ },
+ {
+  "name": "indexof_n",
+  "args": [
+   "a",
+   null
+  ]
+ },
+ {
+  "name": "indexof_n",
+  "args": [
+   [
+    "a"
+   ],
+   "a"
+  ]
+ },
+ {
+  "name": "indexof_n",
+  "args": [
+   "a",
+   [
+    "a"
+   ]
+  ]
+ },
+ {
+  "name": "indexof_n",
+  "args": [
+   {
+    "$set": []
+   },
+   "a"
+  ]
+ },
+ {
+  "name": "indexof_n",
+  "args": [
+   "a",
+   {
+    "$set": []
+   }
+  ]
+ },
+ {
+  "name": "indexof_n",
+  "args": [
+   2,
+   null
+  ]
+ },
+ {
+  "name": "strings.count",
+  "args": [
+   1,
+   "a"
+  ]
+ },
+ {
+  "name": "strings.count",
+  "args": [
+   "a",
+   1
+  ]
+ },
+ {
+  "name": "strings.count",
+  "args": [
+   null,
+   "a"
+  ]
+ },
+ {
+  "name": "strings.count",
+  "args": [
+   "a",
+   null
+  ]
+ },
+ {
+  "name": "strings.count",
+  "args": [
+   [
+    "a"
+   ],
+   "a"
+  ]
+ },
+ {
+  "name": "strings.count",
+  "args": [
+   "a",
+   [
+    "a"
+   ]
+  ]
+ },
+ {
+  "name": "strings.count",
+  "args": [
+   {
+    "$set": []
+   },
+   "a"
+  ]
+ },
+ {
+  "name": "strings.count",
+  "args": [
+   "a",
+   {
+    "$set": []
+   }
+  ]
+ },
+ {
+  "name": "strings.count",
+  "args": [
+   2,
+   null
+  ]
+ },
+ {
+  "name": "trim",
+  "args": [
+   1,
+   "a"
+  ]
+ },
+ {
+  "name": "trim",
+  "args": [
+   "a",
+   1
+  ]
+ },
+ {
+  "name": "trim",
+  "args": [
+   null,
+   "a"
+  ]
+ },
+ {
+  "name": "trim",
+  "args": [
+   "a",
+   null
+  ]
+ },
+ {
+  "name": "trim",
+  "args": [
+   [
+    "a"
+   ],
+   "a"
+  ]
+ },
+ {
+  "name": "trim",
+  "args": [
+   "a",
+   [
+    "a"
+   ]
+  ]
+ },
+ {
+  "name": "trim",
+  "args": [
+   {
+    "$set": []
+   },
+   "a"
+  ]
+ },
+ {
+  "name": "trim",
+  "args": [
+   "a",
+   {
+    "$set": []
+   }
+  ]
+ },
+ {
+  "name": "trim",
+  "args": [
+   2,
+   null
+  ]
+ },
+ {
+  "name": "trim_left",
+  "args": [
+   1,
+   "a"
+  ]
+ },
+ {
+  "name": "trim_left",
+  "args": [
+   "a",
+   1
+  ]
+ },
+ {
+  "name": "trim_left",
+  "args": [
+   null,
+   "a"
+  ]
+ },
+ {
+  "name": "trim_left",
+  "args": [
+   "a",
+   null
+  ]
+ },
+ {
+  "name": "trim_left",
+  "args": [
+   [
+    "a"
+   ],
+   "a"
+  ]
+ },
+ {
+  "name": "trim_left",
+  "args": [
+   "a",
+   [
+    "a"
+   ]
+  ]
+ },
+ {
+  "name": "trim_left",
+  "args": [
+   {
+    "$set": []
+   },
+   "a"
+  ]
+ },
+ {
+  "name": "trim_left",
+  "args": [
+   "a",
+   {
+    "$set": []
+   }
+  ]
+ },
+ {
+  "name": "trim_left",
+  "args": [
+   2,
+   null
+  ]
+ },
+ {
+  "name": "trim_right",
+  "args": [
+   1,
+   "a"
+  ]
+ },
+ {
+  "name": "trim_right",
+  "args": [
+   "a",
+   1
+  ]
+ },
+ {
+  "name": "trim_right",
+  "args": [
+   null,
+   "a"
+  ]
+ },
+ {
+  "name": "trim_right",
+  "args": [
+   "a",
+   null
+  ]
+ },
+ {
+  "name": "trim_right",
+  "args": [
+   [
+    "a"
+   ],
+   "a"
+  ]
+ },
+ {
+  "name": "trim_right",
+  "args": [
+   "a",
+   [
+    "a"
+   ]
+  ]
+ },
+ {
+  "name": "trim_right",
+  "args": [
+   {
+    "$set": []
+   },
+   "a"
+  ]
+ },
+ {
+  "name": "trim_right",
+  "args": [
+   "a",
+   {
+    "$set": []
+   }
+  ]
+ },
+ {
+  "name": "trim_right",
+  "args": [
+   2,
+   null
+  ]
+ },
+ {
+  "name": "trim_prefix",
+  "args": [
+   1,
+   "a"
+  ]
+ },
+ {
+  "name": "trim_prefix",
+  "args": [
+   "a",
+   1
+  ]
+ },
+ {
+  "name": "trim_prefix",
+  "args": [
+   null,
+   "a"
+  ]
+ },
+ {
+  "name": "trim_prefix",
+  "args": [
+   "a",
+   null
+  ]
+ },
+ {
+  "name": "trim_prefix",
+  "args": [
+   [
+    "a"
+   ],
+   "a"
+  ]
+ },
+ {
+  "name": "trim_prefix",
+  "args": [
+   "a",
+   [
+    "a"
+   ]
+  ]
+ },
+ {
+  "name": "trim_prefix",
+  "args": [
+   {
+    "$set": []
+   },
+   "a"
+  ]
+ },
+ {
+  "name": "trim_prefix",
+  "args": [
+   "a",
+   {
+    "$set": []
+   }
+  ]
+ },
+ {
+  "name": "trim_prefix",
+  "args": [
+   2,
+   null
+  ]
+ },
+ {
+  "name": "trim_suffix",
+  "args": [
+   1,
+   "a"
+  ]
+ },
+ {
+  "name": "trim_suffix",
+  "args": [
+   "a",
+   1
+  ]
+ },
+ {
+  "name": "trim_suffix",
+  "args": [
+   null,
+   "a"
+  ]
+ },
+ {
+  "name": "trim_suffix",
+  "args": [
+   "a",
+   null
+  ]
+ },
+ {
+  "name": "trim_suffix",
+  "args": [
+   [
+    "a"
+   ],
+   "a"
+  ]
+ },
+ {
+  "name": "trim_suffix",
+  "args": [
+   "a",
+   [
+    "a"
+   ]
+  ]
+ },
+ {
+  "name": "trim_suffix",
+  "args": [
+   {
+    "$set": []
+   },
+   "a"
+  ]
+ },
+ {
+  "name": "trim_suffix",
+  "args": [
+   "a",
+   {
+    "$set": []
+   }
+  ]
+ },
+ {
+  "name": "trim_suffix",
+  "args": [
+   2,
+   null
+  ]
+ },
+ {
+  "name": "split",
+  "args": [
+   1,
+   "a"
+  ]
+ },
+ {
+  "name": "split",
+  "args": [
+   "a",
+   1
+  ]
+ },
+ {
+  "name": "split",
+  "args": [
+   null,
+   "a"
+  ]
+ },
+ {
+  "name": "split",
+  "args": [
+   "a",
+   null
+  ]
+ },
+ {
+  "name": "split",
+  "args": [
+   [
+    "a"
+   ],
+   "a"
+  ]
+ },
+ {
+  "name": "split",
+  "args": [
+   "a",
+   [
+    "a"
+   ]
+  ]
+ },
+ {
+  "name": "split",
+  "args": [
+   {
+    "$set": []
+   },
+   "a"
+  ]
+ },
+ {
+  "name": "split",
+  "args": [
+   "a",
+   {
+    "$set": []
+   }
+  ]
+ },
+ {
+  "name": "split",
+  "args": [
+   2,
+   null
+  ]
+ },
+ {
+  "name": "lower",
+  "args": [
+   1
+  ]
+ },
+ {
+  "name": "lower",
+  "args": [
+   1.5
+  ]
+ },
+ {
+  "name": "lower",
+  "args": [
+   null
+  ]
+ },
+ {
+  "name": "lower",
+  "args": [
+   true
+  ]
+ },
+ {
+  "name": "lower",
+  "args": [
+   [
+    1
+   ]
+  ]
+ },
+ {
+  "name": "lower",
+  "args": [
+   {
+    "a": 1
+   }
+  ]
+ },
+ {
+  "name": "lower",
+  "args": [
+   {
+    "$set": [
+     "a"
+    ]
+   }
+  ]
+ },
+ {
+  "name": "upper",
+  "args": [
+   1
+  ]
+ },
+ {
+  "name": "upper",
+  "args": [
+   1.5
+  ]
+ },
+ {
+  "name": "upper",
+  "args": [
+   null
+  ]
+ },
+ {
+  "name": "upper",
+  "args": [
+   true
+  ]
+ },
+ {
+  "name": "upper",
+  "args": [
+   [
+    1
+   ]
+  ]
+ },
+ {
+  "name": "upper",
+  "args": [
+   {
+    "a": 1
+   }
+  ]
+ },
+ {
+  "name": "upper",
+  "args": [
+   {
+    "$set": [
+     "a"
+    ]
+   }
+  ]
+ },
+ {
+  "name": "trim_space",
+  "args": [
+   1
+  ]
+ },
+ {
+  "name": "trim_space",
+  "args": [
+   1.5
+  ]
+ },
+ {
+  "name": "trim_space",
+  "args": [
+   null
+  ]
+ },
+ {
+  "name": "trim_space",
+  "args": [
+   true
+  ]
+ },
+ {
+  "name": "trim_space",
+  "args": [
+   [
+    1
+   ]
+  ]
+ },
+ {
+  "name": "trim_space",
+  "args": [
+   {
+    "a": 1
+   }
+  ]
+ },
+ {
+  "name": "trim_space",
+  "args": [
+   {
+    "$set": [
+     "a"
+    ]
+   }
+  ]
+ },
+ {
+  "name": "strings.reverse",
+  "args": [
+   1
+  ]
+ },
+ {
+  "name": "strings.reverse",
+  "args": [
+   1.5
+  ]
+ },
+ {
+  "name": "strings.reverse",
+  "args": [
+   null
+  ]
+ },
+ {
+  "name": "strings.reverse",
+  "args": [
+   true
+  ]
+ },
+ {
+  "name": "strings.reverse",
+  "args": [
+   [
+    1
+   ]
+  ]
+ },
+ {
+  "name": "strings.reverse",
+  "args": [
+   {
+    "a": 1
+   }
+  ]
+ },
+ {
+  "name": "strings.reverse",
+  "args": [
+   {
+    "$set": [
+     "a"
+    ]
+   }
+  ]
+ },
+ {
+  "name": "contains",
+  "args": [
+   "abc",
+   "b"
+  ]
+ },
+ {
+  "name": "contains",
+  "args": [
+   "abc",
+   "a"
+  ]
+ },
+ {
+  "name": "contains",
+  "args": [
+   "abc",
+   "c"
+  ]
+ },
+ {
+  "name": "contains",
+  "args": [
+   "abc",
+   ""
+  ]
+ },
+ {
+  "name": "contains",
+  "args": [
+   "",
+   ""
+  ]
+ },
+ {
+  "name": "contains",
+  "args": [
+   "",
+   "a"
+  ]
+ },
+ {
+  "name": "contains",
+  "args": [
+   "héllo",
+   "é"
+  ]
+ },
+ {
+  "name": "contains",
+  "args": [
+   "héllo",
+   "llo"
+  ]
+ },
+ {
+  "name": "contains",
+  "args": [
+   "héllo",
+   "hé"
+  ]
+ },
+ {
+  "name": "contains",
+  "args": [
+   "abc",
+   "abcd"
+  ]
+ },
+ {
+  "name": "contains",
+  "args": [
+   "日本語",
+   "本"
+  ]
+ },
+ {
+  "name": "contains",
+  "args": [
+   "日本語",
+   "語"
+  ]
+ },
+ {
+  "name": "startswith",
+  "args": [
+   "abc",
+   "b"
+  ]
+ },
+ {
+  "name": "startswith",
+  "args": [
+   "abc",
+   "a"
+  ]
+ },
+ {
+  "name": "startswith",
+  "args": [
+   "abc",
+   "c"
+  ]
+ },
+ {
+  "name": "startswith",
+  "args": [
+   "abc",
+   ""
+  ]
+ },
+ {
+  "name": "startswith",
+  "args": [
+   "",
+   ""
+  ]
+ },
+ {
+  "name": "startswith",
+  "args": [
+   "",
+   "a"
+  ]
+ },
+ {
+  "name": "startswith",
+  "args": [
+   "héllo",
+   "é"
+  ]
+ },
+ {
+  "name": "startswith",
+  "args": [
+   "héllo",
+   "llo"
+  ]
+ },
+ {
+  "name": "startswith",
+  "args": [
+   "héllo",
+   "hé"
+  ]
+ },
+ {
+  "name": "startswith",
+  "args": [
+   "abc",
+   "abcd"
+  ]
+ },
+ {
+  "name": "startswith",
+  "args": [
+   "日本語",
+   "本"
+  ]
+ },
+ {
+  "name": "startswith",
+  "args": [
+   "日本語",
+   "語"
+  ]
+ },
+ {
+  "name": "endswith",
+  "args": [
+   "abc",
+   "b"
+  ]
+ },
+ {
+  "name": "endswith",
+  "args": [
+   "abc",
+   "a"
+  ]
+ },
+ {
+  "name": "endswith",
+  "args": [
+   "abc",
+   "c"
+  ]
+ },
+ {
+  "name": "endswith",
+  "args": [
+   "abc",
+   ""
+  ]
+ },
+ {
+  "name": "endswith",
+  "args": [
+   "",
+   ""
+  ]
+ },
+ {
+  "name": "endswith",
+  "args": [
+   "",
+   "a"
+  ]
+ },
+ {
+  "name": "endswith",
+  "args": [
+   "héllo",
+   "é"
+  ]
+ },
+ {
+  "name": "endswith",
+  "args": [
+   "héllo",
+   "llo"
+  ]
+ },
+ {
+  "name": "endswith",
+  "args": [
+   "héllo",
+   "hé"
+  ]
+ },
+ {
+  "name": "endswith",
+  "args": [
+   "abc",
+   "abcd"
+  ]
+ },
+ {
+  "name": "endswith",
+  "args": [
+   "日本語",
+   "本"
+  ]
+ },
+ {
+  "name": "endswith",
+  "args": [
+   "日本語",
+   "語"
+  ]
+ },
+ {
+  "name": "indexof",
+  "args": [
+   "abcabc",
+   "b"
+  ]
+ },
+ {
+  "name": "indexof",
+  "args": [
+   "abcabc",
+   "c"
+  ]
+ },
+ {
+  "name": "indexof",
+  "args": [
+   "abcabc",
+   "x"
+  ]
+ },
+ {
+  "name": "indexof",
+  "args": [
+   "abc",
+   ""
+  ]
+ },
+ {
+  "name": "indexof",
+  "args": [
+   "",
+   ""
+  ]
+ },
+ {
+  "name": "indexof",
+  "args": [
+   "",
+   "a"
+  ]
+ },
+ {
+  "name": "indexof",
+  "args": [
+   "aaaa",
+   "aa"
+  ]
+ },
+ {
+  "name": "indexof",
+  "args": [
+   "héllo wörld",
+   "ö"
+  ]
+ },
+ {
+  "name": "indexof",
+  "args": [
+   "héllo wörld",
+   "l"
+  ]
+ },
+ {
+  "name": "indexof",
+  "args": [
+   "日本語日本",
+   "本"
+  ]
+ },
+ {
+  "name": "indexof",
+  "args": [
+   "日本語日本",
+   "日本"
+  ]
+ },
+ {
+  "name": "indexof",
+  "args": [
+   "ab",
+   "abc"
+  ]
+ },
+ {
+  "name": "indexof",
+  "args": [
+   "é",
+   "é"
+  ]
+ },
+ {
+  "name": "indexof",
+  "args": [
+   "xéx",
+   "x"
+  ]
+ },
+ {
+  "name": "indexof",
+  "args": [
+   "aéaéa",
+   "aéa"
+  ]
+ },
+ {
+  "name": "indexof",
+  "args": [
+   "🙂a🙂",
+   "a"
+  ]
+ },
+ {
+  "name": "indexof_n",
+  "args": [
+   "abcabc",
+   "b"
+  ]
+ },
+ {
+  "name": "indexof_n",
+  "args": [
+   "abcabc",
+   "c"
+  ]
+ },
+ {
+  "name": "indexof_n",
+  "args": [
+   "abcabc",
+   "x"
+  ]
+ },
+ {
+  "name": "indexof_n",
+  "args": [
+   "abc",
+   ""
+  ]
+ },
+ {
+  "name": "indexof_n",
+  "args": [
+   "",
+   ""
+  ]
+ },
+ {
+  "name": "indexof_n",
+  "args": [
+   "",
+   "a"
+  ]
+ },
+ {
+  "name": "indexof_n",
+  "args": [
+   "aaaa",
+   "aa"
+  ]
+ },
+ {
+  "name": "indexof_n",
+  "args": [
+   "héllo wörld",
+   "ö"
+  ]
+ },
+ {
+  "name": "indexof_n",
+  "args": [
+   "héllo wörld",
+   "l"
+  ]
+ },
+ {
+  "name": "indexof_n",
+  "args": [
+   "日本語日本",
+   "本"
+  ]
+ },
+ {
+  "name": "indexof_n",
+  "args": [
+   "日本語日本",
+   "日本"
+  ]
+ },
+ {
+  "name": "indexof_n",
+  "args": [
+   "ab",
+   "abc"
+  ]
+ },
+ {
+  "name": "indexof_n",
+  "args": [
+   "é",
+   "é"
+  ]
+ },
+ {
+  "name": "indexof_n",
+  "args": [
+   "xéx",
+   "x"
+  ]
+ },
+ {
+  "name": "indexof_n",
+  "args": [
+   "aéaéa",
+   "aéa"
+  ]
+ },
+ {
+  "name": "indexof_n",
+  "args": [
+   "🙂a🙂",
+   "a"
+  ]
+ },
+ {
+  "name": "strings.count",
+  "args": [
+   "cheese",
+   "e"
+  ]
+ },
+ {
+  "name": "strings.count",
+  "args": [
+   "five",
+   ""
+  ]
+ },
+ {
+  "name": "strings.count",
+  "args": [
+   "",
+   ""
+  ]
+ },
+ {
+  "name": "strings.count",
+  "args": [
+   "héllo",
+   ""
+  ]
+ },
+ {
+  "name": "strings.count",
+  "args": [
+   "aaaa",
+   "aa"
+  ]
+ },
+ {
+  "name": "strings.count",
+  "args": [
+   "abc",
+   "x"
+  ]
+ },
+ {
+  "name": "strings.count",
+  "args": [
+   "ééé",
+   "é"
+  ]
+ },
+ {
+  "name": "strings.count",
+  "args": [
+   "日本日本",
+   "日本"
+  ]
+ },
+ {
+  "name": "substring",
+  "args": [
+   "abcdef",
+   0,
+   3
+  ]
+ },
+ {
+  "name": "substring",
+  "args": [
+   "abcdef",
+   2,
+   2
+  ]
+ },
+ {
+  "name": "substring",
+  "args": [
+   "abcdef",
+   2,
+   -1
+  ]
+ },
+ {
+  "name": "substring",
+  "args": [
+   "abcdef",
+   2,
+   100
+  ]
+ },
+ {
+  "name": "substring",
+  "args": [
+   "abcdef",
+   6,
+   1
+  ]
+ },
+ {
+  "name": "substring",
+  "args": [
+   "abcdef",
+   10,
+   1
+  ]
+ },
+ {
+  "name": "substring",
+  "args": [
+   "abcdef",
+   0,
+   0
+  ]
+ },
+ {
+  "name": "substring",
+  "args": [
+   "abcdef",
+   0,
+   6
+  ]
+ },
+ {
+  "name": "substring",
+  "args": [
+   "abcdef",
+   0,
+   7
+  ]
+ },
+ {
+  "name": "substring",
+  "args": [
+   "abcdef",
+   3,
+   0
+  ]
+ },
+ {
+  "name": "substring",
+  "args": [
+   "",
+   0,
+   1
+  ]
+ },
+ {
+  "name": "substring",
+  "args": [
+   "",
+   5,
+   -1
+  ]
+ },
+ {
+  "name": "substring",
+  "args": [
+   "héllo",
+   1,
+   3
+  ]
+ },
+ {
+  "name": "substring",
+  "args": [
+   "héllo",
+   0,
+   5
+  ]
+ },
+ {
+  "name": "substring",
+  "args": [
+   "héllo",
+   0,
+   100
+  ]
+ },
+ {
+  "name": "substring",
+  "args": [
+   "héllo",
+   4,
+   10
+  ]
+ },
+ {
+  "name": "substring",
+  "args": [
+   "héllo",
+   5,
+   1
+  ]
+ },
+ {
+  "name": "substring",
+  "args": [
+   "héllo",
+   2,
+   -1
+  ]
+ },
+ {
+  "name": "substring",
+  "args": [
+   "日本語",
+   1,
+   1
+  ]
+ },
+ {
+  "name": "substring",
+  "args": [
+   "abc",
+   -1,
+   1
+  ]
+ },
+ {
+  "name": "substring",
+  "args": [
+   "abc",
+   0,
+   -5
+  ]
+ },
+ {
+  "name": "substring",
+  "args": [
+   "abc",
+   1.0,
+   1
+  ]
+ },
+ {
+  "name": "substring",
+  "args": [
+   "abc",
+   1,
+   2.0
+  ]
+ },
+ {
+  "name": "substring",
+  "args": [
+   "abc",
+   "1",
+   1
+  ]
+ },
+ {
+  "name": "substring",
+  "args": [
+   "abc",
+   1,
+   null
+  ]
+ },
+ {
+  "name": "substring",
+  "args": [
+   "",
+   -1,
+   1
+  ]
+ },
+ {
+  "name": "substring",
+  "args": [
+   1,
+   0,
+   1
+  ]
+ },
+ {
+  "name": "substring",
+  "args": [
+   "abc",
+   1.5,
+   1
+  ]
+ },
+ {
+  "name": "substring",
+  "args": [
+   "abc",
+   1,
+   1.5
+  ]
+ },
+ {
+  "name": "substring",
+  "args": [
+   "abc",
+   1e2,
+   1
+  ]
+ },
+ {
+  "name": "substring",
+  "args": [
+   "abc",
+   0,
+   1e2
+  ]
+ },
+ {
+  "name": "lower",
+  "args": [
+   ""
+  ]
+ },
+ {
+  "name": "upper",
+  "args": [
+   ""
+  ]
+ },
+ {
+  "name": "lower",
+  "args": [
+   "abc"
+  ]
+ },
+ {
+  "name": "upper",
+  "args": [
+   "abc"
+  ]
+ },
+ {
+  "name": "lower",
+  "args": [
+   "ABC"
+  ]
+ },
+ {
+  "name": "upper",
+  "args": [
+   "ABC"
+  ]
+ },
+ {
+  "name": "lower",
+  "args": [
+   "MiXeD 123"
+  ]
+ },
+ {
+  "name": "upper",
+  "args": [
+   "MiXeD 123"
+  ]
+ },
+ {
+  "name": "lower",
+  "args": [
+   "HÉLLO"
+  ]
+ },
+ {
+  "name": "upper",
+  "args": [
+   "HÉLLO"
+  ]
+ },
+ {
+  "name": "lower",
+  "args": [
+   "héllo"
+  ]
+ },
+ {
+  "name": "upper",
+  "args": [
+   "héllo"
+  ]
+ },
+ {
+  "name": "lower",
+  "args": [
+   "ΣΑΣ"
+  ]
+ },
+ {
+  "name": "upper",
+  "args": [
+   "ΣΑΣ"
+  ]
+ },
+ {
+  "name": "lower",
+  "args": [
+   "σας"
+  ]
+ },
+ {
+  "name": "upper",
+  "args": [
+   "σας"
+  ]
+ },
+ {
+  "name": "lower",
+  "args": [
+   "İstanbul"
+  ]
+ },
+ {
+  "name": "upper",
+  "args": [
+   "İstanbul"
+  ]
+ },
+ {
+  "name": "lower",
+  "args": [
+   "ß"
+  ]
+ },
+ {
+  "name": "upper",
+  "args": [
+   "ß"
+  ]
+ },
+ {
+  "name": "lower",
+  "args": [
+   "straße"
+  ]
+ },
+ {
+  "name": "upper",
+  "args": [
+   "straße"
+  ]
+ },
+ {
+  "name": "lower",
+  "args": [
+   "ǅ"
+  ]
+ },
+ {
+  "name": "upper",
+  "args": [
+   "ǅ"
+  ]
+ },
+ {
+  "name": "lower",
+  "args": [
+   "ǆ"
+  ]
+ },
+ {
+  "name": "upper",
+  "args": [
+   "ǆ"
+  ]
+ },
+ {
+  "name": "lower",
+  "args": [
+   "Ǆ"
+  ]
+ },
+ {
+  "name": "upper",
+  "args": [
+   "Ǆ"
+  ]
+ },
+ {
+  "name": "lower",
+  "args": [
+   "ﬃ"
+  ]
+ },
+ {
+  "name": "upper",
+  "args": [
+   "ﬃ"
+  ]
+ },
+ {
+  "name": "lower",
+  "args": [
+   "ᾀ"
+  ]
+ },
+ {
+  "name": "upper",
+  "args": [
+   "ᾀ"
+  ]
+ },
+ {
+  "name": "lower",
+  "args": [
+   "ᾈ"
+  ]
+ },
+ {
+  "name": "upper",
+  "args": [
+   "ᾈ"
+  ]
+ },
+ {
+  "name": "lower",
+  "args": [
+   "ᾳ"
+  ]
+ },
+ {
+  "name": "upper",
+  "args": [
+   "ᾳ"
+  ]
+ },
+ {
+  "name": "lower",
+  "args": [
+   "ῼ"
+  ]
+ },
+ {
+  "name": "upper",
+  "args": [
+   "ῼ"
+  ]
+ },
+ {
+  "name": "lower",
+  "args": [
+   "ŉ"
+  ]
+ },
+ {
+  "name": "upper",
+  "args": [
+   "ŉ"
+  ]
+ },
+ {
+  "name": "lower",
+  "args": [
+   "K"
+  ]
+ },
+ {
+  "name": "upper",
+  "args": [
+   "K"
+  ]
+ },
+ {
+  "name": "lower",
+  "args": [
+   "ſ"
+  ]
+ },
+ {
+  "name": "upper",
+  "args": [
+   "ſ"
+  ]
+ },
+ {
+  "name": "lower",
+  "args": [
+   "ı"
+  ]
+ },
+ {
+  "name": "upper",
+  "args": [
+   "ı"
+  ]
+ },
+ {
+  "name": "lower",
+  "args": [
+   "ΐ"
+  ]
+ },
+ {
+  "name": "upper",
+  "args": [
+   "ΐ"
+  ]
+ },
+ {
+  "name": "lower",
+  "args": [
+   "Ⅻ"
+  ]
+ },
+ {
+  "name": "upper",
+  "args": [
+   "Ⅻ"
+  ]
+ },
+ {
+  "name": "lower",
+  "args": [
+   "ⓐ"
+  ]
+ },
+ {
+  "name": "upper",
+  "args": [
+   "ⓐ"
+  ]
+ },
+ {
+  "name": "lower",
+  "args": [
+   "𐐨"
+  ]
+ },
+ {
+  "name": "upper",
+  "args": [
+   "𐐨"
+  ]
+ },
+ {
+  "name": "lower",
+  "args": [
+   "𐐀"
+  ]
+ },
+ {
+  "name": "upper",
+  "args": [
+   "𐐀"
+  ]
+ },
+ {
+  "name": "lower",
+  "args": [
+   "ꞔ"
+  ]
+ },
+ {
+  "name": "upper",
+  "args": [
+   "ꞔ"
+  ]
+ },
+ {
+  "name": "lower",
+  "args": [
+   "ǰ"
+  ]
+ },
+ {
+  "name": "upper",
+  "args": [
+   "ǰ"
+  ]
+ },
+ {
+  "name": "lower",
+  "args": [
+   "ͅ"
+  ]
+ },
+ {
+  "name": "upper",
+  "args": [
+   "ͅ"
+  ]
+ },
+ {
+  "name": "lower",
+  "args": [
+   "ẞ"
+  ]
+ },
+ {
+  "name": "upper",
+  "args": [
+   "ẞ"
+  ]
+ },
+ {
+  "name": "split",
+  "args": [
+   "a,b,c",
+   ","
+  ]
+ },
+ {
+  "name": "split",
+  "args": [
+   "abc",
+   ","
+  ]
+ },
+ {
+  "name": "split",
+  "args": [
+   "",
+   ","
+  ]
+ },
+ {
+  "name": "split",
+  "args": [
+   "",
+   ""
+  ]
+ },
+ {
+  "name": "split",
+  "args": [
+   "abc",
+   ""
+  ]
+ },
+ {
+  "name": "split",
+  "args": [
+   "héllo",
+   ""
+  ]
+ },
+ {
+  "name": "split",
+  "args": [
+   ",a,,b,",
+   ","
+  ]
+ },
+ {
+  "name": "split",
+  "args": [
+   "a--b--c",
+   "--"
+  ]
+ },
+ {
+  "name": "split",
+  "args": [
+   "aaa",
+   "a"
+  ]
+ },
+ {
+  "name": "split",
+  "args": [
+   "aaa",
+   "aa"
+  ]
+ },
+ {
+  "name": "split",
+  "args": [
+   "日本語",
+   "本"
+  ]
+ },
+ {
+  "name": "split",
+  "args": [
+   "abc",
+   "abc"
+  ]
+ },
+ {
+  "name": "replace",
+  "args": [
+   "abcabc",
+   "b",
+   "x"
+  ]
+ },
+ {
+  "name": "replace",
+  "args": [
+   "abcabc",
+   "b",
+   ""
+  ]
+ },
+ {
+  "name": "replace",
+  "args": [
+   "abc",
+   "",
+   "-"
+  ]
+ },
+ {
+  "name": "replace",
+  "args": [
+   "",
+   "",
+   "-"
+  ]
+ },
+ {
+  "name": "replace",
+  "args": [
+   "",
+   "a",
+   "b"
+  ]
+ },
+ {
+  "name": "replace",
+  "args": [
+   "aaaa",
+   "aa",
+   "b"
+  ]
+ },
+ {
+  "name": "replace",
+  "args": [
+   "héllo",
+   "é",
+   "e"
+  ]
+ },
+ {
+  "name": "replace",
+  "args": [
+   "héllo",
+   "",
+   "-"
+  ]
+ },
+ {
+  "name": "replace",
+  "args": [
+   "日本",
+   "",
+   "|"
+  ]
+ },
+ {
+  "name": "replace",
+  "args": [
+   "abc",
+   "abc",
+   "xyz"
+  ]
+ },
+ {
+  "name": "replace",
+  "args": [
+   "abc",
+   "x",
+   "y"
+  ]
+ },
+ {
+  "name": "replace",
+  "args": [
+   "aaa",
+   "a",
+   "aa"
+  ]
+ },
+ {
+  "name": "replace",
+  "args": [
+   "a.b.c",
+   ".",
+   ".."
+  ]
+ },
+ {
+  "name": "replace",
+  "args": [
+   1,
+   "a",
+   "b"
+  ]
+ },
+ {
+  "name": "replace",
+  "args": [
+   "a",
+   1,
+   "b"
+  ]
+ },
+ {
+  "name": "replace",
+  "args": [
+   "a",
+   "b",
+   1
+  ]
+ },
+ {
+  "name": "replace",
+  "args": [
+   null,
+   "a",
+   "b"
+  ]
+ },
+ {
+  "name": "replace",
+  "args": [
+   "a",
+   null,
+   "b"
+  ]
+ },
+ {
+  "name": "replace",
+  "args": [
+   "a",
+   "b",
+   null
+  ]
+ },
+ {
+  "name": "replace",
+  "args": [
+   [
+    "a"
+   ],
+   "a",
+   "b"
+  ]
+ },
+ {
+  "name": "replace",
+  "args": [
+   "a",
+   [
+    "a"
+   ],
+   "b"
+  ]
+ },
+ {
+  "name": "replace",
+  "args": [
+   "a",
+   "b",
+   [
+    "a"
+   ]
+  ]
+ },
+ {
+  "name": "strings.replace_n",
+  "args": [
+   {
+    "a": "1",
+    "b": "2"
+   },
+   "abcab"
+  ]
+ },
+ {
+  "name": "strings.replace_n",
+  "args": [
+   {
+    "a": "x",
+    "ab": "y"
+   },
+   "abab"
+  ]
+ },
+ {
+  "name": "strings.replace_n",
+  "args": [
+   {
+    "ab": "y",
+    "abc": "z"
+   },
+   "abcab"
+  ]
+ },
+ {
+  "name": "strings.replace_n",
+  "args": [
+   {
+    "": "-",
+    "a": "x"
+   },
+   "abc"
+  ]
+ },
+ {
+  "name": "strings.replace_n",
+  "args": [
+   {
+    "": "-"
+   },
+   "ab"
+  ]
+ },
+ {
+  "name": "strings.replace_n",
+  "args": [
+   {
+    "": "-"
+   },
+   "é"
+  ]
+ },
+ {
+  "name": "strings.replace_n",
+  "args": [
+   {
+    "b": "-",
+    "": "+"
+   },
+   "abc"
+  ]
+ },
+ {
+  "name": "strings.replace_n",
+  "args": [
+   {},
+   "abc"
+  ]
+ },
+ {
+  "name": "strings.replace_n",
+  "args": [
+   {
+    "x": "y"
+   },
+   ""
+  ]
+ },
+ {
+  "name": "strings.replace_n",
+  "args": [
+   {
+    "é": "e",
+    "ö": "o"
+   },
+   "héllo wörld"
+  ]
+ },
+ {
+  "name": "strings.replace_n",
+  "args": [
+   {
+    "a": "b",
+    "b": "a"
+   },
+   "abba"
+  ]
+ },
+ {
+  "name": "strings.replace_n",
+  "args": [
+   {
+    "aaa": "3",
+    "aa": "2",
+    "a": "1"
+   },
+   "aaaaaa"
+  ]
+ },
+ {
+  "name": "strings.replace_n",
+  "args": [
+   {
+    "a": 1
+   },
+   "abc"
+  ]
+ },
+ {
+  "name": "strings.replace_n",
+  "args": [
+   {
+    "a": "1",
+    "b": null
+   },
+   "abc"
+  ]
+ },
+ {
+  "name": "strings.replace_n",
+  "args": [
+   "x",
+   "abc"
+  ]
+ },
+ {
+  "name": "strings.replace_n",
+  "args": [
+   {
+    "a": "b"
+   },
+   1
+  ]
+ },
+ {
+  "name": "strings.replace_n",
+  "args": [
+   [
+    "a"
+   ],
+   1
+  ]
+ },
+ {
+  "name": "trim",
+  "args": [
+   "  abc  ",
+   " "
+  ]
+ },
+ {
+  "name": "trim",
+  "args": [
+   "xxabcxx",
+   "x"
+  ]
+ },
+ {
+  "name": "trim",
+  "args": [
+   "abc",
+   ""
+  ]
+ },
+ {
+  "name": "trim",
+  "args": [
+   "",
+   "x"
+  ]
+ },
+ {
+  "name": "trim",
+  "args": [
+   "abcba",
+   "ab"
+  ]
+ },
+ {
+  "name": "trim",
+  "args": [
+   "ééaéé",
+   "é"
+  ]
+ },
+ {
+  "name": "trim",
+  "args": [
+   "aaa",
+   "a"
+  ]
+ },
+ {
+  "name": "trim",
+  "args": [
+   "日本日",
+   "日"
+  ]
+ },
+ {
+  "name": "trim_left",
+  "args": [
+   "xxabcxx",
+   "x"
+  ]
+ },
+ {
+  "name": "trim_left",
+  "args": [
+   "abc",
+   "cba"
+  ]
+ },
+ {
+  "name": "trim_left",
+  "args": [
+   "abc",
+   ""
+  ]
+ },
+ {
+  "name": "trim_left",
+  "args": [
+   "éab",
+   "é"
+  ]
+ },
+ {
+  "name": "trim_right",
+  "args": [
+   "xxabcxx",
+   "x"
+  ]
+ },
+ {
+  "name": "trim_right",
+  "args": [
+   "abc",
+   "cba"
+  ]
+ },
+ {
+  "name": "trim_right",
+  "args": [
+   "abé",
+   "é"
+  ]
+ },
+ {
+  "name": "trim_right",
+  "args": [
+   "",
+   ""
+  ]
+ },
+ {
+  "name": "trim_prefix",
+  "args": [
+   "abcabc",
+   "abc"
+  ]
+ },
+ {
+  "name": "trim_prefix",
+  "args": [
+   "abc",
+   "x"
+  ]
+ },
+ {
+  "name": "trim_prefix",
+  "args": [
+   "abc",
+   ""
+  ]
+ },
+ {
+  "name": "trim_prefix",
+  "args": [
+   "abc",
+   "abc"
+  ]
+ },
+ {
+  "name": "trim_prefix",
+  "args": [
+   "ab",
+   "abc"
+  ]
+ },
+ {
+  "name": "trim_prefix",
+  "args": [
+   "éa",
+   "é"
+  ]
+ },
+ {
+  "name": "trim_suffix",
+  "args": [
+   "abcabc",
+   "abc"
+  ]
+ },
+ {
+  "name": "trim_suffix",
+  "args": [
+   "abc",
+   "x"
+  ]
+ },
+ {
+  "name": "trim_suffix",
+  "args": [
+   "abc",
+   ""
+  ]
+ },
+ {
+  "name": "trim_suffix",
+  "args": [
+   "abc",
+   "abc"
+  ]
+ },
+ {
+  "name": "trim_suffix",
+  "args": [
+   "aé",
+   "é"
+  ]
+ },
+ {
+  "name": "trim_space",
+  "args": [
+   ""
+  ]
+ },
+ {
+  "name": "trim_space",
+  "args": [
+   "  "
+  ]
+ },
+ {
+  "name": "trim_space",
+  "args": [
+   " a b "
+  ]
+ },
+ {
+  "name": "trim_space",
+  "args": [
+   "\t\n\u000b\f\r a \r\n"
+  ]
+ },
+ {
+  "name": "trim_space",
+  "args": [
+   "a "
+  ]
+ },
+ {
+  "name": "trim_space",
+  "args": [
+   "　a "
+  ]
+ },
+ {
+  "name": "trim_space",
+  "args": [
+   "​a​"
+  ]
+ },
+ {
+  "name": "trim_space",
+  "args": [
+   "᠎a"
+  ]
+ },
+ {
+  "name": "trim_space",
+  "args": [
+   "a  "
+  ]
+ },
+ {
+  "name": "trim_space",
+  "args": [
+   " a  "
+  ]
+ },
+ {
+  "name": "trim_space",
+  "args": [
+   "abc"
+  ]
+ },
+ {
+  "name": "strings.reverse",
+  "args": [
+   ""
+  ]
+ },
+ {
+  "name": "strings.reverse",
+  "args": [
+   "a"
+  ]
+ },
+ {
+  "name": "strings.reverse",
+  "args": [
+   "abc"
+  ]
+ },
+ {
+  "name": "strings.reverse",
+  "args": [
+   "héllo"
+  ]
+ },
+ {
+  "name": "strings.reverse",
+  "args": [
+   "日本語"
+  ]
+ },
+ {
+  "name": "strings.reverse",
+  "args": [
+   "🙂👍"
+  ]
+ },
+ {
+  "name": "strings.reverse",
+  "args": [
+   "é"
+  ]
+ },
+ {
+  "name": "concat",
+  "args": [
+   ",",
+   [
+    "a",
+    "b",
+    "c"
+   ]
+  ]
+ },
+ {
+  "name": "concat",
+  "args": [
+   "",
+   [
+    "a",
+    "b"
+   ]
+  ]
+ },
+ {
+  "name": "concat",
+  "args": [
+   "--",
+   [
+    "a",
+    "b",
+    "c"
+   ]
+  ]
+ },
+ {
+  "name": "concat",
+  "args": [
+   ",",
+   []
+  ]
+ },
+ {
+  "name": "concat",
+  "args": [
+   ",",
+   [
+    "a"
+   ]
+  ]
+ },
+ {
+  "name": "concat",
+  "args": [
+   ",",
+   {
+    "$set": []
+   }
+  ]
+ },
+ {
+  "name": "concat",
+  "args": [
+   ",",
+   {
+    "$set": [
+     "b",
+     "a",
+     "c"
+    ]
+   }
+  ]
+ },
+ {
+  "name": "concat",
+  "args": [
+   ",",
+   {
+    "$set": [
+     "x"
+    ]
+   }
+  ]
+ },
+ {
+  "name": "concat",
+  "args": [
+   "é",
+   [
+    "a",
+    "b"
+   ]
+  ]
+ },
+ {
+  "name": "concat",
+  "args": [
+   ",",
+   [
+    1
+   ]
+  ]
+ },
+ {
+  "name": "concat",
+  "args": [
+   ",",
+   [
+    "a",
+    1
+   ]
+  ]
+ },
+ {
+  "name": "concat",
+  "args": [
+   ",",
+   {
+    "$set": [
+     1,
+     "a"
+    ]
+   }
+  ]
+ },
+ {
+  "name": "concat",
+  "args": [
+   ",",
+   [
+    null,
+    "a"
+   ]
+  ]
+ },
+ {
+  "name": "concat",
+  "args": [
+   1,
+   [
+    "a"
+   ]
+  ]
+ },
+ {
+  "name": "concat",
+  "args": [
+   ",",
+   "abc"
+  ]
+ },
+ {
+  "name": "concat",
+  "args": [
+   ",",
+   {
+    "a": "b"
+   }
+  ]
+ },
+ {
+  "name": "concat",
+  "args": [
+   null,
+   null
+  ]
+ },
+ {
+  "name": "concat",
+  "args": [
+   ",",
+   {
+    "$set": [
+     {
+      "$set": [
+       "a"
+      ]
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "name": "concat",
+  "args": [
+   ",",
+   [
+    [
+     "a"
+    ]
+   ]
+  ]
+ },
+ {
+  "name": "strings.any_prefix_match",
+  "args": [
+   "foobar",
+   "foo"
+  ]
+ },
+ {
+  "name": "strings.any_prefix_match",
+  "args": [
+   "foobar",
+   "bar"
+  ]
+ },
+ {
+  "name": "strings.any_prefix_match",
+  "args": [
+   "foobar",
+   ""
+  ]
+ },
+ {
+  "name": "strings.any_prefix_match",
+  "args": [
+   "",
+   ""
+  ]
+ },
+ {
+  "name": "strings.any_prefix_match",
+  "args": [
+   "",
+   "a"
+  ]
+ },
+ {
+  "name": "strings.any_prefix_match",
+  "args": [
+   [
+    "foobar",
+    "baz"
+   ],
+   "ba"
+  ]
+ },
+ {
+  "name": "strings.any_prefix_match",
+  "args": [
+   [
+    "foobar",
+    "baz"
+   ],
+   [
+    "x",
+    "fo"
+   ]
+  ]
+ },
+ {
+  "name": "strings.any_prefix_match",
+  "args": [
+   {
+    "$set": [
+     "foobar",
+     "baz"
+    ]
+   },
+   {
+    "$set": [
+     "az",
+     "x"
+    ]
+   }
+  ]
+ },
+ {
+  "name": "strings.any_prefix_match",
+  "args": [
+   [],
+   "a"
+  ]
+ },
+ {
+  "name": "strings.any_prefix_match",
+  "args": [
+   "a",
+   []
+  ]
+ },
+ {
+  "name": "strings.any_prefix_match",
+  "args": [
+   [],
+   []
+  ]
+ },
+ {
+  "name": "strings.any_prefix_match",
+  "args": [
+   [
+    ""
+   ],
+   [
+    ""
+   ]
+  ]
+ },
+ {
+  "name": "strings.any_prefix_match",
+  "args": [
+   [
+    "abc"
+   ],
+   [
+    ""
+   ]
+  ]
+ },
+ {
+  "name": "strings.any_prefix_match",
+  "args": [
+   [
+    ""
+   ],
+   [
+    "a"
+   ]
+  ]
+ },
+ {
+  "name": "strings.any_prefix_match",
+  "args": [
+   [
+    "a",
+    "b"
+   ],
+   [
+    "c",
+    "d"
+   ]
+  ]
+ },
+ {
+  "name": "strings.any_prefix_match",
+  "args": [
+   "héllo",
+   "hé"
+  ]
+ },
+ {
+  "name": "strings.any_prefix_match",
+  "args": [
+   "héllo",
+   "lo"
+  ]
+ },
+ {
+  "name": "strings.any_prefix_match",
+  "args": [
+   [
+    "日本語"
+   ],
+   [
+    "日",
+    "語"
+   ]
+  ]
+ },
+ {
+  "name": "strings.any_prefix_match",
+  "args": [
+   [
+    "abcdefghijklmnopqrstuvwxyz",
+    "abcdefghijklmnopqrstuvwxyz0"
+   ],
+   [
+    "abcdefghijklmnopqrstuvwxyz0"
+   ]
+  ]
+ },
+ {
+  "name": "strings.any_prefix_match",
+  "args": [
+   [
+    "abcdefghijklmnopqrstuvwxyz",
+    "abcdefghijklmnop"
+   ],
+   [
+    "abcdefghijklmnopq",
+    "zz"
+   ]
+  ]
+ },
+ {
+  "name": "strings.any_prefix_match",
+  "args": [
+   1,
+   "a"
+  ]
+ },
+ {
+  "name": "strings.any_prefix_match",
+  "args": [
+   "a",
+   1
+  ]
+ },
+ {
+  "name": "strings.any_prefix_match",
+  "args": [
+   null,
+   null
+  ]
+ },
+ {
+  "name": "strings.any_prefix_match",
+  "args": [
+   [
+    1
+   ],
+   "a"
+  ]
+ },
+ {
+  "name": "strings.any_prefix_match",
+  "args": [
+   "a",
+   [
+    "a",
+    1
+   ]
+  ]
+ },
+ {
+  "name": "strings.any_prefix_match",
+  "args": [
+   {
+    "$set": [
+     1
+    ]
+   },
+   "a"
+  ]
+ },
+ {
+  "name": "strings.any_prefix_match",
+  "args": [
+   {
+    "a": "b"
+   },
+   "a"
+  ]
+ },
+ {
+  "name": "strings.any_prefix_match",
+  "args": [
+   "a",
+   {
+    "a": "b"
+   }
+  ]
+ },
+ {
+  "name": "strings.any_suffix_match",
+  "args": [
+   "foobar",
+   "foo"
+  ]
+ },
+ {
+  "name": "strings.any_suffix_match",
+  "args": [
+   "foobar",
+   "bar"
+  ]
+ },
+ {
+  "name": "strings.any_suffix_match",
+  "args": [
+   "foobar",
+   ""
+  ]
+ },
+ {
+  "name": "strings.any_suffix_match",
+  "args": [
+   "",
+   ""
+  ]
+ },
+ {
+  "name": "strings.any_suffix_match",
+  "args": [
+   "",
+   "a"
+  ]
+ },
+ {
+  "name": "strings.any_suffix_match",
+  "args": [
+   [
+    "foobar",
+    "baz"
+   ],
+   "ba"
+  ]
+ },
+ {
+  "name": "strings.any_suffix_match",
+  "args": [
+   [
+    "foobar",
+    "baz"
+   ],
+   [
+    "x",
+    "fo"
+   ]
+  ]
+ },
+ {
+  "name": "strings.any_suffix_match",
+  "args": [
+   {
+    "$set": [
+     "foobar",
+     "baz"
+    ]
+   },
+   {
+    "$set": [
+     "az",
+     "x"
+    ]
+   }
+  ]
+ },
+ {
+  "name": "strings.any_suffix_match",
+  "args": [
+   [],
+   "a"
+  ]
+ },
+ {
+  "name": "strings.any_suffix_match",
+  "args": [
+   "a",
+   []
+  ]
+ },
+ {
+  "name": "strings.any_suffix_match",
+  "args": [
+   [],
+   []
+  ]
+ },
+ {
+  "name": "strings.any_suffix_match",
+  "args": [
+   [
+    ""
+   ],
+   [
+    ""
+   ]
+  ]
+ },
+ {
+  "name": "strings.any_suffix_match",
+  "args": [
+   [
+    "abc"
+   ],
+   [
+    ""
+   ]
+  ]
+ },
+ {
+  "name": "strings.any_suffix_match",
+  "args": [
+   [
+    ""
+   ],
+   [
+    "a"
+   ]
+  ]
+ },
+ {
+  "name": "strings.any_suffix_match",
+  "args": [
+   [
+    "a",
+    "b"
+   ],
+   [
+    "c",
+    "d"
+   ]
+  ]
+ },
+ {
+  "name": "strings.any_suffix_match",
+  "args": [
+   "héllo",
+   "hé"
+  ]
+ },
+ {
+  "name": "strings.any_suffix_match",
+  "args": [
+   "héllo",
+   "lo"
+  ]
+ },
+ {
+  "name": "strings.any_suffix_match",
+  "args": [
+   [
+    "日本語"
+   ],
+   [
+    "日",
+    "語"
+   ]
+  ]
+ },
+ {
+  "name": "strings.any_suffix_match",
+  "args": [
+   [
+    "abcdefghijklmnopqrstuvwxyz",
+    "abcdefghijklmnopqrstuvwxyz0"
+   ],
+   [
+    "abcdefghijklmnopqrstuvwxyz0"
+   ]
+  ]
+ },
+ {
+  "name": "strings.any_suffix_match",
+  "args": [
+   [
+    "abcdefghijklmnopqrstuvwxyz",
+    "abcdefghijklmnop"
+   ],
+   [
+    "abcdefghijklmnopq",
+    "zz"
+   ]
+  ]
+ },
+ {
+  "name": "strings.any_suffix_match",
+  "args": [
+   1,
+   "a"
+  ]
+ },
+ {
+  "name": "strings.any_suffix_match",
+  "args": [
+   "a",
+   1
+  ]
+ },
+ {
+  "name": "strings.any_suffix_match",
+  "args": [
+   null,
+   null
+  ]
+ },
+ {
+  "name": "strings.any_suffix_match",
+  "args": [
+   [
+    1
+   ],
+   "a"
+  ]
+ },
+ {
+  "name": "strings.any_suffix_match",
+  "args": [
+   "a",
+   [
+    "a",
+    1
+   ]
+  ]
+ },
+ {
+  "name": "strings.any_suffix_match",
+  "args": [
+   {
+    "$set": [
+     1
+    ]
+   },
+   "a"
+  ]
+ },
+ {
+  "name": "strings.any_suffix_match",
+  "args": [
+   {
+    "a": "b"
+   },
+   "a"
+  ]
+ },
+ {
+  "name": "strings.any_suffix_match",
+  "args": [
+   "a",
+   {
+    "a": "b"
+   }
+  ]
+ },
+ {
+  "name": "format_int",
+  "args": [
+   10,
+   2
+  ]
+ },
+ {
+  "name": "format_int",
+  "args": [
+   10,
+   8
+  ]
+ },
+ {
+  "name": "format_int",
+  "args": [
+   10,
+   10
+  ]
+ },
+ {
+  "name": "format_int",
+  "args": [
+   10,
+   16
+  ]
+ },
+ {
+  "name": "format_int",
+  "args": [
+   255,
+   16
+  ]
+ },
+ {
+  "name": "format_int",
+  "args": [
+   -255,
+   16
+  ]
+ },
+ {
+  "name": "format_int",
+  "args": [
+   -10,
+   2
+  ]
+ },
+ {
+  "name": "format_int",
+  "args": [
+   0,
+   2
+  ]
+ },
+ {
+  "name": "format_int",
+  "args": [
+   0,
+   16
+  ]
+ },
+ {
+  "name": "format_int",
+  "args": [
+   3.7,
+   10
+  ]
+ },
+ {
+  "name": "format_int",
+  "args": [
+   -3.7,
+   10
+  ]
+ },
+ {
+  "name": "format_int",
+  "args": [
+   3.7,
+   2
+  ]
+ },
+ {
+  "name": "format_int",
+  "args": [
+   -3.7,
+   16
+  ]
+ },
+ {
+  "name": "format_int",
+  "args": [
+   1e3,
+   10
+  ]
+ },
+ {
+  "name": "format_int",
+  "args": [
+   1e3,
+   16
+  ]
+ },
+ {
+  "name": "format_int",
+  "args": [
+   0.5,
+   10
+  ]
+ },
+ {
+  "name": "format_int",
+  "args": [
+   -0.5,
+   10
+  ]
+ },
+ {
+  "name": "format_int",
+  "args": [
+   123456789012345678901234567890,
+   10
+  ]
+ },
+ {
+  "name": "format_int",
+  "args": [
+   123456789012345678901234567890,
+   16
+  ]
+ },
+ {
+  "name": "format_int",
+  "args": [
+   -123456789012345678901234567890,
+   2
+  ]
+ },
+ {
+  "name": "format_int",
+  "args": [
+   10,
+   3
+  ]
+ },
+ {
+  "name": "format_int",
+  "args": [
+   10,
+   2.0
+  ]
+ },
+ {
+  "name": "format_int",
+  "args": [
+   10,
+   10.0
+  ]
+ },
+ {
+  "name": "format_int",
+  "args": [
+   10,
+   1e1
+  ]
+ },
+ {
+  "name": "format_int",
+  "args": [
+   10,
+   -2
+  ]
+ },
+ {
+  "name": "format_int",
+  "args": [
+   10,
+   16.5
+  ]
+ },
+ {
+  "name": "format_int",
+  "args": [
+   "1",
+   10
+  ]
+ },
+ {
+  "name": "format_int",
+  "args": [
+   1,
+   "10"
+  ]
+ },
+ {
+  "name": "format_int",
+  "args": [
+   null,
+   2
+  ]
+ },
+ {
+  "name": "format_int",
+  "args": [
+   1,
+   null
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%d",
+   [
+    1
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%d",
+   [
+    -42
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%d",
+   [
+    1.5
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%d",
+   [
+    "a"
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%d",
+   [
+    12345678901234567890123
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "hello %s",
+   [
+    "world"
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%s",
+   [
+    1
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%s",
+   [
+    1.5
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%s",
+   [
+    [
+     1,
+     "a"
+    ]
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%s",
+   [
+    {
+     "a": 1
+    }
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%s",
+   [
+    {
+     "$set": [
+      1,
+      2
+     ]
+    }
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v",
+   [
+    null
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v",
+   [
+    true
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v",
+   [
+    false
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v",
+   [
+    {
+     "$set": []
+    }
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v",
+   [
+    {}
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v",
+   [
+    []
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v",
+   [
+    [
+     null,
+     true,
+     1.5,
+     "x\n"
+    ]
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v",
+   [
+    {
+     "b": [
+      1,
+      {
+       "c": {
+        "$set": [
+         "x"
+        ]
+       }
+      }
+     ],
+     "a": null
+    }
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v %v %v %v",
+   [
+    1,
+    1.5,
+    "s",
+    123456789012345678901234567890
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v",
+   [
+    1e21
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v",
+   [
+    1e20
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v",
+   [
+    123456789.0
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v",
+   [
+    1e-06
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v",
+   [
+    1e-07
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v",
+   [
+    100.0
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v",
+   [
+    1e400
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v",
+   [
+    -1e400
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%d",
+   [
+    1e400
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v",
+   [
+    1e-400
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v",
+   [
+    -0.0
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v",
+   [
+    0.1
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v",
+   [
+    1.0
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v",
+   [
+    -1.0
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v",
+   [
+    2.5e-10
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v",
+   [
+    1.7976931348623157e+308
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v",
+   [
+    5e-324
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%f",
+   [
+    3.14159
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.2f",
+   [
+    3.14159
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%8.3f",
+   [
+    3.14159
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%-8.3f|",
+   [
+    3.14159
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%08.3f",
+   [
+    -3.14159
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%+.1f",
+   [
+    2.25
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.1f",
+   [
+    0.25
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.1f",
+   [
+    0.35
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.0f",
+   [
+    0.5
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.0f",
+   [
+    1.5
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.0f",
+   [
+    2.5
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%f",
+   [
+    1
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%f",
+   [
+    "x"
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%f",
+   [
+    12345678901234567890123
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.3f",
+   [
+    1e+100
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.30f",
+   [
+    0.1
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%e",
+   [
+    1234.5678
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%E",
+   [
+    1234.5678
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.2e",
+   [
+    1234.5678
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%e",
+   [
+    0.0
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%e",
+   [
+    1e-300
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.20e",
+   [
+    0.1
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%g",
+   [
+    1234.5678
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%G",
+   [
+    1e-10
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.3g",
+   [
+    1234.5678
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.10g",
+   [
+    0.3333333333333333
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%g",
+   [
+    1000000.0
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%g",
+   [
+    100000.0
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.0g",
+   [
+    1.5
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.1g",
+   [
+    0.15
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%#g",
+   [
+    1.0
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%#g",
+   [
+    1.5
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%#.3g",
+   [
+    1.0
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%#v",
+   [
+    1.5
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%#f",
+   [
+    1.0
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%#e",
+   [
+    1.0
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%#.0f",
+   [
+    1.0
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%#.0e",
+   [
+    1.0
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%#g",
+   [
+    0.0
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%#g",
+   [
+    123456789.0
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%#v",
+   [
+    1.0
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%x",
+   [
+    1.5
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%X",
+   [
+    1.5
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%x",
+   [
+    -0.1
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.2x",
+   [
+    0.3333333333333333
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%#x",
+   [
+    1.0
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%#X",
+   [
+    2.0
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%x",
+   [
+    0.0
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.0x",
+   [
+    1.5
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.1x",
+   [
+    1.96875
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%x",
+   [
+    5e-324
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%x",
+   [
+    1e+300
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%#.3x",
+   [
+    1.0
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%#.3X",
+   [
+    3.75
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%b",
+   [
+    1.0
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%b",
+   [
+    5e-324
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%b",
+   [
+    -2.5
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%F",
+   [
+    1.5
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "% f",
+   [
+    1.5
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "% .2f",
+   [
+    -1.5
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%+f",
+   [
+    1.5
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%+ f",
+   [
+    1.5
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%010.2f",
+   [
+    1.5
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%-010.2f|",
+   [
+    1.5
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%+010.2f",
+   [
+    1.5
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "% 010.2f",
+   [
+    1.5
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%10e",
+   [
+    1.5
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%-12g|",
+   [
+    1.5
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%x",
+   [
+    255
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%X",
+   [
+    255
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%#x",
+   [
+    255
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%#X",
+   [
+    255
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%o",
+   [
+    8
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%#o",
+   [
+    8
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%O",
+   [
+    8
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%#o",
+   [
+    0
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%b",
+   [
+    5
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%#b",
+   [
+    5
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%x",
+   [
+    -255
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%c",
+   [
+    65
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%c",
+   [
+    128578
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%c",
+   [
+    -1
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%c",
+   [
+    1114112
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%c",
+   [
+    55296
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%q",
+   [
+    65
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%q",
+   [
+    39
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%q",
+   [
+    10
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%+q",
+   [
+    233
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%q",
+   [
+    233
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%U",
+   [
+    128578
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%#U",
+   [
+    128578
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%#U",
+   [
+    10
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%U",
+   [
+    -1
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.6U",
+   [
+    65
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%10U|",
+   [
+    65
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%-10U|",
+   [
+    65
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%010U",
+   [
+    65
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%5d|",
+   [
+    42
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%-5d|",
+   [
+    42
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%05d",
+   [
+    42
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%05d",
+   [
+    -42
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%+d",
+   [
+    42
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "% d",
+   [
+    42
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%+ d",
+   [
+    42
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.5d",
+   [
+    42
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%8.5d",
+   [
+    -42
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.0d",
+   [
+    0
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%5.0d|",
+   [
+    0
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%-05d|",
+   [
+    42
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%0-5d|",
+   [
+    42
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%+v",
+   [
+    42
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%#v",
+   [
+    42
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%#v",
+   [
+    "a\"b"
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%+v",
+   [
+    "x"
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%#v",
+   [
+    -1
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v",
+   [
+    9223372036854775807
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%d",
+   [
+    9223372036854775808
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%d",
+   [
+    -9223372036854775808
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%d",
+   [
+    -9223372036854775809
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%x",
+   [
+    9223372036854775808
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%t",
+   [
+    true
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%t",
+   [
+    1
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%t",
+   [
+    "true"
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%t",
+   [
+    1.5
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%t",
+   [
+    123456789012345678901234567890
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%T",
+   [
+    1
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%T",
+   [
+    1.5
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%T",
+   [
+    "a"
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%T",
+   [
+    true
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%T",
+   [
+    null
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%T",
+   [
+    123456789012345678901234567890
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%T",
+   [
+    1e400
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%s",
+   [
+    "abc"
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%10s|",
+   [
+    "abc"
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%-10s|",
+   [
+    "abc"
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.2s",
+   [
+    "abcdef"
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.2s",
+   [
+    "héllo"
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%5.1s|",
+   [
+    "日本"
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%010s",
+   [
+    "abc"
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%-010s|",
+   [
+    "abc"
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%x",
+   [
+    "hello"
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%X",
+   [
+    "hello"
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "% x",
+   [
+    "hello"
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%#x",
+   [
+    "hi"
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%# x",
+   [
+    "hi"
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%# X",
+   [
+    "hi"
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.2x",
+   [
+    "hello"
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%10x|",
+   [
+    "hi"
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%-10x|",
+   [
+    "hi"
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%x",
+   [
+    ""
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%5x|",
+   [
+    ""
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%x",
+   [
+    "é"
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%q",
+   [
+    "hello"
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%q",
+   [
+    "a\"b\\c\n\t\u0001"
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%+q",
+   [
+    "héllo 日本"
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%#q",
+   [
+    "abc"
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%#q",
+   [
+    "a`b"
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%#q",
+   [
+    "a\nb"
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%q",
+   [
+    "­ 🙂󠀁"
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.3q",
+   [
+    "abcdef"
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%10q|",
+   [
+    "a"
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%#+q",
+   [
+    "é"
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%%",
+   []
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "100%%",
+   []
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%5%",
+   []
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%",
+   []
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "abc%",
+   []
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%!",
+   []
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%z",
+   [
+    1
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%z",
+   [
+    "a"
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%z",
+   [
+    1.5
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%z",
+   [
+    123456789012345678901234567890
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%d",
+   []
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%d %d",
+   [
+    1
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%d",
+   [
+    1,
+    2
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%d",
+   [
+    1,
+    "a",
+    1.5,
+    [
+     1
+    ]
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "no verbs",
+   [
+    1
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "",
+   [
+    "a"
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "",
+   []
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%s %s",
+   [
+    "a"
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%[2]d %[1]d",
+   [
+    1,
+    2
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%[3]d",
+   [
+    1,
+    2
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%[0]d",
+   [
+    1
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%[1]d %d",
+   [
+    1,
+    2
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%[2]d %d",
+   [
+    1,
+    2
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%[x]d",
+   [
+    1
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%[1]",
+   [
+    1
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%[1",
+   [
+    1
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%[]d",
+   [
+    1
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%[1]*d",
+   [
+    5,
+    2
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%[2]*[1]d",
+   [
+    12,
+    5
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%*d",
+   [
+    5,
+    42
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%-*d|",
+   [
+    5,
+    42
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%*d|",
+   [
+    -5,
+    42
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.*f",
+   [
+    2,
+    3.14159
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%*d",
+   [
+    "x",
+    42
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%*d",
+   [
+    1.5,
+    42
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.*d",
+   [
+    -1,
+    42
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.*d",
+   [
+    "x",
+    42
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%*d",
+   [
+    5
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%*d",
+   [
+    123456789012345678901234567890,
+    1
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.f",
+   [
+    1.5
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.d",
+   [
+    0
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.s",
+   [
+    "abc"
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%3.",
+   [
+    1
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.",
+   [
+    1
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%1[2]d",
+   [
+    1,
+    2
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%[2].2f",
+   [
+    1,
+    2.5
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%[1]d %[1]d",
+   [
+    7
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%w",
+   [
+    1
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%w",
+   [
+    "a"
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%w",
+   [
+    1.5
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%w",
+   [
+    123456789012345678901234567890
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%+w",
+   [
+    123456789012345678901234567890
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%#w",
+   [
+    123456789012345678901234567890
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%#w",
+   [
+    -123456789012345678901234567890
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%#w",
+   [
+    1
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%d",
+   [
+    123456789012345678901234567890
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%x",
+   [
+    123456789012345678901234567890
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%X",
+   [
+    -123456789012345678901234567890
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%o",
+   [
+    123456789012345678901234567890
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%O",
+   [
+    123456789012345678901234567890
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%b",
+   [
+    123456789012345678901234567890
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%#x",
+   [
+    123456789012345678901234567890
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%#o",
+   [
+    123456789012345678901234567890
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%#b",
+   [
+    123456789012345678901234567890
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%+d",
+   [
+    123456789012345678901234567890
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "% d",
+   [
+    123456789012345678901234567890
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%40d|",
+   [
+    123456789012345678901234567890
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%-40d|",
+   [
+    123456789012345678901234567890
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%040d",
+   [
+    -123456789012345678901234567890
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.40d",
+   [
+    123456789012345678901234567890
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%45.40d|",
+   [
+    123456789012345678901234567890
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%045.40d",
+   [
+    123456789012345678901234567890
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%s",
+   [
+    123456789012345678901234567890
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v",
+   [
+    -123456789012345678901234567890
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%+v",
+   [
+    123456789012345678901234567890
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%#v",
+   [
+    123456789012345678901234567890
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%c",
+   [
+    123456789012345678901234567890
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%q",
+   [
+    123456789012345678901234567890
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%e",
+   [
+    123456789012345678901234567890
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%x",
+   [
+    123456789012345678901234567890,
+    1
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%d",
+   [
+    1,
+    123456789012345678901234567890
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v",
+   [
+    1.0e2
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%d",
+   [
+    1.0e2
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%d",
+   [
+    100.0
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v",
+   [
+    1E2
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%d",
+   [
+    -0
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v",
+   [
+    -0
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%s",
+   [
+    "x",
+    "y"
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%[2]s",
+   [
+    "x",
+    "y"
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v %v",
+   [
+    [
+     1,
+     [
+      2,
+      [
+       3
+      ]
+     ]
+    ],
+    {
+     "k": {
+      "$set": [
+       "v"
+      ]
+     }
+    }
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%5v|",
+   [
+    true
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%-5v|",
+   [
+    null
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%q",
+   [
+    [
+     1
+    ]
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%x",
+   [
+    {
+     "a": 1
+    }
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%d",
+   [
+    [
+     1
+    ]
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v",
+   [
+    "日本語"
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%-8s|",
+   [
+    "日本"
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%08s",
+   [
+    "日本"
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v",
+   [
+    "­\u0001"
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v",
+   [
+    [
+     "­\u0001",
+     "🙂"
+    ]
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%6.2f%%",
+   [
+    99.5
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%s=%d (%.1f%%)",
+   [
+    "a",
+    3,
+    37.5
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%3c|",
+   [
+    65
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%-3c|",
+   [
+    65
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%03c",
+   [
+    65
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v",
+   [
+    1.2e-05
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v",
+   [
+    1234567.0
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v",
+   [
+    12345678.9
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.3v",
+   [
+    3.14159
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%10.3v|",
+   [
+    3.14159
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%5t|",
+   [
+    true
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.2t",
+   [
+    false
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%d %s",
+   [
+    1,
+    null
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   1,
+   []
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%d",
+   1
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%d",
+   {
+    "$set": [
+     1
+    ]
+   }
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%d",
+   {
+    "a": 1
+   }
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   null,
+   null
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v",
+   "abc"
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v %.3e %.20e",
+   [
+    0.1,
+    0.1,
+    0.1
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%e %g %.3f",
+   [
+    0.2,
+    0.2,
+    0.2
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.0e %.3x %.1g",
+   [
+    0.3,
+    0.3,
+    0.3
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.3e %.17e %.25g",
+   [
+    0.3333333333333333,
+    0.3333333333333333,
+    0.3333333333333333
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.17e %.1g %.3x",
+   [
+    0.6666666666666666,
+    0.6666666666666666,
+    0.6666666666666666
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.20e %G %v",
+   [
+    1000000000000000.2,
+    1000000000000000.2,
+    1000000000000000.2
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%f %.20e %.3e",
+   [
+    9.995,
+    9.995,
+    9.995
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.0f %.5g %f",
+   [
+    0.125,
+    0.125,
+    0.125
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.3f %E %.20f",
+   [
+    0.375,
+    0.375,
+    0.375
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.20f %f %.5g",
+   [
+    2.675,
+    2.675,
+    2.675
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%g %.17g %#.5g",
+   [
+    1.005,
+    1.005,
+    1.005
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.1g %v %G",
+   [
+    123.456,
+    123.456,
+    123.456
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.5g %.0f %e",
+   [
+    1e-05,
+    1e-05,
+    1e-05
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.17g %.25g %.17e",
+   [
+    9.999999e-05,
+    9.999999e-05,
+    9.999999e-05
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.25g %e %.0f",
+   [
+    5e-05,
+    5e-05,
+    5e-05
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%#.5g %.3f %g",
+   [
+    5e-05,
+    5e-05,
+    5e-05
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%x %#.5g %.17g",
+   [
+    999999.5,
+    999999.5,
+    999999.5
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.3x %.0e %x",
+   [
+    9999995.0,
+    9999995.0,
+    9999995.0
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%G %.20f %E",
+   [
+    1e+17,
+    1e+17,
+    1e+17
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%E %x %.0e",
+   [
+    1.2345678901234568e-300,
+    1.2345678901234568e-300,
+    1.2345678901234568e-300
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v %.3e %.20e",
+   [
+    5e-324,
+    5e-324,
+    5e-324
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%e %g %.3f",
+   [
+    2.2250738585072014e-308,
+    2.2250738585072014e-308,
+    2.2250738585072014e-308
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.0e %.3x %.1g",
+   [
+    1e+23,
+    1e+23,
+    1e+23
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.3e %.17e %.25g",
+   [
+    8.41e+21,
+    8.41e+21,
+    8.41e+21
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.17e %.1g %.3x",
+   [
+    5e+22,
+    5e+22,
+    5e+22
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.20e %G %v",
+   [
+    688018070742.767,
+    688018070742.767,
+    688018070742.767
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%f %.20e %.3e",
+   [
+    -0.5885024652838298,
+    -0.5885024652838298,
+    -0.5885024652838298
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.0f %.5g %f",
+   [
+    -8.32997413550849e+16,
+    -8.32997413550849e+16,
+    -8.32997413550849e+16
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.3f %E %.20f",
+   [
+    0.0067492442179148205,
+    0.0067492442179148205,
+    0.0067492442179148205
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.20f %f %.5g",
+   [
+    5.0865116520875395e+26,
+    5.0865116520875395e+26,
+    5.0865116520875395e+26
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%g %.17g %#.5g",
+   [
+    -0.2737900413864123,
+    -0.2737900413864123,
+    -0.2737900413864123
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.1g %v %G",
+   [
+    -8.721476532624081e-08,
+    -8.721476532624081e-08,
+    -8.721476532624081e-08
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.5g %.0f %e",
+   [
+    -9.936376244028897e-24,
+    -9.936376244028897e-24,
+    -9.936376244028897e-24
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.17g %.25g %.17e",
+   [
+    3.4749015508581006e-15,
+    3.4749015508581006e-15,
+    3.4749015508581006e-15
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.25g %e %.0f",
+   [
+    -9.301771222266044e-08,
+    -9.301771222266044e-08,
+    -9.301771222266044e-08
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%#.5g %.3f %g",
+   [
+    2.4118114752574237e-12,
+    2.4118114752574237e-12,
+    2.4118114752574237e-12
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%x %#.5g %.17g",
+   [
+    5.342099125338582e-13,
+    5.342099125338582e-13,
+    5.342099125338582e-13
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.3x %.0e %x",
+   [
+    -4.134666998954595e-32,
+    -4.134666998954595e-32,
+    -4.134666998954595e-32
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%G %.20f %E",
+   [
+    -41783106332.88662,
+    -41783106332.88662,
+    -41783106332.88662
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%E %x %.0e",
+   [
+    -7.370637418311795e-07,
+    -7.370637418311795e-07,
+    -7.370637418311795e-07
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v %.3e %.20e",
+   [
+    6.987896952027078e-19,
+    6.987896952027078e-19,
+    6.987896952027078e-19
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%e %g %.3f",
+   [
+    7.845838553265463e-26,
+    7.845838553265463e-26,
+    7.845838553265463e-26
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.0e %.3x %.1g",
+   [
+    -8.199653395161754e-22,
+    -8.199653395161754e-22,
+    -8.199653395161754e-22
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.3e %.17e %.25g",
+   [
+    -17731682048079.2,
+    -17731682048079.2,
+    -17731682048079.2
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.17e %.1g %.3x",
+   [
+    4.178946283663934e+25,
+    4.178946283663934e+25,
+    4.178946283663934e+25
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.20e %G %v",
+   [
+    -9.351820527785868e-30,
+    -9.351820527785868e-30,
+    -9.351820527785868e-30
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%f %.20e %.3e",
+   [
+    40947393698.474754,
+    40947393698.474754,
+    40947393698.474754
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.0f %.5g %f",
+   [
+    -6.224491721109068e-08,
+    -6.224491721109068e-08,
+    -6.224491721109068e-08
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.3f %E %.20f",
+   [
+    2.3028757635286337e-28,
+    2.3028757635286337e-28,
+    2.3028757635286337e-28
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.20f %f %.5g",
+   [
+    -8.703262644333447e+24,
+    -8.703262644333447e+24,
+    -8.703262644333447e+24
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%g %.17g %#.5g",
+   [
+    -6.820562176095689e-22,
+    -6.820562176095689e-22,
+    -6.820562176095689e-22
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.1g %v %G",
+   [
+    -2.8907388748147337e-31,
+    -2.8907388748147337e-31,
+    -2.8907388748147337e-31
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.5g %.0f %e",
+   [
+    8721201122538.491,
+    8721201122538.491,
+    8721201122538.491
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.17g %.25g %.17e",
+   [
+    -8.967375864203251e+27,
+    -8.967375864203251e+27,
+    -8.967375864203251e+27
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.25g %e %.0f",
+   [
+    -1.455090954295315e-18,
+    -1.455090954295315e-18,
+    -1.455090954295315e-18
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%#.5g %.3f %g",
+   [
+    -6146118497385935.0,
+    -6146118497385935.0,
+    -6146118497385935.0
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%x %#.5g %.17g",
+   [
+    -762237271494.0337,
+    -762237271494.0337,
+    -762237271494.0337
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.3x %.0e %x",
+   [
+    -8.195554503216359e-27,
+    -8.195554503216359e-27,
+    -8.195554503216359e-27
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%G %.20f %E",
+   [
+    3.7536096921378803e+21,
+    3.7536096921378803e+21,
+    3.7536096921378803e+21
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%E %x %.0e",
+   [
+    -4.346269217114242e-24,
+    -4.346269217114242e-24,
+    -4.346269217114242e-24
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v %.3e %.20e",
+   [
+    3.108216353771589,
+    3.108216353771589,
+    3.108216353771589
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%e %g %.3f",
+   [
+    0.09192596384241225,
+    0.09192596384241225,
+    0.09192596384241225
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.0e %.3x %.1g",
+   [
+    -6.781915832054839e-13,
+    -6.781915832054839e-13,
+    -6.781915832054839e-13
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.3e %.17e %.25g",
+   [
+    3.8735864022769494e+21,
+    3.8735864022769494e+21,
+    3.8735864022769494e+21
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.17e %.1g %.3x",
+   [
+    -2.653090084754428e-14,
+    -2.653090084754428e-14,
+    -2.653090084754428e-14
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v %e %g %f",
+   [
+    1000000000000000.25,
+    1000000000000000.25,
+    1000000000000000.25,
+    1000000000000000.25
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v %e %g %f",
+   [
+    1000000000000001.25,
+    1000000000000001.25,
+    1000000000000001.25,
+    1000000000000001.25
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v %e %g %f",
+   [
+    1000000000000002.75,
+    1000000000000002.75,
+    1000000000000002.75,
+    1000000000000002.75
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v %e %g %f",
+   [
+    1000000000000003.75,
+    1000000000000003.75,
+    1000000000000003.75,
+    1000000000000003.75
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v %e %g %f",
+   [
+    -1000000000000005.25,
+    -1000000000000005.25,
+    -1000000000000005.25,
+    -1000000000000005.25
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v %e %g %f",
+   [
+    4503599627370497.5,
+    4503599627370497.5,
+    4503599627370497.5,
+    4503599627370497.5
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v %e %g %f",
+   [
+    4503599627370498.5,
+    4503599627370498.5,
+    4503599627370498.5,
+    4503599627370498.5
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v %e %g %f",
+   [
+    9007199254740993,
+    9007199254740993,
+    9007199254740993,
+    9007199254740993
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v %e %g %f",
+   [
+    9007199254740995,
+    9007199254740995,
+    9007199254740995,
+    9007199254740995
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v %e %g %f",
+   [
+    123456789012345680000,
+    123456789012345680000,
+    123456789012345680000,
+    123456789012345680000
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v %e %g %f",
+   [
+    5e-324,
+    5e-324,
+    5e-324,
+    5e-324
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v %e %g %f",
+   [
+    1.5e-323,
+    1.5e-323,
+    1.5e-323,
+    1.5e-323
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v %e %g %f",
+   [
+    2.5e-323,
+    2.5e-323,
+    2.5e-323,
+    2.5e-323
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v %e %g %f",
+   [
+    0.30000000000000004,
+    0.30000000000000004,
+    0.30000000000000004,
+    0.30000000000000004
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v",
+   [
+    -2.5
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%v",
+   [
+    1e+300
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%e",
+   [
+    -2.5
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%e",
+   [
+    1e+300
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.0e",
+   [
+    -2.5
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.0e",
+   [
+    1e+300
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.3e",
+   [
+    -2.5
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.3e",
+   [
+    1e+300
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.17e",
+   [
+    -2.5
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.17e",
+   [
+    1e+300
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.20e",
+   [
+    -2.5
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.20e",
+   [
+    1e+300
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%f",
+   [
+    -2.5
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%f",
+   [
+    1e+300
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.0f",
+   [
+    -2.5
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.0f",
+   [
+    1e+300
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.3f",
+   [
+    -2.5
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.3f",
+   [
+    1e+300
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.20f",
+   [
+    -2.5
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.20f",
+   [
+    1e+300
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%g",
+   [
+    -2.5
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%g",
+   [
+    1e+300
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.1g",
+   [
+    -2.5
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.1g",
+   [
+    1e+300
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.5g",
+   [
+    -2.5
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.5g",
+   [
+    1e+300
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.17g",
+   [
+    -2.5
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.17g",
+   [
+    1e+300
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.25g",
+   [
+    -2.5
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.25g",
+   [
+    1e+300
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%#.5g",
+   [
+    -2.5
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%#.5g",
+   [
+    1e+300
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%x",
+   [
+    -2.5
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%x",
+   [
+    1e+300
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.3x",
+   [
+    -2.5
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%.3x",
+   [
+    1e+300
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%G",
+   [
+    -2.5
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%G",
+   [
+    1e+300
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%E",
+   [
+    -2.5
+   ]
+  ]
+ },
+ {
+  "name": "sprintf",
+  "args": [
+   "%E",
+   [
+    1e+300
+   ]
+  ]
+ },
+ {
+  "name": "strings.render_template",
+  "args": [
+   "Hello {{.name}}!",
+   {
+    "name": "world"
+   }
+  ]
+ },
+ {
+  "name": "strings.render_template",
+  "args": [
+   "{{.missing}}",
+   {}
+  ]
+ },
+ {
+  "name": "strings.render_template",
+  "args": [
+   "{{.a}} {{.b}}",
+   {
+    "a": 1,
+    "b": 1.5
+   }
+  ]
+ },
+ {
+  "name": "strings.render_template",
+  "args": [
+   "{{range .items}}[{{.}}]{{end}}",
+   {
+    "items": [
+     1,
+     "a",
+     true,
+     null
+    ]
+   }
+  ]
+ },
+ {
+  "name": "strings.render_template",
+  "args": [
+   "{{.obj}}",
+   {
+    "obj": {
+     "x": 1,
+     "y": [
+      1,
+      2
+     ]
+    }
+   }
+  ]
+ },
+ {
+  "name": "strings.render_template",
+  "args": [
+   "{{.obj.x}}",
+   {
+    "obj": {
+     "x": "deep"
+    }
+   }
+  ]
+ },
+ {
+  "name": "strings.render_template",
+  "args": [
+   "{{.obj.missing}}",
+   {
+    "obj": {
+     "x": 1
+    }
+   }
+  ]
+ },
+ {
+  "name": "strings.render_template",
+  "args": [
+   "{{if .flag}}yes{{else}}no{{end}}",
+   {
+    "flag": false
+   }
+  ]
+ },
+ {
+  "name": "strings.render_template",
+  "args": [
+   "{{if .flag}}yes{{else}}no{{end}}",
+   {
+    "flag": true
+   }
+  ]
+ },
+ {
+  "name": "strings.render_template",
+  "args": [
+   "{{len .items}}",
+   {
+    "items": [
+     1,
+     2,
+     3
+    ]
+   }
+  ]
+ },
+ {
+  "name": "strings.render_template",
+  "args": [
+   "{{index .items 1}}",
+   {
+    "items": [
+     "a",
+     "b"
+    ]
+   }
+  ]
+ },
+ {
+  "name": "strings.render_template",
+  "args": [
+   "{{printf \"%05d\" 42}}",
+   {}
+  ]
+ },
+ {
+  "name": "strings.render_template",
+  "args": [
+   "{{printf \"%s-%s\" .a .b}}",
+   {
+    "a": "x",
+    "b": "y"
+   }
+  ]
+ },
+ {
+  "name": "strings.render_template",
+  "args": [
+   "{{.a",
+   {}
+  ]
+ },
+ {
+  "name": "strings.render_template",
+  "args": [
+   "{{.a}}}}",
+   {
+    "a": 1
+   }
+  ]
+ },
+ {
+  "name": "strings.render_template",
+  "args": [
+   "{{template \"x\"}}",
+   {}
+  ]
+ },
+ {
+  "name": "strings.render_template",
+  "args": [
+   "{{.a.b}}",
+   {
+    "a": 1
+   }
+  ]
+ },
+ {
+  "name": "strings.render_template",
+  "args": [
+   "{{index .a 5}}",
+   {
+    "a": [
+     1
+    ]
+   }
+  ]
+ },
+ {
+  "name": "strings.render_template",
+  "args": [
+   "plain",
+   {}
+  ]
+ },
+ {
+  "name": "strings.render_template",
+  "args": [
+   "",
+   {}
+  ]
+ },
+ {
+  "name": "strings.render_template",
+  "args": [
+   "{{.}}",
+   {
+    "b": 2,
+    "a": 1
+   }
+  ]
+ },
+ {
+  "name": "strings.render_template",
+  "args": [
+   "{{range $k, $v := .}}{{$k}}={{$v}};{{end}}",
+   {
+    "b": 2,
+    "a": "x"
+   }
+  ]
+ },
+ {
+  "name": "strings.render_template",
+  "args": [
+   "{{.n}}",
+   {
+    "n": null
+   }
+  ]
+ },
+ {
+  "name": "strings.render_template",
+  "args": [
+   "{{.s}}",
+   {
+    "s": {
+     "$set": [
+      "a"
+     ]
+    }
+   }
+  ]
+ },
+ {
+  "name": "strings.render_template",
+  "args": [
+   "{{.s}}",
+   {
+    "s": {
+     "$set": []
+    }
+   }
+  ]
+ },
+ {
+  "name": "strings.render_template",
+  "args": [
+   "{{.s}}",
+   {
+    "s": {
+     "$set": [
+      1,
+      2
+     ]
+    }
+   }
+  ]
+ },
+ {
+  "name": "strings.render_template",
+  "args": [
+   "{{.s}}",
+   {
+    "s": {
+     "$set": [
+      "a",
+      "b"
+     ]
+    }
+   }
+  ]
+ },
+ {
+  "name": "strings.render_template",
+  "args": [
+   "{{.x}}",
+   {
+    "x": "a\u0007b"
+   }
+  ]
+ },
+ {
+  "name": "strings.render_template",
+  "args": [
+   "{{.x}}",
+   {
+    "x": "a\u000bb"
+   }
+  ]
+ },
+ {
+  "name": "strings.render_template",
+  "args": [
+   "{{.x}}",
+   {
+    "x": "a\u0001b"
+   }
+  ]
+ },
+ {
+  "name": "strings.render_template",
+  "args": [
+   "{{.x}}",
+   {
+    "x": "ab"
+   }
+  ]
+ },
+ {
+  "name": "strings.render_template",
+  "args": [
+   "{{.x}}",
+   {
+    "x": "a󠀁b"
+   }
+  ]
+ },
+ {
+  "name": "strings.render_template",
+  "args": [
+   "{{.x}}",
+   {
+    "x": "a­b "
+   }
+  ]
+ },
+ {
+  "name": "strings.render_template",
+  "args": [
+   "{{.x}}",
+   {
+    "x": "tab\there\nnl \"q\" \\"
+   }
+  ]
+ },
+ {
+  "name": "strings.render_template",
+  "args": [
+   "{{.x}}",
+   {
+    "x": "a\u0007",
+    "y": {
+     "$set": []
+    }
+   }
+  ]
+ },
+ {
+  "name": "strings.render_template",
+  "args": [
+   "{{.a}}",
+   {
+    "a": {
+     "$set": []
+    },
+    "b": "\u0007"
+   }
+  ]
+ },
+ {
+  "name": "strings.render_template",
+  "args": [
+   "{{.x}}",
+   {
+    "x": [
+     {
+      "$set": []
+     },
+     1
+    ]
+   }
+  ]
+ },
+ {
+  "name": "strings.render_template",
+  "args": [
+   "{{.x}}",
+   {
+    "x": {
+     "$set": [
+      {
+       "$set": [
+        "a"
+       ]
+      }
+     ]
+    }
+   }
+  ]
+ },
+ {
+  "name": "strings.render_template",
+  "args": [
+   "{{.x}}",
+   {
+    "x": {
+     "$set": [
+      "\u0007"
+     ]
+    }
+   }
+  ]
+ },
+ {
+  "name": "strings.render_template",
+  "args": [
+   "{{.x}} {{.y}}",
+   {
+    "x": 123456789012345678901234567890,
+    "y": 1e400
+   }
+  ]
+ },
+ {
+  "name": "strings.render_template",
+  "args": [
+   "{{.x}}",
+   {
+    "x": 1.0
+   }
+  ]
+ },
+ {
+  "name": "strings.render_template",
+  "args": [
+   "{{eq .x \"a\"}}",
+   {
+    "x": "a"
+   }
+  ]
+ },
+ {
+  "name": "strings.render_template",
+  "args": [
+   "{{printf \"%v\" .x}}",
+   {
+    "x": 2.5
+   }
+  ]
+ },
+ {
+  "name": "strings.render_template",
+  "args": [
+   "{{.x | len}}",
+   {
+    "x": "abc"
+   }
+  ]
+ },
+ {
+  "name": "strings.render_template",
+  "args": [
+   "<no value>",
+   {}
+  ]
+ },
+ {
+  "name": "strings.render_template",
+  "args": [
+   "{{.x}}",
+   {
+    "x": "<no value>"
+   }
+  ]
+ },
+ {
+  "name": "strings.render_template",
+  "args": [
+   "{{with .x}}{{.}}{{else}}none{{end}}",
+   {}
+  ]
+ },
+ {
+  "name": "strings.render_template",
+  "args": [
+   "{{nil}}",
+   {}
+  ]
+ },
+ {
+  "name": "strings.render_template",
+  "args": [
+   "{{.x.y.z}}",
+   {}
+  ]
+ },
+ {
+  "name": "strings.render_template",
+  "args": [
+   1,
+   {}
+  ]
+ },
+ {
+  "name": "strings.render_template",
+  "args": [
+   "a",
+   1
+  ]
+ },
+ {
+  "name": "strings.render_template",
+  "args": [
+   "a",
+   []
+  ]
+ },
+ {
+  "name": "strings.render_template",
+  "args": [
+   null,
+   null
+  ]
+ }
+]

@@ -1,0 +1,4 @@
+docs/research/measurements/builder-cold/results/ci-40419013405-a-epyc-9v45.out.txt: ok: 18 builds, 339 builder samples, 312 of VM processes
+docs/research/measurements/builder-cold/results/ci-40419013405-b-epyc-7763.out.txt: ok: 18 builds, 360 builder samples, 335 of VM processes
+docs/research/measurements/builder-cold/results/ci-40419013405-c-epyc-9v45.out.txt: ok: 18 builds, 329 builder samples, 303 of VM processes
+docs/research/measurements/builder-cold/results/ci-40419013405-d-epyc-9v45.out.txt: ok: 18 builds, 318 builder samples, 290 of VM processes

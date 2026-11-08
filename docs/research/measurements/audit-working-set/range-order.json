@@ -1,0 +1,35 @@
+{
+  "metadata": {
+    "timestamp_utc": "2026-09-29T20:59:57.415113+00:00",
+    "revision": "38457b709e67c4a43de87adfd7f2053531672dc2",
+    "status_before_results": "?? docs/research/measurements/audit-device-allocations/\n?? docs/research/measurements/audit-memory/\n?? docs/research/measurements/audit-stream-allocations/\n?? docs/research/measurements/audit-working-set/",
+    "host": "Adas-MacBook-Pro-2.local",
+    "host_cpu": "Apple M5 Max",
+    "os": "macOS-26.4.1-arm64-arm-64bit",
+    "rustc": "rustc 1.98.0 (88d9e12ae 2026-08-18)",
+    "page_bytes": 16384,
+    "source_sha256": {
+      "crates/vmm/src/snapshot/mod.rs": "f1519d5833dd64d03a1bcd24e8b36bf09dbb26840de397b10c372686e7c2143f",
+      "crates/vmm/src/snapshot/codec.rs": "35eb27335f3c85256a35af43e692f99dc7b17426fc4a0b1b39c8e13a538944d9",
+      "crates/vmm/src/platform/mod.rs": "f6b4756dc1678739c0d38d2f897b56f0e75fe16037073c6516d8c6d7dba4c112",
+      "crates/vmm/src/platform/unix.rs": "e1d1c24117f1effc31aa3cce262273ea1cfef249cf12d15a095ddb972c3b90ea",
+      "crates/vmm/src/hv/mod.rs": "e553054e23b3db1ffca90aaa9d1f15afa236f308042a5590d8878e6727ac157e",
+      "crates/vmm/src/initramfs.rs": "a240935676ea6d2c85a69c563609cd505e59def6b6c508df2936890d85f7e1d1",
+      "crates/vmm/src/memory.rs": "2338d23f36157fdb31b1d59a1efc00f239b4a87330e269dcfaafa807a1cae6c3"
+    },
+    "notes": "Rust System allocator requests only; cached local filesystem reads; no VM/hypervisor. Peak is requested live heap, not allocator RSS or physical footprint. Timings use the same binary with allocation counters disabled."
+  },
+  "range_order": {
+    "input_range_order": "high,low",
+    "page_bytes": 16384,
+    "expected_low": 76,
+    "expected_high": 72,
+    "actual_low": 72,
+    "actual_high": 76,
+    "correct": false,
+    "reused_file_expected_zero": 0,
+    "reused_file_actual": 170,
+    "reused_file_correct": false
+  },
+  "correctness_probe_utc": "2026-09-29T21:02:05.455206+00:00"
+}

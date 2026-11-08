@@ -1,0 +1,28 @@
+[package]
+name = "shards-net-process"
+version = "0.1.0"
+description = "shards' network process: one networked microVM's flows to the host's sockets (D31). Embedded in `shards`, which writes it out and starts it."
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+autobins = false
+
+[[bin]]
+name = "shards-net"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+shards-net = { path = "../net" }
+
+[target.'cfg(windows)'.dependencies]
+shards-ipc = { path = "../ipc" }
+
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+shards-apple = { path = "../apple" }

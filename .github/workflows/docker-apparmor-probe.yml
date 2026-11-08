@@ -1,0 +1,28 @@
+name: docker apparmor probe
+
+# What Docker's default AppArmor profile does to a container's mounts where AppArmor is
+# enforced, for docs/research/measurements/docker-apparmor-mount: the behaviour shards'
+# guests, which have no AppArmor, hold a container to. Runs when the probe changes, or
+# when asked.
+on:
+  push:
+    paths:
+      - docs/research/measurements/docker-apparmor-mount/**
+      - .github/workflows/docker-apparmor-probe.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Probe
+        run: docs/research/measurements/docker-apparmor-mount/probe.sh

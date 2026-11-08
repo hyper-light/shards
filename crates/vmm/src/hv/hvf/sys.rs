@@ -55,16 +55,39 @@ pub struct Perms(u64);
 impl Perms {
     pub const RWX: Perms = Perms(ffi::HV_MEMORY_READ | ffi::HV_MEMORY_WRITE | ffi::HV_MEMORY_EXEC);
     pub const RX: Perms = Perms(ffi::HV_MEMORY_READ | ffi::HV_MEMORY_EXEC);
-    #[cfg(test)]
+    /// Data alone: a GPU's blobs (D144), a run's swap (D159).
+    pub const RW: Perms = Perms(ffi::HV_MEMORY_READ | ffi::HV_MEMORY_WRITE);
+    /// Data read alone: a swap window's zeros (D159).
     pub const R: Perms = Perms(ffi::HV_MEMORY_READ);
     /// No access: every touch exits to the VMM.
     pub const NONE: Perms = Perms(0);
+
+    /// Whether the guest may write it.
+    pub fn writes(self) -> bool {
+        self.0 & ffi::HV_MEMORY_WRITE != 0
+    }
+
+    /// The same, the guest's writes taken away.
+    pub fn read_only(self) -> Perms {
+        Perms(self.0 & !ffi::HV_MEMORY_WRITE)
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
 pub struct VmConfig {
     /// Guest physical address width; `None` keeps the framework default (36 bits).
     pub ipa_bits: Option<u32>,
+    /// Whether the vCPUs have EL2 (macOS 15, on a Mac that can give it).
+    pub el2: bool,
+}
+
+/// Whether this Mac gives a guest EL2 (`hv_vm_config_get_el2_supported`): nested
+/// virtualization, from the M3 on macOS 15.
+pub fn el2_supported() -> bool {
+    let mut supported = false;
+    // SAFETY: a pointer to a local bool, written on success.
+    let res = unsafe { ffi::hv_vm_config_get_el2_supported(&mut supported) };
+    res == ffi::HV_SUCCESS && supported
 }
 
 static VM_EXISTS: AtomicBool = AtomicBool::new(false);
@@ -96,6 +119,12 @@ impl Vm {
                     ffi::hv_vm_config_set_ipa_size(cfg, bits),
                 );
             }
+            if res.is_ok() && config.el2 {
+                res = check(
+                    "hv_vm_config_set_el2_enabled",
+                    ffi::hv_vm_config_set_el2_enabled(cfg, true),
+                );
+            }
             if res.is_ok() {
                 res = check("hv_vm_create", ffi::hv_vm_create(cfg));
             }
@@ -118,15 +147,12 @@ impl Vm {
     /// mapped until it is unmapped here or the VM is destroyed.
     pub unsafe fn map(&self, host: *mut u8, gpa: u64, size: usize, perms: Perms) -> Result<()> {
         // SAFETY: forwarded caller contract.
-        check("hv_vm_map", unsafe {
-            ffi::hv_vm_map(host as *mut c_void, gpa, size, perms.0)
-        })
+        unsafe { map(host, gpa, size, perms) }
     }
 
     /// Unmaps `size` bytes at guest-physical `gpa`.
     pub fn unmap(&self, gpa: u64, size: usize) -> Result<()> {
-        // SAFETY: no host memory is passed.
-        check("hv_vm_unmap", unsafe { ffi::hv_vm_unmap(gpa, size) })
+        unmap(gpa, size)
     }
 
     /// Creates the in-kernel GICv3. Must happen before any vCPU is created.
@@ -163,6 +189,24 @@ impl Vm {
             res.map(|()| Gic(()))
         }
     }
+}
+
+/// Maps `size` bytes of host memory at `host` to guest-physical `gpa` in the process's VM,
+/// which must exist: [`Vm::map`]'s, for a holder of a handle the VM made.
+///
+/// # Safety
+/// As for [`Vm::map`].
+pub unsafe fn map(host: *mut u8, gpa: u64, size: usize, perms: Perms) -> Result<()> {
+    // SAFETY: forwarded caller contract.
+    check("hv_vm_map", unsafe {
+        ffi::hv_vm_map(host as *mut c_void, gpa, size, perms.0)
+    })
+}
+
+/// Unmaps `size` bytes at guest-physical `gpa` in the process's VM, which must exist.
+pub fn unmap(gpa: u64, size: usize) -> Result<()> {
+    // SAFETY: no host memory is passed.
+    check("hv_vm_unmap", unsafe { ffi::hv_vm_unmap(gpa, size) })
 }
 
 impl Drop for Vm {
@@ -232,7 +276,9 @@ pub fn max_ipa_bits() -> Result<u32> {
     Ok(n)
 }
 
-/// Distributor register by GICD offset; callable from any thread (hv_gic.h).
+/// Distributor register by GICD offset; callable from any thread (hv_gic.h). Tests read
+/// the GIC's state through it.
+#[cfg(test)]
 pub fn dist_reg(offset: u16) -> Result<u64> {
     let mut v = 0;
     // SAFETY: writes one u64.
@@ -242,10 +288,56 @@ pub fn dist_reg(offset: u16) -> Result<u64> {
     Ok(v)
 }
 
+#[cfg(test)]
 pub fn set_dist_reg(offset: u16, value: u64) -> Result<()> {
     // SAFETY: no memory is passed.
     check("hv_gic_set_distributor_reg", unsafe {
         ffi::hv_gic_set_distributor_reg(offset, value)
+    })
+}
+
+/// The GIC device's state, as Hypervisor.framework serializes it: "the complete serialized
+/// state of the device, except for the GIC cpu registers", stable and versioned
+/// (hv_gic_state.h). It holds what the distributor and redistributor registers do not, such
+/// as interrupts on their way to a vCPU. The VM must be stopped.
+pub fn gic_state() -> Result<Vec<u8>> {
+    // SAFETY: returns a retained object, released below, or NULL.
+    let state = unsafe { ffi::hv_gic_state_create() };
+    if state.is_null() {
+        return Err(Error {
+            op: "hv_gic_state_create",
+            code: ffi::HV_ERROR,
+        });
+    }
+    let data = (|| {
+        let mut size = 0usize;
+        // SAFETY: a live state object; writes one usize.
+        check("hv_gic_state_get_size", unsafe {
+            ffi::hv_gic_state_get_size(state, &mut size)
+        })?;
+        let mut data = Vec::new();
+        data.try_reserve_exact(size).map_err(|_| Error {
+            op: "hv_gic_state_get_data",
+            code: ffi::HV_NO_RESOURCES,
+        })?;
+        data.resize(size, 0u8);
+        // SAFETY: a live state object, and a buffer of the size it asked for.
+        check("hv_gic_state_get_data", unsafe {
+            ffi::hv_gic_state_get_data(state, data.as_mut_ptr().cast())
+        })?;
+        Ok(data)
+    })();
+    // SAFETY: the object hv_gic_state_create returned, released once.
+    unsafe { ffi::os_release(state) };
+    data
+}
+
+/// Restores [`gic_state`]'s data into this VM's GIC: after the GIC and every vCPU exist,
+/// before any runs (hv_gic.h).
+pub fn set_gic_state(data: &[u8]) -> Result<()> {
+    // SAFETY: a buffer of `data.len()` bytes, only read.
+    check("hv_gic_set_state", unsafe {
+        ffi::hv_gic_set_state(data.as_ptr().cast(), data.len())
     })
 }
 
@@ -322,16 +414,19 @@ pub struct MsiFrame {
     pub count: u32,
 }
 
+/// Where the GIC's parts are: its distributor and redistributors, and its GICv2m frame
+/// (the framework's GIC has no ITS: `its` is refused).
 #[derive(Debug, Clone, Copy)]
 pub struct GicLayout {
     pub dist_base: u64,
     pub redist_base: u64,
     pub msi: Option<MsiFrame>,
+    pub its: Option<u64>,
 }
 
 /// Handle to the in-kernel GIC. Interrupt injection is legal from any thread
 /// (no owning-thread rule on `hv_gic_set_spi`/`hv_gic_send_msi`).
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct Gic(());
 
 impl Gic {
@@ -510,23 +605,6 @@ impl Vcpu {
         // SAFETY: owning thread.
         check("hv_vcpu_set_vtimer_offset", unsafe {
             ffi::hv_vcpu_set_vtimer_offset(self.id, offset)
-        })
-    }
-
-    /// Redistributor register by GICR offset. Owning thread (hv_gic.h).
-    pub fn redist_reg(&self, offset: u32) -> Result<u64> {
-        let mut v = 0;
-        // SAFETY: owning thread; writes one u64.
-        check("hv_gic_get_redistributor_reg", unsafe {
-            ffi::hv_gic_get_redistributor_reg(self.id, offset, &mut v)
-        })?;
-        Ok(v)
-    }
-
-    pub fn set_redist_reg(&mut self, offset: u32, value: u64) -> Result<()> {
-        // SAFETY: owning thread.
-        check("hv_gic_set_redistributor_reg", unsafe {
-            ffi::hv_gic_set_redistributor_reg(self.id, offset, value)
         })
     }
 

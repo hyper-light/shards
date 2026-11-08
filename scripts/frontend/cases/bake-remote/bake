@@ -1,0 +1,4 @@
+-f
+cwd://docker-bake.hcl
+$REPO
+remote

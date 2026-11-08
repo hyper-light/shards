@@ -1,0 +1,17 @@
+# M248: placing a process in a slice of the user's service manager, as the daemon does for
+# `--cgroup-parent` (D183), with the daemon's own code (shards-bus), and where the
+# process's memory is charged after (see run.sh). A workspace of its own.
+[package]
+name = "cgroup-parent"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+libc = "0.2"
+shards-bus = { path = "../../../../crates/bus" }
+
+[profile.release]
+debug = false
+
+[workspace]

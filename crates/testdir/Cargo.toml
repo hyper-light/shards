@@ -1,0 +1,22 @@
+[package]
+name = "shards-testdir"
+version = "0.1.0"
+description = "A directory of a test's own, removed as it goes, for shards' tests"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+# The tests' helper program (`shards_testdir::helper`), which no test of its own runs.
+[[bin]]
+name = "shards-testhelper"
+path = "src/bin/shards-testhelper.rs"
+test = false
+bench = false
+
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+
+[lints]
+workspace = true

@@ -1,0 +1,13 @@
+{
+  "env": {"filename": "Dockerfile", "depth": 0},
+  "image": {
+    "ref": "docker.io/library/alpine:3.22",
+    "host": "docker.io",
+    "repo": "alpine",
+    "fullRepo": "docker.io/library/alpine",
+    "tag": "3.22",
+    "platform": "linux/arm64",
+    "os": "linux",
+    "arch": "arm64"
+  }
+}

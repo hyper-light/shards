@@ -1,0 +1,42 @@
+//! Dockerfiles as BuildKit's Dockerfile frontend reads them (moby/buildkit
+//! dockerfile/1.27.1), for `shards build image` (docs/research/image-build.md):
+//! - `parser`: the text into instructions, with BuildKit's errors and warnings;
+//! - `lex`: words expanded and split, held to BuildKit's lexer (shell/lex.go);
+//! - `instructions`: lines into typed instructions and build stages, with their flags;
+//! - `lint`: the build checks, as `# check=` configures them;
+//! - `plan`: the build planned, held to Dockerfile2LLB (dockerfile2llb/convert.go), into `llb`'s
+//!   graph: stages, steps, mounts, file operations, the image config and its history;
+//! - `image`: an image's config, read and written as BuildKit's (testdata's configs.json);
+//! - `commit`: `docker commit --change` and `docker import --change` applied to a config as
+//!   moby's dockerd applies them (held to dockerd by `tests/commit.rs`);
+//! - `platform`: OCI platforms as containerd parses and formats them;
+//! - `go`: the Go string, path and time handling all of them inherit.
+//!
+//! Each is held to BuildKit's own code byte for byte by `tests/oracle.rs`, against what
+//! scripts/agentfile/generate records BuildKit doing; each module's documentation lists
+//! where it deliberately does better, and testdata/deviations.json each case of it.
+
+pub mod agentfile;
+pub mod caps;
+pub mod commit;
+pub mod export;
+pub mod git;
+pub mod glob;
+pub mod run_options;
+pub use shards_image::go;
+pub mod ignore;
+pub mod image;
+pub mod instructions;
+pub use json::compact as json_compact;
+pub use json::indent as json_indent;
+pub use json::indent_with as json_indent_with;
+pub use shards_image::json;
+pub mod lex;
+pub mod lint;
+pub mod llb;
+pub mod parser;
+pub mod pb;
+pub mod plan;
+pub mod platform;
+pub mod subrequests;
+pub mod url;

@@ -1,0 +1,1007 @@
+{
+  "requests": [
+    {
+      "op": "load, none",
+      "method": "POST",
+      "path": "/twirp/github.actions.results.api.v1.CacheService/GetCacheEntryDownloadURL",
+      "query": "",
+      "headers": [
+        [
+          "authorization",
+          "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhYyI6Ilt7XCJTY29wZVwiOlwicmVmcy9oZWFkcy9tYWluXCIsXCJQZXJtaXNzaW9uXCI6M30se1wiU2NvcGVcIjpcInJlZnMvaGVhZHMvZmVhdHVyZVwiLFwiUGVybWlzc2lvblwiOjF9XSIsImV4cCI6NDEwMjQ0NDgwMCwibmJmIjoxNTc3ODM2ODAwfQ.c2lnbmF0dXJl"
+        ],
+        [
+          "content-length",
+          "163"
+        ],
+        [
+          "content-type",
+          "application/json"
+        ],
+        [
+          "user-agent",
+          "buildkit/v0.28.1"
+        ]
+      ],
+      "length": 163,
+      "body": "{\"key\":\"buildkit-blob-1-sha256:small\",\"restore_keys\":[\"buildkit-blob-1-sha256:small\"],\"version\":\"693bb7016429d80366022f036f84856888c9f13e00145f5f6f4dce303a38d6f2\"}"
+    },
+    {
+      "op": "save, a small layer",
+      "method": "POST",
+      "path": "/twirp/github.actions.results.api.v1.CacheService/CreateCacheEntry",
+      "query": "",
+      "headers": [
+        [
+          "authorization",
+          "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhYyI6Ilt7XCJTY29wZVwiOlwicmVmcy9oZWFkcy9tYWluXCIsXCJQZXJtaXNzaW9uXCI6M30se1wiU2NvcGVcIjpcInJlZnMvaGVhZHMvZmVhdHVyZVwiLFwiUGVybWlzc2lvblwiOjF9XSIsImV4cCI6NDEwMjQ0NDgwMCwibmJmIjoxNTc3ODM2ODAwfQ.c2lnbmF0dXJl"
+        ],
+        [
+          "content-length",
+          "115"
+        ],
+        [
+          "content-type",
+          "application/json"
+        ],
+        [
+          "user-agent",
+          "buildkit/v0.28.1"
+        ]
+      ],
+      "length": 115,
+      "body": "{\"key\":\"buildkit-blob-1-sha256:small\",\"version\":\"693bb7016429d80366022f036f84856888c9f13e00145f5f6f4dce303a38d6f2\"}"
+    },
+    {
+      "op": "save, a small layer",
+      "method": "PUT",
+      "path": "/blob/buildkit-blob-1-sha256:small",
+      "query": "sig=write",
+      "headers": [
+        [
+          "accept",
+          "application/xml"
+        ],
+        [
+          "content-length",
+          "1000"
+        ],
+        [
+          "content-type",
+          "application/octet-stream"
+        ],
+        [
+          "user-agent",
+          "azsdk-go-azblob/v1.5.0 (go1.25.8; darwin)"
+        ],
+        [
+          "x-ms-blob-type",
+          "BlockBlob"
+        ],
+        [
+          "x-ms-version",
+          "2024-11-04"
+        ]
+      ],
+      "length": 1000
+    },
+    {
+      "op": "save, a small layer",
+      "method": "POST",
+      "path": "/twirp/github.actions.results.api.v1.CacheService/FinalizeCacheEntryUpload",
+      "query": "",
+      "headers": [
+        [
+          "authorization",
+          "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhYyI6Ilt7XCJTY29wZVwiOlwicmVmcy9oZWFkcy9tYWluXCIsXCJQZXJtaXNzaW9uXCI6M30se1wiU2NvcGVcIjpcInJlZnMvaGVhZHMvZmVhdHVyZVwiLFwiUGVybWlzc2lvblwiOjF9XSIsImV4cCI6NDEwMjQ0NDgwMCwibmJmIjoxNTc3ODM2ODAwfQ.c2lnbmF0dXJl"
+        ],
+        [
+          "content-length",
+          "133"
+        ],
+        [
+          "content-type",
+          "application/json"
+        ],
+        [
+          "user-agent",
+          "buildkit/v0.28.1"
+        ]
+      ],
+      "length": 133,
+      "body": "{\"key\":\"buildkit-blob-1-sha256:small\",\"size_bytes\":1000,\"version\":\"693bb7016429d80366022f036f84856888c9f13e00145f5f6f4dce303a38d6f2\"}"
+    },
+    {
+      "op": "save, a layer of blocks",
+      "method": "POST",
+      "path": "/twirp/github.actions.results.api.v1.CacheService/CreateCacheEntry",
+      "query": "",
+      "headers": [
+        [
+          "authorization",
+          "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhYyI6Ilt7XCJTY29wZVwiOlwicmVmcy9oZWFkcy9tYWluXCIsXCJQZXJtaXNzaW9uXCI6M30se1wiU2NvcGVcIjpcInJlZnMvaGVhZHMvZmVhdHVyZVwiLFwiUGVybWlzc2lvblwiOjF9XSIsImV4cCI6NDEwMjQ0NDgwMCwibmJmIjoxNTc3ODM2ODAwfQ.c2lnbmF0dXJl"
+        ],
+        [
+          "content-length",
+          "113"
+        ],
+        [
+          "content-type",
+          "application/json"
+        ],
+        [
+          "user-agent",
+          "buildkit/v0.28.1"
+        ]
+      ],
+      "length": 113,
+      "body": "{\"key\":\"buildkit-blob-1-sha256:big\",\"version\":\"693bb7016429d80366022f036f84856888c9f13e00145f5f6f4dce303a38d6f2\"}"
+    },
+    {
+      "op": "save, a layer of blocks",
+      "method": "PUT",
+      "path": "/blob/buildkit-blob-1-sha256:big",
+      "query": "blockid=%2FUBSvPuXTuF%2BfDtALQeOoQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA%3D%3D\u0026comp=block\u0026sig=write",
+      "headers": [
+        [
+          "accept",
+          "application/xml"
+        ],
+        [
+          "content-length",
+          "1048576"
+        ],
+        [
+          "content-type",
+          "application/octet-stream"
+        ],
+        [
+          "user-agent",
+          "azsdk-go-azblob/v1.5.0 (go1.25.8; darwin)"
+        ],
+        [
+          "x-ms-version",
+          "2024-11-04"
+        ]
+      ],
+      "length": 1048576
+    },
+    {
+      "op": "save, a layer of blocks",
+      "method": "PUT",
+      "path": "/blob/buildkit-blob-1-sha256:big",
+      "query": "blockid=%2FUBSvPuXTuF%2BfDtALQeOoQAAAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA%3D%3D\u0026comp=block\u0026sig=write",
+      "headers": [
+        [
+          "accept",
+          "application/xml"
+        ],
+        [
+          "content-length",
+          "1048576"
+        ],
+        [
+          "content-type",
+          "application/octet-stream"
+        ],
+        [
+          "user-agent",
+          "azsdk-go-azblob/v1.5.0 (go1.25.8; darwin)"
+        ],
+        [
+          "x-ms-version",
+          "2024-11-04"
+        ]
+      ],
+      "length": 1048576
+    },
+    {
+      "op": "save, a layer of blocks",
+      "method": "PUT",
+      "path": "/blob/buildkit-blob-1-sha256:big",
+      "query": "blockid=%2FUBSvPuXTuF%2BfDtALQeOoQAAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA%3D%3D\u0026comp=block\u0026sig=write",
+      "headers": [
+        [
+          "accept",
+          "application/xml"
+        ],
+        [
+          "content-length",
+          "1048576"
+        ],
+        [
+          "content-type",
+          "application/octet-stream"
+        ],
+        [
+          "user-agent",
+          "azsdk-go-azblob/v1.5.0 (go1.25.8; darwin)"
+        ],
+        [
+          "x-ms-version",
+          "2024-11-04"
+        ]
+      ],
+      "length": 1048576
+    },
+    {
+      "op": "save, a layer of blocks",
+      "method": "PUT",
+      "path": "/blob/buildkit-blob-1-sha256:big",
+      "query": "blockid=%2FUBSvPuXTuF%2BfDtALQeOoQAAAAMAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA%3D%3D\u0026comp=block\u0026sig=write",
+      "headers": [
+        [
+          "accept",
+          "application/xml"
+        ],
+        [
+          "content-length",
+          "1048576"
+        ],
+        [
+          "content-type",
+          "application/octet-stream"
+        ],
+        [
+          "user-agent",
+          "azsdk-go-azblob/v1.5.0 (go1.25.8; darwin)"
+        ],
+        [
+          "x-ms-version",
+          "2024-11-04"
+        ]
+      ],
+      "length": 1048576
+    },
+    {
+      "op": "save, a layer of blocks",
+      "method": "PUT",
+      "path": "/blob/buildkit-blob-1-sha256:big",
+      "query": "blockid=%2FUBSvPuXTuF%2BfDtALQeOoQAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA%3D%3D\u0026comp=block\u0026sig=write",
+      "headers": [
+        [
+          "accept",
+          "application/xml"
+        ],
+        [
+          "content-length",
+          "1048576"
+        ],
+        [
+          "content-type",
+          "application/octet-stream"
+        ],
+        [
+          "user-agent",
+          "azsdk-go-azblob/v1.5.0 (go1.25.8; darwin)"
+        ],
+        [
+          "x-ms-version",
+          "2024-11-04"
+        ]
+      ],
+      "length": 1048576
+    },
+    {
+      "op": "save, a layer of blocks",
+      "method": "PUT",
+      "path": "/blob/buildkit-blob-1-sha256:big",
+      "query": "comp=blocklist\u0026sig=write",
+      "headers": [
+        [
+          "accept",
+          "application/xml"
+        ],
+        [
+          "content-length",
+          "587"
+        ],
+        [
+          "content-type",
+          "application/xml"
+        ],
+        [
+          "user-agent",
+          "azsdk-go-azblob/v1.5.0 (go1.25.8; darwin)"
+        ],
+        [
+          "x-ms-version",
+          "2024-11-04"
+        ]
+      ],
+      "length": 587,
+      "body": "\u003c?xml version=\"1.0\" encoding=\"UTF-8\"?\u003e\n\u003cBlockList\u003e\u003cLatest\u003e/UBSvPuXTuF+fDtALQeOoQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==\u003c/Latest\u003e\u003cLatest\u003e/UBSvPuXTuF+fDtALQeOoQAAAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==\u003c/Latest\u003e\u003cLatest\u003e/UBSvPuXTuF+fDtALQeOoQAAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==\u003c/Latest\u003e\u003cLatest\u003e/UBSvPuXTuF+fDtALQeOoQAAAAMAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==\u003c/Latest\u003e\u003cLatest\u003e/UBSvPuXTuF+fDtALQeOoQAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==\u003c/Latest\u003e\u003c/BlockList\u003e"
+    },
+    {
+      "op": "save, a layer of blocks",
+      "method": "POST",
+      "path": "/twirp/github.actions.results.api.v1.CacheService/FinalizeCacheEntryUpload",
+      "query": "",
+      "headers": [
+        [
+          "authorization",
+          "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhYyI6Ilt7XCJTY29wZVwiOlwicmVmcy9oZWFkcy9tYWluXCIsXCJQZXJtaXNzaW9uXCI6M30se1wiU2NvcGVcIjpcInJlZnMvaGVhZHMvZmVhdHVyZVwiLFwiUGVybWlzc2lvblwiOjF9XSIsImV4cCI6NDEwMjQ0NDgwMCwibmJmIjoxNTc3ODM2ODAwfQ.c2lnbmF0dXJl"
+        ],
+        [
+          "content-length",
+          "134"
+        ],
+        [
+          "content-type",
+          "application/json"
+        ],
+        [
+          "user-agent",
+          "buildkit/v0.28.1"
+        ]
+      ],
+      "length": 134,
+      "body": "{\"key\":\"buildkit-blob-1-sha256:big\",\"size_bytes\":5242880,\"version\":\"693bb7016429d80366022f036f84856888c9f13e00145f5f6f4dce303a38d6f2\"}"
+    },
+    {
+      "op": "save, a layer there",
+      "method": "POST",
+      "path": "/twirp/github.actions.results.api.v1.CacheService/CreateCacheEntry",
+      "query": "",
+      "headers": [
+        [
+          "authorization",
+          "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhYyI6Ilt7XCJTY29wZVwiOlwicmVmcy9oZWFkcy9tYWluXCIsXCJQZXJtaXNzaW9uXCI6M30se1wiU2NvcGVcIjpcInJlZnMvaGVhZHMvZmVhdHVyZVwiLFwiUGVybWlzc2lvblwiOjF9XSIsImV4cCI6NDEwMjQ0NDgwMCwibmJmIjoxNTc3ODM2ODAwfQ.c2lnbmF0dXJl"
+        ],
+        [
+          "content-length",
+          "115"
+        ],
+        [
+          "content-type",
+          "application/json"
+        ],
+        [
+          "user-agent",
+          "buildkit/v0.28.1"
+        ]
+      ],
+      "length": 115,
+      "body": "{\"key\":\"buildkit-blob-1-sha256:small\",\"version\":\"693bb7016429d80366022f036f84856888c9f13e00145f5f6f4dce303a38d6f2\"}"
+    },
+    {
+      "op": "load, and download",
+      "method": "POST",
+      "path": "/twirp/github.actions.results.api.v1.CacheService/GetCacheEntryDownloadURL",
+      "query": "",
+      "headers": [
+        [
+          "authorization",
+          "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhYyI6Ilt7XCJTY29wZVwiOlwicmVmcy9oZWFkcy9tYWluXCIsXCJQZXJtaXNzaW9uXCI6M30se1wiU2NvcGVcIjpcInJlZnMvaGVhZHMvZmVhdHVyZVwiLFwiUGVybWlzc2lvblwiOjF9XSIsImV4cCI6NDEwMjQ0NDgwMCwibmJmIjoxNTc3ODM2ODAwfQ.c2lnbmF0dXJl"
+        ],
+        [
+          "content-length",
+          "163"
+        ],
+        [
+          "content-type",
+          "application/json"
+        ],
+        [
+          "user-agent",
+          "buildkit/v0.28.1"
+        ]
+      ],
+      "length": 163,
+      "body": "{\"key\":\"buildkit-blob-1-sha256:small\",\"restore_keys\":[\"buildkit-blob-1-sha256:small\"],\"version\":\"693bb7016429d80366022f036f84856888c9f13e00145f5f6f4dce303a38d6f2\"}"
+    },
+    {
+      "op": "load, and download",
+      "method": "GET",
+      "path": "/blob/buildkit-blob-1-sha256:small",
+      "query": "sig=read",
+      "headers": [
+        [
+          "accept",
+          "application/xml"
+        ],
+        [
+          "user-agent",
+          "azsdk-go-azblob/v1.5.0 (go1.25.8; darwin)"
+        ],
+        [
+          "x-ms-version",
+          "2024-11-04"
+        ]
+      ],
+      "length": 0
+    },
+    {
+      "op": "save mutable, the first",
+      "method": "POST",
+      "path": "/twirp/github.actions.results.api.v1.CacheService/GetCacheEntryDownloadURL",
+      "query": "",
+      "headers": [
+        [
+          "authorization",
+          "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhYyI6Ilt7XCJTY29wZVwiOlwicmVmcy9oZWFkcy9tYWluXCIsXCJQZXJtaXNzaW9uXCI6M30se1wiU2NvcGVcIjpcInJlZnMvaGVhZHMvZmVhdHVyZVwiLFwiUGVybWlzc2lvblwiOjF9XSIsImV4cCI6NDEwMjQ0NDgwMCwibmJmIjoxNTc3ODM2ODAwfQ.c2lnbmF0dXJl"
+        ],
+        [
+          "content-length",
+          "159"
+        ],
+        [
+          "content-type",
+          "application/json"
+        ],
+        [
+          "user-agent",
+          "buildkit/v0.28.1"
+        ]
+      ],
+      "length": 159,
+      "body": "{\"key\":\"index-buildkit-1-abcd1234#\",\"restore_keys\":[\"index-buildkit-1-abcd1234#\"],\"version\":\"693bb7016429d80366022f036f84856888c9f13e00145f5f6f4dce303a38d6f2\"}"
+    },
+    {
+      "op": "save mutable, the first",
+      "method": "POST",
+      "path": "/twirp/github.actions.results.api.v1.CacheService/CreateCacheEntry",
+      "query": "",
+      "headers": [
+        [
+          "authorization",
+          "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhYyI6Ilt7XCJTY29wZVwiOlwicmVmcy9oZWFkcy9tYWluXCIsXCJQZXJtaXNzaW9uXCI6M30se1wiU2NvcGVcIjpcInJlZnMvaGVhZHMvZmVhdHVyZVwiLFwiUGVybWlzc2lvblwiOjF9XSIsImV4cCI6NDEwMjQ0NDgwMCwibmJmIjoxNTc3ODM2ODAwfQ.c2lnbmF0dXJl"
+        ],
+        [
+          "content-length",
+          "114"
+        ],
+        [
+          "content-type",
+          "application/json"
+        ],
+        [
+          "user-agent",
+          "buildkit/v0.28.1"
+        ]
+      ],
+      "length": 114,
+      "body": "{\"key\":\"index-buildkit-1-abcd1234#1\",\"version\":\"693bb7016429d80366022f036f84856888c9f13e00145f5f6f4dce303a38d6f2\"}"
+    },
+    {
+      "op": "save mutable, the first",
+      "method": "PUT",
+      "path": "/blob/index-buildkit-1-abcd1234#1",
+      "query": "sig=write",
+      "headers": [
+        [
+          "accept",
+          "application/xml"
+        ],
+        [
+          "content-length",
+          "14"
+        ],
+        [
+          "content-type",
+          "application/octet-stream"
+        ],
+        [
+          "user-agent",
+          "azsdk-go-azblob/v1.5.0 (go1.25.8; darwin)"
+        ],
+        [
+          "x-ms-blob-type",
+          "BlockBlob"
+        ],
+        [
+          "x-ms-version",
+          "2024-11-04"
+        ]
+      ],
+      "length": 14
+    },
+    {
+      "op": "save mutable, the first",
+      "method": "POST",
+      "path": "/twirp/github.actions.results.api.v1.CacheService/FinalizeCacheEntryUpload",
+      "query": "",
+      "headers": [
+        [
+          "authorization",
+          "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhYyI6Ilt7XCJTY29wZVwiOlwicmVmcy9oZWFkcy9tYWluXCIsXCJQZXJtaXNzaW9uXCI6M30se1wiU2NvcGVcIjpcInJlZnMvaGVhZHMvZmVhdHVyZVwiLFwiUGVybWlzc2lvblwiOjF9XSIsImV4cCI6NDEwMjQ0NDgwMCwibmJmIjoxNTc3ODM2ODAwfQ.c2lnbmF0dXJl"
+        ],
+        [
+          "content-length",
+          "130"
+        ],
+        [
+          "content-type",
+          "application/json"
+        ],
+        [
+          "user-agent",
+          "buildkit/v0.28.1"
+        ]
+      ],
+      "length": 130,
+      "body": "{\"key\":\"index-buildkit-1-abcd1234#1\",\"size_bytes\":14,\"version\":\"693bb7016429d80366022f036f84856888c9f13e00145f5f6f4dce303a38d6f2\"}"
+    },
+    {
+      "op": "save mutable, the next",
+      "method": "POST",
+      "path": "/twirp/github.actions.results.api.v1.CacheService/GetCacheEntryDownloadURL",
+      "query": "",
+      "headers": [
+        [
+          "authorization",
+          "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhYyI6Ilt7XCJTY29wZVwiOlwicmVmcy9oZWFkcy9tYWluXCIsXCJQZXJtaXNzaW9uXCI6M30se1wiU2NvcGVcIjpcInJlZnMvaGVhZHMvZmVhdHVyZVwiLFwiUGVybWlzc2lvblwiOjF9XSIsImV4cCI6NDEwMjQ0NDgwMCwibmJmIjoxNTc3ODM2ODAwfQ.c2lnbmF0dXJl"
+        ],
+        [
+          "content-length",
+          "159"
+        ],
+        [
+          "content-type",
+          "application/json"
+        ],
+        [
+          "user-agent",
+          "buildkit/v0.28.1"
+        ]
+      ],
+      "length": 159,
+      "body": "{\"key\":\"index-buildkit-1-abcd1234#\",\"restore_keys\":[\"index-buildkit-1-abcd1234#\"],\"version\":\"693bb7016429d80366022f036f84856888c9f13e00145f5f6f4dce303a38d6f2\"}"
+    },
+    {
+      "op": "save mutable, the next",
+      "method": "POST",
+      "path": "/twirp/github.actions.results.api.v1.CacheService/GetCacheEntryDownloadURL",
+      "query": "",
+      "headers": [
+        [
+          "authorization",
+          "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhYyI6Ilt7XCJTY29wZVwiOlwicmVmcy9oZWFkcy9tYWluXCIsXCJQZXJtaXNzaW9uXCI6M30se1wiU2NvcGVcIjpcInJlZnMvaGVhZHMvZmVhdHVyZVwiLFwiUGVybWlzc2lvblwiOjF9XSIsImV4cCI6NDEwMjQ0NDgwMCwibmJmIjoxNTc3ODM2ODAwfQ.c2lnbmF0dXJl"
+        ],
+        [
+          "content-length",
+          "159"
+        ],
+        [
+          "content-type",
+          "application/json"
+        ],
+        [
+          "user-agent",
+          "buildkit/v0.28.1"
+        ]
+      ],
+      "length": 159,
+      "body": "{\"key\":\"index-buildkit-1-abcd1234#\",\"restore_keys\":[\"index-buildkit-1-abcd1234#\"],\"version\":\"693bb7016429d80366022f036f84856888c9f13e00145f5f6f4dce303a38d6f2\"}"
+    },
+    {
+      "op": "save mutable, the next",
+      "method": "POST",
+      "path": "/twirp/github.actions.results.api.v1.CacheService/CreateCacheEntry",
+      "query": "",
+      "headers": [
+        [
+          "authorization",
+          "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhYyI6Ilt7XCJTY29wZVwiOlwicmVmcy9oZWFkcy9tYWluXCIsXCJQZXJtaXNzaW9uXCI6M30se1wiU2NvcGVcIjpcInJlZnMvaGVhZHMvZmVhdHVyZVwiLFwiUGVybWlzc2lvblwiOjF9XSIsImV4cCI6NDEwMjQ0NDgwMCwibmJmIjoxNTc3ODM2ODAwfQ.c2lnbmF0dXJl"
+        ],
+        [
+          "content-length",
+          "114"
+        ],
+        [
+          "content-type",
+          "application/json"
+        ],
+        [
+          "user-agent",
+          "buildkit/v0.28.1"
+        ]
+      ],
+      "length": 114,
+      "body": "{\"key\":\"index-buildkit-1-abcd1234#2\",\"version\":\"693bb7016429d80366022f036f84856888c9f13e00145f5f6f4dce303a38d6f2\"}"
+    },
+    {
+      "op": "save mutable, the next",
+      "method": "PUT",
+      "path": "/blob/index-buildkit-1-abcd1234#2",
+      "query": "sig=write",
+      "headers": [
+        [
+          "accept",
+          "application/xml"
+        ],
+        [
+          "content-length",
+          "14"
+        ],
+        [
+          "content-type",
+          "application/octet-stream"
+        ],
+        [
+          "user-agent",
+          "azsdk-go-azblob/v1.5.0 (go1.25.8; darwin)"
+        ],
+        [
+          "x-ms-blob-type",
+          "BlockBlob"
+        ],
+        [
+          "x-ms-version",
+          "2024-11-04"
+        ]
+      ],
+      "length": 14
+    },
+    {
+      "op": "save mutable, the next",
+      "method": "POST",
+      "path": "/twirp/github.actions.results.api.v1.CacheService/FinalizeCacheEntryUpload",
+      "query": "",
+      "headers": [
+        [
+          "authorization",
+          "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhYyI6Ilt7XCJTY29wZVwiOlwicmVmcy9oZWFkcy9tYWluXCIsXCJQZXJtaXNzaW9uXCI6M30se1wiU2NvcGVcIjpcInJlZnMvaGVhZHMvZmVhdHVyZVwiLFwiUGVybWlzc2lvblwiOjF9XSIsImV4cCI6NDEwMjQ0NDgwMCwibmJmIjoxNTc3ODM2ODAwfQ.c2lnbmF0dXJl"
+        ],
+        [
+          "content-length",
+          "130"
+        ],
+        [
+          "content-type",
+          "application/json"
+        ],
+        [
+          "user-agent",
+          "buildkit/v0.28.1"
+        ]
+      ],
+      "length": 130,
+      "body": "{\"key\":\"index-buildkit-1-abcd1234#2\",\"size_bytes\":14,\"version\":\"693bb7016429d80366022f036f84856888c9f13e00145f5f6f4dce303a38d6f2\"}"
+    },
+    {
+      "op": "load an index, the newest",
+      "method": "POST",
+      "path": "/twirp/github.actions.results.api.v1.CacheService/GetCacheEntryDownloadURL",
+      "query": "",
+      "headers": [
+        [
+          "authorization",
+          "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhYyI6Ilt7XCJTY29wZVwiOlwicmVmcy9oZWFkcy9tYWluXCIsXCJQZXJtaXNzaW9uXCI6M30se1wiU2NvcGVcIjpcInJlZnMvaGVhZHMvZmVhdHVyZVwiLFwiUGVybWlzc2lvblwiOjF9XSIsImV4cCI6NDEwMjQ0NDgwMCwibmJmIjoxNTc3ODM2ODAwfQ.c2lnbmF0dXJl"
+        ],
+        [
+          "content-length",
+          "157"
+        ],
+        [
+          "content-type",
+          "application/json"
+        ],
+        [
+          "user-agent",
+          "buildkit/v0.28.1"
+        ]
+      ],
+      "length": 157,
+      "body": "{\"key\":\"index-buildkit-1-abcd1234\",\"restore_keys\":[\"index-buildkit-1-abcd1234\"],\"version\":\"693bb7016429d80366022f036f84856888c9f13e00145f5f6f4dce303a38d6f2\"}"
+    },
+    {
+      "op": "v1 load, none",
+      "method": "GET",
+      "path": "/_apis/artifactcache/cache",
+      "query": "keys=buildkit-blob-1-sha256%3Asmall\u0026version=693bb7016429d80366022f036f84856888c9f13e00145f5f6f4dce303a38d6f2",
+      "headers": [
+        [
+          "accept",
+          "application/json;api-version=6.0-preview.1"
+        ],
+        [
+          "authorization",
+          "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhYyI6Ilt7XCJTY29wZVwiOlwicmVmcy9oZWFkcy9tYWluXCIsXCJQZXJtaXNzaW9uXCI6M30se1wiU2NvcGVcIjpcInJlZnMvaGVhZHMvZmVhdHVyZVwiLFwiUGVybWlzc2lvblwiOjF9XSIsImV4cCI6NDEwMjQ0NDgwMCwibmJmIjoxNTc3ODM2ODAwfQ.c2lnbmF0dXJl"
+        ],
+        [
+          "user-agent",
+          "buildkit/v0.28.1"
+        ]
+      ],
+      "length": 0
+    },
+    {
+      "op": "v1 save, a layer of chunks",
+      "method": "POST",
+      "path": "/_apis/artifactcache/caches",
+      "query": "",
+      "headers": [
+        [
+          "accept",
+          "application/json;api-version=6.0-preview.1"
+        ],
+        [
+          "authorization",
+          "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhYyI6Ilt7XCJTY29wZVwiOlwicmVmcy9oZWFkcy9tYWluXCIsXCJQZXJtaXNzaW9uXCI6M30se1wiU2NvcGVcIjpcInJlZnMvaGVhZHMvZmVhdHVyZVwiLFwiUGVybWlzc2lvblwiOjF9XSIsImV4cCI6NDEwMjQ0NDgwMCwibmJmIjoxNTc3ODM2ODAwfQ.c2lnbmF0dXJl"
+        ],
+        [
+          "content-length",
+          "113"
+        ],
+        [
+          "content-type",
+          "application/json"
+        ],
+        [
+          "user-agent",
+          "buildkit/v0.28.1"
+        ]
+      ],
+      "length": 113
+    },
+    {
+      "op": "v1 save, a layer of chunks",
+      "method": "PATCH",
+      "path": "/_apis/artifactcache/caches/1",
+      "query": "",
+      "headers": [
+        [
+          "accept",
+          "application/json;api-version=6.0-preview.1"
+        ],
+        [
+          "authorization",
+          "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhYyI6Ilt7XCJTY29wZVwiOlwicmVmcy9oZWFkcy9tYWluXCIsXCJQZXJtaXNzaW9uXCI6M30se1wiU2NvcGVcIjpcInJlZnMvaGVhZHMvZmVhdHVyZVwiLFwiUGVybWlzc2lvblwiOjF9XSIsImV4cCI6NDEwMjQ0NDgwMCwibmJmIjoxNTc3ODM2ODAwfQ.c2lnbmF0dXJl"
+        ],
+        [
+          "content-range",
+          "bytes 33554432-41943039/*"
+        ],
+        [
+          "content-type",
+          "application/octet-stream"
+        ],
+        [
+          "user-agent",
+          "buildkit/v0.28.1"
+        ]
+      ],
+      "length": -1
+    },
+    {
+      "op": "v1 save, a layer of chunks",
+      "method": "PATCH",
+      "path": "/_apis/artifactcache/caches/1",
+      "query": "",
+      "headers": [
+        [
+          "accept",
+          "application/json;api-version=6.0-preview.1"
+        ],
+        [
+          "authorization",
+          "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhYyI6Ilt7XCJTY29wZVwiOlwicmVmcy9oZWFkcy9tYWluXCIsXCJQZXJtaXNzaW9uXCI6M30se1wiU2NvcGVcIjpcInJlZnMvaGVhZHMvZmVhdHVyZVwiLFwiUGVybWlzc2lvblwiOjF9XSIsImV4cCI6NDEwMjQ0NDgwMCwibmJmIjoxNTc3ODM2ODAwfQ.c2lnbmF0dXJl"
+        ],
+        [
+          "content-range",
+          "bytes 0-33554431/*"
+        ],
+        [
+          "content-type",
+          "application/octet-stream"
+        ],
+        [
+          "user-agent",
+          "buildkit/v0.28.1"
+        ]
+      ],
+      "length": -1
+    },
+    {
+      "op": "v1 save, a layer of chunks",
+      "method": "POST",
+      "path": "/_apis/artifactcache/caches/1",
+      "query": "",
+      "headers": [
+        [
+          "accept",
+          "application/json;api-version=6.0-preview.1"
+        ],
+        [
+          "authorization",
+          "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhYyI6Ilt7XCJTY29wZVwiOlwicmVmcy9oZWFkcy9tYWluXCIsXCJQZXJtaXNzaW9uXCI6M30se1wiU2NvcGVcIjpcInJlZnMvaGVhZHMvZmVhdHVyZVwiLFwiUGVybWlzc2lvblwiOjF9XSIsImV4cCI6NDEwMjQ0NDgwMCwibmJmIjoxNTc3ODM2ODAwfQ.c2lnbmF0dXJl"
+        ],
+        [
+          "content-length",
+          "17"
+        ],
+        [
+          "content-type",
+          "application/json"
+        ],
+        [
+          "user-agent",
+          "buildkit/v0.28.1"
+        ]
+      ],
+      "length": 17
+    },
+    {
+      "op": "v1 save, a layer there",
+      "method": "POST",
+      "path": "/_apis/artifactcache/caches",
+      "query": "",
+      "headers": [
+        [
+          "accept",
+          "application/json;api-version=6.0-preview.1"
+        ],
+        [
+          "authorization",
+          "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhYyI6Ilt7XCJTY29wZVwiOlwicmVmcy9oZWFkcy9tYWluXCIsXCJQZXJtaXNzaW9uXCI6M30se1wiU2NvcGVcIjpcInJlZnMvaGVhZHMvZmVhdHVyZVwiLFwiUGVybWlzc2lvblwiOjF9XSIsImV4cCI6NDEwMjQ0NDgwMCwibmJmIjoxNTc3ODM2ODAwfQ.c2lnbmF0dXJl"
+        ],
+        [
+          "content-length",
+          "113"
+        ],
+        [
+          "content-type",
+          "application/json"
+        ],
+        [
+          "user-agent",
+          "buildkit/v0.28.1"
+        ]
+      ],
+      "length": 113
+    },
+    {
+      "op": "v1 save mutable",
+      "method": "GET",
+      "path": "/_apis/artifactcache/cache",
+      "query": "keys=index-buildkit-1-abcd1234%23\u0026version=693bb7016429d80366022f036f84856888c9f13e00145f5f6f4dce303a38d6f2",
+      "headers": [
+        [
+          "accept",
+          "application/json;api-version=6.0-preview.1"
+        ],
+        [
+          "authorization",
+          "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhYyI6Ilt7XCJTY29wZVwiOlwicmVmcy9oZWFkcy9tYWluXCIsXCJQZXJtaXNzaW9uXCI6M30se1wiU2NvcGVcIjpcInJlZnMvaGVhZHMvZmVhdHVyZVwiLFwiUGVybWlzc2lvblwiOjF9XSIsImV4cCI6NDEwMjQ0NDgwMCwibmJmIjoxNTc3ODM2ODAwfQ.c2lnbmF0dXJl"
+        ],
+        [
+          "user-agent",
+          "buildkit/v0.28.1"
+        ]
+      ],
+      "length": 0
+    },
+    {
+      "op": "v1 save mutable",
+      "method": "POST",
+      "path": "/_apis/artifactcache/caches",
+      "query": "",
+      "headers": [
+        [
+          "accept",
+          "application/json;api-version=6.0-preview.1"
+        ],
+        [
+          "authorization",
+          "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhYyI6Ilt7XCJTY29wZVwiOlwicmVmcy9oZWFkcy9tYWluXCIsXCJQZXJtaXNzaW9uXCI6M30se1wiU2NvcGVcIjpcInJlZnMvaGVhZHMvZmVhdHVyZVwiLFwiUGVybWlzc2lvblwiOjF9XSIsImV4cCI6NDEwMjQ0NDgwMCwibmJmIjoxNTc3ODM2ODAwfQ.c2lnbmF0dXJl"
+        ],
+        [
+          "content-length",
+          "114"
+        ],
+        [
+          "content-type",
+          "application/json"
+        ],
+        [
+          "user-agent",
+          "buildkit/v0.28.1"
+        ]
+      ],
+      "length": 114
+    },
+    {
+      "op": "v1 save mutable",
+      "method": "PATCH",
+      "path": "/_apis/artifactcache/caches/2",
+      "query": "",
+      "headers": [
+        [
+          "accept",
+          "application/json;api-version=6.0-preview.1"
+        ],
+        [
+          "authorization",
+          "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhYyI6Ilt7XCJTY29wZVwiOlwicmVmcy9oZWFkcy9tYWluXCIsXCJQZXJtaXNzaW9uXCI6M30se1wiU2NvcGVcIjpcInJlZnMvaGVhZHMvZmVhdHVyZVwiLFwiUGVybWlzc2lvblwiOjF9XSIsImV4cCI6NDEwMjQ0NDgwMCwibmJmIjoxNTc3ODM2ODAwfQ.c2lnbmF0dXJl"
+        ],
+        [
+          "content-range",
+          "bytes 0-13/*"
+        ],
+        [
+          "content-type",
+          "application/octet-stream"
+        ],
+        [
+          "user-agent",
+          "buildkit/v0.28.1"
+        ]
+      ],
+      "length": -1
+    },
+    {
+      "op": "v1 save mutable",
+      "method": "POST",
+      "path": "/_apis/artifactcache/caches/2",
+      "query": "",
+      "headers": [
+        [
+          "accept",
+          "application/json;api-version=6.0-preview.1"
+        ],
+        [
+          "authorization",
+          "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhYyI6Ilt7XCJTY29wZVwiOlwicmVmcy9oZWFkcy9tYWluXCIsXCJQZXJtaXNzaW9uXCI6M30se1wiU2NvcGVcIjpcInJlZnMvaGVhZHMvZmVhdHVyZVwiLFwiUGVybWlzc2lvblwiOjF9XSIsImV4cCI6NDEwMjQ0NDgwMCwibmJmIjoxNTc3ODM2ODAwfQ.c2lnbmF0dXJl"
+        ],
+        [
+          "content-length",
+          "11"
+        ],
+        [
+          "content-type",
+          "application/json"
+        ],
+        [
+          "user-agent",
+          "buildkit/v0.28.1"
+        ]
+      ],
+      "length": 11
+    },
+    {
+      "op": "v1 load, and download",
+      "method": "GET",
+      "path": "/_apis/artifactcache/cache",
+      "query": "keys=index-buildkit-1-abcd1234\u0026version=693bb7016429d80366022f036f84856888c9f13e00145f5f6f4dce303a38d6f2",
+      "headers": [
+        [
+          "accept",
+          "application/json;api-version=6.0-preview.1"
+        ],
+        [
+          "authorization",
+          "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhYyI6Ilt7XCJTY29wZVwiOlwicmVmcy9oZWFkcy9tYWluXCIsXCJQZXJtaXNzaW9uXCI6M30se1wiU2NvcGVcIjpcInJlZnMvaGVhZHMvZmVhdHVyZVwiLFwiUGVybWlzc2lvblwiOjF9XSIsImV4cCI6NDEwMjQ0NDgwMCwibmJmIjoxNTc3ODM2ODAwfQ.c2lnbmF0dXJl"
+        ],
+        [
+          "user-agent",
+          "buildkit/v0.28.1"
+        ]
+      ],
+      "length": 0
+    },
+    {
+      "op": "v1 load, and download",
+      "method": "GET",
+      "path": "/v1blob/index-buildkit-1-abcd1234#1",
+      "query": "",
+      "headers": [
+        [
+          "user-agent",
+          "Go-http-client/1.1"
+        ]
+      ],
+      "length": 0
+    }
+  ],
+  "scopes": [
+    {
+      "Scope": "refs/heads/main",
+      "Permission": 3
+    },
+    {
+      "Scope": "refs/heads/feature",
+      "Permission": 1
+    }
+  ]
+}

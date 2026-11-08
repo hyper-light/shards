@@ -1,0 +1,1 @@
+{"frontend": {"context": "git@github.com:moby/buildkit.git", "build-arg:BUILDKIT_CONTEXT_KEEP_GIT_DIR": "1"}}

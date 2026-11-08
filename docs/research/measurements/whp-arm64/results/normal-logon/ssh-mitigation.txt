@@ -1,0 +1,3 @@
+2026-11-03T18:32:42.9855972-08:00
+WINARM\runner
+RedirectionTrust ok=True flags=0x00000001 error=0

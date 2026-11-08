@@ -1,0 +1,60 @@
+--- a/crates/init/src/run.rs
++++ b/crates/init/src/run.rs
+@@ -4208,6 +4208,9 @@
+         // said; the host's ask for its writable layer heard, or its end of asking; the
+         // child of init's sending that layer meanwhile.
+         let (mut outlived, mut reported, mut asked) = (false, false, false);
++        // Experiment (docs/research/measurements/relay-end): when the workload ended, and
++        // whether what holds the relay's end was said.
++        let (mut exited_at, mut said_waiting): (Option<std::time::Instant>, bool) = (None, false);
+         let mut packing: Option<libc::pid_t> = None;
+         // Reused each turn: six for the workload, four for each exec.
+         let (mut set, mut owners) = (Vec::<libc::pollfd>::new(), Vec::<Owner>::new());
+@@ -4272,6 +4275,35 @@
+             // record of processes ends with every end it can have (D123).
+             if exited {
+                 keep_processes(&mut self.procs, &mut to_host);
++            }
++            // Experiment (relay-end): each of the end's conditions unmet 2 s past the
++            // workload's end, once, as a marker of its own, 11 to 20.
++            if exited {
++                let since = *exited_at.get_or_insert_with(std::time::Instant::now);
++                if !said_waiting && since.elapsed() > std::time::Duration::from_secs(2) {
++                    said_waiting = true;
++                    let unmet = [
++                        !(flushing.is_none() && !quiet),
++                        self.stdout.is_some(),
++                        self.stderr.is_some(),
++                        !(to_host.is_empty() || host.is_none()),
++                        !execs.is_empty(),
++                        packing.is_some(),
++                        !(!reported || asked || host.is_none()),
++                        !(self.hosts.is_some() || hosts_pid.is_none()),
++                        !self.domains.iter().all(|d| d.out.is_none()),
++                        !(host.is_none()
++                            || self
++                                .procs
++                                .as_ref()
++                                .is_none_or(|p| p.as_ref().is_ok_and(|p| p.settled()))),
++                    ];
++                    for (i, u) in (11u32..).zip(unmet) {
++                        if u {
++                            let _ = crate::linux::control_write(control::MARKER, i);
++                        }
++                    }
++                }
+             }
+             // Its end said here, its joiners having outlived it, its writable layer is
+             // the loop's to send too: the loop goes on until the host has asked for it,
+--- a/crates/vmm/src/devices/control.rs
++++ b/crates/vmm/src/devices/control.rs
+@@ -18,7 +18,8 @@
+ pub type SnapshotRequest = Box<dyn Fn() + Send + Sync>;
+ 
+ /// The markers a guest may send: shards_abi::marker's, 1 to POWERING_OFF.
+-const MARKERS: usize = marker::POWERING_OFF as usize + 1;
++// Experiment (docs/research/measurements/relay-end): 11 to 20 too.
++const MARKERS: usize = 21;
+ 
+ #[derive(Default)]
+ pub struct Control {

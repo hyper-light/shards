@@ -1,0 +1,40 @@
+#!/bin/sh
+# Regenerates crates/ext4/testdata/e2fsck.json and mke2fs.json: what e2fsck 1.47.0 finds
+# in the file systems shards-ext4 makes of each size (examples/images.rs, made as its unit
+# tests make them), and the structures mke2fs 1.47.0 makes of one, whose checksums the
+# tests compute again (crates/ext4/src/tests.rs); and tree.blocks.gz and tree.json, a file
+# system of every kind of file mke2fs copies a tree into (tree.sh) and what debugfs reads of
+# it, which the reader is held to (read.rs). All by Debian 12's e2fsprogs, in a Linux
+# container (Docker's), run as root there.
+#
+#   scripts/ext4/generate
+set -eu
+
+here=$(cd "$(dirname "$0")" && pwd)
+root=$(cd "$here/../.." && pwd)
+data="$root/crates/ext4/testdata"
+image=debian@sha256:f37a335e82bca302e955fa39f9dfe28f1be618f016f8a2b56318e5a5111afc26
+# The least, a group and a small one, a group whose last group stays small, mke2fs's
+# reference's, a run's default layer, past a flex group, and one whose journal mke2fs would
+# make past a group.
+sizes="8388608 134217728 135266304 1054867456 10737418240 18253611008 68719476736"
+
+out=$(mktemp -d)
+trap 'rm -rf "$out"' EXIT
+# The rustup proxy, without the DYLD_* that keep rust-lld from loading libLLVM.
+env -u DYLD_LIBRARY_PATH -u DYLD_FALLBACK_LIBRARY_PATH \
+	cargo run --quiet --manifest-path "$root/Cargo.toml" -p shards-ext4 --example images -- "$out" $sizes
+
+docker run --rm -v "$out:/work" "$image" sh -c '
+	set -u
+	for f in /work/*.img; do
+		e2fsck -fn "$f" >"$f.out" 2>&1
+		echo $? >"$f.exit"
+	done
+	E2FSPROGS_FAKE_TIME=1792486936 mke2fs -q -F -t ext4 -b 4096 -O metadata_csum_seed \
+		-U 5c7b4964-401a-46fd-a8d9-3d8fd0b86b12 -E hash_seed=f38f0154-1c25-4f49-b87a-24455a777588 \
+		/work/mke2fs.raw 257536
+'
+docker run --rm -v "$out:/work" -v "$here/tree.sh:/tree.sh:ro" "$image" sh /tree.sh
+python3 -I "$here/record.py" "$out" "$data"
+echo "wrote $data"

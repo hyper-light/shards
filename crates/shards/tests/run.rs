@@ -1,10 +1,8 @@
-//! Commands run in images, end to end: `shards vm run --rootfs IMAGE -- COMMAND` boots a
+//! Commands run in images, end to end: `shards run vm --rootfs IMAGE -- COMMAND` boots a
 //! real VM into an EROFS image, shards-init runs the command as `docker run` would, and
 //! its output and exit status come back through shards. The command is the test guest,
-//! run as a workload (crates/testguest/src/workload.rs). Runs need vsock, which shards has
-//! on Unix hosts.
+//! run as a workload (crates/testguest/src/workload.rs).
 
-#![cfg(unix)]
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 mod common;
@@ -13,10 +11,10 @@ use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::io::{Read, Write};
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::time::{Duration, Instant};
 
-use common::{TempDir, cannot_run_vms, cannot_snapshot, guest_init, kernel, shards, workload_image};
+use common::{TempDir, cannot_pool, cannot_run_vms, guest_init, kernel, workload_image};
 
 const TIMEOUT: Duration = Duration::from_secs(60);
 
@@ -45,15 +43,10 @@ impl std::fmt::Display for Output {
     }
 }
 
-/// Runs `shards vm run ... --rootfs IMAGE <options> -- <command>`, with `stdin` as its
+/// Runs `shards run ... --rootfs IMAGE <options> -- <command>`, with `stdin` as its
 /// input.
 fn run(image: &Path, options: &[&str], command: &[&str], stdin: &[u8]) -> Output {
-    let mut args: Vec<&OsStr> = vec![
-        "vm".as_ref(),
-        "run".as_ref(),
-        "--kernel".as_ref(),
-        kernel().as_os_str(),
-    ];
+    let mut args: Vec<&OsStr> = vec!["run".as_ref(), "--kernel".as_ref(), kernel().as_os_str()];
     args.extend([
         "--init".as_ref(),
         guest_init().as_os_str(),
@@ -66,9 +59,9 @@ fn run(image: &Path, options: &[&str], command: &[&str], stdin: &[u8]) -> Output
     shards_with(&args, stdin)
 }
 
-/// Runs `shards vm restore TEMPLATE <options> -- <command>`.
+/// Runs `shards restore TEMPLATE <options> -- <command>`.
 fn restore(template: &Path, options: &[&str], command: &[&str]) -> Output {
-    let mut args: Vec<&OsStr> = vec!["vm".as_ref(), "restore".as_ref(), template.as_os_str()];
+    let mut args: Vec<&OsStr> = vec!["restore".as_ref(), template.as_os_str()];
     args.extend(options.iter().map(OsStr::new));
     args.push("--".as_ref());
     args.extend(command.iter().map(OsStr::new));
@@ -77,7 +70,7 @@ fn restore(template: &Path, options: &[&str], command: &[&str]) -> Output {
 
 /// Runs shards with `args`, `stdin` as its input, and a timeout.
 fn shards_with(args: &[&OsStr], stdin: &[u8]) -> Output {
-    let mut child = Command::new(shards())
+    let mut child = common::command()
         .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -101,14 +94,22 @@ fn shards_with(args: &[&OsStr], stdin: &[u8]) -> Output {
         err.read_to_string(&mut s).unwrap();
         s
     });
+    // Within TIMEOUT, or past it while its VM process runs (D209): `run --kernel` is it on
+    // Unix, and starts it on Windows.
     let start = Instant::now();
+    let mut ran = common::Ran::of(child.id());
     let status = loop {
         if let Some(st) = child.try_wait().unwrap() {
             break st;
         }
-        if start.elapsed() > TIMEOUT {
+        // Asked each pass, so that each slice of its VM process's is judged as it comes.
+        let running = ran.lately();
+        if start.elapsed() > TIMEOUT && !running {
             let _ = child.kill();
-            panic!("shards did not exit within {TIMEOUT:?}");
+            panic!(
+                "shards did not exit within {TIMEOUT:?}, nor its VM process run for {:?} after",
+                common::DAEMON_QUIET
+            );
         }
         std::thread::sleep(Duration::from_millis(2));
     };
@@ -139,7 +140,7 @@ fn report(out: &Output) -> BTreeMap<String, String> {
 }
 
 #[test]
-fn commands_run_in_the_image_as_docker_runs_them() {
+fn commands_run_in_the_image() {
     if cannot_run_vms() {
         return;
     }
@@ -178,11 +179,28 @@ fn commands_run_in_the_image_as_docker_runs_them() {
         ("default", "0000000000000000"),
         "{out}"
     );
+    // A run's capabilities, /dev and masked paths, as Docker's are (measured:
+    // Docker Desktop's dockerd 29.3.1, alpine).
+    for (key, want) in [
+        ("capinh", "0000000000000000"),
+        ("capprm", "00000000a80425fb"),
+        ("capeff", "00000000a80425fb"),
+        ("capbnd", "00000000a80425fb"),
+        ("capamb", "0000000000000000"),
+        (
+            "devs",
+            "core,fd,full,mqueue,null,ptmx,pts,random,shm,stderr,stdin,stdout,tty,urandom,zero",
+        ),
+        ("sysctl_writable", "false"),
+        ("kcore_masked", "true"),
+    ] {
+        assert_eq!(get(key), want, "{key}: {out}");
+    }
     for (target, fstype) in [
         ("/", "overlay"),
         ("/proc", "proc"),
         ("/sys", "sysfs"),
-        ("/dev", "devtmpfs"),
+        ("/dev", "tmpfs"),
         ("/dev/pts", "devpts"),
         ("/dev/shm", "tmpfs"),
         ("/dev/mqueue", "mqueue"),
@@ -209,6 +227,13 @@ fn commands_run_in_the_image_as_docker_runs_them() {
     );
     assert_eq!((get("cwd"), get("env HOME")), ("/work/dir", "/home/app"), "{out}");
     assert_eq!(get("writable"), "false", "app may not write to /");
+    // A user but root keeps the bounding set alone: a change to a nonzero UID clears
+    // the permitted and effective sets (capabilities(7)), the run's default set its bound.
+    assert_eq!(
+        (get("capprm"), get("capeff"), get("capbnd")),
+        ("0000000000000000", "0000000000000000", "00000000a80425fb"),
+        "{out}"
+    );
 
     // A numeric user with no passwd entry.
     let out = run(&image, &["-u", "4242"], &["/bin/testguest", "report"], b"");
@@ -222,7 +247,7 @@ fn commands_run_in_the_image_as_docker_runs_them() {
 }
 
 #[test]
-fn exit_statuses_are_the_ones_docker_run_gives() {
+fn exit_statuses_are_the_commands() {
     if cannot_run_vms() {
         return;
     }
@@ -230,9 +255,20 @@ fn exit_statuses_are_the_ones_docker_run_gives() {
     let image = workload_image(&dir);
     for (options, command, status, stderr) in [
         (&[][..], &["/bin/testguest", "exit", "3"][..], 3, ""),
-        (&[], &["/bin/testguest", "kill"], 128 + 9, ""),
+        // One that sends itself SIGKILL, then exits 1: PID 1 of its namespace, as a
+        // container's command, it does not hear it (D115), and exits 1, as under `docker
+        // run` (Docker 29.3.1: 1; 137 under `--init`, PM M145).
+        (&[], &["/bin/testguest", "kill"], 1, ""),
         (&[], &["/bin/testguest", "stderr", "to stderr"], 0, "to stderr"),
         (&[], &["nothere"], 127, "executable file not found in $PATH"),
+        // An empty PATH has nothing in it, not even the working directory (Go's
+        // SplitList): `docker run -e PATH= -w /bin` finds no `testguest` there.
+        (
+            &["-e", "PATH=", "-w", "/bin"],
+            &["testguest", "exit", "0"],
+            127,
+            "executable file not found in $PATH",
+        ),
         (&[], &["/bin/nothere"], 127, "no such file or directory"),
         (&[], &["/bin"], 126, "is a directory"),
         (
@@ -255,7 +291,7 @@ fn exit_statuses_are_the_ones_docker_run_gives() {
             "{command:?}: {out}"
         );
     }
-    // A container ends with its main process: a child left holding stdout is killed.
+    // A run ends with its main process: a child left holding stdout is killed.
     let out = run(&image, &[], &["/bin/testguest", "orphan"], b"");
     assert_eq!(
         (out.status, out.stdout.as_slice()),
@@ -297,16 +333,57 @@ fn stdio_carries_bulk_data_both_ways() {
     assert_eq!(shards_testguest::first_mismatch(9, 0, &out.stdout), None);
 }
 
+/// What Docker gives every container beside its image, in place of what the image has
+/// there: `/etc/hostname` naming the run, `/etc/hosts` as Docker writes it, `/etc/mtab` a
+/// link to `/proc/mounts` (moby daemon/initlayer/setup_unix.go), and loopback up.
+#[test]
+fn a_run_has_its_hostname_hosts_and_mtab_and_loopback() {
+    if cannot_run_vms() {
+        return;
+    }
+    let dir = TempDir::new("run-container-files");
+    let image = workload_image(&dir);
+    let paths = ["/etc/hostname", "/etc/hosts", "/etc/mtab", "/etc/hosts.image"];
+    let out = run(
+        &image,
+        &["--hostname", "box"],
+        &[&["/bin/testguest", "stat"][..], &paths[..]].concat(),
+        b"",
+    );
+    assert_eq!(out.status, Some(0), "{out}");
+    // Docker's /etc/hosts, measured (Docker Desktop, 2026-10-02), with the run's own name
+    // on the loopback, where Docker has the container's address.
+    let hosts = "127.0.0.1\tlocalhost\\n::1\tlocalhost ip6-localhost ip6-loopback\\n\
+                 fe00::\tip6-localnet\\nff00::\tip6-mcastprefix\\nff02::1\tip6-allnodes\\n\
+                 ff02::2\tip6-allrouters\\n127.0.1.1\tbox\\n";
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        format!(
+            "/etc/hostname file 644 0:0 4\n= box\\n\n\
+             /etc/hosts file 644 0:0 162\n= {hosts}\n\
+             /etc/mtab symlink 777 0:0 12\n-> /proc/mounts\n\
+             /etc/hosts.image file 644 0:0 12\n= image hosts\\n\n"
+        ),
+        "{out}"
+    );
+    let out = run(&image, &[], &["/bin/testguest", "loopback"], b"");
+    assert_eq!(
+        (out.status, String::from_utf8_lossy(&out.stdout).into_owned()),
+        (Some(0), "127.0.0.1:0 ok\n[::1]:0 ok\nown name ok\n".to_string()),
+        "{out}"
+    );
+}
+
 #[test]
 fn templates_restore_into_runs_of_their_own() {
-    if cannot_run_vms() || cannot_snapshot() {
+    if cannot_run_vms() || cannot_pool() {
         return;
     }
     let dir = TempDir::new("run-template");
     let image = workload_image(&dir);
     let template = dir.join("template");
-    let saved = Command::new(shards())
-        .args(["vm", "run", "--kernel"])
+    let saved = common::command()
+        .args(["run", "--kernel"])
         .arg(kernel())
         .args([
             "--init".as_ref(),
@@ -362,33 +439,61 @@ fn templates_restore_into_runs_of_their_own() {
         get(&second, "hostname"),
         "each run has its own name"
     );
+    // In /etc/hostname too, though the template made the file before it was saved.
+    for name in ["one", "a-longer-name"] {
+        let out = restore(
+            &template,
+            &["--hostname", name],
+            &["/bin/testguest", "stat", "/etc/hostname"],
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            format!("/etc/hostname file 644 0:0 {}\n= {name}\\n\n", name.len() + 1),
+            "{out}"
+        );
+    }
     assert_eq!(get(&second, "mount /"), "overlay");
 }
 
+/// What a test sends shards: a signal, by its host's number, on Unix; on Windows its
+/// interrupt (common::interrupt), the one event a process can send another's group.
+#[cfg(unix)]
+type Signal = libc::c_int;
+#[cfg(windows)]
+#[derive(Clone, Copy)]
+struct Signal;
+
 /// Runs `command` in the image, sends `signal` to shards once the command says `ready`,
 /// and returns what shards returns.
-fn signaled(image: &Path, command: &[&str], signal: libc::c_int) -> Output {
-    signaled_ignoring(image, command, signal, false)
+fn signaled(image: &Path, command: &[&str], signal: Signal) -> Output {
+    signaled_ignoring(image, command, &[signal], false)
 }
 
 /// [`signaled`], with shards started ignoring SIGINT and SIGQUIT if `ignoring`, as a
-/// non-interactive shell starts `cmd &` (POSIX.1-2024, XCU 2.9.3.1).
-fn signaled_ignoring(image: &Path, command: &[&str], signal: libc::c_int, ignoring: bool) -> Output {
+/// non-interactive shell starts `cmd &` (POSIX.1-2024, XCU 2.9.3.1); else with their
+/// default actions, whatever this test was started with.
+/// Each of `signals` is sent half a second after the one before, so that each reaches
+/// the command before the next is sent.
+fn signaled_ignoring(image: &Path, command: &[&str], signals: &[Signal], ignoring: bool) -> Output {
     use std::io::BufRead;
-    use std::os::unix::process::CommandExt;
-    let mut run = Command::new(shards());
-    if ignoring {
+    let mut run = common::command();
+    #[cfg(unix)]
+    {
+        let action = if ignoring { libc::SIG_IGN } else { libc::SIG_DFL };
         // SAFETY: signal(2) only, between fork and exec.
         unsafe {
-            run.pre_exec(|| {
-                libc::signal(libc::SIGINT, libc::SIG_IGN);
-                libc::signal(libc::SIGQUIT, libc::SIG_IGN);
+            std::os::unix::process::CommandExt::pre_exec(&mut run, move || {
+                libc::signal(libc::SIGINT, action);
+                libc::signal(libc::SIGQUIT, action);
                 Ok(())
             });
         }
     }
-    let mut child = run
-        .args(["vm", "run", "--kernel"])
+    // A Windows console starts no process with its break ignored.
+    #[cfg(windows)]
+    assert!(!ignoring, "Windows starts no process ignoring its break");
+    let mut child = common::interruptible(&mut run)
+        .args(["run", "--kernel"])
         .arg(kernel())
         .args([
             "--init".as_ref(),
@@ -403,21 +508,47 @@ fn signaled_ignoring(image: &Path, command: &[&str], signal: libc::c_int, ignori
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    // A regression fails the test instead of hanging it.
-    let pid = child.id() as libc::pid_t;
+    // A regression fails the test instead of hanging it: its child, only reaped after
+    // `done`, ended outright once past TIMEOUT its VM process has run nothing for
+    // DAEMON_QUIET (D209).
+    let pid = i32::try_from(child.id()).unwrap();
+    let mut ran = common::Ran::of(child.id());
     let (done, watch) = std::sync::mpsc::channel::<()>();
     std::thread::spawn(move || {
-        if watch.recv_timeout(TIMEOUT).is_err() {
-            // SAFETY: kill(2) of our own child, which is only reaped after `done`.
-            unsafe { libc::kill(pid, libc::SIGKILL) };
+        let start = Instant::now();
+        loop {
+            // Asked each pass, so that each slice of its VM process's is judged as it comes.
+            let running = ran.lately();
+            match watch.recv_timeout(Duration::from_secs(1)) {
+                Ok(()) => return,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) if start.elapsed() < TIMEOUT || running => {}
+                // Past its patience, or the test gone without saying it is done.
+                Err(_) => {
+                    common::kill_now(pid);
+                    return;
+                }
+            }
         }
     });
     let mut out = std::io::BufReader::new(child.stdout.take().unwrap());
     let mut ready = String::new();
     out.read_line(&mut ready).unwrap();
     assert_eq!(ready, "ready\n");
-    // SAFETY: kill(2) of our own child.
-    unsafe { libc::kill(child.id() as libc::pid_t, signal) };
+    for (i, &signal) in signals.iter().enumerate() {
+        if i > 0 {
+            std::thread::sleep(Duration::from_millis(500));
+        }
+        #[cfg(unix)]
+        // SAFETY: kill(2) of our own child.
+        unsafe {
+            libc::kill(child.id() as libc::pid_t, signal);
+        }
+        #[cfg(windows)]
+        {
+            let Signal = signal;
+            common::interrupt(&child);
+        }
+    }
     let mut rest = Vec::new();
     out.read_to_end(&mut rest).unwrap();
     let mut stderr = String::new();
@@ -432,26 +563,46 @@ fn signaled_ignoring(image: &Path, command: &[&str], signal: libc::c_int, ignori
 }
 
 #[test]
-fn signals_reach_the_command_as_docker_run_forwards_them() {
+fn signals_reach_the_command() {
     if cannot_run_vms() {
         return;
     }
     let dir = TempDir::new("run-signals");
     let image = workload_image(&dir);
-    // The command sees Linux's numbers, whatever the host's are (SIGUSR1 is 30 on macOS).
-    for (name, host, linux) in [("INT", libc::SIGINT, 2), ("USR1", libc::SIGUSR1, 10)] {
+    // The command sees Linux's numbers, whatever the host's are (SIGUSR1 is 30 on macOS); on
+    // Windows its interrupt, SIGINT.
+    #[cfg(unix)]
+    let cases = [("INT", libc::SIGINT, 2), ("USR1", libc::SIGUSR1, 10)];
+    #[cfg(windows)]
+    let cases = [("INT", Signal, 2)];
+    for (name, host, linux) in cases {
         let out = signaled(&image, &["/bin/testguest", "trap", name], host);
         assert_eq!(out.status, Some(0), "{name}: {out}");
         assert_eq!(out.stdout, format!("got {linux}\n").into_bytes(), "{name}: {out}");
     }
-    // Even one shards was started ignoring, as `docker run`'s signal proxy takes it.
-    let out = signaled_ignoring(&image, &["/bin/testguest", "trap", "INT"], libc::SIGINT, true);
-    assert_eq!(
-        (out.status, out.stdout.as_slice()),
-        (Some(0), &b"got 2\n"[..]),
-        "{out}"
-    );
-    // A signal the command does not catch ends it, and `docker run`'s status says which.
-    let out = signaled(&image, &["/bin/testguest", "sleep"], libc::SIGTERM);
-    assert_eq!(out.status, Some(128 + 15), "{out}");
+    // The rest are Unix's: a Windows console starts no process with its break ignored, and
+    // a process sends another's group that one event alone.
+    #[cfg(unix)]
+    {
+        // Even one shards was started ignoring, as `docker run`'s signal proxy takes it.
+        let out = signaled_ignoring(&image, &["/bin/testguest", "trap", "INT"], &[libc::SIGINT], true);
+        assert_eq!(
+            (out.status, out.stdout.as_slice()),
+            (Some(0), &b"got 2\n"[..]),
+            "{out}"
+        );
+        // One it does not catch, PID 1 of its namespace, as a container's command, does not
+        // hear (D115), as under `docker run`: the run goes on, and hears the next it catches.
+        let out = signaled_ignoring(
+            &image,
+            &["/bin/testguest", "trap", "INT"],
+            &[libc::SIGTERM, libc::SIGINT],
+            false,
+        );
+        assert_eq!(
+            (out.status, out.stdout.as_slice()),
+            (Some(0), &b"got 2\n"[..]),
+            "{out}"
+        );
+    }
 }

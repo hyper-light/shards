@@ -1,0 +1,90 @@
+[
+ {
+  "bundle": "2-tsa-shards.json",
+  "signer": "shards",
+  "digest": "sha256:09b70348315d09fb1ea8a7f6e55e3c44c0c872be3fb0777a7ab7c194d268082a",
+  "logs": [
+   2
+  ],
+  "tsa": true,
+  "identity": "foo@bar.com",
+  "issuer": "http://fakeoidc:8080"
+ },
+ {
+  "bundle": "2-tsa-cosign.json",
+  "signer": "cosign",
+  "digest": "sha256:09b70348315d09fb1ea8a7f6e55e3c44c0c872be3fb0777a7ab7c194d268082a",
+  "logs": [
+   2
+  ],
+  "tsa": true,
+  "identity": "foo@bar.com",
+  "issuer": "http://fakeoidc:8080"
+ },
+ {
+  "bundle": "1-tsa-shards.json",
+  "signer": "shards",
+  "digest": "sha256:09b70348315d09fb1ea8a7f6e55e3c44c0c872be3fb0777a7ab7c194d268082a",
+  "logs": [
+   1
+  ],
+  "tsa": true,
+  "identity": "foo@bar.com",
+  "issuer": "http://fakeoidc:8080"
+ },
+ {
+  "bundle": "1-tsa-cosign.json",
+  "signer": "cosign",
+  "digest": "sha256:09b70348315d09fb1ea8a7f6e55e3c44c0c872be3fb0777a7ab7c194d268082a",
+  "logs": [
+   1
+  ],
+  "tsa": true,
+  "identity": "foo@bar.com",
+  "issuer": "http://fakeoidc:8080"
+ },
+ {
+  "bundle": "1-shards.json",
+  "signer": "shards",
+  "digest": "sha256:09b70348315d09fb1ea8a7f6e55e3c44c0c872be3fb0777a7ab7c194d268082a",
+  "logs": [
+   1
+  ],
+  "tsa": false,
+  "identity": "foo@bar.com",
+  "issuer": "http://fakeoidc:8080"
+ },
+ {
+  "bundle": "1-cosign.json",
+  "signer": "cosign",
+  "digest": "sha256:09b70348315d09fb1ea8a7f6e55e3c44c0c872be3fb0777a7ab7c194d268082a",
+  "logs": [
+   1
+  ],
+  "tsa": false,
+  "identity": "foo@bar.com",
+  "issuer": "http://fakeoidc:8080"
+ },
+ {
+  "bundle": "normal-shards.json",
+  "signer": "shards",
+  "digest": "sha256:09b70348315d09fb1ea8a7f6e55e3c44c0c872be3fb0777a7ab7c194d268082a",
+  "logs": [
+   1
+  ],
+  "tsa": true,
+  "identity": "kilgore@kilgore.trout",
+  "issuer": "http://dex-idp:8888/auth"
+ },
+ {
+  "bundle": "device-shards.json",
+  "signer": "shards",
+  "digest": "sha256:09b70348315d09fb1ea8a7f6e55e3c44c0c872be3fb0777a7ab7c194d268082a",
+  "logs": [
+   1
+  ],
+  "tsa": true,
+  "identity": "kilgore@kilgore.trout",
+  "issuer": "http://dex-idp:8888/auth"
+ }
+]

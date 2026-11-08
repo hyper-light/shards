@@ -1,0 +1,351 @@
+//! What a `RUN` step is given besides its tree, matching a BuildKit step's (D33;
+//! docs/research/buildkit-run.md): its environment, `/etc/hosts`, `/etc/resolv.conf`,
+//! and the words of its failure.
+
+use std::net::IpAddr;
+
+use shards_agentfile::go;
+use shards_agentfile::llb::{HostIp, ProxyEnv};
+
+/// The `PATH` a step gets when its environment has none (util/system/path.go).
+pub const DEFAULT_PATH: &[u8] = b"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
+
+/// BuildKit's default sandbox hostname (executor/oci/hosts.go).
+pub const HOSTNAME: &[u8] = b"buildkitsandbox";
+
+/// The step's environment before runc prepares it: the step's own, then the proxy
+/// variables, each set one given upper then lower case, then `PATH` if it has none, then
+/// secrets as variables (solver/llbsolver/ops/exec.go).
+pub fn env(own: &[Vec<u8>], proxy: Option<&ProxyEnv>, secrets: &[(Vec<u8>, Vec<u8>)]) -> Vec<Vec<u8>> {
+    let mut out = own.to_vec();
+    if let Some(p) = proxy {
+        for (upper, lower, value) in [
+            ("HTTP_PROXY", "http_proxy", &p.http),
+            ("HTTPS_PROXY", "https_proxy", &p.https),
+            ("FTP_PROXY", "ftp_proxy", &p.ftp),
+            ("NO_PROXY", "no_proxy", &p.no),
+            ("ALL_PROXY", "all_proxy", &p.all),
+        ] {
+            if value.is_empty() {
+                continue;
+            }
+            for name in [upper, lower] {
+                let mut kv = name.as_bytes().to_vec();
+                kv.push(b'=');
+                kv.extend_from_slice(value);
+                out.push(kv);
+            }
+        }
+    }
+    if !out.iter().any(|kv| kv.starts_with(b"PATH=")) {
+        out.push(DEFAULT_PATH.to_vec());
+    }
+    for (name, value) in secrets {
+        let mut kv = name.clone();
+        kv.push(b'=');
+        kv.extend_from_slice(value);
+        out.push(kv);
+    }
+    out
+}
+
+/// `/etc/hosts` as BuildKit writes it (executor/oci/hosts.go, makeHostsFile).
+pub fn hosts(hostname: &[u8], extra: &[HostIp]) -> Vec<u8> {
+    let mut out = b"127.0.0.1\tlocalhost ".to_vec();
+    out.extend_from_slice(hostname);
+    out.extend_from_slice(b"\n::1\tlocalhost ip6-localhost ip6-loopback\n");
+    for h in extra {
+        out.extend_from_slice(&h.ip);
+        out.push(b'\t');
+        out.extend_from_slice(&h.host);
+        out.push(b'\n');
+    }
+    out
+}
+
+/// The host's resolvers (shards_net::bridge::host_resolv;
+/// on Windows each up adapter's).
+pub fn host_resolv() -> Vec<u8> {
+    shards_net::bridge::host_resolv()
+}
+
+/// `/etc/resolv.conf` made from the host's as BuildKit makes it for a step without the
+/// host's network (util/resolvconf/resolvconf.go: Parse, TransformForLegacyNw(true),
+/// Generate(false)), and for a run on a network without IPv6, as dockerd makes a container's
+/// (TransformForLegacyNw(false)): nameservers less loopback ones, and less IPv6 ones
+/// without `ipv6`, or Google's when none remain; the last `search`; every `options`;
+/// other lines as they were; no comments, which name the engine that wrote them.
+pub fn resolv(host: &[u8], ipv6: bool) -> Vec<u8> {
+    resolv_with(host, ipv6, &[], &[], &[])
+}
+
+/// [`resolv`], with a run's `--dns`, `--dns-search` and `--dns-option` in place of the
+/// host's, as dockerd overrides them (daemon/libnetwork/sandbox_dns_unix.go,
+/// loadResolvConf): nameservers given are kept as given, loopback ones too
+/// (TransformForLegacyNw leaves an override alone), and a search domain of `.` is none.
+pub fn resolv_with(
+    host: &[u8],
+    ipv6: bool,
+    dns: &[String],
+    search_given: &[String],
+    options_given: &[String],
+) -> Vec<u8> {
+    made(host, Some(ipv6), dns, search_given, options_given)
+}
+
+/// `/etc/resolv.conf` on the host's network (`--network host`, D124), as dockerd makes it
+/// there (PM M177, "Based on host file" without "(legacy)"): the host's nameservers as they
+/// are, loopback and IPv6 ones too, which are the host's own there, and none added; the
+/// run's `--dns`, `--dns-search` and `--dns-option` in place of the host's, as on a bridge.
+/// The daemon's alone.
+pub fn resolv_host(
+    host: &[u8],
+    dns: &[String],
+    search_given: &[String],
+    options_given: &[String],
+) -> Vec<u8> {
+    made(host, None, dns, search_given, options_given)
+}
+
+/// [`resolv_with`] and [`resolv_host`]: the host's file made over by the legacy transform
+/// where `legacy` says whether IPv6 nameservers stay, or as it is where none.
+fn made(
+    host: &[u8],
+    legacy: Option<bool>,
+    dns: &[String],
+    search_given: &[String],
+    options_given: &[String],
+) -> Vec<u8> {
+    let text = String::from_utf8_lossy(host);
+    let mut nameservers: Vec<IpAddr> = Vec::new();
+    let mut search: Vec<&str> = Vec::new();
+    let mut options: Vec<&str> = Vec::new();
+    let mut other: Vec<&str> = Vec::new();
+    for line in text.lines() {
+        // bufio.ScanLines drops a line's trailing \r.
+        let line = line.strip_suffix('\r').unwrap_or(line);
+        if line.is_empty() || line.starts_with('#') || line.starts_with(';') {
+            continue;
+        }
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        match fields.as_slice() {
+            [] => {}
+            ["nameserver", addr, ..] => {
+                if let Ok(a) = addr.parse::<IpAddr>() {
+                    nameservers.push(a);
+                }
+            }
+            ["nameserver"] | ["domain"] | ["search"] | ["options"] => {}
+            ["domain" | "search", rest @ ..] => search = rest.to_vec(),
+            ["options", rest @ ..] => options.extend_from_slice(rest),
+            _ => other.push(line),
+        }
+    }
+    if !search_given.is_empty() {
+        search = search_given
+            .iter()
+            .map(String::as_str)
+            .filter(|s| *s != ".")
+            .collect();
+    }
+    if !options_given.is_empty() {
+        options = options_given.iter().map(String::as_str).collect();
+    }
+    if !dns.is_empty() {
+        nameservers = dns.iter().filter_map(|a| a.parse::<IpAddr>().ok()).collect();
+    }
+    let Some(ipv6) = legacy else {
+        return generate(&nameservers, &search, &options, &other);
+    };
+    // netip's Is6 holds for an IPv4-mapped address too.
+    if dns.is_empty() {
+        nameservers.retain(|a| !loopback(a) && (ipv6 || a.is_ipv4()));
+    }
+    if nameservers.is_empty() {
+        nameservers = [
+            "8.8.8.8",
+            "8.8.4.4",
+            "2001:4860:4860::8888",
+            "2001:4860:4860::8844",
+        ]
+        .iter()
+        .filter_map(|a| a.parse::<IpAddr>().ok())
+        .filter(|a| ipv6 || a.is_ipv4())
+        .collect();
+    }
+    generate(&nameservers, &search, &options, &other)
+}
+
+/// A resolv.conf's lines, as resolvconf's Generate writes them without its comments.
+fn generate(nameservers: &[IpAddr], search: &[&str], options: &[&str], other: &[&str]) -> Vec<u8> {
+    let mut out = String::new();
+    for ns in nameservers {
+        out.push_str(&format!("nameserver {ns}\n"));
+    }
+    if !search.is_empty() {
+        out.push_str(&format!("search {}\n", search.join(" ")));
+    }
+    if !options.is_empty() {
+        out.push_str(&format!("options {}\n", options.join(" ")));
+    }
+    for o in other {
+        out.push_str(o);
+        out.push('\n');
+    }
+    out.into_bytes()
+}
+
+/// netip.Addr.IsLoopback: 127.0.0.0/8 and ::1, an IPv4 address in IPv6 by its IPv4 form.
+fn loopback(a: &IpAddr) -> bool {
+    match a {
+        IpAddr::V4(v4) => v4.is_loopback(),
+        IpAddr::V6(v6) => v6
+            .to_ipv4_mapped()
+            .map_or(v6.is_loopback(), |v4| v4.is_loopback()),
+    }
+}
+
+/// How a failed step is reported (solver/llbsolver/ops/exec.go): its arguments joined
+/// with spaces and Go-quoted, and why.
+pub fn failure(args: &[Vec<u8>], why: &str) -> String {
+    let joined = args.join(&b' ');
+    format!(
+        "process {} did not complete successfully: {why}",
+        go::quote(&joined)
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// What a run's resolvers cost it, the host's read and made over as each run starts
+    /// (review 7.22), against what a look at whether they changed would cost instead, a
+    /// `stat`. Measured, not run with the tests:
+    /// `cargo test --release -p shards --bin shardsd -- resolvers_cost --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn resolvers_cost() {
+        let timed = |f: &dyn Fn()| {
+            let mut ns: Vec<u128> = (0..10_000)
+                .map(|_| {
+                    let t0 = std::time::Instant::now();
+                    f();
+                    t0.elapsed().as_nanos()
+                })
+                .collect();
+            ns.sort_unstable();
+            let q = |p: f64| ns[((ns.len() as f64 * p) as usize).min(ns.len() - 1)];
+            format!(
+                "n {} p50 {} p90 {} p99 {} max {} ns",
+                ns.len(),
+                q(0.5),
+                q(0.9),
+                q(0.99),
+                ns[ns.len() - 1]
+            )
+        };
+        println!(
+            "read and made over: {}",
+            timed(&|| {
+                std::hint::black_box(resolv(&host_resolv(), false));
+            })
+        );
+        println!(
+            "stat: {}",
+            timed(&|| {
+                std::hint::black_box(std::fs::metadata("/etc/resolv.conf").ok());
+            })
+        );
+    }
+
+    #[test]
+    fn a_steps_environment_takes_its_proxy_and_path() {
+        let own = vec![b"A=1".to_vec()];
+        let proxy = ProxyEnv {
+            http: b"http://p:3128".to_vec(),
+            no: b"localhost".to_vec(),
+            ..ProxyEnv::default()
+        };
+        assert_eq!(
+            env(&own, Some(&proxy), &[(b"TOKEN".to_vec(), b"s".to_vec())]),
+            [
+                &b"A=1"[..],
+                b"HTTP_PROXY=http://p:3128",
+                b"http_proxy=http://p:3128",
+                b"NO_PROXY=localhost",
+                b"no_proxy=localhost",
+                DEFAULT_PATH,
+                b"TOKEN=s",
+            ]
+        );
+        let own = vec![b"PATH=/x".to_vec()];
+        assert_eq!(env(&own, None, &[]), [b"PATH=/x".to_vec()]);
+    }
+
+    #[test]
+    fn a_steps_hosts_file_lists_its_extra_hosts() {
+        let extra = [HostIp {
+            host: b"db".to_vec(),
+            ip: b"10.0.0.2".to_vec(),
+        }];
+        assert_eq!(
+            hosts(HOSTNAME, &extra),
+            b"127.0.0.1\tlocalhost buildkitsandbox\n::1\tlocalhost ip6-localhost ip6-loopback\n10.0.0.2\tdb\n"
+        );
+    }
+
+    #[test]
+    fn resolv_conf_is_the_hosts_less_loopback() {
+        let host = b"# mDNSResponder\nnameserver 127.0.0.53\nnameserver ::ffff:127.0.0.1\nnameserver 192.168.1.1\nnameserver fe80:0:0::1\nsearch a b\nsearch home.lan\noptions ndots:2\noptions edns0\nsortlist 10.0.0.0\r\n";
+        assert_eq!(
+            String::from_utf8(resolv(host, true)).unwrap(),
+            "nameserver 192.168.1.1\nnameserver fe80::1\nsearch home.lan\noptions ndots:2 edns0\nsortlist 10.0.0.0\n"
+        );
+        assert_eq!(
+            String::from_utf8(resolv(b"nameserver 127.0.0.1\n", true)).unwrap(),
+            "nameserver 8.8.8.8\nnameserver 8.8.4.4\nnameserver 2001:4860:4860::8888\nnameserver 2001:4860:4860::8844\n"
+        );
+        // Without IPv6, as dockerd writes it for its default bridge (moby
+        // daemon/libnetwork/internal/resolvconf, docker-v29.3.1).
+        let mapped = b"nameserver ::ffff:10.0.0.1\nnameserver 2001:db8::1\nnameserver 192.168.1.1\n";
+        assert_eq!(
+            String::from_utf8(resolv(mapped, false)).unwrap(),
+            "nameserver 192.168.1.1\n"
+        );
+        assert_eq!(
+            String::from_utf8(resolv(b"nameserver 2001:db8::1\n", false)).unwrap(),
+            "nameserver 8.8.8.8\nnameserver 8.8.4.4\n"
+        );
+    }
+
+    /// On the host's network (D124, PM M177): the host's nameservers as they are, loopback
+    /// and IPv6 ones too, none added; `--dns` and the rest in place of the host's.
+    #[cfg(unix)]
+    #[test]
+    fn resolv_conf_on_the_hosts_network_is_the_hosts() {
+        let host = b"# mDNSResponder\nnameserver 127.0.0.53\nnameserver 192.168.1.1\nnameserver fe80::1\nsearch example.org\noptions ndots:2\n";
+        assert_eq!(
+            String::from_utf8(resolv_host(host, &[], &[], &[])).unwrap(),
+            "nameserver 127.0.0.53\nnameserver 192.168.1.1\nnameserver fe80::1\nsearch example.org\noptions ndots:2\n"
+        );
+        assert_eq!(
+            String::from_utf8(resolv_host(host, &["1.1.1.1".into()], &[], &[])).unwrap(),
+            "nameserver 1.1.1.1\nsearch example.org\noptions ndots:2\n"
+        );
+        assert_eq!(String::from_utf8(resolv_host(b"", &[], &[], &[])).unwrap(), "");
+    }
+
+    #[test]
+    fn a_step_failure_is_worded() {
+        let args = [
+            b"/bin/sh".to_vec(),
+            b"-c".to_vec(),
+            b"echo \"hi\"; exit 3".to_vec(),
+        ];
+        assert_eq!(
+            failure(&args, "exit code: 3"),
+            r#"process "/bin/sh -c echo \"hi\"; exit 3" did not complete successfully: exit code: 3"#
+        );
+    }
+}

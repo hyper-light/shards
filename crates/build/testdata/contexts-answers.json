@@ -1,0 +1,4057 @@
+[
+ {
+  "name": "everything",
+  "sent": [
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": ".dockerignore",
+    "size": 13
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": ".git",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": ".git/HEAD",
+    "size": 21
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "Dockerfile",
+    "size": 13
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "Dockerfile.dockerignore",
+    "size": 6
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1650000000123456789,
+    "path": "a.txt",
+    "size": 1
+   },
+   {
+    "link": "/etc/passwd",
+    "mode": 134218221,
+    "mtime": 1600000000000000500,
+    "path": "abs-link",
+    "size": 11
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "b.log",
+    "size": 3
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "c.tmp",
+    "size": 0
+   },
+   {
+    "link": "link-to-src/util",
+    "mode": 134218221,
+    "mtime": 1600000000000000500,
+    "path": "chain",
+    "size": 16
+   },
+   {
+    "link": "nope",
+    "mode": 134218221,
+    "mtime": 1600000000000000500,
+    "path": "dangling",
+    "size": 4
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "deep",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "deep/a",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "deep/a/b",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "deep/a/b/c",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "deep/a/b/c/d.txt",
+    "size": 1
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "deep/a/b/e.txt",
+    "size": 1
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "docs",
+    "size": 0
+   },
+   {
+    "link": "/etc/hosts",
+    "mode": 134218221,
+    "mtime": 1600000000000000500,
+    "path": "docs/abs",
+    "size": 10
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "docs/img",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "docs/img/logo.png",
+    "size": 3
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "docs/readme.md",
+    "size": 6
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "etc",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "etc/hosts",
+    "size": 5
+   },
+   {
+    "link": "",
+    "mode": 493,
+    "mtime": 1600000000000000500,
+    "path": "exec.sh",
+    "size": 10
+   },
+   {
+    "link": "",
+    "mode": 33554848,
+    "mtime": 1600000000000000500,
+    "path": "fifo",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "hard1",
+    "size": 4
+   },
+   {
+    "link": "hard1",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "hard2",
+    "size": 4
+   },
+   {
+    "link": "a.txt",
+    "mode": 134218221,
+    "mtime": 1600000000000000500,
+    "path": "link-to-a",
+    "size": 5
+   },
+   {
+    "link": "src",
+    "mode": 134218221,
+    "mtime": 1600000000000000500,
+    "path": "link-to-src",
+    "size": 3
+   },
+   {
+    "link": "loop2",
+    "mode": 134218221,
+    "mtime": 1600000000000000500,
+    "path": "loop1",
+    "size": 5
+   },
+   {
+    "link": "loop1",
+    "mode": 134218221,
+    "mtime": 1600000000000000500,
+    "path": "loop2",
+    "size": 5
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "node_modules",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "node_modules/pkg",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "node_modules/pkg/index.js",
+    "size": 2
+   },
+   {
+    "link": "",
+    "mode": 493,
+    "mtime": 1600000000000000500,
+    "path": "sock",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "sp ace.txt",
+    "size": 5
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "src",
+    "size": 0
+   },
+   {
+    "link": "hard1",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "src/hard3",
+    "size": 4
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "src/main.go",
+    "size": 12
+   },
+   {
+    "link": "",
+    "mode": 2147484136,
+    "mtime": 1600000000000000500,
+    "path": "src/util",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "src/util/u.go",
+    "size": 12
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "src/util/u_test.go",
+    "size": 12
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "src/vendor",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "src/vendor/v.go",
+    "size": 9
+   },
+   {
+    "link": "",
+    "mode": 2148532735,
+    "mtime": 1600000000000000500,
+    "path": "sticky",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "sticky/f",
+    "size": 1
+   },
+   {
+    "link": "",
+    "mode": 8389101,
+    "mtime": 1600000000000000500,
+    "path": "suid",
+    "size": 1
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "weird[1].txt",
+    "size": 1
+   }
+  ]
+ },
+ {
+  "name": "excludes",
+  "sent": [
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": ".dockerignore",
+    "size": 13
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "Dockerfile",
+    "size": 13
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "Dockerfile.dockerignore",
+    "size": 6
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1650000000123456789,
+    "path": "a.txt",
+    "size": 1
+   },
+   {
+    "link": "/etc/passwd",
+    "mode": 134218221,
+    "mtime": 1600000000000000500,
+    "path": "abs-link",
+    "size": 11
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "c.tmp",
+    "size": 0
+   },
+   {
+    "link": "link-to-src/util",
+    "mode": 134218221,
+    "mtime": 1600000000000000500,
+    "path": "chain",
+    "size": 16
+   },
+   {
+    "link": "nope",
+    "mode": 134218221,
+    "mtime": 1600000000000000500,
+    "path": "dangling",
+    "size": 4
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "deep",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "deep/a",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "deep/a/b",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "deep/a/b/c",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "deep/a/b/c/d.txt",
+    "size": 1
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "deep/a/b/e.txt",
+    "size": 1
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "docs",
+    "size": 0
+   },
+   {
+    "link": "/etc/hosts",
+    "mode": 134218221,
+    "mtime": 1600000000000000500,
+    "path": "docs/abs",
+    "size": 10
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "docs/img",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "docs/img/logo.png",
+    "size": 3
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "docs/readme.md",
+    "size": 6
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "etc",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "etc/hosts",
+    "size": 5
+   },
+   {
+    "link": "",
+    "mode": 493,
+    "mtime": 1600000000000000500,
+    "path": "exec.sh",
+    "size": 10
+   },
+   {
+    "link": "",
+    "mode": 33554848,
+    "mtime": 1600000000000000500,
+    "path": "fifo",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "hard1",
+    "size": 4
+   },
+   {
+    "link": "hard1",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "hard2",
+    "size": 4
+   },
+   {
+    "link": "a.txt",
+    "mode": 134218221,
+    "mtime": 1600000000000000500,
+    "path": "link-to-a",
+    "size": 5
+   },
+   {
+    "link": "src",
+    "mode": 134218221,
+    "mtime": 1600000000000000500,
+    "path": "link-to-src",
+    "size": 3
+   },
+   {
+    "link": "loop2",
+    "mode": 134218221,
+    "mtime": 1600000000000000500,
+    "path": "loop1",
+    "size": 5
+   },
+   {
+    "link": "loop1",
+    "mode": 134218221,
+    "mtime": 1600000000000000500,
+    "path": "loop2",
+    "size": 5
+   },
+   {
+    "link": "",
+    "mode": 493,
+    "mtime": 1600000000000000500,
+    "path": "sock",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "sp ace.txt",
+    "size": 5
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "src",
+    "size": 0
+   },
+   {
+    "link": "hard1",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "src/hard3",
+    "size": 4
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "src/main.go",
+    "size": 12
+   },
+   {
+    "link": "",
+    "mode": 2147484136,
+    "mtime": 1600000000000000500,
+    "path": "src/util",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "src/util/u.go",
+    "size": 12
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "src/util/u_test.go",
+    "size": 12
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "src/vendor",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "src/vendor/v.go",
+    "size": 9
+   },
+   {
+    "link": "",
+    "mode": 2148532735,
+    "mtime": 1600000000000000500,
+    "path": "sticky",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "sticky/f",
+    "size": 1
+   },
+   {
+    "link": "",
+    "mode": 8389101,
+    "mtime": 1600000000000000500,
+    "path": "suid",
+    "size": 1
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "weird[1].txt",
+    "size": 1
+   }
+  ]
+ },
+ {
+  "name": "exclude with exception",
+  "sent": [
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": ".dockerignore",
+    "size": 13
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": ".git",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": ".git/HEAD",
+    "size": 21
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "Dockerfile",
+    "size": 13
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "Dockerfile.dockerignore",
+    "size": 6
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1650000000123456789,
+    "path": "a.txt",
+    "size": 1
+   },
+   {
+    "link": "/etc/passwd",
+    "mode": 134218221,
+    "mtime": 1600000000000000500,
+    "path": "abs-link",
+    "size": 11
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "b.log",
+    "size": 3
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "c.tmp",
+    "size": 0
+   },
+   {
+    "link": "link-to-src/util",
+    "mode": 134218221,
+    "mtime": 1600000000000000500,
+    "path": "chain",
+    "size": 16
+   },
+   {
+    "link": "nope",
+    "mode": 134218221,
+    "mtime": 1600000000000000500,
+    "path": "dangling",
+    "size": 4
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "deep",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "deep/a",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "deep/a/b",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "deep/a/b/c",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "deep/a/b/c/d.txt",
+    "size": 1
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "deep/a/b/e.txt",
+    "size": 1
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "docs",
+    "size": 0
+   },
+   {
+    "link": "/etc/hosts",
+    "mode": 134218221,
+    "mtime": 1600000000000000500,
+    "path": "docs/abs",
+    "size": 10
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "docs/img",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "docs/img/logo.png",
+    "size": 3
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "docs/readme.md",
+    "size": 6
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "etc",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "etc/hosts",
+    "size": 5
+   },
+   {
+    "link": "",
+    "mode": 493,
+    "mtime": 1600000000000000500,
+    "path": "exec.sh",
+    "size": 10
+   },
+   {
+    "link": "",
+    "mode": 33554848,
+    "mtime": 1600000000000000500,
+    "path": "fifo",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "hard1",
+    "size": 4
+   },
+   {
+    "link": "hard1",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "hard2",
+    "size": 4
+   },
+   {
+    "link": "a.txt",
+    "mode": 134218221,
+    "mtime": 1600000000000000500,
+    "path": "link-to-a",
+    "size": 5
+   },
+   {
+    "link": "src",
+    "mode": 134218221,
+    "mtime": 1600000000000000500,
+    "path": "link-to-src",
+    "size": 3
+   },
+   {
+    "link": "loop2",
+    "mode": 134218221,
+    "mtime": 1600000000000000500,
+    "path": "loop1",
+    "size": 5
+   },
+   {
+    "link": "loop1",
+    "mode": 134218221,
+    "mtime": 1600000000000000500,
+    "path": "loop2",
+    "size": 5
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "node_modules",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "node_modules/pkg",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "node_modules/pkg/index.js",
+    "size": 2
+   },
+   {
+    "link": "",
+    "mode": 493,
+    "mtime": 1600000000000000500,
+    "path": "sock",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "sp ace.txt",
+    "size": 5
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "src",
+    "size": 0
+   },
+   {
+    "link": "hard1",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "src/hard3",
+    "size": 4
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "src/main.go",
+    "size": 12
+   },
+   {
+    "link": "",
+    "mode": 2147484136,
+    "mtime": 1600000000000000500,
+    "path": "src/util",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "src/vendor",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 2148532735,
+    "mtime": 1600000000000000500,
+    "path": "sticky",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "sticky/f",
+    "size": 1
+   },
+   {
+    "link": "",
+    "mode": 8389101,
+    "mtime": 1600000000000000500,
+    "path": "suid",
+    "size": 1
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "weird[1].txt",
+    "size": 1
+   }
+  ]
+ },
+ {
+  "name": "exception inside an excluded dir",
+  "sent": [
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": ".dockerignore",
+    "size": 13
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": ".git",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": ".git/HEAD",
+    "size": 21
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "Dockerfile",
+    "size": 13
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "Dockerfile.dockerignore",
+    "size": 6
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1650000000123456789,
+    "path": "a.txt",
+    "size": 1
+   },
+   {
+    "link": "/etc/passwd",
+    "mode": 134218221,
+    "mtime": 1600000000000000500,
+    "path": "abs-link",
+    "size": 11
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "b.log",
+    "size": 3
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "c.tmp",
+    "size": 0
+   },
+   {
+    "link": "link-to-src/util",
+    "mode": 134218221,
+    "mtime": 1600000000000000500,
+    "path": "chain",
+    "size": 16
+   },
+   {
+    "link": "nope",
+    "mode": 134218221,
+    "mtime": 1600000000000000500,
+    "path": "dangling",
+    "size": 4
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "deep",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "deep/a",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "deep/a/b",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "deep/a/b/c",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "deep/a/b/c/d.txt",
+    "size": 1
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "deep/a/b/e.txt",
+    "size": 1
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "docs",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "docs/img",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "docs/img/logo.png",
+    "size": 3
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "etc",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "etc/hosts",
+    "size": 5
+   },
+   {
+    "link": "",
+    "mode": 493,
+    "mtime": 1600000000000000500,
+    "path": "exec.sh",
+    "size": 10
+   },
+   {
+    "link": "",
+    "mode": 33554848,
+    "mtime": 1600000000000000500,
+    "path": "fifo",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "hard1",
+    "size": 4
+   },
+   {
+    "link": "hard1",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "hard2",
+    "size": 4
+   },
+   {
+    "link": "a.txt",
+    "mode": 134218221,
+    "mtime": 1600000000000000500,
+    "path": "link-to-a",
+    "size": 5
+   },
+   {
+    "link": "src",
+    "mode": 134218221,
+    "mtime": 1600000000000000500,
+    "path": "link-to-src",
+    "size": 3
+   },
+   {
+    "link": "loop2",
+    "mode": 134218221,
+    "mtime": 1600000000000000500,
+    "path": "loop1",
+    "size": 5
+   },
+   {
+    "link": "loop1",
+    "mode": 134218221,
+    "mtime": 1600000000000000500,
+    "path": "loop2",
+    "size": 5
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "node_modules",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "node_modules/pkg",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "node_modules/pkg/index.js",
+    "size": 2
+   },
+   {
+    "link": "",
+    "mode": 493,
+    "mtime": 1600000000000000500,
+    "path": "sock",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "sp ace.txt",
+    "size": 5
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "src",
+    "size": 0
+   },
+   {
+    "link": "hard1",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "src/hard3",
+    "size": 4
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "src/main.go",
+    "size": 12
+   },
+   {
+    "link": "",
+    "mode": 2147484136,
+    "mtime": 1600000000000000500,
+    "path": "src/util",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "src/util/u.go",
+    "size": 12
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "src/util/u_test.go",
+    "size": 12
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "src/vendor",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "src/vendor/v.go",
+    "size": 9
+   },
+   {
+    "link": "",
+    "mode": 2148532735,
+    "mtime": 1600000000000000500,
+    "path": "sticky",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "sticky/f",
+    "size": 1
+   },
+   {
+    "link": "",
+    "mode": 8389101,
+    "mtime": 1600000000000000500,
+    "path": "suid",
+    "size": 1
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "weird[1].txt",
+    "size": 1
+   }
+  ]
+ },
+ {
+  "name": "exclude all but",
+  "sent": [
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "src",
+    "size": 0
+   },
+   {
+    "link": "hard1",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "src/hard3",
+    "size": 4
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "src/main.go",
+    "size": 12
+   },
+   {
+    "link": "",
+    "mode": 2147484136,
+    "mtime": 1600000000000000500,
+    "path": "src/util",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "src/util/u.go",
+    "size": 12
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "src/util/u_test.go",
+    "size": 12
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "src/vendor",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "src/vendor/v.go",
+    "size": 9
+   }
+  ]
+ },
+ {
+  "name": "exclude all but a file deep",
+  "sent": [
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "deep",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "deep/a",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "deep/a/b",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "deep/a/b/c",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "deep/a/b/c/d.txt",
+    "size": 1
+   }
+  ]
+ },
+ {
+  "name": "exception with a wildcard",
+  "sent": [
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": ".dockerignore",
+    "size": 13
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": ".git",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": ".git/HEAD",
+    "size": 21
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "Dockerfile",
+    "size": 13
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "Dockerfile.dockerignore",
+    "size": 6
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1650000000123456789,
+    "path": "a.txt",
+    "size": 1
+   },
+   {
+    "link": "/etc/passwd",
+    "mode": 134218221,
+    "mtime": 1600000000000000500,
+    "path": "abs-link",
+    "size": 11
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "b.log",
+    "size": 3
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "c.tmp",
+    "size": 0
+   },
+   {
+    "link": "link-to-src/util",
+    "mode": 134218221,
+    "mtime": 1600000000000000500,
+    "path": "chain",
+    "size": 16
+   },
+   {
+    "link": "nope",
+    "mode": 134218221,
+    "mtime": 1600000000000000500,
+    "path": "dangling",
+    "size": 4
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "deep",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "deep/a",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "deep/a/b",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "deep/a/b/c",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "deep/a/b/c/d.txt",
+    "size": 1
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "deep/a/b/e.txt",
+    "size": 1
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "docs",
+    "size": 0
+   },
+   {
+    "link": "/etc/hosts",
+    "mode": 134218221,
+    "mtime": 1600000000000000500,
+    "path": "docs/abs",
+    "size": 10
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "docs/img",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "docs/img/logo.png",
+    "size": 3
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "docs/readme.md",
+    "size": 6
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "etc",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "etc/hosts",
+    "size": 5
+   },
+   {
+    "link": "",
+    "mode": 493,
+    "mtime": 1600000000000000500,
+    "path": "exec.sh",
+    "size": 10
+   },
+   {
+    "link": "",
+    "mode": 33554848,
+    "mtime": 1600000000000000500,
+    "path": "fifo",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "hard1",
+    "size": 4
+   },
+   {
+    "link": "hard1",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "hard2",
+    "size": 4
+   },
+   {
+    "link": "a.txt",
+    "mode": 134218221,
+    "mtime": 1600000000000000500,
+    "path": "link-to-a",
+    "size": 5
+   },
+   {
+    "link": "src",
+    "mode": 134218221,
+    "mtime": 1600000000000000500,
+    "path": "link-to-src",
+    "size": 3
+   },
+   {
+    "link": "loop2",
+    "mode": 134218221,
+    "mtime": 1600000000000000500,
+    "path": "loop1",
+    "size": 5
+   },
+   {
+    "link": "loop1",
+    "mode": 134218221,
+    "mtime": 1600000000000000500,
+    "path": "loop2",
+    "size": 5
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "node_modules",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "node_modules/pkg",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "node_modules/pkg/index.js",
+    "size": 2
+   },
+   {
+    "link": "",
+    "mode": 493,
+    "mtime": 1600000000000000500,
+    "path": "sock",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "sp ace.txt",
+    "size": 5
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "src",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "src/main.go",
+    "size": 12
+   },
+   {
+    "link": "",
+    "mode": 2148532735,
+    "mtime": 1600000000000000500,
+    "path": "sticky",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "sticky/f",
+    "size": 1
+   },
+   {
+    "link": "",
+    "mode": 8389101,
+    "mtime": 1600000000000000500,
+    "path": "suid",
+    "size": 1
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "weird[1].txt",
+    "size": 1
+   }
+  ]
+ },
+ {
+  "name": "exclude a dir by trailing slash",
+  "sent": [
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": ".dockerignore",
+    "size": 13
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": ".git",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": ".git/HEAD",
+    "size": 21
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "Dockerfile",
+    "size": 13
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "Dockerfile.dockerignore",
+    "size": 6
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1650000000123456789,
+    "path": "a.txt",
+    "size": 1
+   },
+   {
+    "link": "/etc/passwd",
+    "mode": 134218221,
+    "mtime": 1600000000000000500,
+    "path": "abs-link",
+    "size": 11
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "b.log",
+    "size": 3
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "c.tmp",
+    "size": 0
+   },
+   {
+    "link": "link-to-src/util",
+    "mode": 134218221,
+    "mtime": 1600000000000000500,
+    "path": "chain",
+    "size": 16
+   },
+   {
+    "link": "nope",
+    "mode": 134218221,
+    "mtime": 1600000000000000500,
+    "path": "dangling",
+    "size": 4
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "deep",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "deep/a",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "deep/a/b",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "deep/a/b/c",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "deep/a/b/c/d.txt",
+    "size": 1
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "deep/a/b/e.txt",
+    "size": 1
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "docs",
+    "size": 0
+   },
+   {
+    "link": "/etc/hosts",
+    "mode": 134218221,
+    "mtime": 1600000000000000500,
+    "path": "docs/abs",
+    "size": 10
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "docs/img",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "docs/img/logo.png",
+    "size": 3
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "docs/readme.md",
+    "size": 6
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "etc",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "etc/hosts",
+    "size": 5
+   },
+   {
+    "link": "",
+    "mode": 493,
+    "mtime": 1600000000000000500,
+    "path": "exec.sh",
+    "size": 10
+   },
+   {
+    "link": "",
+    "mode": 33554848,
+    "mtime": 1600000000000000500,
+    "path": "fifo",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "hard1",
+    "size": 4
+   },
+   {
+    "link": "hard1",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "hard2",
+    "size": 4
+   },
+   {
+    "link": "a.txt",
+    "mode": 134218221,
+    "mtime": 1600000000000000500,
+    "path": "link-to-a",
+    "size": 5
+   },
+   {
+    "link": "src",
+    "mode": 134218221,
+    "mtime": 1600000000000000500,
+    "path": "link-to-src",
+    "size": 3
+   },
+   {
+    "link": "loop2",
+    "mode": 134218221,
+    "mtime": 1600000000000000500,
+    "path": "loop1",
+    "size": 5
+   },
+   {
+    "link": "loop1",
+    "mode": 134218221,
+    "mtime": 1600000000000000500,
+    "path": "loop2",
+    "size": 5
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "node_modules",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "node_modules/pkg",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "node_modules/pkg/index.js",
+    "size": 2
+   },
+   {
+    "link": "",
+    "mode": 493,
+    "mtime": 1600000000000000500,
+    "path": "sock",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "sp ace.txt",
+    "size": 5
+   },
+   {
+    "link": "",
+    "mode": 2148532735,
+    "mtime": 1600000000000000500,
+    "path": "sticky",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "sticky/f",
+    "size": 1
+   },
+   {
+    "link": "",
+    "mode": 8389101,
+    "mtime": 1600000000000000500,
+    "path": "suid",
+    "size": 1
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "weird[1].txt",
+    "size": 1
+   }
+  ]
+ },
+ {
+  "name": "exclude double star dir",
+  "sent": [
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": ".dockerignore",
+    "size": 13
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": ".git",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": ".git/HEAD",
+    "size": 21
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "Dockerfile",
+    "size": 13
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "Dockerfile.dockerignore",
+    "size": 6
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1650000000123456789,
+    "path": "a.txt",
+    "size": 1
+   },
+   {
+    "link": "/etc/passwd",
+    "mode": 134218221,
+    "mtime": 1600000000000000500,
+    "path": "abs-link",
+    "size": 11
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "b.log",
+    "size": 3
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "c.tmp",
+    "size": 0
+   },
+   {
+    "link": "link-to-src/util",
+    "mode": 134218221,
+    "mtime": 1600000000000000500,
+    "path": "chain",
+    "size": 16
+   },
+   {
+    "link": "nope",
+    "mode": 134218221,
+    "mtime": 1600000000000000500,
+    "path": "dangling",
+    "size": 4
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "deep",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "deep/a",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "deep/a/b",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "deep/a/b/c",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "deep/a/b/c/d.txt",
+    "size": 1
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "deep/a/b/e.txt",
+    "size": 1
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "docs",
+    "size": 0
+   },
+   {
+    "link": "/etc/hosts",
+    "mode": 134218221,
+    "mtime": 1600000000000000500,
+    "path": "docs/abs",
+    "size": 10
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "docs/img",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "docs/img/logo.png",
+    "size": 3
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "docs/readme.md",
+    "size": 6
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "etc",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "etc/hosts",
+    "size": 5
+   },
+   {
+    "link": "",
+    "mode": 493,
+    "mtime": 1600000000000000500,
+    "path": "exec.sh",
+    "size": 10
+   },
+   {
+    "link": "",
+    "mode": 33554848,
+    "mtime": 1600000000000000500,
+    "path": "fifo",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "hard1",
+    "size": 4
+   },
+   {
+    "link": "hard1",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "hard2",
+    "size": 4
+   },
+   {
+    "link": "a.txt",
+    "mode": 134218221,
+    "mtime": 1600000000000000500,
+    "path": "link-to-a",
+    "size": 5
+   },
+   {
+    "link": "src",
+    "mode": 134218221,
+    "mtime": 1600000000000000500,
+    "path": "link-to-src",
+    "size": 3
+   },
+   {
+    "link": "loop2",
+    "mode": 134218221,
+    "mtime": 1600000000000000500,
+    "path": "loop1",
+    "size": 5
+   },
+   {
+    "link": "loop1",
+    "mode": 134218221,
+    "mtime": 1600000000000000500,
+    "path": "loop2",
+    "size": 5
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "node_modules",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "node_modules/pkg",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "node_modules/pkg/index.js",
+    "size": 2
+   },
+   {
+    "link": "",
+    "mode": 493,
+    "mtime": 1600000000000000500,
+    "path": "sock",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "sp ace.txt",
+    "size": 5
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "src",
+    "size": 0
+   },
+   {
+    "link": "hard1",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "src/hard3",
+    "size": 4
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "src/main.go",
+    "size": 12
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "src/vendor",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "src/vendor/v.go",
+    "size": 9
+   },
+   {
+    "link": "",
+    "mode": 2148532735,
+    "mtime": 1600000000000000500,
+    "path": "sticky",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "sticky/f",
+    "size": 1
+   },
+   {
+    "link": "",
+    "mode": 8389101,
+    "mtime": 1600000000000000500,
+    "path": "suid",
+    "size": 1
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "weird[1].txt",
+    "size": 1
+   }
+  ]
+ },
+ {
+  "name": "only an exception",
+  "sent": [
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": ".dockerignore",
+    "size": 13
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": ".git",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": ".git/HEAD",
+    "size": 21
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "Dockerfile",
+    "size": 13
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "Dockerfile.dockerignore",
+    "size": 6
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1650000000123456789,
+    "path": "a.txt",
+    "size": 1
+   },
+   {
+    "link": "/etc/passwd",
+    "mode": 134218221,
+    "mtime": 1600000000000000500,
+    "path": "abs-link",
+    "size": 11
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "b.log",
+    "size": 3
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "c.tmp",
+    "size": 0
+   },
+   {
+    "link": "link-to-src/util",
+    "mode": 134218221,
+    "mtime": 1600000000000000500,
+    "path": "chain",
+    "size": 16
+   },
+   {
+    "link": "nope",
+    "mode": 134218221,
+    "mtime": 1600000000000000500,
+    "path": "dangling",
+    "size": 4
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "deep",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "deep/a",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "deep/a/b",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "deep/a/b/c",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "deep/a/b/c/d.txt",
+    "size": 1
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "deep/a/b/e.txt",
+    "size": 1
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "docs",
+    "size": 0
+   },
+   {
+    "link": "/etc/hosts",
+    "mode": 134218221,
+    "mtime": 1600000000000000500,
+    "path": "docs/abs",
+    "size": 10
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "docs/img",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "docs/img/logo.png",
+    "size": 3
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "docs/readme.md",
+    "size": 6
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "etc",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "etc/hosts",
+    "size": 5
+   },
+   {
+    "link": "",
+    "mode": 493,
+    "mtime": 1600000000000000500,
+    "path": "exec.sh",
+    "size": 10
+   },
+   {
+    "link": "",
+    "mode": 33554848,
+    "mtime": 1600000000000000500,
+    "path": "fifo",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "hard1",
+    "size": 4
+   },
+   {
+    "link": "hard1",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "hard2",
+    "size": 4
+   },
+   {
+    "link": "a.txt",
+    "mode": 134218221,
+    "mtime": 1600000000000000500,
+    "path": "link-to-a",
+    "size": 5
+   },
+   {
+    "link": "src",
+    "mode": 134218221,
+    "mtime": 1600000000000000500,
+    "path": "link-to-src",
+    "size": 3
+   },
+   {
+    "link": "loop2",
+    "mode": 134218221,
+    "mtime": 1600000000000000500,
+    "path": "loop1",
+    "size": 5
+   },
+   {
+    "link": "loop1",
+    "mode": 134218221,
+    "mtime": 1600000000000000500,
+    "path": "loop2",
+    "size": 5
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "node_modules",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "node_modules/pkg",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "node_modules/pkg/index.js",
+    "size": 2
+   },
+   {
+    "link": "",
+    "mode": 493,
+    "mtime": 1600000000000000500,
+    "path": "sock",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "sp ace.txt",
+    "size": 5
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "src",
+    "size": 0
+   },
+   {
+    "link": "hard1",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "src/hard3",
+    "size": 4
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "src/main.go",
+    "size": 12
+   },
+   {
+    "link": "",
+    "mode": 2147484136,
+    "mtime": 1600000000000000500,
+    "path": "src/util",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "src/util/u.go",
+    "size": 12
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "src/util/u_test.go",
+    "size": 12
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "src/vendor",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "src/vendor/v.go",
+    "size": 9
+   },
+   {
+    "link": "",
+    "mode": 2148532735,
+    "mtime": 1600000000000000500,
+    "path": "sticky",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "sticky/f",
+    "size": 1
+   },
+   {
+    "link": "",
+    "mode": 8389101,
+    "mtime": 1600000000000000500,
+    "path": "suid",
+    "size": 1
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "weird[1].txt",
+    "size": 1
+   }
+  ]
+ },
+ {
+  "name": "exclude a bracket name",
+  "sent": [
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": ".dockerignore",
+    "size": 13
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": ".git",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": ".git/HEAD",
+    "size": 21
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "Dockerfile",
+    "size": 13
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "Dockerfile.dockerignore",
+    "size": 6
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1650000000123456789,
+    "path": "a.txt",
+    "size": 1
+   },
+   {
+    "link": "/etc/passwd",
+    "mode": 134218221,
+    "mtime": 1600000000000000500,
+    "path": "abs-link",
+    "size": 11
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "b.log",
+    "size": 3
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "c.tmp",
+    "size": 0
+   },
+   {
+    "link": "link-to-src/util",
+    "mode": 134218221,
+    "mtime": 1600000000000000500,
+    "path": "chain",
+    "size": 16
+   },
+   {
+    "link": "nope",
+    "mode": 134218221,
+    "mtime": 1600000000000000500,
+    "path": "dangling",
+    "size": 4
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "deep",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "deep/a",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "deep/a/b",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "deep/a/b/c",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "deep/a/b/c/d.txt",
+    "size": 1
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "deep/a/b/e.txt",
+    "size": 1
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "docs",
+    "size": 0
+   },
+   {
+    "link": "/etc/hosts",
+    "mode": 134218221,
+    "mtime": 1600000000000000500,
+    "path": "docs/abs",
+    "size": 10
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "docs/img",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "docs/img/logo.png",
+    "size": 3
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "docs/readme.md",
+    "size": 6
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "etc",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "etc/hosts",
+    "size": 5
+   },
+   {
+    "link": "",
+    "mode": 493,
+    "mtime": 1600000000000000500,
+    "path": "exec.sh",
+    "size": 10
+   },
+   {
+    "link": "",
+    "mode": 33554848,
+    "mtime": 1600000000000000500,
+    "path": "fifo",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "hard1",
+    "size": 4
+   },
+   {
+    "link": "hard1",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "hard2",
+    "size": 4
+   },
+   {
+    "link": "a.txt",
+    "mode": 134218221,
+    "mtime": 1600000000000000500,
+    "path": "link-to-a",
+    "size": 5
+   },
+   {
+    "link": "src",
+    "mode": 134218221,
+    "mtime": 1600000000000000500,
+    "path": "link-to-src",
+    "size": 3
+   },
+   {
+    "link": "loop2",
+    "mode": 134218221,
+    "mtime": 1600000000000000500,
+    "path": "loop1",
+    "size": 5
+   },
+   {
+    "link": "loop1",
+    "mode": 134218221,
+    "mtime": 1600000000000000500,
+    "path": "loop2",
+    "size": 5
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "node_modules",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "node_modules/pkg",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "node_modules/pkg/index.js",
+    "size": 2
+   },
+   {
+    "link": "",
+    "mode": 493,
+    "mtime": 1600000000000000500,
+    "path": "sock",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "sp ace.txt",
+    "size": 5
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "src",
+    "size": 0
+   },
+   {
+    "link": "hard1",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "src/hard3",
+    "size": 4
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "src/main.go",
+    "size": 12
+   },
+   {
+    "link": "",
+    "mode": 2147484136,
+    "mtime": 1600000000000000500,
+    "path": "src/util",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "src/util/u.go",
+    "size": 12
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "src/util/u_test.go",
+    "size": 12
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "src/vendor",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "src/vendor/v.go",
+    "size": 9
+   },
+   {
+    "link": "",
+    "mode": 2148532735,
+    "mtime": 1600000000000000500,
+    "path": "sticky",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "sticky/f",
+    "size": 1
+   },
+   {
+    "link": "",
+    "mode": 8389101,
+    "mtime": 1600000000000000500,
+    "path": "suid",
+    "size": 1
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "weird[1].txt",
+    "size": 1
+   }
+  ]
+ },
+ {
+  "error": "invalid excludepatterns: [[]: syntax error in pattern",
+  "name": "exclude bad pattern"
+ },
+ {
+  "error": "invalid excludepatterns: [!]: illegal exclusion pattern: \"!\"",
+  "name": "exclude lone bang"
+ },
+ {
+  "name": "include a dir",
+  "sent": [
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "src",
+    "size": 0
+   },
+   {
+    "link": "hard1",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "src/hard3",
+    "size": 4
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "src/main.go",
+    "size": 12
+   },
+   {
+    "link": "",
+    "mode": 2147484136,
+    "mtime": 1600000000000000500,
+    "path": "src/util",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "src/util/u.go",
+    "size": 12
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "src/util/u_test.go",
+    "size": 12
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "src/vendor",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "src/vendor/v.go",
+    "size": 9
+   }
+  ]
+ },
+ {
+  "name": "include with wildcard",
+  "sent": [
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "src",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "src/main.go",
+    "size": 12
+   }
+  ]
+ },
+ {
+  "name": "include and exclude",
+  "sent": [
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "docs",
+    "size": 0
+   },
+   {
+    "link": "/etc/hosts",
+    "mode": 134218221,
+    "mtime": 1600000000000000500,
+    "path": "docs/abs",
+    "size": 10
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "docs/img",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "docs/img/logo.png",
+    "size": 3
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "docs/readme.md",
+    "size": 6
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "src",
+    "size": 0
+   },
+   {
+    "link": "hard1",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "src/hard3",
+    "size": 4
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "src/main.go",
+    "size": 12
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "src/vendor",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "src/vendor/v.go",
+    "size": 9
+   }
+  ]
+ },
+ {
+  "name": "include deep file",
+  "sent": [
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "deep",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "deep/a",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "deep/a/b",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "deep/a/b/c",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "deep/a/b/c/d.txt",
+    "size": 1
+   }
+  ]
+ },
+ {
+  "name": "include through glob star",
+  "sent": [
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "docs",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "docs/readme.md",
+    "size": 6
+   }
+  ]
+ },
+ {
+  "name": "follow a file",
+  "sent": [
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1650000000123456789,
+    "path": "a.txt",
+    "size": 1
+   }
+  ]
+ },
+ {
+  "name": "follow through a symlinked dir",
+  "sent": [
+   {
+    "link": "src",
+    "mode": 134218221,
+    "mtime": 1600000000000000500,
+    "path": "link-to-src",
+    "size": 3
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "src",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "src/main.go",
+    "size": 12
+   }
+  ]
+ },
+ {
+  "name": "follow a symlink to a file",
+  "sent": [
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1650000000123456789,
+    "path": "a.txt",
+    "size": 1
+   },
+   {
+    "link": "a.txt",
+    "mode": 134218221,
+    "mtime": 1600000000000000500,
+    "path": "link-to-a",
+    "size": 5
+   }
+  ]
+ },
+ {
+  "name": "follow an absolute symlink",
+  "sent": [
+   {
+    "link": "/etc/passwd",
+    "mode": 134218221,
+    "mtime": 1600000000000000500,
+    "path": "abs-link",
+    "size": 11
+   }
+  ]
+ },
+ {
+  "name": "follow a wildcard",
+  "sent": [
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1650000000123456789,
+    "path": "a.txt",
+    "size": 1
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "sp ace.txt",
+    "size": 5
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "weird[1].txt",
+    "size": 1
+   }
+  ]
+ },
+ {
+  "name": "follow a wildcard of symlinks",
+  "sent": [
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1650000000123456789,
+    "path": "a.txt",
+    "size": 1
+   },
+   {
+    "link": "a.txt",
+    "mode": 134218221,
+    "mtime": 1600000000000000500,
+    "path": "link-to-a",
+    "size": 5
+   },
+   {
+    "link": "src",
+    "mode": 134218221,
+    "mtime": 1600000000000000500,
+    "path": "link-to-src",
+    "size": 3
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "src",
+    "size": 0
+   },
+   {
+    "link": "hard1",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "src/hard3",
+    "size": 4
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "src/main.go",
+    "size": 12
+   },
+   {
+    "link": "",
+    "mode": 2147484136,
+    "mtime": 1600000000000000500,
+    "path": "src/util",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "src/util/u.go",
+    "size": 12
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "src/util/u_test.go",
+    "size": 12
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "src/vendor",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "src/vendor/v.go",
+    "size": 9
+   }
+  ]
+ },
+ {
+  "name": "follow a wildcard matching nothing",
+  "sent": null
+ },
+ {
+  "name": "follow dangling and loops",
+  "sent": [
+   {
+    "link": "nope",
+    "mode": 134218221,
+    "mtime": 1600000000000000500,
+    "path": "dangling",
+    "size": 4
+   },
+   {
+    "link": "loop2",
+    "mode": 134218221,
+    "mtime": 1600000000000000500,
+    "path": "loop1",
+    "size": 5
+   },
+   {
+    "link": "loop1",
+    "mode": 134218221,
+    "mtime": 1600000000000000500,
+    "path": "loop2",
+    "size": 5
+   }
+  ]
+ },
+ {
+  "name": "follow a chain",
+  "sent": [
+   {
+    "link": "link-to-src/util",
+    "mode": 134218221,
+    "mtime": 1600000000000000500,
+    "path": "chain",
+    "size": 16
+   },
+   {
+    "link": "src",
+    "mode": 134218221,
+    "mtime": 1600000000000000500,
+    "path": "link-to-src",
+    "size": 3
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "src",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 2147484136,
+    "mtime": 1600000000000000500,
+    "path": "src/util",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "src/util/u.go",
+    "size": 12
+   }
+  ]
+ },
+ {
+  "name": "follow everything",
+  "sent": [
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": ".dockerignore",
+    "size": 13
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": ".git",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": ".git/HEAD",
+    "size": 21
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "Dockerfile",
+    "size": 13
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "Dockerfile.dockerignore",
+    "size": 6
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1650000000123456789,
+    "path": "a.txt",
+    "size": 1
+   },
+   {
+    "link": "/etc/passwd",
+    "mode": 134218221,
+    "mtime": 1600000000000000500,
+    "path": "abs-link",
+    "size": 11
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "b.log",
+    "size": 3
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "c.tmp",
+    "size": 0
+   },
+   {
+    "link": "link-to-src/util",
+    "mode": 134218221,
+    "mtime": 1600000000000000500,
+    "path": "chain",
+    "size": 16
+   },
+   {
+    "link": "nope",
+    "mode": 134218221,
+    "mtime": 1600000000000000500,
+    "path": "dangling",
+    "size": 4
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "deep",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "deep/a",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "deep/a/b",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "deep/a/b/c",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "deep/a/b/c/d.txt",
+    "size": 1
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "deep/a/b/e.txt",
+    "size": 1
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "docs",
+    "size": 0
+   },
+   {
+    "link": "/etc/hosts",
+    "mode": 134218221,
+    "mtime": 1600000000000000500,
+    "path": "docs/abs",
+    "size": 10
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "docs/img",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "docs/img/logo.png",
+    "size": 3
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "docs/readme.md",
+    "size": 6
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "etc",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "etc/hosts",
+    "size": 5
+   },
+   {
+    "link": "",
+    "mode": 493,
+    "mtime": 1600000000000000500,
+    "path": "exec.sh",
+    "size": 10
+   },
+   {
+    "link": "",
+    "mode": 33554848,
+    "mtime": 1600000000000000500,
+    "path": "fifo",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "hard1",
+    "size": 4
+   },
+   {
+    "link": "hard1",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "hard2",
+    "size": 4
+   },
+   {
+    "link": "a.txt",
+    "mode": 134218221,
+    "mtime": 1600000000000000500,
+    "path": "link-to-a",
+    "size": 5
+   },
+   {
+    "link": "src",
+    "mode": 134218221,
+    "mtime": 1600000000000000500,
+    "path": "link-to-src",
+    "size": 3
+   },
+   {
+    "link": "loop2",
+    "mode": 134218221,
+    "mtime": 1600000000000000500,
+    "path": "loop1",
+    "size": 5
+   },
+   {
+    "link": "loop1",
+    "mode": 134218221,
+    "mtime": 1600000000000000500,
+    "path": "loop2",
+    "size": 5
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "node_modules",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "node_modules/pkg",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "node_modules/pkg/index.js",
+    "size": 2
+   },
+   {
+    "link": "",
+    "mode": 493,
+    "mtime": 1600000000000000500,
+    "path": "sock",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "sp ace.txt",
+    "size": 5
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "src",
+    "size": 0
+   },
+   {
+    "link": "hard1",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "src/hard3",
+    "size": 4
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "src/main.go",
+    "size": 12
+   },
+   {
+    "link": "",
+    "mode": 2147484136,
+    "mtime": 1600000000000000500,
+    "path": "src/util",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "src/util/u.go",
+    "size": 12
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "src/util/u_test.go",
+    "size": 12
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "src/vendor",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "src/vendor/v.go",
+    "size": 9
+   },
+   {
+    "link": "",
+    "mode": 2148532735,
+    "mtime": 1600000000000000500,
+    "path": "sticky",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "sticky/f",
+    "size": 1
+   },
+   {
+    "link": "",
+    "mode": 8389101,
+    "mtime": 1600000000000000500,
+    "path": "suid",
+    "size": 1
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "weird[1].txt",
+    "size": 1
+   }
+  ]
+ },
+ {
+  "name": "follow the dockerfile",
+  "sent": [
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "Dockerfile",
+    "size": 13
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "Dockerfile.dockerignore",
+    "size": 6
+   }
+  ]
+ },
+ {
+  "name": "follow dockerignore",
+  "sent": [
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": ".dockerignore",
+    "size": 13
+   }
+  ]
+ },
+ {
+  "name": "follow and exclude",
+  "sent": [
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "deep",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "deep/a",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "deep/a/b",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "deep/a/b/e.txt",
+    "size": 1
+   }
+  ]
+ },
+ {
+  "name": "follow up and back",
+  "sent": [
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1650000000123456789,
+    "path": "a.txt",
+    "size": 1
+   }
+  ]
+ },
+ {
+  "name": "follow nested and parent",
+  "sent": [
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "deep",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "deep/a",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "deep/a/b",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "deep/a/b/c",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "deep/a/b/c/d.txt",
+    "size": 1
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "deep/a/b/e.txt",
+    "size": 1
+   }
+  ]
+ },
+ {
+  "name": "follow hard links",
+  "sent": [
+   {
+    "link": "hard1",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "hard2",
+    "size": 4
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "src",
+    "size": 0
+   },
+   {
+    "link": "hard1",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "src/hard3",
+    "size": 4
+   }
+  ]
+ },
+ {
+  "name": "follow a wildcard dir to a file",
+  "sent": [
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "src",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "src/main.go",
+    "size": 12
+   }
+  ]
+ },
+ {
+  "name": "follow an absolute symlink below the root",
+  "sent": [
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "docs",
+    "size": 0
+   },
+   {
+    "link": "/etc/hosts",
+    "mode": 134218221,
+    "mtime": 1600000000000000500,
+    "path": "docs/abs",
+    "size": 10
+   },
+   {
+    "link": "",
+    "mode": 2147484141,
+    "mtime": 1600000000000000500,
+    "path": "etc",
+    "size": 0
+   },
+   {
+    "link": "",
+    "mode": 420,
+    "mtime": 1600000000000000500,
+    "path": "etc/hosts",
+    "size": 5
+   }
+  ]
+ }
+]

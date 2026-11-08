@@ -1,0 +1,215 @@
+virtiofs: a dax window's page structures made as each range is first mapped
+
+A virtio-fs DAX window's page structures, a 64th of the window, are written whole as the
+device is probed (memmap_init_zone_device()), into its head where the device gives one
+(0008): a window as long as its host's memory, which a guest that may grow to it (virtio-
+mem) could use, cost its guest's boot 1.9 ms and its host 16 MiB a GiB, and a template of
+it the save of all of them (shards' PM M306).
+
+A pgmap may leave its pages' structures to its owner (PGMAP_LAZY_MEMMAP), which makes each
+range's as it first hands the range out (memmap_init_device_range()), all but the first
+page's, whose zone taking the pages down reads; compound pages are made whole, as before.
+virtio-fs sets it, and FUSE's DAX makes each 2 MiB range's as the range is first set up
+(fuse_setup_one_mapping()), before it is in any inode's tree, so before any fault inserts
+its pages: a window costs its guest's boot, and its host, what its guest maps of it.
+
+--- a/fs/fuse/dax.c
++++ b/fs/fuse/dax.c
+@@ -8,6 +8,7 @@
+ 
+ #include <linux/delay.h>
+ #include <linux/dax.h>
++#include <linux/memremap.h>
+ #include <linux/uio.h>
+ #include <linux/pagemap.h>
+ #include <linux/iomap.h>
+@@ -56,6 +57,12 @@ struct fuse_dax_mapping {
+ 
+ 	/* reference count when the mapping is used by dax iomap. */
+ 	refcount_t refcnt;
++
++	/*
++	 * shards: whether its range's page structures have been made (the window's pages
++	 * leave them to it, PGMAP_LAZY_MEMMAP): once, as it is first set up.
++	 */
++	bool memmap_ready;
+ };
+ 
+ /* Per-inode dax map */
+@@ -194,6 +201,37 @@ static void dmap_add_to_free_pool(struct fuse_conn_dax *fcd,
+ 	spin_unlock(&fcd->lock);
+ }
+ 
++/*
++ * shards: the page structures of @dmap's range, made the first time it is set up, where the
++ * window's pages leave them to it (PGMAP_LAZY_MEMMAP): before the range is in any inode's
++ * tree, so before a fault inserts any of its pages or a lookup finds their folios.
++ */
++static int fuse_dax_memmap_init(struct fuse_conn_dax *fcd,
++				struct fuse_dax_mapping *dmap)
++{
++	struct dev_pagemap *pgmap;
++	unsigned long pfn;
++	long nr;
++	int id;
++
++	if (dmap->memmap_ready)
++		return 0;
++	id = dax_read_lock();
++	nr = dax_direct_access(fcd->dev, PHYS_PFN(dmap->window_offset),
++			       FUSE_DAX_PAGES, DAX_ACCESS, NULL, &pfn);
++	dax_read_unlock(id);
++	if (nr < (long)FUSE_DAX_PAGES)
++		return nr < 0 ? nr : -EIO;
++	pgmap = get_dev_pagemap(pfn);
++	if (!pgmap)
++		return -EIO;
++	if (pgmap->flags & PGMAP_LAZY_MEMMAP)
++		memmap_init_device_range(pgmap, pfn, FUSE_DAX_PAGES);
++	put_dev_pagemap(pgmap);
++	dmap->memmap_ready = true;
++	return 0;
++}
++
+ static int fuse_setup_one_mapping(struct inode *inode, unsigned long start_idx,
+ 				  struct fuse_dax_mapping *dmap, bool writable,
+ 				  bool upgrade)
+@@ -208,6 +246,10 @@ static int fuse_setup_one_mapping(struct inode *inode, unsigned long start_idx,
+ 
+ 	WARN_ON(fcd->nr_free_ranges < 0);
+ 
++	err = fuse_dax_memmap_init(fcd, dmap);
++	if (err)
++		return err;
++
+ 	/* Ask fuse daemon to setup mapping */
+ 	memset(&inarg, 0, sizeof(inarg));
+ 	inarg.foffset = offset;
+--- a/fs/fuse/virtio_fs.c
++++ b/fs/fuse/virtio_fs.c
+@@ -1119,6 +1119,12 @@ static int virtio_fs_setup_dax(struct virtio_device *vdev, struct virtio_fs *fs)
+ 		return -ENOMEM;
+ 
+ 	pgmap->type = MEMORY_DEVICE_FS_DAX;
++	/*
++	 * shards: each range's page structures made as it is first mapped
++	 * (fs/fuse/dax.c), not the whole cache's as the device is probed: a cache as long as
++	 * its host's memory costs its guest's boot, and its host, only what it maps.
++	 */
++	pgmap->flags |= PGMAP_LAZY_MEMMAP;
+ 
+ 	/* Ideally we would directly use the PCI BAR resource but
+ 	 * devm_memremap_pages() wants its own copy in pgmap.  So
+--- a/include/linux/memremap.h
++++ b/include/linux/memremap.h
+@@ -103,6 +103,13 @@ struct dev_pagemap_ops {
+ };
+ 
+ #define PGMAP_ALTMAP_VALID	(1 << 0)
++/*
++ * shards: the pages' structures are left to the pgmap's owner, which initializes each
++ * range of them as it first hands it out (memmap_init_device_range()), not as the pages
++ * are mapped: a virtio-fs DAX window has page structures a 64th of its length, which its
++ * guest otherwise wrote whole as it probed the device, and its host then kept.
++ */
++#define PGMAP_LAZY_MEMMAP	(1 << 1)
+ 
+ /**
+  * struct dev_pagemap - metadata for ZONE_DEVICE mappings
+@@ -130,6 +137,8 @@ struct dev_pagemap {
+ 	struct completion done;
+ 	enum memory_type type;
+ 	unsigned int flags;
++	/* shards: the node its pages are in, for PGMAP_LAZY_MEMMAP */
++	int nid;
+ 	unsigned long vmemmap_shift;
+ 	const struct dev_pagemap_ops *ops;
+ 	void *owner;
+@@ -213,6 +222,8 @@ void *devm_memremap_pages(struct device *dev, struct dev_pagemap *pgmap);
+ void devm_memunmap_pages(struct device *dev, struct dev_pagemap *pgmap);
+ struct dev_pagemap *get_dev_pagemap(unsigned long pfn);
+ bool pgmap_pfn_valid(struct dev_pagemap *pgmap, unsigned long pfn);
++void memmap_init_device_range(struct dev_pagemap *pgmap, unsigned long pfn,
++			      unsigned long nr_pages);
+ 
+ unsigned long memremap_compat_align(void);
+ #else
+@@ -238,6 +249,12 @@ static inline struct dev_pagemap *get_dev_pagemap(unsigned long pfn)
+ 	return NULL;
+ }
+ 
++static inline void memmap_init_device_range(struct dev_pagemap *pgmap,
++					    unsigned long pfn,
++					    unsigned long nr_pages)
++{
++}
++
+ static inline bool pgmap_pfn_valid(struct dev_pagemap *pgmap, unsigned long pfn)
+ {
+ 	return false;
+--- a/mm/memremap.c
++++ b/mm/memremap.c
+@@ -184,6 +184,7 @@ static int pagemap_range(struct dev_pagemap *pgmap, struct mhp_params *params,
+ 
+ 	if (nid < 0)
+ 		nid = numa_mem_id();
++	pgmap->nid = nid;
+ 
+ 	error = pfnmap_track(PHYS_PFN(range->start), range_len(range),
+ 			     &params->pgprot);
+@@ -278,6 +279,9 @@ void *memremap_pages(struct dev_pagemap *pgmap, int nid)
+ 	if (WARN_ONCE(pgmap->vmemmap_shift > MAX_FOLIO_ORDER,
+ 		      "requested folio size unsupported\n"))
+ 		return ERR_PTR(-EINVAL);
++	/* shards: compound pages' structures are initialized whole, as they are mapped. */
++	if (pgmap_vmemmap_nr(pgmap) > 1)
++		pgmap->flags &= ~PGMAP_LAZY_MEMMAP;
+ 
+ 	switch (pgmap->type) {
+ 	case MEMORY_DEVICE_PRIVATE:
+--- a/mm/mm_init.c
++++ b/mm/mm_init.c
+@@ -1143,6 +1143,13 @@ void __ref memmap_init_zone_device(struct zone *zone,
+ 	for (pfn = start_pfn; pfn < end_pfn; pfn += pfns_per_compound) {
+ 		struct page *page = pfn_to_page(pfn);
+ 
++		/*
++		 * shards: left to the owner as it hands each range out
++		 * (PGMAP_LAZY_MEMMAP), but the first, whose zone taking the pages down
++		 * reads (pageunmap_range()).
++		 */
++		if (pfn != start_pfn && (pgmap->flags & PGMAP_LAZY_MEMMAP))
++			break;
+ 		__init_zone_device_page(page, pfn, zone_idx, nid, pgmap);
+ 
+ 		if (IS_ALIGNED(pfn, PAGES_PER_SECTION))
+@@ -1160,6 +1167,29 @@ void __ref memmap_init_zone_device(struct zone *zone,
+ 	pr_debug("%s initialised %lu pages in %ums\n", __func__,
+ 		nr_pages, jiffies_to_msecs(jiffies - start));
+ }
++
++/**
++ * memmap_init_device_range - initialize the structures of device pages left to their owner
++ * @pgmap: their pgmap, of base pages, with PGMAP_LAZY_MEMMAP
++ * @pfn: the first page
++ * @nr_pages: how many
++ *
++ * shards: what memmap_init_zone_device() does for each page, which a pgmap with
++ * PGMAP_LAZY_MEMMAP leaves to its owner, for a range it is about to hand out: before
++ * any of its pages is mapped, or its folio looked at.
++ */
++void memmap_init_device_range(struct dev_pagemap *pgmap, unsigned long pfn,
++			      unsigned long nr_pages)
++{
++	unsigned long end_pfn = pfn + nr_pages;
++
++	if (WARN_ON_ONCE(!(pgmap->flags & PGMAP_LAZY_MEMMAP)))
++		return;
++	for (; pfn < end_pfn; pfn++)
++		__init_zone_device_page(pfn_to_page(pfn), pfn, ZONE_DEVICE,
++					pgmap->nid, pgmap);
++}
++EXPORT_SYMBOL_GPL(memmap_init_device_range);
+ #endif
+ 
+ /*

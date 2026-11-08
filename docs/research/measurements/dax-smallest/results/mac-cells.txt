@@ -1,0 +1,57 @@
+host Mac; macOS 26.4.1; kernel 25.4.0; arm64; Apple M5 Max; shards 3ac02479 + changes (smallest.patch) at /Users/adalundhe/Projects/shards/.claude/worktrees/g121/../g121d/target/release/shards
+arms (SHARDS_DAX_SMALLEST) [2097152, 1048576, 262144]; cells ['npm', 'cargo'] on a volume; 5 rounds
+round 0 arm 2097152 npm load 20.42 total 31.75s work 31.67s vm_peak 1315 MiB guest_peak 934 MiB; windows_mib 262144 ranges 0 peak 0 maps 0 removes 0 host_mappings 3464 descriptors 46 | memory_kib 1346323
+round 0 arm 2097152 cargo load 15.88 total 86.29s work 86.24s vm_peak 4261 MiB guest_peak 2378 MiB; windows_mib 262144 ranges 283 peak 283 maps 295 removes 12 host_mappings 3939 descriptors 124 | memory_kib 4359255
+round 0 arm 1048576 npm load 20.44 total 62.50s work 62.40s vm_peak 1265 MiB guest_peak 907 MiB; windows_mib 262144 ranges 0 peak 0 maps 0 removes 0 host_mappings 3462 descriptors 46 | memory_kib 1301907
+round 0 arm 1048576 cargo load 21.13 total 69.93s work 69.87s vm_peak 4198 MiB guest_peak 2440 MiB; windows_mib 262144 ranges 326 peak 326 maps 368 removes 42 host_mappings 3981 descriptors 165 | memory_kib 4298039
+round 0 arm 262144 npm load 33.58 total 17.08s work 16.98s vm_peak 1271 MiB guest_peak 900 MiB; windows_mib 262144 ranges 0 peak 1 maps 1 removes 1 host_mappings 3464 descriptors 46 | memory_kib 1301955
+round 0 arm 262144 cargo load 33.85 total 68.78s work 68.73s vm_peak 4084 MiB guest_peak 2443 MiB; windows_mib 262144 ranges 483 peak 483 maps 704 removes 221 host_mappings 4304 descriptors 322 | memory_kib 4182967
+round 1 arm 2097152 npm load 32.25 total 17.22s work 17.14s vm_peak 1337 MiB guest_peak 950 MiB; windows_mib 262144 ranges 0 peak 0 maps 0 removes 0 host_mappings 3462 descriptors 46 | memory_kib 1369395
+round 1 arm 262144 cargo load 26.27 total 68.55s work 68.50s vm_peak 4183 MiB guest_peak 2545 MiB; windows_mib 262144 ranges 483 peak 483 maps 704 removes 221 host_mappings 4403 descriptors 322 | memory_kib 4252711
+round 1 arm 262144 npm load 31.90 total 17.86s work 17.78s vm_peak 1308 MiB guest_peak 919 MiB; windows_mib 262144 ranges 0 peak 1 maps 1 removes 1 host_mappings 3465 descriptors 46 | memory_kib 1339219
+round 1 arm 1048576 cargo load 32.79 total 69.84s work 69.79s vm_peak 4223 MiB guest_peak 2480 MiB; windows_mib 262144 ranges 320 peak 320 maps 379 removes 59 host_mappings 4019 descriptors 161 | memory_kib 4323767
+round 1 arm 1048576 npm load 31.35 total 17.64s work 17.54s vm_peak 1281 MiB guest_peak 892 MiB; windows_mib 262144 ranges 0 peak 0 maps 0 removes 0 host_mappings 3460 descriptors 46 | memory_kib 1311795
+round 1 arm 2097152 cargo load 30.78 total 70.30s work 70.25s vm_peak 4214 MiB guest_peak 2397 MiB; windows_mib 262144 ranges 283 peak 283 maps 290 removes 7 host_mappings 3925 descriptors 124 | memory_kib 4301383
+round 2 arm 1048576 npm load 40.04 total 18.05s work 17.96s vm_peak 1263 MiB guest_peak 889 MiB; windows_mib 262144 ranges 0 peak 0 maps 0 removes 0 host_mappings 3466 descriptors 46 | memory_kib 1299891
+round 2 arm 1048576 cargo load 39.82 total 69.33s work 69.28s vm_peak 4365 MiB guest_peak 2550 MiB; windows_mib 262144 ranges 326 peak 326 maps 368 removes 42 host_mappings 4016 descriptors 165 | memory_kib 4440503
+round 2 arm 262144 npm load 31.98 total 108.17s work 108.08s vm_peak 1223 MiB guest_peak 857 MiB; windows_mib 262144 ranges 0 peak 1 maps 1 removes 1 host_mappings 3468 descriptors 46 | memory_kib 1258435
+round 2 arm 262144 cargo load 12.81 total 151.36s work 151.28s vm_peak 4666 MiB guest_peak 2993 MiB; windows_mib 262144 ranges 479 peak 479 maps 708 removes 229 host_mappings 4398 descriptors 318 | memory_kib 4777880
+round 2 arm 2097152 npm load 8.92 total 82.96s work 82.87s vm_peak 1316 MiB guest_peak 929 MiB; windows_mib 262144 ranges 0 peak 0 maps 0 removes 0 host_mappings 3473 descriptors 46 | memory_kib 1348067
+round 2 arm 2097152 cargo load 8.13 total 131.11s work 131.04s vm_peak 4320 MiB guest_peak 2482 MiB; windows_mib 262144 ranges 283 peak 283 maps 298 removes 15 host_mappings 3925 descriptors 124 | memory_kib 4422791
+round 3 arm 1048576 npm load 10.56 total 73.24s work 73.16s vm_peak 1269 MiB guest_peak 887 MiB; windows_mib 262144 ranges 0 peak 0 maps 0 removes 0 host_mappings 3471 descriptors 46 | memory_kib 1306227
+round 3 arm 2097152 cargo load 8.96 total 71.59s work 71.54s vm_peak 4335 MiB guest_peak 2491 MiB; windows_mib 262144 ranges 286 peak 286 maps 290 removes 4 host_mappings 3918 descriptors 125 | memory_kib 4439575
+round 3 arm 2097152 npm load 9.99 total 18.61s work 18.52s vm_peak 1341 MiB guest_peak 949 MiB; windows_mib 262144 ranges 0 peak 0 maps 0 removes 0 host_mappings 3468 descriptors 46 | memory_kib 1375027
+round 3 arm 262144 cargo load 10.24 total 69.31s work 69.26s vm_peak 4191 MiB guest_peak 2491 MiB; windows_mib 262144 ranges 483 peak 483 maps 704 removes 221 host_mappings 4308 descriptors 322 | memory_kib 4272583
+round 3 arm 262144 npm load 12.06 total 17.52s work 17.44s vm_peak 1317 MiB guest_peak 934 MiB; windows_mib 262144 ranges 0 peak 1 maps 1 removes 1 host_mappings 3470 descriptors 46 | memory_kib 1348211
+round 3 arm 1048576 cargo load 11.45 total 72.59s work 72.54s vm_peak 4245 MiB guest_peak 2457 MiB; windows_mib 262144 ranges 320 peak 320 maps 368 removes 48 host_mappings 4018 descriptors 161 | memory_kib 4316455
+round 4 arm 262144 npm load 13.37 total 17.40s work 17.32s vm_peak 1331 MiB guest_peak 949 MiB; windows_mib 262144 ranges 0 peak 1 maps 1 removes 1 host_mappings 3462 descriptors 46 | memory_kib 1369939
+round 4 arm 262144 cargo load 11.21 total 73.98s work 73.93s vm_peak 4087 MiB guest_peak 2531 MiB; windows_mib 262144 ranges 458 peak 458 maps 729 removes 271 host_mappings 4324 descriptors 299 | memory_kib 4169623
+round 4 arm 2097152 npm load 13.77 total 17.42s work 17.33s vm_peak 1254 MiB guest_peak 877 MiB; windows_mib 262144 ranges 0 peak 0 maps 0 removes 0 host_mappings 3460 descriptors 46 | memory_kib 1284307
+round 4 arm 2097152 cargo load 12.62 total 89.42s work 89.36s vm_peak 4287 MiB guest_peak 2398 MiB; windows_mib 262144 ranges 286 peak 286 maps 290 removes 4 host_mappings 3908 descriptors 125 | memory_kib 4389975
+round 4 arm 1048576 npm load 15.77 total 27.78s work 27.70s vm_peak 1256 MiB guest_peak 884 MiB; windows_mib 262144 ranges 0 peak 0 maps 0 removes 0 host_mappings 3465 descriptors 46 | memory_kib 1292995
+round 4 arm 1048576 cargo load 12.76 total 73.25s work 73.20s vm_peak 4224 MiB guest_peak 2442 MiB; windows_mib 262144 ranges 320 peak 320 maps 377 removes 57 host_mappings 4006 descriptors 161 | memory_kib 4325495
+load 11.40 at the end; runs failed 0: -
+cargo arm   262144 total          n 5: p50 69.31 p90 151.36 p99 151.36 max 151.36 min 68.55
+cargo arm   262144 work           n 5: p50 69.26 p90 151.28 p99 151.28 max 151.28 min 68.50
+cargo arm   262144 peak_mib       n 5: p50 4183.21 p90 4665.52 p99 4665.52 max 4665.52 min 4084.37
+cargo arm   262144 guest_peak_mib n 5: p50 2531.25 p90 2993.06 p99 2993.06 max 2993.06 min 2443.14
+npm   arm   262144 total          n 5: p50 17.52 p90 108.17 p99 108.17 max 108.17 min 17.08
+npm   arm   262144 work           n 5: p50 17.44 p90 108.08 p99 108.08 max 108.08 min 16.98
+npm   arm   262144 peak_mib       n 5: p50 1307.86 p90 1331.39 p99 1331.39 max 1331.39 min 1223.00
+npm   arm   262144 guest_peak_mib n 5: p50 918.95 p90 948.89 p99 948.89 max 948.89 min 857.23
+cargo arm  1048576 total          n 5: p50 69.93 p90 73.25 p99 73.25 max 73.25 min 69.33
+cargo arm  1048576 work           n 5: p50 69.87 p90 73.20 p99 73.20 max 73.20 min 69.28
+cargo arm  1048576 peak_mib       n 5: p50 4223.84 p90 4365.23 p99 4365.23 max 4365.23 min 4197.66
+cargo arm  1048576 guest_peak_mib n 5: p50 2457.10 p90 2550.34 p99 2550.34 max 2550.34 min 2439.77
+npm   arm  1048576 total          n 5: p50 27.78 p90 73.24 p99 73.24 max 73.24 min 17.64
+npm   arm  1048576 work           n 5: p50 27.70 p90 73.16 p99 73.16 max 73.16 min 17.54
+npm   arm  1048576 peak_mib       n 5: p50 1265.27 p90 1281.44 p99 1281.44 max 1281.44 min 1256.49
+npm   arm  1048576 guest_peak_mib n 5: p50 888.77 p90 907.12 p99 907.12 max 907.12 min 883.75
+cargo arm  2097152 total          n 5: p50 86.29 p90 131.11 p99 131.11 max 131.11 min 70.30
+cargo arm  2097152 work           n 5: p50 86.24 p90 131.04 p99 131.04 max 131.04 min 70.25
+cargo arm  2097152 peak_mib       n 5: p50 4286.77 p90 4335.07 p99 4335.07 max 4335.07 min 4213.52
+cargo arm  2097152 guest_peak_mib n 5: p50 2398.00 p90 2491.36 p99 2491.36 max 2491.36 min 2378.20
+npm   arm  2097152 total          n 5: p50 18.61 p90 82.96 p99 82.96 max 82.96 min 17.22
+npm   arm  2097152 work           n 5: p50 18.52 p90 82.87 p99 82.87 max 82.87 min 17.14
+npm   arm  2097152 peak_mib       n 5: p50 1316.41 p90 1341.49 p99 1341.49 max 1341.49 min 1254.25
+npm   arm  2097152 guest_peak_mib n 5: p50 934.23 p90 950.40 p99 950.40 max 950.40 min 876.93

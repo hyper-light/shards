@@ -1,0 +1,23 @@
+2026-11-03T18:57:54.8446402-08:00
+FILE C:\shards-step10\local-user-broker01.txt
+2026-11-03T18:53:57.1900822-08:00
+Successfully processed 9479 files; Failed processing 0 files
+icacls.exe : C:\Users\adalundhe\Projects\shards\.claude\worktrees\g121-wa64\target\aarch64-pc-windows-msvc\test-release
+\build\shards-4052f755f382dfb8\out\init\aarch64-unknown-linux-musl\guest-test\.fingerprint\num-traits-e2145f59f261cf06\
+run-build-script-build-script-build: The system cannot find the path specified.
+At C:\shards-step10-admin\local-user-broker01.ps1:21 char:4
++    & icacls.exe $dir /grant $grant /T /C /Q
++    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (C:\Users\adalun...path specified.:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+
+
+FILE C:\shards-step10\local-user-broker01.exit
+1
+FILE C:\shards-step10-admin\local-user-api01.txt
+FILE C:\shards-step10\local-user-preflight01.txt
+FILE C:\shards-step10\local-user-preflight01.exit
+TASK state=3 result=1 lastRun=2026-11-03T18:53:54.0000000
+
+
+LastBootUpTime : 11/3/2026 6:23:59 PM

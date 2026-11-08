@@ -1,0 +1,15 @@
+[package]
+name = "spawner"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# Its own workspace: a measurement of the host, not part of shards' build (M158).
+[workspace]
+
+[[bin]]
+name = "spawner"
+path = "src/main.rs"
+
+[dependencies]
+libc = "0.2"

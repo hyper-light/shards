@@ -1,30 +1,73 @@
 //! vCPU threads and the VM lifecycle, on any backend and architecture: boot or restore,
 //! run, snapshot, stop.
 
-use std::fs::File;
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, mpsc};
+use std::sync::{Arc, Condvar, Mutex, OnceLock, Weak, mpsc};
 use std::thread::JoinHandle;
 
-use super::machine::{self, Machine, Start};
-use super::{AfterSnapshot, Config, ExitReason, RestoreConfig, SnapshotPolicy};
+use super::barrier::Barrier;
+use super::hold::Hold;
+use super::live::{self, Pages};
+use super::machine::{self, Machine};
+use super::{AfterSnapshot, Config, ExitReason, Precopied, Precopying, RestoreConfig, Save, SnapshotPolicy};
 use crate::devices::control::Control;
 use crate::devices::power::PowerEvent;
 use crate::devices::serial::Serial;
+use crate::devices::virtio::block::Join;
+use crate::devices::virtio::{head, pmem};
 use crate::hv;
 use crate::memory::GuestMemory;
 use crate::snapshot::{self, MachineConfig, Snapshot, codec::Writer};
 use crate::sync::{lock, wait};
-use crate::{info, platform, warn};
+use crate::{debug, info, platform, warn};
 
 /// Ok when this host can run VMs; otherwise, why not.
 pub fn check_host() -> Result<(), String> {
     hv::check_host()
 }
 
+/// Whether a snapshot restores on this host: where this build's VMs take snapshots
+/// ([`SNAPSHOTS`](super::SNAPSHOTS)) and its hypervisor sets a vCPU's state back as a
+/// restore does, which a Windows may not (WHP's local APIC page on Windows Server 2022, PM
+/// M345), asked of it once a process.
+pub fn restores_here() -> bool {
+    super::SNAPSHOTS && hv::restores()
+}
+
 /// The most vCPUs one VM can have on this host.
 pub fn max_vcpus() -> Result<u32, String> {
     hv::max_vcpus().map_err(|e| e.to_string())
+}
+
+/// What reads a run of a live move's layer or swap into a buffer (D176 part 7).
+type Reader<'a> = dyn Fn(u64, &mut [u8]) -> Result<(), String> + 'a;
+
+/// A live move's stream as its rounds write it (D176 part 7): what it carried told
+/// ([`Precopying::Sent`]) each time it has carried `every` bytes more, counted as its
+/// carrier takes them, so that a slow link is seen going.
+struct Carried<'a, W> {
+    out: W,
+    sent: u64,
+    every: u64,
+    next: u64,
+    told: &'a dyn Fn(Precopying),
+}
+
+impl<W: std::io::Write> std::io::Write for Carried<'_, W> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let n = self.out.write(buf)?;
+        self.sent = self.sent.saturating_add(n as u64);
+        if self.sent >= self.next {
+            (self.told)(Precopying::Sent(self.sent));
+            self.next = self.sent.saturating_add(self.every);
+        }
+        Ok(n)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.out.flush()
+    }
 }
 
 /// A running VM's handle for host-side control.
@@ -33,12 +76,703 @@ pub struct Handle {
     shared: Arc<Shared>,
     serial: Arc<Serial>,
     control: Arc<Control>,
+    memory: Arc<GuestMemory>,
 }
 
 impl Handle {
+    /// Plugs `device` into its PCI bus's first free slot (D214), on virtio's PCI
+    /// transport: an error where it has no slots, or none free.
+    fn plug(&self, device: Box<dyn crate::devices::virtio::VirtioDevice>) -> Result<u8, String> {
+        let plugs = self
+            .control
+            .plugs()
+            .ok_or("this microVM has no PCI slots to plug a device into")?;
+        let memory = self.memory.clone();
+        plugs.hotplug.plug(|slot| {
+            let f = crate::devices::virtio::pci::VirtioPci::new(device, memory, slot.emulated_msi())?;
+            Ok(Arc::new(f) as Arc<dyn crate::devices::pci::hotplug::Plugged>)
+        })
+    }
+
+    /// Plugs `file` into the running machine as a disk (D214), read-only or not, its serial
+    /// `serial`: its guest finds it as its init rescans its PCI bus. Charged to its I/O
+    /// limits (D178) as its other disks are.
+    pub fn plug_disk(
+        &self,
+        file: std::fs::File,
+        read_only: bool,
+        serial: &str,
+    ) -> Result<super::Plugged, String> {
+        let io = self.control.plugs().and_then(|p| p.io);
+        let disk = crate::devices::virtio::block::Block::of_file(file, read_only, serial)?.with_limit(io);
+        let size = disk.size();
+        let devfn = self.plug(Box::new(disk))?;
+        Ok(super::Plugged {
+            devfn,
+            address: super::guest_address((devfn >> 3, devfn & 7)),
+            size,
+            steps: Vec::new(),
+        })
+    }
+
+    /// Plugs a shared directory into the running machine (D214): virtio-fs, mounted by
+    /// `tag`, served by the server its owner puts in `slot`; no DAX window (D189), whose
+    /// guest addresses are given as the machine is made.
+    pub fn plug_share(
+        &self,
+        tag: &str,
+        slot: crate::devices::virtio::fs::Share,
+    ) -> Result<super::Plugged, String> {
+        let io = self.control.plugs().and_then(|p| p.io);
+        let share = crate::devices::virtio::fs::Fs::new(tag, slot)?.with_limit(io);
+        let devfn = self.plug(Box::new(share))?;
+        Ok(super::Plugged {
+            devfn,
+            address: super::guest_address((devfn >> 3, devfn & 7)),
+            size: None,
+            steps: Vec::new(),
+        })
+    }
+
+    /// Passes the host's function `f` through to the running machine (D214), all of its
+    /// RAM mapped for the function's DMA, pinned, as one it boots with outside its IOMMU
+    /// (D154); or, where its slots sit behind its IOMMU ([`super::Config::pci_slots_iommu`]),
+    /// behind it, as `f` must then be ([`super::Vfio::iommu`]), its group's own container
+    /// or address space mapping what its endpoint's domain maps. Opened by its group's or
+    /// its device's node: its guest finds it as its init rescans its PCI bus.
+    #[cfg(target_os = "linux")]
+    pub fn plug_vfio(&self, f: &super::Vfio) -> Result<super::Plugged, String> {
+        self.plug_vfio_with(f, None)
+    }
+
+    /// Off Linux no host's function is plugged into a running machine (D214): refused with
+    /// its host's limit ([`super::plug_refused`]), Windows' that it gives a microVM one as it
+    /// starts alone, changing nothing.
+    #[cfg(not(target_os = "linux"))]
+    pub fn plug_vfio(&self, f: &super::Vfio) -> Result<super::Plugged, String> {
+        Err(format!("{}: {}", f.name, super::plug_refused()))
+    }
+
+    /// [`plug_vfio`](Self::plug_vfio), of a function opened by another process, as a
+    /// confined VM process, which opens no device, is handed one by its daemon: `files`,
+    /// VFIO's container and its group, or iommufd and its device, by `f.cdev`.
+    #[cfg(target_os = "linux")]
+    pub fn plug_vfio_files(
+        &self,
+        f: &super::Vfio,
+        files: super::VfioFiles,
+    ) -> Result<super::Plugged, String> {
+        self.plug_vfio_with(f, Some(files))
+    }
+
+    #[cfg(target_os = "linux")]
+    fn plug_vfio_with(
+        &self,
+        f: &super::Vfio,
+        files: Option<super::VfioFiles>,
+    ) -> Result<super::Plugged, String> {
+        use crate::devices::pci::{self, vfio as v};
+        let plugs = self
+            .control
+            .plugs()
+            .ok_or("this microVM has no PCI slots to plug a device into")?;
+        let named = |e: String| format!("{}: {e}", f.name);
+        if f.iommu && f.noiommu {
+            return Err(named("a group without an IOMMU cannot follow the guest's".into()));
+        }
+        let behind = plugs.hotplug.slots_behind_iommu();
+        match (f.iommu, behind) {
+            (true, false) => {
+                return Err(named(
+                    "behind its microVM's IOMMU, where its slots are not: a microVM takes a host's function behind its IOMMU as it runs where it was booted for one (D214)".into(),
+                ));
+            }
+            (false, true) => {
+                return Err(named(
+                    "outside its microVM's IOMMU, where its slots sit behind it: a function plugged in there is behind it too".into(),
+                ));
+            }
+            _ => {}
+        }
+        if !f.iommu
+            && let Some(why) = &plugs.unpinnable
+        {
+            return Err(named(why.clone()));
+        }
+        // Each step timed (PM M430): `Plugged::steps`, and the VM's log at debug.
+        let mut clock = v::Clock::new();
+        v::raise_memlock();
+        clock.mark("memlock");
+        let (memory, host) = (self.memory.clone(), plugs.vfio.clone());
+        let devfn = plugs.hotplug.plug(|slot| {
+            // Its slot found, and its endpoint made translated where behind the IOMMU.
+            clock.mark("slot");
+            let (first, second) = files.map(|given| (given.first, given.second)).unzip();
+            let endpoint = slot.endpoint();
+            // Behind the IOMMU: a container, or an address space, of its own, which maps
+            // what its endpoint's domain maps (D154's follower).
+            let (opened, follower) = match &f.cdev {
+                Some(cdev) => {
+                    let iommufd = match first {
+                        Some(fd) => v::Iommufd::of_file(fd),
+                        None => v::Iommufd::open().map_err(named)?,
+                    };
+                    clock.mark("iommufd");
+                    let ioas = iommufd.ioas().map_err(named)?;
+                    clock.mark("ioas");
+                    let opened = v::Device::open_cdev_with(&f.name, cdev, second, &ioas, &host, &mut clock)?;
+                    if f.iommu {
+                        (opened, Some(Arc::new(ioas.follower(memory.clone()))))
+                    } else {
+                        ioas.map_ram(&memory).map_err(named)?;
+                        clock.mark("dma-map");
+                        (opened, None)
+                    }
+                }
+                None => {
+                    let mut container = match first {
+                        Some(fd) => v::Container::of_file(fd, f.noiommu, !f.iommu).map_err(named)?,
+                        None if f.iommu => v::Container::followed().map_err(named)?,
+                        None => v::Container::open(f.noiommu).map_err(named)?,
+                    };
+                    clock.mark("container");
+                    let follower = f.iommu.then(|| Arc::new(container.follower(memory.clone())));
+                    let opened = v::Device::open_with(
+                        &f.name,
+                        &f.group,
+                        second,
+                        &mut container,
+                        &memory,
+                        &host,
+                        &mut clock,
+                    )?;
+                    (opened, follower)
+                }
+            };
+            let (mut route, mut send) = (slot.route.clone(), Some(slot.msi.clone()));
+            if let Some(follower) = follower {
+                let translation = slot
+                    .iommu
+                    .clone()
+                    .ok_or_else(|| named("behind its microVM's IOMMU, where its slot is not".into()))?;
+                translation
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .follow(endpoint, follower)
+                    .map_err(|e| named(format!("its DMA mappings: {e}")))?;
+                // Its MSIs land where its endpoint's domain maps their addresses.
+                let translated = Arc::new(v::Translated::new(
+                    translation,
+                    endpoint,
+                    route.clone(),
+                    send.clone(),
+                ));
+                route = route.map(|_| translated.clone() as Arc<dyn v::Route>);
+                send = send.map(|_| translated as Arc<dyn pci::Msi>);
+                clock.mark("followed");
+            }
+            let bars = opened
+                .bars()
+                .into_iter()
+                .map(|(index, size, kind)| pci::Bar {
+                    index,
+                    addr: 0,
+                    size,
+                    kind,
+                })
+                .collect();
+            clock.mark("bars");
+            let function = v::VfioFunction::plugged(opened, bars, route, send, &host, &mut clock)?;
+            Ok(Arc::new(v::PluggedFunction::new(function, host.clone())) as Arc<dyn pci::hotplug::Plugged>)
+        })?;
+        // On the bus: its configuration space reached where its guest looks.
+        clock.mark("bus");
+        let steps = clock.steps();
+        crate::debug!(
+            "{}: plugged in at {devfn:#04x}: {}",
+            f.name,
+            steps
+                .iter()
+                .map(|(step, took)| format!("{step} {} us", took.as_micros()))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        Ok(super::Plugged {
+            devfn,
+            address: super::guest_address((devfn >> 3, devfn & 7)),
+            size: None,
+            steps,
+        })
+    }
+
+    /// Takes the device plugged at `devfn` off its PCI bus (D214), once its guest has let
+    /// it go: an error, changing nothing, where its guest's driver still drives it.
+    pub fn unplug(&self, devfn: u8) -> Result<(), String> {
+        self.control
+            .plugs()
+            .ok_or("this microVM has no PCI slots")?
+            .hotplug
+            .unplug(devfn)
+    }
+
+    /// What grows its file disk `index` of those it was made with (D214), as its host
+    /// grows the disk's file: none past its disks.
+    pub fn disk_size(&self, index: usize) -> Option<crate::devices::virtio::block::DiskSize> {
+        self.control.disks().get(index).cloned()
+    }
+
+    /// The bytes of its memory to plug whose pages this process holds (D133): pages the
+    /// guest touched and has not given back. None where it has none, or the host cannot
+    /// say which pages it holds.
+    pub fn hotplug_held(&self) -> Option<u64> {
+        self.memory.hotplug_held().ok().flatten()
+    }
+
+    /// The bytes its guest has reported free (D151), given back or not.
+    pub fn reported(&self) -> u64 {
+        self.memory.reported()
+    }
+
+    /// Sets the most memory its guest may have plugged, in bytes: a run's own, as a VM
+    /// restored from a template takes it (D148). An error where it has none to plug.
+    pub fn set_plug_most(&self, bytes: u64) -> Result<(), String> {
+        if self.control.set_plug_most(bytes) {
+            Ok(())
+        } else {
+            Err("the VM has no memory to plug".into())
+        }
+    }
+
+    /// Has its writable layer's file read ahead again (D190), as its run's command runs
+    /// ([`Layer::read_ahead`](crate::devices::virtio::pmem::Layer::read_ahead)): nothing
+    /// where it has none.
+    pub fn layer_reads_ahead(&self) {
+        if let Some(layer) = self.control.layer() {
+            layer.read_ahead();
+        }
+    }
+
+    /// Holds its vCPUs together to `cpus` CPUs' time of the host's each period, its run's
+    /// limit (D191), whatever its guest does with its own cgroups; 0, or as many CPUs as
+    /// it has vCPUs, lets them be. Its governor's thread is made with the first limit.
+    pub fn hold_cpus(&self, cpus: u32) -> Result<(), String> {
+        let sh = &self.shared;
+        sh.hold.set(cpus);
+        if cpus == 0 {
+            return Ok(());
+        }
+        let mut governor = lock(&sh.governor);
+        // Under the lock the teardown takes it by, once the machine stops: none is made
+        // after.
+        if governor.is_none() && !sh.exiting() {
+            let shared = sh.clone();
+            let made = std::thread::Builder::new()
+                .name("hold".into())
+                .spawn(move || shared.hold.govern(&|| shared.kick_all()))
+                .map_err(|e| format!("starting the hold on its vCPUs: {e}"))?;
+            *governor = Some(made);
+        }
+        Ok(())
+    }
+
+    /// Holds its vCPUs by their group's CPU budget too (D183, slice 3), `group`, which
+    /// every microVM of the group charges: its own governor's thread, as long as the
+    /// machine runs. A machine is of one group, its run's, from its start.
+    pub fn hold_group(&self, group: super::group::GroupCpu) -> Result<(), String> {
+        let sh = &self.shared;
+        let mut governor = lock(&sh.group_governor);
+        if governor.is_some() {
+            return Err("this microVM is held by a group's budget already".into());
+        }
+        if sh.exiting() {
+            return Ok(());
+        }
+        let shared = sh.clone();
+        let made = std::thread::Builder::new()
+            .name("hold-group".into())
+            .spawn(move || shared.hold.govern_group(&group, &|| shared.kick_all()))
+            .map_err(|e| format!("starting its group's hold on its vCPUs: {e}"))?;
+        *governor = Some(made);
+        Ok(())
+    }
+
+    /// Pauses the machine where it is: every vCPU kicked out of its guest and held there,
+    /// whatever its run's CPU share (the hold of D191), until [`resume`](Self::resume), as
+    /// `pause` freezes a microVM. Returns once every vCPU is held: at once for vCPUs not
+    /// released yet, which go into their guest only through the hold.
+    pub fn pause(&self) -> Result<(), String> {
+        let sh = &self.shared;
+        let held = sh.hold.pause(sh.kickers.len(), &|| sh.kick_all(), &|| {
+            sh.released_at_us.get().is_none()
+        });
+        if held {
+            Ok(())
+        } else {
+            Err("the microVM has stopped".into())
+        }
+    }
+
+    /// A paused machine goes on, its vCPUs held no more but by their share.
+    pub fn resume(&self) {
+        self.shared.hold.resume();
+    }
+
+    /// Readies `file`, a stopped microVM's writable layer kept in its own file (D190), to
+    /// go under the guest's writable layer's device once its guest lets go of the one its
+    /// template mounted (`run::kind::OVER`, `control::LAYER_SWAP`): before its guest hears of
+    /// the run. An error where the VM has no writable layer, or one of another length.
+    pub fn stage_layer(&self, file: std::fs::File) -> Result<(), String> {
+        self.control
+            .layer()
+            .ok_or("the microVM has no writable layer")?
+            .stage(file)
+    }
+
+    /// Maps `file`, a run's swap, into the guest's swap window (D159), writable by the guest;
+    /// returns its length, or nothing where a run's is mapped already, which the guest's
+    /// members share. An error where the VM has no swap window.
+    pub fn attach_swap(&self, file: std::fs::File) -> Result<Option<u64>, String> {
+        self.control
+            .swap()
+            .ok_or("the microVM has no swap window")?
+            .attach(file)
+    }
+
+    /// Maps `file` back into the guest's swap window, a copy of the run's swap a snapshot of
+    /// the run kept (D176), before a held restore's vCPUs run: the length it kept alone.
+    pub fn restore_swap(&self, file: std::fs::File) -> Result<(), String> {
+        self.control
+            .swap()
+            .ok_or("the microVM has no swap window")?
+            .restore_run(Some(file))
+    }
+
+    /// Saves the running machine into `save`'s files, a generation its spawner prepared and
+    /// commits once this returns (D176), with its vCPUs parked and its devices quiet, as a
+    /// template is saved. A machine that goes on runs again before this returns; one that
+    /// stops waits, parked, until the [`Saved`] returned goes, so that its spawner hears of
+    /// the save before it ends. A save that fails leaves the machine running as it was.
+    pub fn save(&self, save: Save) -> Result<Saved, String> {
+        let sh = &self.shared;
+        if !super::SNAPSHOTS {
+            return Err("this host's microVMs take no snapshots yet".into());
+        }
+        let parts = sh.parts.get().ok_or("the microVM has not started")?;
+        if sh.released_at_us.get().is_none() {
+            return Err("the microVM has not started".into());
+        }
+        // A template's snapshot, which the guest asks for, is the only other: its
+        // coordinator would take this one's request for it.
+        if sh.template.load(Ordering::Acquire) {
+            return Err("the microVM has its template still to save".into());
+        }
+        {
+            let mut saving = lock(&sh.saving);
+            if sh.exiting() {
+                return Err("the microVM has stopped".into());
+            }
+            if *saving {
+                return Err("the microVM is being saved already".into());
+            }
+            *saving = true;
+        }
+        let saved = self.save_parked(parts, save);
+        *lock(&sh.saving) = false;
+        sh.saved.notify_all();
+        saved
+    }
+
+    /// Copies the running machine's memory, writable layer and run's swap into `out` for a
+    /// live move (D176 part 7), as its guest runs on: everything in a first round, then,
+    /// round after round, what its guest and its devices wrote since the round before,
+    /// until a round has sent no more than `enough` bytes, or no fewer than the round
+    /// before, or the rounds three times the first, or `most` rounds ([`live::Stop`]),
+    /// whatever the link's rate: never by the clock. The guest's
+    /// writes are watched from then on, for the [`Save`] with `delta` that ends the move
+    /// and the stream, which this leaves without its end. How they go is `told` as they go
+    /// ([`Precopying`]): each round's end, and within a round each further `enough` bytes
+    /// the stream carried.
+    pub fn precopy(
+        &self,
+        out: std::fs::File,
+        most: u32,
+        enough: u64,
+        told: &dyn Fn(Precopying),
+    ) -> Result<Precopied, String> {
+        let sh = &self.shared;
+        if !super::SNAPSHOTS {
+            return Err("this host's microVMs take no snapshots yet".into());
+        }
+        let parts = sh.parts.get().ok_or("the microVM has not started")?;
+        if sh.released_at_us.get().is_none() {
+            return Err("the microVM has not started".into());
+        }
+        let vm = parts.vm.upgrade().ok_or("the microVM has stopped")?;
+        let fail = |e: std::io::Error| format!("sending its memory: {e}");
+        let carried = Carried {
+            out,
+            sent: 0,
+            every: enough.max(live::MAX_RECORD as u64),
+            next: enough.max(live::MAX_RECORD as u64),
+            told,
+        };
+        let mut w = live::Writer::new(std::io::BufWriter::with_capacity(1 << 20, carried)).map_err(fail)?;
+        // Watched first: what the guest writes as a round reads is sent again after it.
+        vm.watch_writes().map_err(|e| e.to_string())?;
+        self.memory.watch_device_writes();
+        let unwatch = || {
+            vm.unwatch_writes();
+            self.memory.unwatch_device_writes();
+        };
+        // Each round flushed as it ends: the last save's round goes on after them.
+        let sent = self.precopy_rounds(&vm, &mut w, most, enough, told);
+        if sent.is_err() {
+            unwatch();
+        }
+        sent
+    }
+
+    fn precopy_rounds<W: std::io::Write>(
+        &self,
+        vm: &hv::Vm,
+        w: &mut live::Writer<W>,
+        most: u32,
+        enough: u64,
+        told: &dyn Fn(Precopying),
+    ) -> Result<Precopied, String> {
+        let fail = |e: std::io::Error| format!("sending its memory: {e}");
+        let mut precopied = Precopied::default();
+        let t0 = crate::log::uptime_us();
+        // Round 0: all its memory holds. Its layer's and swap's data are found as a save
+        // finds them, its machine paused for the moment.
+        self.memory
+            .each_used(&mut |plugged, at, bytes| {
+                w.record(if plugged { live::PLUGGED } else { live::RAM }, at, bytes)
+            })
+            .map_err(fail)?;
+        let layer = self.control.layer().cloned();
+        let swap = self.control.swap().cloned();
+        let paused = crate::log::uptime_us();
+        self.pause()?;
+        // SAFETY: the machine is paused for the both of them.
+        let found = unsafe {
+            (
+                layer.as_ref().map(|l| l.data()).transpose(),
+                swap.as_ref().map(|s| s.run_data()).transpose(),
+            )
+        };
+        self.resume();
+        precopied.paused_us = crate::log::uptime_us().saturating_sub(paused);
+        let (layer_runs, swap_runs) = (found.0?, found.1?);
+        let mut buf = vec![0u8; live::MAX_RECORD];
+        let mut send = |kind: u8, runs: &[(u64, u64)], read: &Reader<'_>| {
+            for &(off, len) in runs {
+                let mut at = off;
+                let end = off.saturating_add(len);
+                while at < end {
+                    let n = usize::try_from(end - at).map_or(buf.len(), |rest| rest.min(buf.len()));
+                    let chunk = buf.get_mut(..n).ok_or("a run past its buffer")?;
+                    read(at, chunk)?;
+                    w.record(kind, at, chunk).map_err(fail)?;
+                    at += n as u64;
+                }
+            }
+            Ok::<(), String>(())
+        };
+        if let (Some(l), Some(runs)) = (&layer, &layer_runs) {
+            send(live::LAYER, runs, &|at, b| l.read_data(at, b))?;
+        }
+        if let (Some(s), Some(runs)) = (&swap, &swap_runs) {
+            send(live::SWAP, runs, &|at, b| s.read_run(at, b))?;
+        }
+        let (pages, bytes) = w.round(0).map_err(fail)?;
+        let us = crate::log::uptime_us().saturating_sub(t0);
+        precopied.rounds.push((pages, bytes, us));
+        told(Precopying::Round {
+            n: 0,
+            pages,
+            bytes,
+            us,
+        });
+        let mut sent = vec![bytes];
+        // Then what was written since, until little is, or rounds no longer gain on what
+        // the guest writes ([`live::Stop`]).
+        let mut n = 1u32;
+        while live::Stop::after(&sent, most, enough).is_none() {
+            let t = crate::log::uptime_us();
+            let mut written = Pages::of(vm.written().map_err(|e| e.to_string())?, machine::PAGE);
+            written.merge(Pages::of(self.memory.device_written(), live::PAGE));
+            self.send_pages(&written, w, &mut buf)?;
+            let (pages, bytes) = w.round(n).map_err(fail)?;
+            let us = crate::log::uptime_us().saturating_sub(t);
+            precopied.rounds.push((pages, bytes, us));
+            told(Precopying::Round { n, pages, bytes, us });
+            sent.push(bytes);
+            n = n.saturating_add(1);
+        }
+        Ok(precopied)
+    }
+
+    /// Sends each page of `written` into `w` from where a save keeps it: its RAM or the
+    /// memory plugged, its writable layer's file system, or its run's swap. A page of none
+    /// of them (memory unplugged since) is no page of a snapshot's.
+    fn send_pages<W: std::io::Write>(
+        &self,
+        written: &Pages,
+        w: &mut live::Writer<W>,
+        buf: &mut [u8],
+    ) -> Result<(), String> {
+        let fail = |e: std::io::Error| format!("sending its memory: {e}");
+        let (layer, swap) = (self.control.layer(), self.control.swap());
+        for gpa in written.iter() {
+            if let Some((plugged, at, bytes)) = self.memory.page_at(gpa) {
+                w.record(if plugged { live::PLUGGED } else { live::RAM }, at, bytes)
+                    .map_err(fail)?;
+                continue;
+            }
+            let page = buf
+                .get_mut(..live::PAGE as usize)
+                .ok_or("a page past its buffer")?;
+            if let Some(l) = layer
+                && let Some((base, len)) = l.data_at()
+                && let Some(off) = gpa.checked_sub(base).filter(|off| off + live::PAGE <= len)
+            {
+                l.read_data(off, page)?;
+                w.record(live::LAYER, off, page).map_err(fail)?;
+                continue;
+            }
+            if let Some(s) = swap
+                && let Some((base, len)) = s.run_at()
+                && let Some(off) = gpa.checked_sub(base).filter(|off| off + live::PAGE <= len)
+            {
+                s.read_run(off, page)?;
+                w.record(live::SWAP, off, page).map_err(fail)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// [`save`](Handle::save)'s snapshot: what it holds of the machine goes before the
+    /// machine may be taken apart.
+    fn save_parked(&self, parts: &Parts, save: Save) -> Result<Saved, String> {
+        let sh = &self.shared;
+        let (Some(vm), Some(bus)) = (parts.vm.upgrade(), parts.bus.upgrade()) else {
+            return Err("the microVM has stopped".into());
+        };
+        let t0 = crate::log::uptime_us();
+        if !sh.snapshot.request() {
+            return Err("the microVM is being saved already".into());
+        }
+        sh.kick_all();
+        let cut = Cut {
+            sh,
+            vm: &vm,
+            bus: &bus,
+            memory: &self.memory,
+            config: &parts.config,
+            join: parts.join,
+            swap: self.control.swap().map(|w| &**w),
+        };
+        if !sh.snapshot.wait_parked(&|| sh.exiting()) {
+            return Err("the microVM has stopped".into());
+        }
+        let snap = match cut.take(true) {
+            Ok(Some(snap)) => snap,
+            Ok(None) => return Err("the microVM has stopped".into()),
+            Err(e) => {
+                cut.go_on();
+                return Err(e);
+            }
+        };
+        let swap = cut.swap.filter(|w| w.attached());
+        // The last of a live move: what was written since its last round, its guest's and
+        // its devices', the vCPUs parked and the devices quiet now (D176 part 7).
+        let delta = if save.delta.is_some() {
+            let mut pages = match vm.written() {
+                Ok(written) => Pages::of(written, machine::PAGE),
+                Err(e) => {
+                    cut.go_on();
+                    return Err(e.to_string());
+                }
+            };
+            pages.merge(Pages::of(self.memory.device_written(), live::PAGE));
+            vm.unwatch_writes();
+            self.memory.unwatch_device_writes();
+            Some(pages)
+        } else {
+            None
+        };
+        // A live move's pages go in its stream, after its rounds, each by its own record:
+        // its memory, layer and swap files here only as long as a save's, all holes. Which
+        // pages a file holds is never read from its file system's holes, which NTFS keeps
+        // in units of 64 KiB, the rest of a unit a page is written into reading as zeros.
+        let held = delta.is_some();
+        let written = if held {
+            snapshot::fill_none(&save.name, &snap, &self.memory, &save.memory, &save.state)
+        } else {
+            snapshot::fill(&save.name, &snap, &self.memory, &save.memory, &save.state)
+        }
+        .and_then(|()| match (swap, &save.swap) {
+            (None, _) => Ok(()),
+            (Some(window), Some(file)) if held => window.save_run_length(file).map(|_| ()),
+            (Some(window), Some(file)) => window.save_run(file).map(|_| ()),
+            (Some(_), None) => Err("its run's swap has nowhere to go".into()),
+        })
+        .and_then(|()| match (self.control.layer(), &save.layer) {
+            (None, _) => Ok(()),
+            (Some(layer), Some((head, data))) if held => layer.save_head(head, data),
+            (Some(layer), Some((head, data))) => layer.save(head, data),
+            (Some(_), None) => Err("its writable layer has nowhere to go".into()),
+        })
+        .and_then(|()| match (self.control.window_heads(), &save.window_heads) {
+            (None, _) => Ok(()),
+            (Some(heads), Some(file)) => heads
+                .save(file)
+                .map_err(|e| format!("its DAX windows' heads: {e}")),
+            (Some(_), None) => Err("its DAX windows' heads have nowhere to go".into()),
+        })
+        // Its last round, then the stream's end, before its spawner hears of the save and
+        // writes what follows them.
+        .and_then(|()| match (&save.delta, &delta) {
+            (Some(stream), Some(pages)) => {
+                let fail = |e: std::io::Error| format!("sending its memory: {e}");
+                let mut w = live::Writer::going_on(std::io::BufWriter::with_capacity(1 << 20, stream));
+                let mut buf = vec![0u8; live::PAGE as usize];
+                self.send_pages(pages, &mut w, &mut buf)?;
+                w.finish().map_err(fail)
+            }
+            _ => Ok(()),
+        });
+        if let Err(e) = written {
+            // One whose guest lost a mapping taken from it for the save stops.
+            if self.control.lost() {
+                sh.stop(ExitReason::Error(e.clone()));
+            } else {
+                cut.go_on();
+            }
+            return Err(e);
+        }
+        info!(
+            "saved for the host in {} us",
+            crate::log::uptime_us().saturating_sub(t0)
+        );
+        Ok(match save.then {
+            AfterSnapshot::Resume => {
+                cut.go_on();
+                Saved(None)
+            }
+            AfterSnapshot::Stop | AfterSnapshot::Hold => Saved(Some(self.shared.clone())),
+        })
+    }
+
     /// Guest markers as `(marker, µs since VMM start)`.
     pub fn markers(&self) -> Vec<(u32, u128)> {
         self.control.markers()
+    }
+
+    /// The contract the guest's init announced (`shards_abi::control::ABI`), if it has.
+    pub fn guest_abi(&self) -> Option<u64> {
+        self.control.guest_abi()
     }
 
     /// Microseconds since VMM start at which the boot vCPU first entered the guest.
@@ -55,9 +789,26 @@ impl Handle {
         self.shared.stop(ExitReason::Stopped);
     }
 
+    /// Waits until no snapshot is being taken: one the guest asked for is durable and in
+    /// use when this returns, though the guest ran again before it was (PM M63). Returns
+    /// at once if none is, or the VM is stopping.
+    pub fn wait_for_snapshot(&self) {
+        let mut committing = lock(&self.shared.committing);
+        while *committing && !self.shared.exiting() {
+            committing = wait(&self.shared.committed, committing);
+        }
+    }
+
     /// Starts the vCPUs of a VM restored with `hold`. Everything else is ready, so this
-    /// is all a start request costs.
+    /// is all a start request costs. A guest whose snapshot kept its run's swap runs only
+    /// with a copy of it mapped back ([`restore_swap`](Handle::restore_swap), D176): one
+    /// without stops, rather than find zeros where it swapped.
     pub fn release(&self) {
+        if self.control.swap().is_some_and(|w| w.wants_run()) {
+            return self.shared.stop(ExitReason::Error(
+                "its snapshot kept its run's swap, which the restore was not given".into(),
+            ));
+        }
         self.shared.release_vcpus();
     }
 
@@ -71,38 +822,43 @@ impl Handle {
         self.serial.enqueue_input(bytes);
     }
 
+    /// The whole lines of the last page its guest wrote to its console, whoever read it:
+    /// a kernel's panic says there why it resets its machine (`panic=-1`).
+    pub fn console_said(&self) -> Vec<u8> {
+        self.serial.said()
+    }
+
     /// Whether the VM is recording a working set ([`SnapshotPolicy::working_set`]).
     pub fn recording(&self) -> bool {
         lock(&self.shared.recording).is_some()
     }
 
-    /// Stops recording the working set, and saves it with the snapshot the VM resumed
-    /// from. Returns how many pages it holds: 0 when nothing was being recorded.
-    pub fn save_working_set(&self) -> Result<usize, String> {
-        let Some((recorder, dir)) = lock(&self.shared.recording).take() else {
-            return Ok(0);
+    /// Stops recording the working set, and keeps what it recorded for
+    /// [`take_working_set`](Handle::take_working_set). The VM writes nothing of it: its
+    /// snapshot is a template other VMs restore, and no VM may write one (D30); the daemon
+    /// takes it and writes it ([`accept_working_set`]).
+    pub fn end_recording(&self) -> Result<(), String> {
+        let Some((recorder, name)) = lock(&self.shared.recording).take() else {
+            return Ok(());
         };
         let pages = machine::recorded(&recorder)?;
         if !pages.is_empty() {
-            snapshot::write_working_set(&dir, &pages, machine::PAGE)?;
+            *lock(&self.shared.recorded) = Some((name, snapshot::encode_working_set(&pages, machine::PAGE)));
         }
-        Ok(pages.len())
+        Ok(())
+    }
+
+    /// The working set recorded, encoded, and the name of the generation it goes with;
+    /// `None` if nothing was. Recording ends first, if it has not.
+    pub fn take_working_set(&self) -> Result<Option<(String, Vec<u8>)>, String> {
+        self.end_recording()?;
+        Ok(lock(&self.shared.recorded).take())
     }
 
     /// How many pages of its snapshot's working set this VM prefetched before it ran.
     pub fn prefetched(&self) -> usize {
-        machine::prefetched(&self.shared.start)
+        self.shared.kept.get().map_or(0, machine::prefetched)
     }
-}
-
-/// A snapshot in progress: vCPUs park here with their state captured.
-#[derive(Debug, Default)]
-struct Pause {
-    requested: bool,
-    /// Per vCPU, while parked: its state and its guest counter when it stopped.
-    captured: Vec<Option<machine::Captured>>,
-    /// Bumped to release parked vCPUs.
-    epoch: u64,
 }
 
 #[derive(Debug)]
@@ -114,19 +870,94 @@ struct Shared {
     exited: Condvar,
     /// When the boot vCPU first entered the guest (µs since VMM start).
     entered_at_us: OnceLock<u128>,
-    pause: Mutex<Pause>,
-    paused: Condvar,
+    /// Where vCPUs park, one phase at a time, while a snapshot is taken.
+    snapshot: Barrier<machine::Captured>,
     /// vCPUs wait here after creation until the machine is complete (and, for a held
     /// restore, until the request arrives).
     released: Mutex<Release>,
     release: Condvar,
-    /// A restored guest's counter at its snapshot.
-    start: Arc<Start>,
+    /// What the machine's start leaves it, once every vCPU is set up: a restored guest's
+    /// counter at its snapshot, and what was prefetched. The rest of the start is dropped
+    /// then (audit D03).
+    kept: OnceLock<machine::Kept>,
     /// When the vCPUs were released (µs since VMM start).
     released_at_us: OnceLock<u128>,
     /// While a working set is recorded: what records it, and the directory of the
     /// snapshot it goes with, held open since the daemon may rename it.
-    recording: Mutex<Option<(machine::Recorder, File)>>,
+    recording: Mutex<Option<(machine::Recorder, String)>>,
+    /// What a recording that ended recorded, for the daemon: the generation's name and the
+    /// encoded working set.
+    recorded: Mutex<Option<(String, Vec<u8>)>>,
+    /// Whether a snapshot is being taken, from its vCPUs parking to its commit: the guest
+    /// runs again before the commit ends (PM M63).
+    committing: Mutex<bool>,
+    committed: Condvar,
+    /// What a snapshot the host asks for reads, once the machine is launched (D176).
+    parts: OnceLock<Parts>,
+    /// Whether a template's snapshot is still to be taken, its coordinator waiting.
+    template: AtomicBool,
+    /// Whether a snapshot the host asked for is being taken: one at a time, and the
+    /// machine is taken apart only once it is done (`Running::teardown`).
+    saving: Mutex<bool>,
+    saved: Condvar,
+    /// The host's hold on the vCPUs' CPU time, a run's limit (D191), and its governor's
+    /// thread, made as the first limit comes and joined as the machine is taken apart.
+    hold: Hold,
+    governor: Mutex<Option<JoinHandle<()>>>,
+    /// Its group's governor's thread (D183), made as its run's group comes.
+    group_governor: Mutex<Option<JoinHandle<()>>>,
+}
+
+/// What a snapshot the host asks for reads of the machine (D176): its VM and devices by
+/// weak references, which `Running` alone owns, so that one held never keeps them past
+/// the machine's teardown.
+#[derive(Debug)]
+struct Parts {
+    vm: Weak<hv::Vm>,
+    bus: Weak<machine::Bus>,
+    config: MachineConfig,
+    join: Option<&'static Join>,
+}
+
+/// A save the host asked for, done ([`Handle::save`]): a machine to stop after it stops as
+/// this goes, its vCPUs parked until then.
+#[derive(Debug)]
+#[must_use = "a machine to stop after its save stops as this goes"]
+pub struct Saved(Option<Arc<Shared>>);
+
+impl Drop for Saved {
+    fn drop(&mut self) {
+        if let Some(sh) = self.0.take() {
+            sh.stop(ExitReason::Snapshotted);
+        }
+    }
+}
+
+impl Saved {
+    /// Lets a machine its save holds ([`AfterSnapshot::Hold`]) run on, as a save that leaves
+    /// it running does: its devices resumed and its vCPUs released. A live move the other
+    /// machine could not take leaves its microVM going on here so (D176 part 7).
+    pub fn resume(mut self) -> Result<(), String> {
+        let Some(sh) = self.0.take() else {
+            return Ok(());
+        };
+        let bus = sh
+            .parts
+            .get()
+            .and_then(|p| p.bus.upgrade())
+            .ok_or("the microVM has stopped")?;
+        match bus.resume() {
+            Ok(()) => {
+                sh.snapshot.release();
+                Ok(())
+            }
+            Err(e) => {
+                let why = format!("resuming devices: {e}");
+                sh.stop(ExitReason::Error(why.clone()));
+                Err(why)
+            }
+        }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -138,7 +969,7 @@ struct Release {
 }
 
 impl Shared {
-    fn new(vcpus: u32, start: Arc<Start>) -> Shared {
+    fn new(vcpus: u32) -> Shared {
         Shared {
             kickers: (0..vcpus).map(|_| OnceLock::new()).collect(),
             exiting: AtomicBool::new(false),
@@ -146,16 +977,30 @@ impl Shared {
             exited_at_us: Mutex::new(None),
             exited: Condvar::new(),
             entered_at_us: OnceLock::new(),
-            pause: Mutex::new(Pause {
-                captured: (0..vcpus).map(|_| None).collect(),
-                ..Pause::default()
-            }),
-            paused: Condvar::new(),
+            snapshot: Barrier::new(vcpus as usize),
             released: Mutex::new(Release::default()),
             release: Condvar::new(),
-            start,
+            kept: OnceLock::new(),
             released_at_us: OnceLock::new(),
             recording: Mutex::new(None),
+            recorded: Mutex::new(None),
+            committing: Mutex::new(false),
+            committed: Condvar::new(),
+            parts: OnceLock::new(),
+            template: AtomicBool::new(false),
+            saving: Mutex::new(false),
+            saved: Condvar::new(),
+            hold: Hold::new(vcpus as usize),
+            governor: Mutex::new(None),
+            group_governor: Mutex::new(None),
+        }
+    }
+
+    /// Waits until no save the host asked for reads the machine.
+    fn await_save(&self) {
+        let mut saving = lock(&self.saving);
+        while *saving {
+            saving = wait(&self.saved, saving);
         }
     }
 
@@ -165,8 +1010,18 @@ impl Shared {
         if r.done {
             return;
         }
+        let Some(kept) = self.kept.get() else {
+            drop(r);
+            return self.stop(ExitReason::Error("released before its vCPUs were set up".into()));
+        };
+        match machine::release_offset(kept) {
+            Ok(offset) => r.counter_offset = offset,
+            Err(e) => {
+                drop(r);
+                return self.stop(ExitReason::Error(format!("releasing the vCPUs: {e}")));
+            }
+        }
         r.done = true;
-        r.counter_offset = machine::release_offset(&self.start);
         let _ = self.released_at_us.set(crate::log::uptime_us());
         drop(r);
         self.release.notify_all();
@@ -186,6 +1041,8 @@ impl Shared {
         for kicker in self.kickers.iter().filter_map(OnceLock::get) {
             kicker.kick();
         }
+        // vCPUs held out of their guest look again at why they might go on.
+        self.hold.wake();
     }
 
     /// Records the first exit reason and interrupts every vCPU so it can wind down.
@@ -200,8 +1057,8 @@ impl Shared {
         }
         self.exited.notify_all();
         // Taking each lock orders the wakeup after any waiter's check of `exiting`.
-        drop(lock(&self.pause));
-        self.paused.notify_all();
+        self.snapshot.wake();
+        self.hold.end();
         drop(lock(&self.released));
         self.release.notify_all();
         self.kick_all();
@@ -224,57 +1081,103 @@ impl Shared {
     /// The guest asked for a snapshot (on a vCPU thread, inside its MMIO write): every
     /// vCPU is kicked out of the guest, this one right after its store completes.
     fn request_snapshot(&self) {
-        let mut p = lock(&self.pause);
-        if p.requested {
-            return;
+        if self.snapshot.request() {
+            self.kick_all();
         }
-        p.requested = true;
-        drop(p);
-        self.paused.notify_all();
-        self.kick_all();
     }
 
-    /// After a kick: if a snapshot is pending, capture this vCPU's state on its own
-    /// thread (HVF requires it) and park until the snapshot is written.
-    fn park_for_snapshot(&self, index: usize, vcpu: &hv::Vcpu) -> Result<(), String> {
-        if !lock(&self.pause).requested {
-            return Ok(());
-        }
-        let captured = machine::capture(vcpu, index)?;
-        let mut p = lock(&self.pause);
-        if let Some(slot) = p.captured.get_mut(index) {
-            *slot = Some(captured);
-        }
-        let epoch = p.epoch;
-        self.paused.notify_all();
-        while p.epoch == epoch && !self.exiting() {
-            p = wait(&self.paused, p);
-        }
-        Ok(())
+    /// After a kick: if a snapshot is pending, park, capture this vCPU's state on its own
+    /// thread (HVF requires it) once every vCPU is out and the devices are quiet, and wait
+    /// until the snapshot is written (the barrier module).
+    fn park_for_snapshot(&self, index: usize, vcpu: &hv::Vcpu) {
+        self.snapshot
+            .park(index, &|| self.exiting(), || machine::capture(vcpu, index));
     }
 }
 
-/// Joins the vCPU threads and tears the VM down once the guest exits.
+/// The running machine, which it owns: waiting for it, or dropping it, stops it and tears
+/// it down in order (audit A04).
 #[derive(Debug)]
 pub struct Running {
+    shared: Arc<Shared>,
     vm: Option<Arc<hv::Vm>>,
     threads: Vec<JoinHandle<()>>,
     /// Devices own memory the VM maps (virtio-pmem regions): they go after the VM, as
     /// guest RAM does.
-    _bus: Arc<machine::Bus>,
+    bus: Arc<machine::Bus>,
+    /// Its writable layer (D190), let go of as soon as the VM is gone.
+    control: Arc<Control>,
     _memory: Arc<GuestMemory>,
 }
 
 impl Running {
-    pub fn wait(mut self, handle: Handle) -> ExitReason {
-        let reason = handle.shared.wait_exit();
-        handle.shared.stop(reason.clone());
+    /// Waits for the guest to exit, then tears the machine down.
+    pub fn wait(self) -> ExitReason {
+        self.wait_then(|| {})
+    }
+
+    /// [`wait`](Self::wait), calling `free` as soon as nothing of the machine writes its
+    /// writable layer's file (D190), so that its host may read it without waiting on this
+    /// process: once every vCPU has stopped and the device workers are quiet, or, where
+    /// letting go of a file written through a shared mapping writes it back as its readers
+    /// wait ([`platform::LET_GO_WRITES_BACK`], PM M278), once the layer is let go of too.
+    pub fn wait_then(mut self, free: impl FnOnce()) -> ExitReason {
+        let reason = self.shared.wait_exit();
+        self.teardown(reason.clone(), free);
+        reason
+    }
+
+    /// Stops the machine, if it runs, and takes it apart in order: every vCPU and the
+    /// snapshot coordinator joined, so each vCPU was destroyed on its own thread; the
+    /// device workers stopped; the VM destroyed; and only then, as the fields drop, the
+    /// devices and guest memory it mapped. Again, it does nothing.
+    fn teardown(&mut self, reason: ExitReason, free: impl FnOnce()) {
+        self.shared.stop(reason);
         for t in self.threads.drain(..) {
             let _ = t.join();
         }
-        // Every vCPU was destroyed on its own thread above; the VM goes before its memory.
-        self.vm.take();
-        reason
+        if let Some(t) = lock(&self.shared.governor).take() {
+            let _ = t.join();
+        }
+        if let Some(t) = lock(&self.shared.group_governor).take() {
+            let _ = t.join();
+        }
+        // A save the host asked for holds the VM and its devices until it is done.
+        self.shared.await_save();
+        let vm = self.vm.take();
+        if vm.is_some() {
+            // The device workers go quiet before the VM they raise interrupts in goes.
+            self.bus.pause();
+        }
+        // No device is plugged in from here on, and its slots' MSIs, which reach the VM,
+        // keep it no longer (D214): a handle outlives its machine.
+        drop(self.control.take_plugs());
+        // Nothing of the machine runs now: its writable layer is what its guest left.
+        let mut free = Some(free);
+        if !platform::LET_GO_WRITES_BACK
+            && let Some(free) = free.take()
+        {
+            free();
+        }
+        if let Some(vm) = vm {
+            drop(vm);
+            // Its writable layer is its file's alone from here on (D190).
+            if let Some(layer) = self.control.layer() {
+                // SAFETY: the VM that mapped it is gone, and nothing maps it again.
+                unsafe { layer.release() };
+            }
+        }
+        if let Some(free) = free.take() {
+            free();
+        }
+    }
+}
+
+impl Drop for Running {
+    /// A machine dropped without [`wait`](Running::wait) is stopped, not left running
+    /// with nothing to own its memory (audit A04).
+    fn drop(&mut self) {
+        self.teardown(ExitReason::Stopped, || {});
     }
 }
 
@@ -293,38 +1196,149 @@ fn check_vcpus(vcpus: u32) -> Result<(), String> {
 pub fn start(cfg: &Config) -> Result<(Handle, Running), String> {
     check_host()?;
     check_vcpus(cfg.vcpus)?;
-    launch(machine::build(cfg)?, cfg.snapshot.clone(), false)
+    launch(machine::build(cfg)?, cfg.snapshot.clone(), false, cfg.join)
+}
+
+/// The most stage-2 pages `snap`'s guest can have, RAM and pmem regions (each its file
+/// rounded up to [`pmem::ALIGN`]): the bound on its working set. A pmem file's size is
+/// its granted descriptor's where it has one, as a VM in App Sandbox reaches it alone,
+/// where a look up of its path may be denied and left its pages out (review 1.11). One
+/// that cannot be read adds nothing; the restore reports it.
+fn guest_pages(snap: &snapshot::Snapshot) -> u64 {
+    let pmem: u64 = snap
+        .config
+        .pmem
+        .iter()
+        .filter_map(|path| platform::input_metadata(path).ok())
+        .map(|m| m.len().checked_next_multiple_of(pmem::ALIGN).unwrap_or(u64::MAX))
+        .fold(0, u64::saturating_add);
+    // Its writable layer's, head and file system (D190).
+    let layer = match snap.config.layer_mib.checked_mul(1 << 20) {
+        Some(0) => 0,
+        Some(data) => pmem::layer_head(data).map_or(u64::MAX, |(head, _)| head.saturating_add(data)),
+        None => u64::MAX,
+    };
+    // Its DAX windows' heads (D189).
+    let windows = u64::from(snap.config.shares) + u64::from(snap.config.join_share);
+    let heads = match snap.config.share_window_mib.checked_mul(1 << 20) {
+        _ if !super::has_windows(&snap.config) => 0,
+        Some(len) => head::window_head_len(len).map_or(u64::MAX, |each| each.saturating_mul(windows)),
+        None => u64::MAX,
+    };
+    snap.config
+        .memory_mib
+        .saturating_mul(1 << 20)
+        .saturating_add(pmem)
+        .saturating_add(layer)
+        .saturating_add(heads)
+        .div_ceil(machine::PAGE)
 }
 
 /// Resumes the VM a snapshot holds, in this process.
 pub fn restore(cfg: &RestoreConfig) -> Result<(Handle, Running), String> {
     check_host()?;
-    let (snap, memory_file) = snapshot::read(&cfg.dir)?;
+    restore_from(cfg, snapshot::read(&cfg.dir)?)
+}
+
+/// [`restore`] of `pinned`, the snapshot in `cfg.dir` already read, on a host its caller
+/// has checked ([`check_host`]): a restore that read it to learn its backing files reads
+/// and decodes it once, and resumes the very generation it checked (review 1.12).
+pub fn restore_from(cfg: &RestoreConfig, pinned: snapshot::Pinned) -> Result<(Handle, Running), String> {
+    let snapshot::Pinned {
+        snapshot: snap,
+        memory: memory_file,
+        path: generation,
+        name,
+    } = pinned;
     check_vcpus(snap.config.vcpus)?;
-    let working_set = if cfg.prefetch {
-        snapshot::read_working_set(&cfg.dir, machine::PAGE).unwrap_or_else(|e| {
+    let mut working_set = if cfg.prefetch {
+        snapshot::read_working_set(&generation, machine::PAGE, guest_pages(&snap)).unwrap_or_else(|e| {
             warn!("{e}; restoring without prefetching it");
             None
         })
     } else {
         None
     };
+    if let Some(ws) = &mut working_set {
+        let cleared = hv::budget_writes(ws, machine::PAGE, hv::PREFETCH_PRIVATE);
+        if cleared > 0 {
+            debug!("{cleared} written pages past the prefetch's private budget are read instead");
+        }
+    }
     let recording = cfg.record && working_set.is_none();
+    // Its writable layer (D190): the head as the snapshot kept it, and the restore's own
+    // copy of its file system, this very generation's: the clone of it the restore was
+    // given, or a copy made here into the file it was given, empty or a clone of another
+    // generation's. One the snapshot and the restore do not agree on is refused as the
+    // machine is checked (`check_hosts`).
+    let layer = match &cfg.layer {
+        Some(path) if snap.config.layer_mib > 0 => {
+            let at = |e: std::io::Error| format!("{}: its writable layer: {e}", generation.display());
+            let head = platform::open_beneath_input(&generation, &[snapshot::LAYER_HEAD]).map_err(at)?;
+            let kept = platform::open_beneath_input(&generation, &[snapshot::LAYER]).map_err(at)?;
+            let file = platform::open_input(path, true).map_err(|e| format!("{}: {e}", path.display()))?;
+            let len = kept.metadata().map_err(at)?.len();
+            let given = file.metadata().map_err(at)?.len();
+            let copies = copies_layer(given, len, cfg.layer_cloned.as_deref(), &name)
+                .map_err(|e| format!("{}: {e}", path.display()))?;
+            if copies {
+                platform::copy_used(&kept, &file, len).map_err(at)?;
+                // Written back as it restores, ahead of its run, rather than as the VM lets
+                // go of the file, where its host waits to read what its run left (macOS, PM
+                // M278), on a thread of its own: the restore goes on.
+                platform::write_back_ahead(&file).map_err(at)?;
+            }
+            Some(Arc::new(pmem::Layer::restore(head, file)?))
+        }
+        Some(path) => {
+            return Err(format!(
+                "{}: a writable layer for a snapshot that has none",
+                path.display()
+            ));
+        }
+        None => None,
+    };
+    // Its DAX windows' heads (D189), as the snapshot kept them.
+    let window_heads = super::has_windows(&snap.config)
+        .then(|| {
+            platform::open_beneath_input(&generation, &[snapshot::WINDOW_HEADS])
+                .map_err(|e| format!("{}: its DAX windows' heads: {e}", generation.display()))
+        })
+        .transpose()?;
     let machine = machine::restore(
         &snap,
         &memory_file,
         cfg.console,
-        cfg.vsock.as_deref(),
+        super::Hosts {
+            vsock: cfg.vsock.as_ref(),
+            net: cfg.net.as_ref(),
+            shares: &cfg.shares,
+            join: cfg.join,
+            join_share: cfg.join_share,
+            io: cfg.io_limit,
+            layer: layer.as_ref(),
+            window_heads: window_heads.as_ref(),
+        },
         working_set.unwrap_or_default(),
     )?;
+    // The run's swap a snapshot of a run kept (D176), back where its guest had it before
+    // any vCPU runs.
+    let swap = cfg
+        .swap
+        .as_ref()
+        .map(std::fs::File::try_clone)
+        .transpose()
+        .map_err(|e| format!("its swap file: {e}"))?;
+    // Held, it may be given later, before its vCPUs run (`Handle::restore_swap`).
+    match machine.control.swap() {
+        Some(window) if swap.is_some() || !cfg.hold => window.restore_run(swap)?,
+        Some(_) => {}
+        None if swap.is_some() => return Err("a run's swap for a microVM without a swap window".into()),
+        None => {}
+    }
+    // A working set is saved into the generation it was recorded from.
     let recorder = if recording {
-        machine::recorder(&machine)
-            .map(|r| File::open(&cfg.dir).map(|dir| (r, dir)))
-            .transpose()
-            .unwrap_or_else(|e| {
-                warn!("not recording a working set: {}: {e}", cfg.dir.display());
-                None
-            })
+        machine::recorder(&machine).map(|r| (r, name))
     } else {
         None
     };
@@ -333,15 +1347,60 @@ pub fn restore(cfg: &RestoreConfig) -> Result<(Handle, Running), String> {
         snap.config.memory_mib,
         cfg.dir.display()
     );
-    let (handle, running) = launch(machine, cfg.snapshot.clone(), cfg.hold)?;
+    let (handle, running) = launch(machine, cfg.snapshot.clone(), cfg.hold, cfg.join)?;
     if recorder.is_some() {
         *lock(&handle.shared.recording) = recorder;
     }
     Ok((handle, running))
 }
 
+/// The most bytes a working set of the snapshot in `dir` can take encoded: its header and
+/// 8 bytes for each page its guest has (`guest_pages`). The daemon takes no more of one.
+pub fn working_set_limit(dir: &Path) -> Result<u64, String> {
+    let pinned = snapshot::read(dir)?;
+    guest_pages(&pinned.snapshot)
+        .checked_mul(8)
+        .and_then(|b| b.checked_add(snapshot::WORKING_SET_HEADER))
+        .ok_or_else(|| format!("{}: a guest too large to bound", dir.display()))
+}
+
+/// Whether a restore of generation `pinned` copies its writable layer, `len` bytes, into
+/// the file it was given, `given` bytes long (D190): not where the file is a clone of that
+/// very generation's layer (`cloned`); where it is empty, or a clone of another
+/// generation's, which a template's newer one replaced before the restore read it. A file
+/// that is neither is refused: it might hold a run's own.
+fn copies_layer(given: u64, len: u64, cloned: Option<&str>, pinned: &str) -> Result<bool, String> {
+    match cloned {
+        Some(of) if of == pinned && given == len => Ok(false),
+        Some(_) => Ok(true),
+        None if given == 0 => Ok(true),
+        None => Err("a writable layer to copy its snapshot's into must be empty".into()),
+    }
+}
+
+/// Writes the working set a VM recorded from generation `name` of the snapshot in `dir`,
+/// for the daemon (`snapshot::accept_working_set`): at this host's page size, within the
+/// snapshot's guest (`guest_pages`).
+pub fn accept_working_set(dir: &Path, name: &str, bytes: &[u8]) -> Result<usize, String> {
+    snapshot::accept_working_set(dir, name, bytes, machine::PAGE, guest_pages)
+}
+
+/// Keeps the working set a restore handed its spawner (`--working-set FD`) beside the
+/// generation of the snapshot in `dir` it names, as [`accept_working_set`] keeps a warm
+/// VM's (`snapshot::split_handed`): the pages kept, 0 where that generation is no longer
+/// the snapshot's.
+pub fn keep_working_set(dir: &Path, handed: &[u8]) -> Result<usize, String> {
+    let (name, bytes) = snapshot::split_handed(handed)?;
+    accept_working_set(dir, name, bytes)
+}
+
 /// Starts the machine's vCPUs; with `hold`, they wait for [`Handle::release`].
-fn launch(m: Machine, snapshots: Option<SnapshotPolicy>, hold: bool) -> Result<(Handle, Running), String> {
+fn launch(
+    m: Machine,
+    snapshots: Option<SnapshotPolicy>,
+    hold: bool,
+    join: Option<&'static crate::devices::virtio::block::Join>,
+) -> Result<(Handle, Running), String> {
     let Machine {
         vm,
         memory,
@@ -352,12 +1411,20 @@ fn launch(m: Machine, snapshots: Option<SnapshotPolicy>, hold: bool) -> Result<(
         finish,
         start,
         config,
+        // What a restore's recorder read, which it took before the launch.
+        #[cfg(all(any(hv = "kvm", hv = "whp"), target_arch = "aarch64"))]
+            pmem: _,
     } = m;
     let vcpus = config.vcpus;
-    let vm = Arc::new(vm);
+    // Each vCPU is moved its own part of the start, and the machine keeps the rest: none
+    // of it is shared, and each part goes as soon as its owner is done with it.
+    let start_bytes = machine::start_bytes(&start);
+    let (starts, mut rest) = machine::split(start, vcpus as usize)?;
+    // The bus before the VM, so that an early return drops the VM first: the hypervisor
+    // maps the bus's device memory until the VM is destroyed (Machine's own order).
     let bus = Arc::new(bus);
-    let start = Arc::new(start);
-    let shared = Arc::new(Shared::new(vcpus, start.clone()));
+    let vm = Arc::new(vm);
+    let shared = Arc::new(Shared::new(vcpus));
     let sh = shared.clone();
     power.on_event(Box::new(move |event| {
         sh.stop(match event {
@@ -366,17 +1433,33 @@ fn launch(m: Machine, snapshots: Option<SnapshotPolicy>, hold: bool) -> Result<(
         })
     }));
 
+    let _ = shared.parts.set(Parts {
+        vm: Arc::downgrade(&vm),
+        bus: Arc::downgrade(&bus),
+        config: config.clone(),
+        join,
+    });
     let mut threads = Vec::with_capacity(vcpus as usize + 1);
     if let Some(policy) = snapshots {
+        shared.template.store(true, Ordering::Release);
         let sh = shared.clone();
-        control.on_snapshot(Box::new(move || sh.request_snapshot()));
+        // One snapshot per VM, a template's: a guest's later requests are passed by,
+        // rather than each parking every vCPU and writing all of memory again.
+        let asked = std::sync::atomic::AtomicBool::new(false);
+        control.on_snapshot(Box::new(move || {
+            if !asked.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                sh.request_snapshot();
+            }
+        }));
         let job = Coordinator {
             sh: shared.clone(),
             vm: vm.clone(),
             bus: bus.clone(),
             memory: memory.clone(),
+            control: control.clone(),
             config,
             policy,
+            join,
         };
         match std::thread::Builder::new()
             .name("snapshot".into())
@@ -388,12 +1471,16 @@ fn launch(m: Machine, snapshots: Option<SnapshotPolicy>, hold: bool) -> Result<(
     }
 
     // vCPUs are created strictly in index order (D5).
-    for index in 0..vcpus as usize {
+    let mut first = None;
+    // Each one's setup, its thread's spawn to its answer: where a slow start's time goes.
+    let (setups, mut slowest) = (crate::log::uptime_us(), (0, 0u128));
+    for (index, start) in starts.into_iter().enumerate() {
+        let began = crate::log::uptime_us();
         let (created_tx, created_rx) = mpsc::channel();
-        let (vm, sh, bus, start) = (vm.clone(), shared.clone(), bus.clone(), start.clone());
+        let (vm, sh, bus) = (vm.clone(), shared.clone(), bus.clone());
         let spawned = std::thread::Builder::new()
             .name(format!("vcpu{index}"))
-            .spawn(move || vcpu_thread(&vm, &sh, &*bus, index, &start, &created_tx));
+            .spawn(move || vcpu_thread(&vm, &sh, &*bus, index, start, &created_tx));
         match spawned {
             Ok(t) => threads.push(t),
             Err(e) => {
@@ -402,7 +1489,15 @@ fn launch(m: Machine, snapshots: Option<SnapshotPolicy>, hold: bool) -> Result<(
             }
         }
         match created_rx.recv() {
-            Ok(Ok(())) => {}
+            Ok(Ok(set_up)) => {
+                if index == 0 {
+                    first = Some(set_up);
+                }
+                let took = crate::log::uptime_us().saturating_sub(began);
+                if took > slowest.1 {
+                    slowest = (index, took);
+                }
+            }
             Ok(Err(e)) => {
                 shared.stop(ExitReason::Error(format!("vCPU {index}: {e}")));
                 break;
@@ -416,7 +1511,31 @@ fn launch(m: Machine, snapshots: Option<SnapshotPolicy>, hold: bool) -> Result<(
         }
     }
     if !shared.exiting() {
-        match machine::finish(&vm, &bus, &finish, &start) {
+        let finishing = crate::log::uptime_us();
+        debug!(
+            "vCPUs set up in {} us, the slowest vCPU {} in {} us",
+            finishing.saturating_sub(setups),
+            slowest.0,
+            slowest.1
+        );
+        let finished = machine::finish(&vm, &bus, &finish, rest.as_mut());
+        debug!(
+            "the machine's start finished in {} us",
+            crate::log::uptime_us().saturating_sub(finishing)
+        );
+        let _ = shared
+            .kept
+            .set(machine::keep(rest.as_mut(), &first.unwrap_or_default()));
+        // The vCPUs dropped theirs once set up: the snapshot's device state goes now, where
+        // a warm VM held it for its whole life.
+        drop(rest);
+        if let Some([vcpus, devices, working_set]) = start_bytes {
+            info!(
+                "dropped the restore's state: {vcpus} bytes of vCPU state, {devices} of \
+                 devices, {working_set} of working set"
+            );
+        }
+        match finished {
             Ok(()) if !hold => shared.release_vcpus(),
             Ok(()) => {}
             Err(e) => shared.stop(ExitReason::Error(e)),
@@ -426,16 +1545,21 @@ fn launch(m: Machine, snapshots: Option<SnapshotPolicy>, hold: bool) -> Result<(
         "{vcpus} vCPU(s) ready to run after {} us",
         crate::log::uptime_us()
     );
+    let handle_shared = shared.clone();
+    let control_running = control.clone();
     Ok((
         Handle {
             shared,
             serial,
             control,
+            memory: memory.clone(),
         },
         Running {
+            shared: handle_shared,
             vm: Some(vm),
             threads,
-            _bus: bus,
+            bus,
+            control: control_running,
             _memory: memory,
         },
     ))
@@ -446,15 +1570,21 @@ fn vcpu_thread(
     sh: &Shared,
     io: &dyn hv::Io,
     index: usize,
-    start: &Start,
-    created: &mpsc::Sender<Result<(), String>>,
+    start: machine::VcpuStart,
+    created: &mpsc::Sender<Result<machine::SetUp, String>>,
 ) {
-    if let Err(e) = platform::prioritize_vcpu_thread()
-        && index == 0
-    {
-        warn!("vCPU threads run without real-time policy (coarser guest timers): {e}");
-    }
-    let mut vcpu = match machine::setup_vcpu(vm, index, start) {
+    // Held while the vCPU runs.
+    let _prioritized = match platform::prioritize_vcpu_thread() {
+        Ok(prioritized) => Some(prioritized),
+        Err(e) => {
+            if index == 0 {
+                warn!("vCPU threads run without real-time policy (coarser guest timers): {e}");
+            }
+            None
+        }
+    };
+    // Its part of the start goes with its setup.
+    let (mut vcpu, set_up) = match machine::setup_vcpu(vm, index, start) {
         Ok(v) => v,
         Err(e) => {
             let _ = created.send(Err(e));
@@ -464,7 +1594,11 @@ fn vcpu_thread(
     if let Some(slot) = sh.kickers.get(index) {
         let _ = slot.set(vcpu.kicker());
     }
-    let _ = created.send(Ok(()));
+    // Its clock, by which the host holds the vCPUs to their run's CPUs (D191).
+    if let Err(e) = sh.hold.register(index) {
+        warn!("vCPU {index}: its CPU time unread, so not held to its run's CPUs: {e}");
+    }
+    let _ = created.send(Ok(set_up));
     if let Some(offset) = sh.wait_release()
         && let Err(e) = machine::set_counter_offset(&mut vcpu, offset)
     {
@@ -477,12 +1611,11 @@ fn vcpu_thread(
         if sh.exiting() {
             return;
         }
+        // Out of the guest while its run's CPU time is spent (D191), or until a snapshot
+        // needs it parked.
+        sh.hold.wait(&|| sh.exiting() || sh.snapshot.requested());
         match vcpu.run(io) {
-            Ok(hv::Exit::Canceled) => {
-                if let Err(e) = sh.park_for_snapshot(index, &vcpu) {
-                    return sh.stop(ExitReason::Error(format!("vCPU {index} snapshot: {e}")));
-                }
-            }
+            Ok(hv::Exit::Canceled) => sh.park_for_snapshot(index, &vcpu),
             Ok(hv::Exit::Shutdown) => return sh.stop(ExitReason::PowerOff),
             Ok(hv::Exit::Reset) => return sh.stop(ExitReason::Reset),
             Err(e) => return sh.stop(ExitReason::Error(format!("vCPU {index}: {e}"))),
@@ -490,97 +1623,325 @@ fn vcpu_thread(
     }
 }
 
-/// Writes a snapshot whenever the guest asks, once every vCPU has parked.
+/// Writes the snapshot the guest asks for, once every vCPU has parked.
 struct Coordinator {
     sh: Arc<Shared>,
     vm: Arc<hv::Vm>,
     bus: Arc<machine::Bus>,
     memory: Arc<GuestMemory>,
+    control: Arc<Control>,
     config: MachineConfig,
     policy: SnapshotPolicy,
+    /// The machine's join disk (D119), which a snapshot keeps only empty.
+    join: Option<&'static Join>,
 }
 
 impl Coordinator {
     fn run(self) {
-        loop {
-            let Some(mut p) = self.wait_until_parked() else {
-                return;
-            };
-            let captured: Option<Vec<machine::Captured>> = p.captured.iter_mut().map(Option::take).collect();
-            drop(p);
-            let t0 = crate::log::uptime_us();
-            let written = match captured {
-                Some(captured) => self.write(captured),
-                None => Err("a vCPU parked without its state".into()),
-            };
-            if let Err(e) = written {
-                return self.sh.stop(ExitReason::Error(format!("snapshot: {e}")));
-            }
-            info!(
-                "snapshot written to {} in {} us",
-                self.policy.dir.display(),
-                crate::log::uptime_us().saturating_sub(t0)
-            );
-            match self.policy.then {
-                AfterSnapshot::Stop => return self.sh.stop(ExitReason::Snapshotted),
-                AfterSnapshot::Resume => {
-                    if self.policy.working_set {
-                        self.record();
-                    }
-                    if let Err(e) = self.bus.resume() {
-                        return self.sh.stop(ExitReason::Error(format!("resuming devices: {e}")));
-                    }
-                    let mut p = lock(&self.sh.pause);
-                    p.requested = false;
-                    p.epoch = p.epoch.wrapping_add(1);
-                    drop(p);
-                    self.sh.paused.notify_all();
-                }
-            }
+        let stopping = || self.sh.exiting();
+        let parked = self.sh.snapshot.wait_parked(&stopping);
+        self.sh.template.store(false, Ordering::Release);
+        if !parked {
+            return;
+        }
+        let t0 = crate::log::uptime_us();
+        *lock(&self.sh.committing) = true;
+        self.take(t0);
+        *lock(&self.sh.committing) = false;
+        self.sh.committed.notify_all();
+    }
+
+    fn cut(&self) -> Cut<'_> {
+        Cut {
+            sh: &self.sh,
+            vm: &self.vm,
+            bus: &self.bus,
+            memory: &self.memory,
+            config: &self.config,
+            join: self.join,
+            swap: self.control.swap().map(|w| &**w),
         }
     }
 
-    /// Starts recording the working set from the snapshot just written, with every vCPU
-    /// parked, unless one is being recorded already. Without one, restores just run.
-    fn record(&self) {
+    /// Takes the snapshot, its vCPUs parked. A VM that resumes after it serves its run
+    /// whatever becomes of the snapshot: one that fails is only a template lost, which
+    /// the daemon finds missing; a VM that only saves one ends with why.
+    fn take(&self, t0: u128) {
+        let resume = matches!(self.policy.then, AfterSnapshot::Resume);
+        let cut = self.cut();
+        // `parked`: whether the guest still waits for the snapshot.
+        let failed = |e: String, parked: bool| {
+            if !resume {
+                return self.sh.stop(ExitReason::Error(e));
+            }
+            // One whose guest lost a mapping taken from it for the save stops.
+            if self.control.lost() {
+                return self.sh.stop(ExitReason::Error(e));
+            }
+            warn!("{e}; the VM goes on without its snapshot");
+            if parked {
+                cut.go_on();
+            }
+        };
+        let snap = match cut.take(false) {
+            Ok(Some(snap)) => snap,
+            Ok(None) => return,
+            Err(e) => return failed(format!("snapshot: {e}"), true),
+        };
+        let beside = snapshot::Beside {
+            layer: self.control.layer().map(|l| &**l),
+            window_heads: self.control.window_heads().map(|h| &**h),
+        };
+        let staged = match snapshot::stage(&self.policy.dir, &snap, &self.memory, beside) {
+            Ok(staged) => staged,
+            Err(e) => return failed(format!("snapshot: {e}"), true),
+        };
+        info!(
+            "snapshot written to {} in {} us",
+            self.policy.dir.display(),
+            crate::log::uptime_us().saturating_sub(t0)
+        );
+        if resume {
+            // Before a working set is recorded, which takes the head from the guest too.
+            match self.remap_head(&staged) {
+                Ok(()) => {
+                    if self.policy.working_set {
+                        self.record(staged.name().to_string());
+                    }
+                    cut.go_on();
+                }
+                Err(e) => self.sh.stop(ExitReason::Error(e)),
+            }
+        }
+        // Durable, and in use, with the guest running again: its files hold all of it
+        // already (PM M63). The process ends only once this thread has.
+        let t1 = crate::log::uptime_us();
+        if let Err(e) = staged.commit() {
+            return failed(format!("snapshot: {e}"), false);
+        }
+        info!(
+            "snapshot made durable in {} us",
+            crate::log::uptime_us().saturating_sub(t1)
+        );
+        if !resume {
+            self.sh.stop(ExitReason::Snapshotted);
+        }
+    }
+
+    /// Maps the writable layer's head back from the copy the snapshot just kept of it, with
+    /// every vCPU parked, for the machine that goes on: a template's, its image's first run,
+    /// which holds of its head from then on what its guest writes alone (D190,
+    /// [`pmem::Layer::remap_head`]). One that fails leaves the head the guest's own memory,
+    /// and is said; an error is a head its guest cannot be given back.
+    fn remap_head(&self, staged: &snapshot::Staged) -> Result<(), String> {
+        self.remap_window_heads(staged)?;
+        let (Some(layer), Some(kept)) = (self.control.layer(), staged.layer_head()) else {
+            return Ok(());
+        };
+        let t0 = crate::log::uptime_us();
+        // SAFETY: every vCPU is parked and the devices quiet since the head was saved into
+        // `kept`.
+        match unsafe { layer.remap_head(kept) } {
+            Ok(()) => info!(
+                "its writable layer's head mapped back from its snapshot in {} us",
+                crate::log::uptime_us().saturating_sub(t0)
+            ),
+            Err(e) if layer.lost() => return Err(format!("its writable layer's head: {e}")),
+            Err(e) => warn!("its writable layer's head stays its own memory where not mapped back: {e}"),
+        }
+        Ok(())
+    }
+
+    /// Maps the DAX windows' heads back from the copy the snapshot just kept of them, as
+    /// [`remap_head`](Self::remap_head) does the writable layer's (D189,
+    /// [`WindowHeads::remap`](crate::devices::virtio::head::WindowHeads::remap)).
+    fn remap_window_heads(&self, staged: &snapshot::Staged) -> Result<(), String> {
+        let (Some(heads), Some(kept)) = (self.control.window_heads(), staged.window_heads()) else {
+            return Ok(());
+        };
+        let t0 = crate::log::uptime_us();
+        // SAFETY: every vCPU is parked and the devices quiet since the heads were saved
+        // into `kept`.
+        match unsafe { heads.remap(kept) } {
+            Ok(parts) => info!(
+                "its DAX windows' heads mapped back from its snapshot in {} us: {parts}",
+                crate::log::uptime_us().saturating_sub(t0)
+            ),
+            Err(e) if heads.lost() => return Err(format!("its DAX windows' heads: {e}")),
+            Err(e) => warn!("its DAX windows' heads stay its own memory where not mapped back: {e}"),
+        }
+        Ok(())
+    }
+
+    /// Starts recording the working set of `generation`, the snapshot just written, with
+    /// every vCPU parked, unless one is being recorded already. Without one, restores just
+    /// run.
+    fn record(&self, generation: String) {
         let mut recording = lock(&self.sh.recording);
         if recording.is_some() {
             return;
         }
-        let started = File::open(&self.policy.dir)
-            .map_err(|e| format!("{}: {e}", self.policy.dir.display()))
-            .and_then(|dir| Ok(machine::record(&self.vm)?.map(|r| (r, dir))));
-        match started {
+        match machine::record(&self.vm).map(|r| r.map(|r| (r, generation))) {
             Ok(r) => *recording = r,
             Err(e) => warn!("not recording a working set: {e}"),
         }
     }
+}
 
-    /// Waits for a request and for every vCPU to park; `None` once the VM is exiting.
-    fn wait_until_parked(&self) -> Option<MutexGuard<'_, Pause>> {
-        let mut p = lock(&self.sh.pause);
-        loop {
-            if self.sh.exiting() {
-                return None;
-            }
-            if p.requested && p.captured.iter().all(Option::is_some) {
-                return Some(p);
-            }
-            p = wait(&self.sh.paused, p);
-        }
-    }
+/// A machine's parts, which a snapshot reads once every vCPU has parked: the guest's or
+/// the host's (D176).
+struct Cut<'a> {
+    sh: &'a Shared,
+    vm: &'a hv::Vm,
+    bus: &'a machine::Bus,
+    memory: &'a GuestMemory,
+    config: &'a MachineConfig,
+    /// The machine's join disk (D119), which a snapshot keeps only empty.
+    join: Option<&'static Join>,
+    /// Its swap window (D159), where it has one.
+    swap: Option<&'a pmem::SwapWindow>,
+}
 
-    /// Quiesces devices, then saves interrupt controller, devices and memory.
-    fn write(&self, captured: Vec<machine::Captured>) -> Result<(), String> {
+impl Cut<'_> {
+    /// Quiets the devices, refuses what a snapshot cannot hold, and takes the machine's
+    /// state, each vCPU's captured on its own thread; none once the machine stops. With
+    /// `run`, a run's snapshot, which keeps the run's swap beside it; a template keeps
+    /// none. The devices stay quiet and the vCPUs parked until [`go_on`](Cut::go_on).
+    fn take(&self, run: bool) -> Result<Option<Snapshot>, String> {
+        // Every vCPU is out of the guest: the devices go quiet, and only then does each
+        // vCPU capture its state.
         self.bus.pause();
-        let arch = machine::encode_state(&self.vm, captured)?;
+        // A snapshot keeps no image of a join disk's: a joiner's image is the joining
+        // run's, and every restore of a snapshot is a microVM no run has joined. It
+        // keeps the ranges once let go, as the joiners ended (D176).
+        if self.join.is_some_and(Join::attached) {
+            return Err(
+                "a container joined to this microVM still has its image attached, which a snapshot cannot keep"
+                    .into(),
+            );
+        }
+        if !run && self.swap.is_some_and(pmem::SwapWindow::attached) {
+            return Err(
+                "a run's swap is mapped into the microVM's swap window, which a template keeps none of"
+                    .into(),
+            );
+        }
+        // What a paused device cannot save refuses the snapshot, not lost in it (D148).
+        if let Some(why) = self.bus.unsaved() {
+            return Err(why);
+        }
+        let captured = match self.sh.snapshot.capture(&|| self.sh.exiting()) {
+            None => return Ok(None),
+            Some(captured) => captured?,
+        };
+        let arch = machine::encode_state(self.vm, captured)?;
         let mut w = Writer::default();
         self.bus.save(&mut w);
-        let snap = Snapshot {
+        Ok(Some(Snapshot {
             config: self.config.clone(),
+            plugged: self.memory.plugged_runs(),
+            // Its memory's save says them.
+            data: None,
             arch,
             devices: w.into_bytes(),
+        }))
+    }
+
+    /// Lets the machine run again after its snapshot.
+    fn go_on(&self) {
+        match self.bus.resume() {
+            Ok(()) => self.sh.snapshot.release(),
+            Err(e) => self.sh.stop(ExitReason::Error(format!("resuming devices: {e}"))),
+        }
+    }
+}
+
+// Of granted inputs, which only Unix hosts have.
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    /// A restore copies its generation's writable layer into an empty file or into a clone
+    /// of another generation's, takes a clone of its own generation's as it is, and refuses
+    /// a file that is neither (D190).
+    #[test]
+    fn a_restore_copies_its_layer_unless_given_its_own_generations_clone() {
+        assert_eq!(copies_layer(0, 8 << 20, None, "g-2"), Ok(true));
+        assert_eq!(copies_layer(8 << 20, 8 << 20, Some("g-2"), "g-2"), Ok(false));
+        // Its template saved again between the clone and the restore's read.
+        assert_eq!(copies_layer(8 << 20, 8 << 20, Some("g-1"), "g-2"), Ok(true));
+        // No whole clone: made again.
+        assert_eq!(copies_layer(4 << 20, 8 << 20, Some("g-2"), "g-2"), Ok(true));
+        assert!(copies_layer(4096, 8 << 20, None, "g-2").is_err());
+    }
+
+    /// A pmem file's pages count whether the process reaches its path or only the
+    /// descriptor granted for it, as a VM in App Sandbox does (review 1.11): each file
+    /// at its size rounded up to the alignment pmem maps it at, beside the RAM.
+    #[test]
+    fn a_granted_pmem_files_pages_count() {
+        let file_dir = shards_testdir::TempDir::new("guest-pages").unwrap();
+        let file = file_dir.join("guest-pages");
+        std::fs::write(&file, vec![0u8; 3 << 20]).unwrap();
+        let granted = std::path::PathBuf::from(format!("/nowhere/shards-{}.erofs", std::process::id()));
+        platform::grant_input(granted.clone(), Some(std::fs::File::open(&file).unwrap().into()));
+        let snap = Snapshot {
+            config: MachineConfig {
+                vcpus: 1,
+                memory_mib: 16,
+                disks: Vec::new(),
+                pmem: vec![granted, file.clone()],
+                vsock: false,
+                net: None,
+                shares: 0,
+                join: false,
+                join_share: false,
+                nested: false,
+                hotplug_mib: 0,
+                reporting: false,
+                gpu: None,
+                swap_mib: 0,
+                share_window_mib: 0,
+                layer_mib: 0,
+                pci_slots: 0,
+            },
+            plugged: Vec::new(),
+            data: None,
+            arch: Vec::new(),
+            devices: Vec::new(),
         };
-        snapshot::write(&self.policy.dir, &snap, &self.memory)
+        assert_eq!(pmem::ALIGN, 2 << 20);
+        assert_eq!(guest_pages(&snap), ((16 + 4 + 4) << 20) / machine::PAGE);
+        let _ = std::fs::remove_file(&file);
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod carried_tests {
+    use super::*;
+    use std::io::Write as _;
+
+    /// A live move's stream tells what it carried each time it has carried `every` bytes
+    /// more, as its carrier takes them: one waiting on a slow link sees it going.
+    #[test]
+    fn a_rounds_stream_tells_what_it_carried_as_it_goes() {
+        let heard = std::cell::RefCell::new(Vec::new());
+        let told = |p: Precopying| heard.borrow_mut().push(p);
+        let mut carried = Carried {
+            out: Vec::new(),
+            sent: 0,
+            every: 10,
+            next: 10,
+            told: &told,
+        };
+        // 12 bytes pass the first 10; the next is told at 22 or past.
+        for _ in 0..5 {
+            carried.write_all(&[0u8; 4]).unwrap();
+        }
+        assert_eq!(*heard.borrow(), [Precopying::Sent(12)]);
+        carried.write_all(&[0u8; 25]).unwrap();
+        assert_eq!(carried.out.len(), 45);
+        assert_eq!(*heard.borrow(), [Precopying::Sent(12), Precopying::Sent(45)]);
     }
 }

@@ -1,0 +1,13 @@
+--- a/crates/init/src/run.rs
++++ b/crates/init/src/run.rs
+@@ -2584,6 +2584,10 @@
+                 )));
+             }
+             let _ = crate::linux::control_write(control::MARKER, 24); // experiment: start markers
++            // Experiment (start markers v7, tmpfs probe): a file of the run's own written in
++            // /dev/shm, a tmpfs, first.
++            let _ = std::fs::write("/dev/shm/.shards-probe", b"x");
++            let _ = crate::linux::control_write(control::MARKER, 30); // experiment: start markers
+             set_hostname(&spec.hostname, &spec.domainname, &spec.hosts)?;
+             let _ = crate::linux::control_write(control::MARKER, 26); // experiment: start markers
+         }

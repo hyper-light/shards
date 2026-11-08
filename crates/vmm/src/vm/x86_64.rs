@@ -4,25 +4,23 @@
 //! that makes each restored copy reseed its RNG.
 
 use std::fs::File;
-use std::io::Write;
-use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use super::{Config, Console};
+use super::{Config, Console, mapped};
 use crate::arch::x86_64::{self, acpi, boot, layout};
 use crate::devices::acpi_sleep::AcpiSleep;
 use crate::devices::control::Control;
 use crate::devices::i8042::I8042;
 use crate::devices::power::Power;
 use crate::devices::serial::Serial;
-use crate::devices::virtio::{VirtioDevice, block::Block, mmio as virtio_mmio, pmem, vsock};
+use crate::devices::virtio::{mmio as virtio_mmio, pmem};
 use crate::devices::vmgenid::VmGenId;
-use crate::devices::{Interrupt, MmioBus};
+use crate::devices::{Interrupt, MmioBus, SharedLine};
 use crate::hv::{self, Io};
 use crate::memory::GuestMemory;
 use crate::snapshot::codec::{Reader, Writer};
 use crate::snapshot::{MachineConfig, Snapshot};
-use crate::{debug, initramfs, platform, warn};
+use crate::{debug, info, platform, warn};
 
 const MIB: u64 = 1 << 20;
 const GIB: u64 = 1 << 30;
@@ -30,7 +28,15 @@ const GIB: u64 = 1 << 30;
 const MIN_MEMORY_MIB: u64 = 128;
 /// Kernel parameters the machine depends on: restart through the i8042 (the device the
 /// VMM emulates), and no PCI bus (there is none yet).
-const MACHINE_CMDLINE: &str = "reboot=k pci=off";
+const MACHINE_CMDLINE: &str = "reboot=k";
+/// Where the machine has no PCI bus, its kernel looks for none (D153).
+const NO_PCI_CMDLINE: &str = "pci=off";
+/// On WHP its kernel brings its APs up one at a time (kernel/cpu.c, `cpuhp.parallel`): in
+/// parallel, each AP started spins in its turn while those to come wait for a host CPU,
+/// which WHP on Windows Server 2022 gave no other vCPU, its 4 CPUs all busy, and bringing up
+/// 8 vCPUs took 1.4 s, 32 took 39 s, and 64 none in 60 s; one at a time 23, 96 and 219 ms,
+/// and 12 ms to parallel's 13 for 4 (PM M353).
+const ONE_AT_A_TIME_CMDLINE: &str = "cpuhp.parallel=0";
 
 /// How the vCPUs start.
 #[derive(Debug)]
@@ -49,8 +55,83 @@ pub struct Restored {
     pub devices: Vec<u8>,
     /// The snapshot's working set, to map before the guest runs; empty for none.
     pub working_set: Vec<hv::Touch>,
-    /// How many of its pages were mapped ahead.
-    pub prefetched: std::sync::OnceLock<usize>,
+    /// The host's fault-around held off over the guest's memory and pmem for the machine's
+    /// life ([`Kept`]): what the host maps of them is then what the guest touches, and a
+    /// working set recorded or mapped ahead holds those pages alone
+    /// (`platform::FaultAroundOff`).
+    pub around: Option<platform::FaultAroundOff>,
+}
+
+/// What vCPU `index` sets itself up from ([`split`]): moved to its thread, its own alone.
+#[derive(Debug)]
+pub enum VcpuStart {
+    /// The boot vCPU's registers; `None` for the others, which wait for INIT/SIPI.
+    Boot(Option<x86_64::Boot>),
+    Restore {
+        state: hv::VcpuState,
+        /// vCPU 0's: the working set it maps ahead.
+        working_set: Option<Vec<hv::Touch>>,
+    },
+}
+
+/// What a restore's start leaves the machine once the vCPUs have theirs ([`split`]):
+/// applied by [`finish`] once every vCPU exists.
+#[derive(Debug)]
+pub struct Remainder {
+    vm: hv::VmState,
+    devices: Vec<u8>,
+    /// Where the snapshot has vCPU 0's TSC start.
+    tsc_start: Option<hv::TscStart>,
+    /// [`Restored::around`], which the machine keeps ([`keep`]).
+    around: Option<platform::FaultAroundOff>,
+}
+
+/// What vCPU 0 found as it set up, for the machine to keep.
+#[derive(Debug, Default)]
+pub struct SetUp {
+    /// Pages of the working set it mapped ahead.
+    prefetched: usize,
+    /// Its TSC, which the release starts ([`release_offset`]), where the restore held the
+    /// vCPUs' TSCs back.
+    tsc: Option<hv::Tsc>,
+}
+
+/// Divides `start` among `vcpus` vCPUs and the machine: each vCPU takes only its own
+/// part, and none is shared.
+pub fn split(start: Start, vcpus: usize) -> Result<(Vec<VcpuStart>, Option<Remainder>), String> {
+    match start {
+        Start::Boot(boot) => Ok((
+            (0..vcpus)
+                .map(|index| VcpuStart::Boot((index == 0).then_some(boot)))
+                .collect(),
+            None,
+        )),
+        Start::Restore(r) => {
+            if r.vcpus.len() < vcpus {
+                return Err(format!("the snapshot has {} vCPUs, not {vcpus}", r.vcpus.len()));
+            }
+            let tsc_start = r.vcpus.first().and_then(hv::VcpuState::tsc_start);
+            let mut working_set = Some(r.working_set);
+            let starts = r
+                .vcpus
+                .into_iter()
+                .take(vcpus)
+                .map(|state| VcpuStart::Restore {
+                    state,
+                    working_set: working_set.take(),
+                })
+                .collect();
+            Ok((
+                starts,
+                Some(Remainder {
+                    vm: r.vm,
+                    devices: r.devices,
+                    tsc_start,
+                    around: r.around,
+                }),
+            ))
+        }
+    }
 }
 
 /// MMIO devices and port I/O devices.
@@ -82,6 +163,10 @@ impl Io for Bus {
             debug!("unclaimed port write {port:#x} ({} bytes)", data.len());
         }
     }
+
+    fn memory_fault(&self, gpa: Option<u64>) -> bool {
+        self.mmio.memory_fault(gpa)
+    }
 }
 
 impl Bus {
@@ -98,6 +183,10 @@ impl Bus {
     pub fn save(&self, w: &mut Writer) {
         self.mmio.save(w);
         self.pio.save(w);
+    }
+
+    pub fn unsaved(&self) -> Option<String> {
+        self.mmio.unsaved().or_else(|| self.pio.unsaved())
     }
 
     fn restore(&self, r: &mut Reader<'_>) -> Result<(), String> {
@@ -148,6 +237,93 @@ struct EdgeLine {
     gsi: u32,
 }
 
+/// A PCI bus's interrupts on this machine (D154): every device's INTx# on GSI_PCI,
+/// wired-OR, level-triggered, as the DSDT's _PRT says; the MSIs of the functions the VMM
+/// emulates delivered by the backend; and a passed-through function's by KVM's irqfds.
+struct PciLines {
+    irqs: hv::Irqs,
+    intx: Arc<SharedLine>,
+}
+
+impl super::PciInterrupts for PciLines {
+    fn intx(&self, device: u8) -> Arc<dyn Interrupt> {
+        self.intx.source(u32::from(device))
+    }
+
+    /// The local APICs', which take an MSI whoever wrote it.
+    fn msi(&self, _requester: u32) -> Arc<dyn crate::devices::pci::Msi> {
+        Arc::new(BackendMsi(self.irqs.clone()))
+    }
+
+    #[cfg(target_os = "linux")]
+    fn route(&self, _requester: u32) -> Option<Arc<dyn crate::devices::pci::vfio::Route>> {
+        Some(Arc::new(IrqfdRoute {
+            irqs: self.irqs.clone(),
+            msis: std::sync::Mutex::new(Vec::new()),
+        }))
+    }
+}
+
+/// MSIs delivered by the backend: KVM_SIGNAL_MSI's, or WHP's as its IOAPIC delivers.
+struct BackendMsi(hv::Irqs);
+
+impl crate::devices::pci::Msi for BackendMsi {
+    fn send(&self, address: u64, data: u32) {
+        if let Err(e) = self.0.msi(address, data) {
+            warn!("an MSI to {address:#x} with {data:#x}: {e}");
+        }
+    }
+}
+
+/// A passed-through function's interrupts by KVM's irqfds (D154): INTx on GSI_PCI,
+/// resampled at the guest's EOI; each MSI on a GSI routed to its message, and which GSI
+/// each eventfd raises.
+#[cfg(target_os = "linux")]
+struct IrqfdRoute {
+    irqs: hv::Irqs,
+    msis: std::sync::Mutex<Vec<(std::os::fd::RawFd, u32)>>,
+}
+
+#[cfg(target_os = "linux")]
+impl crate::devices::pci::vfio::Route for IrqfdRoute {
+    fn intx(&self, trigger: std::os::fd::RawFd, resample: std::os::fd::RawFd) -> Result<(), String> {
+        self.irqs
+            .irqfd(trigger, layout::GSI_PCI, Some(resample))
+            .map_err(|e| e.to_string())
+    }
+
+    fn intx_off(&self, trigger: std::os::fd::RawFd) -> Result<(), String> {
+        self.irqs
+            .irqfd_remove(trigger, layout::GSI_PCI)
+            .map_err(|e| e.to_string())
+    }
+
+    /// An MSI the guest aimed at its local APICs (Intel SDM Vol. 3A §11.11.1: 0xFEE in
+    /// the address's bits 31:20), routed to a GSI of its own.
+    fn msi(&self, event: std::os::fd::RawFd, address: u64, data: u32) -> Result<(), String> {
+        if address >> 20 != 0xfee {
+            return Err(format!("an MSI to {address:#x}: not the local APICs'"));
+        }
+        let gsi = self.irqs.route_msi(address, data).map_err(|e| e.to_string())?;
+        if let Err(e) = self.irqs.irqfd(event, gsi, None) {
+            let _ = self.irqs.unroute_msi(gsi);
+            return Err(e.to_string());
+        }
+        crate::sync::lock(&self.msis).push((event, gsi));
+        Ok(())
+    }
+
+    fn msi_off(&self, event: std::os::fd::RawFd, _address: u64, _data: u32) -> Result<(), String> {
+        let mut msis = crate::sync::lock(&self.msis);
+        let Some(at) = msis.iter().position(|&(e, _)| e == event) else {
+            return Ok(());
+        };
+        let (_, gsi) = msis.swap_remove(at);
+        self.irqs.irqfd_remove(event, gsi).map_err(|e| e.to_string())?;
+        self.irqs.unroute_msi(gsi).map_err(|e| e.to_string())
+    }
+}
+
 impl Interrupt for EdgeLine {
     fn set_level(&self, level: bool) {
         if level && let Err(e) = self.irqs.pulse(self.gsi) {
@@ -166,6 +342,18 @@ struct Assembled {
     power: Arc<Power>,
     vmgenid: VmGenId,
     virtio: Vec<acpi::MmioDevice>,
+    /// Its PCI host bridge, where it has a PCI bus (D153).
+    pci: Option<acpi::PciBridge>,
+    /// Its DAX windows' length in MiB, as its guest's addresses fit them (D189).
+    share_window_mib: u64,
+    /// The GPU's window's length, where it has a GPU (D201).
+    gpu_window: Option<u64>,
+}
+
+/// Where the memory to plug starts (D133): above 4 GiB, at the first GiB boundary after
+/// any high RAM.
+fn plug_at(ram: u64) -> u64 {
+    (layout::MMIO_GAP_END + ram.saturating_sub(layout::MMIO_GAP)).next_multiple_of(GIB)
 }
 
 /// Guest RAM of `memory_mib`, around the MMIO gap.
@@ -186,46 +374,142 @@ fn ram_ranges(memory_mib: u64) -> Result<(u64, Vec<(u64, usize)>), String> {
     Ok((ram, ranges))
 }
 
+/// `gpu`, whether it has a GPU, and its window's length: as its renderer offers, where
+/// `Some(0)`, a boot's; that long, a restore's, where its renderer offers at least as much
+/// (D150, D201).
 fn assemble(
     memory: &Arc<GuestMemory>,
     config: &MachineConfig,
     console: Console,
-    vsock: Option<&Path>,
+    hosts: super::Hosts<'_>,
+    gpu: Option<u64>,
+    pci: super::Pci<'_>,
 ) -> Result<Assembled, String> {
+    if config.nested {
+        return Err("virtualization of a guest's own is not given on x86_64 yet".into());
+    }
+    // The VM before the layout: on WHP each host function it assigns is a device of its
+    // partition first, whose BARs size the PCI bus's 64-bit window (D154).
+    #[cfg(not(hv = "whp"))]
+    let vm = hv::Vm::new(hv::VmConfig { vcpus: config.vcpus }).map_err(|e| e.to_string())?;
+    #[cfg(hv = "whp")]
+    let (vm, assigned, given) = assigning(config, pci.vfio)?;
+    #[cfg(hv = "whp")]
+    let pci = super::Pci { vfio: &given, ..pci };
     let ram = config
         .memory_mib
         .checked_mul(MIB)
         .ok_or_else(|| format!("{} MiB of guest memory", config.memory_mib))?;
-    let vm = hv::Vm::new(hv::VmConfig { vcpus: config.vcpus }).map_err(|e| e.to_string())?;
+    // Device memory (pmem regions) goes above 4 GiB, after any high RAM and after the
+    // memory to plug (`plug_at`), at a GiB boundary.
+    let first = match memory.hotplug() {
+        None => plug_at(ram),
+        Some((gpa, _, len)) => gpa
+            .checked_add(len as u64)
+            .and_then(|end| end.checked_next_multiple_of(GIB))
+            .ok_or("pmem regions overflow the address space")?,
+    };
+    let (regions, end) = super::pmem_regions(config, first)?;
+    // Its writable layer after them (D190).
+    let (layer, end) = super::layer_layout(hosts.layer, end)?;
+    // A GPU's window after it, at a GiB boundary, as long as the renderer says (D201).
+    let gpu = gpu.map(|saw| super::gpu_layout(saw, end)).transpose()?;
+    let end = match &gpu {
+        Some((_, r)) => r
+            .base
+            .checked_add(r.len)
+            .ok_or("the GPU's window overflows the address space")?,
+        None => end,
+    };
+    // The PCI bus's 64-bit window past all of that, as long as its 64-bit BARs need (D154).
+    let mem64 = match pci.mem64()? {
+        Some((len, align)) => Some((
+            end.checked_next_multiple_of(align.max(GIB))
+                .ok_or("the PCI 64-bit window overflows the address space")?,
+            len,
+        )),
+        None => None,
+    };
+    let top = match mem64 {
+        Some((at, len)) => at
+            .checked_add(len)
+            .ok_or("the PCI 64-bit window overflows the address space")?,
+        None => end,
+    };
+    // Every address the guest is given lies within the physical addresses its CPU says it
+    // has: its kernel takes no memory or window past them (Linux's iomem_resource), and the
+    // hypervisor maps none.
+    let bits = vm.phys_bits().map_err(|e| e.to_string())?;
+    // The swap window past all of that (D159), within them, and each share's DAX window
+    // past it (D189).
+    let reach = 1u64.checked_shl(bits).unwrap_or(u64::MAX);
+    let (swap_at, top) = super::swap_layout(config, top, reach)?;
+    let (windows, top, share_window_mib) =
+        super::share_windows(config, top, reach, hosts.window_heads.is_some())?;
+    let window_heads = super::window_heads(&windows, hosts.window_heads)?;
+    if top > 1 << bits {
+        return Err(format!(
+            "the guest's memory and devices end at {top:#x}, past the {bits} address bits its CPU has"
+        ));
+    }
     for (gpa, host, len) in memory.regions() {
         // SAFETY: `memory` outlives the VM: `Machine` and `Running` drop the VM first.
         unsafe { vm.map_ram(host, gpa, len) }.map_err(|e| e.to_string())?;
     }
-    // Device memory (pmem regions) goes above 4 GiB, after any high RAM.
-    let mut regions = Vec::with_capacity(config.pmem.len());
-    let mut next = (layout::MMIO_GAP_END + ram.saturating_sub(layout::MMIO_GAP)).next_multiple_of(GIB);
-    for path in &config.pmem {
-        let region = Arc::new(pmem::Region::open(path)?);
-        let gpa = next;
-        next = gpa
-            .checked_add(region.len() as u64)
-            .ok_or("pmem regions overflow the address space")?;
-        // SAFETY: the region outlives the VM: its device sits on the bus, which
-        // `Machine` and `Running` drop after the VM.
-        unsafe { vm.map_device_memory(region.host(), gpa, region.len(), false) }
+    for (region, gpa) in &regions {
+        // SAFETY: the region outlives the VM: `regions` holds it until after the VM here,
+        // and its device sits on the bus, which `Machine` and `Running` drop after the VM.
+        unsafe { vm.map_device_memory(region.host(), *gpa, region.len(), false) }
             .map_err(|e| e.to_string())?;
-        regions.push((region, gpa));
     }
+    if let Some((l, gpa)) = &layer {
+        super::map_layer(&vm, l, *gpa)?;
+    }
+    if let Some(heads) = &window_heads {
+        super::map_window_heads(&vm, heads)?;
+    }
+    let (hotplug, sizes) = super::hotplug_device(&vm, memory, config)?.unzip();
+    let reporting = super::reporting_device(&vm, config);
+    let swap = super::swap_window(&vm, swap_at)?;
     let irqs = vm.irqs();
     debug!("VM created and RAM mapped");
 
-    let slots = config.disks.len() + regions.len() + usize::from(config.vsock);
-    if slots as u64 > layout::VIRTIO_MMIO_MAX {
-        return Err(format!(
-            "at most {} virtio devices are supported",
-            layout::VIRTIO_MMIO_MAX
-        ));
-    }
+    // A PCI bus takes the last of the virtio devices' GSIs for its INTx (D154).
+    let has_pci = pci.any();
+    let virtio_max = layout::VIRTIO_MMIO_MAX - u64::from(has_pci);
+    // The IOMMU of the PCI functions behind it, last of the virtio devices, the local
+    // APICs' MSI window bypassed (D154; virtio 1.3 §5.13.3: the x86 MSI range,
+    // 0xfee00000 to 0xfeefffff).
+    let (iommu, iommu_device, behind) = match super::iommu_of(pci, Some((0xfee0_0000, 0xfeef_ffff))) {
+        Some((translation, device, endpoints)) => (Some(translation), Some(device), endpoints),
+        None => (None, None, Vec::new()),
+    };
+    let gpu_window = gpu.as_ref().map(|(_, region)| region.len);
+    let gpu = gpu
+        .map(|(renderer, region)| super::gpu_device(&vm, renderer, region, ram))
+        .transpose()?;
+    let (devices, disk_sizes) = super::virtio_devices(
+        config,
+        &regions,
+        layer.as_ref(),
+        &windows,
+        Some(&vm),
+        hosts,
+        gpu.into_iter()
+            .chain(hotplug)
+            .chain(reporting)
+            .chain(
+                swap.clone()
+                    .map(|w| Box::new(pmem::Pmem::swap(w)) as Box<dyn crate::devices::virtio::VirtioDevice>),
+            )
+            .chain(iommu_device)
+            .collect(),
+        virtio_max,
+    )?;
+    // SAFETY: each device's memory stays mapped until the device drops, after
+    // `Running::teardown` has quieted its machine's devices for good.
+    unsafe { memory.give_devices(devices.iter().flat_map(|d| d.device_memory())) }?;
+    let iommu_at = iommu.is_some().then(|| devices.len() - 1);
     let mut bus = Bus {
         pmem: regions
             .iter()
@@ -233,10 +517,9 @@ fn assemble(
             .collect(),
         ..Bus::default()
     };
-    let mut virtio = Vec::with_capacity(slots);
+    let mut virtio = Vec::with_capacity(devices.len());
     // Each virtio device takes the next MMIO window and GSI, in the guest's probe order.
-    let mut add_virtio = |bus: &mut Bus, device: Box<dyn VirtioDevice>| -> Result<(), String> {
-        let i = virtio.len();
+    for (i, device) in devices.into_iter().enumerate() {
         let gsi = layout::GSI_VIRTIO + i as u32;
         let base = layout::VIRTIO_MMIO + i as u64 * layout::VIRTIO_MMIO_STRIDE;
         let line = Arc::new(EdgeLine {
@@ -249,29 +532,32 @@ fn assemble(
             base,
             size: virtio_mmio::WINDOW,
             gsi,
+            iommu: iommu_at == Some(i),
         });
-        Ok(())
-    };
-    for (i, (path, read_only)) in config.disks.iter().enumerate() {
-        let block = Block::open(path, *read_only, &format!("shards-disk{i}"))?;
-        add_virtio(&mut bus, Box::new(block))?;
-    }
-    for (region, gpa) in regions {
-        add_virtio(&mut bus, Box::new(pmem::Pmem::new(region, gpa)))?;
-    }
-    if config.vsock {
-        let path = vsock.ok_or("the machine has a vsock device, but no socket path was given")?;
-        add_virtio(&mut bus, Box::new(vsock::Vsock::new(path, vsock::GUEST_CID)?))?;
     }
     let control = Arc::new(Control::default());
+    control.on_disks(disk_sizes);
+    if let Some(window) = swap {
+        control.on_swap(window);
+    }
+    if let Some((l, gpa)) = layer {
+        control.on_layer(l, gpa);
+    }
+    if let Some(heads) = window_heads {
+        control.on_window_heads(heads);
+    }
+    if let Some(sizes) = sizes {
+        control.on_hotplug(sizes);
+    }
+    // The MAC the VMM was given, before a snapshot's took its device's place: a restored
+    // VM's own, which its guest takes as it resumes (D31, E1).
+    if let Some(net) = hosts.net {
+        control.on_mac(net.mac);
+    }
     bus.mmio.insert(layout::CONTROL, 0x1000, control.clone())?;
 
-    let out: Box<dyn Write + Send> = match console {
-        Console::Stdout => Box::new(platform::stdout_file().map_err(|e| format!("console: {e}"))?),
-        Console::Discard => Box::new(std::io::sink()),
-    };
     let serial = Arc::new(Serial::new(
-        out,
+        super::console_out(console)?,
         Arc::new(LevelLine {
             irqs: irqs.clone(),
             gsi: layout::GSI_COM1,
@@ -290,10 +576,56 @@ fn assemble(
         memory.clone(),
         layout::VMGENID,
         Arc::new(EdgeLine {
-            irqs,
+            irqs: irqs.clone(),
             gsi: layout::GSI_GED,
         }),
     );
+    // A PCI bus (D153, D154): its functions from 00:01.0, their BARs in its window.
+    let mem32 = (layout::PCI_MEM32, layout::PCI_MEM32_SIZE);
+    let lines = has_pci.then(|| PciLines {
+        irqs: irqs.clone(),
+        intx: SharedLine::new(Arc::new(LevelLine {
+            irqs: irqs.clone(),
+            gsi: layout::GSI_PCI,
+        })),
+    });
+    let routes = lines.as_ref().map(|l| l as &dyn super::PciInterrupts);
+    let machine = super::PciMachine {
+        vm: &vm,
+        memory,
+        irqs: routes,
+        iommu: iommu.clone(),
+        #[cfg(hv = "whp")]
+        assigned: std::cell::Cell::new(assigned),
+    };
+    let pci = super::pci_bus(
+        &mut bus.mmio,
+        layout::PCI_ECAM,
+        mem32,
+        mem64,
+        pci,
+        config,
+        machine,
+    )?
+    .map(|routed| {
+        if let Some(hotplug) = routed.hotplug {
+            control.on_plugs(crate::devices::control::Plugs {
+                hotplug,
+                io: hosts.io,
+                unpinnable: super::unpinnable(config),
+                #[cfg(target_os = "linux")]
+                vfio: vm.vfio_host(),
+            });
+        }
+        acpi::PciBridge {
+            ecam: (layout::PCI_ECAM, crate::devices::pci::ECAM_SIZE),
+            mem32,
+            mem64,
+            intx: routed.intx,
+            gsi: layout::GSI_PCI,
+            iommu: behind.iter().filter_map(|&e| u16::try_from(e).ok()).collect(),
+        }
+    });
     Ok(Assembled {
         vm,
         bus,
@@ -302,46 +634,117 @@ fn assemble(
         power,
         vmgenid,
         virtio,
+        pci,
+        share_window_mib,
+        gpu_window,
     })
+}
+
+/// A VM whose partition WHP lets assign the host's functions `vfio` (D154), each made a
+/// device of it, with what its BAR registers read sized; and `vfio` with their 64-bit
+/// BARs' sizes, which the PCI bus's 64-bit window holds ([`super::assigned_functions`]).
+#[cfg(hv = "whp")]
+#[allow(clippy::type_complexity)]
+fn assigning(
+    config: &MachineConfig,
+    vfio: &[super::Vfio],
+) -> Result<(hv::Vm, Vec<(hv::Assigned, [u32; 6])>, Vec<super::Vfio>), String> {
+    let vcpus = hv::VmConfig { vcpus: config.vcpus };
+    if vfio.is_empty() {
+        let vm = hv::Vm::new(vcpus).map_err(|e| e.to_string())?;
+        return Ok((vm, Vec::new(), Vec::new()));
+    }
+    let vm = hv::Vm::assigning(vcpus).map_err(|e| e.to_string())?;
+    let (assigned, given) = super::assigned_functions(&vm, vfio)?;
+    Ok((vm, assigned, given))
 }
 
 pub fn build(cfg: &Config) -> Result<Machine, String> {
     let (ram, ranges) = ram_ranges(cfg.memory_mib)?;
-    let memory = Arc::new(GuestMemory::anonymous(&ranges).map_err(|e| format!("guest RAM: {e}"))?);
+    let mut config = super::machine_config(cfg)?;
+    let layer = super::boot_layer(cfg)?;
+    config.layer_mib = layer.as_ref().map_or(0, |l| l.data_len() >> 20);
+    let memory = Arc::new(super::guest_memory(&ranges, &config, plug_at(ram))?);
+    // Before anything touches it: on huge pages, its first 2 MiB would be resident whole
+    // for its boot structures' few pages (layout::SPARSE, PM M157).
+    memory
+        .small_pages(0, layout::SPARSE)
+        .map_err(|e| format!("guest RAM: {e}"))?;
     let low_ram_end = ram.min(layout::MMIO_GAP);
 
-    let kernel_file = File::open(&cfg.kernel).map_err(|e| format!("{}: {e}", cfg.kernel.display()))?;
-    let kernel = boot::load_kernel(&memory, &kernel_file, low_ram_end).map_err(|e| e.to_string())?;
-    debug!("kernel loaded");
-
-    let config = MachineConfig {
-        vcpus: cfg.vcpus,
-        memory_mib: cfg.memory_mib,
-        disks: cfg.disks.iter().map(|d| (d.path.clone(), d.read_only)).collect(),
-        pmem: cfg.pmem.clone(),
-        vsock: cfg.vsock.is_some(),
-    };
-    let a = assemble(&memory, &config, cfg.console, cfg.vsock.as_deref())?;
-    for (addr, bytes) in acpi::build(cfg.vcpus, &a.virtio)?.blobs {
-        memory.write(addr, &bytes).map_err(|e| e.to_string())?;
-    }
-    a.vmgenid.write_new_id()?;
-
-    let read = |p: &PathBuf| std::fs::read(p).map_err(|e| format!("{}: {e}", p.display()));
-    let initrd_bytes = match (&cfg.initrd, &cfg.init) {
-        (Some(_), Some(_)) => return Err("--initrd and --init are mutually exclusive".into()),
-        (Some(p), None) => Some(read(p)?),
-        (None, Some(p)) => Some(initramfs::with_init(&read(p)?)),
-        (None, None) => None,
-    };
-    let initrd = match initrd_bytes {
+    let kernel_file = crate::platform::open_input(&cfg.kernel, false)
+        .map_err(|e| format!("{}: {e}", cfg.kernel.display()))?;
+    // Where the kernel and the initrd go, from the kernel's headers and the initrd's
+    // length: the initrd between the kernel and the end of low RAM, at its top (boot.rs,
+    // place_initrd). Their bytes are copied in as the machine is made.
+    let (kernel, spans) = boot::plan_kernel(&kernel_file, low_ram_end).map_err(|e| e.to_string())?;
+    // On huge pages where its boot touches much (D29, PM M279).
+    let image = spans.iter().map(|s| s.gpa).min().unwrap_or(kernel.end);
+    super::boot_pages(&memory, &ranges, image..kernel.end)?;
+    let mut pieces: Vec<super::Piece> = spans
+        .into_iter()
+        .map(|span| super::Piece {
+            span,
+            file: &kernel_file,
+            path: &cfg.kernel,
+        })
+        .collect();
+    let initrd_file = super::initrd(cfg, low_ram_end.saturating_sub(kernel.end))?;
+    let initrd = match &initrd_file {
         None => None,
-        Some(bytes) => Some(
-            boot::load_initrd(&memory, &bytes, kernel.end, low_ram_end.min(layout::MMIO_GAP))
-                .map_err(|e| e.to_string())?,
-        ),
+        Some(i) => {
+            let start = boot::place_initrd(i.len(), kernel.end, low_ram_end).map_err(|e| e.to_string())?;
+            pieces.push(i.place(&memory, start)?);
+            Some((start, i.len()))
+        }
     };
-    let cmdline = format!("{} {MACHINE_CMDLINE}", cfg.cmdline);
+    let a = super::beside_copy(&memory, &pieces, || {
+        let hosts = super::Hosts {
+            vsock: cfg.vsock.as_ref(),
+            net: cfg.net.as_ref(),
+            shares: &cfg.shares,
+            join: cfg.join,
+            join_share: cfg.join_share,
+            io: cfg.io_limit,
+            layer: layer.as_ref(),
+            window_heads: None,
+        };
+        let a = assemble(
+            &memory,
+            &config,
+            cfg.console,
+            hosts,
+            cfg.gpu.then_some(0),
+            super::Pci {
+                test: &cfg.pci_test,
+                vfio: &cfg.vfio,
+                slots: cfg.pci_slots,
+                slots_iommu: cfg.pci_slots_iommu,
+            },
+        )?;
+        let tables = acpi::build(cfg.vcpus, &a.virtio, a.pci.as_ref())?.blobs;
+        let access = memory.access().map_err(|e| e.to_string())?;
+        for (addr, bytes) in tables {
+            access.write(addr, &bytes).map_err(|e| e.to_string())?;
+        }
+        drop(access);
+        a.vmgenid.write_new_id()?;
+        Ok(a)
+    })?;
+    super::huge_pages_when_init_runs(&a.control, &memory);
+    debug!("kernel and initrd copied");
+    // Its DAX windows' length as its guest's addresses fit them, which a snapshot keeps,
+    // and its GPU's window's (D150).
+    config.share_window_mib = a.share_window_mib;
+    config.gpu = a.gpu_window;
+    let told = super::kernel_cmdline(cfg);
+    let mut cmdline = match &a.pci {
+        Some(_) => format!("{told} {MACHINE_CMDLINE}"),
+        None => format!("{told} {MACHINE_CMDLINE} {NO_PCI_CMDLINE}"),
+    };
+    if cfg!(hv = "whp") {
+        cmdline = format!("{cmdline} {ONE_AT_A_TIME_CMDLINE}");
+    }
     let boot_state = boot::write_boot_state(
         &memory,
         kernel.entry,
@@ -350,6 +753,7 @@ pub fn build(cfg: &Config) -> Result<Machine, String> {
             ram,
             initrd,
             rsdp: layout::RSDP,
+            pci_ecam: a.pci.as_ref().map(|p| p.ecam),
         },
     )
     .map_err(|e| e.to_string())?;
@@ -375,10 +779,10 @@ pub fn restore(
     snap: &Snapshot,
     memory_file: &File,
     console: Console,
-    vsock: Option<&Path>,
+    hosts: super::Hosts<'_>,
     working_set: Vec<hv::Touch>,
 ) -> Result<Machine, String> {
-    super::check_vsock(snap, vsock)?;
+    super::check_hosts(snap, hosts)?;
     let (vm_state, vcpus) = decode_state(&snap.arch)?;
     if vcpus.len() != snap.config.vcpus as usize {
         return Err(format!(
@@ -387,14 +791,36 @@ pub fn restore(
             snap.config.vcpus
         ));
     }
-    let (_, ranges) = ram_ranges(snap.config.memory_mib)?;
-    let memory =
-        Arc::new(GuestMemory::from_file(&ranges, memory_file).map_err(|e| format!("snapshot memory: {e}"))?);
-    let a = assemble(&memory, &snap.config, console, vsock)?;
-    // Diagnostic (branch kvm-ws-ab): SHARDS_KVM_PREFETCH=none|copy|full (default full).
-    let mode = std::env::var("SHARDS_KVM_PREFETCH").unwrap_or_default();
-    let working_set = if mode == "none" { Vec::new() } else { working_set };
-    if let Err(e) = copy_written(&memory, &working_set) {
+    let (ram, ranges) = ram_ranges(snap.config.memory_mib)?;
+    let memory = Arc::new(super::restored_memory(&ranges, memory_file, snap, plug_at(ram))?);
+    // A machine with functions on its PCI bus saves no snapshot, so a restored one has
+    // none; it has the slots its snapshot's had, empty, as every snapshot's are (D214).
+    let a = assemble(
+        &memory,
+        &snap.config,
+        console,
+        hosts,
+        snap.config.gpu,
+        super::Pci {
+            slots: snap.config.pci_slots,
+            ..super::Pci::default()
+        },
+    )?;
+    super::replug(&memory, snap, memory_file, &a.vm)?;
+    let guest: Vec<(u64, u64)> = memory
+        .regions()
+        .map(|(gpa, _, len)| (gpa, len as u64))
+        .chain(a.bus.pmem.iter().map(|(gpa, region)| (*gpa, region.len() as u64)))
+        .collect();
+    let working_set = super::usable_working_set(working_set, PAGE, &guest);
+    // Before the guest touches any of it, and for the machine's life: a userfaultfd let go
+    // of resets its ranges' page tables, which KVM's MMU notifier takes for its stage 2
+    // gone (mm/userfaultfd.c, `userfaultfd_clear_vma`: `uffd_wp_range`; PM M312), and a
+    // working set mapped ahead with it held off for its mapping alone was faulted in again.
+    let around = platform::FaultAroundOff::over(&mapped::host_ranges(&memory, &a.bus.pmem));
+    // WHP's populate copies the written pages itself, in the host's kernel ([`pre_fault`]).
+    #[cfg(not(hv = "whp"))]
+    if let Err(e) = mapped::copy_written(&memory, &working_set) {
         warn!("{e}; the guest copies the pages it writes as it writes them");
     }
     Ok(Machine {
@@ -410,71 +836,56 @@ pub fn restore(
             vm: vm_state,
             devices: snap.devices.clone(),
             working_set,
-            prefetched: std::sync::OnceLock::new(),
+            around,
         }),
         config: snap.config.clone(),
     })
 }
 
-/// Makes the private copies of RAM that the guest wrote while its working set was
-/// recorded, as its writes would make them: KVM then maps these pages writable ahead,
-/// where a write to a page mapped read-only would fault, copy, and fault again.
-fn copy_written(memory: &GuestMemory, working_set: &[hv::Touch]) -> Result<(), String> {
-    let written = working_set.iter().filter(|t| t.written).map(|t| t.gpa);
-    for (gpa, len) in runs(written) {
-        let at = |e: &dyn std::fmt::Display| format!("copying written pages at {gpa:#x}+{len:#x}: {e}");
-        let len = usize::try_from(len).map_err(|e| at(&e))?;
-        let host = memory.host_ptr(gpa, len).map_err(|e| at(&e))?;
-        platform::populate_writable(host, len).map_err(|e| at(&e))?;
-    }
-    Ok(())
+/// [`pre_fault`] on WHP: every run of `working_set` in one call, the rest's for reading, then
+/// its written pages' for writing, which makes their copies in the host's kernel: no copy
+/// made from the VM process and no call a run, for about what the copies and the calls cost
+/// (PM M415); the copies' said as `mapped::copy_written` says them on the other backends. A page that cannot be mapped
+/// ahead is only a fault later, so a call that fails is made again a run at a time
+/// ([`mapped::every_run`]).
+#[cfg(hv = "whp")]
+fn pre_fault(vcpu: &hv::Vcpu, working_set: &[hv::Touch]) -> (usize, usize) {
+    mapped::populate(vcpu, working_set)
 }
 
-/// The runs of consecutive pages among `pages`, as `(gpa, len)`, in order.
-fn runs(pages: impl Iterator<Item = u64>) -> Vec<(u64, u64)> {
-    let mut pages: Vec<u64> = pages.map(|gpa| gpa & !(PAGE - 1)).collect();
-    pages.sort_unstable();
-    pages.dedup();
-    let mut runs: Vec<(u64, u64)> = Vec::new();
-    for gpa in pages {
-        match runs.last_mut() {
-            Some((start, len)) if start.checked_add(*len) == Some(gpa) => *len += PAGE,
-            _ => runs.push((gpa, PAGE)),
+/// Maps every page of `working_set` into the stage-2 tables; how many it mapped, and in how
+/// many runs of consecutive pages. A page that cannot be mapped ahead is only a fault later:
+/// every run it can ([`mapped::every_run`]).
+#[cfg(not(hv = "whp"))]
+fn pre_fault(vcpu: &hv::Vcpu, working_set: &[hv::Touch]) -> (usize, usize) {
+    let (mut ahead, mut unable) = (0, false);
+    let runs = mapped::runs(working_set.iter().map(|t| t.gpa));
+    let count = runs.len();
+    let done = mapped::every_run(runs, |gpa, len| {
+        if unable {
+            return Ok(());
         }
-    }
-    runs
-}
-
-/// Maps every page of `working_set` into the stage-2 tables; how many it mapped. A page
-/// that cannot be mapped ahead is only a fault later.
-fn pre_fault(vcpu: &hv::Vcpu, working_set: &[hv::Touch]) -> usize {
-    let mut mapped = 0;
-    for (gpa, len) in runs(working_set.iter().map(|t| t.gpa)) {
         match vcpu.pre_fault(gpa, len) {
-            Ok(true) => mapped += (len / PAGE) as usize,
-            Ok(false) => {
-                debug!("KVM cannot map memory ahead here (Linux 6.10+, with two-dimensional paging)");
-                break;
-            }
-            Err(e) => {
-                warn!("mapping the working set ahead at {gpa:#x}+{len:#x}: {e}");
-                break;
-            }
+            Ok(true) => ahead += (len / PAGE) as usize,
+            Ok(false) => unable = true,
+            Err(e) => return Err(e.to_string()),
         }
+        Ok(())
+    });
+    if unable {
+        debug!("KVM cannot map memory ahead here (Linux 6.10+, with two-dimensional paging)");
     }
-    mapped
+    if let Err(e) = done {
+        warn!("mapping the working set ahead {e}: the guest faults those pages in");
+    }
+    (ahead, count)
 }
 
 /// Stage-2 pages, as working sets record them: the host's pages.
 pub const PAGE: u64 = 4 << 10;
 
-/// What records a working set: a restored guest's memory, whose host mappings start
-/// empty, kept mapped until the recording ends, even if the VM stops first.
-#[derive(Debug)]
-pub struct Recorder {
-    memory: Arc<GuestMemory>,
-    pmem: Vec<(u64, Arc<pmem::Region>)>,
-}
+/// What records a working set: the pages the host maps (`mapped`).
+pub type Recorder = mapped::Recorder;
 
 /// None: on KVM, the run that saves a template records nothing; its first warm restore
 /// does ([`recorder`], `vm::RESTORES_RECORD`).
@@ -482,94 +893,98 @@ pub fn record(_vm: &hv::Vm) -> Result<Option<Recorder>, String> {
     Ok(None)
 }
 
-/// Records what restored machine `m` touches: its RAM is mapped copy-on-write from the
-/// snapshot's file and its pmem from its images, afresh, so the host maps a page only once
-/// the guest (or a device) touches it; what the host maps when the recording ends is
-/// what the guest touched, and a private copy of RAM is a page it wrote. None where the
-/// host's pages are not the working set's.
+/// Records what restored machine `m` touches, from what its host maps of its RAM and pmem
+/// ([`mapped::recorder`]).
 pub fn recorder(m: &Machine) -> Option<Recorder> {
-    let page = platform::page_size().ok()? as u64;
-    (page == PAGE).then(|| Recorder {
-        memory: m.memory.clone(),
-        pmem: m.bus.pmem.clone(),
-    })
+    mapped::recorder(&m.memory, &m.bus.pmem)
 }
 
-/// The pages touched since the restore: those the host maps, written where it holds a
-/// private copy of RAM. pmem is read-only, so a page there that is not the file's is the
-/// shared zero page, past the end of the file.
+/// The pages touched since the restore ([`mapped::recorded`]).
 pub fn recorded(recorder: &Recorder) -> Result<Vec<hv::Touch>, String> {
-    let regions = recorder
-        .memory
-        .regions()
-        .map(|(gpa, host, len)| (gpa, host, len, true))
-        .chain(
-            recorder
-                .pmem
-                .iter()
-                .map(|(gpa, r)| (*gpa, r.host(), r.len(), false)),
-        );
-    let mut touched = Vec::new();
-    for (gpa, host, len, writable) in regions {
-        let mapped =
-            platform::mapped_pages(host, len).map_err(|e| format!("the pages mapped at {gpa:#x}: {e}"))?;
-        touched.extend(mapped.into_iter().map(|(i, copied)| hv::Touch {
-            gpa: gpa + i as u64 * PAGE,
-            written: copied && writable,
-        }));
-    }
-    Ok(touched)
+    mapped::recorded(recorder)
 }
 
-/// How many pages of its working set a restored machine mapped ahead.
-pub fn prefetched(start: &Start) -> usize {
-    match start {
-        Start::Restore(r) => r.prefetched.get().copied().unwrap_or(0),
-        Start::Boot(_) => 0,
+/// What a machine keeps of its [`Start`] once its vCPUs are set up, for its release and
+/// its diagnostics; the rest is dropped (audit D03).
+#[derive(Debug)]
+pub struct Kept {
+    /// A restore's: vCPU 0's TSC, and where the snapshot has it start.
+    tsc: Option<(hv::Tsc, Option<hv::TscStart>)>,
+    /// How many pages of its working set a restored machine mapped ahead.
+    prefetched: usize,
+    /// [`Restored::around`], held for the machine's life.
+    _around: Option<platform::FaultAroundOff>,
+}
+
+/// What the start leaves the running machine, once every vCPU is set up.
+pub fn keep(rest: Option<&mut Remainder>, first: &SetUp) -> Kept {
+    let (start, around) = match rest {
+        Some(r) => (Some(r.tsc_start), r.around.take()),
+        None => (None, None),
+    };
+    Kept {
+        tsc: start.and_then(|start| first.tsc.clone().map(|tsc| (tsc, start))),
+        prefetched: first.prefetched,
+        _around: around,
     }
+}
+
+/// The bytes a restore's start holds, by part: its vCPU states (their inline size),
+/// its interrupt controller and device state, and its working set.
+pub fn start_bytes(start: &Start) -> Option<[usize; 3]> {
+    let Start::Restore(r) = start else {
+        return None;
+    };
+    Some([
+        r.vcpus.capacity() * std::mem::size_of::<hv::VcpuState>(),
+        r.devices.capacity(),
+        r.working_set.capacity() * std::mem::size_of::<hv::Touch>(),
+    ])
+}
+
+pub fn prefetched(kept: &Kept) -> usize {
+    kept.prefetched
 }
 
 /// Creates vCPU `index` and puts it where `start` says: the boot protocol's registers for
 /// the boot vCPU, or its restored state.
-pub fn setup_vcpu(vm: &hv::Vm, index: usize, start: &Start) -> Result<hv::Vcpu, String> {
+pub fn setup_vcpu(vm: &hv::Vm, index: usize, start: VcpuStart) -> Result<(hv::Vcpu, SetUp), String> {
     let mut vcpu = vm.create_vcpu(index).map_err(|e| e.to_string())?;
+    let mut set_up = SetUp::default();
     match start {
-        Start::Boot(boot) => {
-            if index == 0 {
-                vcpu.boot(boot).map_err(|e| e.to_string())?;
+        VcpuStart::Boot(boot) => {
+            if let Some(boot) = boot {
+                vcpu.boot(&boot).map_err(|e| e.to_string())?;
             }
         }
-        Start::Restore(r) => {
-            let state = r
-                .vcpus
-                .get(index)
-                .ok_or_else(|| format!("the snapshot has no vCPU {index}"))?;
-            vcpu.restore_state(state).map_err(|e| e.to_string())?;
-            // After the state, which sets the paging mode KVM maps for.
-            if index == 0
-                && !r.working_set.is_empty()
-                && std::env::var("SHARDS_KVM_PREFETCH").as_deref() != Ok("copy")
-            {
-                let t0 = crate::log::uptime_us();
-                let n = pre_fault(&vcpu, &r.working_set);
-                debug!(
-                    "mapped {n} of {} working-set pages ahead in {} us",
-                    r.working_set.len(),
-                    crate::log::uptime_us().saturating_sub(t0)
-                );
-                let _ = r.prefetched.set(n);
+        VcpuStart::Restore { state, working_set } => {
+            vcpu.restore_state(&state).map_err(|e| e.to_string())?;
+            if let Some(working_set) = working_set {
+                set_up.tsc = vcpu.tsc();
+                // After the state, which sets the paging mode KVM maps for.
+                if !working_set.is_empty() {
+                    let t0 = crate::log::uptime_us();
+                    let (prefetched, runs) = pre_fault(&vcpu, &working_set);
+                    set_up.prefetched = prefetched;
+                    info!(
+                        "mapped {} of {} working-set pages ahead, in {runs} runs, in {} us",
+                        set_up.prefetched,
+                        working_set.len(),
+                        crate::log::uptime_us().saturating_sub(t0)
+                    );
+                }
             }
         }
     }
-    Ok(vcpu)
+    Ok((vcpu, set_up))
 }
 
 /// Completes a restore once every vCPU exists and before any runs: the interrupt
 /// controllers and kvmclock, then the devices, which re-raise their lines as they
 /// restore, then a new generation ID, so the guest reseeds its RNG before it runs
 /// anything that uses it (as the arm64 machine orders them).
-pub fn finish(vm: &hv::Vm, bus: &Bus, vmgenid: &Finish, start: &Start) -> Result<(), String> {
-    let Start::Restore(r) = start else {
+pub fn finish(vm: &hv::Vm, bus: &Bus, vmgenid: &Finish, rest: Option<&mut Remainder>) -> Result<(), String> {
+    let Some(r) = rest else {
         return Ok(());
     };
     vm.restore_state(&r.vm).map_err(|e| e.to_string())?;
@@ -579,13 +994,21 @@ pub fn finish(vm: &hv::Vm, bus: &Bus, vmgenid: &Finish, start: &Start) -> Result
     vmgenid.new_generation()
 }
 
-/// The TSC and kvmclock come back with the state; nothing waits for the release.
-pub fn release_offset(_start: &Start) -> Option<u64> {
-    None
+/// For a restore that held the vCPUs' TSCs back: starts vCPU 0's at the value it saved,
+/// now, and returns what every vCPU adds to the offset it saved, so that each TSC goes
+/// on from the snapshot with no jump, as far from the others' as it was (as KVM documents
+/// restoring TSCs, Documentation/virt/kvm/devices/vcpu.rst §4, less the time between,
+/// which a snapshot's guest does not see). kvmclock came back with the VM's state.
+pub fn release_offset(kept: &Kept) -> Result<Option<u64>, String> {
+    match &kept.tsc {
+        Some((tsc, Some(start))) => tsc.restart(*start).map_err(|e| format!("the TSC: {e}")),
+        Some((_, None)) => Err("the TSC: the snapshot kept no TSC to start from".into()),
+        None => Ok(None),
+    }
 }
 
-pub fn set_counter_offset(_vcpu: &mut hv::Vcpu, _offset: u64) -> Result<(), String> {
-    Ok(())
+pub fn set_counter_offset(vcpu: &mut hv::Vcpu, offset: u64) -> Result<(), String> {
+    vcpu.resume_tsc(offset).map_err(|e| format!("the TSC: {e}"))
 }
 
 /// One vCPU's contribution to a snapshot, captured on its own thread.
@@ -609,24 +1032,8 @@ fn decode_state(bytes: &[u8]) -> Result<(hv::VmState, Vec<hv::VcpuState>), Strin
     let mut r = Reader::new(bytes);
     let vm = hv::VmState::decode(&mut r).map_err(|e| format!("snapshot VM state: {e}"))?;
     let vcpus = r
-        .seq(254, hv::VcpuState::decode)
+        .seq(254, 1, hv::VcpuState::decode)
         .map_err(|e| format!("snapshot vCPU state: {e}"))?;
     r.finish().map_err(|e| format!("snapshot state: {e}"))?;
     Ok((vm, vcpus))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn runs_join_consecutive_pages_once_each() {
-        let last = !(PAGE - 1);
-        let pages = [0x3000, 0x1000, 0x2000, 0x2000, 0x2fff, 0x9000, 0x8000, last];
-        assert_eq!(
-            runs(pages.into_iter()),
-            [(0x1000, 0x3000), (0x8000, 0x2000), (last, PAGE)]
-        );
-        assert_eq!(runs(std::iter::empty()), []);
-    }
 }

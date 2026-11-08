@@ -1,0 +1,4986 @@
+[
+ {
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "$A ${A} ${A}x $Ax ${A:-d} ${B:-d} ${C:-d} ${B-d} ${C-d}"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A:+set} ${B:+set} ${C:+set} ${A+set} ${B+set} ${C+set}"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${C?} ${C?gone $A}"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${B:?} ${B:?empty}"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A:?x}"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${FILE%.*} ${FILE%%.*} ${FILE#*.} ${FILE##*.} ${FILE%.gz} ${FILE#arch}"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${PATHX/usr/opt} ${PATHX//usr/opt} ${PATHX//\\//:} ${A/l*/L} ${A//?/x}"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A/[/x}"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A%\\x}"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A:%x}"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A:#x}"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A;}"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A:-x"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A/x"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A/x/y"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${}"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${:}"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${{A}}"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "$"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "$$ $? $# $@ $* $- $! $0 $1x $12x"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${U} $U ${U/ï/i}"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "'$A' \"$A\" \"'$A'\" '\"$A\"'"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "a\\ b \"c\\\"d\" 'e\\'"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "he\\$A \"he\\$A\" he\\\\$A"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "$SP \"$SP\" x${SP}y"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "<<EOF <<-  X < y"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "a <<'E O' b"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "\\"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "\""
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "'"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A:-\"x y\"}"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A:-$B}${C:-${A}}"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A#\"he\"} ${A%'lo'}"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "tab\there"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A//l/\\$}"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A/l/$&}"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A//l/${B}}"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": true,
+  "raw_escapes": true,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "$A ${A} ${A}x $Ax ${A:-d} ${B:-d} ${C:-d} ${B-d} ${C-d}"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": true,
+  "raw_escapes": true,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A:+set} ${B:+set} ${C:+set} ${A+set} ${B+set} ${C+set}"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": true,
+  "raw_escapes": true,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${C?} ${C?gone $A}"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": true,
+  "raw_escapes": true,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${B:?} ${B:?empty}"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": true,
+  "raw_escapes": true,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A:?x}"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": true,
+  "raw_escapes": true,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${FILE%.*} ${FILE%%.*} ${FILE#*.} ${FILE##*.} ${FILE%.gz} ${FILE#arch}"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": true,
+  "raw_escapes": true,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${PATHX/usr/opt} ${PATHX//usr/opt} ${PATHX//\\//:} ${A/l*/L} ${A//?/x}"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": true,
+  "raw_escapes": true,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A/[/x}"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": true,
+  "raw_escapes": true,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A%\\x}"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": true,
+  "raw_escapes": true,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A:%x}"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": true,
+  "raw_escapes": true,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A:#x}"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": true,
+  "raw_escapes": true,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A;}"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": true,
+  "raw_escapes": true,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": true,
+  "raw_escapes": true,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A:-x"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": true,
+  "raw_escapes": true,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A/x"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": true,
+  "raw_escapes": true,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A/x/y"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": true,
+  "raw_escapes": true,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${}"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": true,
+  "raw_escapes": true,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${:}"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": true,
+  "raw_escapes": true,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${{A}}"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": true,
+  "raw_escapes": true,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "$"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": true,
+  "raw_escapes": true,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "$$ $? $# $@ $* $- $! $0 $1x $12x"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": true,
+  "raw_escapes": true,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${U} $U ${U/ï/i}"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": true,
+  "raw_escapes": true,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "'$A' \"$A\" \"'$A'\" '\"$A\"'"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": true,
+  "raw_escapes": true,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "a\\ b \"c\\\"d\" 'e\\'"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": true,
+  "raw_escapes": true,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "he\\$A \"he\\$A\" he\\\\$A"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": true,
+  "raw_escapes": true,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "$SP \"$SP\" x${SP}y"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": true,
+  "raw_escapes": true,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "<<EOF <<-  X < y"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": true,
+  "raw_escapes": true,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "a <<'E O' b"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": true,
+  "raw_escapes": true,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "\\"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": true,
+  "raw_escapes": true,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "\""
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": true,
+  "raw_escapes": true,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "'"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": true,
+  "raw_escapes": true,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A:-\"x y\"}"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": true,
+  "raw_escapes": true,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A:-$B}${C:-${A}}"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": true,
+  "raw_escapes": true,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A#\"he\"} ${A%'lo'}"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": true,
+  "raw_escapes": true,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "tab\there"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": true,
+  "raw_escapes": true,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A//l/\\$}"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": true,
+  "raw_escapes": true,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A/l/$&}"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": true,
+  "raw_escapes": true,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A//l/${B}}"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": true,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "$A ${A} ${A}x $Ax ${A:-d} ${B:-d} ${C:-d} ${B-d} ${C-d}"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": true,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A:+set} ${B:+set} ${C:+set} ${A+set} ${B+set} ${C+set}"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": true,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${C?} ${C?gone $A}"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": true,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${B:?} ${B:?empty}"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": true,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A:?x}"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": true,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${FILE%.*} ${FILE%%.*} ${FILE#*.} ${FILE##*.} ${FILE%.gz} ${FILE#arch}"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": true,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${PATHX/usr/opt} ${PATHX//usr/opt} ${PATHX//\\//:} ${A/l*/L} ${A//?/x}"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": true,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A/[/x}"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": true,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A%\\x}"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": true,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A:%x}"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": true,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A:#x}"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": true,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A;}"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": true,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": true,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A:-x"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": true,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A/x"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": true,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A/x/y"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": true,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${}"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": true,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${:}"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": true,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${{A}}"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": true,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "$"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": true,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "$$ $? $# $@ $* $- $! $0 $1x $12x"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": true,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${U} $U ${U/ï/i}"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": true,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "'$A' \"$A\" \"'$A'\" '\"$A\"'"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": true,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "a\\ b \"c\\\"d\" 'e\\'"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": true,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "he\\$A \"he\\$A\" he\\\\$A"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": true,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "$SP \"$SP\" x${SP}y"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": true,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "<<EOF <<-  X < y"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": true,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "a <<'E O' b"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": true,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "\\"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": true,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "\""
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": true,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "'"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": true,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A:-\"x y\"}"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": true,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A:-$B}${C:-${A}}"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": true,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A#\"he\"} ${A%'lo'}"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": true,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "tab\there"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": true,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A//l/\\$}"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": true,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A/l/$&}"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": true,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A//l/${B}}"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": true,
+  "raw_escapes": false,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "$A ${A} ${A}x $Ax ${A:-d} ${B:-d} ${C:-d} ${B-d} ${C-d}"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": true,
+  "raw_escapes": false,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A:+set} ${B:+set} ${C:+set} ${A+set} ${B+set} ${C+set}"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": true,
+  "raw_escapes": false,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${C?} ${C?gone $A}"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": true,
+  "raw_escapes": false,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${B:?} ${B:?empty}"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": true,
+  "raw_escapes": false,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A:?x}"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": true,
+  "raw_escapes": false,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${FILE%.*} ${FILE%%.*} ${FILE#*.} ${FILE##*.} ${FILE%.gz} ${FILE#arch}"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": true,
+  "raw_escapes": false,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${PATHX/usr/opt} ${PATHX//usr/opt} ${PATHX//\\//:} ${A/l*/L} ${A//?/x}"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": true,
+  "raw_escapes": false,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A/[/x}"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": true,
+  "raw_escapes": false,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A%\\x}"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": true,
+  "raw_escapes": false,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A:%x}"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": true,
+  "raw_escapes": false,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A:#x}"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": true,
+  "raw_escapes": false,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A;}"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": true,
+  "raw_escapes": false,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": true,
+  "raw_escapes": false,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A:-x"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": true,
+  "raw_escapes": false,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A/x"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": true,
+  "raw_escapes": false,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A/x/y"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": true,
+  "raw_escapes": false,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${}"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": true,
+  "raw_escapes": false,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${:}"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": true,
+  "raw_escapes": false,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${{A}}"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": true,
+  "raw_escapes": false,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "$"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": true,
+  "raw_escapes": false,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "$$ $? $# $@ $* $- $! $0 $1x $12x"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": true,
+  "raw_escapes": false,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${U} $U ${U/ï/i}"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": true,
+  "raw_escapes": false,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "'$A' \"$A\" \"'$A'\" '\"$A\"'"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": true,
+  "raw_escapes": false,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "a\\ b \"c\\\"d\" 'e\\'"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": true,
+  "raw_escapes": false,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "he\\$A \"he\\$A\" he\\\\$A"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": true,
+  "raw_escapes": false,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "$SP \"$SP\" x${SP}y"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": true,
+  "raw_escapes": false,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "<<EOF <<-  X < y"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": true,
+  "raw_escapes": false,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "a <<'E O' b"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": true,
+  "raw_escapes": false,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "\\"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": true,
+  "raw_escapes": false,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "\""
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": true,
+  "raw_escapes": false,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "'"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": true,
+  "raw_escapes": false,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A:-\"x y\"}"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": true,
+  "raw_escapes": false,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A:-$B}${C:-${A}}"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": true,
+  "raw_escapes": false,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A#\"he\"} ${A%'lo'}"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": true,
+  "raw_escapes": false,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "tab\there"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": true,
+  "raw_escapes": false,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A//l/\\$}"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": true,
+  "raw_escapes": false,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A/l/$&}"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": true,
+  "raw_escapes": false,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A//l/${B}}"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "$A ${A} ${A}x $Ax ${A:-d} ${B:-d} ${C:-d} ${B-d} ${C-d}"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A:+set} ${B:+set} ${C:+set} ${A+set} ${B+set} ${C+set}"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${C?} ${C?gone $A}"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${B:?} ${B:?empty}"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A:?x}"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${FILE%.*} ${FILE%%.*} ${FILE#*.} ${FILE##*.} ${FILE%.gz} ${FILE#arch}"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${PATHX/usr/opt} ${PATHX//usr/opt} ${PATHX//`//:} ${A/l*/L} ${A//?/x}"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A/[/x}"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A%`x}"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A:%x}"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A:#x}"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A;}"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A:-x"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A/x"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A/x/y"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${}"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${:}"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${{A}}"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "$"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "$$ $? $# $@ $* $- $! $0 $1x $12x"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${U} $U ${U/ï/i}"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "'$A' \"$A\" \"'$A'\" '\"$A\"'"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "a` b \"c`\"d\" 'e`'"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "he`$A \"he`$A\" he``$A"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "$SP \"$SP\" x${SP}y"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "<<EOF <<-  X < y"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "a <<'E O' b"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "`"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "\""
+ },
+ {
+  "escape": "`",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "'"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A:-\"x y\"}"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A:-$B}${C:-${A}}"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A#\"he\"} ${A%'lo'}"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "tab\there"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A//l/`$}"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A/l/$&}"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A//l/${B}}"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": true,
+  "raw_escapes": true,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "$A ${A} ${A}x $Ax ${A:-d} ${B:-d} ${C:-d} ${B-d} ${C-d}"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": true,
+  "raw_escapes": true,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A:+set} ${B:+set} ${C:+set} ${A+set} ${B+set} ${C+set}"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": true,
+  "raw_escapes": true,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${C?} ${C?gone $A}"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": true,
+  "raw_escapes": true,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${B:?} ${B:?empty}"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": true,
+  "raw_escapes": true,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A:?x}"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": true,
+  "raw_escapes": true,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${FILE%.*} ${FILE%%.*} ${FILE#*.} ${FILE##*.} ${FILE%.gz} ${FILE#arch}"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": true,
+  "raw_escapes": true,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${PATHX/usr/opt} ${PATHX//usr/opt} ${PATHX//`//:} ${A/l*/L} ${A//?/x}"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": true,
+  "raw_escapes": true,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A/[/x}"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": true,
+  "raw_escapes": true,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A%`x}"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": true,
+  "raw_escapes": true,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A:%x}"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": true,
+  "raw_escapes": true,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A:#x}"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": true,
+  "raw_escapes": true,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A;}"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": true,
+  "raw_escapes": true,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": true,
+  "raw_escapes": true,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A:-x"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": true,
+  "raw_escapes": true,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A/x"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": true,
+  "raw_escapes": true,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A/x/y"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": true,
+  "raw_escapes": true,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${}"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": true,
+  "raw_escapes": true,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${:}"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": true,
+  "raw_escapes": true,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${{A}}"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": true,
+  "raw_escapes": true,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "$"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": true,
+  "raw_escapes": true,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "$$ $? $# $@ $* $- $! $0 $1x $12x"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": true,
+  "raw_escapes": true,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${U} $U ${U/ï/i}"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": true,
+  "raw_escapes": true,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "'$A' \"$A\" \"'$A'\" '\"$A\"'"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": true,
+  "raw_escapes": true,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "a` b \"c`\"d\" 'e`'"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": true,
+  "raw_escapes": true,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "he`$A \"he`$A\" he``$A"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": true,
+  "raw_escapes": true,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "$SP \"$SP\" x${SP}y"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": true,
+  "raw_escapes": true,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "<<EOF <<-  X < y"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": true,
+  "raw_escapes": true,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "a <<'E O' b"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": true,
+  "raw_escapes": true,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "`"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": true,
+  "raw_escapes": true,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "\""
+ },
+ {
+  "escape": "`",
+  "raw_quotes": true,
+  "raw_escapes": true,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "'"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": true,
+  "raw_escapes": true,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A:-\"x y\"}"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": true,
+  "raw_escapes": true,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A:-$B}${C:-${A}}"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": true,
+  "raw_escapes": true,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A#\"he\"} ${A%'lo'}"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": true,
+  "raw_escapes": true,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "tab\there"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": true,
+  "raw_escapes": true,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A//l/`$}"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": true,
+  "raw_escapes": true,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A/l/$&}"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": true,
+  "raw_escapes": true,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A//l/${B}}"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": true,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "$A ${A} ${A}x $Ax ${A:-d} ${B:-d} ${C:-d} ${B-d} ${C-d}"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": true,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A:+set} ${B:+set} ${C:+set} ${A+set} ${B+set} ${C+set}"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": true,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${C?} ${C?gone $A}"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": true,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${B:?} ${B:?empty}"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": true,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A:?x}"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": true,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${FILE%.*} ${FILE%%.*} ${FILE#*.} ${FILE##*.} ${FILE%.gz} ${FILE#arch}"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": true,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${PATHX/usr/opt} ${PATHX//usr/opt} ${PATHX//`//:} ${A/l*/L} ${A//?/x}"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": true,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A/[/x}"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": true,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A%`x}"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": true,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A:%x}"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": true,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A:#x}"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": true,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A;}"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": true,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": true,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A:-x"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": true,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A/x"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": true,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A/x/y"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": true,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${}"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": true,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${:}"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": true,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${{A}}"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": true,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "$"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": true,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "$$ $? $# $@ $* $- $! $0 $1x $12x"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": true,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${U} $U ${U/ï/i}"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": true,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "'$A' \"$A\" \"'$A'\" '\"$A\"'"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": true,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "a` b \"c`\"d\" 'e`'"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": true,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "he`$A \"he`$A\" he``$A"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": true,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "$SP \"$SP\" x${SP}y"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": true,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "<<EOF <<-  X < y"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": true,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "a <<'E O' b"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": true,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "`"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": true,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "\""
+ },
+ {
+  "escape": "`",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": true,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "'"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": true,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A:-\"x y\"}"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": true,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A:-$B}${C:-${A}}"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": true,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A#\"he\"} ${A%'lo'}"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": true,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "tab\there"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": true,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A//l/`$}"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": true,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A/l/$&}"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": true,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A//l/${B}}"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": true,
+  "raw_escapes": false,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "$A ${A} ${A}x $Ax ${A:-d} ${B:-d} ${C:-d} ${B-d} ${C-d}"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": true,
+  "raw_escapes": false,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A:+set} ${B:+set} ${C:+set} ${A+set} ${B+set} ${C+set}"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": true,
+  "raw_escapes": false,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${C?} ${C?gone $A}"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": true,
+  "raw_escapes": false,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${B:?} ${B:?empty}"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": true,
+  "raw_escapes": false,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A:?x}"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": true,
+  "raw_escapes": false,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${FILE%.*} ${FILE%%.*} ${FILE#*.} ${FILE##*.} ${FILE%.gz} ${FILE#arch}"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": true,
+  "raw_escapes": false,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${PATHX/usr/opt} ${PATHX//usr/opt} ${PATHX//`//:} ${A/l*/L} ${A//?/x}"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": true,
+  "raw_escapes": false,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A/[/x}"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": true,
+  "raw_escapes": false,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A%`x}"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": true,
+  "raw_escapes": false,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A:%x}"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": true,
+  "raw_escapes": false,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A:#x}"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": true,
+  "raw_escapes": false,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A;}"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": true,
+  "raw_escapes": false,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": true,
+  "raw_escapes": false,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A:-x"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": true,
+  "raw_escapes": false,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A/x"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": true,
+  "raw_escapes": false,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A/x/y"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": true,
+  "raw_escapes": false,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${}"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": true,
+  "raw_escapes": false,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${:}"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": true,
+  "raw_escapes": false,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${{A}}"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": true,
+  "raw_escapes": false,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "$"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": true,
+  "raw_escapes": false,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "$$ $? $# $@ $* $- $! $0 $1x $12x"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": true,
+  "raw_escapes": false,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${U} $U ${U/ï/i}"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": true,
+  "raw_escapes": false,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "'$A' \"$A\" \"'$A'\" '\"$A\"'"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": true,
+  "raw_escapes": false,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "a` b \"c`\"d\" 'e`'"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": true,
+  "raw_escapes": false,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "he`$A \"he`$A\" he``$A"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": true,
+  "raw_escapes": false,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "$SP \"$SP\" x${SP}y"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": true,
+  "raw_escapes": false,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "<<EOF <<-  X < y"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": true,
+  "raw_escapes": false,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "a <<'E O' b"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": true,
+  "raw_escapes": false,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "`"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": true,
+  "raw_escapes": false,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "\""
+ },
+ {
+  "escape": "`",
+  "raw_quotes": true,
+  "raw_escapes": false,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "'"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": true,
+  "raw_escapes": false,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A:-\"x y\"}"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": true,
+  "raw_escapes": false,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A:-$B}${C:-${A}}"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": true,
+  "raw_escapes": false,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A#\"he\"} ${A%'lo'}"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": true,
+  "raw_escapes": false,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "tab\there"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": true,
+  "raw_escapes": false,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A//l/`$}"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": true,
+  "raw_escapes": false,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A/l/$&}"
+ },
+ {
+  "escape": "`",
+  "raw_quotes": true,
+  "raw_escapes": false,
+  "skip_unset": true,
+  "skip_quotes": false,
+  "env": [
+   "A=hello",
+   "B=",
+   "PATHX=/usr/local/bin:/usr/bin",
+   "FILE=archive.tar.gz",
+   "U=ünïcode",
+   "SP=a b  c"
+  ],
+  "input": "${A//l/${B}}"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "NL=a\nb\nc",
+   "T=x*y?z"
+  ],
+  "input": "${NL#*b}"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "NL=a\nb\nc",
+   "T=x*y?z"
+  ],
+  "input": "${NL##*}"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "NL=a\nb\nc",
+   "T=x*y?z"
+  ],
+  "input": "${NL%b*}"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "NL=a\nb\nc",
+   "T=x*y?z"
+  ],
+  "input": "${NL%%*}"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "NL=a\nb\nc",
+   "T=x*y?z"
+  ],
+  "input": "${NL//?/x}"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "NL=a\nb\nc",
+   "T=x*y?z"
+  ],
+  "input": "${NL/*/x}"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "NL=a\nb\nc",
+   "T=x*y?z"
+  ],
+  "input": "${NL/?/-}"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "NL=a\nb\nc",
+   "T=x*y?z"
+  ],
+  "input": "${T//\\*/s}"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "NL=a\nb\nc",
+   "T=x*y?z"
+  ],
+  "input": "${T/\\?/q}"
+ },
+ {
+  "escape": "\\",
+  "raw_quotes": false,
+  "raw_escapes": false,
+  "skip_unset": false,
+  "skip_quotes": false,
+  "env": [
+   "NL=a\nb\nc",
+   "T=x*y?z"
+  ],
+  "input": "${NL:+${NL}}"
+ }
+]

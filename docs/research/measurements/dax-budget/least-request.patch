@@ -1,0 +1,13 @@
+diff --git a/crates/init/src/plug.rs b/crates/init/src/plug.rs
+index 9e653f6e3..e05171a99 100644
+--- a/crates/init/src/plug.rs
++++ b/crates/init/src/plug.rs
+@@ -571,7 +571,7 @@ fn working_room_of(cpus: u64, page: u64) -> u64 {
+     const READ_AHEAD: u64 = 128 << 10;
+     CHARGE_BATCH
+         .saturating_mul(cpus)
+-        .saturating_add(u64::from(shards_abi::SHARE_MAX_PAGES))
++        .saturating_add(2 * u64::from(shards_abi::SHARE_MAX_PAGES))
+         .saturating_mul(page)
+         .saturating_add(2 * READ_AHEAD)
+ }

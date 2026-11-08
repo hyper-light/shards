@@ -1,0 +1,16 @@
+#!/bin/sh
+# Records runc's device filter (opencontainers/cgroups v0.0.4, which runc v1.3.4 pins)
+# for crates/devcgroup/testdata/cases.json into oracle.json: its own deviceFilter, run in
+# a pinned Go on Linux (the package builds only there), with Docker.
+set -eu
+here=$(cd "$(dirname "$0")" && pwd)
+data=$here/../../crates/devcgroup/testdata
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+git clone -q --depth 1 --branch v0.0.4 https://github.com/opencontainers/cgroups "$work/cgroups"
+test "$(git -C "$work/cgroups" rev-parse HEAD)" = a3e2ecd1f756a19cee15f85b96337a59c3b5337b
+cp "$here/oracle_test.go" "$work/cgroups/devices/shards_oracle_test.go"
+cp "$data/cases.json" "$work/cases.json"
+docker run --rm -v "$work:/work" -w /work/cgroups -e CASES=/work/cases.json -e OUT=/work/oracle.json \
+  golang:1.24.13-alpine3.23 go test -count=1 -run '^TestShardsOracle$' ./devices
+cp "$work/oracle.json" "$data/oracle.json"

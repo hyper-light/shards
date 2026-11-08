@@ -1,0 +1,2053 @@
+//! The WHP backend (Windows on x86_64): a Windows Hypervisor Platform partition, with the
+//! contract every backend presents (hv/mod.rs): device accesses complete inside
+//! [`Vcpu::run`] through [`Io`], and `run` returns only a kick or a reset; the guest powers
+//! off and resets through the machine's devices, as on KVM. The hypervisor emulates each
+//! vCPU's local APIC (XApic) and runs HLT itself; this backend emulates the IOAPIC
+//! (arch/x86_64/ioapic.rs), asking WHP for each interrupt and taking each level-triggered
+//! EOI back from its exit, and decodes MMIO instructions itself (arch/x86_64/mmio.rs), since
+//! WHP hands it an access's bytes and not its effect. Its partitions offer the guest
+//! Hyper-V's clocks, which a Linux guest of the `hyperv` kernel keeps time by. Ground truth:
+//! WinHvPlatform.h and WinHvPlatformDefs.h (Windows SDK; mingw-w64's copy), and
+//! docs/research/platform-measurements.md M197-M198.
+
+// Windows' constants, matched by their own names.
+#![allow(non_upper_case_globals)]
+
+mod ffi;
+mod state;
+mod vpci;
+
+use std::cell::Cell;
+use std::ffi::c_void;
+use std::fmt;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
+
+use self::ffi::*;
+use super::{Exit, Io};
+use crate::arch::x86_64::ioapic::{Ioapic, Message, Sent};
+use crate::arch::x86_64::mmio::{self, Access, Extend, Mode};
+use crate::arch::x86_64::{Boot, Segment, cpuid, layout};
+use crate::sync::lock;
+
+pub use self::state::{Tsc, TscStart, VcpuState, VmState};
+pub use self::vpci::Assigned;
+
+/// A failed WHP call, or guest behavior the VMM does not emulate.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    Call { op: &'static str, hr: i32 },
+    Guest(String),
+}
+
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Error::Call { op, hr } => {
+                write!(f, "{op} failed: HRESULT {:#010x}", *hr as u32)?;
+                // A Win32 error carried as an HRESULT (FACILITY_WIN32) has its system text.
+                if (*hr as u32) & 0xFFFF_0000 == 0x8007_0000 {
+                    write!(f, " ({})", std::io::Error::from_raw_os_error(*hr & 0xFFFF))?;
+                }
+                Ok(())
+            }
+            Error::Guest(msg) => f.write_str(msg),
+        }
+    }
+}
+
+impl std::error::Error for Error {}
+
+pub type Result<T> = std::result::Result<T, Error>;
+
+fn check(op: &'static str, hr: i32) -> Result<()> {
+    if hr < 0 {
+        Err(Error::Call { op, hr })
+    } else {
+        Ok(())
+    }
+}
+
+/// The synthetic processor features a partition offers its guest, of the host's
+/// (WHV_SYNTHETIC_PROCESSOR_FEATURES, WinHvPlatformDefs.h): the hypervisor's presence and
+/// HV#1; the partition's reference counter and TSC page and the frequency MSRs, which a
+/// Linux guest calibrates and keeps time by; the APIC's synthetic MSRs and VP assist page,
+/// hypercalls and the VP index, which Linux's Hyper-V setup writes; and the TLB-flush and
+/// cluster-IPI hypercalls with extended processor masks, which its hints recommend (PM
+/// M198). Not synthetic timers, which the host offers only with the SynIC, nor anything a
+/// VMBus guest would use: the guest's APIC timer, emulated by the hypervisor, keeps its
+/// time.
+const SYNTHETIC: u64 = (1 << 0) // HypervisorPresent
+    | (1 << 1) // Hv1
+    | (1 << 3) // AccessPartitionReferenceCounter
+    | (1 << 6) // AccessIntrCtrlRegs
+    | (1 << 7) // AccessHypercallRegs
+    | (1 << 8) // AccessVpIndex
+    | (1 << 9) // AccessPartitionReferenceTsc
+    | (1 << 11) // AccessFrequencyRegs
+    | (1 << 24) // ExtendedProcessorMasks
+    | (1 << 25) // TbFlushHypercalls
+    | (1 << 26); // SyntheticClusterIpi
+
+/// What a guest cannot keep time without, of [`SYNTHETIC`]: a host that lacks any runs no
+/// VM. The rest is offered where the host has it.
+const NEEDED: u64 = (1 << 0) | (1 << 1) | (1 << 3) | (1 << 7) | (1 << 8) | (1 << 9) | (1 << 11);
+
+/// WHV_CAPABILITY_FEATURES' LocalApicEmulation.
+const LOCAL_APIC_EMULATION: u64 = 1 << 1;
+
+fn capability(code: WHV_CAPABILITY_CODE) -> Result<WHV_CAPABILITY> {
+    let mut cap = WHV_CAPABILITY::default();
+    let mut written = 0u32;
+    // SAFETY: a buffer of the union's size, which the call fills.
+    check("WHvGetCapability", unsafe {
+        WHvGetCapability(
+            code,
+            (&raw mut cap).cast(),
+            size_of::<WHV_CAPABILITY>() as u32,
+            &raw mut written,
+        )
+    })?;
+    Ok(cap)
+}
+
+/// The features this host's partitions offer their guests: [`SYNTHETIC`] of what it has,
+/// asked once a process. Only an answer that passed is kept: a host whose platform is
+/// missing now is looked at again next time.
+fn features() -> std::result::Result<u64, String> {
+    static FEATURES: OnceLock<u64> = OnceLock::new();
+    if let Some(f) = FEATURES.get() {
+        return Ok(*f);
+    }
+    let f = probe_host()?;
+    Ok(*FEATURES.get_or_init(|| f))
+}
+
+fn probe_host() -> std::result::Result<u64, String> {
+    if !ffi::loaded() {
+        return Err(
+            "the Windows Hypervisor Platform is not on this host: turn on the optional feature \
+                    \"Windows Hypervisor Platform\" (HypervisorPlatform) and restart"
+                .into(),
+        );
+    }
+    let says = |e: Error| format!("asking the Windows Hypervisor Platform: {e}");
+    // SAFETY: the union member each code fills.
+    let present = unsafe {
+        capability(WHvCapabilityCodeHypervisorPresent)
+            .map_err(says)?
+            .HypervisorPresent
+    };
+    if present == 0 {
+        return Err(
+            "no hypervisor runs on this host: hardware virtualization is off in its firmware, or Windows \
+                    started without Hyper-V"
+                .into(),
+        );
+    }
+    // SAFETY: as above.
+    let features = unsafe {
+        capability(WHvCapabilityCodeFeatures)
+            .map_err(says)?
+            .Features
+            .AsUINT64
+    };
+    if features & LOCAL_APIC_EMULATION == 0 {
+        return Err(
+            "this host's Windows Hypervisor Platform cannot emulate a local APIC, which shards' guests need \
+                    (Windows 10 1809 or later)"
+                .into(),
+        );
+    }
+    // SAFETY: as above.
+    let bank = unsafe {
+        capability(WHvCapabilityCodeSyntheticProcessorFeaturesBanks)
+            .map_err(says)?
+            .SyntheticProcessorFeaturesBanks
+            .Anonymous
+            .AsUINT64[0]
+    };
+    if bank & NEEDED != NEEDED {
+        return Err(format!(
+            "this host's hypervisor offers its guests no clock shards' guests can keep time by: synthetic \
+             features {bank:#x}, where {NEEDED:#x} are needed"
+        ));
+    }
+    Ok(bank & SYNTHETIC)
+}
+
+/// Ok when this host can run VMs: WHP is there, a hypervisor runs, and it offers what shards
+/// needs.
+pub fn check_host() -> std::result::Result<(), String> {
+    features().map(drop)
+}
+
+/// WHV_CAPABILITY_FEATURES' VirtualPciDeviceSupport and IommuSupport (WinHvPlatformDefs.h).
+const VIRTUAL_PCI_DEVICES: u64 = 1 << 7;
+const IOMMU_SUPPORT: u64 = 1 << 8;
+
+/// Why this host's hypervisor gives no partition a host's PCI function, in its own words;
+/// none where it would (D154, PM M401, M402). A function reaches a partition as a virtual PCI
+/// device WHP makes of it once its administrator has dismounted it from the host
+/// (WHvAllocateVpciResource, then WHvCreateVpciDevice, physically backed; vpci.rs), in a
+/// partition allowed device assignment (WHvPartitionPropertyCodeAllowDeviceAssignment):
+/// asked of a partition of its own, never set up and given no memory, which a hypervisor
+/// that assigns none refuses as it is set, as Windows 11 Pro's does (M401).
+pub fn device_assignment_refused() -> Option<String> {
+    if !ffi::loaded() {
+        return Some("the Windows Hypervisor Platform is not on this host".into());
+    }
+    let asked = |e: Error| Some(format!("asking the Windows Hypervisor Platform: {e}"));
+    let features = match capability(WHvCapabilityCodeFeatures) {
+        // SAFETY: the union member the code fills.
+        Ok(cap) => unsafe { cap.Features.AsUINT64 },
+        Err(e) => return asked(e),
+    };
+    if features & VIRTUAL_PCI_DEVICES == 0 {
+        return Some(
+            "its Windows Hypervisor Platform makes no virtual PCI device of a host's (WHvCapabilityCodeFeatures: VirtualPciDeviceSupport 0)"
+                .into(),
+        );
+    }
+    let mut handle: WHV_PARTITION_HANDLE = 0;
+    // SAFETY: a handle for the call to fill.
+    if let Err(e) = check("WHvCreatePartition", unsafe {
+        WHvCreatePartition(&raw mut handle)
+    }) {
+        return asked(e);
+    }
+    let partition = Partition::new(handle);
+    let allowed: windows_sys::core::BOOL = 1;
+    let refused = partition
+        .set(
+            WHvPartitionPropertyCodeAllowDeviceAssignment,
+            &allowed,
+            "WHvSetPartitionProperty(AllowDeviceAssignment)",
+        )
+        .err()?;
+    let iommu = if features & IOMMU_SUPPORT == 0 {
+        ", and says it has no IOMMU support (WHvCapabilityCodeFeatures: IommuSupport 0)"
+    } else {
+        ""
+    };
+    Some(format!(
+        "its hypervisor assigns no device to a partition: {refused}{iommu}"
+    ))
+}
+
+/// Whether this Windows sets a vCPU's state back as a restore does (state.rs
+/// `restore_state`): vCPU 0's local APIC page, of a partition of one set up as every VM's
+/// is, read and set back, once a process and only when asked, so that no VM's start pays
+/// for it. Windows Server 2022 (build 20348) refuses a page set back as read
+/// (ERROR_MORE_DATA), where builds 26100 and 26200 take it (PM M345). Only that refusal
+/// says no: a probe that cannot run, as where the process holds a partition already (one a
+/// process, D196), leaves a restore to say why it fails, as it does.
+pub fn restores() -> bool {
+    static RESTORES: OnceLock<bool> = OnceLock::new();
+    *RESTORES.get_or_init(|| {
+        let Ok(partition) = partition(1, false) else {
+            return true;
+        };
+        // SAFETY: the partition just set up.
+        if check("WHvCreateVirtualProcessor", unsafe {
+            WHvCreateVirtualProcessor(partition.0, 0, 0)
+        })
+        .is_err()
+        {
+            return true;
+        }
+        let kind = WHvVirtualProcessorStateTypeInterruptControllerState2;
+        let set_back = partition.state(0, kind).and_then(|page| {
+            partition.set_state(
+                0,
+                kind,
+                &page,
+                "WHvSetVirtualProcessorState(InterruptControllerState2)",
+            )
+        });
+        // SAFETY: the vCPU made above, which never ran.
+        unsafe { WHvDeleteVirtualProcessor(partition.0, 0) };
+        !matches!(set_back, Err(Error::Call { hr, .. }) if hr as u32 == state::ERROR_MORE_DATA_HRESULT)
+    })
+}
+
+/// The most vCPUs one VM can have: as many as the hypervisor tells a partition's guest it
+/// supports (its leaf 0x40000005, Hyper-V TLFS "Implementation Limits"), read for vCPU 0
+/// of a partition of one, once a process ([`host`]); and at most 254, since the MADT
+/// carries 8-bit APIC ids. WHP sets up a partition of 1,024 (PM M198), but creates no vCPU
+/// past what its guest reads there: 240 on GitHub's runners, the 241st refused
+/// (HV_STATUS_INVALID_VP_INDEX). The root partition's own leaf says more than a guest's: a
+/// VM of as many vCPUs as it said failed at its 241st (CI run 38215340140).
+pub fn max_vcpus() -> Result<u32> {
+    host().map(|h| h.max_vcpus)
+}
+
+/// What this host's partitions give their guests, read once a process from vCPU 0 of a
+/// partition of one, set up as every VM's is: a partition offered no synthetic features
+/// gives its guest no hypervisor leaves to read (PM M202: 0 there). Only an answer that
+/// passed is kept.
+#[derive(Debug)]
+struct Host {
+    max_vcpus: u32,
+    /// The CPUID leaves a VM's topology is written into ([`template`]).
+    cpuid: Vec<cpuid::Leaf>,
+    /// Whether the host's processor has an invariant TSC, as its own CPUID says.
+    invariant_tsc: bool,
+    /// The CPU as WHP describes it to a guest ([`state::IDENTITY`]), which a snapshot
+    /// records and its restore requires: each leaf as function, index, 0, EAX, EBX, ECX,
+    /// EDX.
+    identity: Vec<[u32; 7]>,
+}
+
+fn host() -> Result<&'static Host> {
+    static HOST: OnceLock<Host> = OnceLock::new();
+    if let Some(h) = HOST.get() {
+        return Ok(h);
+    }
+    let partition = partition(1, false)?;
+    // SAFETY: the partition just set up.
+    check("WHvCreateVirtualProcessor", unsafe {
+        WHvCreateVirtualProcessor(partition.0, 0, 0)
+    })?;
+    let read = |function: u32, index: u32| -> Result<WHV_CPUID_OUTPUT> {
+        let mut out = WHV_CPUID_OUTPUT::default();
+        // SAFETY: the partition's vCPU 0, its CPUID read into a value of its own size.
+        check("WHvGetVirtualProcessorCpuidOutput", unsafe {
+            WHvGetVirtualProcessorCpuidOutput(partition.0, 0, function, index, &raw mut out)
+        })?;
+        Ok(out)
+    };
+    let limits = read(0x4000_0005, 0);
+    let leaves = template(&read);
+    let identity = identity(&read);
+    // SAFETY: the vCPU made above, which never ran.
+    unsafe { WHvDeleteVirtualProcessor(partition.0, 0) };
+    let (limits, leaves, identity) = (limits?, leaves?, identity?);
+    if limits.Eax == 0 {
+        return Err(Error::Guest(
+            "the hypervisor gives a partition's guest no limit to its vCPUs (CPUID 0x40000005)".into(),
+        ));
+    }
+    let extended = std::arch::x86_64::__cpuid(0x8000_0000).eax;
+    let h = Host {
+        max_vcpus: limits.Eax.min(254),
+        cpuid: leaves,
+        invariant_tsc: extended >= 0x8000_0007
+            && std::arch::x86_64::__cpuid(0x8000_0007).edx & cpuid::INVARIANT_TSC != 0,
+        identity,
+    };
+    Ok(HOST.get_or_init(|| h))
+}
+
+/// The most subleaves of a cache leaf (4, 0x8000001D) read: far past the four levels of
+/// cache a processor has.
+const CACHE_SUBLEAVES: u32 = 16;
+
+/// The CPUID leaves [`cpuid::for_vcpu`] writes a VM's topology into, as the hypervisor
+/// gives `read`'s vCPU (PM M206): the maxima, leaf 1, the caches (4 and 0x8000001D, each to
+/// its first subleaf of no type), the extended topologies where the basic leaves reach
+/// them (0xB, 0x1F), invariant TSC (0x80000007), the package's threads (0x80000008) and
+/// AMD's topology (0x8000001E).
+fn template(read: &dyn Fn(u32, u32) -> Result<WHV_CPUID_OUTPUT>) -> Result<Vec<cpuid::Leaf>> {
+    let leaf = |function: u32, index: u32, flags: u32| {
+        read(function, index).map(|o| cpuid::Leaf {
+            function,
+            index,
+            flags,
+            eax: o.Eax,
+            ebx: o.Ebx,
+            ecx: o.Ecx,
+            edx: o.Edx,
+        })
+    };
+    let basic = leaf(0, 0, 0)?;
+    let extended = leaf(0x8000_0000, 0, 0)?;
+    let mut leaves = vec![basic, extended, leaf(1, 0, 0)?];
+    let caches = |function: u32, leaves: &mut Vec<cpuid::Leaf>| -> Result<()> {
+        for index in 0..CACHE_SUBLEAVES {
+            let l = leaf(function, index, cpuid::SIGNIFICANT_INDEX)?;
+            leaves.push(l);
+            if l.eax & 0x1f == 0 {
+                break;
+            }
+        }
+        Ok(())
+    };
+    if basic.eax >= 4 {
+        caches(4, &mut leaves)?;
+    }
+    for function in [0xb, 0x1f] {
+        if basic.eax >= function {
+            for index in 0..3 {
+                leaves.push(leaf(function, index, cpuid::SIGNIFICANT_INDEX)?);
+            }
+        }
+    }
+    for function in [0x8000_0007, 0x8000_0008] {
+        if extended.eax >= function {
+            leaves.push(leaf(function, 0, 0)?);
+        }
+    }
+    if extended.eax >= 0x8000_001d {
+        caches(0x8000_001d, &mut leaves)?;
+    }
+    if extended.eax >= 0x8000_001e {
+        leaves.push(leaf(0x8000_001e, 0, 0)?);
+    }
+    Ok(leaves)
+}
+
+/// The leaves of [`state::IDENTITY`] the hypervisor gives `read`'s vCPU, each up to the
+/// largest basic or extended leaf it has.
+fn identity(read: &dyn Fn(u32, u32) -> Result<WHV_CPUID_OUTPUT>) -> Result<Vec<[u32; 7]>> {
+    let basic = read(0, 0)?.Eax;
+    let extended = read(0x8000_0000, 0)?.Eax;
+    state::IDENTITY
+        .iter()
+        .filter(|&&(function, _)| function <= if function >= 0x8000_0000 { extended } else { basic })
+        .map(|&(function, index)| {
+            read(function, index).map(|o| [function, index, 0, o.Eax, o.Ebx, o.Ecx, o.Edx])
+        })
+        .collect()
+}
+
+/// The CPUID results a VM of `vcpus` vCPUs is given (PM M206): one package of
+/// single-thread cores, as KVM's guests get ([`cpuid::for_vcpu`]), each result in only
+/// the bits it changes of the hypervisor's ([`cpuid::masked`]); and invariant TSC where the
+/// host's processor has it, which Windows Server 2025 leaves out of its partitions'
+/// CPUID though their TSC runs at the host's fixed rate, a partition never moving to
+/// another host (Server 2022 gives it, on the same processor). With both, a Linux guest's
+/// APs take the boot CPU's delay-loop calibration rather than each timing the boot CPU's
+/// ticks for itself, which took 63 APs past a minute on a 4-CPU host (CI run 38240024887).
+fn cpuid_results(host: &Host, vcpus: u32) -> Vec<cpuid::Masked> {
+    cpuid::masked(&host.cpuid, vcpus, host.invariant_tsc)
+}
+
+/// `results` as WHP takes them (WHvPartitionPropertyCodeCpuidResultList2).
+fn cpuid_list(results: &[cpuid::Masked]) -> Vec<WHV_X64_CPUID_RESULT2> {
+    results
+        .iter()
+        .map(|m| {
+            let output = |[eax, ebx, ecx, edx]: [u32; 4]| WHV_CPUID_OUTPUT {
+                Eax: eax,
+                Ebx: ebx,
+                Ecx: ecx,
+                Edx: edx,
+            };
+            let subleaf = if m.subleaf {
+                WHvX64CpuidResult2FlagSubleafSpecific
+            } else {
+                0
+            };
+            let (vp, one) = match m.vcpu {
+                Some(vp) => (vp, WHvX64CpuidResult2FlagVpSpecific),
+                None => (0, 0),
+            };
+            WHV_X64_CPUID_RESULT2 {
+                Function: m.function,
+                Index: m.index,
+                VpIndex: vp,
+                Flags: subleaf | one,
+                Output: output(m.value),
+                Mask: output(m.mask),
+            }
+        })
+        .collect()
+}
+
+/// A partition: deleted, its vCPUs with it, once nothing holds it. With what it maps of this
+/// process's memory, where the instruction emulator's accesses to guest RAM go
+/// ([`Vcpu::emulate`]), and what it maps writable, whose guest's writes a live move watches
+/// ([`Tracked`]).
+#[derive(Debug)]
+struct Partition(WHV_PARTITION_HANDLE, Mutex<Vec<Mapped>>, Mutex<Tracked>);
+
+/// `len` bytes of guest-physical memory from `gpa`, at `host` in this process.
+#[derive(Debug, Clone, Copy)]
+struct Mapped {
+    gpa: u64,
+    host: usize,
+    len: u64,
+}
+
+/// The page of WHP's dirty bitmaps, a bit each (WinHvPlatform.h's
+/// WHvQueryGpaRangeDirtyBitmap: "RangeSizeInBytes / 4096 / 64" words), on x64 and Arm64.
+const DIRTY_PAGE: u64 = 4096;
+
+/// WHV_CAPABILITY_FEATURES' DirtyPageTracking (WinHvPlatformDefs.h), bit 3 on x64 and
+/// Arm64 alike.
+const DIRTY_PAGE_TRACKING: u64 = 1 << 3;
+
+/// What a partition maps writable, as it maps it (D176 part 7): each range, cut where part
+/// of it is unmapped since (a block the balloon gives back), mapped again with
+/// WHvMapGpaRangeFlagTrackDirtyPages while a live move watches its guest's writes, which
+/// WHvQueryGpaRangeDirtyBitmap then reads; and the pages written, noted as a watched range
+/// is unmapped or replaced. A range is mapped again in place, as WHvMapGpaRange "replaces
+/// any previous mappings for the specified GPA pages" (Microsoft Learn), so the guest never
+/// meets it unmapped. Under its lock, every map and unmap of the partition's and every
+/// read of a bitmap: none is read of a range unmapped since.
+#[derive(Debug, Default)]
+struct Tracked {
+    ranges: Vec<Writable>,
+    written: Option<std::collections::BTreeSet<u64>>,
+}
+
+/// `len` bytes at `gpa`, at `host` in this process, mapped with `flags`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Writable {
+    gpa: u64,
+    host: usize,
+    len: u64,
+    flags: WHV_MAP_GPA_RANGE_FLAGS,
+}
+
+impl Tracked {
+    /// Takes `len` bytes at `gpa` out of the ranges, unmapped or mapped anew: what is left
+    /// of each range they cut kept, at its own place in this process.
+    fn cut(&mut self, gpa: u64, len: u64) {
+        let end = gpa.saturating_add(len);
+        let mut kept = Vec::with_capacity(self.ranges.len());
+        for r in self.ranges.drain(..) {
+            let r_end = r.gpa.saturating_add(r.len);
+            if r_end <= gpa || r.gpa >= end {
+                kept.push(r);
+                continue;
+            }
+            if r.gpa < gpa {
+                kept.push(Writable {
+                    len: gpa - r.gpa,
+                    ..r
+                });
+            }
+            if r_end > end {
+                kept.push(Writable {
+                    gpa: end,
+                    host: r.host.saturating_add((end - r.gpa) as usize),
+                    len: r_end - end,
+                    flags: r.flags,
+                });
+            }
+        }
+        self.ranges = kept;
+    }
+
+    /// The parts of the ranges within `len` bytes at `gpa`.
+    fn within(&self, gpa: u64, len: u64) -> Vec<(u64, u64)> {
+        let end = gpa.saturating_add(len);
+        self.ranges
+            .iter()
+            .filter_map(|r| {
+                let from = r.gpa.max(gpa);
+                let to = r.gpa.saturating_add(r.len).min(end);
+                (from < to).then_some((from, to - from))
+            })
+            .collect()
+    }
+}
+
+impl Drop for Partition {
+    fn drop(&mut self) {
+        // SAFETY: the partition this value made; nothing runs in it once nothing holds it.
+        unsafe { WHvDeletePartition(self.0) };
+    }
+}
+
+impl Partition {
+    fn new(handle: WHV_PARTITION_HANDLE) -> Partition {
+        Partition(handle, Mutex::new(Vec::new()), Mutex::new(Tracked::default()))
+    }
+
+    fn set<T>(&self, code: WHV_PARTITION_PROPERTY_CODE, value: &T, op: &'static str) -> Result<()> {
+        // SAFETY: a property of its own size.
+        check(op, unsafe {
+            WHvSetPartitionProperty(self.0, code, (value as *const T).cast(), size_of::<T>() as u32)
+        })
+    }
+
+    /// Maps `len` bytes at `host` at `gpa`, as `flags` say: its writes tracked where it is
+    /// writable and a live move watches them.
+    ///
+    /// # Safety
+    /// `host..host+len` must stay mapped until unmapped or the partition is deleted.
+    unsafe fn map(&self, host: *mut u8, gpa: u64, len: usize, flags: WHV_MAP_GPA_RANGE_FLAGS) -> Result<()> {
+        let mut tracked = lock(&self.2);
+        let writable = flags & WHvMapGpaRangeFlagWrite != 0;
+        let tracking = if writable && tracked.written.is_some() {
+            WHvMapGpaRangeFlagTrackDirtyPages
+        } else {
+            0
+        };
+        // What it replaces of a watched range: the writes there noted first.
+        self.note_written(&mut tracked, gpa, len as u64);
+        // SAFETY: forwarded caller contract.
+        check("WHvMapGpaRange", unsafe {
+            WHvMapGpaRange(
+                self.0,
+                host.cast_const().cast::<c_void>(),
+                gpa,
+                len as u64,
+                flags | tracking,
+            )
+        })?;
+        tracked.cut(gpa, len as u64);
+        if writable {
+            tracked.ranges.push(Writable {
+                gpa,
+                host: host as usize,
+                len: len as u64,
+                flags,
+            });
+        }
+        drop(tracked);
+        lock(&self.1).push(Mapped {
+            gpa,
+            host: host as usize,
+            len: len as u64,
+        });
+        Ok(())
+    }
+
+    /// Maps `len` bytes at `host` at `gpa`, as `flags` say, without recording them as guest
+    /// RAM for Windows' emulator ([`Partition::host`]): a DAX window's range, which may be a
+    /// bare placeholder or a view the guest may not write, and which this process must never
+    /// touch for the guest. An access the emulator meets there goes to the VMM's devices, as
+    /// an access to no memory does.
+    ///
+    /// # Safety
+    /// `host..host+len` must stay reserved until unmapped or the partition is deleted.
+    unsafe fn map_unrecorded(
+        &self,
+        host: *mut u8,
+        gpa: u64,
+        len: usize,
+        flags: WHV_MAP_GPA_RANGE_FLAGS,
+    ) -> Result<()> {
+        // SAFETY: forwarded caller contract.
+        check("WHvMapGpaRange", unsafe {
+            WHvMapGpaRange(self.0, host.cast_const().cast::<c_void>(), gpa, len as u64, flags)
+        })
+    }
+
+    /// Unmaps `len` bytes at `gpa`: what the guest wrote there, while a live move watches
+    /// its writes, noted first.
+    fn unmap(&self, gpa: u64, len: u64) -> Result<()> {
+        let mut tracked = lock(&self.2);
+        self.note_written(&mut tracked, gpa, len);
+        // SAFETY: the partition's own mapping, which nothing else uses.
+        check("WHvUnmapGpaRange", unsafe { WHvUnmapGpaRange(self.0, gpa, len) })?;
+        tracked.cut(gpa, len);
+        drop(tracked);
+        lock(&self.1).retain(|m| m.gpa != gpa || m.len != len);
+        Ok(())
+    }
+
+    /// Notes the pages the guest wrote of the watched ranges within `len` bytes at `gpa`,
+    /// while a live move watches: every page of a part whose bitmap is not read.
+    fn note_written(&self, tracked: &mut Tracked, gpa: u64, len: u64) {
+        if tracked.written.is_none() {
+            return;
+        }
+        let parts = tracked.within(gpa, len);
+        let Some(set) = tracked.written.as_mut() else {
+            return;
+        };
+        for (at, n) in parts {
+            if self.dirty(at, n, set).is_err() {
+                set.extend(crate::hv::every_page(at, n));
+            }
+        }
+    }
+
+    /// Notes in `set` the pages of `len` bytes at `gpa`, mapped with their writes tracked,
+    /// that the guest wrote since they were last asked (WHvQueryGpaRangeDirtyBitmap: a bit
+    /// a [`DIRTY_PAGE`], in 64-bit words from `gpa`). Microsoft Learn's page says a call
+    /// with no bitmap clears the range's dirty state "without querying the current state",
+    /// and no more: that a query clears the bits it gives, as KVM_GET_DIRTY_LOG does, is
+    /// read from it, not stated. Nothing here clears a bit after reading it, which could
+    /// lose a write between the two: a query that kept them would give each round every
+    /// page written since the watch began, more than was written, and so lengthen a move's
+    /// rounds, never lose a page.
+    fn dirty(&self, gpa: u64, len: u64, set: &mut std::collections::BTreeSet<u64>) -> Result<()> {
+        let words = len.div_ceil(DIRTY_PAGE).div_ceil(64);
+        let too_large = || Error::Guest(format!("a dirty bitmap of {len} bytes' pages at {gpa:#x}"));
+        let size = words
+            .checked_mul(8)
+            .and_then(|bytes| u32::try_from(bytes).ok())
+            .ok_or_else(too_large)?;
+        let mut bitmap = vec![0u64; usize::try_from(words).map_err(|_| too_large())?];
+        // SAFETY: a bitmap of `size` bytes, 8-aligned, a bit for each page of the range.
+        check("WHvQueryGpaRangeDirtyBitmap", unsafe {
+            WHvQueryGpaRangeDirtyBitmap(self.0, gpa, len, bitmap.as_mut_ptr(), size)
+        })?;
+        crate::hv::note_dirty(&bitmap, gpa, DIRTY_PAGE, set);
+        Ok(())
+    }
+
+    /// Watches the guest's writes to the partition's writable memory (D176 part 7): each
+    /// range mapped again in place with its writes tracked
+    /// (WHvMapGpaRangeFlagTrackDirtyPages), and its dirty state cleared, as nothing of it
+    /// is read yet. Callable while vCPUs run.
+    fn watch_writes(&self) -> Result<()> {
+        // SAFETY: the union member the code fills.
+        let features = unsafe { capability(WHvCapabilityCodeFeatures)?.Features.AsUINT64 };
+        if features & DIRTY_PAGE_TRACKING == 0 {
+            return Err(Error::Guest(
+                "this host's Windows Hypervisor Platform tracks no partition's dirty pages \
+                 (WHvCapabilityCodeFeatures: DirtyPageTracking 0), which a live move reads"
+                    .into(),
+            ));
+        }
+        let mut tracked = lock(&self.2);
+        tracked.written = Some(std::collections::BTreeSet::new());
+        let tracking = tracked.ranges.iter().try_for_each(|r| {
+            // SAFETY: a range the partition maps, mapped again at the same memory of this
+            // process, which stays mapped as long as it did.
+            check("WHvMapGpaRange", unsafe {
+                WHvMapGpaRange(
+                    self.0,
+                    r.host as *const c_void,
+                    r.gpa,
+                    r.len,
+                    r.flags | WHvMapGpaRangeFlagTrackDirtyPages,
+                )
+            })?;
+            // SAFETY: no bitmap, of no bytes: the range's dirty state cleared.
+            check("WHvQueryGpaRangeDirtyBitmap", unsafe {
+                WHvQueryGpaRangeDirtyBitmap(self.0, r.gpa, r.len, std::ptr::null_mut(), 0)
+            })
+        });
+        drop(tracked);
+        tracking.inspect_err(|_| self.unwatch_writes())
+    }
+
+    /// The pages written since the watch began or since this was last asked, in order of
+    /// their addresses.
+    fn written(&self) -> Result<Vec<u64>> {
+        let mut tracked = lock(&self.2);
+        let Tracked { ranges, written } = &mut *tracked;
+        let Some(set) = written.as_mut() else {
+            return Ok(Vec::new());
+        };
+        for r in ranges.iter() {
+            self.dirty(r.gpa, r.len, set)?;
+        }
+        Ok(std::mem::take(set).into_iter().collect())
+    }
+
+    /// Stops watching the guest's writes: each range mapped again in place as it was.
+    fn unwatch_writes(&self) {
+        let mut tracked = lock(&self.2);
+        if tracked.written.take().is_none() {
+            return;
+        }
+        for r in &tracked.ranges {
+            // SAFETY: a range the partition maps, mapped again as it was first. It fails
+            // only once the partition is going, with nothing left to track.
+            let _ = unsafe { WHvMapGpaRange(self.0, r.host as *const c_void, r.gpa, r.len, r.flags) };
+        }
+    }
+
+    /// Where `len` bytes of guest RAM at `gpa` lie in this process, if one mapping holds
+    /// them all.
+    fn host(&self, gpa: u64, len: u64) -> Option<*mut u8> {
+        lock(&self.1).iter().find_map(|m| {
+            let offset = gpa.checked_sub(m.gpa)?;
+            (offset.checked_add(len)? <= m.len).then(|| (m.host + offset as usize) as *mut u8)
+        })
+    }
+
+    /// Registers `names` of vCPU `vp`, which is out of the guest.
+    fn registers(&self, vp: u32, names: &[WHV_REGISTER_NAME]) -> Result<Vec<Value>> {
+        let mut values = vec![Value::default(); names.len()];
+        // SAFETY: `names.len()` names and as many values, 16-aligned (`Value`).
+        check("WHvGetVirtualProcessorRegisters", unsafe {
+            WHvGetVirtualProcessorRegisters(
+                self.0,
+                vp,
+                names.as_ptr(),
+                names.len() as u32,
+                values.as_mut_ptr().cast(),
+            )
+        })?;
+        Ok(values)
+    }
+
+    /// Sets registers `names` of vCPU `vp` to `values`, in their order. Where the
+    /// hypervisor refuses them, each is set alone, to name the one it refuses.
+    fn set_each(&self, vp: u32, names: &[WHV_REGISTER_NAME], values: &[Value]) -> Result<()> {
+        if names.len() != values.len() {
+            return Err(Error::Guest(format!(
+                "{} register names, {} values",
+                names.len(),
+                values.len()
+            )));
+        }
+        let set = |names: &[WHV_REGISTER_NAME], values: &[Value]| {
+            // SAFETY: `names.len()` names and as many values, 16-aligned (`Value`).
+            check("WHvSetVirtualProcessorRegisters", unsafe {
+                WHvSetVirtualProcessorRegisters(
+                    self.0,
+                    vp,
+                    names.as_ptr(),
+                    names.len() as u32,
+                    values.as_ptr().cast(),
+                )
+            })
+        };
+        let Err(e) = set(names, values) else {
+            return Ok(());
+        };
+        for (name, value) in names.iter().zip(values) {
+            if let Err(one) = set(std::slice::from_ref(name), std::slice::from_ref(value)) {
+                return Err(Error::Guest(format!("vCPU {vp}'s register {name:#x}: {one}")));
+            }
+        }
+        Err(e)
+    }
+
+    /// State `kind` of vCPU `vp` (WHvGetVirtualProcessorState), as large as the hypervisor
+    /// says it is.
+    fn state(&self, vp: u32, kind: WHV_VIRTUAL_PROCESSOR_STATE_TYPE) -> Result<Vec<u8>> {
+        let mut needed = 0u32;
+        // SAFETY: no buffer: the call answers with the size it needs.
+        let sized = unsafe {
+            WHvGetVirtualProcessorState(self.0, vp, kind, std::ptr::null_mut(), 0, &raw mut needed)
+        };
+        if sized != windows_sys::Win32::Foundation::WHV_E_INSUFFICIENT_BUFFER {
+            check("WHvGetVirtualProcessorState", sized)?;
+        }
+        let mut buf = vec![0u8; needed as usize];
+        let mut written = 0u32;
+        // SAFETY: a buffer of the size the hypervisor asked for.
+        check("WHvGetVirtualProcessorState", unsafe {
+            WHvGetVirtualProcessorState(
+                self.0,
+                vp,
+                kind,
+                buf.as_mut_ptr().cast(),
+                buf.len() as u32,
+                &raw mut written,
+            )
+        })?;
+        buf.truncate(written as usize);
+        Ok(buf)
+    }
+
+    fn set_state(
+        &self,
+        vp: u32,
+        kind: WHV_VIRTUAL_PROCESSOR_STATE_TYPE,
+        bytes: &[u8],
+        op: &'static str,
+    ) -> Result<()> {
+        let len =
+            u32::try_from(bytes.len()).map_err(|_| Error::Guest(format!("{op}: {} bytes", bytes.len())))?;
+        // SAFETY: a buffer of its own length.
+        check(op, unsafe {
+            WHvSetVirtualProcessorState(self.0, vp, kind, bytes.as_ptr().cast(), len)
+        })
+    }
+
+    /// Holds the partition's time: its vCPUs' TSCs and its reference time stand still
+    /// until it is resumed, or until a vCPU runs (WHvSuspendPartitionTime's reference; PM
+    /// M345). No vCPU may be running.
+    fn suspend_time(&self) -> Result<()> {
+        // SAFETY: the partition this value made.
+        check("WHvSuspendPartitionTime", unsafe {
+            WHvSuspendPartitionTime(self.0)
+        })
+    }
+
+    fn resume_time(&self) -> Result<()> {
+        // SAFETY: the partition this value made.
+        check("WHvResumePartitionTime", unsafe {
+            WHvResumePartitionTime(self.0)
+        })
+    }
+
+    /// The partition's reference time, in 100 ns units.
+    fn reference_time(&self) -> Result<u64> {
+        let mut time = 0u64;
+        let mut written = 0u32;
+        // SAFETY: a u64, the property's own type.
+        check("WHvGetPartitionProperty(ReferenceTime)", unsafe {
+            WHvGetPartitionProperty(
+                self.0,
+                WHvPartitionPropertyCodeReferenceTime,
+                (&raw mut time).cast(),
+                size_of::<u64>() as u32,
+                &raw mut written,
+            )
+        })?;
+        Ok(time)
+    }
+
+    fn set_reference_time(&self, time: u64) -> Result<()> {
+        self.set(
+            WHvPartitionPropertyCodeReferenceTime,
+            &time,
+            "WHvSetPartitionProperty(ReferenceTime)",
+        )
+    }
+
+    /// Sends each of `sent` to its local APICs (WHvRequestInterrupt).
+    fn deliver(&self, sent: &Sent) -> Result<()> {
+        for m in sent.iter() {
+            let kind = match m.delivery {
+                0 => WHvX64InterruptTypeFixed,
+                1 => WHvX64InterruptTypeLowestPriority,
+                4 => WHvX64InterruptTypeNmi,
+                5 => WHvX64InterruptTypeInit,
+                d => {
+                    return Err(Error::Guest(format!(
+                        "an IOAPIC entry of delivery mode {d} (vector {:#x}), which shards does not deliver",
+                        m.vector
+                    )));
+                }
+            };
+            let control = WHV_INTERRUPT_CONTROL {
+                // Type (7:0), DestinationMode (11:8), TriggerMode (15:12): WinHvPlatformDefs.h.
+                _bitfield: kind as u64
+                    | (u64::from(m.logical) * WHvX64InterruptDestinationModeLogical as u64) << 8
+                    | (u64::from(m.level) * WHvX64InterruptTriggerModeLevel as u64) << 12,
+                Destination: u32::from(m.destination),
+                Vector: u32::from(m.vector),
+            };
+            // SAFETY: a control of its own size.
+            check("WHvRequestInterrupt", unsafe {
+                WHvRequestInterrupt(
+                    self.0,
+                    &raw const control,
+                    size_of::<WHV_INTERRUPT_CONTROL>() as u32,
+                )
+            })?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct VmConfig {
+    pub vcpus: u32,
+}
+
+/// What maps the memory a virtio-mem device plugs into the guest ([`Vm::add_hotplug`]):
+/// each block mapped into the partition as it is plugged and unmapped as it is unplugged,
+/// so the guest reaches no memory the host has withheld.
+#[derive(Debug, Clone)]
+pub struct Stage2(Arc<Partition>);
+
+impl Stage2 {
+    /// Maps `len` bytes at `host` at `gpa`.
+    ///
+    /// # Safety
+    /// As every backend's: `host..host+len` must stay mapped in this process until
+    /// unmapped here or the VM is destroyed.
+    pub unsafe fn map(&self, host: *mut u8, gpa: u64, len: usize) -> Result<()> {
+        // SAFETY: forwarded caller contract.
+        unsafe { self.0.map(host, gpa, len, RWX) }
+    }
+
+    /// Maps `len` bytes at `host` at `gpa` for a share's DAX window (D189): readable and
+    /// executable, as a guest runs programs from its volumes, and writable only if
+    /// `writable`. A view placed there later is the guest's with no further call, as stage 2
+    /// follows the host's view (PM M341). Not guest RAM to Windows' emulator: the range may
+    /// be a bare placeholder ([`Partition::map_unrecorded`]).
+    ///
+    /// # Safety
+    /// As [`Stage2::map`]'s.
+    pub unsafe fn map_file(&self, host: *mut u8, gpa: u64, len: usize, writable: bool) -> Result<()> {
+        let flags = if writable {
+            RWX
+        } else {
+            WHvMapGpaRangeFlagRead | WHvMapGpaRangeFlagExecute
+        };
+        // SAFETY: forwarded caller contract.
+        unsafe { self.0.map_unrecorded(host, gpa, len, flags) }
+    }
+
+    pub fn unmap(&self, gpa: u64, len: usize) -> Result<()> {
+        self.0.unmap(gpa, len as u64)
+    }
+}
+
+const RWX: WHV_MAP_GPA_RANGE_FLAGS =
+    WHvMapGpaRangeFlagRead | WHvMapGpaRangeFlagWrite | WHvMapGpaRangeFlagExecute;
+
+/// Device memory a device maps into the guest and unmaps, while the VM lives: a swap
+/// window's (D159). Slots are KVM's notion; the partition maps by address, so the index
+/// names nothing here.
+#[derive(Debug, Clone)]
+pub struct DeviceSlots(Arc<Partition>);
+
+impl DeviceSlots {
+    /// Maps `len` bytes of host memory at `host` at `gpa`, read-only to the guest unless
+    /// `writable`, never executable.
+    ///
+    /// # Safety
+    /// `host..host+len` must stay mapped in this process until unmapped here or the VM is
+    /// destroyed.
+    pub unsafe fn map(&self, _i: u32, host: *mut u8, gpa: u64, len: usize, writable: bool) -> Result<()> {
+        let flags = if writable {
+            WHvMapGpaRangeFlagRead | WHvMapGpaRangeFlagWrite
+        } else {
+            WHvMapGpaRangeFlagRead
+        };
+        // SAFETY: forwarded caller contract.
+        unsafe { self.0.map(host, gpa, len, flags) }
+    }
+
+    /// Unmaps `len` bytes at `gpa`: the guest's accesses there exit as MMIO to nothing.
+    pub fn unmap(&self, _i: u32, gpa: u64, len: usize) -> Result<()> {
+        self.0.unmap(gpa, len as u64)
+    }
+}
+
+/// The VM. Guest memory must outlive it.
+#[derive(Debug)]
+pub struct Vm {
+    partition: Arc<Partition>,
+    ioapic: Arc<Ioapic>,
+    vcpus: u32,
+    /// Its vCPUs' CPUID, set once the last of them exists ([`Vm::create_vcpu`]).
+    cpuid: Vec<cpuid::Masked>,
+}
+
+/// A partition of `vcpus` vCPUs, set up as every one of shards' is: its local APICs
+/// emulated by the hypervisor (XApic), its guest offered [`SYNTHETIC`] of the host's
+/// synthetic features, which the hypervisor sets up only with the APICs it emulates
+/// (HV_STATUS_INVALID_PARAMETER, 0xc0350005, without; CI run 38222358454). Allowed device
+/// assignment where `assign` says (D154): a property set before setup alone, as WHP refuses
+/// it after (E_INVALIDARG, PM M401).
+fn partition(vcpus: u32, assign: bool) -> Result<Partition> {
+    let features = features().map_err(Error::Guest)?;
+    let mut handle: WHV_PARTITION_HANDLE = 0;
+    // SAFETY: a handle for the call to fill.
+    check("WHvCreatePartition", unsafe {
+        WHvCreatePartition(&raw mut handle)
+    })?;
+    let partition = Partition::new(handle);
+    partition.set(
+        WHvPartitionPropertyCodeProcessorCount,
+        &vcpus,
+        "WHvSetPartitionProperty(ProcessorCount)",
+    )?;
+    partition.set(
+        WHvPartitionPropertyCodeLocalApicEmulationMode,
+        &WHvX64LocalApicEmulationModeXApic,
+        "WHvSetPartitionProperty(LocalApicEmulationMode)",
+    )?;
+    partition.set(
+        WHvPartitionPropertyCodeSyntheticProcessorFeaturesBanks,
+        &WHV_SYNTHETIC_PROCESSOR_FEATURES_BANKS {
+            BanksCount: 1,
+            Reserved0: 0,
+            Anonymous: WHV_SYNTHETIC_PROCESSOR_FEATURES_BANKS_0 { AsUINT64: [features] },
+        },
+        "WHvSetPartitionProperty(SyntheticProcessorFeaturesBanks)",
+    )?;
+    if assign {
+        let allowed: windows_sys::core::BOOL = 1;
+        partition.set(
+            WHvPartitionPropertyCodeAllowDeviceAssignment,
+            &allowed,
+            "WHvSetPartitionProperty(AllowDeviceAssignment)",
+        )?;
+    }
+    // SAFETY: the partition just configured.
+    check("WHvSetupPartition", unsafe { WHvSetupPartition(partition.0) })?;
+    Ok(partition)
+}
+
+/// Whether this process forbids itself dynamic code once a partition is set up
+/// ([`forbid_dynamic_code_once_set_up`]).
+static FORBID_DYNAMIC_CODE: AtomicBool = AtomicBool::new(false);
+
+/// Has this process forbid itself dynamic code (ACG) as soon as its next partition is set
+/// up, for good: a VM process's choice, made before it reads anything of its guest's (D141).
+/// Not a partition's own: windows-2022 sets up no partition in a process that has forbidden
+/// it, a VM process's own included, while every call a VM makes after its setup works
+/// (PM M201, M202); and a process that runs many VMs, a test's, sets many up.
+pub fn forbid_dynamic_code_once_set_up() {
+    FORBID_DYNAMIC_CODE.store(true, Ordering::Relaxed);
+}
+
+/// Forbids this process dynamic code from here on (SetProcessMitigationPolicy,
+/// ProcessDynamicCodePolicy).
+fn forbid_dynamic_code() -> Result<()> {
+    use windows_sys::Win32::System::SystemServices::{
+        PROCESS_MITIGATION_DYNAMIC_CODE_POLICY, PROCESS_MITIGATION_DYNAMIC_CODE_POLICY_0,
+    };
+    use windows_sys::Win32::System::Threading::{ProcessDynamicCodePolicy, SetProcessMitigationPolicy};
+    // ProhibitDynamicCode, the policy's first flag (winnt.h).
+    let policy = PROCESS_MITIGATION_DYNAMIC_CODE_POLICY {
+        Anonymous: PROCESS_MITIGATION_DYNAMIC_CODE_POLICY_0 { Flags: 1 },
+    };
+    // SAFETY: a policy of its own size, for this process.
+    let set = unsafe {
+        SetProcessMitigationPolicy(
+            ProcessDynamicCodePolicy,
+            (&raw const policy).cast(),
+            size_of::<PROCESS_MITIGATION_DYNAMIC_CODE_POLICY>(),
+        )
+    };
+    if set == 0 {
+        // HRESULT_FROM_WIN32 of the call's error, as WHP's own failures are reported.
+        let code = std::io::Error::last_os_error().raw_os_error().unwrap_or(0) as u32;
+        return Err(Error::Call {
+            op: "SetProcessMitigationPolicy(ProcessDynamicCodePolicy)",
+            hr: ((code & 0xFFFF) | 0x8007_0000) as i32,
+        });
+    }
+    Ok(())
+}
+
+impl Vm {
+    /// Watches the guest's writes for a live move (D176 part 7): WHP's dirty page tracking
+    /// of every writable range the partition maps ([`Tracked`]), plugged memory and a run's
+    /// swap mapped while it runs among them.
+    pub fn watch_writes(&self) -> Result<()> {
+        self.partition.watch_writes()
+    }
+
+    /// The pages written since the watch began or was last asked, in order of their
+    /// addresses (WHvQueryGpaRangeDirtyBitmap).
+    pub fn written(&self) -> Result<Vec<u64>> {
+        self.partition.written()
+    }
+
+    /// Stops watching the guest's writes.
+    pub fn unwatch_writes(&self) {
+        self.partition.unwatch_writes();
+    }
+}
+
+impl Vm {
+    /// A partition of `config.vcpus` vCPUs, their local APICs emulated by the hypervisor, its
+    /// guest offered [`SYNTHETIC`] of the host's synthetic features.
+    pub fn new(config: VmConfig) -> Result<Vm> {
+        Vm::made(config, false)
+    }
+
+    /// [`Vm::new`]'s, its partition allowed device assignment, for a host's PCI functions
+    /// ([`Vm::assign`], D154).
+    pub fn assigning(config: VmConfig) -> Result<Vm> {
+        Vm::made(config, true)
+    }
+
+    fn made(config: VmConfig, assign: bool) -> Result<Vm> {
+        let cpuid = cpuid_results(host()?, config.vcpus);
+        let partition = partition(config.vcpus, assign)?;
+        if FORBID_DYNAMIC_CODE.load(Ordering::Relaxed) {
+            forbid_dynamic_code()?;
+        }
+        Ok(Vm {
+            partition: Arc::new(partition),
+            ioapic: Arc::new(Ioapic::default()),
+            vcpus: config.vcpus,
+            cpuid,
+        })
+    }
+
+    /// Maps `len` bytes of host memory at `host` as guest RAM at `gpa`.
+    ///
+    /// # Safety
+    /// `host..host+len` must stay mapped until the VM is destroyed.
+    pub unsafe fn map_ram(&self, host: *mut u8, gpa: u64, len: usize) -> Result<()> {
+        // SAFETY: forwarded caller contract.
+        unsafe { self.partition.map(host, gpa, len, RWX) }
+    }
+
+    /// What takes guest RAM from the guest and gives it back, from whichever thread gives
+    /// its pages back to the host as the guest reports them free (D151).
+    pub fn stage2(&self) -> Stage2 {
+        Stage2(self.partition.clone())
+    }
+
+    /// What maps a device's memory into the guest while the VM lives, `count` slots of it
+    /// on KVM; here the partition's mappings, by address.
+    pub fn device_slots(&self, _count: u32) -> DeviceSlots {
+        DeviceSlots(self.partition.clone())
+    }
+
+    /// The memory a virtio-mem device plugs, `len` bytes at `host` seen at `gpa` (D133):
+    /// none of it mapped until plugged, block by block, through the [`Stage2`] this returns.
+    ///
+    /// # Safety
+    /// `host..host+len` must stay mapped in this process until the VM is destroyed.
+    pub unsafe fn add_hotplug(&self, _host: *mut u8, _gpa: u64, _len: usize) -> Result<Stage2> {
+        Ok(Stage2(self.partition.clone()))
+    }
+
+    /// Maps device memory (a virtio-pmem region) at `gpa`, writable by the guest only if
+    /// `writable`.
+    ///
+    /// # Safety
+    /// As for `map_ram`.
+    pub unsafe fn map_device_memory(
+        &self,
+        host: *mut u8,
+        gpa: u64,
+        len: usize,
+        writable: bool,
+    ) -> Result<()> {
+        let flags = if writable {
+            RWX
+        } else {
+            WHvMapGpaRangeFlagRead | WHvMapGpaRangeFlagExecute
+        };
+        // SAFETY: forwarded caller contract.
+        unsafe { self.partition.map(host, gpa, len, flags) }
+    }
+
+    /// The guest's physical address width, as its CPUID says: no address it is given may
+    /// be past it.
+    pub fn phys_bits(&self) -> Result<u32> {
+        Ok(cpuid::phys_bits(&host()?.cpuid))
+    }
+
+    /// A handle for driving interrupt lines from any thread.
+    pub fn irqs(&self) -> Irqs {
+        Irqs {
+            partition: self.partition.clone(),
+            ioapic: self.ioapic.clone(),
+        }
+    }
+
+    /// Creates vCPU `index` on the calling thread, which runs it. Application processors
+    /// are created held in wait-for-SIPI, which the boot processor's INIT and SIPI end
+    /// (PM M198). The last one sets every vCPU's CPUID: WHP takes a result for one vCPU
+    /// only once that vCPU exists (HV_STATUS_INVALID_VP_INDEX at setup, PM M206), and no
+    /// vCPU runs before all of them exist, made in index order (D5).
+    pub fn create_vcpu(&self, index: usize) -> Result<Vcpu> {
+        let index = u32::try_from(index).map_err(|_| Error::Guest(format!("vCPU {index}")))?;
+        // SAFETY: the partition, set up.
+        check("WHvCreateVirtualProcessor", unsafe {
+            WHvCreateVirtualProcessor(self.partition.0, index, 0)
+        })?;
+        if index + 1 == self.vcpus && !self.cpuid.is_empty() {
+            let list = cpuid_list(&self.cpuid);
+            // SAFETY: the list, of its own size.
+            check("WHvSetPartitionProperty(CpuidResultList2)", unsafe {
+                WHvSetPartitionProperty(
+                    self.partition.0,
+                    WHvPartitionPropertyCodeCpuidResultList2,
+                    list.as_ptr().cast(),
+                    size_of_val(list.as_slice()) as u32,
+                )
+            })?;
+        }
+        Ok(Vcpu {
+            partition: self.partition.clone(),
+            ioapic: self.ioapic.clone(),
+            index,
+            emulator: None,
+        })
+    }
+}
+
+/// Drives the IOAPIC's pins (GSIs) from any thread.
+#[derive(Debug, Clone)]
+pub struct Irqs {
+    partition: Arc<Partition>,
+    ioapic: Arc<Ioapic>,
+}
+
+impl Irqs {
+    pub fn set(&self, gsi: u32, level: bool) -> Result<()> {
+        self.partition.deliver(&self.ioapic.set(gsi, level))
+    }
+
+    /// One edge on an edge-triggered pin: raised and lowered at once, as KVM's backend
+    /// pulses one, so that no other thread's raise finds the line high (PM M272).
+    pub fn pulse(&self, gsi: u32) -> Result<()> {
+        self.partition.deliver(&self.ioapic.pulse(gsi))
+    }
+
+    /// Delivers the MSI of `address` and `data`, as the IOAPIC delivers its messages.
+    pub fn msi(&self, address: u64, data: u32) -> Result<()> {
+        self.partition.deliver(&Sent::one(Message::of_msi(address, data)))
+    }
+}
+
+/// x86's segment as WHP takes it: the descriptor's access rights in VMX's layout.
+fn segment(s: &Segment) -> Value {
+    let mut v = WHV_REGISTER_VALUE::default();
+    let attributes = u16::from(s.kind & 0xF)
+        | u16::from(s.code_or_data) << 4
+        | u16::from(s.present) << 7
+        | u16::from(s.long) << 13
+        | u16::from(s.db) << 14
+        | u16::from(s.granular) << 15;
+    v.Segment = WHV_X64_SEGMENT_REGISTER {
+        Base: s.base,
+        Limit: s.limit,
+        Selector: s.selector,
+        Anonymous: WHV_X64_SEGMENT_REGISTER_0 {
+            Attributes: attributes,
+        },
+    };
+    Value(v)
+}
+
+fn table(base: u64, limit: u16) -> Value {
+    let mut v = WHV_REGISTER_VALUE::default();
+    v.Table = WHV_X64_TABLE_REGISTER {
+        Pad: [0; 3],
+        Limit: limit,
+        Base: base,
+    };
+    Value(v)
+}
+
+/// A vCPU, run by the thread that created it.
+#[derive(Debug)]
+pub struct Vcpu {
+    partition: Arc<Partition>,
+    ioapic: Arc<Ioapic>,
+    index: u32,
+    /// Microsoft's instruction emulator, made the first time an MMIO access is by an
+    /// instruction shards does not decode itself ([`Vcpu::emulate`]).
+    emulator: Option<Emulator>,
+}
+
+impl Drop for Vcpu {
+    fn drop(&mut self) {
+        // SAFETY: this vCPU, which no thread runs once it drops.
+        unsafe { WHvDeleteVirtualProcessor(self.partition.0, self.index) };
+    }
+}
+
+/// An instruction emulator (WinHvEmulation.h), destroyed as it drops; used by the thread
+/// that runs its vCPU alone.
+#[derive(Debug)]
+struct Emulator(*mut c_void);
+
+// SAFETY: a handle the emulator's library made, used by one thread at a time: its vCPU's,
+// which takes it along.
+unsafe impl Send for Emulator {}
+
+impl Drop for Emulator {
+    fn drop(&mut self) {
+        // SAFETY: the emulator this value made.
+        unsafe { WHvEmulatorDestroyEmulator(self.0) };
+    }
+}
+
+/// What the emulator's callbacks reach while it emulates one instruction: the vCPU, the
+/// VMM's devices, and the first failure of a device's, which no HRESULT carries.
+struct Emulating<'a> {
+    vcpu: &'a Vcpu,
+    io: &'a dyn Io,
+    failed: Cell<Option<Error>>,
+}
+
+/// The emulator's callbacks (WinHvEmulation.h, WHV_EMULATOR_CALLBACKS): each given the
+/// [`Emulating`] its call was.
+mod emulate {
+    use super::*;
+
+    /// E_FAIL.
+    const FAILED: windows_sys::core::HRESULT = 0x8000_4005_u32 as i32;
+
+    /// # Safety
+    /// `context` is the [`Emulating`] of the call that is emulating.
+    unsafe fn emulating<'a>(context: *const c_void) -> &'a Emulating<'a> {
+        // SAFETY: as the caller says.
+        unsafe { &*context.cast::<Emulating<'a>>() }
+    }
+
+    /// Port I/O, which shards emulates itself before it asks the emulator anything.
+    pub unsafe extern "system" fn io_port(
+        _: *const c_void,
+        _: *mut WHV_EMULATOR_IO_ACCESS_INFO,
+    ) -> windows_sys::core::HRESULT {
+        FAILED
+    }
+
+    /// An access of 1 to 8 bytes at a GPA: guest RAM where the partition maps it, else the
+    /// VMM's devices.
+    pub unsafe extern "system" fn memory(
+        context: *const c_void,
+        access: *mut WHV_EMULATOR_MEMORY_ACCESS_INFO,
+    ) -> windows_sys::core::HRESULT {
+        // SAFETY: the emulator's context and access, for this call.
+        let (cx, access) = unsafe { (emulating(context), &mut *access) };
+        let size = usize::from(access.AccessSize).min(access.Data.len());
+        let Some(data) = access.Data.get_mut(..size) else {
+            return FAILED;
+        };
+        let gpa = access.GpaAddress;
+        let write = access.Direction != 0;
+        if let Some(at) = cx.vcpu.partition.host(gpa, size as u64) {
+            for (i, b) in data.iter_mut().enumerate() {
+                // SAFETY: inside a mapping of guest RAM, which stays mapped while the VM
+                // lives; byte by byte, as the guest's other vCPUs may touch it meanwhile.
+                unsafe {
+                    if write {
+                        at.add(i).write_volatile(*b);
+                    } else {
+                        *b = at.add(i).read_volatile();
+                    }
+                }
+            }
+            return 0;
+        }
+        if !write {
+            cx.vcpu.mmio_read(cx.io, gpa, data);
+            return 0;
+        }
+        match cx.vcpu.mmio_write(cx.io, gpa, data) {
+            Ok(()) => 0,
+            Err(e) => {
+                cx.failed.set(Some(e));
+                FAILED
+            }
+        }
+    }
+
+    pub unsafe extern "system" fn get_registers(
+        context: *const c_void,
+        names: *const WHV_REGISTER_NAME,
+        count: u32,
+        values: *mut WHV_REGISTER_VALUE,
+    ) -> windows_sys::core::HRESULT {
+        // SAFETY: the emulator's context, names and values, `count` of each.
+        unsafe {
+            let cx = emulating(context);
+            WHvGetVirtualProcessorRegisters(cx.vcpu.partition.0, cx.vcpu.index, names, count, values)
+        }
+    }
+
+    pub unsafe extern "system" fn set_registers(
+        context: *const c_void,
+        names: *const WHV_REGISTER_NAME,
+        count: u32,
+        values: *const WHV_REGISTER_VALUE,
+    ) -> windows_sys::core::HRESULT {
+        // SAFETY: the emulator's context, names and values, `count` of each.
+        unsafe {
+            let cx = emulating(context);
+            WHvSetVirtualProcessorRegisters(cx.vcpu.partition.0, cx.vcpu.index, names, count, values)
+        }
+    }
+
+    /// The GPA of a guest-virtual page, as the vCPU's own page tables have it.
+    pub unsafe extern "system" fn translate(
+        context: *const c_void,
+        gva: u64,
+        flags: WHV_TRANSLATE_GVA_FLAGS,
+        result: *mut WHV_TRANSLATE_GVA_RESULT_CODE,
+        gpa: *mut u64,
+    ) -> windows_sys::core::HRESULT {
+        let mut translated = WHV_TRANSLATE_GVA_RESULT::default();
+        // SAFETY: the emulator's context, result and GPA, for this call.
+        unsafe {
+            let cx = emulating(context);
+            let hr = WHvTranslateGva(
+                cx.vcpu.partition.0,
+                cx.vcpu.index,
+                gva,
+                flags,
+                &raw mut translated,
+                gpa,
+            );
+            *result = translated.ResultCode;
+            hr
+        }
+    }
+}
+
+impl Vcpu {
+    /// Maps each of `runs`, `(gpa, len)`, of guest memory into stage 2 ahead of the guest's
+    /// first touch of them, all in one call (WHvAdviseGpaRange,
+    /// WHvAdviseGpaRangeCodePopulate): each page the guest would take into stage 2 one exit
+    /// at a time, 6 to 23 µs a page, populated at 0.4 to 0.7 µs a page of a 2 MiB range (PM
+    /// M341). What a populate costs is its pages': single pages, as a restore's working set's
+    /// mostly are, 2.6 µs a page on jupiter and a call's own 1.96 µs, and 50 to 58 µs a
+    /// page on CI's windows-2025, whose WHP runs nested (M308, M415). For writing where
+    /// `write`: a page a copy-on-write view still shares with its file is copied, in the
+    /// host's kernel, as the guest's first write of it would copy it, in about the time a copy
+    /// made from this process and a populate after it take together (M415); else for reading,
+    /// mapping the file's own pages.
+    pub fn pre_fault_runs(&self, runs: &[(u64, u64)], write: bool) -> Result<()> {
+        if runs.is_empty() {
+            return Ok(());
+        }
+        let ranges: Vec<WHV_MEMORY_RANGE_ENTRY> = runs
+            .iter()
+            .map(|&(gpa, len)| WHV_MEMORY_RANGE_ENTRY {
+                GuestAddress: gpa,
+                SizeInBytes: len,
+            })
+            .collect();
+        let populate = WHV_ADVISE_GPA_RANGE_POPULATE {
+            Flags: WHV_ADVISE_GPA_RANGE_POPULATE_FLAGS { AsUINT32: 0 },
+            AccessType: if write {
+                WHvMemoryAccessWrite
+            } else {
+                WHvMemoryAccessRead
+            },
+        };
+        // As many ranges a call as its count holds.
+        for chunk in ranges.chunks(u32::MAX as usize) {
+            // SAFETY: the chunk's ranges, of the partition's, and an advice of its own type
+            // and size.
+            check("WHvAdviseGpaRange(Populate)", unsafe {
+                WHvAdviseGpaRange(
+                    self.partition.0,
+                    chunk.as_ptr(),
+                    chunk.len() as u32,
+                    WHvAdviseGpaRangeCodePopulate,
+                    (&raw const populate).cast(),
+                    size_of::<WHV_ADVISE_GPA_RANGE_POPULATE>() as u32,
+                )
+            })?;
+        }
+        Ok(())
+    }
+
+    pub fn kicker(&self) -> Kicker {
+        Kicker {
+            partition: self.partition.clone(),
+            index: self.index,
+        }
+    }
+
+    fn set(&self, names: &[WHV_REGISTER_NAME], values: &[Value], op: &'static str) -> Result<()> {
+        if names.len() != values.len() {
+            return Err(Error::Guest(format!(
+                "{op}: {} names, {} values",
+                names.len(),
+                values.len()
+            )));
+        }
+        // SAFETY: `names.len()` names and as many values, 16-aligned (`Value`), whose
+        // layout is WHV_REGISTER_VALUE's.
+        check(op, unsafe {
+            WHvSetVirtualProcessorRegisters(
+                self.partition.0,
+                self.index,
+                names.as_ptr(),
+                names.len() as u32,
+                values.as_ptr().cast(),
+            )
+        })
+    }
+
+    fn get(&self, name: WHV_REGISTER_NAME) -> Result<u64> {
+        let values = self.partition.registers(self.index, &[name])?;
+        Ok(values.first().map_or(0, Value::get))
+    }
+
+    /// The boot vCPU's registers for the 64-bit boot protocol: every one the protocol
+    /// names, over the reset state.
+    pub fn boot(&mut self, b: &Boot) -> Result<()> {
+        let data = segment(&b.data);
+        self.set(
+            &[
+                WHvX64RegisterCr0,
+                WHvX64RegisterCr3,
+                WHvX64RegisterCr4,
+                WHvX64RegisterEfer,
+                WHvX64RegisterCs,
+                WHvX64RegisterDs,
+                WHvX64RegisterEs,
+                WHvX64RegisterFs,
+                WHvX64RegisterGs,
+                WHvX64RegisterSs,
+                WHvX64RegisterTr,
+                WHvX64RegisterGdtr,
+                WHvX64RegisterIdtr,
+                WHvX64RegisterRip,
+                WHvX64RegisterRsi,
+                WHvX64RegisterRflags,
+            ],
+            &[
+                Value::u64(b.cr0),
+                Value::u64(b.cr3),
+                Value::u64(b.cr4),
+                Value::u64(b.efer),
+                segment(&b.cs),
+                data,
+                data,
+                data,
+                data,
+                data,
+                segment(&b.tr),
+                table(b.gdt.0, b.gdt.1),
+                table(b.idt.0, b.idt.1),
+                Value::u64(b.rip),
+                Value::u64(b.rsi),
+                Value::u64(0x2),
+            ],
+            "WHvSetVirtualProcessorRegisters(boot)",
+        )
+    }
+
+    /// Runs the guest until a kick or a reset; device accesses complete through `io` on
+    /// the way.
+    pub fn run(&mut self, io: &dyn Io) -> Result<Exit> {
+        loop {
+            let mut exit = ExitContext::default();
+            // SAFETY: an exit context of the size given, 16-aligned.
+            check("WHvRunVirtualProcessor", unsafe {
+                WHvRunVirtualProcessor(
+                    self.partition.0,
+                    self.index,
+                    (&raw mut exit).cast(),
+                    size_of::<WHV_RUN_VP_EXIT_CONTEXT>() as u32,
+                )
+            })?;
+            let e = &exit.0;
+            match e.ExitReason {
+                WHvRunVpExitReasonMemoryAccess => self.mmio(io, e)?,
+                WHvRunVpExitReasonX64IoPortAccess => self.pio(io, e)?,
+                WHvRunVpExitReasonX64ApicEoi => {
+                    // SAFETY: the union member an EOI exit fills.
+                    let vector = unsafe { e.Anonymous.ApicEoi.InterruptVector };
+                    self.partition.deliver(&self.ioapic.eoi(vector as u8))?;
+                }
+                WHvRunVpExitReasonCanceled => return Ok(Exit::Canceled),
+                // A triple fault: the guest crashed.
+                WHvRunVpExitReasonUnrecoverableException => {
+                    crate::warn!("the guest triple-faulted (WHvRunVpExitReasonUnrecoverableException)");
+                    return Ok(Exit::Reset);
+                }
+                WHvRunVpExitReasonX64Halt => {
+                    return Err(Error::Guest("HLT exit despite the emulated LAPIC".into()));
+                }
+                other => {
+                    return Err(Error::Guest(format!(
+                        "unexpected WHP exit {other:#x} at rip {:#x}",
+                        e.VpContext.Rip
+                    )));
+                }
+            }
+        }
+    }
+
+    /// The instruction's length, which WHP gives for port I/O exits (PM M198).
+    fn length(e: &WHV_RUN_VP_EXIT_CONTEXT) -> u64 {
+        u64::from(e.VpContext._bitfield & 0xF)
+    }
+
+    fn pio(&self, io: &dyn Io, e: &WHV_RUN_VP_EXIT_CONTEXT) -> Result<()> {
+        // SAFETY: the union member a port I/O exit fills.
+        let p = unsafe { e.Anonymous.IoPortAccess };
+        // SAFETY: the access's bits: IsWrite (0), AccessSize (3:1), StringOp (4), RepPrefix (5).
+        let info = unsafe { p.AccessInfo.AsUINT32 };
+        let size = ((info >> 1) & 7) as usize;
+        let port = p.PortNumber;
+        if info & (1 << 4) != 0 || !matches!(size, 1 | 2 | 4) {
+            return Err(Error::Guest(format!(
+                "a string or {size}-byte port access at {port:#x}, which shards does not emulate"
+            )));
+        }
+        let rip = e.VpContext.Rip.wrapping_add(Self::length(e));
+        if info & 1 != 0 {
+            io.pio_write(port, p.Rax.to_le_bytes().get(..size).unwrap_or_default());
+            return self.set(
+                &[WHvX64RegisterRip],
+                &[Value::u64(rip)],
+                "WHvSetVirtualProcessorRegisters(rip)",
+            );
+        }
+        let mut data = [0u8; 8];
+        if let Some(d) = data.get_mut(..size) {
+            io.pio_read(port, d);
+        }
+        let size = size as u8;
+        let rax = mmio::loaded(p.Rax, u64::from_le_bytes(data), size, size, false, Extend::None);
+        self.set(
+            &[WHvX64RegisterRax, WHvX64RegisterRip],
+            &[Value::u64(rax), Value::u64(rip)],
+            "WHvSetVirtualProcessorRegisters(rax, rip)",
+        )
+    }
+
+    fn mmio(&mut self, io: &dyn Io, e: &WHV_RUN_VP_EXIT_CONTEXT) -> Result<()> {
+        // SAFETY: the union member a memory exit fills.
+        let m = unsafe { e.Anonymous.MemoryAccess };
+        let gpa = m.Gpa;
+        // Memory a device gives the guest that the host had none at as it was accessed: a
+        // share's DAX window's range while another thread replaced it, as stage 2 follows the
+        // host's view (D189, PM M341). Given now, the access runs again, its instruction not
+        // stepped over.
+        if io.memory_fault(Some(gpa)) {
+            return Ok(());
+        }
+        // SAFETY: the access's bits: AccessType (1:0), 0 read, 1 write, 2 execute.
+        let kind = unsafe { m.AccessInfo.AsUINT32 } & 3;
+        if kind == 2 {
+            return Err(Error::Guest(format!(
+                "the guest ran code at {gpa:#x}, where it has no memory (rip {:#x})",
+                e.VpContext.Rip
+            )));
+        }
+        // SAFETY: the execution state's bits: Cr0Pe (2), EferLma (4).
+        let state = unsafe { e.VpContext.ExecutionState.AsUINT16 };
+        // SAFETY: CS's access rights: L (13), D/B (14).
+        let cs = unsafe { e.VpContext.Cs.Anonymous.Attributes };
+        let mode = if state & (1 << 4) != 0 && cs & (1 << 13) != 0 {
+            Some(Mode::Long)
+        } else if state & (1 << 2) != 0 && cs & (1 << 14) != 0 {
+            Some(Mode::Protected32)
+        } else {
+            None
+        };
+        let bytes = m
+            .InstructionBytes
+            .get(..usize::from(m.InstructionByteCount))
+            .unwrap_or_default();
+        let Some(decoded) = mode.and_then(|mode| mmio::decode(bytes, mode)) else {
+            return self.emulate(io, e).map_err(|why| {
+                Error::Guest(format!(
+                    "an MMIO {} at {gpa:#x} by an instruction neither shards nor Windows' emulator emulates ({why}): {bytes:02x?} (rip {:#x})",
+                    if kind == 1 { "write" } else { "read" },
+                    e.VpContext.Rip
+                ))
+            });
+        };
+        let rip = e.VpContext.Rip.wrapping_add(u64::from(decoded.len));
+        let write = |data: u64, size: u8| {
+            let bytes = data.to_le_bytes();
+            let bytes = bytes.get(..usize::from(size)).unwrap_or_default();
+            self.mmio_write(io, gpa, bytes)
+        };
+        match decoded.access {
+            Access::Store { reg, high, size } if kind == 1 => {
+                let value = self.get(WHV_REGISTER_NAME::from(reg))?;
+                write(mmio::stored(value, high, size), size)?;
+                self.set(
+                    &[WHvX64RegisterRip],
+                    &[Value::u64(rip)],
+                    "WHvSetVirtualProcessorRegisters(rip)",
+                )
+            }
+            Access::StoreImm { value, size } if kind == 1 => {
+                write(value, size)?;
+                self.set(
+                    &[WHvX64RegisterRip],
+                    &[Value::u64(rip)],
+                    "WHvSetVirtualProcessorRegisters(rip)",
+                )
+            }
+            Access::Load {
+                reg,
+                high,
+                size,
+                dest,
+                extend,
+            } if kind == 0 => {
+                let mut data = [0u8; 8];
+                if let Some(d) = data.get_mut(..usize::from(size)) {
+                    self.mmio_read(io, gpa, d);
+                }
+                let name = WHV_REGISTER_NAME::from(reg);
+                // Only an 8- or 16-bit destination keeps the rest of its register.
+                let old = if dest < 4 { self.get(name)? } else { 0 };
+                let value = mmio::loaded(old, u64::from_le_bytes(data), size, dest, high, extend);
+                self.set(
+                    &[name, WHvX64RegisterRip],
+                    &[Value::u64(value), Value::u64(rip)],
+                    "WHvSetVirtualProcessorRegisters(load)",
+                )
+            }
+            access => Err(Error::Guest(format!(
+                "an MMIO access at {gpa:#x} whose instruction ({access:?}) is not of its direction"
+            ))),
+        }
+    }
+
+    /// Emulates the instruction of MMIO exit `e` with Windows' own instruction emulator
+    /// (WinHvEmulation.h, WHvEmulatorTryMmioEmulation), for what shards' decoder does not
+    /// take (arch/x86_64/mmio.rs): string instructions above all, as KVM's emulator takes
+    /// them. Linux copies a page of a mount's options from its caller, however long they
+    /// are (fs/namespace.c, copy_mount_options), so a REP MOVSB reads the page that follows
+    /// them, which may be the control page a process of the guest maps.
+    fn emulate(&mut self, io: &dyn Io, e: &WHV_RUN_VP_EXIT_CONTEXT) -> Result<()> {
+        static CALLBACKS: WHV_EMULATOR_CALLBACKS = WHV_EMULATOR_CALLBACKS {
+            Size: size_of::<WHV_EMULATOR_CALLBACKS>() as u32,
+            Reserved: 0,
+            WHvEmulatorIoPortCallback: Some(emulate::io_port),
+            WHvEmulatorMemoryCallback: Some(emulate::memory),
+            WHvEmulatorGetVirtualProcessorRegisters: Some(emulate::get_registers),
+            WHvEmulatorSetVirtualProcessorRegisters: Some(emulate::set_registers),
+            WHvEmulatorTranslateGvaPage: Some(emulate::translate),
+        };
+        let emulator = match &self.emulator {
+            Some(made) => made.0,
+            None => {
+                let mut made = std::ptr::null_mut();
+                // SAFETY: callbacks that live as long as the process, and a handle for the
+                // call to fill, destroyed as the Emulator holding it drops.
+                check("WHvEmulatorCreateEmulator", unsafe {
+                    WHvEmulatorCreateEmulator(&raw const CALLBACKS, &raw mut made)
+                })?;
+                self.emulator = Some(Emulator(made));
+                made
+            }
+        };
+        let cx = Emulating {
+            vcpu: self,
+            io,
+            failed: Cell::new(None),
+        };
+        let mut status = WHV_EMULATOR_STATUS::default();
+        // SAFETY: this vCPU's emulator; the context its callbacks are given, alive for the
+        // call; and the exit's own contexts.
+        let hr = unsafe {
+            WHvEmulatorTryMmioEmulation(
+                emulator,
+                (&raw const cx).cast(),
+                &raw const e.VpContext,
+                &raw const e.Anonymous.MemoryAccess,
+                &raw mut status,
+            )
+        };
+        if let Some(failed) = cx.failed.take() {
+            return Err(failed);
+        }
+        check("WHvEmulatorTryMmioEmulation", hr)?;
+        // EmulationSuccessful, the status's first bit (WinHvEmulation.h).
+        // SAFETY: the union's word, which every member shares.
+        let bits = unsafe { status.AsUINT32 };
+        if bits & 1 == 0 {
+            return Err(Error::Guest(format!("its status {bits:#x}")));
+        }
+        Ok(())
+    }
+
+    fn mmio_read(&self, io: &dyn Io, gpa: u64, data: &mut [u8]) {
+        match gpa.checked_sub(layout::IOAPIC) {
+            Some(offset) if offset < 0x1000 => self.ioapic.read(offset, data),
+            _ => io.mmio_read(gpa, data),
+        }
+    }
+
+    fn mmio_write(&self, io: &dyn Io, gpa: u64, data: &[u8]) -> Result<()> {
+        match gpa.checked_sub(layout::IOAPIC) {
+            Some(offset) if offset < 0x1000 => self.partition.deliver(&self.ioapic.write(offset, data)),
+            _ => {
+                io.mmio_write(gpa, data);
+                Ok(())
+            }
+        }
+    }
+}
+
+/// Interrupts a vCPU's `run` from any thread: a cancel, which returns the run it finds or,
+/// made before one, the next (PM M198).
+#[derive(Debug, Clone)]
+pub struct Kicker {
+    partition: Arc<Partition>,
+    index: u32,
+}
+
+impl Kicker {
+    pub fn kick(&self) {
+        // SAFETY: the partition, which this kicker holds; a vCPU that no longer exists
+        // fails the call, harmlessly.
+        unsafe { WHvCancelRunVirtualProcessor(self.partition.0, self.index, 0) };
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod tests {
+    use super::*;
+
+    /// A writable range cut by an unmap keeps what is left of it on either side, each at
+    /// its own place in this process; ranges it misses stay whole; and the parts within a
+    /// span are those it overlaps.
+    #[test]
+    fn a_watched_range_is_cut_where_part_of_it_is_unmapped() {
+        let range = |gpa: u64, len: u64, host: usize| Writable {
+            gpa,
+            host,
+            len,
+            flags: RWX,
+        };
+        let mut tracked = Tracked {
+            ranges: vec![
+                range(0, 0x10_0000, 0x1000_0000),
+                range(0x20_0000, 0x1000, 0x2000_0000),
+            ],
+            written: None,
+        };
+        assert_eq!(
+            tracked.within(0xf_f000, 0x11_1000),
+            [(0xf_f000, 0x1000), (0x20_0000, 0x1000)]
+        );
+        tracked.cut(0x4000, 0x2000);
+        assert_eq!(
+            tracked.ranges,
+            [
+                range(0, 0x4000, 0x1000_0000),
+                range(0x6000, 0xf_a000, 0x1000_6000),
+                range(0x20_0000, 0x1000, 0x2000_0000),
+            ]
+        );
+        tracked.cut(0, 0x6000);
+        tracked.cut(0x20_0000, 0x1000);
+        assert_eq!(tracked.ranges, [range(0x6000, 0xf_a000, 0x1000_6000)]);
+        assert!(tracked.within(0, 0x6000).is_empty());
+    }
+
+    /// Do, on a real partition: map 64 pages of RAM, watch its guest's writes (the range
+    /// mapped again in place with them tracked), ask what was written, ask a part of the
+    /// range alone, give a block of it back and map it again as the balloon does, ask
+    /// again, and stop. Expect each call taken, nothing said written before the block went
+    /// (the guest ran nothing), after it nothing but the block's, and nothing once the
+    /// watch is over. Skips where the host offers no WHP.
+    #[test]
+    fn a_partitions_writes_are_watched_where_it_maps_them() {
+        use windows_sys::Win32::System::Memory::{
+            MEM_COMMIT, MEM_RELEASE, MEM_RESERVE, PAGE_READWRITE, VirtualAlloc, VirtualFree,
+        };
+        if let Err(why) = check_host() {
+            eprintln!("SKIP: no WHP here ({why})");
+            return;
+        }
+        const PAGE: usize = 4096;
+        let len = 64 * PAGE;
+        // SAFETY: fresh memory of this process, freed below once the VM is gone.
+        let at = unsafe { VirtualAlloc(std::ptr::null(), len, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE) }
+            .cast::<u8>();
+        assert!(!at.is_null());
+        let vm = Vm::new(VmConfig { vcpus: 1 }).unwrap();
+        // SAFETY: the memory stays until the VM is dropped, below.
+        unsafe { vm.map_ram(at, 0, len) }.unwrap();
+        let block = (16 * PAGE) as u64..(32 * PAGE) as u64;
+        vm.watch_writes().unwrap();
+        assert_eq!(vm.written().unwrap(), Vec::<u64>::new(), "the guest ran nothing");
+        let mut part = std::collections::BTreeSet::new();
+        vm.partition
+            .dirty(block.start, block.end - block.start, &mut part)
+            .unwrap();
+        vm.stage2().unmap(block.start, 16 * PAGE).unwrap();
+        assert_eq!(lock(&vm.partition.2).ranges.len(), 2, "cut around the block");
+        let stage2 = vm.stage2();
+        // SAFETY: as map_ram's.
+        unsafe { stage2.map(at.wrapping_add(16 * PAGE), block.start, 16 * PAGE) }.unwrap();
+        let pages = vm.written().unwrap();
+        assert!(pages.iter().all(|p| block.contains(p)), "{pages:x?}");
+        vm.unwatch_writes();
+        assert_eq!(vm.written().unwrap(), Vec::<u64>::new(), "no longer watched");
+        drop((stage2, vm));
+        // SAFETY: the memory allocated above, the VM gone.
+        unsafe { VirtualFree(at.cast(), 0, MEM_RELEASE) };
+    }
+
+    /// Do, on a real partition: map a copy-on-write view of a file as guest RAM, and populate
+    /// 512 of its pages for writing and 512 for reading, each a run of its own as a restore's
+    /// working set's mostly are, each way's runs in one call. Expect each page populated for
+    /// writing a private copy of the file's bytes, each for reading the file's own, no other
+    /// page mapped, and the file as it was; and say what each way costs: in one call, a call
+    /// a run, and copied from this process as a write copies a page, for the choice a
+    /// restore makes (PM M415). Skips where the host offers no WHP.
+    #[test]
+    fn a_write_populate_copies_a_views_pages_in_the_kernel() {
+        use std::io::Write as _;
+        use windows_sys::Win32::System::Memory::{
+            CreateFileMappingW, FILE_MAP_COPY, MEMORY_MAPPED_VIEW_ADDRESS, MapViewOfFile, PAGE_WRITECOPY,
+            UnmapViewOfFile,
+        };
+        if let Err(why) = check_host() {
+            eprintln!("SKIP: no WHP here ({why})");
+            return;
+        }
+        const PAGE: usize = 4096;
+        let pages = 4096;
+        let len = pages * PAGE;
+        let dir = shards_testdir::TempDir::new("populate-w").unwrap();
+        // Each page's bytes its own: its index's low byte.
+        let bytes: Vec<u8> = (0..len).map(|i| (i / PAGE) as u8).collect();
+        let mut file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(dir.join("memory"))
+            .unwrap();
+        file.write_all(&bytes).unwrap();
+        file.sync_all().unwrap();
+        // SAFETY: a copy-on-write mapping of the whole file, and a view of it, closed below.
+        let mapping = unsafe {
+            CreateFileMappingW(
+                std::os::windows::io::AsRawHandle::as_raw_handle(&file),
+                std::ptr::null(),
+                PAGE_WRITECOPY,
+                0,
+                0,
+                std::ptr::null(),
+            )
+        };
+        assert!(!mapping.is_null());
+        // SAFETY: as above.
+        let view = unsafe { MapViewOfFile(mapping, FILE_MAP_COPY, 0, 0, len) };
+        let at = view.Value.cast::<u8>();
+        assert!(!at.is_null());
+        let vm = Vm::new(VmConfig { vcpus: 1 }).unwrap();
+        // SAFETY: the view stays mapped until the VM is dropped, below.
+        unsafe { vm.map_ram(at, 0, len) }.unwrap();
+        let vcpu = vm.create_vcpu(0).unwrap();
+        let run = |page: usize| ((page * PAGE) as u64, PAGE as u64);
+        let written: Vec<_> = (0..512).map(|i| run(2 * i)).collect();
+        let read: Vec<_> = (0..512).map(|i| run(2 * i + 1)).collect();
+        let started = std::time::Instant::now();
+        vcpu.pre_fault_runs(&written, true).unwrap();
+        let write_once = started.elapsed();
+        let started = std::time::Instant::now();
+        vcpu.pre_fault_runs(&read, false).unwrap();
+        let read_once = started.elapsed();
+        let mapped = crate::platform::mapped_pages(at, len).unwrap();
+        let expected: Vec<(usize, bool)> = (0..1024).map(|p| (p, p % 2 == 0)).collect();
+        assert_eq!(
+            mapped, expected,
+            "each populated for writing a copy, for reading the file's"
+        );
+        // Each way again over pages of their own: a call a run, and copies from this process.
+        let started = std::time::Instant::now();
+        for i in 0..512 {
+            vcpu.pre_fault_runs(&[run(2048 + 2 * i + 1)], false).unwrap();
+        }
+        let read_each = started.elapsed();
+        // A copy from this process, as its write makes one: each page's first word written as
+        // it holds it, by a compare-exchange, which x86_64 writes whatever it compares (an
+        // atomic add of nothing LLVM compiles to no access of the word at all).
+        let started = std::time::Instant::now();
+        for i in 0..512 {
+            // SAFETY: the first word of a page of the view, mapped copy-on-write above.
+            let word = unsafe {
+                std::sync::atomic::AtomicU64::from_ptr(at.wrapping_add((2048 + 2 * i) * PAGE).cast())
+            };
+            let held = word.load(std::sync::atomic::Ordering::Relaxed);
+            let _ = word.compare_exchange(
+                held,
+                held,
+                std::sync::atomic::Ordering::Relaxed,
+                std::sync::atomic::Ordering::Relaxed,
+            );
+        }
+        let copied_here = started.elapsed();
+        // SAFETY: the view's `len` bytes, read.
+        let seen = unsafe { std::slice::from_raw_parts(at, len) };
+        assert!(seen == bytes.as_slice(), "the view's bytes changed");
+        drop((vcpu, vm));
+        // SAFETY: the view and mapping made above, each closed once, the VM gone.
+        unsafe {
+            UnmapViewOfFile(MEMORY_MAPPED_VIEW_ADDRESS { Value: view.Value });
+            windows_sys::Win32::Foundation::CloseHandle(mapping);
+        }
+        assert!(
+            std::fs::read(dir.join("memory")).unwrap() == bytes,
+            "the file changed"
+        );
+        eprintln!(
+            "512 pages a way, a run each: populated for writing {write_once:?} in one call, \
+             for reading {read_once:?} in one call and {read_each:?} a call each; \
+             copied from this process {copied_here:?}"
+        );
+    }
+}

@@ -1,0 +1,15 @@
+# Which pure-Rust xz and bzip2 decoders decode what the xz and bzip2 tools write (PM M77).
+# Not a workspace member: run with `cargo run --release --manifest-path ... -- CASES_DIR`
+# after `cases.sh CASES_DIR`.
+[package]
+name = "decompress-probe"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+bzip2 = "0.6.1"
+lzma-rust2 = { version = "0.21", default-features = false, features = ["std", "xz"] }
+xz4rust = "0.2.3"

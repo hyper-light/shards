@@ -4,12 +4,21 @@
 //! VIRTIO_RING_F_EVENT_IDX and a queue notify only hands work to a device thread
 //! (docs/research/virtio-io-exits.md R2).
 
+pub mod balloon;
 pub mod block;
+pub mod fs;
+pub mod gpu;
+pub mod head;
+pub mod iommu;
+pub mod limit;
+pub mod mem;
 pub mod mmio;
+pub mod net;
+pub mod pci;
 pub mod pmem;
 pub mod queue;
-#[cfg(unix)]
 pub mod vsock;
+mod worker;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -45,7 +54,13 @@ pub struct DeviceInterrupt {
     status: AtomicU32,
     /// Set by a device that met a malformed ring; reported as DEVICE_NEEDS_RESET.
     failed: AtomicBool,
+    /// Whether a failure has been said in the host's log: once a device, kept across
+    /// resets, as the transport says the driver's faults.
+    said_failure: AtomicBool,
     line: Arc<dyn Interrupt>,
+    /// Where a configuration change is signalled, where not on `line`: virtio over PCI's
+    /// configuration vector (virtio 1.3 §4.1.4.3, `config_msix_vector`).
+    config_line: Option<Arc<dyn Interrupt>>,
 }
 
 impl std::fmt::Debug for DeviceInterrupt {
@@ -61,7 +76,18 @@ impl DeviceInterrupt {
         DeviceInterrupt {
             status: AtomicU32::new(0),
             failed: AtomicBool::new(false),
+            said_failure: AtomicBool::new(false),
             line,
+            config_line: None,
+        }
+    }
+
+    /// An interrupt whose used buffers raise `line` and whose configuration changes raise
+    /// `config`: the two vectors of a device on PCI with MSI-X (virtio 1.3 §4.1.5.1.2).
+    pub fn with_config_line(line: Arc<dyn Interrupt>, config: Arc<dyn Interrupt>) -> DeviceInterrupt {
+        DeviceInterrupt {
+            config_line: Some(config),
+            ..DeviceInterrupt::new(line)
         }
     }
 
@@ -73,13 +99,16 @@ impl DeviceInterrupt {
 
     pub fn config_change(&self) {
         self.status.fetch_or(INT_CONFIG_CHANGE, Ordering::AcqRel);
-        self.line.set_level(true);
+        self.config_line.as_ref().unwrap_or(&self.line).set_level(true);
     }
 
-    /// Stops the device from being used until the driver resets it (§2.1.2).
-    pub fn fail(&self) {
+    /// Stops the device from being used until the driver resets it (§2.1.2). True for the
+    /// device's first failure, the one to say: a guest that breaks a ring after every reset
+    /// wrote a line of the host's log each time, which nothing rotates (audit V07).
+    pub fn fail(&self) -> bool {
         self.failed.store(true, Ordering::Release);
         self.config_change();
+        !self.said_failure.swap(true, Ordering::AcqRel)
     }
 
     fn failed(&self) -> bool {
@@ -120,6 +149,16 @@ pub struct Activation {
     pub restored: bool,
 }
 
+/// A shared memory region a device offers its driver (virtio 1.3 §2.10): memory both may
+/// reach without a copy, at a guest-physical `base` of `len` bytes, named by `id` (the
+/// device type's own meaning, as virtio-gpu's host-visible memory is its region 1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ShmRegion {
+    pub id: u8,
+    pub base: u64,
+    pub len: u64,
+}
+
 /// A virtio device behind a transport.
 pub trait VirtioDevice: Send {
     fn device_id(&self) -> u32;
@@ -129,6 +168,17 @@ pub trait VirtioDevice: Send {
     fn queue_max_sizes(&self) -> &[u16];
     fn read_config(&self, offset: u64, data: &mut [u8]);
     fn write_config(&mut self, offset: u64, data: &[u8]);
+    /// What the device's configuration has changed by on its own, as a count: the
+    /// transport's ConfigGeneration adds it (virtio 1.3 §4.2.2.1), so a driver reading a
+    /// field in two accesses sees whether it changed between them. Its sizes are what
+    /// virtio-mem's changes; no other device's does.
+    fn config_generation(&self) -> u32 {
+        0
+    }
+    /// The shared memory regions it offers: none, but where its type has them.
+    fn shm_regions(&self) -> &[ShmRegion] {
+        &[]
+    }
     /// Starts processing. On error the transport reports DEVICE_NEEDS_RESET.
     fn activate(&mut self, activation: Activation) -> Result<(), String>;
     /// Called on a vCPU thread when the driver notifies `queue`. Must not block: work that
@@ -146,5 +196,22 @@ pub trait VirtioDevice: Send {
     /// Reads what `save` wrote, before a restored device is activated.
     fn restore(&mut self, _r: &mut Reader<'_>) -> codec::Result<()> {
         Ok(())
+    }
+    /// Why its state cannot be saved, where it cannot: asked while paused, before a
+    /// snapshot, which is then refused (D148).
+    fn unsaved(&self) -> Option<String> {
+        None
+    }
+    /// As [`crate::hv::Io::memory_fault`], for memory the device gives the guest: a
+    /// share's DAX window (D189).
+    fn memory_fault(&self, _gpa: Option<u64>) -> bool {
+        false
+    }
+    /// The memory it gives the guest that is not RAM and holds files the guest maps, a
+    /// pmem device's or a share's DAX window, `(gpa, host, len)` each: which the guest so
+    /// names to any device as its pages, as a write from a mapped file's pages does (D189,
+    /// [`GuestMemory::give_devices`]). Mapped in this process until the device drops.
+    fn device_memory(&self) -> Vec<(u64, *mut u8, usize)> {
+        Vec::new()
     }
 }

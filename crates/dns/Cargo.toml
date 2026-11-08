@@ -1,0 +1,11 @@
+[package]
+name = "shards-dns"
+version = "0.1.0"
+description = "Names a network of shards' answers its members, as RFC 1035 messages"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true

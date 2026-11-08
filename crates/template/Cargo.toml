@@ -1,0 +1,16 @@
+[package]
+name = "shards-template"
+version = "0.1.0"
+description = "Go's text/template, as the Docker CLI's --format runs it"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+
+[dev-dependencies]
+serde_json = "1"

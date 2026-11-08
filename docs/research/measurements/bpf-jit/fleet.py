@@ -1,0 +1,236 @@
+#!/usr/bin/env python3
+"""PM M489 (D227): what the guest kernel's BPF JIT costs a host's fleet of microVMs, beside
+ab.py's costs inside one guest. One `shards`, two homes, each with IMAGE and a guest of its
+own recorded (`shards configure guest --kernel K --init INIT`): A the kernel pinned before
+D227 (interpreter), B the JIT kernel. Rounds alternate which home goes first. Each round,
+in each home:
+
+- the daemon stopped and the home's templates removed, so the round's first run boots its
+  guest and saves the image's template (init attaches the device filter before the save,
+  D44, so the JIT's pack is in the template): `run vm -d IMAGE sleep`, its client wall clock
+  (`first`);
+- --n - 1 more `run vm -d`, each served from the pool's warm microVMs, restored from that
+  template, each one's client wall clock (`restored`): request to a workload running;
+- once the home's VM processes stay the same for 5 s, each one's memory (Linux:
+  /proc/PID/smaps_rollup's Rss, Pss and Anonymous; macOS: proc_pid_rusage's physical
+  footprint and resident size; Windows: Get-Process's private bytes and working set): the
+  booted run's, the restored runs' (the VM processes `inspect vm` names, State.Pid) and the
+  warm microVMs' the pool keeps, apart, and their sum; the template's disk blocks (du; not
+  on Windows, where Git's du reads a sparse file's length);
+- every run removed (`remove vm -f`).
+
+    fleet.py --shards SHARDS --init INIT [--init-b INIT] --a KERNEL --b KERNEL --homes DIR
+             [--n 10] [--rounds 10] [--warmup 1] [--image IMAGE]
+
+DIR keeps both homes (DIR/A, DIR/B) between invocations: IMAGE is pulled into each once
+(a registry limits the pulls it serves). INIT is the shards-init the guests run; with
+--init-b, B's guests run that one (one kernel, two inits: `--a K --b K`). Prints n, p50,
+p90, p99 and max of each, and each round's p50, with host, OS and revision. Every `shards`
+runs with an empty DOCKER_CONFIG. Start latency through the daemon's pools, request to
+status, one run at a time: build-ab/ab.py over the same two homes (latency.sh).
+"""
+import argparse, atexit, ctypes, hashlib, math, os, platform, re, shutil, subprocess, sys, tempfile, time
+
+p = argparse.ArgumentParser()
+for flag in ("--shards", "--init", "--a", "--b", "--homes"):
+    p.add_argument(flag, required=True)
+p.add_argument("--init-b")
+p.add_argument("--n", type=int, default=10)
+p.add_argument("--rounds", type=int, default=10)
+p.add_argument("--warmup", type=int, default=1)
+p.add_argument("--image", default="alpine@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6")
+a = p.parse_args()
+
+MACOS = platform.system() == "Darwin"
+WINDOWS = platform.system() == "Windows"
+work = tempfile.mkdtemp(prefix="bpf-fleet-")
+config = os.path.join(work, "docker-config")
+os.makedirs(config)
+kernels = {"A": os.path.realpath(a.a), "B": os.path.realpath(a.b)}
+homes = {k: os.path.join(os.path.realpath(a.homes), k) for k in kernels}
+
+
+def shards(arm, *args, check=True):
+    e = dict(os.environ, SHARDS_HOME=homes[arm], DOCKER_CONFIG=config)
+    t = time.perf_counter()
+    done = subprocess.run([a.shards, *args], env=e, stdin=subprocess.DEVNULL, capture_output=True)
+    took = (time.perf_counter() - t) * 1000
+    if check and done.returncode != 0:
+        raise SystemExit(f"{arm} {' '.join(args)}: {done.returncode}: {done.stderr.decode(errors='replace')}")
+    return took, done.stdout.decode(errors="replace")
+
+
+@atexit.register
+def clean():
+    for arm in homes:
+        shards(arm, "stop", "daemon", check=False)
+    shutil.rmtree(work, ignore_errors=True)
+
+
+def powershell(script):
+    return subprocess.run(["powershell", "-NoProfile", "-Command", script], capture_output=True,
+                          text=True).stdout
+
+
+def vms(home):
+    """The home's VM processes: (pid, booted), booted for one that runs a kernel."""
+    if WINDOWS:
+        out = powershell("Get-CimInstance Win32_Process -Filter \"Name like 'shards-vm%'\" | "
+                         "ForEach-Object { \"$($_.ProcessId) $($_.CommandLine)\" }")
+    else:
+        out = subprocess.run(["ps", "-axww", "-o", "pid=,command="], capture_output=True, text=True).stdout
+    found = []
+    for line in out.splitlines():
+        pid, _, command = line.strip().partition(" ")
+        words = command.split()
+        name = words[0].strip('"').lower().removesuffix(".exe") if words else ""
+        if len(words) < 2 or not name.endswith("shards-vm") or home not in command:
+            continue
+        if words[1] == "run" and "--kernel" in words:
+            found.append((int(pid), True))
+        elif words[1] == "restore":
+            found.append((int(pid), False))
+    return found
+
+
+if MACOS:
+    libproc = ctypes.CDLL("/usr/lib/libproc.dylib")
+
+    class RusageV2(ctypes.Structure):
+        # <sys/resource.h>, struct rusage_info_v2, to its physical footprint.
+        _fields_ = [("uuid", ctypes.c_uint8 * 16)] + [
+            (f, ctypes.c_uint64)
+            for f in ("user", "system", "idle", "interrupt", "pageins", "wired", "resident", "footprint")
+        ] + [("rest", ctypes.c_uint64 * 16)]
+
+
+def memory(pid):
+    """A VM process's memory in KiB: macOS {footprint, resident}; Linux {rss, pss, anon};
+    Windows {private, working set} (Get-Process's PrivateMemorySize64, WorkingSet64)."""
+    if WINDOWS:
+        out = powershell(f"Get-Process -Id {pid} -ErrorAction SilentlyContinue | ForEach-Object "
+                         "{ \"$($_.PrivateMemorySize64) $($_.WorkingSet64)\" }").split()
+        if len(out) != 2:
+            return None
+        return {"private": int(out[0]) // 1024, "working set": int(out[1]) // 1024}
+    if MACOS:
+        u = RusageV2()
+        if libproc.proc_pid_rusage(pid, 2, ctypes.byref(u)) != 0:
+            return None
+        return {"footprint": u.footprint // 1024, "resident": u.resident // 1024}
+    try:
+        text = open(f"/proc/{pid}/smaps_rollup").read()
+    except OSError:
+        return None
+    kib = {k: int(v) for k, v in re.findall(r"^(\w+):\s+(\d+) kB", text, re.M)}
+    return {"rss": kib["Rss"], "pss": kib["Pss"], "anon": kib["Anonymous"]}
+
+
+def settled(home, least, timeout=300):
+    """The home's VM processes once at least `least` are there and none come or go for 5 s."""
+    deadline = time.monotonic() + timeout
+    last, since = None, time.monotonic()
+    while time.monotonic() < deadline:
+        now = sorted(vms(home))
+        if now != last:
+            last, since = now, time.monotonic()
+        elif len(now) >= least and time.monotonic() - since >= 5:
+            return now
+        time.sleep(0.25)
+    raise SystemExit(f"{home}: its microVMs never settled: {last}")
+
+
+def du_kib(path):
+    if WINDOWS:
+        # Git's du reads a sparse file's length, not what it holds.
+        return None
+    out = subprocess.run(["du", "-sk", path], capture_output=True, text=True).stdout.split()
+    return int(out[0]) if out else 0
+
+
+def pct(xs, q):
+    # The nearest rank, as ab.py.
+    xs = sorted(xs)
+    return xs[min(len(xs), max(1, math.ceil(q * len(xs)))) - 1]
+
+
+def digest(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()[:12]
+
+
+for arm, kernel in kernels.items():
+    os.makedirs(homes[arm], exist_ok=True)
+    init = a.init_b if arm == "B" and a.init_b else a.init
+    shards(arm, "configure", "guest", "--kernel", kernel, "--init", os.path.realpath(init))
+    images = subprocess.run([a.shards, "list", "images", "-q"], capture_output=True, text=True,
+                            env=dict(os.environ, SHARDS_HOME=homes[arm], DOCKER_CONFIG=config)).stdout
+    if not images.strip():
+        shards(arm, "pull", "image", a.image)
+
+results = {arm: {} for arm in kernels}
+
+
+by_round = {arm: {} for arm in kernels}
+
+
+def note(arm, key, value, counted):
+    if counted and value is not None:
+        results[arm].setdefault(key, []).append(value)
+        by_round[arm].setdefault(key, {}).setdefault(i, []).append(value)
+
+
+serial = 0
+for i in range(a.warmup + a.rounds):
+    counted = i >= a.warmup
+    for arm in (list(kernels) if i % 2 == 0 else list(kernels)[::-1]):
+        home = homes[arm]
+        shards(arm, "stop", "daemon", check=False)
+        shutil.rmtree(os.path.join(home, "templates"), ignore_errors=True)
+        names = []
+        for j in range(a.n):
+            serial += 1
+            name = f"jit-{os.getpid()}-{serial}"
+            took, _ = shards(arm, "run", "vm", "-d", "--pull", "never", "--name", name, a.image, "sleep", "100000")
+            names.append(name)
+            note(arm, "first run ms" if j == 0 else "restored run ms", took, counted)
+        now = settled(home, a.n)
+        # The runs' VM processes (State.Pid); the rest restored are the pool's warm microVMs.
+        _, out = shards(arm, "inspect", "vm", "--format", "{{.State.Pid}}", *names)
+        runs = {int(w) for w in out.split()}
+        sums = {}
+        for pid, booted in now:
+            m = memory(pid)
+            if not m:
+                continue
+            kind = "booted run" if booted else "restored run" if pid in runs else "warm"
+            for k, v in m.items():
+                note(arm, f"{kind} {k} KiB", v, counted)
+                sums[k] = sums.get(k, 0) + v
+        note(arm, "VMs", len(now), counted)
+        for k, v in sums.items():
+            note(arm, f"all VMs {k} KiB", v, counted)
+            note(arm, f"all VMs {k} KiB per VM", v / len(now), counted)
+        note(arm, "templates du KiB", du_kib(os.path.join(home, "templates")), counted)
+        shards(arm, "remove", "vm", "-f", *names)
+
+rev = subprocess.run(["git", "rev-parse", "--short", "HEAD"], capture_output=True, text=True,
+                     cwd=os.path.dirname(os.path.abspath(__file__))).stdout.strip()
+u = platform.uname()
+print(f"host {u.node} {u.machine} · {platform.platform()} · revision {rev} · {a.n} runs a round · "
+      f"rounds {a.rounds} after {a.warmup} · image {a.image}")
+for arm, kernel in kernels.items():
+    init = a.init_b if arm == "B" and a.init_b else a.init
+    print(f"{arm}: {os.path.basename(kernel)} sha256 {digest(kernel)} · init sha256 {digest(init)}")
+for key in results["A"]:
+    for arm in kernels:
+        xs = results[arm].get(key, [])
+        if xs:
+            # Each round's p50: whether a tail is some rounds' (their templates') or every round's.
+            p50s = sorted(pct(v, .5) for v in by_round[arm][key].values())
+            print(f"{key:<30} {arm} n {len(xs):>4} p50 {pct(xs, .5):10.1f} p90 {pct(xs, .9):10.1f} "
+                  f"p99 {pct(xs, .99):10.1f} max {max(xs):10.1f}  round p50s "
+                  + " ".join(f"{v:.0f}" for v in p50s))

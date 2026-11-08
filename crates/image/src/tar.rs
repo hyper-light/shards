@@ -2,7 +2,7 @@
 //! because Docker, containerd and BuildKit read and write OCI layers with it: V7, ustar,
 //! star and GNU headers, base-256 numbers, GNU long names and links, and local PAX headers
 //! (path, linkpath, uid, gid, mtime, size, and the `SCHILY.xattr.*` records containerd
-//! applies). Global PAX headers are parsed and then ignored, as containerd ignores them.
+//! applies). Global PAX headers are parsed and then ignored, as containerd v2.4.1 ignores them.
 //! Sparse files are refused: layers SHOULD NOT use them (image-spec layer.md), and a
 //! file's data must be one run of the archive.
 //!
@@ -14,6 +14,8 @@ use std::collections::BTreeMap;
 use std::io::{self, Read};
 
 use crate::{Error, bad};
+
+pub mod writer;
 
 const BLOCK: usize = 512;
 /// Go's maxSpecialFileSize: the largest PAX header or GNU long name read.
@@ -82,6 +84,30 @@ pub struct Reader<R> {
     inner: R,
     pos: u64,
     done: bool,
+    /// Names and hard links as the archive holds them, uncleaned and unchecked.
+    raw: bool,
+    /// The last entry's data, skipped when the next is asked for, as Go's Reader skips
+    /// it: an entry's header is read without its data being reached.
+    owed: Option<u64>,
+    /// For an archive that can seek: its length from where reading began, and how to
+    /// move past data without reading it.
+    seek: Option<(u64, Skip<R>)>,
+}
+
+/// Moves a reader forward by so many bytes.
+type Skip<R> = fn(&mut R, i64) -> io::Result<()>;
+
+impl<R: Read + io::Seek> Reader<R> {
+    /// A reader of an archive that can seek, from where it stands: entries' data, and
+    /// their padding, are passed over without being read.
+    pub fn seekable(mut inner: R) -> Result<Reader<R>, Error> {
+        let start = inner.stream_position()?;
+        let end = inner.seek(io::SeekFrom::End(0))?;
+        inner.seek(io::SeekFrom::Start(start))?;
+        let mut r = Reader::new(inner);
+        r.seek = Some((end.saturating_sub(start), |r, n| r.seek_relative(n)));
+        Ok(r)
+    }
 }
 
 impl<R: Read> Reader<R> {
@@ -90,11 +116,26 @@ impl<R: Read> Reader<R> {
             inner,
             pos: 0,
             done: false,
+            raw: false,
+            owed: None,
+            seek: None,
         }
+    }
+
+    /// A reader that leaves names and hard-link targets as the archive holds them, for
+    /// an unpacker that applies its own rules to them (moby's, for ADD).
+    pub fn raw(inner: R) -> Reader<R> {
+        let mut r = Reader::new(inner);
+        r.raw = true;
+        r
     }
 
     /// The next entry, or `None` at the end of the archive.
     pub fn next_entry(&mut self) -> Result<Option<Entry>, Error> {
+        if let Some(size) = self.owed.take() {
+            self.skip(size)?;
+            self.pad(size)?;
+        }
         let mut pax = BTreeMap::new();
         let mut long_name = Vec::new();
         let mut long_link = Vec::new();
@@ -208,9 +249,9 @@ impl<R: Read> Reader<R> {
             }
             _ => (0, 0),
         };
-        let path = clean(&name)?;
+        let path = if self.raw { name } else { clean(name)? };
         let link = match kind {
-            Type::HardLink => clean(&link)?,
+            Type::HardLink if !self.raw => clean(link)?,
             _ => link,
         };
         let entry = Entry {
@@ -229,9 +270,114 @@ impl<R: Read> Reader<R> {
             xattrs,
             offset: self.pos,
         };
-        self.skip(size)?;
-        self.pad(size)?;
+        self.owed = Some(size);
         Ok(entry)
+    }
+
+    /// The last entry's data, copied to `out` instead of skipped: for a reader of a stream,
+    /// which cannot come back for it. Nothing is copied twice, and nothing when the entry
+    /// has no data.
+    pub fn copy_data(&mut self, out: &mut dyn io::Write) -> Result<u64, Error> {
+        let Some(size) = self.owed.take() else {
+            return Ok(0);
+        };
+        let n = io::copy(&mut (&mut self.inner).take(size), out)?;
+        self.pos += n;
+        if n != size {
+            return bad("archive ends inside a member");
+        }
+        self.pad(size)?;
+        Ok(n)
+    }
+
+    /// When the newest of what Go's `Reader.Next` returns that `FileInfo().Mode()` calls
+    /// regular was modified, as BuildKit takes a source's time from an archive
+    /// (dockerfile/1.27.1 epoch.go, archiveMaxTimeFromRef): `None` for an archive of none.
+    /// Go returns every member but metadata ones, hard links, sparse files and types it
+    /// knows nothing of included, and each global header as one of no time (year 1) and
+    /// no mode, which it calls regular.
+    pub fn newest_regular(mut self) -> Result<Option<(i64, u32)>, Error> {
+        let mut newest = None;
+        let mut pax = BTreeMap::new();
+        let mut long_name = Vec::new();
+        while !self.done {
+            let Some(block) = self.block()? else {
+                break;
+            };
+            if block.iter().all(|&b| b == 0) {
+                if self.block()?.is_some_and(|b| b.iter().any(|&c| c != 0)) {
+                    return bad("a zero block followed by a header");
+                }
+                break;
+            }
+            let h = header(&block)?;
+            if !header_only(h.flag) && h.size < 0 {
+                return bad(format!("negative size {}", h.size));
+            }
+            let (time, regular) = match h.flag {
+                b'x' => {
+                    pax = parse_pax(&self.special(h.size)?)?;
+                    continue;
+                }
+                b'L' => {
+                    long_name = c_str(&self.special(h.size)?).to_vec();
+                    continue;
+                }
+                b'K' => {
+                    self.special(h.size)?;
+                    continue;
+                }
+                // Its records are no member's: Go does not check them.
+                b'g' => {
+                    parse_pax(&self.special(h.size)?)?;
+                    ((GO_ZERO_TIME, 0), true)
+                }
+                flag => {
+                    let (mut name, mut time, mut size) = (h.name, (h.mtime, 0), h.size);
+                    // mergePAX: an empty value keeps the header's.
+                    for (key, value) in pax.iter().filter(|(_, v)| !v.is_empty()) {
+                        match key.as_slice() {
+                            b"path" => name.clone_from(value),
+                            b"mtime" => time = pax_time(value)?,
+                            b"size" => size = decimal(value)?,
+                            b"uid" | b"gid" => {
+                                decimal(value)?;
+                            }
+                            b"atime" | b"ctime" => {
+                                pax_time(value)?;
+                            }
+                            _ => {}
+                        }
+                    }
+                    if !long_name.is_empty() {
+                        name = std::mem::take(&mut long_name);
+                    }
+                    // An old GNU sparse file's extension blocks, each saying whether
+                    // another follows.
+                    let mut extended = flag == b'S' && block.get(482).is_some_and(|&b| b != 0);
+                    while extended {
+                        let Some(next) = self.block()? else {
+                            return bad("archive ends inside a header");
+                        };
+                        extended = next.get(504).is_some_and(|&b| b != 0);
+                    }
+                    let data = if header_only(flag) {
+                        0
+                    } else {
+                        u64::try_from(size).map_err(|_| Error(format!("negative size {size}")))?
+                    };
+                    self.skip(data)?;
+                    self.pad(data)?;
+                    (time, go_regular(flag, h.mode, &name))
+                }
+            };
+            pax.clear();
+            long_name.clear();
+            if regular && newest.is_none_or(|n| time > n) {
+                newest = Some(time);
+            }
+        }
+        Ok(newest)
     }
 
     /// The next block: `None` at the end of the stream, an error if it ends inside one.
@@ -273,9 +419,7 @@ impl<R: Read> Reader<R> {
     }
 
     fn skip(&mut self, n: u64) -> Result<(), Error> {
-        let skipped = io::copy(&mut (&mut self.inner).take(n), &mut io::sink())?;
-        self.pos += skipped;
-        if skipped != n {
+        if self.pass(n)? != n {
             return bad("archive ends inside a member");
         }
         Ok(())
@@ -285,13 +429,42 @@ impl<R: Read> Reader<R> {
     /// as a complete archive.
     fn pad(&mut self, size: u64) -> Result<(), Error> {
         let n = (BLOCK as u64 - size % BLOCK as u64) % BLOCK as u64;
-        let skipped = io::copy(&mut (&mut self.inner).take(n), &mut io::sink())?;
-        self.pos += skipped;
-        if skipped != n {
+        if self.pass(n)? != n {
             self.done = true;
         }
         Ok(())
     }
+
+    /// Passes over up to `n` bytes, by seeking where the archive can, and says how many
+    /// there were before its end.
+    fn pass(&mut self, n: u64) -> Result<u64, Error> {
+        let passed = match self.seek {
+            Some((len, skip)) => {
+                let k = n.min(len.saturating_sub(self.pos));
+                let by = i64::try_from(k).map_err(|_| Error(format!("{k}-byte member")))?;
+                skip(&mut self.inner, by)?;
+                k
+            }
+            None => io::copy(&mut (&mut self.inner).take(n), &mut io::sink())?,
+        };
+        self.pos += passed;
+        Ok(passed)
+    }
+}
+
+/// Go's zero Time, January 1 of year 1, in seconds since 1970.
+const GO_ZERO_TIME: i64 = -62_135_596_800;
+
+/// Whether Go's `FileInfo().Mode()` of a member is a regular file's: no file type in the
+/// type bits of its mode, which Go keeps 32 of, nor in its type flag, NUL with a name
+/// ending in a slash being a directory's (`Reader.next`, `headerFileInfo.Mode`).
+fn go_regular(flag: u8, mode: i64, name: &[u8]) -> bool {
+    let typed_mode = matches!(
+        mode & 0xffff_ffff & !0o7777,
+        0o40000 | 0o10000 | 0o120000 | 0o60000 | 0o20000 | 0o140000
+    );
+    let typed_flag = matches!(flag, b'2'..=b'6') || (flag == 0 && name.ends_with(b"/"));
+    !typed_mode && !typed_flag
 }
 
 /// Go's isHeaderOnlyType: types whose size is not followed by data.
@@ -495,28 +668,48 @@ fn pax_time(v: &[u8]) -> Result<(i64, u32), Error> {
     Ok((secs, nsec))
 }
 
-/// Cleans a member path lexically, as containerd's filepath.Clean does before it joins the
-/// path to the root: empty and `.` components go, and `..` removes the component before
-/// it. A `..` at the root of an absolute path stays at the root; one that climbs out of a
-/// relative path is refused, as moby refuses it.
-fn clean(path: &[u8]) -> Result<Vec<u8>, Error> {
+/// Cleans a member path lexically, as containerd v2.4.1's filepath.Clean does before it
+/// joins the path to the root: empty and `.` components go, and `..` removes the component
+/// before it. A `..` at the root of an absolute path stays at the root; one that climbs out
+/// of a relative path is refused, so that no member lands outside the layer's root.
+fn clean(mut path: Vec<u8>) -> Result<Vec<u8>, Error> {
+    // In place: what is kept never runs ahead of what is read, as Go's lazybuf keeps it.
     let rooted = path.first() == Some(&b'/');
-    let mut parts: Vec<&[u8]> = Vec::new();
-    for part in path.split(|&c| c == b'/') {
-        match part {
+    let (mut read, mut kept) = (0, 0);
+    while read < path.len() {
+        let rest = path.get(read..).unwrap_or_default();
+        let len = rest.iter().position(|&c| c == b'/').unwrap_or(rest.len());
+        let end = read + len;
+        match rest.get(..len).unwrap_or_default() {
             b"" | b"." => {}
             b".." => {
-                if parts.pop().is_none() && !rooted {
-                    return bad(format!(
-                        "path {:?} leaves the root",
-                        String::from_utf8_lossy(path)
-                    ));
+                if kept == 0 {
+                    if !rooted {
+                        return bad(format!(
+                            "path {:?} leaves the root",
+                            String::from_utf8_lossy(&path)
+                        ));
+                    }
+                } else {
+                    let back = path.get(..kept).unwrap_or_default();
+                    kept = back.iter().rposition(|&c| c == b'/').unwrap_or(0);
                 }
             }
-            p => parts.push(p),
+            _ => {
+                if kept > 0 {
+                    if let Some(c) = path.get_mut(kept) {
+                        *c = b'/';
+                    }
+                    kept += 1;
+                }
+                path.copy_within(read..end, kept);
+                kept += len;
+            }
         }
+        read = end + 1;
     }
-    Ok(parts.join(&b'/'))
+    path.truncate(kept);
+    Ok(path)
 }
 
 #[cfg(test)]
@@ -620,13 +813,66 @@ pub(crate) mod tests {
         }
     }
 
+    /// `archive`'s entries, read as a stream; a reader that seeks over their data must
+    /// read the same, or fail alike.
+    #[allow(clippy::panic_in_result_fn)]
     fn entries(archive: &[u8]) -> Result<Vec<Entry>, Error> {
-        let mut r = Reader::new(archive);
+        let streamed = all(Reader::new(archive));
+        let sought = Reader::seekable(io::Cursor::new(archive)).and_then(all);
+        match (&streamed, &sought) {
+            (Ok(a), Ok(b)) => assert_eq!(a, b),
+            (Err(a), Err(b)) => assert_eq!(a.0, b.0),
+            _ => panic!("streamed {streamed:?}, sought {sought:?}"),
+        }
+        streamed
+    }
+
+    fn all<R: Read>(mut r: Reader<R>) -> Result<Vec<Entry>, Error> {
         let mut out = Vec::new();
         while let Some(e) = r.next_entry()? {
             out.push(e);
         }
         Ok(out)
+    }
+
+    #[test]
+    fn a_seeking_reader_reads_what_a_streaming_one_does() {
+        let archive = Writer::default()
+            .member(Member {
+                name: b"a",
+                data: &[7; 1000],
+                ..Member::default()
+            })
+            .member(Member {
+                name: b"b",
+                data: b"",
+                ..Member::default()
+            })
+            .member(Member {
+                name: b"c",
+                data: &[9; 513],
+                ..Member::default()
+            })
+            .finish();
+        // Cut anywhere: inside a header, a member's data, or its padding.
+        for end in 0..=archive.len() {
+            let _ = entries(&archive[..end]);
+        }
+        // From where a file already stands, as a layer is applied from its position.
+        let mut file = vec![1u8; 300];
+        file.extend_from_slice(&archive);
+        let mut at = io::Cursor::new(&file[..]);
+        at.set_position(300);
+        assert_eq!(
+            all(Reader::seekable(at).unwrap()).unwrap(),
+            entries(&archive).unwrap()
+        );
+        // Through a buffer smaller than a member, as layers are read.
+        let buffered = io::BufReader::with_capacity(600, io::Cursor::new(&archive[..]));
+        assert_eq!(
+            all(Reader::seekable(buffered).unwrap()).unwrap(),
+            entries(&archive).unwrap()
+        );
     }
 
     fn fnv(bytes: &[u8]) -> u64 {
@@ -646,6 +892,37 @@ pub(crate) mod tests {
     /// what Go reads from each (expect.go). Where Go returns an entry we support, we return
     /// the same one; where Go returns one we refuse (sparse files, GNU dumpdirs) or fails,
     /// we fail; global headers, which Go returns as entries, we skip.
+    /// testdata/tar-newest/newest.txt holds when Go's archive/tar (go1.27.1) finds the
+    /// newest regular member of each of Go's test archives and of the ones newest.go
+    /// crafts was modified, as BuildKit takes a source's time; where Go fails, we fail.
+    #[test]
+    fn finds_the_newest_regular_member_as_go_does() {
+        let testdata = Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata");
+        let newest = std::fs::read_to_string(testdata.join("tar-newest/newest.txt")).unwrap();
+        let mut lines = newest.lines();
+        let mut checked = 0;
+        while let Some(line) = lines.next() {
+            let name = line.strip_prefix("archive ").unwrap();
+            let want = lines.next().unwrap();
+            let archive = std::fs::read(testdata.join(name)).unwrap();
+            let got = Reader::new(&archive[..]).newest_regular();
+            match want.split(' ').collect::<Vec<_>>().as_slice() {
+                ["newest", secs, nsec] => {
+                    assert_eq!(
+                        got.unwrap(),
+                        Some((secs.parse().unwrap(), nsec.parse().unwrap())),
+                        "{name}"
+                    );
+                }
+                ["none"] => assert_eq!(got.unwrap(), None, "{name}"),
+                ["error", ..] => assert!(got.is_err(), "{name}: {got:?}"),
+                _ => panic!("{want}"),
+            }
+            checked += 1;
+        }
+        assert_eq!(checked, 53);
+    }
+
     #[test]
     fn reads_what_go_reads() {
         let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/go-tar");
@@ -705,10 +982,10 @@ pub(crate) mod tests {
                     .map(|(k, v)| (unhex(k), unhex(v)))
                     .collect();
                 let want = Entry {
-                    path: clean(&unhex(go["name"])).unwrap(),
+                    path: clean(unhex(go["name"])).unwrap(),
                     kind,
                     link: if kind == Type::HardLink {
-                        clean(&link).unwrap()
+                        clean(link.clone()).unwrap()
                     } else {
                         link
                     },
@@ -867,6 +1144,7 @@ pub(crate) mod tests {
 
     #[test]
     fn paths_are_cleaned() {
+        let clean = |p: &[u8]| clean(p.to_vec());
         assert_eq!(clean(b"./a//b/./c/").unwrap(), b"a/b/c");
         assert_eq!(clean(b"/abs/x").unwrap(), b"abs/x");
         assert_eq!(clean(b"a/../b").unwrap(), b"b");
@@ -874,6 +1152,55 @@ pub(crate) mod tests {
         assert_eq!(clean(b"./").unwrap(), b"");
         assert!(clean(b"../x").is_err());
         assert!(clean(b"a/../../b").is_err());
+        // Against cleaning by components, every path of up to five of these, rooted or not.
+        let by_parts = |path: &[u8]| -> Option<Vec<u8>> {
+            let mut parts: Vec<&[u8]> = Vec::new();
+            for part in path.split(|&c| c == b'/') {
+                match part {
+                    b"" | b"." => {}
+                    b".." => {
+                        if parts.pop().is_none() && path.first() != Some(&b'/') {
+                            return None;
+                        }
+                    }
+                    p => parts.push(p),
+                }
+            }
+            Some(parts.join(&b'/'))
+        };
+        let words: [&[u8]; 6] = [b"", b".", b"..", b"a", b"bc", b"..."];
+        let mut paths: Vec<Vec<u8>> = vec![Vec::new()];
+        for _ in 0..5 {
+            let longer: Vec<Vec<u8>> = paths
+                .iter()
+                .flat_map(|p| {
+                    words.iter().map(move |w| {
+                        let mut q = p.clone();
+                        if !q.is_empty() {
+                            q.push(b'/');
+                        }
+                        q.extend_from_slice(w);
+                        q
+                    })
+                })
+                .collect();
+            paths.extend(longer.into_iter().filter(|q| q.len() < 16));
+            paths.sort();
+            paths.dedup();
+        }
+        let mut checked = 0;
+        for p in &paths {
+            for rooted in [false, true] {
+                let p = if rooted {
+                    [b"/", &p[..]].concat()
+                } else {
+                    p.clone()
+                };
+                assert_eq!(clean(&p).ok(), by_parts(&p), "{:?}", String::from_utf8_lossy(&p));
+                checked += 1;
+            }
+        }
+        assert!(checked > 10_000, "{checked}");
     }
 
     #[test]

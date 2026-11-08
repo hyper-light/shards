@@ -14,28 +14,31 @@ const MAGIC: u64 = 0x000;
 const VERSION: u64 = 0x004;
 const DEVICE_ID: u64 = 0x008;
 const VENDOR_ID: u64 = 0x00c;
-const DEVICE_FEATURES: u64 = 0x010;
-const DEVICE_FEATURES_SEL: u64 = 0x014;
-const DRIVER_FEATURES: u64 = 0x020;
-const DRIVER_FEATURES_SEL: u64 = 0x024;
-const QUEUE_SEL: u64 = 0x030;
-const QUEUE_NUM_MAX: u64 = 0x034;
-const QUEUE_NUM: u64 = 0x038;
-const QUEUE_READY: u64 = 0x044;
-const QUEUE_NOTIFY: u64 = 0x050;
-const INTERRUPT_STATUS: u64 = 0x060;
-const INTERRUPT_ACK: u64 = 0x064;
-const STATUS: u64 = 0x070;
-const QUEUE_DESC_LOW: u64 = 0x080;
-const QUEUE_DESC_HIGH: u64 = 0x084;
-const QUEUE_DRIVER_LOW: u64 = 0x090;
-const QUEUE_DRIVER_HIGH: u64 = 0x094;
-const QUEUE_DEVICE_LOW: u64 = 0x0a0;
-const QUEUE_DEVICE_HIGH: u64 = 0x0a4;
-const SHM_LEN_LOW: u64 = 0x0b0;
-const SHM_LEN_HIGH: u64 = 0x0b4;
-const CONFIG_GENERATION: u64 = 0x0fc;
-const CONFIG: u64 = 0x100;
+pub(super) const DEVICE_FEATURES: u64 = 0x010;
+pub(super) const DEVICE_FEATURES_SEL: u64 = 0x014;
+pub(super) const DRIVER_FEATURES: u64 = 0x020;
+pub(super) const DRIVER_FEATURES_SEL: u64 = 0x024;
+pub(super) const QUEUE_SEL: u64 = 0x030;
+pub(super) const QUEUE_NUM_MAX: u64 = 0x034;
+pub(super) const QUEUE_NUM: u64 = 0x038;
+pub(super) const QUEUE_READY: u64 = 0x044;
+pub(super) const QUEUE_NOTIFY: u64 = 0x050;
+pub(super) const INTERRUPT_STATUS: u64 = 0x060;
+pub(super) const INTERRUPT_ACK: u64 = 0x064;
+pub(super) const STATUS: u64 = 0x070;
+pub(super) const QUEUE_DESC_LOW: u64 = 0x080;
+pub(super) const QUEUE_DESC_HIGH: u64 = 0x084;
+pub(super) const QUEUE_DRIVER_LOW: u64 = 0x090;
+pub(super) const QUEUE_DRIVER_HIGH: u64 = 0x094;
+pub(super) const QUEUE_DEVICE_LOW: u64 = 0x0a0;
+pub(super) const QUEUE_DEVICE_HIGH: u64 = 0x0a4;
+pub(super) const SHM_SEL: u64 = 0x0ac;
+pub(super) const SHM_LEN_LOW: u64 = 0x0b0;
+pub(super) const SHM_LEN_HIGH: u64 = 0x0b4;
+pub(super) const SHM_BASE_LOW: u64 = 0x0b8;
+pub(super) const SHM_BASE_HIGH: u64 = 0x0bc;
+pub(super) const CONFIG_GENERATION: u64 = 0x0fc;
+pub(super) const CONFIG: u64 = 0x100;
 
 const MAGIC_VALUE: u32 = 0x7472_6976; // "virt"
 /// "SHRD" read as a little-endian u32.
@@ -50,10 +53,18 @@ struct State {
     driver_features_sel: u32,
     driver_features: u64,
     queue_sel: u32,
+    /// The shared memory region the driver selected (SHMSel): not in a snapshot, as a
+    /// driver selects one each time before it reads it (Linux virtio_mmio.c,
+    /// vm_get_shm_region).
+    shm_sel: u32,
     queues: Vec<QueueConfig>,
     config_generation: u32,
     /// Each queue's progress while paused, for a snapshot.
     paused: Vec<QueueState>,
+    /// The driver's faults already said, once each: a guest repeating one gets no more
+    /// lines of the host's log for it. Kept across resets.
+    said_status: bool,
+    said_activate: bool,
 }
 
 /// One virtio device behind an MMIO register window.
@@ -91,6 +102,16 @@ impl MmioTransport {
         memory: Arc<GuestMemory>,
         line: Arc<dyn Interrupt>,
     ) -> MmioTransport {
+        MmioTransport::with_interrupt(device, memory, DeviceInterrupt::new(line))
+    }
+
+    /// The transport of `device`, which signals through `interrupt`: virtio over PCI's
+    /// ([`super::pci`]), whose registers are this transport's, read and written for it.
+    pub fn with_interrupt(
+        device: Box<dyn VirtioDevice>,
+        memory: Arc<GuestMemory>,
+        interrupt: DeviceInterrupt,
+    ) -> MmioTransport {
         let queues = vec![QueueConfig::default(); device.queue_max_sizes().len()];
         MmioTransport {
             state: Mutex::new(State {
@@ -100,11 +121,14 @@ impl MmioTransport {
                 driver_features_sel: 0,
                 driver_features: 0,
                 queue_sel: 0,
+                shm_sel: 0,
                 queues,
                 config_generation: 0,
                 paused: Vec::new(),
+                said_status: false,
+                said_activate: false,
             }),
-            interrupt: Arc::new(DeviceInterrupt::new(line)),
+            interrupt: Arc::new(interrupt),
             memory,
         }
     }
@@ -116,6 +140,7 @@ impl MmioTransport {
         s.driver_features_sel = 0;
         s.driver_features = 0;
         s.queue_sel = 0;
+        s.shm_sel = 0;
         s.queues.iter_mut().for_each(|q| *q = QueueConfig::default());
         self.interrupt.clear();
     }
@@ -127,10 +152,12 @@ impl MmioTransport {
         }
         // Status bits are only ever added (virtio 1.3 §3.1.1); clearing requires reset.
         if new & s.status != s.status {
-            warn!(
-                "virtio: driver cleared status bits {:#x} -> {new:#x} without reset",
-                s.status
-            );
+            if !std::mem::replace(&mut s.said_status, true) {
+                warn!(
+                    "virtio: driver cleared status bits {:#x} -> {new:#x} without reset",
+                    s.status
+                );
+            }
             return;
         }
         let added = new & !s.status;
@@ -147,7 +174,9 @@ impl MmioTransport {
         if added & status::DRIVER_OK != 0
             && let Err(e) = self.activate(s, &[])
         {
-            warn!("virtio device {}: {e}", s.device.device_id());
+            if !std::mem::replace(&mut s.said_activate, true) {
+                warn!("virtio device {}: {e}", s.device.device_id());
+            }
             s.status |= status::DEVICE_NEEDS_RESET;
             self.interrupt.config_change();
         }
@@ -216,9 +245,21 @@ impl MmioDevice for MmioTransport {
             INTERRUPT_STATUS => self.interrupt.status(),
             STATUS if self.interrupt.failed() => s.status | status::DEVICE_NEEDS_RESET,
             STATUS => s.status,
-            // No shared memory regions: length reads as all-ones (§4.2.2).
-            SHM_LEN_LOW | SHM_LEN_HIGH => u32::MAX,
-            CONFIG_GENERATION => s.config_generation,
+            // The selected shared memory region's length and base; one the device has not
+            // reads as all-ones (§4.2.2).
+            SHM_LEN_LOW | SHM_LEN_HIGH | SHM_BASE_LOW | SHM_BASE_HIGH => {
+                let sel = s.shm_sel;
+                match s.device.shm_regions().iter().find(|r| u32::from(r.id) == sel) {
+                    Some(r) => match offset {
+                        SHM_LEN_LOW => low(r.len),
+                        SHM_LEN_HIGH => high(r.len),
+                        SHM_BASE_LOW => low(r.base),
+                        _ => high(r.base),
+                    },
+                    None => u32::MAX,
+                }
+            }
+            CONFIG_GENERATION => s.config_generation.wrapping_add(s.device.config_generation()),
             _ => 0,
         };
         put_le(data, u64::from(v));
@@ -247,6 +288,7 @@ impl MmioDevice for MmioTransport {
                 }
             }
             QUEUE_SEL => s.queue_sel = v,
+            SHM_SEL => s.shm_sel = v,
             QUEUE_NUM if configurable => {
                 if let Some(q) = Self::selected_queue(&mut s) {
                     q.size = v as u16;
@@ -288,6 +330,14 @@ impl MmioDevice for MmioTransport {
         lock(&self.state).device.resume()
     }
 
+    fn unsaved(&self) -> Option<String> {
+        lock(&self.state).device.unsaved()
+    }
+
+    fn memory_fault(&self, gpa: Option<u64>) -> bool {
+        lock(&self.state).device.memory_fault(gpa)
+    }
+
     fn save(&self, w: &mut Writer) {
         let s = lock(&self.state);
         for v in [
@@ -326,7 +376,7 @@ impl MmioDevice for MmioTransport {
             [r.u32()?, r.u32()?, r.u32()?, r.u32()?, r.u32()?, r.u32()?];
         let driver_features = r.u64()?;
         let failed = r.bool()?;
-        let queues = r.seq(s.queues.len(), |r| {
+        let queues = r.seq(s.queues.len(), 1, |r| {
             Ok(QueueConfig {
                 size: r.u16()?,
                 desc: r.u64()?,
@@ -342,7 +392,7 @@ impl MmioDevice for MmioTransport {
                 s.queues.len()
             )));
         }
-        let progress = r.seq(s.queues.len(), |r| {
+        let progress = r.seq(s.queues.len(), 7, |r| {
             let (next_avail, next_used, signalled) = (r.u16()?, r.u16()?, r.bool()?);
             let at = r.u16()?;
             Ok(QueueState {
@@ -367,5 +417,80 @@ impl MmioDevice for MmioTransport {
                 .map_err(|e| codec::DecodeError(format!("restoring virtio device: {e}")))?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+    use crate::devices::virtio::ShmRegion;
+
+    /// A device with nothing but shared memory regions.
+    struct Regions(Vec<ShmRegion>);
+
+    impl VirtioDevice for Regions {
+        fn device_id(&self) -> u32 {
+            16
+        }
+        fn features(&self) -> u64 {
+            0
+        }
+        fn queue_max_sizes(&self) -> &[u16] {
+            &[]
+        }
+        fn read_config(&self, _: u64, data: &mut [u8]) {
+            data.fill(0);
+        }
+        fn write_config(&mut self, _: u64, _: &[u8]) {}
+        fn shm_regions(&self) -> &[ShmRegion] {
+            &self.0
+        }
+        fn activate(&mut self, _: Activation) -> Result<(), String> {
+            Ok(())
+        }
+        fn notify(&self, _: u16) {}
+        fn reset(&mut self) {}
+        fn pause(&mut self) -> Vec<QueueState> {
+            Vec::new()
+        }
+        fn resume(&mut self) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    struct Line;
+
+    impl Interrupt for Line {
+        fn set_level(&self, _: bool) {}
+    }
+
+    fn read(t: &MmioTransport, offset: u64) -> u32 {
+        let mut data = [0u8; 4];
+        t.read(offset, &mut data);
+        u32::from_le_bytes(data)
+    }
+
+    /// The region the driver selects reads its length and base, each in two halves; one
+    /// the device has not reads as all-ones, as virtio 1.3 §4.2.2 has it; a reset selects
+    /// region 0 again.
+    #[test]
+    fn shared_memory_regions_read_as_selected() {
+        let region = ShmRegion {
+            id: 1,
+            base: 0x1_2345_0000,
+            len: 0x2_0000_0000,
+        };
+        let memory = Arc::new(GuestMemory::anonymous(&[(0x8000_0000, 1 << 16)]).unwrap());
+        let t = MmioTransport::new(Box::new(Regions(vec![region])), memory, Arc::new(Line));
+        assert_eq!(read(&t, SHM_LEN_LOW), u32::MAX, "region 0 is not the device's");
+        assert_eq!(read(&t, SHM_LEN_HIGH), u32::MAX);
+        t.write(SHM_SEL, &1u32.to_le_bytes());
+        assert_eq!(read(&t, SHM_LEN_LOW), 0);
+        assert_eq!(read(&t, SHM_LEN_HIGH), 2);
+        assert_eq!(read(&t, SHM_BASE_LOW), 0x2345_0000);
+        assert_eq!(read(&t, SHM_BASE_HIGH), 1);
+        t.write(STATUS, &0u32.to_le_bytes());
+        assert_eq!(read(&t, SHM_LEN_LOW), u32::MAX, "a reset selects region 0");
     }
 }

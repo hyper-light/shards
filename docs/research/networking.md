@@ -334,7 +334,9 @@ Defects:
 
 ## 3. Implications for shards (ranked)
 
-**R1. Default datapath: one in-VMM userspace L2→L4 translator (passt-style), in-repo, on both macOS and Linux.** No TAP, no host network namespaces, no vmnet.
+**R1. Default datapath: one userspace L2→L4 translator (passt-style), in-repo, on both macOS and Linux.** No TAP, no host network namespaces, no vmnet.
+
+> Superseded in part (2026-09-30): the translator runs in a network process of its own per VM, not in the VMM, as rootless-security.md R4.16 and R6 require; architecture.md D31.
 
 - **Why:**
   - It is the only option that is rootless and needs no entitlement on macOS [Apple: vmnet; socket_vmnet README].

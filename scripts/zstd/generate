@@ -1,0 +1,25 @@
+#!/bin/sh
+# Regenerates crates/zstd/testdata/zstd.json: what klauspost/compress v1.19.2's zstd
+# writer, as BuildKit v0.28.1 drives it (util/compression/zstd.go: zstd.NewWriter, with
+# zstd.WithEncoderLevel(zstd.EncoderLevelFromZstd(level)) when a level is given, written
+# whole, closed), makes of the corpus crates/zstd/tests/oracle.rs makes again, run by Go
+# 1.25.8, the Go Docker 29.3.1 (moby docker-v29.3.1 Dockerfile GO_VERSION) and so its
+# BuildKit are built with (GOTOOLCHAIN fetches it).
+#
+#   scripts/zstd/generate
+set -eu
+here=$(cd "$(dirname "$0")" && pwd)
+root=$(cd "$here/../.." && pwd)
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+cp "$here/oracle/main.go" "$work/main.go"
+cd "$work"
+cat >go.mod <<'MOD'
+module shards.dev/zstd-oracle
+
+go 1.25
+
+require github.com/klauspost/compress v1.19.2
+MOD
+GOTOOLCHAIN=go1.25.8 GOFLAGS=-mod=mod go mod tidy >/dev/null 2>&1 || true
+GOTOOLCHAIN=go1.25.8 GOFLAGS=-mod=mod go run . "$root/crates/zstd/testdata/zstd.json"

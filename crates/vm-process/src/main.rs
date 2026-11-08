@@ -1,0 +1,55 @@
+//! shards-vm: one microVM per process, booted (`run`) or resumed from a snapshot
+//! (`restore`), for `shards run vm --kernel` and `shards restore vm` and for the daemon's templates and warm VMs. It links the
+//! VMM and what a VM process runs, its workload's relay and its link to the daemon, and
+//! nothing else of shards: a process maps and relocates its whole binary as it starts, and
+//! shardsd's registry, TLS and image code cost each VM about 1 MiB of memory
+//! (docs/research/platform-measurements.md M34).
+
+use std::io::Write;
+use std::process::ExitCode;
+
+#[path = "../../shards/src/confine.rs"]
+mod confine;
+#[cfg(any(target_os = "macos", windows))]
+#[path = "../../shards/src/grant.rs"]
+mod grant;
+#[cfg(any(target_os = "macos", windows))]
+#[path = "../../shards/src/grant_ask.rs"]
+mod grant_ask;
+// Made by the daemon alone; the logger's tests make them as it does.
+#[cfg(all(test, unix))]
+#[path = "../../shards/src/segments.rs"]
+mod segments;
+#[path = "../../shards/src/spec.rs"]
+mod spec;
+#[path = "../../shards/src/terminal.rs"]
+mod terminal;
+#[path = "../../shards/src/vm_run.rs"]
+mod vm_run;
+#[path = "../../shards/src/warm.rs"]
+mod warm;
+#[path = "../../shards/src/workload.rs"]
+mod workload;
+
+fn main() -> ExitCode {
+    shards_vmm::log::init();
+    // Before it reads anything: its arguments name files it has yet to open.
+    if let Err(e) = confine::confine() {
+        let _ = writeln!(std::io::stderr(), "shards-vm: {e}");
+        return ExitCode::from(125);
+    }
+    let mut args = std::env::args_os().skip(1);
+    match args.next().as_ref().and_then(|c| c.to_str()) {
+        Some("run") => vm_run::run(args),
+        Some("restore") => vm_run::restore(args),
+        // This host's CPU as its hypervisor shows a guest, for a CPU baseline (D176 part 6).
+        Some("cpu") => vm_run::cpu(),
+        other => {
+            let _ = writeln!(
+                std::io::stderr(),
+                "shards-vm: unknown command {other:?}; `shards run` and `shards restore` run it"
+            );
+            ExitCode::from(2)
+        }
+    }
+}

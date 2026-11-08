@@ -1,0 +1,1735 @@
+//! `shards build agent`, and agents, harnesses and MCP servers as OSI artifacts (D54;
+//! AGENTFILE_ARCH.md §8 Q1, §12.17): made from a directory and its config, kept in the
+//! image store under their names, pushed to and pulled from OCI registries as images
+//! are, listed, inspected and removed.
+//!
+//! An artifact's content holds files, directories and links alone: no device nodes,
+//! FIFOs, sockets or set-ID bits, no symlink whose target leaves the directory, no
+//! whiteouts (§9.2). It is checked when made, when pulled, and when a build takes it.
+
+use std::collections::BTreeMap;
+use std::ffi::OsString;
+use std::fs;
+use std::io::{self, Read, Write};
+use std::path::{Path, PathBuf};
+use std::process::ExitCode;
+
+use sha2::{Digest as _, Sha256};
+use shards_image::oci::{self, Descriptor, Document};
+use shards_image::osi::{self, Config, Kind};
+use shards_image::reference::{Digest, Reference};
+use shards_image::store::Store;
+
+/// The artifact type of an SBOM referrer: SPDX's JSON (D116).
+pub const SPDX_JSON: &str = "application/spdx+json";
+
+/// The file a directory's config is read from, by kind.
+fn config_file(kind: Kind) -> &'static str {
+    match kind {
+        Kind::Agent => "agent.json",
+        Kind::Harness => "harness.json",
+        Kind::Mcp => "mcp.json",
+    }
+}
+
+pub(crate) fn kind_of(word: &str) -> Option<Kind> {
+    match word {
+        "agent" | "agents" => Some(Kind::Agent),
+        "harness" | "harnesses" => Some(Kind::Harness),
+        "mcp" | "mcps" => Some(Kind::Mcp),
+        _ => None,
+    }
+}
+
+/// `shards agent ACTION [ARG...]` (and `harness`, `mcp`), as the grammar's `shards ACTION
+/// agent ...` says it.
+pub fn command(word: &str, args: impl Iterator<Item = OsString>) -> ExitCode {
+    let Some(kind) = kind_of(word) else {
+        return fail(&format!("unknown kind {word:?}"));
+    };
+    let args: Result<Vec<String>, String> = args
+        .map(|a| {
+            a.into_string()
+                .map_err(|a| format!("argument {a:?} is not valid UTF-8"))
+        })
+        .collect();
+    let result = args.and_then(|args| {
+        let (action, rest) = args.split_first().ok_or_else(|| usage(kind))?;
+        // -h is help, after any action.
+        if rest.iter().any(|a| a == "-h" || a == "--help") {
+            let text = if action == "sign" {
+                sign_usage(kind)
+            } else {
+                usage(kind)
+            };
+            let _ = writeln!(io::stdout(), "{text}");
+            return Ok(());
+        }
+        match action.as_str() {
+            "build" => build(kind, rest),
+            "push" => push(kind, rest),
+            "pull" => pull_cmd(kind, rest),
+            "ls" | "list" => list(kind),
+            "inspect" => inspect(kind, rest),
+            "rm" | "remove" | "delete" => remove(kind, rest),
+            "sign" => sign(kind, rest),
+            "-h" | "--help" | "help" => {
+                let _ = writeln!(io::stdout(), "{}", usage(kind));
+                Ok(())
+            }
+            other => Err(format!("unknown action {other:?}\n{}", usage(kind))),
+        }
+    });
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => fail(&e),
+    }
+}
+
+/// An OSI artifact of `kind`, with its article.
+fn a(kind: Kind) -> &'static str {
+    match kind {
+        Kind::Agent => "an OSI agent",
+        Kind::Harness => "an OSI harness",
+        Kind::Mcp => "an OSI MCP server",
+    }
+}
+
+fn fail(e: &str) -> ExitCode {
+    let _ = writeln!(io::stderr(), "ERROR: {e}");
+    ExitCode::FAILURE
+}
+
+fn usage(kind: Kind) -> String {
+    let w = match kind {
+        Kind::Agent => "agent",
+        Kind::Harness => "harness",
+        Kind::Mcp => "mcp",
+    };
+    format!(
+        "Usage:\n  shards build {w} DIR -t NAME [--platform LIST]   make one of DIR and its {}\n  shards sign {w} NAME [--key FILE]               sign it with a cosign key (COSIGN_PASSWORD), or keylessly\n  shards push {w} NAME                             with its signatures and SBOMs\n  shards pull {w} NAME\n  shards ls {w}\n  shards inspect {w} NAME\n  shards rm {w} NAME\n  shards rm {w} NAME --referrer DIGEST             delete a signature or SBOM from its registry",
+        config_file(kind)
+    )
+}
+
+fn sha256(bytes: &[u8]) -> Result<Digest, String> {
+    let hex: String = Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect();
+    Digest::parse(&format!("sha256:{hex}")).map_err(|e| e.to_string())
+}
+
+fn store() -> Result<Store, String> {
+    crate::pull::store(&shards_ipc::home()?)
+}
+
+/// The name an artifact goes by: as `docker pull` reads one.
+fn reference(name: &str) -> Result<Reference, String> {
+    Reference::parse(name).map_err(|e| format!("invalid reference {name:?}: {e}"))
+}
+
+/// What `shards build agent` is given: its directory, and which of its words that is, the
+/// name, the platforms and the SBOM's scanner.
+pub(crate) struct BuildArgs {
+    pub dir: PathBuf,
+    pub dir_at: usize,
+    pub name: Option<String>,
+    pub platforms: Vec<String>,
+    pub sbom: Option<String>,
+}
+
+/// `args` as `shards build agent` reads them, here and through a context alike.
+pub(crate) fn build_args(kind: Kind, args: &[String]) -> Result<BuildArgs, String> {
+    let (mut dir, mut name, mut sbom) = (None, None, None);
+    let mut platforms: Vec<String> = Vec::new();
+    let mut it = args.iter().enumerate();
+    while let Some((at, a)) = it.next() {
+        match a.as_str() {
+            "-t" | "--tag" => name = Some(it.next().ok_or("-t needs a name")?.1.clone()),
+            s if s.starts_with("--tag=") => name = Some(s.trim_start_matches("--tag=").to_string()),
+            "--platform" => platforms.push(it.next().ok_or("--platform needs platforms")?.1.clone()),
+            s if s.starts_with("--platform=") => {
+                platforms.push(s.trim_start_matches("--platform=").to_string())
+            }
+            "--sbom" => sbom = Some("true".to_string()),
+            s if s.starts_with("--sbom=") => sbom = Some(s.trim_start_matches("--sbom=").to_string()),
+            s if s.starts_with('-') => return Err(format!("unknown flag {s}\n{}", usage(kind))),
+            s if dir.is_none() => dir = Some((PathBuf::from(s), at)),
+            s => return Err(format!("one directory only, not {s:?} too")),
+        }
+    }
+    let (dir, dir_at) = dir.ok_or_else(|| usage(kind))?;
+    Ok(BuildArgs {
+        dir,
+        dir_at,
+        name,
+        platforms,
+        sbom: sbom.filter(|s| s != "false"),
+    })
+}
+
+/// `shards build agent DIR -t NAME`.
+fn build(kind: Kind, args: &[String]) -> Result<(), String> {
+    let BuildArgs {
+        dir,
+        name,
+        platforms,
+        sbom,
+        ..
+    } = build_args(kind, args)?;
+    let name = reference(&name.ok_or("-t names what it is called")?)?;
+    let store = store()?;
+    let _lease = store.lease().map_err(|e| e.to_string())?;
+    if !platforms.is_empty() {
+        return build_index(kind, &dir, &name, &platforms, &store, sbom.as_deref());
+    }
+    let (desc, _) = make(kind, &dir, &store)?;
+    let digest = desc.digest().map_err(|e| e.to_string())?;
+    store
+        .tag(&name.to_string(), &desc, &digest, &contents(&store, &desc)?)
+        .map_err(|e| e.to_string())?;
+    if let Some(sbom) = &sbom {
+        attach_sbom(&store, &name, &desc, &dir, &[config_file(kind)], sbom)?;
+    }
+    let _ = writeln!(io::stdout(), "{digest}");
+    Ok(())
+}
+
+/// An SBOM of the content `content` (`skip` at its root left out), kept with `name` as a
+/// referrer of `subject`, its manifest (D116): the SPDX document of the scanner `--sbom`
+/// names, run over the content as `shards build image --sbom` runs one over a build's result
+/// (D81), in a build of the content alone. The scan's progress is said where it fails.
+fn attach_sbom(
+    store: &Store,
+    name: &Reference,
+    subject: &Descriptor,
+    content: &Path,
+    skip: &[&str],
+    sbom: &str,
+) -> Result<(), String> {
+    let stage = store.stage().map_err(|e| e.to_string())?;
+    let file = stage.path().join("Dockerfile");
+    let excludes: String = skip.iter().map(|s| format!(" --exclude={s}")).collect();
+    fs::write(&file, format!("FROM scratch\nCOPY{excludes} . /\n")).map_err(|e| e.to_string())?;
+    let out = stage.path().join("out");
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    // Built here, as the artifact is, whatever context the home has chosen.
+    let (here, this) = crate::context::HERE;
+    let ran = std::process::Command::new(exe)
+        .env(here, this)
+        .arg("build")
+        .arg("--progress=plain")
+        .arg(format!("--sbom={sbom}"))
+        .arg("--provenance=false")
+        .arg("--output")
+        .arg(format!("type=oci,dest={},tar=false", out.display()))
+        .arg("-f")
+        .arg(&file)
+        .arg(content)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map_err(|e| format!("scanning {}: {e}", content.display()))?;
+    if !ran.status.success() {
+        return Err(format!(
+            "scanning {} for an SBOM failed:\n{}",
+            content.display(),
+            String::from_utf8_lossy(&ran.stderr)
+        ));
+    }
+    let doc = scanned_document(&out)?;
+    let referrer = sbom_referrer(store, &doc, subject)?;
+    store
+        .keep_referrer(&name.to_string(), &referrer)
+        .map_err(|e| e.to_string())?;
+    let _ = writeln!(
+        io::stderr(),
+        "{name}: SBOM {} of {}",
+        referrer.digest,
+        subject.digest
+    );
+    Ok(())
+}
+
+/// The SPDX document of the result's SBOM statement in the OCI layout at `layout`: the
+/// first attestation layer of its predicate type, as D81 writes the result's first.
+fn scanned_document(layout: &Path) -> Result<Vec<u8>, String> {
+    let read = |digest: &str| -> Result<Vec<u8>, String> {
+        let hex = digest
+            .strip_prefix("sha256:")
+            .ok_or_else(|| format!("{digest}: not SHA-256"))?;
+        let path = layout.join("blobs/sha256").join(hex);
+        let len = fs::metadata(&path).map_err(|e| format!("{digest}: {e}"))?.len();
+        if len > oci::MAX_MANIFEST {
+            return Err(format!("{digest}: larger than {} bytes", oci::MAX_MANIFEST));
+        }
+        fs::read(&path).map_err(|e| format!("{digest}: {e}"))
+    };
+    let json = |b: &[u8]| -> Result<serde_json::Value, String> {
+        serde_json::from_slice(b).map_err(|e| e.to_string())
+    };
+    // A field of a field: `get` of each in turn.
+    let at = |v: &serde_json::Value, path: &[&str]| -> Option<serde_json::Value> {
+        path.iter().try_fold(v.clone(), |v, k| v.get(k).cloned())
+    };
+    let list = |v: &serde_json::Value, key: &str| -> Vec<serde_json::Value> {
+        v.get(key)
+            .and_then(serde_json::Value::as_array)
+            .cloned()
+            .unwrap_or_default()
+    };
+    let text_of = |v: &serde_json::Value, path: &[&str]| -> String {
+        at(v, path)
+            .and_then(|s| s.as_str().map(String::from))
+            .unwrap_or_default()
+    };
+    let top = json(&fs::read(layout.join("index.json")).map_err(|e| format!("the scan's index: {e}"))?)?;
+    let mut manifests = list(&top, "manifests");
+    // The layout's index names the image's, which holds the attestation manifest.
+    for _ in 0..2 {
+        if let Some(att) = manifests
+            .iter()
+            .find(|m| text_of(m, &["annotations", "vnd.docker.reference.type"]) == "attestation-manifest")
+        {
+            let m = json(&read(&text_of(att, &["digest"]))?)?;
+            for layer in list(&m, "layers") {
+                if text_of(&layer, &["annotations", "in-toto.io/predicate-type"])
+                    == crate::build::sbom::PREDICATE
+                {
+                    let text = read(&text_of(&layer, &["digest"]))?;
+                    return Ok(crate::build::sbom::statement("sbom", &text)?.predicate);
+                }
+            }
+            break;
+        }
+        let Some(index) = manifests
+            .iter()
+            .find(|m| text_of(m, &["mediaType"]) == oci::media::OCI_INDEX)
+            .map(|m| text_of(m, &["digest"]))
+        else {
+            break;
+        };
+        manifests = list(&json(&read(&index)?)?, "manifests");
+    }
+    Err("the scan wrote no SBOM".into())
+}
+
+/// The referrer an SBOM `doc` of `subject` is, its blobs stored: an artifact of type
+/// `application/spdx+json`, the empty config, the document its one layer (image-spec
+/// manifest.md, "Guidelines for Artifact Usage"), made now.
+fn sbom_referrer(store: &Store, doc: &[u8], subject: &Descriptor) -> Result<Descriptor, String> {
+    let layer = ingest(store, doc)?;
+    let config = ingest(store, shards_sigstore::sign::EMPTY_CONFIG)?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| e.to_string())?
+        .as_secs();
+    let created = shards_cmdline::format::rfc3339_at(i64::try_from(now).map_err(|e| e.to_string())?, 0);
+    let manifest = serde_json::to_vec(&serde_json::json!({
+        "schemaVersion": 2,
+        "mediaType": oci::media::OCI_MANIFEST,
+        "artifactType": SPDX_JSON,
+        "config": {
+            "mediaType": shards_sigstore::sign::EMPTY_MEDIA_TYPE,
+            "digest": config.to_string(),
+            "size": shards_sigstore::sign::EMPTY_CONFIG.len(),
+        },
+        "layers": [{"mediaType": SPDX_JSON, "digest": layer.to_string(), "size": doc.len()}],
+        "subject": {"mediaType": subject.media_type, "digest": subject.digest, "size": subject.size},
+        "annotations": {"org.opencontainers.image.created": created},
+    }))
+    .map_err(|e| e.to_string())?;
+    let digest = ingest(store, &manifest)?;
+    Ok(Descriptor {
+        media_type: oci::media::OCI_MANIFEST.into(),
+        digest: digest.to_string(),
+        size: i64::try_from(manifest.len()).map_err(|e| e.to_string())?,
+        platform: None,
+        annotations: BTreeMap::new(),
+    })
+}
+
+/// An artifact of several platforms (§8 Q1): an index of a manifest for each, its config
+/// naming its platform, its content `DIR/<os>_<arch>[_<variant>]` where there is one, as
+/// BuildKit's local exporter lays out several platforms, else `DIR` itself, those
+/// directories left out. The name resolves to the index, and is this host's manifest.
+fn build_index(
+    kind: Kind,
+    dir: &Path,
+    name: &Reference,
+    given: &[String],
+    store: &Store,
+    sbom: Option<&str>,
+) -> Result<(), String> {
+    let host = crate::build::host_platform();
+    let wanted = crate::build::target_platforms(given, &host)?;
+    let text = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
+    let subdirs: Vec<String> = wanted.iter().map(crate::build::multi::dir_name).collect();
+    let skip: Vec<&str> = subdirs.iter().map(String::as_str).collect();
+    let mut manifests = Vec::new();
+    let mut all = Vec::new();
+    // Each platform's content, what of it is left out, and its manifest: an SBOM's.
+    let mut scanned: Vec<(PathBuf, Vec<&str>, Descriptor)> = Vec::new();
+    for (p, sub) in wanted.iter().zip(&subdirs) {
+        let content = dir.join(sub);
+        let platform = osi::Platform {
+            os: text(&p.os),
+            architecture: text(&p.architecture),
+            variant: (!p.variant.is_empty()).then(|| text(&p.variant)),
+        };
+        let (mut desc, _) = if content.is_dir() {
+            let made = make_in(kind, dir, &content, &[], store, Some(&platform))?;
+            scanned.push((content.clone(), Vec::new(), made.0.clone()));
+            made
+        } else {
+            let made = make_in(kind, dir, dir, &skip, store, Some(&platform))?;
+            let mut left = skip.clone();
+            left.push(config_file(kind));
+            scanned.push((dir.to_path_buf(), left, made.0.clone()));
+            made
+        };
+        all.extend(contents(store, &desc)?);
+        desc.platform = Some(oci::Platform {
+            architecture: platform.architecture.clone(),
+            os: platform.os.clone(),
+            variant: platform.variant.clone(),
+            os_features: Vec::new(),
+        });
+        manifests.push(desc);
+    }
+    let entries = manifests
+        .iter()
+        .map(|d| {
+            let mut v = serde_json::to_value(d).map_err(|e| e.to_string())?;
+            if let Some(o) = v.as_object_mut() {
+                o.insert("artifactType".into(), kind.artifact_type().into());
+            }
+            Ok(v)
+        })
+        .collect::<Result<Vec<serde_json::Value>, String>>()?;
+    let index = serde_json::to_vec(&serde_json::json!({
+        "schemaVersion": 2,
+        "mediaType": oci::media::OCI_INDEX,
+        "artifactType": kind.artifact_type(),
+        "manifests": entries,
+    }))
+    .map_err(|e| e.to_string())?;
+    let index_digest = sha256(&index)?;
+    store
+        .ingest(&index_digest, index.len() as u64, &mut &index[..])
+        .map_err(|e| e.to_string())?;
+    all.insert(0, index_digest.clone());
+    let parsed = oci::Index {
+        schema_version: 2,
+        media_type: Some(oci::media::OCI_INDEX.into()),
+        manifests: manifests.clone(),
+    };
+    // This host's manifest, else the first: what the name gives a run here.
+    let ours = shards_image::platform::select(&parsed, &shards_image::platform::guest())
+        .or(manifests.first())
+        .cloned()
+        .ok_or("no platforms")?;
+    let ours = Descriptor {
+        platform: None,
+        ..ours
+    };
+    store
+        .tag(&name.to_string(), &ours, &index_digest, &all)
+        .map_err(|e| e.to_string())?;
+    // An SBOM of each platform's content, referring to its manifest, as an image's SBOM
+    // attestation refers to its platform's (D81).
+    if let Some(sbom) = sbom {
+        for (content, left, desc) in &scanned {
+            attach_sbom(store, name, desc, content, left, sbom)?;
+        }
+    }
+    let _ = writeln!(io::stdout(), "{index_digest}");
+    Ok(())
+}
+
+/// The artifact of `dir`: its config (its `agent.json`, with `schemaVersion` filled in),
+/// and its files in one uncompressed tar, all stored. Returns its manifest's descriptor.
+pub fn make(kind: Kind, dir: &Path, store: &Store) -> Result<(Descriptor, Config), String> {
+    make_in(kind, dir, dir, &[], store, None)
+}
+
+/// [`make`] of the config in `dir` and the content of `content`, `skip` left out of it,
+/// for `platform` where one is given: its config names it, and refuses another.
+fn make_in(
+    kind: Kind,
+    dir: &Path,
+    content: &Path,
+    skip: &[&str],
+    store: &Store,
+    platform: Option<&osi::Platform>,
+) -> Result<(Descriptor, Config), String> {
+    let cfg_path = dir.join(config_file(kind));
+    let text = fs::read(&cfg_path).map_err(|e| format!("{}: {e}", cfg_path.display()))?;
+    let mut v: serde_json::Value =
+        serde_json::from_slice(&text).map_err(|e| format!("{}: {e}", cfg_path.display()))?;
+    if let Some(o) = v.as_object_mut() {
+        o.entry("schemaVersion").or_insert(osi::SCHEMA_VERSION.into());
+    }
+    let bytes = serde_json::to_vec(&v).map_err(|e| e.to_string())?;
+    let mut config = Config::parse(&bytes).map_err(|e| format!("{}: {e}", cfg_path.display()))?;
+    if let Some(p) = platform {
+        if let Some(said) = config.platform.as_ref().filter(|said| *said != p) {
+            return Err(format!(
+                "{} says its platform is {}/{}, not {}/{}",
+                cfg_path.display(),
+                said.os,
+                said.architecture,
+                p.os,
+                p.architecture
+            ));
+        }
+        config.platform = Some(p.clone());
+    }
+    let config_bytes = config.to_bytes().map_err(|e| e.to_string())?;
+    let mut tar = Vec::new();
+    let mut skipped = vec![config_file(kind)];
+    skipped.extend_from_slice(skip);
+    pack(content, &skipped, &mut tar)?;
+    let put = |bytes: &[u8]| -> Result<Digest, String> {
+        let d = sha256(bytes)?;
+        store
+            .ingest(&d, bytes.len() as u64, &mut &bytes[..])
+            .map_err(|e| e.to_string())?;
+        Ok(d)
+    };
+    let desc = |media: &str, d: &Digest, size: usize| -> Result<Descriptor, String> {
+        Ok(Descriptor {
+            media_type: media.to_string(),
+            digest: d.to_string(),
+            size: i64::try_from(size).map_err(|e| e.to_string())?,
+            platform: None,
+            annotations: BTreeMap::new(),
+        })
+    };
+    let config_desc = desc(kind.config_type(), &put(&config_bytes)?, config_bytes.len())?;
+    let layer = desc(kind.content_type(), &put(&tar)?, tar.len())?;
+    let manifest =
+        osi::manifest(kind, &config_desc, std::slice::from_ref(&layer)).map_err(|e| e.to_string())?;
+    let d = put(&manifest)?;
+    Ok((desc(oci::media::OCI_MANIFEST, &d, manifest.len())?, config))
+}
+
+/// Every blob of the artifact `desc` names: its manifest, config and layers.
+fn contents(store: &Store, desc: &Descriptor) -> Result<Vec<Digest>, String> {
+    let (m, _) = manifest_of(store, desc)?;
+    let mut out = vec![desc.digest().map_err(|e| e.to_string())?];
+    for d in std::iter::once(&m.config).chain(&m.layers) {
+        out.push(d.digest().map_err(|e| e.to_string())?);
+    }
+    Ok(out)
+}
+
+/// The artifact manifest `desc` names, here, and its kind.
+pub fn manifest_of(store: &Store, desc: &Descriptor) -> Result<(oci::Manifest, Kind), String> {
+    let bytes = store
+        .content(desc, oci::MAX_MANIFEST)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("{}: its manifest is not here", desc.digest))?;
+    let Document::Manifest(m) = oci::parse_document(&bytes, &desc.media_type).map_err(|e| e.to_string())?
+    else {
+        return Err(format!(
+            "{}: an index, where an OSI artifact's manifest was asked for",
+            desc.digest
+        ));
+    };
+    let kind = check_manifest(&desc.digest, &m)?;
+    Ok((m, kind))
+}
+
+/// What an OSI artifact's manifest `digest` says it is, refused where it is none: its
+/// artifactType, its config's type and its layers' types each its kind's (D54, §12.17).
+pub fn check_manifest(digest: &str, m: &oci::Manifest) -> Result<Kind, String> {
+    let kind = m.artifact_type.as_deref().and_then(Kind::of).ok_or_else(|| {
+        format!(
+            "{digest}: no OSI artifact (its artifactType is {})",
+            m.artifact_type.as_deref().unwrap_or("none")
+        )
+    })?;
+    if m.config.media_type != kind.config_type() {
+        return Err(format!(
+            "{digest}: its config is {}, not {}",
+            m.config.media_type,
+            kind.config_type()
+        ));
+    }
+    for l in &m.layers {
+        if osi::content_compression(kind, &l.media_type).is_none() {
+            return Err(format!(
+                "{digest}: a layer of type {}, which no {} holds",
+                l.media_type,
+                kind.word()
+            ));
+        }
+    }
+    Ok(kind)
+}
+
+/// The words for an artifact of one kind where another was asked for.
+pub fn not_the_kind(name: &str, found: Kind, want: Kind) -> String {
+    format!("{name} is {}, not {}", a(found), a(want))
+}
+
+/// The tar of `dir`'s files but `skip` at its root, read as a build reads its context
+/// (shards-build's walk of it, fsutil's: a Windows host's files of the modes fsutil gives
+/// them, a Linux tree a Windows machine keeps of a client's context of its own, D180): names
+/// in order, owned by root, times kept; refused if it holds what no domain may (§9.2). So an
+/// agent built through a context, of the client's files copied to its machine, is the one
+/// the client builds of them.
+fn pack(dir: &Path, skip: &[&str], out: &mut Vec<u8>) -> Result<(), String> {
+    use shards_archive::tar::{self as gotar, Header};
+    use shards_build::copy::{fm, syscall_mode};
+    let root = fs::canonicalize(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let tree = shards_build::host::Tree::at(&root);
+    let mut tw = gotar::Writer::new(out);
+    // A file's first name, by its inode: each other name of it a hard link to it.
+    let mut seen: BTreeMap<u128, Vec<u8>> = BTreeMap::new();
+    let mut stack: Vec<Vec<u8>> = vec![Vec::new()];
+    while let Some(rel) = stack.pop() {
+        let names = tree
+            .read_dir(&rel)
+            .map_err(|e| format!("{}: {e}", tree.path(&rel).display()))?;
+        // Directories pushed in reverse, to be walked in name order after their parent.
+        let mut dirs = Vec::new();
+        for n in names {
+            let path = if rel.is_empty() {
+                n
+            } else {
+                [rel.as_slice(), b"/", &n].concat()
+            };
+            let shown = String::from_utf8_lossy(&path).into_owned();
+            if rel.is_empty() && skip.iter().any(|s| s.as_bytes() == path.as_slice()) {
+                continue;
+            }
+            let st = tree.lstat(&path).map_err(|e| format!("{shown}: {e}"))?;
+            let mut h = Header {
+                name: path.clone(),
+                mode: i64::from(syscall_mode(st.mode) & 0o7777),
+                mtime: gotar::Time::unix(st.mtime.0.max(0), 0),
+                ..Header::default()
+            };
+            if h.mode & 0o6000 != 0 {
+                return Err(format!(
+                    "{shown}: set-ID bits, which nothing in an agent's directory may have"
+                ));
+            }
+            if st.mode & fm::DIR != 0 {
+                h.typeflag = gotar::TYPE_DIR;
+                h.name.push(b'/');
+                tw.write_header(&h).map_err(|e| e.to_string())?;
+                dirs.push(path);
+            } else if st.mode & fm::SYMLINK != 0 {
+                let target = walked_path(&st.link);
+                if !stays_inside(&walked_path(&rel), &target) {
+                    return Err(format!(
+                        "{shown}: a symlink to {}, outside the directory",
+                        target.display()
+                    ));
+                }
+                h.typeflag = gotar::TYPE_SYMLINK;
+                h.linkname = st.link.clone();
+                tw.write_header(&h).map_err(|e| e.to_string())?;
+            } else if st.socket || st.mode & (fm::DEVICE | fm::NAMED_PIPE) != 0 {
+                return Err(format!(
+                    "{shown}: a device, FIFO or socket, which no agent's directory may hold"
+                ));
+            } else {
+                let linked = st.inode.filter(|&(_, links)| links > 1).map(|(ino, _)| ino);
+                if let Some(first) = linked.and_then(|ino| seen.get(&ino)) {
+                    h.typeflag = gotar::TYPE_LINK;
+                    h.linkname = first.clone();
+                    tw.write_header(&h).map_err(|e| e.to_string())?;
+                    continue;
+                }
+                if let Some(ino) = linked {
+                    seen.insert(ino, path.clone());
+                }
+                h.typeflag = gotar::TYPE_REG;
+                h.size = i64::try_from(st.size).map_err(|e| e.to_string())?;
+                tw.write_header(&h).map_err(|e| e.to_string())?;
+                let f = fs::File::open(tree.path(&path)).map_err(|e| format!("{shown}: {e}"))?;
+                tw.copy_from(f).map_err(|e| format!("{shown}: {e}"))?;
+            }
+        }
+        stack.extend(dirs.into_iter().rev());
+    }
+    tw.finish().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// A walked name or a symlink's target, slash-separated bytes, as a path of the host's.
+fn walked_path(bytes: &[u8]) -> PathBuf {
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt as _;
+        PathBuf::from(std::ffi::OsStr::from_bytes(bytes))
+    }
+    #[cfg(not(unix))]
+    {
+        PathBuf::from(String::from_utf8_lossy(bytes).into_owned())
+    }
+}
+
+/// Whether a symlink in `dir` (relative to the root) pointing at `target` resolves inside
+/// the root, as written: absolute targets never do.
+fn stays_inside(dir: &Path, target: &Path) -> bool {
+    if target.is_absolute() {
+        return false;
+    }
+    let mut depth = dir.components().count() as i64;
+    for c in target.components() {
+        match c {
+            std::path::Component::ParentDir => {
+                depth -= 1;
+                if depth < 0 {
+                    return false;
+                }
+            }
+            std::path::Component::Normal(_) => depth += 1,
+            std::path::Component::CurDir => {}
+            _ => return false,
+        }
+    }
+    true
+}
+
+/// Each content layer of a stored artifact read through, refusing what no domain may
+/// hold: whiteouts, devices, FIFOs, set-ID bits, absolute or climbing names, and
+/// symlinks or hard links leaving the directory.
+pub fn check_content(store: &Store, kind: Kind, m: &oci::Manifest) -> Result<(), String> {
+    for l in &m.layers {
+        let d = l.digest().map_err(|e| e.to_string())?;
+        let file = fs::File::open(store.blob_path(&d)).map_err(|e| format!("{d}: {e}"))?;
+        check_layer(kind, &l.media_type, &d.to_string(), io::BufReader::new(file))?;
+    }
+    Ok(())
+}
+
+/// An OSI artifact's layer `digest` of `media_type`, read from `blob`, its compression
+/// undone, as [`check_content`] holds each.
+pub fn layer_reader<'a>(
+    kind: Kind,
+    media_type: &str,
+    digest: &str,
+    blob: impl io::BufRead + 'a,
+) -> Result<Box<dyn Read + 'a>, String> {
+    Ok(match osi::content_compression(kind, media_type) {
+        Some(None) => Box::new(blob),
+        Some(Some("gzip")) => Box::new(shards_image::store::gunzip(blob)),
+        Some(Some("zstd")) => Box::new(shards_image::store::Zstd::new(blob)),
+        _ => return Err(format!("{digest}: a layer of type {media_type}")),
+    })
+}
+
+/// One layer of an OSI artifact, read from `blob`, refused where it holds what no
+/// domain may (§9.2): what [`check_content`] holds each of the artifact's layers to.
+pub fn check_layer(kind: Kind, media_type: &str, digest: &str, blob: impl io::BufRead) -> Result<(), String> {
+    let d = digest;
+    {
+        let reader = layer_reader(kind, media_type, digest, blob)?;
+        let mut r = shards_archive::tar::Reader::new(reader);
+        while let Some(h) = r.next_header().map_err(|e| format!("{d}: {e}"))? {
+            let name = String::from_utf8_lossy(&h.name).into_owned();
+            let path = Path::new(name.trim_end_matches('/'));
+            let base = path
+                .file_name()
+                .map(|b| b.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            if base.starts_with(".wh.") {
+                return Err(format!("{name}: a whiteout, which no OSI artifact holds"));
+            }
+            if path.is_absolute() || !stays_inside(Path::new(""), path) {
+                return Err(format!("{name}: a name outside the artifact's directory"));
+            }
+            if h.mode & 0o6000 != 0 {
+                return Err(format!(
+                    "{name}: set-ID bits, which nothing in an agent's directory may have"
+                ));
+            }
+            match h.typeflag {
+                shards_archive::tar::TYPE_REG
+                | shards_archive::tar::TYPE_REGA
+                | shards_archive::tar::TYPE_DIR => {}
+                shards_archive::tar::TYPE_SYMLINK => {
+                    let target = PathBuf::from(String::from_utf8_lossy(&h.linkname).into_owned());
+                    let dir = path.parent().unwrap_or(Path::new(""));
+                    if !stays_inside(dir, &target) {
+                        return Err(format!(
+                            "{name}: a symlink to {}, outside the directory",
+                            target.display()
+                        ));
+                    }
+                }
+                shards_archive::tar::TYPE_LINK => {
+                    let target = PathBuf::from(String::from_utf8_lossy(&h.linkname).into_owned());
+                    if !stays_inside(Path::new(""), &target) {
+                        return Err(format!("{name}: a hard link outside the directory"));
+                    }
+                }
+                _ => {
+                    return Err(format!(
+                        "{name}: a device, FIFO or other entry no agent's directory may hold"
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The artifact `name` in the store, checked; pulled first if it is not here, or if
+/// `fresh` says to. Returns its manifest's descriptor, manifest, kind and config.
+pub fn fetch(
+    store: &Store,
+    name: &Reference,
+    want: Kind,
+    fresh: bool,
+    say: &dyn Fn(&str),
+) -> Result<(Descriptor, oci::Manifest, Config), String> {
+    take(store, name, Some(want), fresh, say).map(|(desc, m, config, _)| (desc, m, config))
+}
+
+/// [`fetch`] of an artifact of the kind `want`, or of any where none is wanted; its kind
+/// too.
+pub fn take(
+    store: &Store,
+    name: &Reference,
+    want: Option<Kind>,
+    fresh: bool,
+    say: &dyn Fn(&str),
+) -> Result<(Descriptor, oci::Manifest, Config, Kind), String> {
+    let wrong = |kind: Kind| want.is_some_and(|w| w != kind);
+    let word = want.map_or("OSI artifact", Kind::word);
+    let held = if fresh {
+        None
+    } else {
+        store.tagged(&name.to_string()).map_err(|e| e.to_string())?
+    };
+    let desc = match held {
+        Some(d) => d,
+        None => {
+            say(&format!("pulling {name}"));
+            let registry = crate::pull::registry(name, None, &|k| std::env::var(k).ok())?;
+            let desc = registry.resolve(store, name).map_err(|e| e.to_string())?;
+            let bytes = registry.fetch_document(store, &desc).map_err(|e| e.to_string())?;
+            // An index of several platforms: this host's manifest, the name resolving to
+            // the index.
+            let (desc, bytes, index) =
+                match oci::parse_document(&bytes, &desc.media_type).map_err(|e| e.to_string())? {
+                    Document::Index(index) => {
+                        let chosen = shards_image::platform::select(&index, &shards_image::platform::guest())
+                            .cloned()
+                            .ok_or_else(|| format!("{name}: no {word} for this platform"))?;
+                        let bytes = registry
+                            .fetch_document(store, &chosen)
+                            .map_err(|e| e.to_string())?;
+                        (
+                            Descriptor {
+                                platform: None,
+                                ..chosen
+                            },
+                            bytes,
+                            Some(desc.digest().map_err(|e| e.to_string())?),
+                        )
+                    }
+                    Document::Manifest(_) => (desc, bytes, None),
+                };
+            let Document::Manifest(m) =
+                oci::parse_document(&bytes, &desc.media_type).map_err(|e| e.to_string())?
+            else {
+                return Err(format!("{name}: an index inside an index"));
+            };
+            let limits = crate::pull::limits()?;
+            for part in std::iter::once(&m.config).chain(&m.layers) {
+                registry
+                    .fetch_blob(store, part, &limits, &|_| {})
+                    .map_err(|e| e.to_string())?;
+            }
+            let digest = desc.digest().map_err(|e| e.to_string())?;
+            let (_, kind) = manifest_of(store, &desc)?;
+            if let Some(want) = want.filter(|_| wrong(kind)) {
+                return Err(not_the_kind(&name.to_string(), kind, want));
+            }
+            let mut held = contents(store, &desc)?;
+            held.extend(index.clone());
+            store
+                .tag(&name.to_string(), &desc, index.as_ref().unwrap_or(&digest), &held)
+                .map_err(|e| e.to_string())?;
+            // Its signatures and SBOMs with it, for its policies to read (D116).
+            let subject = subject_of(store, name, &desc)?;
+            take_referrers(store, &registry, name, &subject, say)?;
+            desc
+        }
+    };
+    let (m, config, kind) = checked(store, &name.to_string(), &desc, want)?;
+    Ok((desc, m, config, kind))
+}
+
+/// The artifact manifest `desc` names, here, held as one of `want` is, or as any artifact
+/// where none is wanted (D54, §12.17, §9.2): its types its kind's, its kind the one asked
+/// for, its config one an artifact may have, and its content nothing no domain may hold.
+/// `name` is how its failures name it. Returns its manifest, config and kind.
+pub fn checked(
+    store: &Store,
+    name: &str,
+    desc: &Descriptor,
+    want: Option<Kind>,
+) -> Result<(oci::Manifest, Config, Kind), String> {
+    let (m, kind) = manifest_of(store, desc)?;
+    if let Some(want) = want.filter(|&w| w != kind) {
+        return Err(not_the_kind(name, kind, want));
+    }
+    let config = store
+        .content(&m.config, oci::MAX_CONFIG)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("{name}: its config is not here"))?;
+    let config = Config::parse(&config).map_err(|e| format!("{name}: {e}"))?;
+    check_content(store, kind, &m).map_err(|e| format!("{name}: {e}"))?;
+    Ok((m, config, kind))
+}
+
+fn pull_cmd(kind: Kind, args: &[String]) -> Result<(), String> {
+    let [name] = args else { return Err(usage(kind)) };
+    let name = reference(name)?;
+    let store = store()?;
+    let _lease = store.lease().map_err(|e| e.to_string())?;
+    let (desc, _, config) = fetch(&store, &name, kind, true, &|l| {
+        let _ = writeln!(io::stderr(), "{l}");
+    })?;
+    let _ = writeln!(
+        io::stdout(),
+        "{name}: {} {} {}",
+        kind.word(),
+        config.name,
+        desc.digest
+    );
+    // Its signatures and SBOMs, as the pull took them (D116).
+    for r in store.referrers_of(&name.to_string()).map_err(|e| e.to_string())? {
+        let _ = writeln!(io::stdout(), "{name}: {} {}", referrer_kind(&store, &r), r.digest);
+    }
+    Ok(())
+}
+
+/// The referrers of `subject`, what `name` was just pulled as, as the registry lists them
+/// (D116): each a manifest that refers to it, taken with its blobs and kept with the name,
+/// in place of those kept before, so that one deleted there is let go of here too. A
+/// list under the tag schema is anyone's who may push: what refers to another is left,
+/// said, and so is a referrer that is no manifest.
+fn take_referrers(
+    store: &Store,
+    registry: &shards_registry::registry::Registry,
+    name: &Reference,
+    subject: &Descriptor,
+    say: &dyn Fn(&str),
+) -> Result<(), String> {
+    let limits = crate::pull::limits()?;
+    let listed =
+        shards_registry::referrers::list(registry, &subject.digest, &[]).map_err(|e| e.to_string())?;
+    let mut taken = Vec::new();
+    for r in &listed {
+        let desc = Descriptor {
+            media_type: r.media_type.clone(),
+            digest: r.digest.clone(),
+            size: r.size,
+            platform: None,
+            annotations: BTreeMap::new(),
+        };
+        if desc.media_type != oci::media::OCI_MANIFEST {
+            say(&format!(
+                "{name}: referrer {} of type {} left",
+                r.digest, r.media_type
+            ));
+            continue;
+        }
+        let bytes = registry.fetch_document(store, &desc).map_err(|e| e.to_string())?;
+        let refers_to = shards_registry::referrers::entry(&desc, &bytes).map(|(_, s)| s);
+        if refers_to.as_deref().ok() != Some(subject.digest.as_str()) {
+            say(&format!(
+                "{name}: referrer {} left: it does not refer to {}",
+                r.digest, subject.digest
+            ));
+            continue;
+        }
+        let Document::Manifest(m) =
+            oci::parse_document(&bytes, &desc.media_type).map_err(|e| e.to_string())?
+        else {
+            continue;
+        };
+        for part in std::iter::once(&m.config).chain(&m.layers) {
+            registry
+                .fetch_blob(store, part, &limits, &|_| {})
+                .map_err(|e| e.to_string())?;
+        }
+        taken.push(desc);
+    }
+    let reference = name.to_string();
+    for kept in store.referrers_of(&reference).map_err(|e| e.to_string())? {
+        if !taken.iter().any(|t| t.digest == kept.digest) {
+            store
+                .drop_referrer(&reference, &kept.digest)
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    for desc in &taken {
+        store.keep_referrer(&reference, desc).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// The signature bundles among the referrers kept with `name` (D116): each of cosign's
+/// signature manifests' one layer, at most a manifest's size.
+pub fn signature_bundles(store: &Store, name: &str) -> Result<Vec<Vec<u8>>, String> {
+    let mut out = Vec::new();
+    for r in store.referrers_of(name).map_err(|e| e.to_string())? {
+        let Some(bytes) = store.content(&r, oci::MAX_MANIFEST).map_err(|e| e.to_string())? else {
+            continue;
+        };
+        let Ok(Document::Manifest(m)) = oci::parse_document(&bytes, &r.media_type) else {
+            continue;
+        };
+        if m.artifact_type.as_deref() != Some(shards_sigstore::image::ARTIFACT_SIGSTORE_BUNDLE) {
+            continue;
+        }
+        for layer in m
+            .layers
+            .iter()
+            .filter(|l| l.media_type == shards_sigstore::image::ARTIFACT_SIGSTORE_BUNDLE)
+        {
+            if let Some(b) = store
+                .content(layer, oci::MAX_MANIFEST)
+                .map_err(|e| e.to_string())?
+            {
+                out.push(b);
+            }
+        }
+    }
+    Ok(out)
+}
+
+fn push(kind: Kind, args: &[String]) -> Result<(), String> {
+    let [name] = args else { return Err(usage(kind)) };
+    let name = reference(name)?;
+    let store = store()?;
+    let _lease = store.lease().map_err(|e| e.to_string())?;
+    let desc = store
+        .tagged(&name.to_string())
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("no {} {name} here", kind.word()))?;
+    let (m, found) = manifest_of(&store, &desc)?;
+    if found != kind {
+        return Err(format!("{name} is {}, not {}", a(found), a(kind)));
+    }
+    check_content(&store, kind, &m)?;
+    let registry = crate::pull::registry_for_push(&name, None, None, &|k| std::env::var(k).ok())?;
+    // Of several platforms, the index: every platform's manifest with it.
+    let desc = subject_of(&store, &name, &desc)?;
+    shards_registry::push::push(&registry, &store, &desc, name.tag.as_deref(), None, &|_, _| {})
+        .map_err(|e| e.to_string())?;
+    let _ = writeln!(io::stdout(), "{name}: pushed {}", desc.digest);
+    // Its signatures and SBOMs after it, each listed by the registry or, where it has no
+    // referrers API, in the index the referrers tag schema names (D116).
+    for r in store.referrers_of(&name.to_string()).map_err(|e| e.to_string())? {
+        let listed = shards_registry::referrers::push(&registry, &store, &r).map_err(|e| e.to_string())?;
+        let how = match listed {
+            shards_registry::referrers::Listed::ByApi => "the registry lists it",
+            shards_registry::referrers::Listed::ByTagSchema => "listed under the referrers tag schema",
+        };
+        let _ = writeln!(
+            io::stdout(),
+            "{name}: pushed {} {} ({how})",
+            referrer_kind(&store, &r),
+            r.digest
+        );
+    }
+    Ok(())
+}
+
+/// What a kept referrer is, by its artifact type: a signature, an SBOM, or its type.
+fn referrer_kind(store: &Store, r: &Descriptor) -> String {
+    let artifact_type = store
+        .content(r, oci::MAX_MANIFEST)
+        .ok()
+        .flatten()
+        .and_then(|bytes| shards_registry::referrers::entry(r, &bytes).ok())
+        .map(|(e, _)| e.artifact_type)
+        .unwrap_or_default();
+    match artifact_type.as_str() {
+        shards_sigstore::image::ARTIFACT_SIGSTORE_BUNDLE => "signature".into(),
+        crate::agent::SPDX_JSON => "SBOM".into(),
+        other => format!("referrer of type {other}"),
+    }
+}
+
+/// The OSI artifacts of `kind` the store holds: each name, its config's name, version and
+/// manifest digest.
+fn list(kind: Kind) -> Result<(), String> {
+    let store = store()?;
+    let mut rows = Vec::new();
+    for (name, _) in store.references().map_err(|e| e.to_string())? {
+        let Some(desc) = store.tagged(&name).map_err(|e| e.to_string())? else {
+            continue;
+        };
+        let Ok((m, k)) = manifest_of(&store, &desc) else {
+            continue;
+        };
+        if k != kind {
+            continue;
+        }
+        let version = store
+            .content(&m.config, oci::MAX_CONFIG)
+            .ok()
+            .flatten()
+            .and_then(|c| Config::parse(&c).ok())
+            .map(|c| c.version)
+            .unwrap_or_default();
+        rows.push((name, version, desc.digest.clone()));
+    }
+    let _ = writeln!(io::stdout(), "NAME\tVERSION\tDIGEST");
+    for (n, v, d) in rows {
+        let _ = writeln!(io::stdout(), "{n}\t{v}\t{d}");
+    }
+    Ok(())
+}
+
+fn inspect(kind: Kind, args: &[String]) -> Result<(), String> {
+    let [name] = args else { return Err(usage(kind)) };
+    let name = reference(name)?;
+    let store = store()?;
+    let desc = store
+        .tagged(&name.to_string())
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("no {} {name} here", kind.word()))?;
+    let (m, found) = manifest_of(&store, &desc)?;
+    if found != kind {
+        return Err(format!("{name} is {}, not {}", a(found), a(kind)));
+    }
+    let config = store
+        .content(&m.config, oci::MAX_CONFIG)
+        .map_err(|e| e.to_string())?
+        .ok_or("its config is not here")?;
+    let config: serde_json::Value = serde_json::from_slice(&config).map_err(|e| e.to_string())?;
+    // Its signatures and SBOMs kept with it (D116), as a referrers list names each.
+    let mut referrers = Vec::new();
+    for r in store.referrers_of(&name.to_string()).map_err(|e| e.to_string())? {
+        let bytes = store
+            .content(&r, oci::MAX_MANIFEST)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("{}: not here", r.digest))?;
+        let (entry, _) = shards_registry::referrers::entry(&r, &bytes).map_err(|e| e.to_string())?;
+        referrers.push(entry);
+    }
+    let out = serde_json::json!([{
+        "Name": name.to_string(),
+        "Digest": desc.digest,
+        "ArtifactType": kind.artifact_type(),
+        "Config": config,
+        "Layers": m.layers,
+        "Referrers": referrers,
+    }]);
+    let _ = writeln!(
+        io::stdout(),
+        "{}",
+        serde_json::to_string_pretty(&out).map_err(|e| e.to_string())?
+    );
+    Ok(())
+}
+
+fn remove(kind: Kind, args: &[String]) -> Result<(), String> {
+    let (mut names, mut referrer) = (Vec::new(), None);
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--referrer" => referrer = Some(it.next().ok_or("--referrer needs a digest")?.clone()),
+            s if s.starts_with("--referrer=") => {
+                referrer = Some(s.trim_start_matches("--referrer=").to_string())
+            }
+            s if s.starts_with('-') => return Err(format!("unknown flag {s}\n{}", usage(kind))),
+            s => names.push(s.to_string()),
+        }
+    }
+    if names.is_empty() {
+        return Err(usage(kind));
+    }
+    if let Some(digest) = referrer {
+        let [name] = names.as_slice() else {
+            return Err(format!("--referrer is one name's: {}", names.join(" ")));
+        };
+        return remove_referrer(&reference(name)?, &digest);
+    }
+    let store = store()?;
+    for n in &names {
+        let name = reference(n)?;
+        let desc = store
+            .tagged(&name.to_string())
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("no {} {name} here", kind.word()))?;
+        let (_, found) = manifest_of(&store, &desc)?;
+        if found != kind {
+            return Err(format!("{name} is {}, not {}", a(found), a(kind)));
+        }
+        store.untag(&name.to_string()).map_err(|e| e.to_string())?;
+        let _ = writeln!(io::stdout(), "Untagged: {name}");
+    }
+    Ok(())
+}
+
+/// `shards rm agent NAME --referrer DIGEST`: deletes the referrer DIGEST of what NAME
+/// names in its registry from there, with its entry in the referrers tag schema's list
+/// where the registry has no referrers API (D116); then lets go of it here. A signature
+/// deleted so no longer vouches for the artifact to anyone who takes it.
+fn remove_referrer(name: &Reference, digest: &str) -> Result<(), String> {
+    Digest::parse(digest).map_err(|e| format!("{digest}: {e}"))?;
+    let store = store()?;
+    let registry = crate::pull::registry_for_delete(name, &|k| std::env::var(k).ok())?;
+    // What the name resolves to there is what its referrers refer to.
+    let subject = registry.resolve(&store, name).map_err(|e| e.to_string())?;
+    shards_registry::referrers::delete(&registry, &subject.digest, digest).map_err(|e| e.to_string())?;
+    let here = store
+        .drop_referrer(&name.to_string(), digest)
+        .map_err(|e| e.to_string())?;
+    let _ = writeln!(
+        io::stdout(),
+        "Deleted: {digest}, a referrer of {name}{}",
+        if here { ", here too" } else { "" }
+    );
+    Ok(())
+}
+
+/// What `name`, whose manifest here `desc` describes, resolved to, as its referrers'
+/// `subject` names it: the index of an artifact of several platforms, else its manifest.
+fn subject_of(store: &Store, name: &Reference, desc: &Descriptor) -> Result<Descriptor, String> {
+    let resolved = store.resolved(&name.to_string()).map_err(|e| e.to_string())?;
+    match resolved.filter(|r| r.to_string() != desc.digest) {
+        Some(index) => {
+            let size = fs::metadata(store.blob_path(&index))
+                .map_err(|e| format!("{index}: {e}"))?
+                .len();
+            Ok(Descriptor {
+                media_type: oci::media::OCI_INDEX.into(),
+                digest: index.to_string(),
+                size: i64::try_from(size).map_err(|e| e.to_string())?,
+                platform: None,
+                annotations: BTreeMap::new(),
+            })
+        }
+        None => Ok(Descriptor {
+            platform: None,
+            annotations: BTreeMap::new(),
+            ..desc.clone()
+        }),
+    }
+}
+
+/// `bytes` into the store, by their SHA-256.
+fn ingest(store: &Store, bytes: &[u8]) -> Result<Digest, String> {
+    let d = sha256(bytes)?;
+    store
+        .ingest(&d, bytes.len() as u64, &mut &bytes[..])
+        .map_err(|e| e.to_string())?;
+    Ok(d)
+}
+
+/// `shards sign KIND -h`: signing with a key, and keylessly with cosign's flags for it.
+fn sign_usage(kind: Kind) -> String {
+    let w = match kind {
+        Kind::Agent => "agent",
+        Kind::Harness => "harness",
+        Kind::Mcp => "mcp",
+    };
+    format!(
+        "Usage:  shards sign {w} NAME [OPTIONS]
+
+Sign {} with a cosign key, or keylessly.
+
+Keylessly, Fulcio certifies an identity for the signature, which is timestamped and
+logged as the signing config asks (Sigstore's public instance unless --signing-config
+names another). The signature is kept with NAME and pushed with it.
+
+Options:
+      --key FILE                        Sign with this cosign key (its password COSIGN_PASSWORD's)
+      --identity-token TOKEN            Sign as this identity token's subject (a token, or a
+                                        file holding one); else the environment's, else sign in
+      --oidc-provider NAME              Take the token from this provider alone: buildkite-agent,
+                                        envvar, filesystem, github-actions,
+                                        google-workload-identity, google-impersonate, spiffe
+      --oidc-disable-ambient-providers  Take no token from the environment
+      --fulcio-auth-flow FLOW           Sign in by: normal (a browser), device, client_credentials
+      --oidc-client-id ID               The client that signs in (default \"sigstore\")
+      --oidc-client-secret-file FILE    Its secret
+      --oidc-redirect-url URL           Where the browser brings the code back
+      --signing-config FILE             The services to sign with
+      --trusted-root FILE               The root the signature is checked against
+  -y, --yes                             Publish the identity in the log without asking
+  -h, --help                            Show this help",
+        a(kind)
+    )
+}
+
+/// `shards sign agent NAME --key FILE` (and `harness`, `mcp`): a signature of what NAME
+/// names, as cosign v3.1.3 signs one with a key (D116, shards_sigstore::sign), kept with
+/// it and pushed with it. The key is cosign's own (generate-key-pair's, import-key-pair's),
+/// its password COSIGN_PASSWORD's, as cosign takes it, else asked on the terminal.
+/// Without `--key`, keylessly, as cosign signs without one (D126, crate::keyless): an
+/// identity token's certificate from Fulcio, the signature timestamped and logged as the
+/// signing config asks.
+/// What `shards sign agent` is given: the name, and the cosign key's file, or how to sign
+/// keylessly.
+pub(crate) struct SignArgs {
+    pub name: Reference,
+    key: Option<String>,
+    keyless: crate::keyless::Options,
+}
+
+/// `args` as `shards sign agent` reads them, here and through a context alike.
+pub(crate) fn sign_args(kind: Kind, args: &[String]) -> Result<SignArgs, String> {
+    let (mut name, mut key) = (None, None);
+    let mut keyless = crate::keyless::Options::default();
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--key" => key = Some(it.next().ok_or("--key needs a file")?.clone()),
+            s if s.starts_with("--key=") => key = Some(s.trim_start_matches("--key=").to_string()),
+            s if keyless.take(s, &mut it)? => {}
+            s if s.starts_with('-') => return Err(format!("unknown flag {s}\n{}", usage(kind))),
+            s if name.is_none() => name = Some(s.to_string()),
+            s => return Err(format!("one name only, not {s:?} too")),
+        }
+    }
+    let name = reference(&name.ok_or_else(|| usage(kind))?)?;
+    if key.is_some() && keyless.any() {
+        return Err("--key signs with that key alone; --identity-token, --signing-config and the other flags of keyless signing are for signing without one".into());
+    }
+    Ok(SignArgs { name, key, keyless })
+}
+
+/// What a signature of `name`, an artifact of `kind` in `store`, is of: its manifest, or the
+/// index its name resolves to, as cosign signs the digest a name resolves to.
+pub(crate) fn subject(store: &Store, kind: Kind, name: &Reference) -> Result<Descriptor, String> {
+    let desc = store
+        .tagged(&name.to_string())
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("no {} {name} here", kind.word()))?;
+    let (_, found) = manifest_of(store, &desc)?;
+    if found != kind {
+        return Err(format!("{name} is {}, not {}", a(found), a(kind)));
+    }
+    subject_of(store, name, &desc)
+}
+
+/// The signature of `subject` that `args` ask for: by the cosign key in its file, its
+/// password COSIGN_PASSWORD's or asked, or keylessly, by the identity OIDC gives the signer.
+/// Its bundle, and who it says signed. Made where the signer is: through a context, the
+/// client's key, password and identity, never the machine's.
+pub(crate) fn signed(subject: &Descriptor, args: &SignArgs) -> Result<(Vec<u8>, String), String> {
+    let payload = shards_sigstore::sign::statement(&subject.digest)?;
+    let Some(key) = &args.key else {
+        let signed = crate::keyless::sign(&payload, &args.keyless)?;
+        let who = shards_sigstore::x509::Certificate::parse(&signed.certificate)
+            .ok()
+            .and_then(|c| shards_sigstore::summary::summarize(&c).ok())
+            .map(|s| format!("{} (issuer {})", s.subject_alternative_name, s.extensions.issuer))
+            .unwrap_or_default();
+        let logged: Vec<String> = signed
+            .entries
+            .iter()
+            .map(|(url, e)| format!(", logged in {url} at {}", e.log_index))
+            .collect();
+        return Ok((signed.bundle, format!("{who}{}", logged.concat())));
+    };
+    let pem = fs::read(key).map_err(|e| format!("{key}: {e}"))?;
+    let mut password = password()?;
+    let signer = shards_sigstore::cosignkey::load(&pem, &password);
+    password.fill(0);
+    let signer = signer.map_err(|e| format!("{key}: {e}"))?;
+    let bundle = shards_sigstore::sign::bundle(&signer, &payload)?;
+    Ok((bundle, format!("the key {}", signer.hint())))
+}
+
+/// Keeps `bundle` as a signature of `name`, an artifact of `kind` in `store`, whose name
+/// resolves to `digest` still, and whose statement the bundle's envelope holds: a bundle of
+/// anything else, or of what the name named before, is no signature of it. The referrer it
+/// is kept as.
+pub(crate) fn keep_signature(
+    store: &Store,
+    kind: Kind,
+    name: &Reference,
+    digest: &str,
+    bundle: &[u8],
+) -> Result<Descriptor, String> {
+    let subject = subject(store, kind, name)?;
+    if subject.digest != digest {
+        return Err(format!(
+            "{name} is {} now, not {digest}, which was signed",
+            subject.digest
+        ));
+    }
+    let statement = shards_sigstore::sign::statement(digest)?;
+    let holds = shards_sigstore::bundle::parse(bundle).is_ok_and(|b| {
+        matches!(
+            &b.content,
+            shards_sigstore::bundle::Content::Envelope { payload: Some(p), payload_type, .. }
+                if *p == statement && payload_type == shards_sigstore::image::ARTIFACT_IN_TOTO
+        )
+    });
+    if !holds {
+        return Err(format!("that signature is not of {name}'s {digest}"));
+    }
+    let referrer = signature_of(store, bundle, &subject)?;
+    store
+        .keep_referrer(&name.to_string(), &referrer)
+        .map_err(|e| e.to_string())?;
+    Ok(referrer)
+}
+
+/// What marks a step of a signature made through a context (D180) to the machine's daemon:
+/// no command line's word, as no command line can hold NUL.
+pub(crate) const SIGN_STEP: &str = "\u{0}sign";
+
+/// The most of a bundle a client may send: a keyless one's certificates, its logs' entries
+/// and their proofs come to a few KiB.
+const BUNDLE_MOST: u64 = 1 << 20;
+
+/// A step of a signature made through a context, on the machine whose store holds the
+/// artifact: `subject KIND NAME` says what a signature of it is of, as its descriptor;
+/// `keep KIND NAME DIGEST` keeps the bundle `input` holds as one, and says the referrer's
+/// digest. Signing is the client's, between the two. The machine's half.
+pub(crate) fn sign_step(
+    home: &Path,
+    args: &[String],
+    input: &mut dyn io::Read,
+    output: &mut dyn Write,
+) -> Result<(), String> {
+    let word = |i: usize| args.get(i).map(String::as_str).unwrap_or_default();
+    let kind = kind_of(word(2)).ok_or_else(|| format!("{:?}: no kind of artifact", word(2)))?;
+    let name = reference(word(3))?;
+    let store = crate::pull::store(home)?;
+    let _lease = store.lease().map_err(|e| e.to_string())?;
+    match word(1) {
+        "subject" => {
+            let subject = subject(&store, kind, &name)?;
+            let said = serde_json::to_vec(&subject).map_err(|e| e.to_string())?;
+            output.write_all(&said).map_err(|e| e.to_string())
+        }
+        "keep" => {
+            let mut bundle = Vec::new();
+            input
+                .take(BUNDLE_MOST + 1)
+                .read_to_end(&mut bundle)
+                .map_err(|e| format!("reading the signature: {e}"))?;
+            if u64::try_from(bundle.len()).unwrap_or(u64::MAX) > BUNDLE_MOST {
+                return Err(format!("a signature past {BUNDLE_MOST} bytes"));
+            }
+            let referrer = keep_signature(&store, kind, &name, word(4), &bundle)?;
+            writeln!(output, "{}", referrer.digest).map_err(|e| e.to_string())
+        }
+        other => Err(format!("{other:?}: no such step of a signature")),
+    }
+}
+
+fn sign(kind: Kind, args: &[String]) -> Result<(), String> {
+    let args = sign_args(kind, args)?;
+    let store = store()?;
+    let _lease = store.lease().map_err(|e| e.to_string())?;
+    let subject = subject(&store, kind, &args.name)?;
+    let (bundle, who) = signed(&subject, &args)?;
+    let referrer = keep_signature(&store, kind, &args.name, &subject.digest, &bundle)?;
+    let _ = writeln!(
+        io::stdout(),
+        "{}: {} signed by {who}: signature {}",
+        args.name,
+        subject.digest,
+        referrer.digest
+    );
+    Ok(())
+}
+
+/// The referrer `bundle`, a signature of `subject`, is: the bundle, the empty config and
+/// the manifest cosign's WriteReferrer writes, stored, made now.
+pub fn signature_of(store: &Store, bundle: &[u8], subject: &Descriptor) -> Result<Descriptor, String> {
+    use shards_sigstore::sign::{self as cosign, Described};
+    let bundle_digest = ingest(store, bundle)?;
+    ingest(store, cosign::EMPTY_CONFIG)?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| e.to_string())?
+        .as_secs();
+    let created = shards_cmdline::format::rfc3339_at(i64::try_from(now).map_err(|e| e.to_string())?, 0);
+    let manifest = cosign::referrer(
+        &Described {
+            media_type: shards_sigstore::image::ARTIFACT_SIGSTORE_BUNDLE.into(),
+            size: i64::try_from(bundle.len()).map_err(|e| e.to_string())?,
+            digest: bundle_digest.to_string(),
+        },
+        &Described {
+            media_type: subject.media_type.clone(),
+            size: subject.size,
+            digest: subject.digest.clone(),
+        },
+        cosign::COSIGN_SIGN_PREDICATE,
+        &created,
+    );
+    let digest = ingest(store, &manifest)?;
+    Ok(Descriptor {
+        media_type: oci::media::OCI_MANIFEST.into(),
+        digest: digest.to_string(),
+        size: i64::try_from(manifest.len()).map_err(|e| e.to_string())?,
+        platform: None,
+        annotations: BTreeMap::new(),
+    })
+}
+
+/// The key's password, as cosign takes it: COSIGN_PASSWORD's if it is set, empty for a key
+/// that has none; else asked on the controlling terminal, not echoed.
+fn password() -> Result<Vec<u8>, String> {
+    if let Some(p) = std::env::var_os("COSIGN_PASSWORD") {
+        return Ok(p.into_encoded_bytes());
+    }
+    ask_password("Enter password for private key: ")
+}
+
+#[cfg(unix)]
+fn ask_password(prompt: &str) -> Result<Vec<u8>, String> {
+    use std::io::BufRead as _;
+    use std::os::fd::AsRawFd as _;
+    let no_terminal = || "no terminal to ask the key's password on: set COSIGN_PASSWORD".to_string();
+    let mut tty = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/dev/tty")
+        .map_err(|_| no_terminal())?;
+    let fd = tty.as_raw_fd();
+    // SAFETY: an all-zero termios is a valid out-parameter.
+    let mut t: libc::termios = unsafe { std::mem::zeroed() };
+    // SAFETY: tcgetattr(3) fills `t` for the terminal.
+    if unsafe { libc::tcgetattr(fd, &mut t) } != 0 {
+        return Err(no_terminal());
+    }
+    let saved = t;
+    t.c_lflag &= !libc::ECHO;
+    // SAFETY: tcsetattr(3) reads `t`.
+    if unsafe { libc::tcsetattr(fd, libc::TCSANOW, &t) } != 0 {
+        return Err(no_terminal());
+    }
+    let _ = tty.write_all(prompt.as_bytes()).and_then(|()| tty.flush());
+    let mut line = Vec::new();
+    // A password is a line; a terminal's line discipline holds no more than 4096 bytes
+    // of one (Linux N_TTY_BUF_SIZE, macOS MAX_CANON 1024).
+    let read = io::BufReader::new(&tty).take(4096).read_until(b'\n', &mut line);
+    // SAFETY: tcsetattr(3) reads `saved`, the settings found.
+    unsafe { libc::tcsetattr(fd, libc::TCSANOW, &saved) };
+    let _ = tty.write_all(b"\n");
+    read.map_err(|e| format!("reading the key's password: {e}"))?;
+    while line.last().is_some_and(|b| *b == b'\n' || *b == b'\r') {
+        line.pop();
+    }
+    Ok(line)
+}
+
+#[cfg(not(unix))]
+fn ask_password(_: &str) -> Result<Vec<u8>, String> {
+    Err("set COSIGN_PASSWORD to the key's password".into())
+}
+
+/// The image layer type an OSI content layer is read as: the same tar, compressed the
+/// same way, whiteouts already refused (check_content).
+pub fn layer_type(kind: Kind, media_type: &str) -> Option<&'static str> {
+    match osi::content_compression(kind, media_type)? {
+        None => Some("application/vnd.oci.image.layer.v1.tar"),
+        Some("gzip") => Some("application/vnd.oci.image.layer.v1.tar+gzip"),
+        Some(_) => Some("application/vnd.oci.image.layer.v1.tar+zstd"),
+    }
+}
+
+/// Each content layer's diff ID: the SHA-256 of its tar as uncompressed.
+pub fn diff_ids(store: &Store, kind: Kind, m: &oci::Manifest) -> Result<Vec<Digest>, String> {
+    let mut out = Vec::new();
+    for l in &m.layers {
+        let d = l.digest().map_err(|e| e.to_string())?;
+        let file = io::BufReader::new(fs::File::open(store.blob_path(&d)).map_err(|e| format!("{d}: {e}"))?);
+        let mut reader: Box<dyn Read> = match osi::content_compression(kind, &l.media_type) {
+            Some(None) => Box::new(file),
+            Some(Some("gzip")) => Box::new(shards_image::store::gunzip(file)),
+            Some(Some("zstd")) => Box::new(shards_image::store::Zstd::new(file)),
+            _ => return Err(format!("{d}: a layer of type {}", l.media_type)),
+        };
+        let mut h = Sha256::new();
+        let mut buf = vec![0u8; 1 << 16];
+        loop {
+            let n = reader.read(&mut buf).map_err(|e| format!("{d}: {e}"))?;
+            if n == 0 {
+                break;
+            }
+            h.update(buf.get(..n).unwrap_or_default());
+        }
+        let hex: String = h.finalize().iter().map(|b| format!("{b:02x}")).collect();
+        out.push(Digest::parse(&format!("sha256:{hex}")).map_err(|e| e.to_string())?);
+    }
+    Ok(out)
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::indexing_slicing)]
+mod tests {
+    use super::*;
+
+    /// Each entry of the tar `bytes`: its name, type and mode, and a link's target.
+    fn entries(bytes: &[u8]) -> Vec<(String, u8, i64, Vec<u8>)> {
+        let mut r = shards_archive::tar::Reader::new(bytes);
+        let mut out = Vec::new();
+        while let Some(h) = r.next_header().unwrap() {
+            out.push((
+                String::from_utf8_lossy(&h.name).into_owned(),
+                h.typeflag,
+                h.mode,
+                h.linkname,
+            ));
+        }
+        out
+    }
+
+    /// An agent's directory is read as a build reads its context: a file's mode its own on
+    /// Unix and fsutil's on Windows (0755, its scripts runnable), each in name order; and on
+    /// Windows a Linux tree, as a machine keeps a client's context (D180), of its own modes,
+    /// symlinks and hard links, as the client reads them.
+    #[test]
+    fn an_agents_files_are_read_as_a_build_reads_its_context() {
+        use shards_archive::tar::{TYPE_DIR, TYPE_REG};
+        let top = shards_testdir::TempDir::new("agent-pack").unwrap();
+        let top: &Path = top.as_ref();
+        let dir = top.join("host");
+        fs::create_dir_all(dir.join("bin")).unwrap();
+        fs::write(dir.join("agent.json"), "{}").unwrap();
+        fs::write(dir.join("bin/run.sh"), "#!/bin/sh\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            fs::set_permissions(dir.join("bin/run.sh"), fs::Permissions::from_mode(0o750)).unwrap();
+            fs::set_permissions(dir.join("agent.json"), fs::Permissions::from_mode(0o600)).unwrap();
+            fs::set_permissions(dir.join("bin"), fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let mut tar = Vec::new();
+        pack(&dir, &[], &mut tar).unwrap();
+        let (file, script) = if cfg!(windows) {
+            (0o755, 0o755)
+        } else {
+            (0o600, 0o750)
+        };
+        assert_eq!(
+            entries(&tar)
+                .into_iter()
+                .map(|(name, kind, mode, _)| (name, kind, mode))
+                .collect::<Vec<_>>(),
+            [
+                ("agent.json".to_string(), TYPE_REG, file),
+                ("bin/".to_string(), TYPE_DIR, 0o755),
+                ("bin/run.sh".to_string(), TYPE_REG, script),
+            ]
+        );
+
+        #[cfg(windows)]
+        {
+            use shards_archive::tar::{Format, Header, TYPE_LINK, TYPE_SYMLINK, Writer};
+            let linux = top.join("linux");
+            fs::create_dir(&linux).unwrap();
+            let mut w = Writer::new(Vec::new());
+            for (typeflag, name, mode, data, link) in [
+                (TYPE_REG, "agent.json", 0o600, &b"{}"[..], ""),
+                (TYPE_LINK, "again", 0o600, b"", "agent.json"),
+                (TYPE_SYMLINK, "run", 0o777, b"", "bin/run.sh"),
+                (TYPE_DIR, "bin", 0o750, b"", ""),
+                (TYPE_REG, "bin/run.sh", 0o750, b"#!/bin/sh\n", ""),
+            ] {
+                let h = Header {
+                    typeflag,
+                    name: name.as_bytes().to_vec(),
+                    linkname: link.as_bytes().to_vec(),
+                    mode,
+                    size: i64::try_from(data.len()).unwrap(),
+                    format: Format::PAX,
+                    ..Header::default()
+                };
+                w.write_header(&h).unwrap();
+                std::io::Write::write_all(&mut w, data).unwrap();
+            }
+            shards_archive::apply_layer_lx(&w.finish().unwrap()[..], &linux).unwrap();
+            let mut tar = Vec::new();
+            pack(&linux, &[], &mut tar).unwrap();
+            assert_eq!(
+                entries(&tar),
+                [
+                    ("again".to_string(), TYPE_REG, 0o600, Vec::new()),
+                    ("agent.json".to_string(), TYPE_LINK, 0o600, b"again".to_vec()),
+                    ("bin/".to_string(), TYPE_DIR, 0o750, Vec::new()),
+                    ("run".to_string(), TYPE_SYMLINK, 0o777, b"bin/run.sh".to_vec()),
+                    ("bin/run.sh".to_string(), TYPE_REG, 0o750, Vec::new()),
+                ]
+            );
+        }
+    }
+
+    /// The PKCS #8 of a key cosign v3.1.3 made (crates/sigstore's oracle).
+    fn pkcs8() -> Vec<u8> {
+        let oracle: serde_json::Value =
+            serde_json::from_str(include_str!("../../sigstore/testdata/cosign/oracle.json")).unwrap();
+        let k = oracle["keys"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|k| k["name"] == "ecdsa p256 standard")
+            .unwrap();
+        let hex = k["pkcs8"].as_str().unwrap();
+        (0..hex.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(hex.get(i..i + 2).unwrap(), 16).unwrap())
+            .collect()
+    }
+
+    /// A signature is kept only of what its name names, and only one whose statement is
+    /// that: a bundle of another digest, or of what the name named before it moved, is
+    /// refused, as is what is no bundle; one of what it names now is kept.
+    #[test]
+    fn a_signature_is_kept_only_of_what_its_name_names() {
+        let home = shards_testdir::TempDir::new("agent-keep").unwrap();
+        let store = crate::pull::store(home.as_ref()).unwrap();
+        let dir = shards_testdir::TempDir::new("agent-keep-dir").unwrap();
+        let dir: &Path = dir.as_ref();
+        fs::write(dir.join("agent.json"), r#"{"name":"main","version":"1.0.0"}"#).unwrap();
+        fs::write(dir.join("run.sh"), "one").unwrap();
+        let name = reference("team/agent:1").unwrap();
+        let tagged = || {
+            let (desc, _) = make(Kind::Agent, dir, &store).unwrap();
+            let digest = desc.digest().unwrap();
+            store
+                .tag(
+                    &name.to_string(),
+                    &desc,
+                    &digest,
+                    &contents(&store, &desc).unwrap(),
+                )
+                .unwrap();
+            desc.digest
+        };
+        let signer = shards_sigstore::sign::Signer::from_pkcs8(&pkcs8()).unwrap();
+        let bundle_of = |digest: &str| {
+            shards_sigstore::sign::bundle(&signer, &shards_sigstore::sign::statement(digest).unwrap())
+                .unwrap()
+        };
+        let keep = |digest: &str, bundle: &[u8]| keep_signature(&store, Kind::Agent, &name, digest, bundle);
+        let first = tagged();
+        let other = format!("sha256:{}", "0".repeat(64));
+        let refused = keep(&first, &bundle_of(&other)).unwrap_err();
+        assert!(refused.contains("is not of"), "{refused}");
+        let refused = keep(&other, &bundle_of(&other)).unwrap_err();
+        assert!(refused.contains("which was signed"), "{refused}");
+        assert!(keep(&first, b"{}").is_err());
+        // Moved since: what it named is no longer what a signature of it is of.
+        fs::write(dir.join("run.sh"), "two").unwrap();
+        let second = tagged();
+        assert_ne!(first, second);
+        let refused = keep(&first, &bundle_of(&first)).unwrap_err();
+        assert!(refused.contains("which was signed"), "{refused}");
+        let kept = keep(&second, &bundle_of(&second)).unwrap();
+        assert_eq!(kept.media_type, oci::media::OCI_MANIFEST);
+    }
+}
