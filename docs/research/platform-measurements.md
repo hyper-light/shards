@@ -20489,9 +20489,14 @@ revision before comparing a changed API/implementation.
   | macOS-HVF | the same, 02:01Z, load 5.4-11.3, bb79e7f1 | 89.6 ms / 230.018375 ms | 43.5 ms / 47.3 ms |
   | Linux-KVM, before the fix | fedora, 01:44Z, load 30-36, 33c3a40e + boot.rs's E2E | 572.8 ms / 1.9413 s | 240.6 ms / 283.7 ms |
   | Linux-KVM | fedora, 02:03Z, load 49-51, bb79e7f1 | 344.0 ms / 1.20682226 s | 273.0 ms / 400.3 ms |
+  | Windows-WHP | jupiter (32 cores, 124 GiB), kiln background run, 2026-11-08T00:09Z, CPU 14.6-18.8%, kernel 1.9-6.4%, 938203ac | 263.7 ms / 2.4068389 s | 299.3 ms / 311.1 ms |
+  | Windows-WHP | the same, 00:10Z, CPU 13.8-15.0%, kernel 1.7-2.6%, 938203ac | 312.0 ms / 813.2 ms | 313.6 ms / 338.1 ms |
 
 - **Reading.** Before the dial-cost fix a boot under the suite waited up to 6.2 s on HVF
   (15.2 s in one run): its pause grew from dials the muxer held while the guest's vsock
   was not up. Since, the slowest is 230 ms on HVF and 1.21 s on KVM, and the bound is
-  twice that: 460 ms and 2.41 s. A class without a record (WHP, yet) seeds from the
-  slowest of any (`shards_api::record::Learned`).
+  twice that: 460 ms and 2.41 s. On WHP the slowest is 2.41 s, the first boot of a round, and
+  the bound 4.81 s: the seed a class without a record takes (twice the slowest of any,
+  `shards_api::record::Learned`) was 2.41 s, which that boot met with 3 ms to spare. WHP's
+  rows are from after jupiter's reboot: before it, an NTFS stall held 81-96% of its CPU in
+  the kernel and its boots took up to 134 s, a host fault the rows do not measure.

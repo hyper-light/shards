@@ -26,6 +26,7 @@ static E2E: shards_api::record::Learned = shards_api::record::Learned::new(
     &[
         ("macOS-HVF", Duration::from_nanos(230_018_375)),
         ("Linux-KVM", Duration::from_nanos(1_206_822_260)),
+        ("Windows-WHP", Duration::from_nanos(2_406_838_900)),
     ],
 );
 
