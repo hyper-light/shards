@@ -2245,7 +2245,7 @@ mod tests {
                 why: "a config whose descriptor is wrong about its size",
                 config: right.clone(),
                 manifest: manifest(&wrong_size, &one),
-                pulled: "without progress",
+                pulled: "the registry's blob ends at",
                 found: "where its descriptor says",
             },
         ];
