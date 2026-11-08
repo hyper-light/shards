@@ -200,9 +200,9 @@ Reviewed feature by feature, each D-entry's design against what it took from Doc
     - A build's SSH agent on Windows: its pipe waited for 2 s, go-winio's default, which
       BuildKit's call leaves unset (build/ssh.rs; found 2026-11-03). Done (2026-11-08,
       D51, PM M493): OpenSSH's agent frees an instance 1.4 ms apart at the median however
-      many dial, while a dial's whole wait passed 2 s at 128 clients; a dial now dials
-      again as each instance is freed, giving the agent up after a minute with none
-      freed (D209's quiet).
+      many dial, while a dial's whole wait passed 2 s at 128 clients; a dial now follows the
+      agent, with no time of shards': it dials again as each instance is freed, each wait
+      the agent's pipe's own, and ends as the agent serves it or goes.
 - The rest: open, D-entry by D-entry.
 
 ## Fixing order

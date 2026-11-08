@@ -18749,10 +18749,12 @@ revision before comparing a changed API/implementation.
     buffers loses every event past 8,040 bytes of string, which a session of bigger buffers
     still has. A 16 KiB part of moby's, 32 KiB of UTF-16 and more, is lost whole to a
     session of default buffers, as the logman command moby's documentation gives makes.
-- **So** (D163, D198): an etwlogs event is at most 8,040 bytes of string, its details and
-  line in UTF-16 (`EVENT_MOST`), each part the longest that fits.
-  `an_event_as_long_as_the_driver_lets_one_be_reaches_a_default_session` holds the bound,
-  and logman's default buffers, on each Windows host it runs on.
+- **So** (D163, D198): no one length serves every session, and ETW says which it gave an
+  event (ERROR_MORE_DATA) as it is written: the etwlogs driver learns the sessions' bound
+  from their answers as it runs, its first try ETW's stated 64 KB less an EVENT_HEADER.
+  `a_sessions_bound_is_learned_from_a_real_sessions_answers` holds that the learning ends
+  at what a real session of logman's default buffers takes; these numbers are its check,
+  not a constant of shards'.
 
 ### M493. How long a dial of OpenSSH for Windows' agent waits for its pipe (D51)
 
@@ -18788,9 +18790,9 @@ revision before comparing a changed API/implementation.
     the agent's worker). A dial's whole wait grows with the clients ahead of it, past 2 s
     at 128 clients, where go-winio's dial fails; the agent's interval between instances
     does not grow: 1.4 ms at the median at every count, 297 ms at most once.
-- **So** (D51): a dial follows the agent's progress, dialing again as each instance is
-  freed, and gives the agent up only once it frees none for a minute (`AGENT_QUIET`, D209's
-  quiet), never at a fixed whole wait.
+- **So** (D51): no fixed wait holds whatever the clients ahead of a dial: a dial follows
+  the agent, dialing again as each instance is freed, each wait the agent's pipe's own, and
+  ends as the agent serves it or goes, with no time of shards'.
 
 ### M494. What a long line's parts cost, and what the journal and os_log keep whole (D163, D166, D199)
 
@@ -18834,5 +18836,8 @@ revision before comparing a changed API/implementation.
     most it keeps of an entry.
   - os_log on the Mac Studio's macOS 26.2 kept lines of 1,008 to 1,015 bytes whole, and
     of 1,016 to 1,024 its first 1,015 bytes and `<…>`, as M374 found on macOS 26.4.1.
-- **So** (D163): each driver's part is its receiver's bound; journald's lines are in the
-  journal as it keeps any program's (LineMax), and oslog's at os_log's 1,015 bytes.
+- **So** (D163): journald's parts are the host's journal's LineMax as configured, read as
+  the journal reads its configuration while shards runs (its default, 48K, where none sets
+  it), so that a run's lines are in the journal as any program's are; this run checks the
+  reading, not a number to keep. oslog's 1,015 bytes is os_log's as measured, below the
+  1,024 os/log.h states, still a measured constant (open).

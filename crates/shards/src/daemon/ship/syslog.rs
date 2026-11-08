@@ -165,7 +165,8 @@ impl Syslog {
 
 impl Driver for Syslog {
     /// A line's bytes that leave a message within what syslog's receivers take
-    /// (logging/syslog.rs `MESSAGE_MOST`), its header and newline counted.
+    /// (logging/syslog.rs `Config::most`: RFC 5425's over a stream, RFC 5426's over
+    /// UDP), its header and newline counted.
     fn part(&self) -> usize {
         self.config.part(&self.from)
     }

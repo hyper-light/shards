@@ -300,7 +300,16 @@ impl Config {
         m
     }
 
-    /// The most of a line one message carries: what is left of [`MESSAGE_MOST`] past the
+    /// The most of a message's octets its transport's receivers should take: over UDP
+    /// [`DATAGRAM_MOST`], else [`MESSAGE_MOST`].
+    pub fn most(&self) -> usize {
+        match self.to {
+            To::Udp(_) => DATAGRAM_MOST,
+            _ => MESSAGE_MOST,
+        }
+    }
+
+    /// The most of a line one message carries: what is left of [`Config::most`] past the
     /// longest header this run's messages can have (either stream's priority, a time zone
     /// of the widest offset, every field at its widest) and the newline.
     pub fn part(&self, from: &From) -> usize {
@@ -318,7 +327,7 @@ impl Config {
             .into_iter()
             .max()
             .unwrap_or(0);
-        MESSAGE_MOST.saturating_sub(header).max(1)
+        self.most().saturating_sub(header).max(1)
     }
 
     /// The SYSLOG-MSG of `line` (RFC 5424 section 6, RFC 5425 section 4.3): its header,
@@ -357,13 +366,16 @@ impl Config {
 }
 
 /// The most of a message's octets, its header, line and newline, that a run's lines are cut
-/// to: what every syslog receiver over TLS should take (RFC 5425 section 4.3.1: "Transport
-/// receivers SHOULD be able to process messages with lengths up to and including 8192
-/// octets"), and rsyslog's default (`maxMessageSize`, 8192 since a configuration is loaded:
-/// rsyslog v8.2610.0 runtime/glbl.c), past which a receiver should cut it short (RFC 5424
-/// section 6.1). syslog-ng takes 65536 (`log-msg-size`, syslog-ng 4.12.0 lib/cfg.c). A
-/// message cut so is taken whole where a 16 KiB part was not.
+/// to over a stream: what syslog's protocol says every receiver should take (RFC 5425
+/// section 4.3.1: "Transport receivers SHOULD be able to process messages with lengths up to
+/// and including 8192 octets"), past which a receiver should cut it short (RFC 5424 section
+/// 6.1). It is rsyslog's default too (`maxMessageSize`, rsyslog v8.2610.0 runtime/glbl.c).
+/// A message cut so is taken whole where a 16 KiB part was not.
 pub const MESSAGE_MOST: usize = 8192;
+/// The same over UDP: "All syslog receivers SHOULD be able to receive datagrams with
+/// message sizes of up to and including 2048 octets" (RFC 5426 section 3.2). A datagram a
+/// local socket refuses as too long is sent again in halves (daemon/ship/syslog.rs).
+pub const DATAGRAM_MOST: usize = 2048;
 
 /// A tag as RFC 3164's TAG and srslog's Unix format carry it: whitespace and control
 /// characters, which would end it early, as `_`.
@@ -558,12 +570,21 @@ mod tests {
                     cert: None,
                     key: None,
                 };
+                let most = config.most();
+                assert_eq!(
+                    most,
+                    if matches!(config.to, To::Udp(_)) {
+                        DATAGRAM_MOST
+                    } else {
+                        MESSAGE_MOST
+                    }
+                );
                 let part = config.part(&from);
-                assert!(part > MESSAGE_MOST - 200, "{format:?}: {part}");
+                assert!(part > most - 200, "{format:?}: {part}");
                 for stream in [crate::spec::LOG_STDOUT, crate::spec::LOG_STDERR] {
                     for offset in [0, 3600, -(14 * 3600)] {
                         let m = config.syslog_msg(&from, stream, 1, &zone(offset), &vec![b'x'; part]);
-                        assert!(m.len() <= MESSAGE_MOST, "{format:?} {offset}: {}", m.len());
+                        assert!(m.len() <= most, "{format:?} {offset}: {}", m.len());
                     }
                 }
                 let widest = config.syslog_msg(
@@ -573,7 +594,7 @@ mod tests {
                     &zone(-(14 * 3600)),
                     &vec![b'x'; part + 1],
                 );
-                assert_eq!(widest.len(), MESSAGE_MOST + 1, "{format:?}");
+                assert_eq!(widest.len(), most + 1, "{format:?}");
             }
         }
     }

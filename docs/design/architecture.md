@@ -3830,14 +3830,17 @@ the words BuildKit's users read.
   makes. go-winio, which BuildKit dials with, waits 2 s in all: with 128 clients at once
   on jupiter, 6 of 6,146 busy dials waited longer (2.80 s at most), while the agent freed
   an instance every 1.35 ms at the median and 8.6 ms at most; a dial's whole wait grows
-  with the clients ahead of it, an instance's does not. So a dial dials again each time an
-  instance is freed (WaitNamedPipe), another client may take it first, and gives the agent
-  up only once it frees none for a minute (`AGENT_QUIET`, D209's quiet past which what
-  shows no progress is given up); an agent with no instance left has gone, and the dial
-  says so at once. `a_dial_waits_while_its_agent_frees_instances` holds a dial waiting
-  past 2 s through an agent-like server that frees each instance 150 ms after the last,
-  and the server's own interval, a process started per connection, within the quiet;
-  `a_dial_gives_up_an_agent_that_frees_no_instance` the end.
+  with the clients ahead of it, an instance's does not. So a dial follows the agent, with
+  no time of shards': it dials again each time an instance is freed (WaitNamedPipe),
+  another client may take it first, each wait the one the agent's pipe says
+  (NMPWAIT_USE_DEFAULT_WAIT, its CreateNamedPipe timeout) before the pipe is looked for
+  again; it ends as the agent serves it, or as the agent goes, its pipe gone. An agent that
+  holds its instances and serves none is waited on as a read of it would be, until the
+  build is stopped. The first dial is as any other. The measurement shows the method's
+  need, not a number shards keeps. `a_dial_waits_while_its_agent_serves_the_clients_ahead`
+  holds a dial waiting past 2 s through an agent-like server that frees each instance
+  150 ms after the last; `a_dial_ends_as_its_agent_does` a dial still waiting while the
+  agent holds its instance, and ended as the agent goes.
 - **Tested** on real microVMs against a real ssh-agent holding a key ssh-keygen made
   (`run_steps_reach_the_clients_ssh_agent`): the step lists the key and has the agent sign,
   its request to forget the keys is refused and the agent keeps them, a rogue dial is
@@ -11054,15 +11057,20 @@ and the way every later one sends.
 
   | driver | a message's bound | its source |
   |---|---|---|
-  | syslog | 8,192 octets, header and newline counted | RFC 5425 4.3.1, rsyslog's `maxMessageSize` |
-  | gelf | 128 chunks over UDP, compressed as asked; 2 MiB over TCP | Graylog's `MAX_CHUNKS`, `max_message_size` |
-  | fluentd | 6,144,000 bytes of event | Fluent Bit's forward `buffer_max_size` |
-  | journald | 48 KiB of line | the journal's own LineMax, as it cuts any program's output (M494) |
-  | splunk | 838,860,800 bytes over a batch of events | HEC's `max_content_length` |
-  | awslogs | 1,048,550 bytes as CloudWatch counts them | PutLogEvents' 1 MB event |
-  | gcplogs | 256 KiB of entry, as JSON | Cloud Logging's LogEntry size |
-  | oslog | 1,015 bytes | os_log, measured (M374, M494) |
-  | etwlogs | 8,040 bytes of UTF-16 | an 8 KB-buffer session, measured (M492) |
+  | syslog | 8,192 octets over a stream, 2,048 over UDP, header and newline counted | the protocol: RFC 5425 4.3.1, RFC 5426 3.2; a local datagram refused as too long sent again in halves |
+  | gelf | 128 chunks over UDP, compressed as asked | the protocol: GELF's "MUST NOT consist of more than 128 chunks" |
+  | gelf over TCP | 2 MiB | Graylog's `max_message_size` default: GELF states none (open) |
+  | fluentd | 6,144,000 bytes of event | Fluent Bit's forward `buffer_max_size` default: the forward protocol states none (open) |
+  | journald | the host's journal's LineMax | its configuration as journald reads it, as shards runs; journald.conf(5)'s 48K where none sets it |
+  | splunk | 838,860,800 bytes over a batch of events | HEC's `max_content_length` default (open: HEC says 413 past it) |
+  | awslogs | 1,048,550 bytes as CloudWatch counts them | the API: PutLogEvents' 1 MB event |
+  | gcplogs | 256 KiB of entry, as JSON | the API: Cloud Logging's LogEntry size |
+  | oslog | 1,015 bytes | os/log.h states a 1,024-byte cap on dynamic content; the 1,015 it keeps whole is measured (M374, M494; open) |
+  | etwlogs | the listening sessions' | their answers as shards runs (ERROR_MORE_DATA, ERROR_ARITHMETIC_OVERFLOW): first ETW's stated 64 KB less an EVENT_HEADER, then narrowed between the longest all took and the shortest refused; a line no session took sent again in halves |
+
+  A bound the measurements show (M492, M494) validates the method; none is kept as a
+  number. The rows marked open take a receiver's documented default where the protocol
+  states no bound, until the destination's own refusals are followed.
 
   moby's copier cuts every line past 16 KiB whatever its receiver takes (copier.go,
   defaultBufSize), a character in two among them: a syslog receiver that takes 8,192
