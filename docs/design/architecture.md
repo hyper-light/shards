@@ -8940,7 +8940,7 @@ the guest keeps their metadata alone.
   (`pmem`'s, `platform`'s), and both E2E tests pass on its real microVMs
   (`a_stopped_microvms_next_run_goes_on_over_its_kept_file`,
   `a_restored_microvm_goes_on_over_a_stopped_containers_kept_file`, on an M3 Ultra with
-  macOS 26.4, at 8a13e492 3 of 3 and 4 of 4, 2026-11-07). macOS's and Windows' restarts
+  macOS 26.4, at 8a13e492 3 of 3 and 4 of 4, 2026-11-07; at 5ae6a197, going over from 7 MiB, 3 of 3 each, 2026-11-08). macOS's and Windows' restarts
   cross later than Linux's (PM M464): going over costs a restart more there whatever the
   layer holds (an empty layer's 7.5 to 8.7 ms more than its packing at p50 on macOS, 233 on
   Windows), packing growing with what it holds as on Linux, the lines meeting at 6.8 to 7.9
