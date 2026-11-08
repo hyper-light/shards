@@ -1,5 +1,5 @@
 //! What a client of another machine's, which this machine's daemon enrolled (D180), may
-//! reach of this machine itself (D215): none of its directories and none of its devices,
+//! reach of this machine itself (D228): none of its directories and none of its devices,
 //! but those its owner grants that client by name. A client's own files are its own: a
 //! bind it names is of its directory, served from it through its context ([`relayed`]);
 //! named volumes are the daemon's, every client's to mount. Default deny, as shards'
@@ -8,14 +8,14 @@
 
 use std::path::{Path, PathBuf};
 
-/// The variable the daemon's listener names the client a command runs for by (D215), set
+/// The variable the daemon's listener names the client a command runs for by (D228), set
 /// for each client's command and no other: what the command asks of the daemon carries it
 /// ([`shards_ipc::Run::client`], [`shards_ipc::Command::client`]). A client cannot set it:
 /// its request's variables are `frame::ENV`'s alone, and the listener sets it last.
 pub(crate) const CLIENT_VAR: &str = "SHARDS_CLIENT";
 
 /// The step by which a client serves a directory of its own for a run of its own through
-/// its context (D215), a word no command line can carry: then its relay's token.
+/// its context (D228), a word no command line can carry: then its relay's token.
 pub(crate) const BIND_STEP: &str = "\0bind";
 
 /// What a bind step's stream says first, once its relay is kept for its run to take.
@@ -251,7 +251,7 @@ fn granting(client: &str, what: &str) -> String {
 }
 
 /// Why client `client`, holding `grants`, may not have the run `run` asks for of this
-/// machine's devices (D215): its GPUs (`--gpus`, an Engine API create's requests), a CDI
+/// machine's devices (D228): its GPUs (`--gpus`, an Engine API create's requests), a CDI
 /// device, a VFIO group or VFIO's own nodes. A `--device` of any other path is the
 /// microVM's own (D44), every run's to take.
 pub(crate) fn refuse_devices(run: &shards_ipc::Run, client: &str, grants: &Grants) -> Result<(), String> {
@@ -415,14 +415,14 @@ fn opened_path(file: &std::fs::File) -> std::io::Result<PathBuf> {
 }
 
 /// The prefix of a bind's source a client's context gives for a directory of its own
-/// (D215): `d` for a directory or `f` for a file bound alone, its relay's token, then its
+/// (D228): `d` for a directory or `f` for a file bound alone, its relay's token, then its
 /// path there as hex, so that no `:` of a Windows path splits `-v`'s fields. It crosses as
 /// an argument of the command the machine starts, which holds no NUL; the daemon takes a
 /// source of this prefix for a relay alone, a client's run's, and refuses it to any other
 /// (`refuse_bind`), so that no path of this machine's is opened for it.
 pub(crate) const RELAYED: &str = "/.shards-client-bind/";
 
-/// A client's bind of its own directory, or of a file alone, as it crosses (D215).
+/// A client's bind of its own directory, or of a file alone, as it crosses (D228).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Relayed {
     /// The relay's token, by which the machine finds the stream it is served on.
@@ -497,7 +497,7 @@ pub(crate) fn refuse_bind(client: &str, source: &str) -> Result<(), String> {
     }
 }
 
-/// Why a client's command `args`, as it came, may not run here (D215): a command that
+/// Why a client's command `args`, as it came, may not run here (D228): a command that
 /// would read or write this machine's files in its own process, which a client's shards
 /// carries otherwise (D180: a build's context kept in step, a copy driven step by step, a
 /// file it saves or loads its stdout or stdin, a run's `--env-file` its variables, its

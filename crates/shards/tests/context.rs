@@ -737,7 +737,7 @@ fn a_contexts_engine_is_its_machines() {
     assert_eq!(status, 200, "{there}");
     assert!(there.contains("\"/relayed\""), "{there}");
     // A bind through the context's engine names a path, which is the client's, and Docker's
-    // API carries no more of it than its path (D215): no directory of the machine's is bound
+    // API carries no more of it than its path (D228): no directory of the machine's is bound
     // for the client, its home here among them.
     {
         use std::io::{Read as _, Write as _};
@@ -2523,7 +2523,7 @@ fn a_cidfile_through_a_context_is_the_clients() {
     assert!(!laptop.join("never.id").exists(), "{missing}");
 }
 
-/// A client's binds through its context are its own files (D215): `-v DIR:PATH` on the
+/// A client's binds through its context are its own files (D228): `-v DIR:PATH` on the
 /// laptop shows the microVM there the laptop's directory, and what the microVM writes
 /// lands on the laptop, read-only where asked, a file bound alone, a detached run's too;
 /// nothing of the machine's is bound or written. The machine's own directories are its
@@ -2595,6 +2595,44 @@ fn a_clients_binds_are_its_own_files_and_the_machines_its_owners_to_grant() {
         std::thread::sleep(Duration::from_millis(100));
     }
     assert_eq!(std::fs::read_to_string(src.join("c")).unwrap(), "detached");
+    // A directory of the laptop's plugged into a running microVM there: its files read and
+    // written there, until it is unplugged.
+    let via = |command: &[&str], args: &[&str]| {
+        let mut words = vec!["--context", "gpu"];
+        words.extend_from_slice(command);
+        run_shards_env(&words, args, &on_laptop, TIMEOUT)
+    };
+    let started = via(
+        &["run"],
+        &["--pull", "never", "-d", "--name", "plugged", &image, "sleep"],
+    );
+    assert_eq!(started.status, Some(0), "{started}");
+    let plugged = via(
+        &["plug"],
+        &["volume", "plugged", &format!("{}:/plugged", src.display())],
+    );
+    assert_eq!(plugged.status, Some(0), "{plugged}");
+    let slurped = via(&["exec"], &["plugged", "/bin/testguest", "slurp", "/plugged/a"]);
+    assert!(slurped.stdout.contains("slurp /plugged/a: laptop"), "{slurped}");
+    let wrote = via(
+        &["exec"],
+        &[
+            "-u",
+            "0",
+            "plugged",
+            "/bin/testguest",
+            "fs",
+            "write:/plugged/p=plugged",
+        ],
+    );
+    assert_eq!(wrote.status, Some(0), "{wrote}");
+    assert_eq!(std::fs::read_to_string(src.join("p")).unwrap(), "plugged");
+    let unplugged = via(&["unplug"], &["volume", "plugged", "/plugged"]);
+    assert_eq!(unplugged.status, Some(0), "{unplugged}");
+    let gone = via(&["exec"], &["plugged", "/bin/testguest", "slurp", "/plugged/a"]);
+    assert!(gone.stdout.contains("errno 2"), "{gone}");
+    let removed = via(&["rm"], &["-f", "plugged"]);
+    assert_eq!(removed.status, Some(0), "{removed}");
     // Nothing of the laptop's paths, or files, on the machine.
     assert!(!machine.join("src").exists());
 
@@ -2662,12 +2700,12 @@ fn a_clients_binds_are_its_own_files_and_the_machines_its_owners_to_grant() {
 }
 
 /// What a client's bind costs its guest against the machine's own bind of the same files
-/// (D215): each round, in turns, a run of the owner's binding a directory of the machine's
+/// (D228): each round, in turns, a run of the owner's binding a directory of the machine's
 /// and a client's binding its own, each timing 2,000 opens of a 4 KiB read and its file's
 /// 64 MiB read and written through (the test guest's `share-cost`). A measurement, run by
 /// docs/research/measurements/client-binds/run.sh.
 #[test]
-#[ignore = "a measurement (D215): docs/research/measurements/client-binds/run.sh"]
+#[ignore = "a measurement (D228): docs/research/measurements/client-binds/run.sh"]
 fn what_a_clients_bind_costs() {
     let Some((machine, _listening, laptop, image)) = joined("ctx-bind-cost") else {
         return;
