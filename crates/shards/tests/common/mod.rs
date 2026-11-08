@@ -2417,8 +2417,12 @@ fn end_run(child: &mut std::process::Child, within: Duration) -> (Vec<Process>, 
             .collect();
         (started, left)
     }
+    // On Unix a run's share process ends as its VM does (cli/shares.rs): none to end here.
     #[cfg(not(windows))]
-    (Vec::new(), Vec::new())
+    {
+        let _ = within;
+        (Vec::new(), Vec::new())
+    }
 }
 
 /// The processes under `root` (its children, theirs and so on), as one snapshot of them
