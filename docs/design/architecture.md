@@ -17066,7 +17066,7 @@ held to more than OPA's answers:
 - Two fuzz targets run it on what a policy can send: `fuzz/fuzz_targets/rego.rs`, a
   policy's text and input through the parser, compiler and evaluation (partial and
   whole), and `rego-builtins.rs`, any builtin with any operands. CI runs each for 60 s
-  with the other targets. Twenty minutes of each found no panic (M497).
+  with the other targets. Twenty minutes of each found no panic (M510).
 - Work that grew faster than OPA's, or as fast where it need not, was found by fuzzing
   and M160's shapes and taken out, each holding OPA's answers: glob.match's
   minimizeMatchers (cubic in a pattern's matchers in gobwas and OPA: 50.8 s for a 6 KB

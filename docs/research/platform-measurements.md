@@ -5179,7 +5179,7 @@ revision before comparing a changed API/implementation.
   Every case answers as OPA answers (results, or the first error of the same list) but
   for the two marked. 99990 deep with x unused, OPA's memory passed 48 GiB in 64 s,
   when it was stopped (one run outside the harness, watched for its memory).
-- **Open.** (Comprehensions nested, print calls and closures closed since by M497.) Shapes both still take time growing with the square or faster, from a
+- **Open.** (Comprehensions nested, print calls and closures closed since by M510.) Shapes both still take time growing with the square or faster, from a
   policy of a few kilobytes; shards' whole check, one run each (the same harness), and
   OPA's (`run`, one run each):
 
@@ -19634,7 +19634,7 @@ revision before comparing a changed API/implementation.
   command and the client's launch. A boot's spawn under heavy load is slower than
   Firecracker's: open.
 
-### M497. Hostile policies: what fuzzing found in shards' Rego, and the compile stages that grew faster than their input
+### M510. Hostile policies: what fuzzing found in shards' Rego, and the compile stages that grew faster than their input
 
 - **Question.** A build's policy may be anyone's (a remote context's `Dockerfile.rego`,
   D111): can a policy's text, its input, or a builtin's operands make shards' Rego panic,
