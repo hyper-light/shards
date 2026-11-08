@@ -103,7 +103,7 @@ const OWN: [&str; 25] = [
 /// (`context::kept_here`): a child of a command run `--context default` reads the same
 /// home, whose current context may be another machine's. No client of this machine's runs
 /// one (daemon/remote.rs `owners`).
-pub(crate) const INTERNAL: [&str; 6] = [
+pub(crate) const INTERNAL: [&str; 7] = [
     // The VM's broker (`shards run --kernel`, `shards restore`, macOS).
     "grants",
     // The writer of a restore's working set (`shards restore`, Linux).
@@ -117,6 +117,9 @@ pub(crate) const INTERNAL: [&str; 6] = [
     "frontend",
     // The daemon's spawner (PM M158).
     "spawner",
+    // What serves a client's binds for a run through its context that goes on without
+    // its command (D215).
+    crate::client_binds::SERVE_APART,
 ];
 
 fn dispatch(args: Vec<OsString>) -> ExitCode {
@@ -547,6 +550,7 @@ fn container(
                     color: std::env::var_os("NO_COLOR").is_none_or(|v| v.is_empty())
                         && std::env::var_os("TERM").is_none_or(|t| t != "dumb"),
                     daemon: identity,
+                    client: crate::client_grants::client_here(),
                 };
                 // `cp` asks in steps, and moves the files itself (cli/cp.rs).
                 if std::ptr::eq(command, &shards_cmdline::commands::COPY) {

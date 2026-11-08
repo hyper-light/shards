@@ -23,7 +23,7 @@ pub mod window;
 #[path = "window_whp.rs"]
 pub mod window;
 
-use std::io::{self, Read as _, Write as _};
+use std::io::{self, Read as _};
 use std::sync::Arc;
 
 /// The stream a share's server is reached over: a Unix socket on Unix, a duplex named pipe
@@ -457,7 +457,7 @@ fn descriptor_ask(node: u64, writable: bool, foffset: u64, len: u64) -> Vec<u8> 
 }
 
 /// Sends `bytes` as a frame: its length (le32), then itself, from where they are.
-pub fn write_frame(to: &mut Stream, bytes: &[u8]) -> io::Result<()> {
+pub fn write_frame(to: &mut impl io::Write, bytes: &[u8]) -> io::Result<()> {
     let len = u32::try_from(bytes.len()).map_err(|_| io::ErrorKind::InvalidInput)?;
     to.write_all(&len.to_le_bytes())?;
     to.write_all(bytes)
@@ -535,7 +535,7 @@ fn control(conn: &mut Stream, ask: u8, bytes: &[u8]) -> Result<Vec<u8>, String> 
     }
 }
 
-fn write_control(to: &mut Stream, bytes: &[u8]) -> io::Result<()> {
+fn write_control(to: &mut impl io::Write, bytes: &[u8]) -> io::Result<()> {
     if bytes.len() > MAX_CONTROL {
         return Err(io::ErrorKind::InvalidInput.into());
     }
@@ -567,7 +567,7 @@ fn read_any(from: &mut Stream) -> io::Result<Option<Frame>> {
 
 /// [`read_any`] into `bytes`, which it empties first, a buffer its caller keeps: whether
 /// the frame is a control frame, none at the end.
-fn read_any_into(from: &mut Stream, bytes: &mut Vec<u8>) -> io::Result<Option<bool>> {
+fn read_any_into(from: &mut impl io::Read, bytes: &mut Vec<u8>) -> io::Result<Option<bool>> {
     let mut len = [0u8; 4];
     match from.read_exact(&mut len) {
         Ok(()) => {}
@@ -653,6 +653,47 @@ pub fn answer(server: &server::Server, mut conn: Stream) -> io::Result<()> {
                 write_control(&mut conn, &answer)?;
             }
         }
+    }
+    Ok(())
+}
+
+/// Answers the requests a guest on another machine sends `server` on `from`, relayed
+/// there from its VM's connection, on `to`, until `from` ends (D215): as [`answer`] answers
+/// a share process's, but a mapping's descriptor, which no relay carries, asked of none
+/// (`Server::serves_afar`): an ask for one is refused EINVAL, as a shards_ipc message of
+/// kind 1 and its errno, which is what the VM reads of a refusal.
+pub fn answer_afar(server: &server::Server, mut from: impl io::Read, mut to: impl io::Write) -> io::Result<()> {
+    let (mut frame, mut reply) = (Vec::new(), Vec::new());
+    while let Some(control) = read_any_into(&mut from, &mut frame)? {
+        let asked = frame.as_slice();
+        match control {
+            false => {
+                if !server.handle_into(asked, &mut reply) {
+                    reply.clear();
+                }
+                write_frame(&mut to, &reply)?;
+            }
+            true if asked.first() == Some(&DESCRIPTOR) => {
+                let errno: i32 = 22;
+                let mut message = vec![1u8];
+                message.extend_from_slice(&4u32.to_be_bytes());
+                message.extend_from_slice(&errno.to_le_bytes());
+                to.write_all(&message)?;
+            }
+            true => {
+                let done = match asked.split_first() {
+                    Some((&SAVE, [])) => server.save(),
+                    Some((&RESTORE, tables)) => server.restore(tables).map(|()| Vec::new()),
+                    _ => Err("a control frame of no known ask".into()),
+                };
+                let answer = match done {
+                    Ok(brought) => [&[0u8][..], &brought].concat(),
+                    Err(why) => [&[1u8][..], why.as_bytes()].concat(),
+                };
+                write_control(&mut to, &answer)?;
+            }
+        }
+        to.flush()?;
     }
     Ok(())
 }

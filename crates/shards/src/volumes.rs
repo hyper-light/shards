@@ -58,6 +58,17 @@ pub struct MountPoint {
     /// kept.
     #[serde(skip)]
     pub flags: Vec<String>,
+    /// A client's bind of its own directory, or of a file alone, through its context
+    /// (D215): its relay's token, by which the run's start finds the stream the client
+    /// serves it on, its `source` the client's path. Not Docker's: inspect leaves it out.
+    #[serde(rename = "ShardsRelay", default, skip_serializing_if = "String::is_empty")]
+    pub relay: String,
+    /// A file a client binds alone: its one name, which its relay serves of its directory.
+    #[serde(rename = "ShardsRelayOnly", default, skip_serializing_if = "String::is_empty")]
+    pub relay_only: String,
+    /// One of CDI's (D146): its host's path is its device's, granted with it (D215).
+    #[serde(skip)]
+    pub cdi: bool,
 }
 
 /// CDI's mounts (D146), as CDI's Apply adds them to a container's spec: each a bind of
@@ -91,6 +102,7 @@ pub fn cdi_points(given: &[crate::build::cdi::Mount]) -> Result<Vec<MountPoint>,
                     .filter(|f| has(f))
                     .map(String::from)
                     .collect(),
+                cdi: true,
                 ..MountPoint::default()
             })
         })
@@ -889,6 +901,92 @@ pub fn register(
     }
 }
 
+/// A bind's mount point `mp` of a run of `client` (empty for this machine's own user's), as
+/// it crosses (D215): a client's directory, served from it by the relay its source names,
+/// its source then the client's path; refused where it is no client's of its own, or
+/// where a relay comes from no client.
+fn relay(mp: &mut MountPoint, client: &str) -> Result<(), String> {
+    crate::client_grants::refuse_bind(client, &mp.source)?;
+    if let Some(r) = crate::client_grants::relay_of(&mp.source) {
+        mp.relay_only = r.only();
+        mp.relay = r.token;
+        mp.source = r.here;
+        mp.create_source = false;
+    }
+    Ok(())
+}
+
+/// Why client `client`, holding `grants`, may not have `points` mounted, judged by their
+/// paths before anything is opened, as its run is made (D215): a bind of this machine's
+/// (one `--volumes-from` took of another run) or a volume of a directory of this
+/// machine's (`o=bind`) only where a grant holds it, a CDI device's own mounts with their
+/// device; and another client's bind of its directory never, as its client serves it to
+/// the run that named it alone. [`open_for`] judges each again by what it opens.
+pub fn refuse_points(
+    points: &[MountPoint],
+    store: &Store,
+    client: &str,
+    grants: &crate::client_grants::Grants,
+) -> Result<(), String> {
+    for p in points {
+        if !p.relay.is_empty() {
+            continue;
+        }
+        match p.kind.as_str() {
+            "bind" if !p.cdi => crate::client_grants::refuse_path(
+                client,
+                grants,
+                &format!("bind {}", p.source),
+                Path::new(&p.source),
+                p.rw,
+            )?,
+            "volume" => {
+                if let Some(device) = bound_device(store, &p.name) {
+                    crate::client_grants::refuse_path(
+                        client,
+                        grants,
+                        &format!("volume {}", p.name),
+                        Path::new(&device),
+                        p.rw,
+                    )?;
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+/// The host directory volume `name` binds (`o=bind`, its `device`), none for the store's
+/// own.
+fn bound_device(store: &Store, name: &str) -> Option<String> {
+    let options = store.get(name)?.options;
+    let bound = options
+        .get("o")
+        .is_some_and(|o| o.split(',').any(|f| f == "bind" || f == "rbind"));
+    bound.then(|| options.get("device").cloned().unwrap_or_default())
+}
+
+/// Why client `client`, holding `grants`, may not make a volume of `options` (D215): one of
+/// a host directory (`o=bind`, its `device`) is of this machine's, which a grant must hold.
+pub fn refuse_options(
+    options: &BTreeMap<String, String>,
+    name: &str,
+    client: &str,
+    grants: &crate::client_grants::Grants,
+) -> Result<(), String> {
+    let Some(device) = options.get("device") else {
+        return Ok(());
+    };
+    crate::client_grants::refuse_path(
+        client,
+        grants,
+        &format!("volume {name}: device={device}"),
+        Path::new(device),
+        true,
+    )
+}
+
 fn register_into(
     points: &mut Vec<(MountPoint, bool)>,
     store: &Store,
@@ -933,6 +1031,14 @@ fn register_into(
                     m.destination
                 ));
             }
+            // A client's bind of its own directory is served to the run that named it
+            // alone, by that client (D215).
+            if !m.relay.is_empty() {
+                return Err(format!(
+                    "cannot take the volumes of {id}: its bind at {} is a directory of its client's, {}, which that client serves to that run alone",
+                    m.destination, m.source
+                ));
+            }
             let cp = MountPoint {
                 rw: m.rw && !mode.split(',').any(|o| o == "ro"),
                 copy_data: false,
@@ -952,6 +1058,9 @@ fn register_into(
     let mut bound: Vec<String> = Vec::new();
     for b in binds {
         let mut mp = parse_raw(b, driver)?;
+        if mp.kind == "bind" {
+            relay(&mut mp, &run.client)?;
+        }
         if bound.contains(&mp.destination) || tmpfs_dests.contains(&mp.destination) {
             return Err(format!("Duplicate mount point: {}", mp.destination));
         }
@@ -971,7 +1080,16 @@ fn register_into(
         set(points, mp, made);
     }
     for s in specs {
-        let mut mp = parse_spec(s)?;
+        // A client's: its bind is of its own directory, which this host need not have,
+        // and whether this host has a path it names is none of the client's to learn.
+        let mut mp = if run.client.is_empty() {
+            parse_spec(s)?
+        } else {
+            parse_spec_within(s)?
+        };
+        if mp.kind == "bind" {
+            relay(&mut mp, &run.client)?;
+        }
         if bound.contains(&mp.destination) {
             let m = mounts::parse_mount(s, None)?;
             return Err(format!("Duplicate mount point: {}", m.target));
@@ -1075,10 +1193,42 @@ pub struct Opened {
 /// container is first started, where dockerd copies them as it is made (populateVolumes).
 /// Each in the guest at `shards{i}`, `i` its place in `dirs`.
 pub fn open(points: &[MountPoint], first: bool, store: &Store) -> Result<Opened, String> {
+    open_for(points, first, store, &Access::default())
+}
+
+/// Whose run's mount points are opened (D215): a client's, what its owner granted it, by
+/// which each directory of this machine's is judged once it is open; and where its own
+/// directories' relays are taken from, by their tokens. None for this machine's own user's.
+#[derive(Default)]
+pub struct Access<'a> {
+    pub client: Option<(&'a str, &'a crate::client_grants::Grants)>,
+    /// The VM's end of the stream a client serves its directory on, by its relay's token;
+    /// none where nothing is served, as for a visit, which mounts none of a client's.
+    pub relay: Option<&'a dyn Fn(&str) -> Result<shards_ipc::fd::OwnedFd, String>>,
+}
+
+/// [`open`] of the mount points of a run `access` says whose.
+pub fn open_for(points: &[MountPoint], first: bool, store: &Store, access: &Access<'_>) -> Result<Opened, String> {
     use shards_ipc::fd::OwnedFd;
     let mut opened = Opened::default();
     for p in points {
         let dest = &p.destination;
+        // A client's own directory, served from it (D215): the stream its relay is, which
+        // its share passes to the VM as it is.
+        if !p.relay.is_empty() {
+            let Some(take) = access.relay else {
+                continue;
+            };
+            let fd = take(&p.relay)
+                .map_err(|e| format!("error mounting \"{}\" to rootfs at \"{dest}\": {e}", p.source))?;
+            let flags = if p.rw { "" } else { "ro" };
+            let i = opened.dirs.len();
+            let mut entry = format!("volume=shards{i}\0{dest}\0{flags}\0").into_bytes();
+            entry.extend_from_slice(p.relay_only.as_bytes());
+            opened.mounts.push((dest.clone(), entry));
+            opened.dirs.push((fd, !p.rw, std::ffi::OsString::from(&p.relay_only)));
+            continue;
+        }
         if p.kind == "tmpfs" {
             let mut options = vec!["noexec", "nosuid", "nodev", "rprivate"];
             options.extend(p.tmpfs.split(',').filter(|o| !o.is_empty()));
@@ -1116,6 +1266,19 @@ pub fn open(points: &[MountPoint], first: bool, store: &Store) -> Result<Opened,
             }
             _ => Path::new(&p.source),
         };
+        // A client's: nothing of this machine's looked at, or made, beyond its grants
+        // (D215); what is open is judged again below.
+        let host_path = !p.cdi && (p.kind == "bind" || source != Path::new(&p.source));
+        let shown = if p.kind == "bind" {
+            format!("bind {}", p.source)
+        } else {
+            format!("volume {}", p.name)
+        };
+        if let Some((client, grants)) = access.client
+            && host_path
+        {
+            crate::client_grants::refuse_path(client, grants, &shown, source, p.rw)?;
+        }
         let meta = match std::fs::metadata(source) {
             Ok(meta) => meta,
             Err(e)
@@ -1152,9 +1315,16 @@ pub fn open(points: &[MountPoint], first: bool, store: &Store) -> Result<Opened,
             return Err(cannot_stand_in("a file", dest));
         }
         // A directory opens on Windows only for backup semantics (`platform::open_dir`).
-        let fd: OwnedFd = shards_vmm::platform::open_dir(dir)
-            .map_err(|e| format!("error mounting \"{}\" to rootfs at \"{dest}\": {e}", p.source))?
-            .into();
+        let file = shards_vmm::platform::open_dir(dir)
+            .map_err(|e| format!("error mounting \"{}\" to rootfs at \"{dest}\": {e}", p.source))?;
+        // A client's: a directory of this machine's only where its owner granted it, judged
+        // by the directory open, which is what is shared (D215).
+        if let Some((client, grants)) = access.client
+            && host_path
+        {
+            crate::client_grants::refuse_opened(client, grants, &shown, &file, p.rw)?;
+        }
+        let fd: OwnedFd = file.into();
         let mut flags: Vec<&str> = p.flags.iter().map(String::as_str).collect();
         if !p.rw {
             flags.push("ro");

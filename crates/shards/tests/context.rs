@@ -2500,3 +2500,110 @@ fn a_cidfile_through_a_context_is_the_clients() {
     assert_ne!(missing.status, Some(0), "{missing}");
     assert!(!laptop.join("never.id").exists(), "{missing}");
 }
+
+/// A client's binds through its context are its own files (D215): `-v DIR:PATH` on the
+/// laptop shows the microVM there the laptop's directory, and what the microVM writes
+/// lands on the laptop, read-only where asked, a file bound alone, a detached run's too;
+/// nothing of the machine's is bound or written. The machine's own directories are its
+/// owner's to grant: a volume of one is refused to the client, made by the client or by
+/// the owner, until the owner grants it (read-only, then refused read-write), and again
+/// once taken back; a named volume of the daemon's is every client's; and the machine's
+/// GPUs are refused without a grant.
+#[test]
+fn a_clients_binds_are_its_own_files_and_the_machines_its_owners_to_grant() {
+    let Some((machine, _listening, laptop, image)) = joined("ctx-binds") else {
+        return;
+    };
+    let on_laptop = [("SHARDS_HOME", laptop.as_os_str())];
+    let on_machine = [("SHARDS_HOME", machine.as_os_str())];
+    let there = |args: &[&str]| {
+        let mut all = vec!["run", "--pull", "never"];
+        all.extend_from_slice(args);
+        run_shards_env(&["--context", "gpu"], &all, &on_laptop, TIMEOUT)
+    };
+    let src = laptop.join("src");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(src.join("a"), "laptop").unwrap();
+    std::fs::write(laptop.join("one"), "alone").unwrap();
+    let srv = machine.join("srv");
+    std::fs::create_dir_all(&srv).unwrap();
+    std::fs::write(srv.join("a"), "machine").unwrap();
+    let bind = format!("{}:/data", src.display());
+    let ro = format!("{}:/ro:ro", src.display());
+    let single = format!("{}:/etc/one:ro", laptop.join("one").display());
+
+    // The laptop's files, read there; written there, landing here.
+    let read = there(&["--rm", "-v", &bind, "-v", &single, &image, "stat", "/data/a", "/etc/one"]);
+    assert_eq!(read.status, Some(0), "{read}");
+    assert!(read.stdout.contains("= laptop"), "{read}");
+    assert!(read.stdout.contains("= alone"), "{read}");
+    let wrote = there(&["--rm", "-u", "0", "-v", &bind, &image, "fs", "mkdir:/data/d", "write:/data/d/b=guest"]);
+    assert_eq!(wrote.status, Some(0), "{wrote}");
+    assert_eq!(std::fs::read_to_string(src.join("d/b")).unwrap(), "guest");
+    let refused = there(&["--rm", "-u", "0", "-v", &ro, &image, "fs", "write:/ro/x=1"]);
+    assert!(refused.stderr.contains("Read-only file system"), "{refused}");
+    assert!(!src.join("x").exists());
+    // A run that goes on without its command: its binds served apart, as long as it runs.
+    let detached = there(&["-d", "--rm", "-u", "0", "-v", &bind, &image, "fs", "write:/data/c=detached"]);
+    assert_eq!(detached.status, Some(0), "{detached}");
+    let waited = std::time::Instant::now();
+    while !src.join("c").exists() && waited.elapsed() < TIMEOUT {
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert_eq!(std::fs::read_to_string(src.join("c")).unwrap(), "detached");
+    // Nothing of the laptop's paths, or files, on the machine.
+    assert!(!machine.join("src").exists());
+
+    // The machine's directory, as a volume: the client's own volume of it refused, the
+    // owner's refused to the client, until granted.
+    let device = format!("device={}", srv.display());
+    let volume_opts = ["--opt", "type=none", "--opt", "o=bind", "--opt", device.as_str()];
+    let mut made: Vec<&str> = volume_opts.to_vec();
+    made.push("theirs");
+    let theirs = run_shards_env(&["--context", "gpu", "volume", "create"], &made, &on_laptop, TIMEOUT);
+    assert_ne!(theirs.status, Some(0), "{theirs}");
+    assert!(
+        theirs.stderr.contains("holds no grant") && theirs.stderr.contains("shards grant client laptop --dir"),
+        "{theirs}"
+    );
+    let mut owners: Vec<&str> = volume_opts.to_vec();
+    owners.push("owners");
+    let made = run_shards_env(&["volume", "create"], &owners, &on_machine, TIMEOUT);
+    assert_eq!(made.status, Some(0), "{made}");
+    let ungranted = there(&["--rm", "-v", "owners:/srv:ro", &image, "stat", "/srv/a"]);
+    assert_ne!(ungranted.status, Some(0), "{ungranted}");
+    assert!(ungranted.stderr.contains("holds no grant"), "{ungranted}");
+    let granted = run_shards_env(
+        &["grant", "client"],
+        &["laptop", "--dir", &format!("{}:ro", srv.display())],
+        &on_machine,
+        TIMEOUT,
+    );
+    assert_eq!(granted.status, Some(0), "{granted}");
+    let shown = run_shards_env(&["inspect", "client"], &["laptop"], &on_machine, TIMEOUT);
+    assert!(shown.stdout.contains("(read-only)"), "{shown}");
+    let read = there(&["--rm", "-v", "owners:/srv:ro", &image, "stat", "/srv/a"]);
+    assert_eq!(read.status, Some(0), "{read}");
+    assert!(read.stdout.contains("= machine"), "{read}");
+    let rw = there(&["--rm", "-v", "owners:/srv", &image, "stat", "/srv/a"]);
+    assert_ne!(rw.status, Some(0), "{rw}");
+    assert!(rw.stderr.contains("read-only"), "{rw}");
+    let revoked = run_shards_env(
+        &["revoke", "client"],
+        &["laptop", "--dir", srv.to_str().unwrap()],
+        &on_machine,
+        TIMEOUT,
+    );
+    assert_eq!(revoked.status, Some(0), "{revoked}");
+    let again = there(&["--rm", "-v", "owners:/srv:ro", &image, "stat", "/srv/a"]);
+    assert_ne!(again.status, Some(0), "{again}");
+
+    // A volume of the daemon's own is every client's.
+    let named = there(&["--rm", "-u", "0", "-v", "plain:/v", &image, "fs", "write:/v/x=1"]);
+    assert_eq!(named.status, Some(0), "{named}");
+
+    // The machine's GPUs, its owner's to grant.
+    let gpus = there(&["--rm", "--gpus", "all", &image, "true"]);
+    assert_ne!(gpus.status, Some(0), "{gpus}");
+    assert!(gpus.stderr.contains("shards grant client laptop --gpus"), "{gpus}");
+}
