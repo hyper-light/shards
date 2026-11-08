@@ -3938,6 +3938,24 @@ impl<D: Disk> Daemon<D> {
         if let Some((_, at)) = &swap {
             let _ = std::fs::remove_file(at);
         }
+        // The CPU baseline its guest was told (D176 part 6), which a move of it is checked
+        // against: its home's as it booted; a resumed run's is its snapshot's, kept from its
+        // first start, and a joiner's its provider's.
+        if started.is_ok() && resuming.is_none() && !matches!(start, network::Start::Join(_)) {
+            let at = lock(&self.containers).dir(&id).join(moves::RUN_BASELINE);
+            let baseline = moves::home_baseline(&self.home);
+            let kept = if baseline.is_empty() {
+                std::fs::remove_file(&at).or_else(|e| match e.kind() {
+                    io::ErrorKind::NotFound => Ok(()),
+                    _ => Err(e),
+                })
+            } else {
+                std::fs::write(&at, shards_vmm::arch::aarch64::cpu::encode(&baseline))
+            };
+            if let Err(e) = kept {
+                log(format!("{}: {e}", at.display()));
+            }
+        }
         match started {
             Ok(inbox) => Some((id, inbox)),
             Err(said) => {
@@ -7065,8 +7083,11 @@ impl<D: Disk> Daemon<D> {
         // asks for as its workload needs it within its own most (D148): one template for
         // every limit (run::template). Plugged memory comes online as the kernel's own, as
         // a builder's does (D133).
+        // The CPU baseline its home's microVMs are told (D176 part 6), read once a run.
+        let cpu_baseline = moves::home_baseline(&self.home);
         let on_network = |cfg: &mut Config| {
             (cfg.vcpus, cfg.memory_mib) = prepared.size;
+            cfg.cpu_baseline.clone_from(&cpu_baseline);
             cfg.hotplug_mib = crate::build::host_memory()
                 .map_or(0, |bytes| ((bytes >> 20) & !1).saturating_sub(cfg.memory_mib));
             if cfg.hotplug_mib > 0 {
@@ -7651,6 +7672,13 @@ impl<D: Disk> Daemon<D> {
             if cfg.pci_slots_iommu {
                 args.push("--pci-slots-iommu".into());
             }
+        }
+        // The CPU baseline its guest is told (D176 part 6).
+        if !cfg.cpu_baseline.is_empty() {
+            args.extend([
+                "--cpu-baseline".into(),
+                shards_vmm::arch::aarch64::cpu::encode(&cfg.cpu_baseline).into(),
+            ]);
         }
         // A join disk and a join share in every microVM, empty and unserved until a
         // container joins its network (D119): its templates have them, and so every restore

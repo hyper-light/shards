@@ -989,12 +989,26 @@ pub fn template(
         + gpu(cfg)
         + JOIN_SHARE
         + &share_window(cfg)
+        + &cpu_baseline(cfg)
         + &format!("layer {layer}\n");
     let hex: String = Sha256::digest(key.as_bytes())
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect();
     home.join("templates").join(hex)
+}
+
+/// A template's CPU baseline (D176 part 6), in its key where it has one: a template saved
+/// for one fleet is none of another's.
+fn cpu_baseline(cfg: &Config) -> String {
+    if cfg.cpu_baseline.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "cpu baseline {}\n",
+            shards_vmm::arch::aarch64::cpu::encode(&cfg.cpu_baseline)
+        )
+    }
 }
 
 /// Every template's join share (D119), which every microVM the daemon starts has, as it has

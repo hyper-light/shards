@@ -119,6 +119,16 @@ pub use runtime::{
     restore_from, restores_here, start, working_set_limit,
 };
 
+#[cfg(all(hv, target_arch = "aarch64"))]
+pub use aarch64::host_cpu_id;
+
+/// This host's CPU as its hypervisor shows a guest, as AArch64 ID registers (D176 part 6):
+/// none on another architecture's host, whose CPU baseline is not built.
+#[cfg(not(all(hv, target_arch = "aarch64")))]
+pub fn host_cpu_id() -> Result<Vec<(u16, u64)>, String> {
+    Err("a CPU baseline is of arm64 hosts' ID registers, and this host is none".into())
+}
+
 #[cfg(not(hv))]
 mod unsupported;
 #[cfg(not(hv))]
@@ -1172,6 +1182,10 @@ pub struct Config {
     /// every function plugged in. Its snapshot is refused, as its IOMMU's state is no
     /// snapshot's.
     pub pci_slots_iommu: bool,
+    /// The CPU baseline its guest is told (D176 part 6), as AArch64 ID registers by
+    /// encoding, each field the most it may find: every vCPU is told the lower of this
+    /// host's and the baseline's. Empty for none: the host's own.
+    pub cpu_baseline: Vec<(u16, u64)>,
 }
 
 /// A device plugged into a running machine (D214): its place on bus 0 (`devfn`, device <<
@@ -2237,6 +2251,7 @@ impl Config {
             vfio: Vec::new(),
             pci_slots: 0,
             pci_slots_iommu: false,
+            cpu_baseline: Vec::new(),
         }
     }
 }

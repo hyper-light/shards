@@ -22,7 +22,7 @@ pub(crate) use client::ask_here;
 pub(crate) mod cp;
 pub(crate) mod listing;
 pub(crate) mod look;
-mod moves;
+pub(crate) mod moves;
 pub(crate) mod request;
 pub(crate) mod save;
 mod screens;
@@ -64,7 +64,7 @@ pub fn main() -> ExitCode {
 /// [`INTERNAL`]'s. `daemon`, `guest` and `disk` are what `run daemon`, `stop daemon`,
 /// `configure guest` and `configure disk` are said as, and `daemon` how the client starts the
 /// daemon.
-const OWN: [&str; 25] = [
+const OWN: [&str; 26] = [
     "system",
     // Devices plugged into a running microVM, and its disks grown (D214).
     "plug",
@@ -96,6 +96,8 @@ const OWN: [&str; 25] = [
     "restore",
     // A microVM moved to another machine (`move vm`, D176 part 6).
     "move",
+    // The CPU baseline a home's microVMs are told (`configure cpu`, D176 part 6).
+    "cpu",
 ];
 
 /// The commands shards starts of itself, parts of it that no one types. Each runs on this
@@ -207,6 +209,7 @@ fn dispatch(args: Vec<OsString>) -> ExitCode {
         }
         ["run", ..] => request::run("shards run", args.get(1..).unwrap_or_default()),
         ["context", ..] => crate::context::command(args.get(1..).unwrap_or_default()),
+        ["cpu", ..] => moves::cpu(args.get(1..).unwrap_or_default()),
         [thing @ ("client" | "invitation"), ..] => {
             crate::context::admin(thing, args.get(1..).unwrap_or_default())
         }

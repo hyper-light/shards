@@ -88,6 +88,67 @@ pub(crate) struct Plan {
     /// kernel, which a restore of it prepares its run's request with (run::prepare).
     #[serde(default)]
     pub guest: bool,
+    /// The CPU baseline its guest was told (D176 part 6), as ID registers by encoding: a
+    /// machine whose hypervisor shows every field of it at least takes it, whatever more
+    /// the machine it ran on has. Empty where it was told none, its host's own CPU.
+    #[serde(default)]
+    pub baseline: Vec<(u16, u64)>,
+}
+
+/// What a run keeps the CPU baseline its guest was told in, in its container's directory
+/// (D176 part 6), as its home keeps its own (`cli::moves::BASELINE`): written as the run
+/// starts, and moved with it.
+pub(super) const RUN_BASELINE: &str = "cpu-baseline";
+
+/// The CPU baseline `home`'s microVMs are told ([`crate::cli::moves::BASELINE`]); none
+/// where it keeps none, or none it can read.
+pub(super) fn home_baseline(home: &Path) -> Vec<(u16, u64)> {
+    read_baseline(&home.join(crate::cli::moves::BASELINE))
+}
+
+/// The ID registers on the first line of a baseline's file at `at`; none where there is
+/// none.
+fn read_baseline(at: &Path) -> Vec<(u16, u64)> {
+    std::fs::read_to_string(at)
+        .ok()
+        .and_then(|text| shards_vmm::arch::aarch64::cpu::decode(text.lines().next()?).ok())
+        .unwrap_or_default()
+}
+
+/// The register of each feature macOS names (`hw.optional.arm.FEAT_*`, [`host_cpu`]) that
+/// its field is in (Arm ARM DDI 0487, the ID_AA64* registers' fields): a baseline that
+/// names the register masks the feature where it is lower, and a feature whose register
+/// the baseline does not name (ISAR2's, which Hypervisor.framework neither says nor lets a
+/// VMM set, PM M460) is the guest's whatever the baseline says, and checked by name.
+fn feature_register(feature: &str) -> Option<u16> {
+    Some(match feature {
+        "FEAT_CSV2" | "FEAT_CSV3" | "FEAT_DIT" | "FEAT_FP16" => 0xc020,
+        "FEAT_SSBS" | "FEAT_BTI" => 0xc021,
+        "FEAT_CRC32" | "FEAT_FlagM" | "FEAT_FlagM2" | "FEAT_FHM" | "FEAT_DotProd" | "FEAT_SHA3"
+        | "FEAT_RDM" | "FEAT_LSE" | "FEAT_SHA256" | "FEAT_SHA512" | "FEAT_SHA1" | "FEAT_AES"
+        | "FEAT_PMULL" => 0xc030,
+        "FEAT_SPECRES" | "FEAT_SPECRES2" | "FEAT_SB" | "FEAT_FRINTTS" | "FEAT_PACIMP" | "FEAT_LRCPC"
+        | "FEAT_LRCPC2" | "FEAT_FCMA" | "FEAT_JSCVT" | "FEAT_PAuth" | "FEAT_PAuth2" | "FEAT_FPAC"
+        | "FEAT_FPACCOMBINE" | "FEAT_DPB" | "FEAT_DPB2" | "FEAT_BF16" | "FEAT_EBF16" | "FEAT_I8MM" => 0xc031,
+        "FEAT_WFxT" | "FEAT_RPRES" | "FEAT_CSSC" | "FEAT_HBC" => 0xc032,
+        "FEAT_ECV" => 0xc038,
+        "FEAT_AFP" => 0xc039,
+        "FEAT_LSE2" => 0xc03a,
+        _ => return None,
+    })
+}
+
+/// The features of `ran_on` a guest told `baseline` may still have used: those whose
+/// register the baseline does not name, and every one where it is none.
+fn unmasked(ran_on: &[String], baseline: &[(u16, u64)]) -> Vec<String> {
+    ran_on
+        .iter()
+        .filter(|f| {
+            baseline.is_empty()
+                || feature_register(f).is_none_or(|reg| !baseline.iter().any(|(r, _)| *r == reg))
+        })
+        .cloned()
+        .collect()
 }
 
 /// The features of this machine's CPU a guest may be shown, as its OS names them: on macOS
@@ -765,6 +826,9 @@ impl<D: Disk> Daemon<D> {
             Some("live") => self.move_live(args.get(1..).unwrap_or_default(), asker, reply),
             Some("done") => self.move_done(args.get(1..).unwrap_or_default()),
             Some("ready") => self.move_ready(args.get(1).map_or("", String::as_str), asker, reply),
+            Some("cpu") => self
+                .host_cpu_id()
+                .map(|id| shards_vmm::arch::aarch64::cpu::encode(&id)),
             Some("export") => self.move_export(args.get(1..).unwrap_or_default(), asker),
             Some("import") => self.move_import(args.get(1..).unwrap_or_default(), asker),
             _ => Err(format!("no step of a move in {args:?}")),
@@ -875,6 +939,7 @@ impl<D: Disk> Daemon<D> {
             binds,
             cpu: host_cpu(),
             guest: self.boots_stored_guest(&c.id),
+            baseline: read_baseline(&lock(&self.containers).dir(&c.id).join(RUN_BASELINE)),
         };
         serde_json::to_string(&plan).map_err(|e| e.to_string())
     }
@@ -1101,7 +1166,41 @@ impl<D: Disk> Daemon<D> {
             binds,
             cpu: host_cpu(),
             guest: self.boots_stored_guest(id),
+            baseline: read_baseline(&lock(&self.containers).dir(id).join(RUN_BASELINE)),
         })
+    }
+
+    /// This machine's CPU as its hypervisor shows a guest (D176 part 6): its VM process asked
+    /// (`shards-vm cpu`), once a daemon, until it answers.
+    fn host_cpu_id(&self) -> Result<Vec<(u16, u64)>, String> {
+        static HOST: std::sync::OnceLock<Vec<(u16, u64)>> = std::sync::OnceLock::new();
+        if let Some(id) = HOST.get() {
+            return Ok(id.clone());
+        }
+        let asked = (|| {
+            use shards_ipc::fd::AsFd as _;
+            let (mut reader, writer) = io::pipe().map_err(|e| e.to_string())?;
+            let stderr = io::stderr();
+            let child = shards_ipc::spawn(
+                &self.vm,
+                &[std::ffi::OsStr::new("cpu")],
+                &[(writer.as_fd(), 1), (stderr.as_fd(), 2)],
+                false,
+            )
+            .map_err(|e| format!("{}: {e}", self.vm.display()))?;
+            drop(writer);
+            let mut out = String::new();
+            let read = reader.read_to_string(&mut out);
+            let status = child.wait().map_err(|e| e.to_string())?;
+            read.map_err(|e| e.to_string())?;
+            if status != 0 {
+                return Err(format!(
+                    "its VM process could not say this host's CPU (status {status})"
+                ));
+            }
+            shards_vmm::arch::aarch64::cpu::decode(out.trim())
+        })()?;
+        Ok(HOST.get_or_init(|| asked).clone())
     }
 
     /// Whether container `id`'s run boots the guest its home stores: its request names no
@@ -1136,8 +1235,16 @@ impl<D: Disk> Daemon<D> {
             ));
         }
         // Its CPU: every feature of the machine it ran on, as its guest may have used any.
+        // Told a baseline, each of its fields this machine's hypervisor shows at least; and of
+        // the features it ran on, those the baseline cannot mask, by name.
+        if !plan.baseline.is_empty() {
+            let id = self.host_cpu_id()?;
+            shards_vmm::arch::aarch64::cpu::covers(&id, &plan.baseline)
+                .map_err(|e| format!("{e}, which {}'s CPU baseline names", plan.name))?;
+        }
         let here = host_cpu();
-        let lacks = cpu_lacks(&plan.cpu, &here);
+        let may_use = unmasked(&plan.cpu, &plan.baseline);
+        let lacks = cpu_lacks(&may_use, &here);
         if !lacks.is_empty() {
             return Err(format!(
                 "this machine's CPU lacks {}, which {}'s guest may have used where it ran",
@@ -1686,7 +1793,30 @@ mod tests {
             binds: Vec::new(),
             cpu: Vec::new(),
             guest: false,
+            baseline: Vec::new(),
         }
+    }
+
+    /// A baseline masks the features of the registers it names, which the move checks by
+    /// their fields; the rest it checks by name.
+    #[test]
+    fn a_baseline_masks_the_features_of_the_registers_it_names() {
+        let names = |l: &[&str]| l.iter().map(|f| (*f).to_string()).collect::<Vec<String>>();
+        // An M3 Ultra on macOS 26.4 and an M4 Max on 26.2 (PM M462).
+        let m3 = names(&["FEAT_AES", "FEAT_SSBS"]);
+        let m4 = names(&["FEAT_AES", "FEAT_FPACCOMBINE", "FEAT_WFxT"]);
+        assert_eq!(cpu_lacks(&m3, &m4), ["FEAT_SSBS"]);
+        assert_eq!(cpu_lacks(&m4, &m3), ["FEAT_FPACCOMBINE", "FEAT_WFxT"]);
+        // Told a baseline naming PFR1, ISAR0 and ISAR1, as Hypervisor.framework's are: SSBS
+        // and FPAC combined are its to mask, and the move checks them by its fields; WFxT,
+        // ISAR2's, it cannot, and the move still checks by name.
+        let base = [(0xc020, 0), (0xc021, 0), (0xc030, 0), (0xc031, 0)];
+        assert!(cpu_lacks(&unmasked(&m3, &base), &m4).is_empty());
+        assert_eq!(cpu_lacks(&unmasked(&m4, &base), &m3), ["FEAT_WFxT"]);
+        // No baseline: every feature, by name, as before.
+        assert_eq!(unmasked(&m4, &[]), m4);
+        // A feature of no known register is checked by name.
+        assert_eq!(unmasked(&names(&["FEAT_NEW"]), &base), ["FEAT_NEW"]);
     }
 
     /// A move to a machine whose CPU lacks a feature of the one its microVM ran on is

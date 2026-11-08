@@ -31,8 +31,9 @@ const SPI_INTID_BASE: u32 = 32;
 /// How the vCPUs start.
 #[derive(Debug)]
 pub enum Start {
-    /// The boot vCPU enters the kernel here; the others wait for PSCI CPU_ON.
-    Boot(Entry),
+    /// The boot vCPU enters the kernel here; the others wait for PSCI CPU_ON. Each is
+    /// told the CPU baseline, where there is one.
+    Boot(Entry, Vec<(u16, u64)>),
     Restore(Restored),
 }
 
@@ -73,8 +74,9 @@ pub struct Restored {
     )
 )]
 pub enum VcpuStart {
-    /// The boot vCPU's entry; `None` for the others, which wait for PSCI CPU_ON.
-    Boot(Option<Entry>),
+    /// The boot vCPU's entry, `None` for the others, which wait for PSCI CPU_ON; and the
+    /// CPU baseline its guest is told, where it has one ([`Config::cpu_baseline`]).
+    Boot(Option<Entry>, Vec<(u16, u64)>),
     Restore {
         state: hv::VcpuState,
         /// The CPU the snapshot's guest found, which each vCPU is given where its host's
@@ -135,9 +137,9 @@ pub struct SetUp {
 /// part, and none is shared.
 pub fn split(start: Start, vcpus: usize) -> Result<(Vec<VcpuStart>, Option<Remainder>), String> {
     match start {
-        Start::Boot(entry) => Ok((
+        Start::Boot(entry, baseline) => Ok((
             (0..vcpus)
-                .map(|index| VcpuStart::Boot((index == 0).then_some(entry)))
+                .map(|index| VcpuStart::Boot((index == 0).then_some(entry), baseline.clone()))
                 .collect(),
             None,
         )),
@@ -906,14 +908,31 @@ pub fn build(cfg: &Config) -> Result<Machine, String> {
         control: a.control,
         power: Arc::new(Power::default()),
         finish: a.vmgenid,
-        start: Start::Boot(Entry {
-            pc: kernel.entry,
-            x0: fdt_addr,
-        }),
+        start: Start::Boot(
+            Entry {
+                pc: kernel.entry,
+                x0: fdt_addr,
+            },
+            cfg.cpu_baseline.clone(),
+        ),
         config,
         #[cfg(any(hv = "kvm", hv = "whp"))]
         pmem: a.pmem_regions,
     })
+}
+
+/// This host's CPU as its hypervisor shows a guest (D176 part 6): the ID registers a vCPU
+/// of a VM of no memory reads, the hypervisor's own view, which a CPU baseline is the
+/// meet of across a fleet ([`aarch64::cpu::meet`]).
+pub fn host_cpu_id() -> Result<Vec<(u16, u64)>, String> {
+    let vm = hv::Vm::new(hv::VmConfig {
+        ipa_bits: 36,
+        mpidrs: vec![aarch64::mpidr(0)],
+        el2: false,
+    })
+    .map_err(|e| e.to_string())?;
+    let vcpu = vm.create_vcpu(0).map_err(|e| e.to_string())?;
+    vcpu.cpu_id().map_err(|e| e.to_string())
 }
 
 /// Stage-2 pages, as working sets record them.
@@ -1188,7 +1207,15 @@ pub fn setup_vcpu(vm: &hv::Vm, index: usize, start: VcpuStart) -> Result<(hv::Vc
     let created = crate::log::uptime_us();
     let mut set_up = SetUp::default();
     match start {
-        VcpuStart::Boot(entry) => {
+        VcpuStart::Boot(entry, baseline) => {
+            // A CPU baseline (D176 part 6): each field the lower of this host's and the
+            // baseline's, so that its guest finds nothing a machine of its fleet lacks.
+            if !baseline.is_empty() {
+                let here = vcpu.cpu_id().map_err(e)?;
+                let told = aarch64::cpu::meet(&here, &baseline);
+                vcpu.set_cpu_id(&told)
+                    .map_err(|err| format!("its CPU baseline is not told its guest: {err}"))?;
+            }
             if let Some(entry) = entry {
                 vcpu.boot(entry).map_err(e)?;
             }
