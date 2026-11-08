@@ -3123,9 +3123,9 @@ is kept with the microVM's record. Each policy means what Docker's clients rely 
   the daemon's own); `on-failure` on a non-zero status, under its count where it has one.
   A command that never started is not restarted. A stop or kill by the microVM's stop
   signal or SIGKILL cancels the next restart (ExitOnNext); a SIGHUP does not.
-- **When.** After a wait that starts at 100 ms, doubles each time to at most a minute,
-  and starts over once a run lasted 10 s (dockerd's figures: open in docs/audit/
-  2026-10-16_docker-framing.md, to derive from what a microVM's restart costs). The wait is a deadline on the followers' loop
+- **When.** After a wait that doubles each time, as dockerd's does, from and to what this
+  host's restarts cost, learned as it runs (D219), where dockerd's are figures (100 ms, a
+  minute, from scratch after a run of 10 s). The wait is a deadline on the followers' loop
   (no thread waits it out); the start then goes through the daemon's own door, a detached
   `start` from a client of its own making, so a restart is handled, followed and recorded
   as any start is.
@@ -7768,6 +7768,66 @@ pays its filter's compile after a restore could be paid before the template's sn
 whether unprivileged loads should be blinded (`bpf_jit_harden=1`, which blinds the
 constants of a program a task without CAP_BPF loads, a seccomp filter's among them) is not
 decided.
+
+### D219. A restart's waits come from what restarts cost on the host it runs on (built; measured on Fedora, macOS owed)
+
+**Found.** The audit of what was taken from Docker (docs/audit/2026-10-16_docker-framing.md):
+a restart policy's wait was dockerd's restart manager's figures (moby docker-v29.8.1
+daemon/internal/restartmanager: 100 ms first, doubled to a minute at most, from scratch
+after a run of 10 s). They say nothing of what a microVM's restart costs. On Fedora a run
+of `false` costs its host 82 to 142 ms of CPU from its end to its next's start, and a
+microVM whose command sleeps 2.4 to 16 ms a second (PM M484); a Mac's are other numbers,
+and a loaded host's others again. A figure measured here, frozen into a constant, would be
+as arbitrary on another machine as dockerd's.
+
+**Decided** (`daemon/restart.rs`):
+- **Kept, as scripts read them:** what each policy restarts, a stop or kill by its stop
+  signal or SIGKILL cancelling the next, `shards start` starting the count and the waits
+  over, `RestartCount`, `restarting` in `ps` and inspect while it waits, and each wait twice
+  the last (binary exponential backoff: Metcalfe and Boggs, CACM 19(7), 1976; a loop's
+  restarts from its first failure to any time `t` number at most log2(t / first) + 1, and
+  the one after its cause is gone comes within as long again as the loop had failed).
+- **A restart's cost is learned as each run ends:** its VM process's CPU time
+  (`shards_vmm::platform::process_usage`: /proc on Linux, proc_pidinfo on macOS,
+  GetProcessTimes on Windows), its restore and its run, without the time it idled in a
+  pool. Where that cannot be read: the host's last, smoothed as pools' refill times are
+  (RFC 6298 §2, α 1/8); where none was read, the run's own time.
+- **An idle microVM's cost is learned from warm VMs:** each one's CPU from ready to
+  claimed, against how long it waited, fitted by least squares. The slope is the idle rate.
+  What a VM still does as it becomes ready falls in the intercept: the CPU over the time
+  read 23.8 ms a second on Fedora, where a sleeping microVM costs 6.4, as a crash loop's
+  short waits count that settling over and over (PM M484).
+- **The first wait** is the restart's cost at the share of a CPU the run's limits give it
+  (`resources::cpu_allowance_micros`). A crash loop's restarts then take no more of its
+  host than its limits let its command take: a few milliseconds where it may use every
+  CPU, 1.6 s for 80 ms of CPU at `--cpus 0.05`.
+- **The longest** is the restart's cost at the idle rate: past it, a microVM failing for
+  good costs its host what one idling would. A run that lasts as long has paid for its
+  restart as an idle microVM would, and its waits start over.
+- **Cold start.** What a host learned is kept in its home (`restart-costs`: the smoothed
+  cost and the fit's sums) for the next daemon. Before any warm VM of the home's has idled
+  and been claimed, the waits are not capped: they double on, and start over after a run
+  as long as the last wait. A pooled run's first restart claims a warm VM, so the second
+  decision has a rate.
+
+**Deliberate differences from dockerd, each a script-visible one:** the first restart of
+an unlimited microVM comes within milliseconds, not 100 ms; a microVM with a small CPU
+share waits longer at first than dockerd's 100 ms; the longest wait is the host's figure,
+seconds on Fedora's numbers where dockerd's is a minute; the start-over run is the
+longest wait, not 10 s. No script reads more than restarts coming, counting and waiting
+longer each time, which all hold.
+
+**Tested.** Unit tests (`daemon::restart::tests`): what each policy restarts; the waits
+from a cost, a share and an idle rate (first, doubling, longest, start over, a small
+share, the log2 bound); a cold host doubling on; what a host learns from ready, claimed
+and ended VMs, kept and read back from the home, a garbled file read as nothing; the slope
+against the CPU over the time; this host's own process's CPU read
+(`a_processs_cpu_is_read_on_this_host`, on every platform's CI). On Fedora, 9 of 9.
+`resources::tests::a_runs_cpu_allowance_is_its_limits_share`. Measured: PM M484.
+**Not yet:** the harness on macOS; the harness again on Fedora with the slope fit, to set
+what the daemon learned beside its process tree's and cgroup's figures; the E2E restart
+test (`tests/containers.rs` `restart_policies_start_microvms_again`, cold boots, so the
+cold-start rule) and a pooled one, on real VMs on each platform.
 
 ### D208. A GPU on every Linux host: musl's GPU VM process, and Intel's GPUs (built)
 
