@@ -645,7 +645,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
         } else if std::ptr::eq(command, &shards_cmdline::commands::NETWORK_DISCONNECT) {
             self.network_disconnect(&parsed, reply)
         } else if std::ptr::eq(command, &shards_cmdline::commands::VOLUME_CREATE) {
-            self.volume_create(&parsed, asker.styled(), reply)
+            self.volume_create(&parsed, asker.styled(), &asker.whose, reply)
         } else if std::ptr::eq(command, &shards_cmdline::commands::VOLUME_LS) {
             self.volume_ls(&parsed, asker, reply)
         } else if std::ptr::eq(command, &shards_cmdline::commands::VOLUME_INSPECT) {
@@ -3588,6 +3588,9 @@ pub(super) struct Asker {
     pub color: bool,
     /// What they sent to be written: `save`'s archive's destination.
     pub files: Vec<OwnedFd>,
+    /// The client of another machine's they ask for through its context (D215), empty for
+    /// this machine's own user: what it reaches of this machine its owner granted it.
+    pub whose: String,
 }
 
 impl Asker {

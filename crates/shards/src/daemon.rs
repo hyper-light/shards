@@ -430,6 +430,23 @@ impl Wake {
         self.event.set();
     }
 
+    /// What wakes it from another thread that holds no daemon: its side of the pair, or
+    /// its event.
+    fn waker(&self) -> io::Result<Box<dyn Fn() + Send + Sync>> {
+        #[cfg(unix)]
+        {
+            let tell = self.pair.0.try_clone()?;
+            Ok(Box::new(move || {
+                let _ = (&tell).write(&[0]);
+            }))
+        }
+        #[cfg(windows)]
+        {
+            let event = self.event.try_clone()?;
+            Ok(Box::new(move || event.set()))
+        }
+    }
+
     /// Whether a wake is pending: Windows' listener asks; Unix's polls.
     #[cfg_attr(all(unix, not(test)), allow(dead_code))]
     fn pending(&self) -> bool {
@@ -1670,7 +1687,11 @@ fn serve(ready: Option<File>, listen: Option<std::net::SocketAddr>) -> Result<()
     // Other machines' clients (D180), before it says it serves: an address it cannot bind
     // is its starter's to hear.
     if let Some(at) = listen {
-        remote::listen(daemon.home.clone(), exe.clone(), at)?;
+        let wake = daemon
+            .listener_wake
+            .waker()
+            .map_err(|e| format!("what wakes the listener: {e}"))?;
+        remote::listen(daemon.home.clone(), exe.clone(), at, wake)?;
     }
     // Its starter returns once it hears this: its slots are offered from now on.
     if let Some(mut ready) = ready {
@@ -2118,7 +2139,7 @@ impl<D: Disk> Daemon<D> {
             if let Some(api) = &api {
                 loop {
                     match accept_api(api) {
-                        Ok(conn) => self.take_engine(threads, conn, None),
+                        Ok(conn) => self.take_engine(threads, conn, None, None),
                         Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
                         Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
                         Err(e) => {
@@ -2132,7 +2153,11 @@ impl<D: Disk> Daemon<D> {
             // What runs' commands asked of their own microVMs' engines (D181), each served
             // scoped to its microVM.
             for (provider, conn) in self.engine.take_arrived() {
-                self.take_engine(threads, conn, Some(engine::Scope { provider }));
+                self.take_engine(threads, conn, Some(engine::Scope { provider }), None);
+            }
+            // Clients' of other machines', through their contexts' engines (D215).
+            for (client, conn) in remote::take_engine_clients() {
+                self.take_engine(threads, conn, None, Some(client));
             }
             self.age_pools();
             self.mark_collection();
@@ -2666,10 +2691,16 @@ impl<D: Disk> Daemon<D> {
                     width: command.width,
                     color: command.color,
                     files: message.fds,
+                    whose: command.client.clone(),
                 };
                 // A stopped microVM's files are read in a VM booted over them (visit.rs).
                 let visit = self.visit_for(threads, &command.argv);
-                let status = match self.device_command(threads, &command.argv, &commands::Reply(conn)) {
+                let status = match self.device_command(
+                    threads,
+                    &command.argv,
+                    &command.client,
+                    &commands::Reply(conn),
+                ) {
                     Some(status) => status,
                     None => self.command(&command.argv, &asker, &commands::Reply(conn)),
                 };
@@ -3418,7 +3449,16 @@ impl<D: Disk> Daemon<D> {
         let shared = cdi_points
             .and_then(|more| {
                 points.extend(more);
-                crate::volumes::open(&points, first, &crate::volumes::Store::new(&self.home))
+                // A client's (D215): judged by what its owner granted it, and its own
+                // directories served by the relays its client opened for them.
+                let grants =
+                    (!run.client.is_empty()).then(|| crate::client_grants::load(&self.home, &run.client));
+                let relay = |token: &str| remote::take_relay(&run.client, token);
+                let access = crate::volumes::Access {
+                    client: grants.as_ref().map(|g| (run.client.as_str(), g)),
+                    relay: Some(&relay),
+                };
+                crate::volumes::open_for(&points, first, &crate::volumes::Store::new(&self.home), &access)
             })
             .and_then(|opened| {
                 let cdi = prepared.cdi.as_ref().ok().and_then(Option::as_ref);
@@ -4532,6 +4572,23 @@ impl<D: Disk> Daemon<D> {
         crate::resources::verify(&run.resources, crate::resources::host_cpus(), false)?;
         crate::setup::verify(run)?;
         validate_restart_policy(&run.restart_policy)?;
+        // A client's, through its context: what it reaches of this machine is what its owner
+        // granted it (D215), its devices judged here, its mounts' directories below.
+        let grants = (!run.client.is_empty()).then(|| crate::client_grants::load(&self.home, &run.client));
+        if let Some(grants) = &grants {
+            crate::client_grants::refuse_devices(run, &run.client, grants)?;
+            for spec in &run.mounts {
+                let m = shards_cmdline::mounts::parse_mount(spec, None)?;
+                let name = if m.source.is_empty() {
+                    "an anonymous volume"
+                } else {
+                    m.source.as_str()
+                };
+                if let Some((_, options)) = m.volume.as_ref().and_then(|v| v.driver.as_ref()) {
+                    crate::volumes::refuse_options(options, name, &run.client, grants)?;
+                }
+            }
+        }
         // Then shards' own: beside its image's agents and harnesses, nothing that reaches
         // them (D115); its init refuses each again as it starts the command.
         if let Some(a) = &prepared.agentfile {
@@ -4572,6 +4629,11 @@ impl<D: Disk> Daemon<D> {
             }
             e
         };
+        if let Some(grants) = &grants {
+            let held: Vec<crate::volumes::MountPoint> = points.iter().map(|(p, _)| p.clone()).collect();
+            let store = crate::volumes::Store::new(&self.home);
+            crate::volumes::refuse_points(&held, &store, &run.client, grants).map_err(unmade)?;
+        }
         let mut registry = lock(&self.containers);
         let named = match &run.name {
             Some(given) => {
@@ -9752,6 +9814,7 @@ mod tests {
             width: 0,
             color: false,
             files: Vec::new(),
+            whose: String::new(),
         };
         let status = daemon.command(&argv, &asker, &commands::Reply(&ours));
         drop(ours);
@@ -10200,6 +10263,7 @@ mod tests {
             width: 0,
             color: false,
             daemon: Identity::default(),
+            client: String::new(),
         };
         shards_ipc::send(&client, kind::CONTAINER, &command.encode(), &[]).unwrap();
         (daemon, client)
@@ -10551,6 +10615,7 @@ mod tests {
                 width: 0,
                 color: false,
                 daemon: Identity::default(),
+                client: String::new(),
             };
             let ask = || {
                 let s::Taken::Slot(client) = s::take(&t.home, 0).unwrap() else {
@@ -11183,6 +11248,7 @@ mod tests {
                         width: 0,
                         color: false,
                         files: Vec::new(),
+                        whose: String::new(),
                     };
                     daemon.command(&argv, &asker, &commands::Reply(&ours))
                 });
@@ -11236,6 +11302,7 @@ mod tests {
             width: 0,
             color: false,
             files: Vec::new(),
+            whose: String::new(),
         };
         let status = daemon.command(&argv, &asker, &commands::Reply(&ours));
         drop(ours);
@@ -11362,6 +11429,7 @@ mod tests {
                     width: 0,
                     color: false,
                     files: Vec::new(),
+                    whose: String::new(),
                 };
                 daemon.command(&argv, &asker, &commands::Reply(&ours))
             });
@@ -12767,7 +12835,7 @@ mod tests {
                         let [(provider, conn)] = <[(String, UnixStream); 1]>::try_from(arrived).unwrap();
                         assert_eq!(provider, id);
                         t.t.daemon
-                            .take_engine(t.threads, conn, Some(engine::Scope { provider }));
+                            .take_engine(t.threads, conn, Some(engine::Scope { provider }), None);
                         (&ours)
                             .write_all(b"GET /_ping HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
                             .unwrap();

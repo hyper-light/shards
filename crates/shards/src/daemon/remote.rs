@@ -109,7 +109,11 @@ impl Host for Machine {
             return self.copy_step(args);
         }
         if args.first().map(String::as_str) == Some(crate::context::ENGINE_STEP) {
-            return self.engine_step();
+            return self.engine_step(client);
+        }
+        // A directory of the client's, which it serves for a run of its own (D215).
+        if args.first().map(String::as_str) == Some(crate::client_grants::BIND_STEP) {
+            return bind_step(client, args.get(1).map(String::as_str).unwrap_or_default());
         }
         if args.first().map(String::as_str) == Some(crate::synced::SYNC_STEP) {
             let shown: Vec<String> = args.iter().skip(1).map(|a| a.replace('\0', "")).collect();
@@ -124,7 +128,7 @@ impl Host for Machine {
             let step = args.get(1).cloned().unwrap_or_default();
             let shown: Vec<&str> = args.iter().skip(1).map(String::as_str).collect();
             super::log(format!("client {client}: policy step {}", shown.join(" ")));
-            let mut env = self.command_env(request.env);
+            let mut env = self.command_env(client, request.env);
             env.push((STEP_VAR.to_string(), OsString::from(step)));
             let words: Vec<String> = ["buildx", "policy"]
                 .into_iter()
@@ -137,6 +141,12 @@ impl Host for Machine {
             let shown: Vec<&str> = args.iter().skip(1).map(String::as_str).collect();
             super::log(format!("client {client}: signature step {}", shown.join(" ")));
             return self.sign_step(args);
+        }
+        // Words its shards never sends, which would have this machine's files read or
+        // written for the client (D215).
+        if let Some(why) = crate::client_grants::refuse_words(&args, crate::context::CIDFILE) {
+            super::log(format!("client {client}: refused {}: {why}", args.join(" ")));
+            return Err(Error::new(why));
         }
         // A run's or create's `--cidfile` of the client's (`context::CIDFILE`), the client's
         // file, which the run records: the command writes the ID to a pipe instead
@@ -161,7 +171,7 @@ impl Host for Machine {
             }
             false => (None, None),
         };
-        let env = self.command_env(request.env);
+        let env = self.command_env(client, request.env);
         command(&self.exe, &args, &env, request.terminal, made, made_w)
     }
 
@@ -476,9 +486,18 @@ impl Machine {
     /// context (D180 part 4): what the stream brings, to the API's socket, and the API's
     /// answers back, as a client of it on this machine; the stream's end of input the
     /// connection's, so that a client's half-close (an attach's end of stdin) reaches it.
-    fn engine_step(&self) -> Result<Running, Error> {
+    fn engine_step(&self, client: &str) -> Result<Running, Error> {
         let reached = |e: std::io::Error| Error::new(format!("this machine's Engine API: {e}"));
-        let conn = engine_api().map_err(reached)?;
+        // A connection of the daemon's own making, its other end the API's to serve as the
+        // client's (D215), so that what its calls make is judged by what the client holds.
+        #[cfg(unix)]
+        let (conn, theirs) = shards_ipc::Stream::pair().map_err(reached)?;
+        #[cfg(windows)]
+        let (conn, theirs) = shards_ipc::Stream::plain_pair().map_err(reached)?;
+        super::lock(&ENGINE_CLIENTS).push((client.to_string(), theirs));
+        if let Some(wake) = LISTENER.get() {
+            wake();
+        }
         let (asking, hung) = (
             conn.try_clone().map_err(reached)?,
             conn.try_clone().map_err(reached)?,
@@ -500,10 +519,10 @@ impl Machine {
     /// A client's command's environment: this machine's own shards, whatever context its
     /// owner's commands use, of the daemon's environment only what shards is set by
     /// ([`kept`]), and the client's own, which its request carries.
-    fn command_env(&self, given: Vec<(String, Vec<u8>)>) -> Vec<(String, OsString)> {
+    fn command_env(&self, client: &str, given: Vec<(String, Vec<u8>)>) -> Vec<(String, OsString)> {
         let mut env: Vec<(String, OsString)> = std::env::vars_os()
             .filter_map(|(k, v)| Some((k.into_string().ok()?, v)))
-            .filter(|(k, _)| kept(k))
+            .filter(|(k, _)| kept(k) && !k.eq_ignore_ascii_case(crate::client_grants::CLIENT_VAR))
             .collect();
         env.extend([
             ("SHARDS_HOME".to_string(), self.home.clone().into_os_string()),
@@ -526,6 +545,13 @@ impl Machine {
                 .filter(|(k, _)| !k.eq_ignore_ascii_case(crate::build::policy_command::STEP_VAR))
                 .filter_map(|(k, v)| String::from_utf8(v).ok().map(|v| (k, OsString::from(v)))),
         );
+        // Whom the command runs for, last, so that what it asks of the daemon is judged by
+        // what this machine's owner granted that client (D215).
+        env.retain(|(k, _)| !k.eq_ignore_ascii_case(crate::client_grants::CLIENT_VAR));
+        env.push((
+            crate::client_grants::CLIENT_VAR.to_string(),
+            OsString::from(client),
+        ));
         env
     }
 
@@ -688,7 +714,7 @@ impl Machine {
         };
         #[cfg(windows)]
         let resize = kept.as_ref().map(Console::resizer);
-        let (exe, env) = (self.exe.clone(), self.command_env(env));
+        let (exe, env) = (self.exe.clone(), self.command_env(client, env));
         let (done, status) = std::sync::mpsc::channel();
         let building = Arc::new(Building::default());
         let ending = kept.clone();
@@ -970,13 +996,85 @@ impl Machine {
     }
 }
 
-/// A connection to this machine's Engine API: its socket, relative to the home, the
-/// daemon's working directory; on Windows the named pipe the home's file names.
-fn engine_api() -> std::io::Result<shards_ipc::Stream> {
+/// Clients' connections to this machine's Engine API through their contexts (D215), by
+/// client, for the daemon's listener to take ([`take_engine_clients`]).
+static ENGINE_CLIENTS: std::sync::Mutex<Vec<(String, shards_ipc::Stream)>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// What wakes the daemon's listener, given as it listens for clients.
+static LISTENER: std::sync::OnceLock<Box<dyn Fn() + Send + Sync>> = std::sync::OnceLock::new();
+
+/// The connections clients made to the Engine API through their contexts since the last
+/// look, each with its client (D215).
+pub(super) fn take_engine_clients() -> Vec<(String, shards_ipc::Stream)> {
+    std::mem::take(&mut *super::lock(&ENGINE_CLIENTS))
+}
+
+/// The directories clients serve for their runs here (D215), by client and token: the VM's
+/// end of the stream each is served on, until its run's start takes it ([`take_relay`]).
+static RELAYS: std::sync::Mutex<std::collections::BTreeMap<(String, String), shards_ipc::Stream>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+/// The stream on which client `client` serves a directory of its own as `token` (D215), its
+/// relay: one end kept for the run that names the token to take, which its share gives
+/// its VM as it is (share.rs), the other the step's, so that what the VM asks reaches the
+/// client and what the client answers reaches the VM, byte for byte. Let go of as the
+/// client hangs up, unused or not: a run that has not yet taken it then finds none.
+#[cfg(unix)]
+fn bind_step(client: &str, token: &str) -> Result<Running, Error> {
+    if !(16..=64).contains(&token.len()) || !token.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(Error::new("a bind's token: 16 to 64 hex digits"));
+    }
+    let made = |e: std::io::Error| Error::new(format!("a stream for the client's directory: {e}"));
+    let (vm, ours) = std::os::unix::net::UnixStream::pair().map_err(made)?;
+    let key = (client.to_string(), token.to_string());
+    {
+        let mut relays = super::lock(&RELAYS);
+        if relays.contains_key(&key) {
+            return Err(Error::new(format!("{token}: a bind's token given twice")));
+        }
+        relays.insert(key.clone(), vm);
+    }
+    super::log(format!("client {client}: serves a directory as {token}"));
+    let (asking, hung) = (ours.try_clone().map_err(made)?, ours.try_clone().map_err(made)?);
+    Ok(Running {
+        stdin: Box::new(HalfClosed(asking)),
+        stdout: Box::new(std::io::Cursor::new([crate::client_grants::RELAY_READY]).chain(ours)),
+        stderr: Box::new(std::io::empty()),
+        wait: Box::new(|| 0),
+        hangup: Box::new(move || {
+            super::lock(&RELAYS).remove(&key);
+            shards_ipc::end(&hung);
+        }),
+        resize: None,
+        signal: Box::new(|_| {}),
+        made: None,
+    })
+}
+
+/// A client's directory is served on a Windows machine through a share's pipe of its own,
+/// which its daemon makes (D197): not yet.
+#[cfg(windows)]
+fn bind_step(_client: &str, _token: &str) -> Result<Running, Error> {
+    Err(Error::new(
+        "a bind of the client's own directory: a Windows machine serves none yet; name a volume of this machine's",
+    ))
+}
+
+/// The VM's end of the stream client `client` serves its directory `token` on, for its
+/// run's start (D215): taken once.
+pub(super) fn take_relay(client: &str, token: &str) -> Result<OwnedFd, String> {
+    let taken = super::lock(&RELAYS).remove(&(client.to_string(), token.to_string()));
+    let stream = taken.ok_or_else(|| {
+        format!("client {client} serves this directory no longer: a client's directory is served to the run that names it, as long as its client is there; run it again from the client")
+    })?;
     #[cfg(unix)]
-    return std::os::unix::net::UnixStream::connect(super::engine::SOCKET);
+    return Ok(OwnedFd::from(stream));
     #[cfg(windows)]
-    return shards_ipc::Stream::connect(std::fs::read_to_string(super::engine::SOCKET)?.trim());
+    {
+        let _ = stream;
+        Err("a bind of the client's own directory: a Windows machine serves none yet".into())
+    }
 }
 
 /// A connection's writing half, closed as it drops: what its reader then reads is the end.
@@ -1505,7 +1603,9 @@ pub(super) fn listen(
     home: PathBuf,
     exe: PathBuf,
     at: std::net::SocketAddr,
+    wake: Box<dyn Fn() + Send + Sync>,
 ) -> Result<std::net::SocketAddr, String> {
+    let _ = LISTENER.set(wake);
     let identity = crate::context::identity(&home)?;
     let (tx, rx) = std::sync::mpsc::channel::<Result<std::net::SocketAddr, String>>();
     let ended = tx.clone();

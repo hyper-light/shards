@@ -34,6 +34,7 @@ impl<D: Disk> Daemon<D> {
         &self,
         parsed: &shards_cmdline::flags::Parsed,
         styled: bool,
+        whose: &str,
         reply: &Reply<'_>,
     ) -> u8 {
         let name = parsed
@@ -69,6 +70,15 @@ impl<D: Disk> Daemon<D> {
         {
             reply.err(&format!("shards: {}", crate::volumes::reserved(k)));
             return 1;
+        }
+        // A client's: a volume of a directory of this machine's only where its owner granted
+        // it (D215).
+        if !whose.is_empty() {
+            let grants = crate::client_grants::load(&self.home, whose);
+            if let Err(e) = crate::volumes::refuse_options(&options, &name, whose, &grants) {
+                reply.err(&format!("shards: {e}"));
+                return 1;
+            }
         }
         let made = {
             let _held = crate::volumes::lock();

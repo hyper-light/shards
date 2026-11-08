@@ -145,6 +145,9 @@ pub fn rewrite(args: &[String]) -> Option<Vec<String>> {
         ("inspect" | "show", Thing::Context) => &["context", "inspect"],
         ("remove" | "rm" | "delete", Thing::Context) => &["context", "rm"],
         ("invite", Thing::Client) => &["client", "invite"],
+        ("grant", Thing::Client) => &["client", "grant"],
+        ("revoke", Thing::Client) => &["client", "revoke"],
+        ("inspect" | "show", Thing::Client) => &["client", "inspect"],
         ("list" | "ls", Thing::Client) => &["client", "ls"],
         ("remove" | "rm" | "delete", Thing::Client) => &["client", "rm"],
         ("list" | "ls", Thing::Invitation) => &["invitation", "ls"],
@@ -320,6 +323,12 @@ pub static ACTIONS: &[(&str, &str, &str, &str)] = &[
     ("manage", "copy", "vm", "Copy files into or out of a microVM"),
     (
         "manage",
+        "grant",
+        "client",
+        "Let a client reach directories or devices of this machine's, which it reaches none of until then",
+    ),
+    (
+        "manage",
         "grow",
         "disk",
         "Grow a disk plugged into a running microVM, and its file system, as it runs",
@@ -351,6 +360,12 @@ pub static ACTIONS: &[(&str, &str, &str, &str)] = &[
         "Remove microVMs, images with their stopped microVMs, volumes, snapshots, contexts, clients, or invitations",
     ),
     ("manage", "rename", "vm", "Name a microVM again"),
+    (
+        "manage",
+        "revoke",
+        "client",
+        "Take back what a client was granted of this machine's",
+    ),
     (
         "manage",
         "stop",
@@ -723,6 +738,18 @@ pub static USES: &[(&str, &str, &str, &str)] = &[
         "invite",
         "client --name NAME --output FILE",
         "Let another machine run shards here: an invitation, a private file that enrolls it once",
+    ),
+    (
+        "manage",
+        "grant",
+        "client NAME [--dir PATH[:ro]] [--device NAME] [--gpus]",
+        "Let client NAME's microVMs mount a directory of this machine's, or have its devices or GPUs",
+    ),
+    (
+        "manage",
+        "revoke",
+        "client NAME [--dir PATH] [--device NAME] [--gpus]",
+        "Take back what client NAME was granted of this machine's",
     ),
     ("manage", "rename", "vm NAME NEW_NAME", "Name a microVM again"),
     (
