@@ -730,6 +730,73 @@ fn a_restored_microvm_goes_on_over_a_stopped_containers_kept_file() {
     }
 }
 
+/// A warm VM's run starts without growing its process's descriptor table: Linux grows a
+/// table its threads share only after an RCU grace period (fs/file.c, `expand_fdtable`),
+/// which held a run's hand-over 8 to 15 ms on a 32-CPU host whose warm VMs' 64
+/// descriptors filled theirs (PM M470). Each warm VM makes room for its run's first.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_warm_vms_run_starts_without_growing_its_descriptor_table() {
+    if cannot_run_vms() || cannot_pool() {
+        return;
+    }
+    let (image, _) = served();
+    let home = home("daemon-fd-room", &image);
+    let templates = home.join("templates").to_string_lossy().into_owned();
+    let table = |pid: u32| -> Option<u64> {
+        std::fs::read_to_string(format!("/proc/{pid}/status"))
+            .ok()?
+            .lines()
+            .find_map(|l| l.strip_prefix("FDSize:"))?
+            .trim()
+            .parse()
+            .ok()
+    };
+    // What a VM's thread named `name` waits in (wchan), if it has one.
+    let waits = |pid: u32, name: &str| -> Option<String> {
+        std::fs::read_dir(format!("/proc/{pid}/task"))
+            .ok()?
+            .flatten()
+            .find(|t| std::fs::read_to_string(t.path().join("comm")).is_ok_and(|c| c.trim() == name))
+            .and_then(|t| std::fs::read_to_string(t.path().join("wchan")).ok())
+    };
+    // The pool's VMs waiting for a run, their room made: each one's workload thread in its
+    // read of the daemon's socket.
+    let mut idle: Vec<(u32, u64)> = Vec::new();
+    eventually(&home, "a warm VM waited for its run", || {
+        idle = commands_with(&templates)
+            .into_iter()
+            .filter(|(pid, args)| {
+                args.contains(" restore ")
+                    && waits(*pid, "workload").as_deref() == Some("unix_stream_data_wait")
+            })
+            .filter_map(|(pid, _)| Some((pid, table(pid)?)))
+            .collect();
+        !idle.is_empty()
+    });
+    let mut sleeper = spawn_run(&home, &["--pull", "never", &image, "sleep"]);
+    let mut line = String::new();
+    BufReader::new(sleeper.stdout.as_mut().unwrap())
+        .read_line(&mut line)
+        .unwrap();
+    assert_eq!(line, "ready\n");
+    // The run's VM: the one relaying its client's signals.
+    let served: Vec<&(u32, u64)> = idle
+        .iter()
+        .filter(|(pid, _)| waits(*pid, "client-signals").as_deref() == Some("unix_stream_data_wait"))
+        .collect();
+    assert_eq!(served.len(), 1, "the run's VM among the pool's {idle:?}");
+    for &&(pid, before) in &served {
+        assert_eq!(
+            table(pid),
+            Some(before),
+            "VM {pid}'s descriptor table grew as its run started"
+        );
+    }
+    let _ = sleeper.kill();
+    let _ = sleeper.wait();
+}
+
 /// `stop` ends the runs in progress as it shuts down (D26): SIGTERM to the command, whose
 /// client gets its status. The pool's waiting VMs end too. The run is under --init, so that
 /// its command, which does not handle SIGTERM, is not PID 1, which would not hear it and

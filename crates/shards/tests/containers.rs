@@ -12719,6 +12719,108 @@ fn update_moves_a_microvms_memory_both_ways() {
     let _ = exit(&mut held, &home);
 }
 
+/// The stress of [`update_moves_a_microvms_memory_both_ways`]'s raise beside its host's
+/// pressure: one run of `-m 256m`, `SHARDS_STRESS_N` rounds (default 40) of it raised to
+/// `1g`, allocating 512 MiB while its daemon is told its host is short of memory every
+/// `SHARDS_STRESS_PRESSURE_MS` (default 50; 0, never), as a whole suite's host says it, so
+/// that its microVM gives back what it holds cold as it grows (D188), then lowered to
+/// `256m` again, where the same allocation is killed. One line a round, then the raised
+/// allocations' n, p50, p90, p99 and max, and the rounds where one was not held.
+#[test]
+#[ignore = "a stress: SHARDS_STRESS_N=… cargo test --test containers -- --ignored update_under_pressure --nocapture"]
+fn update_under_pressure_stress() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    if cannot_run_vms() {
+        return;
+    }
+    let setting = |name: &str, default: u64| -> u64 {
+        std::env::var(name)
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(default)
+    };
+    let (rounds, every) = (
+        setting("SHARDS_STRESS_N", 40),
+        setting("SHARDS_STRESS_PRESSURE_MS", 50),
+    );
+    let (image, _) = served();
+    let home = TempDir::new("containers-update-pressure");
+    let mut told = Told::new(&home);
+    let pipe = told.path.clone();
+    let (kernel, init) = (kernel(), guest_init());
+    let env: [(&str, &OsStr); 4] = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel.as_os_str()),
+        ("SHARDS_INIT", init.as_os_str()),
+        ("SHARDS_PRESSURE", pipe.as_os_str()),
+    ];
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let pulled = shards(&["pull", "-q", &image]);
+    assert_eq!(pulled.status, Some(0), "{pulled}");
+    let mut held = start(
+        &home,
+        &image,
+        &["--name", "grows", "-m", "256m", "--memory-swap", "256m"],
+        &["sleep"],
+    );
+    let alloc = || shards(&["exec", "grows", "/bin/testguest", "alloc", "512"]);
+    let (mut took, mut killed) = (Vec::new(), Vec::new());
+    for round in 0..rounds {
+        let first = alloc();
+        assert_eq!(first.status, Some(137), "round {round}: {first}");
+        let raised = shards(&["update", "-m", "1g", "--memory-swap", "1g", "grows"]);
+        assert_eq!(raised.status, Some(0), "{raised}");
+        let done = AtomicBool::new(false);
+        let (held_more, words) = std::thread::scope(|s| {
+            let saying = s.spawn(|| {
+                let mut words = 0u32;
+                while every > 0 && !done.load(Ordering::SeqCst) {
+                    told.say();
+                    words += 1;
+                    std::thread::sleep(Duration::from_millis(every));
+                }
+                words
+            });
+            let held_more = alloc();
+            done.store(true, Ordering::SeqCst);
+            (held_more, saying.join().unwrap())
+        });
+        let ok = (held_more.status, held_more.stdout.as_str()) == (Some(0), "allocated 512\n");
+        println!(
+            "round {round}: {:?} in {:.0} ms, {words} words{}",
+            held_more.status,
+            held_more.elapsed.as_secs_f64() * 1e3,
+            if ok {
+                String::new()
+            } else {
+                // What its guest's kernel said of the kill: the daemon's last such word.
+                let said = oom_said(&home);
+                format!("\n{held_more}{}", said.lines().last().unwrap_or_default())
+            }
+        );
+        took.push(held_more.elapsed.as_secs_f64() * 1e3);
+        if !ok {
+            killed.push(round);
+        }
+        let lowered = shards(&["update", "-m", "256m", "--memory-swap", "256m", "grows"]);
+        assert_eq!(lowered.status, Some(0), "{lowered}");
+    }
+    took.sort_by(f64::total_cmp);
+    let at = |q: f64| took[((took.len() as f64 - 1.0) * q).round() as usize];
+    println!(
+        "allocations: n {}, p50 {:.0}, p90 {:.0}, p99 {:.0}, max {:.0} ms; not held {} {killed:?}",
+        took.len(),
+        at(0.5),
+        at(0.9),
+        at(0.99),
+        at(1.0),
+        killed.len()
+    );
+    assert_eq!(shards(&["stop", "-t", "1", "grows"]).status, Some(0));
+    let _ = exit(&mut held, &home);
+    assert!(killed.is_empty(), "{killed:?}");
+}
+
 /// `update`, as `docker update` takes it: a running microVM's limits written to its
 /// workload's cgroup as it runs, and kept; dockerd's refusals; the restart policy.
 #[test]
@@ -14210,7 +14312,8 @@ fn microvms_on_an_ipv6_network_reach_one_another() {
 }
 
 /// A network's options are what its microVMs do: one made with `enable_icc` false keeps its
-/// members from one another, their names still answered (D46); its ports published with no
+/// members from one another, and so each one's name from the others (default deny), each
+/// answered its own (D46); its ports published with no
 /// address are bound at its `host_binding_ipv4` alone, and reached there; an MTU is kept as
 /// given, its members keeping their devices'; a routed one publishes no port; and each
 /// option is read with its meaning (D46). The default network says what it does.
@@ -14300,14 +14403,22 @@ fn a_networks_options_are_what_its_microvms_do() {
         &["--name", "lone", "--network", "apart", "-p", "7000"],
         &["serve", "7000", "1"],
     );
-    // Its name answers, and nothing reaches it.
+    // Nothing reaches it, and so its name answers no other member (default deny, D46):
+    // refused at once, as a name past the network is; a member's own name answers it.
     let r = run_in(
         &home,
         &image,
         &["--rm", "--network", "apart"],
-        &["resolve", "lone"],
+        &["dnsttl", "lone"],
     );
-    assert!(r.stdout.starts_with("resolve 10.78.0."), "{r}");
+    assert_eq!(r.stdout, "dnsttl rcode 5\n", "{r}");
+    let r = run_in(
+        &home,
+        &image,
+        &["--rm", "--network", "apart", "--name", "other"],
+        &["dnsttl", "other"],
+    );
+    assert!(r.stdout.starts_with("dnsttl 0 10.78.0."), "{r}");
     let r = run_in(
         &home,
         &image,

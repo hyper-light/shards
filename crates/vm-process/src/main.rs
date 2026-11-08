@@ -42,6 +42,8 @@ fn main() -> ExitCode {
     match args.next().as_ref().and_then(|c| c.to_str()) {
         Some("run") => vm_run::run(args),
         Some("restore") => vm_run::restore(args),
+        // This host's CPU as its hypervisor shows a guest, for a CPU baseline (D176 part 6).
+        Some("cpu") => vm_run::cpu(),
         other => {
             let _ = writeln!(
                 std::io::stderr(),

@@ -3270,6 +3270,10 @@ Engine 29.3.1's words and to what its containers see (`security_opt_confines_the
   compile's lookups to its tables' size (mutation-checked).
 - Not served: SCMP_ACT_NOTIFY, which needs a seccomp agent (listenerPath) shards does not
   run; it is refused as the microVM starts.
+- What the filter costs a syscall: the guest kernel ran it interpreted until D227, which
+  builds the kernel with its BPF JIT and no interpreter; seccomp's action cache skips it
+  for a syscall allowed whatever its arguments. Each call's cost and each load's, loaded
+  with and without `no-new-privileges`, interpreted against compiled: PM M489.
 
 ### stats (D43)
 
@@ -3334,7 +3338,9 @@ Improvements over Docker, each measured or tested:
   boots, before the template's snapshot: every VM restored from it has it. A run with
   other rules swaps its own in (BPF_F_REPLACE: never without a filter between the two), a
   privileged one takes it away. Loading the filter at each start cost a run 1026 µs of
-  its time in the guest; at boot, nothing (PM M121).
+  its time in the guest; at boot, nothing (PM M121). The filter runs on each device a
+  run opens or makes: interpreted until D227, compiled by the guest's BPF JIT since; its
+  cost to an open of /dev/null either way, against a cgroup with no filter, is PM M489's.
 - **An `a` rule allows what it says.** runc's emulator reads any `a` rule as every
   device, every access: `--device-cgroup-rule 'a 1:2 m'` or `'a *:* r'` lets a Docker
   container read, write and make every device. shards reads one that is not `a *:* rwm`
@@ -3343,8 +3349,34 @@ Improvements over Docker, each measured or tested:
 - `shards start vm` of a microVM that cannot start says why as `docker start` does, without
   run's help (it said run's before, for every start that failed).
 
-Open: BuildKit's RUN steps run under containerd's default device rules; `shards build image`'s
-steps are to be held to them.
+A build's (`shards build image`'s) `RUN` steps reach the devices BuildKit gives a step's container, and no other of
+their builder's: before, a step could make a node of the builder's image device (259:0) and
+read it, as a run could before this entry. BuildKit v0.28.1's runc executor
+(executor/oci/spec.go GenerateSpec) starts from containerd v2.2.1's default spec, which
+denies every device (pkg/oci/spec.go populateDefaultUnixSpec), where dockerd's run starts
+from moby's few; `--security=insecure` allows every char and block device in its place
+(util/entitlements/security WithInsecureSpec); each CDI device node (D96) adds its rule, of
+the access its spec's `permissions` gives, `rwm` where none
+(container-device-interface v1.1.0 ContainerEdits.Apply); then runc's own, less those whose
+path a device given takes (`shards_devcgroup::build_step`). Each step starts in a cgroup of
+its own, under the builder's `steps`, which the first step confines to the default rules
+once (a step of those rules, the most, costs no program of its own), or under `devices`,
+which nothing confines, where its own program is attached alone (a cgroup's programs and
+its parents' must all allow an access). Unlike BuildKit, by design: CDI gives a node of
+type `u` (an unbuffered char device) no rule, so that the step it is given cannot open it;
+shards gives it its rule, as a `c` node's. Tested: devcgroup's
+`a_build_step_reaches_runcs_devices_and_its_cdi_devices_alone` (the rules, run through
+the kernel's evaluation of the program, the compiler held to runc's by the oracle above);
+build.rs `run_steps_reach_the_devices_buildkit_gives_them_alone` (a step opens runc's
+devices and makes a node of the builder's 259:0, and is refused it, "Operation not
+permitted"; an insecure step reads it and /dev/kmsg) and `run_steps_take_cdi_devices` (a
+CDI node of the builder's disk given `r` read and not written).
+
+`shards attach` (D45) and the network commands (D46) touch no device rule: a joined or
+attached process is the run's own, under the run's filter, and a network is no device.
+Shards' own grammar names devices where a run takes them (`--device`, worded as the VM's,
+never the host's, `cmdline::grammar`) and where a running microVM is given a host's PCI
+function (`plug`, D214).
 
 ### attach (D45)
 
@@ -3427,7 +3459,15 @@ the daemon elected (D31).
   refused at once (REFUSED, a refusal by policy, RFC 1035 §4.1.1): SERVFAIL, a server's
   failure, which it answered until 2026-10-17 as Docker's embedded resolver does, is
   taken for a passing one and asked again (musl reads it as `EAI_AGAIN`). The daemon
-  sends each member the table as members come and go (`NET_NAMES`).
+  sends each member its own table as members come and go (`NET_NAMES`): its own names and
+  those of the members it reaches, and no other's. Networks are default deny: a name is a
+  grant's, never membership's alone, so a member no link reaches has no name either (one of
+  an `enable_icc` false network, below), where Docker's embedded resolver answers every
+  container of the network, reached or not (libnetwork's resolver answers from the
+  network's service records, which `enable_icc` does not touch). Unit-tested
+  (`a_member_is_answered_the_names_it_reaches_alone`) and on real microVMs
+  (`a_networks_options_are_what_its_microvms_do`: a peer's name refused at once, its own
+  answered).
 - **Members.** A microVM is a member while its run lasts: from its start, under the
   network's lock (no two take one address), to its end; one whose start fails is no
   member, however it failed. An address a run asked for is free once its end is told,
@@ -3451,8 +3491,9 @@ drivers/bridge/bridge_linux.go, port_mapping_linux.go; netlabel). Before, they w
 checked (two of them) and ignored, and two of those asked for less reach: a network made
 with `enable_icc` false or `host_binding_ipv4` 127.0.0.1 got neither, and was not told.
 - **`enable_icc` false keeps its members from one another:** no link between their
-  network processes (`NET_PEER`), the only way one reaches another; their names still
-  answered: a service finds its peers by name, as Compose files expect.
+  network processes (`NET_PEER`), the only way one reaches another, and none of their
+  names: each is answered its own alone (default deny; until 2026-11-08 their names were
+  answered, a name with no flow behind it).
 - **`host_binding_ipv4` is where a port published with no address is bound**, alone, as
   the option means to Docker's clients: an IPv4 address or an IPv6 one, whatever its name says; 0.0.0.0 or
   unset, every address, IPv4's and IPv6's (`configurePortBindingIPv4`, `IPv6`).
@@ -3479,7 +3520,7 @@ with `enable_icc` false or `host_binding_ipv4` 127.0.0.1 got neither, and was no
   read.
 Tested (`a_networks_options_are_what_its_microvms_do`: the default network's options,
 an old record's made true; each refusal in dockerd's words; a member of an `enable_icc`
-false network resolved by name and not reached; its port bound at 127.0.0.1 alone and
+false network neither resolved by another's name (REFUSED) nor reached; its port bound at 127.0.0.1 alone and
 reached there; the MTU kept in inspect, 65520 in the guest; a routed network's port
 refused; publish.rs `a_port_at_no_address_takes_its_networks`), mutation-checked: members
 linked whatever icc says, the host binding ignored, the default network saying icc, an
@@ -6488,7 +6529,17 @@ host (PM M267), where a container's page cache is its host's to drop. Free page 
   allocation past it but cannot refuse one with no swap, and a run that grew faster than
   its memory came back took the kernel's own and met its OOM killer: 3 of 30 runs of the
   benchmark with DAX windows, whose guests hold no page cache of the files they map and so
-  keep less; none of 60 since, the host as short of memory and as much given back.
+  keep less; none of 60 since, the host as short of memory and as much given back. Nor
+  from one that grew within the window its host's pressure is measured over (2 s,
+  `shards_abi::PRESSURE_WINDOW_US`; PM M466): the grower marks each ask and each block
+  that comes in a page init, its grower and its builtins share, and a give-back that finds
+  a mark within the window keeps all it has. Its keep counts from what the run uses
+  (twice its `memory.current`), the grower's ask from what the guest has (twice its
+  MemTotal), and a run raised to more (`update -m`) that had just had 128 MiB plugged for
+  an allocation not yet touched was cut back to its keep, held there, grew, and was cut
+  back again pass after pass of a host that stayed short, until its guest ran out of
+  memory and killed what grew: 15 of 74 raised allocations in `update_under_pressure_stress`
+  (the host's word every 50 ms), the slowest 42 minutes; none of 2,000 since.
 - **No hold counts what goes** (PM M324): every hold init sets counts out the memory
   still plugged past its device's request, which goes as its driver unplugs it, free or
   not, as the give-back's own hold does; and what is plugged, for a run held at its cap or
@@ -7561,6 +7612,105 @@ directory of the machine's refused.
 its daemon makes, D197): refused, said so. Docker's CLI through a context serves none of
 its client's directories, as its API names a path alone. `plug volume` of a client's own
 directory. A context's relays measured across two machines (PM M463 has loopback alone).
+
+### D227. The guest kernel compiles BPF programs, and has no interpreter (pinned, PM M489)
+
+**Why.** Every workload runs under a seccomp filter (D42) on each of its syscalls, and every
+run's cgroup has a device filter (D44) on each device it opens or makes. Both are BPF
+programs, and the guest kernel ran both interpreted: Firecracker's 6.18 configs, shards'
+base, leave BPF_JIT unset (`# CONFIG_BPF_JIT is not set`, firecracker-x86_64-6.18.config
+line 119, firecracker-aarch64-6.18.config line 100) beside `HAVE_EBPF_JIT=y` and
+`ARCH_WANT_DEFAULT_BPF_JIT=y`, and none of shards' fragments (shards.config,
+shards-aarch64.config, kvm.config, hyperv.config, gpu.config) set it. seccomp's action
+cache (kernel/seccomp.c `seccomp_cache_check_allow`, Linux 5.11 and later, native ABI on
+x86_64 and arm64) answers without the filter only a syscall the filter allows whatever its
+arguments; one compared by its arguments (personality, clone's flags, socket's family) or
+refused runs the program each call.
+
+**Decided.** `CONFIG_BPF_JIT=y` and `CONFIG_BPF_JIT_ALWAYS_ON=y` in resources/kernel/
+shards.config, so every architecture's kernel and every variant (kvm, hyperv, gpu,
+hyperv+gpu) has them; one fragment, as scripts/build-kernel.sh refuses an option two
+fragments name. Pinned: kernel-6.18.48-fa4edcc82303, built at 36e47536 (crates/shards/src/
+kernel.rs, tests/common's `kvm` variant, README), after PM M489 measured it against
+kernel-6.18.48-64a9427a8997, whose config differs in BPF_JIT, BPF_JIT_ALWAYS_ON and
+BPF_JIT_DEFAULT_ON alone. shards.config's comments name this decision D215 and its
+measurement PM M462, the numbers it was built under before both were renumbered for
+decisions another branch took them for: the file is one of the kernel's inputs, hashed into
+its release's name (.github/workflows/kernel.yml), so its words stay as they were built.
+
+**What it gives** (PM M489, p50): a syscall the default profile's filter runs on costs
+10.5 ns over no filter where it cost 30.6 (KVM x86_64), 20.9 where it cost 36.5
+(Hypervisor.framework, M3 Ultra), and on KVM its p99 falls from 209 to 89 ns; the device
+filter, an eBPF program, costs an open nothing measurable where it cost 11 ns (KVM) and 2.6
+where it cost 18.2 (HVF); on KVM a run from a template answers 533 µs sooner on the VM's
+clock (the quietest segment; 873 pooled). And no workload's guest holds an interpreter.
+
+- kernel/bpf/Kconfig (v6.18): BPF_JIT "allows the kernel to generate native code when a
+  program is loaded into the kernel. This will significantly speed-up processing of BPF
+  programs." BPF_JIT_ALWAYS_ON "Enables BPF JIT and removes BPF interpreter to avoid
+  speculative execution of BPF instructions by the interpreter", and pins
+  /proc/sys/net/core/bpf_jit_enable to 1 (net/core/sysctl_net_core.c: its bounds both
+  SYSCTL_ONE). It depends on BPF_SYSCALL, HAVE_EBPF_JIT and BPF_JIT, which the base and this
+  change give both architectures. Commit 290af86629b2 (Linux 4.15) brought it in because the
+  interpreter in a host's text was the gadget Project Zero's CVE-2017-5715 attack used from
+  a guest: a guest kernel with no interpreter offers none to its workloads.
+- Each architecture wants the JIT on by default: x86 and arm64 select
+  ARCH_WANT_DEFAULT_BPF_JIT, and `bpf_jit_enable` starts at BPF_JIT_DEFAULT_ON
+  (kernel/bpf/core.c), `def_bool ARCH_WANT_DEFAULT_BPF_JIT || BPF_JIT_ALWAYS_ON`.
+- `net.core.bpf_jit_harden` keeps its default, 0, no constant blinding
+  (Documentation/admin-guide/sysctl/net.rst: "0 - disable JIT hardening (default value)").
+- What shards loads needs no interpreter. Classic seccomp programs (init's workload, exec
+  and build-step filters, crates/init run.rs, build.rs, domains.rs; crates/syscall-filter;
+  the in-VM server's, crates/server) are turned into eBPF as they load
+  (net/core/filter.c `bpf_migrate_filter`) and compiled by the architecture's eBPF JIT;
+  init's device filter is a BPF_PROG_TYPE_CGROUP_DEVICE program (crates/init devices.rs),
+  which both JITs compile. Programs with kfunc calls or deep stacks need the JIT anyway
+  (`bpf_prog_select_runtime`).
+
+**Its costs and risks** (PM M489: docs/research/measurements/bpf-jit/ab.py, fleet.py and
+latency.sh, the kernel pinned before against this one, interleaved):
+
+- **A load the JIT cannot compile fails.** With ALWAYS_ON, `bpf_prog_select_runtime` returns
+  -ENOTSUPP where the JIT does not produce code; without it, the program ran interpreted.
+  The JIT fails where its executable memory cannot be had (execmem, under memory
+  pressure), or where a task without CAP_BPF or CAP_SYS_ADMIN would take the JIT's memory
+  past `bpf_jit_limit` (`bpf_jit_charge_modmem`: half the module area on x86_64, half the
+  vmalloc area on arm64, `bpf_jit_alloc_exec_limit`), which a workload's own filters would
+  have to fill. A workload's start then fails as a profile that cannot load fails it (D42:
+  exit 125, the reason in State.Error), closed, never without its filter.
+- **Memory: a pack per template, not per VM.** The JIT's first program takes a 2 MiB pack
+  of executable memory (kernel/bpf/core.c at v6.18, `BPF_PROG_PACK_SIZE`, `SZ_2M *
+  num_possible_nodes()`), filled whole with trapping instructions (`alloc_new_pack`,
+  `bpf_fill_ill_insns`); later programs take 64-byte chunks of it, and it goes with its
+  last program. It is lazy already (no program, no pack); a lazier fill would leave unused
+  chunks without the traps the fill is for. Init's device filter is the first, at boot
+  (D44), so the booted VM holds 2.2 to 3.6 MiB more (KVM anonymous; 2.4 MiB footprint on
+  HVF) and its template 1.5 to 3.1 MiB more on disk; every VM restored from the template
+  maps the pack from its file, and the pool's warm VMs hold what they held interpreted on
+  both hosts. A VM that starts a workload compiles its filter after the restore: on HVF
+  that run holds 432 KiB more footprint (1.9 % of 22.3 MiB); on KVM, nothing measurable
+  (its p50 592 KiB lower).
+- **arm64's Spectre-BHB sequence.** arm64's JIT ends a classic program loaded by a task
+  without CAP_SYS_ADMIN with a branch-history sequence (arch/arm64/net/bpf_jit_comp.c
+  `build_bhb_mitigation`: CLRBHB, a loop of k branches and DSB ISB, or a firmware call),
+  where the guest thinks its CPU affected. A run with `no-new-privileges` loads its filter
+  so (D42). shards' VMM answers SMCCC_ARCH_FEATURES for ARCH_WORKAROUND_3 NOT_SUPPORTED on
+  Hypervisor.framework (arch/aarch64/psci.rs), so no guest there calls its firmware from a
+  filter; on the M3 Ultra a filter loaded with no_new_privs costs a call what one loaded
+  with CAP_SYS_ADMIN does (M489, `nnp/*`).
+- **Each start compiles its filter.** A seccomp(2) load takes 59.5 µs where it took 40.0
+  (KVM), 42.0 where it took 30.8 (HVF). On HVF a run from a template answers 206 µs later
+  on the VM's clock (1,197 to 1,404 µs), every template's interval above 0; which of its
+  writes after the restore cost it is not split.
+- **Code made for the boot CPU.** The JIT chooses instructions by the CPU the guest booted
+  on, as the kernel's alternatives choose its own; a microVM moved to another machine is
+  checked for the CPU features its guest may use already (D176, PM M460).
+
+Open: M489's numbers on WHP (the hyperv variant); what of HVF's 206 µs and 432 KiB a run
+pays its filter's compile after a restore could be paid before the template's snapshot;
+whether unprivileged loads should be blinded (`bpf_jit_harden=1`, which blinds the
+constants of a program a task without CAP_BPF loads, a seccomp filter's among them) is not
+decided.
 
 ### D208. A GPU on every Linux host: musl's GPU VM process, and Intel's GPUs (built)
 
@@ -10110,6 +10260,27 @@ peer", each going on here as it should. What changed for them:
   and went on where they were too): macOS 26.4 names FEAT_SSBS on the M3 Ultra, 26.2 not on
   either M4 Max, which name FEAT_FPACCOMBINE, FEAT_WFxT and SME's features the M3 Ultra does
   not, so neither way is taken, as the check is meant to (PM M460, M462).
+- **A CPU baseline**, for machines neither of which has every feature of the other.
+  `shards configure cpu --baseline CONTEXT[,CONTEXT...]` asks this machine's daemon and each
+  context's for its CPU as its own hypervisor shows a guest (`move step cpu`, which runs
+  `shards-vm cpu`: a vCPU of a VM of no memory read, as the daemon is not entitled to the
+  hypervisor) and keeps their meet in the home's `cpu-baseline`, each 4-bit ID-register
+  field the lowest of them (`arch::aarch64::cpu::baseline`, `meet`: Linux's own rule across a
+  system's CPUs, the Arm ARM's ID scheme; a signed field's 0xF the lowest). A setting of the
+  home, as `configure guest` and `configure disk` are, not a flag of `run`: a microVM moves
+  among the machines its home is told of, and `run`'s flags are Docker's. Each vCPU of a
+  microVM booted there is told the lower of its host's fields and the baseline's
+  (`Config::cpu_baseline`, `setup_vcpu`), its templates keyed by it (`run::template`), so
+  that a baseline changed starts none from another's; `--none` takes it away and `shards
+  inspect cpu` says it. Masked as a CPU model masks: a guest's kernel and programs use a
+  feature only where a field says so, and an instruction a program runs regardless is not
+  stopped. The run keeps what it was told in its directory (`cpu-baseline`), which moves
+  with it, and a plan carries it (`Plan::baseline`): the machine moved to checks each field
+  against what its own hypervisor shows (`covers`), not the machine it ran on's whole set;
+  and by name only the features no register of the baseline can hide, on
+  Hypervisor.framework ID_AA64ISAR2_EL1's (FEAT_WFxT, FEAT_RPRES, FEAT_CSSC, FEAT_HBC), which
+  it neither says nor lets a VMM set (PM M460, `feature_register`). On arm64 only: x86_64's
+  CPUID has `covers` and no meet yet, and `configure cpu` says so there.
 
 Not yet measured: the moves on that link with this build, between two machines of one
 macOS (two M4 Max Studios), cold and live, n 20, and tests/moved.rs's tests of another
@@ -14308,6 +14479,53 @@ process a container listens with (https://docs.docker.com/reference/cli/docker/c
 
 `--mcps=` waits on local MCP servers joining networks: today each caller runs its own
 instance over stdio, in its own confinement (D60, §9.6).
+
+**2026-11-08, the user's decision: `FOR` takes a list of targets, networks and members
+mixed, and a port of several members goes to the one listening.** This replaces "one
+receiver for an incoming port" above:
+
+- **`EXPOSE <port>… [AS …] FOR <network_or_member>…`.** Each target is a network or an
+  agent or harness the lineage declares; a name that is both is a build error, and so is
+  `--agents`/`--harnesses` on a line whose targets are members alone. A member named is
+  given the ports on each network it is on (`CONNECT ... ON`), as `EXPOSE --agents=<it>
+  <ports> FOR <its networks>` says (`agentfile::resolve_targets`, which the build applies
+  before it checks and keeps the normalized Agentfile so); a member on no network is a
+  build error, as no flow reaches a member but on a network. Every target gets the
+  exposure, and nothing a target does not name is opened: both boundaries still apply
+  (the network's `--ingress`/`--expose` and the microVM's `EXPOSE`).
+- **Named members alone, both ways.** An `EXPOSE` that names its members opens egress for
+  them alone, as it opens ingress: before, egress named for one member was every member's
+  of the network (default deny: a grant to one is no other's).
+- **Several members on one port: the one listening takes each connection.** A port the
+  `EXPOSE`s give several members (a network's every member where none is named, several
+  named, or members of several networks) goes to the member that listens on it, the first
+  to listen holding it while it listens and then the next that does in declaration order;
+  no member listening, it goes nowhere past init, as a port no member claims. This is a
+  host's rule for a port (RFC 9293 §3.10.7.2: a SYN is for the socket in LISTEN on its
+  port; POSIX bind(2): EADDRINUSE keeps a second socket off a bound port), the microVM's
+  port standing for one host's. Two members' claims that overlap without being the same
+  ports are a build error, as which holds the rest no rule says. Init's chooser
+  (crate::chooser) makes it so: each candidate runs under a seccomp filter that notifies of
+  listen(2) and bind(2) (seccomp_unotify(2)); the chooser makes a TCP socket's listen
+  itself, and a UDP socket's bind to a contested port, refused EACCES as the member's own
+  kernel would refuse a privileged one, so that it knows the socket takes the port as it
+  answers; sock_diag tells it each socket's end in each candidate's namespace
+  (SKNLGRP_*_DESTROY), and it asks sock_diag who listens before it chooses. Each choice is
+  the uplink's chain `chosen`, before `pre`, programmed again whole. No grant rests on the
+  chooser: every candidate's gate and the switch let the port in to it, and the chooser
+  only picks among them. `shards read ports` names every candidate ("the one listening of
+  agent web; agent api").
+- **Tested**: the parser's and the plan's cases (agentfile.rs
+  `ingress_reaches_a_networks_one_member`: FOR's mixes, named and unnamed members, overlaps
+  refused, a member on no network refused; netplan's
+  `ingress_goes_to_the_member_its_expose_names`: every member a candidate, egress the named
+  member's alone; the chooser's unit tests of its filter, its contests and sock_diag's
+  messages) and on real microVMs, build.rs `a_port_comes_in_to_the_member_listening_on_it`:
+  two networks, `FOR front ops` giving three members four ports, each port reaching the one
+  member listening, every connection, and a member no `FOR` names not reached.
+- **Not yet**: a UDP flow already admitted keeps its conntrack entry's member past a change
+  of holder, as a host's kernel keeps a connected flow; ports past the microVM are IPv4's
+  alone (D99).
 
 ### D121. Docker's AppArmor mount rule, in guests that have no AppArmor
 
