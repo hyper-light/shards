@@ -12772,10 +12772,21 @@ fn update_moves_a_microvms_memory_both_ways() {
 /// that its microVM gives back what it holds cold as it grows (D188), then lowered to
 /// `256m` again, where the same allocation is killed. One line a round, then the raised
 /// allocations' n, p50, p90, p99 and max, and the rounds where one was not held.
+///
+/// And the grow-after-unplug tail (PM M466): a raise that comes while the guest's driver
+/// still unplugs what the lowering before it gave back waits for the unplug, and where
+/// nothing came for 5 s its grower asked a second time and said so in its kernel's log
+/// (init plug.rs `come`, `STALLED`), which a privileged run's exec reads. Each round whose
+/// allocation took longer than that has its guest's words read; the rounds where its
+/// grower asked again are printed with what its driver said, and fail the test: a driver
+/// that gives way to a changed request (resources/kernel/patches/0014) has none.
 #[test]
 #[ignore = "a stress: SHARDS_STRESS_N=… cargo test --test containers -- --ignored update_under_pressure --nocapture"]
 fn update_under_pressure_stress() {
     use std::sync::atomic::{AtomicBool, Ordering};
+    // init plug.rs `STALLED`: how long the grower waits on memory that does not come
+    // before it asks again. An allocation shorter than it holds no second ask.
+    const STALLED: Duration = Duration::from_secs(5);
     if cannot_run_vms() {
         return;
     }
@@ -12801,20 +12812,34 @@ fn update_under_pressure_stress() {
         ("SHARDS_PRESSURE", pipe.as_os_str()),
     ];
     let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
-    let pulled = shards(&["pull", "-q", &image]);
+    let pulled = shards(&["pull", "image", "-q", &image]);
     assert_eq!(pulled.status, Some(0), "{pulled}");
+    // Privileged, so that its exec may read its guest's kernel log (CAP_SYSLOG).
     let mut held = start(
         &home,
         &image,
-        &["--name", "grows", "-m", "256m", "--memory-swap", "256m"],
+        &[
+            "--name",
+            "grows",
+            "--privileged",
+            "-u",
+            "0",
+            "-m",
+            "256m",
+            "--memory-swap",
+            "256m",
+        ],
         &["sleep"],
     );
-    let alloc = || shards(&["exec", "grows", "/bin/testguest", "alloc", "512"]);
-    let (mut took, mut killed) = (Vec::new(), Vec::new());
+    let alloc = || shards(&["exec", "vm", "grows", "/bin/testguest", "alloc", "512"]);
+    // The grower's second asks the guest's log has held, each line once (its kernel's
+    // time leads it), as its ring may drop old lines by the time a later round reads it.
+    let mut asked_again = std::collections::BTreeSet::new();
+    let (mut took, mut killed, mut stalled) = (Vec::new(), Vec::new(), Vec::new());
     for round in 0..rounds {
         let first = alloc();
         assert_eq!(first.status, Some(137), "round {round}: {first}");
-        let raised = shards(&["update", "-m", "1g", "--memory-swap", "1g", "grows"]);
+        let raised = shards(&["update", "vm", "-m", "1g", "--memory-swap", "1g", "grows"]);
         assert_eq!(raised.status, Some(0), "{raised}");
         let done = AtomicBool::new(false);
         let (held_more, words) = std::thread::scope(|s| {
@@ -12848,23 +12873,44 @@ fn update_under_pressure_stress() {
         if !ok {
             killed.push(round);
         }
-        let lowered = shards(&["update", "-m", "256m", "--memory-swap", "256m", "grows"]);
+        if held_more.elapsed > STALLED {
+            let log = shards(&["exec", "vm", "grows", "/bin/testguest", "fs", "kmsg:asking again"]);
+            assert_eq!(log.status, Some(0), "round {round}: {log}");
+            let new: Vec<String> = log
+                .stdout
+                .lines()
+                .filter(|l| !l.starts_with("kmsg "))
+                .filter(|l| asked_again.insert(l.to_string()))
+                .map(str::to_string)
+                .collect();
+            if !new.is_empty() {
+                println!("round {round}: its grower asked again: {}", new.join("\n  "));
+                stalled.push(round);
+            }
+        }
+        let lowered = shards(&["update", "vm", "-m", "256m", "--memory-swap", "256m", "grows"]);
         assert_eq!(lowered.status, Some(0), "{lowered}");
     }
     took.sort_by(f64::total_cmp);
     let at = |q: f64| took[((took.len() as f64 - 1.0) * q).round() as usize];
     println!(
-        "allocations: n {}, p50 {:.0}, p90 {:.0}, p99 {:.0}, max {:.0} ms; not held {} {killed:?}",
+        "allocations: n {}, p50 {:.0}, p90 {:.0}, p99 {:.0}, max {:.0} ms; not held {} {killed:?}; over {} s {}; asked again {} {stalled:?}",
         took.len(),
         at(0.5),
         at(0.9),
         at(0.99),
         at(1.0),
-        killed.len()
+        killed.len(),
+        STALLED.as_secs(),
+        took.iter()
+            .filter(|&&ms| ms > STALLED.as_secs_f64() * 1e3)
+            .count(),
+        stalled.len()
     );
-    assert_eq!(shards(&["stop", "-t", "1", "grows"]).status, Some(0));
+    assert_eq!(shards(&["stop", "vm", "-t", "1", "grows"]).status, Some(0));
     let _ = exit(&mut held, &home);
     assert!(killed.is_empty(), "{killed:?}");
+    assert!(stalled.is_empty(), "the grower asked again in rounds {stalled:?}");
 }
 
 /// `update`, as `docker update` takes it: a running microVM's limits written to its

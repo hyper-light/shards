@@ -13148,6 +13148,28 @@ builder memory as its build needs it; runs now have it too.
   to within 16 MiB of it. boot.rs `a_snapshot_keeps_memory_to_plug`: a guest snapshotted with memory to
   plug, the booted VM and two restores each plugging 512 MiB. Mutation-checked: without
   the grower, the 1 GiB run is ended (137); without the restored region, a restore fails.
+- **A grow asked for during an unplug** (resources/kernel/patches/0014, PM M466): Linux's
+  driver looks for a changed request before each request to the device and each try to
+  take a range (drivers/virtio/virtio_mem.c, Linux 6.18.48: `virtio_mem_send_unplug_request`
+  l. 1468, `virtio_mem_fake_offline` l. 1243), and goes back to `virtio_mem_run_wq` with
+  `-EAGAIN` (l. 2491) to plan again; but an online memory block it unplugs whole
+  (`virtio_mem_sbm_unplug_any_sb_online`, l. 2029-2039) it took in one
+  `alloc_contig_range` of 128 MiB (`virtio_mem_sbm_unplug_sb_online`, l. 1976), which
+  migrates every page of its range before it returns and stops early only for a fatal
+  signal (mm/page_alloc.c `__alloc_contig_migrate_range`, l. 6827), which the driver's
+  workqueue never has. A raise that came as a lowering's unplug went on waited for the
+  whole block: 6 of 2,000 raised allocations 5.1 to 5.4 s, the grower asking a second
+  time (M466). Patch 0014 takes the block a subblock at a time, each its own
+  `virtio_mem_fake_offline`, which looks for the change first, and on one gives back what
+  it took: what a changed request waits for is one subblock's migration, 2 MiB of shards'
+  128 MiB blocks (a pageblock, the unit `virtio_mem_init_hotplug` finds
+  `alloc_contig_range` reliable at on ZONE_NORMAL, l. 2557-2560, where plugged memory
+  comes online, D133). Only the driver's own helpers and its `config_changed`, present in
+  every kernel with Sub Block Mode; Big Block Mode, which shards' 2 MiB device blocks never
+  select (l. 2564), is left as it is. Built for x86_64 in the pinned builder (vmlinux
+  SHA-256 cd841a35…c5d68f, no warnings); not yet released or pinned, and not yet measured:
+  `update_under_pressure_stress` reads the guest's log in each round past the grower's
+  `STALLED` and fails on any second ask.
 - **What it costs** (PM M219): a run's start and end within 0.1 ms of before (paired
   A/B, median +36 µs, 95% [-14, +100]), an idle run 0.2 MiB more of footprint; a region
   of 128 GiB costs a cold boot 0.8 ms. Found on the way: `SHARDS_TIMING`'s count of held
