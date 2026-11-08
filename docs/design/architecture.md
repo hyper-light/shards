@@ -5008,7 +5008,7 @@ context.rs `PolicyBuilder`):
 - **Evaluated here, of the client's files.** The command runs in the client's process
   against a builder (`policy_command::Builder`): its policy file or stdin, its tests and
   their directory, a local path as its context, its `--debug` lines and the signature
-  verifier's trust roots are the client's, as buildx's are; what it prints is byte for byte
+  verifier's trust roots are the client's, its files being there; what it prints is byte for byte
   what the same command prints on the machine of the same files.
 - **The builder's answers, the machine's.** Its platform, the default of `--platform` and
   of a test's input; each source's metadata, resolved as the machine's builds resolve it, of
@@ -5030,7 +5030,7 @@ Tested in `tests/context.rs`
 checksum resolved there, as the machine prints it itself; a policy of the client's
 allowing that checksum and one denying in its words; a local path the client's context;
 the client's tests, an image's input resolved there, as the machine runs them itself (the
-test failed and the input printed, as buildx fails a test whose input its policy completed,
+test failed and the input printed, as buildx v0.37.1 fails a test whose input its policy completed,
 the machine's checksum in it); a registry that wants a login refusing the client while
 the owner is logged in there, and answering it once it logs in through the context; the
 machine asked its steps alone, no `buildx policy` command and none of the client's paths. Unit tests: a request and its
@@ -7285,23 +7285,24 @@ share made ahead), and a disk's capacity was fixed when its file was opened.
     at its start has it root's as Docker gives one (D154's runs use `--user root`); a
     function plugged in is for the run's workload, whose user cannot change once it runs,
     and the node its user's alone (0600 kept) gives nothing to another user of the
-    microVM, as containerd's and CRI-O's `device_ownership_from_security_context` give a
-    non-root container's devices its user (Kubernetes blog, "Non-root Containers And
-    Devices", 2021-11-09). A function had by its device node is taken through iommufd too
+    microVM; the need is the one Kubernetes' `device_ownership_from_security_context`
+    answers for a non-root workload's devices (Kubernetes blog, "Non-root Containers And
+    Devices", 2021-11-09, https://kubernetes.io/blog/2021/11/09/non-root-containers-and-devices/). A function had by its device node is taken through iommufd too
     (vfio.rst, "Device cdev Example"), whose `/dev/iommu` is a misc device of a dynamic
     minor (10:M) and mode 0660, root's (drivers/iommu/iommufd/main.c, `iommu_misc_dev`):
     init gives the workload's its user and group as well while such a function is plugged,
     made with the VM's numbers and mode where its run was not given it, and answers what
     it was before (`made`, or its owner), which the daemon keeps from the first such
     function and has init restore as the last goes (taken out, or its owner again), so a
-    run given `/dev/iommu` at its start has it as Docker gives it once nothing is plugged.
+    run given `/dev/iommu` at its start has it as its host's node was given (D44) once
+    nothing is plugged.
     That `/dev` is the run's own: a tmpfs init mounts at the run's root (`container_mounts`),
     which its command and execs share; each agent's domain mounts a `/dev` of its own, and
     each joiner (D119) makes its own in its mount namespace, so no other workload of the
     microVM is given it. The workload's device filter is
     then its run's rules and one `c MAJ:MIN rwm` for each function plugged in (and
     `/dev/iommu`'s, once, where its run's rules have it not already), given last,
-    as runc's given devices come after the defaults and take precedence (`devices::allow`):
+    so that a run's given devices take precedence over the defaults (D44, `devices::allow`):
     done by init's own process, which keeps the run's rules and the program attached, and
     replaces it (BPF_F_REPLACE) each time with the whole list, so a function unplugged
     leaves it; a privileged run's has no filter. Anything else the step is asked to allow
@@ -11507,8 +11508,8 @@ one. So both, in that order.
     VMs, which give them neither, as Hyper-V says (IovSupport False), and no function but
     Azure's own VMBus adapters; windows-11-arm runs no hypervisor at all (M402). A run that
     names a host's function there, by VFIO's nodes or as DDA's cmdlets name one (its
-    location path, its instance ID), is refused with those words in dockerd's for a device
-    it cannot give, as is `--vfio NAME` (`vm::passthrough_refused`). Held by
+    location path, its instance ID), is refused with those words, said as a device the
+    host cannot give (D154), as is `--vfio NAME` (`vm::passthrough_refused`). Held by
     `a_hosts_pci_function_is_refused_with_its_oss_own_limit` (vm/mod.rs),
     `a_hosts_pci_function_is_refused_where_its_os_passes_none` (boot.rs) and
     `a_run_given_a_hosts_pci_function_is_refused_with_its_hosts_limit` (containers.rs).
