@@ -107,6 +107,12 @@ impl<T> Shared<T> {
         Rc::clone(&self.0)
     }
 
+    /// A pointer that keeps the value's place, but not the value: while it lives no other
+    /// value takes that address, and a change made through any Shared moves the value.
+    pub fn downgrade(this: &Shared<T>) -> std::rc::Weak<T> {
+        Rc::downgrade(&this.0)
+    }
+
     /// Whether both share one value.
     pub fn ptr_eq(a: &Shared<T>, b: &Shared<T>) -> bool {
         Rc::ptr_eq(&a.0, &b.0)
