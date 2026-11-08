@@ -957,6 +957,92 @@ fn a_build_held_short_of_memory_has_its_builder_give_back() {
     assert_eq!(layers(&held_out), layers(&free_out), "{shown}");
 }
 
+/// A build held to a budget from its start has its builder's cache layers and their
+/// changes read and written for its guest by its writer outside the budget (D188,
+/// `block::Through`, PM M442): a cache one held build fills, 24 MiB in a step, more than
+/// one request to the writer carries, is read back whole by the next held build's step, its
+/// image the same bytes as the same builds' with no budget. Linux alone, with a user's
+/// manager, which places the writer.
+#[cfg(unix)]
+#[test]
+fn a_held_builds_caches_go_through_its_writer() {
+    if !cfg!(target_os = "linux") || cannot_run_vms() {
+        return;
+    }
+    let bus = std::env::var_os("XDG_RUNTIME_DIR")
+        .map(std::path::PathBuf::from)
+        // SAFETY: getuid(2) takes nothing and cannot fail.
+        .unwrap_or_else(|| std::path::PathBuf::from(format!("/run/user/{}", unsafe { libc::getuid() })))
+        .join("bus");
+    if !bus.exists() {
+        assert!(
+            !std::env::var_os("SHARDS_REQUIRE_USER_MANAGER").is_some_and(|v| v == "1"),
+            "no user's systemd manager's bus at {}",
+            bus.display()
+        );
+        eprintln!("SKIP: no user's systemd manager here: {} is not", bus.display());
+        return;
+    }
+    let (image, _) = served();
+    let (kernel, init) = (kernel(), guest_init());
+    let fill = context(
+        "build-through-fill",
+        &format!(
+            "FROM {image}\nUSER root\nRUN --mount=type=cache,target=/c [\"/bin/testguest\", \"big\", \"/c/big\", \"24\"]\n"
+        ),
+    );
+    let sum = context(
+        "build-through-sum",
+        &format!(
+            "FROM {image}\nUSER root\nRUN --mount=type=cache,target=/c [\"/bin/testguest\", \"read-dropped\", \"/c/big\", \"0\", \"/sum\"]\n"
+        ),
+    );
+    // Both builds in one home, in a scope of the user's manager, held to a budget no build
+    // here fills (so its writer is placed, and nothing presses) or to none.
+    let built = |held: bool| {
+        let home = TempDir::new(if held { "through-held" } else { "through-free" });
+        let out = TempDir::new(if held {
+            "through-held-out"
+        } else {
+            "through-free-out"
+        });
+        for (ctx, oci) in [(&fill, None), (&sum, Some(&out))] {
+            let mut cmd = std::process::Command::new("systemd-run");
+            cmd.args(["--user", "--scope", "--quiet", "-p", "MemorySwapMax=0"]);
+            if held {
+                cmd.args(["-p", "MemoryHigh=16G"]);
+            }
+            cmd.arg(common::shards()).args([
+                "build",
+                "--progress=plain",
+                "--build-arg",
+                "SOURCE_DATE_EPOCH=0",
+            ]);
+            if let Some(oci) = oci {
+                cmd.arg("-o").arg(format!(
+                    "type=oci,dest={},tar=false,rewrite-timestamp=true",
+                    oci.display()
+                ));
+            }
+            cmd.arg(ctx.as_os_str())
+                .env("SHARDS_HOME", home.as_os_str())
+                .env("SHARDS_KERNEL", &kernel)
+                .env("SHARDS_INIT", &init);
+            common::as_tests_run(&mut cmd);
+            let done = cmd.output().unwrap();
+            assert!(
+                done.status.success(),
+                "held {held}: {}",
+                String::from_utf8_lossy(&done.stderr)
+            );
+        }
+        (home, out)
+    };
+    let (_held_home, held_out) = built(true);
+    let (_free_home, free_out) = built(false);
+    assert_eq!(layers(&held_out), layers(&free_out));
+}
+
 /// The layers of the image an OCI layout `out` holds, as its config lists them
 /// (`rootfs.diff_ids`): two builds whose results are the same bytes, whatever their history
 /// says, have the same.

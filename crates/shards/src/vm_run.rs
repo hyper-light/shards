@@ -865,15 +865,28 @@ fn serve_attach(fd: &str) -> Result<(), String> {
     let answer = |m: shards_ipc::Message| -> Result<(u8, Vec<u8>), String> {
         match m.kind {
             kind::DISK_ATTACH => {
+                // Its file, and where the builder gives one, the connection to the process
+                // that reads and writes it for the guest (block::Through, D188).
                 let mut fds = m.fds.into_iter();
-                let (Some(fd), None) = (fds.next(), fds.next()) else {
+                let (Some(fd), through, None) = (fds.next(), fds.next(), fds.next()) else {
                     return Err("an attach without its one file".into());
                 };
                 let file = std::fs::File::from(fd);
-                let (start, len) = match m.payload.as_slice() {
-                    [0] => JOIN.attach(file),
-                    [1] => JOIN.attach_writable(file),
-                    _ => Err("an attach neither read-only nor writable".into()),
+                let writable = match m.payload.as_slice() {
+                    [0] => false,
+                    [1] => true,
+                    _ => return Err("an attach neither read-only nor writable".into()),
+                };
+                let (start, len) = match through {
+                    Some(conn) => JOIN.attach_through(
+                        file,
+                        writable,
+                        shards_vmm::devices::virtio::block::Through::new(
+                            std::os::unix::net::UnixStream::from(conn),
+                        ),
+                    ),
+                    None if writable => JOIN.attach_writable(file),
+                    None => JOIN.attach(file),
                 }?;
                 Ok((
                     kind::DISK_ATTACH,
