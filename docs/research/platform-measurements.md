@@ -18425,6 +18425,30 @@ revision before comparing a changed API/implementation.
   caches are read and written for its guest outside its budget, by its writer, as its own
   files are: what a budget takes back first, with no swap, is no longer the files the
   build reads again.
+- **Since d9c42120: every held build pressed, and a builder's room as its kernel charges
+  it.** The four runners' apt builds above were never pressed, and a budget set below what
+  a build counts as held made 10 s builds take 246 to 622 s (573e4bf8, above). Both have one
+  cause in the build's count: it held the file pages its processes map wherever charged
+  (each process's `Pss_File`), and at every held peak of runs 42496009314 and 42496014878
+  it exceeded the scope's `memory.current` by exactly the pages mapped and charged
+  elsewhere (`Pss_File` less memory.stat's `file_mapped`): 13 to 14 MiB for npm, 55 to 64
+  for apt, 99 to 100 for rust, its base rust:1-slim on the builder's pmem device. So a
+  budget in that count left the kernel that much more room (apt's held arms never reached
+  their `memory.high`), and a budget short of the kernel's charge told the guest it was
+  short by them besides, which holds its build at what it uses and reclaims as many of its
+  file pages (init's `ROOM`, `plug::hold_within`). A builder's room now counts them only
+  where charged to the budget (`daemon::budget::charged_room`, D188): no reclaim of the
+  budget takes pages charged elsewhere (mm/vmscan.c `shrink_node_memcgs`), and read again
+  once another's takes them they come back charged to it, counted then. The harness counts
+  as the build does now, and holds each build to its held arms' own peak less the most its
+  builder held cold in that arm: a round 0 settling arm, under the peak of a round 0 arm
+  held under the host's whole memory, sets it for rounds 1 on (a builder told the host's
+  whole memory as its room plugs and holds more, and a budget from that arm was 4 to 49 MiB
+  past the later rounds' peaks on the four runners). Its samples now say what the pressure
+  cost: the guest's major faults, file refaults and throttles past its hold (cold.patch),
+  the VM process's major faults and the host's throttles of the scope (memory.events), and
+  the least room the build told against the least its budget left as the kernel charges it
+  (tables.py). To measure: `builder-pressure.yml` and `fedora.sh` at the commit that has it.
 
 ### M443. A restart over the kept layer file itself, and what the guest freed given back (D190)
 
