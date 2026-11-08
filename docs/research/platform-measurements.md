@@ -18767,6 +18767,74 @@ revision before comparing a changed API/implementation.
   0.2 ms a run started from a template. Not measured: WHP's hyperv variant; whether
   unprivileged filters are blinded stays D227's open question.
 
+### M497. Moves between two wired machines, cold and live, and a CPU baseline told and moved (D176 parts 6 and 7)
+
+- **Question.** Between two machines on one wired network, what does a move cost, cold and
+  live, n 20, and do tests/moved.rs's tests of another machine pass across them? Does a
+  home's CPU baseline (`configure cpu`, D176 part 6) reach its guest, and go with it when it
+  moves?
+- **Method.** At abcea5f5, 2026-11-08T16:55Z: docs/research/measurements/migrate/two-hosts.sh
+  `listen` on adacachy (AMD Ryzen 9 9950X3D2, 32 threads, CachyOS, Linux 7.2.9-2-cachyos,
+  KVM; 192.168.1.90, wired), `ADDR=192.168.1.90:3000` (the one UDP port its firewall takes
+  from the LAN that nothing held); `move`, N 20, `MODE="cold live"`, alpine:3.20 counting
+  every 50 ms (each live one rewriting 1 MiB of /dev/shm as it counts), from adacachy2 (the
+  same CPU model, Linux 7.3.3-1-cachyos, KVM; 192.168.1.91, wired), the two machines' CPU
+  flags identical as /proc/cpuinfo names them. The other way is not measured: adacachy2's
+  firewall takes no free UDP port from the LAN. Both runs by kiln runners; adacachy2 beside
+  other sessions' builds (load 19 to 20, 0.2 to 0.6 GB of its 61 GB available, 22 GB in
+  zram swap: memory pressure's `some` 20% over 10 s). Then tests/moved.rs's
+  `a_microvm_moves_to_another_host_saved_and_live` and `a_volumes_guest_owners_move_with_it`
+  on adacachy2, each with an invitation of the listening home of its own, the test binary
+  built on adacachy at the same paths (its prebuilt guests through `SHARDS_TEST_GUESTS`);
+  and all of tests/moved.rs between two homes of adacachy. The baseline:
+  `a_cpu_baseline_is_all_its_guest_finds_and_goes_with_it` between two homes of
+  Adas-Mac-Studio (Apple M3 Ultra, macOS 26.4, Hypervisor.framework), and
+  `alpine:3.20 grep Features /proc/cpuinfo` there with no baseline.
+- **Found** (µs unless said; n 20 each, adacachy2 to adacachy):
+
+  | mode | what | p50 | p90 | p99 | max |
+  |---|---|---|---|---|---|
+  | cold | move took | 954,047 | 1,159,569 | 9,986,861 | 9,986,861 |
+  | cold | ran nowhere | 908,119 | 1,124,556 | 9,894,417 | 9,894,417 |
+  | cold | sent (bytes) | 39,339,806 | 44,236,449 | 76,307,190 | 76,307,190 |
+  | cold | link (B/s) | 77,763,982 | 100,386,905 | 109,593,620 | 109,593,620 |
+  | cold | longest silence | 64,686 | 416,980 | 485,488 | 485,488 |
+  | live | move took | 705,170 | 833,503 | 1,034,245 | 1,034,245 |
+  | live | ran nowhere | 207,740 | 280,932 | 345,251 | 345,251 |
+  | live | sent (bytes) | 49,597,811 | 54,362,422 | 101,169,507 | 101,169,507 |
+  | live | link (B/s) | 76,006,620 | 83,885,916 | 105,849,205 | 105,849,205 |
+  | live | longest silence | 60,626 | 120,740 | 195,338 | 195,338 |
+  | live | rounds (n) | 3 | 3 | 3 | 3 |
+
+  40 of 40 moved, every count once there. The link: up to 109.6 MB/s acknowledged (a
+  gigabit link's), round trips 0.7 to 2.5 ms, no packets lost.
+  - **Cold.** Each stream 80.5 to 81.6 MB as written, sent as 32.9 to 76.3 MB. Move 1, the
+    fresh home's first, ran nowhere 9.89 s (its link 15.2 MB/s, the image fetched there by
+    its digest as it readied); moves 2 to 20 ran nowhere 0.74 to 1.26 s.
+  - **Live.** Round 0 sent 74.5 to 75.4 MB in 364 to 620 ms, round 1 7.4 to 11.3 MB, and
+    15 of 20 a third of 0.9 to 6.1 MB; every one ended with little left (8 MiB or less).
+    Its last save took 50.8 to 161.5 ms and its last stream 9.1 to 41.0 ms of the time it
+    ran nowhere.
+  - **E2E.** Both tests of another machine passed across the two (the saved and the live
+    move of the first: its live move ran nowhere 132 ms, its streams at 106 and 92 MB/s);
+    tests/moved.rs between two homes of adacachy, 9 of 9.
+  - **The baseline.** Told ID_AA64PFR1_EL1 of nothing, a guest on the M3 Ultra found
+    neither `ssbs` nor `bti`, and moved to the other home found the same CPU there: passed.
+    With no baseline its guest's Features were `fp asimd evtstrm aes pmull sha1 sha2 crc32
+    atomics fphp asimdhp cpuid asimdrdm jscvt fcma lrcpc dcpop sha3 asimddp sha512 asimdfhm
+    dit uscat ilrcpc flagm sb paca pacg dcpodp flagm2 frint i8mm bf16 bti afp`: no `ssbs`
+    and no `rpres` (ID_AA64ISAR2_EL1's), though macOS names FEAT_SSBS and FEAT_RPRES on
+    the host.
+  - First built, the VM process's probe of its host's CPU (`shards-vm cpu`) failed on
+    Hypervisor.framework, "vCPUs need the GIC first": it makes the VM's GIC before its
+    vCPU now (abcea5f5).
+- **Reading.** On a wired link a cold move of alpine runs nowhere about 0.9 s and a live one
+  about 0.2 s, its downtime its last save and the restore, as on loopback (M462); a fresh
+  home's first move pays for its image. A guest on Hypervisor.framework is shown less than
+  its host's OS names: the features macOS names are no measure of what a guest may have
+  used.
+- **Consequence.** D176 parts 6 and 7 record these as the two-machine numbers. Still to
+  measure: the M3 Ultra and an M4 Max with a baseline, both ways, and the Studios' Wi-Fi.
 ### M422. Whether a Hypervisor.framework guest given EL2 has VHE (the parity plan's step 10)
 
 - **Question.** Step 10's host is to be Windows 11 arm64 under QEMU on this Mac, given EL2
@@ -18985,11 +19053,31 @@ revision before comparing a changed API/implementation.
   `mark_growth`, in the page init shares with its grower and builtins), and a give-back
   that finds a mark within the window the host's pressure is measured over (2 s,
   `shards_abi::PRESSURE_WINDOW_US`, the PSI trigger's window, D188) keeps all it has. 0 of
-  2,000 raised allocations killed, against 15 of 74 (under 3 in 2,000 at 95%). Open: 6 of
-  the 2,000 took 5.1 to 5.4 s, the grower's `STALLED` (5 s) and its second ask, as 3 and 4
-  of two runs of 1,000 did at 49ee67a5 with an ask and a give-back's request serialized besides (a lock
-  in the shared page): that lock changed nothing, and is not kept; the stall's cause is
-  not yet found.
+  2,000 raised allocations killed, against 15 of 74 (under 3 in 2,000 at 95%).
+- **The rest, a tail.** 6 of the 2,000 took 5.1 to 5.4 s, the grower's `STALLED` (5 s) and
+  its second ask, as 3 and 4 of two runs of 1,000 did at 49ee67a5 with an ask and a
+  give-back's request serialized besides (a lock in the shared page, which changed nothing
+  and is not kept), and 5 of 1,992 rounds of a privileged run (whose exec may read its
+  guest's kernel log), all five after the host's free memory fell to 5 to 8 GB of 64
+  under other agents' work. The guest's kernel said why, at the grower's second ask:
+  `943718400 bytes asked for, 354418688 came in 5 s; ... requested size: 0x38400000;
+  plugged size: 0x30000000; requested size: 0x2e00000`, then `plugged size: 0x15200000,
+  requested size: 0x38400000`. The round before had ended lowering the run to `-m 256m`,
+  its device's request to 46 MiB (0x2e00000, what is pluggable under 256 MiB); its driver
+  was still unplugging 768 MiB down to it when the raise's ask for 900 MiB came, and went
+  on unplugging (to 338 MiB) for the 5 s before the second ask. Linux's driver stops for a
+  changed request between its requests to the device and between its tries to take a
+  range (drivers/virtio/virtio_mem.c `virtio_mem_send_unplug_request`,
+  `virtio_mem_fake_offline`: `config_changed`, then `-EAGAIN` back to
+  `virtio_mem_run_wq`), but not inside one: a memory block it offlines whole
+  (`offline_and_remove_memory`) migrates every page of it, and `offline_pages`
+  (mm/memory_hotplug.c) retries until it is done or its thread has a signal pending, which
+  a kworker never has; a guest at its hold, allocating, has little free memory to migrate
+  to, and a host short of memory runs it slowly. Read in Linux 7.2-rc4's source, not
+  checked against the pinned 6.18.48's; where in its unplug the driver was is not
+  recorded. Nothing of shards' asks is lost: the grow waits on the unplug before it. Not
+  fixed here: an unplug that gives way to a grow is a change to the guest kernel's
+  driver, and a new kernel pin (D148's patches).
 
 ### M495. A start on a contended Windows host: WHP's vCPUs at THREAD_PRIORITY_ABOVE_NORMAL (D191)
 
@@ -19138,3 +19226,190 @@ revision before comparing a changed API/implementation.
   macOS and Windows, each held to its own table by `a_restart_goes_over_from_where_packing_costs_more`
   (the macOS run "n 40 again" and Windows' quiet run above). The two D190 E2E tests write
   8 MiB, past both. Harness: `layer-kept/ab.py`, `pack.patch`, `over.patch`.
+
+### M468. Flakes: the CLI killed at launch, as a home's first client, 100,000 launches on an M3 Ultra (the flakes goal, M322)
+
+- **Question.** The one `shards pull` ended by a signal in 17 ms (2026-10-06) was a test's
+  first command in its home, the client that starts the home's daemon; M322 launched the
+  CLI 200,000 times, but as a home's first client only 8 times, each other launch a client
+  of a daemon already serving. Does a first client, starting its daemon, or the `shards
+  stop daemon` that ends it, end by a signal on a loaded Mac?
+- **Method.** docs/research/measurements/launch-stress/launch.rs's `fresh` mode (added
+  here): each launch the first client of a home of its own (`ps -q`, `images -q` or `ps
+  -aq`; its daemon started by it, D26), then `shards stop daemon` in that home, the home
+  removed after; each ending counted. 50,000 such pairs from 8 threads, the copy of
+  `shards` placed as the tests place theirs (written beside, renamed into place), beside
+  the grant-stall campaign's fleet rounds (M469) and 16 busy loops, another agent's E2E
+  tests on the same host besides (load 30 to 88), on an Apple M3 Ultra (32 CPUs, 96 GiB,
+  macOS 26.4, 25E246) at a8c4602f, 2026-11-08.
+- **Results.** 50,000 first clients exited 0 and 50,000 stops exited 0; none ended by a
+  signal, none exited otherwise. A first client's launch, its daemon's start in it: n
+  50,000, p50 22.95, p90 31.72, p99 45.27, max 172.20 ms.
+- **Consequence.** None found: with M322, no launch of 300,000 ended by a signal, 100,000
+  of them a home's first client or its daemon's stop (under 3 in 100,000 at 95% for
+  those). Its cause is not found, nor ruled out on 2026-10-06's tree: since then every
+  child the daemon makes comes from its spawner (M158), and a pid it holds is not
+  signalled once the spawner that made it has gone (`shards_ipc` `Child::kill`), which
+  keeps the daemon from signalling a pid another process has taken; no failed test since
+  has recorded a killing signal (`Run::signal`).
+
+### M469. Flakes: the macOS VM grant stall, none in 31,200 runs on an M3 Ultra (D30, M326)
+
+- **Question.** M326 found no grant stall in 115,440 runs on an M5 Max beside full gates.
+  Does a VM process stall before or between its asks on other Apple silicon, loaded
+  otherwise?
+- **Method.** docs/research/measurements/vm-grant-stall/campaign.sh, 30 rounds of the fleet
+  (FLEET_SIZES=10 FLEET_BURST=16 FLEET_ROUNDS=60, 1,040 runs a round), each round's daemon
+  saying the VMs it saw stall (it samples one that has asked nothing for 10 s), beside 16
+  busy loops, M468's 100,000 launches for its first 4 minutes and another agent's E2E
+  tests (load 30 to 88), on the M3 Ultra of M468 (32 CPUs, macOS 26.4) at a8c4602f,
+  2026-11-08, its tests run from a kiln runner's session.
+- **Results.** 30 rounds, 31,200 runs: no stall said, none failed. Starts, the median of
+  the rounds' own figures and the most of them, ms:
+
+  | runs | a round | p50 | p90 | p99 | max |
+  |---|---|---|---|---|---|
+  | first (pull, boot, save) | 10 | 384.6 | 406.6 | 454.4 (most 1,256.8) | 1,256.8 |
+  | second (restore) | 10 | 20.2 | 27.6 | 33.2 (most 40.2) | 40.2 |
+  | one at a time | 60 | 18.4 | 23.6 | 26.9 (most 153.6) | 232.3 |
+  | bursts of 16 | 960 | 76.0 | 130.8 | 220.8 (most 615.4) | 638.2 |
+
+- **Consequence.** None in the code: with M326, no stall in 146,640 runs on two Macs (under
+  3 in 146,640, one in 48,880, at 95%). The stall was never caught with its stacks; its
+  two suspects' fixes (M315's held templates, M317's governor) came before every run since
+  and of either, which ended it is not shown.
+
+### M470. A pooled run's hand-over held by its warm VM's descriptor table growing (D26)
+
+- **Question.** The start target is a request to a usable microVM in under 5 ms. On Fedora
+  the image bench's pooled run (`run_template`, `exit 0` from the E2E image) took 22.3 ms at
+  p50 (n 100 over 5 templates, at 2d2a783a, load 15), and its guest's own part
+  (`template_start`, the request to the command executing) 5.6 ms of it. Where does the
+  rest go?
+- **Method.** `docs/research/measurements/start-path`: `trace.patch` makes every process's
+  timing clock the host's monotonic clock and has the client, the daemon's slot and
+  handling threads and the warm VM write each step of a run (its request written, read
+  whole, handled, a VM acquired, its network process told, the run sent, read by the VM,
+  TAKEN); `trace.py` spawns pooled `shards run --pull never alpine true`, n 100 after 5
+  warm-ups, a 0.3 s pause after each, and splits each from its client's spawn to its reap.
+  Then the warm VM's threads sampled through the hand-over (`/proc/PID/task/*/stat` and
+  `wchan`, every few tens of µs; `schedstat`), and its `FDSize` idle and during a run.
+  Fedora 44, Linux 6.19.10-300.fc44 (M258's Intel Core i9-14900HX, 32 CPUs, THP
+  `madvise`), other agents' builds and VMs running throughout, 2026-11-08. Each microVM
+  has a vCPU per host CPU (D191): 32.
+- **Found.** The hand-over (the daemon's send of the run to the warm VM's read of it) took
+  13.4 ms at p50: the VM's thread that reads the run sat in `__wait_rcu_gp` (state D) 8.1
+  to 12.8 ms of it, and was on a run queue for at most 35 µs (`schedstat`). An idle warm VM
+  held 64 descriptors, its first table's all (`FDSize: 64`); its run's brought it to 73
+  (`FDSize: 128`), in 3 of 4 VMs looked at, the fourth's table at 128 already, whose
+  hand-over took 30 µs. Linux grows the descriptor table of a process whose threads share
+  it only after an RCU grace period (fs/file.c `expand_fdtable`: `synchronize_rcu()` when
+  `files->count > 1`), which on this host took the time above.
+- **The change.** Each warm VM takes and lets go of `2 × shards_ipc::MAX_FDS` descriptors
+  (as many again as a run's message brings at most, for the clones and connections its
+  start makes) before it says READY (warm.rs `reserve_descriptors`): its table grows while
+  it idles, and never shrinks.
+- **Results.** trace.py, baad0965 (before) against 48c8ad1d (the change), each with
+  trace.patch, one after the other on one home, load 20 to 26; ms:
+
+  | step | before p50 | p90 | p99 | max | after p50 | p90 | p99 | max |
+  |---|---|---|---|---|---|---|---|---|
+  | hand-over | 13.53 | 18.93 | 24.51 | 24.51 | 0.14 | 0.17 | 0.27 | 0.27 |
+  | its read by the VM | 13.44 | 18.75 | 24.41 | 24.41 | 0.04 | 0.07 | 0.11 | 0.11 |
+  | spawn to usable | 19.17 | 24.85 | 29.69 | 29.69 | 5.82 | 7.29 | 66.91 | 66.91 |
+  | spawn to reap | 21.11 | 26.89 | 36.94 | 36.94 | 7.82 | 9.94 | 69.26 | 69.26 |
+
+  `build-ab/ab.py`, release builds, 2d2a783a against 86e41c99 (the change and the
+  integration's work since), each its own home, pooled `run --rm alpine true`, both in
+  turn, n 150 pairs, the host's load 64 throughout: wall 33.9 (p90 53.6, p99 373.5, max
+  380.2) against 18.9 ms (39.8, 205.0, 871.0), paired median −15.1 ms [95% −16.1, −13.0];
+  outside the guest −14.8 [−15.5, −13.7]; the command's own time +0.6 [−0.6, +1.5], tied.
+  The 66.9 and 69.3 ms maxima after are one run whose daemon took 61 ms from its handling's
+  start to a VM in hand.
+- **Where the rest goes** (after the change, with cpu-elastic/markers.patch too, n 100,
+  load 30; p50, ms): the client's launch, spawn to its `main` 1.57 (a 160 MB PIE binary's:
+  `/usr/bin/true` spawns and exits in 0.57, a small Rust program in 0.71, `shards
+  --version` 1.53, with 180 more page faults, 125 of them its 500 KB of relocated
+  read-only data copied); the client to its request written 0.37; the slot's read and
+  bridge 0.18; the daemon's handling to a VM 1.14 (the run prepared 0.55, its container
+  made 0.19, its request kept 0.13, the rest 0.20); its network told 0.07; the hand-over
+  0.17; the guest's start of the command 3.53: init's taking of the request 0.49, the
+  hostname's files 0.35 and 0.13, the standby woken 0.39 and its setup 0.16, and the
+  command's exec until init hears it 1.67 (`m16`).
+- **Reading.** Most of a pooled run's time on this host was one RCU grace period in its warm
+  VM, from a table one descriptor short. Without it a run is usable 5.8 ms after the
+  user's request at p50 on a host at load 20 to 30, the start target's 5 ms not yet met:
+  the guest's start of the command (3.5) and the client's launch (1.6) are most of it.
+- **Consequence.** D26: a warm VM makes room in its descriptor table for its run before
+  READY. Tested: daemon.rs `a_warm_vms_run_starts_without_growing_its_descriptor_table`
+  (a pool's VM's `FDSize` the same as its run starts as while it waited, Linux), on
+  Fedora. Harness: start-path/trace.py and trace.patch.
+
+### M471. Where the start and memory targets stand on Fedora: the image bench and the Firecracker comparison (D25, D26)
+
+- **Question.** CLAUDE.md's targets: a request to a usable microVM under 5 ms, boot
+  included, and less memory per VM than Firecracker. Where does the current build stand,
+  by the committed benches?
+- **Method.** Fedora 44, Linux 6.19.10-300.fc44, M258's Intel Core i9-14900HX (32 CPUs, THP
+  `madvise`), other agents' builds, clusters and VMs running throughout (each run's load
+  below), 2026-11-07 and -08. `cargo bench -p shards --bench image -- --runs 100
+  --templates 5` (with `template_usable`, the client's spawn to the command executing,
+  less the VM's own clock from WORKLOAD_STARTED to the status read: an upper bound); and
+  `--bench firecracker -- --runs 30` (Firecracker v1.17.0, the pinned kernel
+  vmlinux-6.18.48-x86_64-64a9427a8997, one initrd, 1 vCPU, 128 MiB, the two VMMs
+  interleaved; density 16 VMs a VMM, rounds S F F S S F F S), with `scripts/bench-envelope`.
+  At 2d2a783a (before M470) and 86e41c99 (after it, with the integration's work since).
+- **Results, the image bench** (µs; the microVM a vCPU per host CPU, D191):
+
+  | revision (load) | row | p50 | p90 | p99 | max |
+  |---|---|---|---|---|---|
+  | 2d2a783a (14.5) | run_template | 22,321 | 30,905 | 37,809 | 46,390 |
+  | | template_usable | 21,324 | 27,972 | 36,185 | 42,434 |
+  | | template_start | 5,589 | 6,394 | 11,516 | 21,977 |
+  | | run_cold | 249,087 | 424,361 | 720,943 | 1,436,650 |
+  | 86e41c99 (86) | run_template | 19,297 | 33,493 | 242,238 | 248,923 |
+  | | template_usable | 15,615 | 28,927 | 234,552 | 245,112 |
+  | | template_start | 5,287 | 12,325 | 22,082 | 87,659 |
+  | | run_cold | 1,447,281 | 1,893,914 | 2,269,459 | 2,476,815 |
+
+  The second run's host was overloaded (load 86 at its end): its rows say what an overloaded
+  host does, not the build. M470's trace, at load 20 to 30, has the start's own steps.
+- **Results, the comparison** (p50, shards against Firecracker; the envelope's paired median
+  difference [95%]):
+
+  | revision (load) | metric | shards | Firecracker | difference | verdict |
+  |---|---|---|---|---|---|
+  | 2d2a783a (15) | boot: spawn to ready | 90.4 ms | 96.5 ms | −7.9 [−21.8, +21.1] | tied |
+  | | boot: PSS | 54.3 MiB | 54.7 MiB | −0.8 [−1.0, −0.1] | better |
+  | | boot: outside guest memory | 2.0 MiB | 2.5 MiB | −0.5 | better |
+  | | restore: spawn to first beat | 9.1 ms | 10.4 ms | −1.6 [−2.1, −1.2] | better |
+  | | restore: PSS | 4.9 MiB | 12.6 MiB | −7.7 | better |
+  | | restore: outside guest memory | 2.0 MiB | 2.8 MiB | −0.8 | better |
+  | | 16 VMs: PSS a VM | 1.2 MiB | 1.7 MiB | −0.5 [−0.5, −0.5] | better |
+  | | 16 VMs: host memory a VM | 5.8 MiB | 0.0 MiB | +5.8 [+0.0, +15.2] | tied |
+  | 86e41c99 (85) | boot: spawn to ready | 205.5 ms | 168.3 ms | +27.5 [+1.3, +71.0] | worse |
+  | | boot: PSS | 53.0 MiB | 54.2 MiB | −1.1 [−1.6, −0.9] | better |
+  | | restore: spawn to first beat | 12.1 ms | 24.9 ms | −8.7 [−16.5, −7.3] | better |
+  | | restore: PSS | 4.9 MiB | 12.9 MiB | −8.0 | better |
+  | | 16 VMs: PSS a VM | 1.2 MiB | 1.8 MiB | −0.6 [−0.6, −0.6] | better |
+  | | 16 VMs: host memory a VM | 2.4 MiB | 15.1 MiB | −10.9 [−17.8, −4.6] | better |
+
+  Every other memory row (peak RSS, anonymous and file-backed RSS and PSS, page tables)
+  is better or tied in both runs. The boot's p90 was shards' 206.4 against 127.7 ms at load
+  15, its time outside the guest (the VMM's spawn and setup, the kernel's start) 164.5
+  against 51.0 ms at p90: under load the spawn of shards' VM process goes slower than
+  Firecracker's; at load 85 its median too. The 16 VMs' host memory (MemAvailable given
+  up) moves by more than the VMs' own between rounds on this host; tied, then better.
+- **Also: DAX windows on Linux 6.19.** M463 found a bind's DAX window (D189) on adacachy2
+  (CachyOS, Linux 7.3.3) read 64 MiB at 9.5 MiB/s, 513 µs an open, a 4 KiB read and a
+  close. The same test (`what_a_clients_bind_costs`, 3 rounds, 86e41c99) here, load 40 to
+  65: the machine's own bind with DAX 111 to 201 µs at p50 an open, read 122 to 577 MiB/s;
+  FUSE alone 146 to 257 µs, 99 to 383 MiB/s. Not this kernel's or this host's: open on
+  adacachy2.
+- **Reading.** Memory: on every axis the comparison measures, booted, restored and held 16
+  at once, a shards VM holds less than Firecracker's (16 VMs: 1.2 against 1.7 to 1.8 MiB
+  of PSS a VM); the VMM's own memory outside its guest's 1.9 to 2.0 against 2.5 to 2.8 MiB,
+  glibc gone from it (M281). The start target is not met on Fedora: M470's fix took a pooled
+  run's usable from 19.2 to 5.8 ms at load 20 to 26; the rest is the guest's start of the
+  command and the client's launch. A boot's spawn under heavy load is slower than
+  Firecracker's: open.
