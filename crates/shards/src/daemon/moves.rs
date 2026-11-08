@@ -157,7 +157,10 @@ fn unmasked(ran_on: &[String], baseline: &[(u16, u64)]) -> Vec<String> {
 /// `Features` (arm64) in /proc/cpuinfo; none elsewhere, which no move checks. Where one
 /// machine's guest found a feature the other's CPU has not (ID_AA64ISAR2_EL1's CSSC and HBC,
 /// an M5's and not an M4's, which Hypervisor.framework neither says nor lets a VMM set, PM
-/// M460), a program that used it would fault there.
+/// M460), a program that used it would fault there. Not FEAT_WFxT and FEAT_RPRES, of that
+/// register too, which the framework shows no guest where macOS names them (an M4 Max's
+/// guest finds no `wfxt` and an M3 Ultra's or M4 Max's no `rpres`, PM M499; tests/moved.rs
+/// `a_cpu_baseline_is_all_its_guest_finds_and_goes_with_it` holds it on each Mac it runs).
 pub(crate) fn host_cpu() -> Vec<String> {
     #[cfg(target_os = "macos")]
     {
@@ -193,8 +196,6 @@ pub(crate) fn host_cpu() -> Vec<String> {
             "FEAT_BF16",
             "FEAT_EBF16",
             "FEAT_I8MM",
-            "FEAT_WFxT",
-            "FEAT_RPRES",
             "FEAT_CSSC",
             "FEAT_HBC",
             "FEAT_ECV",
@@ -1804,15 +1805,15 @@ mod tests {
         let names = |l: &[&str]| l.iter().map(|f| (*f).to_string()).collect::<Vec<String>>();
         // An M3 Ultra on macOS 26.4 and an M4 Max on 26.2 (PM M462).
         let m3 = names(&["FEAT_AES", "FEAT_SSBS"]);
-        let m4 = names(&["FEAT_AES", "FEAT_FPACCOMBINE", "FEAT_WFxT"]);
+        let m4 = names(&["FEAT_AES", "FEAT_FPACCOMBINE", "FEAT_CSSC"]);
         assert_eq!(cpu_lacks(&m3, &m4), ["FEAT_SSBS"]);
-        assert_eq!(cpu_lacks(&m4, &m3), ["FEAT_FPACCOMBINE", "FEAT_WFxT"]);
+        assert_eq!(cpu_lacks(&m4, &m3), ["FEAT_FPACCOMBINE", "FEAT_CSSC"]);
         // Told a baseline naming PFR1, ISAR0 and ISAR1, as Hypervisor.framework's are: SSBS
-        // and FPAC combined are its to mask, and the move checks them by its fields; WFxT,
+        // and FPAC combined are its to mask, and the move checks them by its fields; CSSC,
         // ISAR2's, it cannot, and the move still checks by name.
         let base = [(0xc020, 0), (0xc021, 0), (0xc030, 0), (0xc031, 0)];
         assert!(cpu_lacks(&unmasked(&m3, &base), &m4).is_empty());
-        assert_eq!(cpu_lacks(&unmasked(&m4, &base), &m3), ["FEAT_WFxT"]);
+        assert_eq!(cpu_lacks(&unmasked(&m4, &base), &m3), ["FEAT_CSSC"]);
         // No baseline: every feature, by name, as before.
         assert_eq!(unmasked(&m4, &[]), m4);
         // A feature of no known register is checked by name.
