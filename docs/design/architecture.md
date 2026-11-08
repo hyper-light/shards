@@ -6640,10 +6640,11 @@ was ended, followed by the budget's word all the same (12 runs of 12 on Fedora, 
 restored from their template, its warm microVMs in the slice, read a gigabyte through FUSE
 under a `MemoryHigh` its idle microVMs leave 128 MiB of within twice the time runs under
 none took (medians of 3), alone in its test binary so other daemon tests do not compete
-between its phases (CI 41365265628: 2.06 times beside them), a run begun under no budget
-held to one set as it goes within it too, and a run alone in the slice, its daemon
-keeping no warm microVM there, held under a
-budget short of what the slice holds and its kernel's inactive buffer, by a mebibyte,
+between its phases (CI 41365265628: 2.06 times beside them; alone, 4 runs of 4 passed on
+Fedora 44, kernel 6.19.10, i9-14900HX, at 49ee67a5 with the host at load 24 to 45, the
+slowest phase's median 0.46 to 1.34 times its run's median under none), a run begun
+under no budget held to one set as it goes within it too, and a run alone in the slice,
+its daemon keeping no warm microVM there, held under a budget short of what the slice holds and its kernel's inactive buffer, by a mebibyte,
 within the least room a run goes on in and reading within it too (where held at what
 they used they read a gigabyte at 0.16 to 0.57 MiB/s, PM M309; with warm microVMs beside
 it, the budget ended them for room, and room came back to every run, PM M314): dispatched
