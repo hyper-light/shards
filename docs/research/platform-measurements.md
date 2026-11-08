@@ -18871,7 +18871,7 @@ revision before comparing a changed API/implementation.
   - A fleet's memory and runs: docs/research/measurements/bpf-jit/fleet.py, one release
     `shards`, two homes, each with alpine (sha256:294b683c…) and a guest recorded
     (`configure guest --kernel K --init` shards-init), rounds alternating which goes first.
-    Each round, in each home: the daemon stopped and its templates removed; 10 `run -d
+    Each round, in each home: the daemon stopped and its templates removed; 10 `run vm -d
     alpine sleep`, the first booting the guest and saving the template (init attaches the
     device filter before the save, D44), the other 9 served from the pool's VMs restored
     from it; once the home's VM processes stay the same for 5 s, each one's memory (Linux:
@@ -18879,8 +18879,8 @@ revision before comparing a changed API/implementation.
     resident size), the booted run, the restored runs (State.Pid) and the pool's warm VMs
     apart; the template's disk blocks (du). 10 rounds after 1.
   - Start latency: docs/research/measurements/bpf-jit/latency.sh, build-ab/ab.py's paired
-    runs over fleet.py's two homes, `run --rm alpine true` one at a time, 4 segments of 100
-    pairs, each segment with templates of its own (PM M29). `command` is request to status
+    runs over fleet.py's two homes, `run vm --rm alpine true` one at a time, 4 segments of
+    100 pairs, each segment with templates of its own (PM M29). `command` is request to status
     on the VM's clock (SHARDS_TIMING), `wall` the client's spawn to reap.
 - **Found.** KVM: fedora-2, x86_64, Fedora 44, Linux 6.19.10-300.fc44, host load 6 to 45
   from other agents' work (each run's own `uptime`), revisions dd3e96a1 (ab.py),
@@ -18934,20 +18934,40 @@ revision before comparing a changed API/implementation.
   -661 to -442), every segment's below 0. `wall` A 28,096, B 25,914, -1,592. HVF `command`
   A 1,197 (1,962), B 1,404 (2,124), +206, every segment's interval above 0 (+161 to +286);
   `wall` A 8,817 (34,797), B 9,176 (34,583), +235, every segment's interval holding 0.
+
+  WHP: jupiter, AMD Ryzen AI Max+ 395, Windows 11 10.0.26200, the hyperv variants
+  (d04b68b9… against 975846f3…), 27 to 31 of its 32 CPUs idle as each began; shards built
+  `release` with `CARGO_PROFILE_RELEASE_DEBUG=0` (no debug information, for the disk it
+  had), Python 3.13.1's embeddable build; revisions 62a6aa1e5 (ab.py), 70f75ea49
+  (fleet.py), a6035554a (latency.sh). ns per call, p50 (p99), A against B: none/personality
+  87.5 (93.8) and 87.5 (100.0); root/personality 350.0 (400.0) and 150.0 (168.8);
+  root/denied 312.5 (362.5) and 137.5 (156.2); nnp/personality 350.0 (418.8) and 150.0
+  (168.8); dev/open 1,812.5 (2,556.2) and 1,631.2 (2,056.2) beside nodev/open 1,612.5
+  (2,075.0) and 1,606.2 (2,050.0); root/load 46,300 (126,200) and 65,800 (155,200);
+  nnp/load 77,400 (224,800) and 111,000 (293,900); device/load 327,500 and 314,300. The
+  JIT's area, 2,101,248 bytes (`execmem_alloc`). The fleet, KiB, p50: a restored run's
+  working set 198,768 and 198,456, its private bytes 499,472 and 499,464 (a WHP guest's
+  memory is committed whole, so private bytes hold it all either way); a warm VM's working
+  set 193,248 and 193,248; the booted run's 301,932 and 301,824. Start latency, `command`
+  A 8,371 (34,558), B 8,106 (42,659) µs, paired median -667 µs (segments -1,088, -739,
+  +558, -697); `wall` -492 µs.
 - **Reading.**
   - A filter that runs costs a syscall 30.6 ns over none interpreted and 10.5 ns compiled
     on KVM (personality, p50; the refused path 27 against 11), 36.5 against 20.9 ns on HVF:
     compiled, it costs a third of what it did on KVM and 57 % on HVF, and on KVM the call's
-    p99 falls from 209 to 89 ns. What
-    the action cache answers (getppid) costs the same either way. A filter loaded by a task
+    p99 falls from 209 to 89 ns; on WHP, 262.5 against 62.5 ns, a quarter. What the action
+    cache answers (getppid) costs the same either way. A filter loaded by a task
     without CAP_SYS_ADMIN (nnp) costs what one loaded with it does on both: the arm64 BHB
     epilogue (D227) is not measurable here, the guest seeing its CPU as needing none
     (`spectre_v2: CSV2, but not BHB`, no firmware call: arch/aarch64/psci.rs).
   - The device filter, an eBPF program, costs an open 11.0 ns interpreted and nothing
     measurable compiled on KVM (B's dev/open below its nodev/open), 18.2 against 2.6 ns on
-    HVF: 7 times less.
+    HVF, 200 against 25 ns on WHP: 7 and 8 times less.
   - Each load compiles: +19.5 µs a seccomp(2) load on KVM (40.0 to 59.5), +11.2 µs on HVF
-    (30.8 to 42.0); the device filter's load is the same either way.
+    (30.8 to 42.0), +19.5 µs on WHP (46.3 to 65.8; 77.4 to 111.0 with no_new_privs); the
+    device filter's load is the same either way.
+  - On WHP a run from a template holds no more (its working set 312 KiB less) and answers
+    667 µs sooner: there, as on KVM, only HVF's runs pay for the compile.
   - The pack is allocated once, at the first program a guest compiles (kernel/bpf/core.c at
     v6.18, `bpf_prog_pack_alloc`: a new pack only when no pack on `pack_list` has room),
     and filled whole with trapping instructions (`alloc_new_pack`, `bpf_fill_ill_insns`
@@ -18964,13 +18984,35 @@ revision before comparing a changed API/implementation.
   - A restored VM that starts a workload compiles its filter after the restore: on HVF that
     run holds 432 KiB more footprint (p50; 1.9 % of its 22.3 MiB) and its start takes 206
     µs more on the VM's clock (1,197 to 1,404 µs); on KVM it holds no more (its p50 592 KiB
-    less) and starts 533 µs sooner at the quietest load, 873 µs pooled. Which pages the HVF
-    run writes, and what of the KVM run's path the JIT speeds, are not split here.
+    less) and starts 533 µs sooner at the quietest load, 873 µs pooled. What of the KVM
+    run's path the JIT speeds is not split here.
+  - What the HVF run writes: docs/research/measurements/bpf-jit/written.py over the working
+    set the daemon keeps beside each home's template (the pages its first restored runs
+    touched, each marked where written; crates/vmm/src/snapshot `encode_working_set`),
+    each page classed by what the template's memory file held there: one template an arm,
+    latency.sh's last on the M3 Ultra (16 KiB stage-2 pages). A: 1,361 pages touched, 701
+    written (679 holding data, 22 zero). B: 1,387 touched, 746 written (694 holding data,
+    51 zero, 1 the JIT's fill). So B's runs write 45 more host pages, 720 KiB, 29 of them
+    memory the template held free (zero, as its page reports gave it back), and one page of
+    the pack, the chunk their filter takes. The pack is not the cost; what the compile
+    after the restore allocates is: its working memory (arch/arm64/net/bpf_jit_comp.c at
+    v6.18, `bpf_int_jit_compile`: `jit_data` by kzalloc, the offsets by kvcalloc, the
+    image's writable copy by `bpf_jit_binary_pack_alloc`'s kvmalloc). The guest's
+    allocators place what is fresh at random (CONFIG_SHUFFLE_PAGE_ALLOCATOR and
+    CONFIG_SLAB_FREELIST_RANDOM in the release's config), so on HVF, whose stage-2 pages are
+    16 KiB, each fresh 4 KiB guest page can be a host page of its own.
+  - The fix built from it (D227): before a template's snapshot, init compiles one classic
+    program of a run's filter's size (512 instructions) in a child that ends with it
+    (crates/init/src/jit.rs), so that the slabs and pages a compile takes are in the
+    template, freed, for each restored run's compiles to take again. Its measurement is
+    owed: written.py, fleet.py (`--init-b`, the warm-up's init in B) and latency.sh on HVF
+    against the interpreter, done when a restored run's footprint and `command` latency
+    are within the interpreter's spread.
 - **Consequence.** D227 kept: kernel-6.18.48-fa4edcc82303 pinned (crates/shards/src/
   kernel.rs, tests/common, README). Its costs, recorded in D227: one 2 MiB pack per booted
   guest and template, 11 to 20 µs a filter load, and on Hypervisor.framework 0.43 MiB and
-  0.2 ms a run started from a template. Not measured: WHP's hyperv variant; whether
-  unprivileged filters are blinded stays D227's open question.
+  0.2 ms a run started from a template, which the warm-up (D227) is built to take back,
+  unmeasured. Whether unprivileged filters are blinded stays D227's open question.
 
 ### M497. Moves between two wired machines, cold and live, and a CPU baseline told and moved (D176 parts 6 and 7)
 
