@@ -447,6 +447,11 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
                     .map_err(|e| format!("--pci-slots: {e}"))?
             }
             "--pci-slots-iommu" => cfg.pci_slots_iommu = true,
+            // The CPU baseline its guest is told (D176 part 6), ID registers as its home keeps
+            // them.
+            "--cpu-baseline" => {
+                cfg.cpu_baseline = shards_vmm::arch::aarch64::cpu::decode(&text(value("--cpu-baseline")?)?)?
+            }
             "--vfio" => cfg.vfio.push(vfio(&text(value("--vfio")?)?)?),
             "--vfio-iommu" => cfg.vfio.push(vm::Vfio {
                 iommu: true,
@@ -694,6 +699,28 @@ static HAS_JOIN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::
 /// prepared, then on or stopped ([`Handle::save`]).
 pub fn save(save: vm::Save) -> Result<vm::Saved, String> {
     RUNNING.get().ok_or("the microVM has not started")?.save(save)
+}
+
+/// `shards-vm cpu`: this host's CPU as its hypervisor shows a guest, its ID registers on
+/// stdout as a CPU baseline is written ([`shards_vmm::arch::aarch64::cpu::encode`]), for its
+/// daemon (D176 part 6). The VM process's alone (crates/vm-process): shards carries this file
+/// for `run --kernel` and `restore`.
+#[allow(dead_code)]
+pub fn cpu() -> ExitCode {
+    match vm::host_cpu_id() {
+        Ok(id) => {
+            let _ = writeln!(
+                std::io::stdout(),
+                "{}",
+                shards_vmm::arch::aarch64::cpu::encode(&id)
+            );
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            let _ = writeln!(std::io::stderr(), "shards-vm: this host's CPU: {e}");
+            ExitCode::FAILURE
+        }
+    }
 }
 
 /// Copies this VM's memory for a live move into `out` (D176 part 7, `PRECOPY`), how it
