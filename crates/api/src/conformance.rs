@@ -12,7 +12,7 @@ use std::net::Shutdown;
 use std::time::{Duration, Instant};
 
 use crate::record::Learned;
-use crate::{Backend, End, Guest, GuestSpec, Guests, Refusal, backend_of, min_memory_mib};
+use crate::{Backend, End, Guest, GuestSpec, Guests, Identity, Refusal, backend_of, min_memory_mib};
 
 /// What the suite runs against.
 pub struct Subject<'a> {
@@ -74,7 +74,8 @@ pub fn run(s: &Subject<'_>) -> Result<(), Failure> {
     a_served_port_carries_bytes_and_a_half_close(s)?;
     an_unserved_port_is_refused(s)?;
     stop_ends_it_and_later_connects_are_refused(s)?;
-    a_guest_that_powers_off_ends_as_power_off(s)
+    a_guest_that_powers_off_ends_as_power_off(s)?;
+    a_guest_its_client_lost_is_taken_back_by_attach(s)
 }
 
 /// `backend()` is this host's, and macOS x86_64 and Windows arm64 have none, by name.
@@ -310,6 +311,62 @@ pub fn stop_ends_it_and_later_connects_are_refused(s: &Subject<'_>) -> Result<()
     match guest.connect(s.port, s.patience) {
         Err(Refusal::Ended(End::Stopped)) => Ok(()),
         other => Err(fail(CASE, format!("connect after stop: {:?}", other.err()))),
+    }
+}
+
+/// A guest whose client's handle is lost without its drop (a crashed client's: nothing of it ran
+/// on) is taken back by `attach` of its identity: the attached guest serves its port and stops as
+/// any guest does; once it has ended, attach of it is refused `Ended` or `Gone`, and attach of an
+/// identity whose start time differs (its pid since given another process) is refused `Gone`. On
+/// Windows, where a guest's VM ends with its client's process (D141), no client survives to attach,
+/// but in one process the guest still runs, so the case holds there too.
+pub fn a_guest_its_client_lost_is_taken_back_by_attach(s: &Subject<'_>) -> Result<(), Failure> {
+    const CASE: &str = "a guest its client lost is taken back by attach";
+    let guest = boot(CASE, s, &s.serving)?;
+    let identity = guest
+        .identity()
+        .map_err(|e| fail(CASE, format!("identity: {e}")))?;
+    // The client's crash: its handle goes without its drop, which would end the guest.
+    std::mem::forget(guest);
+    let other = Identity {
+        started: identity.started.wrapping_add(1),
+        ..identity.clone()
+    };
+    match s.guests.attach(&other, &s.serving) {
+        Err(Refusal::Gone { .. }) => {}
+        other => {
+            return Err(fail(
+                CASE,
+                format!("attach of a start time that isn't its: {:?}", other.err()),
+            ));
+        }
+    }
+    let back = s
+        .guests
+        .attach(&identity, &s.serving)
+        .map_err(|e| fail(CASE, format!("attach: {e}")))?;
+    let mut conn = back
+        .connect(s.port, s.patience)
+        .map_err(|e| fail(CASE, format!("connect after attach: {e}")))?;
+    conn.set_read_timeout(Some(s.patience))
+        .map_err(|e| fail(CASE, format!("its read timeout: {e}")))?;
+    conn.write_all(b"back")
+        .and_then(|()| conn.shutdown(Shutdown::Write))
+        .map_err(|e| fail(CASE, format!("writing after attach: {e}")))?;
+    let mut got = Vec::new();
+    conn.read_to_end(&mut got)
+        .map_err(|e| fail(CASE, format!("reading after attach: {e}")))?;
+    if got != b"back" {
+        return Err(fail(CASE, format!("echoed {got:?} after attach")));
+    }
+    back.stop().map_err(|e| fail(CASE, format!("stop: {e}")))?;
+    match back.wait_for(s.patience) {
+        Ok(Some(End::Stopped)) => {}
+        other => return Err(fail(CASE, format!("its end: {other:?}"))),
+    }
+    match s.guests.attach(&identity, &s.serving) {
+        Err(Refusal::Ended(_) | Refusal::Gone { .. }) => Ok(()),
+        other => Err(fail(CASE, format!("attach of an ended guest: {:?}", other.err()))),
     }
 }
 

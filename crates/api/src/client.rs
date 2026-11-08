@@ -22,7 +22,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use crate::stream::{self, Socket};
-use crate::{End, Guest, GuestSpec, Guests, Init, Refusal, Stream, allowed, backend, check};
+use crate::{End, Guest, GuestSpec, Guests, Identity, Init, Refusal, Stream, allowed, backend, check};
 
 /// The guests the `shards` binary boots: [`GuestSpec::binary`], else `SHARDS_BIN`, else
 /// `shards` on `PATH`.
@@ -63,6 +63,16 @@ impl Guests for Shards {
 
     fn boot(&self, spec: &GuestSpec) -> Result<Box<dyn Guest>, Refusal> {
         Ok(Box::new(start(spec)?))
+    }
+
+    /// Hex's proposal leaves the real client's attach to shards: finding the VM process by
+    /// pid and start time, re-dialing its vsock socket, and waiting on a process that is no
+    /// longer this one's child (a pidfd on Linux, `EVFILT_PROC` on macOS).
+    fn attach(&self, _identity: &Identity, _spec: &GuestSpec) -> Result<Box<dyn Guest>, Refusal> {
+        Err(Refusal::Unsupported {
+            what: "attach",
+            why: "the shards client does not take a guest back yet".into(),
+        })
     }
 }
 
@@ -685,6 +695,15 @@ impl Guest for ShardsGuest {
             self.signal(&state);
         }
         Ok(())
+    }
+
+    /// Hex's proposal leaves the real client's identity to shards: the VM process's pid, its
+    /// start time as its OS counts it, and the `--vsock` socket.
+    fn identity(&self) -> Result<Identity, Refusal> {
+        Err(Refusal::Unsupported {
+            what: "identity",
+            why: "the shards client does not name its guests yet".into(),
+        })
     }
 
     fn wait_for(&self, timeout: Duration) -> Result<Option<End>, Refusal> {

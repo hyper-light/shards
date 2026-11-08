@@ -187,6 +187,24 @@ pub enum Refusal {
     Channel { port: u32, why: String },
     /// The guest is gone.
     Ended(End),
+    /// No guest runs as the [`Identity`] names: its VM's process has ended, or its pid now names
+    /// another process (its start time differs).
+    Gone { pid: u32, why: String },
+}
+
+/// What names a booted guest beyond its client's process, so a client that restarts (crashed, say)
+/// takes it back with [`Guests::attach`]: its VM's process, by pid and the start time that tells it
+/// from a process given that pid since, and the socket its vsock is reached at. A client records it
+/// durably once the guest is booted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Identity {
+    pub pid: u32,
+    /// The VM process's start, as its OS counts it: Linux's `/proc/<pid>/stat` starttime (clock
+    /// ticks since boot, proc(5)); macOS's `proc_pid_rusage` `ri_proc_start_abstime` (Mach absolute
+    /// time); Windows' `GetProcessTimes` creation time (a FILETIME, 100 ns since 1601).
+    pub started: u64,
+    /// Where its vsock is reached (`--vsock`'s socket).
+    pub vsock: PathBuf,
 }
 
 impl std::fmt::Display for Refusal {
@@ -199,6 +217,7 @@ impl std::fmt::Display for Refusal {
             Refusal::Boot(why) => write!(f, "the guest did not boot: {why}"),
             Refusal::Channel { port, why } => write!(f, "vsock port {port}: {why}"),
             Refusal::Ended(end) => write!(f, "the guest has ended: {end:?}"),
+            Refusal::Gone { pid, why } => write!(f, "no guest runs as pid {pid}: {why}"),
         }
     }
 }
@@ -241,6 +260,15 @@ pub trait Guests: Send + Sync {
     /// Boots a guest; refused before boot past this host's bounds. It is the caller's
     /// until it drops, which ends it.
     fn boot(&self, spec: &GuestSpec) -> Result<Box<dyn Guest>, Refusal>;
+    /// Takes back the guest `identity` names, booted from `spec` by a client whose process has
+    /// gone since (a crash: nothing of it ran on, so nothing ended the guest), as [`boot`]'s
+    /// own: the caller's until it drops, which ends it. Refused [`Refusal::Gone`] when no guest
+    /// runs as `identity` names, [`Refusal::Ended`] when that guest has ended. On Windows a
+    /// guest's VM is in a job object that ends with the process that booted it (D141), so no
+    /// guest outlives its client there, and attach finds it gone.
+    ///
+    /// [`boot`]: Guests::boot
+    fn attach(&self, identity: &Identity, spec: &GuestSpec) -> Result<Box<dyn Guest>, Refusal>;
 }
 
 /// A booted guest. Dropping it ends it.
@@ -263,6 +291,8 @@ pub trait Guest: Send + Sync {
     /// Its end, once it has come, waiting at most `timeout` (`Duration::MAX`: until it
     /// comes).
     fn wait_for(&self, timeout: Duration) -> Result<Option<End>, Refusal>;
+    /// What names it for [`Guests::attach`].
+    fn identity(&self) -> Result<Identity, Refusal>;
 }
 
 /// The backend shards boots Linux guests with on `os` and `arch` (`std::env::consts`'):
