@@ -246,7 +246,7 @@ struct State {
     /// Its directory is a copy of the one its guest's tables were saved with, made on another
     /// machine (D176 part 6): a restore takes each node as the file at its path here.
     moved: bool,
-    /// Its guest is on another machine, its requests relayed (D215): no file is mapped
+    /// Its guest is on another machine, its requests relayed (D228): no file is mapped
     /// into a DAX window, whose memory is of that machine's, not this one's.
     windowless: bool,
 }
@@ -920,7 +920,7 @@ impl Server {
         self.state.lock().unwrap_or_else(PoisonError::into_inner).moved = true;
     }
 
-    /// Serves a guest on another machine, its requests relayed to this process (D215): its
+    /// Serves a guest on another machine, its requests relayed to this process (D228): its
     /// guest is told to map no file into a DAX window, which maps a file of the host the
     /// guest is on alone, and a mapping's descriptor is asked of no file here.
     pub fn serves_afar(&self) {

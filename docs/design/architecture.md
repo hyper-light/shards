@@ -1255,10 +1255,8 @@ for the exit status.
     containers when it shuts down (moby daemon/daemon.go `shutdownContainer`,
     daemon/stop.go): each command gets its run's stop signal (SIGTERM if it has
     none), then SIGKILL once its stop timeout is up (10 s if it has none, never if it
-    is negative), and its VM ends if the command outlives that by 5 s (dockerd's grace
-    after the longest stop timeout, `ShutdownTimeout`: open in docs/audit/
-    2026-10-16_docker-framing.md, to derive from how long a guest takes to say a killed
-    command's end). The settings are those
+    is negative), and its VM ends once its guest has had what tearing the command down
+    costs it and has since run nothing of it for a slice (D217). The settings are those
     the run was made with, read before its record is written if need be. A
     daemon that another build replaces does the same: two daemons never keep one home's
     records.
@@ -6382,6 +6380,59 @@ builds that ran steps did. `a_builds_cache_is_kept_as_its_user_set` (D186): a ch
 policy collected at the next build, which grew nothing. Measured: PM M426's harness,
 `build::gc::tests::a_collections_cost_by_records`.
 
+### D217. A kill waits as long as its microVM goes on ending, by what its host has shown; a freeze, to its end (built)
+
+**Found.** The audit of what was taken from Docker (docs/audit/2026-10-16_docker-framing.md):
+a microVM whose command outlived its SIGKILL had its VM killed 10 s later and its end given
+up 2 s after that (moby daemon/kill.go), a signal that could not be sent waited out 2 s
+(daemon/stop.go), a daemon's shutdown killed a VM whose command outlived its stop timeout
+by 5 s (daemon.go `ShutdownTimeout`), and a joiner's freeze (D119) gave up after 10 s
+(runc libcontainer cgroups/fs2/freezer.go `waitFrozen`). Each is a clock on work that ends
+as it ends: a SIGKILLed command ends as its guest's kernel frees what it held, which grows
+with it, 0.3 s for 16 GiB at p50 and 5.6 s beside a host's every CPU busy (PM M480), so
+that a microVM holding a few tens of GiB on a busy host outlives 10 s with nothing wrong;
+and a VM ended first loses what its guest had yet to write back (D119's joiner layers, a
+writable layer's metadata). A figure measured on shards' machines is as arbitrary on a
+user's host as Docker's.
+
+**Decided.**
+- **A teardown is followed, not timed** (daemon/ends.rs), as a start is (D209): once
+  SIGKILL is sent, by `stop`, `kill`, `rm -f`, `restart` or the daemon's own stop, its VM
+  process is looked at after a slice and each slice after, and waited on while it has run
+  more than an idle microVM does or held less than it did (`Progress`, PM M357's idle
+  CPU); its VM is killed only once it has gone on with nothing of its end for a whole
+  slice. A killed VM process is followed the same way, its host freeing it, before its end
+  is given up on. A joiner's VM is its provider's, which runs the provider's command too:
+  a joiner is held to one slice, then sent SIGKILL again, as before.
+- **The slice is the host's own.** Each end heard is kept in the home (`ends`: `teardown
+  MS`, `exit MS`, the slowest of each this home's daemons have heard, written whole and
+  renamed over), and a slice is the slowest of its kind there, so that a host whose guests
+  stall on its disk for 9 s before they end (PM M419) gives its teardowns that long, and
+  never less than the window over which `Progress` tells a microVM that runs from one
+  that runs nothing (`IDLE_VM_CPU`'s 10 s), which a home with no record yet takes alone:
+  below it a tick of CPU time reads as a run, and a pause of the host's as a stall.
+- **A signal that cannot be sent kills its VM at once:** the run's connection to its VM
+  is gone, the one its guest says its end on, so nothing it could wait for can come.
+- **A joiner's freeze has no deadline** (init's `freeze`): once `cgroup.freeze` is
+  written no process of the cgroup runs another instruction of its own, and `frozen 1`
+  comes as each leaves the kernel work it was in (cgroup-v2.rst), a volume's write as its
+  host's share server answers. A freeze given up on left the cgroup freezing while its
+  pause said it had failed. One whose work cannot end is ended by the joiner's own kill.
+  Measured, every freeze came within 0.23 s (PM M482).
+- **Kept: the stop timeout of 10 s** where a run sets none. It is the input's meaning, not
+  a wait on work: a Compose file's `stop_grace_period` left out is "10 seconds for the
+  container to exit before sending SIGKILL" (the Compose file reference), and a run's
+  `--stop-timeout` left out is read the same, the time its author gave its command to end
+  on its own.
+
+**Tested.** Unit tests (daemon/ends.rs): a home with no record gives each end the least
+slice; each slower end heard is kept, in the home too, and read back by the next daemon; a
+record it cannot read is none; an end is followed while its VM process runs, a joiner's
+never. On real microVMs, tests/containers.rs `a_kills_end_is_kept_as_this_hosts_in_its_home`:
+a kill's end kept in the home, its VM not killed under it; the stop, kill, pause and
+daemon-stop tests as before. Measured: PM M480 to M482, which validate the method (every
+teardown and freeze measured ends while it is followed) and are no figure of it.
+
 ### D188. A host short of memory gets back what its microVMs hold cold of their files (built)
 
 **Found.** The user's plan, item 4: memory that tracks the working set, reclaimed at the
@@ -6421,8 +6472,20 @@ host (PM M267), where a container's page cache is its host's to drop. Free page 
   before asked nothing more until it has answered or been ended: passes that asked one
   microVM after another, each waiting up to 10 s for an answer and then for its end,
   waited on a guest whose own memory its host had taken for minutes, and gave back 3 times
-  in 600 s (PM M308). One with no answer within 10 s is said to have had none, and is
-  ended.
+  in 600 s (PM M308). Each is waited for as long as its microVM's process runs (more CPU
+  in each 10 s than an idle microVM takes, M357's bound, as D209's waits judge a start),
+  and one that runs nothing for 10 s is said to have had no answer, and is ended: a
+  microVM over its budget's `memory.high` is slowed by its host for as long as it is over
+  it, and the answers of one asked to give back what would bring it under, and to hear
+  its room after, came past a 10 s deadline as its host let it run, which ended them, its
+  budget's word never said or saying nothing given back (PM M467). A group's give-backs,
+  macOS's and Windows', which no kernel slows, keep the 10 s.
+- **A budget falling short waits for its host's give-back** (PM M467): where a give-back
+  of the host's pressure is under way in the microVM, the budget's own asks once it has
+  ended, its room read again; and its word says what its host's pressure had it give back
+  and ask to unplug since the word before, which the host's own word says once a minute
+  at most: a budget set just after the host had taken what it held cold found nothing to
+  give back, and its word said nothing given back.
 - **Held within what its budget leaves it** (PM M309). Where the cgroup a microVM's VM
   process is in, or one above it, holds it to a budget (`memory.high` or `memory.max`, a
   slice's `MemoryHigh` or `MemoryMax`, D183), the host can take back only page cache from
@@ -6642,6 +6705,22 @@ host (PM M267), where a container's page cache is its host's to drop. Free page 
   same build held under a budget that presses nothing: a build under a budget hands its
   own writes to its writer (below), so a free build's peak, which counts them, left a
   held build room it never filled (c3ce85e).
+  A builder's room counts the file pages its processes map only where they are charged to
+  the budget (`daemon::budget::charged_room`), where a run's counts them wherever charged
+  (above). A builder boots cold, its guest's RAM its VM process's own memory, charged to
+  the budget; what it maps charged elsewhere is its bases' images on its pmem devices and
+  its VM process's program, page cache an earlier build or run read, which no reclaim of
+  the budget takes (mm/vmscan.c `shrink_node_memcgs` scans the budget's own memcgs) and
+  which, taken back by another's and read again, comes back charged to it and counted
+  then; a run's guest maps its own RAM from its template (PM M309). Counted wherever
+  charged, they made a held build's count exceed its scope's `memory.current` by exactly
+  them at every held peak on CI's runners (13 to 14 MiB for npm, 55 to 64 for apt, 99 to
+  100 for rust over rust:1-slim; d9c42120, PM M442), and a budget short of the build's
+  charge by what its builder held cold told its guest it was short by them besides, which
+  holds its build at what it uses (init's `ROOM`): builds of 10 s took 246 to 622 s
+  (573e4bf8). The harness now holds each build to its held arms' own peak in that count
+  less what its builder held cold, so that every held build is pressed; measured at the
+  commit that has it (PM M442).
   Before the writer (2d168658), held builds on CI's runners were 0.4 to 16 s slower in the
   steps that write to the host's disk, which the memory controller holds to the budget's
   share of dirty pages (`balance_dirty_pages`): the builder, held within room it never
@@ -7556,7 +7635,7 @@ share made ahead), and a disk's capacity was fixed when its file was opened.
   has a spare one bound to vfio-pci: tested nested, on QEMU edu's model); the guest's
   remove's 29 ms on KVM x86_64, not yet split (PM M430).
 
-### D215. A client's paths are its own; the machine's are its owner's to grant (built)
+### D228. A client's paths are its own; the machine's are its owner's to grant (built)
 
 **The need.** Through a context (D180) a laptop runs microVMs on a GPU or x86_64 machine.
 Until now a command it sent ran as that machine's CLI, so `-v /home/me/src:/src` bound the
@@ -7593,8 +7672,21 @@ its owner's grant, default deny, as shards' networks are.
   another's), the step's stream the other, and the run's start takes it (`take_relay`): its
   share process hands the VM that socket as the share's end as it is (share.rs), so the
   guest's FUSE requests reach the client's server byte for byte and its answers come back.
-  Nothing of the machine's is opened for it; a source of the prefix in an owner's run, or a
-  client's bind of any other source, is refused (`refuse_bind`).
+  On a Windows machine, whose shares' streams are pipes its daemon makes (D197), the relay
+  is such a pair (`shards_ipc::byte_pair`): the step reads and writes its end through
+  overlapped handles of its own (`platform::PipeStream`), and the run's request hands the
+  VM the other in the share's place, the share process started for the machine's own
+  shares alone, none where every share is a client's (`started_shares`, a pipe's handle
+  told apart from a directory's by GetFileType). Nothing of the machine's is opened for it;
+  a source of the prefix in an owner's run, or a client's bind of any other source, is
+  refused (`refuse_bind`). A run joining another's microVM (`--network container:NAME`)
+  takes none, its volumes its join share's (D119).
+- **Plugged in as it runs** (`shards plug volume MICROVM DIR:PATH[:ro]`, D214): a directory
+  of the client's is sent as its relay and served apart, as a detached run's binds are; the
+  machine gives the VM the relay's end as the plugged share's stream, starting no share
+  process, and the relay ends as the share is unplugged or its microVM ends. A named
+  volume plugged in is the daemon's, judged by the client's grants where it binds a
+  directory of the machine's.
 - **What the relay gives.** The same server, so the same semantics as a bind of a local
   directory: no FUSE writeback cache is negotiated (server.rs `INIT` offers none), so a
   guest's write reaches the client's file before its `write(2)` returns; the guest's page
@@ -7603,7 +7695,7 @@ its owner's grant, default deny, as shards' networks are.
   second (`VALID_S`), as a local share's are. Only the cost differs, each request a round
   trip to the client: over loopback on the GPU desktop an open, a 4 KiB read and a close
   took 251 µs at p50 and 399 at p99 against the machine's own bind's 136 and 206, a 64 MiB
-  read 458 MiB/s against 468, a write 572 MiB/s against 2,157 (PM M463). No DAX window: a mapping maps a file of the host the
+  read 458 MiB/s against 468, a write 572 MiB/s against 2,157 (PM M511). No DAX window: a mapping maps a file of the host the
   guest is on, so the client's server tells its guest to map nothing (`serves_afar`: no
   `FUSE_HAS_INODE_DAX`, no `FUSE_ATTR_DAX`) and refuses a mapping's descriptor (EINVAL,
   `answer_afar`).
@@ -7661,14 +7753,19 @@ directory and a file bound alone read in a microVM there, its writes landing on 
 read-only refused, a detached run's write landing; nothing of the laptop's made on the
 machine; a client's volume of the machine's directory refused, the owner's refused to the
 client until granted read-only, then refused read-write, and refused again once revoked; a
-named volume the client's; and `--gpus` refused without a grant. And
+named volume the client's; `--gpus` refused without a grant; and a directory of the
+laptop's plugged into a running microVM there, read and written there, gone once unplugged. On
+adacachy2 (Linux 7.3, KVM) and Fedora at 34408c9d, and with the plugged directory on
+adacachy2 and on jupiter (Windows 11, WHP; the machine's side a Windows
+daemon's, the relay its pipe pair). And
 `a_contexts_engine_is_its_machines`: a create through the context's engine binding a
 directory of the machine's refused.
 
-**Not yet.** A Windows machine serves no client's directory (its shares' streams are pipes
-its daemon makes, D197): refused, said so. Docker's CLI through a context serves none of
-its client's directories, as its API names a path alone. `plug volume` of a client's own
-directory. A context's relays measured across two machines (PM M463 has loopback alone).
+**Not yet.** Docker's CLI through a context serves none of its client's directories, as its
+API names a path alone. A context's relays measured across two machines (PM M511 has
+loopback alone). A command whose run goes on without it that fails ends the process serving
+its binds apart; one that succeeds but whose microVM is never started (`create`, then no
+`start`) keeps it serving until its client ends it.
 
 ### D227. The guest kernel compiles BPF programs, and has no interpreter (pinned, PM M489)
 
@@ -10417,9 +10514,25 @@ peer", each going on here as it should. What changed for them:
   with it, and a plan carries it (`Plan::baseline`): the machine moved to checks each field
   against what its own hypervisor shows (`covers`), not the machine it ran on's whole set;
   and by name only the features no register of the baseline can hide, on
-  Hypervisor.framework ID_AA64ISAR2_EL1's (FEAT_WFxT, FEAT_RPRES, FEAT_CSSC, FEAT_HBC), which
-  it neither says nor lets a VMM set (PM M460, `feature_register`). On arm64 only: x86_64's
-  CPUID has `covers` and no meet yet, and `configure cpu` says so there.
+  Hypervisor.framework ID_AA64ISAR2_EL1's, which it neither says nor lets a VMM set (PM
+  M460, `feature_register`): FEAT_CSSC and FEAT_HBC. Its FEAT_WFxT and FEAT_RPRES the
+  framework shows no guest where macOS names them (an M4 Max's guest finds no `wfxt`, an M3
+  Ultra's and an M4 Max's no `rpres`, PM M499), so no move checks them, and the baseline
+  test holds it on each Mac it runs on. A guest is shown less than the features macOS
+  names in registers the framework does say too (an M4 Max's finds no `i8mm`, ISAR1's),
+  which a baseline's fields, the hypervisors' own views, take in. On
+  arm64 only: x86_64's CPUID has `covers` and no meet yet, and `configure cpu` says so
+  there; between the two Linux hosts measured (one CPU model, Linux 7.2 and 7.3) every move
+  went through without one (PM M497).
+- **A listener that outlives its runner's restarts** (two-hosts.sh, the harness of these
+  measurements). A runner that restarts ends what its runs started, the listening daemon
+  among them, and kiln's ends a launchd job a session starts within seconds (3 s on the M3
+  Ultra, PM M499), so no process of a run outlives it there. What does is the listening
+  home: `listen` run again on it listens as the same daemon, its key and the clients it
+  enrolled kept, inviting none, and the mover's series waits for it (`WAIT_PEER`), moving
+  again a move whose error says the daemon was gone (`PEER_GONE`), counted apart from the
+  failures; a hold restarts a daemon that ends while it lives. `two-hosts.sh restart` holds
+  it on one machine (PM M499).
 
 Between two machines on a wired gigabit link (two AMD Ryzen 9 9950X3D2 hosts, Linux 7.3.3
 to 7.2.9, KVM), n 20 cold: a move took 0.95 s at p50, 1.16 at p90 and 9.99 at most, and
@@ -17153,6 +17266,29 @@ Measured differences, kept:
 - Rule indices with more than 8 distinct refs or keys range over Go's larger maps in
   hash order, which can't be reproduced. Lookups there may list rules in another of the
   orders OPA could take.
+
+Hostile policies. A policy may be anyone's (a remote context's, D111), so the engine is
+held to more than OPA's answers:
+- No panic (the workspace's lints), and no stack overflow: the policy thread's stack is
+  measured (M126), and an evaluation deeper than it ends in an error.
+- Two fuzz targets run it on what a policy can send: `fuzz/fuzz_targets/rego.rs`, a
+  policy's text and input through the parser, compiler and evaluation (partial and
+  whole), and `rego-builtins.rs`, any builtin with any operands. CI runs each for 60 s
+  with the other targets. Twenty minutes of each found no panic (M510).
+- Work that grew faster than OPA's, or as fast where it need not, was found by fuzzing
+  and M160's shapes and taken out, each holding OPA's answers: glob.match's
+  minimizeMatchers (cubic in a pattern's matchers in gobwas and OPA: 50.8 s for a 6 KB
+  pattern, now 6.5 ms); the type checker checking each comprehension again for each
+  walk that meets it (three times as long each level: 12 deep 3.25 s, now 0.5 ms); the
+  safety check's and print rewrite's outputs read again for each expression, and each
+  equality copying the whole safe set (cubic: 1000 closures in a body 42 s, now 0.48 s).
+- Left, as OPA's: rewriteLocalVars walks an `every` statement again after its body and
+  numbers the comprehensions within it anew, twice the work each level they alternate
+  (20 deep 9.3 s; OPA takes 7 minutes at 12), and the numbers are in what OPA compiles
+  and partial evaluation leaves, so a shortcut must number as the walk does; rule wrap's
+  type check is quadratic (10000 rules 24.9 s). Evaluation asks no bound of a policy, as
+  OPA's does not (`numbers.range` over any span); a build's policies run in its own
+  process, which Ctrl-C ends, as buildx's end with its build's context.
 
 ### D97. OSI artifacts of several platforms: an index
 

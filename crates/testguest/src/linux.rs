@@ -4429,7 +4429,9 @@ fn bpf_costs() -> Result<(), String> {
     };
     let nothing = || true;
     let nnp = || unprivileged() && load();
-    let arms: [(&str, &dyn Fn() -> bool, &dyn Fn() -> bool); 11] = [
+    // An arm: its name, what readies it, and the call it times.
+    type Arm<'a> = (&'a str, &'a dyn Fn() -> bool, &'a dyn Fn() -> bool);
+    let arms: [Arm<'_>; 11] = [
         ("clock", &nothing, &nothing),
         ("none/getppid", &nothing, &getppid),
         ("none/personality", &nothing, &personality),

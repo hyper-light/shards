@@ -1,7 +1,8 @@
 diff --git a/crates/init/src/build.rs b/crates/init/src/build.rs
+index f74739781..267a52dc9 100644
 --- a/crates/init/src/build.rs
 +++ b/crates/init/src/build.rs
-@@ -238,6 +238,14 @@
+@@ -243,6 +243,14 @@ fn serve() -> io::Result<()> {
          crate::plug::answer_give_backs(give)?;
      }
      let conn = dial(build::PORT, true)?;
@@ -16,7 +17,7 @@ diff --git a/crates/init/src/build.rs b/crates/init/src/build.rs
      let mut b = Builder {
          conn,
          bases: HashMap::new(),
-@@ -266,6 +274,7 @@
+@@ -271,6 +279,7 @@ fn serve() -> io::Result<()> {
              kind::STEP => {
                  let step = Step::decode(&payload).ok_or_else(|| err("a malformed step"))?;
                  b.step(&step)?;
@@ -25,10 +26,10 @@ diff --git a/crates/init/src/build.rs b/crates/init/src/build.rs
              kind::EMULATE => {
                  let why = b
 diff --git a/crates/init/src/plug.rs b/crates/init/src/plug.rs
-index ef8f442a9..a47951ae5 100644
+index e54ac38b4..8e8ff5a13 100644
 --- a/crates/init/src/plug.rs
 +++ b/crates/init/src/plug.rs
-@@ -674,6 +674,46 @@ fn peak_since(used: u64) -> u64 {
+@@ -708,6 +708,57 @@ fn peak_since(used: u64) -> u64 {
      peak.max(used)
  }
  
@@ -57,18 +58,29 @@ index ef8f442a9..a47951ae5 100644
 +        .checked_next_multiple_of(ALIGN)
 +        .unwrap_or(u64::MAX)
 +        .min(most);
++    // builder-pressure: how often the build's kernel throttled it past its hold (its
++    // memory.events' `high`), the hold itself, and the major faults and file refaults its
++    // pages cost it so far.
++    let events = std::fs::read_to_string(format!("{cgroup}/memory.events")).unwrap_or_default();
++    let high_events = events
++        .lines()
++        .find_map(|l| l.strip_prefix("high ").and_then(|v| v.trim().parse::<u64>().ok()))
++        .unwrap_or(0);
++    let hold = number(&format!("{cgroup}/memory.high")).unwrap_or(u64::MAX);
 +    let mut t = libc::timespec { tv_sec: 0, tv_nsec: 0 };
 +    // SAFETY: clock_gettime(2) writes `t`.
 +    unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut t) };
 +    format!(
-+        "builder-cold t_ms {} current {current} peak {peak} file {} active_file {} inactive_file {} anon {} shmem {} swap {swap} total {total} free {free} boot {boot} plugged {plugged} asked {asked} most {most} past_twice_used {}",
++        "builder-cold t_ms {} current {current} peak {peak} file {} active_file {} inactive_file {} anon {} shmem {} swap {swap} total {total} free {free} boot {boot} plugged {plugged} asked {asked} most {most} past_twice_used {} hold {hold} high_events {high_events} pgmajfault {} refault_file {}",
 +        t.tv_sec * 1000 + t.tv_nsec / 1_000_000,
 +        field("file"),
 +        field("active_file"),
 +        field("inactive_file"),
 +        field("anon"),
 +        field("shmem"),
-+        plugged.saturating_sub(keep)
++        plugged.saturating_sub(keep),
++        field("pgmajfault"),
++        field("workingset_refault_file")
 +    )
 +}
 +
@@ -76,9 +88,10 @@ index ef8f442a9..a47951ae5 100644
  /// back (D188), from what its microVM booted with (`boot`), the most it may have plugged,
  /// what stays of what it has plugged ([`staying`]) and has asked to have, what it uses and
 diff --git a/crates/shards/src/build/builder.rs b/crates/shards/src/build/builder.rs
+index 438450c21..9ea41d1cf 100644
 --- a/crates/shards/src/build/builder.rs
 +++ b/crates/shards/src/build/builder.rs
-@@ -417,10 +417,23 @@
+@@ -566,10 +566,23 @@ fn launch(
      };
      let null = std::fs::File::open("/dev/null").map_err(|e| format!("/dev/null: {e}"))?;
      let err = io::stderr();
@@ -104,7 +117,7 @@ diff --git a/crates/shards/src/build/builder.rs b/crates/shards/src/build/builde
          (side.region.as_fd(), crate::netproc::VM_FDS[0]),
          (side.sleeps.as_fd(), crate::netproc::VM_FDS[1]),
          (side.rings.as_fd(), crate::netproc::VM_FDS[2]),
-@@ -627,7 +640,6 @@
+@@ -809,7 +822,6 @@ impl Builder {
              vsock.clone().into(),
              "--net".into(),
              crate::netproc::VmSide::arg(&mac).into(),

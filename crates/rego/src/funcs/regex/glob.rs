@@ -1543,7 +1543,7 @@ mod tests {
 
     /// `{a}b` n times: 2n texts, which minimizeMatchers glues into one row. OPA v1.14.1
     /// takes 41 to 45 s over n = 1500, gluing each of its runs to judge it, and this
-    /// port took 141 to 157 s before; now 47 to 49 ms, with the same answer (PM M462).
+    /// port took 141 to 157 s before; now 47 to 49 ms, with the same answer (PM M510).
     #[test]
     fn a_pattern_of_many_matchers_compiles_in_time() {
         if cfg!(debug_assertions) {

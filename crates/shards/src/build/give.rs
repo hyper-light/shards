@@ -77,12 +77,13 @@ fn own_cgroup() -> Option<std::path::PathBuf> {
     Some(std::path::Path::new(crate::daemon::budget::ROOT).join(path.trim_start_matches('/')))
 }
 
-/// The room the budget over this process's cgroup leaves its builders, as the daemon works
-/// out a run's (`daemon::budget::room`, nothing of theirs evicted): none where no cgroup it
-/// is in has a budget, or none is to be read (macOS).
+/// The room the budget over this process's cgroup leaves its builders, as its kernel
+/// charges it (`daemon::budget::charged_room`: the file pages their processes map counted
+/// where charged to it, not wherever, as a run's are): none where no cgroup it is in has a
+/// budget, or none is to be read (macOS).
 fn room() -> Option<i64> {
     let root = std::path::Path::new(crate::daemon::budget::ROOT);
-    crate::daemon::budget::room(&own_cgroup()?, root, &mut |_| 0).map(|(room, _)| room)
+    crate::daemon::budget::charged_room(&own_cgroup()?, root).map(|(room, _)| room)
 }
 
 /// What wakes the watcher: its host's word that it is short of memory, a budget over the

@@ -5179,7 +5179,7 @@ revision before comparing a changed API/implementation.
   Every case answers as OPA answers (results, or the first error of the same list) but
   for the two marked. 99990 deep with x unused, OPA's memory passed 48 GiB in 64 s,
   when it was stopped (one run outside the harness, watched for its memory).
-- **Open.** Shapes both still take time growing with the square or faster, from a
+- **Open.** (Comprehensions nested, print calls and closures closed since by M510.) Shapes both still take time growing with the square or faster, from a
   policy of a few kilobytes; shards' whole check, one run each (the same harness), and
   OPA's (`run`, one run each):
 
@@ -18425,6 +18425,30 @@ revision before comparing a changed API/implementation.
   caches are read and written for its guest outside its budget, by its writer, as its own
   files are: what a budget takes back first, with no swap, is no longer the files the
   build reads again.
+- **Since d9c42120: every held build pressed, and a builder's room as its kernel charges
+  it.** The four runners' apt builds above were never pressed, and a budget set below what
+  a build counts as held made 10 s builds take 246 to 622 s (573e4bf8, above). Both have one
+  cause in the build's count: it held the file pages its processes map wherever charged
+  (each process's `Pss_File`), and at every held peak of runs 42496009314 and 42496014878
+  it exceeded the scope's `memory.current` by exactly the pages mapped and charged
+  elsewhere (`Pss_File` less memory.stat's `file_mapped`): 13 to 14 MiB for npm, 55 to 64
+  for apt, 99 to 100 for rust, its base rust:1-slim on the builder's pmem device. So a
+  budget in that count left the kernel that much more room (apt's held arms never reached
+  their `memory.high`), and a budget short of the kernel's charge told the guest it was
+  short by them besides, which holds its build at what it uses and reclaims as many of its
+  file pages (init's `ROOM`, `plug::hold_within`). A builder's room now counts them only
+  where charged to the budget (`daemon::budget::charged_room`, D188): no reclaim of the
+  budget takes pages charged elsewhere (mm/vmscan.c `shrink_node_memcgs`), and read again
+  once another's takes them they come back charged to it, counted then. The harness counts
+  as the build does now, and holds each build to its held arms' own peak less the most its
+  builder held cold in that arm: a round 0 settling arm, under the peak of a round 0 arm
+  held under the host's whole memory, sets it for rounds 1 on (a builder told the host's
+  whole memory as its room plugs and holds more, and a budget from that arm was 4 to 49 MiB
+  past the later rounds' peaks on the four runners). Its samples now say what the pressure
+  cost: the guest's major faults, file refaults and throttles past its hold (cold.patch),
+  the VM process's major faults and the host's throttles of the scope (memory.events), and
+  the least room the build told against the least its budget left as the kernel charges it
+  (tables.py). To measure: `builder-pressure.yml` and `fedora.sh` at the commit that has it.
 
 ### M443. A restart over the kept layer file itself, and what the guest freed given back (D190)
 
@@ -18937,6 +18961,45 @@ revision before comparing a changed API/implementation.
   used.
 - **Consequence.** D176 parts 6 and 7 record these as the two-machine numbers. Still to
   measure: the M3 Ultra and an M4 Max with a baseline, both ways, and the Studios' Wi-Fi.
+
+### M499. What a Hypervisor.framework guest is shown of its host's CPU, and a listener that outlives its runner (D176 part 6)
+
+- **Question.** A move between Macs is checked by the features macOS names
+  (`hw.optional.arm.FEAT_*`): does a guest find them? And can the listening end of a
+  two-machine series outlive a kiln runner's restart, which ends what its runs started?
+- **Method.** At abcea5f5, 2026-11-08: `shards run --rm alpine:3.20 grep -m1 Features
+  /proc/cpuinfo`, no CPU baseline, a fresh home each, on Adas-Mac-Studio (Apple M3 Ultra,
+  macOS 26.4) and Adas-Mac-Studio-4 (Apple M4 Max, macOS 26.2), beside `sysctl
+  hw.optional.arm` on each (the M4 Max's as Adas-Mac-Studio-3's, an M4 Max on 26.2 too, says
+  it). A launchd user agent (`launchctl bootstrap gui/UID`, a shell loop trapping SIGTERM
+  and writing the time) started by a kiln run on the M3 Ultra. docs/research/measurements/
+  migrate/two-hosts.sh `restart` at 9a6f5ac5 (the script; shards at abcea5f5) on adacachy
+  (Linux 7.2.9, KVM): two homes, 4 cold moves, the listening daemon and its hold sent
+  SIGTERM as the second microVM started, `listen` run again on its home 10 s later.
+- **Found.**
+  - Guests' Features, the two the same but `i8mm`, which the M3 Ultra's has and the M4
+    Max's not: `fp asimd evtstrm aes pmull sha1 sha2 crc32 atomics fphp asimdhp cpuid
+    asimdrdm jscvt fcma lrcpc dcpop sha3 asimddp sha512 asimdfhm dit uscat ilrcpc flagm sb
+    paca pacg dcpodp flagm2 frint [i8mm] bf16 bti afp`. Neither has `rpres` or `ssbs`
+    (macOS names FEAT_RPRES on both, FEAT_SSBS on the M3 Ultra), nor the M4 Max's `wfxt`
+    or any of `sme` (FEAT_WFxT, FEAT_SME, FEAT_SME2 named there), nor `i8mm` on the M4 Max
+    (FEAT_I8MM named there).
+  - The launchd agent was sent SIGTERM 3 s after it started.
+  - `restart`: move 2's client found no daemon ("no shards daemon answered at
+    127.0.0.1:7443 within 10s"; the microVM went on here); the series waited, moved it
+    again once `listen` had listened again on the home, the context's enrollment and the
+    daemon's key as they were, and moves 2 to 4 went through: 4 moved, 0 failed, 1 moved
+    again. Before the error was read too, the series counted that move failed: the daemon
+    was back by the time the client's 10 s wait ended.
+- **Reading.** Hypervisor.framework shows a guest ID_AA64ISAR2_EL1's WFxT and RPRES on no
+  host measured, and less than macOS names in ISAR1 too: what macOS names is no measure of
+  what a guest found, which the hypervisors' views a baseline meets are. Under kiln no
+  process a run starts outlives its runner; its home does.
+- **Consequence.** A move checks neither FEAT_WFxT nor FEAT_RPRES by name on macOS
+  (9a6f5ac5), the baseline test asserting that a guest finds neither on each Mac it runs
+  on; two-hosts.sh's `listen` listens again on a kept home, and its series wait for the
+  listener and move again what its going cut short (D176 part 6). Not measured: an M5's
+  guest (FEAT_CSSC, FEAT_HBC, still checked by name).
 ### M422. Whether a Hypervisor.framework guest given EL2 has VHE (the parity plan's step 10)
 
 - **Question.** Step 10's host is to be Windows 11 arm64 under QEMU on this Mac, given EL2
@@ -19082,10 +19145,10 @@ revision before comparing a changed API/implementation.
   session), which alone says whether Hyper-V's SGIs and timers hold across a 64-vCPU
   snapshot at a native host's timing.
 
-### M463. What a client's bind through its context costs its guest (D215)
+### M511. What a client's bind through its context costs its guest (D228)
 
 - **Question.** A client's bind is its own directory, each FUSE request its microVM's share
-  makes relayed over the context's QUIC to the client's share server (D215). What does that
+  makes relayed over the context's QUIC to the client's share server (D228). What does that
   cost a guest's opens, reads and writes against the machine's own bind of the same files?
 - **Method.** docs/research/measurements/client-binds/run.sh 10 (`what_a_clients_bind_costs`,
   tests/context.rs) at 703c6a06 on adacachy2 (the GPU desktop: x86_64, 32 cores, CachyOS,
@@ -19113,7 +19176,7 @@ revision before comparing a changed API/implementation.
   430 µs. With the machine's DAX window on, its own bind's opens cost 513 µs at p50 and its
   64 MiB read 9.5 MiB/s on this host, slower than the relay's: every file of 1 MiB or more is
   mapped (DAX_SMALLEST), and on this host a mapped read is far slower than FUSE's; not
-  D215's, and open (D189's to explain on this kernel).
+  D228's, and open (D189's to explain on this kernel).
 - **Not measured.** Two machines apart (Mac Studios on one network: their runners did not
   take this run on 2026-11-08); a Mac's own; latency under a lossy link.
 
@@ -19681,6 +19744,140 @@ revision before comparing a changed API/implementation.
 - **Owed:** the same on macOS; the harness again on Fedora with the slope build, setting
   the daemon's learned figures (its log, `restart-costs`) beside these.
 
+### M480. What a SIGKILL's end costs a microVM by what its command holds (D217)
+
+- **Question.** A SIGKILLed command's VM was killed 10 s after the SIGKILL, moby's
+  kill.go figure (`KILL_WAIT`), and a shutting-down daemon's 5 s past the stop timeout
+  (`SHUTDOWN_KILL`). How long does a guest take to tear a killed command down, by what it
+  holds and how its host is loaded, and is that work its VM process runs, so that the wait
+  can follow it (D209)?
+- **Method.** containers.rs `kills_cost_by_what_the_command_holds` (ignored;
+  docs/research/measurements/kill-waits/run.sh): for 64, 1,024, 4,096 and 16,384 MiB and
+  three shapes, one process of one thread (`one`), one of 64 threads (`threads`) and 16
+  processes of 4 threads under the command (`tree`), 5 runs of the test guest's `held`
+  each hold that much, every page touched, and are killed by `shards kill`, which waits
+  for the end its guest says: each kill's time, and per GiB its VM process held (resident
+  or footprint, the more). With nothing beside it, then beside as many threads spinning
+  on the host as it has CPUs. n, p50, p90, p99 and max (nearest rank), ms.
+- **Found, Fedora** (Intel Core i9-14900HX, 32 CPUs, Linux 6.19.10-300.fc44, KVM;
+  7f4e8e46's tree; the host's own load 11 to 26 beside the measurement, other agents'):
+  - quiet: 64 MiB, its VM process 0.31 GiB: `threads` p50 8.6, max 14.8; `tree` p50 8.6,
+    max 12.7. 1,024 MiB (1.3 GiB): `one` p50 27.1, max 41.6; `threads` p50 50.6, max
+    103.5; `tree` p50 82.8, max 140.5. 4,096 MiB (4.4 GiB): p50 99.3 to 181.8, max 146.5
+    to 394.1. 16,384 MiB (16.8 GiB): `one` p50 723.8, max 773.0; `threads` p50 798.6, max
+    846.6; `tree` p50 307.8, max 936.7. Per GiB held, 18 to 64 ms at p50, 110 at most.
+  - beside 32 spinning threads: 64 MiB p50 23.0 to 34.4, max 381.2; 1,024 MiB p50 73.5
+    to 110.6, max 135.0; 4,096 MiB p50 204.5 to 355.7, max 446.6; 16,384 MiB `one` p50
+    1,255.2, max 1,551.9; `threads` p50 1,458.0, max 2,107.2; `tree` p50 1,111.7, max
+    5,612.4. Per GiB, 45 to 111 ms at p50, 1,211 at most (a 0.32 GiB run's 381 ms).
+  - Every kill ended: none was cut, the most 5.6 s.
+- **Found, a Mac Studio** (Apple M3 Ultra, 32 CPUs, macOS 26.4, Hypervisor.framework;
+  7f4e8e46; the host's own load 21 to 26 before the measurement and 56 to 66 at its end,
+  other agents'):
+  - quiet: 64 MiB (0.32 GiB) p50 19.2 to 19.5, max 24.3; 1,024 MiB p50 26.1 to 35.7, max
+    70.1; 4,096 MiB p50 84.3 to 111.2, max 339.2; 16,384 MiB (16.8 GiB) p50 187.0 to
+    296.8, max 392.6. Per GiB, 11 to 60 ms at p50, 77 at most.
+  - beside 32 spinning threads, `one` and `threads`: 64 MiB p50 14.1 to 18.7, max 23.3;
+    1,024 MiB p50 27.5 to 31.7, max 45.2; 4,096 MiB p50 79.9 to 94.3, max 122.7; 16,384
+    MiB p50 285.4 to 301.9, max 554.3.
+  - beside 32 spinning threads, `tree` (16 processes): 1,024 MiB p50 31.1, max 1,189.2;
+    4,096 MiB p50 2,952.3, p90 59,529.2, max 59,529.2; 16,384 MiB p50 48,256.4, p90 and max
+    121,856.5: at least 4 of these 10 outlived moby's 10 s.
+- **Reading.** A teardown is work that grows with what the command holds, by 11 to 110
+  ms a GiB on a quiet host, more on a loaded one: on the Mac a tree of 16 processes beside
+  a host whose every CPU was busy took 2 minutes for 16.8 GiB. A fixed wait is short for
+  a microVM holding GiB on a busy host and long for a small one on a quiet host, and no
+  figure from one host holds on another. Its
+  work is the guest kernel's freeing, on the VM's vCPUs, which its VM process's CPU time
+  counts (proc(5): `utime` includes `guest_time`, the time a virtual CPU ran), so following that time tells a teardown going on from a guest that has stalled.
+- **Consequence.** D217: a teardown is followed while its VM process runs or frees, its
+  VM killed only after a slice with neither; the slice is the slowest end the host has
+  shown (the home's `ends`), never less than `Progress`'s window. These numbers validate
+  that method on this host; no constant is taken from them.
+
+### M481. What a killed VM process's end costs, by what it held (D217)
+
+- **Question.** Once a VM was killed, its end was given up on 2 s later (`LAST_WAIT`,
+  moby's). How long does a host take to end a killed VM process, by what it holds?
+- **Method.** containers.rs `kills_cost_by_what_the_command_holds`, after each size's
+  kills: 5 runs holding that much (`held` of one thread) whose VM processes are killed
+  outright (SIGKILL), each's end, as no longer alive, after its kill; quiet, then beside
+  the spinning threads. n, p50, p90, p99 and max, ms.
+- **Found, Fedora** (as M480): quiet, 0.31 GiB p50 40.9, max 45.1; 1.3 GiB p50 82.0, max
+  109.0; 4.4 GiB p50 279.6, max 685.1; 16.8 GiB p50 524.9, max 1,431.5. Beside 32 spinning
+  threads, 0.31 GiB p50 128.2, max 277.2; 1.3 GiB p50 43.6, max 61.0; 4.4 GiB p50 80.8, max
+  88.2; 16.8 GiB p50 779.2, max 1,047.9.
+- **Reading.** A killed VM process's end is its host freeing what it held, which its
+  resident memory shows falling as it goes: the killed microVM is followed by that, as its
+  teardown is by its CPU (D217).
+
+### M482. How long a joiner's freeze takes by what it does (D217)
+
+- **Question.** A joiner's pause (D119: its cgroup frozen in its provider's guest) gave up
+  after 10 s, runc's `waitFrozen`. How long does a freeze take a busy joiner, and does what
+  it waits for end as the joiner's own work does?
+- **Method.** containers.rs `freezes_cost_by_what_a_joiner_does` (ignored; run.sh): a
+  provider and, joined to it in turn, the test guest's `busy spin 64` (64 threads
+  spinning), `busy procs 64` (64 processes spinning) and `busy write 8` (8 threads each
+  writing a MiB to a file and syncing it, over and over) to its `/tmp` and to a volume,
+  `/v`, whose writes wait on the host's share server; 20 `shards pause` each, each
+  unpaused before the next, quiet, then beside the spinning threads. n, p50, p90, p99 and
+  max, ms. Its first run, at 8501f093, waited 13 h for a `write` joiner that never said it
+  was at work, its writes to the root failing unsaid: the guest's workers now say a
+  failure and end, and write to `/tmp`.
+- **Found, Fedora** (as M480): quiet, `spin` p50 23.4, max 35.4; `procs` p50 25.1, max
+  227.4; `write /tmp` p50 12.7, max 24.1; `write /v` p50 16.7, max 35.3. Beside 32 spinning
+  threads, `spin` p50 38.6, max 62.4; `procs` p50 56.6, max 135.3; `write /tmp` p50 24.3,
+  max 42.7; `write /v` p50 29.5, max 51.9.
+- **Reading.** A freeze takes what its processes' way out of the kernel takes, a volume's
+  write its share server's answer, tens of ms; nothing a deadline guards ends it sooner,
+  and a freeze given up on leaves the cgroup freezing. D217: no deadline, a joiner whose
+  work cannot end ended by its kill.
+
+### M467. Flakes: a budget's give-back and room told past a 10 s deadline, and its word saying nothing given back (D188)
+
+- **Question.** `a_microvm_held_to_a_budget_gives_back_what_it_holds_cold` failed on CI's
+  x86_64 Linux (42423531064, at 9f2520c2) and once on Fedora: with its budget set 256 MiB
+  short, the daemon's `RECLAIM` and `ROOM` to the microVM had no answer within 10 s, and
+  its budget's word never came or said nothing was given back; it passed 3 of 3 again.
+- **Method.** The test alone, in a row, on adacachy2 (M466's host, CachyOS, Linux 7.3.3),
+  pinned with its daemon and microVM to 1 to 4 of its threads beside 4 busy loops pinned
+  there too (`taskset`), the host short of memory from other agents' work (1 to 8 GB free
+  of 64, swapping), `SHARDS_LOG=debug` for each exec's time to its answer; the tree
+  (8501f093) and the change in turn, 2026-11-08. Then a knob of the test's
+  (`SHARDS_STRESS_PRESSURE_MS`), which tells its daemon its host is short every so many
+  ms, as a whole suite's runner is.
+- **Results.**
+  - The tree, 2 threads: 1 of 10 failed as CI's had. Its daemon told the microVM its room
+    twice with "no answer within 10s, and so it was ended", and then said its budget
+    short by 109 MiB "past 0 warm VMs ended and 0 MiB it gave back"; the host's pressure
+    had had it give back 341 MiB of its files in that minute, said only at the minute's
+    end, after the test had failed. A budget falling short asked for no give-back while
+    one of its host's pressure was under way (one at a time a microVM, M308), and its
+    word counted none of what that one gave.
+  - The tree and the change in turn, 2 threads: 18 and 18 passed; 1 thread: 10 and 9
+    passed. The change's answers (each exec's `answered after`, log lines): p50 7.9 ms,
+    p90 142, p99 2,174, max 2,199 ms on 2 threads; p50 30.9, p90 274, p99 4,104, max
+    4,470 ms on 1. None passed 10 s in these, so neither arm met the deadline's failure.
+  - The host's word every 50 ms, 4 threads: the tree failed 3 of 3 (its give-backs and
+    rooms "no answer within 10s, and so it was ended"; its words nothing given back); the
+    change's answers came within 4,520 ms (968 lines, p99 4,114), none ended, but it failed
+    3 of 3 too: its guest's page cache was gone before the short budget (`Cached` 2,408
+    kB), taken by its host's give-backs and unplugs, said with the budget's words before,
+    which the test did not read.
+- **Consequence (D188).** The daemon waits on its own give-backs and rooms as long as the
+  microVM's process runs (`Wait::WhileRuns`: more CPU in each 10 s than an idle microVM
+  takes, M357), ending one that runs nothing for 10 s; a group's (macOS, Windows) keep
+  10 s. A budget falling short waits for a give-back of its host's under way and then
+  reads its room again (`give_after`); its words say what its host's pressure had it give
+  back and ask to unplug since the word before (`gave_at_pressure`), and the test reads
+  those in any word since it read. Unit tests: health.rs
+  `an_exec_is_waited_for_as_long_as_its_microvm_runs`, budget.rs
+  `what_its_hosts_pressure_had_it_give_back_is_counted_for_its_word`; the daemon's unit
+  tests 265 of 265 on adacachy2. Owed: the test in a row under its host's word every
+  2 s (`SHARDS_STRESS_PRESSURE_MS=2000`) on a loaded host, both arms; the series begun
+  here completed no run in 30 minutes, the host out of memory to other work.
+
 ### M498. A build step's device cgroup, and the ports' chooser's round trip (D44, D122)
 
 - **Question.** D44 starts every `RUN` step in a cgroup of its own (mkdir, CLONE_INTO_CGROUP,
@@ -19697,3 +19894,65 @@ revision before comparing a changed API/implementation.
   p99 and max with host, OS and revision. On macOS through
   `docs/research/measurements/macos-sched/launchd-run.sh`.
 - **Results.** Not yet measured.
+
+### M510. Hostile policies: what fuzzing found in shards' Rego, and the compile stages that grew faster than their input
+
+- **Question.** A build's policy may be anyone's (a remote context's `Dockerfile.rego`,
+  D111): can a policy's text, its input, or a builtin's operands make shards' Rego panic,
+  overflow its stack, or take time or memory growing faster than what it is given? M160
+  left five shapes open whose compile grew with the square or faster.
+- **Method.** Two cargo-fuzz targets (`fuzz/fuzz_targets/rego.rs`: a policy's text and
+  input, parsed, compiled with buildx's functions and evaluated, partially and whole, on
+  the policy thread's stack; `rego-builtins.rs`: any builtin, any operands), seeded from
+  the oracle suites (503 policies, 11,393 calls), with libFuzzer's `-timeout=10
+  -rss_limit_mb=2048 -max_len=65536`, 20 minutes each with 6 and 4 workers. Each slow
+  input was run through OPA v1.14.1 (scripts/rego/oracle_test.go's builtin calls, built
+  with go1.27.3) and this port, built without a sanitizer. The shapes then through
+  `docs/research/measurements/rego-nesting/run.sh 5 glob-terms comprehension-nested
+  prints-wide closures-wide` (shards: a warm-up then n = 5; OPA: one run). Host: AMD
+  Ryzen 9 9950X3D2 (adacachy2), Linux 7.3.3-1-cachyos, shared with other agents' work
+  (load average 6 to 12), revision 8501f093 with 825a7c6c, c02fe4b5 and 5bd2c3e7's changes,
+  2026-11-08.
+- **Results.** No panic and no stack overflow in 20 minutes of each target. The timeouts
+  and memory limits were `numbers.range` over spans of 10^14 and more (OPA's array grows
+  as long; neither can finish) and `glob.match` patterns of many matchers: OPA 0.32 and
+  1.08 s on two of them where this port took 1.7 and 6.5 s, 102 s on a third where it
+  took more than 300 s, and more than 120 s, as this port did, on a fourth (now 5, 8, 77
+  and 76 ms). The cause, in gobwas/glob's compiler, both: minimizeMatchers
+  glues every run of a pattern's matchers to judge it, reading each matcher's length again
+  for each run (cubic; this port also copied each run). The shapes (shards whole check
+  p50 / p90 / max, n = 5, after the changes; before them one run; OPA one run):
+
+  | shape, size | shards before | shards now | OPA |
+  |---|---|---|---|
+  | glob.match `{a}b` x 500 | 5.1 s (1) | 1.2 / 1.3 / 1.3 ms | 1.25 s |
+  | glob.match `{a}b` x 1000 | 41 s (1) | 3.3 / 3.3 / 3.3 ms | 13.3 s |
+  | glob.match `{a}b` x 1500 | 141 to 157 s (1) | 6.5 / 6.7 / 6.7 ms | 50.8 s |
+  | comprehensions nested, 10 | 0.28 s | 0.46 / 0.50 / 0.50 ms | 0.18 s |
+  | comprehensions nested, 12 | 3.25 s | 0.51 / 0.61 / 0.61 ms | 2.34 s |
+  | print calls, 500 in a body | 2.81 s | 80 / 80 / 80 ms | 4.29 s |
+  | print calls, 1000 in a body | 26.3 s | 324 / 324 / 324 ms | 34.7 s |
+  | closures, 500 in a body | 4.60 s | 122 / 124 / 124 ms | 8.42 s |
+  | closures, 1000 in a body | 42.3 s | 480 / 481 / 481 ms | 65.8 s |
+
+  (1) The fuzz harness built without a sanitizer, three runs (`{a}b` x n against
+  `ab` x n); OPA's three runs of x 1500 there took 41.4 to 44.7 s.
+
+  Every case answers as OPA does. What changed: glob's runs are judged from lengths summed
+  once and counts kept as a run grows, only the run chosen glued; the type checker keeps
+  each comprehension body's check while a rule is checked, by the nodes of the variables
+  the body names, and takes it again where they are the same (OPA checks a comprehension
+  again for each walk that meets it, three a level); the safety check reads the placed
+  expressions' outputs again only as one is placed, the print rewrite reads a body on from
+  the last expression it asked about, and an equality unifies with its operands' safe
+  variables, not a copy of the whole safe set.
+- **Open.** As OPA's, still: every statement and comprehension alternating (20 deep 9.3 s,
+  twice as long a level; OPA 7 min at 12) and every statements declaring after the one
+  within (2000 deep 3.1 s, quadratic), both in rewriteLocalVars, whose second walk of an
+  every statement rewrites the comprehensions within it again and numbers their
+  variables anew: the numbers are in what OPA compiles (and the partial evaluation buildx
+  reads), so a shortcut has to number as the walk would; rule wrap's type check (2000
+  0.69 s, 10000 24.9 s, quadratic). Evaluation is OPA's: a policy may ask for work
+  without bound (`numbers.range` over any span, comprehensions over each other), as it
+  may of OPA; buildx's evaluation ends with its build's context, and shards' with its
+  build's process, which Ctrl-C ends.
