@@ -15,6 +15,8 @@ mod alloc_count;
 mod aws;
 mod build;
 mod cli;
+mod client_binds;
+mod client_grants;
 mod containers;
 mod context;
 mod daemon;
@@ -84,7 +86,7 @@ pub(crate) fn shardsd(args: Vec<std::ffi::OsString>) -> ExitCode {
         Some("guest") => guest::guest(args),
         Some("disk") => disk::command(args),
         Some(kind @ ("agent" | "harness" | "mcp")) => agent::command(kind, args),
-        // the VM's broker (`shards run --kernel`, `shards restore`): not for people to run.
+        // the VM's broker (`shards run vm --kernel`, `shards restore vm`): not for people to run.
         #[cfg(target_os = "macos")]
         Some("grants") => grant_answer::broker(),
         // the writer of a restore's working set (`shards restore` on Linux): not for people to run.
@@ -95,6 +97,9 @@ pub(crate) fn shardsd(args: Vec<std::ffi::OsString>) -> ExitCode {
         Some("build-writer") => build::outside::serve(),
         // a run's share process (D38), which the daemon starts: not for people to run.
         Some("share") => share::share(args),
+        // what serves a client's binds for a run through its context that goes on without
+        // its command (D215): not for people to run.
+        Some(client_binds::SERVE_APART) => client_binds::serve_apart(args),
         // the daemon's spawner (shards_ipc::start_spawner, PM M158): not for people to run.
         #[cfg(unix)]
         Some("spawner") => match shards_ipc::serve_spawner() {

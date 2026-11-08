@@ -116,7 +116,7 @@ pub struct Options {
     pub session: Vec<u8>,
     pub local_sessions: BTreeMap<Vec<u8>, Vec<u8>>,
     /// The LLB capabilities the worker has, as its gateway says (Ping): `None` for every
-    /// one dockerfile/1.27.1 knows, as `shards build`'s builder has them. Where one is
+    /// one dockerfile/1.27.1 knows, as `shards build image`'s builder has them. Where one is
     /// missing, the step that needs it is planned as Dockerfile2LLB plans it without.
     pub llb_caps: Option<BTreeSet<Vec<u8>>>,
     /// The frontend's `cmdline` option: set where BuildKit runs this frontend because a
@@ -647,7 +647,7 @@ const FRONTENDS: [&str; 2] = ["docker/dockerfile", "docker/dockerfile-upstream"]
 
 /// shards' own frontend (D113), at any tag: the image of `shards` itself, which an
 /// Agentfile's `# syntax=` line names so that `docker buildx build` builds it too, and
-/// which `shards build` therefore builds as its own.
+/// which `shards build image` therefore builds as its own.
 pub const SHARDS_FRONTEND: (&str, &str) = ("ghcr.io", "hyper-light/shards");
 
 /// What builder.Build does with the frontend BUILDKIT_SYNTAX or `# syntax=` names, which is
@@ -5071,6 +5071,9 @@ impl Planner<'_> {
         // An Agentfile's directives travel in a layer of their own, the normalized
         // Agentfile, and its digest in a label (§8, D35).
         if !t.agentfile.is_empty() {
+            // `EXPOSE ... FOR`'s members, each an exposure of its own on its networks: the
+            // normalized Agentfile holds them so, as its run reads them.
+            t.agentfile = crate::agentfile::resolve_targets(&t.agentfile).map_err(Fail::new)?;
             crate::agentfile::reach(&t.agentfile).map_err(Fail::new)?;
             crate::agentfile::ingress(&t.agentfile).map_err(Fail::new)?;
             crate::agentfile::connections(&t.agentfile).map_err(Fail::new)?;

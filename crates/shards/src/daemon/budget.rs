@@ -662,7 +662,7 @@ impl<D: Disk> Daemon<D> {
     }
 
     /// A run of VM process `pid`'s, through which it is told, its own, else a joiner's; and
-    /// the microVM's own container's ID, which its giving back is kept by (reclaim.rs).
+    /// the microVM's own ID, which its giving back is kept by (reclaim.rs).
     fn run_of_vm(&self, pid: u32) -> Option<(String, String)> {
         let runs = lock(&self.runs);
         let of = |own: bool| {

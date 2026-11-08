@@ -1,4 +1,4 @@
-//! Commands run in images, end to end: `shards run --rootfs IMAGE -- COMMAND` boots a
+//! Commands run in images, end to end: `shards run vm --rootfs IMAGE -- COMMAND` boots a
 //! real VM into an EROFS image, shards-init runs the command as `docker run` would, and
 //! its output and exit status come back through shards. The command is the test guest,
 //! run as a workload (crates/testguest/src/workload.rs).
@@ -179,7 +179,7 @@ fn commands_run_in_the_image() {
         ("default", "0000000000000000"),
         "{out}"
     );
-    // A container's capabilities, /dev and masked paths, as Docker's are (measured:
+    // A run's capabilities, /dev and masked paths, as Docker's are (measured:
     // Docker Desktop's dockerd 29.3.1, alpine).
     for (key, want) in [
         ("capinh", "0000000000000000"),
@@ -291,7 +291,7 @@ fn exit_statuses_are_the_commands() {
             "{command:?}: {out}"
         );
     }
-    // A container ends with its main process: a child left holding stdout is killed.
+    // A run ends with its main process: a child left holding stdout is killed.
     let out = run(&image, &[], &["/bin/testguest", "orphan"], b"");
     assert_eq!(
         (out.status, out.stdout.as_slice()),

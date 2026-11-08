@@ -82,7 +82,7 @@ impl Agentfile {
                 .unwrap_or("a capability");
             return Err(beside::capability(name, reach));
         }
-        // A container's own and its endpoint's (`driver-opt=…endpoint.sysctls`), each net.*.
+        // A microVM's own and its endpoint's (`driver-opt=…endpoint.sysctls`), each net.*.
         if self.uplink
             && let Some(s) = run
                 .sysctls
@@ -199,8 +199,8 @@ pub fn agentfile(rootfs: &std::path::Path, digest: &str) -> Result<Agentfile, St
     if actual != digest {
         return Err(fail(format!("its content hashes to {actual}")));
     }
-    let directives = af::from_spec(&json).map_err(fail)?;
     let said = |e: Vec<u8>| fail(String::from_utf8_lossy(&e).into_owned());
+    let directives = af::resolve_targets(&af::from_spec(&json).map_err(fail)?).map_err(said)?;
     af::connections(&directives).map_err(said)?;
     let receivers = af::ingress(&directives).map_err(said)?;
     af::reach(&directives).map_err(said)?;

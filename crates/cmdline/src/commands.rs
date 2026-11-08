@@ -362,6 +362,15 @@ pub static RUN: Command = Command {
             None,
             "Bind mount Docker API socket and required auth",
         ),
+        // shards' grammar's `run container` and `create container`: IMAGE is to be a
+        // container image, made a microVM as it runs; a shards microVM is refused.
+        Flag::bool(
+            "container-image",
+            None,
+            "Refuse an image that is a shards microVM already",
+        )
+        .extension()
+        .hidden(),
         Flag::value(
             "blkio-weight",
             None,
@@ -433,7 +442,7 @@ pub static RUN: Command = Command {
     error_prefix: "",
 };
 
-/// `shards create` (docker/cli cli/command/container/create.go): `run`'s container flags,
+/// `shards create` (docker/cli cli/command/container/create.go): `run`'s flags for its microVM,
 /// without what only `run` has.
 pub static CREATE: Command = Command {
     usage: "[OPTIONS] IMAGE [COMMAND] [ARG...]",
@@ -776,6 +785,15 @@ pub static CREATE: Command = Command {
             None,
             "Bind mount Docker API socket and required auth",
         ),
+        // shards' grammar's `run container` and `create container`: IMAGE is to be a
+        // container image, made a microVM as it runs; a shards microVM is refused.
+        Flag::bool(
+            "container-image",
+            None,
+            "Refuse an image that is a shards microVM already",
+        )
+        .extension()
+        .hidden(),
         Flag::value(
             "blkio-weight",
             None,
@@ -1412,7 +1430,7 @@ pub static IMPORT: Command = Command {
     error_prefix: "",
 };
 
-/// `shards update` (docker/cli cli/command/container/update.go): a running container's
+/// `shards update` (docker/cli cli/command/container/update.go): a running microVM's
 /// limits change as it runs.
 pub static UPDATE: Command = Command {
     usage: "[OPTIONS] CONTAINER [CONTAINER...]",
@@ -2044,7 +2062,7 @@ pub static UNPAUSE: Command = Command {
 };
 
 /// `shards top` (docker/cli cli/command/container/top.go): ps's options follow the
-/// container, as they are.
+/// microVM, as they are.
 pub static TOP: Command = Command {
     usage: "CONTAINER [ps OPTIONS]",
     about: "Display the running processes of a container",

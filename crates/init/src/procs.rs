@@ -5,15 +5,15 @@
 //! The dump is records separated by RS (0x1e), fields by US (0x1f). The first record is
 //! the system's: `shards-processes/1`, then `/proc/stat`'s `btime`, the clock tick,
 //! the page size, `/proc/meminfo`'s `MemTotal` in KiB, `/proc/uptime`'s first field,
-//! the time now in seconds since the epoch, and the container's `/etc/passwd` and
-//! `/etc/group` (names are the container's own). Each process is then its
+//! the time now in seconds since the epoch, and the microVM's `/etc/passwd` and
+//! `/etc/group` (names are the microVM's own). Each process is then its
 //! `/proc/PID/stat`, `status`, `cmdline` (its NULs kept) and `wchan`. RS and US within
 //! any of them become `?`, as ps shows any control character.
 //!
 //! Left out: this process, kernel threads, and processes of this program not yet
-//! anything else (shards-init's standby forks), which are not the container's, but its
+//! anything else (shards-init's standby forks), which are not the run's, but its
 //! reaper under `--init`, docker-init's part, which `docker top` lists (D115); and those
-//! of another container's cgroup, as containerd lists a container's processes by its
+//! of another run's cgroup, as containerd lists a container's processes by its
 //! cgroup: a joiner sharing the workload's PID namespace shows in it (D119).
 
 use std::io;

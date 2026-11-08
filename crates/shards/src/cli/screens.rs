@@ -247,7 +247,7 @@ fn table(page: &mut Page, p: &Paint, cols: usize, columns: &[Column<'_>], rows: 
     }
 }
 
-/// `shards images`: the store's totals, then each image a row: what it is (a microVM, or
+/// `shards list images`: the store's totals, then each image a row: what it is (a microVM, or
 /// an image stored for another platform), its name, ID and age, its layers, its size
 /// (a microVM's disk, else its layers) drawn against the largest, its platform, and the
 /// microVMs it runs as.
@@ -390,7 +390,7 @@ fn images(page: &mut Page, p: &Paint, sheet: &Sheet) {
     table(page, p, cols, &columns, &table_rows);
 }
 
-/// `shards ps`: how many run, then each microVM a row: its name, ID, image, how it
+/// `shards list vms`: how many run, then each microVM a row: its name, ID, image, how it
 /// stands, its ports and what it runs.
 fn ps(page: &mut Page, p: &Paint, sheet: &Sheet) {
     let cols = look::width();
@@ -488,7 +488,7 @@ fn ps(page: &mut Page, p: &Paint, sheet: &Sheet) {
     table(page, p, cols, &columns, &table_rows);
 }
 
-/// `shards stop`, `kill` and `rm`: what became of each microVM named, how it ended and
+/// `shards stop vm`, `kill` and `rm`: what became of each microVM named, how it ended and
 /// in how long, all ended at once.
 fn ended(page: &mut Page, p: &Paint, sheet: &Sheet) {
     let cols = look::width();
@@ -588,7 +588,7 @@ fn ended(page: &mut Page, p: &Paint, sheet: &Sheet) {
     }
 }
 
-/// `shards rmi`: each image removed: the names it lost, whether its data went or is kept
+/// `shards remove image`: each image removed: the names it lost, whether its data went or is kept
 /// for a microVM still made from it, the stopped microVMs removed with it, each refusal.
 fn rmi(page: &mut Page, p: &Paint, sheet: &Sheet) {
     let cols = look::width();
@@ -680,7 +680,7 @@ fn rmi(page: &mut Page, p: &Paint, sheet: &Sheet) {
     }
 }
 
-/// `shards history`: how an image's layers were made, newest first: when, by what, and
+/// `shards read history`: how an image's layers were made, newest first: when, by what, and
 /// each layer's size drawn against the largest; the steps that made no layer quieter.
 fn history(page: &mut Page, p: &Paint, sheet: &Sheet) {
     let cols = look::width();
@@ -863,7 +863,7 @@ fn disk(page: &mut Page, p: &Paint, sheet: &Sheet) {
     table(page, p, cols, &columns, &rows);
 }
 
-/// `shards diff`, a sheet at a time as the changes come: the head with the first, each
+/// `shards read changes`, a sheet at a time as the changes come: the head with the first, each
 /// change a row (added sage, changed amber, deleted rose), its directory faint before
 /// its name; the counts with the last. Whether this sheet was the last.
 fn diff(page: &mut Page, p: &Paint, sheet: &Sheet) -> bool {
@@ -928,7 +928,7 @@ fn diff(page: &mut Page, p: &Paint, sheet: &Sheet) -> bool {
     end
 }
 
-/// `shards events`, a sheet an event as they happen: the head first, then each event a
+/// `shards watch system`, a sheet an event as they happen: the head first, then each event a
 /// row: its time, its type, what happened and to what, coloured by what it was.
 fn events(page: &mut Page, p: &Paint, sheet: &Sheet) {
     let cols = look::width();
@@ -1137,7 +1137,7 @@ fn top(page: &mut Page, p: &Paint, sheet: &Sheet) {
     table(page, p, cols, &columns, &rows);
 }
 
-/// `shards stats`: what each microVM takes of the host, redrawn each second: its share of
+/// `shards watch vms`: what each microVM takes of the host, redrawn each second: its share of
 /// a CPU and its memory against what it was given, each with a bar.
 fn stats(page: &mut Page, p: &Paint, sheet: &Sheet) {
     let cols = look::width();
@@ -1577,7 +1577,7 @@ fn volume(page: &mut Page, p: &Paint, sheet: &Sheet) {
     }
 }
 
-/// `shards tag`: the new name, and the image it names.
+/// `shards tag image`: the new name, and the image it names.
 fn tag(page: &mut Page, p: &Paint, sheet: &Sheet) {
     let cols = look::width();
     let get = |k: &str| sheet.get(0, k).unwrap_or("");

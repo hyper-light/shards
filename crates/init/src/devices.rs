@@ -573,7 +573,7 @@ fn prepare_with(entry: &[u8]) -> Result<Prepared, String> {
     // the run's root's being read-only. A device that names the group's host path, by
     // `--device` or a CDI node, is the group's node in the guest, as the guest's /sys
     // numbers it (Kata's agent does the same, vfio_device_handler.rs), and there in the
-    // container too where its path there is the host's.
+    // workload too where its path there is the host's.
     let mut groups: Vec<(&str, String)> = Vec::with_capacity(a.vfio.len());
     for [host, addresses] in &a.vfio {
         let sys = SYSFS.get().ok_or_else(|| {
@@ -912,7 +912,7 @@ fn keep_workload(w: Workload) {
 
 /// The workload's device filter widened to its run's rules and each of `rules` too, each
 /// `c MAJ:MIN rwm`, the nodes of the host's functions plugged into the microVM as it runs
-/// (D214), as a container given their devices at its start has them (runc's rules, the
+/// (D214), as a run given their devices at its start has them (runc's rules, the
 /// ones given after the defaults, which then take precedence): the whole list each time,
 /// so a function unplugged leaves it. `cgroup` is the workload's, whose filter is
 /// Docker's default where its run set none. Nothing for a privileged microVM, which has
@@ -1159,6 +1159,13 @@ pub fn confine_joiner(cgroup: &str) -> Result<Filter, String> {
     let program = dc::compile(&dc::container(&[], &[], false))?;
     let fd = attach(&program, cgroup, None)?;
     Ok((program, fd))
+}
+
+/// Confines `cgroup`, and every cgroup made under it, to the devices `program` allows
+/// (a build's steps, D44): its descriptor, which need not be kept, as an attached program
+/// stays as long as its cgroup.
+pub fn confine(program: &[u8], cgroup: &str) -> Result<OwnedFd, String> {
+    attach(program, cgroup, None)
 }
 
 /// `union bpf_attr` for BPF_PROG_LOAD, up to the last field the device filter's load sets.

@@ -1,6 +1,6 @@
 //! An Agentfile's isolation checks (AGENTFILE_ARCH.md §9.2, D55) as shards' frontend has
 //! BuildKit run them (D113): in an exec step whose root is the frontend's own image, so
-//! that `shards` itself reads the trees whole, as `shards build` reads its own snapshots.
+//! that `shards` itself reads the trees whole, as `shards build image` reads its own snapshots.
 //! BuildKit's gateway cannot: its ReadDir walks one directory a call and its stat carries
 //! no inode (cache/util/fsutil.go, fsutil's Stat), so no hard link is seen.
 //!
@@ -9,7 +9,7 @@
 //!   build` checks one before its export (build::domains);
 //! - `{"domains": [...], "own": DIR, "report": NAME}`: a guarded step, its tree before at
 //!   `/before` and after at `/after`, writing nothing in a domain but `own`'s (null where
-//!   the step is no domain's directive), as `shards build`'s guard holds a step's layers.
+//!   the step is no domain's directive), as `shards build image`'s guard holds a step's layers.
 //!
 //! Each domain is `{"name", "harness", "dir"}`. The finding, or nothing, is written to
 //! `/out/NAME`: a check that cannot read its trees says so there, so that the build fails
@@ -172,7 +172,7 @@ struct Read {
     seen: BTreeMap<Vec<Vec<u8>>, Seen>,
 }
 
-/// The tree under `dir` as the snapshot `shards build` checks: every entry, its kind,
+/// The tree under `dir` as the snapshot `shards build image` checks: every entry, its kind,
 /// mode, owner, times and extended attributes, hard links one node; and, for paths in a
 /// domain of `roots`, what a guard compares.
 fn read_tree(dir: &Path, roots: &[(Vec<Vec<u8>>, usize)]) -> io::Result<Read> {
@@ -376,7 +376,7 @@ fn xattrs(_: &Path) -> shards_image::erofs::Xattrs {
 }
 
 /// A guarded step's writes: what differs between its trees before and after, in no domain
-/// but `own`'s; a removal is a write. Named as `shards build`'s guard names it: the first
+/// but `own`'s; a removal is a write. Named as `shards build image`'s guard names it: the first
 /// thing written that is no directory, where there is one, in the paths' order.
 fn guard(before: &Read, after: &Read, own: Option<&[u8]>, domains: &[DomainDir]) -> Result<(), String> {
     let roots = domain_roots(domains);
@@ -461,7 +461,7 @@ mod tests {
         shards_testdir::TempDir::new(&format!("d113-check-{name}")).unwrap()
     }
 
-    /// The image check reads a host tree as `shards build`'s snapshot is read: a symlink
+    /// The image check reads a host tree as `shards build image`'s snapshot is read: a symlink
     /// out of a domain, one file's hard links in two domains, a FIFO and set-user-ID bits
     /// in one, each named.
     #[test]

@@ -1,6 +1,6 @@
 //! `run -p` as the Docker CLI reads it (docker/cli cli/command/container/opts.go, parse:
 //! convertToStandardNotation, then go-connections nat.ParsePortSpecs, vendored by
-//! docker/cli v29.8.1): each value a port or range of the container, published on a
+//! docker/cli v29.8.1): each value a port or range of the microVM, published on a
 //! host port, range, or any, at a host address or every one, for TCP, UDP or SCTP.
 
 use crate::network::parse_addr;
@@ -18,7 +18,7 @@ impl std::fmt::Display for Port {
     }
 }
 
-/// Where a container port is published: a host address (none for every one), and a host
+/// Where a microVM's port is published: a host address (none for every one), and a host
 /// port, a range of them to take one from, or none for any.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Binding {
@@ -121,7 +121,7 @@ fn parse_spec(raw: &str) -> Result<Vec<Binding>, String> {
             let host_port = if host_port.is_empty() {
                 String::new()
             } else if count == 1 && host_start != host_end {
-                // A single container port takes one port of the host's range.
+                // A single microVM port takes one port of the host's range.
                 format!("{}-{host_end}", host_start + i)
             } else {
                 (host_start + i).to_string()

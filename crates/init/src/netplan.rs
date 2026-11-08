@@ -503,14 +503,9 @@ pub fn plan(
             }
         }
         let joined: Vec<String> = own.addresses.iter().map(|a| a.network.clone()).collect();
-        let egress = boundary_of(spec, &joined, true)?;
-        let alone: Vec<String> = joined
-            .iter()
-            .filter(|n| members.iter().any(|(m, ds)| m == *n && ds.as_slice() == [d]))
-            .cloned()
-            .collect();
+        let egress = boundary_of(spec, &joined, true, names.get(d).map(|(h, n)| (*h, n.as_str())))?;
         let ingress = match names.get(d) {
-            Some((harness, name)) => ingress_of(spec, (*harness, name), &joined, &alone)?,
+            Some((harness, name)) => ingress_of(spec, (*harness, name), &joined)?,
             None => Vec::new(),
         };
         let dns = spec
@@ -565,7 +560,15 @@ pub fn plan(
 /// microVM's for it (`EXPOSE ... FOR` it, both ways or `AS` that direction) open, where
 /// their ranges meet. Two boundaries, and a flow crossing both needs both
 /// (AGENTFILE_ARCH.md §12 answer 6); the build's `agentfile::boundary` reads them alike.
-fn boundary_of(spec: &Value, joined: &[String], outward: bool) -> Result<Vec<Egress>, String> {
+/// An `EXPOSE` that names its members (`--agents`, `--harnesses`, or `FOR` itself, D122)
+/// opens its ports for those alone: for domain `d`, a harness or not, where it is one of
+/// them (default deny: no other member is granted what one is).
+fn boundary_of(
+    spec: &Value,
+    joined: &[String],
+    outward: bool,
+    d: Option<(bool, &str)>,
+) -> Result<Vec<Egress>, String> {
     let away = if outward { "ingress" } else { "egress" };
     let ranges = |ports: Vec<String>| -> Result<Vec<Egress>, String> {
         ports
@@ -592,7 +595,13 @@ fn boundary_of(spec: &Value, joined: &[String], outward: bool) -> Result<Vec<Egr
         )?;
         let mut vms = Vec::new();
         for e in spec.get("exposures").map(Value::array).unwrap_or_default() {
-            if e.get("direction").and_then(Value::str) != Some(away)
+            let (agents, harnesses) = (strings(e.get("agents")), strings(e.get("harnesses")));
+            let for_d = (agents.is_empty() && harnesses.is_empty())
+                || d.is_some_and(|(harness, n)| {
+                    if harness { &harnesses } else { &agents }.iter().any(|m| m == n)
+                });
+            if for_d
+                && e.get("direction").and_then(Value::str) != Some(away)
                 && strings(e.get("networks")).iter().any(|x| x == name)
             {
                 vms.extend(ranges(strings(e.get("ports")))?);
@@ -612,16 +621,12 @@ fn boundary_of(spec: &Value, joined: &[String], outward: bool) -> Result<Vec<Egr
 
 /// The ports let in past the microVM to the domain `d` names, a harness or not, on
 /// `joined` (D122): of each joined network that is not internal, each `EXPOSE ... FOR` it
-/// that lets ports in and names `d` (`agents`, `harnesses`), or names no one where `d` is
-/// the network's one member (`alone`); each where the network lets the domain's port in
-/// too (`NETWORK --ingress`, `--expose`): a mapped one (`<port>:<member_port>`) at the
-/// member's, which it is given at, any other where their ranges meet.
-fn ingress_of(
-    spec: &Value,
-    d: (bool, &str),
-    joined: &[String],
-    alone: &[String],
-) -> Result<Vec<Ingress>, String> {
+/// that lets ports in and names `d` (`agents`, `harnesses`), or names no one, every member
+/// a candidate; each where the network lets the domain's port in too (`NETWORK --ingress`,
+/// `--expose`): a mapped one (`<port>:<member_port>`) at the member's, which it is given
+/// at, any other where their ranges meet. Of several domains given one port, the uplink
+/// gives each connection to the one listening ([`crate::links`]' chooser).
+fn ingress_of(spec: &Value, d: (bool, &str), joined: &[String]) -> Result<Vec<Ingress>, String> {
     let range = |p: &str| port_range(p).ok_or_else(|| format!("the port {p:?} is no port or range of ports"));
     let mut out: Vec<Ingress> = Vec::new();
     for n in spec.get("networks").map(Value::array).unwrap_or_default() {
@@ -650,11 +655,9 @@ fn ingress_of(
             }
             let (agents, harnesses) = (strings(e.get("agents")), strings(e.get("harnesses")));
             let named = if d.0 { &harnesses } else { &agents };
-            let for_d = if agents.is_empty() && harnesses.is_empty() {
-                alone.iter().any(|a| a == name)
-            } else {
-                named.iter().any(|m| m == d.1)
-            };
+            // Every member of the network where it names none, as of several the one
+            // listening takes each connection (D122, the uplink's chooser).
+            let for_d = (agents.is_empty() && harnesses.is_empty()) || named.iter().any(|m| m == d.1);
             if !for_d {
                 continue;
             }
@@ -848,19 +851,25 @@ mod tests {
         assert!(p.uplink);
     }
 
-    /// Ports coming in to a network of several members (D122): each to the member its
+    /// Ports coming in to a network of several members (D122): each to the members its
     /// EXPOSE names, an agent or a harness of one name told apart, a mapped one at the
-    /// member's own port, and none to a member no EXPOSE names; a Unix socket the network
-    /// lets in is no port of the microVM's.
+    /// member's own port, or every member where it names none (the one listening takes
+    /// each connection, crate::chooser); a Unix socket the network lets in is no port of the
+    /// microVM's. Egress an EXPOSE names members for is theirs alone.
     #[test]
     fn ingress_goes_to_the_member_its_expose_names() {
         let spec = crate::json::parse(
             br#"{"networks":[{"name":"front","internal":false,"subnets":[],"gateways":[],
                              "ports":[{"port":"3000","direction":"ingress"},{"port":"80","direction":"ingress"},
+                                      {"port":"7000","direction":"ingress"},{"port":"443","direction":"egress"},
+                                      {"port":"25","direction":"egress"},
                                       {"port":"unix:tools","direction":"ingress"}]}],
                 "exposures":[{"ports":["3000"],"direction":"ingress","networks":["front"],"agents":["web"]},
                              {"ports":["8081:80"],"direction":"ingress","networks":["front"],"harnesses":["web"]},
-                             {"ports":["9000"],"direction":"ingress","networks":["front"],"agents":["web"]}],
+                             {"ports":["9000"],"direction":"ingress","networks":["front"],"agents":["web"]},
+                             {"ports":["7000"],"direction":"ingress","networks":["front"]},
+                             {"ports":["443"],"direction":"egress","networks":["front"],"agents":["api"]},
+                             {"ports":["25"],"direction":"egress","networks":["front"]}],
                 "connections":[{"kind":null,"from":["web"],"bothWays":true,"to":["api"],"on":["front"]},
                                {"kind":"harness","from":["web"],"bothWays":true,"to":["web"],"on":["front"]}]}"#,
         )
@@ -868,10 +877,19 @@ mod tests {
         let names: Vec<Name> = vec![(false, "web".into()), (false, "api".into()), (true, "web".into())];
         let p = plan(&spec, &names, None, None).unwrap();
         let ingress = |d: usize| p.links[d].as_ref().unwrap().ingress.clone();
+        let egress = |d: usize| p.links[d].as_ref().unwrap().egress.clone();
+        let every = ((6, 7000, 7000), (6, 7000, 7000));
         // 9000 the network lets no member have.
-        assert_eq!(ingress(0), vec![((6, 3000, 3000), (6, 3000, 3000))]);
-        assert_eq!(ingress(1), vec![], "named by no EXPOSE, on a network of several");
-        assert_eq!(ingress(2), vec![((6, 8081, 8081), (6, 80, 80))]);
+        assert_eq!(ingress(0), vec![((6, 3000, 3000), (6, 3000, 3000)), every]);
+        assert_eq!(
+            ingress(1),
+            vec![every],
+            "named by no EXPOSE but the one that names none"
+        );
+        assert_eq!(ingress(2), vec![((6, 8081, 8081), (6, 80, 80)), every]);
+        assert_eq!(egress(0), vec![(6, 25, 25)]);
+        assert_eq!(egress(1), vec![(6, 443, 443), (6, 25, 25)], "443 api's alone");
+        assert_eq!(egress(2), vec![(6, 25, 25)]);
     }
 
     /// A remote MCP server reaches the agents its FOR names, or every agent, at its port,

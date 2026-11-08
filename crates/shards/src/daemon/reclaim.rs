@@ -210,8 +210,8 @@ impl<D: Disk> Daemon<D> {
         self.say_given();
     }
 
-    /// What container `id`'s microVM gave back of what it holds cold, asked through it and
-    /// waited for as `wait` says; none where it gave nothing back, and why said.
+    /// What microVM `id` gave back of what it holds cold, asked through it and waited for
+    /// as `wait` says; none where it gave nothing back, and why said.
     pub(super) fn give_back_of(&self, id: &str, wait: Wait) -> Option<Gave> {
         let spec = shards_abi::run::Spec {
             builtin: shards_abi::run::builtin::RECLAIM,

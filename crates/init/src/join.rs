@@ -828,7 +828,7 @@ pub fn build(join: Join, cgroup: &str) -> Result<Built, String> {
     if own != 0 && unsafe { libc::unshare(own) } != 0 {
         return Err(last("its UTS and IPC namespaces"));
     }
-    // A container with a network of its own has its own name.
+    // A joiner with a network of its own has its own name.
     let own_net = join.member.is_some() || join.own_net_none;
     if own_net && !join.uts_host && !join.hostname.is_empty() {
         // SAFETY: a buffer of the given length.
@@ -995,7 +995,7 @@ pub fn build(join: Join, cgroup: &str) -> Result<Built, String> {
 
 /// Puts back the joiner's writable layer from before, `len` bytes of the join disk at
 /// `disk` from `offset`, over its root ([`ROOT`]), as go-archive's ApplyLayer puts a
-/// container's back (layer.rs, `apply`). Applied with [`ROOT`] as this process's root, so
+/// layer back (layer.rs, `apply`). Applied with [`ROOT`] as this process's root, so
 /// that no path or link the layer holds resolves past it (chroot(2)); the root it had is
 /// taken back after, from a descriptor of it held meanwhile. What it reads of the disk is
 /// let go of from the page cache as it goes: read once, it is the joiner's files after.

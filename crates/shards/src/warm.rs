@@ -113,7 +113,7 @@ fn own_pidfd() -> Option<OwnedFd> {
 static FLUSH: std::sync::OnceLock<shards_vmm::devices::virtio::net::TxFlush> = std::sync::OnceLock::new();
 
 /// On the host's network (D124): the daemon's connection the guest's asks go on, the
-/// containers whose processes asked for a port of the host's, and those whose ports the
+/// runs whose processes asked for a port of the host's, and those whose ports the
 /// daemon has said it let go of (`HOST_RELEASE`).
 static HOST: Host = Host {
     daemon: std::sync::OnceLock::new(),
@@ -237,13 +237,13 @@ pub struct Request {
     pub detached: bool,
     /// The client asked for the timing line.
     pub timing: bool,
-    /// The container's log, if its output is kept.
+    /// The microVM's log, if its output is kept.
     pub log: Option<workload::Logger>,
-    /// The container's writable layer from before, to put back (D37); and where its
-    /// layer goes once it stops, for a container that stays.
+    /// The microVM's writable layer from before, to put back (D37); and where its
+    /// layer goes once it stops, for a microVM that stays.
     pub layer_in: Option<File>,
     pub layer_out: Option<File>,
-    /// `layer_in` is the file the container's layer was kept in (D190), to go under the
+    /// `layer_in` is the file the microVM's layer was kept in (D190), to go under the
     /// microVM's layer device, not an archive to put back.
     pub layer_over: bool,
     /// The most memory its guest may plug, in bytes: the run's own (D148).
@@ -384,7 +384,7 @@ struct Head<'a> {
     cpus: u32,
     /// A group's CPU budget holds it too (D183): its file comes after its swap.
     group: bool,
-    /// Its container's layer from before comes as the file it was kept in (D190).
+    /// Its microVM's layer from before comes as the file it was kept in (D190).
     layer_over: bool,
     spec: &'a [u8],
 }
@@ -483,7 +483,7 @@ pub fn receive(
         (File::from(next()?), File::from(next()?))
     };
     // The log's first segment; the daemon makes the rest, as this VM reaches no
-    // container's directory (D30), and its answers arrive with its signals.
+    // microVM's directory (D30), and its answers arrive with its signals.
     let (segments, answers) = mpsc::channel();
     let log = if logged {
         let (log, index) = (File::from(next()?), File::from(next()?));
@@ -692,7 +692,7 @@ fn pauses() -> Result<&'static mpsc::Sender<Pause>, String> {
 }
 
 /// Passes the signals that arrive on `conn` to the workload until it closes: the client's,
-/// or the daemon's (`shards stop`, `kill`), and the client's terminal sizes. When the
+/// or the daemon's (`shards stop vm`, `kill`), and the client's terminal sizes. When the
 /// client hangs up, the VM lets go of its stdio. A workload outlives its client, as a
 /// container outlives `docker run`'s.
 fn relay_signals(conn: &UnixStream, to: &'static ToGuest, from: From<'_>) {
@@ -809,7 +809,7 @@ fn relay_signals(conn: &UnixStream, to: &'static ToGuest, from: From<'_>) {
             kind::HOST_BOUND if matches!(from, From::Daemon(_)) => {
                 workload::bound_guest(to, &message.payload);
             }
-            // A container's ports of the host's, let go as it ends (`release_host`).
+            // A microVM's ports of the host's, let go as it ends (`release_host`).
             kind::HOST_RELEASE if matches!(from, From::Daemon(_)) => {
                 if let Ok(owner) = <[u8; 4]>::try_from(message.payload.as_slice()) {
                     HOST.released
@@ -1046,8 +1046,8 @@ static HELD_AS: std::sync::Mutex<Option<(String, String)>> = std::sync::Mutex::n
 /// Saves this microVM as the daemon's `SAVE` asks (D176): into the generation's files it
 /// brings, its memory, its state and the run's swap where it has one, then on or stopped.
 fn save_request(message: shards_ipc::Message) -> Result<shards_vmm::vm::Saved, String> {
-    // A joiner's processes are in its guest, its run its own container's (D119): a snapshot
-    // would keep them, and a restore bring them back, without their containers.
+    // A joiner's processes are in its guest, its run its own record's (D119): a snapshot
+    // would keep them, and a restore bring them back, without their records.
     if *JOINERS.lock().unwrap_or_else(std::sync::PoisonError::into_inner) > 0 {
         return Err(
             "containers joined to it run in its microVM, which a snapshot would keep without their containers: save it once they end"
@@ -1213,11 +1213,11 @@ fn exec_request(
 /// The joiners this VM serves (D119), which it waits for before it ends: each tells the
 /// daemon how it ended.
 static JOINERS: std::sync::Mutex<usize> = std::sync::Mutex::new(0);
-/// Whether this VM is being saved (D176), from its `SAVE` on: no container joins it then.
+/// Whether this VM is being saved (D176), from its `SAVE` on: no joiner joins it then.
 static SAVING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 static JOINER_ENDED: std::sync::Condvar = std::sync::Condvar::new();
 
-/// Whether a container joined to this VM's network runs (D119).
+/// Whether a joiner of this VM's network runs (D119).
 pub fn joining() -> bool {
     *JOINERS.lock().unwrap_or_else(std::sync::PoisonError::into_inner) > 0
 }
@@ -1239,7 +1239,7 @@ pub fn await_joiners(within: std::time::Duration) {
     }
 }
 
-/// Takes the container the daemon's `JOIN` brings (D119): its own connection to the daemon,
+/// Takes the joiner the daemon's `JOIN` brings (D119): its own connection to the daemon,
 /// and its image, which the VM's join disk gives a range; then serves its run on a thread
 /// of its own, as a warm VM serves its daemon's.
 fn join_request(message: shards_ipc::Message, to: &'static ToGuest) -> Result<(), String> {
@@ -1251,7 +1251,7 @@ fn join_request(message: shards_ipc::Message, to: &'static ToGuest) -> Result<()
     // What fails here, the run says as its own start failing, once it has the run.
     let range = match crate::vm_run::join_disk() {
         // A joiner starting in a guest going quiet for its save would be in its snapshot
-        // without its container (D176).
+        // without its record (D176).
         _ if SAVING.load(std::sync::atomic::Ordering::SeqCst) => {
             Err("the microVM it joins is being saved: join it once it is saved".into())
         }
@@ -1702,7 +1702,7 @@ pub fn started(link: &Link) {
 }
 
 /// Tells the daemon how the command ended, then the client: `ps` then shows the
-/// container exited, or gone for `--rm`, once `run` has returned, as with `docker run`
+/// microVM exited, or gone for `--rm`, once `run` has returned, as with `docker run`
 /// (docker/cli run.go waitExitOrRemoved; the daemon takes what its runs have sent before
 /// it answers). What kept the command from running goes to the client's stderr first, as
 /// `docker run` reports it, and the VM lets go of the client's stdio before the status
@@ -1740,7 +1740,7 @@ pub fn finish(
         }
     };
     // A command that never started: what dockerd would say, and the exit code its
-    // container keeps (shards_cmdline::commands::start_failed).
+    // microVM keeps (shards_cmdline::commands::start_failed).
     let failed = not_run.map(shards_cmdline::commands::start_failed);
     let mut said_status = status;
     if let Some((said, kept)) = &failed {
@@ -1829,7 +1829,7 @@ pub fn host_net(link: &Link, frame: &[u8]) {
     let _ = to_daemon(&link.daemon, kind::HOST_NET, frame, &[]);
 }
 
-/// Has the daemon let go of container `owner`'s ports of the host's (D124) as it ends,
+/// Has the daemon let go of microVM `owner`'s ports of the host's (D124) as it ends,
 /// before its end is told, waiting up to a second for it to say it has: the daemon's
 /// copies and its network process's closed, so that the host may bind them again once
 /// the end is told, as dockerd's may (PM M181). Nothing to do for one that asked for none.
@@ -1872,7 +1872,7 @@ fn release_host(owner: u32) {
     }
 }
 
-/// Tells the daemon the container's writable layer is whole where it asked for it.
+/// Tells the daemon the microVM's writable layer is whole where it asked for it.
 pub fn layer_saved(link: &Link, used: Option<u64>) {
     let payload = used.map(u64::to_be_bytes);
     let _ = to_daemon(
@@ -1883,12 +1883,12 @@ pub fn layer_saved(link: &Link, used: Option<u64>) {
     );
 }
 
-/// The daemon's word that the container's writable layer stays in its own file (D190),
+/// The daemon's word that the microVM's writable layer stays in its own file (D190),
 /// held until nothing of the machine writes the file ([`tell_kept`]): its link's own
 /// socket, and what the layer used in the guest.
 static KEPT: std::sync::Mutex<Option<(UnixStream, Option<u64>)>> = std::sync::Mutex::new(None);
 
-/// Holds the word that the container's writable layer stays in its own file (D190), its
+/// Holds the word that the microVM's writable layer stays in its own file (D190), its
 /// guest's journal written in place, for [`tell_kept`] once the machine is down. An error
 /// where its link's socket cannot be held: the daemon then keeps the layer as the VM goes.
 pub fn hold_kept(link: &Link, used: Option<u64>) -> std::io::Result<()> {
@@ -1898,7 +1898,7 @@ pub fn hold_kept(link: &Link, used: Option<u64>) -> std::io::Result<()> {
 }
 
 /// Tells the daemon what [`hold_kept`] held, if anything: nothing of the machine writes the
-/// layer's file any more, which is the container's from now on (`Running::wait_then`).
+/// layer's file any more, which is the microVM's from now on (`Running::wait_then`).
 pub fn tell_kept() {
     let held = KEPT
         .lock()

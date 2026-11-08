@@ -1,4 +1,4 @@
-//! The build protocol: how `shards build` runs `RUN` steps in a builder guest
+//! The build protocol: how `shards build image` runs `RUN` steps in a builder guest
 //! (docs/design/architecture.md D34). The guest dials the host on [`PORT`] once it is up,
 //! and the one connection carries everything, in the run protocol's frames
 //! ([`crate::run::header`]).
@@ -267,7 +267,9 @@ pub struct Step {
 /// A device node a step is given: its path in the step, the guest's device it is (`from`,
 /// the path itself where empty; never a host's numbers, which name nothing in a guest),
 /// the kind it must be (`c`, `b`, a FIFO `p`, or 0 for the guest device's own), and its
-/// mode (the guest device's where `None`) and owner.
+/// mode (the guest device's where `None`) and owner; and the access its device rule
+/// allows (D44: CDI's `permissions`, read 2, write 4 and mknod 1 as BPF_DEVCG_ACC_* are;
+/// 0, a FIFO's, for none).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Device {
     pub path: Vec<u8>,
@@ -276,6 +278,7 @@ pub struct Device {
     pub mode: Option<u32>,
     pub uid: u32,
     pub gid: u32,
+    pub access: u8,
 }
 
 fn put_u32(out: &mut Vec<u8>, n: u32) {
@@ -426,6 +429,7 @@ impl Step {
             put_u32(&mut out, d.mode.unwrap_or(0));
             put_u32(&mut out, d.uid);
             put_u32(&mut out, d.gid);
+            out.push(d.access);
         }
         put_bytes(&mut out, &self.proxy_ca);
         out.push(u8::from(self.emulated));
@@ -527,7 +531,7 @@ impl Step {
                 root: Root::decode(r.take(12)?)?,
             });
         }
-        let n = r.count(19)?;
+        let n = r.count(20)?;
         let mut devices = Vec::with_capacity(n);
         for _ in 0..n {
             let path = r.bytes()?;
@@ -542,6 +546,7 @@ impl Step {
                 mode: has_mode.then_some(mode),
                 uid: r.u32()?,
                 gid: r.u32()?,
+                access: r.u8()?,
             });
         }
         let proxy_ca = r.bytes()?;
@@ -757,6 +762,7 @@ mod tests {
                     mode: None,
                     uid: 0,
                     gid: 0,
+                    access: 7,
                 },
                 Device {
                     path: b"/dev/vendor0".to_vec(),
@@ -765,6 +771,7 @@ mod tests {
                     mode: Some(0o660),
                     uid: 1000,
                     gid: 44,
+                    access: 6,
                 },
             ],
             proxy_ca: b"-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n".to_vec(),

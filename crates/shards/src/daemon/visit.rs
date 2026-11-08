@@ -1,9 +1,9 @@
-//! Visits to a stopped container's files (D37). dockerd reads and writes a stopped
+//! Visits to a stopped microVM's files (D37). dockerd reads and writes a stopped
 //! container's writable layer where it keeps it, for `docker cp`, `diff` and `export`; a
 //! microVM's files are read by the init that made them, so a stopped one's are read in a
 //! VM booted over them: its image, its writable layer put back, and no command of the
 //! image's (`builtin::HOLD`), the same built-ins answering as for a running one. The
-//! container stays stopped throughout: no start, no end, no event of the visit's own; what
+//! microVM stays stopped throughout: no start, no end, no event of the visit's own; what
 //! the visit changed (`cp` into it) is saved as its layer when the visit ends, as a run's
 //! is, and a visit that only reads (`diff`, `export`, `cp` out of it) saves nothing.
 
@@ -22,9 +22,9 @@ use super::{Daemon, Inbox, Keep, LAYER_NEW, REQUEST, RunState, Threads, lock, lo
 const START_LIMIT: Duration = Duration::from_secs(30);
 
 impl<D: crate::containers::Disk> Daemon<D> {
-    /// Starts a visit to the files of the stopped container container command `argv` reads
-    /// (`cp`'s steps, `diff`, `export`), if it reads one; returns the container visited,
-    /// for [`end_visit`](Self::end_visit). A container that runs, or does not exist, or
+    /// Starts a visit to the files of the stopped microVM that command `argv` reads
+    /// (`cp`'s steps, `diff`, `export`), if it reads one; returns the microVM visited,
+    /// for [`end_visit`](Self::end_visit). A microVM that runs, or does not exist, or
     /// whose visit cannot start, is left to the command, which says so.
     pub(super) fn visit_for<'s, 'e>(
         &'s self,
@@ -34,11 +34,11 @@ impl<D: crate::containers::Disk> Daemon<D> {
         let (given, copies, writes) = target(argv)?;
         // What any client has seen of its last run first, as every command takes it
         // (`settle`): a run that has just returned its status may have sent a DONE not yet
-        // taken, and the container would read as running still, its files then read in a
+        // taken, and the microVM would read as running still, its files then read in a
         // VM whose run is over.
         self.settle();
         let id = self.resolve(&given).ok()?;
-        // One visit at a time to a container.
+        // One visit at a time to a microVM.
         {
             let mut visiting = lock(&self.visiting);
             while visiting.contains(&id) {
@@ -49,7 +49,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
             }
             visiting.insert(id.clone());
         }
-        // Only where nothing runs or starts: a running container is read as it is.
+        // Only where nothing runs or starts: a running microVM is read as it is.
         let free = {
             let mut runs = lock(&self.runs);
             let free = !runs.contains_key(&id);
@@ -79,8 +79,8 @@ impl<D: crate::containers::Disk> Daemon<D> {
         None
     }
 
-    /// Ends the visit to container `id`: its VM killed, and what it changed saved as the
-    /// container's layer before anything else reads it.
+    /// Ends the visit to microVM `id`: its VM killed, and what it changed saved as the
+    /// microVM's layer before anything else reads it.
     pub(super) fn end_visit(&self, id: &str) {
         let socket = match lock(&self.runs).get(id) {
             Some(RunState::Tracked(t)) if t.visit => Some(t.socket.clone()),
@@ -103,7 +103,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
         self.visited.notify_all();
     }
 
-    /// Waits until no visit to container `id` is under way.
+    /// Waits until no visit to microVM `id` is under way.
     pub(super) fn await_visit(&self, id: &str) {
         let mut visiting = lock(&self.visiting);
         while visiting.contains(id) {
@@ -114,7 +114,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
         }
     }
 
-    /// Boots a VM over container `id`'s files, holding, as its run, pending in `runs`; for
+    /// Boots a VM over microVM `id`'s files, holding, as its run, pending in `runs`; for
     /// a copy (`copies`), with its shared directories; its layer kept as the visit ends
     /// where it `writes` (`cp` into it).
     fn start_visit<'s, 'e>(
@@ -128,7 +128,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
         let stored = std::fs::read(dir.join(REQUEST))
             .ok()
             .and_then(|b| Run::decode(&b))
-            .ok_or_else(|| format!("container {id} was not made to be started again"))?;
+            .ok_or_else(|| format!("microVM {id} was not made to be started again"))?;
         let cancel = shards_registry::http::Cancel::new();
         let mut prepared = crate::run::prepare(&stored, &self.home, &|_| {}, &cancel)?;
         // Its files as its runs see them, init's own included (handle()), and its limits.
@@ -138,7 +138,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
         // A copy sees the files its runs see (D38): its shared directories served and
         // mounted where they mount them, and its root read-only where theirs is, so that
         // a file copied in is where its command will find it, and none goes where its runs
-        // could not write. A tmpfs is a run's own, and no stopped container's; a
+        // could not write. A tmpfs is a run's own, and no stopped microVM's; a
         // directory only its agents mount is none of its root's.
         let link = if copies {
             let (points, first) = lock(&self.containers)
@@ -332,7 +332,7 @@ fn said_to(client: &UnixStream) -> String {
     String::from_utf8_lossy(&said).trim().to_string()
 }
 
-/// The container container command `argv` reads the files of, given as its client gave
+/// The microVM whose files command `argv` reads, given as its client gave
 /// it: `cp`'s steps', `diff`'s and `export`'s; whether it copies, and whether it writes
 /// them (`cp`'s extract step).
 fn target(argv: &[String]) -> Option<(String, bool, bool)> {

@@ -829,7 +829,7 @@ mod tests {
         text
     }
 
-    /// What shards' containers' removal relies on (D195): NTFS renames no directory while a
+    /// What a stopped microVM's removal relies on (D195): NTFS renames no directory while a
     /// file in it is open, even one std opened (every sharing allowed), by MoveFileEx's
     /// rename or one through the directory's handle (a POSIX one too, PM M347); once nothing
     /// in it is open, it does. Both refusals were "Access is denied" on jupiter.

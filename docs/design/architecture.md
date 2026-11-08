@@ -38,7 +38,7 @@ An all-in-one, rootless microVM platform for agents. There are two layers:
 | Start latency | ≤ 5 ms from request to environment ready |
 | Per-VM memory | minimal; beat Firecracker's ≤ 5 MiB VMM overhead |
 
-The whole stack (VM, in-VM engine and containers) must match or beat Firecracker's
+The whole stack (VM, in-VM engine and its workloads) must match or beat Firecracker's
 performance and resource usage.
 
 ## 2. Decisions so far
@@ -57,8 +57,8 @@ performance and resource usage.
 | D10 | Pin the guest's CPU view explicitly: MPIDR, PARange clamped to the IPA, SME exposure decided per image. Don't inherit defaults. | Defaults show PARange 40 on a 36-bit IPA and expose SME2 [PM M12] |
 | D11 | GPUs are zero-cost when unused. GPU VMs are a separate class assigned from a warm pool (VFIO via iommufd on Linux; virtio-gpu/Venus plus a remoting broker on macOS). | Assigned devices pin all RAM and break CoW; FLR ≥ 100 ms; CUDA init takes seconds [GPU §2.3, R1–R6] |
 | D12 | vsock is the host↔guest control plane (exec, stdio, lifecycle, engine API). Built (a7b32ab): guest ports map to host Unix sockets as in Firecracker (`CONNECT <port>`; the guest reaches `<path>_P`). Unlike Firecracker, host EOF is a half-close, so a guest can answer after stdin ends. Each restored copy binds its own socket, where it is given a path; the ports its own process serves (the run's) take no socket file (D30). A snapshot keeps the streams the device held. The restored device resets each of them with an RST on its RX queue, ahead of every other packet, and continues host port allocation past the snapshot's, never reusing a held port. It posts no TRANSPORT_RESET: Linux handles that event in a work item apart from RX, and on one interrupt it visits RX first. So a connection made right after the restore could be established and then reset (13 of 350 restores under CPU load). The guest's dials of the host wait for its answer however long it takes: Linux gives a connection 2 s and then resets it, though its host may have taken it already, and a loaded host's VM process had told its daemon its VM was ready on such a connection, whose run then found it gone as init powered off (2 runs of 13 rounds, PM M346). | Rootless and portable; Firecracker's AF_UNIX mapping [VIO R7]; macOS poll reports POLLHUP on a half-close, so the device waits with kqueue there; restores [PM M20]: Linux 7.2 net/vmw_vsock/virtio_transport.c (`event_work`, `rx_work` handles RX in order), drivers/virtio/virtio_mmio.c `vm_interrupt` over queues in setup order (virtio_ring.c `list_add_tail`); a REQUEST matching a closing socket is dropped (virtio_transport_common.c `virtio_transport_recv_disconnecting`); dials: net/vmw_vsock/af_vsock.c `vsock_connect` (VSOCK_DEFAULT_CONNECT_TIMEOUT, 2·HZ; "VIRTIO_VSOCK_OP_RST will follow") and SO_VM_SOCKETS_CONNECT_TIMEOUT [PM M346] |
-| D26 | `shards run` is served by a per-user daemon that hands each request to a warm VM process of the image's template: resumed, connected, waiting for its command. The client's stdio and connection pass by `SCM_RIGHTS`, and the daemon keeps its copies until the warm VM has taken them. The CLI is a thin binary. | Handoff 31 µs p50; warm VM 12.3 MiB, no CPU; a thin client costs 1.4 ms against 3.5 ms for a binary linking the VMM's frameworks [PM M23]; XNU flushes a socket in flight that no process holds [PM M24]; a pooled run takes 3.4 ms at p50 and 3.9 ms at p99 with the thin client [PM M26]; pre-created VM shells [Manco17 §5.2; Wanninger22 §5.2] |
-| D27 | Every `shards run` is a container, as `docker run`'s is: an ID and a name, running until its command ends, then exited until `shards rm` or `--rm` removes it. Command lines are read as the Docker CLI reads them, by one crate (`shards-cmdline`) in the client and the daemon: the client answers `--help` and usage mistakes itself, and the daemon keeps the records and answers `ps`, `wait`, `logs`, `stop`, `kill` and `rm`. | The Docker CLI's own answers: a differential test against docker/cli v29.8.1's command tree [scripts/docker-cli]; dockerd's names, IDs, start failures and stop semantics [moby daemon/names.go, daemon/errors.go, daemon/stop.go, daemon/kill.go @ docker-v29.8.1]; docs/research/container-lifecycle-cli.md; a record costs no run anything it waits for (a spare container made ahead) |
+| D26 | `shards run vm` is served by a per-user daemon that hands each request to a warm VM process of the image's template: resumed, connected, waiting for its command. The client's stdio and connection pass by `SCM_RIGHTS`, and the daemon keeps its copies until the warm VM has taken them. The CLI is a thin binary. | Handoff 31 µs p50; warm VM 12.3 MiB, no CPU; a thin client costs 1.4 ms against 3.5 ms for a binary linking the VMM's frameworks [PM M23]; XNU flushes a socket in flight that no process holds [PM M24]; a pooled run takes 3.4 ms at p50 and 3.9 ms at p99 with the thin client [PM M26]; pre-created VM shells [Manco17 §5.2; Wanninger22 §5.2] |
+| D27 | Every `shards run vm` is a microVM, kept as `docker run`'s container is: an ID and a name, running until its command ends, then exited until `shards remove vm` or `--rm` removes it. Command lines are read as the Docker CLI reads them, by one crate (`shards-cmdline`) in the client and the daemon: the client answers `--help` and usage mistakes itself, and the daemon keeps the records and answers `ps`, `wait`, `logs`, `stop`, `kill` and `rm`. | The Docker CLI's own answers: a differential test against docker/cli v29.8.1's command tree [scripts/docker-cli]; dockerd's names, IDs, start failures and stop semantics [moby daemon/names.go, daemon/errors.go, daemon/stop.go, daemon/kill.go @ docker-v29.8.1]; docs/research/container-lifecycle-cli.md; a record costs no run anything it waits for (a spare container made ahead) |
 | D115 | A run of an Agentfile's image gives its own command no reach into the image's agents and harnesses, whatever the CLI asks. The command is PID 1 of a PID namespace of its own, as a container's command is (under `--init` a reaper is, in docker-init's place), so it sees none of their processes; and the daemon, its init, and the build refuse — in Docker's words where Docker defines the flag, shards' otherwise — `--privileged`, the capabilities that would cross into a domain, `systempaths=unconfined`, a `net.*` sysctl where the domains' flows cross the command's network namespace, a uid or gid of the domains' or their servers', `--pid host`, `--network none` where the Agentfile grants egress, and `--volumes-from` or a named-volume mount that would take a scoped volume; Docker's default `CAP_NET_RAW`, withheld there, is said to be. | Docker's default capabilities include CAP_KILL [moby oci/caps/defaults.go]; a shared PID namespace lets the workload signal, `/proc/<pid>/root`- and ptrace-reach the domains [Linux 6.18 kernel/signal.c check_kill_permission, fs/proc, kernel/ptrace.c ptrace_may_access]; the kernel ends a PID namespace's processes with its init, which hears only the signals it handles [pid_namespaces(7)]; Docker 29.3.1's own answers [PM M145]; every check twice (D109): [[feedback-runtime-and-buildtime-checks]] |
 
 ### Snapshots (D14)
@@ -227,8 +227,8 @@ SPIs of the GICv2m frame the VMM keeps (D154).
 
 | Feature | Linux amd64 | Linux arm64 | macOS arm64 | Windows amd64 |
 |---|---|---|---|---|
-| Boot, `run --kernel`, `shards run IMAGE`, builds (D16, D33) | yes | yes | yes | yes (D140, D141) |
-| The daemon, containers and every command, the CLI's client, Engine API, compose, events (D26, D27, D170) | yes | yes | yes | yes (D195) |
+| Boot, `run --kernel`, `shards run vm IMAGE`, builds (D16, D33) | yes | yes | yes | yes (D140, D141) |
+| The daemon, its microVMs and every command, the CLI's client, Engine API, compose, events (D26, D27, D170) | yes | yes | yes | yes (D195) |
 | Snapshots, restores, templates, warm pools (D14, D25, D26) | yes | yes (D154) | yes | yes (D196) |
 | A restore's working set recorded and mapped ahead (D29) | yes | yes (D154) | yes | yes (D196, PM M415, M421) |
 | Networks, published ports, default deny, IPv6 on networks and past the microVM (D46, D59, D99) | yes | yes | yes | yes (D142, D143) |
@@ -322,7 +322,7 @@ virtio-pmem with DAX ([image-storage](../research/image-storage.md) R1, R2). The
 
 ### Running a workload (D16)
 
-`shards run --rootfs IMAGE -- COMMAND` boots into an image and runs a command there as
+`shards run vm --rootfs IMAGE -- COMMAND` boots into an image and runs a command there as
 `docker run` does. The guest side is `crates/init/src/run.rs`; the host side is
 `crates/shards/src/workload.rs`.
 
@@ -392,16 +392,16 @@ virtio-pmem with DAX ([image-storage](../research/image-storage.md) R1, R2). The
     safely, and those Linux has no number for.
   - They travel on a second vsock connection that the guest opens once the command runs,
     so unread stdin cannot hold them up.
-  - Through the daemon, a signal that arrives once the container is made, before the
+  - Through the daemon, a signal that arrives once the run's record is made, before the
     command runs, waits for it (D26). `run --kernel`, whose process is the VM, ends as that
     signal would end it. dockerd instead drops a signal sent before its container starts
     (warm-pool-daemon.md §2.7).
-  - Before the container is made, as the image is pulled, SIGINT and SIGTERM end the
+  - Before the run's record is made, as the image is pulled, SIGINT and SIGTERM end the
     client with 128 and their number, saying nothing. The daemon sees its client's
-    connection end, lets the pull go and makes no container. That is `docker run`
+    connection end, lets the pull go and makes no run. That is `docker run`
     interrupted as it pulls, measured on Docker 29.3.1 (its CLI cancels its request
     until `ContainerCreate` returns, docker/cli `notifyContext`). The daemon tells the
-    client the container is made (`CREATED`), from which point it forwards signals. A
+    client the run is made (`CREATED`), from which point it forwards signals. A
     client that went hears nothing more of its run: the daemon holds its stderr.
   - So too as it waits for its daemon to start: the thread that takes the signals starts
     before any wait, where no daemon listens and one is started or awaited, and else once
@@ -410,18 +410,18 @@ virtio-pmem with DAX ([image-storage](../research/image-storage.md) R1, R2). The
     (`a_client_waiting_for_its_daemon_ends_on_sigterm`, mutation-checked: the thread
     started after the request, the client waited past SIGTERM).
   - A signal shards was started ignoring is forwarded too: what is sent to the client is
-    for its command. A script's `shards run ... &` starts with SIGINT and SIGQUIT ignored,
+    for its command. A script's `shards run vm ... &` starts with SIGINT and SIGQUIT ignored,
     as a shell starts a background job, and a script that signals its job expects the
     command to get it, as the Docker CLI gives it; macOS drops an ignored signal even for a
     thread in `sigwait` [PM M28].
   - Only `run`, `attach` and `start -a` pass signals on, as docker/cli's do: `start -a`
-    inspects the container first and passes them only to one without a terminal, whose
+    inspects the microVM first and passes them only to one without a terminal, whose
     own keys are its signals (docker/cli container/start.go), and attaches its stdin
-    only where `-i` asks and the container keeps one open. `create`, `restart` and a
-    detached `start` pass none on, where they did once their container was made: a
-    SIGINT to `shards restart` reached the container it restarted
+    only where `-i` asks and the microVM keeps one open. `create`, `restart` and a
+    detached `start` pass none on, where they did once their microVM was made: a
+    SIGINT to `shards restart vm` reached the microVM it restarted
     (`start_attached_passes_signals_on`, mutation-checked: passed
-    to a container with a terminal, its command heard it).
+    to a microVM with a terminal, its command heard it).
   - Deliberately unlike docker/cli: a command that passes no signal on is ended by
     SIGINT or SIGTERM, the signal's default action, where docker/cli cancels its
     request and exits 128 and the signal's number (cmd/docker notifyContext,
@@ -441,7 +441,7 @@ virtio-pmem with DAX ([image-storage](../research/image-storage.md) R1, R2). The
     (`TIOCSCTTY`), so the command leads a session in the terminal's foreground.
   - The pty keeps the kernel's settings: the command's output reaches the host as a
     terminal shows it, one stream with `\r\n` line ends and its echoes, and `logs` keeps
-    it so, as a script reading a TTY container's log expects.
+    it so, as a script reading a TTY run's log expects.
   - Its TERM, where its environment (the image's, the user's) names none: its client's
     terminal type where its root describes it (a terminfo entry where ncurses looks, by
     the command's own TERMINFO, HOME and TERMINFO_DIRS), else xterm-256color where the
@@ -459,7 +459,7 @@ virtio-pmem with DAX ([image-storage](../research/image-storage.md) R1, R2). The
   - A resize travels beside the signals, as its own frame; the kernel then signals the
     terminal's foreground group, if the size changed.
 - **Not yet:** a terminal for `run --kernel --rootfs`, whose commands are shards' tests and
-  benchmarks. Detached runs came with containers (D27).
+  benchmarks. Detached runs came with kept runs (D27).
 - **Tests:** E2E runs a minimal image (no `/proc`, `/sys` or `/dev`). It covers users,
   groups, the environment, working directories, mounts and every exit status. It also
   sends 8 MiB through stdin and back, and reads 32 MiB of output.
@@ -823,7 +823,7 @@ A pull resolves, fetches and checks as containerd v2.4.1 does
   - stored documents changed under their digests, and every check a pull makes,
     refused when the image is found again too.
 
-### Credentials, certificates and `shards pull` (D23)
+### Credentials, certificates and `shards pull image` (D23)
 
 `docker login` state and Docker's certificates work unchanged
 ([registry-pull](../research/registry-pull.md) §3.3, §6.3, R5). The code is
@@ -854,7 +854,7 @@ A pull resolves, fetches and checks as containerd v2.4.1 does
   - `$XDG_DATA_HOME` or `~/.local/share` elsewhere on Unix;
   - `%LOCALAPPDATA%` on Windows.
   - It is created 0700: it is its user's alone.
-- **`shards pull`** prints `docker pull`'s lines: the default tag, `Already exists` or
+- **`shards pull image`** prints `docker pull`'s lines: the default tag, `Already exists` or
   `Download complete` per layer, `Digest:` and `Status:`.
 - **Checked against real registries** (2026-09-28, from the M5 Max):
   - Docker Hub (`alpine`, and by digest), GHCR (`ghcr.io/containerd/busybox:1.36`) and
@@ -866,9 +866,9 @@ A pull resolves, fetches and checks as containerd v2.4.1 does
   - `DOCKER_AUTH_CONFIG` and its fallback;
   - `certs.d` CAs, and a mutual-TLS handshake with and without its client certificate.
 
-### `shards run IMAGE` (D24)
+### `shards run vm IMAGE` (D24)
 
-`shards run [OPTIONS] IMAGE [COMMAND] [ARG...]` runs a command in a new microVM booted
+`shards run vm [OPTIONS] IMAGE [COMMAND] [ARG...]` runs a command in a new microVM booted
 into an image, as `docker run` runs one in a new container. The code is
 `crates/shards/src/run.rs`. The VM and the workload are D16's.
 
@@ -892,7 +892,7 @@ into an image, as `docker run` runs one in a new container. The code is
     environment apply. A second run uses the stored image, fetches nothing, and the
     command line wins.
 
-### Templates for `shards run` (D25)
+### Templates for `shards run vm` (D25)
 
 Repeated runs of an image restore a template of it instead of booting (D2, D14). The code
 is `crates/shards/src/run.rs` and `crates/shards/src/guest.rs`.
@@ -1005,14 +1005,14 @@ is `crates/shards/src/run.rs` and `crates/shards/src/guest.rs`.
 
 ### Warm pool (D26, in progress)
 
-A per-user daemon hands each `shards run` to a **warm VM**: a VMM process that has already
+A per-user daemon hands each `shards run vm` to a **warm VM**: a VMM process that has already
 restored the image's template, resumed the guest and let it connect, and now waits only
 for a command (D2). The client asks the daemon for a run, passes it its stdio, and waits
 for the exit status.
 
 - **Built: warm VMs** (`crates/shards/src/warm.rs`; messages in `crates/ipc`).
   - `shards restore DIR --warm FD` is one, where FD is its socket to the daemon.
-    `shards run … --rootfs R [--snapshot-dir D] --warm FD` boots one instead, saving a
+    `shards run vm … --rootfs R [--snapshot-dir D] --warm FD` boots one instead, saving a
     template on the way if asked.
   - It says `READY` once the guest waits for its command.
   - The daemon answers with `RUN`: the command, plus four descriptors passed by
@@ -1044,9 +1044,9 @@ for the exit status.
     another's bytes in it, refused, and the stream broken, the daemon taking the VM for
     ended: 1 of 511 sets taken on CI's runners (PM M319).
   - The warm VM serves one request, then exits.
-- **Built: the daemon** (`crates/shards/src/daemon.rs`), with `shards run` as its client
+- **Built: the daemon** (`crates/shards/src/daemon.rs`), with `shards run vm` as its client
   (`client.rs`).
-  - One serves each SHARDS_HOME, holding its `daemon.lock`. `shards run` starts it when
+  - One serves each SHARDS_HOME, holding its `daemon.lock`. `shards run vm` starts it when
     none offers its request slots, in the home's `requests/` (D185; a socket,
     `daemon.sock`, before), through `shards daemon --detached`, which starts it in a session of its own and exits: init adopts the
     daemon and reaps it when it exits (APUE §13.3). Left the child of the client that
@@ -1074,7 +1074,7 @@ for the exit status.
       Documentation/admin-guide/cgroup-v2.rst). Where none is said, POSIX's
       `_POSIX_THREAD_THREADS_MAX` (64). `SHARDS_MAX_CLIENTS` sets fewer. The 256
       before was chosen, not derived.
-    - A client that waits long, on a container's end (`wait`) or its output
+    - A client that waits long, on a microVM's end (`wait`) or its output
       (`logs -f`), counts among those in hand no more, so that waiters shut out no
       client however many there are. A thread that cannot be spawned still drops its
       client.
@@ -1191,9 +1191,9 @@ for the exit status.
   - It follows each run to its end. The warm VM tells the daemon of its command's start
     (`STARTED`) before its client has any of the command's output, and of its end
     (`DONE`) before its client has the status; a Unix socket's send puts a message in
-    the daemon's queue before it returns. Every container command first takes what
+    the daemon's queue before it returns. Every command on runs first takes what
     each run has sent (`settle`), under a lock per run that the followers' loop (below)
-    reads under too, so it answers with all any client has seen: `ps` lists a container whose
+    reads under too, so it answers with all any client has seen: `ps` lists a run whose
     output has appeared, and not a `--rm` one whose `run` has returned, as dockerd
     records a container's state before `docker run` learns it (docker/cli run.go
     `waitExitOrRemoved`). Waiting for the daemon to acknowledge each instead cost a run
@@ -1203,7 +1203,7 @@ for the exit status.
   - **It waits on events, not a clock** (review 7.16, 7.22). Each run had a thread
     following it and another for its health checks, check or none, each waking every
     250 ms, as the listener and every `wait` and `logs -f` did: an idle running
-    container cost the daemon two threads, 0.18 MiB and about 40 µs of CPU a second, and
+    microVM cost the daemon two threads, 0.18 MiB and about 40 µs of CPU a second, and
     threads, 16,384 a process on macOS, would stop runs near 8,000, where their VMs take
     60 GB of a 128 GB host [PM M89].
     - One thread follows every run: a readiness poller over all their VMs' sockets
@@ -1211,7 +1211,7 @@ for the exit status.
       each run's messages as they come in whole. A socket the poller cannot take has its
       run followed on a thread of its own. It waits on no write: a run's end is kept in
       memory, in its reservation if its record is not yet written, its record written by
-      the recorder and a `--rm` container's removal set aside by the completer. Waiting
+      the recorder and a `--rm` run's removal set aside by the completer. Waiting
       there for the record, or for the removal's rename, held up every other run's
       messages by 81 ms at a loaded host's p90 [PM M96]. Nor does it make the files a
       run's VM asks for: a working set is gathered there, in memory, within the bound
@@ -1224,16 +1224,16 @@ for the exit status.
       its VM, a second, is ended, and the VM's ports are freed once both have gone. A VM's
       watcher thread lives until its VM is ready, where it waited out the VM's life, the
       one thread an idle run still cost [PM M90]: now the daemon's threads stay 6 at 10
-      running containers and at 100, and an idle run costs it about 10 KiB [PM M92];
+      running microVMs and at 100, and an idle run costs it about 10 KiB [PM M92];
       8 since the collector's and the files' threads [PM M98]. macOS watches only ends
       to come, and
       refuses a child that has ended already (`ESRCH`, measured), which is then reaped at
       once; a process whose end cannot be watched is waited for on a thread of its own.
-    - One thread schedules the health checks of the containers that have one, from a
+    - One thread schedules the health checks of the microVMs that have one, from a
       heap of their due times, and runs each probe on a thread while it runs; dockerd
       keeps a goroutine per container and one per probe (moby 0fed273 daemon/health.go
       `monitor`).
-    - One thread makes `--rm` containers' removals durable: one sync of their directory
+    - One thread makes `--rm` runs' removals durable: one sync of their directory
       serves every removal pending, so runs that end together share it. A run named as
       one still being removed waits for the name.
     - One thread makes the files runs' VMs ask for, in the order asked: log segments, and
@@ -1248,13 +1248,13 @@ for the exit status.
   - It exits after SHARDS_DAEMON_IDLE seconds (900) with no run in progress and none
     asked for. `shards daemon stop` first ends the runs in progress as dockerd ends its
     containers when it shuts down (moby daemon/daemon.go `shutdownContainer`,
-    daemon/stop.go): each command gets its container's stop signal (SIGTERM if it has
+    daemon/stop.go): each command gets its run's stop signal (SIGTERM if it has
     none), then SIGKILL once its stop timeout is up (10 s if it has none, never if it
     is negative), and its VM ends if the command outlives that by 5 s (dockerd's grace
     after the longest stop timeout, `ShutdownTimeout`: open in docs/audit/
     2026-10-16_docker-framing.md, to derive from how long a guest takes to say a killed
     command's end). The settings are those
-    the container was made with, read before its record is written if need be. A
+    the run was made with, read before its record is written if need be. A
     daemon that another build replaces does the same: two daemons never keep one home's
     records.
     Keeping runs through a restart (live-restore) is a later milestone. A daemon killed
@@ -1269,7 +1269,7 @@ for the exit status.
     connections itself, last, since the kernel closes an exiting process's descriptors
     in no order to rely on (XNU `fdt_invalidate` closes the highest first).
   - **A stop waits for nothing it can end (audit A07).** It shuts down the connections of
-    clients still sending their requests and of container commands, so their reads and
+    clients still sending their requests and of commands on runs, so their reads and
     writes fail and their threads return, and cancels what runs being prepared are
     downloading, images or the guest kernel (`shards_registry::http::Cancel`, which shuts
     down the connections in use, as cancelling Go's request context ends them). A run
@@ -1375,7 +1375,7 @@ A run is a microVM, its record the one Docker's tools read as a container's. The
 names it, follows it to its end, and keeps its record after it, until `shards remove vm`
 removes it; `--rm` removes it once it ends.
 
-- **Command lines** (`crates/cmdline`). `run` and the container commands (`ps`, `wait`,
+- **Command lines** (`crates/cmdline`). `run` and the commands on runs (`ps`, `wait`,
   `logs`, `rm`, `stop`, `kill`, each also under `container`) are read as docker/cli
   v29.8.1 reads them. The thin client answers `--help` and usage mistakes itself, with
   no daemon, as `docker` answers them without dockerd; the daemon reads the same words
@@ -1415,7 +1415,7 @@ removes it; `--rm` removes it once it ends.
     command's host (`hostname`, and `HOSTNAME` in its environment) unless `--hostname`
     does (moby daemon/internal/stringid, daemon/container.go).
   - The daemon writes each to `containers/ID/config.json` in the home when it starts and
-    when it ends, so exited containers outlive the daemon. A daemon starting finds them
+    when it ends, so exited runs' records outlive the daemon. A daemon starting finds them
     as dockerd restores its own (moby daemon/daemon.go): one left running is exited
     with 255, the status nobody saw, and a `--rm` one goes.
   - Names are unique. A name must match `[a-zA-Z0-9][a-zA-Z0-9_.-]+`, and a taken one
@@ -1424,33 +1424,33 @@ removes it; `--rm` removes it once it ends.
     surname; from the second try a digit follows; after six collisions, the short ID
     (moby internal/namesgenerator/legacy, daemon/names.go). The word lists are shards'
     own.
-  - A run's request path writes nothing: it takes a spare container, an ID with its
+  - A run's request path writes nothing: it takes a spare record, an ID with its
     directory and open log, made after the last handover.
-- **Output.** Every run writes its output to the container's log, as records of stream,
+- **Output.** Every run writes its output to the run's log, as records of stream,
   time and bytes, in the order they arrived (`workload.rs`); `--rm` takes the log with
-  the container. The VM reaches no container's directory: the request brings its log's
+  its record. The VM reaches no run's directory: the request brings its log's
   first segment open, and the daemon makes each next one as the VM asks
   (`kind::LOG_SEGMENT`, `segments.rs`). Before, every warm VM could write the whole
-  `containers` directory, every container's log and record, since a pooled VM cannot know
-  its container ahead; and on macOS its grant cost each warm VM's start about 4.5 ms
+  `containers` directory, every run's log and record, since a pooled VM cannot know
+  its run ahead; and on macOS its grant cost each warm VM's start about 4.5 ms
   [PM M73].
 - **The guest says when the command started** (`STARTED`), before any output, so a
-  container is running only once its command is.
-- **Detached runs** (`-d`). The ID goes to stdout once the container exists, before its
+  microVM is running only once its command is.
+- **Detached runs** (`-d`). The ID goes to stdout once the run's record exists, before its
   command starts, as `docker run -d` prints it; the client exits 0 once the command has
   started. The run's output goes only to its log, and it reads nothing.
 - **Commands that cannot start.** shards-init says why in the words of runc's Go
   (`exec.LookPath`, `os.PathError`, Go's errno texts): `exec: "/x": stat /x: no such
   file or directory`. The client prints `shards: Error response from daemon: …` and the
-  hint, exiting 125, 126 or 127 by the CLI's `toStatusError`; the container stays created
+  hint, exiting 125, 126 or 127 by the CLI's `toStatusError`; the run stays created
   with the exit code dockerd gives it, 126, 127 or 128, from the message dockerd amends
   (moby daemon/errors.go, setExitCodeFromError). Nothing goes to its log, as nothing
   reaches `docker logs`. A detached client gets the same, after the ID.
-- **A run's start has one owner** (`daemon.rs`, `RunState`; audit A06). The container
+- **A run's start has one owner** (`daemon.rs`, `RunState`; audit A06). The record
   and its pending run appear together, under the records' lock, and the run then moves
   through three states the commands and the daemon's shutdown consult:
-  - *Pending*: no warm VM committed to yet. `rm` removes the container and cancels the
-    run, so that a container removed never starts; the run's warm VM goes back to its pool
+  - *Pending*: no warm VM committed to yet. `rm` removes the record and cancels the
+    run, so that a run removed never starts; the run's warm VM goes back to its pool
     unused, and its client hears `No such container: ID`, exit 125, what scripts hear from
     `docker run` of a container removed before its start.
   - *Handing*: committed to a warm VM, which has the request or is getting it. `rm`,
@@ -1459,14 +1459,14 @@ removes it; `--rm` removes it once it ends.
     holds the container's lock throughout).
   - *Tracked*: taken, and followed until it ends, registered before the client stops
     counting as busy, so shutdown always sees one or the other.
-  - `stop` and `kill` of a container still starting act once it runs: `shards run -d`
+  - `stop` and `kill` of a microVM still starting act once it runs: `shards run vm -d`
     prints the ID before the start, where `docker run -d` prints it after, so a script
     that stops what `run -d` printed stops a running command in both.
-  - `stop`, `kill` and `rm -f` end every container they name at once, from one loop over
-    the containers' end sockets, each escalating on its own clock (signal, SIGKILL at
+  - `stop`, `kill` and `rm -f` end every microVM they name at once, from one loop over
+    the runs' end sockets, each escalating on its own clock (signal, SIGKILL at
     its grace, its VM 10 s on). docker/cli sends 50 requests at a time
     (cli/command/container/utils.go, parallelOperation), so stopping 60 containers that
-    ignore SIGTERM takes two graces; here one, with no thread a container
+    ignore SIGTERM takes two graces; here one, with no thread a microVM
     (`stop_ends_every_container_at_once`). Answers come as the CLI's do: in the order
     asked, each once it and those before it are done.
   - A daemon told to stop commits no pending run: `ending` is set under the runs' lock,
@@ -1482,23 +1482,23 @@ removes it; `--rm` removes it once it ends.
     hold each step (acquisition, TAKEN, STARTED, DONE) while `rm`, `rm -f`, `wait`,
     `stop`, `kill` and daemon stop act, fourteen mutations of the fix each caught; and
     the audit's real-VM reproduction, a `shards-vm` held at a gate, which the old
-    daemon fails (the command ran, exit 7, after its container was removed or the
+    daemon fails (the command ran, exit 7, after its record was removed or the
     daemon stopped) and this one passes (`containers::rm_cancels_a_run_whose_vm_is_not_ready`,
     `a_stopping_daemon_starts_no_pending_run`).
 - **Commands** (`crates/shards/src/daemon/commands.rs`), answering with dockerd's and the
   CLI's words:
-  - A container is named by its ID, its name, or the start of its ID and of no other's
+  - A microVM is named by its ID, its name, or the start of its ID and of no other's
     (moby daemon/container.go).
   - `ps`: the CLI's table, byte for byte: tabwriter widths, go-units durations,
     commands cut to 20 columns and quoted as Go quotes them, images by their familiar
     name without digest; `-a`, `-q`, `--no-trunc`, `-n`, `-l` as the CLI and dockerd
     combine them.
-  - `wait`: one container at a time, its exit code once it stops: 0 for one that never
+  - `wait`: one microVM at a time, its exit code once it stops: 0 for one that never
     started, dockerd's code for one that could not.
   - `logs`: stdout to stdout and stderr to stderr, in the order they arrived; a line
     of any length arrives whole, in messages of at most 1 MiB, and output that does not
     all reach the client fails the command (audit A08); `-f`
-    while the container runs; `-t` with RFC 3339 times; `--tail` (not a number: all);
+    while the microVM runs; `-t` with RFC 3339 times; `--tail` (not a number: all);
     `--details` adds the space before the attributes shards' lines do not have.
     `--since` and `--until` are read as the Docker client reads them, on the client's
     clock and in its zone: Go durations, Go's time layouts with their error texts, Unix
@@ -1540,7 +1540,7 @@ removes it; `--rm` removes it once it ends.
       most 20 MiB, two at least, the oldest removed as the next begins; the daemon's
       environment (`SHARDS_LOG_MAX_SIZE`, `SHARDS_LOG_MAX_FILE`) gives the segments' size
       and count instead, where it is set. The daemon reads them as each run starts and
-      sends them with it; the run's VM writes the segments in the container's directory,
+      sends them with it; the run's VM writes the segments in the run's directory,
       which it is given open. Until D186, Docker's `local` driver's 5 segments of 20 MiB.
       - Segments are numbered, `log`, `log.1`, …, and never renamed, so a reader never
         pairs one segment's log with another's index. A segment is there once its index
@@ -1553,22 +1553,22 @@ removes it; `--rm` removes it once it ends.
         appends.
     - A record the log cannot keep, on a full disk or a log removed, costs the log, not
       the run: it is taken back from both files and counted; the run's VM tells the
-      daemon, the container keeps the count, and `logs` says so and exits 1 rather than
+      daemon, its record keeps the count, and `logs` says so and exits 1 rather than
       show the log as all the output. A log that is gone is said, not shown as nothing.
-  - `stop`, `kill` and `rm` act on up to 50 containers at once. Each success prints its
+  - `stop`, `kill` and `rm` act on up to 50 microVMs at once. Each success prints its
     argument once it and those before it are done, and the errors follow (docker/cli
     parallelOperation).
   - `stop`: the signal (SIGTERM), then after `-t` seconds (10; negative: never)
     SIGKILL, 10 s more, the VM itself, and 2 s more (moby daemon/stop.go, kill.go). A
-    stopped container stops again without complaint, and a signal is checked only for a
+    stopped microVM stops again without complaint, and a signal is checked only for a
     running one.
   - `kill`: SIGKILL, waiting for the end as `stop` does after its signal; any other
     signal is only sent. Signals are named by the names `docker kill -s` takes
-    (moby/sys/signal's), real-time ones included, and every error names its container.
-  - `rm` trims `/` from its arguments, refuses a running container unless `-f`, which
-    kills it, says nothing of a missing one with `-f`, and removes one container at a
+    (moby/sys/signal's), real-time ones included, and every error names its microVM.
+  - `rm` trims `/` from its arguments, refuses a running microVM unless `-f`, which
+    kills it, says nothing of a missing one with `-f`, and removes one microVM at a
     time; one still starting as above.
-  - Whoever waits for a container is told its exit code as its record changes, under
+  - Whoever waits for a microVM is told its exit code as its record changes, under
     the records' lock, so that `wait` never reads a record before its end is written.
 - **`run -t` and `-it`**: a terminal for the command, and the client's own raw while it is
   attached (docs/research/tty-and-interactive-runs.md §2.1):
@@ -1581,7 +1581,7 @@ removes it; `--rm` removes it once it ends.
     with the command's status, a start that failed, a detach, or a signal it forwards
     and would end by; as with Docker, not after SIGKILL.
   - The detach keys (ctrl-p ctrl-q, or `--detach-keys`) end the client with status 0
-    and nothing said; the container runs on. As moby/term's proxy does, a byte that may
+    and nothing said; the microVM runs on. As moby/term's proxy does, a byte that may
     start them waits for the next.
   - The pty is as big as the client's stdout, 0×0 if that is no terminal. Each SIGWINCH
     resizes it, then goes to the command too, as both reach a Docker container. XNU
@@ -1597,57 +1597,57 @@ removes it; `--rm` removes it once it ends.
   own) and `/etc/mtab` (a link to `/proc/mounts`), in place of what the image has there,
   as ordinary files a workload may change (PM M81). `/etc/resolv.conf` comes with
   networking.
-- **Tests:** E2E with booted VMs, so they need no snapshots: a container outlives its
+- **Tests:** E2E with booted VMs, so they need no snapshots: a record outlives its
   run until `rm`, and `wait` reports its status; names are unique, and `--rm` leaves
   nothing; `stop` ends a command by SIGTERM (143) and `kill -s USR1` reaches it; `rm`
-  refuses a running container and `rm -f` kills it (137); `ps` and `logs`; `-d` prints
+  refuses a running microVM and `rm -f` kills it (137); `ps` and `logs`; `-d` prints
   the ID and runs on, named for its ID; a command that cannot start is reported as
   `docker run` reports it, attached and detached; usage mistakes start no daemon.
 - **Durability** (`containers.rs`, `Registry`; audit A15). What a daemon crash may cut
   short, the next start reconciles exactly; what a power loss may lose is bounded:
-  - **A container is seen once its record is written.** It is reserved first, its name
+  - **A run is seen once its record is written.** It is reserved first, its name
     held, and its record is written on a recorder thread beside the run's start, which
     never waits for it. Writing it on the start path cost nothing at the median but put
     the filesystem's tail there: on a busy host a file's create or rename waits
     milliseconds at p90 behind other processes' flushes (PM M46), and a run's p90 and
-    p99 doubled. What happens to a reserved container waits in the reservation, and the
+    p99 doubled. What happens to a reserved run waits in the reservation, and the
     recorder writes again until what it wrote is current. `run -d` prints the ID once
-    the container is seen.
+    the run is seen.
   - **What happened to a run stands.** Its start and end are kept at once, and written
     after, by the recorder's thread, outside the registry's lock (review 7.7): written
-    under it, a record held every other run's container and every command for as long
+    under it, a record held every other run's record and every command for as long
     as the filesystem took, up to 0.37 s on a busy host, against microseconds now
-    [PM M93]. Records are written in the order their changes came, a container changed
+    [PM M93]. Records are written in the order their changes came, a run changed
     again before its record is written once, as it then stands. A command is answered
     once every record changed before it is written, a detached run's client hears of
     its start once it is recorded, and the daemon exits once its records are written; a
     record that cannot be written is behind, logged, told to a detached client as a
     warning, and written again before any command is answered.
-  - **A removal takes the container out of sight at once, and sets its directory aside
+  - **A removal takes the microVM out of sight at once, and sets its directory aside
     after** (`.ID.removing`), outside the registry's lock: set aside under it, a removal
     held up every run's end and every command for as long as the rename took, 34 ms at a
     loaded host's p99 [PM M96]. Until it is set aside, a crash would bring back a
-    container `rm` removed, so commands wait for it, as `rm` does to answer; a `--rm`
-    container's removal makes no one wait, since the next start removes every one that
+    microVM `rm` removed, so commands wait for it, as `rm` does to answer; a `--rm`
+    run's removal makes no one wait, since the next start removes every one that
     no longer runs. One that cannot be set aside is put back as it was, its record
     written again, and `rm` says why. It is then synced before its name is let go and
     `rm` answers: an answered `rm` never comes back, and no power loss brings back a
-    container beside one that took its name. The sync, 4.3 ms at the median on macOS
+    record beside one that took its name. The sync, 4.3 ms at the median on macOS
     (PM M46), is out of the registry's lock.
   - **Records are written and renamed, not synced.** Syncing one costs 8.5 ms at the
     median on macOS (PM M46), 2.5 times a pooled run. A power loss ends every run
     anyway; what it leaves of their records, the next start reconciles: a record missing
-    (a spare, or a container never seen: its directory goes), older (a running one exited
+    (a spare, or a run never seen: its directory goes), older (a running one exited
     with 255, a pending one keeps 255 as a run that did not start), torn (its next
     version is taken if a power loss kept that whole, else it is left and logged, as
     dockerd leaves a container it cannot load), a removal cut short (finished), or a
     write cut short (removed).
   - **Tests:** a fault-injecting disk fails each write, rename and sync, and cuts a
-    container's life short at every step, and the next start must reconcile each; a
+    run's life short at every step, and the next start must reconcile each; a
     model of a filesystem losing power, after ALICE's abstract persistence model (Pillai
     et al., OSDI 2014) at its weakest, enumerates every state a power loss may leave at
-    every step of a life and of the next container to take its name; the daemon holds a
-    removal's name until its sync returns; an E2E kills the daemon while a container is
+    every step of a life and of the next run to take its name; the daemon holds a
+    removal's name until its sync returns; an E2E kills the daemon while a run is
     pending and finds it after. Eighteen mutations of the fix, each caught.
 - **Tests of terminals** (E2E, crates/shards/tests/tty.rs): under `-t` the command's
   stdio is a terminal that leads its session, with `\r\n` in its output and its log;
@@ -1726,7 +1726,7 @@ removes it; `--rm` removes it once it ends.
   them (MemBytes through go-units' RAMInBytes, NanoCPUs through math/big's Rat, each held
   to the real CLI by the docker-cli oracle), and checked as dockerd checks them on a cgroup
   v2 host (verifyPlatformContainerResources), in shards' words (D158); swap, swappiness
-  and `--oom-kill-disable` are the run's microVM's own (D159). A container's limits are a
+  and `--oom-kill-disable` are the run's microVM's own (D159). A run's limits are a
   cgroup's, inside the
   microVM as on a Linux host: the guest kernel has cgroup v2 with every controller runc
   uses, init mounts it with `nsdelegate`, and each workload process joins one cgroup, in
@@ -1746,7 +1746,7 @@ removes it; `--rm` removes it once it ends.
   `--cpuset-mems` is checked against the guest's memory nodes, where dockerd checks it
   against the host's CPUs (its cgroup2 sysinfo parses `Cpus` into `MemSets`) and runc then
   fails at the start; and a limit above the host's memory gives a VM of the host's
-  memory, past which it limits nothing. `shards create`'s refusals are said alone, exit 1,
+  memory, past which it limits nothing. `shards create vm`'s refusals are said alone, exit 1,
   in the words scripts read from `docker create` (runCreate returns them unwrapped). Test:
   `run_limits_a_microvms_resources`.
 - **Mounts, rlimits and sysctls** (`setup.rs`; init `setup.rs`, `isolate`). `run` and
@@ -1775,7 +1775,7 @@ removes it; `--rm` removes it once it ends.
   container is made, then tweaked as TweakCapabilities tweaks the defaults; groups added
   by `--group-add`, resolved by the meaning its clients give it (moby/sys/user
   GetAdditionalGroups), after the user's own;
-  the OOM score set on the process before it execs; a privileged container's every
+  the OOM score set on the process before it execs; a privileged run's every
   capability, no masked or read-only paths, `/sys` and its cgroup writable, every device
   the VM has made in `/dev` from its devtmpfs, and `SecurityOpt` `label=disable`. An exec
   takes the workload's process (moby daemon/exec.go): its capabilities (all, with
@@ -1785,7 +1785,7 @@ removes it; `--rm` removes it once it ends.
   default seccomp profile, which shards' guest does not apply (`--security-opt`, with it).
 ### Shipping the guest (D28)
 
-`shards run IMAGE` works on first use: with no guest recorded and none named, a run boots
+`shards run vm IMAGE` works on first use: with no guest recorded and none named, a run boots
 shards' pinned kernel and the shards-init that `shardsd` carries. The evidence is in
 docs/research/shipping-the-guest.md; the code is `crates/shards/build.rs`,
 `src/kernel.rs` and `src/guest.rs`.
@@ -2029,7 +2029,7 @@ audit's "Security and test coverage").
   - It fails closed: a VM process not in App Sandbox, or given nothing to ask, starts no
     VM. Its spawner keeps each descriptor it sends until the VM's next message, as XNU
     flushes a socket in flight that no process holds [PM M24].
-  - The daemon answers its own VMs, on the thread that watches each. `shards run --kernel`, which
+  - The daemon answers its own VMs, on the thread that watches each. `shards run vm --kernel`, which
     becomes the VM by exec, starts a broker, `shardsd grants`, that answers and exits. A
     broker per VM would cost each warm VM's start 3.9 ms, 95% [3.8, 4.1], all of it a
     directory's bookmark made in a fresh process, where the daemon makes one in 0.4 ms;
@@ -2058,7 +2058,7 @@ audit's "Security and test coverage").
   process bound `<path>_<port>` in a private directory and its own device dialled it:
   - any process that could reach a `--vsock` directory could dial the run's port first
     and be sent the command, its environment and stdin; a pair has no name to dial;
-  - neither Landlock nor App Sandbox has anything to grant for a warm VM or `shards run`,
+  - neither Landlock nor App Sandbox has anything to grant for a warm VM or `shards run vm`,
     whose VMs now make no socket file at all; App Sandbox refuses Unix sockets outside
     its container even in a granted directory (macos-confinement.md §2);
   - a `socketpair` is allowed by the seccomp filter already (Unix sockets only);
@@ -2086,7 +2086,7 @@ audit's "Security and test coverage").
     windows-2022's WHP sets up no partition in a process that forbids it [PM M201, M202].
   - It fails closed: a VM process outside an AppContainer starts no VM.
   - A profile costs 4.4 / 5.7 ms to make at p50 and 1.8 / 2.1 ms to delete [PM M201], on
-    `shards run --kernel`'s path; a dial through the spawner 100-111 µs at p50, where the
+    `shards run vm --kernel`'s path; a dial through the spawner 100-111 µs at p50, where the
     spawner's own costs 38-41 [PM M203]. A profile is recorded while it lives, in a file
     its spawner holds open, so that the next spawner deletes what a killed one left.
   - Its connections end shut down, then closed: on Windows an exit that closes a socket's
@@ -2169,7 +2169,7 @@ stack inside the VMM, is superseded by it.
   (networking.md R3; [RFC 2131 §4.4.1; RFC 4862 §5.4]) and no datagram waits in the guest
   on ARP's answer (PM M180); each run's own address, MAC and IPv6 address keep it. A VM
   with no network gets no device (networking.md R7: absent device, no attack surface).
-- **Built so far.** Builds' `RUN` steps and `shards run` are on Docker's default bridge,
+- **Built so far.** Builds' `RUN` steps and `shards run vm` are on Docker's default bridge,
   on the subnet dockerd would make it on this host (moby docker-v29.9.0
   daemon_unix.go initBridgeDriver): the first of dockerd's default pools (libnetwork
   ipamutils: 172.17.0.0/16, 172.18 and 172.19, the /16s of 172.20/14, 172.24/14 and
@@ -2333,9 +2333,9 @@ Docker's own microVMs, Docker Sandboxes, are not a Docker runtime either. shards
 OCI citizen where that costs nothing: registries, the Agentfile's BuildKit frontend, and
 Compose files that shards reads. Evidence: docs/research/oci-engines.md.
 
-### Building images: `shards build` (D33)
+### Building images: `shards build image` (D33)
 
-`shards build` is a drop-in for `docker build`: the same Dockerfiles accepted, the same
+`shards build image` is a drop-in for `docker build`: the same Dockerfiles accepted, the same
 image config and history, the same steps cached. RUN steps run in microVMs, not
 containers. Evidence: docs/research/image-build.md (§3 ranks the choices below).
 
@@ -2367,14 +2367,14 @@ containers. Evidence: docs/research/image-build.md (§3 ranks the choices below)
   normalization follow `exporter/containerimage/writer.go`.
 - **Order of work** (§3.13):
   1. The frontend and its oracle. Done.
-  2. Metadata-only builds and host file operations, written to the store so `shards run`
+  2. Metadata-only builds and host file operations, written to the store so `shards run vm`
      boots them. buildx's command line, held to buildx's own command tree as D27's
      commands are held to docker/cli's.
      - Done: buildx's `build` command line (36 answers of buildx v0.37.1's own tree), the
        exporter (512 configs and manifests of BuildKit's own functions), and builds of
-       base images and settings, end to end. An image `shards build` wrote has the config
+       base images and settings, end to end. An image `shards build image` wrote has the config
        Docker Desktop's BuildKit wrote for the same Dockerfile, byte for byte (the same
-       digest, checked 2026-10-01), and `shards run` boots it (`tests/build.rs`).
+       digest, checked 2026-10-01), and `shards run vm` boots it (`tests/build.rs`).
      - Done: file operations and their layers (`crates/build`). BuildKit's mkdir, mkfile
        and copy actions (fsutil's copy, its chmod strings, `--chown` names from the
        image's /etc/passwd and /etc/group) run on an in-memory tree that changes as Linux
@@ -2390,7 +2390,7 @@ containers. Evidence: docs/research/image-build.md (§3 ranks the choices below)
        fsutil's own walk on this host), and written byte for byte BuildKit's receiver's
        (five COPYs from contexts sent and received by fsutil itself, in the overlayfs
        oracle).
-     - Done: the executor. `shards build` runs WORKDIR, COPY (with `--chown`, `--chmod`,
+     - Done: the executor. `shards build image` runs WORKDIR, COPY (with `--chown`, `--chmod`,
        `--link`, heredocs, `.dockerignore`) and merges as FileOpSolver runs them: a mount
        per action chain, committed to a layer when it is an output or read twice; a
        merge stacks its inputs' layers. `tests/build.rs` boots such an image in a VM and
@@ -2684,50 +2684,50 @@ grows by one a release. Now each is removed once no process of its build lives.
   `helpers_are_written_whole_once_and_found_after`. Mutation-checked: a held directory
   taken, no mark made, the mark unread, the collection not holding the helpers' lock.
 
-### A container's files outlive its microVM (D37)
+### A stopped microVM's files outlive its VM (D37)
 
 A Docker container keeps its writable layer when it stops: `docker start` runs its
 command again over the files it left, and `diff`, `export`, `cp` and `commit` read them.
 A microVM's writable layer is the upper directory of its root's overlay, in guest memory,
-gone with the VM. So a container that stays (not `--rm`) keeps it on the host:
+gone with the VM. So a microVM that stays (not `--rm`) keeps it on the host:
 
 - **Saved as it stops.** After the command's status, the host asks init for the layer
   (`kind::SAVE`); init packs the upper directory as go-archive packs one
   (`WhiteoutFormat::Overlay`: whiteouts become `.wh.` entries, opaque directories
-  `.wh..wh..opq`), without what init makes of every container (its mounts, `/etc`'s files),
+  `.wh..wh..opq`), without what init makes of every run (its mounts, `/etc`'s files),
   and sends it as `kind::LAYER` frames. The VM process writes it to a file the daemon
-  opened in the container's directory (`layer.new`), and says so (`LAYER_SAVED`); the
-  daemon keeps it as `layer.tar` only whole. That is an OCI image layer of the container's
+  opened in the run's directory (`layer.new`), and says so (`LAYER_SAVED`); the
+  daemon keeps it as `layer.tar` only whole. That is an OCI image layer of the microVM's
   changes, which `commit` takes as it is. Where not all of it could be packed, init says
-  why (`kind::SYSTEM_ERR`) in place of the layer's end, and the layer the container had
+  why (`kind::SYSTEM_ERR`) in place of the layer's end, and the layer the microVM had
   stays: before, the end came all the same, and a cut layer was kept that only the next
   start found unreadable.
 - **After the end is told.** Saving before the run's end cost an empty layer 29 ms at p50
   and a 4 MiB one 155 ms; told first, the empty layer costs nothing measurable and the
   4 MiB one 6.5 ms at p50, from the save running beside the next run [PM M115]. Only what
   reads the layer waits for it (`start`, until the daemon has it settled).
-- **Put back as it starts.** `shards start` sends the request the container was made by
+- **Put back as it starts.** `shards start vm` sends the request the microVM was made by
   (kept as `request` beside its log), and the daemon hands the VM its layer
   (`RUN_LAYER_IN`), which init applies over the image's root before the command, as
   go-archive's ApplyLayer does; its log goes on from its newest segment. `restart` stops
   it first; `create` makes it, and starts nothing.
-- **A start refused before it starts** leaves the container as it was: nothing of a
+- **A start refused before it starts** leaves the microVM as it was: nothing of a
   refused start stays. The start it was waiting to be is released and whoever waits on it woken
   (`not_again`), in `docker start`'s words (the client names the container after) or
   `docker restart`'s ("Cannot restart container NAME: ...", moby daemon/restart.go,
   ContainerRestart). Before, one the network checks refused stayed starting, and every
   command after waited on it (`a_refused_start_leaves_its_container_as_it_was`,
   mutation-checked: the release left out, its `diff` waited past 60 s).
-- **Visits** (`daemon/visit.rs`). `cp`, `diff` and `export` of a stopped container read
+- **Visits** (`daemon/visit.rs`). `cp`, `diff` and `export` of a stopped microVM read
   its files as dockerd reads a stopped container's: in a VM booted over them, its image
   and its layer put back, running nothing of the image's (`builtin::HOLD`: init's standby,
   never given its orders, is the workload). The same built-ins answer as for a running
-  one, so both are read alike; the container stays stopped (no state, no event of the
+  one, so both are read alike; the microVM stays stopped (no state, no event of the
   visit's), one visit at a time, and `start` waits for one under way; what `cp` copied in
   is saved as its layer as the visit ends. It costs 5.7 ms at p50 over a running one's
-  [PM M116]. `top` of a stopped container is refused, as dockerd refuses it.
+  [PM M116]. `top` of a stopped microVM is refused, as dockerd refuses it.
 - The layer is on the host from the start (D190): an ext4 file system in a file of the
-  run's own, mounted with DAX, so that what a container writes is its host's page cache,
+  run's own, mounted with DAX, so that what a microVM writes is its host's page cache,
   never its microVM's memory, and is held to what its layer holds, not to its memory limit:
   256 MiB written under `--memory 64m`, where a run whose layer was a tmpfs in its memory
   was killed 64 MiB into a 100 MiB `dd` (2026-10-05). A stop keeps that file rather than
@@ -2758,7 +2758,7 @@ specifies (§4, with the review's answers of §12): `AGENT`, `HARNESS`, `SKILL`,
 `NETWORK`, `CONNECT`, `ATTACH`, and `EXPOSE … AS/FOR` and `VOLUME` with options, a name
 and `FOR`.
 
-- **Read as one or the other.** `shards build` reads a file as an Agentfile where it is
+- **Read as one or the other.** `shards build image` reads a file as an Agentfile where it is
   named as one, by a Dockerfile's conventions, which its users know (`Agentfile`,
   `*.Agentfile`, `Agentfile.*`),
   and without `-f` finds the context's `Agentfile` before its `Dockerfile`. A Dockerfile is
@@ -2806,8 +2806,8 @@ microVM as virtio-fs shares (virtio 1.3 §5.11; Linux fs/fuse/virtio_fs.c):
   named volumes made as they are named, anonymous ones for the image's `VOLUME`s and
   `-v DEST`, binds checked; a later failure removes the anonymous volumes it made, as
   dockerd's cleanup does. Volumes live in the home (`volumes/NAME/_data`, `opts.json`)
-  as the local driver keeps them under its root. `rm -v` and `--rm` remove a container's
-  anonymous volumes that no other container mounts (removeMountPoints), `--rm`'s as its
+  as the local driver keeps them under its root. `rm -v` and `--rm` remove a microVM's
+  anonymous volumes that no other microVM mounts (removeMountPoints), `--rm`'s as its
   removal completes; a command that reads volumes waits for removals queued, so that,
   as with Docker, `run --rm` then `volume ls` lists none of its.
   `inspect` gives dockerd's `Mounts`, `HostConfig.Binds`, `Mounts`, `VolumeDriver`,
@@ -2828,7 +2828,7 @@ microVM as virtio-fs shares (virtio 1.3 §5.11; Linux fs/fuse/virtio_fs.c):
   restored ahead of its run has its devices (`shards{i}`), empty slots its run fills:
   a template is made for each number of shares (`run::template`). A guest that mounts
   a share before its run has one is told ENODEV.
-- **A share another server serves** (`shards run --kernel … --slates-fs-fd N`): a direct
+- **A share another server serves** (`shards run vm --kernel … --slates-fs-fd N`): a direct
   run's share slot (`shards{i}`, after any of its own) given a connected socket its spawner
   hands it, which a server answers in this device's framing, as `slates shards VOLUME --fd
   N -- shards run …` hands it one the slates daemon serves a volume on (slates' A-161). The
@@ -2840,7 +2840,7 @@ microVM as virtio-fs shares (virtio 1.3 §5.11; Linux fs/fuse/virtio_fs.c):
   (tests/slates_fs.rs, where `SLATES_BIN` names a slates binary): a guest mounts, reads and
   writes a slates volume, and one maps a slates file through its window, its fsynced
   stores in the volume at slates' first read and slates' write of the file in its map.
-  - **On Windows** (`shards run --kernel … --slates-fs-handle V`): the stream is a duplex
+  - **On Windows** (`shards run vm --kernel … --slates-fs-handle V`): the stream is a duplex
     named pipe, since AF_UNIX makes no pair without a socket file and the pipe loses
     nothing at its writer's exit (PM M340).
     - **Handing it in.** V is a handle the spawner inherited from the server. It checks V
@@ -2961,10 +2961,10 @@ microVM as virtio-fs shares (virtio 1.3 §5.11; Linux fs/fuse/virtio_fs.c):
   invalid option`, `get NAME: no such volume`, `remove NAME: volume is in use - [ID]`),
   `volume ls`'s table the CLI's formatter's (formatter/volume.go, held to its output).
   Anonymous volumes carry dockerd's `com.docker.volume.anonymous` label. One lock orders
-  volume changes and a container's registration, so that no volume a container is being
+  volume changes and a microVM's registration, so that no volume a microVM is being
   made with is removed: the reference counts' guarantee. `system df` counts volumes
   (LocalVolumesSize: size and references), `system prune --volumes` prunes the anonymous
-  ones after the containers, as pruner.pruneOrder has it. A colour terminal gets shards'
+  ones after the microVMs, as pruner.pruneOrder has it. A colour terminal gets shards'
   pages: each volume, what it holds, and how many microVMs mount it. Shards' grammar says
   them as `create volume`, `list volumes`, `inspect volume`, `remove volume`, `prune
   volumes`.
@@ -3092,13 +3092,13 @@ microVM as virtio-fs shares (virtio 1.3 §5.11; Linux fs/fuse/virtio_fs.c):
 
 `--restart` takes what `docker run --restart` takes, and refuses what it refuses
 (docker/cli opts.ParseRestartPolicy, `--rm` with it; dockerd's ValidateRestartPolicy), and
-is kept with the container. Each policy means what Docker's clients rely on it to mean
+is kept with the microVM's record. Each policy means what Docker's clients rely on it to mean
 (moby docker-v29.8.1 daemon/internal/restartmanager, monitor.go handleContainerExit;
 `daemon/restart.rs`):
 
 - **Whether.** `always`; `unless-stopped` unless stopped by hand (any stop or kill, but
   the daemon's own); `on-failure` on a non-zero status, under its count where it has one.
-  A command that never started is not restarted. A stop or kill by the container's stop
+  A command that never started is not restarted. A stop or kill by the microVM's stop
   signal or SIGKILL cancels the next restart (ExitOnNext); a SIGHUP does not.
 - **When.** After a wait that starts at 100 ms, doubles each time to at most a minute,
   and starts over once a run lasted 10 s (dockerd's figures: open in docs/audit/
@@ -3106,12 +3106,12 @@ is kept with the container. Each policy means what Docker's clients rely on it t
   (no thread waits it out); the start then goes through the daemon's own door, a detached
   `start` from a client of its own making, so a restart is handled, followed and recorded
   as any start is.
-- **Meanwhile.** The container is restarting: running to `ps` (listed without `-a`,
+- **Meanwhile.** The microVM is restarting: running to `ps` (listed without `-a`,
   `Restarting (CODE) X ago`), to inspect (`Status` restarting, `Running` and `Restarting`
-  true) and to `wait`, which waits on; `RestartCount` counts, and `shards start` starts it
+  true) and to `wait`, which waits on; `RestartCount` counts, and `shards start vm` starts it
   over. `stop` and `kill` stop it there; `rm` refuses it without `-f`, as it refuses one
   running.
-- **As the daemon starts**, the containers its stop ended start again where their policy
+- **As the daemon starts**, the microVMs its stop ended start again where their policy
   says: a policy outlives the daemon that ran it. shards' daemon starts with the first
   command, so they start with it.
 
@@ -3120,9 +3120,9 @@ is kept with the container. Each policy means what Docker's clients rely on it t
 `shards update` is `docker update` (docker/cli container/update.go; moby docker-v29.8.1
 daemon/update.go and container UpdateContainer, `daemon/update.rs`): what is asked
 checked as at create (verifyContainerSettings with its `update` flag: swap alone
-passes), merged into what the container has with dockerd's refusals (Nano CPUs against a
+passes), merged into what the microVM has with dockerd's refusals (Nano CPUs against a
 set CFS period or quota and the reverse; a memory limit over the swap kept, which for a
-container made without one is none, since memory and swap together cannot be less than
+microVM made without one is none, since memory and swap together cannot be less than
 memory; a restart policy beside
 `--rm`), kept with its request, and written to a running workload's cgroup at once by an
 init built-in (`builtin::CGROUP`, the writes runc's fs2 makes as it starts). A limit the
@@ -3229,12 +3229,12 @@ Engine 29.3.1's words and to what its containers see (`security_opt_confines_the
   the guest kernel has neither of; `writable-cgroups=true` leaves the cgroup hierarchy
   writable.
 - The workload runs under Docker's default seccomp profile (moby/profiles seccomp
-  v0.2.3), the one a container names, or none (`unconfined`, or privileged and naming
+  v0.2.3), the one a run names, or none (`unconfined`, or privileged and naming
   none), resolved for its capabilities, the guest's architecture and the guest kernel's
   version (`minKernel`), compiled at start, cached per profile, capabilities and kernel,
   and loaded by shards-init where runc loads it: before the capabilities go, or with
-  `no-new-privileges` just before the command; an exec takes the container's. A profile
-  that cannot be loaded fails the start, not the making, the container kept created with
+  `no-new-privileges` just before the command; an exec takes the microVM's. A profile
+  that cannot be loaded fails the start, not the making, the microVM kept created with
   exit code 128 and the reason in State.Error, which shards now keeps for every start that
   fails (it was always empty); `docker run` exits 125.
 - The filter is shards' own (crates/seccomp). Its rules are kept as libseccomp 2.5.4
@@ -3268,11 +3268,11 @@ Engine 29.3.1's words and to what its containers see (`security_opt_confines_the
   the 33 cases on both architectures under five kernels in both modes; a test holds a
   compile's lookups to its tables' size (mutation-checked).
 - Not served: SCMP_ACT_NOTIFY, which needs a seccomp agent (listenerPath) shards does not
-  run; it is refused as the container starts.
+  run; it is refused as the microVM starts.
 
 ### stats (D43)
 
-`shards stats` reads each running container's guest as dockerd's collector reads a
+`shards watch vms` reads each running microVM's guest as dockerd's collector reads a
 container's cgroup (moby daemon/stats/collector_unix.go): shards-init's STATS built-in
 says the workload cgroup's CPU time, memory in use and its inactive file pages, its
 limit (memory.max, else the VM's memory), its processes and its block devices' bytes,
@@ -3280,14 +3280,14 @@ the VM's CPU time from /proc/stat and its online CPUs, and the bytes its interfa
 loopback's moved. docker/cli's helpers make the figures of two samples a second apart
 (calculateCPUPercentUnix; memory less inactive_file on cgroup v2), and its formatter
 (container/formatter_stats.go, `format::stats`) lays them out, `--format` with it; a
-stopped container under `-a` shows zeros, as Docker's does. Every container is sampled at
+stopped microVM under `-a` shows zeros, as Docker's does. Every microVM is sampled at
 once, each on its own thread. The CPU's denominator is the host's clock between the
 samples, where docker/cli's is the system's CPU time from /proc/stat: inside a VM on a
 loaded host that does not keep time (one spinning vCPU read 329% and 2503%). A paused
-container's guest cannot answer; it shows the sample taken as it was paused, its CPU 0%,
+microVM's guest cannot answer; it shows the sample taken as it was paused, its CPU 0%,
 where dockerd reads a frozen cgroup's files from outside it. Before, `stats` showed the VM process's own CPU and
 resident memory and `--` for the rest. Memory is the guest's truth: the files a
-container writes are memory while its writable layer is in guest memory (D37's open
+microVM writes are memory while its writable layer is in guest memory (D37's open
 item).
 
 ### Devices and block I/O (D44)
@@ -3339,11 +3339,37 @@ Improvements over Docker, each measured or tested:
   container read, write and make every device. shards reads one that is not `a *:* rwm`
   as a block and a char rule of its numbers and access (tested: `a *:* r` reads a loop
   device and cannot write it).
-- `shards start` of a microVM that cannot start says why as `docker start` does, without
+- `shards start vm` of a microVM that cannot start says why as `docker start` does, without
   run's help (it said run's before, for every start that failed).
 
-Open: BuildKit's RUN steps run under containerd's default device rules; `shards build`'s
-steps are to be held to them.
+A build's (`shards build image`'s) `RUN` steps reach the devices BuildKit gives a step's container, and no other of
+their builder's: before, a step could make a node of the builder's image device (259:0) and
+read it, as a run could before this entry. BuildKit v0.28.1's runc executor
+(executor/oci/spec.go GenerateSpec) starts from containerd v2.2.1's default spec, which
+denies every device (pkg/oci/spec.go populateDefaultUnixSpec), where dockerd's run starts
+from moby's few; `--security=insecure` allows every char and block device in its place
+(util/entitlements/security WithInsecureSpec); each CDI device node (D96) adds its rule, of
+the access its spec's `permissions` gives, `rwm` where none
+(container-device-interface v1.1.0 ContainerEdits.Apply); then runc's own, less those whose
+path a device given takes (`shards_devcgroup::build_step`). Each step starts in a cgroup of
+its own, under the builder's `steps`, which the first step confines to the default rules
+once (a step of those rules, the most, costs no program of its own), or under `devices`,
+which nothing confines, where its own program is attached alone (a cgroup's programs and
+its parents' must all allow an access). Unlike BuildKit, by design: CDI gives a node of
+type `u` (an unbuffered char device) no rule, so that the step it is given cannot open it;
+shards gives it its rule, as a `c` node's. Tested: devcgroup's
+`a_build_step_reaches_runcs_devices_and_its_cdi_devices_alone` (the rules, run through
+the kernel's evaluation of the program, the compiler held to runc's by the oracle above);
+build.rs `run_steps_reach_the_devices_buildkit_gives_them_alone` (a step opens runc's
+devices and makes a node of the builder's 259:0, and is refused it, "Operation not
+permitted"; an insecure step reads it and /dev/kmsg) and `run_steps_take_cdi_devices` (a
+CDI node of the builder's disk given `r` read and not written).
+
+`shards attach` (D45) and the network commands (D46) touch no device rule: a joined or
+attached process is the run's own, under the run's filter, and a network is no device.
+Shards' own grammar names devices where a run takes them (`--device`, worded as the VM's,
+never the host's, `cmdline::grammar`) and where a running microVM is given a host's PCI
+function (`plug`, D214).
 
 ### attach (D45)
 
@@ -3426,7 +3452,15 @@ the daemon elected (D31).
   refused at once (REFUSED, a refusal by policy, RFC 1035 §4.1.1): SERVFAIL, a server's
   failure, which it answered until 2026-10-17 as Docker's embedded resolver does, is
   taken for a passing one and asked again (musl reads it as `EAI_AGAIN`). The daemon
-  sends each member the table as members come and go (`NET_NAMES`).
+  sends each member its own table as members come and go (`NET_NAMES`): its own names and
+  those of the members it reaches, and no other's. Networks are default deny: a name is a
+  grant's, never membership's alone, so a member no link reaches has no name either (one of
+  an `enable_icc` false network, below), where Docker's embedded resolver answers every
+  container of the network, reached or not (libnetwork's resolver answers from the
+  network's service records, which `enable_icc` does not touch). Unit-tested
+  (`a_member_is_answered_the_names_it_reaches_alone`) and on real microVMs
+  (`a_networks_options_are_what_its_microvms_do`: a peer's name refused at once, its own
+  answered).
 - **Members.** A microVM is a member while its run lasts: from its start, under the
   network's lock (no two take one address), to its end; one whose start fails is no
   member, however it failed. An address a run asked for is free once its end is told,
@@ -3450,8 +3484,9 @@ drivers/bridge/bridge_linux.go, port_mapping_linux.go; netlabel). Before, they w
 checked (two of them) and ignored, and two of those asked for less reach: a network made
 with `enable_icc` false or `host_binding_ipv4` 127.0.0.1 got neither, and was not told.
 - **`enable_icc` false keeps its members from one another:** no link between their
-  network processes (`NET_PEER`), the only way one reaches another; their names still
-  answered: a service finds its peers by name, as Compose files expect.
+  network processes (`NET_PEER`), the only way one reaches another, and none of their
+  names: each is answered its own alone (default deny; until 2026-11-08 their names were
+  answered, a name with no flow behind it).
 - **`host_binding_ipv4` is where a port published with no address is bound**, alone, as
   the option means to Docker's clients: an IPv4 address or an IPv6 one, whatever its name says; 0.0.0.0 or
   unset, every address, IPv4's and IPv6's (`configurePortBindingIPv4`, `IPv6`).
@@ -3478,7 +3513,7 @@ with `enable_icc` false or `host_binding_ipv4` 127.0.0.1 got neither, and was no
   read.
 Tested (`a_networks_options_are_what_its_microvms_do`: the default network's options,
 an old record's made true; each refusal in dockerd's words; a member of an `enable_icc`
-false network resolved by name and not reached; its port bound at 127.0.0.1 alone and
+false network neither resolved by another's name (REFUSED) nor reached; its port bound at 127.0.0.1 alone and
 reached there; the MTU kept in inspect, 65520 in the guest; a routed network's port
 refused; publish.rs `a_port_at_no_address_takes_its_networks`), mutation-checked: members
 linked whatever icc says, the host binding ignored, the default network saying icc, an
@@ -3488,18 +3523,18 @@ unread.
 
 An endpoint's sysctls (`--network NAME,driver-opt=com.docker.network.endpoint.sysctls=…`),
 as dockerd sets them (PM M171): written on eth0 by init, its name in place of `IFNAME`
-(or `ifname`, as the CLI lowercases it), after the container's own sysctls, as libnetwork
+(or `ifname`, as the CLI lowercases it), after the run's own sysctls, as libnetwork
 writes them on the interface it configures after runc's; libnetwork's checks and words (a
 key with no file "… is not a sysctl file", a value the kernel refuses "unable to write
 to …", the start failing "failed to set up container networking: failed to add interface
 eth0 to sandbox: …", where dockerd names its veth); a value already set is not written;
-none on `none`, which has no interface. An interface's sysctl given as the container's own
+none on `none`, which has no interface. An interface's sysctl given as the run's own
 (`--sysctl net.X.Y.ethN.Z`) is refused, as clients of API 1.48 and on are told (moby's
 create route's handleSysctlBC), before anything else is checked, for any
-network of the container's own. Beside an Agentfile's agents whose flows cross the
+network of the run's own. Beside an Agentfile's agents whose flows cross the
 command's namespace, refused as any net.* sysctl is (D115). Tested
 (`an_endpoints_sysctls_are_its_interfaces`, mutation-checked: written before the
-container's own, eth0 kept all's; `interface_sysctls_are_endpoints`).
+run's own, eth0 kept all's; `interface_sysctls_are_endpoints`).
 
 A run's own MAC, as dockerd gives it (PM M173): the one given (`--mac-address`, or its
 endpoint's `mac-address`), in any form Go's ParseMAC reads (colons, dashes, dots or bare
@@ -3533,7 +3568,7 @@ gives them (PM M175):
 - **On eth0** once it has its addresses, as libnetwork adds them (setInterfaceLinkLocalIPs):
   IPv4's as /16 with its broadcast, IPv6's as /64 without duplicate address detection, an
   IPv4-mapped one as IPv4 and a zone dropped.
-- **dockerd's checks, in its words.** An unspecified one is refused as the container is
+- **dockerd's checks, in its words.** An unspecified one is refused as the run is
   made (validateEndpointSettings). One that is not link-local fails the start after the
   network is found, on `none` too (libnetwork's createEndpoint). IPv6 where its network has
   none fails with "permission denied", 126, the status docker/cli gives it, and one given
@@ -3550,7 +3585,7 @@ gives them (PM M175):
   4291's modified EUI-64), the run's own (PM M173).
 - **Beside an image's agents**, whose flows past the microVM cross init's link
   169.254.77.0/30 (D59), a link-local address in that link is refused, in shards' words, by
-  the daemon as the container is made and by init as it starts.
+  the daemon as the run is made and by init as it starts.
 - **Tested** (`a_runs_link_local_addresses_are_its_own`; the network
   process's `link_local_addresses_reach_their_peers_alone`; the CLI's
   `top_level_flags_land_on_endpoints_as_run_puts_them`, held to docker/cli's own
@@ -3585,6 +3620,85 @@ answers they parse; the conversion is shards' grammar's (`--convert`, shown unde
 options in each command's help). Tested in `images.rs`
 (`actions_on_an_image_not_here_convert_it_first`, on real microVMs, and that neither
 Docker's order nor removal fetches anything) and in the grammar's unit tests.
+
+### D216. Commands on microVMs: the user's list, closed (built)
+
+The user's list of 2026-10-04 asked that every command work on microVMs, in shards' own
+grammar, `shards ACTION THING [NAME]` (`crates/cmdline/src/grammar.rs`), with Docker's own
+spellings still read as Docker's scripts write them. Each item's state:
+
+1. **shards' own words say microVM.** Docker's byte-exact texts (help from the oracle
+   tables, docker/cli's and dockerd's refusals) keep `container` where scripts parse them,
+   and `look::ours` rewords them on a terminal; every form's page says microVM
+   (`every_form_of_shards_grammar_answers_help_with_its_own_page`). The refusals shards
+   wrote itself in container's words now say microVM: a paused microVM's files, changes and
+   commit, a copy or a read of changes that failed, a commit whose image is gone, a
+   snapshot of one not running, a join (`--pid`, `--network`, `--ipc` of `container:NAME`)
+   of one whose request is lost or too far removed, a microVM that stopped before its
+   command started, a health check its microVM ended.
+2. **`shards vm ls`.** `list vm` was the form; `vm ls`, `vm rm`, `vm exec` and every other
+   action said after `vm` (or `microvm`) are now read turned round, as Docker's
+   management form `image ls` is (`vm ls` is `list vm`), keeping shards' own options
+   (`vm inspect IMAGE` converts the image, which `container inspect`, Docker's, does not).
+   Pulled and converted images are listed by `list image` (D25).
+3. **`remove image` frees the image.** It takes the image's stopped microVMs, unpublishes
+   it from the local store, and its blobs go with the daemon's next collection
+   (`rmi_removes_images`).
+4. **`remove vm` removes the microVM**, its writable layer, log and snapshots
+   (`names_are_unique_and_rm_leaves_nothing`).
+5. **`shards vm rm`**: item 2's turned-round form; `remove vm` is the documented one.
+6. **The container image a microVM is made of** is kept but not shown: listings show the
+   microVM, `push` and `save` stay byte for byte the image's, and `remove image` frees both
+   (the user's call, 2026-10-04).
+7. **`exec vm NAME COMMAND`** runs in a running microVM, by its name or, as item 10, an
+   image's.
+8. **A form for each command a microVM needs.** Added now: `attach vm NAME` (D45),
+   `update vm NAME` (D40), `import vm|image FILE|URL|- [NAME]` (D41: a shards microVM
+   brought in whole, or one made of a tarball's files or an image archive), and `wait vm
+   NAME` in the help (it was read but not listed). The others were there: `copy vm`,
+   `create vm`, `read changes`, `watch system`, `export vm`, `read history`, `inspect`,
+   `kill vm`, `load image`, `read logs`, `pause vm`, `read ports`, `list vm`, `rename vm`,
+   `restart vm`, `remove image`, `save image`, `tag image`, `read processes`, `unpause vm`,
+   `inspect system`, `prune system`, `inspect disk`.
+9. **The microVMs shards makes appear in the machine's local image store**, as
+   `shards.local/NAME` (D41's publisher): a pull already, and an import; now also the image a
+   run, `create` or an action's `--convert` pulls, a tag's new name, a named commit, each
+   named image a load or an imported archive holds, and a build's `-t` names. A build ends
+   before an upload would, and a publish cut off part way leaves Docker's content locked
+   (D41), so a build asks its daemon to publish (`shards_ipc::PUBLISH_STEP`), whose
+   publisher outlives it; it asks only where a local store is there to publish to, so no
+   daemon starts for it otherwise. A name already of `shards.local/` (an archive of one
+   brought back) is not published again under `shards.local/shards.local/`. The emulator a
+   run of another CPU's image pulls is shards' own part and is not published.
+10. **An image's name reaches the microVMs made from it**: `stop`, `kill`, `pause`,
+    `unpause` and `remove` already; now `wait` and `restart` too, which reach the running
+    ones (`restart` asks its daemon which, `shards_ipc::NAMES_STEP`, as it restarts each
+    by its own request). A name of a microVM is that microVM first.
+11. **`shards vm run` folded into `run vm`**: a kernel booted with `run vm --kernel`, a
+    snapshot resumed with `restore vm DIR` (since 2026-10-04).
+12. **Verb, then noun**: `stop vm NAME`, `stop container NAME`, `remove vm|container|image
+    NAME`, with Docker's `rm`, `rmi` and `stop NAME` still read.
+13. **`run container X` where X is a shards microVM** is refused, and says why: `X is a
+    shards microVM, not a container image: it has no container's layers to make one of.
+    shards run vm X runs it as the microVM it is` (`create container` the same, `shards
+    create vm X` making it). A container
+    image is converted as it runs, as `run vm` converts it. The grammar says it with the
+    hidden option `--container-image`, which Docker's order (`container run`) goes
+    without: a Docker script's `container run` of a microVM runs it.
+
+**A microVM's record of processes** (the user's call, 2026-11-08: keep it, and show it in
+shards' grammar): D123's record is it, kept as files of the microVM's own in the home
+(`containers/ID/processes.N`, segments as its log's), read with `read processes NAME` and
+followed with `watch processes NAME`; it outlives the run and the daemon, and goes with
+the microVM's removal. No flag or subcommand of Docker's shape carries it.
+
+Tested: the grammar's unit tests (`actions_on_things_are_said_as_shards_runs_them`, every
+form above), and on real microVMs (`tests/containers.rs`
+`microvms_are_reached_in_shards_grammar_by_their_names_and_their_images`: `vm ls`, `vm
+exec`, `wait vm` and `restart vm` by an image's name, `update vm`, `read processes` the same before and after the daemon stops, `vm rm` taking the record;
+`import_makes_images_of_tarballs`: `run container` of an imported microVM refused, `run vm`
+of it run; `created_microvms_are_published_to_the_local_store`: a tag's, a commit's and a
+run's pull's microVMs sent to an engine the test serves).
 
 ### ADD of Git repositories: shards' own client (D48)
 
@@ -3678,7 +3792,7 @@ BuildKit runs every step under moby's default seccomp profile (its executor's
 oci/spec.go WithDefaultSeccomp; `Seccomp: 2` in a step's `/proc/self/status`, measured), an
 insecure step unconfined. shards' builder does the same: the profile `docker run` applies
 (D42, `crates/seccomp`, compiled as libseccomp and runc compile it) is compiled once per
-build for a step's capabilities (the defaults a container has, `shards_abi::run::CAPS`), the
+build for a step's capabilities (the defaults a run has, `shards_abi::run::CAPS`), the
 builder's architecture and its kernel's version, and carried in each step
 (`shards_abi::build::Step::seccomp`); the builder guest loads it while the step is still
 root with every capability, before it changes user, no_new_privs unset (BuildKit sets
@@ -3689,7 +3803,7 @@ the capabilities and the exec that follow run under it. Tested in
 
 ### The build cache (D50)
 
-A step `shards build` has run before, from the same definition and inputs, is not run
+A step `shards build image` has run before, from the same definition and inputs, is not run
 again: its result is the layers it made then, and its progress says so in BuildKit's
 words (`#N CACHED`, tests/build.rs), which CI logs and tools read.
 
@@ -4041,7 +4155,7 @@ nothing; a local MCP server joining no one; every agent reaching the world refus
 a harness driving a world-reaching agent allowed), mutation-checked three ways: a search
 that follows no edge, every domain taken as internal-only, and none. End to end (§9.10),
 `an_internal_agent_reaches_the_world_through_nothing`: each of those paths refused by
-`shards build`, the path named; and at run, an image whose own normalized Agentfile joins
+`shards build image`, the path named; and at run, an image whose own normalized Agentfile joins
 b to a (a commit of the Agentfile changed, its digest relabelled, as no build of shards'
 would make it) refused as the daemon reads it (D109), as built it runs. Mutation-checked:
 the build's check dropped, and the run's.
@@ -5011,7 +5125,7 @@ context.rs `PolicyBuilder`):
 - **Evaluated here, of the client's files.** The command runs in the client's process
   against a builder (`policy_command::Builder`): its policy file or stdin, its tests and
   their directory, a local path as its context, its `--debug` lines and the signature
-  verifier's trust roots are the client's, as buildx's are; what it prints is byte for byte
+  verifier's trust roots are the client's, its files being there; what it prints is byte for byte
   what the same command prints on the machine of the same files.
 - **The builder's answers, the machine's.** Its platform, the default of `--platform` and
   of a test's input; each source's metadata, resolved as the machine's builds resolve it, of
@@ -5033,7 +5147,7 @@ Tested in `tests/context.rs`
 checksum resolved there, as the machine prints it itself; a policy of the client's
 allowing that checksum and one denying in its words; a local path the client's context;
 the client's tests, an image's input resolved there, as the machine runs them itself (the
-test failed and the input printed, as buildx fails a test whose input its policy completed,
+test failed and the input printed, as buildx v0.37.1 fails a test whose input its policy completed,
 the machine's checksum in it); a registry that wants a login refusing the client while
 the owner is logged in there, and answering it once it logs in through the context; the
 machine asked its steps alone, no `buildx policy` command and none of the client's paths. Unit tests: a request and its
@@ -5167,7 +5281,7 @@ there where the container is not removed.
   of its microVM (D119): its own image, its own mount, PID, IPC and UTS namespaces and
   cgroup, its record, log and end; its network a namespace of its own on the microVM's
   switch, granted what it declares and nothing else (slice 3), `host` the command's own
-  namespace where its client asks for it, `container:X` one of its own containers'. The
+  namespace where its client asks for it, `container:X` one of its own joiners'. The
   microVM's boundary holds the host from all of them. It is named in the scope as the command named it, and on the
   host after its microVM's name (`PROV.NAME`), so that two microVMs' engines making the
   same name (two CI jobs of one project) never collide, where a shared dockerd's do. Its
@@ -5257,14 +5371,14 @@ Slice 2 tested on real microVMs (`a_microvms_own_engine_runs_binds_execs_and_pul
 `docker run`'s calls, a create, an attach before the start and the start and wait on one
 kept connection, its output from its first byte; binds of the command's file and of its
 volume, read-only and written through, a link to its volume resolved as the command sees
-it; an exec in its container, another microVM's exec unseen; a pull from a registry that
+it; an exec in its joiner, another microVM's exec unseen; a pull from a registry that
 asks for credentials, which the run's client alone has, the image not its own before, its
 own after; its images listed, none of the host's it never pulled), and in the scope
 (`a_create_stays_in_its_microvm`).
 
-Slices: (1) and (2) built, as above; (3), the containers its engine makes on networks of
+Slices: (1) and (2) built, as above; (3), the joiners its engine makes on networks of
 their own and Compose through them, designed as follows and built in five parts. A first cut of
-(3) (part 3a, b6083246) put each container on a bridge of its own in the command's
+(3) (part 3a, b6083246) put each joiner on a bridge of its own in the command's
 namespace, with every port open between them and their flows translated to the command's:
 no part of the microVM's own network design (D59, D61), it is replaced.
 
@@ -5273,12 +5387,12 @@ no part of the microVM's own network design (D59, D61), it is replaced.
   services), each listening on its own ports, two on one port among them, each reaching
   the others it needs by name; and they run under the microVM's own rule, default deny,
   beside its agents.
-- **Each is a member of the microVM's switch.** A container its engine makes gets a
+- **Each is a member of the microVM's switch.** A joiner its engine makes gets a
   network namespace of its own, linked to init's switch through a gate of its own (D59
   part three, D61), as each of the image's agents is: known by its link, never by an
   address it could claim; what it opens tracked in its gate's table alone; no state of it
   kept by the switch. Init makes the namespace, its gate and its link before the
-  container starts, and its processes enter it (setns(2)); the switch and the gate are
+  joiner starts, and its processes enter it (setns(2)); the switch and the gate are
   outside every namespace they have.
 - **Its engine's networks are the switch's.** A network its engine makes (Compose's
   project networks, a test's own) is a network of the switch: a /24 of the switch's block
@@ -5287,17 +5401,17 @@ no part of the microVM's own network design (D59, D61), it is replaced.
   gateway its first address, or the one given. Init holds them, and gives each member the
   lowest free address as it joins: a /32 routed through the gateway on its link, as an
   agent's is. The engine's default network, which its clients call `bridge`, is one; a
-  container named onto no other is on it.
-- **Joining grants nothing; what a container declares does.** Each flow is named
-  (AGENTFILE_ARCH.md §4.7): a container accepts, from each member of a network it shares,
+  joiner named onto no other is on it.
+- **Joining grants nothing; what a joiner declares does.** Each flow is named
+  (AGENTFILE_ARCH.md §4.7): a joiner accepts, from each member of a network it shares,
   on the ports it declares, and on no other: its image's `EXPOSE`, its create's
-  (`--expose`, Compose's `expose:`), and the container side of each port it publishes.
+  (`--expose`, Compose's `expose:`), and the joiner's side of each port it publishes.
   That is the receiver naming what it accepts, as `CONNECT --port` names it for an agent:
   the network says who may ask, the receiver on what. The default network names no peers:
-  a container on it is alone, as an agent with no `CONNECT` is. Nothing else crosses: no
+  a joiner on it is alone, as an agent with no `CONNECT` is. Nothing else crosses: no
   port a receiver did not declare, no member of a network the two do not share, no agent
   of the image, not the command.
-- **Names, of granted peers alone.** A container resolves its own names and those of each
+- **Names, of granted peers alone.** A joiner resolves its own names and those of each
   peer it is granted a flow to, and no other (§4.7). Its names on a network are its name
   in its engine's scope and the aliases its client gives it there (Compose's service
   names, `--network-alias`); nothing else names it. Its `/etc/hosts`, a file of its own
@@ -5310,11 +5424,11 @@ no part of the microVM's own network design (D59, D61), it is replaced.
   microVM, never asked past it.
 - **Published ports, to the command alone.** A port it publishes (`-p HOST:PORT`, `-P`)
   reaches it from the command, its engine's host, at `localhost:HOST` in the command's
-  namespace: init's proxy there passes each connection and datagram on to the container's
+  namespace: init's proxy there passes each connection and datagram on to the joiner's
   port, and the switch and its gate let that port alone in, up the switch's link from
   init's namespace. Nothing past the microVM reaches it but through a port the run itself
-  publishes. The command reaches no container on any port it did not publish.
-- **Past the microVM, no more than the command.** A container acts for the command that
+  publishes. The command reaches no joiner on any port it did not publish.
+- **Past the microVM, no more than the command.** A joiner acts for the command that
   asked its engine for it: what it reaches past the microVM is what the command reaches
   (the run's own grants, the network process holding the microVM to them; beside agents
   whose grants reach past it, eth0's own subnet alone, as `confine_eth0` keeps the
@@ -5323,36 +5437,36 @@ no part of the microVM's own network design (D59, D61), it is replaced.
   resolver, which forwards what the command may resolve.
 - **What it tells where a flow is refused.** A peer's connection to a port its receiver
   never declared ends at the receiver's gate, as any flow no grant names does.
-  `shards read ports` of a container lists each port it listens on that no grant lets its
+  `shards read ports` of a joiner lists each port it listens on that no grant lets its
   peers reach, with what would declare it (`EXPOSE`, `expose:`, `--expose`), so the gap
   is seen at once rather than as a connection that hangs.
-- **Its own values.** A container's link takes the hardware address its kernel gives it,
+- **Its own values.** A joiner's link takes the hardware address its kernel gives it,
   as an agent's does. The proxy keeps a UDP client's mapping as long as the microVM's own
   connection tracking keeps a UDP flow (`nf_conntrack_udp_timeout`, and
   `nf_conntrack_udp_timeout_stream` once answered, read from the running guest), so that
   a published UDP port lasts as the microVM's translated flows do.
 - **`--network host` is the command's own namespace**, as the client asks: the engine's
   host's network, the command's reach and no more. `none` is a namespace of its own with
-  its loopback alone; `container:X` the namespace of X, one of its own containers.
+  its loopback alone; `container:X` the namespace of X, one of its own joiners.
 - **The networks API** (create, list, inspect, remove, prune, connect, disconnect) takes
   what Compose and the SDKs send, and answers in the shapes they read, with the switch's
   values: its subnets, its members' addresses. A driver no microVM's switch can be
   (`overlay`, `macvlan`, `ipvlan`) and a setting it cannot hold are refused with why.
 - **Named volumes it makes** are its own: the host's volume store's, named after its
-  microVM's as its containers are (`PROV.NAME`), mounted through the join share (D119),
+  microVM's as its joiners are (`PROV.NAME`), mounted through the join share (D119),
   removed with its microVM.
 
 Each difference from Docker is deliberate: membership carries no flow, where Docker's
 network carries every port both ways; the default network names no peers, where Docker's
-carries every port between its containers; a container resolves its granted peers alone,
+carries every port between its containers; a joiner resolves its granted peers alone,
 where Docker resolves every member by name, alias, short ID and hostname; the command
-reaches a container through what it publishes alone, where Docker's host reaches every
-container's address; and a container reaches past the microVM no more than the command.
+reaches a joiner through what it publishes alone, where Docker's host reaches every
+container's address; and a joiner reaches past the microVM no more than the command.
 
 Built in parts: (3a) members on the switch, the default network, published ports, `host`
 and `none`, built; (3b) the networks its engine makes, their grants and names, and the
 networks API, built; (3c) its
-named volumes, one container in another's namespace (`container:X`, Compose's
+named volumes, one joiner in another's namespace (`container:X`, Compose's
 `service:`), and Compose end to end, built; (3d) the undeclared listeners `shards read
 ports` lists, built; (3e) connect and disconnect of a running member, built.
 
@@ -5429,7 +5543,7 @@ ports` lists, built; (3e) connect and disconnect of a running member, built.
   `local`, gateway modes but `nat` and `isolated`, `enable_ip_masquerade`,
   `inhibit_ipv4`, a bridge's name, an MTU, an interface prefix; an endpoint's hardware
   address, link-local addresses and driver options; an alias on the default network,
-  which names no peers. Connect and disconnect change a container's
+  which names no peers. Connect and disconnect change a joiner's
   networks for its next start (the request it was made with), and refuse one that runs,
   with why, until 3e. Inspect's `NetworkSettings.Networks` has an entry for each of its
   networks (its address, prefix, gateway and hardware address as init said them, its
@@ -5442,7 +5556,7 @@ ports` lists, built; (3e) connect and disconnect of a running member, built.
   its name on 7000 from members of its network, its alias answered with a TTL of 0;
   stray, declaring 7000 and listening on 7001, is not reached on 7001; neither a member
   of the other network, by db's address or its name, nor the command reaches db, whose
-  second connection is web2's; a network with a running member stays; a container that
+  second connection is web2's; a network with a running member stays; a joiner that
   does not run joins one for its next start and resolves db there once started, and one
   that runs is refused; stray resolves db's alias while db runs and not once it has ended;
   a network naming 127.0.0.1 for its members' published ports binds one there, reached at
@@ -5469,50 +5583,50 @@ ports` lists, built; (3e) connect and disconnect of a running member, built.
   the range its own connections take does. A gate now holds its member's declared ports
   from the start.
 - **How its volumes are built (3c).** A volume a microVM's engine makes, through its API
-  or as a container it makes names one (`-v NAME:DEST`, `--mount source=NAME`), is in the
+  or as a joiner it makes names one (`-v NAME:DEST`, `--mount source=NAME`), is in the
   host's store, on disk rather than in the microVM's memory, where its writable layer
   is. The store's record says whose it is (`Of`, the microVM's ID) and what its engine
-  calls it (`There`); on the host it is named after the microVM, as its containers are
+  calls it (`There`); on the host it is named after the microVM, as its joiners are
   (`PROV.NAME`, or `PROV.NAME.N` where the host has a volume of that name: a host name is
   only how it is shown). Its engine finds its own by that record alone, so a renamed
   microVM keeps them, and no name of its reaches another microVM's or the host's own. A
-  container it makes mounts them through the microVM's join share (D119), a fresh one
+  joiner it makes mounts them through the microVM's join share (D119), a fresh one
   taking the image's files at its mount point and their owner as it is first mounted,
   and its anonymous ones are the microVM's too. Its engine lists, inspects, makes,
   removes and prunes them by its own names, with no path of the host's in what it says
   (`Mountpoint`, a mount's `Source`); a volume takes no driver and no driver options, the
-  local driver's binding a directory of the host's (`o=bind,device=...`). One a container
-  mounts stays; the rest go with their microVM, each as the last container that mounts it
+  local driver's binding a directory of the host's (`o=bind,device=...`). One a joiner
+  mounts stays; the rest go with their microVM, each as the last joiner that mounts it
   goes.
 - **Tested on real microVMs.** `a_microvms_own_engine_makes_volumes_of_its_own`: a volume
   made through the API by its name, at no host path, and none with driver options; a
-  container writes to it by `-v`, another reads it through `--mount`, a third's named
+  joiner writes to it by `-v`, another reads it through `--mount`, a third's named
   volume made as it is named; its engine lists its own alone, by their names, and a
-  container's mount by that name at no path; the host lists them after the microVM's
+  joiner's mount by that name at no path; the host lists them after the microVM's
   name; the host's own `prov.secret` neither taken nor seen by the microVM's `secret`,
   which is named `prov.secret.2`; renamed, the microVM keeps them and reads what it
   wrote; another microVM's engine finds none of them, its own `data` its own; one a
-  container mounts stays, and goes once none does; and the rest go with the microVM,
+  joiner mounts stays, and goes once none does; and the rest go with the microVM,
   the host's and the other microVM's staying. Mutation-checked, each caught: its engine
   listing every volume; one found by its host name alone, which a rename lost; no free
   name taken, the host's `prov.secret` refusing its `secret`; no free name and another's
   volume taken, which read the host's file; its volumes left as it went; a host path in
-  a volume's document, and in a container's mount; driver options taken. With a free
+  a volume's document, and in a joiner's mount; driver options taken. With a free
   name taken, the store's refusal of another's volume is a second guard the test does
   not reach.
-- **One in another's namespace (3c).** `--network container:X` of a container its
+- **One in another's namespace (3c).** `--network container:X` of a joiner its
   microVM's engine made, and Compose's `network_mode: service:X`, shares X's network
   namespace as it is: a member's (its link, address, gate, grants and names), one on
   `none` (its loopback alone), or the command's where X is on `host`. The daemon names the
   namespace to init by X's exec in its provider's guest (`net=joiner=ID`, as `pid=joiner=`
   names a PID namespace), following X to the one it shares where it shares another's; init
-  enters it, and X's UTS namespace, before anything of the new container's runs. Its
+  enters it, and X's UTS namespace, before anything of the new joiner's runs. Its
   `hostname`, `hosts` and `resolv.conf` are X's, the same files read-only, copied from X's
   mount namespace (open_tree(2)), so that a link X put there resolves in X's files alone.
   It publishes and declares no ports of its own, refused as any joiner's are at create
-  (D119), for it has no link to have them on. Found on the way: before, any such container
+  (D119), for it has no link to have them on. Found on the way: before, any such joiner
   but a member's was given its provider's namespace, the command's, so one beside a
-  container on `none`, loopback alone, reached as far as the command; and one beside a
+  joiner on `none`, loopback alone, reached as far as the command; and one beside a
   member was refused.
 - **Tested on real microVMs.**
   `a_container_in_anothers_namespace_shares_that_ones_as_it_is`: beside one on `none`, its
@@ -5527,16 +5641,16 @@ ports` lists, built; (3e) connect and disconnect of a running member, built.
   project's network, volume and services; `ps` lists them running; `exec` in one reaches
   the other by its service's name on the port it declares (`expose:`); a file written to
   the project's named volume is read back, the volume on the host as `PROV.shp_data`;
-  and `down -v` takes the containers, network and volume. What it relies on is
+  and `down -v` takes the project's joiners, network and volume. What it relies on is
   mutation-checked in the tests above.
-- **How 3d is built.** `shards read ports` of a container its microVM's engine made, a
+- **How 3d is built.** `shards read ports` of a joiner its microVM's engine made, a
   member of the switch, says each port it declares or listens on, where it is
   published, and who reaches it there (REACHED BY): the command where it publishes it;
   its peers on each of its networks that make peers of their members where it declares
   it; no one where its networks make no peers; and no one where it listens without
   declaring it, with what would (`EXPOSE`, `expose:`, `--expose`), so that a connection
   that would hang is seen at once instead. What it listens on init reads by a builtin
-  (`LISTENS`) through its own `/proc` by the container's process (`/proc/PID/net/tcp`,
+  (`LISTENS`) through its own `/proc` by the joiner's process (`/proc/PID/net/tcp`,
   `tcp6`, `udp`, `udp6`: TCP in LISTEN, UDP bound and unconnected), past the loopback,
   which nothing but itself reaches. Tested in the 3b test (stray's declared 7000 reached
   by its peers on app, its 7001 undeclared by no one, with what would declare it) and the
@@ -5545,7 +5659,7 @@ ports` lists, built; (3e) connect and disconnect of a running member, built.
   and states, in init's unit tests. Mutation-checked, each caught: what it listens on
   ignored; what it declares ignored; a network of no peers taken for one; what it
   publishes ignored.
-- **How 3e is built.** A container that runs is connected and disconnected at once, by
+- **How 3e is built.** A joiner that runs is connected and disconnected at once, by
   init (`NETWORK connect ID NETWORK ADDR NAME...` and `disconnect ID NETWORK`, ID its exec's
   in the guest). Connect gives the member an address on the network, the one asked or the
   lowest free, routed on its one link as a member's addresses are: the switch's route to
@@ -5557,7 +5671,7 @@ ports` lists, built; (3e) connect and disconnect of a running member, built.
   it). Its last network stays, refused with why: it would be left a link with no address.
   The daemon records the address init gives, which inspect shows, and keeps the change for
   its next start. Its own hosts file stays as it started; its peers resolve its new names
-  through the agents' resolver. A container that runs on `none`, or in another's
+  through the agents' resolver. A joiner that runs on `none`, or in another's
   namespace, gains no link as it runs, and is refused with why.
 - **Tested on real microVMs.** `a_running_member_is_connected_and_disconnected_at_once`:
   a member of a, connected to b as it runs, has its address there at once in its
@@ -5625,7 +5739,7 @@ Decided by the user on 2026-10-14 ("so long as they apply appropriately to micro
   placement keeps no run under another waiting (`daemon/parents.rs`). Every process of a
   microVM under that parent is made by it (`spawn_in_group`), in its scope from its first
   instruction: the VM process, its network process, its share process, a stopped
-  container's visit's, and the join share of a microVM others join, under that microVM's
+  microVM's visit's, and the join share of a microVM others join, under that microVM's
   own parent. Warm pools are kept per template and parent (`PoolKey`), and a template
   collected ends its pools under every parent. A spawner found ended as a run asks for it
   (its first connection, which it never writes, readable: one `poll(2)` that waits for
@@ -5634,7 +5748,7 @@ Decided by the user on 2026-10-14 ("so long as they apply appropriately to micro
   have. Refused before anything is made, each saying why: any parent off Linux; a value
   that is no slice's name, as systemd's own check has it (src/basic/unit-name.c); a joiner
   (D119) naming a parent other than its provider's; and from a microVM's own engine (D181),
-  not built yet (501). Inspect's `HostConfig.CgroupParent` says it, and the Engine API takes
+  403, with slice 4's reason (below). Inspect's `HostConfig.CgroupParent` says it, and the Engine API takes
   `HostConfig.CgroupParent` as the command line takes the flag (D170's create bodies, a
   case of it among them).
 - **Tested.** On real microVMs on Linux, where CI's x86_64 runner has its user's manager
@@ -5650,7 +5764,7 @@ Decided by the user on 2026-10-14 ("so long as they apply appropriately to micro
   parent its process, watched, signalled and reaped through it; ended, signalled no more)
   and a killed one found ended; shards-bus against a bus of a test's own.
   Mutation-checked on macOS, each caught: a parent served off Linux; a path taken for a
-  slice; the Engine API's `CgroupParent` dropped; a microVM engine's container given a
+  slice; the Engine API's `CgroupParent` dropped; a microVM engine's joiner given a
   parent; a group's children made by the process's own spawner; a killed group's spawner
   never found ended.
 - **Where no user's manager is.** A slice there is refused before anything is made,
@@ -5726,7 +5840,7 @@ Decided by the user on 2026-10-14 ("so long as they apply appropriately to micro
     Each microVM is told the room under the least of its budgets as D188 tells a slice's
     (init's `ROOM`), and where the group is short each gives back what it holds cold,
     then unplugs. Past `memory.max` with a pass that gave nothing back, the microVM of
-    the group that holds the most is stopped, its container marked OOM-killed, as a
+    the group that holds the most is stopped, its record marked OOM-killed, as a
     cgroup's OOM killer takes its largest. Tested on real microVMs
     (`a_microvm_under_a_group_is_held_to_its_budget`, M355): 1,254 MiB held under a
     `memory.high` of 998 MiB, given back to 281; past a `memory.max` of 793 MiB, the
@@ -5797,11 +5911,28 @@ Decided by the user on 2026-10-14 ("so long as they apply appropriately to micro
 - **Slices.** 1: Linux, a slice of the user's manager (built). 2: a delegated cgroup
   where no user's manager is (built, above). 3: macOS and Windows, groups shards keeps
   (built, above). 4: the microVM's own engine's members (D181), a cgroup within the
-  microVM, refused (501) until a need for it inside a microVM is shown.
+  microVM: refused (403), each part of the need already met, and what is left of it no
+  one in the microVM could use (checked 2026-11-07):
+  - What a parent is for is a budget its members share, set by whoever owns the
+    parent: on a host, its administrator writes the slice's or cgroup's files, and the
+    run names it alone (`HostConfig.CgroupParent` is a path, with no budget of its own).
+  - Every member of a microVM's engine is a joiner of that microVM (D119), so its
+    members already share one budget, the microVM's own, under the host parent it was
+    run under (slices 1 to 3), and each member takes its own limits as any joiner does.
+  - A parent within the microVM, for a group of its members apart from the others, would
+    be a cgroup no process in the microVM may budget. The workload, the engine's only
+    client, is in a cgroup namespace rooted at its own cgroup, mounted `nsdelegate`, and
+    may write no cgroup outside it (cgroup-v2.rst, "Delegation Containment"); and a
+    parent under the workload's own cgroup could enable no controller for its members
+    while the workload's processes are there ("No Internal Process Constraint"). Init
+    alone could write its files, and no input names what to write.
+  - A group of agents with a budget of their own is a microVM of their own, under a
+    host parent of their own. So slice 4 stays refused, with that reason, unless an
+    input that carries a member group's budget is found.
 
 ### D184. A credential helper is asked at once and waited for only where its registry asks (built)
 
-**Found.** `shards pull alpine:3.22` with a user's own Docker config (2026-10-17) waited
+**Found.** `shards pull image alpine:3.22` with a user's own Docker config (2026-10-17) waited
 12 minutes and more on `docker-credential-desktop get`, Docker Desktop's backend not
 answering: sampled, the daemon's thread read the helper's output (credentials.rs
 `run_helper`). The client's Ctrl-C ended the client alone: the lookup took no cancel, so
@@ -6119,6 +6250,11 @@ the settings; a short history in one segment; a reset reading what it resets; fl
 a reset unchecked; a run admitted past settings that do not read; a reserve past the most;
 settings that do not read collected by the default policy; a set policy waiting out the
 last collection; a failed collection unsaid; the collection ignoring the settings.
+On every host the daemon runs on: both E2E tests are every host's, and pass on Windows'
+real WHP microVMs too, where the disk's size is GetDiskFreeSpaceExW's
+(`platform::disk_space`): CI 42329593544 at 51a709e9, windows-2025 (job 128272814009, no
+test of it skipped) and windows-2022 (job 128272814036, whose skips are snapshot restores
+alone, PM M345), as on macOS and Linux.
 
 ### D187. The home's events, kept for `--since` past their daemon (built)
 
@@ -6386,7 +6522,17 @@ host (PM M267), where a container's page cache is its host's to drop. Free page 
   allocation past it but cannot refuse one with no swap, and a run that grew faster than
   its memory came back took the kernel's own and met its OOM killer: 3 of 30 runs of the
   benchmark with DAX windows, whose guests hold no page cache of the files they map and so
-  keep less; none of 60 since, the host as short of memory and as much given back.
+  keep less; none of 60 since, the host as short of memory and as much given back. Nor
+  from one that grew within the window its host's pressure is measured over (2 s,
+  `shards_abi::PRESSURE_WINDOW_US`; PM M466): the grower marks each ask and each block
+  that comes in a page init, its grower and its builtins share, and a give-back that finds
+  a mark within the window keeps all it has. Its keep counts from what the run uses
+  (twice its `memory.current`), the grower's ask from what the guest has (twice its
+  MemTotal), and a run raised to more (`update -m`) that had just had 128 MiB plugged for
+  an allocation not yet touched was cut back to its keep, held there, grew, and was cut
+  back again pass after pass of a host that stayed short, until its guest ran out of
+  memory and killed what grew: 15 of 74 raised allocations in `update_under_pressure_stress`
+  (the host's word every 50 ms), the slowest 42 minutes; none of 2,000 since.
 - **No hold counts what goes** (PM M324): every hold init sets counts out the memory
   still plugged past its device's request, which goes as its driver unplugs it, free or
   not, as the give-back's own hold does; and what is plugged, for a run held at its cap or
@@ -6404,7 +6550,7 @@ host (PM M267), where a container's page cache is its host's to drop. Free page 
   then a thread blocked in poll(2) on Linux 6.4 and later and on macOS; on an older Linux,
   a read of the host's average every ten seconds.
 - **A build's builders give back as runs do** (D133's builders; PM M442). A build's
-  builders are its own process's, not the daemon's (`shards build`), so the build watches
+  builders are its own process's, not the daemon's (`shards build image`), so the build watches
   its host's memory pressure as the daemon does, the same words on every host (PSI on its
   own cgroup on Linux, libdispatch's source on macOS, the low memory notification on
   Windows, `SHARDS_BUILD_PRESSURE` a test's), and a write to a budget over it (inotify on
@@ -6623,10 +6769,11 @@ was ended, followed by the budget's word all the same (12 runs of 12 on Fedora, 
 restored from their template, its warm microVMs in the slice, read a gigabyte through FUSE
 under a `MemoryHigh` its idle microVMs leave 128 MiB of within twice the time runs under
 none took (medians of 3), alone in its test binary so other daemon tests do not compete
-between its phases (CI 41365265628: 2.06 times beside them), a run begun under no budget
-held to one set as it goes within it too, and a run alone in the slice, its daemon
-keeping no warm microVM there, held under a
-budget short of what the slice holds and its kernel's inactive buffer, by a mebibyte,
+between its phases (CI 41365265628: 2.06 times beside them; alone, 4 runs of 4 passed on
+Fedora 44, kernel 6.19.10, i9-14900HX, at 49ee67a5 with the host at load 24 to 45, the
+slowest phase's median 0.46 to 1.34 times its run's median under none), a run begun
+under no budget held to one set as it goes within it too, and a run alone in the slice,
+its daemon keeping no warm microVM there, held under a budget short of what the slice holds and its kernel's inactive buffer, by a mebibyte,
 within the least room a run goes on in and reading within it too (where held at what
 they used they read a gigabyte at 0.16 to 0.57 MiB/s, PM M309; with warm microVMs beside
 it, the budget ended them for room, and room came back to every run, PM M314): dispatched
@@ -7282,23 +7429,24 @@ share made ahead), and a disk's capacity was fixed when its file was opened.
     at its start has it root's as Docker gives one (D154's runs use `--user root`); a
     function plugged in is for the run's workload, whose user cannot change once it runs,
     and the node its user's alone (0600 kept) gives nothing to another user of the
-    microVM, as containerd's and CRI-O's `device_ownership_from_security_context` give a
-    non-root container's devices its user (Kubernetes blog, "Non-root Containers And
-    Devices", 2021-11-09). A function had by its device node is taken through iommufd too
+    microVM; the need is the one Kubernetes' `device_ownership_from_security_context`
+    answers for a non-root workload's devices (Kubernetes blog, "Non-root Containers And
+    Devices", 2021-11-09, https://kubernetes.io/blog/2021/11/09/non-root-containers-and-devices/). A function had by its device node is taken through iommufd too
     (vfio.rst, "Device cdev Example"), whose `/dev/iommu` is a misc device of a dynamic
     minor (10:M) and mode 0660, root's (drivers/iommu/iommufd/main.c, `iommu_misc_dev`):
     init gives the workload's its user and group as well while such a function is plugged,
     made with the VM's numbers and mode where its run was not given it, and answers what
     it was before (`made`, or its owner), which the daemon keeps from the first such
     function and has init restore as the last goes (taken out, or its owner again), so a
-    run given `/dev/iommu` at its start has it as Docker gives it once nothing is plugged.
+    run given `/dev/iommu` at its start has it as its host's node was given (D44) once
+    nothing is plugged.
     That `/dev` is the run's own: a tmpfs init mounts at the run's root (`container_mounts`),
     which its command and execs share; each agent's domain mounts a `/dev` of its own, and
     each joiner (D119) makes its own in its mount namespace, so no other workload of the
     microVM is given it. The workload's device filter is
     then its run's rules and one `c MAJ:MIN rwm` for each function plugged in (and
     `/dev/iommu`'s, once, where its run's rules have it not already), given last,
-    as runc's given devices come after the defaults and take precedence (`devices::allow`):
+    so that a run's given devices take precedence over the defaults (D44, `devices::allow`):
     done by init's own process, which keeps the run's rules and the program attached, and
     replaces it (BPF_F_REPLACE) each time with the whole list, so a function unplugged
     leaves it; a privileged run's has no filter. Anything else the step is asked to allow
@@ -7343,6 +7491,120 @@ share made ahead), and a disk's capacity was fixed when its file was opened.
   past the 32-bit window; a host's function plugged on bare-metal hardware (no host here
   has a spare one bound to vfio-pci: tested nested, on QEMU edu's model); the guest's
   remove's 29 ms on KVM x86_64, not yet split (PM M430).
+
+### D215. A client's paths are its own; the machine's are its owner's to grant (built)
+
+**The need.** Through a context (D180) a laptop runs microVMs on a GPU or x86_64 machine.
+Until now a command it sent ran as that machine's CLI, so `-v /home/me/src:/src` bound the
+machine's `/home/me/src`, and every enrolled client could bind any of the machine's
+directories (`-v /:/host`), plug in its files and PCI functions, take its GPUs, and make
+its CLI read and write its files (`--env-file`, `--cidfile`, `save -o`, a build of a
+directory there), all as the machine's user. That is Docker's model: its CLI sends a bind
+as the path typed (docker/cli v29.8.1 cli/command/container/opts.go, `parse`: `Binds`
+taken as given), its daemon resolves it on its own host (moby docker-v29.8.1
+daemon/volume/mounts/linux_parser.go, `validateMountConfigImpl`: the source `os.Stat`ed
+there; daemon/volume/mounts/mounts.go, `MountPoint.Setup`: a `-v` source made there,
+createSource), and Docker's documentation says so: a bind mount is made on the daemon's
+host, never the client's, so a client of a remote daemon cannot bind its own files
+(docs.docker.com, "Bind mounts", Considerations and constraints). Whoever reaches a remote
+dockerd reaches its host's whole file system: Docker's own documentation calls daemon
+access root-equivalent (docs.docker.com, "Docker Engine security", Docker daemon attack
+surface).
+
+**Decided** (the user, 2026-11-07; shards is filesystem based, its memory's rule): a path
+means the files where its user typed it, and nothing of a machine's own is reachable but by
+its owner's grant, default deny, as shards' networks are.
+
+- **A client's bind is its own directory, served from it.** The client reads its run's
+  and create's `-v` and `--mount type=bind` as shards' parser reads them (`client_binds`,
+  `here_binds`, by `flags::Parsed::positions`), relative paths from its working directory,
+  a missing `-v` directory made there as `-v` makes its host's, a missing `--mount` source
+  refused in the words docker/cli's daemon refuses one. Each crosses as a relay's token
+  (`client_grants::Relayed`: `/.shards-client-bind/` then `d` or `f`, 128 random bits, its
+  path as hex so that a Windows path's `:` splits no field), and the client serves it over a
+  QUIC connection of its own (the bind step, `\0bind TOKEN`): the share server shards' share
+  processes run (`fs::server::Server`, D38's confinement, its own budget), over the client's
+  directory or a file's directory limited to it. The machine keeps one end of a socket pair
+  for the token (`daemon/remote.rs`, `RELAYS`, by client and token, so that no client takes
+  another's), the step's stream the other, and the run's start takes it (`take_relay`): its
+  share process hands the VM that socket as the share's end as it is (share.rs), so the
+  guest's FUSE requests reach the client's server byte for byte and its answers come back.
+  Nothing of the machine's is opened for it; a source of the prefix in an owner's run, or a
+  client's bind of any other source, is refused (`refuse_bind`).
+- **What the relay gives.** The same server, so the same semantics as a bind of a local
+  directory: no FUSE writeback cache is negotiated (server.rs `INIT` offers none), so a
+  guest's write reaches the client's file before its `write(2)` returns; the guest's page
+  cache is dropped at each open (no `FOPEN_KEEP_CACHE`), so data is close-to-open
+  consistent with the client's other programs; names and attributes are trusted for a
+  second (`VALID_S`), as a local share's are. Only the cost differs, each request a round
+  trip to the client: over loopback on the GPU desktop an open, a 4 KiB read and a close
+  took 251 µs at p50 and 399 at p99 against the machine's own bind's 136 and 206, a 64 MiB
+  read 458 MiB/s against 468, a write 572 MiB/s against 2,157 (PM M463). No DAX window: a mapping maps a file of the host the
+  guest is on, so the client's server tells its guest to map nothing (`serves_afar`: no
+  `FUSE_HAS_INODE_DAX`, no `FUSE_ATTR_DAX`) and refuses a mapping's descriptor (EINVAL,
+  `answer_afar`).
+- **As long as its client serves it.** An attached run's binds are served by its command
+  while it runs, and let go as it ends (`Relays`, hung up as it drops: a relay its run never
+  took is kept there no longer). `run -d` and `create` serve theirs from a process of the
+  client's own (`shards bind-server`, one of `cli::INTERNAL`, never a client's to send:
+  `owners`), which says it is ready once each relay is kept, and ends as each relay does,
+  as the run that took it ends. A relay serves one start: a container started again, or
+  `--volumes-from` of a client's bind, is refused, said as its client's directory, which
+  that client serves to that run alone.
+- **The machine's directories and devices, by grant.** The owner grants a client by name
+  (`shards grant client NAME --dir PATH[:ro] --device NAME --gpus`, `revoke client`,
+  `inspect client`; or `invite client ... --dir ...`, kept for the client the invitation
+  enrolls), kept in the home (`grants/NAME`, removed with the client). The machine's
+  directory reaches a client's run only as a volume of it (`o=bind`, its `device`), the
+  local driver's form Compose's `driver_opts` give, never as a bind's path, which is the
+  client's. A client's `volume create`, a `--mount` volume's options, a volume one mounts
+  (made by anyone), a `--volumes-from` of the machine's bind, and `plug disk|volume` are
+  judged against its grants: by the path's real place before anything is looked at or made
+  (`refuse_path`), and again by where the directory or file now open is, as the system names
+  an open file (`refuse_opened`: `F_GETPATH`, `/proc/self/fd`, GetFinalPathNameByHandleW),
+  which is what is shared: no rename or link between the look and the open reaches past a
+  grant. The innermost grant decides whether it may be written. Devices: the machine's GPUs
+  (`--gpus`, an Engine API create's device requests), CDI devices, VFIO's nodes, and `plug
+  function` need a grant of each by its name; a `--device` of any other path is the
+  microVM's own (D44), every run's.
+- **What a client's command may not do in its own process.** A client's shards carries
+  what is its own (D180's parts) and never sends words that would have the machine's CLI
+  read or write the machine's files; a client that does is refused before the command
+  starts (`refuse_words`): a kernel booted directly, a snapshot restored, a build or
+  artifact build or signature of a directory there, `cp`, `buildx policy`, an import of a
+  file there, `--env-file`, `--label-file`, `--iidfile`, `--metadata-file`, `-o` and `-i`
+  but `-`, a `--cidfile` not told on its pipe, a seccomp profile's file.
+- **Whom a request is for.** The listener names the client last in each command's
+  environment (`SHARDS_CLIENT`, which no client can set: a request's variables are
+  `frame::ENV`'s alone); the CLI sends it with each run and command (`Run::client`,
+  `Command::client`), kept with a container's record, so that its start is judged by its
+  client's grants however long after.
+- **Docker's tools through a context's engine** (D180 part 4) are the client's too: the
+  listener no longer connects a client's engine stream to `engine.sock` as any local
+  client, but makes the connection itself and hands the API its other end with the client
+  named (`take_engine_clients`, the listener woken), so that what its calls make is the
+  client's (`engine_client`, the connection's thread's): a create's binds, which Docker's
+  API carries as paths alone, are the client's paths, refused as shards' own CLI would have
+  served them, and its devices and volumes judged by the client's grants.
+
+Tested: unit tests of the grants' record, of what a client's devices and directories are
+(a link inside a grant to a directory outside refused, by path and by what is open; a
+directory not there judged where it would be made; read-only), of a relay's source (a
+Windows path whole), of a run's binds rewritten (`client_binds`), of the share answering
+afar; and `tests/context.rs`
+(`a_clients_binds_are_its_own_files_and_the_machines_its_owners_to_grant`): the laptop's
+directory and a file bound alone read in a microVM there, its writes landing on the laptop,
+read-only refused, a detached run's write landing; nothing of the laptop's made on the
+machine; a client's volume of the machine's directory refused, the owner's refused to the
+client until granted read-only, then refused read-write, and refused again once revoked; a
+named volume the client's; and `--gpus` refused without a grant. And
+`a_contexts_engine_is_its_machines`: a create through the context's engine binding a
+directory of the machine's refused.
+
+**Not yet.** A Windows machine serves no client's directory (its shares' streams are pipes
+its daemon makes, D197): refused, said so. Docker's CLI through a context serves none of
+its client's directories, as its API names a path alone. `plug volume` of a client's own
+directory. A context's relays measured across two machines (PM M463 has loopback alone).
 
 ### D208. A GPU on every Linux host: musl's GPU VM process, and Intel's GPUs (built)
 
@@ -7526,7 +7788,7 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
   process's page faults now on every host). An idle or stalled microVM is said nothing
   of: a test's client past its deadline (`common::Said`) is waited on while its microVM
   runs, and given up on a minute after it last ran, as before. Where a microVM is the
-  client's own, no daemon's (`shards run --kernel`, `shards restore`, `shards build`'s
+  client's own, no daemon's (`shards run vm --kernel`, `shards restore vm`, `shards build image`'s
   builders), the test judges the VM processes under its client itself, by the same basis
   and slice (`common::Ran`), while they start. Detached runs are not looked at:
   a busy server run with `-d` logs nothing. Not caught, as of a start: a guest that spins
@@ -7925,9 +8187,9 @@ shards' own shares' DAX windows (slice 4). What it took, decided:
   as Unix's share process hands its own: a stream given to a process on Windows hands no
   handle on, its holder having no handle of the process it would send one to. A run of
   five shares sent in its request alone had been refused, past `MAX_FDS`.
-- **A container's share processes end with its removal**, each ended and waited for as
+- **A microVM's share processes end with its removal**, each ended and waited for as
   the removal completes, its runs over (`end_shares`): NTFS renames no directory a handle
-  beneath is open in, and a volume removed just after the last container that mounted it
+  beneath is open in, and a volume removed just after the last microVM that mounted it
   had been refused (HTTP 500), a `run --rm`'s anonymous volume left behind.
 - **RENAME_EXCHANGE**, which overlayfs asks of a volume to remove a directory
   (ovl_cleanup_and_whiteout exchanges it with a whiteout), and of which NTFS has none:
@@ -8197,7 +8459,7 @@ M421); `platform::windows` `a_file_kept_cached_is_a_view_of_all_of_it_until_it_d
 
 **Why.** Every feature on every host (the user, 2026-10-27; docs/audit/2026-10-27_platform-parity.md
 row 1): on Windows `shards` had no daemon, so no `run IMAGE` and none of the commands of its
-containers, images, volumes and networks. D185's slots are FIFOs in the home, their
+microVMs, images, volumes and networks. D185's slots are FIFOs in the home, their
 streams handed by `SCM_RIGHTS`, its spawner a forked process: Windows has no FIFO in a
 filesystem and passes no descriptor over a socket, and a process there is made, not
 forked.
@@ -8278,11 +8540,11 @@ forked.
 - **Another build's daemon steps aside**, `shards run daemon` serves and `shards stop daemon`
   ends it, as on Unix (D185).
 - **Containers' directories** (M347). NTFS renames no directory while a file in it is open,
-  and a run's VM or a reader of its log may hold one, so a removal marks its container's
+  and a run's VM or a reader of its log may hold one, so a removal marks its run's
   directory instead of renaming it: an empty file `.ID.removing` beside it, made durable by
-  the containers' directory's sync as the rename is; the next start deletes a marked
+  the `containers` directory's sync as the rename is; the next start deletes a marked
   directory, then its mark. The directory is deleted where it is once no record of its
-  container is being written (a write under way lands in it, which Windows leaves in
+  run is being written (a write under way lands in it, which Windows leaves in
   place), and its mark only once that deletion is durable: removals completed together
   share that sync. A directory's entries are made durable by FlushFileBuffers of a handle
   to it that may write, in the VMM's platform and the image store, where Windows synced
@@ -8410,13 +8672,66 @@ prints.
   HTTPS in plain HTTP: asked in HTTPS alone unnamed, in HTTPS once and then in plain HTTP
   named, its credentials refused there and never sent; where each kind of registry is
   asked in plain HTTP); `info`'s text and JSON; and `images`'
-  `a_registry_daemon_json_names_insecure_is_pulled_from_in_plain_http`: `shards pull` from
+  `a_registry_daemon_json_names_insecure_is_pulled_from_in_plain_http`: `shards pull image` from
   such a registry fails, then pulls once the rootless engine's file names it, then fails
   again, naming the file, once it holds what dockerd refuses. The fallback and the
   credentials' refusal are mutation-checked.
 
 **Next.** A mirror that answers but stalls a blob's body: the pull's resumes go on asking
 it (fetch.rs), where dockerd's pull would fall to its next endpoint.
+
+### D226. A push sends as many blobs at once as pay, each in as few requests as its registry takes (built)
+
+**Found.** `shards push` uploaded a manifest's blobs 5 at once, dockerd's
+`max-concurrent-uploads` (moby `daemon/config/config.go`, `DefaultMaxConcurrentUploads`),
+whatever the link, where a pull's fetcher measures its connections and doubles them while
+that pays (M114): a figure of Docker's machinery, listed open in the de-Dockerify audit
+(docs/audit/2026-10-16_docker-framing.md). And it sent each blob in one PUT, as
+containerd's pusher does, so a registry that takes no request so large could not be
+pushed to at all: nginx refuses a body past `client_max_body_size`, 1 MiB unless set, with
+a 413 (nginx.org `ngx_http_core_module`), the limit distribution's own nginx recipe tells
+its users to lift "to avoid HTTP 413 for large image uploads" (distribution
+`docs/content/recipes/nginx.md`). Measured (M488): where more uploads at once stop paying
+differs from link to link, and so does how much they bring. On one host sixteen carried
+7.3 times what one did and still gained; across a LAN one carried what the link does and
+eight carried less than four; to ttl.sh across the Internet four carried twice what one
+did, and blobs of 256 KiB, bound by their round trips, gained to sixteen everywhere. A
+blob sent in chunks cost what a request does: whole 632 MB/s on one host, in 8 MiB chunks
+421, in 1 MiB 166.
+
+**Decided.**
+- **Uploads at once climb while they pay** (`crate::climb`, shared with the pull's
+  fetcher, which it was taken out of): four at first, as on no link measured did fewer
+  carry more; each second the bytes every upload has sent are measured, the second after
+  a change passed over and a second where an upload had no blob left out; a doubling is
+  kept where it brings a tenth more (the fetcher's figure, four connections' spread from
+  second to second, M114), and one that does not goes back to the count before, kept for
+  the rest of the manifest. No most but the manifest's blobs: a fixed most would be a
+  number measured on one link only. Uploads past the count take no new blob once the
+  count falls; each finishes the one it has.
+- **A blob goes whole, and in chunks only where its registry refuses it whole** (push.rs,
+  registry.rs `upload`): one PUT, the fewest requests, unless a request of a blob so long
+  was refused with a 413 already. Then it goes in PATCHes of distribution-spec v1.1.1's
+  chunked upload (spec.md, "Pushing a blob in chunks": in order, each `Content-Range`
+  inclusive, each answered 202 with a `Location` the next goes to and a `Range` that says
+  what the registry has, which is where the next starts), then a PUT with its digest and
+  no body. A chunk holds half the least the registry refused, halved again at each 413,
+  never less than the `OCI-Chunk-Min-Length` its POST's answer names (a refusal of one so
+  small fails the push, naming the request); what was refused is the push's own, so the
+  next blob goes straight to chunks the registry takes. A proxy's 413 comes before the
+  registry has the request, so the upload begun stays open and takes the chunks.
+- **Tested**: `climb`'s unit tests (a count doubles while a doubling pays, returns to the
+  last that did, measures no window it began in or where a transfer had no work);
+  `push`'s `uploads_climb_while_more_carry_more` (uploads that each carry their own climb
+  to sixteen or more; uploads sharing one link go back to four and stay); `registry`'s
+  `a_blob_refused_whole_goes_up_in_chunks_the_registry_takes` and
+  `chunks_hold_at_least_what_the_registry_asks` (each request's method and range, in
+  order); and containers.rs' `a_push_uploads_more_blobs_at_once_while_that_carries_more`
+  (`shards push` of forty 2 MiB layers to a registry that takes each connection's upload
+  at 4 MiB/s has more than four at once), on Fedora's KVM. Against a real registry:
+  `measurements/push-uploads/limited.sh`, `shards push` of nginx:alpine to registry:2
+  behind nginx at its default 1 MiB limit, pulled back through it to the same digest
+  (M488).
 
 ### D193. A run past its pids limit says so: a `pids-limit` event (built)
 
@@ -8433,14 +8748,14 @@ A harness that sorts its runs' failures could not tell a pids limit from any oth
   `pids.max`, `pids.peak`, the count and `pids.events` whole, as `OOM` goes with memory's
   (D159). `max.imposed`, a newer kernel's count of an ancestor's limit, is not it.
 - **The VM process passes it on** (shards_ipc::kind::PIDS), as it passes `OOM`; the daemon
-  logs the facts and says a **`pids-limit` event** of the container's, shards' own action
-  (dockerd has none): its attributes the name and image every event of a container's has,
+  logs the facts and says a **`pids-limit` event** of the microVM's, shards' own action
+  (dockerd has none): its attributes the name and image every event of a microVM's has,
   with `pids.max` and `refused`. Docker's typed State stays Docker's: inspect gains
   nothing.
 - **A joiner's too** (D119): init reads its own cgroup's `pids.events` as its process is
   reaped, before its cgroup goes, as its OOM is read (D159), and sends `PIDS` before its
   `EXIT`; the VM process passes it on as it passes a joiner's `OOM`, and the event is the
-  joiner's container's.
+  joiner's.
 - **Tested** (containers.rs `a_run_past_its_pids_limit_says_so`, on real microVMs): a
   `--pids-limit 4` run starting eight threads at once says one `pids-limit` event, with
   `pids.max` 4 and a count of what was refused, and the daemon's log its facts; a run
@@ -8772,7 +9087,7 @@ the guest keeps their metadata alone.
   (VIRTIO_PMEM_REQ_TYPE_FLUSH), which its fsync waits for (drivers/nvdimm/nd_virtio.c,
   `virtio_pmem_flush`), was answered at once, and the run's root overlay was mounted
   `volatile`, which omits every sync of its upper (Documentation/filesystems/overlayfs.rst):
-  a container's fsync made nothing durable on its host, where Docker's overlay2 passes it to
+  a microVM's fsync made nothing durable on its host, where Docker's overlay2 passes it to
   the host's file system. The root is now `volatile` only over a tmpfs, which nothing
   outlives, and the device makes the layer durable before it answers (`Layer::flush`,
   `platform::sync_mapped`), outside guest memory's access, which other devices go on taking:
@@ -8786,10 +9101,10 @@ the guest keeps their metadata alone.
   Fedora's Btrfs and 26.6 on the Mac, F_FULLFSYNC 3 to 16 ms as the host's load went, where
   before it cost 0.68 ms and nothing it wrote was the host's to keep (PM M286). A run's
   swap and an image hold nothing past their run: their flushes are done at once.
-- **Its file is its run's, then its container's.** A layer's file stays in the home's
+- **Its file is its run's, then its stopped microVM's.** A layer's file stays in the home's
   `layers` while its microVM serves its run, the daemon holding it with the microVM; what
   a daemon before left there is no run's by the next, which removes it as it starts. A
-  container that stays keeps it once the microVM has gone (slice 2), in its directory as
+  run that stays keeps it once the microVM has gone (slice 2), in its directory as
   `layer.ext4`, in place of the layer it had; every other run's goes with its microVM.
 - **Kept as it stops, not packed** (slice 2). As a run ends, its host asks the guest to
   keep its layer (`kind::KEEP`) where it asked it to pack one (`kind::SAVE`, D37): init says
@@ -8814,7 +9129,7 @@ the guest keeps their metadata alone.
   p50, 1.9 at most, where a freeze (FIFREEZE: the same writes, and the file system then
   marked as needing no recovery, fs/ext4/super.c ext4_freeze) took 16 and 32 ms the first
   time in each microVM, 63 at most, and a read-only remount 3.6 and 7.3 (PM M278). A
-  microVM whose run has containers joined to its network (D119) packs its layer as before:
+  microVM whose run has runs joined to its network (D119) packs its layer as before:
   they go on in it, and its file with them.
 - **Read on the host.** `shards-ext4`'s reader reads a kept layer as Linux 6.18 reads one
   (super.c, inode.c, extents.c, dir.c, namei.c, xattr.c, acl.c): its guest's bytes, which
@@ -8825,7 +9140,7 @@ the guest keeps their metadata alone.
   (`scripts/ext4/generate`, `a_volume_reads_as_debugfs_reads_it`), and read without panic
   however its bytes are changed. shards-archive packs it through `Files` as it packs the
   host's own files (`pack_from`), as go-archive packs a Linux host's, whatever the host:
-  `commit` of a stopped container takes that pack, and its next run (`start`) and a visit
+  `commit` of a stopped microVM takes that pack, and its next run (`start`) and a visit
   to its files (`cp`, `diff`, `export`, D37) put it back as they put back a packed layer,
   the same bytes as its guest's pack of it (init's made-only rule now compares with the
   image's directory, where it compared with the root's own, which shows the copy: always
@@ -8835,7 +9150,7 @@ the guest keeps their metadata alone.
   checkpoint leaves it, holds nothing to replay (jbd2_journal_recover: "No recovery
   required") and is read as it stands, the host writing nothing to it. A microVM killed
   before its guest wrote its journal in place leaves what its guest committed in its log,
-  not yet in place. Its container keeps it all the same where its command had started (a
+  not yet in place. The run keeps it all the same where its command had started (a
   run that never started leaves the layer it had), and its journal is replayed on the host
   before it is read (`shards_ext4::journal`), as jbd2 replays one as it mounts it
   (fs/jbd2/recovery.c, its three passes: the log's whole transactions found, its revoke
@@ -8849,7 +9164,7 @@ the guest keeps their metadata alone.
   own (`s_lastcheck`, `s_kbytes_written`); a transaction whose commit block does not hold
   is not replayed; and replayed without panic however its log's bytes are changed.
 - **Measured against packing** (PM M278, n = 20 a side, interleaved). A stop costs the
-  same. `diff` of a stopped container is 25 to 84% quicker at 4 and 64 MiB written on both
+  same. `diff` of a stopped microVM is 25 to 84% quicker at 4 and 64 MiB written on both
   hosts and at 0 on the Mac (6.75 ms against 32.56), and on Fedora at 0 0.41 ms slower at
   p50; `start` quicker on the Mac at every size (64 MiB: 275 ms against 397) and on Fedora
   the same at 0 and 4 MiB and 4% quicker at 64; `commit` the same or quicker. Open: the
@@ -8864,15 +9179,15 @@ the guest keeps their metadata alone.
   the snapshot's for a run's five files; `layers`' for the files the daemon makes and
   removes; on real microVMs, `a_microvm_takes_its_ipc_hostname_cgroups_umask_and_writable_layer`:
   sizes held to, refusals, and 256 MiB written under `--memory 64m`; and
-  `a_stopped_microvms_layer_stays_in_its_file`: a stopped container's `layer.ext4`, its
+  `a_stopped_microvms_layer_stays_in_its_file`: a stopped microVM's `layer.ext4`, its
   journal written in place, holding its file and its whiteout, put back as it starts
   again; a microVM killed after its guest committed a file, its layer kept with its
   journal to replay, replayed as `diff` visits it, and the file found;
   `a_stopped_microvms_next_run_goes_on_over_its_kept_file` (booted) and daemon.rs's
   `a_restored_microvm_goes_on_over_a_stopped_containers_kept_file` (restored from its
-  template): each restart over the container's own file, the same file (its inode), what
+  template): each restart over the run's own kept file, the same file (its inode), what
   the run before made found, no microVM's own layer left, and 32 MiB written and removed
-  each run given back, and a container whose layer holds little packed and put back
+  each run given back, and a microVM whose layer holds little packed and put back
   (another file); `layers`' `what_a_layer_holds_is_its_blocks_past_an_empty_ones` and
   `a_restart_goes_over_from_where_packing_costs_more`. shards-ext4's `free_blocks_are_what_the_bitmaps_and_counts_say`
   (its free runs the groups' own counts, as mke2fs and e2fsck keep them, in `format`'s file
@@ -8905,7 +9220,7 @@ the guest keeps their metadata alone.
   kernel-6.18.48-8df0015cca35).
 
 - **A restart goes on over the kept file itself** (slice 7, PM M443). A stopped
-  container's `start` put its files back: the host packed its kept layer, and its warm
+  microVM's `start` put its files back: the host packed its kept layer, and its warm
   microVM's guest unpacked the archive into the layer its template mounted, a copy as long
   as the layer's changes. Now the file goes under the microVM's layer device as it is.
   The daemon gives the VM the kept file where it is as long as the run's layer
@@ -8926,13 +9241,13 @@ the guest keeps their metadata alone.
   host's mapping, is unchanged; taken from HVF's stage 2 and given back around it, as a
   save's data ranges are, PM M285; on Windows a view in place of a view, below), and reads
   back that it did; then mounts the device's
-  file system, the container's, the image under it, the mounts moved onto that, makes it
+  file system, the run's, the image under it, the mounts moved onto that, makes it
   every process's root, the tmpfs detached, and forks a standby again. A copy of a
   descriptor of the layer a process forked before held the layer's file system mounted:
   the grower closes its copies as it starts (`close_layer_fds`). The file stays the
-  container's, where it is, through the run (`LayerFile::in_place`): its stop keeps it in
+  run's, where it is, through the run (`LayerFile::in_place`): its stop keeps it in
   place, the microVM's own layer, the template's clone, goes as the run is registered, and
-  a daemon or microVM killed meanwhile leaves the container its layer as its guest
+  a daemon or microVM killed meanwhile leaves the run its layer as its guest
   committed it, replayed as it is next read. Before it lets go of the template's layer,
   init shuts that file system down unwritten (EXT4_IOC_SHUTDOWN, NOLOGFLUSH), and the VMM
   answers the flushes of a layer whose file is about to be replaced at once: its unmount's
@@ -8942,9 +9257,9 @@ the guest keeps their metadata alone.
   cgroup2 was mounted `favordynmods` (Linux 6.0; a kernel without it mounts as before),
   0.3 to 0.9 so. And the file's new mapping reads at random until the command runs, as the
   one before (M297). The guest's part took 13.5 ms at p50 (18.3 at most, n = 41), its
-  container's file system's mount, with its one host flush, 4.1 of it. Going over always,
+  kept file system's mount, with its one host flush, 4.1 of it. Going over always,
   against packing (n = 20 a side, interleaved, Fedora's Btrfs, a loaded host), `start` of a
-  container that wrote 0 B was 17.6 ms slower at p50 (79.33 against 61.77) and 15% quicker
+  microVM that wrote 0 B was 17.6 ms slower at p50 (79.33 against 61.77) and 15% quicker
   at 64 MiB (464.71 against 546.43): its cost is the go-over's, about the same whatever
   the layer holds, where packing's grows with it. So each restart chooses from what its
   layer holds (`layers::held`): its blocks in use, as its groups' descriptors count them
@@ -8960,7 +9275,7 @@ the guest keeps their metadata alone.
   packed: within the spread, p90 63.04 against 59.42), 4 MiB 95.98 / 126.78 against
   97.37 / 121.45, 64 MiB 482.05 / 503.19 against 576.05 / 899.66; `diff` alike at 0 and
   4 MiB and 28% quicker at 64 MiB; `run` and `commit` the same (PM M443).
-  Visits (`cp`, `diff` and `export` of a stopped container) and joiners' runs (D119) put
+  Visits (`cp`, `diff` and `export` of a stopped microVM) and joiners' runs (D119) put
   their layer back as before. On macOS the swap and the give-back are held by unit tests
   (`pmem`'s, `platform`'s); its real microVMs have not run it yet.
 - **On Windows, a view in place of a view** (row 18 of the parity audit). Windows maps no
@@ -8972,7 +9287,7 @@ the guest keeps their metadata alone.
   `MEM_REPLACE_PLACEHOLDER`, whose address and size must be the placeholder's exactly), and
   the swap unmaps the template's view back to its placeholder (UnmapViewOfFile2,
   `MEM_PRESERVE_PLACEHOLDER`, "unmaps a mapped view back to a placeholder") and places the
-  container's file's view in it (`platform::map_file_shared_at`), the address the same and
+  kept file's view in it (`platform::map_file_shared_at`), the address the same and
   the range never free (Microsoft's VirtualAlloc2, MapViewOfFile3 and UnmapViewOfFile2
   references). WHP's stage 2 maps a range of host addresses (WHvMapGpaRange): the layer's
   file system is unmapped from the partition (WHvUnmapGpaRange) before the views change and
@@ -8981,7 +9296,7 @@ the guest keeps their metadata alone.
   placed back; one that cannot be placed back loses the layer, and the machine stops, as on
   Unix. A view unmapped without `MEM_PRESERVE_PLACEHOLDER` frees its range, as VirtualAlloc2's
   own example frees its views, and a placeholder left alone is freed whole
-  (`unmap_file_shared`). The daemon gives a Windows run its container's kept file as it gives
+  (`unmap_file_shared`). The daemon gives a Windows run its own kept file as it gives
   a Unix one, and the freed blocks go back there as everywhere (FSCTL_SET_ZERO_DATA on the
   sparse file, slice 8). Held by `platform`'s `a_view_goes_in_place_of_another_at_its_address`
   (the range a view, then a placeholder, then freed, as VirtualQuery says, and what each view
@@ -8996,7 +9311,7 @@ the guest keeps their metadata alone.
   measured there.
 - **What the guest freed goes back to the host** (slice 8, PM M443). pmem takes no
   discard (drivers/nvdimm/pmem.c), so a layer's file only grew while its microVM lived,
-  whatever its guest deleted. As a stopped container's layer is kept, its microVM gone,
+  whatever its guest deleted. As a stopped microVM's layer is kept, its microVM gone,
   the daemon reads its block bitmaps (`Volume::free_runs`: each group's whose bitmap was
   written, each checked against its descriptor's checksum, a `BLOCK_UNINIT` group's never
   allocated past its own metadata) and deallocates the free blocks its file holds data in
@@ -9004,7 +9319,7 @@ the guest keeps their metadata alone.
   FSCTL_SET_ZERO_DATA on a sparse NTFS file), which read as zeros after, a free block's
   bytes never read. A layer whose journal is still to replay (its microVM killed) gives
   nothing back until it is kept again: its bitmaps may not say yet what its journal
-  allocated. A container that wrote 64 MiB or 1 GiB and removed it kept a file of 64.35 and
+  allocated. A microVM that wrote 64 MiB or 1 GiB and removed it kept a file of 64.35 and
   1,024.5 MiB on the disk, and now of 0.36 and 0.56 (n = 20 each, alike to the hundredth); the
   give-back took 11.1 and 160.2 ms at p50 (15.3 and 303.8 at most) on Fedora's Btrfs, as
   the daemon keeps the layer, after its run's client is told it ended and before a command
@@ -9015,7 +9330,7 @@ the guest keeps their metadata alone.
   Hypervisor.framework), and measured on Windows and a Mac against packing (Windows'
   crossing its own, where it is not 5 MiB); and visits and joiners' runs over it too.
 - Going over's fixed cost below packing's, so that a layer holding under 5 MiB goes over
-  too: the mount of the container's file system and its one host flush, and the root's two
+  too: the mount of the kept file system and its one host flush, and the root's two
   moves (PM M443).
 - Joiners' layers (D119) on the microVM's own, rather than tmpfs.
 - The head's boot: a 2 MiB block a section for the guest to write as it probes, on KVM
@@ -9303,7 +9618,7 @@ stays; a load of the other alone from an archive of both, run emulated.
 
 ### D178. A microVM's I/O limits, kept outside it
 
-`--io-maxbandwidth BYTES` and `--io-maxiops N`, on `shards run` and `create` and in the
+`--io-maxbandwidth BYTES` and `--io-maxiops N`, on `shards run vm` and `create` and in the
 Engine API's `HostConfig.IOMaximumBandwidth` and `IOMaximumIOps`, are the most bytes and
 requests a second of a microVM's I/O to the host's storage: its volumes (virtio-fs) and its
 disks (virtio-blk). Docker takes them for its Windows containers' system drive alone:
@@ -9356,7 +9671,7 @@ oracle (`MICROVM_FLAGS`), the API's by its create bodies.
 
 ### D177. `build --squash`: a build's layers as one
 
-`shards build --squash`, and the Engine API's `POST /build?squash=1` (docker-py's
+`shards build image --squash`, and the Engine API's `POST /build?squash=1` (docker-py's
 `build(squash=True)`, the docker CLI's legacy builder's `--squash`), make the layers a
 build adds past its base's one layer: the base's layers as they were, then one that makes
 the build's tree of the base's. What a later step removed is in no layer, so it is neither
@@ -9453,7 +9768,7 @@ coordinator would take the request for its own. The machine is taken apart only 
 save has let go of it: the save holds the VM and its devices by weak references, which
 `Running` alone owns. What a save cannot keep whole refuses it, and the microVM goes on as
 it was, with nothing of the save left: a host's devices (VFIO), a GPU's contexts, a
-container joined to it (D119), and files it holds open in its volumes after removing them
+run joined to it (D119), and files it holds open in its volumes after removing them
 that hold more than a snapshot's state keeps (part 5).
 
 Runs joined to a microVM (`--network container:NAME`, D119) run in it, each a run of its
@@ -9464,9 +9779,9 @@ messages in order, knows as no other can: a JOIN before a SAVE counts its joiner
 taken, and the save refuses while one counts; a JOIN after it is refused until the save is
 done, its joiner's start failing with why. Once they end it is saved, its join disk with
 the ranges their images had, each let go (snapshot format 19): its restored guest knows the
-disk's capacity, and a container that joins the restored microVM takes the next range, no
+disk's capacity, and a run that joins the restored microVM takes the next range, no
 place given twice (D119). Before this, a microVM saved with joiners running kept them, and
-one any container had ever joined was never saved again. Held by
+one any run had ever joined was never saved again. Held by
 `a_save_refused_leaves_the_microvm_running_and_nothing_behind` (refused while a joiner runs,
 saved once it ends, restored and joined again) and `a_join_disk_reads_each_image_at_its_range`
 (the ranges kept, mutation-checked).
@@ -9546,7 +9861,7 @@ the M5 Max): a save left running parks the guest's vCPUs for 17 ms at p50 and 46
 most on a loaded host, its going quiet first under 0.2 ms at p90; its caller waits 92 ms
 at p50 quiet, the commit's sync among it, and a restore 18 ms at p50. `shards list snapshots NAME` lists a
 microVM's snapshots, newest first, when each was saved and the disk it takes; `shards
-remove snapshot NAME SNAPSHOT...` removes them, and `shards rm` with the microVM. A run on
+remove snapshot NAME SNAPSHOT...` removes them, and `shards remove vm` with the microVM. A run on
 the host's network (D124) is not saved: its guest's sockets are the host's, which no
 snapshot keeps.
 
@@ -9597,7 +9912,7 @@ it means for Docker, a daemon started with `--experimental`, CRIU installed and 
 microVM needs none of. Their answers are dockerd's (moby 464cd50c `daemon/checkpoint.go`,
 `daemon/start.go`), in its order: a name that is not `[a-zA-Z0-9][a-zA-Z0-9_.-]+`, or ends
 in `.`, refused before anything is looked up (`invalid checkpoint ID "../x", only … are
-allowed`, quoted as Go's `%q` quotes it), then the container, its state, a name taken.
+allowed`, quoted as Go's `%q` quotes it), then the microVM, its state, a name taken.
 `start --checkpoint` prints nothing, which is what a `docker` script reads of it, and
 restores one microVM at a time. A paused microVM is not started, by `start` with a
 checkpoint or without, where shards had answered it as one running already: it is refused
@@ -9622,7 +9937,7 @@ would take.
 A checkpoint directory of the client's (`--checkpoint-dir`, the API's `CheckpointDir`) is
 refused, saying why: dockerd writes and lists checkpoints wherever its caller names, but
 restores from none of them (`custom checkpointdir is not supported`, 403, which shards'
-start answers too), so that its checkpoints move between containers and hosts only by
+start answers too), so that its checkpoints move between microVMs and hosts only by
 being copied into the one's own directory by hand. A microVM's snapshot is its devices as
 they were, its disks and its interface's identity among them, which another microVM can
 resume only with the same devices: a snapshot restored in another microVM, or on another
@@ -9635,7 +9950,7 @@ itself), and by docker/cli's own answers to the command lines (oracle_test.go).
 moves a microVM to the machine a context reaches (D180): saved whole here, as `save vm`
 saves it, and resumed there where it was saved. The context is the fleet: each machine's
 daemon serves the clients it enrolled, and the move is a client of both, asking each for
-its steps as `shards cp` asks for its own (cli/moves.rs; daemon/moves.rs: `save`, `ready`,
+its steps as `shards copy vm` asks for its own (cli/moves.rs; daemon/moves.rs: `save`, `ready`,
 `export`, `import`, through the context's `MOVE_STEP` as its copy steps go), its stream
 from the one daemon to the other through no file. Nothing of the one machine is the
 other's but what the move sends, and what the other takes by content:
@@ -10101,7 +10416,7 @@ given by D170's calls. What a project gains, each for the microVM:
     a `tmpfs`, `init`, `hostname`;
   - `build` with the API's first builder (where buildx is absent, or with
     `DOCKER_BUILDKIT=0`), and `down -v --rmi local`.
-- **A container's events carry its labels**, as dockerd's do (daemon/events.go,
+- **A microVM's events carry its labels**, as dockerd's do (daemon/events.go,
   LogContainerEventWithAttributes: copyAttributes, then image and name). They carried
   none, so `docker compose up`, attached, never heard its services end (its monitor
   follows its project's label: `label=com.docker.compose.project=P`) and waited for
@@ -10121,7 +10436,7 @@ given by D170's calls. What a project gains, each for the microVM:
   engine's own BuildKit API (buildx's docker driver: `/session` and `/grpc`), which
   would need no builder of buildx's, is a slice of its own.
 
-Held by tests/compose.rs (three projects), tests/engine.rs (a container's events by its
+Held by tests/compose.rs (three projects), tests/engine.rs (a microVM's events by its
 label) and tests/containers.rs (an exec into a workload that nests its cgroups).
 
 ### D172. Images found in registries: `shards search image`, and `GET /images/search`
@@ -10145,7 +10460,7 @@ documents, and says of each whether it runs here and what its pull takes. `GET
   - Any other registry's comes from the tag's index or manifest, and a lone manifest's from
     its config.
   - A repository without `latest` says so. 11 of the 25 results of a search for `python`
-    had none (PM M234), and a `shards run` of one would fail.
+    had none (PM M234), and a `shards run vm` of one would fail.
   - Lookups go four at once, the most measured with none throttled by Docker Hub; 25 at
     once was throttled (PM M234). Each is its own, so a slow one holds up no other.
 - **Across registries, through what each documents.**
@@ -10302,7 +10617,7 @@ unchanged (`DOCKER_HOST=unix://HOME/engine.sock`). What they gain, each for the 
   registered before their heads are written, as clients start once they have them, so
   no first byte and no end goes unseen. A wait is for a microVM not running, its next
   end though it has yet to start, or its removal.
-- **Its output before its end.** A run's end (its container stopped, its waiters
+- **Its output before its end.** A run's end (its microVM stopped, its waiters
   answered, `die` logged) and an exec's `exec_die` wait for what the daemon relays of
   their output to their attaches, up to 2 s from the end, as dockerd waits for its streams
   before it stops a container or an exec (moby v28.5.1 daemon/monitor.go, `StreamConfig.Wait`
@@ -10430,7 +10745,7 @@ unchanged (`DOCKER_HOST=unix://HOME/engine.sock`). What they gain, each for the 
   from Dockerfiles among them), and the docker CLI's legacy builder. Each RUN step runs
   in a microVM, never a container on the host's kernel, by BuildKit's plan and cache,
   where dockerd answers the API's first version, which those clients ask for, with its
-  legacy builder. The build is a `shards build` process of its own, each option the flag
+  legacy builder. The build is a `shards build image` process of its own, each option the flag
   it takes it by; each line it says is a `stream` message, then the image's ID (`aux`,
   from API 1.30) and the "Successfully built" and "tagged" lines docker-py finds an
   image by; with `q`, the ID alone. Its client's registry credentials
@@ -10558,8 +10873,8 @@ daemon's shipper, never by the microVM, to CloudWatch Logs' JSON 1.1 API
   daemon serves every run of its home, started by whichever client came first; finding
   credentials in its own environment, dockerd's way, would sign one shell's runs with
   another shell's account. The daemon keeps the environment in memory alone. The request a
-  container keeps on disk holds neither it nor, any longer, the client's registry
-  environment, `DOCKER_AUTH_CONFIG`'s credentials among it. A container started again is
+  run keeps on disk holds neither it nor, any longer, the client's registry
+  environment, `DOCKER_AUTH_CONFIG`'s credentials among it. A microVM started again is
   signed with the credentials of the client that starts it; a daemon that restarts before
   a run's log is sent sends the rest once a client starts the run again.
 - **The whole default chain** (crates/shards/src/aws/credentials.rs), in the order
@@ -10617,7 +10932,7 @@ daemon's shipper, never by the microVM, to CloudWatch Logs' JSON 1.1 API
   failure and drops it. One whose stream or group was deleted since makes them again
   first. Events CloudWatch takes and does not keep (too old for it or the group, too far
   ahead) are said in the daemon's log.
-- **Its stream** (`awslogs-stream`, else the run's tag, by default its container's whole
+- **Its stream** (`awslogs-stream`, else the run's tag, by default its microVM's whole
   ID) is made as the shipper starts, one already there taken as made, its group first
   where CloudWatch says it is not there and `awslogs-create-group` says to make it. The run
   starts regardless; dockerd refuses to start a container whose stream it cannot make.
@@ -10633,7 +10948,7 @@ daemon's shipper, never by the microVM, to CloudWatch Logs' JSON 1.1 API
 Tested on real microVMs (`a_runs_log_is_sent_to_cloudwatch_logs_as_its_options_say`),
 against CloudWatch Logs in the test:
 
-- a line on each stream: its stream made first, named for its container's whole ID; each
+- a line on each stream: its stream made first, named for its microVM's whole ID; each
   line an event at its `logs -t` time to the millisecond; signed with the client's keys
   and token;
 - a second client's keys, its run's own, the daemon having been started by another;
@@ -10642,7 +10957,7 @@ against CloudWatch Logs in the test:
 - lines joined by a pattern;
 - a line put while its run still runs;
 - nothing of the client's keys, token or registry credentials in the request the
-  container keeps;
+  run keeps;
 - the refusals.
 
 Mutation-checked: with the client's registry environment kept in the request, its
@@ -10730,7 +11045,7 @@ Unit tests cover:
 - indexer acknowledgment: delivered once indexed, the close waiting, a post not acked in
   time posted again.
 
-### D166. A run's log sent to the journal; a container's own fields its own
+### D166. A run's log sent to the journal; a microVM's own fields its own
 
 `--log-driver journald` is served on Linux, and sent as syslog's is (D163): from shards'
 store, by the daemon's shipper.
@@ -10794,7 +11109,7 @@ store, by the daemon's shipper.
 Tested on real microVMs on Linux (`a_runs_log_is_sent_to_journald_as_its_options_say`),
 against a journal socket in the test:
 
-- a line on each stream: its priority, the container's fields, its time `logs -t`'s, and
+- a line on each stream: its priority, the microVM's fields, its time `logs -t`'s, and
   its ordinal; an attribute asked for, and those left out;
 - a 40,000-byte line in three parts;
 - an entry past twice `wmem_max` (Linux doubles a send buffer) in a memfd, sealed against
@@ -10878,7 +11193,7 @@ starts whether or not its server is up, and nothing is lost to a server that is 
   - first its own fields in their order: the version, this host's name, the line, the
     time in seconds to the millisecond (GELF 1.1's), and the level, 6 for stdout and 3 for
     stderr;
-  - then the container's own, the fields such a stream is searched by (gelf.json): `_container_id`,
+  - then the microVM's own, the fields such a stream is searched by (gelf.json): `_container_id`,
     `_container_name`, `_image_id`, `_image_name`, `_command`, `_tag` and `_created`;
   - then the attributes asked for (`labels`, `env`, their regexes), each named with a `_`
     first, all sorted by name and HTML-escaped, as Go's encoding/json writes a map.
@@ -10916,7 +11231,7 @@ chunking.
 and the way every later one sends.
 
 - **From the store, by the daemon.** The run's VM keeps its output in shards' store as
-  every run's does (D161). The daemon follows the log of each container whose driver
+  every run's does (D161). The daemon follows the log of each microVM whose driver
   sends it elsewhere, on a thread of its own (`daemon/ship.rs`), as `logs -f` follows
   one, and sends each line. So:
   - the VM, its guest and its run reach no network for their log;
@@ -11055,9 +11370,9 @@ D162 serves two of Docker's log options that D161 refused, `compress` and
   - The compressed file is made durable before the segment as written goes, so a reader
     finds one or the other whole. It looks for the one as written first.
   - Retention removes either. A segment removed as it is compressed leaves nothing, and
-    a container being removed is left to its removal.
+    a microVM being removed is left to its removal.
   - As a daemon starts, it compresses what one before it left as written, including a
-    file a crash left half compressed. The container's record says which logs compress
+    file a crash left half compressed. The run's record says which logs compress
     (`log_compress`).
 - **Which logs.**
   - `shards`, shards' own driver, compresses by default: 13 times less disk, for at most
@@ -11128,10 +11443,10 @@ own where none was, and the options as a map (`HostConfig.LogConfig`).
   attached one's to its client alone, and `logs` is refused (`NAME keeps no log: it was
   run with --log-driver none`).
 - **Details.** `labels`, `labels-regex`, `env`, `env-regex` and `tag` (a Go template of the
-  container: `{{.Name}}`, `{{.ID}}`, `{{.ImageName}}`, `{{.Command}}`, ...) are what `logs
+  microVM: `{{.Name}}`, `{{.ID}}`, `{{.ImageName}}`, `{{.Command}}`, ...) are what `logs
   --details` shows before each line, in the form `docker logs --details` prints, which scripts read: sorted by name, each
   `NAME=VALUE` query-escaped, joined by commas (moby logger.Info.ExtraAttributes,
-  loggerutils.ParseLogTag), from what `inspect` says of the container's environment,
+  loggerutils.ParseLogTag), from what `inspect` says of the microVM's environment,
   labels and command.
 - **Refused, in shards' words.** An unknown driver or option; values that do not read
   (`max-size`, `max-file`, `compress`, `mode`, the regexes); `max-buffer-size` without
@@ -11158,7 +11473,7 @@ None given, stdout and stderr; stdin is the command's with `-i` alone (Docker's
 status. `-a` with `-d` is refused: a detached run's streams go to its log alone.
 
 `inspect`'s `Config.AttachStdin`, `AttachStdout`, `AttachStderr` and `StdinOnce` say what
-the command line gave: a created container's as the CLI's create sends them, which clients read back (stdout
+the command line gave: a created microVM's as the CLI's create sends them, which clients read back (stdout
 and stderr without `-a`), which shards showed as detached before, its kept request losing
 that it was a create; `run -d`'s none.
 
@@ -11179,7 +11494,7 @@ and disk are its swap.
   host's memory, the most a run may have and so its default swap, past everything else
   the guest is given and within the addresses the host allows (a window cut short holds
   less, as a host's swap device smaller than a container's allowance does). A run with
-  swap gets a sparse file of its own, made anew each run in its container's directory and
+  swap gets a sparse file of its own, made anew each run in its run's directory and
   unlinked there once its microVM holds it, off the run's path: what it swapped out is
   nowhere once the microVM has ended. Its VM writes the file's first 64 KiB through the
   file's own path, then maps it at the window's start, shared and writable; init writes
@@ -11638,8 +11953,8 @@ one. So both, in that order.
     VMs, which give them neither, as Hyper-V says (IovSupport False), and no function but
     Azure's own VMBus adapters; windows-11-arm runs no hypervisor at all (M402). A run that
     names a host's function there, by VFIO's nodes or as DDA's cmdlets name one (its
-    location path, its instance ID), is refused with those words in dockerd's for a device
-    it cannot give, as is `--vfio NAME` (`vm::passthrough_refused`). Held by
+    location path, its instance ID), is refused with those words, said as a device the
+    host cannot give (D154), as is `--vfio NAME` (`vm::passthrough_refused`). Held by
     `a_hosts_pci_function_is_refused_with_its_oss_own_limit` (vm/mod.rs),
     `a_hosts_pci_function_is_refused_where_its_os_passes_none` (boot.rs) and
     `a_run_given_a_hosts_pci_function_is_refused_with_its_hosts_limit` (containers.rs).
@@ -11742,7 +12057,7 @@ one. So both, in that order.
   another (__iommu_group_set_domain), and each MAP and UNMAP of the domain it shows
   reaches it once. A guest that kept the endpoints in domains apart would have the last
   one's view for all of them: of its own RAM still, all a container is given.
-- **A run given a host's VFIO group** (`shards run --device /dev/vfio/N`, Linux, as
+- **A run given a host's VFIO group** (`shards run vm --device /dev/vfio/N`, Linux, as
   Docker's is given a VFIO group's node; `/dev/vfio` gives each group in it, as
   DevicesFromPath walks it). The daemon finds the group's functions the host gave
   vfio-pci or another of VFIO's PCI drivers (/sys/kernel/iommu_groups/N/devices; its PCI
@@ -11814,7 +12129,7 @@ one. So both, in that order.
   it by; a no-IOMMU function has no device node ("cdev does not support noiommu device",
   vfio.h). The guest's kernel, the `kvm` variant, makes VFIO's device nodes too (IOMMUFD,
   VFIO_DEVICE_CDEV), and a device that names the host's node is the guest's node of the
-  function (sysfs's `vfio-dev`), there in the container too where its path there is the
+  function (sysfs's `vfio-dev`), there in the workload's view too where its path there is the
   host's; `/dev/iommu` is the guest's. Verified on real VMs (mutation-checked: the guest's
   node of the function, the follower's maps, guest RAM's address space): the daemon's runs
   given the two functions' nodes and /dev/iommu, and the directory of the nodes, whose
@@ -12209,7 +12524,7 @@ container's memory freed is its host's at once.
   at the median, though no report came during them (PM M222). Kernel patch 0005 adds
   `page_reporting.flush`, which reports at once what waits, pass after pass until
   nothing does; a template's init writes it before the template is saved (6 ms), through
-  a sysfs of its own opened as it boots, its container's being read-only. A guest kernel
+  a sysfs of its own opened as it boots, the workload's being read-only. A guest kernel
   without it reports as before.
 - **What a pass holds is free memory (patch 0006).** A pass holds up to 32 free blocks
   of at most 4 MiB, 128 MiB, until the host answers, and the zones count them gone:
@@ -12442,7 +12757,7 @@ builder memory as its build needs it; runs now have it too.
     which init resolves from the image's user database; the spec's cgroup access, else
     `rwm`. A FIFO is made as one, outside the device filter.
   - Its mounts as binds of the host path, read-only with `ro`, of the propagation its
-    options name, with `nosuid`, `nodev` and `noexec` on the guest's mount; a container's
+    options name, with `nosuid`, `nodev` and `noexec` on the guest's mount; a run's
     record keeps none of them, as dockerd's keeps none.
   - A node of the GPU's render node gives the run this Mac's GPU (D144, D145).
 - **As dockerd fails:** a name no spec has fails the start, not the making, in dockerd's
@@ -12552,7 +12867,7 @@ to test on, where no CI runner has a GPU behind an IOMMU.
   50-udev-default.rules.in, `KERNEL=="renderD*"`, group-render-mode's default), where the
   guest's devtmpfs gives 0600, so a run's user other than root has the GPU, and a step's
   node where its CDI spec gives no mode; verified (`--user 1000`), mutation-checked.
-- **Verified on this Mac** (tests/gpu.rs): `shards run --rm --gpus all` of an image with
+- **Verified on this Mac** (tests/gpu.rs): `shards run vm --rm --gpus all` of an image with
   Mesa's Venus finds "Virtio-GPU Venus (Apple M5 Max)", conformance 1.3; the guest's
   driver negotiates VIRGL, RESOURCE_BLOB, CONTEXT_INIT and BLOB_ALIGNMENT.
 - **Built by CI and releases:** the macOS arm64 jobs run scripts/gpu-libs, so `shards`
@@ -12674,7 +12989,7 @@ was built on [PM M200-M203]:
 - **Grants as macOS's, over a pipe each way.** Files by DuplicateHandle, each with the path
   its spawner found it at (GetFinalPathNameByHandleW refuses an AppContainer [PM M203]);
   sockets by WSADuplicateSocketW, as Winsock documents, 6-10 µs more a dial than
-  DuplicateHandle at p50 [PM M203]. The spawner of `shards run --kernel` answers in its own
+  DuplicateHandle at p50 [PM M203]. The spawner of `shards run vm --kernel` answers in its own
   process, since Windows has no exec: the VM is its child, which shares its console, one
   with a window or one without, as a CI runner's is (counted by GetConsoleProcessList, where
   GetConsoleWindow answers none for one without: its VM was made detached there, and heard
@@ -12905,7 +13220,7 @@ revision's header unchecked, 2025-11-25 not spoken: each fails a test.
 CI run 38198639601 (dev fd9da553, x86_64 Linux): `a_builders_memory_is_plugged_as_its_
 build_needs_it`'s first build ran past its 120 s, where it takes about 33 s (runs
 38197041559 and 38189388050), and what it said was lost, its pipes held open by its builder,
-which outlived the `shards build` the test killed. Three faults, each fixed here; the
+which outlived the `shards build image` the test killed. Three faults, each fixed here; the
 cause of that build's stall left no evidence, so what the next one leaves is fixed too.
 
 - **Memory that stopped coming held the build** (D133). A build past its `memory.high` is
@@ -12951,7 +13266,7 @@ cause of that build's stall left no evidence, so what the next one leaves is fix
     grower says no kill. Mutation-checked: the runner saying none fails the test every
     time.
 - **A killed build left its builder running.** A builder's VM ended as its build dropped
-  it, or as its guest powered off on its connection closing: a killed `shards build` drops
+  it, or as its guest powered off on its connection closing: a killed `shards build image` drops
   nothing, and a guest held at its memory hears nothing. The VM now ends as its `--attach`
   socket closes, which the build holds for as long as it holds the VM, killed or not; its
   network process goes with it, as it goes with every VM (D31).
@@ -13121,7 +13436,7 @@ changes.
   cache from something (`from=`) written on the host from its source's snapshot, or
   layers merged. Version 1's records go at the next collection, as the store drops a
   layout it no longer reads.
-- **The builder's join disk takes writes** (D119's, `shards run --kernel --attach FD`): the
+- **The builder's join disk takes writes** (D119's, `shards run vm --kernel --attach FD`): the
   host attaches each layer's file to it, read-only, once for the builder's life, and for
   each cache a step writes, a file of its own for the changes, as large as the store has
   room for (`SHARDS_MAX_IMAGE_BYTES`, within what the disk has free past
@@ -13276,7 +13591,7 @@ given the rest as its build needs it, up to what it may have.
   kept the builder's kernel's own, 1024 of 4096 files).
 - **No snapshot.** Memory plugged is not saved, so a snapshot of a VM with memory to plug
   is refused, and `--memory-max` with `--snapshot-dir` up front.
-- **`shards run --kernel K --memory M --memory-max N`** boots a guest with M MiB that may
+- **`shards run vm --kernel K --memory M --memory-max N`** boots a guest with M MiB that may
   have N in all.
 - **Measured** (PM M193): against a builder booted with all it may have, half the host's
   (64 GiB), M82's three RUNs end 199 ms sooner at the median ([-223, -158]), the builder
@@ -13312,7 +13627,7 @@ given the rest as its build needs it, up to what it may have.
 D13 plans KVM on arm64 Linux hosts. GitHub's arm64 runners give no nested
 virtualization, so the record's test path is a guest booted at EL2 by shards' own HVF
 backend, its kernel a KVM host (docs/research/measurements/nested-kvm). That path now
-works: `shards run --kernel K --nested` boots a guest at EL2 on a Mac that gives one (an
+works: `shards run vm --kernel K --nested` boots a guest at EL2 on a Mac that gives one (an
 M3 or later on macOS 15), and its KVM comes up as a hypervisor.
 
 - **The VM.** `hv_vm_config_set_el2_enabled` (macOS 15), bound on first use as every
@@ -13480,7 +13795,7 @@ builder does.
     target (a stage `BUILDKIT_SBOM_SCAN_STAGE` names, the context with
     `BUILDKIT_SBOM_SCAN_CONTEXT`) beside it, `/tmp` a tmpfs and `/run/out` its output.
   - It asks no cache where the target asks none. `Plan.ignore_cache` now says so, and
-    `shards build`'s own scan (D81) heeds it too.
+    `shards build image`'s own scan (D81) heeds it too.
   - The scanner's source is `llb.Image`'s: unnamed and pinned by no digest.
     `sbom::plan` takes both as arguments; shards build keeps its named, pinned source.
 - **The attestation**: each platform's scan output, a `Bundle` with `reason=sbom`,
@@ -13501,7 +13816,7 @@ builder does.
 
 ### D128. Build policies over OCI layouts, and a policy's own errors, as buildx ends a build
 
-Found while D127 measured OCI layout contexts: `shards build` asked its policies (D101) of
+Found while D127 measured OCI layout contexts: `shards build image` asked its policies (D101) of
 an OCI layout as if it were a registry's image, and it said a policy's own errors as
 BuildKit says a denial. Both now go as buildx v0.37.1 on BuildKit v0.28.1 has them (PM
 M186).
@@ -13511,7 +13826,7 @@ M186).
     supported yet", policy/validate.go). A build under any policy with an OCI layout named
     context fails: "failed to solve: failed to build policy input: unsupported source
     scheme: oci-layout".
-  - `shards build` asked of the layout's image as `docker-image://docker.io/library/NAME@DIGEST`,
+  - `shards build image` asked of the layout's image as `docker-image://docker.io/library/NAME@DIGEST`,
     the stand-in name dockerui gives a layout, NAME being the context's. A policy that
     allows `alpine` by name allowed a layout named `alpine`, whatever it held.
   - It now asks of the layout as itself and is refused as buildx is (build.rs
@@ -13540,7 +13855,7 @@ M186).
 
 docker/dockerfile:1.27.1 lets SOURCE_DATE_EPOCH name where a build's time comes from,
 not only give it in seconds (epoch.go): `context`, a named context, or a stage whose one
-remote ADD is the source. `shards build` took a stage's Git or HTTP source's time and
+remote ADD is the source. `shards build image` took a stage's Git or HTTP source's time and
 gave `context` none, whatever the context was; shards' frontend (D113) refused every
 name. Both now take each as that frontend takes it, held to it in `shards-dind` (PM M185).
 
@@ -13579,7 +13894,7 @@ name. Both now take each as that frontend takes it, held to it in `shards-dind` 
   SOURCE_DATE_EPOCH that is no number before a frontend runs ("failed to solve: invalid
   source-date-epoch: strconv.ParseInt: parsing "src": invalid syntax: ..."); v0.33.0
   leaves it to the frontend. shards' frontend, run by either, does as dockerfile's does
-  there. `shards build` takes the value as v0.33.0 does: an input Docker 29.3.1 refuses
+  there. `shards build image` takes the value as v0.33.0 does: an input Docker 29.3.1 refuses
   and newer BuildKit builds.
 - **Where shards does better.** The time is resolved once a build, in both. dockerfile's
   frontend resolves it again for each platform, all at once, so buildx shows the steps
@@ -13595,7 +13910,7 @@ name. Both now take each as that frontend takes it, held to it in `shards-dind` 
     byte for byte. The cases: the context (a Git URL, and a local directory, which says
     none); a stage's Git source, HTTP Last-Modified and an archive's newest file; a named
     Git context, image and OCI layout; a name refused; two platforms; v0.28.1's refusal.
-  - `source_date_epoch_is_taken_from_a_named_or_remote_context` (`shards build`):
+  - `source_date_epoch_is_taken_from_a_named_or_remote_context` (`shards build image`):
     - a named HTTP context before the stage of its name;
     - the refusal;
     - a named image's one step (mutation-checked);
@@ -13805,19 +14120,19 @@ host networking does for its VM's containers (PM M177).
   and, at the run's end, which spares the relays, what their connections hold, for up to
   a second, the network process's own grace. The VM puts what the guest sent in the
   network process's ring before the daemon's word to close a port, which that process
-  takes first. As a container ends, before its end is told, its ports go (PM M181): the
+  takes first. As a microVM ends, before its end is told, its ports go (PM M181): the
   VM asks the daemon to let go of them (`HOST_RELEASE`), which closes its copies, waits
   for the network process to close its own, then answers; the host may bind them again
   once `run` has returned, as dockerd's may.
-- **Joiners: on the host's network too** (D119, PM M181). A container joining one on the
+- **Joiners: on the host's network too** (D119, PM M181). A run joining one on the
   host's network is in its microVM's network namespace, which is the host's network, as
   dockerd's joiner is in the host's network namespace: its binds the host's by the same
   process of init's (the run's `seccomp-binds=` filter is the joiner's too, its listener
-  given to that process), each socket of the host's its container's (`HostBind::owner`:
-  0 the run's own, a joiner's exec id), so that each container's ports go as it ends
+  given to that process), each socket of the host's its run's (`HostBind::owner`:
+  0 the run's own, a joiner's exec id), so that each run's ports go as it ends
   and the rest stay. Its servers stay the host's past its provider's command, and one
   it starts then is the host's too: the daemon follows the provider's microVM while
-  containers joined to it run, since their network is the one it gives them.
+  runs joined to it are running, since their network is the one it gives them.
   It is told so as it starts (`shards_abi::run::NETWORK_HOST_JOINED`), which dockerd's
   is not.
 - **No boundary.** A run on the host's network reaches what the host reaches, as it was
@@ -13876,7 +14191,7 @@ host networking does for its VM's containers (PM M177).
   closed its copies of the run's host sockets and told the network process nothing, whose
   copies stayed until it ended, 3 to 10 ms later: a port a killed server held was still
   held once `run` returned, in 96 of 100 runs under load, where dockerd's is free. The
-  VM now has the daemon let go of a container's ports before it tells its end, and the
+  VM now has the daemon let go of a microVM's ports before it tells its end, and the
   daemon waits for the network process (none of 100, quiet and loaded). A joiner's are
   let go so too; without it, the daemon's own letting go at the joiner's end came first
   in each of 100 runs, which nothing but timing ordered.
@@ -13924,7 +14239,7 @@ Each record is a fork and its parent, an
 exec and its command line, or an end and its code or signal, with the time, the member
 (`command`, `agent NAME`, `harness NAME`, `joiner ID`) and the process's PID in the
 microVM. Kept as the log is: segments of `--log-opt max-size`, as many as `max-file`, in
-the container's directory.
+the run's directory.
 
 - **From the kernel's process events** (`drivers/connector/cn_proc.c`), which init, in
   the initial PID and user namespaces, listens to as the run starts. They name a process
@@ -13970,7 +14285,7 @@ the container's directory.
   powers off, rather than for a layer the host may not have asked for yet. The daemon
   reads them too (2026-10-11, D124's joiners): it followed the run's connection only to
   its command's end, or its layer's, and the records its joiners' processes made past it
-  went unread; it follows it now while containers joined to the microVM run.
+  went unread; it follows it now while runs joined to the microVM are running.
 - **Tested**: `a_runs_processes_are_recorded_as_they_start_and_end` (a child's fork, exec
   and end in order; 200 children, each over at once and reaped by its parent, each
   recorded whole; a child the run's end kills outside the command's namespace, freeing
@@ -14021,15 +14336,62 @@ process a container listens with (https://docs.docker.com/reference/cli/docker/c
 `--mcps=` waits on local MCP servers joining networks: today each caller runs its own
 instance over stdio, in its own confinement (D60, §9.6).
 
+**2026-11-08, the user's decision: `FOR` takes a list of targets, networks and members
+mixed, and a port of several members goes to the one listening.** This replaces "one
+receiver for an incoming port" above:
+
+- **`EXPOSE <port>… [AS …] FOR <network_or_member>…`.** Each target is a network or an
+  agent or harness the lineage declares; a name that is both is a build error, and so is
+  `--agents`/`--harnesses` on a line whose targets are members alone. A member named is
+  given the ports on each network it is on (`CONNECT ... ON`), as `EXPOSE --agents=<it>
+  <ports> FOR <its networks>` says (`agentfile::resolve_targets`, which the build applies
+  before it checks and keeps the normalized Agentfile so); a member on no network is a
+  build error, as no flow reaches a member but on a network. Every target gets the
+  exposure, and nothing a target does not name is opened: both boundaries still apply
+  (the network's `--ingress`/`--expose` and the microVM's `EXPOSE`).
+- **Named members alone, both ways.** An `EXPOSE` that names its members opens egress for
+  them alone, as it opens ingress: before, egress named for one member was every member's
+  of the network (default deny: a grant to one is no other's).
+- **Several members on one port: the one listening takes each connection.** A port the
+  `EXPOSE`s give several members (a network's every member where none is named, several
+  named, or members of several networks) goes to the member that listens on it, the first
+  to listen holding it while it listens and then the next that does in declaration order;
+  no member listening, it goes nowhere past init, as a port no member claims. This is a
+  host's rule for a port (RFC 9293 §3.10.7.2: a SYN is for the socket in LISTEN on its
+  port; POSIX bind(2): EADDRINUSE keeps a second socket off a bound port), the microVM's
+  port standing for one host's. Two members' claims that overlap without being the same
+  ports are a build error, as which holds the rest no rule says. Init's chooser
+  (crate::chooser) makes it so: each candidate runs under a seccomp filter that notifies of
+  listen(2) and bind(2) (seccomp_unotify(2)); the chooser makes a TCP socket's listen
+  itself, and a UDP socket's bind to a contested port, refused EACCES as the member's own
+  kernel would refuse a privileged one, so that it knows the socket takes the port as it
+  answers; sock_diag tells it each socket's end in each candidate's namespace
+  (SKNLGRP_*_DESTROY), and it asks sock_diag who listens before it chooses. Each choice is
+  the uplink's chain `chosen`, before `pre`, programmed again whole. No grant rests on the
+  chooser: every candidate's gate and the switch let the port in to it, and the chooser
+  only picks among them. `shards read ports` names every candidate ("the one listening of
+  agent web; agent api").
+- **Tested**: the parser's and the plan's cases (agentfile.rs
+  `ingress_reaches_a_networks_one_member`: FOR's mixes, named and unnamed members, overlaps
+  refused, a member on no network refused; netplan's
+  `ingress_goes_to_the_member_its_expose_names`: every member a candidate, egress the named
+  member's alone; the chooser's unit tests of its filter, its contests and sock_diag's
+  messages) and on real microVMs, build.rs `a_port_comes_in_to_the_member_listening_on_it`:
+  two networks, `FOR front ops` giving three members four ports, each port reaching the one
+  member listening, every connection, and a member no `FOR` names not reached.
+- **Not yet**: a UDP flow already admitted keeps its conntrack entry's member past a change
+  of holder, as a host's kernel keeps a connected flow; ports past the microVM are IPv4's
+  alone (D99).
+
 ### D121. Docker's AppArmor mount rule, in guests that have no AppArmor
 
 Where AppArmor is enforced, as on Ubuntu, Docker confines every container with its
 docker-default profile (moby profiles/apparmor/template.go), whose `deny mount,` keeps even
 a container given CAP_SYS_ADMIN from mounting anything; `--security-opt apparmor=unconfined`
 and `--privileged` lift it, `seccomp=unconfined` does not. A shards guest has no AppArmor,
-and its devices are its microVM's, reachable by name: a container given SYS_ADMIN could
+and its devices are its microVM's, reachable by name: a workload given SYS_ADMIN could
 mount a virtio-fs tag of its own microVM, its provider's shares or the join share (D119),
-and remount a read-only volume writable. So shards holds every container to docker-default's
+and remount a read-only volume writable. So shards holds every workload to docker-default's
 mount rule itself, on every guest kernel, with seccomp, which all have:
 
 - **The rule as a filter of its own** (`shards_seccomp::MOUNTS`, `seccomp-mounts=`): mount,
@@ -14044,10 +14406,10 @@ mount rule itself, on every guest kernel, with seccomp, which all have:
   opens its files, as Docker's container with the capability made a tmpfs and a file in
   it while docker-default refused only move_mount (M174, measured on both GitHub
   runners), so the rule that refused mount(2) alone would leave a microVM's own
-  virtio-fs shares, a provider's and the join share, to any container given the
+  virtio-fs shares, a provider's and the join share, to any workload given the
   capability. shards refuses the new mount API too; a program that mounts gets EACCES
   from its first step instead of from mount(2) or move_mount.
-- **Only where it protects something**: for a container with CAP_SYS_ADMIN, not
+- **Only where it protects something**: for a workload with CAP_SYS_ADMIN, not
   privileged, not `apparmor=unconfined`. Without the capability the kernel refuses every
   mount, EPERM, and Docker's seccomp profile refuses first. Installed before Docker's
   profile, whose errno then wins where both refuse (seccomp_filter.rst: the most recent
@@ -14056,11 +14418,11 @@ mount rule itself, on every guest kernel, with seccomp, which all have:
   mount(2) is refused EPERM, by the kernel, where AppArmor answers EACCES: the kernel asks
   AppArmor before it checks the capability (Linux fs/namespace.c path_mount:
   security_sb_mount, then may_mount; PM M174). A filter would change that errno alone, and
-  would put a seccomp filter on a container that asked to have none (`Seccomp: 2` in
+  would put a seccomp filter on a workload that asked to have none (`Seccomp: 2` in
   /proc/PID/status, where Docker's shows 0). With the capability under
   `seccomp=unconfined`, the filter stays, and so does `Seccomp: 2`: there it is what keeps
   the microVM's shares.
-- **For all a container runs**: the workload, its execs (the run's filters are theirs, as
+- **For all a microVM runs**: the workload, its execs (the run's filters are theirs, as
   runc's exec takes the container's) and joiners.
 - **Tested** (`a_container_given_sys_admin_mounts_nothing_as_apparmor_keeps_it`: a mount, a
   remount of a read-only file, fsopen, open_tree and its microVM's own share refused EACCES,
@@ -14074,17 +14436,17 @@ mount rule itself, on every guest kernel, with seccomp, which all have:
   which PID namespaces keep between containers.
 - **What CAP_SYS_ADMIN still reaches, as with Docker.** Docker's own seccomp profile gives
   a container with the capability `bpf` and `perf_event_open`, whose tracing programs read
-  the kernel's memory, and with it every container's in the microVM, as on a Docker host
+  the kernel's memory, and with it every workload's in the microVM, as on a Docker host
   every container's on the host: the capability is the kernel's, AppArmor or not. So the
   rule is held where Docker holds it, and no further: under `apparmor=unconfined` a
-  container may mount its microVM's shares, a joiner its provider's, as it may read them
-  through the kernel. What a container without the capability could reach of another's is
+  workload may mount its microVM's shares, a joiner its provider's, as it may read them
+  through the kernel. What a workload without the capability could reach of another's is
   closed: the join share's volumes by names and node IDs none can guess (D119), so
   CAP_DAC_READ_SEARCH opens no other joiner's file by handle. Kernel lockdown
   (`lockdown=confidentiality`) in the guest would close the kernel to the capability too,
   past Docker; not built.
 
-### D119. `--network container:NAME`: a container joins another's microVM
+### D119. `--network container:NAME`: a run joins another's microVM
 
 Docker's container network mode gives a container another's network namespace and
 nothing else of it (moby docker-v29.3.1 daemon/oci_linux.go: the joiner's netns is
@@ -14093,12 +14455,12 @@ namespaces are its own). It takes the other's hostname and domain name, and its
 `/etc/hostname`, `/etc/hosts` and `/etc/resolv.conf`, the same files
 (daemon/container_operations.go initializeNetworking, initializeNetworkingPaths). A
 microVM's network namespace cannot be shared with another microVM, so the joiner runs in
-the provider's: its guest init starts the joiner as a container of its own (its image its
+the provider's: its guest init starts the joiner apart, as a run of its own (its image its
 root, its own mount, PID, IPC and UTS namespaces and cgroup) in the network namespace the
 provider's command runs in. The microVM's boundary still holds the host; between the two,
 the boundary is a container's, which is what the mode asks for.
 
-- **What dockerd checks, held to its words.** As the container is made
+- **What dockerd checks, held to its words.** As the joiner is made
   (daemon/internal/runconfig/hostconfig.go validateNetContainerMode, in order): `container`
   with no name ("invalid network mode: invalid container format container:<name|id>"),
   then `--hostname`, `--link`, `--dns`, `--add-host`, `-p`/`-P`, `--expose`, each
@@ -14111,7 +14473,7 @@ the boundary is a container's, which is what the mode asks for.
   while joiners run (daemon/delete.go checks no dependents).
 - **The joiner's image, on a join disk.** A microVM has no PCI and no hotplug (virtio-mmio
   alone, its devices in the device tree or ACPI), so every microVM carries a read-only
-  virtio-blk join disk, empty until a container joins, as Firecracker attaches a drive's
+  virtio-blk join disk, empty until a run joins, as Firecracker attaches a drive's
   file after boot (its `PATCH /drives` rescan). The VM process appends the joiner's EROFS
   file as a range of the disk and raises its capacity; the guest's virtio_blk reads the
   new capacity on the config-change interrupt (Linux drivers/block/virtio_blk.c,
@@ -14129,7 +14491,7 @@ the boundary is a container's, which is what the mode asks for.
   (−513 µs [−1,682, +120]; none less join +330 [−370, +883]), and no memory per VM
   resolved (`phys_footprint` +0 KiB [−32, +16], PM M170), the RSS it adds being the
   template's pages every microVM restored from it shares.
-- **Its life.** The joiner is a container of its own: its record, log, exit code, `stop`,
+- **Its life.** The joiner is a run of its own: its record, log, exit code, `stop`,
   `kill`, `wait`, `rm`, `inspect` (its NetworkMode its provider's ID, as dockerd keeps it,
   PM M169; its provider's hostname), and
   in its own namespaces and cgroup `exec`, `attach` (its stdin and output, never its
@@ -14148,7 +14510,7 @@ the boundary is a container's, which is what the mode asks for.
 - **It outlives its provider's command**, its own command its own to end (D119). As the workload ends,
   init kills every process but its joiners' (their `join-N` cgroups), says the workload's
   end at once, saves its writable layer if asked, and goes on serving the joiners; the
-  microVM ends with its last container. Pod semantics, the joiners killed with the
+  microVM ends with its last run. Pod semantics, the joiners killed with the
   provider, was built first and dropped: a joiner finishing as its provider's command
   ended was killed (137) where Docker's finishes. Unlike Docker, its network stays whole
   (Docker's joiner keeps a namespace whose interfaces went with the provider's sandbox,
@@ -14168,7 +14530,7 @@ the boundary is a container's, which is what the mode asks for.
   namespace, where its `/proc` is its PID namespace's and has no `/proc/self` for init's
   child (Linux fs/proc/self.c: ENOENT where the reader has no PID), so the walk reaches
   the layers by descriptor alone (the image's from where it stands, the writable one
-  opened a directory at a time, `O_NOFOLLOW`, never through a link the container put
+  opened a directory at a time, `O_NOFOLLOW`, never through a link the joiner put
   there), and reads the root's mount table through init's `/proc`, opened before
   entering. The workload's `diff` walks the same way. Its size and `commit` read its
   writable layer as init sees it; `commit` freezes its cgroup alone while it packs, where
@@ -14178,7 +14540,7 @@ the boundary is a container's, which is what the mode asks for.
   `top` of a joiner reads its `/proc`, whose PIDs are its namespace's: init's child no
   longer leaves out the one numbered as its own PID in init's (getpid(2) answers in the
   caller's namespace).
-- **Its files kept as it stops**, as any container's (D37). After the joiner's end on its
+- **Its files kept as it stops**, as any run's (D37). After the joiner's end on its
   own connection, its VM process asks there for its writable layer (`kind::SAVE`), as for
   a run's; init keeps the joiner's connection and layers until the host has asked or
   closed it, and packs the layer in a child of its own, which writes to the connection:
@@ -14206,7 +14568,7 @@ the boundary is a container's, which is what the mode asks for.
   does, before it reads its users and before anything is mounted in its root, with its
   root as its own (chroot(2)) so that no path or link of the layer resolves past it; the
   disk's pages it read are let go of as it reads them (`POSIX_FADV_DONTNEED`). Stopped, its
-  files are visited as any stopped container's. Started again, its names are its
+  files are visited as any stopped microVM's. Started again, its names are its
   provider's, given again at every start, since its provider's may have changed
   (containers.rs `a_joiner_keeps_its_files_as_it_stops`), and the create-time checks are
   not made again, being checks of what its create asked: before, the hostname its first
@@ -14219,12 +14581,12 @@ the boundary is a container's, which is what the mode asks for.
   keeps another container's namespaces by its ID as the container is made, so that they
   hold as that one is renamed (daemon/daemon_unix.go, adaptSharedNamespaceContainer):
   shards keeps both modes so, where it kept the name as given. `--pid container:NAME`
-  beside `--network container:NAME` of the same container gives the joiner its provider's
+  beside `--network container:NAME` naming the same run gives the joiner its provider's
   PID namespace, its child born there as an exec is (`pid=workload`); `--pid host`, the
   microVM's own, init's. Its command is then no namespace's PID 1, whose end the kernel
   would make the end of the rest, so init kills what is left in its cgroup as it ends, as
   runc kills what a container sharing one leaves (libcontainer signalAllProcesses), and
-  removes the cgroup once all of it is said. `top` lists a container's processes by its
+  removes the cgroup once all of it is said. `top` lists a run's processes by its
   cgroup, so that each lists its own: the workload's leave out the joiners' in its
   namespace. `--init` there is kept and not given, as dockerd gives its init only to a PID
   namespace of the container's own (daemon/oci_linux.go). `--pid container:` of another
@@ -14239,7 +14601,7 @@ the boundary is a container's, which is what the mode asks for.
   (`a_joiner_may_share_its_providers_pid_namespace`: its PID 1 its provider's command,
   `top` of each, `--init` kept, an exec of its killed as it ends, `--pid host`, the
   refusals; `a_joiner_may_share_another_joiners_pid_namespace`: another joiner's command
-  its PID 1, a third container through it, a joiner in its provider's passing that one
+  its PID 1, a third joiner through it, a joiner in its provider's passing that one
   on, the namespace's end its own; mutation-checked; `a_joiner_is_a_container_of_its_own`:
   its provider by ID).
 - **`--init` in a PID namespace of its own**: a reaper is its first process, as the
@@ -14276,8 +14638,8 @@ the boundary is a container's, which is what the mode asks for.
   the VM is given the connection to it in a message of its own (`kind::JOIN_SHARE`),
   before that joiner's `JOIN` and so before any guest mounts the share. Each joiner's
   volumes go to the process on a link of the joiner's own (`kind::JOIN_LINK`,
-  `kind::JOIN_VOLUME`, each answered), named so that no other container can guess them
-  (256 random bits, as a container's ID), and are served until the link closes: at the
+  `kind::JOIN_VOLUME`, each answered), named so that no other joiner can guess them
+  (256 random bits, as a run's ID), and are served until the link closes: at the
   joiner's end, or as a start fails. In the guest the joiner's standby, its root built,
   mounts the share in its own mount namespace, binds each volume from it as a run's are
   mounted (a file alone where one is bound; the image's files copied into an empty
@@ -14301,7 +14663,7 @@ the boundary is a container's, which is what the mode asks for.
   mutation-checked).
 - **Its boundary is a container's, within the microVM.** A joiner given `CAP_SYS_ADMIN`
   mounts none of the microVM's shares: docker-default's mount rule holds it, as it holds
-  every container (D121); under `apparmor=unconfined` the join share's root shows nothing
+  every workload (D121); under `apparmor=unconfined` the join share's root shows nothing
   and its volumes are reached only by names it has learned. One given
   `CAP_DAC_READ_SEARCH` may open what the guest's kernel holds of the join share by handle
   (open_by_handle_at, Docker's reason to withhold it); a privileged one has the whole
@@ -14415,7 +14777,7 @@ from the registry layer up to the build's policies.
     - Signing follows sigstore's default for each key type: ECDSA P-256, P-384 and P-521,
       Ed25519ph (as cosign signs Ed25519 keys), and RSA PKCS #1 v1.5.
     - The password is `COSIGN_PASSWORD`'s, else asked on the terminal, not echoed.
-  - The signature is kept with the name and pushed by `shards push`.
+  - The signature is kept with the name and pushed by `shards push image`.
   - A key's signature is uploaded to no transparency log, as cosign signs with a signing
     config naming none; cosign then verifies with `--insecure-ignore-tlog`, as M135
     measured. Keyless signing came with D126.
@@ -14454,7 +14816,7 @@ from the registry layer up to the build's policies.
   - It is asked by name before it is taken, as a base is before its metadata, then
     pinned with the definition. A pin of one is refused in BuildKit's words (D116).
   - `shards buildx policy eval osi-artifact://NAME` asks the same of an artifact on its
-    own, before or after `shards pull`, its kind read from its manifest.
+    own, before or after `shards pull image`, its kind read from its manifest.
 - **At run** (the standing rule's twin). The brief assumed the normalized Agentfile names
   each artifact by digest; it names it as written.
   - A run re-verifies nothing per start. Signatures need the registry and the build's
@@ -14529,7 +14891,7 @@ the rest of a run's reach into its domains.
   a new microVM and a new namespace, the command PID 1 again. init takes its own PID
   namespace back after each `unshare` or `setns`, so its later children — the agents among
   them — are born in init's own, not where the command would see them. A `cp`, `diff` or
-  `export` visit reads the container's files in a mount namespace where `/proc`, `/sys` and
+  `export` visit reads the stopped microVM's files in a mount namespace where `/proc`, `/sys` and
   `/dev` are unmounted, so init's `/proc` — which reaches every domain's root — is not under
   the path it serves.
 - **`--init`: a reaper as PID 1.** Under `--init` (until now accepted and
@@ -14555,7 +14917,7 @@ the rest of a run's reach into its domains.
   (`/proc/1/root` denied, as under Docker). Beside an Agentfile's domains it is refused, by
   the daemon and by init: that namespace is the parent of theirs. Under `--pid host`,
   `--init` adds nothing, shards-init being that namespace's init. `--pid container:NAME`
-  names another container, a microVM of its own: refused, not supported, as `--network
+  names another run, a microVM of its own: refused, not supported, as `--network
   container:NAME` is; one that is not, dockerd's `No such container`; a value Docker
   refuses, the CLI's `--pid: invalid PID mode`. inspect's `HostConfig.Init` and `PidMode`
   say what was asked, `Init` a `*bool` as clients read dockerd's (D115; `--init=false` is `false`, kept by
@@ -14589,7 +14951,7 @@ the rest of a run's reach into its domains.
   of its agents and harnesses alone (`VOLUME name path FOR …`) is labelled
   `vnd.osi.agentfile.scoped` as its run first mounts it; another run mounts it by name only
   where its own image's Agentfile puts it (a stand-in, D109), and `--volumes-from` a
-  container skips the volumes its image scoped. The `vnd.osi.agentfile.*` label namespace,
+  microVM skips the volumes its image scoped. The `vnd.osi.agentfile.*` label namespace,
   already refused in a build `LABEL` and a run `--label` (D109), is refused in `volume
   create` and a `--mount volume-label` too.
 - **Firewall.** init's own namespace, which the command shares, drops in nf_tables (of both
@@ -14614,7 +14976,7 @@ the rest of a run's reach into its domains.
   | A run joining the microVM (`--network container:`, D119) | held to every rule of this table, by the daemon and again by init | it runs beside them as the microVM's own run does |
   | `--ipc` (`host` is init's namespace, theirs each their own), `--uts`, `--userns`, `--umask`, `--storage-opt` (D156); `--runtime`, `--isolation`, `--cpu-count`, `--cpu-percent`, `--cpu-rt-*` (D155) | given | the command's own namespaces, writable layer and limits |
   | `--link` | refused for every run, not served yet | |
-  | `--log-driver`, `--log-opt` (D161 to D169) | given | the command's own output, kept on the host by its VM process, in its container's directory, and sent elsewhere by the daemon, never by the microVM |
+  | `--log-driver`, `--log-opt` (D161 to D169) | given | the command's own output, kept on the host by its VM process, in its run's directory, and sent elsewhere by the daemon, never by the microVM |
   | `--cap-add` of any other: `DAC_READ_SEARCH`, `IPC_OWNER`, `IPC_LOCK`, `SYS_BOOT`, `SYS_RESOURCE`, `CHECKPOINT_RESTORE` among them | given | `open_by_handle_at` opens only on filesystems the command holds a mount of, a domain's own being none of them; IPC namespaces differ; `reboot(2)` ends the caller's own PID namespace's init (pid_namespaces(7)); the rest bound the command's own resources or namespaces |
   | `--cap-drop`, `no-new-privileges`, `writable-cgroups=true` (its cgroup namespace's subtree), `apparmor=`, `label=` (no LSM in the microVM: accepted, as on a Docker host without one) | given | narrows the command, or touches only its own |
   | `seccomp=` a profile or `unconfined` | given, recorded | its own filter; the domains keep theirs. Measured: unconfined, any uid makes a user namespace (`max_user_namespaces` 994), owning none of the domains' namespaces but reaching more of the kernel they share |
@@ -14831,7 +15193,7 @@ and BuildKit build an Agentfile, no shards installed. The frontend is `shards` i
   since D130, subrequests, named contexts, Git query strings, zstd contexts); a test holds
   it to `frontend::CAPS`.
 - **Named** `ghcr.io/hyper-light/shards:<version>`, under the project's own GitHub
-  organization, where its releases are (`release.yml`). `shards build` takes an Agentfile
+  organization, where its releases are (`release.yml`). `shards build image` takes an Agentfile
   whose `# syntax=` names it, at any tag, as its own (`plan::SHARDS_FRONTEND`). Publishing
   waits on the user's approval: nothing is pushed anywhere public, and no credential is
   written. Tests build the image in `shards-dind` and push it only to a registry
@@ -14876,21 +15238,21 @@ and BuildKit build an Agentfile, no shards installed. The frontend is `shards` i
     the frontend's wrapping). Each location gets an `errdefs.Source+json` detail,
     encoding/json of the Dockerfile and its definition, byte for byte.
   - The checks' warnings are sent as they are found, between the other calls.
-- **What the planner gained**, for `shards build` too where it applies:
+- **What the planner gained**, for `shards build image` too where it applies:
   - local sources name the build's session;
   - steps needing a capability the worker lacks are planned without it, as Dockerfile2LLB
     plans them;
   - no `--platform` is an implicit target, so the image keeps its base's platform; this
-    changes `shards build` too;
+    changes `shards build image` too;
   - the target's base image as resolved;
-  - Git contexts' `git.mtime` and `git.advice`, missing before, for `shards build`'s
+  - Git contexts' `git.mtime` and `git.advice`, missing before, for `shards build image`'s
     remote contexts too;
   - zstd archives are read as archives;
   - local named contexts' own `.dockerignore`;
   - OCI layout contexts read from the client's store.
 - **Agentfiles.**
   - shards' own skills step has no BuildKit op. Its tree is solved and read through the
-    gateway (ReadDir, ReadFile), checked by the same code `shards build` uses
+    gateway (ReadDir, ReadFile), checked by the same code `shards build image` uses
     (`build::skills::Fetched`), and laid out as a file op.
   - D55's isolation checks cannot go through the gateway. Its ReadDir walks one directory
     a call, and fsutil's Stat carries no inode, so a hard link across two domains is
@@ -14901,7 +15263,7 @@ and BuildKit build an Agentfile, no shards installed. The frontend is `shards` i
     as BuildKit runs any step (D113: under Docker's BuildKit), as root in its sandbox, because it reads every file
     whatever its owner and mode, but with no network and every tree read-only, its report
     alone written. The checks are solved at once, before the build, and refuse in
-    `shards build`'s words.
+    `shards build image`'s words.
   - D57's manifest annotations are returned as `annotation-manifest` metadata, which
     BuildKit's exporter takes.
 - **Deliberately unlike docker/dockerfile, recorded:**
@@ -14928,7 +15290,7 @@ and BuildKit build an Agentfile, no shards installed. The frontend is `shards` i
   - Read in the source, not run: BuildKit v0.34.0, the latest release (2026-10-07), and
     master (325ea68, 2026-10-09) hold the same code, at lines 235–236 and 294–295.
   - shards' frontend asks BuildKit for no attestation chain.
-  - `shards build`, asked by a policy for a one-manifest image's chain, answers with a
+  - `shards build image`, asked by a policy for a one-manifest image's chain, answers with a
     chain of that manifest alone, rooted at its digest: no provenance and no signatures,
     and the policy decides. buildx's policy, given no chain, asks again until "too many
     policy requests"; so did shards build before this.
@@ -14951,7 +15313,7 @@ and BuildKit build an Agentfile, no shards installed. The frontend is `shards` i
       finds BuildKit's cache and synced context as the other left them.
     - Mutation-checked: a warning's line number left off is caught.
   - The Agentfiles of `scripts/frontend/agentfile-cases` were each built in `shards-dind`
-    by BuildKit through the frontend and on this host by `shards build`
+    by BuildKit through the frontend and on this host by `shards build image`
     (`scripts/frontend/agentfiles`). They cover every directive that brings files (AGENT,
     HARNESS, MCP local and remote, SKILL for one and for all, ATTACH), a COPY into an
     agent's domain, a symlink out of one, a skill the reference refuses, and an
@@ -15016,7 +15378,7 @@ and BuildKit build an Agentfile, no shards installed. The frontend is `shards` i
   How it goes:
   - `AGENT main FROM REF` (HARNESS, MCP alike) takes the context named REF, keyed as a
     FROM's is (familiar form, `:latest` dropped, with or without `::os/arch`), in the
-    planner, so `shards build` takes it too, with no registry asked.
+    planner, so `shards build image` takes it too, with no registry asked.
   - A context of another kind is refused: "the build context REF for the OSI artifact REF
     is …: an artifact's context is an OCI layout, oci-layout://DIR[:TAG]".
   - Where REF pins a digest, the context must name it, or the build is refused in the
@@ -15028,14 +15390,14 @@ and BuildKit build an Agentfile, no shards installed. The frontend is `shards` i
       §12.17), and its kind the directive's;
     - the config, as an artifact's config is parsed.
 
-    The checks and their words are `shards build`'s own (`agent::check_manifest`,
+    The checks and their words are `shards build image`'s own (`agent::check_manifest`,
     `not_the_kind`, `Config::parse`).
   - The content is laid out by an exec step of the frontend's own image, with no network
     (`shards frontend osi`, osi.rs): each layer blob mounted, held to its digest and to
     what an artifact's layer may hold (`agent::check_layer`, §9.2), then applied in order
-    as an image's layers are. Its tree's root is at the epoch, as `shards build` gives an
+    as an image's layers are. Its tree's root is at the epoch, as `shards build image` gives an
     artifact's, since a COPY of the tree takes its root's time for where it goes. A
-    refusal fails the build in `shards build`'s words.
+    refusal fails the build in `shards build image`'s words.
   - That step takes the planner's `osi-artifact://` source's place in the definition, its
     inputs inserted before it.
   - With no context, the artifact is refused by name, saying what to give:
@@ -15051,11 +15413,11 @@ and BuildKit build an Agentfile, no shards installed. The frontend is `shards` i
     - the frontend's reads, checks, layout step and the definition it makes, which
       marshals, through a fake gateway;
     - the layout step over real layers (osi.rs);
-    - `shards build` from a layout, no registry reachable, pinned, mismatched and of
+    - `shards build image` from a layout, no registry reachable, pinned, mismatched and of
       another kind (`agents_come_from_the_oci_layouts_build_contexts_give`, real
       microVMs);
     - in `shards-dind`, an agent pushed, copied into a layout by oras, and built through
-      BuildKit and the frontend: its image is equal byte for byte to `shards build`'s from
+      BuildKit and the frontend: its image is equal byte for byte to `shards build image`'s from
       the same layout, and both run it confined on a microVM, saying the same.
 
     Mutation-checked, each mutant killed: the pinned digest, the frontend's and the
@@ -15339,8 +15701,8 @@ reserves no label: recorded as ours).
   reads and execution alone where it is read-only. A domain not granted a scoped volume
   sees the image as built at its mount point. Two volumes at one mount point are refused
   here too.
-- A visit to a stopped container's files (D37, `HOLD`: `cp`, `diff`, `export`) starts no
-  agent or harness, as it runs no command of the image's. Before, an Agentfile's container
+- A visit to a stopped microVM's files (D37, `HOLD`: `cp`, `diff`, `export`) starts no
+  agent or harness, as it runs no command of the image's. Before, an Agentfile's stopped microVM
   could not be visited at all: its domains, given no filter, failed the visit's VM.
 
 **Tested:** `agentfile_volumes_reach_whom_they_are_for` on microVMs:
@@ -15355,7 +15717,7 @@ reserves no label: recorded as ours).
 - At run: `-v agvol-other:/data` stands in, given to a alone, owned by a, filled, seen by the
   run's root; a host directory at `/scratch` given to b, its owner and mode unchanged;
   `--tmpfs`, `--mount type=tmpfs` and a file refused; a `.agentfile.json` and an agent's
-  `osi.json` that `cp` put in a created container before `start` change no grant, and `cp`
+  `osi.json` that `cp` put in a created microVM before `start` change no grant, and `cp`
   out of it works.
 - Unit: the build's refusals (`tests/agentfile.rs`); `from_spec` against `spec` and the
   grants of both; the daemon's reading of a root (`volumes.rs`: a crafted file's volumes over
@@ -16045,7 +16407,7 @@ Tested:
 
 ### D101. Build policies: `--policy` and `Dockerfile.rego`, asked of every source
 
-`shards build` heeds build policies as buildx v0.37.1 sets them up (build/opt.go
+`shards build image` heeds build policies as buildx v0.37.1 sets them up (build/opt.go
 configureSourcePolicy, build/policy_loader.go, policy/validate.go) and BuildKit v0.28.1
 heeds them (solver/llbsolver/policy.go, bridge.go resolveSourceMetadata). Each policy is
 a set of Rego modules, evaluated by shards' own OPA (D98) and asked `data.docker.decision`
@@ -16192,7 +16554,7 @@ Evidence:
     (IFA_F_NODAD).
   - **Names.** The embedded DNS answers AAAA from a member's IPv6 addresses
     (resolver.go, handleIPQuery), and PTR under `ip6.arpa` as under `in-addr.arpa`.
-  - **/etc/hosts.** It names the container at each of its addresses, IPv6's after
+  - **/etc/hosts.** It names the microVM at each of its addresses, IPv6's after
     IPv4's (sandbox_dns_unix.go, makeHostsRecs).
 - RFC 8200 (IPv6, its extension headers), RFC 4443 (ICMPv6), RFC 4861 (neighbor
   discovery).
@@ -16374,7 +16736,7 @@ brackets, and one learned from AAAA, at their ports alone),
 
 ### D98. Rego as OPA evaluates it, for buildx's build policies
 
-`shards build --policy` (buildx v0.37.1's, in progress) needs OPA v1.14.1's Rego, with
+`shards build image --policy` (buildx v0.37.1's, in progress) needs OPA v1.14.1's Rego, with
 OPA's answers. `crates/rego` is shards' own implementation of that Rego, not a binding.
 OPA is Go, and linking it would put a second runtime beside `shards` (rule: one binary).
 Its parts:
@@ -16436,7 +16798,7 @@ Evidence:
   and `artifactType` of each entry.
 - BuildKit v0.28.1's local exporter: with several platforms it writes each one's files
   under `<os>_<arch>[_<variant>]`, so that is how a directory lays out per-platform content.
-- `--platform` is read as `shards build` reads it (`build::target_platforms`, which
+- `--platform` is read as `shards build image` reads it (`build::target_platforms`, which
   normalizes names as containerd does (D97)).
 
 What it does:
@@ -16446,7 +16808,7 @@ What it does:
   is refused.
 - The index carries the artifact type, at the top and on every entry.
 - The name resolves to the index, and is tagged to this host's manifest (else the first).
-- `shards push` sends the index together with every platform's manifest.
+- `shards push image` sends the index together with every platform's manifest.
 - `AGENT … FROM` (and `shards pull agent`) takes the guest's manifest out of an index.
   Before this, an index was refused.
 
@@ -16644,7 +17006,7 @@ Tested:
 
 ### D91. Remote build contexts: Git, HTTP(S) and stdin
 
-`shards build` takes every context `docker build` takes:
+`shards build image` takes every context `docker build` takes:
 - a directory;
 - a Git URL;
 - an HTTP(S) URL;
@@ -17303,7 +17665,7 @@ A build finds an image pinned by digest in the store whatever it is named there
 content finds it, and resolves it to the digest asked, (D78), as BuildKit resolves a pinned
 reference; before, a pinned reference to an image built here and never pushed was pulled.
 Linux images alone (`os` other than linux refused, named). Taking in OCI layouts and
-`docker save` archives is `shards load`'s (D41); Compose files and rebuildable `RUN`
+`docker save` archives is `shards load image`'s (D41); Compose files and rebuildable `RUN`
 history are later work (§12.16).
 
 Tested: `an_agentfile_made_from_an_image_builds_its_config` (an image of every setting,
@@ -17318,7 +17680,7 @@ commit (f0c0ec2e, 2026-10-04), and nothing read it: a pull that named it wrote n
 and said nothing of it. It is served: once the pull is through, the Agentfile of the image
 it pulled, of the platform it pulled (a lone manifest whatever its platform, as the pull
 takes one: `local_base`), is written to the file named, or as `Agentfile` in a directory
-named, where `shards build DIR` finds one; its file is made before the pull, so that a path
+named, where `shards build image DIR` finds one; its file is made before the pull, so that a path
 it cannot write fails first, and is written whole or not at all, as `save -o` writes an
 archive (D180 part 3a): a pull that fails leaves nothing. `-a`, which names no one image,
 is refused with it before anything is pulled. `make agentfile` takes `--platform`, read as
@@ -17889,7 +18251,7 @@ and no `containerimage.config.digest`; for files (`local`, `tar`), none.
 Found with it, and fixed: `build -q`, `--iidfile` and the `writing image` line gave the
 config's digest, which moby's classic store names an image by (BuildKit's image exporter
 answers it, and buildx's `getImageID` prefers it), while shards' store names it by its
-manifest's digest: `shards run $(shards build -q .)` found no such image. Now each gives
+manifest's digest: `shards run vm $(shards build -q .)` found no such image. Now each gives
 the manifest's digest, (D63), as Docker with its containerd store gives its image's
 (`a_build_given_no_name_is_kept_dangling` runs the image by the ID `-q` printed). `buildx.build.ref` is
 `shards/shards/` and an ID made as BuildKit's `identity.NewID` makes one (D63).
@@ -18328,7 +18690,7 @@ Part six, ingress:
 
 - **What is let in.** A port is let in past the microVM where both boundaries open it
   inward: the network's own grant (`--ingress`, `--expose`) and the microVM's for it
-  (`EXPOSE … FOR` it, both ways or `AS ingress`). `shards run -p` publishes it as any
+  (`EXPOSE … FOR` it, both ways or `AS ingress`). `shards run vm -p` publishes it as any
   port; `EXPOSE … AS egress` stays out of the image's exposed ports, so `-P` does not.
 - **To whom.** To the network's member. Which of several members a connection is for, no
   directive says yet, so the build refuses a network with such ports and more than one
@@ -18677,7 +19039,7 @@ config refused in their words), the listing check mutation-checked.
 | GIC restore (`hv_gic_set_state`; its registers alone, 20–30 µs, lose interrupts in flight) | ~1.2–1.3 ms; paid by a warm VM before the request | [PM M14, M45] |
 | vCPU register restore | ~0.5 µs per vCPU | [PM M14] |
 | Resume; guest faults in its working set | ~64 µs per MiB (1 vCPU), ~2.2× less with prefetch vCPUs; a warm VM prefetches it before the request | [PM M5, M6, M30] |
-| Engine starts the container, reports ready over vsock | to be measured | pending |
+| Engine starts the workload, reports ready over vsock | to be measured | pending |
 
 Clone correctness hazards (RNG reseed via vmgenid, clock via vtimer offset, network
 identity) are **pending** the snapshot research.
@@ -18698,10 +19060,10 @@ Each phase ends with committed E2E tests and benchmarks that run real VMs.
    - Exit: measured request → guest-running ≤ 1 ms p50 on the M5 Max.
 3. **Guest stack v0.**
    - Scope: `shards-init`; tuned kernel built in a shards builder VM; OCI pull →
-     rootfs image; `shards run IMAGE CMD`.
+     rootfs image; `shards run vm IMAGE CMD`.
    - Built: our kernel (CI releases); virtio-pmem; the EROFS writer; layers → one EROFS
      image (D15); booting into an image to run a command (D16); the image store (D18);
-     registry TLS, HTTP and auth (D19–D21); pulls (D22); `shards pull` (D23); `shards run
+     registry TLS, HTTP and auth (D19–D21); pulls (D22); `shards pull image` (D23); `shards run vm
      IMAGE` (D24); terminals (D16, D27); the kernel and shards-init shipped with shards
      (D28).
 4. **In-VM engine.**

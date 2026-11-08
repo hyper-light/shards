@@ -24,9 +24,9 @@
 //! scope is not under the budget it writes what the build gives it, each write to the
 //! build's own open file (passed with it, SCM_RIGHTS), at that file's offset, as the build
 //! would have (`shards_image::through`). The page cache they dirty is charged to it, and
-//! paced by the host's dirty limit alone, as BuildKit's own writes are made by buildkitd,
-//! never in the cgroup its `RUN` steps are given (docker build `--cgroup-parent`: "the
-//! parent cgroup for the RUN instructions"). The builder's VM process, whose memory the
+//! paced by the host's dirty limit alone: a build's writes are the builder's, never those
+//! of the cgroup its `RUN` steps are given (docker build `--cgroup-parent`: "the parent
+//! cgroup for the RUN instructions", D188). The builder's VM process, whose memory the
 //! budget holds, stays in it. Where nothing places it there (no user manager), the build
 //! writes its files itself.
 //!
@@ -73,8 +73,13 @@ const FAILED: u8 = 3;
 /// Build → writer: the memory file the slots are in, which comes with it, to allocate and
 /// map. Answered `READY` or `FAILED`.
 const SLOTS: u8 = 4;
-/// Writer → build: the slots are allocated and mapped.
+/// Writer → build: the slots are allocated and mapped, or a range is served.
 const READY: u8 = 5;
+/// Build → writer: read and write, for the builder's VM process, the file that comes with
+/// it first, at the offsets the VM process asks for on the socket that comes second
+/// (`shards_vmm::devices::virtio::block::Through`), until it hangs up. Answered `READY`
+/// once a thread of the writer's serves it, or `FAILED`.
+const SERVE: u8 = 6;
 
 /// How many slots: one the writer writes from, and the next, which the build fills and
 /// hands while it does, so that the writer has it as soon as it is done.
@@ -95,15 +100,42 @@ struct Outside {
     _child: shards_ipc::Child,
 }
 
-impl shards_image::through::Writer for Outside {
+/// This process's writer, once one is placed outside its budget: for its life.
+static OUTSIDE: std::sync::OnceLock<Outside> = std::sync::OnceLock::new();
+
+/// The build's writes, handed to [`OUTSIDE`].
+struct Handed;
+
+impl shards_image::through::Writer for Handed {
     fn hand(&self, owner: Owner, file: &File, buf: &[u8]) -> io::Result<usize> {
-        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let outside = OUTSIDE.get().ok_or_else(|| io::Error::other("no writer"))?;
+        let mut state = outside.state.lock().unwrap_or_else(PoisonError::into_inner);
         state.hand(owner, file, buf)
     }
 
     fn settle(&self, owner: Owner) -> io::Result<()> {
-        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let outside = OUTSIDE.get().ok_or_else(|| io::Error::other("no writer"))?;
+        let mut state = outside.state.lock().unwrap_or_else(PoisonError::into_inner);
         state.settle(owner)
+    }
+}
+
+/// The connection a builder's VM process reads and writes `file`, a cache's layer or a
+/// file for its changes (D134), through: to this build's writer, outside its budget, so
+/// that the page cache the guest's reads and writes of it fault is charged there, where
+/// the budget's reclaim does not take it (PM M442); none where no writer is placed there,
+/// and the VM process reads and writes it itself.
+pub fn through(file: &File) -> Option<UnixStream> {
+    let outside = OUTSIDE.get()?;
+    let mut state = outside.state.lock().unwrap_or_else(PoisonError::into_inner);
+    match state.serve(file) {
+        Ok(conn) => Some(conn),
+        Err(e) => {
+            shards_vmm::debug!(
+                "a cache's file read and written by the builder itself, under its budget: {e}"
+            );
+            None
+        }
     }
 }
 
@@ -172,6 +204,40 @@ impl State {
         }
         self.flight.push_back((owner, slot, chunk.len()));
         Ok(())
+    }
+
+    /// Has the writer serve `file` for a builder's VM process: the connection the VM
+    /// process asks on. Every write in flight is answered first, so that the answer read
+    /// next is this one's.
+    fn serve(&mut self, file: &File) -> io::Result<UnixStream> {
+        if let Some(why) = &self.ended {
+            return Err(io::Error::other(why.clone()));
+        }
+        while !self.flight.is_empty() {
+            self.answer()?;
+        }
+        let (ours, theirs) = UnixStream::pair()?;
+        if let Err(e) = shards_ipc::send(&self.conn, SERVE, &[], &[file.as_fd(), theirs.as_fd()]) {
+            self.end(format!("the build's writer: {e}"));
+            return Err(e);
+        }
+        // Held until it answers, which it does holding its own (M24).
+        let answer = shards_ipc::recv(&self.conn);
+        drop(theirs);
+        let answer = match answer.and_then(|m| m.ok_or_else(|| io::Error::other("the build's writer ended")))
+        {
+            Ok(m) => m,
+            Err(e) => {
+                self.end(format!("the build's writer: {e}"));
+                return Err(e);
+            }
+        };
+        match answer.kind {
+            READY => Ok(ours),
+            FAILED => Err(failure(&answer.payload)
+                .map_or_else(|| io::Error::other("the build's writer failed"), |f| f.error())),
+            other => Err(io::Error::other(format!("the build's writer answered {other}"))),
+        }
     }
 
     /// Waits until every write of `owner`'s is answered: why one failed, if one did.
@@ -363,7 +429,7 @@ fn begin_once() {
     };
     match start(&budget) {
         Ok(outside) => {
-            if !shards_image::through::set(Box::new(outside)) {
+            if OUTSIDE.set(outside).is_err() || !shards_image::through::set(Box::new(Handed)) {
                 shards_vmm::debug!("a build's writes were handed to a writer already");
             }
         }
@@ -514,7 +580,12 @@ fn serve_on(conn: &UnixStream) -> io::Result<()> {
         let Some(m) = shards_ipc::recv(conn)? else {
             return Ok(());
         };
-        let (kind, payload) = match (m.kind, m.fds.into_iter().next()) {
+        let mut fds = m.fds.into_iter();
+        let (kind, payload) = match (m.kind, fds.next()) {
+            (SERVE, Some(fd)) => match fds.next() {
+                Some(conn) => serving(File::from(fd), UnixStream::from(conn)),
+                None => refused(0, "a range to serve with no connection"),
+            },
             (SLOTS, Some(fd)) if slots.is_none() => match allocate(&fd) {
                 Ok(made) => {
                     slots = Some(made);
@@ -590,6 +661,69 @@ fn wrote(file: &File, slots: &Slots, payload: &[u8], failed: &mut HashSet<u64>) 
         }
     }
     (WROTE, (done as u64).to_be_bytes().to_vec())
+}
+
+/// Serves `file` to a builder's VM process on `conn`, on a thread of its own: the answer
+/// to the build.
+fn serving(file: File, conn: UnixStream) -> (u8, Vec<u8>) {
+    match std::thread::Builder::new()
+        .name("range".into())
+        .spawn(move || serve_range(&file, conn))
+    {
+        Ok(_) => (READY, Vec::new()),
+        Err(e) => refused(
+            e.raw_os_error().unwrap_or(0),
+            &format!("a thread for a range: {e}"),
+        ),
+    }
+}
+
+/// Reads and writes `file` as the VM process at the other end of `conn` asks
+/// (`shards_vmm::devices::virtio::block::Through`), until it hangs up or asks what it may
+/// not: each at the offset asked, at most `THROUGH_MAX` bytes, answered with the error's
+/// number (0 for none) and how many bytes it moved, a read's after them.
+fn serve_range(file: &File, mut conn: UnixStream) {
+    use shards_vmm::devices::virtio::block::{THROUGH_MAX, THROUGH_READ, THROUGH_WRITE};
+    use std::io::Read as _;
+    use std::os::unix::fs::FileExt as _;
+    let mut buf = vec![0u8; THROUGH_MAX];
+    loop {
+        let mut head = [0u8; 13];
+        if conn.read_exact(&mut head).is_err() {
+            return;
+        }
+        let (op, rest) = head.split_at(1);
+        let (offset, len) = rest.split_at(8);
+        let offset = u64::from_be_bytes(offset.try_into().unwrap_or_default());
+        let len = u32::from_be_bytes(len.try_into().unwrap_or_default()) as usize;
+        let Some(at) = buf.get_mut(..len) else {
+            return;
+        };
+        let (done, code) = match op.first().copied() {
+            Some(THROUGH_READ) => match file.read_at(at, offset) {
+                Ok(n) => (n, 0),
+                Err(e) => (0, e.raw_os_error().unwrap_or(libc::EIO)),
+            },
+            Some(THROUGH_WRITE) => {
+                if conn.read_exact(at).is_err() {
+                    return;
+                }
+                match file.write_all_at(at, offset) {
+                    Ok(()) => (len, 0),
+                    Err(e) => (0, e.raw_os_error().unwrap_or(libc::EIO)),
+                }
+            }
+            _ => return,
+        };
+        let mut answer = code.to_be_bytes().to_vec();
+        answer.extend_from_slice(&u32::try_from(done).unwrap_or(0).to_be_bytes());
+        if op.first() == Some(&THROUGH_READ) {
+            answer.extend_from_slice(at.get(..done).unwrap_or_default());
+        }
+        if conn.write_all(&answer).is_err() {
+            return;
+        }
+    }
 }
 
 fn refused(code: i32, why: &str) -> (u8, Vec<u8>) {
@@ -780,6 +914,48 @@ mod tests {
         f.seek(io::SeekFrom::Start(0)).unwrap();
         f.read_to_string(&mut back).unwrap();
         assert_eq!(back, "made");
+    }
+
+    /// A range served for a VM process is read and written where it asks, its writes
+    /// landing among the build's own handed on, and a read past the file's end moves what
+    /// there is.
+    #[test]
+    fn a_served_range_reads_and_writes_where_it_is_asked() {
+        use shards_vmm::devices::virtio::block::{THROUGH_READ, THROUGH_WRITE};
+        let dir = shards_testdir::TempDir::new("outside-range").unwrap();
+        let mut f = File::options()
+            .create_new(true)
+            .read(true)
+            .write(true)
+            .open(dir.path().join("f"))
+            .unwrap();
+        f.write_all(b"0123456789").unwrap();
+        let (mut state, serving) = writer();
+        let mut conn = state.serve(&f).unwrap();
+        let ask = |conn: &mut UnixStream, op: u8, offset: u64, bytes: &[u8], len: u32| {
+            let mut head = vec![op];
+            head.extend_from_slice(&offset.to_be_bytes());
+            head.extend_from_slice(&len.to_be_bytes());
+            head.extend_from_slice(bytes);
+            conn.write_all(&head).unwrap();
+            let mut answer = [0u8; 8];
+            conn.read_exact(&mut answer).unwrap();
+            let code = i32::from_be_bytes(answer[..4].try_into().unwrap());
+            let n = u32::from_be_bytes(answer[4..].try_into().unwrap()) as usize;
+            let mut got = vec![0u8; if op == THROUGH_READ { n } else { 0 }];
+            conn.read_exact(&mut got).unwrap();
+            (code, n, got)
+        };
+        assert_eq!(ask(&mut conn, THROUGH_WRITE, 4, b"ab", 2), (0, 2, Vec::new()));
+        assert_eq!(ask(&mut conn, THROUGH_READ, 2, b"", 5), (0, 5, b"23ab6".to_vec()));
+        assert_eq!(ask(&mut conn, THROUGH_READ, 8, b"", 9), (0, 2, b"89".to_vec()));
+        let mut back = String::new();
+        f.seek(io::SeekFrom::Start(0)).unwrap();
+        f.read_to_string(&mut back).unwrap();
+        assert_eq!(back, "0123ab6789");
+        drop(conn);
+        drop(state);
+        serving.join().unwrap().unwrap();
     }
 
     /// An answer that says fewer bytes than were handed, or is no answer, fails its write.

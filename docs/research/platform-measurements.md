@@ -3953,6 +3953,57 @@ revision before comparing a changed API/implementation.
   longer bounds a large pull: unpacking its largest layer does, after the layer has
   arrived. Next: unpack a layer as its bytes arrive in order, not after.
 
+### M488. A push's uploads: how many at once, and what chunks cost (D226)
+
+- **Question.** `shards push` sent 5 blobs at once, dockerd's figure, each in one PUT.
+  Where do more uploads at once stop paying, and is it one count across links? What does
+  sending a blob in chunks cost, for a registry that refuses it whole?
+- **Method.** `docs/research/measurements/push-uploads/`:
+  - `push.py`: N new blobs of random bytes uploaded as shards' pusher sends them (HEAD,
+    POST, one PUT of the whole), each worker on one kept-alive connection, at 1 to 16 at
+    once, 3 rounds in alternating order; or, with `--chunk`, in PATCHes of that size and
+    a PUT with no body. Each blob's upload time, n, p50, p90, p99, max.
+  - `sweep.sh`: 16 blobs of 16 MiB (8 of 8 MiB across the Internet) and 32 of 256 KiB at
+    each count, then the large blobs at 4 at once whole and in chunks of 1, 4 and 8 MiB.
+  - `limited.sh`: `shards push` of nginx:alpine (Docker's pull, then given to the
+    registry by Docker) to registry:2 behind nginx at `client_max_body_size 1m`, nginx's
+    default, then pulled back through nginx into a fresh home; nginx's answers counted.
+  - Links: registry:2 (image a3d8aaa63ed8) on fedora-2 (x86_64, 32 CPUs, Fedora 44, Linux
+    6.19.10, on Wi-Fi), asked from the same host, load average 13 to 25 from other work;
+    and from adacachy2 (x86_64, 32 CPUs, CachyOS, Linux 7.3.3, wired) across the LAN, at
+    load 5 to 15; and ttl.sh from adacachy2 over home broadband. 2026-11-08, revision
+    8501f093 plus D226.
+- **Results** (MB/s of the whole, median of 3 rounds; each round).
+  - One host, 16 MiB blobs: 1: 234.7 (238.1, 234.7, 231.2); 2: 403.3; 4: 691.6; 8: 1115.1;
+    16: 1705.4 (1705.4, 1728.1, 1682.1). A blob's upload at 1, n=48: p50 70 ms, p90 79,
+    p99 88, max 88; at 16, p50 152, p90 156, p99 159, max 159.
+  - One host, 256 KiB blobs: 1: 10.5; 2: 13.7; 4: 24.9; 8: 46.7; 16: 84.6. At 1, n=96:
+    p50 24 ms, p90 28, p99 39, max 46.
+  - LAN, 16 MiB: 1: 71.2 (43.0, 71.2, 74.6); 2: 72.6; 4: 73.9 (42.3, 73.9, 87.3); 8: 54.0
+    (33.1, 65.1, 54.0); 16: 61.1. At 4, n=48: p50 771 ms, p90 1323, p99 5185, max 5185.
+    256 KiB: 1: 8.2; 2: 13.4; 4: 19.4; 8: 27.4; 16: 37.9.
+  - ttl.sh, 8 MiB: 1: 4.5 (2.2, 4.5, 4.9); 2: 5.9 (5.9, 9.6, 5.4); 4: 9.2 (1.7, 9.2,
+    13.3); 8: 2.3 (2.1, 12.1, 2.3). At 4, n=24: p50 3173 ms, p90 7755, p99 39654, max
+    39654. 256 KiB: 1: 0.2; 2: 0.4; 4: 0.6; 8: 0.7; 16: 0.9; at 1, n=96, p50 748 ms, p99
+    6012, max 9212.
+  - Chunks, 4 at once: one host whole 632.5, 8 MiB 421.5, 4 MiB 342.7, 1 MiB 165.9; LAN
+    whole 95.6, 8 MiB 88.4, 4 MiB 83.7, 1 MiB 78.9; ttl.sh whole 2.3 (2.3, 3.5, 2.3), 8 MiB
+    10.0 (2.9, 10.0, 10.1), 4 MiB 5.4 (12.6, 2.7, 5.4), 1 MiB 4.1: across the Internet
+    rounds of one case differed fourfold, more than the cases did.
+  - `limited.sh`, run twice: the push took 0.48 s and 0.45 s. nginx answered the first
+    with one PUT 413 and one PATCH 413 then 30 PATCHes 202, the second with two PUTs 413
+    (two uploads at once refused before either knew) and 28 PATCHes 202 of 177,552 to
+    970,385 bytes each, every one under the limit; each image pulled back through nginx to
+    the digest pushed, sha256:697b0b15….
+- **Consequence.** No one count is right: on one host more kept paying past 16, across
+  the LAN one filled the link and 8 lost a quarter, across the Internet 4 doubled 1 and 8
+  fell back, and small blobs, bound by round trips, gained to 16 on every link. On none
+  did fewer than 4 carry more than 4. So a push starts at 4 and doubles while a doubling
+  pays, as the pull's connections do, bounded by its blobs alone (D226). Chunks cost a
+  request each: on one host they lost a third of the rate at 8 MiB and three quarters at
+  1 MiB, across the LAN 7 to 18%, and across the Internet less than its noise: a blob goes whole, in chunks only once its registry refused
+  a request so long, each half the least refused.
+
 ### M115. What keeping a container's writable layer costs a run
 
 - **Question.** A container that stays keeps its writable layer once its microVM stops
@@ -18724,3 +18775,82 @@ revision before comparing a changed API/implementation.
   change, and on a native arm64 Windows host with WHP (a Snapdragon X machine, as a user
   session), which alone says whether Hyper-V's SGIs and timers hold across a 64-vCPU
   snapshot at a native host's timing.
+
+### M463. What a client's bind through its context costs its guest (D215)
+
+- **Question.** A client's bind is its own directory, each FUSE request its microVM's share
+  makes relayed over the context's QUIC to the client's share server (D215). What does that
+  cost a guest's opens, reads and writes against the machine's own bind of the same files?
+- **Method.** docs/research/measurements/client-binds/run.sh 10 (`what_a_clients_bind_costs`,
+  tests/context.rs) at 703c6a06 on adacachy2 (the GPU desktop: x86_64, 32 cores, CachyOS,
+  Linux 7.3.3-1-cachyos), 2026-11-08T08:00Z, load average 7 to 10 (another session's work):
+  two homes of the one machine, the client's context over loopback QUIC. Each of 10 rounds, in
+  turns (the order swapped each round), a run of the owner's binding a directory of the
+  machine's and the client's binding its own, each running the test guest's `share-cost` on
+  a 64 MiB file: 2,000 opens, each reading 4 KiB and closing, timed one by one; then the file
+  read through, and a copy written and fsynced. Once as the daemon is by default, its shares'
+  DAX windows on (D189), and once with `SHARDS_SHARE_WINDOW_MIB=0`, FUSE alone for both, which
+  is what a client's relay always is (`serves_afar`).
+- **Found** (FUSE alone; each quantile the median of the 10 rounds' own, of n 2,000 opens
+  each; max the largest of any round; MiB/s the rounds' median):
+
+  | bind | open, 4 KiB read, close p50 | p90 | p99 | max | read MiB/s | write MiB/s |
+  |---|---|---|---|---|---|---|
+  | the machine's own | 136 µs | 160 µs | 206 µs | 1,434 µs | 468 | 2,157 |
+  | the client's, relayed | 251 µs | 310 µs | 399 µs | 914 µs | 458 | 572 |
+
+  The relay adds 115 µs at p50 to an open, a 4 KiB read and a close (its requests' round
+  trips through the share's socket, the daemon's relay, QUIC on loopback and the client's
+  server), and 193 at p99. A large file reads as fast (the guest's reads are 1 MiB requests,
+  the relay's round trip small beside each); writes are a quarter as fast, each 1 MiB write a
+  request whose reply waits on the client's write. Every round of the client's at p99 under
+  430 µs. With the machine's DAX window on, its own bind's opens cost 513 µs at p50 and its
+  64 MiB read 9.5 MiB/s on this host, slower than the relay's: every file of 1 MiB or more is
+  mapped (DAX_SMALLEST), and on this host a mapped read is far slower than FUSE's; not
+  D215's, and open (D189's to explain on this kernel).
+- **Not measured.** Two machines apart (Mac Studios on one network: their runners did not
+  take this run on 2026-11-08); a Mac's own; latency under a lossy link.
+
+### M466. Flakes: a raised run's allocation killed as its host stays short of memory (D148, D188)
+
+- **Question.** `update_moves_a_microvms_memory_both_ways` once had its `alloc 512`, after
+  `update -m 1g` raised a run of 256 MiB, killed for want of memory (137) on a full suite's
+  Fedora, and passed alone (600 of 600 on CI, M325). What kills it?
+- **Method.** `update_under_pressure_stress` (tests/containers.rs, ignored): one run of
+  `-m 256m --memory-swap 256m`; each round its `alloc 512` killed at 256 MiB, the run
+  raised to `1g`, `alloc 512` again while its daemon is told its host is short of memory
+  every 50 ms (`SHARDS_PRESSURE`, as a whole suite's host says it each window), then
+  lowered; the raised allocation's time and status each round. On adacachy2 (AMD Ryzen 9
+  9950X3D2, 16 cores, 32 threads, 64 GB, CachyOS, Linux 7.3.3), the test pinned to 15 of
+  its threads (`taskset`), the host loaded by other agents' work (load 9 to 37), at
+  8501f093 (the tree) and at 49ee67a5 with the change below, 2026-11-08.
+- **Results.** Raised allocations, ms:
+
+  | build | n | killed | p50 | p90 | p99 | max |
+  |---|---|---|---|---|---|---|
+  | 8501f093 | 74 | 15 | 125 | 807,303 | 2,461,830 | 2,516,060 |
+  | the change, run 1 | 1,000 | 0 | 119 | 171 | 1,035 | 5,393 |
+  | the change, run 2 | 1,000 | 0 | 113 | 129 | 144 | 5,117 |
+
+  On the tree an allocation that went wrong never recovered quickly: 32 of 74 took over 5
+  s, up to 42 minutes, and 15 were killed by the guest's own OOM killer (`memory.events`
+  `oom 0 oom_kill 1` of its cgroup, the kernel's `testguest invoked oom-killer`, its
+  `memory.peak` 541 MB of a `memory.max` of 1 GiB). A give-back's keep is twice what the
+  run uses (`memory.current`) past what its microVM booted with, in 128 MiB blocks, and
+  its peak since the pass before; the grower asks for twice what its guest has (MemTotal),
+  which counts the kernel's own and init's memory besides the run's. Raised to 1 GiB and
+  held at its hold, the run had the grower plug 128 MiB for the allocation; a pass of the
+  host's pressure between its coming and the allocation's touching it found the run's use
+  where it had been and its keep a block short, took the block back and held the run at
+  what it would have after; the run grew into its hold, the grower plugged the block again,
+  and the next pass, 50 ms on, took it again, until an unplug left the guest's kernel
+  without free memory as the allocation faulted, and its OOM killer ended it.
+- **Consequence (D188).** The grower marks each ask and each block that comes (init plug.rs
+  `mark_growth`, in the page init shares with its grower and builtins), and a give-back
+  that finds a mark within the window the host's pressure is measured over (2 s,
+  `shards_abi::PRESSURE_WINDOW_US`, the PSI trigger's window, D188) keeps all it has. 0 of
+  2,000 raised allocations killed, against 15 of 74 (under 3 in 2,000 at 95%). Open: 6 of
+  the 2,000 took 5.1 to 5.4 s, the grower's `STALLED` (5 s) and its second ask, as 3 and 4
+  of two runs of 1,000 did at 49ee67a5 with an ask and a give-back's request serialized besides (a lock
+  in the shared page): that lock changed nothing, and is not kept; the stall's cause is
+  not yet found.

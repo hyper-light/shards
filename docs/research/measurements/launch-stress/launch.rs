@@ -10,7 +10,7 @@
 //!     LAUNCH DIR LAUNCHES THREADS [HOME [fresh]]    (DIR: target/e2e/shards-DIGEST)
 //!
 //! With HOME, each launch is a client of the daemon in that home (SHARDS_HOME, which the
-//! first starts), asking it what it holds, as a test's `shards ps` or `pull` does; a
+//! first starts), asking it what it holds, as a test's `shards list vms` or `pull` does; a
 //! DOCKER_CONFIG of its own, empty, as the tests give theirs. With `fresh` too, each launch
 //! is the first client of a home of its own under HOME, as a test's first `shards pull` is
 //! (it starts that home's daemon), and `shards stop daemon` then ends that daemon, the

@@ -156,11 +156,18 @@ impl<D: Disk> Daemon<D> {
             let one = loaded.len() == 1;
             for image in &loaded {
                 // The name given names it too, where the archive held one image.
-                if let (Some(n), true) = (&named, one)
-                    && let Err(e) = store.alias(&n.to_string(), &image.name)
-                {
-                    reply.err(&format!("shards: {e}"));
-                    status = 1;
+                if let (Some(n), true) = (&named, one) {
+                    match store.alias(&n.to_string(), &image.name) {
+                        Ok(()) => image.publish(&self.home, &n.to_string(), &asker.registry_env),
+                        Err(e) => {
+                            reply.err(&format!("shards: {e}"));
+                            status = 1;
+                        }
+                    }
+                }
+                // Each microVM the archive held, by its own name too (D216).
+                if !image.dangling {
+                    image.publish(&self.home, &image.name, &asker.registry_env);
                 }
                 if let Some(Err(e)) = &image.unpacked {
                     reply.err(&format!("shards: {}: {e}", image.shown));
@@ -344,7 +351,7 @@ impl<D: Disk> Daemon<D> {
 
 /// Whether the tarball at `path` (plain or compressed) is an image archive: an OCI image
 /// layout (`oci-layout`, `index.json`), a shards microVM among them, or a `docker save`
-/// archive (`manifest.json`), as containerd's importer recognizes one; not a container's
+/// archive (`manifest.json`), as containerd's importer recognizes one; not a microVM's
 /// files.
 fn is_image_archive(path: &std::path::Path) -> bool {
     let Ok(file) = std::fs::File::open(path) else {

@@ -25,12 +25,15 @@ use std::sync::Mutex;
 
 use shards_image::reference::{Digest, Reference};
 
+/// The registry domain microVMs are named under in the local store.
+pub const DOMAIN: &str = "shards.local";
+
 /// Where a microVM is named in the local store: `shards.local/` and the familiar name.
 pub fn name(reference: &str) -> String {
     let familiar = Reference::parse_normalized(reference)
         .map(|r| r.tag_name_only().familiar())
         .unwrap_or_else(|_| reference.to_string());
-    format!("shards.local/{familiar}")
+    format!("{DOMAIN}/{familiar}")
 }
 
 /// The local engine's socket, if one is named and there.

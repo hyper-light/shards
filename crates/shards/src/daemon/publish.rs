@@ -3,8 +3,8 @@
 //! dockerd 29.3.1, 2026-10-02): each binding bound on the host as the run starts, here by
 //! the daemon, which hands the sockets to the VM's network process (D31); that process
 //! opens each connection they take to the guest, and gives each peer of a UDP port a flow
-//! of its own. A binding that cannot be bound fails the start, the container left created.
-//! SCTP, which the network process does not carry, is refused before the container is.
+//! of its own. A binding that cannot be bound fails the start, the microVM left created.
+//! SCTP, which the network process does not carry, is refused before the microVM is.
 //!
 //! Unlike dockerd: a host port range is tried port by port to its end, where dockerd
 //! gives up after 10 tries; and `-P` binds IPv6 too, as `-p` with no address does, where
@@ -34,14 +34,14 @@ pub(super) struct Listener {
 pub(super) const TCP: u8 = 6;
 pub(super) const UDP: u8 = 17;
 
-/// What a run publishes, bound: the host sockets, and the ports its container lists.
+/// What a run publishes, bound: the host sockets, and the ports its microVM lists.
 #[derive(Debug, Default)]
 pub(super) struct Bound {
     pub listeners: Vec<Listener>,
     pub ports: Vec<PortRecord>,
 }
 
-/// Host addresses a container publishes: held from their binding until the network
+/// Host addresses a microVM publishes: held from their binding until the network
 /// process of the VM that took them (`vm`) has gone, with the daemon's copies of their
 /// listening sockets once that VM has its run.
 #[derive(Debug)]
@@ -66,7 +66,7 @@ pub(super) fn overlaps(a: SocketAddr, b: SocketAddr) -> bool {
 pub(super) enum InUse {
     /// Another program's.
     Host,
-    /// A running container's of this daemon.
+    /// A running microVM's of this daemon.
     Allocated,
     /// A run's that has ended, and is free now.
     Freed,
@@ -87,7 +87,7 @@ fn exposed(key: &str) -> Option<(u16, String)> {
 
 /// The bindings `run` asks for: `-p`'s, then with `-P` one to a port the host picks for
 /// each port exposed (the image's and `-p`'s) that has none. And the ports exposed alone,
-/// which its container lists without a host side.
+/// which its microVM lists without a host side.
 pub(super) fn wanted(run: &Run, image_exposed: &[String]) -> (Vec<Publish>, Vec<(u16, String)>) {
     let mut ports: Vec<(u16, String)> = image_exposed.iter().filter_map(|k| exposed(k)).collect();
     for p in &run.publish {
@@ -116,7 +116,7 @@ pub(super) fn wanted(run: &Run, image_exposed: &[String]) -> (Vec<Publish>, Vec<
     (bindings, alone)
 }
 
-/// The ports a container its microVM's engine made lists (D181), its bindings' published
+/// The ports a joiner its microVM's engine made lists (D181), its bindings' published
 /// in its microVM's command's namespace by init, none of the host's: each at the address
 /// asked, or where none at `default`, its network's for its members' ports, or every IPv4
 /// one; its port the one asked or none until init says the one it was given
@@ -163,7 +163,7 @@ pub(super) fn engine_ports(
     Ok(ports)
 }
 
-/// What shards cannot publish yet, refused before a container is made for it.
+/// What shards cannot publish yet, refused before a microVM is made for it.
 pub(super) fn unsupported(bindings: &[Publish]) -> Option<String> {
     bindings
         .iter()
@@ -645,7 +645,7 @@ mod tests {
         assert!(!overlaps(at("0.0.0.0:8080"), at("0.0.0.0:8081")));
     }
 
-    /// A container's port is refused before any bind, at an address another overlaps,
+    /// A microVM's port is refused before any bind, at an address another overlaps,
     /// whatever the kernel would allow (review 2.7): nothing is bound for it.
     #[test]
     fn a_containers_port_is_refused_before_any_bind() {

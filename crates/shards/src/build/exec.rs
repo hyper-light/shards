@@ -30,7 +30,7 @@ use shards_image::store::{self, Limits, Store, Unpacked};
 use super::builder::{Origin, origin_id};
 
 /// The media type of the layers shards writes: uncompressed, as the store keeps them for
-/// `shards run` to unpack at no cost.
+/// `shards run vm` to unpack at no cost.
 pub const LAYER_TAR: &str = "application/vnd.oci.image.layer.v1.tar";
 
 /// A committed result: its snapshot, the layers that make it, and how the tree they
@@ -1138,6 +1138,20 @@ fn ssh_token() -> Result<[u8; 16], String> {
     Ok(token)
 }
 
+/// A device rule's access, `r`, `w` and `m`, as BPF_DEVCG_ACC_* bits (read 2, write 4,
+/// mknod 1), as shards_devcgroup reads them; CDI refuses any other letter as its spec is
+/// read (cdi.rs).
+fn device_access(letters: &[u8]) -> u8 {
+    letters.iter().fold(0, |acc, l| {
+        acc | match l {
+            b'r' => 2,
+            b'w' => 4,
+            b'm' => 1,
+            _ => 0,
+        }
+    })
+}
+
 /// Secret `id`'s bytes, if the build was given it.
 fn secret<'s>(op: &'s RunOp<'_>, id: &[u8]) -> Option<&'s [u8]> {
     let id = std::str::from_utf8(id).ok()?;
@@ -1564,6 +1578,17 @@ impl Exec<'_> {
                 };
                 // CDI gives a node the process's owner where the spec gives none, but root.
                 let owner = |given: Option<u32>, process: u32| given.unwrap_or(process);
+                // Its device rule's access, CDI's `permissions`, all three where it says
+                // none (ContainerEdits.Apply); a FIFO is no device and has none. An
+                // unbuffered char device (`u`) has its rule too, where CDI gives it none
+                // and so a step could not open the node it was given.
+                let access = if kind == b'p' {
+                    0
+                } else if n.permissions.is_empty() {
+                    device_access(b"rwm")
+                } else {
+                    device_access(n.permissions.as_bytes())
+                };
                 devices.push(shards_abi::build::Device {
                     path: n.path.clone().into_bytes(),
                     from: n.host_path.clone().into_bytes(),
@@ -1571,6 +1596,7 @@ impl Exec<'_> {
                     mode: n.file_mode.map(|m| m & 0o7777),
                     uid: owner(n.uid, user.uid),
                     gid: owner(n.gid, user.gid),
+                    access,
                 });
             }
         }

@@ -10,7 +10,7 @@
 //!
 //! `shards share --join` serves a microVM's join share instead (D119): the connection its
 //! VM asks it on as descriptor 3, the daemon's as descriptor 4, an empty directory, the
-//! share's root, as descriptor 5, and the home's private directory as 6. Its volumes are the directories of the containers joining
+//! share's root, as descriptor 5, and the home's private directory as 6. Its volumes are the directories of the joiners of
 //! the microVM's network: the daemon gives it a link for each joiner (`kind::JOIN_LINK`),
 //! on which its volumes come (`kind::JOIN_VOLUME`), served until the link closes as the
 //! joiner ends. It exits as its VM's connection closes.
@@ -244,8 +244,17 @@ pub fn share(args: impl Iterator<Item = OsString>) -> ExitCode {
     let (mut dirs, mut conns, mut theirs) = (Vec::new(), Vec::new(), Vec::new());
     for (i, g) in given.into_iter().enumerate() {
         let fd = 4 + i as i32;
+        // A client's own directory, which its client serves through its context (D215):
+        // the stream it is served on, the VM's as it is, answered there.
+        if is(fd, libc::S_IFSOCK) {
+            // SAFETY: a socket the daemon left for this process alone, checked above.
+            theirs.push(unsafe { UnixStream::from_raw_fd(fd) });
+            continue;
+        }
         if !is(fd, libc::S_IFDIR) {
-            return failed(&format!("share {i}: descriptor {fd} is not a directory"));
+            return failed(&format!(
+                "share {i}: descriptor {fd} is neither a directory nor a client's stream"
+            ));
         }
         // SAFETY: a directory the daemon left for this process alone, checked above.
         dirs.push((unsafe { OwnedFd::from_raw_fd(fd) }, g));

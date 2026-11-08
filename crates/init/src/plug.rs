@@ -167,7 +167,7 @@ pub fn run_plug(cgroup: &'static str) -> io::Result<Option<Plug>> {
 }
 
 /// The kernel's log, opened where init's /dev still has it, before its root's own /dev
-/// holds a container's devices alone: where a run's grower says what it sees (D148).
+/// holds the workload's devices alone: where a run's grower says what it sees (D148).
 pub fn kmsg() -> io::Result<OwnedFd> {
     std::fs::OpenOptions::new()
         .write(true)
@@ -469,7 +469,7 @@ impl Plug {
         }
         if pid == 0 {
             // Nothing of the run's writable layer held past what it needs: a stopped
-            // container's layer takes the template's place (D190, over.rs).
+            // microVM's layer takes the template's place (D190, over.rs).
             crate::over::close_layer_fds();
             grow(*self, &events, &notes);
         }
@@ -488,57 +488,13 @@ impl Plug {
 /// its restores resume with none.
 static CAP: std::sync::OnceLock<&'static Shared> = std::sync::OnceLock::new();
 
-/// What init, its grower and its builtins' forks share in [`CAP`]'s page: the cap, when
-/// the grower last asked for memory or had memory come ([`grew_lately`]), and the process
-/// that asks the device for memory now ([`Asking`]).
+/// What init, its grower and its builtins' forks share in [`CAP`]'s page: the cap, and when
+/// the grower last asked for memory or had memory come ([`grew_lately`]).
 #[repr(C)]
 #[derive(Debug)]
 struct Shared {
     cap: std::sync::atomic::AtomicU64,
     grown_at: std::sync::atomic::AtomicU64,
-    asker: std::sync::atomic::AtomicU32,
-}
-
-/// The device's request held by this process, the grower's ask or a give-back's, from its
-/// read of what is asked to its write of what it asks, let go of as it drops: a give-back
-/// that read the request before the grower asked for more, and wrote its own after, took
-/// back what the grower had asked for, and the grower waited [`STALLED`] for memory that
-/// would not come, asked again and waited on (PM M466). None where nothing is shared.
-struct Asking(&'static Shared, u32);
-
-impl Asking {
-    /// Takes the request, waiting for the process that holds it; one that has ended, a
-    /// give-back's fork killed as it asked, holds it no more.
-    fn take() -> Option<Asking> {
-        use std::sync::atomic::Ordering::SeqCst;
-        let shared = CAP.get()?;
-        // SAFETY: getpid(2) takes nothing and cannot fail.
-        let me = u32::try_from(unsafe { libc::getpid() }).ok()?;
-        loop {
-            match shared.asker.compare_exchange(0, me, SeqCst, SeqCst) {
-                Ok(_) => return Some(Asking(shared, me)),
-                Err(holder) => {
-                    let gone = libc::pid_t::try_from(holder).is_ok_and(|pid| {
-                        // SAFETY: kill(2) of no signal asks whether the process is there.
-                        let asked = unsafe { libc::kill(pid, 0) };
-                        asked != 0 && io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
-                    });
-                    if gone {
-                        let _ = shared.asker.compare_exchange(holder, 0, SeqCst, SeqCst);
-                    } else {
-                        std::thread::sleep(Duration::from_millis(1));
-                    }
-                }
-            }
-        }
-    }
-}
-
-impl Drop for Asking {
-    fn drop(&mut self) {
-        use std::sync::atomic::Ordering::SeqCst;
-        let _ = self.0.asker.compare_exchange(self.1, 0, SeqCst, SeqCst);
-    }
 }
 
 /// Makes [`CAP`], none yet: by PID 1 as it starts, before it forks anything, a grower or a
@@ -765,7 +721,8 @@ fn within(used: u64, room: i64, least: u64, was: u64) -> u64 {
 /// its hold again at each of its run's events, each a reclaim the kernel makes at once.
 fn set_cap(bytes: u64) {
     if let Some(s) = CAP.get() {
-        s.cap.store(in_pages(bytes, page_size()), std::sync::atomic::Ordering::SeqCst);
+        s.cap
+            .store(in_pages(bytes, page_size()), std::sync::atomic::Ordering::SeqCst);
     }
 }
 
@@ -839,8 +796,6 @@ pub fn shrink_run(cgroup: &str) -> io::Result<u64> {
     };
     // No more than its budget's room lets its run hold (D188).
     let most = most_within(boot, control_read64(control::HOTPLUG_SIZE)?, cgroup);
-    // The request read, and written below, with no ask of its grower's between.
-    let _asking = Asking::take();
     let total = mem_total()?;
     let plugged = total.saturating_sub(boot);
     let asked = control_read64(control::HOTPLUG_REQUEST).unwrap_or(plugged);
@@ -1259,7 +1214,6 @@ impl Grows for Builder<'_> {
     }
 
     fn ask(&mut self, bytes: u64) -> io::Result<()> {
-        let _asking = Asking::take();
         mark_growth();
         control_write64(control::HOTPLUG_REQUEST, bytes)
     }
@@ -1686,35 +1640,6 @@ mod tests {
         assert!(grew_within(WINDOW, WINDOW, WINDOW), "just now");
         assert!(grew_within(WINDOW, 2 * WINDOW - 1, WINDOW), "within");
         assert!(!grew_within(WINDOW, 2 * WINDOW, WINDOW), "past it");
-    }
-
-    /// The device's request is held by one asker at a time, the next waiting until it is let
-    /// go of; a holder that has ended holds it no more (PM M466).
-    #[test]
-    fn the_request_is_asked_by_one_at_a_time() {
-        use std::sync::atomic::{AtomicBool, Ordering};
-        make_cap().unwrap();
-        let shared = CAP.get().unwrap();
-        let held = Asking::take().unwrap();
-        let taken = AtomicBool::new(false);
-        std::thread::scope(|s| {
-            s.spawn(|| {
-                let _second = Asking::take().unwrap();
-                taken.store(true, Ordering::SeqCst);
-            });
-            std::thread::sleep(Duration::from_millis(50));
-            assert!(!taken.load(Ordering::SeqCst), "taken while held");
-            drop(held);
-        });
-        assert!(taken.load(Ordering::SeqCst));
-        assert_eq!(shared.asker.load(Ordering::SeqCst), 0, "let go of");
-        // A holder that has ended: a child, reaped.
-        let mut child = std::process::Command::new("/bin/true").spawn().unwrap();
-        let pid = child.id();
-        child.wait().unwrap();
-        shared.asker.store(pid, Ordering::SeqCst);
-        drop(Asking::take().unwrap());
-        assert_eq!(shared.asker.load(Ordering::SeqCst), 0);
     }
 
     /// A hold counts out what its device has been asked to unplug, free or not, so that the
