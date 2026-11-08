@@ -2835,12 +2835,24 @@ fn a_microvm_held_to_a_budget_gives_back_what_it_holds_cold() {
     let (kernel, init) = (kernel(), guest_init());
     // Its daemon, started by the pull, gives its share no window: the files come through
     // FUSE into the guest's page cache, which is what it holds cold.
-    let env: [(&str, &OsStr); 4] = [
+    let mut env: Vec<(&str, &OsStr)> = vec![
         ("SHARDS_HOME", home.as_os_str()),
         ("SHARDS_KERNEL", kernel.as_os_str()),
         ("SHARDS_INIT", init.as_os_str()),
         ("SHARDS_SHARE_WINDOW_MIB", "0".as_ref()),
     ];
+    // Its host short of memory throughout, as a whole suite's runner is, where a stress says
+    // so: its daemon told it every `SHARDS_STRESS_PRESSURE_MS` (PM M467).
+    let every = std::env::var("SHARDS_STRESS_PRESSURE_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .filter(|&ms| ms > 0);
+    let told = every.map(|_| Told::new(&home));
+    let pipe = told.as_ref().map(|t| t.path.clone());
+    if let Some(pipe) = &pipe {
+        env.push(("SHARDS_PRESSURE", pipe.as_os_str()));
+    }
+    let _saying = told.zip(every).map(|(told, every)| Saying::start(told, every));
     let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
     let pulled = shards(&["pull", "-q", &image]);
     assert_eq!(pulled.status, Some(0), "{pulled}");
@@ -3027,9 +3039,15 @@ fn a_microvm_held_to_a_budget_gives_back_what_it_holds_cold() {
             break word;
         }
         tries += 1;
+        // Its host's pressure having taken first, said with its budget's words since, or by
+        // the host's own word, which comes once a minute at most (PM M467): what it gave back
+        // of its files, or what it asked to unplug, which takes their pages with it.
+        let pressed = "its host's pressure having had it give back ";
         let host_took = said().get(counting..).unwrap_or_default().lines().any(|l| {
             l.contains("the host is short of memory: its microVMs gave back ")
                 && mib_after(l, "gave back ") > 0
+                || l.contains(pressed)
+                    && (mib_after(l, pressed) > 0 || mib_after(l, "and ask to unplug ") > 0)
         });
         assert!(
             tries < 5 && (word.contains("held within its budget") || host_took),
@@ -3085,6 +3103,9 @@ fn a_microvm_held_to_a_budget_gives_back_what_it_holds_cold() {
     // 41255435995's x86_64 Linux said 213 MiB, with no answer.
     if !gave.contains("with no answer") {
         let _said = mib_after(&gave, "asking to unplug ");
+    }
+    for line in said().lines().filter(|l| l.contains(": answered after ")) {
+        println!("{line}");
     }
     assert_eq!(shards(&["kill", "budget"]).status, Some(0));
 }
@@ -3762,6 +3783,30 @@ impl Told {
             .unwrap();
         #[cfg(windows)]
         self.server.write_all(b"\n").unwrap();
+    }
+}
+
+/// A host's word that it is short of memory, said on a thread of its own every `every` ms
+/// until this drops.
+struct Saying(&'static std::sync::atomic::AtomicBool);
+
+impl Saying {
+    fn start(mut told: Told, every: u64) -> Saying {
+        let stop: &'static std::sync::atomic::AtomicBool =
+            Box::leak(Box::new(std::sync::atomic::AtomicBool::new(false)));
+        std::thread::spawn(move || {
+            while !stop.load(std::sync::atomic::Ordering::SeqCst) {
+                told.say();
+                std::thread::sleep(Duration::from_millis(every));
+            }
+        });
+        Saying(stop)
+    }
+}
+
+impl Drop for Saying {
+    fn drop(&mut self) {
+        self.0.store(true, std::sync::atomic::Ordering::SeqCst);
     }
 }
 

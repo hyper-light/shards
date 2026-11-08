@@ -6421,8 +6421,20 @@ host (PM M267), where a container's page cache is its host's to drop. Free page 
   before asked nothing more until it has answered or been ended: passes that asked one
   microVM after another, each waiting up to 10 s for an answer and then for its end,
   waited on a guest whose own memory its host had taken for minutes, and gave back 3 times
-  in 600 s (PM M308). One with no answer within 10 s is said to have had none, and is
-  ended.
+  in 600 s (PM M308). Each is waited for as long as its microVM's process runs (more CPU
+  in each 10 s than an idle microVM takes, M357's bound, as D209's waits judge a start),
+  and one that runs nothing for 10 s is said to have had no answer, and is ended: a
+  microVM over its budget's `memory.high` is slowed by its host for as long as it is over
+  it, and the answers of one asked to give back what would bring it under, and to hear
+  its room after, came past a 10 s deadline as its host let it run, which ended them, its
+  budget's word never said or saying nothing given back (PM M467). A group's give-backs,
+  macOS's and Windows', which no kernel slows, keep the 10 s.
+- **A budget falling short waits for its host's give-back** (PM M467): where a give-back
+  of the host's pressure is under way in the microVM, the budget's own asks once it has
+  ended, its room read again; and its word says what its host's pressure had it give back
+  and ask to unplug since the word before, which the host's own word says once a minute
+  at most: a budget set just after the host had taken what it held cold found nothing to
+  give back, and its word said nothing given back.
 - **Held within what its budget leaves it** (PM M309). Where the cgroup a microVM's VM
   process is in, or one above it, holds it to a budget (`memory.high` or `memory.max`, a
   slice's `MemoryHigh` or `MemoryMax`, D183), the host can take back only page cache from

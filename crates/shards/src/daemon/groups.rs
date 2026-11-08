@@ -470,7 +470,9 @@ impl<D: Disk> Daemon<D> {
         }
         let (mut freed, mut unplugging) = (0u64, 0u64);
         for m in members {
-            if let Some(gave) = self.give_back_of(&m.id) {
+            // By the clock: its pass is one member after another, and shards' groups hold
+            // their microVMs by counting, with no kernel to slow them (macOS, Windows).
+            if let Some(gave) = self.give_back_of(&m.id, super::health::Wait::For(TAKE_TIMEOUT)) {
                 freed = freed.saturating_add(gave.freed);
                 unplugging = unplugging.saturating_add(gave.unplugging);
             }

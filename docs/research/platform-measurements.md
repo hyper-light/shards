@@ -19633,3 +19633,47 @@ revision before comparing a changed API/implementation.
   run's usable from 19.2 to 5.8 ms at load 20 to 26; the rest is the guest's start of the
   command and the client's launch. A boot's spawn under heavy load is slower than
   Firecracker's: open.
+
+### M467. Flakes: a budget's give-back and room told past a 10 s deadline, and its word saying nothing given back (D188)
+
+- **Question.** `a_microvm_held_to_a_budget_gives_back_what_it_holds_cold` failed on CI's
+  x86_64 Linux (42423531064, at 9f2520c2) and once on Fedora: with its budget set 256 MiB
+  short, the daemon's `RECLAIM` and `ROOM` to the microVM had no answer within 10 s, and
+  its budget's word never came or said nothing was given back; it passed 3 of 3 again.
+- **Method.** The test alone, in a row, on adacachy2 (M466's host, CachyOS, Linux 7.3.3),
+  pinned with its daemon and microVM to 1 to 4 of its threads beside 4 busy loops pinned
+  there too (`taskset`), the host short of memory from other agents' work (1 to 8 GB free
+  of 64, swapping), `SHARDS_LOG=debug` for each exec's time to its answer; the tree
+  (8501f093) and the change in turn, 2026-11-08. Then a knob of the test's
+  (`SHARDS_STRESS_PRESSURE_MS`), which tells its daemon its host is short every so many
+  ms, as a whole suite's runner is.
+- **Results.**
+  - The tree, 2 threads: 1 of 10 failed as CI's had. Its daemon told the microVM its room
+    twice with "no answer within 10s, and so it was ended", and then said its budget
+    short by 109 MiB "past 0 warm VMs ended and 0 MiB it gave back"; the host's pressure
+    had had it give back 341 MiB of its files in that minute, said only at the minute's
+    end, after the test had failed. A budget falling short asked for no give-back while
+    one of its host's pressure was under way (one at a time a microVM, M308), and its
+    word counted none of what that one gave.
+  - The tree and the change in turn, 2 threads: 18 and 18 passed; 1 thread: 10 and 9
+    passed. The change's answers (each exec's `answered after`, log lines): p50 7.9 ms,
+    p90 142, p99 2,174, max 2,199 ms on 2 threads; p50 30.9, p90 274, p99 4,104, max
+    4,470 ms on 1. None passed 10 s in these, so neither arm met the deadline's failure.
+  - The host's word every 50 ms, 4 threads: the tree failed 3 of 3 (its give-backs and
+    rooms "no answer within 10s, and so it was ended"; its words nothing given back); the
+    change's answers came within 4,520 ms (968 lines, p99 4,114), none ended, but it failed
+    3 of 3 too: its guest's page cache was gone before the short budget (`Cached` 2,408
+    kB), taken by its host's give-backs and unplugs, said with the budget's words before,
+    which the test did not read.
+- **Consequence (D188).** The daemon waits on its own give-backs and rooms as long as the
+  microVM's process runs (`Wait::WhileRuns`: more CPU in each 10 s than an idle microVM
+  takes, M357), ending one that runs nothing for 10 s; a group's (macOS, Windows) keep
+  10 s. A budget falling short waits for a give-back of its host's under way and then
+  reads its room again (`give_after`); its words say what its host's pressure had it give
+  back and ask to unplug since the word before (`gave_at_pressure`), and the test reads
+  those in any word since it read. Unit tests: health.rs
+  `an_exec_is_waited_for_as_long_as_its_microvm_runs`, budget.rs
+  `what_its_hosts_pressure_had_it_give_back_is_counted_for_its_word`; the daemon's unit
+  tests 265 of 265 on adacachy2. Owed: the test in a row under its host's word every
+  2 s (`SHARDS_STRESS_PRESSURE_MS=2000`) on a loaded host, both arms; the series begun
+  here completed no run in 30 minutes, the host out of memory to other work.
