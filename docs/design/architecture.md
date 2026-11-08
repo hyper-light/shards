@@ -234,7 +234,7 @@ SPIs of the GICv2m frame the VMM keeps (D154).
 | A restore's working set recorded and mapped ahead (D29) | yes | yes (D154) | yes | yes (D196, PM M415, M421) |
 | Networks, published ports, default deny, IPv6 on networks and past the microVM (D46, D59, D99) | yes | yes | yes | yes (D142, D143) |
 | Volumes and binds, a bind's host-made files its run's user's, DAX windows (D38, D189) | yes | yes | yes | yes (D197, D207, PM M412, M413) |
-| A run's writable layer, ext4 over pmem, restarts over the kept layer, freed blocks given back (D190) | yes | yes | yes; restarts over the kept layer on real microVMs, going over from 7 MiB held, where its restarts cross (PM M496) | yes; restarts over the kept layer, a view placed where the template's was (placeholders), on real microVMs (CI's windows-2025 and windows-2022, jupiter), going over from 7 MiB held, where its restarts cross (PM M496) |
+| A run's writable layer, ext4 over pmem, restarts over the kept layer, freed blocks given back (D190) | yes; each restart's way learned from the host's own restarts (`layers::Restarts`) | yes | yes; restarts over the kept layer on real microVMs, their way learned as on Linux | yes; restarts over the kept layer, a view placed where the template's was (placeholders), on real microVMs (CI's windows-2025 and windows-2022, jupiter), their way learned as on Linux |
 | Memory given back: free page reporting, budgets, the host's word, for runs and builders (D148, D151, D188) | yes | yes | yes | yes (PM M371, M375, M391) |
 | A budgeted build's writes made outside its budget (D188, PM M442) | yes | yes | needs none: no kernel charges its page cache to a group shards keeps | needs none: a job's limit is its commit, never its cache |
 | `--cgroup-parent` (D183) | a slice of the user's manager, or a cgroup delegated to the user (slices 1, 2) | as amd64 | groups shards keeps (slice 3, PM M355) | groups shards keeps, each a job its VM and network processes are made in (slice 3, PM M359, M361) |
@@ -9436,12 +9436,10 @@ the guest keeps their metadata alone.
   layer holds (`layers::held`): its blocks in use, as its groups' descriptors count them
   with its bitmaps (`Volume::free_blocks`), less what an empty layer of its size holds of
   metadata (`Made::free_blocks`, a format made once a size in memory, nothing written).
-  Below 5 MiB on Linux (`layers::OVER_FROM`) it is packed and put back as before; from
-  there on it goes over. 5 MiB is where Linux's measured restarts cross: at 0, 1, 2 and 4 MiB written
+  Linux's measured restarts cross at 5 MiB: at 0, 1, 2 and 4 MiB written
   packing was 5.0 to 14.1 ms quicker at p50, at 8, 16 and 32 MiB going over 13.6, 70.1 and
-  110.3 ms quicker, the lines between 4 and 8 MiB meeting at 5.08 MiB
-  (`a_restart_goes_over_from_where_packing_costs_more` holds the constant to that
-  table). So chosen, against packing always (894c2c67 against de2b1cf5, n = 20 a side,
+  110.3 ms quicker, the lines between 4 and 8 MiB meeting at 5.08 MiB. Chosen at a 5 MiB
+  constant then, against packing always (894c2c67 against de2b1cf5, n = 20 a side,
   interleaved), `start` at p50 / p99: 0 B 55.66 / 64.28 against 53.63 / 67.19 ms (both
   packed: within the spread, p90 63.04 against 59.42), 4 MiB 95.98 / 126.78 against
   97.37 / 121.45, 64 MiB 482.05 / 503.19 against 576.05 / 899.66; `diff` alike at 0 and
@@ -9457,7 +9455,28 @@ the guest keeps their metadata alone.
   Windows), packing growing with what it holds as on Linux, the lines meeting at 6.8 to 7.9
   MiB on macOS (three runs, n 20 and 40; a fourth at load 19 to 23, its p90s overlapping
   at every size to 12 MiB, at 5.3) and 7.95 and 7.73 on Windows (jupiter, n 20, two runs).
-  So `OVER_FROM` is 7 MiB on both, each held by the test to its own table.
+  So the crossing is each host's own, its disk's, file system's and load's: no constant
+  measured here is another machine's. **Learned on the host** (2026-11-08): each restart
+  that may go either way (its kept file of the run's layer's length, what it holds counted)
+  records the bytes its layer held and the time from the choice to its command executing
+  (`STARTED`), per way, in the home's `restarts` (`layers::Restarts`): each way's
+  least-squares line of time against bytes, kept online as its count, means and
+  co-moments (Welford's updates), packing's cost growing with what the layer holds and
+  going over's less so. The next restart estimates both at what its layer holds, each with
+  its estimate's variance (the residuals' over the line's degrees of freedom, as a
+  regression's mean at a point has it), and takes the quicker only where the two differ by
+  more than their difference's spread, the square of the difference past the sum of the
+  variances; where they do not (no records, fewer than three a way, layers of one size
+  asked of another, or near the crossing, where either costs about the same), it takes
+  the way recorded fewer times, packing on a tie: a new home's restarts take each way in
+  turn until their records tell them apart. No literal is chosen: the one spread is the
+  records' own, the three records the least that give a line a residual. PM M443's and
+  M496's tables, given as records, hold it (`a_restart_goes_the_way_this_hosts_restarts_say_is_quicker`):
+  wherever it decides, it takes the way measured quicker there (Linux, macOS, Windows'
+  two runs); it is sure of packing an empty layer and of going over the largest; where it
+  is not sure, 2 to 4 MiB on Linux and 6 to 8 on macOS, the two were within a few ms of
+  each other. The two E2E tests give their home records that cross at 4 MiB
+  (`common::restarts_cross_at`), their 8 MiB layers past it, their small one below.
 - **On Windows, a view in place of a view** (row 18 of the parity audit). Windows maps no
   file over a mapping as `mmap(MAP_FIXED)` does: a view is made at an address that is free
   (MapViewOfFile3), and a range unmapped then mapped again is free between the two calls,
@@ -9490,7 +9509,7 @@ the guest keeps their metadata alone.
   packing (PM M496, n 20 a side, interleaved), `start` at p50: 0 B 321.55 ms gone over
   against 88.66 packed, 4 MiB 652.89 against 494.89, 8 MiB 822.56 against 824.35, 16 MiB
   1,344.67 against 1,612.55, 32 MiB 2,205.23 against 3,126.39: Windows' restarts cross at
-  7.95 MiB (7.73 run again, its tails kept), and it goes over from 7 (`OVER_FROM`).
+  7.95 MiB (7.73 run again, its tails kept); a Windows host's restarts learn their own.
 - **What the guest freed goes back to the host** (slice 8, PM M443). pmem takes no
   discard (drivers/nvdimm/pmem.c), so a layer's file only grew while its microVM lived,
   whatever its guest deleted. As a stopped microVM's layer is kept, its microVM gone,
@@ -9509,7 +9528,10 @@ the guest keeps their metadata alone.
 
 **Next** (the slices after these).
 - Visits and joiners' runs over the kept file too.
-- Going over's fixed cost below packing's, so that a layer holding under `OVER_FROM` goes
+- Records that age: a host whose disk or load changes keeps its first restarts' records
+  beside its last (change detection on each way's residuals, so that a line follows its
+  host).
+- Going over's fixed cost below packing's, so that a layer holding little goes
   over too: the mount of the kept file system and its one host flush, and the root's
   two moves (PM M443); on Windows its 233 ms, unmeasured step by step (PM M496).
 - Joiners' layers (D119) on the microVM's own, rather than tmpfs.
