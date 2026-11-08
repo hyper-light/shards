@@ -52,7 +52,13 @@ fn affinity_cpus() -> Option<usize> {
 /// microVM had the host's (PM M265), past what a run's start has; a run is held to what it
 /// is given by its cgroup ([`cgroup`]).
 pub fn microvm_vcpus() -> u32 {
-    u32::try_from(host_cpus()).unwrap_or(u32::MAX)
+    vcpus_of(host_cpus())
+}
+
+/// The vCPUs a run's microVM has on a host that gives it `cpus` ([`microvm_vcpus`]), for a
+/// caller that has read them already.
+pub fn vcpus_of(cpus: usize) -> u32 {
+    u32::try_from(cpus).unwrap_or(u32::MAX)
 }
 
 /// What a run's limits may ask (D155, D159), checked as it is made, in the order moby's

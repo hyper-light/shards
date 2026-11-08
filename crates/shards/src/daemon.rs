@@ -3125,7 +3125,7 @@ impl<D: Disk> Daemon<D> {
             return None;
         }
         // Its limits, a joiner's too, held by its own cgroup in its microVM.
-        prepared.spec.cgroup = crate::resources::cgroup(&run.resources, crate::resources::host_cpus());
+        prepared.spec.cgroup = crate::resources::cgroup(&run.resources, prepared.cpus);
         // A user network's endpoint (D46): its address, as the microVM starts, or why
         // the start fails, the microVM kept.
         let mut network_setup = Vec::new();
@@ -3358,7 +3358,7 @@ impl<D: Disk> Daemon<D> {
                 if start == network::Start::Attach(network::Net::Host) && !run.publish.is_empty() {
                     say("WARNING: Published ports are discarded when using host network mode");
                 }
-                let warned = crate::resources::verify(&run.resources, crate::resources::host_cpus(), false);
+                let warned = crate::resources::verify(&run.resources, prepared.cpus, false);
                 for w in warned.unwrap_or_default() {
                     say(&format!("WARNING: {w}"));
                 }
@@ -3846,7 +3846,7 @@ impl<D: Disk> Daemon<D> {
             }
             (None, Some(bytes)) => {
                 let at = lock(&self.containers).dir(&id).join(SWAP);
-                let vcpus = crate::resources::microvm_vcpus();
+                let vcpus = crate::resources::vcpus_of(prepared.cpus);
                 match open_swap(&at, crate::resources::swap_device_bytes(bytes, vcpus)) {
                     Ok(file) => Some((file, at)),
                     Err(e) => {
@@ -3925,10 +3925,7 @@ impl<D: Disk> Daemon<D> {
             io_bytes: run.resources.io_maximum_bandwidth,
             io_requests: run.resources.io_maximum_iops,
             // The CPUs its VMM holds its vCPUs to (D191).
-            cpus: u64::from(crate::resources::held_cpus(
-                &run.resources,
-                crate::resources::host_cpus(),
-            )),
+            cpus: u64::from(crate::resources::held_cpus(&run.resources, prepared.cpus)),
             // And its group's budget (D183).
             group: group_cpu.is_some(),
             // Its layer as its file (D190).
@@ -4649,7 +4646,7 @@ impl<D: Disk> Daemon<D> {
         }
         // Its resources (verifyPlatformContainerResources), whose warnings it says once
         // it is made.
-        crate::resources::verify(&run.resources, crate::resources::host_cpus(), false)?;
+        crate::resources::verify(&run.resources, prepared.cpus, false)?;
         crate::setup::verify(run)?;
         validate_restart_policy(&run.restart_policy)?;
         // A client's, through its context: what it reaches of this machine is what its owner
@@ -9730,6 +9727,7 @@ mod tests {
                 ..Run::default()
             };
             let prepared = Prepared {
+                cpus: crate::resources::host_cpus(),
                 boot: Boot::Given(Box::new(Config::new(PathBuf::from("kernel"), None))),
                 gpu: None,
                 vfio: Ok(Vec::new()),
