@@ -1204,11 +1204,20 @@ pub struct Access<'a> {
     pub client: Option<(&'a str, &'a crate::client_grants::Grants)>,
     /// The VM's end of the stream a client serves its directory on, by its relay's token;
     /// none where nothing is served, as for a visit, which mounts none of a client's.
-    pub relay: Option<&'a dyn Fn(&str) -> Result<shards_ipc::fd::OwnedFd, String>>,
+    pub relay: Option<Relay<'a>>,
 }
 
+/// Where a run's start takes the VM's end of the stream a client serves a directory on, by
+/// its relay's token (D215).
+pub type Relay<'a> = &'a dyn Fn(&str) -> Result<shards_ipc::fd::OwnedFd, String>;
+
 /// [`open`] of the mount points of a run `access` says whose.
-pub fn open_for(points: &[MountPoint], first: bool, store: &Store, access: &Access<'_>) -> Result<Opened, String> {
+pub fn open_for(
+    points: &[MountPoint],
+    first: bool,
+    store: &Store,
+    access: &Access<'_>,
+) -> Result<Opened, String> {
     use shards_ipc::fd::OwnedFd;
     let mut opened = Opened::default();
     for p in points {
@@ -1226,7 +1235,9 @@ pub fn open_for(points: &[MountPoint], first: bool, store: &Store, access: &Acce
             let mut entry = format!("volume=shards{i}\0{dest}\0{flags}\0").into_bytes();
             entry.extend_from_slice(p.relay_only.as_bytes());
             opened.mounts.push((dest.clone(), entry));
-            opened.dirs.push((fd, !p.rw, std::ffi::OsString::from(&p.relay_only)));
+            opened
+                .dirs
+                .push((fd, !p.rw, std::ffi::OsString::from(&p.relay_only)));
             continue;
         }
         if p.kind == "tmpfs" {

@@ -208,6 +208,11 @@ pub fn main() -> ! {
         // Reads each file named through, a megabyte at a time, and says how much: what it
         // read stays in the page cache, the reader's own memory one megabyte.
         "read" => read_through(args.get(1..).unwrap_or_default()),
+        // What a share costs its guest (D215's relay): N opens of FILE, each reading its
+        // first 4 KiB and closing it, timed one by one, said as their n, p50, p90, p99 and
+        // max in µs; then FILE read through and a copy of it written and synced beside it,
+        // each said as MiB/s.
+        "share-cost" => share_cost(arg(1), arg(2).parse().unwrap_or(0)),
         // Says it begins, reads a file through, as `read` does, then waits up to N seconds
         // for the guest's page cache to hold at least half of it less, as its builder gives
         // back what it holds cold (D188), and says whether it did; then reads it again and
@@ -3570,6 +3575,63 @@ fn read_dropped(path: &str, secs: u64, out: &str) -> i32 {
             1
         }
     }
+}
+
+fn share_cost(path: &str, n: usize) -> i32 {
+    let failed = |e: io::Error| {
+        let _ = writeln!(io::stderr(), "{path}: {e}");
+        1
+    };
+    let mut small = [0u8; 4096];
+    let mut each = Vec::with_capacity(n);
+    for _ in 0..n {
+        let began = std::time::Instant::now();
+        let read = std::fs::File::open(path).and_then(|mut f| f.read(&mut small));
+        if let Err(e) = read {
+            return failed(e);
+        }
+        each.push(began.elapsed().as_micros());
+    }
+    each.sort_unstable();
+    let at = |q: f64| {
+        each.get(((each.len() as f64 * q) as usize).min(each.len().saturating_sub(1)))
+            .copied()
+            .unwrap_or(0)
+    };
+    let _ = writeln!(
+        io::stdout(),
+        "open-read-close n {} p50 {} p90 {} p99 {} max {} us",
+        each.len(),
+        at(0.5),
+        at(0.9),
+        at(0.99),
+        each.last().copied().unwrap_or(0)
+    );
+    let began = std::time::Instant::now();
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(e) => return failed(e),
+    };
+    let mib = bytes.len() as f64 / f64::from(1u32 << 20);
+    let _ = writeln!(
+        io::stdout(),
+        "read {:.1} MiB/s",
+        mib / began.elapsed().as_secs_f64()
+    );
+    let began = std::time::Instant::now();
+    let wrote = std::fs::File::create(format!("{path}.w")).and_then(|mut f| {
+        f.write_all(&bytes)?;
+        f.sync_all()
+    });
+    if let Err(e) = wrote {
+        return failed(e);
+    }
+    let _ = writeln!(
+        io::stdout(),
+        "write {:.1} MiB/s",
+        mib / began.elapsed().as_secs_f64()
+    );
+    0
 }
 
 fn read_through(paths: &[String]) -> i32 {

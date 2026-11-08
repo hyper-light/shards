@@ -662,7 +662,11 @@ pub fn answer(server: &server::Server, mut conn: Stream) -> io::Result<()> {
 /// a share process's, but a mapping's descriptor, which no relay carries, asked of none
 /// (`Server::serves_afar`): an ask for one is refused EINVAL, as a shards_ipc message of
 /// kind 1 and its errno, which is what the VM reads of a refusal.
-pub fn answer_afar(server: &server::Server, mut from: impl io::Read, mut to: impl io::Write) -> io::Result<()> {
+pub fn answer_afar(
+    server: &server::Server,
+    mut from: impl io::Read,
+    mut to: impl io::Write,
+) -> io::Result<()> {
     let (mut frame, mut reply) = (Vec::new(), Vec::new());
     while let Some(control) = read_any_into(&mut from, &mut frame)? {
         let asked = frame.as_slice();

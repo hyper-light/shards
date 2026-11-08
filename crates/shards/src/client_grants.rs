@@ -333,7 +333,13 @@ fn refuse_dir(client: &str, grants: &Grants, shown: &str, real: &Path, rw: bool)
 /// [`refuse_dir`] of a path, as a volume of a directory is made or a run is checked before
 /// anything is opened: its real path, links followed as a bind's are. A path not there is
 /// judged where it would be made, by its nearest directory that is.
-pub(crate) fn refuse_path(client: &str, grants: &Grants, shown: &str, path: &Path, rw: bool) -> Result<(), String> {
+pub(crate) fn refuse_path(
+    client: &str,
+    grants: &Grants,
+    shown: &str,
+    path: &Path,
+    rw: bool,
+) -> Result<(), String> {
     let mut at = path.to_path_buf();
     let mut rest = Vec::new();
     let real = loop {
@@ -410,10 +416,11 @@ fn opened_path(file: &std::fs::File) -> std::io::Result<PathBuf> {
 
 /// The prefix of a bind's source a client's context gives for a directory of its own
 /// (D215): `d` for a directory or `f` for a file bound alone, its relay's token, then its
-/// path there as hex, so that no `:` of a Windows path splits `-v`'s fields. A NUL is in
-/// no path a system opens, so a source of this prefix that some part of shards took for
-/// this machine's path opens nothing.
-pub(crate) const RELAYED: &str = "/\0client-bind/";
+/// path there as hex, so that no `:` of a Windows path splits `-v`'s fields. It crosses as
+/// an argument of the command the machine starts, which holds no NUL; the daemon takes a
+/// source of this prefix for a relay alone, a client's run's, and refuses it to any other
+/// (`refuse_bind`), so that no path of this machine's is opened for it.
+pub(crate) const RELAYED: &str = "/.shards-client-bind/";
 
 /// A client's bind of its own directory, or of a file alone, as it crosses (D215).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -440,7 +447,11 @@ impl Relayed {
         if !self.file {
             return String::new();
         }
-        self.here.rsplit(['/', '\\']).next().unwrap_or_default().to_string()
+        self.here
+            .rsplit(['/', '\\'])
+            .next()
+            .unwrap_or_default()
+            .to_string()
     }
 }
 
@@ -471,7 +482,10 @@ pub(crate) fn relay_of(source: &str) -> Option<Relayed> {
 /// machine's own user's): a client's bind is of its own directory, which it serves
 /// ([`Relayed`]), and no path of this machine's; and a relay is a client's alone.
 pub(crate) fn refuse_bind(client: &str, source: &str) -> Result<(), String> {
-    match (client.is_empty(), relay_of(source).is_some() || source.starts_with(RELAYED)) {
+    match (
+        client.is_empty(),
+        relay_of(source).is_some() || source.starts_with(RELAYED),
+    ) {
         (true, true) => Err(
             "a bind of a client's directory, which only a client's command through its context names".into(),
         ),
@@ -501,18 +515,14 @@ pub(crate) fn refuse_words(args: &[String], cidfile_marker: &str) -> Option<Stri
         ))
     };
     match refs.as_slice() {
-        ["run", "--kernel", ..] | ["restore", ..] => return files("a kernel booted directly, or a snapshot resumed"),
+        ["run", "--kernel", ..] | ["restore", ..] => {
+            return files("a kernel booted directly, or a snapshot resumed");
+        }
         ["build" | "cp", ..]
         | ["image" | "builder" | "buildx", "build", ..]
         | ["agent" | "harness" | "mcp", "build" | "sign", ..]
         | ["container", "cp", ..]
         | ["buildx", "policy", ..] => return files(refs.first().copied().unwrap_or_default()),
-        ["import", rest @ ..] | ["image", "import", rest @ ..] => {
-            let file = rest.iter().find(|w| !w.starts_with('-'));
-            if file.is_some_and(|f| *f != "-" && !f.contains("://")) {
-                return files("import FILE");
-            }
-        }
         _ => {}
     }
     let (command, path, n) = match refs.as_slice() {
@@ -528,6 +538,16 @@ pub(crate) fn refuse_words(args: &[String], cidfile_marker: &str) -> Option<Stri
     let Outcome::Run(parsed) = flags::parse(command, path, &rest, &|_, value| Ok(value.to_string())) else {
         return None;
     };
+    // An import's file is its stdin, `-`, where a client's shards sends it; a URL the
+    // machine's to fetch, as Docker's CLI leaves one to its daemon.
+    if std::ptr::eq(command, &shards_cmdline::commands::IMPORT)
+        && parsed
+            .args
+            .first()
+            .is_some_and(|f| f != "-" && !f.contains("://"))
+    {
+        return files("import FILE");
+    }
     for flag in ["env-file", "label-file", "iidfile", "metadata-file"] {
         if parsed.changed(flag) {
             return files(&format!("--{flag}"));
@@ -701,5 +721,52 @@ mod tests {
         let machines = refuse_bind("laptop", "/srv/data").unwrap_err();
         assert!(machines.contains("its own directory"), "{machines}");
         assert!(refuse_bind("", &source).is_err());
+    }
+
+    /// What a client's shards sends runs; the words it never sends, which would have the
+    /// machine's CLI read or write the machine's files, are refused.
+    #[test]
+    fn a_clients_command_reads_none_of_the_machines_files() {
+        let marker = "\0cidfile/";
+        let w = |words: &str| words.split(' ').map(String::from).collect::<Vec<_>>();
+        for sent in [
+            "run --rm alpine true",
+            "run -v /.shards-client-bind/d00/2f:/d alpine",
+            "import - img:1",
+            "import -m msg - img:1",
+            "import https://example.com/x.tar img:1",
+            "save alpine",
+            "load",
+            "logs -f web",
+            r#"run --security-opt seccomp={"defaultAction":"SCMP_ACT_ALLOW"} alpine"#,
+            "run --security-opt seccomp=unconfined alpine",
+        ] {
+            assert_eq!(refuse_words(&w(sent), marker), None, "{sent}");
+        }
+        let cidfile = vec![
+            "run".to_string(),
+            format!("--cidfile=x{marker}/l/id"),
+            "alpine".into(),
+        ];
+        assert_eq!(refuse_words(&cidfile, marker), None);
+        for raw in [
+            "run --kernel /k",
+            "restore /snap",
+            "build /etc",
+            "buildx build .",
+            "image build .",
+            "agent build .",
+            "cp web:/a /etc",
+            "import /etc/shadow img:1",
+            "run --env-file /etc/environment alpine",
+            "exec --env-file /etc/environment web true",
+            "run --cidfile /etc/x alpine",
+            "save -o /tmp/x alpine",
+            "load -i /etc/x",
+            "run --security-opt seccomp=/etc/profile.json alpine",
+            "buildx policy eval --filename p .",
+        ] {
+            assert!(refuse_words(&w(raw), marker).is_some(), "{raw}");
+        }
     }
 }

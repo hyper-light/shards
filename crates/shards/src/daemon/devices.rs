@@ -400,7 +400,10 @@ impl<D: Disk> Daemon<D> {
                 use shards_ipc::fd::AsFd as _;
                 (self.ask_device(id, &step, &[opened.as_fd()])?, Some(file))
             }
-            What::Volume => (self.plug_share(threads, id, &source, read_only, &name, whom)?, None),
+            What::Volume => (
+                self.plug_share(threads, id, &source, read_only, &name, whom)?,
+                None,
+            ),
             What::Function => return Err("a function is plugged in by plug function".into()),
         };
         let (devfn, address) = answer
@@ -481,7 +484,13 @@ impl<D: Disk> Daemon<D> {
         if let Some((client, grants)) = whom
             && store_dir_of(&self.home, source) != Some(dir.clone())
         {
-            crate::client_grants::refuse_opened(client, grants, &format!("volume {source}"), &opened, !read_only)?;
+            crate::client_grants::refuse_opened(
+                client,
+                grants,
+                &format!("volume {source}"),
+                &opened,
+                !read_only,
+            )?;
         }
         let dirs = [(
             shards_ipc::fd::OwnedFd::from(opened),

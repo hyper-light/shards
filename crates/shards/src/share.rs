@@ -252,7 +252,9 @@ pub fn share(args: impl Iterator<Item = OsString>) -> ExitCode {
             continue;
         }
         if !is(fd, libc::S_IFDIR) {
-            return failed(&format!("share {i}: descriptor {fd} is neither a directory nor a client's stream"));
+            return failed(&format!(
+                "share {i}: descriptor {fd} is neither a directory nor a client's stream"
+            ));
         }
         // SAFETY: a directory the daemon left for this process alone, checked above.
         dirs.push((unsafe { OwnedFd::from_raw_fd(fd) }, g));

@@ -22,6 +22,10 @@ pub(crate) struct Served {
     pub read_only: bool,
 }
 
+/// A command's words as they are sent, what of this client's they bind, and whether its
+/// binds are served apart from it ([`here_binds`]).
+pub(crate) type Bound = (Vec<String>, Vec<Served>, bool);
+
 /// A token a relay goes by: 128 random bits, as hex.
 fn token() -> Result<String, String> {
     let mut bytes = [0u8; 16];
@@ -34,7 +38,7 @@ fn token() -> Result<String, String> {
 /// (`run -d`, `create`), so that the binds are served apart from it; or why not, in the
 /// run's words, and whether the command is a run. A command that is no run or create, or
 /// that shards' parser refuses, goes as it is.
-pub(crate) fn here_binds(words: Vec<String>) -> Result<(Vec<String>, Vec<Served>, bool), (bool, String)> {
+pub(crate) fn here_binds(words: Vec<String>) -> Result<Bound, (bool, String)> {
     use shards_cmdline::commands::{CREATE, RUN};
     let said = shards_cmdline::grammar::rewrite(&words).unwrap_or_else(|| words.clone());
     let refs: Vec<&str> = said.iter().map(String::as_str).collect();
@@ -96,9 +100,10 @@ fn volume_here(value: &str, cwd: &Path, served: &mut Vec<Served>) -> Result<Opti
         std::fs::create_dir_all(&here)
             .map_err(|e| format!("error while creating mount source path '{}': {e}", here.display()))?;
     }
-    let read_only = after.rsplit(':').next().is_some_and(|mode| {
-        after.matches(':').count() >= 2 && mode.split(',').any(|o| o == "ro")
-    });
+    let read_only = after
+        .rsplit(':')
+        .next()
+        .is_some_and(|mode| after.matches(':').count() >= 2 && mode.split(',').any(|o| o == "ro"));
     let relay = relayed(&here)?;
     let source = relay.source();
     served.push(Served { relay, read_only });
@@ -148,7 +153,12 @@ fn relayed(here: &Path) -> Result<Relayed, String> {
         token: token()?,
         here: here
             .to_str()
-            .ok_or_else(|| format!("{}: a path that is not UTF-8 does not cross to another machine", here.display()))?
+            .ok_or_else(|| {
+                format!(
+                    "{}: a path that is not UTF-8 does not cross to another machine",
+                    here.display()
+                )
+            })?
             .to_string(),
         file: !meta.is_dir(),
     })
@@ -156,18 +166,29 @@ fn relayed(here: &Path) -> Result<Relayed, String> {
 
 /// The share server of `served`: of its directory, or of a file's directory limited to it,
 /// telling its guest on the machine to map nothing of it (`Server::serves_afar`).
-fn server_of(served: &Served, budget: u64) -> Result<shards_vmm::devices::virtio::fs::server::Server, String> {
+fn server_of(
+    served: &Served,
+    budget: u64,
+) -> Result<shards_vmm::devices::virtio::fs::server::Server, String> {
     let here = PathBuf::from(&served.relay.here);
     let (dir, only) = if served.relay.file {
-        let parent = here.parent().ok_or_else(|| format!("{}: no directory", here.display()))?;
-        let name = std::ffi::CString::new(served.relay.only()).map_err(|_| format!("{}: its name", here.display()))?;
+        let parent = here
+            .parent()
+            .ok_or_else(|| format!("{}: no directory", here.display()))?;
+        let name = std::ffi::CString::new(served.relay.only())
+            .map_err(|_| format!("{}: its name", here.display()))?;
         (parent.to_path_buf(), Some(name))
     } else {
         (here.clone(), None)
     };
     let opened = shards_vmm::platform::open_dir(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    let server = shards_vmm::devices::virtio::fs::server::Server::with_budget(opened.into(), served.read_only, only, budget)
-        .map_err(|e| format!("{}: {e}", here.display()))?;
+    let server = shards_vmm::devices::virtio::fs::server::Server::with_budget(
+        opened.into(),
+        served.read_only,
+        only,
+        budget,
+    )
+    .map_err(|e| format!("{}: {e}", here.display()))?;
     server.serves_afar();
     Ok(server)
 }
@@ -345,30 +366,32 @@ pub(crate) fn start_apart(context: &str, served: &[Served]) -> Result<(), String
     {
         use shards_ipc::fd::AsFd as _;
         let fds = [(says.as_fd(), 1)];
-        let child = shards_ipc::spawn(&exe, &argv, &fds, true).map_err(|e| format!("starting the binds' server: {e}"))?;
-        drop(child);
+        // Left to run on its own: it ends as its relays do.
+        let _ = shards_ipc::spawn(&exe, &argv, &fds, true)
+            .map_err(|e| format!("starting the binds' server: {e}"))?;
     }
     drop(says);
+    // Its first line: it holds its stdout open as long as it serves.
     let mut answer = String::new();
-    said.read_to_string(&mut answer)
+    io::BufRead::read_line(&mut io::BufReader::new(&mut said), &mut answer)
         .map_err(|e| format!("the binds' server: {e}"))?;
-    match answer.strip_prefix("ok") {
-        Some(_) => Ok(()),
-        None if answer.is_empty() => Err("the binds' server ended before it served them".into()),
-        None => Err(answer.trim().to_string()),
+    match answer.trim_end() {
+        "ok" => Ok(()),
+        "" => Err("the binds' server ended before it served them".into()),
+        why => Err(why.to_string()),
     }
 }
 
 /// `shards bind-server CONTEXT (SOURCE MODE)...`: [`start_apart`]'s process, which says `ok`
-/// on its stdout once every relay is kept there, or why not, closes it, and serves until
-/// each relay ends.
+/// on a line of its stdout once every relay is kept there, or why not, and serves until each
+/// relay ends.
 pub(crate) fn serve_apart(args: impl Iterator<Item = std::ffi::OsString>) -> std::process::ExitCode {
     use std::io::Write as _;
     let args: Vec<String> = args.filter_map(|a| a.into_string().ok()).collect();
     let mut out = Some(io::stdout());
     let fail = |out: &mut Option<io::Stdout>, why: String| {
         if let Some(mut o) = out.take() {
-            let _ = writeln!(o, "{why}");
+            let _ = writeln!(o, "{}", why.replace('\n', " "));
         }
         std::process::ExitCode::FAILURE
     };
@@ -389,13 +412,15 @@ pub(crate) fn serve_apart(args: impl Iterator<Item = std::ffi::OsString>) -> std
         });
     }
     let started = shards_ipc::home().and_then(|home| {
-        let context = crate::context::load(&home, context)?.ok_or_else(|| format!("no context {context:?}"))?;
+        let context =
+            crate::context::load(&home, context)?.ok_or_else(|| format!("no context {context:?}"))?;
         Relays::start(&home, context.remote(), &served)
     });
     match started {
         Ok(relays) => {
             if let Some(mut o) = out.take() {
-                let _ = write!(o, "ok");
+                let _ = writeln!(o, "ok");
+                let _ = o.flush();
             }
             // Its stdout closed for good: what it was told on is its starter's alone.
             relays.wait();
@@ -433,7 +458,10 @@ mod tests {
             "/anon",
             &format!("--volume={}:/made", missing.display()),
             "--mount",
-            &format!("type=bind,src={},dst=/x.conf,readonly", at.join("x.conf").display()),
+            &format!(
+                "type=bind,src={},dst=/x.conf,readonly",
+                at.join("x.conf").display()
+            ),
             "--tmpfs",
             "/t",
             "alpine",
@@ -451,9 +479,17 @@ mod tests {
         assert_eq!(sent[7], format!("--volume={}:/made", served[1].relay.source()));
         assert!(sent[9].contains(&served[2].relay.source()), "{}", sent[9]);
         assert!(!sent.iter().any(|w| w.contains(at.to_str().unwrap())));
-        let (_, _, apart) = here_binds(w(&["run", "-d", "-v", &format!("{}:/src", dir.display()), "alpine"])).unwrap();
+        let (_, _, apart) = here_binds(w(&[
+            "run",
+            "-d",
+            "-v",
+            &format!("{}:/src", dir.display()),
+            "alpine",
+        ]))
+        .unwrap();
         assert!(apart);
-        let (_, _, apart) = here_binds(w(&["create", "-v", &format!("{}:/src", dir.display()), "alpine"])).unwrap();
+        let (_, _, apart) =
+            here_binds(w(&["create", "-v", &format!("{}:/src", dir.display()), "alpine"])).unwrap();
         assert!(apart);
         let refused = here_binds(w(&[
             "run",
@@ -462,7 +498,10 @@ mod tests {
             "alpine",
         ]))
         .unwrap_err();
-        assert!(refused.0 && refused.1.contains("bind source path does not exist"), "{refused:?}");
+        assert!(
+            refused.0 && refused.1.contains("bind source path does not exist"),
+            "{refused:?}"
+        );
         let (sent, served, _) = here_binds(w(&["ps", "-a"])).unwrap();
         assert!(served.is_empty() && sent == w(&["ps", "-a"]));
     }

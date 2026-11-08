@@ -7330,6 +7330,118 @@ share made ahead), and a disk's capacity was fixed when its file was opened.
   has a spare one bound to vfio-pci: tested nested, on QEMU edu's model); the guest's
   remove's 29 ms on KVM x86_64, not yet split (PM M430).
 
+### D215. A client's paths are its own; the machine's are its owner's to grant (built)
+
+**The need.** Through a context (D180) a laptop runs microVMs on a GPU or x86_64 machine.
+Until now a command it sent ran as that machine's CLI, so `-v /home/me/src:/src` bound the
+machine's `/home/me/src`, and every enrolled client could bind any of the machine's
+directories (`-v /:/host`), plug in its files and PCI functions, take its GPUs, and make
+its CLI read and write its files (`--env-file`, `--cidfile`, `save -o`, a build of a
+directory there), all as the machine's user. That is Docker's model: its CLI sends a bind
+as the path typed (docker/cli v29.8.1 cli/command/container/opts.go, `parse`: `Binds`
+taken as given), its daemon resolves it on its own host (moby docker-v29.8.1
+daemon/volume/mounts/linux_parser.go, `validateMountConfigImpl`: the source `os.Stat`ed
+there; daemon/volume/mounts/mounts.go, `MountPoint.Setup`: a `-v` source made there,
+createSource), and Docker's documentation says so: a bind mount is made on the daemon's
+host, never the client's, so a client of a remote daemon cannot bind its own files
+(docs.docker.com, "Bind mounts", Considerations and constraints). Whoever reaches a remote
+dockerd reaches its host's whole file system: Docker's own documentation calls daemon
+access root-equivalent (docs.docker.com, "Docker Engine security", Docker daemon attack
+surface).
+
+**Decided** (the user, 2026-11-07; shards is filesystem based, its memory's rule): a path
+means the files where its user typed it, and nothing of a machine's own is reachable but by
+its owner's grant, default deny, as shards' networks are.
+
+- **A client's bind is its own directory, served from it.** The client reads its run's
+  and create's `-v` and `--mount type=bind` as shards' parser reads them (`client_binds`,
+  `here_binds`, by `flags::Parsed::positions`), relative paths from its working directory,
+  a missing `-v` directory made there as `-v` makes its host's, a missing `--mount` source
+  refused in the words docker/cli's daemon refuses one. Each crosses as a relay's token
+  (`client_grants::Relayed`: `/.shards-client-bind/` then `d` or `f`, 128 random bits, its
+  path as hex so that a Windows path's `:` splits no field), and the client serves it over a
+  QUIC connection of its own (the bind step, `\0bind TOKEN`): the share server shards' share
+  processes run (`fs::server::Server`, D38's confinement, its own budget), over the client's
+  directory or a file's directory limited to it. The machine keeps one end of a socket pair
+  for the token (`daemon/remote.rs`, `RELAYS`, by client and token, so that no client takes
+  another's), the step's stream the other, and the run's start takes it (`take_relay`): its
+  share process hands the VM that socket as the share's end as it is (share.rs), so the
+  guest's FUSE requests reach the client's server byte for byte and its answers come back.
+  Nothing of the machine's is opened for it; a source of the prefix in an owner's run, or a
+  client's bind of any other source, is refused (`refuse_bind`).
+- **What the relay gives.** The same server, so the same semantics as a bind of a local
+  directory: no FUSE writeback cache is negotiated (server.rs `INIT` offers none), so a
+  guest's write reaches the client's file before its `write(2)` returns; the guest's page
+  cache is dropped at each open (no `FOPEN_KEEP_CACHE`), so data is close-to-open
+  consistent with the client's other programs; names and attributes are trusted for a
+  second (`VALID_S`), as a local share's are. Only the latency differs: each request one
+  round trip to the client (PM M463). No DAX window: a mapping maps a file of the host the
+  guest is on, so the client's server tells its guest to map nothing (`serves_afar`: no
+  `FUSE_HAS_INODE_DAX`, no `FUSE_ATTR_DAX`) and refuses a mapping's descriptor (EINVAL,
+  `answer_afar`).
+- **As long as its client serves it.** An attached run's binds are served by its command
+  while it runs, and let go as it ends (`Relays`, hung up as it drops: a relay its run never
+  took is kept there no longer). `run -d` and `create` serve theirs from a process of the
+  client's own (`shards bind-server`, one of `cli::INTERNAL`, never a client's to send:
+  `owners`), which says it is ready once each relay is kept, and ends as each relay does,
+  as the run that took it ends. A relay serves one start: a container started again, or
+  `--volumes-from` of a client's bind, is refused, said as its client's directory, which
+  that client serves to that run alone.
+- **The machine's directories and devices, by grant.** The owner grants a client by name
+  (`shards grant client NAME --dir PATH[:ro] --device NAME --gpus`, `revoke client`,
+  `inspect client`; or `invite client ... --dir ...`, kept for the client the invitation
+  enrolls), kept in the home (`grants/NAME`, removed with the client). The machine's
+  directory reaches a client's run only as a volume of it (`o=bind`, its `device`), the
+  local driver's form Compose's `driver_opts` give, never as a bind's path, which is the
+  client's. A client's `volume create`, a `--mount` volume's options, a volume one mounts
+  (made by anyone), a `--volumes-from` of the machine's bind, and `plug disk|volume` are
+  judged against its grants: by the path's real place before anything is looked at or made
+  (`refuse_path`), and again by where the directory or file now open is, as the system names
+  an open file (`refuse_opened`: `F_GETPATH`, `/proc/self/fd`, GetFinalPathNameByHandleW),
+  which is what is shared: no rename or link between the look and the open reaches past a
+  grant. The innermost grant decides whether it may be written. Devices: the machine's GPUs
+  (`--gpus`, an Engine API create's device requests), CDI devices, VFIO's nodes, and `plug
+  function` need a grant of each by its name; a `--device` of any other path is the
+  microVM's own (D44), every run's.
+- **What a client's command may not do in its own process.** A client's shards carries
+  what is its own (D180's parts) and never sends words that would have the machine's CLI
+  read or write the machine's files; a client that does is refused before the command
+  starts (`refuse_words`): a kernel booted directly, a snapshot restored, a build or
+  artifact build or signature of a directory there, `cp`, `buildx policy`, an import of a
+  file there, `--env-file`, `--label-file`, `--iidfile`, `--metadata-file`, `-o` and `-i`
+  but `-`, a `--cidfile` not told on its pipe, a seccomp profile's file.
+- **Whom a request is for.** The listener names the client last in each command's
+  environment (`SHARDS_CLIENT`, which no client can set: a request's variables are
+  `frame::ENV`'s alone); the CLI sends it with each run and command (`Run::client`,
+  `Command::client`), kept with a container's record, so that its start is judged by its
+  client's grants however long after.
+- **Docker's tools through a context's engine** (D180 part 4) are the client's too: the
+  listener no longer connects a client's engine stream to `engine.sock` as any local
+  client, but makes the connection itself and hands the API its other end with the client
+  named (`take_engine_clients`, the listener woken), so that what its calls make is the
+  client's (`engine_client`, the connection's thread's): a create's binds, which Docker's
+  API carries as paths alone, are the client's paths, refused as shards' own CLI would have
+  served them, and its devices and volumes judged by the client's grants.
+
+Tested: unit tests of the grants' record, of what a client's devices and directories are
+(a link inside a grant to a directory outside refused, by path and by what is open; a
+directory not there judged where it would be made; read-only), of a relay's source (a
+Windows path whole), of a run's binds rewritten (`client_binds`), of the share answering
+afar; and `tests/context.rs`
+(`a_clients_binds_are_its_own_files_and_the_machines_its_owners_to_grant`): the laptop's
+directory and a file bound alone read in a microVM there, its writes landing on the laptop,
+read-only refused, a detached run's write landing; nothing of the laptop's made on the
+machine; a client's volume of the machine's directory refused, the owner's refused to the
+client until granted read-only, then refused read-write, and refused again once revoked; a
+named volume the client's; and `--gpus` refused without a grant. And
+`a_contexts_engine_is_its_machines`: a create through the context's engine binding a
+directory of the machine's refused.
+
+**Not yet.** A Windows machine serves no client's directory (its shares' streams are pipes
+its daemon makes, D197): refused, said so. Docker's CLI through a context serves none of
+its client's directories, as its API names a path alone. `plug volume` of a client's own
+directory. A context's relays measured across two machines (PM M463 has loopback alone).
+
 ### D208. A GPU on every Linux host: musl's GPU VM process, and Intel's GPUs (built)
 
 The roadmap's item 6b, after D201: Venus on Linux hosts was built for glibc's and tested on

@@ -109,7 +109,7 @@ impl Host for Machine {
             return self.copy_step(args);
         }
         if args.first().map(String::as_str) == Some(crate::context::ENGINE_STEP) {
-            return self.engine_step();
+            return self.engine_step(client);
         }
         // A directory of the client's, which it serves for a run of its own (D215).
         if args.first().map(String::as_str) == Some(crate::client_grants::BIND_STEP) {
@@ -486,9 +486,18 @@ impl Machine {
     /// context (D180 part 4): what the stream brings, to the API's socket, and the API's
     /// answers back, as a client of it on this machine; the stream's end of input the
     /// connection's, so that a client's half-close (an attach's end of stdin) reaches it.
-    fn engine_step(&self) -> Result<Running, Error> {
+    fn engine_step(&self, client: &str) -> Result<Running, Error> {
         let reached = |e: std::io::Error| Error::new(format!("this machine's Engine API: {e}"));
-        let conn = engine_api().map_err(reached)?;
+        // A connection of the daemon's own making, its other end the API's to serve as the
+        // client's (D215), so that what its calls make is judged by what the client holds.
+        #[cfg(unix)]
+        let (conn, theirs) = shards_ipc::Stream::pair().map_err(reached)?;
+        #[cfg(windows)]
+        let (conn, theirs) = shards_ipc::Stream::plain_pair().map_err(reached)?;
+        super::lock(&ENGINE_CLIENTS).push((client.to_string(), theirs));
+        if let Some(wake) = LISTENER.get() {
+            wake();
+        }
         let (asking, hung) = (
             conn.try_clone().map_err(reached)?,
             conn.try_clone().map_err(reached)?,
@@ -539,7 +548,10 @@ impl Machine {
         // Whom the command runs for, last, so that what it asks of the daemon is judged by
         // what this machine's owner granted that client (D215).
         env.retain(|(k, _)| !k.eq_ignore_ascii_case(crate::client_grants::CLIENT_VAR));
-        env.push((crate::client_grants::CLIENT_VAR.to_string(), OsString::from(client)));
+        env.push((
+            crate::client_grants::CLIENT_VAR.to_string(),
+            OsString::from(client),
+        ));
         env
     }
 
@@ -984,13 +996,18 @@ impl Machine {
     }
 }
 
-/// A connection to this machine's Engine API: its socket, relative to the home, the
-/// daemon's working directory; on Windows the named pipe the home's file names.
-fn engine_api() -> std::io::Result<shards_ipc::Stream> {
-    #[cfg(unix)]
-    return std::os::unix::net::UnixStream::connect(super::engine::SOCKET);
-    #[cfg(windows)]
-    return shards_ipc::Stream::connect(std::fs::read_to_string(super::engine::SOCKET)?.trim());
+/// Clients' connections to this machine's Engine API through their contexts (D215), by
+/// client, for the daemon's listener to take ([`take_engine_clients`]).
+static ENGINE_CLIENTS: std::sync::Mutex<Vec<(String, shards_ipc::Stream)>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// What wakes the daemon's listener, given as it listens for clients.
+static LISTENER: std::sync::OnceLock<Box<dyn Fn() + Send + Sync>> = std::sync::OnceLock::new();
+
+/// The connections clients made to the Engine API through their contexts since the last
+/// look, each with its client (D215).
+pub(super) fn take_engine_clients() -> Vec<(String, shards_ipc::Stream)> {
+    std::mem::take(&mut *super::lock(&ENGINE_CLIENTS))
 }
 
 /// The directories clients serve for their runs here (D215), by client and token: the VM's
@@ -1586,7 +1603,9 @@ pub(super) fn listen(
     home: PathBuf,
     exe: PathBuf,
     at: std::net::SocketAddr,
+    wake: Box<dyn Fn() + Send + Sync>,
 ) -> Result<std::net::SocketAddr, String> {
+    let _ = LISTENER.set(wake);
     let identity = crate::context::identity(&home)?;
     let (tx, rx) = std::sync::mpsc::channel::<Result<std::net::SocketAddr, String>>();
     let ended = tx.clone();

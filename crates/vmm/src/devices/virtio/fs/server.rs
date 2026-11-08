@@ -924,7 +924,10 @@ impl Server {
     /// guest is told to map no file into a DAX window, which maps a file of the host the
     /// guest is on alone, and a mapping's descriptor is asked of no file here.
     pub fn serves_afar(&self) {
-        self.state.lock().unwrap_or_else(PoisonError::into_inner).windowless = true;
+        self.state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .windowless = true;
     }
 
     /// Drops its host's copy of what the guest reads once keeping it would leave the budgets
@@ -1329,7 +1332,11 @@ impl Server {
                     .u32(1)
                     .u16(MAX_PAGES)
                     .u16(alignment)
-                    .u32(if s.windowless { 0 } else { flags2 & init::HAS_INODE_DAX })
+                    .u32(if s.windowless {
+                        0
+                    } else {
+                        flags2 & init::HAS_INODE_DAX
+                    })
                     .u32(0)
                     .u16(0)
                     .bytes(&[0u8; 22]);

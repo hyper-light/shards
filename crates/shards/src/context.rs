@@ -3450,7 +3450,8 @@ pub(crate) fn admin(thing: &str, args: &[OsString]) -> ExitCode {
     }
 }
 
-const ADMIN_USAGE: &str = "usage: shards invite client --name NAME --output FILE [--dir PATH[:ro]]... [--device NAME]... [--gpus]
+const ADMIN_USAGE: &str =
+    "usage: shards invite client --name NAME --output FILE [--dir PATH[:ro]]... [--device NAME]... [--gpus]
        shards grant client NAME [--dir PATH[:ro]]... [--device NAME]... [--gpus]
        shards revoke client NAME [--dir PATH]... [--device NAME]... [--gpus]
        shards inspect client NAME...
@@ -3477,7 +3478,12 @@ fn grant_client(home: &Path, name: &str, rest: &[&str], adding: bool) -> Result<
     let mut i = 0;
     while i < rest.len() {
         match asked.read(rest, i)? {
-            0 => return Err(format!("unknown flag: {}", rest.get(i).copied().unwrap_or_default())),
+            0 => {
+                return Err(format!(
+                    "unknown flag: {}",
+                    rest.get(i).copied().unwrap_or_default()
+                ));
+            }
             n => i += n,
         }
     }
