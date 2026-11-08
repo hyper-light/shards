@@ -550,6 +550,27 @@ impl Client {
         }
     }
 
+    /// This host's address on its route to `url`, or to the proxy that reaches it: the
+    /// local address of a TCP connection dialled there, as the client dials its own, and
+    /// let go (one handshake). Each host's system gives a connected socket the source its
+    /// route chose, and says it: Linux's (net/ipv4/tcp_ipv4.c `tcp_v4_connect`, the source
+    /// from `ip_route_connect`), XNU's (bsd/netinet/in_pcb.c `in_pcbconnect`, from
+    /// `in_pcbladdr`'s route), and Windows' ("the local association that has been set by
+    /// the system" once connected: Microsoft Learn, winsock `getsockname`), which may not
+    /// say a UDP socket's before I/O. `None` where it cannot be reached.
+    pub(crate) fn route(&self, url: &Url) -> Option<std::net::IpAddr> {
+        let proxy = self.proxies.for_url(url).ok()?;
+        let first = proxy.map_or(url, |p| &p.url);
+        let reach = match proxy {
+            Some(_) => None,
+            None => self.reach,
+        };
+        let tcp = dial(first, self.cancel.as_ref(), reach, self.patience.connect).ok()?;
+        let from = tcp.local_addr().ok()?.ip();
+        self.paths.located(&path_of(url), from);
+        Some(from)
+    }
+
     /// [`send`](Self::send), counting into `sent` each byte of a file's body as it goes.
     fn send_now(&self, req: &Request<'_>, sent: Option<&AtomicU64>) -> Result<Response<'_>, Error> {
         if let Some(cancel) = &self.cancel {
@@ -739,7 +760,13 @@ impl Client {
                         | io::ErrorKind::ConnectionReset
                         | io::ErrorKind::ConnectionAborted
                 );
-                let sending = || Failure::BeforeResponse(Error::new(format!("{}: sending: {e}", req.url)));
+                // A send cut short is the link's failure, not the request's: sent again.
+                let sending = || {
+                    Failure::BeforeResponse(Error::of(
+                        ErrorKind::Transient,
+                        format!("{}: sending: {e}", req.url),
+                    ))
+                };
                 if !left {
                     return Err(sending());
                 }
@@ -829,6 +856,10 @@ impl Client {
                 None => e,
             })?;
         let _ = tcp.set_nodelay(true);
+        // The route it went by keys the path's record (crate::links).
+        if let Ok(local) = tcp.local_addr() {
+            self.paths.located(&path_of(url), local.ip());
+        }
         // Watched from here, the handshakes and tunnel included.
         let watch = self.cancel.as_ref().map(|c| c.watch(&tcp));
         let mut hop = match (proxy, first.scheme()) {

@@ -11,9 +11,10 @@
 //! - Ranges of a blob after the first are asked of where the registry redirected the
 //!   first, as long as that answers: Docker Hub's redirect cost 100 ms a request more
 //!   than asking its CDN directly (p50 151 against 52 ms).
-//! - The connections start at four, and double while that brings at least a tenth more.
-//!   A layer that is not compressed is fetched whole, over one connection, so that the
-//!   registry may compress it for the transfer.
+//! - The connections climb as crate::climb has them (D226): from where the path was learned
+//!   at, or from one, doubling while a doubling carries more than the path's noise, to the
+//!   host's cores at most. A layer that is not compressed is fetched whole, over one
+//!   connection, so that the registry may compress it for the transfer.
 //!
 //! containerd fetches each layer whole over one connection, three layers at a time.
 
@@ -26,16 +27,12 @@ use shards_image::oci::{Descriptor, Manifest};
 use shards_image::reference::Digest;
 use shards_image::store::{Limits, Ranged, Store};
 
-use crate::climb::{Climb, WINDOW};
+use crate::climb::{Climb, WINDOW, cores};
+use crate::links::Learned;
 use crate::pull::Event;
 use crate::registry::{CHUNK, Registry, Trouble, not_fetched, short, stalled};
 use crate::url::Url;
 use crate::{Error, ErrorKind};
-
-/// Connections at first: where four reached what eight and sixteen did (PM M114).
-const FIRST: usize = 4;
-/// The most connections: the most measured.
-const MOST: usize = 16;
 
 /// A layer of the pull.
 struct Layer<'a> {
@@ -130,14 +127,16 @@ pub(crate) fn layers(
             ..Work::default()
         }),
         layers,
-        spans: (0..MOST).map(|_| Mutex::new(Span::default())).collect(),
+        spans: (0..cores()).map(|_| Mutex::new(Span::default())).collect(),
         changed: Condvar::new(),
-        target: AtomicUsize::new(FIRST),
+        target: AtomicUsize::new(1),
         bytes: AtomicU64::new(0),
         started: Instant::now(),
         answer: AtomicU64::new(0),
         failed: Mutex::new(None),
     };
+    let record = registry.record(store, crate::links::Direction::Pull);
+    let learned = record.read();
     std::thread::scope(|scope| {
         let mut started = 0;
         let start = |to: usize, started: &mut usize| {
@@ -154,18 +153,35 @@ pub(crate) fn layers(
             }
         };
         // As many as there are layers, or more where a layer may be split between them.
-        let first = if flows.layers.iter().any(|l| compressed(&l.desc.media_type)) {
-            FIRST
+        let most = if flows.layers.iter().any(|l| compressed(&l.desc.media_type)) {
+            flows.spans.len()
         } else {
-            FIRST.min(flows.layers.len())
+            flows.spans.len().min(flows.layers.len())
         };
-        start(first, &mut started);
+        let mut climb = Climb::new(learned.as_ref().and_then(Learned::climb), most);
+        if let Some(us) = learned.as_ref().and_then(|l| l.answer_us) {
+            climb.answered(Duration::from_micros(us));
+        }
+        flows.target.store(climb.target(), Ordering::Relaxed);
+        start(climb.target(), &mut started);
         if started == 0 {
             // No thread to spare: fetched here, one connection.
             flows.flow(0);
             return;
         }
-        flows.adapt(|to| start(to, &mut started));
+        flows.adapt(&mut climb, |to| start(to, &mut started));
+        if let Some((count, rate)) = climb.learned() {
+            let kept = Learned {
+                count,
+                rate,
+                answer_us: climb
+                    .answer()
+                    .map(|a| u64::try_from(a.as_micros()).unwrap_or(u64::MAX)),
+                ..Learned::default()
+            };
+            // What is learned only helps the next pull: one not kept costs this one nothing.
+            let _ = record.write(&kept);
+        }
     });
     match flows.failed.into_inner().unwrap_or_else(PoisonError::into_inner) {
         Some(e) => Err(e),
@@ -195,8 +211,10 @@ impl<'a> Flows<'a> {
 
     /// Measures what the connections bring, doubling them while that pays, until the
     /// layers are in; `start` starts connections up to a count.
-    fn adapt(&self, mut start: impl FnMut(usize)) {
-        let mut climb = Climb::new(FIRST, MOST);
+    fn adapt(&self, climb: &mut Climb, mut start: impl FnMut(usize)) {
+        // The mean layer: what one connection holds in flight.
+        let unit = self.layers.iter().filter_map(|l| l.desc.size().ok()).sum::<u64>() as f64
+            / self.layers.len().max(1) as f64;
         let mut since = (Instant::now(), self.bytes.load(Ordering::Relaxed));
         let mut work = self.work();
         loop {
@@ -216,8 +234,12 @@ impl<'a> Flows<'a> {
             let rate = (now.1 - since.1) as f64 / now.0.duration_since(since.0).as_secs_f64();
             since = now;
             let target = self.target.load(Ordering::Relaxed);
+            let answer = self.answer.load(Ordering::Relaxed);
+            if answer > 0 {
+                climb.answered(Duration::from_micros(answer));
+            }
             // Measured only while every connection has work.
-            let Some(to) = climb.window(rate, target, work.busy >= target) else {
+            let Some(to) = climb.window(rate, work.busy >= target, unit) else {
                 continue;
             };
             self.target.store(to, Ordering::Relaxed);
@@ -254,9 +276,14 @@ impl<'a> Flows<'a> {
     fn take(&self, n: usize) -> Option<Took> {
         let mut work = self.work();
         loop {
-            if self.stopped() || work.left == 0 || n >= self.target.load(Ordering::Relaxed) {
+            if self.stopped() || work.left == 0 {
                 self.changed.notify_all();
                 return None;
+            }
+            // Past the count: kept for when it climbs again.
+            if n >= self.target.load(Ordering::Relaxed) {
+                work = self.changed.wait(work).unwrap_or_else(PoisonError::into_inner);
+                continue;
             }
             if let Some(layer) = self.layers.get(work.next) {
                 let i = work.next;
@@ -703,6 +730,29 @@ mod tests {
         Registry::new(client, &reference, Credentials::Anonymous).unwrap()
     }
 
+    /// A path to `fake`'s registry learned at `count` connections, so that a pull over it
+    /// starts with that many.
+    fn learned_at(store: &Store, fake: &Fake, count: usize) {
+        let mut rate = crate::climb::Spread::default();
+        rate.add(1e6);
+        rate.add(1e6);
+        let learned = Learned {
+            count,
+            rate,
+            ..Learned::default()
+        };
+        let from = Some(std::net::IpAddr::from([127, 0, 0, 1]));
+        crate::links::Record::of(
+            store.root(),
+            crate::links::Direction::Pull,
+            "127.0.0.1",
+            fake.registry.port,
+            from,
+        )
+        .write(&learned)
+        .unwrap();
+    }
+
     fn store(name: &str) -> (Store, shards_testdir::TempDir) {
         let root = shards_testdir::TempDir::new(&format!("fetch-{name}")).unwrap();
         (Store::open(&root).unwrap(), root)
@@ -742,6 +792,7 @@ mod tests {
             },
         );
         let (store, root) = store("split");
+        learned_at(&store, &fake, 4);
         let here = Mutex::new(Vec::new());
         let arrived = AtomicU64::new(0);
         let report = |e: Event<'_>| {
@@ -872,6 +923,9 @@ mod tests {
         });
         let registry = Registry::new(client, &reference, Credentials::Anonymous).unwrap();
         let (store, root) = store("stuck");
+        // A path learned at four connections: a new one starts at one (D226), and isolates
+        // a stuck layer only from its first doubling on.
+        learned_at(&store, &fake, 4);
         let t0 = Instant::now();
         let here = Mutex::new(Vec::new());
         let layered: Vec<(&str, &[u8])> = all.iter().map(|b| (GZIP, &b[..])).collect();
@@ -951,6 +1005,7 @@ mod tests {
             },
         );
         let (store, root) = store("expired");
+        learned_at(&store, &fake, 4);
         layers(
             &registry(&fake),
             &store,
