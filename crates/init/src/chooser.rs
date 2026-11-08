@@ -16,8 +16,10 @@
 //! namespace's `ip_unprivileged_port_start` without CAP_NET_BIND_SERVICE, EACCES). As a
 //! domain's socket goes, sock_diag tells this process (SKNLGRP_*_DESTROY, a socket in each
 //! domain's namespace), and the port goes to the next that listens, if any. Each choice is
-//! the uplink's chain `chosen` (links::program_chosen), programmed again whole: what no
-//! domain listens on goes nowhere past init, as a port no domain claims.
+//! the uplink's chain `chosen` (links::program_chosen), programmed again whole, once every
+//! call a round of poll(2) found is answered, on a netfilter socket kept for the process's
+//! life (closing one waits out an RCU grace period, PM M513): what no domain listens on
+//! goes nowhere past init, as a port no domain claims.
 //!
 //! No grant rests on this process: every candidate is granted the port by its
 //! Agentfile, its gate and the switch letting it in, and the process only chooses among
@@ -162,6 +164,12 @@ struct Serve {
     zone: u16,
     /// What was last programmed, so that a change alone is.
     programmed: Option<Vec<crate::links::Chosen>>,
+    /// The netfilter socket choices are programmed on, kept: closing one that has
+    /// committed waits out an RCU grace period (links::program_chosen).
+    nft: Option<OwnedFd>,
+    /// Whether a holder is to be chosen again: once every call this round of poll(2)
+    /// found is answered, so that none waits behind programming another's choice.
+    stale: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -182,6 +190,8 @@ fn serve(ctl: OwnedFd, contests: Vec<Contest>) {
         zones,
         zone: 0,
         programmed: None,
+        nft: None,
+        stale: false,
     };
     s.program();
     let mut watched: Vec<(RawFd, Owner)> = Vec::new();
@@ -226,11 +236,14 @@ fn serve(ctl: OwnedFd, contests: Vec<Contest>) {
                         if let Some(m) = s.members.get_mut(i) {
                             (m.listener, m.ask, m.told) = (None, None, None);
                         }
-                        s.choose_all();
+                        s.stale = true;
                     }
                 }
                 Owner::Told(i) => s.told(i),
             }
+        }
+        if std::mem::take(&mut s.stale) {
+            s.choose_all();
         }
     }
 }
@@ -287,7 +300,7 @@ impl Serve {
                         );
                     }
                 }
-                self.choose_all();
+                self.stale = true;
             }
             _ => {}
         }
@@ -323,9 +336,7 @@ impl Serve {
         }
         // SAFETY: ioctl(2) sending a struct of the size its number says.
         unsafe { libc::ioctl(listener, libc::SECCOMP_IOCTL_NOTIF_SEND, &raw const resp) };
-        if changed {
-            self.choose_all();
-        }
+        self.stale |= changed;
     }
 
     /// The call of notification `n` of member `i`'s: made here, its result (none to let
@@ -410,9 +421,7 @@ impl Serve {
             }
             any = true;
         }
-        if any {
-            self.choose_all();
-        }
+        self.stale |= any;
     }
 
     /// Each contest's holder: its holder still, where it still listens; else the first of
@@ -471,7 +480,17 @@ impl Serve {
         if self.programmed.as_ref() == Some(&chosen) {
             return;
         }
-        match crate::links::program_chosen(&chosen) {
+        let nft = match self.nft.take() {
+            Some(nft) => Ok(nft),
+            None => crate::links::netlink_socket(libc::NETLINK_NETFILTER),
+        };
+        // Kept while it programs; one that failed, opened again for the next choice.
+        let done = nft.and_then(|nft| {
+            crate::links::program_chosen(&nft, &chosen)?;
+            self.nft = Some(nft);
+            Ok(())
+        });
+        match done {
             Ok(()) => self.programmed = Some(chosen),
             Err(e) => {
                 let _ = writeln!(
