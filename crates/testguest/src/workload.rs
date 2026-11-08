@@ -4137,7 +4137,61 @@ fn confined(args: &[String]) -> i32 {
             | "srv-send" | "srv-receive" | "srv-answer" | "owner" | "mcp-run" | "srv-run"
             | "srv-run-timeout" | "srv-run-cancel" | "srv-run-abandon" | "srv-bench" | "srv-modern"
             | "hold-tell" | "make" | "srv-hand" | "follow" | "hardlink" | "exec" | "nosuid" | "hear"
-            | "size" => mode = a.as_str(),
+            | "size" | "udpserve" | "listencost" => mode = a.as_str(),
+            // `listencost N:PORT`: N times a TCP socket bound at PORT on every IPv4 address,
+            // listening, and closed; how long bind(2) and listen(2) each took, in ns.
+            spec if mode == "listencost" => {
+                let (n, port) = spec.split_once(':').unwrap_or((spec, "0"));
+                let (n, port) = (n.parse::<usize>().unwrap_or(0), port.parse::<u16>().unwrap_or(0));
+                let mut binds = Vec::with_capacity(n);
+                let mut listens = Vec::with_capacity(n);
+                let mut failed = String::new();
+                for _ in 0..n {
+                    match listen_once(port) {
+                        Ok((b, l)) => {
+                            binds.push(b);
+                            listens.push(l);
+                        }
+                        Err(e) => {
+                            failed = errno(&e);
+                            break;
+                        }
+                    }
+                }
+                out.push_str(&format!(
+                    "confined listencost {port}: bind ns {} listen ns {} {failed}\n",
+                    summary_us(&mut binds),
+                    summary_us(&mut listens)
+                ));
+            }
+            // `udpserve PORT:AFTER_MS:FOR_MS`: after AFTER_MS, a UDP socket bound at PORT on
+            // every IPv4 address answers each datagram with its host name, for FOR_MS (0,
+            // for as long as the agent runs), then is closed; on a thread of its own.
+            spec if mode == "udpserve" => {
+                let mut parts = spec.split(':').map(|p| p.parse::<u64>().unwrap_or(0));
+                let (port, after, lasts) = (
+                    parts.next().unwrap_or(0),
+                    parts.next().unwrap_or(0),
+                    parts.next().unwrap_or(0),
+                );
+                let hello = format!("hello from {host}\n");
+                let _ = std::thread::Builder::new().spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_millis(after));
+                    let Ok(sock) = std::net::UdpSocket::bind(("0.0.0.0", u16::try_from(port).unwrap_or(0)))
+                    else {
+                        return;
+                    };
+                    let until = std::time::Instant::now() + std::time::Duration::from_millis(lasts);
+                    let _ = sock.set_read_timeout(Some(std::time::Duration::from_millis(100)));
+                    let mut buf = [0u8; 512];
+                    while lasts == 0 || std::time::Instant::now() < until {
+                        if let Ok((_, from)) = sock.recv_from(&mut buf) {
+                            let _ = sock.send_to(hello.as_bytes(), from);
+                        }
+                    }
+                });
+                out.push_str(&format!("confined udpserve {spec}: started\n"));
+            }
             "srv-mcp" => {
                 let said = match server_call("mcp", "{}") {
                     Ok((t, false)) => t,
@@ -5616,6 +5670,58 @@ impl Session {
             }
         }
     }
+}
+
+/// A TCP socket bound at `port` on every IPv4 address and listening, then closed: how long
+/// its bind(2) and its listen(2) took, in ns.
+fn listen_once(port: u16) -> io::Result<(f64, f64)> {
+    use std::os::fd::FromRawFd as _;
+    // SAFETY: socket(2) with constant arguments.
+    let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_STREAM | libc::SOCK_CLOEXEC, 0) };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: a descriptor just made, owned here alone.
+    let sock = unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) };
+    let one: libc::c_int = 1;
+    // SAFETY: setsockopt(2) of an int of ours, its size given.
+    unsafe {
+        libc::setsockopt(
+            fd,
+            libc::SOL_SOCKET,
+            libc::SO_REUSEADDR,
+            (&raw const one).cast(),
+            size_of::<libc::c_int>() as libc::socklen_t,
+        )
+    };
+    let sin = libc::sockaddr_in {
+        sin_family: libc::AF_INET as libc::sa_family_t,
+        sin_port: port.to_be(),
+        sin_addr: libc::in_addr { s_addr: 0 },
+        sin_zero: [0; 8],
+    };
+    let at = std::time::Instant::now();
+    // SAFETY: bind(2) with a sockaddr_in of ours, its size given.
+    let bound = unsafe {
+        libc::bind(
+            fd,
+            (&raw const sin).cast(),
+            size_of::<libc::sockaddr_in>() as libc::socklen_t,
+        )
+    };
+    let bind = at.elapsed().as_nanos() as f64;
+    if bound != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let at = std::time::Instant::now();
+    // SAFETY: listen(2) of a socket of ours.
+    let listening = unsafe { libc::listen(fd, 128) };
+    let listen = at.elapsed().as_nanos() as f64;
+    if listening != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    drop(sock);
+    Ok((bind, listen))
 }
 
 /// `values`, sorted: n, and the nearest-rank p50, p90, p99 and max, in µs.

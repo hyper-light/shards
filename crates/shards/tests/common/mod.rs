@@ -22,6 +22,38 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use sha2::Digest as _;
 use shards_image::erofs::{self, DataRef, Dir, Kind, Meta, Node, NodeId, Source, Tree};
 
+/// Records in `home` of a host whose restarts go over a kept layer quicker than they pack
+/// it from `from` bytes, and pack it quicker below (D190's `layers::Restarts`, the home's
+/// `restarts`): a thousand restarts each way, of layers holding 0 to 64 MiB evenly, on two
+/// exact lines meeting at `from`, packing's the steeper, so that the few a test's own
+/// restarts add move neither. The home's daemon is stopped, as the next reads them.
+pub fn restarts_cross_at(home: &Path, from: u64, timeout: Duration) {
+    let mib = f64::from(1u32 << 20);
+    let (n, top) = (1000.0f64, 64.0 * mib);
+    let (mean, xx) = (top / 2.0, (top / (n - 1.0)).powi(2) * n * (n * n - 1.0) / 12.0);
+    let from = from as f64;
+    // Packing 50 ms and 10 a MiB; going over the same at `from`, 2 a MiB, in µs.
+    let (packed, over) = (
+        (50e3, 10e3 / mib),
+        (50e3 + 10e3 / mib * from - 2e3 / mib * from, 2e3 / mib),
+    );
+    let line = |(at_zero, slope): (f64, f64)| {
+        format!(
+            "{n} {mean} {} {xx} {} {}",
+            at_zero + slope * mean,
+            slope * xx,
+            slope * slope * xx
+        )
+    };
+    std::fs::write(
+        home.join("restarts"),
+        format!("packed {}\nover {}\n", line(packed), line(over)),
+    )
+    .unwrap();
+    let env = [("SHARDS_HOME", home.as_os_str())];
+    let _ = run_shards_env(&["daemon"], &["stop"], &env, timeout);
+}
+
 /// Which file is at `path`: its device and inode on Unix, its volume's serial number and
 /// its index on that volume on Windows (`platform::file_id`), so that a test tells the same
 /// file from another put in its place.

@@ -1609,11 +1609,26 @@ fn read_memory(pid: libc::pid_t, at: u64, out: &mut [u8]) -> Option<()> {
     (usize::try_from(n).ok()? == out.len()).then_some(())
 }
 
-/// The socket `fd` of process `pid`, as a descriptor of ours (pidfd_getfd(2)).
+/// The socket `fd` of thread `pid`, as a descriptor of ours (pidfd_getfd(2)). A
+/// notification names the thread that called (seccomp_unotify(2)), and pidfd_open(2)
+/// refuses a thread that leads no thread group (EINVAL, without PIDFD_THREAD, which
+/// kernels before 6.9 lack): its group's leader then, which shares its descriptors
+/// (CLONE_FILES, as every thread of a process does).
 pub(crate) fn socket_of(pid: libc::pid_t, fd: RawFd) -> Option<OwnedFd> {
-    // SAFETY: pidfd_open(2) of a process by its PID, no flags.
-    let pidfd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
-    let pidfd = RawFd::try_from(pidfd).ok().filter(|&f| f >= 0)?;
+    let open = |pid: libc::pid_t| {
+        // SAFETY: pidfd_open(2) of a process by its PID, no flags.
+        let pidfd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
+        RawFd::try_from(pidfd).ok().filter(|&f| f >= 0)
+    };
+    let pidfd = open(pid).or_else(|| {
+        let status = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
+        let leader = status
+            .lines()
+            .find_map(|l| l.strip_prefix("Tgid:"))
+            .and_then(|v| v.trim().parse::<libc::pid_t>().ok())
+            .filter(|&t| t != pid)?;
+        open(leader)
+    })?;
     // SAFETY: a descriptor just made, owned here alone.
     let pidfd = unsafe { OwnedFd::from_raw_fd(pidfd) };
     // SAFETY: pidfd_getfd(2) of the process's descriptor, no flags.

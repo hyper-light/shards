@@ -234,7 +234,7 @@ SPIs of the GICv2m frame the VMM keeps (D154).
 | A restore's working set recorded and mapped ahead (D29) | yes | yes (D154) | yes | yes (D196, PM M415, M421) |
 | Networks, published ports, default deny, IPv6 on networks and past the microVM (D46, D59, D99) | yes | yes | yes | yes (D142, D143) |
 | Volumes and binds, a bind's host-made files its run's user's, DAX windows (D38, D189) | yes | yes | yes | yes (D197, D207, PM M412, M413) |
-| A run's writable layer, ext4 over pmem, restarts over the kept layer, freed blocks given back (D190) | yes | yes | yes; restarts over the kept layer on real microVMs, going over from 7 MiB held, where its restarts cross (PM M496) | yes; restarts over the kept layer, a view placed where the template's was (placeholders), on real microVMs (CI's windows-2025 and windows-2022, jupiter), going over from 7 MiB held, where its restarts cross (PM M496) |
+| A run's writable layer, ext4 over pmem, restarts over the kept layer, freed blocks given back (D190) | yes; each restart's way learned from the host's own restarts (`layers::Restarts`) | yes | yes; restarts over the kept layer on real microVMs, their way learned as on Linux | yes; restarts over the kept layer, a view placed where the template's was (placeholders), on real microVMs (CI's windows-2025 and windows-2022, jupiter), their way learned as on Linux |
 | Memory given back: free page reporting, budgets, the host's word, for runs and builders (D148, D151, D188) | yes | yes | yes | yes (PM M371, M375, M391) |
 | A budgeted build's writes made outside its budget (D188, PM M442) | yes | yes | needs none: no kernel charges its page cache to a group shards keeps | needs none: a job's limit is its commit, never its cache |
 | `--cgroup-parent` (D183) | a slice of the user's manager, or a cgroup delegated to the user (slices 1, 2) | as amd64 | groups shards keeps (slice 3, PM M355) | groups shards keeps, each a job its VM and network processes are made in (slice 3, PM M359, M361) |
@@ -6421,8 +6421,20 @@ host (PM M267), where a container's page cache is its host's to drop. Free page 
   before asked nothing more until it has answered or been ended: passes that asked one
   microVM after another, each waiting up to 10 s for an answer and then for its end,
   waited on a guest whose own memory its host had taken for minutes, and gave back 3 times
-  in 600 s (PM M308). One with no answer within 10 s is said to have had none, and is
-  ended.
+  in 600 s (PM M308). Each is waited for as long as its microVM's process runs (more CPU
+  in each 10 s than an idle microVM takes, M357's bound, as D209's waits judge a start),
+  and one that runs nothing for 10 s is said to have had no answer, and is ended: a
+  microVM over its budget's `memory.high` is slowed by its host for as long as it is over
+  it, and the answers of one asked to give back what would bring it under, and to hear
+  its room after, came past a 10 s deadline as its host let it run, which ended them, its
+  budget's word never said or saying nothing given back (PM M467). A group's give-backs,
+  macOS's and Windows', which no kernel slows, keep the 10 s.
+- **A budget falling short waits for its host's give-back** (PM M467): where a give-back
+  of the host's pressure is under way in the microVM, the budget's own asks once it has
+  ended, its room read again; and its word says what its host's pressure had it give back
+  and ask to unplug since the word before, which the host's own word says once a minute
+  at most: a budget set just after the host had taken what it held cold found nothing to
+  give back, and its word said nothing given back.
 - **Held within what its budget leaves it** (PM M309). Where the cgroup a microVM's VM
   process is in, or one above it, holds it to a budget (`memory.high` or `memory.max`, a
   slice's `MemoryHigh` or `MemoryMax`, D183), the host can take back only page cache from
@@ -9454,12 +9466,10 @@ the guest keeps their metadata alone.
   layer holds (`layers::held`): its blocks in use, as its groups' descriptors count them
   with its bitmaps (`Volume::free_blocks`), less what an empty layer of its size holds of
   metadata (`Made::free_blocks`, a format made once a size in memory, nothing written).
-  Below 5 MiB on Linux (`layers::OVER_FROM`) it is packed and put back as before; from
-  there on it goes over. 5 MiB is where Linux's measured restarts cross: at 0, 1, 2 and 4 MiB written
+  Linux's measured restarts cross at 5 MiB: at 0, 1, 2 and 4 MiB written
   packing was 5.0 to 14.1 ms quicker at p50, at 8, 16 and 32 MiB going over 13.6, 70.1 and
-  110.3 ms quicker, the lines between 4 and 8 MiB meeting at 5.08 MiB
-  (`a_restart_goes_over_from_where_packing_costs_more` holds the constant to that
-  table). So chosen, against packing always (894c2c67 against de2b1cf5, n = 20 a side,
+  110.3 ms quicker, the lines between 4 and 8 MiB meeting at 5.08 MiB. Chosen at a 5 MiB
+  constant then, against packing always (894c2c67 against de2b1cf5, n = 20 a side,
   interleaved), `start` at p50 / p99: 0 B 55.66 / 64.28 against 53.63 / 67.19 ms (both
   packed: within the spread, p90 63.04 against 59.42), 4 MiB 95.98 / 126.78 against
   97.37 / 121.45, 64 MiB 482.05 / 503.19 against 576.05 / 899.66; `diff` alike at 0 and
@@ -9475,7 +9485,28 @@ the guest keeps their metadata alone.
   Windows), packing growing with what it holds as on Linux, the lines meeting at 6.8 to 7.9
   MiB on macOS (three runs, n 20 and 40; a fourth at load 19 to 23, its p90s overlapping
   at every size to 12 MiB, at 5.3) and 7.95 and 7.73 on Windows (jupiter, n 20, two runs).
-  So `OVER_FROM` is 7 MiB on both, each held by the test to its own table.
+  So the crossing is each host's own, its disk's, file system's and load's: no constant
+  measured here is another machine's. **Learned on the host** (2026-11-08): each restart
+  that may go either way (its kept file of the run's layer's length, what it holds counted)
+  records the bytes its layer held and the time from the choice to its command executing
+  (`STARTED`), per way, in the home's `restarts` (`layers::Restarts`): each way's
+  least-squares line of time against bytes, kept online as its count, means and
+  co-moments (Welford's updates), packing's cost growing with what the layer holds and
+  going over's less so. The next restart estimates both at what its layer holds, each with
+  its estimate's variance (the residuals' over the line's degrees of freedom, as a
+  regression's mean at a point has it), and takes the quicker only where the two differ by
+  more than their difference's spread, the square of the difference past the sum of the
+  variances; where they do not (no records, fewer than three a way, layers of one size
+  asked of another, or near the crossing, where either costs about the same), it takes
+  the way recorded fewer times, packing on a tie: a new home's restarts take each way in
+  turn until their records tell them apart. No literal is chosen: the one spread is the
+  records' own, the three records the least that give a line a residual. PM M443's and
+  M496's tables, given as records, hold it (`a_restart_goes_the_way_this_hosts_restarts_say_is_quicker`):
+  wherever it decides, it takes the way measured quicker there (Linux, macOS, Windows'
+  two runs); it is sure of packing an empty layer and of going over the largest; where it
+  is not sure, 2 to 4 MiB on Linux and 6 to 8 on macOS, the two were within a few ms of
+  each other. The two E2E tests give their home records that cross at 4 MiB
+  (`common::restarts_cross_at`), their 8 MiB layers past it, their small one below.
 - **On Windows, a view in place of a view** (row 18 of the parity audit). Windows maps no
   file over a mapping as `mmap(MAP_FIXED)` does: a view is made at an address that is free
   (MapViewOfFile3), and a range unmapped then mapped again is free between the two calls,
@@ -9508,7 +9539,7 @@ the guest keeps their metadata alone.
   packing (PM M496, n 20 a side, interleaved), `start` at p50: 0 B 321.55 ms gone over
   against 88.66 packed, 4 MiB 652.89 against 494.89, 8 MiB 822.56 against 824.35, 16 MiB
   1,344.67 against 1,612.55, 32 MiB 2,205.23 against 3,126.39: Windows' restarts cross at
-  7.95 MiB (7.73 run again, its tails kept), and it goes over from 7 (`OVER_FROM`).
+  7.95 MiB (7.73 run again, its tails kept); a Windows host's restarts learn their own.
 - **What the guest freed goes back to the host** (slice 8, PM M443). pmem takes no
   discard (drivers/nvdimm/pmem.c), so a layer's file only grew while its microVM lived,
   whatever its guest deleted. As a stopped microVM's layer is kept, its microVM gone,
@@ -9527,7 +9558,10 @@ the guest keeps their metadata alone.
 
 **Next** (the slices after these).
 - Visits and joiners' runs over the kept file too.
-- Going over's fixed cost below packing's, so that a layer holding under `OVER_FROM` goes
+- Records that age: a host whose disk or load changes keeps its first restarts' records
+  beside its last (change detection on each way's residuals, so that a line follows its
+  host).
+- Going over's fixed cost below packing's, so that a layer holding little goes
   over too: the mount of the kept file system and its one host flush, and the root's
   two moves (PM M443); on Windows its 233 ms, unmeasured step by step (PM M496).
 - Joiners' layers (D119) on the microVM's own, rather than tmpfs.
@@ -10353,9 +10387,25 @@ peer", each going on here as it should. What changed for them:
   with it, and a plan carries it (`Plan::baseline`): the machine moved to checks each field
   against what its own hypervisor shows (`covers`), not the machine it ran on's whole set;
   and by name only the features no register of the baseline can hide, on
-  Hypervisor.framework ID_AA64ISAR2_EL1's (FEAT_WFxT, FEAT_RPRES, FEAT_CSSC, FEAT_HBC), which
-  it neither says nor lets a VMM set (PM M460, `feature_register`). On arm64 only: x86_64's
-  CPUID has `covers` and no meet yet, and `configure cpu` says so there.
+  Hypervisor.framework ID_AA64ISAR2_EL1's, which it neither says nor lets a VMM set (PM
+  M460, `feature_register`): FEAT_CSSC and FEAT_HBC. Its FEAT_WFxT and FEAT_RPRES the
+  framework shows no guest where macOS names them (an M4 Max's guest finds no `wfxt`, an M3
+  Ultra's and an M4 Max's no `rpres`, PM M499), so no move checks them, and the baseline
+  test holds it on each Mac it runs on. A guest is shown less than the features macOS
+  names in registers the framework does say too (an M4 Max's finds no `i8mm`, ISAR1's),
+  which a baseline's fields, the hypervisors' own views, take in. On
+  arm64 only: x86_64's CPUID has `covers` and no meet yet, and `configure cpu` says so
+  there; between the two Linux hosts measured (one CPU model, Linux 7.2 and 7.3) every move
+  went through without one (PM M497).
+- **A listener that outlives its runner's restarts** (two-hosts.sh, the harness of these
+  measurements). A runner that restarts ends what its runs started, the listening daemon
+  among them, and kiln's ends a launchd job a session starts within seconds (3 s on the M3
+  Ultra, PM M499), so no process of a run outlives it there. What does is the listening
+  home: `listen` run again on it listens as the same daemon, its key and the clients it
+  enrolled kept, inviting none, and the mover's series waits for it (`WAIT_PEER`), moving
+  again a move whose error says the daemon was gone (`PEER_GONE`), counted apart from the
+  failures; a hold restarts a daemon that ends while it lives. `two-hosts.sh restart` holds
+  it on one machine (PM M499).
 
 Between two machines on a wired gigabit link (two AMD Ryzen 9 9950X3D2 hosts, Linux 7.3.3
 to 7.2.9, KVM), n 20 cold: a move took 0.95 s at p50, 1.16 at p90 and 9.99 at most, and
@@ -14668,9 +14718,22 @@ receiver for an incoming port" above:
   messages) and on real microVMs, build.rs `a_port_comes_in_to_the_member_listening_on_it`:
   two networks, `FOR front ops` giving three members four ports, each port reaching the one
   member listening, every connection, and a member no `FOR` names not reached.
-- **Not yet**: a UDP flow already admitted keeps its conntrack entry's member past a change
-  of holder, as a host's kernel keeps a connected flow; ports past the microVM are IPv4's
-  alone (D99).
+- **A UDP flow follows its port's holder.** Linux keeps a flow's NAT binding for the
+  flow's life (nf_nat_core.c; 120 s past its last datagram once it streams,
+  nf_conntrack_proto_udp.c), so a client sending all along would have stayed with a
+  holder that had closed its socket. Each choice of a UDP port's holder has a conntrack
+  zone of its own (`ct zone set`, raw prerouting, the datagrams coming in and the holder's
+  answers): a flow admitted before is new in the new zone and is translated to the new
+  holder, its old entry left to expire, as a guest kernel without ctnetlink (shards' has
+  none) has no other way to end one; the old holder's answers past the change are new
+  flows no grant opens. Tested on real microVMs (`a_udp_flow_goes_to_its_ports_next_holder`:
+  one client socket answered by web, then, after web closes and api binds, by api).
+  A notification names the calling thread, which pidfd_open(2) refuses where it leads no
+  thread group: the chooser, and the host network's binds (D124), open its group's leader
+  then, so that a server binding on a thread of its own is seen (found by that test).
+- **Not yet**: ports past the microVM are IPv4's alone (D99). The costs (PM M498) are
+  unmeasured: a build step's device cgroup (`docs/research/measurements/step-devices/run.py`)
+  and the chooser's round trip (`step-devices/chooser.sh`).
 
 ### D121. Docker's AppArmor mount rule, in guests that have no AppArmor
 
@@ -17076,6 +17139,29 @@ Measured differences, kept:
 - Rule indices with more than 8 distinct refs or keys range over Go's larger maps in
   hash order, which can't be reproduced. Lookups there may list rules in another of the
   orders OPA could take.
+
+Hostile policies. A policy may be anyone's (a remote context's, D111), so the engine is
+held to more than OPA's answers:
+- No panic (the workspace's lints), and no stack overflow: the policy thread's stack is
+  measured (M126), and an evaluation deeper than it ends in an error.
+- Two fuzz targets run it on what a policy can send: `fuzz/fuzz_targets/rego.rs`, a
+  policy's text and input through the parser, compiler and evaluation (partial and
+  whole), and `rego-builtins.rs`, any builtin with any operands. CI runs each for 60 s
+  with the other targets. Twenty minutes of each found no panic (M510).
+- Work that grew faster than OPA's, or as fast where it need not, was found by fuzzing
+  and M160's shapes and taken out, each holding OPA's answers: glob.match's
+  minimizeMatchers (cubic in a pattern's matchers in gobwas and OPA: 50.8 s for a 6 KB
+  pattern, now 6.5 ms); the type checker checking each comprehension again for each
+  walk that meets it (three times as long each level: 12 deep 3.25 s, now 0.5 ms); the
+  safety check's and print rewrite's outputs read again for each expression, and each
+  equality copying the whole safe set (cubic: 1000 closures in a body 42 s, now 0.48 s).
+- Left, as OPA's: rewriteLocalVars walks an `every` statement again after its body and
+  numbers the comprehensions within it anew, twice the work each level they alternate
+  (20 deep 9.3 s; OPA takes 7 minutes at 12), and the numbers are in what OPA compiles
+  and partial evaluation leaves, so a shortcut must number as the walk does; rule wrap's
+  type check is quadratic (10000 rules 24.9 s). Evaluation asks no bound of a policy, as
+  OPA's does not (`numbers.range` over any span); a build's policies run in its own
+  process, which Ctrl-C ends, as buildx's end with its build's context.
 
 ### D97. OSI artifacts of several platforms: an index
 
