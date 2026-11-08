@@ -30,7 +30,7 @@ index 3f83936a..3b78c10d 100644
      }
  }
 diff --git a/crates/shards/src/daemon.rs b/crates/shards/src/daemon.rs
-index 2ff34e8e..17ed9e9a 100644
+index 2ff34e8e..13efbc53 100644
 --- a/crates/shards/src/daemon.rs
 +++ b/crates/shards/src/daemon.rs
 @@ -2609,7 +2609,10 @@ impl<D: Disk> Daemon<D> {
@@ -45,7 +45,39 @@ index 2ff34e8e..17ed9e9a 100644
              kind::STOP => {
                  self.release_client(number);
                  match conn.try_clone() {
-@@ -3978,7 +3981,9 @@ impl<D: Disk> Daemon<D> {
+@@ -3013,6 +3016,7 @@ impl<D: Disk> Daemon<D> {
+             };
+             crate::run::prepare(&run, &self.home, &heard, cancel)
+         });
++        shards_vmm::log::trace("d_prepared");
+         if watched != Watched::Stayed {
+             abandon(&id);
+             return None;
+@@ -3292,6 +3296,7 @@ impl<D: Disk> Daemon<D> {
+             }
+             None => self.create(&run, &prepared, &id, ports),
+         };
++        shards_vmm::log::trace("d_created");
+         let name = match made {
+             // A new container's warnings, as the CLI prints ContainerCreate's.
+             Ok(name) if again.is_none() => {
+@@ -3373,6 +3378,7 @@ impl<D: Disk> Daemon<D> {
+             self.make_spare();
+             return None;
+         }
++        shards_vmm::log::trace("d_kept");
+         // From here, its client passes signals on to the command; it has the ID for
+         // `--cidfile`.
+         let _ = shards_ipc::send(conn, kind::CREATED, id.as_bytes(), &[]);
+@@ -3875,6 +3881,7 @@ impl<D: Disk> Daemon<D> {
+             None => prepared.spec.encode_into(&mut payload),
+         }
+         let detached = run.detach.then_some(conn);
++        shards_vmm::log::trace("d_starting");
+         let started = self.start_run(
+             threads,
+             &id,
+@@ -3978,7 +3985,9 @@ impl<D: Disk> Daemon<D> {
              }
          };
          for _ in 0..HANDOFF_TRIES {
@@ -55,7 +87,7 @@ index 2ff34e8e..17ed9e9a 100644
              // Every way on leaves `Handing` while `ready` holds the socket it names.
              if let Err(said) = self.commit(id, ready.socket.as_raw_fd()) {
                  // A joiner's VM is its provider's, in no pool: only its connection goes.
-@@ -4006,7 +4011,9 @@ impl<D: Disk> Daemon<D> {
+@@ -4006,7 +4015,9 @@ impl<D: Disk> Daemon<D> {
              if ready.net.is_some() && keep.mac.is_some() {
                  ready.mac = keep.mac;
              }
@@ -65,7 +97,7 @@ index 2ff34e8e..17ed9e9a 100644
              // Only now, so that starting its successor delays no run: on the refiller's
              // thread.
              self.refill_soon(threads, ready.pool.as_ref());
-@@ -8356,6 +8363,7 @@ fn hand_over(
+@@ -8356,6 +8367,7 @@ fn hand_over(
      }
      // A request cut short is no request: the VM never had all of it.
      shards_ipc::send(vm, kind::RUN, payload, fds).map_err(|e| Untaken::Surely(e.to_string()))?;

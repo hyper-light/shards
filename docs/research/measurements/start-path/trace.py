@@ -120,6 +120,21 @@ def one():
               ("vm_recv", "h_vm_decode", "vm_taking"), ("vm_taking", "h_taken_read", "run_taken")]
     for begin, name, end in within:
         row[name] = (steps[end] - steps[begin]) / 1000 if begin in steps and end in steps else None
+    # The daemon's handling before it looks for a VM: the run prepared (its image and
+    # spec), its container made, its request kept, and the rest of its setup.
+    within = [("handle_start", "d_prepare", "d_prepared"), ("d_prepared", "d_create", "d_created"),
+              ("d_created", "d_keep", "d_kept"), ("d_kept", "d_setup", "d_starting"),
+              ("d_starting", "d_to_acquire", "run_acquire")]
+    for begin, name, end in within:
+        row[name] = (steps[end] - steps[begin]) / 1000 if begin in steps and end in steps else None
+    # With cpu-elastic/markers.patch too, the guest's own steps of its start of the run:
+    # each marker from the request to the command executing, from the one before it.
+    if markers.get(STARTED) and t.get("request_us"):
+        last = t["request_us"]
+        for at_, m in sorted((at_, m) for m, at_ in markers.items() if m >= 11 and t["request_us"] <= at_ <= markers[STARTED]):
+            row[f"g_m{m}"] = (at_ - last) / 1000
+            last = at_
+        row["g_to_started"] = (markers[STARTED] - last) / 1000
     row["h_vm_prepare"] = (t["request_us"] - steps["vm_taking"]) / 1000 if "vm_taking" in steps else None
     return row
 
@@ -143,8 +158,11 @@ rev = subprocess.run([a.shards, "--version"], capture_output=True, text=True).st
 print(f"host: {platform.node()} {platform.machine()} cpus {os.cpu_count()}; os: {platform.platform()}")
 print(f"shards: {rev}; image {a.image}; command {' '.join(command)}; flags {a.flags!r}; load {os.getloadavg()}")
 print(f"{'step':<17}{'n':>5}{'p50':>9}{'p90':>9}{'p99':>9}{'max':>9}  ms")
-for name in rows[0]:
-    v = [r[name] for r in rows if r[name] is not None]
+names = []
+for r in rows:
+    names += [k for k in r if k not in names]
+for name in names:
+    v = [r[name] for r in rows if r.get(name) is not None]
     if not v:
         print(f"{name:<17} none")
         continue
