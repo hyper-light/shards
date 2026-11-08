@@ -14311,7 +14311,8 @@ fn microvms_on_an_ipv6_network_reach_one_another() {
 }
 
 /// A network's options are what its microVMs do: one made with `enable_icc` false keeps its
-/// members from one another, their names still answered (D46); its ports published with no
+/// members from one another, and so each one's name from the others (default deny), each
+/// answered its own (D46); its ports published with no
 /// address are bound at its `host_binding_ipv4` alone, and reached there; an MTU is kept as
 /// given, its members keeping their devices'; a routed one publishes no port; and each
 /// option is read with its meaning (D46). The default network says what it does.
@@ -14401,14 +14402,22 @@ fn a_networks_options_are_what_its_microvms_do() {
         &["--name", "lone", "--network", "apart", "-p", "7000"],
         &["serve", "7000", "1"],
     );
-    // Its name answers, and nothing reaches it.
+    // Nothing reaches it, and so its name answers no other member (default deny, D46):
+    // refused at once, as a name past the network is; a member's own name answers it.
     let r = run_in(
         &home,
         &image,
         &["--rm", "--network", "apart"],
-        &["resolve", "lone"],
+        &["dnsttl", "lone"],
     );
-    assert!(r.stdout.starts_with("resolve 10.78.0."), "{r}");
+    assert_eq!(r.stdout, "dnsttl rcode 5\n", "{r}");
+    let r = run_in(
+        &home,
+        &image,
+        &["--rm", "--network", "apart", "--name", "other"],
+        &["dnsttl", "other"],
+    );
+    assert!(r.stdout.starts_with("dnsttl 0 10.78.0."), "{r}");
     let r = run_in(
         &home,
         &image,

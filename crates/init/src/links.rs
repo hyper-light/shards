@@ -1421,6 +1421,50 @@ impl Batch {
     }
 }
 
+/// The chain of the ports several domains are given (D122), each to the domain the
+/// chooser finds listening on it, before `pre` (crate::chooser).
+const CHOSEN: &[u8] = b"chosen\0";
+
+/// The chooser's choices, programmed again whole in one transaction: what comes in on
+/// eth0 to each port `from` goes to `to`, at its port `at`, as `pre` gives a port that is
+/// one domain's; a port of no one listening, nowhere here (the run's own command's, as a
+/// port no domain claims is).
+pub(crate) fn program_chosen(
+    chosen: &[(crate::netplan::Egress, Ipv4Addr, crate::netplan::Egress)],
+) -> io::Result<()> {
+    let eth0 = interface_index("eth0")?;
+    let mut b = Batch::new();
+    b.chain(
+        CHOSEN,
+        b"nat\0",
+        nft::NF_INET_PRE_ROUTING,
+        nft::PRIORITY_DNAT.wrapping_sub(1),
+        nft::NF_ACCEPT,
+    );
+    b.flush(CHOSEN);
+    for &(from, to, at) in chosen {
+        let mut e = Vec::new();
+        meta(&mut e, nft::NFT_META_IIF);
+        compare(&mut e, nft::NFT_CMP_EQ, &eth0.to_ne_bytes());
+        ports(&mut e, from);
+        load(&mut e, &to.octets());
+        let mapped = from != at;
+        if mapped {
+            load_into(&mut e, nft::NFT_REG_2, &at.1.to_be_bytes());
+        }
+        expr(&mut e, b"nat\0", |d| {
+            be32(d, nft::NFTA_NAT_TYPE, nft::NFT_NAT_DNAT);
+            be32(d, nft::NFTA_NAT_FAMILY, u32::from(nft::NFPROTO_IPV4));
+            be32(d, nft::NFTA_NAT_REG_ADDR_MIN, nft::NFT_REG_1);
+            if mapped {
+                be32(d, nft::NFTA_NAT_REG_PROTO_MIN, nft::NFT_REG_2);
+            }
+        });
+        b.rule(CHOSEN, e);
+    }
+    b.commit(&netlink_socket(libc::NETLINK_NETFILTER)?)
+}
+
 /// On the host's network (D124): what the run's processes send IPv6's loopback (`::1`)
 /// goes to the host's, its TCP and UDP. IPv6 keeps `::1` off every link but the loopback
 /// (RFC 4291 §2.5.3), so it goes by address translation: to `gateway6`, which the network
@@ -2113,8 +2157,24 @@ fn outside(sock: &OwnedFd, eth0: u32, u: &Uplink, members: &[Member]) -> io::Res
             nft::NF_ACCEPT,
         );
         b.flush(b"pre\0");
+        // A port several domains are given goes to the one listening (D122): chosen, as
+        // they listen and stop, by the chooser (crate::chooser) in a chain of its own,
+        // before this one; every other to its one domain here.
+        let contested = crate::chooser::contested(ingress);
+        if !contested.is_empty() {
+            b.chain(
+                CHOSEN,
+                b"nat\0",
+                nft::NF_INET_PRE_ROUTING,
+                nft::PRIORITY_DNAT.wrapping_sub(1),
+                nft::NF_ACCEPT,
+            );
+        }
         for (to, ranges) in ingress {
-            for &(from, at) in ranges {
+            for &(from, at) in ranges
+                .iter()
+                .filter(|(from, _)| contested.iter().all(|c| c.from != *from))
+            {
                 let mut e = Vec::new();
                 meta(&mut e, nft::NFT_META_IIF);
                 compare(&mut e, nft::NFT_CMP_EQ, &eth0.to_ne_bytes());

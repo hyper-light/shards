@@ -9,6 +9,8 @@ mod caches;
 #[cfg(target_os = "linux")]
 mod changes;
 #[cfg(target_os = "linux")]
+mod chooser;
+#[cfg(target_os = "linux")]
 mod copy;
 #[cfg(target_os = "linux")]
 mod defaults;

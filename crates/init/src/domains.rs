@@ -620,6 +620,9 @@ struct Prepared {
     resolv: Option<Vec<u8>>,
     /// Where it waits for its link, before it holds nothing of init's.
     go: Option<RawFd>,
+    /// Where it sends the listener of the chooser's filter, and the filter, for a domain
+    /// among several given a port (D122, crate::chooser).
+    chooser: Option<(RawFd, *const libc::sock_fprog)>,
     /// Its root: the image as built, a mount not yet attached.
     root: RawFd,
     /// Its Unix sockets' directories, each a mount not yet attached and where it goes,
@@ -1051,6 +1054,9 @@ pub type Filter = (u32, Vec<libc::sock_filter>);
 /// The switch the domains' links meet in, kept while the microVM runs: a namespace no
 /// process holds lives while a descriptor of it does.
 pub(crate) static SWITCH: std::sync::OnceLock<crate::links::Switch> = std::sync::OnceLock::new();
+
+/// The chooser of the ports several domains are given (D122), for the run's life.
+static CHOOSER: std::sync::OnceLock<crate::chooser::Chooser> = std::sync::OnceLock::new();
 
 /// What the `i`-th domain's gate lets through (D61): its addresses; to each peer a pair
 /// lets it open flows to, at the peer's addresses, the ports granted; from each that may
@@ -1563,6 +1569,31 @@ pub fn start(
             joined.push((key, a, b));
         }
     }
+    // Ports several domains are given go to the one listening (D122): the chooser, started
+    // before any of them, and the address of each it chooses among.
+    let contests = crate::chooser::contested(
+        &domains
+            .iter()
+            .filter_map(|d| {
+                let l = d.link.as_ref()?;
+                Some((l.addresses.first()?.addr, l.ingress.clone()))
+            })
+            .filter(|(_, ranges)| !ranges.is_empty())
+            .collect::<Vec<_>>(),
+    );
+    let candidates: Vec<std::net::Ipv4Addr> = contests
+        .iter()
+        .flat_map(|c| c.candidates.iter().map(|(a, _)| *a))
+        .collect();
+    if !contests.is_empty() && CHOOSER.get().is_none() {
+        let chooser = crate::chooser::start(contests).map_err(|e| format!("the ports' chooser: {e}"))?;
+        let _ = CHOOSER.set(chooser);
+    }
+    let notify_ops = crate::chooser::filter();
+    let notify = libc::sock_fprog {
+        len: u16::try_from(notify_ops.len()).map_err(|_| "the chooser's filter is too long")?,
+        filter: notify_ops.as_ptr().cast_mut(),
+    };
     let mut started = Vec::new();
     for (i, d) in domains.iter().enumerate() {
         let group = format!("{CGROUPS}/{}", d.cgroup);
@@ -1701,8 +1732,20 @@ pub fn start(
             hosts: d.link.as_ref().map(|l| l.hosts.clone()),
             resolv: d.resolv.clone(),
             go: None,
+            chooser: None,
         };
         let mut prepared = prepared;
+        // A candidate for a port several are given: the channel its listener comes on.
+        let address = d.link.as_ref().and_then(|l| l.addresses.first()).map(|a| a.addr);
+        let chooser_channel = match address.filter(|a| candidates.contains(a)) {
+            Some(addr) => {
+                let (ours, theirs) = crate::hostbind::seqpacket()
+                    .map_err(|e| format!("{}: its chooser's channel: {e}", d.label))?;
+                prepared.chooser = Some((theirs.as_raw_fd(), &raw const notify));
+                Some((addr, ours, theirs))
+            }
+            None => None,
+        };
         let go = match &d.link {
             Some(_) => {
                 let mut fds = [0 as RawFd; 2];
@@ -1776,6 +1819,21 @@ pub fn start(
                     d.label,
                     io::Error::last_os_error()
                 ));
+            }
+        }
+        // Its listener, sent as it loads the chooser's filter, and its network namespace, to
+        // the chooser. One that ends before it sends its listener has said why on its output.
+        if let Some((addr, ours, theirs)) = chooser_channel {
+            drop(theirs);
+            let mut buf = [0u8; 4];
+            if let Ok((_, Some(listener))) = crate::hostbind::recv_fd(ours.as_raw_fd(), &mut buf, 0) {
+                let netns = crate::links::open_ns(&format!("/proc/{pid}/ns/net"))
+                    .map_err(|e| format!("{}: its network namespace: {e}", d.label))?;
+                if !CHOOSER.get().is_some_and(|c| c.give(addr, &listener, &netns)) {
+                    // SAFETY: kill(2) of the child just made, whose listens no one answers.
+                    unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
+                    return Err(format!("{}: the ports' chooser has gone", d.label));
+                }
             }
         }
         crate::run::set_nonblocking(read_end.as_raw_fd(), true);
@@ -2355,6 +2413,28 @@ fn child(d: &Domain, p: &Prepared, out: RawFd, flags: u32, program: &libc::sock_
             let mut byte = 0u8;
             if libc::read(go, (&raw mut byte).cast(), 1) != 1 {
                 fail(out, c"waiting for its link");
+            }
+        }
+        // The chooser's filter (D122), whose listener goes to init on its channel, which
+        // closes with init's other descriptors below; nothing this process does before its
+        // command runs binds or listens.
+        if let Some((channel, notify)) = p.chooser {
+            let listener = libc::syscall(
+                libc::SYS_seccomp,
+                libc::SECCOMP_SET_MODE_FILTER,
+                crate::chooser::NEW_LISTENER,
+                notify,
+            );
+            let Ok(listener) = RawFd::try_from(listener) else {
+                fail(out, c"loading the chooser's filter");
+            };
+            if listener < 0 {
+                fail(out, c"loading the chooser's filter");
+            }
+            let sent = crate::hostbind::send_fd(channel, b"L", listener, 0);
+            libc::close(listener);
+            if !sent {
+                fail(out, c"giving init the chooser's listener");
             }
         }
         // Its stdio, and no other descriptor of init's.

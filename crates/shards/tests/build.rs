@@ -4658,6 +4658,74 @@ fn run_steps_take_cdi_devices() {
         log.contains("a createContainer hook (/usr/bin/vendor-hook)"),
         "{log}"
     );
+    // A device node's rule is of the access its spec gives (D44): the builder's own disk,
+    // given read alone, read and not written.
+    std::fs::write(
+        specs.join("disk.yaml"),
+        "cdiVersion: \"0.7.0\"\nkind: vendor.com/disk\ndevices:\n  - name: ro\n    containerEdits:\n      deviceNodes:\n        - path: /dev/vendordisk\n          hostPath: /dev/pmem0\n          permissions: r\n",
+    )
+    .unwrap();
+    let (code, log) = build(
+        &format!(
+            "FROM {image}\nUSER root\nRUN --device=vendor.com/disk=ro [\"/bin/testguest\", \"fs\", \"dev:/dev/vendordisk\", \"open:r:/dev/vendordisk\"]\n"
+        ),
+        &["--allow", "device"],
+    );
+    assert_eq!(code, Some(0), "{log}");
+    assert!(log.contains("/dev/vendordisk b 259:0"), "{log}");
+    let (code, log) = build(
+        &format!(
+            "FROM {image}\nUSER root\nRUN --device=vendor.com/disk=ro [\"/bin/testguest\", \"fs\", \"open:w:/dev/vendordisk\"]\n"
+        ),
+        &["--allow", "device"],
+    );
+    assert_ne!(code, Some(0), "{log}");
+    assert!(
+        log.contains("open:w:/dev/vendordisk: Operation not permitted"),
+        "{log}"
+    );
+}
+
+/// A `RUN` step reaches the devices BuildKit's runc executor gives its container (D44):
+/// runc's own (/dev/null, urandom and the rest) read and written, any device made, and no
+/// other opened, as containerd's default spec denies every device: before, a step made a
+/// node of its builder's image device (259:0) and read it. An insecure step reaches every
+/// device, as BuildKit allows each one with `security.insecure`.
+#[test]
+fn run_steps_reach_the_devices_buildkit_gives_them_alone() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let home = TempDir::new("build-dev-home");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let build = |dockerfile: &str, extra: &[&str]| {
+        let ctx = context("build-dev-ctx", dockerfile);
+        let mut args = vec!["build", "--progress=plain", "--no-cache"];
+        args.extend_from_slice(extra);
+        args.push(ctx.to_str().unwrap());
+        let r = run_shards_env(&[], &args, &env, TIMEOUT);
+        (r.status, r.stderr)
+    };
+    let (code, log) = build(
+        &format!(
+            "FROM {image}\nUSER root\nRUN [\"/bin/testguest\", \"fs\", \"open:w:/dev/null\", \"open:r:/dev/urandom\", \"open:w:/dev/full\", \"mknod:b:259:0:/disk\", \"open:r:/disk\"]\n"
+        ),
+        &[],
+    );
+    assert_ne!(code, Some(0), "{log}");
+    assert!(log.contains("open:r:/disk: Operation not permitted"), "{log}");
+    let (code, log) = build(
+        &format!(
+            "FROM {image}\nUSER root\nRUN --security=insecure [\"/bin/testguest\", \"fs\", \"mknod:b:259:0:/disk\", \"open:r:/disk\", \"open:r:/dev/kmsg\"]\n"
+        ),
+        &["--allow", "security.insecure"],
+    );
+    assert_eq!(code, Some(0), "{log}");
 }
 
 /// A ustar archive of `files` (path, bytes), regular files mode 0644, as a client's
@@ -10760,7 +10828,7 @@ fn agents_answer_what_their_networks_let_in() {
 /// Each member of a network answers the port its `EXPOSE` names it for (D122): two agents
 /// that both listen on 7100 are each reached, web at the microVM's 7100 and api at its
 /// 7101, mapped to api's 7100, each answering with its host name; with no member named, a
-/// network of two that lets a port in is refused as it is built.
+/// network of two that lets a port in builds, its members both candidates for it.
 #[test]
 fn each_agent_answers_the_port_its_expose_names() {
     use std::io::Read as _;
@@ -10804,15 +10872,10 @@ fn each_agent_answers_the_port_its_expose_names() {
         format!("{base}EXPOSE 7100 AS ingress FOR front\n"),
     )
     .unwrap();
+    // Named none: both its members, the one listening taking each connection (the user's
+    // decision, 2026-11-08; a_port_comes_in_to_the_member_listening_on_it).
     let built = shards(&["build", "-t", "members:0", ctx.to_str().unwrap()]);
-    assert_ne!(built.status, Some(0), "{}", built.stdout);
-    assert!(
-        built
-            .stderr
-            .contains("network front lets port 7100 in past the microVM to its members agent web, agent api: name the one it is for"),
-        "{}",
-        built.stderr
-    );
+    assert_eq!(built.status, Some(0), "{}", built.stderr);
     std::fs::write(
         ctx.join("Agentfile"),
         format!(
@@ -10880,6 +10943,132 @@ fn each_agent_answers_the_port_its_expose_names() {
         )
     );
     let _ = shards(&["rm", "-f", "pair"]);
+}
+
+/// A port coming in to several members goes to the member listening on it (the user's
+/// decision, 2026-11-08; D122), and `EXPOSE ... FOR` names networks and agents alike: on
+/// two networks, `FOR front ops` gives 7100, 7200 and 7300 to front's two members and to
+/// ops, on back; web listens on 7100 alone, api on 7200, ops on 7300, and each port reaches
+/// the one listening on it. idle, on back too but named by no `FOR`, listens on 7400, which
+/// back lets in, and is not reached (default deny).
+#[test]
+fn a_port_comes_in_to_the_member_listening_on_it() {
+    use std::io::Read as _;
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let (port, _repos) = common::writable_registry();
+    let home = TempDir::new("listening-home");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let mut agents = String::new();
+    for (name, listens) in [("web", 7100), ("api", 7200), ("ops", 7300), ("idle", 7400)] {
+        let dir = TempDir::new(&format!("listening-{name}"));
+        std::fs::create_dir_all(dir.join("bin")).unwrap();
+        std::fs::copy(common::test_guest(), dir.join("bin/testguest")).unwrap();
+        std::fs::write(
+            dir.join("agent.json"),
+            format!(
+                r#"{{"name":"{name}","run":{{"command":["bin/testguest","confined","listen","{listens}"]}}}}"#
+            ),
+        )
+        .unwrap();
+        let tag = format!("127.0.0.1:{port}/team/listening-{name}:1");
+        let made = shards(&["build", "agent", dir.to_str().unwrap(), "-t", &tag]);
+        assert_eq!(made.status, Some(0), "{}", made.stderr);
+        let pushed = shards(&["push", "agent", &tag]);
+        assert_eq!(pushed.status, Some(0), "{}", pushed.stderr);
+        agents.push_str(&format!("AGENT {name} FROM {tag}\n"));
+    }
+    let ctx = context("listening-ctx", &format!("FROM {image}\n"));
+    std::fs::write(
+        ctx.join("Agentfile"),
+        format!(
+            "FROM {image}\n{agents}NETWORK --ingress=7100-7400 front\nNETWORK --ingress=7100-7400 back\n\
+             CONNECT web WITH web ON front\nCONNECT api WITH api ON front\nCONNECT ops WITH ops ON back\nCONNECT idle WITH idle ON back\n\
+             EXPOSE 7100 7200 7300 7400 AS ingress FOR front ops\n"
+        ),
+    )
+    .unwrap();
+    let built = shards(&["build", "-t", "listening:1", ctx.to_str().unwrap()]);
+    assert_eq!(built.status, Some(0), "{}", built.stderr);
+    let mut run = vec!["run", "-d", "--name", "listening"];
+    for p in [
+        "127.0.0.1::7100",
+        "127.0.0.1::7200",
+        "127.0.0.1::7300",
+        "127.0.0.1::7400",
+    ] {
+        run.extend(["-p", p]);
+    }
+    run.extend(["listening:1", "sleep"]);
+    let ran = shards(&run);
+    assert_eq!(ran.status, Some(0), "{}{}", ran.stdout, ran.stderr);
+    let listed = shards(&["port", "listening"]);
+    assert_eq!(listed.status, Some(0), "{}", listed.stderr);
+    let host_port = |container: &str| -> u16 {
+        listed
+            .stdout
+            .lines()
+            .find(|l| l.starts_with(&format!("{container}/tcp")))
+            .and_then(|l| l.rsplit(':').next())
+            .and_then(|p| p.parse().ok())
+            .unwrap_or_else(|| panic!("no {container} in {}", listed.stdout))
+    };
+    // What one connection reads, in 3 s at most.
+    let once = |p: u16| -> String {
+        let mut got = String::new();
+        if let Ok(mut c) = std::net::TcpStream::connect(("127.0.0.1", p)) {
+            let _ = c.set_read_timeout(Some(std::time::Duration::from_secs(3)));
+            let _ = c.read_to_string(&mut got);
+        }
+        got
+    };
+    // Once its agent listens: until then a connection finds no one.
+    let read = |p: u16| -> String {
+        let deadline = std::time::Instant::now() + TIMEOUT;
+        loop {
+            let got = once(p);
+            if !got.is_empty() || std::time::Instant::now() >= deadline {
+                return got;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+    };
+    // What the run and its agents said, where a port reached no one.
+    let said = || {
+        let logs = shards(&["logs", "listening"]);
+        format!("--- logs\n{}{}", logs.stdout, logs.stderr)
+    };
+    for (p, who) in [("7100", "web"), ("7200", "api"), ("7300", "ops")] {
+        let got = read(host_port(p));
+        assert_eq!(got, format!("hello from agent-{who}\n"), "port {p}\n{}", said());
+    }
+    // Every connection, not the first alone.
+    for _ in 0..20 {
+        assert_eq!(once(host_port("7100")), "hello from agent-web\n");
+        assert_eq!(once(host_port("7300")), "hello from agent-ops\n");
+    }
+    // idle listens on 7400, which no FOR gives it: nothing reaches it.
+    assert!(
+        !once(host_port("7400")).contains("agent-idle"),
+        "idle was reached"
+    );
+    // Which members each port is for, in shards' grammar.
+    let shown = shards(&["read", "ports", "listening"]);
+    assert_eq!(shown.status, Some(0), "{}", shown.stderr);
+    assert!(
+        shown.stdout.lines().any(|l| l.starts_with("7100/tcp")
+            && l.ends_with("the one listening of agent web; agent api; agent ops")),
+        "{}",
+        shown.stdout
+    );
+    let _ = shards(&["rm", "-f", "listening"]);
 }
 
 /// A TCP listener on a port of its own at every IPv4 address; where the host has none to
