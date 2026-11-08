@@ -1,0 +1,76 @@
+diff --git a/crates/init/src/run.rs b/crates/init/src/run.rs
+index 29633e609..910a9552d 100644
+--- a/crates/init/src/run.rs
++++ b/crates/init/src/run.rs
+@@ -208,10 +208,12 @@ pub fn main(device: &str, template: bool) -> ! {
+     let signals = dial(run::SIGNAL_PORT, false).ok();
+     let started = standby.and_then(|standby| {
+         let (spec, standby) = receive(&conn, standby)?;
++        let _ = crate::linux::control_write(control::MARKER, 37); // experiment: start markers
+         // What processes the run's members start and end (D123), listened to before any
+         // starts; none of a visit to a stopped microVM's files, which runs nothing.
+         let procs = (spec.builtin != run::builtin::HOLD)
+             .then(|| crate::procevents::Listener::new().map_err(|e| e.to_string()));
++        let _ = crate::linux::control_write(control::MARKER, 38); // experiment: start markers
+         let (mut workload, declared) = standby.start(&spec)?;
+         workload.procs = procs;
+         // A visit to a stopped microVM's files (`HOLD`, D37) runs nothing of the image's:
+@@ -2535,6 +2537,7 @@ impl Standby {
+     /// standby that has ended is replaced first. With it, the image's Agentfile as read
+     /// before the workload starts, for a run that starts its domains (D115).
+     fn start(self, spec: &Spec) -> Result<(Workload, Option<crate::domains::Read>), Failure> {
++        let _ = crate::linux::control_write(control::MARKER, 30); // experiment: start markers
+         // What its microVM may still plug, its run's own, which its VM set before its run
+         // came, where the kernel reports it (D149): before anything of the run's starts.
+         crate::plug::report_pluggable()
+@@ -2646,6 +2649,8 @@ impl Standby {
+             Born::Own
+         };
+         let mut status = 0;
++
++        let _ = crate::linux::control_write(control::MARKER, 39); // experiment: start markers
+         // SAFETY: waitpid(2) for our own child, without blocking.
+         let ended = unsafe { libc::waitpid(self.pid, &mut status, libc::WNOHANG) } == self.pid;
+         let standby = if ended || self.born != born {
+@@ -2746,7 +2751,9 @@ impl Standby {
+             .map(crate::engine::start)
+             .transpose()
+             .map_err(|e| setup_failed(format!("its microVM's engine: {e}")))?;
++        let _ = crate::linux::control_write(control::MARKER, 31); // experiment: start markers
+         let mut w = standby.launch(spec, false, setup, &inherited)?;
++        let _ = crate::linux::control_write(control::MARKER, 36); // experiment: start markers
+         if let (Some(hosts), Some(listener)) = (&hosts, w.binds.take()) {
+             hosts.listener(&listener, 0);
+         }
+@@ -2963,6 +2970,7 @@ impl Standby {
+         File::from(to_standby)
+             .write_all(&orders)
+             .map_err(|e| setup_failed(format!("starting the workload: {e}")))?;
++        let _ = crate::linux::control_write(control::MARKER, 32); // experiment: start markers
+         // The error channel closes on exec: a report on it means the workload never
+         // started.
+         let Said {
+@@ -3066,6 +3074,7 @@ fn standby(ends: Ends, isolation: Isolation) -> ! {
+     let mut bytes = Vec::new();
+     let got = File::from(orders).read_to_end(&mut bytes);
+     let decoded = got.ok().and_then(|_| Orders::decode(&bytes));
++    let _ = crate::linux::control_write(control::MARKER, 33); // experiment: start markers
+     let built = decoded.and_then(|mut o| {
+         // Its TERM, where it is to be chosen: the first of its client's terminal types
+         // this root describes, else the last (terms.rs).
+@@ -5424,6 +5433,7 @@ unsafe fn child(c: &Child<'_>) -> ! {
+                 fail(step::SECCOMP);
+             }
+         }
++        let _ = crate::linux::control_write(control::MARKER, 34); // experiment: start markers
+         for (i, path) in c.candidates.iter().enumerate() {
+             // Go's findExecutable: a file that is not a directory, executable by us.
+             let mut st: libc::stat = std::mem::zeroed();
+@@ -5446,6 +5456,7 @@ unsafe fn child(c: &Child<'_>) -> ! {
+                 }
+                 continue;
+             }
++            let _ = crate::linux::control_write(control::MARKER, 35); // experiment: start markers
+             libc::execve(path.as_ptr(), c.argv, c.envp);
+             report(c.err, step::EXEC, i);
+         }

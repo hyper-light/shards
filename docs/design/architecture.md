@@ -15072,6 +15072,15 @@ receiver for an incoming port" above:
   programs, choosing once for them all. The chains stay rebuilt whole: what a commit of
   them costs now is M513's after-run, which decides whether a map keyed by port is
   worth its code.
+- **A run's start closes no netfilter socket (PM M513).** The commits a run makes before
+  its command executes were each on a socket opened for them and closed after, a grace
+  period each where its start makes them: its confinement (`confine_eth0`, an image whose
+  agents reach past the microVM), the host's loopback (`net::host_loopback`, D124), the
+  agents' way past the microVM in init's namespace (`outside`, `outside6`) and each
+  domain's gate (`attach_ns`), and a member's gate as its engine changes it (`regate`).
+  Init's own namespace's are made on one socket kept for its life (links.rs `INIT_NFT`),
+  let go only where an exchange fails; each gate keeps its own with its namespace.
+  Before and after: the start-path trace of a run of each kind, owed.
 - **Not yet**: ports past the microVM are IPv4's alone (D99). The costs (PM M498) are
   unmeasured: a build step's device cgroup (`docs/research/measurements/step-devices/run.py`)
   and the chooser's round trip after M513 (`step-devices/chooser.sh`).
@@ -19760,10 +19769,10 @@ work (p50):
 
 | Step | Cost | Evidence |
 |---|---|---|
-| The client's launch: spawn to `main` of the 160 MB PIE `shards` (0.57 for `/usr/bin/true`; 180 more page faults, 125 of them its relocated read-only data) | 1.5–1.6 ms | [PM M470] |
+| The client's launch: spawn to `main` of the 160 MB PIE `shards` (0.57 for `/usr/bin/true`; 180 more page faults, 125 of them its relocated read-only data, about 1.8 µs a page at load 2; its size costs nothing, and RELR takes the relocations' table but not the pages they write, PM M514) | 1.5–1.6 ms | [PM M470, M514] |
 | The client: its request written to its slot | 0.37 ms | [PM M470] |
 | The daemon's slot thread reads it, bridges it to its handling | 0.18 ms | [PM M470, D185] |
-| The daemon prepares the run (image, spec), makes its container, keeps its request, sets it up | 1.1 ms (0.55, 0.19, 0.13, 0.20) | [PM M470] |
+| The daemon prepares the run (image, spec), makes its container, keeps its request, sets it up; the host's CPUs read once for all of it (`Prepared::cpus`; on Linux each read walks the daemon's cgroups, and the start read them six times; the cut unmeasured) | 1.1 ms (0.55, 0.19, 0.13, 0.20) | [PM M470] |
 | Its network process told (E1) | 0.07 ms | [PM M470] |
 | The hand-over to the warm VM, TAKEN (13.5 ms before its descriptor room, M470) | 0.14–0.17 ms | [PM M470] |
 | The guest starts the command: init takes the request 0.49, its names' files 0.48, the standby woken and set up 0.55, the exec until init hears it 1.67 | 2.5–3.5 ms | [PM M470, M292, M440] |

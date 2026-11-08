@@ -20190,3 +20190,64 @@ revision before comparing a changed API/implementation.
   keyed by port is worth its code. Init's setup paths still close a socket after each of
   their commits (links.rs's switch and gates, `net::host_loopback`), a grace period each,
   once a run.
+
+### M514. What a launch of the 150 MB `shards` costs on Linux: its relocated data, and RELR (the start path, PM M470)
+
+- **Question.** M470 put a pooled run's client launch at 1.57 ms at load 30 (spawn to
+  `main`), 180 page faults more than a small Rust program, 125 of them its 500 KB of
+  relocated read-only data. Without giving up PIE and ASLR, does packing its relative
+  relocations (RELR, `-z pack-relative-relocs`) cut it, and what does relocated data
+  cost a launch at all?
+- **Method.** `docs/research/measurements/launch-relocs/launch.py`: each command spawned
+  and reaped 500 times after 20 warm-ups, the commands in turn, the spawn to the reap and
+  the minor and major faults of each (the children's rusage); n, p50, p90, p99, max.
+  `shards --version` of a release build at a5194c83 (`SHARDS_HELPERS=skip`, 152,622,496
+  bytes) and the same build's binary linked again with `-C link-arg=-Wl,-z,pack-relative-
+  relocs` (`cargo rustc --release --bin shards`, 152,024,592 bytes); `/usr/bin/true`; and
+  three release Rust programs, `panic = "abort"`, that print a line: `hello`; `big`, with
+  150,000,000 random bytes included (`include_bytes!`); `rel`, with a static table of
+  31,000 `&str`s (`.data.rel.ro` 503,088 bytes). The dynamic loader's own counts and
+  cycles by `LD_DEBUG=statistics`; sections by `readelf`. fedora-2 (Intel Core
+  i9-14900HX, 32 CPUs), Fedora 44, Linux 6.19.10-300.fc44, glibc 2.43, load 2.0 to 2.4,
+  2026-11-08.
+- **Results** (ms, then minor faults; no major fault but one):
+
+  | run | command | n | p50 | p90 | p99 | max | faults p50 |
+  |---|---|---|---|---|---|---|---|
+  | 1 | `/usr/bin/true` | 500 | 0.412 | 0.487 | 0.650 | 0.808 | 57 |
+  | 1 | `hello` | 500 | 0.529 | 0.625 | 0.739 | 0.833 | 78 |
+  | 1 | `shards --version` | 500 | 0.949 | 1.066 | 1.206 | 1.311 | 258 |
+  | 1 | the same, RELR | 500 | 0.982 | 1.104 | 1.256 | 1.447 | 249 |
+  | 2 | `hello` | 500 | 0.531 | 0.651 | 0.874 | 1.239 | 78 |
+  | 2 | `big` (150 MB included) | 500 | 0.538 | 0.650 | 0.961 | 1.285 | 79 |
+  | 2 | `rel` (31,000 relocated `&str`s) | 500 | 0.770 | 0.927 | 1.395 | 1.693 | 210 |
+  | 2 | `shards --version` | 500 | 0.949 | 1.131 | 1.801 | 2.039 | 258 |
+
+  - RELR: `.rela.dyn` 613,680 bytes to 5,712, beside a `.relr.dyn` of 8,120; the dynamic
+    loader's relative relocations 25,336 to 4; its startup 167,974 to 150,206 cycles, its
+    relocation 108,502 to 93,290 (`hello`: 42,294 and 4,971; `rel`: 124,654 and 82,997).
+    `.data.rel.ro` stays 504,648 bytes, every page of it written at each launch either way.
+    It needs glibc 2.36's `GLIBC_ABI_DT_RELR`, which costs no host: v0.7.0's glibc
+    assets need GLIBC_2.39 already (`readelf -V`).
+  - What shards' 25,064 relative relocations point at (v0.7.0's x86_64 glibc asset):
+    15,795 data (string and slice pointers of tables, format pieces and constants), 4,665
+    functions (vtables; `core` 761, the vendored `hyper_tls` 523, shards 447, `std` 420,
+    `rustls` 394, the rest under 240 a crate), 3,497 panic locations' file names (2,689
+    of them crates.io's), 875 other relocated data; the largest named object, AWS-LC's
+    `kObjects`, 39,960 bytes. No table of shards' own holds more than a few pages.
+- **Reading.**
+  - The binary's size costs a launch nothing: 150 MB included, 0.007 ms and one fault.
+  - Relocated data does: 31,000 relocations, 132 faults more (123 pages written, the
+    rest the table read), cost 0.24 ms at p50 on this host, about 1.8 µs a fault. shards'
+    504 KB of it, as many pages, is most of its 0.42 ms over `hello`; the rest is its 48
+    faults past those.
+  - RELR takes the relocations' table (600 KB, 9 faults) and not the pages they write:
+    no launch time came of it (0.949 against 0.982 ms at p50, interleaved). Not taken.
+  - What is left to cut is the relocated data itself, spread over every crate: the
+    vtables, panic locations and string tables of the whole dependency tree, none a
+    large share alone; stable Rust has no flag that drops panic locations
+    (`-Zlocation-detail` is nightly's).
+- **Owed.** The same on arm64 Linux and musl's static-pie builds; macOS's launch through
+  `macos-sched/launchd-run.sh` (its binary is chained fixups already, `LC_DYLD_CHAINED_
+  FIXUPS` at minimum macOS 15: 27,727 fixups in `__DATA_CONST,__const`, 33 pages of 16
+  KiB); Windows', whose loader applies PE base relocations, unmeasured.
