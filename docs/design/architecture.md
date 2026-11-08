@@ -9785,6 +9785,64 @@ the guest keeps their metadata alone.
   is not sure, 2 to 4 MiB on Linux and 6 to 8 on macOS, the two were within a few ms of
   each other. The two E2E tests give their home records that cross at 4 MiB
   (`common::restarts_cross_at`), their 8 MiB layers past it, their small one below.
+- **Records that age** (2026-11-08). A host whose disk or load changes kept its first
+  restarts' records beside its last, and its lines described a machine that no longer
+  existed. Now each way keeps, beside its line, the records since its last that fell
+  outside it, held out of it (`layers::Way`), and three in a row restart its learning
+  from them: the line becomes theirs, every record before gone. A record is outside by
+  the line's own spread: its distance from the line over `s·√(1 + 1/n + (x − x̄)²/Sxx)`, the
+  spread a new record has about a least-squares line (its residuals' variance and the
+  estimate's together), is Student's t with the line's degrees of freedom while nothing
+  changes (Brown, Durbin and Evans 1975, "Techniques for testing the constancy of
+  regression relationships over time", JRSS B 37(2): the recursive residual, their test of
+  a regression's constancy as records arrive), and it is outside where t's two-sided tail
+  past it is below `1/(n + 1)`. That level is the records' own count: of the line's `n`
+  records and this one, alike while nothing changes, the newest is the farthest out with
+  that chance, so a record past it is farther than the farthest of `n + 1` is expected to
+  be once (the rank argument of conformal prediction, Vovk, Gammerman and Shafer 2005,
+  *Algorithmic Learning in a Random World*, ch. 2). Three in a row are the least records
+  that make a line with a residual, the line learning restarts from; while nothing
+  changes they come with a chance of about `(n + 1)^-3` (about: the three are tested
+  against one line, whose `s` they share), whose sum over a line's whole life is finite,
+  so that a host whose restarts stay alike restarts its learning finitely often, and
+  almost all of that while its line holds a few records. A record within the spread puts
+  those held out back into the line with itself (their counts, means and co-moments
+  merged: Chan, Golub and LeVeque 1979), as the line's own tail; dropping them instead
+  narrows the line until noise alone restarts it. t's tail is the regularized incomplete
+  beta function, `I_x(ν/2, 1/2)` at `x = ν/(ν + t²)` (Numerical Recipes, 2nd ed., eq.
+  6.4.9), by its continued fraction (DLMF 8.17.22) and Lentz's method (Numerical Recipes
+  §5.2, §6.4), its log-gamma musl's (the `libm` crate). The home keeps the held-out
+  records as lines of their own in `restarts` (`packed-outside`, `over-outside`), which a
+  daemon before passes over, and reads a home written before as nothing held out
+  (`records_held_out_are_kept_and_merge_back`). The log says each restart of learning.
+  Unit tests hold it with seeded records about Linux's packing (PM M443: 52 ms and 10.6 a
+  MiB, its noise Linux's p50 to p90 at 0 B as a normal's, sizes the tables' at random):
+  noise alone, normal, restarts no learning once a line holds 30 records in 32 lives of
+  2,000; a log-normal tail, its p99 several times its p50's distance, which the normal
+  test underrates, in 2 of them, three slow restarts in a row being a burst of load that
+  the line follows and comes back from (`a_line_keeps_its_records_through_noise_alone`);
+  60 ms more at every size restarts learning within 10 records in all 32 lives, and
+  packing's cost a byte doubled within 100 in 30 of the 32, after which the line says what
+  restarts take now (`a_line_follows_its_host_when_its_level_or_slope_moves`; Fedora,
+  647f162e).
+  A slope's change is the slower to find: records at the sizes it moves least stay
+  within the spread and break the runs, and those a broken run puts back widen the line.
+  A change smaller than the line's spread is no change to it: the line takes it in, as
+  least squares does. PM M443's and M496's tables, given in size order, restart a line of
+  their first three, which says little of their largest, where the costs curve: their
+  test holds the lines alone.
+
+  | Literal | Where | From |
+  |---|---|---|
+  | `1/(n + 1)` | the level a record is outside at | the line's `n` records and this one: the chance that the newest of `n + 1` alike is the farthest (Vovk, Gammerman and Shafer 2005) |
+  | `s²(1 + 1/n + (x − x̄)²/Sxx)` | a new record's variance about the line | least squares' prediction variance; Brown, Durbin and Evans 1975's recursive residual |
+  | `n − 2` (`n − 1` at one size) | t's degrees of freedom | the residual's: two estimated for intercept and slope (one, a mean, where every layer held one size) |
+  | 3 (`RESTART_FROM`) | outside records in a row that restart learning | the least that make a line with a residual: two for its intercept and slope, one for the residual (as D190's lines need to answer) |
+  | `I_x(ν/2, 1/2)`, `x = ν/(ν + t²)` | t's two-sided tail | Numerical Recipes, 2nd ed., eq. 6.4.9 |
+  | `(a + 1)/(a + b + 2)` | where the continued fraction is taken of `x`, else of `1 − x` | Numerical Recipes §6.4: where it converges quickly |
+  | `f64::EPSILON` | when the continued fraction has converged | a term that changes it by less than an `f64` tells apart |
+  | `f64::MIN_POSITIVE` | a denominator kept off zero | Lentz's method (Numerical Recipes §5.2), the least normal `f64` |
+  | `max(a, b) + 1` | the continued fraction's terms at most | past the `O(√max(a, b))` it needs (Numerical Recipes §6.4): a count read from a damaged file ends |
 - **On Windows, a view in place of a view** (row 18 of the parity audit). Windows maps no
   file over a mapping as `mmap(MAP_FIXED)` does: a view is made at an address that is free
   (MapViewOfFile3), and a range unmapped then mapped again is free between the two calls,
@@ -9836,9 +9894,9 @@ the guest keeps their metadata alone.
 
 **Next** (the slices after these).
 - Visits and joiners' runs over the kept file too.
-- Records that age: a host whose disk or load changes keeps its first restarts' records
-  beside its last (change detection on each way's residuals, so that a line follows its
-  host).
+- A changed host's restarts, timed: the ageing's records and its restarts of learning
+  read from a home whose disk or load is changed under it (the unit tests' records are
+  seeded).
 - Going over's fixed cost below packing's, so that a layer holding little goes
   over too: the mount of the kept file system and its one host flush, and the root's
   two moves (PM M443); on Windows its 233 ms, unmeasured step by step (PM M496).
