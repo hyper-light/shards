@@ -5,12 +5,12 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::Ordering;
-use std::sync::{Mutex, PoisonError};
+use std::sync::{Condvar, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use shards_vmm::platform::PressureWatches;
 
-use super::health::Quiet;
+use super::health::{Quiet, Wait};
 use super::{Daemon, RunState, TAKE_TIMEOUT, Threads, lock, log};
 use crate::containers::Disk;
 use crate::pressure::Pressure;
@@ -31,6 +31,8 @@ pub(super) struct Watching {
     /// keeps no other's from the host (PM M308: a pass that waited on each in turn gave
     /// back 3 times in 600 s).
     giving: Mutex<HashSet<String>>,
+    /// Woken as one of them ends its give-back ([`Daemon::give_after`]).
+    given: Condvar,
     /// What they gave back since it was last said.
     unsaid: Mutex<Unsaid>,
 }
@@ -183,17 +185,18 @@ impl<D: Disk> Daemon<D> {
                     .name("give-back".into())
                     .spawn_scoped(threads, move || {
                         let before = super::budget::resident_file(pid);
-                        let gave = self.give_back_of(&id);
-                        lock(&self.watching.giving).remove(&vm);
+                        let gave = self.give_back_of(&id, Wait::WhileRuns(pid));
+                        self.given_back(&vm);
                         if let Some(gave) = gave {
                             self.budgets.gave_back(pid, before, gave.freed);
+                            self.budgets.gave_at_pressure(pid, gave);
                             self.gave(gave);
                         }
                         // What it gave back its budget may let it have again (D188).
                         self.tell_room(threads, pid);
                     });
             if let Err(e) = spawned {
-                lock(&self.watching.giving).remove(&gone);
+                self.given_back(&gone);
                 log(format!(
                     "container {gone}: giving back what it holds cold: its thread: {e}"
                 ));
@@ -207,14 +210,17 @@ impl<D: Disk> Daemon<D> {
         self.say_given();
     }
 
-    /// What microVM `id` gave back of what it holds cold, asked through it;
-    /// none where it gave nothing back, and why said.
-    pub(super) fn give_back_of(&self, id: &str) -> Option<Gave> {
+    /// What microVM `id` gave back of what it holds cold, asked through it and waited for
+    /// as `wait` says; none where it gave nothing back, and why said.
+    pub(super) fn give_back_of(&self, id: &str, wait: Wait) -> Option<Gave> {
         let spec = shards_abi::run::Spec {
             builtin: shards_abi::run::builtin::RECLAIM,
             ..Default::default()
         };
-        match self.exec_quietly(id, &spec, None, 64, TAKE_TIMEOUT) {
+        let asked = Instant::now();
+        let quiet = self.exec_waiting(id, &spec, None, 64, wait);
+        said_if_long(id, "giving back what it holds cold", asked.elapsed());
+        match quiet {
             Ok(q) => match given(&q) {
                 Ok(gave) => Some(gave),
                 Err(why) => {
@@ -265,6 +271,17 @@ impl<D: Disk> Daemon<D> {
     }
 }
 
+/// Says that an exec of the daemon's own in container `id` took past [`TAKE_TIMEOUT`]; each
+/// at debug.
+pub(super) fn said_if_long(id: &str, what: &str, took: Duration) {
+    shards_vmm::debug!("container {id}: {what}: answered after {took:?}");
+    if took > TAKE_TIMEOUT {
+        log(format!(
+            "container {id}: {what}: answered after {took:?}, its microVM running"
+        ));
+    }
+}
+
 /// What a microVM's give-back said it gave: the bytes of files its run's cgroup holds less,
 /// then the bytes plugged it asked to unplug (init's `RECLAIM`); else why it gave nothing.
 /// Its answer whole, its line ended, is what it gave however late its exec's own end came:
@@ -310,7 +327,7 @@ pub(super) struct Gave {
 }
 
 impl Gave {
-    fn and(self, other: Gave) -> Gave {
+    pub(super) fn and(self, other: Gave) -> Gave {
         Gave {
             freed: self.freed.saturating_add(other.freed),
             unplugging: self.unplugging.saturating_add(other.unplugging),
@@ -319,10 +336,26 @@ impl Gave {
 }
 
 impl<D: Disk> Daemon<D> {
-    /// The microVMs giving back now, by their own IDs: one asked to give back
-    /// is asked nothing more until it has answered or been ended.
-    pub(super) fn watching_giving(&self) -> &Mutex<HashSet<String>> {
-        &self.watching.giving
+    /// Has microVM `vm` (by its own run's ID) give back next, once a give-back of it under
+    /// way has ended: a budget falling short asks it for what its host's pressure may be
+    /// taking back already, and its word says what it gave once that has ended (PM M467).
+    /// Its give-back is ended with [`given_back`](Self::given_back).
+    pub(super) fn give_after(&self, vm: &str) {
+        let mut giving = lock(&self.watching.giving);
+        while giving.contains(vm) {
+            giving = self
+                .watching
+                .given
+                .wait(giving)
+                .unwrap_or_else(PoisonError::into_inner);
+        }
+        giving.insert(vm.to_string());
+    }
+
+    /// MicroVM `vm`'s give-back has ended: it may be asked again.
+    pub(super) fn given_back(&self, vm: &str) {
+        lock(&self.watching.giving).remove(vm);
+        self.watching.given.notify_all();
     }
 }
 

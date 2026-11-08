@@ -6472,8 +6472,20 @@ host (PM M267), where a container's page cache is its host's to drop. Free page 
   before asked nothing more until it has answered or been ended: passes that asked one
   microVM after another, each waiting up to 10 s for an answer and then for its end,
   waited on a guest whose own memory its host had taken for minutes, and gave back 3 times
-  in 600 s (PM M308). One with no answer within 10 s is said to have had none, and is
-  ended.
+  in 600 s (PM M308). Each is waited for as long as its microVM's process runs (more CPU
+  in each 10 s than an idle microVM takes, M357's bound, as D209's waits judge a start),
+  and one that runs nothing for 10 s is said to have had no answer, and is ended: a
+  microVM over its budget's `memory.high` is slowed by its host for as long as it is over
+  it, and the answers of one asked to give back what would bring it under, and to hear
+  its room after, came past a 10 s deadline as its host let it run, which ended them, its
+  budget's word never said or saying nothing given back (PM M467). A group's give-backs,
+  macOS's and Windows', which no kernel slows, keep the 10 s.
+- **A budget falling short waits for its host's give-back** (PM M467): where a give-back
+  of the host's pressure is under way in the microVM, the budget's own asks once it has
+  ended, its room read again; and its word says what its host's pressure had it give back
+  and ask to unplug since the word before, which the host's own word says once a minute
+  at most: a budget set just after the host had taken what it held cold found nothing to
+  give back, and its word said nothing given back.
 - **Held within what its budget leaves it** (PM M309). Where the cgroup a microVM's VM
   process is in, or one above it, holds it to a budget (`memory.high` or `memory.max`, a
   slice's `MemoryHigh` or `MemoryMax`, D183), the host can take back only page cache from
@@ -10408,9 +10420,25 @@ peer", each going on here as it should. What changed for them:
   with it, and a plan carries it (`Plan::baseline`): the machine moved to checks each field
   against what its own hypervisor shows (`covers`), not the machine it ran on's whole set;
   and by name only the features no register of the baseline can hide, on
-  Hypervisor.framework ID_AA64ISAR2_EL1's (FEAT_WFxT, FEAT_RPRES, FEAT_CSSC, FEAT_HBC), which
-  it neither says nor lets a VMM set (PM M460, `feature_register`). On arm64 only: x86_64's
-  CPUID has `covers` and no meet yet, and `configure cpu` says so there.
+  Hypervisor.framework ID_AA64ISAR2_EL1's, which it neither says nor lets a VMM set (PM
+  M460, `feature_register`): FEAT_CSSC and FEAT_HBC. Its FEAT_WFxT and FEAT_RPRES the
+  framework shows no guest where macOS names them (an M4 Max's guest finds no `wfxt`, an M3
+  Ultra's and an M4 Max's no `rpres`, PM M499), so no move checks them, and the baseline
+  test holds it on each Mac it runs on. A guest is shown less than the features macOS
+  names in registers the framework does say too (an M4 Max's finds no `i8mm`, ISAR1's),
+  which a baseline's fields, the hypervisors' own views, take in. On
+  arm64 only: x86_64's CPUID has `covers` and no meet yet, and `configure cpu` says so
+  there; between the two Linux hosts measured (one CPU model, Linux 7.2 and 7.3) every move
+  went through without one (PM M497).
+- **A listener that outlives its runner's restarts** (two-hosts.sh, the harness of these
+  measurements). A runner that restarts ends what its runs started, the listening daemon
+  among them, and kiln's ends a launchd job a session starts within seconds (3 s on the M3
+  Ultra, PM M499), so no process of a run outlives it there. What does is the listening
+  home: `listen` run again on it listens as the same daemon, its key and the clients it
+  enrolled kept, inviting none, and the mover's series waits for it (`WAIT_PEER`), moving
+  again a move whose error says the daemon was gone (`PEER_GONE`), counted apart from the
+  failures; a hold restarts a daemon that ends while it lives. `two-hosts.sh restart` holds
+  it on one machine (PM M499).
 
 Between two machines on a wired gigabit link (two AMD Ryzen 9 9950X3D2 hosts, Linux 7.3.3
 to 7.2.9, KVM), n 20 cold: a move took 0.95 s at p50, 1.16 at p90 and 9.99 at most, and
@@ -17144,6 +17172,29 @@ Measured differences, kept:
 - Rule indices with more than 8 distinct refs or keys range over Go's larger maps in
   hash order, which can't be reproduced. Lookups there may list rules in another of the
   orders OPA could take.
+
+Hostile policies. A policy may be anyone's (a remote context's, D111), so the engine is
+held to more than OPA's answers:
+- No panic (the workspace's lints), and no stack overflow: the policy thread's stack is
+  measured (M126), and an evaluation deeper than it ends in an error.
+- Two fuzz targets run it on what a policy can send: `fuzz/fuzz_targets/rego.rs`, a
+  policy's text and input through the parser, compiler and evaluation (partial and
+  whole), and `rego-builtins.rs`, any builtin with any operands. CI runs each for 60 s
+  with the other targets. Twenty minutes of each found no panic (M510).
+- Work that grew faster than OPA's, or as fast where it need not, was found by fuzzing
+  and M160's shapes and taken out, each holding OPA's answers: glob.match's
+  minimizeMatchers (cubic in a pattern's matchers in gobwas and OPA: 50.8 s for a 6 KB
+  pattern, now 6.5 ms); the type checker checking each comprehension again for each
+  walk that meets it (three times as long each level: 12 deep 3.25 s, now 0.5 ms); the
+  safety check's and print rewrite's outputs read again for each expression, and each
+  equality copying the whole safe set (cubic: 1000 closures in a body 42 s, now 0.48 s).
+- Left, as OPA's: rewriteLocalVars walks an `every` statement again after its body and
+  numbers the comprehensions within it anew, twice the work each level they alternate
+  (20 deep 9.3 s; OPA takes 7 minutes at 12), and the numbers are in what OPA compiles
+  and partial evaluation leaves, so a shortcut must number as the walk does; rule wrap's
+  type check is quadratic (10000 rules 24.9 s). Evaluation asks no bound of a policy, as
+  OPA's does not (`numbers.range` over any span); a build's policies run in its own
+  process, which Ctrl-C ends, as buildx's end with its build's context.
 
 ### D97. OSI artifacts of several platforms: an index
 
