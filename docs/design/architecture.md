@@ -17617,13 +17617,18 @@ held to more than OPA's answers:
   `compile/fast_tests.rs` (4000 policies made at random, and M510's shapes, compiled
   both ways), and to OPA by the oracle. Also linear now: an `every` statement declaring
   after the one within (quadratic: each level's walk again, never skippable as the
-  scope had changed). OPA's counter is a Go int, which wraps: 64 alternating levels
-  generate more than 2^64 names, and past that names repeat, as OPA's would, were it to
-  live so long. The rule wrap's type check was quadratic (10000 rules 24.9 s): each
+  scope had changed). OPA's counter is a Go int: past about 62 alternating levels a
+  rule needs more names than it numbers (OPA's would go negative and repeat, were it to
+  live the 2^63 steps), and such a rule fails to compile with an error of its own
+  (`rule ... nests every statements and comprehensions deeper than its local variables
+  can be numbered`), the counts checked as they add, never rewritten OPA's way, which
+  would not end. The rule wrap's type check was quadratic (10000 rules 24.9 s): each
   rule's type copied the type of the rule within whole, the check of each equality
   asked whether any part of a type is not known (types.Nil) by walking it, and a
   node's children were searched from the first. A type's parts are shared now, as
-  OPA's pointers are, each keeping whether any of it is unknown, and a node finds a
+  OPA's pointers are (within a compile: the builtins' declarations, every thread's, are
+  kept as OPA's JSON and made types for each compile), each keeping whether any of it is
+  unknown, and a node finds a
   child by name, as OPA's typeTreeNode does with its map. The times after: owed, the
   nesting bench's M510 inputs and deeper (`rego-nesting/run.sh`).
 - Left: a rule whose local-variable rewrite errs is rewritten OPA's way, so an

@@ -11,9 +11,11 @@ use super::{COMPILE_ERR, CompileError};
 use crate::ast::{Body, Expr, ExprTerms, Location, Rule, Shared, TemplatePart, Term, TermValue};
 
 /// localVarGenerator: `__local<n>__`, skipping names the modules use. Its `n` is Go's
-/// `int`, so past `i64::MAX` it goes on from `i64::MIN`, as OPA's would; the names the
-/// modules use are skipped from the numbers not negative (a module's `__local-1__` matters
-/// only after 2^63 names, which OPA would not live to generate).
+/// `int`: past `i64::MAX` OPA's names would go negative and repeat. No rule reaches that
+/// in OPA's time (the names it generates double with each level an `every` statement and
+/// a comprehension alternate, and OPA takes 7 minutes for 12 levels, PM M160), but the
+/// counts [`Fast`] passes over do: asked for a name past it, the generator says so
+/// (`overflowed`) and the rule fails to compile with an error of its own.
 #[derive(Debug, Clone)]
 pub struct LocalVarGen {
     /// The numbers whose names the modules use, ascending.
@@ -21,7 +23,11 @@ pub struct LocalVarGen {
     prefix: String,
     /// How many names have been generated, or passed over by [`LocalVarGen::advance`].
     calls: u64,
+    overflowed: bool,
 }
+
+/// The greatest number of OPA's counter, Go's `int`.
+const MAX_NUMBER: u64 = i64::MAX.unsigned_abs();
 
 impl LocalVarGen {
     pub fn new(exclude: VarSet, suffix: &str) -> LocalVarGen {
@@ -40,20 +46,24 @@ impl LocalVarGen {
             taken,
             prefix,
             calls: 0,
+            overflowed: false,
         }
     }
 
     pub fn generate(&mut self) -> Var {
         let v = self.name_at(self.calls);
-        self.calls = self.calls.wrapping_add(1);
+        if self.number_at(self.calls).is_none() {
+            self.overflowed = true;
+        }
+        self.calls = self.calls.saturating_add(1);
         v
     }
 
-    /// The name the `k`th generation gives: the `k`th number no module's name takes. A
-    /// taken number lies below it where its place among the numbers not taken is `k` or
-    /// less (`taken[i] - i` of them lie below `taken[i]`), so the count of those, `j`, is
-    /// found by halving, and the name's number is `k + j`.
-    pub fn name_at(&self, k: u64) -> Var {
+    /// The number the `k`th generation gives, none past OPA's counter: the `k`th number
+    /// no module's name takes. A taken number lies below it where its place among the
+    /// numbers not taken is `k` or less (`taken[i] - i` of them lie below `taken[i]`), so
+    /// the count of those, `j`, is found by halving, and the number is `k + j`.
+    fn number_at(&self, k: u64) -> Option<u64> {
         let (mut lo, mut hi) = (0usize, self.taken.len());
         while lo < hi {
             let mid = lo + (hi - lo) / 2;
@@ -67,8 +77,14 @@ impl LocalVarGen {
                 hi = mid;
             }
         }
-        let n = k.wrapping_add(lo as u64);
-        format!("{}{}__", self.prefix, i64::from_ne_bytes(n.to_ne_bytes())).into()
+        k.checked_add(lo as u64).filter(|n| *n <= MAX_NUMBER)
+    }
+
+    /// The name the `k`th generation gives (past OPA's counter, its greatest: the rule
+    /// fails to compile, see `overflowed`).
+    pub fn name_at(&self, k: u64) -> Var {
+        let n = self.number_at(k).unwrap_or(MAX_NUMBER);
+        format!("{}{n}__", self.prefix).into()
     }
 
     /// How many names have been generated.
@@ -78,12 +94,24 @@ impl LocalVarGen {
 
     /// Passes over `n` names, as generating them would.
     pub fn advance(&mut self, n: u64) {
-        self.calls = self.calls.wrapping_add(n);
+        match self.calls.checked_add(n) {
+            Some(c) if n == 0 || self.number_at(c - 1).is_some() => self.calls = c,
+            _ => {
+                self.overflowed = true;
+                self.calls = self.calls.saturating_add(n);
+            }
+        }
+    }
+
+    /// Whether a name was asked for past OPA's counter since the last rewind.
+    pub fn overflowed(&self) -> bool {
+        self.overflowed
     }
 
     /// Back to where `calls` names had been generated.
     pub fn rewind(&mut self, calls: u64) {
         self.calls = calls;
+        self.overflowed = false;
     }
 }
 
@@ -379,8 +407,8 @@ struct NodeInfo {
     _body: std::rc::Weak<Body>,
     /// How many names a walk of it generates: of a comprehension, a walk of it; of an
     /// `every` statement, rewriteDeclaredVarsInExpr's of it (`walk`) and
-    /// rewriteEveryStatement's (`whole`). Wrapping: a walk 64 levels deep generates more
-    /// than 2^64, and OPA's counter, an int, wraps.
+    /// rewriteEveryStatement's (`whole`). Saturating: a walk 64 levels deep generates more
+    /// than 2^64, far past what OPA's counter numbers (see [`LocalVarGen`]).
     walk: Option<u64>,
     whole: Option<u64>,
     record: Option<Record>,
@@ -446,7 +474,7 @@ impl Fast {
         match self.node(body).and_then(|n| n.record) {
             Some(r) if r.time > c.time => Ctx {
                 time: r.time,
-                delta: (!r.orig).then(|| here.wrapping_sub(r.start)),
+                delta: (!r.orig).then(|| here.saturating_sub(r.start)),
             },
             _ => c,
         }
@@ -481,7 +509,7 @@ impl Fast {
     fn touch_g(&self, terms: &[&mut Term], body: &[Expr]) -> Option<u64> {
         let mut n = self.body_g(body)?;
         for t in terms {
-            n = n.wrapping_add(self.term_g(t)?);
+            n = n.saturating_add(self.term_g(t)?);
         }
         Some(n)
     }
@@ -496,7 +524,7 @@ impl Fast {
                 _ if e.is_assignment() || e.is_some() => return None,
                 _ => self.walk_g(e)?,
             };
-            n = n.wrapping_add(g);
+            n = n.saturating_add(g);
         }
         Some(n)
     }
@@ -511,8 +539,8 @@ impl Fast {
         };
         for w in &e.with {
             n = n
-                .wrapping_add(self.term_g(&w.target)?)
-                .wrapping_add(self.term_g(&w.value)?);
+                .saturating_add(self.term_g(&w.target)?)
+                .saturating_add(self.term_g(&w.value)?);
         }
         Some(n)
     }
@@ -522,17 +550,17 @@ impl Fast {
         let ExprTerms::Every(ev) = &e.terms else {
             return self.walk_g(e);
         };
-        let mut n = self.term_g(&ev.value)?.wrapping_add(self.term_g(&ev.domain)?);
+        let mut n = self.term_g(&ev.value)?.saturating_add(self.term_g(&ev.domain)?);
         if let Some(k) = &ev.key {
-            n = n.wrapping_add(self.term_g(k)?);
+            n = n.saturating_add(self.term_g(k)?);
         }
         for b in ev.body.iter() {
-            n = n.wrapping_add(self.walk_g(b)?);
+            n = n.saturating_add(self.walk_g(b)?);
         }
         for w in &e.with {
             n = n
-                .wrapping_add(self.term_g(&w.target)?)
-                .wrapping_add(self.term_g(&w.value)?);
+                .saturating_add(self.term_g(&w.target)?)
+                .saturating_add(self.term_g(&w.value)?);
         }
         Some(n)
     }
@@ -547,16 +575,16 @@ impl Fast {
         let kv = u64::from(ev.key.as_ref().is_none_or(declares)) + u64::from(declares(&ev.value));
         Some(
             self.term_g(&ev.domain)?
-                .wrapping_add(kv)
-                .wrapping_add(self.body_g(&ev.body)?)
-                .wrapping_add(walk),
+                .saturating_add(kv)
+                .saturating_add(self.body_g(&ev.body)?)
+                .saturating_add(walk),
         )
     }
 
     fn terms_g(&self, ts: &[Term]) -> Option<u64> {
         let mut n = 0u64;
         for t in ts {
-            n = n.wrapping_add(self.term_g(t)?);
+            n = n.saturating_add(self.term_g(t)?);
         }
         Some(n)
     }
@@ -581,7 +609,7 @@ impl Fast {
             TermValue::Object(o) => {
                 let mut n = 0u64;
                 for (k, v) in o.iter() {
-                    n = n.wrapping_add(self.term_g(k)?).wrapping_add(self.term_g(v)?);
+                    n = n.saturating_add(self.term_g(k)?).saturating_add(self.term_g(v)?);
                 }
                 Some(n)
             }
@@ -591,7 +619,7 @@ impl Fast {
             TermValue::TemplateString { parts, .. } => {
                 let mut n = 0u64;
                 for p in parts {
-                    n = n.wrapping_add(match p {
+                    n = n.saturating_add(match p {
                         TemplatePart::Term(t) => self.term_g(t)?,
                         TemplatePart::Expr(e) => self.walk_g(e)?,
                     });
@@ -1138,7 +1166,7 @@ fn declare_again(rw: &mut Rewriter<'_>, stack: &mut Stack, v: &Var, again: bool)
             .last()
             .and_then(|o| {
                 o.prev
-                    .map(|p| rw.vargen.name_at(p.wrapping_add(here.wrapping_sub(o.cur))))
+                    .map(|p| rw.vargen.name_at(p.saturating_add(here.saturating_sub(o.cur))))
             })
             .unwrap_or_else(|| v.clone());
         stack.rewritten.insert(gv.clone(), prev);
@@ -1676,7 +1704,7 @@ fn comprehension(rw: &mut Rewriter<'_>, stack: &mut Stack, terms: &mut [&mut Ter
         let ctx = f.ctx_for(body, start);
         f.owners.push(Owner {
             cur: start,
-            prev: ctx.delta.map(|d| start.wrapping_sub(d)),
+            prev: ctx.delta.map(|d| start.saturating_sub(d)),
         });
         f.ctx.push(ctx);
         time = f.tick();

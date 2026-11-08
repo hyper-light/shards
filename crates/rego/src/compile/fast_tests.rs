@@ -294,3 +294,33 @@ fn the_corpus_rewrites_as_opas_walks_again() {
         }
     }
 }
+
+/// The generator skips the numbers the modules' names take, as OPA's loop does, and
+/// says when it is asked past what OPA's counter numbers.
+#[test]
+fn the_generator_numbers_as_opas_and_stops_at_its_int() {
+    use super::localvars::LocalVarGen;
+    let taken: vars::VarSet = ["__local0__", "__local2__", "__local3__", "__local7__", "__local05__", "x"]
+        .into_iter()
+        .map(Into::into)
+        .collect();
+    let mut g = LocalVarGen::new(taken, "");
+    let names: Vec<String> = (0..6).map(|_| g.generate().to_string()).collect();
+    assert_eq!(
+        names,
+        ["__local1__", "__local4__", "__local5__", "__local6__", "__local8__", "__local9__"]
+    );
+    assert_eq!(&*g.name_at(1), "__local4__");
+    let mut g = LocalVarGen::new(vars::VarSet::new(), "");
+    g.advance(i64::MAX.unsigned_abs());
+    assert!(!g.overflowed());
+    assert_eq!(g.calls(), i64::MAX.unsigned_abs());
+    g.generate();
+    assert!(!g.overflowed(), "the last name OPA's counter numbers: __local{}__", i64::MAX);
+    g.generate();
+    assert!(g.overflowed());
+    g.rewind(0);
+    assert!(!g.overflowed());
+    g.advance(u64::MAX);
+    assert!(g.overflowed());
+}

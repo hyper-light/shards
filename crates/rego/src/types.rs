@@ -4,7 +4,7 @@
 
 use std::cmp::Ordering;
 use std::fmt;
-use std::sync::Arc;
+use std::rc::Rc;
 
 use crate::value::number_compare;
 
@@ -149,12 +149,13 @@ pub enum Type {
     },
 }
 
-/// A part of a type, shared (atomically: the builtins' declarations are every policy
-/// thread's), with whether any of it is not known (types.Nil) kept beside it: the checker asks that of each operand of each equality, and of a type wrapping
+/// A part of a type, shared within a compile (the builtins' declarations, every policy
+/// thread's, are kept as OPA's JSON and made types for each compile), with whether any
+/// of it is not known (types.Nil) kept beside it: the checker asks that of each operand of each equality, and of a type wrapping
 /// another ten thousand deep each asking would walk every level below.
 #[derive(Debug, Clone)]
 pub struct Part {
-    ty: Arc<Type>,
+    ty: Rc<Type>,
     nil: bool,
 }
 
@@ -162,13 +163,13 @@ impl Part {
     pub fn new(t: Type) -> Part {
         Part {
             nil: has_nil(&t),
-            ty: Arc::new(t),
+            ty: Rc::new(t),
         }
     }
 
     /// The type, unshared: moved out where nothing else holds it, else copied.
     pub fn into_inner(self) -> Type {
-        Arc::unwrap_or_clone(self.ty)
+        Rc::unwrap_or_clone(self.ty)
     }
 }
 
@@ -197,7 +198,7 @@ impl Eq for Part {}
 /// A type's list of parts, shared, with whether any is not known.
 #[derive(Debug, Clone)]
 pub struct Shares<T> {
-    items: Arc<[T]>,
+    items: Rc<[T]>,
     nil: bool,
 }
 
