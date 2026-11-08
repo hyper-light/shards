@@ -18767,6 +18767,74 @@ revision before comparing a changed API/implementation.
   0.2 ms a run started from a template. Not measured: WHP's hyperv variant; whether
   unprivileged filters are blinded stays D227's open question.
 
+### M497. Moves between two wired machines, cold and live, and a CPU baseline told and moved (D176 parts 6 and 7)
+
+- **Question.** Between two machines on one wired network, what does a move cost, cold and
+  live, n 20, and do tests/moved.rs's tests of another machine pass across them? Does a
+  home's CPU baseline (`configure cpu`, D176 part 6) reach its guest, and go with it when it
+  moves?
+- **Method.** At abcea5f5, 2026-11-08T16:55Z: docs/research/measurements/migrate/two-hosts.sh
+  `listen` on adacachy (AMD Ryzen 9 9950X3D2, 32 threads, CachyOS, Linux 7.2.9-2-cachyos,
+  KVM; 192.168.1.90, wired), `ADDR=192.168.1.90:3000` (the one UDP port its firewall takes
+  from the LAN that nothing held); `move`, N 20, `MODE="cold live"`, alpine:3.20 counting
+  every 50 ms (each live one rewriting 1 MiB of /dev/shm as it counts), from adacachy2 (the
+  same CPU model, Linux 7.3.3-1-cachyos, KVM; 192.168.1.91, wired), the two machines' CPU
+  flags identical as /proc/cpuinfo names them. The other way is not measured: adacachy2's
+  firewall takes no free UDP port from the LAN. Both runs by kiln runners; adacachy2 beside
+  other sessions' builds (load 19 to 20, 0.2 to 0.6 GB of its 61 GB available, 22 GB in
+  zram swap: memory pressure's `some` 20% over 10 s). Then tests/moved.rs's
+  `a_microvm_moves_to_another_host_saved_and_live` and `a_volumes_guest_owners_move_with_it`
+  on adacachy2, each with an invitation of the listening home of its own, the test binary
+  built on adacachy at the same paths (its prebuilt guests through `SHARDS_TEST_GUESTS`);
+  and all of tests/moved.rs between two homes of adacachy. The baseline:
+  `a_cpu_baseline_is_all_its_guest_finds_and_goes_with_it` between two homes of
+  Adas-Mac-Studio (Apple M3 Ultra, macOS 26.4, Hypervisor.framework), and
+  `alpine:3.20 grep Features /proc/cpuinfo` there with no baseline.
+- **Found** (µs unless said; n 20 each, adacachy2 to adacachy):
+
+  | mode | what | p50 | p90 | p99 | max |
+  |---|---|---|---|---|---|
+  | cold | move took | 954,047 | 1,159,569 | 9,986,861 | 9,986,861 |
+  | cold | ran nowhere | 908,119 | 1,124,556 | 9,894,417 | 9,894,417 |
+  | cold | sent (bytes) | 39,339,806 | 44,236,449 | 76,307,190 | 76,307,190 |
+  | cold | link (B/s) | 77,763,982 | 100,386,905 | 109,593,620 | 109,593,620 |
+  | cold | longest silence | 64,686 | 416,980 | 485,488 | 485,488 |
+  | live | move took | 705,170 | 833,503 | 1,034,245 | 1,034,245 |
+  | live | ran nowhere | 207,740 | 280,932 | 345,251 | 345,251 |
+  | live | sent (bytes) | 49,597,811 | 54,362,422 | 101,169,507 | 101,169,507 |
+  | live | link (B/s) | 76,006,620 | 83,885,916 | 105,849,205 | 105,849,205 |
+  | live | longest silence | 60,626 | 120,740 | 195,338 | 195,338 |
+  | live | rounds (n) | 3 | 3 | 3 | 3 |
+
+  40 of 40 moved, every count once there. The link: up to 109.6 MB/s acknowledged (a
+  gigabit link's), round trips 0.7 to 2.5 ms, no packets lost.
+  - **Cold.** Each stream 80.5 to 81.6 MB as written, sent as 32.9 to 76.3 MB. Move 1, the
+    fresh home's first, ran nowhere 9.89 s (its link 15.2 MB/s, the image fetched there by
+    its digest as it readied); moves 2 to 20 ran nowhere 0.74 to 1.26 s.
+  - **Live.** Round 0 sent 74.5 to 75.4 MB in 364 to 620 ms, round 1 7.4 to 11.3 MB, and
+    15 of 20 a third of 0.9 to 6.1 MB; every one ended with little left (8 MiB or less).
+    Its last save took 50.8 to 161.5 ms and its last stream 9.1 to 41.0 ms of the time it
+    ran nowhere.
+  - **E2E.** Both tests of another machine passed across the two (the saved and the live
+    move of the first: its live move ran nowhere 132 ms, its streams at 106 and 92 MB/s);
+    tests/moved.rs between two homes of adacachy, 9 of 9.
+  - **The baseline.** Told ID_AA64PFR1_EL1 of nothing, a guest on the M3 Ultra found
+    neither `ssbs` nor `bti`, and moved to the other home found the same CPU there: passed.
+    With no baseline its guest's Features were `fp asimd evtstrm aes pmull sha1 sha2 crc32
+    atomics fphp asimdhp cpuid asimdrdm jscvt fcma lrcpc dcpop sha3 asimddp sha512 asimdfhm
+    dit uscat ilrcpc flagm sb paca pacg dcpodp flagm2 frint i8mm bf16 bti afp`: no `ssbs`
+    and no `rpres` (ID_AA64ISAR2_EL1's), though macOS names FEAT_SSBS and FEAT_RPRES on
+    the host.
+  - First built, the VM process's probe of its host's CPU (`shards-vm cpu`) failed on
+    Hypervisor.framework, "vCPUs need the GIC first": it makes the VM's GIC before its
+    vCPU now (abcea5f5).
+- **Reading.** On a wired link a cold move of alpine runs nowhere about 0.9 s and a live one
+  about 0.2 s, its downtime its last save and the restore, as on loopback (M462); a fresh
+  home's first move pays for its image. A guest on Hypervisor.framework is shown less than
+  its host's OS names: the features macOS names are no measure of what a guest may have
+  used.
+- **Consequence.** D176 parts 6 and 7 record these as the two-machine numbers. Still to
+  measure: the M3 Ultra and an M4 Max with a baseline, both ways, and the Studios' Wi-Fi.
 ### M422. Whether a Hypervisor.framework guest given EL2 has VHE (the parity plan's step 10)
 
 - **Question.** Step 10's host is to be Windows 11 arm64 under QEMU on this Mac, given EL2
