@@ -148,8 +148,8 @@ impl Syslog {
 impl Syslog {
     /// Sends `line` as a message; where its receiver refuses a datagram so long, in halves,
     /// each a message of its own, down to what every receiver takes: none of it lost, and
-    /// none left waiting for a receiver that never takes it. moby's driver sends a line's
-    /// 16 KiB parts whole, and drops one refused.
+    /// none left waiting for a receiver that never takes it. moby's driver drops one
+    /// refused.
     fn send_line(&mut self, stream: u8, at: u64, zone: &Local, line: &[u8]) -> io::Result<()> {
         let bytes = self.config.message(&self.from, stream, at, zone, line);
         match self.write(&bytes) {
@@ -164,6 +164,13 @@ impl Syslog {
 }
 
 impl Driver for Syslog {
+    /// A line's bytes that leave a message within what syslog's receivers take
+    /// (logging/syslog.rs `Config::most`: RFC 5425's over a stream, RFC 5426's over
+    /// UDP), its header and newline counted.
+    fn part(&self) -> usize {
+        self.config.part(&self.from)
+    }
+
     fn send(&mut self, m: &Message<'_>, _wait: &Wait<'_>) -> io::Result<()> {
         // moby's syslogger sends no empty line.
         if m.line.is_empty() {
