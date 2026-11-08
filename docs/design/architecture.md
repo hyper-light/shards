@@ -14527,9 +14527,22 @@ receiver for an incoming port" above:
   messages) and on real microVMs, build.rs `a_port_comes_in_to_the_member_listening_on_it`:
   two networks, `FOR front ops` giving three members four ports, each port reaching the one
   member listening, every connection, and a member no `FOR` names not reached.
-- **Not yet**: a UDP flow already admitted keeps its conntrack entry's member past a change
-  of holder, as a host's kernel keeps a connected flow; ports past the microVM are IPv4's
-  alone (D99).
+- **A UDP flow follows its port's holder.** Linux keeps a flow's NAT binding for the
+  flow's life (nf_nat_core.c; 120 s past its last datagram once it streams,
+  nf_conntrack_proto_udp.c), so a client sending all along would have stayed with a
+  holder that had closed its socket. Each choice of a UDP port's holder has a conntrack
+  zone of its own (`ct zone set`, raw prerouting, the datagrams coming in and the holder's
+  answers): a flow admitted before is new in the new zone and is translated to the new
+  holder, its old entry left to expire, as a guest kernel without ctnetlink (shards' has
+  none) has no other way to end one; the old holder's answers past the change are new
+  flows no grant opens. Tested on real microVMs (`a_udp_flow_goes_to_its_ports_next_holder`:
+  one client socket answered by web, then, after web closes and api binds, by api).
+  A notification names the calling thread, which pidfd_open(2) refuses where it leads no
+  thread group: the chooser, and the host network's binds (D124), open its group's leader
+  then, so that a server binding on a thread of its own is seen (found by that test).
+- **Not yet**: ports past the microVM are IPv4's alone (D99). The costs (PM M497) are
+  unmeasured: a build step's device cgroup (`docs/research/measurements/step-devices/run.py`)
+  and the chooser's round trip (`step-devices/chooser.sh`).
 
 ### D121. Docker's AppArmor mount rule, in guests that have no AppArmor
 
