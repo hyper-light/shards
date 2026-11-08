@@ -18445,3 +18445,38 @@ revision before comparing a changed API/implementation.
   change, and on a native arm64 Windows host with WHP (a Snapdragon X machine, as a user
   session), which alone says whether Hyper-V's SGIs and timers hold across a 64-vCPU
   snapshot at a native host's timing.
+
+### M463. What a client's bind through its context costs its guest (D215)
+
+- **Question.** A client's bind is its own directory, each FUSE request its microVM's share
+  makes relayed over the context's QUIC to the client's share server (D215). What does that
+  cost a guest's opens, reads and writes against the machine's own bind of the same files?
+- **Method.** docs/research/measurements/client-binds/run.sh 10 (`what_a_clients_bind_costs`,
+  tests/context.rs) at 703c6a06 on adacachy2 (the GPU desktop: x86_64, 32 cores, CachyOS,
+  Linux 7.3.3-1-cachyos), 2026-11-08T08:00Z, load average 7 to 10 (another session's work):
+  two homes of the one machine, the client's context over loopback QUIC. Each of 10 rounds, in
+  turns (the order swapped each round), a run of the owner's binding a directory of the
+  machine's and the client's binding its own, each running the test guest's `share-cost` on
+  a 64 MiB file: 2,000 opens, each reading 4 KiB and closing, timed one by one; then the file
+  read through, and a copy written and fsynced. Once as the daemon is by default, its shares'
+  DAX windows on (D189), and once with `SHARDS_SHARE_WINDOW_MIB=0`, FUSE alone for both, which
+  is what a client's relay always is (`serves_afar`).
+- **Found** (FUSE alone; each quantile the median of the 10 rounds' own, of n 2,000 opens
+  each; max the largest of any round; MiB/s the rounds' median):
+
+  | bind | open, 4 KiB read, close p50 | p90 | p99 | max | read MiB/s | write MiB/s |
+  |---|---|---|---|---|---|---|
+  | the machine's own | 136 µs | 160 µs | 206 µs | 1,434 µs | 468 | 2,157 |
+  | the client's, relayed | 251 µs | 310 µs | 399 µs | 914 µs | 458 | 572 |
+
+  The relay adds 115 µs at p50 to an open, a 4 KiB read and a close (its requests' round
+  trips through the share's socket, the daemon's relay, QUIC on loopback and the client's
+  server), and 193 at p99. A large file reads as fast (the guest's reads are 1 MiB requests,
+  the relay's round trip small beside each); writes are a quarter as fast, each 1 MiB write a
+  request whose reply waits on the client's write. Every round of the client's at p99 under
+  430 µs. With the machine's DAX window on, its own bind's opens cost 513 µs at p50 and its
+  64 MiB read 9.5 MiB/s on this host, slower than the relay's: every file of 1 MiB or more is
+  mapped (DAX_SMALLEST), and on this host a mapped read is far slower than FUSE's; not
+  D215's, and open (D189's to explain on this kernel).
+- **Not measured.** Two machines apart (Mac Studios on one network: their runners did not
+  take this run on 2026-11-08); a Mac's own; latency under a lossy link.

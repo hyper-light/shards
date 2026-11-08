@@ -7374,8 +7374,10 @@ its owner's grant, default deny, as shards' networks are.
   guest's write reaches the client's file before its `write(2)` returns; the guest's page
   cache is dropped at each open (no `FOPEN_KEEP_CACHE`), so data is close-to-open
   consistent with the client's other programs; names and attributes are trusted for a
-  second (`VALID_S`), as a local share's are. Only the latency differs: each request one
-  round trip to the client (PM M463). No DAX window: a mapping maps a file of the host the
+  second (`VALID_S`), as a local share's are. Only the cost differs, each request a round
+  trip to the client: over loopback on the GPU desktop an open, a 4 KiB read and a close
+  took 251 µs at p50 and 399 at p99 against the machine's own bind's 136 and 206, a 64 MiB
+  read 458 MiB/s against 468, a write 572 MiB/s against 2,157 (PM M463). No DAX window: a mapping maps a file of the host the
   guest is on, so the client's server tells its guest to map nothing (`serves_afar`: no
   `FUSE_HAS_INODE_DAX`, no `FUSE_ATTR_DAX`) and refuses a mapping's descriptor (EINVAL,
   `answer_afar`).
