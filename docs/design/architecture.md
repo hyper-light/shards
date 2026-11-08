@@ -14927,9 +14927,21 @@ receiver for an incoming port" above:
   A notification names the calling thread, which pidfd_open(2) refuses where it leads no
   thread group: the chooser, and the host network's binds (D124), open its group's leader
   then, so that a server binding on a thread of its own is seen (found by that test).
+- **A choice costs a commit, not a grace period (PM M513).** M498 found a contested
+  bind(2) and listen(2) each at 16 ms (p50) where an uncontested filtered one took 19 and
+  14 µs: the chooser programmed each choice on a netfilter socket of its own and closed
+  it, and a netfilter socket's close (NETLINK_URELEASE, nft_rcv_nl_event) flushes the
+  pending transactions' destroy work, which waits in synchronize_rcu (nf_tables_api.c,
+  Linux 6.18.48), with the commit mutex held, while the member's next call waited
+  behind it. The chooser and the host network's binds (D124, IPv6's loopback) keep one
+  socket for their life, so that the destroy work's grace period passes on a kernel
+  worker; and the chooser answers every call a round of poll(2) finds before it
+  programs, choosing once for them all. The chains stay rebuilt whole: what a commit of
+  them costs now is M513's after-run, which decides whether a map keyed by port is
+  worth its code.
 - **Not yet**: ports past the microVM are IPv4's alone (D99). The costs (PM M498) are
   unmeasured: a build step's device cgroup (`docs/research/measurements/step-devices/run.py`)
-  and the chooser's round trip (`step-devices/chooser.sh`).
+  and the chooser's round trip after M513 (`step-devices/chooser.sh`).
 
 ### D121. Docker's AppArmor mount rule, in guests that have no AppArmor
 

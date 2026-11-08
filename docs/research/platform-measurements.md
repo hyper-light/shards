@@ -20071,3 +20071,44 @@ revision before comparing a changed API/implementation.
 - **So.** `reserve_descriptors` stays Linux's (warm.rs): on macOS and Windows a run's
   descriptors cost a warm VM no wait to make room for, and reserving would hold descriptors
   for nothing.
+
+### M513. Where a contested bind's 16 ms went: closing a netfilter socket waits out a grace period (D122, M498)
+
+- **Question.** M498's run of build.rs `chooser_round_trip_costs` on Fedora (x86_64, Linux
+  6.19 host, a guest of 32 vCPUs, integration revision f9dee140, n = 2,000 rounds an
+  agent) found a contested port's bind(2) at p50 16.0 ms (p99 32 ms, max 175 ms) and
+  listen(2) at p50 16.1 ms, where a filtered, uncontested port's took 19 and 14 µs and an
+  unfiltered domain's 0.28 and 0.18 µs. The chooser is single-threaded, and each choice
+  (a listen answered, and a socket's end told) was programmed before the next call was
+  read. Where in programming do 16 ms go?
+- **Method.** The chooser's path read against the guest kernel's source, Linux 6.18.48
+  (src/kernel.rs's pin; gregkh/linux's v6.18.48 tag), net/netfilter/nf_tables_api.c and
+  net/netlink/af_netlink.c. `links::program_chosen` opened a NETLINK_NETFILTER socket,
+  sent one batch (both chains flushed and refilled), read its acknowledgments, and closed
+  the socket.
+- **Results.** The commit itself waits for nothing: nf_tables_commit_release (line 10538)
+  moves the batch's transactions to the destroy list and schedules the destroy work (line
+  10567), "to prevent expensive synchronize_rcu() in commit phase". The close does wait:
+  netlink_release sends NETLINK_URELEASE for a socket that has a port ID (af_netlink.c
+  line 757; a send binds one), and nf_tables' notifier, nft_rcv_nl_event (line 11912),
+  takes the commit mutex (line 11928) and calls nf_tables_trans_destroy_flush_work (line
+  11932), flush_work of that destroy work (line 10125), whose nf_tables_trans_destroy_work
+  calls synchronize_rcu (line 10113) before it frees the transactions: every choice paid a
+  whole RCU grace period on the chooser's thread, and each round (a listen, then a
+  socket's end) two of them, the member's next call waiting behind both. The guest
+  kernel is tree RCU at HZ = 250 on x86_64 and 100 on aarch64
+  (resources/kernel/firecracker-*-6.18.config), so a grace period is jiffies long. The
+  host network's binds (D124) made IPv6's loopback translation again the same way
+  (`links::host_loopback6`), once for each port a server took or let go.
+- **So.** The chooser and the host network's binds keep one netfilter socket for their
+  life (opened again only after a failure; an exchange that fails reads the rest of its
+  answers, so a kept socket holds none for the next, links.rs
+  `a_kept_socket_holds_no_answer_of_an_exchange_before`): the destroy work's grace period
+  passes on a kernel worker, off every member's call. The chooser also answers every call
+  a round of poll(2) finds before it chooses, then programs once for them all. Not yet
+  measured: the M498 test again at this change (before at its parent, after at it, n,
+  p50, p90, p99, max on Fedora and on an arm64 Mac); what is left of a contested call
+  past an uncontested one's is then the commit of two chains, which decides whether a map
+  keyed by port is worth its code. Init's setup paths still close a socket after each of
+  their commits (links.rs's switch and gates, `net::host_loopback`), a grace period each,
+  once a run.
