@@ -281,18 +281,31 @@ mod tests {
     }
 
     /// A write waits for room at most its timeout, however much it is given: one far larger
-    /// than the socket's buffers, to a peer that reads none of it, fails there rather than
-    /// waiting in the call for room that never comes.
+    /// than a Unix socket's buffers, to a peer that reads none of it, fails there rather
+    /// than waiting in the call for room that never comes. On Windows Winsock's AF_UNIX
+    /// took all 64 MiB without a reader (jupiter, Windows x86_64), so the write ends
+    /// there too, having written it.
     #[test]
     fn a_write_times_out_however_large() {
         let (mut a, _b) = pair().unwrap();
         Stream::set_write_timeout(&a, Some(Duration::from_millis(50))).unwrap();
         let start = Instant::now();
-        let e = a.write_all(&vec![0u8; 64 << 20]).unwrap_err();
-        assert!(
-            matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut),
-            "{e:?}"
-        );
+        let wrote = a.write_all(&vec![0u8; 64 << 20]);
+        #[cfg(unix)]
+        {
+            let e = wrote.unwrap_err();
+            assert!(
+                matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut),
+                "{e:?}"
+            );
+        }
+        #[cfg(windows)]
+        if let Err(e) = wrote {
+            assert!(
+                matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut),
+                "{e:?}"
+            );
+        }
         assert!(start.elapsed() < Duration::from_secs(10), "{:?}", start.elapsed());
     }
 
