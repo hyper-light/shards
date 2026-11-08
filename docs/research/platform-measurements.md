@@ -19574,6 +19574,13 @@ revision before comparing a changed API/implementation.
     | gelf udp, none, one byte | Fedora | 6 | 3.54 | 3.67 | 5.54 | 5.54 |
     | gelf udp, gzip, one byte | Fedora | 6 | 3.73 | 3.81 | 3.84 | 3.84 |
     | gelf udp, gzip, random | Fedora | 9 | 483 | 554 | 597 | 597 |
+    | the same again, by halves (the method before) | Fedora | 9 | 538 | 641 | 660 | 660 |
+    | the same, by the ratio of written bytes | Fedora | 9 | 69.5 | 70.6 | 71.4 | 71.4 |
+    | gelf udp, gzip, one byte, by the ratio | Fedora | 6 | 3.88 | 3.99 | 4.09 | 4.09 |
+  - The last three rows are the tree of the ratio's commit, 2026-11-08, on kiln-a094a12d at
+    load average 22 to 35 beside CI jobs: cut by the ratio of written bytes to the line's,
+    a part of random bytes over gelf's UDP and gzip is written once to three times, 7.7x
+    less of the shipper's time at p50 than by halves, in as many parts.
   - A part that fits as its driver's part says costs one ask, a message written once, as
     moby's are. One that does not (bytes gzip cannot shrink, a line JSON escapes at length)
     is found by halves, its message written about 18 times: 0.48 s of the shipper's CPU a
@@ -19588,8 +19595,11 @@ revision before comparing a changed API/implementation.
 - **So** (D163): journald's parts are the host's journal's LineMax as configured, read as
   the journal reads its configuration while shards runs (its default, 48K, where none sets
   it), so that a run's lines are in the journal as any program's are; this run checks the
-  reading, not a number to keep. oslog's 1,015 bytes is os_log's as measured, below the
-  1,024 os/log.h states, still a measured constant (open).
+  reading, not a number to keep. oslog learns what the host's log keeps whole by writing
+  entries of its own and reading them back from its process's log store (`oslog::learn`),
+  these 1,015 bytes its check. Bytes gzip cannot shrink over gelf's UDP are no longer cut by
+  halves: a part is cut where the ratio of written bytes to the line's says the bound is,
+  written once to three times (`parts_are_cut_where_the_ratio_of_written_bytes_says`).
 
 ### M468. Flakes: the CLI killed at launch, as a home's first client, 100,000 launches on an M3 Ultra (the flakes goal, M322)
 
