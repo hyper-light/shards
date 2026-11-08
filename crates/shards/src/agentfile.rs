@@ -579,34 +579,6 @@ mod tests {
                 "agent b -> network inside -> agent a -> ",
             ),
             (
-                "ingress",
-                vec![
-                    agent("a"),
-                    agent("b"),
-                    Directive::Network(Network {
-                        name: b("pub"),
-                        ports: vec![(b("8080"), Direction::Both)],
-                        ..Network::default()
-                    }),
-                    Directive::Expose(Exposure {
-                        ports: vec![b("8080")],
-                        direction: Direction::Both,
-                        networks: vec![b("pub")],
-                        agents: Vec::new(),
-                        harnesses: Vec::new(),
-                    }),
-                    Directive::Connect(Connect {
-                        kind: None,
-                        from: vec![b("a")],
-                        both_ways: true,
-                        to: vec![b("b")],
-                        on: vec![b("pub")],
-                        ports: vec![b("8080")],
-                    }),
-                ],
-                "lets port 8080 in past the microVM to its members agent a, agent b: name the one it is for",
-            ),
-            (
                 "port",
                 vec![
                     agent("a"),
@@ -644,6 +616,40 @@ mod tests {
             let got = agentfile(&root_with(name, file(&json)), &digest(&json));
             assert!(got.as_ref().is_err_and(|e| e.contains(said)), "{name}: {got:?}");
         }
+        // A port let in to several members goes to the one listening on it (D122, the
+        // user's decision of 2026-11-08): each is a receiver of it, none refused.
+        let json = spec(&[
+            agent("a"),
+            agent("b"),
+            Directive::Network(Network {
+                name: b("pub"),
+                ports: vec![(b("8080"), Direction::Both)],
+                ..Network::default()
+            }),
+            Directive::Expose(Exposure {
+                ports: vec![b("8080")],
+                direction: Direction::Both,
+                networks: vec![b("pub")],
+                agents: Vec::new(),
+                harnesses: Vec::new(),
+            }),
+            Directive::Connect(Connect {
+                kind: None,
+                from: vec![b("a")],
+                both_ways: true,
+                to: vec![b("b")],
+                on: vec![b("pub")],
+                ports: vec![b("8080")],
+            }),
+        ]);
+        let got = agentfile(&root_with("ingress", file(&json)), &digest(&json)).unwrap();
+        let names: Vec<&[u8]> = got
+            .receivers
+            .iter()
+            .filter(|r| r.at == (6, 8080, 8080))
+            .map(|r| r.name.as_slice())
+            .collect();
+        assert_eq!(names, [b"a".as_slice(), b"b".as_slice()], "{got:?}");
         let e = agentfile(&root_with("none", None), "sha256:01").unwrap_err();
         assert!(e.contains("the image's root holds none"), "{e}");
         let link = Kind::Symlink(b"/etc/x".to_vec().into_boxed_slice());

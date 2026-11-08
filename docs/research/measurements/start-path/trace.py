@@ -12,7 +12,7 @@ handling's start, a warm VM acquired, its network process told, the VM's TAKEN, 
 command's EXIT passed on). This harness reads the same clock (CLOCK_MONOTONIC) as it
 spawns each client and reaps it.
 
-HOME holds IMAGE already. Each run is `shards run --pull never [FLAGS] IMAGE COMMAND`
+HOME holds IMAGE already. Each run is `shards run vm --pull never [FLAGS] IMAGE COMMAND`
 with SHARDS_TIMING set and an empty DOCKER_CONFIG, then a pause (--pause, seconds) in
 which the daemon refills its pool. --warmup runs are not counted: the first saves the
 image's template and the next ones record its working set (PM M30, M33).
@@ -71,7 +71,7 @@ def one():
     at = log_size()
     spawn = now_us()
     done = subprocess.run(
-        [a.shards, "run", "--pull", "never", *a.flags.split(), a.image, *command],
+        [a.shards, "run", "vm", "--pull", "never", *a.flags.split(), a.image, *command],
         env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
     )
     reap = now_us()
@@ -127,8 +127,21 @@ def one():
               ("d_starting", "d_to_acquire", "run_acquire")]
     for begin, name, end in within:
         row[name] = (steps[end] - steps[begin]) / 1000 if begin in steps and end in steps else None
-    # With cpu-elastic/markers.patch too, the guest's own steps of its start of the run:
-    # each marker from the request to the command executing, from the one before it.
+    # The run's preparing (run::prepare), step by step: its guest found, its CDI devices
+    # and VFIO groups, its image found in the store, its spec composed, its labels, and the
+    # rest of what it holds.
+    within = [("handle_start", "p_boot"), ("p_boot", "p_cdi"), ("p_cdi", "p_devices"),
+              ("p_devices", "p_image"), ("p_image", "p_spec"), ("p_spec", "p_labels"),
+              ("p_labels", "d_prepared")]
+    for begin, end in within:
+        row[f"{end}"] = (steps[end] - steps[begin]) / 1000 if begin in steps and end in steps else None
+    # With markers.patch too, the guest's own steps of its start of the run: each marker
+    # from the request to the command executing, from the one before it. Init's: 37 the
+    # request taken, 38 the process events' listener, 30 the standby's start, 39 its names
+    # and confinement before its birth, 31 its limits and setup sorted, 32 its orders
+    # written, 36 the exec heard (the error channel's end); the standby's own: 33 its
+    # orders read, 34 its seccomp, capabilities, user and working directory set, 35 its
+    # command found, just before execve(2).
     if markers.get(STARTED) and t.get("request_us"):
         last = t["request_us"]
         for at_, m in sorted((at_, m) for m, at_ in markers.items() if m >= 11 and t["request_us"] <= at_ <= markers[STARTED]):

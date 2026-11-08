@@ -17,8 +17,12 @@ pub struct Builtin {
     pub allowed: bool,
     /// Partial evaluation leaves nondeterministic builtins' calls for later.
     pub nondeterministic: bool,
-    /// The declaration: a function type.
-    pub decl: Type,
+    /// The declaration, a function type, as OPA marshals it: made a [`Type`] for each
+    /// compile (`Type::from_json`), whose parts it shares within its thread.
+    pub decl: serde_json::Value,
+    /// The declaration's arguments, and whether it has no result (a void function).
+    pub arity: usize,
+    pub void: bool,
 }
 
 /// Every OPA builtin by name. Empty only if the embedded data failed to read, which
@@ -41,7 +45,17 @@ fn read(text: &str) -> Option<HashMap<String, Builtin>> {
             deprecated: flag("deprecated"),
             allowed: flag("allowed"),
             nondeterministic: flag("nondeterministic"),
-            decl: Type::from_json(e.get("decl")?)?,
+            decl: e.get("decl")?.clone(),
+            arity: 0,
+            void: false,
+        };
+        let Type::Function { args, result, .. } = Type::from_json(&b.decl)? else {
+            return None;
+        };
+        let b = Builtin {
+            arity: args.len(),
+            void: result.is_none(),
+            ..b
         };
         out.insert(name, b);
     }

@@ -94,6 +94,14 @@ pub(crate) fn move_vm(parsed: &Parsed, home: &Path, ask: &Ask<'_>) -> ExitCode {
 /// machine's of on its second. Its daemon reads it at each run (daemon/moves.rs).
 pub(crate) const BASELINE: &str = "cpu-baseline";
 
+/// `shards configure cpu` and `shards inspect cpu`'s page (`-h` is help everywhere).
+const CPU_USAGE: &str = "usage: shards configure cpu --baseline CONTEXT[,CONTEXT...] | --none
+       shards inspect cpu
+  configure: tell every microVM this home starts the CPU this machine and every machine
+             the contexts reach share, so a microVM moves to any of them; --none: this
+             machine's own CPU again.
+  inspect: show the baseline in use, and the machines it is shared with.";
+
 /// `shards configure cpu --baseline CONTEXT[,CONTEXT...]` (`cpu configure`): the CPU every
 /// machine the contexts reach and this one share, as each one's hypervisor shows a guest
 /// (D176 part 6), told every microVM this home starts from then on, so that a move to any
@@ -101,6 +109,10 @@ pub(crate) const BASELINE: &str = "cpu-baseline";
 /// cpu` (`cpu`) says it.
 pub(crate) fn cpu(args: &[std::ffi::OsString]) -> ExitCode {
     let words: Vec<String> = args.iter().map(|a| a.to_string_lossy().into_owned()).collect();
+    let said: Vec<&str> = words.iter().map(String::as_str).collect();
+    if crate::context::asks_help(&said, &["--baseline"]) {
+        return crate::context::help_page("cpu", CPU_USAGE);
+    }
     let home = match shards_ipc::home() {
         Ok(home) => home,
         Err(e) => return failed(&format!("shards: {e}")),

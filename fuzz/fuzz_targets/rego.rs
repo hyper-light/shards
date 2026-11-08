@@ -34,11 +34,7 @@ fn functions() -> Vec<Function> {
     let a = || Type::Any(Vec::new());
     let f = |name: &str, args: Vec<Type>, result: Type| Function {
         name: name.into(),
-        decl: Type::Function {
-            args,
-            result: Some(Box::new(result)),
-            variadic: None,
-        },
+        decl: Type::function(args, result),
     };
     vec![
         f("load_json", vec![s()], a()),

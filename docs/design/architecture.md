@@ -9808,6 +9808,64 @@ the guest keeps their metadata alone.
   is not sure, 2 to 4 MiB on Linux and 6 to 8 on macOS, the two were within a few ms of
   each other. The two E2E tests give their home records that cross at 4 MiB
   (`common::restarts_cross_at`), their 8 MiB layers past it, their small one below.
+- **Records that age** (2026-11-08). A host whose disk or load changes kept its first
+  restarts' records beside its last, and its lines described a machine that no longer
+  existed. Now each way keeps, beside its line, the records since its last that fell
+  outside it, held out of it (`layers::Way`), and three in a row restart its learning
+  from them: the line becomes theirs, every record before gone. A record is outside by
+  the line's own spread: its distance from the line over `s·√(1 + 1/n + (x − x̄)²/Sxx)`, the
+  spread a new record has about a least-squares line (its residuals' variance and the
+  estimate's together), is Student's t with the line's degrees of freedom while nothing
+  changes (Brown, Durbin and Evans 1975, "Techniques for testing the constancy of
+  regression relationships over time", JRSS B 37(2): the recursive residual, their test of
+  a regression's constancy as records arrive), and it is outside where t's two-sided tail
+  past it is below `1/(n + 1)`. That level is the records' own count: of the line's `n`
+  records and this one, alike while nothing changes, the newest is the farthest out with
+  that chance, so a record past it is farther than the farthest of `n + 1` is expected to
+  be once (the rank argument of conformal prediction, Vovk, Gammerman and Shafer 2005,
+  *Algorithmic Learning in a Random World*, ch. 2). Three in a row are the least records
+  that make a line with a residual, the line learning restarts from; while nothing
+  changes they come with a chance of about `(n + 1)^-3` (about: the three are tested
+  against one line, whose `s` they share), whose sum over a line's whole life is finite,
+  so that a host whose restarts stay alike restarts its learning finitely often, and
+  almost all of that while its line holds a few records. A record within the spread puts
+  those held out back into the line with itself (their counts, means and co-moments
+  merged: Chan, Golub and LeVeque 1979), as the line's own tail; dropping them instead
+  narrows the line until noise alone restarts it. t's tail is the regularized incomplete
+  beta function, `I_x(ν/2, 1/2)` at `x = ν/(ν + t²)` (Numerical Recipes, 2nd ed., eq.
+  6.4.9), by its continued fraction (DLMF 8.17.22) and Lentz's method (Numerical Recipes
+  §5.2, §6.4), its log-gamma musl's (the `libm` crate). The home keeps the held-out
+  records as lines of their own in `restarts` (`packed-outside`, `over-outside`), which a
+  daemon before passes over, and reads a home written before as nothing held out
+  (`records_held_out_are_kept_and_merge_back`). The log says each restart of learning.
+  Unit tests hold it with seeded records about Linux's packing (PM M443: 52 ms and 10.6 a
+  MiB, its noise Linux's p50 to p90 at 0 B as a normal's, sizes the tables' at random):
+  noise alone, normal, restarts no learning once a line holds 30 records in 32 lives of
+  2,000; a log-normal tail, its p99 several times its p50's distance, which the normal
+  test underrates, in 2 of them, three slow restarts in a row being a burst of load that
+  the line follows and comes back from (`a_line_keeps_its_records_through_noise_alone`);
+  60 ms more at every size restarts learning within 10 records in all 32 lives, and
+  packing's cost a byte doubled within 100 in 30 of the 32, after which the line says what
+  restarts take now (`a_line_follows_its_host_when_its_level_or_slope_moves`; Fedora,
+  647f162e).
+  A slope's change is the slower to find: records at the sizes it moves least stay
+  within the spread and break the runs, and those a broken run puts back widen the line.
+  A change smaller than the line's spread is no change to it: the line takes it in, as
+  least squares does. PM M443's and M496's tables, given in size order, restart a line of
+  their first three, which says little of their largest, where the costs curve: their
+  test holds the lines alone.
+
+  | Literal | Where | From |
+  |---|---|---|
+  | `1/(n + 1)` | the level a record is outside at | the line's `n` records and this one: the chance that the newest of `n + 1` alike is the farthest (Vovk, Gammerman and Shafer 2005) |
+  | `s²(1 + 1/n + (x − x̄)²/Sxx)` | a new record's variance about the line | least squares' prediction variance; Brown, Durbin and Evans 1975's recursive residual |
+  | `n − 2` (`n − 1` at one size) | t's degrees of freedom | the residual's: two estimated for intercept and slope (one, a mean, where every layer held one size) |
+  | 3 (`RESTART_FROM`) | outside records in a row that restart learning | the least that make a line with a residual: two for its intercept and slope, one for the residual (as D190's lines need to answer) |
+  | `I_x(ν/2, 1/2)`, `x = ν/(ν + t²)` | t's two-sided tail | Numerical Recipes, 2nd ed., eq. 6.4.9 |
+  | `(a + 1)/(a + b + 2)` | where the continued fraction is taken of `x`, else of `1 − x` | Numerical Recipes §6.4: where it converges quickly |
+  | `f64::EPSILON` | when the continued fraction has converged | a term that changes it by less than an `f64` tells apart |
+  | `f64::MIN_POSITIVE` | a denominator kept off zero | Lentz's method (Numerical Recipes §5.2), the least normal `f64` |
+  | `max(a, b) + 1` | the continued fraction's terms at most | past the `O(√max(a, b))` it needs (Numerical Recipes §6.4): a count read from a damaged file ends |
 - **On Windows, a view in place of a view** (row 18 of the parity audit). Windows maps no
   file over a mapping as `mmap(MAP_FIXED)` does: a view is made at an address that is free
   (MapViewOfFile3), and a range unmapped then mapped again is free between the two calls,
@@ -9859,9 +9917,9 @@ the guest keeps their metadata alone.
 
 **Next** (the slices after these).
 - Visits and joiners' runs over the kept file too.
-- Records that age: a host whose disk or load changes keeps its first restarts' records
-  beside its last (change detection on each way's residuals, so that a line follows its
-  host).
+- A changed host's restarts, timed: the ageing's records and its restarts of learning
+  read from a home whose disk or load is changed under it (the unit tests' records are
+  seeded).
 - Going over's fixed cost below packing's, so that a layer holding little goes
   over too: the mount of the kept file system and its one host flush, and the root's
   two moves (PM M443); on Windows its 233 ms, unmeasured step by step (PM M496).
@@ -11834,18 +11892,43 @@ and the way every later one sends.
   |---|---|---|
   | syslog | 8,192 octets over a stream, 2,048 over UDP, header and newline counted | the protocol: RFC 5425 4.3.1, RFC 5426 3.2; a local datagram refused as too long sent again in halves |
   | gelf | 128 chunks over UDP, compressed as asked | the protocol: GELF's "MUST NOT consist of more than 128 chunks" |
-  | gelf over TCP | 2 MiB | Graylog's `max_message_size` default: GELF states none (open) |
-  | fluentd | 6,144,000 bytes of event | Fluent Bit's forward `buffer_max_size` default: the forward protocol states none (open) |
+  | gelf over TCP | what the destination has taken, learned from its refusals | first Graylog's documented `max_message_size`, 2 MiB (GELF states none); then each connection its receiver ends on a message (Graylog's input, past its bound), that message sent again cut |
+  | fluentd | what the destination has taken, learned from its refusals | first Fluent Bit's documented `buffer_max_size`, 6,144,000 bytes (the forward protocol states none); then an event acked on no connection (Fluentd's `chunk_size_limit`, Fluent Bit's bound), cut again by the shipper, or without acks a connection its receiver ends on an event, that event sent again cut |
   | journald | the host's journal's LineMax | its configuration as journald reads it, as shards runs; journald.conf(5)'s 48K where none sets it |
-  | splunk | 838,860,800 bytes over a batch of events | HEC's `max_content_length` default (open: HEC says 413 past it) |
+  | splunk | what the destination has taken of a post, learned from its refusals | first HEC's documented `max_content_length`, 838,860,800 bytes; then each post answered 413 (RFC 9110 15.5.14), posted again in smaller posts, an event alone cut in halves |
   | awslogs | 1,048,550 bytes as CloudWatch counts them | the API: PutLogEvents' 1 MB event |
   | gcplogs | 256 KiB of entry, as JSON | the API: Cloud Logging's LogEntry size |
-  | oslog | 1,015 bytes | os/log.h states a 1,024-byte cap on dynamic content; the 1,015 it keeps whole is measured (M374, M494; open) |
+  | oslog | what the host's log keeps whole, read back as the daemon runs | entries of its own written and read back from its process's log store (OSLogStore, current process), by halves below os/log.h's stated 1,024-byte cap, which a line goes in parts of where the store cannot be read |
   | etwlogs | the listening sessions' | their answers as shards runs (ERROR_MORE_DATA, ERROR_ARITHMETIC_OVERFLOW): first ETW's stated 64 KB less an EVENT_HEADER, then narrowed between the longest all took and the shortest refused; a line no session took sent again in halves |
 
   A bound the measurements show (M492, M494) validates the method; none is kept as a
-  number. The rows marked open take a receiver's documented default where the protocol
-  states no bound, until the destination's own refusals are followed.
+  number. What a destination has shown (the longest message it took, the shortest it
+  refused) is kept in the home, a file a destination in `log-bounds/`
+  (`daemon/ship/learned.rs`), so that a daemon started again starts from it; only a
+  refusal narrows it, the next message's most halfway between the two, and the file,
+  removed, starts it again. A receiver that ends connections is read as refusing only
+  where two in a row ended with a message held that is longer than any it took (a
+  receiver's restart or a network's drop ends connections whatever their messages). Its
+  end is its FIN, a reset, or over TLS its close_notify, read from the records as they
+  come (RFC 8446 §6.1: its sender "will not send any more messages on this connection"),
+  which comes before its FIN and which a peek at the TCP socket read as bytes sent; and
+  over a unix socket as over TCP. A message the shipper has not yet given up is cut again
+  by it (`ErrorKind::FileTooLarge`), its parts' places its own; one already written that a
+  stream holds is cut again by its driver.
+
+  A fluentd event cut so keeps its line's identity. The forward protocol names none of an
+  event's: its one ID is `chunk`'s, "an ID of a set of events", and a server sent one
+  "MUST respond `ack`" (Forward Protocol Specification v1, Option and Response), so
+  without acks there is none. A line's parts are joined by their records' own fields,
+  moby's `partial_id`, `partial_ordinal` and `partial_last`: fluent-plugin-concat gathers
+  them by tag and `partial_id`, sorts them by `partial_ordinal` and joins them at the part
+  whose `partial_last` is true (filter_concat.rb at b8583840). So the pieces of an event
+  that was a line's part go under its line's `partial_id` in its place: the first takes
+  its ordinal, each the next, every part of the line after it goes as many places later
+  (those held written again so, the shipper's still to come numbered so), and the last
+  piece is the last part where the event was. What the receiver had of the line stands,
+  and the line it joins is the line, where the pieces under an ID of their own had left
+  it a part short. A whole line cut so goes as a line of its own ID.
 
   moby's copier cuts every line past 16 KiB whatever its receiver takes (copier.go,
   defaultBufSize), a character in two among them: a syslog receiver that takes 8,192
@@ -11853,12 +11936,17 @@ and the way every later one sends.
   whole, and Fluent Bit's, journald's and CloudWatch's take lines whole that Docker cut.
   A receiver that joins Docker's parts by their fields joins shards'. Cutting costs the
   shipper (M494): a part that fits as its driver's part says is written once, as moby's
-  are (a 1 MiB line in 3.5 ms over gelf's UDP, 0.85 ms in 16 KiB parts); one that does not
-  is found by halves, its message written about 18 times (0.48 s a MiB of random bytes over
-  gelf's UDP and gzip), on the shipper's thread, its store holding what waits.
+  are (a 1 MiB line in 3.5 ms over gelf's UDP, 0.85 ms in 16 KiB parts). One whose
+  message as written is not in a fixed ratio to its line (gelf's UDP datagrams by gzip) is
+  cut where the ratio of written bytes to the line's, the last a part showed and as far
+  again as it last moved, says the bound is reached, and grown once by its own ratio where
+  there is room: written once to three times a part, where finding the longest by halves
+  wrote it some 18 times (0.48 s a MiB of random bytes, M494). A driver that says only
+  whether a message fits is cut by halves.
 - **Delivered, not written** (`daemon/ship/stream.rs`, PM M233). Over TCP, TLS or a unix
-  stream socket, a message counts as sent only once its receiver has it.
-  - Over TCP, that is once its receiver's TCP has acknowledged its last byte, as the
+  stream socket, a message counts as sent only once its receiver has it and has not ended
+  the connection on it.
+  - Over TCP, its receiver has it once its TCP has acknowledged its last byte, as the
     kernel counts them: Linux's SIOCOUTQ, macOS's TCP_CONNECTION_INFO, Windows'
     SIO_TCP_INFO, whose BytesOut counts the bytes sent again too (PM M373): there the
     bytes written less `BytesOut − BytesRetrans − BytesInFlight`, BytesRetrans's 32 bits
@@ -11866,12 +11954,27 @@ and the way every later one sends.
     socket's bytes are in its receiver's buffer as they are written; on Windows an AF_UNIX
     stream's (afunix), Windows having no AF_UNIX datagrams: a `unixgram` address is
     refused there as its run is made, in shards' words.
+  - A receiver that ends a connection on a message it will not take has had its bytes,
+    its TCP acknowledging them as it reads. So a message is let go of only once the
+    connection is found open the kernel's RTO after its receiver was first seen to have it
+    (RFC 6298: the time within which the kernel takes what it sent to have been answered),
+    and a unix socket's RFC 6298's least, 1 s, a unix socket having no round trip of its
+    own; an end found before is followed. Nothing gelf or forward without acks sends says
+    more: neither answers a message, and their receivers end connections on those they
+    refuse. With acks, fluentd's ack says its receiver has it (D165).
   - The shipper keeps its place only as far as what is delivered. So a daemon that stops
     or dies costs sending again what was not yet delivered, and loses no line.
   - What a connection had not delivered when it ended (a reset, a receiver that
     restarts, a timeout after a partition) is held, and written again, in order, on the
     next. srslog, go-gelf and fluent-logger-golang lose it.
-  - A connection ends only once its receiver has all of it:
+  - A connection ends only once nothing is held: what is held is written on one where
+    there is none and waited on until it is delivered, so that a receiver's end after the
+    stream's is its answer to it, and one before it is followed as any other: the close
+    says so (`ConnectionAborted`) and is tried again, the driver cutting what connections
+    end on. So a run's last message, refused at close, is sent again cut before the
+    shipper ends, where gelf's and fluentd's without acks were lost; the shipper's end
+    waits on its receiver's TCP and its end, and on no time of its own. Then the
+    connection ends once its receiver has all of it:
     - TLS's close_notify is sent;
     - its write side is shut;
     - what the receiver still sends is read and let go;
@@ -11956,7 +12059,18 @@ Unit tests cover:
   at once, its receiver sees a reset);
 - what a connection reset by its receiver had not delivered, written again on the next,
   in order, before what comes after (mutation-checked: what is held dropped fails it);
-- the segments wholly sent going.
+- the segments wholly sent going;
+- over TLS, a receiver's close_notify found as its end as the stream settles, no write
+  failing (mutation-checked: read as bytes sent, no end is found);
+- over a unix socket, messages held until delivered and a receiver that ends connections
+  on one pointed at, as over TCP (mutation-checked: an end never found);
+- gelf over TCP, a run's last message its receiver ends connections on, sent again cut
+  before the close ends (mutation-checked: the close taking that end for its answer
+  loses it);
+- fluentd without acks, over TCP, TLS and a unix socket, a line's middle part refused at
+  close and one refused before its last part is sent: every part within the receiver's
+  bound, the line rebuilt whole by its places under its one ID (mutation-checked: pieces
+  under an ID of their own leave it a part short).
 
 ### D162. A run's rotated log segments compressed, seekably; a log that never holds up its run
 
@@ -14373,19 +14487,83 @@ usual time: a stuck request, not a registry down. Healthy answers took 61 to 272
 and up to 7.1 s at most, by endpoint; a healthy download's longest silence was 1.2 s in
 32 of 3.4 GB. A figure measured on these machines would be as arbitrary on anyone else's
 network as containerd's: so each wait is learned from the path it is on, as shards runs.
+Learned first as TCP learns its retransmission timeout (RFC 6298), the answer wait then
+failed on Wi-Fi (M486, the Mac Studio): over 2.01 h and 30,687 requests, answers were
+heavy-tailed on every endpoint (p50 0.3 to 0.55 s, p90 1 to 3.8 s, p99 4 to 21 s, at
+most 19 to 64 s, 43 past 30 s), with 32 never answered and the host's network down for
+every endpoint twice. Replayed, RFC 6298's waits cut 3.89% of healthy answers and lost
+5,110.8 s where fixed 30 s waits lost 1,001.2 s: SRTT + 4·RTTVAR follows the latest
+answers, so it cuts answers that are merely slow, and each asking again starts its wait
+over. The healthy downloads' silences there reached 25 s, dozens past a second a
+download.
 
 **Decided** (crates/registry `patience.rs`, `http.rs`, `registry.rs` `Trouble`):
-- **A request without a body waits for its answer as long as its path answers**, and a
-  download for its next byte as long as its silences go: each estimated as TCP estimates
-  its retransmission timeout (RFC 6298 §2, after Jacobson, "Congestion Avoidance and
-  Control", SIGCOMM 1988), the smoothed wait and four smoothed deviations, at least a
-  second (§2.4), a second before the path has shown any (§2.1, the cold start), and
-  doubled for each timeout in a row (§5.5) until one is answered. An answer or a byte
-  overdue is cut and asked again (a download resumed where it was), on a fresh
-  connection. Replayed on M486's own answers, the learned waits cut 73 healthy answers in
-  39,235 (0.19%), each asked again, and lost 120 s in all where 30 s waits lost 752 s.
-  A request with a body waits on its server's work with it (a blob's digest checked as
-  its upload ends), as long as its patience says (D226's).
+- **A lookup (a GET or HEAD without a body) waits for its answer, and a download for its
+  next byte, as long as makes the answer come soonest** (`patience::Cutoff`): a wait cut
+  is asked again (a download resumed where it was), on a fresh connection, so the wait is a
+  restart cutoff, and the optimal one for a known distribution F of the time to an
+  answer, restarts each drawing anew, is one fixed t* minimising E(t) = ∫0^t (1 − F) /
+  F(t) (Luby, Sinclair and Zuckerman, "Optimal speedup of Las Vegas algorithms", Inf.
+  Process. Lett. 47(4), 1993; the renewal-reward expectation of cycles costing min(X, t)
+  and succeeding with F(t)). shards keeps the renewal and measures the rest, per path:
+  - **F is the path's own**: its answers' times, and the times waited before a cut (an
+    answer that came later, if ever), as Kaplan and Meier estimate a distribution from
+    observations cut short ("Nonparametric estimation from incomplete observations", JASA
+    53(282), 1958). A request never answered keeps F below 1, so E grows without end past
+    what the path answers in. Kept in log buckets of 1% relative accuracy (DDSketch,
+    Masson, Rim and Lee, PVLDB 12(12), 2019): a time known within a factor γ = 1.01/0.99,
+    at most 2,219 buckets whatever the count, and two sketches merged exactly by adding
+    their counts. The cutoff is a bucket's upper bound: E(γt) ≤ γ·E(t), as ∫t^γt S ≤
+    (γ − 1)·t·S(t) ≤ (γ − 1)·∫0^t S, so at most 2.02% slower than the best of the times
+    as bucketed.
+  - **What a cut costs is measured, not assumed**: R, the mean time from a cut to the
+    answer of an asking begun after it (from a silence's cut to the first byte of a body
+    begun after it), and the wait W's expected time ∫0^W S + S(W)·R, S = 1 − F. A path
+    whose slow answers come in spells, so that the asking again is slow too (after an
+    asking past its endpoint's p90, the next was past it 26% to 59% of the time on Fedora
+    and 24% to 77% on the Studio, not the 10% of independent askings, M486), is cut
+    later. Before any R is measured, Luby's own: asking again a fresh draw,
+    E[∫0^W S] / E[F(W)].
+  - **The wait is drawn uniformly from [t, 2t)**, and t chosen for that draw. A fixed
+    cutoff cuts every asking at it, so F past it is never seen and t can only fall
+    (replayed, it fell below the paths' p99 and lost more than RFC 6298's waits); the draw
+    spreads the cuts over [t, 2t), Kaplan-Meier sees past t, and t rises where the path
+    answers later. For an answer, the draw is the pause `Trouble` takes before asking
+    again (a uniform share of how long the trouble has lasted, t at the first cut) spent
+    listening to the asking instead of asleep: an answer cut by its wait is overdue
+    (`Error::is_overdue`) and asked again at once, at the moment the pause would have
+    ended, and one that comes meanwhile is taken. A stalled download already resumes at
+    once once it brought bytes (fetch.rs).
+  - **At least a second** (RFC 6298 §2.4's least timeout, which keeps it conservative
+    against what its samples do not show; RFC 6298 cites Allman and Paxson, SIGCOMM
+    1999: a large minimum avoids spurious retransmissions). Without it, this crate's
+    tests on a host at a load of 190 cut healthy loopback answers their paths had learned
+    were quick, and replayed (M486) it lost more on Fedora than RFC 6298's waits in the
+    model where asking again never helps, at two seeds of three.
+  - **Doubled for each cut in a row** (RFC 6298 §5.5), which reaches past anything the
+    path has shown, within its trouble budget (below).
+  - **Only a lookup is cut**: asking again is a restart only where it repeats the request
+    without effect (a safe method, RFC 9110 §9.2.1). A bodiless PUT (an upload's commit,
+    its digest checked) or POST (an upload begun) waits on its server's work, as a
+    request with a body does; before, any bodiless request was cut as its path's
+    answers said, and a commit cut could be asked of an upload its server had finished.
+  - **Before any answer, a second** (RFC 6298 §2.1), drawn and doubled as any wait: no
+    cut at all would hold a request that is never answered forever, and the doubling
+    reaches an answer of any time x within 2x (Baeza-Yates, Culberson and Rawlins 1993).
+  Replayed on both hosts' records (M486; seed 0 of the draws, seeds 1 and 2 within
+  the ranges given there), in the model where asking again meets the path's own next
+  recorded asking: fixed 30 s waits lost 1,124.8 s on Fedora and 3,836.3 s on the
+  Studio, RFC 6298's 50.3 s and 3,579.6 s, the cutoff 19.7 s and 1,251.3 s (cutting
+  0.05% and 3.01% of healthy answers, against RFC 6298's 0.21% and 5.09%); in the model
+  first replayed, where asking again never helps, RFC 6298's lost 120.1 s and 5,110.8 s,
+  fixed waits 752.0 s and 5,301.2 s (the Studio's 43 answers past 30 s, never answered
+  within them, each charged R2's 100 s; uncounted, as first replayed, 1,001.2 s), and the
+  cutoff 102.3 s and 2,344.0 s. Silences follow the same rule, since a stall cut is a
+  restart whose cost is a reconnect (a resume by range, no bytes lost): RFC 6298's
+  estimator at its floor would cut dozens of a Wi-Fi download's healthy silences
+  (M486). A request with a body
+  waits on its server's work with it (a blob's digest checked as its upload ends), as
+  long as its patience says (D226's), and so does any request but a lookup.
 - **A connection is made, and its TLS handshake done, as fast as its path's are**
   (`Wait::Connect`, `Wait::Handshake`): each the same estimator over the path's own
   connects (the name's lookup included, as Go's dialer counts it, and the race of RFC
@@ -14417,17 +14595,20 @@ network as containerd's: so each wait is learned from the path it is on, as shar
   or a trouble past it, is said as the registry's failure. A 500, which RFC 9110 §15.6.1
   does not say passes, is asked again once, and a repeat is the request's own answer.
   A cancel ends a wait at once.
-- **Kept in the home, by path**: what each path showed (its answers', silences',
-  connects' and handshakes' estimators, the longest trouble it passed and how many) is
+- **Kept in the home, by path**: what each path showed (its answers' and silences'
+  times, cuts and what the cuts cost, its connects' and handshakes' estimators, the
+  longest trouble it passed and how many) is
   kept in the path's one record under the image store's `links/`, named by its host and
   port and this host's address on its route there (D226), with what transfers learn of
   the path; merged into the record as the pull or push lets its client go, under the
   records' lock (D226), and read as a client first asks the path, and again once a
   connection says its route. Clients that asked one path at once all keep theirs
   (`Shown::merged`, three ways: the record as it is now, what the client read, what it
-  holds): each wait's estimator is the one whose last sample is the newer, whole, for
-  RFC 6298's SRTT and RTTVAR are their latest samples' (each moves them an eighth and a
-  quarter, §2.3), with the count of waits both clients'; the longest trouble the longer;
+  holds): the answers' and silences' counts are the record's and those each client
+  added (a sketch merges exactly); each connect's and handshake's estimator is the one
+  whose last sample is the newer, whole, for RFC 6298's SRTT and RTTVAR are their latest
+  samples' (each moves them an eighth and a quarter, §2.3), with the count of waits both
+  clients'; the longest trouble the longer;
   the troubles passed the record's and each client's own. Each estimator keeps when its
   last wait was seen (`at_us`, the wall clock, compared across processes). A pull's
   registry, its token server and its CDN are three paths, each learned for itself.
@@ -14440,34 +14621,47 @@ network as containerd's: so each wait is learned from the path it is on, as shar
 - **Unlike Docker, recorded:** containerd gives a request five attempts 50 ms apart and a
   download three stalls; Go's transport, 30 s to connect, 10 s for a handshake, 30 s for
   an answer and none for a body's silence unless set, and containerd's keeps an idle
-  connection 30 s. shards learns each wait from the path, and keeps an idle connection
-  as long as its server and RFC 5382's NATs do.
+  connection 30 s. shards learns each wait from the path (an answer's and a silence's as
+  the cutoff that makes them come soonest), and keeps an idle connection as long as its
+  server and RFC 5382's NATs do.
 - **Every value, and where it comes from:**
 
   | Value | Where | Source |
   |---|---|---|
-  | timeout = SRTT + 4·RTTVAR, α = 1/8, β = 1/4, first: R, R/2 | `Pace` | RFC 6298 §2.2, §2.3 |
-  | 1 s before any wait, and the least | `patience::FIRST` | RFC 6298 §2.1, §2.4 |
+  | an answer's and a silence's cutoff t: argmin of E over W of ∫0^W S + S(W)·R | `Cutoff::base` | Luby, Sinclair and Zuckerman 1993 (restart cutoff, renewal-reward) |
+  | S: Kaplan-Meier over answers and cuts | `Cutoff::base` | Kaplan and Meier 1958 |
+  | R: mean time from a cut to an answer of an asking begun after it; before any, Luby's fresh draw | `Cutoff::recovered`, `Paths::waited`, `Paths::silenced` | measured on the path |
+  | times in buckets of α = 1%, t a bucket's upper bound (≤ 2.02% slower), ≤ 2,219 buckets, merged by adding | `Sketch`, `patience::ALPHA` | DDSketch (Masson, Rim and Lee 2019) |
+  | the wait drawn from [t, 2t); an overdue answer asked again at once | `Cutoff::wait`, `Error::is_overdue` | `Trouble`'s pause (a uniform share of the trouble, t at the first cut) spent listening; Kaplan-Meier past t |
+  | t at least 1 s | `Cutoff::base`, `patience::FIRST` | RFC 6298 §2.4 (after Allman and Paxson 1999) |
+  | only GET and HEAD without a body cut by their answers' wait | `Client::exchange` | safe methods, RFC 9110 §9.2.1 |
+  | connect, handshake: SRTT + 4·RTTVAR, α = 1/8, β = 1/4, first: R, R/2 | `Pace` | RFC 6298 §2.2, §2.3 |
+  | 1 s before any wait, and a pace's least | `patience::FIRST` | RFC 6298 §2.1, §2.4 |
   | ×2 a timeout in a row | `backed_off` | RFC 6298 §5.5 |
-  | answers, silences, connects, handshakes each learned | `Wait`, `Paths::timeout` | the same estimator over each one's own waits |
+  | answers, silences, connects, handshakes each learned | `Wait`, `Paths::timeout`, `Paths::silence` | each over its own times |
   | budget: 2 × the longest trouble passed | `Shown::budget` | doubling search (Baeza-Yates, Culberson and Rawlins 1993) |
   | budget at least 100 s | `patience::R2` | RFC 1122 §4.2.3.5, R2 |
   | a random share of the trouble so far | `Trouble` | full jitter, bounded by the trouble's own length |
   | at least `Retry-After` | `Trouble` | RFC 9110 §10.2.3 |
   | 502, 503, 504, 408 pass; a 500 asked once more | `Trouble` | RFC 9110 §15.5.9, §15.6.1, §15.6.3 to §15.6.5 |
-  | merged: the newer sample's estimator, waits and troubles summed, the longest kept | `Shown::merged` | RFC 6298 §2.3 (SRTT, RTTVAR follow their latest samples) |
+  | merged: answers' and silences' counts summed, the newer sample's pace, troubles summed, the longest kept | `Shown::merged` | DDSketch's merge; RFC 6298 §2.3 (SRTT, RTTVAR follow their latest samples) |
   | an idle connection kept 2 h 4 min at most | `http::IDLE` | not a wait (RFC 9112 §9.5); RFC 5382 §5 REQ-5 |
   | 30 s to connect, 10 s a handshake: clients that do not learn | `http::CONNECT`, `http::HANDSHAKE` | Go's dialer and `TLSHandshakeTimeout`, as containerd sets them |
-- **Tested:** patience.rs (RFC 6298's arithmetic; a path's budget, backoff and record,
-  kept and read back by the next client; each wait's backoff its own; two clients at
-  once both kept, `clients_at_once_both_keep_what_they_showed`; a record of before
-  connects were kept read whole); http.rs (`a_learning_client_learns_its_connects_and_handshakes`:
-  one connect, one handshake, two answers over a connection used twice); registry.rs (a gateway's 502, 503, 504, 408 or
+- **Tested:** patience.rs (RFC 6298's arithmetic; a sketch's buckets within γ and its
+  merge, `a_sketch_keeps_times_within_its_accuracy`; the cutoff, `the_cutoff_makes_answers_come_soonest`:
+  nine answers in ten at 2 s and one at 100 s cut just past 2 s, waited past 100 s once
+  a cut is measured to cost an hour, a path that answers alike cut just past its
+  answers, one that answers in 100 ms at the least second, the draw and doubling; what a cut costs, `what_a_cut_costs_is_measured`; a
+  path's budget, backoff and record, kept and read back by the next client; each wait's
+  backoff its own; two clients at once both kept, `clients_at_once_both_keep_what_they_showed`;
+  a record of before answers were counted read whole); http.rs (`a_learning_client_learns_its_connects_and_handshakes`:
+  one connect, one handshake, two answers over a connection used twice;
+  `an_answer_cut_by_its_wait_is_overdue`); registry.rs (a gateway's 502, 503, 504, 408 or
   cut connections ridden out for as long as they last and no longer than their length
   again; past the budget the registry's answer; a named wait waited, one past the budget
-  not; a cancel ends a wait; a path whose answers come 1.5 s late cut once, then waited
-  for; a download silent 1.5 s cut and resumed where it was; a blob short of its size
-  failing at once); fetch.rs (a stuck layer keeps no other waiting; a blob shorter than
+  not; a cancel ends a wait; a path whose answers come 1.5 s late cut once at the 1.25 s
+  drawn, asked again, then waited for; a download silent 1.5 s cut and resumed where it
+  was, what the cut cost learned; a blob short of its size failing at once); fetch.rs (a stuck layer keeps no other waiting; a blob shorter than
   its descriptor fails at once, with ranges and without); auth.rs (a token server's
   gateway failures ridden out). Mutation-checked: the budget, the riding, the short blob.
   A real pull from ghcr.io on Fedora kept ghcr.io's and its CDN's paths in the home.
@@ -15179,12 +15373,24 @@ receiver for an incoming port" above:
   behind it. The chooser and the host network's binds (D124, IPv6's loopback) keep one
   socket for their life, so that the destroy work's grace period passes on a kernel
   worker; and the chooser answers every call a round of poll(2) finds before it
-  programs, choosing once for them all. The chains stay rebuilt whole: what a commit of
-  them costs now is M513's after-run, which decides whether a map keyed by port is
-  worth its code.
-- **Not yet**: ports past the microVM are IPv4's alone (D99). The costs (PM M498) are
-  unmeasured: a build step's device cgroup (`docs/research/measurements/step-devices/run.py`)
-  and the chooser's round trip after M513 (`step-devices/chooser.sh`).
+  programs, choosing once for them all. Measured before and after, interleaved (M513,
+  adacachy, n 2,000): a contested bind 15.98 ms at p50 (32 ms p99) before, 20.6 to 21.7
+  µs (68 to 71 µs p99) after, where a filtered, uncontested one takes 19 µs; listen
+  likewise. The chains stay rebuilt whole: their commit leaves a contested call a few µs
+  past an uncontested one's, which a map keyed by port could not buy back worth its code.
+- **A run's start closes no netfilter socket (PM M513).** The commits a run makes before
+  its command executes were each on a socket opened for them and closed after, a grace
+  period each where its start makes them: its confinement (`confine_eth0`, an image whose
+  agents reach past the microVM), the host's loopback (`net::host_loopback`, D124), the
+  agents' way past the microVM in init's namespace (`outside`, `outside6`) and each
+  domain's gate (`attach_ns`), and a member's gate as its engine changes it (`regate`).
+  Init's own namespace's are made on one socket kept for its life (links.rs `INIT_NFT`),
+  let go only where an exchange fails; each gate keeps its own with its namespace.
+  Before and after: the start-path trace of a run of each kind, owed.
+- **Not yet**: ports past the microVM are IPv4's alone (D99). Unmeasured: a build step's
+  device cgroup (`docs/research/measurements/step-devices/run.py`, PM M498); the
+  chooser's round trip on an arm64 Mac; and Fedora's tail after M513 (max 21 to 107 ms in
+  three runs at load 18 to 26, not interleaved).
 
 ### D121. Docker's AppArmor mount rule, in guests that have no AppArmor
 
@@ -17606,13 +17812,45 @@ held to more than OPA's answers:
   walk that meets it (three times as long each level: 12 deep 3.25 s, now 0.5 ms); the
   safety check's and print rewrite's outputs read again for each expression, and each
   equality copying the whole safe set (cubic: 1000 closures in a body 42 s, now 0.48 s).
-- Left, as OPA's: rewriteLocalVars walks an `every` statement again after its body and
-  numbers the comprehensions within it anew, twice the work each level they alternate
-  (20 deep 9.3 s; OPA takes 7 minutes at 12), and the numbers are in what OPA compiles
-  and partial evaluation leaves, so a shortcut must number as the walk does; rule wrap's
-  type check is quadratic (10000 rules 24.9 s). Evaluation asks no bound of a policy, as
-  OPA's does not (`numbers.range` over any span); a build's policies run in its own
-  process, which Ctrl-C ends, as buildx's end with its build's context.
+- The rewrite of local variables walked as OPA's does, and OPA's way is exponential:
+  rewriteEveryStatement (ast/compile.go) rewrites a statement's body, then walks the
+  whole statement again (rewriteDeclaredVarsInExpr), whose walk rewrites each
+  comprehension within again (rewriteDeclaredVarsInArrayComprehension and its kin) and
+  so each `every` statement in those (rewriteEveryStatement again: its key and value
+  declared anew, numbered by localVarGenerator.Generate), twice a level where they
+  alternate (20 deep 9.3 s; OPA 7 minutes at 12). The numbers are in what OPA compiles
+  and what its partial evaluation leaves, and the names each replaced
+  (localDeclaredVars.Insert's `rewritten`) in its error texts. `localvars::Fast` gives
+  those numbers without the walks: a walk whose work a later walk does again (a
+  comprehension's in a statement's body while the statement is walked again; an `every`
+  statement's, where a statement around it is still being rewritten and the walk would
+  rename nothing) is counted, not walked, the generator passing over the names it would
+  have made, each part of the rule keeping how many its walk makes; each walk of a
+  comprehension makes its statements' names in one order, so a name's predecessor is the
+  one at its place in the walk of that comprehension before. A rule whose rewrite meets
+  an error is rewritten again OPA's way, for OPA's errors. Held to OPA's way by
+  `compile/fast_tests.rs` (4000 policies made at random, and M510's shapes, compiled
+  both ways), and to OPA by the oracle. Also linear now: an `every` statement declaring
+  after the one within (quadratic: each level's walk again, never skippable as the
+  scope had changed). OPA's counter is a Go int: past about 62 alternating levels a
+  rule needs more names than it numbers (OPA's would go negative and repeat, were it to
+  live the 2^63 steps), and such a rule fails to compile with an error of its own
+  (`rule ... nests every statements and comprehensions deeper than its local variables
+  can be numbered`), the counts checked as they add, never rewritten OPA's way, which
+  would not end. The rule wrap's type check was quadratic (10000 rules 24.9 s): each
+  rule's type copied the type of the rule within whole, the check of each equality
+  asked whether any part of a type is not known (types.Nil) by walking it, and a
+  node's children were searched from the first. A type's parts are shared now, as
+  OPA's pointers are (within a compile: the builtins' declarations, every thread's, are
+  kept as OPA's JSON and made types for each compile), each keeping whether any of it is
+  unknown, and a node finds a
+  child by name, as OPA's typeTreeNode does with its map. The times after: owed, the
+  nesting bench's M510 inputs and deeper (`rego-nesting/run.sh`).
+- Left: a rule whose local-variable rewrite errs is rewritten OPA's way, so an
+  erroring rule of `every` statements and comprehensions alternating takes OPA's time.
+  Evaluation asks no bound of a policy, as OPA's does not (`numbers.range` over any
+  span); a build's policies run in its own process, which Ctrl-C ends, as buildx's end
+  with its build's context.
 
 ### D97. OSI artifacts of several platforms: an index
 
@@ -19870,10 +20108,10 @@ work (p50):
 
 | Step | Cost | Evidence |
 |---|---|---|
-| The client's launch: spawn to `main` of the 160 MB PIE `shards` (0.57 for `/usr/bin/true`; 180 more page faults, 125 of them its relocated read-only data) | 1.5–1.6 ms | [PM M470] |
+| The client's launch: spawn to `main` of the 160 MB PIE `shards` (0.57 for `/usr/bin/true`; 180 more page faults, 125 of them its relocated read-only data, about 1.8 µs a page at load 2; its size costs nothing, and RELR takes the relocations' table but not the pages they write, PM M514) | 1.5–1.6 ms | [PM M470, M514] |
 | The client: its request written to its slot | 0.37 ms | [PM M470] |
 | The daemon's slot thread reads it, bridges it to its handling | 0.18 ms | [PM M470, D185] |
-| The daemon prepares the run (image, spec), makes its container, keeps its request, sets it up | 1.1 ms (0.55, 0.19, 0.13, 0.20) | [PM M470] |
+| The daemon prepares the run (image, spec), makes its container, keeps its request, sets it up; the host's CPUs read once for all of it (`Prepared::cpus`; on Linux each read walks the daemon's cgroups, and the start read them six times; the cut unmeasured) | 1.1 ms (0.55, 0.19, 0.13, 0.20) | [PM M470] |
 | Its network process told (E1) | 0.07 ms | [PM M470] |
 | The hand-over to the warm VM, TAKEN (13.5 ms before its descriptor room, M470) | 0.14–0.17 ms | [PM M470] |
 | The guest starts the command: init takes the request 0.49, its names' files 0.48, the standby woken and set up 0.55, the exec until init hears it 1.67 | 2.5–3.5 ms | [PM M470, M292, M440] |

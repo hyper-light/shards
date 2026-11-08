@@ -807,10 +807,14 @@ impl Registry {
                 }
                 // A timeout, a reset or a cut answer: ridden out while it lasts a moment. A
                 // file's body is resumed by its upload instead, from what the registry has.
+                // An overdue answer is asked again at once: its wait was drawn to end
+                // where the pause would have (crate::patience `Cutoff`).
                 Err(e) if e.kind() == ErrorKind::Transient && file.is_none() => {
                     match trouble.wait(asked, self.http.budget(url), None) {
                         Some(wait) => {
-                            self.http.pause(wait)?;
+                            if !e.is_overdue() {
+                                self.http.pause(wait)?;
+                            }
                             continue;
                         }
                         None => return Err(e),
@@ -1802,7 +1806,7 @@ fn retry_after(response: &Response) -> Option<Duration> {
 }
 
 /// A number in [0, 1), from the process's random hash keys and the time.
-fn jitter() -> f64 {
+pub(crate) fn jitter() -> f64 {
     use std::hash::{BuildHasher, Hasher};
     let mut h = std::hash::RandomState::new().build_hasher();
     h.write_u128(
@@ -3365,9 +3369,10 @@ mod tests {
         assert!(took >= short && took < short * 2 + SLACK, "{took:?}");
     }
 
-    /// A path whose answers come 1.5 s late: its first, past the second a path starts with
-    /// (RFC 6298 §2.1), is cut and asked again with the wait doubled (§5.5), and answered;
-    /// its pace learned, the next is waited for, asked once (D222).
+    /// A path whose answers come 1.5 s late: its first, past the 1.25 s drawn from the
+    /// second a path starts with (RFC 6298 §2.1), is cut and asked again at once with the
+    /// wait doubled (§5.5), and answered; its answer, its cut and what the cut cost
+    /// learned, the next is waited for, asked once (D222).
     #[test]
     fn a_paths_answers_are_waited_for_as_long_as_it_shows() {
         // Every answer 1.5 s late.
@@ -3379,16 +3384,24 @@ mod tests {
         let http = Client::new(
             Box::new(|_| crate::tls::client_config(Vec::new(), None)),
             "shards-test",
-        );
+        )
+        .drawing(0.25);
         let registry = Registry::new(http, &reference, Credentials::Anonymous).unwrap();
         let url = registry.base().join("manifests/v1").unwrap();
+        let t0 = Instant::now();
         let (response, _) = registry.request("GET", &url, &[]).unwrap();
+        let took = t0.elapsed();
         assert_eq!(response.status, 200);
         drop(response);
-        assert_eq!(server.requests().len(), 2, "cut at a second, asked again");
+        assert!(took >= Duration::from_millis(1250 + 1500), "{took:?}");
+        assert_eq!(server.requests().len(), 2, "cut at 1.25 s, asked again");
         let shown = registry.http.shown("127.0.0.1", server.port);
-        assert_eq!(shown.answer.n, 1, "{shown:?}");
-        assert!(shown.answer.srtt_us >= 1_000_000, "{shown:?}");
+        let answers = &shown.answers;
+        assert_eq!(
+            (answers.answered.total(), answers.cut.total(), answers.agains),
+            (1, 1, 1),
+            "{shown:?}"
+        );
         // Its connections, the cut one's and the one after, each made in time.
         assert!(shown.connect.n >= 2, "{shown:?}");
         // What it showed is waited for: the same answer again, asked once.
@@ -3453,10 +3466,12 @@ mod tests {
         let dir = shards_testdir::TempDir::new(&format!("silent-{port}")).unwrap();
         let store = Store::open(&dir).unwrap();
         let reference = Reference::parse(&format!("127.0.0.1:{port}/test/image:v1")).unwrap();
+        // Its silence cut at the 1.25 s drawn from a second.
         let http = Client::new(
             Box::new(|_| crate::tls::client_config(Vec::new(), None)),
             "shards-test",
-        );
+        )
+        .drawing(0.25);
         let registry = Registry::new(http, &reference, Credentials::Anonymous).unwrap();
         let desc = Descriptor {
             media_type: "application/vnd.oci.image.layer.v1.tar".into(),
@@ -3473,7 +3488,9 @@ mod tests {
         assert_eq!(ranges[0], 0);
         assert!(ranges[1] > 0, "resumed where it was cut: {ranges:?}");
         let shown = registry.http.shown("127.0.0.1", port);
-        assert!(shown.silence.n > 0, "{shown:?}");
+        let silences = &shown.silences;
+        assert!(silences.answered.total() > 0, "{shown:?}");
+        assert_eq!((silences.cut.total(), silences.agains), (1, 1), "{shown:?}");
     }
 
     /// A whole blob whose answer ends as its framing says, short of its descriptor's size,

@@ -717,7 +717,10 @@ impl Bearer {
                 ));
             };
             last = failed.status;
-            http.pause(wait)?;
+            // An overdue answer is asked again at once (crate::patience `Cutoff`).
+            if !failed.error.is_overdue() {
+                http.pause(wait)?;
+            }
         }
     }
 

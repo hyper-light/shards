@@ -391,6 +391,13 @@ pub struct Prepared {
     pub image_id: String,
     /// The manifest of the image the run takes: its platform's (D179).
     pub image_manifest: String,
+    /// The CPUs the host gives the run ([`crate::resources::host_cpus`]) as it was prepared,
+    /// which every step of its start that sizes or checks it by them takes from here: on
+    /// Linux each read is std's `available_parallelism`, which reads /proc/self/cgroup and
+    /// opens `cpu.max` at every level of the process's cgroup up to /sys/fs/cgroup
+    /// (library/std/src/sys/thread/unix.rs, `cgroups::quota_v2`), and a run's start read
+    /// it six times.
+    pub cpus: usize,
     /// The microVM's vCPUs and the memory it boots with, in MiB ([`sizes`]).
     pub size: (u32, u64),
     /// The most memory the microVM may have in all, in MiB ([`sizes`], D148).
@@ -900,7 +907,15 @@ pub fn prepare(
         .and_then(|c| c.labels.clone())
         .unwrap_or_default();
     let labels = merge_labels(image_labels, &request.labels)?;
+    // The host's CPUs, read once for the whole of the run's start (see `Prepared::cpus`).
+    let cpus = crate::resources::host_cpus();
+    let (vcpus, boot_mib, memory_max) = sizes_for(
+        &request.resources,
+        crate::build::host_memory(),
+        crate::resources::vcpus_of(cpus),
+    );
     Ok(Prepared {
+        cpus,
         layer: crate::setup::storage_size(request)?.unwrap_or(LAYER_HOLDS),
         agentfile,
         emulator,
@@ -928,11 +943,8 @@ pub fn prepare(
             .unwrap_or_else(|| vec!["/bin/sh".into(), "-c".into()]),
         labels,
         parent: request.cgroup_parent.clone(),
-        size: {
-            let (vcpus, boot, _) = sizes(&request.resources, crate::build::host_memory());
-            (vcpus, boot)
-        },
-        memory_max: sizes(&request.resources, crate::build::host_memory()).2,
+        size: (vcpus, boot_mib),
+        memory_max,
         image_volumes: image
             .config
             .config
@@ -964,8 +976,12 @@ pub fn prepare(
 /// their heaps as under Docker (Node.js's V8, PM M220, M221). Where the host's memory is
 /// not known, it plugs none, and a run with a limit boots with what its limit needs.
 pub fn sizes(resources: &shards_ipc::Resources, host: Option<u64>) -> (u32, u64, u64) {
+    sizes_for(resources, host, crate::resources::microvm_vcpus())
+}
+
+/// [`sizes`] of a microVM of `vcpus`, read by its caller already.
+pub fn sizes_for(resources: &shards_ipc::Resources, host: Option<u64>, vcpus: u32) -> (u32, u64, u64) {
     use shards_vmm::vm::MEMORY_MIB;
-    let vcpus = crate::resources::microvm_vcpus();
     // Its swap's bookkeeping too, its kernel's and not its workload's (D159).
     let kernel = crate::resources::swap_bytes(resources).map_or(0, |allowance| {
         let device = crate::resources::swap_device_bytes(allowance, vcpus);
@@ -1316,6 +1332,27 @@ fn short(digest: &str) -> &str {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    /// A run's start sizes its microVM from the host's CPUs it read once (`Prepared::cpus`)
+    /// as [`sizes`] sizes one from the host's CPUs read again, with a limit and without,
+    /// swap and not, the host's memory known and not.
+    #[test]
+    fn sizes_from_cpus_read_once_are_the_hosts() {
+        let vcpus = crate::resources::vcpus_of(crate::resources::host_cpus());
+        assert_eq!(vcpus, crate::resources::microvm_vcpus());
+        for memory in [0, 512 << 20, 6 << 30] {
+            for memory_swap in [0, -1] {
+                let r = shards_ipc::Resources {
+                    memory,
+                    memory_swap,
+                    ..shards_ipc::Resources::default()
+                };
+                for host in [None, Some(16 << 30), Some(128 << 30)] {
+                    assert_eq!(sizes_for(&r, host, vcpus), sizes(&r, host));
+                }
+            }
+        }
+    }
 
     /// A run given VFIO's own nodes, its container or iommufd, is booted to take a host's
     /// functions plugged in as it runs (D214), on Linux; one given neither, or only a

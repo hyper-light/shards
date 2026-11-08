@@ -1155,6 +1155,7 @@ dependencies = [
  "cc",
  "flate2",
  "libc",
+ "libm",
  "lzma-rust2",
  "rcgen",
  "regex",

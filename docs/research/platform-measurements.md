@@ -4044,10 +4044,17 @@ revision before comparing a changed API/implementation.
     reset, refused) asked again every 50 ms to its first answer. `episodes.py`: answers'
     times by endpoint (n, p50, p90, p99, max) and each failure's episode, from its first
     failed request's start to the answer, with its askings and when it began.
-  - `replay.py`: each endpoint's answers, in order, through patience.rs's estimator (the
-    smoothed wait and four deviations, at least 1 s, 1 s before any, doubled per timeout
-    in a row): the healthy answers it would have cut and asked again, and the time lost,
-    against 30 s waits.
+  - `replay.py`: each endpoint's answers, in order, through each rule as patience.rs
+    keeps it, learning as they come: fixed 30 s waits; RFC 6298's estimator (the smoothed
+    wait and four deviations, at least 1 s, 1 s before any, doubled per timeout in a row,
+    D222 as first built); and the cutoff that replaced it (D222's `Cutoff`, below). Two
+    models of what asking again meets: `same`, the model first replayed here (a healthy
+    answer cut is answered as it was, after each wait it outlasts: asking again never
+    helps), and `trace`, the endpoint's own next recorded asking begun once the asking
+    again would have been, `Trouble`'s pause included (a slow spell, and an outage, as
+    recorded). For each, the healthy answers cut and asked again, and the time lost: each
+    asking's time to its answer, less its own recorded answer; and by endpoint, how often
+    an asking past its p90 was followed by another.
   - `silences.py`: the four largest layers of ghcr.io/actions/actions-runner:latest and
     of Docker Hub's library/python:3.13 (linux/amd64), downloaded four at once, 4 rounds
     each, following the redirect to the CDN; each download's head times and its longest
@@ -4076,7 +4083,8 @@ revision before comparing a changed API/implementation.
   | mcr.microsoft.com/v2/ | 3,585 | 90 | 152 | 362 | 5,289 | 1 |
   | registry.gitlab.com/v2/ | 3,573 | 272 | 309 | 684 | 1,574 | 2 |
 
-  Replayed: the learned waits stayed at their 1 s floor at p50 on every endpoint, rising
+  Replayed through RFC 6298's estimator (D222 as first built; `same`): the learned
+  waits stayed at their 1 s floor at p50 on every endpoint, rising
   to 2.0 to 8.1 s at most after slow answers; they would have cut 73 of 39,235 healthy
   answers (0.19%, 0.03% to 0.53% by endpoint, most on ghcr.io and quay.io, whose answers
   run longest), each asked again, and lost 120 s in all, where 30 s waits lost 752 s to
@@ -4099,13 +4107,80 @@ revision before comparing a changed API/implementation.
   trial run before, one ghcr.io download of 324 MB ended 19.6 MB short after 546 s,
   progressing at 0.56 MB/s: a transfer a deadline would have cut, and one a resume
   finishes.
+- **Found on the Mac Studio (Wi-Fi).** adas-mac-studio.local-2 (kiln
+  d1323898b255a3ed435eb83fa0f7b0cf: Apple M3 Ultra, 32 CPUs, macOS 26.4, Darwin 25.4.0,
+  on Wi-Fi, home broadband), 2026-11-08, the same harness (records kept on that host at
+  `/tmp/regprobe/studio.jsonl` and `sil-studio.jsonl`; Fedora's at fedora-2's
+  `/tmp/regprobe/fedora.jsonl` and `sil-fedora.jsonl`). 30,687 requests over 2.01 h, and
+  answers heavy-tailed on every endpoint: p99 ten to forty times p50, and 43 healthy
+  answers past 30 s. 68 failure episodes: 32 requests never answered within 30 s
+  (0.10%), resets and lookups failing in bursts (mcr.microsoft.com's resets up to 109 s,
+  nine askings), and timeouts across every endpoint at once at +2,371 s and +5,183 s (the
+  host's own network). Answers (ms):
+
+  | endpoint | n | p50 | p90 | p99 | max | never answered |
+  |---|---|---|---|---|---|---|
+  | auth.docker.io/token | 2,566 | 392 | 3,327 | 14,358 | 47,588 | 2 |
+  | registry-1.docker.io/v2/ | 2,499 | 529 | 3,151 | 20,948 | 41,220 | 3 |
+  | ghcr.io/token | 2,589 | 483 | 3,720 | 15,367 | 45,078 | 3 |
+  | ghcr.io/v2/ | 2,605 | 480 | 3,770 | 15,431 | 45,071 | 2 |
+  | quay.io/v2/ | 2,543 | 525 | 3,476 | 17,269 | 63,822 | 6 |
+  | public.ecr.aws/token/ | 2,635 | 322 | 3,814 | 14,683 | 40,401 | 2 |
+  | gcr.io/v2/ | 3,279 | 555 | 1,047 | 4,376 | 19,407 | 3 |
+  | us-docker.pkg.dev/v2/ | 3,296 | 539 | 1,053 | 4,597 | 19,655 | 2 |
+  | registry.k8s.io/v2/ | 3,180 | 369 | 1,033 | 6,335 | 29,401 | 3 |
+  | mcr.microsoft.com/v2/ | 2,542 | 320 | 2,883 | 14,139 | 34,101 | 3 |
+  | registry.gitlab.com/v2/ | 2,953 | 533 | 1,089 | 11,890 | 38,359 | 3 |
+
+  Replayed as first (`same`): RFC 6298's waits cut 1,191 healthy answers of 30,594
+  (3.89%) and lost 5,110.8 s, where fixed 30 s waits lost 1,001.2 s to the stuck ones:
+  on a heavy-tailed path the estimator, which follows the latest answers, cuts answers
+  that are merely slow, and each asking again starts its wait over. Downloads: ghcr.io's
+  went silent past a second 6 to 142 times each, its longest silence 2.0 to 25.3 s (two
+  of its sixteen ended short); Docker Hub's eight (its last two rounds refused, 401) at
+  most three times each, 1.4 s.
+
+  **The cutoff (D222's `Cutoff`) replayed**, beside the rules it replaced (`replay.py`,
+  seed 0, the draws of seeds 1 and 2 in brackets; healthy cuts as a share of answers):
+
+  | records | model | fixed 30 s | RFC 6298 | cutoff |
+  |---|---|---|---|---|
+  | fedora-2 (wired) | trace | 1,124.8 s, 0% | 50.3 s, 0.21% | 19.7 s [17.7, 19.1], 0.05% |
+  | fedora-2 (wired) | same | 752.0 s, 0% | 120.1 s, 0.19% | 102.3 s [105.9, 98.3], 0.04% |
+  | Mac Studio (Wi-Fi) | trace | 3,836.3 s, 0.15% | 3,579.6 s, 5.09% | 1,251.3 s [1,769.4, 1,548.4], 3.01% |
+  | Mac Studio (Wi-Fi) | same | 5,301.2 s, 0.14% | 5,110.8 s, 3.89% | 2,344.0 s [2,327.8, 2,344.4], 0.30% |
+
+  Slowness persists: after an asking past its endpoint's p90, the next (2 s later) was
+  past it 26% to 59% of the time on Fedora and 24% to 77% on the Studio (seven of its
+  endpoints 72% to 77%), where independent askings would be 10%; so asking again is not
+  a fresh draw, and what a cut costs is measured (R). `same` first counted nothing
+  against fixed waits for the Studio's 43 answers past
+  30 s (1,001.2 s): each, answered as it was, never comes within a 30 s wait, and is
+  charged here the least budget a trouble is ridden out for, R2's 100 s, and its
+  failure. A negative loss is an asking again that beat a slow answer. Variants
+  replayed on the way (seed 0): Luby's cutoff with asking again taken as a fresh draw
+  (`luby`: 19.1% of the Studio's answers cut and 9,711.0 s lost in `trace`, 22,240.8 s
+  in `same`); the cutoff without RFC 6298's least second (`unfloored`: Fedora −20.7 s in
+  `trace` but 119.7 s, 136.3 s and 142.9 s by seed in `same`, the Studio 1,083.8 s and
+  2,351.4 s; and this crate's unit tests, on a host at a load of 190, cut healthy
+  loopback answers their paths had learned were quick); and, before the draw, one fixed
+  t with the trouble's pause after each cut (past t, F is never seen, and t only falls:
+  Fedora 127.0 s in `trace` and 139.3 s in `same`, the Studio 3,442.8 s in `trace`).
 - **Consequence.** What fails is a request that is never answered, at random and rarely,
-  where its next asking answers: waiting a fixed 30 s for it loses most of the time lost,
-  and a wait learned from the path's own answers loses a sixth of it, at the cost of a
-  second asking of one healthy answer in five hundred. No registry here was down or
-  answered 5xx within two hours, so how long a trouble lasts is learned where troubles
-  happen (D222's budget), from what each path passes. Healthy silences reach a second:
-  a learned wait at its floor cuts a rare one, and a resume costs a request.
+  where its next asking answers: waiting a fixed 30 s for it loses most of the time lost
+  on a wired path. On a heavy-tailed one (Wi-Fi), answers that are merely slow are most
+  of the tail, and RFC 6298's estimator, built for a round trip's mean and deviation,
+  cuts them: it lost five times what fixed waits did. The cutoff that makes answers come
+  soonest given the path's own distribution (Luby, Sinclair and Zuckerman 1993), with
+  what a cut costs measured rather than assumed and RFC 6298's least second kept, loses
+  less than both in both models on both hosts, at every seed: of the better one's loss,
+  35% to 39% on Fedora in `trace` and 82% to 88% in `same`, 35% to 49% on the Studio in
+  `trace` and 46% in `same`. Against `same`'s
+  first count for fixed waits on the Studio (1,001.2 s, its 43 answers past 30 s
+  uncounted), it loses more (2,344.0 s). How long a trouble lasts is learned where troubles
+  happen (D222's budget), from what each path passes. Healthy silences reach 25 s on
+  Wi-Fi: RFC 6298's estimator at its floor would cut dozens of a download's, so the
+  same cutoff governs them (D222).
 
 ### M115. What keeping a container's writable layer costs a run
 
@@ -19652,6 +19727,13 @@ revision before comparing a changed API/implementation.
     | gelf udp, none, one byte | Fedora | 6 | 3.54 | 3.67 | 5.54 | 5.54 |
     | gelf udp, gzip, one byte | Fedora | 6 | 3.73 | 3.81 | 3.84 | 3.84 |
     | gelf udp, gzip, random | Fedora | 9 | 483 | 554 | 597 | 597 |
+    | the same again, by halves (the method before) | Fedora | 9 | 538 | 641 | 660 | 660 |
+    | the same, by the ratio of written bytes | Fedora | 9 | 69.5 | 70.6 | 71.4 | 71.4 |
+    | gelf udp, gzip, one byte, by the ratio | Fedora | 6 | 3.88 | 3.99 | 4.09 | 4.09 |
+  - The last three rows are the tree of the ratio's commit, 2026-11-08, on kiln-a094a12d at
+    load average 22 to 35 beside CI jobs: cut by the ratio of written bytes to the line's,
+    a part of random bytes over gelf's UDP and gzip is written once to three times, 7.7x
+    less of the shipper's time at p50 than by halves, in as many parts.
   - A part that fits as its driver's part says costs one ask, a message written once, as
     moby's are. One that does not (bytes gzip cannot shrink, a line JSON escapes at length)
     is found by halves, its message written about 18 times: 0.48 s of the shipper's CPU a
@@ -19666,8 +19748,11 @@ revision before comparing a changed API/implementation.
 - **So** (D163): journald's parts are the host's journal's LineMax as configured, read as
   the journal reads its configuration while shards runs (its default, 48K, where none sets
   it), so that a run's lines are in the journal as any program's are; this run checks the
-  reading, not a number to keep. oslog's 1,015 bytes is os_log's as measured, below the
-  1,024 os/log.h states, still a measured constant (open).
+  reading, not a number to keep. oslog learns what the host's log keeps whole by writing
+  entries of its own and reading them back from its process's log store (`oslog::learn`),
+  these 1,015 bytes its check. Bytes gzip cannot shrink over gelf's UDP are no longer cut by
+  halves: a part is cut where the ratio of written bytes to the line's says the bound is,
+  written once to three times (`parts_are_cut_where_the_ratio_of_written_bytes_says`).
 
 ### M468. Flakes: the CLI killed at launch, as a home's first client, 100,000 launches on an M3 Ultra (the flakes goal, M322)
 
@@ -20183,10 +20268,88 @@ revision before comparing a changed API/implementation.
   answers, so a kept socket holds none for the next, links.rs
   `a_kept_socket_holds_no_answer_of_an_exchange_before`): the destroy work's grace period
   passes on a kernel worker, off every member's call. The chooser also answers every call
-  a round of poll(2) finds before it chooses, then programs once for them all. Not yet
-  measured: the M498 test again at this change (before at its parent, after at it, n,
-  p50, p90, p99, max on Fedora and on an arm64 Mac); what is left of a contested call
-  past an uncontested one's is then the commit of two chains, which decides whether a map
-  keyed by port is worth its code. Init's setup paths still close a socket after each of
+  a round of poll(2) finds before it chooses, then programs once for them all.
+- **Measured.** The M498 test before (f9dee1407) and after (6c60636dd), interleaved
+  before, after, before, after, n = 2,000 rounds an agent each, on adacachy (AMD Ryzen 9
+  9950X3D2, 32 CPUs, CachyOS Linux 7.2.9, a guest of 32 vCPUs, load 8 to 22), 2026-11-08;
+  in µs, p50 / p90 / p99 / max:
+
+  | call | before, round 1 | before, round 2 | after, round 1 | after, round 2 |
+  |---|---|---|---|---|
+  | contested bind | 15,984 / 27,971 / 32,038 / 90,450 | 15,986 / 27,932 / 35,978 / 55,956 | 20.6 / 33.6 / 67.7 / 448 | 21.7 / 51.7 / 70.6 / 2,227 |
+  | contested listen | 16,008 / 20,093 / 32,021 / 40,017 | 16,015 / 20,109 / 32,019 / 40,109 | 18.1 / 24.5 / 66.1 / 474 | 19.1 / 57.7 / 73.9 / 336 |
+  | filtered, uncontested bind | 19.0 / 21.4 / 30.0 / 27,683 | 20.2 / 26.1 / 46.5 / 18,948 | 18.7 / 21.6 / 35.2 / 512 | 19.1 / 24.8 / 34.5 / 565 |
+  | unfiltered bind | 0.27 / 0.35 / 1.2 / 24 | 0.35 / 0.52 / 1.7 / 6.9 | 0.19 / 0.30 / 1.2 / 3.8 | 0.28 / 0.36 / 1.2 / 294 |
+
+  Before, a contested call's p50 was 16.0 ms, four of the guest's 4 ms jiffies (HZ 250), and
+  its p99 32 ms, eight: whole grace periods, as the source reads. After, a contested call
+  costs what a filtered, uncontested one does (p50 21 against 19 µs; p99 about twice), and
+  the uncontested port's tail, which had waited behind the chooser's programming (max 19
+  to 28 ms), is gone (max 0.5 ms). On Fedora (i9-14900HX, Linux 6.19.10, load 18 to 26 with
+  CI jobs), three runs after the change alone: contested bind p50 23 to 35 µs, p99 141 to
+  151 µs, max 21 to 107 ms; that host's tail is open (one run each, not interleaved). The
+  commit of two chains leaves a contested call a few µs past an uncontested one's at p50,
+  so a map keyed by port would buy little: the chains stay. Init's setup paths still close a socket after each of
   their commits (links.rs's switch and gates, `net::host_loopback`), a grace period each,
   once a run.
+
+### M514. What a launch of the 150 MB `shards` costs on Linux: its relocated data, and RELR (the start path, PM M470)
+
+- **Question.** M470 put a pooled run's client launch at 1.57 ms at load 30 (spawn to
+  `main`), 180 page faults more than a small Rust program, 125 of them its 500 KB of
+  relocated read-only data. Without giving up PIE and ASLR, does packing its relative
+  relocations (RELR, `-z pack-relative-relocs`) cut it, and what does relocated data
+  cost a launch at all?
+- **Method.** `docs/research/measurements/launch-relocs/launch.py`: each command spawned
+  and reaped 500 times after 20 warm-ups, the commands in turn, the spawn to the reap and
+  the minor and major faults of each (the children's rusage); n, p50, p90, p99, max.
+  `shards --version` of a release build at a5194c83 (`SHARDS_HELPERS=skip`, 152,622,496
+  bytes) and the same build's binary linked again with `-C link-arg=-Wl,-z,pack-relative-
+  relocs` (`cargo rustc --release --bin shards`, 152,024,592 bytes); `/usr/bin/true`; and
+  three release Rust programs, `panic = "abort"`, that print a line: `hello`; `big`, with
+  150,000,000 random bytes included (`include_bytes!`); `rel`, with a static table of
+  31,000 `&str`s (`.data.rel.ro` 503,088 bytes). The dynamic loader's own counts and
+  cycles by `LD_DEBUG=statistics`; sections by `readelf`. fedora-2 (Intel Core
+  i9-14900HX, 32 CPUs), Fedora 44, Linux 6.19.10-300.fc44, glibc 2.43, load 2.0 to 2.4,
+  2026-11-08.
+- **Results** (ms, then minor faults; no major fault but one):
+
+  | run | command | n | p50 | p90 | p99 | max | faults p50 |
+  |---|---|---|---|---|---|---|---|
+  | 1 | `/usr/bin/true` | 500 | 0.412 | 0.487 | 0.650 | 0.808 | 57 |
+  | 1 | `hello` | 500 | 0.529 | 0.625 | 0.739 | 0.833 | 78 |
+  | 1 | `shards --version` | 500 | 0.949 | 1.066 | 1.206 | 1.311 | 258 |
+  | 1 | the same, RELR | 500 | 0.982 | 1.104 | 1.256 | 1.447 | 249 |
+  | 2 | `hello` | 500 | 0.531 | 0.651 | 0.874 | 1.239 | 78 |
+  | 2 | `big` (150 MB included) | 500 | 0.538 | 0.650 | 0.961 | 1.285 | 79 |
+  | 2 | `rel` (31,000 relocated `&str`s) | 500 | 0.770 | 0.927 | 1.395 | 1.693 | 210 |
+  | 2 | `shards --version` | 500 | 0.949 | 1.131 | 1.801 | 2.039 | 258 |
+
+  - RELR: `.rela.dyn` 613,680 bytes to 5,712, beside a `.relr.dyn` of 8,120; the dynamic
+    loader's relative relocations 25,336 to 4; its startup 167,974 to 150,206 cycles, its
+    relocation 108,502 to 93,290 (`hello`: 42,294 and 4,971; `rel`: 124,654 and 82,997).
+    `.data.rel.ro` stays 504,648 bytes, every page of it written at each launch either way.
+    It needs glibc 2.36's `GLIBC_ABI_DT_RELR`, which costs no host: v0.7.0's glibc
+    assets need GLIBC_2.39 already (`readelf -V`).
+  - What shards' 25,064 relative relocations point at (v0.7.0's x86_64 glibc asset):
+    15,795 data (string and slice pointers of tables, format pieces and constants), 4,665
+    functions (vtables; `core` 761, the vendored `hyper_tls` 523, shards 447, `std` 420,
+    `rustls` 394, the rest under 240 a crate), 3,497 panic locations' file names (2,689
+    of them crates.io's), 875 other relocated data; the largest named object, AWS-LC's
+    `kObjects`, 39,960 bytes. No table of shards' own holds more than a few pages.
+- **Reading.**
+  - The binary's size costs a launch nothing: 150 MB included, 0.007 ms and one fault.
+  - Relocated data does: 31,000 relocations, 132 faults more (123 pages written, the
+    rest the table read), cost 0.24 ms at p50 on this host, about 1.8 µs a fault. shards'
+    504 KB of it, as many pages, is most of its 0.42 ms over `hello`; the rest is its 48
+    faults past those.
+  - RELR takes the relocations' table (600 KB, 9 faults) and not the pages they write:
+    no launch time came of it (0.949 against 0.982 ms at p50, interleaved). Not taken.
+  - What is left to cut is the relocated data itself, spread over every crate: the
+    vtables, panic locations and string tables of the whole dependency tree, none a
+    large share alone; stable Rust has no flag that drops panic locations
+    (`-Zlocation-detail` is nightly's).
+- **Owed.** The same on arm64 Linux and musl's static-pie builds; macOS's launch through
+  `macos-sched/launchd-run.sh` (its binary is chained fixups already, `LC_DYLD_CHAINED_
+  FIXUPS` at minimum macOS 15: 27,727 fixups in `__DATA_CONST,__const`, 33 pages of 16
+  KiB); Windows', whose loader applies PE base relocations, unmeasured.

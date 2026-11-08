@@ -4863,7 +4863,9 @@ fn a_networks_egress_is_a_grant_of_its_destinations_alone() {
     // The host's resolver, as the daemon is told to ask (SHARDS_DNS): api.example and
     // also.example are this host, so that a name refused is shards' refusal, not the
     // resolver's.
-    let resolver = std::net::UdpSocket::bind("0.0.0.0:0").unwrap();
+    // Bound to the address it is asked at, so its answers come from it on a host of several
+    // addresses (adacachy's .77 and .90 on one link), as a resolver's must (RFC 5452 §9.1).
+    let resolver = std::net::UdpSocket::bind((address, 0)).unwrap();
     let resolver_at = format!("{address}:{}", resolver.local_addr().unwrap().port());
     std::thread::spawn(move || {
         let mut q = [0u8; 512];

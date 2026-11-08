@@ -237,13 +237,21 @@ impl Config {
         .max(1)
     }
 
-    /// Whether `message`, as [`message`] makes it, goes whole to its receiver: over TCP
-    /// within [`TCP_MOST`], over UDP compressed as asked within [`CHUNKS`] chunks.
-    pub fn fits(&self, message: &[u8]) -> std::io::Result<bool> {
+    /// What `message`, as [`message`] makes it, takes of what its receiver bounds, and the
+    /// bound: over TCP its bytes of [`TCP_MOST`], over UDP its data, compressed as asked, of
+    /// [`UDP_MOST`], what [`CHUNKS`] chunks carry.
+    pub fn written(&self, message: &[u8]) -> std::io::Result<(usize, usize)> {
         Ok(match self.to {
-            To::Tcp(_) => message.len() <= TCP_MOST,
-            To::Udp(_) => compress(self.compression, self.level, message)?.len() <= UDP_MOST,
+            To::Tcp(_) => (message.len(), TCP_MOST),
+            To::Udp(_) => (compress(self.compression, self.level, message)?.len(), UDP_MOST),
         })
+    }
+
+    /// Whether `message` goes whole to its receiver ([`Config::written`]).
+    #[cfg(test)]
+    pub fn fits(&self, message: &[u8]) -> std::io::Result<bool> {
+        let (written, bound) = self.written(message)?;
+        Ok(written <= bound)
     }
 }
 

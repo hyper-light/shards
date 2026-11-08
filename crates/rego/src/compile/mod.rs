@@ -11,6 +11,8 @@ use crate::builtins::{self, Builtin};
 use crate::check;
 use crate::types::Type;
 
+#[cfg(test)]
+mod fast_tests;
 mod graph;
 pub mod localvars;
 pub mod rewrite;
@@ -107,6 +109,8 @@ pub struct Compiler {
     limit_reached: bool,
     /// The types the checker knows: the builtins', then the rules' (c.TypeEnv).
     pub type_env: check::TypeEnv,
+    /// The declarations of the builtins a policy may call, made types for this compile.
+    builtin_decls: HashMap<String, Type>,
     loader: Option<Loader>,
     /// The rules' dependencies, which checkRecursion and checkTypes read (c.Graph).
     graph: Option<graph::DepGraph>,
@@ -128,13 +132,20 @@ pub fn allowed(name: &str) -> Option<&'static Builtin> {
 
 impl Compiler {
     pub fn new(modules: BTreeMap<String, Module>, functions: Vec<Function>, print: bool) -> Compiler {
+        let builtin_decls: HashMap<String, Type> = builtins::registry()
+            .values()
+            .filter(|b| b.allowed)
+            .filter_map(|b| Some((b.name.clone(), Type::from_json(&b.decl)?)))
+            .collect();
         let decls = builtins::registry()
             .values()
             .filter(|b| b.allowed)
-            .map(|b| (b.name.as_str(), &b.decl));
+            .filter_map(|b| builtin_decls.get_key_value(&b.name))
+            .map(|(n, d)| (n.as_str(), d));
         let type_env =
             check::TypeEnv::with_builtins(decls.chain(functions.iter().map(|f| (f.name.as_str(), &f.decl))));
         Compiler {
+            builtin_decls,
             type_env,
             modules,
             errors: Vec::new(),
@@ -179,8 +190,8 @@ impl Compiler {
 
     /// The declaration of a callable builtin or host function.
     pub fn builtin_decl(&self, name: &str) -> Option<&Type> {
-        allowed(name)
-            .map(|b| &b.decl)
+        self.builtin_decls
+            .get(name)
             .or_else(|| self.functions.iter().find(|f| f.name == name).map(|f| &f.decl))
     }
 
@@ -422,19 +433,34 @@ impl Compiler {
         let mut rewritten = std::mem::take(&mut self.rewritten);
         let mut all_errs = Vec::new();
         for m in self.modules.values_mut() {
+            let package = m.package.path.clone();
             for rule in m.rules.iter_mut() {
-                let mut rw = localvars::Rewriter {
-                    vargen: &mut vargen,
-                    errs: Vec::new(),
-                };
-                let mut args_stack = localvars::Stack::default();
-                localvars::rewrite_arg_vars(&mut rw, &mut args_stack, rule);
-                let mut r = Some(rule);
-                while let Some(x) = r {
-                    let _ = localvars::rewrite_rule(&mut rw, &mut rewritten, x, &args_stack);
-                    r = x.else_.as_deref_mut();
+                // As localvars::Fast does, and where that meets an error, again OPA's way
+                // from where the rule began, for OPA's errors; past what OPA's counter
+                // numbers, which OPA's way would take longer than OPA could run to reach,
+                // an error of its own.
+                let (written, calls) = (rule.clone(), vargen.calls());
+                let mut ours = HashMap::new();
+                let mut errs = rewrite_rule_local_vars(&mut vargen, &mut ours, rule, localvars::fast());
+                if vargen.overflowed() {
+                    *rule = written;
+                    vargen.rewind(calls);
+                    ours.clear();
+                    errs = vec![CompileError::compile(
+                        rule.loc.clone(),
+                        format!(
+                            "rule {} nests every statements and comprehensions deeper than its local variables can be numbered",
+                            text_of_ref(&rule_ref(&package, rule))
+                        ),
+                    )];
+                } else if !errs.is_empty() {
+                    *rule = written;
+                    vargen.rewind(calls);
+                    ours.clear();
+                    errs = rewrite_rule_local_vars(&mut vargen, &mut ours, rule, None);
                 }
-                all_errs.extend(rw.errs);
+                rewritten.extend(ours);
+                all_errs.extend(errs);
             }
         }
         self.vargen = vargen;
@@ -841,6 +867,28 @@ pub fn text_of_ref(r: &[Term]) -> String {
 }
 
 /// rewriteVarsInRef: generated names back to the ones written.
+/// rewriteLocalVars of one rule and its else branches: its errors.
+fn rewrite_rule_local_vars(
+    vargen: &mut localvars::LocalVarGen,
+    rewritten: &mut HashMap<Var, Var>,
+    rule: &mut Rule,
+    fast: Option<Box<localvars::Fast>>,
+) -> Vec<CompileError> {
+    let mut rw = localvars::Rewriter {
+        vargen,
+        errs: Vec::new(),
+        fast,
+    };
+    let mut args_stack = localvars::Stack::default();
+    localvars::rewrite_arg_vars(&mut rw, &mut args_stack, rule);
+    let mut r = Some(rule);
+    while let Some(x) = r {
+        let _ = localvars::rewrite_rule(&mut rw, rewritten, x, &args_stack);
+        r = x.else_.as_deref_mut();
+    }
+    rw.errs
+}
+
 pub fn rewrite_ref(rewritten: &HashMap<Var, Var>, r: &[Term]) -> Vec<Term> {
     let mut r = r.to_vec();
     for t in r.iter_mut() {

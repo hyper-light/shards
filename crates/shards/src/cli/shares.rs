@@ -11,33 +11,17 @@
 use std::ffi::{OsStr, OsString};
 use std::path::PathBuf;
 
-/// A `--share` value: its directory, and whether it is read-only (`:ro`). A value whose
-/// last name holds another `:MODE` is refused: no other mode is served.
+/// A `--share` value: its directory, and whether it is read-only, as `--disk` reads its
+/// path (vm_run.rs): a trailing `:ro` is the mode, and every other colon is the path's, so a
+/// directory whose names hold colons is shared as it is named. A mode mistyped (`DIR:rw`)
+/// names a directory that is not there, and its open says so.
 pub(super) fn parse(value: &OsStr) -> Result<(PathBuf, bool), String> {
-    let bytes = value.as_encoded_bytes();
-    let last = bytes
-        .rsplit(|&b| b == b'/' || (cfg!(windows) && b == b'\\'))
-        .next()
-        .unwrap_or_default();
-    let Some(colon) = last.iter().rposition(|&b| b == b':') else {
-        return directory(value, false);
-    };
-    // A drive's colon (`C:`) is a path's, not a mode's.
-    if cfg!(windows) && last.len() == bytes.len() && colon == 1 {
-        return directory(value, false);
+    match value.as_encoded_bytes().strip_suffix(b":ro") {
+        // SAFETY: cut just before `:ro`, ASCII, which `from_encoded_bytes_unchecked`
+        // documents as a valid boundary.
+        Some(dir) => directory(unsafe { OsStr::from_encoded_bytes_unchecked(dir) }, true),
+        None => directory(value, false),
     }
-    let mode = last.get(colon.saturating_add(1)..).unwrap_or_default();
-    if mode != b"ro" {
-        return Err(format!(
-            "--share {}: {:?} is no mode: DIR or DIR:ro",
-            value.display(),
-            String::from_utf8_lossy(mode)
-        ));
-    }
-    let dir = bytes.get(..bytes.len().saturating_sub(3)).unwrap_or_default();
-    // SAFETY: cut just before `:ro`, ASCII, which `from_encoded_bytes_unchecked` documents as
-    // a valid boundary.
-    directory(unsafe { OsStr::from_encoded_bytes_unchecked(dir) }, true)
 }
 
 fn directory(dir: &OsStr, read_only: bool) -> Result<(PathBuf, bool), String> {
@@ -259,7 +243,8 @@ pub(super) fn served(
 mod tests {
     use super::*;
 
-    /// `--share DIR` is writable, `DIR:ro` read-only, and any other mode refused.
+    /// `--share DIR` is writable and `DIR:ro` read-only; every other colon is the path's, as
+    /// `--disk` reads it.
     #[test]
     fn a_share_is_a_directory_and_its_mode() {
         assert_eq!(
@@ -271,9 +256,21 @@ mod tests {
             ("/srv/data".into(), true)
         );
         assert_eq!(parse(OsStr::new("rel/dir:ro")).unwrap(), ("rel/dir".into(), true));
-        // A colon in a name above the last is the path's.
+        // Colons anywhere but a trailing `:ro` are the path's, the last name's too.
         assert_eq!(parse(OsStr::new("/a:b/c")).unwrap(), ("/a:b/c".into(), false));
-        for bad in ["/srv/data:rw", "/srv/data:", "/srv/data:RO", ":ro", ""] {
+        assert_eq!(
+            parse(OsStr::new("/srv/v1:2024")).unwrap(),
+            ("/srv/v1:2024".into(), false)
+        );
+        assert_eq!(
+            parse(OsStr::new("/srv/v1:2024:ro")).unwrap(),
+            ("/srv/v1:2024".into(), true)
+        );
+        assert_eq!(
+            parse(OsStr::new("/srv/data:rw")).unwrap(),
+            ("/srv/data:rw".into(), false)
+        );
+        for bad in [":ro", ""] {
             assert!(parse(OsStr::new(bad)).is_err(), "{bad}");
         }
     }

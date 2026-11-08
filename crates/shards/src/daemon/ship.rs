@@ -30,6 +30,7 @@ mod gcplogs;
 mod gelf;
 #[cfg(target_os = "linux")]
 mod journald;
+mod learned;
 #[cfg(target_os = "macos")]
 mod oslog;
 mod sockets;
@@ -80,8 +81,17 @@ pub(super) trait Driver: Send {
     /// line) rather than the line's bytes: a line, or a part, that does not is cut shorter.
     /// Asked of a line at its end and of each part cut; every message fits where the
     /// receiver bounds no more than [`Driver::part`] does.
-    fn fits(&mut self, _m: &Message<'_>) -> io::Result<bool> {
-        Ok(true)
+    fn fits(&mut self, m: &Message<'_>) -> io::Result<bool> {
+        Ok(self.written(m)?.is_none_or(|(written, bound)| written <= bound))
+    }
+
+    /// The bytes `m` takes of what its receiver bounds, as written, and that bound, where
+    /// the two are not in a fixed ratio to the line's bytes (gelf's compressed datagrams):
+    /// a part is then cut where the ratio seen so far says it fits, its message written
+    /// once where the ratio holds (`Open::longest_by_ratio`), not found by halves. None
+    /// where the driver says only whether a message fits.
+    fn written(&mut self, _m: &Message<'_>) -> io::Result<Option<(usize, usize)>> {
+        Ok(None)
     }
 
     /// How long until it would flush what it holds back though its shipper has nothing
@@ -195,6 +205,16 @@ impl Sender<'_> {
         Ok(fits)
     }
 
+    /// What `m` takes of its driver's receiver's bound, and the bound, where the driver says
+    /// ([`Driver::written`]), asked again until it can say; given up only as the daemon
+    /// stops.
+    fn written(&mut self, m: &Message<'_>) -> io::Result<Option<(usize, usize)>> {
+        let (driver, wait) = (&mut *self.driver, &self.wait);
+        let mut written = None;
+        until_done(self.id, wait, || driver.written(m).map(|w| written = w))?;
+        Ok(written)
+    }
+
     /// Sends what its driver holds back, as its shipper has caught up, again until it is
     /// sent; given up only as the daemon stops.
     fn flush(&mut self) -> io::Result<()> {
@@ -229,6 +249,10 @@ fn until_done(id: &str, wait: &Wait<'_>, mut f: impl FnMut() -> io::Result<()>) 
         // The daemon stops: no failure of the driver's.
         if wait.pause(Duration::ZERO) {
             return Err(stops());
+        }
+        // Its receiver refused the message as too long: the caller cuts it shorter.
+        if e.kind() == io::ErrorKind::FileTooLarge {
+            return Err(e);
         }
         if e.kind() != io::ErrorKind::WouldBlock {
             log(format!(
@@ -291,6 +315,7 @@ impl Shipping {
 trait Ship {
     fn send(&mut self, m: &Message<'_>) -> io::Result<()>;
     fn fits(&mut self, m: &Message<'_>) -> io::Result<bool>;
+    fn written(&mut self, m: &Message<'_>) -> io::Result<Option<(usize, usize)>>;
 }
 
 impl Ship for Sender<'_> {
@@ -300,6 +325,10 @@ impl Ship for Sender<'_> {
 
     fn fits(&mut self, m: &Message<'_>) -> io::Result<bool> {
         Sender::fits(self, m)
+    }
+
+    fn written(&mut self, m: &Message<'_>) -> io::Result<Option<(usize, usize)>> {
+        Sender::written(self, m)
     }
 }
 
@@ -321,6 +350,45 @@ struct Open {
     at: u64,
     /// Its parts sent so far: their ID, and the next one's place.
     parts: Option<(String, u32)>,
+    /// Where its driver says what a message takes as written ([`Driver::written`]): what
+    /// the stream's lines so far showed of it.
+    ratio: Option<Ratio>,
+}
+
+/// What a stream's messages took as written, by the line's bytes they carried: the ratio
+/// the last one measured had, how far it moved from the one before, and the bound.
+#[derive(Debug, Clone, Copy)]
+struct Ratio {
+    last: f64,
+    moved: f64,
+    bound: usize,
+}
+
+impl Ratio {
+    /// Notes that a message of `n` of the line's bytes took `written` of `bound`.
+    fn note(ratio: &mut Option<Ratio>, n: usize, written: usize, bound: usize) {
+        if n == 0 {
+            return;
+        }
+        let r = written as f64 / n as f64;
+        *ratio = Some(Ratio {
+            last: r,
+            moved: ratio.map_or(0.0, |q| (r - q.last).abs()),
+            bound,
+        });
+    }
+
+    /// The line's bytes a message holds where the ratio says it reaches its bound: at the
+    /// last ratio and as far again as it last moved, so that one written there fits but
+    /// where the ratio moves more.
+    fn reach(&self) -> usize {
+        let r = self.last + self.moved;
+        if r > 0.0 {
+            (self.bound as f64 / r).floor() as usize
+        } else {
+            usize::MAX
+        }
+    }
 }
 
 impl Lines {
@@ -376,6 +444,24 @@ impl Lines {
     }
 }
 
+/// `line` in pieces each of which `fits`, halved at a character's boundary until it does;
+/// a piece of one character goes as it is. Where a driver's destination refuses a message
+/// as too long it has already sent (learned.rs), it sends the message's line again so.
+fn halves(line: &[u8], fits: &dyn Fn(&[u8]) -> bool) -> Vec<Vec<u8>> {
+    let one = (1..=line.len().min(4))
+        .find(|&n| std::str::from_utf8(line.get(..n).unwrap_or_default()).is_ok())
+        .unwrap_or(1);
+    if line.len() <= one || fits(line) {
+        return vec![line.to_vec()];
+    }
+    let half = boundary(line, line.len() / 2);
+    let half = if half == 0 { one } else { half };
+    let (a, b) = line.split_at(half.min(line.len()));
+    let mut pieces = halves(a, fits);
+    pieces.extend(halves(b, fits));
+    pieces
+}
+
 /// The most of `line`'s first `n` bytes that ends at a character's boundary: `n` less the
 /// bytes of a UTF-8 character it would cut in two; `n` itself where none is cut, where the
 /// bytes there are no UTF-8, or where the character begins the line.
@@ -414,22 +500,79 @@ fn boundary(line: &[u8], n: usize) -> usize {
     n
 }
 
+/// The length of a line's next part where its driver says what a message takes as
+/// written: `first`, what its first `start` bytes take and the bound, `start` where the
+/// stream's ratio said the bound is reached (or `most`). A part that fits is grown once
+/// to where its own ratio says the bound is, if that is further; one that does not is cut
+/// where its ratio says, until one fits. So a part of bytes gzip cannot shrink is written
+/// once to three times, not some 18 times by halves (PM M494), within the ratio's spread of the
+/// longest that fits; of at most `most` bytes, and at least a character.
+fn longest_by_ratio<'a>(
+    held: &[u8],
+    ratio: &mut Option<Ratio>,
+    most: usize,
+    start: usize,
+    first: (usize, usize),
+    message: &dyn Fn(usize) -> Message<'a>,
+    ship: &mut dyn Ship,
+) -> io::Result<usize> {
+    let (mut n, (mut written, mut bound)) = (start, first);
+    // The longest seen to fit, the shortest seen not to, and whether it has grown.
+    let (mut fit, mut over, mut grown) = (0, most.saturating_add(1), false);
+    loop {
+        Ratio::note(ratio, n, written, bound);
+        if written <= bound {
+            fit = fit.max(n);
+        } else {
+            over = over.min(n);
+        }
+        // Nothing lies between the longest that fits and the shortest that does not.
+        if fit.saturating_add(1) >= over {
+            break;
+        }
+        let reach = ratio.map_or(0, |q| q.reach());
+        let next = boundary(held, reach.max(fit.saturating_add(1)).min(over.saturating_sub(1)));
+        let try_next = if written <= bound {
+            // Grown once at most: a part's cost is a message or two.
+            !grown && next > fit && next < over
+        } else {
+            next < over && next > fit
+        };
+        if !try_next {
+            break;
+        }
+        grown |= written <= bound;
+        n = next;
+        (written, bound) = ship.written(&message(n))?.unwrap_or((0, bound));
+    }
+    Ok(if fit > 0 {
+        fit
+    } else {
+        // Not a character fits: the receiver refuses or cuts it as it does, and the line
+        // goes on.
+        (1..=held.len().min(4))
+            .find(|&n| std::str::from_utf8(held.get(..n).unwrap_or_default()).is_ok())
+            .unwrap_or(1)
+    })
+}
+
 impl Open {
     /// The length of the line's next part, `id`'s `ordinal`th: the most of its first
     /// `most` bytes, cut at a character's boundary, that one message carries.
     fn longest(
-        &self,
+        &mut self,
         stream: u8,
         most: usize,
         id: &str,
         ordinal: u32,
         ship: &mut dyn Ship,
     ) -> io::Result<usize> {
-        let held = &self.held;
+        let Open { held, at, ratio, .. } = self;
+        let (held, at) = (&*held, *at);
         let fits = |n: usize, ship: &mut dyn Ship| {
             ship.fits(&Message {
                 stream,
-                at: self.at,
+                at,
                 line: held.get(..n).unwrap_or_default(),
                 part: Some(crate::logging::fluentd::Part {
                     id,
@@ -439,6 +582,21 @@ impl Open {
             })
         };
         let most = boundary(held, most.min(held.len()));
+        let message = |n: usize| Message {
+            stream,
+            at,
+            line: held.get(..n).unwrap_or_default(),
+            part: Some(crate::logging::fluentd::Part {
+                id,
+                ordinal,
+                last: false,
+            }),
+        };
+        // Where the stream's ratio says the bound is reached, else the most.
+        let start = ratio.map_or(most, |q| boundary(held, q.reach().min(most)));
+        if let Some(first) = ship.written(&message(start.max(1)))? {
+            return longest_by_ratio(held, ratio, most, start.max(1), first, &message, ship);
+        }
         if fits(most, ship)? {
             return Ok(most);
         }
@@ -471,11 +629,24 @@ impl Open {
         if self.parts.is_none() {
             self.parts = Some((partial_id()?, 1));
         }
-        let (id, ordinal) = self.parts.clone().unwrap_or_default();
-        let n = self.longest(stream, most, &id, ordinal, ship)?;
-        let rest = self.held.split_off(n.min(self.held.len()));
-        let part = std::mem::replace(&mut self.held, rest);
-        self.send_part(stream, &part, false, ship)
+        loop {
+            let (id, ordinal) = self.parts.clone().unwrap_or_default();
+            let n = self.longest(stream, most, &id, ordinal, ship)?;
+            let rest = self.held.split_off(n.min(self.held.len()));
+            let part = std::mem::replace(&mut self.held, rest);
+            match self.send_part(stream, &part, false, ship) {
+                // Refused as too long, the destination's bound learned: put back, and cut
+                // again within it.
+                Err(e) if refused(&e, &part) => self.put_back(part),
+                sent => return sent,
+            }
+        }
+    }
+
+    /// Puts `part` back before what is held, its receiver having refused it.
+    fn put_back(&mut self, mut part: Vec<u8>) {
+        part.append(&mut self.held);
+        self.held = part;
     }
 
     /// Sends `part` as the line's next part.
@@ -512,31 +683,53 @@ impl Open {
                     ordinal: *ordinal,
                     last: true,
                 });
-            let fits = ship.fits(&Message {
-                stream,
-                at: self.at,
-                line: &self.held,
-                part,
-            })?;
+            // Not asked where the stream's ratio already says it is past the bound: each ask
+            // of a driver that compresses costs a message written.
+            let past = self.ratio.is_some_and(|q| self.held.len() > q.reach());
+            let fits = !past
+                && ship.fits(&Message {
+                    stream,
+                    at: self.at,
+                    line: &self.held,
+                    part,
+                })?;
             if fits || self.held.is_empty() {
                 break;
             }
             self.cut(stream, most, ship)?;
         }
         let held = std::mem::take(&mut self.held);
-        if self.parts.is_some() {
-            self.send_part(stream, &held, true, ship)?;
+        let sent = if self.parts.is_some() {
+            self.send_part(stream, &held, true, ship)
         } else {
             ship.send(&Message {
                 stream,
                 at: self.at,
                 line: &held,
                 part: None,
-            })?;
+            })
+        };
+        match sent {
+            // Refused as too long, the destination's bound learned: put back, and cut
+            // within it.
+            Err(e) if refused(&e, &held) => {
+                self.put_back(held);
+                self.finish(stream, most, ship)
+            }
+            sent => {
+                sent?;
+                self.parts = None;
+                Ok(())
+            }
         }
-        self.parts = None;
-        Ok(())
     }
+}
+
+/// Whether `e` says its receiver refused `line`'s message as too long, so that it is to be
+/// cut shorter: where the line is more than a character, which no cut makes shorter.
+fn refused(e: &io::Error, line: &[u8]) -> bool {
+    e.kind() == io::ErrorKind::FileTooLarge
+        && std::str::from_utf8(line).map_or(line.len() > 1, |s| s.chars().nth(1).is_some())
 }
 
 /// A line's ID for its parts, in the form receivers that join parts read (D163, moby's
@@ -988,6 +1181,7 @@ impl<D: Disk> Daemon<D> {
                         host: details.hostname.clone(),
                         extra: crate::logging::gelf::extra(&fields, &attributes),
                     },
+                    &self.home,
                 ))
             }
             crate::logging::Remote::Fluentd(config) => Box::new(fluentd::Fluentd::new(
@@ -998,6 +1192,7 @@ impl<D: Disk> Daemon<D> {
                     name: details.name.clone(),
                     extra: crate::logging::extra(run, &details.info())?,
                 },
+                &self.home,
             )?),
             crate::logging::Remote::Awslogs(config) => {
                 let env = lock(&self.shipping.clouds).get(id).cloned().ok_or(
@@ -1030,6 +1225,8 @@ impl<D: Disk> Daemon<D> {
                 let untagged = crate::logging::options(run)
                     .get("tag")
                     .is_some_and(String::is_empty);
+                let learned =
+                    learned::Learned::open(&self.home, "splunk", &config.base, splunk::CONTENT_MOST);
                 Box::new(splunk::Splunk::new(
                     config,
                     crate::logging::splunk::From {
@@ -1037,6 +1234,7 @@ impl<D: Disk> Daemon<D> {
                         tag: (!untagged).then_some(tag),
                         attrs: crate::logging::extra(run, &details.info())?,
                     },
+                    learned,
                 )?)
             }
             #[cfg(target_os = "linux")]
@@ -1120,8 +1318,12 @@ mod tests {
         sent: Vec<(u8, u64, Vec<u8>)>,
         ids: [Option<String>; 2],
         fits: F,
+        /// What a message takes as written, and the bound, where the test's receiver says.
+        written: Option<Written>,
         asked: usize,
     }
+
+    type Written = Box<dyn FnMut(&Message<'_>) -> (usize, usize)>;
 
     impl<F: FnMut(&Message<'_>) -> bool> Ship for Seen<F> {
         fn send(&mut self, m: &Message<'_>) -> io::Result<()> {
@@ -1142,7 +1344,21 @@ mod tests {
 
         fn fits(&mut self, m: &Message<'_>) -> io::Result<bool> {
             self.asked += 1;
-            Ok((self.fits)(m))
+            match &mut self.written {
+                Some(w) => {
+                    let (written, bound) = w(m);
+                    Ok(written <= bound)
+                }
+                None => Ok((self.fits)(m)),
+            }
+        }
+
+        fn written(&mut self, m: &Message<'_>) -> io::Result<Option<(usize, usize)>> {
+            let Some(w) = &mut self.written else {
+                return Ok(None);
+            };
+            self.asked += 1;
+            Ok(Some(w(m)))
         }
     }
 
@@ -1154,10 +1370,22 @@ mod tests {
         fits: impl FnMut(&Message<'_>) -> bool,
         pieces: &[(u8, u64, bool, &[u8])],
     ) -> (Vec<(u8, u64, Vec<u8>)>, usize) {
+        cut_with(part, fits, None, pieces)
+    }
+
+    /// [`cut_by`], its receiver saying what a message takes as written where `written` is
+    /// given.
+    fn cut_with(
+        part: usize,
+        fits: impl FnMut(&Message<'_>) -> bool,
+        written: Option<Written>,
+        pieces: &[(u8, u64, bool, &[u8])],
+    ) -> (Vec<(u8, u64, Vec<u8>)>, usize) {
         let mut seen = Seen {
             sent: Vec::new(),
             ids: [None, None],
             fits,
+            written,
             asked: 0,
         };
         let mut lines = Lines::new(part);
@@ -1276,6 +1504,173 @@ mod tests {
         assert_eq!(parts, [&b"a"[..], "€".as_bytes(), b""]);
     }
 
+    /// Where a receiver says what a message takes as written: a line that fits goes whole,
+    /// asked once; a longer one in parts that each fit, every byte sent, each within the
+    /// ratio's spread of the longest that fits; each part written once where the ratio
+    /// holds, and at most about three times where it moves (a GELF message by gzip of bytes
+    /// it cannot shrink), not some 18 times by halves.
+    #[test]
+    fn parts_are_cut_where_the_ratio_of_written_bytes_says() {
+        // A receiver bounding 1,000 bytes, each byte of the line written twice, and a part's
+        // place 4 bytes more.
+        let doubled = || -> Written {
+            Box::new(|m: &Message<'_>| (m.line.len() * 2 + if m.part.is_some() { 4 } else { 0 }, 1000))
+        };
+        let line = [vec![b'x'; 400], b"\n".to_vec()].concat();
+        let (sent, asked) = cut_with(
+            100_000,
+            |_| true,
+            Some(doubled()),
+            &[(LOG_STDOUT, 1, true, &line)],
+        );
+        assert_eq!((sent.len(), asked), (1, 1));
+        let line = [vec![b'x'; 10_000], b"\n".to_vec()].concat();
+        let (sent, asked) = cut_with(
+            100_000,
+            |_| true,
+            Some(doubled()),
+            &[(LOG_STDOUT, 1, true, &line)],
+        );
+        let lens: Vec<usize> = sent.iter().map(|(_, _, b)| b.len()).collect();
+        assert_eq!(lens.iter().sum::<usize>(), 10_000);
+        // The longest that fits is 498 bytes; the ratio cuts within its spread of it.
+        assert!(
+            lens[..lens.len() - 1].iter().all(|&n| (490..=498).contains(&n)),
+            "{lens:?}"
+        );
+        assert!(
+            asked <= 2 * lens.len() + 2,
+            "{asked} asks for {} parts",
+            lens.len()
+        );
+        // GELF's UDP messages by gzip, of random bytes: each part fits 128 chunks.
+        use crate::logging::gelf::{self, Compression, Config, To};
+        let config = Config {
+            to: To::Udp("h:1".into()),
+            compression: Compression::Gzip,
+            level: 1,
+            reconnects: 3,
+            delay: 1,
+        };
+        let from = gelf::From {
+            host: "h".into(),
+            extra: String::new(),
+        };
+        let part = config.part(&from);
+        let gzip: Written = Box::new(move |m: &Message<'_>| {
+            let message = gelf::message(&from, m.stream, m.at, m.line);
+            (
+                gelf::compress(Compression::Gzip, 1, &message).unwrap().len(),
+                gelf::UDP_MOST,
+            )
+        });
+        // Bytes gzip shrinks: each part the most, which fits, written once.
+        let gzip_of = |from: gelf::From| -> Written {
+            Box::new(move |m: &Message<'_>| {
+                let message = gelf::message(&from, m.stream, m.at, m.line);
+                (
+                    gelf::compress(Compression::Gzip, 1, &message).unwrap().len(),
+                    gelf::UDP_MOST,
+                )
+            })
+        };
+        let same = [vec![b'x'; 1 << 20], vec![b'\n']].concat();
+        let (sent, _) = cut_with(
+            part,
+            |_| true,
+            Some(gzip_of(gelf::From {
+                host: "h".into(),
+                extra: String::new(),
+            })),
+            &[(LOG_STDOUT, 1, true, &same)],
+        );
+        assert!(
+            sent[..sent.len() - 1].iter().all(|(_, _, b)| b.len() == part),
+            "{}",
+            sent.len()
+        );
+        let mut random = vec![0u8; 1 << 20];
+        shards_vmm::platform::fill_random(&mut random).unwrap();
+        random.push(b'\n');
+        let (sent, asked) = cut_with(part, |_| true, Some(gzip), &[(LOG_STDOUT, 1, true, &random)]);
+        assert_eq!(sent.iter().map(|(_, _, b)| b.len()).sum::<usize>(), 1 << 20);
+        // A guess and at most one growth a part, where by halves took some 18.
+        assert!(
+            asked <= 3 * sent.len() + 2,
+            "{asked} asks for {} parts",
+            sent.len()
+        );
+        let from = gelf::From {
+            host: "h".into(),
+            extra: String::new(),
+        };
+        for (_, _, b) in &sent {
+            let message = gelf::message(&from, LOG_STDOUT, 1, b);
+            assert!(config.fits(&message).unwrap());
+        }
+    }
+
+    /// Do: a line of 3,000 bytes, then one of 300, to a receiver that refuses as too long
+    /// any message of more than 700 bytes of line, its driver learning its bound from the
+    /// refusals (learned.rs) from a stated 100,000. Expect every byte sent, in order, in
+    /// parts of at most 700 under one ID; the shorter line whole; the bound learned.
+    #[test]
+    fn a_message_refused_as_too_long_is_cut_again() {
+        struct Refuser {
+            learned: learned::Learned,
+            sent: Vec<(Vec<u8>, bool)>,
+        }
+        impl Ship for Refuser {
+            fn send(&mut self, m: &Message<'_>) -> io::Result<()> {
+                if m.line.len() > 700 {
+                    self.learned.refused(m.line.len());
+                    return Err(io::Error::new(io::ErrorKind::FileTooLarge, "too long"));
+                }
+                self.learned.taken(m.line.len());
+                self.sent.push((m.line.to_vec(), m.part.is_some()));
+                Ok(())
+            }
+            fn fits(&mut self, m: &Message<'_>) -> io::Result<bool> {
+                Ok(m.line.len() <= self.learned.most())
+            }
+            fn written(&mut self, _m: &Message<'_>) -> io::Result<Option<(usize, usize)>> {
+                Ok(None)
+            }
+        }
+        let mut ship = Refuser {
+            learned: learned::Learned::new(100_000),
+            sent: Vec::new(),
+        };
+        let mut lines = Lines::new(100_000);
+        let long: Vec<u8> = (0..3000u32).map(|i| b'a' + (i % 26) as u8).collect();
+        for line in [&long[..], &[b'z'; 300][..]] {
+            let piece = [line, b"\n"].concat();
+            lines
+                .take(
+                    &Piece {
+                        stream: LOG_STDOUT,
+                        at: 1,
+                        first: true,
+                        bytes: &piece,
+                    },
+                    &mut ship,
+                )
+                .unwrap();
+        }
+        let (parts, whole): (Vec<_>, Vec<_>) = ship.sent.iter().partition(|(_, part)| *part);
+        assert!(
+            parts.iter().all(|(p, _)| p.len() <= 700),
+            "{:?}",
+            parts.iter().map(|p| p.0.len()).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            parts.iter().flat_map(|(p, _)| p.clone()).collect::<Vec<u8>>(),
+            long
+        );
+        assert_eq!(whole, [&(vec![b'z'; 300], false)]);
+        assert!(ship.learned.most() <= 700);
+    }
+
     /// What cutting a long line costs the shipper (PM M494): a line of 1 MiB, cut in 16 KiB
     /// parts as moby's copier cuts every line, in syslog's parts (no fit asked), and in the
     /// longest GELF UDP messages that 128 chunks carry (the driver's part, each asked), compressed by gzip or not, of bytes
@@ -1348,19 +1743,43 @@ mod tests {
                 &same,
             ),
             (
-                "gelf udp, gzip, random",
+                "gelf udp, gzip, random, by halves",
                 gelf_part,
                 Box::new(gelf_fits(Compression::Gzip)),
                 &random,
             ),
+            (
+                "gelf udp, gzip, random, by ratio",
+                gelf_part,
+                Box::new(|_: &Message<'_>| true),
+                &random,
+            ),
+            (
+                "gelf udp, gzip, compressible, by ratio",
+                gelf_part,
+                Box::new(|_: &Message<'_>| true),
+                &same,
+            ),
         ];
+        // The driver's own answer, what a message takes as written (Driver::written).
+        let gelf_written = || -> Written {
+            let from = from.clone();
+            Box::new(move |m: &Message<'_>| {
+                let message = gelf::message(&from, m.stream, m.at, m.line);
+                (
+                    gelf::compress(Compression::Gzip, 1, &message).unwrap().len(),
+                    gelf::UDP_MOST,
+                )
+            })
+        };
         for (name, part, fits, bytes) in cases {
             let line = [bytes, b"\n"].concat();
             let mut took = Vec::new();
             let mut parts = 0;
             for _ in 0..rounds {
+                let written = name.ends_with("by ratio").then(gelf_written);
                 let started = std::time::Instant::now();
-                let (sent, _) = cut_by(part, |m| fits(m), &[(LOG_STDOUT, 1, true, &line)]);
+                let (sent, _) = cut_with(part, |m| fits(m), written, &[(LOG_STDOUT, 1, true, &line)]);
                 took.push(started.elapsed());
                 parts = sent.len();
             }

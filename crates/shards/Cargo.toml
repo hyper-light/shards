@@ -64,6 +64,8 @@ base64 = "0.23.1"
 zeroize = "1"
 yaml-rust2 = "0.13.0"
 time = { version = "0.3.55", features = ["parsing"] }
+# lgamma, for the t test that ages a home's restart records (D190): musl's, in Rust.
+libm = "0.2.16"
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
