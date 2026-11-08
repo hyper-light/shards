@@ -102,8 +102,8 @@ fn split_spec(spec: &str) -> Result<(String, String, bool), String> {
 }
 
 /// A size as `--size` and `grow disk` take one: bytes, or with a unit of 1024's powers
-/// (`k`, `m`, `g`, `t`, with or without `b`), as Docker's sizes are read (go-units
-/// RAMInBytes).
+/// (`k`, `m`, `g`, `t`, with or without `b`), the units `--memory` takes, so that a size
+/// reads alike in every flag of a run (go-units v0.5.0 RAMInBytes, `ram_in_bytes`).
 pub(super) fn bytes_of(size: &str) -> Result<u64, String> {
     let lower = size.trim().to_ascii_lowercase();
     let digits = lower.trim_end_matches(|c: char| c.is_ascii_alphabetic());
@@ -1021,7 +1021,7 @@ mod tests {
 
     /// Sizes in bytes or 1024's powers.
     #[test]
-    fn sizes_read_as_dockers_do() {
+    fn sizes_read_in_bytes_or_binary_units() {
         assert_eq!(bytes_of("512"), Ok(512));
         assert_eq!(bytes_of("64m"), Ok(64 << 20));
         assert_eq!(bytes_of("1GB"), Ok(1 << 30));

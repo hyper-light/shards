@@ -2070,7 +2070,8 @@ fn policies_of(
             base = "dockerfile".into();
         }
         // filepath.Join's, by this host's rules: `Dockerfile.rego` of the context `.` on
-        // Windows too, as buildx names it there, never `.\Dockerfile.rego`.
+        // Windows too, the name buildx v0.37.1 gives the policy there, never
+        // `.\Dockerfile.rego`.
         let rego = dir.join(format!("{base}.rego"));
         let filename = shards_archive::copy::clean(&rego).to_string_lossy().into_owned();
         match std::fs::read(&rego) {
