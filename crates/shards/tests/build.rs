@@ -10904,7 +10904,7 @@ fn a_port_comes_in_to_the_member_listening_on_it() {
         ctx.join("Agentfile"),
         format!(
             "FROM {image}\n{agents}NETWORK --ingress=7100-7400 front\nNETWORK --ingress=7100-7400 back\n\
-             CONNECT web WITH api ON front\nCONNECT ops WITH idle ON back\n\
+             CONNECT web WITH web ON front\nCONNECT api WITH api ON front\nCONNECT ops WITH ops ON back\nCONNECT idle WITH idle ON back\n\
              EXPOSE 7100 7200 7300 7400 AS ingress FOR front ops\n"
         ),
     )
@@ -10954,9 +10954,15 @@ fn a_port_comes_in_to_the_member_listening_on_it() {
             std::thread::sleep(std::time::Duration::from_millis(100));
         }
     };
-    assert_eq!(read(host_port("7100")), "hello from agent-web\n");
-    assert_eq!(read(host_port("7200")), "hello from agent-api\n");
-    assert_eq!(read(host_port("7300")), "hello from agent-ops\n");
+    // What the run and its agents said, where a port reached no one.
+    let said = || {
+        let logs = shards(&["logs", "listening"]);
+        format!("--- logs\n{}{}", logs.stdout, logs.stderr)
+    };
+    for (p, who) in [("7100", "web"), ("7200", "api"), ("7300", "ops")] {
+        let got = read(host_port(p));
+        assert_eq!(got, format!("hello from agent-{who}\n"), "port {p}\n{}", said());
+    }
     // Every connection, not the first alone.
     for _ in 0..20 {
         assert_eq!(once(host_port("7100")), "hello from agent-web\n");

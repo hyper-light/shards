@@ -2415,6 +2415,28 @@ fn child(d: &Domain, p: &Prepared, out: RawFd, flags: u32, program: &libc::sock_
                 fail(out, c"waiting for its link");
             }
         }
+        // The chooser's filter (D122), whose listener goes to init on its channel, which
+        // closes with init's other descriptors below; nothing this process does before its
+        // command runs binds or listens.
+        if let Some((channel, notify)) = p.chooser {
+            let listener = libc::syscall(
+                libc::SYS_seccomp,
+                libc::SECCOMP_SET_MODE_FILTER,
+                crate::chooser::NEW_LISTENER,
+                notify,
+            );
+            let Ok(listener) = RawFd::try_from(listener) else {
+                fail(out, c"loading the chooser's filter");
+            };
+            if listener < 0 {
+                fail(out, c"loading the chooser's filter");
+            }
+            let sent = crate::hostbind::send_fd(channel, b"L", listener, 0);
+            libc::close(listener);
+            if !sent {
+                fail(out, c"giving init the chooser's listener");
+            }
+        }
         // Its stdio, and no other descriptor of init's.
         let devnull = libc::open(c"/dev/null".as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC);
         if devnull < 0 || libc::dup2(devnull, 0) < 0 || libc::dup2(out, 1) < 0 || libc::dup2(out, 2) < 0 {
@@ -2535,28 +2557,6 @@ fn child(d: &Domain, p: &Prepared, out: RawFd, flags: u32, program: &libc::sock_
             fail(out, c"entering its Landlock ruleset");
         }
         libc::close(ruleset as libc::c_int);
-        // The chooser's filter (D122), before its own, whose listener goes to init and is
-        // closed here, before the command runs.
-        if let Some((channel, notify)) = p.chooser {
-            let listener = libc::syscall(
-                libc::SYS_seccomp,
-                libc::SECCOMP_SET_MODE_FILTER,
-                crate::chooser::NEW_LISTENER,
-                notify,
-            );
-            let Ok(listener) = RawFd::try_from(listener) else {
-                fail(out, c"loading the chooser's filter");
-            };
-            if listener < 0 {
-                fail(out, c"loading the chooser's filter");
-            }
-            let sent = crate::hostbind::send_fd(channel, b"L", listener, 0);
-            libc::close(listener);
-            libc::close(channel);
-            if !sent {
-                fail(out, c"giving init the chooser's listener");
-            }
-        }
         // Its seccomp filter, last: what it refuses, nothing after may need.
         if libc::syscall(
             libc::SYS_seccomp,

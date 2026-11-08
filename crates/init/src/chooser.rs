@@ -24,7 +24,7 @@
 //! them. A call it cannot see (another ABI's, which its filter lets through) keeps a socket
 //! from being chosen, and reaches no further.
 
-use std::io;
+use std::io::{self, Write as _};
 use std::net::{IpAddr, Ipv4Addr};
 use std::os::fd::{AsRawFd, OwnedFd, RawFd};
 
@@ -267,10 +267,19 @@ impl Serve {
         match which {
             LISTENER => m.listener = Some(fd),
             NETNS => {
-                if let Ok((ask, told, unprivileged)) = in_namespace(&fd) {
-                    m.ask = Some(ask);
-                    m.told = Some(told);
-                    m.unprivileged = unprivileged;
+                match in_namespace(&fd) {
+                    Ok((ask, told, unprivileged)) => {
+                        m.ask = Some(ask);
+                        m.told = Some(told);
+                        m.unprivileged = unprivileged;
+                    }
+                    // Its sockets cannot be asked of: it is chosen for nothing, and said so.
+                    Err(e) => {
+                        let _ = writeln!(
+                            io::stderr(),
+                            "shards-init: the ports' chooser: {addr}'s namespace: {e}"
+                        );
+                    }
                 }
                 self.choose_all();
             }
@@ -438,8 +447,14 @@ impl Serve {
         if self.programmed.as_ref() == Some(&chosen) {
             return;
         }
-        if crate::links::program_chosen(&chosen).is_ok() {
-            self.programmed = Some(chosen);
+        match crate::links::program_chosen(&chosen) {
+            Ok(()) => self.programmed = Some(chosen),
+            Err(e) => {
+                let _ = writeln!(
+                    io::stderr(),
+                    "shards-init: the ports' chooser: programming its choices: {e}"
+                );
+            }
         }
     }
 }
