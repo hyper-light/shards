@@ -8,7 +8,8 @@ mod common;
 use std::time::Duration;
 
 use common::{
-    KERNEL_NR_CPUS, cannot_run_vms, cannot_snapshot, guest_init, kernel, run_shards, test_guest, vm_run,
+    KERNEL_NR_CPUS, cannot_run_vms, cannot_snapshot, guest_init, kernel, run_shards, run_shards_env,
+    test_guest, vm_run,
 };
 
 const TIMEOUT: Duration = Duration::from_secs(60);
@@ -2012,5 +2013,88 @@ fn cold_boots_profiled() {
             "M376 PROFILE vcpus={vcpus} at_once={at_once}{told}: {:.2} s, CPUs brought online (count, us) {onlined:?}, {total} ticks, guests up {uptimes:?} s at their start: {top:#?}\nM376 INITCALLS vcpus={vcpus} at_once={at_once}{told}: {slowest:#?}\nM376 GAPS vcpus={vcpus} at_once={at_once}{told} (us, each guest's longest three): {gaps:#?}\nM376 STEPS vcpus={vcpus} at_once={at_once}{told} (us): {steps:#?}\nM376 HYPER-V vcpus={vcpus} at_once={at_once}{told}: {offered:#?}",
             started.elapsed().as_secs_f64()
         );
+    }
+}
+
+/// `run --kernel … --share DIR --share DIR:ro`: the guest mounts `shards0` and `shards1`
+/// over virtio-fs, reads what the host put in each, writes a file through the first, which
+/// the host then reads, and is refused creating one through the second, which stays
+/// without it (D38's share process, served by `run --kernel` before its VM confines itself).
+#[test]
+fn a_direct_boot_writes_through_a_share_and_not_through_a_read_only_one() {
+    if cannot_run_vms() {
+        return;
+    }
+    let dir = common::TempDir::new("share");
+    let (rw, ro) = (dir.join("rw"), dir.join("ro"));
+    for d in [&rw, &ro] {
+        std::fs::create_dir(d).unwrap();
+        std::fs::write(d.join("hello"), "hello through --share\n").unwrap();
+    }
+    let read_only = format!("{}:ro", ro.display());
+    // A home of its own, which the share process's private directory goes in: none of
+    // this host's user's.
+    let home = dir.join("home");
+    let r = run_shards_env(
+        &["run"],
+        &[
+            "--kernel",
+            kernel().to_str().unwrap(),
+            "--init",
+            test_guest().to_str().unwrap(),
+            "--memory",
+            "256",
+            "--cmdline",
+            "console=ttyS0 quiet panic=-1 shards_test=share",
+            "--share",
+            rw.to_str().unwrap(),
+            "--share",
+            &read_only,
+        ],
+        &[("SHARDS_HOME", home.as_os_str())],
+        TIMEOUT,
+    );
+    assert_eq!(r.status, Some(0), "{r}");
+    assert!(r.stdout.contains("SHARDS-TEST PASS"), "{r}");
+    assert!(r.stdout.contains("SHARE READ-ONLY"), "{r}");
+    assert_eq!(
+        std::fs::read_to_string(rw.join("from-guest")).unwrap(),
+        "written by a shards guest through --share\n"
+    );
+    assert!(!ro.join("from-guest").exists());
+}
+
+/// shards-api's conformance suite (`crates/api`) against real guests this build's `shards`
+/// boots (`run --kernel`), the test guest their PID 1: `echo` serves vsock port 1234 until
+/// stopped, `kmsg` powers off. Bounds refused before boot, bytes and half-closes both ways,
+/// unserved and off-list ports refused, stop, and power-off, on each host's backend. The
+/// client starts `shards` itself: `run --kernel` reads no docker config and no home, so
+/// none of this host's.
+#[test]
+fn shards_api_conforms_on_real_guests() {
+    if cannot_run_vms() {
+        return;
+    }
+    let spec = |mode: &str| shards_api::GuestSpec {
+        kernel: kernel().into(),
+        init: shards_api::Init::Executable(test_guest().into()),
+        cmdline: format!("console=ttyS0 quiet panic=-1 shards_test={mode}"),
+        vcpus: 1,
+        memory_mib: 256,
+        disks: vec![],
+        shares: vec![],
+        ports: vec![1234, 1236],
+        binary: Some(common::shards().into()),
+    };
+    let subject = shards_api::conformance::Subject {
+        guests: &shards_api::Shards,
+        serving: spec("echo"),
+        port: 1234,
+        unserved: 1236,
+        powering_off: spec("kmsg"),
+        patience: TIMEOUT,
+    };
+    if let Err(e) = shards_api::conformance::run(&subject) {
+        panic!("{e}");
     }
 }

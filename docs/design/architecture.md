@@ -2833,6 +2833,24 @@ microVM as virtio-fs shares (virtio 1.3 §5.11; Linux fs/fuse/virtio_fs.c):
   restored ahead of its run has its devices (`shards{i}`), empty slots its run fills:
   a template is made for each number of shares (`run::template`). A guest that mounts
   a share before its run has one is told ENODEV.
+- **A direct boot's own shares** (`shards run vm --kernel … --share DIR[:ro]`, repeatable):
+  the i-th is `shards{i}`, fixed at boot, for programs that boot their own PID 1 (shards-api,
+  `crates/api`, whose `GuestSpec::shares` map onto it one to one). The `run --kernel`
+  process takes the daemon's part for them before it becomes the VM (`cli/shares.rs`): it
+  opens each directory, starts the share process as the daemon does (`shards share` with
+  the VM's connection at 3, each directory at 4 + i and the home's private directory after
+  them; on Windows each share's duplex pipe at 5 + n + i, D197), takes its `SHARE_ENDS` and
+  says `TAKEN` (M24), and hands each connection on as a share another server serves
+  (`--slates-fs-fd`, on Windows `--slates-fs share-{i}` through its grants). Why there and
+  not in the VM process: the VM opens no directory. On macOS it is in App Sandbox from its
+  first instruction and opens only what its broker grants (D30); on Linux Landlock and
+  seccomp confine it before it runs a guest; on Windows its AppContainer reaches none of its
+  user's files (D141). So only a process outside that confinement can open the directories,
+  and it must do so before the VM starts. The server and its path rules are the daemon's
+  run's, unchanged (`fs::server::Server`, `fs::answer`); `:ro` is its read-only mode, and
+  any other suffix is refused. Test: boot.rs
+  `a_direct_boot_writes_through_a_share_and_not_through_a_read_only_one`; shards-api's
+  conformance suite on real guests, boot.rs `shards_api_conforms_on_real_guests`.
 - **A share another server serves** (`shards run vm --kernel … --slates-fs-fd N`): a direct
   run's share slot (`shards{i}`, after any of its own) given a connected socket its spawner
   hands it, which a server answers in this device's framing, as `slates shards VOLUME --fd

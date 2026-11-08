@@ -26,6 +26,7 @@ pub(crate) mod moves;
 pub(crate) mod request;
 pub(crate) mod save;
 mod screens;
+mod shares;
 mod show;
 pub(crate) mod terminal;
 pub(crate) mod terms;
@@ -1043,6 +1044,12 @@ fn vm(args: &[OsString]) -> ExitCode {
     if !matches!(args.first().and_then(|a| a.to_str()), Some("run" | "restore")) {
         return instead(args);
     }
+    // Its shares served before its VM process starts, sandboxed (shares.rs).
+    let args = match shares::served(args) {
+        Ok(args) => args,
+        Err(e) => return failed(&e),
+    };
+    let args = args.as_slice();
     let broker = match shardsd() {
         Ok(bin) => bin,
         Err(e) => return failed(&e),
@@ -1107,6 +1114,12 @@ fn vm(args: &[OsString]) -> ExitCode {
 /// the kernel, since SIGCHLD stays ignored through the exec.
 #[cfg(not(any(target_os = "macos", windows)))]
 fn vm(args: &[OsString]) -> ExitCode {
+    // Its shares served before it becomes the VM, which confines itself (shares.rs).
+    let args = match shares::served(args) {
+        Ok(args) => args,
+        Err(e) => return failed(&e),
+    };
+    let args = args.as_slice();
     match working_set_writer(args) {
         Ok(Some(with)) => instead(&with),
         Ok(None) => instead(args),
@@ -1231,6 +1244,11 @@ fn vm(args: &[OsString]) -> ExitCode {
         Ok(served) => served,
         Err(e) => return failed(&e),
     };
+    // Its shares served before its VM process starts, in its AppContainer (shares.rs).
+    let (args, shared) = match shares::served(&args) {
+        Ok(shared) => shared,
+        Err(e) => return failed(&e),
+    };
     let args = args.as_slice();
     let bin = match vm_binary(args) {
         Ok(bin) => bin,
@@ -1285,6 +1303,10 @@ fn vm(args: &[OsString]) -> ExitCode {
         name,
         handle: *handle,
     }));
+    given.extend(shared.iter().map(|(name, handle)| shards_ipc::Given {
+        name,
+        handle: handle.as_handle(),
+    }));
     given.extend(to_keeper.as_ref().map(|to_keeper| shards_ipc::Given {
         name: WORKING_SET,
         handle: to_keeper.as_handle(),
@@ -1316,9 +1338,9 @@ fn vm(args: &[OsString]) -> ExitCode {
         // A GPU's VM process runs its host's GPU driver (D202).
         graphics: args.iter().take_while(|a| *a != "--").any(|a| a == "--gpu"),
     });
-    // The VM's ends are its own now: its exit ends the requests, and what it hands over of
-    // its working set.
-    drop((asks_to, answers_from, to_keeper));
+    // The VM's ends are its own now: its exit ends the requests, what it hands over of its
+    // working set, and its shares, whose process then exits.
+    drop((asks_to, answers_from, to_keeper, shared));
     let child = match spawned {
         Ok(child) => child,
         Err(e) => return failed(&format!("{}: {e}", bin.display())),
