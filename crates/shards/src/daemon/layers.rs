@@ -361,7 +361,7 @@ impl Line {
         let fit = self.fit(x)?;
         let distance = y - fit.estimate;
         let variance = fit.residual * (1.0 + fit.spread);
-        if !(variance > 0.0) {
+        if variance.is_nan() || variance <= 0.0 {
             // A line with no spread at all: every record off it is outside.
             return Some(distance != 0.0);
         }
@@ -468,7 +468,7 @@ fn t_beyond(t2: f64, free: f64) -> f64 {
 /// 8.17.22), evaluated by Lentz's method where it converges quickly, `x < (a + 1)/(a + b + 2)`,
 /// and through `I_x(a, b) = 1 − I_(1−x)(b, a)` where not (Numerical Recipes, 2nd ed., §6.4).
 fn incomplete_beta(a: f64, b: f64, x: f64) -> f64 {
-    if !(x > 0.0) {
+    if x.is_nan() || x <= 0.0 {
         return 0.0;
     }
     if x >= 1.0 {
@@ -514,7 +514,8 @@ fn fraction(a: f64, b: f64, x: f64) -> f64 {
         let step = d * c;
         h *= step;
         // Converged, or nothing a number any more.
-        if !((step - 1.0).abs() > f64::EPSILON) {
+        let off = (step - 1.0).abs();
+        if off.is_nan() || off <= f64::EPSILON {
             break;
         }
         m += 1.0;
