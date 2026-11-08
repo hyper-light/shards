@@ -278,9 +278,7 @@ static INIT_NFT: std::sync::Mutex<Option<OwnedFd>> = std::sync::Mutex::new(None)
 /// by its caller, a thread of init's namespace, as each of them opened its own before;
 /// one whose exchange failed is let go, and the next opens another, as the chooser's.
 pub(crate) fn on_init_nft<T>(f: impl FnOnce(&OwnedFd) -> io::Result<T>) -> io::Result<T> {
-    let mut kept = INIT_NFT
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut kept = INIT_NFT.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     kept_socket(&mut kept, || netlink_socket(libc::NETLINK_NETFILTER), f)
 }
 
