@@ -20193,11 +20193,28 @@ revision before comparing a changed API/implementation.
   answers, so a kept socket holds none for the next, links.rs
   `a_kept_socket_holds_no_answer_of_an_exchange_before`): the destroy work's grace period
   passes on a kernel worker, off every member's call. The chooser also answers every call
-  a round of poll(2) finds before it chooses, then programs once for them all. Not yet
-  measured: the M498 test again at this change (before at its parent, after at it, n,
-  p50, p90, p99, max on Fedora and on an arm64 Mac); what is left of a contested call
-  past an uncontested one's is then the commit of two chains, which decides whether a map
-  keyed by port is worth its code. Init's setup paths still close a socket after each of
+  a round of poll(2) finds before it chooses, then programs once for them all.
+- **Measured.** The M498 test before (f9dee1407) and after (6c60636dd), interleaved
+  before, after, before, after, n = 2,000 rounds an agent each, on adacachy (AMD Ryzen 9
+  9950X3D2, 32 CPUs, CachyOS Linux 7.2.9, a guest of 32 vCPUs, load 8 to 22), 2026-11-08;
+  in µs, p50 / p90 / p99 / max:
+
+  | call | before, round 1 | before, round 2 | after, round 1 | after, round 2 |
+  |---|---|---|---|---|
+  | contested bind | 15,984 / 27,971 / 32,038 / 90,450 | 15,986 / 27,932 / 35,978 / 55,956 | 20.6 / 33.6 / 67.7 / 448 | 21.7 / 51.7 / 70.6 / 2,227 |
+  | contested listen | 16,008 / 20,093 / 32,021 / 40,017 | 16,015 / 20,109 / 32,019 / 40,109 | 18.1 / 24.5 / 66.1 / 474 | 19.1 / 57.7 / 73.9 / 336 |
+  | filtered, uncontested bind | 19.0 / 21.4 / 30.0 / 27,683 | 20.2 / 26.1 / 46.5 / 18,948 | 18.7 / 21.6 / 35.2 / 512 | 19.1 / 24.8 / 34.5 / 565 |
+  | unfiltered bind | 0.27 / 0.35 / 1.2 / 24 | 0.35 / 0.52 / 1.7 / 6.9 | 0.19 / 0.30 / 1.2 / 3.8 | 0.28 / 0.36 / 1.2 / 294 |
+
+  Before, a contested call's p50 was 16.0 ms, four of the guest's 4 ms jiffies (HZ 250), and
+  its p99 32 ms, eight: whole grace periods, as the source reads. After, a contested call
+  costs what a filtered, uncontested one does (p50 21 against 19 µs; p99 about twice), and
+  the uncontested port's tail, which had waited behind the chooser's programming (max 19
+  to 28 ms), is gone (max 0.5 ms). On Fedora (i9-14900HX, Linux 6.19.10, load 18 to 26 with
+  CI jobs), three runs after the change alone: contested bind p50 23 to 35 µs, p99 141 to
+  151 µs, max 21 to 107 ms; that host's tail is open (one run each, not interleaved). The
+  commit of two chains leaves a contested call a few µs past an uncontested one's at p50,
+  so a map keyed by port would buy little: the chains stay. Init's setup paths still close a socket after each of
   their commits (links.rs's switch and gates, `net::host_loopback`), a grace period each,
   once a run.
 
