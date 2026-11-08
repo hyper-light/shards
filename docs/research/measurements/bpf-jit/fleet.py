@@ -7,32 +7,34 @@ in each home:
 
 - the daemon stopped and the home's templates removed, so the round's first run boots its
   guest and saves the image's template (init attaches the device filter before the save,
-  D44, so the JIT's pack is in the template): `run -d IMAGE sleep`, its client wall clock
+  D44, so the JIT's pack is in the template): `run vm -d IMAGE sleep`, its client wall clock
   (`first`);
-- --n - 1 more `run -d`, each served from the pool's warm microVMs, restored from that
+- --n - 1 more `run vm -d`, each served from the pool's warm microVMs, restored from that
   template, each one's client wall clock (`restored`): request to a workload running;
 - once the home's VM processes stay the same for 5 s, each one's memory (Linux:
   /proc/PID/smaps_rollup's Rss, Pss and Anonymous; macOS: proc_pid_rusage's physical
   footprint and resident size; Windows: Get-Process's private bytes and working set): the
-  booted run's, the restored runs' (the VM processes `inspect` names, State.Pid) and the
+  booted run's, the restored runs' (the VM processes `inspect vm` names, State.Pid) and the
   warm microVMs' the pool keeps, apart, and their sum; the template's disk blocks (du; not
   on Windows, where Git's du reads a sparse file's length);
-- every run removed (`rm -f`).
+- every run removed (`remove vm -f`).
 
-    fleet.py --shards SHARDS --init INIT --a KERNEL --b KERNEL --homes DIR
+    fleet.py --shards SHARDS --init INIT [--init-b INIT] --a KERNEL --b KERNEL --homes DIR
              [--n 10] [--rounds 10] [--warmup 1] [--image IMAGE]
 
 DIR keeps both homes (DIR/A, DIR/B) between invocations: IMAGE is pulled into each once
-(a registry limits the pulls it serves). INIT is the shards-init the guests run. Prints n,
-p50, p90, p99 and max of each, and each round's p50, with host, OS and revision. Every
-`shards` runs with an empty DOCKER_CONFIG. Start latency through the daemon's pools, request to status, one run at a
-time: build-ab/ab.py over the same two homes (ENV_* unset, each home's own guest).
+(a registry limits the pulls it serves). INIT is the shards-init the guests run; with
+--init-b, B's guests run that one (one kernel, two inits: `--a K --b K`). Prints n, p50,
+p90, p99 and max of each, and each round's p50, with host, OS and revision. Every `shards`
+runs with an empty DOCKER_CONFIG. Start latency through the daemon's pools, request to
+status, one run at a time: build-ab/ab.py over the same two homes (latency.sh).
 """
 import argparse, atexit, ctypes, hashlib, math, os, platform, re, shutil, subprocess, sys, tempfile, time
 
 p = argparse.ArgumentParser()
 for flag in ("--shards", "--init", "--a", "--b", "--homes"):
     p.add_argument(flag, required=True)
+p.add_argument("--init-b")
 p.add_argument("--n", type=int, default=10)
 p.add_argument("--rounds", type=int, default=10)
 p.add_argument("--warmup", type=int, default=1)
@@ -162,11 +164,12 @@ def digest(path):
 
 for arm, kernel in kernels.items():
     os.makedirs(homes[arm], exist_ok=True)
-    shards(arm, "configure", "guest", "--kernel", kernel, "--init", os.path.realpath(a.init))
-    images = subprocess.run([a.shards, "images", "-q"], capture_output=True, text=True,
+    init = a.init_b if arm == "B" and a.init_b else a.init
+    shards(arm, "configure", "guest", "--kernel", kernel, "--init", os.path.realpath(init))
+    images = subprocess.run([a.shards, "list", "images", "-q"], capture_output=True, text=True,
                             env=dict(os.environ, SHARDS_HOME=homes[arm], DOCKER_CONFIG=config)).stdout
     if not images.strip():
-        shards(arm, "pull", a.image)
+        shards(arm, "pull", "image", a.image)
 
 results = {arm: {} for arm in kernels}
 
@@ -191,12 +194,12 @@ for i in range(a.warmup + a.rounds):
         for j in range(a.n):
             serial += 1
             name = f"jit-{os.getpid()}-{serial}"
-            took, _ = shards(arm, "run", "-d", "--pull", "never", "--name", name, a.image, "sleep", "100000")
+            took, _ = shards(arm, "run", "vm", "-d", "--pull", "never", "--name", name, a.image, "sleep", "100000")
             names.append(name)
             note(arm, "first run ms" if j == 0 else "restored run ms", took, counted)
         now = settled(home, a.n)
         # The runs' VM processes (State.Pid); the rest restored are the pool's warm microVMs.
-        _, out = shards(arm, "inspect", "--format", "{{.State.Pid}}", *names)
+        _, out = shards(arm, "inspect", "vm", "--format", "{{.State.Pid}}", *names)
         runs = {int(w) for w in out.split()}
         sums = {}
         for pid, booted in now:
@@ -212,7 +215,7 @@ for i in range(a.warmup + a.rounds):
             note(arm, f"all VMs {k} KiB", v, counted)
             note(arm, f"all VMs {k} KiB per VM", v / len(now), counted)
         note(arm, "templates du KiB", du_kib(os.path.join(home, "templates")), counted)
-        shards(arm, "rm", "-f", *names)
+        shards(arm, "remove", "vm", "-f", *names)
 
 rev = subprocess.run(["git", "rev-parse", "--short", "HEAD"], capture_output=True, text=True,
                      cwd=os.path.dirname(os.path.abspath(__file__))).stdout.strip()
@@ -220,7 +223,8 @@ u = platform.uname()
 print(f"host {u.node} {u.machine} · {platform.platform()} · revision {rev} · {a.n} runs a round · "
       f"rounds {a.rounds} after {a.warmup} · image {a.image}")
 for arm, kernel in kernels.items():
-    print(f"{arm}: {os.path.basename(kernel)} sha256 {digest(kernel)}")
+    init = a.init_b if arm == "B" and a.init_b else a.init
+    print(f"{arm}: {os.path.basename(kernel)} sha256 {digest(kernel)} · init sha256 {digest(init)}")
 for key in results["A"]:
     for arm in kernels:
         xs = results[arm].get(key, [])
