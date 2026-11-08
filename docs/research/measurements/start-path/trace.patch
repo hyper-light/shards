@@ -1,0 +1,137 @@
+diff --git a/crates/shards/src/cli/client.rs b/crates/shards/src/cli/client.rs
+index 3f83936a..3b78c10d 100644
+--- a/crates/shards/src/cli/client.rs
++++ b/crates/shards/src/cli/client.rs
+@@ -230,6 +230,7 @@ fn serve(
+             Ok(asked) => asked,
+             Err(e) => return failed(&e),
+         };
++        ASKED_US.store(u64::try_from(shards_vmm::log::uptime_us()).unwrap_or(0), std::sync::atomic::Ordering::Relaxed);
+         let ran = match asked {
+             Asked::Slot(mut client) => {
+                 match client.sender() {
+@@ -1191,14 +1192,16 @@ fn stop_socket(home: &Path) -> ExitCode {
+ /// first field, `client_rss_kib`, and its microseconds from its `main` to now,
+ /// `client_us`, for benchmarks: a run timed from its client's spawn, less those, is its
+ /// client's launch, which its host may hold back (PM M166).
++static ASKED_US: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
++
+ fn with_client_rss(timing: &str) -> String {
+     let kib = shards_ipc::peak_rss_kib();
+     let us = shards_vmm::log::uptime_us();
+     match timing.strip_prefix('{') {
+         Some(rest) if rest.trim_start().starts_with('}') => {
+-            format!("{{\"client_rss_kib\":{kib},\"client_us\":{us}{rest}")
++            format!("{{\"client_rss_kib\":{kib},\"client_us\":{us},\"client_main_us\":{},\"client_asked_us\":{}{rest}", shards_vmm::log::started_us(), ASKED_US.load(std::sync::atomic::Ordering::Relaxed))
+         }
+-        Some(rest) => format!("{{\"client_rss_kib\":{kib},\"client_us\":{us},{rest}"),
++        Some(rest) => format!("{{\"client_rss_kib\":{kib},\"client_us\":{us},\"client_main_us\":{},\"client_asked_us\":{},{rest}", shards_vmm::log::started_us(), ASKED_US.load(std::sync::atomic::Ordering::Relaxed)),
+         None => timing.to_string(),
+     }
+ }
+diff --git a/crates/shards/src/daemon.rs b/crates/shards/src/daemon.rs
+index 2ff34e8e..f828a1ac 100644
+--- a/crates/shards/src/daemon.rs
++++ b/crates/shards/src/daemon.rs
+@@ -2609,7 +2609,10 @@ impl<D: Disk> Daemon<D> {
+         }
+         match message.kind {
+             // Its connection is its run's from here, and passes to the VM.
+-            kind::START => self.release_client(number),
++            kind::START => {
++                shards_vmm::log::trace("handle_start");
++                self.release_client(number)
++            }
+             kind::STOP => {
+                 self.release_client(number);
+                 match conn.try_clone() {
+@@ -3978,7 +3981,9 @@ impl<D: Disk> Daemon<D> {
+             }
+         };
+         for _ in 0..HANDOFF_TRIES {
++            shards_vmm::log::trace("run_acquire");
+             let mut ready = acquire().map_err(|e| failed(&e))?;
++            shards_vmm::log::trace("run_acquired");
+             // Every way on leaves `Handing` while `ready` holds the socket it names.
+             if let Err(said) = self.commit(id, ready.socket.as_raw_fd()) {
+                 // A joiner's VM is its provider's, in no pool: only its connection goes.
+@@ -4006,7 +4011,9 @@ impl<D: Disk> Daemon<D> {
+             if ready.net.is_some() && keep.mac.is_some() {
+                 ready.mac = keep.mac;
+             }
++            shards_vmm::log::trace("run_told_net");
+             let handed = hand_over(&ready.socket, payload, fds, ends);
++            shards_vmm::log::trace("run_taken");
+             // Only now, so that starting its successor delays no run: on the refiller's
+             // thread.
+             self.refill_soon(threads, ready.pool.as_ref());
+diff --git a/crates/shards/src/daemon/slots.rs b/crates/shards/src/daemon/slots.rs
+index 42d7f612..ba15f6b4 100644
+--- a/crates/shards/src/daemon/slots.rs
++++ b/crates/shards/src/daemon/slots.rs
+@@ -354,6 +354,7 @@ impl<D: Disk> Daemon<D> {
+                 return;
+             }
+         };
++        shards_vmm::log::trace("slot_opened");
+         living.opened();
+         let _ = tell.send(Event::Asked(n));
+         // The rest of its request, whole within the time a socket's client had to send its
+@@ -376,6 +377,7 @@ impl<D: Disk> Daemon<D> {
+             })) => {
+                 // A stop's session the daemon holds until its exit itself, which is how its
+                 // client learns of it: it holds no quiet.
++                shards_vmm::log::trace("slot_request");
+                 if request.kind == kind::STOP {
+                     living.forget();
+                 }
+@@ -510,6 +512,9 @@ impl<D: Disk> Daemon<D> {
+                 {
+                     ended(pidfd);
+                 }
++                if m.kind == kind::EXIT {
++                    shards_vmm::log::trace("slot_exit");
++                }
+                 if living.answer(&answer, m.kind, &m.payload).is_err() {
+                     break;
+                 }
+diff --git a/crates/vmm/src/log.rs b/crates/vmm/src/log.rs
+index 079dac8c..70357dfe 100644
+--- a/crates/vmm/src/log.rs
++++ b/crates/vmm/src/log.rs
+@@ -48,9 +48,33 @@ pub fn enabled(level: Level) -> bool {
+     level as u8 <= if current == 0 { Level::Warn as u8 } else { current }
+ }
+ 
+-/// Microseconds since `init`.
++/// trace.patch: the host's monotonic clock, in microseconds, so that every process's
++/// readings compare (docs/research/measurements/start-path).
+ pub fn uptime_us() -> u128 {
+-    START.get_or_init(Instant::now).elapsed().as_micros()
++    let _ = STARTED_US.get_or_init(monotonic_us);
++    monotonic_us()
++}
++
++static STARTED_US: OnceLock<u128> = OnceLock::new();
++
++/// trace.patch: this process's first reading.
++pub fn started_us() -> u128 {
++    *STARTED_US.get_or_init(monotonic_us)
++}
++
++#[allow(unsafe_code, clippy::cast_sign_loss)]
++fn monotonic_us() -> u128 {
++    let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
++    // SAFETY: a valid timespec to fill.
++    unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts) };
++    ts.tv_sec as u128 * 1_000_000 + ts.tv_nsec as u128 / 1000
++}
++
++/// trace.patch: a step of a run, on stderr (a daemon's: its log).
++pub fn trace(step: &str) {
++    use std::io::Write;
++    let line = format!("shards-trace {} {step} {}\n", std::process::id(), monotonic_us());
++    let _ = std::io::stderr().write_all(line.as_bytes());
+ }
+ 
+ pub fn write(level: Level, args: std::fmt::Arguments<'_>) {
