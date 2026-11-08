@@ -130,8 +130,12 @@ Reviewed feature by feature, each D-entry's design against what it took from Doc
     docker/docs content/manuals/engine/logging/configure.md), and a run that wants another
     names it.
   - A long line cut into parts of 16 KiB for the drivers that send a log away (moby's copier's
-    size): open. It is what receivers that join Docker's parts expect, so it stays until a
-    receiver-led size is measured.
+    size). Done (2026-11-08, D163, PM M492, M494): each driver's parts are as long as its
+    receiver takes a message (syslog's 8,192 octets, Graylog's 128 chunks and 2 MiB, Fluent
+    Bit's forward buffer, the journal's LineMax, HEC's content over a batch, CloudWatch's and
+    Cloud Logging's event and entry, os_log's 1,015 bytes, an 8 KB ETW session's 8,040), each
+    asked to fit as written, never a character in two; receivers join them by the same
+    fields.
   - A registry's request tried 5 times, 50 ms apart, and a 500, 502, 503 or 504 tried again
     only once unless it changes (containerd's `maxAttempts` and pause, crates/registry
     `ATTEMPTS`, `PAUSE`): open. Docker Hub's token server answered 502 twice within the
@@ -194,8 +198,11 @@ Reviewed feature by feature, each D-entry's design against what it took from Doc
       way the cache passes its bounds, one collection at a time in a home, and a build
       answered from the cache collects nothing; no timer.
     - A build's SSH agent on Windows: its pipe waited for 2 s, go-winio's default, which
-      BuildKit's call leaves unset (build/ssh.rs; found 2026-11-03). To derive from how
-      long an agent's pipe takes to come free, measured.
+      BuildKit's call leaves unset (build/ssh.rs; found 2026-11-03). Done (2026-11-08,
+      D51, PM M493): OpenSSH's agent frees an instance 1.4 ms apart at the median however
+      many dial, while a dial's whole wait passed 2 s at 128 clients; a dial now dials
+      again as each instance is freed, giving the agent up after a minute with none
+      freed (D209's quiet).
 - The rest: open, D-entry by D-entry.
 
 ## Fixing order

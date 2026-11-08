@@ -89,7 +89,7 @@ impl Gelf {
 impl Driver for Gelf {
     /// What its input takes of a message (logging/gelf.rs `Config::part`).
     fn part(&self) -> usize {
-        self.config.part()
+        self.config.part(&self.from)
     }
 
     fn fits(&mut self, m: &Message<'_>) -> io::Result<bool> {

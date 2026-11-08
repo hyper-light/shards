@@ -1109,7 +1109,7 @@ impl<D: Disk> Daemon<D> {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::indexing_slicing)]
+#[allow(clippy::unwrap_used, clippy::indexing_slicing, clippy::panic_in_result_fn)]
 mod tests {
     use super::*;
     use crate::spec::LOG_STDOUT;
@@ -1278,7 +1278,7 @@ mod tests {
 
     /// What cutting a long line costs the shipper (PM M494): a line of 1 MiB, cut in 16 KiB
     /// parts as moby's copier cuts every line, in syslog's parts (no fit asked), and in the
-    /// longest GELF UDP messages that 128 chunks carry, compressed by gzip or not, of bytes
+    /// longest GELF UDP messages that 128 chunks carry (the driver's part, each asked), compressed by gzip or not, of bytes
     /// that compress and of bytes that do not; each case `SHARDS_CUT_ROUNDS` times (30),
     /// its time a line as n, p50, p90, p99 and max, and its parts. Run with `--ignored
     /// --nocapture` under the release profile.
@@ -1298,6 +1298,7 @@ mod tests {
             extra: "\"_container_id\":\"0123456789abcdef\"".into(),
         };
         let gelf_fits = |compression| {
+            let from = from.clone();
             let config = Config {
                 to: To::Udp("h:1".into()),
                 compression,
@@ -1311,7 +1312,17 @@ mod tests {
                     .unwrap()
             }
         };
-        let cases: Vec<(&str, usize, Box<dyn Fn(&Message<'_>) -> bool>, &[u8])> = vec![
+        // The driver's part over UDP: 128 chunks less the rest of its message.
+        let gelf_part = Config {
+            to: To::Udp("h:1".into()),
+            compression: Compression::None,
+            level: 1,
+            reconnects: 3,
+            delay: 1,
+        }
+        .part(&from);
+        type Fits = Box<dyn Fn(&Message<'_>) -> bool>;
+        let cases: Vec<(&str, usize, Fits, &[u8])> = vec![
             (
                 "16 KiB parts (moby's copier)",
                 16 * 1024,
@@ -1326,19 +1337,19 @@ mod tests {
             ),
             (
                 "gelf udp, none, compressible",
-                gelf::UDP_MOST,
+                gelf_part,
                 Box::new(gelf_fits(Compression::None)),
                 &same,
             ),
             (
                 "gelf udp, gzip, compressible",
-                gelf::UDP_MOST,
+                gelf_part,
                 Box::new(gelf_fits(Compression::Gzip)),
                 &same,
             ),
             (
                 "gelf udp, gzip, random",
-                gelf::UDP_MOST,
+                gelf_part,
                 Box::new(gelf_fits(Compression::Gzip)),
                 &random,
             ),

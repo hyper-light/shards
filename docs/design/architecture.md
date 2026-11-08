@@ -3823,6 +3823,21 @@ the words BuildKit's users read.
   agent (readOnlyAgent): keys and signatures, no adding, removing, locking or extensions.
   The host relays an agent request only if it is one of those (identities, sign, unlock)
   and answers any other SSH_AGENT_FAILURE, each message bounded by OpenSSH's 256 KiB.
+- **On Windows, an agent's pipe is waited on while it frees instances** (PM M493). OpenSSH
+  for Windows' agent keeps one instance of its pipe listening, and makes the next only
+  once it has started a worker process for the last connection; a client that dials
+  meanwhile is told the pipe is busy. A build dials once for each connection a step
+  makes. go-winio, which BuildKit dials with, waits 2 s in all: with 128 clients at once
+  on jupiter, 6 of 6,146 busy dials waited longer (2.80 s at most), while the agent freed
+  an instance every 1.35 ms at the median and 8.6 ms at most; a dial's whole wait grows
+  with the clients ahead of it, an instance's does not. So a dial dials again each time an
+  instance is freed (WaitNamedPipe), another client may take it first, and gives the agent
+  up only once it frees none for a minute (`AGENT_QUIET`, D209's quiet past which what
+  shows no progress is given up); an agent with no instance left has gone, and the dial
+  says so at once. `a_dial_waits_while_its_agent_frees_instances` holds a dial waiting
+  past 2 s through an agent-like server that frees each instance 150 ms after the last,
+  and the server's own interval, a process started per connection, within the quiet;
+  `a_dial_gives_up_an_agent_that_frees_no_instance` the end.
 - **Tested** on real microVMs against a real ssh-agent holding a key ssh-keygen made
   (`run_steps_reach_the_clients_ssh_agent`): the step lists the key and has the agent sign,
   its request to forget the keys is refused and the agent keeps them, a rogue dial is
@@ -7898,7 +7913,7 @@ refusal. A unit test holds the parts to os_log's bound and to characters' bounda
 lines go to the host's own event tracing, as Docker's Windows driver sends them. Sent as
 every driver's are, from shards' store, by the daemon's shipper (D163).
 
-- **Docker's provider and words.** Each line, and each 16 KiB part of a longer one, is an
+- **Docker's provider and words.** Each line, and each part of a longer one (D163), is an
   event of moby's provider, `{a3693192-9ed6-46d2-a981-f8226c8363bd}`, written by
   EventWriteString at level 0 and keyword 0, its string moby's createLogMessage's:
   `container_name: NAME, image_name: IMAGE, container_id: ID, image_id: IMAGE_ID, source:
@@ -10694,9 +10709,11 @@ daemon's shipper, never by the microVM, to CloudWatch Logs' JSON 1.1 API
   `AWS_ENDPOINT_URL`, the profile's services section), which dockerd's client discards,
   else the partition's own by the SDK's endpoint rules, FIPS's and dual-stack's where asked.
 - **Events.** Each line is an event at its output's time in milliseconds. A line of up to
-  262,118 bytes, as CloudWatch counts them (a byte that is not UTF-8 counted as U+FFFD's
-  three), is whole: the shipper cuts this driver's lines in parts of that length
-  (`Driver::part`), not 16 KiB. A longer one is cut where no character is. With
+  1,048,550 bytes, as CloudWatch counts them (a byte that is not UTF-8 counted as U+FFFD's
+  three), is whole, a put's 1,048,576 less its 26 bytes an event ("Each log event can be
+  no larger than 1 MB", PutLogEvents): the shipper cuts this driver's lines in parts of
+  that length (`Driver::part`, D163), not 16 KiB; moby's cuts at the 256 KiB CloudWatch
+  took before. A longer one is cut where no character is. With
   `awslogs-multiline-pattern`, or `awslogs-datetime-format` made a pattern by its strftime
   table, lines are joined, each followed by a newline, until one matches. Lines held wait
   `awslogs-force-flush-interval-seconds` (5 s) for more, the shipper woken for them
@@ -10846,7 +10863,7 @@ store, by the daemon's shipper.
     - CONTAINER_LOG_EPOCH, an ID each shipper makes as it starts;
     - CONTAINER_LOG_ORDINAL, the entry's place from 1;
   - SYSLOG_TIMESTAMP, its output's time, RFC 3339 to the nanosecond;
-  - a part's place where a line is longer than 16 KiB: CONTAINER_PARTIAL_ID, _ORDINAL
+  - a part's place where a line is longer than the journal's LineMax (D163): CONTAINER_PARTIAL_ID, _ORDINAL
     and _LAST, and before the last, CONTAINER_PARTIAL_MESSAGE;
   - the attributes asked for, named as journal queries for Docker's runs name them (moby's
     sanitizeKeyMod): letters in
@@ -10926,7 +10943,7 @@ daemon's shipper.
     `source`, `log`, the attributes asked for (an attribute named as one of those is
     left out: D166), and a part's place over all
     (`partial_message`, `partial_id`, `partial_ordinal`, `partial_last`) where a line is
-    longer than 16 KiB. Its members are sorted, where Go writes a map in no order.
+    longer than a forward input takes (D163). Its members are sorted, where Go writes a map in no order.
   - Held to Docker 29.3.1's (`scripts/logdrivers/generate`): over TCP in whole seconds
     and to the nanosecond, over a unix socket, and 26 cases of which options Docker
     takes.
@@ -11026,10 +11043,36 @@ and the way every later one sends.
     daemon's restarts: the shipper keeps its place beside the log (`ship`), and the next
     daemon sends what is left. Docker sends from the run's copier and loses what it had
     not sent.
-- **Lines cut where Docker's are** (logging/testdata/gelf.json), so that a receiver that joins
-  Docker's parts joins shards'. Each line is a message, cut as moby's copier cuts it (the size
-  open in docs/audit/2026-10-16_docker-framing.md): past
-  16 KiB, in parts of 16 KiB, then the rest.
+- **Lines cut where each receiver bounds a message** (PM M492, M494). Each line is a
+  message; a longer one than its receiver takes whole goes in parts, each the longest one
+  message carries, with the fields receivers join parts by (an ID in common, its place,
+  the last saying so), never a character of UTF-8 in two. Each driver says the most of a
+  line one message carries (`Driver::part`), from its receiver's own bound, and, where the
+  receiver bounds the message as written (escaped JSON, UTF-16, the fields beside its
+  line), whether a part fits (`Driver::fits`), the shipper cutting by halves the longest
+  that does:
+
+  | driver | a message's bound | its source |
+  |---|---|---|
+  | syslog | 8,192 octets, header and newline counted | RFC 5425 4.3.1, rsyslog's `maxMessageSize` |
+  | gelf | 128 chunks over UDP, compressed as asked; 2 MiB over TCP | Graylog's `MAX_CHUNKS`, `max_message_size` |
+  | fluentd | 6,144,000 bytes of event | Fluent Bit's forward `buffer_max_size` |
+  | journald | 48 KiB of line | the journal's own LineMax, as it cuts any program's output (M494) |
+  | splunk | 838,860,800 bytes over a batch of events | HEC's `max_content_length` |
+  | awslogs | 1,048,550 bytes as CloudWatch counts them | PutLogEvents' 1 MB event |
+  | gcplogs | 256 KiB of entry, as JSON | Cloud Logging's LogEntry size |
+  | oslog | 1,015 bytes | os_log, measured (M374, M494) |
+  | etwlogs | 8,040 bytes of UTF-16 | an 8 KB-buffer session, measured (M492) |
+
+  moby's copier cuts every line past 16 KiB whatever its receiver takes (copier.go,
+  defaultBufSize), a character in two among them: a syslog receiver that takes 8,192
+  octets cuts its parts short, an ETW session of logman's default buffers loses each
+  whole, and Fluent Bit's, journald's and CloudWatch's take lines whole that Docker cut.
+  A receiver that joins Docker's parts by their fields joins shards'. Cutting costs the
+  shipper (M494): a part that fits as its driver's part says is written once, as moby's
+  are (a 1 MiB line in 3.5 ms over gelf's UDP, 0.85 ms in 16 KiB parts); one that does not
+  is found by halves, its message written about 18 times (0.48 s a MiB of random bytes over
+  gelf's UDP and gzip), on the shipper's thread, its store holding what waits.
 - **Delivered, not written** (`daemon/ship/stream.rs`, PM M233). Over TCP, TLS or a unix
   stream socket, a message counts as sent only once its receiver has it.
   - Over TCP, that is once its receiver's TCP has acknowledged its last byte, as the

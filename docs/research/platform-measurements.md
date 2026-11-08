@@ -18724,3 +18724,116 @@ revision before comparing a changed API/implementation.
   change, and on a native arm64 Windows host with WHP (a Snapdragon X machine, as a user
   session), which alone says whether Hyper-V's SGIs and timers hold across a 64-vCPU
   snapshot at a native host's timing.
+
+### M492. The longest string event ETW gives a session, by its buffers (D198, D163)
+
+- **Question.** The etwlogs driver writes each line as one EventWriteString event, and cut
+  lines in moby's copier's 16 KiB parts. Microsoft's documentation bounds an event at
+  "64KB - header" (ERROR_ARITHMETIC_OVERFLOW) and by the buffers of the sessions that listen
+  (ERROR_MORE_DATA), without saying the header's size or the most a session of the default
+  buffers takes. How long may an event's string be?
+- **Method.** `docs/research/measurements/etw-event-size` (`run.sh`, `src/main.rs`): a
+  provider of a GUID of its own registered, and, while a file-mode session started by
+  logman listens for it (one of logman's default buffers, one of 128 KB), the most UTF-16
+  units, its NUL among them, that EventWriteString takes, found by halves, then the answer
+  of each length around it. On jupiter (Windows 11 Pro 10.0.26200.9711, AMD Ryzen AI Max+
+  395, 32 CPUs), elevated, 2026-11-08, the harness of 68dfea28.
+- **Found.**
+
+  | session's buffers | most taken | one unit more |
+  |---|---:|---|
+  | logman's default (`Buffer Size: 8`, KB) | 4,020 units, 8,040 bytes | 234, ERROR_MORE_DATA |
+  | 128 KB | 32,724 units, 65,448 bytes | 534, ERROR_ARITHMETIC_OVERFLOW |
+
+  - ETW's own bound is 64 KiB less an 88-byte header; a session of logman's default
+    buffers loses every event past 8,040 bytes of string, which a session of bigger buffers
+    still has. A 16 KiB part of moby's, 32 KiB of UTF-16 and more, is lost whole to a
+    session of default buffers, as the logman command moby's documentation gives makes.
+- **So** (D163, D198): an etwlogs event is at most 8,040 bytes of string, its details and
+  line in UTF-16 (`EVENT_MOST`), each part the longest that fits.
+  `an_event_as_long_as_the_driver_lets_one_be_reaches_a_default_session` holds the bound,
+  and logman's default buffers, on each Windows host it runs on.
+
+### M493. How long a dial of OpenSSH for Windows' agent waits for its pipe (D51)
+
+- **Question.** A build dials a client's SSH agent once for each connection a step makes;
+  on Windows OpenSSH's agent serves `\\.\pipe\openssh-ssh-agent` one instance at a time,
+  making the next once it has started a worker process for the last connection
+  (openssh-portable contrib/win32/win32compat/ssh-agent/agent.c, `agent_listen_loop`). A
+  dial that finds every instance busy waited for one as go-winio does, 2 s in all
+  (pipe.go's default, which BuildKit's call leaves). How long do dials wait, and how long
+  does the agent take to free each instance?
+- **Method.** `docs/research/measurements/ssh-agent-pipe`: N client threads started
+  together, each dialing the agent's pipe 100 times (50 at 128 clients) as `ssh::pipe`
+  dials it (anonymous to its server), waiting in WaitNamedPipe without end where all are
+  busy and dialing again as each is freed, then asking the agent for its identities
+  (SSH_AGENTC_REQUEST_IDENTITIES). Each dial's whole wait, each WaitNamedPipe's (the
+  agent's interval between instances) and each request's round trip. On jupiter (as
+  M492), OpenSSH_for_Windows_9.5p2's agent holding one ED25519 key, 2026-11-08, quiet but
+  for other agents' runs, the harness of 68dfea28.
+- **Found** (ms; busy dials those that found every instance busy):
+
+  | clients | busy dials: n | p50 | p90 | p99 | max | past 2 s | instance waits: n | p50 | p99 | max |
+  |---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+  | 1 | 0 | | | | | 0 | 0 | | | |
+  | 2 | 65 | 0.62 | 1.28 | 1.48 | 1.80 | 0 | 65 | 0.59 | 1.43 | 1.76 |
+  | 4 | 174 | 0.41 | 0.92 | 3.05 | 7.12 | 0 | 182 | 0.39 | 1.95 | 4.26 |
+  | 8 | 786 | 3.07 | 6.41 | 12.0 | 15.6 | 0 | 2,372 | 1.26 | 1.75 | 6.06 |
+  | 16 | 1,569 | 8.58 | 29.4 | 74.2 | 113 | 0 | 15,375 | 1.30 | 2.79 | 14.3 |
+  | 32 | 3,147 | 18.4 | 72.4 | 247 | 588 | 0 | 68,506 | 1.38 | 3.06 | 10.3 |
+  | 64 | 6,242 | 40.6 | 188 | 656 | 1,391 | 0 | 295,155 | 1.42 | 3.28 | 297 |
+  | 128 | 6,146 | 99.1 | 400 | 1,131 | 2,796 | 6 | 627,514 | 1.35 | 2.84 | 8.61 |
+
+  - Every dial reached the agent and every request was answered (7 to 8 ms at the median,
+    the agent's worker). A dial's whole wait grows with the clients ahead of it, past 2 s
+    at 128 clients, where go-winio's dial fails; the agent's interval between instances
+    does not grow: 1.4 ms at the median at every count, 297 ms at most once.
+- **So** (D51): a dial follows the agent's progress, dialing again as each instance is
+  freed, and gives the agent up only once it frees none for a minute (`AGENT_QUIET`, D209's
+  quiet), never at a fixed whole wait.
+
+### M494. What a long line's parts cost, and what the journal and os_log keep whole (D163, D166, D199)
+
+- **Question.** The shipper cuts a long line in parts as long as each driver's receiver
+  takes (D163) where it cut every line at moby's copier's 16 KiB. What does cutting cost it,
+  where a part is asked whether it fits as written? And are the bounds the journald and
+  oslog drivers cut at their receivers' on the hosts shards runs on?
+- **Method.**
+  - `daemon::ship::tests::what_cutting_a_long_line_costs` (`cargo test -p shards --bin
+    shards --profile test-release -- --ignored --nocapture what_cutting`): a line of 1 MiB cut
+    30 times each way: in 16 KiB parts, no fit asked; in syslog's parts (8,092 bytes), no
+    fit asked; and in the longest GELF UDP messages that 128 chunks carry (the driver's
+    part, each asked to fit), uncompressed and by gzip, of one byte repeated and of random
+    bytes. The time of a line, n, p50, p90, p99, max. On kiln-a094a12d (Fedora 44, Linux
+    6.19.10, x86_64, 32 CPUs, 62 GiB; load average 15 beside CI jobs) and on
+    adas-mac-studio-2 (Apple M4 Max, macOS 26), the tree of this entry's commit.
+  - `docs/research/measurements/journald-parts/run.py` on kiln-a094a12d (systemd 259,
+    LineMax as shipped, `#LineMax=48K`): a 100,000-byte line written to the journal as a
+    program's output (systemd-cat), and native entries (a datagram each, as the driver
+    sends one) of 49,152 to 200,000 bytes, each read back with journalctl.
+  - `docs/research/measurements/macos-log/run.sh` (M374's) on adas-mac-studio (Apple M4 Max,
+    macOS 26.2).
+- **Found.**
+  - Cutting a 1 MiB line (ms a line, n=30):
+
+    | how | host | parts | p50 | p90 | p99 | max |
+    |---|---|---:|---:|---:|---:|---:|
+    | 16 KiB parts, no fit asked | Fedora | 64 | 0.85 | 1.71 | 3.01 | 3.01 |
+    | syslog's parts, no fit asked | Fedora | 130 | 2.91 | 3.94 | 4.09 | 4.09 |
+    | gelf udp, none, one byte | Fedora | 6 | 3.54 | 3.67 | 5.54 | 5.54 |
+    | gelf udp, gzip, one byte | Fedora | 6 | 3.73 | 3.81 | 3.84 | 3.84 |
+    | gelf udp, gzip, random | Fedora | 9 | 483 | 554 | 597 | 597 |
+    MACROWS
+  - A part that fits as its driver's part says costs one ask, a message written once, as
+    moby's are. One that does not (bytes gzip cannot shrink, a line JSON escapes at length)
+    is found by halves, its message written about 18 times: 0.48 s of the shipper's CPU a
+    MiB of random bytes over gelf's UDP and gzip, on the shipper's own thread, the store
+    holding what it has not yet sent (D162).
+  - The journal cut the program's 100,000-byte line into entries of 49,152, 49,152 and
+    1,696 bytes, its LineMax; its native entries of 49,152, 65,536, 150,000 and 200,000
+    bytes it kept whole. LineMax is the journal's own cut of any program's output, not the
+    most it keeps of an entry.
+  - os_log on the Mac Studio's macOS 26.2 kept lines of 1,008 to 1,015 bytes whole, and
+    of 1,016 to 1,024 its first 1,015 bytes and `<…>`, as M374 found on macOS 26.4.1.
+- **So** (D163): each driver's part is its receiver's bound; journald's lines are in the
+  journal as it keeps any program's (LineMax), and oslog's at os_log's 1,015 bytes.
