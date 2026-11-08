@@ -15228,12 +15228,15 @@ receiver for an incoming port" above:
   behind it. The chooser and the host network's binds (D124, IPv6's loopback) keep one
   socket for their life, so that the destroy work's grace period passes on a kernel
   worker; and the chooser answers every call a round of poll(2) finds before it
-  programs, choosing once for them all. The chains stay rebuilt whole: what a commit of
-  them costs now is M513's after-run, which decides whether a map keyed by port is
-  worth its code.
-- **Not yet**: ports past the microVM are IPv4's alone (D99). The costs (PM M498) are
-  unmeasured: a build step's device cgroup (`docs/research/measurements/step-devices/run.py`)
-  and the chooser's round trip after M513 (`step-devices/chooser.sh`).
+  programs, choosing once for them all. Measured before and after, interleaved (M513,
+  adacachy, n 2,000): a contested bind 15.98 ms at p50 (32 ms p99) before, 20.6 to 21.7
+  µs (68 to 71 µs p99) after, where a filtered, uncontested one takes 19 µs; listen
+  likewise. The chains stay rebuilt whole: their commit leaves a contested call a few µs
+  past an uncontested one's, which a map keyed by port could not buy back worth its code.
+- **Not yet**: ports past the microVM are IPv4's alone (D99). Unmeasured: a build step's
+  device cgroup (`docs/research/measurements/step-devices/run.py`, PM M498); the
+  chooser's round trip on an arm64 Mac; and Fedora's tail after M513 (max 21 to 107 ms in
+  three runs at load 18 to 26, not interleaved).
 
 ### D121. Docker's AppArmor mount rule, in guests that have no AppArmor
 
