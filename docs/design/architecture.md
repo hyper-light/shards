@@ -6627,7 +6627,12 @@ host (PM M267), where a container's page cache is its host's to drop. Free page 
   256 MiB at an answer, and held builds took no longer than unbudgeted beyond their rounds'
   spread in 23 of the 24 runner and build pairs: apt on the Xeon 6973P-C was 0.1 s slower,
   its build reading again 58 MiB at p50 of the cache layers it merges, whose page cache its
-  budget had taken back, not slowed by its builder. On Fedora (i9-14900HX, NVMe, Btrfs) at
+  budget had taken back, not slowed by its builder. Since d9c42120 a held build's caches
+  are read and written for its guest by its writer, outside the budget (below), and on
+  eight of CI's runners (EPYC 7763 and 9V74, Xeon Platinum 8573C and 6973P-C) and Fedora
+  held builds took no longer than unbudgeted beyond their rounds' spread in all 27 host
+  and build pairs, apt on the Xeon 6973P-C among them (held's fastest 28.0 s, free's
+  slowest 28.2), no held build reading its caches again. On Fedora (i9-14900HX, NVMe, Btrfs) at
   b8c98e7f and 2f82adb6, the same builder, every build held answered (0 to 5 ms at p50,
   318 ms at most), an apt builder giving back 55 and 80 MiB of its files a build at p50,
   none slower beyond the spread. On an M3 Ultra at 9f2520c2, its builds told every 2 s that their host was short
@@ -6696,7 +6701,19 @@ host (PM M267), where a container's page cache is its host's to drop. Free page 
   next. So at b8c98e7f and after, the writer outside in every held build (150 on Fedora
   and eight of CI's runners), held builds took no longer than unbudgeted beyond their
   rounds' spread but apt's on one runner by 0.1 s, which read again what its budget took
-  of its cache layers' page cache (above).
+  of its cache layers' page cache (above). Those were the scope's: its VM process read and
+  wrote the caches' ranges of the join disk, and a page cache folio is charged to the task
+  that adds it (mm/filemap.c `filemap_add_folio`, `mem_cgroup_charge`); over
+  `memory.high` the kernel reclaims from the scope's own memcgs alone (mm/memcontrol.c
+  `reclaim_high`; mm/vmscan.c `shrink_node_memcgs`) and, with no swap, from its file pages
+  alone (`get_scan_count`, `SCAN_FILE`), the unmapped first. So where the writer is outside
+  the budget, each of a builder's cache ranges is read and written for its guest by the
+  writer, over a connection of its own, a request a round trip (`block::Through`,
+  build/outside.rs `serve_range`), and the guest writes a cache's changes past its own page
+  cache (O_DIRECT, init `caches.rs`): their page cache is the writer's, which no reclaim of
+  the budget scans. With a round trip for each 4 KiB of a request (e0e430d5), apt's step
+  end on CI took 0.31 to 1.00 s held against 0.10 to 0.54 free; in one (d9c42120), 0.09 to
+  0.61 against 0.09 to 0.63, and no pair is slower held beyond the spread (PM M442).
 - **An image's root filesystem over its base's** (PM M442; built and measured). An
   export wrote its image's whole root filesystem, rust:1-slim's 850 MiB again for a build
   that added 7 MiB; over its base's on Fedora's Btrfs, that export takes 0.1 s at p50
@@ -13798,7 +13815,9 @@ given the rest as its build needs it, up to what it may have.
   1,152 MiB, every builder answered 0 to 84 ms after its build's word at p50 on Fedora,
   eight of CI's runners and an M3 Ultra, and the build took no longer than with no budget
   beyond its rounds' spread in 32 of 33 host and build pairs, the other 0.1 s longer as it
-  read again what its budget took of its own files' page cache (PM M442). The build's
+  read again what its budget took of its own files' page cache; since its caches are read
+  and written outside the budget, by its writer (d9c42120), in all 27 pairs of eight of
+  CI's runners and Fedora (PM M442). The build's
   process asks, not the daemon: a builder is its build's, not a run of the daemon's.
 - **What the kernel sized by the memory it booted with** is raised to what it sizes by all
   of it, so that a step sees what it saw in a builder booted with all its memory: the
