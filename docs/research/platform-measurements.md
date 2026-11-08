@@ -3955,7 +3955,7 @@ revision before comparing a changed API/implementation.
 
 ### M488. A push's uploads: how many at once, and what chunks cost (D226)
 
-- **Question.** `shards push` sent 5 blobs at once, dockerd's figure, each in one PUT.
+- **Question.** `shards push image` sent 5 blobs at once, dockerd's figure, each in one PUT.
   Where do more uploads at once stop paying, and is it one count across links? What does
   sending a blob in chunks cost, for a registry that refuses it whole?
 - **Method.** `docs/research/measurements/push-uploads/`:
@@ -3965,7 +3965,7 @@ revision before comparing a changed API/implementation.
     a PUT with no body. Each blob's upload time, n, p50, p90, p99, max.
   - `sweep.sh`: 16 blobs of 16 MiB (8 of 8 MiB across the Internet) and 32 of 256 KiB at
     each count, then the large blobs at 4 at once whole and in chunks of 1, 4 and 8 MiB.
-  - `limited.sh`: `shards push` of nginx:alpine (Docker's pull, then given to the
+  - `limited.sh`: `shards push image` of nginx:alpine (Docker's pull, then given to the
     registry by Docker) to registry:2 behind nginx at `client_max_body_size 1m`, nginx's
     default, then pulled back through nginx into a fresh home; nginx's answers counted.
   - Links: registry:2 (image a3d8aaa63ed8) on fedora-2 (x86_64, 32 CPUs, Fedora 44, Linux
@@ -3994,7 +3994,10 @@ revision before comparing a changed API/implementation.
     with one PUT 413 and one PATCH 413 then 30 PATCHes 202, the second with two PUTs 413
     (two uploads at once refused before either knew) and 28 PATCHes 202 of 177,552 to
     970,385 bytes each, every one under the limit; each image pulled back through nginx to
-    the digest pushed, sha256:697b0b15….
+    the digest pushed, sha256:697b0b15…. With D226's second version (bisecting between
+    the most taken and the least refused), a third run: one PUT 413, then 14 PATCHes 413
+    as the bisection closed in and 26 PATCHes 202 of up to 1,049,050 bytes a request,
+    head and body (a body at most the 1 MiB limit), pulled back to the same digest.
 - **Consequence.** No one count is right: on one host more kept paying past 16, across
   the LAN one filled the link and 8 lost a quarter, across the Internet 4 doubled 1 and 8
   fell back, and small blobs, bound by round trips, gained to 16 on every link. Chunks

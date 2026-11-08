@@ -9002,7 +9002,7 @@ it (fetch.rs), where dockerd's pull would fall to its next endpoint.
 
 ### D226. Pushes and pulls learn their network path: as many transfers at once as pay, chunks of the size that costs least a byte (built; measurements owed)
 
-**Found.** `shards push` uploaded a manifest's blobs 5 at once, dockerd's
+**Found.** `shards push image` uploaded a manifest's blobs 5 at once, dockerd's
 `max-concurrent-uploads` (moby `daemon/config/config.go`, `DefaultMaxConcurrentUploads`),
 whatever the link, where a pull's fetcher measures its connections and doubles them while
 that pays (M114): a figure of Docker's machinery, listed open in the de-Dockerify audit
@@ -9133,7 +9133,7 @@ estimator's of what was measured (the table below).
   `chunks_hold_at_least_what_the_registry_asks` and
   `a_failed_send_resumes_from_what_the_registry_has` (a PUT cut off, 4 bytes in: the next
   PATCH starts at byte 4); and containers.rs' `a_push_climbs_from_one_and_the_next_starts_where_it_got`
-  (`shards push` of forty 2 MiB layers at 4 MiB/s a connection: the first starts at one
+  (`shards push image` of forty 2 MiB layers at 4 MiB/s a connection: the first starts at one
   and climbs; its record in the home; the second starts at the count kept).
 - **Which input bound each case**: M488's first measurements had all its hosts at 32
   cores and at most 16 transfers, so none was bound by the CPU: one host's rose to 16 (the

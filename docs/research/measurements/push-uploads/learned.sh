@@ -30,12 +30,12 @@ for r in $(seq 1 "$rounds"); do
   a=$(python3 -I "$here/mkimage.py" "http://$source" "m488/learned-$id" a --layers "$layers" --size "$size")
   b=$(python3 -I "$here/mkimage.py" "http://$source" "m488/learned-$id" b --layers "$layers" --size "$size")
   export SHARDS_HOME="$work/home-$r"
-  pull_cold=$(timed "$shards" pull -q "$a")
-  pull_warm=$(timed "$shards" pull -q "$b")
-  "$shards" tag "$a" "$target/m488/learned-$id:a"
-  "$shards" tag "$b" "$target/m488/learned-$id:b"
-  push_cold=$(timed "$shards" push "$target/m488/learned-$id:a")
-  push_warm=$(timed "$shards" push "$target/m488/learned-$id:b")
+  pull_cold=$(timed "$shards" pull image -q "$a")
+  pull_warm=$(timed "$shards" pull image -q "$b")
+  "$shards" tag image "$a" "$target/m488/learned-$id:a"
+  "$shards" tag image "$b" "$target/m488/learned-$id:b"
+  push_cold=$(timed "$shards" push image "$target/m488/learned-$id:a")
+  push_warm=$(timed "$shards" push image "$target/m488/learned-$id:b")
   echo "round $r: pull cold $pull_cold s, warm $pull_warm s; push cold $push_cold s, warm $push_warm s"
   for f in "$SHARDS_HOME"/images/links/*/*; do
     echo "  $(basename "$(dirname "$f")") $(basename "$f"): $(cat "$f")"

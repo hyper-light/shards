@@ -11740,11 +11740,11 @@ fn a_push_climbs_from_one_and_the_next_starts_where_it_got() {
     let (port, began) = pacing_registry(4 << 20);
     let home = TempDir::new("containers-push-climbs");
     let shards = |args: &[&str]| shards_in(&home, args);
-    let pulled = shards(&["pull", "-q", &source]);
+    let pulled = shards(&["pull", "image", "-q", &source]);
     assert_eq!(pulled.status, Some(0), "{pulled}");
     let target = format!("127.0.0.1:{port}/team/app:1");
-    assert_eq!(shards(&["tag", &source, &target]).status, Some(0));
-    let pushed = shards(&["push", &target]);
+    assert_eq!(shards(&["tag", "image", &source, &target]).status, Some(0));
+    let pushed = shards(&["push", "image", &target]);
     assert_eq!(pushed.status, Some(0), "{pushed}");
     let first = std::mem::take(&mut *began.lock().unwrap());
     let cores = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
@@ -11762,8 +11762,8 @@ fn a_push_climbs_from_one_and_the_next_starts_where_it_got() {
     let count = record["count"].as_u64().unwrap() as usize;
     assert!(count >= 2.min(cores), "{record}");
     let again = format!("127.0.0.1:{port}/team/app:2");
-    assert_eq!(shards(&["tag", &source, &again]).status, Some(0));
-    let pushed = shards(&["push", &again]);
+    assert_eq!(shards(&["tag", "image", &source, &again]).status, Some(0));
+    let pushed = shards(&["push", "image", &again]);
     assert_eq!(pushed.status, Some(0), "{pushed}");
     let second = began.lock().unwrap().clone();
     let at_first = second.iter().take(count).copied().max().unwrap_or(0);

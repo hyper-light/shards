@@ -1,5 +1,5 @@
 #!/bin/sh
-# PM M488: `shards push` to a registry:2 behind nginx at its default request body limit
+# PM M488: `shards push image` to a registry:2 behind nginx at its default request body limit
 # (client_max_body_size 1m, ngx_http_core_module), as distribution's nginx recipe warns
 # of (docs/content/recipes/nginx.md: "to avoid HTTP 413 for large image uploads"). Pushes
 # nginx:alpine, which the registry at REGISTRY (a registry:2 on this host) is given by
@@ -36,14 +36,14 @@ sleep 1
 export DOCKER_CONFIG="$work/docker" SHARDS_HOME="$work/home"
 mkdir -p "$DOCKER_CONFIG"
 repo=m488/limited-$(od -An -N4 -tx4 /dev/urandom | tr -d ' ')
-"$shards" pull -q 127.0.0.1:$port/m488/source:1
-"$shards" tag 127.0.0.1:$port/m488/source:1 127.0.0.1:5078/$repo:1
+"$shards" pull image -q 127.0.0.1:$port/m488/source:1
+"$shards" tag image 127.0.0.1:$port/m488/source:1 127.0.0.1:5078/$repo:1
 t0=$(date +%s.%N)
-"$shards" push 127.0.0.1:5078/$repo:1
+"$shards" push image 127.0.0.1:5078/$repo:1
 t1=$(date +%s.%N)
 echo "push took $(echo "$t1 - $t0" | bc) s"
 "$shards" stop daemon >/dev/null 2>&1 || true
-SHARDS_HOME="$work/back" "$shards" pull 127.0.0.1:5078/$repo:1
+SHARDS_HOME="$work/back" "$shards" pull image 127.0.0.1:5078/$repo:1
 SHARDS_HOME="$work/back" "$shards" stop daemon >/dev/null 2>&1 || true
 echo "nginx's answers to the push and the pull back, by method and status, and the bytes of each"
 echo "request, head and body: count, least, most"
