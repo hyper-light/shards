@@ -971,26 +971,51 @@ mod tests {
         assert_eq!(guest.wait_for(Duration::MAX).unwrap(), Some(End::Stopped));
     }
 
-    /// A dropped guest leaves no zombie: once its watcher says it has exited, its process
-    /// is reaped, so its pid names nothing (Hex HEX-GUEST-9; review B2).
+    /// Whether `pid` names no process once `shared`'s watcher says it has exited: kill -0
+    /// names a zombie as a process, and a reaped pid as none.
+    #[cfg(unix)]
+    fn reaped_once_exited(pid: u32, shared: &Shared) -> bool {
+        let mut state = lock(&shared.state);
+        while !state.exited {
+            state = shared.changed.wait(state).unwrap();
+        }
+        drop(state);
+        let alive = Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .stderr(Stdio::null())
+            .status()
+            .unwrap();
+        !alive.success()
+    }
+
+    /// A guest leaves no zombie, dropped while its shards runs or after shards has exited
+    /// with nobody asking its end: once its watcher says it has exited, its process is
+    /// reaped, so its pid names nothing (Hex HEX-GUEST-9; review B2; both of integrate's
+    /// 80078b00 cases).
     #[cfg(unix)]
     #[test]
     fn a_dropped_guest_leaves_no_zombie() {
         let (_dir, guest, _) = listening_after(0);
         let (pid, shared) = (guest.pid, guest.shared.clone());
         drop(guest);
-        let mut state = lock(&shared.state);
-        while !state.exited {
-            state = shared.changed.wait(state).unwrap();
-        }
-        drop(state);
-        // kill -0 names a zombie as a process; a reaped pid is none.
-        let alive = Command::new("kill")
-            .args(["-0", &pid.to_string()])
-            .stderr(Stdio::null())
-            .status()
-            .unwrap();
-        assert!(!alive.success(), "pid {pid} is still a process (a zombie)");
+        assert!(
+            reaped_once_exited(pid, &shared),
+            "pid {pid} is still a process (a zombie)"
+        );
+        let dir = shards_testdir::TempDir::new("api-exits").unwrap();
+        let bin = dir.path().join("shards");
+        installed(&bin, "#!/bin/sh\nexit 0\n");
+        let guest = start(&GuestSpec {
+            binary: Some(bin),
+            ..spec()
+        })
+        .unwrap();
+        let (pid, shared) = (guest.pid, guest.shared.clone());
+        assert!(
+            reaped_once_exited(pid, &shared),
+            "pid {pid}, exited unasked, is still a process (a zombie)"
+        );
+        drop(guest);
     }
 
     /// A patience of zero is one dial, its answer awaited, and no other (Hex HEX-GUEST-9).
