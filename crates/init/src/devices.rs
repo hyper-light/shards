@@ -1161,6 +1161,13 @@ pub fn confine_joiner(cgroup: &str) -> Result<Filter, String> {
     Ok((program, fd))
 }
 
+/// Confines `cgroup`, and every cgroup made under it, to the devices `program` allows
+/// (a build's steps, D44): its descriptor, which need not be kept, as an attached program
+/// stays as long as its cgroup.
+pub fn confine(program: &[u8], cgroup: &str) -> Result<OwnedFd, String> {
+    attach(program, cgroup, None)
+}
+
 /// `union bpf_attr` for BPF_PROG_LOAD, up to the last field the device filter's load sets.
 #[repr(C)]
 #[derive(Default)]

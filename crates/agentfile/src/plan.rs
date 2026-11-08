@@ -5071,6 +5071,9 @@ impl Planner<'_> {
         // An Agentfile's directives travel in a layer of their own, the normalized
         // Agentfile, and its digest in a label (§8, D35).
         if !t.agentfile.is_empty() {
+            // `EXPOSE ... FOR`'s members, each an exposure of its own on its networks: the
+            // normalized Agentfile holds them so, as its run reads them.
+            t.agentfile = crate::agentfile::resolve_targets(&t.agentfile).map_err(Fail::new)?;
             crate::agentfile::reach(&t.agentfile).map_err(Fail::new)?;
             crate::agentfile::ingress(&t.agentfile).map_err(Fail::new)?;
             crate::agentfile::connections(&t.agentfile).map_err(Fail::new)?;

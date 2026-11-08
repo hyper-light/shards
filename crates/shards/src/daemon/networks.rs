@@ -394,6 +394,27 @@ fn bridge_options() -> BTreeMap<String, String> {
     .collect()
 }
 
+/// The names member `asker` of `network` is answered (D46), as `NET_NAMES` carries them:
+/// its own, and those of each member it reaches, every member of a network whose members
+/// reach one another and none of one made with `enable_icc` false. A name resolves only
+/// where its member is reached (default deny): a peer no link reaches has no name either.
+fn names_table(network: &Network, members: &[Member], asker: &str) -> Vec<u8> {
+    let mut entries = Vec::new();
+    for m in members.iter().filter(|m| m.container == asker || network.icc()) {
+        let mut names = m.dns_names.clone();
+        if !m.name.is_empty() && !names.contains(&m.name) {
+            names.insert(0, m.name.clone());
+        }
+        for n in names {
+            entries.push((n.clone(), std::net::IpAddr::V4(m.ip)));
+            if let Some(ip6) = m.ip6 {
+                entries.push((n, std::net::IpAddr::V6(ip6)));
+            }
+        }
+    }
+    shards_net::dns::Names::encode(&network.name, &entries)
+}
+
 impl<D: Disk> Daemon<D> {
     /// The ULA pool dockerd derives from its host's ID: fd00::/8 with the ID's hash's 40
     /// bits, a /48.
@@ -1006,7 +1027,7 @@ impl<D: Disk> Daemon<D> {
         asks.ask(
             "network",
             shards_ipc::kind::NET_NAMES,
-            &self.names_table(&network),
+            &names_table(&network, &self.members_of(&network.id), id),
             &[],
         )?;
         self.tell_names(&network);
@@ -1021,29 +1042,13 @@ impl<D: Disk> Daemon<D> {
         }
     }
 
-    /// The names network `network`'s members answer to, as `NET_NAMES` carries them.
-    fn names_table(&self, network: &Network) -> Vec<u8> {
-        let mut entries = Vec::new();
-        for m in &self.members_of(&network.id) {
-            let mut names = m.dns_names.clone();
-            if !m.name.is_empty() && !names.contains(&m.name) {
-                names.insert(0, m.name.clone());
-            }
-            for n in names {
-                entries.push((n.clone(), std::net::IpAddr::V4(m.ip)));
-                if let Some(ip6) = m.ip6 {
-                    entries.push((n, std::net::IpAddr::V6(ip6)));
-                }
-            }
-        }
-        shards_net::dns::Names::encode(&network.name, &entries)
-    }
-
-    /// Network `network`'s names, to each followed member's network process.
+    /// Network `network`'s names, to each followed member's network process: each its own
+    /// table ([`names_table`]).
     pub(super) fn tell_names(&self, network: &Network) {
-        let table = self.names_table(network);
-        for m in &self.members_of(&network.id) {
+        let members = self.members_of(&network.id);
+        for m in &members {
             if let Some(net) = self.net_control(&m.container) {
+                let table = names_table(network, &members, &m.container);
                 let _ = ask_net(&net, shards_ipc::kind::NET_NAMES, &table, &[]);
             }
         }
@@ -1916,6 +1921,71 @@ mod tests {
         assert_eq!(
             ipam_errors(&c[0]),
             ["--ip-range 10.10.0.0/16: larger than its subnet 10.10.0.0/24"]
+        );
+    }
+
+    /// Each member is answered its own names and those of the members it reaches: all of a
+    /// network's whose members reach one another, none but its own on one made with
+    /// `enable_icc` false (default deny: no name for a peer no link reaches).
+    #[test]
+    fn a_member_is_answered_the_names_it_reaches_alone() {
+        let member = |id: &str, ip: [u8; 4], names: &[&str]| Member {
+            container: id.into(),
+            name: String::new(),
+            endpoint: String::new(),
+            mac: String::new(),
+            link_local: Vec::new(),
+            ip: Ipv4Addr::from(ip),
+            ip6: None,
+            dns_names: s(names),
+        };
+        let members = [
+            member("aaa", [10, 0, 0, 2], &["web"]),
+            member("bbb", [10, 0, 0, 3], &["db", "pg"]),
+        ];
+        let mut net = Network {
+            name: "app".into(),
+            id: "n1".into(),
+            created: 0,
+            scope: "local".into(),
+            driver: "bridge".into(),
+            ipv4: true,
+            ipv6: false,
+            ipam_driver: "default".into(),
+            ipam_options: BTreeMap::new(),
+            pools: Vec::new(),
+            pools6: Vec::new(),
+            v6_first: false,
+            internal: false,
+            attachable: false,
+            ingress: false,
+            config_from: String::new(),
+            config_only: false,
+            options: BTreeMap::new(),
+            labels: BTreeMap::new(),
+        };
+        let v4 = |a: [u8; 4]| std::net::IpAddr::V4(Ipv4Addr::from(a));
+        let all = shards_net::dns::Names::encode(
+            "app",
+            &[
+                ("web".into(), v4([10, 0, 0, 2])),
+                ("db".into(), v4([10, 0, 0, 3])),
+                ("pg".into(), v4([10, 0, 0, 3])),
+            ],
+        );
+        assert_eq!(names_table(&net, &members, "aaa"), all);
+        assert_eq!(names_table(&net, &members, "bbb"), all);
+        net.options.insert(nets::ICC.into(), "false".into());
+        assert_eq!(
+            names_table(&net, &members, "aaa"),
+            shards_net::dns::Names::encode("app", &[("web".into(), v4([10, 0, 0, 2]))])
+        );
+        assert_eq!(
+            names_table(&net, &members, "bbb"),
+            shards_net::dns::Names::encode(
+                "app",
+                &[("db".into(), v4([10, 0, 0, 3])), ("pg".into(), v4([10, 0, 0, 3]))]
+            )
         );
     }
 }
