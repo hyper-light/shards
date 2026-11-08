@@ -280,6 +280,13 @@ fn serve() -> io::Result<()> {
                     .unwrap_or_default();
                 send(&b.conn, kind::EMULATED, why.as_bytes())?;
             }
+            kind::NEEDS => {
+                let said = match crate::plug::needed() {
+                    Ok((need, killed)) => format!("{need} {killed}"),
+                    Err(e) => e.to_string(),
+                };
+                send(&b.conn, kind::NEEDED, said.as_bytes())?;
+            }
             other => return Err(err(format!("an unknown frame kind {other}"))),
         }
     }

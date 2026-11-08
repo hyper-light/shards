@@ -138,8 +138,11 @@ Reviewed feature by feature, each D-entry's design against what it took from Doc
     pause and a CI build failed (job 117733752147, 2026-10-18). To derive from how long a
     registry's 5xx last, measured.
   - A builder's ceiling of half the host's memory (Docker Desktop's VM's share, which
-    `builder_memory_mib` took): open. Its memory is plugged as its build needs it (D133),
-    so the ceiling can come from what the host can give as the build asks, measured.
+    `builder_memory_mib` took). Done (D133, PM M490): from the host it runs on and its
+    home's builds, never a figure of ours: what the host has available as the builder
+    starts, the most a build of the home needed where more (each builder's guest says its
+    build's need, recorded in the home's `builder-memory`), and all the host's memory once
+    a build was ended short of it.
   - A restart's wait (100 ms doubling to a minute, from scratch after a run of 10 s), dockerd's
     restart manager's figures: open, to derive from what a microVM's restart costs, so that
     a crash loop's restarts take a bounded share of a core.

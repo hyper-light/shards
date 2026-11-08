@@ -986,6 +986,34 @@ fn reserve(total: u64, left: u64) -> u64 {
 /// only there, was never asked to plug more (PM M392).
 const PCP_FRACTION: u64 = 8;
 
+/// What the build has needed of its builder's memory so far, for its host to record
+/// (`kind::NEEDED`, D133): the least memory, in whole blocks, whose hold keeps the most its
+/// cgroup has held (`memory.peak`, Documentation/admin-guide/cgroup-v2.rst) under its
+/// `memory.high`, and the processes of the build the kernel ended for want of memory
+/// (`memory.events`' `oom_kill`, any OOM killer's, its descendants' counted with its own).
+pub fn needed() -> io::Result<(u64, u64)> {
+    let peak = number(&format!("{BUILD}/memory.peak"))
+        .ok_or_else(|| err(format!("{BUILD}/memory.peak: none to read")))?;
+    let events = std::fs::read_to_string(format!("{BUILD}/memory.events"))
+        .map_err(|e| err(format!("{BUILD}/memory.events: {e}")))?;
+    let killed = events
+        .lines()
+        .find_map(|l| l.strip_prefix("oom_kill "))
+        .and_then(|n| n.trim().parse().ok())
+        .unwrap_or(0);
+    Ok((needed_for(peak), killed))
+}
+
+/// The least memory in whole blocks whose hold, its [`reserve`] beside it and nothing left
+/// to plug, is at least `peak`: `total − SLACK − total / PCP_FRACTION ≥ peak`.
+fn needed_for(peak: u64) -> u64 {
+    let total = peak
+        .saturating_add(SLACK)
+        .saturating_mul(PCP_FRACTION)
+        .div_ceil(PCP_FRACTION - 1);
+    total.div_ceil(ALIGN).saturating_mul(ALIGN)
+}
+
 /// The build's `memory.high`: what it holds now and what is free and stays plugged, less
 /// the [`reserve`] for what may still be plugged, `left` of it. Its page cache counts as
 /// its own, so it is not free; nothing else the kernel keeps is the build's.
@@ -1472,6 +1500,22 @@ mod tests {
         cgroup: BUILD,
         whose: "the builder's",
     };
+
+    /// What a build needed is the least memory in whole blocks whose hold, with nothing
+    /// left to plug, keeps its peak: a block less holds less.
+    #[test]
+    fn what_a_build_needed_is_the_least_memory_that_holds_its_peak() {
+        let hold = |total: u64| total.saturating_sub(reserve(total, 0));
+        for peak in [0, 1, 300 * MIB, 512 * MIB, 1536 * MIB, 34 << 30, 120 << 30] {
+            let need = needed_for(peak);
+            assert_eq!(need % ALIGN, 0, "{peak}");
+            assert!(hold(need) >= peak, "{peak}: {need} holds {}", hold(need));
+            assert!(
+                hold(need - ALIGN) < peak || need == ALIGN,
+                "{peak}: {need} is not the least"
+            );
+        }
+    }
 
     /// A builder whose memory is what `comes` makes of the requests so far and the time.
     struct Fake<F> {

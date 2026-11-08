@@ -451,50 +451,153 @@ fn a_builders_steps_see_the_memory_it_may_have() {
     assert!(once.stderr.contains("allocated 1536 at once"), "{shown}");
 }
 
-/// A builder given no memory of its own may have all its host's, as a run with no limit may
-/// (D133, D148): its steps see `MemTotal` of the host's memory less no more than what the
-/// builder boots with (512 MiB, whose kernel and reserves are its own), past the half of it
-/// a builder was held to before (PM M490).
+/// The memory this host has available, as shards reads it for a builder's ceiling (D133):
+/// Linux's `MemAvailable`, macOS's `kern.memorystatus_level` of its memory, Windows'
+/// `ullAvailPhys`.
+fn host_available() -> u64 {
+    #[cfg(target_os = "linux")]
+    {
+        let text = std::fs::read_to_string("/proc/meminfo").unwrap();
+        let kib: u64 = text
+            .lines()
+            .find_map(|l| l.strip_prefix("MemAvailable:"))
+            .and_then(|v| v.split_whitespace().next())
+            .unwrap()
+            .parse()
+            .unwrap();
+        kib << 10
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let mut level: libc::c_int = 0;
+        let mut len = std::mem::size_of::<libc::c_int>();
+        // SAFETY: sysctlbyname(3) of a NUL-terminated name into an int of the length given.
+        let rc = unsafe {
+            libc::sysctlbyname(
+                c"kern.memorystatus_level".as_ptr(),
+                (&raw mut level).cast(),
+                &raw mut len,
+                std::ptr::null_mut(),
+                0,
+            )
+        };
+        assert_eq!(rc, 0);
+        common::host_memory() / 100 * u64::try_from(level).unwrap().min(100)
+    }
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
+        let mut status = MEMORYSTATUSEX {
+            dwLength: u32::try_from(std::mem::size_of::<MEMORYSTATUSEX>()).unwrap(),
+            ..MEMORYSTATUSEX::default()
+        };
+        // SAFETY: a structure on this stack, its length set as the call asks.
+        assert_ne!(unsafe { GlobalMemoryStatusEx(&raw mut status) }, 0);
+        status.ullAvailPhys
+    }
+}
+
+/// A builder's ceiling comes from its host and its home (D133, PM M490): in a new home its
+/// steps see `MemTotal` no more than the host had available as it started, and its build's
+/// need is recorded in the home as it ends; a build ended short of memory is recorded so,
+/// and the next builder may have all its host's memory, as a run with no limit may (D148):
+/// `MemTotal` of the host's less no more than what a builder boots with.
 #[test]
-fn a_builder_may_have_all_its_hosts_memory() {
+fn a_builders_ceiling_comes_from_its_host_and_its_homes_builds() {
     if cannot_run_vms() {
         return;
     }
     let (image, _) = served();
-    let home = TempDir::new("build-host-home");
-    let env = [
-        ("SHARDS_HOME", home.as_os_str()),
-        ("SHARDS_KERNEL", kernel().as_os_str()),
-        ("SHARDS_INIT", guest_init().as_os_str()),
-    ];
-    let ctx = context(
-        "build-host-ctx",
+    let home = TempDir::new("build-ceil-home");
+    let record = home.join("builder-memory");
+    let meminfo = context(
+        "build-ceil-ctx",
         &format!(
             "FROM {image}\nRUN [\"/bin/testguest\", \"stat\", \"/proc/sys/vm/pluggable_kbytes\", \"/proc/meminfo\"]\n"
         ),
     );
-    let seen = run_shards_env(
-        &["build"],
-        &["--progress=plain", "--no-cache", ctx.to_str().unwrap()],
-        &env,
-        TIMEOUT,
-    );
-    let shown = format!("--- stdout\n{}\n--- stderr\n{}", seen.stdout, seen.stderr);
+    let build = |ctx: &std::path::Path, most: Option<&str>| {
+        let mut env = vec![
+            ("SHARDS_HOME", home.as_os_str()),
+            ("SHARDS_KERNEL", kernel().as_os_str()),
+            ("SHARDS_INIT", guest_init().as_os_str()),
+        ];
+        if let Some(m) = most {
+            env.push(("SHARDS_BUILD_MEMORY", m.as_ref()));
+        }
+        let seen = run_shards_env(
+            &["build"],
+            &["--progress=plain", "--no-cache", ctx.to_str().unwrap()],
+            &env,
+            TIMEOUT,
+        );
+        let shown = format!("--- stdout\n{}\n--- stderr\n{}", seen.stdout, seen.stderr);
+        (seen, shown)
+    };
+    let total_kib = |stderr: &str, shown: &str| -> u64 {
+        stderr
+            .split_once("MemTotal:")
+            .and_then(|(_, after)| after.split_whitespace().next())
+            .and_then(|n| n.parse().ok())
+            .unwrap_or_else(|| panic!("no MemTotal: {shown}"))
+    };
+    // The cold start: what the host had available as the builder started, at most the
+    // most sampled while the build ran.
+    let done = std::sync::atomic::AtomicBool::new(false);
+    let (most_available, (seen, shown)) = std::thread::scope(|s| {
+        let sampler = s.spawn(|| {
+            let mut most = host_available();
+            while !done.load(std::sync::atomic::Ordering::Relaxed) {
+                most = most.max(host_available());
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            most
+        });
+        let built = build(&meminfo, None);
+        done.store(true, std::sync::atomic::Ordering::Relaxed);
+        (sampler.join().unwrap(), built)
+    });
     if seen.stderr.contains("/proc/sys/vm/pluggable_kbytes missing") {
         println!("SKIP: this guest kernel reports none of the memory it may plug (D149)");
         return;
     }
     assert_eq!(seen.status, Some(0), "{shown}");
-    let total_kib: u64 = seen
-        .stderr
-        .split_once("MemTotal:")
-        .and_then(|(_, after)| after.split_whitespace().next())
-        .and_then(|n| n.parse().ok())
-        .unwrap_or_else(|| panic!("no MemTotal: {shown}"));
     let host_kib = common::host_memory() >> 10;
+    let cold = total_kib(&seen.stderr, &shown);
+    let block_kib = 128 << 10;
     assert!(
-        total_kib <= host_kib && total_kib + (512 << 10) > host_kib,
-        "MemTotal {total_kib} kB of a builder on a host of {host_kib} kB: {shown}"
+        cold <= (most_available >> 10) + block_kib,
+        "MemTotal {cold} kB of a builder in a new home, the host having at most {} kB available: {shown}",
+        most_available >> 10
+    );
+    let said =
+        std::fs::read_to_string(&record).unwrap_or_else(|e| panic!("{}: {e}: {shown}", record.display()));
+    let needed: u64 = said
+        .lines()
+        .find_map(|l| l.strip_prefix("needed "))
+        .and_then(|n| n.parse().ok())
+        .unwrap_or_else(|| panic!("no need recorded: {said}"));
+    assert!(needed > 0 && said.contains("short no"), "{said}");
+    // A build ended short of memory: 3 GiB in a builder of 2.5.
+    let over = context(
+        "build-ceil-over-ctx",
+        &format!("FROM {image}\nRUN [\"/bin/testguest\", \"alloc\", \"3072\"]\n"),
+    );
+    let (ended, shown) = build(&over, Some("2560"));
+    assert!(
+        ended
+            .stderr
+            .contains("did not complete successfully: exit code: 137"),
+        "{shown}"
+    );
+    let said = std::fs::read_to_string(&record).unwrap();
+    assert!(said.contains("short yes"), "{said}");
+    let (seen, shown) = build(&meminfo, None);
+    assert_eq!(seen.status, Some(0), "{shown}");
+    let all = total_kib(&seen.stderr, &shown);
+    assert!(
+        all <= host_kib && all + (512 << 10) > host_kib,
+        "MemTotal {all} kB of a builder after a build ended short, on a host of {host_kib} kB: {shown}"
     );
 }
 

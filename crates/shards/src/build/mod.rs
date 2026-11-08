@@ -770,28 +770,182 @@ fn builder_cpus() -> u32 {
     std::thread::available_parallelism().map_or(1, |n| u32::try_from(n.get()).unwrap_or(u32::MAX))
 }
 
-/// The most memory a builder may have, in MiB: `SHARDS_BUILD_MEMORY` if set, else
-/// [`builder_most`] of the host's. Its steps and its layers share it. It boots with little of
-/// it, and the rest is plugged as the build needs it (builder::BOOT_MEMORY_MIB, D133): what
-/// it costs at boot grows with what it boots with (PM M82), not with what it may have.
-fn builder_memory_mib() -> u64 {
+/// The most memory a builder may have, in MiB: `SHARDS_BUILD_MEMORY` if set, else what
+/// [`builder_most`] makes of this host's memory, what it has available as the builder
+/// starts, and what the home's builds have needed (`needs`, [`Needed`]). Its steps and its
+/// layers share it. It boots with little of it, and the rest is plugged as the build needs
+/// it (builder::BOOT_MEMORY_MIB, D133): what it costs at boot grows with what it boots with
+/// (PM M82), not with what it may have.
+fn builder_memory_mib(needs: &Path) -> u64 {
     if let Some(m) = std::env::var("SHARDS_BUILD_MEMORY")
         .ok()
         .and_then(|v| v.parse().ok())
     {
         return whole_blocks(m);
     }
-    builder_most(host_memory())
+    builder_most(host_memory(), host_available(), Needed::read(needs))
 }
 
-/// The most memory a builder may have on a host of `host` bytes, in MiB: all of it, in whole
-/// blocks, as a run with no limit may have (`run::sizes`, D148), a build's steps being runs
-/// of its own. What the host can give it is what it has: a builder holds only what its build
-/// asks for (D133), gives back what it holds cold as its host runs short (D188), and is held
-/// within the room a budget over its build leaves it (D188's builders). 512 MiB, what a
-/// builder boots with, where the host's memory cannot be read.
-fn builder_most(host: Option<u64>) -> u64 {
-    whole_blocks(host.map_or(512, |bytes| (bytes >> 20).max(512)))
+/// The most memory a builder may have, in MiB, on a host of `host` bytes that has
+/// `available` as it starts, the home's builds having needed `needed` (D133), in whole
+/// blocks:
+///
+/// - with no build recorded (a new home: the cold start), what the host has available,
+///   what its kernel says it can give a new program without taking from what runs;
+/// - with builds recorded, the most one needed where that is more: the host gave it once;
+/// - all the host's memory once a build was ended short of memory, its builder having
+///   reached its ceiling, as a run with no limit may have (`run::sizes`, D148);
+///
+/// never more than the host's memory, nor less than a builder boots with, which is all it
+/// may have where the host's memory cannot be read; all of it where what is available
+/// cannot be.
+fn builder_most(host: Option<u64>, available: Option<u64>, needed: Needed) -> u64 {
+    let Some(host) = host else {
+        return whole_blocks(builder::BOOT_MEMORY_MIB);
+    };
+    let most = if needed.short {
+        host
+    } else {
+        available.unwrap_or(host).max(needed.most)
+    };
+    whole_blocks((most.min(host) >> 20).max(builder::BOOT_MEMORY_MIB))
+}
+
+/// What a home's builds have needed of memory (D133), as their builders' guests said it as
+/// each ended (`build::kind::NEEDED`): the most one needed, in bytes, and whether any was
+/// ended short of it. Recorded in the home's `builder-memory`, one `KEY VALUE` a line.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct Needed {
+    most: u64,
+    short: bool,
+}
+
+impl Needed {
+    /// The record at `path`: none (the cold start) where there is none or it does not read.
+    fn read(path: &Path) -> Needed {
+        std::fs::read_to_string(path).map_or_else(|_| Needed::default(), |t| Needed::parse(&t))
+    }
+
+    fn parse(text: &str) -> Needed {
+        let mut needed = Needed::default();
+        for line in text.lines() {
+            match line.split_once(' ') {
+                Some(("needed", n)) => needed.most = n.trim().parse().unwrap_or(0),
+                Some(("short", s)) => needed.short = s.trim() == "yes",
+                _ => {}
+            }
+        }
+        needed
+    }
+
+    fn text(self) -> String {
+        format!(
+            "needed {}\nshort {}\n",
+            self.most,
+            if self.short { "yes" } else { "no" }
+        )
+    }
+}
+
+/// The home's record of what its builds needed of memory ([`Needed`]).
+fn needs_path(home: &Path) -> PathBuf {
+    home.join("builder-memory")
+}
+
+/// Adds a build that needed `need` bytes of memory, `short` where it was ended short of it,
+/// to the record at `path`, under the record's lock, so that builds ending together each
+/// count; unlocked before it closes (PM M244).
+fn record_need(path: &Path, need: u64, short: bool) -> Result<(), String> {
+    use std::io::{Read as _, Seek as _, Write as _};
+    let said = |e: std::io::Error| format!("{}: {e}", path.display());
+    let mut file = std::fs::File::options()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(path)
+        .map_err(said)?;
+    file.lock().map_err(said)?;
+    let mut text = String::new();
+    let written = file
+        .read_to_string(&mut text)
+        .and_then(|_| {
+            let had = Needed::parse(&text);
+            let now = Needed {
+                most: had.most.max(need),
+                short: had.short || short,
+            };
+            if now == had && !text.is_empty() {
+                return Ok(());
+            }
+            file.set_len(0)?;
+            file.rewind()?;
+            file.write_all(now.text().as_bytes())
+        })
+        .map_err(said);
+    let _ = file.unlock();
+    written
+}
+
+/// The memory this host has available, in bytes: what its kernel says a new program may
+/// have without taking from what runs. Linux's `MemAvailable` ("an estimate of how much
+/// memory is available for starting new applications, without swapping", proc_meminfo(5)).
+#[cfg(target_os = "linux")]
+fn host_available() -> Option<u64> {
+    let text = std::fs::read_to_string("/proc/meminfo").ok()?;
+    let kib: u64 = text
+        .lines()
+        .find_map(|l| l.strip_prefix("MemAvailable:"))?
+        .split_whitespace()
+        .next()?
+        .parse()
+        .ok()?;
+    kib.checked_mul(1024)
+}
+
+/// The memory this host has available, in bytes: macOS's `kern.memorystatus_level`, the
+/// percentage of its pages its pressure thread counts available
+/// (`memorystatus_get_available_page_count`, osfmk/vm/vm_pageout.c `vm_pressure_response`;
+/// the sysctl in bsd/kern/kern_memorystatus.c), of its memory.
+#[cfg(target_os = "macos")]
+fn host_available() -> Option<u64> {
+    let mut level: libc::c_int = 0;
+    let mut len = size_of::<libc::c_int>();
+    // SAFETY: sysctlbyname(3) of a NUL-terminated name into an int of the length given.
+    let rc = unsafe {
+        libc::sysctlbyname(
+            c"kern.memorystatus_level".as_ptr(),
+            (&raw mut level).cast(),
+            &raw mut len,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if rc != 0 || len != size_of::<libc::c_int>() {
+        return None;
+    }
+    let level = u64::try_from(level).ok()?.min(100);
+    Some(host_memory()? / 100 * level)
+}
+
+/// The memory this host has available, in bytes: none known on this Unix.
+#[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
+fn host_available() -> Option<u64> {
+    None
+}
+
+/// The memory this host has available, in bytes: `ullAvailPhys` (GlobalMemoryStatusEx),
+/// "the amount of physical memory that can be immediately reused without having to write
+/// its contents to disk first" (MEMORYSTATUSEX).
+#[cfg(windows)]
+fn host_available() -> Option<u64> {
+    use windows_sys::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
+    let mut status = MEMORYSTATUSEX {
+        dwLength: size_of::<MEMORYSTATUSEX>() as u32,
+        ..Default::default()
+    };
+    // SAFETY: a structure of its own length for the call to fill.
+    (unsafe { GlobalMemoryStatusEx(&raw mut status) } != 0).then_some(status.ullAvailPhys)
 }
 
 /// `mib` down to whole blocks of what a builder's memory is plugged in (virtio-mem's,
@@ -4000,15 +4154,17 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
                         true => None,
                         false => Some(bases.emulators(&limits).map_err(|e| fail(&v, &e))?),
                     };
+                    let needs = needs_path(&home);
                     let boot = builder::Boot {
                         kernel: &guest.0,
                         init: &guest.1,
                         cpus: builder_cpus(),
-                        memory_mib: builder_memory_mib(),
+                        memory_mib: builder_memory_mib(&needs),
                         bases: &run_bases,
                         proxy: build_proxy.as_ref(),
                         gpu,
                         emulators: emulators.as_deref().map(|root| (root, emulating.as_slice())),
+                        needs: Some(&needs),
                     };
                     let kernel = crate::guest::version_of(&guest.0).map_err(|e| fail(&v, &e))?;
                     step_filter = crate::setup::step_seccomp(kernel).map_err(|e| fail(&v, &e))?;
@@ -6236,25 +6392,142 @@ fn redact_credentials(url: &str) -> String {
 
 #[cfg(test)]
 mod memory_tests {
-    /// A builder may have what a run with no limit may have, all its host's memory (D148),
-    /// in the whole blocks it is plugged in, which a VM refuses anything but (CI run
-    /// 38274751000, a Windows runner's 16 GiB less what Windows keeps back); what a builder
-    /// boots with where the host's memory cannot be read.
+    use super::{Needed, builder_most};
+
+    const GIB: u64 = 1 << 30;
+
+    /// A builder's ceiling comes from its host and its home (D133), in whole blocks: with
+    /// no build recorded, what the host has available as it starts; past that, the most a
+    /// build of its home needed; all the host's memory once a build was ended short of it,
+    /// as a run with no limit may have (D148); never past the host's memory nor below what
+    /// a builder boots with. Hosts: a Windows runner's 16 GiB less what Windows keeps back
+    /// (CI run 38274751000), CI's runners, a Mac Studio's, Fedora's, a size of no whole MiB.
     #[test]
-    fn a_builder_may_have_what_a_run_with_no_limit_may_have() {
+    fn a_builders_ceiling_comes_from_its_host_and_its_homes_builds() {
         let block = shards_vmm::devices::virtio::mem::BLOCK >> 20;
+        let whole = |bytes: u64| super::whole_blocks(bytes >> 20);
         let unlimited = shards_ipc::Resources::default();
-        // A Windows runner's 16 GiB less what Windows keeps back, CI's runners, a Mac
-        // Studio's, Fedora's, this Mac's, and a size of no whole MiB.
-        let hosts = [16_368u64 << 20, 7 << 30, 16 << 30, 36 << 30, 64 << 30, 128 << 30, (64 << 30) + 4096];
+        let hosts = [
+            16_368u64 << 20,
+            7 * GIB,
+            16 * GIB,
+            36 * GIB,
+            64 * GIB,
+            128 * GIB,
+            64 * GIB + 4096,
+        ];
         for host in hosts {
-            let most = super::builder_most(Some(host));
-            let run = crate::run::sizes(&unlimited, Some(host)).2;
-            assert_eq!(most, super::whole_blocks(run), "{host}");
-            assert!(most > (host >> 20) / 2, "{host}: no more than half the host's");
-            assert!(most << 20 <= host && (host >> 20) - most < block, "{host}");
+            let available = host / 3 + 4096;
+            let cold = builder_most(Some(host), Some(available), Needed::default());
+            assert_eq!(
+                cold,
+                whole(available),
+                "{host}: the cold start is what is available"
+            );
+            let less = Needed {
+                most: available / 2,
+                short: false,
+            };
+            assert_eq!(builder_most(Some(host), Some(available), less), cold, "{host}");
+            let more = Needed {
+                most: available + 2 * GIB,
+                short: false,
+            };
+            assert_eq!(
+                builder_most(Some(host), Some(available), more),
+                whole(available + 2 * GIB),
+                "{host}"
+            );
+            let past = Needed {
+                most: host + GIB,
+                short: false,
+            };
+            assert_eq!(
+                builder_most(Some(host), Some(available), past),
+                whole(host),
+                "{host}"
+            );
+            let short = Needed {
+                most: available / 2,
+                short: true,
+            };
+            let all = builder_most(Some(host), Some(available), short);
+            assert_eq!(
+                all,
+                super::whole_blocks(crate::run::sizes(&unlimited, Some(host)).2),
+                "{host}"
+            );
+            assert!(all << 20 <= host && (host >> 20) - all < block, "{host}");
+            assert_eq!(
+                builder_most(Some(host), None, Needed::default()),
+                all,
+                "{host}: none known available"
+            );
+            assert_eq!(
+                builder_most(Some(host), Some(0), Needed::default()),
+                512,
+                "{host}"
+            );
         }
-        assert_eq!(super::builder_most(None), 512);
+        assert_eq!(
+            builder_most(
+                None,
+                Some(8 * GIB),
+                Needed {
+                    most: 4 * GIB,
+                    short: true
+                }
+            ),
+            512
+        );
+    }
+
+    /// A home's record of its builds' needs keeps the most any needed and whether any was
+    /// ended short, whatever order builds end in; a record that does not read is the cold
+    /// start's.
+    #[test]
+    fn a_homes_record_keeps_the_most_its_builds_needed() {
+        let dir = shards_testdir::TempDir::new("needs").unwrap();
+        let path = super::needs_path(&dir);
+        assert_eq!(Needed::read(&path), Needed::default());
+        super::record_need(&path, 3 * GIB, false).unwrap();
+        super::record_need(&path, GIB, false).unwrap();
+        assert_eq!(
+            Needed::read(&path),
+            Needed {
+                most: 3 * GIB,
+                short: false
+            }
+        );
+        super::record_need(&path, 2 * GIB, true).unwrap();
+        super::record_need(&path, 5 * GIB, false).unwrap();
+        assert_eq!(
+            Needed::read(&path),
+            Needed {
+                most: 5 * GIB,
+                short: true
+            }
+        );
+        std::fs::write(&path, "garbled").unwrap();
+        assert_eq!(Needed::read(&path), Needed::default());
+        // Builds ending together each count.
+        std::fs::remove_file(&path).unwrap();
+        std::thread::scope(|s| {
+            for i in 1..=8u64 {
+                let path = &path;
+                s.spawn(move || super::record_need(path, i * GIB, false).unwrap());
+            }
+        });
+        assert_eq!(Needed::read(&path).most, 8 * GIB);
+    }
+
+    /// What this host says it has available is some of its memory.
+    #[test]
+    fn this_hosts_available_memory_is_some_of_its_memory() {
+        let (Some(host), Some(available)) = (super::host_memory(), super::host_available()) else {
+            panic!("this host's memory reads");
+        };
+        assert!(available > 0 && available <= host, "{available} of {host}");
     }
 
     /// A builder's memory is whole blocks of what it is plugged in.
