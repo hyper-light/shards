@@ -130,10 +130,11 @@ pub struct Prioritized {
 /// M8, M10); on Linux EEVDF's shortest slice, at its weight as before, where on a host
 /// whose CPUs are busy each of a guest's wakeups of another vCPU (an IPI, a woken task)
 /// waited for the busy thread's slice to run out, and a run's start in a microVM of every
-/// CPU of the host took twice as long as in one of one (PM M292, M440). On Windows a
-/// candidate, until it is measured on a contended host (D191): a step above normal priority
-/// while the thread uses no more than half of its CPU, its governor's credit carrying half
-/// a period across its clock's coarse steps (windows_thread.rs).
+/// CPU of the host took twice as long as in one of one (PM M292, M440). On Windows a step
+/// above normal priority while the thread uses no more than half of its CPU, its governor's
+/// credit carrying half a period across its clock's coarse steps (windows_thread.rs), where
+/// on 4 CPUs that 4 busy loops hold a run's start waited 217 to 337 ms at p50 for its guest
+/// to begin the command, and 8 to 10 so (PM M463, D191).
 pub fn prioritize_vcpu_thread() -> Result<Prioritized, String> {
     #[cfg(target_os = "macos")]
     return macos_thread::make_current_realtime().map(|watch| Prioritized { _watch: watch });
@@ -152,7 +153,7 @@ pub fn prioritize_vcpu_thread() -> Result<Prioritized, String> {
 /// verified in 3 s at p50, 210k at QoS user-interactive and 156k at the default, and all
 /// three alike on a quiet host (PM M317); on Linux at the vCPUs' slice too (a start on a
 /// busy host gained nothing measured past its vCPUs' slice from every thread's, PM M440);
-/// on Windows at the vCPUs' candidate priority.
+/// on Windows at the vCPUs' priority.
 pub fn prioritize_device_thread() -> Result<Prioritized, String> {
     prioritize_vcpu_thread()
 }

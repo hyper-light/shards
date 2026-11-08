@@ -18724,3 +18724,126 @@ revision before comparing a changed API/implementation.
   change, and on a native arm64 Windows host with WHP (a Snapdragon X machine, as a user
   session), which alone says whether Hyper-V's SGIs and timers hold across a 64-vCPU
   snapshot at a native host's timing.
+
+### M463. A start on a contended Windows host: WHP's vCPUs at THREAD_PRIORITY_ABOVE_NORMAL (D191)
+
+- **Question.** D191's Windows candidate (`platform::windows_thread`) runs each vCPU thread
+  and device worker a step above normal priority, base 9 against the host's threads' 8,
+  back to normal while one uses more than half of its CPU. On Linux a woken vCPU waited for
+  the busy thread on its CPU to run its slice out, and a contended start's guest part took
+  20.8 ms at p50 where 9.2 with the shortest slice (M440). Does a WHP vCPU wait so behind
+  a Windows host's busy threads, or does the boost Windows gives a thread whose wait is
+  satisfied (Microsoft, Priority Boosts) give it its CPU already?
+- **Method.** 2026-11-07 and 08. Release builds of p/parity-step14, each as built and with
+  `cpu-elastic/winnone.patch` (the candidate left out: every vCPU thread and device worker
+  at the priority it starts at); `cpu-elastic/phases.py` (its Windows path:
+  `--affinity` holds the harness and so its runs, daemons, VM processes and busy loops to
+  those CPUs, SetProcessAffinityMask, inherited by each child; the loops Python's), `run
+  --rm --cpus 1 alpine true`, 20 rounds of 5 starts after a warmup, the two arms alternating
+  each round, n 100 a side, each pair its own run; and the patched build against itself, one
+  home's vCPU threads raised from outside by `cpu-elastic/winslice.py`. Two hosts:
+  - CI's windows-2025 (`.github/workflows/windows-wake.yml`, run 42435846541 at 3efe4190):
+    an Intel Xeon Platinum 8370C at 2.80 GHz, 4 CPUs, Windows Server 2025 10.0.26100, the
+    hypervisor's root scheduler (its launch event's scheduler type 0x4), nothing else of
+    note running; 4 busy loops on its 4 CPUs, or none.
+  - jupiter (AMD Ryzen AI Max+ 395, 32 CPUs, Windows 11 Pro 10.0.26200, root scheduler
+    0x4), e2820ce9, shared with other agents' work; `--affinity f` (CPUs 0 to 3) and 4
+    loops, or none; `--affinity ffff` and 16 loops. Its kernel (the System process) took 21
+    to 29 of its 32 CPUs for hours at a time on both days (`\Process(System)\% Processor
+    Time`; the hypervisor's root virtual processors 70% run, no other partition running a
+    virtual processor), gone after each restart of its kiln runner and back later; each
+    pair below says which.
+- **Found, first: a held daemon's microVMs had every CPU of the host.** At 8a13e492, with
+  `--affinity f`, each VM process had 32 vCPU threads on its 4 CPUs (winslice.py: "at most
+  32 vCPU threads a VM process; the first VM process's affinity 0xf"): `resources::host_cpus`
+  took `available_parallelism`, which on Windows reads no affinity mask ("may overcount the
+  amount of parallelism available when limited by process-wide affinity masks", its
+  documentation), where on Linux it reads sched_getaffinity(2), as M440's `taskset -c 0-3`
+  gave a microVM of 4. Fixed (e2820ce9): on Windows `host_cpus` counts the process's
+  affinity mask (GetProcessAffinityMask), held by resources'
+  `a_microvm_has_the_cpus_its_daemon_may_run_on` on Linux and Windows (CI 42429865659); every
+  pair below but the last row's is of builds with it, a microVM of 4 vCPUs on 4 CPUs.
+- **Results** (ms, p50 (p90), p99; `start` the request to the command executing, `command`
+  its run, `wall` the client's, as phases.py takes them; winnone → as built unless said):
+
+  | host, case | wall | start | start p99 | command |
+  |---|---|---|---|---|
+  | windows-2025, 4 busy loops | 715.64 (1,039.95) → 646.40 (902.24) | 217.09 (365.94) → **8.20 (31.43)** | 453.96 → 45.08 | 49.10 (119.83) → 1.13 (1.87) |
+  | windows-2025, 4 busy loops, again | 781.48 (1,030.80) → 685.13 (919.44) | 336.51 (489.53) → **10.13 (34.19)** | 680.90 → 78.91 | 67.84 (104.95) → 1.33 (2.12) |
+  | windows-2025, 4 busy loops: winnone, then raised from outside | 856.68 (1,056.53) → 719.49 (939.05) | 351.90 (469.48) → **8.73 (57.41)** | 590.90 → 159.72 | 77.40 (126.33) → 1.42 (1.99) |
+  | windows-2025, idle | 323.04 (633.04) → 332.97 (606.38) | 49.85 (184.19) → 21.96 (65.09) | 286.07 → 112.06 | 5.60 (42.62) → 1.76 (2.75) |
+  | jupiter quiet (System 0.03 to 0.22 cores), 4 CPUs, 4 busy loops | 582.80 (1,186.68) → 588.70 (1,216.92) | 241.45 (927.65) → 293.28 (1,130.25) | 2,898.78 → 4,025.59 | 14.63 (216.73) → 11.30 (128.44) |
+  | jupiter quiet, 4 CPUs idle | 283.99 (604.89) → 323.15 (561.99) | 44.13 (213.55) → 56.34 (231.88) | 498.26 → 377.69 | 2.44 (22.50) → 3.00 (34.60) |
+  | jupiter quiet, 4 busy loops: winnone, then raised from outside | 571.68 (1,006.88) → 524.87 (907.23) | 217.68 (520.30) → 224.55 (448.36) | 873.57 → 641.95 | 18.90 (114.78) → 44.64 (176.26) |
+  | jupiter quiet, 16 CPUs, 16 busy loops | 1,221.42 (2,379.64) → 1,359.40 (2,245.22) | 513.51 (1,116.49) → 549.82 (1,221.38) | 1,579.10 → 2,372.87 | 81.80 (511.50) → 130.82 (438.33) |
+  | jupiter, its kernel at 24 to 29 cores, 4 CPUs, 4 busy loops | 2,028.53 (3,483.37) → 1,540.18 (2,998.99) | 1,347.30 (2,656.86) → 932.75 (2,259.67) | 7,036.11 → 4,436.14 | 160.67 (650.42) → 132.66 (624.66) |
+  | jupiter, its kernel at 25 to 29 cores, 4 CPUs idle | 1,410.29 (3,871.95) → 1,323.83 (4,182.29) | 422.48 (1,870.04) → 323.42 (2,731.15) | 7,176.28 → 4,716.76 | 12.81 (427.30) → 17.16 (555.07) |
+  | jupiter, its kernel at 24 to 29 cores, 4 busy loops: winnone, then raised from outside | 2,141.44 (4,506.37) → 2,180.40 (4,000.42) | 1,393.60 (3,351.35) → 1,375.13 (3,276.14) | 5,521.49 → 4,738.76 | 175.69 (807.88) → 181.62 (835.95) |
+  | jupiter quiet, 8a13e492 (32 vCPUs on 4 CPUs), 4 busy loops | 760.64 (2,967.60) → 691.47 (2,366.64) | 550.47 (1,942.76) → 463.20 (1,833.65) | 14,203.13 → 7,625.13 | 18.82 (639.79) → 29.00 (367.03) |
+
+- **Reading.** On windows-2025 a WHP vCPU woken on a CPU a busy thread holds waits for it,
+  as Linux's did: with its vCPUs at the priority they start at, the guest's part of a
+  contended start took 217 and 337 ms at p50, at ABOVE_NORMAL 8.2 and 10.1, the command's
+  run 49 to 68 ms where 1.1 to 1.3, the tail (p99) a tenth. Raised from outside, the same
+  (8.73): the priority, nothing else of the build. Windows' wake boost does not give them
+  their CPU. Idle the start is shorter too (49.9 where 22.0 at p50). The wall gains less
+  than the start, 70 to 137 ms, its other parts the client's and the removal's. On jupiter
+  neither the build nor the raise from outside moved a start by more than its spread, quiet
+  or under its kernel's load: its starts, idle ones too (44 to 56 ms at p50, p90 four to
+  five times that), are held by something this harness does not see, which the vCPUs'
+  priority does not reach; what it is was not found.
+- **Consequence.** D191's Windows policy, kept: vCPU threads and device workers at
+  THREAD_PRIORITY_ABOVE_NORMAL with their governor (`platform::windows_thread`), which
+  shortens a contended start where a busy thread holds the vCPUs' CPUs (windows-2025) and
+  costs nothing measured where it does not (jupiter); the hold's governor at TIME_CRITICAL
+  as before (M294). And a daemon held to some CPUs gives its microVMs those alone on Windows
+  as on Linux (D125, e2820ce9). Harness: `cpu-elastic/phases.py`, `winslice.py`,
+  `winnone.patch`, `.github/workflows/windows-wake.yml`.
+
+### M464. A restart over the kept layer against packing it, on macOS and Windows (D190)
+
+- **Question.** D190's restart goes over a stopped container's kept layer file where it
+  holds 5 MiB or more and packs and puts it back below, where Linux's two restarts cross
+  (M443). Do macOS's and Windows' cross there too?
+- **Method.** `docs/research/measurements/layer-kept/ab.py OLD NEW` (M278's harness, as
+  M443 ran it): release builds of p/parity-step14 with `layer-kept/pack.patch` (OLD: every
+  kept layer packed and put back) and `layer-kept/over.patch` (NEW: every one gone over),
+  each with a home of its own, interleaved; a container writes that many bytes, ends, and
+  `start -a` runs it again; n after one round not counted.
+  - macOS: adas-mac-studio (Apple M3 Ultra, 32 CPUs, macOS 26.4, APFS), 8a13e492,
+    2026-11-07; its load 4 to 27 as they ran (other work on it).
+  - Windows: jupiter (AMD Ryzen AI Max+ 395, 32 CPUs, Windows 11 Pro 10.0.26200, NTFS),
+    e2820ce9, 2026-11-08, its kernel quiet (the System process 0 to 0.08 cores, the
+    processor queue 0 at the start and the end); and a first run at 8a13e492 on 2026-11-07
+    while its kernel took 21 to 29 of its 32 CPUs (M463), cut off after 8 MiB.
+- **Found** (`start -a` ms at p50 (p90), OLD → NEW, NEW less OLD at p50):
+
+  | written | macOS, n 20 | macOS, n 40 | macOS, n 40 again | Windows quiet, n 20 | Windows, kernel busy, n 20 |
+  |---|---|---|---|---|---|
+  | 0 | 32.52 (37.93) → 39.99 (51.91), +7.47 | 35.96 (37.06) → 44.67 (51.32), +8.71 | 41.40 (47.60) → 48.89 (55.91), +7.49 | 88.66 (152.12) → 321.55 (482.10), +232.89 | 139.51 (327.82) → 368.06 (513.23), +228.55 |
+  | 1 MiB | 39.74 (44.76) → 45.59 (53.53), +5.85 | | | 182.17 (265.71) → 319.86 (382.09), +137.69 | 381.85 (823.39) → 706.19 (1,736.96), +324.34 |
+  | 2 MiB | 43.41 (45.77) → 50.18 (55.64), +6.77 | | | 243.61 (317.63) → 344.20 (362.40), +100.59 | 512.77 (676.16) → 589.68 (834.94), +76.91 |
+  | 4 MiB | 53.32 (56.39) → 58.11 (61.77), +4.79 | 69.81 (92.41) → 73.80 (89.29), +3.99 | 64.37 (69.27) → 65.82 (71.17), +1.45 | 494.89 (775.57) → 652.89 (891.73), +158.00 | 685.70 (1,000.93) → 748.36 (985.50), +62.66 |
+  | 6 MiB | | 96.53 (125.21) → 97.97 (139.09), +1.44 | 77.38 (81.77) → 78.75 (86.40), +1.37 | | |
+  | 8 MiB | 78.10 (97.43) → 78.01 (95.69), -0.09 | 115.07 (120.50) → 112.71 (116.55), -2.36 | 78.39 (84.06) → 78.10 (86.03), -0.29 | 824.35 (946.69) → 822.56 (900.11), -1.79 | 1,863.65 (8,670.62) → 1,118.65 (1,625.98), -745.00 |
+  | 12 MiB | | 197.43 (422.18) → 145.52 (283.30), -51.91 | 97.77 (102.78) → 95.63 (100.22), -2.14 | | |
+  | 16 MiB | 177.09 (234.95) → 149.12 (197.61), -27.97 | 125.95 (145.31) → 118.20 (134.18), -7.75 | 124.28 (130.01) → 113.45 (120.48), -10.83 | 1,612.55 (1,677.04) → 1,344.67 (1,450.10), -267.88 | |
+  | 32 MiB | 190.19 (231.17) → 163.40 (291.93), -26.79 | | | 3,126.39 (3,431.87) → 2,205.23 (5,006.59), -921.16 | |
+
+  The lines between the last size packing was quicker at and the first going over was
+  meet at 7.93, 6.76 and 7.65 MiB on macOS, 7.95 on quiet Windows (4.31 with its kernel
+  busy). A fourth macOS run, n 100 at 0, 4, 5, 6, 7, 8, 10, 12 and 16 MiB as its load rose to
+  15, had packing quicker at 0 to 7 MiB by 1.7 to 8.1 ms and the two within 7 ms of each
+  other from 8 on, while its times at a size moved by more than their difference from size
+  to size (8 MiB 228 ms, 12 MiB 153): not kept. `diff` of the stopped container was
+  quicker gone over at every size on both, `run` and `commit` alike between the builds.
+- **Reading.** Packing grows with what the layer holds on every host; going over costs a
+  restart about the same whatever it holds, more on macOS than on Linux (7.5 to 8.7 ms
+  more than packing an empty layer, against M443's 10.6 on a loaded Fedora) and far more on
+  Windows (233 ms), so they cross later there: at 7 to 8 MiB on both, where Linux's cross at
+  5.08. Windows' go-over cost is its own to find (the view swap around WHP's unmap and map
+  of the layer's range, D190; not measured step by step here).
+- **Consequence.** `layers::OVER_FROM` per host's kind: 5 MiB on Linux (M443), 7 MiB on
+  macOS and Windows, each held to its own table by `a_restart_goes_over_from_where_packing_costs_more`
+  (the macOS run "n 40 again" and Windows' quiet run above). The two D190 E2E tests write
+  8 MiB, past both. Harness: `layer-kept/ab.py`, `pack.patch`, `over.patch`.

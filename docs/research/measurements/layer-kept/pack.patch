@@ -1,0 +1,15 @@
+diff --git a/crates/shards/src/daemon/layers.rs b/crates/shards/src/daemon/layers.rs
+index 4f611f00..de1f55fd 100644
+--- a/crates/shards/src/daemon/layers.rs
++++ b/crates/shards/src/daemon/layers.rs
+@@ -250,7 +250,9 @@ pub(super) fn open_kept(at: &Path) -> Result<std::fs::File, String> {
+ /// holds more, going over about the same whatever it holds (its guest's let-go of the
+ /// template's layer and mount of the container's). Where the two cost the same, as
+ /// measured ([`CROSSOVER_BASIS`]), to the MiB.
+-pub(super) const OVER_FROM: u64 = 5 << 20;
++// Experiment (docs/research/measurements/layer-kept, pack): every kept layer packed and
++// put back, as before slice 7.
++pub(super) const OVER_FROM: u64 = u64::MAX;
+ 
+ /// PM M443's restarts, `start -a` of a container that wrote that many bytes, n = 20 a side
+ /// interleaved, ms at p50: packed and put back, then gone over (Fedora, Btrfs). Packing was

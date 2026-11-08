@@ -5881,7 +5881,8 @@ fn a_stopped_microvms_layer_stays_in_its_file() {
 }
 
 /// A stopped container's next run goes on over the file its layer was kept in (D190), where
-/// the layer holds past what packing it costs less below (`layers::OVER_FROM`, 5 MiB): the
+/// the layer holds past what packing it costs less below (`layers::OVER_FROM`, 5 MiB on
+/// Linux, 7 on macOS and Windows): the
 /// file goes under its microVM's layer device as it is, its root the image over it, and
 /// stays the container's, the same file, with what each run wrote; the microVM's own layer
 /// goes. One that holds little is packed and put back, in another file. What a run's guest
