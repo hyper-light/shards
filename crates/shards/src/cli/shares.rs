@@ -348,4 +348,19 @@ mod tests {
         assert_eq!(kept, ["--kernel", "k", "--cmdline", "--share", "-e", "--"]);
         assert_eq!(shares, [("/a".into(), false)]);
     }
+
+    /// Every flag `run` reads a value after is one whose value `take` keeps as its own, as
+    /// `run` reads its command line (vm_run.rs `parse_run`) and not by a list beside it:
+    /// `--cpu-baseline` (D176 part 6), a flag `parse_run` takes a value for, keeps a value
+    /// that reads `--share` (integrate's review: vm_run's own parser).
+    #[test]
+    fn take_reads_values_as_run_does() {
+        let args: Vec<OsString> = ["--kernel", "k", "--cpu-baseline", "--share", "--share", "/a"]
+            .into_iter()
+            .map(OsString::from)
+            .collect();
+        let (kept, shares) = take(&args).unwrap();
+        assert_eq!(kept, ["--kernel", "k", "--cpu-baseline", "--share"]);
+        assert_eq!(shares, [("/a".into(), false)]);
+    }
 }
