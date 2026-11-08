@@ -416,13 +416,13 @@ fn confine(
             "--use-api-socket: a container made by a microVM's own engine has no engine of its own",
         ));
     }
-    // Its processes are its microVM's, under that microVM's parent on the host (D183); a
-    // parent of its own within the microVM is to come.
+    // Its processes are its microVM's, under that microVM's parent on the host, and a
+    // parent within the microVM would be one no process there may budget (D183, slice 4).
     if !run.cgroup_parent.is_empty() {
         return Err(Answer::error(
-            501,
+            403,
             format!(
-                "--cgroup-parent {}: a parent of its own, within the microVM, for a container its engine makes is not built yet",
+                "--cgroup-parent {}: a container made by a microVM's own engine shares its microVM's budget, and no process in the microVM may budget a parent within it: run agents that need a budget of their own as a microVM of their own",
                 run.cgroup_parent
             ),
         ));
@@ -1018,8 +1018,8 @@ mod tests {
                     ..Run::default()
                 },
                 Some((
-                    501,
-                    "--cgroup-parent agents.slice: a parent of its own, within the microVM, for a container its engine makes is not built yet"
+                    403,
+                    "--cgroup-parent agents.slice: a container made by a microVM's own engine shares its microVM's budget, and no process in the microVM may budget a parent within it: run agents that need a budget of their own as a microVM of their own"
                         .into(),
                 )),
             ),

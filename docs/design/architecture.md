@@ -5631,7 +5631,7 @@ Decided by the user on 2026-10-14 ("so long as they apply appropriately to micro
   have. Refused before anything is made, each saying why: any parent off Linux; a value
   that is no slice's name, as systemd's own check has it (src/basic/unit-name.c); a joiner
   (D119) naming a parent other than its provider's; and from a microVM's own engine (D181),
-  not built yet (501). Inspect's `HostConfig.CgroupParent` says it, and the Engine API takes
+  403, with slice 4's reason (below). Inspect's `HostConfig.CgroupParent` says it, and the Engine API takes
   `HostConfig.CgroupParent` as the command line takes the flag (D170's create bodies, a
   case of it among them).
 - **Tested.** On real microVMs on Linux, where CI's x86_64 runner has its user's manager
@@ -5794,7 +5794,24 @@ Decided by the user on 2026-10-14 ("so long as they apply appropriately to micro
 - **Slices.** 1: Linux, a slice of the user's manager (built). 2: a delegated cgroup
   where no user's manager is (built, above). 3: macOS and Windows, groups shards keeps
   (built, above). 4: the microVM's own engine's members (D181), a cgroup within the
-  microVM, refused (501) until a need for it inside a microVM is shown.
+  microVM: refused (403), each part of the need already met, and what is left of it no
+  one in the microVM could use (checked 2026-11-07):
+  - What a parent is for is a budget its members share, set by whoever owns the
+    parent: on a host, its administrator writes the slice's or cgroup's files, and the
+    run names it alone (`HostConfig.CgroupParent` is a path, with no budget of its own).
+  - Every member of a microVM's engine is a joiner of that microVM (D119), so its
+    members already share one budget, the microVM's own, under the host parent it was
+    run under (slices 1 to 3), and each member takes its own limits as any joiner does.
+  - A parent within the microVM, for a group of its members apart from the others, would
+    be a cgroup no process in the microVM may budget. The workload, the engine's only
+    client, is in a cgroup namespace rooted at its own cgroup, mounted `nsdelegate`, and
+    may write no cgroup outside it (cgroup-v2.rst, "Delegation Containment"); and a
+    parent under the workload's own cgroup could enable no controller for its members
+    while the workload's processes are there ("No Internal Process Constraint"). Init
+    alone could write its files, and no input names what to write.
+  - A group of agents with a budget of their own is a microVM of their own, under a
+    host parent of their own. So slice 4 stays refused, with that reason, unless an
+    input that carries a member group's budget is found.
 
 ### D184. A credential helper is asked at once and waited for only where its registry asks (built)
 
