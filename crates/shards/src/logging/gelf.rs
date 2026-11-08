@@ -1,6 +1,6 @@
 //! The gelf driver's messages (D164), as moby's gelf driver writes them through Graylog's
 //! go-gelf (moby daemon/logger/gelf; go-gelf message.go, udpwriter.go, tcpwriter.go): a
-//! line a GELF 1.1 message, its level info for stdout and err for stderr, the container's
+//! line a GELF 1.1 message, its level info for stdout and err for stderr, the microVM's
 //! own fields after the message's, as Go's encoding/json writes them; over UDP compressed
 //! and cut into chunks, over TCP each followed by a NUL. Each is stamped with when its
 //! output came, to the millisecond, as GELF 1.1 has it.
@@ -120,7 +120,7 @@ pub fn config(opts: &BTreeMap<String, String>) -> Result<Config, String> {
 }
 
 /// What every message of a run carries besides its line: this host's name, and the
-/// container's own fields, made once, as GELF receivers read them (gelf.New, D164):
+/// microVM's own fields, made once, as GELF receivers read them (gelf.New, D164):
 /// `_container_id`, `_container_name`, `_image_id`, `_image_name`, `_command`, `_tag`,
 /// `_created`, then the attributes asked for, each named with a `_` before it, written as
 /// Go's encoding/json writes a map: sorted by name.
@@ -131,11 +131,11 @@ pub struct From {
     pub extra: String,
 }
 
-/// The container's own fields: `fields` its own (name and value, `_created` an RFC 3339
+/// The microVM's own fields: `fields` its own (name and value, `_created` an RFC 3339
 /// time) and `attributes` those asked for, the latter's names given a `_` first, all
 /// sorted by name, as Go's encoding/json writes a map. An attribute named as a field of
-/// the container's own is left out (D166): moby's driver lets it replace the field, so a
-/// label `container_id` says another container wrote the line.
+/// the microVM's own is left out (D166): moby's driver lets it replace the field, so a
+/// label `container_id` says another microVM wrote the line.
 pub fn extra(fields: &[(&str, String)], attributes: &BTreeMap<String, String>) -> String {
     let mut all: BTreeMap<String, &str> = fields
         .iter()
@@ -168,7 +168,7 @@ const ERR: u8 = 3;
 /// The message of `line` on `stream`, whose output came at `at` nanoseconds since the
 /// epoch, as go-gelf's MarshalJSONBuf writes it: its own fields in their order, the
 /// version, the host, the line, the time in seconds to the millisecond, the level, then
-/// the container's.
+/// the microVM's.
 pub fn message(from: &From, stream: u8, at: u64, line: &[u8]) -> Vec<u8> {
     let level = if stream == crate::spec::LOG_STDERR {
         ERR
@@ -355,8 +355,8 @@ mod tests {
 
     /// A message past one datagram goes in chunks of at most 1,420 bytes, each its
     /// header, numbered in order; one past 128 of them is none.
-    /// An attribute named as a field of the container's own is left out: an image's label
-    /// says nothing of which container wrote a line.
+    /// An attribute named as a field of the microVM's own is left out: an image's label
+    /// says nothing of which microVM wrote a line.
     #[test]
     fn the_containers_own_fields_are_its_own() {
         let attributes: BTreeMap<String, String> = [("container_id", "other"), ("team", "logs")]

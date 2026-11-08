@@ -85,7 +85,7 @@ pub fn run(path: &str, args: &[OsString]) -> ExitCode {
     }
 }
 
-/// Makes a container as the command line `args` says, the words after `path` (`shards
+/// Makes a microVM as the command line `args` says, the words after `path` (`shards
 /// create`), as `docker create` makes one: as `run` would, and not started; its ID said.
 pub fn create(path: &str, args: &[OsString]) -> ExitCode {
     let argv = match crate::cli::utf8(args) {
@@ -121,7 +121,7 @@ pub fn create(path: &str, args: &[OsString]) -> ExitCode {
     send(&mut request, term::DETACH_KEYS, &mut cid, false)
 }
 
-/// Starts the containers the command line `args` names, the words after `path` (`shards
+/// Starts the microVMs the command line `args` names, the words after `path` (`shards
 /// start`), as `docker start` does (docker/cli container/start.go): each run again as it
 /// was made, its files as it left them (D37), named once it is; with `-a` or `-i`, one,
 /// attached.
@@ -145,7 +145,7 @@ pub fn start(path: &str, args: &[OsString]) -> ExitCode {
         }
     };
     let (attach, interactive) = (parsed.bool("attach"), parsed.bool("interactive"));
-    // A container resumed from a checkpoint of its own, a microVM's snapshot (D176).
+    // A microVM resumed from a checkpoint of its own, a microVM's snapshot (D176).
     let checkpoint = Some(parsed.string("checkpoint").to_string()).filter(|c| !c.is_empty());
     if attach || interactive {
         if parsed.args.len() > 1 {
@@ -154,7 +154,7 @@ pub fn start(path: &str, args: &[OsString]) -> ExitCode {
         let Some(container) = parsed.args.first().cloned() else {
             return crate::cli::failed("a container is required");
         };
-        // Inspected first: the container's terminal,
+        // Inspected first: the microVM's terminal,
         // which takes the client's raw input and size, and with which signals are not
         // passed on (the terminal's own keys are); and whether it reads a stdin, which `-i`
         // attaches.
@@ -205,7 +205,7 @@ pub fn start(path: &str, args: &[OsString]) -> ExitCode {
     refuse(&format!("failed to start containers: {}", failed.join(", ")))
 }
 
-/// Restarts the containers the command line `args` names, the words after `path`
+/// Restarts the microVMs the command line `args` names, the words after `path`
 /// (`shards restart`), as `docker restart` does (docker/cli container/restart.go): each
 /// stopped, by `-s` and `-t` where given, then started again, and named.
 pub fn restart(path: &str, args: &[OsString]) -> ExitCode {
@@ -254,7 +254,7 @@ fn send(request: &mut Run, detach_keys: &[u8], cid: &mut Option<CidFile>, sig_pr
 }
 
 /// Runs the command line `args`, the words after `path` (`shards exec`), as `docker exec`
-/// runs it: in a running container, attached unless `-d` (docker/cli
+/// runs it: in a running microVM, attached unless `-d` (docker/cli
 /// cli/command/container/exec.go).
 pub fn exec(path: &str, args: &[OsString]) -> ExitCode {
     let argv = match crate::cli::utf8(args) {
@@ -294,12 +294,12 @@ pub fn exec(path: &str, args: &[OsString]) -> ExitCode {
             Vec::new()
         },
         // `-it` without a terminal is refused by the daemon, once it has found the
-        // container: the CLI inspects it first, so that "No such container" comes first
+        // microVM: the CLI inspects it first, so that "No such container" comes first
         // (docker/cli exec.go RunExec).
         stdin_terminal: std::io::stdin().is_terminal(),
         ..shards_ipc::Exec::default()
     };
-    // Before the container is looked for, as the CLI checks them (exec.go parseExec).
+    // Before the microVM is looked for, as the CLI checks them (exec.go parseExec).
     let keys = parsed.string("detach-keys");
     let detach_keys = if keys.is_empty() {
         term::DETACH_KEYS.to_vec()
@@ -359,7 +359,7 @@ fn inspected(container: &str) -> Result<(PathBuf, PathBuf, Identity, bool, bool)
 }
 
 /// Runs the command line `args`, the words after `path` (`shards attach`), as `docker
-/// attach` does (docker/cli cli/command/container/attach.go): the container inspected for
+/// attach` does (docker/cli cli/command/container/attach.go): the microVM inspected for
 /// its terminal and its stdin, refused as the CLI refuses it, then attached until its
 /// command ends, whose status is this one's, or until the detach keys.
 pub fn attach(path: &str, args: &[OsString]) -> ExitCode {
@@ -741,7 +741,7 @@ fn request(parsed: &Parsed) -> Result<Run, String> {
     })
 }
 
-/// What `createContainer` checks and makes before it asks for the container (docker/cli
+/// What `createContainer` checks and makes before it asks for the microVM (docker/cli
 /// create.go): the platform, read as containerd reads it, and then the CID file. A
 /// platform that parses but that this host's microVMs cannot run is refused here, before
 /// anything is pulled: Docker would pull it and fail as it starts, or start it under
@@ -815,7 +815,7 @@ fn absolute_as_given(path: &str) -> std::io::Result<PathBuf> {
     Ok(std::env::current_dir()?.join(given))
 }
 
-/// `--cidfile`'s file: made before the container, its ID
+/// `--cidfile`'s file: made before the microVM, its ID
 /// written once there is one, and removed if none was; or, a client's over a context, the
 /// descriptor its daemon tells the client the ID through, the file being the client's.
 pub(crate) struct CidFile {
@@ -856,7 +856,7 @@ impl CidFile {
         })
     }
 
-    /// Writes the container's ID, once, and closes the file, as createContainer closes its
+    /// Writes the microVM's ID, once, and closes the file, as createContainer closes its
     /// own once the container is made (docker/cli create.go): a client's over a context is
     /// told the ID as it closes (`context::CIDFILE`), not as the run ends.
     pub(crate) fn write(&mut self, id: &str) -> Result<(), String> {

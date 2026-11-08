@@ -2,7 +2,7 @@
 //! fluent-logger-golang (moby daemon/logger/fluentd; fluent-logger-golang fluent.go,
 //! proto.go): a line an event of Fluentd's forward protocol, Message mode (Forward
 //! Protocol Specification v1): an array of the tag, the time, the record and the options,
-//! in MessagePack. The record holds the container's ID and name, the stream, the line,
+//! in MessagePack. The record holds the microVM's ID and name, the stream, the line,
 //! the attributes asked for, and a part's place in its line; the time is whole seconds, or
 //! with `fluentd-sub-second-precision` an EventTime to the nanosecond; with
 //! `fluentd-request-ack` the options ask the server to acknowledge the event's chunk.
@@ -179,7 +179,7 @@ fn address(given: &str) -> Result<To, String> {
     }
 }
 
-/// What every event of a run carries besides its line: its tag, its container's ID and
+/// What every event of a run carries besides its line: its tag, its microVM's ID and
 /// name (Docker's, with its `/`), and the attributes asked for: the fields receivers read
 /// (fluentd.New, D165).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -203,7 +203,7 @@ pub struct Part<'a> {
 /// epoch, as fluent-logger-golang's EncodeData writes it in MessagePack: the tag, the time
 /// (whole seconds, or an EventTime to the nanosecond), the record, and the options, which
 /// ask for `chunk`'s ack where one is given. The record's members are moby's (fluentd.Log):
-/// the container's ID and name, the stream, the line, the attributes over them, then a
+/// the microVM's ID and name, the stream, the line, the attributes over them, then a
 /// part's place over all; sorted by name, where Go writes a map in no order.
 pub fn event(
     config: &Config,
@@ -522,7 +522,7 @@ mod tests {
     }
 
     /// An attribute named as one of a record's own is left out: a label `log` does not
-    /// take the line's place, nor one `container_id` say another container wrote it.
+    /// take the line's place, nor one `container_id` say another microVM wrote it.
     #[test]
     fn a_records_own_keys_are_its_own() {
         let config = Config {

@@ -279,7 +279,7 @@ fn names_a_microvm(target: &str) -> bool {
     named && !shards_vmm::snapshot::pointed(std::path::Path::new(target)).unwrap_or(false)
 }
 
-/// A container command, `named` words of `words` naming it: read here, and run by the
+/// A microVM command, `named` words of `words` naming it: read here, and run by the
 /// daemon.
 fn container(
     command: &'static Command,

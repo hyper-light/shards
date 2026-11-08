@@ -103,7 +103,7 @@ fn clean(path: &Path) -> PathBuf {
     out
 }
 
-/// A path's stat in container `container`, in the shape clients parse (PathStat).
+/// A path's stat in microVM `container`, in the shape clients parse (PathStat).
 struct Stat {
     size: u64,
     mode: u32,
