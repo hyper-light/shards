@@ -3955,7 +3955,7 @@ revision before comparing a changed API/implementation.
 
 ### M488. A push's uploads: how many at once, and what chunks cost (D226)
 
-- **Question.** `shards push` sent 5 blobs at once, dockerd's figure, each in one PUT.
+- **Question.** `shards push image` sent 5 blobs at once, dockerd's figure, each in one PUT.
   Where do more uploads at once stop paying, and is it one count across links? What does
   sending a blob in chunks cost, for a registry that refuses it whole?
 - **Method.** `docs/research/measurements/push-uploads/`:
@@ -3965,7 +3965,7 @@ revision before comparing a changed API/implementation.
     a PUT with no body. Each blob's upload time, n, p50, p90, p99, max.
   - `sweep.sh`: 16 blobs of 16 MiB (8 of 8 MiB across the Internet) and 32 of 256 KiB at
     each count, then the large blobs at 4 at once whole and in chunks of 1, 4 and 8 MiB.
-  - `limited.sh`: `shards push` of nginx:alpine (Docker's pull, then given to the
+  - `limited.sh`: `shards push image` of nginx:alpine (Docker's pull, then given to the
     registry by Docker) to registry:2 behind nginx at `client_max_body_size 1m`, nginx's
     default, then pulled back through nginx into a fresh home; nginx's answers counted.
   - Links: registry:2 (image a3d8aaa63ed8) on fedora-2 (x86_64, 32 CPUs, Fedora 44, Linux
@@ -3994,15 +3994,39 @@ revision before comparing a changed API/implementation.
     with one PUT 413 and one PATCH 413 then 30 PATCHes 202, the second with two PUTs 413
     (two uploads at once refused before either knew) and 28 PATCHes 202 of 177,552 to
     970,385 bytes each, every one under the limit; each image pulled back through nginx to
-    the digest pushed, sha256:697b0b15….
+    the digest pushed, sha256:697b0b15…. With D226's second version (bisecting between
+    the most taken and the least refused), a third run: one PUT 413, then 14 PATCHes 413
+    as the bisection closed in and 26 PATCHes 202 of up to 1,049,050 bytes a request,
+    head and body (a body at most the 1 MiB limit), pulled back to the same digest.
 - **Consequence.** No one count is right: on one host more kept paying past 16, across
   the LAN one filled the link and 8 lost a quarter, across the Internet 4 doubled 1 and 8
-  fell back, and small blobs, bound by round trips, gained to 16 on every link. On none
-  did fewer than 4 carry more than 4. So a push starts at 4 and doubles while a doubling
-  pays, as the pull's connections do, bounded by its blobs alone (D226). Chunks cost a
-  request each: on one host they lost a third of the rate at 8 MiB and three quarters at
-  1 MiB, across the LAN 7 to 18%, and across the Internet less than its noise: a blob goes whole, in chunks only once its registry refused
-  a request so long, each half the least refused.
+  fell back, and small blobs, bound by round trips, gained to 16 on every link. Chunks
+  cost a request each: on one host they lost a third of the rate at 8 MiB and three
+  quarters at 1 MiB, across the LAN 7 to 18%, and across the Internet less than its
+  noise. So no count or chunk is chosen (D226): transfers start at one over a path never
+  seen and climb while a doubling pays past the path's own noise, a path's count is
+  learned for its next transfer, and a chunk is the size that costs least a byte given
+  the path's measured answer time, rate and failures, a whole blob where it never failed.
+  Every case here was bound by its link, or on one host by its 16 blobs, none by the CPU
+  (32 cores each).
+- **Harness for the learned transfers** (committed with D226's second version):
+  `learned.sh SHARDS SOURCE TARGET [ROUNDS LAYERS SIZE]` pulls and pushes images of fresh
+  layers that `mkimage.py` puts in SOURCE, cold then warm in each round's fresh home, and
+  prints each transfer's seconds and the records learned; `netem.sh up PORT DELAY LOSS`
+  starts a registry:2 behind tc-netem on its own interface. Smoked once on fedora-2
+  (2026-11-08, load 13): 4 layers of 1 MiB from a plain registry to one at 20 ms and 1%
+  loss, pushes 0.72 s cold and 0.80 s warm, too short to measure a count (two windows
+  after one settling), so the record kept only the answer time (20,966 µs), the bytes and
+  no failure: netem's packet loss is recovered by TCP and shows as rate, not as a failed
+  send, which only resets, timeouts and sends cut short are.
+- **Owed** (the user's order, 2026-11-08; not yet run): learned.sh cold and warm, 3
+  rounds each, over (1) one host and (2) the wired pair, registry:2 on adacachy2 pushed
+  to from adacachy; (3) the Mac Studios' Wi-Fi (about 0.19 MB/s between two), registry:2
+  on one, pushed to from the other; (4) ttl.sh as TARGET; (5) tc-netem on fedora-2 at
+  40 ms with 0%, 1% and 5% loss, and with bursts that outlast a send's patience (`loss
+  gemodel`), so that sends fail and chunks are used; each against the fixed sizes push.py
+  measures (`--chunk`). For each: which input bound the count (the link's noise, its
+  bandwidth-delay product, the blobs, the cores) and the chunk (Young's optimum, a 413).
 
 ### M486. How real registries fail a request, how long a healthy download goes silent, and what learned waits make of it (D222)
 
@@ -18871,7 +18895,7 @@ revision before comparing a changed API/implementation.
   - A fleet's memory and runs: docs/research/measurements/bpf-jit/fleet.py, one release
     `shards`, two homes, each with alpine (sha256:294b683c…) and a guest recorded
     (`configure guest --kernel K --init` shards-init), rounds alternating which goes first.
-    Each round, in each home: the daemon stopped and its templates removed; 10 `run -d
+    Each round, in each home: the daemon stopped and its templates removed; 10 `run vm -d
     alpine sleep`, the first booting the guest and saving the template (init attaches the
     device filter before the save, D44), the other 9 served from the pool's VMs restored
     from it; once the home's VM processes stay the same for 5 s, each one's memory (Linux:
@@ -18879,8 +18903,8 @@ revision before comparing a changed API/implementation.
     resident size), the booted run, the restored runs (State.Pid) and the pool's warm VMs
     apart; the template's disk blocks (du). 10 rounds after 1.
   - Start latency: docs/research/measurements/bpf-jit/latency.sh, build-ab/ab.py's paired
-    runs over fleet.py's two homes, `run --rm alpine true` one at a time, 4 segments of 100
-    pairs, each segment with templates of its own (PM M29). `command` is request to status
+    runs over fleet.py's two homes, `run vm --rm alpine true` one at a time, 4 segments of
+    100 pairs, each segment with templates of its own (PM M29). `command` is request to status
     on the VM's clock (SHARDS_TIMING), `wall` the client's spawn to reap.
 - **Found.** KVM: fedora-2, x86_64, Fedora 44, Linux 6.19.10-300.fc44, host load 6 to 45
   from other agents' work (each run's own `uptime`), revisions dd3e96a1 (ab.py),
@@ -18934,20 +18958,40 @@ revision before comparing a changed API/implementation.
   -661 to -442), every segment's below 0. `wall` A 28,096, B 25,914, -1,592. HVF `command`
   A 1,197 (1,962), B 1,404 (2,124), +206, every segment's interval above 0 (+161 to +286);
   `wall` A 8,817 (34,797), B 9,176 (34,583), +235, every segment's interval holding 0.
+
+  WHP: jupiter, AMD Ryzen AI Max+ 395, Windows 11 10.0.26200, the hyperv variants
+  (d04b68b9… against 975846f3…), 27 to 31 of its 32 CPUs idle as each began; shards built
+  `release` with `CARGO_PROFILE_RELEASE_DEBUG=0` (no debug information, for the disk it
+  had), Python 3.13.1's embeddable build; revisions 62a6aa1e5 (ab.py), 70f75ea49
+  (fleet.py), a6035554a (latency.sh). ns per call, p50 (p99), A against B: none/personality
+  87.5 (93.8) and 87.5 (100.0); root/personality 350.0 (400.0) and 150.0 (168.8);
+  root/denied 312.5 (362.5) and 137.5 (156.2); nnp/personality 350.0 (418.8) and 150.0
+  (168.8); dev/open 1,812.5 (2,556.2) and 1,631.2 (2,056.2) beside nodev/open 1,612.5
+  (2,075.0) and 1,606.2 (2,050.0); root/load 46,300 (126,200) and 65,800 (155,200);
+  nnp/load 77,400 (224,800) and 111,000 (293,900); device/load 327,500 and 314,300. The
+  JIT's area, 2,101,248 bytes (`execmem_alloc`). The fleet, KiB, p50: a restored run's
+  working set 198,768 and 198,456, its private bytes 499,472 and 499,464 (a WHP guest's
+  memory is committed whole, so private bytes hold it all either way); a warm VM's working
+  set 193,248 and 193,248; the booted run's 301,932 and 301,824. Start latency, `command`
+  A 8,371 (34,558), B 8,106 (42,659) µs, paired median -667 µs (segments -1,088, -739,
+  +558, -697); `wall` -492 µs.
 - **Reading.**
   - A filter that runs costs a syscall 30.6 ns over none interpreted and 10.5 ns compiled
     on KVM (personality, p50; the refused path 27 against 11), 36.5 against 20.9 ns on HVF:
     compiled, it costs a third of what it did on KVM and 57 % on HVF, and on KVM the call's
-    p99 falls from 209 to 89 ns. What
-    the action cache answers (getppid) costs the same either way. A filter loaded by a task
+    p99 falls from 209 to 89 ns; on WHP, 262.5 against 62.5 ns, a quarter. What the action
+    cache answers (getppid) costs the same either way. A filter loaded by a task
     without CAP_SYS_ADMIN (nnp) costs what one loaded with it does on both: the arm64 BHB
     epilogue (D227) is not measurable here, the guest seeing its CPU as needing none
     (`spectre_v2: CSV2, but not BHB`, no firmware call: arch/aarch64/psci.rs).
   - The device filter, an eBPF program, costs an open 11.0 ns interpreted and nothing
     measurable compiled on KVM (B's dev/open below its nodev/open), 18.2 against 2.6 ns on
-    HVF: 7 times less.
+    HVF, 200 against 25 ns on WHP: 7 and 8 times less.
   - Each load compiles: +19.5 µs a seccomp(2) load on KVM (40.0 to 59.5), +11.2 µs on HVF
-    (30.8 to 42.0); the device filter's load is the same either way.
+    (30.8 to 42.0), +19.5 µs on WHP (46.3 to 65.8; 77.4 to 111.0 with no_new_privs); the
+    device filter's load is the same either way.
+  - On WHP a run from a template holds no more (its working set 312 KiB less) and answers
+    667 µs sooner: there, as on KVM, only HVF's runs pay for the compile.
   - The pack is allocated once, at the first program a guest compiles (kernel/bpf/core.c at
     v6.18, `bpf_prog_pack_alloc`: a new pack only when no pack on `pack_list` has room),
     and filled whole with trapping instructions (`alloc_new_pack`, `bpf_fill_ill_insns`
@@ -18964,13 +19008,35 @@ revision before comparing a changed API/implementation.
   - A restored VM that starts a workload compiles its filter after the restore: on HVF that
     run holds 432 KiB more footprint (p50; 1.9 % of its 22.3 MiB) and its start takes 206
     µs more on the VM's clock (1,197 to 1,404 µs); on KVM it holds no more (its p50 592 KiB
-    less) and starts 533 µs sooner at the quietest load, 873 µs pooled. Which pages the HVF
-    run writes, and what of the KVM run's path the JIT speeds, are not split here.
+    less) and starts 533 µs sooner at the quietest load, 873 µs pooled. What of the KVM
+    run's path the JIT speeds is not split here.
+  - What the HVF run writes: docs/research/measurements/bpf-jit/written.py over the working
+    set the daemon keeps beside each home's template (the pages its first restored runs
+    touched, each marked where written; crates/vmm/src/snapshot `encode_working_set`),
+    each page classed by what the template's memory file held there: one template an arm,
+    latency.sh's last on the M3 Ultra (16 KiB stage-2 pages). A: 1,361 pages touched, 701
+    written (679 holding data, 22 zero). B: 1,387 touched, 746 written (694 holding data,
+    51 zero, 1 the JIT's fill). So B's runs write 45 more host pages, 720 KiB, 29 of them
+    memory the template held free (zero, as its page reports gave it back), and one page of
+    the pack, the chunk their filter takes. The pack is not the cost; what the compile
+    after the restore allocates is: its working memory (arch/arm64/net/bpf_jit_comp.c at
+    v6.18, `bpf_int_jit_compile`: `jit_data` by kzalloc, the offsets by kvcalloc, the
+    image's writable copy by `bpf_jit_binary_pack_alloc`'s kvmalloc). The guest's
+    allocators place what is fresh at random (CONFIG_SHUFFLE_PAGE_ALLOCATOR and
+    CONFIG_SLAB_FREELIST_RANDOM in the release's config), so on HVF, whose stage-2 pages are
+    16 KiB, each fresh 4 KiB guest page can be a host page of its own.
+  - The fix built from it (D227): before a template's snapshot, init compiles one classic
+    program of a run's filter's size (512 instructions) in a child that ends with it
+    (crates/init/src/jit.rs), so that the slabs and pages a compile takes are in the
+    template, freed, for each restored run's compiles to take again. Its measurement is
+    owed: written.py, fleet.py (`--init-b`, the warm-up's init in B) and latency.sh on HVF
+    against the interpreter, done when a restored run's footprint and `command` latency
+    are within the interpreter's spread.
 - **Consequence.** D227 kept: kernel-6.18.48-fa4edcc82303 pinned (crates/shards/src/
   kernel.rs, tests/common, README). Its costs, recorded in D227: one 2 MiB pack per booted
   guest and template, 11 to 20 µs a filter load, and on Hypervisor.framework 0.43 MiB and
-  0.2 ms a run started from a template. Not measured: WHP's hyperv variant; whether
-  unprivileged filters are blinded stays D227's open question.
+  0.2 ms a run started from a template, which the warm-up (D227) is built to take back,
+  unmeasured. Whether unprivileged filters are blinded stays D227's open question.
 
 ### M497. Moves between two wired machines, cold and live, and a CPU baseline told and moved (D176 parts 6 and 7)
 
@@ -20083,3 +20149,44 @@ revision before comparing a changed API/implementation.
 - **So.** `reserve_descriptors` stays Linux's (warm.rs): on macOS and Windows a run's
   descriptors cost a warm VM no wait to make room for, and reserving would hold descriptors
   for nothing.
+
+### M513. Where a contested bind's 16 ms went: closing a netfilter socket waits out a grace period (D122, M498)
+
+- **Question.** M498's run of build.rs `chooser_round_trip_costs` on Fedora (x86_64, Linux
+  6.19 host, a guest of 32 vCPUs, integration revision f9dee140, n = 2,000 rounds an
+  agent) found a contested port's bind(2) at p50 16.0 ms (p99 32 ms, max 175 ms) and
+  listen(2) at p50 16.1 ms, where a filtered, uncontested port's took 19 and 14 µs and an
+  unfiltered domain's 0.28 and 0.18 µs. The chooser is single-threaded, and each choice
+  (a listen answered, and a socket's end told) was programmed before the next call was
+  read. Where in programming do 16 ms go?
+- **Method.** The chooser's path read against the guest kernel's source, Linux 6.18.48
+  (src/kernel.rs's pin; gregkh/linux's v6.18.48 tag), net/netfilter/nf_tables_api.c and
+  net/netlink/af_netlink.c. `links::program_chosen` opened a NETLINK_NETFILTER socket,
+  sent one batch (both chains flushed and refilled), read its acknowledgments, and closed
+  the socket.
+- **Results.** The commit itself waits for nothing: nf_tables_commit_release (line 10538)
+  moves the batch's transactions to the destroy list and schedules the destroy work (line
+  10567), "to prevent expensive synchronize_rcu() in commit phase". The close does wait:
+  netlink_release sends NETLINK_URELEASE for a socket that has a port ID (af_netlink.c
+  line 757; a send binds one), and nf_tables' notifier, nft_rcv_nl_event (line 11912),
+  takes the commit mutex (line 11928) and calls nf_tables_trans_destroy_flush_work (line
+  11932), flush_work of that destroy work (line 10125), whose nf_tables_trans_destroy_work
+  calls synchronize_rcu (line 10113) before it frees the transactions: every choice paid a
+  whole RCU grace period on the chooser's thread, and each round (a listen, then a
+  socket's end) two of them, the member's next call waiting behind both. The guest
+  kernel is tree RCU at HZ = 250 on x86_64 and 100 on aarch64
+  (resources/kernel/firecracker-*-6.18.config), so a grace period is jiffies long. The
+  host network's binds (D124) made IPv6's loopback translation again the same way
+  (`links::host_loopback6`), once for each port a server took or let go.
+- **So.** The chooser and the host network's binds keep one netfilter socket for their
+  life (opened again only after a failure; an exchange that fails reads the rest of its
+  answers, so a kept socket holds none for the next, links.rs
+  `a_kept_socket_holds_no_answer_of_an_exchange_before`): the destroy work's grace period
+  passes on a kernel worker, off every member's call. The chooser also answers every call
+  a round of poll(2) finds before it chooses, then programs once for them all. Not yet
+  measured: the M498 test again at this change (before at its parent, after at it, n,
+  p50, p90, p99, max on Fedora and on an arm64 Mac); what is left of a contested call
+  past an uncontested one's is then the commit of two chains, which decides whether a map
+  keyed by port is worth its code. Init's setup paths still close a socket after each of
+  their commits (links.rs's switch and gates, `net::host_loopback`), a grace period each,
+  once a run.

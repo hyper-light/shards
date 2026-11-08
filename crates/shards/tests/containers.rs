@@ -11596,19 +11596,19 @@ fn a_push_ends_with_its_client_and_the_daemon() {
 /// A registry that takes uploads at `per` bytes a second on each connection, as a link
 /// whose every connection has a ceiling of its own carries them (PM M488: one upload to
 /// ttl.sh 4.5 MB/s, four 9.2). Every blob is new to it; its uploads are taken whole, with
-/// a 201, and its manifests too. The most PUTs of a blob it had at once.
-fn pacing_registry(per: usize) -> (u16, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+/// a 201, and its manifests too. How many PUTs of a blob it had at once as each began.
+fn pacing_registry(per: usize) -> (u16, std::sync::Arc<std::sync::Mutex<Vec<usize>>>) {
     use std::io::{Read as _, Write as _};
-    use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
-    let (now, most) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
-    let held = most.clone();
+    let (now, began) = (Arc::new(AtomicUsize::new(0)), Arc::new(Mutex::new(Vec::new())));
+    let held = began.clone();
     std::thread::spawn(move || {
         for tcp in listener.incoming() {
             let Ok(tcp) = tcp else { return };
-            let (now, most) = (now.clone(), held.clone());
+            let (now, began) = (now.clone(), held.clone());
             std::thread::spawn(move || {
                 let mut first = [0u8; 1];
                 if tcp.peek(&mut first).is_ok_and(|n| n == 1) && first[0] == 0x16 {
@@ -11636,7 +11636,8 @@ fn pacing_registry(per: usize) -> (u16, std::sync::Arc<std::sync::atomic::Atomic
                     }
                     let blob_put = line.starts_with("PUT ") && line.contains("/blobs/uploads/");
                     if blob_put {
-                        most.fetch_max(now.fetch_add(1, Ordering::SeqCst) + 1, Ordering::SeqCst);
+                        let at_once = now.fetch_add(1, Ordering::SeqCst) + 1;
+                        began.lock().unwrap().push(at_once);
                     }
                     // Its body at `per` a second: a 64 KiB piece, then its share of a second.
                     let mut left = length;
@@ -11674,15 +11675,15 @@ fn pacing_registry(per: usize) -> (u16, std::sync::Arc<std::sync::atomic::Atomic
             });
         }
     });
-    (port, most)
+    (port, began)
 }
 
-/// A push sends as many of a microVM's blobs at once as pay (PM M488): where each upload
-/// carries no more than its connection's ceiling, more go at once than it started with,
-/// so that a push of many layers over such a link is not held to a fixed few.
+/// A push sends as many of a microVM's blobs at once as pay over its path (D226, PM
+/// M488): over a path never seen it starts with one and, where each upload carries no
+/// more than its connection's ceiling, climbs; what it got to is kept in the home, and the
+/// next push over the path starts there.
 #[test]
-fn a_push_uploads_more_blobs_at_once_while_that_carries_more() {
-    use std::sync::atomic::Ordering;
+fn a_push_climbs_from_one_and_the_next_starts_where_it_got() {
     if cannot_run_vms() {
         return;
     }
@@ -11734,21 +11735,40 @@ fn a_push_uploads_more_blobs_at_once_while_that_carries_more() {
     blobs.extend(layers);
     let (from, _) = registry(manifest, blobs);
     let source = format!("127.0.0.1:{from}/test/image:v1");
-    // 4 MiB a second each: forty layers take 5 s at four at once, past the windows a
-    // count is measured in.
-    let (port, most) = pacing_registry(4 << 20);
+    // 4 MiB a second each: forty layers take 20 s at one at once, past the windows a count
+    // is measured in.
+    let (port, began) = pacing_registry(4 << 20);
     let home = TempDir::new("containers-push-climbs");
     let shards = |args: &[&str]| shards_in(&home, args);
-    let pulled = shards(&["pull", "-q", &source]);
+    let pulled = shards(&["pull", "image", "-q", &source]);
     assert_eq!(pulled.status, Some(0), "{pulled}");
     let target = format!("127.0.0.1:{port}/team/app:1");
-    assert_eq!(shards(&["tag", &source, &target]).status, Some(0));
-    let pushed = shards(&["push", &target]);
+    assert_eq!(shards(&["tag", "image", &source, &target]).status, Some(0));
+    let pushed = shards(&["push", "image", &target]);
     assert_eq!(pushed.status, Some(0), "{pushed}");
-    let most = most.load(Ordering::SeqCst);
-    assert!(
-        most >= 8,
-        "at most {most} uploads at once: they never climbed past four"
+    let first = std::mem::take(&mut *began.lock().unwrap());
+    let cores = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
+    assert_eq!(first.first(), Some(&1), "a new path starts at one: {first:?}");
+    let most = first.iter().copied().max().unwrap_or(0);
+    assert!(most >= 4.min(cores), "at most {most} uploads at once: {first:?}");
+    // What it got to, kept in the home in its path's one record: the registry's host and
+    // port, and the route's address, loopback's.
+    let file = home
+        .join("images")
+        .join("links")
+        .join(format!("127.0.0.1%3A{port}@127.0.0.1"));
+    let record: serde_json::Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+    let count = record["push"]["count"].as_u64().unwrap() as usize;
+    assert!(count >= 2.min(cores), "{record}");
+    let again = format!("127.0.0.1:{port}/team/app:2");
+    assert_eq!(shards(&["tag", "image", &source, &again]).status, Some(0));
+    let pushed = shards(&["push", "image", &again]);
+    assert_eq!(pushed.status, Some(0), "{pushed}");
+    let second = began.lock().unwrap().clone();
+    let at_first = second.iter().take(count).copied().max().unwrap_or(0);
+    assert_eq!(
+        at_first, count,
+        "the next push did not start where the last got: {second:?}"
     );
 }
 

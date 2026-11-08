@@ -13,14 +13,15 @@
 //!   retransmits to an unanswering peer for before it gives up (RFC 1122 §4.2.3.5, R2),
 //!   which is all a path that has passed none is given.
 //!
-//! What a path showed is kept in the home, in the image store's `links/paths/`, beside
-//! what transfers learn of their paths (D226): a file each, by its host and port, written
-//! whole by a rename as the client that learned it is let go of, read as a client first
-//! asks the path, so the next pull or push over it starts from what the last showed.
+//! What a path showed is kept in the home, in the image store's `links/`, in the one
+//! record of the path that its transfers learn into too (D226, crate::links): by its host
+//! and port and this host's address on its route there (as a connection there is given
+//! it), written whole by a rename as the client that learned it is let go of, read as a
+//! client first asks the path, and again once it knows the route, so the next pull or push
+//! over it starts from what the last showed.
 
 use std::collections::HashMap;
 use std::path::{Path as FsPath, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock, PoisonError};
 use std::time::Duration;
 
@@ -109,11 +110,13 @@ pub(crate) fn path_of(url: &crate::url::Url) -> String {
     )
 }
 
-/// The paths a client has asked, by their host and port ([`path_of`]), and the directory
+/// The paths a client has asked, by their host and port ([`path_of`]), the address this
+/// host's route to each leaves from, as its connections were given it, and the directory
 /// they are kept in, once it is known.
 #[derive(Debug, Default)]
 pub(crate) struct Paths {
     paths: Mutex<HashMap<String, Path>>,
+    routes: Mutex<HashMap<String, std::net::IpAddr>>,
     kept: OnceLock<PathBuf>,
 }
 
@@ -127,11 +130,11 @@ impl Paths {
         f(path)
     }
 
-    /// Keeps the paths in `root`'s `links/paths/` (`root` an image store's directory):
-    /// those asked already start from what they showed before, as [`learn`](Self::learn)
-    /// has it, and those asked after are read as they are first asked.
+    /// Keeps the paths in `root`'s `links/` (`root` an image store's directory): those
+    /// asked already start from what they showed before, as [`learn`](Self::learn) has it,
+    /// and those asked after are read as they are first asked.
     pub(crate) fn keep_in(&self, root: &FsPath) {
-        if self.kept.set(root.join("links").join("paths")).is_err() {
+        if self.kept.set(root.to_path_buf()).is_err() {
             return;
         }
         let keys: Vec<String> = self
@@ -148,35 +151,41 @@ impl Paths {
         }
     }
 
+    /// The path to `key` leaves this host from `from`: its record is the one of that route,
+    /// read now where nothing has been shown since it was first asked.
+    pub(crate) fn located(&self, key: &str, from: std::net::IpAddr) {
+        let new = self
+            .routes
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(key.to_string(), from)
+            .is_none_or(|was| was != from);
+        if new && let Some(shown) = self.read(key) {
+            self.learn(key, shown);
+        }
+    }
+
     fn file(&self, key: &str) -> Option<PathBuf> {
-        Some(self.kept.get()?.join(encode(key)))
+        let from = self
+            .routes
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(key)
+            .copied();
+        Some(crate::links::file(self.kept.get()?, key, from))
     }
 
-    /// What `key`'s file holds, where it holds what this build reads.
+    /// What `key`'s record holds of it, where it holds what this build reads.
     fn read(&self, key: &str) -> Option<Shown> {
-        serde_json::from_slice(&std::fs::read(self.file(key)?).ok()?).ok()
+        Some(crate::links::read(&self.file(key)?)?.shown)
     }
 
-    /// Keeps `shown` as `key`'s, whole.
+    /// Keeps `shown` as `key`'s, in its record.
     fn write(&self, key: &str, shown: &Shown) -> std::io::Result<()> {
-        static NEXT: AtomicU64 = AtomicU64::new(0);
         let Some(file) = self.file(key) else {
             return Ok(());
         };
-        let dir = file
-            .parent()
-            .ok_or_else(|| std::io::Error::other("no directory"))?;
-        std::fs::create_dir_all(dir)?;
-        let bytes = serde_json::to_vec(shown).map_err(std::io::Error::other)?;
-        let tmp = dir.join(format!(
-            ".{}.{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        std::fs::write(&tmp, bytes)?;
-        std::fs::rename(&tmp, &file).inspect_err(|_| {
-            let _ = std::fs::remove_file(&tmp);
-        })
+        crate::links::update(&file, |record| record.shown = *shown)
     }
 
     /// What the path has shown.
@@ -268,20 +277,6 @@ impl Drop for Paths {
     }
 }
 
-/// `s` as a file's name on every host: letters, digits, `.` and `-` as they are, every
-/// other byte `%XX`, so that no two names are one.
-fn encode(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for b in s.bytes() {
-        if b.is_ascii_alphanumeric() || b == b'.' || b == b'-' {
-            out.push(char::from(b));
-        } else {
-            out.push_str(&format!("%{b:02X}"));
-        }
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -354,13 +349,13 @@ mod tests {
         let _ = paths.budget("quiet:443");
         paths.keep_in(&dir);
         drop(paths);
-        let kept = dir.join("links").join("paths");
+        let kept = dir.join("links");
         let mut names: Vec<String> = std::fs::read_dir(&kept)
             .unwrap()
             .map(|e| e.unwrap().file_name().into_string().unwrap())
             .collect();
         names.sort();
-        assert_eq!(names, ["%5B%3A%3A1%5D%3A5000", "r%3A443"]);
+        assert_eq!(names, ["%5B%3A%3A1%5D%3A5000@unrouted", "r%3A443@unrouted"]);
         let next = Paths::default();
         let _ = next.budget("r:443");
         next.keep_in(&dir);
@@ -370,5 +365,35 @@ mod tests {
             "asked before it knew where"
         );
         assert_eq!(next.shown("[::1]:5000").answer.n, 1, "asked after");
+    }
+
+    /// A path's record is its route's: one asked before its route was known starts from
+    /// its record once a connection says the route, unless it has shown something since;
+    /// and what it shows then is kept in that route's record.
+    #[test]
+    fn a_path_is_kept_by_its_route() {
+        let dir = shards_testdir::TempDir::new("routes").unwrap();
+        let wired = std::net::IpAddr::from([192, 168, 1, 91]);
+        let kept = Shown {
+            trouble_us: 200_000_000,
+            ..Shown::default()
+        };
+        crate::links::update(&crate::links::file(&dir, "r:443", Some(wired)), |r| {
+            r.shown = kept
+        })
+        .unwrap();
+        let paths = Paths::default();
+        paths.keep_in(&dir);
+        assert_eq!(paths.budget("r:443"), R2, "the route not known yet");
+        paths.located("r:443", wired);
+        assert_eq!(
+            paths.budget("r:443"),
+            Duration::from_secs(400),
+            "its route's record"
+        );
+        paths.passed("r:443", Duration::from_secs(300));
+        drop(paths);
+        let record = crate::links::read(&crate::links::file(&dir, "r:443", Some(wired))).unwrap();
+        assert_eq!(record.shown.trouble_us, 300_000_000);
     }
 }

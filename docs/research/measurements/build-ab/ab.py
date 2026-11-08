@@ -104,7 +104,9 @@ def q(v, f):
 
 
 rng = random.Random(0)
-print("load %.2f %.2f %.2f" % os.getloadavg())
+# Windows has no load average (os.getloadavg is Unix's).
+if hasattr(os, "getloadavg"):
+    print("load %.2f %.2f %.2f" % os.getloadavg())
 for part, of in (("wall", lambda w, c: w), ("command", lambda w, c: c), ("outside", lambda w, c: w - c)):
     a = [of(*s) for s in samples["old"]]
     b = [of(*s) for s in samples["new"]]

@@ -289,8 +289,28 @@ pub(crate) fn exchange(sock: &OwnedFd, msgs: &[(u16, u16, Vec<u8>)]) -> io::Resu
     if unsafe { libc::send(sock.as_raw_fd(), out.as_ptr().cast(), out.len(), 0) } < 0 {
         return Err(io::Error::last_os_error());
     }
-    let mut acked = 0usize;
     let mut buf = vec![0u8; 65536];
+    let acks = acknowledged(sock, asked, &mut buf);
+    if acks.is_err() {
+        // What the kernel said past the first error, read, so that a socket kept for
+        // another exchange holds none of this one's answers.
+        // SAFETY: a buffer of the length given, without waiting.
+        while unsafe {
+            libc::recv(
+                sock.as_raw_fd(),
+                buf.as_mut_ptr().cast(),
+                buf.len(),
+                libc::MSG_DONTWAIT,
+            )
+        } > 0
+        {}
+    }
+    acks
+}
+
+/// The `asked` acknowledgments of an exchange, read: the first error among them, if any.
+fn acknowledged(sock: &OwnedFd, asked: usize, buf: &mut [u8]) -> io::Result<()> {
+    let mut acked = 0usize;
     while acked < asked {
         // SAFETY: a buffer of the length given; without waiting, as every answer is queued.
         let n = unsafe {
@@ -1453,7 +1473,11 @@ pub(crate) type Chosen = (
 /// UDP flow lives 30 s past its last datagram, 120 s once it streams,
 /// nf_conntrack_proto_udp.c), and a guest kernel without ctnetlink (shards' has none) has
 /// no other way to let one go.
-pub(crate) fn program_chosen(chosen: &[Chosen]) -> io::Result<()> {
+///
+/// On `nft`, a netfilter socket its caller keeps for its life: closing one that has
+/// committed waits out a grace period (nft_rcv_nl_event flushes the transactions' destroy
+/// work, which waits in synchronize_rcu, nf_tables_api.c; PM M513).
+pub(crate) fn program_chosen(nft: &OwnedFd, chosen: &[Chosen]) -> io::Result<()> {
     let eth0 = interface_index("eth0")?;
     let mut b = Batch::new();
     b.chain(
@@ -1515,7 +1539,7 @@ pub(crate) fn program_chosen(chosen: &[Chosen]) -> io::Result<()> {
         });
         b.rule(CHOSEN, e);
     }
-    b.commit(&netlink_socket(libc::NETLINK_NETFILTER)?)
+    b.commit(nft)
 }
 
 /// On the host's network (D124): what the run's processes send IPv6's loopback (`::1`)
@@ -1526,8 +1550,13 @@ pub(crate) fn program_chosen(chosen: &[Chosen]) -> io::Result<()> {
 /// port) by the run's own servers there, which stay the guest's. Made again whole, in one
 /// transaction, as those change: chains `host-out`, at the output hook as NAT's
 /// destination translation is, and `host-post`, at postrouting, of table `shards` of
-/// family ip6.
-pub fn host_loopback6(guest6: Ipv6Addr, gateway6: Ipv6Addr, held: &[(u8, u16)]) -> io::Result<()> {
+/// family ip6. On `nft`, a netfilter socket its caller keeps, as [`program_chosen`]'s.
+pub fn host_loopback6(
+    nft: &OwnedFd,
+    guest6: Ipv6Addr,
+    gateway6: Ipv6Addr,
+    held: &[(u8, u16)],
+) -> io::Result<()> {
     let eth0 = interface_index("eth0")?;
     let mut b = Batch::of(nft::NFPROTO_IPV6);
     b.chain(
@@ -1576,7 +1605,7 @@ pub fn host_loopback6(guest6: Ipv6Addr, gateway6: Ipv6Addr, held: &[(u8, u16)]) 
         be32(d, nft::NFTA_NAT_REG_ADDR_MIN, nft::NFT_REG_1);
     });
     b.rule(b"host-post\0", e);
-    b.commit(&netlink_socket(libc::NETLINK_NETFILTER)?)
+    b.commit(nft)
 }
 
 /// An interface's index, by its name.
@@ -2383,4 +2412,51 @@ pub fn confine_eth0() -> io::Result<()> {
         )?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::indexing_slicing)]
+
+    use super::*;
+
+    /// A netlink acknowledgment: an nlmsghdr, the error (0 for none), and the request's
+    /// header.
+    fn ack(code: i32) -> Vec<u8> {
+        let mut m = 36u32.to_ne_bytes().to_vec();
+        m.extend_from_slice(&NLMSG_ERROR.to_ne_bytes());
+        m.extend_from_slice(&[0; 10]);
+        m.extend_from_slice(&code.to_ne_bytes());
+        m.extend_from_slice(&[0; 16]);
+        m
+    }
+
+    /// An exchange the kernel refuses part of leaves none of its answers on the socket, so
+    /// that one kept (the chooser's, PM M513) counts only the next exchange's for it.
+    #[test]
+    fn a_kept_socket_holds_no_answer_of_an_exchange_before() {
+        let (ours, kernel) = std::os::unix::net::UnixDatagram::pair().unwrap();
+        let ours = OwnedFd::from(ours);
+        let asked = vec![(0u16, NLM_F_REQUEST | NLM_F_ACK, Vec::new()); 3];
+        for code in [0, -libc::EEXIST, 0] {
+            kernel.send(&ack(code)).unwrap();
+        }
+        let e = exchange(&ours, &asked).unwrap_err();
+        assert_eq!(e.raw_os_error(), Some(libc::EEXIST));
+        for _ in 0..3 {
+            kernel.send(&ack(0)).unwrap();
+        }
+        exchange(&ours, &asked).unwrap();
+        let mut buf = [0u8; 64];
+        // SAFETY: recv(2) into a buffer of ours, without waiting.
+        let left = unsafe {
+            libc::recv(
+                ours.as_raw_fd(),
+                buf.as_mut_ptr().cast(),
+                buf.len(),
+                libc::MSG_DONTWAIT,
+            )
+        };
+        assert_eq!(left, -1, "an answer was left");
+    }
 }

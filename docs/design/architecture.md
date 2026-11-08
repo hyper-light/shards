@@ -7793,10 +7793,12 @@ its release's name (.github/workflows/kernel.yml), so its words stay as they wer
 
 **What it gives** (PM M489, p50): a syscall the default profile's filter runs on costs
 10.5 ns over no filter where it cost 30.6 (KVM x86_64), 20.9 where it cost 36.5
-(Hypervisor.framework, M3 Ultra), and on KVM its p99 falls from 209 to 89 ns; the device
-filter, an eBPF program, costs an open nothing measurable where it cost 11 ns (KVM) and 2.6
-where it cost 18.2 (HVF); on KVM a run from a template answers 533 µs sooner on the VM's
-clock (the quietest segment; 873 pooled). And no workload's guest holds an interpreter.
+(Hypervisor.framework, M3 Ultra), 62.5 where it cost 262.5 (WHP, the hyperv variant), and
+on KVM its p99 falls from 209 to 89 ns; the device filter, an eBPF program, costs an open
+nothing measurable where it cost 11 ns (KVM), 2.6 where it cost 18.2 (HVF) and 25 where it
+cost 200 (WHP); a run from a template answers 533 µs sooner on KVM's VM clock (the quietest
+segment; 873 pooled) and 667 µs sooner on WHP's. And no workload's guest holds an
+interpreter.
 
 - kernel/bpf/Kconfig (v6.18): BPF_JIT "allows the kernel to generate native code when a
   program is loaded into the kernel. This will significantly speed-up processing of BPF
@@ -7852,16 +7854,30 @@ latency.sh, the kernel pinned before against this one, interleaved):
   filter; on the M3 Ultra a filter loaded with no_new_privs costs a call what one loaded
   with CAP_SYS_ADMIN does (M489, `nnp/*`).
 - **Each start compiles its filter.** A seccomp(2) load takes 59.5 µs where it took 40.0
-  (KVM), 42.0 where it took 30.8 (HVF). On HVF a run from a template answers 206 µs later
-  on the VM's clock (1,197 to 1,404 µs), every template's interval above 0; which of its
-  writes after the restore cost it is not split.
+  (KVM), 42.0 where it took 30.8 (HVF), 65.8 where it took 46.3 (WHP). On HVF a run from
+  a template answers 206 µs later on the VM's clock (1,197 to 1,404 µs), every template's
+  interval above 0; on KVM and WHP sooner (533 and 667 µs). The HVF run's restored guest
+  writes 45 more 16 KiB host pages than the interpreter's, 29 of them memory its template
+  held free, one the pack's (M489, written.py): what a compile allocates, placed at random
+  by the guest's allocators (SHUFFLE_PAGE_ALLOCATOR, SLAB_FREELIST_RANDOM), not the pack.
+- **The JIT warmed in every template** (built; measurement owed, M489). Before a
+  template's snapshot, init compiles one classic program of a run's filter's size (512
+  instructions, past the default profile's 252 on arm64 and 397 on x86_64) in a child
+  that sets no_new_privs, loads it and ends (crates/init/src/jit.rs, `warm`), so that
+  what a compile allocates is in the template, freed, for every restored run's compiles
+  to take again: the work moved before the snapshot, as D44 moved the device filter's
+  load. The guest's code, for every host: KVM's and WHP's runs paid nothing measurable
+  for their compiles (M489), and take the same template step, one compile, once a
+  template; a failed warm-up is said on init's stderr and the template is saved without
+  it, as one is without a JIT.
 - **Code made for the boot CPU.** The JIT chooses instructions by the CPU the guest booted
   on, as the kernel's alternatives choose its own; a microVM moved to another machine is
   checked for the CPU features its guest may use already (D176, PM M460).
 
-Open: M489's numbers on WHP (the hyperv variant); what of HVF's 206 µs and 432 KiB a run
-pays its filter's compile after a restore could be paid before the template's snapshot;
-whether unprivileged loads should be blinded (`bpf_jit_harden=1`, which blinds the
+Open: the warm-up's measurement on HVF (written.py, fleet.py, latency.sh against the
+interpreter: done when a restored run's footprint and latency are within the
+interpreter's spread), and on KVM and WHP that it costs their runs nothing; whether
+unprivileged loads should be blinded (`bpf_jit_harden=1`, which blinds the
 constants of a program a task without CAP_BPF loads, a seccomp filter's among them) is not
 decided.
 
@@ -8999,9 +9015,9 @@ prints.
 **Next.** A mirror that answers but stalls a blob's body: the pull's resumes go on asking
 it (fetch.rs), where dockerd's pull would fall to its next endpoint.
 
-### D226. A push sends as many blobs at once as pay, each in as few requests as its registry takes (built)
+### D226. Pushes and pulls learn their network path: as many transfers at once as pay, chunks of the size that costs least a byte (built; measurements owed)
 
-**Found.** `shards push` uploaded a manifest's blobs 5 at once, dockerd's
+**Found.** `shards push image` uploaded a manifest's blobs 5 at once, dockerd's
 `max-concurrent-uploads` (moby `daemon/config/config.go`, `DefaultMaxConcurrentUploads`),
 whatever the link, where a pull's fetcher measures its connections and doubles them while
 that pays (M114): a figure of Docker's machinery, listed open in the de-Dockerify audit
@@ -9016,41 +9032,135 @@ differs from link to link, and so does how much they bring. On one host sixteen 
 eight carried less than four; to ttl.sh across the Internet four carried twice what one
 did, and blobs of 256 KiB, bound by their round trips, gained to sixteen everywhere. A
 blob sent in chunks cost what a request does: whole 632 MB/s on one host, in 8 MiB chunks
-421, in 1 MiB 166.
+421, in 1 MiB 166. Its first version (2026-11-08) still chose three figures, a start at four, a doubling
+kept for a tenth more, chunks only after a 413; the user refused them as encoding our own
+network: every value is now a protocol's, measured on the path as shards runs, or an
+estimator's of what was measured (the table below).
 
 **Decided.**
-- **Uploads at once climb while they pay** (`crate::climb`, shared with the pull's
-  fetcher, which it was taken out of): four at first, as on no link measured did fewer
-  carry more; each second the bytes every upload has sent are measured, the second after
-  a change passed over and a second where an upload had no blob left out; a doubling is
-  kept where it brings a tenth more (the fetcher's figure, four connections' spread from
-  second to second, M114), and one that does not goes back to the count before, kept for
-  the rest of the manifest. No most but the manifest's blobs: a fixed most would be a
-  number measured on one link only. Uploads past the count take no new blob once the
-  count falls; each finishes the one it has.
-- **A blob goes whole, and in chunks only where its registry refuses it whole** (push.rs,
-  registry.rs `upload`): one PUT, the fewest requests, unless a request of a blob so long
-  was refused with a 413 already. Then it goes in PATCHes of distribution-spec v1.1.1's
-  chunked upload (spec.md, "Pushing a blob in chunks": in order, each `Content-Range`
-  inclusive, each answered 202 with a `Location` the next goes to and a `Range` that says
-  what the registry has, which is where the next starts), then a PUT with its digest and
-  no body. A chunk holds half the least the registry refused, halved again at each 413,
-  never less than the `OCI-Chunk-Min-Length` its POST's answer names (a refusal of one so
-  small fails the push, naming the request); what was refused is the push's own, so the
-  next blob goes straight to chunks the registry takes. A proxy's 413 comes before the
-  registry has the request, so the upload begun stays open and takes the chunks.
-- **Tested**: `climb`'s unit tests (a count doubles while a doubling pays, returns to the
-  last that did, measures no window it began in or where a transfer had no work);
-  `push`'s `uploads_climb_while_more_carry_more` (uploads that each carry their own climb
-  to sixteen or more; uploads sharing one link go back to four and stay); `registry`'s
-  `a_blob_refused_whole_goes_up_in_chunks_the_registry_takes` and
-  `chunks_hold_at_least_what_the_registry_asks` (each request's method and range, in
-  order); and containers.rs' `a_push_uploads_more_blobs_at_once_while_that_carries_more`
-  (`shards push` of forty 2 MiB layers to a registry that takes each connection's upload
-  at 4 MiB/s has more than four at once), on Fedora's KVM. Against a real registry:
-  `measurements/push-uploads/limited.sh`, `shards push` of nginx:alpine to registry:2
-  behind nginx at its default 1 MiB limit, pulled back through it to the same digest
-  (M488).
+- **A path is learned, and kept in the home** (`crate::links`): one record a path,
+  `images/links/<registry host:port>@<address>`, which its pulls and its pushes learn
+  into, each its own part, beside D222's waits and troubles of the path (patience.rs,
+  `#[serde(default)]` each part, so a record of one part is read whole); the address
+  this host's on its route to the registry: the local address of a TCP
+  connection dialled there as the client dials its own (to its proxy, where one is used),
+  then let go, one handshake. Over Wi-Fi and over a wire a host has two addresses, so the
+  same registry is learned apart over each; two networks that lease the host the same
+  address are one path until its samples say otherwise (the aging below). A record holds the
+  count of transfers the path converged to, Welford's mean and variance of what each
+  second at that count carried, the least a request took to answer, and the bytes of
+  bodies sent and the sends that failed. It is written whole by a rename, so a reader
+  never sees half of one; two that change it at once leave one's change, which the other
+  learns again. A path's pulls and pushes are learned apart within it: a home's uplink
+  and downlink differ (M114 pulled at 98 MB/s where M488 pushed to ttl.sh at 4.5).
+- **A path never seen starts at one transfer and doubles while a doubling pays**
+  (`crate::climb`, for push.rs's uploads and fetch.rs's connections alike): TCP's slow
+  start (RFC 5681 §3.1), one transfer the least window. Once its requests have answered
+  and a count has carried something, it goes straight to what the path needs in flight
+  where that is past a doubling: the bandwidth-delay product over the mean blob or layer a
+  transfer holds, the bandwidth the most a second carried and the delay the least a
+  request took to answer, as BBR estimates both (Cardwell et al., ACM Queue 14(5), 2016).
+  Never past the cores this process may run on (`available_parallelism`): each transfer
+  hashes, runs TLS, and a pull's decompresses, and more contend. Nor past a push's blobs.
+- **A doubling pays only past the path's own noise**: each count is measured over two
+  windows after one that settles (two, the fewest that have a variance), and a doubling
+  is kept where its mean is above the count before's by more than the two counts' pooled
+  standard deviation; one that is not goes back to the count before, kept for the rest of
+  the transfer. A lossy path, where more streams lose more, keeps fewer that way.
+- **A learned path starts where it converged**, held to the cores; its first two windows
+  are judged against the record: where their mean is apart from the record's by more than
+  the pooled standard deviation, the path changed, and is learned again from one. That is
+  its aging: a record is believed as long as the path still measures as it did, never for
+  a time chosen. A path's failures age the same way: this transfer's count is added to
+  the record's where it is within a Poisson count's spread (the root of its mean) of what
+  the record's rate expected for the bytes sent, and replaces it where not.
+- **A push's chunk is the size that costs least a byte** (`links::optimum`): a chunk of c
+  bytes costs c/rate to send and one request's answer, and a send that fails loses, on
+  average, the half of its chunk sent; the time a byte, 1/rate + answer/c + loss·c/(2·rate),
+  is least at c = √(2·answer·rate/loss), Young's optimum interval between checkpoints
+  (CACM 17(9), 1974), with rate what each upload carries a second, answer the least a
+  request took, and loss the path's failures a byte. A path that never failed has no
+  finite optimum: a blob goes in one PUT, the fewest requests. One that fails goes in
+  distribution-spec v1.1.1's chunks (spec.md, "Pushing a blob in chunks": in order, each
+  `Content-Range` inclusive, each answered 202 with a `Location` and a `Range`), then a
+  PUT with the digest and no body. A send that fails is resumed from what the registry
+  says it has, a GET of the upload's `Location` answered 204 with its `Range`, never from
+  the blob's start unless the upload is gone (404, begun again); a file's body is not
+  resent whole by the request's own retries. A failure is a reset, a timeout, or a send
+  cut short (now a transient failure, not a refusal). Each resume waits a random share of
+  how long the trouble has lasted (D222's `Trouble`), and the upload gives up once its
+  sends have failed for its path's trouble budget without the registry taking more
+  (twice the longest trouble the path passed, at least TCP's R2: crate::patience); no
+  count of attempts.
+- **The registry's own limits bound the chunk too**: never less than the
+  `OCI-Chunk-Min-Length` its POST's answer names (spec.md), and never more than it takes
+  in one request: a 413 (nginx before it refuses a body past `client_max_body_size`, 1 MiB
+  unless set) makes the next chunk the midpoint of the most it took and the least it
+  refused, a bisection that ends at the most it takes. A proxy's 413 comes before the
+  registry has the request, so the upload begun stays open and takes the chunks. A refusal
+  of a chunk at the registry's least fails the push, naming the request.
+- **On every host alike**, through std and what each system documents:
+  - The path: each system gives a connected TCP socket the source address its route
+    chose, and getsockname says it: Linux (net/ipv4/tcp_ipv4.c `tcp_v4_connect`, its
+    source from `ip_route_connect`), XNU (bsd/netinet/in_pcb.c `in_pcbconnect`, from
+    `in_pcbladdr`'s route lookup), Windows ("the local association that has been set by
+    the system", Microsoft Learn, winsock `getsockname`). A UDP socket's would send
+    nothing, but Windows may not say its address before I/O (the same page), so a TCP
+    connection is what tells it. The route's gateway and interface (Linux's routing
+    table, macOS's SCNetworkReachability, Windows' `GetBestRoute2` and its interface
+    LUID) are not read: the source address alone keys the path.
+  - The cores: `std::thread::available_parallelism`, each system's count of the CPUs
+    this process may run on, as std documents it (on Linux the affinity mask and the
+    cgroup's CPU quota taken into account).
+  - Failures: std's `io::ErrorKind` of each system's errors (ECONNRESET and WSAECONNRESET
+    as `ConnectionReset`, EPIPE as `BrokenPipe`, ETIMEDOUT and WSAETIMEDOUT as `TimedOut`,
+    ECONNABORTED and WSAECONNABORTED as `ConnectionAborted`), taken as transient by
+    `Error::from`; a send cut short is shards' own error, transient alike.
+- **The CPU is bounded by the cores, not their load**: shards reads no host CPU load to
+  reuse (its budgets read memory pressure, D188), so the cap is the cores this process may
+  run on, and the noise rule finds where contention for them stops a doubling paying.
+
+**Every value, and where it comes from.**
+
+| Value | Where | Source |
+|---|---|---|
+| a start at 1 transfer | `Climb::new` | RFC 5681 §3.1 slow start, the least window |
+| ×2 a step | `Climb::window` | RFC 5681 §3.1: a window doubles a round trip |
+| need = ⌈peak · answer / unit⌉ | `Climb::need` | measured bandwidth and delay (BBR's estimators), measured mean blob |
+| most = min(blobs, cores) | push.rs, fetch.rs | the push's blobs; `available_parallelism` |
+| 2 samples a count | `SAMPLES` | the fewest with a variance (n − 1 ≥ 1) |
+| pays: gain > pooled sd | `pays` | Welford's variance of the path's own samples |
+| changed: \|Δmean\| > pooled sd | `same` | the same |
+| failures kept: \|n − E\| ≤ √E | `links::aged` | a Poisson count's standard deviation |
+| c = √(2 · answer · rate / loss) | `links::optimum` | solved minimum of the time a byte (Young 1974); the 2 is a failure's mean loss, half a chunk |
+| whole where loss = 0 | `links::optimum` | the optimum has no finite value |
+| chunk ≥ `OCI-Chunk-Min-Length`, none where unstated | `Registry::begin` | distribution-spec v1.1.1 |
+| midpoint of took and refused | `Registry::chunk` | bisection |
+| `0-0` taken as nothing | `Registry::status` | distribution `blobupload.go`: an upload of 0 or 1 bytes says `0-0` |
+| 1 s a window | `climb::WINDOW` | **not derived**: M114's measuring period, kept |
+| failures without progress, for the path's budget | `Trouble`, `Client::budget` | D222's: twice the longest trouble the path passed (doubling search), at least RFC 1122's R2 |
+| 30 s to look the route up | `http::CONNECT` | **not derived**: Go's dial timeout, kept from before |
+
+- **Tested** (Fedora, x86_64): `climb`'s
+  `a_spread_is_its_samples_mean_and_variance`, `a_doubling_pays_past_the_noise_measured`
+  (1.41 within a √2 spread, 1.42 past it), `a_new_path_starts_at_one_and_doubles_while_it_pays`,
+  `a_count_jumps_to_the_paths_bandwidth_delay_product` (10 MB/s, 300 ms, 256 KiB: 12),
+  `a_learned_path_starts_where_it_converged_until_it_changed`, `a_count_stops_at_its_most`;
+  `links`' `a_paths_record_is_kept_by_its_path` (another route, another record),
+  `a_chunk_is_the_least_time_a_byte`, `failures_age_by_the_change_measured` (100 expected:
+  110 kept, 111 and 89 replace it), `a_links_chunk_follows_its_failures` (1 MB/s, 20 ms,
+  1e-5 a byte: 63,246 bytes); `push`'s `uploads_climb_from_one_and_the_next_push_starts_where_they_got`;
+  `registry`'s `a_blob_refused_whole_goes_up_in_chunks_the_registry_takes`,
+  `chunks_hold_at_least_what_the_registry_asks` and
+  `a_failed_send_resumes_from_what_the_registry_has` (a PUT cut off, 4 bytes in: the next
+  PATCH starts at byte 4); and containers.rs' `a_push_climbs_from_one_and_the_next_starts_where_it_got`
+  (`shards push image` of forty 2 MiB layers at 4 MiB/s a connection: the first starts at one
+  and climbs; its record in the home; the second starts at the count kept).
+- **Which input bound each case**: M488's first measurements had all its hosts at 32
+  cores and at most 16 transfers, so none was bound by the CPU: one host's rose to 16 (the
+  blobs), the LAN's and ttl.sh's were bound by the link. The adaptive push's and pull's own
+  numbers, cold and warm, over the wired pair (adacachy, adacachy2), the Mac Studios' Wi-Fi,
+  and tc-netem's induced loss and delay, are owed (M488's list).
 
 ### D193. A run past its pids limit says so: a `pids-limit` event (built)
 
@@ -14226,10 +14336,11 @@ network as containerd's: so each wait is learned from the path it is on, as shar
   does not say passes, is asked again once, and a repeat is the request's own answer.
   A cancel ends a wait at once.
 - **Kept in the home, by path**: what each path showed (its answers' and silences'
-  estimators, the longest trouble it passed and how many) is a file under the image
-  store's `links/paths/`, named by its host and port, beside D226's records of what
-  transfers learn of their paths; written whole by a rename as the pull or push lets its
-  client go, and read as a client first asks the path. A pull's registry, its token server
+  estimators, the longest trouble it passed and how many) is kept in the path's one
+  record under the image store's `links/`, named by its host and port and this host's
+  address on its route there (D226), with what transfers learn of the path; written
+  whole by a rename as the pull or push lets its client go, read as a client first asks
+  the path, and again once a connection says its route. A pull's registry, its token server
   and its CDN are three paths, each learned for itself.
 - **A stuck item is isolated**: a layer whose request goes unanswered holds no other: the
   pull's connections take the layers after it (fetch.rs), and its own is asked again as
@@ -14949,9 +15060,21 @@ receiver for an incoming port" above:
   A notification names the calling thread, which pidfd_open(2) refuses where it leads no
   thread group: the chooser, and the host network's binds (D124), open its group's leader
   then, so that a server binding on a thread of its own is seen (found by that test).
+- **A choice costs a commit, not a grace period (PM M513).** M498 found a contested
+  bind(2) and listen(2) each at 16 ms (p50) where an uncontested filtered one took 19 and
+  14 µs: the chooser programmed each choice on a netfilter socket of its own and closed
+  it, and a netfilter socket's close (NETLINK_URELEASE, nft_rcv_nl_event) flushes the
+  pending transactions' destroy work, which waits in synchronize_rcu (nf_tables_api.c,
+  Linux 6.18.48), with the commit mutex held, while the member's next call waited
+  behind it. The chooser and the host network's binds (D124, IPv6's loopback) keep one
+  socket for their life, so that the destroy work's grace period passes on a kernel
+  worker; and the chooser answers every call a round of poll(2) finds before it
+  programs, choosing once for them all. The chains stay rebuilt whole: what a commit of
+  them costs now is M513's after-run, which decides whether a map keyed by port is
+  worth its code.
 - **Not yet**: ports past the microVM are IPv4's alone (D99). The costs (PM M498) are
   unmeasured: a build step's device cgroup (`docs/research/measurements/step-devices/run.py`)
-  and the chooser's round trip (`step-devices/chooser.sh`).
+  and the chooser's round trip after M513 (`step-devices/chooser.sh`).
 
 ### D121. Docker's AppArmor mount rule, in guests that have no AppArmor
 

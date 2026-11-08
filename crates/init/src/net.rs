@@ -496,7 +496,12 @@ pub fn host_loopback() -> io::Result<()> {
         attr(&mut r, RTA_OIF, &index.to_ne_bytes());
         attr(&mut r, RTA_PRIORITY, &LOCAL6_METRIC.to_ne_bytes());
         request(&sock, RTM_NEWROUTE, NLM_F_CREATE | NLM_F_EXCL, &r)?;
-        crate::links::host_loopback6(guest6, gateway6, &[])?;
+        crate::links::host_loopback6(
+            &crate::links::netlink_socket(libc::NETLINK_NETFILTER)?,
+            guest6,
+            gateway6,
+            &[],
+        )?;
     }
     let (_, _, gateway) = current().ok_or_else(|| io::Error::other("eth0 has no address"))?;
     crate::setup::write_sysctl("net.ipv4.conf.eth0.route_localnet", "1").map_err(io::Error::other)?;
