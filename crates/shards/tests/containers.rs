@@ -5888,8 +5888,8 @@ fn a_stopped_microvms_layer_stays_in_its_file() {
 }
 
 /// A stopped microVM's next run goes on over the file its layer was kept in (D190), where
-/// the layer holds past what packing it costs less below (`layers::OVER_FROM`, 5 MiB on
-/// Linux, 7 on macOS and Windows): the
+/// the home's restarts say going over is the quicker for what it holds (a home whose
+/// records cross at 4 MiB, `common::restarts_cross_at`): the
 /// file goes under its microVM's layer device as it is, its root the image over it, and
 /// stays the microVM's, the same file, with what each run wrote; the microVM's own layer
 /// goes. One that holds little is packed and put back, in another file. What a run's guest
@@ -5900,6 +5900,7 @@ fn a_stopped_microvms_next_run_goes_on_over_its_kept_file() {
     let Some((home, image)) = home("containers-over") else {
         return;
     };
+    common::restarts_cross_at(&home, 4 << 20, TIMEOUT);
     let shards = |args: &[&str]| shards_in(&home, args);
     let big = 32u64 << 20;
     // Each run writes a file, 8 MiB it keeps and 32 MiB it removes, and makes a directory: a

@@ -734,6 +734,12 @@ struct OwnEngine {
     registry_env: Vec<String>,
 }
 
+/// The way a restart took its kept layer (D190), what that held, and when it was chosen.
+type LayerWay = (layers::Restart, u64, Instant);
+
+/// A kept layer's file going under a restart's layer device (D190), and where it is.
+type KeptOver = (File, PathBuf);
+
 /// What a run's registration keeps of its request: a detached client, until it is told
 /// whether its command started, and what each `exec` in its microVM starts from.
 struct Keep<'a> {
@@ -755,6 +761,9 @@ struct Keep<'a> {
     /// Where its writable layer was kept, which goes under its microVM's layer device as
     /// it starts (D190): its VM's layer from then on, which stays where it is.
     layer_over: Option<PathBuf>,
+    /// The way its kept layer was taken, where it could go either, what it held, and when
+    /// it was chosen: recorded as its command starts ([`layers::Restarts`]).
+    layer_way: Option<LayerWay>,
     /// How many segments its log keeps (D161): its own, else the daemon's.
     log_files: u64,
     /// Its log's rotated segments are compressed (D162).
@@ -886,6 +895,8 @@ struct Inbox {
     /// word once its command had started, its journal then to replay as it is read
     /// (`layers::open_kept`). Else let go of.
     layer: Option<layers::LayerFile>,
+    /// [`Keep::layer_way`].
+    layer_way: Option<LayerWay>,
     /// [`Keep::named`].
     named: Option<String>,
     /// [`Keep::restarted`].
@@ -1176,6 +1187,9 @@ struct Daemon<D: Disk = Real> {
     /// one is no more.
     settling: Mutex<HashSet<String>>,
     settled: Condvar,
+    /// What this host's restarts over a kept layer and packing it cost (D190), which
+    /// decides each next one's way.
+    layer_restarts: Mutex<layers::Restarts>,
     /// Each microVM's restart manager, as its runs end (restart.rs).
     restarts: Mutex<HashMap<String, restart::Manager>>,
     /// The microVMs the daemon itself is starting again, for their policies: such a
@@ -1928,6 +1942,8 @@ impl<D: Disk> Daemon<D> {
     ) -> io::Result<Daemon<D>> {
         let home_id = crate::os::path_id(&home);
         let events = events::Events::kept_in(&home);
+        // What this host's restarts cost each way, as its last daemon left them (D190).
+        let layer_restarts = layers::Restarts::kept_in(&home);
         Ok(Daemon {
             home,
             bridge: settings.bridge,
@@ -1987,6 +2003,7 @@ impl<D: Disk> Daemon<D> {
             events,
             settling: Mutex::default(),
             settled: Condvar::new(),
+            layer_restarts: Mutex::new(layer_restarts),
             restarts: Mutex::default(),
             restarting_now: Mutex::default(),
             visiting: Mutex::default(),
@@ -3760,7 +3777,7 @@ impl<D: Disk> Daemon<D> {
         // What it changed before (D37); a resumed one's is in its memory. Its layer kept in
         // its file goes under its microVM's layer device as it is, where the microVM's is of
         // its length (D190); else it is put back.
-        let over = match again.as_ref().filter(|_| resuming.is_none() && !joining) {
+        let (over, layer_way) = match again.as_ref().filter(|_| resuming.is_none() && !joining) {
             Some(_) => match self.layer_over(&id, &run) {
                 Ok(over) => over,
                 Err(e) => {
@@ -3771,7 +3788,7 @@ impl<D: Disk> Daemon<D> {
                     return None;
                 }
             },
-            None => None,
+            None => (None, None),
         };
         let layer_in = match again.as_ref().filter(|_| resuming.is_none() && over.is_none()) {
             Some(_) => match self.layer_in(threads, &id, joining) {
@@ -3930,6 +3947,7 @@ impl<D: Disk> Daemon<D> {
                 restarted: restarting,
                 layer_pending: layer_out.is_some(),
                 layer_over: over.as_ref().map(|(_, at)| at.clone()),
+                layer_way,
                 log_files: kept.map_or(DEFAULT_LOGS.files, |k| k.files),
                 log_compress: kept.is_some_and(|k| k.compress),
                 visit: false,
@@ -5260,6 +5278,7 @@ impl<D: Disk> Daemon<D> {
             restarted,
             layer_pending,
             layer_over,
+            layer_way,
             log_files,
             log_compress,
             visit,
@@ -5342,6 +5361,7 @@ impl<D: Disk> Daemon<D> {
             waited_execs: Vec::new(),
             layer_pending,
             layer,
+            layer_way,
             named,
             restarted,
             incoming: Default::default(),
@@ -5727,23 +5747,33 @@ impl<D: Disk> Daemon<D> {
     /// file's length (`--storage-opt size`, which its template is made for): its VM maps it
     /// where the template's layer was (`platform::map_file_shared_at`). Its journal replayed
     /// first where its microVM was killed ([`layers::open_kept`]). None where it has none, or
-    /// where it is to be put back instead ([`layer_in`](Self::layer_in)).
-    fn layer_over(&self, id: &str, run: &Run) -> Result<Option<(File, PathBuf)>, String> {
+    /// where it is to be put back instead ([`layer_in`](Self::layer_in)): the way this host's
+    /// restarts say is quicker for what it holds ([`layers::Restarts`]), which goes with it,
+    /// what it held and when, to be recorded as its command starts.
+    fn layer_over(&self, id: &str, run: &Run) -> Result<(Option<KeptOver>, Option<LayerWay>), String> {
         let at = lock(&self.containers).dir(id).join(layers::KEPT);
         let Ok(meta) = std::fs::metadata(&at) else {
-            return Ok(None);
+            return Ok((None, None));
         };
         let holds = crate::setup::storage_size(run)?.unwrap_or(crate::run::LAYER_HOLDS);
         if meta.len() != layers::size(holds)? {
-            return Ok(None);
+            return Ok((None, None));
         }
         let kept = layers::open_kept(&at)?;
-        // One that holds little is packed and put back: quicker, below what it holds at
-        // [`layers::OVER_FROM`] (PM M443).
-        match layers::held(&kept, meta.len()) {
-            Ok(Some(held)) if held < layers::OVER_FROM => return Ok(None),
-            Ok(_) => {}
-            Err(e) => log(format!("container {id}: what its writable layer holds: {e}")),
+        // One whose blocks are not counted goes over, whatever it holds.
+        let way = match layers::held(&kept, meta.len()) {
+            Ok(Some(held)) => {
+                let way = lock(&self.layer_restarts).choose(held);
+                Some((way, held, Instant::now()))
+            }
+            Ok(None) => None,
+            Err(e) => {
+                log(format!("container {id}: what its writable layer holds: {e}"));
+                None
+            }
+        };
+        if let Some((layers::Restart::Packed, ..)) = way {
+            return Ok((None, way));
         }
         drop(kept);
         let file = std::fs::OpenOptions::new()
@@ -5751,7 +5781,7 @@ impl<D: Disk> Daemon<D> {
             .write(true)
             .open(&at)
             .map_err(|e| format!("{}: {e}", at.display()))?;
-        Ok(Some((file, at)))
+        Ok((Some((file, at)), way))
     }
 
     /// Container `id`'s writable layer, as its VM left it (D37): kept if it came `whole`;
@@ -5993,6 +6023,12 @@ impl<D: Disk> Daemon<D> {
     /// `SetRunning`).
     fn run_started(&self, id: &str, inbox: &mut Inbox) {
         inbox.started = true;
+        // What its restart's way took, for the next (D190).
+        if let Some((way, held, chosen)) = inbox.layer_way.take()
+            && let Err(e) = lock(&self.layer_restarts).record(&self.home, way, held, chosen.elapsed())
+        {
+            log(format!("container {id}: its restart's cost: {e}"));
+        }
         if inbox.visit {
             return;
         }
@@ -9692,6 +9728,7 @@ mod tests {
                         restarted: false,
                         layer_pending: false,
                         layer_over: None,
+                        layer_way: None,
                         log_files: DEFAULT_LOGS.files,
                         log_compress: false,
                         visit: false,
@@ -10020,6 +10057,7 @@ mod tests {
                             restarted: false,
                             layer_pending: false,
                             layer_over: None,
+                            layer_way: None,
                             log_files: DEFAULT_LOGS.files,
                             log_compress: false,
                             visit: false,
@@ -12194,6 +12232,7 @@ mod tests {
                 restarted: false,
                 layer_pending: false,
                 layer_over: None,
+                layer_way: None,
                 log_files: DEFAULT_LOGS.files,
                 log_compress: false,
                 visit: false,
@@ -12244,6 +12283,7 @@ mod tests {
                 restarted: false,
                 layer_pending: false,
                 layer_over: None,
+                layer_way: None,
                 log_files: DEFAULT_LOGS.files,
                 log_compress: false,
                 visit: false,
@@ -12836,6 +12876,7 @@ mod tests {
                     restarted: false,
                     layer_pending: false,
                     layer_over: None,
+                    layer_way: None,
                     log_files: DEFAULT_LOGS.files,
                     log_compress: false,
                     visit: false,

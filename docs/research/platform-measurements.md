@@ -19134,7 +19134,9 @@ revision before comparing a changed API/implementation.
   Windows (233 ms), so they cross later there: at 7 to 8 MiB on both, where Linux's cross at
   5.08. Windows' go-over cost is its own to find (the view swap around WHP's unmap and map
   of the layer's range, D190; not measured step by step here).
-- **Consequence.** `layers::OVER_FROM` per host's kind: 5 MiB on Linux (M443), 7 MiB on
-  macOS and Windows, each held to its own table by `a_restart_goes_over_from_where_packing_costs_more`
-  (the macOS run "n 40 again" and Windows' quiet run above). The two D190 E2E tests write
-  8 MiB, past both. Harness: `layer-kept/ab.py`, `pack.patch`, `over.patch`.
+- **Consequence.** A crossing that moves from host to host (5.08 MiB on a Fedora, 6.8 to
+  7.9 on an M3 Ultra, 7.73 to 7.95 on jupiter) is no constant: each host learns its own
+  from its restarts (D190, `layers::Restarts`, an online least-squares line a way, decided
+  at the records' own spread), and these tables, with M443's, hold the estimator
+  (`a_restart_goes_the_way_this_hosts_restarts_say_is_quicker`: where it decides, the way
+  measured quicker; packing an empty layer, going over the largest). Harness: `layer-kept/ab.py`, `pack.patch`, `over.patch`.
