@@ -1,12 +1,22 @@
 diff --git a/crates/shards/src/daemon/layers.rs b/crates/shards/src/daemon/layers.rs
-index 4f611f00..de1f55fd 100644
+index 57de7246..08b13440 100644
 --- a/crates/shards/src/daemon/layers.rs
 +++ b/crates/shards/src/daemon/layers.rs
-@@ -250,7 +250,9 @@ pub(super) fn open_kept(at: &Path) -> Result<std::fs::File, String> {
- /// holds more, going over about the same whatever it holds (its guest's let-go of the
- /// template's layer and mount of the container's). Where the two cost the same, as
- /// measured ([`CROSSOVER_BASIS`]), to the MiB.
+@@ -251,14 +251,18 @@ pub(super) fn open_kept(at: &Path) -> Result<std::fs::File, String> {
+ /// template's layer and mount of the container's). Where the two cost the same on the
+ /// host's kind, as measured ([`CROSSOVER_BASIS`]), to the MiB: 5 MiB on Linux (PM M443).
+ #[cfg(target_os = "linux")]
 -pub(super) const OVER_FROM: u64 = 5 << 20;
++// Experiment (docs/research/measurements/layer-kept, pack): every kept layer packed and
++// put back, as before slice 7.
++pub(super) const OVER_FROM: u64 = u64::MAX;
+ 
+ /// [`OVER_FROM`] on macOS and Windows, 7 MiB, where their restarts cross (PM M464): going
+ /// over costs more there than on Linux whatever the layer holds (an empty layer's restart 7
+ /// to 9 ms more than its packing at p50 on macOS, 233 on Windows), and packing grows with
+ /// what it holds as on Linux.
+ #[cfg(not(target_os = "linux"))]
+-pub(super) const OVER_FROM: u64 = 7 << 20;
 +// Experiment (docs/research/measurements/layer-kept, pack): every kept layer packed and
 +// put back, as before slice 7.
 +pub(super) const OVER_FROM: u64 = u64::MAX;
