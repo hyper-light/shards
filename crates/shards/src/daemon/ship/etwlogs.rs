@@ -287,10 +287,8 @@ mod tests {
         let provider = GUID::from_u128(id);
         let mut handle: REGHANDLE = 0;
         // SAFETY: a GUID, no callback, and a handle for the call to fill.
-        assert_eq!(
-            unsafe { EventRegister(&provider, None, std::ptr::null(), &raw mut handle) },
-            0
-        );
+        let registered = unsafe { EventRegister(&provider, None, std::ptr::null(), &raw mut handle) };
+        assert_eq!(registered, 0);
         let write = |bytes: usize| {
             let mut s: Vec<u16> = vec![u16::from(b'x'); bytes / 2 - 1];
             s.push(0);
