@@ -45,6 +45,7 @@ mod commit;
 mod cuts;
 mod demand;
 mod devices;
+mod ends;
 mod engine;
 /// The Engine API's socket in the home (D170), relative to it: what Docker's clients reach;
 /// on Windows the file that names its named pipe.
@@ -226,14 +227,13 @@ pub(crate) const PRIVATE: &str = "tmp";
 /// (shards_ipc::exiting): one started at the same moment, which listens as soon as it
 /// has the lock. One ending its runs is waited for as long as it takes.
 const TAKEOVER: Duration = Duration::from_secs(20);
-/// How long `shards daemon stop` lets a command end after its SIGTERM, before SIGKILL:
-/// dockerd's default stop timeout (moby daemon/config/config_linux.go), which it gives
-/// each container when it shuts down.
+/// How long a command made with no stop timeout of its own is given to end after its stop
+/// signal, before SIGKILL: by `stop`, `restart` and the daemon's own stop alike. The
+/// input's meaning, not a figure of shards': a Compose file's `stop_grace_period` left out
+/// is "10 seconds for the container to exit before sending SIGKILL" (the Compose file
+/// reference, services, `stop_grace_period`), and a run's `--stop-timeout` left out is read
+/// the same, so that what its author expected of a stop holds in a microVM.
 const STOP_GRACE: Duration = Duration::from_secs(10);
-/// How long a shutting-down daemon lets a command take to end after that SIGKILL, before
-/// its VM goes too: dockerd gives up on its containers after the larger of its shutdown
-/// timeout (15 s) and the stop timeout plus 5 s (moby daemon/daemon.go, ShutdownTimeout).
-const SHUTDOWN_KILL: Duration = Duration::from_secs(5);
 /// How often a listener out of descriptors looks for one again: nothing tells of one
 /// closed anywhere in the process. And how often one whose watches could not be made
 /// looks at its home.
@@ -1022,26 +1022,17 @@ fn resolved(rootfs: &Path) -> PathBuf {
 }
 
 /// A run's stop as the daemon stops, once begun ([`Daemon::stop_each`]): SIGKILL at
-/// `kill`, if ever, then its VM's end SHUTDOWN_KILL later.
+/// `next`, if ever, then its VM's end once its guest's teardown has gone on no more for a
+/// slice (`ends`, D217).
 struct Stop {
     socket: Arc<RunSocket>,
     /// Its VM, which its stop ends past its grace; none for a joiner, whose VM is its
     /// provider's, ended by the provider's own stop (D119).
     vm: Option<Arc<shards_ipc::Child>>,
-    kill: Option<Instant>,
-    killed: bool,
-}
-
-impl Stop {
-    /// When its next step is due, if it has one.
-    fn next(&self) -> Option<Instant> {
-        let kill = self.kill?;
-        if self.killed {
-            kill.checked_add(SHUTDOWN_KILL)
-        } else {
-            Some(kill)
-        }
-    }
+    /// When its next step is due: its SIGKILL, then its VM's end; none once it has none.
+    next: Option<Instant>,
+    /// Its command's teardown once it is sent SIGKILL.
+    killed: Option<ends::Followed>,
 }
 
 /// Why a template's pool gave no warm VM.
@@ -1139,6 +1130,9 @@ struct Daemon<D: Disk = Real> {
     /// The microVMs a client waits on, by their processes' IDs, each as the listener last
     /// looked at it ([`Daemon::log_progress`]).
     followed: Mutex<HashMap<u32, Progress>>,
+    /// How long this host's microVMs have taken to end once killed, kept in the home
+    /// (D217).
+    ends: ends::Ends,
     /// A run's start was decided: it runs, or never will.
     resolved: Condvar,
     /// `shards daemon stop` asked this daemon to end its runs.
@@ -1928,6 +1922,7 @@ impl<D: Disk> Daemon<D> {
     ) -> io::Result<Daemon<D>> {
         let home_id = crate::os::path_id(&home);
         let events = events::Events::kept_in(&home);
+        let ends = ends::Ends::kept_in(&home);
         Ok(Daemon {
             home,
             bridge: settings.bridge,
@@ -1965,6 +1960,7 @@ impl<D: Disk> Daemon<D> {
             stoppers: Mutex::default(),
             runs: Mutex::default(),
             followed: Mutex::default(),
+            ends,
             resolved: Condvar::new(),
             ending: AtomicBool::new(false),
             containers: Mutex::new(containers),
@@ -6425,11 +6421,10 @@ impl<D: Disk> Daemon<D> {
         self.changed.notify_all();
     }
 
-    /// Ends the runs in progress as dockerd ends its containers when it shuts down (moby
-    /// daemon/daemon.go Shutdown and shutdownContainer, daemon/stop.go containerStop): each
-    /// command gets its microVM's stop signal, SIGKILL once its stop timeout is up,
-    /// unless that is negative, and its VM goes too if the command outlives even that by
-    /// SHUTDOWN_KILL. A run handed to a VM as the daemon stops is stopped as it registers.
+    /// Ends the runs in progress: each command gets its stop signal, SIGKILL once its stop
+    /// timeout is up, unless that is negative, and its VM goes too once its guest's
+    /// teardown has gone on no more for a slice (`ends`, D217). A run handed to a VM as the
+    /// daemon stops is stopped as it registers.
     fn stop_runs<'s, 'e>(&'s self, threads: &'s Threads<'s, 'e>) {
         {
             // Under the runs' lock: a run still starting is either one the stop thread
@@ -6474,7 +6469,7 @@ impl<D: Disk> Daemon<D> {
                     let now = Instant::now();
                     let due: Vec<String> = stops
                         .iter()
-                        .filter(|(_, stop)| stop.next().is_some_and(|at| at <= now))
+                        .filter(|(_, stop)| stop.next.is_some_and(|at| at <= now))
                         .map(|(id, _)| id.clone())
                         .collect();
                     if !new.is_empty() || !due.is_empty() {
@@ -6483,7 +6478,7 @@ impl<D: Disk> Daemon<D> {
                     if runs.values().all(|run| matches!(run, RunState::Pending { .. })) {
                         return;
                     }
-                    runs = match stops.values().filter_map(Stop::next).min() {
+                    runs = match stops.values().filter_map(|stop| stop.next).min() {
                         Some(at) => {
                             self.resolved
                                 .wait_timeout(runs, at.saturating_duration_since(now))
@@ -6510,8 +6505,8 @@ impl<D: Disk> Daemon<D> {
                     Stop {
                         socket,
                         vm,
-                        kill,
-                        killed: false,
+                        next: kill,
+                        killed: None,
                     },
                 );
             }
@@ -6519,14 +6514,35 @@ impl<D: Disk> Daemon<D> {
                 let Some(stop) = stops.get_mut(&id) else {
                     continue;
                 };
-                if stop.killed {
-                    if let Some(vm) = &stop.vm {
-                        let _ = vm.kill(shards_ipc::signal::SIGKILL);
+                match &mut stop.killed {
+                    Some(teardown) => {
+                        if teardown.goes_on().is_some() {
+                            // Its guest still at its end: another slice.
+                            stop.next = Instant::now().checked_add(self.ends.slice(ends::End::Teardown));
+                            continue;
+                        }
+                        if let Some(vm) = &stop.vm {
+                            log(format!(
+                                "container {id}: its command not ended as the daemon stops, its microVM gone on with nothing of its end for {:?}: its microVM killed",
+                                self.ends.slice(ends::End::Teardown)
+                            ));
+                            let _ = vm.kill(shards_ipc::signal::SIGKILL);
+                        }
+                        stop.next = None;
                     }
-                    stop.kill = None;
-                } else {
-                    let _ = stop.socket.send(kind::SIGNAL, &9u32.to_be_bytes(), &[]);
-                    stop.killed = true;
+                    None => {
+                        // A SIGKILL that cannot be sent leaves its guest nothing to end it
+                        // by, nor to say its end on: its VM goes at once.
+                        let teardown = ends::Followed::of(stop.vm.as_ref().map(|vm| vm.id()));
+                        let sent = stop.socket.send(kind::SIGNAL, &9u32.to_be_bytes(), &[]).is_ok();
+                        let wait = if sent {
+                            self.ends.slice(ends::End::Teardown)
+                        } else {
+                            Duration::ZERO
+                        };
+                        stop.next = Instant::now().checked_add(wait);
+                        stop.killed = Some(teardown);
+                    }
                 }
             }
         }
