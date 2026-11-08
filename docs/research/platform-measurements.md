@@ -18319,10 +18319,112 @@ revision before comparing a changed API/implementation.
 - **Consequence.** The plan's step 4 is met: D133 and D188 say what a builder gives back,
   as runs do, and at what cost (this entry). The harness sizes a held budget from held
   arms (c3ce85e's free arms' budget pressed nothing). A build's start no longer waits on a
-  running builder's exit (`Child::try_wait`). Left as measured: a budget short of a
-  build's peak takes back its own files' page cache first (mm/vmscan.c), which an apt
-  build's merge of its caches reads again, 0.5 to 1.2 s at p50 on the runners where it
-  did.
+  running builder's exit (`Child::try_wait`). What a budget short of a build's peak took
+  of its own files' page cache, which an apt build's merge of its caches read again, is
+  fixed at its root since (below).
+- **Who read the cache layers again, and why the budget took them.** A cache's layers and
+  the changes a step makes to it are ranges of the builder's join disk (D134), read and
+  written by its VM process, in the build's scope. A page cache folio is charged as it is
+  added, to the memcg of the task that adds it (mm/filemap.c `filemap_add_folio`:
+  `mem_cgroup_charge(folio, NULL, gfp)`; mm/memcontrol.c `get_mem_cgroup_from_mm`, with no
+  mm, `current`'s), and a later read that finds it charges nothing: so the layers' pages
+  were the scope's. Over `memory.high` the kernel reclaims from the scope alone
+  (mm/memcontrol.c `reclaim_high`, `try_to_free_mem_cgroup_pages` of the memcg;
+  mm/vmscan.c `shrink_node_memcgs`, `mem_cgroup_iter(target_memcg, ...)`: only the
+  target's own subtree), and with no swap from its file pages alone (mm/vmscan.c
+  `get_scan_count`: "If we have no swap space, do not bother scanning anon folios",
+  `SCAN_FILE`). The pages no process maps go first, and the merge, in the build's process,
+  read them back from the disk: 58 and 45 MiB at p50 on the two runners that paid
+  (2f82adb6, above). Read at v7.0, CI's kernel, and v7.2-rc4; the same code in both.
+  Three changes:
+  - e0e430d5: where the writer is outside the budget, each cache range of the join disk
+    is read and written for the guest by the writer, over a connection of its own
+    (`block::Through`, build/outside.rs `serve_range`), so that its page cache is charged
+    to the writer, which no reclaim of the budget's scans (D188's "writer outside");
+  - d9a1c65b: the guest writes a cache's changes to the join disk with O_DIRECT, so that
+    they are not in its own page cache a second time as they go out;
+  - b2751e7c: a request to the writer in one round trip (at most a MiB), not one for each
+    of its 4 KiB segments; d9c42120 keeps the connection in step after a read cut short
+    (`a_through_range_moves_a_request_whole`), and `a_held_builds_caches_go_through_its_writer`
+    (build.rs) builds a 24 MiB cache held and free, the same image's bytes.
+- **At e0e430d5, on CI's runners (runs 42462346562 and 42462348862): no read again, a round
+  trip a page.** Eight runners (EPYC 7763 three times, 9V45 twice, 9V74 twice, Xeon
+  6973P-C once), `results/ci-42462346562-*`, `results/ci-42462348862-*`. No held apt
+  build's process read anything from storage at p50 or p90 on any runner (`build read`), against
+  58 and 45 MiB at p50 at 2f82adb6, and apt passed on the Xeon 6973P-C (held's fastest
+  27.5 s, free's slowest 27.7). It failed on an EPYC 7763 by 0.6 s (35.6 against 35.0):
+  from a step's `run` phase to its first cache kept, where the guest writes its caches'
+  85.7 MiB of changes to the join disk, took 0.31 to 1.00 s held against 0.10 to 0.54 free
+  (s, rounds 1 to 5, each runner), each 4 KiB a round trip to the writer. Fixed in
+  b2751e7c. On Fedora at e0e430d5 every pair held within the spread (apt held's fastest
+  17.1 s against free's slowest 23.9; `results/fedora-e0e430d5.tables.txt`). (Runs 42464364924 and 42464367989 at b2751e7c measured nothing: GitHub's
+  release download of the pinned kernel answered HTTP 504 on 6 of their 8 runners.)
+- **At d9c42120, on CI's runners (runs 42496009314 and 42496014878) and Fedora: every pair
+  within the spread.** The same harness, unchanged: on CI, EPYC 7763 four times, 9V74
+  twice, Xeon Platinum 8573C and Xeon 6973P-C, Ubuntu 24.04.5, kernel 7.0.0-1017-azure, 4
+  vCPUs and 16 GiB each (`results/ci-42496009314-*`, `results/ci-42496014878-*`); Fedora
+  as above, beside other agents' builds (load 29 as it started),
+  `results/fedora-d9c42120.tables.txt`. The writer was outside in each of the 135 held
+  builds. Build time, s, and what the builders gave back, held (n, p50, p90, p99, max):
+
+  | host (run) | build | free | held | held slower beyond the spread | answers | answered in (ms) | freed a build (MiB) | unplugged at an answer (MiB) | budget short of the free arm's peak (MiB) |
+  |---|---|---|---|---|---|---|---|---|---|
+  | EPYC 7763 (1, a) | rust | 5, 5.0, 5.7, 5.7, 5.7 | 5, 5.0, 5.2, 5.2, 5.2 | no | 3 | 3, 7, 8, 8, 8 | 5, 0.0, 30.3, 30.3, 30.3 | 1, 0, 0, 0, 0 | 5, 24.8, 27.6, 27.6, 27.6 |
+  | EPYC 7763 (1, a) | npm | 5, 9.4, 9.7, 9.7, 9.7 | 5, 9.3, 9.3, 9.3, 9.3 | no | 5 | 5, 13, 19, 19, 19 | 5, 18.4, 22.2, 22.2, 22.2 | 5, 128, 128, 128, 128 | 5, 28.0, 31.0, 31.0, 31.0 |
+  | EPYC 7763 (1, a) | apt | 5, 35.8, 36.0, 36.0, 36.0 | 5, 35.8, 36.0, 36.0, 36.0 | no | 0 | - | - | - | 5, 125.3, 161.6, 161.6, 161.6 |
+  | EPYC 7763 (1, b) | rust | 5, 5.4, 5.4, 5.4, 5.4 | 5, 5.4, 5.5, 5.5, 5.5 | no | 6 | 6, 7, 8, 8, 8 | 5, 17.8, 21.5, 21.5, 21.5 | 3, 0, 0, 0, 0 | 5, 25.9, 32.0, 32.0, 32.0 |
+  | EPYC 7763 (1, b) | npm | 5, 9.3, 9.4, 9.4, 9.4 | 5, 9.3, 9.4, 9.4, 9.4 | no | 4 | 4, 13, 15, 15, 15 | 5, 16.1, 19.2, 19.2, 19.2 | 4, 128, 128, 128, 128 | 5, 21.8, 31.4, 31.4, 31.4 |
+  | EPYC 7763 (1, b) | apt | 5, 35.8, 36.3, 36.3, 36.3 | 5, 36.5, 37.5, 37.5, 37.5 | no | 2 | 2, 37, 37, 37, 37 | 5, 0.0, 77.8, 77.8, 77.8 | 2, 128, 128, 128, 128 | 5, 150.5, 161.1, 161.1, 161.1 |
+  | Xeon 8573C (1) | rust | 5, 7.3, 7.6, 7.6, 7.6 | 5, 7.3, 8.1, 8.1, 8.1 | no | 1 | 1, 8, 8, 8, 8 | 5, 0.0, 2.9, 2.9, 2.9 | 1, 0, 0, 0, 0 | 5, 25.5, 28.4, 28.4, 28.4 |
+  | Xeon 8573C (1) | npm | 5, 9.8, 9.8, 9.8, 9.8 | 5, 9.6, 9.9, 9.9, 9.9 | no | 5 | 5, 8, 9, 9, 9 | 5, 2.5, 4.1, 4.1, 4.1 | 5, 128, 128, 128, 128 | 5, 6.6, 11.5, 11.5, 11.5 |
+  | Xeon 8573C (1) | apt | 5, 33.2, 33.7, 33.7, 33.7 | 5, 34.5, 36.1, 36.1, 36.1 | no | 0 | - | - | - | 5, 86.0, 106.9, 106.9, 106.9 |
+  | EPYC 7763 (1, d) | rust | 5, 5.0, 5.2, 5.2, 5.2 | 5, 4.9, 5.2, 5.2, 5.2 | no | 7 | 7, 6, 8, 8, 8 | 5, 26.7, 32.0, 32.0, 32.0 | 3, 0, 0, 0, 0 | 5, 29.7, 33.2, 33.2, 33.2 |
+  | EPYC 7763 (1, d) | npm | 5, 9.2, 10.6, 10.6, 10.6 | 5, 9.2, 9.3, 9.3, 9.3 | no | 4 | 4, 14, 15, 15, 15 | 5, 15.8, 21.0, 21.0, 21.0 | 4, 128, 128, 128, 128 | 5, 24.4, 31.7, 31.7, 31.7 |
+  | EPYC 7763 (1, d) | apt | 5, 35.9, 36.0, 36.0, 36.0 | 5, 35.9, 36.8, 36.8, 36.8 | no | 0 | - | - | - | 5, 152.0, 161.7, 161.7, 161.7 |
+  | EPYC 9V74 (2, a) | rust | 5, 6.9, 7.3, 7.3, 7.3 | 5, 6.7, 7.5, 7.5, 7.5 | no | 8 | 8, 7, 7, 7, 7 | 5, 31.6, 33.3, 33.3, 33.3 | 8, 0, 0, 0, 0 | 5, 28.1, 30.2, 30.2, 30.2 |
+  | EPYC 9V74 (2, a) | npm | 5, 8.8, 8.9, 8.9, 8.9 | 5, 9.1, 11.1, 11.1, 11.1 | no | 6 | 6, 6, 50, 50, 50 | 5, 0.1, 0.2, 0.2, 0.2 | 6, 128, 256, 256, 256 | 5, 50.5, 55.3, 55.3, 55.3 |
+  | EPYC 9V74 (2, a) | apt | 5, 35.1, 35.2, 35.2, 35.2 | 5, 35.3, 39.5, 39.5, 39.5 | no | 3 | 3, 9, 11, 11, 11 | 5, 0.0, 70.0, 70.0, 70.0 | 3, 128, 128, 128, 128 | 5, 157.6, 163.2, 163.2, 163.2 |
+  | EPYC 7763 (2) | rust | 5, 5.1, 5.3, 5.3, 5.3 | 5, 5.1, 5.2, 5.2, 5.2 | no | 4 | 4, 7, 7, 7, 7 | 5, 0.0, 29.6, 29.6, 29.6 | 2, 0, 0, 0, 0 | 5, 27.0, 38.9, 38.9, 38.9 |
+  | EPYC 7763 (2) | npm | 5, 9.3, 9.6, 9.6, 9.6 | 5, 9.3, 9.4, 9.4, 9.4 | no | 5 | 5, 14, 16, 16, 16 | 5, 20.4, 22.1, 22.1, 22.1 | 5, 128, 128, 128, 128 | 5, 17.0, 21.9, 21.9, 21.9 |
+  | EPYC 7763 (2) | apt | 5, 36.3, 36.7, 36.7, 36.7 | 5, 36.4, 37.4, 37.4, 37.4 | no | 0 | - | - | - | 5, 108.9, 150.3, 150.3, 150.3 |
+  | EPYC 9V74 (2, c) | rust | 5, 6.7, 7.2, 7.2, 7.2 | 5, 6.9, 10.8, 10.8, 10.8 | no | 2 | 2, 7, 7, 7, 7 | 5, 0.0, 33.5, 33.5, 33.5 | 2, 0, 0, 0, 0 | 5, 23.3, 26.1, 26.1, 26.1 |
+  | EPYC 9V74 (2, c) | npm | 5, 8.6, 8.8, 8.8, 8.8 | 5, 8.7, 9.0, 9.0, 9.0 | no | 5 | 5, 7, 42, 42, 42 | 5, 1.6, 2.5, 2.5, 2.5 | 5, 128, 128, 128, 128 | 5, 22.2, 33.5, 33.5, 33.5 |
+  | EPYC 9V74 (2, c) | apt | 5, 35.6, 39.9, 39.9, 39.9 | 5, 35.0, 37.1, 37.1, 37.1 | no | 5 | 5, 17, 31, 31, 31 | 5, 52.6, 57.7, 57.7, 57.7 | 5, 128, 128, 128, 128 | 5, 95.3, 126.0, 126.0, 126.0 |
+  | Xeon 6973P-C (2) | rust | 5, 6.8, 7.3, 7.3, 7.3 | 5, 6.6, 7.0, 7.0, 7.0 | no | 10 | 10, 5, 9, 9, 9 | 5, 30.0, 31.5, 31.5, 31.5 | 8, 0, 0, 0, 0 | 5, 30.4, 31.9, 31.9, 31.9 |
+  | Xeon 6973P-C (2) | npm | 5, 8.1, 8.6, 8.6, 8.6 | 5, 8.3, 8.7, 8.7, 8.7 | no | 5 | 5, 9, 19, 19, 19 | 5, 10.1, 13.1, 13.1, 13.1 | 5, 128, 128, 128, 128 | 5, 1.4, 27.2, 27.2, 27.2 |
+  | Xeon 6973P-C (2) | apt | 5, 27.9, 28.2, 28.2, 28.2 | 5, 28.1, 29.1, 29.1, 29.1 | no | 1 | 1, 5, 5, 5, 5 | 5, 0.0, 0.2, 0.2, 0.2 | 1, 128, 128, 128, 128 | 5, 107.9, 134.0, 134.0, 134.0 |
+  | Fedora | rust | 5, 2.9, 3.2, 3.2, 3.2 | 5, 2.8, 3.2, 3.2, 3.2 | no | 4 | 4, 1, 3, 3, 3 | 5, 2.9, 2.9, 2.9, 2.9 | - | 5, 3.3, 54.0, 54.0, 54.0 |
+  | Fedora | npm | 5, 6.9, 8.2, 8.2, 8.2 | 5, 6.8, 7.5, 7.5, 7.5 | no | 9 | 9, 5, 15, 15, 15 | 5, 17.2, 18.1, 18.1, 18.1 | 7, 0, 128, 128, 128 | 5, -3.3, 17.2, 17.2, 17.2 |
+  | Fedora | apt | 5, 23.9, 26.2, 26.2, 26.2 | 5, 22.4, 28.9, 28.9, 28.9 | no | 15 | 15, 1, 18, 24, 24 | 5, 36.6, 107.8, 107.8, 107.8 | 15, 0, 128, 128, 128 | 5, 64.3, 88.1, 88.1, 88.1 |
+
+  The rule held for all 27 host and build pairs, apt on the Xeon 6973P-C among them (held's
+  fastest 28.0 s against free's slowest 28.2). From a step's `run` phase to its first cache
+  kept, held 0.09 to 0.61 s against free 0.09 to 0.63 on CI, held's median no later than
+  free's on any runner (0.40 against 0.40 on the Xeon 6973P-C), and 0.12 to 0.16 s against
+  0.10 to 0.14 on Fedora; a merge of apt's 191 MiB written in less time held than free at
+  p50 on every host. No held build's process read from storage at p50 on any of CI's
+  runners.
+
+  Every held build was told its budget's room (D188's builders), and every held rust and
+  npm build was asked to give back, but apt's on four runners was never asked: its budget,
+  the most a held arm so far had held as the build counts it less its builder's cold
+  files, was 4 to 49 MiB over each round's peak by that count, and its scope's
+  `memory.current` peaked 60 to 113 MiB under its `memory.high` (the count holds pages the
+  scope is not charged for, the builder's mapped base and the VM process's text among them,
+  573e4bf8 above), so nothing reclaimed and no word came. Its builder held 0 to 23 MiB cold at the peak (the count's peak less the
+  budget's measure of it) and 46 to 105 MiB at its build's end. Before e0e430d5 the same
+  budget pressed: the cache layers' unmapped page cache, the scope's then, filled what the
+  count left, and its reclaim took them. So under a budget short of its peak by what its
+  builder holds cold, an apt build no longer needs its builder's give-back to fit on half
+  of these runners, and where it does (four runners, Fedora: 1 to 15 answers) it is no
+  slower.
+- **Consequence, at d9c42120.** The plan's step 4 is met on every host measured: a build
+  held to a budget short of its peak by what its builder holds cold took no longer than the
+  same build unbudgeted beyond its rounds' spread in all 27 host and build pairs (eight of
+  CI's runners, Intel and AMD, and Fedora), as on the Mac at 9f2520c2. A held build's
+  caches are read and written for its guest outside its budget, by its writer, as its own
+  files are: what a budget takes back first, with no swap, is no longer the files the
+  build reads again.
 
 ### M443. A restart over the kept layer file itself, and what the guest freed given back (D190)
 
