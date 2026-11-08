@@ -11844,37 +11844,51 @@ fn run_mounts_binds_volumes_and_tmpfs() {
     std::os::unix::fs::symlink(&file, &link).unwrap();
     #[cfg(windows)]
     std::os::windows::fs::symlink_file(&file, &link).unwrap();
+    // A host that lets no program through a link its user made has none to bind: Windows
+    // 11 26H2 (10.0.26300) refuses one made unprivileged to every process of that user,
+    // PowerShell's and cmd's too, ERROR_UNTRUSTED_MOUNT_POINT (448; its Redirection
+    // Guard), as it refuses shards the same.
+    let through_links = match std::fs::read(&link) {
+        Ok(_) => true,
+        Err(e) if cfg!(windows) && e.raw_os_error() == Some(448) => {
+            eprintln!(
+                "SKIP: a link to a file bound: this host lets no program through a link its user made ({e})"
+            );
+            false
+        }
+        Err(e) => panic!("{}: {e}", link.display()),
+    };
     let bind = format!("{}:/data", shared.display());
     let ro = format!("{}:/ro:ro", shared.display());
     let single = format!("{}:/etc/one:ro", file.display());
     let linked = format!("{}:/etc/linked:ro", link.display());
-    let ran = run_in(
-        &home,
-        &image,
-        &[
-            "--rm",
-            "-v",
-            &bind,
-            "-v",
-            &ro,
-            "-v",
-            &single,
-            "-v",
-            "tools:/bin",
-            "--mount",
-            "type=tmpfs,dst=/t,tmpfs-size=1m",
-            "-v",
-            &linked,
-        ],
-        &["stat", "/data/a", "/etc/one", "/etc/linked", "/proc/self/mounts"],
-    );
+    let mut flags = vec![
+        "--rm",
+        "-v",
+        &bind,
+        "-v",
+        &ro,
+        "-v",
+        &single,
+        "-v",
+        "tools:/bin",
+        "--mount",
+        "type=tmpfs,dst=/t,tmpfs-size=1m",
+    ];
+    let mut stats = vec!["stat", "/data/a", "/etc/one"];
+    if through_links {
+        flags.extend(["-v", &linked]);
+        stats.push("/etc/linked");
+    }
+    stats.push("/proc/self/mounts");
+    let ran = run_in(&home, &image, &flags, &stats);
     assert_eq!(ran.status, Some(0), "{ran}");
     let host = host_file_mode();
-    for (path, said) in [
-        ("/data/a", "4\n= host"),
-        ("/etc/one", "5\n= alone"),
-        ("/etc/linked", "5\n= alone"),
-    ] {
+    let mut seen = vec![("/data/a", "4\n= host"), ("/etc/one", "5\n= alone")];
+    if through_links {
+        seen.push(("/etc/linked", "5\n= alone"));
+    }
+    for (path, said) in seen {
         // The host's files, which hold no owner, are the run's user's: the image's, app.
         assert!(
             ran.stdout
