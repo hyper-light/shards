@@ -207,7 +207,7 @@ impl<D: Disk> Daemon<D> {
         self.say_given();
     }
 
-    /// What container `id`'s microVM gave back of what it holds cold, asked through it;
+    /// What microVM `id` gave back of what it holds cold, asked through it;
     /// none where it gave nothing back, and why said.
     pub(super) fn give_back_of(&self, id: &str) -> Option<Gave> {
         let spec = shards_abi::run::Spec {
@@ -319,7 +319,7 @@ impl Gave {
 }
 
 impl<D: Disk> Daemon<D> {
-    /// The microVMs giving back now, by their own containers' IDs: one asked to give back
+    /// The microVMs giving back now, by their own IDs: one asked to give back
     /// is asked nothing more until it has answered or been ended.
     pub(super) fn watching_giving(&self) -> &Mutex<HashSet<String>> {
         &self.watching.giving

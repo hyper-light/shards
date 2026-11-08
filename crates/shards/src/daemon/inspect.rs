@@ -536,7 +536,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
 
     /// Container `c`'s InspectResponse, from its record, its request, its image and its
     /// VM (inspect_doc.rs).
-    /// What container `id` is, as `inspect` says it, for its log's tag and attributes
+    /// What microVM `id` is, as `inspect` says it, for its log's tag and attributes
     /// (D161, D163): its environment, its labels and its command as its image and its run
     /// made them, and this host's name.
     pub(super) fn log_details(&self, id: &str) -> Result<crate::logging::Details, String> {
@@ -573,7 +573,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
         })
     }
 
-    /// The attributes `logs --details` shows before each of container `id`'s lines, as its
+    /// The attributes `logs --details` shows before each of microVM `id`'s lines, as its
     /// run's `--log-opt`s ask (D161): written as dockerd writes them (its log stream's
     /// attrsByteSlice: sorted, each `NAME=VALUE` query-escaped, joined by commas).
     pub(super) fn log_attributes(&self, id: &str, run: &shards_ipc::Run) -> Result<Vec<u8>, String> {
@@ -587,7 +587,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
             .into_bytes())
     }
 
-    /// The bytes of the /dev/shm container `c`'s command sees (D156), as `inspect` says
+    /// The bytes of the /dev/shm microVM `c`'s command sees (D156), as `inspect` says
     /// them: none where it has none (`--ipc none`); where it shares another's (`--ipc
     /// container:NAME`), that one's; its own `--shm-size`; else its microVM's, half all the
     /// memory that microVM may have (`run::shm_bytes`), its own or that of the microVM it
@@ -623,7 +623,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
         Some((id, run))
     }
 
-    /// The bytes of each /dev/shm of the microVM container `id`, made by `run`, lives in
+    /// The bytes of each /dev/shm of the microVM run `id`, made by `run`, lives in
     /// (D156): half the memory that microVM may have in all, by the run whose microVM it is:
     /// its own, the one it joined (`--network container:`), or the one whose engine made it
     /// (D181). Every run of every limit restores one template (D148): each is told its own.

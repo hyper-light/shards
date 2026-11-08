@@ -41,7 +41,7 @@ pub(super) struct Refills {
 #[derive(Default)]
 struct Asked {
     pools: HashSet<PoolKey>,
-    /// A spare container, for the next run to take.
+    /// A spare record, for the next run to take.
     spare: bool,
 }
 
@@ -56,7 +56,7 @@ impl Refills {
 }
 
 impl<D: Disk> Daemon<D> {
-    /// Has `pool` refilled, if given, and a spare container made, on the refiller's
+    /// Has `pool` refilled, if given, and a spare record made, on the refiller's
     /// thread, which the first ask starts. Waits for nothing: its callers may hold the
     /// pools' lock. A daemon that has closed starts none: no run will claim it, and it
     /// would end with the daemon as the next one starts.
@@ -191,7 +191,7 @@ impl<D: Disk> Daemon<D> {
             return None;
         }
         pool.starting += count;
-        // It writes no file of the home: the daemon gives it its container's log (D30).
+        // It writes no file of the home: the daemon gives it its microVM's log (D30).
         let mut args: Vec<OsString> = vec![
             "restore".into(),
             dir.into(),

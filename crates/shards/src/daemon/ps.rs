@@ -235,7 +235,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
     }
 }
 
-/// The containers a list considers, newest first: every one, or, where names or IDs are
+/// The microVMs a list considers, newest first: every one, or, where names or IDs are
 /// filtered on, those an ID's unique prefix names and those whose name matches
 /// (filterByNameIDMatches).
 fn by_name_or_id(registry: &Registry, filters: &Filters) -> Vec<Container> {
@@ -274,7 +274,7 @@ fn by_name_or_id(registry: &Registry, filters: &Filters) -> Vec<Container> {
     list
 }
 
-/// idOrNameFilter: the container whose whole ID is `value`, else the one named it.
+/// idOrNameFilter: the microVM whose whole ID is `value`, else the one named it.
 fn id_or_name(registry: &Registry, value: &str) -> Result<String, String> {
     if let Some(c) = registry.all().find(|c| c.id == value) {
         return Ok(c.id.clone());

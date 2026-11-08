@@ -1,4 +1,4 @@
-//! Reading a container's log (spec.rs, `LOG_STDOUT`) for `shards logs` (audit A12):
+//! Reading a microVM's log (spec.rs, `LOG_STDOUT`) for `shards logs` (audit A12):
 //! through its index, in buffers of bounded size however long it is or its lines are, and
 //! back from its end for `--tail`, reading only what the lines it shows hold.
 //!
@@ -6,7 +6,7 @@
 //! prefix before the first: the bytes a client gets are the whole line's, as moby's copier
 //! splits a long line into partial messages (daemon/logger/copier.go, `bufSize`).
 //!
-//! Lines are ordered by where their last byte is. A line a container left unfinished
+//! Lines are ordered by where their last byte is. A line a microVM left unfinished
 //! counts, once it has ended, where its last byte is.
 
 use std::fs::File;
@@ -20,7 +20,7 @@ use crate::os::ReadAt as _;
 use crate::segments::log_segment;
 use crate::spec::{INDEX_LINE, INDEX_START, INDEX_STDERR, LOG_HEAD, LOG_STDERR, LOG_STDOUT};
 
-/// A log's first segment, and its index, in its container's directory.
+/// A log's first segment, and its index, in its microVM's directory.
 pub const LOG: &str = "log";
 pub const INDEX: &str = "log.idx";
 /// How much is read at once, and sent a client in one message.
@@ -94,7 +94,7 @@ struct Record {
     len: u64,
 }
 
-/// A container's log: its directory, where its segments are (segments.rs),
+/// A microVM's log: its directory, where its segments are (segments.rs),
 /// held open wherever it goes.
 #[derive(Debug)]
 pub struct LogFile {
@@ -329,7 +329,7 @@ fn index_legacy(dir: &Path, log: &File) -> io::Result<()> {
 
 /// Where `--tail n` starts, for each stream: the first byte of the first of the last `n`
 /// lines of it, or the log's end, which lines to come are past. With `ended`, the lines a
-/// container left unfinished count; without, they are still to come, and are read from
+/// microVM left unfinished count; without, they are still to come, and are read from
 /// where they began, whatever `n`. Read back from the end, segment by segment: the index,
 /// read back in chunks, says each record's stream and whether it ends a line, and only
 /// the records of lines whose starts are sought are read.
@@ -727,7 +727,7 @@ impl Reader {
         Ok(true)
     }
 
-    /// What is left of each stream's unfinished line, once the container has ended.
+    /// What is left of each stream's unfinished line, once the microVM has ended.
     pub fn finish(&mut self, each: &mut dyn FnMut(Piece<'_>) -> Flow) -> Flow {
         for (s, open) in self.open.iter_mut().enumerate() {
             if let Some(line) = open.take()
@@ -1036,7 +1036,7 @@ mod tests {
     }
 
     /// Every way of reading a log shows what the plain way shows: whole or its last n
-    /// lines, the container ended or not, indexed or from an earlier shards (audit A12).
+    /// lines, the microVM ended or not, indexed or from an earlier shards (audit A12).
     #[test]
     fn logs_read_as_the_plain_way_reads_them() {
         let dir = temp("differential");
@@ -1076,7 +1076,7 @@ mod tests {
     }
 
     /// A log in segments reads as the records of those still there, in order, whole or
-    /// its last n lines, the container ended or not, whatever segments are gone (audit
+    /// its last n lines, the microVM ended or not, whatever segments are gone (audit
     /// A12).
     #[test]
     fn logs_in_segments_read_as_their_records_do() {
@@ -1101,7 +1101,7 @@ mod tests {
     }
 
     /// A log whose rotated segments are compressed (D162) reads as their records do, as
-    /// one kept as written does: whole or its last n lines, the container ended or not.
+    /// one kept as written does: whole or its last n lines, the microVM ended or not.
     #[test]
     fn logs_in_packed_segments_read_as_their_records_do() {
         let dir = temp("packed");

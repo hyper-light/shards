@@ -4,7 +4,7 @@
 //!
 //! A record is a reference the store holds, its target what the reference resolved to:
 //! the image's ID. Removal takes records away; the content no record names goes with the
-//! store's next collection, which removal makes due. An image a container still uses
+//! store's next collection, which removal makes due. An image a microVM still uses
 //! keeps a dangling record, `moby-dangling@<ID>`, named as moby's store names one
 //! (image_delete.go), so that the store's collection keeps what it runs.
 //!
@@ -15,7 +15,7 @@ use shards_image::reference::{AnyReference, Digest, Reference};
 
 use crate::containers::State as Life;
 
-/// containerd's name for an image a container keeps when its last name goes.
+/// containerd's name for an image a microVM keeps when its last name goes.
 pub(super) use shards_image::store::DANGLING;
 
 /// A reference the store holds, and its image's ID.
@@ -31,7 +31,7 @@ impl Record {
     }
 }
 
-/// A container, as image removal sees it: its ID, whether it runs, its image's, and the
+/// A microVM, as image removal sees it: its ID, whether it runs, its image's, and the
 /// manifest of it it was made from, where its record says (D179).
 #[derive(Clone, Debug)]
 pub(super) struct User {
@@ -337,7 +337,7 @@ pub(super) fn delete(
                         ),
                     ));
                 }
-                // softImageDelete: the image stays, dangling, for its container.
+                // softImageDelete: the image stays, dangling, for its microVM.
                 if all.len() == 1 {
                     store
                         .alias(&format!("{DANGLING}{id}"), &record.name)
@@ -390,7 +390,7 @@ fn delete_all(
     Ok(removed)
 }
 
-/// The containers image removal checks against.
+/// The microVMs image removal checks against.
 pub(super) fn users<'a>(containers: impl Iterator<Item = &'a crate::containers::Container>) -> Vec<User> {
     containers
         .map(|c| User {
@@ -535,8 +535,8 @@ mod tests {
     use Removed::{Deleted, Untagged};
 
     /// As measured against dockerd 29.3.1 (2026-10-02): a name of several untags; the
-    /// last deletes; an ID with several names, or one a container uses, must be forced; a
-    /// running container's cannot be; forced, a used image's last name goes and the image
+    /// last deletes; an ID with several names, or one a microVM uses, must be forced; a
+    /// running microVM's cannot be; forced, a used image's last name goes and the image
     /// stays, dangling.
     #[test]
     fn images_are_untagged_and_removed() {
@@ -598,7 +598,7 @@ mod tests {
                 id: digest('c')
             }]
         );
-        // Stopped, its container's image goes with -f, and is not untagged by name.
+        // Stopped, its microVM's image goes with -f, and is not untagged by name.
         let stopped = [user(false, 'c')];
         assert_eq!(
             rmi(&mut fake, &stopped, "cccc", false),

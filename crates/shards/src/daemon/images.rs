@@ -313,7 +313,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                 .filter_map(|n| n.parent.as_ref().map(ToString::to_string))
                 .collect()
         };
-        // Each container's image, counted by ID.
+        // Each microVM's image, counted by ID.
         let mut users: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
         for c in super::lock(&self.containers).all() {
             if let Some(id) = &c.image_id {
@@ -1330,7 +1330,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
         )
         .unwrap_or(i64::MAX);
         // Local volumes, each its size and references (LocalVolumesSize): in use where
-        // any container mounts it, reclaimable where none does.
+        // any microVM mounts it, reclaimable where none does.
         let volumes = self.volume_usage();
         let v_total = volumes.len();
         let v_active = volumes.iter().filter(|(_, _, refs)| *refs > 0).count();
@@ -1630,7 +1630,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                 }
             }
         }
-        // filterImagesUsedByContainers: a container's dangling image and the name it
+        // filterImagesUsedByContainers: a microVM's dangling image and the name it
         // was made by stay, and an image it named by ID or digest is used.
         let mut used: std::collections::HashSet<String> = std::collections::HashSet::new();
         for c in super::lock(&self.containers).all() {
@@ -1690,7 +1690,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
     /// ImagePrune): the stopped microVMs `--filter` keeps, with `containers`; the image
     /// names it keeps, dangling ones only unless `all`, with `images`; then what was
     /// reclaimed, as the CLI says it. Where dockerd would delete the last name of an
-    /// image a stopped container was made from by a name since given to another, shards
+    /// image a stopped microVM was made from by a name since given to another, shards
     /// keeps it: a stopped microVM starts again from its image (D37).
     pub(super) fn prune(
         &self,
@@ -1718,7 +1718,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
             }
         }
         // `system prune`: the user networks no microVM is on, after the microVMs that were
-        // (pruner.pruneOrder: containers, networks, volumes, images).
+        // (pruner.pruneOrder: microVMs, networks, volumes, images).
         let mut removed_networks: Vec<String> = Vec::new();
         if images && containers {
             match self.prune_networks(given, now, offset) {
@@ -1726,8 +1726,8 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                 Err(e) => return refuse(e),
             }
         }
-        // `system prune --volumes`: the anonymous volumes no container mounts, after the
-        // containers that mounted them (pruner.pruneOrder).
+        // `system prune --volumes`: the anonymous volumes no microVM mounts, after the
+        // microVMs that mounted them (pruner.pruneOrder).
         let mut removed_volumes: Vec<String> = Vec::new();
         if images && containers && parsed.bool("volumes") {
             match self.prune_volumes(given, false) {
@@ -2471,7 +2471,7 @@ mod tests {
         assert!(reference_matches(&["alpine", "["], &r));
     }
 
-    /// A manifest is in use while a container runs it, and a run uses the image's
+    /// A manifest is in use while a microVM runs it, and a run uses the image's
     /// manifest for our platform: not every manifest here, so that the others can go
     /// while it runs.
     #[test]
