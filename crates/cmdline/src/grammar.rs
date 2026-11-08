@@ -24,6 +24,9 @@ pub enum Thing {
     Guest,
     /// What shards takes on disk.
     Disk,
+    /// The CPU this home's microVMs are told: a baseline every machine they may move to
+    /// has (D176 part 6).
+    Cpu,
     /// All of shards' own: what prune system clears.
     System,
     /// Volumes: directories microVMs mount, which outlive them.
@@ -55,6 +58,7 @@ impl Thing {
             "daemon" => Some(Thing::Daemon),
             "guest" => Some(Thing::Guest),
             "disk" => Some(Thing::Disk),
+            "cpu" => Some(Thing::Cpu),
             "system" => Some(Thing::System),
             "volume" | "volumes" => Some(Thing::Volume),
             "agent" | "agents" => Some(Thing::Agent),
@@ -104,6 +108,7 @@ pub fn rewrite(args: &[String]) -> Option<Vec<String>> {
                 Thing::Daemon
                 | Thing::Guest
                 | Thing::Disk
+                | Thing::Cpu
                 | Thing::System
                 | Thing::Volume
                 | Thing::Agent
@@ -187,6 +192,8 @@ pub fn rewrite(args: &[String]) -> Option<Vec<String>> {
         ("stop", Thing::Daemon) => &["daemon", "stop"],
         ("configure" | "use" | "set", Thing::Guest) => &["guest", "use"],
         ("configure" | "set", Thing::Disk) => &["disk", "configure"],
+        ("configure" | "set", Thing::Cpu) => &["cpu", "configure"],
+        ("inspect" | "show", Thing::Cpu) => &["cpu"],
         ("inspect" | "show", Thing::Guest) => &["guest"],
         ("login", Thing::Registry) => &["login"],
         ("logout", Thing::Registry) => &["logout"],
@@ -317,8 +324,8 @@ pub static ACTIONS: &[(&str, &str, &str, &str)] = &[
     (
         "manage",
         "configure",
-        "guest | disk",
-        "Choose the kernel and shards-init runs boot, or how much of the disk shards keeps",
+        "guest | disk | cpu",
+        "Choose the kernel and shards-init runs boot, how much of the disk shards keeps, or the CPU every machine its microVMs move to has",
     ),
     ("manage", "copy", "vm", "Copy files into or out of a microVM"),
     (
@@ -538,6 +545,12 @@ pub static USES: &[(&str, &str, &str, &str)] = &[
         "inspect",
         "guest",
         "Show the kernel and shards-init runs boot",
+    ),
+    (
+        "inspect",
+        "inspect",
+        "cpu",
+        "Show the CPU this home's microVMs are told, and the machines it is every one's of",
     ),
     (
         "inspect",

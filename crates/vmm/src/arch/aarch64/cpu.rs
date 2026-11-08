@@ -89,6 +89,41 @@ pub fn covers(host: &[(u16, u64)], guest: &[(u16, u64)]) -> Result<(), String> {
     }
 }
 
+/// `regs` as text: `REG=VALUE` by encoding, in hex, comma-separated, as a home keeps a CPU
+/// baseline and a VM process is given one (D176 part 6).
+pub fn encode(regs: &[(u16, u64)]) -> String {
+    regs.iter()
+        .map(|(r, v)| format!("{r:04x}={v:016x}"))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+/// [`encode`]'s text read back; empty for none.
+pub fn decode(text: &str) -> Result<Vec<(u16, u64)>, String> {
+    text.split(',')
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .map(|pair| {
+            let bad = || format!("{pair:?} is no ID register's REG=VALUE, in hex");
+            let (r, v) = pair.split_once('=').ok_or_else(bad)?;
+            Ok((
+                u16::from_str_radix(r, 16).map_err(|_| bad())?,
+                u64::from_str_radix(v, 16).map_err(|_| bad())?,
+            ))
+        })
+        .collect()
+}
+
+/// The CPU every one of `cpus` runs ([`meet`] of them all), the first's MIDR_EL1; none of
+/// none.
+pub fn baseline(cpus: &[Vec<(u16, u64)>]) -> Vec<(u16, u64)> {
+    let mut all = cpus.iter();
+    let Some(first) = all.next() else {
+        return Vec::new();
+    };
+    all.fold(first.clone(), |acc, cpu| meet(&acc, cpu))
+}
+
 /// The CPU both `a` and `b` run: each field the lower of the two, by registers both name;
 /// `a`'s MIDR_EL1, and its registers `b` does not name.
 pub fn meet(a: &[(u16, u64)], b: &[(u16, u64)]) -> Vec<(u16, u64)> {
@@ -145,5 +180,34 @@ mod tests {
         assert_eq!(meet(&fp, &no_fp), no_fp.to_vec());
         // A register one does not name is no refusal.
         assert!(covers(&m4, &[(0xc03c, 0xffff)]).is_ok());
+    }
+
+    /// A fleet's baseline is each field's lowest across its machines: a guest told it finds
+    /// nothing any of them lacks, and every one of them runs it. Two Studios as each one's
+    /// own lacks shows (PM M462): one with SSBS (ID_AA64PFR1_EL1[7:4] 2) and no FPAC
+    /// combined (ISAR1's API 4), the other the other way (API 5).
+    #[test]
+    fn a_baseline_masks_what_any_machine_lacks() {
+        let (pfr1, isar1) = (0xc021, 0xc031);
+        let m3 = vec![(MIDR_EL1, 0x612f_0320), (pfr1, 0x20), (isar1, 0x4 << 8)];
+        let m4 = vec![(MIDR_EL1, 0x612f_0280), (pfr1, 0x0), (isar1, 0x5 << 8)];
+        assert!(covers(&m4, &m3).is_err(), "SSBS");
+        assert!(covers(&m3, &m4).is_err(), "FPACCOMBINE");
+        let base = baseline(&[m3.clone(), m4.clone()]);
+        assert_eq!(
+            base,
+            vec![(MIDR_EL1, 0x612f_0320), (pfr1, 0x0), (isar1, 0x4 << 8)]
+        );
+        assert!(covers(&m3, &base).is_ok() && covers(&m4, &base).is_ok());
+        // Told on either host, the lower of the host's and the baseline's: the baseline.
+        assert_eq!(meet(&m3, &base)[1..], base[1..]);
+        assert_eq!(meet(&m4, &base)[1..], base[1..]);
+        assert_eq!(baseline(&[]), Vec::new());
+        assert_eq!(baseline(std::slice::from_ref(&m4)), m4);
+        // As a home keeps it and a VM is given it.
+        assert_eq!(decode(&encode(&base)).unwrap(), base);
+        assert_eq!(decode("").unwrap(), Vec::new());
+        assert!(decode("c021").is_err());
+        assert!(decode("zz=1").is_err());
     }
 }

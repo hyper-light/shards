@@ -10137,6 +10137,27 @@ peer", each going on here as it should. What changed for them:
   and went on where they were too): macOS 26.4 names FEAT_SSBS on the M3 Ultra, 26.2 not on
   either M4 Max, which name FEAT_FPACCOMBINE, FEAT_WFxT and SME's features the M3 Ultra does
   not, so neither way is taken, as the check is meant to (PM M460, M462).
+- **A CPU baseline**, for machines neither of which has every feature of the other.
+  `shards configure cpu --baseline CONTEXT[,CONTEXT...]` asks this machine's daemon and each
+  context's for its CPU as its own hypervisor shows a guest (`move step cpu`, which runs
+  `shards-vm cpu`: a vCPU of a VM of no memory read, as the daemon is not entitled to the
+  hypervisor) and keeps their meet in the home's `cpu-baseline`, each 4-bit ID-register
+  field the lowest of them (`arch::aarch64::cpu::baseline`, `meet`: Linux's own rule across a
+  system's CPUs, the Arm ARM's ID scheme; a signed field's 0xF the lowest). A setting of the
+  home, as `configure guest` and `configure disk` are, not a flag of `run`: a microVM moves
+  among the machines its home is told of, and `run`'s flags are Docker's. Each vCPU of a
+  microVM booted there is told the lower of its host's fields and the baseline's
+  (`Config::cpu_baseline`, `setup_vcpu`), its templates keyed by it (`run::template`), so
+  that a baseline changed starts none from another's; `--none` takes it away and `shards
+  inspect cpu` says it. Masked as a CPU model masks: a guest's kernel and programs use a
+  feature only where a field says so, and an instruction a program runs regardless is not
+  stopped. The run keeps what it was told in its directory (`cpu-baseline`), which moves
+  with it, and a plan carries it (`Plan::baseline`): the machine moved to checks each field
+  against what its own hypervisor shows (`covers`), not the machine it ran on's whole set;
+  and by name only the features no register of the baseline can hide, on
+  Hypervisor.framework ID_AA64ISAR2_EL1's (FEAT_WFxT, FEAT_RPRES, FEAT_CSSC, FEAT_HBC), which
+  it neither says nor lets a VMM set (PM M460, `feature_register`). On arm64 only: x86_64's
+  CPUID has `covers` and no meet yet, and `configure cpu` says so there.
 
 Not yet measured: the moves on that link with this build, between two machines of one
 macOS (two M4 Max Studios), cold and live, n 20, and tests/moved.rs's tests of another
