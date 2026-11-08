@@ -330,7 +330,11 @@ fn the_generator_numbers_as_opas_and_stops_at_its_int() {
     assert!(!g.overflowed());
     assert_eq!(g.calls(), i64::MAX.unsigned_abs());
     g.generate();
-    assert!(!g.overflowed(), "the last name OPA's counter numbers: __local{}__", i64::MAX);
+    assert!(
+        !g.overflowed(),
+        "the last name OPA's counter numbers: __local{}__",
+        i64::MAX
+    );
     g.generate();
     assert!(g.overflowed());
     g.rewind(0);
