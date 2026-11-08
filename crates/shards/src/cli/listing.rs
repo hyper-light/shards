@@ -522,7 +522,7 @@ fn image(row: &serde_json::Value) -> format::image::Image {
     }
 }
 
-/// A container from the daemon's row.
+/// A microVM from the daemon's row.
 fn container(row: &serde_json::Value) -> format::container::Container {
     let text = |k: &str| {
         row.get(k)

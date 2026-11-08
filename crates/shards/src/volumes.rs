@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use shards_cmdline::mounts::{self, Mount, clean};
 
-/// A mount point of a container, in the shape `inspect`'s `Mounts` answers
+/// A mount point of a microVM, in the shape `inspect`'s `Mounts` answers
 /// (volumemounts.MountPoint, D38).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MountPoint {
@@ -63,7 +63,7 @@ pub struct MountPoint {
 /// CDI's mounts (D146), as CDI's Apply adds them to a container's spec: each a bind of
 /// its host path at its container path, read-only with `ro`, of the propagation its
 /// options name (rprivate where none), its `nosuid`, `nodev` and `noexec` the guest's
-/// mount's. A container's record keeps none of them, so `inspect` lists none (D146).
+/// mount's. A microVM's record keeps none of them, so `inspect` lists none (D146).
 pub fn cdi_points(given: &[crate::build::cdi::Mount]) -> Result<Vec<MountPoint>, String> {
     given
         .iter()
@@ -485,7 +485,7 @@ pub struct Volume {
     /// When it was made, in nanoseconds since the epoch.
     #[serde(rename = "Created", default)]
     pub created: u128,
-    /// Made for one container, by none's name.
+    /// Made for one microVM, by none's name.
     #[serde(rename = "Anonymous", default)]
     pub anonymous: bool,
     /// The microVM whose own engine made it (D181), by its ID: that engine's alone to take
@@ -500,7 +500,7 @@ pub struct Volume {
 
 const RESTRICTED: &str = "[a-zA-Z0-9][a-zA-Z0-9_.-]";
 
-/// The label of a volume made for a container without a name (moby
+/// The label of a volume made for a microVM without a name (moby
 /// daemon/volume/service AnonymousLabel), which `volume prune` takes without `--all`.
 pub const ANONYMOUS: &str = "com.docker.volume.anonymous";
 
@@ -541,7 +541,7 @@ pub fn reserved(key: &str) -> String {
     )
 }
 
-/// One volume change at a time, and none while a container's mount points are taken: as
+/// One volume change at a time, and none while a microVM's mount points are taken: as
 /// the local driver's lock and dockerd's reference counts keep a volume in use from
 /// being removed.
 static CHANGES: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -552,7 +552,7 @@ pub fn lock() -> std::sync::MutexGuard<'static, ()> {
 }
 
 impl Volume {
-    /// Made for a container, by none's name.
+    /// Made for a microVM, by none's name.
     pub fn is_anonymous(&self) -> bool {
         self.anonymous || self.labels.contains_key(ANONYMOUS)
     }
@@ -852,10 +852,10 @@ fn getrandom(buf: &mut [u8]) -> Result<(), String> {
     shards_vmm::platform::fill_random(buf).map_err(|e| format!("a volume's name: {e}"))
 }
 
-/// What a container mounts: registerMountPoints' order, `--volumes-from`'s first, then
+/// What a microVM mounts: registerMountPoints' order, `--volumes-from`'s first, then
 /// `-v`'s, then `--mount`'s, then the image's `VOLUME`s and `-v DEST`'s not otherwise
 /// mounted, each as an anonymous volume; volumes made as they are named. `from` gives
-/// another container's mount points by name or ID. A run a microVM's own engine made
+/// another microVM's mount points by name or ID. A run a microVM's own engine made
 /// (D181) has that microVM's volumes alone, found by the names its engine gave them, and
 /// made after `prefix`, the microVM's name, where they are not there.
 pub fn register(
@@ -877,7 +877,7 @@ pub fn register(
         prefix,
     ) {
         Ok(()) => Ok(points),
-        // The anonymous volumes it made go with the container it could not make.
+        // The anonymous volumes it made go with the microVM it could not make.
         Err(e) => {
             for (p, made) in &points {
                 if *made && store.get(&p.name).is_some_and(|v| v.anonymous) {
@@ -926,7 +926,7 @@ fn register_into(
         let (id, mode) = parse_volumes_from(v)?;
         for m in from(&id)? {
             // One its image's Agentfile gives its agents and harnesses alone is theirs: no
-            // other run takes it (D115), as theirs is never in that container's own root.
+            // other run takes it (D115), as theirs is never in that microVM's own root.
             if m.domains_only {
                 return Err(format!(
                     "cannot take the volumes of {id}: its image's Agentfile gives the volume at {} to its agents and harnesses alone",
@@ -936,7 +936,7 @@ fn register_into(
             let cp = MountPoint {
                 rw: m.rw && !mode.split(',').any(|o| o == "ro"),
                 copy_data: false,
-                // Whom it was for was that container's image's to say: this run's image
+                // Whom it was for was that microVM's image's to say: this run's image
                 // says it here (below), and the volume is mounted as any other is.
                 domains: false,
                 domains_only: false,
@@ -1060,7 +1060,7 @@ fn register_into(
     Ok(())
 }
 
-/// A container's mount points, opened for a start: each shared directory, read-only or not,
+/// A microVM's mount points, opened for a start: each shared directory, read-only or not,
 /// and its one name where a file is bound alone; and the guest's setup entry for each mount
 /// point, by its destination.
 #[derive(Debug, Default)]
@@ -1072,7 +1072,7 @@ pub struct Opened {
 /// Opens `points` for a start, its first where `first`: a `-v` bind's missing source made,
 /// as `-v` means it (volumemounts.MountPoint.Setup, createSource); a file shared through
 /// its directory, limited to it; an image's files copied into a volume only as its
-/// container is first started, where dockerd copies them as it is made (populateVolumes).
+/// microVM is first started, where dockerd copies them as it is made (populateVolumes).
 /// Each in the guest at `shards{i}`, `i` its place in `dirs`.
 pub fn open(points: &[MountPoint], first: bool, store: &Store) -> Result<Opened, String> {
     use shards_ipc::fd::OwnedFd;
@@ -1414,7 +1414,7 @@ mod tests {
         );
 
         // `--volumes-from`: mounted as Docker mounts it, for whom this image says; one its
-        // container's image gives its agents and harnesses alone is theirs (D115).
+        // microVM's image gives its agents and harnesses alone is theirs (D115).
         let theirs = |scoped: bool| {
             move |_: &str| {
                 Ok(["/theirs", "/data"]

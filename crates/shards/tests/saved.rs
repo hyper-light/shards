@@ -101,7 +101,7 @@ fn exit(child: &mut Child, home: &Path) -> Option<i32> {
     }
 }
 
-/// The ID of the container `name`.
+/// The ID of the microVM `name`.
 /// What a failing test says of microVM `name`: its state, as inspect gives it (its exit,
 /// and whether the kernel killed its command for memory), and the end of its daemon's log,
 /// where a microVM's end is said (CI's x86_64 runs 38808371825, 38812393591 and
@@ -428,8 +428,8 @@ fn a_save_refused_leaves_the_microvm_running_and_nothing_behind() {
     assert_eq!(refused.status, Some(1), "{refused}");
     assert!(refused.stderr.contains("on the host's network"), "{refused}");
     assert_eq!(shards(&["rm", "-f", "hosted"]).status, Some(0));
-    // Containers joined to it run in its microVM (D119), which a snapshot would keep
-    // without their containers; once they end, it is saved.
+    // Joiners of it run in its microVM (D119), which a snapshot would keep
+    // without their records; once they end, it is saved.
     let run = |args: &[&str]| {
         let mut all = vec!["run", "-d", "--pull", "never"];
         all.extend_from_slice(args);
@@ -461,7 +461,7 @@ fn a_save_refused_leaves_the_microvm_running_and_nothing_behind() {
     assert!(left.is_empty(), "{left:?}");
     assert_eq!(shards(&["rm", "-f", "joiner"]).status, Some(0));
     // Once they end, it is saved, and restored with its join disk as its guest knew it: a
-    // container joins the restored microVM, its image given the disk's next range.
+    // joiner joins the restored microVM, its image given the disk's next range.
     let mut saved = shards(&["save", "vm", "provider", "joined"]);
     let mut patience = Patience::of(&home, TIMEOUT);
     while saved.status != Some(0) && patience.holds() {

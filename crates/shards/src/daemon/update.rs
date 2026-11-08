@@ -1,5 +1,5 @@
 //! `shards update` (moby docker-v29.8.1 daemon/update.go, ContainerUpdate; container
-//! UpdateContainer): a container's limits and restart policy changed, checked as at create,
+//! UpdateContainer): a microVM's limits and restart policy changed, checked as at create,
 //! merged into what it has, kept, and written to its running workload's cgroup at once.
 
 use shards_cmdline::flags::Parsed;
@@ -94,7 +94,7 @@ fn merge(had: &Resources, new: &Resources) -> Result<Resources, String> {
 }
 
 impl<D: Disk> Daemon<D> {
-    /// `shards update [OPTIONS] CONTAINER...`: each container updated said by the name
+    /// `shards update [OPTIONS] CONTAINER...`: each microVM updated said by the name
     /// it was given, then dockerd's warnings; every error after, each its own.
     pub(super) fn update(&self, parsed: &Parsed, reply: &Reply<'_>) -> u8 {
         let new = asked(parsed);

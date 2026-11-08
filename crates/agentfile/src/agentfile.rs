@@ -1278,7 +1278,7 @@ pub fn remote_mcp(directives: &[Directive]) -> Vec<Vec<u8>> {
 }
 
 /// The label of the ports an Agentfile declares `EXPOSE ... AS egress` alone (§12 answer
-/// 6): `shards run -p` refuses to publish them, as an egress port is a destination, not a
+/// 6): `shards run vm -p` refuses to publish them, as an egress port is a destination, not a
 /// listener.
 pub const EGRESS_DECLARED_LABEL: &[u8] = b"vnd.osi.agentfile.egress-declared";
 

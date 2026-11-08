@@ -22,7 +22,7 @@ use crate::spec::LOG_STDERR;
 pub(crate) const PROVIDER: GUID = GUID::from_u128(0xa3693192_9ed6_46d2_a981_f8226c8363bd);
 
 pub(super) struct Etwlogs {
-    /// Each event's words before its stream's: its container's and its image's names and
+    /// Each event's words before its stream's: its microVM's and its image's names and
     /// IDs, the fields its consumers parse (D198).
     head: String,
 }

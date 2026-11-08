@@ -206,7 +206,7 @@ struct Member {
 }
 
 /// What the groups' thread hears of runs (D183, slice 3): those begun, by VM process and
-/// container, and those ended, by VM process.
+/// microVM, and those ended, by VM process.
 #[cfg(any(target_os = "macos", windows))]
 #[derive(Debug, Default)]
 struct Woke {

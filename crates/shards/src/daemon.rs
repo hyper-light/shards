@@ -1,6 +1,6 @@
-//! `shards daemon`: serves `shards run` from warm VMs (docs/design/architecture.md D26).
+//! `shards daemon`: serves `shards run vm` from warm VMs (docs/design/architecture.md D26).
 //!
-//! One runs per SHARDS_HOME, holding the home's lock; `shards run` starts it when none
+//! One runs per SHARDS_HOME, holding the home's lock; `shards run vm` starts it when none
 //! listens. For each template it has served, it keeps SHARDS_POOL warm VMs (default 2):
 //! restored, resumed, connected, and waiting for a command (warm.rs). A run takes one, and
 //! the pool refills. A run with no template yet boots a VM that saves one on the way, and
@@ -147,13 +147,13 @@ const DEFAULT_IDLE: Duration = Duration::from_secs(900);
 const DEFAULT_KEEP: Duration = Duration::from_secs(600);
 /// Warm VMs a run may try: one can end while it waits, or before it has taken the run.
 const HANDOFF_TRIES: usize = 3;
-/// A stopped container's writable layer, in its directory (D37): kept whole, and being
+/// A stopped microVM's writable layer, in its directory (D37): kept whole, and being
 /// written as its microVM stops.
 pub(super) const LAYER: &str = "layer.tar";
-/// The request a container was made by, in its directory, for `shards start`.
+/// The request a microVM was made by, in its directory, for `shards start vm`.
 pub(super) const REQUEST: &str = "request";
 const LAYER_NEW: &str = "layer.new";
-/// A running container's swap (D159), in its directory until its microVM holds it.
+/// A running microVM's swap (D159), in its directory until its VM holds it.
 const SWAP: &str = "swap";
 
 /// A VM process's link to its daemon, as `--warm` and `--resume` name it: its descriptor 3
@@ -200,7 +200,7 @@ fn remove_if_there(at: &Path) -> io::Result<()> {
     }
 }
 
-/// A new file for a container's layer to be written to, in place of any half-written
+/// A new file for a microVM's layer to be written to, in place of any half-written
 /// one: only this user's.
 fn open_layer(at: &Path) -> std::io::Result<std::fs::File> {
     crate::os::owner_only(
@@ -257,7 +257,7 @@ const POSIX_THREADS: u64 = 64;
 /// process may have hold, past the daemon's own, at [`CLIENT_THREADS`] each. A client is
 /// in hand until its run is handed over or its command answered, or it waits long (`wait`,
 /// `logs -f`, [`Daemon::waits_long`]); it holds up to six descriptors meanwhile (its
-/// connection, its stdio, its container's log and a VM's socket), which the daemon waits
+/// connection, its stdio, its microVM's log and a VM's socket), which the daemon waits
 /// for room for where they run out. Past this many, connections wait in the listener's
 /// backlog. Before, 256, chosen.
 fn most_clients() -> usize {
@@ -319,7 +319,7 @@ pub fn daemon(args: impl Iterator<Item = OsString>) -> ExitCode {
     }
 }
 
-/// A container's membership of its microVM's switch as init says it (D181): its network,
+/// A joiner's membership of its microVM's switch as init says it (D181): its network,
 /// its address and prefix there, its gateway and its link's hardware address, each a word;
 /// none for what is not that.
 fn engine_address_of(said: &[u8]) -> Option<crate::containers::EngineAddress> {
@@ -367,7 +367,7 @@ fn log(message: impl std::fmt::Display) {
 #[cfg(test)]
 static LOGGED: AtomicU64 = AtomicU64::new(0);
 
-/// The host's hosts file, as a container on its network has it (D124): `/etc/hosts`, or
+/// The host's hosts file, as a microVM on its network has it (D124): `/etc/hosts`, or
 /// Windows' own; none where it cannot be read.
 fn host_hosts() -> Vec<u8> {
     #[cfg(windows)]
@@ -544,7 +544,7 @@ struct Ready {
     /// The template the working set it records goes with: its pool's, or the one it saves.
     /// The daemon writes it there; no VM may write a template (D30).
     records: Option<Records>,
-    /// For a container joining another's network (D119), that container's ID: `vm` is its
+    /// For a joiner of another's network (D119), the ID of the run it joins: `vm` is its
     /// VM, which the joiner's run may never end, and `socket` the joiner's own connection
     /// to it.
     joined: Option<String>,
@@ -657,7 +657,7 @@ struct State {
     starting: HashMap<u32, Arc<shards_ipc::Child>>,
 }
 
-/// The spare container: none, one being made, or one made.
+/// The spare record (a microVM's ID, directory and log): none, one being made, or one made.
 #[derive(Debug, Default)]
 enum Spare {
     #[default]
@@ -672,8 +672,8 @@ enum For {
     Run(mpsc::Sender<Result<Ready, String>>),
 }
 
-/// A run, from its container's creation to its end (audit A06): what the container
-/// commands and the daemon's shutdown consult, under `runs`' lock.
+/// A run, from its record's creation to its end (audit A06): what the commands on
+/// microVMs and the daemon's shutdown consult, under `runs`' lock.
 enum RunState {
     /// Created and not yet handed to a warm VM: `rm` may cancel it, and then it never
     /// starts.
@@ -699,7 +699,7 @@ unsafe impl Send for Named {}
 #[cfg(windows)]
 unsafe impl Sync for Named {}
 
-/// What a run was composed of, which each `exec` in its container starts from, and its
+/// What a run was composed of, which each `exec` in its microVM starts from, and its
 /// health check with the shell a `CMD-SHELL` one runs in.
 struct Base {
     options: crate::spec::Options,
@@ -718,7 +718,7 @@ struct OwnEngine {
 }
 
 /// What a run's registration keeps of its request: a detached client, until it is told
-/// whether its command started, and what each `exec` in its container starts from.
+/// whether its command started, and what each `exec` in its microVM starts from.
 struct Keep<'a> {
     detached: Option<&'a UnixStream>,
     options: crate::spec::Options,
@@ -727,7 +727,7 @@ struct Keep<'a> {
     /// Its published ports' host sockets: sent to its VM's network process, and held
     /// until that process has them (M24).
     published: Vec<publish::Listener>,
-    /// The name a detached client gave the container it started again, said once its
+    /// The name a detached client gave the microVM it started again, said once its
     /// command starts, as `docker start` says it.
     named: Option<String>,
     /// Its start is a restart's (`shards restart vm`): said as an event of its own once it
@@ -735,15 +735,15 @@ struct Keep<'a> {
     restarted: bool,
     /// Its VM saves its writable layer as it stops (`RUN_LAYER_OUT`).
     layer_pending: bool,
-    /// Where its container's layer was kept, which goes under its microVM's layer device as
+    /// Where its writable layer was kept, which goes under its microVM's layer device as
     /// it starts (D190): its VM's layer from then on, which stays where it is.
     layer_over: Option<PathBuf>,
     /// How many segments its log keeps (D161): its own, else the daemon's.
     log_files: u64,
     /// Its log's rotated segments are compressed (D162).
     log_compress: bool,
-    /// A visit to a stopped container's files (visit.rs): no start, no end, no state of
-    /// the container's changes with it.
+    /// A visit to a stopped microVM's files (visit.rs): no start, no end, no state of
+    /// the microVM's changes with it.
     visit: bool,
     /// The ports its image's Agentfile grants its agents (D59), for its VM's network
     /// process: `NET_POLICY`'s payload.
@@ -800,19 +800,19 @@ struct Tracked {
     socket: Arc<RunSocket>,
     vm: Arc<shards_ipc::Child>,
     inbox: Arc<Mutex<Inbox>>,
-    /// [`Keep::visit`]: the container is not running.
+    /// [`Keep::visit`]: the microVM is not running.
     visit: bool,
     /// Its guest's MAC on its network, for `inspect`.
     mac: Option<[u8; 6]>,
     /// Its network process's control socket, where peers on its network come (D46).
     net: Option<crate::netproc::Control>,
-    /// For a container joining another's network (D119), that container's ID: `vm` is its
+    /// For a joiner of another's network (D119), the ID of the run it joins: `vm` is its
     /// VM, which this run never ends, pauses or reads as its own.
     joined: Option<String>,
 }
 
 /// What a run has told the daemon, and the socket it tells it on: read under this lock
-/// alone, by the followers' loop as messages come (`follow`), and by every container
+/// alone, by the followers' loop as messages come (`follow`), and by every microVM
 /// command before it answers (`settle`). A run tells the daemon of its start and end
 /// before its client learns of them, so a command sees what any client has seen.
 /// A run's end, as [`Daemon::tell_end`] tells it: its VM's process, whether its command
@@ -842,7 +842,7 @@ struct Inbox {
     /// The pool its warm VM came from, which counts it among its runs going until it ends
     /// (demand.rs).
     pool: Option<PoolKey>,
-    /// The run's container's directory, and the log segment the VM writes there, which
+    /// The run's directory, and the log segment the VM writes there, which
     /// the daemon made.
     container: PathBuf,
     segment: u64,
@@ -861,9 +861,9 @@ struct Inbox {
     /// The execs whose clients wait on their ends (none detached), by number, until each
     /// ends (`EXEC_ENDED`): its microVM's progress is logged meanwhile.
     waited_execs: Vec<u64>,
-    /// The container's writable layer is still to come, after its end (D37).
+    /// The microVM's writable layer is still to come, after its end (D37).
     layer_pending: bool,
-    /// Its writable layer's file (D190), its VM's, for a container that stays: kept in its
+    /// Its writable layer's file (D190), its VM's, for a microVM that stays: kept in its
     /// directory once nothing of its machine writes it, as the VM says it kept it
     /// (`LAYER_KEPT`, its guest's journal written in place), or as the VM goes without a
     /// word once its command had started, its journal then to replay as it is read
@@ -886,7 +886,7 @@ struct Inbox {
     guest: Option<u32>,
     /// On the host's network (D124): its guest's sockets of the host's, its joiners' too.
     host_net: Option<hostnet::HostNet>,
-    /// How many containers joining its microVM's network run (D119): its VM, which runs on
+    /// How many joiners of its microVM's network run (D119): its VM, which runs on
     /// for them past its own command, is followed until it ends, for what their processes
     /// ask of the host's network and record (D123, D124).
     joiners: u32,
@@ -894,9 +894,9 @@ struct Inbox {
     provider: Option<Arc<Mutex<Inbox>>>,
     /// A save its VM was asked for and has yet to answer (D176).
     saving: Option<snapshots::Saving>,
-    /// A live move's rounds its VM was asked for and has yet to answer (D176 part 7): what
-    /// they sent, as its VM says it, or why not.
-    precopying: Option<mpsc::Sender<Result<String, String>>>,
+    /// A live move's rounds its VM was asked for and has yet to answer (D176 part 7): how
+    /// they go as they go, then what they sent, as its VM says it, or why not.
+    precopying: Option<mpsc::Sender<moves::Rounds>>,
     /// The pauses and resumes its VM was asked for (`PAUSE`) and has yet to answer, each
     /// by its number.
     pausing: Vec<(u64, mpsc::Sender<Result<(), String>>)>,
@@ -975,7 +975,7 @@ fn gather(set: &mut WorkingSet, limit: u64, payload: &[u8]) -> Gathered {
     Gathered::Whole(taken.name.unwrap_or_default(), taken.bytes)
 }
 
-/// One waiting for a container to end ([`Daemon::await_exit_held`]), by its number.
+/// One waiting for a microVM to end ([`Daemon::await_exit_held`]), by its number.
 struct Waiter {
     number: u64,
     /// Written the exit code: its other end, which the waiter waits on in poll(2) beside
@@ -984,7 +984,7 @@ struct Waiter {
 }
 
 impl Waiter {
-    /// Tells it the container's exit code.
+    /// Tells it the microVM's exit code.
     fn hear(&self, code: u8) {
         let _ = (&self.wake).write_all(&[code]);
     }
@@ -1056,7 +1056,7 @@ struct Daemon<D: Disk = Real> {
     /// The most mappings one process may hold, Linux's `vm.max_map_count`, which bounds each
     /// run's windows (D189); none where the host has no such limit.
     max_map_count: Option<u64>,
-    /// How much of each container's output its log keeps, where the daemon's environment
+    /// How much of each microVM's output its log keeps, where the daemon's environment
     /// says (`SHARDS_LOG_MAX_SIZE`, `SHARDS_LOG_MAX_FILE`); else [`Daemon::log_retention`]
     /// reads the home's disk settings.
     logs: Option<LogRetention>,
@@ -1071,7 +1071,7 @@ struct Daemon<D: Disk = Real> {
     /// The clients that wait long, by number, in hand no more ([`Daemon::waits_long`]).
     long_waits: Mutex<HashSet<u64>>,
     /// The connections of clients in hand whose threads the daemon's shutdown ends, by
-    /// number: those still sending their request, and those of container commands. A run's
+    /// number: those still sending their request, and those of commands on microVMs. A run's
     /// connection is its command's once its request is read, and leaves here then.
     clients: Mutex<HashMap<u64, Arc<UnixStream>>>,
     /// The clients whose request no thread has taken yet: one is answered either by its
@@ -1117,7 +1117,7 @@ struct Daemon<D: Disk = Real> {
     /// The connections of `shards daemon stop`, held open until this daemon has let go
     /// of its home, which is how they learn it has exited.
     stoppers: Mutex<Vec<UnixStream>>,
-    /// Every run whose container exists and has not ended, by the container's ID.
+    /// Every run whose microVM exists and has not ended, by the microVM's ID.
     runs: Mutex<HashMap<String, RunState>>,
     /// The microVMs a client waits on, by their processes' IDs, each as the listener last
     /// looked at it ([`Daemon::log_progress`]).
@@ -1126,19 +1126,19 @@ struct Daemon<D: Disk = Real> {
     resolved: Condvar,
     /// `shards daemon stop` asked this daemon to end its runs.
     ending: AtomicBool,
-    /// Every run's container.
+    /// Every run's record.
     containers: Mutex<Registry>,
-    /// Where the containers' records are kept: the host's file system, or a test's. Each
+    /// Where the microVMs' records are kept: the host's file system, or a test's. Each
     /// of the registry's writes, and each record or removal finished outside its lock,
     /// borrows it.
     disk: D,
-    /// A reserved container was let be seen, or taken out; or a container taken out was
+    /// A reserved microVM was let be seen, or taken out; or a microVM taken out was
     /// set aside, or put back.
     arrived: Condvar,
-    /// The containers' records to write, and the thread that writes them (record.rs).
+    /// The microVMs' records to write, and the thread that writes them (record.rs).
     recording: record::Recording,
-    /// Who waits for each running container to end, for its exit code: `shards wait`,
-    /// `stop`, `kill`, `rm -f`. Told under the containers' lock, as the record changes.
+    /// Who waits for each running microVM to end, for its exit code: `shards wait vm`,
+    /// `stop`, `kill`, `rm -f`. Told under the microVMs' lock, as the record changes.
     /// Each waiter has a number, by which it goes if it stops waiting first.
     waiters: Mutex<HashMap<String, Vec<Waiter>>>,
     next_waiter: AtomicU64,
@@ -1151,45 +1151,45 @@ struct Daemon<D: Disk = Real> {
     /// that took them has gone, and told as each goes.
     ports_held: Mutex<Vec<publish::Held>>,
     ports_freed: Condvar,
-    /// The containers `shards rm` is removing.
+    /// The microVMs `shards remove vm` is removing.
     removing: Mutex<HashSet<String>>,
-    /// What has happened, for `shards events`.
+    /// What has happened, for `shards watch system`.
     events: events::Events,
     /// Containers whose writable layer their stopped VM is still saving (D37), and when
     /// one is no more.
     settling: Mutex<HashSet<String>>,
     settled: Condvar,
-    /// Each container's restart manager, as its runs end (restart.rs).
+    /// Each microVM's restart manager, as its runs end (restart.rs).
     restarts: Mutex<HashMap<String, restart::Manager>>,
-    /// The containers the daemon itself is starting again, for their policies: such a
-    /// start keeps its restart count, where `shards start` resets it.
+    /// The microVMs the daemon itself is starting again, for their policies: such a
+    /// start keeps its restart count, where `shards start vm` resets it.
     restarting_now: Mutex<HashSet<String>>,
-    /// Stopped containers whose files a VM is visiting (visit.rs), and its end's wakeup:
+    /// Stopped microVMs whose files a VM is visiting (visit.rs), and its end's wakeup:
     /// one visit at a time each, and no start meanwhile.
     visiting: Mutex<HashSet<String>>,
     visited: Condvar,
-    /// The containers `shards pause` froze: their VM processes stopped (SIGSTOP), until
+    /// The microVMs `shards pause vm` froze: their VM processes stopped (SIGSTOP), until
     /// `unpause`, or a stop or kill, lets them go on.
     paused: Mutex<HashSet<String>>,
-    /// What is plugged into each running microVM (D214), by container ID, then by the path
+    /// What is plugged into each running microVM (D214), by microVM ID, then by the path
     /// its workload has it at.
     plugged: Mutex<devices::PluggedMap>,
-    /// Each running microVM's join share process (D119), by the ID of the container whose
+    /// Each running microVM's join share process (D119), by the ID of the microVM whose
     /// run it is: the daemon's connection to it, on which each joiner's link to it goes.
-    /// Made as the first container joining that microVM's network brings volumes.
+    /// Made as the first joiner of that microVM's network brings volumes.
     join_shares: Mutex<HashMap<String, JoinDoor>>,
-    /// Each container's share processes (D38) not yet seen to end, by its ID: its removal
+    /// Each microVM's share processes (D38) not yet seen to end, by its ID: its removal
     /// completes once they have, so that none holds a file of its volumes or binds as they
     /// go, which NTFS renames no directory beneath (D197).
     shared_by: Mutex<HashMap<String, Vec<Arc<shards_ipc::Child>>>>,
     /// Each joiner's link to its microVM's join share, by its ID, with the ID of the
-    /// container whose microVM it is: its volumes are served until the link closes, as it
+    /// run whose microVM it is: its volumes are served until the link closes, as it
     /// ends.
     joiner_links: Mutex<HashMap<String, (String, UnixStream)>>,
-    /// Each user network's members, by its ID: the endpoints of its running containers
+    /// Each user network's members, by its ID: the endpoints of its running microVMs
     /// (D46).
     members: Mutex<std::collections::BTreeMap<String, Vec<networks::Member>>>,
-    /// A container's ID, directory and log, made ahead of the run that takes them.
+    /// A microVM's ID, directory and log, made ahead of the run that takes them.
     spare: Mutex<Spare>,
     /// Numbers the templates a run saves before they become the template.
     saved: AtomicU64,
@@ -1208,7 +1208,7 @@ struct Daemon<D: Disk = Real> {
     home_gone: AtomicBool,
     /// Every run followed to its end by one thread (follow.rs).
     followers: follow::Followers,
-    /// The removals of `--rm` containers that ended, made durable together (follow.rs).
+    /// The removals of `--rm` microVMs that ended, made durable together (follow.rs).
     completing: follow::Completing,
     /// The files runs' VMs ask for, made on a thread of their own (files.rs).
     files: files::Files,
@@ -1230,7 +1230,7 @@ struct Daemon<D: Disk = Real> {
     /// The groups shards keeps for `--cgroup-parent` (D183, slice 3), held by their thread.
     #[cfg(any(target_os = "macos", windows))]
     groups: groups::Groups,
-    /// When each running container's health check is next due (health.rs).
+    /// When each running microVM's health check is next due (health.rs).
     checks: health::Checks,
     /// Runs waiting for a VM booted for them, by number: told as the daemon stops.
     booting: Mutex<HashMap<u64, mpsc::Sender<Result<Ready, String>>>>,
@@ -1296,7 +1296,7 @@ fn ready_link(fd: i32) -> Result<File, String> {
 /// Starts the daemon in the background, and returns once it serves: in a session of its
 /// own, writing to the log in its home, and orphaned as this process exits, so that init
 /// adopts it (or the nearest subreaper) and reaps it when it exits. A daemon left the
-/// child of the `shards run` that started it would stay a zombie after it exits, for as
+/// child of the `shards run vm` that started it would stay a zombie after it exits, for as
 /// long as that client lives (APUE 13.3; XNU proc_exit reparents orphans to launchd). One
 /// that ends before it serves has found another daemon serving its home, or failed,
 /// which this says with its log's path, rather than leave its client to wait for it
@@ -1382,7 +1382,7 @@ fn count(name: &str, default: u64) -> Result<u64, String> {
     }
 }
 
-/// How much of a container's output its log keeps unless a setting says otherwise: its
+/// How much of a microVM's output its log keeps unless a setting says otherwise: its
 /// newest 1 GiB (the user's call, 2026-10-18; `shards configure disk`, D186).
 const DEFAULT_LOGS: LogRetention = crate::disk::log_retention(crate::disk::LOG_HISTORY);
 
@@ -1399,7 +1399,7 @@ struct Settings {
     /// How long a template's pool keeps warm VMs after its last claim:
     /// `SHARDS_POOL_KEEP`, in seconds.
     keep: Duration,
-    /// How much of each container's output its log keeps, where `SHARDS_LOG_MAX_SIZE` or
+    /// How much of each microVM's output its log keeps, where `SHARDS_LOG_MAX_SIZE` or
     /// `SHARDS_LOG_MAX_FILE` says.
     logs: Option<LogRetention>,
     /// Clients in hand at once: `SHARDS_MAX_CLIENTS`, at most [`most_clients`].
@@ -2089,7 +2089,7 @@ impl<D: Disk> Daemon<D> {
         let mut contexts_changed = true;
         loop {
             let closing = self.closed.load(Ordering::SeqCst);
-            // A daemon whose home is gone has nothing left to serve, and its runs' containers
+            // A daemon whose home is gone has nothing left to serve, and its runs' microVMs
             // are gone with it, so no command could reach them: they end as `daemon stop`
             // ends them, rather than run on unseen.
             if !closing && self.home_going() {
@@ -2443,7 +2443,7 @@ impl<D: Disk> Daemon<D> {
         }
     }
 
-    /// Client `number` waits long, for a container's end or its log's growth (`wait`,
+    /// Client `number` waits long, for a microVM's end or its log's growth (`wait`,
     /// `logs -f`): it counts among the clients in hand no more, so that waiters shut out
     /// no client however many there are (review 7.9). Its connection stays the daemon's
     /// to end as it stops, and its thread holds on.
@@ -2548,7 +2548,7 @@ impl<D: Disk> Daemon<D> {
         }
         // The removals of runs that ended with `--rm`, done, their `destroy` kept: a
         // daemon stopped as one is pending lost the event, and left its files for the
-        // next to delete (musl CI 39297260869). Then what it last knew of its containers is
+        // next to delete (musl CI 39297260869). Then what it last knew of its microVMs is
         // what the next daemon reads, and the files its runs asked for are made.
         self.await_removals();
         self.await_recorded();
@@ -2579,7 +2579,7 @@ impl<D: Disk> Daemon<D> {
     }
 
     /// Serves one client's request. A run it hands to a warm VM, registered, comes back
-    /// with its container's ID, for the caller to follow once the client's descriptors
+    /// with its microVM's ID, for the caller to follow once the client's descriptors
     /// here are closed.
     fn handle<'s, 'e>(
         &'s self,
@@ -2667,7 +2667,7 @@ impl<D: Disk> Daemon<D> {
                     color: command.color,
                     files: message.fds,
                 };
-                // A stopped container's files are read in a VM booted over them (visit.rs).
+                // A stopped microVM's files are read in a VM booted over them (visit.rs).
                 let visit = self.visit_for(threads, &command.argv);
                 let status = match self.device_command(threads, &command.argv, &commands::Reply(conn)) {
                     Some(status) => status,
@@ -2714,7 +2714,7 @@ impl<D: Disk> Daemon<D> {
             return None;
         }
         let _ = shards_ipc::send(conn, kind::HEARD, &[], &[]);
-        // `shards create` says the daemon's refusal as it is, and exits 1: runCreate
+        // `shards create vm` says the daemon's refusal as it is, and exits 1: runCreate
         // returns createContainer's error unwrapped (docker/cli create.go).
         let creating = run.create;
         let refuse = |said: &str| {
@@ -2725,10 +2725,10 @@ impl<D: Disk> Daemon<D> {
                 refuse(said);
             }
         };
-        // `shards start`: the container as it was made, attached as this client asks
+        // `shards start vm`: the microVM as it was made, attached as this client asks
         // (D37). One running already is left so, and named, as `docker start` names it.
         let mut again = None;
-        // Set aside as the run becomes the one the container was made by (`again_as`).
+        // Set aside as the run becomes the one the microVM was made by (`again_as`).
         let restarting = run.restart;
         if let Some(given) = run.again.clone() {
             if run.restart
@@ -2764,7 +2764,7 @@ impl<D: Disk> Daemon<D> {
                 }
             }
         }
-        // A container started again is refused in `docker start`'s words, the client
+        // A microVM started again is refused in `docker start`'s words, the client
         // naming it after, or `docker restart`'s (moby daemon/restart.go,
         // ContainerRestart), not `docker run`'s.
         let asked_again = again.as_ref().map(|(given, _, _)| given.clone());
@@ -2787,7 +2787,7 @@ impl<D: Disk> Daemon<D> {
                 self.not_again(id);
             }
         };
-        // `shards restore vm` (D176): the container resumed from a snapshot of its own, its
+        // `shards restore vm` (D176): the microVM resumed from a snapshot of its own, its
         // command going on where it was saved, in a VM restoring it. Its guest's interface
         // is as it was: its MAC, and its address on its network asked for again, as `--ip`
         // asks for one, which a restore finding it another's fails on, as a start does.
@@ -2825,7 +2825,7 @@ impl<D: Disk> Daemon<D> {
             None => None,
         };
         // dockerd's create route first, before its daemon checks anything (moby
-        // handleSysctlBC): an interface's sysctl given as the container's own is refused.
+        // handleSysctlBC): an interface's sysctl given as the microVM's own is refused.
         if again.is_none()
             && let Err(e) = network::interface_sysctl(&run)
         {
@@ -2853,9 +2853,9 @@ impl<D: Disk> Daemon<D> {
                 v4.chain(v6).collect()
             })
         };
-        // Another container's namespaces are kept by its ID as the container is made, so
+        // Another microVM's namespaces are kept by its ID as the microVM is made, so
         // that they hold as that one is renamed, as dockerd keeps them (moby
-        // daemon/daemon_unix.go, adaptSharedNamespaceContainer); a name no container has
+        // daemon/daemon_unix.go, adaptSharedNamespaceContainer); a name no microVM has
         // is kept as given, and fails as it starts.
         if again.is_none() {
             let by_id = |mode: &str| {
@@ -2952,7 +2952,7 @@ impl<D: Disk> Daemon<D> {
             ));
             return None;
         }
-        // The container's ID first: it names the command's host unless the run does
+        // The microVM's ID first: it names the command's host unless the run does
         // (moby daemon/container.go).
         let (again, id, container_log) = match again {
             Some((given, id, log)) => (Some(given), id, log),
@@ -2964,10 +2964,10 @@ impl<D: Disk> Daemon<D> {
                 }
             },
         };
-        // What a run refused before its container is made leaves: what its start took is let
-        // go, a new container's directory goes, and a spare is made; a container started
+        // What a run refused before its microVM is made leaves: what its start took is let
+        // go, a new microVM's directory goes, and a spare is made; a microVM started
         // again only waits no more to be (`again`). Once a new one is made, a run that does
-        // not start fails as a start does (`not_started`): never abandoned, whose container
+        // not start fails as a start does (`not_started`): never abandoned, whose microVM
         // would be seen with no directory, and its run pending to the daemon's end.
         let abandon = |id: &str| {
             self.let_go(id);
@@ -3002,7 +3002,7 @@ impl<D: Disk> Daemon<D> {
         }
         // The next run's spare is made once this one is answered, off its path. What it
         // downloads, a shutdown cancels, and its client's going, or its asking to be ended
-        // (`INTERRUPT`, D26). A client that went, or asked, gets no container, as a Docker
+        // (`INTERRUPT`, D26). A client that went, or asked, gets no microVM, as a Docker
         // CLI interrupted as it pulls gets none, and hears nothing more but the answer to
         // its asking: its stderr, which this daemon holds, may be a terminal it gave back.
         let (prepared, watched) = self.cancellable(number, conn, |cancel| {
@@ -3033,7 +3033,7 @@ impl<D: Disk> Daemon<D> {
         // libnetwork/resolvconf's legacy transform, neither with IPv6), read as the run
         // starts; with them the command still within a frame (review 1.y), as spec.rs
         // measured it without.
-        // A joiner's: an Agentfile's agents are not yet taken by a container joining
+        // A joiner's: an Agentfile's agents are not yet taken by a run joining
         // another's network (D119), as the guest refuses them.
         if let network::Start::Join(_) = &start
             && prepared.agentfile.is_some()
@@ -3147,7 +3147,7 @@ impl<D: Disk> Daemon<D> {
                     |at, proto| self.in_use(at, proto),
                 )
             }
-            // A container its microVM's engine made, a member of that microVM's switch (D181):
+            // A joiner its microVM's engine made, a member of that microVM's switch (D181):
             // its ports the microVM's, which init publishes, none of the host's.
             network::Start::Join(_) if !run.engine_nets.is_empty() => {
                 publish::engine_ports(&bindings, &alone, self.engine_host_binding(&run)).map(|ports| {
@@ -3201,7 +3201,7 @@ impl<D: Disk> Daemon<D> {
         // Its user network's own destinations for its members' commands (D192, the
         // network's shards.egress): kept apart from an image's agents' grants, whose flows
         // its network process could not tell from the command's, so refused beside them,
-        // before its container is made, as a setting dockerd refuses is.
+        // before its microVM is made, as a setting dockerd refuses is.
         let network_egress = match user_net
             .as_ref()
             .map(crate::networks::Network::egress)
@@ -3269,7 +3269,7 @@ impl<D: Disk> Daemon<D> {
             }
         };
         let confined = grants.is_some();
-        // The run's container, before anything starts: its name must be free. Its record
+        // The run's microVM, before anything starts: its name must be free. Its record
         // is written while a VM is found for it.
         let made = match &again {
             // Its record stays, with the ports it has now. A restart by its policy keeps
@@ -3293,7 +3293,7 @@ impl<D: Disk> Daemon<D> {
             None => self.create(&run, &prepared, &id, ports),
         };
         let name = match made {
-            // A new container's warnings, as the CLI prints ContainerCreate's.
+            // A new microVM's warnings, as the CLI prints ContainerCreate's.
             Ok(name) if again.is_none() => {
                 // verifyContainerSettings: before the platform's (moby daemon/container.go).
                 if start == network::Start::Attach(network::Net::Host) && !run.publish.is_empty() {
@@ -3330,7 +3330,7 @@ impl<D: Disk> Daemon<D> {
         } else if joins_host {
             say(&format!("WARNING: {}", shards_abi::run::NETWORK_HOST_JOINED));
         }
-        // From here, a run that cannot start fails as a start does: its container stays,
+        // From here, a run that cannot start fails as a start does: its microVM stays,
         // with its error, or goes with `--rm`, and what its start took is let go.
         let fails = |why: &str| {
             self.let_go(&id);
@@ -3341,9 +3341,9 @@ impl<D: Disk> Daemon<D> {
         // A driver that ships its log to a cloud finds its credentials with this client's
         // environment, kept in memory alone (D168).
         self.shipping.give(&id, &run);
-        // A new container keeps the request it was made by, for `shards start` (D37): but
+        // A new microVM keeps the request it was made by, for `shards start vm` (D37): but
         // its client's environments, its registries' and its cloud's, which hold
-        // credentials and are no container's, and which each client that starts it gives.
+        // credentials and are no microVM's, and which each client that starts it gives.
         if again.is_none() {
             let dir = lock(&self.containers).dir(&id);
             let kept = Run {
@@ -3359,7 +3359,7 @@ impl<D: Disk> Daemon<D> {
                 ));
             }
         }
-        // `shards create`: made, not started, its ports not yet bound and no member of its
+        // `shards create vm`: made, not started, its ports not yet bound and no member of its
         // network, its address no one's (moby daemon/create.go makes no network endpoint).
         if run.create {
             self.let_go(&id);
@@ -3408,7 +3408,7 @@ impl<D: Disk> Daemon<D> {
         // join share, given to the share as it joins (`join_vm`).
         let mut join_volumes = Vec::new();
         let joining = matches!(start, network::Start::Join(_));
-        // A container its microVM's engine made, a member of that microVM's switch (D181):
+        // A joiner its microVM's engine made, a member of that microVM's switch (D181):
         // the network it joins there, and its name in its engine's scope. Init gives it its
         // address as it starts, and says it (`MEMBER`).
         let member = match (&run.engine_made, joining) {
@@ -3449,7 +3449,7 @@ impl<D: Disk> Daemon<D> {
                 if let Some(other) = run.ipc.strip_prefix("container:") {
                     prepared.spec.setup.push(self.shared_ipc_entry(other)?);
                 }
-                // `--network container:` of a container its microVM's engine gave a network
+                // `--network container:` of a joiner its microVM's engine gave a network
                 // namespace of its own (D181): that one's, not its provider's.
                 if run.engine_made.is_some()
                     && let Some(other) = run.network.strip_prefix("container:")
@@ -3607,7 +3607,7 @@ impl<D: Disk> Daemon<D> {
                     prepared.cdi.as_ref().ok().and_then(Option::as_ref),
                     prepared.vfio.as_deref().unwrap_or_default(),
                 )?);
-                // A joiner of a container on the host's network: its binds the host's too,
+                // A joiner of a microVM on the host's network: its binds the host's too,
                 // by its provider's process for them (D124).
                 if joins_host {
                     prepared.spec.setup.extend(crate::setup::binds(&run, kernel)?);
@@ -3618,7 +3618,7 @@ impl<D: Disk> Daemon<D> {
                     prepared.spec.setup.extend(crate::setup::domain_seccomp(kernel)?);
                 }
                 // A joiner's are volumes of its microVM's join share, each named so that no
-                // other container can guess it (D119), as no run's own shares are its.
+                // other microVM can guess it (D119), as no run's own shares are its.
                 if joining {
                     let names = opened
                         .dirs
@@ -3701,7 +3701,7 @@ impl<D: Disk> Daemon<D> {
         if kept.is_some() {
             fds.extend([container_log.log.as_fd(), container_log.index.as_fd()]);
         }
-        // A container that stays keeps its writable layer once it stops (D37): written
+        // A microVM that stays keeps its writable layer once it stops (D37): written
         // beside its log, and kept once whole (`run_ended`); a joiner's (D119) as any.
         let layer_out = if run.remove {
             None
@@ -3948,7 +3948,7 @@ impl<D: Disk> Daemon<D> {
         }
     }
 
-    /// Hands the run of container `id`, just created, to a warm VM from `acquire` (audit
+    /// Hands the run of microVM `id`, just created, to a warm VM from `acquire` (audit
     /// A06). Until a VM is committed to, the run is pending, and `rm` may cancel it; from
     /// then on commands wait to see whether the VM took it. A VM that surely did not gives
     /// way to another; one that may have is followed as it is, so no run starts twice.
@@ -3966,7 +3966,7 @@ impl<D: Disk> Daemon<D> {
         mut acquire: impl FnMut() -> Result<Ready, String>,
     ) -> Result<Arc<Mutex<Inbox>>, String> {
         let mut keep = keep;
-        // A visit that cannot start leaves the container as it was.
+        // A visit that cannot start leaves the microVM as it was.
         let visit = keep.visit;
         let failed = |why: &str| {
             if visit {
@@ -4037,7 +4037,7 @@ impl<D: Disk> Daemon<D> {
         Err(failed("no warm VM took the run"))
     }
 
-    /// A new container's ID, and its log: the spare's, made ahead, or made now.
+    /// A new microVM's ID, and its log: the spare's, made ahead, or made now.
     fn new_container(&self) -> Result<(String, Log), String> {
         {
             let mut spare = lock(&self.spare);
@@ -4053,7 +4053,7 @@ impl<D: Disk> Daemon<D> {
         Ok((id, log))
     }
 
-    /// Holds what container `id` publishes at `listeners`' addresses.
+    /// Holds what microVM `id` publishes at `listeners`' addresses.
     fn hold_ports(&self, id: &str, listeners: &[publish::Listener]) {
         if listeners.is_empty() {
             return;
@@ -4067,7 +4067,7 @@ impl<D: Disk> Daemon<D> {
         });
     }
 
-    /// Lets go of what the start of container `id`'s run took, as the run does not start:
+    /// Lets go of what the start of microVM `id`'s run took, as the run does not start:
     /// its published ports; its membership of its network, whose address and names are
     /// then free, as libnetwork's endpoint goes with a start that fails (moby
     /// daemon/start.go, Cleanup); and a joiner's volumes in its microVM's join share (D119).
@@ -4077,7 +4077,7 @@ impl<D: Disk> Daemon<D> {
         lock(&self.joiner_links).remove(id);
     }
 
-    /// Lets go of what container `id`'s run, or VM `vm`'s network process, held: the
+    /// Lets go of what microVM `id`'s run, or VM `vm`'s network process, held: the
     /// daemon's copies of its listening sockets close, and their ports are free.
     fn free_ports(&self, id: Option<&str>, vm: Option<u32>) {
         let mut held = lock(&self.ports_held);
@@ -4214,13 +4214,13 @@ impl<D: Disk> Daemon<D> {
         Ok(())
     }
 
-    /// Container `given`, to be started again (`shards start`): its ID, its log's newest
+    /// Container `given`, to be started again (`shards start vm`): its ID, its log's newest
     /// segment, and the request it was made by; none if it runs, or is starting, already.
     /// From here until its run is handed over or abandoned, it is starting.
     fn again(&self, given: &str) -> Result<Option<(String, Log, Run)>, String> {
         // What any client has seen of its last run first, as every command takes it
         // (`settle`): a `run` that has just returned its status may have sent a DONE not
-        // yet taken, and the container would read as running still.
+        // yet taken, and the microVM would read as running still.
         self.settle();
         let id = self.resolve(given)?;
         if lock(&self.removing).contains(&id) {
@@ -4274,7 +4274,7 @@ impl<D: Disk> Daemon<D> {
         self.resolved.notify_all();
     }
 
-    /// Waits until container `id`'s writable layer is whole where it is kept, if its VM
+    /// Waits until microVM `id`'s writable layer is whole where it is kept, if its VM
     /// is still saving it (D37).
     pub(super) fn await_settled(&self, id: &str) {
         let mut settling = lock(&self.settling);
@@ -4286,7 +4286,7 @@ impl<D: Disk> Daemon<D> {
         }
     }
 
-    /// Removes what was made for container `id`, which will not be created.
+    /// Removes what was made for microVM `id`, which will not be created.
     fn discard(&self, id: &str) {
         let dir = lock(&self.containers).dir(id);
         if let Err(e) = std::fs::remove_dir_all(&dir) {
@@ -4294,7 +4294,7 @@ impl<D: Disk> Daemon<D> {
         }
     }
 
-    /// The mount points of a container `run` makes (moby daemon/volumes.go,
+    /// The mount points of a microVM `run` makes (moby daemon/volumes.go,
     /// registerMountPoints). Anonymous volumes it made go again if a later one fails, as
     /// dockerd's cleanup removes them with the container it could not make.
     fn register_mounts(
@@ -4371,7 +4371,7 @@ impl<D: Disk> Daemon<D> {
         Ok(Some(ends))
     }
 
-    /// Ends container `id`'s share processes and waits for them, as its removal completes:
+    /// Ends microVM `id`'s share processes and waits for them, as its removal completes:
     /// its runs have ended, and nothing of theirs is served any more.
     fn end_shares(&self, id: &str) {
         let children = lock(&self.shared_by).remove(id).unwrap_or_default();
@@ -4560,7 +4560,7 @@ impl<D: Disk> Daemon<D> {
         }
         // Its mount points (registerMountPoints): volumes made as they are named, binds
         // checked; an image's volumes, and `-v DEST`'s, anonymous. No volume is removed
-        // from here until the container that mounts it is seen.
+        // from here until the microVM that mounts it is seen.
         let _volumes = crate::volumes::lock();
         let points = self.register_mounts(run, prepared)?;
         let unmade = |e: String| {
@@ -4651,12 +4651,12 @@ impl<D: Disk> Daemon<D> {
                 }),
         });
         self.event_for(id, &name, &run.image, &prepared.labels, "create", &[]);
-        // Its run is owned from the moment the container is visible.
+        // Its run is owned from the moment the microVM is visible.
         lock(&self.runs).insert(id.to_string(), RunState::Pending { cancelled: false });
         Ok(name)
     }
 
-    /// Writes the record of reserved container `id`, again while it changes as it is
+    /// Writes the record of reserved microVM `id`, again while it changes as it is
     /// written, then lets it be seen. One whose record cannot be written is seen, its
     /// record behind, which is said: it exists, and its run may have started.
     fn arrive(&self, id: &str) -> io::Result<()> {
@@ -4681,7 +4681,7 @@ impl<D: Disk> Daemon<D> {
         }
     }
 
-    /// Waits until reserved container `id` is seen.
+    /// Waits until reserved microVM `id` is seen.
     fn await_arrival(&self, id: &str) {
         let mut registry = lock(&self.containers);
         while registry.is_arriving(id) {
@@ -4692,7 +4692,7 @@ impl<D: Disk> Daemon<D> {
         }
     }
 
-    /// Makes a spare container, if there is none and none is being made, for the next run
+    /// Makes a spare record, if there is none and none is being made, for the next run
     /// to take: making it costs a directory and a file that no run should wait for. One
     /// maker at a time, so no spare is made only to be dropped (audit A20).
     fn make_spare(&self) {
@@ -4719,11 +4719,11 @@ impl<D: Disk> Daemon<D> {
         };
     }
 
-    /// The run of container `id` will not start, for `why`: with `--rm` its container
+    /// The run of microVM `id` will not start, for `why`: with `--rm` its microVM
     /// goes, and otherwise it stays created, with the exit code dockerd gives it (moby
-    /// daemon/start.go, daemon/errors.go). A run `rm` cancelled has no container left, and
+    /// daemon/start.go, daemon/errors.go). A run `rm` cancelled has no microVM left, and
     /// its client hears what `docker run` hears of a container removed before it could
-    /// start it. Those waiting for the container hear its code. Returns what the client is
+    /// start it. Those waiting for the microVM hear its code. Returns what the client is
     /// told.
     fn not_started(&self, id: &str, why: &str) -> String {
         let mut registry = lock(&self.containers);
@@ -4757,8 +4757,8 @@ impl<D: Disk> Daemon<D> {
         said
     }
 
-    /// The end of container `id`'s run, as `end` records it, kept at once: in sight, or
-    /// in its reservation, whose record then holds it. A `--rm` container is taken out of
+    /// The end of microVM `id`'s run, as `end` records it, kept at once: in sight, or
+    /// in its reservation, whose record then holds it. A `--rm` microVM is taken out of
     /// sight, for [`set_aside`](Self::set_aside) and [`complete`](Self::complete) to
     /// remove, counted until its caller queues or completes it
     /// ([`removal_taken`](Self::removal_taken)); any other's record is written on the
@@ -4797,8 +4797,8 @@ impl<D: Disk> Daemon<D> {
         None
     }
 
-    /// Sets aside the directory of the container `removal` took out of sight, out of the
-    /// registry's lock: once it is, no crash of the daemon brings the container back. One
+    /// Sets aside the directory of the microVM `removal` took out of sight, out of the
+    /// registry's lock: once it is, no crash of the daemon brings the microVM back. One
     /// that cannot be set aside is put back in sight as it was, its record written again,
     /// and the error is returned. Commands waiting for it to be set aside look again.
     pub(super) fn set_aside(&self, removal: &Removal) -> io::Result<()> {
@@ -4825,7 +4825,7 @@ impl<D: Disk> Daemon<D> {
     }
 
     /// Logs container event `action` (moby daemon/events.go,
-    /// LogContainerEventWithAttributes): `extra`, the container's labels over them, its
+    /// LogContainerEventWithAttributes): `extra`, the microVM's labels over them, its
     /// image and its name.
     pub(super) fn container_event(&self, id: &str, action: impl Into<String>, extra: &[(&str, String)]) {
         let (name, image, labels) = lock(&self.containers)
@@ -4835,7 +4835,7 @@ impl<D: Disk> Daemon<D> {
         self.event_for(id, &name, &image, &labels, action, extra);
     }
 
-    /// [`container_event`](Self::container_event), of a container named `name` made
+    /// [`container_event`](Self::container_event), of a microVM named `name` made
     /// from `image`, with `labels`: what clients that follow events filter them by, as
     /// Compose follows its project's (`label=com.docker.compose.project=P`). Its own
     /// attributes first, its labels over them, then its image and name, the order clients
@@ -4861,7 +4861,7 @@ impl<D: Disk> Daemon<D> {
 
     /// Makes `removal`, set aside, durable out of the registry's lock, then lets its name
     /// go and deletes what it set aside. Until it is durable the name stays held, since a
-    /// power loss could bring the container back. Failures go to the log, and whether it
+    /// power loss could bring the microVM back. Failures go to the log, and whether it
     /// is durable is returned.
     pub(super) fn complete(&self, removal: &Removal) -> io::Result<()> {
         let id = &removal.container.id;
@@ -4879,7 +4879,7 @@ impl<D: Disk> Daemon<D> {
         }
         self.remove_engine_made(id);
         // Its own engine's volumes, as it goes, those nothing mounts; the rest as the last
-        // container that mounts them goes after it (D181).
+        // microVM that mounts them goes after it (D181).
         self.remove_own_volumes(id);
         if let Some(made) = &removal.container.engine_made
             && lock(&self.containers).get(&made.of).is_none()
@@ -4890,7 +4890,7 @@ impl<D: Disk> Daemon<D> {
     }
 
     /// Removes what microVM `provider`'s own engine made (D181) as `provider` goes, as a
-    /// nested engine's containers go with its files: each ended at once, and each still
+    /// nested engine's joiners go with its files: each ended at once, and each still
     /// running as it ends, which it does with its microVM. None is left behind.
     fn remove_engine_made(&self, provider: &str) {
         let made: Vec<String> = lock(&self.containers)
@@ -4931,7 +4931,7 @@ impl<D: Disk> Daemon<D> {
         }
     }
 
-    /// Removes the anonymous volumes `removed` mounted that no other container mounts, as
+    /// Removes the anonymous volumes `removed` mounted that no other microVM mounts, as
     /// dockerd does with a container removed with its volumes (`rm -v`, `run --rm`; moby
     /// daemon/delete.go, removeMountPoints): a volume another holds stays, as dockerd's
     /// does, in use.
@@ -5056,7 +5056,7 @@ impl<D: Disk> Daemon<D> {
         asks.answered()
     }
 
-    /// Commits the run of container `id` to the warm VM in hand, unless `rm` cancelled it
+    /// Commits the run of microVM `id` to the warm VM in hand, unless `rm` cancelled it
     /// or the daemon is stopping: then it never starts, and the error is what its client
     /// is told. `stop_runs` sets `ending` under the same lock, so a run either commits
     /// before and is stopped once it runs, or sees it here.
@@ -5091,7 +5091,7 @@ impl<D: Disk> Daemon<D> {
     }
 
     /// A warm VM no run took goes back to its pool, unless it has ended, or was booted
-    /// for the run; then it goes. The run took the spare container: another is made.
+    /// for the run; then it goes. The run took the spare record: another is made.
     fn give_back<'s, 'e>(&'s self, threads: &'s Threads<'s, 'e>, ready: Ready) {
         // A warm VM says nothing until it has a run: one with something to read has ended.
         match ready.pool.clone() {
@@ -5111,7 +5111,7 @@ impl<D: Disk> Daemon<D> {
         self.refill_soon(threads, None);
     }
 
-    /// Waits while the run of container `id` is being started: until it runs, or never
+    /// Waits while the run of microVM `id` is being started: until it runs, or never
     /// will. What `stop` and `kill` then find is what a client that saw `run` return would
     /// find.
     pub(super) fn await_start(&self, id: &str) {
@@ -5124,7 +5124,7 @@ impl<D: Disk> Daemon<D> {
         }
     }
 
-    /// Waits until container `id`'s run has ended in its record: a save that stops it
+    /// Waits until microVM `id`'s run has ended in its record: a save that stops it
     /// answers once the next command finds it stopped. Its VM's EXIT comes on the run's
     /// socket right after its answer to the save, so this waits for nothing but its
     /// recording; and for nothing once the daemon is stopping, which ends its runs itself.
@@ -5137,8 +5137,8 @@ impl<D: Disk> Daemon<D> {
         }
     }
 
-    /// For `rm`: takes container `id` out of sight with its run if no VM has been
-    /// committed to the run, which then never starts; those waiting for the container hear
+    /// For `rm`: takes microVM `id` out of sight with its run if no VM has been
+    /// committed to the run, which then never starts; those waiting for the microVM hear
     /// 0, the code of one that never ran. The removal, for [`set_aside`](Self::set_aside)
     /// and [`complete`](Self::complete), if it did. A run being handed over is seen through
     /// first, so that `rm` acts on whether it started.
@@ -5167,7 +5167,7 @@ impl<D: Disk> Daemon<D> {
         }
     }
 
-    /// Registers the run of container `id`, just handed to `ready`'s VM: from here it
+    /// Registers the run of microVM `id`, just handed to `ready`'s VM: from here it
     /// runs, as commands see it. A run handed over while the daemon stops is stopped too:
     /// its registration wakes the stop thread (`stop_each`), which finds it. Returns the run's inbox, for [`follow`](Self::follow).
     fn register(&self, ready: Ready, id: &str, keep: Keep<'_>) -> Arc<Mutex<Inbox>> {
@@ -5229,10 +5229,10 @@ impl<D: Disk> Daemon<D> {
                 .map_err(|e| log(format!("holding a detached client's connection: {e}")))
                 .ok()
         });
-        // Its writable layer's file, for a container that stays; another's goes now, its VM
+        // Its writable layer's file, for a microVM that stays; another's goes now, its VM
         // holding it.
         // A layer that went under its device in place of the VM's own (D190) is the
-        // container's file, where it stays: the VM's own goes now, the VM holding it.
+        // microVM's file, where it stays: the VM's own goes now, the VM holding it.
         let layer = match (layer_pending, layer_over) {
             (true, Some(at)) => Some(layers::LayerFile::in_place(at)),
             (true, None) => ready.layer,
@@ -5338,7 +5338,7 @@ impl<D: Disk> Daemon<D> {
     fn take_messages(&self, id: &str, inbox: &Mutex<Inbox>) -> bool {
         let mut guard = lock(inbox);
         // Followed past its end while its writable layer is still to come (D37), and while
-        // containers joining its network run in its microVM (D119).
+        // joiners of its network run in its microVM (D119).
         while !guard.ended || guard.layer_pending || guard.joiners > 0 {
             let inbox = &mut *guard;
             let m = match inbox.incoming.take(&inbox.socket.stream) {
@@ -5355,7 +5355,7 @@ impl<D: Disk> Daemon<D> {
                         let _ = saving.told.send(Err("its microVM stopped".into()));
                     }
                     if let Some(told) = inbox.precopying.take() {
-                        let _ = told.send(Err("its microVM stopped".into()));
+                        let _ = told.send(moves::Rounds::Done(Err("its microVM stopped".into())));
                     }
                     for (_, told) in inbox.pausing.drain(..) {
                         let _ = told.send(Err("its microVM stopped".into()));
@@ -5413,7 +5413,7 @@ impl<D: Disk> Daemon<D> {
                         ));
                     }
                 }
-                // A container in its microVM ending (D124): its ports of the host's let go,
+                // A joiner in its microVM ending (D124): its ports of the host's let go,
                 // the network process's copies too, before its end is told.
                 kind::HOST_RELEASE => {
                     if let (Some(h), Ok(owner)) =
@@ -5434,7 +5434,7 @@ impl<D: Disk> Daemon<D> {
                     }
                 }
                 kind::LOG_SEGMENT => self.ask_segment(id, inbox, &m.payload),
-                // A container its microVM's engine made, a member of that microVM's switch
+                // A joiner its microVM's engine made, a member of that microVM's switch
                 // (D181): its address there as init gave it, kept while it runs.
                 kind::MEMBER => match engine_address_of(&m.payload) {
                     Some(address) => {
@@ -5453,7 +5453,7 @@ impl<D: Disk> Daemon<D> {
                         String::from_utf8_lossy(&m.payload)
                     )),
                 },
-                // The ports init gave what a container its microVM's engine made publishes
+                // The ports init gave what a joiner its microVM's engine made publishes
                 // (D181), each binding's in its order.
                 kind::PORTS => {
                     let (given, _) = m.payload.as_chunks::<2>();
@@ -5536,6 +5536,7 @@ impl<D: Disk> Daemon<D> {
                     }
                 }
                 kind::PRECOPIED => moves::precopied(inbox, &m.payload),
+                kind::PRECOPYING => moves::precopying(inbox, &m.payload),
                 // Its VM's answer to a pause or resume it was asked for.
                 kind::PAUSED => {
                     if let Some((number, said)) = m.payload.split_first_chunk::<8>()
@@ -5559,7 +5560,7 @@ impl<D: Disk> Daemon<D> {
                 }
                 // Its layer stays in its file (D190), its guest's journal written in place,
                 // said once nothing of its machine writes it (`warm::tell_kept`): the
-                // container's from now on.
+                // stopped microVM's from now on.
                 kind::LAYER_KEPT => {
                     let used = <[u8; 8]>::try_from(m.payload.as_slice())
                         .ok()
@@ -5605,7 +5606,7 @@ impl<D: Disk> Daemon<D> {
         done
     }
 
-    /// What container `id` changed before, to put back as its next run, or a visit to its
+    /// What microVM `id` changed before, to put back as its next run, or a visit to its
     /// files, starts (D37): its writable layer kept in its file (D190), packed here as its
     /// guest packs one, into a pipe a thread of its own writes, or into a file of its own
     /// for a joiner (`joining`, D119), whose join disk takes it; else one its guest packed
@@ -5675,7 +5676,7 @@ impl<D: Disk> Daemon<D> {
 
     /// Container `id`'s writable layer, as its VM left it (D37): kept if it came `whole`;
     /// else what came of it goes, and the layer it had before stays.
-    /// What container `id`'s writable layer uses as its last run left it, where its VM said
+    /// What microVM `id`'s writable layer uses as its last run left it, where its VM said
     /// (`SizeRw`, inspect's): recorded before its layer is settled, so that a reader that
     /// waited for it (`await_settled`) reads it.
     fn layer_used(&self, id: &str, used: Option<u64>) {
@@ -5713,7 +5714,7 @@ impl<D: Disk> Daemon<D> {
     /// file is its layer from now on, in its directory, in place of what it had.
     fn settle_kept(&self, id: &str, inbox: &mut Inbox, used: Option<u64>) {
         inbox.layer_pending = false;
-        // A container removed as its microVM went (`rm -f`) keeps nothing: the file goes.
+        // A run removed as its microVM went (`rm -f`) keeps nothing: the file goes.
         if let Some(layer) = inbox.layer.take()
             && inbox.container.is_dir()
         {
@@ -5748,7 +5749,7 @@ impl<D: Disk> Daemon<D> {
     }
 
     /// Has the log segment run `id`'s VM asks for made, the one after the last asked for,
-    /// in its container, on the files' thread, which answers with its files, or with none
+    /// in its directory, on the files' thread, which answers with its files, or with none
     /// where it cannot be made: the VM then keeps no more output (workload.rs, `Logger`).
     /// One asked for out of turn is answered with none here.
     fn ask_segment(&self, id: &str, inbox: &mut Inbox, payload: &[u8]) {
@@ -5780,7 +5781,7 @@ impl<D: Disk> Daemon<D> {
     /// Takes what every run has sent, so that what a command answers includes all that
     /// any client has seen of them.
     pub(super) fn settle(&self) {
-        // A container is seen once its record is written, on the recorder's thread, while
+        // A microVM is seen once its record is written, on the recorder's thread, while
         // its run goes on: a short run's client can have its status first. The answer
         // waits for every record being written, each a local write away, and for every
         // removal a crash would undo to be set aside.
@@ -5824,7 +5825,7 @@ impl<D: Disk> Daemon<D> {
         self.await_recorded();
     }
 
-    /// Output of run `id` its log could not keep: counted on its container, for `logs` to
+    /// Output of run `id` its log could not keep: counted on its microVM, for `logs` to
     /// say (audit A12).
     /// Run `id`'s guest killed a process of it for want of memory: as dockerd hears
     /// containerd's TaskOOM (daemon/monitor.go), State.OOMKilled until it runs again, and
@@ -5983,7 +5984,7 @@ impl<D: Disk> Daemon<D> {
             }
         }
         inbox.ended = true;
-        // A visit's end is its own: the container stays as it was.
+        // A visit's end is its own: the microVM stays as it was.
         if inbox.visit {
             lock(&self.runs).remove(id);
             self.resolved.notify_all();
@@ -5997,7 +5998,7 @@ impl<D: Disk> Daemon<D> {
         // snapshots: `restore vm` resumes it.
         let saved = inbox.saved_as.take();
         // DONE carries the status, and for a command that never started what dockerd
-        // would say and the code its container keeps (warm.rs finish).
+        // would say and the code its microVM keeps (warm.rs finish).
         let (status, said) = match done.and_then(<[u8]>::split_first) {
             _ if saved.is_some() => (shards_ipc::SAVED_STATUS, None),
             Some((&status, said)) => (
@@ -6012,9 +6013,8 @@ impl<D: Disk> Daemon<D> {
             }
             None => {
                 log(format!("VM {pid} ended before its command started"));
-                let (said, code) = shards_cmdline::commands::start_failed(
-                    "the container's microVM stopped before its command started",
-                );
+                let (said, code) =
+                    shards_cmdline::commands::start_failed("the microVM stopped before its command started");
                 (code, Some(said))
             }
         };
@@ -6032,7 +6032,7 @@ impl<D: Disk> Daemon<D> {
         self.end_after_relays(id, ended);
     }
 
-    /// Tells run `id`'s end: its container stopped, its waiters, `die`, and its restart or
+    /// Tells run `id`'s end: its microVM stopped, its waiters, `die`, and its restart or
     /// removal, as its policy has it.
     pub(super) fn tell_end(&self, id: &str, ended: Ended) {
         let Ended {
@@ -6044,7 +6044,7 @@ impl<D: Disk> Daemon<D> {
             mut detached,
             named,
         } = ended;
-        // A run may end before its container's record is written: its end waits in its
+        // A run may end before its microVM's record is written: its end waits in its
         // reservation, for the record (`end_container`).
         // What `die` says of it (moby daemon/monitor.go): its status, and how long it ran
         // in whole seconds; a command that never started does not die.
@@ -6135,7 +6135,7 @@ impl<D: Disk> Daemon<D> {
     }
 
     /// Waits up to `limit` (for ever if `None`, or if it is too long to count) for the
-    /// container with `id`, found in `registry`, held since, to stop running, and returns
+    /// microVM with `id`, found in `registry`, held since, to stop running, and returns
     /// its exit code: 0 if it never ran. `None` if it still runs, or if `client`, the
     /// connection of the command that waits, has hung up. A waiter that stops waiting is
     /// forgotten (audit A07).
@@ -6152,7 +6152,7 @@ impl<D: Disk> Daemon<D> {
         }
     }
 
-    /// A waiter for the end of the container with `id`, found in `registry`, held since,
+    /// A waiter for the end of the microVM with `id`, found in `registry`, held since,
     /// registered under its lock, under which ends are told, so that none goes unheard:
     /// its number and the socket its code comes on; or its code at once (`Err`) where it
     /// does not run, unless `next` asks for its next run's, though it has yet to start (the
@@ -6188,7 +6188,7 @@ impl<D: Disk> Daemon<D> {
     }
 
     /// Waits up to `limit` (for ever if `None`) for the end the waiter `register_waiter`
-    /// made for container `id` hears: its code, or `None` once `client` hangs up first.
+    /// made for microVM `id` hears: its code, or `None` once `client` hangs up first.
     /// A waiter that stops waiting is forgotten (audit A07).
     pub(super) fn await_waiter(
         &self,
@@ -6282,7 +6282,7 @@ impl<D: Disk> Daemon<D> {
         Ok(Some((number, ours)))
     }
 
-    /// Forgets waiter `number` of container `id`, which stops waiting (audit A07).
+    /// Forgets waiter `number` of microVM `id`, which stops waiting (audit A07).
     pub(super) fn forget_waiter(&self, id: &str, number: u64) {
         let mut waiters = lock(&self.waiters);
         if let Some(list) = waiters.get_mut(id) {
@@ -6347,7 +6347,7 @@ impl<D: Disk> Daemon<D> {
 
     /// Ends the runs in progress as dockerd ends its containers when it shuts down (moby
     /// daemon/daemon.go Shutdown and shutdownContainer, daemon/stop.go containerStop): each
-    /// command gets its container's stop signal, SIGKILL once its stop timeout is up,
+    /// command gets its microVM's stop signal, SIGKILL once its stop timeout is up,
     /// unless that is negative, and its VM goes too if the command outlives even that by
     /// SHUTDOWN_KILL. A run handed to a VM as the daemon stops is stopped as it registers.
     fn stop_runs<'s, 'e>(&'s self, threads: &'s Threads<'s, 'e>) {
@@ -6464,7 +6464,7 @@ impl<D: Disk> Daemon<D> {
             let run = std::fs::read(dir.join(REQUEST))
                 .ok()
                 .and_then(|b| Run::decode(&b))
-                .ok_or_else(|| format!("container {at}: its request is lost"))?;
+                .ok_or_else(|| format!("microVM {at}: its request is lost"))?;
             if run.pid == "host" {
                 return Ok(b"pid=host".to_vec());
             }
@@ -6475,14 +6475,14 @@ impl<D: Disk> Daemon<D> {
                     let guest = self.inbox_of(&at).and_then(|inbox| lock(&inbox).guest);
                     return guest
                         .map(|g| format!("pid=joiner={g}").into_bytes())
-                        .ok_or_else(|| format!("container {at} is not running"));
+                        .ok_or_else(|| format!("microVM {at} is not running"));
                 }
             }
         }
-        Err(format!("container {id}: its PID namespace is too far removed"))
+        Err(format!("microVM {id}: its PID namespace is too far removed"))
     }
 
-    /// The network namespace of container `id` as another's `--network container:` takes it
+    /// The network namespace of microVM `id` as another's `--network container:` takes it
     /// (D181): its own, where its microVM's engine gave it one (a member of the switch, or
     /// its loopback alone), as `net=joiner=ID` of its exec in its provider's guest; that of
     /// the one it shares, followed; none where it is its provider's, the command's.
@@ -6494,7 +6494,7 @@ impl<D: Disk> Daemon<D> {
             let run = std::fs::read(dir.join(REQUEST))
                 .ok()
                 .and_then(|b| Run::decode(&b))
-                .ok_or_else(|| format!("container {at}: its request is lost"))?;
+                .ok_or_else(|| format!("microVM {at}: its request is lost"))?;
             if run.engine_made.is_none() {
                 return Ok(None);
             }
@@ -6502,16 +6502,14 @@ impl<D: Disk> Daemon<D> {
                 let guest = self.inbox_of(&at).and_then(|inbox| lock(&inbox).guest);
                 return guest
                     .map(|g| Some(format!("net=joiner={g}").into_bytes()))
-                    .ok_or_else(|| format!("container {at} is not running"));
+                    .ok_or_else(|| format!("microVM {at} is not running"));
             }
             match run.network.strip_prefix("container:") {
                 Some(other) => at = other.to_string(),
                 None => return Ok(None),
             }
         }
-        Err(format!(
-            "container {id}: its network namespace is too far removed"
-        ))
+        Err(format!("microVM {id}: its network namespace is too far removed"))
     }
 
     /// `--ipc container:NAME` (D156): a run shares another's IPC namespace and /dev/shm
@@ -6609,13 +6607,13 @@ impl<D: Disk> Daemon<D> {
             let run = std::fs::read(dir.join(REQUEST))
                 .ok()
                 .and_then(|b| Run::decode(&b))
-                .ok_or_else(|| format!("container {at}: its request is lost"))?;
+                .ok_or_else(|| format!("microVM {at}: its request is lost"))?;
             match run.network.strip_prefix("container:") {
                 Some(provider) => at = self.resolve(provider)?,
                 None => return Ok(at),
             }
         }
-        Err(format!("container {id}: its microVM is too far removed"))
+        Err(format!("microVM {id} is too far removed"))
     }
 
     /// Whose IPC namespace a run sharing `id`'s takes (D156), as a setup entry: the
@@ -6627,7 +6625,7 @@ impl<D: Disk> Daemon<D> {
             let run = std::fs::read(dir.join(REQUEST))
                 .ok()
                 .and_then(|b| Run::decode(&b))
-                .ok_or_else(|| format!("container {at}: its request is lost"))?;
+                .ok_or_else(|| format!("microVM {at}: its request is lost"))?;
             if run.ipc == "host" {
                 return Ok(b"ipc=host".to_vec());
             }
@@ -6641,13 +6639,13 @@ impl<D: Disk> Daemon<D> {
             let guest = self.inbox_of(&at).and_then(|inbox| lock(&inbox).guest);
             return guest
                 .map(|g| format!("ipc=joiner={g}").into_bytes())
-                .ok_or_else(|| format!("container {at} is not running"));
+                .ok_or_else(|| format!("microVM {at} is not running"));
         }
-        Err(format!("container {id}: its IPC namespace is too far removed"))
+        Err(format!("microVM {id}: its IPC namespace is too far removed"))
     }
 
-    /// The hostname and domain name of the container `name` names, as its run gave them
-    /// (its request), for a container joining its network (D119).
+    /// The hostname and domain name of the microVM `name` names, as its run gave them
+    /// (its request), for a joiner of its network (D119).
     fn names_of(&self, name: &str) -> Option<(String, String)> {
         let id = self.resolve(name).ok()?;
         let dir = lock(&self.containers).dir(&id);
@@ -6658,7 +6656,7 @@ impl<D: Disk> Daemon<D> {
         Some((hostname, run.domainname))
     }
 
-    /// Whether the container `name` names, whose network a joiner joins (D119), is on the
+    /// Whether the microVM `name` names, whose network a joiner joins (D119), is on the
     /// host's network (D124): its microVM's run is, its provider's where it is a joiner
     /// itself, as [`Self::join_vm`] finds that microVM.
     fn joins_hosts_network(&self, name: &str) -> bool {
@@ -6673,7 +6671,7 @@ impl<D: Disk> Daemon<D> {
             .is_some_and(|inbox| lock(&inbox).host_net.is_some())
     }
 
-    /// The microVM container `id` joins (D119): that of the container `name` names, found
+    /// The microVM joiner `id` joins (D119): that of the microVM `name` names, found
     /// as dockerd finds it as a joiner starts (moby daemon/container_operations.go
     /// getNetworkedContainer), in its words where it cannot be joined; a joiner's, its
     /// provider's. The VM is given the joiner's own connection, whose other end is the
@@ -7072,7 +7070,7 @@ impl<D: Disk> Daemon<D> {
                 cfg.cmdline.push_str(" memhp_default_state=online_kernel");
             }
             // And memory its workload frees given back to the host, as it reports it
-            // free, as a container's is (D151).
+            // free, as a microVM's own is (D151).
             cfg.reporting = true;
             // And a swap window as long as the host's memory (D159), which a run with a
             // memory limit swaps to: as much as the most memory a run may have, the swap
@@ -7349,7 +7347,7 @@ impl<D: Disk> Daemon<D> {
         self.collecting.changed.notify_all();
     }
 
-    /// Marks a collection due if a pull, here or by `shards pull`, has said one is
+    /// Marks a collection due if a pull, here or by `shards pull image`, has said one is
     /// (pull.rs, `collect_due`), for the collector's thread.
     fn mark_collection(&self) {
         let due = crate::pull::collect_due(&self.home);
@@ -7493,7 +7491,7 @@ impl<D: Disk> Daemon<D> {
         Ok(())
     }
 
-    /// How much of a container's output its log keeps: the daemon's environment's, where it
+    /// How much of a microVM's output its log keeps: the daemon's environment's, where it
     /// says; else what `shards configure disk` set (D186), its file read at each ask, so
     /// that a change takes at the next run, where a cache keyed by its file's times could
     /// miss one made within its filesystem's tick; else [`DEFAULT_LOGS`].
@@ -7652,7 +7650,7 @@ impl<D: Disk> Daemon<D> {
             }
         }
         // A join disk and a join share in every microVM, empty and unserved until a
-        // container joins its network (D119): its templates have them, and so every restore
+        // joiner joins its network (D119): its templates have them, and so every restore
         // of them.
         args.push("--join".into());
         args.push("--join-share".into());
@@ -7702,8 +7700,8 @@ impl<D: Disk> Daemon<D> {
         ready
     }
 
-    /// The parent container `name`'s microVM's processes are under (D183), as its request
-    /// keeps it; none where it is no container whose request is kept.
+    /// The parent microVM `name`'s processes are under (D183), as its request
+    /// keeps it; none where it is no microVM whose request is kept.
     fn parent_of(&self, name: &str) -> Option<String> {
         let id = self.resolve(name).ok()?;
         let dir = lock(&self.containers).dir(&id);
@@ -8390,18 +8388,18 @@ fn taken(vm: &UnixStream) -> Result<(), Untaken> {
     }
 }
 
-/// The first segment of a container's log (spec.rs, `LOG_STDOUT`), its log and index,
+/// The first segment of a microVM's log (spec.rs, `LOG_STDOUT`), its log and index,
 /// which its run's VM appends to; the daemon makes the rest as the VM asks
 /// (`kind::LOG_SEGMENT`).
 #[derive(Debug)]
 struct Log {
     log: File,
     index: File,
-    /// Its segment's number: 0 for a new container's.
+    /// Its segment's number: 0 for a new microVM's.
     seq: u64,
 }
 
-/// The newest segment of the log in container directory `dir`, to go on writing: the
+/// The newest segment of the log in a run's directory `dir`, to go on writing: the
 /// last whose index is there (segments.rs).
 fn newest_log(dir: &Path) -> io::Result<Log> {
     let mut seq = 0;
@@ -8419,7 +8417,7 @@ fn newest_log(dir: &Path) -> io::Result<Log> {
     })
 }
 
-/// The request container `id` was made by, as a client asks to start it again: attached
+/// The request microVM `id` was made by, as a client asks to start it again: attached
 /// as that client asks, its stdin only if it was made to read one, never pulled (moby
 /// daemon/start.go; docker/cli container/start.go).
 fn again_as(stored: Run, client: &Run, id: &str) -> Run {
@@ -8550,7 +8548,7 @@ pub(super) fn validate_restart_policy((name, max): &(String, i64)) -> Result<(),
     }
 }
 
-/// A new container's directory `dir`, with its log's first segment and that segment's
+/// A new microVM's directory `dir`, with its log's first segment and that segment's
 /// index, for this user alone and written by appends.
 fn new_log(dir: &Path) -> io::Result<Log> {
     // In the home's `containers`, which is there while the home is: a daemon whose home
@@ -9378,11 +9376,11 @@ mod tests {
     }
 
     impl<D: Disk + Opens> Test<D> {
-        /// A daemon whose containers are kept on `disk`, which the test reaches as
+        /// A daemon whose microVMs' records are kept on `disk`, which the test reaches as
         /// `t.daemon.disk`.
         fn on(tag: &str, disk: D) -> Test<D> {
             keep_panics();
-            // A home of its own: a daemon's refill thread may still make a spare container
+            // A home of its own: a daemon's refill thread may still make a spare record
             // as its test ends, and must not make it in another test's home.
             static HOMES: AtomicUsize = AtomicUsize::new(0);
             let n = HOMES.fetch_add(1, Ordering::Relaxed);
@@ -9508,7 +9506,7 @@ mod tests {
     }
 
     impl<'s, 'e, D: Disk + Opens> In<'s, 'e, D> {
-        /// Creates container `name` as a client's run does, in a directory of its own; its
+        /// Creates microVM `name` as a client's run does, in a directory of its own; its
         /// ID, once it is seen.
         fn create(&self, name: &str) -> String {
             let id = self.reserve(name);
@@ -9516,13 +9514,13 @@ mod tests {
             id
         }
 
-        /// Reserves container `name` as a client's run does, its record being written; its
+        /// Reserves microVM `name` as a client's run does, its record being written; its
         /// ID.
         fn reserve(&self, name: &str) -> String {
             self.reserve_with(name, None, false)
         }
 
-        /// [`reserve`](Self::reserve), with the container's own stop signal, and `--rm`.
+        /// [`reserve`](Self::reserve), with the microVM's own stop signal, and `--rm`.
         fn reserve_with(&self, name: &str, stop_signal: Option<&str>, remove: bool) -> String {
             let (id, _log) = self.t.daemon.new_container().unwrap();
             let run = Run {
@@ -9566,7 +9564,7 @@ mod tests {
             id
         }
 
-        /// Starts the run of container `id` on a thread of its own, as a client's run is
+        /// Starts the run of microVM `id` on a thread of its own, as a client's run is
         /// started, then follows it; the warm VMs sent on the channel returned are the
         /// ones it may take, and each it asks for is said on its other channel. The
         /// thread returns what the client was told, if the run did not start.
@@ -9848,7 +9846,7 @@ mod tests {
         say(vm, kind::DONE, &[status]);
     }
 
-    /// `rm` of a container whose run no VM has been committed to removes it, tells those
+    /// `rm` of a microVM whose run no VM has been committed to removes it, tells those
     /// waiting for it 0, and the run never starts: its warm VM hears nothing and goes back
     /// to its pool, and its client hears what `docker run` hears of a container removed
     /// before it was started (audit A06).
@@ -9897,7 +9895,7 @@ mod tests {
         });
     }
 
-    /// `start` of a container whose last run told its client it ended, though the daemon
+    /// `start` of a microVM whose last run told its client it ended, though the daemon
     /// has not yet taken that run's DONE, starts it again: `again` first takes what every
     /// run has sent, as `docker start` right after `docker run` finds the container exited.
     #[test]
@@ -9960,7 +9958,7 @@ mod tests {
         });
     }
 
-    /// `rm` of a container whose run is being handed over waits to learn whether it
+    /// `rm` of a microVM whose run is being handed over waits to learn whether it
     /// started, and acts on that: a run that started is running, and is not removed
     /// without `-f`; once it has ended it is.
     #[test]
@@ -10002,7 +10000,7 @@ mod tests {
         });
     }
 
-    /// `rm -f` of a container whose run is being handed over kills the run once it has
+    /// `rm -f` of a microVM whose run is being handed over kills the run once it has
     /// started, then removes it.
     #[test]
     fn rm_force_kills_a_run_being_handed_over_once_it_runs() {
@@ -10036,7 +10034,7 @@ mod tests {
         });
     }
 
-    /// `wait`, `stop` and `kill` of a container still starting act once its run has
+    /// `wait`, `stop` and `kill` of a microVM still starting act once its run has
     /// started, as they would had its client seen `run` return: `wait` hears the run's own
     /// code, and the signals reach its command.
     #[test]
@@ -10098,7 +10096,7 @@ mod tests {
         }
     }
 
-    /// `stop` ends every container it names at once, from one loop: 60 that ignore their
+    /// `stop` ends every microVM it names at once, from one loop: 60 that ignore their
     /// SIGTERM all hear it before any hears SIGKILL, and all are stopped one grace after,
     /// where docker/cli's 50 at a time would take two; the answers in the order asked. The
     /// grace is long beside what sending 60 signals takes a busy host (2.8 s once, where
@@ -10139,7 +10137,7 @@ mod tests {
     }
 
     /// A daemon told to stop starts no run still pending: its warm VM hears nothing, its
-    /// container keeps the code of a start that failed, and those waiting for it hear
+    /// microVM keeps the code of a start that failed, and those waiting for it hear
     /// that code.
     #[test]
     fn a_stopping_daemon_starts_no_pending_run() {
@@ -10188,7 +10186,7 @@ mod tests {
         });
     }
 
-    /// A client that has sent container command `args`: the daemon's end of its
+    /// A client that has sent command `args` on a microVM: the daemon's end of its
     /// connection, for [`Daemon::take`], and its own.
     fn commanding(args: &[&str]) -> (UnixStream, UnixStream) {
         let (daemon, client) = UnixStream::pair().unwrap();
@@ -10229,7 +10227,7 @@ mod tests {
         );
     }
 
-    /// Starts container `name`'s run on a warm VM the test plays, and has it running.
+    /// Starts microVM `name`'s run on a warm VM the test plays, and has it running.
     fn running<'s>(t: &In<'s, '_, Real>, name: &str) -> (String, Starting<'s>, UnixStream) {
         let id = t.create(name);
         let starting = t.start(&id);
@@ -10286,7 +10284,7 @@ mod tests {
     }
 
     /// A daemon told to stop ends the clients it would otherwise wait for: one that never
-    /// sends its request, in hand, and container commands waiting long on a run that
+    /// sends its request, in hand, and commands on microVMs waiting long on a run that
     /// ignores its SIGTERM (review 7.9), whose connections are shut down. The audit's
     /// reproduction (A07): before, the daemon waited for the first until its client
     /// closed.
@@ -11247,10 +11245,10 @@ mod tests {
 
     use crate::spec::{LOG_STDERR, LOG_STDOUT};
 
-    /// A container's log line: its stream, when its first byte came, and its bytes.
+    /// A microVM's log line: its stream, when its first byte came, and its bytes.
     type Logged = (u8, u64, Vec<u8>);
 
-    /// Writes `lines` to container `id`'s log as a workload's `Logger` writes it
+    /// Writes `lines` to microVM `id`'s log as a workload's `Logger` writes it
     /// (spec.rs, `LOG_STDOUT`): records of at most 16 KiB, each its stream, its time in
     /// big-endian nanoseconds, its length in a big-endian u32, then its bytes, and each
     /// record's entry in the index.
@@ -11294,8 +11292,8 @@ mod tests {
     }
 
     /// Lines of every length about the largest message the daemon may send reach
-    /// `shards logs` whole, byte for byte, on their own streams, with and without their
-    /// prefixes, and so do lines several times that, and the last line a container left
+    /// `shards read logs` whole, byte for byte, on their own streams, with and without their
+    /// prefixes, and so do lines several times that, and the last line a microVM left
     /// unfinished. A client that hangs up is told nothing, and the command fails: its
     /// output did not all arrive (audit A08: a line past 1 MiB was dropped, status 0).
     #[test]
@@ -11528,7 +11526,7 @@ mod tests {
         });
     }
 
-    /// A command answers once every container being recorded is seen: its run may have
+    /// A command answers once every microVM being recorded is seen: its run may have
     /// ended, and its client have its status, before its record is written.
     #[test]
     fn a_command_sees_a_container_whose_record_is_being_written() {
@@ -11580,10 +11578,10 @@ mod tests {
         });
     }
 
-    /// A run that ends before its container's record is written ends at once, holding up
+    /// A run that ends before its microVM's record is written ends at once, holding up
     /// no other run's messages on the followers' loop (PM M96), and keeps its end: the
     /// record says how it exited, and `wait` hears its code. Before, the end was dropped,
-    /// the container stayed running in sight, and `wait` said 0 (seen 2026-10-02 under
+    /// the microVM stayed running in sight, and `wait` said 0 (seen 2026-10-02 under
     /// parallel E2E runs, which slow the record's write); then the loop waited for the
     /// write.
     #[test]
@@ -11615,8 +11613,8 @@ mod tests {
         });
     }
 
-    /// A `--rm` run that ends before its container's record is written ends at once too:
-    /// its container is out of sight, its name held, and removed once the record's write
+    /// A `--rm` run that ends before its microVM's record is written ends at once too:
+    /// its microVM is out of sight, its name held, and removed once the record's write
     /// is done, never seen; that write, which finds the directory set aside, fails for
     /// nothing, and is neither logged nor kept as a record behind.
     #[test]
@@ -11686,7 +11684,7 @@ mod tests {
         });
     }
 
-    /// A `--rm` container whose directory cannot be set aside as its run ends is back in
+    /// A `--rm` microVM whose directory cannot be set aside as its run ends is back in
     /// sight, as it ended, its record written as such with no command asking, its name
     /// its own.
     #[test]
@@ -11722,7 +11720,7 @@ mod tests {
         });
     }
 
-    /// Where the completer's thread does not run, a `--rm` container's removal is
+    /// Where the completer's thread does not run, a `--rm` microVM's removal is
     /// completed where its run ends.
     #[test]
     fn a_removal_completes_where_no_completer_runs() {
@@ -11749,9 +11747,9 @@ mod tests {
         });
     }
 
-    /// A command waiting for a container's record to be written sees the container taken
+    /// A command waiting for a microVM's record to be written sees the microVM taken
     /// out once its `--rm` run ends first, and answers once what was asked before it is
-    /// written: nothing else says the container has arrived until its removal is set
+    /// written: nothing else says the microVM has arrived until its removal is set
     /// aside, which may wait on the filesystem.
     #[test]
     fn a_command_waiting_for_an_arrival_sees_it_taken_out() {
@@ -11792,9 +11790,9 @@ mod tests {
         });
     }
 
-    /// `rm` sets its container's directory aside out of the registry's lock, which every
+    /// `rm` sets its microVM's directory aside out of the registry's lock, which every
     /// run's end takes: while the rename waits on the filesystem, the lock is free, and a
-    /// command, which could say the container is gone, waits until it is set aside, since
+    /// command, which could say the microVM is gone, waits until it is set aside, since
     /// a crash before then would bring it back (audit A15). One that cannot be set aside is
     /// back as it was, and `rm` says why.
     #[test]
@@ -11869,7 +11867,7 @@ mod tests {
                 t.ask(&["rm", ""]),
                 (1, String::new(), "container name cannot be empty\n".into())
             );
-            // Resolved: a container with no ports says none.
+            // Resolved: a microVM with no ports says none.
             assert_eq!(t.ask(&["port", "  racer  "]), (0, String::new(), String::new()));
             assert_eq!(t.ask(&["rm", " racer "]), (0, " racer \n".into(), String::new()));
             // A reference is named as the client sent it: trimmed.
@@ -11895,9 +11893,9 @@ mod tests {
         });
     }
 
-    /// A container command answers once every record being written is (`settle`): `ps`
-    /// lists a container whose record a thread is still writing. An image command reads
-    /// no container, and waits for no record.
+    /// A command on a microVM answers once every record being written is (`settle`): `ps`
+    /// lists a microVM whose record a thread is still writing. An image command reads
+    /// no microVM, and waits for no record.
     #[test]
     fn container_commands_wait_for_records_and_image_commands_do_not() {
         let t = Test::on("settle-commands", Held::default());
@@ -11982,7 +11980,7 @@ mod tests {
         drop(vm);
     }
 
-    /// A container being removed, not running, is listed so until it is gone, as dockerd
+    /// A microVM being removed, not running, is listed so until it is gone, as dockerd
     /// lists one (moby daemon/container/state.go, RemovalInProgress).
     #[test]
     fn a_container_being_removed_is_listed_so() {
@@ -12404,7 +12402,7 @@ mod tests {
     }
 
     /// A run's end waits for the relays of its output to its Engine API attaches under way
-    /// (engine `Relaying`): its container runs on, its waiters unanswered and its `die`
+    /// (engine `Relaying`): its microVM runs on, its waiters unanswered and its `die`
     /// unsaid, until the last has ended, as dockerd stops a container and logs `die` once
     /// its streams are copied (moby daemon/monitor.go, handleContainerExit); a run with
     /// none ends at once.
@@ -12681,7 +12679,7 @@ mod tests {
     }
 
     /// Refills are the refiller's, which starts what a pool keeps ahead of its runs, no
-    /// more however often it is asked, and makes the spare container. Unix's: its stand-in
+    /// more however often it is asked, and makes the spare record. Unix's: its stand-in
     /// VM is a script that sleeps whatever it is given, and Windows starts no program that
     /// waits however it is started in a VM's AppContainer; the refiller is the same code
     /// there, and its VMs' start Windows' own, which the pool tests of tests/daemon.rs run.
@@ -12792,8 +12790,8 @@ mod tests {
         });
     }
 
-    /// As the daemon stops, a run hears its container's own stop signal, though the
-    /// container's record is not written yet: what it was made with is read where it is.
+    /// As the daemon stops, a run hears its microVM's own stop signal, though the
+    /// microVM's record is not written yet: what it was made with is read where it is.
     #[test]
     fn a_stop_signals_a_run_its_own_way_before_its_record_is_written() {
         let t = Test::on("stop-arriving", Held::default());
@@ -12831,8 +12829,8 @@ mod tests {
     }
 
     /// A daemon compresses, as it starts, the rotated segments a daemon before it left
-    /// as written (D162): of each container whose log compresses them, every segment but
-    /// the newest, and one a crash left half compressed; none of any other container.
+    /// as written (D162): of each microVM whose log compresses them, every segment but
+    /// the newest, and one a crash left half compressed; none of any other microVM.
     #[test]
     fn rotated_segments_left_as_written_are_compressed_at_start() {
         let t = Test::new("pack-left");
@@ -12892,7 +12890,7 @@ mod tests {
         /// Its writes too wait until let through, while this is set.
         holding_writes: AtomicBool,
         writing: AtomicBool,
-        /// Its renames that set a removed container's directory aside (`.ID.removing`)
+        /// Its renames that set a removed microVM's directory aside (`.ID.removing`)
         /// too wait until let through, while this is set: on a gate of their own, which
         /// [`let_writes_through`](Self::let_writes_through) leaves shut.
         holding_set_asides: AtomicBool,
@@ -12989,8 +12987,8 @@ mod tests {
         }
     }
 
-    /// The name a `--rm` container held is free for the next container as soon as its run
-    /// has ended: its end is taken, by the followers or by the next container's making,
+    /// The name a `--rm` microVM held is free for the next microVM as soon as its run
+    /// has ended: its end is taken, by the followers or by the next microVM's making,
     /// and its removal, which the completer makes durable, waited for: a script's next
     /// `run --rm --name` finds it free.
     #[test]
@@ -13046,7 +13044,7 @@ mod tests {
         });
     }
 
-    /// `--rm` containers that end together are made durable together: the removals that
+    /// `--rm` microVMs that end together are made durable together: the removals that
     /// queue while one sync waits take one more, for them all.
     #[test]
     fn removals_ending_together_take_one_sync() {
@@ -13107,8 +13105,8 @@ mod tests {
         });
     }
 
-    /// A removed container's name is let go only once its removal is durable: a power
-    /// loss before then could bring the container back, next to one that took its name
+    /// A removed microVM's name is let go only once its removal is durable: a power
+    /// loss before then could bring the microVM back, next to one that took its name
     /// (audit A15).
     #[test]
     fn a_name_is_let_go_only_once_its_removal_is_durable() {
@@ -13145,7 +13143,7 @@ mod tests {
         });
     }
 
-    /// A shutdown waits for the removal of a `--rm` container its run's end has taken out
+    /// A shutdown waits for the removal of a `--rm` microVM its run's end has taken out
     /// and not yet queued, whose `destroy` is then kept: one that found nothing pending
     /// between the two left the next daemon no `destroy` to read (windows-2025, CI
     /// 40961442989, events_outlive_their_daemon).
@@ -13206,7 +13204,7 @@ mod tests {
         });
     }
 
-    /// What happens to a container while its record is written is written too, before it
+    /// What happens to a microVM while its record is written is written too, before it
     /// is seen (audit A15).
     #[test]
     fn a_change_while_a_record_is_written_is_written_before_it_is_seen() {
@@ -13243,7 +13241,7 @@ mod tests {
         });
     }
 
-    /// Makers of the spare container at once leave one spare, and no directory besides
+    /// Makers of the spare record at once leave one spare, and no directory besides
     /// (audit A20).
     #[test]
     fn makers_at_once_leave_one_spare() {
@@ -13400,9 +13398,9 @@ mod tests {
         });
     }
 
-    /// A run's VM is given each log segment it asks for, in turn, made in its container,
+    /// A run's VM is given each log segment it asks for, in turn, made in its directory,
     /// and nothing for one out of turn; past the retention the oldest goes. No VM reaches a
-    /// container's directory (D30): the daemon makes its segments.
+    /// run's directory (D30): the daemon makes its segments.
     #[test]
     fn a_runs_log_segments_are_made_in_turn() {
         use std::io::Write as _;

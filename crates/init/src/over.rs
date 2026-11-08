@@ -1,4 +1,4 @@
-//! A stopped container's writable layer kept in its file (D190), gone on over as it is:
+//! A stopped microVM's writable layer kept in its file (D190), gone on over as it is:
 //! its host readies the file to go under the microVM's layer device (vmm `Layer::stage`)
 //! and says so ([`kind::OVER`](shards_abi::run::kind::OVER)) in place of the archive it put
 //! back before. The microVM's root, the image under the layer its template mounted, is
@@ -10,14 +10,14 @@
 //!    `/dev` and theirs) moved onto it, the old root detached.
 //! 2. The layer's file system, unmounted and nothing of it open, is let go of: its device
 //!    opened exclusively says so (a mounted block device is claimed by its file system,
-//!    block/bdev.c, bd_prepare_to_claim), and the host puts the container's file under it
+//!    block/bdev.c, bd_prepare_to_claim), and the host puts the kept file under it
 //!    (`control::LAYER_SWAP`), read back to have been.
-//! 3. The device's file system, the container's, is mounted, the image under it, the mounts
+//! 3. The device's file system, the kept layer's, is mounted, the image under it, the mounts
 //!    moved onto that, and it becomes every process's root, the tmpfs detached: the root
-//!    a boot makes, over the container's layer as it left it.
+//!    a boot makes, over the stopped microVM's layer as it left it.
 //!
 //! The template's standby, in a mount namespace of its own whose copy of the old root holds
-//! the layer too, is ended first and born again after (run.rs). What the container's file
+//! the layer too, is ended first and born again after (run.rs). What the kept file
 //! held of the template's own making is its last run's: the run writes its files again as
 //! it starts.
 
@@ -54,8 +54,8 @@ pub fn close_layer_fds() {
     }
 }
 
-/// Goes on over the container's layer its host readied (module docs). An error leaves the
-/// microVM unable to run the container: its run fails.
+/// Goes on over the stopped microVM's layer its host readied (module docs). An error leaves the
+/// microVM unable to go on over it: its run fails.
 pub fn go_over() -> Result<(), String> {
     let os = |what: &str| format!("{what}: {}", io::Error::last_os_error());
     // Moves between mounts of a shared tree are refused (fs/namespace.c, do_move_mount):

@@ -113,9 +113,8 @@ Reviewed feature by feature, each D-entry's design against what it took from Doc
     dockerd's 10% reserve, 80% most and 20% free as its defaults, each the user's to set
     with `shards configure disk`; each now exactly that share of the disk, where dockerd's
     arithmetic, which shards had taken, kept 9.3%, 74.5% and 18.6%.)
-  - A terminal run's `TERM=xterm`, dockerd's value: open. The client's own terminal type,
-    where the image's terminfo has it, would serve its programs better (colours, keys);
-    xterm where it has not.
+  - (Done, the same item as the constants' `TERM=xterm` below: the client's own terminal
+    type where the run's root describes it, D16, PM M263.)
   - A download that stops without progress fails after three (containerd's
     `httpReadSeeker`'s count): open, to derive from what a stalling server costs.
   - Splunk's batch of 1,000 events. Kept, decided (2026-11-03): it is the documented
@@ -226,6 +225,8 @@ Each step is gated and committed; this file's counts are re-run as they land.
 | 2026-10-17, help, networks, engine | 0 | 1,898 (1,119) | 1,685 | 388 | 36 | 176 |
 | 2026-11-03, before step 6's sweep (de2b1cf5) | 2 | 1,807 (688) | 1,944 | 400 | 42 | 189 |
 | 2026-11-03, every unbacked line resolved | 0 | 1,268 (0) | 1,876 | 400 | 42 | 189 |
+| 2026-11-07, before step 6's second sweep (8501f093) | 1 | 1,287 (12) | 1,966 | 412 | 43 | 189 |
+| 2026-11-08, `container` and `grammar` swept | 0 | 1,276 (0) | 700 | 130 | 42 | 189 |
 
 Reviewed by hand (2026-10-17), the design's unbacked lines to line 5,800: nearly every one
 says what shards matches for compatibility, its evidence a few lines off (a log driver's
@@ -241,8 +242,44 @@ microVM where it meant one; or it stated a compatibility contract (an answer sha
 wire format, words scripts match, a Dockerfile's meaning held to BuildKit), and now cites
 what it is held to: the D-entry, the pinned source and version, the oracle or recording,
 the RFC or the measurement. Citations were checked against the pinned upstream sources.
-The `framing` lines left each have such evidence beside them; the `container` and
-`grammar` counts are the next sweep's.
+The `framing` lines left each have such evidence beside them.
+
+Swept (2026-11-07 and 08, branch p/agentfile-close, comments and docs alone, no string or
+identifier but the two below): the regressions since 2026-11-03 first, a test named after
+Docker's sizes (`sizes_read_in_bytes_or_binary_units` now) and 12 unbacked lines, each now
+shards' reason or the source, version or D-entry it rests on; a test's message in Docker's
+name (a `strings` line). Then every `container` line, file by file: where shards' own voice
+said container for its microVM, its run or the run's record, it says microVM, run or
+record; for a run in another's microVM, by `--network container:` or made by a microVM's
+own engine, joiner (D119, D181). 1,966 lines to 700, each left one of these: Docker's,
+dockerd's, runc's, containerd's or OCI's own container, said as theirs or compared with a
+microVM ("as a container's page cache is its host's to drop"); a byte-exact text, an API
+field, an event or object kind, an identifier of docker/cli's or moby's (`container.StopSignal`,
+`DiskUsage of image, container, volume and build`); a CLI word a user types (`--network
+container:NAME`, `shards container ls`) or Docker's `--volume` syntax's container path; a
+file or test name (`containers.rs`); another system's own container: VFIO's IOMMU
+container, macOS App Sandbox's, Windows' AppContainer and NTFS's WCI container, Azure Blob
+Storage's, AWS's container credentials, CDI's, JSON's, D-Bus's and Go's; a host that is a
+container itself; the conversion said as such ("each container a microVM"); and the
+comments beside the copied defaults still being derived (the kill, shutdown and freeze
+waits, restarts), which their own changes reword. Then every `grammar` line: a command said
+in Docker's form in shards' own voice is said in shards' grammar where the grammar has a
+form for it (`grammar::rewrite`): `shards ps` is `shards list vms`, `shards rmi` `shards
+remove image`, `shards logs -f` `shards watch logs`, `shards diff` `shards read changes`,
+`shards events` `shards watch system`, a microVM's actions with `vm` and an image's with
+`image`. 412 lines to 130, each left one of these: an action the grammar has no form for
+(`top` 18, `attach` 14, `checkpoint` 7, `import` 6, `update` 5, `port` 5: `read ports` and
+`read processes` say other things); the command tables held to docker/cli
+(cmdline/src/commands.rs) and the grammar's own account of what each form runs; tests that
+pin Docker's command line itself; the README's lines on what scripts written for `docker`
+type; and the pattern's own misses (`shards build-writer`, a key's label, forms split by a
+line's end). The `strings` left are protocol names (`Docker-Content-Digest`,
+`X-Docker-Token`, `Docker-Experimental`, `X-Docker-Container-Path-Stat`), Docker Hub as a
+registry's name, docker/cli's own command texts and `--use-api-socket`'s option text (held
+to it, `look::ours` rewording them on a terminal), dockerd's own refusals matched by tests,
+the frontend's capability table (BuildKit's), Docker's install paths for its CLI plugins,
+seccomp's oracle comparing against Docker's profile, and a context's refusal saying it
+reaches no Docker daemon.
 
 `unbacked` (2026-10-17): framing with no evidence beside it. The rest of `framing` cites
 what an input or output is held to (a version, a source file, a measurement), as the

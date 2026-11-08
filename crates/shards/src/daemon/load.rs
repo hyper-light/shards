@@ -1,4 +1,4 @@
-//! `shards load` as dockerd's containerd store loads an archive (moby docker-v29.3.1
+//! `shards load image` as dockerd's containerd store loads an archive (moby docker-v29.3.1
 //! daemon/containerd/image_exporter.go, LoadImage; containerd v2 core/images/archive
 //! importer.go, ImportIndex; client/import.go, Import): every regular file of the tar
 //! ingested as a blob, hashed as it streams; then the images an OCI layout's
@@ -420,7 +420,7 @@ fn source(target: &Descriptor) -> Option<String> {
 }
 
 impl<D: crate::containers::Disk> super::Daemon<D> {
-    /// `shards load` (docker/cli runLoad; moby LoadImage): the archive the client sent,
+    /// `shards load image` (docker/cli runLoad; moby LoadImage): the archive the client sent,
     /// read as it comes, each image it holds recorded and unpacked, said as it is; of each,
     /// with `--platform`, the microVMs of those platforms alone (D179).
     pub(super) fn load(
@@ -466,6 +466,9 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                 reply.out(&image.shown);
             } else {
                 reply.out(&format!("Loaded image: {}", image.shown));
+            }
+            if !image.dangling {
+                image.publish(&self.home, &image.name, &asker.registry_env);
             }
             if let Some(Err(e)) = image.unpacked {
                 reply.out(&format!("Error unpacking image {}: {e}", image.shown));
@@ -559,6 +562,21 @@ pub(super) struct Loaded {
     /// Its microVM, made (its disk and config), or why not; none where no manifest of
     /// it is for this host's guests.
     pub unpacked: Option<Result<shards_registry::pull::Pulled, String>>,
+}
+
+impl Loaded {
+    /// Its microVM, in the machine's local image store under `name` as a pull's is
+    /// (D216): the store the client's `env` names, else the daemon's own. Nothing for one
+    /// no guest here runs.
+    pub(super) fn publish(&self, home: &std::path::Path, name: &str, env: &[String]) {
+        if let (Some(Ok(pulled)), Ok(reference)) = (&self.unpacked, Reference::parse(name))
+            && let Some(disk) = &pulled.rootfs
+        {
+            crate::pull::publish(home, &reference, &pulled.id, &pulled.config, disk, &|k| {
+                shards_ipc::env_value(env, k)
+            });
+        }
+    }
 }
 
 #[cfg(test)]

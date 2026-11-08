@@ -1,7 +1,7 @@
 //! The command line: `run` and the container and image commands read with the Docker CLI's
 //! meaning (crates/cmdline commands.rs, held to docker/cli's answers), their `--help` and
 //! usage mistakes answered here, the rest asked of the daemon; `shards daemon stop` stops
-//! it; `shards run --kernel` and `shards restore` become the VM process; every other
+//! it; `shards run vm --kernel` and `shards restore vm` become the VM process; every other
 //! command is the daemon side's (main.rs, `shardsd`), in this process. One binary does it
 //! all and starts as fast as the command alone did: it links no framework that loads at
 //! launch, binding Apple's when first needed (shards_apple, the VMM's hvf::ffi; PM M113).
@@ -104,7 +104,7 @@ const OWN: [&str; 25] = [
 /// home, whose current context may be another machine's. No client of this machine's runs
 /// one (daemon/remote.rs `owners`).
 pub(crate) const INTERNAL: [&str; 6] = [
-    // The VM's broker (`shards run --kernel`, `shards restore`, macOS).
+    // The VM's broker (`shards run vm --kernel`, `shards restore vm`, macOS).
     "grants",
     // The writer of a restore's working set (`shards restore`, Linux).
     "working-set",
@@ -199,7 +199,7 @@ fn dispatch(args: Vec<OsString>) -> ExitCode {
         _ => {}
     }
     match words.as_slice() {
-        // `shards run --kernel FILE ...`: a kernel booted directly, in the VM process.
+        // `shards run vm --kernel FILE ...`: a kernel booted directly, in the VM process.
         ["run", "--kernel", ..] => {
             let mut boot = vec![OsString::from("run")];
             boot.extend(args.iter().skip(1).cloned());
@@ -279,7 +279,7 @@ fn names_a_microvm(target: &str) -> bool {
     named && !shards_vmm::snapshot::pointed(std::path::Path::new(target)).unwrap_or(false)
 }
 
-/// A container command, `named` words of `words` naming it: read here, and run by the
+/// A microVM command, `named` words of `words` naming it: read here, and run by the
 /// daemon.
 fn container(
     command: &'static Command,
@@ -1024,7 +1024,7 @@ fn instead(args: &[OsString]) -> ExitCode {
     }
 }
 
-/// `shards run --kernel` and `shards restore`: become shards-vm. On macOS, where shards-vm runs in App Sandbox and may
+/// `shards run vm --kernel` and `shards restore vm`: become shards-vm. On macOS, where shards-vm runs in App Sandbox and may
 /// open nothing it is not granted, it first starts the VM's broker, `shardsd grants`, on a
 /// socket the VM then asks on (`--grants`; docs/research/macos-confinement.md §3). The VM
 /// keeps this process: its terminal, its signals, its exit status. The broker leads a
@@ -1093,7 +1093,7 @@ fn vm(args: &[OsString]) -> ExitCode {
     instead(&with)
 }
 
-/// `shards run --kernel` and `shards restore`: become shards-vm. A restore whose snapshot's
+/// `shards run vm --kernel` and `shards restore vm`: become shards-vm. A restore whose snapshot's
 /// generation has no working set first starts its writer, `shardsd working-set`, on a pipe
 /// the VM hands the working set it records to (`--working-set`): no VM writes its snapshot
 /// (D30), and a process that becomes the VM leaves none behind to. The writer is reaped by
@@ -1207,7 +1207,7 @@ fn working_set_writer(_: &[OsString]) -> Result<Option<Vec<OsString>>, String> {
     Ok(None)
 }
 
-/// `shards run --kernel` and `shards restore` on Windows: shards-vm, started confined (D141):
+/// `shards run vm --kernel` and `shards restore vm` on Windows: shards-vm, started confined (D141):
 /// in an AppContainer of its own, which holds the hypervisor's capabilities and reaches
 /// none of its user's files or sockets; in a Job that ends it as this process ends and lets
 /// it start nothing; with Windows' mitigations (PM M200-M203). This process then answers
@@ -1375,7 +1375,7 @@ fn vm(args: &[OsString]) -> ExitCode {
 #[cfg(windows)]
 type ServedPipe = (String, std::os::windows::io::BorrowedHandle<'static>);
 
-/// The pipes `shards run … --slates-fs-handle V` names (D38, PM M340): each a handle this
+/// The pipes `shards run vm … --slates-fs-handle V` names (D38, PM M340): each a handle this
 /// process inherited from the server that serves its share (slates' `slates shards`). The
 /// VM is given each through its grants as `slates-fs-<i>`, in its order, and told the name
 /// with `--slates-fs`, as `--net`'s handles are given: no handle's value crosses as a flag,
@@ -1487,7 +1487,7 @@ fn failed(message: &str) -> ExitCode {
 
 #[cfg(all(test, windows))]
 mod served_pipes_tests {
-    //! `shards run … --slates-fs-handle V` on Windows (D38, PM M340): each pipe the spawner
+    //! `shards run vm … --slates-fs-handle V` on Windows (D38, PM M340): each pipe the spawner
     //! holds goes to the VM through its grants by name, never by value.
     use std::ffi::OsString;
     use std::os::windows::io::AsRawHandle as _;

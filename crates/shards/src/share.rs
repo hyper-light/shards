@@ -10,7 +10,7 @@
 //!
 //! `shards share --join` serves a microVM's join share instead (D119): the connection its
 //! VM asks it on as descriptor 3, the daemon's as descriptor 4, an empty directory, the
-//! share's root, as descriptor 5, and the home's private directory as 6. Its volumes are the directories of the containers joining
+//! share's root, as descriptor 5, and the home's private directory as 6. Its volumes are the directories of the joiners of
 //! the microVM's network: the daemon gives it a link for each joiner (`kind::JOIN_LINK`),
 //! on which its volumes come (`kind::JOIN_VOLUME`), served until the link closes as the
 //! joiner ends. It exits as its VM's connection closes.

@@ -1,4 +1,4 @@
-//! A microVM as `shards inspect` shows it: dockerd's container.InspectResponse (moby
+//! A microVM as `shards inspect vm` shows it: dockerd's container.InspectResponse (moby
 //! api/types/container/container.go, at docker-v29.8.1), as Go types, so that a
 //! `--format` reads it as the Docker CLI reads dockerd's (typed first, then the raw JSON:
 //! docker/cli cli/command/inspect/inspector.go), and its JSON is dockerd's field for
@@ -77,7 +77,7 @@ pub(super) struct UserNet {
     pub prefix6: u8,
     pub mac: String,
     pub dns_names: Vec<String>,
-    /// Of a container a microVM's own engine made (D181): its aliases there, and the address
+    /// Of a joiner a microVM's own engine made (D181): its aliases there, and the address
     /// its client asked for there; none on a network of the host's, whose come from its
     /// request's endpoints.
     pub engine: Option<(Vec<String>, String)>,
@@ -102,7 +102,7 @@ pub(super) struct Facts<'a> {
     /// Its place on the bridge, while it runs there.
     pub net: Option<Net>,
     /// Its endpoint on each user network it is on: one of the host's (D46), or each of its
-    /// engine's a container a microVM's own engine made is on (D181).
+    /// engine's a joiner a microVM's own engine made is on (D181).
     pub user_nets: Vec<UserNet>,
     /// With `--size`: SizeRw and SizeRootFs.
     pub size: Option<(i64, i64)>,
@@ -373,7 +373,7 @@ pub(super) fn document(f: &Facts<'_>) -> Value {
         .value()
 }
 
-/// The container's mount points, as InspectResponse's Mounts holds them
+/// The microVM's mount points, as InspectResponse's Mounts holds them
 /// (container.MountPoint): by destination, where dockerd's map has none.
 fn mount_points(c: &Container) -> Value {
     let mut points: Vec<&crate::volumes::MountPoint> = c.mounts.iter().collect();
@@ -877,7 +877,7 @@ fn host_config(f: &Facts<'_>) -> Value {
         .field("PublishAllPorts", Value::Bool(run.publish_all))
         .field("ReadonlyRootfs", Value::Bool(run.read_only))
         // As the CLI sent them, and generateSecurityOpt's (daemon/daemon_unix.go) after: a
-        // privileged container's labels off.
+        // privileged microVM's labels off.
         .field("SecurityOpt", {
             let mut opts = run.security_opt.clone();
             if run.privileged {
@@ -1017,7 +1017,7 @@ fn host_config(f: &Facts<'_>) -> Value {
         .field("IOMaximumIOps", Value::Uint(res.io_maximum_iops))
         .field("IOMaximumBandwidth", Value::Uint(res.io_maximum_bandwidth))
         .tagged("Mounts", Some("Mounts"), true, api_mounts(&run.mounts))
-        // A privileged container's are none (daemon/oci_linux.go); the CLI sends empty
+        // A privileged microVM's are none (daemon/oci_linux.go); the CLI sends empty
         // ones for `--security-opt systempaths=unconfined`.
         .field(
             "MaskedPaths",

@@ -1,4 +1,4 @@
-//! The guest kernel and shards-init that `shards run` boots, kept by content in
+//! The guest kernel and shards-init that `shards run vm` boots, kept by content in
 //! `$SHARDS_HOME/guest`, named by their SHA-256. A run then knows what it boots by digest
 //! without reading either file, and templates are kept by those digests
 //! (docs/design/architecture.md D25).
@@ -325,7 +325,7 @@ const UNFINISHED: [&str; 4] = ["storing.", "kernel.", "incoming.", "current."];
 /// it, which every opening of the file takes apart: review 8.5), then removes what is
 /// unfinished there. Every write of the store is made under it, so what is unfinished
 /// under it is what a process that ended left; before, a daemon storing its default
-/// guest removed what a `shards build` or a `guest use` was writing.
+/// guest removed what a `shards build image` or a `guest use` was writing.
 fn hold(dir: &Path) -> Result<File, String> {
     let at = |e: io::Error| format!("{}: {e}", dir.join(".lock").display());
     let lock = File::create(dir.join(".lock")).map_err(at)?;

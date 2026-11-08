@@ -42,7 +42,7 @@ const MOST_CONFIG: u64 = shards_image::oci::MAX_MANIFEST;
 /// A repository found.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Found {
-    /// As `shards pull` takes it: Docker Hub's as its index names it, any other's with its
+    /// As `shards pull image` takes it: Docker Hub's as its index names it, any other's with its
     /// host.
     pub name: String,
     pub description: String,

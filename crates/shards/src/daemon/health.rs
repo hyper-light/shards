@@ -1,6 +1,6 @@
-//! A container's health, as dockerd keeps it (moby daemon/health.go, docker-v29.3.1):
+//! A microVM's health, as dockerd keeps it (moby daemon/health.go, docker-v29.3.1):
 //! probes a configured interval apart, and the start interval within the start period
-//! while the container is starting; each probe's result recorded, the last five kept;
+//! while the microVM is starting; each probe's result recorded, the last five kept;
 //! failures counted in a streak that makes it unhealthy at the retries, except within the
 //! start period while it has never been healthy. Like dockerd's, it lives in the daemon's
 //! memory, not on disk: a probe a few seconds apart writes nothing.
@@ -28,7 +28,7 @@ const RETRIES: u64 = 3;
 pub(super) const MAX_OUTPUT: usize = 4096;
 const MAX_LOG: usize = 5;
 
-/// How a container's health checks have gone.
+/// How a microVM's health checks have gone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Status {
     Starting,
@@ -47,8 +47,8 @@ impl Status {
     }
 }
 
-/// When the checks of running containers are due, soonest first, for one thread to run
-/// them (`check_all`): a thread a container with a check would bound the containers the
+/// When the checks of running microVMs are due, soonest first, for one thread to run
+/// them (`check_all`): a thread a microVM with a check would bound the microVMs the
 /// daemon can check to the threads a process may have (PM M89), and wake every one of
 /// them at each run's start and end.
 #[derive(Default)]
@@ -137,7 +137,7 @@ pub(super) fn timeout(cfg: &Config) -> Duration {
     or(cfg.timeout, TIMEOUT)
 }
 
-/// How long to wait for the next probe, `since_start` after the container started
+/// How long to wait for the next probe, `since_start` after the microVM started
 /// (getInterval): the start interval within the start period while it is starting.
 pub(super) fn interval(cfg: &Config, since_start: Duration, status: Status) -> Duration {
     let start_period = or(cfg.start_period, Duration::ZERO);
@@ -149,9 +149,9 @@ pub(super) fn interval(cfg: &Config, since_start: Duration, status: Status) -> D
 }
 
 impl State {
-    /// Records `probe`, which began `since_start` after the container started
+    /// Records `probe`, which began `since_start` after the microVM started
     /// (handleProbeResult): a success makes it healthy and ends the streak; a failure,
-    /// any code but 0, adds to the streak, unless the container is still starting within
+    /// any code but 0, adds to the streak, unless the microVM is still starting within
     /// its start period, and makes it unhealthy once the streak reaches the retries.
     pub(super) fn record(&mut self, cfg: &Config, probe: Probe, since_start: Duration) {
         if self.log.len() >= MAX_LOG {
@@ -222,7 +222,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
         }
     }
 
-    /// Makes container `id`'s next probe due `wait` from now.
+    /// Makes microVM `id`'s next probe due `wait` from now.
     fn due_after(&self, id: &str, wait: Duration) {
         let Some(at) = Instant::now().checked_add(wait) else {
             return;
@@ -231,7 +231,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
         self.checks.changed.notify_all();
     }
 
-    /// How long ago container `id` started.
+    /// How long ago microVM `id` started.
     fn since_start(&self, id: &str) -> Duration {
         let started = lock(&self.containers).get(id).and_then(|c| c.started);
         let ns = started.map_or(0, |s| crate::spec::now().saturating_sub(s));
@@ -288,7 +288,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
         }
     }
 
-    /// One probe of container `id`, recorded, and the next made due an interval after it
+    /// One probe of microVM `id`, recorded, and the next made due an interval after it
     /// ends; nothing of one that ends after the run did, whose result says nothing of a run
     /// that has gone.
     fn probe_once(&self, id: &str, cfg: &Config, argv: &[String]) {
@@ -319,8 +319,8 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
         self.due_after(id, interval(cfg, self.since_start(id), status));
     }
 
-    /// One probe of container `id`: `argv` run beside its workload as an exec without
-    /// stdin or a terminal, as the container's user in its working directory with its
+    /// One probe of microVM `id`: `argv` run beside its workload as an exec without
+    /// stdin or a terminal, as the microVM's user in its working directory with its
     /// environment (cmdProbe.run); its stdout and stderr kept together; killed at the
     /// check's timeout, whose result is -1 and says so.
     fn probe(&self, id: &str, argv: &[String], cfg: &Config) -> Probe {
@@ -376,11 +376,11 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                 exit_code: code,
                 output: said,
             },
-            (false, None) => failed("the container's microVM ended the check".into()),
+            (false, None) => failed("the microVM ended the check".into()),
         }
     }
 
-    /// An exec of `spec` in container `id`, beside its workload, without stdin or a
+    /// An exec of `spec` in microVM `id`, beside its workload, without stdin or a
     /// terminal: its stdout and stderr together, the first `limit` bytes of them kept;
     /// killed once `timeout` has passed, then waited for, so that none outlives its
     /// asker. An error if it could not be sent. A command (`argv`) has its exec events,
@@ -443,7 +443,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
         }))
     }
 
-    /// An exec of `spec` in container `id` on the asker's own descriptors: what it
+    /// An exec of `spec` in microVM `id` on the asker's own descriptors: what it
     /// reads (with `input`, its stdin; else nothing), and where its output and errors
     /// go; until it ends.
     pub(super) fn exec_on(
@@ -457,7 +457,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
         Ok(await_exit(&ours, None))
     }
 
-    /// Sends container `id`'s VM an exec of `spec` with `stdio`, logging its events if
+    /// Sends microVM `id`'s VM an exec of `spec` with `stdio`, logging its events if
     /// it is a command (`argv`); returns the connection its end is told on.
     fn send_exec(
         &self,
@@ -572,7 +572,7 @@ mod tests {
         assert_eq!(s.status, Status::Unhealthy);
     }
 
-    /// Failures within the start period count only once the container has been healthy.
+    /// Failures within the start period count only once the microVM has been healthy.
     #[test]
     fn the_start_period_forgives_failures_until_the_first_success() {
         let cfg = Config {

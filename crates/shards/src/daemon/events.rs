@@ -1,4 +1,4 @@
-//! `shards events`: what happens to microVMs and images, as dockerd tells it (moby
+//! `shards watch system`: what happens to microVMs and images, as dockerd tells it (moby
 //! daemon/events/events.go, daemon/events.go, daemon/events/filter.go;
 //! daemon/server/router/system/system_routes.go, getEvents). Each is kept in the home's
 //! journal for `--since` (D187), where dockerd keeps its last 256 in its memory, gone with
@@ -638,7 +638,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
         self.events.log("image", action, id, attributes);
     }
 
-    /// `shards events [--since T] [--until T] [--filter F]... [--format json]`
+    /// `shards watch system [--since T] [--until T] [--filter F]... [--format json]`
     /// (system_routes.go, getEvents; docker/cli system/events.go).
     pub(super) fn events(&self, parsed: &Parsed, asker: &Asker, reply: &Reply<'_>) -> u8 {
         let given = [

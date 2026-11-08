@@ -1,4 +1,4 @@
-//! The daemon, end to end (crates/shards/src/daemon.rs): `shards run` through the daemon
+//! The daemon, end to end (crates/shards/src/daemon.rs): `shards run vm` through the daemon
 //! its first run starts, served from pools of warm VMs of the image's template. Real VMs;
 //! the image comes from a loopback registry (tests/common, `served`), and its entrypoint
 //! is the test guest, so a command is one of its modes. Needs vsock; its template and pool
@@ -337,7 +337,7 @@ fn threads_of(pid: i32) -> String {
 }
 
 /// A client that must wait for its daemon to start ends of SIGTERM at once, as the Docker
-/// CLI ends before its container is made: with 128 and the signal's number, nothing said
+/// CLI ends before its microVM is made: with 128 and the signal's number, nothing said
 /// (docker/cli cmd/docker/docker.go, notifyContext). Its daemon cannot start here, the
 /// home's lock held; then it goes, seeing one listen (`take_lock`), before anything is
 /// asserted, so that a failing test leaves no process behind. Windows sends a console
@@ -671,10 +671,10 @@ fn errors_reach_the_client() {
     assert_eq!(not_found.status, Some(127), "{}", not_found.stderr);
 }
 
-/// A stopped container's next run, served by a microVM its image's template restored, goes
+/// A stopped microVM's next run, served by a microVM its image's template restored, goes
 /// on over the file its layer was kept in (D190): the template's own layer let go of, the
-/// container's file under the device, what its run before made there, and the file the
-/// container's still, the same one, once it stops again.
+/// microVM's file under the device, what its run before made there, and the file the
+/// microVM's still, the same one, once it stops again.
 #[test]
 fn a_restored_microvm_goes_on_over_a_stopped_containers_kept_file() {
     if cannot_run_vms() || cannot_pool() {
@@ -1097,7 +1097,7 @@ fn interactive_stdin_ends_with_its_client() {
     let mut line = String::new();
     out.read_line(&mut line).unwrap();
     assert_eq!(line, "through the client\n");
-    // The VM serving it, as its container says, rather than the one of those waiting that
+    // The VM serving it, as its microVM says, rather than the one of those waiting that
     // went: a run's VM tells its end before it goes, and one that took a loaded runner past
     // the pool's settling was counted as waiting, and its going as this one's.
     let env = [("SHARDS_HOME", home.as_os_str())];
@@ -1693,7 +1693,7 @@ fn a_home_removed_once_is_gone_with_its_daemon() {
         if name == requests || name == lock {
             continue;
         }
-        // The daemon may be writing in it as it goes, a spare container: until it is gone.
+        // The daemon may be writing in it as it goes, a spare microVM: until it is gone.
         if name.is_dir() {
             eventually(&home, "a directory of the home could not be removed", || {
                 std::fs::remove_dir_all(&name).is_ok() || !name.exists()
@@ -1751,7 +1751,7 @@ fn lists_removed_by_hand_are_made_again_for_the_next_client() {
 /// ends there, all written. Before, the daemon waited for both for ever, its slots counted
 /// until each had passed all on and its client had ended. No VM needed. Windows takes a
 /// command line of 32,767 characters (CreateProcessW), which no such label nor name fits:
-/// there each answer's first message is a container made with 100 KiB of labels from a file,
+/// there each answer's first message is a microVM made with 100 KiB of labels from a file,
 /// more than std's pipes take (64 KiB, its child pipes' quota), and for the one 4,500 names
 /// nothing has follow, their errors one message of 123 KiB, more than a slot's line takes
 /// (a Linux FIFO's 64 KiB, ipc pipe.rs `LINE_BUFFER`).
@@ -2001,7 +2001,7 @@ fn an_idle_daemon_wakes_for_nothing() {
     assert_eq!(stopped.status, Some(0), "{stopped}");
 }
 
-/// Clients waiting long, on a container's end (`wait`) or its output (`logs -f`), shut
+/// Clients waiting long, on a microVM's end (`wait`) or its output (`logs -f`), shut
 /// out no other, however few the daemon serves at once: here one (review 7.9).
 #[test]
 fn waiters_shut_out_no_client() {
@@ -2483,7 +2483,7 @@ impl Held {
         }
     }
 
-    /// Its microVM once its command runs, as its container names it (`.State.Pid`), and its
+    /// Its microVM once its command runs, as its record names it (`.State.Pid`), and its
     /// command line, as [`commands_with`] lists it among the processes that name
     /// `templates`: its own `--layer` file and MAC tell it from a VM given its process ID
     /// once it has gone.
@@ -2921,10 +2921,10 @@ fn what_a_moved_tag_named_is_collected() {
     assert_eq!(stopped.status, Some(0), "{stopped}");
 }
 
-/// A daemon whose home is removed ends its runs, whose containers went with the home, and
-/// exits, and never makes the home again: before, the spare container it made after the
+/// A daemon whose home is removed ends its runs, whose microVMs went with the home, and
+/// exits, and never makes the home again: before, the spare microVM it made after the
 /// removal made the home's path anew, with its own directory inside, and a run kept its
-/// daemon and VM going with no container left to reach them by.
+/// daemon and VM going with no microVM left to reach them by.
 #[test]
 fn a_daemon_whose_home_is_removed_exits_without_making_it_again() {
     if cannot_run_vms() {
@@ -2945,7 +2945,7 @@ fn a_daemon_whose_home_is_removed_exits_without_making_it_again() {
     let daemon = daemon_pid(&home).expect("a daemon pid");
     let path = home.to_path_buf();
     let named = path.to_string_lossy().into_owned();
-    // The daemon may be writing in it as it goes, a spare container or a refill: removed
+    // The daemon may be writing in it as it goes, a spare microVM or a refill: removed
     // again until it is gone.
     eventually(&home, "the home could not be removed", || {
         matches!(std::fs::remove_dir_all(&path), Ok(())) || !path.exists()
@@ -3150,8 +3150,8 @@ fn a_home_named_relatively_is_one_home() {
     }
 }
 
-/// Followers of a quiet container cost its daemon nothing: they wait on the log, the
-/// run's end and their clients, not a timer, and all end once the container does (audit
+/// Followers of a quiet microVM cost its daemon nothing: they wait on the log, the
+/// run's end and their clients, not a timer, and all end once the microVM does (audit
 /// A12: before, each looked for output 50 times a second).
 #[test]
 fn idle_followers_cost_nothing_and_end_with_their_container() {
@@ -3180,7 +3180,7 @@ fn idle_followers_cost_nothing_and_end_with_their_container() {
                 .unwrap()
         })
         .collect();
-    // Each served: it has shown the log's line, the `ready` the container says as it starts,
+    // Each served: it has shown the log's line, the `ready` the microVM says as it starts,
     // which its daemon sends it as it takes its request, before it follows. A quiet second
     // alone did not say so: on windows-2022 (88ff4cbc) 92 of them came to their daemon in
     // the 3 s measured after one, their requests' threads' cycles in it what each thread had

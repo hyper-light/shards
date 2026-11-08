@@ -1,6 +1,6 @@
 //! The networks a microVM's own engine makes (D181), each a network of that microVM's
 //! switch, which init holds: its clients create, list, inspect, remove and prune them, and
-//! connect and disconnect its containers, in the calls Compose and Docker's SDKs make, and
+//! connect and disconnect its joiners, in the calls Compose and Docker's SDKs make, and
 //! are answered in the shapes they read with the switch's own values. Joining one grants a
 //! member nothing; what each member declares is what its peers there reach (init's
 //! `members.rs`).
@@ -78,7 +78,7 @@ impl<D: Disk> Daemon<D> {
         }
     }
 
-    /// The address a published port of `run`, a container this microVM's engine made, is
+    /// The address a published port of `run`, a joiner this microVM's engine made, is
     /// bound at where its binding names none: the one the network it is published through,
     /// its first, names for its members' ports (`host_binding_ipv4`), if it names one.
     pub(in crate::daemon) fn engine_host_binding(&self, run: &shards_ipc::Run) -> Option<std::net::Ipv4Addr> {
@@ -104,7 +104,7 @@ impl<D: Disk> Daemon<D> {
             .unwrap_or_default()
     }
 
-    /// The members of network `name` of microVM `scope`'s engine, each a container it made
+    /// The members of network `name` of microVM `scope`'s engine, each a joiner it made
     /// that runs there.
     fn own_members(&self, scope: &Scope, name: &str) -> Vec<crate::daemon::networks::Member> {
         lock(&self.containers)
@@ -567,7 +567,7 @@ impl<D: Disk> Daemon<D> {
     }
 
     /// `POST /networks/{term}/connect` and `disconnect` of a microVM's own engine: a
-    /// container of its that does not run joins or leaves the network for its next start;
+    /// joiner of its that does not run joins or leaves the network for its next start;
     /// one that runs, not yet.
     pub(super) fn scoped_network_join(
         &self,
@@ -707,7 +707,7 @@ impl<D: Disk> Daemon<D> {
 }
 
 impl<D: Disk> Daemon<D> {
-    /// Changes the request container `id` was made with, as `change` says, and keeps it: what
+    /// Changes the request joiner `id` was made with, as `change` says, and keeps it: what
     /// its next start reads.
     fn change_request(
         &self,

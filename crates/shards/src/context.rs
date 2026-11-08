@@ -756,8 +756,8 @@ fn chosen_in(
 }
 
 /// `buildx policy ARGS…`'s ARGS, where `args` is that command: run here, of this client's
-/// files, against the machine as its builder ([`PolicyBuilder`]), as buildx evaluates a
-/// policy against a remote builder. Every other `buildx` and `builder` command asks the
+/// files, against the machine as its builder ([`PolicyBuilder`]), whose files the policy
+/// reads (D180). Every other `buildx` and `builder` command asks the
 /// machine's builder alone, and `compose`, which is no command of shards', is the
 /// machine's to say so of, as this one's would.
 fn policy_args(args: &[OsString]) -> Option<Vec<OsString>> {

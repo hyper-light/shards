@@ -138,6 +138,72 @@ struct Conn {
     handle: ConnectionHandle,
     quic: Connection,
     connected: bool,
+    liveness: Liveness,
+}
+
+/// When a connection was last heard from, and whether it lives on: its handshake held to
+/// [`IDLE`](crate::tls::IDLE) from its start, by the driver, as nothing it carries is
+/// anyone's yet; then to [`QUIET`](crate::tls::QUIET) from the last packet its peer sent, by
+/// its transport's idle timer (RFC 9000 §10.1), which each packet restarts, the
+/// acknowledgments of what it sends among them: it lives while it progresses. The longest
+/// silence it lived through is kept, the evidence its bound is judged by.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Liveness {
+    began: Instant,
+    heard: Option<Instant>,
+    connected: bool,
+    longest: Duration,
+}
+
+impl Liveness {
+    pub fn new(now: Instant) -> Liveness {
+        Liveness {
+            began: now,
+            heard: None,
+            connected: false,
+            longest: Duration::ZERO,
+        }
+    }
+
+    /// Its peer was heard at `now`: the silence since it last was, measured.
+    pub fn heard(&mut self, now: Instant) {
+        if let Some(last) = self.heard {
+            self.longest = self.longest.max(now.saturating_duration_since(last));
+        }
+        self.heard = Some(now);
+    }
+
+    /// Its handshake is done.
+    pub fn connected(&mut self) {
+        self.connected = true;
+    }
+
+    /// When the driver ends it unless its handshake is done first: none once it is, as its
+    /// transport's idle timer holds it from then on.
+    pub fn due(&self) -> Option<Instant> {
+        if self.connected {
+            return None;
+        }
+        self.began.checked_add(crate::tls::IDLE)
+    }
+
+    /// The longest its peer went unheard, between two packets of its own.
+    pub fn longest_silence(&self) -> Duration {
+        self.longest
+    }
+}
+
+/// What a connection saw of the path it crossed, for its caller's record: the longest its
+/// peer went unheard ([`Liveness`]), its round trip as last estimated (RFC 9002 §5), the bytes
+/// it sent in UDP datagrams and the bytes of them its peer acknowledged, and the packets it
+/// took for lost.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Seen {
+    pub longest_silence: Duration,
+    pub rtt: Duration,
+    pub sent_bytes: u64,
+    pub acked_bytes: u64,
+    pub lost_packets: u64,
 }
 
 /// What reading a stream gave.
@@ -186,8 +252,22 @@ impl Io<'_> {
                 handle,
                 quic,
                 connected: false,
+                liveness: Liveness::new(self.now),
             },
         ))
+    }
+
+    /// What `conn` saw of its path so far.
+    pub fn seen(&mut self, conn: ConnKey) -> Option<Seen> {
+        let conn = self.conn(conn).ok()?;
+        let stats = conn.quic.stats();
+        Some(Seen {
+            longest_silence: conn.liveness.longest_silence(),
+            rtt: stats.path.rtt,
+            sent_bytes: stats.udp_tx.bytes,
+            acked_bytes: stats.path.acked_bytes,
+            lost_packets: stats.path.lost_packets,
+        })
     }
 
     /// Opens a bidirectional stream on `conn`.
@@ -404,6 +484,7 @@ impl<H: Handler> Driver<H> {
                 self.client = io.client;
             }
             self.timers(now);
+            self.expire(now);
             self.transmit(now)?;
             if (self.stopping || self.handler.done()) && self.out.is_empty() {
                 return Ok(());
@@ -505,6 +586,8 @@ impl<H: Handler> Driver<H> {
                 }
                 match self.endpoint.accept(incoming, now, &mut response, None, None) {
                     Ok((handle, quic)) => {
+                        let mut liveness = Liveness::new(now);
+                        liveness.heard(now);
                         let key = place(
                             &mut self.conns,
                             &mut self.next,
@@ -512,6 +595,7 @@ impl<H: Handler> Driver<H> {
                                 handle,
                                 quic,
                                 connected: false,
+                                liveness,
                             },
                         );
                         self.pump(now, key);
@@ -529,6 +613,7 @@ impl<H: Handler> Driver<H> {
             Some(DatagramEvent::ConnectionEvent(handle, event)) => {
                 if let Some(key) = self.key_of(handle) {
                     if let Some(conn) = self.conns.get_mut(&key) {
+                        conn.liveness.heard(now);
                         conn.quic.handle_event(event, self.endpoint.configs_mut());
                     }
                     self.pump(now, key);
@@ -593,6 +678,7 @@ impl<H: Handler> Driver<H> {
                     .unwrap_or_default();
                 if let Some(conn) = self.conns.get_mut(&key) {
                     conn.connected = true;
+                    conn.liveness.connected();
                 }
                 let (mut io, handler) = self.io(now);
                 if let Err(close) = handler.connected(&mut io, key, &peer) {
@@ -658,10 +744,38 @@ impl<H: Handler> Driver<H> {
         }
     }
 
+    /// Ends each connection whose handshake is not done within [`IDLE`](crate::tls::IDLE)
+    /// of its start ([`Liveness::due`]), its handler told as of a timeout: its transport's
+    /// own idle bound is the longer [`QUIET`](crate::tls::QUIET), for a peer known to be
+    /// there.
+    fn expire(&mut self, now: Instant) {
+        self.keys.clear();
+        for (key, conn) in &self.conns {
+            if !conn.quic.is_closed() && conn.liveness.due().is_some_and(|at| at <= now) {
+                self.keys.push(*key);
+            }
+        }
+        for at in 0..self.keys.len() {
+            let Some(&key) = self.keys.get(at) else {
+                break;
+            };
+            let (mut io, handler) = self.io(now);
+            io.close(key, 0, "its handshake took too long");
+            handler.lost(&mut io, key, "timed out", None);
+            self.client = io.client;
+        }
+    }
+
     fn next_timer(&mut self) -> Option<Instant> {
         self.conns
             .values_mut()
-            .filter_map(|c| c.quic.poll_timeout())
+            .filter_map(|c| {
+                let handshake = c.liveness.due().filter(|_| !c.quic.is_closed());
+                match (c.quic.poll_timeout(), handshake) {
+                    (Some(a), Some(b)) => Some(a.min(b)),
+                    (a, b) => a.or(b),
+                }
+            })
             .min()
     }
 
@@ -705,5 +819,41 @@ impl<H: Handler> Driver<H> {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+    use crate::tls::{IDLE, QUIET};
+
+    /// A connection's handshake is held to IDLE from its start, and nothing of the driver's
+    /// after: an established one lives as long as its peer is heard within QUIET, however
+    /// long it carries, and the longest silence it lived through is the one measured.
+    #[test]
+    fn a_connection_lives_while_it_is_heard_and_its_handshake_alone_is_held_to_idle() {
+        assert!(QUIET > IDLE);
+        let t0 = Instant::now();
+        let mut l = Liveness::new(t0);
+        assert_eq!(l.due(), t0.checked_add(IDLE));
+        l.heard(t0 + Duration::from_millis(30));
+        // Heard from, its handshake still not done: still due at IDLE from its start.
+        assert_eq!(l.due(), t0.checked_add(IDLE));
+        l.connected();
+        assert_eq!(l.due(), None);
+        // An hour of a transfer, its peer heard every second but for one gap of 42 s, longer
+        // than IDLE and shorter than QUIET: it lives, and the gap is what it says.
+        let mut at = t0 + Duration::from_millis(30);
+        for s in 1..3600u64 {
+            at += if s == 1800 {
+                Duration::from_secs(42)
+            } else {
+                Duration::from_secs(1)
+            };
+            l.heard(at);
+        }
+        assert_eq!(l.longest_silence(), Duration::from_secs(42));
+        assert_eq!(l.due(), None);
     }
 }

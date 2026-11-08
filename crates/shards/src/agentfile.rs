@@ -82,7 +82,7 @@ impl Agentfile {
                 .unwrap_or("a capability");
             return Err(beside::capability(name, reach));
         }
-        // A container's own and its endpoint's (`driver-opt=…endpoint.sysctls`), each net.*.
+        // A microVM's own and its endpoint's (`driver-opt=…endpoint.sysctls`), each net.*.
         if self.uplink
             && let Some(s) = run
                 .sysctls

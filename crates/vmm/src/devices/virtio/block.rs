@@ -1,5 +1,5 @@
 //! virtio-blk backed by a host file (virtio 1.3 §5.2), or a join disk: the ranges the
-//! images of containers joining the microVM were given (D119), and a builder's cache layers
+//! images of runs joining the microVM were given (D119), and a builder's cache layers
 //! and the layers its steps write (D134).
 //!
 //! Data moves directly between the file and guest memory: the device passes raw guest
@@ -132,7 +132,7 @@ impl DiskSize {
 }
 
 /// A disk whose sectors are the files its VM process is given (D119): the images of the
-/// containers that joined the microVM, a builder's cache layers, and the files its steps
+/// runs that joined the microVM, a builder's cache layers, and the files its steps
 /// write theirs to (D134), each a range of its own from a [`RANGE_ALIGN`] boundary, in the
 /// order they came; the gaps between them read as zeros. A range is written only where it
 /// was given as writable; every other write is an I/O error. It is empty, of no capacity,
@@ -249,7 +249,7 @@ impl Join {
         Ok(())
     }
 
-    /// Whether a range still has its file: a joined container's image the guest may still
+    /// Whether a range still has its file: a joined run's image the guest may still
     /// read, which a snapshot keeps nothing of (D176).
     pub fn attached(&self) -> bool {
         self.ranges
@@ -307,7 +307,7 @@ impl Join {
         Ok(())
     }
 
-    /// Whether no container's image was ever given a range.
+    /// Whether no joiner's image was ever given a range.
     pub fn is_empty(&self) -> bool {
         self.ranges
             .read()

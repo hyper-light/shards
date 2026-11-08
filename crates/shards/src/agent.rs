@@ -195,7 +195,7 @@ fn build(kind: Kind, args: &[String]) -> Result<(), String> {
 
 /// An SBOM of the content `content` (`skip` at its root left out), kept with `name` as a
 /// referrer of `subject`, its manifest (D116): the SPDX document of the scanner `--sbom`
-/// names, run over the content as `shards build --sbom` runs one over a build's result
+/// names, run over the content as `shards build image --sbom` runs one over a build's result
 /// (D81), in a build of the content alone. The scan's progress is said where it fails.
 fn attach_sbom(
     store: &Store,

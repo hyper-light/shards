@@ -1535,7 +1535,7 @@ impl Store {
     /// createOrReplaceImage does (moby docker-v29.3.1 daemon/containerd/image_tag.go):
     /// - the image it names already: nothing changes, the time it was named included;
     /// - an image that loses its last name to it stays, dangling (softImageDelete,
-    ///   ensureDanglingImage), for its containers and its ID to find, and its record is
+    ///   ensureDanglingImage), for its microVMs and its ID to find, and its record is
     ///   written first, so that no crash between the two loses it;
     /// - an image named again is dangling no more.
     fn replace_record(&self, tag: Tag) -> Result<(), Error> {

@@ -123,7 +123,7 @@ impl Supervisor {
         self.pid
     }
 
-    /// Gives the process a launched process's listener, the process container `owner`'s
+    /// Gives the process a launched process's listener, the process run or joiner `owner`'s
     /// (0 the run's own, or a joiner's exec id, D119); false once it has gone.
     pub fn listener(&self, listener: &OwnedFd, owner: u32) -> bool {
         let [a, b, c, d] = owner.to_be_bytes();
@@ -497,7 +497,7 @@ struct Held {
     relay: Option<Relay>,
     /// It keeps its port on the guest's loopback, a server's there.
     kept: bool,
-    /// The container whose process bound it ([`HostBind::owner`]).
+    /// The run or joiner whose process bound it ([`HostBind::owner`]).
     owner: u32,
 }
 
@@ -633,7 +633,7 @@ struct Supervise {
     own: Option<Ipv4Addr>,
     /// eth0's IPv6 address and its gateway's, where it has IPv6.
     own6: Option<(Ipv6Addr, Ipv6Addr)>,
-    /// Each launched process's listener, and the container whose process it is.
+    /// Each launched process's listener, and the run or joiner whose process it is.
     listeners: Vec<Option<(OwnedFd, u32)>>,
     pending: HashMap<u32, Pending>,
     next: u32,
@@ -883,7 +883,7 @@ impl Supervise {
         self.respond(notif, answer);
     }
 
-    /// Notification `n` of a process of container `owner`'s.
+    /// Notification `n` of a process of run or joiner `owner`'s.
     fn take(&mut self, listener: RawFd, notif: Notif, n: &libc::seccomp_notif, owner: u32) -> Answer {
         let Some(call) = call(n) else {
             return Answer::Continue;
@@ -948,7 +948,7 @@ impl Supervise {
     }
 
     /// Asks the host to bind `port` for the guest's `sock`, of protocol `proto`, a process
-    /// of container `owner`'s, to bind it to `guest` once the host has.
+    /// of run or joiner `owner`'s, to bind it to `guest` once the host has.
     #[allow(clippy::too_many_arguments)]
     fn bind(
         &mut self,
