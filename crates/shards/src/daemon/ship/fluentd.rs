@@ -14,8 +14,24 @@
 //! is refused, and the shipper cuts it shorter (`ErrorKind::FileTooLarge`): Fluentd's
 //! `in_forward` drops an event past its `chunk_size_limit` unacked, Fluent Bit ends the
 //! connection. Without acks, an event its receiver ends connections on (stream.rs
-//! `suspect`) is learned so and sent again cut, its pieces a line of their own, with an ID
-//! of their own.
+//! `suspect`) is learned so and sent again cut, as a run's last is before its connection
+//! ends (stream.rs `close`).
+//!
+//! An event cut again keeps its line's identity. The forward protocol names none of an
+//! event's own: its only ID is `chunk`'s, "an ID of a set of events" that a client sends
+//! to have it acked, the server then bound to ack it ("Server MUST respond `ack` when the
+//! `chunk` option is sent by client"; Forward Protocol Specification v1, Option and
+//! Response), so without acks there is none. A line's parts are joined by their records'
+//! own fields, moby's `partial_id`, `partial_ordinal` and `partial_last`: fluent-plugin-concat
+//! gathers a line's parts by its tag and `partial_id`, sorts them by `partial_ordinal`
+//! and joins them at the one whose `partial_last` is "true" (filter_concat.rb,
+//! fluent-plugins-nursery b8583840, `process_partial_metadata`, `buffered_lines`). So
+//! the pieces of an event that was a line's part go under the line's `partial_id`, in its
+//! place: they take its ordinal and those after it, each of the line's parts after them
+//! goes as many places later (those held written again so, the shipper's still to come
+//! numbered so), and the last piece is the line's last where the event was. The parts its
+//! receiver had before it stand, and the line its receiver joins is the line. An event that
+//! was a whole line goes as the parts of a line of its own ID: none of it was had under any.
 
 use std::collections::VecDeque;
 use std::io::{self, Read};
@@ -52,6 +68,9 @@ pub(super) struct Fluentd {
     /// Without acks, the line of each event the stream holds, its part's place, and its
     /// event's length, to cut it again.
     held: VecDeque<Held>,
+    /// The lines one of whose parts was cut again, their last part not yet sent: each one's
+    /// ID, and how many places later than the shipper numbers them its parts go.
+    later: Vec<(String, u32)>,
 }
 
 /// An event a stream holds: its stream, time, line, part's place, and length.
@@ -83,10 +102,12 @@ impl Fluentd {
             part,
             learned,
             held: VecDeque::new(),
+            later: Vec::new(),
         })
     }
 
-    /// The length of `m`'s event, its chunk's ID at its length where acks are asked for.
+    /// The length of `m`'s event, its chunk's ID at its length where acks are asked for,
+    /// its part in the place it goes.
     fn event_len(&self, m: &Message<'_>) -> usize {
         let chunk = self.config.ack.then(|| "A".repeat(24));
         fluentd::event(
@@ -95,7 +116,7 @@ impl Fluentd {
             m.stream,
             m.at,
             m.line,
-            m.part,
+            self.placed(m.part),
             chunk.as_deref(),
         )
         .len()
@@ -103,7 +124,7 @@ impl Fluentd {
 
     /// Without acks, follows what the destination shows (as gelf.rs `follow`): the events
     /// the stream no longer holds it has; one it points at as refused is learned so, and
-    /// its line put back cut, its pieces a line of their own.
+    /// its line put back cut, in its line's place (this module's words).
     fn follow(&mut self) -> io::Result<()> {
         if self.config.ack {
             return Ok(());
@@ -116,12 +137,16 @@ impl Fluentd {
         let Some(i) = self.stream.suspect(self.learned.took()) else {
             return Ok(());
         };
-        let Some((st, at, line, _, len)) = self.held.get(i).cloned() else {
+        let Some((st, at, line, part, len)) = self.held.get(i).cloned() else {
             return Ok(());
         };
         self.learned.refused(len);
         let (config, from, most) = (&self.config, &self.from, self.learned.most());
-        let id = super::partial_id()?;
+        // Its line's ID, its place and whether it was the last; a whole line's own.
+        let (id, first, last) = match &part {
+            Some((id, ordinal, last)) => (id.clone(), *ordinal, *last),
+            None => (super::partial_id()?, 1, true),
+        };
         let event = |l: &[u8], ordinal: u32, last: bool| {
             fluentd::event(
                 config,
@@ -141,17 +166,74 @@ impl Fluentd {
         let count = pieces.len();
         let mut events = Vec::with_capacity(count);
         let mut entries = Vec::with_capacity(count);
+        let mut ordinal = first;
         for (k, l) in pieces.into_iter().enumerate() {
-            let (ordinal, last) = (u32::try_from(k + 1).unwrap_or(u32::MAX), k + 1 == count);
+            let last = last && k + 1 == count;
             let e = event(&l, ordinal, last);
             entries.push((st, at, l, Some((id.clone(), ordinal, last)), e.len()));
             events.push(e);
+            ordinal = ordinal.saturating_add(1);
         }
+        // How many places later the line's parts after it go.
+        let later = u32::try_from(count.saturating_sub(1)).unwrap_or(u32::MAX);
         self.stream.replace(i, events);
         let rest = self.held.split_off(i);
         self.held.extend(entries);
         self.held.extend(rest.into_iter().skip(1));
+        if part.is_none() || later == 0 {
+            return Ok(());
+        }
+        let mut rewritten = Vec::new();
+        let mut ended = last;
+        for (k, (st, at, l, part, len)) in self.held.iter_mut().enumerate().skip(i + count) {
+            let Some((pid, ordinal, last)) = part else {
+                continue;
+            };
+            if *pid != id {
+                continue;
+            }
+            *ordinal = ordinal.saturating_add(later);
+            ended |= *last;
+            let e = fluentd::event(
+                &self.config,
+                &self.from,
+                *st,
+                *at,
+                l,
+                Some(fluentd::Part {
+                    id: pid,
+                    ordinal: *ordinal,
+                    last: *last,
+                }),
+                None,
+            );
+            *len = e.len();
+            rewritten.push((k, e));
+        }
+        self.stream.rewrite(rewritten);
+        // The shipper's parts of it still to come.
+        if !ended {
+            match self.later.iter_mut().find(|(pid, _)| *pid == id) {
+                Some((_, n)) => *n = n.saturating_add(later),
+                None => self.later.push((id, later)),
+            }
+        }
         Ok(())
+    }
+
+    /// `part` placed as this driver has its line's parts go ([`Fluentd::later`]).
+    fn placed<'p>(&self, part: Option<fluentd::Part<'p>>) -> Option<fluentd::Part<'p>> {
+        part.map(|p| {
+            let later = self
+                .later
+                .iter()
+                .find(|(id, _)| id == p.id)
+                .map_or(0, |(_, n)| *n);
+            fluentd::Part {
+                ordinal: p.ordinal.saturating_add(later),
+                ..p
+            }
+        })
     }
 
     /// Writes `event`, and where `chunk` is given, reads its ack; `written` says whether
@@ -277,16 +359,17 @@ impl Driver for Fluentd {
         } else {
             None
         };
+        self.follow()?;
+        let placed = self.placed(m.part);
         let event = fluentd::event(
             &self.config,
             &self.from,
             m.stream,
             m.at,
             m.line,
-            m.part,
+            placed,
             chunk.as_deref(),
         );
-        self.follow()?;
         let mut pause = self.config.retry_wait;
         let mut tries = 0u32;
         // Tries in a row on which the event was written whole and not acked.
@@ -298,9 +381,12 @@ impl Driver for Fluentd {
                     if chunk.is_some() {
                         self.learned.taken(event.len());
                     } else {
-                        let part = m.part.map(|p| (p.id.to_string(), p.ordinal, p.last));
+                        let part = placed.map(|p| (p.id.to_string(), p.ordinal, p.last));
                         self.held
                             .push_back((m.stream, m.at, m.line.to_vec(), part, event.len()));
+                    }
+                    if let Some(p) = placed.filter(|p| p.last) {
+                        self.later.retain(|(id, _)| id != p.id);
                     }
                     return Ok(());
                 }
@@ -440,5 +526,290 @@ mod tests {
             assert!(f.fits(&m(&half[..1500])).unwrap());
             f.send(&m(&half[..1500]), &wait).unwrap();
         }
+    }
+
+    /// Where the MessagePack value at `b[at]` ends, of the forms an event holds; none where
+    /// `b` holds only its beginning.
+    fn skip(b: &[u8], at: usize) -> Option<usize> {
+        let t = *b.get(at)?;
+        let be = |from: usize, n: usize| -> Option<usize> {
+            Some(
+                b.get(from..from + n)?
+                    .iter()
+                    .fold(0usize, |v, &x| v << 8 | usize::from(x)),
+            )
+        };
+        let next = at + 1;
+        let (body, items) = match t {
+            0x00..=0x7f | 0xc0 | 0xc2 | 0xc3 => (next, 0),
+            0x80..=0x8f => (next, 2 * usize::from(t & 0x0f)),
+            0x90..=0x9f => (next, usize::from(t & 0x0f)),
+            0xa0..=0xbf => return Some(next + usize::from(t & 0x1f)).filter(|&e| e <= b.len()),
+            0xc4 | 0xd9 => return Some(next + 1 + be(next, 1)?).filter(|&e| e <= b.len()),
+            0xc5 | 0xda => return Some(next + 2 + be(next, 2)?).filter(|&e| e <= b.len()),
+            0xc6 | 0xdb => return Some(next + 4 + be(next, 4)?).filter(|&e| e <= b.len()),
+            0xcc | 0xd0 => return Some(next + 1).filter(|&e| e <= b.len()),
+            0xcd | 0xd1 => return Some(next + 2).filter(|&e| e <= b.len()),
+            0xce | 0xd2 => return Some(next + 4).filter(|&e| e <= b.len()),
+            0xcf | 0xd3 => return Some(next + 8).filter(|&e| e <= b.len()),
+            0xd7 => return Some(next + 9).filter(|&e| e <= b.len()),
+            0xdc => (next + 2, be(next, 2)?),
+            0xdd => (next + 4, be(next, 4)?),
+            0xde => (next + 2, 2 * be(next, 2)?),
+            0xdf => (next + 4, 2 * be(next, 4)?),
+            t => panic!("a form {t:#x} no event holds"),
+        };
+        let mut end = body;
+        for _ in 0..items {
+            end = skip(b, end)?;
+        }
+        Some(end)
+    }
+
+    /// How a test's receiver is reached.
+    #[derive(Clone, Copy, Debug)]
+    enum Via {
+        Tcp,
+        Tls,
+        Unix,
+    }
+
+    /// A forward receiver for the tests, as Fluent Bit's is past its `buffer_max_size`:
+    /// each event of at most `most` bytes sent on `got`, a connection ended as it reads a
+    /// longer one (over TLS with close_notify, its TCP's writing then shut). A driver that
+    /// sends to it from `home`, without acks.
+    fn receiver(via: Via, home: &Path, most: usize) -> (Fluentd, std::sync::mpsc::Receiver<Vec<u8>>) {
+        fn serve<C: Read + std::io::Write>(
+            mut conn: C,
+            most: usize,
+            got: &std::sync::mpsc::Sender<Vec<u8>>,
+            end: impl FnOnce(C),
+        ) -> bool {
+            let mut buf = Vec::new();
+            let mut chunk = [0u8; 4096];
+            loop {
+                match conn.read(&mut chunk) {
+                    Ok(0) | Err(_) => return true,
+                    Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                }
+                while let Some(len) = skip(&buf, 0) {
+                    let event: Vec<u8> = buf.drain(..len).collect();
+                    if event.len() > most {
+                        end(conn);
+                        return true;
+                    }
+                    if got.send(event).is_err() {
+                        return false;
+                    }
+                }
+            }
+        }
+        let (got, events) = std::sync::mpsc::channel();
+        let (to, tls) = match via {
+            Via::Tcp | Via::Tls => {
+                let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+                let port = listener.local_addr().unwrap().port();
+                let tls = matches!(via, Via::Tls).then(super::super::stream::tests::tls);
+                let server = tls.as_ref().map(|(server, _)| server.clone());
+                std::thread::spawn(move || {
+                    let mut kept = Vec::new();
+                    for conn in listener.incoming() {
+                        let Ok(conn) = conn else { return };
+                        let going = match &server {
+                            None => serve(conn, most, &got, drop),
+                            Some(server) => {
+                                let tls = rustls::StreamOwned::new(
+                                    rustls::ServerConnection::new(server.clone()).unwrap(),
+                                    conn,
+                                );
+                                serve(tls, most, &got, |mut tls| {
+                                    tls.conn.send_close_notify();
+                                    let _ = std::io::Write::flush(&mut tls);
+                                    let _ = tls.sock.shutdown(std::net::Shutdown::Write);
+                                    kept.push(tls);
+                                })
+                            }
+                        };
+                        if !going {
+                            return;
+                        }
+                    }
+                });
+                // TLS's by the name its certificate has.
+                let host = if tls.is_some() { "localhost" } else { "127.0.0.1" };
+                (To::Tcp(format!("{host}:{port}")), tls)
+            }
+            Via::Unix => {
+                let path = home.join("f.sock");
+                let listener = shards_vmm::platform::UnixListener::bind(&path).unwrap();
+                std::thread::spawn(move || {
+                    loop {
+                        let Ok((conn, _)) = listener.accept() else { return };
+                        if !serve(conn, most, &got, drop) {
+                            return;
+                        }
+                    }
+                });
+                (To::Unix(path), None)
+            }
+        };
+        let config = Config {
+            to: to.clone(),
+            sub_second: false,
+            ack: false,
+            retry_wait: Duration::from_millis(10),
+            max_retries: 3,
+            write_timeout: Some(Duration::from_secs(10)),
+            read_timeout: Some(Duration::from_secs(10)),
+        };
+        let from = From {
+            tag: "t".into(),
+            id: "0123".into(),
+            name: "/n".into(),
+            extra: std::collections::BTreeMap::new(),
+        };
+        let mut f = Fluentd::new(config, from, home).unwrap();
+        if let (Some((_, client)), To::Tcp(address)) = (tls, to) {
+            f.stream = Stream::new(stream::To::Tls(address, client), [None; 2]);
+        }
+        (f, events)
+    }
+
+    /// The line `events` make of the parts of ID `id`, as a receiver that joins a line's
+    /// parts by their places (fluent-plugin-concat's `buffered_lines`) makes it; each
+    /// place's part checked to be one line, the same wherever it came again, the places
+    /// one after another from 1, and the last part the last place's alone.
+    fn joined(events: &[serde_json::Value], id: &str) -> String {
+        let mut parts: std::collections::BTreeMap<u32, (String, bool)> = Default::default();
+        for e in events {
+            let record = &e[2];
+            if record["partial_id"] != id {
+                continue;
+            }
+            let ordinal: u32 = record["partial_ordinal"].as_str().unwrap().parse().unwrap();
+            let part = (
+                record["log"].as_str().unwrap().to_string(),
+                record["partial_last"] == "true",
+            );
+            let had = parts.entry(ordinal).or_insert_with(|| part.clone());
+            assert_eq!(*had, part, "place {ordinal} came as two parts");
+        }
+        let places: Vec<u32> = parts.keys().copied().collect();
+        assert_eq!(
+            places,
+            (1..=places.len() as u32).collect::<Vec<_>>(),
+            "places of {id}"
+        );
+        let lasts: Vec<u32> = parts
+            .iter()
+            .filter(|(_, (_, last))| *last)
+            .map(|(o, _)| *o)
+            .collect();
+        assert_eq!(lasts, vec![places.len() as u32], "the last of {id}");
+        parts.into_values().map(|(log, _)| log).collect()
+    }
+
+    /// The events received, decoded.
+    fn decoded(events: &std::sync::mpsc::Receiver<Vec<u8>>, most: usize) -> Vec<serde_json::Value> {
+        events
+            .try_iter()
+            .map(|e| {
+                assert!(e.len() <= most, "{}", e.len());
+                let mut at = 0;
+                let v = crate::logging::fluentd::tests::unpack(&e, &mut at);
+                assert_eq!(at, e.len());
+                v
+            })
+            .collect()
+    }
+
+    /// Do: without acks, over TCP, TLS and a unix socket, to a receiver that ends its
+    /// connection on any event of more than 2,000 bytes, send a line's three parts as a
+    /// shipper does, its second of 3,000 bytes, its third the run's last; then close the
+    /// driver as its shipper does, again while it says its receiver ended the connection
+    /// with events held. Expect, before the close ends, every event within 2,000 bytes, and
+    /// the line rebuilt whole from its parts by their places under its one ID: the second
+    /// cut into pieces in its place, the third later by as many, still the last.
+    #[test]
+    fn a_part_refused_goes_again_in_its_lines_place() {
+        for via in [Via::Tcp, Via::Tls, Via::Unix] {
+            let home = shards_testdir::TempDir::new("fw").unwrap();
+            let (mut f, events) = receiver(via, &home, 2000);
+            let (_stop, stopped) = shards_ipc::Stream::pair().unwrap();
+            let wait = Wait(&stopped);
+            let id = "a".repeat(64);
+            let long = "b".repeat(3000);
+            let parts = [("first", 1, false), (long.as_str(), 2, false), ("third", 3, true)];
+            for (line, ordinal, last) in parts {
+                f.send(
+                    &Message {
+                        stream: crate::spec::LOG_STDOUT,
+                        at: 1_000_000_000,
+                        line: line.as_bytes(),
+                        part: Some(fluentd::Part {
+                            id: &id,
+                            ordinal,
+                            last,
+                        }),
+                    },
+                    &wait,
+                )
+                .unwrap();
+            }
+            super::super::gelf::tests::close_until_ended(&mut || f.close(&wait));
+            // The receiver's thread has sent all it read: the connection ended only once it
+            // had read all.
+            let events = decoded(&events, 2000);
+            assert_eq!(joined(&events, &id), format!("first{long}third"), "{via:?}");
+            assert!(f.learned.most() < 3000, "{via:?}");
+        }
+    }
+
+    /// Do: without acks, over TCP, to the same receiver, send a line's first part and a
+    /// second of 3,000 bytes, then another line whole; once the receiver has ended two
+    /// connections on the long part, send the line's third and last part, then close.
+    /// Expect the long part cut in its place as the third is sent, and the third, which
+    /// the shipper numbers 3, placed after the pieces: the line rebuilt whole.
+    #[test]
+    fn a_lines_parts_still_to_come_go_after_a_part_cut_again() {
+        let home = shards_testdir::TempDir::new("fw").unwrap();
+        let (mut f, events) = receiver(Via::Tcp, &home, 2000);
+        let (_stop, stopped) = shards_ipc::Stream::pair().unwrap();
+        let wait = Wait(&stopped);
+        let id = "c".repeat(64);
+        let long = "d".repeat(3000);
+        let m = |line: &'static str, part: Option<fluentd::Part<'static>>| Message {
+            stream: crate::spec::LOG_STDOUT,
+            at: 1_000_000_000,
+            line: line.as_bytes(),
+            part,
+        };
+        let id: &'static str = String::leak(id);
+        let long: &'static str = String::leak(long);
+        let part = |ordinal, last| Some(fluentd::Part { id, ordinal, last });
+        f.send(&m("first", part(1, false)), &wait).unwrap();
+        f.send(&m(long, part(2, false)), &wait).unwrap();
+        let started = std::time::Instant::now();
+        let mut ticks = 0;
+        loop {
+            assert!(started.elapsed() < Duration::from_secs(20), "no end found");
+            std::thread::sleep(Duration::from_millis(5));
+            f.stream.undelivered();
+            if f.stream.suspect(f.learned.took()).is_some() {
+                break;
+            }
+            // A new connection, the held written first, once one ended.
+            if f.stream.ended() > ticks {
+                f.send(&m("whole", None), &wait).unwrap();
+                ticks += 1;
+            }
+        }
+        f.follow().unwrap();
+        assert!(f.later.iter().any(|(i, n)| i == id && *n > 0), "{:?}", f.later);
+        f.send(&m("third", part(3, true)), &wait).unwrap();
+        assert!(f.later.is_empty(), "a line's places kept past its last part");
+        super::super::gelf::tests::close_until_ended(&mut || f.close(&wait));
+        let events = decoded(&events, 2000);
+        assert_eq!(joined(&events, id), format!("first{long}third"));
     }
 }
