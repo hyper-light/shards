@@ -6424,26 +6424,33 @@ host (PM M267), where a container's page cache is its host's to drop. Free page 
   on Fedora was held within it for 200 s while its budget had 140 MiB to spare, 219 s
   against 31.5 s with none. Under a user scope's `MemoryHigh` the least that holds the
   build where its builder gives back all it holds cold, interleaved with the same builds
-  unbudgeted (builder-pressure/measure.py, at 2d168658; the Mac's at 0e24be3e): on Fedora
-  (i9-14900HX, NVMe) rust and apt builds held took no longer than with no budget beyond
-  their rounds' spread and npm 0.1 s longer, an apt
-  build's builder giving back 82 MiB of its files at p50 and unplugging up to 492 MiB,
-  its answers 4 ms after the word at p50; on an M3 Ultra, its builds told every 2 s that
-  their host was short, none slower beyond the spread, an apt build's builder giving back
-  70 MiB at p50 and unplugging up to 1,152 MiB, its answers 2 ms after at p50. On CI's
-  runners (EPYC 7763 and 9V45, Xeon 8573C), the answers 1 to 11 ms after at p50 and an apt
-  builder giving back 69 to 91 MiB, rust held no slower beyond the spread on two runners
-  and npm on one; the rest 0.4 to 3.3 s slower (16 s for apt on the Xeon), in the steps
-  that write to the host's disk (an apt build's caches and its image's root filesystem),
-  which the memory controller holds to the budget's share of dirty pages
-  (`balance_dirty_pages`) where with no budget they went out after the build: its builder,
-  held within 300 MiB of room it never filled, was not what held it. On Windows
+  unbudgeted (builder-pressure/measure.py; PM M442): at 2f82adb6, on eight of CI's
+  runners (EPYC 7763, 9V45 and 9V74, Xeon 6973P-C and Platinum 8573C), every held build
+  but one was asked to give back, its builder answering 5 to 33 ms after the word at p50
+  (710 ms at most), giving back up to 202 MiB of its files a build and unplugging 128 to
+  256 MiB at an answer, and held builds took no longer than unbudgeted beyond their rounds'
+  spread in 23 of the 24 runner and build pairs: apt on the Xeon 6973P-C was 0.1 s slower,
+  its build reading again 58 MiB at p50 of the cache layers it merges, whose page cache its
+  budget had taken back, not slowed by its builder. On Fedora (i9-14900HX, NVMe, Btrfs) at
+  b8c98e7f and 2f82adb6, the same builder, every build held answered (0 to 5 ms at p50,
+  318 ms at most), an apt builder giving back 55 and 80 MiB of its files a build at p50,
+  none slower beyond the spread. On an M3 Ultra at 9f2520c2, its builds told every 2 s that their host was short
+  and the host loaded by other work (load 11 to 21), every word answered, 64 to 84 ms
+  after it at p50, an apt builder giving back 142 MiB of its files a build at p50 and
+  unplugging up to 1,152 MiB, none slower beyond the spread. The budget is the most the
+  same build held under a budget that presses nothing: a build under a budget hands its
+  own writes to its writer (below), so a free build's peak, which counts them, left a
+  held build room it never filled (c3ce85e).
+  Before the writer (2d168658), held builds on CI's runners were 0.4 to 16 s slower in the
+  steps that write to the host's disk, which the memory controller holds to the budget's
+  share of dirty pages (`balance_dirty_pages`): the builder, held within room it never
+  filled, was not what held them. On Windows
   too since 2026-10-28, free page reporting (D151) theirs there as a run's: on jupiter's
   WHP a builder holding a step's 256 MiB file gave back 253 MiB of it, its VM process from
   350,516 KiB to 96,168, and again at d1deefd9, from 352,088 KiB to 96,220
   (`a_builder_gives_back_what_it_holds_cold_at_its_builds_word`).
-- **A budgeted build's own writes, outside its budget** (Linux; PM M442; built, its
-  measurement on CI's runners awaited). A write dirties page cache charged to its writer's
+- **A budgeted build's own writes, outside its budget** (Linux; PM M442; built and
+  measured). A write dirties page cache charged to its writer's
   cgroup, and `balance_dirty_pages` (mm/page-writeback.c, Linux 7.0) throttles the writer
   against its own cgroup's domain beside the host's (`mdtc`, the domain of the writer's
   own wb, `wb_get_create_current` in `balance_dirty_pages_ratelimited_flags`): what that
@@ -6490,11 +6497,15 @@ host (PM M267), where a container's page cache is its host's to drop. Free page 
   only which slot and whose in the message, and a buffered writer of a build's file goes on
   once a write is handed, its writes settled before the file is flushed, sought in, taken
   back or dropped (`through::Through`): the writer makes one while the build makes the
-  next.
-- **An image's root filesystem over its base's** (PM M442; built, its measurement
-  awaited). An export wrote its image's whole root filesystem, rust:1-slim's 850 MiB again
-  for a build that added 7 MiB. Where the store's file system clones a file (APFS's
-  clonefile, Btrfs's and XFS's FICLONE: `shards_build::host::clone_file`), the image now
+  next. So at b8c98e7f and after, the writer outside in every held build (150 on Fedora
+  and eight of CI's runners), held builds took no longer than unbudgeted beyond their
+  rounds' spread but apt's on one runner by 0.1 s, which read again what its budget took
+  of its cache layers' page cache (above).
+- **An image's root filesystem over its base's** (PM M442; built and measured). An
+  export wrote its image's whole root filesystem, rust:1-slim's 850 MiB again for a build
+  that added 7 MiB; over its base's on Fedora's Btrfs, that export takes 0.1 s at p50
+  against 0.9 (b8c98e7f against 2d168658). Where the store's file system clones a file
+  (APFS's clonefile, Btrfs's and XFS's FICLONE: `shards_build::host::clone_file`), the image now
   starts as a clone of the root filesystem kept for its base's layers, sharing its blocks,
   and only what the build added is written past them: the image's metadata, whole, and the
   data of each file the base had not as it is (`shards_erofs::write_over`), each file the
@@ -6647,7 +6658,7 @@ such a budget is throttled for as long as it runs (761 to 1,729 s a gigabyte, PM
 where one restored from its template holds that template's clean pages beside as much
 anonymous memory, which its host may take back. A builder gives back its files and what
 it holds plugged past its use at its build's word (above; PM M442, of its files a build at
-p50 on each host: apt's 69 to 91 MiB, npm's 0.4 to 24, rust's 3 to 34), but most of what
+p50 on each host: apt's 0 to 142 MiB, npm's 1 to 26, rust's 0 to 31), but most of what
 its steps write it keeps in tmpfs layers, 148 MiB of Shmem after an npm install of 73 MiB
 of packages against 1.4 MiB of file pages (PM M295), which no give-back of file pages
 takes: that comes back as its layers leave memory, to its swap window or a layer on the
@@ -13107,11 +13118,13 @@ given the rest as its build needs it, up to what it may have.
   back what it holds cold of its files and the blocks it holds plugged past twice what its
   build uses where its kernel holds none of a block, and holds its build within the room
   a budget over the build leaves it, told again each pressure window where it changed
-  (D188's builders): on Fedora an apt build's builder gave back 82 MiB of its files at
-  p50 and unplugged up to 492 MiB, its build no slower beyond its rounds' spread than
-  with no budget, and on Fedora, CI's runners and an M3 Ultra every builder answered 1 to
-  11 ms after its build's word at p50 (PM M442). The build's process asks, not the
-  daemon: a builder is its build's, not a run of the daemon's.
+  (D188's builders): under a budget short of its peak by what its builder held cold, an
+  apt build's builder gave back up to 202 MiB of its files a build and unplugged up to
+  1,152 MiB, every builder answered 0 to 84 ms after its build's word at p50 on Fedora,
+  eight of CI's runners and an M3 Ultra, and the build took no longer than with no budget
+  beyond its rounds' spread in 32 of 33 host and build pairs, the other 0.1 s longer as it
+  read again what its budget took of its own files' page cache (PM M442). The build's
+  process asks, not the daemon: a builder is its build's, not a run of the daemon's.
 - **What the kernel sized by the memory it booted with** is raised to what it sizes by all
   of it, so that a step sees what it saw in a builder booted with all its memory: the
   layers' tmpfs (`size=` and `nr_inodes=` of all of it, where `size=100%` would be of 512

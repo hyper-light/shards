@@ -9,16 +9,24 @@ after its word it came, on the build's stderr).
 
 - Linux: each build in a scope of the user's manager (systemd-run --user --scope) that swaps
   nothing (MemorySwapMax=0). Held, its MemoryHigh is the least that holds its build where
-  its builder gives back all it holds cold of its files: the most, each second of the free
-  arm in the round before it, of what the scope holds that its host may take back from its
+  its builder gives back all it holds cold of its files: the most, each second of every
+  held arm before it, of what the scope holds that its host may take back from its
   processes alone, as the daemon and the build count it (daemon::budget `Holding::held`:
   its anonymous, shared, kernel and socket memory, the file pages its processes map
   wherever they are charged, their `Pss_File`, and the inactive pages its kernel keeps
   beside those charged to it, `lru_buffer`), less what its builder
   held cold of its files then (inactive_file, from the builder's last sample before it):
   so the budget is short of the build's peak by what its builder holds cold, and the build
-  fits it where its builder gives that back. The most of every free arm's so far, the
-  round's own among them where it came first: a build's peak moves from one round to the
+  fits it where its builder gives that back. A held arm's, not a free arm's: a build under
+  a budget hands its own writes to a writer outside it (D188, build/outside.rs), so its
+  scope holds neither their kernel memory nor the build's buffers for them, and a budget
+  from its free arms, which hold both, pressed nothing: on CI's four runners at c3ce85e
+  (run 42366506933), a free rust arm's scope held 30 MiB of kernel memory at its peak and
+  a held one's 3, a free apt arm's 1,012 MiB anonymous and a held one's 906, so the held
+  rust and apt scopes peaked 18 to 62 MiB under their budgets and their builders, never
+  asked, gave nothing back. So a round 0 held arm under a budget of the host's whole
+  memory, which places the writer as any budget does and presses nothing, sizes the first;
+  then the most of every held arm's so far: a build's peak moves from one round to the
   next (npm's 796 to 815 MiB on Fedora), and a budget from the round before alone, short of
   the next round's peak by 13 MiB more than its builder held cold, slowed it 3 times
   (b25d2d05). Held to its anonymous peak less what its
@@ -37,9 +45,10 @@ after its word it came, on the build's stderr).
   and a budget of it less what the builder could give back asked the builder for nothing
   (run 40426695726, 0 asks).
   A round's held arm comes after its free arm where the round is odd, before it where even.
-  A round 0 of free arms alone first fills the builds' caches and pulls their bases, its
-  peaks no budget's: a first build's peak is its downloads' (npm's 688 MiB against 796 to
-  819 after, which held round 2 to 340 s, b25d2d05).
+  A round 0 first fills the builds' caches and pulls their bases with each build's free
+  arm, then on Linux runs its held arm under the host's whole memory, so that no budget is
+  of a free arm's peak: a first build's peak is its downloads' (npm's 688 MiB against 796
+  to 819 after, which held round 2 to 340 s, b25d2d05). tables.py counts no round 0.
 - Before each build, what the one before wrote is written out (sync(2)), and how long that
   took said: no arm starts under another's writeback.
 - macOS, where no unprivileged process may raise the system's pressure: held, the build is
@@ -469,22 +478,28 @@ def one(r, name, arm, budget):
 
 header()
 builds = a.builds.split(",")
-for name in builds:
-    if short.is_set() or room() < ROOM:
-        say(f"room {room() >> 20} MiB: ending the run")
-        sys.exit(1)
-    one(0, name, "free", 0)
+# A budget that holds nothing back, the host's memory: its build places its writer outside it
+# as under any budget (build/outside.rs `budgeted_at`), and is pressed by none.
+WHOLE = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
 seen = {}
+for name in builds:
+    for arm in ("free",) if macos else ("free", "held"):
+        if short.is_set() or room() < ROOM:
+            say(f"room {room() >> 20} MiB: ending the run")
+            sys.exit(1)
+        got = one(0, name, arm, WHOLE if arm == "held" else 0)
+        if arm == "held":
+            seen[name] = got
 for r in range(1, a.rounds + 1):
     order = builds[(r - 1) % len(builds):] + builds[:(r - 1) % len(builds)]
     for name in order:
-        arms = ("free", "held") if r % 2 == 1 or name not in seen else ("held", "free")
+        arms = ("free", "held") if r % 2 == 1 else ("held", "free")
         for arm in arms:
             if short.is_set() or room() < ROOM:
                 say(f"room {room() >> 20} MiB: ending the run")
                 sys.exit(1)
             budget = seen.get(name, 0) if arm == "held" and not macos else 0
             got = one(r, name, arm, budget)
-            if arm == "free":
+            if arm == "held":
                 seen[name] = max(seen.get(name, 0), got)
 say("done")

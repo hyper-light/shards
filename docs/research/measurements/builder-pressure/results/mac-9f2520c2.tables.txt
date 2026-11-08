@@ -1,0 +1,86 @@
+== /Users/adalundhe/builder-pressure/run/out.txt
+host Adas-Mac-Studio.local; macOS 26.4; kernel 25.4.0; arm64; Apple M3 Ultra; shards 9f2520c2; memory 98304 MiB; cpus 32
+builds rust,npm,apt; rounds 5; home /Users/adalundhe/builder-pressure/home; bases each Dockerfiles own
+-- apt free: rounds past the caches' 5, failed 0
+   build time        n 5 p50 40.6 p90 52.4 p99 52.4 max 52.4 s
+-- apt held: rounds past the caches' 5, failed 0
+   build time        n 5 p50 32.0 p90 73.3 p99 73.3 max 73.3 s
+   answers           84, unanswered 0
+   answered in       n 84 p50 71 p90 326 p99 784 max 784 ms
+   freed an answer   n 84 p50 0.0 p90 30.0 p99 174.2 max 174.2 MiB
+   unplug asked      n 84 p50 0.0 p90 128.0 p99 1280.0 max 1280.0 MiB
+   unplug done       n 79 p50 0.0 p90 128.0 p99 1152.0 max 1152.0 MiB
+   freed a build     n 5 p50 141.9 p90 265.2 p99 265.2 max 265.2 MiB
+   phase run           free n 5 p50 11.7 p90 12.7 p99 12.7 max 12.7 s; held n 5 p50 14.2 p90 42.5 p99 42.5 max 42.5 s
+   phase cache-keep    free n 5 p50 2.9 p90 4.3 p99 4.3 max 4.3 s; held n 5 p50 3.4 p90 4.1 p99 4.1 max 4.1 s
+   phase layer         free n 5 p50 2.4 p90 2.9 p99 2.9 max 2.9 s; held n 5 p50 2.8 p90 3.7 p99 3.7 max 3.7 s
+   phase blob          free n 5 p50 0.0 p90 0.1 p99 0.1 max 0.1 s; held n 5 p50 0.0 p90 0.1 p99 0.1 max 0.1 s
+   caches kept         free n 5 p50 85.0 p90 85.0 p99 85.0 max 85.0 MiB; held n 5 p50 85.0 p90 85.0 p99 85.0 max 85.0 MiB
+   kept, synced in     free n 5 p50 56.0 p90 89.0 p99 89.0 max 89.0 ms; held n 5 p50 37.0 p90 99.0 p99 99.0 max 99.0 ms
+   merges              free n 5 p50 1.0 p90 2.0 p99 2.0 max 2.0; held n 5 p50 2.0 p90 2.0 p99 2.0 max 2.0
+   merged              free n 5 p50 180.2 p90 181.1 p99 181.1 max 181.1 MiB; held n 5 p50 181.1 p90 181.1 p99 181.1 max 181.1 MiB
+   merged, written in  free n 5 p50 943.0 p90 1265.0 p99 1265.0 max 1265.0 ms; held n 5 p50 1242.0 p90 1413.0 p99 1413.0 max 1413.0 ms
+   merged, synced in   free n 5 p50 26.0 p90 33.0 p99 33.0 max 33.0 ms; held n 5 p50 36.0 p90 40.0 p99 40.0 max 40.0 ms
+   step #1   free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s
+   step #2   free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s
+   step #3   free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s
+   step #4   free n 5 p50 0.0 p90 0.1 p99 0.1 max 0.1 s; held n 5 p50 0.1 p90 0.1 p99 0.1 max 0.1 s
+   step #5   free n 5 p50 13.6 p90 23.3 p99 23.3 max 23.3 s; held n 5 p50 7.2 p90 37.3 p99 37.3 max 37.3 s
+   step #6   free n 5 p50 15.6 p90 19.8 p99 19.8 max 19.8 s; held n 5 p50 19.5 p90 50.1 p99 50.1 max 50.1 s
+   step #7   free n 5 p50 3.0 p90 3.9 p99 3.9 max 3.9 s; held n 5 p50 3.2 p90 3.6 p99 3.6 max 3.6 s
+   rule: held slower than free beyond the rounds' spread: no (held's fastest 27.7 s, free's slowest 52.4 s)
+-- npm free: rounds past the caches' 5, failed 0
+   build time        n 5 p50 25.1 p90 39.4 p99 39.4 max 39.4 s
+-- npm held: rounds past the caches' 5, failed 0
+   build time        n 5 p50 23.0 p90 31.0 p99 31.0 max 31.0 s
+   answers           20, unanswered 0
+   answered in       n 20 p50 84 p90 421 p99 579 max 579 ms
+   freed an answer   n 20 p50 0.2 p90 25.1 p99 29.7 max 29.7 MiB
+   unplug asked      n 20 p50 0.0 p90 128.0 p99 128.0 max 128.0 MiB
+   unplug done       n 15 p50 0.0 p90 128.0 p99 128.0 max 128.0 MiB
+   freed a build     n 5 p50 25.5 p90 30.4 p99 30.4 max 30.4 MiB
+   phase run           free n 5 p50 2.8 p90 3.6 p99 3.6 max 3.6 s; held n 5 p50 2.8 p90 3.1 p99 3.1 max 3.1 s
+   phase cache-keep    free n 5 p50 0.1 p90 0.3 p99 0.3 max 0.3 s; held n 5 p50 0.2 p90 0.3 p99 0.3 max 0.3 s
+   phase layer         free n 5 p50 0.8 p90 1.0 p99 1.0 max 1.0 s; held n 5 p50 0.7 p90 1.0 p99 1.0 max 1.0 s
+   phase blob          free n 5 p50 0.1 p90 0.1 p99 0.1 max 0.1 s; held n 5 p50 0.1 p90 0.1 p99 0.1 max 0.1 s
+   caches kept         free n 5 p50 0.1 p90 0.1 p99 0.1 max 0.1 MiB; held n 5 p50 0.1 p90 0.1 p99 0.1 max 0.1 MiB
+   kept, synced in     free n 5 p50 24.0 p90 27.0 p99 27.0 max 27.0 ms; held n 5 p50 24.0 p90 38.0 p99 38.0 max 38.0 ms
+   merges              free n 2 p50 1.0 p90 1.0 p99 1.0 max 1.0; held n 4 p50 1.0 p90 1.0 p99 1.0 max 1.0
+   merged              free n 2 p50 0.9 p90 0.9 p99 0.9 max 0.9 MiB; held n 4 p50 0.2 p90 0.9 p99 0.9 max 0.9 MiB
+   merged, written in  free n 2 p50 6.0 p90 6.0 p99 6.0 max 6.0 ms; held n 4 p50 10.0 p90 10.0 p99 10.0 max 10.0 ms
+   merged, synced in   free n 2 p50 31.0 p90 31.0 p99 31.0 max 31.0 ms; held n 4 p50 20.0 p90 25.0 p99 25.0 max 25.0 ms
+   step #1   free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s
+   step #2   free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s
+   step #3   free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s
+   step #4   free n 5 p50 0.0 p90 0.2 p99 0.2 max 0.2 s; held n 5 p50 0.0 p90 0.2 p99 0.2 max 0.2 s
+   step #6   free n 5 p50 0.0 p90 0.1 p99 0.1 max 0.1 s; held n 5 p50 0.0 p90 0.1 p99 0.1 max 0.1 s
+   step #8   free n 5 p50 20.4 p90 34.6 p99 34.6 max 34.6 s; held n 5 p50 17.8 p90 25.9 p99 25.9 max 25.9 s
+   step #9   free n 5 p50 3.4 p90 3.8 p99 3.8 max 3.8 s; held n 5 p50 2.9 p90 3.1 p99 3.1 max 3.1 s
+   rule: held slower than free beyond the rounds' spread: no (held's fastest 16.5 s, free's slowest 39.4 s)
+-- rust free: rounds past the caches' 5, failed 0
+   build time        n 5 p50 7.4 p90 29.9 p99 29.9 max 29.9 s
+-- rust held: rounds past the caches' 5, failed 0
+   build time        n 5 p50 11.3 p90 39.0 p99 39.0 max 39.0 s
+   answers           15, unanswered 0
+   answered in       n 15 p50 64 p90 392 p99 410 max 410 ms
+   freed an answer   n 15 p50 2.5 p90 3.1 p99 3.5 max 3.5 MiB
+   unplug asked      n 15 p50 0.0 p90 0.0 p99 0.0 max 0.0 MiB
+   unplug done       n 12 p50 0.0 p90 0.0 p99 0.0 max 0.0 MiB
+   freed a build     n 5 p50 6.9 p90 12.7 p99 12.7 max 12.7 MiB
+   phase run           free n 5 p50 2.9 p90 9.6 p99 9.6 max 9.6 s; held n 5 p50 5.4 p90 10.8 p99 10.8 max 10.8 s
+   phase cache-keep    free n 5 p50 0.2 p90 0.5 p99 0.5 max 0.5 s; held n 5 p50 0.3 p90 0.4 p99 0.4 max 0.4 s
+   phase layer         free n 5 p50 0.1 p90 0.1 p99 0.1 max 0.1 s; held n 5 p50 0.1 p90 0.2 p99 0.2 max 0.2 s
+   phase blob          free n 5 p50 0.0 p90 0.1 p99 0.1 max 0.1 s; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s
+   caches kept         free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 MiB; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 MiB
+   kept, synced in     free n 5 p50 14.0 p90 44.0 p99 44.0 max 44.0 ms; held n 5 p50 26.0 p90 47.0 p99 47.0 max 47.0 ms
+   merges              free n 5 p50 2.0 p90 2.0 p99 2.0 max 2.0; held n 5 p50 2.0 p90 2.0 p99 2.0 max 2.0
+   merged              free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 MiB; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 MiB
+   merged, written in  free n 5 p50 5.0 p90 13.0 p99 13.0 max 13.0 ms; held n 5 p50 8.0 p90 9.0 p99 9.0 max 9.0 ms
+   merged, synced in   free n 5 p50 11.0 p90 32.0 p99 32.0 max 32.0 ms; held n 5 p50 26.0 p90 36.0 p99 36.0 max 36.0 ms
+   step #1   free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s
+   step #2   free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s
+   step #3   free n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s; held n 5 p50 0.0 p90 0.0 p99 0.0 max 0.0 s
+   step #4   free n 5 p50 0.0 p90 0.2 p99 0.2 max 0.2 s; held n 5 p50 0.0 p90 0.2 p99 0.2 max 0.2 s
+   step #5   free n 5 p50 6.1 p90 28.4 p99 28.4 max 28.4 s; held n 5 p50 10.2 p90 37.4 p99 37.4 max 37.4 s
+   step #6   free n 5 p50 0.4 p90 0.6 p99 0.6 max 0.6 s; held n 5 p50 0.4 p90 0.6 p99 0.6 max 0.6 s
+   rule: held slower than free beyond the rounds' spread: no (held's fastest 2.0 s, free's slowest 29.9 s)
