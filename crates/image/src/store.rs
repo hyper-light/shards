@@ -107,7 +107,22 @@ fn grew() {
 /// shares until its exec closes it: closed alone, the lock outlasts its drop that long
 /// (PM M244).
 #[derive(Debug)]
-pub(crate) struct Locked(pub(crate) File);
+pub struct Locked(pub(crate) File);
+
+impl Locked {
+    /// The file at `path`, made where missing, held alone (flock(2)'s `LOCK_EX`,
+    /// `LockFileEx`'s exclusive lock) by this and no other open of it, in any process,
+    /// until the lock returned drops.
+    pub fn exclusive(path: &Path) -> std::io::Result<Locked> {
+        let file = File::options()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(path)?;
+        file.lock()?;
+        Ok(Locked(file))
+    }
+}
 
 impl Drop for Locked {
     fn drop(&mut self) {

@@ -19388,6 +19388,18 @@ revision before comparing a changed API/implementation.
   recorded. Nothing of shards' asks is lost: the grow waits on the unplug before it. Not
   fixed here: an unplug that gives way to a grow is a change to the guest kernel's
   driver, and a new kernel pin (D148's patches).
+- **Read again in 6.18.48** (the pinned source, whose driver is 7.2-rc4's but for two
+  `mutex_destroy`s and a `kzalloc_obj`). Plugged memory comes online as the kernel's own
+  (`memhp_default_state=online_kernel`) in Sub Block Mode (2 MiB device blocks under 128
+  MiB memory blocks, `virtio_mem_init_hotplug`), and an online block unplugged whole is
+  not migrated by `offline_and_remove_memory`, which then finds every page fake-offline
+  (`virtio_mem_sbm_try_remove_unplugged_mb`), but by the one `alloc_contig_range` of all
+  of it that `virtio_mem_sbm_unplug_sb_online` takes first (through
+  `virtio_mem_fake_offline`, which looks for a changed request only before it), and
+  `__alloc_contig_migrate_range` stops early only for a fatal signal. Patch 0014 takes it
+  a subblock at a time (D148). `update_under_pressure_stress` now runs privileged and
+  reads its guest's log in each round longer than the grower's `STALLED`, counting and
+  failing on the rounds whose grower asked again. Not yet measured with 0014.
 
 ### M495. A start on a contended Windows host: WHP's vCPUs at THREAD_PRIORITY_ABOVE_NORMAL (D191)
 

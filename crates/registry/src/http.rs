@@ -13,7 +13,12 @@
 //! Connections follow containerd's transport (`core/remotes/docker/registry.go`):
 //! - 30 s to connect, racing addresses 300 ms apart (RFC 8305);
 //! - 10 s for the TLS handshake, 30 s for the response head;
-//! - at most 10 idle connections, each kept for 30 s.
+//! - at most 10 idle connections.
+//!
+//! A registry's client waits instead as long as each wait of its path has shown (D222,
+//! crate::patience): to connect, for its handshake, for an answer and through a body's
+//! silence. An idle connection is kept until its server closes it, which is seen as it is
+//! taken ([`Conn::quiet`]), or until RFC 5382's least idle time a NAT keeps it for.
 //!
 //! A body that makes no progress for 30 s fails too, where Go would wait on its context.
 //! That context's cancellation is a [`Cancel`]: every request of a client it cancels
@@ -29,21 +34,30 @@ use std::time::{Duration, Instant};
 use rustls::pki_types::ServerName;
 use rustls::{ClientConfig, ClientConnection};
 
-use crate::patience::{Pace, Paths, path_of};
+use crate::patience::{Pace, Paths, Wait, path_of};
 use crate::proxy::{Proxies, Proxy};
 use crate::registries::Registries;
 use crate::url::{Scheme, Url};
 use crate::{Error, ErrorKind};
 
+/// How long a client that does not learn its waits (not a registry's) takes to connect:
+/// Go's dialer's, as containerd's transport gives it.
 const CONNECT: Duration = Duration::from_secs(30);
 const RACE: Duration = Duration::from_millis(300);
 /// How often a dial waiting on its attempts looks for a cancel.
 const DIAL_POLL: Duration = Duration::from_millis(100);
+/// How long a client that does not learn its waits gives a TLS handshake: Go's
+/// transport's `TLSHandshakeTimeout`, as containerd's gives it.
 const HANDSHAKE: Duration = Duration::from_secs(10);
 /// How long a request waits for its response's head.
 pub const HEAD: Duration = Duration::from_secs(30);
 const STALL: Duration = Duration::from_secs(30);
-const IDLE: Duration = Duration::from_secs(30);
+/// How long an idle connection is kept, its server not having closed it: no wait (nothing
+/// waits on it, and the time a server keeps one is the server's, RFC 9112 §9.5), but the
+/// least a NAT on its path keeps an idle connection's mapping for, 2 h 4 min (RFC 5382
+/// §5, REQ-5); past it a NAT may forget it without a word, and a request on it would wait
+/// for an answer that never comes.
+const IDLE: Duration = Duration::from_secs((2 * 60 + 4) * 60);
 const MAX_IDLE: usize = 10;
 const MAX_HEAD: usize = 10 << 20;
 /// The most of a proxy's answer to CONNECT read.
@@ -86,8 +100,10 @@ pub struct Client {
 
 /// How long a request waits on its server: to connect, its name's lookup included; for
 /// its response's head; and on any read or write that makes no progress. `None` waits
-/// for as long as it takes, until the request is cancelled. A registry's are bounded (30
-/// s, [`HEAD`] and 30 s); a build's proxy waits as long as the step it serves does, as Go's
+/// for as long as it takes, until the request is cancelled. By default 30 s, [`HEAD`] and
+/// 30 s, Go's transport's; a registry's client waits instead as long as its path has shown
+/// (D222: connects, handshakes, bodiless answers and silences, where its patience bounds
+/// them at all); a build's proxy waits as long as the step it serves does, as Go's
 /// transport has no bound of its own (D110); EC2's instance metadata is given 250 ms to
 /// connect, as the AWS SDK gives it (D168).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -469,7 +485,7 @@ impl Client {
             std::thread::sleep(wait);
             return Ok(());
         };
-        let deadline = Instant::now() + wait;
+        let deadline = after(wait);
         let mut live = cancel.0.live.lock().unwrap_or_else(PoisonError::into_inner);
         loop {
             cancel.check()?;
@@ -565,7 +581,7 @@ impl Client {
             Some(_) => None,
             None => self.reach,
         };
-        let tcp = dial(first, self.cancel.as_ref(), reach, self.patience.connect).ok()?;
+        let tcp = self.dial(url, first, reach).ok()?;
         let from = tcp.local_addr().ok()?.ip();
         self.paths.located(&path_of(url), from);
         Some(from)
@@ -728,7 +744,7 @@ impl Client {
         // body waits on its server's work with it, as long as its patience says.
         let bodiless = req.file.is_none() && req.body.is_empty();
         let answer = match self.patience.head {
-            Some(_) if self.learning && bodiless => Some(self.paths.answer_timeout(&path)),
+            Some(_) if self.learning && bodiless => Some(self.paths.timeout(&path, Wait::Answer)),
             patience => patience,
         };
         let written = conn.io.get_mut().write_all(head).and_then(|()| match req.file {
@@ -739,9 +755,9 @@ impl Client {
         let learned = |read: Result<Head, Failure>| {
             if self.learning && bodiless {
                 match &read {
-                    Ok(_) => self.paths.answered(&path, asked.elapsed()),
+                    Ok(_) => self.paths.waited(&path, Wait::Answer, asked.elapsed()),
                     Err(_) if answer.is_some_and(|a| asked.elapsed() >= a) => {
-                        self.paths.answer_timed_out(&path)
+                        self.paths.timed_out(&path, Wait::Answer)
                     }
                     Err(_) => {}
                 }
@@ -850,11 +866,10 @@ impl Client {
             }
             None => self.reach,
         };
-        let tcp =
-            dial(first, self.cancel.as_ref(), reach, self.patience.connect).map_err(|e| match proxy {
-                Some(p) => e.context(format!("proxyconnect {}", p.url.authority())),
-                None => e,
-            })?;
+        let tcp = self.dial(url, first, reach).map_err(|e| match proxy {
+            Some(p) => e.context(format!("proxyconnect {}", p.url.authority())),
+            None => e,
+        })?;
         let _ = tcp.set_nodelay(true);
         // The route it went by keys the path's record (crate::links).
         if let Ok(local) = tcp.local_addr() {
@@ -862,8 +877,9 @@ impl Client {
         }
         // Watched from here, the handshakes and tunnel included.
         let watch = self.cancel.as_ref().map(|c| c.watch(&tcp));
+        let path = path_of(url);
         let mut hop = match (proxy, first.scheme()) {
-            (Some(_), Scheme::Https) => Hop::Tls(Box::new(self.handshake(first, tcp)?)),
+            (Some(_), Scheme::Https) => Hop::Tls(Box::new(self.handshake(first, tcp, &path)?)),
             _ => Hop::Tcp(tcp),
         };
         if let Some(proxy) = proxy
@@ -873,7 +889,7 @@ impl Client {
         }
         let stream = match url.scheme() {
             Scheme::Http => Stream::Plain(hop),
-            Scheme::Https => Stream::Tls(Box::new(self.handshake(url, hop)?)),
+            Scheme::Https => Stream::Tls(Box::new(self.handshake(url, hop, &path)?)),
         };
         let conn = Conn {
             key,
@@ -886,8 +902,54 @@ impl Client {
         Ok(conn)
     }
 
-    /// A TLS session with `url`'s host over `io`, its handshake done within 10 s.
-    fn handshake<T: Wire>(&self, url: &Url, mut io: T) -> Result<Tls<T>, Error> {
+    /// `first`, the first hop to `url` (its proxy, or it), dialled: within the connections
+    /// of `url`'s path take ([`Wait::Connect`]) where the client learns its waits (D222),
+    /// which learns from how long it took, else within its patience.
+    fn dial(
+        &self,
+        url: &Url,
+        first: &Url,
+        reach: Option<fn(std::net::IpAddr) -> bool>,
+    ) -> Result<TcpStream, Error> {
+        if !self.learning {
+            return dial(first, self.cancel.as_ref(), reach, self.patience.connect);
+        }
+        let path = path_of(url);
+        let within = self.paths.timeout(&path, Wait::Connect);
+        let began = Instant::now();
+        let dialled = dial(first, self.cancel.as_ref(), reach, within);
+        self.learned(&path, Wait::Connect, began, within, dialled.is_ok());
+        dialled
+    }
+
+    /// The path `path`'s `wait`, begun at `began` and given `within`, ended, in time where
+    /// `ok`: learned from, or counted as a timeout where its time ran out.
+    fn learned(&self, path: &str, wait: Wait, began: Instant, within: Duration, ok: bool) {
+        let took = began.elapsed();
+        if ok {
+            self.paths.waited(path, wait, took);
+        } else if took >= within {
+            self.paths.timed_out(path, wait);
+        }
+    }
+
+    /// A TLS session with `url`'s host over `io`, its handshake done as quickly as the
+    /// handshakes of `path`, the path it is on, take ([`Wait::Handshake`]) where the client
+    /// learns its waits (D222), which learns from how long it took; else within Go's
+    /// transport's `TLSHandshakeTimeout`, 10 s, as containerd's transport gives it.
+    fn handshake<T: Wire>(&self, url: &Url, io: T, path: &str) -> Result<Tls<T>, Error> {
+        if !self.learning {
+            return self.shake(url, io, HANDSHAKE);
+        }
+        let within = self.paths.timeout(path, Wait::Handshake);
+        let began = Instant::now();
+        let shaken = self.shake(url, io, within);
+        self.learned(path, Wait::Handshake, began, within, shaken.is_ok());
+        shaken
+    }
+
+    /// A TLS session with `url`'s host over `io`, its handshake done `within`.
+    fn shake<T: Wire>(&self, url: &Url, mut io: T, within: Duration) -> Result<Tls<T>, Error> {
         let config = (self.tls)(url)?;
         let host = match &self.server_name {
             Some(name) => name.as_str(),
@@ -895,7 +957,7 @@ impl Client {
         };
         let name = ServerName::try_from(host.to_string()).map_err(|e| Error::new(format!("{url}: {e}")))?;
         let mut tls = ClientConnection::new(config, name)?;
-        let deadline = Instant::now() + HANDSHAKE;
+        let deadline = after(within);
         let mut heard = Heard::default();
         while tls.is_handshaking() {
             let left = deadline
@@ -1176,7 +1238,7 @@ fn send_from(tcp: &TcpStream, file: &std::fs::File, at: u64, left: u64) -> io::R
 #[cfg(unix)]
 fn ready(tcp: &TcpStream, d: Option<Duration>) -> io::Result<(bool, bool)> {
     use std::os::fd::AsRawFd;
-    let deadline = d.map(|d| Instant::now() + d);
+    let deadline = d.map(after);
     loop {
         let ms = match deadline {
             Some(deadline) => {
@@ -1217,7 +1279,7 @@ fn ready(tcp: &TcpStream, d: Option<Duration>) -> io::Result<(bool, bool)> {
     use windows_sys::Win32::Networking::WinSock::{
         POLLERR, POLLHUP, POLLRDNORM, POLLWRNORM, WSAPOLLFD, WSAPoll,
     };
-    let deadline = d.map(|d| Instant::now() + d);
+    let deadline = d.map(after);
     loop {
         let ms = match deadline {
             Some(deadline) => {
@@ -1315,6 +1377,19 @@ pub(crate) fn resolve(
     }
 }
 
+/// The instant `d` from now, or the furthest this host's clock holds where that is past
+/// it: a wait learned so long (a timeout doubled many times, §5.5) is one without end.
+fn after(d: Duration) -> Instant {
+    let now = Instant::now();
+    let mut d = d;
+    loop {
+        if let Some(at) = now.checked_add(d) {
+            return at;
+        }
+        d /= 2;
+    }
+}
+
 /// What a client [`Client::reaching`] some addresses alone says of a URL it may not reach.
 fn unreachable(url: &Url) -> Error {
     Error::new(format!(
@@ -1330,7 +1405,7 @@ fn dial(
     within: Duration,
 ) -> Result<TcpStream, Error> {
     // The name's lookup is within the dial's time, as Go's Dialer counts it.
-    let deadline = Instant::now() + within;
+    let deadline = after(within);
     let mut addrs = resolve(url, deadline, cancel)?;
     if let Some(reach) = reach {
         addrs.retain(|a| reach(a.ip()));
@@ -1435,7 +1510,7 @@ struct Head {
 /// Reads a response head, skipping 1xx ones, within 10 MiB and `patience` in all (30 s
 /// for a registry; without end where `None`).
 fn read_head(conn: &mut Conn, url: &Url, patience: Option<Duration>) -> Result<Head, Failure> {
-    let deadline = patience.map(|p| Instant::now() + p);
+    let deadline = patience.map(after);
     let mut budget = MAX_HEAD;
     let mut first = true;
     loop {
@@ -2746,6 +2821,38 @@ mod tests {
         assert_eq!(fetch(&client, "GET", &url).unwrap(), (200, b"ok".to_vec()));
         assert_eq!(fetch(&client, "GET", &url).unwrap(), (200, b"ok".to_vec()));
         assert_eq!(listening.accepted(), 1);
+    }
+
+    /// A client that learns its waits learns its path's connects and handshakes as it
+    /// makes them, and its answers: one each over a connection used twice (D222).
+    #[test]
+    fn a_learning_client_learns_its_connects_and_handshakes() {
+        let (ca, server) = registry(&[&rustls::version::TLS13]);
+        let ok = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok".to_vec();
+        let listening = serve(Some(server), vec![(ok.clone(), After::Keep), (ok, After::Keep)]);
+        let client = Client::new(
+            Box::new(move |_| client_config(vec![ca.clone()], None)),
+            "shards-test",
+        )
+        .learning();
+        let url = at("https", "localhost", listening.port);
+        assert_eq!(fetch(&client, "GET", &url).unwrap(), (200, b"ok".to_vec()));
+        assert_eq!(fetch(&client, "GET", &url).unwrap(), (200, b"ok".to_vec()));
+        assert_eq!(listening.accepted(), 1);
+        let shown = client.shown("localhost", listening.port);
+        assert_eq!(
+            (shown.connect.n, shown.handshake.n, shown.answer.n),
+            (1, 1, 2),
+            "{shown:?}"
+        );
+        assert!(shown.connect.at_us > 0 && shown.handshake.at_us >= shown.connect.at_us);
+        // Loopback's: well under RFC 6298's least, which is then the wait.
+        let path = format!("localhost:{}", listening.port);
+        assert_eq!(client.paths.timeout(&path, Wait::Connect), crate::patience::FIRST);
+        assert_eq!(
+            client.paths.timeout(&path, Wait::Handshake),
+            crate::patience::FIRST
+        );
     }
 
     /// A proxy on loopback: each connection's request head is kept; a CONNECT answered

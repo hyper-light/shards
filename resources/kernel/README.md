@@ -95,6 +95,12 @@ shards builds its own guest kernel. Firecracker's CI kernel lacks EROFS, which i
     its host's memory cost its guest 64 KiB of memory a GiB, and each mount their making
     (PM M306). Each range's is made as the range is first wanted, in the window's order
     (D189).
+  - `0014`: virtio-mem's driver took an online memory block it unplugs whole in one
+    `alloc_contig_range()`, which migrates all 128 MiB before it returns, and looked for a
+    changed request only before it: a guest asked to grow again as it gave memory back
+    waited for the whole block, 5.1 to 5.4 s in 6 of 2,000 grows of a host short of memory
+    (PM M466). It takes the block a subblock at a time, each after a look for a changed
+    request, and on one gives back what it took and plans again (D148).
 - **The toolchain:** `builder.env` pins a Debian image by its multi-architecture index
   digest, and installs its compiler, linker and tools from Debian's snapshot archive at a
   fixed time. So every build of the same inputs gets the same toolchain, and a new
