@@ -1355,7 +1355,14 @@ fn a_command_is_pid_1_as_a_containers_is() {
         let took = at.elapsed();
         assert_eq!(stopped.status, Some(0), "{stopped}");
         if quick {
-            assert!(took < Duration::from_secs(5), "{name} took {took:?} to stop");
+            // Stopped by its own handler, before `stop -t` would have killed it: a bound
+            // of the test's own timeout, not a guess at how fast a host is (an emulated
+            // arm64 Windows host took 5.2 s, its exit code 7 its handler's).
+            let limit = Duration::from_secs(timeout.parse().unwrap());
+            assert!(
+                took < limit,
+                "{name} took {took:?} to stop, past its -t {timeout}"
+            );
         } else {
             assert!(
                 took >= Duration::from_secs(2),
