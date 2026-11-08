@@ -1116,7 +1116,7 @@ fn an_attach_before_a_start_has_its_output_from_the_first_byte() {
 
 /// A terminal's output comes raw, CRLF and all; a client's input reaches the command's
 /// stdin through an attach before the start, and ends it as the client closes it; a
-/// client that types its terminal's detach keys leaves, its container running; a
+/// client that types its terminal's detach keys leaves, its microVM running; a
 /// terminal a client started attached is resized while its run lives, and one started
 /// detached, which no client holds, is not.
 #[test]
@@ -1174,7 +1174,7 @@ fn attaches_carry_terminals_stdin_and_detaches() {
     assert_eq!(demux(&echoed), ("typed in\n".into(), String::new()));
     let waited = api.call("POST", &format!("/containers/{id}/wait"), None);
     assert_eq!(waited.json(), json!({"StatusCode": 0}));
-    // Detached by its terminal's keys: the container runs on, and is attached again.
+    // Detached by its terminal's keys: the microVM runs on, and is attached again.
     let made = api.call(
         "POST",
         "/containers/create?name=kept",
@@ -1225,7 +1225,7 @@ fn attaches_carry_terminals_stdin_and_detaches() {
 }
 
 /// A list takes its filters as the API gives them, and `info` says what shards holds and
-/// the platform its containers are.
+/// the platform its microVMs are.
 #[test]
 fn lists_filter_and_info_counts() {
     let Some((home, image)) = home("eng-list") else {
@@ -1278,10 +1278,10 @@ fn lists_filter_and_info_counts() {
     assert!(info.get("ClientInfo").is_none(), "{info}");
 }
 
-/// A command run in a running container by exec: made, started on the connection taken
+/// A command run in a running microVM by exec: made, started on the connection taken
 /// over, its streams as frames, its status kept for its client to read, and its events,
 /// `exec_create` as it is made, `exec_start` and `exec_die`, said with the ID its client
-/// has, as dockerd says them (moby daemon/exec.go, daemon/monitor.go); the container then
+/// has, as dockerd says them (moby daemon/exec.go, daemon/monitor.go); the microVM then
 /// killed and removed.
 #[test]
 fn a_command_runs_in_a_running_container_by_exec() {
@@ -2665,7 +2665,7 @@ fn a_runs_command_reaches_its_own_microvms_engine() {
 /// What a microVM's own engine does for a CI job's tools (D181): `docker run`'s calls, its
 /// attach taking the command's output from its start; binds of the microVM's own files,
 /// read-only or written through, a volume of the microVM's among them, never the host's;
-/// execs in its containers; and pulls, with its run's client's registries, after which an
+/// execs in its joiners; and pulls, with its run's client's registries, after which an
 /// image is its own, where none of the host's store it did not pull is.
 #[test]
 fn a_microvms_own_engine_runs_binds_execs_and_pulls() {
@@ -2773,7 +2773,7 @@ fn a_microvms_own_engine_runs_binds_execs_and_pulls() {
     let (status, said) = in_own(&["/work/tovol:/v:ro"], &["stat", "/v/from-host"]);
     assert_eq!(status, json!(0), "{said}");
     assert!(said.contains("= the volume's\\n"), "{said}");
-    // An exec in one of its containers.
+    // An exec in one of its joiners.
     let body = json!({ "Image": image, "Cmd": ["sleep"] }).to_string();
     let out = exec(&["api", "POST", "/containers/create?name=held", &body]);
     assert!(out.stdout.starts_with("api HTTP/1.1 201"), "{out}");
@@ -2859,10 +2859,10 @@ fn a_microvms_own_engine_runs_binds_execs_and_pulls() {
     assert_eq!(removed.status, Some(0), "{removed}");
 }
 
-/// A container a microVM's own engine makes is a member of that microVM's switch (D181,
+/// A joiner a microVM's own engine makes is a member of that microVM's switch (D181,
 /// D59, D61): a namespace of its own, reached by the command, its engine's host, on the
 /// ports it publishes alone, at `localhost` as a test reaches a Testcontainers service;
-/// on its engine's default network, which names no peers, reaching no other container;
+/// on its engine's default network, which names no peers, reaching no other joiner;
 /// named in its own hosts file; and past the microVM as far as the command reaches, but
 /// from internal networks alone not at all.
 #[test]
@@ -3149,7 +3149,7 @@ fn a_microvms_own_engine_makes_each_container_a_member_of_its_switch() {
 /// a member reaches another of one it shares by name, answered with a TTL of 0, on the port
 /// that one declares and on no other; its own connections take no port it declares; a
 /// member of another network reaches and resolves neither; a member that goes is no one's
-/// peer; a network some member runs on stays; a container that does not run joins one for
+/// peer; a network some member runs on stays; a joiner that does not run joins one for
 /// its next start; a network's address for its members' published ports binds them; and a
 /// prune takes the networks no member runs on.
 #[test]
@@ -3349,7 +3349,7 @@ fn a_microvms_own_engine_makes_networks_whose_members_reach_what_each_declares()
     // A network a member runs on stays.
     let (status, said) = api("DELETE", "/networks/app", &Value::Null);
     assert!(status.starts_with("api HTTP/1.1 403"), "{status} {said}");
-    // A container that does not run joins a network for its next start, and resolves db
+    // A joiner that does not run joins a network for its next start, and resolves db
     // there.
     let (status, said) = api(
         "POST",
@@ -3457,10 +3457,10 @@ fn a_microvms_own_engine_makes_networks_whose_members_reach_what_each_declares()
 
 /// The volumes a microVM's own engine makes are that microVM's own (D181): on the host's
 /// disk, named there after the microVM, and by the names its engine gave them in it; a
-/// container's named volume is one of them, made as it is named; another microVM's engine,
+/// joiner's named volume is one of them, made as it is named; another microVM's engine,
 /// and the host's own volumes, reach none of them by any name; they stay its own as it is
 /// renamed; no driver options, which would bind a directory of the host's; one a
-/// container mounts stays; and they go with their microVM.
+/// joiner mounts stays; and they go with their microVM.
 #[test]
 fn a_microvms_own_engine_makes_volumes_of_its_own() {
     let Some((home, image)) = home("eng-vols") else {
@@ -3496,7 +3496,7 @@ fn a_microvms_own_engine_makes_volumes_of_its_own() {
             serde_json::from_str(rest).unwrap_or(Value::Null),
         )
     };
-    // A container run to its end in `prov`'s microVM: its exit code and what it printed.
+    // A joiner run to its end in `prov`'s microVM: its exit code and what it printed.
     let ran_in = |prov: &str, name: &str, body: Value| -> (i64, String) {
         let (status, said) = api(prov, "POST", &format!("/containers/create?name={name}"), &body);
         assert!(status.starts_with("api HTTP/1.1 201"), "{name}: {status} {said}");
@@ -3565,7 +3565,7 @@ fn a_microvms_own_engine_makes_volumes_of_its_own() {
         &json!({ "Name": "etc", "DriverOpts": { "type": "none", "o": "bind", "device": "/etc" } }),
     );
     assert!(status.starts_with("api HTTP/1.1 400"), "{status} {said}");
-    // A container writes to it by name, another reads it through a mount; a third's named
+    // A joiner writes to it by name, another reads it through a mount; a third's named
     // volume is made as it is named. Each at the image's /work, its user's, whose files and
     // owner a volume takes as it is first mounted.
     let (code, said) = ran_in(
@@ -3647,7 +3647,7 @@ fn a_microvms_own_engine_makes_volumes_of_its_own() {
     );
     assert_eq!(code, 0, "{said}");
     assert!(said.contains("there"), "{said}");
-    // One a container mounts stays; once none does, it goes.
+    // One a joiner mounts stays; once none does, it goes.
     let (status, said) = api("p2", "DELETE", "/volumes/data", &Value::Null);
     assert!(status.starts_with("api HTTP/1.1 409"), "{status} {said}");
     for name in ["writer", "reader", "reread"] {
@@ -3656,7 +3656,7 @@ fn a_microvms_own_engine_makes_volumes_of_its_own() {
     }
     let (status, said) = api("p2", "DELETE", "/volumes/data", &Value::Null);
     assert!(status.starts_with("api HTTP/1.1 204"), "{status} {said}");
-    // The rest go with their microVM, its containers that mount them with it; the other
+    // The rest go with their microVM, its joiners that mount them with it; the other
     // microVM's stay its own, and the host's its own.
     let removed = shards(&["rm", "-f", "p2"]);
     assert_eq!(removed.status, Some(0), "{removed}");
@@ -3668,7 +3668,7 @@ fn a_microvms_own_engine_makes_volumes_of_its_own() {
     assert_eq!(removed.status, Some(0), "{removed}");
 }
 
-/// A container a microVM's own engine makes in another's network namespace (`--network
+/// A joiner a microVM's own engine makes in another's network namespace (`--network
 /// container:X`, Compose's `network_mode: service:`) shares that one's, as it is (D181):
 /// one on `none`'s loopback alone, not the command's; a member's, its address, loopback
 /// and host name; and no ports of its own, which it has no link to publish or declare on.
@@ -3888,7 +3888,7 @@ volumes:
     assert_eq!(read.stdout, "kept", "{read}");
     let volumes = shards(&["volume", "ls", "--format", "{{.Name}}"]);
     assert!(volumes.stdout.lines().any(|n| n == "prov.shp_data"), "{volumes}");
-    // down -v takes its containers, network and volume.
+    // down -v takes its joiners, network and volume.
     let down = compose_in(&["down", "-v"]);
     assert_eq!(down.status, Some(0), "{down}");
     let ps = compose_in(&["ps", "-a", "-q"]);
