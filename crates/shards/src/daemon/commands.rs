@@ -32,12 +32,7 @@ use super::{Daemon, RunState, STOP_GRACE, lock};
 use crate::containers::{Container, Registry, Removal, State as Life, now};
 use crate::spec::{LOG_STDERR, LOG_STDOUT};
 
-/// How long a command may take to end after SIGKILL before its VM goes too, and how long
-/// the VM may take then (moby daemon/kill.go, kill).
-const KILL_WAIT: Duration = Duration::from_secs(10);
-const LAST_WAIT: Duration = Duration::from_secs(2);
-/// How long `stop` waits after a signal it could not send (moby daemon/stop.go).
-const UNSENT_WAIT: Duration = Duration::from_secs(2);
+use super::ends::{END_SLICE, Teardown, end_wait, exit_wait};
 
 /// How a microVM [`end_all`](Daemon::end_all) ended came to its end: it had already,
 /// by the signal it was sent, by SIGKILL asked for, by SIGKILL once its grace was up, by
@@ -1558,20 +1553,26 @@ impl<D: crate::containers::Disk> Daemon<D> {
     }
 
     /// Freezes the cgroup of joiner `id` (D119) in its provider's guest, or
-    /// thaws it: init's FREEZE, which waits as runc's freezer does, so its exec is given
-    /// that long and more.
+    /// thaws it: init's FREEZE, waited for to its end, which comes as the joiner's
+    /// processes have left the kernel work they were in, or as they end (its kill), with
+    /// no deadline of the daemon's (init's `freeze`, PM M482).
     fn freeze(&self, id: &str, frozen: bool) -> Result<(), String> {
         let spec = shards_abi::run::Spec {
             builtin: shards_abi::run::builtin::FREEZE,
             argv: vec![if frozen { b"1".to_vec() } else { b"0".to_vec() }],
             ..Default::default()
         };
-        let quiet = self
-            .exec_quietly(id, &spec, None, 1 << 12, super::TAKE_TIMEOUT * 2)
+        let mut said = Vec::new();
+        let ended = self
+            .exec_streamed(id, &spec, None, None, &mut |chunk| {
+                let room = (1usize << 12).saturating_sub(said.len());
+                said.extend_from_slice(chunk.get(..room.min(chunk.len())).unwrap_or_default());
+                true
+            })
             .map_err(|e| e.to_string())?;
-        match quiet.status {
+        match ended.status {
             Some(0) => Ok(()),
-            _ => Err(String::from_utf8_lossy(&quiet.output).trim().to_string()),
+            _ => Err(String::from_utf8_lossy(&said).trim().to_string()),
         }
     }
 
@@ -1637,6 +1638,31 @@ impl<D: crate::containers::Disk> Daemon<D> {
             }
         }
         sent
+    }
+
+    /// What the VM process of run `id` holds ([`super::ends::held`]): its provider's for a
+    /// joiner (D119), whose processes are in its provider's guest; none where it has none.
+    pub(super) fn held_by(&self, id: &str) -> u64 {
+        let pid = match lock(&self.runs).get(id) {
+            Some(RunState::Tracked(t)) => t.vm.id(),
+            _ => return 0,
+        };
+        super::ends::held(pid)
+    }
+
+    /// SIGKILL sent to the command of run `id` ([`signal`](Self::signal)): whether it
+    /// was, how long its teardown is waited for ([`end_wait`], by what its VM process holds
+    /// as it is told), and the teardown followed from then on. A SIGKILL that cannot be
+    /// sent leaves its guest nothing to end it by, nor to say its end on: no wait.
+    fn kill_command(&self, id: &str) -> (Duration, Teardown) {
+        let (held, own) = match lock(&self.runs).get(id) {
+            Some(RunState::Tracked(t)) => (t.vm.id(), t.joined.is_none().then(|| t.vm.id())),
+            _ => (0, None),
+        };
+        let held = if held == 0 { 0 } else { super::ends::held(held) };
+        let teardown = Teardown::of(own);
+        let wait = if self.signal(id, 9) { end_wait(held) } else { Duration::ZERO };
+        (wait, teardown)
     }
 
     /// Lets paused microVM `id` go on ([`pause_vm`](Self::pause_vm)); whether
@@ -1846,12 +1872,15 @@ impl<D: crate::containers::Disk> Daemon<D> {
         u8::from(failed)
     }
 
-    /// Ends every microVM of `targets` (its index, ID, signal and grace) at once, from
-    /// one loop, as dockerd ends one (moby daemon/stop.go, containerStop): the signal, then SIGKILL once its grace
-    /// is up (2 s if it could not be sent), then its VM after 10 s more, then giving up
-    /// after 2 s. Each end is heard on a socket of its own, registered before anything is
-    /// sent, so none is missed; `done` hears each microVM's index once, with whether it
-    /// ended, as it does.
+    /// Ends every microVM's command of `targets` (its index, ID, signal and grace) at once,
+    /// from one loop: the signal, then SIGKILL once its grace is up, then its VM once its
+    /// guest has had what tearing the command down costs it ([`end_wait`], by what its VM
+    /// process holds) and has since run nothing of it for a slice ([`Teardown`]), then
+    /// giving up once the killed VM process has had what its own end costs
+    /// ([`exit_wait`]). A signal that cannot be sent kills its VM at once: its
+    /// guest can be told nothing, nor tell its end. Each end is heard on a socket of its
+    /// own, registered before anything is sent, so none is missed; `done` hears each
+    /// index once, with whether it ended, as it does.
     fn end_all(
         &self,
         targets: Vec<(usize, String, u32, Option<Duration>)>,
@@ -1876,6 +1905,13 @@ impl<D: crate::containers::Disk> Daemon<D> {
             told: UnixStream,
             phase: Phase,
             deadline: Option<Instant>,
+            /// Its command's teardown once it is sent SIGKILL, followed past its wait.
+            teardown: Teardown,
+            /// When it was sent SIGKILL, for the log of a teardown waited on past its wait.
+            killed: Instant,
+            /// How long its killed VM is given ([`exit_wait`]), for the log of one that
+            /// outlives it.
+            waited: Duration,
         }
         let after = |d: Duration| Instant::now().checked_add(d);
         let mut going = Vec::with_capacity(targets.len());
@@ -1893,13 +1929,16 @@ impl<D: crate::containers::Disk> Daemon<D> {
                     continue;
                 }
             };
-            let (phase, deadline) = if linux == 9 {
-                self.signal(&id, 9);
-                (Phase::Killed, after(KILL_WAIT))
+            // A signal that could not be sent went nowhere: its run's connection to its VM
+            // is gone, which its guest says its end on too, so no end can come from the
+            // guest, and its VM is killed at once.
+            let (phase, deadline, teardown) = if linux == 9 {
+                let (wait, teardown) = self.kill_command(&id);
+                (Phase::Killed, after(wait), teardown)
             } else if self.signal(&id, linux) {
-                (Phase::Signalled, grace.and_then(after))
+                (Phase::Signalled, grace.and_then(after), Teardown::of(None))
             } else {
-                (Phase::Signalled, after(UNSENT_WAIT))
+                (Phase::Killed, after(Duration::ZERO), Teardown::of(None))
             };
             going.push(Ending {
                 index,
@@ -1908,6 +1947,9 @@ impl<D: crate::containers::Disk> Daemon<D> {
                 told,
                 phase,
                 deadline,
+                teardown,
+                killed: Instant::now(),
+                waited: Duration::ZERO,
             });
         }
         // Their ends, waited on together by their indices, however many: a wait of Windows'
@@ -1939,11 +1981,25 @@ impl<D: crate::containers::Disk> Daemon<D> {
                 if e.deadline.is_some_and(|d| d <= now) {
                     match e.phase {
                         Phase::Signalled => {
-                            self.signal(&e.id, 9);
+                            let (wait, teardown) = self.kill_command(&e.id);
                             e.phase = Phase::Escalated;
-                            e.deadline = after(KILL_WAIT);
+                            e.deadline = after(wait);
+                            (e.teardown, e.killed) = (teardown, Instant::now());
                         }
                         Phase::Killed | Phase::Escalated => {
+                            if let Some(look) = e.teardown.runs() {
+                                // Its guest is still at its end: another slice.
+                                super::log(format!(
+                                    "container {}: its command not yet ended {:?} after SIGKILL, its microVM running its end: {look}",
+                                    e.id,
+                                    Duration::from_secs(e.killed.elapsed().as_secs())
+                                ));
+                                e.deadline = after(END_SLICE);
+                                i += 1;
+                                continue;
+                            }
+                            // Read before its kill, which takes what it held with it.
+                            let held = self.held_by(&e.id);
                             // A joiner's VM is its provider's (D119), which its end must
                             // not take: its own SIGKILL again, on its own connection.
                             let socket = match lock(&self.runs).get(&e.id) {
@@ -1960,7 +2016,8 @@ impl<D: crate::containers::Disk> Daemon<D> {
                                 let _ = socket.send(kind::SIGNAL, &9u32.to_be_bytes(), &[]);
                             }
                             e.phase = Phase::VmKilled;
-                            e.deadline = after(LAST_WAIT);
+                            e.waited = exit_wait(held);
+                            e.deadline = after(e.waited);
                         }
                         Phase::VmKilled => {
                             let gone = going.swap_remove(i);
@@ -1972,8 +2029,9 @@ impl<D: crate::containers::Disk> Daemon<D> {
                             let ended = matches!((&gone.told).read(&mut byte), Ok(1));
                             if !ended {
                                 super::log(format!(
-                                    "container {}: no end heard {LAST_WAIT:?} after its microVM was killed: {}",
+                                    "container {}: no end heard {:?} after its microVM was killed: {}",
                                     gone.id,
+                                    gone.waited,
                                     self.unheard(&gone.id)
                                 ));
                             }
@@ -2218,8 +2276,8 @@ impl<D: crate::containers::Disk> Daemon<D> {
                         Err(e) => return Step::Now(Err(cannot(&e))),
                     }
                 };
-                // No signal Linux has: killed, after 2 s.
-                let (linux, grace) = linux.map_or((9, Some(UNSENT_WAIT)), |l| (l, grace));
+                // No signal Linux has: SIGKILL, as `end_all` sends it (its grace is moot).
+                let (linux, grace) = linux.map_or((9, None), |l| (l, grace));
                 self.exit_on_next(&id, linux);
                 let unheard = cannot("tried to kill container, but did not receive an exit event");
                 let stopped = id.clone();
@@ -2264,7 +2322,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
                 Err(e) => return Err(cannot(&e)),
             },
         };
-        let (linux, grace) = linux.map_or((9, Some(UNSENT_WAIT)), |l| (l, grace));
+        let (linux, grace) = linux.map_or((9, None), |l| (l, grace));
         let mut ended = false;
         self.end_all(vec![(0, id.clone(), linux, grace)], &mut |_, e, _| ended = e);
         if !ended {

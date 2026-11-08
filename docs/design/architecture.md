@@ -1250,10 +1250,8 @@ for the exit status.
     containers when it shuts down (moby daemon/daemon.go `shutdownContainer`,
     daemon/stop.go): each command gets its run's stop signal (SIGTERM if it has
     none), then SIGKILL once its stop timeout is up (10 s if it has none, never if it
-    is negative), and its VM ends if the command outlives that by 5 s (dockerd's grace
-    after the longest stop timeout, `ShutdownTimeout`: open in docs/audit/
-    2026-10-16_docker-framing.md, to derive from how long a guest takes to say a killed
-    command's end). The settings are those
+    is negative), and its VM ends once its guest has had what tearing the command down
+    costs it and has since run nothing of it for a slice (D217). The settings are those
     the run was made with, read before its record is written if need be. A
     daemon that another build replaces does the same: two daemons never keep one home's
     records.

@@ -14663,6 +14663,191 @@ fn stops_beside_a_gigabyte_build() {
     }
 }
 
+/// Host load for a measurement: `n` threads spinning until `done`.
+fn spinning<'s>(s: &'s std::thread::Scope<'s, '_>, n: usize, done: &'s std::sync::atomic::AtomicBool) {
+    for _ in 0..n {
+        s.spawn(move || {
+            let mut x = 0u64;
+            while !done.load(std::sync::atomic::Ordering::Relaxed) {
+                x = std::hint::black_box(x.wrapping_add(1));
+            }
+        });
+    }
+}
+
+/// `sorted`'s n, p50, p90, p99 and max (nearest rank), in ms.
+fn spread(sorted: &[f64]) -> String {
+    if sorted.is_empty() {
+        return "n 0".into();
+    }
+    let at = |q: f64| {
+        let rank = ((q * sorted.len() as f64).ceil() as usize).clamp(1, sorted.len());
+        sorted[rank - 1]
+    };
+    format!(
+        "n {} p50 {:.1} p90 {:.1} p99 {:.1} max {:.1} ms",
+        sorted.len(),
+        at(0.5),
+        at(0.9),
+        at(0.99),
+        at(1.0)
+    )
+}
+
+/// PM M480, M481: what a SIGKILL's end costs a microVM by what its command holds, and what
+/// a VM process's end costs once it is killed. For each size of `KILLS_MIB` (MiB, default
+/// 64,1024,4096,16384) and each shape (one process of one thread; one of 64 threads; 16
+/// processes of 4 threads, a tree under the command, which is its PID namespace's first),
+/// `KILLS_ROUNDS` runs (5) hold that much, every page touched (`held`), and are killed by
+/// `shards kill`, which waits for the end its guest says: each kill's time. Then runs of
+/// each size whose VM processes are killed outright: each's end after its kill. All of it
+/// with nothing beside it, then beside `KILLS_LOAD` threads spinning on the host (twice
+/// its CPUs). Each as n, p50, p90, p99 and max (nearest rank).
+#[test]
+#[ignore = "a measurement: docs/research/measurements/kill-waits/run.sh"]
+fn kills_cost_by_what_the_command_holds() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let Some((home, image)) = home("containers-m480") else {
+        return;
+    };
+    let env = |name: &str| std::env::var(name).ok();
+    let sizes: Vec<usize> = env("KILLS_MIB")
+        .unwrap_or_else(|| "64,1024,4096,16384".into())
+        .split(',')
+        .filter_map(|s| s.trim().parse().ok())
+        .collect();
+    let rounds: usize = env("KILLS_ROUNDS").and_then(|v| v.parse().ok()).unwrap_or(5);
+    let cpus = std::thread::available_parallelism().map_or(1, usize::from);
+    let load: usize = env("KILLS_LOAD").and_then(|v| v.parse().ok()).unwrap_or(2 * cpus);
+    let shapes = [("one", 1, 1), ("threads", 64, 1), ("tree", 4, 16)];
+    let timeout = Duration::from_secs(600);
+    let n = std::sync::atomic::AtomicUsize::new(0);
+    // A run of `held` started: its name, its client, its VM process and the most of its
+    // resident memory and footprint (shards_vmm::platform::process_usage), in GiB.
+    let held = |mib: usize, threads: usize, procs: usize| {
+        let name = format!("m480-{}", n.fetch_add(1, Ordering::Relaxed));
+        let (mib, threads, procs) = (mib.to_string(), threads.to_string(), procs.to_string());
+        let run = start(&home, &image, &["--name", &name], &["held", &mib, &threads, &procs]);
+        let vm = shards_in(&home, &["inspect", "-f", "{{.State.Pid}}", &name]);
+        let vm: u32 = vm.stdout.trim().parse().unwrap();
+        let usage = shards_vmm::platform::process_usage(vm).unwrap();
+        let gib = usage.resident.max(usage.footprint) as f64 / f64::from(1u32 << 30);
+        (name, run, vm, gib)
+    };
+    let measure = |label: &str| {
+        for &mib in &sizes {
+            for &(shape, threads, procs) in &shapes {
+                let (mut took, mut per_gib, mut most) = (Vec::new(), Vec::new(), 0f64);
+                for _ in 0..rounds {
+                    let (name, mut run, _, gib) = held(mib, threads, procs);
+                    let t0 = Instant::now();
+                    let killed = shards_in_within(&home, &["kill", &name], timeout);
+                    let ms = t0.elapsed().as_secs_f64() * 1e3;
+                    assert_eq!(killed.status, Some(0), "{killed}");
+                    took.push(ms);
+                    per_gib.push(ms / gib.max(f64::MIN_POSITIVE));
+                    most = most.max(gib);
+                    let _ = exit(&mut run, &home);
+                    let _ = shards_in(&home, &["rm", "-f", &name]);
+                }
+                took.sort_by(f64::total_cmp);
+                per_gib.sort_by(f64::total_cmp);
+                eprintln!(
+                    "M480 {label} {mib} MiB {shape}, its VM process holding {most:.2} GiB at most: {}; per GiB it held: {}",
+                    spread(&took),
+                    spread(&per_gib)
+                );
+            }
+            let (mut ended, mut most) = (Vec::new(), 0f64);
+            for _ in 0..rounds {
+                let (name, mut run, vm, gib) = held(mib, 1, 1);
+                let vm = i32::try_from(vm).unwrap();
+                most = most.max(gib);
+                let t0 = Instant::now();
+                common::kill_now(vm);
+                while common::alive(vm) && t0.elapsed() < timeout {
+                    std::thread::sleep(Duration::from_micros(200));
+                }
+                ended.push(t0.elapsed().as_secs_f64() * 1e3);
+                let _ = exit(&mut run, &home);
+                let _ = shards_in(&home, &["rm", "-f", &name]);
+            }
+            ended.sort_by(f64::total_cmp);
+            eprintln!(
+                "M481 {label} {mib} MiB, its VM process holding {most:.2} GiB at most, killed: {}",
+                spread(&ended)
+            );
+        }
+    };
+    measure("quiet");
+    let done = AtomicBool::new(false);
+    std::thread::scope(|s| {
+        spinning(s, load, &done);
+        measure(&format!("beside {load} spinning threads"));
+        done.store(true, Ordering::Relaxed);
+    });
+}
+
+/// PM M482: how long a joiner's freeze (D119: its cgroup in its provider's guest, `shards
+/// pause`) takes by what it does: `busy spin 64` (64 threads spinning), `busy procs 64` (64
+/// processes spinning), `busy write 8` (8 threads each writing a MiB to a file and syncing
+/// it, over and over: to the joiner's `/tmp`, and to a volume, `/v`, whose writes wait on
+/// its host's share server), `FREEZES_ROUNDS` pauses each (20), each unpaused before the
+/// next; with nothing beside
+/// it, then beside `KILLS_LOAD` threads spinning on the host. Each as n, p50, p90, p99 and
+/// max (nearest rank).
+#[test]
+#[ignore = "a measurement: docs/research/measurements/kill-waits/run.sh"]
+fn freezes_cost_by_what_a_joiner_does() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let Some((home, image)) = home("containers-m482") else {
+        return;
+    };
+    let env = |name: &str| std::env::var(name).ok();
+    let rounds: usize = env("FREEZES_ROUNDS").and_then(|v| v.parse().ok()).unwrap_or(20);
+    let cpus = std::thread::available_parallelism().map_or(1, usize::from);
+    let load: usize = env("KILLS_LOAD").and_then(|v| v.parse().ok()).unwrap_or(2 * cpus);
+    let mut provider = start(&home, &image, &["--name", "m482p"], &["sleep"]);
+    let measure = |label: &str| {
+        for (kind, count, dir) in [
+            ("spin", "64", ""),
+            ("procs", "64", ""),
+            ("write", "8", "/tmp"),
+            ("write", "8", "/v"),
+        ] {
+            let name = format!("m482-{kind}{}", dir.replace('/', "-"));
+            let mut joiner = start(
+                &home,
+                &image,
+                &["--name", &name, "--network", "container:m482p", "-v", "m482v:/v"],
+                &["busy", kind, count, dir],
+            );
+            let mut took = Vec::new();
+            for _ in 0..rounds {
+                let t0 = Instant::now();
+                let paused = shards_in(&home, &["pause", &name]);
+                took.push(t0.elapsed().as_secs_f64() * 1e3);
+                assert_eq!(paused.status, Some(0), "{paused}");
+                let unpaused = shards_in(&home, &["unpause", &name]);
+                assert_eq!(unpaused.status, Some(0), "{unpaused}");
+            }
+            took.sort_by(f64::total_cmp);
+            eprintln!("M482 {label} busy {kind} {count} {dir}: {}", spread(&took));
+            let _ = shards_in(&home, &["rm", "-f", &name]);
+            let _ = exit(&mut joiner, &home);
+        }
+    };
+    measure("quiet");
+    let done = AtomicBool::new(false);
+    std::thread::scope(|s| {
+        spinning(s, load, &done);
+        measure(&format!("beside {load} spinning threads"));
+        done.store(true, Ordering::Relaxed);
+    });
+    let _ = shards_in(&home, &["rm", "-f", "m482p"]);
+    let _ = exit(&mut provider, &home);
+}
+
 /// What a run's workload frees goes back to the host (D151): half a gigabyte touched, then
 /// freed, and once the guest has reported it free, its microVM holds what an idle one
 /// does, not the half gigabyte, as a container's memory freed is its host's at once.
