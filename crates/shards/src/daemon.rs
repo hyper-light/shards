@@ -1161,6 +1161,8 @@ struct Daemon<D: Disk = Real> {
     settled: Condvar,
     /// Each container's restart manager, as its runs end (restart.rs).
     restarts: Mutex<HashMap<String, restart::Manager>>,
+    /// What restarts cost on this host, as its microVMs show it (restart.rs).
+    costs: Mutex<restart::Costs>,
     /// The containers the daemon itself is starting again, for their policies: such a
     /// start keeps its restart count, where `shards start` resets it.
     restarting_now: Mutex<HashSet<String>>,
@@ -1907,6 +1909,7 @@ impl<D: Disk> Daemon<D> {
     ) -> io::Result<Daemon<D>> {
         let home_id = crate::os::path_id(&home);
         let events = events::Events::kept_in(&home);
+        let costs = restart::Costs::load(&home);
         Ok(Daemon {
             home,
             bridge: settings.bridge,
@@ -1967,6 +1970,7 @@ impl<D: Disk> Daemon<D> {
             settling: Mutex::default(),
             settled: Condvar::new(),
             restarts: Mutex::default(),
+            costs: Mutex::new(costs),
             restarting_now: Mutex::default(),
             visiting: Mutex::default(),
             visited: Condvar::new(),
@@ -6057,8 +6061,9 @@ impl<D: Disk> Daemon<D> {
             .unwrap_or_default();
         // Its policy's say (handleContainerExit): started again after a wait, or not; a
         // command that never started is never restarted.
+        let cost = self.vm_ended(pid);
         let restart_after = if started && saved.is_none() {
-            self.should_restart(id, status, ran)
+            self.should_restart(id, status, ran, cost)
         } else {
             None
         };
@@ -7198,7 +7203,10 @@ impl<D: Disk> Daemon<D> {
         let key = PoolKey::new(&dir, &prepared.parent);
         if shards_vmm::snapshot::exists(&dir) {
             match self.claim(threads, &key, &prepared.rootfs, stamp.as_deref()) {
-                Ok(ready) => return Ok(ready),
+                Ok(ready) => {
+                    self.vm_claimed(ready.vm.id());
+                    return Ok(ready);
+                }
                 Err(Claim::Failed(e)) => return Err(e),
                 Err(Claim::Broken) => {
                     say(&format!(
@@ -8158,6 +8166,12 @@ impl<D: Disk> Daemon<D> {
                             joined: None,
                             layer,
                         });
+                        let live: Vec<u32> = state
+                            .pools
+                            .values()
+                            .flat_map(|p| p.ready.iter().map(|r| r.vm.id()))
+                            .collect();
+                        self.vm_readied(pid, &live);
                         self.rebalance(threads, &state, key);
                     }
                     Err(e) => {

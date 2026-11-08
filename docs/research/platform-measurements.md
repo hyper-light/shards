@@ -18445,3 +18445,48 @@ revision before comparing a changed API/implementation.
   change, and on a native arm64 Windows host with WHP (a Snapdragon X machine, as a user
   session), which alone says whether Hyper-V's SGIs and timers hold across a 64-vCPU
   snapshot at a native host's timing.
+
+### M484. What a microVM's restart and an idle microVM cost their host (D219)
+
+- **Question.** A restart's wait was dockerd's figures (100 ms doubling to a minute). What
+  does a restart of a microVM cost its host, and what does a microVM cost idling, so that
+  the waits can come from them? And can the daemon learn them from its own VM processes?
+- **Method.** `docs/research/measurements/restart-cost/restart.py`. The daemon is the
+  harness's child, on Linux in a transient systemd scope. Each daemon life starts with one
+  run. Short and 30 s lives with nothing more give the daemon's own CPU a second, which is
+  taken off the others'. In a loop life, 5 microVMs run `false` under
+  `--restart on-failure:10`: 55 runs, whose CPU from end to next start is the life's less
+  the daemon's own, a run each. In an idle life, a microVM runs `sleep` for 30 s: its CPU a
+  second, less one run's. Each figure is n 8 trials. CPU is the daemon's whole process tree
+  as it stands before its stop, each process with the children it reaped (/proc
+  utime+stime+cutime+cstime; proc_pid_rusage on macOS), and on Linux the scope's cgroup
+  `cpu.stat`. wait4 on the daemon read 8.4 to 8.9 ms a run where the cgroup read 78 to 82:
+  the spawner outlives the daemon, and the VM processes are the spawner's. The process tree
+  agrees with the cgroup within 1.2 ms a run. alpine:3.22, template restores. Host:
+  kiln-a094a12d (Intel Core i9-14900HX, 32 CPUs, Fedora 44, Linux 6.19.10), the tree of
+  8501f093 with D219's drafts, 2026-11-08, shared with CI jobs and other agents' builds.
+- **Found** (ms; p50, p90, p99, max, mean of the 8 trials):
+
+  | | load | a run, end to next start, CPU | a sleeping microVM, CPU a second | the daemon idling, CPU a second |
+  |---|---|---|---|---|
+  | frozen-constant build | 16 to 29 | 87.9, 96.4, 104.8, 104.8, 88.8 | 10.8, 12.5, 16.3, 16.3, 11.1 | 6.0, 6.0, 6.0, 6.0, 5.5 |
+  | same, +16 busy loops | 28 to 51 | 99.6, 110.8, 141.8, 141.8, 102.2 | 10.2, 11.7, 122.8, 122.8, 12.5 | 4.3, 5.0, 82.2, 82.2, 13.8 |
+  | D219's first learned build | 55 to 64 | 93.1, 97.2, 103.8, 103.8, 92.1 | 6.4, 9.4, 10.0, 10.0, 6.0 | 4.0, 4.3, 4.7, 4.7, 4.1 |
+
+  - The cgroup's figures for the same runs: 88.5 to 105.1 ms a run and 6.8 to 16.9 ms a
+    second at p50 to max, within 1.2 ms of the tree's.
+  - In the loaded run, one trial's daemon idled at 82 ms a second and the next trial's idle
+    microVM came out at 122.8. Both are other work landing in the short life the harness
+    subtracts. They show as p99 and max and are not taken out.
+  - A run's life, `start` to `die`, p50 1.3 to 5.1 ms. Its die to the next start, the
+    policy's wait included, p50 99 to 289 ms, p99 829 to 2,501 under load.
+  - What the first learned build learned of idling, the warm VMs' CPU over their time,
+    summed: 23.8 ms a second over 42.8 s of warm VMs, against 6.4 for a sleeping microVM.
+    The short waits of a crash loop count, many times over, what a VM still does as it
+    becomes ready.
+- **So** (D219): a restart costs about ten times what an idle microVM spends a second on
+  this host, so its longest wait here is seconds, not a minute. These are this host's
+  figures at this load, so the daemon learns its own from its VM processes, and they
+  become no constant. The idle rate is a fitted slope, not CPU over time.
+- **Owed:** the same on macOS; the harness again on Fedora with the slope build, setting
+  the daemon's learned figures (its log, `restart-costs`) beside these.

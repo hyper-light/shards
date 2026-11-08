@@ -142,8 +142,11 @@ Reviewed feature by feature, each D-entry's design against what it took from Doc
     `builder_memory_mib` took): open. Its memory is plugged as its build needs it (D133),
     so the ceiling can come from what the host can give as the build asks, measured.
   - A restart's wait (100 ms doubling to a minute, from scratch after a run of 10 s), dockerd's
-    restart manager's figures: open, to derive from what a microVM's restart costs, so that
-    a crash loop's restarts take a bounded share of a core.
+    restart manager's figures. Done (D219): the doubling kept, its ends learned on each host
+    as it runs, from its VM processes' CPU: the first a restart's CPU at the share of a CPU
+    the run's limits give it, the longest a restart's CPU at an idle microVM's rate a
+    second, past which a microVM failing for good costs its host what one idling does; kept
+    in the home for the next daemon, uncapped before an idle microVM is measured (PM M484).
   - A daemon's shutdown ends a VM whose command outlives its stop timeout by 5 s (dockerd's
     `ShutdownTimeout` grace): open, to derive from how long a guest takes to say a killed
     command's end, measured.

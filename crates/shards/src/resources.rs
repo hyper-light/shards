@@ -467,6 +467,37 @@ pub fn held_cpus(r: &Resources, cpus: usize) -> u32 {
     }
 }
 
+/// The CPU time a second that a run's limits let its microVM use of a host of `cpus`, in
+/// millionths of a CPU: its quota's share exactly (`--cpus 0.5` is 500,000), else as
+/// many whole CPUs as `--cpu-count` or `--cpuset-cpus` give it, the fewest; every CPU of
+/// the host's with none. What [`held_cpus`] holds it to, before that rounds a quota up to
+/// whole CPUs.
+pub fn cpu_allowance_micros(r: &Resources, cpus: usize) -> u64 {
+    const WHOLE: u64 = 1_000_000;
+    let host = u64::try_from(cpus.max(1)).unwrap_or(u64::MAX);
+    let mut most = host.saturating_mul(WHOLE);
+    if let Ok(count) = u64::try_from(r.cpu_count)
+        && count > 0
+    {
+        most = most.min(count.saturating_mul(WHOLE));
+    }
+    if let Some((quota, period)) = cpu_max(r, cpus).filter(|&(quota, period)| quota > 0 && period > 0) {
+        let quota = u128::try_from(quota).unwrap_or(0);
+        let period = u128::try_from(period).unwrap_or(1).max(1);
+        let share = quota.saturating_mul(u128::from(WHOLE)) / period;
+        most = most.min(u64::try_from(share).unwrap_or(u64::MAX));
+    }
+    if let Ok(mut named) = parse_uint_list(&r.cpuset_cpus, cpus)
+        && !named.is_empty()
+    {
+        named.sort_unstable();
+        named.dedup();
+        let named = u64::try_from(named.len()).unwrap_or(u64::MAX);
+        most = most.min(named.saturating_mul(WHOLE));
+    }
+    most.max(1)
+}
+
 /// The memory a microVM of `vcpus` vCPUs needs, in MiB, for its workload to use `limit`
 /// bytes: the least even size, as the VM takes it, whose memory less what its kernel keeps
 /// ([`overhead_kib`]) holds the limit; at least `default_mib`; and at most the host's
@@ -910,6 +941,42 @@ mod tests {
             ..r()
         };
         assert_eq!(held_cpus(&both, host), 2);
+    }
+
+    #[test]
+    fn a_runs_cpu_allowance_is_its_limits_share() {
+        let host = 8;
+        assert_eq!(cpu_allowance_micros(&r(), host), 8_000_000, "no limit, every CPU");
+        let nano = |nano_cpus| Resources { nano_cpus, ..r() };
+        assert_eq!(cpu_allowance_micros(&nano(500_000_000), host), 500_000);
+        assert_eq!(cpu_allowance_micros(&nano(10_000_000), host), 10_000);
+        assert_eq!(cpu_allowance_micros(&nano(20_000_000_000), host), 8_000_000);
+        let quota = Resources {
+            cpu_quota: 25_000,
+            cpu_period: 100_000,
+            ..r()
+        };
+        assert_eq!(cpu_allowance_micros(&quota, host), 250_000);
+        let unlimited = Resources { cpu_quota: -1, ..r() };
+        assert_eq!(cpu_allowance_micros(&unlimited, host), 8_000_000);
+        let set = Resources {
+            cpuset_cpus: "0,0-1".into(),
+            ..r()
+        };
+        assert_eq!(cpu_allowance_micros(&set, host), 2_000_000);
+        let count = Resources { cpu_count: 3, ..r() };
+        assert_eq!(cpu_allowance_micros(&count, host), 3_000_000);
+        let percent = Resources {
+            cpu_percent: 50,
+            ..r()
+        };
+        assert_eq!(cpu_allowance_micros(&percent, host), 4_000_000);
+        let both = Resources {
+            nano_cpus: 1_500_000_000,
+            cpuset_cpus: "0".into(),
+            ..r()
+        };
+        assert_eq!(cpu_allowance_micros(&both, host), 1_000_000);
     }
 
     #[test]
