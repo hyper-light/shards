@@ -2595,6 +2595,44 @@ fn a_clients_binds_are_its_own_files_and_the_machines_its_owners_to_grant() {
         std::thread::sleep(Duration::from_millis(100));
     }
     assert_eq!(std::fs::read_to_string(src.join("c")).unwrap(), "detached");
+    // A directory of the laptop's plugged into a running microVM there: its files read and
+    // written there, until it is unplugged.
+    let via = |command: &[&str], args: &[&str]| {
+        let mut words = vec!["--context", "gpu"];
+        words.extend_from_slice(command);
+        run_shards_env(&words, args, &on_laptop, TIMEOUT)
+    };
+    let started = via(
+        &["run"],
+        &["--pull", "never", "-d", "--name", "plugged", &image, "sleep"],
+    );
+    assert_eq!(started.status, Some(0), "{started}");
+    let plugged = via(
+        &["plug"],
+        &["volume", "plugged", &format!("{}:/plugged", src.display())],
+    );
+    assert_eq!(plugged.status, Some(0), "{plugged}");
+    let slurped = via(&["exec"], &["plugged", "/bin/testguest", "slurp", "/plugged/a"]);
+    assert!(slurped.stdout.contains("slurp /plugged/a: laptop"), "{slurped}");
+    let wrote = via(
+        &["exec"],
+        &[
+            "-u",
+            "0",
+            "plugged",
+            "/bin/testguest",
+            "fs",
+            "write:/plugged/p=plugged",
+        ],
+    );
+    assert_eq!(wrote.status, Some(0), "{wrote}");
+    assert_eq!(std::fs::read_to_string(src.join("p")).unwrap(), "plugged");
+    let unplugged = via(&["unplug"], &["volume", "plugged", "/plugged"]);
+    assert_eq!(unplugged.status, Some(0), "{unplugged}");
+    let gone = via(&["exec"], &["plugged", "/bin/testguest", "slurp", "/plugged/a"]);
+    assert!(gone.stdout.contains("errno 2"), "{gone}");
+    let removed = via(&["rm"], &["-f", "plugged"]);
+    assert_eq!(removed.status, Some(0), "{removed}");
     // Nothing of the laptop's paths, or files, on the machine.
     assert!(!machine.join("src").exists());
 

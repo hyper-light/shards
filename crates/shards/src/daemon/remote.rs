@@ -1010,10 +1010,35 @@ pub(super) fn take_engine_clients() -> Vec<(String, shards_ipc::Stream)> {
     std::mem::take(&mut *super::lock(&ENGINE_CLIENTS))
 }
 
+/// The VM's end of a client's directory's stream (D228): a socket on Unix, which its share
+/// process hands the VM as it is; on Windows a pipe's end of the pair its daemon makes, as
+/// it makes each share's (D197), which the run's request hands the VM.
+#[cfg(unix)]
+type RelayEnd = std::os::unix::net::UnixStream;
+#[cfg(windows)]
+type RelayEnd = std::os::windows::io::OwnedHandle;
+
 /// The directories clients serve for their runs here (D228), by client and token: the VM's
 /// end of the stream each is served on, until its run's start takes it ([`take_relay`]).
-static RELAYS: std::sync::Mutex<std::collections::BTreeMap<(String, String), shards_ipc::Stream>> =
+static RELAYS: std::sync::Mutex<std::collections::BTreeMap<(String, String), RelayEnd>> =
     std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+/// Keeps `vm` as client `client`'s relay `token`, refused where the token is no relay's or
+/// is one already.
+fn keep_relay(client: &str, token: &str, vm: RelayEnd) -> Result<(String, String), Error> {
+    if !(16..=64).contains(&token.len()) || !token.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(Error::new("a bind's token: 16 to 64 hex digits"));
+    }
+    let key = (client.to_string(), token.to_string());
+    let mut relays = super::lock(&RELAYS);
+    if relays.contains_key(&key) {
+        return Err(Error::new(format!("{token}: a bind's token given twice")));
+    }
+    relays.insert(key.clone(), vm);
+    drop(relays);
+    super::log(format!("client {client}: serves a directory as {token}"));
+    Ok(key)
+}
 
 /// The stream on which client `client` serves a directory of its own as `token` (D228), its
 /// relay: one end kept for the run that names the token to take, which its share gives
@@ -1022,21 +1047,10 @@ static RELAYS: std::sync::Mutex<std::collections::BTreeMap<(String, String), sha
 /// client hangs up, unused or not: a run that has not yet taken it then finds none.
 #[cfg(unix)]
 fn bind_step(client: &str, token: &str) -> Result<Running, Error> {
-    if !(16..=64).contains(&token.len()) || !token.bytes().all(|b| b.is_ascii_hexdigit()) {
-        return Err(Error::new("a bind's token: 16 to 64 hex digits"));
-    }
     let made = |e: std::io::Error| Error::new(format!("a stream for the client's directory: {e}"));
     let (vm, ours) = std::os::unix::net::UnixStream::pair().map_err(made)?;
-    let key = (client.to_string(), token.to_string());
-    {
-        let mut relays = super::lock(&RELAYS);
-        if relays.contains_key(&key) {
-            return Err(Error::new(format!("{token}: a bind's token given twice")));
-        }
-        relays.insert(key.clone(), vm);
-    }
-    super::log(format!("client {client}: serves a directory as {token}"));
     let (asking, hung) = (ours.try_clone().map_err(made)?, ours.try_clone().map_err(made)?);
+    let key = keep_relay(client, token, vm)?;
     Ok(Running {
         stdin: Box::new(HalfClosed(asking)),
         stdout: Box::new(std::io::Cursor::new([crate::client_grants::RELAY_READY]).chain(ours)),
@@ -1052,29 +1066,41 @@ fn bind_step(client: &str, token: &str) -> Result<Running, Error> {
     })
 }
 
-/// A client's directory is served on a Windows machine through a share's pipe of its own,
-/// which its daemon makes (D197): not yet.
+/// [`bind_step`] on Windows: the pair a byte pipe's ends, as a share's stream is (D197),
+/// the step reading and writing its end through handles of its own, each overlapped
+/// (`platform::PipeStream`), the VM's kept for the run. A pipe has no half to close: the
+/// relay ends as the VM's end goes, as its run ends, or as the client hangs up before its
+/// run took it.
 #[cfg(windows)]
-fn bind_step(_client: &str, _token: &str) -> Result<Running, Error> {
-    Err(Error::new(
-        "a bind of the client's own directory: a Windows machine serves none yet; name a volume of this machine's",
-    ))
+fn bind_step(client: &str, token: &str) -> Result<Running, Error> {
+    let made = |e: std::io::Error| Error::new(format!("a stream for the client's directory: {e}"));
+    let (vm, ours) = shards_ipc::byte_pair().map_err(made)?;
+    let reading =
+        shards_vmm::platform::PipeStream::from_handle(ours.try_clone().map_err(made)?).map_err(made)?;
+    let writing = shards_vmm::platform::PipeStream::from_handle(ours).map_err(made)?;
+    let key = keep_relay(client, token, vm)?;
+    Ok(Running {
+        stdin: Box::new(writing),
+        stdout: Box::new(std::io::Cursor::new([crate::client_grants::RELAY_READY]).chain(reading)),
+        stderr: Box::new(std::io::empty()),
+        wait: Box::new(|| 0),
+        hangup: Box::new(move || {
+            super::lock(&RELAYS).remove(&key);
+        }),
+        resize: None,
+        signal: Box::new(|_| {}),
+        made: None,
+    })
 }
 
 /// The VM's end of the stream client `client` serves its directory `token` on, for its
 /// run's start (D228): taken once.
 pub(super) fn take_relay(client: &str, token: &str) -> Result<OwnedFd, String> {
     let taken = super::lock(&RELAYS).remove(&(client.to_string(), token.to_string()));
-    let stream = taken.ok_or_else(|| {
+    let end = taken.ok_or_else(|| {
         format!("client {client} serves this directory no longer: a client's directory is served to the run that names it, as long as its client is there; run it again from the client")
     })?;
-    #[cfg(unix)]
-    return Ok(OwnedFd::from(stream));
-    #[cfg(windows)]
-    {
-        let _ = stream;
-        Err("a bind of the client's own directory: a Windows machine serves none yet".into())
-    }
+    Ok(OwnedFd::from(end))
 }
 
 /// A connection's writing half, closed as it drops: what its reader then reads is the end.

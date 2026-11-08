@@ -2684,10 +2684,25 @@ pub(crate) fn forward(home: &Path, context: &Context, args: Vec<OsString>) -> Ex
             return ExitCode::from(status);
         }
     };
+    // A directory of this client's plugged into a microVM there is served apart, for as long
+    // as it is plugged in (D228).
+    let (words, plugged) = match crate::client_binds::here_plug(words) {
+        Ok(rewritten) => rewritten,
+        Err(why) => return fail(why),
+    };
+    let (served, apart) = if plugged.is_empty() {
+        (served, apart)
+    } else {
+        (plugged, true)
+    };
+    let mut serving_apart = None;
     let _relays = match (served.is_empty(), apart) {
         (true, _) => None,
         (false, true) => match crate::client_binds::start_apart(&context.name, &served) {
-            Ok(()) => None,
+            Ok(child) => {
+                serving_apart = Some(child);
+                None
+            }
             Err(e) => return fail(e),
         },
         (false, false) => match crate::client_binds::Relays::start(home, context.remote(), &served) {
@@ -2936,6 +2951,12 @@ pub(crate) fn forward(home: &Path, context: &Context, args: Vec<OsString>) -> Ex
         made,
     );
     crate::cli::terminal::restore();
+    // A command that failed took none of what was served apart for it (D228).
+    if let Some(child) = serving_apart
+        && !matches!(ran, Ok(Ok(0)))
+    {
+        let _ = child.kill(shards_ipc::signal::SIGKILL);
+    }
     if let Some((said, status)) = unwritten {
         let _ = writeln!(io::stderr(), "{said}");
         return ExitCode::from(status);
