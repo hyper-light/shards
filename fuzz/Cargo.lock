@@ -715,6 +715,7 @@ dependencies = [
  "shards-cmdline",
  "shards-image",
  "shards-registry",
+ "shards-rego",
  "shards-vmm",
 ]
 
@@ -730,6 +731,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "shards-erofs",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -746,6 +748,13 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "shards-afunix",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "shards-ntfs"
+version = "0.1.0"
+dependencies = [
  "windows-sys 0.61.2",
 ]
 
@@ -772,6 +781,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "shards-rego"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "num-bigint",
+ "regex",
+ "serde_json",
+ "shards-template",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "shards-syscall-filter"
 version = "0.1.0"
 dependencies = [
@@ -789,7 +810,9 @@ dependencies = [
  "libc",
  "shards-abi",
  "shards-afunix",
+ "shards-ipc",
  "shards-netring",
+ "shards-ntfs",
  "shards-syscall-filter",
  "windows-sys 0.61.2",
 ]

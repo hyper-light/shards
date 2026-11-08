@@ -17,6 +17,7 @@ libfuzzer-sys = "0.4"
 shards-cmdline = { path = "../crates/cmdline" }
 shards-image = { path = "../crates/image" }
 shards-registry = { path = "../crates/registry" }
+shards-rego = { path = "../crates/rego" }
 shards-vmm = { path = "../crates/vmm" }
 
 [workspace]
@@ -87,6 +88,20 @@ bench = false
 [[bin]]
 name = "snapshot-state"
 path = "fuzz_targets/snapshot-state.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "rego"
+path = "fuzz_targets/rego.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "rego-builtins"
+path = "fuzz_targets/rego-builtins.rs"
 test = false
 doc = false
 bench = false
