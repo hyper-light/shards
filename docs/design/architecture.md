@@ -7616,7 +7616,7 @@ its owner's grant, default deny, as shards' networks are.
   second (`VALID_S`), as a local share's are. Only the cost differs, each request a round
   trip to the client: over loopback on the GPU desktop an open, a 4 KiB read and a close
   took 251 µs at p50 and 399 at p99 against the machine's own bind's 136 and 206, a 64 MiB
-  read 458 MiB/s against 468, a write 572 MiB/s against 2,157 (PM M495). No DAX window: a mapping maps a file of the host the
+  read 458 MiB/s against 468, a write 572 MiB/s against 2,157 (PM M498). No DAX window: a mapping maps a file of the host the
   guest is on, so the client's server tells its guest to map nothing (`serves_afar`: no
   `FUSE_HAS_INODE_DAX`, no `FUSE_ATTR_DAX`) and refuses a mapping's descriptor (EINVAL,
   `answer_afar`).
@@ -7683,7 +7683,7 @@ daemon's, the relay its pipe pair). And
 directory of the machine's refused.
 
 **Not yet.** Docker's CLI through a context serves none of its client's directories, as its
-API names a path alone. A context's relays measured across two machines (PM M495 has
+API names a path alone. A context's relays measured across two machines (PM M498 has
 loopback alone). A command whose run goes on without it that fails ends the process serving
 its binds apart; one that succeeds but whose microVM is never started (`create`, then no
 `start`) keeps it serving until its client ends it.
