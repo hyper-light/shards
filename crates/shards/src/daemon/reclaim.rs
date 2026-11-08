@@ -276,7 +276,9 @@ impl<D: Disk> Daemon<D> {
 pub(super) fn said_if_long(id: &str, what: &str, took: Duration) {
     shards_vmm::debug!("container {id}: {what}: answered after {took:?}");
     if took > TAKE_TIMEOUT {
-        log(format!("container {id}: {what}: answered after {took:?}, its microVM running"));
+        log(format!(
+            "container {id}: {what}: answered after {took:?}, its microVM running"
+        ));
     }
 }
 

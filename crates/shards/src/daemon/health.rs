@@ -616,7 +616,12 @@ mod tests {
             let ended = await_exit_judged(&ours, Wait::WhileRuns(me), quiet);
             assert_eq!((ended.status, ended.timed_out), (Some(7), false));
         });
-        let idle = Killed(std::process::Command::new("/bin/sleep").arg("60").spawn().unwrap());
+        let idle = Killed(
+            std::process::Command::new("/bin/sleep")
+                .arg("60")
+                .spawn()
+                .unwrap(),
+        );
         let (ours, theirs) = shards_ipc::Stream::pair().unwrap();
         std::thread::scope(|s| {
             s.spawn(|| {
