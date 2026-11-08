@@ -18,6 +18,7 @@ use shards_image::store::{Download, Held, Limits, Store};
 use crate::auth::{Authorizer, Credentials, loopback};
 use crate::credentials::Found;
 use crate::http::{Client, Redirects, Request, Response};
+use crate::links::{Link, Record};
 use crate::url::{Scheme, Url};
 use crate::{Error, ErrorKind, Said, printable};
 
@@ -61,6 +62,29 @@ pub(crate) const CHUNK: usize = 64 << 10;
 const OCTET: (&str, &str) = ("Content-Type", "application/octet-stream");
 const OCTETS: &[(&str, &str)] = &[OCTET];
 
+/// An upload begun: there already (mounted or not), or open at its `Location`, taking
+/// chunks of at least so many bytes.
+enum Begun {
+    There(bool),
+    Open(Url, u64),
+}
+
+/// The bytes the registry says it has of an upload of `size` bytes, by its `Range`
+/// (`0-<end>`, inclusive), where it says.
+fn had(response: &Response<'_>, size: u64) -> Result<Option<u64>, Error> {
+    let Some(range) = response.header("range") else {
+        return Ok(None);
+    };
+    range
+        .trim()
+        .strip_prefix("0-")
+        .and_then(|end| end.parse::<u64>().ok())
+        .and_then(|end| end.checked_add(1))
+        .filter(|&had| had <= size)
+        .map(Some)
+        .ok_or_else(|| Error::new(format!("an upload of {size} bytes said to have {range:?}")))
+}
+
 /// Whether the request that ended an upload, its last PUT, was answered as containerd's
 /// pusher takes it: 202 is not among them, as the request that gets it hears
 /// (pusher.go), though `Commit` would take it; and a `Docker-Content-Digest`, if sent,
@@ -99,6 +123,8 @@ pub struct Registry {
     /// The fewest bytes of a blob it refused to take in one request, with a 413 (D226):
     /// a push sends no request of a blob so long again, `u64::MAX` before any refusal.
     refused: AtomicU64,
+    /// The most bytes of a chunk it took.
+    took: AtomicU64,
 }
 
 /// A mirror of Docker Hub's a pull asks first, and whether it failed: once it has, the
@@ -233,23 +259,140 @@ impl Registry {
         }
     }
 
+    /// The record of `direction` over the path to this registry (crate::links): by its host
+    /// and port, and this host's address on its route there.
+    pub(crate) fn record(&self, store: &Store, direction: &str) -> Record {
+        let host = self.base.host().trim_start_matches('[').trim_end_matches(']');
+        Record::of(
+            store.root(),
+            direction,
+            host,
+            self.base.port(),
+            self.http.route(&self.base),
+        )
+    }
+
     /// Uploads the blob `desc` describes from `file`, as containerd v2.4.1's pusher does
     /// (core/remotes/docker/pusher.go, Push and Commit): mounted from `from`, a repository
     /// of the same registry, when given and the registry does, and uploaded as if it were
     /// not given when the mount is refused as unauthorized; else an upload begun with a
     /// POST, which a 201 answers as there already, and done with one PUT of it all, whose
     /// `Docker-Content-Digest`, if it sends one, must be the blob's. Whether it was
-    /// mounted. Each byte of the blob is counted into `sent` as it goes, where given.
+    /// mounted.
     ///
-    /// A registry, or a proxy before it, that refuses a request so large with a 413 is
-    /// sent the blob in chunks instead (D226), each as large as it has not refused.
+    /// Over a `link` (D226) its bytes are counted as they go, and it goes in chunks where
+    /// the link's sends have failed, each of the size that costs least a byte
+    /// ([`Link::chunk`]), or where the registry, or a proxy before it, refused a request so
+    /// long with a 413: then each as long as bisecting what it took and what it refused
+    /// says it takes. A send that fails is resumed from what the registry says it has
+    /// (distribution-spec v1.1.1, "Pushing a blob in chunks": a GET of the upload's
+    /// `Location` says its `Range`), never from the blob's start, unless the upload is gone.
     pub fn upload(
         &self,
         desc: &Descriptor,
         file: &std::fs::File,
         from: Option<&str>,
-        sent: Option<&AtomicU64>,
+        link: Option<&Link>,
     ) -> Result<bool, Error> {
+        let size = desc.size().map_err(|e| Error::new(e.to_string()))?;
+        let sent = link.map(Link::sent);
+        let (mut at, least) = match self.begin(desc, from, link)? {
+            Begun::There(mounted) => return Ok(mounted),
+            Begun::Open(at, least) => (at, least),
+        };
+        // What the registry has taken, and what it had when a send last failed; and the
+        // failures since it last took more.
+        let (mut done, mut mark, mut fruitless) = (0u64, 0u64, 0usize);
+        loop {
+            let chunk = self.chunk(link, least);
+            let whole =
+                done == 0 && size < self.refused.load(Ordering::Relaxed) && chunk.is_none_or(|c| c >= size);
+            let len = match chunk {
+                _ if whole => size,
+                Some(c) => c.max(least).min(size - done),
+                None => size - done,
+            };
+            let answered = if whole {
+                let put = at.with_query_pair("digest", &desc.digest)?;
+                self.send("PUT", &put, OCTETS, &[], Some((file, 0, size)), sent)
+            } else if len > 0 {
+                let range = format!("{done}-{}", done + len - 1);
+                let headers = [OCTET, ("Content-Range", range.as_str())];
+                self.send("PATCH", &at, &headers, &[], Some((file, done, len)), sent)
+            } else {
+                let put = at.with_query_pair("digest", &desc.digest)?;
+                let (response, _) = self.send("PUT", &put, OCTETS, &[], None, None)?;
+                return committed(desc, response).map(|()| false);
+            };
+            let response = match answered {
+                Ok((response, _)) => response,
+                Err(e) if e.kind() == ErrorKind::Transient => {
+                    if let Some(link) = link {
+                        link.failed();
+                    }
+                    if done > mark {
+                        fruitless = 0;
+                    }
+                    mark = done;
+                    fruitless += 1;
+                    if fruitless >= ATTEMPTS {
+                        return Err(
+                            e.context(format!("{}: the upload failed {fruitless} times", desc.digest))
+                        );
+                    }
+                    match self.status(&at, size)? {
+                        Some((url, had)) => (at, done) = (url, had),
+                        None => match self.begin(desc, from, link)? {
+                            Begun::There(mounted) => return Ok(mounted),
+                            Begun::Open(url, _) => (at, done) = (url, 0),
+                        },
+                    }
+                    continue;
+                }
+                Err(e) => return Err(e),
+            };
+            match response.status {
+                413 if whole => {
+                    // Refused before the registry had it (nginx's `client_max_body_size`,
+                    // 1 MiB unless set): the upload begun is still open, and takes chunks.
+                    self.refused.fetch_min(size, Ordering::Relaxed);
+                }
+                _ if whole => return committed(desc, response).map(|()| false),
+                202 => {
+                    self.took.fetch_max(len, Ordering::Relaxed);
+                    let had = had(&response, size)?.unwrap_or(done + len);
+                    if had <= done {
+                        return Err(Error::new(format!(
+                            "{}: the registry has {had} bytes of an upload sent to byte {}",
+                            desc.digest,
+                            done + len
+                        )));
+                    }
+                    let next = response.header("location").ok_or_else(|| {
+                        Error::new(format!("{}: a chunk taken with no Location", desc.digest))
+                    })?;
+                    (at, done) = (response.url().join(next)?, had);
+                }
+                413 if len > least.max(1) => {
+                    self.refused.fetch_min(len, Ordering::Relaxed);
+                }
+                // Not where the registry is: asked where that is.
+                416 if fruitless + 1 < ATTEMPTS => {
+                    fruitless += 1;
+                    drop(response);
+                    match self.status(&at, size)? {
+                        Some((url, had)) => (at, done) = (url, had),
+                        None => return Err(Error::new(format!("{}: the upload is gone", desc.digest))),
+                    }
+                }
+                _ => return Err(unexpected("PATCH", response)),
+            }
+        }
+    }
+
+    /// An upload of `desc` begun: mounted from `from` where given, else a POST, its answer
+    /// timed into `link`.
+    fn begin(&self, desc: &Descriptor, from: Option<&str>, link: Option<&Link>) -> Result<Begun, Error> {
         let mut started = None;
         if let Some(repo) = from {
             let url = self
@@ -263,10 +406,16 @@ impl Registry {
                 Err(e) => return Err(e.context(format!("pushing with mount from {repo}"))),
             }
         }
+        let asked = std::time::Instant::now();
         let (response, mounting) = match started {
             Some(started) => started,
             None => match self.send("POST", &self.base.join("blobs/uploads/")?, &[], &[], None, None) {
-                Ok((response, _)) => (response, false),
+                Ok((response, _)) => {
+                    if let Some(link) = link {
+                        link.answered(asked.elapsed());
+                    }
+                    (response, false)
+                }
                 Err(e) if e.kind() == ErrorKind::Unauthorized => {
                     return Err(e.context(
                         "push access denied, repository does not exist or may require authorization",
@@ -276,7 +425,7 @@ impl Registry {
             },
         };
         let location = match response.status {
-            201 => return Ok(mounting),
+            201 => return Ok(Begun::There(mounting)),
             200 | 202 | 204 => response
                 .header("location")
                 .map(str::to_string)
@@ -289,63 +438,48 @@ impl Registry {
             .header("oci-chunk-min-length")
             .and_then(|n| n.trim().parse::<u64>().ok())
             .unwrap_or(0);
-        let mut at = response.url().join(&location)?;
-        drop(response);
-        let size = desc.size().map_err(|e| Error::new(e.to_string()))?;
-        if size < self.refused.load(Ordering::Relaxed) {
-            let put = at.with_query_pair("digest", &desc.digest)?;
-            let (response, _) = self.send("PUT", &put, OCTETS, &[], Some((file, 0, size)), sent)?;
-            if response.status != 413 {
-                return committed(desc, response).map(|()| false);
+        Ok(Begun::Open(response.url().join(&location)?, least))
+    }
+
+    /// Where an upload at `at` of a blob of `size` bytes is: its `Location` and the bytes the
+    /// registry has (a GET of it, answered 204 with its `Range`), or `None` where the
+    /// registry has it no more (404).
+    fn status(&self, at: &Url, size: u64) -> Result<Option<(Url, u64)>, Error> {
+        let (response, _) = self.send("GET", at, &[], &[], None, None)?;
+        match response.status {
+            204 => {
+                // `0-0` is all an upload of nothing or of one byte says (distribution's
+                // blobupload.go): taken as nothing, one byte sent again at most.
+                let had = match response.header("range").map(str::trim) {
+                    Some("0-0") | None => 0,
+                    Some(_) => had(&response, size)?.unwrap_or(0),
+                };
+                let url = match response.header("location") {
+                    Some(next) => response.url().join(next)?,
+                    None => at.clone(),
+                };
+                Ok(Some((url, had)))
             }
-            // Refused before the registry had it (nginx's `client_max_body_size`, 1 MiB
-            // unless set): the upload begun is still open, and takes it in chunks.
-            self.refused.fetch_min(size, Ordering::Relaxed);
+            404 => Ok(None),
+            _ => Err(unexpected("GET", response)),
         }
-        let mut done = 0;
-        while done < size {
-            // As much as was never refused: half the least that was, which a refusal halves
-            // again, and never less than the registry's least.
-            let most = (self.refused.load(Ordering::Relaxed) / 2).max(least).max(1);
-            let len = most.min(size - done);
-            let range = format!("{done}-{}", done + len - 1);
-            let headers = [OCTET, ("Content-Range", range.as_str())];
-            let (response, _) = self.send("PATCH", &at, &headers, &[], Some((file, done, len)), sent)?;
-            match response.status {
-                202 => {}
-                413 if len > least.max(1) => {
-                    self.refused.fetch_min(len, Ordering::Relaxed);
-                    continue;
-                }
-                _ => return Err(unexpected("PATCH", response)),
-            }
-            // What the registry says it has is where the next chunk starts.
-            let had = match response.header("range") {
-                Some(range) => range
-                    .trim()
-                    .strip_prefix("0-")
-                    .and_then(|end| end.parse::<u64>().ok())
-                    .and_then(|end| end.checked_add(1))
-                    .filter(|&had| had > done && had <= size)
-                    .ok_or_else(|| {
-                        Error::new(format!(
-                            "{}: the registry has {range:?} of an upload sent to byte {}",
-                            desc.digest,
-                            done + len
-                        ))
-                    })?,
-                None => done + len,
-            };
-            let next = response
-                .header("location")
-                .ok_or_else(|| Error::new(format!("{}: a chunk taken with no Location", desc.digest)))?;
-            at = response.url().join(next)?;
-            done = had;
+    }
+
+    /// The next chunk's most: the least of what costs `link` least a byte and what the
+    /// registry takes, bisected between the most it took and the least it refused; `None`
+    /// where neither bounds it.
+    fn chunk(&self, link: Option<&Link>, least: u64) -> Option<u64> {
+        let refused = self.refused.load(Ordering::Relaxed);
+        let takes = (refused != u64::MAX).then(|| {
+            let took = self.took.load(Ordering::Relaxed).min(refused);
+            took + (refused - took) / 2
+        });
+        let best = link.and_then(Link::chunk);
+        match (takes, best) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
         }
-        let put = at.with_query_pair("digest", &desc.digest)?;
-        let (response, _) = self.send("PUT", &put, OCTETS, &[], None, None)?;
-        committed(desc, response)?;
-        Ok(false)
+        .map(|c| c.max(least).max(1))
     }
 
     /// Puts a manifest or index as `reference` names it (a tag or its digest).
@@ -492,6 +626,7 @@ impl Registry {
             scopes,
             mirrors: Vec::new(),
             refused: AtomicU64::new(u64::MAX),
+            took: AtomicU64::new(0),
         })
     }
 
@@ -673,7 +808,8 @@ impl Registry {
                     attempt -= 1;
                     continue;
                 }
-                Err(e) if e.kind() == ErrorKind::Transient && attempt < ATTEMPTS => {
+                // A file's body is resumed by its upload, from what the registry has.
+                Err(e) if e.kind() == ErrorKind::Transient && attempt < ATTEMPTS && file.is_none() => {
                     std::thread::sleep(PAUSE);
                     continue;
                 }
@@ -2585,9 +2721,10 @@ mod tests {
         (results, lines)
     }
 
-    /// A blob the registry refuses whole with a 413 goes up in chunks in order, each half
-    /// the least refused until one is taken, then one PUT that ends it; a second blob
-    /// through the same registry goes straight to chunks of what it took.
+    /// A blob the registry refuses whole with a 413 goes up in chunks in order, each the
+    /// midpoint of the most it took and the least it refused, so that its chunks bisect
+    /// to the most it takes; then one PUT that ends it. A second blob through the same
+    /// registry goes straight to chunks of what it took.
     #[test]
     fn a_blob_refused_whole_goes_up_in_chunks_the_registry_takes() {
         let (results, lines) = uploaded_through(&[b"0123456789", b"abcdef"], 3, None);
@@ -2599,18 +2736,101 @@ mod tests {
                 "PUT 10",
                 "PATCH 0-4",
                 "PATCH 0-1",
-                "PATCH 2-3",
-                "PATCH 4-5",
-                "PATCH 6-7",
+                "PATCH 2-4",
+                "PATCH 5-8",
+                "PATCH 5-7",
                 "PATCH 8-9",
                 "PUT 0",
                 "POST 0",
-                "PATCH 0-1",
-                "PATCH 2-3",
-                "PATCH 4-5",
+                "PATCH 0-2",
+                "PATCH 3-5",
                 "PUT 0",
             ]
         );
+    }
+
+    /// A send that fails is resumed from what the registry says it has, never from the
+    /// blob's start: its PUT cut off, a GET of the upload says 4 bytes are in, and the rest
+    /// goes from there. Over a link, the failure is counted, and the rest goes in chunks.
+    #[test]
+    fn a_failed_send_resumes_from_what_the_registry_has() {
+        for linked in [false, true] {
+            let cut = Arc::new(AtomicUsize::new(0));
+            let server = route(None, move |seen| {
+                let answer = match seen.method.as_str() {
+                    "POST" => http("202 Accepted", &[("Location", "/v2/test/image/blobs/uploads/u")]),
+                    "PUT" if seen.header("content-length") != Some("0") => {
+                        cut.fetch_add(1, Ordering::SeqCst);
+                        return None;
+                    }
+                    "GET" => http("204 No Content", &[("Range", "0-3")]),
+                    "PATCH" => {
+                        let end = seen
+                            .header("content-range")
+                            .and_then(|r| r.split_once('-'))
+                            .map(|(_, end)| end.to_string())
+                            .unwrap_or_default();
+                        http(
+                            "202 Accepted",
+                            &[
+                                ("Location", "/v2/test/image/blobs/uploads/u"),
+                                ("Range", &format!("0-{end}")),
+                            ],
+                        )
+                    }
+                    _ => http("201 Created", &[]),
+                };
+                Some((answer, After::Keep))
+            });
+            let dir = shards_testdir::TempDir::new("upload-resume").unwrap();
+            let path = dir.join("blob");
+            let blob = b"0123456789";
+            std::fs::write(&path, blob).unwrap();
+            let reference = Reference::parse(&format!("127.0.0.1:{}/test/image:v1", server.port)).unwrap();
+            let http = Client::new(
+                Box::new(|_| crate::tls::client_config(Vec::new(), None)),
+                "shards-test",
+            );
+            let registry = Registry::new(http, &reference, Credentials::Anonymous).unwrap();
+            let desc = Descriptor {
+                media_type: "application/octet-stream".into(),
+                digest: Digest::from_hash(Algorithm::Sha256, &Sha256::digest(blob)).to_string(),
+                size: 10,
+                platform: None,
+                annotations: Default::default(),
+            };
+            let link = Link::new(None);
+            let done = registry.upload(
+                &desc,
+                &std::fs::File::open(&path).unwrap(),
+                None,
+                linked.then_some(&link),
+            );
+            assert!(matches!(done, Ok(false)), "{done:?}");
+            let lines: Vec<String> = server
+                .requests()
+                .iter()
+                .map(|r| {
+                    let seen = crate::testing::parse(r);
+                    let size = seen
+                        .header("content-range")
+                        .or(seen.header("content-length"))
+                        .unwrap_or_default()
+                        .to_string();
+                    format!("{} {size}", seen.method)
+                })
+                .collect();
+            assert_eq!(lines[..3], ["POST 0", "PUT 10", "GET "], "{lines:?}");
+            assert_eq!(lines.last().map(String::as_str), Some("PUT 0"), "{lines:?}");
+            let patches: Vec<&String> = lines.iter().filter(|l| l.starts_with("PATCH")).collect();
+            assert!(patches[0].starts_with("PATCH 4-"), "{lines:?}");
+            if linked {
+                assert_eq!(link.failures(), 1);
+                assert!(patches.iter().all(|p| p.as_str() != "PATCH 0-9"), "{lines:?}");
+            } else {
+                assert_eq!(patches, ["PATCH 4-9"], "unbounded, the rest in one");
+            }
+        }
     }
 
     /// A chunk is never smaller than the least the registry says one may be (`OCI-Chunk-

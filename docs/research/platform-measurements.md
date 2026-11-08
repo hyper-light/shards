@@ -3997,12 +3997,33 @@ revision before comparing a changed API/implementation.
     the digest pushed, sha256:697b0b15….
 - **Consequence.** No one count is right: on one host more kept paying past 16, across
   the LAN one filled the link and 8 lost a quarter, across the Internet 4 doubled 1 and 8
-  fell back, and small blobs, bound by round trips, gained to 16 on every link. On none
-  did fewer than 4 carry more than 4. So a push starts at 4 and doubles while a doubling
-  pays, as the pull's connections do, bounded by its blobs alone (D226). Chunks cost a
-  request each: on one host they lost a third of the rate at 8 MiB and three quarters at
-  1 MiB, across the LAN 7 to 18%, and across the Internet less than its noise: a blob goes whole, in chunks only once its registry refused
-  a request so long, each half the least refused.
+  fell back, and small blobs, bound by round trips, gained to 16 on every link. Chunks
+  cost a request each: on one host they lost a third of the rate at 8 MiB and three
+  quarters at 1 MiB, across the LAN 7 to 18%, and across the Internet less than its
+  noise. So no count or chunk is chosen (D226): transfers start at one over a path never
+  seen and climb while a doubling pays past the path's own noise, a path's count is
+  learned for its next transfer, and a chunk is the size that costs least a byte given
+  the path's measured answer time, rate and failures, a whole blob where it never failed.
+  Every case here was bound by its link, or on one host by its 16 blobs, none by the CPU
+  (32 cores each).
+- **Harness for the learned transfers** (committed with D226's second version):
+  `learned.sh SHARDS SOURCE TARGET [ROUNDS LAYERS SIZE]` pulls and pushes images of fresh
+  layers that `mkimage.py` puts in SOURCE, cold then warm in each round's fresh home, and
+  prints each transfer's seconds and the records learned; `netem.sh up PORT DELAY LOSS`
+  starts a registry:2 behind tc-netem on its own interface. Smoked once on fedora-2
+  (2026-11-08, load 13): 4 layers of 1 MiB from a plain registry to one at 20 ms and 1%
+  loss, pushes 0.72 s cold and 0.80 s warm, too short to measure a count (two windows
+  after one settling), so the record kept only the answer time (20,966 µs), the bytes and
+  no failure: netem's packet loss is recovered by TCP and shows as rate, not as a failed
+  send, which only resets, timeouts and sends cut short are.
+- **Owed** (the user's order, 2026-11-08; not yet run): learned.sh cold and warm, 3
+  rounds each, over (1) one host and (2) the wired pair, registry:2 on adacachy2 pushed
+  to from adacachy; (3) the Mac Studios' Wi-Fi (about 0.19 MB/s between two), registry:2
+  on one, pushed to from the other; (4) ttl.sh as TARGET; (5) tc-netem on fedora-2 at
+  40 ms with 0%, 1% and 5% loss, and with bursts that outlast a send's patience (`loss
+  gemodel`), so that sends fail and chunks are used; each against the fixed sizes push.py
+  measures (`--chunk`). For each: which input bound the count (the link's noise, its
+  bandwidth-delay product, the blobs, the cores) and the chunk (Young's optimum, a 413).
 
 ### M115. What keeping a container's writable layer costs a run
 

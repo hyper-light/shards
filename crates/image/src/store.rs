@@ -1133,6 +1133,11 @@ impl Store {
         })
     }
 
+    /// The directory the store is in.
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
     pub fn blob_path(&self, digest: &Digest) -> PathBuf {
         self.root
             .join("blobs")

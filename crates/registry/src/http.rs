@@ -471,6 +471,29 @@ impl Client {
         }
     }
 
+    /// This host's address on its route to `url`, or to the proxy that reaches it: a UDP
+    /// socket connected there sends nothing, and is given the address its route leaves
+    /// from. Looked up as a connection's name is, within its patience; `None` where it
+    /// cannot be.
+    pub(crate) fn route(&self, url: &Url) -> Option<std::net::IpAddr> {
+        let proxy = self.proxies.for_url(url).ok()?;
+        let first = proxy.map_or(url, |p| &p.url);
+        let to = *resolve(
+            first,
+            Instant::now() + self.patience.connect,
+            self.cancel.as_ref(),
+        )
+        .ok()?
+        .first()?;
+        let any: std::net::IpAddr = match to {
+            SocketAddr::V4(_) => std::net::Ipv4Addr::UNSPECIFIED.into(),
+            SocketAddr::V6(_) => std::net::Ipv6Addr::UNSPECIFIED.into(),
+        };
+        let socket = std::net::UdpSocket::bind((any, 0)).ok()?;
+        socket.connect(to).ok()?;
+        Some(socket.local_addr().ok()?.ip())
+    }
+
     /// [`send`](Self::send), counting into `sent` each byte of a file's body as it goes.
     fn send_now(&self, req: &Request<'_>, sent: Option<&AtomicU64>) -> Result<Response<'_>, Error> {
         if let Some(cancel) = &self.cancel {
@@ -639,7 +662,13 @@ impl Client {
                         | io::ErrorKind::ConnectionReset
                         | io::ErrorKind::ConnectionAborted
                 );
-                let sending = || Failure::BeforeResponse(Error::new(format!("{}: sending: {e}", req.url)));
+                // A send cut short is the link's failure, not the request's: sent again.
+                let sending = || {
+                    Failure::BeforeResponse(Error::of(
+                        ErrorKind::Transient,
+                        format!("{}: sending: {e}", req.url),
+                    ))
+                };
                 if !left {
                     return Err(sending());
                 }
