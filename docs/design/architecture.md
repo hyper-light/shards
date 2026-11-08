@@ -19185,15 +19185,42 @@ config refused in their words), the listing check mutation-checked.
 
 ## 4. Start path (≤ 5 ms budget)
 
+The target: a user's `shards run IMAGE COMMAND` to its command executing in its microVM
+(usable), under 5 ms, boot included. A pooled run's VM restored its image's template,
+resumed and connected before the request (D25, D26): what a restore costs is paid ahead
+(restore below). Measured from the user's side: the client's spawn to the guest's
+WORKLOAD_STARTED marker, on one clock across every process (`docs/research/measurements/
+start-path`, PM M470), and by the image bench's `template_usable` (benches/image.rs).
+
+Each step of a pooled run, Fedora (KVM, Intel Core i9-14900HX, 32 CPUs, a vCPU per host
+CPU, Linux 6.19), alpine `true`, n 100, after PM M470, the host at load 20 to 30 from other
+work (p50):
+
 | Step | Cost | Evidence |
 |---|---|---|
-| Daemon receives request; resolves template; claims warm VMM | ~10–50 µs of IPC (to be measured) | — |
-| `hv_vm_create` + `hv_gic_create` + sequential vCPU creation | ~11 + 2 + 7·n µs; can be done ahead in the warm process | [PM M2] |
+| The client's launch: spawn to `main` of the 160 MB PIE `shards` (0.57 for `/usr/bin/true`; 180 more page faults, 125 of them its relocated read-only data) | 1.5–1.6 ms | [PM M470] |
+| The client: its request written to its slot | 0.37 ms | [PM M470] |
+| The daemon's slot thread reads it, bridges it to its handling | 0.18 ms | [PM M470, D185] |
+| The daemon prepares the run (image, spec), makes its container, keeps its request, sets it up | 1.1 ms (0.55, 0.19, 0.13, 0.20) | [PM M470] |
+| Its network process told (E1) | 0.07 ms | [PM M470] |
+| The hand-over to the warm VM, TAKEN (13.5 ms before its descriptor room, M470) | 0.14–0.17 ms | [PM M470] |
+| The guest starts the command: init takes the request 0.49, its names' files 0.48, the standby woken and set up 0.55, the exec until init hears it 1.67 | 2.5–3.5 ms | [PM M470, M292, M440] |
+| **Spawn to usable** | **5.8 ms at load 20–26 (p90 7.3); 7.2 at load 30** | [PM M470, M471] |
+
+Before the request, off its path: the restore itself (`to_beat`, a fresh VM process to its
+guest running again: 9.1 ms on Fedora at load 15, against Firecracker's 10.4, PM M471),
+and on HVF:
+
+| Step | Cost | Evidence |
+|---|---|---|
+| `hv_vm_create` + `hv_gic_create` + sequential vCPU creation | ~11 + 2 + 7·n µs | [PM M2] |
 | `mmap` snapshot memory `MAP_PRIVATE` + `hv_vm_map` | ~1–10 µs | [PM M3] |
-| GIC restore (`hv_gic_set_state`; its registers alone, 20–30 µs, lose interrupts in flight) | ~1.2–1.3 ms; paid by a warm VM before the request | [PM M14, M45] |
+| GIC restore (`hv_gic_set_state`; its registers alone, 20–30 µs, lose interrupts in flight) | ~1.2–1.3 ms | [PM M14, M45] |
 | vCPU register restore | ~0.5 µs per vCPU | [PM M14] |
-| Resume; guest faults in its working set | ~64 µs per MiB (1 vCPU), ~2.2× less with prefetch vCPUs; a warm VM prefetches it before the request | [PM M5, M6, M30] |
-| Engine starts the workload, reports ready over vsock | to be measured | pending |
+| Resume; guest faults in its working set | ~64 µs per MiB (1 vCPU), ~2.2× less with prefetch vCPUs; prefetched | [PM M5, M6, M30] |
+
+Not met yet on Fedora: the guest's start of the command and the client's launch are most
+of what is left.
 
 Clone correctness hazards (RNG reseed via vmgenid, clock via vtimer offset, network
 identity) are **pending** the snapshot research.
