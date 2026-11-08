@@ -76,22 +76,6 @@ impl Guests for Shards {
             .stderr(Stdio::piped())
             .spawn()
             .map_err(|e| Refusal::Boot(format!("{}: {e}", binary.display())))?;
-        let shared = Arc::new(Shared {
-            state: Mutex::new(State {
-                exited: false,
-                stopping: false,
-                ready: false,
-                end: None,
-                said: String::new(),
-                ended_as: String::new(),
-            }),
-            changed: Condvar::new(),
-            tail: Mutex::new(Tail {
-                bytes: VecDeque::new(),
-                open: 0,
-            }),
-            drained: Condvar::new(),
-        });
         let outputs: [Option<Box<dyn io::Read + Send>>; 2] = [
             child
                 .stdout
@@ -102,8 +86,30 @@ impl Guests for Shards {
                 .take()
                 .map(|e| Box::new(e) as Box<dyn io::Read + Send>),
         ];
-        let started = start_threads(&shared, &child, outputs);
+        #[cfg(unix)]
+        let pid = child.id();
+        let exit = Exit::of(&child);
+        let shared = Arc::new(Shared {
+            state: Mutex::new(State {
+                exited: false,
+                stopping: false,
+                dropped: false,
+                ready: false,
+                end: None,
+                said: String::new(),
+                ended_as: String::new(),
+            }),
+            changed: Condvar::new(),
+            child: Mutex::new(child),
+            tail: Mutex::new(Tail {
+                bytes: VecDeque::new(),
+                open: 0,
+            }),
+            drained: Condvar::new(),
+        });
+        let started = exit.and_then(|exit| start_threads(&shared, exit, outputs));
         if let Err(e) = started {
+            let mut child = lock(&shared.child);
             let _ = child.kill();
             let _ = child.wait();
             return Err(Refusal::Boot(format!("a thread to watch shards: {e}")));
@@ -112,8 +118,7 @@ impl Guests for Shards {
             ports: spec.ports.clone(),
             vsock,
             #[cfg(unix)]
-            pid: child.id(),
-            child: Mutex::new(child),
+            pid,
             shared,
             _dir: dir,
         }))
@@ -140,10 +145,32 @@ fn arguments(spec: &GuestSpec, vsock: &Path) -> Result<Vec<OsString>, Refusal> {
         args.extend(["--disk".into(), with_mode("disk", &disk.path, disk.read_only)?]);
     }
     for share in &spec.shares {
+        share_dir(&share.dir)?;
         args.extend(["--share".into(), with_mode("share", &share.dir, share.read_only)?]);
     }
     args.extend(["--vsock".into(), vsock.into(), "--no-console".into()]);
     Ok(args)
+}
+
+/// Refuses a share's directory where `--share` would read a mode in it, as shards refuses
+/// one (`cli/shares.rs` `parse`): a colon in its last name, but a Windows drive's (`C:`).
+fn share_dir(dir: &Path) -> Result<(), Refusal> {
+    let bytes = dir.as_os_str().as_encoded_bytes();
+    let last = bytes
+        .rsplit(|&b| b == b'/' || (cfg!(windows) && b == b'\\'))
+        .next()
+        .unwrap_or_default();
+    match last.iter().rposition(|&b| b == b':') {
+        None => Ok(()),
+        Some(1) if cfg!(windows) && last.len() == bytes.len() => Ok(()),
+        Some(_) => Err(Refusal::Unsupported {
+            what: "share",
+            why: format!(
+                "{}: a colon in its last name, which shards reads as a mode",
+                dir.display()
+            ),
+        }),
+    }
 }
 
 /// `path`, with `:ro` where read-only. One that ends in `:ro` itself is refused: shards
@@ -228,6 +255,9 @@ struct Shared {
     state: Mutex<State>,
     /// Signalled as the process ends.
     changed: Condvar,
+    /// The process: reaped once, under the state's lock, by the guest's end, or by its
+    /// watcher where the guest was dropped first.
+    child: Mutex<Child>,
     tail: Mutex<Tail>,
     /// Signalled as each of its outputs ends.
     drained: Condvar,
@@ -239,6 +269,9 @@ struct State {
     exited: bool,
     /// `stop` or a drop is ending it: its end is `Stopped`.
     stopping: bool,
+    /// The guest was dropped before the process exited: its watcher reaps it, which no
+    /// zombie outlives.
+    dropped: bool,
     /// A `CONNECT` has been answered `OK`.
     ready: bool,
     end: Option<End>,
@@ -263,7 +296,7 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 /// to exit.
 fn start_threads(
     shared: &Arc<Shared>,
-    child: &Child,
+    exit: Exit,
     outputs: [Option<Box<dyn io::Read + Send>>; 2],
 ) -> io::Result<()> {
     for output in outputs.into_iter().flatten() {
@@ -276,7 +309,6 @@ fn start_threads(
             .name("shards-api-drain".into())
             .spawn(move || drain(&shared, output))?;
     }
-    let exit = Exit::of(child)?;
     let shared = shared.clone();
     std::thread::Builder::new()
         .name("shards-api-wait".into())
@@ -391,6 +423,9 @@ impl Exit {
         }
         state.said = said;
         state.exited = true;
+        if state.dropped {
+            let _ = lock(&shared.child).wait();
+        }
         shared.changed.notify_all();
     }
 }
@@ -401,7 +436,6 @@ struct ShardsGuest {
     vsock: PathBuf,
     #[cfg(unix)]
     pid: u32,
-    child: Mutex<Child>,
     shared: Arc<Shared>,
     _dir: PrivateDir,
 }
@@ -413,7 +447,7 @@ impl ShardsGuest {
             return None;
         }
         if state.end.is_none() {
-            let status = lock(&self.child).wait();
+            let status = lock(&self.shared.child).wait();
             state.ended_as = match &status {
                 Ok(status) => said(&format!("shards {status}"), &state.said),
                 Err(e) => format!("shards: {e}"),
@@ -455,7 +489,7 @@ impl ShardsGuest {
         #[cfg(windows)]
         {
             let _ = kill;
-            let _ = lock(&self.child).kill();
+            let _ = lock(&self.shared.child).kill();
         }
     }
 }
@@ -609,13 +643,18 @@ impl Guest for ShardsGuest {
 }
 
 impl Drop for ShardsGuest {
-    /// Ends the guest, if it has not ended: no VM outlives its owner.
+    /// Ends the guest, if it has not ended: no VM outlives its owner, and no zombie its
+    /// guest. One that has exited is reaped here; one still running, by its watcher as it
+    /// exits.
     fn drop(&mut self) {
         let mut state = lock(&self.shared.state);
-        if !state.exited {
-            state.stopping = true;
-            self.signal(&state, true);
+        if state.exited {
+            let _ = self.end(&mut state);
+            return;
         }
+        state.stopping = true;
+        state.dropped = true;
+        self.signal(&state, true);
     }
 }
 
@@ -702,6 +741,32 @@ mod tests {
             arguments(&s, Path::new("/p/v")),
             Err(Refusal::Unsupported { what: "disk", .. })
         ));
+    }
+
+    /// A share whose last name holds a colon, which `--share` would read as a mode and
+    /// refuse, is refused here by name; one above it is the path's.
+    #[test]
+    fn a_share_with_a_colon_in_its_last_name_is_refused() {
+        for dir in ["/s/a:b", "/s/a:rw", "/s/:ro"] {
+            let mut s = spec();
+            s.shares = vec![Share {
+                dir: dir.into(),
+                read_only: false,
+            }];
+            assert!(
+                matches!(
+                    arguments(&s, Path::new("/p/v")),
+                    Err(Refusal::Unsupported { what: "share", .. })
+                ),
+                "{dir}"
+            );
+        }
+        let mut s = spec();
+        s.shares = vec![Share {
+            dir: "/s:x/a".into(),
+            read_only: true,
+        }];
+        assert!(arguments(&s, Path::new("/p/v")).is_ok());
     }
 
     /// The socket's directory is private, short enough to bind, and goes with its value.

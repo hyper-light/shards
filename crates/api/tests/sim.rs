@@ -175,6 +175,62 @@ mod client {
         );
     }
 
+    /// The pid a stand-in wrote to `at`, once it has.
+    fn pid_in(at: &std::path::Path) -> libc::pid_t {
+        let deadline = std::time::Instant::now() + PATIENCE;
+        loop {
+            if let Some(pid) = std::fs::read_to_string(at)
+                .ok()
+                .and_then(|s| s.trim().parse().ok())
+            {
+                return pid;
+            }
+            assert!(std::time::Instant::now() < deadline, "no pid in {}", at.display());
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// Whether `pid` is gone: reaped, not a zombie, which kill(2) still finds.
+    fn reaped(pid: libc::pid_t) -> bool {
+        let deadline = std::time::Instant::now() + PATIENCE;
+        loop {
+            // SAFETY: kill(2) with no signal, which only asks whether the pid is there.
+            if unsafe { libc::kill(pid, 0) } != 0 {
+                return std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH);
+            }
+            if std::time::Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// A guest dropped while shards runs ends it and reaps it, as one dropped after shards
+    /// has exited reaps it: neither leaves a zombie for its owner's life.
+    #[test]
+    fn a_dropped_guest_leaves_no_zombie() {
+        for body in [
+            "echo $$ > \"$0.pid\"; exec sleep 1000",
+            "echo $$ > \"$0.pid\"; exit 0",
+        ] {
+            let dir = shards_testdir::TempDir::new("api-drop").unwrap();
+            let bin = stand_in(&dir, body);
+            let g = Shards
+                .boot(&GuestSpec {
+                    binary: Some(bin.clone()),
+                    ..spec("")
+                })
+                .unwrap();
+            let pid = pid_in(&bin.with_extension("pid"));
+            if body.ends_with("exit 0") {
+                // Exited, and unreaped: no wait_for has asked for its end.
+                std::thread::sleep(Duration::from_millis(200));
+            }
+            drop(g);
+            assert!(reaped(pid), "{body}: pid {pid} is left a zombie");
+        }
+    }
+
     /// A port off the allowlist is refused before anything is dialled (Hex HEX-GUEST-9).
     #[test]
     fn a_port_off_the_allowlist_is_refused() {

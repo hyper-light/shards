@@ -108,27 +108,37 @@ pub enum End {
 }
 
 /// What can't be done, and why.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Refusal {
     /// This host has no backend shards boots Linux with.
-    #[error("shards boots no guest on {os} {arch}: it has no backend there")]
     NoBackend { os: &'static str, arch: &'static str },
     /// A spec past this host's bounds, refused before anything boots.
-    #[error("{what}: {why}")]
     Bounds { what: &'static str, why: String },
     /// Its kernel, its init or a disk; or shards, which ended before the guest was ready.
-    #[error("the guest did not boot: {0}")]
     Boot(String),
     /// What this client does not do yet, by name.
-    #[error("{what}: {why}")]
     Unsupported { what: &'static str, why: String },
     /// `CONNECT <port>` refused, or unanswered within its patience.
-    #[error("vsock port {port}: {why}")]
     Channel { port: u32, why: String },
     /// The guest is gone.
-    #[error("the guest has ended: {0:?}")]
     Ended(End),
 }
+
+impl std::fmt::Display for Refusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Refusal::NoBackend { os, arch } => {
+                write!(f, "shards boots no guest on {os} {arch}: it has no backend there")
+            }
+            Refusal::Bounds { what, why } | Refusal::Unsupported { what, why } => write!(f, "{what}: {why}"),
+            Refusal::Boot(why) => write!(f, "the guest did not boot: {why}"),
+            Refusal::Channel { port, why } => write!(f, "vsock port {port}: {why}"),
+            Refusal::Ended(end) => write!(f, "the guest has ended: {end:?}"),
+        }
+    }
+}
+
+impl std::error::Error for Refusal {}
 
 /// A connection to a guest's vsock port: a Unix stream socket, on Windows shards' own
 /// overlapped one (`shards_afunix`), whose one thread's write never waits for another's
@@ -204,9 +214,11 @@ pub fn max_vcpus() -> u32 {
 /// (`MAX_CONNECTIONS`, Firecracker's, `devices/virtio/vsock/muxer.rs`).
 pub const MAX_PORTS: usize = 1023;
 
-/// Checks `spec` against this host's bounds, as shards-vmm does as it starts a VM
-/// (`vm/runtime.rs` `check_vcpus`; `vm/{aarch64,x86_64}.rs`' memory), so that both the
-/// client and the simulator refuse it before anything boots.
+/// Checks `spec` against this host's bounds, so that both the client and the simulator
+/// refuse it before anything boots: its memory as shards-vmm checks it as it starts a VM
+/// (`vm/{aarch64,x86_64}.rs`); its vCPUs against the host's CPUs ([`max_vcpus`]), tighter
+/// than shards-vmm, which holds them to the hypervisor's limit alone (`vm/runtime.rs`
+/// `check_vcpus`) and so boots more vCPUs than CPUs.
 pub fn check(spec: &GuestSpec) -> Result<(), Refusal> {
     let max = max_vcpus();
     if spec.vcpus == 0 {
