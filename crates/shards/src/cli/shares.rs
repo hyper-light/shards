@@ -35,27 +35,25 @@ fn directory(dir: &OsStr, read_only: bool) -> Result<(PathBuf, bool), String> {
 type Named = (PathBuf, bool);
 
 /// `args` (a `run`'s, after `run`) with each `--share` taken out, and the shares, in order.
-/// Those after `--` are its command's.
+/// Those after `--` are its command's. Read word by word as `run` reads them
+/// (`spec::next_word`): a flag's value is its own, whatever it reads as.
 pub(super) fn take(args: &[OsString]) -> Result<(Vec<OsString>, Vec<Named>), String> {
     let mut kept = Vec::with_capacity(args.len());
     let mut shares = Vec::new();
-    let mut rest = args.iter();
-    while let Some(arg) = rest.next() {
+    let mut rest = args.iter().cloned();
+    while let Some((arg, value)) = crate::spec::next_word(&mut rest) {
         if arg == "--" {
-            kept.push(arg.clone());
-            kept.extend(rest.cloned());
+            kept.push(arg);
+            kept.extend(rest);
             break;
         }
-        if arg != "--share" {
-            kept.push(arg.clone());
-            // A flag's value is its own, whatever it reads as.
-            if arg.to_str().is_some_and(|a| crate::spec::RUN_VALUED.contains(&a)) {
-                kept.extend(rest.next().cloned());
-            }
+        if arg == "--share" {
+            let value = rest.next().ok_or("--share needs a value")?;
+            shares.push(parse(&value)?);
             continue;
         }
-        let value = rest.next().ok_or("--share needs a value")?;
-        shares.push(parse(value)?);
+        kept.push(arg);
+        kept.extend(value);
     }
     Ok((kept, shares))
 }

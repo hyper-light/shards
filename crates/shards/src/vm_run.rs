@@ -354,9 +354,11 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
     let mut served: Vec<i32> = Vec::new();
     #[cfg(windows)]
     let mut served: Vec<String> = Vec::new();
-    while let Some(arg) = args.next() {
+    // Each word with the value `spec::next_word` gives it, a value only for a flag
+    // `spec::RUN_VALUED` lists, as the command line is read ahead of this (cli/shares.rs).
+    while let Some((arg, mut given)) = crate::spec::next_word(&mut args) {
         let arg = text(arg)?;
-        let mut value = |name: &str| args.next().ok_or_else(|| format!("{name} needs a value"));
+        let mut value = |name: &str| given.take().ok_or_else(|| format!("{name} needs a value"));
         if common.option(&arg, &mut value)? {
             continue;
         }
