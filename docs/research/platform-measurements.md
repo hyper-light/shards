@@ -19324,10 +19324,12 @@ revision before comparing a changed API/implementation.
   Windows (233 ms), so they cross later there: at 7 to 8 MiB on both, where Linux's cross at
   5.08. Windows' go-over cost is its own to find (the view swap around WHP's unmap and map
   of the layer's range, D190; not measured step by step here).
-- **Consequence.** `layers::OVER_FROM` per host's kind: 5 MiB on Linux (M443), 7 MiB on
-  macOS and Windows, each held to its own table by `a_restart_goes_over_from_where_packing_costs_more`
-  (the macOS run "n 40 again" and Windows' quiet run above). The two D190 E2E tests write
-  8 MiB, past both. Harness: `layer-kept/ab.py`, `pack.patch`, `over.patch`.
+- **Consequence.** A crossing that moves from host to host (5.08 MiB on a Fedora, 6.8 to
+  7.9 on an M3 Ultra, 7.73 to 7.95 on jupiter) is no constant: each host learns its own
+  from its restarts (D190, `layers::Restarts`, an online least-squares line a way, decided
+  at the records' own spread), and these tables, with M443's, hold the estimator
+  (`a_restart_goes_the_way_this_hosts_restarts_say_is_quicker`: where it decides, the way
+  measured quicker; packing an empty layer, going over the largest). Harness: `layer-kept/ab.py`, `pack.patch`, `over.patch`.
 
 ### M492. The longest string event ETW gives a session, by its buffers (D198, D163)
 
@@ -19677,3 +19679,20 @@ revision before comparing a changed API/implementation.
   tests 265 of 265 on adacachy2. Owed: the test in a row under its host's word every
   2 s (`SHARDS_STRESS_PRESSURE_MS=2000`) on a loaded host, both arms; the series begun
   here completed no run in 30 minutes, the host out of memory to other work.
+
+### M498. A build step's device cgroup, and the ports' chooser's round trip (D44, D122)
+
+- **Question.** D44 starts every `RUN` step in a cgroup of its own (mkdir, CLONE_INTO_CGROUP,
+  rmdir; a step of rules of its own also loads and attaches its device program), where a
+  step without limits had none. D122's chooser answers each bind(2) and listen(2) of a
+  candidate domain (seccomp_unotify), and makes a contested TCP socket's listen itself.
+  What does each cost a step's start and a candidate's call?
+- **Method.** `docs/research/measurements/step-devices/chooser.sh [STEPS_N] [ROUNDS]
+  [CHOOSER_N]`, release builds: build.rs `chooser_round_trip_costs` (ignored; the test
+  guest's `confined listencost`, from the agent's side: a contested port, an uncontested
+  port in a candidate, and a domain under no chooser filter, bind and listen each in ns),
+  then `step-devices/run.py` (the test guest's `stepcgroup` mode as PID 1: `fork`,
+  `steps`, `devices` and `confine` arms, interleaved, µs per start). Reports n, p50, p90,
+  p99 and max with host, OS and revision. On macOS through
+  `docs/research/measurements/macos-sched/launchd-run.sh`.
+- **Results.** Not yet measured.
