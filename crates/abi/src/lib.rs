@@ -17,11 +17,11 @@ pub const DOMAIN_FIRST_ID: u32 = 200_000;
 pub const SERVER_FIRST_ID: u32 = DOMAIN_FIRST_ID + 4 * 1024 * 1024;
 
 /// The join disk's virtio-blk serial (D119), which init finds it by: the read-only disk
-/// whose ranges are the images of containers joining the microVM's network.
+/// whose ranges are the images of runs joining the microVM's network.
 pub const JOIN_DISK_SERIAL: &str = "shards-join";
 
 /// The tag of a microVM's join share (D119): the virtio-fs device, served by no directory
-/// until a container joining its network brings volumes, which init mounts then.
+/// until a run joining its network brings volumes, which init mounts then.
 pub const JOIN_SHARE_TAG: &str = "shards-join-share";
 
 /// The attribute init sets on a share's root, or a join share's volume, as it mounts it
@@ -112,7 +112,7 @@ pub mod control {
     pub const LAYER: u64 = 0x40;
     /// Write [`SWAP_LAYER`]: the guest has let go of its writable layer's file system
     /// (D190), nothing of it mounted or open, and the VMM puts the file its host readied for
-    /// the run under the device in its place, a stopped container's own (`run::kind::OVER`).
+    /// the run under the device in its place, a stopped microVM's own (`run::kind::OVER`).
     /// Read: 1 once one was put there, else 0.
     pub const LAYER_SWAP: u64 = 0x48;
 
