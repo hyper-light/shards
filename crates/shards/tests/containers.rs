@@ -16133,6 +16133,18 @@ fn accept_within(listener: &std::net::TcpListener) -> Option<std::net::TcpStream
     }
 }
 
+/// A 40,000-byte line's parts as syslog messages carry them: each as long as a message
+/// within 8,192 octets leaves of a line, the last the rest (D163).
+fn syslog_parts(parts: &[usize]) {
+    assert_eq!(parts.iter().sum::<usize>(), 40000, "{parts:?}");
+    let (last, whole) = parts.split_last().unwrap();
+    assert!(
+        whole.iter().all(|&p| p == whole[0]) && *last <= whole[0],
+        "{parts:?}"
+    );
+    assert!((8000..8192).contains(&whole[0]), "{parts:?}");
+}
+
 /// What a syslog server reads on `listener`'s first connection: its lines until `lines`
 /// have come, or all it gets until the connection ends; none where none comes.
 fn syslog_lines(listener: std::net::TcpListener, lines: usize) -> std::thread::JoinHandle<Vec<String>> {
@@ -16171,7 +16183,8 @@ fn free_port() -> u16 {
 /// - its tag as asked, else the container's short ID;
 /// - stamped with when its output came (Docker stamps when it sends);
 /// - naming this host (Docker names its socket's address and port);
-/// - a line longer than 16 KiB in parts.
+/// - a line longer than a message within 8,192 octets carries in parts (RFC 5425's
+///   least a receiver takes; Docker cuts at 16 KiB whatever its receiver takes).
 ///
 /// One sent to a server that comes up only after its run gets there, and so does one
 /// whose daemon restarted meanwhile: Docker's would not start without its server, and
@@ -16361,7 +16374,7 @@ fn a_runs_log_is_sent_to_syslog_as_its_options_say() {
         .collect();
     assert_eq!(said, [("27".into(), "err".into()), ("30".into(), "out".into())]);
 
-    // A unix datagram socket; a line of 40,000 bytes in parts of 16 KiB. Windows has none,
+    // A unix datagram socket; a line of 40,000 bytes in parts. Windows has none,
     // and refuses one's address as a run is made: its parts go on a unix stream there.
     let sockets = TempDir::new("sl");
     #[cfg(windows)]
@@ -16384,13 +16397,16 @@ fn a_runs_log_is_sent_to_syslog_as_its_options_say() {
             let (conn, ()) = unix.accept().unwrap();
             conn.set_read_timeout(Some(TIMEOUT)).unwrap();
             let mut read = BufReader::new(conn);
-            (0..3)
-                .map(|_| {
-                    let mut line = String::new();
-                    read.read_line(&mut line).unwrap();
-                    line
-                })
-                .collect::<Vec<String>>()
+            let (mut lines, mut carried) = (Vec::new(), 0);
+            while carried < 40000 {
+                let mut line = String::new();
+                read.read_line(&mut line).unwrap();
+                carried += line
+                    .split_once("]: ")
+                    .map_or(0, |(_, b)| b.trim_end_matches('\n').len());
+                lines.push(line);
+            }
+            lines
         });
         syslog(
             "gram",
@@ -16404,10 +16420,12 @@ fn a_runs_log_is_sent_to_syslog_as_its_options_say() {
             .map(|m| {
                 let body = m.split_once("]: ").unwrap().1.trim_end_matches('\n');
                 assert!(body.bytes().all(|b| b == b'x'), "{m:?}");
+                // Within what syslog's receivers take, its newline counted (RFC 5425).
+                assert!(m.len() <= 8192, "{}", m.len());
                 body.len()
             })
             .collect();
-        assert_eq!(parts, [16384, 16384, 7232]);
+        syslog_parts(&parts);
     }
     #[cfg(unix)]
     let gram = sockets.join("g");
@@ -16435,15 +16453,17 @@ fn a_runs_log_is_sent_to_syslog_as_its_options_say() {
             &["wide", "40000"],
         );
         let mut parts = Vec::new();
-        for _ in 0..3 {
+        while parts.iter().sum::<usize>() < 40000 {
             let mut b = vec![0u8; 1 << 16];
             let n = unixgram.recv(&mut b).unwrap();
+            // Within what syslog's receivers take, its newline counted (RFC 5425).
+            assert!(n <= 8192, "{n}");
             let m = String::from_utf8(b[..n].to_vec()).unwrap();
             let body = m.split_once("]: ").unwrap().1.trim_end_matches('\n');
             assert!(body.bytes().all(|b| b == b'x'), "{m:?}");
             parts.push(body.len());
         }
-        assert_eq!(parts, [16384, 16384, 7232]);
+        syslog_parts(&parts);
     }
 
     // A server that comes up only after the run: its log waits in the store, and goes.
@@ -16677,18 +16697,18 @@ fn a_runs_log_is_sent_to_gelf_as_its_options_say() {
         assert_eq!(sent_ms, kept_ms, "{m}: {stamped}");
     }
 
-    // Uncompressed: a line of 40,000 bytes, in parts of 16 KiB, each its own message in
-    // chunks.
+    // Uncompressed: a line of 40,000 bytes, one message in chunks, as a GELF input takes
+    // 128 of them (moby's goes in 16 KiB parts).
     gelf(
         "wide",
         &[&address, "gelf-compression-type=none"],
         &["wide", "40000"],
     );
-    let parts: Vec<usize> = receive(3)
+    let parts: Vec<usize> = receive(1)
         .iter()
         .map(|m| m["short_message"].as_str().unwrap().len())
         .collect();
-    assert_eq!(parts, [16384, 16384, 7232]);
+    assert_eq!(parts, [40000]);
 
     // TCP: each message followed by a NUL.
     let tcp = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -16827,7 +16847,7 @@ fn fluentd_events(
 /// (D163): each line an event of Fluentd's forward protocol as Docker's fluentd driver
 /// sends it: its tag, its time (whole seconds, or to the nanosecond), its record (the
 /// container's ID and name, the stream, the line, the attributes asked for, and a part's
-/// place in a line longer than 16 KiB), and an ack asked for where told. Over TCP and a
+/// place in a line longer than a forward input takes), and an ack asked for where told. Over TCP and a
 /// unix socket.
 #[test]
 fn a_runs_log_is_sent_to_fluentd_as_its_options_say() {
@@ -16900,7 +16920,8 @@ fn a_runs_log_is_sent_to_fluentd_as_its_options_say() {
         assert_eq!(*at, stamped("nanos", line), "its time its output's");
     }
 
-    // A unix socket, whole seconds, a line of 40,000 bytes in parts.
+    // A unix socket, whole seconds, a line longer than a forward input takes (Fluent Bit's
+    // 6,144,000 bytes) in parts, the first as long as one takes.
     let sockets = TempDir::new("fd");
     let path = sockets.join("f");
     #[cfg(unix)]
@@ -16914,21 +16935,27 @@ fn a_runs_log_is_sent_to_fluentd_as_its_options_say() {
     let reading = std::thread::spawn(move || {
         let (mut conn, _) = unix.accept().unwrap();
         conn.set_read_timeout(Some(TIMEOUT)).unwrap();
-        fluentd_events(&mut conn, 3)
+        fluentd_events(&mut conn, 2)
     });
     fluentd(
         "parts",
         &[&format!("fluentd-address=unix:///{}", path.display())],
-        &["wide", "40000"],
+        &["wide", "6200000"],
     );
     let events = reading.join().unwrap();
     let id = events[0].2["partial_id"].clone();
+    let lens: Vec<usize> = events
+        .iter()
+        .map(|e| e.2["log"].as_str().unwrap().len())
+        .collect();
+    assert_eq!(lens.iter().sum::<usize>(), 6_200_000, "{lens:?}");
+    // Its event within the input's bound, the rest of the event a few hundred bytes.
+    assert!((6_143_000..6_144_000).contains(&lens[0]), "{lens:?}");
     for (i, (_, at, record, _)) in events.iter().enumerate() {
-        assert_eq!(record["log"].as_str().unwrap().len(), [16384, 16384, 7232][i]);
         assert_eq!(record["partial_message"], "true");
         assert_eq!(record["partial_id"], id);
         assert_eq!(record["partial_ordinal"], (i + 1).to_string());
-        assert_eq!(record["partial_last"], if i == 2 { "true" } else { "false" });
+        assert_eq!(record["partial_last"], if i == 1 { "true" } else { "false" });
         assert_eq!(*at % 1_000_000_000, 0, "whole seconds");
     }
 
@@ -17130,14 +17157,13 @@ fn a_runs_log_is_sent_to_journald_as_its_options_say() {
         ordinals.sort();
         assert_eq!(ordinals, ["1", "2"]);
 
-        // A line of 40,000 bytes in parts of 16 KiB, the size receivers that join parts
-        // expect.
-        journald("parts", &[], &["wide", "40000"]);
+        // A line of 100,000 bytes in parts of the journal's own LineMax, 48 KiB.
+        journald("parts", &[], &["wide", "100000"]);
         let parts: Vec<_> = (0..3).map(|_| journal_entry(&journal).0).collect();
         let partial = field(&parts[0], "CONTAINER_PARTIAL_ID");
         assert_eq!(partial[0].len(), 64);
         for (i, fields) in parts.iter().enumerate() {
-            assert_eq!(field(fields, "MESSAGE")[0].len(), [16384, 16384, 7232][i]);
+            assert_eq!(field(fields, "MESSAGE")[0].len(), [49152, 49152, 1696][i]);
             assert_eq!(field(fields, "CONTAINER_PARTIAL_ID"), partial);
             assert_eq!(field(fields, "CONTAINER_PARTIAL_ORDINAL"), [(i + 1).to_string()]);
             let last = i == 2;

@@ -286,10 +286,44 @@ impl Config {
         Ok((roots, client))
     }
 
-    /// The message of `line` (a line of the run's output without its newline, or a 16 KiB
-    /// part of a longer one) on `stream`, whose output came at `at` nanoseconds since the
+    /// The message of `line` (a line of the run's output without its newline, or a part
+    /// of a longer one) on `stream`, whose output came at `at` nanoseconds since the
     /// epoch, in `zone`'s local time, framed for its transport.
     pub fn message(&self, from: &From, stream: u8, at: u64, zone: &Local, line: &[u8]) -> Vec<u8> {
+        let m = self.syslog_msg(from, stream, at, zone, line);
+        // RFC 5425's octet counting over TLS, for RFC 5424's formats (moby parseLogFormat).
+        if matches!(self.to, To::Tls(_)) && matches!(self.format, Format::Rfc5424 | Format::Rfc5424Micro) {
+            let mut framed = format!("{} ", m.len()).into_bytes();
+            framed.extend(m);
+            return framed;
+        }
+        m
+    }
+
+    /// The most of a line one message carries: what is left of [`MESSAGE_MOST`] past the
+    /// longest header this run's messages can have (either stream's priority, a time zone
+    /// of the widest offset, every field at its widest) and the newline.
+    pub fn part(&self, from: &From) -> usize {
+        let widest = Local {
+            year: 9999,
+            mon: 8,
+            mday: 30,
+            hour: 23,
+            min: 59,
+            sec: 59,
+            offset: -(14 * 3600),
+        };
+        let header = [crate::spec::LOG_STDOUT, crate::spec::LOG_STDERR]
+            .map(|stream| self.syslog_msg(from, stream, 999_999_999, &widest, b"").len())
+            .into_iter()
+            .max()
+            .unwrap_or(0);
+        MESSAGE_MOST.saturating_sub(header).max(1)
+    }
+
+    /// The SYSLOG-MSG of `line` (RFC 5424 section 6, RFC 5425 section 4.3): its header,
+    /// the line and its newline, unframed.
+    fn syslog_msg(&self, from: &From, stream: u8, at: u64, zone: &Local, line: &[u8]) -> Vec<u8> {
         let severity = if stream == crate::spec::LOG_STDERR {
             ERR
         } else {
@@ -318,15 +352,18 @@ impl Config {
         m.extend_from_slice(header.as_bytes());
         m.extend_from_slice(line);
         m.push(b'\n');
-        // RFC 5425's octet counting over TLS, for RFC 5424's formats (moby parseLogFormat).
-        if matches!(self.to, To::Tls(_)) && matches!(self.format, Format::Rfc5424 | Format::Rfc5424Micro) {
-            let mut framed = format!("{} ", m.len()).into_bytes();
-            framed.extend(m);
-            return framed;
-        }
         m
     }
 }
+
+/// The most of a message's octets, its header, line and newline, that a run's lines are cut
+/// to: what every syslog receiver over TLS should take (RFC 5425 section 4.3.1: "Transport
+/// receivers SHOULD be able to process messages with lengths up to and including 8192
+/// octets"), and rsyslog's default (`maxMessageSize`, 8192 since a configuration is loaded:
+/// rsyslog v8.2610.0 runtime/glbl.c), past which a receiver should cut it short (RFC 5424
+/// section 6.1). syslog-ng takes 65536 (`log-msg-size`, syslog-ng 4.12.0 lib/cfg.c). A
+/// message cut so is taken whole where a 16 KiB part was not.
+pub const MESSAGE_MOST: usize = 8192;
 
 /// A tag as RFC 3164's TAG and srslog's Unix format carry it: whitespace and control
 /// characters, which would end it early, as `_`.
@@ -485,6 +522,60 @@ mod tests {
     /// (scripts/logdrivers/generate).
     fn oracle() -> serde_json::Value {
         serde_json::from_str(include_str!("testdata/syslog.json")).unwrap()
+    }
+
+    /// A line's part leaves every message within what syslog's receivers take, header and
+    /// newline counted, in every format, either stream, in any time zone; a part a byte
+    /// longer would not, where the zone is the widest; a TLS frame's count is no part of it.
+    #[test]
+    fn a_part_leaves_its_message_within_what_receivers_take() {
+        let from = From {
+            tag: "a tag of the run".into(),
+            hostname: "host.example".into(),
+            pid: 4_194_304,
+        };
+        let zone = |offset| Local {
+            year: 2026,
+            mon: 10,
+            mday: 7,
+            hour: 9,
+            min: 5,
+            sec: 3,
+            offset,
+        };
+        for format in [
+            Format::Unix,
+            Format::Rfc3164,
+            Format::Rfc5424,
+            Format::Rfc5424Micro,
+        ] {
+            for to in [To::Tls("h:1".into()), To::Udp("h:1".into())] {
+                let config = Config {
+                    to,
+                    facility: 23,
+                    format,
+                    ca: None,
+                    cert: None,
+                    key: None,
+                };
+                let part = config.part(&from);
+                assert!(part > MESSAGE_MOST - 200, "{format:?}: {part}");
+                for stream in [crate::spec::LOG_STDOUT, crate::spec::LOG_STDERR] {
+                    for offset in [0, 3600, -(14 * 3600)] {
+                        let m = config.syslog_msg(&from, stream, 1, &zone(offset), &vec![b'x'; part]);
+                        assert!(m.len() <= MESSAGE_MOST, "{format:?} {offset}: {}", m.len());
+                    }
+                }
+                let widest = config.syslog_msg(
+                    &from,
+                    crate::spec::LOG_STDERR,
+                    1,
+                    &zone(-(14 * 3600)),
+                    &vec![b'x'; part + 1],
+                );
+                assert_eq!(widest.len(), MESSAGE_MOST + 1, "{format:?}");
+            }
+        }
     }
 
     /// Every message the recording holds (scripts/logdrivers/generate), on every

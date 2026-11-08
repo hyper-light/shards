@@ -29,6 +29,10 @@ const POST: Duration = Duration::from_secs(30);
 const UNACKNOWLEDGED: Duration = Duration::from_secs(5 * 60);
 /// The most of an answer's body a refusal quotes (moby's maxResponseSize).
 const QUOTED: usize = 1024;
+/// The most of a post's content HEC takes: `max_content_length`, "the maximum length, in
+/// bytes, of HTTP request content that is accepted by the HTTP Event Collector server",
+/// 838,860,800 unless set (Splunk Enterprise 10.0 limits.conf, `[http_input]`).
+const CONTENT_MOST: usize = 838_860_800;
 
 pub(super) struct Splunk {
     config: Config,
@@ -182,6 +186,18 @@ impl Splunk {
 }
 
 impl Driver for Splunk {
+    /// The most of an event's bytes that leaves a post of `batch_size` events, each as long,
+    /// within what HEC takes of a post ([`CONTENT_MOST`]), uncompressed: an event's line is
+    /// no longer than its event.
+    fn part(&self) -> usize {
+        CONTENT_MOST / self.batch_size.max(1)
+    }
+
+    fn fits(&mut self, m: &Message<'_>) -> io::Result<bool> {
+        Ok(splunk::event(&self.config, &self.from, m.stream, m.at, m.line)
+            .is_none_or(|e| e.len() <= self.part()))
+    }
+
     fn send(&mut self, m: &Message<'_>, _wait: &Wait<'_>) -> io::Result<()> {
         // A full batch goes first: a message is taken only where there is room for it.
         if self.batch.len() >= self.batch_size {

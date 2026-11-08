@@ -1488,16 +1488,36 @@ fn asked_of(path: &std::path::Path) -> std::io::Result<Option<shards_ipc::Stream
     return shards_ipc::Stream::given(conn).map(Some);
 }
 
+/// How long a dial of an agent's pipe waits for the agent to free an instance, all of them
+/// busy, before it gives the agent up: the quiet past which shards gives up on what shows
+/// no progress (D209, the daemon's `READY_TIMEOUT`). Each instance freed is the agent's
+/// progress, however many clients take one first: OpenSSH for Windows' agent frees its next
+/// instance once it has started a worker for the last connection, 1.4 ms apart at the
+/// median and 297 ms at most with 64 clients dialing at once (PM M493), while a dial's whole
+/// wait grows with the clients ahead of it, past go-winio's 2 s, the wait shards had.
+#[cfg(windows)]
+const AGENT_QUIET: std::time::Duration = std::time::Duration::from_secs(60);
+
 /// A client's end of the named pipe at `path`, as BuildKit v0.27.1 dials an agent's
 /// (sshprovider/agentprovider_windows.go, winio.DialPipe): anonymous to the pipe's server
-/// (SECURITY_SQOS_PRESENT, SECURITY_ANONYMOUS), which cannot impersonate this process; and
-/// opened once an instance is free where all are busy (ERROR_PIPE_BUSY), as winio.DialPipe
-/// waits for one (2 s, winio's pipe.go default, which BuildKit's call leaves).
+/// (SECURITY_SQOS_PRESENT, SECURITY_ANONYMOUS), which cannot impersonate this process; and,
+/// where every instance is busy (ERROR_PIPE_BUSY), dialed again each time one is freed,
+/// for another client may take it first (Microsoft Learn, "Named Pipe Client"), for as long
+/// as the agent frees one within [`AGENT_QUIET`]. An agent with no instance left has gone,
+/// and the dial says so at once (WaitNamedPipe returns at once where none exists).
+/// winio.DialPipe waits 2 s in all, however busy the agent, BuildKit's call leaving its
+/// default (pipe.go).
 #[cfg(windows)]
 fn pipe(path: &std::path::Path) -> std::io::Result<std::fs::File> {
+    pipe_within(path, AGENT_QUIET)
+}
+
+/// [`pipe`], giving the agent up once it frees no instance for `quiet`.
+#[cfg(windows)]
+fn pipe_within(path: &std::path::Path, quiet: std::time::Duration) -> std::io::Result<std::fs::File> {
     use std::os::windows::ffi::OsStrExt as _;
     use std::os::windows::fs::OpenOptionsExt as _;
-    use windows_sys::Win32::Foundation::ERROR_PIPE_BUSY;
+    use windows_sys::Win32::Foundation::{ERROR_PIPE_BUSY, ERROR_SEM_TIMEOUT};
     use windows_sys::Win32::Storage::FileSystem::SECURITY_ANONYMOUS;
     use windows_sys::Win32::System::Pipes::WaitNamedPipeW;
     let open = || {
@@ -1507,16 +1527,27 @@ fn pipe(path: &std::path::Path) -> std::io::Result<std::fs::File> {
             .security_qos_flags(SECURITY_ANONYMOUS)
             .open(path)
     };
-    match open() {
-        Err(e) if e.raw_os_error() == Some(ERROR_PIPE_BUSY as i32) => {
-            let wide: Vec<u16> = path.as_os_str().encode_wide().chain([0]).collect();
-            // SAFETY: a NUL-terminated name.
-            if unsafe { WaitNamedPipeW(wide.as_ptr(), 2000) } == 0 {
-                return Err(std::io::Error::last_os_error());
-            }
-            open()
+    let wide: Vec<u16> = path.as_os_str().encode_wide().chain([0]).collect();
+    // Below NMPWAIT_WAIT_FOREVER and NMPWAIT_USE_DEFAULT_WAIT's values.
+    let ms = u32::try_from(quiet.as_millis())
+        .unwrap_or(u32::MAX - 1)
+        .clamp(1, u32::MAX - 1);
+    loop {
+        match open() {
+            Err(e) if e.raw_os_error() == Some(ERROR_PIPE_BUSY as i32) => {}
+            opened => return opened,
         }
-        opened => opened,
+        // SAFETY: a NUL-terminated name.
+        if unsafe { WaitNamedPipeW(wide.as_ptr(), ms) } == 0 {
+            let e = std::io::Error::last_os_error();
+            if e.raw_os_error() == Some(ERROR_SEM_TIMEOUT as i32) {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    format!("its agent freed no instance of its pipe in {quiet:?}, every one busy"),
+                ));
+            }
+            return Err(e);
+        }
     }
 }
 
@@ -1958,5 +1989,162 @@ mod tests {
             0,
             "asked of a descriptor it was not told"
         );
+    }
+
+    /// A named pipe served as OpenSSH for Windows' agent serves its own (agent.c,
+    /// `agent_listen_loop`): one instance at a time, the next made only once a process is
+    /// started for the last client's connection, and `pause` more; each client written a
+    /// byte. Gives back how long each next instance took after the last was taken.
+    #[cfg(windows)]
+    fn agent_like(path: &str, clients: usize, pause: Duration) -> std::thread::JoinHandle<Vec<Duration>> {
+        use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle};
+        use windows_sys::Win32::Foundation::{ERROR_PIPE_CONNECTED, INVALID_HANDLE_VALUE};
+        use windows_sys::Win32::Storage::FileSystem::PIPE_ACCESS_DUPLEX;
+        use windows_sys::Win32::System::Pipes::{
+            ConnectNamedPipe, CreateNamedPipeW, PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS,
+            PIPE_TYPE_BYTE, PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
+        };
+        let wide: Vec<u16> = path.encode_utf16().chain([0]).collect();
+        let instance = move || {
+            // SAFETY: a NUL-terminated name; bytes, waiting; no attributes.
+            let h = unsafe {
+                CreateNamedPipeW(
+                    wide.as_ptr(),
+                    PIPE_ACCESS_DUPLEX,
+                    PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
+                    PIPE_UNLIMITED_INSTANCES,
+                    4096,
+                    4096,
+                    0,
+                    std::ptr::null(),
+                )
+            };
+            assert_ne!(h, INVALID_HANDLE_VALUE);
+            // SAFETY: the instance just made, owned here alone.
+            std::fs::File::from(unsafe { OwnedHandle::from_raw_handle(h) })
+        };
+        // The first instance before any client dials.
+        let first = instance();
+        std::thread::spawn(move || {
+            let mut next = Some(first);
+            let mut gaps = Vec::new();
+            let mut workers = Vec::new();
+            for served in 0..clients {
+                let Some(mut conn) = next.take() else { break };
+                // SAFETY: the instance's handle, waited on for a client, no overlap.
+                if unsafe { ConnectNamedPipe(conn.as_raw_handle(), std::ptr::null_mut()) } == 0 {
+                    assert_eq!(
+                        std::io::Error::last_os_error().raw_os_error(),
+                        Some(ERROR_PIPE_CONNECTED as i32)
+                    );
+                }
+                let taken = std::time::Instant::now();
+                // The agent's worker for the connection (CreateProcessW).
+                workers.push(
+                    std::process::Command::new("cmd")
+                        .args(["/c", "exit"])
+                        .spawn()
+                        .unwrap(),
+                );
+                std::thread::sleep(pause);
+                if served + 1 < clients {
+                    next = Some(instance());
+                    gaps.push(taken.elapsed());
+                }
+                conn.write_all(b"!").unwrap();
+                // Held until its client has read it: a pipe closed drops what is unread.
+                let mut end = [0; 1];
+                let _ = conn.read(&mut end);
+            }
+            for mut w in workers {
+                w.wait().unwrap();
+            }
+            gaps
+        })
+    }
+
+    /// Do: 16 clients dial at once an agent's pipe served as OpenSSH for Windows' agent
+    /// serves its own, each next instance 150 ms after the last was taken, so that the last
+    /// client's whole wait is 2.25 s, past go-winio's 2 s; each giving the agent up after
+    /// a second with no instance freed. Expect every dial to reach the agent and read its
+    /// byte; and the agent's own interval between instances, a process started for each
+    /// connection, within [`AGENT_QUIET`] on this host (PM M493's basis).
+    #[cfg(windows)]
+    #[test]
+    fn a_dial_waits_while_its_agent_frees_instances() {
+        let path = format!(r"\\.\pipe\shards-tests-agent-{}", std::process::id());
+        let clients = 16;
+        let server = agent_like(&path, clients, Duration::from_millis(150));
+        let started = std::time::Instant::now();
+        let dials: Vec<_> = (0..clients)
+            .map(|_| {
+                let path = path.clone();
+                std::thread::spawn(move || {
+                    let mut conn = pipe_within(std::path::Path::new(&path), Duration::from_secs(1)).unwrap();
+                    let mut got = [0; 1];
+                    conn.read_exact(&mut got).unwrap();
+                    conn.write_all(b".").unwrap();
+                    got
+                })
+            })
+            .collect();
+        for d in dials {
+            assert_eq!(&d.join().unwrap(), b"!");
+        }
+        assert!(
+            started.elapsed() > Duration::from_secs(2),
+            "{:?}",
+            started.elapsed()
+        );
+        // The agent's own interval, without the test's pause: a process started.
+        let path = format!(r"{path}-quick");
+        let server_quick = agent_like(&path, clients, Duration::ZERO);
+        let dials: Vec<_> = (0..clients)
+            .map(|_| {
+                let path = path.clone();
+                std::thread::spawn(move || {
+                    let mut conn = pipe(std::path::Path::new(&path)).unwrap();
+                    let mut got = [0; 1];
+                    conn.read_exact(&mut got).unwrap();
+                    conn.write_all(b".").unwrap();
+                })
+            })
+            .collect();
+        for d in dials {
+            d.join().unwrap();
+        }
+        server.join().unwrap();
+        let gaps = server_quick.join().unwrap();
+        let most = gaps.iter().max().copied().unwrap_or_default();
+        println!(
+            "an instance after the last taken: most {most:?} of {}",
+            gaps.len()
+        );
+        assert!(most < AGENT_QUIET, "{most:?}");
+    }
+
+    /// Do: an agent's pipe whose one instance a client holds and whose agent makes no
+    /// other, dialed by a second client that gives it up after 300 ms with none freed; then
+    /// a pipe no agent serves. Expect the second dial to fail as timed out, no sooner than
+    /// 300 ms, and the pipe no one serves to fail at once as not found.
+    #[cfg(windows)]
+    #[test]
+    fn a_dial_gives_up_an_agent_that_frees_no_instance() {
+        let path = format!(r"\\.\pipe\shards-tests-stuck-{}", std::process::id());
+        let server = agent_like(&path, 1, Duration::ZERO);
+        let mut held = pipe(std::path::Path::new(&path)).unwrap();
+        let started = std::time::Instant::now();
+        let e = pipe_within(std::path::Path::new(&path), Duration::from_millis(300)).unwrap_err();
+        assert_eq!(e.kind(), std::io::ErrorKind::TimedOut, "{e}");
+        assert!(started.elapsed() >= Duration::from_millis(300));
+        let mut got = [0; 1];
+        held.read_exact(&mut got).unwrap();
+        held.write_all(b".").unwrap();
+        server.join().unwrap();
+        let none = format!(r"{path}-none");
+        let started = std::time::Instant::now();
+        let e = pipe_within(std::path::Path::new(&none), AGENT_QUIET).unwrap_err();
+        assert_eq!(e.kind(), std::io::ErrorKind::NotFound, "{e}");
+        assert!(started.elapsed() < AGENT_QUIET);
     }
 }

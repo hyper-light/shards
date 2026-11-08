@@ -1,0 +1,15 @@
+# The longest string event ETW takes from EventWriteString (PM M492): the etwlogs driver's
+# events, a run's line and its details in UTF-16, past which a line goes in parts.
+[package]
+name = "etw-event-size"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+windows-sys = { version = "=0.61.2", features = [
+  "Win32_Foundation",
+  "Win32_System_Diagnostics_Etw",
+] }

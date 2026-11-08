@@ -14,6 +14,13 @@ use std::path::PathBuf;
 use super::{Driver, Message, Wait};
 use crate::logging::journald::{self, From};
 
+/// The most of a line one entry carries: the journal's own LineMax, where it cuts a
+/// program's output into entries as it takes them from a stream (journald.conf(5): "Defaults
+/// to 48K, ... small enough so that log records likely fit into network datagrams along with
+/// extra room for metadata"; systemd v262 src/journal/journald-config.c `DEFAULT_LINE_MAX`,
+/// 48*1024). A longer line goes in parts, its CONTAINER_PARTIAL fields joining them.
+const LINE_MAX: usize = 48 * 1024;
+
 pub(super) struct Journald {
     from: From,
     socket: PathBuf,
@@ -55,6 +62,10 @@ impl Journald {
 }
 
 impl Driver for Journald {
+    fn part(&self) -> usize {
+        LINE_MAX
+    }
+
     fn send(&mut self, m: &Message<'_>, _wait: &Wait<'_>) -> io::Result<()> {
         let ordinal = self.sent.saturating_add(1);
         let entry = journald::entry(&self.from, m.stream, m.at, m.line, m.part, ordinal);

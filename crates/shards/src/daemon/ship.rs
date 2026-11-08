@@ -44,8 +44,9 @@ pub(super) struct Message<'a> {
     pub at: u64,
     /// Its bytes, without the line's newline.
     pub line: &'a [u8],
-    /// Its place in its line, where the line is longer than [`PART`] (moby's
-    /// PartialLogMetaData).
+    /// Its place in its line, where the line is longer than one message of its receiver's
+    /// carries ([`Driver::part`], [`Driver::fits`]): the ID its parts have in common, its
+    /// place among them and whether it is the last, the fields receivers join parts by.
     pub part: Option<crate::logging::fluentd::Part<'a>>,
 }
 
@@ -68,9 +69,19 @@ pub(super) trait Driver: Send {
         0
     }
 
-    /// The longest message it is given: longer lines go in parts of it ([`PART`]).
-    fn part(&self) -> usize {
-        PART
+    /// The most of a line's bytes one message to its receiver carries, as the receiver
+    /// says it takes a message: a longer line goes in parts, each as long as it may be
+    /// (D163). Each driver's is its receiver's own bound, cited where it is set; it is the
+    /// most a shipper holds of a line, too.
+    fn part(&self) -> usize;
+
+    /// Whether `m` goes in one message its receiver takes whole, where what the receiver
+    /// bounds is the message as it is written (escaped JSON, UTF-16, the fields beside its
+    /// line) rather than the line's bytes: a line, or a part, that does not is cut shorter.
+    /// Asked of a line at its end and of each part cut; every message fits where the
+    /// receiver bounds no more than [`Driver::part`] does.
+    fn fits(&mut self, _m: &Message<'_>) -> io::Result<bool> {
+        Ok(true)
     }
 
     /// How long until it would flush what it holds back though its shipper has nothing
@@ -174,6 +185,16 @@ impl Sender<'_> {
         Ok(())
     }
 
+    /// Whether `m` fits one message of its driver's receiver, asked again until the driver
+    /// can say (gcplogs' resource, found as first needed); given up only as the daemon
+    /// stops.
+    fn fits(&mut self, m: &Message<'_>) -> io::Result<bool> {
+        let (driver, wait) = (&mut *self.driver, &self.wait);
+        let mut fits = false;
+        until_done(self.id, wait, || driver.fits(m).map(|f| fits = f))?;
+        Ok(fits)
+    }
+
     /// Sends what its driver holds back, as its shipper has caught up, again until it is
     /// sent; given up only as the daemon stops.
     fn flush(&mut self) -> io::Result<()> {
@@ -221,10 +242,6 @@ fn until_done(id: &str, wait: &Wait<'_>, mut f: impl FnMut() -> io::Result<()>) 
     }
 }
 
-/// The longest message: moby's copier's buffer (copier.go, defaultBufSize), past which a
-/// line goes in parts.
-const PART: usize = 16 * 1024;
-
 /// How long a driver that could not send waits before it tries again: a second at first,
 /// half as long again after each failure, a minute at most, as fluent-logger-golang waits
 /// for its server (fluent.go: defaultRetryWait, defaultReconnectWaitIncreRate,
@@ -270,12 +287,29 @@ impl Shipping {
     }
 }
 
-/// Each stream's line as its messages go, cut as moby's copier cuts one (copier.go,
-/// copySrc): a line of less than [`PART`] bytes is one message; a longer one, parts of
-/// [`PART`] bytes, then the rest, which may be nothing, with an ID in common and their
-/// places, the last saying so. A line the run left unfinished goes whole, or as its last
-/// part, where moby's copier sends it as a part that is never the last. A driver's parts
-/// may be longer (Driver::part).
+/// Where a shipper's lines go: each message sent, and whether one fits its receiver.
+trait Ship {
+    fn send(&mut self, m: &Message<'_>) -> io::Result<()>;
+    fn fits(&mut self, m: &Message<'_>) -> io::Result<bool>;
+}
+
+impl Ship for Sender<'_> {
+    fn send(&mut self, m: &Message<'_>) -> io::Result<()> {
+        Sender::send(self, m)
+    }
+
+    fn fits(&mut self, m: &Message<'_>) -> io::Result<bool> {
+        Sender::fits(self, m)
+    }
+}
+
+/// Each stream's line as its messages go, cut where its receiver bounds a message (D163):
+/// a line one message carries whole goes whole; a longer one in parts, each as long as one
+/// message carries ([`Driver::part`], [`Driver::fits`]), with an ID in common and their
+/// places, the last saying so. A part is cut at a character's boundary where the line is
+/// UTF-8 there, so that no character is split across two messages. A line the run left
+/// unfinished goes whole, or as its last part. moby's copier cuts every line past 16 KiB
+/// whatever its receiver takes (copier.go, defaultBufSize), a character in two among them.
 struct Lines {
     open: [Open; 2],
     part: usize,
@@ -293,18 +327,15 @@ impl Lines {
     fn new(part: usize) -> Lines {
         Lines {
             open: Default::default(),
-            part,
+            part: part.max(1),
         }
     }
 
-    /// Takes `piece`, sending each message it completes with `send`, which returns once
+    /// Takes `piece`, sending each message it completes through `ship`, which returns once
     /// it is sent, or says why it never will be.
-    fn take(
-        &mut self,
-        piece: &Piece<'_>,
-        send: &mut dyn FnMut(&Message<'_>) -> io::Result<()>,
-    ) -> io::Result<()> {
+    fn take(&mut self, piece: &Piece<'_>, ship: &mut dyn Ship) -> io::Result<()> {
         let stream = piece.stream;
+        let part = self.part;
         let open = self
             .open
             .get_mut(usize::from(stream == LOG_STDERR))
@@ -317,21 +348,20 @@ impl Lines {
             None => (piece.bytes, false),
         };
         open.held.extend_from_slice(bytes);
-        // A part as soon as one is held whole, without its newline: the copier's buffer
-        // full, which holds the line's newline only where there is room for it.
-        while open.held.len() >= self.part {
-            let rest = open.held.split_off(self.part);
-            let part = std::mem::replace(&mut open.held, rest);
-            open.send_part(stream, &part, false, send)?;
+        // A part as soon as more is held than one message carries: what is held then is
+        // the most a shipper keeps of a line.
+        while open.held.len() > part {
+            open.cut(stream, part, ship)?;
         }
         if ends {
-            open.finish(stream, send)?;
+            open.finish(stream, part, ship)?;
         }
         Ok(())
     }
 
     /// Sends what is left of each stream's unfinished line, as the run has ended.
-    fn finish(&mut self, send: &mut dyn FnMut(&Message<'_>) -> io::Result<()>) -> io::Result<()> {
+    fn finish(&mut self, ship: &mut dyn Ship) -> io::Result<()> {
+        let part = self.part;
         for (s, open) in self.open.iter_mut().enumerate() {
             let stream = if s == 1 {
                 LOG_STDERR
@@ -339,29 +369,124 @@ impl Lines {
                 crate::spec::LOG_STDOUT
             };
             if !open.held.is_empty() || open.parts.is_some() {
-                open.finish(stream, send)?;
+                open.finish(stream, part, ship)?;
             }
         }
         Ok(())
     }
 }
 
+/// The most of `line`'s first `n` bytes that ends at a character's boundary: `n` less the
+/// bytes of a UTF-8 character it would cut in two; `n` itself where none is cut, where the
+/// bytes there are no UTF-8, or where the character begins the line.
+fn boundary(line: &[u8], n: usize) -> usize {
+    let Some(&next) = line.get(n) else {
+        return n.min(line.len());
+    };
+    // Not a continuation byte: no character is cut.
+    if next & 0xc0 != 0x80 {
+        return n;
+    }
+    // The character's lead, within the three bytes before.
+    for back in 1..=n.min(3) {
+        let start = n - back;
+        let Some(&lead) = line.get(start) else {
+            return n;
+        };
+        if lead & 0xc0 == 0x80 {
+            continue;
+        }
+        let len = match lead {
+            0xc2..=0xdf => 2,
+            0xe0..=0xef => 3,
+            0xf0..=0xf4 => 4,
+            _ => return n,
+        };
+        let whole = line
+            .get(start..start + len)
+            .is_some_and(|c| std::str::from_utf8(c).is_ok());
+        return if whole && start + len > n && start > 0 {
+            start
+        } else {
+            n
+        };
+    }
+    n
+}
+
 impl Open {
-    /// Sends `part` as the line's next part.
-    fn send_part(
-        &mut self,
+    /// The length of the line's next part, `id`'s `ordinal`th: the most of its first
+    /// `most` bytes, cut at a character's boundary, that one message carries.
+    fn longest(
+        &self,
         stream: u8,
-        part: &[u8],
-        last: bool,
-        send: &mut dyn FnMut(&Message<'_>) -> io::Result<()>,
-    ) -> io::Result<()> {
+        most: usize,
+        id: &str,
+        ordinal: u32,
+        ship: &mut dyn Ship,
+    ) -> io::Result<usize> {
+        let held = &self.held;
+        let fits = |n: usize, ship: &mut dyn Ship| {
+            ship.fits(&Message {
+                stream,
+                at: self.at,
+                line: held.get(..n).unwrap_or_default(),
+                part: Some(crate::logging::fluentd::Part {
+                    id,
+                    ordinal,
+                    last: false,
+                }),
+            })
+        };
+        let most = boundary(held, most.min(held.len()));
+        if fits(most, ship)? {
+            return Ok(most);
+        }
+        // The longest prefix that fits, by halves: every shorter one fits where a longer
+        // one does.
+        let (mut lo, mut hi) = (0, most);
+        while hi - lo > 1 {
+            let mid = lo + (hi - lo) / 2;
+            if fits(boundary(held, mid), ship)? {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        let n = boundary(held, lo);
+        // At least a character, though none fits: the receiver refuses or cuts it as it
+        // does, and the line goes on.
+        Ok(if n > 0 {
+            n
+        } else {
+            (1..=held.len().min(4))
+                .find(|&n| std::str::from_utf8(held.get(..n).unwrap_or_default()).is_ok())
+                .unwrap_or(1)
+        })
+    }
+
+    /// Sends the longest part of the line that one message carries, of at most `most`
+    /// bytes, as the line's next part, not its last.
+    fn cut(&mut self, stream: u8, most: usize, ship: &mut dyn Ship) -> io::Result<()> {
+        if self.parts.is_none() {
+            self.parts = Some((partial_id()?, 1));
+        }
+        let (id, ordinal) = self.parts.clone().unwrap_or_default();
+        let n = self.longest(stream, most, &id, ordinal, ship)?;
+        let rest = self.held.split_off(n.min(self.held.len()));
+        let part = std::mem::replace(&mut self.held, rest);
+        self.send_part(stream, &part, false, ship)
+    }
+
+    /// Sends `part` as the line's next part.
+    fn send_part(&mut self, stream: u8, part: &[u8], last: bool, ship: &mut dyn Ship) -> io::Result<()> {
         if self.parts.is_none() {
             self.parts = Some((partial_id()?, 1));
         }
         let Some((id, ordinal)) = &mut self.parts else {
             return Ok(());
         };
-        send(&Message {
+        ship.send(&Message {
             stream,
             at: self.at,
             line: part,
@@ -375,13 +500,34 @@ impl Open {
         Ok(())
     }
 
-    /// Sends the rest of the line: whole, or as its last part.
-    fn finish(&mut self, stream: u8, send: &mut dyn FnMut(&Message<'_>) -> io::Result<()>) -> io::Result<()> {
+    /// Sends the rest of the line: whole where one message carries it, else as its last
+    /// part, cut into more first where one message does not carry that either.
+    fn finish(&mut self, stream: u8, most: usize, ship: &mut dyn Ship) -> io::Result<()> {
+        loop {
+            let part = self
+                .parts
+                .as_ref()
+                .map(|(id, ordinal)| crate::logging::fluentd::Part {
+                    id,
+                    ordinal: *ordinal,
+                    last: true,
+                });
+            let fits = ship.fits(&Message {
+                stream,
+                at: self.at,
+                line: &self.held,
+                part,
+            })?;
+            if fits || self.held.is_empty() {
+                break;
+            }
+            self.cut(stream, most, ship)?;
+        }
         let held = std::mem::take(&mut self.held);
         if self.parts.is_some() {
-            self.send_part(stream, &held, true, send)?;
+            self.send_part(stream, &held, true, ship)?;
         } else {
-            send(&Message {
+            ship.send(&Message {
                 stream,
                 at: self.at,
                 line: &held,
@@ -732,7 +878,7 @@ impl<D: Disk> Daemon<D> {
                     let mut watch = FileWatch::new(file.dir()).ok();
                     let mut watched = None;
                     loop {
-                        let mut each = |p: Piece<'_>| lines.take(&p, &mut |m| sender.send(m)).map(|()| true);
+                        let mut each = |p: Piece<'_>| lines.take(&p, &mut sender).map(|()| true);
                         reader.read(&file, &mut each)?;
                         let at = reader.resume_at();
                         place.reached(sender.sent, at);
@@ -782,10 +928,10 @@ impl<D: Disk> Daemon<D> {
             }
             // Its run is over: what it left, whole, and its place kept as all of it sent
             // once its receiver has all of it.
-            let mut each = |p: Piece<'_>| lines.take(&p, &mut |m| sender.send(m)).map(|()| true);
+            let mut each = |p: Piece<'_>| lines.take(&p, &mut sender).map(|()| true);
             if reader.read(&file, &mut each)? {
                 reader.finish(&mut each)?;
-                lines.finish(&mut |m| sender.send(m))?;
+                lines.finish(&mut sender)?;
             }
             place.reached(sender.sent, reader.resume_at());
             sender.close()?;
@@ -968,27 +1114,53 @@ mod tests {
     use super::*;
     use crate::spec::LOG_STDOUT;
 
-    /// The messages `pieces` make, then the run's end: each its stream, time and bytes;
-    /// each part's place and whether it is the last, every part of a line one ID.
-    fn cut(pieces: &[(u8, u64, bool, &[u8])]) -> Vec<(u8, u64, Vec<u8>)> {
-        let mut sent = Vec::new();
-        let mut ids: [Option<String>; 2] = [None, None];
-        let mut lines = Lines::new(PART);
-        let mut send = |m: &Message<'_>| {
+    /// A receiver for the tests: what is sent, each part's ID and place checked, and
+    /// whether a message fits, as its test says.
+    struct Seen<F: FnMut(&Message<'_>) -> bool> {
+        sent: Vec<(u8, u64, Vec<u8>)>,
+        ids: [Option<String>; 2],
+        fits: F,
+        asked: usize,
+    }
+
+    impl<F: FnMut(&Message<'_>) -> bool> Ship for Seen<F> {
+        fn send(&mut self, m: &Message<'_>) -> io::Result<()> {
             let s = usize::from(m.stream == LOG_STDERR);
             match &m.part {
                 Some(p) => {
-                    let id = ids[s].get_or_insert_with(|| p.id.to_string());
+                    let id = self.ids[s].get_or_insert_with(|| p.id.to_string());
                     assert_eq!((p.id.len(), &**id), (64, p.id), "one ID a line");
                     if p.last {
-                        ids[s] = None;
+                        self.ids[s] = None;
                     }
                 }
-                None => assert!(ids[s].is_none(), "a whole line amid a line's parts"),
+                None => assert!(self.ids[s].is_none(), "a whole line amid a line's parts"),
             }
-            sent.push((m.stream, m.at, m.line.to_vec()));
+            self.sent.push((m.stream, m.at, m.line.to_vec()));
             Ok(())
+        }
+
+        fn fits(&mut self, m: &Message<'_>) -> io::Result<bool> {
+            self.asked += 1;
+            Ok((self.fits)(m))
+        }
+    }
+
+    /// The messages `pieces` make, at most `part` bytes each, then the run's end: each its
+    /// stream, time and bytes; each part's place and whether it is the last, every part of
+    /// a line one ID; and how many times a fit was asked.
+    fn cut_by(
+        part: usize,
+        fits: impl FnMut(&Message<'_>) -> bool,
+        pieces: &[(u8, u64, bool, &[u8])],
+    ) -> (Vec<(u8, u64, Vec<u8>)>, usize) {
+        let mut seen = Seen {
+            sent: Vec::new(),
+            ids: [None, None],
+            fits,
+            asked: 0,
         };
+        let mut lines = Lines::new(part);
         for &(stream, at, first, bytes) in pieces {
             lines
                 .take(
@@ -998,53 +1170,200 @@ mod tests {
                         first,
                         bytes,
                     },
-                    &mut send,
+                    &mut seen,
                 )
                 .unwrap();
         }
-        lines.finish(&mut send).unwrap();
-        sent
+        lines.finish(&mut seen).unwrap();
+        (seen.sent, seen.asked)
     }
 
-    /// A line of less than 16 KiB goes whole; one of 16 KiB exactly, or longer, in parts of
-    /// 16 KiB, then what is left, nothing where nothing is; each stream its own; and a line
-    /// the run left unfinished whole.
+    fn cut(part: usize, pieces: &[(u8, u64, bool, &[u8])]) -> Vec<(u8, u64, Vec<u8>)> {
+        cut_by(part, |_| true, pieces).0
+    }
+
+    /// A line no longer than its receiver's message carries goes whole, one of exactly
+    /// that length too; a longer one in parts that long, then what is left; each stream
+    /// its own; and a line the run left unfinished whole.
     #[test]
-    fn long_lines_go_in_parts_of_16_kib() {
+    fn long_lines_go_in_parts_as_long_as_their_receiver_takes() {
+        const PART: usize = 16;
         let x = |n: usize| vec![b'x'; n];
         let line = |n: usize| [x(n), b"\n".to_vec()].concat();
         assert_eq!(
-            cut(&[(LOG_STDOUT, 1, true, b"out\n")]),
+            cut(PART, &[(LOG_STDOUT, 1, true, b"out\n")]),
             [(LOG_STDOUT, 1, b"out".to_vec())]
         );
         assert_eq!(
-            cut(&[(LOG_STDOUT, 1, true, &line(PART - 1))]),
-            [(LOG_STDOUT, 1, x(PART - 1))]
+            cut(PART, &[(LOG_STDOUT, 1, true, &line(PART))]),
+            [(LOG_STDOUT, 1, x(PART))]
         );
         assert_eq!(
-            cut(&[(LOG_STDOUT, 1, true, &line(PART))]),
-            [(LOG_STDOUT, 1, x(PART)), (LOG_STDOUT, 1, Vec::new())]
+            cut(PART, &[(LOG_STDOUT, 1, true, &line(PART + 1))]),
+            [(LOG_STDOUT, 1, x(PART)), (LOG_STDOUT, 1, x(1))]
         );
-        // 40,000 bytes, as the reader gives them, in pieces, each with the line's time.
-        let long = line(40_000);
-        let sent = cut(&[
-            (LOG_STDOUT, 7, true, &long[..20_000]),
-            (LOG_STDERR, 8, true, b"err\n"),
-            (LOG_STDOUT, 9, false, &long[20_000..]),
-        ]);
+        // 40 bytes, as the reader gives them, in pieces, each with the line's time.
+        let long = line(40);
+        let sent = cut(
+            PART,
+            &[
+                (LOG_STDOUT, 7, true, &long[..20]),
+                (LOG_STDERR, 8, true, b"err\n"),
+                (LOG_STDOUT, 9, false, &long[20..]),
+            ],
+        );
         assert_eq!(
             sent,
             [
                 (LOG_STDOUT, 7, x(PART)),
                 (LOG_STDERR, 8, b"err".to_vec()),
                 (LOG_STDOUT, 7, x(PART)),
-                (LOG_STDOUT, 7, x(40_000 - 2 * PART)),
+                (LOG_STDOUT, 7, x(40 - 2 * PART)),
             ]
         );
         assert_eq!(
-            cut(&[(LOG_STDERR, 3, true, b"no end")]),
+            cut(PART, &[(LOG_STDERR, 3, true, b"no end")]),
             [(LOG_STDERR, 3, b"no end".to_vec())]
         );
+    }
+
+    /// A part is cut at a character's boundary: a character that would cross it goes
+    /// whole into the next part; bytes that are no UTF-8 are cut where they fall.
+    #[test]
+    fn a_part_never_cuts_a_character_in_two() {
+        let mut line = vec![b'x'; 9];
+        line.extend("€".as_bytes()); // bytes 9 to 11
+        line.extend(b"yz\n");
+        let lens = |sent: Vec<(u8, u64, Vec<u8>)>| sent.into_iter().map(|(_, _, b)| b).collect::<Vec<_>>();
+        let parts = lens(cut(10, &[(LOG_STDOUT, 1, true, &line)]));
+        assert_eq!(parts, [vec![b'x'; 9], "€yz".as_bytes().to_vec()]);
+        let mut bad = vec![b'x'; 9];
+        bad.extend([0x80, 0x80, 0x80, b'\n']);
+        let parts = lens(cut(10, &[(LOG_STDOUT, 1, true, &bad)]));
+        assert_eq!(parts.iter().map(Vec::len).collect::<Vec<_>>(), [10, 2]);
+        assert_eq!(
+            boundary("€".as_bytes(), 1),
+            1,
+            "a character the line begins with is cut"
+        );
+    }
+
+    /// Where a receiver bounds a message as it is written, a line that fits goes whole,
+    /// however close to its bound; a longer one in the longest parts that fit, each part
+    /// asked as a part; and a line well within its bound is asked once.
+    #[test]
+    fn parts_are_the_longest_their_receiver_takes_as_written() {
+        // A receiver that takes 25 bytes a message, each byte of the line written twice,
+        // and a part's place 4 bytes more.
+        let fits = |m: &Message<'_>| m.line.len() * 2 + if m.part.is_some() { 4 } else { 0 } <= 25;
+        let (sent, asked) = cut_by(1000, fits, &[(LOG_STDOUT, 1, true, b"0123456789ab\n")]);
+        assert_eq!(sent, [(LOG_STDOUT, 1, b"0123456789ab".to_vec())]);
+        assert_eq!(asked, 1);
+        let (sent, _) = cut_by(
+            1000,
+            fits,
+            &[(LOG_STDOUT, 1, true, b"0123456789abcdefghijklmnopqrstu\n")],
+        );
+        let parts: Vec<&[u8]> = sent.iter().map(|(_, _, b)| &b[..]).collect();
+        assert_eq!(parts, [&b"0123456789"[..], b"abcdefghij", b"klmnopqrst", b"u"]);
+        // A receiver that takes nothing still gets every character, one a message.
+        let (sent, _) = cut_by(
+            1000,
+            |m: &Message<'_>| m.line.is_empty(),
+            &[(LOG_STDOUT, 1, true, "a€\n".as_bytes())],
+        );
+        let parts: Vec<&[u8]> = sent.iter().map(|(_, _, b)| &b[..]).collect();
+        assert_eq!(parts, [&b"a"[..], "€".as_bytes(), b""]);
+    }
+
+    /// What cutting a long line costs the shipper (PM M494): a line of 1 MiB, cut in 16 KiB
+    /// parts as moby's copier cuts every line, in syslog's parts (no fit asked), and in the
+    /// longest GELF UDP messages that 128 chunks carry, compressed by gzip or not, of bytes
+    /// that compress and of bytes that do not; each case `SHARDS_CUT_ROUNDS` times (30),
+    /// its time a line as n, p50, p90, p99 and max, and its parts. Run with `--ignored
+    /// --nocapture` under the release profile.
+    #[test]
+    #[ignore = "a measurement (PM M494)"]
+    fn what_cutting_a_long_line_costs() {
+        use crate::logging::gelf::{self, Compression, Config, To};
+        let rounds: usize = std::env::var("SHARDS_CUT_ROUNDS")
+            .ok()
+            .and_then(|r| r.parse().ok())
+            .unwrap_or(30);
+        let mut random = vec![0u8; 1 << 20];
+        shards_vmm::platform::fill_random(&mut random).unwrap();
+        let same = vec![b'x'; 1 << 20];
+        let from = gelf::From {
+            host: "host.example".into(),
+            extra: "\"_container_id\":\"0123456789abcdef\"".into(),
+        };
+        let gelf_fits = |compression| {
+            let config = Config {
+                to: To::Udp("h:1".into()),
+                compression,
+                level: 1,
+                reconnects: 3,
+                delay: 1,
+            };
+            move |m: &Message<'_>| {
+                config
+                    .fits(&gelf::message(&from, m.stream, m.at, m.line))
+                    .unwrap()
+            }
+        };
+        let cases: Vec<(&str, usize, Box<dyn Fn(&Message<'_>) -> bool>, &[u8])> = vec![
+            (
+                "16 KiB parts (moby's copier)",
+                16 * 1024,
+                Box::new(|_: &Message<'_>| true),
+                &same,
+            ),
+            (
+                "syslog's parts",
+                8192 - 100,
+                Box::new(|_: &Message<'_>| true),
+                &same,
+            ),
+            (
+                "gelf udp, none, compressible",
+                gelf::UDP_MOST,
+                Box::new(gelf_fits(Compression::None)),
+                &same,
+            ),
+            (
+                "gelf udp, gzip, compressible",
+                gelf::UDP_MOST,
+                Box::new(gelf_fits(Compression::Gzip)),
+                &same,
+            ),
+            (
+                "gelf udp, gzip, random",
+                gelf::UDP_MOST,
+                Box::new(gelf_fits(Compression::Gzip)),
+                &random,
+            ),
+        ];
+        for (name, part, fits, bytes) in cases {
+            let line = [bytes, b"\n"].concat();
+            let mut took = Vec::new();
+            let mut parts = 0;
+            for _ in 0..rounds {
+                let started = std::time::Instant::now();
+                let (sent, _) = cut_by(part, |m| fits(m), &[(LOG_STDOUT, 1, true, &line)]);
+                took.push(started.elapsed());
+                parts = sent.len();
+            }
+            took.sort();
+            let at = |q: f64| took[((took.len() - 1) as f64 * q).round() as usize];
+            println!(
+                "{name}: {parts} parts; a line: n {} p50 {:?} p90 {:?} p99 {:?} max {:?}",
+                took.len(),
+                at(0.5),
+                at(0.9),
+                at(0.99),
+                took[took.len() - 1]
+            );
+        }
     }
 
     /// Where a shipper got to is kept and read back; what is not one is none.

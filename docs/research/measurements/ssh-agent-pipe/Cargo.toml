@@ -1,0 +1,21 @@
+# How long a build's dial of an SSH agent's named pipe waits for an instance on Windows
+# (PM M493): OpenSSH for Windows' agent, the one a Windows user's `ssh-add` fills, dialed by
+# N clients at once as a build's steps dial it, each busy dial's wait for a free instance
+# timed, then a request of identities answered.
+[package]
+name = "ssh-agent-pipe"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+windows-sys = { version = "=0.61.2", features = [
+  "Win32_Foundation",
+  "Win32_Security",
+  "Win32_Storage_FileSystem",
+  "Win32_System_IO",
+  "Win32_System_Pipes",
+  "Win32_System_Threading",
+] }

@@ -87,6 +87,16 @@ impl Gelf {
 }
 
 impl Driver for Gelf {
+    /// What its input takes of a message (logging/gelf.rs `Config::part`).
+    fn part(&self) -> usize {
+        self.config.part()
+    }
+
+    fn fits(&mut self, m: &Message<'_>) -> io::Result<bool> {
+        self.config
+            .fits(&gelf::message(&self.from, m.stream, m.at, m.line))
+    }
+
     fn send(&mut self, m: &Message<'_>, wait: &Wait<'_>) -> io::Result<()> {
         // moby's gelfLogger sends no empty line.
         if m.line.is_empty() {

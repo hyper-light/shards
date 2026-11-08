@@ -60,6 +60,12 @@ impl Oslog {
 }
 
 impl Driver for Oslog {
+    /// What os_log keeps of an entry whole: its own parts of a line, cut where a character
+    /// begins, are what the shipper gives it.
+    fn part(&self) -> usize {
+        WHOLE
+    }
+
     fn send(&mut self, m: &Message<'_>, _wait: &Wait<'_>) -> io::Result<()> {
         let kind = if m.stream == LOG_STDERR { ERROR } else { DEFAULT };
         // Its bytes that are no UTF-8, and a NUL, which would end the C string, U+FFFD.
