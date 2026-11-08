@@ -29,6 +29,7 @@ on:
       - "!.github/workflows/windows-watch.yml"
       - "!.github/workflows/whp-restore.yml"
       - "!.github/workflows/windows-binaries.yml"
+      - "!.github/workflows/windows-wake.yml"
       - "!.github/workflows/whp-passthrough.yml"
       - "!.github/workflows/migrate-e2e.yml"
   pull_request:

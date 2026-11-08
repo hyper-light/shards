@@ -73,6 +73,10 @@ pub struct Client {
     /// What Docker's daemon configuration says of registries, for the registries it asks
     /// (D194).
     registries: Registries,
+    /// How long a registry's trouble is ridden out (registry.rs [`MOMENT`]).
+    ///
+    /// [`MOMENT`]: crate::registry::MOMENT
+    moment: Duration,
 }
 
 /// How long a request waits on its server: to connect, its name's lookup included; for
@@ -110,6 +114,9 @@ struct Cancelling {
     cancelled: AtomicBool,
     /// The connections in use, by number, and the next number.
     live: Mutex<(u64, HashMap<u64, TcpStream>)>,
+    /// Rung once, under `live`'s lock, as the cancel is made: what waits on it before
+    /// asking a registry again ([`Client::pause`]) waits no more.
+    rung: std::sync::Condvar,
     /// The credential helpers asked for this client's registry, by number, and the next
     /// number: a cancel ends each, and so a wait for its answer (credentials.rs).
     helpers: Mutex<(u64, HashMap<u64, Helper>)>,
@@ -148,6 +155,7 @@ impl Cancel {
         for tcp in live.1.values() {
             end(tcp);
         }
+        self.0.rung.notify_all();
         drop(live);
         let helpers = self.0.helpers.lock().unwrap_or_else(PoisonError::into_inner);
         for helper in helpers.1.values() {
@@ -404,6 +412,45 @@ impl Client {
             reach: None,
             server_name: None,
             registries: Registries::default(),
+            moment: crate::registry::MOMENT,
+        }
+    }
+
+    /// How long a registry's trouble is ridden out before it is said as the registry's
+    /// failure (registry.rs `Trouble`).
+    pub(crate) fn moment(&self) -> Duration {
+        self.moment
+    }
+
+    /// This client, riding out a registry's trouble for `moment`: tests of a registry
+    /// that stays down, ended within it.
+    #[cfg(test)]
+    pub(crate) fn with_moment(mut self, moment: Duration) -> Client {
+        self.moment = moment;
+        self
+    }
+
+    /// Waits `wait` before asking a registry again, or until the client is cancelled,
+    /// which it then says.
+    pub(crate) fn pause(&self, wait: Duration) -> Result<(), Error> {
+        let Some(cancel) = &self.cancel else {
+            std::thread::sleep(wait);
+            return Ok(());
+        };
+        let deadline = Instant::now() + wait;
+        let mut live = cancel.0.live.lock().unwrap_or_else(PoisonError::into_inner);
+        loop {
+            cancel.check()?;
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return Ok(());
+            }
+            live = cancel
+                .0
+                .rung
+                .wait_timeout(live, left)
+                .unwrap_or_else(PoisonError::into_inner)
+                .0;
         }
     }
 

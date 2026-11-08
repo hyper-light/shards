@@ -73,6 +73,13 @@ pub mod kind {
     /// build is held within past what it uses, in decimal, or nothing with no budget; else
     /// why it is not held.
     pub const HELD: u8 = 43;
+    /// Host to guest, between steps: what has the build needed of memory so far? No
+    /// payload. Its home records it, and the next builders' ceilings come from it (D133).
+    pub const NEEDS: u8 = 44;
+    /// Guest to host, a `NEEDS`'s answer: the bytes of memory the builder needed for its
+    /// build's peak to fit under its `memory.high`, and the processes of the build ended
+    /// for want of memory, in decimal, a space between; else why it cannot say.
+    pub const NEEDED: u8 = 45;
 }
 
 /// A cache's root directory: what overlayfs shows of the directory its upper layer is,

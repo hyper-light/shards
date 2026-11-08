@@ -121,6 +121,9 @@ pub struct Builder {
     attach: UnixStream,
     /// The range of its join disk each cache layer's file was given, by the layer.
     attached: HashMap<String, (u64, u64)>,
+    /// Where its home records what its builds needed of memory (D133), which it adds its
+    /// own build's to as it ends.
+    needs: Option<PathBuf>,
 }
 
 /// A builder's give-back connection, as its build's memory pressure watcher asks through it
@@ -307,6 +310,8 @@ pub struct Boot<'a> {
     /// filesystem, one more pmem device after the bases, and the OCI architectures it
     /// registers of it.
     pub emulators: Option<(&'a Path, &'a [&'static str])>,
+    /// Where its home records what its builds needed of memory (D133), none to record.
+    pub needs: Option<&'a Path>,
 }
 
 /// A directory of a builder's or a build proxy's own for its sockets ([`socket_dir`]),
@@ -895,6 +900,7 @@ impl Builder {
             proxy_url,
             attach,
             attached: HashMap::new(),
+            needs: boot.needs.map(Path::to_path_buf),
         };
         if let Some((_, architectures)) = boot.emulators {
             let device = u32::try_from(boot.bases.len()).map_err(|_| "too many base images")?;
@@ -1041,6 +1047,36 @@ impl Builder {
         io::Write::write_all(&mut w, &run::header(which, len))
             .and_then(|()| io::Write::write_all(&mut w, payload))
             .map_err(|e| format!("telling the builder: {e}"))
+    }
+
+    /// What its build has needed of memory so far, as its guest says it (`NEEDED`): the
+    /// bytes, and the processes ended for want of it; its answer waited for until
+    /// `deadline`, past the frames of a step still running, which come before it. None
+    /// where it has not come by then, Err where its guest cannot say.
+    fn needed(&self, deadline: Instant) -> Result<Option<(u64, u64)>, String> {
+        self.frame(kind::NEEDS, b"")?;
+        let mut buf = Vec::new();
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return Ok(None);
+            }
+            self.conn
+                .set_read_timeout(Some(left))
+                .map_err(|e| format!("hearing the builder: {e}"))?;
+            match self.read_frame(&mut buf) {
+                Ok(kind::NEEDED) => break,
+                Ok(_) => continue,
+                Err(_) if Instant::now() >= deadline => return Ok(None),
+                Err(e) => return Err(e),
+            }
+        }
+        let said = String::from_utf8_lossy(&buf);
+        let mut words = said.split_whitespace().map(str::parse::<u64>);
+        match (words.next(), words.next(), words.next()) {
+            (Some(Ok(need)), Some(Ok(killed)), None) => Ok(Some((need, killed))),
+            _ => Err(format!("the builder cannot say what its build needed: {said}")),
+        }
     }
 
     fn read_frame(&self, buf: &mut Vec<u8>) -> Result<u8, String> {
@@ -1452,9 +1488,17 @@ fn whole_of(origin: &Origin) -> Option<(u64, Rc<Fs>)> {
 
 impl Drop for Builder {
     fn drop(&mut self) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        // What its build needed added to its home's record, the next builders' evidence
+        // (D133), within the time its guest has to power off: one that cannot say leaves
+        // the record as it was.
+        if let Some(path) = &self.needs
+            && let Ok(Some((need, killed))) = self.needed(deadline)
+        {
+            let _ = super::record_need(path, need, killed > 0);
+        }
         // The guest powers off as its connection closes.
         super::end(&self.conn);
-        let deadline = Instant::now() + Duration::from_secs(5);
         while self.vm.try_wait().is_none() {
             if Instant::now() > deadline {
                 kill(&self.vm);

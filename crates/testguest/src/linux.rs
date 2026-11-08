@@ -25,6 +25,8 @@ pub fn main() {
             "kmsg" => kmsg(),
             "beat" => beat(),
             "vsock" => vsock(),
+            // Serves the echo alone, until stopped: shards-api's conformance suite.
+            "echo" => vsock_listen(ECHO_PORT).and_then(|l| serve_echo(&l)),
             "vsock_snapshot" => vsock_snapshot(),
             "vsock_snapshot_held" => vsock_snapshot_held(),
             "pmem" => pmem(),
@@ -46,6 +48,7 @@ pub fn main() {
             "daemon" => daemon(),
             "e2e" => e2e(),
             "slates_fs" => slates_fs(),
+            "share" => share(),
             "slates_fs_dax" => slates_fs_dax(),
             "bpf" => bpf_costs(),
             other => Err(format!("unknown test {other:?}")),
@@ -132,6 +135,44 @@ fn slates_fs() -> Result<(), String> {
         return Err(format!("the share read back {back:?} after writing {wrote:?}"));
     }
     Ok(())
+}
+
+/// Mounts `shards run --kernel … --share`'s two shares: `shards0` writable, `shards1`
+/// read-only. Reads `hello` in each, writes `from-guest` through the first and reads it back,
+/// and is refused creating a file through the second. The bytes are
+/// crates/shards/tests/boot.rs's.
+fn share() -> Result<(), String> {
+    let want = "hello through --share\n";
+    for (tag, at) in [("shards0", "/mnt0"), ("shards1", "/mnt1")] {
+        std::fs::create_dir_all(at).map_err(|e| format!("mkdir {at}: {e}"))?;
+        let (src, target, fs) = (cstr(tag)?, cstr(at)?, cstr("virtiofs")?);
+        // SAFETY: NUL-terminated strings and no data argument, as setup() mounts the
+        // pseudo-filesystems.
+        if unsafe { libc::mount(src.as_ptr(), target.as_ptr(), fs.as_ptr(), 0, std::ptr::null()) } != 0 {
+            return Err(format!("mount {tag} (virtiofs): {}", io::Error::last_os_error()));
+        }
+        let got =
+            std::fs::read_to_string(format!("{at}/hello")).map_err(|e| format!("read {at}/hello: {e}"))?;
+        if got != want {
+            return Err(format!("{tag} served {got:?}, expected {want:?}"));
+        }
+    }
+    let wrote = "written by a shards guest through --share\n";
+    {
+        let mut file =
+            std::fs::File::create("/mnt0/from-guest").map_err(|e| format!("create /mnt0/from-guest: {e}"))?;
+        file.write_all(wrote.as_bytes())
+            .map_err(|e| format!("write /mnt0/from-guest: {e}"))?;
+        file.sync_all()
+            .map_err(|e| format!("fsync /mnt0/from-guest: {e}"))?;
+    }
+    match std::fs::File::create("/mnt1/from-guest") {
+        Ok(_) => Err("created /mnt1/from-guest through the read-only share".into()),
+        Err(e) => {
+            let _ = writeln!(io::stdout(), "SHARE READ-ONLY {e}");
+            Ok(())
+        }
+    }
 }
 
 /// Maps a slates file with DAX through the slates-backed share (slates' Shards part 3,

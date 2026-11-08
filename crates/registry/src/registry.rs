@@ -8,7 +8,7 @@
 use std::fmt;
 use std::io::{self, Read};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use sha2::{Digest as _, Sha256};
 use shards_image::oci::{Descriptor, MAX_MANIFEST, media};
@@ -21,10 +21,13 @@ use crate::http::{Client, Redirects, Request, Response};
 use crate::url::{Scheme, Url};
 use crate::{Error, ErrorKind, Said, printable};
 
-/// containerd's `maxAttempts`.
-pub(crate) const ATTEMPTS: usize = 5;
-/// containerd's pause before trying a transient transport error again.
-pub(crate) const PAUSE: Duration = Duration::from_millis(50);
+/// How long a registry's trouble is ridden out before it is said as the registry's
+/// failure (D222): a failure the registry or its connection says is passing (a 502, 503,
+/// 504 or 408, a timeout, a reset, a cut answer, RFC 9110 §15.6.3 to §15.6.5, §9.2.2), or
+/// a download that brings nothing. The minute a throttle is waited out within ([`WINDOW_MOST`],
+/// D131): a moment's trouble, where a registry down for longer is down, and said so.
+/// Every failure measured passed well within it (PM M486).
+pub(crate) const MOMENT: Duration = WINDOW_MOST;
 /// The longest of the waits before asking a throttling registry again: up to 50 ms,
 /// then 100, 200, 400 and 800, each a random share of it. ECR Public throttles
 /// anonymous requests at random, at 1 a second already, and less the slower they come
@@ -53,9 +56,6 @@ const MAX_ERROR_BODY: u64 = 64000;
 /// never ends one, where distribution's client reads all it is sent. Docker Hub sent
 /// library/python's 3,974 tags in one page of 81,819 bytes (2026-10-04).
 const MAX_TAGS_PAGE: u64 = 4 << 20;
-/// A download that stops this many times in a row without progress fails, as
-/// containerd's `httpReadSeeker` gives up.
-pub(crate) const MAX_STALLS: usize = 3;
 pub(crate) const CHUNK: usize = 64 << 10;
 /// What a blob's bytes are sent as.
 const OCTET: (&str, &str) = ("Content-Type", "application/octet-stream");
@@ -630,11 +630,11 @@ impl Registry {
     ) -> Result<(Response<'_>, &'a str), Error> {
         let mut method = method;
         let mut last: Option<u16> = None;
-        let mut attempt = 0;
+        let mut trouble = Trouble::default();
         let mut throttled = 0;
         let mut waited = Duration::ZERO;
         loop {
-            attempt += 1;
+            let asked = Instant::now();
             // The registry's own host, once it answered HTTPS in plain HTTP, is asked so.
             let ours = |plain: &Plain| {
                 url.scheme() == Scheme::Https
@@ -668,57 +668,69 @@ impl Registry {
                         && let Some(plain) = &self.plain
                         && (e.is_not_tls() || (e.is_refused() && plain.on_refusal)) =>
                 {
-                    // Asked again at once, as the fallback's round trip does: not an attempt.
+                    // Asked again at once, as the fallback's round trip does.
                     plain.fallen.store(true, Ordering::Release);
-                    attempt -= 1;
                     continue;
                 }
-                Err(e) if e.kind() == ErrorKind::Transient && attempt < ATTEMPTS => {
-                    std::thread::sleep(PAUSE);
-                    continue;
+                // A timeout, a reset or a cut answer: ridden out while it lasts a moment.
+                Err(e) if e.kind() == ErrorKind::Transient => {
+                    match trouble.wait(asked, self.http.moment(), None) {
+                        Some(wait) => {
+                            self.http.pause(wait)?;
+                            continue;
+                        }
+                        None => return Err(e),
+                    }
                 }
                 Err(e) => return Err(e),
             };
             let repeated = last == Some(response.status);
             last = Some(response.status);
-            let again = match response.status {
-                401 => self.auth.challenged(response.url(), &response, repeated)?,
+            let wait = match response.status {
+                401 => self
+                    .auth
+                    .challenged(response.url(), &response, repeated)?
+                    .then_some(Duration::ZERO),
                 405 if method == "HEAD" && url.target().contains("/manifests/") => {
                     method = "GET";
-                    true
+                    Some(Duration::ZERO)
                 }
-                408 => true,
                 429 => {
                     // What the registry says of it, read ahead: a refusal passed on still
                     // says it.
                     let said = response.peek(2 << 10).map(<[u8]>::to_vec).unwrap_or_default();
-                    match throttle(&response, &said, throttled, waited) {
-                        Some(wait) => {
-                            // Not an attempt: the registry asked for patience, not a repair.
-                            throttled += 1;
-                            waited += wait;
-                            attempt -= 1;
-                            // A HEAD's refusal says nothing: a manifest's is asked again as
-                            // a GET, whose refusal says how long the throttle may last, as
-                            // containerd asks a refused HEAD's body with a GET.
-                            if method == "HEAD" && url.target().contains("/manifests/") {
-                                method = "GET";
-                            }
-                            let _ = io::copy(&mut (&mut response).take(2 << 10), &mut io::sink());
-                            std::thread::sleep(wait);
-                            continue;
+                    let wait = throttle(&response, &said, throttled, waited);
+                    if let Some(wait) = wait {
+                        throttled += 1;
+                        waited += wait;
+                        // A HEAD's refusal says nothing: a manifest's is asked again as a
+                        // GET, whose refusal says how long the throttle may last, as
+                        // containerd asks a refused HEAD's body with a GET.
+                        if method == "HEAD" && url.target().contains("/manifests/") {
+                            method = "GET";
                         }
-                        None => false,
                     }
+                    wait
                 }
-                500 | 502 | 503 | 504 => !repeated,
-                _ => false,
+                // What the registry or its gateway says is passing (RFC 9110 §15.5.9,
+                // §15.6.3 to §15.6.5): ridden out while it lasts a moment, waited as long
+                // as it names.
+                408 | 502 | 503 | 504 => trouble.wait(asked, self.http.moment(), retry_after(&response)),
+                // An unexpected condition, which RFC 9110 §15.6.1 does not say passes:
+                // asked again once, as it may have been the moment's, but not past a
+                // repeat, which is the request's own.
+                500 if !repeated => trouble.wait(asked, self.http.moment(), retry_after(&response)),
+                _ => None,
             };
-            if !again || attempt >= ATTEMPTS {
+            let Some(wait) = wait else {
                 return Ok((response, method));
-            }
+            };
             // Read what little a refusal carries, so its connection can be used again.
             let _ = io::copy(&mut (&mut response).take(2 << 10), &mut io::sink());
+            drop(response);
+            if !wait.is_zero() {
+                self.http.pause(wait)?;
+            }
         }
     }
 
@@ -1129,8 +1141,9 @@ impl Registry {
         };
         let url = self.base.join(&format!("blobs/{digest}"))?;
         let accept = accept(&desc.media_type);
-        let mut stalls = 0;
+        let mut trouble = Trouble::default();
         while download.offset() < size {
+            let asked = Instant::now();
             let offset = download.offset();
             let range = format!("bytes={offset}-");
             // A resumed download asks for the blob as it is: a range of an encoding of it
@@ -1143,6 +1156,7 @@ impl Registry {
                 headers.push(("Accept-Encoding", ENCODINGS));
             }
             let (mut response, _) = self.request("GET", &url, &headers)?;
+            let whole = response.status == 200;
             match response.status {
                 206 => {
                     if let Some(range) = response.header("content-range")
@@ -1164,25 +1178,60 @@ impl Registry {
                 .to_string();
             let copied = decoded(&mut response, &encoding)
                 .and_then(|mut body| copy(&mut body, &mut download, progress));
-            match copied {
-                Ok(()) => {}
-                Err(e) if e.kind() == ErrorKind::Transient => {}
+            let ended = match copied {
+                Ok(()) => true,
+                Err(e) if e.kind() == ErrorKind::Transient => false,
                 Err(e) => return Err(e.context(&digest)),
+            };
+            drop(response);
+            // An answer that ended as its framing said is the registry's own, not a
+            // passing trouble: the whole blob, short of its size, is shorter than its
+            // descriptor; a range that brought nothing will bring nothing.
+            if ended && download.offset() < size && (whole || download.offset() == before) {
+                return Err(short(&digest, download.offset(), desc.size));
             }
             if download.offset() > before {
-                stalls = 0;
-            } else {
-                stalls += 1;
-                if stalls >= MAX_STALLS {
-                    return Err(Error::of(
-                        ErrorKind::Transient,
-                        format!("{digest}: the download stopped {MAX_STALLS} times without progress"),
-                    ));
-                }
+                trouble.over();
+                continue;
+            }
+            // It brought nothing: resumed while that lasts a moment.
+            match trouble.wait(asked, self.http.moment(), None) {
+                Some(wait) => self.http.pause(wait)?,
+                None => return Err(stalled(&digest, trouble.lasted())),
             }
         }
         download.commit().map(drop).map_err(|e| Error::new(e.to_string()))
     }
+
+    /// Waits `wait` before asking this registry again, or until its client is cancelled.
+    pub(crate) fn pause(&self, wait: Duration) -> Result<(), Error> {
+        self.http.pause(wait)
+    }
+
+    /// How long a trouble of this registry's is ridden out.
+    pub(crate) fn moment(&self) -> Duration {
+        self.http.moment()
+    }
+}
+
+/// A download that brought nothing for a moment (D222).
+pub(crate) fn stalled(digest: &Digest, lasted: Duration) -> Error {
+    Error::of(
+        ErrorKind::Transient,
+        format!(
+            "{digest}: the download brought nothing for {:.1} s",
+            lasted.as_secs_f64()
+        ),
+    )
+}
+
+/// A blob whose registry's answer, ended as its framing said, ends at `at` bytes, short of
+/// its descriptor's `size`: the registry's own answer, which asking again does not change
+/// (D222).
+pub(crate) fn short(digest: &Digest, at: u64, size: i64) -> Error {
+    Error::new(format!(
+        "{digest}: the registry's blob ends at {at} bytes, where its descriptor says {size}"
+    ))
 }
 
 /// Whether `name` is a tag: distribution's `anchoredTagRegexp` (reference/regexp.go),
@@ -1544,6 +1593,61 @@ fn allowance_window(response: &Response, said: &[u8]) -> Option<Duration> {
         _ => return None,
     };
     Some(Duration::from_secs(secs))
+}
+
+/// A registry's trouble, ridden out while it lasts a moment (D222, PM M486): each failure
+/// that may pass is asked again after a wait, a random share of how long the trouble has
+/// lasted so far (full jitter: a share of the failure's own length, so that the time lost
+/// past its end is at most what it had already lasted, and a crowd's asks do not come back
+/// together), at least what the registry names in `Retry-After` (RFC 9110 §10.2.3); until
+/// it has lasted [`MOMENT`] in all, or a wait it names would end past it. No count: a
+/// trouble of many quick failures (a gateway's cut connections) is ridden out as one of a
+/// few slow ones (a timeout's), for as long.
+#[derive(Debug, Default)]
+pub(crate) struct Trouble {
+    /// When its first failed attempt began.
+    began: Option<Instant>,
+}
+
+impl Trouble {
+    /// The trouble is over: what fails next begins another.
+    pub(crate) fn over(&mut self) {
+        self.began = None;
+    }
+
+    /// How long it has lasted.
+    pub(crate) fn lasted(&self) -> Duration {
+        self.began.map_or(Duration::ZERO, |b| b.elapsed())
+    }
+
+    /// After an attempt begun at `attempt` failed: how long to wait before asking again,
+    /// or `None` where the trouble has lasted `moment`, or the registry names a wait
+    /// (`after`) past it.
+    pub(crate) fn wait(
+        &mut self,
+        attempt: Instant,
+        moment: Duration,
+        after: Option<Duration>,
+    ) -> Option<Duration> {
+        let began = *self.began.get_or_insert(attempt);
+        let lasted = began.elapsed();
+        let left = moment.checked_sub(lasted).filter(|l| !l.is_zero())?;
+        let share = lasted.mul_f64(jitter());
+        match after {
+            Some(after) if after > left => None,
+            Some(after) => Some(after.max(share).min(left)),
+            None => Some(share.min(left)),
+        }
+    }
+}
+
+/// The wait a refusal names in `Retry-After`, in seconds (RFC 9110 §10.2.3); an HTTP date
+/// is not read, and names none.
+fn retry_after(response: &Response) -> Option<Duration> {
+    response
+        .header("retry-after")
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .map(Duration::from_secs)
 }
 
 /// A number in [0, 1), from the process's random hash keys and the time.
@@ -1938,7 +2042,7 @@ mod tests {
     }
 
     /// The tag is asked for where the API is not found or refuses, a 404 of both an empty
-    /// list; but an API that could not answer, past its retries, is a failure, whatever
+    /// list; but an API that could not answer, past its trouble's moment, is a failure, whatever
     /// the tag's 404 says: a policy would read an empty list as no signature (D116).
     #[test]
     fn referrers_that_could_not_be_read_are_no_empty_list() {
@@ -1972,10 +2076,12 @@ mod tests {
                 Some((reply, After::Keep))
             });
             let reference = Reference::parse(&format!("127.0.0.1:{}/test/image:v1", server.port)).unwrap();
+            // A gateway's failure is ridden out for a moment (D222): a short one here.
             let http = Client::new(
                 Box::new(|_| crate::tls::client_config(Vec::new(), None)),
                 "shards-test",
-            );
+            )
+            .with_moment(Duration::from_millis(300));
             let registry = Registry::new(http, &reference, Credentials::Anonymous).unwrap();
             registry
                 .referrers(&digest, &[], &[])
@@ -1994,7 +2100,7 @@ mod tests {
             assert_eq!(asked(api, None).unwrap(), empty, "{api}");
             assert_eq!(asked(api, Some(tagged)).unwrap().as_bytes(), tagged, "{api}");
         }
-        // An API that could not answer, past its retries: the tag where there is one,
+        // An API that could not answer, past its trouble's moment: the tag where there is one,
         // else its failure.
         for api in [
             "429 Too Many Requests",
@@ -2788,5 +2894,270 @@ mod tests {
             Registry::login(client(), &host, Credentials::Anonymous).unwrap(),
             None
         );
+    }
+
+    /// A trouble's waits are random shares of how long it has lasted, at least what the
+    /// registry names, until it has lasted its moment or names a wait past it (D222).
+    #[test]
+    fn a_troubles_waits_are_shares_of_its_length_within_a_moment() {
+        let moment = Duration::from_secs(10);
+        let ago = |d: Duration| Instant::now().checked_sub(d).unwrap();
+        let mut trouble = Trouble::default();
+        let began = ago(Duration::from_secs(2));
+        let mut waits = Vec::new();
+        for _ in 0..200 {
+            let wait = trouble.wait(began, moment, None).unwrap();
+            assert!(wait <= trouble.lasted(), "{wait:?} past {:?}", trouble.lasted());
+            waits.push(wait);
+        }
+        // Shares, not one figure.
+        waits.sort();
+        assert!(waits[0] < waits[199], "{waits:?}");
+        // Named: at least that.
+        let named = trouble.wait(Instant::now(), moment, Some(Duration::from_secs(3)));
+        assert!(named.unwrap() >= Duration::from_secs(3));
+        // Named past the moment: given up on.
+        assert_eq!(
+            trouble.wait(Instant::now(), moment, Some(Duration::from_secs(9))),
+            None
+        );
+        // Lasted the moment: given up on.
+        assert_eq!(Trouble::default().wait(ago(moment), moment, None), None);
+        // Over: what fails next begins another.
+        trouble.over();
+        assert!(trouble.lasted().is_zero());
+        // The moment ridden out is the minute a throttle is waited out within (D131).
+        assert_eq!(MOMENT, Duration::from_secs(60));
+        assert_eq!(MOMENT, WINDOW_MOST);
+    }
+
+    /// What the round trips of a test of riding out a trouble may take beyond the waits
+    /// themselves, on a host whose every core is busy with the other tests.
+    const SLACK: Duration = Duration::from_millis(1500);
+
+    /// A registry asked of a server that answers `failing` (a status line, or `None` to
+    /// close the connection unanswered) until `lasting` has passed since its first request,
+    /// then 200; riding its trouble out for `moment`. Its answer's status (or error), the
+    /// requests it made, and how long it took.
+    fn ridden(
+        failing: Option<&'static str>,
+        fields: &'static [(&'static str, &'static str)],
+        lasting: Duration,
+        moment: Duration,
+    ) -> (Result<u16, Error>, usize, Duration) {
+        let first = Arc::new(std::sync::Mutex::new(None::<Instant>));
+        let server = route(None, move |_| {
+            let began = *first.lock().unwrap().get_or_insert_with(Instant::now);
+            if began.elapsed() >= lasting {
+                return Some((http("200 OK", &[]), After::Keep));
+            }
+            failing.map(|status| (http(status, fields), After::Keep))
+        });
+        let reference = Reference::parse(&format!("127.0.0.1:{}/test/image:v1", server.port)).unwrap();
+        let http = Client::new(
+            Box::new(|_| crate::tls::client_config(Vec::new(), None)),
+            "shards-test",
+        )
+        .with_moment(moment);
+        let registry = Registry::new(http, &reference, Credentials::Anonymous).unwrap();
+        let url = registry.base().join("manifests/v1").unwrap();
+        let t0 = Instant::now();
+        let status = registry.request("GET", &url, &[]).map(|(r, _)| r.status);
+        (status, server.requests().len(), t0.elapsed())
+    }
+
+    /// A registry's passing trouble, a gateway's 502, 503 or 504 or connections cut
+    /// unanswered, is ridden out for as long as it lasts within a moment, however many
+    /// times it fails meanwhile, and costs at most its own length again; one that outlasts
+    /// the moment is the answer; a wait the registry names is waited; a repeated 500 is the
+    /// request's own, answered at once (D222). Before, two 502s in a row failed a request,
+    /// as Docker Hub's token server's did a CI build (job 117733752147).
+    #[test]
+    fn a_registrys_passing_trouble_is_ridden_out_within_a_moment() {
+        let lasting = Duration::from_millis(400);
+        let moment = Duration::from_secs(20);
+        for failing in [
+            Some("502 Bad Gateway"),
+            Some("503 Service Unavailable"),
+            Some("504 Gateway Timeout"),
+            Some("408 Request Timeout"),
+            None,
+        ] {
+            let (status, asked, took) = ridden(failing, &[], lasting, moment);
+            assert_eq!(status.unwrap(), 200, "{failing:?}");
+            assert!(asked >= 3, "{failing:?}: asked {asked} times");
+            assert!(took >= lasting, "{failing:?}: {took:?}");
+            // At most its length again, and the asking's own round trips.
+            assert!(took < lasting * 2 + SLACK, "{failing:?}: {took:?}");
+        }
+        // Past the moment: the registry's answer, said.
+        let short = Duration::from_millis(500);
+        let (status, _, took) = ridden(
+            Some("503 Service Unavailable"),
+            &[],
+            Duration::from_secs(3600),
+            short,
+        );
+        assert_eq!(status.unwrap(), 503);
+        assert!(took >= short && took < short * 2 + SLACK, "{took:?}");
+        let (status, _, took) = ridden(None, &[], Duration::from_secs(3600), short);
+        assert_eq!(status.unwrap_err().kind(), ErrorKind::Transient);
+        assert!(took >= short && took < short * 2 + SLACK, "{took:?}");
+        // A wait it names is waited.
+        let (status, _, took) = ridden(
+            Some("503 Service Unavailable"),
+            &[("Retry-After", "1")],
+            Duration::from_millis(100),
+            moment,
+        );
+        assert_eq!(status.unwrap(), 200);
+        assert!(took >= Duration::from_secs(1), "{took:?}");
+        // One past the moment is not: the answer at once.
+        let (status, asked, took) = ridden(
+            Some("503 Service Unavailable"),
+            &[("Retry-After", "3600")],
+            Duration::from_secs(3600),
+            moment,
+        );
+        assert_eq!((status.unwrap(), asked), (503, 1));
+        assert!(took < Duration::from_secs(5), "{took:?}");
+        // A 500 is asked again once; repeated, it is the answer.
+        let (status, asked, _) = ridden(
+            Some("500 Internal Server Error"),
+            &[],
+            Duration::from_secs(3600),
+            moment,
+        );
+        assert_eq!((status.unwrap(), asked), (500, 2));
+    }
+
+    /// A wait before asking a registry again ends at its client's cancel, which it says.
+    #[test]
+    fn a_cancel_ends_a_troubles_wait() {
+        let server = route(None, |_| {
+            Some((http("503 Service Unavailable", &[]), After::Keep))
+        });
+        let reference = Reference::parse(&format!("127.0.0.1:{}/test/image:v1", server.port)).unwrap();
+        let cancel = crate::http::Cancel::new();
+        let http = Client::new(
+            Box::new(|_| crate::tls::client_config(Vec::new(), None)),
+            "shards-test",
+        )
+        .cancelled_by(cancel.clone());
+        let registry = Registry::new(http, &reference, Credentials::Anonymous).unwrap();
+        let url = registry.base().join("manifests/v1").unwrap();
+        let canceller = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_secs(3));
+            cancel.cancel();
+        });
+        let t0 = Instant::now();
+        let e = registry
+            .request("GET", &url, &[])
+            .map(|(r, _)| r.status)
+            .unwrap_err();
+        let took = t0.elapsed();
+        canceller.join().unwrap();
+        assert_eq!(e.kind(), ErrorKind::Cancelled, "{e}");
+        assert!(
+            took >= Duration::from_secs(3) && took < Duration::from_secs(5),
+            "{took:?}"
+        );
+    }
+
+    /// A download that brings nothing, its connections cut before a byte, is resumed while
+    /// that lasts a moment, and fetched once the server sends again; one that brings nothing
+    /// for a moment fails, saying how long (D222). Before, three such answers in a row
+    /// failed it, however quickly they came.
+    #[test]
+    fn a_download_that_brings_nothing_is_resumed_within_a_moment() {
+        let blob: Arc<Vec<u8>> = Arc::new((0..100_000u32).map(|i| (i % 253) as u8).collect());
+        let digest = Digest::from_hash(Algorithm::Sha256, &Sha256::digest(&blob[..]));
+        let fetch = |lasting: Duration, moment: Duration| {
+            let first = Arc::new(std::sync::Mutex::new(None::<Instant>));
+            let body = blob.clone();
+            let server = route(None, move |_| {
+                let began = *first.lock().unwrap().get_or_insert_with(Instant::now);
+                let mut out =
+                    format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", body.len()).into_bytes();
+                if began.elapsed() >= lasting {
+                    out.extend_from_slice(&body);
+                    return Some((out, After::Keep));
+                }
+                // Its head, and none of its body.
+                Some((out, After::Close))
+            });
+            let dir = shards_testdir::TempDir::new(&format!("nothing-{}", server.port)).unwrap();
+            let store = Store::open(&dir).unwrap();
+            let reference = Reference::parse(&format!("127.0.0.1:{}/test/image:v1", server.port)).unwrap();
+            let http = Client::new(
+                Box::new(|_| crate::tls::client_config(Vec::new(), None)),
+                "shards-test",
+            )
+            .with_moment(moment);
+            let registry = Registry::new(http, &reference, Credentials::Anonymous).unwrap();
+            let desc = Descriptor {
+                media_type: "application/vnd.oci.image.layer.v1.tar".into(),
+                digest: digest.to_string(),
+                size: 100_000,
+                platform: None,
+                annotations: Default::default(),
+            };
+            let t0 = Instant::now();
+            let fetched = registry
+                .fetch_blob(&store, &desc, &Limits::none(), &|_| {})
+                .map(|()| std::fs::read(store.blob_path(&digest)).unwrap());
+            (fetched, server.requests().len(), t0.elapsed())
+        };
+        let (fetched, asked, took) = fetch(Duration::from_millis(400), Duration::from_secs(20));
+        assert_eq!(fetched.unwrap(), *blob);
+        assert!(asked >= 4, "asked {asked} times");
+        assert!(took < Duration::from_millis(400) * 2 + SLACK, "{took:?}");
+        let short = Duration::from_millis(500);
+        let (fetched, _, took) = fetch(Duration::from_secs(3600), short);
+        let e = fetched.unwrap_err();
+        assert!(
+            e.to_string().contains("the download brought nothing for 0."),
+            "{e}"
+        );
+        assert!(took >= short && took < short * 2 + SLACK, "{took:?}");
+    }
+
+    /// A whole blob whose answer ends as its framing says, short of its descriptor's size,
+    /// fails at once, asked once: the registry's own answer, which no asking again changes.
+    #[test]
+    fn a_blob_answered_whole_short_of_its_size_fails_at_once() {
+        let blob: Vec<u8> = (0..50_000u32).map(|i| (i % 251) as u8).collect();
+        let digest = Digest::from_hash(Algorithm::Sha256, &Sha256::digest(&blob[..]));
+        let server = route(None, move |_| {
+            let mut out = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", blob.len()).into_bytes();
+            out.extend_from_slice(&blob);
+            Some((out, After::Keep))
+        });
+        let dir = shards_testdir::TempDir::new(&format!("short-{}", server.port)).unwrap();
+        let store = Store::open(&dir).unwrap();
+        let reference = Reference::parse(&format!("127.0.0.1:{}/test/image:v1", server.port)).unwrap();
+        let http = Client::new(
+            Box::new(|_| crate::tls::client_config(Vec::new(), None)),
+            "shards-test",
+        );
+        let registry = Registry::new(http, &reference, Credentials::Anonymous).unwrap();
+        let desc = Descriptor {
+            media_type: "application/vnd.oci.image.layer.v1.tar".into(),
+            digest: digest.to_string(),
+            size: 100_000,
+            platform: None,
+            annotations: Default::default(),
+        };
+        let t0 = Instant::now();
+        let e = registry
+            .fetch_blob(&store, &desc, &Limits::none(), &|_| {})
+            .unwrap_err();
+        assert!(
+            e.to_string()
+                .contains("the registry's blob ends at 50000 bytes, where its descriptor says 100000"),
+            "{e}"
+        );
+        assert_eq!(server.requests().len(), 1);
+        assert!(t0.elapsed() < Duration::from_secs(5), "{:?}", t0.elapsed());
     }
 }

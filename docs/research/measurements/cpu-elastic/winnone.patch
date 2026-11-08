@@ -1,0 +1,16 @@
+diff --git a/crates/vmm/src/platform/mod.rs b/crates/vmm/src/platform/mod.rs
+index 64da47a0..16a0482e 100644
+--- a/crates/vmm/src/platform/mod.rs
++++ b/crates/vmm/src/platform/mod.rs
+@@ -141,8 +141,10 @@ pub fn prioritize_vcpu_thread() -> Result<Prioritized, String> {
+     return unix::run_promptly()
+         .map(|()| Prioritized {})
+         .map_err(|e| format!("its slice (sched_setattr): {e}"));
++    // Experiment (docs/research/measurements/cpu-elastic, winnone): Windows' vCPU threads
++    // and device workers left at the priority they start at, as before D191's candidate.
+     #[cfg(windows)]
+-    return windows_thread::raise_current().map(|watch| Prioritized { _watch: watch });
++    return Ok(Prioritized { _watch: None });
+     #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
+     Ok(Prioritized {})
+ }
