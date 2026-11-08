@@ -6215,6 +6215,11 @@ the settings; a short history in one segment; a reset reading what it resets; fl
 a reset unchecked; a run admitted past settings that do not read; a reserve past the most;
 settings that do not read collected by the default policy; a set policy waiting out the
 last collection; a failed collection unsaid; the collection ignoring the settings.
+On every host the daemon runs on: both E2E tests are every host's, and pass on Windows'
+real WHP microVMs too, where the disk's size is GetDiskFreeSpaceExW's
+(`platform::disk_space`): CI 42329593544 at 51a709e9, windows-2025 (job 128272814009, no
+test of it skipped) and windows-2022 (job 128272814036, whose skips are snapshot restores
+alone, PM M345), as on macOS and Linux.
 
 ### D187. The home's events, kept for `--since` past their daemon (built)
 
