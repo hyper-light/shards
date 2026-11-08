@@ -18462,6 +18462,45 @@ revision before comparing a changed API/implementation.
   used.
 - **Consequence.** D176 parts 6 and 7 record these as the two-machine numbers. Still to
   measure: the M3 Ultra and an M4 Max with a baseline, both ways, and the Studios' Wi-Fi.
+
+### M498. What a Hypervisor.framework guest is shown of its host's CPU, and a listener that outlives its runner (D176 part 6)
+
+- **Question.** A move between Macs is checked by the features macOS names
+  (`hw.optional.arm.FEAT_*`): does a guest find them? And can the listening end of a
+  two-machine series outlive a kiln runner's restart, which ends what its runs started?
+- **Method.** At abcea5f5, 2026-11-08: `shards run --rm alpine:3.20 grep -m1 Features
+  /proc/cpuinfo`, no CPU baseline, a fresh home each, on Adas-Mac-Studio (Apple M3 Ultra,
+  macOS 26.4) and Adas-Mac-Studio-4 (Apple M4 Max, macOS 26.2), beside `sysctl
+  hw.optional.arm` on each (the M4 Max's as Adas-Mac-Studio-3's, an M4 Max on 26.2 too, says
+  it). A launchd user agent (`launchctl bootstrap gui/UID`, a shell loop trapping SIGTERM
+  and writing the time) started by a kiln run on the M3 Ultra. docs/research/measurements/
+  migrate/two-hosts.sh `restart` at 9a6f5ac5 (the script; shards at abcea5f5) on adacachy
+  (Linux 7.2.9, KVM): two homes, 4 cold moves, the listening daemon and its hold sent
+  SIGTERM as the second microVM started, `listen` run again on its home 10 s later.
+- **Found.**
+  - Guests' Features, the two the same but `i8mm`, which the M3 Ultra's has and the M4
+    Max's not: `fp asimd evtstrm aes pmull sha1 sha2 crc32 atomics fphp asimdhp cpuid
+    asimdrdm jscvt fcma lrcpc dcpop sha3 asimddp sha512 asimdfhm dit uscat ilrcpc flagm sb
+    paca pacg dcpodp flagm2 frint [i8mm] bf16 bti afp`. Neither has `rpres` or `ssbs`
+    (macOS names FEAT_RPRES on both, FEAT_SSBS on the M3 Ultra), nor the M4 Max's `wfxt`
+    or any of `sme` (FEAT_WFxT, FEAT_SME, FEAT_SME2 named there), nor `i8mm` on the M4 Max
+    (FEAT_I8MM named there).
+  - The launchd agent was sent SIGTERM 3 s after it started.
+  - `restart`: move 2's client found no daemon ("no shards daemon answered at
+    127.0.0.1:7443 within 10s"; the microVM went on here); the series waited, moved it
+    again once `listen` had listened again on the home, the context's enrollment and the
+    daemon's key as they were, and moves 2 to 4 went through: 4 moved, 0 failed, 1 moved
+    again. Before the error was read too, the series counted that move failed: the daemon
+    was back by the time the client's 10 s wait ended.
+- **Reading.** Hypervisor.framework shows a guest ID_AA64ISAR2_EL1's WFxT and RPRES on no
+  host measured, and less than macOS names in ISAR1 too: what macOS names is no measure of
+  what a guest found, which the hypervisors' views a baseline meets are. Under kiln no
+  process a run starts outlives its runner; its home does.
+- **Consequence.** A move checks neither FEAT_WFxT nor FEAT_RPRES by name on macOS
+  (9a6f5ac5), the baseline test asserting that a guest finds neither on each Mac it runs
+  on; two-hosts.sh's `listen` listens again on a kept home, and its series wait for the
+  listener and move again what its going cut short (D176 part 6). Not measured: an M5's
+  guest (FEAT_CSSC, FEAT_HBC, still checked by name).
 ### M422. Whether a Hypervisor.framework guest given EL2 has VHE (the parity plan's step 10)
 
 - **Question.** Step 10's host is to be Windows 11 arm64 under QEMU on this Mac, given EL2
