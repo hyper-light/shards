@@ -1,16 +1,16 @@
-//! What a container changed of its image's files, for `shards diff`: Docker's answer
+//! What a microVM changed of its image's files, for `shards diff`: Docker's answer
 //! (moby daemon/containerd/image_changes.go: go-archive v0.3.3 `ChangesDirs` of the
 //! container's root against its image's), found without walking the whole image.
 //!
-//! The root is an overlay of the container's writable layer over the image
-//! (run.rs, mount_root), and a directory the container changed anything in is in that
+//! The root is an overlay of the microVM's writable layer over the image
+//! (run.rs, mount_root), and a directory the microVM changed anything in is in that
 //! layer: only those are walked, each one's entries in the root compared with the
 //! image's by go-archive's rules (changes_unix.go, statDifferent): mode, owner, device,
 //! and for all but directories size and mtime, and the `security.capability` xattr. A
 //! directory with changes inside that is not itself added or changed is changed too
 //! (changes.go, addChanges). Docker's init layer, which the comparison starts from, is
-//! what init makes of every container: its mounts and `/etc`'s files, which are not the
-//! container's changes.
+//! what init makes of every microVM: its mounts and `/etc`'s files, which are not the
+//! microVM's changes.
 //!
 //! Each change is a line as docker/cli prints it (diff.go): its kind (`C`, `A` or `D`),
 //! a space and its path. Each directory's entries come in name order, each followed by
@@ -26,11 +26,11 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
 use std::sync::OnceLock;
 
-/// The image's layer and the container's writable one, as init mounted them, kept before
+/// The image's layer and the microVM's writable one, as init mounted them, kept before
 /// the root moved over them (run.rs).
 static LAYERS: OnceLock<(OwnedFd, OwnedFd)> = OnceLock::new();
 
-/// What init makes of every container, as Docker's init layer holds it (moby
+/// What init makes of every microVM, as Docker's init layer holds it (moby
 /// daemon/initlayer/setup_unix.go): its mounts and the files it writes in `/etc`.
 const MADE: [&str; 7] = [
     "/proc",
@@ -58,7 +58,7 @@ pub fn keep(lower: &str, upper: &str) -> io::Result<()> {
 }
 
 /// The descriptor of the writable layer [`keep`] kept, where it did: one whose number stays
-/// as a stopped container's layer takes the template's place (D190, over.rs).
+/// as a stopped microVM's layer takes the template's place (D190, over.rs).
 pub fn upper_fd() -> Option<std::os::fd::RawFd> {
     LAYERS
         .get()
@@ -129,7 +129,7 @@ pub fn write_with(
 }
 
 struct Walk {
-    /// Where something is mounted over the root: what is there is not the container's
+    /// Where something is mounted over the root: what is there is not the microVM's
     /// files.
     mounts: Vec<Vec<u8>>,
 }
@@ -161,7 +161,7 @@ impl Walk {
                 continue;
             }
             // `/etc` where the image has no directory is init's (container_files): only
-            // what is in it is the container's, and it is changed if anything is.
+            // what is in it is the microVM's, and it is changed if anything is.
             if path == b"/etc" && image.get(name).is_none_or(|m| !m.is_dir()) {
                 if merged.get(name).is_some_and(|m| m.is_dir()) {
                     let start = changes.len();
@@ -214,7 +214,7 @@ impl Walk {
 }
 
 /// Directory `name` of the writable layer's directory `upper`, if it is a directory
-/// there: opened by its name alone, not following a link the container may have put in
+/// there: opened by its name alone, not following a link the workload may have put in
 /// its place (openat(2): O_NOFOLLOW, and O_DIRECTORY refusing what is not one).
 fn written(upper: Option<&OwnedFd>, name: &OsStr) -> Option<io::Result<OwnedFd>> {
     let upper = upper?;

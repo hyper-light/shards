@@ -147,7 +147,7 @@ pub const GHOST_PREFIX: &str = "ghost-";
 /// at [`ROOT`], so none is 0.
 const NO_VOLUME: u64 = 0;
 
-/// A join share's volume (D119): a directory a container joining the microVM's network is
+/// A join share's volume (D119): a directory a run joining the microVM's network is
 /// given, reached from the share's empty root by its name, read-only or not, or of its one
 /// name, held for as long as it is served.
 #[derive(Debug)]

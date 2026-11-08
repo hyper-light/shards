@@ -39,7 +39,7 @@ const VALID: [&[u8]; 11] = [
     b"workdir",
 ];
 
-/// `config` with `changes` applied for a container of `os`, or moby's error. With no
+/// `config` with `changes` applied for a microVM of `os`, or moby's error. With no
 /// changes the config comes back as it is.
 pub fn build_from_config(config: &Value, changes: &[String], os: &str) -> Result<Value, String> {
     if changes.is_empty() {

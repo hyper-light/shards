@@ -47,7 +47,7 @@ fn setup_failed(message: impl Into<String>) -> Failure {
 }
 
 /// `page_reporting.flush` (resources/kernel/patches/0005), where the kernel has it: opened
-/// by a template's init before its root is the container's, whose sysfs is read-only, and
+/// by a template's init before its root is the workload's, whose sysfs is read-only, and
 /// by a builder's before it answers its host's asks to give back (D188); kept for
 /// [`flush_page_reports`].
 static FLUSH: std::sync::OnceLock<File> = std::sync::OnceLock::new();
@@ -203,12 +203,12 @@ pub fn main(device: &str, template: bool) -> ! {
     let started = standby.and_then(|standby| {
         let (spec, standby) = receive(&conn, standby)?;
         // What processes the run's members start and end (D123), listened to before any
-        // starts; none of a visit to a stopped container's files, which runs nothing.
+        // starts; none of a visit to a stopped microVM's files, which runs nothing.
         let procs = (spec.builtin != run::builtin::HOLD)
             .then(|| crate::procevents::Listener::new().map_err(|e| e.to_string()));
         let (mut workload, declared) = standby.start(&spec)?;
         workload.procs = procs;
-        // A visit to a stopped container's files (`HOLD`, D37) runs nothing of the image's:
+        // A visit to a stopped microVM's files (`HOLD`, D37) runs nothing of the image's:
         // no command, and no agent or harness.
         if spec.builtin == run::builtin::HOLD {
             return Ok(workload);
@@ -258,7 +258,7 @@ pub fn main(device: &str, template: bool) -> ! {
             (f.status, false, conn)
         }
     };
-    // Said by the relay already where containers joined to its network outlived it (D119).
+    // Said by the relay already where joiners of its network outlived it (D119).
     if !reported {
         if oom_killed() {
             let _ = send(&conn, kind::OOM, &oom_facts(WORKLOAD_CGROUP));
@@ -267,7 +267,7 @@ pub fn main(device: &str, template: bool) -> ! {
             let _ = send(&conn, kind::PIDS, &facts);
         }
         let _ = send(&conn, kind::EXIT, &status.to_be_bytes());
-        // The host may ask for the container's writable layer, to keep (layer.rs): packed
+        // The host may ask for the microVM's writable layer, to keep (layer.rs): packed
         // and sent, or kept where it is, in its host's file (D190).
         let kept = match asked_to_save(&conn) {
             Some(kind::SAVE) => crate::layer::save(&conn),
@@ -285,7 +285,7 @@ pub fn main(device: &str, template: bool) -> ! {
     power_off()
 }
 
-/// Kills every process but init, the kernel's threads, those of the containers joined to
+/// Kills every process but init, the kernel's threads, those of the joiners of
 /// the workload's network (D119), each in a cgroup of its own ([`joiner_path`]), the
 /// grower of its memory (D148), and `spared`, init's own children working for them: the
 /// workload's end ends the rest of its microVM, and its joiners go on. Looked at again until none is left to kill, as one may
@@ -1014,7 +1014,7 @@ fn cgroups() -> Result<(), Failure> {
     // RCU grace period unless the lock is held in its slow mode (kernel/cgroup/cgroup.c,
     // cgroup_attach_lock; kernel/rcu/sync.c), as favordynmods holds it; there each fork and
     // exit pays a full barrier more (kernel/locking/percpu-rwsem.c, __percpu_down_read_trylock).
-    // A standby born after the snapshot, as one going on over a stopped container's layer
+    // A standby born after the snapshot, as one going on over a stopped microVM's layer
     // is (over.rs), moved itself into the workload's cgroup in 10 to 40 ms on a 32-vCPU
     // guest, and in 0.3 to 0.9 favored (PM M443), as an exec's standby moves itself into
     // its workload's. A kernel without it refuses the option, and the hierarchy is mounted
@@ -1364,7 +1364,7 @@ fn spawn_reaper(cgroup: &str, ids: Ids, whose: &str) -> Result<(libc::pid_t, Own
 /// reaper then ended.
 fn await_reaper(pid: libc::pid_t, ready: OwnedFd, whose: &str) -> Result<libc::pid_t, Failure> {
     let failed = |e: io::Error| setup_failed(format!("{whose} PID namespace: {e}"));
-    // No process of the container's is born in its namespace before it is ready, as none
+    // No process of the run's is born in its namespace before it is ready, as none
     // is in docker-init's (D115) before runc has made it the command's user: one would find it
     // root, with init's privileges and descriptors, be refused signalling it as the
     // command's user (kill(2)), and lose a signal it sent before the reaper blocked its
@@ -1403,7 +1403,7 @@ fn await_reaper(pid: libc::pid_t, ready: OwnedFd, whose: &str) -> Result<libc::p
 /// The command's PID in the namespace of a [`reaper`], the second process born there.
 const REAPED: libc::pid_t = 2;
 
-/// The run's [`reaper`], under `--init`: the container's process `top` lists, as `docker
+/// The run's [`reaper`], under `--init`: the run's process `top` lists, as `docker
 /// top` lists docker-init.
 static REAPER: std::sync::OnceLock<libc::pid_t> = std::sync::OnceLock::new();
 
@@ -1690,7 +1690,7 @@ fn go_error(e: &io::Error) -> String {
     shards_cmdline::go::linux_error(e.raw_os_error().unwrap_or(libc::EIO))
 }
 
-/// A container's devices in /dev, and runc's links (crate::defaults).
+/// The workload's devices in /dev, and runc's links (crate::defaults).
 fn devices() -> Result<(), Failure> {
     for (name, major, minor) in DEVICES {
         let path = c(&format!("/dev/{name}"))?;
@@ -1720,7 +1720,7 @@ fn devices() -> Result<(), Failure> {
     Ok(())
 }
 
-/// The paths a container has masked and read-only (crate::defaults), (D42), as runc makes
+/// The paths a run has masked and read-only (crate::defaults), (D42), as runc makes
 /// them: a file under /dev/null, a directory under an empty read-only tmpfs, a
 /// read-only path bound onto itself and remounted so.
 pub(crate) fn masked() -> Result<(), Failure> {
@@ -1864,7 +1864,7 @@ fn set_hostname(name: &[u8], domain: &[u8], extra: &[Vec<u8>]) -> Result<(), Fai
     write_file("/etc/hosts", &hosts)
 }
 
-/// Brings the loopback interface up, as every container's network namespace has it,
+/// Brings the loopback interface up, as every network namespace has it,
 /// `--network none` included: the kernel then gives it 127.0.0.1/8 and ::1
 /// (netdevice(7), SIOCSIFFLAGS).
 pub(crate) fn loopback_up() -> io::Result<()> {
@@ -2048,7 +2048,7 @@ fn shutdown_and_wait(conn: &File) -> io::Result<()> {
     }
 }
 
-/// The workload the host sends; first, if it sends one, the container's writable layer
+/// The workload the host sends; first, if it sends one, the microVM's writable layer
 /// from before, put over the root (layer.rs), or kept in its file and gone on over in the
 /// template's layer's place (over.rs, D190), `standby` born again over it: the standby to
 /// start the workload.
@@ -2532,7 +2532,7 @@ impl Standby {
         })
     }
 
-    /// Sets the container up as the spec says, then has the standby exec the workload. A
+    /// Sets the run up as the spec says, then has the standby exec the workload. A
     /// standby that has ended is replaced first. With it, the image's Agentfile as read
     /// before the workload starts, for a run that starts its domains (D115).
     fn start(self, spec: &Spec) -> Result<(Workload, Option<crate::domains::Read>), Failure> {
@@ -2661,7 +2661,7 @@ impl Standby {
         // from them before its command can start (D59, D99).
         if spec.setup.iter().any(|e| e == b"confine-eth0") {
             crate::links::confine_eth0().map_err(|e| setup_failed(format!("eth0's confinement: {e}")))?;
-            // And its engine's containers (D181), whose networks it makes.
+            // And its engine's joiners (D181), whose networks it makes.
             crate::members::CONFINED.store(true, std::sync::atomic::Ordering::Relaxed);
         }
         if !spec.hostname.is_empty() {
@@ -2682,7 +2682,7 @@ impl Standby {
         if let Some(r) = &spec.resolv {
             write_file("/etc/resolv.conf", r)?;
         }
-        // A visit to a stopped container's files (`shards cp`, `diff`, `export`): the
+        // A visit to a stopped microVM's files (`shards cp`, `diff`, `export`): the
         // standby is the workload, run nothing of the image's, and holds until killed; a
         // copy's sees its shared directories as its runs do, and what it copies in is held
         // to its writable layer's size as theirs is (D156).
@@ -2759,7 +2759,7 @@ impl Standby {
     }
 
     /// A visit's standby (`HOLD`, D37): orders with no command, by which it sets up its
-    /// namespaces as a run's standby does, a copy's view of the container's files (its
+    /// namespaces as a run's standby does, a copy's view of the stopped microVM's files (its
     /// shared directories, D38, and its root read-only where its runs' is, of `setup`),
     /// then holds on in them until it is killed. Its error channel says when it is done,
     /// so that nothing enters its namespaces before they are whole, or what failed.
@@ -3210,7 +3210,7 @@ struct Exec {
     status: Option<u32>,
     /// Its EXIT is queued.
     ended: bool,
-    /// A container joining the workload's network (D119), rather than a command beside it.
+    /// A joiner of the workload's network (D119), rather than a command beside it.
     joined: bool,
     /// A joiner's process the kernel killed for want of memory: what its cgroup held and
     /// was allowed, read as its process ended, before its cgroup went (D159).
@@ -3297,7 +3297,7 @@ fn builtin(
     // What a microVM's engine asks of its networks is init's own state (D181): done here,
     // and said by the child as any built-in's answer is.
     let networked = (kind == run::builtin::NETWORK).then(|| crate::members::network(args));
-    // What a container listens on, read through init's `/proc` by its process, whose
+    // What a joiner listens on, read through init's `/proc` by its process, whose
     // network namespace its socket tables are (D181).
     let networked = networked.or_else(|| {
         (kind == run::builtin::LISTENS).then(|| crate::members::listening(joiner.unwrap_or(workload)))
@@ -3389,7 +3389,7 @@ fn builtin(
             run::builtin::STAT | run::builtin::ARCHIVE | run::builtin::EXTRACT
         ) {
             let path = args.first().map_or(&[][..], Vec::as_slice);
-            // The container's files, as dockerd's are in its root (D37): without init's /proc,
+            // The microVM's files, as dockerd's are in its root (D37): without init's /proc,
             // /sys and /dev, kernel filesystems no file of the run's is in, and whose
             // /proc reaches every process of the microVM, an agent's root among them
             // (`/proc/PID/root`), which this process, init's, could read and write (D115).
@@ -3476,7 +3476,7 @@ fn builtin(
                         let path = format!("/proc/self/fd/{}", upper.as_raw_fd());
                         if pause {
                             // Thawed whatever the packing did; a thaw that fails is the
-                            // error to say, its container left frozen.
+                            // error to say, the run left frozen.
                             freeze(&cgroup, true).and_then(|()| {
                                 let packed = crate::layer::pack_from(&lower, &path, &mut out);
                                 freeze(&cgroup, false).and(packed)
@@ -3576,7 +3576,7 @@ fn read_at(dir: &File, name: &std::ffi::CStr) -> io::Result<Vec<u8>> {
     Ok(read)
 }
 
-/// The container's files as a tar archive, as dockerd exports its root (moby
+/// The microVM's files as a tar archive, as dockerd exports its root (moby
 /// daemon/export.go: go-archive's Tar of the container's mounted root): what is
 /// mounted over the root is not its files, and the files init writes in `/etc` are
 /// left out, where Docker's root holds them empty for its mounts.
@@ -3609,7 +3609,7 @@ struct Started {
     stderr: Option<OwnedFd>,
     /// Its filter's listener, on the host's network (D124).
     binds: Option<OwnedFd>,
-    /// What a container its microVM's engine made publishes (D181): its proxy's PID, and
+    /// What a joiner its microVM's engine made publishes (D181): its proxy's PID, and
     /// the port each binding was given.
     published: Option<(libc::pid_t, Vec<u16>)>,
     /// Its membership of the microVM's switch, made by its microVM's engine (D181).
@@ -3756,7 +3756,7 @@ fn start_joiner(
         .and_then(|()| limit_in(&crate::join::cgroup(id), &spec.cgroup, devices.as_ref(), Some(id)))
         .and_then(|()| sort_setup(&setup, &mut inherited))
         .and_then(|sorted| match sorted.engine {
-            // A container made through its microVM's engine reaches none of its own (D181).
+            // A joiner made through its microVM's engine reaches none of its own (D181).
             Some(_) => Err(setup_failed("a joining container's own engine")),
             None => Ok(sorted.standby),
         })
@@ -4099,8 +4099,8 @@ impl Exec {
         };
         match started {
             Ok(w) => {
-                // Its filter's listener, on the host's network (D124): its container's, a
-                // joiner's own or the joiner it runs in (D119), or the run's.
+                // Its filter's listener, on the host's network (D124): a joiner's own,
+                // or that of the joiner it runs in (D119), or the run's.
                 if let (Some(hosts), Some(listener)) = (hosts, &w.binds) {
                     let owner = if exec.joined {
                         id
@@ -4215,7 +4215,7 @@ impl Exec {
 }
 
 /// Sends the workload's writable layer on `conn` from a child of init's, as the host asks
-/// once it has the workload's end while containers joined to its network go on (D119):
+/// once it has the workload's end while joiners of its network go on (D119):
 /// its pid, init's loop serving them meanwhile. Where no child can be had, init sends it
 /// itself, its loop waiting.
 fn send_workload_layer(conn: &File) -> Option<libc::pid_t> {
@@ -4307,7 +4307,7 @@ impl Workload {
     /// exec has said all it has, and returns the workload's status. Execs start, are
     /// signalled and resized through the signal connection, each relayed on its own.
     /// Relays the workload, and its execs, until they end: its status, and whether its end
-    /// was said already, as it is where containers joined to its network outlive it (D119):
+    /// was said already, as it is where joiners of its network outlive it (D119):
     /// its OOM and EXIT as soon as its own output is drained, and its writable layer saved
     /// as the host asks, while the joiners go on. And the host's connection, which a save of
     /// the run may have it dial again (D176): the microVM saved goes quiet for the save, and
@@ -4343,7 +4343,7 @@ impl Workload {
         let mut tokens: Option<Tokens> = None;
         let mut born = generation();
         let mut lost = false;
-        // The workload ended while containers joined to its network ran (D119); its end
+        // The workload ended while joiners of its network ran (D119); its end
         // said; the host's ask for its writable layer heard, or its end of asking; the
         // child of init's sending that layer meanwhile.
         let (mut outlived, mut reported, mut asked) = (false, false, false);
@@ -4599,7 +4599,7 @@ impl Workload {
                             if pid == main {
                                 let _ = crate::linux::control_write(control::MARKER, marker::WORKLOAD_EXITED);
                                 status = Some(code);
-                                // A container ends with its main process; containers joined
+                                // A run ends with its main process; the runs joined
                                 // to its network outlive it, as Docker's do (D119), but those
                                 // its own engine made, which end with it (D181): each the
                                 // first process of its PID namespace, whose end the kernel
@@ -5391,7 +5391,7 @@ unsafe fn child(c: &Child<'_>) -> ! {
         if !c.nnp && !load_all() {
             fail(step::SECCOMP);
         }
-        // A container's capabilities (crate::defaults), (D42), as runc applies them
+        // A run's capabilities (crate::defaults), (D42), as runc applies them
         // (finalizeNamespace): the bounding set first, the rest kept across the change of
         // user, then set. For any user but root, execve then leaves none but the
         // bounding set, there being no file or ambient capabilities (capabilities(7)),

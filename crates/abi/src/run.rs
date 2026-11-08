@@ -81,13 +81,13 @@ pub mod kind {
     /// host fails that exec with them, rather than wait for a connection that will not
     /// come.
     pub const EXEC_FAILED: u8 = 25;
-    /// Either way, on the workload's connection: a piece of a container's writable layer,
+    /// Either way, on the workload's connection: a piece of a microVM's writable layer,
     /// a tar archive of its changes in the OCI image layer form (`.wh.` whiteouts); an
-    /// empty frame ends it. Host to guest before [`SPEC`]: a stopped container's layer, to
+    /// empty frame ends it. Host to guest before [`SPEC`]: a stopped microVM's layer, to
     /// put over the image before the command runs again. Guest to host after [`SAVE`]: the
-    /// layer as the container left it.
+    /// layer as the microVM left it.
     pub const LAYER: u8 = 26;
-    /// Host to guest, after [`EXIT`]: send the container's writable layer as [`LAYER`]
+    /// Host to guest, after [`EXIT`]: send the microVM's writable layer as [`LAYER`]
     /// frames, then wait to be powered off.
     pub const SAVE: u8 = 27;
     /// Guest to host, before [`EXIT`]: the kernel killed a process of the workload's
@@ -126,11 +126,11 @@ pub mod kind {
     pub const QUIESCED: u8 = 36;
     /// Host to guest: the microVM goes on as it was, saved or not: send again.
     pub const RESUME: u8 = 37;
-    /// Guest to host, on a container's connection its microVM's engine made (D181), before
+    /// Guest to host, on the connection of a joiner its microVM's engine made (D181), before
     /// [`STARTED`]: the port each of its bindings was given in its microVM's command's
     /// network namespace, a big-endian u16 each, in their order.
     pub const PORTS: u8 = 38;
-    /// Guest to host, on a container's connection its microVM's engine made (D181), before
+    /// Guest to host, on the connection of a joiner its microVM's engine made (D181), before
     /// [`PORTS`] and [`STARTED`]: its membership of the microVM's switch, as text, its
     /// network, its address and prefix there, its gateway and its link's hardware address
     /// (`bridge 10.244.0.2/24 10.244.0.1 aa:bb:cc:dd:ee:ff`).
@@ -146,11 +146,11 @@ pub mod kind {
     /// or thread past its limit (its `pids.events` counts a `max`, cgroup-v2.rst), with what
     /// its cgroup was allowed and held: as [`OOM`] says memory's (D193).
     pub const PIDS: u8 = 41;
-    /// Host to guest, in a [`LAYER`]'s place before [`SPEC`], empty: a stopped container's
+    /// Host to guest, in a [`LAYER`]'s place before [`SPEC`], empty: a stopped microVM's
     /// writable layer kept in its file (D190, [`KEEP`]) is the microVM's layer device's
     /// from here on, its host having it ready (`control::LAYER_SWAP`): the guest lets go of
-    /// the layer its template mounted, has its host put the container's file under the
-    /// device, mounts it and makes its root the image under it, as the container left it.
+    /// the layer its template mounted, has its host put the kept file under the
+    /// device, mounts it and makes its root the image under it, as the microVM left it.
     pub const OVER: u8 = 42;
 }
 
@@ -160,9 +160,9 @@ pub mod kind {
 /// finds as the layer is kept, where the image is at hand.
 pub const MADE_ONLY: &str = "shards-made-only";
 
-/// What init makes of every container, which is not its change: its mounts and the files
+/// What init makes of every microVM, which is not its change: its mounts and the files
 /// it writes in `/etc`, as Docker's init layer holds them (moby daemon/initlayer/
-/// setup_unix.go). A container's writable layer is packed without them, in its guest
+/// setup_unix.go). A microVM's writable layer is packed without them, in its guest
 /// (init's layer.rs) and on its host (D190).
 pub const MADE: [&str; 7] = [
     "proc",
@@ -182,7 +182,7 @@ pub const MADE: [&str; 7] = [
 pub struct HostBind {
     /// Its number, which the answer names.
     pub request: u32,
-    /// The container whose process bound: 0 for the run's own, or a joiner's exec id
+    /// The run or joiner whose process bound: 0 for the run's own, or a joiner's exec id
     /// (D119), whose ports go as it ends.
     pub owner: u32,
     /// TCP's (6) or UDP's (17).
@@ -371,7 +371,7 @@ pub struct Spec {
     pub terms: Vec<Vec<u8>>,
 }
 
-/// A container's capabilities by default, by number (linux/capability.h; moby
+/// A run's capabilities by default, by number (linux/capability.h; moby
 /// daemon/pkg/oci/caps/defaults.go): CHOWN, DAC_OVERRIDE, FOWNER, FSETID, KILL, SETGID,
 /// SETUID, SETPCAP, NET_BIND_SERVICE, NET_RAW, SYS_CHROOT, MKNOD, AUDIT_WRITE and SETFCAP:
 /// CapBnd 00000000a80425fb.
@@ -427,7 +427,7 @@ pub const CAP_NAMES: [&str; 41] = [
 /// stderr, as a warning.
 pub const NETWORK_HOST: &str = "--network host puts this microVM on your host's network: ports its processes listen on are your host's, reachable from every network your host is on, and they reach your host's own services and every network your host reaches";
 
-/// What a container joining the network of one on the host's network (D119, D124) is told
+/// What a run joining the network of one on the host's network (D119, D124) is told
 /// as it starts, as [`NETWORK_HOST`] is.
 pub const NETWORK_HOST_JOINED: &str = "the container whose network this one joins is on your host's network, and so is this one: ports its processes listen on are your host's, reachable from every network your host is on, and they reach your host's own services and every network your host reaches";
 
@@ -591,43 +591,43 @@ pub mod beside {
 pub mod builtin {
     /// The guest's processes as `/proc` has them, for `shards top` (init procs.rs).
     pub const PROCESSES: u8 = 1;
-    /// What the container changed of its image's files, for `shards diff` (init
+    /// What the microVM changed of its image's files, for `shards diff` (init
     /// changes.rs).
     pub const CHANGES: u8 = 2;
-    /// The container's files as a tar archive, for `shards export` (init run.rs).
+    /// The microVM's files as a tar archive, for `shards export` (init run.rs).
     pub const EXPORT: u8 = 3;
-    /// The container's writable layer as an OCI layer, as it is now, for `shards
+    /// The microVM's writable layer as an OCI layer, as it is now, for `shards
     /// commit` (init layer.rs): with `pause` its only argument, its processes stopped
     /// meanwhile.
     pub const LAYER: u8 = 4;
     /// `shards cp`'s (init copy.rs), each its path first: a path's stat as a JSON line;
     /// a tar archive of it; and the tar archive on stdin unpacked into it, then the
-    /// container user's to own it all or empty, then `1` to let a directory and a file
+    /// run's user's to own it all or empty, then `1` to let a directory and a file
     /// replace each other.
     pub const STAT: u8 = 5;
     pub const ARCHIVE: u8 = 6;
     pub const EXTRACT: u8 = 7;
-    /// As a run's own command: nothing of the image's runs, and the container holds,
+    /// As a run's own command: nothing of the image's runs, and the microVM holds,
     /// its files there for the builtins above, until it is killed: the daemon's visit to
-    /// a stopped container (D37).
+    /// a stopped microVM (D37).
     pub const HOLD: u8 = 8;
     /// Each argument a `FILE=VALUE` written to the workload's cgroup, as its limits are
-    /// as it starts: `shards update` of a running container (moby daemon/update.go).
+    /// as it starts: `shards update` of a running microVM (moby daemon/update.go).
     pub const CGROUP: u8 = 9;
     /// The disk the writable layer uses, in decimal: inspect's and `ps -s`'s SizeRw.
     pub const SIZE: u8 = 10;
     /// The workload's use of its microVM, for `stats`: lines of `KEY VALUE`, each in
     /// decimal, as the cgroup's interface files and /proc say them (see shards-init).
     pub const STATS: u8 = 11;
-    /// With `1` its only argument, the container's cgroup frozen, once the kernel says it
+    /// With `1` its only argument, the run's cgroup frozen, once the kernel says it
     /// is, as runc's cgroup v2 freezer freezes it; with `0`, thawed: `pause` and `unpause`
-    /// of a container that shares its microVM (D119).
+    /// of a joiner that shares its microVM (D119).
     pub const FREEZE: u8 = 12;
     /// What a microVM's own engine asks of its networks, done by init itself (D181):
     /// `make NAME SUBNET GATEWAY RANGE FLAGS`, answered with the subnet and gateway made, or
     /// `remove NAME`.
     pub const NETWORK: u8 = 13;
-    /// What a container listens on (D181): each TCP port it listens on and each UDP port
+    /// What a joiner listens on (D181): each TCP port it listens on and each UDP port
     /// it holds, at an address past its loopback, as `tcp PORT` and `udp PORT` lines.
     pub const LISTENS: u8 = 14;
     /// What the microVM holds cold of its files given back to its host, at the host's

@@ -433,7 +433,7 @@ pub static RUN: Command = Command {
     error_prefix: "",
 };
 
-/// `shards create` (docker/cli cli/command/container/create.go): `run`'s container flags,
+/// `shards create` (docker/cli cli/command/container/create.go): `run`'s flags for its microVM,
 /// without what only `run` has.
 pub static CREATE: Command = Command {
     usage: "[OPTIONS] IMAGE [COMMAND] [ARG...]",
@@ -1412,7 +1412,7 @@ pub static IMPORT: Command = Command {
     error_prefix: "",
 };
 
-/// `shards update` (docker/cli cli/command/container/update.go): a running container's
+/// `shards update` (docker/cli cli/command/container/update.go): a running microVM's
 /// limits change as it runs.
 pub static UPDATE: Command = Command {
     usage: "[OPTIONS] CONTAINER [CONTAINER...]",
@@ -2044,7 +2044,7 @@ pub static UNPAUSE: Command = Command {
 };
 
 /// `shards top` (docker/cli cli/command/container/top.go): ps's options follow the
-/// container, as they are.
+/// microVM, as they are.
 pub static TOP: Command = Command {
     usage: "CONTAINER [ps OPTIONS]",
     about: "Display the running processes of a container",

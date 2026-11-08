@@ -107,11 +107,11 @@ pub mod kind {
     /// Warm VM → daemon: the guest is connected and waiting for its command.
     pub const READY: u8 = 1;
     /// Daemon → warm VM: [`RUN_INTERACTIVE`](super::RUN_INTERACTIVE) flags, the most
-    /// bytes a segment of the container's log holds, the most segments it keeps, and the
+    /// bytes a segment of the run's log holds, the most segments it keeps, and the
     /// segment the run's log starts in (each a big-endian u64), then the command
     /// (`shards_abi::run::Spec`). Descriptors: the
     /// client's connection, then its stdin, stdout and stderr, then with
-    /// [`RUN_LOG`](super::RUN_LOG) the container's directory, where its log is. With
+    /// [`RUN_LOG`](super::RUN_LOG) the run's directory, where its log is. With
     /// [`RUN_DETACHED`](super::RUN_DETACHED), only the command's stdin and the directory.
     /// Last, where the VM shares directories with its guest (D38), its connection to the
     /// run's share process, which sends a connection for each ([`SHARE_ENDS`]).
@@ -144,11 +144,11 @@ pub mod kind {
     /// means it never did. A joiner's (D119) carries its exec's id in its provider's guest
     /// (u32, big-endian), by which another joiner may join its PID namespace.
     pub const STARTED: u8 = 10;
-    /// Client → daemon: a container command (`ps`, `wait`, `rm`, ...) and its arguments,
+    /// Client → daemon: a command of the catalog's (`ps`, `wait`, `rm`, ...) and its arguments,
     /// as a list of strings, for the daemon to run and answer with `OUT`, `ERR` and `END`.
     pub const CONTAINER: u8 = 11;
     /// Daemon → client: bytes for the client's stdout. A detached run's first is its
-    /// container's ID.
+    /// microVM's ID.
     pub const OUT: u8 = 12;
     /// Daemon → client: bytes for the client's stderr.
     pub const ERR: u8 = 13;
@@ -158,7 +158,7 @@ pub mod kind {
     /// big-endian u16, as `docker run` resizes a TTY container's (docker/cli
     /// cli/command/container/tty.go).
     pub const RESIZE: u8 = 15;
-    /// Warm VM → daemon, before `DONE`: bytes of the command's output its container's log
+    /// Warm VM → daemon, before `DONE`: bytes of the command's output its run's log
     /// could not keep, as a big-endian u64 (audit A12).
     pub const LOST: u8 = 16;
     /// Warm VM → daemon, before `DONE`: the working set it recorded, for the daemon to
@@ -181,17 +181,17 @@ pub mod kind {
     /// agents: a connection to that agent, answered the same way.
     pub const DIAL: u8 = 20;
     /// Warm VM → daemon, as its run's log fills a segment: the next segment's sequence
-    /// number, a big-endian u64, which the daemon makes in the run's container and removes
+    /// number, a big-endian u64, which the daemon makes in the run's directory and removes
     /// the oldest past the retention. Answered with a `SEGMENT` carrying the new segment's
     /// log and index, in that order, or none where it could not be made. A VM reaches no
-    /// container's directory itself (D30).
+    /// run's directory itself (D30).
     pub const LOG_SEGMENT: u8 = 21;
     /// Daemon → warm VM: the answer to its `LOG_SEGMENT`.
     pub const SEGMENT: u8 = 22;
-    /// Client → daemon: run a command in a running container ([`Exec`](super::Exec)),
+    /// Client → daemon: run a command in a running microVM ([`Exec`](super::Exec)),
     /// with the client's stdin, stdout and stderr; the connection itself is its client's.
     pub const EXEC: u8 = 23;
-    /// Daemon → the container's VM: run a command beside its workload. Its number (a
+    /// Daemon → the microVM's VM process: run a command beside its workload. Its number (a
     /// big-endian u64, which `EXEC_TAKEN` answers), a flags byte
     /// ([`EXEC_INTERACTIVE`](super::EXEC_INTERACTIVE), [`EXEC_DETACHED`](super::EXEC_DETACHED)),
     /// then its `abi::run::Spec`, with the client's connection, stdin, stdout and stderr.
@@ -211,11 +211,11 @@ pub mod kind {
     /// listening socket; and back, once they are closed, so that the run's end is told
     /// only when its ports are free.
     pub const UNPUBLISH: u8 = 27;
-    /// Daemon → client: the run's container is made. Until then, a signal that would end
+    /// Daemon → client: the run's microVM is made. Until then, a signal that would end
     /// the client ends it, and with it the run, as one ends the Docker CLI's request until
     /// `ContainerCreate` returns (docker/cli cmd/docker/docker.go, notifyContext); from
     /// then on, the client passes signals on to the command. Its payload is the
-    /// container's ID.
+    /// microVM's ID.
     pub const CREATED: u8 = 28;
     /// Daemon → client on a colour terminal: how a pull goes, one
     /// [`Progress`](super::Progress) a message, for the client to show as it likes, where
@@ -228,7 +228,7 @@ pub mod kind {
     /// Warm VM → daemon: the `EXEC_RUN` numbered so (a big-endian u64) has ended, with
     /// the status after it (a byte), for its `exec_die` event.
     pub const EXEC_ENDED: u8 = 31;
-    /// Warm VM → daemon, before `DONE`: the container's writable layer is whole where
+    /// Warm VM → daemon, before `DONE`: the microVM's writable layer is whole where
     /// `RUN_LAYER_OUT` said to write it; with the disk it used in the guest (a big-endian
     /// u64), where the guest said.
     pub const LAYER_SAVED: u8 = 32;
@@ -263,14 +263,14 @@ pub mod kind {
     /// Agentfile's egress grants (D59, shards_net::Ports::encode); answered with the same
     /// kind once taken.
     pub const NET_POLICY: u8 = 40;
-    /// Daemon → a running container's VM: a container joins its network (D119). Its number
+    /// Daemon → a running microVM's VM process: a run joins its network (D119). Its number
     /// (a big-endian u64, which `EXEC_TAKEN` answers), with the VM's end of the joiner's
     /// own connection to the daemon, on which the joiner's run goes as a warm VM's does
     /// (`RUN`, `TAKEN`, `STARTED`, `DONE`, its log's segments), and its image's EROFS file,
     /// which the VM gives a range of its join disk.
     pub const JOIN: u8 = 41;
-    /// Daemon → a running container's VM: its number, then its join share's connection to
-    /// the share process that serves it (D119), as the first container joining its network
+    /// Daemon → a running microVM's VM process: its number, then its join share's connection to
+    /// the share process that serves it (D119), as the first joiner of its network
     /// brings volumes; answered `EXEC_TAKEN`, as a joiner's `JOIN` is.
     pub const JOIN_SHARE: u8 = 42;
     /// Daemon → a join share process: a joiner's link to it, on which its volumes come
@@ -287,7 +287,7 @@ pub mod kind {
     /// (PM M175), each a length, 4 or 16, then its octets; answered `NET_LINK_LOCAL`.
     pub const NET_LINK_LOCAL: u8 = 46;
     /// A VM → its daemon, as they come: records of the processes its run's members started
-    /// and ended (D123), as shards-init writes them, for the container's record.
+    /// and ended (D123), as shards-init writes them, for the run's record.
     pub const PROCESS: u8 = 47;
     /// Daemon → a VM's network process: a port of the host's network (`--network host`,
     /// D124), its guest's bind made the host's: the daemon's number for it (a big-endian
@@ -305,7 +305,7 @@ pub mod kind {
     /// Daemon → a VM on the host's network: the host's answer to its guest's `BIND` or
     /// `LISTEN` (`shards_abi::run::HostBound`), for its guest.
     pub const HOST_BOUND: u8 = 51;
-    /// A VM on the host's network → its daemon, as a container in it ends, before its end
+    /// A VM on the host's network → its daemon, as a run in it ends, before its end
     /// is told: its ports of the host's let go (`shards_abi::run::HostBind::owner`, a
     /// big-endian u32); answered with the same kind and owner once the daemon's copies and
     /// the network process's are closed, so that the host may bind them again once the
@@ -342,11 +342,11 @@ pub mod kind {
     /// bytes, for the daemon to check and serve with its Engine API, scoped to that run's
     /// microVM.
     pub const ENGINE_CONN: u8 = 59;
-    /// A VM → its daemon, on a container's own link its microVM's engine made (D181),
+    /// A VM → its daemon, on the link of a joiner its microVM's engine made (D181),
     /// before `STARTED`: the port each of its bindings was given in that microVM's
     /// command's network namespace, a big-endian u16 each, in their order.
     pub const PORTS: u8 = 60;
-    /// A VM → its daemon, on a container's own link its microVM's engine made (D181),
+    /// A VM → its daemon, on the link of a joiner its microVM's engine made (D181),
     /// before `PORTS` and `STARTED`: its membership of that microVM's switch, as text, as
     /// init said it (`shards_abi::run::kind::MEMBER`).
     pub const MEMBER: u8 = 61;
@@ -372,7 +372,7 @@ pub mod kind {
     /// share's place (4, big-endian) and its node (8): the window maps it as it is now,
     /// zeros where it has no pages, before its guest reads there (PM M273).
     pub const CUT: u8 = 66;
-    /// Warm VM → daemon, in `LAYER_SAVED`'s place: the container's writable layer stays in
+    /// Warm VM → daemon, in `LAYER_SAVED`'s place: the microVM's writable layer stays in
     /// its own file, an ext4 file system its guest's journal written in place (D190), said
     /// once nothing of the VM's machine writes it, the file the daemon's from then on;
     /// with the disk it used in the guest (a big-endian u64), where the guest said.
@@ -389,12 +389,12 @@ pub mod kind {
     /// SIGTERM, SIGHUP or SIGQUIT where it was not ignored as the client started, as
     /// `SIGNAL`'s payload. Before the client's run is made (its image pulled and its spec
     /// prepared), its daemon takes it as the client's end, answers `INTERRUPTED`, and makes
-    /// no container, as a Docker CLI interrupted then ends; after, it is the command's, as
+    /// no microVM, as a Docker CLI interrupted then ends; after, it is the command's, as
     /// `SIGNAL` is (D26).
     pub const INTERRUPT: u8 = 70;
     /// Daemon → client: the `INTERRUPT` it took before the client's run was made, its
     /// payload as it came: the client ends as that signal ends the Docker CLI before its
-    /// container is made (D26).
+    /// microVM is made (D26).
     pub const INTERRUPTED: u8 = 71;
     /// VM → its spawner, on its grants link, where it writes in no directory of its own
     /// (Windows' AppContainer, D141): stage a snapshot generation in the directory it was
@@ -491,7 +491,7 @@ pub const EXEC_INTERACTIVE: u8 = 1;
 /// output goes nowhere.
 pub const EXEC_DETACHED: u8 = 2;
 
-/// `shards exec` as the client asks for it: the container, the command, and what the
+/// `shards exec` as the client asks for it: the microVM, the command, and what the
 /// command line set; the client's terminal size for `-t`; and the daemon binary the client
 /// would start, as in [`Run`].
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -500,15 +500,15 @@ pub struct Exec {
     pub cmd: Vec<String>,
     /// `-e`, each `NAME=VALUE`, or `NAME` alone to unset NAME.
     pub env: Vec<String>,
-    /// `-u`, or empty for the container's user.
+    /// `-u`, or empty for the run's user.
     pub user: String,
-    /// `-w`, or empty for the container's working directory.
+    /// `-w`, or empty for the run's working directory.
     pub workdir: String,
     pub interactive: bool,
     pub detach: bool,
     pub tty: Option<(u16, u16)>,
     /// The client's stdin is a terminal, as `-it` needs: the daemon refuses one that is
-    /// not once it has found the container, where the CLI refuses it after its inspect.
+    /// not once it has found the microVM, where the CLI refuses it after its inspect.
     pub stdin_terminal: bool,
     pub daemon: Identity,
     /// `--privileged`: every capability.
@@ -575,7 +575,7 @@ impl Exec {
     }
 }
 
-/// `shards attach` as the client asks for it: the container, whether its stdin goes to the
+/// `shards attach` as the client asks for it: the microVM, whether its stdin goes to the
 /// command's, and the daemon binary the client would start, as in [`Run`].
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Attach {
@@ -605,7 +605,7 @@ impl Attach {
     }
 }
 
-/// A container command as the client asks for it (`kind::CONTAINER`): its name and the
+/// A command of the catalog's as the client asks for it (`kind::CONTAINER`): its name and the
 /// words after it, which the client has checked; what of the client's locale shapes the
 /// answer; and the daemon binary the client would start, as in [`Run`].
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -731,9 +731,9 @@ pub struct Run {
     pub timing: bool,
     /// `--name`.
     pub name: Option<String>,
-    /// `-d`: the client gets the container's ID, and the run goes on without it.
+    /// `-d`: the client gets the microVM's ID, and the run goes on without it.
     pub detach: bool,
-    /// `--rm`: the container goes once it ends.
+    /// `--rm`: the microVM goes once it ends.
     pub remove: bool,
     /// `-t`: the command's stdio is a pseudo-terminal, of this many rows and columns
     /// (0 for either: the kernel's default).
@@ -749,26 +749,26 @@ pub struct Run {
     pub stop_timeout: Option<i64>,
     /// The `--health-*` settings, or `--no-healthcheck`'s `NONE`, if any was given.
     pub health: Option<Health>,
-    /// `-p`'s bindings, in the order given: each a container port and protocol, a host
+    /// `-p`'s bindings, in the order given: each a microVM's port and protocol, a host
     /// address (empty for every one) and a host port, range or none (empty).
     pub publish: Vec<Publish>,
     /// `-P`: every exposed port without a binding gets one to a port the host picks.
     pub publish_all: bool,
     /// The client's [`REGISTRY_ENV`], for the image's pull.
     pub registry_env: Vec<String>,
-    /// `shards start`: the container, as given, to run again as it was made, its
+    /// `shards start`: the microVM, as given, to run again as it was made, its
     /// writable layer put back (D37); the rest of this request says only how its client
     /// attaches.
     pub again: Option<String>,
-    /// `shards restore vm` (D176): with `again`, the container resumed from a snapshot of
+    /// `shards restore vm` (D176): with `again`, the microVM resumed from a snapshot of
     /// its own, by name; empty for its newest.
     pub resume: Option<String>,
     /// With `again`, the client says nothing of the start but what fails, as docker/cli's
     /// `start --checkpoint` says nothing (container/start.go).
     pub silent: bool,
-    /// `shards create`: the container is made, and not started.
+    /// `shards create`: the microVM is made, and not started.
     pub create: bool,
-    /// `shards restart`: with `again`, the container is stopped first if it runs, by
+    /// `shards restart`: with `again`, the microVM is stopped first if it runs, by
     /// `stop_signal` and `stop_timeout` where given, else as it stops.
     pub restart: bool,
     /// The daemon binary this client would start.
@@ -785,7 +785,7 @@ pub struct Run {
     pub dns_options: Vec<String>,
     /// `--domainname`.
     pub domainname: String,
-    /// `--cidfile`: the file its client writes the container's ID to, absolute.
+    /// `--cidfile`: the file its client writes the microVM's ID to, absolute.
     pub cidfile: String,
     /// `-q`: a pull says nothing.
     pub quiet: bool,
@@ -886,7 +886,7 @@ pub struct Run {
     /// The client's environment a log driver that ships to a cloud finds its credentials
     /// by, `NAME=VALUE` (awslogs': `AWS_*`, the home, `PATH` and the proxies, D168): as the
     /// client's shell would find them, not as the daemon's happened to be when it started.
-    /// The daemon keeps it in memory alone, never in the request a container keeps.
+    /// The daemon keeps it in memory alone, never in the request a run keeps.
     pub cloud_env: Vec<String>,
     /// The streams an Engine API create says its client attaches, as it says them (D170);
     /// `None` for a run a command line made, whose `attach`, `interactive` and `detach`
@@ -897,8 +897,8 @@ pub struct Run {
     pub device_requests: Vec<DeviceRequest>,
     /// `--use-api-socket`: its command reaches its own microVM's engine (D181).
     pub use_api_socket: bool,
-    /// Made through a microVM's own engine (D181): that microVM's container ID, and the
-    /// name the container has there, none for one its engine names.
+    /// Made through a microVM's own engine (D181): that microVM's ID, and the
+    /// name the joiner has there, none for one its engine names.
     pub engine_made: Option<(String, String)>,
     /// Binds of its microVM's own files (D181), each `SRC\0DST\0ro|rw\0PROPAGATION`, SRC a
     /// path in the files of the command whose engine made it, as a bind names a path of its
@@ -1325,7 +1325,7 @@ impl Run {
         w.push(u8::from(self.restart));
         put_identity(&mut w, &self.daemon);
         // Then what later builds added, each by name, so that a request kept by an
-        // earlier one (a container's, D37) still reads: what it lacks is empty.
+        // earlier one (a stopped microVM's, D37) still reads: what it lacks is empty.
         let more: Vec<(&str, Vec<String>)> = [
             ("labels", self.labels.clone()),
             ("expose", self.expose.clone()),
@@ -1852,20 +1852,20 @@ pub const RUN_INTERACTIVE: u8 = 1;
 /// A `kind::RUN` flag: the warm VM writes its timing line to the client's stderr, as
 /// `SHARDS_TIMING` asks.
 pub const RUN_TIMING: u8 = 2;
-/// A `kind::RUN` flag: the command's output also goes to the container's log.
+/// A `kind::RUN` flag: the command's output also goes to the run's log.
 pub const RUN_LOG: u8 = 4;
-/// A `kind::RUN` flag: no client: the command's output goes only to the container's log
+/// A `kind::RUN` flag: no client: the command's output goes only to the run's log
 /// (`-d`).
 pub const RUN_DETACHED: u8 = 8;
 /// A `kind::RUN` flag: the run publishes ports, which close before its end is told
 /// (`kind::UNPUBLISH`).
 pub const RUN_PUBLISHED: u8 = 16;
-/// A `kind::RUN` flag: a stopped container's writable layer comes with the run, read
+/// A `kind::RUN` flag: a stopped microVM's writable layer comes with the run, read
 /// from a descriptor after the log's, to put back before the command runs (D37); or, where
 /// its head says so ([`RunHead::layer_over`]), the file the layer was kept in (D190), to go
 /// under the microVM's layer device.
 pub const RUN_LAYER_IN: u8 = 32;
-/// A `kind::RUN` flag: the container stays once it stops, and its writable layer goes to
+/// A `kind::RUN` flag: the microVM stays once it stops, and its writable layer goes to
 /// a descriptor after those, told by `kind::LAYER_SAVED` once whole.
 pub const RUN_LAYER_OUT: u8 = 64;
 /// A `kind::RUN` flag: the run's swap comes with it (D159), a sparse file of what its
@@ -1879,7 +1879,7 @@ pub const RUN_SWAP: u8 = 128;
 /// most memory its guest may plug in bytes (D148), its log's queue (D162): none where
 /// the run's output is kept as it comes, else the most bytes queued for its log; its I/O
 /// limits (D178); the CPUs its microVM is held to (D191); whether a group's CPU budget
-/// holds it too (D183); and whether its stopped container's layer comes as the file it was
+/// holds it too (D183); and whether its stopped microVM's layer comes as the file it was
 /// kept in (D190).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct RunHead {
@@ -1899,7 +1899,7 @@ pub struct RunHead {
     /// Its microVM is held by its group's CPU budget too (D183, slice 3): the budget's
     /// file comes after its swap among the request's files.
     pub group: bool,
-    /// Its container's writable layer from before ([`RUN_LAYER_IN`]) comes as the file it
+    /// Its writable layer from before ([`RUN_LAYER_IN`]) comes as the file it
     /// was kept in (D190), which goes under its microVM's layer device, its root then over
     /// it (`run::kind::OVER`), rather than as an archive to put back.
     pub layer_over: bool,

@@ -1,4 +1,4 @@
-//! What publishing a container's record costs at each level of durability (audit A15,
+//! What publishing a microVM's record costs at each level of durability (audit A15,
 //! PM M46). A record of 420 bytes, as `containers/ID/config.json` holds, is written to a
 //! temporary sibling and renamed over the last, in a directory of its own per level. Each
 //! level runs alone, in blocks of N/2, in two rounds of opposite order: a drive flush one
