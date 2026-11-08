@@ -119,9 +119,9 @@ fn every_statements_nested_deep_answer_in_time() {
 /// would finish (every statements and comprehensions alternating took OPA 7 minutes 12
 /// deep and twice as long a level; this port, OPA's way, 9.3 s 20 deep): rewritten as
 /// localvars::Fast does, they answer as OPA would. Alternating, each level doubles the
-/// names OPA generates: 60 deep it has generated more than 2^60, and past 63 its counter,
-/// a Go int, wraps, names repeat and one comprehension's variable is taken for another's
-/// (unsafe), as OPA's would be were it to live so long. Rules each wrapping the one
+/// names OPA generates: 60 deep it has generated more than 2^60, and past about 62 more
+/// than its counter, a Go int, numbers (OPA's would go negative and repeat, were it to
+/// live so long); such a rule fails to compile, saying so. Rules each wrapping the one
 /// before, 10000, check with their types shared; their evaluation ends with the error of
 /// one deeper than its stack, as above.
 #[test]
@@ -140,7 +140,13 @@ fn every_statements_nested_with_comprehensions_answer() {
     let alternating = |n| nest("every x in [1] { x == 1; count([z | z := x; ", "]) == 1 }", n);
     assert_eq!(decide(alternating(60)).unwrap(), ["true"]);
     let e = decide(alternating(1000)).unwrap_err();
-    assert!(e.ends_with("rego_unsafe_var_error: var z is unsafe"), "{e}");
+    assert!(
+        e.ends_with(
+            "policy.rego:3: rego_compile_error: rule data.docker.decision nests every statements \
+             and comprehensions deeper than its local variables can be numbered"
+        ),
+        "{e}"
+    );
     let after = nest("every x in [1] { x == 1; ", "; y := 1; y == 1 }", 4000);
     assert_eq!(decide(after).unwrap(), ["true"]);
     let e = decide(wrapped(10000)).unwrap_err();

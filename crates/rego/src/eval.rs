@@ -222,10 +222,8 @@ impl Program {
     /// GetArity: a builtin's, a host function's or a function rule's arguments.
     pub fn arity(&self, r: &[Term]) -> Option<usize> {
         let name = crate::compile::text_of_ref(r);
-        if let Some(crate::types::Type::Function { args, .. }) =
-            crate::compile::allowed(&name).map(|b| &b.decl)
-        {
-            return Some(args.len());
+        if let Some(b) = crate::compile::allowed(&name) {
+            return Some(b.arity);
         }
         if self.host_names.contains(&name) {
             return Some(host_arity(&name));
@@ -4096,8 +4094,8 @@ fn decl_args_len(m: &Machine<'_>, f: &Frame, e: &Expr) -> Option<usize> {
     let ExprTerms::Call(c) = &e.terms else { return None };
     let op = c.first()?.as_ref()?;
     let name = crate::compile::text_of_ref(op);
-    if let Some(crate::types::Type::Function { args, .. }) = crate::compile::allowed(&name).map(|b| &b.decl) {
-        return Some(args.len());
+    if let Some(b) = crate::compile::allowed(&name) {
+        return Some(b.arity);
     }
     if m.p.host_names.contains(&name) {
         return Some(host_arity(&name));
@@ -4251,10 +4249,7 @@ fn eval_call(m: &mut Machine<'_>, f: &Frame, terms: &[Term], k: K<'_>) -> R {
         }
     };
     let Some(v) = result else { return Ok(()) };
-    let decl_void = matches!(
-        crate::compile::allowed(&name).map(|b| &b.decl),
-        Some(crate::types::Type::Function { result: None, .. })
-    );
+    let decl_void = crate::compile::allowed(&name).is_some_and(|b| b.void);
     if decl_void {
         return k(m);
     }
