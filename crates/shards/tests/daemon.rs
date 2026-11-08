@@ -763,14 +763,16 @@ fn a_warm_vms_run_starts_without_growing_its_descriptor_table() {
             .and_then(|t| std::fs::read_to_string(t.path().join("wchan")).ok())
     };
     // The pool's VMs waiting for a run, their room made: each one's workload thread in its
-    // read of the daemon's socket.
+    // read of the daemon's socket, which the kernel names by the function it sleeps in:
+    // unix_stream_data_wait up to 6.x, unix_stream_read_generic on 7.2 (adacachy's
+    // 7.2.9-cachyos), both of af_unix's stream read.
     let mut idle: Vec<(u32, u64)> = Vec::new();
     eventually(&home, "a warm VM waited for its run", || {
         idle = commands_with(&templates)
             .into_iter()
             .filter(|(pid, args)| {
                 args.contains(" restore ")
-                    && waits(*pid, "workload").as_deref() == Some("unix_stream_data_wait")
+                    && waits(*pid, "workload").is_some_and(|w| w.starts_with("unix_stream_"))
             })
             .filter_map(|(pid, _)| Some((pid, table(pid)?)))
             .collect();
@@ -785,7 +787,7 @@ fn a_warm_vms_run_starts_without_growing_its_descriptor_table() {
     // The run's VM: the one relaying its client's signals.
     let served: Vec<&(u32, u64)> = idle
         .iter()
-        .filter(|(pid, _)| waits(*pid, "client-signals").as_deref() == Some("unix_stream_data_wait"))
+        .filter(|(pid, _)| waits(*pid, "client-signals").is_some_and(|w| w.starts_with("unix_stream_")))
         .collect();
     assert_eq!(served.len(), 1, "the run's VM among the pool's {idle:?}");
     for &&(pid, before) in &served {
