@@ -170,6 +170,114 @@ struct Range {
     file: Option<File>,
     /// Whether the guest may write it.
     writable: bool,
+    /// Who reads and writes its file for the guest, where not this process: a process of
+    /// its builder's outside the budget that holds the builder ([`Through`]).
+    through: Option<Through>,
+}
+
+/// A request to a [`Through`]'s process: read (`THROUGH_READ`) or write (`THROUGH_WRITE`)
+/// what follows its 13 bytes: the operation, the offset in the range's file (8 bytes) and
+/// how many bytes (4), big-endian, at most [`THROUGH_MAX`]; a write's bytes after it. Its
+/// answer: an error's number (4 bytes, 0 for none) and how many bytes it read or wrote (4),
+/// a read's bytes after it.
+pub const THROUGH_READ: u8 = 1;
+pub const THROUGH_WRITE: u8 = 2;
+/// The most bytes one request moves.
+pub const THROUGH_MAX: usize = 1 << 20;
+
+/// The process that reads and writes a range's file for its guest, over a connection of
+/// its own, as this process would have, from and into the guest's memory: a build held to
+/// a budget has its builder's cache layers and their changes (D134) read and written by
+/// its writer outside the budget (D188), so that the page cache they fault is charged to
+/// the writer, where the budget's reclaim does not take it before the build's merge of
+/// the cache reads it again (PM M442). Unix's: the connection is a socket.
+#[derive(Debug)]
+pub struct Through {
+    #[cfg(unix)]
+    conn: Mutex<std::os::unix::net::UnixStream>,
+}
+
+#[cfg(unix)]
+impl Through {
+    /// Reads and writes through the process at the other end of `conn`.
+    pub fn new(conn: std::os::unix::net::UnixStream) -> Through {
+        Through {
+            conn: Mutex::new(conn),
+        }
+    }
+
+    /// Asks for `op` of up to `len` bytes at `offset` of the file, from or into `ptr`:
+    /// how many bytes it moved.
+    ///
+    /// # Safety
+    ///
+    /// `ptr .. ptr + len` lies in guest memory, as `GuestMemory::io_ptr` gives it.
+    unsafe fn ask(&self, op: u8, ptr: *mut u8, len: usize, offset: u64) -> std::io::Result<usize> {
+        use std::io::{Read as _, Write as _};
+        use std::os::fd::AsRawFd as _;
+        let n = len.min(THROUGH_MAX);
+        let mut conn = self.conn.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut head = vec![op];
+        head.extend_from_slice(&offset.to_be_bytes());
+        head.extend_from_slice(&u32::try_from(n).unwrap_or(u32::MAX).to_be_bytes());
+        conn.write_all(&head)?;
+        if op == THROUGH_WRITE {
+            // SAFETY: the caller's: `ptr .. ptr + n` lies in guest memory, which write(2)
+            // reads, never a Rust reference.
+            unsafe { raw(conn.as_raw_fd(), ptr, n, true) }?;
+        }
+        let mut code = [0u8; 4];
+        let mut moved = [0u8; 4];
+        conn.read_exact(&mut code)?;
+        conn.read_exact(&mut moved)?;
+        let code = i32::from_be_bytes(code);
+        let moved = u32::from_be_bytes(moved) as usize;
+        if code != 0 {
+            return Err(std::io::Error::from_raw_os_error(code));
+        }
+        if moved > n {
+            return Err(std::io::Error::other(
+                "a range's process moved more than it was asked",
+            ));
+        }
+        if op == THROUGH_READ {
+            // SAFETY: the caller's, `moved` within it: read(2) writes guest memory.
+            unsafe { raw(conn.as_raw_fd(), ptr, moved, false) }?;
+        }
+        Ok(moved)
+    }
+}
+
+/// All `len` bytes at `ptr` written to `fd` (`out`), or read from it into them.
+///
+/// # Safety
+///
+/// `ptr .. ptr + len` is valid memory, for reads where `out`, for writes where not.
+#[cfg(unix)]
+unsafe fn raw(fd: std::os::fd::RawFd, ptr: *mut u8, len: usize, out: bool) -> std::io::Result<()> {
+    let mut done = 0usize;
+    while done < len {
+        // SAFETY: the caller's: `ptr + done .. ptr + len` is valid.
+        let n = unsafe {
+            let p = ptr.add(done).cast::<libc::c_void>();
+            if out {
+                libc::write(fd, p, len - done)
+            } else {
+                libc::read(fd, p, len - done)
+            }
+        };
+        match n {
+            0 => return Err(std::io::ErrorKind::UnexpectedEof.into()),
+            n if n > 0 => done += n.unsigned_abs(),
+            _ => {
+                let e = std::io::Error::last_os_error();
+                if e.kind() != std::io::ErrorKind::Interrupted {
+                    return Err(e);
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 impl Join {
@@ -192,7 +300,17 @@ impl Join {
     /// last, read-only, and tells the driver the disk's new capacity. Returns where the
     /// range starts and its length, in bytes.
     pub fn attach(&self, file: File) -> Result<(u64, u64), String> {
-        self.give(file, false)
+        self.give(file, false, None)
+    }
+
+    /// Gives `file` a range as [`attach`](Self::attach) does, or one the guest may write as
+    /// [`attach_writable`](Self::attach_writable) does, whose reads and writes `through`
+    /// makes.
+    pub fn attach_through(&self, file: File, writable: bool, through: Through) -> Result<(u64, u64), String> {
+        if writable && !self.writable.load(Ordering::Acquire) {
+            return Err("a writable range of a join disk that takes no writes".into());
+        }
+        self.give(file, writable, Some(through))
     }
 
     /// Gives `file`, whose size is a whole number of sectors, a range after the last that
@@ -202,10 +320,10 @@ impl Join {
         if !self.writable.load(Ordering::Acquire) {
             return Err("a writable range of a join disk that takes no writes".into());
         }
-        self.give(file, true)
+        self.give(file, true, None)
     }
 
-    fn give(&self, file: File, writable: bool) -> Result<(u64, u64), String> {
+    fn give(&self, file: File, writable: bool, through: Option<Through>) -> Result<(u64, u64), String> {
         let len = file
             .metadata()
             .map_err(|e| format!("a file for the join disk: {e}"))?
@@ -227,6 +345,7 @@ impl Join {
                 len,
                 file: Some(file),
                 writable,
+                through,
             });
             start
         };
@@ -246,6 +365,7 @@ impl Join {
             .find(|r| r.start == start)
             .ok_or_else(|| format!("no range of the join disk starts at {start}"))?;
         range.file = None;
+        range.through = None;
         Ok(())
     }
 
@@ -279,6 +399,7 @@ impl Join {
                 len: r.u64()?,
                 file: None,
                 writable: r.bool()?,
+                through: None,
             })
         })?;
         let mut end = 0u64;
@@ -342,6 +463,14 @@ impl Join {
             let file = r.file.as_ref().ok_or(S_IOERR)?;
             let left = r.start.saturating_add(r.len) - offset;
             let n = usize::try_from(left).map_or(len, |left| left.min(len));
+            #[cfg(unix)]
+            if let Some(through) = &r.through {
+                // SAFETY: the caller's: `ptr .. ptr + n` lies in guest memory.
+                return match unsafe { through.ask(THROUGH_READ, ptr, n, offset - r.start) } {
+                    Ok(0) | Err(_) => Err(S_IOERR),
+                    Ok(n) => Ok(n),
+                };
+            }
             // SAFETY: the caller's: `ptr .. ptr + n` lies in guest memory, which the
             // kernel's read reaches.
             return match unsafe { platform::read_at(file, ptr, n, offset - r.start) } {
@@ -374,6 +503,15 @@ impl Join {
         let file = r.file.as_ref().ok_or(S_IOERR)?;
         let left = r.start.saturating_add(r.len) - offset;
         let n = usize::try_from(left).map_or(len, |left| left.min(len));
+        #[cfg(unix)]
+        if let Some(through) = &r.through {
+            // SAFETY: the caller's: `ptr .. ptr + n` lies in guest memory, which write(2)
+            // here copies from; the process at the other end never reaches it.
+            return match unsafe { through.ask(THROUGH_WRITE, ptr.cast_mut(), n, offset - r.start) } {
+                Ok(0) | Err(_) => Err(S_IOERR),
+                Ok(n) => Ok(n),
+            };
+        }
         // SAFETY: the caller's: `ptr .. ptr + n` lies in guest memory, which the kernel's
         // write reaches.
         match unsafe { platform::write_at(file, ptr, n, offset - r.start) } {
