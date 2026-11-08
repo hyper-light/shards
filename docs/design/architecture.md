@@ -1036,6 +1036,10 @@ for the exit status.
     before the status, so a pipeline reading it ends with the client, and again when the
     client hangs up, so a command outliving its client writes nowhere. A container's
     output likewise stops reaching a `docker run` that has gone.
+  - Before `READY` it makes room in its descriptor table for what a run brings and opens
+    (warm.rs `reserve_descriptors`): Linux grows a table its threads share only after an
+    RCU grace period, which held a run's hand-over 8 to 15 ms on a 32-CPU host whose warm
+    VMs' 64 descriptors filled their first table (PM M470).
   - Each message to the daemon goes whole, under one lock (warm.rs `to_daemon`), as the
     daemon's to a VM do (`RunSocket`): the VM's threads send on its connection and on
     clones of it (the run's end and its working set, its processes' records, its log's

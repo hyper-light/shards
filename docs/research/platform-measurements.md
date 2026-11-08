@@ -18900,7 +18900,8 @@ revision before comparing a changed API/implementation.
   turn, n 150 pairs, the host's load 64 throughout: wall 33.9 (p90 53.6, p99 373.5, max
   380.2) against 18.9 ms (39.8, 205.0, 871.0), paired median −15.1 ms [95% −16.1, −13.0];
   outside the guest −14.8 [−15.5, −13.7]; the command's own time +0.6 [−0.6, +1.5], tied.
-  The 66.9 and 69.3 ms maxima after are one run's daemon waiting 61 ms to acquire its VM.
+  The 66.9 and 69.3 ms maxima after are one run whose daemon took 61 ms from its handling's
+  start to a VM in hand.
 - **Where the rest goes** (after the change, with cpu-elastic/markers.patch too, n 100,
   load 30; p50, ms): the client's launch, spawn to its `main` 1.57 (a 160 MB PIE binary's:
   `/usr/bin/true` spawns and exits in 0.57, a small Rust program in 0.71, `shards
