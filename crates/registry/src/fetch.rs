@@ -916,6 +916,9 @@ mod tests {
         });
         let registry = Registry::new(client, &reference, Credentials::Anonymous).unwrap();
         let (store, root) = store("stuck");
+        // A path learned at four connections: a new one starts at one (D226), and isolates
+        // a stuck layer only from its first doubling on.
+        learned_at(&store, &fake, 4);
         let t0 = Instant::now();
         let here = Mutex::new(Vec::new());
         let layered: Vec<(&str, &[u8])> = all.iter().map(|b| (GZIP, &b[..])).collect();

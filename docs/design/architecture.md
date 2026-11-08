@@ -9025,10 +9025,11 @@ estimator's of what was measured (the table below).
 **Decided.**
 - **A path is learned, and kept in the home** (`crate::links`): each pull's and push's
   record is a file of its own, `images/links/<pull|push>/<registry host:port>@<address>`,
-  the address this host's on its route to the registry (a UDP socket connected there,
-  which sends nothing, says it; the registry's name looked up as a connection's is, within
-  its patience, and a proxy's route where one is used). Over Wi-Fi and over a wire a host
-  has two addresses, so the same registry is learned apart over each. A record holds the
+  the address this host's on its route to the registry: the local address of a TCP
+  connection dialled there as the client dials its own (to its proxy, where one is used),
+  then let go, one handshake. Over Wi-Fi and over a wire a host has two addresses, so the
+  same registry is learned apart over each; two networks that lease the host the same
+  address are one path until its samples say otherwise (the aging below). A record holds the
   count of transfers the path converged to, Welford's mean and variance of what each
   second at that count carried, the least a request took to answer, and the bytes of
   bodies sent and the sends that failed. It is written whole by a rename, so a reader
@@ -9077,6 +9078,23 @@ estimator's of what was measured (the table below).
   refused, a bisection that ends at the most it takes. A proxy's 413 comes before the
   registry has the request, so the upload begun stays open and takes the chunks. A refusal
   of a chunk at the registry's least fails the push, naming the request.
+- **On every host alike**, through std and what each system documents:
+  - The path: each system gives a connected TCP socket the source address its route
+    chose, and getsockname says it: Linux (net/ipv4/tcp_ipv4.c `tcp_v4_connect`, its
+    source from `ip_route_connect`), XNU (bsd/netinet/in_pcb.c `in_pcbconnect`, from
+    `in_pcbladdr`'s route lookup), Windows ("the local association that has been set by
+    the system", Microsoft Learn, winsock `getsockname`). A UDP socket's would send
+    nothing, but Windows may not say its address before I/O (the same page), so a TCP
+    connection is what tells it. The route's gateway and interface (Linux's routing
+    table, macOS's SCNetworkReachability, Windows' `GetBestRoute2` and its interface
+    LUID) are not read: the source address alone keys the path.
+  - The cores: `std::thread::available_parallelism`, each system's count of the CPUs
+    this process may run on, as std documents it (on Linux the affinity mask and the
+    cgroup's CPU quota taken into account).
+  - Failures: std's `io::ErrorKind` of each system's errors (ECONNRESET and WSAECONNRESET
+    as `ConnectionReset`, EPIPE as `BrokenPipe`, ETIMEDOUT and WSAETIMEDOUT as `TimedOut`,
+    ECONNABORTED and WSAECONNABORTED as `ConnectionAborted`), taken as transient by
+    `Error::from`; a send cut short is shards' own error, transient alike.
 - **The CPU is bounded by the cores, not their load**: shards reads no host CPU load to
   reuse (its budgets read memory pressure, D188), so the cap is the cores this process may
   run on, and the noise rule finds where contention for them stops a doubling paying.

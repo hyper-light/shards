@@ -1,8 +1,8 @@
 //! What transfers learn of their network path, kept in the home (D226): each pull's and
 //! each push's, by the path it went over (this host's address on its route to the
-//! registry, and the registry's host and port), the count of transfers it converged to,
-//! what each second at that count carried, the least a request took to answer, and how
-//! often a send failed. A file of its own each, `links/<pull|push>/<registry>@<address>`
+//! registry, as a connection there is given it, and the registry's host and port), the
+//! count of transfers it converged to, what each second at that count carried, the least
+//! a request took to answer, and how often a send failed. A file of its own each, `links/<pull|push>/<registry>@<address>`
 //! in the image store, written whole by a rename, so a reader never sees half of one and
 //! two transfers that end together leave one of theirs.
 //!

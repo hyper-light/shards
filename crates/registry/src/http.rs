@@ -518,27 +518,23 @@ impl Client {
         }
     }
 
-    /// This host's address on its route to `url`, or to the proxy that reaches it: a UDP
-    /// socket connected there sends nothing, and is given the address its route leaves
-    /// from. Looked up as a connection's name is, within its patience; `None` where it
-    /// cannot be.
+    /// This host's address on its route to `url`, or to the proxy that reaches it: the
+    /// local address of a TCP connection dialled there, as the client dials its own, and
+    /// let go (one handshake). Each host's system gives a connected socket the source its
+    /// route chose, and says it: Linux's (net/ipv4/tcp_ipv4.c `tcp_v4_connect`, the source
+    /// from `ip_route_connect`), XNU's (bsd/netinet/in_pcb.c `in_pcbconnect`, from
+    /// `in_pcbladdr`'s route), and Windows' ("the local association that has been set by
+    /// the system" once connected: Microsoft Learn, winsock `getsockname`), which may not
+    /// say a UDP socket's before I/O. `None` where it cannot be reached.
     pub(crate) fn route(&self, url: &Url) -> Option<std::net::IpAddr> {
         let proxy = self.proxies.for_url(url).ok()?;
         let first = proxy.map_or(url, |p| &p.url);
-        let to = *resolve(
-            first,
-            Instant::now() + self.patience.connect,
-            self.cancel.as_ref(),
-        )
-        .ok()?
-        .first()?;
-        let any: std::net::IpAddr = match to {
-            SocketAddr::V4(_) => std::net::Ipv4Addr::UNSPECIFIED.into(),
-            SocketAddr::V6(_) => std::net::Ipv6Addr::UNSPECIFIED.into(),
+        let reach = match proxy {
+            Some(_) => None,
+            None => self.reach,
         };
-        let socket = std::net::UdpSocket::bind((any, 0)).ok()?;
-        socket.connect(to).ok()?;
-        Some(socket.local_addr().ok()?.ip())
+        let tcp = dial(first, self.cancel.as_ref(), reach, self.patience.connect).ok()?;
+        Some(tcp.local_addr().ok()?.ip())
     }
 
     /// [`send`](Self::send), counting into `sent` each byte of a file's body as it goes.
