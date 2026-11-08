@@ -179,7 +179,7 @@ fn commands_run_in_the_image() {
         ("default", "0000000000000000"),
         "{out}"
     );
-    // A container's capabilities, /dev and masked paths, as Docker's are (measured:
+    // A run's capabilities, /dev and masked paths, as Docker's are (measured:
     // Docker Desktop's dockerd 29.3.1, alpine).
     for (key, want) in [
         ("capinh", "0000000000000000"),
@@ -291,7 +291,7 @@ fn exit_statuses_are_the_commands() {
             "{command:?}: {out}"
         );
     }
-    // A container ends with its main process: a child left holding stdout is killed.
+    // A run ends with its main process: a child left holding stdout is killed.
     let out = run(&image, &[], &["/bin/testguest", "orphan"], b"");
     assert_eq!(
         (out.status, out.stdout.as_slice()),

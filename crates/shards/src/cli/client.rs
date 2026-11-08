@@ -61,7 +61,7 @@ const START_TIMEOUT: Duration = Duration::from_secs(30);
 /// (request.rs), since this process makes the home its working directory, where the
 /// daemon's socket is (`shards_ipc::SOCKET`). The terminal is back as it was when this
 /// returns. Signals go on to the command with `sig_proxy` (`--sig-proxy`), and the
-/// container's ID into `cid` once it is made (`--cidfile`).
+/// microVM's ID into `cid` once it is made (`--cidfile`).
 pub fn run(
     home: &Path,
     daemon: &Path,
@@ -89,7 +89,7 @@ pub fn run(
     code
 }
 
-/// Runs `request` in a running container through the daemon of `home`, as `docker exec`
+/// Runs `request` in a running microVM through the daemon of `home`, as `docker exec`
 /// does: the command's stdio is this process's, and its status this process's, but
 /// signals are not passed on, as `docker exec` passes none.
 pub fn exec(home: &Path, daemon: &Path, request: &shards_ipc::Exec, detach_keys: &[u8]) -> ExitCode {
@@ -109,7 +109,7 @@ pub fn exec(home: &Path, daemon: &Path, request: &shards_ipc::Exec, detach_keys:
     code
 }
 
-/// Attaches to a running container's command (`shards attach`), whose terminal `tty`
+/// Attaches to a running microVM's command (`shards attach`), whose terminal `tty`
 /// says, its signals passed on with `proxies_signals`, as `docker attach` attaches; a
 /// detach is said as docker/cli says it, and exits 1 (attach.go: the streamer's
 /// EscapeError).
@@ -509,7 +509,7 @@ enum Ran {
 /// The command's messages, as `recv` takes them, until it ends: its ID once made, for
 /// `--cidfile`, from when what the client sends on the run's connection in `current` is
 /// the command's, and its terminal follows this client's (a run's once the daemon has made
-/// its container, an exec's at once); a detached run's answer; its status; or the daemon's
+/// its microVM, an exec's at once); a detached run's answer; its status; or the daemon's
 /// answer to the client's asking to be ended before its run was made.
 fn ran_on(
     request: &Attached,
@@ -558,7 +558,7 @@ fn ran_on(
                 return Ran::Ended(ExitCode::from(status), timing);
             }
             Ok(Some(m)) if m.kind == kind::RESTART => return Ran::Restart,
-            // A detached run's answer: its container's ID, or why it did not start.
+            // A detached run's answer: its microVM's ID, or why it did not start.
             Ok(Some(m)) if m.kind == kind::OUT => {
                 if let (Some((image, name)), Some(p)) = (&request.card, crate::cli::look::styled()) {
                     let id = String::from_utf8_lossy(&m.payload).trim().to_string();
@@ -665,7 +665,7 @@ fn ended(pidfd: &std::os::fd::OwnedFd) {
     }
 }
 
-/// A descriptor a container command's request stands for, and which way it goes: what the
+/// A descriptor a microVM command's request stands for, and which way it goes: what the
 /// daemon writes (`To`: save's and export's output, cp's archive) or reads (`From`:
 /// import's and load's input, cp's extract).
 #[derive(Debug, Clone, Copy)]
@@ -813,7 +813,7 @@ fn copy_streams<'s>(
     Ok(waited)
 }
 
-/// Runs a container command (`ps`, `wait`, `rm`, ...) in the daemon of `home`, whose
+/// Runs a microVM command (`ps`, `wait`, `rm`, ...) in the daemon of `home`, whose
 /// binary is `daemon`, printing what the daemon answers as it comes, and exits with the
 /// command's status.
 pub fn container(home: &Path, daemon: &Path, command: &Command, fds: &[Stream<'_>]) -> u8 {

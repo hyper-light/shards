@@ -113,7 +113,7 @@ pub fn capabilities(run: &Run) -> u64 {
     (defaults & !drop) | add
 }
 
-/// A container's `--security-opt`, as dockerd reads them as it makes one (moby
+/// A microVM's `--security-opt`, as dockerd reads them as it makes one (moby
 /// daemon/daemon_unix.go, parseSecurityOpt): each `KEY=VALUE`, else `KEY:VALUE` (which it
 /// calls deprecated), but `no-new-privileges`, `writable-cgroups` and `disable` alone.
 /// Labels are kept, as on a host without SELinux, which the guest kernel has none of; an
@@ -171,7 +171,7 @@ pub fn security(run: &Run) -> Result<Security, String> {
     Ok(out)
 }
 
-/// The capabilities of a container's bounding set, by name.
+/// The capabilities of a microVM's bounding set, by name.
 pub fn capability_names(run: &Run) -> Vec<String> {
     let mask = capabilities(run);
     shards_abi::run::CAP_NAMES
@@ -184,7 +184,7 @@ pub fn capability_names(run: &Run) -> Vec<String> {
 
 /// The seccomp filter a build's `RUN` steps run under, as BuildKit gives each step
 /// moby's default profile (its executor's `Seccomp: 2`, oci/spec.go
-/// WithDefaultSeccomp): compiled for a step's capabilities, the defaults a container
+/// WithDefaultSeccomp): compiled for a step's capabilities, the defaults a run
 /// has (shards_abi::run::CAPS), and the builder's kernel; as a step carries it
 /// ([`shards_abi::build::Step::seccomp`]), empty where the profile asks for none.
 pub fn step_seccomp(kernel: shards_seccomp::Kernel) -> Result<Vec<u8>, String> {
@@ -210,9 +210,9 @@ pub fn step_seccomp(kernel: shards_seccomp::Kernel) -> Result<Vec<u8>, String> {
         .unwrap_or_default())
 }
 
-/// The seccomp filter a container's workload runs under, as moby chooses its profile
+/// The seccomp filter a microVM's workload runs under, as moby chooses its profile
 /// (daemon/seccomp_linux.go, WithSeccomp): none for `unconfined`; a privileged
-/// container's only where it names one; else the one it names or Docker's default. As the
+/// run's only where it names one; else the one it names or Docker's default. As the
 /// setup entry init loads it by (`seccomp=`, the seccomp(2) flags and the program); none
 /// where the profile asks for none. Each profile, set of capabilities and kernel is
 /// compiled once.
@@ -236,11 +236,11 @@ pub fn seccomp(
 /// What docker-default, Docker's AppArmor profile, refuses a container with CAP_SYS_ADMIN
 /// where AppArmor is enforced (`deny mount,`, PM M174), as a filter of its own, for guests,
 /// which have no AppArmor (`seccomp-mounts=`, shards_seccomp::MOUNTS): mount(2), and past
-/// docker-default the new mount API and pivot_root (D121). So a container given SYS_ADMIN
-/// mounts nothing of its microVM's, its shares among them. None for a privileged container
+/// docker-default the new mount API and pivot_root (D121). So a run given SYS_ADMIN
+/// mounts nothing of its microVM's, its shares among them. None for a privileged run
 /// or `apparmor=unconfined`, which ask for no confinement, nor without the capability: the
 /// kernel refuses every mount then, and a filter would change only mount(2)'s errno (AppArmor's
-/// EACCES for the kernel's EPERM) while putting one on a container `seccomp=unconfined`
+/// EACCES for the kernel's EPERM) while putting one on a run `seccomp=unconfined`
 /// asked to have none.
 pub fn mounts(
     run: &Run,
@@ -257,7 +257,7 @@ pub fn mounts(
     compiled(shards_seccomp::MOUNTS, run, kernel, b"seccomp-mounts=", false)
 }
 
-/// On the host's network (`--network host`, D124), or joining a container there: the
+/// On the host's network (`--network host`, D124), or joining a microVM there: the
 /// filter by which init makes each bind(2) and listen(2) of the run's processes the host's
 /// (`seccomp-binds=`, shards_seccomp::BINDS), loaded first and for a listener.
 pub fn binds(run: &Run, kernel: shards_seccomp::Kernel) -> Result<Option<Vec<u8>>, String> {
@@ -636,7 +636,7 @@ pub fn setup(
         out.push(b"pid=host".to_vec());
     } else if run.pid.starts_with("container:") {
         // The namespace of the workload whose network a joiner joins (D119), the one other
-        // container's that the daemon lets a container join.
+        // run's that the daemon lets a joiner join.
         out.push(b"pid=workload".to_vec());
     }
     Ok(out)
@@ -668,7 +668,7 @@ pub(crate) fn storage_size(run: &Run) -> Result<Option<u64>, String> {
 /// `--security-opt`'s setup entries, after the rest: the paths left unmasked, the cgroup
 /// writable, no new privileges and the seccomp filter, which its execs take too (init
 /// installs the filter last, so that none of its own setup is filtered). Made as the
-/// container starts: a profile it cannot load fails its start, not its making (D41).
+/// microVM starts: a profile it cannot load fails its start, not its making (D41).
 pub fn security_setup(
     run: &Run,
     kernel: shards_seccomp::Kernel,
@@ -709,12 +709,12 @@ pub fn security_setup(
 
 /// The setup entry by which init gives the container its devices and confines it to
 /// them (D44): `devices=`, then, each NUL-ended, `p` where it is privileged (`-` where
-/// not), and `d` with each device's host and container paths and permissions, `r` with
+/// not), and `d` with each device's host and guest paths and permissions, `r` with
 /// each `--device-cgroup-rule`, `i` with each CDI device, and `w`, `rb`, `wb`, `ri` and
 /// `wi` with each device weight's and throttle's path and number; and first, `v` with each
 /// host VFIO group the microVM is given (D154), its path and its functions' addresses on
 /// the microVM's bus, which a device that names the path is then in the guest. Without
-/// one, a container keeps the filter of Docker's defaults that its VM booted with.
+/// one, a microVM keeps the filter of Docker's defaults that its VM booted with.
 fn devices(
     run: &Run,
     cdi: Option<&crate::build::cdi::Edits>,
@@ -926,9 +926,9 @@ mod tests {
         );
     }
 
-    /// Docker's AppArmor's mount rule is a filter of its own for a container given
+    /// Docker's AppArmor's mount rule is a filter of its own for a run given
     /// CAP_SYS_ADMIN, before Docker's profile; none without the capability, `seccomp=`
-    /// unconfined or a profile of its own alike, for a privileged container, or with
+    /// unconfined or a profile of its own alike, for a privileged run, or with
     /// `apparmor=unconfined`, as Docker's has none then (PM M174).
     #[test]
     fn a_container_given_sys_admin_has_apparmors_mount_rule() {

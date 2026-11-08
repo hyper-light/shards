@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-/// Where a container is in its life (moby api/types/container/state.go).
+/// Where a microVM is in its life (moby api/types/container/state.go).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum State {
@@ -67,7 +67,7 @@ pub struct Container {
     #[serde(default)]
     pub ports: Vec<PortRecord>,
     /// Its image's ID, what its reference resolved to as it was made (`images` counts
-    /// the containers of each); none in a record from before shards kept it.
+    /// the microVMs of each); none in a record from before shards kept it.
     #[serde(default)]
     pub image_id: Option<String>,
     /// The manifest of its image it was made from: the platform its microVM runs, one of
@@ -107,7 +107,7 @@ pub struct Container {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub engine_made: Option<EngineMade>,
     /// The images its own engine pulled (D181), by ID: with its own image, those its
-    /// engine's containers run and its clients see.
+    /// engine's joiners run and its clients see.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub engine_images: Vec<String>,
     /// The networks its own engine made (D181).
@@ -115,8 +115,8 @@ pub struct Container {
     pub engine_networks: Vec<EngineNetwork>,
 }
 
-/// A container made through a microVM's own engine (D181): that microVM's container ID,
-/// and the name the container has there, as that engine's clients name it; and, while it
+/// A joiner made through a microVM's own engine (D181): that microVM's ID,
+/// and the name the joiner has there, as that engine's clients name it; and, while it
 /// runs as a member of that microVM's switch, its address on each of its networks there,
 /// as init gave it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -148,7 +148,7 @@ pub struct EngineNetwork {
     pub options: std::collections::BTreeMap<String, String>,
 }
 
-/// A container's address on a network of its microVM's engine (D181), its membership of
+/// A joiner's address on a network of its microVM's engine (D181), its membership of
 /// the microVM's switch: the network, its address and prefix, its gateway, and its link's
 /// hardware address, the guest kernel's.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -160,7 +160,7 @@ pub struct EngineAddress {
     pub mac: [u8; 6],
 }
 
-/// A container's restart policy (HostConfig.RestartPolicy) and what its restart manager
+/// A microVM's restart policy (HostConfig.RestartPolicy) and what its restart manager
 /// keeps: how many times it was restarted (RestartCount), whether a stop or kill ended
 /// it (HasBeenManuallyStopped), and whether it waits to restart (State.Restarting).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -184,9 +184,9 @@ pub struct PortRecord {
 
 pub use crate::spec::now;
 
-/// A new container ID: 32 random bytes in hex, the form clients parse
+/// A new microVM's ID: 32 random bytes in hex, the form clients parse
 /// (`stringid.GenerateRandomID`), drawn again while the first 12 digits are all decimal:
-/// the short ID names the container's host, and a hostname must not look like a number
+/// the short ID names the microVM's host, and a hostname must not look like a number
 /// (moby daemon/internal/stringid/stringid.go).
 pub fn new_id() -> io::Result<String> {
     loop {
@@ -199,7 +199,7 @@ pub fn new_id() -> io::Result<String> {
     }
 }
 
-/// Whether `name` may name a container: `[a-zA-Z0-9][a-zA-Z0-9_.-]+`, after an optional
+/// Whether `name` may name a microVM: `[a-zA-Z0-9][a-zA-Z0-9_.-]+`, after an optional
 /// `/` (moby daemon/names/names.go).
 pub fn valid_name(name: &str) -> bool {
     let name = name.strip_prefix('/').unwrap_or(name).as_bytes();
@@ -213,7 +213,7 @@ pub fn valid_name(name: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'-'))
 }
 
-/// A container's record, in its directory, and the name it is written under first.
+/// A microVM's record, in its directory, and the name it is written under first.
 const RECORD: &str = "config.json";
 const NEW_RECORD: &str = "config.json.new";
 /// The largest record read. A run's command arrives in one message
@@ -291,35 +291,35 @@ impl Disk for Real {
     }
 }
 
-/// The daemon's containers, by ID, each kept in its directory under `containers` in the
+/// The daemon's microVMs, by ID, each kept in its directory under `containers` in the
 /// home (docs/design/architecture.md D27, "Durability"):
-/// - A container is seen once its record is written, so what a command sees or is told
-///   outlives a crash of the daemon. A container is reserved first, its name held, and its
+/// - A microVM is seen once its record is written, so what a command sees or is told
+///   outlives a crash of the daemon. A microVM is reserved first, its name held, and its
 ///   record written beside the run's start, which never waits for it: a write waits on
 ///   whatever else the filesystem is doing, milliseconds at a busy host's p90 (PM M46).
-///   What happens to a reserved container waits in its reservation, for the record.
-/// - A removal takes a container out of sight at once, its name held, and its directory
+///   What happens to a reserved microVM waits in its reservation, for the record.
+/// - A removal takes a microVM out of sight at once, its name held, and its directory
 ///   is set aside after, outside the lock ([`take_out`](Self::take_out),
 ///   [`Removal::set_aside`]). Until then a crash brings it back, unless it is a `--rm`
 ///   one, which the next start removes: a command answers once no other is being set
 ///   aside ([`any_setting_aside`](Self::any_setting_aside)). One that cannot be set aside
 ///   is put back as it was ([`bring_back`](Self::bring_back)).
-/// - What happened to a container's run is kept at once, since it happened
+/// - What happened to a microVM's run is kept at once, since it happened
 ///   ([`change`](Self::change)), and its record is written after, outside the lock the
 ///   registry is kept under ([`snapshot`](Self::snapshot), [`written`](Self::written)); a
 ///   record not written yet, or that could not be, is behind, and is written again until
 ///   it is not.
 /// - Records are written and renamed into place, not synced: syncing one costs 8.5 ms on
 ///   macOS (PM M46). A removal is synced before its name is let go, so that a power loss
-///   cannot bring back a container whose name another has taken.
+///   cannot bring back a microVM whose name another has taken.
 #[derive(Debug)]
 pub struct Registry {
     root: PathBuf,
     by_id: BTreeMap<String, Container>,
-    /// The IDs of those in sight, by name: a command finds its container by name without
+    /// The IDs of those in sight, by name: a command finds its microVM by name without
     /// looking at every other, as dockerd's name registrar does (PM M88).
     by_name: HashMap<String, String>,
-    /// The containers whose records are behind.
+    /// The microVMs whose records are behind.
     behind: BTreeSet<String>,
     /// Containers being removed, by ID: out of sight, their names held until the removal
     /// is durable.
@@ -333,21 +333,21 @@ pub struct Registry {
 }
 
 impl Registry {
-    /// The containers kept under `containers` in `home`, as dockerd restores its own when
+    /// The microVMs kept under `containers` in `home`, as dockerd restores its own when
     /// it starts (moby daemon/daemon.go restore). What `note` hears goes to the log.
     pub fn open(home: &Path, note: &mut dyn FnMut(String)) -> io::Result<Registry> {
         Registry::open_on(home.join("containers"), &Real, note)
     }
 
-    /// The containers kept in `root` on `disk`, reconciled with whatever a crash or a
+    /// The microVMs kept in `root` on `disk`, reconciled with whatever a crash or a
     /// power loss left of them:
-    /// - A run no daemon follows can no longer be followed: a container running exited,
+    /// - A run no daemon follows can no longer be followed: a microVM running exited,
     ///   with 255 for the status nobody saw, and one created with no status yet has 255,
     ///   as one whose run did not start has its status.
-    /// - A `--rm` container that no longer runs goes, and so does a removal that was cut
+    /// - A `--rm` microVM that no longer runs goes, and so does a removal that was cut
     ///   short.
     /// - A directory with no record is a spare a daemon made and never used, or a
-    ///   container cut short before its record was written, and goes too.
+    ///   microVM cut short before its record was written, and goes too.
     /// - A record that cannot be read gives way to its next version, whole, where a power
     ///   loss kept that from its rename; otherwise it is left as it is, and noted, as
     ///   dockerd leaves a container it cannot load.
@@ -402,7 +402,7 @@ impl Registry {
                     continue;
                 }
                 // A record whose rename outlasted a power loss, and its bytes did not: the
-                // next version, whole, is the container's, if a power loss kept it from
+                // next version, whole, is the microVM's, if a power loss kept it from
                 // its rename.
                 Loaded::Unreadable(why) => match load(disk, &dir, name, NEW_RECORD) {
                     Loaded::Record(c) => {
@@ -484,13 +484,13 @@ impl Registry {
         self.by_id.get(id)
     }
 
-    /// The container with `id`, its record written yet or not: what was set as it was
+    /// The microVM with `id`, its record written yet or not: what was set as it was
     /// made, which a run may need before its record is written.
     pub fn made(&self, id: &str) -> Option<&Container> {
         self.by_id.get(id).or_else(|| self.arriving.get(id))
     }
 
-    /// Every container, those whose records are still being written too.
+    /// Every microVM, those whose records are still being written too.
     pub fn every(&self) -> impl Iterator<Item = &Container> {
         self.by_id.values().chain(self.arriving.values())
     }
@@ -499,7 +499,7 @@ impl Registry {
         self.by_id.values()
     }
 
-    /// The container named `name`, of those in sight.
+    /// The microVM named `name`, of those in sight.
     pub fn named(&self, name: &str) -> Option<&Container> {
         self.by_id.get(self.by_name.get(name)?)
     }
@@ -513,7 +513,7 @@ impl Registry {
             .map(|(_, c)| c)
     }
 
-    /// The container holding `name`, for a new container: one in sight, one reserved, or
+    /// The microVM holding `name`, for a new microVM: one in sight, one reserved, or
     /// one whose removal is not yet durable.
     pub fn name_taken(&self, name: &str) -> Option<&Container> {
         self.named(name).or_else(|| {
@@ -549,8 +549,8 @@ impl Registry {
         Ok(())
     }
 
-    /// Whether any container is reserved, its record not yet written.
-    /// Whether a container being removed still holds `name`.
+    /// Whether any microVM is reserved, its record not yet written.
+    /// Whether a microVM being removed still holds `name`.
     pub fn is_leaving_name(&self, name: &str) -> bool {
         self.leaving.values().any(|c| c.name == name)
     }
@@ -559,7 +559,7 @@ impl Registry {
         !self.arriving.is_empty()
     }
 
-    /// Whether a reserved container, its record not yet written, may be what `reference`
+    /// Whether a reserved microVM, its record not yet written, may be what `reference`
     /// names: its ID, its name, or the start of its ID.
     pub fn arriving_as(&self, reference: &str) -> bool {
         let name = reference.strip_prefix('/').unwrap_or(reference);
@@ -568,12 +568,12 @@ impl Registry {
             .any(|c| c.id.starts_with(reference) || c.name == name)
     }
 
-    /// Whether the container with `id` is reserved, its record not yet written.
+    /// Whether the microVM with `id` is reserved, its record not yet written.
     pub fn is_arriving(&self, id: &str) -> bool {
         self.arriving.contains_key(id)
     }
 
-    /// What writes the record of the reserved container with `id`, and the record, for a
+    /// What writes the record of the reserved microVM with `id`, and the record, for a
     /// write outside the registry's lock.
     pub fn arrival(&self, id: &str) -> Option<(Recorder, Container)> {
         let c = self.arriving.get(id)?.clone();
@@ -583,7 +583,7 @@ impl Registry {
         Some((recorder, c))
     }
 
-    /// Lets the reserved container with `id` be seen, its record `written`, unless it
+    /// Lets the reserved microVM with `id` be seen, its record `written`, unless it
     /// changed since: then it is to be written again, and this is false.
     pub fn admit(&mut self, id: &str, written: &Container) -> bool {
         if self.arriving.get(id).is_some_and(|c| c != written) {
@@ -601,7 +601,7 @@ impl Registry {
         self.by_id.insert(c.id.clone(), c);
     }
 
-    /// Lets the reserved container with `id` be seen though its record could not be
+    /// Lets the reserved microVM with `id` be seen though its record could not be
     /// written: it exists, and its record is behind.
     pub fn admit_behind(&mut self, id: &str) {
         if let Some(c) = self.arriving.remove(id) {
@@ -610,11 +610,11 @@ impl Registry {
         }
     }
 
-    /// Keeps what happened to the container with `id`: `f` changes it, and the change
-    /// stands, since it happened; its record is behind until it is written. A container
+    /// Keeps what happened to the microVM with `id`: `f` changes it, and the change
+    /// stands, since it happened; its record is behind until it is written. A microVM
     /// with no record is an error: whoever changes one owns it until it goes (audit A06).
     pub fn change(&mut self, id: &str, f: impl FnOnce(&mut Container)) -> io::Result<()> {
-        // A reserved container's change waits in its reservation, for its record.
+        // A reserved microVM's change waits in its reservation, for its record.
         if let Some(c) = self.arriving.get_mut(id) {
             f(c);
             return Ok(());
@@ -628,7 +628,7 @@ impl Registry {
         Ok(())
     }
 
-    /// Names the container in sight with `id` `name` instead: its old name free at once,
+    /// Names the microVM in sight with `id` `name` instead: its old name free at once,
     /// the new one held; its record is behind until it is written.
     pub fn rename(&mut self, id: &str, name: &str) -> io::Result<()> {
         let c = self
@@ -654,7 +654,7 @@ impl Registry {
         Ok(())
     }
 
-    /// The record of the container with `id` as it stands, and what writes it, for a write
+    /// The record of the microVM with `id` as it stands, and what writes it, for a write
     /// outside the registry's lock ([`written`](Self::written)).
     pub fn snapshot(&self, id: &str) -> Option<(Recorder, Container)> {
         let c = self.by_id.get(id)?.clone();
@@ -664,7 +664,7 @@ impl Registry {
         Some((recorder, c))
     }
 
-    /// The container with `id` had its record written as `written`: it is behind no more,
+    /// The microVM with `id` had its record written as `written`: it is behind no more,
     /// unless it has changed since, to be written again.
     pub fn written(&mut self, id: &str, written: &Container) {
         if self.by_id.get(id).is_none_or(|c| c == written) {
@@ -672,12 +672,12 @@ impl Registry {
         }
     }
 
-    /// The containers whose records are behind.
+    /// The microVMs whose records are behind.
     pub fn behind(&self) -> impl Iterator<Item = &String> {
         self.behind.iter()
     }
 
-    /// Takes the container with `id` out of sight, or out of its reservation, at once:
+    /// Takes the microVM with `id` out of sight, or out of its reservation, at once:
     /// its name stays held until its removal is durable ([`Removal::sync`], then
     /// [`release`](Self::release)). Its directory is set aside after, outside the lock
     /// ([`Removal::set_aside`], then [`aside`](Self::aside), or
@@ -702,13 +702,13 @@ impl Registry {
         })
     }
 
-    /// The directory of the container with `id`, taken out, is set aside: no crash of the
+    /// The directory of the microVM with `id`, taken out, is set aside: no crash of the
     /// daemon brings it back.
     pub fn aside(&mut self, id: &str) {
         self.setting_aside.remove(id);
     }
 
-    /// Puts the container with `id`, taken out, back in sight, its directory not set
+    /// Puts the microVM with `id`, taken out, back in sight, its directory not set
     /// aside: its removal failed, and it stands as it was, its record behind.
     pub fn bring_back(&mut self, id: &str) {
         self.setting_aside.remove(id);
@@ -718,24 +718,24 @@ impl Registry {
         }
     }
 
-    /// Whether a container taken out is being set aside that a crash would bring back: a
+    /// Whether a microVM taken out is being set aside that a crash would bring back: a
     /// command that says it is gone waits until it is not (audit A15).
     pub fn any_setting_aside(&self) -> bool {
         !self.setting_aside.is_empty()
     }
 
-    /// Lets the name of a container whose removal is durable go.
+    /// Lets the name of a microVM whose removal is durable go.
     pub fn release(&mut self, id: &str) {
         self.leaving.remove(id);
     }
 
-    /// The directory kept for the container with `id`.
+    /// The directory kept for the microVM with `id`.
     pub fn dir(&self, id: &str) -> PathBuf {
         self.root.join(id)
     }
 }
 
-/// What a container's directory holds of its record.
+/// What a microVM's directory holds of its record.
 enum Loaded {
     /// Boxed: a record is many times the size of the other answers.
     Record(Box<Container>),
@@ -744,7 +744,7 @@ enum Loaded {
     Unreadable(String),
 }
 
-/// The record in `file` of the directory `dir`, which is named for its container.
+/// The record in `file` of the directory `dir`, which is named for its microVM.
 fn load(disk: &dyn Disk, dir: &Path, name: &str, file: &str) -> Loaded {
     match disk.read(&dir.join(file), MAX_RECORD) {
         Ok(bytes) => match serde_json::from_slice::<Container>(&bytes) {
@@ -757,7 +757,7 @@ fn load(disk: &dyn Disk, dir: &Path, name: &str, file: &str) -> Loaded {
     }
 }
 
-/// Writes a reserved container's record ([`Registry::arrival`]).
+/// Writes a reserved microVM's record ([`Registry::arrival`]).
 #[derive(Debug)]
 pub struct Recorder {
     root: PathBuf,
@@ -777,7 +777,7 @@ fn write(disk: &dyn Disk, root: &Path, c: &Container) -> io::Result<()> {
     disk.rename(&dir.join(NEW_RECORD), &dir.join(RECORD))
 }
 
-/// A container taken out of sight ([`Registry::take_out`]), its directory to set aside.
+/// A microVM taken out of sight ([`Registry::take_out`]), its directory to set aside.
 #[derive(Debug)]
 pub struct Removal {
     pub container: Container,
@@ -787,7 +787,7 @@ pub struct Removal {
 }
 
 impl Removal {
-    /// Sets the container's directory aside, under the name the next start deletes
+    /// Sets the microVM's directory aside, under the name the next start deletes
     /// (`.ID.removing`): no crash of the daemon brings it back. One gone already has
     /// nothing to set aside. A write of its record meanwhile lands in what is set aside, or
     /// fails: none makes the directory again.
@@ -808,8 +808,8 @@ impl Removal {
         }
     }
 
-    /// Makes the removal durable: the containers' directory is synced, so that no crash
-    /// brings the container back. Slow (PM M46), so done outside the registry's lock.
+    /// Makes the removal durable: the microVMs' directory is synced, so that no crash
+    /// brings the microVM back. Slow (PM M46), so done outside the registry's lock.
     pub fn sync(&self, disk: &dyn Disk) -> io::Result<()> {
         disk.sync_dir(&self.root)
     }
@@ -824,7 +824,7 @@ impl Removal {
     /// place: on Windows each directory where it is, its files deleted as POSIX deletes
     /// them where they are open (std's `remove_dir_all`), then, once that is durable, its
     /// mark: a power loss that kept the mark's deletion but not the directory's would bring
-    /// the container back. One sync makes all their deletions durable, a sync's tail being
+    /// the microVM back. One sync makes all their deletions durable, a sync's tail being
     /// milliseconds (PM M348). What a failure leaves, the next start deletes.
     pub fn delete_all(removals: &[&Removal], disk: &dyn Disk) -> Vec<io::Result<()>> {
         let gone = |done: io::Result<()>| match done {
@@ -871,7 +871,7 @@ mod tests {
         shards_testdir::TempDir::new(&format!("containers-{tag}")).unwrap()
     }
 
-    /// Where container `id`'s directory is once set aside: `.ID.removing` on Unix; on
+    /// Where microVM `id`'s directory is once set aside: `.ID.removing` on Unix; on
     /// Windows where it was, beside its mark.
     fn aside_dir(home: &Path, id: &str) -> PathBuf {
         #[cfg(unix)]
@@ -880,7 +880,7 @@ mod tests {
         return home.join("containers").join(id);
     }
 
-    /// Whether container `id`'s directory is set aside.
+    /// Whether microVM `id`'s directory is set aside.
     fn is_aside(home: &Path, id: &str) -> bool {
         #[cfg(unix)]
         return aside_dir(home, id).is_dir();
@@ -942,7 +942,7 @@ mod tests {
         }
     }
 
-    /// Removes the container with `id` as the daemon does: out of sight, then its
+    /// Removes the microVM with `id` as the daemon does: out of sight, then its
     /// directory set aside, or back in sight if that fails.
     fn remove(r: &mut Registry, disk: &dyn Disk, id: &str) -> io::Result<Option<Removal>> {
         let Some(removal) = r.take_out(id) else {
@@ -1075,7 +1075,7 @@ mod tests {
         }
     }
 
-    /// A change to a container with no record fails: whatever changes a container owns
+    /// A change to a microVM with no record fails: whatever changes a microVM owns
     /// it until it goes, so one missing is a broken invariant, not nothing to do (audit
     /// A06).
     #[test]
@@ -1192,7 +1192,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&home);
     }
 
-    /// A container is seen once its record is written, its name held from its
+    /// A microVM is seen once its record is written, its name held from its
     /// reservation; what happens to it meanwhile waits in the reservation, and is written
     /// before it is seen. One whose record cannot be written is seen, its record behind,
     /// since its run may have started (audit A15).
@@ -1239,7 +1239,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&home);
     }
 
-    /// What happened to a container stands even when its record cannot be written; the
+    /// What happened to a microVM stands even when its record cannot be written; the
     /// record is behind until it is written again, and then outlives the daemon.
     #[test]
     fn a_record_that_cannot_be_written_is_behind_until_it_is() {
@@ -1277,7 +1277,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&home);
     }
 
-    /// A removal that fails changes nothing: the container is seen, with its name, and
+    /// A removal that fails changes nothing: the microVM is seen, with its name, and
     /// can be removed again (audit A15).
     #[test]
     fn a_removal_that_fails_leaves_the_container_as_it_was() {
@@ -1302,7 +1302,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&home);
     }
 
-    /// A container taken out is out of sight at once, its name held; one a crash would
+    /// A microVM taken out is out of sight at once, its name held; one a crash would
     /// bring back is said to be setting aside until its directory is, and a `--rm` one,
     /// which the next start removes, is not. One taken out of its reservation is never
     /// seen, though its record is written after; one whose directory cannot be set aside
@@ -1353,8 +1353,8 @@ mod tests {
         assert!(!r.any_setting_aside());
     }
 
-    /// A container's name is held until its removal is durable: a power loss before then
-    /// could bring the container back, next to another that took its name.
+    /// A microVM's name is held until its removal is durable: a power loss before then
+    /// could bring the microVM back, next to another that took its name.
     #[test]
     fn a_name_is_held_until_its_removal_is_durable() {
         let home = temp_home("leaving");
@@ -1447,10 +1447,10 @@ mod tests {
         let _ = std::fs::remove_dir_all(&home);
     }
 
-    /// A crash at any step of a container's life leaves what the next start reconciles:
-    /// the container not seen until its record was written, seen after that with the
+    /// A crash at any step of a microVM's life leaves what the next start reconciles:
+    /// the microVM not seen until its record was written, seen after that with the
     /// last status written or 255, and gone once its directory was set aside; the other
-    /// containers as they were; nothing left over (audit A15).
+    /// microVMs as they were; nothing left over (audit A15).
     #[test]
     fn a_crash_anywhere_in_a_life_is_reconciled() {
         /// One life: made, created, running, exited with 3, removed; or with `--rm`,
@@ -1531,7 +1531,7 @@ mod tests {
                 let what = format!("--rm {auto_remove}, a crash at step {crash} of {steps:?}");
                 assert!(again.get("other").is_some(), "{what}");
                 let life = again.get("life");
-                // A `--rm` container whose run no daemon follows goes, as dockerd removes
+                // A `--rm` microVM whose run no daemon follows goes, as dockerd removes
                 // one it restores (moby daemon/daemon.go restore).
                 if auto_remove || crash <= created || crash > set_aside {
                     assert!(life.is_none(), "{what}: {life:?}");
@@ -1768,11 +1768,11 @@ mod tests {
         }
     }
 
-    /// A power loss anywhere in a container's life, and in the life of the next container
+    /// A power loss anywhere in a microVM's life, and in the life of the next microVM
     /// to take its name, leaves what the next start reconciles, in every state the model
-    /// allows (audit A15): the start succeeds; what it shows was written whole; a container
-    /// whose removal was made durable never comes back, so no two containers share a name;
-    /// the containers that were on stable storage stay; and nothing is left over.
+    /// allows (audit A15): the start succeeds; what it shows was written whole; a microVM
+    /// whose removal was made durable never comes back, so no two microVMs share a name;
+    /// the microVMs that were on stable storage stay; and nothing is left over.
     #[test]
     fn a_power_loss_anywhere_leaves_what_a_start_reconciles() {
         let root = PathBuf::from("/model/containers");
@@ -1821,7 +1821,7 @@ mod tests {
             disk.after_power_loss(k, &mut |tree| {
                 states += 1;
                 let what = format!("a power loss after {k} of {ops:?}\nleaving {tree:?}");
-                // A record torn whose next version is whole: the container is the next
+                // A record torn whose next version is whole: the microVM is the next
                 // version's.
                 let whole = |path: PathBuf, id: &str| {
                     tree.get(&path)

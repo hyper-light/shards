@@ -2340,7 +2340,7 @@ fn add_stops_at_the_image_limits_and_leaves_nothing() {
     }
 }
 
-/// An image's `STOPSIGNAL` is what `stop` sends its containers unless told otherwise
+/// An image's `STOPSIGNAL` is what `stop` sends its microVMs unless told otherwise
 /// (moby container.StopSignal): SIGUSR1 here, which ends the command 128 + 10 under
 /// --init, where it is not PID 1, which hears only what it handles (D115, M145).
 #[test]
@@ -2380,7 +2380,7 @@ fn an_images_stop_signal_is_what_stop_sends() {
 }
 
 /// An image's `HEALTHCHECK` runs as dockerd runs it (D26): each probe an exec beside the
-/// command, the container `(health: starting)` until the first result, then `(healthy)`,
+/// command, the microVM `(health: starting)` until the first result, then `(healthy)`,
 /// or `(unhealthy)` once failures, or probes past their timeout, reach its retries; a
 /// run's `--health-*` overrides the image's.
 #[test]
@@ -10137,7 +10137,7 @@ fn agents_reach_only_what_connect_grants() {
 }
 
 /// Beside agents whose grants reach past the microVM, the run's command reaches no farther
-/// than eth0's own subnet (`confine_eth0`, D59), and nor does a container its microVM's own
+/// than eth0's own subnet (`confine_eth0`, D59), and nor does a joiner its microVM's own
 /// engine makes (D181): a member reaches past the microVM no farther than the command. The
 /// host's port an agent is granted is reached by neither the command nor a member of such
 /// a run; a member of a run with no agents reaches it as that run's command does. Nor does
@@ -11120,7 +11120,7 @@ fn a_remote_mcp_server_is_a_grant_of_that_server_alone() {
         "{}",
         beside.stderr
     );
-    // Refused before its container is made: none is left, nor its run, which would keep
+    // Refused before its microVM is made: none is left, nor its run, which would keep
     // the daemon from ever exiting.
     let left = shards(&["ps", "-aq"]);
     assert_eq!(left.stdout, "", "{}", left.stderr);
@@ -16014,7 +16014,7 @@ fn agentfile_volumes_reach_whom_they_are_for() {
         assert!(refused.stderr.contains(said), "{args:?}: {}", refused.stderr);
     }
 
-    // A container's own root, written before it starts (`cp`): its agents are still
+    // A microVM's own root, written before it starts (`cp`): its agents are still
     // given what the image's Agentfile says, which init reads in the image as built.
     let created = shards(&[
         "create",
