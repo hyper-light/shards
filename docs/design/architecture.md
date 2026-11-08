@@ -7336,7 +7336,7 @@ share made ahead), and a disk's capacity was fixed when its file was opened.
   has a spare one bound to vfio-pci: tested nested, on QEMU edu's model); the guest's
   remove's 29 ms on KVM x86_64, not yet split (PM M430).
 
-### D215. The guest kernel compiles BPF programs, and has no interpreter (configured; measurement pending, PM M462)
+### D215. The guest kernel compiles BPF programs, and has no interpreter (pinned, PM M462)
 
 **Why.** Every workload runs under a seccomp filter (D42) on each of its syscalls, and every
 run's cgroup has a device filter (D44) on each device it opens or makes. Both are BPF
@@ -7353,7 +7353,17 @@ refused runs the program each call.
 **Decided.** `CONFIG_BPF_JIT=y` and `CONFIG_BPF_JIT_ALWAYS_ON=y` in resources/kernel/
 shards.config, so every architecture's kernel and every variant (kvm, hyperv, gpu,
 hyperv+gpu) has them; one fragment, as scripts/build-kernel.sh refuses an option two
-fragments name.
+fragments name. Pinned: kernel-6.18.48-fa4edcc82303, built at 36e47536 (crates/shards/src/
+kernel.rs, tests/common's `kvm` variant, README), after PM M462 measured it against
+kernel-6.18.48-64a9427a8997, whose config differs in BPF_JIT, BPF_JIT_ALWAYS_ON and
+BPF_JIT_DEFAULT_ON alone.
+
+**What it gives** (PM M462, p50): a syscall the default profile's filter runs on costs
+10.5 ns over no filter where it cost 30.6 (KVM x86_64), 20.9 where it cost 36.5
+(Hypervisor.framework, M3 Ultra), and on KVM its p99 falls from 209 to 89 ns; the device
+filter, an eBPF program, costs an open nothing measurable where it cost 11 ns (KVM) and 2.6
+where it cost 18.2 (HVF); on KVM a run from a template answers 533 µs sooner on the VM's
+clock (the quietest segment; 873 pooled). And no workload's guest holds an interpreter.
 
 - kernel/bpf/Kconfig (v6.18): BPF_JIT "allows the kernel to generate native code when a
   program is loaded into the kernel. This will significantly speed-up processing of BPF
@@ -7377,8 +7387,8 @@ fragments name.
   which both JITs compile. Programs with kfunc calls or deep stacks need the JIT anyway
   (`bpf_prog_select_runtime`).
 
-**Its costs and risks**, each measured or to be (PM M462, docs/research/measurements/
-bpf-jit/ab.py, the pinned kernel against this one, interleaved):
+**Its costs and risks** (PM M462: docs/research/measurements/bpf-jit/ab.py, fleet.py and
+latency.sh, the kernel pinned before against this one, interleaved):
 
 - **A load the JIT cannot compile fails.** With ALWAYS_ON, `bpf_prog_select_runtime` returns
   -ENOTSUPP where the JIT does not produce code; without it, the program ran interpreted.
@@ -7388,28 +7398,37 @@ bpf-jit/ab.py, the pinned kernel against this one, interleaved):
   vmalloc area on arm64, `bpf_jit_alloc_exec_limit`), which a workload's own filters would
   have to fill. A workload's start then fails as a profile that cannot load fails it (D42:
   exit 125, the reason in State.Error), closed, never without its filter.
-- **Memory.** The JIT's first program takes a 2 MiB pack of executable memory
-  (kernel/bpf/core.c `BPF_PROG_PACK_SIZE`, `SZ_2M * num_possible_nodes()`) and fills all
-  of it with trapping instructions (`alloc_new_pack`, `bpf_fill_ill_insns`), so a guest
-  writes up to 2 MiB more; init attaches the device filter at boot, before a template's
-  snapshot (D44), so every template would hold it. M462 reads MemAvailable before and
-  after and the JIT's vmalloc areas; against the per-VM memory target this is the number
-  that decides whether ALWAYS_ON stays or the default filter moves.
+- **Memory: a pack per template, not per VM.** The JIT's first program takes a 2 MiB pack
+  of executable memory (kernel/bpf/core.c at v6.18, `BPF_PROG_PACK_SIZE`, `SZ_2M *
+  num_possible_nodes()`), filled whole with trapping instructions (`alloc_new_pack`,
+  `bpf_fill_ill_insns`); later programs take 64-byte chunks of it, and it goes with its
+  last program. It is lazy already (no program, no pack); a lazier fill would leave unused
+  chunks without the traps the fill is for. Init's device filter is the first, at boot
+  (D44), so the booted VM holds 2.2 to 3.6 MiB more (KVM anonymous; 2.4 MiB footprint on
+  HVF) and its template 1.5 to 3.1 MiB more on disk; every VM restored from the template
+  maps the pack from its file, and the pool's warm VMs hold what they held interpreted on
+  both hosts. A VM that starts a workload compiles its filter after the restore: on HVF
+  that run holds 432 KiB more footprint (1.9 % of 22.3 MiB); on KVM, nothing measurable
+  (its p50 592 KiB lower).
 - **arm64's Spectre-BHB sequence.** arm64's JIT ends a classic program loaded by a task
   without CAP_SYS_ADMIN with a branch-history sequence (arch/arm64/net/bpf_jit_comp.c
   `build_bhb_mitigation`: CLRBHB, a loop of k branches and DSB ISB, or a firmware call),
   where the guest thinks its CPU affected. A run with `no-new-privileges` loads its filter
-  so (D42); M462 times it apart (`nnp/*`). shards' VMM answers SMCCC_ARCH_FEATURES for
-  ARCH_WORKAROUND_3 NOT_SUPPORTED on Hypervisor.framework (arch/aarch64/psci.rs), so no
-  guest there calls its firmware from a filter.
-- **Each start compiles its filter.** A workload's seccomp(2) load now runs the JIT;
-  M462 times the load (`*/load`).
+  so (D42). shards' VMM answers SMCCC_ARCH_FEATURES for ARCH_WORKAROUND_3 NOT_SUPPORTED on
+  Hypervisor.framework (arch/aarch64/psci.rs), so no guest there calls its firmware from a
+  filter; on the M3 Ultra a filter loaded with no_new_privs costs a call what one loaded
+  with CAP_SYS_ADMIN does (M462, `nnp/*`).
+- **Each start compiles its filter.** A seccomp(2) load takes 59.5 µs where it took 40.0
+  (KVM), 42.0 where it took 30.8 (HVF). On HVF a run from a template answers 206 µs later
+  on the VM's clock (1,197 to 1,404 µs), every template's interval above 0; which of its
+  writes after the restore cost it is not split.
 - **Code made for the boot CPU.** The JIT chooses instructions by the CPU the guest booted
   on, as the kernel's alternatives choose its own; a microVM moved to another machine is
   checked for the CPU features its guest may use already (D176, PM M460).
 
-Open: M462's numbers on Hypervisor.framework, KVM x86_64 and WHP; whether unprivileged
-loads should be blinded (`bpf_jit_harden=1`, which blinds the constants of a program a task
+Open: M462's numbers on WHP (the hyperv variant); what of HVF's 206 µs and 432 KiB a run
+pays its filter's compile after a restore could be paid before the template's snapshot;
+whether unprivileged loads should be blinded (`bpf_jit_harden=1`, which blinds the constants of a program a task
 without CAP_BPF loads, a seccomp filter's among them) is not decided.
 
 ### D208. A GPU on every Linux host: musl's GPU VM process, and Intel's GPUs (built)
