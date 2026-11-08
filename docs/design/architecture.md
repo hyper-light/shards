@@ -3269,6 +3269,10 @@ Engine 29.3.1's words and to what its containers see (`security_opt_confines_the
   compile's lookups to its tables' size (mutation-checked).
 - Not served: SCMP_ACT_NOTIFY, which needs a seccomp agent (listenerPath) shards does not
   run; it is refused as the container starts.
+- What the filter costs a syscall: the guest kernel ran it interpreted until D215, which
+  builds the kernel with its BPF JIT and no interpreter; seccomp's action cache skips it
+  for a syscall allowed whatever its arguments. Each call's cost and each load's, loaded
+  with and without `no-new-privileges`, interpreted against compiled: PM M462.
 
 ### stats (D43)
 
@@ -3333,7 +3337,9 @@ Improvements over Docker, each measured or tested:
   boots, before the template's snapshot: every VM restored from it has it. A run with
   other rules swaps its own in (BPF_F_REPLACE: never without a filter between the two), a
   privileged one takes it away. Loading the filter at each start cost a run 1026 µs of
-  its time in the guest; at boot, nothing (PM M121).
+  its time in the guest; at boot, nothing (PM M121). The filter runs on each device a
+  run opens or makes: interpreted until D215, compiled by the guest's BPF JIT since; its
+  cost to an open of /dev/null either way, against a cgroup with no filter, is PM M462's.
 - **An `a` rule allows what it says.** runc's emulator reads any `a` rule as every
   device, every access: `--device-cgroup-rule 'a 1:2 m'` or `'a *:* r'` lets a Docker
   container read, write and make every device. shards reads one that is not `a *:* rwm`
@@ -7329,6 +7335,82 @@ share made ahead), and a disk's capacity was fixed when its file was opened.
   past the 32-bit window; a host's function plugged on bare-metal hardware (no host here
   has a spare one bound to vfio-pci: tested nested, on QEMU edu's model); the guest's
   remove's 29 ms on KVM x86_64, not yet split (PM M430).
+
+### D215. The guest kernel compiles BPF programs, and has no interpreter (configured; measurement pending, PM M462)
+
+**Why.** Every workload runs under a seccomp filter (D42) on each of its syscalls, and every
+run's cgroup has a device filter (D44) on each device it opens or makes. Both are BPF
+programs, and the guest kernel ran both interpreted: Firecracker's 6.18 configs, shards'
+base, leave BPF_JIT unset (`# CONFIG_BPF_JIT is not set`, firecracker-x86_64-6.18.config
+line 119, firecracker-aarch64-6.18.config line 100) beside `HAVE_EBPF_JIT=y` and
+`ARCH_WANT_DEFAULT_BPF_JIT=y`, and none of shards' fragments (shards.config,
+shards-aarch64.config, kvm.config, hyperv.config, gpu.config) set it. seccomp's action
+cache (kernel/seccomp.c `seccomp_cache_check_allow`, Linux 5.11 and later, native ABI on
+x86_64 and arm64) answers without the filter only a syscall the filter allows whatever its
+arguments; one compared by its arguments (personality, clone's flags, socket's family) or
+refused runs the program each call.
+
+**Decided.** `CONFIG_BPF_JIT=y` and `CONFIG_BPF_JIT_ALWAYS_ON=y` in resources/kernel/
+shards.config, so every architecture's kernel and every variant (kvm, hyperv, gpu,
+hyperv+gpu) has them; one fragment, as scripts/build-kernel.sh refuses an option two
+fragments name.
+
+- kernel/bpf/Kconfig (v6.18): BPF_JIT "allows the kernel to generate native code when a
+  program is loaded into the kernel. This will significantly speed-up processing of BPF
+  programs." BPF_JIT_ALWAYS_ON "Enables BPF JIT and removes BPF interpreter to avoid
+  speculative execution of BPF instructions by the interpreter", and pins
+  /proc/sys/net/core/bpf_jit_enable to 1 (net/core/sysctl_net_core.c: its bounds both
+  SYSCTL_ONE). It depends on BPF_SYSCALL, HAVE_EBPF_JIT and BPF_JIT, which the base and this
+  change give both architectures. Commit 290af86629b2 (Linux 4.15) brought it in because the
+  interpreter in a host's text was the gadget Project Zero's CVE-2017-5715 attack used from
+  a guest: a guest kernel with no interpreter offers none to its workloads.
+- Each architecture wants the JIT on by default: x86 and arm64 select
+  ARCH_WANT_DEFAULT_BPF_JIT, and `bpf_jit_enable` starts at BPF_JIT_DEFAULT_ON
+  (kernel/bpf/core.c), `def_bool ARCH_WANT_DEFAULT_BPF_JIT || BPF_JIT_ALWAYS_ON`.
+- `net.core.bpf_jit_harden` keeps its default, 0, no constant blinding
+  (Documentation/admin-guide/sysctl/net.rst: "0 - disable JIT hardening (default value)").
+- What shards loads needs no interpreter. Classic seccomp programs (init's workload, exec
+  and build-step filters, crates/init run.rs, build.rs, domains.rs; crates/syscall-filter;
+  the in-VM server's, crates/server) are turned into eBPF as they load
+  (net/core/filter.c `bpf_migrate_filter`) and compiled by the architecture's eBPF JIT;
+  init's device filter is a BPF_PROG_TYPE_CGROUP_DEVICE program (crates/init devices.rs),
+  which both JITs compile. Programs with kfunc calls or deep stacks need the JIT anyway
+  (`bpf_prog_select_runtime`).
+
+**Its costs and risks**, each measured or to be (PM M462, docs/research/measurements/
+bpf-jit/ab.py, the pinned kernel against this one, interleaved):
+
+- **A load the JIT cannot compile fails.** With ALWAYS_ON, `bpf_prog_select_runtime` returns
+  -ENOTSUPP where the JIT does not produce code; without it, the program ran interpreted.
+  The JIT fails where its executable memory cannot be had (execmem, under memory
+  pressure), or where a task without CAP_BPF or CAP_SYS_ADMIN would take the JIT's memory
+  past `bpf_jit_limit` (`bpf_jit_charge_modmem`: half the module area on x86_64, half the
+  vmalloc area on arm64, `bpf_jit_alloc_exec_limit`), which a workload's own filters would
+  have to fill. A workload's start then fails as a profile that cannot load fails it (D42:
+  exit 125, the reason in State.Error), closed, never without its filter.
+- **Memory.** The JIT's first program takes a 2 MiB pack of executable memory
+  (kernel/bpf/core.c `BPF_PROG_PACK_SIZE`, `SZ_2M * num_possible_nodes()`) and fills all
+  of it with trapping instructions (`alloc_new_pack`, `bpf_fill_ill_insns`), so a guest
+  writes up to 2 MiB more; init attaches the device filter at boot, before a template's
+  snapshot (D44), so every template would hold it. M462 reads MemAvailable before and
+  after and the JIT's vmalloc areas; against the per-VM memory target this is the number
+  that decides whether ALWAYS_ON stays or the default filter moves.
+- **arm64's Spectre-BHB sequence.** arm64's JIT ends a classic program loaded by a task
+  without CAP_SYS_ADMIN with a branch-history sequence (arch/arm64/net/bpf_jit_comp.c
+  `build_bhb_mitigation`: CLRBHB, a loop of k branches and DSB ISB, or a firmware call),
+  where the guest thinks its CPU affected. A run with `no-new-privileges` loads its filter
+  so (D42); M462 times it apart (`nnp/*`). shards' VMM answers SMCCC_ARCH_FEATURES for
+  ARCH_WORKAROUND_3 NOT_SUPPORTED on Hypervisor.framework (arch/aarch64/psci.rs), so no
+  guest there calls its firmware from a filter.
+- **Each start compiles its filter.** A workload's seccomp(2) load now runs the JIT;
+  M462 times the load (`*/load`).
+- **Code made for the boot CPU.** The JIT chooses instructions by the CPU the guest booted
+  on, as the kernel's alternatives choose its own; a microVM moved to another machine is
+  checked for the CPU features its guest may use already (D176, PM M460).
+
+Open: M462's numbers on Hypervisor.framework, KVM x86_64 and WHP; whether unprivileged
+loads should be blinded (`bpf_jit_harden=1`, which blinds the constants of a program a task
+without CAP_BPF loads, a seccomp filter's among them) is not decided.
 
 ### D208. A GPU on every Linux host: musl's GPU VM process, and Intel's GPUs (built)
 
