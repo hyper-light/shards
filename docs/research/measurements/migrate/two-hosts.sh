@@ -7,8 +7,13 @@
 #            ADDR, this machine's address on its default route and port 7443 unless given;
 #            an invitation for the other written, and printed base64 on its last line; then,
 #            where HOLD is given, it holds the daemon up to HOLD seconds, or until `stop`
-#            removes its home, and stops it; AGENT=1 on macOS runs the daemon as a launchd
-#            user agent instead, which a runner's restart does not end, and `stop` removes)
+#            removes its home, and stops it, starting it again should it end meanwhile.
+#            Run again on the home a runner's restart left (one ends what its runs started,
+#            the hold with them), it listens again as the same daemon, its key and the
+#            clients it enrolled kept, and invites none: the mover's series waits for it and
+#            goes on. AGENT=1 on macOS runs the daemon as a launchd user agent instead,
+#            which `stop` removes; kiln's runner ends one a session starts within seconds
+#            (3 s on the M3 Ultra, 2026-11-08), so under kiln listen again instead)
 #   invite.  On the machine moved to, listening: another invitation, printed base64 on the
 #            last line. One enrolls one client: each run of `e2e` joins with a home of its own,
 #            so each needs one.
@@ -25,7 +30,13 @@
 #            too; a live move's rounds, their bytes and why they ended (`move: rounds`). A
 #            move that fails is counted, its log kept, and the series goes on; any failure
 #            exits 1 at the end. FIRST resumes a series cut short at that move (its runner
-#            gone, say), the moves before it counted with the rest.
+#            gone, say), the moves before it counted with the rest. Before each move, and
+#            after one that failed with the other machine's daemon gone (its runner
+#            restarted, say: `lab` answers nothing, or the move's error says it did not),
+#            it waits up to WAIT_PEER seconds (3600)
+#            for `listen` to be run again there, saying so each minute, and moves that one
+#            again, up to RETRIES times (3): such a move is counted as retried, not failed,
+#            the microVM having gone on here meanwhile.
 #            Results also go to $OUT, $HOME_HERE/results.txt unless given, headed by both
 #            machines: this one's, and the other's as THERE says it (listen's `listening at`
 #            line), where given. BASELINE=1 tells its microVMs the CPU the two machines
@@ -46,6 +57,10 @@
 #            each of its tests of another machine (`a_microvm_moves_to_another_host_saved_and_live`,
 #            `a_volumes_guest_owners_move_with_it`) moving to the listening home, each with
 #            an invitation of its own; stop.
+#   restart. One machine, two homes, as `local` listens: a series of 4 cold moves, the
+#            listening daemon and its hold ended (SIGTERM, as a runner's restart ends them)
+#            as the second microVM starts here, and `listen` run again on its home 10 s
+#            later; every move must go through, and the series must have seen lab go.
 #   summary. $OUT's series as Markdown: n, p50, p90, p99 and max of what each move took and
 #            of the time each ran nowhere, by mode, with the machines and what failed; and
 #            the E2E tests' results in $LOG, where given (.github/workflows/migrate-e2e.yml
@@ -89,6 +104,8 @@ FIRST=${FIRST:-1}
 AGENT_LABEL=dev.shards.two-hosts
 AGENT_PLIST=$HOME/Library/LaunchAgents/$AGENT_LABEL.plist
 MODE=${MODE:-cold live}
+WAIT_PEER=${WAIT_PEER:-3600}
+RETRIES=${RETRIES:-3}
 OUT=${OUT:-$HOME_HERE/results.txt}
 export DOCKER_CONFIG=${DOCKER_CONFIG:-$(mktemp -d)}
 
@@ -140,11 +157,35 @@ lines_within() {
 	done
 }
 
+# What a move's error says where the other machine's daemon was gone or went as it moved
+# (shards' context client, D180; QUIC's, PM M462).
+PEER_GONE='no shards daemon answered|aborted by peer|connection (lost|closed|reset)'
+
+# Whether context `lab`'s daemon answers.
+peer_answers() { here --context lab info --format '{{.Name}}' >/dev/null 2>&1; }
+
+# Waits up to WAIT_PEER seconds for `lab` to answer again, saying so each minute; fails
+# where it does not.
+peer_back() {
+	local since deadline said
+	since=$(date +%s)
+	deadline=$((since + WAIT_PEER))
+	said=$since
+	until peer_answers; do
+		[ "$(date +%s)" -lt "$deadline" ] || { echo "lab answered nothing for $WAIT_PEER s"; return 1; }
+		if [ $(($(date +%s) - said)) -ge 60 ]; then
+			echo "waiting for lab to listen again ($(($(date +%s) - since)) s)"
+			said=$(date +%s)
+		fi
+		sleep 2
+	done
+}
+
 # A series of N moves of `$1` (cold or live), its results said and appended to $OUT, the
 # moves that failed added to `failed`.
 failed=0
 series() {
-	local mode=$1 flag="" work i name start end out status ran last counts was=$failed link
+	local mode=$1 flag="" work i name start end out status ran last counts was=$failed link tries=0
 	work='i=0; while :; do i=$((i+1)); echo $i; '
 	if [ "$mode" = live ]; then
 		flag="--live"
@@ -153,10 +194,13 @@ series() {
 	work="$work"'sleep 0.05; done'
 	# A series resumed (FIRST past 1) goes on with the files of the moves before it.
 	if [ "$FIRST" = 1 ]; then
-		for f in took nowhere sent rate silence rounds failed; do : > "$HOME_HERE/$f-$mode.txt"; done
+		for f in took nowhere sent rate silence rounds failed retried; do : > "$HOME_HERE/$f-$mode.txt"; done
 	fi
-	for i in $(seq "$FIRST" "$((FIRST + N - 1))"); do
+	i=$((FIRST - 1))
+	while [ "$i" -lt "$((FIRST + N - 1))" ]; do
+		i=$((i + 1))
 		name="mv-$mode-$i"
+		peer_back || { failed=$((failed + 1)); continue; }
 		# One a failed move left here, or an earlier series' there.
 		here rm -f "$name" >/dev/null 2>&1 || true
 		here --context lab rm -f "$name" >/dev/null 2>&1 || true
@@ -173,6 +217,18 @@ series() {
 		end=$(now)
 		echo "$out" > "$HOME_HERE/move-$mode-$i.log"
 		link=$(record "$mode" "$out")
+		if [ "$status" != 0 ] && [ "$tries" -lt "$RETRIES" ] && { ! peer_answers || echo "$out" | grep -qE "$PEER_GONE"; }; then
+			# The other machine's daemon went away (its runner restarted): this one again,
+			# once it listens again. Gone, it may be back by the time the move's own wait
+			# ends: its error says so then.
+			tries=$((tries + 1))
+			echo "$mode move $i: lab went away ($out); moving it again once lab listens again"
+			echo "$i" >> "$HOME_HERE/retried-$mode.txt"
+			here rm -f "$name" >/dev/null 2>&1 || true
+			i=$((i - 1))
+			continue
+		fi
+		tries=0
 		if [ "$status" != 0 ]; then
 			echo "$mode move $i failed ($status), $link, log $HOME_HERE/move-$mode-$i.log: $out"
 			failed=$((failed + 1))
@@ -206,7 +262,7 @@ series() {
 	done
 	{
 		echo "$((failed - was))" >> "$HOME_HERE/failed-$mode.txt"
-		echo "$mode: $((FIRST + N - 1)) moves, $(awk '{n += $1} END {print n + 0}' "$HOME_HERE/failed-$mode.txt") failed"
+		echo "$mode: $((FIRST + N - 1)) moves, $(awk '{n += $1} END {print n + 0}' "$HOME_HERE/failed-$mode.txt") failed, $(wc -l < "$HOME_HERE/retried-$mode.txt" | tr -d ' ') moved again after lab went away"
 		stats "$mode move took (us)" < "$HOME_HERE/took-$mode.txt"
 		stats "$mode ran nowhere (us)" < "$HOME_HERE/nowhere-$mode.txt"
 		stats "$mode sent (bytes)" < "$HOME_HERE/sent-$mode.txt"
@@ -280,8 +336,14 @@ listen)
 	else
 		there run daemon --detached --listen "$ADDR"
 	fi
-	there invite client --name mover --output "$HOME_THERE/mover.invite"
-	echo "listening at $ADDR: $(machine "$HOME_THERE"), shards $(there version 2>/dev/null | head -1)"
+	# A home listened from before (a runner's restart ended its daemon) keeps its key and
+	# the clients it enrolled: the mover's context reaches it again as it was.
+	if [ -f "$HOME_THERE/mover.invite" ]; then
+		echo "listening again at $ADDR: $(machine "$HOME_THERE"), shards $(there version 2>/dev/null | head -1)"
+	else
+		there invite client --name mover --output "$HOME_THERE/mover.invite"
+		echo "listening at $ADDR: $(machine "$HOME_THERE"), shards $(there version 2>/dev/null | head -1)"
+	fi
 	base64 < "$HOME_THERE/mover.invite" | tr -d '\n'
 	echo
 	# Held up to HOLD seconds, where given, or until `stop` removes the home: a runner that
@@ -289,7 +351,15 @@ listen)
 	# the background.
 	if [ -n "${HOLD:-}" ]; then
 		held=$(($(date +%s) + HOLD))
-		while [ -d "$HOME_THERE" ] && [ "$(date +%s)" -lt "$held" ]; do sleep 5; done
+		while [ -d "$HOME_THERE" ] && [ "$(date +%s)" -lt "$held" ]; do
+			sleep 5
+			# Its daemon ended meanwhile: listening again, as the same daemon (asked by its
+			# pid, as a command to it would start one that does not listen).
+			if [ -d "$HOME_THERE" ] && [ "${AGENT:-0}" != 1 ] && ! kill -0 "$(cat "$HOME_THERE/daemon.pid" 2>/dev/null)" 2>/dev/null; then
+				echo "its daemon ended: listening again at $ADDR"
+				there run daemon --detached --listen "$ADDR" || true
+			fi
+		done
 		if [ -d "$HOME_THERE" ]; then there stop daemon || true; fi
 	fi
 	;;
@@ -364,6 +434,41 @@ local)
 	for t in a_microvm_moves_to_another_host_saved_and_live a_volumes_guest_owners_move_with_it; do
 		INVITE=$("$self" invite | tail -1) FILTER=$t "$self" e2e || status=$?
 	done
+	exit "$status"
+	;;
+restart)
+	: "${SHARDS:?the shards binary to run}"
+	export ADDR=${ADDR:-127.0.0.1:7443} WAIT_PEER=${WAIT_PEER:-300} N=4 FIRST=1 MODE=cold
+	trap '"$self" stop' EXIT
+	listened=$(mktemp)
+	HOLD=3600 "$self" listen > "$listened" 2>&1 &
+	holder=$!
+	until [ "$(grep -c '^c2hh' "$listened")" -ge 1 ]; do
+		kill -0 "$holder" 2>/dev/null || { cat "$listened"; exit 1; }
+		sleep 0.2
+	done
+	INVITE=$(grep '^c2hh' "$listened" | tail -1)
+	export INVITE
+	moved=$(mktemp)
+	"$self" move > "$moved" 2>&1 &
+	mover=$!
+	until here ps --format '{{.Names}}' 2>/dev/null | grep -qx mv-cold-2; do
+		kill -0 "$mover" 2>/dev/null || { cat "$moved"; exit 1; }
+		sleep 0.1
+	done
+	# The runner restarts: the hold and the daemon it kept end.
+	daemon=$(cat "$HOME_THERE/daemon.pid")
+	kill "$holder" "$daemon" 2>/dev/null || true
+	while kill -0 "$daemon" 2>/dev/null; do sleep 0.1; done
+	echo "ended the listening daemon as mv-cold-2 started"
+	sleep 10
+	HOLD=3600 "$self" listen > "$listened" 2>&1 &
+	status=0
+	wait "$mover" || status=$?
+	cat "$moved"
+	grep '^listening' "$listened"
+	grep -q '^cold: .* 0 failed' "$moved" || status=1
+	grep -qE 'lab went away|waiting for lab' "$moved" || { echo "the series never saw lab go"; status=1; }
 	exit "$status"
 	;;
 summary)
