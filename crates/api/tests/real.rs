@@ -1,9 +1,12 @@
-//! The conformance suite against real guests, booted by the `shards` binary: run where
-//! `SHARDS_API_REAL=1`, with `SHARDS_API_KERNEL` a kernel (shards' pinned one) and
+//! The waits real guests make, measured for the bounds that hold them (PM M463,
+//! `docs/research/measurements/shards-api-waits/run.sh`): an ignored test its harness runs
+//! where `SHARDS_API_REAL=1`, with `SHARDS_API_KERNEL` a kernel (shards' pinned one) and
 //! `SHARDS_API_INIT` Shards' test guest (`crates/testguest`, static musl, as the E2E tests
 //! build it or `SHARDS_TEST_GUESTS` holds it), booted as its PID 1: `shards_test=echo`
 //! serves port 1234, `shards_test=kmsg` powers off. `SHARDS_BIN` names the `shards` to
-//! boot them with (on macOS a signed build), else `shards` on `PATH`.
+//! boot them with (on macOS a signed build), else `shards` on `PATH`. The conformance suite
+//! runs against real guests in every E2E run, `crates/shards/tests/boot.rs`
+//! `shards_api_conforms_on_real_guests`.
 
 #![allow(
     clippy::unwrap_used,
@@ -17,7 +20,7 @@ use std::io::{Read as _, Write as _};
 use std::net::Shutdown;
 use std::time::{Duration, Instant};
 
-use shards_api::conformance::{self, Subject};
+use shards_api::conformance;
 use shards_api::{End, GuestSpec, Guests as _, Init, Shards, min_memory_mib};
 
 /// The real guests' specs, by `shards_test=` mode, where `SHARDS_API_REAL=1` asks for them.
@@ -43,21 +46,6 @@ fn specs() -> Option<impl Fn(&str) -> GuestSpec> {
         ports: vec![1234, 1236],
         binary: None,
     })
-}
-
-/// Every case passes against real guests (Hex HEX-GUEST-10).
-#[test]
-fn shards_conforms() {
-    let Some(spec) = specs() else { return };
-    conformance::run(&Subject {
-        guests: &Shards,
-        serving: spec("echo"),
-        port: 1234,
-        unserved: 1236,
-        powering_off: spec("kmsg"),
-        patience: conformance::PATIENCE.get(),
-    })
-    .unwrap();
 }
 
 /// Measures the waits real guests make, for the bounds that hold them: a boot to its echo

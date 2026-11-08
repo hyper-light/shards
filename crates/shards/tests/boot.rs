@@ -2141,13 +2141,15 @@ fn a_direct_boot_ended_at_its_deadline_leaves_none_of_its_processes() {
 /// shards-api's client of this build's `shards` conforms: every case of its conformance
 /// suite against real guests, the test guest as PID 1 (`echo` serves port 1234, `kmsg`
 /// powers off), each wait guarded by [`E2E`], recorded side by side with the suite's boots.
+/// A guest kernel's panic resets it at once (`panic=-1`), its case failing then, not at its
+/// patience.
 #[test]
-fn shards_api_conforms() {
+fn shards_api_conforms_on_real_guests() {
     if cannot_run_vms() {
         return;
     }
     let patience = E2E.get();
-    let spec = |mode: &str| api_spec(&format!("console=ttyS0 quiet shards_test={mode}"));
+    let spec = |mode: &str| api_spec(&format!("console=ttyS0 quiet panic=-1 shards_test={mode}"));
     conformance::run(&conformance::Subject {
         guests: &shards_api::Shards,
         serving: spec("echo"),

@@ -1,10 +1,11 @@
 //! What every [`Guests`] does, run against the simulator in this crate's tests and against
-//! [`Shards`](crate::Shards) on each backend: a spec past the bounds is refused before boot,
-//! and one past the hypervisor's vCPUs as `Bounds`;
-//! a served port carries bytes both ways and a half-close; an unserved port is refused as
-//! `Channel` within its patience, one off the allowlist at once; `stop` ends a guest as
-//! `Stopped`, and every later `connect` is refused `Ended`; a guest that powers off ends as
-//! `PowerOff`; and the hosts without a backend are refused naming them.
+//! [`Shards`](crate::Shards) on each backend's real guests (`crates/shards/tests/boot.rs`
+//! `shards_api_conforms_on_real_guests`): a spec past the bounds is refused before boot,
+//! and one past the hypervisor's vCPUs as `Bounds`; a served port carries bytes both ways
+//! and a half-close; an unserved port is refused as `Channel` within its patience, one off
+//! the allowlist at once; `stop` ends a guest as `Stopped`, and every later `connect` is
+//! refused `Ended`; a guest that powers off ends as `PowerOff`; and the hosts without a
+//! backend are refused naming them.
 
 use std::io::{Read as _, Write as _};
 use std::net::Shutdown;
