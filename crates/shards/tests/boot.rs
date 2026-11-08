@@ -8,7 +8,8 @@ mod common;
 use std::time::Duration;
 
 use common::{
-    KERNEL_NR_CPUS, cannot_run_vms, cannot_snapshot, guest_init, kernel, run_shards, test_guest, vm_run,
+    KERNEL_NR_CPUS, cannot_run_vms, cannot_snapshot, guest_init, kernel, run_shards, run_shards_env,
+    test_guest, vm_run,
 };
 
 const TIMEOUT: Duration = Duration::from_secs(60);
@@ -2031,7 +2032,11 @@ fn a_direct_boot_writes_through_a_share_and_not_through_a_read_only_one() {
         std::fs::write(d.join("hello"), "hello through --share\n").unwrap();
     }
     let read_only = format!("{}:ro", ro.display());
-    let r = vm_run(
+    // A home of its own, which the share process's private directory goes in: none of
+    // this host's user's.
+    let home = dir.join("home");
+    let r = run_shards_env(
+        &["run"],
         &[
             "--kernel",
             kernel().to_str().unwrap(),
@@ -2046,6 +2051,7 @@ fn a_direct_boot_writes_through_a_share_and_not_through_a_read_only_one() {
             "--share",
             &read_only,
         ],
+        &[("SHARDS_HOME", home.as_os_str())],
         TIMEOUT,
     );
     assert_eq!(r.status, Some(0), "{r}");
@@ -2056,4 +2062,39 @@ fn a_direct_boot_writes_through_a_share_and_not_through_a_read_only_one() {
         "written by a shards guest through --share\n"
     );
     assert!(!ro.join("from-guest").exists());
+}
+
+/// shards-api's conformance suite (`crates/api`) against real guests this build's `shards`
+/// boots (`run --kernel`), the test guest their PID 1: `echo` serves vsock port 1234 until
+/// stopped, `kmsg` powers off. Bounds refused before boot, bytes and half-closes both ways,
+/// unserved and off-list ports refused, stop, and power-off, on each host's backend. The
+/// client starts `shards` itself: `run --kernel` reads no docker config and no home, so
+/// none of this host's.
+#[test]
+fn shards_api_conforms_on_real_guests() {
+    if cannot_run_vms() {
+        return;
+    }
+    let spec = |mode: &str| shards_api::GuestSpec {
+        kernel: kernel().into(),
+        init: shards_api::Init::Executable(test_guest().into()),
+        cmdline: format!("console=ttyS0 quiet panic=-1 shards_test={mode}"),
+        vcpus: 1,
+        memory_mib: 256,
+        disks: vec![],
+        shares: vec![],
+        ports: vec![1234, 1236],
+        binary: Some(common::shards().into()),
+    };
+    let subject = shards_api::conformance::Subject {
+        guests: &shards_api::Shards,
+        serving: spec("echo"),
+        port: 1234,
+        unserved: 1236,
+        powering_off: spec("kmsg"),
+        patience: TIMEOUT,
+    };
+    if let Err(e) = shards_api::conformance::run(&subject) {
+        panic!("{e}");
+    }
 }

@@ -95,7 +95,7 @@ fn opened(shares: &[(PathBuf, bool)]) -> Result<Vec<std::fs::File>, String> {
 /// The home's private directory, which a share process keeps a restored guest's unreached
 /// files in (D176), as the daemon gives it its own (`daemon.rs` `private_dir`).
 fn private_dir() -> Result<std::fs::File, String> {
-    let at = shards_ipc::home()?.join("tmp");
+    let at = shards_ipc::home()?.join(crate::daemon::PRIVATE);
     match crate::os::owner_only_dir(std::fs::DirBuilder::new().recursive(true)).create(&at) {
         Err(e) if e.kind() != std::io::ErrorKind::AlreadyExists => {
             return Err(format!("{}: {e}", at.display()));

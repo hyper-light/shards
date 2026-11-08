@@ -1331,9 +1331,9 @@ fn vm(args: &[OsString]) -> ExitCode {
         // A GPU's VM process runs its host's GPU driver (D202).
         graphics: args.iter().take_while(|a| *a != "--").any(|a| a == "--gpu"),
     });
-    // The VM's ends are its own now: its exit ends the requests, and what it hands over of
-    // its working set.
-    drop((asks_to, answers_from, to_keeper));
+    // The VM's ends are its own now: its exit ends the requests, what it hands over of its
+    // working set, and its shares, whose process then exits.
+    drop((asks_to, answers_from, to_keeper, shared));
     let child = match spawned {
         Ok(child) => child,
         Err(e) => return failed(&format!("{}: {e}", bin.display())),
