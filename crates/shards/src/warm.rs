@@ -422,6 +422,28 @@ fn head(payload: &[u8]) -> Result<Head<'_>, String> {
     })
 }
 
+/// The descriptors a run's start may open in a warm VM: those its request brings, at most
+/// [`shards_ipc::MAX_FDS`], and as many again for the clones and connections its start
+/// makes of them (a run's start took a warm VM from 64 open to 73, PM M470).
+#[cfg(target_os = "linux")]
+const RUN_DESCRIPTORS: usize = 2 * shards_ipc::MAX_FDS;
+
+/// Room for [`RUN_DESCRIPTORS`] more in this process's descriptor table, made while the
+/// VM waits for its run: Linux grows the table of a process whose threads share it only
+/// after an RCU grace period (fs/file.c, `expand_fdtable`: `synchronize_rcu`), which held
+/// a run's hand-over 8 to 15 ms on a 32-CPU host whose warm VMs held 64 descriptors, its
+/// first table's all (PM M470). Each lowest free descriptor taken in turn, then all let go:
+/// a table never shrinks.
+#[cfg(target_os = "linux")]
+fn reserve_descriptors(daemon: &UnixStream) -> Result<(), String> {
+    let taken = (0..RUN_DESCRIPTORS)
+        .map(|_| daemon.as_fd().try_clone_to_owned())
+        .collect::<io::Result<Vec<OwnedFd>>>()
+        .map_err(|e| format!("room for a run's descriptors: {e}"))?;
+    drop(taken);
+    Ok(())
+}
+
 /// A run its microVM was restored from a save of (`resumed`, D176) is asked for as any
 /// other, its request bringing the save's tokens in place of a command.
 pub fn receive(
@@ -435,6 +457,8 @@ pub fn receive(
     // way to the guest (review 8.13).
     let daemon_relay = Relay::start("daemon-signals", to)?;
     let client_relay = Relay::start("client-signals", to)?;
+    #[cfg(target_os = "linux")]
+    reserve_descriptors(daemon)?;
     to_daemon(daemon, kind::READY, &[], &[]).map_err(|e| format!("telling the daemon: {e}"))?;
     let request = shards_ipc::recv(daemon)
         .map_err(|e| format!("waiting for a request: {e}"))?
