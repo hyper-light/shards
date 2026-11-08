@@ -275,7 +275,13 @@ impl Through {
         if code != 0 {
             return Err(std::io::Error::from_raw_os_error(code));
         }
-        if u32::from_be_bytes(moved) as usize != n {
+        let moved = u32::from_be_bytes(moved) as usize;
+        if moved != n {
+            // A read cut short (its file shorter than its range) has its bytes after the
+            // answer: taken off the connection, which the next request reads from.
+            if op == THROUGH_READ && moved < n {
+                std::io::copy(&mut (&mut *conn).take(moved as u64), &mut std::io::sink())?;
+            }
             return Err(std::io::Error::other(
                 "a range's process moved other than it was asked",
             ));
@@ -1355,6 +1361,115 @@ mod tests {
         );
         disk.detach(out_at).unwrap();
         assert_eq!(write(out_at, &[1; 512]), Err(S_IOERR), "let go");
+    }
+
+    /// A request to a range given a [`Through`] goes to its process whole, in round trips
+    /// of at most [`THROUGH_MAX`] however its segments fall (PM M442): its bytes written
+    /// and read back as they were. A read its process cuts short fails alone, the next
+    /// request on the connection answered as asked.
+    #[cfg(unix)]
+    #[test]
+    fn a_through_range_moves_a_request_whole() {
+        use std::io::{Read as _, Write as _};
+        use std::os::unix::fs::FileExt as _;
+        let dir = shards_testdir::TempDir::new("join-through").unwrap();
+        let path = dir.join("cache");
+        const LEN: usize = 3 << 20;
+        std::fs::write(&path, vec![0u8; LEN]).unwrap();
+        let open = || {
+            std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&path)
+                .unwrap()
+        };
+        let (mine, theirs) = std::os::unix::net::UnixStream::pair().unwrap();
+        // The range's process, as the writer's serve_range answers.
+        let served = open();
+        let trips = std::thread::spawn(move || {
+            let mut conn = theirs;
+            let mut trips = Vec::new();
+            let mut head = [0u8; 13];
+            while conn.read_exact(&mut head).is_ok() {
+                let offset = u64::from_be_bytes(head[1..9].try_into().unwrap());
+                let n = u32::from_be_bytes(head[9..].try_into().unwrap()) as usize;
+                trips.push(n);
+                let mut buf = vec![0u8; n];
+                let moved = if head[0] == THROUGH_WRITE {
+                    conn.read_exact(&mut buf).unwrap();
+                    served.write_all_at(&buf, offset).unwrap();
+                    n
+                } else {
+                    served.read_at(&mut buf, offset).unwrap()
+                };
+                let mut answer = 0i32.to_be_bytes().to_vec();
+                answer.extend_from_slice(&(moved as u32).to_be_bytes());
+                if head[0] == THROUGH_READ {
+                    answer.extend_from_slice(&buf[..moved]);
+                }
+                conn.write_all(&answer).unwrap();
+            }
+            trips
+        });
+        let disk = Join::new();
+        disk.take_writes();
+        let (at, len) = disk.attach_through(open(), true, Through::new(mine)).unwrap();
+        assert_eq!(len, LEN as u64);
+        // 2.5 MiB in segments of 4 KiB and one of 3 KiB, the first written 512 bytes in.
+        let mut out: Vec<u8> = (0..(5 << 19)).map(|i: usize| (i * 7 + i / 4096) as u8).collect();
+        let mut cuts: Vec<usize> = (0..out.len() / 4096).map(|_| 4096).collect();
+        cuts[0] = 1024;
+        cuts.push(3072);
+        let segments = |buf: &mut [u8]| {
+            let mut segs = Vec::new();
+            let mut ptr = buf.as_mut_ptr();
+            for &cut in &cuts {
+                segs.push((ptr, cut));
+                // SAFETY: the cuts lie within the buffer, summing to its length.
+                ptr = unsafe { ptr.add(cut) };
+            }
+            segs
+        };
+        let total: usize = cuts.iter().sum();
+        assert_eq!(total, out.len());
+        // SAFETY: each segment lies in `out`.
+        let wrote = unsafe { disk.through_request(&segments(&mut out), at + 512, true) };
+        assert_eq!(wrote, Some(Ok(())));
+        let file = std::fs::read(&path).unwrap();
+        assert_eq!(file[..512], [0; 512]);
+        assert!(file[512..512 + total] == out[..], "written as the guest gave it");
+        let mut back = vec![0u8; total];
+        // SAFETY: each segment lies in `back`.
+        let read = unsafe { disk.through_request(&segments(&mut back), at + 512, false) };
+        assert_eq!(read, Some(Ok(())));
+        assert!(back == out, "read back as written");
+        // Its file cut short under it: that read fails, and the next is answered whole.
+        open().set_len((LEN - 4096) as u64).unwrap();
+        let mut tail = vec![0u8; 8192];
+        let tail_ptr = tail.as_mut_ptr();
+        // SAFETY: the segment is `tail`.
+        let short = unsafe { disk.through_request(&[(tail_ptr, 8192)], at + LEN as u64 - 8192, false) };
+        assert_eq!(short, Some(Err(S_IOERR)));
+        let mut again = vec![0u8; 4096];
+        let again_ptr = again.as_mut_ptr();
+        // SAFETY: the segment is `again`.
+        let read = unsafe { disk.through_request(&[(again_ptr, 4096)], at + 512, false) };
+        assert_eq!(read, Some(Ok(())));
+        assert!(again[..] == out[..4096], "the connection kept in step");
+        assert_eq!(
+            // SAFETY: the segment is `again`.
+            unsafe { disk.through_request(&[(again_ptr, 4096)], at + LEN as u64, false) },
+            None,
+            "past its range: not this range's to move"
+        );
+        disk.detach(at).unwrap();
+        drop(disk);
+        let trips = trips.join().unwrap();
+        // 2.5 MiB each way in trips of at most a MiB, then the short read and the one after.
+        assert_eq!(
+            trips,
+            [1 << 20, 1 << 20, 1 << 19, 1 << 20, 1 << 20, 1 << 19, 8192, 4096]
+        );
     }
 
     /// A transfer reaches device memory, a page of a file its guest maps (D189), as it
