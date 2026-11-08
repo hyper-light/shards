@@ -9667,10 +9667,12 @@ the guest keeps their metadata alone.
   MiB, its noise Linux's p50 to p90 at 0 B as a normal's, sizes the tables' at random):
   noise alone, normal, restarts no learning once a line holds 30 records in 32 lives of
   2,000; a log-normal tail, its p99 several times its p50's distance, which the normal
-  test underrates, in at most 2 of them (`a_line_keeps_its_records_through_noise_alone`);
-  60 ms more at every size restarts learning within 10 records in every life, and
-  packing's cost a byte doubled within 100 in at least 30 of the 32, after which the line
-  says what restarts take now (`a_line_follows_its_host_when_its_level_or_slope_moves`).
+  test underrates, in 2 of them, three slow restarts in a row being a burst of load that
+  the line follows and comes back from (`a_line_keeps_its_records_through_noise_alone`);
+  60 ms more at every size restarts learning within 10 records in all 32 lives, and
+  packing's cost a byte doubled within 100 in 30 of the 32, after which the line says what
+  restarts take now (`a_line_follows_its_host_when_its_level_or_slope_moves`; Fedora,
+  647f162e).
   A slope's change is the slower to find: records at the sizes it moves least stay
   within the spread and break the runs, and those a broken run puts back widen the line.
   A change smaller than the line's spread is no change to it: the line takes it in, as
