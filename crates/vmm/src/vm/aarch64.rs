@@ -922,7 +922,7 @@ pub fn build(cfg: &Config) -> Result<Machine, String> {
 }
 
 /// This host's CPU as its hypervisor shows a guest (D176 part 6): the ID registers a vCPU
-/// of a VM of no memory reads, the hypervisor's own view, which a CPU baseline is the
+/// of a VM of no memory (but its GIC) reads, the hypervisor's own view, which a CPU baseline is the
 /// meet of across a fleet ([`aarch64::cpu::meet`]).
 pub fn host_cpu_id() -> Result<Vec<(u16, u64)>, String> {
     let vm = hv::Vm::new(hv::VmConfig {
@@ -931,6 +931,15 @@ pub fn host_cpu_id() -> Result<Vec<(u16, u64)>, String> {
         el2: false,
     })
     .map_err(|e| e.to_string())?;
+    // Its vCPU's redistributor is the GIC's, which comes first, as in [`build`].
+    let _gic = vm
+        .create_gic(&GicLayout {
+            dist_base: layout::GIC_DIST,
+            redist_base: layout::GIC_REDIST,
+            msi: None,
+            its: None,
+        })
+        .map_err(|e| e.to_string())?;
     let vcpu = vm.create_vcpu(0).map_err(|e| e.to_string())?;
     vcpu.cpu_id().map_err(|e| e.to_string())
 }
