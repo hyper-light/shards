@@ -354,6 +354,7 @@ impl<D: Disk> Daemon<D> {
                 return;
             }
         };
+        shards_vmm::log::trace("slot_opened");
         living.opened();
         let _ = tell.send(Event::Asked(n));
         // The rest of its request, whole within the time a socket's client had to send its
@@ -376,6 +377,7 @@ impl<D: Disk> Daemon<D> {
             })) => {
                 // A stop's session the daemon holds until its exit itself, which is how its
                 // client learns of it: it holds no quiet.
+                shards_vmm::log::trace("slot_request");
                 if request.kind == kind::STOP {
                     living.forget();
                 }
@@ -509,6 +511,9 @@ impl<D: Disk> Daemon<D> {
                     && let Some(pidfd) = m.fds.first()
                 {
                     ended(pidfd);
+                }
+                if m.kind == kind::EXIT {
+                    shards_vmm::log::trace("slot_exit");
                 }
                 if living.answer(&answer, m.kind, &m.payload).is_err() {
                     break;

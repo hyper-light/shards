@@ -767,7 +767,9 @@ pub fn prepare(
         }),
         _ => return Err("--kernel and --init (or SHARDS_KERNEL and SHARDS_INIT) go together".into()),
     };
+    shards_vmm::log::trace("p_boot");
     let cdi = cdi_edits(request);
+    shards_vmm::log::trace("p_cdi");
     let renders = cdi.as_ref().ok().and_then(Option::as_ref).is_some_and(|e| {
         let render = |p: &str| p == RENDER_NODE;
         e.nodes.iter().any(|n| render(&n.path) || render(&n.host_path))
@@ -811,6 +813,7 @@ pub fn prepare(
             shards_ipc::env_value(&request.registry_env, k)
         })?),
     };
+    shards_vmm::log::trace("p_devices");
     let (image, lease) = find_image(
         &request.image,
         request.pull,
@@ -838,6 +841,7 @@ pub fn prepare(
     if let Some(e) = &image.config.run_error {
         return Err(format!("the image's config does not read: {e}"));
     }
+    shards_vmm::log::trace("p_image");
     let options = compose(image.config.config.as_ref(), request)?;
     let stop_signal = request
         .stop_signal
@@ -848,6 +852,7 @@ pub fn prepare(
     // The client gave `-e NAME` its value already: this process's environment is not
     // the user's.
     let spec = crate::spec::spec(&options, |_| None)?;
+    shards_vmm::log::trace("p_spec");
     let rootfs = image.rootfs.ok_or_else(|| {
         format!(
             "{}: an image of a platform this host's microVMs do not run",
@@ -900,6 +905,7 @@ pub fn prepare(
         .and_then(|c| c.labels.clone())
         .unwrap_or_default();
     let labels = merge_labels(image_labels, &request.labels)?;
+    shards_vmm::log::trace("p_labels");
     Ok(Prepared {
         layer: crate::setup::storage_size(request)?.unwrap_or(LAYER_HOLDS),
         agentfile,

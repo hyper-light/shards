@@ -230,6 +230,7 @@ fn serve(
             Ok(asked) => asked,
             Err(e) => return failed(&e),
         };
+        ASKED_US.store(u64::try_from(shards_vmm::log::uptime_us()).unwrap_or(0), std::sync::atomic::Ordering::Relaxed);
         let ran = match asked {
             Asked::Slot(mut client) => {
                 match client.sender() {
@@ -1191,14 +1192,16 @@ fn stop_socket(home: &Path) -> ExitCode {
 /// first field, `client_rss_kib`, and its microseconds from its `main` to now,
 /// `client_us`, for benchmarks: a run timed from its client's spawn, less those, is its
 /// client's launch, which its host may hold back (PM M166).
+static ASKED_US: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 fn with_client_rss(timing: &str) -> String {
     let kib = shards_ipc::peak_rss_kib();
     let us = shards_vmm::log::uptime_us();
     match timing.strip_prefix('{') {
         Some(rest) if rest.trim_start().starts_with('}') => {
-            format!("{{\"client_rss_kib\":{kib},\"client_us\":{us}{rest}")
+            format!("{{\"client_rss_kib\":{kib},\"client_us\":{us},\"client_main_us\":{},\"client_asked_us\":{}{rest}", shards_vmm::log::started_us(), ASKED_US.load(std::sync::atomic::Ordering::Relaxed))
         }
-        Some(rest) => format!("{{\"client_rss_kib\":{kib},\"client_us\":{us},{rest}"),
+        Some(rest) => format!("{{\"client_rss_kib\":{kib},\"client_us\":{us},\"client_main_us\":{},\"client_asked_us\":{},{rest}", shards_vmm::log::started_us(), ASKED_US.load(std::sync::atomic::Ordering::Relaxed)),
         None => timing.to_string(),
     }
 }

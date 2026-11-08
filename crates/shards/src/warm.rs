@@ -460,9 +460,11 @@ pub fn receive(
     #[cfg(target_os = "linux")]
     reserve_descriptors(daemon)?;
     to_daemon(daemon, kind::READY, &[], &[]).map_err(|e| format!("telling the daemon: {e}"))?;
+    shards_vmm::log::trace("vm_ready");
     let request = shards_ipc::recv(daemon)
         .map_err(|e| format!("waiting for a request: {e}"))?
         .ok_or("the daemon closed without a request")?;
+    shards_vmm::log::trace("vm_recv");
     if request.kind != kind::RUN {
         return Err(format!("expected a request, got message kind {}", request.kind));
     }
@@ -560,6 +562,7 @@ pub fn receive(
     // What must hold for this VM to take a run, checked while the daemon may still give
     // it to another.
     may_take()?;
+    shards_vmm::log::trace("vm_taking");
     // TAKEN before anything of the client's is touched or anything starts: a VM that ends
     // without it never started the run, which the daemon may then hand to another VM
     // (daemon.rs, hand_over). A daemon gone by now has no copies left to close, and hands

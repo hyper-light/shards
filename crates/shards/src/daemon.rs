@@ -2662,7 +2662,10 @@ impl<D: Disk> Daemon<D> {
         }
         match message.kind {
             // Its connection is its run's from here, and passes to the VM.
-            kind::START => self.release_client(number),
+            kind::START => {
+                shards_vmm::log::trace("handle_start");
+                self.release_client(number)
+            }
             kind::STOP => {
                 self.release_client(number);
                 match conn.try_clone() {
@@ -3072,6 +3075,7 @@ impl<D: Disk> Daemon<D> {
             };
             crate::run::prepare(&run, &self.home, &heard, cancel)
         });
+        shards_vmm::log::trace("d_prepared");
         if watched != Watched::Stayed {
             abandon(&id);
             return None;
@@ -3351,6 +3355,7 @@ impl<D: Disk> Daemon<D> {
             }
             None => self.create(&run, &prepared, &id, ports),
         };
+        shards_vmm::log::trace("d_created");
         let name = match made {
             // A new microVM's warnings, as the CLI prints ContainerCreate's.
             Ok(name) if again.is_none() => {
@@ -3432,6 +3437,7 @@ impl<D: Disk> Daemon<D> {
             self.make_spare();
             return None;
         }
+        shards_vmm::log::trace("d_kept");
         // From here, its client passes signals on to the command; it has the ID for
         // `--cidfile`.
         let _ = shards_ipc::send(conn, kind::CREATED, id.as_bytes(), &[]);
@@ -3948,6 +3954,7 @@ impl<D: Disk> Daemon<D> {
             None => prepared.spec.encode_into(&mut payload),
         }
         let detached = run.detach.then_some(conn);
+        shards_vmm::log::trace("d_starting");
         let started = self.start_run(
             threads,
             &id,
@@ -4070,7 +4077,9 @@ impl<D: Disk> Daemon<D> {
             }
         };
         for _ in 0..HANDOFF_TRIES {
+            shards_vmm::log::trace("run_acquire");
             let mut ready = acquire().map_err(|e| failed(&e))?;
+            shards_vmm::log::trace("run_acquired");
             // Every way on leaves `Handing` while `ready` holds the socket it names.
             if let Err(said) = self.commit(id, ready.socket.as_raw_fd()) {
                 // A joiner's VM is its provider's, in no pool: only its connection goes.
@@ -4098,7 +4107,9 @@ impl<D: Disk> Daemon<D> {
             if ready.net.is_some() && keep.mac.is_some() {
                 ready.mac = keep.mac;
             }
+            shards_vmm::log::trace("run_told_net");
             let handed = hand_over(&ready.socket, payload, fds, ends);
+            shards_vmm::log::trace("run_taken");
             // Only now, so that starting its successor delays no run: on the refiller's
             // thread.
             self.refill_soon(threads, ready.pool.as_ref());
@@ -8554,6 +8565,7 @@ fn hand_over(
     }
     // A request cut short is no request: the VM never had all of it.
     shards_ipc::send(vm, kind::RUN, payload, fds).map_err(|e| Untaken::Surely(e.to_string()))?;
+    shards_vmm::log::trace("run_sent");
     // MAX_FDS a message at most; the VM takes the run only once it has them all.
     for batch in ends.chunks(shards_ipc::MAX_FDS) {
         shards_ipc::send(vm, kind::SHARE_ENDS, &[], batch).map_err(|e| Untaken::Surely(e.to_string()))?;

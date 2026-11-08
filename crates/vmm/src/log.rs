@@ -48,9 +48,33 @@ pub fn enabled(level: Level) -> bool {
     level as u8 <= if current == 0 { Level::Warn as u8 } else { current }
 }
 
-/// Microseconds since `init`.
+/// trace.patch: the host's monotonic clock, in microseconds, so that every process's
+/// readings compare (docs/research/measurements/start-path).
 pub fn uptime_us() -> u128 {
-    START.get_or_init(Instant::now).elapsed().as_micros()
+    let _ = STARTED_US.get_or_init(monotonic_us);
+    monotonic_us()
+}
+
+static STARTED_US: OnceLock<u128> = OnceLock::new();
+
+/// trace.patch: this process's first reading.
+pub fn started_us() -> u128 {
+    *STARTED_US.get_or_init(monotonic_us)
+}
+
+#[allow(unsafe_code, clippy::cast_sign_loss)]
+fn monotonic_us() -> u128 {
+    let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+    // SAFETY: a valid timespec to fill.
+    unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts) };
+    ts.tv_sec as u128 * 1_000_000 + ts.tv_nsec as u128 / 1000
+}
+
+/// trace.patch: a step of a run, on stderr (a daemon's: its log).
+pub fn trace(step: &str) {
+    use std::io::Write;
+    let line = format!("shards-trace {} {step} {}\n", std::process::id(), monotonic_us());
+    let _ = std::io::stderr().write_all(line.as_bytes());
 }
 
 pub fn write(level: Level, args: std::fmt::Arguments<'_>) {
