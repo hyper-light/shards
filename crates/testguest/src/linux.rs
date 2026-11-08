@@ -47,6 +47,7 @@ pub fn main() {
             "e2e" => e2e(),
             "slates_fs" => slates_fs(),
             "slates_fs_dax" => slates_fs_dax(),
+            "bpf" => bpf_costs(),
             other => Err(format!("unknown test {other:?}")),
         },
     );
@@ -4189,4 +4190,402 @@ fn check_entry(line: &str) -> Result<(), String> {
         }
         _ => Err(format!("kind {kind} with type {file_type:o}")),
     }
+}
+
+/// PM M489 (D227): what the guest's BPF programs cost, run by its kernel's JIT or by its
+/// interpreter as the kernel was built. Docker's default seccomp profile is compiled as
+/// shards compiles a run's (D42: a container's default capabilities, this kernel's
+/// version) and loaded as shards-init loads it, and Docker's default device filter (D44)
+/// attached to a cgroup as init attaches it. Each arm runs in a child of its own: untimed
+/// warm-up batches, then `shards_bpf_n` batches of `shards_bpf_batch` calls (10,000 of 16
+/// by default), the clock read once a batch.
+///
+/// - `clock`: an empty batch, the clock's own cost.
+/// - `{none,root,nnp}/getppid`: a syscall the profile allows whatever its arguments, which
+///   seccomp's action cache answers without running the filter where it can prove so
+///   (kernel/seccomp.c `seccomp_cache_check_allow`).
+/// - `{none,root,nnp}/personality`: personality(0xffffffff), allowed by its argument, so
+///   the filter runs on each call.
+/// - `{root,nnp}/denied`: acct(NULL), refused (EPERM) to a container's capabilities: the
+///   filter's whole path to its default.
+/// - `root/load`, `nnp/load`: one seccomp(2) load into a fresh child, `shards_bpf_loads`
+///   children (10,000 by default), as each workload's start pays it.
+/// - `dev/open`, `nodev/open`: open(2) and close(2) of /dev/null in a cgroup with the
+///   device filter and in one without.
+/// - `device/load`: the device filter's load and attach, once a boot, as init's at boot.
+///
+/// `root` loads the filter with init's capabilities, as init does for a run without
+/// `no-new-privileges`; `nnp` as user 65534 with no capabilities and no_new_privs, as init
+/// does with it. arm64's JIT ends a classic program loaded without CAP_SYS_ADMIN with a
+/// Spectre-BHB sequence (arch/arm64/net/bpf_jit_comp.c `build_bhb_mitigation`).
+///
+/// The record, text, goes to /dev/vda for the host (docs/research/measurements/bpf-jit/
+/// ab.py): `jit`, the release, the Spectre verdicts, MemFree and MemAvailable (KiB) at four
+/// points, the JIT's vmalloc areas, and `arm NAME BATCH NS...`, a batch's nanoseconds each.
+fn bpf_costs() -> Result<(), String> {
+    use std::fmt::Write as _;
+    let setting = |name: &str, default: u64| -> Result<usize, String> {
+        let v = std::env::var(name).map_or(Ok(default), |v| v.parse().map_err(|e| format!("{name}: {e}")))?;
+        usize::try_from(v).map_err(|e| format!("{name}: {e}"))
+    };
+    let (n, batch, loads) = (
+        setting("shards_bpf_n", 10_000)?,
+        setting("shards_bpf_batch", 16)?,
+        setting("shards_bpf_loads", 10_000)?,
+    );
+    let mut rec = String::new();
+    let jit = sysfs("/proc/sys/net/core/bpf_jit_enable").unwrap_or_else(|_| "absent".into());
+    let release = sysfs("/proc/sys/kernel/osrelease")?;
+    let _ = writeln!(rec, "jit {jit}\nkernel {release}");
+    for v in ["spectre_v1", "spectre_v2", "spec_store_bypass"] {
+        let said = sysfs(&format!("/sys/devices/system/cpu/vulnerabilities/{v}")).unwrap_or_default();
+        let _ = writeln!(rec, "vuln {v} {said}");
+    }
+    let mem = |rec: &mut String, at: &str| {
+        let meminfo = std::fs::read_to_string("/proc/meminfo").unwrap_or_default();
+        let field = |name: &str| {
+            meminfo
+                .lines()
+                .find_map(|l| l.strip_prefix(name))
+                .and_then(|v| v.trim().strip_suffix("kB"))
+                .map_or("?", str::trim)
+                .to_string()
+        };
+        let _ = writeln!(rec, "mem {at} {} {}", field("MemFree:"), field("MemAvailable:"));
+    };
+    mem(&mut rec, "boot");
+
+    // Docker's default profile, compiled for a container's capabilities on this kernel.
+    let caps: Vec<String> = shards_abi::run::CAPS
+        .iter()
+        .filter_map(|&c| shards_abi::run::CAP_NAMES.get(usize::try_from(c).ok()?))
+        .map(|n| (*n).to_string())
+        .collect();
+    let mut version = release.split(['.', '-']).map(|p| p.parse::<u64>().unwrap_or(0));
+    let kernel = shards_seccomp::Kernel(version.next().unwrap_or(0), version.next().unwrap_or(0));
+    let arch = shards_seccomp::Arch::host().ok_or("seccomp needs an amd64 or arm64 guest")?;
+    let c = shards_seccomp::Container {
+        arch,
+        caps: &caps,
+        kernel,
+    };
+    let program = shards_seccomp::compile(shards_seccomp::DEFAULT, &c)?
+        .ok_or("Docker's default profile compiled to no filter")?;
+    let filter: Vec<libc::sock_filter> = program
+        .insns
+        .iter()
+        .map(|i| libc::sock_filter {
+            code: i.code,
+            jt: i.jt,
+            jf: i.jf,
+            k: i.k,
+        })
+        .collect();
+    let fprog = libc::sock_fprog {
+        len: u16::try_from(filter.len()).map_err(|_| "a seccomp filter too long")?,
+        filter: filter.as_ptr().cast_mut(),
+    };
+    let flags = libc::c_long::from(program.flags);
+    let _ = writeln!(rec, "filter {} {:#x}", filter.len(), program.flags);
+
+    // Docker's default device filter, attached to a cgroup of its own; another has none.
+    let cgroups = "/sys/fs/cgroup";
+    let (src, target, fs) = (cstr("cgroup2")?, cstr(cgroups)?, cstr("cgroup2")?);
+    // SAFETY: NUL-terminated strings and no data argument.
+    if unsafe { libc::mount(src.as_ptr(), target.as_ptr(), fs.as_ptr(), 0, std::ptr::null()) } != 0 {
+        return Err(format!("mount cgroup2: {}", io::Error::last_os_error()));
+    }
+    for dir in ["dev", "nodev"] {
+        std::fs::create_dir(format!("{cgroups}/{dir}")).map_err(|e| format!("mkdir {cgroups}/{dir}: {e}"))?;
+    }
+    let device = shards_devcgroup::compile(&shards_devcgroup::container(&[], &[], false))?;
+    let _ = writeln!(rec, "device {}", device.len() / 8);
+    let started = now_ns();
+    let _device = attach_device_filter(&device, &format!("{cgroups}/dev"))?;
+    let _ = writeln!(rec, "arm device/load 1 {}", now_ns().saturating_sub(started));
+    mem(&mut rec, "device");
+
+    // Each child's samples, in memory it shares with this process.
+    let len = n.max(loads).max(1);
+    let bytes = len.checked_mul(4).ok_or("too many samples")?;
+    // SAFETY: a new anonymous shared mapping, checked below.
+    let at = unsafe {
+        libc::mmap(
+            std::ptr::null_mut(),
+            bytes,
+            libc::PROT_READ | libc::PROT_WRITE,
+            libc::MAP_SHARED | libc::MAP_ANONYMOUS,
+            -1,
+            0,
+        )
+    };
+    if at == libc::MAP_FAILED {
+        return Err(format!("mmap: {}", io::Error::last_os_error()));
+    }
+    // SAFETY: the mapping just made, `len` u32s, page-aligned, which only this process and
+    // the child it waits for touch, and unmapped only below, after its last use.
+    let samples: &mut [u32] = unsafe { std::slice::from_raw_parts_mut(at.cast::<u32>(), len) };
+
+    let load = move || {
+        // SAFETY: seccomp(2) with a program that outlives the call.
+        unsafe {
+            libc::syscall(
+                libc::SYS_seccomp,
+                libc::SECCOMP_SET_MODE_FILTER,
+                flags,
+                &raw const fprog,
+            ) == 0
+        }
+    };
+    // As init with no-new-privileges: no capabilities, no new privileges.
+    let unprivileged = || {
+        // SAFETY: setgroups(2), setgid(2), setuid(2) and prctl(2), of this child alone.
+        unsafe {
+            libc::setgroups(0, std::ptr::null()) == 0
+                && libc::setgid(65534) == 0
+                && libc::setuid(65534) == 0
+                && libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) == 0
+        }
+    };
+    let getppid = || {
+        // SAFETY: getppid(2) takes nothing.
+        unsafe { libc::syscall(libc::SYS_getppid) == 1 }
+    };
+    let personality = || {
+        // SAFETY: personality(0xffffffff) only reads the persona.
+        unsafe { libc::syscall(libc::SYS_personality, libc::c_long::from(u32::MAX)) >= 0 }
+    };
+    let denied = || {
+        // SAFETY: acct(NULL), which the filter refuses.
+        let r = unsafe { libc::syscall(libc::SYS_acct, std::ptr::null::<libc::c_char>()) };
+        r == -1 && io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+    };
+    let open_close = || {
+        // SAFETY: open(2) of a NUL-terminated path, and close(2) of what it opened.
+        unsafe {
+            let fd = libc::open(c"/dev/null".as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC);
+            fd >= 0 && libc::close(fd) == 0
+        }
+    };
+    let join = |cgroup: &str| std::fs::write(format!("{cgroups}/{cgroup}/cgroup.procs"), b"0").is_ok();
+    let timed = |out: &mut [u32], call: &dyn Fn() -> bool| -> bool {
+        for _ in 0..(n / 10).max(1) * batch {
+            if !call() {
+                return false;
+            }
+        }
+        for slot in out.iter_mut() {
+            let t0 = now_ns();
+            for _ in 0..batch {
+                if !call() {
+                    return false;
+                }
+            }
+            *slot = u32::try_from(now_ns().saturating_sub(t0)).unwrap_or(u32::MAX);
+        }
+        true
+    };
+    let nothing = || true;
+    let nnp = || unprivileged() && load();
+    let arms: [(&str, &dyn Fn() -> bool, &dyn Fn() -> bool); 11] = [
+        ("clock", &nothing, &nothing),
+        ("none/getppid", &nothing, &getppid),
+        ("none/personality", &nothing, &personality),
+        ("root/getppid", &load, &getppid),
+        ("root/personality", &load, &personality),
+        ("root/denied", &load, &denied),
+        ("nnp/getppid", &nnp, &getppid),
+        ("nnp/personality", &nnp, &personality),
+        ("nnp/denied", &nnp, &denied),
+        ("dev/open", &|| join("dev"), &open_close),
+        ("nodev/open", &|| join("nodev"), &open_close),
+    ];
+    for (name, setup, call) in arms {
+        let out = samples.get_mut(..n).ok_or("no room for the samples")?;
+        in_child(name, || setup() && timed(out, call))?;
+        let _ = write!(rec, "arm {name} {batch}");
+        for v in samples.get(..n).unwrap_or_default() {
+            let _ = write!(rec, " {v}");
+        }
+        rec.push('\n');
+    }
+    mem(&mut rec, "filters");
+    let loaders: [(&str, &dyn Fn() -> bool); 2] = [("root/load", &nothing), ("nnp/load", &unprivileged)];
+    for (name, setup) in loaders {
+        for slot in samples.iter_mut().take(loads) {
+            in_child(name, || {
+                if !setup() {
+                    return false;
+                }
+                let t0 = now_ns();
+                let loaded = load();
+                *slot = u32::try_from(now_ns().saturating_sub(t0)).unwrap_or(u32::MAX);
+                loaded
+            })?;
+        }
+        let _ = write!(rec, "arm {name} 1");
+        for v in samples.get(..loads).unwrap_or_default() {
+            let _ = write!(rec, " {v}");
+        }
+        rec.push('\n');
+    }
+    mem(&mut rec, "end");
+    // SAFETY: the mapping made above, unmapped once; `samples` is not used after.
+    unsafe { libc::munmap(at, bytes) };
+    // The JIT's executable memory, by the function that asked for it.
+    let mut areas: std::collections::BTreeMap<String, u64> = std::collections::BTreeMap::new();
+    let vmalloc = std::fs::read_to_string("/proc/vmallocinfo").unwrap_or_default();
+    for line in vmalloc.lines() {
+        let mut f = line.split_whitespace().skip(1);
+        let (Some(size), Some(caller)) = (f.next().and_then(|s| s.parse::<u64>().ok()), f.next()) else {
+            continue;
+        };
+        let caller = caller.split('+').next().unwrap_or(caller);
+        if caller.contains("bpf") || caller.contains("execmem") {
+            *areas.entry(caller.to_string()).or_default() += size;
+        }
+    }
+    for (caller, size) in areas {
+        let _ = writeln!(rec, "vmalloc {caller} {size}");
+    }
+    rec.push_str("end\n");
+
+    let room = sysfs("/sys/block/vda/size")?
+        .parse::<u64>()
+        .map_err(|e| format!("/sys/block/vda/size: {e}"))?
+        .saturating_mul(512);
+    if rec.len() as u64 > room {
+        return Err(format!("a record of {} bytes, a disk of {room}", rec.len()));
+    }
+    let mut disk = std::fs::OpenOptions::new()
+        .write(true)
+        .open("/dev/vda")
+        .map_err(|e| format!("/dev/vda: {e}"))?;
+    disk.write_all(rec.as_bytes())
+        .map_err(|e| format!("writing /dev/vda: {e}"))?;
+    disk.sync_all().map_err(|e| format!("syncing /dev/vda: {e}"))
+}
+
+/// CLOCK_MONOTONIC, in nanoseconds.
+fn now_ns() -> u64 {
+    let mut ts = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: clock_gettime(2) writes `ts`.
+    unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts) };
+    u64::try_from(ts.tv_sec)
+        .unwrap_or(0)
+        .saturating_mul(1_000_000_000)
+        .saturating_add(u64::try_from(ts.tv_nsec).unwrap_or(0))
+}
+
+/// Runs `work` in a child of this single-threaded process, which exits 0 where it returns
+/// true; an error naming `what` where it does not.
+fn in_child(what: &str, work: impl FnOnce() -> bool) -> Result<(), String> {
+    // SAFETY: fork(2) of a process of one thread; the child runs `work` and exits.
+    let pid = unsafe { libc::fork() };
+    if pid < 0 {
+        return Err(format!("{what}: fork: {}", io::Error::last_os_error()));
+    }
+    if pid == 0 {
+        let ok = work();
+        // SAFETY: _exit(2), the child's end.
+        unsafe { libc::_exit(if ok { 0 } else { 1 }) };
+    }
+    let mut status = 0;
+    // SAFETY: waitpid(2) of our own child, writing `status`.
+    if unsafe { libc::waitpid(pid, &mut status, 0) } != pid {
+        return Err(format!("{what}: waitpid: {}", io::Error::last_os_error()));
+    }
+    if libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0 {
+        Ok(())
+    } else {
+        Err(format!(
+            "{what}: its child failed (wait status {status:#x}): a call did not answer as the profile and rules say"
+        ))
+    }
+}
+
+/// `program` loaded as a BPF_PROG_TYPE_CGROUP_DEVICE program and attached to `cgroup` with
+/// BPF_F_ALLOW_MULTI, as shards-init attaches the default filter at boot
+/// (crates/init/src/devices.rs `attach`). Its descriptor.
+fn attach_device_filter(program: &[u8], cgroup: &str) -> Result<std::os::fd::OwnedFd, String> {
+    use std::os::fd::{AsRawFd as _, FromRawFd as _, OwnedFd};
+    /// `union bpf_attr` for BPF_PROG_LOAD, to `expected_attach_type`.
+    #[repr(C)]
+    #[derive(Default)]
+    struct ProgLoad {
+        prog_type: u32,
+        insn_cnt: u32,
+        insns: u64,
+        license: u64,
+        log_level: u32,
+        log_size: u32,
+        log_buf: u64,
+        kern_version: u32,
+        prog_flags: u32,
+        prog_name: [u8; 16],
+        prog_ifindex: u32,
+        expected_attach_type: u32,
+    }
+    /// `union bpf_attr` for BPF_PROG_ATTACH.
+    #[repr(C)]
+    #[derive(Default)]
+    struct ProgAttach {
+        target_fd: u32,
+        attach_bpf_fd: u32,
+        attach_type: u32,
+        attach_flags: u32,
+        replace_bpf_fd: u32,
+    }
+    const BPF_PROG_LOAD: libc::c_long = 5;
+    const BPF_PROG_ATTACH: libc::c_long = 8;
+    const BPF_PROG_TYPE_CGROUP_DEVICE: u32 = 15;
+    const BPF_CGROUP_DEVICE: u32 = 6;
+    const BPF_F_ALLOW_MULTI: u32 = 2;
+    let license = cstr(shards_devcgroup::LICENSE)?;
+    let load = ProgLoad {
+        prog_type: BPF_PROG_TYPE_CGROUP_DEVICE,
+        insn_cnt: u32::try_from(program.len() / 8).map_err(|_| "a program too long")?,
+        insns: program.as_ptr() as u64,
+        license: license.as_ptr() as u64,
+        ..ProgLoad::default()
+    };
+    // SAFETY: bpf(2) BPF_PROG_LOAD of a program and license that outlive the call.
+    let prog = unsafe {
+        libc::syscall(
+            libc::SYS_bpf,
+            BPF_PROG_LOAD,
+            &raw const load,
+            std::mem::size_of::<ProgLoad>(),
+        )
+    };
+    let prog = i32::try_from(prog)
+        .ok()
+        .filter(|fd| *fd >= 0)
+        .ok_or_else(|| format!("BPF_PROG_LOAD: {}", io::Error::last_os_error()))?;
+    // SAFETY: the descriptor bpf(2) just returned, ours alone.
+    let prog = unsafe { OwnedFd::from_raw_fd(prog) };
+    let dir = std::fs::File::open(cgroup).map_err(|e| format!("{cgroup}: {e}"))?;
+    let at = ProgAttach {
+        target_fd: u32::try_from(dir.as_raw_fd()).map_err(|_| "a descriptor out of range")?,
+        attach_bpf_fd: u32::try_from(prog.as_raw_fd()).map_err(|_| "a descriptor out of range")?,
+        attach_type: BPF_CGROUP_DEVICE,
+        attach_flags: BPF_F_ALLOW_MULTI,
+        ..ProgAttach::default()
+    };
+    // SAFETY: bpf(2) BPF_PROG_ATTACH of descriptors held open over the call.
+    let attached = unsafe {
+        libc::syscall(
+            libc::SYS_bpf,
+            BPF_PROG_ATTACH,
+            &raw const at,
+            std::mem::size_of::<ProgAttach>(),
+        )
+    };
+    if attached != 0 {
+        return Err(format!("BPF_PROG_ATTACH: {}", io::Error::last_os_error()));
+    }
+    Ok(prog)
 }
