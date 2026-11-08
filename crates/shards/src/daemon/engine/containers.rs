@@ -27,8 +27,8 @@ use crate::daemon::{Daemon, REQUEST, Threads, lock, log};
 const CHECKPOINT_DIR: &str =
     "a checkpoint directory of your own is not supported: shards keeps a microVM's checkpoints with it";
 
-/// An attach waiting for its container's start, which `docker run` asks for before it
-/// starts the container: the start's output goes to it.
+/// An attach waiting for its microVM's start, which `docker run` asks for before it
+/// starts the microVM: the start's output goes to it.
 pub(in crate::daemon) struct Waiting {
     /// Its number, by which it is taken out where it stops waiting.
     number: u64,
@@ -41,8 +41,8 @@ pub(in crate::daemon) struct Waiting {
     stdin: Option<mpsc::Sender<PipeWriter>>,
 }
 
-/// How long an attach waiting for its container's start waits before it looks whether
-/// the container is still there.
+/// How long an attach waiting for its microVM's start waits before it looks whether
+/// the microVM is still there.
 const LOOK_AGAIN: Duration = Duration::from_secs(1);
 
 /// The connections a run's output goes to, each with the streams it asked for; and
@@ -194,7 +194,7 @@ pub(super) fn filters(given: Option<&str>) -> Result<Vec<(String, String)>, Stri
 }
 
 impl<D: Disk> Daemon<D> {
-    /// The request container `id` was made by, as it keeps it (D37).
+    /// The request microVM `id` was made by, as it keeps it (D37).
     pub(super) fn made_by(&self, id: &str) -> Option<Run> {
         let dir = lock(&self.containers).dir(id);
         Run::decode(&std::fs::read(dir.join(REQUEST)).ok()?)
@@ -263,7 +263,7 @@ impl<D: Disk> Daemon<D> {
         Ok(super::run_answer(&conn, said))
     }
 
-    /// `GET /containers/json`: the containers `ps` lists, its flags the query's, each as
+    /// `GET /containers/json`: the microVMs `ps` lists, its flags the query's, each as
     /// the API sums one up (container.Summary).
     pub(super) fn engine_list(&self, call: &Call<'_>) -> Answer {
         let mut argv: Vec<String> = Vec::new();
@@ -393,7 +393,7 @@ impl<D: Disk> Daemon<D> {
         call: &Call<'_>,
     ) -> Answer {
         // A checkpoint, a microVM's snapshot (D176), checked as dockerd checks it, in its
-        // order (moby daemon/start.go): its name, the container, its state, and only then
+        // order (moby daemon/start.go): its name, the microVM, its state, and only then
         // a directory of the client's, which dockerd refuses too.
         let checkpoint = call
             .query("checkpoint")
@@ -490,9 +490,9 @@ impl<D: Disk> Daemon<D> {
         }
     }
 
-    /// Starts container `id` attached as `shards start -a` starts one, its output to the
+    /// Starts microVM `id` attached as `shards start -a` starts one, its output to the
     /// attaches `waiting`, and its stdin from the first that asked for it, where the
-    /// container reads one. Answers once it runs, or did not start; its output goes on
+    /// microVM reads one. Answers once it runs, or did not start; its output goes on
     /// meanwhile on a thread of its own, until the run ends.
     fn start_attached<'s, 'e>(
         &'s self,
@@ -732,7 +732,7 @@ impl<D: Disk> Daemon<D> {
         }
     }
 
-    /// Waits for container `id` to be removed: `None` once `client` goes first.
+    /// Waits for microVM `id` to be removed: `None` once `client` goes first.
     fn await_removal(&self, id: &str, client: &UnixStream) -> Option<()> {
         let mut registry = lock(&self.containers);
         while registry.made(id).is_some() {
@@ -748,7 +748,7 @@ impl<D: Disk> Daemon<D> {
         Some(())
     }
 
-    /// Takes the attach numbered `number`, waiting for container `id`'s start, out of
+    /// Takes the attach numbered `number`, waiting for microVM `id`'s start, out of
     /// those waiting: whether it was still there, which no start had taken.
     fn unwait(&self, id: &str, number: u64) -> bool {
         let mut waiting = lock(&self.engine.waiting);
@@ -764,8 +764,8 @@ impl<D: Disk> Daemon<D> {
         taken
     }
 
-    /// `POST /containers/{id}/attach`: the connection taken over for the container's
-    /// streams. A container yet to start is attached as it starts (its start's output
+    /// `POST /containers/{id}/attach`: the connection taken over for the microVM's
+    /// streams. A microVM yet to start is attached as it starts (its start's output
     /// goes here); a running one, as `shards attach` attaches.
     pub(super) fn engine_attach<'s, 'e>(
         &'s self,
@@ -902,7 +902,7 @@ impl<D: Disk> Daemon<D> {
         }
     }
 
-    /// Attaches `conn` to running container `id`, made by `made`, as `shards attach`
+    /// Attaches `conn` to running microVM `id`, made by `made`, as `shards attach`
     /// attaches: its output from here on, and its stdin where both ask for one, until its
     /// command ends, or its client detaches by `keys` from its terminal.
     fn attach_running<'s, 'e>(

@@ -1,6 +1,6 @@
 //! A microVM's own engine (`--use-api-socket`, D181): the Engine API a run's command
 //! reaches from inside its microVM, on connections its VM hands the daemon, scoped to that
-//! microVM. Through it the command sees and acts on the containers its engine made alone,
+//! microVM. Through it the command sees and acts on the joiners its engine made alone,
 //! each a joiner of its microVM (D119), by the names it gave them; what would reach past
 //! the microVM is refused, with why.
 
@@ -13,7 +13,7 @@ use super::{Call, Done, containers::filters, create, plain, refused, status_of};
 use crate::containers::{Container, Disk, State as Life};
 use crate::daemon::{Daemon, Threads, lock};
 
-/// The microVM a connection's calls are scoped to: its run's container ID.
+/// The microVM a connection's calls are scoped to: its run's ID.
 pub(in crate::daemon) struct Scope {
     pub(in crate::daemon) provider: String,
 }
@@ -81,7 +81,7 @@ fn no_such(given: &str) -> Answer {
 /// one (`SRC\0DST\0FLAGS`: `ro` or `rw`, `create` for a source `-v` makes where it is
 /// missing, the meaning `-v` gives it): none for a mount that is no bind; why not for a
 /// propagation that would reach the command's own mounts, which a copy of them in the
-/// container's namespace shares nothing with.
+/// joiner's namespace shares nothing with.
 fn own_bind(point: &crate::volumes::MountPoint) -> Option<Result<String, String>> {
     if point.kind != "bind" {
         return None;
@@ -132,7 +132,7 @@ fn images_of(provider: &Container) -> Vec<String> {
         .collect()
 }
 
-/// The containers of `all` that the engine of microVM `provider` made, each by the name
+/// The joiners in `all` that the engine of microVM `provider` made, each by the name
 /// it has there.
 fn of_scope<'a>(all: impl Iterator<Item = &'a Container>, provider: &str) -> Vec<Container> {
     all.filter_map(|c| {
@@ -165,7 +165,7 @@ pub(super) fn resolve<'a>(scoped: &'a [Container], given: &str) -> Option<&'a Co
     }
 }
 
-/// A network of its engine's a create asks a container onto: the address its client asked
+/// A network of its engine's a create asks a joiner onto: the address its client asked
 /// for there (none for one init gives), its aliases there, and its priority for the
 /// default route.
 struct Membership {
@@ -187,7 +187,7 @@ impl Membership {
 }
 
 /// What of a create's run would reach past its microVM, refused with why; what names a
-/// container is taken in the scope (`scoped`), as its engine's clients name them.
+/// joiner is taken in the scope (`scoped`), as its engine's clients name them.
 fn confine(
     run: &mut Run,
     provider: &str,
@@ -205,7 +205,7 @@ fn confine(
     // It joins its microVM (D119) as a member of that microVM's switch: a network
     // namespace of its own there, on each network of its engine's it names, granted what
     // it declares; the command's own, its engine's host's, for `host`; its loopback alone
-    // for `none`; or that of one of its own containers that has none of its own.
+    // for `none`; or that of one of its own joiners that has none of its own.
     let network_of = |given: &str| -> Result<String, Answer> {
         match given {
             "" | "default" | "bridge" => Ok("bridge".to_string()),
@@ -324,7 +324,7 @@ fn confine(
     }
     // A bind names a path of its microVM's own command's files, as a bind names one of its
     // engine's host's: init copies it from the command's mount namespace into the
-    // container's (`own-bind`), and nothing of the host's. A volume, named or not, is the
+    // joiner's (`own-bind`), and nothing of the host's. A volume, named or not, is the
     // microVM's own (the store's, found by the name its engine gave it), and a tmpfs its
     // own; a volume takes no driver options, the local driver's binding a host directory.
     let mut binds = Vec::new();
@@ -381,7 +381,7 @@ fn confine(
             None => c.id.clone(),
         };
     }
-    // Namespaces of its own containers, by their IDs; the microVM's own are its host's.
+    // Namespaces of its own joiners, by their IDs; the microVM's own are its host's.
     for mode in [&mut run.pid, &mut run.ipc] {
         if let Some(other) = mode.strip_prefix("container:") {
             match resolve(scoped, other) {
@@ -431,7 +431,7 @@ fn confine(
 }
 
 impl<D: Disk> Daemon<D> {
-    /// The containers microVM `scope`'s engine made, each by the name it has there.
+    /// The joiners microVM `scope`'s engine made, each by the name it has there.
     pub(super) fn scoped(&self, scope: &Scope) -> Vec<Container> {
         of_scope(lock(&self.containers).all(), &scope.provider)
     }
@@ -496,7 +496,7 @@ impl<D: Disk> Daemon<D> {
                     _ => unserved(method, &call.head.target),
                 }
             }
-            // An exec of its own containers' alone, said as one that is not there.
+            // An exec of its own joiners' alone, said as one that is not there.
             (_, ["exec", exec_id, rest @ ..]) => {
                 self.settle();
                 let scoped = self.scoped(scope);
@@ -518,7 +518,7 @@ impl<D: Disk> Daemon<D> {
         Done::Answer(answer)
     }
 
-    /// `GET /info` of a microVM's own engine: its own containers and image, and the
+    /// `GET /info` of a microVM's own engine: its own joiners and image, and the
     /// microVM's CPUs and memory, where its run limits them; nothing of its host's that
     /// the microVM has no part of (its name, its directories, its proxies).
     fn scoped_info(&self, scope: &Scope) -> Answer {
@@ -735,7 +735,7 @@ impl<D: Disk> Daemon<D> {
         (status == 0).then(|| String::from_utf8_lossy(&out).trim().to_string())
     }
 
-    /// `GET /containers/json` of a microVM's own engine: its own containers, as `ps` lists
+    /// `GET /containers/json` of a microVM's own engine: its own joiners, as `ps` lists
     /// them, by their names there.
     fn scoped_list(&self, call: &Call<'_>, scope: &Scope) -> Answer {
         let limit = call

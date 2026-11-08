@@ -8,7 +8,7 @@
 //! (`UNBIND`), or the run ends. That process answers each port's letting go once it has
 //! closed its copies, which a bind of the same port, refused meanwhile, waits for: a server
 //! that closes its socket and binds its port again at once has it, as on the host. Each
-//! socket is its container's: the run's own, or a joiner's of its network (D119), whose
+//! socket is its owner's: the run's own, or a joiner's of its network (D119), whose
 //! ports go as it ends while the rest stay.
 
 use std::collections::HashMap;
@@ -47,7 +47,7 @@ pub(super) struct HostNet {
 }
 
 /// A socket of the host's for the guest's: its protocol, whether the network process has
-/// it, and the container whose it is ([`HostBind::owner`]).
+/// it, and the run whose it is ([`HostBind::owner`]).
 #[derive(Debug)]
 struct Hosted {
     fd: Sock,
@@ -209,8 +209,8 @@ impl HostNet {
         self.answers(true);
     }
 
-    /// Lets go of the ports of container `owner`, which has ended: its own, or a joiner's
-    /// (D119), the rest kept for the containers still running.
+    /// Lets go of the ports of run `owner`, which has ended: its own, or a joiner's
+    /// (D119), the rest kept for the runs still running.
     pub(super) fn release(&mut self, owner: u32) {
         let theirs: Vec<u32> = self
             .sockets

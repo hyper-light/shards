@@ -1,6 +1,6 @@
 //! The volumes a microVM's own engine makes (D181): each that microVM's own, in the host's
 //! store on disk, found by the name its engine gave it whatever it is named on the host,
-//! where it is named after the microVM as its containers are; listed, inspected, made,
+//! where it is named after the microVM as its joiners are; listed, inspected, made,
 //! removed and pruned in the calls Compose and Docker's SDKs make, and answered in the
 //! shapes they read with no path of the host's.
 
@@ -17,7 +17,7 @@ use crate::filters::Filters;
 use crate::volumes::{Store, Volume};
 
 /// The name a microVM's engine gives volume `v`: the one it was made by, or, for one made
-/// for a container alone, the one it was given.
+/// for a joiner alone, the one it was given.
 fn name_there(v: &Volume) -> &str {
     if v.there.is_empty() { &v.name } else { &v.there }
 }
@@ -183,7 +183,7 @@ impl<D: Disk> Daemon<D> {
         }
     }
 
-    /// `DELETE /volumes/{name}` of a microVM's own engine: its own, none of its containers
+    /// `DELETE /volumes/{name}` of a microVM's own engine: its own, none of its joiners
     /// mounting it; with `force`, one not there is no error.
     pub(super) fn scoped_volume_remove(&self, given: &str, call: &Call<'_>, scope: &Scope) -> Answer {
         self.await_removals();
@@ -215,7 +215,7 @@ impl<D: Disk> Daemon<D> {
     }
 
     /// `POST /volumes/prune` of a microVM's own engine: its own volumes none of its
-    /// containers mounts that the filters keep (`label`, `label!`), those made for none
+    /// joiners mounts that the filters keep (`label`, `label!`), those made for none
     /// alone unless `all`; their names there, and the bytes their files took.
     pub(super) fn scoped_volume_prune(&self, call: &Call<'_>, scope: &Scope) -> Answer {
         let given = match super::containers::filters(call.query("filters")) {
@@ -286,7 +286,7 @@ impl<D: Disk> Daemon<D> {
     }
 
     /// Removes the volumes microVM `provider`'s own engine made, as `provider` goes (D181):
-    /// each no container mounts; one a container of the host's mounts stays, said in the
+    /// each no joiner mounts; one a microVM of the host's mounts stays, said in the
     /// log.
     pub(in crate::daemon) fn remove_own_volumes(&self, provider: &str) {
         let _held = crate::volumes::lock();

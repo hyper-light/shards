@@ -34,7 +34,7 @@ pub(super) struct Facts {
     registries: Registries,
 }
 
-/// What a microVM's own engine says of itself (D181): its own containers and images, and
+/// What a microVM's own engine says of itself (D181): its own joiners and images, and
 /// the microVM's CPUs, memory and name, where its run gives them.
 pub(super) struct Scoped {
     pub(super) containers: usize,
