@@ -20035,3 +20035,39 @@ revision before comparing a changed API/implementation.
   without bound (`numbers.range` over any span, comprehensions over each other), as it
   may of OPA; buildx's evaluation ends with its build's context, and shards' with its
   build's process, which Ctrl-C ends.
+
+### M512. Growing a shared descriptor or handle table, on each host (M470, D26)
+
+- **Question.** M470 found a warm VM's hand-over held 8 to 15 ms by Linux growing the
+  descriptor table its threads share (fs/file.c `expand_fdtable`, `synchronize_rcu()`), and
+  warm.rs's `reserve_descriptors` grows the table while the VM waits instead, on Linux only.
+  Do macOS and Windows hosts pay a cost of the kind there?
+- **Method.** `docs/research/measurements/fd-grow/fdgrow.rs` (b22167ced), built with
+  `rustc -O`: a process whose THREADS other threads sit blocked, as a warm VM's do, holds
+  HELD duplicates of one file, then times each of EXTRA more (`try_clone`: `fcntl(F_DUPFD_CLOEXEC)`
+  on Unix, `DuplicateHandle` on Windows), and reports its slowest and its median; one fresh
+  process per round, n 100. `fdgrow 100 60 256 8`, and `100 60 256 0` (no other threads) as
+  the control, 2026-11-08:
+  - this Mac (Apple M5 Max, macOS 26.4.1), load 200 (another project's 144 busy loops);
+  - Fedora 44, Linux 6.19.10-300.fc44, M258's Intel Core i9-14900HX (32 CPUs), load 9;
+  - jupiter, Windows 11 (MINGW64_NT-10.0-26200), x86_64, 32 CPUs idle; and `100 60 4096 8` there too.
+- **Found.** The slowest duplicate per process, in µs, as p50 / p90 / p99 / max; the
+  median duplicate's p50 in µs:
+
+  | host | threads | extra | slowest p50 | p90 | p99 | max | median |
+  |---|---|---|---|---|---|---|---|
+  | Fedora (Linux) | 8 | 256 | 13,883 | 16,850 | 17,997 | 18,027 | 0.21 |
+  | Fedora (Linux) | 0 | 256 | 1.07 | 1.51 | 5.23 | 5.71 | 0.19 |
+  | this Mac (macOS) | 8 | 256 | 1.75 | 5.96 | 12.6 | 25.4 | 0.42 |
+  | jupiter (Windows) | 8 | 256 | 0.4 | 0.7 | 6.7 | 9.6 | 0.3 |
+  | jupiter (Windows) | 0 | 256 | 0.4 | 0.7 | 6.7 | 7.0 | 0.3 |
+  | jupiter (Windows) | 8 | 4,096 | 4.1 | 11.5 | 17.4 | 37.3 | 0.3 |
+
+  Linux's slowest duplicate fell at the 120th descriptor open: its table grew past its first
+  64 with other threads sharing it, and waited a grace period, as M470 found in warm VMs,
+  where it does not with no other thread. Neither macOS nor Windows shows a step of the kind
+  as its table grows, with other threads or without: their slowest duplicates are tens of µs
+  at most, the Mac's at load 200, three orders below Linux's.
+- **So.** `reserve_descriptors` stays Linux's (warm.rs): on macOS and Windows a run's
+  descriptors cost a warm VM no wait to make room for, and reserving would hold descriptors
+  for nothing.
