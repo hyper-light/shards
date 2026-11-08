@@ -94,6 +94,13 @@ impl Fluentd {
             To::Unix(path) => stream::To::Unix(path.clone()),
         };
         let stream = Stream::new(to, [config.write_timeout, config.read_timeout]);
+        // With acks, its acks say what its receiver took; without, its connections' ends are
+        // asked by a message of nothing (stream.rs `Asking`).
+        let stream = if config.ack {
+            stream.answered()
+        } else {
+            stream.probing(fluentd::nothing(&from))
+        };
         let part = part(&config, &from);
         Ok(Fluentd {
             config,
@@ -238,8 +245,14 @@ impl Fluentd {
 
     /// Writes `event`, and where `chunk` is given, reads its ack; `written` says whether
     /// it was written whole.
-    fn try_send(&mut self, event: &[u8], chunk: Option<&str>, written: &mut bool) -> io::Result<()> {
-        self.stream.send(event)?;
+    fn try_send(
+        &mut self,
+        event: &[u8],
+        chunk: Option<&str>,
+        written: &mut bool,
+        wait: &Wait<'_>,
+    ) -> io::Result<()> {
+        self.stream.send(event, wait)?;
         *written = true;
         if let Some(chunk) = chunk {
             let ack = read_ack(&mut self.stream)?;
@@ -359,73 +372,80 @@ impl Driver for Fluentd {
         } else {
             None
         };
-        self.follow()?;
-        let placed = self.placed(m.part);
-        let event = fluentd::event(
-            &self.config,
-            &self.from,
-            m.stream,
-            m.at,
-            m.line,
-            placed,
-            chunk.as_deref(),
-        );
         let mut pause = self.config.retry_wait;
         let mut tries = 0u32;
-        // Tries in a row on which the event was written whole and not acked.
+        // Tries in a row on which the event went first on its connection, whole, and was not
+        // acked.
         let mut unacked = 0u32;
         loop {
+            // What the destination showed since, followed first: a part of this line cut
+            // again places this one later.
+            self.follow()?;
+            let placed = self.placed(m.part);
+            let event = fluentd::event(
+                &self.config,
+                &self.from,
+                m.stream,
+                m.at,
+                m.line,
+                placed,
+                chunk.as_deref(),
+            );
             let mut written = false;
-            match self.try_send(&event, chunk.as_deref(), &mut written) {
-                Ok(()) => {
-                    if chunk.is_some() {
-                        self.learned.taken(event.len());
-                    } else {
-                        let part = placed.map(|p| (p.id.to_string(), p.ordinal, p.last));
-                        self.held
-                            .push_back((m.stream, m.at, m.line.to_vec(), part, event.len()));
-                    }
-                    if let Some(p) = placed.filter(|p| p.last) {
-                        self.later.retain(|(id, _)| id != p.id);
-                    }
-                    return Ok(());
+            let Err(e) = self.try_send(&event, chunk.as_deref(), &mut written, wait) else {
+                if chunk.is_some() {
+                    self.learned.taken(event.len());
+                } else {
+                    let part = placed.map(|p| (p.id.to_string(), p.ordinal, p.last));
+                    self.held
+                        .push_back((m.stream, m.at, m.line.to_vec(), part, event.len()));
                 }
-                Err(e) => {
-                    if chunk.is_some() && written {
-                        unacked += 1;
-                        // Each try a connection of its own, the event its first: one never
-                        // acked, longer than any the destination took, is past its bound.
-                        if unacked >= 2 && event.len() > self.learned.took() && m.line.len() > 1 {
-                            self.learned.refused(event.len());
-                            self.stream.drop_connection();
-                            self.stream.let_go();
-                            return Err(io::Error::new(
-                                io::ErrorKind::FileTooLarge,
-                                format!(
-                                    "an event of {} bytes its receiver did not ack on two connections: {e}",
-                                    event.len()
-                                ),
-                            ));
-                        }
-                    } else {
-                        unacked = 0;
-                    }
-                    // An ack not read leaves its connection's state unknown; the event,
-                    // held, is this loop's to send again.
-                    if chunk.is_some() {
-                        self.stream.drop_connection();
-                        self.stream.let_go();
-                    }
-                    if tries >= self.config.max_retries {
-                        return Err(e);
-                    }
-                    tries += 1;
-                    if wait.pause(pause) {
-                        return Err(super::stops());
-                    }
-                    pause = pause.mul_f64(1.5).min(MOST_WAIT);
+                if let Some(p) = placed.filter(|p| p.last) {
+                    self.later.retain(|(id, _)| id != p.id);
                 }
+                return Ok(());
+            };
+            if chunk.is_some() && written {
+                // An ack missing on a connection its receiver may have ended after its last
+                // (in_forward's `deny_keepalive` closes one once its ack is written) says
+                // nothing of the event: it goes again at once, first on one of its own.
+                if !self.stream.first_on_its_connection() {
+                    self.stream.drop_connection();
+                    self.stream.let_go();
+                    continue;
+                }
+                unacked += 1;
+                // Each a connection of its own, the event its first: one never acked,
+                // longer than any the destination took, is past its bound.
+                if unacked >= 2 && event.len() > self.learned.took() && m.line.len() > 1 {
+                    self.learned.refused(event.len());
+                    self.stream.drop_connection();
+                    self.stream.let_go();
+                    return Err(io::Error::new(
+                        io::ErrorKind::FileTooLarge,
+                        format!(
+                            "an event of {} bytes its receiver did not ack on two connections: {e}",
+                            event.len()
+                        ),
+                    ));
+                }
+            } else {
+                unacked = 0;
             }
+            // An ack not read leaves its connection's state unknown; the event, held, is
+            // this loop's to send again.
+            if chunk.is_some() {
+                self.stream.drop_connection();
+                self.stream.let_go();
+            }
+            if tries >= self.config.max_retries {
+                return Err(e);
+            }
+            tries += 1;
+            if wait.pause(pause) {
+                return Err(super::stops());
+            }
+            pause = pause.mul_f64(1.5).min(MOST_WAIT);
         }
     }
 
@@ -574,14 +594,31 @@ mod tests {
         Unix,
     }
 
-    /// A forward receiver for the tests, as Fluent Bit's is past its `buffer_max_size`:
-    /// each event of at most `most` bytes sent on `got`, a connection ended as it reads a
-    /// longer one (over TLS with close_notify, its TCP's writing then shut). A driver that
-    /// sends to it from `home`, without acks.
-    fn receiver(via: Via, home: &Path, most: usize) -> (Fluentd, std::sync::mpsc::Receiver<Vec<u8>>) {
+    /// How a test's receiver ends connections.
+    #[derive(Clone, Copy, Debug)]
+    enum Ends {
+        /// As Fluent Bit's forward input does past its `buffer_max_size`: on reading an
+        /// event longer than this.
+        Past(usize),
+        /// As Fluentd's in_forward does with `deny_keepalive`: after every message it
+        /// handles, once its ack, where one is asked, is written (in_forward.rb
+        /// `handle_connection`).
+        AfterEach,
+    }
+
+    /// A forward receiver for the tests, ending connections as `ends` says (over TLS with
+    /// close_notify, its TCP's writing then shut): each event it takes sent on `got`, and
+    /// its `chunk` acked where one is asked. A driver that sends to it from `home`, with
+    /// acks where `ack`.
+    fn receiver(
+        via: Via,
+        home: &Path,
+        ends: Ends,
+        ack: bool,
+    ) -> (Fluentd, std::sync::mpsc::Receiver<Vec<u8>>) {
         fn serve<C: Read + std::io::Write>(
             mut conn: C,
-            most: usize,
+            ends: Ends,
             got: &std::sync::mpsc::Sender<Vec<u8>>,
             end: impl FnOnce(C),
         ) -> bool {
@@ -594,12 +631,29 @@ mod tests {
                 }
                 while let Some(len) = skip(&buf, 0) {
                     let event: Vec<u8> = buf.drain(..len).collect();
-                    if event.len() > most {
+                    if let Ends::Past(most) = ends
+                        && event.len() > most
+                    {
                         end(conn);
                         return true;
                     }
+                    let mut at = 0;
+                    let chunk = crate::logging::fluentd::tests::unpack(&event, &mut at)[3]["chunk"]
+                        .as_str()
+                        .map(str::to_string);
                     if got.send(event).is_err() {
                         return false;
+                    }
+                    if let Some(chunk) = chunk {
+                        let mut ack = vec![0x81, 0xa3, b'a', b'c', b'k', 0xb8];
+                        ack.extend_from_slice(chunk.as_bytes());
+                        if conn.write_all(&ack).and_then(|()| conn.flush()).is_err() {
+                            return true;
+                        }
+                    }
+                    if let Ends::AfterEach = ends {
+                        end(conn);
+                        return true;
                     }
                 }
             }
@@ -616,13 +670,13 @@ mod tests {
                     for conn in listener.incoming() {
                         let Ok(conn) = conn else { return };
                         let going = match &server {
-                            None => serve(conn, most, &got, drop),
+                            None => serve(conn, ends, &got, drop),
                             Some(server) => {
                                 let tls = rustls::StreamOwned::new(
                                     rustls::ServerConnection::new(server.clone()).unwrap(),
                                     conn,
                                 );
-                                serve(tls, most, &got, |mut tls| {
+                                serve(tls, ends, &got, |mut tls| {
                                     tls.conn.send_close_notify();
                                     let _ = std::io::Write::flush(&mut tls);
                                     let _ = tls.sock.shutdown(std::net::Shutdown::Write);
@@ -645,7 +699,7 @@ mod tests {
                 std::thread::spawn(move || {
                     loop {
                         let Ok((conn, _)) = listener.accept() else { return };
-                        if !serve(conn, most, &got, drop) {
+                        if !serve(conn, ends, &got, drop) {
                             return;
                         }
                     }
@@ -656,7 +710,7 @@ mod tests {
         let config = Config {
             to: to.clone(),
             sub_second: false,
-            ack: false,
+            ack,
             retry_wait: Duration::from_millis(10),
             max_retries: 3,
             write_timeout: Some(Duration::from_secs(10)),
@@ -670,7 +724,12 @@ mod tests {
         };
         let mut f = Fluentd::new(config, from, home).unwrap();
         if let (Some((_, client)), To::Tcp(address)) = (tls, to) {
-            f.stream = Stream::new(stream::To::Tls(address, client), [None; 2]);
+            let stream = Stream::new(stream::To::Tls(address, client), [None; 2]);
+            f.stream = if ack {
+                stream.answered()
+            } else {
+                stream.probing(fluentd::nothing(&f.from))
+            };
         }
         (f, events)
     }
@@ -709,7 +768,7 @@ mod tests {
         parts.into_values().map(|(log, _)| log).collect()
     }
 
-    /// The events received, decoded.
+    /// The events received, decoded, but messages of nothing.
     fn decoded(events: &std::sync::mpsc::Receiver<Vec<u8>>, most: usize) -> Vec<serde_json::Value> {
         events
             .try_iter()
@@ -720,6 +779,7 @@ mod tests {
                 assert_eq!(at, e.len());
                 v
             })
+            .filter(|v| !v[1].is_array())
             .collect()
     }
 
@@ -734,7 +794,7 @@ mod tests {
     fn a_part_refused_goes_again_in_its_lines_place() {
         for via in [Via::Tcp, Via::Tls, Via::Unix] {
             let home = shards_testdir::TempDir::new("fw").unwrap();
-            let (mut f, events) = receiver(via, &home, 2000);
+            let (mut f, events) = receiver(via, &home, Ends::Past(2000), false);
             let (_stop, stopped) = shards_ipc::Stream::pair().unwrap();
             let wait = Wait(&stopped);
             let id = "a".repeat(64);
@@ -766,50 +826,115 @@ mod tests {
     }
 
     /// Do: without acks, over TCP, to the same receiver, send a line's first part and a
-    /// second of 3,000 bytes, then another line whole; once the receiver has ended two
-    /// connections on the long part, send the line's third and last part, then close.
-    /// Expect the long part cut in its place as the third is sent, and the third, which
-    /// the shipper numbers 3, placed after the pieces: the line rebuilt whole.
+    /// second of 3,000 bytes, and follow the driver until the long part is shown refused;
+    /// follow it, then send the line's third and last part, and close. Expect the long part
+    /// cut in its place, the third, which the shipper numbers 3, placed after the pieces:
+    /// the line rebuilt whole.
     #[test]
     fn a_lines_parts_still_to_come_go_after_a_part_cut_again() {
         let home = shards_testdir::TempDir::new("fw").unwrap();
-        let (mut f, events) = receiver(Via::Tcp, &home, 2000);
+        let (mut f, events) = receiver(Via::Tcp, &home, Ends::Past(2000), false);
         let (_stop, stopped) = shards_ipc::Stream::pair().unwrap();
         let wait = Wait(&stopped);
-        let id = "c".repeat(64);
-        let long = "d".repeat(3000);
-        let m = |line: &'static str, part: Option<fluentd::Part<'static>>| Message {
+        let id: &'static str = String::leak("c".repeat(64));
+        let long: &'static str = String::leak("d".repeat(3000));
+        let m = |line: &'static str, ordinal, last| Message {
             stream: crate::spec::LOG_STDOUT,
             at: 1_000_000_000,
             line: line.as_bytes(),
-            part,
+            part: Some(fluentd::Part { id, ordinal, last }),
         };
-        let id: &'static str = String::leak(id);
-        let long: &'static str = String::leak(long);
-        let part = |ordinal, last| Some(fluentd::Part { id, ordinal, last });
-        f.send(&m("first", part(1, false)), &wait).unwrap();
-        f.send(&m(long, part(2, false)), &wait).unwrap();
+        f.send(&m("first", 1, false), &wait).unwrap();
+        f.send(&m(long, 2, false), &wait).unwrap();
         let started = std::time::Instant::now();
-        let mut ticks = 0;
-        loop {
-            assert!(started.elapsed() < Duration::from_secs(20), "no end found");
+        while f.stream.suspect(f.learned.took()).is_none() {
+            assert!(
+                started.elapsed() < Duration::from_secs(20),
+                "nothing shown refused"
+            );
             std::thread::sleep(Duration::from_millis(5));
             f.stream.undelivered();
-            if f.stream.suspect(f.learned.took()).is_some() {
-                break;
-            }
-            // A new connection, the held written first, once one ended.
-            if f.stream.ended() > ticks {
-                f.send(&m("whole", None), &wait).unwrap();
-                ticks += 1;
-            }
         }
         f.follow().unwrap();
         assert!(f.later.iter().any(|(i, n)| i == id && *n > 0), "{:?}", f.later);
-        f.send(&m("third", part(3, true)), &wait).unwrap();
+        f.send(&m("third", 3, true), &wait).unwrap();
         assert!(f.later.is_empty(), "a line's places kept past its last part");
         super::super::gelf::tests::close_until_ended(&mut || f.close(&wait));
         let events = decoded(&events, 2000);
         assert_eq!(joined(&events, id), format!("first{long}third"));
+    }
+
+    /// Do: over TCP, TLS and a unix socket, with acks and without, to a receiver that ends
+    /// its connection after every message it takes, as in_forward with `deny_keepalive`
+    /// does (its ack written first, where one is asked): send whole lines and a line in
+    /// three parts, one of them 3,000 bytes, as a shipper does, then close. Expect nothing
+    /// lost and nothing cut: every line received, each part as it was sent, its places as
+    /// the shipper gave them; nothing learned refused; and, without acks, the stream found
+    /// to have a receiver that ends a connection after each message.
+    #[test]
+    fn a_receiver_that_ends_a_connection_after_each_message_loses_and_cuts_nothing() {
+        for (via, ack) in [
+            (Via::Tcp, false),
+            (Via::Tls, false),
+            (Via::Unix, false),
+            (Via::Tcp, true),
+        ] {
+            let home = shards_testdir::TempDir::new("fw").unwrap();
+            let (mut f, events) = receiver(via, &home, Ends::AfterEach, ack);
+            let (_stop, stopped) = shards_ipc::Stream::pair().unwrap();
+            let wait = Wait(&stopped);
+            let id = "e".repeat(64);
+            let long = "f".repeat(3000);
+            let whole = |line: &str| (line.to_string(), None);
+            let sent: Vec<(String, Option<(u32, bool)>)> = vec![
+                whole("one"),
+                whole("two"),
+                ("first".into(), Some((1, false))),
+                (long.clone(), Some((2, false))),
+                ("third".into(), Some((3, true))),
+                whole("three"),
+            ];
+            for (line, part) in &sent {
+                f.send(
+                    &Message {
+                        stream: crate::spec::LOG_STDOUT,
+                        at: 1_000_000_000,
+                        line: line.as_bytes(),
+                        part: part.map(|(ordinal, last)| fluentd::Part {
+                            id: &id,
+                            ordinal,
+                            last,
+                        }),
+                    },
+                    &wait,
+                )
+                .unwrap();
+            }
+            super::super::gelf::tests::close_until_ended(&mut || f.close(&wait));
+            let events = decoded(&events, usize::MAX);
+            let got: std::collections::BTreeSet<(String, Option<(u32, bool)>)> = events
+                .iter()
+                .map(|e| {
+                    let r = &e[2];
+                    let part = r["partial_ordinal"]
+                        .as_str()
+                        .map(|o| (o.parse().unwrap(), r["partial_last"] == "true"));
+                    (r["log"].as_str().unwrap().to_string(), part)
+                })
+                .collect();
+            let want: std::collections::BTreeSet<_> = sent.iter().cloned().collect();
+            assert_eq!(got, want, "{via:?} ack {ack}");
+            assert_eq!(
+                f.learned.most(),
+                FORWARD_MOST,
+                "{via:?} ack {ack}: learned refused"
+            );
+            if !ack {
+                assert!(
+                    f.stream.closes(),
+                    "{via:?}: its ends not found to follow each message"
+                );
+            }
+        }
     }
 }

@@ -267,6 +267,20 @@ pub fn event(
     out
 }
 
+/// A Forward-mode message of no events, `[tag, []]` (Forward Protocol Specification v1,
+/// Forward Mode: its entries "a series of events", here of none): what a receiver takes
+/// whatever its bound, and handles as a message, so that one that ends a connection after
+/// every message ends it after this too. Fluentd's in_forward emits its stream of nothing
+/// (`on_message`'s Forward branch), Fluent Bit's forward input ingests no entries
+/// (`fw_process_forward_mode`); neither answers it, no `chunk` asked.
+pub fn nothing(from: &From) -> Vec<u8> {
+    let mut out = Vec::with_capacity(from.tag.len() + 8);
+    array_header(&mut out, 2);
+    string(&mut out, from.tag.as_bytes());
+    array_header(&mut out, 0);
+    out
+}
+
 /// MessagePack, as tinylib/msgp writes it: each the smallest form that holds it.
 fn array_header(out: &mut Vec<u8>, n: usize) {
     match n {
