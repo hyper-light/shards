@@ -23,11 +23,7 @@ impl Host for NoHost {
 pub fn functions() -> Vec<Function> {
     let s = || Type::String;
     let a = || Type::Any(Vec::new());
-    let f = |args: Vec<Type>, result: Type| Type::Function {
-        args,
-        result: Some(Box::new(result)),
-        variadic: None,
-    };
+    let f = |args: Vec<Type>, result: Type| Type::function(args, result);
     vec![
         Function {
             name: "load_json".into(),
