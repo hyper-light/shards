@@ -257,6 +257,15 @@ pub(super) enum Restart {
 /// Where the home keeps what its restarts cost ([`Restarts`]).
 const RESTARTS: &str = "restarts";
 
+/// A line's answer at a size ([`Line::fit`]).
+#[derive(Clone, Copy, Debug)]
+struct Fit {
+    estimate: f64,
+    residual: f64,
+    free: f64,
+    spread: f64,
+}
+
 /// One way's restarts on this host: the least-squares line of a restart's time against the
 /// bytes its layer held, kept online as its count, means and co-moments (Welford's
 /// updates), which a file of the home keeps between daemons.
@@ -274,7 +283,7 @@ struct Line {
 
 impl Line {
     fn add(&mut self, x: f64, y: f64) {
-        self.n += 1;
+        self.n = self.n.saturating_add(1);
         let n = self.n as f64;
         let (dx, dy) = (x - self.x, y - self.y);
         self.x += dx / n;
@@ -284,11 +293,40 @@ impl Line {
         self.yy += dy * (y - self.y);
     }
 
+    /// The records of `self` and `other` as one line: their counts, means and co-moments
+    /// combined (Chan, Golub and LeVeque's pairwise update), as if each of `other`'s had been
+    /// added.
+    fn merge(&mut self, other: &Line) {
+        if other.n == 0 {
+            return;
+        }
+        if self.n == 0 {
+            *self = *other;
+            return;
+        }
+        let total = self.n.saturating_add(other.n);
+        let (n, m, sum) = (self.n as f64, other.n as f64, total as f64);
+        let (dx, dy) = (other.x - self.x, other.y - self.y);
+        let weight = n * m / sum;
+        self.xx += other.xx + dx * dx * weight;
+        self.xy += other.xy + dx * dy * weight;
+        self.yy += other.yy + dy * dy * weight;
+        self.x += dx * m / sum;
+        self.y += dy * m / sum;
+        self.n = total;
+    }
+
     /// What a restart of a layer holding `x` bytes takes by the line, µs, and the variance
     /// of that estimate (its residuals' variance over the line's degrees of freedom, as an
     /// estimate of a regression's mean at `x` has it). None while the records cannot say: a
     /// line of fewer than three, or one whose layers all held one size, asked of another.
     fn at(&self, x: f64) -> Option<(f64, f64)> {
+        self.fit(x).map(|fit| (fit.estimate, fit.residual * fit.spread))
+    }
+
+    /// The line's estimate at `x`, its residuals' variance over its degrees of freedom, and
+    /// the estimate's variance as a multiple of that (`1/n + (x − x̄)²/Sxx`).
+    fn fit(&self, x: f64) -> Option<Fit> {
         let n = self.n as f64;
         let (slope, residual, free, spread) = if self.xx > 0.0 {
             let slope = self.xy / self.xx;
@@ -306,8 +344,29 @@ impl Line {
         if free < 1.0 {
             return None;
         }
-        let variance = residual.max(0.0) / free;
-        Some((self.y + slope * (x - self.x), variance * (1.0 / n + spread)))
+        Some(Fit {
+            estimate: self.y + slope * (x - self.x),
+            residual: residual.max(0.0) / free,
+            free,
+            spread: 1.0 / n + spread,
+        })
+    }
+
+    /// Whether a new record, a restart of a layer holding `x` bytes that took `y` µs, is
+    /// outside the line's spread ([`Way`]): a regression's prediction test (the distance of
+    /// a new record from the line over `s·√(1 + 1/n + (x − x̄)²/Sxx)` is Student's t with the
+    /// line's degrees of freedom; Brown, Durbin and Evans's recursive residual) at the level
+    /// `1/(n + 1)`. None where the line cannot say ([`at`](Self::at)).
+    fn outside(&self, x: f64, y: f64) -> Option<bool> {
+        let fit = self.fit(x)?;
+        let distance = y - fit.estimate;
+        let variance = fit.residual * (1.0 + fit.spread);
+        if !(variance > 0.0) {
+            // A line with no spread at all: every record off it is outside.
+            return Some(distance != 0.0);
+        }
+        let beyond = t_beyond(distance * distance / variance, fit.free);
+        Some(beyond * (self.n as f64 + 1.0) < 1.0)
     }
 
     fn encode(&self) -> String {
@@ -348,8 +407,120 @@ impl Line {
 /// measured until they can be told apart.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(super) struct Restarts {
-    packed: Line,
-    over: Line,
+    packed: Way,
+    over: Way,
+}
+
+/// The records a way learns from (D190's ageing): its line, of every record since its
+/// learning last restarted, and those since that each fell outside the line's spread, held
+/// out of it. A record is outside where the line gives one as far from it a chance below
+/// `1/(n + 1)`, its `n` records' and this one's ([`Line::outside`]): no farther than the
+/// farthest of `n + 1` records alike is expected to be, under no change, once. Three in a
+/// row, the least records that make a line with a residual, restart its learning from them,
+/// a chance under no change of `(n + 1)^-3`, whose sum over a line's life is finite; one
+/// within the line's spread puts those held out back into it with itself.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct Way {
+    line: Line,
+    outside: Line,
+}
+
+/// The records outside a line that restart its learning: the least that make a line with a
+/// residual (two for its intercept and slope, one more for the residual's degree of freedom).
+const RESTART_FROM: u64 = 3;
+
+impl Way {
+    /// Learns from a restart of a layer holding `x` bytes that took `y` µs. True where the
+    /// record restarted its learning.
+    fn add(&mut self, x: f64, y: f64) -> bool {
+        match self.line.outside(x, y) {
+            None => {
+                self.line.add(x, y);
+                false
+            }
+            Some(false) => {
+                self.line.merge(&self.outside);
+                self.outside = Line::default();
+                self.line.add(x, y);
+                false
+            }
+            Some(true) => {
+                self.outside.add(x, y);
+                if self.outside.n < RESTART_FROM {
+                    return false;
+                }
+                self.line = self.outside;
+                self.outside = Line::default();
+                true
+            }
+        }
+    }
+}
+
+/// The chance that Student's t with `free` degrees of freedom is farther than `√t2` from
+/// zero, either way: `I_x(free/2, 1/2)` at `x = free/(free + t2)`, the regularized
+/// incomplete beta function (Abramowitz and Stegun 26.7.1 with 26.5.27; DLMF 8.17.2).
+fn t_beyond(t2: f64, free: f64) -> f64 {
+    incomplete_beta(free / 2.0, 0.5, free / (free + t2))
+}
+
+/// The regularized incomplete beta function `I_x(a, b)`: its continued fraction (DLMF
+/// 8.17.22), evaluated by Lentz's method where it converges quickly, `x < (a + 1)/(a + b + 2)`,
+/// and through `I_x(a, b) = 1 − I_(1−x)(b, a)` where not (Press et al., Numerical Recipes,
+/// 3rd ed., §6.4).
+fn incomplete_beta(a: f64, b: f64, x: f64) -> f64 {
+    if !(x > 0.0) {
+        return 0.0;
+    }
+    if x >= 1.0 {
+        return 1.0;
+    }
+    let front =
+        (libm::lgamma(a + b) - libm::lgamma(a) - libm::lgamma(b) + a * x.ln() + b * (-x).ln_1p()).exp();
+    if x < (a + 1.0) / (a + b + 2.0) {
+        front * fraction(a, b, x) / a
+    } else {
+        1.0 - front * fraction(b, a, 1.0 - x) / b
+    }
+}
+
+/// DLMF 8.17.22's continued fraction for `I_x(a, b)`, by Lentz's method (Numerical Recipes
+/// §5.2, §6.4): its terms taken until one changes it by less than an `f64` can tell
+/// (`f64::EPSILON`), a denominator of zero kept off it by the least normal `f64`. It needs
+/// `O(√max(a, b))` terms (Numerical Recipes §6.4); it is cut at `max(a, b) + 1`, so that a
+/// line of absurd count read from a damaged file ends.
+fn fraction(a: f64, b: f64, x: f64) -> f64 {
+    let off_zero = |v: f64| {
+        if v.abs() < f64::MIN_POSITIVE {
+            f64::MIN_POSITIVE
+        } else {
+            v
+        }
+    };
+    let (sum, up, down) = (a + b, a + 1.0, a - 1.0);
+    let mut c = 1.0;
+    let mut d = 1.0 / off_zero(1.0 - sum * x / up);
+    let mut h = d;
+    let last = a.max(b) + 1.0;
+    let mut m = 1.0;
+    while m <= last {
+        let m2 = 2.0 * m;
+        let even = m * (b - m) * x / ((down + m2) * (a + m2));
+        d = 1.0 / off_zero(1.0 + even * d);
+        c = off_zero(1.0 + even / c);
+        h *= d * c;
+        let odd = -(a + m) * (sum + m) * x / ((a + m2) * (up + m2));
+        d = 1.0 / off_zero(1.0 + odd * d);
+        c = off_zero(1.0 + odd / c);
+        let step = d * c;
+        h *= step;
+        // Converged, or nothing a number any more.
+        if !((step - 1.0).abs() > f64::EPSILON) {
+            break;
+        }
+        m += 1.0;
+    }
+    h
 }
 
 impl Restarts {
@@ -359,10 +530,16 @@ impl Restarts {
         let Ok(text) = std::fs::read_to_string(home.join(RESTARTS)) else {
             return restarts;
         };
+        // A daemon before the records aged kept their lines alone, and one of them reads
+        // these and passes over what it does not know.
         for line in text.lines() {
-            match line.split_once(' ') {
-                Some(("packed", rest)) => restarts.packed = Line::decode(rest).unwrap_or_default(),
-                Some(("over", rest)) => restarts.over = Line::decode(rest).unwrap_or_default(),
+            let (name, rest) = line.split_once(' ').unwrap_or((line, ""));
+            let read = Line::decode(rest).unwrap_or_default();
+            match name {
+                "packed" => restarts.packed.line = read,
+                "over" => restarts.over.line = read,
+                "packed-outside" => restarts.packed.outside = read,
+                "over-outside" => restarts.over.outside = read,
                 _ => {}
             }
         }
@@ -372,7 +549,8 @@ impl Restarts {
     /// The way the restart of a layer holding `held` bytes goes.
     pub(super) fn choose(&self, held: u64) -> Restart {
         let x = held as f64;
-        if let (Some((packed, vp)), Some((over, vo))) = (self.packed.at(x), self.over.at(x)) {
+        let (packed, over) = (&self.packed.line, &self.over.line);
+        if let (Some((packed, vp)), Some((over, vo))) = (packed.at(x), over.at(x)) {
             let difference = packed - over;
             if difference * difference > vp + vo {
                 return if difference > 0.0 {
@@ -382,7 +560,7 @@ impl Restarts {
                 };
             }
         }
-        if self.over.n < self.packed.n {
+        if over.n < packed.n {
             Restart::Over
         } else {
             Restart::Packed
@@ -390,7 +568,8 @@ impl Restarts {
     }
 
     /// A restart that went `way` with a layer holding `held` bytes took `took`; kept in
-    /// `home` for the next daemon.
+    /// `home` for the next daemon. Where its record and the two before it fell outside the
+    /// way's line, its learning restarts from them ([`Way`]), and the log says so.
     pub(super) fn record(
         &mut self,
         home: &Path,
@@ -398,14 +577,26 @@ impl Restarts {
         held: u64,
         took: std::time::Duration,
     ) -> Result<(), String> {
-        let line = match way {
-            Restart::Packed => &mut self.packed,
-            Restart::Over => &mut self.over,
+        let (learning, name) = match way {
+            Restart::Packed => (&mut self.packed, "packing"),
+            Restart::Over => (&mut self.over, "going over"),
         };
-        line.add(held as f64, took.as_secs_f64() * 1e6);
+        let had = learning.line.n;
+        if learning.add(held as f64, took.as_secs_f64() * 1e6) {
+            super::log(format!(
+                "restarts: {name}'s last {RESTART_FROM} fell outside its line of {had}; \
+                 its records restart from them"
+            ));
+        }
         let at = home.join(RESTARTS);
         let new = home.join(format!("{RESTARTS}.new"));
-        let text = format!("packed {}\nover {}\n", self.packed.encode(), self.over.encode());
+        let text = format!(
+            "packed {}\nover {}\npacked-outside {}\nover-outside {}\n",
+            self.packed.line.encode(),
+            self.over.line.encode(),
+            self.packed.outside.encode(),
+            self.over.outside.encode()
+        );
         std::fs::write(&new, text)
             .and_then(|()| std::fs::rename(&new, &at))
             .map_err(|e| format!("{}: {e}", at.display()))
@@ -416,7 +607,7 @@ impl Restarts {
     #[cfg(test)]
     fn crossing(&self) -> Option<f64> {
         let line = |l: &Line| (l.xx > 0.0).then(|| (l.xy / l.xx, l.y - l.xy / l.xx * l.x));
-        let ((sp, ip), (so, io)) = (line(&self.packed)?, line(&self.over)?);
+        let ((sp, ip), (so, io)) = (line(&self.packed.line)?, line(&self.over.line)?);
         (sp != so).then(|| (io - ip) / (sp - so))
     }
 }
@@ -890,8 +1081,9 @@ mod tests {
             for &(held, packed, over) in table {
                 let sure = restarts
                     .packed
+                    .line
                     .at(held as f64)
-                    .zip(restarts.over.at(held as f64))
+                    .zip(restarts.over.line.at(held as f64))
                     .filter(|&((p, vp), (o, vo))| (p - o) * (p - o) > vp + vo);
                 let quicker = if over < packed {
                     Restart::Over
@@ -924,10 +1116,182 @@ mod tests {
             [Restart::Packed, Restart::Over, Restart::Packed, Restart::Over]
         );
         // Layers of one size say nothing of another's.
-        assert_eq!(restarts.packed.at(2.0 * f64::from(1u32 << 20)), None);
+        assert_eq!(restarts.packed.line.at(2.0 * f64::from(1u32 << 20)), None);
         // A file that cannot be read is no records.
         std::fs::write(home.join(RESTARTS), "packed 3 x\nover\n").unwrap();
         assert_eq!(Restarts::kept_in(&home), Restarts::default());
+    }
+
+    /// Restarts of a host whose line is Linux's packing (PM M443: 52 ms and 10.6 a MiB), at
+    /// the measured tables' sizes taken at random, `shift(i)` µs added to the `i`th's line
+    /// past its first `from`, with noise of `noise(rng)` µs. Returns the record each restart
+    /// of learning came at, and the way.
+    fn learn(
+        seed: u64,
+        n: usize,
+        shift: impl Fn(usize, f64) -> f64,
+        noise: impl Fn(&mut Rng) -> f64,
+    ) -> (Vec<usize>, Way) {
+        let mib = f64::from(1u32 << 20);
+        let sizes = [0u32, 1, 2, 4, 8, 16, 32];
+        let mut rng = Rng(seed);
+        let mut way = Way::default();
+        let mut restarts = Vec::new();
+        for i in 0..n {
+            let x = f64::from(sizes[(rng.next() % sizes.len() as u64) as usize]) * mib;
+            let y = 52e3 + 10.6e3 * x / mib + shift(i, x) + noise(&mut rng);
+            if way.add(x, y) {
+                restarts.push(i);
+            }
+        }
+        (restarts, way)
+    }
+
+    /// SplitMix64 (Steele, Lea and Flood 2014), and Box and Muller's normal deviates of it.
+    struct Rng(u64);
+
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
+            let mut z = self.0;
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+            z ^ (z >> 31)
+        }
+
+        fn uniform(&mut self) -> f64 {
+            ((self.next() >> 11) as f64 + 0.5) / (1u64 << 53) as f64
+        }
+
+        fn normal(&mut self) -> f64 {
+            let (u, v) = (self.uniform(), self.uniform());
+            (-2.0 * u.ln()).sqrt() * (std::f64::consts::TAU * v).cos()
+        }
+    }
+
+    /// Linux's p50 to p90 at 0 B (PM M443: 55.66 and 63.04 ms) as a normal deviation's,
+    /// µs: 7.38 ms over 1.2816.
+    const SIGMA: f64 = 7.38e3 / 1.2816;
+
+    /// Noise alone restarts no learning once its line holds a few tens of records, whether
+    /// it is normal or has a busy host's long tail (a log-normal's, its p99 several times its
+    /// p50's distance): a host whose restarts stay alike keeps its records.
+    #[test]
+    fn a_line_keeps_its_records_through_noise_alone() {
+        let normal = |r: &mut Rng| SIGMA * r.normal();
+        let tailed = |r: &mut Rng| SIGMA * (r.normal().exp() - 0.5f64.exp());
+        for seed in 0..32 {
+            for (name, noise) in [
+                ("normal", &normal as &dyn Fn(&mut Rng) -> f64),
+                ("tailed", &tailed),
+            ] {
+                let (restarts, way) = learn(seed, 2000, |_, _| 0.0, noise);
+                let late: Vec<_> = restarts.iter().filter(|&&i| i >= 30).collect();
+                assert!(late.is_empty(), "{name} seed {seed}: restarted at {late:?}");
+                assert!(way.line.n + way.outside.n >= 1970, "{name} seed {seed}");
+            }
+        }
+    }
+
+    /// A host whose restarts all take longer by many of their spreads (its disk slower, or
+    /// busier), or whose packing takes twice as long a byte, restarts its learning within a
+    /// few records of the change, and its line then says what the host's restarts take now.
+    #[test]
+    fn a_line_follows_its_host_when_its_level_or_slope_moves() {
+        let mib = f64::from(1u32 << 20);
+        let normal = |r: &mut Rng| SIGMA * r.normal();
+        let level = |i: usize, _: f64| if i >= 500 { 60e3 } else { 0.0 };
+        let slope = |i: usize, x: f64| if i >= 500 { 10.6e3 * x / mib } else { 0.0 };
+        for seed in 0..32 {
+            for (name, shift) in [("level", &level as &dyn Fn(usize, f64) -> f64), ("slope", &slope)] {
+                let (restarts, way) = learn(seed, 1000, shift, normal);
+                let after = restarts.iter().find(|&&i| i >= 500);
+                assert!(
+                    after.is_some_and(|&i| i < 540),
+                    "{name} seed {seed}: restarted at {restarts:?}"
+                );
+                for size in [0.0, 8.0, 32.0] {
+                    let x = size * mib;
+                    let now = 52e3 + 10.6e3 * size + shift(1000, x);
+                    let (estimate, variance) = way.line.at(x).unwrap();
+                    assert!(
+                        (estimate - now).abs() < 4.0 * (variance + SIGMA * SIGMA / 10.0).sqrt(),
+                        "{name} seed {seed} at {size} MiB: {estimate} for {now}"
+                    );
+                    // The records before the change are gone from it.
+                    assert!(way.line.n <= 500, "{name} seed {seed}: {}", way.line.n);
+                }
+            }
+        }
+    }
+
+    /// The t test's tail is Student's: two-sided 5% at the tabled quantiles (1, 2, 10 and 30
+    /// degrees of freedom: 12.706, 4.303, 2.228, 2.042), 1% at 2.576 as the normal's, past a
+    /// million; all of it at none, none of it at an infinite distance.
+    #[test]
+    fn the_t_tests_tail_is_students() {
+        for (t, free, p) in [
+            (12.706, 1.0, 0.05),
+            (4.303, 2.0, 0.05),
+            (2.228, 10.0, 0.05),
+            (2.042, 30.0, 0.05),
+            (2.5758, 1e6, 0.01),
+        ] {
+            let beyond = t_beyond(t * t, free);
+            assert!((beyond - p).abs() < p * 1e-3, "t {t}, {free}: {beyond}");
+        }
+        assert_eq!(t_beyond(0.0, 5.0), 1.0);
+        assert_eq!(t_beyond(f64::INFINITY, 5.0), 0.0);
+        assert!(t_beyond(f64::NAN, 5.0).is_finite());
+    }
+
+    /// Two lines' records merged are the line of all of them; what a way holds out is kept
+    /// in the home beside its line, and a home written before the records aged reads as its
+    /// lines with nothing held out.
+    #[test]
+    fn records_held_out_are_kept_and_merge_back() {
+        let (mut all, mut a, mut b) = (Line::default(), Line::default(), Line::default());
+        for i in 0..40u32 {
+            let (x, y) = (f64::from(i % 7) * 1e6, f64::from(i * i % 13) * 1e3);
+            all.add(x, y);
+            if i % 3 == 0 { a.add(x, y) } else { b.add(x, y) }
+        }
+        a.merge(&b);
+        assert_eq!(a.n, all.n);
+        for (p, q) in [
+            (a.x, all.x),
+            (a.y, all.y),
+            (a.xx, all.xx),
+            (a.xy, all.xy),
+            (a.yy, all.yy),
+        ] {
+            assert!((p - q).abs() <= 1e-9 * q.abs().max(1.0), "{p} against {q}");
+        }
+        let home = shards_testdir::TempDir::new("layers-aged").unwrap();
+        let mut restarts = Restarts::default();
+        let ms = |v: f64| std::time::Duration::from_secs_f64(v / 1e3);
+        for (held, took) in [
+            (0, 50.0),
+            (1 << 20, 60.0),
+            (2 << 20, 70.0),
+            (4 << 20, 90.0),
+            (0, 500.0),
+        ] {
+            restarts.record(&home, Restart::Packed, held, ms(took)).unwrap();
+        }
+        assert_eq!(restarts.packed.outside.n, 1);
+        assert_eq!(Restarts::kept_in(&home), restarts);
+        std::fs::write(
+            home.join(RESTARTS),
+            format!("packed {}\nover {}\n", all.encode(), all.encode()),
+        )
+        .unwrap();
+        let old = Restarts::kept_in(&home);
+        assert_eq!((old.packed.line, old.over.line), (all, all));
+        assert_eq!(
+            (old.packed.outside, old.over.outside),
+            (Line::default(), Line::default())
+        );
     }
 
     /// A layer made empty holds nothing past what any of its size holds; one whose blocks a
