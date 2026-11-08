@@ -668,16 +668,23 @@ fn print_bodies_in_term(c: &mut Compiler, t: &mut Term, errs: &mut Vec<CompileEr
 
 /// rewritePrintCalls on one body, its globals `p.safe`.
 fn print_calls(c: &mut Compiler, body: &mut Body, errs: &mut Vec<CompileError>, p: &mut Prints) {
+    // The outputs of the expressions before each one asked about, read on from the last
+    // asked (each expression before is as it will stay by then).
+    let mut before = safety::PrefixOutputs::default();
+    let mut read = 0;
     for i in 0..body.len() {
         if !body.get(i).is_some_and(contains_closures) {
             continue;
         }
         let mark = p.added.len();
-        let outputs = {
+        {
             let arity = arity_of(c);
-            safety::output_vars_for_body_among(body.get(..i).unwrap_or_default(), &arity, &p.safe)
-        };
-        p.add(outputs);
+            for e in body.get(read..i).unwrap_or_default() {
+                before.push(e, &arity, &p.safe);
+            }
+        }
+        read = i;
+        p.add(before.outputs().clone());
         let mut local = Vec::new();
         if let Some(e) = body.get_mut(i) {
             print_closures_in_expr(c, e, &mut local, p);
@@ -688,15 +695,21 @@ fn print_calls(c: &mut Compiler, body: &mut Body, errs: &mut Vec<CompileError>, 
             return;
         }
     }
+    let mut prefix = safety::PrefixOutputs::default();
+    let mut read = 0;
     for i in 0..body.len() {
         if !body.get(i).is_some_and(is_print_call) {
             continue;
         }
-        let before = body.get(..i).unwrap_or_default();
-        let outputs = {
+        {
             let arity = arity_of(c);
-            safety::output_vars_for_body_among(before, &arity, &p.safe)
-        };
+            for e in body.get(read..i).unwrap_or_default() {
+                prefix.push(e, &arity, &p.safe);
+            }
+        }
+        read = i;
+        let before = body.get(..i).unwrap_or_default();
+        let outputs = prefix.outputs();
         let Some(e) = body.get(i) else { continue };
         let loc = e.loc.clone();
         let args: Vec<Term> = match &e.terms {

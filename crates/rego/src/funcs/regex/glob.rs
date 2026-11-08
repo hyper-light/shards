@@ -1076,101 +1076,185 @@ fn glue_as_row(ms: &[M]) -> Option<M> {
     })
 }
 
+/// The separators of a matcher glueMatchersAsEvery takes, if it takes it.
+fn every_sep(m: &M) -> Option<&[u32]> {
+    match m {
+        M::Super => Some(&[]),
+        M::Any(s) | M::Single(s) => Some(s),
+        M::List { list, not: true } => Some(list),
+        _ => None,
+    }
+}
+
+/// What glueMatchersAsEvery reads of the matchers it takes: whether one is an Any, a
+/// Super, a single rune (Single or a negated List), how many are single runes, and the
+/// first's separators, which every other's equal.
+#[derive(Clone, Copy)]
+struct Every<'a> {
+    any: bool,
+    sup: bool,
+    single: bool,
+    min: usize,
+    sep: &'a [u32],
+}
+
+impl<'a> Every<'a> {
+    fn new(sep: &'a [u32]) -> Every<'a> {
+        Every {
+            any: false,
+            sup: false,
+            single: false,
+            min: 0,
+            sep,
+        }
+    }
+
+    /// Takes one more matcher, or says glueMatchersAsEvery takes none with it.
+    fn take(&mut self, m: &M) -> bool {
+        if every_sep(m) != Some(self.sep) {
+            return false;
+        }
+        match m {
+            M::Super => self.sup = true,
+            M::Any(_) => self.any = true,
+            _ => {
+                self.single = true;
+                self.min += 1;
+            }
+        }
+        true
+    }
+
+    /// The length of what [`Every::glued`] makes, without making it.
+    fn len(&self) -> i64 {
+        if (self.sup || self.any) && !self.single && self.sup != self.any {
+            return -1; // Super or Any
+        }
+        if (self.any || self.sup) && self.min > 0 && self.sep.is_empty() {
+            return -1; // Min
+        }
+        // EveryOf, -1 unless it is empty.
+        if self.min > 0 || !self.sep.is_empty() {
+            -1
+        } else {
+            0
+        }
+    }
+
+    fn glued(&self) -> M {
+        let (has_any, has_super, has_single, min) = (self.any, self.sup, self.single, self.min);
+        if has_super && !has_any && !has_single {
+            return M::Super;
+        }
+        if has_any && !has_super && !has_single {
+            return M::Any(self.sep.to_vec());
+        }
+        if (has_any || has_super) && min > 0 && self.sep.is_empty() {
+            return M::Min(min);
+        }
+        let mut every = Vec::new();
+        if min > 0 {
+            every.push(M::Min(min));
+            if !has_any && !has_super {
+                every.push(M::Max(min));
+            }
+        }
+        if !self.sep.is_empty() {
+            let needle: String = self.sep.iter().map(|&r| rune_string(r)).collect();
+            every.push(M::Contains {
+                needle: needle.into_bytes(),
+                not: true,
+            });
+        }
+        M::EveryOf(every)
+    }
+}
+
 fn glue_as_every(ms: &[M]) -> Option<M> {
     if ms.len() <= 1 {
         return None;
     }
-    let (mut has_any, mut has_super, mut has_single) = (false, false, false);
-    let mut min = 0;
-    let mut separator: &[u32] = &[];
-    for (i, m) in ms.iter().enumerate() {
-        let sep: &[u32] = match m {
-            M::Super => {
-                has_super = true;
-                &[]
-            }
-            M::Any(s) => {
-                has_any = true;
-                s
-            }
-            M::Single(s) => {
-                has_single = true;
-                min += 1;
-                s
-            }
-            M::List { list, not: true } => {
-                has_single = true;
-                min += 1;
-                list
-            }
-            _ => return None,
-        };
-        if i == 0 {
-            separator = sep;
-        }
-        if sep != separator {
+    let mut every = Every::new(every_sep(ms.first()?)?);
+    for m in ms {
+        if !every.take(m) {
             return None;
         }
     }
-    if has_super && !has_any && !has_single {
-        return Some(M::Super);
-    }
-    if has_any && !has_super && !has_single {
-        return Some(M::Any(separator.to_vec()));
-    }
-    if (has_any || has_super) && min > 0 && separator.is_empty() {
-        return Some(M::Min(min));
-    }
-    let mut every = Vec::new();
-    if min > 0 {
-        every.push(M::Min(min));
-        if !has_any && !has_super {
-            every.push(M::Max(min));
-        }
-    }
-    if !separator.is_empty() {
-        let needle: String = separator.iter().map(|&r| rune_string(r)).collect();
-        every.push(M::Contains {
-            needle: needle.into_bytes(),
-            not: true,
-        });
-    }
-    Some(M::EveryOf(every))
+    Some(every.glued())
 }
 
+/// minimizeMatchers: the longest run of matchers glueMatchers glues, glued, and again
+/// until no run glues. gobwas glues every run to judge it, reading each matcher's
+/// length again for each run it is in: cubic in the matchers a pattern makes (OPA
+/// v1.14.1 takes 102 s over a glob.match pattern of 12 KB, and this port, which also
+/// copied each run, longer). Here a run's length is two sums' difference, what
+/// glueMatchersAsEvery takes is counted as the run grows, and only the run chosen is
+/// glued: the same runs chosen in the same order, each judged in constant time.
 fn minimize_matchers(ms: Vec<M>) -> Vec<M> {
-    let mut done: Option<M> = None;
-    let (mut left, mut right, mut count) = (0, 0, 0);
-    for l in 0..ms.len() {
-        for r in (l + 1..=ms.len()).rev() {
-            let Some(glued) = ms.get(l..r).and_then(glue) else {
-                continue;
-            };
-            let swap = match &done {
-                None => true,
-                Some(d) => {
-                    let (cl, gl) = (d.len(), glued.len());
-                    (cl > -1 && gl > -1 && gl > cl) || count < r - l
+    let n = ms.len();
+    let lens: Vec<i64> = ms.iter().map(M::len).collect();
+    // sums[i]: the lengths of ms[..i]; fixed_to[i]: where the run of matchers of a
+    // fixed length from i ends.
+    let mut sums = Vec::with_capacity(n + 1);
+    let mut sum = 0i64;
+    sums.push(sum);
+    for l in &lens {
+        sum = sum.saturating_add((*l).max(0));
+        sums.push(sum);
+    }
+    let mut fixed_to = vec![n; n + 1];
+    for i in (0..n).rev() {
+        let next = fixed_to.get(i + 1).copied().unwrap_or(n);
+        if let Some(f) = fixed_to.get_mut(i) {
+            *f = if lens.get(i) == Some(&-1) { i } else { next };
+        }
+    }
+    // every[r]: the length of ms[l..r] glued as every, for the l at hand.
+    let mut every: Vec<Option<i64>> = vec![None; n + 1];
+    let mut done: Option<(usize, usize, i64)> = None;
+    let mut count = 0;
+    for l in 0..n {
+        every.fill(None);
+        if let Some(sep) = ms.get(l).and_then(every_sep) {
+            let mut e = Every::new(sep);
+            for (r, m) in ms.iter().enumerate().skip(l) {
+                if !e.take(m) {
+                    break;
                 }
+                if r > l
+                    && let Some(slot) = every.get_mut(r + 1)
+                {
+                    *slot = Some(e.len());
+                }
+            }
+        }
+        for r in (l + 2..=n).rev() {
+            // glueMatchers: as every, else as a row of fixed lengths.
+            let glued_len = match every.get(r).copied().flatten() {
+                Some(len) => len,
+                None if fixed_to.get(l).is_some_and(|&f| f >= r) => {
+                    sums.get(r).copied().unwrap_or(0) - sums.get(l).copied().unwrap_or(0)
+                }
+                None => continue,
+            };
+            let swap = match done {
+                None => true,
+                Some((_, _, cl)) => (cl > -1 && glued_len > -1 && glued_len > cl) || count < r - l,
             };
             if swap {
-                done = Some(glued);
-                left = l;
-                right = r;
+                done = Some((l, r, glued_len));
                 count = r - l;
             }
         }
     }
-    let Some(done) = done else {
+    let Some(glued) = done.and_then(|(l, r, _)| ms.get(l..r).and_then(glue).map(|g| (l, r, g))) else {
         return ms;
     };
-    let total = ms.len();
+    let (left, right, glued) = glued;
     let mut next: Vec<M> = ms.get(..left).unwrap_or(&[]).to_vec();
-    next.push(done);
-    if right < total {
-        next.extend(ms.get(right..).unwrap_or(&[]).iter().cloned());
-    }
-    if next.len() == total {
+    next.push(glued);
+    next.extend(ms.get(right..).unwrap_or(&[]).iter().cloned());
+    if next.len() == n {
         return next;
     }
     minimize_matchers(next)
@@ -1342,4 +1426,139 @@ pub fn quote_meta(s: &str) -> String {
         out.push(c);
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// minimizeMatchers as gobwas writes it, every run glued to be judged.
+    fn minimize_as_gobwas(ms: Vec<M>) -> Vec<M> {
+        let mut done: Option<M> = None;
+        let (mut left, mut right, mut count) = (0, 0, 0);
+        for l in 0..ms.len() {
+            for r in (l + 1..=ms.len()).rev() {
+                let Some(glued) = ms.get(l..r).and_then(glue) else {
+                    continue;
+                };
+                let swap = match &done {
+                    None => true,
+                    Some(d) => {
+                        let (cl, gl) = (d.len(), glued.len());
+                        (cl > -1 && gl > -1 && gl > cl) || count < r - l
+                    }
+                };
+                if swap {
+                    done = Some(glued);
+                    left = l;
+                    right = r;
+                    count = r - l;
+                }
+            }
+        }
+        let Some(done) = done else {
+            return ms;
+        };
+        let total = ms.len();
+        let mut next: Vec<M> = ms[..left].to_vec();
+        next.push(done);
+        next.extend(ms[right..].iter().cloned());
+        if next.len() == total {
+            return next;
+        }
+        minimize_as_gobwas(next)
+    }
+
+    /// Each pattern node's matchers, as compile_tree hands them to minimize_matchers.
+    fn lists(tree: &Node, sep: &[u32], out: &mut Vec<Vec<M>>) {
+        if tree.kind == Kind::Pattern && !tree.children.is_empty() {
+            out.push(compile_children(tree, sep));
+        }
+        for c in &tree.children {
+            lists(c, sep, out);
+        }
+    }
+
+    /// Patterns of glob's tokens from a fixed seed: runs of each kind of matcher
+    /// glueMatchers takes, texts, ranges, lists and alternatives, nested.
+    fn patterns() -> Vec<String> {
+        let tokens = [
+            "a", "bc", "*", "**", "?", "[!a]", "[!.]", "[a-c]", "[ab]", "{", "}", ",", "\\*", ".", "é",
+        ];
+        let mut x: u64 = 0x9E37_79B9_7F4A_7C15;
+        let mut next = move || {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x
+        };
+        (0..4000)
+            .map(|_| {
+                let n = next() % 24;
+                (0..n)
+                    .map(|_| tokens[(next() % tokens.len() as u64) as usize])
+                    .collect()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn matchers_minimize_as_gobwas_minimizes_them() {
+        let mut checked = 0;
+        for p in patterns() {
+            let Ok(tree) = parse(&p) else { continue };
+            for sep in [&[][..], &['.' as u32][..], &['.' as u32, 'a' as u32][..]] {
+                let mut ls = Vec::new();
+                lists(&tree, sep, &mut ls);
+                for ms in ls {
+                    assert_eq!(
+                        minimize_matchers(ms.clone()),
+                        minimize_as_gobwas(ms),
+                        "{p:?} {sep:?}"
+                    );
+                    checked += 1;
+                }
+            }
+        }
+        assert!(checked > 5000, "{checked}");
+    }
+
+    #[test]
+    fn every_glue_reads_its_length_as_the_glued_matcher_has_it() {
+        for sep in [&[][..], &['.' as u32][..]] {
+            for bits in 0..8u8 {
+                for min in [0, 1, 3] {
+                    let e = Every {
+                        any: bits & 1 != 0,
+                        sup: bits & 2 != 0,
+                        single: bits & 4 != 0,
+                        min,
+                        sep,
+                    };
+                    assert_eq!(e.len(), e.glued().len(), "{bits} {min} {sep:?}");
+                }
+            }
+        }
+    }
+
+    /// `{a}b` n times: 2n texts, which minimizeMatchers glues into one row. OPA v1.14.1
+    /// takes 41 to 45 s over n = 1500, gluing each of its runs to judge it, and this
+    /// port took 141 to 157 s before; now 47 to 49 ms, with the same answer (PM M462).
+    #[test]
+    fn a_pattern_of_many_matchers_compiles_in_time() {
+        if cfg!(debug_assertions) {
+            eprintln!("SKIP: timed in release builds");
+            return;
+        }
+        let n = 1500;
+        let t0 = std::time::Instant::now();
+        let g = compile(&"{a}b".repeat(n), &[]).unwrap();
+        assert!(g.matches("ab".repeat(n).as_bytes()).unwrap());
+        assert!(!g.matches("ab".repeat(n - 1).as_bytes()).unwrap());
+        assert!(
+            t0.elapsed() < std::time::Duration::from_secs(5),
+            "{:?}",
+            t0.elapsed()
+        );
+    }
 }

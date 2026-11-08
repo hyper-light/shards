@@ -56,6 +56,13 @@ impl<T> Clone for Shared<T> {
     }
 }
 
+impl<T> Shared<T> {
+    /// Where the value is: two Shared at one address share it.
+    pub fn addr(&self) -> usize {
+        Rc::as_ptr(&self.0).addr()
+    }
+}
+
 impl<T> std::ops::Deref for Shared<T> {
     type Target = T;
 

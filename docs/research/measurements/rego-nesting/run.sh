@@ -5,10 +5,15 @@
 # so that each peak is the case's own. OPA's deep cases take it minutes to hours a run:
 # they run once, stopped past a deadline or 32 GiB resident, and recorded as such.
 #
-#   docs/research/measurements/rego-nesting/run.sh [N]
+#   docs/research/measurements/rego-nesting/run.sh [N [SHAPE...]]
 #
-# N (default 5) is how many times shards checks each case, after a warm-up.
+# N (default 5) is how many times shards checks each case, after a warm-up; SHAPEs, if
+# named, are the only shapes run.
 set -eu
+only=" $(echo "$@" | cut -s -d' ' -f2-) "
+want() {
+	[ "$only" = "  " ] || case "$only" in *" $1 "*) true ;; *) false ;; esac
+}
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../../../.." && pwd)
 shapes=$root/crates/rego/benches/nesting.json
@@ -48,7 +53,8 @@ for c in every-unused:1000 every-unused:5000 every-unused:20000 every-unused:999
 	rule-wrap:10000 comprehension-nested:10 comprehension-nested:12 \
 	every-comprehension-alternating:16 every-comprehension-alternating:20 \
 	every-declaring-after:1000 every-declaring-after:2000 prints-wide:500 prints-wide:1000 \
-	closures-wide:500 closures-wide:1000; do
+	closures-wide:500 closures-wide:1000 glob-terms:500 glob-terms:1000 glob-terms:1500; do
+	want "${c%%:*}" || continue
 	cargo bench -p shards-rego --bench nesting -- --shape "${c%%:*}" --depth "${c#*:}" --n "$n" 2>/dev/null |
 		grep '^shards-bench ' | sed 's/^shards-bench //'
 done
@@ -61,8 +67,10 @@ for c in every-unused:1000:600 every-unused:5000:1800 every-used:16:600 every-us
 	rule-chain:10000:3600 rule-wrap:2000:600 rule-wrap:10000:1800 comprehension-nested:10:600 \
 	comprehension-nested:12:600 every-comprehension-alternating:12:1800 \
 	every-comprehension-alternating:16:3600 prints-wide:500:1800 prints-wide:1000:3600 \
-	closures-wide:500:1800 closures-wide:1000:3600; do
+	closures-wide:500:1800 closures-wide:1000:3600 glob-terms:500:600 glob-terms:1000:600 \
+	glob-terms:1500:1800; do
 	shape=${c%%:*}
+	want "$shape" || continue
 	rest=${c#*:}
 	depth=${rest%%:*}
 	deadline=${rest#*:}
