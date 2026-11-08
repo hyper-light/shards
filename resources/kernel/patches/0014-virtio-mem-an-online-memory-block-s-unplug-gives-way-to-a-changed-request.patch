@@ -1,0 +1,71 @@
+virtio-mem: an online memory block's unplug gives way to a changed request
+
+A guest giving memory back as its host asks for more again waits for the
+unplug under way to end before it plugs: in shards, 6 of 2,000 grows
+asked for as an unplug went on took 5.1 to 5.4 s, held until the guest's
+agent asked a second time (PM M466). The driver looks for a changed
+request before each request to the device and before each try to take a
+range (virtio_mem_send_unplug_request(), virtio_mem_fake_offline()), and
+goes back to virtio_mem_run_wq() with -EAGAIN to plan again, but never
+inside a try. An online memory block it unplugs whole
+(virtio_mem_sbm_unplug_any_sb_online()) is taken in one
+alloc_contig_range() over all of it, 128 MiB with 4 KiB pages, which
+migrates every page of the range before it returns and stops early only
+for a fatal signal (mm/page_alloc.c, __alloc_contig_migrate_range()),
+which the driver's workqueue never has. A guest short of free memory
+migrates slowly, and the changed request waits for the whole block.
+
+Take the subblocks of an online memory block one at a time, each its own
+virtio_mem_fake_offline(), which looks for a changed request first: on
+one, what was taken goes back to the buddy and the main loop plans
+again. What a changed request waits for is at most one subblock's
+migration: a pageblock or the device's block, whichever is larger, the
+unit virtio_mem_init_hotplug() already finds alloc_contig_range()
+reliable at on ZONE_NORMAL and the one its fallback takes subblocks in.
+A block taken whole is still unplugged in one request and removed with
+its metadata, as before. Big Block Mode, which takes a big block a
+section at a time (virtio_mem_bbm_offline_remove_and_unplug_bb()), is
+left as it is: a device whose block is smaller than a memory block, as
+shards' (2 MiB) is, is driven in Sub Block Mode.
+
+--- a/drivers/virtio/virtio_mem.c
++++ b/drivers/virtio/virtio_mem.c
+@@ -1977,17 +1977,33 @@
+ 					   unsigned long mb_id, int sb_id,
+ 					   int count)
+ {
+-	const unsigned long nr_pages = PFN_DOWN(vm->sbm.sb_size) * count;
++	const unsigned long sb_pages = PFN_DOWN(vm->sbm.sb_size);
++	const unsigned long nr_pages = sb_pages * count;
+ 	const int old_state = virtio_mem_sbm_get_mb_state(vm, mb_id);
+ 	unsigned long start_pfn;
+-	int rc;
++	int rc, i;
+ 
+ 	start_pfn = PFN_DOWN(virtio_mem_mb_id_to_phys(mb_id) +
+ 			     sb_id * vm->sbm.sb_size);
+ 
+-	rc = virtio_mem_fake_offline(vm, start_pfn, nr_pages);
+-	if (rc)
+-		return rc;
++	/*
++	 * Take the subblocks one at a time. alloc_contig_range() migrates
++	 * every page of its range before it returns and stops early only
++	 * for a fatal signal, which a workqueue never has: a whole memory
++	 * block taken in one call holds off a changed request until all of
++	 * it has moved. virtio_mem_fake_offline() looks for a changed config
++	 * before each subblock and returns -EAGAIN, and what was taken so far
++	 * goes back to the buddy for the main loop to plan again.
++	 */
++	for (i = 0; i < count; i++) {
++		rc = virtio_mem_fake_offline(vm, start_pfn + i * sb_pages,
++					     sb_pages);
++		if (rc) {
++			if (i)
++				virtio_mem_fake_online(start_pfn, i * sb_pages);
++			return rc;
++		}
++	}
+ 
+ 	/* Try to unplug the allocated memory */
+ 	rc = virtio_mem_sbm_unplug_sb(vm, mb_id, sb_id, count);
