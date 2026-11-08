@@ -46,6 +46,11 @@ pub const fn gateway_mac(gateway: [u8; 4]) -> [u8; 6] {
     [0x02, 0x42, a, b, c, d]
 }
 
+/// The window its host's memory pressure is measured over (D188; `vmm` platform/pressure.rs,
+/// its PSI trigger's and its other hosts' repeat): a guest that grew less than this ago is
+/// taken for one growing, whatever its host says meanwhile (init plug.rs, PM M466).
+pub const PRESSURE_WINDOW_US: u64 = 2_000_000;
+
 pub mod build;
 pub mod changes;
 pub mod emulate;

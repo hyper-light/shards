@@ -7,11 +7,14 @@
 //! its directory, tests/common `hold`), so that no test prunes it meanwhile.
 //!
 //!     rustc -O --edition 2024 docs/research/measurements/launch-stress/launch.rs -o LAUNCH
-//!     LAUNCH DIR LAUNCHES THREADS [HOME]    (DIR: target/e2e/shards-DIGEST)
+//!     LAUNCH DIR LAUNCHES THREADS [HOME [fresh]]    (DIR: target/e2e/shards-DIGEST)
 //!
 //! With HOME, each launch is a client of the daemon in that home (SHARDS_HOME, which the
 //! first starts), asking it what it holds, as a test's `shards ps` or `pull` does; a
-//! DOCKER_CONFIG of its own, empty, as the tests give theirs.
+//! DOCKER_CONFIG of its own, empty, as the tests give theirs. With `fresh` too, each launch
+//! is the first client of a home of its own under HOME, as a test's first `shards pull` is
+//! (it starts that home's daemon), and `shards stop daemon` then ends that daemon, the
+//! home removed after: both launches counted, the first's as `start`, the stop's as `stop`.
 //!
 //! Prints, at the end: launches, how many exited 0, exited otherwise, and were ended by a
 //! signal (each signal's count), and n, p50, p90, p99 and max of a launch's milliseconds.
@@ -46,6 +49,7 @@ fn main() {
     let launches: u64 = launches.parse().expect("LAUNCHES");
     let threads: u64 = threads.parse().expect("THREADS");
     let home = args.get(4).map(PathBuf::from);
+    let fresh = args.get(5).is_some_and(|a| a == "fresh");
     let config = home.as_ref().map(|h| {
         let c = h.join("docker-config");
         std::fs::create_dir_all(&c).expect("the docker config");
@@ -69,19 +73,26 @@ fn main() {
                         return;
                     }
                     let command = commands[(i % commands.len() as u64) as usize];
+                    let own = fresh.then(|| {
+                        let h = home.as_ref().expect("HOME").join(format!("h{i}"));
+                        std::fs::create_dir_all(&h).expect("a fresh home");
+                        h
+                    });
+                    let launch = |command: &[&str]| {
+                        let mut cmd = Command::new(&shards);
+                        if let (Some(home), Some(config)) = (own.as_ref().or(home.as_ref()), &config) {
+                            cmd.env("SHARDS_HOME", home)
+                                .env("DOCKER_CONFIG", config)
+                                .env("SHARDS_LOCAL_STORE", "none");
+                        }
+                        cmd.args(command)
+                            .stdin(Stdio::null())
+                            .stdout(Stdio::piped())
+                            .stderr(Stdio::piped())
+                            .output()
+                    };
                     let t0 = Instant::now();
-                    let mut cmd = Command::new(&shards);
-                    if let (Some(home), Some(config)) = (&home, &config) {
-                        cmd.env("SHARDS_HOME", home)
-                            .env("DOCKER_CONFIG", config)
-                            .env("SHARDS_LOCAL_STORE", "none");
-                    }
-                    let out = cmd
-                        .args(command)
-                        .stdin(Stdio::null())
-                        .stdout(Stdio::piped())
-                        .stderr(Stdio::piped())
-                        .output();
+                    let out = launch(command);
                     let ms = t0.elapsed().as_secs_f64() * 1000.0;
                     let how = match &out {
                         Err(e) => format!("not launched: {e}"),
@@ -106,8 +117,28 @@ fn main() {
                             started.elapsed().as_secs_f64()
                         );
                     }
+                    let how = if fresh { format!("start {how}") } else { how };
                     *ended.lock().unwrap().entry(how).or_insert(0) += 1;
                     times.lock().unwrap().push(ms);
+                    if let Some(own) = &own {
+                        let t0 = Instant::now();
+                        let stop = launch(&["stop", "daemon"]);
+                        let ms = t0.elapsed().as_secs_f64() * 1000.0;
+                        let how = match &stop {
+                            Err(e) => format!("stop not launched: {e}"),
+                            Ok(o) => match (o.status.code(), o.status.signal()) {
+                                (Some(code), _) => format!("stop exit {code}"),
+                                (None, Some(signal)) => format!("stop signal {signal}"),
+                                (None, None) => "stop neither".to_string(),
+                            },
+                        };
+                        if how != "stop exit 0" {
+                            let stderr = stop.as_ref().map_or(String::new(), |o| String::from_utf8_lossy(&o.stderr).into_owned());
+                            let _ = writeln!(std::io::stderr().lock(), "launch {i} {how} after {ms:.1} ms\n--- stderr\n{stderr}");
+                        }
+                        *ended.lock().unwrap().entry(how).or_insert(0) += 1;
+                        let _ = std::fs::remove_dir_all(own);
+                    }
                 }
             });
         }

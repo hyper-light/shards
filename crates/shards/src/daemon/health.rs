@@ -16,8 +16,9 @@ use std::io::Read as _;
 
 use shards_ipc::Health as Config;
 use shards_ipc::fd::AsFd as _;
+use shards_vmm::platform::Progress;
 
-use super::{RunState, Threads, lock};
+use super::{RunState, TAKE_TIMEOUT, Threads, lock};
 
 /// What dockerd uses where a check leaves a setting at 0.
 const INTERVAL: Duration = Duration::from_secs(30);
@@ -393,9 +394,21 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
         limit: usize,
         timeout: Duration,
     ) -> std::io::Result<Quiet> {
+        self.exec_waiting(id, spec, argv, limit, Wait::For(timeout))
+    }
+
+    /// [`exec_quietly`](Self::exec_quietly), waited for as `wait` says.
+    pub(super) fn exec_waiting(
+        &self,
+        id: &str,
+        spec: &shards_abi::run::Spec,
+        argv: Option<&[String]>,
+        limit: usize,
+        wait: Wait,
+    ) -> std::io::Result<Quiet> {
         let mut output = Vec::with_capacity(limit.min(1 << 16));
         let mut more = false;
-        let ended = self.exec_streamed(id, spec, argv, Some(timeout), &mut |chunk| {
+        let ended = self.exec_followed(id, spec, argv, wait, &mut |chunk| {
             let room = limit.saturating_sub(output.len());
             output.extend_from_slice(chunk.get(..room.min(chunk.len())).unwrap_or_default());
             more |= chunk.len() > room;
@@ -420,6 +433,18 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
         timeout: Option<Duration>,
         sink: &mut (dyn FnMut(&[u8]) -> bool + Send),
     ) -> std::io::Result<Ended> {
+        self.exec_followed(id, spec, argv, timeout.map_or(Wait::Ending, Wait::For), sink)
+    }
+
+    /// [`exec_streamed`](Self::exec_streamed), waited for as `wait` says.
+    fn exec_followed(
+        &self,
+        id: &str,
+        spec: &shards_abi::run::Spec,
+        argv: Option<&[String]>,
+        wait: Wait,
+        sink: &mut (dyn FnMut(&[u8]) -> bool + Send),
+    ) -> std::io::Result<Ended> {
         let (mut out, into) = std::io::pipe()?;
         let null = std::fs::File::open(crate::os::NULL)?;
         let ours = self.send_exec(id, spec, argv, false, [null.as_fd(), into.as_fd(), into.as_fd()])?;
@@ -437,7 +462,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                     }
                 }
             });
-            let ended = await_exit(&ours, timeout);
+            let ended = await_exit(&ours, wait);
             let _ = reader.join();
             ended
         }))
@@ -454,7 +479,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
         stdio: [shards_ipc::fd::BorrowedFd<'_>; 3],
     ) -> std::io::Result<Ended> {
         let ours = self.send_exec(id, spec, None, input, stdio)?;
-        Ok(await_exit(&ours, None))
+        Ok(await_exit(&ours, Wait::Ending))
     }
 
     /// Sends container `id`'s VM an exec of `spec` with `stdio`, logging its events if
@@ -505,10 +530,37 @@ fn kill(conn: &shards_ipc::Stream) {
     let _ = shards_ipc::send(conn, shards_ipc::kind::SIGNAL, &9u32.to_be_bytes(), &[]);
 }
 
-/// Waits on `ours` for an exec's end, killing it once `timeout` (if any) has passed and
-/// waiting on for that.
-fn await_exit(ours: &shards_ipc::Stream, timeout: Option<Duration>) -> Ended {
-    let _ = ours.set_read_timeout(timeout);
+/// How long the daemon waits for the end of an exec of its own.
+#[derive(Debug, Clone, Copy)]
+pub(super) enum Wait {
+    /// Until it ends.
+    Ending,
+    /// This long, then it is ended.
+    For(Duration),
+    /// As long as VM process `.0` runs ([`shards_vmm::platform::progressed`]), judged each
+    /// [`TAKE_TIMEOUT`], and ended once it has run nothing for that long: a microVM its
+    /// host holds at a `memory.high` is slowed there for as long as it is over it, and the
+    /// answer of one asked to give back what would bring it under comes as its host lets
+    /// it run (D188, D209; PM M467).
+    WhileRuns(u32),
+}
+
+/// Waits on `ours` for an exec's end, killing it as `wait` says and waiting on for that.
+fn await_exit(ours: &shards_ipc::Stream, wait: Wait) -> Ended {
+    await_exit_judged(ours, wait, TAKE_TIMEOUT)
+}
+
+/// [`await_exit`], a [`Wait::WhileRuns`] judged each `quiet`.
+fn await_exit_judged(ours: &shards_ipc::Stream, wait: Wait, quiet: Duration) -> Ended {
+    let _ = ours.set_read_timeout(match wait {
+        Wait::Ending => None,
+        Wait::For(timeout) => Some(timeout),
+        Wait::WhileRuns(_) => Some(quiet),
+    });
+    let mut progress = match wait {
+        Wait::WhileRuns(vm) => Some(Progress::of(vm)),
+        Wait::Ending | Wait::For(_) => None,
+    };
     let mut timed_out = false;
     let status = loop {
         match shards_ipc::recv(ours) {
@@ -523,6 +575,9 @@ fn await_exit(ours: &shards_ipc::Stream, timeout: Option<Duration>) -> Ended {
                         std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
                     ) =>
             {
+                if progress.as_mut().is_some_and(|p| p.look().ran) {
+                    continue;
+                }
                 timed_out = true;
                 kill(ours);
                 let _ = ours.set_read_timeout(None);
@@ -536,6 +591,54 @@ fn await_exit(ours: &shards_ipc::Stream, timeout: Option<Duration>) -> Ended {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An exec whose microVM's process runs is waited for past the wait's judging, and one
+    /// whose process runs nothing is ended: its exec told SIGKILL, its end still waited for
+    /// (PM M467).
+    #[cfg(unix)]
+    #[test]
+    fn an_exec_is_waited_for_as_long_as_its_microvm_runs() {
+        let quiet = Duration::from_millis(200);
+        let (ours, theirs) = shards_ipc::Stream::pair().unwrap();
+        let busy = std::sync::atomic::AtomicBool::new(true);
+        let me = std::process::id();
+        std::thread::scope(|s| {
+            s.spawn(|| {
+                while busy.load(Ordering::Relaxed) {
+                    std::hint::spin_loop();
+                }
+            });
+            s.spawn(|| {
+                std::thread::sleep(quiet * 4);
+                shards_ipc::send(&theirs, shards_ipc::kind::EXIT, &[7], &[]).unwrap();
+                busy.store(false, Ordering::Relaxed);
+            });
+            let ended = await_exit_judged(&ours, Wait::WhileRuns(me), quiet);
+            assert_eq!((ended.status, ended.timed_out), (Some(7), false));
+        });
+        let idle = Killed(std::process::Command::new("/bin/sleep").arg("60").spawn().unwrap());
+        let (ours, theirs) = shards_ipc::Stream::pair().unwrap();
+        std::thread::scope(|s| {
+            s.spawn(|| {
+                // The kill the wait sends, then the end it waits on for.
+                let said = shards_ipc::recv(&theirs).unwrap().unwrap();
+                assert_eq!(said.kind, shards_ipc::kind::SIGNAL);
+                shards_ipc::send(&theirs, shards_ipc::kind::EXIT, &[137], &[]).unwrap();
+            });
+            let ended = await_exit_judged(&ours, Wait::WhileRuns(idle.0.id()), quiet);
+            assert_eq!((ended.status, ended.timed_out), (Some(137), true));
+        });
+    }
+
+    /// A child killed as it drops.
+    struct Killed(std::process::Child);
+
+    impl Drop for Killed {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
 
     fn probe(exit_code: i64) -> Probe {
         Probe {

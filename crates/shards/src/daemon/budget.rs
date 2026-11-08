@@ -12,8 +12,10 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Condvar, Mutex, PoisonError};
+use std::time::Instant;
 
-use super::{Daemon, RunState, TAKE_TIMEOUT, Threads, lock, log};
+use super::health::Wait;
+use super::{Daemon, RunState, Threads, lock, log};
 use crate::containers::Disk;
 
 /// The cgroup v2 hierarchy's root, which holds nothing to a budget (cgroup-v2.rst).
@@ -743,7 +745,7 @@ impl<D: Disk> Daemon<D> {
                 asked = true;
                 let before = resident_file(pid);
                 let held_before = room.as_ref().and_then(|(_, level)| self.held_now(level));
-                gave = self.give_back_of(&id);
+                gave = self.give_back_of(&id, Wait::WhileRuns(pid));
                 lock(self.watching_giving()).remove(&vm);
                 // Said with its budget's word below, its own: not its host's shortage,
                 // which says what its pressure had given back at most once a minute.
@@ -774,7 +776,10 @@ impl<D: Disk> Daemon<D> {
         };
         // What it is held within past what it uses, as its init answers (none with no
         // budget): never less than the least room a run goes on in, however short.
-        let held = match self.exec_quietly(&id, &spec, None, 1 << 12, TAKE_TIMEOUT) {
+        let told_at = Instant::now();
+        let quiet = self.exec_waiting(&id, &spec, None, 1 << 12, Wait::WhileRuns(pid));
+        super::reclaim::said_if_long(&id, "telling its microVM its budget's room", told_at.elapsed());
+        let held = match quiet {
             Ok(q) if q.status == Some(0) && !q.timed_out => std::str::from_utf8(&q.output)
                 .ok()
                 .and_then(|o| o.trim().parse::<u64>().ok()),

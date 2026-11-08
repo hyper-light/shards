@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use shards_vmm::platform::PressureWatches;
 
-use super::health::Quiet;
+use super::health::{Quiet, Wait};
 use super::{Daemon, RunState, TAKE_TIMEOUT, Threads, lock, log};
 use crate::containers::Disk;
 use crate::pressure::Pressure;
@@ -183,7 +183,7 @@ impl<D: Disk> Daemon<D> {
                     .name("give-back".into())
                     .spawn_scoped(threads, move || {
                         let before = super::budget::resident_file(pid);
-                        let gave = self.give_back_of(&id);
+                        let gave = self.give_back_of(&id, Wait::WhileRuns(pid));
                         lock(&self.watching.giving).remove(&vm);
                         if let Some(gave) = gave {
                             self.budgets.gave_back(pid, before, gave.freed);
@@ -207,14 +207,17 @@ impl<D: Disk> Daemon<D> {
         self.say_given();
     }
 
-    /// What container `id`'s microVM gave back of what it holds cold, asked through it;
-    /// none where it gave nothing back, and why said.
-    pub(super) fn give_back_of(&self, id: &str) -> Option<Gave> {
+    /// What container `id`'s microVM gave back of what it holds cold, asked through it and
+    /// waited for as `wait` says; none where it gave nothing back, and why said.
+    pub(super) fn give_back_of(&self, id: &str, wait: Wait) -> Option<Gave> {
         let spec = shards_abi::run::Spec {
             builtin: shards_abi::run::builtin::RECLAIM,
             ..Default::default()
         };
-        match self.exec_quietly(id, &spec, None, 64, TAKE_TIMEOUT) {
+        let asked = Instant::now();
+        let quiet = self.exec_waiting(id, &spec, None, 64, wait);
+        said_if_long(id, "giving back what it holds cold", asked.elapsed());
+        match quiet {
             Ok(q) => match given(&q) {
                 Ok(gave) => Some(gave),
                 Err(why) => {
@@ -262,6 +265,15 @@ impl<D: Disk> Daemon<D> {
             said: Some(Instant::now()),
             ..Unsaid::default()
         };
+    }
+}
+
+/// Says that an exec of the daemon's own in container `id` took past [`TAKE_TIMEOUT`]; each
+/// at debug.
+pub(super) fn said_if_long(id: &str, what: &str, took: Duration) {
+    shards_vmm::debug!("container {id}: {what}: answered after {took:?}");
+    if took > TAKE_TIMEOUT {
+        log(format!("container {id}: {what}: answered after {took:?}, its microVM running"));
     }
 }
 
