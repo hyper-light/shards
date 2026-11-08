@@ -3806,6 +3806,7 @@ impl Saying {
     }
 }
 
+#[cfg(unix)]
 impl Drop for Saying {
     fn drop(&mut self) {
         self.0.store(true, std::sync::atomic::Ordering::SeqCst);
