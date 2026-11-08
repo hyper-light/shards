@@ -1,5 +1,5 @@
 //! Docker's seccomp profiles (`docker run --security-opt seccomp=…`), resolved for a
-//! container and compiled to the BPF filter its workload runs under.
+//! run and compiled to the BPF filter its workload runs under.
 //!
 //! A profile is read and resolved as dockerd docker-v29.8.1 does (D42), refused in its words,
 //! and its rules kept as libseccomp keeps them, so that a profile written for Docker means
@@ -18,7 +18,7 @@ pub use compiler::FILTER_FLAG_NEW_LISTENER;
 pub use compiler::{ACT_ALLOW, ACT_KILL_PROCESS, ACT_KILL_THREAD, ACT_LOG, ACT_TRAP, Program, act_errno};
 pub use profile::{Arch, BINDS, Container, DEFAULT, Kernel, MOUNTS};
 
-/// The filter `profile` (a profile's JSON) makes for container `c`, or none where it asks
+/// The filter `profile` (a profile's JSON) makes for run `c`, or none where it asks
 /// for none (no default action and no rules: unconfined).
 pub fn compile(profile: &[u8], c: &Container<'_>) -> Result<Option<Program>, String> {
     let decoded = profile::decode(profile)?;

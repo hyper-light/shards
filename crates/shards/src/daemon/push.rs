@@ -1,4 +1,4 @@
-//! `shards push` as dockerd's containerd store pushes (moby docker-v29.3.1
+//! `shards push image` as dockerd's containerd store pushes (moby docker-v29.3.1
 //! daemon/containerd/image_push.go, PushImage and pushRef) and docker/cli reports it
 //! (cli/command/image/push.go, runPush and handleAux): each tag of the repository, or the
 //! one named; what it resolved to, or, when that is an index not all of whose content is
@@ -42,7 +42,7 @@ pub(super) fn note(text: &str, color: bool) -> String {
 }
 
 impl<D: crate::containers::Disk> super::Daemon<D> {
-    /// `shards push NAME[:TAG]`, `-a` for every tag of the repository; with `--platform`,
+    /// `shards push image NAME[:TAG]`, `-a` for every tag of the repository; with `--platform`,
     /// that platform's microVM of each, pushed as an image of that platform alone (D179):
     /// its manifest, config and layers, under the tag, with no index.
     pub(super) fn push(

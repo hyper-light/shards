@@ -1,7 +1,7 @@
 //! A microVM's I/O limits (D178): the bytes and the requests a second that its devices serve
 //! of the host's storage, its shared directories' (virtio-fs) and its disks' (virtio-blk), at
 //! most. The VMM keeps them, outside the guest: no guest, its root or not, lifts them, where
-//! the limits a container's cgroup sets in the guest are the guest's own to keep (D44).
+//! the limits a run's cgroup sets in the guest are the guest's own to keep (D44).
 //!
 //! Each request is charged as it is served, by each measure's theoretical arrival time
 //! (ITU-T I.371's generic cell rate algorithm): when the requests served so far would have

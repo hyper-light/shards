@@ -42,6 +42,7 @@ mod netproc;
 mod networks;
 mod oidc;
 mod os;
+mod packing;
 mod pressure;
 mod pull;
 mod resources;
@@ -83,7 +84,7 @@ pub(crate) fn shardsd(args: Vec<std::ffi::OsString>) -> ExitCode {
         Some("guest") => guest::guest(args),
         Some("disk") => disk::command(args),
         Some(kind @ ("agent" | "harness" | "mcp")) => agent::command(kind, args),
-        // the VM's broker (`shards run --kernel`, `shards restore`): not for people to run.
+        // the VM's broker (`shards run vm --kernel`, `shards restore vm`): not for people to run.
         #[cfg(target_os = "macos")]
         Some("grants") => grant_answer::broker(),
         // the writer of a restore's working set (`shards restore` on Linux): not for people to run.

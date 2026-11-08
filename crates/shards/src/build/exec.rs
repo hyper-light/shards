@@ -30,7 +30,7 @@ use shards_image::store::{self, Limits, Store, Unpacked};
 use super::builder::{Origin, origin_id};
 
 /// The media type of the layers shards writes: uncompressed, as the store keeps them for
-/// `shards run` to unpack at no cost.
+/// `shards run vm` to unpack at no cost.
 pub const LAYER_TAR: &str = "application/vnd.oci.image.layer.v1.tar";
 
 /// A committed result: its snapshot, the layers that make it, and how the tree they

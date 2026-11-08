@@ -3,7 +3,7 @@
 //! (`take_messages`), and every VM process's end, and its network process's, as it comes
 //! (`Poller::add_exit`). A thread a run would bound the runs the daemon can follow to the
 //! threads a process may have, before memory (PM M89, M90), and wake each of them to look
-//! at its clock. And the removals of `--rm` containers that end, made durable together.
+//! at its clock. And the removals of `--rm` microVMs that end, made durable together.
 
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap};
@@ -26,7 +26,7 @@ use crate::containers::{Disk, Removal};
 /// The token of the followers' own wake socket.
 const WAKE: u64 = 0;
 
-/// A run followed: its container's ID and its inbox, which holds its socket open while the
+/// A run followed: its microVM's ID and its inbox, which holds its socket open while the
 /// poller watches it.
 type Followed = (String, Arc<Mutex<Inbox>>);
 
@@ -66,10 +66,10 @@ pub(super) struct Followers {
     pub(super) runs: Mutex<HashMap<u64, Followed>>,
     /// Each process followed, by its token.
     processes: Mutex<HashMap<u64, Process>>,
-    /// When network processes whose VMs have gone are ended, and containers waiting to
+    /// When network processes whose VMs have gone are ended, and microVMs waiting to
     /// restart start again, by their tokens.
     pub(super) deadlines: Mutex<BinaryHeap<Reverse<(Instant, u64)>>>,
-    /// The containers waiting to restart, by their deadlines' tokens (restart.rs).
+    /// The microVMs waiting to restart, by their deadlines' tokens (restart.rs).
     pub(super) restarts: Mutex<HashMap<u64, String>>,
     next: AtomicU64,
     /// Written to wake the loop; its other end, which the poller watches, read.
@@ -130,7 +130,7 @@ impl Followers {
     }
 }
 
-/// The removals of containers that ended with `--rm`, made durable together by one
+/// The removals of microVMs that ended with `--rm`, made durable together by one
 /// thread: one sync of their directory serves every removal before it.
 #[derive(Default)]
 pub(super) struct Completing {
@@ -167,9 +167,9 @@ impl Completing {
 
 impl<D: Disk> Daemon<D> {
     /// Follows run `id` to its end on the followers' loop, which the first run starts, and
-    /// keeps its container's record: running once the VM says STARTED, exited at its
+    /// keeps its microVM's record: running once the VM says STARTED, exited at its
     /// DONE, or at the VM's end if the VM dies first. A command that never started leaves
-    /// its container created, with the status that says why (moby daemon/start.go). A
+    /// its microVM created, with the status that says why (moby daemon/start.go). A
     /// detached run's client learns whether its command started, and if not, why not, as
     /// `docker run -d` does. Where the poller cannot take it, followed here instead, on
     /// its own.
@@ -259,7 +259,7 @@ impl<D: Disk> Daemon<D> {
                 let Some(token) = overdue else {
                     break;
                 };
-                // A container whose wait to restart is up.
+                // A microVM whose wait to restart is up.
                 let restart = lock(&f.restarts).remove(&token);
                 if let Some(id) = restart {
                     self.restart_due(threads, &id);

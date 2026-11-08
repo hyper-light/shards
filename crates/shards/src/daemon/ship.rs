@@ -1,5 +1,5 @@
 //! A run's log sent where its driver sends it (D163). The run's VM keeps its output in
-//! shards' store, as every run's (D161); the daemon follows the log of each container
+//! shards' store, as every run's (D161); the daemon follows the log of each microVM
 //! whose driver sends it elsewhere, from where it last got to, as `logs -f` follows one,
 //! and sends each line to the driver. So the VM, its guest and its run reach no network
 //! for their log; a driver that falls behind, or is down, holds up nothing but its own
@@ -249,12 +249,12 @@ fn until_done(id: &str, wait: &Wait<'_>, mut f: impl FnMut() -> io::Result<()>) 
 const RETRY_FIRST: Duration = Duration::from_secs(1);
 const RETRY_MOST: Duration = Duration::from_secs(60);
 
-/// Where a container's shipper keeps its place in its log, beside it.
+/// Where a microVM's shipper keeps its place in its log, beside it.
 const CURSOR: &str = "ship";
 const CURSOR_NEW: &str = "ship.new";
 
-/// The shippers running, by container: each one's end, which is told to stop; and the
-/// environments that runs' clients gave, by container, where its driver ships to a cloud
+/// The shippers running, by microVM: each one's end, which is told to stop; and the
+/// environments that runs' clients gave, by microVM, where its driver ships to a cloud
 /// (D168): in memory alone.
 #[derive(Default)]
 pub(super) struct Shipping {
@@ -263,7 +263,7 @@ pub(super) struct Shipping {
 }
 
 impl Shipping {
-    /// Keeps `run`'s client's environment for container `id`'s shipper, where its driver
+    /// Keeps `run`'s client's environment for microVM `id`'s shipper, where its driver
     /// ships to a cloud (AWS's, Google's): the latest client's, which started it.
     pub(super) fn give(&self, id: &str, run: &shards_ipc::Run) {
         if matches!(crate::logging::driver(run), "awslogs" | "gcplogs") {
@@ -271,7 +271,7 @@ impl Shipping {
         }
     }
 
-    /// Lets container `id`'s environment go, as it is removed.
+    /// Lets microVM `id`'s environment go, as it is removed.
     pub(super) fn forget(&self, id: &str) {
         lock(&self.clouds).remove(id);
     }
@@ -783,7 +783,7 @@ fn stopped_within(stop: &UnixStream, also: Option<BorrowedFd<'_>>, wait: Duratio
 }
 
 impl<D: Disk> Daemon<D> {
-    /// Has container `id`'s log sent where its driver says, from where it last got to, on
+    /// Has microVM `id`'s log sent where its driver says, from where it last got to, on
     /// a thread of its own, unless one does it already: as its run starts, and as the
     /// daemon starts, for what the one before it had not sent.
     pub(super) fn ship_soon<'s, 'e>(&'s self, threads: &'s Threads<'s, 'e>, id: &str) {
@@ -945,7 +945,7 @@ impl<D: Disk> Daemon<D> {
         shipped
     }
 
-    /// The driver container `id`'s run sends its log with, if one sends it elsewhere.
+    /// The driver microVM `id`'s run sends its log with, if one sends it elsewhere.
     fn driver_of(&self, id: &str, run: &shards_ipc::Run) -> Result<Option<Box<dyn Driver>>, String> {
         let Some(remote) = crate::logging::remote(run)? else {
             return Ok(None);
@@ -1004,7 +1004,7 @@ impl<D: Disk> Daemon<D> {
                     "its credentials are found with the environment of the client that starts its run, which no daemon keeps: the rest of its log is sent once it is started again",
                 )?;
                 // Its stream: as the options name it, else the run's tag, which is the
-                // container's whole ID unless `tag` says (moby awslogs newStreamConfig).
+                // microVM's whole ID unless `tag` says (moby awslogs newStreamConfig).
                 let stream = match &config.stream {
                     Some(s) => s.clone(),
                     None => crate::logging::tag_or(run, &details.info(), "{{.FullID}}")?,

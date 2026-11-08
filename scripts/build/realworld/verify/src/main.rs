@@ -1,4 +1,4 @@
-//! verify HOME REFERENCE: moves the root filesystem `shards build` wrote for REFERENCE
+//! verify HOME REFERENCE: moves the root filesystem `shards build image` wrote for REFERENCE
 //! aside, has Store::rootfs build it again from the stored layers, and compares bytes.
 use shards_image::reference::Digest;
 use shards_image::store::{Layer, Limits, Store};

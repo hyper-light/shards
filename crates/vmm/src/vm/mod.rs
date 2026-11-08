@@ -135,7 +135,7 @@ pub(crate) struct Hosts<'a> {
     pub net: Option<&'a crate::devices::virtio::net::NetHost>,
     /// Each virtio-fs device's slot, in order (D38).
     pub shares: &'a [crate::devices::virtio::fs::Share],
-    /// The join disk's ranges, which its VM process gives joining containers' images
+    /// The join disk's ranges, which its VM process gives joining runs' images
     /// (D119).
     pub join: Option<&'static crate::devices::virtio::block::Join>,
     /// The join share's slot (D119), which a server of its VM's joiners' volumes fills.
@@ -1114,7 +1114,7 @@ pub struct Config {
     /// virtio-fs devices, each a slot its directory's server is put in (D38).
     pub shares: Vec<crate::devices::virtio::fs::Share>,
     /// A join disk, after the disks: empty until the VM process gives a joining
-    /// container's image a range of it (D119).
+    /// run's image a range of it (D119).
     pub join: Option<&'static crate::devices::virtio::block::Join>,
     /// Virtualization for the guest itself (nested): on arm64 its vCPUs have EL2, so
     /// that its kernel may be a hypervisor (KVM). Refused where the host cannot give it,
@@ -2326,6 +2326,23 @@ pub struct Save {
 pub struct Precopied {
     pub rounds: Vec<(u64, u64, u128)>,
     pub paused_us: u128,
+}
+
+/// How a live move's rounds go, told as they go ([`Handle::precopy`]): so that one waiting
+/// on them follows their progress, never a clock (D209), however slowly its host or its
+/// link carries them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Precopying {
+    /// The stream has carried this many bytes, told each time it has carried another
+    /// round's worth of little left (the `enough` a round may send and be the last).
+    Sent(u64),
+    /// Round `n` ended, its pages and bytes sent, in `us`.
+    Round {
+        n: u32,
+        pages: u64,
+        bytes: u64,
+        us: u128,
+    },
 }
 
 /// What the VM does once its snapshot is written.

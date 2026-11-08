@@ -25,13 +25,28 @@ use crate::identity::{self, Fingerprint, Identity};
 /// The application protocol a shards connection speaks (RFC 7301).
 pub const ALPN: &[u8] = b"shards/1";
 
-/// Longest silence before a connection is taken for dead, with a keep-alive every quarter of
-/// it, as focal's transport keeps its connections (../focal crates/focal-wire transport.rs):
-/// a live peer is heard from several times in each window however late its scheduler runs it,
-/// and a bound as short as a request's deadline lost every connection of a process stalled
-/// for half a second on a loaded host there. A restarted daemon is told sooner, by its
-/// stateless reset (RFC 9000 §10.3).
+/// Longest a connection waits for its handshake, and a stranger for its join (server.rs),
+/// with a keep-alive every quarter of it, as focal's transport keeps its connections
+/// (../focal crates/focal-wire transport.rs): a live peer is heard from several times in each
+/// window however late its scheduler runs it, and a bound as short as a request's deadline
+/// lost every connection of a process stalled for half a second on a loaded host there. A
+/// restarted daemon is told sooner, by its stateless reset (RFC 9000 §10.3). A connection
+/// that has done its handshake is held to [`QUIET`] instead (net.rs, `Liveness`).
 pub const IDLE: Duration = Duration::from_secs(10);
+
+/// Longest an established connection goes unheard before it is taken for dead: its
+/// transport's idle timeout (RFC 9000 §10.1, `max_idle_timeout`), which every packet its peer
+/// sends restarts, each acknowledgment of the bytes it carries among them, so that a
+/// connection lives while its peer is heard and ends this long after it last was. TCP's own
+/// floor for giving up on data it sent and has heard nothing of, RFC 1122 §4.2.3.5's R2, "at
+/// least 100 seconds" (Linux waits 924.6 s by default, ip-sysctl `tcp_retries2`): the TCP
+/// beside a move on a 2.4 GHz Wi-Fi link carried its bytes on where this bound at [`IDLE`]
+/// lost 2 moves of 20 mid-send, one "timed out" here and one "reset by peer" (its daemon
+/// had let it go first, RFC 9000 §10.3), the link working throughout (D176 part 6). Each
+/// move logs the longest silence its connection lived through (`Seen`), the evidence this
+/// bound is held to. The peer's bound counts too, as a connection takes the lesser of the
+/// two (RFC 9000 §10.1): a daemon of an earlier build ends one at [`IDLE`].
+pub const QUIET: Duration = Duration::from_secs(100);
 
 fn provider() -> &'static rustls::crypto::CryptoProvider {
     hyper_quic::crypto::rustls::node_provider()
@@ -49,14 +64,17 @@ fn certified(identity: &Identity) -> Result<CertifiedKey, Error> {
     ))
 }
 
-/// The transport both sides run: idle after [`IDLE`], kept alive four times within it, and only
+/// The transport both sides run: idle after [`QUIET`] unheard, its handshake held to [`IDLE`]
+/// by its driver (net.rs), kept alive four times within [`IDLE`], as RFC 9000 §10.1.2 has an
+/// endpoint that awaits its peer's answer send PINGs to defer its peer's idle timeout (and
+/// more often than the 30 s it finds most middleboxes keep a UDP flow's state for), and only
 /// the streams the protocol has, bidirectional ones a client opens, a command or a join each.
 /// A peer may open no stream the other would not read (RFC 9000 §4.6), whose bytes its side
 /// would hold: none one way, and none of a client's. A daemon's clients may have quinn-proto's
 /// 100 open at once.
 fn transport(serves: bool) -> Result<TransportConfig, Error> {
     let mut transport = TransportConfig::default();
-    let idle = IdleTimeout::try_from(IDLE).map_err(|_| Error::new("an idle bound QUIC cannot carry"))?;
+    let idle = IdleTimeout::try_from(QUIET).map_err(|_| Error::new("an idle bound QUIC cannot carry"))?;
     transport.max_idle_timeout(Some(idle));
     transport.keep_alive_interval(Some(IDLE / 4));
     transport.max_concurrent_uni_streams(VarInt::from_u32(0));

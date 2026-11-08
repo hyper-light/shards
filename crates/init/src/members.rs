@@ -1,4 +1,4 @@
-//! The containers a microVM's own engine makes, as members of the microVM's switch
+//! The joiners a microVM's own engine makes, as members of the microVM's switch
 //! (D181), each as each of the image's agents is (D59, D61): a network namespace of its
 //! own, linked to the switch through a gate of its own, known by its link and never by an
 //! address it could claim, granted what it declares and nothing else.

@@ -1,0 +1,917 @@
+host fedora; Fedora Linux 44 (KDE Plasma Desktop Edition); kernel 6.19.10-300.fc44.x86_64; x86_64; Intel(R) Core(TM) i9-14900HX; shards 2f82adb6; memory 64018 MiB; cpus 32
+builds rust,npm,apt; rounds 5; home /home/adalundhe/builder-pressure/home; bases each Dockerfiles own
+phase t=1794095294.497 round=0 build=rust arm=free step=- name=start
+phase t=1794095294.505 round=0 build=rust arm=free step=3 name=plan
+phase t=1794095294.718 round=0 build=rust arm=free step=4 name=op
+phase t=1794095295.412 round=0 build=rust arm=free step=5 name=cache-take
+phase t=1794095295.412 round=0 build=rust arm=free step=5 name=cache-attach
+give t=1794095296.507 round=0 build=rust arm=free answered_ms=1 freed=389120 unplugging=0
+phase t=1794095296.878 round=0 build=rust arm=free step=5 name=run
+keep t=1794095296.887 round=0 build=rust arm=free step=5 bytes=4096 sync_ms=5
+merge t=1794095296.907 round=0 build=rust arm=free step=5 layers=2 bytes=4096 write_ms=0 sync_ms=4
+keep t=1794095296.930 round=0 build=rust arm=free step=5 bytes=8192 sync_ms=6
+merge t=1794095296.951 round=0 build=rust arm=free step=5 layers=2 bytes=8192 write_ms=0 sync_ms=5
+phase t=1794095296.967 round=0 build=rust arm=free step=5 name=cache-keep
+phase t=1794095296.967 round=0 build=rust arm=free step=5 name=step
+phase t=1794095296.991 round=0 build=rust arm=free step=5 name=layer
+phase t=1794095297.017 round=0 build=rust arm=free step=5 name=blob
+phase t=1794095297.029 round=0 build=rust arm=free step=5 name=op
+phase t=1794095297.029 round=0 build=rust arm=free step=5 name=drop
+phase t=1794095297.942 round=0 build=rust arm=free step=5 name=rootfs-from-snapshot
+phase t=1794095297.988 round=0 build=rust arm=free step=5 name=end
+build round=0 build=rust arm=free exit=0 s=3.6 budget=0 scope_anon_peak=193212416 scope_held_peak=375199744 scope_need_peak=371439616 held_cold=3760128 sync_s=0.6 writer_seen=0 writer_file_peak=0 writer_dirty_peak=0 steps=1:0.0,2:0.0,3:0.0,4:0.2,5:2.3,6:0.2
+phase t=1794095298.371 round=0 build=rust arm=held step=- name=start
+phase t=1794095298.378 round=0 build=rust arm=held step=3 name=plan
+phase t=1794095298.412 round=0 build=rust arm=held step=4 name=op
+phase t=1794095298.844 round=0 build=rust arm=held step=5 name=cache-take
+phase t=1794095298.844 round=0 build=rust arm=held step=5 name=cache-attach
+phase t=1794095300.142 round=0 build=rust arm=held step=5 name=run
+keep t=1794095300.157 round=0 build=rust arm=held step=5 bytes=4096 sync_ms=7
+merge t=1794095300.188 round=0 build=rust arm=held step=5 layers=2 bytes=4096 write_ms=0 sync_ms=10
+keep t=1794095300.210 round=0 build=rust arm=held step=5 bytes=8192 sync_ms=5
+merge t=1794095300.232 round=0 build=rust arm=held step=5 layers=2 bytes=8192 write_ms=0 sync_ms=5
+phase t=1794095300.247 round=0 build=rust arm=held step=5 name=cache-keep
+phase t=1794095300.247 round=0 build=rust arm=held step=5 name=step
+phase t=1794095300.265 round=0 build=rust arm=held step=5 name=layer
+phase t=1794095300.289 round=0 build=rust arm=held step=5 name=blob
+phase t=1794095300.304 round=0 build=rust arm=held step=5 name=op
+phase t=1794095300.304 round=0 build=rust arm=held step=5 name=drop
+give t=1794095300.409 round=0 build=rust arm=held answered_ms=0 freed=3084288 unplugging=0
+give t=1794095300.412 round=0 build=rust arm=held held_ms=3 within=66844921856
+phase t=1794095301.383 round=0 build=rust arm=held step=5 name=rootfs-from-snapshot
+phase t=1794095301.474 round=0 build=rust arm=held step=5 name=end
+build round=0 build=rust arm=held exit=0 s=3.2 budget=67128651776 scope_anon_peak=199151616 scope_held_peak=284247040 scope_need_peak=281281536 held_cold=17289216 sync_s=0.2 writer_seen=3 writer_file_peak=70893568 writer_dirty_peak=30097408 steps=1:0.0,2:0.0,3:0.0,4:0.0,5:1.9,6:0.2
+phase t=1794095301.752 round=0 build=npm arm=free step=- name=start
+phase t=1794095301.754 round=0 build=npm arm=free step=3 name=plan
+phase t=1794095301.968 round=0 build=npm arm=free step=4 name=op
+phase t=1794095302.002 round=0 build=npm arm=free step=6 name=op
+phase t=1794095302.445 round=0 build=npm arm=free step=8 name=cache-take
+phase t=1794095302.445 round=0 build=npm arm=free step=8 name=cache-attach
+give t=1794095304.508 round=0 build=npm arm=free answered_ms=4 freed=19128320 unplugging=134217728
+phase t=1794095306.053 round=0 build=npm arm=free step=8 name=run
+keep t=1794095306.065 round=0 build=npm arm=free step=8 bytes=90112 sync_ms=6
+phase t=1794095306.086 round=0 build=npm arm=free step=8 name=cache-keep
+phase t=1794095306.087 round=0 build=npm arm=free step=8 name=step
+phase t=1794095306.172 round=0 build=npm arm=free step=8 name=layer
+phase t=1794095306.229 round=0 build=npm arm=free step=8 name=blob
+phase t=1794095306.250 round=0 build=npm arm=free step=8 name=op
+phase t=1794095306.250 round=0 build=npm arm=free step=8 name=drop
+phase t=1794095309.591 round=0 build=npm arm=free step=8 name=rootfs-from-snapshot
+phase t=1794095309.705 round=0 build=npm arm=free step=8 name=end
+build round=0 build=npm arm=free exit=0 s=8.0 budget=0 scope_anon_peak=818655232 scope_held_peak=846507008 scope_need_peak=846507008 held_cold=20176896 sync_s=0.2 writer_seen=0 writer_file_peak=0 writer_dirty_peak=0 steps=1:0.0,2:0.0,3:0.0,4:0.2,6:0.0,8:4.2,9:0.7
+phase t=1794095310.067 round=0 build=npm arm=held step=- name=start
+phase t=1794095310.071 round=0 build=npm arm=held step=3 name=plan
+phase t=1794095310.096 round=0 build=npm arm=held step=4 name=op
+phase t=1794095310.136 round=0 build=npm arm=held step=6 name=op
+phase t=1794095310.579 round=0 build=npm arm=held step=8 name=cache-take
+phase t=1794095310.579 round=0 build=npm arm=held step=8 name=cache-attach
+give t=1794095312.583 round=0 build=npm arm=held held_ms=2 within=67004018688
+phase t=1794095313.437 round=0 build=npm arm=held step=8 name=run
+keep t=1794095313.444 round=0 build=npm arm=held step=8 bytes=90112 sync_ms=4
+merge t=1794095313.460 round=0 build=npm arm=held step=8 layers=2 bytes=172032 write_ms=0 sync_ms=5
+phase t=1794095313.473 round=0 build=npm arm=held step=8 name=cache-keep
+phase t=1794095313.473 round=0 build=npm arm=held step=8 name=step
+phase t=1794095313.528 round=0 build=npm arm=held step=8 name=layer
+phase t=1794095313.575 round=0 build=npm arm=held step=8 name=blob
+phase t=1794095313.584 round=0 build=npm arm=held step=8 name=op
+phase t=1794095313.584 round=0 build=npm arm=held step=8 name=drop
+give t=1794095314.586 round=0 build=npm arm=held held_ms=2 within=66403368960
+give t=1794095314.618 round=0 build=npm arm=held answered_ms=3 freed=25350144 unplugging=268435456
+give t=1794095314.621 round=0 build=npm arm=held held_ms=6 within=66454515712
+phase t=1794095316.399 round=0 build=npm arm=held step=8 name=rootfs-from-snapshot
+phase t=1794095316.451 round=0 build=npm arm=held step=8 name=end
+build round=0 build=npm arm=held exit=0 s=6.5 budget=67128651776 scope_anon_peak=821202944 scope_held_peak=847605760 scope_need_peak=822378496 held_cold=25227264 sync_s=0.3 writer_seen=6 writer_file_peak=541749248 writer_dirty_peak=346157056 steps=1:0.0,2:0.0,3:0.0,4:0.0,6:0.0,8:3.4,9:0.5
+phase t=1794095316.789 round=0 build=apt arm=free step=- name=start
+phase t=1794095316.790 round=0 build=apt arm=free step=3 name=plan
+phase t=1794095316.888 round=0 build=apt arm=free step=4 name=op
+phase t=1794095317.278 round=0 build=apt arm=free step=5 name=cache-take
+phase t=1794095317.279 round=0 build=apt arm=free step=5 name=cache-attach
+phase t=1794095317.372 round=0 build=apt arm=free step=5 name=run
+phase t=1794095317.372 round=0 build=apt arm=free step=5 name=cache-keep
+phase t=1794095317.372 round=0 build=apt arm=free step=5 name=step
+phase t=1794095317.372 round=0 build=apt arm=free step=5 name=layer
+phase t=1794095317.379 round=0 build=apt arm=free step=5 name=blob
+phase t=1794095317.389 round=0 build=apt arm=free step=5 name=op
+phase t=1794095317.389 round=0 build=apt arm=free step=6 name=cache-take
+phase t=1794095317.389 round=0 build=apt arm=free step=6 name=cache-attach
+give t=1794095318.713 round=0 build=apt arm=free answered_ms=1 freed=0 unplugging=0
+give t=1794095320.762 round=0 build=apt arm=free answered_ms=2 freed=32583680 unplugging=0
+phase t=1794095328.407 round=0 build=apt arm=free step=6 name=run
+keep t=1794095329.379 round=0 build=apt arm=free step=6 bytes=89600000 sync_ms=55
+merge t=1794095329.574 round=0 build=apt arm=free step=6 layers=2 bytes=199974912 write_ms=103 sync_ms=70
+keep t=1794095329.599 round=0 build=apt arm=free step=6 bytes=847872 sync_ms=4
+merge t=1794095329.619 round=0 build=apt arm=free step=6 layers=2 bytes=851968 write_ms=1 sync_ms=8
+phase t=1794095329.630 round=0 build=apt arm=free step=6 name=cache-keep
+phase t=1794095329.630 round=0 build=apt arm=free step=6 name=step
+phase t=1794095330.006 round=0 build=apt arm=free step=6 name=layer
+phase t=1794095330.187 round=0 build=apt arm=free step=6 name=blob
+phase t=1794095330.194 round=0 build=apt arm=free step=6 name=op
+phase t=1794095330.194 round=0 build=apt arm=free step=6 name=drop
+phase t=1794095342.615 round=0 build=apt arm=free step=6 name=rootfs-from-snapshot
+phase t=1794095342.691 round=0 build=apt arm=free step=6 name=end
+build round=0 build=apt arm=free exit=0 s=26.0 budget=0 scope_anon_peak=1007054848 scope_held_peak=1114804224 scope_need_peak=1060536320 held_cold=120000512 sync_s=0.2 writer_seen=0 writer_file_peak=0 writer_dirty_peak=0 steps=1:0.0,2:0.0,3:0.0,4:0.1,5:0.5,6:12.8,7:0.7
+phase t=1794095343.910 round=0 build=apt arm=held step=- name=start
+phase t=1794095343.916 round=0 build=apt arm=held step=3 name=plan
+phase t=1794095343.925 round=0 build=apt arm=held step=4 name=op
+phase t=1794095344.298 round=0 build=apt arm=held step=5 name=cache-take
+phase t=1794095344.298 round=0 build=apt arm=held step=5 name=cache-attach
+phase t=1794095344.346 round=0 build=apt arm=held step=5 name=run
+phase t=1794095344.346 round=0 build=apt arm=held step=5 name=cache-keep
+phase t=1794095344.346 round=0 build=apt arm=held step=5 name=step
+phase t=1794095344.346 round=0 build=apt arm=held step=5 name=layer
+phase t=1794095344.350 round=0 build=apt arm=held step=5 name=blob
+phase t=1794095344.357 round=0 build=apt arm=held step=5 name=op
+phase t=1794095344.357 round=0 build=apt arm=held step=6 name=cache-take
+phase t=1794095344.357 round=0 build=apt arm=held step=6 name=cache-attach
+give t=1794095344.573 round=0 build=apt arm=held answered_ms=5 freed=73728 unplugging=0
+give t=1794095344.577 round=0 build=apt arm=held held_ms=10 within=67004993536
+give t=1794095346.580 round=0 build=apt arm=held held_ms=3 within=66792681472
+give t=1794095346.616 round=0 build=apt arm=held answered_ms=1 freed=25968640 unplugging=0
+give t=1794095346.618 round=0 build=apt arm=held held_ms=3 within=66792321024
+give t=1794095348.622 round=0 build=apt arm=held held_ms=3 within=66625044480
+give t=1794095350.625 round=0 build=apt arm=held held_ms=3 within=66265608192
+give t=1794095352.629 round=0 build=apt arm=held held_ms=3 within=66141224960
+give t=1794095354.632 round=0 build=apt arm=held held_ms=3 within=66121224192
+phase t=1794095354.847 round=0 build=apt arm=held step=6 name=run
+keep t=1794095355.403 round=0 build=apt arm=held step=6 bytes=89600000 sync_ms=49
+merge t=1794095355.585 round=0 build=apt arm=held step=6 layers=2 bytes=199974912 write_ms=87 sync_ms=85
+keep t=1794095355.607 round=0 build=apt arm=held step=6 bytes=241664 sync_ms=3
+phase t=1794095355.620 round=0 build=apt arm=held step=6 name=cache-keep
+phase t=1794095355.620 round=0 build=apt arm=held step=6 name=step
+phase t=1794095355.848 round=0 build=apt arm=held step=6 name=layer
+phase t=1794095355.997 round=0 build=apt arm=held step=6 name=blob
+phase t=1794095356.004 round=0 build=apt arm=held step=6 name=op
+phase t=1794095356.005 round=0 build=apt arm=held step=6 name=drop
+give t=1794095356.638 round=0 build=apt arm=held held_ms=5 within=66079309824
+give t=1794095358.641 round=0 build=apt arm=held held_ms=3 within=66216304640
+give t=1794095360.645 round=0 build=apt arm=held held_ms=3 within=66216292352
+give t=1794095362.649 round=0 build=apt arm=held held_ms=3 within=66216255488
+give t=1794095364.651 round=0 build=apt arm=held held_ms=2 within=66215997440
+give t=1794095366.655 round=0 build=apt arm=held held_ms=3 within=66218061824
+phase t=1794095368.164 round=0 build=apt arm=held step=6 name=rootfs-from-snapshot
+phase t=1794095368.214 round=0 build=apt arm=held step=6 name=end
+build round=0 build=apt arm=held exit=0 s=24.4 budget=67128651776 scope_anon_peak=982999040 scope_held_peak=1048704000 scope_need_peak=1020883968 held_cold=77889536 sync_s=1.1 writer_seen=23 writer_file_peak=1140326400 writer_dirty_peak=162041856 steps=1:0.0,2:0.0,3:0.0,4:0.0,5:0.4,6:11.6,7:0.5
+phase t=1794095368.638 round=1 build=rust arm=free step=- name=start
+phase t=1794095368.640 round=1 build=rust arm=free step=3 name=plan
+phase t=1794095368.762 round=1 build=rust arm=free step=4 name=op
+phase t=1794095369.126 round=1 build=rust arm=free step=5 name=cache-take
+phase t=1794095369.127 round=1 build=rust arm=free step=5 name=cache-attach
+phase t=1794095370.302 round=1 build=rust arm=free step=5 name=run
+keep t=1794095370.312 round=1 build=rust arm=free step=5 bytes=4096 sync_ms=3
+merge t=1794095370.325 round=1 build=rust arm=free step=5 layers=2 bytes=4096 write_ms=0 sync_ms=2
+keep t=1794095370.337 round=1 build=rust arm=free step=5 bytes=8192 sync_ms=2
+merge t=1794095370.350 round=1 build=rust arm=free step=5 layers=2 bytes=8192 write_ms=0 sync_ms=3
+phase t=1794095370.359 round=1 build=rust arm=free step=5 name=cache-keep
+phase t=1794095370.359 round=1 build=rust arm=free step=5 name=step
+phase t=1794095370.380 round=1 build=rust arm=free step=5 name=layer
+phase t=1794095370.399 round=1 build=rust arm=free step=5 name=blob
+phase t=1794095370.406 round=1 build=rust arm=free step=5 name=op
+phase t=1794095370.406 round=1 build=rust arm=free step=5 name=drop
+phase t=1794095371.226 round=1 build=rust arm=free step=5 name=rootfs-from-snapshot
+phase t=1794095371.256 round=1 build=rust arm=free step=5 name=end
+build round=1 build=rust arm=free exit=0 s=2.7 budget=0 scope_anon_peak=195829760 scope_held_peak=282002432 scope_need_peak=279036928 held_cold=2965504 sync_s=0.3 writer_seen=0 writer_file_peak=0 writer_dirty_peak=0 steps=1:0.0,2:0.0,3:0.0,4:0.1,5:1.6,6:0.1
+phase t=1794095371.420 round=1 build=rust arm=held step=- name=start
+phase t=1794095371.426 round=1 build=rust arm=held step=3 name=plan
+phase t=1794095371.458 round=1 build=rust arm=held step=4 name=op
+phase t=1794095371.832 round=1 build=rust arm=held step=5 name=cache-take
+phase t=1794095371.832 round=1 build=rust arm=held step=5 name=cache-attach
+give t=1794095372.474 round=1 build=rust arm=held answered_ms=1 freed=4046848 unplugging=0
+give t=1794095372.476 round=1 build=rust arm=held held_ms=3 within=72302592
+phase t=1794095372.850 round=1 build=rust arm=held step=5 name=run
+keep t=1794095372.859 round=1 build=rust arm=held step=5 bytes=4096 sync_ms=2
+merge t=1794095372.870 round=1 build=rust arm=held step=5 layers=2 bytes=4096 write_ms=0 sync_ms=2
+keep t=1794095372.881 round=1 build=rust arm=held step=5 bytes=8192 sync_ms=2
+merge t=1794095372.891 round=1 build=rust arm=held step=5 layers=2 bytes=8192 write_ms=0 sync_ms=2
+phase t=1794095372.899 round=1 build=rust arm=held step=5 name=cache-keep
+phase t=1794095372.899 round=1 build=rust arm=held step=5 name=step
+phase t=1794095372.916 round=1 build=rust arm=held step=5 name=layer
+phase t=1794095372.937 round=1 build=rust arm=held step=5 name=blob
+phase t=1794095372.943 round=1 build=rust arm=held step=5 name=op
+phase t=1794095372.943 round=1 build=rust arm=held step=5 name=drop
+phase t=1794095373.847 round=1 build=rust arm=held step=5 name=rootfs-from-snapshot
+phase t=1794095373.872 round=1 build=rust arm=held step=5 name=end
+build round=1 build=rust arm=held exit=0 s=2.6 budget=281281536 scope_anon_peak=198279168 scope_held_peak=281581568 scope_need_peak=278546432 held_cold=3039232 sync_s=0.1 writer_seen=2 writer_file_peak=65470464 writer_dirty_peak=33243136 steps=1:0.0,2:0.0,3:0.0,4:0.0,5:1.5,6:0.1
+phase t=1794095374.019 round=1 build=npm arm=free step=- name=start
+phase t=1794095374.021 round=1 build=npm arm=free step=3 name=plan
+phase t=1794095374.042 round=1 build=npm arm=free step=4 name=op
+phase t=1794095374.069 round=1 build=npm arm=free step=6 name=op
+phase t=1794095374.464 round=1 build=npm arm=free step=8 name=cache-take
+phase t=1794095374.465 round=1 build=npm arm=free step=8 name=cache-attach
+give t=1794095376.514 round=1 build=npm arm=free answered_ms=10 freed=21544960 unplugging=0
+phase t=1794095377.105 round=1 build=npm arm=free step=8 name=run
+keep t=1794095377.115 round=1 build=npm arm=free step=8 bytes=90112 sync_ms=3
+merge t=1794095377.126 round=1 build=npm arm=free step=8 layers=2 bytes=253952 write_ms=0 sync_ms=3
+phase t=1794095377.134 round=1 build=npm arm=free step=8 name=cache-keep
+phase t=1794095377.134 round=1 build=npm arm=free step=8 name=step
+phase t=1794095377.214 round=1 build=npm arm=free step=8 name=layer
+phase t=1794095377.264 round=1 build=npm arm=free step=8 name=blob
+phase t=1794095377.269 round=1 build=npm arm=free step=8 name=op
+phase t=1794095377.269 round=1 build=npm arm=free step=8 name=drop
+phase t=1794095379.977 round=1 build=npm arm=free step=8 name=rootfs-from-snapshot
+phase t=1794095380.014 round=1 build=npm arm=free step=8 name=end
+build round=1 build=npm arm=free exit=0 s=6.1 budget=0 scope_anon_peak=783458304 scope_held_peak=810409984 scope_need_peak=810381312 held_cold=25214976 sync_s=0.0 writer_seen=0 writer_file_peak=0 writer_dirty_peak=0 steps=1:0.0,2:0.0,3:0.0,4:0.0,6:0.0,8:3.2,9:0.5
+phase t=1794095380.192 round=1 build=npm arm=held step=- name=start
+phase t=1794095380.197 round=1 build=npm arm=held step=3 name=plan
+phase t=1794095380.218 round=1 build=npm arm=held step=4 name=op
+phase t=1794095380.253 round=1 build=npm arm=held step=6 name=op
+phase t=1794095380.641 round=1 build=npm arm=held step=8 name=cache-take
+phase t=1794095380.642 round=1 build=npm arm=held step=8 name=cache-attach
+give t=1794095382.467 round=1 build=npm arm=held answered_ms=12 freed=19697664 unplugging=0
+give t=1794095382.470 round=1 build=npm arm=held held_ms=14 within=51240960
+phase t=1794095382.933 round=1 build=npm arm=held step=8 name=run
+keep t=1794095382.940 round=1 build=npm arm=held step=8 bytes=90112 sync_ms=3
+phase t=1794095382.950 round=1 build=npm arm=held step=8 name=cache-keep
+phase t=1794095382.950 round=1 build=npm arm=held step=8 name=step
+phase t=1794095383.025 round=1 build=npm arm=held step=8 name=layer
+phase t=1794095383.072 round=1 build=npm arm=held step=8 name=blob
+phase t=1794095383.077 round=1 build=npm arm=held step=8 name=op
+phase t=1794095383.077 round=1 build=npm arm=held step=8 name=drop
+give t=1794095384.473 round=1 build=npm arm=held held_ms=3 within=10747904
+give t=1794095384.505 round=1 build=npm arm=held answered_ms=1 freed=131072 unplugging=268435456
+give t=1794095384.508 round=1 build=npm arm=held held_ms=4 within=162668544
+phase t=1794095385.589 round=1 build=npm arm=held step=8 name=rootfs-from-snapshot
+phase t=1794095385.618 round=1 build=npm arm=held step=8 name=end
+build round=1 build=npm arm=held exit=0 s=5.5 budget=822378496 scope_anon_peak=790327296 scope_held_peak=817120256 scope_need_peak=817091584 held_cold=7421952 sync_s=0.1 writer_seen=5 writer_file_peak=346898432 writer_dirty_peak=234741760 steps=1:0.0,2:0.0,3:0.0,4:0.0,6:0.0,8:2.8,9:0.5
+phase t=1794095385.966 round=1 build=apt arm=free step=- name=start
+phase t=1794095385.968 round=1 build=apt arm=free step=3 name=plan
+phase t=1794095385.977 round=1 build=apt arm=free step=4 name=op
+phase t=1794095386.330 round=1 build=apt arm=free step=5 name=cache-take
+phase t=1794095386.330 round=1 build=apt arm=free step=5 name=cache-attach
+phase t=1794095386.372 round=1 build=apt arm=free step=5 name=run
+phase t=1794095386.372 round=1 build=apt arm=free step=5 name=cache-keep
+phase t=1794095386.372 round=1 build=apt arm=free step=5 name=step
+phase t=1794095386.372 round=1 build=apt arm=free step=5 name=layer
+phase t=1794095386.376 round=1 build=apt arm=free step=5 name=blob
+phase t=1794095386.383 round=1 build=apt arm=free step=5 name=op
+phase t=1794095386.383 round=1 build=apt arm=free step=6 name=cache-take
+phase t=1794095386.383 round=1 build=apt arm=free step=6 name=cache-attach
+give t=1794095386.488 round=1 build=apt arm=free answered_ms=0 freed=0 unplugging=0
+give t=1794095388.536 round=1 build=apt arm=free answered_ms=0 freed=376832 unplugging=0
+phase t=1794095398.435 round=1 build=apt arm=free step=6 name=run
+keep t=1794095398.615 round=1 build=apt arm=free step=6 bytes=89600000 sync_ms=53
+merge t=1794095398.806 round=1 build=apt arm=free step=6 layers=2 bytes=199974912 write_ms=102 sync_ms=80
+keep t=1794095398.830 round=1 build=apt arm=free step=6 bytes=241664 sync_ms=4
+merge t=1794095398.845 round=1 build=apt arm=free step=6 layers=3 bytes=851968 write_ms=1 sync_ms=3
+phase t=1794095398.856 round=1 build=apt arm=free step=6 name=cache-keep
+phase t=1794095398.856 round=1 build=apt arm=free step=6 name=step
+phase t=1794095399.233 round=1 build=apt arm=free step=6 name=layer
+phase t=1794095399.439 round=1 build=apt arm=free step=6 name=blob
+phase t=1794095399.445 round=1 build=apt arm=free step=6 name=op
+phase t=1794095399.445 round=1 build=apt arm=free step=6 name=drop
+phase t=1794095412.150 round=1 build=apt arm=free step=6 name=rootfs-from-snapshot
+phase t=1794095412.205 round=1 build=apt arm=free step=6 name=end
+build round=1 build=apt arm=free exit=0 s=26.3 budget=0 scope_anon_peak=1013800960 scope_held_peak=1081221120 scope_need_peak=1024856064 held_cold=70529024 sync_s=0.3 writer_seen=0 writer_file_peak=0 writer_dirty_peak=0 steps=1:0.0,2:0.0,3:0.0,4:0.0,5:0.4,6:13.1,7:0.7
+phase t=1794095412.656 round=1 build=apt arm=held step=- name=start
+phase t=1794095412.662 round=1 build=apt arm=held step=3 name=plan
+phase t=1794095412.672 round=1 build=apt arm=held step=4 name=op
+phase t=1794095413.044 round=1 build=apt arm=held step=5 name=cache-take
+phase t=1794095413.044 round=1 build=apt arm=held step=5 name=cache-attach
+phase t=1794095413.108 round=1 build=apt arm=held step=5 name=run
+phase t=1794095413.108 round=1 build=apt arm=held step=5 name=cache-keep
+phase t=1794095413.108 round=1 build=apt arm=held step=5 name=step
+phase t=1794095413.108 round=1 build=apt arm=held step=5 name=layer
+phase t=1794095413.111 round=1 build=apt arm=held step=5 name=blob
+phase t=1794095413.117 round=1 build=apt arm=held step=5 name=op
+phase t=1794095413.117 round=1 build=apt arm=held step=6 name=cache-take
+phase t=1794095413.118 round=1 build=apt arm=held step=6 name=cache-attach
+give t=1794095414.584 round=1 build=apt arm=held answered_ms=1 freed=409600 unplugging=0
+give t=1794095414.587 round=1 build=apt arm=held held_ms=3 within=738193408
+give t=1794095416.593 round=1 build=apt arm=held held_ms=5 within=529477632
+give t=1794095418.559 round=1 build=apt arm=held answered_ms=6 freed=93618176 unplugging=0
+give t=1794095418.562 round=1 build=apt arm=held held_ms=10 within=136036352
+give t=1794095420.566 round=1 build=apt arm=held held_ms=3 within=78520320
+give t=1794095422.568 round=1 build=apt arm=held held_ms=2 within=63553536
+give t=1794095424.571 round=1 build=apt arm=held held_ms=3 within=33124352
+phase t=1794095425.136 round=1 build=apt arm=held step=6 name=run
+keep t=1794095425.391 round=1 build=apt arm=held step=6 bytes=89600000 sync_ms=88
+merge t=1794095425.570 round=1 build=apt arm=held step=6 layers=2 bytes=199974912 write_ms=127 sync_ms=41
+keep t=1794095425.586 round=1 build=apt arm=held step=6 bytes=241664 sync_ms=3
+phase t=1794095425.595 round=1 build=apt arm=held step=6 name=cache-keep
+phase t=1794095425.595 round=1 build=apt arm=held step=6 name=step
+phase t=1794095425.818 round=1 build=apt arm=held step=6 name=layer
+phase t=1794095425.973 round=1 build=apt arm=held step=6 name=blob
+phase t=1794095425.986 round=1 build=apt arm=held step=6 name=op
+phase t=1794095425.986 round=1 build=apt arm=held step=6 name=drop
+give t=1794095426.575 round=1 build=apt arm=held answered_ms=3 freed=114688 unplugging=134217728
+give t=1794095426.578 round=1 build=apt arm=held held_ms=7 within=135905280
+give t=1794095428.582 round=1 build=apt arm=held held_ms=3 within=227430400
+give t=1794095430.585 round=1 build=apt arm=held held_ms=3 within=228458496
+give t=1794095432.589 round=1 build=apt arm=held held_ms=3 within=230305792
+give t=1794095434.591 round=1 build=apt arm=held held_ms=2 within=230273024
+give t=1794095436.594 round=1 build=apt arm=held held_ms=2 within=230281216
+phase t=1794095438.025 round=1 build=apt arm=held step=6 name=rootfs-from-snapshot
+phase t=1794095438.074 round=1 build=apt arm=held step=6 name=end
+build round=1 build=apt arm=held exit=0 s=25.5 budget=1020883968 scope_anon_peak=971390976 scope_held_peak=1036339200 scope_need_peak=1036290048 held_cold=32555008 sync_s=0.3 writer_seen=24 writer_file_peak=1141374976 writer_dirty_peak=205950976 steps=1:0.0,2:0.0,3:0.0,4:0.0,5:0.4,6:12.9,7:0.6
+phase t=1794095438.591 round=2 build=npm arm=held step=- name=start
+phase t=1794095438.596 round=2 build=npm arm=held step=3 name=plan
+phase t=1794095438.631 round=2 build=npm arm=held step=4 name=op
+phase t=1794095438.666 round=2 build=npm arm=held step=6 name=op
+phase t=1794095439.060 round=2 build=npm arm=held step=8 name=cache-take
+phase t=1794095439.060 round=2 build=npm arm=held step=8 name=cache-attach
+give t=1794095440.505 round=2 build=npm arm=held answered_ms=2 freed=19738624 unplugging=0
+give t=1794095440.507 round=2 build=npm arm=held held_ms=3 within=196923392
+phase t=1794095441.477 round=2 build=npm arm=held step=8 name=run
+keep t=1794095441.485 round=2 build=npm arm=held step=8 bytes=90112 sync_ms=4
+merge t=1794095441.498 round=2 build=npm arm=held step=8 layers=4 bytes=917504 write_ms=1 sync_ms=3
+phase t=1794095441.506 round=2 build=npm arm=held step=8 name=cache-keep
+phase t=1794095441.506 round=2 build=npm arm=held step=8 name=step
+phase t=1794095441.556 round=2 build=npm arm=held step=8 name=layer
+phase t=1794095441.601 round=2 build=npm arm=held step=8 name=blob
+phase t=1794095441.607 round=2 build=npm arm=held step=8 name=op
+phase t=1794095441.607 round=2 build=npm arm=held step=8 name=drop
+give t=1794095442.510 round=2 build=npm arm=held answered_ms=3 freed=81920 unplugging=134217728
+give t=1794095442.513 round=2 build=npm arm=held held_ms=6 within=147476480
+give t=1794095442.551 round=2 build=npm arm=held answered_ms=0 freed=0 unplugging=0
+give t=1794095442.554 round=2 build=npm arm=held held_ms=2 within=230371328
+phase t=1794095444.132 round=2 build=npm arm=held step=8 name=rootfs-from-snapshot
+phase t=1794095444.178 round=2 build=npm arm=held step=8 name=end
+build round=2 build=npm arm=held exit=0 s=5.7 budget=822378496 scope_anon_peak=794685440 scope_held_peak=823741440 scope_need_peak=823675904 held_cold=417792 sync_s=0.4 writer_seen=5 writer_file_peak=196325376 writer_dirty_peak=91648000 steps=1:0.0,2:0.0,3:0.0,4:0.0,6:0.0,8:2.9,9:0.5
+phase t=1794095444.400 round=2 build=npm arm=free step=- name=start
+phase t=1794095444.401 round=2 build=npm arm=free step=3 name=plan
+phase t=1794095444.425 round=2 build=npm arm=free step=4 name=op
+phase t=1794095444.457 round=2 build=npm arm=free step=6 name=op
+phase t=1794095444.821 round=2 build=npm arm=free step=8 name=cache-take
+phase t=1794095444.821 round=2 build=npm arm=free step=8 name=cache-attach
+give t=1794095446.592 round=2 build=npm arm=free answered_ms=7 freed=22638592 unplugging=0
+phase t=1794095447.095 round=2 build=npm arm=free step=8 name=run
+keep t=1794095447.101 round=2 build=npm arm=free step=8 bytes=90112 sync_ms=3
+phase t=1794095447.110 round=2 build=npm arm=free step=8 name=cache-keep
+phase t=1794095447.110 round=2 build=npm arm=free step=8 name=step
+phase t=1794095447.187 round=2 build=npm arm=free step=8 name=layer
+phase t=1794095447.232 round=2 build=npm arm=free step=8 name=blob
+phase t=1794095447.238 round=2 build=npm arm=free step=8 name=op
+phase t=1794095447.238 round=2 build=npm arm=free step=8 name=drop
+phase t=1794095449.688 round=2 build=npm arm=free step=8 name=rootfs-from-snapshot
+phase t=1794095449.718 round=2 build=npm arm=free step=8 name=end
+build round=2 build=npm arm=free exit=0 s=5.4 budget=0 scope_anon_peak=785227776 scope_held_peak=811042816 scope_need_peak=810387456 held_cold=25219072 sync_s=0.1 writer_seen=0 writer_file_peak=0 writer_dirty_peak=0 steps=1:0.0,2:0.0,3:0.0,4:0.0,6:0.0,8:2.7,9:0.5
+phase t=1794095449.930 round=2 build=apt arm=held step=- name=start
+phase t=1794095449.936 round=2 build=apt arm=held step=3 name=plan
+phase t=1794095449.948 round=2 build=apt arm=held step=4 name=op
+phase t=1794095450.278 round=2 build=apt arm=held step=5 name=cache-take
+phase t=1794095450.279 round=2 build=apt arm=held step=5 name=cache-attach
+phase t=1794095450.323 round=2 build=apt arm=held step=5 name=run
+phase t=1794095450.323 round=2 build=apt arm=held step=5 name=cache-keep
+phase t=1794095450.323 round=2 build=apt arm=held step=5 name=step
+phase t=1794095450.323 round=2 build=apt arm=held step=5 name=layer
+phase t=1794095450.327 round=2 build=apt arm=held step=5 name=blob
+phase t=1794095450.333 round=2 build=apt arm=held step=5 name=op
+phase t=1794095450.333 round=2 build=apt arm=held step=6 name=cache-take
+phase t=1794095450.334 round=2 build=apt arm=held step=6 name=cache-attach
+give t=1794095450.554 round=2 build=apt arm=held answered_ms=0 freed=106496 unplugging=0
+give t=1794095450.556 round=2 build=apt arm=held held_ms=2 within=911810560
+give t=1794095452.560 round=2 build=apt arm=held held_ms=3 within=655925248
+give t=1794095452.601 round=2 build=apt arm=held answered_ms=1 freed=27811840 unplugging=0
+give t=1794095452.603 round=2 build=apt arm=held held_ms=4 within=659595264
+give t=1794095454.607 round=2 build=apt arm=held held_ms=3 within=383766528
+give t=1794095456.610 round=2 build=apt arm=held held_ms=2 within=129462272
+give t=1794095458.612 round=2 build=apt arm=held held_ms=2 within=20643840
+phase t=1794095459.632 round=2 build=apt arm=held step=6 name=run
+keep t=1794095459.771 round=2 build=apt arm=held step=6 bytes=89600000 sync_ms=62
+merge t=1794095459.942 round=2 build=apt arm=held step=6 layers=2 bytes=199974912 write_ms=103 sync_ms=59
+keep t=1794095459.959 round=2 build=apt arm=held step=6 bytes=241664 sync_ms=5
+merge t=1794095459.976 round=2 build=apt arm=held step=6 layers=3 bytes=851968 write_ms=2 sync_ms=3
+phase t=1794095459.985 round=2 build=apt arm=held step=6 name=cache-keep
+phase t=1794095459.985 round=2 build=apt arm=held step=6 name=step
+phase t=1794095460.173 round=2 build=apt arm=held step=6 name=layer
+phase t=1794095460.318 round=2 build=apt arm=held step=6 name=blob
+phase t=1794095460.324 round=2 build=apt arm=held step=6 name=op
+phase t=1794095460.324 round=2 build=apt arm=held step=6 name=drop
+give t=1794095460.619 round=2 build=apt arm=held answered_ms=7 freed=17440768 unplugging=134217728
+give t=1794095460.622 round=2 build=apt arm=held held_ms=10 within=119009280
+give t=1794095462.626 round=2 build=apt arm=held held_ms=3 within=250609664
+give t=1794095464.629 round=2 build=apt arm=held held_ms=3 within=252469248
+give t=1794095466.632 round=2 build=apt arm=held held_ms=2 within=253009920
+give t=1794095468.635 round=2 build=apt arm=held held_ms=3 within=252891136
+phase t=1794095470.223 round=2 build=apt arm=held step=6 name=rootfs-from-snapshot
+phase t=1794095470.280 round=2 build=apt arm=held step=6 name=end
+build round=2 build=apt arm=held exit=0 s=20.5 budget=1036290048 scope_anon_peak=978505728 scope_held_peak=1044844544 scope_need_peak=1027403776 held_cold=89571328 sync_s=0.1 writer_seen=20 writer_file_peak=1165262848 writer_dirty_peak=289406976 steps=1:0.0,2:0.0,3:0.0,4:0.0,5:0.4,6:10.0,7:0.5
+phase t=1794095470.596 round=2 build=apt arm=free step=- name=start
+phase t=1794095470.597 round=2 build=apt arm=free step=3 name=plan
+phase t=1794095470.608 round=2 build=apt arm=free step=4 name=op
+phase t=1794095470.993 round=2 build=apt arm=free step=5 name=cache-take
+phase t=1794095470.994 round=2 build=apt arm=free step=5 name=cache-attach
+phase t=1794095471.036 round=2 build=apt arm=free step=5 name=run
+phase t=1794095471.036 round=2 build=apt arm=free step=5 name=cache-keep
+phase t=1794095471.036 round=2 build=apt arm=free step=5 name=step
+phase t=1794095471.036 round=2 build=apt arm=free step=5 name=layer
+phase t=1794095471.043 round=2 build=apt arm=free step=5 name=blob
+phase t=1794095471.055 round=2 build=apt arm=free step=5 name=op
+phase t=1794095471.055 round=2 build=apt arm=free step=6 name=cache-take
+phase t=1794095471.055 round=2 build=apt arm=free step=6 name=cache-attach
+give t=1794095472.699 round=2 build=apt arm=free answered_ms=1 freed=372736 unplugging=0
+give t=1794095474.746 round=2 build=apt arm=free answered_ms=2 freed=8761344 unplugging=0
+phase t=1794095480.485 round=2 build=apt arm=free step=6 name=run
+keep t=1794095480.617 round=2 build=apt arm=free step=6 bytes=89600000 sync_ms=49
+merge t=1794095480.796 round=2 build=apt arm=free step=6 layers=2 bytes=199974912 write_ms=97 sync_ms=72
+keep t=1794095480.817 round=2 build=apt arm=free step=6 bytes=241664 sync_ms=3
+phase t=1794095480.825 round=2 build=apt arm=free step=6 name=cache-keep
+phase t=1794095480.825 round=2 build=apt arm=free step=6 name=step
+phase t=1794095481.165 round=2 build=apt arm=free step=6 name=layer
+phase t=1794095481.323 round=2 build=apt arm=free step=6 name=blob
+phase t=1794095481.331 round=2 build=apt arm=free step=6 name=op
+phase t=1794095481.331 round=2 build=apt arm=free step=6 name=drop
+phase t=1794095492.428 round=2 build=apt arm=free step=6 name=rootfs-from-snapshot
+phase t=1794095492.504 round=2 build=apt arm=free step=6 name=end
+build round=2 build=apt arm=free exit=0 s=22.0 budget=0 scope_anon_peak=1018388480 scope_held_peak=1085726720 scope_need_peak=1021898752 held_cold=70529024 sync_s=0.2 writer_seen=0 writer_file_peak=0 writer_dirty_peak=0 steps=1:0.0,2:0.0,3:0.0,4:0.0,5:0.4,6:10.3,7:0.6
+phase t=1794095492.817 round=2 build=rust arm=held step=- name=start
+phase t=1794095492.821 round=2 build=rust arm=held step=3 name=plan
+phase t=1794095492.882 round=2 build=rust arm=held step=4 name=op
+phase t=1794095493.197 round=2 build=rust arm=held step=5 name=cache-take
+phase t=1794095493.197 round=2 build=rust arm=held step=5 name=cache-attach
+phase t=1794095494.214 round=2 build=rust arm=held step=5 name=run
+keep t=1794095494.224 round=2 build=rust arm=held step=5 bytes=4096 sync_ms=3
+merge t=1794095494.234 round=2 build=rust arm=held step=5 layers=2 bytes=4096 write_ms=0 sync_ms=2
+keep t=1794095494.245 round=2 build=rust arm=held step=5 bytes=8192 sync_ms=2
+merge t=1794095494.256 round=2 build=rust arm=held step=5 layers=2 bytes=8192 write_ms=0 sync_ms=2
+phase t=1794095494.264 round=2 build=rust arm=held step=5 name=cache-keep
+phase t=1794095494.264 round=2 build=rust arm=held step=5 name=step
+phase t=1794095494.278 round=2 build=rust arm=held step=5 name=layer
+phase t=1794095494.296 round=2 build=rust arm=held step=5 name=blob
+phase t=1794095494.301 round=2 build=rust arm=held step=5 name=op
+phase t=1794095494.302 round=2 build=rust arm=held step=5 name=drop
+give t=1794095494.520 round=2 build=rust arm=held answered_ms=0 freed=3018752 unplugging=0
+give t=1794095494.523 round=2 build=rust arm=held held_ms=4 within=10747904
+phase t=1794095495.065 round=2 build=rust arm=held step=5 name=rootfs-from-snapshot
+phase t=1794095495.089 round=2 build=rust arm=held step=5 name=end
+build round=2 build=rust arm=held exit=0 s=2.4 budget=281281536 scope_anon_peak=200654848 scope_held_peak=284268544 scope_need_peak=281298944 held_cold=2969600 sync_s=0.2 writer_seen=2 writer_file_peak=68616192 writer_dirty_peak=36388864 steps=1:0.0,2:0.0,3:0.0,4:0.1,5:1.4,6:0.1
+phase t=1794095495.240 round=2 build=rust arm=free step=- name=start
+phase t=1794095495.242 round=2 build=rust arm=free step=3 name=plan
+phase t=1794095495.265 round=2 build=rust arm=free step=4 name=op
+phase t=1794095495.608 round=2 build=rust arm=free step=5 name=cache-take
+phase t=1794095495.608 round=2 build=rust arm=free step=5 name=cache-attach
+give t=1794095496.569 round=2 build=rust arm=free answered_ms=1 freed=761856 unplugging=0
+phase t=1794095496.654 round=2 build=rust arm=free step=5 name=run
+keep t=1794095496.661 round=2 build=rust arm=free step=5 bytes=4096 sync_ms=3
+merge t=1794095496.671 round=2 build=rust arm=free step=5 layers=2 bytes=4096 write_ms=0 sync_ms=2
+keep t=1794095496.688 round=2 build=rust arm=free step=5 bytes=8192 sync_ms=3
+merge t=1794095496.699 round=2 build=rust arm=free step=5 layers=2 bytes=8192 write_ms=0 sync_ms=2
+phase t=1794095496.707 round=2 build=rust arm=free step=5 name=cache-keep
+phase t=1794095496.707 round=2 build=rust arm=free step=5 name=step
+phase t=1794095496.730 round=2 build=rust arm=free step=5 name=layer
+phase t=1794095496.749 round=2 build=rust arm=free step=5 name=blob
+phase t=1794095496.754 round=2 build=rust arm=free step=5 name=op
+phase t=1794095496.755 round=2 build=rust arm=free step=5 name=drop
+phase t=1794095497.647 round=2 build=rust arm=free step=5 name=rootfs-from-snapshot
+phase t=1794095497.682 round=2 build=rust arm=free step=5 name=end
+build round=2 build=rust arm=free exit=0 s=2.5 budget=0 scope_anon_peak=198639616 scope_held_peak=284687360 scope_need_peak=280595456 held_cold=7213056 sync_s=0.0 writer_seen=0 writer_file_peak=0 writer_dirty_peak=0 steps=1:0.0,2:0.0,3:0.0,4:0.0,5:1.5,6:0.1
+phase t=1794095497.850 round=3 build=apt arm=free step=- name=start
+phase t=1794095497.852 round=3 build=apt arm=free step=3 name=plan
+phase t=1794095497.863 round=3 build=apt arm=free step=4 name=op
+phase t=1794095498.193 round=3 build=apt arm=free step=5 name=cache-take
+phase t=1794095498.193 round=3 build=apt arm=free step=5 name=cache-attach
+phase t=1794095498.284 round=3 build=apt arm=free step=5 name=run
+phase t=1794095498.284 round=3 build=apt arm=free step=5 name=cache-keep
+phase t=1794095498.284 round=3 build=apt arm=free step=5 name=step
+phase t=1794095498.284 round=3 build=apt arm=free step=5 name=layer
+phase t=1794095498.288 round=3 build=apt arm=free step=5 name=blob
+phase t=1794095498.300 round=3 build=apt arm=free step=5 name=op
+phase t=1794095498.300 round=3 build=apt arm=free step=6 name=cache-take
+phase t=1794095498.301 round=3 build=apt arm=free step=6 name=cache-attach
+give t=1794095498.617 round=3 build=apt arm=free answered_ms=2 freed=139264 unplugging=0
+give t=1794095500.665 round=3 build=apt arm=free answered_ms=1 freed=28209152 unplugging=0
+phase t=1794095508.521 round=3 build=apt arm=free step=6 name=run
+keep t=1794095509.293 round=3 build=apt arm=free step=6 bytes=89600000 sync_ms=46
+merge t=1794095509.466 round=3 build=apt arm=free step=6 layers=2 bytes=199974912 write_ms=88 sync_ms=67
+keep t=1794095509.490 round=3 build=apt arm=free step=6 bytes=241664 sync_ms=6
+merge t=1794095509.514 round=3 build=apt arm=free step=6 layers=3 bytes=851968 write_ms=1 sync_ms=6
+phase t=1794095509.530 round=3 build=apt arm=free step=6 name=cache-keep
+phase t=1794095509.530 round=3 build=apt arm=free step=6 name=step
+phase t=1794095509.871 round=3 build=apt arm=free step=6 name=layer
+phase t=1794095510.019 round=3 build=apt arm=free step=6 name=blob
+phase t=1794095510.029 round=3 build=apt arm=free step=6 name=op
+phase t=1794095510.029 round=3 build=apt arm=free step=6 name=drop
+phase t=1794095521.236 round=3 build=apt arm=free step=6 name=rootfs-from-snapshot
+phase t=1794095521.284 round=3 build=apt arm=free step=6 name=end
+build round=3 build=apt arm=free exit=0 s=23.5 budget=0 scope_anon_peak=990130176 scope_held_peak=1055635456 scope_need_peak=1003485184 held_cold=120045568 sync_s=0.1 writer_seen=0 writer_file_peak=0 writer_dirty_peak=0 steps=1:0.0,2:0.0,3:0.0,4:0.0,5:0.4,6:11.7,7:0.6
+phase t=1794095521.804 round=3 build=apt arm=held step=- name=start
+phase t=1794095521.809 round=3 build=apt arm=held step=3 name=plan
+phase t=1794095521.819 round=3 build=apt arm=held step=4 name=op
+phase t=1794095522.161 round=3 build=apt arm=held step=5 name=cache-take
+phase t=1794095522.161 round=3 build=apt arm=held step=5 name=cache-attach
+phase t=1794095522.199 round=3 build=apt arm=held step=5 name=run
+phase t=1794095522.199 round=3 build=apt arm=held step=5 name=cache-keep
+phase t=1794095522.199 round=3 build=apt arm=held step=5 name=step
+phase t=1794095522.200 round=3 build=apt arm=held step=5 name=layer
+phase t=1794095522.204 round=3 build=apt arm=held step=5 name=blob
+phase t=1794095522.209 round=3 build=apt arm=held step=5 name=op
+phase t=1794095522.209 round=3 build=apt arm=held step=6 name=cache-take
+phase t=1794095522.210 round=3 build=apt arm=held step=6 name=cache-attach
+give t=1794095523.193 round=3 build=apt arm=held answered_ms=1 freed=405504 unplugging=0
+give t=1794095523.195 round=3 build=apt arm=held held_ms=4 within=757235712
+give t=1794095525.198 round=3 build=apt arm=held held_ms=2 within=549654528
+give t=1794095527.202 round=3 build=apt arm=held held_ms=3 within=157057024
+give t=1794095527.295 round=3 build=apt arm=held answered_ms=8 freed=58642432 unplugging=0
+give t=1794095527.298 round=3 build=apt arm=held held_ms=11 within=188948480
+give t=1794095529.301 round=3 build=apt arm=held held_ms=2 within=101429248
+phase t=1794095531.156 round=3 build=apt arm=held step=6 name=run
+give t=1794095531.304 round=3 build=apt arm=held held_ms=3 within=11272192
+keep t=1794095532.620 round=3 build=apt arm=held step=6 bytes=89600000 sync_ms=8
+merge t=1794095532.802 round=3 build=apt arm=held step=6 layers=2 bytes=199974912 write_ms=106 sync_ms=67
+keep t=1794095532.822 round=3 build=apt arm=held step=6 bytes=241664 sync_ms=3
+phase t=1794095532.830 round=3 build=apt arm=held step=6 name=cache-keep
+phase t=1794095532.830 round=3 build=apt arm=held step=6 name=step
+phase t=1794095533.041 round=3 build=apt arm=held step=6 name=layer
+phase t=1794095533.197 round=3 build=apt arm=held step=6 name=blob
+phase t=1794095533.202 round=3 build=apt arm=held step=6 name=op
+phase t=1794095533.202 round=3 build=apt arm=held step=6 name=drop
+give t=1794095533.310 round=3 build=apt arm=held answered_ms=6 freed=22310912 unplugging=134217728
+give t=1794095533.312 round=3 build=apt arm=held held_ms=8 within=159092736
+give t=1794095535.315 round=3 build=apt arm=held held_ms=2 within=234336256
+give t=1794095537.317 round=3 build=apt arm=held held_ms=1 within=234131456
+give t=1794095539.319 round=3 build=apt arm=held held_ms=1 within=234659840
+give t=1794095541.321 round=3 build=apt arm=held held_ms=1 within=233897984
+give t=1794095543.323 round=3 build=apt arm=held held_ms=1 within=234110976
+phase t=1794095543.576 round=3 build=apt arm=held step=6 name=rootfs-from-snapshot
+phase t=1794095543.643 round=3 build=apt arm=held step=6 name=end
+build round=3 build=apt arm=held exit=0 s=21.9 budget=1036290048 scope_anon_peak=969879552 scope_held_peak=1035833344 scope_need_peak=1013522432 held_cold=108773376 sync_s=0.4 writer_seen=21 writer_file_peak=1355751424 writer_dirty_peak=798760960 steps=1:0.0,2:0.0,3:0.0,4:0.0,5:0.4,6:11.0,7:0.5
+phase t=1794095544.073 round=3 build=rust arm=free step=- name=start
+phase t=1794095544.075 round=3 build=rust arm=free step=3 name=plan
+phase t=1794095544.144 round=3 build=rust arm=free step=4 name=op
+phase t=1794095544.650 round=3 build=rust arm=free step=5 name=cache-take
+phase t=1794095544.651 round=3 build=rust arm=free step=5 name=cache-attach
+phase t=1794095545.784 round=3 build=rust arm=free step=5 name=run
+keep t=1794095545.793 round=3 build=rust arm=free step=5 bytes=4096 sync_ms=2
+merge t=1794095545.812 round=3 build=rust arm=free step=5 layers=2 bytes=4096 write_ms=0 sync_ms=5
+keep t=1794095545.832 round=3 build=rust arm=free step=5 bytes=8192 sync_ms=4
+merge t=1794095545.854 round=3 build=rust arm=free step=5 layers=2 bytes=8192 write_ms=0 sync_ms=5
+phase t=1794095545.870 round=3 build=rust arm=free step=5 name=cache-keep
+phase t=1794095545.870 round=3 build=rust arm=free step=5 name=step
+phase t=1794095545.894 round=3 build=rust arm=free step=5 name=layer
+phase t=1794095545.913 round=3 build=rust arm=free step=5 name=blob
+phase t=1794095545.924 round=3 build=rust arm=free step=5 name=op
+phase t=1794095545.924 round=3 build=rust arm=free step=5 name=drop
+phase t=1794095546.735 round=3 build=rust arm=free step=5 name=rootfs-from-snapshot
+phase t=1794095546.758 round=3 build=rust arm=free step=5 name=end
+build round=3 build=rust arm=free exit=0 s=2.8 budget=0 scope_anon_peak=195051520 scope_held_peak=280412160 scope_need_peak=277442560 held_cold=2969600 sync_s=0.3 writer_seen=0 writer_file_peak=0 writer_dirty_peak=0 steps=1:0.0,2:0.0,3:0.0,4:0.1,5:1.8,6:0.1
+phase t=1794095546.938 round=3 build=rust arm=held step=- name=start
+phase t=1794095546.943 round=3 build=rust arm=held step=3 name=plan
+phase t=1794095546.965 round=3 build=rust arm=held step=4 name=op
+phase t=1794095547.289 round=3 build=rust arm=held step=5 name=cache-take
+phase t=1794095547.290 round=3 build=rust arm=held step=5 name=cache-attach
+phase t=1794095548.331 round=3 build=rust arm=held step=5 name=run
+keep t=1794095548.336 round=3 build=rust arm=held step=5 bytes=4096 sync_ms=2
+merge t=1794095548.351 round=3 build=rust arm=held step=5 layers=2 bytes=4096 write_ms=0 sync_ms=4
+keep t=1794095548.362 round=3 build=rust arm=held step=5 bytes=8192 sync_ms=2
+merge t=1794095548.373 round=3 build=rust arm=held step=5 layers=2 bytes=8192 write_ms=0 sync_ms=2
+phase t=1794095548.381 round=3 build=rust arm=held step=5 name=cache-keep
+phase t=1794095548.381 round=3 build=rust arm=held step=5 name=step
+phase t=1794095548.395 round=3 build=rust arm=held step=5 name=layer
+phase t=1794095548.412 round=3 build=rust arm=held step=5 name=blob
+phase t=1794095548.418 round=3 build=rust arm=held step=5 name=op
+phase t=1794095548.418 round=3 build=rust arm=held step=5 name=drop
+give t=1794095548.537 round=3 build=rust arm=held answered_ms=1 freed=3084288 unplugging=0
+give t=1794095548.540 round=3 build=rust arm=held held_ms=3 within=10747904
+phase t=1794095549.092 round=3 build=rust arm=held step=5 name=rootfs-from-snapshot
+phase t=1794095549.117 round=3 build=rust arm=held step=5 name=end
+build round=3 build=rust arm=held exit=0 s=2.3 budget=281298944 scope_anon_peak=197394432 scope_held_peak=280116224 scope_need_peak=277150720 held_cold=5566464 sync_s=0.1 writer_seen=2 writer_file_peak=69664768 writer_dirty_peak=37437440 steps=1:0.0,2:0.0,3:0.0,4:0.0,5:1.4,6:0.1
+phase t=1794095549.294 round=3 build=npm arm=free step=- name=start
+phase t=1794095549.296 round=3 build=npm arm=free step=3 name=plan
+phase t=1794095549.318 round=3 build=npm arm=free step=4 name=op
+phase t=1794095549.345 round=3 build=npm arm=free step=6 name=op
+phase t=1794095549.691 round=3 build=npm arm=free step=8 name=cache-take
+phase t=1794095549.692 round=3 build=npm arm=free step=8 name=cache-attach
+phase t=1794095552.696 round=3 build=npm arm=free step=8 name=run
+keep t=1794095552.707 round=3 build=npm arm=free step=8 bytes=90112 sync_ms=4
+merge t=1794095552.735 round=3 build=npm arm=free step=8 layers=2 bytes=172032 write_ms=0 sync_ms=7
+phase t=1794095552.758 round=3 build=npm arm=free step=8 name=cache-keep
+phase t=1794095552.758 round=3 build=npm arm=free step=8 name=step
+phase t=1794095552.867 round=3 build=npm arm=free step=8 name=layer
+phase t=1794095552.929 round=3 build=npm arm=free step=8 name=blob
+phase t=1794095552.950 round=3 build=npm arm=free step=8 name=op
+phase t=1794095552.950 round=3 build=npm arm=free step=8 name=drop
+give t=1794095554.682 round=3 build=npm arm=free answered_ms=2 freed=22769664 unplugging=268435456
+phase t=1794095555.712 round=3 build=npm arm=free step=8 name=rootfs-from-snapshot
+phase t=1794095555.743 round=3 build=npm arm=free step=8 name=end
+build round=3 build=npm arm=free exit=0 s=6.6 budget=0 scope_anon_peak=817352704 scope_held_peak=844041216 scope_need_peak=821271552 held_cold=22769664 sync_s=0.1 writer_seen=0 writer_file_peak=0 writer_dirty_peak=0 steps=1:0.0,2:0.0,3:0.0,4:0.0,6:0.0,8:3.6,9:0.6
+phase t=1794095556.341 round=3 build=npm arm=held step=- name=start
+phase t=1794095556.348 round=3 build=npm arm=held step=3 name=plan
+phase t=1794095556.370 round=3 build=npm arm=held step=4 name=op
+phase t=1794095556.401 round=3 build=npm arm=held step=6 name=op
+phase t=1794095556.942 round=3 build=npm arm=held step=8 name=cache-take
+phase t=1794095556.943 round=3 build=npm arm=held step=8 name=cache-attach
+give t=1794095558.781 round=3 build=npm arm=held answered_ms=5 freed=25210880 unplugging=0
+give t=1794095558.783 round=3 build=npm arm=held held_ms=8 within=170258432
+phase t=1794095559.787 round=3 build=npm arm=held step=8 name=run
+keep t=1794095559.796 round=3 build=npm arm=held step=8 bytes=90112 sync_ms=5
+merge t=1794095559.823 round=3 build=npm arm=held step=8 layers=2 bytes=253952 write_ms=1 sync_ms=6
+phase t=1794095559.842 round=3 build=npm arm=held step=8 name=cache-keep
+phase t=1794095559.842 round=3 build=npm arm=held step=8 name=step
+phase t=1794095559.896 round=3 build=npm arm=held step=8 name=layer
+phase t=1794095559.949 round=3 build=npm arm=held step=8 name=blob
+phase t=1794095559.961 round=3 build=npm arm=held step=8 name=op
+phase t=1794095559.961 round=3 build=npm arm=held step=8 name=drop
+give t=1794095560.789 round=3 build=npm arm=held held_ms=5 within=10747904
+give t=1794095560.824 round=3 build=npm arm=held answered_ms=1 freed=73728 unplugging=268435456
+give t=1794095560.828 round=3 build=npm arm=held held_ms=4 within=164937728
+phase t=1794095562.566 round=3 build=npm arm=held step=8 name=rootfs-from-snapshot
+phase t=1794095562.598 round=3 build=npm arm=held step=8 name=end
+build round=3 build=npm arm=held exit=0 s=6.4 budget=823675904 scope_anon_peak=788467712 scope_held_peak=815678464 scope_need_peak=815641600 held_cold=339968 sync_s=0.5 writer_seen=6 writer_file_peak=549539840 writer_dirty_peak=257810432 steps=1:0.0,2:0.0,3:0.0,4:0.0,6:0.0,8:3.5,9:0.5
+phase t=1794095563.050 round=4 build=rust arm=held step=- name=start
+phase t=1794095563.058 round=4 build=rust arm=held step=3 name=plan
+phase t=1794095563.123 round=4 build=rust arm=held step=4 name=op
+phase t=1794095563.463 round=4 build=rust arm=held step=5 name=cache-take
+phase t=1794095563.464 round=4 build=rust arm=held step=5 name=cache-attach
+phase t=1794095564.483 round=4 build=rust arm=held step=5 name=run
+keep t=1794095564.488 round=4 build=rust arm=held step=5 bytes=4096 sync_ms=2
+merge t=1794095564.500 round=4 build=rust arm=held step=5 layers=2 bytes=4096 write_ms=0 sync_ms=2
+keep t=1794095564.512 round=4 build=rust arm=held step=5 bytes=8192 sync_ms=3
+merge t=1794095564.527 round=4 build=rust arm=held step=5 layers=2 bytes=8192 write_ms=0 sync_ms=2
+phase t=1794095564.537 round=4 build=rust arm=held step=5 name=cache-keep
+phase t=1794095564.537 round=4 build=rust arm=held step=5 name=step
+phase t=1794095564.553 round=4 build=rust arm=held step=5 name=layer
+phase t=1794095564.574 round=4 build=rust arm=held step=5 name=blob
+phase t=1794095564.580 round=4 build=rust arm=held step=5 name=op
+phase t=1794095564.580 round=4 build=rust arm=held step=5 name=drop
+give t=1794095564.920 round=4 build=rust arm=held answered_ms=0 freed=3084288 unplugging=0
+give t=1794095564.923 round=4 build=rust arm=held held_ms=3 within=10747904
+phase t=1794095565.424 round=4 build=rust arm=held step=5 name=rootfs-from-snapshot
+phase t=1794095565.453 round=4 build=rust arm=held step=5 name=end
+build round=4 build=rust arm=held exit=0 s=2.5 budget=281298944 scope_anon_peak=199446528 scope_held_peak=283456512 scope_need_peak=280491008 held_cold=2965504 sync_s=0.3 writer_seen=2 writer_file_peak=67567616 writer_dirty_peak=35340288 steps=1:0.0,2:0.0,3:0.0,4:0.1,5:1.5,6:0.1
+phase t=1794095565.779 round=4 build=rust arm=free step=- name=start
+phase t=1794095565.781 round=4 build=rust arm=free step=3 name=plan
+phase t=1794095565.813 round=4 build=rust arm=free step=4 name=op
+phase t=1794095566.222 round=4 build=rust arm=free step=5 name=cache-take
+phase t=1794095566.222 round=4 build=rust arm=free step=5 name=cache-attach
+give t=1794095566.969 round=4 build=rust arm=free answered_ms=1 freed=413696 unplugging=0
+phase t=1794095567.284 round=4 build=rust arm=free step=5 name=run
+keep t=1794095567.290 round=4 build=rust arm=free step=5 bytes=4096 sync_ms=3
+merge t=1794095567.302 round=4 build=rust arm=free step=5 layers=2 bytes=4096 write_ms=0 sync_ms=2
+keep t=1794095567.314 round=4 build=rust arm=free step=5 bytes=8192 sync_ms=2
+merge t=1794095567.327 round=4 build=rust arm=free step=5 layers=2 bytes=8192 write_ms=0 sync_ms=3
+phase t=1794095567.337 round=4 build=rust arm=free step=5 name=cache-keep
+phase t=1794095567.337 round=4 build=rust arm=free step=5 name=step
+phase t=1794095567.360 round=4 build=rust arm=free step=5 name=layer
+phase t=1794095567.383 round=4 build=rust arm=free step=5 name=blob
+phase t=1794095567.389 round=4 build=rust arm=free step=5 name=op
+phase t=1794095567.389 round=4 build=rust arm=free step=5 name=drop
+phase t=1794095568.213 round=4 build=rust arm=free step=5 name=rootfs-from-snapshot
+phase t=1794095568.243 round=4 build=rust arm=free step=5 name=end
+build round=4 build=rust arm=free exit=0 s=2.6 budget=0 scope_anon_peak=197459968 scope_held_peak=283008000 scope_need_peak=279084032 held_cold=3923968 sync_s=0.2 writer_seen=0 writer_file_peak=0 writer_dirty_peak=0 steps=1:0.0,2:0.0,3:0.0,4:0.0,5:1.6,6:0.1
+phase t=1794095568.529 round=4 build=npm arm=held step=- name=start
+phase t=1794095568.535 round=4 build=npm arm=held step=3 name=plan
+phase t=1794095568.567 round=4 build=npm arm=held step=4 name=op
+phase t=1794095568.608 round=4 build=npm arm=held step=6 name=op
+phase t=1794095569.057 round=4 build=npm arm=held step=8 name=cache-take
+phase t=1794095569.057 round=4 build=npm arm=held step=8 name=cache-attach
+give t=1794095570.621 round=4 build=npm arm=held answered_ms=5 freed=23789568 unplugging=0
+give t=1794095570.624 round=4 build=npm arm=held held_ms=8 within=228220928
+phase t=1794095572.189 round=4 build=npm arm=held step=8 name=run
+keep t=1794095572.197 round=4 build=npm arm=held step=8 bytes=90112 sync_ms=3
+phase t=1794095572.208 round=4 build=npm arm=held step=8 name=cache-keep
+phase t=1794095572.208 round=4 build=npm arm=held step=8 name=step
+phase t=1794095572.286 round=4 build=npm arm=held step=8 name=layer
+phase t=1794095572.342 round=4 build=npm arm=held step=8 name=blob
+phase t=1794095572.348 round=4 build=npm arm=held step=8 name=op
+phase t=1794095572.348 round=4 build=npm arm=held step=8 name=drop
+give t=1794095572.628 round=4 build=npm arm=held held_ms=4 within=10747904
+give t=1794095572.665 round=4 build=npm arm=held answered_ms=2 freed=262144 unplugging=268435456
+give t=1794095572.669 round=4 build=npm arm=held held_ms=5 within=183836672
+give t=1794095574.672 round=4 build=npm arm=held held_ms=2 within=263430144
+phase t=1794095575.055 round=4 build=npm arm=held step=8 name=rootfs-from-snapshot
+phase t=1794095575.103 round=4 build=npm arm=held step=8 name=end
+build round=4 build=npm arm=held exit=0 s=6.7 budget=823675904 scope_anon_peak=742412288 scope_held_peak=770408448 scope_need_peak=769916928 held_cold=491520 sync_s=0.2 writer_seen=6 writer_file_peak=351498240 writer_dirty_peak=239337472 steps=1:0.0,2:0.0,3:0.0,4:0.0,6:0.0,8:3.7,9:0.6
+phase t=1794095575.537 round=4 build=npm arm=free step=- name=start
+phase t=1794095575.540 round=4 build=npm arm=free step=3 name=plan
+phase t=1794095575.575 round=4 build=npm arm=free step=4 name=op
+phase t=1794095575.621 round=4 build=npm arm=free step=6 name=op
+phase t=1794095576.080 round=4 build=npm arm=free step=8 name=cache-take
+phase t=1794095576.081 round=4 build=npm arm=free step=8 name=cache-attach
+give t=1794095576.762 round=4 build=npm arm=free answered_ms=3 freed=28672 unplugging=0
+give t=1794095578.824 round=4 build=npm arm=free answered_ms=15 freed=19996672 unplugging=0
+phase t=1794095579.367 round=4 build=npm arm=free step=8 name=run
+keep t=1794095579.380 round=4 build=npm arm=free step=8 bytes=90112 sync_ms=4
+merge t=1794095579.404 round=4 build=npm arm=free step=8 layers=4 bytes=917504 write_ms=2 sync_ms=4
+phase t=1794095579.419 round=4 build=npm arm=free step=8 name=cache-keep
+phase t=1794095579.419 round=4 build=npm arm=free step=8 name=step
+phase t=1794095579.510 round=4 build=npm arm=free step=8 name=layer
+phase t=1794095579.564 round=4 build=npm arm=free step=8 name=blob
+phase t=1794095579.574 round=4 build=npm arm=free step=8 name=op
+phase t=1794095579.574 round=4 build=npm arm=free step=8 name=drop
+phase t=1794095582.354 round=4 build=npm arm=free step=8 name=rootfs-from-snapshot
+phase t=1794095582.383 round=4 build=npm arm=free step=8 name=end
+build round=4 build=npm arm=free exit=0 s=7.0 budget=0 scope_anon_peak=796966912 scope_held_peak=823036928 scope_need_peak=822623232 held_cold=22859776 sync_s=0.3 writer_seen=0 writer_file_peak=0 writer_dirty_peak=0 steps=1:0.0,2:0.0,3:0.0,4:0.0,6:0.0,8:3.9,9:0.6
+phase t=1794095582.763 round=4 build=apt arm=held step=- name=start
+phase t=1794095582.767 round=4 build=apt arm=held step=3 name=plan
+phase t=1794095582.776 round=4 build=apt arm=held step=4 name=op
+phase t=1794095583.131 round=4 build=apt arm=held step=5 name=cache-take
+phase t=1794095583.131 round=4 build=apt arm=held step=5 name=cache-attach
+phase t=1794095583.177 round=4 build=apt arm=held step=5 name=run
+phase t=1794095583.177 round=4 build=apt arm=held step=5 name=cache-keep
+phase t=1794095583.177 round=4 build=apt arm=held step=5 name=step
+phase t=1794095583.177 round=4 build=apt arm=held step=5 name=layer
+phase t=1794095583.181 round=4 build=apt arm=held step=5 name=blob
+phase t=1794095583.186 round=4 build=apt arm=held step=5 name=op
+phase t=1794095583.187 round=4 build=apt arm=held step=6 name=cache-take
+phase t=1794095583.187 round=4 build=apt arm=held step=6 name=cache-attach
+give t=1794095584.632 round=4 build=apt arm=held answered_ms=1 freed=385024 unplugging=0
+give t=1794095584.635 round=4 build=apt arm=held held_ms=3 within=762277888
+give t=1794095586.638 round=4 build=apt arm=held held_ms=3 within=622022656
+give t=1794095588.643 round=4 build=apt arm=held held_ms=4 within=389582848
+give t=1794095588.734 round=4 build=apt arm=held answered_ms=5 freed=19501056 unplugging=268435456
+give t=1794095588.737 round=4 build=apt arm=held held_ms=8 within=398487552
+give t=1794095590.740 round=4 build=apt arm=held held_ms=3 within=207323136
+give t=1794095592.744 round=4 build=apt arm=held held_ms=3 within=88989696
+phase t=1794095594.660 round=4 build=apt arm=held step=6 name=run
+give t=1794095594.749 round=4 build=apt arm=held held_ms=4 within=10829824
+keep t=1794095595.152 round=4 build=apt arm=held step=6 bytes=89600000 sync_ms=19
+merge t=1794095595.351 round=4 build=apt arm=held step=6 layers=2 bytes=199974912 write_ms=115 sync_ms=74
+keep t=1794095595.369 round=4 build=apt arm=held step=6 bytes=241664 sync_ms=3
+merge t=1794095595.382 round=4 build=apt arm=held step=6 layers=3 bytes=851968 write_ms=1 sync_ms=2
+phase t=1794095595.390 round=4 build=apt arm=held step=6 name=cache-keep
+phase t=1794095595.390 round=4 build=apt arm=held step=6 name=step
+phase t=1794095595.630 round=4 build=apt arm=held step=6 name=layer
+phase t=1794095595.797 round=4 build=apt arm=held step=6 name=blob
+phase t=1794095595.803 round=4 build=apt arm=held step=6 name=op
+phase t=1794095595.803 round=4 build=apt arm=held step=6 name=drop
+give t=1794095596.761 round=4 build=apt arm=held answered_ms=11 freed=37187584 unplugging=134217728
+give t=1794095596.764 round=4 build=apt arm=held held_ms=15 within=166719488
+give t=1794095598.767 round=4 build=apt arm=held held_ms=2 within=249667584
+give t=1794095600.771 round=4 build=apt arm=held held_ms=3 within=249667584
+give t=1794095602.774 round=4 build=apt arm=held held_ms=3 within=249958400
+give t=1794095604.778 round=4 build=apt arm=held held_ms=3 within=249937920
+give t=1794095606.781 round=4 build=apt arm=held held_ms=3 within=249511936
+phase t=1794095607.324 round=4 build=apt arm=held step=6 name=rootfs-from-snapshot
+phase t=1794095607.386 round=4 build=apt arm=held step=6 name=end
+build round=4 build=apt arm=held exit=0 s=24.7 budget=1036290048 scope_anon_peak=973836288 scope_held_peak=1038614528 scope_need_peak=1001533440 held_cold=37105664 sync_s=0.3 writer_seen=24 writer_file_peak=1165258752 writer_dirty_peak=139460608 steps=1:0.0,2:0.0,3:0.0,4:0.0,5:0.4,6:12.6,7:0.6
+phase t=1794095607.849 round=4 build=apt arm=free step=- name=start
+phase t=1794095607.851 round=4 build=apt arm=free step=3 name=plan
+phase t=1794095607.865 round=4 build=apt arm=free step=4 name=op
+phase t=1794095608.215 round=4 build=apt arm=free step=5 name=cache-take
+phase t=1794095608.215 round=4 build=apt arm=free step=5 name=cache-attach
+phase t=1794095608.259 round=4 build=apt arm=free step=5 name=run
+phase t=1794095608.260 round=4 build=apt arm=free step=5 name=cache-keep
+phase t=1794095608.260 round=4 build=apt arm=free step=5 name=step
+phase t=1794095608.260 round=4 build=apt arm=free step=5 name=layer
+phase t=1794095608.264 round=4 build=apt arm=free step=5 name=blob
+phase t=1794095608.272 round=4 build=apt arm=free step=5 name=op
+phase t=1794095608.272 round=4 build=apt arm=free step=6 name=cache-take
+phase t=1794095608.272 round=4 build=apt arm=free step=6 name=cache-attach
+give t=1794095608.570 round=4 build=apt arm=free answered_ms=2 freed=319488 unplugging=0
+give t=1794095610.617 round=4 build=apt arm=free answered_ms=1 freed=27918336 unplugging=0
+phase t=1794095618.041 round=4 build=apt arm=free step=6 name=run
+keep t=1794095618.215 round=4 build=apt arm=free step=6 bytes=89600000 sync_ms=87
+merge t=1794095618.376 round=4 build=apt arm=free step=6 layers=2 bytes=199974912 write_ms=81 sync_ms=70
+keep t=1794095618.397 round=4 build=apt arm=free step=6 bytes=241664 sync_ms=4
+phase t=1794095618.406 round=4 build=apt arm=free step=6 name=cache-keep
+phase t=1794095618.406 round=4 build=apt arm=free step=6 name=step
+phase t=1794095618.709 round=4 build=apt arm=free step=6 name=layer
+phase t=1794095618.856 round=4 build=apt arm=free step=6 name=blob
+phase t=1794095618.867 round=4 build=apt arm=free step=6 name=op
+phase t=1794095618.867 round=4 build=apt arm=free step=6 name=drop
+phase t=1794095628.980 round=4 build=apt arm=free step=6 name=rootfs-from-snapshot
+phase t=1794095629.026 round=4 build=apt arm=free step=6 name=end
+build round=4 build=apt arm=free exit=0 s=21.3 budget=0 scope_anon_peak=1025241088 scope_held_peak=1093115904 scope_need_peak=1028829184 held_cold=70479872 sync_s=0.3 writer_seen=0 writer_file_peak=0 writer_dirty_peak=0 steps=1:0.0,2:0.0,3:0.0,4:0.0,5:0.4,6:10.6,7:0.6
+phase t=1794095629.619 round=5 build=npm arm=free step=- name=start
+phase t=1794095629.621 round=5 build=npm arm=free step=3 name=plan
+phase t=1794095629.643 round=5 build=npm arm=free step=4 name=op
+phase t=1794095629.666 round=5 build=npm arm=free step=6 name=op
+phase t=1794095629.977 round=5 build=npm arm=free step=8 name=cache-take
+phase t=1794095629.977 round=5 build=npm arm=free step=8 name=cache-attach
+give t=1794095630.843 round=5 build=npm arm=free answered_ms=4 freed=7340032 unplugging=268435456
+phase t=1794095631.900 round=5 build=npm arm=free step=8 name=run
+keep t=1794095631.906 round=5 build=npm arm=free step=8 bytes=90112 sync_ms=3
+phase t=1794095631.914 round=5 build=npm arm=free step=8 name=cache-keep
+phase t=1794095631.914 round=5 build=npm arm=free step=8 name=step
+phase t=1794095631.980 round=5 build=npm arm=free step=8 name=layer
+phase t=1794095632.023 round=5 build=npm arm=free step=8 name=blob
+phase t=1794095632.028 round=5 build=npm arm=free step=8 name=op
+phase t=1794095632.028 round=5 build=npm arm=free step=8 name=drop
+give t=1794095632.890 round=5 build=npm arm=free answered_ms=2 freed=40960 unplugging=805306368
+phase t=1794095634.390 round=5 build=npm arm=free step=8 name=rootfs-from-snapshot
+phase t=1794095634.424 round=5 build=npm arm=free step=8 name=end
+build round=5 build=npm arm=free exit=0 s=4.9 budget=0 scope_anon_peak=817840128 scope_held_peak=845336576 scope_need_peak=845336576 held_cold=18296832 sync_s=0.5 writer_seen=0 writer_file_peak=0 writer_dirty_peak=0 steps=1:0.0,2:0.0,3:0.0,4:0.0,6:0.0,8:2.3,9:0.5
+phase t=1794095634.645 round=5 build=npm arm=held step=- name=start
+phase t=1794095634.651 round=5 build=npm arm=held step=3 name=plan
+phase t=1794095634.677 round=5 build=npm arm=held step=4 name=op
+phase t=1794095634.704 round=5 build=npm arm=held step=6 name=op
+phase t=1794095635.123 round=5 build=npm arm=held step=8 name=cache-take
+phase t=1794095635.123 round=5 build=npm arm=held step=8 name=cache-attach
+give t=1794095636.670 round=5 build=npm arm=held answered_ms=7 freed=17580032 unplugging=0
+give t=1794095636.673 round=5 build=npm arm=held held_ms=9 within=110047232
+phase t=1794095637.213 round=5 build=npm arm=held step=8 name=run
+keep t=1794095637.233 round=5 build=npm arm=held step=8 bytes=90112 sync_ms=17
+merge t=1794095637.248 round=5 build=npm arm=held step=8 layers=2 bytes=172032 write_ms=0 sync_ms=3
+phase t=1794095637.258 round=5 build=npm arm=held step=8 name=cache-keep
+phase t=1794095637.258 round=5 build=npm arm=held step=8 name=step
+phase t=1794095637.313 round=5 build=npm arm=held step=8 name=layer
+phase t=1794095637.357 round=5 build=npm arm=held step=8 name=blob
+phase t=1794095637.362 round=5 build=npm arm=held step=8 name=op
+phase t=1794095637.363 round=5 build=npm arm=held step=8 name=drop
+give t=1794095638.677 round=5 build=npm arm=held held_ms=3 within=10747904
+give t=1794095638.712 round=5 build=npm arm=held answered_ms=1 freed=73728 unplugging=268435456
+give t=1794095638.715 round=5 build=npm arm=held held_ms=4 within=138944512
+phase t=1794095639.636 round=5 build=npm arm=held step=8 name=rootfs-from-snapshot
+phase t=1794095639.669 round=5 build=npm arm=held step=8 name=end
+build round=5 build=npm arm=held exit=0 s=5.1 budget=823675904 scope_anon_peak=789295104 scope_held_peak=816729088 scope_need_peak=816692224 held_cold=11034624 sync_s=0.1 writer_seen=4 writer_file_peak=190541824 writer_dirty_peak=84307968 steps=1:0.0,2:0.0,3:0.0,4:0.0,6:0.0,8:2.6,9:0.5
+phase t=1794095639.930 round=5 build=apt arm=free step=- name=start
+phase t=1794095639.932 round=5 build=apt arm=free step=3 name=plan
+phase t=1794095639.945 round=5 build=apt arm=free step=4 name=op
+phase t=1794095640.279 round=5 build=apt arm=free step=5 name=cache-take
+phase t=1794095640.279 round=5 build=apt arm=free step=5 name=cache-attach
+phase t=1794095640.329 round=5 build=apt arm=free step=5 name=run
+phase t=1794095640.329 round=5 build=apt arm=free step=5 name=cache-keep
+phase t=1794095640.329 round=5 build=apt arm=free step=5 name=step
+phase t=1794095640.329 round=5 build=apt arm=free step=5 name=layer
+phase t=1794095640.347 round=5 build=apt arm=free step=5 name=blob
+phase t=1794095640.353 round=5 build=apt arm=free step=5 name=op
+phase t=1794095640.353 round=5 build=apt arm=free step=6 name=cache-take
+phase t=1794095640.354 round=5 build=apt arm=free step=6 name=cache-attach
+give t=1794095640.761 round=5 build=apt arm=free answered_ms=1 freed=385024 unplugging=0
+give t=1794095644.608 round=5 build=apt arm=free answered_ms=7 freed=23470080 unplugging=134217728
+phase t=1794095648.921 round=5 build=apt arm=free step=6 name=run
+keep t=1794095649.061 round=5 build=apt arm=free step=6 bytes=89600000 sync_ms=44
+merge t=1794095649.201 round=5 build=apt arm=free step=6 layers=2 bytes=199974912 write_ms=74 sync_ms=57
+keep t=1794095649.221 round=5 build=apt arm=free step=6 bytes=241664 sync_ms=3
+merge t=1794095649.233 round=5 build=apt arm=free step=6 layers=3 bytes=851968 write_ms=0 sync_ms=3
+phase t=1794095649.241 round=5 build=apt arm=free step=6 name=cache-keep
+phase t=1794095649.241 round=5 build=apt arm=free step=6 name=step
+phase t=1794095649.519 round=5 build=apt arm=free step=6 name=layer
+phase t=1794095649.655 round=5 build=apt arm=free step=6 name=blob
+phase t=1794095649.661 round=5 build=apt arm=free step=6 name=op
+phase t=1794095649.661 round=5 build=apt arm=free step=6 name=drop
+phase t=1794095659.936 round=5 build=apt arm=free step=6 name=rootfs-from-snapshot
+phase t=1794095659.986 round=5 build=apt arm=free step=6 name=end
+build round=5 build=apt arm=free exit=0 s=20.2 budget=0 scope_anon_peak=1005301760 scope_held_peak=1073552384 scope_need_peak=1070685184 held_cold=27848704 sync_s=0.1 writer_seen=0 writer_file_peak=0 writer_dirty_peak=0 steps=1:0.0,2:0.0,3:0.0,4:0.0,5:0.4,6:9.3,7:0.6
+phase t=1794095660.281 round=5 build=apt arm=held step=- name=start
+phase t=1794095660.286 round=5 build=apt arm=held step=3 name=plan
+phase t=1794095660.297 round=5 build=apt arm=held step=4 name=op
+phase t=1794095660.629 round=5 build=apt arm=held step=5 name=cache-take
+phase t=1794095660.629 round=5 build=apt arm=held step=5 name=cache-attach
+phase t=1794095660.678 round=5 build=apt arm=held step=5 name=run
+phase t=1794095660.678 round=5 build=apt arm=held step=5 name=cache-keep
+phase t=1794095660.678 round=5 build=apt arm=held step=5 name=step
+phase t=1794095660.678 round=5 build=apt arm=held step=5 name=layer
+phase t=1794095660.682 round=5 build=apt arm=held step=5 name=blob
+phase t=1794095660.687 round=5 build=apt arm=held step=5 name=op
+phase t=1794095660.687 round=5 build=apt arm=held step=6 name=cache-take
+phase t=1794095660.687 round=5 build=apt arm=held step=6 name=cache-attach
+give t=1794095660.728 round=5 build=apt arm=held answered_ms=0 freed=0 unplugging=0
+give t=1794095660.730 round=5 build=apt arm=held held_ms=2 within=913403904
+give t=1794095662.733 round=5 build=apt arm=held held_ms=2 within=656670720
+give t=1794095662.778 round=5 build=apt arm=held answered_ms=2 freed=27869184 unplugging=0
+give t=1794095662.780 round=5 build=apt arm=held held_ms=5 within=660766720
+give t=1794095664.785 round=5 build=apt arm=held held_ms=4 within=396427264
+give t=1794095666.788 round=5 build=apt arm=held held_ms=3 within=143532032
+give t=1794095668.790 round=5 build=apt arm=held held_ms=2 within=37998592
+phase t=1794095669.727 round=5 build=apt arm=held step=6 name=run
+keep t=1794095670.009 round=5 build=apt arm=held step=6 bytes=89600000 sync_ms=21
+merge t=1794095670.191 round=5 build=apt arm=held step=6 layers=2 bytes=199974912 write_ms=110 sync_ms=63
+keep t=1794095670.209 round=5 build=apt arm=held step=6 bytes=241664 sync_ms=3
+phase t=1794095670.217 round=5 build=apt arm=held step=6 name=cache-keep
+phase t=1794095670.217 round=5 build=apt arm=held step=6 name=step
+phase t=1794095670.439 round=5 build=apt arm=held step=6 name=layer
+phase t=1794095670.594 round=5 build=apt arm=held step=6 name=blob
+phase t=1794095670.599 round=5 build=apt arm=held step=6 name=op
+phase t=1794095670.599 round=5 build=apt arm=held step=6 name=drop
+give t=1794095670.797 round=5 build=apt arm=held answered_ms=6 freed=29966336 unplugging=134217728
+give t=1794095670.800 round=5 build=apt arm=held held_ms=9 within=130011136
+give t=1794095672.803 round=5 build=apt arm=held held_ms=3 within=238333952
+give t=1794095674.807 round=5 build=apt arm=held held_ms=3 within=238088192
+give t=1794095676.810 round=5 build=apt arm=held held_ms=3 within=238428160
+give t=1794095678.813 round=5 build=apt arm=held held_ms=3 within=238395392
+give t=1794095680.817 round=5 build=apt arm=held held_ms=3 within=237916160
+phase t=1794095681.055 round=5 build=apt arm=held step=6 name=rootfs-from-snapshot
+phase t=1794095681.113 round=5 build=apt arm=held step=6 name=end
+build round=5 build=apt arm=held exit=0 s=20.9 budget=1036290048 scope_anon_peak=973819904 scope_held_peak=1039570944 scope_need_peak=1009620992 held_cold=82960384 sync_s=0.2 writer_seen=20 writer_file_peak=1310359552 writer_dirty_peak=664543232 steps=1:0.0,2:0.0,3:0.0,4:0.0,5:0.4,6:9.9,7:0.5
+phase t=1794095681.386 round=5 build=rust arm=free step=- name=start
+phase t=1794095681.388 round=5 build=rust arm=free step=3 name=plan
+phase t=1794095681.450 round=5 build=rust arm=free step=4 name=op
+phase t=1794095681.764 round=5 build=rust arm=free step=5 name=cache-take
+phase t=1794095681.764 round=5 build=rust arm=free step=5 name=cache-attach
+give t=1794095682.745 round=5 build=rust arm=free answered_ms=1 freed=765952 unplugging=0
+phase t=1794095682.817 round=5 build=rust arm=free step=5 name=run
+keep t=1794095682.827 round=5 build=rust arm=free step=5 bytes=4096 sync_ms=3
+merge t=1794095682.838 round=5 build=rust arm=free step=5 layers=2 bytes=4096 write_ms=0 sync_ms=3
+keep t=1794095682.849 round=5 build=rust arm=free step=5 bytes=8192 sync_ms=2
+merge t=1794095682.859 round=5 build=rust arm=free step=5 layers=2 bytes=8192 write_ms=0 sync_ms=2
+phase t=1794095682.867 round=5 build=rust arm=free step=5 name=cache-keep
+phase t=1794095682.867 round=5 build=rust arm=free step=5 name=step
+phase t=1794095682.890 round=5 build=rust arm=free step=5 name=layer
+phase t=1794095682.911 round=5 build=rust arm=free step=5 name=blob
+phase t=1794095682.916 round=5 build=rust arm=free step=5 name=op
+phase t=1794095682.916 round=5 build=rust arm=free step=5 name=drop
+phase t=1794095683.642 round=5 build=rust arm=free step=5 name=rootfs-from-snapshot
+phase t=1794095683.665 round=5 build=rust arm=free step=5 name=end
+build round=5 build=rust arm=free exit=0 s=2.4 budget=0 scope_anon_peak=196726784 scope_held_peak=281928704 scope_need_peak=277840896 held_cold=4087808 sync_s=0.2 writer_seen=0 writer_file_peak=0 writer_dirty_peak=0 steps=1:0.0,2:0.0,3:0.0,4:0.1,5:1.5,6:0.1
+phase t=1794095683.815 round=5 build=rust arm=held step=- name=start
+phase t=1794095683.821 round=5 build=rust arm=held step=3 name=plan
+phase t=1794095683.844 round=5 build=rust arm=held step=4 name=op
+phase t=1794095684.159 round=5 build=rust arm=held step=5 name=cache-take
+phase t=1794095684.159 round=5 build=rust arm=held step=5 name=cache-attach
+give t=1794095684.792 round=5 build=rust arm=held answered_ms=1 freed=413696 unplugging=0
+give t=1794095684.796 round=5 build=rust arm=held held_ms=4 within=70287360
+phase t=1794095685.080 round=5 build=rust arm=held step=5 name=run
+keep t=1794095685.084 round=5 build=rust arm=held step=5 bytes=4096 sync_ms=2
+merge t=1794095685.097 round=5 build=rust arm=held step=5 layers=2 bytes=4096 write_ms=0 sync_ms=3
+keep t=1794095685.110 round=5 build=rust arm=held step=5 bytes=8192 sync_ms=3
+merge t=1794095685.126 round=5 build=rust arm=held step=5 layers=2 bytes=8192 write_ms=0 sync_ms=3
+phase t=1794095685.137 round=5 build=rust arm=held step=5 name=cache-keep
+phase t=1794095685.137 round=5 build=rust arm=held step=5 name=step
+phase t=1794095685.151 round=5 build=rust arm=held step=5 name=layer
+phase t=1794095685.169 round=5 build=rust arm=held step=5 name=blob
+phase t=1794095685.175 round=5 build=rust arm=held step=5 name=op
+phase t=1794095685.175 round=5 build=rust arm=held step=5 name=drop
+phase t=1794095685.854 round=5 build=rust arm=held step=5 name=rootfs-from-snapshot
+phase t=1794095685.885 round=5 build=rust arm=held step=5 name=end
+build round=5 build=rust arm=held exit=0 s=2.2 budget=281298944 scope_anon_peak=198533120 scope_held_peak=283602944 scope_need_peak=279678976 held_cold=3923968 sync_s=0.1 writer_seen=2 writer_file_peak=100970496 writer_dirty_peak=30097408 steps=1:0.0,2:0.0,3:0.0,4:0.0,5:1.3,6:0.1
+done

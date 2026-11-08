@@ -34,7 +34,7 @@ const EVENT_MOST: usize = 8040;
 const UTF8_PER_UNIT: usize = 3;
 
 pub(super) struct Etwlogs {
-    /// Each event's words before its stream's: its container's and its image's names and
+    /// Each event's words before its stream's: its microVM's and its image's names and
     /// IDs, the fields its consumers parse (D198).
     head: String,
 }

@@ -7,14 +7,14 @@
 //! files, else an empty file, which it fills with a copy of that layer as it reads the
 //! snapshot, so that the two are always one generation's. Either is made in the home's
 //! `layers`, and stays there until the run it
-//! serves ends: a container that stays keeps it in its directory once its microVM has
+//! serves ends: a run that stays keeps it in its directory once its microVM has
 //! gone ([`LayerFile::keep_at`]), its guest having written its journal in place, and every
 //! other goes with its handle, its microVM holding it open and mapped meanwhile, as a
 //! run's swap does (D159).
 //! What a daemon before left in `layers` is no run's by the next.
 //!
 //! A kept layer is read here, on the host ([`pack`]): what `commit` takes of a stopped
-//! container, and what a container's next run, or a visit to its files, puts back.
+//! microVM, and what a microVM's next run, or a visit to its files, puts back.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -37,7 +37,7 @@ pub(super) struct LayerFile {
     path: PathBuf,
     /// The snapshot generation whose layer it is a clone of, for a restore of it.
     of: Option<String>,
-    /// A container's own, kept where it is ([`in_place`](Self::in_place)): never removed
+    /// A microVM's own, kept where it is ([`in_place`](Self::in_place)): never removed
     /// here.
     in_place: bool,
 }
@@ -181,7 +181,7 @@ impl LayerFile {
         &self.path
     }
 
-    /// A container's layer kept at `path` (D190) as a microVM's own, the file its run's
+    /// A stopped microVM's layer kept at `path` (D190) as its own, the file its run's
     /// microVM took under its layer device as it started: where it stays, never removed
     /// as its handle goes.
     pub(super) fn in_place(path: PathBuf) -> LayerFile {
@@ -192,7 +192,7 @@ impl LayerFile {
         }
     }
 
-    /// Keeps the file as `at`, a container's, in place of what was there: no longer the
+    /// Keeps the file as `at`, a microVM's, in place of what was there: no longer the
     /// handle's to remove. One kept there already stays.
     pub(super) fn keep_at(mut self, at: &Path) -> std::io::Result<()> {
         if !(self.in_place && self.path == at) {
@@ -205,14 +205,14 @@ impl LayerFile {
 
 impl Drop for LayerFile {
     fn drop(&mut self) {
-        // None, once kept, or a container's own.
+        // None, once kept, or a microVM's own.
         if !self.path.as_os_str().is_empty() && !self.in_place {
             let _ = std::fs::remove_file(&self.path);
         }
     }
 }
 
-/// Where a container keeps its writable layer once its microVM has gone (D190), in its
+/// Where a run keeps its writable layer once its microVM has gone (D190), in its
 /// directory, beside its log.
 pub(super) const KEPT: &str = "layer.ext4";
 
@@ -245,14 +245,14 @@ pub(super) fn open_kept(at: &Path) -> Result<std::fs::File, String> {
     Ok(file)
 }
 
-/// What a kept layer holds past which its container's next run goes on over its file rather
+/// What a kept layer holds past which its microVM's next run goes on over its file rather
 /// than having it packed and put back (D190, PM M443): packing costs a restart as the layer
 /// holds more, going over about the same whatever it holds (its guest's let-go of the
-/// template's layer and mount of the container's). Where the two cost the same, as
+/// template's layer and mount of the microVM's). Where the two cost the same, as
 /// measured ([`CROSSOVER_BASIS`]), to the MiB.
 pub(super) const OVER_FROM: u64 = 5 << 20;
 
-/// PM M443's restarts, `start -a` of a container that wrote that many bytes, n = 20 a side
+/// PM M443's restarts, `start -a` of a microVM that wrote that many bytes, n = 20 a side
 /// interleaved, ms at p50: packed and put back, then gone over (Fedora, Btrfs). Packing was
 /// quicker up to 4 MiB and going over from 8; they cross where the two lines between those
 /// meet.
@@ -374,7 +374,7 @@ fn overlaps(free: &[(u64, u64)], block: u64, unit: u64, data: &[(u64, u64)]) -> 
 
 /// Writes the writable layer kept in `file` (D190) to `out` as an OCI layer: its overlay's
 /// upper directory, whiteouts as `.wh.` entries, without what init made of every
-/// container (shards_abi::run::MADE) and the directories its guest found held nothing
+/// microVM (shards_abi::run::MADE) and the directories its guest found held nothing
 /// else (run::MADE_ONLY): the archive its guest's own pack of it makes (init's layer.rs).
 pub(super) fn pack(file: std::fs::File, out: impl Write) -> Result<(), String> {
     let volume = Volume::open(file).map_err(|e| e.to_string())?;

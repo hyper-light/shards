@@ -4,9 +4,9 @@
 //! a container whose command ends is started again where its policy says, after a wait
 //! that doubles from 100 ms to a minute, and starts over once a run lasted 10 s; a stop
 //! or kill by its stop signal or SIGKILL cancels the next; a stop or kill marks it stopped
-//! by hand, which `unless-stopped` heeds; `shards start` starts its count over. The wait
+//! by hand, which `unless-stopped` heeds; `shards start vm` starts its count over. The wait
 //! is a deadline of the followers' loop, and the start goes through the daemon's own
-//! door, as a client's detached `shards start` would.
+//! door, as a client's detached `shards start vm` would.
 
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
@@ -90,7 +90,7 @@ impl<D: Disk> Daemon<D> {
         f.wake();
     }
 
-    /// Container `id`'s wait to restart is up: started again, as a detached `shards start`
+    /// Container `id`'s wait to restart is up: started again, as a detached `shards start vm`
     /// starts it, unless a stop, kill, removal or the daemon's own stop came first; then
     /// it is stopped, so that a cancelled restart leaves it as its stop asked (D27).
     pub(super) fn restart_due<'s, 'e>(&'s self, threads: &'s Threads<'s, 'e>, id: &str) {
@@ -188,7 +188,7 @@ impl<D: Disk> Daemon<D> {
     }
 
     /// Whether container `id`'s run that started was the daemon's restart, which keeps
-    /// its count; one `shards start` or `run` asked for starts its manager over
+    /// its count; one `shards start vm` or `run` asked for starts its manager over
     /// (ResetRestartManager(true)), so that it waits 100 ms first again.
     pub(super) fn restarted_by_policy(&self, id: &str) -> bool {
         let ours = lock(&self.restarting_now).remove(id);

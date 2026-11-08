@@ -1,7 +1,7 @@
-//! `shards build`: builds an image as `docker build` does (docs/design/architecture.md
+//! `shards build image`: builds an image as `docker build` does (docs/design/architecture.md
 //! D33). The command line is buildx's (`shards_cmdline::commands::BUILD`); the plan is
 //! BuildKit's (`shards_agentfile::plan`); the image is written to this user's store as
-//! BuildKit's exporter writes it (`shards_agentfile::export`), so `shards run` boots it.
+//! BuildKit's exporter writes it (`shards_agentfile::export`), so `shards run vm` boots it.
 //! Progress is BuildKit's plain display.
 //!
 //! Every Dockerfile instruction runs: file operations (COPY, ADD of the context, of
@@ -136,6 +136,18 @@ pub fn build(args: impl Iterator<Item = OsString>) -> ExitCode {
     }
     if let Some(s) = stdin {
         let _ = std::fs::remove_file(&s.path);
+    }
+    // The microVMs it named, in the machine's local image store (D216): a name the build
+    // kept no image under (an output elsewhere) the daemon finds none of, and publishes
+    // nothing. Its failure is no build's, and is said.
+    if r.is_ok()
+        && status.get() == 0
+        && let Err(e) = crate::cli::request::publish_built(parsed.many("tag"))
+    {
+        let _ = writeln!(
+            std::io::stderr(),
+            "WARNING: the image was not put in the local image store: {e}"
+        );
     }
     match r {
         Ok(()) if status.get() != 0 => ExitCode::from(status.get()),
@@ -2070,7 +2082,8 @@ fn policies_of(
             base = "dockerfile".into();
         }
         // filepath.Join's, by this host's rules: `Dockerfile.rego` of the context `.` on
-        // Windows too, as buildx names it there, never `.\Dockerfile.rego`.
+        // Windows too, the name buildx v0.37.1 gives the policy there, never
+        // `.\Dockerfile.rego`.
         let rego = dir.join(format!("{base}.rego"));
         let filename = shards_archive::copy::clean(&rego).to_string_lossy().into_owned();
         match std::fs::read(&rego) {

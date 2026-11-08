@@ -1150,7 +1150,7 @@ fn report() -> i32 {
     let written =
         std::fs::write("/written", b"x").is_ok() && std::fs::read("/written").is_ok_and(|d| d == b"x");
     out.push_str(&format!("writable {written}\n"));
-    // What a container's /dev holds, and its paths read-only and masked.
+    // What the run's /dev holds, and its paths read-only and masked.
     let mut devs: Vec<String> = std::fs::read_dir("/dev")
         .map(|d| {
             d.filter_map(Result::ok)
@@ -3257,7 +3257,7 @@ fn into_map(spec: &str) -> io::Result<(&str, usize)> {
 
 /// [`fs`]'s `kmsg`: how many of the kernel's log lines hold `word`, each said: its ring
 /// read whole through syslog(2) (SYSLOG_ACTION_READ_ALL), which a privileged exec may
-/// (CAP_SYSLOG) where its container has no /dev/kmsg.
+/// (CAP_SYSLOG) where its run has no /dev/kmsg.
 fn kmsg_holding(word: &str) -> io::Result<usize> {
     // syslog(2)'s SYSLOG_ACTION_SIZE_BUFFER and SYSLOG_ACTION_READ_ALL.
     const SIZE_BUFFER: libc::c_int = 10;
@@ -3622,7 +3622,7 @@ fn bulk(len: u64, salt: u64) -> i32 {
 }
 
 /// Leaves a child that holds stdout open and never exits, then exits: the run must still
-/// end, as a container ends with its main process.
+/// end, as a run ends with its main process.
 fn orphan() -> i32 {
     // SAFETY: fork(2); the child only sleeps.
     if unsafe { libc::fork() } == 0 {

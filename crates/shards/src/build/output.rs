@@ -1,4 +1,4 @@
-//! What `shards build --output` writes (docs/design/architecture.md D52), as BuildKit's
+//! What `shards build image --output` writes (docs/design/architecture.md D52), as BuildKit's
 //! exporters write it through buildx (measured against dockerd 29.3.1, BuildKit v0.28.1,
 //! buildx v0.33.0, 2026-10-06):
 //!

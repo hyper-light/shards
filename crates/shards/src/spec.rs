@@ -1,6 +1,6 @@
 //! A command as `docker run` specifies it, which the daemon and each VM read alike: its
 //! options and the workload they make, the words and status of one that cannot run, and
-//! the records of a container's log.
+//! the records of a microVM's log.
 
 // Where shards runs no workloads yet (Windows), nothing reads these.
 #![cfg_attr(not(unix), allow(dead_code))]
@@ -28,7 +28,7 @@ pub fn not_run(said: &str) -> (String, u8) {
 pub struct Options {
     pub argv: Vec<String>,
     pub env: Vec<String>,
-    /// An exec's own variables, laid over the container's environment whole (moby
+    /// An exec's own variables, laid over the microVM's environment whole (moby
     /// daemon/exec.go): empty for a run.
     pub exec_env: Vec<String>,
     pub workdir: String,
@@ -100,7 +100,7 @@ pub fn spec(o: &Options, lookup: impl Fn(&str) -> Option<std::ffi::OsString>) ->
             .collect()
     };
     let defaults = defaults.into_iter().map(String::into_bytes).collect();
-    // The container's (CreateDaemonEnvironment), then an exec's over it whole.
+    // The microVM's (CreateDaemonEnvironment), then an exec's over it whole.
     let mut env = replace_or_append(defaults, given(&o.env)?);
     if !o.exec_env.is_empty() {
         env = replace_or_append(env, given(&o.exec_env)?);
@@ -165,7 +165,7 @@ pub fn now() -> u128 {
         .map_or(0, |d| d.as_nanos())
 }
 
-/// A container's log, `log` in its directory, is a sequence of records, each a stream
+/// A microVM's log, `log` in its directory, is a sequence of records, each a stream
 /// byte ([`LOG_STDOUT`] or [`LOG_STDERR`]), the time the output arrived in nanoseconds
 /// since the Unix epoch (big-endian u64), the output's length (big-endian u32), then the
 /// output. Appends keep the streams in the order they arrived, as `docker logs` shows
@@ -186,7 +186,7 @@ pub const INDEX_START: u64 = INDEX_LINE - 1;
 /// A record's bytes before its output.
 pub const LOG_HEAD: u64 = 13;
 
-/// How much of a container's output its log keeps: `files` segments of `size` bytes at
+/// How much of a microVM's output its log keeps: `files` segments of `size` bytes at
 /// most, the oldest removed first, as its daemon's settings say (daemon.rs, `Settings`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LogRetention {
@@ -280,8 +280,8 @@ mod tests {
         );
     }
 
-    /// An exec's variables over the container's, as dockerd lays them (daemon/exec.go):
-    /// one replaces the container's of its name, the last of two; one without a value
+    /// An exec's variables over the microVM's, as dockerd lays them (daemon/exec.go):
+    /// one replaces the microVM's of its name, the last of two; one without a value
     /// unsets it; a new one is appended.
     #[test]
     fn an_execs_environment_is_laid_over_its_containers() {

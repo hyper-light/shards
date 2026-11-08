@@ -6,7 +6,7 @@ use shards_template::Value;
 use super::units::{bytes_size, human_size_precision};
 use super::{Context, Ctx, Header, Methods, TABLE, truncate_id};
 
-/// A container's sample (StatsEntry).
+/// A microVM's sample (StatsEntry).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Stats {
     /// The name or ID it was asked for by.
