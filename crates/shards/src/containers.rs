@@ -1,6 +1,6 @@
 //! Containers, as `docker run` leaves them (docs/design/architecture.md D27): each run is
 //! one, with an ID and a name, running until its command ends, then exited until
-//! `shards rm` removes it, or at once with `--rm`. The daemon keeps them, and writes each
+//! `shards remove vm` removes it, or at once with `--rm`. The daemon keeps them, and writes each
 //! to `containers/ID/config.json` in the home, so that they outlive it ([`Registry`]).
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};

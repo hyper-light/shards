@@ -1,4 +1,4 @@
-//! `shards run` boots a kernel directly in a microVM; `shards restore` resumes one
+//! `shards run vm` boots a kernel directly in a microVM; `shards restore vm` resumes one
 //! from a snapshot. Either can run a command in an image as `docker run` does
 //! (workload.rs): `vm run --rootfs IMAGE -- COMMAND` boots into the image for it, and
 //! `vm run --rootfs IMAGE --snapshot-dir DIR` saves a template, booted and mounted, that
@@ -402,7 +402,7 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
                 );
             }
             // The same on Windows (PM M340): the name its spawner gave a pipe it duplicated
-            // into this process from `shards run … --slates-fs-handle V`, as `--net`'s are
+            // into this process from `shards run vm … --slates-fs-handle V`, as `--net`'s are
             // given; no handle's value crosses as a flag. Taken once its flags are all read.
             #[cfg(windows)]
             "--slates-fs" => served.push(text(value("--slates-fs")?)?),

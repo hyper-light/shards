@@ -160,7 +160,7 @@ limit and how many it refused), as one that runs out of memory says `oom`.
 
 ### A microVM's own engine
 
-`shards run --use-api-socket` gives the program it runs an engine of its own microVM's:
+`shards run vm --use-api-socket` gives the program it runs an engine of its own microVM's:
 `DOCKER_HOST` points at a socket in its own files (`/run/shards/engine.sock`), so the
 `docker` CLI, Testcontainers and CI tools inside it run what they ask for as containers in
 that same microVM. What runs there takes nothing of your machine's: not its engine, not its files, not your

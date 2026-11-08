@@ -591,16 +591,16 @@ pub mod beside {
 pub mod builtin {
     /// The guest's processes as `/proc` has them, for `shards top` (init procs.rs).
     pub const PROCESSES: u8 = 1;
-    /// What the microVM changed of its image's files, for `shards diff` (init
+    /// What the microVM changed of its image's files, for `shards read changes` (init
     /// changes.rs).
     pub const CHANGES: u8 = 2;
-    /// The microVM's files as a tar archive, for `shards export` (init run.rs).
+    /// The microVM's files as a tar archive, for `shards export vm` (init run.rs).
     pub const EXPORT: u8 = 3;
     /// The microVM's writable layer as an OCI layer, as it is now, for `shards
     /// commit` (init layer.rs): with `pause` its only argument, its processes stopped
     /// meanwhile.
     pub const LAYER: u8 = 4;
-    /// `shards cp`'s (init copy.rs), each its path first: a path's stat as a JSON line;
+    /// `shards copy vm`'s (init copy.rs), each its path first: a path's stat as a JSON line;
     /// a tar archive of it; and the tar archive on stdin unpacked into it, then the
     /// run's user's to own it all or empty, then `1` to let a directory and a file
     /// replace each other.

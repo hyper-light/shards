@@ -217,7 +217,7 @@ impl<D: Disk> Daemon<D> {
         serde_json::from_slice(&out).map_err(|e| format!("image {image}'s command: {e}"))
     }
 
-    /// `POST /containers/create`: the run the body asks for, made as `shards create` makes
+    /// `POST /containers/create`: the run the body asks for, made as `shards create vm` makes
     /// it.
     pub(super) fn engine_create<'s, 'e>(&'s self, threads: &'s Threads<'s, 'e>, call: &Call<'_>) -> Answer {
         let body: Value = match serde_json::from_slice(&call.body) {
@@ -383,7 +383,7 @@ impl<D: Disk> Daemon<D> {
         }
     }
 
-    /// `POST /containers/{id}/start`: started as `shards start` starts it; attached where
+    /// `POST /containers/{id}/start`: started as `shards start vm` starts it; attached where
     /// attaches wait for its start, its output theirs. One running already is not
     /// modified (304).
     pub(super) fn engine_start<'s, 'e>(
@@ -490,7 +490,7 @@ impl<D: Disk> Daemon<D> {
         }
     }
 
-    /// Starts microVM `id` attached as `shards start -a` starts one, its output to the
+    /// Starts microVM `id` attached as `shards start vm -a` starts one, its output to the
     /// attaches `waiting`, and its stdin from the first that asked for it, where the
     /// microVM reads one. Answers once it runs, or did not start; its output goes on
     /// meanwhile on a thread of its own, until the run ends.
@@ -607,7 +607,7 @@ impl<D: Disk> Daemon<D> {
         })
     }
 
-    /// `POST /containers/{id}/stop` and `kill`: as `shards stop` and `kill` ask, by the
+    /// `POST /containers/{id}/stop` and `kill`: as `shards stop vm` and `kill` ask, by the
     /// query's signal and time. One that does not run is not modified by a stop (304).
     pub(super) fn engine_stop<'s, 'e>(
         &'s self,
@@ -638,7 +638,7 @@ impl<D: Disk> Daemon<D> {
         }
     }
 
-    /// `DELETE /containers/{id}`: removed as `shards rm` removes it, `force` and `v` its
+    /// `DELETE /containers/{id}`: removed as `shards remove vm` removes it, `force` and `v` its
     /// flags.
     pub(super) fn engine_remove<'s, 'e>(
         &'s self,
@@ -1167,7 +1167,7 @@ impl<D: Disk> Daemon<D> {
         }
     }
 
-    /// `GET /containers/{id}/logs`: its log as `shards logs` reads it, by the query's
+    /// `GET /containers/{id}/logs`: its log as `shards read logs` reads it, by the query's
     /// flags, each piece a frame of its stream, or raw for a terminal's.
     pub(super) fn engine_logs<'s, 'e>(
         &'s self,

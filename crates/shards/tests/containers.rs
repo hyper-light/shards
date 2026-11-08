@@ -1,4 +1,4 @@
-//! Containers, end to end: what `shards run` and `run -d` leave behind, and `shards ps`,
+//! Containers, end to end: what `shards run vm` and `run -d` leave behind, and `shards list vms`,
 //! `wait`, `logs`, `rm`, `stop` and `kill` (crates/shards/src/daemon/commands.rs), as
 //! `docker` has them. Real VMs, booted from SHARDS_KERNEL and SHARDS_INIT, so no snapshots
 //! are needed; the image comes from a loopback registry (tests/common, `served`), and its

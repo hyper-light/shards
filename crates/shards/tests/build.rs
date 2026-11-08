@@ -1,6 +1,6 @@
-//! `shards build`, end to end: an image built from a Dockerfile over a base the build
+//! `shards build image`, end to end: an image built from a Dockerfile over a base the build
 //! pulls from a registry (a loopback one, as in images.rs), written to the store as
-//! BuildKit's exporter writes it, then booted by `shards run` in a real VM, where the
+//! BuildKit's exporter writes it, then booted by `shards run vm` in a real VM, where the
 //! build's settings must hold.
 
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]

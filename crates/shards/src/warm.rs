@@ -692,7 +692,7 @@ fn pauses() -> Result<&'static mpsc::Sender<Pause>, String> {
 }
 
 /// Passes the signals that arrive on `conn` to the workload until it closes: the client's,
-/// or the daemon's (`shards stop`, `kill`), and the client's terminal sizes. When the
+/// or the daemon's (`shards stop vm`, `kill`), and the client's terminal sizes. When the
 /// client hangs up, the VM lets go of its stdio. A workload outlives its client, as a
 /// container outlives `docker run`'s.
 fn relay_signals(conn: &UnixStream, to: &'static ToGuest, from: From<'_>) {

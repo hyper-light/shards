@@ -329,7 +329,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
         inspected(parsed.string("format"), &documents, errors, styled, reply)
     }
 
-    /// `shards save IMAGE...` (moby ImageExport): every image found first, so that one not
+    /// `shards save image IMAGE...` (moby ImageExport): every image found first, so that one not
     /// here fails before any byte is written; then the archive, written to what the client
     /// sent (its stdout, or its `-o` file), under a lease, so that no collection takes a
     /// blob meanwhile. With `--platform`, of each image the microVMs of those platforms

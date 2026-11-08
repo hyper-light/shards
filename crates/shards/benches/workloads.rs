@@ -1,4 +1,4 @@
-//! Workloads benchmark: `shards run IMAGE COMMAND` as a user runs it, for commands that
+//! Workloads benchmark: `shards run vm IMAGE COMMAND` as a user runs it, for commands that
 //! do different work, each run's output checked byte for byte (docs/audit/2026-09-29_audit.md,
 //! "Required benchmark matrix": workloads, exact status and output). The image is the E2E
 //! tests' registry image, its entrypoint the test guest; runs are served from the

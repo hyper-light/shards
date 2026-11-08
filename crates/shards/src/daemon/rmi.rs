@@ -1,4 +1,4 @@
-//! `shards rmi` as dockerd's containerd store removes images (moby docker-v29.3.1
+//! `shards remove image` as dockerd's containerd store removes images (moby docker-v29.3.1
 //! daemon/containerd/image_delete.go, ImageDelete; image.go, resolveAllReferences;
 //! soft_delete.go), and as docker/cli reports it (cli/command/image/remove.go).
 //!

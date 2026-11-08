@@ -1,5 +1,5 @@
 //! Execs' calls (D170): a command made to run in a running microVM, then started as
-//! `shards exec` runs one, and its end kept for its client to read.
+//! `shards exec vm` runs one, and its end kept for its client to read.
 
 use std::fs::File;
 use std::io::{self, Read as _};
@@ -131,7 +131,7 @@ impl<D: Disk> Daemon<D> {
         Answer::json(201, &json!({ "Id": exec_id }))
     }
 
-    /// `POST /exec/{id}/start`: run as `shards exec` runs it, detached, or on `conn`
+    /// `POST /exec/{id}/start`: run as `shards exec vm` runs it, detached, or on `conn`
     /// taken over: its output, multiplexed unless a terminal's, and its stdin where it
     /// attaches one. Its end is kept before its stream ends, for its client to ask.
     pub(super) fn engine_exec_start<'s, 'e>(

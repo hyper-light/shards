@@ -65,7 +65,7 @@ pub fn log(home: &Path) -> PathBuf {
     home.join("daemon.log")
 }
 
-/// The first word of `shards cp`'s steps, which no command line has: what its client asks
+/// The first word of `shards copy vm`'s steps, which no command line has: what its client asks
 /// the daemon one at a time (cli/cp.rs, daemon/commands.rs).
 pub const COPY_STEP: &str = "\u{0}cp";
 
@@ -491,7 +491,7 @@ pub const EXEC_INTERACTIVE: u8 = 1;
 /// output goes nowhere.
 pub const EXEC_DETACHED: u8 = 2;
 
-/// `shards exec` as the client asks for it: the microVM, the command, and what the
+/// `shards exec vm` as the client asks for it: the microVM, the command, and what the
 /// command line set; the client's terminal size for `-t`; and the daemon binary the client
 /// would start, as in [`Run`].
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -756,7 +756,7 @@ pub struct Run {
     pub publish_all: bool,
     /// The client's [`REGISTRY_ENV`], for the image's pull.
     pub registry_env: Vec<String>,
-    /// `shards start`: the microVM, as given, to run again as it was made, its
+    /// `shards start vm`: the microVM, as given, to run again as it was made, its
     /// writable layer put back (D37); the rest of this request says only how its client
     /// attaches.
     pub again: Option<String>,
@@ -766,9 +766,9 @@ pub struct Run {
     /// With `again`, the client says nothing of the start but what fails, as docker/cli's
     /// `start --checkpoint` says nothing (container/start.go).
     pub silent: bool,
-    /// `shards create`: the microVM is made, and not started.
+    /// `shards create vm`: the microVM is made, and not started.
     pub create: bool,
-    /// `shards restart`: with `again`, the microVM is stopped first if it runs, by
+    /// `shards restart vm`: with `again`, the microVM is stopped first if it runs, by
     /// `stop_signal` and `stop_timeout` where given, else as it stops.
     pub restart: bool,
     /// The daemon binary this client would start.

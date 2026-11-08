@@ -1,6 +1,6 @@
-//! `shards daemon`: serves `shards run` from warm VMs (docs/design/architecture.md D26).
+//! `shards daemon`: serves `shards run vm` from warm VMs (docs/design/architecture.md D26).
 //!
-//! One runs per SHARDS_HOME, holding the home's lock; `shards run` starts it when none
+//! One runs per SHARDS_HOME, holding the home's lock; `shards run vm` starts it when none
 //! listens. For each template it has served, it keeps SHARDS_POOL warm VMs (default 2):
 //! restored, resumed, connected, and waiting for a command (warm.rs). A run takes one, and
 //! the pool refills. A run with no template yet boots a VM that saves one on the way, and
@@ -150,7 +150,7 @@ const HANDOFF_TRIES: usize = 3;
 /// A stopped microVM's writable layer, in its directory (D37): kept whole, and being
 /// written as its microVM stops.
 pub(super) const LAYER: &str = "layer.tar";
-/// The request a microVM was made by, in its directory, for `shards start`.
+/// The request a microVM was made by, in its directory, for `shards start vm`.
 pub(super) const REQUEST: &str = "request";
 const LAYER_NEW: &str = "layer.new";
 /// A running microVM's swap (D159), in its directory until its VM holds it.
@@ -1137,7 +1137,7 @@ struct Daemon<D: Disk = Real> {
     arrived: Condvar,
     /// The microVMs' records to write, and the thread that writes them (record.rs).
     recording: record::Recording,
-    /// Who waits for each running microVM to end, for its exit code: `shards wait`,
+    /// Who waits for each running microVM to end, for its exit code: `shards wait vm`,
     /// `stop`, `kill`, `rm -f`. Told under the microVMs' lock, as the record changes.
     /// Each waiter has a number, by which it goes if it stops waiting first.
     waiters: Mutex<HashMap<String, Vec<Waiter>>>,
@@ -1151,9 +1151,9 @@ struct Daemon<D: Disk = Real> {
     /// that took them has gone, and told as each goes.
     ports_held: Mutex<Vec<publish::Held>>,
     ports_freed: Condvar,
-    /// The microVMs `shards rm` is removing.
+    /// The microVMs `shards remove vm` is removing.
     removing: Mutex<HashSet<String>>,
-    /// What has happened, for `shards events`.
+    /// What has happened, for `shards watch system`.
     events: events::Events,
     /// Containers whose writable layer their stopped VM is still saving (D37), and when
     /// one is no more.
@@ -1162,13 +1162,13 @@ struct Daemon<D: Disk = Real> {
     /// Each microVM's restart manager, as its runs end (restart.rs).
     restarts: Mutex<HashMap<String, restart::Manager>>,
     /// The microVMs the daemon itself is starting again, for their policies: such a
-    /// start keeps its restart count, where `shards start` resets it.
+    /// start keeps its restart count, where `shards start vm` resets it.
     restarting_now: Mutex<HashSet<String>>,
     /// Stopped microVMs whose files a VM is visiting (visit.rs), and its end's wakeup:
     /// one visit at a time each, and no start meanwhile.
     visiting: Mutex<HashSet<String>>,
     visited: Condvar,
-    /// The microVMs `shards pause` froze: their VM processes stopped (SIGSTOP), until
+    /// The microVMs `shards pause vm` froze: their VM processes stopped (SIGSTOP), until
     /// `unpause`, or a stop or kill, lets them go on.
     paused: Mutex<HashSet<String>>,
     /// What is plugged into each running microVM (D214), by microVM ID, then by the path
@@ -1296,7 +1296,7 @@ fn ready_link(fd: i32) -> Result<File, String> {
 /// Starts the daemon in the background, and returns once it serves: in a session of its
 /// own, writing to the log in its home, and orphaned as this process exits, so that init
 /// adopts it (or the nearest subreaper) and reaps it when it exits. A daemon left the
-/// child of the `shards run` that started it would stay a zombie after it exits, for as
+/// child of the `shards run vm` that started it would stay a zombie after it exits, for as
 /// long as that client lives (APUE 13.3; XNU proc_exit reparents orphans to launchd). One
 /// that ends before it serves has found another daemon serving its home, or failed,
 /// which this says with its log's path, rather than leave its client to wait for it
@@ -2714,7 +2714,7 @@ impl<D: Disk> Daemon<D> {
             return None;
         }
         let _ = shards_ipc::send(conn, kind::HEARD, &[], &[]);
-        // `shards create` says the daemon's refusal as it is, and exits 1: runCreate
+        // `shards create vm` says the daemon's refusal as it is, and exits 1: runCreate
         // returns createContainer's error unwrapped (docker/cli create.go).
         let creating = run.create;
         let refuse = |said: &str| {
@@ -2725,7 +2725,7 @@ impl<D: Disk> Daemon<D> {
                 refuse(said);
             }
         };
-        // `shards start`: the microVM as it was made, attached as this client asks
+        // `shards start vm`: the microVM as it was made, attached as this client asks
         // (D37). One running already is left so, and named, as `docker start` names it.
         let mut again = None;
         // Set aside as the run becomes the one the microVM was made by (`again_as`).
@@ -3341,7 +3341,7 @@ impl<D: Disk> Daemon<D> {
         // A driver that ships its log to a cloud finds its credentials with this client's
         // environment, kept in memory alone (D168).
         self.shipping.give(&id, &run);
-        // A new microVM keeps the request it was made by, for `shards start` (D37): but
+        // A new microVM keeps the request it was made by, for `shards start vm` (D37): but
         // its client's environments, its registries' and its cloud's, which hold
         // credentials and are no microVM's, and which each client that starts it gives.
         if again.is_none() {
@@ -3359,7 +3359,7 @@ impl<D: Disk> Daemon<D> {
                 ));
             }
         }
-        // `shards create`: made, not started, its ports not yet bound and no member of its
+        // `shards create vm`: made, not started, its ports not yet bound and no member of its
         // network, its address no one's (moby daemon/create.go makes no network endpoint).
         if run.create {
             self.let_go(&id);
@@ -4214,7 +4214,7 @@ impl<D: Disk> Daemon<D> {
         Ok(())
     }
 
-    /// Container `given`, to be started again (`shards start`): its ID, its log's newest
+    /// Container `given`, to be started again (`shards start vm`): its ID, its log's newest
     /// segment, and the request it was made by; none if it runs, or is starting, already.
     /// From here until its run is handed over or abandoned, it is starting.
     fn again(&self, given: &str) -> Result<Option<(String, Log, Run)>, String> {
@@ -7349,7 +7349,7 @@ impl<D: Disk> Daemon<D> {
         self.collecting.changed.notify_all();
     }
 
-    /// Marks a collection due if a pull, here or by `shards pull`, has said one is
+    /// Marks a collection due if a pull, here or by `shards pull image`, has said one is
     /// (pull.rs, `collect_due`), for the collector's thread.
     fn mark_collection(&self) {
         let due = crate::pull::collect_due(&self.home);
@@ -11294,7 +11294,7 @@ mod tests {
     }
 
     /// Lines of every length about the largest message the daemon may send reach
-    /// `shards logs` whole, byte for byte, on their own streams, with and without their
+    /// `shards read logs` whole, byte for byte, on their own streams, with and without their
     /// prefixes, and so do lines several times that, and the last line a microVM left
     /// unfinished. A client that hangs up is told nothing, and the command fails: its
     /// output did not all arrive (audit A08: a line past 1 MiB was dropped, status 0).

@@ -92,7 +92,7 @@ pub fn pull(
 }
 
 /// [`pull`], every layer fetched again though stored, and the root filesystem built
-/// again in its place: `shards pull --no-cache`, which `docker pull` has not.
+/// again in its place: `shards pull image --no-cache`, which `docker pull` has not.
 pub fn pull_again(
     registry: &Registry,
     store: &Store,

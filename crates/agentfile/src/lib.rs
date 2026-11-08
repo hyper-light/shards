@@ -1,5 +1,5 @@
 //! Dockerfiles as BuildKit's Dockerfile frontend reads them (moby/buildkit
-//! dockerfile/1.27.1), for `shards build` (docs/research/image-build.md):
+//! dockerfile/1.27.1), for `shards build image` (docs/research/image-build.md):
 //! - `parser`: the text into instructions, with BuildKit's errors and warnings;
 //! - `lex`: words expanded and split, held to BuildKit's lexer (shell/lex.go);
 //! - `instructions`: lines into typed instructions and build stages, with their flags;

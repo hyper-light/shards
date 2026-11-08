@@ -923,7 +923,7 @@ impl Machine {
         })
     }
 
-    /// A step of a client's copy (`shards cp`, cli/cp.rs), which the client drives as this
+    /// A step of a client's copy (`shards copy vm`, cli/cp.rs), which the client drives as this
     /// machine's own CLI drives one (D180): this daemon's to take, asked as the CLI asks it,
     /// the stream's pipes the descriptors the CLI would give, an archive's to write and an
     /// extract's to read; what it says, and its status, the command's.

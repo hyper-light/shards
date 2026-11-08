@@ -1,4 +1,4 @@
-//! The daemon, end to end (crates/shards/src/daemon.rs): `shards run` through the daemon
+//! The daemon, end to end (crates/shards/src/daemon.rs): `shards run vm` through the daemon
 //! its first run starts, served from pools of warm VMs of the image's template. Real VMs;
 //! the image comes from a loopback registry (tests/common, `served`), and its entrypoint
 //! is the test guest, so a command is one of its modes. Needs vsock; its template and pool

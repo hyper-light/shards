@@ -1,4 +1,4 @@
-//! The client side of `shards run` (docs/design/architecture.md D26). It asks the daemon
+//! The client side of `shards run vm` (docs/design/architecture.md D26). It asks the daemon
 //! for the run, starting the daemon if there is none, and passes it this process's stdout
 //! and stderr, which the command then writes to itself. The command's stdin is /dev/null,
 //! or with `-i` a pipe the client fills from its own stdin: then the command's stdin ends
