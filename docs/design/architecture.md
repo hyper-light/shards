@@ -9071,8 +9071,11 @@ estimator's of what was measured (the table below).
   says it has, a GET of the upload's `Location` answered 204 with its `Range`, never from
   the blob's start unless the upload is gone (404, begun again); a file's body is not
   resent whole by the request's own retries. A failure is a reset, a timeout, or a send
-  cut short (now a transient failure, not a refusal). The upload gives up once its sends
-  have failed for a moment (D222's `MOMENT`) without the registry taking more.
+  cut short (now a transient failure, not a refusal). Each resume waits a random share of
+  how long the trouble has lasted (D222's `Trouble`), and the upload gives up once its
+  sends have failed for its path's trouble budget without the registry taking more
+  (twice the longest trouble the path passed, at least TCP's R2: crate::patience); no
+  count of attempts.
 - **The registry's own limits bound the chunk too**: never less than the
   `OCI-Chunk-Min-Length` its POST's answer names (spec.md), and never more than it takes
   in one request: a 413 (nginx before it refuses a body past `client_max_body_size`, 1 MiB
@@ -9119,7 +9122,7 @@ estimator's of what was measured (the table below).
 | midpoint of took and refused | `Registry::chunk` | bisection |
 | `0-0` taken as nothing | `Registry::status` | distribution `blobupload.go`: an upload of 0 or 1 bytes says `0-0` |
 | 1 s a window | `climb::WINDOW` | **not derived**: M114's measuring period, kept |
-| a minute of failures without progress | `MOMENT` | D222's: every registry failure M486 measured passed within it |
+| failures without progress, for the path's budget | `Trouble`, `Client::budget` | D222's: twice the longest trouble the path passed (doubling search), at least RFC 1122's R2 |
 | 30 s to look the route up | `http::CONNECT` | **not derived**: Go's dial timeout, kept from before |
 
 - **Tested** (Fedora, x86_64): `climb`'s
