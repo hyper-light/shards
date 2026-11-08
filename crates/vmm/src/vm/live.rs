@@ -29,6 +29,69 @@ pub const SWAP: u8 = 4;
 /// A round's end: its number, and the pages and bytes it sent.
 pub const ROUND: u8 = 5;
 
+/// Why a live move's pre-copy stopped and its last save began (D176 part 7).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Stop {
+    /// Its last round sent no more than the bytes a last round may: what is left is little
+    /// (Clark et al., NSDI 2005, §5.3: "less than 256KB remains"; Xen's xc_domain_save, fewer
+    /// than 50 pages dirtied).
+    Little,
+    /// Its last round sent no fewer bytes than the round before: its guest writes as fast as
+    /// the link carries what it wrote. A round sends what was written as the round before it
+    /// went, so its bytes over that round's time are the guest's rate of writing, and the
+    /// round before's bytes over the same time the link's rate: rounds that no longer shrink
+    /// say the first is the greater, and another round would leave as much to the last save
+    /// as this one does, at the cost of a round (Clark et al. §4.1, "the hottest pages will
+    /// be dirtied at least as fast as we can transfer them, and hence must be transferred in
+    /// the final stop-and-copy phase"; §6.5, a guest writing faster than the network carries
+    /// suspended after the rounds that did not outpace it).
+    Unshrinking,
+    /// It has sent three times the bytes its first round sent, all its memory held: Xen's
+    /// bound, "never send more than 3x" its memory (xc_domain_save.c, `DEF_MAX_FACTOR`).
+    Thrice,
+    /// It has run its most rounds: Xen's 30 (`DEF_MAX_ITERS` 29, "limit us to 30 times round
+    /// loop").
+    Rounds,
+}
+
+impl Stop {
+    /// Whether, and why, a pre-copy stops after rounds that sent `sent` bytes each, in order,
+    /// the first all its memory: at its `most` rounds (at least one), or once one sends no
+    /// more than `enough`; and once rounds no longer shrink, or what they sent comes to three
+    /// times the first's. None before any round: the first always runs. Rounds that each
+    /// shrink end too, as each is fewer bytes, of pages, than the one before.
+    pub fn after(sent: &[u64], most: u32, enough: u64) -> Option<Stop> {
+        let &last = sent.last()?;
+        if last <= enough {
+            return Some(Stop::Little);
+        }
+        if let [.., before, _] = sent
+            && last >= *before
+        {
+            return Some(Stop::Unshrinking);
+        }
+        let first = sent.first().copied().unwrap_or(0);
+        let total = sent.iter().fold(0u64, |a, b| a.saturating_add(*b));
+        if sent.len() > 1 && total > first.saturating_mul(3) {
+            return Some(Stop::Thrice);
+        }
+        if sent.len() >= most.max(1) as usize {
+            return Some(Stop::Rounds);
+        }
+        None
+    }
+
+    /// As a move's log says it.
+    pub fn said(self) -> &'static str {
+        match self {
+            Stop::Little => "little left",
+            Stop::Unshrinking => "its rounds no longer shrink",
+            Stop::Thrice => "three times its memory sent",
+            Stop::Rounds => "its most rounds",
+        }
+    }
+}
+
 /// Pages of guest memory, by guest-physical address, each [`PAGE`] long: sorted, each once.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Pages(Vec<u64>);
@@ -186,6 +249,58 @@ pub fn read(
 #[allow(clippy::unwrap_used, clippy::indexing_slicing)]
 mod tests {
     use super::*;
+
+    const MIB: u64 = 1 << 20;
+
+    /// Pre-copy goes on while its rounds shrink, and stops at the first that leaves little,
+    /// or sends no fewer bytes than the one before, or brings what was sent to three times the
+    /// first round, or is its most; never before its first round. A guest writing faster than
+    /// the link carries (the two-host harness's 1 MiB rewritten every 50 ms, over a link of
+    /// 0.55 MB/s) stops after its second round, where 30 rounds of it ran past 30 minutes.
+    #[test]
+    fn precopy_stops_once_its_rounds_no_longer_shrink() {
+        let (most, enough) = (30, 8 * MIB);
+        assert_eq!(Stop::after(&[], most, enough), None);
+        // A guest that settles: on until little is left.
+        assert_eq!(Stop::after(&[74 * MIB], most, enough), None);
+        assert_eq!(Stop::after(&[74 * MIB, 20 * MIB], most, enough), None);
+        assert_eq!(
+            Stop::after(&[74 * MIB, 20 * MIB, 6 * MIB], most, enough),
+            Some(Stop::Little)
+        );
+        // One writing as fast as the link carries: the second round as long as the first.
+        assert_eq!(Stop::after(&[60 * MIB, 40 * MIB], most, enough), None);
+        assert_eq!(
+            Stop::after(&[60 * MIB, 40 * MIB, 40 * MIB], most, enough),
+            Some(Stop::Unshrinking)
+        );
+        assert_eq!(
+            Stop::after(&[60 * MIB, 40 * MIB, 41 * MIB], most, enough),
+            Some(Stop::Unshrinking)
+        );
+        // Shrinking slowly: on until three times the first round is sent.
+        let mut slow = vec![30 * MIB];
+        let mut round = 29 * MIB;
+        while Stop::after(&slow, most, enough).is_none() {
+            slow.push(round);
+            round -= MIB / 4;
+        }
+        assert_eq!(Stop::after(&slow, most, enough), Some(Stop::Thrice));
+        assert_eq!(slow.len(), 4);
+        // Each round a page fewer, never three times the first (a first round of 1 GiB):
+        // its most rounds.
+        let mut pages = vec![1024 * MIB, 9 * MIB];
+        while Stop::after(&pages, most, enough).is_none() {
+            pages.push(pages[pages.len() - 1] - PAGE);
+        }
+        assert_eq!(
+            (Stop::after(&pages, most, enough), pages.len()),
+            (Some(Stop::Rounds), 30)
+        );
+        // At most one round, which stops it whatever it sent.
+        assert_eq!(Stop::after(&[74 * MIB], 1, enough), Some(Stop::Rounds));
+        assert_eq!(Stop::after(&[74 * MIB], 0, enough), Some(Stop::Rounds));
+    }
 
     /// Pages noted in a hypervisor's 16 KiB are each of their four 4 KiB, once, in order.
     #[test]

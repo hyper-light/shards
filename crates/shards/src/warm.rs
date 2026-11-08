@@ -895,7 +895,19 @@ fn relay_signals(conn: &UnixStream, to: &'static ToGuest, from: From<'_>) {
             kind::PRECOPY if matches!(from, From::Daemon(_)) => {
                 let answer = conn.try_clone();
                 let copying = std::thread::Builder::new().name("precopy".into()).spawn(move || {
-                    let said = match precopy_request(message) {
+                    // How the rounds go, told the daemon as they go (`PRECOPYING`).
+                    let told = |p: shards_vmm::vm::Precopying| {
+                        let text = match p {
+                            shards_vmm::vm::Precopying::Sent(bytes) => format!("sent {bytes}"),
+                            shards_vmm::vm::Precopying::Round { n, pages, bytes, us } => {
+                                format!("round {n} {pages} {bytes} {us}")
+                            }
+                        };
+                        if let Ok(answer) = &answer {
+                            let _ = to_daemon(answer, kind::PRECOPYING, text.as_bytes(), &[]);
+                        }
+                    };
+                    let said = match precopy_request(message, &told) {
                         Ok(p) => {
                             let mut text = format!("{}\n", p.paused_us);
                             for (pages, bytes, us) in &p.rounds {
@@ -1133,7 +1145,10 @@ fn save_request(message: shards_ipc::Message) -> Result<shards_vmm::vm::Saved, S
 /// Copies this microVM's memory for a live move as the daemon's `PRECOPY` asks (D176 part
 /// 7): its most rounds and the bytes a last round may send, into the descriptor it brings.
 /// No joiner may run in it, as no save may with one.
-fn precopy_request(message: shards_ipc::Message) -> Result<shards_vmm::vm::Precopied, String> {
+fn precopy_request(
+    message: shards_ipc::Message,
+    told: &dyn Fn(shards_vmm::vm::Precopying),
+) -> Result<shards_vmm::vm::Precopied, String> {
     if *JOINERS.lock().unwrap_or_else(std::sync::PoisonError::into_inner) > 0 {
         return Err("containers joined to it run in its microVM: move it once they end".into());
     }
@@ -1148,7 +1163,7 @@ fn precopy_request(message: shards_ipc::Message) -> Result<shards_vmm::vm::Preco
     let (Some(out), None) = (fds.next(), fds.next()) else {
         return Err("a live move brings one descriptor".into());
     };
-    crate::vm_run::precopy(out, u32::from_be_bytes(*most), u64::from_be_bytes(*enough))
+    crate::vm_run::precopy(out, u32::from_be_bytes(*most), u64::from_be_bytes(*enough), told)
 }
 
 /// Starts the exec the daemon's `EXEC_RUN` asks for (workload::exec): its flags and spec,

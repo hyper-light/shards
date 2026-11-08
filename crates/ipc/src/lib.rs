@@ -462,6 +462,9 @@ pub mod kind {
     /// Daemon → a VM its live move's last save holds (D176 part 7): taken by the other
     /// machine (1), which stops it as saved, or not (0), which lets it go on.
     pub const MOVED: u8 = 84;
+    /// A VM → its daemon, as the rounds `PRECOPY` asked for go (D176 part 7), as text: `sent
+    /// B`, the bytes its stream has carried, or `round N PAGES BYTES US`, a round's end.
+    pub const PRECOPYING: u8 = 85;
 
     /// Whether a network process's control message of `kind` hands it sockets: published
     /// ports' (`PUBLISH`, `NET_PUBLISHED`) and a peer's link (`NET_PEER`). Beside the

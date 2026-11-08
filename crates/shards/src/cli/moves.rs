@@ -20,6 +20,7 @@ use std::time::Instant;
 
 use shards_cmdline::flags::Parsed;
 use shards_remote::frame::Request;
+use shards_remote::net::Seen;
 
 use crate::cli::cp::Ask;
 
@@ -64,11 +65,14 @@ struct PlanFile {
     rel: String,
 }
 
-/// What the other machine lacks (daemon/moves.rs `Needs`).
+/// What the other machine lacks (daemon/moves.rs `Needs`), and the packings of the move's
+/// stream it unpacks: none, from a daemon of an earlier build.
 #[derive(serde::Deserialize)]
 struct Needs {
     image: bool,
     files: Vec<String>,
+    #[serde(default)]
+    unpacks: Vec<String>,
 }
 
 /// `shards move vm NAME CONTEXT`, its local steps asked through `ask`.
@@ -152,6 +156,31 @@ fn removed_there(there: &AskThere<'_>, name: &str) -> bool {
     matches!(there(argv(&["inspect", "-f", "{{.Id}}", name]), None), Ok((s, _, _)) if s != 0)
 }
 
+/// What a move's stream carried and what its connection saw of the link, as its log says it
+/// (docs/research/measurements/migrate/two-hosts.sh reads it): the stream's bytes as the
+/// export wrote them, and as they were sent where it was packed; the bytes of UDP the
+/// other machine acknowledged, over the import's whole time, the rate the link was seen to
+/// carry; its round trip, the packets it took for lost, and the longest its peer went
+/// unheard, which `shards_remote::tls::QUIET` bounds.
+fn sent_line(tally: Option<crate::packing::Tally>, seen: &Seen, took: std::time::Duration) -> String {
+    let packed = match tally {
+        Some(t) => format!(
+            "stream {} bytes, sent {} bytes, {} of {} frames as zstd",
+            t.raw, t.wire, t.packed, t.frames
+        ),
+        None => "stream sent as it is".to_string(),
+    };
+    let us = took.as_micros().max(1);
+    let rate = u128::from(seen.acked_bytes).saturating_mul(1_000_000) / us;
+    format!(
+        "move: {packed}; link {} bytes acknowledged in {us} us, {rate} B/s, rtt {} us, {} packets lost, longest silence {} us",
+        seen.acked_bytes,
+        seen.rtt.as_micros(),
+        seen.lost_packets,
+        seen.longest_silence.as_micros()
+    )
+}
+
 fn moved(home: &Path, name: &str, to: &str, live: bool, ask: &Ask<'_>) -> Result<(), String> {
     let times = Times {
         on: std::env::var_os("SHARDS_MOVE_TIMES").is_some(),
@@ -159,30 +188,33 @@ fn moved(home: &Path, name: &str, to: &str, live: bool, ask: &Ask<'_>) -> Result
     };
     let context = crate::context::load(home, to)?.ok_or_else(|| format!("no context named {to}"))?;
     let identity = crate::context::identity(home)?;
-    // A step on the other machine: `argv`, `stdin` sent as it comes.
-    let there = |argv: Vec<String>, stdin: Option<Box<dyn Read + Send>>| -> Result<There, String> {
-        let (out_tx, out_rx) = std::sync::mpsc::channel();
-        let (err_tx, err_rx) = std::sync::mpsc::channel();
-        let request = Request {
-            args: argv.into_iter().map(String::into_bytes).collect(),
-            env: Vec::new(),
-            terminal: None,
+    // A step on the other machine: `argv`, `stdin` sent as it comes; and what its
+    // connection saw of the link.
+    let there_seen =
+        |argv: Vec<String>, stdin: Option<Box<dyn Read + Send>>| -> (Result<There, String>, Seen) {
+            let (out_tx, out_rx) = std::sync::mpsc::channel();
+            let (err_tx, err_rx) = std::sync::mpsc::channel();
+            let request = Request {
+                args: argv.into_iter().map(String::into_bytes).collect(),
+                env: Vec::new(),
+                terminal: None,
+            };
+            let (ran, seen) = shards_remote::client::exec_seen(
+                &identity,
+                context.remote(),
+                request,
+                stdin,
+                Taken(out_tx),
+                Taken(err_tx),
+            );
+            let ran = match ran {
+                Ok(Ok(status)) => Ok((u8::try_from(status).unwrap_or(1), taken(&out_rx), taken(&err_rx))),
+                Ok(Err(refused)) => Err(format!("{to}: {refused}")),
+                Err(e) => Err(format!("{to}: {e}")),
+            };
+            (ran, seen)
         };
-        let ran = shards_remote::client::exec(
-            &identity,
-            context.remote(),
-            request,
-            stdin,
-            Taken(out_tx),
-            Taken(err_tx),
-            |_| {},
-        );
-        match ran {
-            Ok(Ok(status)) => Ok((u8::try_from(status).unwrap_or(1), taken(&out_rx), taken(&err_rx))),
-            Ok(Err(refused)) => Err(format!("{to}: {refused}")),
-            Err(e) => Err(format!("{to}: {e}")),
-        }
-    };
+    let there = |argv: Vec<String>, stdin: Option<Box<dyn Read + Send>>| there_seen(argv, stdin).0;
     let step = |argv: &[&str]| argv.iter().map(|a| (*a).to_string()).collect::<Vec<String>>();
     let mv = shards_ipc::MOVE_STEP;
 
@@ -289,8 +321,23 @@ fn moved(home: &Path, name: &str, to: &str, live: bool, ask: &Ask<'_>) -> Result
     // first, then its last save, which holds it here until that one has it.
     let checked: Vec<String> = plan.files.iter().map(|f| f.rel.clone()).collect();
     let mut said_here = Vec::new();
+    // Packed for the link where the other machine unpacks it (crate::packing).
+    let packs = crate::packing::taken(&needs.unpacks);
+    let mut tallies = None;
+    let mut seen = Seen::default();
+    let import_began = Instant::now();
     let imported = (|| -> Result<(), String> {
         let (reader, writer) = std::io::pipe().map_err(|e| e.to_string())?;
+        let mut import = step(&[mv, "import"]);
+        let stdin: Box<dyn Read + Send> = if packs {
+            import.extend(["--packed".to_string(), crate::packing::CODEC.to_string()]);
+            let (packing, told) =
+                crate::packing::pack(reader).map_err(|e| format!("packing its stream: {e}"))?;
+            tallies = Some(told);
+            Box::new(packing)
+        } else {
+            Box::new(reader)
+        };
         let mut export = step(&[mv, if live { "live" } else { "export" }, name, &plan.snapshot]);
         if live {
             for rel in &needs.files {
@@ -305,16 +352,15 @@ fn moved(home: &Path, name: &str, to: &str, live: bool, ask: &Ask<'_>) -> Result
         std::thread::scope(|scope| {
             let importing = std::thread::Builder::new()
                 .name("move-import".into())
-                .spawn_scoped(scope, move || {
-                    there(step(&[mv, "import"]), Some(Box::new(reader)))
-                })
+                .spawn_scoped(scope, move || there_seen(import, Some(stdin)))
                 .map_err(|e| e.to_string())?;
             let sent = ask(
                 export,
                 &[crate::cli::Stream::To(shards_ipc::fd::AsFd::as_fd(&writer))],
             );
             drop(writer);
-            let taken = importing.join().map_err(|_| "its import failed".to_string())?;
+            let (taken, link) = importing.join().map_err(|_| "its import failed".to_string())?;
+            seen = link;
             if let Ok((_, _, err)) = &sent {
                 said_here.clone_from(err);
             }
@@ -328,6 +374,17 @@ fn moved(home: &Path, name: &str, to: &str, live: bool, ask: &Ask<'_>) -> Result
             }
         })
     })();
+    if times.on {
+        let _ = writeln!(
+            io::stderr(),
+            "{}",
+            sent_line(
+                tallies.and_then(|t| t.try_iter().last()),
+                &seen,
+                import_began.elapsed()
+            )
+        );
+    }
     // A live move's microVM is held here, saved, from its last save on, until it runs there.
     let held = live && String::from_utf8_lossy(&said_here).contains("move: saved at ");
     let back_here = |why: String| -> String {

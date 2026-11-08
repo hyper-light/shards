@@ -50,8 +50,10 @@ const CHUNK: usize = 1 << 20;
 /// Where a moved microVM's files that its new machine had none of, or another of, are kept
 /// in its directory: what its snapshot restores against there.
 const BACKING: &str = "backing";
-/// A live move's rounds (D176 part 7): at most so many, the last the first that sends no
-/// more than so many bytes, 8 MiB, what a link of 1 Gb/s carries in 67 ms.
+/// A live move's rounds (D176 part 7): at most so many, Xen's own (xc_domain_save.c,
+/// `DEF_MAX_ITERS`, "limit us to 30 times round loop"), the last the first that sends no
+/// more than so many bytes, 8 MiB, what a link of 1 Gb/s carries in 67 ms, or no fewer than
+/// the round before, or that brings them to three times the first (`live::Stop`).
 const LIVE_ROUNDS: u32 = 30;
 const LIVE_ENOUGH: u64 = 8 << 20;
 
@@ -82,6 +84,10 @@ pub(crate) struct Plan {
     /// have each, as its guest may have found and used any.
     #[serde(default)]
     pub cpu: Vec<String>,
+    /// Whether its run boots the guest its home stores, no kernel given: the pinned
+    /// kernel, which a restore of it prepares its run's request with (run::prepare).
+    #[serde(default)]
+    pub guest: bool,
 }
 
 /// The features of this machine's CPU a guest may be shown, as its OS names them: on macOS
@@ -212,11 +218,15 @@ pub(crate) struct Backing {
 }
 
 /// What a machine lacks to take a [`Plan`]: its image, which the client loads there, and the
-/// files the export is to send.
+/// files the export is to send; and the packings of a move's stream it unpacks
+/// (`crate::packing`), none where a daemon of an earlier build answers, which is sent the
+/// stream as it is.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Needs {
     pub image: bool,
     pub files: Vec<String>,
+    #[serde(default)]
+    pub unpacks: Vec<String>,
 }
 
 /// `bytes`' SHA-256, in hex.
@@ -756,7 +766,7 @@ impl<D: Disk> Daemon<D> {
             Some("done") => self.move_done(args.get(1..).unwrap_or_default()),
             Some("ready") => self.move_ready(args.get(1).map_or("", String::as_str), asker, reply),
             Some("export") => self.move_export(args.get(1..).unwrap_or_default(), asker),
-            Some("import") => self.move_import(asker),
+            Some("import") => self.move_import(args.get(1..).unwrap_or_default(), asker),
             _ => Err(format!("no step of a move in {args:?}")),
         };
         match done {
@@ -864,6 +874,7 @@ impl<D: Disk> Daemon<D> {
             volumes,
             binds,
             cpu: host_cpu(),
+            guest: self.boots_stored_guest(&c.id),
         };
         serde_json::to_string(&plan).map_err(|e| e.to_string())
     }
@@ -932,21 +943,48 @@ impl<D: Disk> Daemon<D> {
             lock(&inbox).precopying = None;
             return Err(format!("asking its microVM: {e}"));
         }
-        let rounds = answer
-            .recv()
-            .unwrap_or_else(|_| Err("its microVM stopped".into()))?;
+        // Each round said as it ends, and the bytes the stream carried as it carries them,
+        // in the client's answer and in the daemon's log: what one waiting on the move
+        // follows, however slowly its host or its link goes (D209), never a clock.
+        let rounds = loop {
+            match answer.recv() {
+                Ok(Rounds::Going(going)) => {
+                    let said: Vec<&str> = going.split_whitespace().collect();
+                    let line = match said.as_slice() {
+                        ["round", n, pages, bytes, us] => {
+                            format!("move: round {n}: {pages} pages, {bytes} bytes, {us} us")
+                        }
+                        ["sent", bytes] => format!("move: carried {bytes} bytes of its rounds"),
+                        _ => continue,
+                    };
+                    super::log(format!("{reference}: {line}"));
+                    reply.err(&line);
+                }
+                Ok(Rounds::Done(rounds)) => break rounds?,
+                Err(_) => return Err("its microVM stopped".into()),
+            }
+        };
         let mut lines = rounds.lines();
         if let Some(paused) = lines.next() {
             reply.err(&format!(
                 "move: paused {paused} us to find its layer's and swap's data"
             ));
         }
-        for (n, line) in lines.enumerate() {
+        let mut sent = Vec::new();
+        for line in lines {
             let said: Vec<&str> = line.split_whitespace().collect();
-            if let [pages, bytes, us] = said.as_slice() {
-                reply.err(&format!("move: round {n}: {pages} pages, {bytes} bytes, {us} us"));
+            if let [_pages, bytes, _us] = said.as_slice() {
+                sent.push(bytes.parse::<u64>().unwrap_or(0));
             }
         }
+        // Why its rounds ended, as its VM judged them.
+        let why = shards_vmm::vm::live::Stop::after(&sent, LIVE_ROUNDS, LIVE_ENOUGH)
+            .map_or("its VM ended them", shards_vmm::vm::live::Stop::said);
+        reply.err(&format!(
+            "move: rounds {}, {} bytes, ended: {why}",
+            sent.len(),
+            sent.iter().fold(0u64, |a, b| a.saturating_add(*b))
+        ));
         // Its last save, its guest's writes since the last round sent by its VM as the
         // rounds' last, and their end, before it answers.
         let asked = crate::containers::now();
@@ -1062,7 +1100,18 @@ impl<D: Disk> Daemon<D> {
             volumes,
             binds,
             cpu: host_cpu(),
+            guest: self.boots_stored_guest(id),
         })
+    }
+
+    /// Whether container `id`'s run boots the guest its home stores: its request names no
+    /// kernel (`--kernel`, `SHARDS_KERNEL`).
+    fn boots_stored_guest(&self, id: &str) -> bool {
+        let dir = lock(&self.containers).dir(id);
+        std::fs::read(dir.join(super::REQUEST))
+            .ok()
+            .and_then(|b| shards_ipc::Run::decode(&b))
+            .is_some_and(|r| r.kernel.is_none() && r.init.is_none())
     }
 
     /// `ready PLAN`, on the machine moved to: whether it can take the plan's microVM, and
@@ -1124,9 +1173,21 @@ impl<D: Disk> Daemon<D> {
         }
         // Its image, by the digest its name resolved to: here, or pulled by it.
         let image = self.moved_image(&plan, asker, reply);
+        // The guest a restore here prepares its run's request with (run::prepare, as a
+        // start does), where its run boots the stored one: the pinned kernel, downloaded
+        // where this home has none recorded, now rather than in its restore, which a live
+        // move's microVM waits for running nowhere. A fresh home's first move waited 17 s
+        // in its restore for the kernel's 19 MB from GitHub (PM M462).
+        if plan.guest && crate::guest::current(&self.home)?.is_none() {
+            let cancel = shards_registry::http::Cancel::new();
+            crate::guest::default(&self.home, &|line| reply.err(line), Some(&cancel), &|k| {
+                shards_ipc::env_value(&asker.registry_env, k)
+            })?;
+        }
         let mut needs = Needs {
             image: image.is_err(),
             files: Vec::new(),
+            unpacks: vec![crate::packing::CODEC.to_string()],
         };
         for file in &plan.files {
             let here = self.home.join(relative(&file.rel)?);
@@ -1234,17 +1295,28 @@ impl<D: Disk> Daemon<D> {
         Ok(String::new())
     }
 
-    /// `import`: a move's stream read from the client's descriptor, its files put in place,
-    /// its snapshot made to restore against this machine's files, and the microVM made here,
-    /// stopped as saved. Its name, once it is.
-    fn move_import(&self, asker: &Asker) -> Result<String, String> {
+    /// `import [--packed zstd]`: a move's stream read from the client's descriptor, unpacked
+    /// where it was packed (`crate::packing`), its files put in place, its snapshot made to
+    /// restore against this machine's files, and the microVM made here, stopped as saved. Its
+    /// name, once it is.
+    fn move_import(&self, args: &[String], asker: &Asker) -> Result<String, String> {
+        let packed = match args {
+            [] => false,
+            [flag, codec] if flag == "--packed" && codec == crate::packing::CODEC => true,
+            other => return Err(format!("import: {other:?}")),
+        };
         let input = asker
             .files
             .first()
             .ok_or("import: the client sent nothing to read")?
             .try_clone()
             .map_err(|e| e.to_string())?;
-        let mut input = io::BufReader::with_capacity(CHUNK, File::from(input));
+        let read = io::BufReader::with_capacity(CHUNK, File::from(input));
+        let mut input: Box<dyn Read> = if packed {
+            Box::new(crate::packing::Unpacked::new(read))
+        } else {
+            Box::new(read)
+        };
         let staging = self.private_staging()?;
         // A live move's rounds first, where it is one (D176 part 7): what its memory, layer
         // and swap held, kept to be laid under its last save's.
@@ -1412,6 +1484,13 @@ impl<D: Disk> Daemon<D> {
     }
 }
 
+/// What a live move hears of its rounds from its VM (D176 part 7): how they go, as they go
+/// (`kind::PRECOPYING`), then their answer (`kind::PRECOPIED`).
+pub(super) enum Rounds {
+    Going(String),
+    Done(Result<String, String>),
+}
+
 /// A run's VM's answer to its live move's rounds (`kind::PRECOPIED`), told to the move that
 /// waits for it.
 pub(super) fn precopied(inbox: &mut super::Inbox, payload: &[u8]) {
@@ -1422,7 +1501,15 @@ pub(super) fn precopied(inbox: &mut super::Inbox, payload: &[u8]) {
         Some((0, why)) => Err(String::from_utf8_lossy(why).into_owned()),
         _ => Ok(String::from_utf8_lossy(payload).into_owned()),
     };
-    let _ = told.send(answer);
+    let _ = told.send(Rounds::Done(answer));
+}
+
+/// How a run's VM's live move's rounds go (`kind::PRECOPYING`), told to the move that waits
+/// for them.
+pub(super) fn precopying(inbox: &mut super::Inbox, payload: &[u8]) {
+    if let Some(told) = &inbox.precopying {
+        let _ = told.send(Rounds::Going(String::from_utf8_lossy(payload).into_owned()));
+    }
 }
 
 /// What a live move's rounds sent, kept on the machine moved to (D176 part 7): its memory's
@@ -1598,6 +1685,7 @@ mod tests {
             volumes: vec!["data".into()],
             binds: Vec::new(),
             cpu: Vec::new(),
+            guest: false,
         }
     }
 

@@ -2328,6 +2328,23 @@ pub struct Precopied {
     pub paused_us: u128,
 }
 
+/// How a live move's rounds go, told as they go ([`Handle::precopy`]): so that one waiting
+/// on them follows their progress, never a clock (D209), however slowly its host or its
+/// link carries them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Precopying {
+    /// The stream has carried this many bytes, told each time it has carried another
+    /// round's worth of little left (the `enough` a round may send and be the last).
+    Sent(u64),
+    /// Round `n` ended, its pages and bytes sent, in `us`.
+    Round {
+        n: u32,
+        pages: u64,
+        bytes: u64,
+        us: u128,
+    },
+}
+
 /// What the VM does once its snapshot is written.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AfterSnapshot {

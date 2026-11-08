@@ -696,12 +696,18 @@ pub fn save(save: vm::Save) -> Result<vm::Saved, String> {
     RUNNING.get().ok_or("the microVM has not started")?.save(save)
 }
 
-/// Copies this VM's memory for a live move into `out` (D176 part 7, `PRECOPY`).
-pub fn precopy(out: std::fs::File, most: u32, enough: u64) -> Result<vm::Precopied, String> {
+/// Copies this VM's memory for a live move into `out` (D176 part 7, `PRECOPY`), how it
+/// goes `told` as it goes.
+pub fn precopy(
+    out: std::fs::File,
+    most: u32,
+    enough: u64,
+    told: &dyn Fn(vm::Precopying),
+) -> Result<vm::Precopied, String> {
     RUNNING
         .get()
         .ok_or("the microVM has not started")?
-        .precopy(out, most, enough)
+        .precopy(out, most, enough, told)
 }
 
 /// Sets the most memory this VM's guest may plug past what it booted with, its run's
