@@ -23,7 +23,7 @@ in each home:
 
 DIR keeps both homes (DIR/A, DIR/B) between invocations: IMAGE is pulled into each once
 (a registry limits the pulls it serves). INIT is the shards-init the guests run. Prints n,
-p50, p90, p99 and max of each, with host, OS and revision. Every `shards` runs with an empty
+p50, p90, p99 and max of each, and each round's p50, with host, OS and revision. Every `shards` runs with an empty
 DOCKER_CONFIG. Start latency through the daemon's pools, request to status, one run at a
 time: build-ab/ab.py over the same two homes (ENV_* unset, each home's own guest).
 """
@@ -149,9 +149,13 @@ for arm, kernel in kernels.items():
 results = {arm: {} for arm in kernels}
 
 
+by_round = {arm: {} for arm in kernels}
+
+
 def note(arm, key, value, counted):
     if counted and value is not None:
         results[arm].setdefault(key, []).append(value)
+        by_round[arm].setdefault(key, {}).setdefault(i, []).append(value)
 
 
 serial = 0
@@ -199,5 +203,8 @@ for key in results["A"]:
     for arm in kernels:
         xs = results[arm].get(key, [])
         if xs:
+            # Each round's p50: whether a tail is some rounds' (their templates') or every round's.
+            p50s = sorted(pct(v, .5) for v in by_round[arm][key].values())
             print(f"{key:<30} {arm} n {len(xs):>4} p50 {pct(xs, .5):10.1f} p90 {pct(xs, .9):10.1f} "
-                  f"p99 {pct(xs, .99):10.1f} max {max(xs):10.1f}")
+                  f"p99 {pct(xs, .99):10.1f} max {max(xs):10.1f}  round p50s "
+                  + " ".join(f"{v:.0f}" for v in p50s))
