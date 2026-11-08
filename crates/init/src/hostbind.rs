@@ -649,6 +649,9 @@ struct Supervise {
     flows: Vec<Option<Flow>>,
     by_peer: HashMap<(u64, SocketAddr), usize>,
     datagram: Vec<u8>,
+    /// The netfilter socket IPv6's loopback translation is made again on, kept: closing
+    /// one that has committed waits out an RCU grace period (links::program_chosen).
+    nft: Option<OwnedFd>,
 }
 
 /// The process's loop, until init closes its end.
@@ -670,6 +673,7 @@ fn serve(ctl: OwnedFd, diag: OwnedFd) {
         flows: Vec::new(),
         by_peer: HashMap::new(),
         datagram: vec![0; DATAGRAM],
+        nft: None,
     };
     let mut watched: Vec<(RawFd, libc::c_short, Owner)> = Vec::new();
     let mut set: Vec<libc::pollfd> = Vec::new();
@@ -1298,10 +1302,19 @@ impl Supervise {
 
     /// IPv6's loopback's ports the run's servers hold: its translation to the host's made
     /// again with them (links::host_loopback6).
-    fn held6_changed(&self) {
+    fn held6_changed(&mut self) {
         if let Some((guest6, gateway6)) = self.own6 {
             let held: Vec<(u8, u16)> = self.holds6.keys().copied().collect();
-            let _ = crate::links::host_loopback6(guest6, gateway6, &held);
+            let nft = match self.nft.take() {
+                Some(nft) => Ok(nft),
+                None => crate::links::netlink_socket(libc::NETLINK_NETFILTER),
+            };
+            // Kept while it programs; one that failed, opened again the next time.
+            if let Ok(nft) = nft
+                && crate::links::host_loopback6(&nft, guest6, gateway6, &held).is_ok()
+            {
+                self.nft = Some(nft);
+            }
         }
     }
 
