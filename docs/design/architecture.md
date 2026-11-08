@@ -2604,9 +2604,9 @@ rather than a container on the build host's kernel.
   Dockerfile2LLB's AddUlimit gives them, the run alone.
 - **Not yet as BuildKit:** a step's network is its own loopback until the guest has a
   network (D31); BuildKit's seccomp profile; caches kept past one build; ssh from the
-  client. Each is an item of AGENTFILE_ARCH.md §11. A builder may have half the host's
-  memory, as Docker Desktop's VM has, but boots with little and is given the rest as its
-  build needs it (D133): a builder paid about 21 MiB and 4 ms per GiB it booted with
+  client. Each is an item of AGENTFILE_ARCH.md §11. A builder may have what its host has
+  available and what its home's builds have needed (D133), but boots with little and is
+  given the rest as its build needs it: a builder paid about 21 MiB and 4 ms per GiB it booted with
   (PM M82).
 
 ### One binary (D36)
@@ -13738,11 +13738,40 @@ changes.
 
 ### D133. A builder's memory, plugged as its build needs it (virtio-mem)
 
-A builder may have half the host's memory, Docker Desktop's VM's share (a default open in
-docs/audit/2026-10-16_docker-framing.md, to derive from what the host can give), but the memory a
-guest boots with costs it its page structures as it boots: about 21 MiB and 4 ms per GiB, a
+A builder may have what its host can give and its home's builds have needed, but the memory
+a guest boots with costs it its page structures as it boots: about 21 MiB and 4 ms per GiB, a
 builder of 64 GiB 1.4 GiB and 434 ms (PM M82). A builder now boots with 512 MiB, and is
 given the rest as its build needs it, up to what it may have.
+
+- **What it may have** (`build::builder_most`), in whole blocks, from the host it runs
+  on and what its home's builds have needed, never a figure of ours: `SHARDS_BUILD_MEMORY`
+  MiB where the user sets it; else
+  - **the cold start**, a home with no build recorded: what the host has available as the
+    builder starts, what its kernel says a new program may have without taking from what
+    runs (Linux's `MemAvailable`, proc_meminfo(5); macOS's `kern.memorystatus_level`, the
+    share of its pages its pressure thread counts available, osfmk/vm/vm_pageout.c
+    `vm_pressure_response`; Windows' `ullAvailPhys`, MEMORYSTATUSEX);
+  - past it, **the most a build of the home needed**, where that is more: the host gave
+    it once. Each builder's guest says, as its build ends (`kind::NEEDS`, `NEEDED`), the
+    least memory whose hold keeps its build's peak (`memory.peak` of its cgroup, with the
+    reserve its kernel keeps beside it, `plug::needed`), and the build's process adds it to
+    the home's `builder-memory` under its lock, the most kept;
+  - and **all the host's memory**, as a run with no limit may have (D148), once a build
+    of the home was ended short of memory (its cgroup's `memory.events` `oom_kill`): its
+    builder had all it could be given and the build needed more;
+  - never more than the host's memory nor less than a builder boots with; all of it where
+    what is available cannot be read, 512 MiB where the host's memory cannot be.
+
+  It was half the host's, the share Docker Desktop's VM takes, a figure of that VM's and
+  of no builder's (the de-Dockerify audit): a step that needed more was ended with memory
+  to spare on its host. Nothing is paid for a ceiling a build never reaches: its region to
+  plug is address space, its page structures made only as blocks come online (PM M490).
+  The cold start holds a build that runs away to what its host could spare, not all its
+  host's memory; a build ended there says so in the home, and its next builder may have
+  the rest. What a builder holds is held back where its host runs short as a run's is: it
+  gives back what it holds cold and unplugs what it holds past twice its use at its host's
+  word (D188's builders), and a budget over the build (a `MemoryHigh` or `MemoryMax` of
+  the user's manager on Linux) is the room it holds its build within.
 
 - **The device.** A virtio-mem device (VIRTIO 1.3 §5.15, device 24), the machine's last,
   so no other device's window moves for it: its region at the first GiB boundary after RAM
