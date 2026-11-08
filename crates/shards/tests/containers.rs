@@ -13118,7 +13118,7 @@ fn security_opt_confines_the_workload() {
         "0",
     ]);
     // Made, its profile read only as it starts (D42).
-    assert_eq!(made.status, Some(0), "made as dockerd makes it: {made}");
+    assert_eq!(made.status, Some(0), "made, its profile not yet read: {made}");
     let started = shards(&["start", "bad"]);
     assert_eq!(started.status, Some(1), "{started}");
     assert!(
