@@ -170,6 +170,204 @@ struct Range {
     file: Option<File>,
     /// Whether the guest may write it.
     writable: bool,
+    /// Who reads and writes its file for the guest, where not this process: a process of
+    /// its builder's outside the budget that holds the builder ([`Through`]).
+    through: Option<Through>,
+}
+
+/// A request to a [`Through`]'s process: read (`THROUGH_READ`) or write (`THROUGH_WRITE`)
+/// what follows its 13 bytes: the operation, the offset in the range's file (8 bytes) and
+/// how many bytes (4), big-endian, at most [`THROUGH_MAX`]; a write's bytes after it. Its
+/// answer: an error's number (4 bytes, 0 for none) and how many bytes it read or wrote (4),
+/// a read's bytes after it.
+pub const THROUGH_READ: u8 = 1;
+pub const THROUGH_WRITE: u8 = 2;
+/// The most bytes one request moves.
+pub const THROUGH_MAX: usize = 1 << 20;
+
+/// The process that reads and writes a range's file for its guest, over a connection of
+/// its own, as this process would have, from and into the guest's memory: a build held to
+/// a budget has its builder's cache layers and their changes (D134) read and written by
+/// its writer outside the budget (D188), so that the page cache they fault is charged to
+/// the writer, where the budget's reclaim does not take it before the build's merge of
+/// the cache reads it again (PM M442). Unix's: the connection is a socket.
+#[derive(Debug)]
+pub struct Through {
+    #[cfg(unix)]
+    conn: Mutex<std::os::unix::net::UnixStream>,
+}
+
+#[cfg(unix)]
+impl Through {
+    /// Reads and writes through the process at the other end of `conn`.
+    pub fn new(conn: std::os::unix::net::UnixStream) -> Through {
+        Through {
+            conn: Mutex::new(conn),
+        }
+    }
+
+    /// Asks for `op` of up to `len` bytes at `offset` of the file, from or into `ptr`:
+    /// how many bytes it moved.
+    ///
+    /// # Safety
+    ///
+    /// `ptr .. ptr + len` lies in guest memory, as `GuestMemory::io_ptr` gives it.
+    unsafe fn ask(&self, op: u8, ptr: *mut u8, len: usize, offset: u64) -> std::io::Result<usize> {
+        use std::io::{Read as _, Write as _};
+        use std::os::fd::AsRawFd as _;
+        let n = len.min(THROUGH_MAX);
+        let mut conn = self.conn.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut head = vec![op];
+        head.extend_from_slice(&offset.to_be_bytes());
+        head.extend_from_slice(&u32::try_from(n).unwrap_or(u32::MAX).to_be_bytes());
+        conn.write_all(&head)?;
+        if op == THROUGH_WRITE {
+            // SAFETY: the caller's: `ptr .. ptr + n` lies in guest memory, which write(2)
+            // reads, never a Rust reference.
+            unsafe { raw(conn.as_raw_fd(), ptr, n, true) }?;
+        }
+        let mut code = [0u8; 4];
+        let mut moved = [0u8; 4];
+        conn.read_exact(&mut code)?;
+        conn.read_exact(&mut moved)?;
+        let code = i32::from_be_bytes(code);
+        let moved = u32::from_be_bytes(moved) as usize;
+        if code != 0 {
+            return Err(std::io::Error::from_raw_os_error(code));
+        }
+        if moved > n {
+            return Err(std::io::Error::other(
+                "a range's process moved more than it was asked",
+            ));
+        }
+        if op == THROUGH_READ {
+            // SAFETY: the caller's, `moved` within it: read(2) writes guest memory.
+            unsafe { raw(conn.as_raw_fd(), ptr, moved, false) }?;
+        }
+        Ok(moved)
+    }
+
+    /// Asks for `op` of all `n` bytes the `iov` describe, at most [`THROUGH_MAX`], at
+    /// `offset` of the file, in one round trip: a request's segments are the pages of its
+    /// guest's buffer, 4 KiB each, and a round trip for each cost more than the writes: 85 MiB
+    /// took 0.5 to 0.7 s longer than the same writes made here (PM M442).
+    ///
+    /// # Safety
+    ///
+    /// Each of `iov` lies in guest memory, as `GuestMemory::io_ptr` gives it.
+    unsafe fn ask_all(&self, op: u8, iov: &mut [libc::iovec], n: usize, offset: u64) -> std::io::Result<()> {
+        use std::io::{Read as _, Write as _};
+        use std::os::fd::AsRawFd as _;
+        let mut conn = self.conn.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut head = vec![op];
+        head.extend_from_slice(&offset.to_be_bytes());
+        head.extend_from_slice(&u32::try_from(n).unwrap_or(u32::MAX).to_be_bytes());
+        conn.write_all(&head)?;
+        if op == THROUGH_WRITE {
+            // SAFETY: the caller's: guest memory, which writev(2) reads.
+            unsafe { raw_all(conn.as_raw_fd(), iov, true) }?;
+        }
+        let mut code = [0u8; 4];
+        let mut moved = [0u8; 4];
+        conn.read_exact(&mut code)?;
+        conn.read_exact(&mut moved)?;
+        let code = i32::from_be_bytes(code);
+        if code != 0 {
+            return Err(std::io::Error::from_raw_os_error(code));
+        }
+        let moved = u32::from_be_bytes(moved) as usize;
+        if moved != n {
+            // A read cut short (its file shorter than its range) has its bytes after the
+            // answer: taken off the connection, which the next request reads from.
+            if op == THROUGH_READ && moved < n {
+                std::io::copy(&mut (&mut *conn).take(moved as u64), &mut std::io::sink())?;
+            }
+            return Err(std::io::Error::other(
+                "a range's process moved other than it was asked",
+            ));
+        }
+        if op == THROUGH_READ {
+            // SAFETY: the caller's: guest memory, which readv(2) writes.
+            unsafe { raw_all(conn.as_raw_fd(), iov, false) }?;
+        }
+        Ok(())
+    }
+}
+
+/// All the bytes the `iov` describe written to `fd` (`out`), or read from it into them. The
+/// `iov` are used up.
+///
+/// # Safety
+///
+/// Each of `iov` is valid memory, for reads where `out`, for writes where not.
+#[cfg(unix)]
+unsafe fn raw_all(fd: std::os::fd::RawFd, iov: &mut [libc::iovec], out: bool) -> std::io::Result<()> {
+    let mut at = 0usize;
+    while let Some(rest) = iov.get(at..).filter(|r| !r.is_empty()) {
+        let count = libc::c_int::try_from(rest.len().min(1024)).unwrap_or(1);
+        // SAFETY: the caller's: each of `rest` is valid.
+        let n = unsafe {
+            if out {
+                libc::writev(fd, rest.as_ptr(), count)
+            } else {
+                libc::readv(fd, rest.as_ptr(), count)
+            }
+        };
+        let mut left = match n {
+            0 => return Err(std::io::ErrorKind::UnexpectedEof.into()),
+            n if n > 0 => n.unsigned_abs(),
+            _ => {
+                let e = std::io::Error::last_os_error();
+                if e.kind() == std::io::ErrorKind::Interrupted {
+                    continue;
+                }
+                return Err(e);
+            }
+        };
+        while let Some(v) = iov.get_mut(at) {
+            if left < v.iov_len {
+                // SAFETY: within the segment, `left` bytes being less than its length.
+                v.iov_base = unsafe { v.iov_base.cast::<u8>().add(left) }.cast();
+                v.iov_len -= left;
+                break;
+            }
+            left -= v.iov_len;
+            at += 1;
+        }
+    }
+    Ok(())
+}
+
+/// All `len` bytes at `ptr` written to `fd` (`out`), or read from it into them.
+///
+/// # Safety
+///
+/// `ptr .. ptr + len` is valid memory, for reads where `out`, for writes where not.
+#[cfg(unix)]
+unsafe fn raw(fd: std::os::fd::RawFd, ptr: *mut u8, len: usize, out: bool) -> std::io::Result<()> {
+    let mut done = 0usize;
+    while done < len {
+        // SAFETY: the caller's: `ptr + done .. ptr + len` is valid.
+        let n = unsafe {
+            let p = ptr.add(done).cast::<libc::c_void>();
+            if out {
+                libc::write(fd, p, len - done)
+            } else {
+                libc::read(fd, p, len - done)
+            }
+        };
+        match n {
+            0 => return Err(std::io::ErrorKind::UnexpectedEof.into()),
+            n if n > 0 => done += n.unsigned_abs(),
+            _ => {
+                let e = std::io::Error::last_os_error();
+                if e.kind() != std::io::ErrorKind::Interrupted {
+                    return Err(e);
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 impl Join {
@@ -192,7 +390,17 @@ impl Join {
     /// last, read-only, and tells the driver the disk's new capacity. Returns where the
     /// range starts and its length, in bytes.
     pub fn attach(&self, file: File) -> Result<(u64, u64), String> {
-        self.give(file, false)
+        self.give(file, false, None)
+    }
+
+    /// Gives `file` a range as [`attach`](Self::attach) does, or one the guest may write as
+    /// [`attach_writable`](Self::attach_writable) does, whose reads and writes `through`
+    /// makes.
+    pub fn attach_through(&self, file: File, writable: bool, through: Through) -> Result<(u64, u64), String> {
+        if writable && !self.writable.load(Ordering::Acquire) {
+            return Err("a writable range of a join disk that takes no writes".into());
+        }
+        self.give(file, writable, Some(through))
     }
 
     /// Gives `file`, whose size is a whole number of sectors, a range after the last that
@@ -202,10 +410,10 @@ impl Join {
         if !self.writable.load(Ordering::Acquire) {
             return Err("a writable range of a join disk that takes no writes".into());
         }
-        self.give(file, true)
+        self.give(file, true, None)
     }
 
-    fn give(&self, file: File, writable: bool) -> Result<(u64, u64), String> {
+    fn give(&self, file: File, writable: bool, through: Option<Through>) -> Result<(u64, u64), String> {
         let len = file
             .metadata()
             .map_err(|e| format!("a file for the join disk: {e}"))?
@@ -227,6 +435,7 @@ impl Join {
                 len,
                 file: Some(file),
                 writable,
+                through,
             });
             start
         };
@@ -246,6 +455,7 @@ impl Join {
             .find(|r| r.start == start)
             .ok_or_else(|| format!("no range of the join disk starts at {start}"))?;
         range.file = None;
+        range.through = None;
         Ok(())
     }
 
@@ -279,6 +489,7 @@ impl Join {
                 len: r.u64()?,
                 file: None,
                 writable: r.bool()?,
+                through: None,
             })
         })?;
         let mut end = 0u64;
@@ -342,6 +553,14 @@ impl Join {
             let file = r.file.as_ref().ok_or(S_IOERR)?;
             let left = r.start.saturating_add(r.len) - offset;
             let n = usize::try_from(left).map_or(len, |left| left.min(len));
+            #[cfg(unix)]
+            if let Some(through) = &r.through {
+                // SAFETY: the caller's: `ptr .. ptr + n` lies in guest memory.
+                return match unsafe { through.ask(THROUGH_READ, ptr, n, offset - r.start) } {
+                    Ok(0) | Err(_) => Err(S_IOERR),
+                    Ok(n) => Ok(n),
+                };
+            }
             // SAFETY: the caller's: `ptr .. ptr + n` lies in guest memory, which the
             // kernel's read reaches.
             return match unsafe { platform::read_at(file, ptr, n, offset - r.start) } {
@@ -354,6 +573,72 @@ impl Join {
         // SAFETY: the caller's: `ptr .. ptr + gap` lies in guest memory.
         unsafe { zeros(ptr, gap) }?;
         Ok(gap)
+    }
+
+    /// Whether the range at `offset` is read and written through a [`Through`].
+    #[cfg(unix)]
+    fn goes_through(&self, offset: u64) -> bool {
+        let ranges = self.ranges.read().unwrap_or_else(PoisonError::into_inner);
+        let at = ranges.partition_point(|r| r.start <= offset);
+        at.checked_sub(1)
+            .and_then(|i| ranges.get(i))
+            .is_some_and(|r| offset < r.start.saturating_add(r.len) && r.through.is_some())
+    }
+
+    /// One request's `segments`, guest memory, read or written at `offset` through its
+    /// range's [`Through`], in round trips of at most [`THROUGH_MAX`]; none (`None`) where
+    /// they are not all of one such range, and its segments go one at a time.
+    ///
+    /// # Safety
+    ///
+    /// Each of `segments` lies in guest memory, as `GuestMemory::io_ptr` gives it.
+    #[cfg(unix)]
+    unsafe fn through_request(
+        &self,
+        segments: &[(*mut u8, usize)],
+        offset: u64,
+        write: bool,
+    ) -> Option<Result<(), u8>> {
+        let ranges = self.ranges.read().unwrap_or_else(PoisonError::into_inner);
+        let at = ranges.partition_point(|r| r.start <= offset);
+        let r = at.checked_sub(1).and_then(|i| ranges.get(i))?;
+        let through = r.through.as_ref()?;
+        r.file.as_ref()?;
+        let total = segments.iter().map(|&(_, len)| len as u64).sum::<u64>();
+        if offset.checked_add(total)? > r.start.saturating_add(r.len) || (write && !r.writable) {
+            return None;
+        }
+        let op = if write { THROUGH_WRITE } else { THROUGH_READ };
+        let mut at = offset - r.start;
+        let mut iov = Vec::with_capacity(segments.len());
+        let mut gathered = 0usize;
+        for &(ptr, len) in segments {
+            let mut done = 0usize;
+            while done < len {
+                let take = (len - done).min(THROUGH_MAX - gathered);
+                iov.push(libc::iovec {
+                    // SAFETY: the caller's: `ptr + done` lies in the segment.
+                    iov_base: unsafe { ptr.add(done) }.cast(),
+                    iov_len: take,
+                });
+                done += take;
+                gathered += take;
+                if gathered == THROUGH_MAX {
+                    // SAFETY: the caller's: each of `iov` lies in guest memory.
+                    if unsafe { through.ask_all(op, &mut iov, gathered, at) }.is_err() {
+                        return Some(Err(S_IOERR));
+                    }
+                    at += gathered as u64;
+                    gathered = 0;
+                    iov.clear();
+                }
+            }
+        }
+        // SAFETY: the caller's: each of `iov` lies in guest memory.
+        if gathered > 0 && unsafe { through.ask_all(op, &mut iov, gathered, at) }.is_err() {
+            return Some(Err(S_IOERR));
+        }
+        Some(Ok(()))
     }
 
     /// Writes up to `len` bytes from the guest's memory at `ptr` at `offset`: into the
@@ -374,6 +659,15 @@ impl Join {
         let file = r.file.as_ref().ok_or(S_IOERR)?;
         let left = r.start.saturating_add(r.len) - offset;
         let n = usize::try_from(left).map_or(len, |left| left.min(len));
+        #[cfg(unix)]
+        if let Some(through) = &r.through {
+            // SAFETY: the caller's: `ptr .. ptr + n` lies in guest memory, which write(2)
+            // here copies from; the process at the other end never reaches it.
+            return match unsafe { through.ask(THROUGH_WRITE, ptr.cast_mut(), n, offset - r.start) } {
+                Ok(0) | Err(_) => Err(S_IOERR),
+                Ok(n) => Ok(n),
+            };
+        }
         // SAFETY: the caller's: `ptr .. ptr + n` lies in guest memory, which the kernel's
         // write reaches.
         match unsafe { platform::write_at(file, ptr, n, offset - r.start) } {
@@ -792,6 +1086,27 @@ fn transfer(
     if end > backend.capacity().saturating_mul(SECTOR) {
         return Err(S_IOERR);
     }
+    #[cfg(unix)]
+    if let Store::Join(join) = &backend.store
+        && join.goes_through(start)
+    {
+        let segments = bufs
+            .iter()
+            .map(|d| {
+                Ok((
+                    mem.io_ptr(d.addr, d.len as usize).map_err(|_| S_IOERR)?,
+                    d.len as usize,
+                ))
+            })
+            .collect::<Result<Vec<_>, u8>>()?;
+        // SAFETY: each lies inside guest memory (io_ptr checked it), which the kernel reads
+        // or writes, with no Rust reference to it.
+        if let Some(done) = unsafe { join.through_request(&segments, start, matches!(dir, Direction::Write)) }
+        {
+            done?;
+            return u32::try_from(total).map_err(|_| S_IOERR);
+        }
+    }
     let mut offset = start;
     for d in bufs {
         // Guest RAM, or device memory: a page of a file the guest maps (D189), which a
@@ -1046,6 +1361,115 @@ mod tests {
         );
         disk.detach(out_at).unwrap();
         assert_eq!(write(out_at, &[1; 512]), Err(S_IOERR), "let go");
+    }
+
+    /// A request to a range given a [`Through`] goes to its process whole, in round trips
+    /// of at most [`THROUGH_MAX`] however its segments fall (PM M442): its bytes written
+    /// and read back as they were. A read its process cuts short fails alone, the next
+    /// request on the connection answered as asked.
+    #[cfg(unix)]
+    #[test]
+    fn a_through_range_moves_a_request_whole() {
+        use std::io::{Read as _, Write as _};
+        use std::os::unix::fs::FileExt as _;
+        let dir = shards_testdir::TempDir::new("join-through").unwrap();
+        let path = dir.join("cache");
+        const LEN: usize = 3 << 20;
+        std::fs::write(&path, vec![0u8; LEN]).unwrap();
+        let open = || {
+            std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&path)
+                .unwrap()
+        };
+        let (mine, theirs) = std::os::unix::net::UnixStream::pair().unwrap();
+        // The range's process, as the writer's serve_range answers.
+        let served = open();
+        let trips = std::thread::spawn(move || {
+            let mut conn = theirs;
+            let mut trips = Vec::new();
+            let mut head = [0u8; 13];
+            while conn.read_exact(&mut head).is_ok() {
+                let offset = u64::from_be_bytes(head[1..9].try_into().unwrap());
+                let n = u32::from_be_bytes(head[9..].try_into().unwrap()) as usize;
+                trips.push(n);
+                let mut buf = vec![0u8; n];
+                let moved = if head[0] == THROUGH_WRITE {
+                    conn.read_exact(&mut buf).unwrap();
+                    served.write_all_at(&buf, offset).unwrap();
+                    n
+                } else {
+                    served.read_at(&mut buf, offset).unwrap()
+                };
+                let mut answer = 0i32.to_be_bytes().to_vec();
+                answer.extend_from_slice(&(moved as u32).to_be_bytes());
+                if head[0] == THROUGH_READ {
+                    answer.extend_from_slice(&buf[..moved]);
+                }
+                conn.write_all(&answer).unwrap();
+            }
+            trips
+        });
+        let disk = Join::new();
+        disk.take_writes();
+        let (at, len) = disk.attach_through(open(), true, Through::new(mine)).unwrap();
+        assert_eq!(len, LEN as u64);
+        // 2.5 MiB in segments of 4 KiB and one of 3 KiB, the first written 512 bytes in.
+        let mut out: Vec<u8> = (0..(5 << 19)).map(|i: usize| (i * 7 + i / 4096) as u8).collect();
+        let mut cuts: Vec<usize> = (0..out.len() / 4096).map(|_| 4096).collect();
+        cuts[0] = 1024;
+        cuts.push(3072);
+        let segments = |buf: &mut [u8]| {
+            let mut segs = Vec::new();
+            let mut ptr = buf.as_mut_ptr();
+            for &cut in &cuts {
+                segs.push((ptr, cut));
+                // SAFETY: the cuts lie within the buffer, summing to its length.
+                ptr = unsafe { ptr.add(cut) };
+            }
+            segs
+        };
+        let total: usize = cuts.iter().sum();
+        assert_eq!(total, out.len());
+        // SAFETY: each segment lies in `out`.
+        let wrote = unsafe { disk.through_request(&segments(&mut out), at + 512, true) };
+        assert_eq!(wrote, Some(Ok(())));
+        let file = std::fs::read(&path).unwrap();
+        assert_eq!(file[..512], [0; 512]);
+        assert!(file[512..512 + total] == out[..], "written as the guest gave it");
+        let mut back = vec![0u8; total];
+        // SAFETY: each segment lies in `back`.
+        let read = unsafe { disk.through_request(&segments(&mut back), at + 512, false) };
+        assert_eq!(read, Some(Ok(())));
+        assert!(back == out, "read back as written");
+        // Its file cut short under it: that read fails, and the next is answered whole.
+        open().set_len((LEN - 4096) as u64).unwrap();
+        let mut tail = vec![0u8; 8192];
+        let tail_ptr = tail.as_mut_ptr();
+        // SAFETY: the segment is `tail`.
+        let short = unsafe { disk.through_request(&[(tail_ptr, 8192)], at + LEN as u64 - 8192, false) };
+        assert_eq!(short, Some(Err(S_IOERR)));
+        let mut again = vec![0u8; 4096];
+        let again_ptr = again.as_mut_ptr();
+        // SAFETY: the segment is `again`.
+        let read = unsafe { disk.through_request(&[(again_ptr, 4096)], at + 512, false) };
+        assert_eq!(read, Some(Ok(())));
+        assert!(again[..] == out[..4096], "the connection kept in step");
+        assert_eq!(
+            // SAFETY: the segment is `again`.
+            unsafe { disk.through_request(&[(again_ptr, 4096)], at + LEN as u64, false) },
+            None,
+            "past its range: not this range's to move"
+        );
+        disk.detach(at).unwrap();
+        drop(disk);
+        let trips = trips.join().unwrap();
+        // 2.5 MiB each way in trips of at most a MiB, then the short read and the one after.
+        assert_eq!(
+            trips,
+            [1 << 20, 1 << 20, 1 << 19, 1 << 20, 1 << 20, 1 << 19, 8192, 4096]
+        );
     }
 
     /// A transfer reaches device memory, a page of a file its guest maps (D189), as it

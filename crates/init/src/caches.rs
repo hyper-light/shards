@@ -18,7 +18,7 @@
 use std::collections::HashMap;
 use std::ffi::{CString, OsStr};
 use std::fs::{File, OpenOptions};
-use std::io::{self, BufWriter, Write};
+use std::io::{self, Write};
 use std::os::fd::AsRawFd;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{FileExt, FileTypeExt, MetadataExt, OpenOptionsExt};
@@ -238,16 +238,17 @@ impl Caches {
                 .checked_add(len)
                 .ok_or_else(|| err("changes past the join disk"))?,
         )?;
-        let (_, disk) = self.disk()?;
-        let mut out = BufWriter::with_capacity(
-            WRITE_CHUNK,
-            Range {
-                disk,
-                start,
-                len,
-                at: 0,
-            },
-        );
+        let (name, disk) = self.disk()?;
+        // The same device again, written past the guest's page cache (O_DIRECT): written
+        // through it, the image sat in the guest's memory a second time as it went out,
+        // which its host then held as the builder's own, beside the host's page cache of
+        // the file it went to (PM M442).
+        let direct = OpenOptions::new()
+            .write(true)
+            .custom_flags(libc::O_DIRECT | libc::O_CLOEXEC)
+            .open(format!("/dev/{name}"))
+            .ok();
+        let mut out = Range::new(disk, direct, start, len);
         // A volume of its own, as overlayfs's index needs of each layer.
         let mut uuid = [0u8; 16];
         // SAFETY: getrandom(2) into a buffer of the length given.
@@ -264,19 +265,20 @@ impl Caches {
             uuid,
         )
         .map_err(|e| err(e.0))?;
-        let range = out.into_inner().map_err(io::IntoInnerError::into_error)?;
+        let written = out.finish()?;
         disk.sync_data()?;
-        // The host reads them from here on: the guest needs none of their pages.
+        // The host reads them from here on: the guest needs none of their pages, which only
+        // a write the device refused past its cache left.
         // SAFETY: posix_fadvise(2) on a descriptor this process holds.
         unsafe {
             libc::posix_fadvise(
                 disk.as_raw_fd(),
                 i64::try_from(start).unwrap_or(i64::MAX),
-                i64::try_from(range.at).unwrap_or(0),
+                i64::try_from(written).unwrap_or(0),
                 libc::POSIX_FADV_DONTNEED,
             );
         }
-        Ok((range.at, hidden))
+        Ok((written, hidden))
     }
 }
 
@@ -383,21 +385,97 @@ fn loop_device(disk: &File, offset: u64, len: u64) -> io::Result<(String, File)>
     Err(err("no loop device stayed free"))
 }
 
+/// What a write past the join disk's page cache is aligned to, in memory, on the disk and
+/// in length: its logical block, 512 bytes, as virtio-blk's is where it offers no `blk_size`
+/// (virtio 1.3 §5.2.4; the host's offers none, shards_vmm `block`), and the kernel checks a
+/// direct write's buffer, offset and length against (block/fops.c, `blkdev_dio_invalid`).
+/// The buffer starts on a page, which any block divides.
+const SECTOR: usize = 512;
+const PAGE: usize = 4096;
+
 /// The writable range of the join disk a cache's changes go to, written in order, never
-/// past its end.
+/// past its end, a [`WRITE_CHUNK`] at a time: past the guest's page cache where the device
+/// takes it (`direct`), else through it.
 struct Range<'d> {
     disk: &'d File,
+    direct: Option<File>,
     start: u64,
     len: u64,
-    /// How much has been written.
+    /// How much has been taken.
     at: u64,
+    /// The chunk being gathered, from `from` in `buf`, a page boundary, `held` bytes of it.
+    buf: Vec<u8>,
+    from: usize,
+    held: usize,
+}
+
+impl<'d> Range<'d> {
+    fn new(disk: &'d File, direct: Option<File>, start: u64, len: u64) -> Range<'d> {
+        let buf = vec![0u8; WRITE_CHUNK + PAGE];
+        let from = buf.as_ptr().align_offset(PAGE).min(PAGE);
+        Range {
+            disk,
+            direct,
+            start,
+            len,
+            at: 0,
+            buf,
+            from,
+            held: 0,
+        }
+    }
+
+    /// Writes the chunk gathered, `held` bytes of it, `padded` with the zeros after them up
+    /// to a whole number of sectors where it goes past the guest's page cache.
+    fn out(&mut self, padded: usize) -> io::Result<()> {
+        let offset = self
+            .start
+            .checked_add(self.at - self.held as u64)
+            .ok_or_else(|| err("a write past the join disk"))?;
+        let chunk = self
+            .buf
+            .get(self.from..self.from + padded.max(self.held))
+            .ok_or_else(|| err("a chunk past its buffer"))?;
+        if let Some(direct) = &self.direct {
+            match direct.write_all_at(chunk, offset) {
+                Ok(()) => {
+                    self.held = 0;
+                    return Ok(());
+                }
+                // A device that takes no such write takes this one and the rest through
+                // the guest's page cache, as before.
+                Err(e) if e.raw_os_error() == Some(libc::EINVAL) => self.direct = None,
+                Err(e) => return Err(e),
+            }
+        }
+        let chunk = chunk
+            .get(..self.held)
+            .ok_or_else(|| err("a chunk past its buffer"))?;
+        self.disk.write_all_at(chunk, offset)?;
+        self.held = 0;
+        Ok(())
+    }
+
+    /// Writes what is left: the image's length.
+    fn finish(mut self) -> io::Result<u64> {
+        if self.held > 0 {
+            // `len` is whole sectors and `at` within it, so the padding is too.
+            let padded = self.held.next_multiple_of(SECTOR);
+            if let Some(tail) = self.buf.get_mut(self.from + self.held..self.from + padded) {
+                tail.fill(0);
+            }
+            self.out(padded)?;
+        }
+        Ok(self.at)
+    }
 }
 
 impl Write for Range<'_> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let take = buf.len().min(WRITE_CHUNK - self.held);
         let end = self
             .at
-            .checked_add(buf.len() as u64)
+            .checked_add(take as u64)
             .filter(|&end| end <= self.len)
             .ok_or_else(|| {
                 io::Error::new(
@@ -405,13 +483,17 @@ impl Write for Range<'_> {
                     format!("they take more than the {} bytes the host had room for", self.len),
                 )
             })?;
-        let offset = self
-            .start
-            .checked_add(self.at)
-            .ok_or_else(|| err("a write past the join disk"))?;
-        self.disk.write_all_at(buf, offset)?;
+        let to = self
+            .buf
+            .get_mut(self.from + self.held..self.from + self.held + take)
+            .ok_or_else(|| err("a chunk past its buffer"))?;
+        to.copy_from_slice(buf.get(..take).unwrap_or_default());
+        self.held += take;
         self.at = end;
-        Ok(buf.len())
+        if self.held == WRITE_CHUNK {
+            self.out(WRITE_CHUNK)?;
+        }
+        Ok(take)
     }
 
     fn flush(&mut self) -> io::Result<()> {

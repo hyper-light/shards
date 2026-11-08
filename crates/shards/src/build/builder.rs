@@ -927,14 +927,21 @@ impl Builder {
     /// the range it was given, where it starts and its length.
     fn attach(&mut self, file: &std::fs::File, writable: bool) -> Result<(u64, u64), String> {
         use shards_ipc::kind;
+        // Read and written by the build's writer outside its budget where one is (D188):
+        // the page cache the guest faults of it is then charged there, not to the budget,
+        // whose reclaim took it before the build's merge of the cache read it again (PM
+        // M442).
+        #[cfg(target_os = "linux")]
+        let through = super::outside::through(file);
+        #[cfg(target_os = "linux")]
+        let fds: Vec<_> = std::iter::once(file.as_fd())
+            .chain(through.as_ref().map(|t| t.as_fd()))
+            .collect();
+        #[cfg(all(unix, not(target_os = "linux")))]
+        let fds = [file.as_fd()];
         #[cfg(unix)]
-        shards_ipc::send(
-            &self.attach,
-            kind::DISK_ATTACH,
-            &[u8::from(writable)],
-            &[file.as_fd()],
-        )
-        .map_err(|e| format!("attaching a cache to the builder: {e}"))?;
+        shards_ipc::send(&self.attach, kind::DISK_ATTACH, &[u8::from(writable)], &fds)
+            .map_err(|e| format!("attaching a cache to the builder: {e}"))?;
         // The file's handle given the VM process, its value there after the mode: a
         // message on Windows carries no handle (shards_ipc).
         #[cfg(windows)]
