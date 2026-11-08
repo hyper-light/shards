@@ -340,10 +340,17 @@ fn output_vars_for_expr_eq_in(e: &Expr, safe: &VarSet, output: &mut VarSet) -> V
         return safe.clone();
     }
     output.extend(output_vars_for_terms(e, safe));
-    output.extend(safe.iter().cloned());
+    // OPA unifies with all of `safe` added to `output`, a copy as large as the body
+    // before (cubic in a body of closures or print calls, PM M160). What the unification
+    // asks of the set is only whether the operands' variables are in it: those of them
+    // that are safe stand for the whole.
+    let mut v = VarVisitor::new(Params::default());
+    v.term(a);
+    v.term(b);
+    output.extend(v.vars.into_iter().filter(|x| safe.contains(x)));
     let u = unify(output, a, b);
     output.extend(u);
-    let diff = output.difference(safe).cloned().collect();
+    let diff = output.iter().filter(|x| !safe.contains(*x)).cloned().collect();
     output.clear();
     diff
 }
@@ -446,6 +453,47 @@ pub fn output_vars_for_body_among(body: &[Expr], arity: Arity<'_>, safe: &VarSet
     }
     let here: VarSet = v.vars.into_iter().filter(|x| safe.contains(x)).collect();
     output_vars_for_body(body, arity, &here)
+}
+
+/// [`output_vars_for_body_among`] of a body's first expressions, as the body is read one
+/// expression further at a time: what rewritePrintCalls asks before each expression it
+/// rewrites, which, asked afresh each time, reads the body once for each of them (cubic
+/// in a body of print calls, PM M160). Each expression's outputs read of what is safe
+/// only whether its own variables are (see [`output_vars_for_body_among`]): those of
+/// them in `safe`, and the outputs before it.
+#[derive(Debug, Default)]
+pub struct PrefixOutputs {
+    /// The variables of the expressions read that are safe, and their outputs.
+    o: VarSet,
+    /// outputVarsForBody's `output`, carried from each expression to the next.
+    carry: VarSet,
+    /// The outputs that are not in `safe`: [`output_vars_for_body_among`]'s answer.
+    out: VarSet,
+}
+
+impl PrefixOutputs {
+    /// Reads one more expression, `safe` the same set at each.
+    pub fn push(&mut self, e: &Expr, arity: Arity<'_>, safe: &VarSet) {
+        let mut v = VarVisitor::new(Params {
+            skip_closures: true,
+            ..Params::default()
+        });
+        v.expr(e);
+        for w in &e.with {
+            v.with(w);
+        }
+        self.o.extend(v.vars.into_iter().filter(|x| safe.contains(x)));
+        for x in output_vars_for_expr_in(e, arity, &self.o, &mut self.carry) {
+            if !safe.contains(&x) {
+                self.out.insert(x.clone());
+            }
+            self.o.insert(x);
+        }
+    }
+
+    pub fn outputs(&self) -> &VarSet {
+        &self.out
+    }
 }
 
 /// outputVarsForBody over expressions in turn, wherever they are.
@@ -618,6 +666,10 @@ pub fn reorder(
     // reorderBodyForSafety reads every expression with one output set, through every pass.
     let mut output = VarSet::new();
     let mut placed: HashSet<usize> = HashSet::new();
+    // What the expressions placed so far output, given what is safe: both change only as
+    // one is placed, so it is read again then, not for each expression after (OPA reads
+    // it for each, cubic in a body of closures, PM M160).
+    let mut placed_outputs: Option<VarSet> = None;
     loop {
         let n = order.len();
         for (i, e) in body.iter().enumerate() {
@@ -626,15 +678,17 @@ pub fn reorder(
             }
             let ovs = output_vars_for_expr_in(e, arity, &safe, &mut output);
             let cv = closed.get(i).unwrap_or(&none);
-            // What the expressions placed so far output: none of it matters to an
-            // expression without closures reading this body's variables.
+            // None of it matters to an expression without closures reading this body's
+            // variables.
             let ob = if cv.is_empty() {
-                VarSet::new()
+                &none
             } else {
-                output_vars_for_exprs(order.iter().filter_map(|&j| body.get(j)), arity, &safe)
+                &*placed_outputs.get_or_insert_with(|| {
+                    output_vars_for_exprs(order.iter().filter_map(|&j| body.get(j)), arity, &safe)
+                })
             };
-            if diff_count(cv, &ob) > 0 {
-                let uv: VarSet = cv.difference(&ob).cloned().collect();
+            if diff_count(cv, ob) > 0 {
+                let uv: VarSet = cv.difference(ob).cloned().collect();
                 if uv == ovs {
                     continue;
                 }
@@ -648,6 +702,7 @@ pub fn reorder(
                 order.push(i);
                 placed.insert(i);
                 safe.extend(ovs);
+                placed_outputs = None;
             }
         }
         if order.len() == n {
@@ -739,5 +794,68 @@ pub fn compare_loc(a: &Option<Location>, b: &Option<Location>) -> i32 {
                 std::cmp::Ordering::Greater => 1,
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use super::*;
+    use crate::compile::Compiler;
+    use crate::parser::parse_module;
+
+    /// Every body of the corpora's compiled modules, each prefix of it: what
+    /// PrefixOutputs reads one expression further at a time is what
+    /// output_vars_for_body_among reads of the prefix whole, for safe sets of none of the
+    /// body's variables, some and all.
+    #[test]
+    fn prefix_outputs_read_on_answer_as_each_prefix_read_whole() {
+        let mut bodies = 0;
+        for file in [
+            include_str!("../../testdata/cases.json"),
+            include_str!("../../testdata/check.json"),
+        ] {
+            let v: serde_json::Value = serde_json::from_str(file).unwrap();
+            for case in v.as_array().unwrap() {
+                let Some(ms) = case.get("modules").and_then(serde_json::Value::as_array) else {
+                    continue;
+                };
+                let mut parsed = BTreeMap::new();
+                for m in ms {
+                    let (name, src) = (m[0].as_str().unwrap(), m[1].as_str().unwrap());
+                    if let Ok(module) = parse_module(name, src) {
+                        parsed.insert(name.to_string(), module);
+                    }
+                }
+                let mut c = Compiler::new(parsed, Vec::new(), true);
+                c.compile();
+                let arity = |r: &[Term]| c.arity(r);
+                for module in c.modules.values() {
+                    for rule in &module.rules {
+                        let body = &rule.body;
+                        let mut vis = VarVisitor::new(Params::default());
+                        vis.body(body);
+                        let all: VarSet = vis.vars;
+                        let some: VarSet = all.iter().step_by(2).cloned().collect();
+                        for safe in [VarSet::new(), some, all] {
+                            let mut prefix = PrefixOutputs::default();
+                            for i in 0..=body.len() {
+                                assert_eq!(
+                                    prefix.outputs(),
+                                    &output_vars_for_body_among(&body[..i], &arity, &safe),
+                                    "{body:?} {safe:?} {i}"
+                                );
+                                if let Some(e) = body.get(i) {
+                                    prefix.push(e, &arity, &safe);
+                                }
+                            }
+                        }
+                        bodies += 1;
+                    }
+                }
+            }
+        }
+        assert!(bodies > 300, "{bodies}");
     }
 }
