@@ -1,5 +1,5 @@
 //! `shards move vm NAME CONTEXT` (D176 part 6): a microVM moved to the machine a context
-//! reaches (D180), driven here as `shards cp` is, each step asked of this machine's daemon
+//! reaches (D180), driven here as `shards copy vm` is, each step asked of this machine's daemon
 //! or of the other's through the context (daemon/moves.rs):
 //!
 //! 1. saved whole here, stopped where it is (D176): its plan;

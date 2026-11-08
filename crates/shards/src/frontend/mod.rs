@@ -576,7 +576,7 @@ fn go_quote(s: &str) -> String {
     shards_image::go::quote(s.as_bytes())
 }
 
-/// An Agentfile by its name (D35), as `shards build` tells one: `Agentfile`, `*.agentfile`
+/// An Agentfile by its name (D35), as `shards build image` tells one: `Agentfile`, `*.agentfile`
 /// or `agentfile.*`, any case.
 fn dialect_of(name: &str) -> Dialect {
     let base = name.rsplit('/').next().unwrap_or(name).to_ascii_lowercase();
@@ -899,7 +899,7 @@ impl<R: Read, W: Write> Gateway<'_, R, W> {
     }
 
     /// An OSI artifact of `kind` from the OCI layout the client serves as `store`, at
-    /// `digest` (D113): held as `shards build` holds one from a registry (agent.rs, the
+    /// `digest` (D113): held as `shards build image` holds one from a registry (agent.rs, the
     /// same checks and words: D54, §12.17, §9.2), its content checked and laid out by a
     /// step of the frontend's own image, which the definition takes its place for.
     fn artifact_from_layout(
@@ -923,7 +923,7 @@ impl<R: Read, W: Write> Gateway<'_, R, W> {
                 .unwrap_or_else(|| oci::media::OCI_MANIFEST.to_string())
         };
         // The root the context names: an index's manifest for this platform, as
-        // `shards build` takes one (agent::fetch), else the manifest itself.
+        // `shards build image` takes one (agent::fetch), else the manifest itself.
         let mut d = String::from_utf8_lossy(digest).into_owned();
         let mut bytes = self.read_layout_blob(store, &d, oci::MAX_MANIFEST)?;
         // Each document is the one its digest names, as a fetch into the store holds one.
@@ -2623,7 +2623,7 @@ impl<R: Read, W: Write> skills::Fetched for GatewayTree<'_, '_, R, W> {
 }
 
 /// Each of shards' own skills steps (D54) made a file op BuildKit runs: the tree it checks
-/// solved first, read through the gateway, checked as `shards build` checks it, and laid
+/// solved first, read through the gateway, checked as `shards build image` checks it, and laid
 /// out by the copies that check gives; a refusal the build's error, on the SKILL's lines.
 fn lay_skills<R: Read, W: Write>(
     g: &Gateway<'_, R, W>,
@@ -3063,7 +3063,7 @@ mod tests {
         }
     }
 
-    /// A skills step becomes the file op `shards build` lays its skills with: its tree
+    /// A skills step becomes the file op `shards build image` lays its skills with: its tree
     /// solved and read through the gateway, checked as shards build checks it.
     #[test]
     fn skills_are_laid_out_through_the_gateway_as_shards_build_lays_them() {
@@ -3465,7 +3465,7 @@ mod tests {
     }
 
     /// An OSI artifact from the OCI layout a build context gives (D113): its manifest and
-    /// config read from the client's layout by digest and held as `shards build` holds
+    /// config read from the client's layout by digest and held as `shards build image` holds
     /// them, its layer held and laid out by a step of the frontend's own image, which the
     /// build's definition then takes in its source's place.
     #[test]

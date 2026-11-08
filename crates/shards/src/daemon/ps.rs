@@ -1,4 +1,4 @@
-//! Which microVMs `shards ps` lists, as dockerd chooses containers for `docker ps` (moby
+//! Which microVMs `shards list vms` lists, as dockerd chooses containers for `docker ps` (moby
 //! daemon/list.go: Containers, foldFilter, filterByNameIDMatches, includeContainerInList),
 //! its `--filter`s included.
 

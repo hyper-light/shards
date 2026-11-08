@@ -246,7 +246,7 @@ fn platform_arg(given: &str) -> String {
 }
 
 impl<D: Disk> Daemon<D> {
-    /// `POST /images/create`: `fromImage` pulled as `shards pull` pulls it, each line it
+    /// `POST /images/create`: `fromImage` pulled as `shards pull image` pulls it, each line it
     /// says a JSON message of the stream (D170, [`message`]); with `fromSrc`, an import.
     pub(super) fn engine_pull<'s, 'e>(
         &'s self,

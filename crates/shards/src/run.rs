@@ -1,4 +1,4 @@
-//! `shards run`, the daemon's half (daemon.rs): a request (`shards_ipc::Run`) made ready
+//! `shards run vm`, the daemon's half (daemon.rs): a request (`shards_ipc::Run`) made ready
 //! to run, as `docker run` runs one in a new container (docs/design/architecture.md D16,
 //! D24–D26). The image's entrypoint, command, environment, working directory and user
 //! apply unless the command line gave its own, merged as dockerd merges them. With the

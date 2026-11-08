@@ -1,4 +1,4 @@
-//! Reading a container's log (spec.rs, `LOG_STDOUT`) for `shards logs` (audit A12):
+//! Reading a container's log (spec.rs, `LOG_STDOUT`) for `shards read logs` (audit A12):
 //! through its index, in buffers of bounded size however long it is or its lines are, and
 //! back from its end for `--tail`, reading only what the lines it shows hold.
 //!

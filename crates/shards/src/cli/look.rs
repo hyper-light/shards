@@ -615,7 +615,7 @@ pub(crate) fn version(p: &Paint, out: &mut impl std::io::Write) {
     page.write(p, out);
 }
 
-/// `shards run -d`: the microVM started, its ID, image and name, and what to do next.
+/// `shards run vm -d`: the microVM started, its ID, image and name, and what to do next.
 pub(crate) fn started(p: &Paint, id: &str, image: &str, name: Option<&str>, out: &mut impl std::io::Write) {
     let cols = width();
     let short = id.get(..12).unwrap_or(id);

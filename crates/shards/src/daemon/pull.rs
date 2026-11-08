@@ -1,11 +1,11 @@
-//! `shards pull`, served for the daemon's clients: crate::pull::command, said through
+//! `shards pull image`, served for the daemon's clients: crate::pull::command, said through
 //! the client's connection, its steps sent where the client shows them, cancelled when
 //! the client goes or the daemon stops.
 
 use shards_ipc::Progress;
 
 impl<D: crate::containers::Disk> super::Daemon<D> {
-    /// `shards pull NAME[:TAG|@DIGEST]`.
+    /// `shards pull image NAME[:TAG|@DIGEST]`.
     pub(super) fn pull(
         &self,
         parsed: &shards_cmdline::flags::Parsed,

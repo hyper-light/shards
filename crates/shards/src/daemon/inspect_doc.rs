@@ -1,4 +1,4 @@
-//! A microVM as `shards inspect` shows it: dockerd's container.InspectResponse (moby
+//! A microVM as `shards inspect vm` shows it: dockerd's container.InspectResponse (moby
 //! api/types/container/container.go, at docker-v29.8.1), as Go types, so that a
 //! `--format` reads it as the Docker CLI reads dockerd's (typed first, then the raw JSON:
 //! docker/cli cli/command/inspect/inspector.go), and its JSON is dockerd's field for

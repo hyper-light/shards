@@ -1,6 +1,6 @@
 //! A microVM moved to another machine (D176 part 6): `shards move vm NAME CONTEXT`, whose
 //! client asks this daemon and the other machine's, through its context (D180), for its
-//! steps one at a time (cli/moves.rs), as `shards cp` asks for its own.
+//! steps one at a time (cli/moves.rs), as `shards copy vm` asks for its own.
 //!
 //! - `save NAME`: the microVM saved whole and stopped (D176), or the snapshot a save
 //!   stopped it as; its [`Plan`], on stdout: what the other machine needs of it.

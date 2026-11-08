@@ -1,4 +1,4 @@
-//! `shards commit CONTAINER [REPOSITORY[:TAG]]` (moby daemon/commit.go,
+//! `shards commit vm CONTAINER [REPOSITORY[:TAG]]` (moby daemon/commit.go,
 //! CreateImageFromContainer; daemon/containerd/image_commit.go, CommitImage): a new
 //! image of the container's image and the layer of what it changed (D37), its config the
 //! container's, its history one step longer.
@@ -13,7 +13,7 @@ use super::commands::{Asker, Reply};
 use super::{Daemon, LAYER, lock};
 use crate::containers::State as Life;
 
-/// An OCI layer's media type, uncompressed, as `shards build` writes its layers.
+/// An OCI layer's media type, uncompressed, as `shards build image` writes its layers.
 const LAYER_TAR: &str = "application/vnd.oci.image.layer.v1.tar";
 
 impl<D: crate::containers::Disk> Daemon<D> {

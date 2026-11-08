@@ -1,4 +1,4 @@
-//! `shards run [OPTIONS] IMAGE [COMMAND] [ARG...]`: runs a command in a new microVM booted
+//! `shards run vm [OPTIONS] IMAGE [COMMAND] [ARG...]`: runs a command in a new microVM booted
 //! into an image, as `docker run` runs one in a new container (docs/design/architecture.md
 //! D16, D24–D27). The command line, read as the Docker CLI reads it (shards_cmdline),
 //! becomes a request (`shards_ipc::Run`), completed with what only this process knows, for
@@ -21,7 +21,7 @@ use shards_cmdline::term;
 
 use crate::cli::NOT_RUN;
 
-/// Runs the command line `args`, the words after `path` (`shards run`).
+/// Runs the command line `args`, the words after `path` (`shards run vm`).
 pub fn run(path: &str, args: &[OsString]) -> ExitCode {
     let argv = match crate::cli::utf8(args) {
         Ok(argv) => argv,
@@ -206,7 +206,7 @@ pub fn start(path: &str, args: &[OsString]) -> ExitCode {
 }
 
 /// Restarts the containers the command line `args` names, the words after `path`
-/// (`shards restart`), as `docker restart` does (docker/cli container/restart.go): each
+/// (`shards restart vm`), as `docker restart` does (docker/cli container/restart.go): each
 /// stopped, by `-s` and `-t` where given, then started again, and named.
 pub fn restart(path: &str, args: &[OsString]) -> ExitCode {
     let argv = match crate::cli::utf8(args) {
@@ -253,7 +253,7 @@ fn send(request: &mut Run, detach_keys: &[u8], cid: &mut Option<CidFile>, sig_pr
     }
 }
 
-/// Runs the command line `args`, the words after `path` (`shards exec`), as `docker exec`
+/// Runs the command line `args`, the words after `path` (`shards exec vm`), as `docker exec`
 /// runs it: in a running container, attached unless `-d` (docker/cli
 /// cli/command/container/exec.go).
 pub fn exec(path: &str, args: &[OsString]) -> ExitCode {
@@ -406,7 +406,7 @@ pub fn attach(path: &str, args: &[OsString]) -> ExitCode {
 
 /// Says `why` as the CLI says a plain error, and exits 1 (docker/cli cmd/docker/docker.go).
 /// `shards restore vm MICROVM [SNAPSHOT]` (D176): a stopped microVM resumed by its daemon
-/// from a snapshot of its own, its newest unless named, as `shards start` starts one:
+/// from a snapshot of its own, its newest unless named, as `shards start vm` starts one:
 /// named once it runs.
 pub fn restore(path: &str, args: &[OsString]) -> ExitCode {
     let argv = match crate::cli::utf8(args) {

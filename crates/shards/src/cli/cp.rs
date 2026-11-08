@@ -1,4 +1,4 @@
-//! `shards cp`, as docker/cli copies (cli/command/container/cp.go): between a microVM and
+//! `shards copy vm`, as docker/cli copies (cli/command/container/cp.go): between a microVM and
 //! this machine, either way, as tar archives laid out by go-archive's copy rules
 //! (shards_archive::copy), the daemon doing dockerd's half in the microVM (daemon
 //! commands.rs, `copy_step`). The archives pass between the microVM and this process

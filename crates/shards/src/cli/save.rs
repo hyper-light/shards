@@ -1,4 +1,4 @@
-//! Where `shards save` and `export` write, as docker/cli's runSave and runExport choose
+//! Where `shards save image` and `export` write, as docker/cli's runSave and runExport choose
 //! (cli/command/image/save.go, container/export.go):
 //! stdout, unless it is a terminal; or with `-o`, a file written whole or not at all, as
 //! moby/sys/atomicwriter writes one: a temporary file beside it, synced, made 0600 and
@@ -398,7 +398,7 @@ impl Output {
     }
 }
 
-/// Where `shards load` reads (runLoad's input): `-i`'s file, or stdin,
+/// Where `shards load image` reads (runLoad's input): `-i`'s file, or stdin,
 /// unless it is a terminal. What the CLI says instead, in Go's words.
 pub fn input(path: &str) -> Result<Option<File>, String> {
     if path.is_empty() {
