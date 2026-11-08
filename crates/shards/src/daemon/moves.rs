@@ -84,6 +84,10 @@ pub(crate) struct Plan {
     /// have each, as its guest may have found and used any.
     #[serde(default)]
     pub cpu: Vec<String>,
+    /// Whether its run boots the guest its home stores, no kernel given: the pinned
+    /// kernel, which a restore of it prepares its run's request with (run::prepare).
+    #[serde(default)]
+    pub guest: bool,
 }
 
 /// The features of this machine's CPU a guest may be shown, as its OS names them: on macOS
@@ -870,6 +874,7 @@ impl<D: Disk> Daemon<D> {
             volumes,
             binds,
             cpu: host_cpu(),
+            guest: self.boots_stored_guest(&c.id),
         };
         serde_json::to_string(&plan).map_err(|e| e.to_string())
     }
@@ -1095,7 +1100,18 @@ impl<D: Disk> Daemon<D> {
             volumes,
             binds,
             cpu: host_cpu(),
+            guest: self.boots_stored_guest(id),
         })
+    }
+
+    /// Whether container `id`'s run boots the guest its home stores: its request names no
+    /// kernel (`--kernel`, `SHARDS_KERNEL`).
+    fn boots_stored_guest(&self, id: &str) -> bool {
+        let dir = lock(&self.containers).dir(id);
+        std::fs::read(dir.join(super::REQUEST))
+            .ok()
+            .and_then(|b| shards_ipc::Run::decode(&b))
+            .is_some_and(|r| r.kernel.is_none() && r.init.is_none())
     }
 
     /// `ready PLAN`, on the machine moved to: whether it can take the plan's microVM, and
@@ -1157,6 +1173,17 @@ impl<D: Disk> Daemon<D> {
         }
         // Its image, by the digest its name resolved to: here, or pulled by it.
         let image = self.moved_image(&plan, asker, reply);
+        // The guest a restore here prepares its run's request with (run::prepare, as a
+        // start does), where its run boots the stored one: the pinned kernel, downloaded
+        // where this home has none recorded, now rather than in its restore, which a live
+        // move's microVM waits for running nowhere. A fresh home's first move waited 17 s
+        // in its restore for the kernel's 19 MB from GitHub (PM M462).
+        if plan.guest && crate::guest::current(&self.home)?.is_none() {
+            let cancel = shards_registry::http::Cancel::new();
+            crate::guest::default(&self.home, &|line| reply.err(line), Some(&cancel), &|k| {
+                shards_ipc::env_value(&asker.registry_env, k)
+            })?;
+        }
         let mut needs = Needs {
             image: image.is_err(),
             files: Vec::new(),
@@ -1658,6 +1685,7 @@ mod tests {
             volumes: vec!["data".into()],
             binds: Vec::new(),
             cpu: Vec::new(),
+            guest: false,
         }
     }
 
