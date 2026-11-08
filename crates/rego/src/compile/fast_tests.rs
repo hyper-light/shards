@@ -321,7 +321,7 @@ fn the_generator_numbers_as_opas_and_stops_at_its_int() {
             "__local5__",
             "__local6__",
             "__local8__",
-            "__local9__"
+            "__local9__",
         ]
     );
     assert_eq!(&*g.name_at(1), "__local4__");
