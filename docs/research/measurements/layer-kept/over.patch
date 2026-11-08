@@ -1,9 +1,9 @@
 diff --git a/crates/shards/src/daemon/layers.rs b/crates/shards/src/daemon/layers.rs
-index 57de7246..41bc80c5 100644
+index cc37c3a..c113738 100644
 --- a/crates/shards/src/daemon/layers.rs
 +++ b/crates/shards/src/daemon/layers.rs
 @@ -251,14 +251,18 @@ pub(super) fn open_kept(at: &Path) -> Result<std::fs::File, String> {
- /// template's layer and mount of the container's). Where the two cost the same on the
+ /// template's layer and mount of the microVM's). Where the two cost the same on the
  /// host's kind, as measured ([`CROSSOVER_BASIS`]), to the MiB: 5 MiB on Linux (PM M443).
  #[cfg(target_os = "linux")]
 -pub(super) const OVER_FROM: u64 = 5 << 20;
@@ -11,7 +11,7 @@ index 57de7246..41bc80c5 100644
 +// whatever it holds.
 +pub(super) const OVER_FROM: u64 = 0;
  
- /// [`OVER_FROM`] on macOS and Windows, 7 MiB, where their restarts cross (PM M464): going
+ /// [`OVER_FROM`] on macOS and Windows, 7 MiB, where their restarts cross (PM M496): going
  /// over costs more there than on Linux whatever the layer holds (an empty layer's restart 7
  /// to 9 ms more than its packing at p50 on macOS, 233 on Windows), and packing grows with
  /// what it holds as on Linux.
@@ -21,5 +21,5 @@ index 57de7246..41bc80c5 100644
 +// whatever it holds.
 +pub(super) const OVER_FROM: u64 = 0;
  
- /// PM M443's restarts, `start -a` of a container that wrote that many bytes, n = 20 a side
+ /// PM M443's restarts, `start -a` of a microVM that wrote that many bytes, n = 20 a side
  /// interleaved, ms at p50: packed and put back, then gone over (Fedora, Btrfs). Packing was

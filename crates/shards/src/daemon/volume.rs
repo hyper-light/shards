@@ -18,7 +18,7 @@ const LIST_FILTERS: [&str; 4] = ["dangling", "name", "driver", "label"];
 const PRUNE_FILTERS: [&str; 3] = ["label", "label!", "all"];
 
 impl<D: Disk> Daemon<D> {
-    /// The containers that mount volume `name`, made or being made: its references, which
+    /// The microVMs that mount volume `name`, made or being made: its references, which
     /// keep it from removal (the volume store's reference counts).
     pub(super) fn volume_refs(&self, name: &str) -> Vec<String> {
         lock(&self.containers)
@@ -34,6 +34,7 @@ impl<D: Disk> Daemon<D> {
         &self,
         parsed: &shards_cmdline::flags::Parsed,
         styled: bool,
+        whose: &str,
         reply: &Reply<'_>,
     ) -> u8 {
         let name = parsed
@@ -69,6 +70,15 @@ impl<D: Disk> Daemon<D> {
         {
             reply.err(&format!("shards: {}", crate::volumes::reserved(k)));
             return 1;
+        }
+        // A client's: a volume of a directory of this machine's only where its owner granted
+        // it (D215).
+        if !whose.is_empty() {
+            let grants = crate::client_grants::load(&self.home, whose);
+            if let Err(e) = crate::volumes::refuse_options(&options, &name, whose, &grants) {
+                reply.err(&format!("shards: {e}"));
+                return 1;
+            }
         }
         let made = {
             let _held = crate::volumes::lock();
@@ -226,7 +236,7 @@ impl<D: Disk> Daemon<D> {
     }
 
     /// The volumes `filters` keep (filtersToBy): by driver, name (Match), labels
-    /// (MatchKVList, and `label!`'s none), and whether any container mounts them
+    /// (MatchKVList, and `label!`'s none), and whether any microVM mounts them
     /// (`dangling`).
     fn volumes_by(&self, filters: &Filters) -> Result<Vec<Volume>, String> {
         let dangling = if filters.contains("dangling") {
@@ -328,7 +338,7 @@ impl<D: Disk> Daemon<D> {
     }
 
     /// `shards volume prune` (VolumesService.Prune, withPrune): the local volumes no
-    /// container mounts and the filters keep, anonymous ones alone unless `all`; with the
+    /// microVM mounts and the filters keep, anonymous ones alone unless `all`; with the
     /// bytes they took.
     pub(super) fn volume_prune(
         &self,
@@ -370,7 +380,7 @@ impl<D: Disk> Daemon<D> {
         0
     }
 
-    /// The volumes a prune removes, and the bytes they took: those no container mounts,
+    /// The volumes a prune removes, and the bytes they took: those no microVM mounts,
     /// of the local driver with no options, that the filters keep; anonymous ones alone
     /// unless `all` or a filter `all` says otherwise.
     pub(super) fn prune_volumes(&self, given: &[String], all: bool) -> Result<(Vec<String>, u64), String> {

@@ -91,14 +91,17 @@ pub fn rewrite(args: &[String]) -> Option<Vec<String>> {
         out.extend(args.get(2..)?.iter().cloned());
         return Some(out);
     }
-    // `shards image ls` is `shards ls image`: the THING ACTION form, turned round.
+    // `shards image ls` is `shards ls image`, and `shards vm ls` is `shards ls vm`: the
+    // THING ACTION form, turned round. Docker's management commands (`image`, `container`)
+    // keep Docker's answers, `--convert` left out; `vm` is shards' own, and keeps it.
     let thing_first = matches!(Thing::of(first), Some(Thing::Image | Thing::Container));
     let (action, thing, rest) = match (Thing::of(first), second) {
-        (Some(thing @ (Thing::Image | Thing::Container)), Some(action)) => (action, thing, args.get(2..)?),
+        (Some(thing @ (Thing::Image | Thing::Container | Thing::Vm)), Some(action)) => {
+            (action, thing, args.get(2..)?)
+        }
         (
             Some(
-                Thing::Vm
-                | Thing::Daemon
+                Thing::Daemon
                 | Thing::Guest
                 | Thing::Disk
                 | Thing::System
@@ -142,6 +145,9 @@ pub fn rewrite(args: &[String]) -> Option<Vec<String>> {
         ("inspect" | "show", Thing::Context) => &["context", "inspect"],
         ("remove" | "rm" | "delete", Thing::Context) => &["context", "rm"],
         ("invite", Thing::Client) => &["client", "invite"],
+        ("grant", Thing::Client) => &["client", "grant"],
+        ("revoke", Thing::Client) => &["client", "revoke"],
+        ("inspect" | "show", Thing::Client) => &["client", "inspect"],
         ("list" | "ls", Thing::Client) => &["client", "ls"],
         ("remove" | "rm" | "delete", Thing::Client) => &["client", "rm"],
         ("list" | "ls", Thing::Invitation) => &["invitation", "ls"],
@@ -161,11 +167,22 @@ pub fn rewrite(args: &[String]) -> Option<Vec<String>> {
         ("commit", Thing::Vm | Thing::Container) => &["commit"],
         ("copy" | "cp", Thing::Vm | Thing::Container) => &["cp"],
         ("restart", Thing::Vm | Thing::Container) => &["restart"],
-        ("create" | "make", Thing::Vm | Thing::Container) => &["create"],
+        // A container is an image to make a microVM of: one that is a shards microVM
+        // already is refused, its words saying how it runs (`--container-image`).
+        ("create" | "make", Thing::Container) => &["create", "--container-image"],
+        ("create" | "make", Thing::Vm) => &["create"],
         ("unpause" | "resume" | "thaw", Thing::Vm | Thing::Container) => &["unpause"],
         ("inspect", Thing::Vm | Thing::Container) => &["container", "inspect", "--convert"],
-        ("run", Thing::Vm | Thing::Container) => &["run"],
+        ("run", Thing::Container) => &["run", "--container-image"],
+        ("run", Thing::Vm) => &["run"],
         ("restore", Thing::Vm) => &["restore"],
+        // A terminal joined to a running microVM's command, and its limits changed as it
+        // runs (D40, D45); Docker's `container attach` and `container update` are its own.
+        ("attach", Thing::Vm | Thing::Container) if !thing_first => &["attach"],
+        ("update", Thing::Vm | Thing::Container) if !thing_first => &["update"],
+        // A microVM brought in whole, or made of an image's or a microVM's files (D41);
+        // Docker's `image import` is its own.
+        ("import", Thing::Vm | Thing::Image) if !thing_first => &["import"],
         ("run" | "start", Thing::Daemon) => &["daemon"],
         ("stop", Thing::Daemon) => &["daemon", "stop"],
         ("configure" | "use" | "set", Thing::Guest) => &["guest", "use"],
@@ -210,12 +227,16 @@ pub fn rewrite(args: &[String]) -> Option<Vec<String>> {
     };
     let mut out: Vec<String> = said
         .iter()
-        .filter(|w| !(thing_first && **w == "--convert"))
+        .filter(|w| !(thing_first && SHARDS_OWN.contains(*w)))
         .map(|w| (*w).to_string())
         .collect();
     out.extend(rest.iter().cloned());
     Some(out)
 }
+
+/// The options of shards' own the grammar adds, which Docker's management commands said
+/// turned round (`image inspect`, `container run`) go without, answering as Docker's do.
+const SHARDS_OWN: [&str; 2] = ["--convert", "--container-image"];
 
 fn once(action: &str, rest: &[String]) -> Vec<String> {
     std::iter::once(action.to_string())
@@ -230,6 +251,12 @@ pub static SECTIONS: &[&str] = &["run", "inspect", "manage", "images"];
 /// the things it acts on, and what it does. How each thing is given is on the action's
 /// own page ([`USES`]).
 pub static ACTIONS: &[(&str, &str, &str, &str)] = &[
+    (
+        "run",
+        "attach",
+        "vm",
+        "Join your terminal to a running microVM's command",
+    ),
     (
         "run",
         "create",
@@ -296,6 +323,12 @@ pub static ACTIONS: &[(&str, &str, &str, &str)] = &[
     ("manage", "copy", "vm", "Copy files into or out of a microVM"),
     (
         "manage",
+        "grant",
+        "client",
+        "Let a client reach directories or devices of this machine's, which it reaches none of until then",
+    ),
+    (
+        "manage",
         "grow",
         "disk",
         "Grow a disk plugged into a running microVM, and its file system, as it runs",
@@ -329,6 +362,12 @@ pub static ACTIONS: &[(&str, &str, &str, &str)] = &[
     ("manage", "rename", "vm", "Name a microVM again"),
     (
         "manage",
+        "revoke",
+        "client",
+        "Take back what a client was granted of this machine's",
+    ),
+    (
+        "manage",
         "stop",
         "vm | daemon",
         "Stop microVMs, or the daemon and its runs",
@@ -343,9 +382,21 @@ pub static ACTIONS: &[(&str, &str, &str, &str)] = &[
     ),
     (
         "manage",
+        "update",
+        "vm",
+        "Change what a microVM may take of the host, as it runs",
+    ),
+    (
+        "manage",
         "use",
         "context",
         "Choose the machine shards' commands run on",
+    ),
+    (
+        "manage",
+        "wait",
+        "vm",
+        "Wait for microVMs to stop, and say how each command ended",
     ),
     (
         "images",
@@ -364,6 +415,12 @@ pub static ACTIONS: &[(&str, &str, &str, &str)] = &[
         "export",
         "vm",
         "Write a microVM's files out as a tar archive",
+    ),
+    (
+        "images",
+        "import",
+        "vm | image",
+        "Bring in a microVM saved whole, or make one of a tarball's files",
     ),
     (
         "images",
@@ -391,6 +448,12 @@ pub static ACTIONS: &[(&str, &str, &str, &str)] = &[
 /// Each way an action is said, for its own page (`shards run`): its section, the action,
 /// what it takes, and what it does.
 pub static USES: &[(&str, &str, &str, &str)] = &[
+    (
+        "run",
+        "attach",
+        "vm NAME",
+        "Join your terminal to a running microVM's command: its output, and your input where it reads it; ctrl-p ctrl-q leaves it running",
+    ),
     (
         "run",
         "create",
@@ -676,6 +739,18 @@ pub static USES: &[(&str, &str, &str, &str)] = &[
         "client --name NAME --output FILE",
         "Let another machine run shards here: an invitation, a private file that enrolls it once",
     ),
+    (
+        "manage",
+        "grant",
+        "client NAME [--dir PATH[:ro]] [--device NAME] [--gpus]",
+        "Let client NAME's microVMs mount a directory of this machine's, or have its devices or GPUs",
+    ),
+    (
+        "manage",
+        "revoke",
+        "client NAME [--dir PATH] [--device NAME] [--gpus]",
+        "Take back what client NAME was granted of this machine's",
+    ),
     ("manage", "rename", "vm NAME NEW_NAME", "Name a microVM again"),
     (
         "manage",
@@ -698,9 +773,21 @@ pub static USES: &[(&str, &str, &str, &str)] = &[
     ),
     (
         "manage",
+        "update",
+        "vm NAME [--cpus N] [--memory SIZE] ...",
+        "Change what running microVMs may take of the host, their CPUs, memory and I/O, as they run",
+    ),
+    (
+        "manage",
         "use",
         "context NAME",
         "Run shards' commands on context NAME's machine from now on; `default` is this one",
+    ),
+    (
+        "manage",
+        "wait",
+        "vm NAME",
+        "Wait for microVMs to stop, and print each command's exit status",
     ),
     (
         "images",
@@ -719,6 +806,12 @@ pub static USES: &[(&str, &str, &str, &str)] = &[
         "export",
         "vm NAME",
         "Write a microVM's files out as a tar archive",
+    ),
+    (
+        "images",
+        "import",
+        "vm | image FILE|URL|- [NAME]",
+        "Bring in a shards microVM saved whole, or make a microVM of a tarball's files or an image archive's, named NAME",
     ),
     (
         "images",
@@ -971,8 +1064,56 @@ mod tests {
         // Docker's management form, turned round.
         assert_eq!(said("image rm alpine").as_deref(), Some("rmi --vms alpine"));
         assert_eq!(said("container ls").as_deref(), Some("ps"));
-        // `shards vm ...` is no form of shards'.
-        assert_eq!(said("vm ls"), None);
+        // shards' own THING ACTION, turned round as Docker's is, keeping shards' options.
+        assert_eq!(said("vm ls").as_deref(), Some("ps"));
+        assert_eq!(said("vms list -a").as_deref(), Some("ps -a"));
+        assert_eq!(said("vm rm -f web").as_deref(), Some("rm -f web"));
+        assert_eq!(said("microvm exec web ls").as_deref(), Some("exec web ls"));
+        assert_eq!(
+            said("vm inspect ubuntu").as_deref(),
+            Some("container inspect --convert ubuntu")
+        );
+        assert_eq!(said("vm run --kernel k").as_deref(), Some("run --kernel k"));
+        assert_eq!(said("vm restore dir").as_deref(), Some("restore dir"));
+        assert_eq!(said("vm"), None);
+        assert_eq!(said("vm nothing"), None);
+        // A terminal joined, limits changed, a microVM brought in, a stop waited for.
+        assert_eq!(said("attach vm web").as_deref(), Some("attach web"));
+        assert_eq!(
+            said("update vm --cpus 2 web").as_deref(),
+            Some("update --cpus 2 web")
+        );
+        assert_eq!(
+            said("import vm vm.tar web:1").as_deref(),
+            Some("import vm.tar web:1")
+        );
+        assert_eq!(
+            said("import image - files:1").as_deref(),
+            Some("import - files:1")
+        );
+        assert_eq!(said("wait vm web db").as_deref(), Some("wait web db"));
+        assert_eq!(said("vm attach web").as_deref(), Some("attach web"));
+        // Docker's management commands of these are Docker's own.
+        for docker in [
+            "container attach web",
+            "container update --cpus 1 web",
+            "image import - x",
+        ] {
+            assert_eq!(said(docker), None, "{docker}");
+        }
+        // A container is an image made a microVM: one that is a microVM already is
+        // refused where a container is asked to run; Docker's order runs either.
+        assert_eq!(
+            said("run container -d alpine").as_deref(),
+            Some("run --container-image -d alpine")
+        );
+        assert_eq!(
+            said("create container alpine").as_deref(),
+            Some("create --container-image alpine")
+        );
+        assert_eq!(said("container run alpine").as_deref(), Some("run alpine"));
+        assert_eq!(said("container create alpine").as_deref(), Some("create alpine"));
+        assert_eq!(said("create vm alpine").as_deref(), Some("create alpine"));
         assert_eq!(
             said("run daemon --detached").as_deref(),
             Some("daemon --detached")

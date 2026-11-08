@@ -1,10 +1,10 @@
 //! Containers' records written outside the lock the registry is kept under, on one
-//! thread (review 7.7): a reserved container's first record, which makes it seen
+//! thread (review 7.7): a reserved microVM's first record, which makes it seen
 //! (`Daemon::arrive`), and the record of each change, which stands in memory from the
 //! moment it happens (`Registry::change`). A write waits on whatever else the filesystem
 //! is doing, milliseconds at a busy host's p90 (PM M46): under the lock, everything that
 //! takes the lock waited for it, and on the followers' loop, every run's messages. The
-//! records are written in the order their changes were asked for, a container changed
+//! records are written in the order their changes were asked for, a microVM changed
 //! again before its record is written once, as it then stands; and a command is answered
 //! once every record changed before it is written, or behind (audit A15).
 
@@ -34,22 +34,22 @@ pub(super) struct Recording {
 
 #[derive(Default)]
 struct Queue {
-    /// The containers whose records to write, each once, in the order first asked for,
+    /// The microVMs whose records to write, each once, in the order first asked for,
     /// each with the number of that first ask.
     ids: VecDeque<(u64, String)>,
     /// Those queued, each with the clients of detached runs to tell once it is written.
     told: HashMap<String, Vec<UnixStream>>,
     /// Those whose records could not be written, until they are.
     failed: HashSet<String>,
-    /// The number of the write going on, if one is, and its container.
+    /// The number of the write going on, if one is, and its microVM.
     writing: Option<(u64, String)>,
-    /// The asks so far, numbered: an ask for a container queued already is written with
+    /// The asks so far, numbered: an ask for a microVM queued already is written with
     /// it, which an earlier number holds its place.
     asked: u64,
 }
 
 impl Recording {
-    /// How many containers' records could not be written, and are not yet.
+    /// How many microVMs' records could not be written, and are not yet.
     #[cfg(test)]
     pub(super) fn failed(&self) -> usize {
         lock(&self.queue).failed.len()
@@ -66,7 +66,7 @@ impl Recording {
 
 impl<D: Disk> Daemon<D> {
     /// Starts the recorder's thread, unless it runs. Where it cannot run, a reserved
-    /// container's record is written where it is asked for, and a change's stays behind.
+    /// microVM's record is written where it is asked for, and a change's stays behind.
     pub(super) fn start_recorder<'s, 'e>(&'s self, threads: &'s Threads<'s, 'e>) {
         let r = &self.recording;
         if !r.started.swap(true, Ordering::SeqCst)
@@ -79,7 +79,7 @@ impl<D: Disk> Daemon<D> {
         }
     }
 
-    /// Has the record of reserved container `id` written, which makes it seen: on the
+    /// Has the record of reserved microVM `id` written, which makes it seen: on the
     /// recorder's thread, started here if it is not yet; here, if it cannot be.
     pub(super) fn record_arrival<'s, 'e>(&'s self, threads: &'s Threads<'s, 'e>, id: &str) {
         self.start_recorder(threads);
@@ -90,7 +90,7 @@ impl<D: Disk> Daemon<D> {
         }
     }
 
-    /// Has container `id`'s record written on the recorder's thread, once however often it
+    /// Has microVM `id`'s record written on the recorder's thread, once however often it
     /// is asked meanwhile, then `told`, the clients of detached runs, told it is, or that
     /// it is behind. Waits for nothing: its callers may hold the registry's lock. Where
     /// the recorder does not run, the record stays behind, and `told` are told so at once.
@@ -152,7 +152,7 @@ impl<D: Disk> Daemon<D> {
         }
     }
 
-    /// Writes container `id`'s record: its first, which makes it seen, or that of its
+    /// Writes microVM `id`'s record: its first, which makes it seen, or that of its
     /// changes as it now stands. One that changes as it is written stays behind, for the
     /// write its change asked for; one gone has nothing to write, and one taken out of
     /// sight as it was written nothing to keep: what was written went with its directory,
@@ -176,7 +176,7 @@ impl<D: Disk> Daemon<D> {
 
     /// Waits until every record asked for so far is written, or behind, the registry's
     /// lock free meanwhile: before a command is answered (audit A15), and as the daemon
-    /// exits, so that what it last knew of its containers is what the next one reads.
+    /// exits, so that what it last knew of its microVMs is what the next one reads.
     /// Those asked for since are not waited for: written in order, they come after.
     pub(super) fn await_recorded(&self) {
         let r = &self.recording;
@@ -192,7 +192,7 @@ impl<D: Disk> Daemon<D> {
         }
     }
 
-    /// Waits until no record of container `id`, taken out of sight, is being written:
+    /// Waits until no record of microVM `id`, taken out of sight, is being written:
     /// none starts once it is ([`record`](Self::record)), but one under way when it was
     /// lands in its directory, which Windows leaves where it is, marked
     /// (`Removal::set_aside`), and whose deletion it would then outlive, the directory not
@@ -207,7 +207,7 @@ impl<D: Disk> Daemon<D> {
     }
 }
 
-/// Tells the clients of detached runs that their containers' records are written, or
+/// Tells the clients of detached runs that their microVMs' records are written, or
 /// are behind, and why.
 pub(super) fn tell(told: Vec<UnixStream>, id: &str, recorded: &io::Result<()>) {
     for client in told {

@@ -79,7 +79,7 @@ pub enum Request<'a> {
     Later(&'a dyn Fn() -> Result<Asked<'a>, String>),
 }
 
-/// A request, as served: the command, whether it reads stdin, the container's log if its
+/// A request, as served: the command, whether it reads stdin, the microVM's log if its
 /// output is kept, and what to call once the command runs.
 pub struct Asked<'a> {
     pub spec: Spec,
@@ -88,10 +88,10 @@ pub struct Asked<'a> {
     pub detached: bool,
     pub log: Option<Logger>,
     pub started: Option<&'a (dyn Fn() + Sync)>,
-    /// The container's writable layer from before, to put back before the command runs
+    /// The microVM's writable layer from before, to put back before the command runs
     /// (D37); and where its layer goes once it stops.
     pub layer_in: Option<fs::File>,
-    /// Its microVM's layer device has the container's layer kept in its file readied for
+    /// Its microVM's layer device has the microVM's layer kept in its file readied for
     /// it (D190): the guest is told to go on over it ([`kind::OVER`]) in a put-back layer's
     /// place.
     pub layer_over: bool,
@@ -102,7 +102,7 @@ pub struct Asked<'a> {
     /// Told the layer is saved whole.
     pub saved: Option<&'a (dyn Fn(Option<u64>) + Sync)>,
     /// Told the layer stays in its own file (D190), its guest's journal written in place:
-    /// where the VM's layer is one and no container joined to its network outlives the
+    /// where the VM's layer is one and no joiner of its network outlives the
     /// run, in place of a save.
     pub kept: Option<&'a (dyn Fn(Option<u64>) + Sync)>,
     /// Given the records of the processes the run's members start and end (D123).
@@ -223,13 +223,13 @@ pub struct Ended {
     pub pids: Option<Vec<u8>>,
 }
 
-/// Keeps a container's output (spec.rs, `LOG_STDOUT`): each record appended to its log,
+/// Keeps a microVM's output (spec.rs, `LOG_STDOUT`): each record appended to its log,
 /// then its entry to the log's index once the record is whole, in segments kept as its
 /// retention says (segments.rs). A record that cannot be kept, on a full disk
 /// or a log removed, costs the log, not the run: it is taken back, so neither file holds
 /// any of it, and its bytes are counted as lost (audit A12).
 pub struct Logger {
-    /// Makes the next segment: in a VM, its daemon, since no VM reaches a container's
+    /// Makes the next segment: in a VM, its daemon, since no VM reaches a microVM's
     /// directory (D30).
     next: NextSegment,
     retention: LogRetention,
@@ -261,8 +261,8 @@ impl std::fmt::Debug for Logger {
 }
 
 impl Logger {
-    /// Writes a container's log from its segment `seq`, `log` and `index`, which its
-    /// daemon made with the container (or its newest, for one started again), going on in
+    /// Writes a microVM's log from its segment `seq`, `log` and `index`, which its
+    /// daemon made with the microVM (or its newest, for one started again), going on in
     /// the segments `next` makes.
     pub fn new(
         log: fs::File,
@@ -653,11 +653,11 @@ pub fn serve(
         }
         _ => false,
     };
-    // A container that stays keeps its files, as they are now its command has ended:
+    // A microVM that stays keeps its files, as they are now its command has ended:
     // once its end is told, so that nothing waits for them that does not need them. Where
     // they are an ext4 file system in a file of their own (D190), they stay there, its
     // journal written in place, for its host to read once the microVM has gone, unless
-    // containers joined to its network go on in it past the run (D119): their files are
+    // joiners of its network go on in it past the run (D119): their files are
     // its, and a microVM that goes on keeps it in use.
     if let (Ok(_), Some(out)) = (&status, layer_out) {
         if crate::vm_run::layered() && !crate::warm::joining() {
@@ -717,7 +717,7 @@ fn end_guest(conn: &UnixStream) {
 }
 
 /// Copies the guest's frames to shards' stdout and stderr until the exit status, and to
-/// `log` if the container's output is kept. Why a command never ran is not its output,
+/// `log` if the microVM's output is kept. Why a command never ran is not its output,
 /// and stays out of the log: `logs` holds what the command wrote.
 fn relay(
     conn: &mut io::BufReader<shards_ipc::Polled<&UnixStream>>,
@@ -920,7 +920,7 @@ fn send_layer(conn: &mut UnixStream, mut layer: fs::File) -> io::Result<()> {
     }
 }
 
-/// Asks the guest for the container's writable layer ([`kind::SAVE`]) and writes its
+/// Asks the guest for the microVM's writable layer ([`kind::SAVE`]) and writes its
 /// [`kind::LAYER`] frames to `out` until the empty one; an error if it did not come
 /// whole: the guest's reason, where it says why ([`kind::SYSTEM_ERR`]).
 pub(crate) fn receive_layer(conn: &mut UnixStream, out: fs::File) -> io::Result<Option<u64>> {
@@ -984,7 +984,7 @@ fn receive_layer_from(
     }
 }
 
-/// Asks the guest to keep the container's writable layer in its own file ([`kind::KEEP`],
+/// Asks the guest to keep the microVM's writable layer in its own file ([`kind::KEEP`],
 /// D190) and reads its answer: what the layer uses ([`kind::USAGE`]) and an empty
 /// [`kind::LAYER`] frame; each other frame given to `beyond`, as
 /// [`receive_layer_from`]'s.
@@ -1460,7 +1460,7 @@ fn exec_session(to: &'static ToGuest, req: &mut ExecRequest) -> Result<u8, Strin
     }
 }
 
-/// A container joining the workload's network (D119): its command, as a run's spec says
+/// A joiner of the workload's network (D119): its command, as a run's spec says
 /// it, the join entry naming its image's range of the join disk among its setup; its
 /// client's connection and stdio, as a run's, none for a detached one; its log.
 pub struct JoinRequest {
@@ -1634,7 +1634,7 @@ pub fn end_joiner(id: u32, status: u8) {
 }
 
 /// Sends Linux signal `linux` to the guest's exec, or joiner, `id` (D119), as the daemon
-/// signals a container: false where the guest has no connection to take it.
+/// signals a microVM's command: false where the guest has no connection to take it.
 pub fn signal_exec(to: &ToGuest, id: u32, linux: u32) -> bool {
     to_guest(
         to,
@@ -1647,7 +1647,7 @@ pub fn signal_exec(to: &ToGuest, id: u32, linux: u32) -> bool {
 /// from starting, or its output to its client and its log, its client's stdin, terminal
 /// sizes and signals, and its status. Its id in the guest goes to `on_id` as soon as it
 /// has one, and `started` hears when its command runs; `told` hears what init says of a
-/// container its microVM's engine made (D181), by its frame's kind: its membership of the
+/// joiner its microVM's engine made (D181), by its frame's kind: its membership of the
 /// microVM's switch (`MEMBER`) and the ports it was given (`PORTS`).
 pub fn join(
     to: &'static ToGuest,
@@ -1751,7 +1751,7 @@ pub fn join(
             match which {
                 kind::STARTED => started(),
                 // Its membership of its microVM's switch, and the ports it was given, as a
-                // container its microVM's engine made (D181).
+                // joiner its microVM's engine made (D181).
                 kind::MEMBER | kind::PORTS => told(which, payload),
                 kind::STDOUT | kind::STDERR => {
                     let (out, stream) = if which == kind::STDOUT {

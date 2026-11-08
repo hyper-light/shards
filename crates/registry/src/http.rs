@@ -22,7 +22,7 @@
 use std::collections::HashMap;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpStream, ToSocketAddrs};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, mpsc};
 use std::time::{Duration, Instant};
 
@@ -458,7 +458,7 @@ impl Client {
     /// retries replayable requests; so is any request a reused connection answers with
     /// 408, which says the server never had it whole.
     pub fn send(&self, req: &Request<'_>) -> Result<Response<'_>, Error> {
-        self.checked(self.send_now(req))
+        self.checked(self.send_now(req, None))
     }
 
     /// `result`, unless the client was cancelled: then that, whatever the failure it made.
@@ -471,7 +471,8 @@ impl Client {
         }
     }
 
-    fn send_now(&self, req: &Request<'_>) -> Result<Response<'_>, Error> {
+    /// [`send`](Self::send), counting into `sent` each byte of a file's body as it goes.
+    fn send_now(&self, req: &Request<'_>, sent: Option<&AtomicU64>) -> Result<Response<'_>, Error> {
         if let Some(cancel) = &self.cancel {
             cancel.check()?;
         }
@@ -480,7 +481,7 @@ impl Client {
         let key = Key::of(req.url, proxy);
         if let Some(mut conn) = self.pool.take(&key) {
             conn.watch = self.cancel.as_ref().map(|c| c.watch(conn.io.get_ref().tcp()));
-            match self.exchange(conn, req, &head) {
+            match self.exchange(conn, req, &head, sent) {
                 // The server may have closed it while it sat idle.
                 Err(Failure::BeforeResponse(_)) if matches!(req.method, "GET" | "HEAD") => {}
                 // Or said so, its 408 crossing the request: a request in transit may be
@@ -491,7 +492,7 @@ impl Client {
             }
         }
         let conn = self.connect(req.url, key, proxy)?;
-        self.exchange(conn, req, &head).map_err(Failure::into_error)
+        self.exchange(conn, req, &head, sent).map_err(Failure::into_error)
     }
 
     /// Sends `req` and follows redirects as Go's client does (go1.27.1
@@ -510,6 +511,18 @@ impl Client {
         authorize: &dyn Fn(&Url) -> Result<Option<String>, Error>,
         redirects: Redirects,
     ) -> Result<Response<'_>, Error> {
+        self.follow_counting(req, authorize, redirects, None)
+    }
+
+    /// [`follow`](Self::follow), counting into `sent` each byte of a file's body as it goes:
+    /// what a push measures its uploads by (push.rs).
+    pub(crate) fn follow_counting(
+        &self,
+        req: &Request<'_>,
+        authorize: &dyn Fn(&Url) -> Result<Option<String>, Error>,
+        redirects: Redirects,
+        sent: Option<&AtomicU64>,
+    ) -> Result<Response<'_>, Error> {
         let mut url = req.url.clone();
         let mut method = req.method;
         let mut body = req.body;
@@ -520,13 +533,16 @@ impl Client {
             if let Some(value) = &authorization {
                 headers.push(("Authorization", value));
             }
-            let mut response = self.send(&Request {
-                method,
-                url: &url,
-                headers: &headers,
-                body,
-                file,
-            })?;
+            let mut response = self.checked(self.send_now(
+                &Request {
+                    method,
+                    url: &url,
+                    headers: &headers,
+                    body,
+                    file,
+                },
+                sent,
+            ))?;
             let location = match response.status {
                 301 | 302 | 303 | 307 | 308 => response.header("location").map(str::to_string),
                 _ => None,
@@ -600,9 +616,15 @@ impl Client {
         Ok(head)
     }
 
-    fn exchange(&self, mut conn: Conn, req: &Request<'_>, head: &[u8]) -> Result<Response<'_>, Failure> {
+    fn exchange(
+        &self,
+        mut conn: Conn,
+        req: &Request<'_>,
+        head: &[u8],
+        sent: Option<&AtomicU64>,
+    ) -> Result<Response<'_>, Failure> {
         let written = conn.io.get_mut().write_all(head).and_then(|()| match req.file {
-            Some((file, from, len)) => send_body(&mut conn, file, from, len, self.patience.stall),
+            Some((file, from, len)) => send_body(&mut conn, file, from, len, self.patience.stall, sent),
             None => conn.io.get_mut().flush().map(|()| true),
         });
         // A server may answer before it has read the whole request, then close: a 413 or a
@@ -886,9 +908,10 @@ fn send_body(
     from: u64,
     len: u64,
     stall: Option<Duration>,
+    counted: Option<&AtomicU64>,
 ) -> io::Result<bool> {
     conn.io.get_ref().tcp().set_nonblocking(true)?;
-    let sent = sending(conn, file, from, len, stall);
+    let sent = sending(conn, file, from, len, stall, counted);
     let restored = conn.io.get_ref().tcp().set_nonblocking(false);
     let sent = sent?;
     restored?;
@@ -897,13 +920,15 @@ fn send_body(
 
 /// [`send_body`]'s writes: on Linux a plain connection takes the body by sendfile(2), as
 /// std copies a file to a socket; otherwise in 64 KiB writes, four TLS records each, where
-/// io::copy's 8 KiB writes make a record and a send of each.
+/// io::copy's 8 KiB writes make a record and a send of each. Each byte the socket, or TLS,
+/// takes is added to `counted`.
 fn sending(
     conn: &mut Conn,
     mut file: &std::fs::File,
     from: u64,
     len: u64,
     stall: Option<Duration>,
+    counted: Option<&AtomicU64>,
 ) -> io::Result<bool> {
     use std::io::{BufRead as _, Seek as _, SeekFrom};
     // The server has left: what it said is read next.
@@ -915,6 +940,11 @@ fn sending(
     };
     let again = |e: &io::Error| matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted);
     let short = |sent: u64| io::Error::other(format!("{sent} of the body's {len} bytes"));
+    let count = |n: u64| {
+        if let Some(c) = counted {
+            c.fetch_add(n, Ordering::Relaxed);
+        }
+    };
     file.seek(SeekFrom::Start(from))?;
     let mut buf = vec![0u8; 64 << 10];
     let (mut at, mut end, mut sent) = (0usize, 0usize, 0u64);
@@ -939,7 +969,10 @@ fn sending(
             }
             match send_from(tcp, file, from + sent, len - sent) {
                 Ok(0) => return Err(short(sent)),
-                Ok(n) => sent += n,
+                Ok(n) => {
+                    sent += n;
+                    count(n);
+                }
                 Err(e) if again(&e) => {}
                 Err(e) if gone(&e) => return Ok(false),
                 Err(e) => return Err(e),
@@ -959,9 +992,10 @@ fn sending(
         }
         let stream = conn.io.get_mut();
         let wrote = if at < end {
-            stream
-                .write(buf.get(at..end).unwrap_or_default())
-                .map(|n| at += n)
+            stream.write(buf.get(at..end).unwrap_or_default()).map(|n| {
+                at += n;
+                count(n as u64);
+            })
         } else {
             // All handed over: what TLS still holds goes out.
             match stream.flush() {

@@ -134,7 +134,7 @@ pub struct Prioritized {
 /// above normal priority while the thread uses no more than half of its CPU, its governor's
 /// credit carrying half a period across its clock's coarse steps (windows_thread.rs), where
 /// on 4 CPUs that 4 busy loops hold a run's start waited 217 to 337 ms at p50 for its guest
-/// to begin the command, and 8 to 10 so (PM M463, D191).
+/// to begin the command, and 8 to 10 so (PM M495, D191).
 pub fn prioritize_vcpu_thread() -> Result<Prioritized, String> {
     #[cfg(target_os = "macos")]
     return macos_thread::make_current_realtime().map(|watch| Prioritized { _watch: watch });

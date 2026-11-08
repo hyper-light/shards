@@ -4,7 +4,7 @@
 //! Protocol"), each field `NAME=value` and a newline, or, where its value holds a newline,
 //! its name and a newline, the value's length as a little-endian u64, the value and a
 //! newline. Its priority (6 for stdout, 3 for stderr) and its line first; then the
-//! container's own fields, the attributes asked for, its output's time, a part's place in
+//! microVM's own fields, the attributes asked for, its output's time, a part's place in
 //! its line, and its ordinal in the run's log: the fields journal readers look for (D166). The
 //! journal is Linux's: elsewhere its entries are made by its tests alone, held to
 //! Docker's on every host.
@@ -22,8 +22,8 @@ pub const OPTIONS: [&str; 0] = [];
 pub const SOCKET: &str = "/run/systemd/journal/socket";
 
 /// The fields the driver writes itself. An attribute named as one is left out, where
-/// moby's driver lets it replace the container's own (a label `container.id` its
-/// CONTAINER_ID, so an image's labels could say another container wrote its lines) or
+/// moby's driver lets it replace the microVM's own (a label `container.id` its
+/// CONTAINER_ID, so an image's labels could say another microVM wrote its lines) or
 /// stand beside the driver's (a second MESSAGE or PRIORITY).
 const OWN: [&str; 15] = [
     "PRIORITY",
@@ -46,7 +46,7 @@ const OWN: [&str; 15] = [
 /// What every entry of a run carries besides its line.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct From {
-    /// The container's own fields, then the attributes asked for, by their fields' names.
+    /// The microVM's own fields, then the attributes asked for, by their fields' names.
     pub fields: Vec<(String, String)>,
     /// The attributes left out: those whose names no journal field's can be, which
     /// journald drops where moby's driver sends them, and those named as a field of the
@@ -219,7 +219,7 @@ mod tests {
     const PARTIAL: &str = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
 
     /// An entry's fields as the oracle keeps Docker's: by name, in order within a name;
-    /// the container's own values, its epoch, a part's ID and its time placeholders; a run
+    /// the microVM's own values, its epoch, a part's ID and its time placeholders; a run
     /// of one letter its length.
     fn normal(fields: Vec<(String, Vec<u8>)>) -> Vec<Value> {
         let mut out: Vec<Value> = fields

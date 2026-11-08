@@ -34,12 +34,12 @@ pub enum Net {
 pub type UserSubnets<'a> = &'a dyn Fn(&str) -> Option<Vec<(IpAddr, u8)>>;
 
 /// What starting the run will find of its networks: one to attach it to, another
-/// container's to join (D119), or what dockerd says as the start fails, the container left
+/// microVM's to join (D119), or what dockerd says as the start fails, the microVM left
 /// created.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Start {
     Attach(Net),
-    /// `--network container:NAME`: the network of the container NAME names, as given; which
+    /// `--network container:NAME`: the network of the microVM NAME names, as given; which
     /// microVM that is, and whether it runs, is seen as the run starts, so that a provider
     /// made or started later is found (D119).
     Join(String),
@@ -50,7 +50,7 @@ pub enum Start {
 use crate::setup::ENDPOINT_SYSCTLS as SYSCTLS;
 
 /// moby's create route (daemon/server/router/container, handleSysctlBC, API 1.48 and on):
-/// a sysctl of an interface (`net.X.Y.ethN.Z`) given a container on a network of its
+/// a sysctl of an interface (`net.X.Y.ethN.Z`) given a microVM on a network of its
 /// own (not `host`, not `container:`) is refused before anything else is checked; it is
 /// an endpoint's (`driver-opt=com.docker.network.endpoint.sysctls=…`).
 pub fn interface_sysctl(run: &Run) -> Result<(), String> {
@@ -92,9 +92,9 @@ fn subnets(network: &str, bridge: Option<Bridge>, user: UserSubnets<'_>) -> Opti
     }
 }
 
-/// What run `run` will find as it starts, or why its container is not created. `bridge`
+/// What run `run` will find as it starts, or why its microVM is not created. `bridge`
 /// is the default bridge the daemon elected, none if every subnet it may take is in use
-/// on the host; `exists` says whether a container is named so (for `container:NAME`).
+/// on the host; `exists` says whether a microVM is named so (for `container:NAME`).
 pub fn check(
     run: &Run,
     bridge: Option<Bridge>,
@@ -624,7 +624,7 @@ mod tests {
         );
     }
 
-    /// What shards does not do yet is refused before a container is made, where dockerd
+    /// What shards does not do yet is refused before a microVM is made, where dockerd
     /// would have made one.
     #[test]
     fn what_shards_does_not_do_yet_is_refused_up_front() {

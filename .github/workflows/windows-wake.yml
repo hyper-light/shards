@@ -1,7 +1,7 @@
 name: windows wake
 
 # D191's Windows candidate measured on a host of its own (the platform parity audit's row
-# 15, PM M463): on windows-2025 (4 CPUs, WHP; windows-2022 restores no template, PM M345),
+# 15, PM M495): on windows-2025 (4 CPUs, WHP; windows-2022 restores no template, PM M345),
 # this checkout's shards as built, whose vCPU threads and device workers start at
 # THREAD_PRIORITY_ABOVE_NORMAL (platform::windows_thread), against the same with
 # cpu-elastic/winnone.patch applied, which leaves them at the priority they start at;

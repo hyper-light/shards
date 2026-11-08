@@ -345,7 +345,7 @@ pub fn serve_waiting(
 }
 
 #[cfg(target_os = "macos")]
-/// `shardsd grants`: the VM's broker (`shards run --kernel`, `shards restore`), which the CLI starts before it becomes the VM.
+/// `shardsd grants`: the VM's broker (`shards run vm --kernel`, `shards restore vm`), which the CLI starts before it becomes the VM.
 /// Answers the VM on descriptor 3 until it has all it needs and closes it, then exits. What
 /// it could not grant, the VM is told and says.
 pub fn broker() -> std::process::ExitCode {

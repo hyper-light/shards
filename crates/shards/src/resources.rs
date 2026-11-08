@@ -21,7 +21,7 @@ const CPU_PERIOD: i64 = 100_000;
 /// On Windows those of its affinity mask, which `available_parallelism` does not read there
 /// ("may overcount the amount of parallelism available when limited by process-wide
 /// affinity masks", its documentation), where Linux's reads its sched_getaffinity(2) set:
-/// a daemon held to 4 of 32 CPUs gave every microVM 32 vCPUs, which ran on those 4 (PM M463).
+/// a daemon held to 4 of 32 CPUs gave every microVM 32 vCPUs, which ran on those 4 (PM M495).
 pub fn host_cpus() -> usize {
     #[cfg(windows)]
     if let Some(cpus) = affinity_cpus() {
@@ -638,7 +638,7 @@ mod tests {
     }
 
     /// A daemon held to some of its host's CPUs gives each microVM those alone (D125): on
-    /// Linux its sched_getaffinity(2) set, on Windows its affinity mask (PM M463). In a
+    /// Linux its sched_getaffinity(2) set, on Windows its affinity mask (PM M495). In a
     /// process of its own, as an affinity is its whole process's.
     #[cfg(any(target_os = "linux", windows))]
     #[test]

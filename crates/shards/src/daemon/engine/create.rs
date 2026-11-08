@@ -103,6 +103,8 @@ pub fn run_of(
         env.retain(|e| e != CLI_CREDENTIALS_ENV);
     }
     Ok(Run {
+        // The client whose connection asks for it (D215).
+        client: super::engine_client(),
         image,
         cmd,
         entrypoint,
@@ -216,7 +218,7 @@ pub fn run_of(
         name: name.map(str::to_string),
         platform: platform.to_string(),
         pull: Pull::Never,
-        // As `shards create` asks for it.
+        // As `shards create vm` asks for it.
         create: true,
         detach: true,
         ..Run::default()

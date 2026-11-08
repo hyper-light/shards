@@ -453,7 +453,7 @@ fn tabwrite(rows: &[Vec<String>], padding: usize) -> String {
 /// warnings in the order they were found, the file, and the error that ended the
 /// planning, if one did. The file carries the definition that loaded it where there is
 /// one (compact JSON, [`crate::pb::definition_json`]): a frontend's, which names its
-/// build's session; `shards build`'s has none (testdata/deviations.json).
+/// build's session; `shards build image`'s has none (testdata/deviations.json).
 #[derive(Debug)]
 pub struct LintResults<'a> {
     pub warnings: &'a [crate::lint::Warning],

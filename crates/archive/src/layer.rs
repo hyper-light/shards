@@ -1,5 +1,5 @@
 //! go-archive's UnpackLayer (diff.go), through ApplyUncompressedLayer: an image layer, or a
-//! container's saved writable layer, applied over a tree. Its entries are unpacked as
+//! stopped microVM's saved writable layer, applied over a tree. Its entries are unpacked as
 //! [`crate::unpack`] unpacks them, but whiteouts are applied rather than written: `.wh.NAME`
 //! deletes NAME, `.wh..wh..opq` deletes whatever its directory held that this layer did
 //! not put there, and AUFS's `.wh..wh.plnk` hard link targets are resolved and dropped.

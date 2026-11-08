@@ -12,7 +12,7 @@
 //! here, the confined VM process opening no device, and its VFIO files handed to the VM,
 //! which plugs it in behind its microVM's IOMMU; its guest's init gives it to vfio-pci,
 //! makes its group's node in the workload's `/dev` and widens the workload's device
-//! filter to it, as a container given it at its start has it (D44, D154). What is plugged
+//! filter to it, as a microVM given it at its start has it (D44, D154). What is plugged
 //! into a run is kept as long as it runs, by the path it is mounted at, or a function by
 //! its host's name.
 
@@ -26,6 +26,16 @@ use shards_ipc::{device, kind};
 use super::commands::Reply;
 use super::{Daemon, RunState, Threads, lock};
 use crate::containers::Disk;
+
+/// The client a device command is asked for, and what its owner granted it (D215); none
+/// for this machine's own user.
+type Whom<'a> = Option<(&'a str, &'a crate::client_grants::Grants)>;
+
+/// Where the store keeps volume `name`'s files, where it is one.
+fn store_dir_of(home: &Path, name: &str) -> Option<PathBuf> {
+    let store = crate::volumes::Store::new(home);
+    store.get(name).map(|_| store.data(name))
+}
 
 /// What is plugged into a run's microVM, by the path its workload has it at.
 #[derive(Debug, Clone)]
@@ -77,7 +87,7 @@ pub(super) enum What {
     Function,
 }
 
-/// Each running microVM's plugged devices, by container ID, then by path.
+/// Each running microVM's plugged devices, by microVM ID, then by path.
 pub(super) type PluggedMap = HashMap<String, HashMap<String, Plugged>>;
 
 /// How long its guest is given to find, mount or let go of a device.
@@ -102,8 +112,8 @@ fn split_spec(spec: &str) -> Result<(String, String, bool), String> {
 }
 
 /// A size as `--size` and `grow disk` take one: bytes, or with a unit of 1024's powers
-/// (`k`, `m`, `g`, `t`, with or without `b`), as Docker's sizes are read (go-units
-/// RAMInBytes).
+/// (`k`, `m`, `g`, `t`, with or without `b`), the units `--memory` takes, so that a size
+/// reads alike in every flag of a run (go-units v0.5.0 RAMInBytes, `ram_in_bytes`).
 pub(super) fn bytes_of(size: &str) -> Result<u64, String> {
     let lower = size.trim().to_ascii_lowercase();
     let digits = lower.trim_end_matches(|c: char| c.is_ascii_alphabetic());
@@ -171,6 +181,7 @@ impl<D: Disk> Daemon<D> {
         &'s self,
         threads: &'s Threads<'s, 'e>,
         argv: &[String],
+        whose: &str,
         reply: &Reply<'_>,
     ) -> Option<u8> {
         use shards_cmdline::commands::{
@@ -208,12 +219,16 @@ impl<D: Disk> Daemon<D> {
             }
         };
         self.settle();
+        // A client's, through its context: what it plugs in of this machine is what its
+        // owner granted it (D215).
+        let grants = (!whose.is_empty()).then(|| crate::client_grants::load(&self.home, whose));
+        let whom = grants.as_ref().map(|g| (whose, g));
         Some(if std::ptr::eq(command, &PLUG_DISK) {
-            self.plug(threads, What::Disk, &parsed, reply)
+            self.plug(threads, What::Disk, &parsed, whom, reply)
         } else if std::ptr::eq(command, &PLUG_VOLUME) {
-            self.plug(threads, What::Volume, &parsed, reply)
+            self.plug(threads, What::Volume, &parsed, whom, reply)
         } else if std::ptr::eq(command, &PLUG_FUNCTION) {
-            self.plug(threads, What::Function, &parsed, reply)
+            self.plug(threads, What::Function, &parsed, whom, reply)
         } else if std::ptr::eq(command, &UNPLUG_DISK) {
             self.unplug(What::Disk, &parsed, reply)
         } else if std::ptr::eq(command, &UNPLUG_VOLUME) {
@@ -225,7 +240,7 @@ impl<D: Disk> Daemon<D> {
         })
     }
 
-    /// Asks the VM of running container `id` device step `step` (`DEVICE`), with `fds`,
+    /// Asks the VM of running microVM `id` device step `step` (`DEVICE`), with `fds`,
     /// and waits for its answer (`DEVICED`), as a pause is.
     fn ask_device(
         &self,
@@ -261,7 +276,7 @@ impl<D: Disk> Daemon<D> {
             .map_err(|e| format!("its microVM: {e}"))
     }
 
-    /// Runs init's DEVICE built-in with `args` in running container `id`'s guest: its
+    /// Runs init's DEVICE built-in with `args` in running microVM `id`'s guest: its
     /// answer, or why it failed.
     fn guest_device(&self, id: &str, args: &[&str]) -> Result<String, String> {
         let spec = shards_abi::run::Spec {
@@ -303,6 +318,7 @@ impl<D: Disk> Daemon<D> {
         threads: &'s Threads<'s, 'e>,
         what: What,
         parsed: &Parsed,
+        whom: Whom<'_>,
         reply: &Reply<'_>,
     ) -> u8 {
         let (Some(given), Some(spec)) = (parsed.args.first(), parsed.args.get(1)) else {
@@ -314,8 +330,13 @@ impl<D: Disk> Daemon<D> {
         };
         let done = self.running_own(given).and_then(|id| {
             match what {
-                What::Function => self.plug_function(&id, spec),
-                _ => self.plug_one(threads, &id, what, spec, parsed.string("size")),
+                What::Function => {
+                    if let Some((client, grants)) = whom {
+                        crate::client_grants::refuse_function(spec, client, grants)?;
+                    }
+                    self.plug_function(&id, spec)
+                }
+                _ => self.plug_one(threads, &id, what, spec, parsed.string("size"), whom),
             }
             .map(|said| (id, said))
         });
@@ -339,6 +360,7 @@ impl<D: Disk> Daemon<D> {
         what: What,
         spec: &str,
         size: &str,
+        whom: Whom<'_>,
     ) -> Result<String, String> {
         let (source, path, read_only) = split_spec(spec)?;
         if lock(&self.plugged).get(id).is_some_and(|p| p.contains_key(&path)) {
@@ -356,6 +378,12 @@ impl<D: Disk> Daemon<D> {
                 if !file.is_absolute() {
                     return Err(format!("{source}: a disk's file is given by its absolute path"));
                 }
+                // A client's: a file of this machine's only in a directory its owner granted
+                // it, judged before it is made and again as it is open (D215).
+                let shown = format!("plug disk {source}");
+                if let Some((client, grants)) = whom {
+                    crate::client_grants::refuse_path(client, grants, &shown, &file, !read_only)?;
+                }
                 if !size.is_empty() && !file.exists() {
                     made_disk(&file, bytes_of(size)?)?;
                 }
@@ -364,12 +392,18 @@ impl<D: Disk> Daemon<D> {
                     .write(!read_only)
                     .open(&file)
                     .map_err(|e| format!("{source}: {e}"))?;
+                if let Some((client, grants)) = whom {
+                    crate::client_grants::refuse_opened(client, grants, &shown, &opened, !read_only)?;
+                }
                 let flags = if read_only { device::READ_ONLY } else { 0 };
                 let step = [&[device::DISK, flags][..], name.as_bytes()].concat();
                 use shards_ipc::fd::AsFd as _;
                 (self.ask_device(id, &step, &[opened.as_fd()])?, Some(file))
             }
-            What::Volume => (self.plug_share(threads, id, &source, read_only, &name)?, None),
+            What::Volume => (
+                self.plug_share(threads, id, &source, read_only, &name, whom)?,
+                None,
+            ),
             What::Function => return Err("a function is plugged in by plug function".into()),
         };
         let (devfn, address) = answer
@@ -407,7 +441,7 @@ impl<D: Disk> Daemon<D> {
     }
 
     /// A share of `source`, a host's absolute directory or a named volume, served by a
-    /// share process of its own (share.rs), its stream given the VM of running container
+    /// share process of its own (share.rs), its stream given the VM of running microVM
     /// `id` as a device of `tag`, as a run's are (D207): the VM's answer. On Unix its
     /// connection, which the share process sends and waits to be taken; on Windows the
     /// stream itself, a duplex pipe made here whose server end the share process was given
@@ -419,8 +453,18 @@ impl<D: Disk> Daemon<D> {
         source: &str,
         read_only: bool,
         tag: &str,
+        whom: Whom<'_>,
     ) -> Result<String, String> {
         use shards_ipc::fd::AsFd as _;
+        // A client's directory is its own, which a run's bind serves from it (D215); one
+        // plugged into a running microVM is not served so yet.
+        if let Some((client, _)) = whom
+            && Path::new(source).is_absolute()
+        {
+            return Err(format!(
+                "{source}: client {client}'s directory is its own, which a context serves to a run's bind (-v) alone yet: plug a volume"
+            ));
+        }
         let dir = if Path::new(source).is_absolute() {
             PathBuf::from(source)
         } else {
@@ -434,6 +478,19 @@ impl<D: Disk> Daemon<D> {
         let opened = shards_vmm::platform::open_dir(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
         if !opened.metadata().map_err(|e| e.to_string())?.is_dir() {
             return Err(format!("{}: not a directory", dir.display()));
+        }
+        // A volume a client plugs in is the store's, or a directory of this machine's its
+        // owner granted it, judged as it is open (D215).
+        if let Some((client, grants)) = whom
+            && store_dir_of(&self.home, source) != Some(dir.clone())
+        {
+            crate::client_grants::refuse_opened(
+                client,
+                grants,
+                &format!("volume {source}"),
+                &opened,
+                !read_only,
+            )?;
         }
         let dirs = [(
             shards_ipc::fd::OwnedFd::from(opened),
@@ -667,7 +724,7 @@ fn release<'a>(address: &'a str, node: &'a str, iommu: Option<&'a Iommu>) -> Vec
 impl<D: Disk> Daemon<D> {
     /// `shards plug function MICROVM FUNCTION` (D214, Linux): the host's function FUNCTION,
     /// by its name (`0000:01:00.0`) or its VFIO device node (`/dev/vfio/devices/vfioN`),
-    /// bound to vfio-pci, plugged into running container `id`'s microVM behind its IOMMU,
+    /// bound to vfio-pci, plugged into running microVM `id` behind its IOMMU,
     /// which a microVM booted to take functions has its slots behind ([`crate::run::
     /// takes_functions`]); its guest's vfio-pci given it, its node made in the workload's
     /// `/dev` and allowed by its device filter. Refused, as a run's start refuses one
@@ -1021,7 +1078,7 @@ mod tests {
 
     /// Sizes in bytes or 1024's powers.
     #[test]
-    fn sizes_read_as_dockers_do() {
+    fn sizes_read_in_bytes_or_binary_units() {
         assert_eq!(bytes_of("512"), Ok(512));
         assert_eq!(bytes_of("64m"), Ok(64 << 20));
         assert_eq!(bytes_of("1GB"), Ok(1 << 30));

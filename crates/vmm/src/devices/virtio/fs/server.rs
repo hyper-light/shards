@@ -147,7 +147,7 @@ pub const GHOST_PREFIX: &str = "ghost-";
 /// at [`ROOT`], so none is 0.
 const NO_VOLUME: u64 = 0;
 
-/// A join share's volume (D119): a directory a container joining the microVM's network is
+/// A join share's volume (D119): a directory a run joining the microVM's network is
 /// given, reached from the share's empty root by its name, read-only or not, or of its one
 /// name, held for as long as it is served.
 #[derive(Debug)]
@@ -246,6 +246,9 @@ struct State {
     /// Its directory is a copy of the one its guest's tables were saved with, made on another
     /// machine (D176 part 6): a restore takes each node as the file at its path here.
     moved: bool,
+    /// Its guest is on another machine, its requests relayed (D215): no file is mapped
+    /// into a DAX window, whose memory is of that machine's, not this one's.
+    windowless: bool,
 }
 
 /// The descriptors of the directories the guest named and of the files and directories it
@@ -725,6 +728,7 @@ impl Server {
                 ghosts: None,
                 headroom: None,
                 moved: false,
+                windowless: false,
             }),
         })
     }
@@ -916,6 +920,16 @@ impl Server {
         self.state.lock().unwrap_or_else(PoisonError::into_inner).moved = true;
     }
 
+    /// Serves a guest on another machine, its requests relayed to this process (D215): its
+    /// guest is told to map no file into a DAX window, which maps a file of the host the
+    /// guest is on alone, and a mapping's descriptor is asked of no file here.
+    pub fn serves_afar(&self) {
+        self.state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .windowless = true;
+    }
+
     /// Drops its host's copy of what the guest reads once keeping it would leave the budgets
     /// `headroom` watches less room than the share's own reads need (D188): the guest keeps
     /// what it read in its own page cache.
@@ -1076,6 +1090,9 @@ impl Server {
     /// mapping does; and write, in a volume the guest may write, wherever a mapping's
     /// descriptor is opened to write too (window::SHARED_NEEDS_WRITE).
     fn dax_of(&self, s: &State, node: u64, st: &Stat) -> bool {
+        if s.windowless {
+            return false;
+        }
         let euid = served_by();
         let mode = mode_of(st);
         let size = st.size;
@@ -1102,6 +1119,9 @@ impl Server {
     pub fn descriptor(&self, node: u64, writable: bool) -> Result<host::Owned, Errno> {
         let mut s = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         let s = &mut *s;
+        if s.windowless {
+            return Err(EINVAL);
+        }
         let n = s.nodes.get(&node).ok_or(ENOENT)?;
         if n.dir {
             return Err(EISDIR);
@@ -1312,7 +1332,11 @@ impl Server {
                     .u32(1)
                     .u16(MAX_PAGES)
                     .u16(alignment)
-                    .u32(flags2 & init::HAS_INODE_DAX)
+                    .u32(if s.windowless {
+                        0
+                    } else {
+                        flags2 & init::HAS_INODE_DAX
+                    })
                     .u32(0)
                     .u16(0)
                     .bytes(&[0u8; 22]);

@@ -1,6 +1,6 @@
-//! `shards build`, end to end: an image built from a Dockerfile over a base the build
+//! `shards build image`, end to end: an image built from a Dockerfile over a base the build
 //! pulls from a registry (a loopback one, as in images.rs), written to the store as
-//! BuildKit's exporter writes it, then booted by `shards run` in a real VM, where the
+//! BuildKit's exporter writes it, then booted by `shards run vm` in a real VM, where the
 //! build's settings must hold.
 
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
@@ -908,6 +908,92 @@ fn a_build_held_short_of_memory_has_its_builder_give_back() {
     let free = build(false, &free_out).wait_with_output().unwrap();
     assert!(free.status.success(), "{}", String::from_utf8_lossy(&free.stderr));
     assert_eq!(layers(&held_out), layers(&free_out), "{shown}");
+}
+
+/// A build held to a budget from its start has its builder's cache layers and their
+/// changes read and written for its guest by its writer outside the budget (D188,
+/// `block::Through`, PM M442): a cache one held build fills, 24 MiB in a step, more than
+/// one request to the writer carries, is read back whole by the next held build's step, its
+/// image the same bytes as the same builds' with no budget. Linux alone, with a user's
+/// manager, which places the writer.
+#[cfg(unix)]
+#[test]
+fn a_held_builds_caches_go_through_its_writer() {
+    if !cfg!(target_os = "linux") || cannot_run_vms() {
+        return;
+    }
+    let bus = std::env::var_os("XDG_RUNTIME_DIR")
+        .map(std::path::PathBuf::from)
+        // SAFETY: getuid(2) takes nothing and cannot fail.
+        .unwrap_or_else(|| std::path::PathBuf::from(format!("/run/user/{}", unsafe { libc::getuid() })))
+        .join("bus");
+    if !bus.exists() {
+        assert!(
+            !std::env::var_os("SHARDS_REQUIRE_USER_MANAGER").is_some_and(|v| v == "1"),
+            "no user's systemd manager's bus at {}",
+            bus.display()
+        );
+        eprintln!("SKIP: no user's systemd manager here: {} is not", bus.display());
+        return;
+    }
+    let (image, _) = served();
+    let (kernel, init) = (kernel(), guest_init());
+    let fill = context(
+        "build-through-fill",
+        &format!(
+            "FROM {image}\nUSER root\nRUN --mount=type=cache,target=/c [\"/bin/testguest\", \"big\", \"/c/big\", \"24\"]\n"
+        ),
+    );
+    let sum = context(
+        "build-through-sum",
+        &format!(
+            "FROM {image}\nUSER root\nRUN --mount=type=cache,target=/c [\"/bin/testguest\", \"read-dropped\", \"/c/big\", \"0\", \"/sum\"]\n"
+        ),
+    );
+    // Both builds in one home, in a scope of the user's manager, held to a budget no build
+    // here fills (so its writer is placed, and nothing presses) or to none.
+    let built = |held: bool| {
+        let home = TempDir::new(if held { "through-held" } else { "through-free" });
+        let out = TempDir::new(if held {
+            "through-held-out"
+        } else {
+            "through-free-out"
+        });
+        for (ctx, oci) in [(&fill, None), (&sum, Some(&out))] {
+            let mut cmd = std::process::Command::new("systemd-run");
+            cmd.args(["--user", "--scope", "--quiet", "-p", "MemorySwapMax=0"]);
+            if held {
+                cmd.args(["-p", "MemoryHigh=16G"]);
+            }
+            cmd.arg(common::shards()).args([
+                "build",
+                "--progress=plain",
+                "--build-arg",
+                "SOURCE_DATE_EPOCH=0",
+            ]);
+            if let Some(oci) = oci {
+                cmd.arg("-o").arg(format!(
+                    "type=oci,dest={},tar=false,rewrite-timestamp=true",
+                    oci.display()
+                ));
+            }
+            cmd.arg(ctx.as_os_str())
+                .env("SHARDS_HOME", home.as_os_str())
+                .env("SHARDS_KERNEL", &kernel)
+                .env("SHARDS_INIT", &init);
+            common::as_tests_run(&mut cmd);
+            let done = cmd.output().unwrap();
+            assert!(
+                done.status.success(),
+                "held {held}: {}",
+                String::from_utf8_lossy(&done.stderr)
+            );
+        }
+        (home, out)
+    };
+    let (_held_home, held_out) = built(true);
+    let (_free_home, free_out) = built(false);
+    assert_eq!(layers(&held_out), layers(&free_out));
 }
 
 /// The layers of the image an OCI layout `out` holds, as its config lists them
@@ -2340,7 +2426,7 @@ fn add_stops_at_the_image_limits_and_leaves_nothing() {
     }
 }
 
-/// An image's `STOPSIGNAL` is what `stop` sends its containers unless told otherwise
+/// An image's `STOPSIGNAL` is what `stop` sends its microVMs unless told otherwise
 /// (moby container.StopSignal): SIGUSR1 here, which ends the command 128 + 10 under
 /// --init, where it is not PID 1, which hears only what it handles (D115, M145).
 #[test]
@@ -2380,7 +2466,7 @@ fn an_images_stop_signal_is_what_stop_sends() {
 }
 
 /// An image's `HEALTHCHECK` runs as dockerd runs it (D26): each probe an exec beside the
-/// command, the container `(health: starting)` until the first result, then `(healthy)`,
+/// command, the microVM `(health: starting)` until the first result, then `(healthy)`,
 /// or `(unhealthy)` once failures, or probes past their timeout, reach its retries; a
 /// run's `--health-*` overrides the image's.
 #[test]
@@ -10137,7 +10223,7 @@ fn agents_reach_only_what_connect_grants() {
 }
 
 /// Beside agents whose grants reach past the microVM, the run's command reaches no farther
-/// than eth0's own subnet (`confine_eth0`, D59), and nor does a container its microVM's own
+/// than eth0's own subnet (`confine_eth0`, D59), and nor does a joiner its microVM's own
 /// engine makes (D181): a member reaches past the microVM no farther than the command. The
 /// host's port an agent is granted is reached by neither the command nor a member of such
 /// a run; a member of a run with no agents reaches it as that run's command does. Nor does
@@ -11120,7 +11206,7 @@ fn a_remote_mcp_server_is_a_grant_of_that_server_alone() {
         "{}",
         beside.stderr
     );
-    // Refused before its container is made: none is left, nor its run, which would keep
+    // Refused before its microVM is made: none is left, nor its run, which would keep
     // the daemon from ever exiting.
     let left = shards(&["ps", "-aq"]);
     assert_eq!(left.stdout, "", "{}", left.stderr);
@@ -16014,7 +16100,7 @@ fn agentfile_volumes_reach_whom_they_are_for() {
         assert!(refused.stderr.contains(said), "{args:?}: {}", refused.stderr);
     }
 
-    // A container's own root, written before it starts (`cp`): its agents are still
+    // A microVM's own root, written before it starts (`cp`): its agents are still
     // given what the image's Agentfile says, which init reads in the image as built.
     let created = shards(&[
         "create",

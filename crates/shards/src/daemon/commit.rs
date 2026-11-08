@@ -1,7 +1,7 @@
-//! `shards commit CONTAINER [REPOSITORY[:TAG]]` (moby daemon/commit.go,
+//! `shards commit vm CONTAINER [REPOSITORY[:TAG]]` (moby daemon/commit.go,
 //! CreateImageFromContainer; daemon/containerd/image_commit.go, CommitImage): a new
-//! image of the container's image and the layer of what it changed (D37), its config the
-//! container's, its history one step longer.
+//! image of the microVM's image and the layer of what it changed (D37), its config the
+//! microVM's, its history one step longer.
 
 use std::io::{Read as _, Write};
 
@@ -13,7 +13,7 @@ use super::commands::{Asker, Reply};
 use super::{Daemon, LAYER, lock};
 use crate::containers::State as Life;
 
-/// An OCI layer's media type, uncompressed, as `shards build` writes its layers.
+/// An OCI layer's media type, uncompressed, as `shards build image` writes its layers.
 const LAYER_TAR: &str = "application/vnd.oci.image.layer.v1.tar";
 
 impl<D: crate::containers::Disk> Daemon<D> {
@@ -60,7 +60,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
         };
         let store = match self.store() {
             Ok(Some(store)) => store,
-            Ok(None) => return refuse(format!("container {id}: its image is not here")),
+            Ok(None) => return refuse(format!("microVM {id}: its image is not here")),
             Err(e) => return refuse(e),
         };
         // Its image: the manifest and config it was made from.
@@ -72,14 +72,14 @@ impl<D: crate::containers::Disk> Daemon<D> {
                 .find(|i| i.id.to_string() == want)
         });
         let Some(base) = base else {
-            return refuse(format!("container {id}: the image it was made from is gone"));
+            return refuse(format!("microVM {id}: the image it was made from is gone"));
         };
         let base_manifest: serde_json::Value = match std::fs::read(store.blob_path(&base.manifest))
             .ok()
             .and_then(|b| serde_json::from_slice(&b).ok())
         {
             Some(m) => m,
-            None => return refuse(format!("container {id}: its image's manifest is not here")),
+            None => return refuse(format!("microVM {id}: its image's manifest is not here")),
         };
         // Its image's config as moby's commit reads it (daemon/containerd
         // image_commit.go), a DockerOCIImage, failing as that fails, and written again as
@@ -122,7 +122,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
             if running {
                 if lock(&self.paused).contains(&id) {
                     return refuse(format!(
-                        "container {id} is paused: its files can be committed once it is unpaused"
+                        "microVM {id} is paused: its files can be committed once it is unpaused"
                     ));
                 }
                 // `--pause`, deprecated, says it where given (commit.go).
@@ -231,6 +231,10 @@ impl<D: crate::containers::Disk> Daemon<D> {
                 ),
             ],
         );
+        // The microVM a named commit makes, in the machine's local image store (D216).
+        if let Some(r) = &named {
+            crate::pull::publish_name(&self.home, &r.to_string(), &asker.registry_env);
+        }
         reply.out(&image_id);
         0
     }
@@ -414,7 +418,7 @@ fn digest_of(bytes: &[u8]) -> shards_image::reference::Digest {
     )
 }
 
-/// The container's config as dockerd keeps it (its image's, with what its run set: moby
+/// The microVM's config as dockerd keeps it (its image's, with what its run set: moby
 /// daemon/create.go, merge), in the OCI image config's form commit writes
 /// (containerConfigToDockerOCIImageConfig).
 fn container_config(image: Option<&serde_json::Value>, run: Option<&Run>) -> serde_json::Value {

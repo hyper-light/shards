@@ -135,7 +135,7 @@ pub(crate) struct Hosts<'a> {
     pub net: Option<&'a crate::devices::virtio::net::NetHost>,
     /// Each virtio-fs device's slot, in order (D38).
     pub shares: &'a [crate::devices::virtio::fs::Share],
-    /// The join disk's ranges, which its VM process gives joining containers' images
+    /// The join disk's ranges, which its VM process gives joining runs' images
     /// (D119).
     pub join: Option<&'static crate::devices::virtio::block::Join>,
     /// The join share's slot (D119), which a server of its VM's joiners' volumes fills.
@@ -1114,7 +1114,7 @@ pub struct Config {
     /// virtio-fs devices, each a slot its directory's server is put in (D38).
     pub shares: Vec<crate::devices::virtio::fs::Share>,
     /// A join disk, after the disks: empty until the VM process gives a joining
-    /// container's image a range of it (D119).
+    /// run's image a range of it (D119).
     pub join: Option<&'static crate::devices::virtio::block::Join>,
     /// Virtualization for the guest itself (nested): on arm64 its vCPUs have EL2, so
     /// that its kernel may be a hypervisor (KVM). Refused where the host cannot give it,

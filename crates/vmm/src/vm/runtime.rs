@@ -417,7 +417,7 @@ impl Handle {
         self.shared.hold.resume();
     }
 
-    /// Readies `file`, a stopped container's writable layer kept in its own file (D190), to
+    /// Readies `file`, a stopped microVM's writable layer kept in its own file (D190), to
     /// go under the guest's writable layer's device once its guest lets go of the one its
     /// template mounted (`run::kind::OVER`, `control::LAYER_SWAP`): before its guest hears of
     /// the run. An error where the VM has no writable layer, or one of another length.
@@ -1811,8 +1811,8 @@ impl Cut<'_> {
         // Every vCPU is out of the guest: the devices go quiet, and only then does each
         // vCPU capture its state.
         self.bus.pause();
-        // A snapshot keeps no image of a join disk's: a container's image is the joining
-        // run's, and every restore of a snapshot is a microVM no container has joined. It
+        // A snapshot keeps no image of a join disk's: a joiner's image is the joining
+        // run's, and every restore of a snapshot is a microVM no run has joined. It
         // keeps the ranges once let go, as the joiners ended (D176).
         if self.join.is_some_and(Join::attached) {
             return Err(

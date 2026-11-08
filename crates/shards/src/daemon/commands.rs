@@ -1,4 +1,4 @@
-//! Container commands the daemon runs for its clients (`shards ps`, `wait`, `logs`, `rm`,
+//! Container commands the daemon runs for its clients (`shards list vms`, `wait`, `logs`, `rm`,
 //! `stop`, `kill`), answering on the client's stdout and stderr as `docker` answers
 //! (docs/design/architecture.md D27). The client has read the command line already
 //! (shards_cmdline); the daemon reads it again by the same rules, and does what dockerd
@@ -39,7 +39,7 @@ const LAST_WAIT: Duration = Duration::from_secs(2);
 /// How long `stop` waits after a signal it could not send (moby daemon/stop.go).
 const UNSENT_WAIT: Duration = Duration::from_secs(2);
 
-/// How a container [`end_all`](Daemon::end_all) ended came to its end: it had already,
+/// How a microVM [`end_all`](Daemon::end_all) ended came to its end: it had already,
 /// by the signal it was sent, by SIGKILL asked for, by SIGKILL once its grace was up, by
 /// its VM killed, or it was not heard to end.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -61,8 +61,8 @@ fn grace_of(seconds: i64) -> Option<Duration> {
     })
 }
 
-/// What `stop`, `kill` and `rm` make of one argument before any container is ended: an
-/// answer now, or a container to end, with its signal and grace, and what to answer once
+/// What `stop`, `kill` and `rm` make of one argument before any microVM is ended: an
+/// answer now, or a microVM to end, with its signal and grace, and what to answer once
 /// it has ended (`true`) or would not (`false`).
 pub(super) enum Step<'a> {
     Now(Result<bool, String>),
@@ -74,7 +74,7 @@ pub(super) enum Step<'a> {
     },
 }
 
-/// What a step answers once its container has ended, or would not.
+/// What a step answers once its microVM has ended, or would not.
 pub(super) type Then<'a> = Box<dyn FnOnce(bool) -> Result<bool, String> + 'a>;
 
 /// The client's end: what a command prints goes there.
@@ -233,11 +233,11 @@ fn linux_signal(n: i64) -> Option<u32> {
 }
 
 impl<D: crate::containers::Disk> Daemon<D> {
-    /// `shards exec`: runs a command in a running container, as `docker exec` does. Its
-    /// spec starts from the container's run, as dockerd composes an exec's (moby
+    /// `shards exec vm`: runs a command in a running microVM, as `docker exec` does. Its
+    /// spec starts from the microVM's run, as dockerd composes an exec's (moby
     /// daemon/exec.go, ContainerExecCreate): the run's environment then `-e`'s, its user
     /// and working directory unless `-u` and `-w` say otherwise, its host name, and TERM
-    /// for a terminal of its own. It goes to the container's VM with the client's
+    /// for a terminal of its own. It goes to the microVM's VM with the client's
     /// connection and stdio, and the VM answers the client. What the daemon refuses, it
     /// says on the client's stderr, then `EXIT` 1.
     pub(super) fn exec(&self, message: &shards_ipc::Message, conn: &UnixStream) {
@@ -353,7 +353,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
             Err(e) => return refuse(&format!("shards: handing on the connection: {e}")),
         };
         // An Engine API exec said its `exec_create` as it was made, with the ID its client
-        // has; `shards exec` makes and starts one at once.
+        // has; `shards exec vm` makes and starts one at once.
         let exec_id = if exec.id.is_empty() {
             self.exec_events(&id, &options.argv)
         } else {
@@ -381,14 +381,14 @@ impl<D: crate::containers::Disk> Daemon<D> {
             held.exec_ids.retain(|(n, _)| *n != number);
             held.waited_execs.retain(|n| *n != number);
             drop(held);
-            refuse(&format!("shards: the container's microVM: {e}"));
+            refuse(&format!("shards: the microVM: {e}"));
         }
     }
 
-    /// `shards attach`: the client attached to a running container's command, as dockerd's
+    /// `shards attach`: the client attached to a running microVM's command, as dockerd's
     /// ContainerAttach attaches one (moby daemon/attach.go), refused as docker/cli refuses
     /// one it has inspected (attach.go inspectContainerAndCheckState). The client goes to
-    /// the container's VM, which answers it, as an exec's does.
+    /// the microVM's VM, which answers it, as an exec's does.
     pub(super) fn attach(&self, message: &shards_ipc::Message, conn: &UnixStream) {
         let stderr = message
             .fds
@@ -424,7 +424,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
             Some(RunState::Tracked(run)) => (run.base.clone(), run.socket.clone(), run.inbox.clone()),
             _ => return refuse("cannot attach to a stopped container, start it first"),
         };
-        // Its stdin goes in where the container's command reads one (Config.OpenStdin).
+        // Its stdin goes in where the microVM's command reads one (Config.OpenStdin).
         let flags = if attach.stdin && base.options.interactive {
             shards_ipc::ATTACH_STDIN
         } else {
@@ -448,11 +448,11 @@ impl<D: crate::containers::Disk> Daemon<D> {
         let fds = [handed.as_fd(), stdin.as_fd(), stdout.as_fd(), stderr.as_fd()];
         if let Err(e) = socket.send(kind::ATTACH_RUN, &payload, &fds) {
             lock(&inbox).execs_in_flight.retain(|(n, _)| *n != number);
-            refuse(&format!("shards: the container's microVM: {e}"));
+            refuse(&format!("shards: the microVM: {e}"));
         }
     }
 
-    /// Logs exec `exec_id`'s `action` of `argv` in container `id` as dockerd does (moby
+    /// Logs exec `exec_id`'s `action` of `argv` in microVM `id` as dockerd does (moby
     /// daemon/exec.go: `exec_create: ENTRYPOINT ARGS`, then `exec_start: …`, each with its
     /// ID).
     pub(super) fn exec_event(&self, id: &str, argv: &[String], action: &str, exec_id: &str) {
@@ -465,7 +465,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
         );
     }
 
-    /// Logs exec `argv`'s creation and start in container `id`, as `shards exec` makes and
+    /// Logs exec `argv`'s creation and start in microVM `id`, as `shards exec vm` makes and
     /// starts one at once ([`exec_event`](Self::exec_event)), and returns its ID, for its
     /// `exec_die`; none if no ID could be made.
     pub(super) fn exec_events(&self, id: &str, argv: &[String]) -> Option<String> {
@@ -476,10 +476,10 @@ impl<D: crate::containers::Disk> Daemon<D> {
         Some(exec_id)
     }
 
-    /// Runs container command `argv` for a client, answering on `reply`, and returns its
+    /// Runs command `argv` on microVMs for a client, answering on `reply`, and returns its
     /// exit status, the client being `asker`.
     pub(super) fn command(&self, argv: &[String], asker: &Asker, reply: &Reply<'_>) -> u8 {
-        // `shards cp`'s steps, which its client takes one at a time (cli/cp.rs).
+        // `shards copy vm`'s steps, which its client takes one at a time (cli/cp.rs).
         if let Some((first, rest)) = argv.split_first()
             && first == COPY_STEP
         {
@@ -490,6 +490,24 @@ impl<D: crate::containers::Disk> Daemon<D> {
             && first == shards_ipc::MOVE_STEP
         {
             return self.move_step(rest, asker, reply);
+        }
+        // A build's names, each one's microVM published to the local store (D216).
+        if let Some((first, names)) = argv.split_first()
+            && first == shards_ipc::PUBLISH_STEP
+        {
+            for name in names {
+                crate::pull::publish_name(&self.home, name, &asker.registry_env);
+            }
+            return 0;
+        }
+        // The microVMs a client's names reach: an image's name, its running ones (D216).
+        if let Some((first, names)) = argv.split_first()
+            && first == shards_ipc::NAMES_STEP
+        {
+            for name in self.by_image(names, true) {
+                reply.out(&name);
+            }
+            return 0;
         }
         let words: Vec<&str> = argv.iter().map(String::as_str).collect();
         let Some((command, path, named)) = commands::find(&words) else {
@@ -509,7 +527,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
                 return status;
             }
         };
-        // What any client has seen of its run, an answer that reads containers includes:
+        // What any client has seen of its run, an answer that reads microVMs includes:
         // `images` and `rmi` read which use an image too.
         if ![&TAG, &IMAGE_INSPECT, &SAVE, &LOAD, &PULL, &PUSH]
             .iter()
@@ -525,7 +543,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
         if std::ptr::eq(command, &PS) {
             self.ps(&parsed, asker, reply)
         } else if std::ptr::eq(command, &WAIT) {
-            self.wait(&parsed.args, asker.client, reply)
+            self.wait(&self.by_image(&parsed.args, true), asker.client, reply)
         } else if std::ptr::eq(command, &LOGS) {
             self.logs(&parsed, asker, reply)
         } else if std::ptr::eq(command, &RM) {
@@ -557,7 +575,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
         } else if std::ptr::eq(command, &IMAGES) {
             self.images(&parsed, asker, reply)
         } else if std::ptr::eq(command, &TAG) {
-            self.tag(&parsed.args, asker.styled(), reply)
+            self.tag(&parsed.args, asker.styled(), &asker.registry_env, reply)
         } else if std::ptr::eq(command, &RMI) {
             self.rmi(&parsed, asker.styled(), &asker.registry_env, reply)
         } else if std::ptr::eq(command, &IMAGE_INSPECT) {
@@ -627,7 +645,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
         } else if std::ptr::eq(command, &shards_cmdline::commands::NETWORK_DISCONNECT) {
             self.network_disconnect(&parsed, reply)
         } else if std::ptr::eq(command, &shards_cmdline::commands::VOLUME_CREATE) {
-            self.volume_create(&parsed, asker.styled(), reply)
+            self.volume_create(&parsed, asker.styled(), &asker.whose, reply)
         } else if std::ptr::eq(command, &shards_cmdline::commands::VOLUME_LS) {
             self.volume_ls(&parsed, asker, reply)
         } else if std::ptr::eq(command, &shards_cmdline::commands::VOLUME_INSPECT) {
@@ -642,7 +660,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
         }
     }
 
-    /// `shards export CONTAINER` (moby daemon/export.go, ContainerExport): the
+    /// `shards export vm CONTAINER` (moby daemon/export.go, ContainerExport): the
     /// microVM's files as a tar archive, written by its init straight to where the
     /// client asked (`-o`'s file or its stdout), through no copy here: a stopped one's in
     /// a VM visiting them (visit.rs).
@@ -665,12 +683,12 @@ impl<D: crate::containers::Disk> Daemon<D> {
         self.await_start(&id);
         if !self.reachable(&id) {
             return refuse(format!(
-                "container {id}: its files cannot be reached (see the daemon's log)"
+                "microVM {id}: its files cannot be reached (see the daemon's log)"
             ));
         }
         if lock(&self.paused).contains(&id) {
             return refuse(format!(
-                "container {id} is paused: its files can be exported once it is unpaused"
+                "microVM {id} is paused: its files can be exported once it is unpaused"
             ));
         }
         let spec = shards_abi::run::Spec {
@@ -696,10 +714,10 @@ impl<D: crate::containers::Disk> Daemon<D> {
         }
     }
 
-    /// A step of `shards cp` in container `container`, as dockerd's archive routes take
+    /// A step of `shards copy vm` in microVM `container`, as dockerd's archive routes take
     /// them (moby daemon/archive.go): `stat PATH`, its stat as a JSON line; `archive
     /// PATH`, a tar archive of it to the asker's file; `extract PATH UIDGID OVERWRITE`,
-    /// the archive the asker's file holds unpacked there, owned by the container's user
+    /// the archive the asker's file holds unpacked there, owned by the microVM's user
     /// with `UIDGID` 1. Done in its microVM (init copy.rs): a stopped one's in a VM
     /// visiting its files (visit.rs), which keeps what was copied in as it ends.
     fn copy_step(&self, args: &[String], asker: &Asker, reply: &Reply<'_>) -> u8 {
@@ -720,12 +738,12 @@ impl<D: crate::containers::Disk> Daemon<D> {
         self.await_start(&id);
         if !self.reachable(&id) {
             return refuse(format!(
-                "container {id}: its files cannot be reached (see the daemon's log)"
+                "microVM {id}: its files cannot be reached (see the daemon's log)"
             ));
         }
         if lock(&self.paused).contains(&id) {
             return refuse(format!(
-                "container {id} is paused: its files can be copied once it is unpaused"
+                "microVM {id} is paused: its files can be copied once it is unpaused"
             ));
         }
         use shards_abi::run::builtin;
@@ -738,7 +756,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
         if kind == builtin::EXTRACT {
             // A read-only root, or volume, takes nothing: refused by init where the path
             // resolves, on the mounts its command sees (copy.rs, `writable`).
-            // `-a`: everything the container's user's (archive_tarcopyoptions_unix.go).
+            // `-a`: everything the microVM's user's (archive_tarcopyoptions_unix.go).
             let user = if args.get(3).is_some_and(|a| a == "1") {
                 self.container_user(&id)
             } else {
@@ -800,14 +818,14 @@ impl<D: crate::containers::Disk> Daemon<D> {
             Some(2) => refuse(format!("Could not find the file {path} in container {given}")),
             Some(3) => refuse(why),
             _ => refuse(if why.is_empty() {
-                format!("container {id}: the copy failed")
+                format!("microVM {id}: the copy failed")
             } else {
                 why
             }),
         }
     }
 
-    /// The user container `id` runs as: its run's, else its image's.
+    /// The user microVM `id` runs as: its run's, else its image's.
     fn container_user(&self, id: &str) -> String {
         let dir = lock(&self.containers).dir(id);
         let run = std::fs::read(dir.join(super::REQUEST))
@@ -832,7 +850,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
         }
     }
 
-    /// `shards diff CONTAINER` (moby daemon/changes.go, ContainerChanges): what the
+    /// `shards read changes CONTAINER` (moby daemon/changes.go, ContainerChanges): what the
     /// microVM changed of its image's files, as its init finds them (init changes.rs),
     /// one `KIND PATH` a line as docker/cli prints them (diff.go): a stopped one's in a VM
     /// visiting its files (visit.rs).
@@ -854,12 +872,12 @@ impl<D: crate::containers::Disk> Daemon<D> {
         self.await_start(&id);
         if !self.reachable(&id) {
             return refuse(format!(
-                "container {id}: its files cannot be reached (see the daemon's log)"
+                "microVM {id}: its files cannot be reached (see the daemon's log)"
             ));
         }
         if lock(&self.paused).contains(&id) {
             return refuse(format!(
-                "container {id} is paused: its changes can be read once it is unpaused"
+                "microVM {id} is paused: its changes can be read once it is unpaused"
             ));
         }
         let spec = shards_abi::run::Spec {
@@ -900,8 +918,8 @@ impl<D: crate::containers::Disk> Daemon<D> {
         };
         match ended {
             Ok(e) if e.status == Some(0) => 0,
-            Ok(_) => refuse(format!("container {id}: its changes could not all be read")),
-            Err(e) => refuse(format!("container {id}: reading its changes: {e}")),
+            Ok(_) => refuse(format!("microVM {id}: its changes could not all be read")),
+            Err(e) => refuse(format!("microVM {id}: reading its changes: {e}")),
         }
     }
 
@@ -1003,7 +1021,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
         Ok(table)
     }
 
-    /// `shards stats [CONTAINER...]` (docker/cli cli/command/container/stats.go): what each
+    /// `shards watch vms [CONTAINER...]` (docker/cli cli/command/container/stats.go): what each
     /// microVM takes of the host, measured from its VM process each second: CPU as the
     /// share of one CPU its process had over the second, memory as its resident size
     /// against the microVM's. Streamed until the client goes, or once with `--no-stream`.
@@ -1181,8 +1199,8 @@ impl<D: crate::containers::Disk> Daemon<D> {
         }
     }
 
-    /// `shards rename CONTAINER NEW_NAME` (moby daemon/rename.go, ContainerRename): the
-    /// new name checked as a new container's is, refused if it is the old one or held; the
+    /// `shards rename vm CONTAINER NEW_NAME` (moby daemon/rename.go, ContainerRename): the
+    /// new name checked as a new microVM's is, refused if it is the old one or held; the
     /// old one free at once; the record written soon.
     fn rename(&self, args: &[String], reply: &Reply<'_>) -> u8 {
         let (Some(given), Some(new)) = (args.first(), args.get(1)) else {
@@ -1231,7 +1249,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
     }
 
     /// `shards port CONTAINER [PORT]` (docker/cli cli/command/container/port.go): each
-    /// published port of a running container as `PORT/PROTO -> HOST:PORT`, or with PORT
+    /// published port of a running microVM as `PORT/PROTO -> HOST:PORT`, or with PORT
     /// the host addresses of that one, in natural order.
     fn port(&self, args: &[String], styled: bool, reply: &Reply<'_>) -> u8 {
         let (Some(reference), wanted) = (args.first(), args.get(1).filter(|p| !p.is_empty())) else {
@@ -1251,7 +1269,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
                 return 1;
             }
         };
-        // dockerd's NetworkSettings.Ports: a running container's bindings.
+        // dockerd's NetworkSettings.Ports: a running microVM's bindings.
         let ports = match lock(&self.containers).get(&id) {
             Some(c) if c.state == Life::Running => c.ports.clone(),
             _ => Vec::new(),
@@ -1312,7 +1330,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
             Some(c) if c.state == Life::Running => (c.ports.clone(), c.engine_made.clone()),
             _ => (Vec::new(), None),
         };
-        // A container its microVM's engine made, a member of that microVM's switch (D181):
+        // A joiner its microVM's engine made, a member of that microVM's switch (D181):
         // who reaches each port it declares or listens on.
         if let Some(made) = made.filter(|m| !m.addresses.is_empty()) {
             return self.member_ports(&id, &made, &ports, reply);
@@ -1471,10 +1489,10 @@ impl<D: crate::containers::Disk> Daemon<D> {
         0
     }
 
-    /// The ID of the container `reference` names: all of its ID, its name, or the start of
+    /// The ID of the microVM `reference` names: all of its ID, its name, or the start of
     /// its ID and of no other's (moby daemon/container.go, GetContainer).
     /// `args`, each name of no microVM but of an image some run from said as those
-    /// microVMs' names: `shards stop ubuntu:latest` stops what runs from it. With
+    /// microVMs' names: `shards stop vm ubuntu:latest` stops what runs from it. With
     /// `running`, only the running ones. A name of a microVM is itself.
     fn by_image(&self, args: &[String], running: bool) -> Vec<String> {
         use shards_image::reference::Reference;
@@ -1552,12 +1570,12 @@ impl<D: crate::containers::Disk> Daemon<D> {
         (registry, found)
     }
 
-    /// Whether the container with `id` runs: its run was handed over, and has not ended.
+    /// Whether the microVM with `id` runs: its run was handed over, and has not ended.
     pub(super) fn running(&self, id: &str) -> bool {
         matches!(lock(&self.runs).get(id), Some(RunState::Tracked(t)) if !t.visit)
     }
 
-    /// Freezes the cgroup of container `id`, a joiner (D119), in its provider's guest, or
+    /// Freezes the cgroup of joiner `id` (D119) in its provider's guest, or
     /// thaws it: init's FREEZE, which waits as runc's freezer does, so its exec is given
     /// that long and more.
     fn freeze(&self, id: &str, frozen: bool) -> Result<(), String> {
@@ -1603,21 +1621,21 @@ impl<D: crate::containers::Disk> Daemon<D> {
             .unwrap_or_else(|_| Err("its microVM stopped".into()))
     }
 
-    /// Whether container `id` runs joined to another's network (D119): in its provider's
+    /// Whether run `id` runs joined to another's network (D119): in its provider's
     /// microVM, keeping no layer of its own yet.
     pub(super) fn joined_run(&self, id: &str) -> bool {
         matches!(lock(&self.runs).get(id), Some(RunState::Tracked(t)) if t.joined.is_some())
     }
 
-    /// Whether container `id` has a VM to read its files in: its run's, or a visit's.
+    /// Whether microVM `id` has a VM to read its files in: its run's, or a visit's.
     pub(super) fn reachable(&self, id: &str) -> bool {
         matches!(lock(&self.runs).get(id), Some(RunState::Tracked(_)))
     }
 
-    /// Sends Linux signal `linux` to the command of the container with `id`; whether it
+    /// Sends Linux signal `linux` to the command of the microVM with `id`; whether it
     /// could.
     ///
-    /// A paused container is let go on once sent SIGKILL or its own stop signal, as
+    /// A paused microVM is let go on once sent SIGKILL or its own stop signal, as
     /// dockerd resumes one (moby daemon/kill.go, killWithSignal): the signal waits in its
     /// socket and is read as it runs again. Other signals wait for `unpause`.
     pub(super) fn signal(&self, id: &str, linux: u32) -> bool {
@@ -1639,7 +1657,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
         sent
     }
 
-    /// Lets paused container `id`'s microVM go on ([`pause_vm`](Self::pause_vm)); whether
+    /// Lets paused microVM `id` go on ([`pause_vm`](Self::pause_vm)); whether
     /// it could.
     fn thaw(&self, id: &str) -> bool {
         // A joiner's cgroup is thawed in its provider's guest (D119): its VM is its
@@ -1653,7 +1671,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
         resumed
     }
 
-    /// `shards pause` and `unpause` (moby daemon/pause.go, unpause.go): each running
+    /// `shards pause vm` and `unpause` (moby daemon/pause.go, unpause.go): each running
     /// microVM frozen whole where it is, every vCPU held out of its guest by its VMM,
     /// which needs no cgroup and holds on every hypervisor alike (WHP's
     /// host stops a process no documented way); or let go on. A frozen microVM runs none
@@ -1713,7 +1731,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
         )
     }
 
-    /// Runs `op` for each of `args`, in their order, then ends every container the steps
+    /// Runs `op` for each of `args`, in their order, then ends every microVM the steps
     /// name at once ([`end_all`](Self::end_all)): docker/cli acts on 50 at a time
     /// (cli/command/container/utils.go, parallelOperation), so that stopping 200 took four
     /// graces; here it takes the longest one, with no thread for each. Answers as the CLI
@@ -1846,11 +1864,11 @@ impl<D: crate::containers::Disk> Daemon<D> {
         u8::from(failed)
     }
 
-    /// Ends every container of `targets` (its index, ID, signal and grace) at once, from
+    /// Ends every microVM of `targets` (its index, ID, signal and grace) at once, from
     /// one loop, as dockerd ends one (moby daemon/stop.go, containerStop): the signal, then SIGKILL once its grace
     /// is up (2 s if it could not be sent), then its VM after 10 s more, then giving up
     /// after 2 s. Each end is heard on a socket of its own, registered before anything is
-    /// sent, so none is missed; `done` hears each container's index once, with whether it
+    /// sent, so none is missed; `done` hears each microVM's index once, with whether it
     /// ended, as it does.
     fn end_all(
         &self,
@@ -1972,7 +1990,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
                             let ended = matches!((&gone.told).read(&mut byte), Ok(1));
                             if !ended {
                                 super::log(format!(
-                                    "container {}: no end heard {LAST_WAIT:?} after its microVM was killed: {}",
+                                    "microVM {}: no end heard {LAST_WAIT:?} after it was killed: {}",
                                     gone.id,
                                     self.unheard(&gone.id)
                                 ));
@@ -2022,9 +2040,9 @@ impl<D: crate::containers::Disk> Daemon<D> {
         }
     }
 
-    /// `shards wait`: for each container in turn, its exit code once it stops. Found and
+    /// `shards wait vm`: for each microVM in turn, its exit code once it stops. Found and
     /// waited for under one hold of the records, so that the state found is the state
-    /// waited on: an end in between, of a `--rm` container above all, is not
+    /// waited on: an end in between, of a `--rm` microVM above all, is not
     /// missed.
     fn wait(&self, references: &[String], client: u64, reply: &Reply<'_>) -> u8 {
         // Its client waits long: it shuts no other out (review 7.9).
@@ -2052,9 +2070,9 @@ impl<D: crate::containers::Disk> Daemon<D> {
         u8::from(!errors.is_empty())
     }
 
-    /// `shards rm [-f]`: removes containers that have stopped; with `-f`, kills the ones
+    /// `shards remove vm [-f]`: removes microVMs that have stopped; with `-f`, kills the ones
     /// still running first, and says nothing of those not there. The CLI trims `/` from
-    /// both ends of each argument (docker/cli rm.go; moby daemon/delete.go). A container
+    /// both ends of each argument (docker/cli rm.go; moby daemon/delete.go). A microVM
     /// whose run no VM has yet been committed to has not started: it goes, and its run
     /// never starts. One whose run is being handed over is removed once it is known
     /// whether it started, so that no VM goes on running a removed microVM's command.
@@ -2168,10 +2186,10 @@ impl<D: crate::containers::Disk> Daemon<D> {
         )
     }
 
-    /// `shards stop [-t SECONDS] [-s SIGNAL]`: the signal (SIGTERM), then SIGKILL once the
+    /// `shards stop vm [-t SECONDS] [-s SIGNAL]`: the signal (SIGTERM), then SIGKILL once the
     /// time (10 s) is up, as dockerd stops a container (moby daemon/stop.go). A negative
-    /// time waits for ever; a stopped container stops again without complaint. A container
-    /// still starting is stopped once it runs: `shards run -d` prints its ID before then,
+    /// time waits for ever; a stopped microVM stops again without complaint. A microVM
+    /// still starting is stopped once it runs: `shards run vm -d` prints its ID before then,
     /// where `docker run -d` prints it after.
     fn stop(&self, parsed: &Parsed, styled: bool, reply: &Reply<'_>) -> u8 {
         if parsed.changed("time") && parsed.changed("timeout") {
@@ -2206,7 +2224,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
                     return Step::Now(Ok(true));
                 }
                 let cannot = |why: &str| format!("shards: cannot stop {reference}: {why}");
-                // Unless told, the container's own (`own_stop`).
+                // Unless told, the microVM's own (`own_stop`).
                 let (own_signal, own_grace) = self.own_stop(&id);
                 let grace = told.map_or(own_grace, grace_of);
                 let linux = if signal.is_empty() {
@@ -2240,7 +2258,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
         )
     }
 
-    /// Stops container `given` if it runs, for `restart` (moby daemon/restart.go,
+    /// Stops microVM `given` if it runs, for `restart` (moby daemon/restart.go,
     /// containerRestart: containerStop first): by `signal` and `timeout` where given,
     /// else as it stops; its ID, or what dockerd says.
     pub(super) fn stop_for_restart(
@@ -2276,11 +2294,11 @@ impl<D: crate::containers::Disk> Daemon<D> {
         Ok(id)
     }
 
-    /// The stop container `id` asks for when nothing else is told, as dockerd reads it
+    /// The stop microVM `id` asks for when nothing else is told, as dockerd reads it
     /// (moby daemon/stop.go, container.StopSignal and StopTimeout): its stop signal, else
     /// SIGTERM, `None` where Linux has no signal of its number; and how long its command
     /// may take to end after it: its stop timeout, else 10 s, for ever if negative. Set
-    /// as the container was made, and read so: its record may not be written yet.
+    /// as the microVM was made, and read so: its record may not be written yet.
     pub(super) fn own_stop(&self, id: &str) -> (Option<u32>, Option<Duration>) {
         let (signal, timeout) = lock(&self.containers)
             .made(id)
@@ -2292,10 +2310,10 @@ impl<D: crate::containers::Disk> Daemon<D> {
         (signal, timeout.map_or(Some(STOP_GRACE), grace_of))
     }
 
-    /// `shards kill [-s SIGNAL]`: the signal (SIGKILL) to each running container's command.
+    /// `shards kill vm [-s SIGNAL]`: the signal (SIGKILL) to each running microVM's command.
     /// SIGKILL waits for the end, as dockerd's kill does; other signals are only sent
-    /// (moby daemon/kill.go ContainerKill). Every error names its container (moby
-    /// container_routes.go postContainersKill). A container still starting is signalled
+    /// (moby daemon/kill.go ContainerKill). Every error names its microVM (moby
+    /// container_routes.go postContainersKill). A microVM still starting is signalled
     /// once it runs, as `stop` stops it.
     fn kill(&self, parsed: &Parsed, styled: bool, reply: &Reply<'_>) -> u8 {
         let signal = parsed.string("signal");
@@ -2365,7 +2383,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
         )
     }
 
-    /// `shards ps`: the containers, as `docker ps` lists them (docker/cli v29.8.1
+    /// `shards list vms`: the microVMs, as `docker ps` lists them (docker/cli v29.8.1
     /// cli/command/formatter/container.go): the running ones, or all with `-a`, or the
     /// last `-n` made (`-l`: one); newest first; with `-q` their IDs alone.
     fn ps(&self, parsed: &Parsed, asker: &Asker, reply: &Reply<'_>) -> u8 {
@@ -2525,10 +2543,10 @@ impl<D: crate::containers::Disk> Daemon<D> {
             .collect()
     }
 
-    /// `shards logs [-f] [-t] [--details] [--tail N] [--since T] [--until T]`: a
-    /// container's output, stdout to stdout and stderr to stderr, in the order it arrived;
+    /// `shards read logs [-f] [-t] [--details] [--tail N] [--since T] [--until T]`: a
+    /// microVM's output, stdout to stdout and stderr to stderr, in the order it arrived;
     /// the last N lines with `--tail`, of which those from `--since` on and to `--until`,
-    /// each after its time with `-t`, and more as it comes until the container ends with
+    /// each after its time with `-t`, and more as it comes until the microVM ends with
     /// `-f`. Lines carry no attributes here, so `--details` adds only the space that would
     /// follow them (moby daemon/server/httputils/logstream/logstream.go).
     fn logs(&self, parsed: &Parsed, asker: &Asker, reply: &Reply<'_>) -> u8 {
@@ -2686,7 +2704,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
                         reply.0,
                         watch.is_none().then_some(super::RETRY),
                     )?;
-                    // Once the container has ended, what is left of a line is all of it.
+                    // Once the microVM has ended, what is left of a line is all of it.
                     if ready[1] {
                         if show.read(&mut reader, &log)? {
                             show.finish(&mut reader)?;
@@ -3163,7 +3181,7 @@ pub(super) fn displayable_ports(mut ports: Vec<PortSummary>) -> String {
     result.join(", ")
 }
 
-/// A container's command as the API shows it: the path, then the arguments, each in single
+/// A microVM's command as the API shows it: the path, then the arguments, each in single
 /// quotes if it holds a space (moby daemon/container/view.go).
 pub(super) fn command_line(argv: &[String]) -> String {
     let Some((path, args)) = argv.split_first() else {
@@ -3222,7 +3240,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
     }
 }
 
-/// Each container's last sample, for one whose VM is paused and cannot be asked: taken
+/// Each microVM's last sample, for one whose VM is paused and cannot be asked: taken
 /// as it is paused, and as `stats` samples it; a removed one's goes as `stats` next looks.
 static LAST_USAGE: std::sync::Mutex<std::collections::BTreeMap<String, Usage>> =
     std::sync::Mutex::new(std::collections::BTreeMap::new());
@@ -3394,7 +3412,7 @@ pub(super) fn human_duration(ns: u128) -> String {
     }
 }
 
-/// A container's status as dockerd words it (moby daemon/container/state.go): up for how
+/// A microVM's status as dockerd words it (moby daemon/container/state.go): up for how
 /// long, with its health if it has a check; else being removed, if it is; or exited with
 /// what status how long ago, or created and never started.
 pub(super) fn status(
@@ -3552,7 +3570,7 @@ fn ps_args_allowed(args: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Who asked for a container command, and what of theirs shapes the answer.
+/// Who asked for a command on microVMs, and what of theirs shapes the answer.
 pub(super) struct Asker {
     /// Their number among the daemon's clients: what a shutdown cancels is theirs by it.
     pub client: u64,
@@ -3570,6 +3588,9 @@ pub(super) struct Asker {
     pub color: bool,
     /// What they sent to be written: `save`'s archive's destination.
     pub files: Vec<OwnedFd>,
+    /// The client of another machine's they ask for through its context (D215), empty for
+    /// this machine's own user: what it reaches of this machine its owner granted it.
+    pub whose: String,
 }
 
 impl Asker {

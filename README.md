@@ -160,24 +160,24 @@ limit and how many it refused), as one that runs out of memory says `oom`.
 
 ### A microVM's own engine
 
-`shards run --use-api-socket` gives the program it runs an engine of its own microVM's:
+`shards run vm --use-api-socket` gives the program it runs an engine of its own microVM's:
 `DOCKER_HOST` points at a socket in its own files (`/run/shards/engine.sock`), so the
-`docker` CLI, Testcontainers and CI tools inside it make their containers in that same
-microVM. They take nothing of your machine's: not its engine, not its files, not your
+`docker` CLI, Testcontainers and CI tools inside it run what they ask for as containers in
+that same microVM. What runs there takes nothing of your machine's: not its engine, not its files, not your
 other microVMs, and your registry logins stay outside it. Each is on its own, like each
 agent in the microVM: the program reaches it on the ports it publishes (`-p 0:5432`, at
-`localhost`), and on the default network it reaches no other container or agent. On a
+`localhost`), and on the default network it reaches no other of them, nor any agent. On a
 network made in the microVM (`docker network create`, a Compose project's networks),
-containers reach one another by name, each on the ports it declares (`EXPOSE`, `expose:`,
+they reach one another by name, each on the ports it declares (`EXPOSE`, `expose:`,
 `--expose` and the ports it publishes) and on no other. None gets out of the microVM
 farther than the program can, and none on an internal network gets out at all. One can
 share another's network (`--network container:db`, Compose's `network_mode: service:db`)
-as that one has it, and no more. Two microVMs' programs can each make a container called
+as that one has it, and no more. Two microVMs' programs can each run one called
 `db`; on your machine they're listed as `MICROVM.db`. What a microVM's engine made stops
 when its program does, and is removed with it. `docker run --use-api-socket` through
 shards' Engine API does the same, and the credentials the `docker` CLI would copy in are
-refused (it warns). Its program can run containers (`docker run`, attached or not), exec
-in them, stop, kill, wait for, read the logs of, list, inspect and remove them, make
+refused (it warns). Its program can run what it asks for (`docker run`, attached or not),
+exec in them, stop, kill, wait for, read the logs of, list, inspect and remove them, make
 networks and volumes for them, connect and disconnect them as they run, and pull images:
 shards pulls with the registry logins of whoever ran the microVM, and the image is then
 that microVM's own; images of yours it never pulled aren't there for it. A bind (`-v
@@ -196,7 +196,7 @@ agents.slice MemoryMax=16G` caps them together, and `systemctl --user status age
 shows what they use. Each microVM's memory, its network's process included, is counted
 there from its first page, warm starts too, and only the first run under a slice asks
 systemd for anything. It works from an ssh login as from a desktop session, with nothing to
-set up. A container that shares another's network runs in that one's microVM, so it names
+set up. A run that shares another's network runs in that one's microVM, so it names
 that one's slice or none.
 
 Where no systemd manager of yours runs (a container, or a host on OpenRC, runit or s6) but
@@ -328,15 +328,22 @@ Firecracker. The plan and its evidence are in
 
 Every command is an action and what it acts on: `shards ACTION THING [ARG...]`.
 `shards ACTION` alone lists the ways it is said, and `shards --help` lists every action.
+Said the other way round, `shards vm ls` is `shards list vm` and `shards image rm` is
+`shards remove image`. Where a command takes a microVM's name, the name of an image reaches
+the microVMs running from it: `shards stop vm ubuntu` stops each.
 
 | Command | What it does |
 |---|---|
 | `shards run vm IMAGE [COMMAND]` | Run a command in a new microVM made from `IMAGE`, pulled first if it isn't here. With `-it`, your terminal is the command's: ctrl-p ctrl-q leaves it running. Repeated runs of an image are served from copies of its booted microVM that the daemon restores ahead of time |
+| `shards run container IMAGE [COMMAND]` | The same, `IMAGE` a container image: one that is a shards microVM already is refused, and `run vm` runs it |
 | `shards create vm IMAGE [COMMAND]` | Make a microVM without starting it |
+| `shards attach vm NAME` | Join your terminal to a running microVM's command; ctrl-p ctrl-q leaves it running |
 | `shards start vm NAME` · `shards restart vm NAME` | Start a stopped microVM again, its files as it left them; stop one and start it again |
 | `shards exec vm NAME COMMAND` | Run a command in a running microVM |
 | `shards stop vm NAME` · `shards kill vm NAME` | Stop a microVM: its stop signal, then SIGKILL once its grace is up; or kill it |
 | `shards pause vm NAME` · `shards unpause vm NAME` | Freeze a microVM where it is, every vCPU and device, at no CPU; let it run on |
+| `shards wait vm NAME` | Wait for a microVM to stop, and print its command's exit status |
+| `shards update vm NAME --cpus N --memory SIZE ...` | Change what a running microVM may take of your machine, as it runs |
 | `shards plug disk NAME FILE:PATH[:ro] [--size SIZE]` · `shards plug volume NAME SOURCE:PATH[:ro]` · `shards unplug disk\|volume NAME PATH` | Plug a disk, a folder of yours or a volume into a running microVM, mounted at `PATH`; `--size` makes `FILE` an empty ext4 disk where it isn't there. Unplug it once nothing there uses it |
 | `shards grow disk NAME PATH SIZE` | Grow a plugged disk, and its file system, as the microVM runs |
 | `shards plug function NAME FUNCTION` · `shards unplug function NAME FUNCTION` | On Linux, give a running microVM's program one of your PCI devices (`0000:01:00.0`, bound to `vfio-pci`), through its IOMMU; the microVM is started with `--device /dev/vfio/vfio` |
@@ -349,7 +356,7 @@ Every command is an action and what it acts on: `shards ACTION THING [ARG...]`.
 | `shards inspect disk` · `shards inspect system` · `shards inspect guest` | What shards takes on disk; what it is, holds and runs on; the kernel and shards-init runs boot |
 | `shards read logs NAME` · `shards watch logs NAME` | What a microVM's command printed; what it prints, as it prints it |
 | `shards read processes NAME` · `shards watch processes NAME` | The processes a microVM's agents started and ended, each whole, as the kernel saw them; as they come |
-| `shards read ports NAME` | Which of a microVM's agents each published port reaches; for a container its own engine made, who reaches each port it declares or listens on, and what would declare one it listens on that none reaches |
+| `shards read ports NAME` | Which of a microVM's agents each published port reaches; for what its own engine made, who reaches each port it declares or listens on, and what would declare one it listens on that none reaches |
 | `shards read changes NAME` | What a microVM changed of its image's files |
 | `shards watch vms [NAME...]` · `shards watch system` | What microVMs take of your machine, live; what happens to microVMs and images, as it happens |
 | `shards copy vm NAME:PATH PATH` · `shards copy vm PATH NAME:PATH` | Copy files out of a microVM, or into one |
@@ -362,6 +369,7 @@ Every command is an action and what it acts on: `shards ACTION THING [ARG...]`.
 | `shards read history IMAGE` · `shards tag image SOURCE TARGET` | How an image's layers were made, `--platform`'s for an image of several; name an image again |
 | `shards save image NAME` · `shards load image` · `shards export vm NAME` | Images to a tar archive and back, every platform of each or `--platform`'s alone; a microVM's files as a tar archive |
 | `shards commit vm NAME [IMAGE]` | Make an image of what a microVM changed |
+| `shards import vm FILE [NAME]` · `shards import image FILE\|URL\|- [NAME]` | Bring in a shards microVM saved whole (`docker save shards.local/NAME`), or make a microVM of a tarball of files or an image archive |
 | `shards remove image NAME` · `shards prune image` | Remove an image with its stopped microVMs, or `--platform`'s microVM of it alone, freeing the disk it took; remove unused images |
 | `shards login registry [SERVER]` · `shards logout registry [SERVER]` | Log in to a registry, or forget a login: kept where `docker login` keeps one, so both find it |
 | `shards search image TERM` | Find images on Docker Hub, on quay.io (`quay.io/TERM`), or in any registry's catalog (`HOST/TERM`); on a terminal, whether each runs on this machine, and what its first pull downloads |
@@ -376,6 +384,12 @@ Every command is an action and what it acts on: `shards ACTION THING [ARG...]`.
 
 `docker`'s command lines work too, as `docker` takes them (`shards ps`, `shards logs -f web`,
 `shards checkpoint create web first`), for the scripts written for it.
+
+Where Docker runs on your machine, every microVM shards makes (pulled, run, built,
+committed, tagged, loaded or imported) shows in Docker's images as `shards.local/NAME`: its
+disk, and the config of the image it was made of; `shards remove image NAME` takes it from
+there too, and `docker save shards.local/NAME | shards import vm -` brings one back.
+`SHARDS_LOCAL_STORE=none` keeps them out.
 
 | Option of `run vm --kernel` | What it does |
 |---|---|

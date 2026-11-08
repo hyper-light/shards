@@ -1,8 +1,8 @@
-//! Names for containers that `--name` did not name, in the form users know: an
+//! Names for microVMs that `--name` did not name, in the form users know: an
 //! adjective and a surname joined by an underscore, from word lists of shards' own. The
 //! procedure is moby's (docker-v29.8.1, internal/namesgenerator/legacy/names-generator.go
 //! and daemon/names.go): from the second try on, a random digit follows; after six names
-//! that are taken, the container's short ID names it.
+//! that are taken, the microVM's short ID names it.
 
 use std::io;
 
@@ -275,7 +275,7 @@ fn random(n: usize) -> io::Result<usize> {
     Ok((u64::from_le_bytes(bytes) % n as u64) as usize)
 }
 
-/// A name for the container with `id` that `taken` does not refuse.
+/// A name for the microVM with `id` that `taken` does not refuse.
 pub fn generate(id: &str, taken: impl Fn(&str) -> bool) -> io::Result<String> {
     for retry in 0..6 {
         let name = draw(retry, &mut random)?;

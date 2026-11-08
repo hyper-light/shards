@@ -37,7 +37,7 @@ pub fn main() {
     }
     // `shards_root=<device>` on the kernel command line: boot into the image on that
     // device and run the host's workload in it; with `shards_template=1`, snapshot first.
-    // `shards_build=1`: a builder for `shards build`'s steps (build.rs).
+    // `shards_build=1`: a builder for `shards build image`'s steps (build.rs).
     if std::env::var_os("shards_build").is_some() {
         crate::build::main()
     }

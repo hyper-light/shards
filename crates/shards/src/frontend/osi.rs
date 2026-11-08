@@ -3,12 +3,12 @@
 //! exec step whose root is the frontend's own image, with no network. BuildKit fetches
 //! each layer blob from the client's layout by digest (`oci-layout+blob`) and mounts it;
 //! `shards frontend osi SPEC` holds each to what an artifact's layer may hold, as
-//! `shards build` holds one (agent::check_layer), and applies them in order, as an
+//! `shards build image` holds one (agent::check_layer), and applies them in order, as an
 //! image's layers are applied, at `/out`.
 //!
 //! SPEC is a JSON object, `{"kind": "agent", "layers": [{"digest", "mediaType"}...]}`, the
 //! layers mounted at `/layers/<i>/blob`. A refusal, or nothing, is written to
-//! `/report/finding`, so that the build fails in `shards build`'s words.
+//! `/report/finding`, so that the build fails in `shards build image`'s words.
 
 use std::io::{self, Write as _};
 use std::path::Path;
@@ -103,7 +103,7 @@ pub(crate) fn lay_out(spec: &Spec, layers: &Path, out: &Path) -> Result<(), Stri
         shards_archive::apply_layer(reader, out, &shards_archive::UnpackOptions::default())
             .map_err(|e| format!("{digest}: {e}"))?;
     }
-    // The tree's root, which no layer names, at the time `shards build` gives an
+    // The tree's root, which no layer names, at the time `shards build image` gives an
     // artifact's: the epoch. A COPY of the tree takes its root's time for where it goes.
     let epoch = std::fs::FileTimes::new()
         .set_accessed(std::time::UNIX_EPOCH)
@@ -193,7 +193,7 @@ mod tests {
     }
 
     /// An artifact's layers are laid out in order, each held first to what an artifact
-    /// may hold, in `shards build`'s words: a set-ID file refused, nothing laid out.
+    /// may hold, in `shards build image`'s words: a set-ID file refused, nothing laid out.
     #[test]
     fn layers_are_held_then_laid_out_as_shards_build_holds_them() {
         let root_dir = shards_testdir::TempDir::new("osi").unwrap();
