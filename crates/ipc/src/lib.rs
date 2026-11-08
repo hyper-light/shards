@@ -74,6 +74,16 @@ pub const COPY_STEP: &str = "\u{0}cp";
 /// daemon/moves.rs).
 pub const MOVE_STEP: &str = "\u{0}mv";
 
+/// The first word of what a build asks of its daemon once it has named its image, which no
+/// command line has: each name's microVM put in the machine's local image store by the
+/// daemon's publisher, which outlives the build (D216).
+pub const PUBLISH_STEP: &str = "\u{0}publish";
+
+/// The first word of what a client asks its daemon of the names it was given, which no
+/// command line has: each said as itself where it names a microVM, else as the names of
+/// the running microVMs made from the image it names (D216), a line each.
+pub const NAMES_STEP: &str = "\u{0}names";
+
 /// Message kinds between the daemon, warm VMs and clients.
 /// [`kind::DEVICE`]'s steps (D214), each a byte after the request's number.
 pub mod device {
@@ -897,6 +907,9 @@ pub struct Run {
     pub device_requests: Vec<DeviceRequest>,
     /// `--use-api-socket`: its command reaches its own microVM's engine (D181).
     pub use_api_socket: bool,
+    /// shards' grammar's `run container` (D216): the image is to be a container image, made
+    /// a microVM as it runs; one that is a shards microVM already is refused.
+    pub container_image: bool,
     /// Made through a microVM's own engine (D181): that microVM's container ID, and the
     /// name the container has there, none for one its engine names.
     pub engine_made: Option<(String, String)>,
@@ -1503,6 +1516,14 @@ impl Run {
                 },
             ),
             (
+                "container-image",
+                if self.container_image {
+                    vec![String::new()]
+                } else {
+                    Vec::new()
+                },
+            ),
+            (
                 "engine-made",
                 self.engine_made
                     .as_ref()
@@ -1695,6 +1716,7 @@ impl Run {
                     "silent" => run.silent = values.first().is_some_and(|v| v == "true"),
                     "streams" => run.streams = Some(Streams::of(&values)?),
                     "use-api-socket" => run.use_api_socket = true,
+                    "container-image" => run.container_image = true,
                     "engine-made" => {
                         let mut v = values.into_iter();
                         run.engine_made = v.next().zip(v.next());
@@ -2646,6 +2668,7 @@ mod tests {
             init_process: Some(false),
             pid: "host".into(),
             use_api_socket: true,
+            container_image: true,
             engine_made: Some(("prov".into(), String::new())),
             own_binds: vec!["/work\0/src\0ro\0rprivate".into()],
             engine_net: "app".into(),
@@ -2717,6 +2740,7 @@ mod tests {
             streams: None,
             device_requests: Vec::new(),
             use_api_socket: false,
+            container_image: false,
             engine_made: None,
             own_binds: Vec::new(),
             engine_net: String::new(),

@@ -140,7 +140,7 @@ impl Unsaved {
         match self {
             Unsaved::Unknown(e) => e.strip_prefix("shards: ").unwrap_or(e).to_string(),
             // container.GetRunningTask's errNotRunning.
-            Unsaved::NotRunning(id) => format!("container {id} is not running"),
+            Unsaved::NotRunning(id) => format!("microVM {id} is not running"),
             Unsaved::Invalid(_) => invalid_checkpoint(asked),
             Unsaved::Exists(name) => format!(
                 "cannot checkpoint container {reference}: checkpoint with name {name} already exists for container {reference}"

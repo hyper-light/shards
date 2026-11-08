@@ -376,7 +376,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                 exit_code: code,
                 output: said,
             },
-            (false, None) => failed("the container's microVM ended the check".into()),
+            (false, None) => failed("the microVM ended the check".into()),
         }
     }
 

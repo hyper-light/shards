@@ -381,7 +381,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
             held.exec_ids.retain(|(n, _)| *n != number);
             held.waited_execs.retain(|n| *n != number);
             drop(held);
-            refuse(&format!("shards: the container's microVM: {e}"));
+            refuse(&format!("shards: the microVM: {e}"));
         }
     }
 
@@ -448,7 +448,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
         let fds = [handed.as_fd(), stdin.as_fd(), stdout.as_fd(), stderr.as_fd()];
         if let Err(e) = socket.send(kind::ATTACH_RUN, &payload, &fds) {
             lock(&inbox).execs_in_flight.retain(|(n, _)| *n != number);
-            refuse(&format!("shards: the container's microVM: {e}"));
+            refuse(&format!("shards: the microVM: {e}"));
         }
     }
 
@@ -491,6 +491,24 @@ impl<D: crate::containers::Disk> Daemon<D> {
         {
             return self.move_step(rest, asker, reply);
         }
+        // A build's names, each one's microVM published to the local store (D216).
+        if let Some((first, names)) = argv.split_first()
+            && first == shards_ipc::PUBLISH_STEP
+        {
+            for name in names {
+                crate::pull::publish_name(&self.home, name, &asker.registry_env);
+            }
+            return 0;
+        }
+        // The microVMs a client's names reach: an image's name, its running ones (D216).
+        if let Some((first, names)) = argv.split_first()
+            && first == shards_ipc::NAMES_STEP
+        {
+            for name in self.by_image(names, true) {
+                reply.out(&name);
+            }
+            return 0;
+        }
         let words: Vec<&str> = argv.iter().map(String::as_str).collect();
         let Some((command, path, named)) = commands::find(&words) else {
             reply.err(&format!("shards: no container command in {argv:?}"));
@@ -525,7 +543,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
         if std::ptr::eq(command, &PS) {
             self.ps(&parsed, asker, reply)
         } else if std::ptr::eq(command, &WAIT) {
-            self.wait(&parsed.args, asker.client, reply)
+            self.wait(&self.by_image(&parsed.args, true), asker.client, reply)
         } else if std::ptr::eq(command, &LOGS) {
             self.logs(&parsed, asker, reply)
         } else if std::ptr::eq(command, &RM) {
@@ -557,7 +575,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
         } else if std::ptr::eq(command, &IMAGES) {
             self.images(&parsed, asker, reply)
         } else if std::ptr::eq(command, &TAG) {
-            self.tag(&parsed.args, asker.styled(), reply)
+            self.tag(&parsed.args, asker.styled(), &asker.registry_env, reply)
         } else if std::ptr::eq(command, &RMI) {
             self.rmi(&parsed, asker.styled(), &asker.registry_env, reply)
         } else if std::ptr::eq(command, &IMAGE_INSPECT) {
@@ -665,12 +683,12 @@ impl<D: crate::containers::Disk> Daemon<D> {
         self.await_start(&id);
         if !self.reachable(&id) {
             return refuse(format!(
-                "container {id}: its files cannot be reached (see the daemon's log)"
+                "microVM {id}: its files cannot be reached (see the daemon's log)"
             ));
         }
         if lock(&self.paused).contains(&id) {
             return refuse(format!(
-                "container {id} is paused: its files can be exported once it is unpaused"
+                "microVM {id} is paused: its files can be exported once it is unpaused"
             ));
         }
         let spec = shards_abi::run::Spec {
@@ -720,12 +738,12 @@ impl<D: crate::containers::Disk> Daemon<D> {
         self.await_start(&id);
         if !self.reachable(&id) {
             return refuse(format!(
-                "container {id}: its files cannot be reached (see the daemon's log)"
+                "microVM {id}: its files cannot be reached (see the daemon's log)"
             ));
         }
         if lock(&self.paused).contains(&id) {
             return refuse(format!(
-                "container {id} is paused: its files can be copied once it is unpaused"
+                "microVM {id} is paused: its files can be copied once it is unpaused"
             ));
         }
         use shards_abi::run::builtin;
@@ -800,7 +818,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
             Some(2) => refuse(format!("Could not find the file {path} in container {given}")),
             Some(3) => refuse(why),
             _ => refuse(if why.is_empty() {
-                format!("container {id}: the copy failed")
+                format!("microVM {id}: the copy failed")
             } else {
                 why
             }),
@@ -854,12 +872,12 @@ impl<D: crate::containers::Disk> Daemon<D> {
         self.await_start(&id);
         if !self.reachable(&id) {
             return refuse(format!(
-                "container {id}: its files cannot be reached (see the daemon's log)"
+                "microVM {id}: its files cannot be reached (see the daemon's log)"
             ));
         }
         if lock(&self.paused).contains(&id) {
             return refuse(format!(
-                "container {id} is paused: its changes can be read once it is unpaused"
+                "microVM {id} is paused: its changes can be read once it is unpaused"
             ));
         }
         let spec = shards_abi::run::Spec {
@@ -900,8 +918,8 @@ impl<D: crate::containers::Disk> Daemon<D> {
         };
         match ended {
             Ok(e) if e.status == Some(0) => 0,
-            Ok(_) => refuse(format!("container {id}: its changes could not all be read")),
-            Err(e) => refuse(format!("container {id}: reading its changes: {e}")),
+            Ok(_) => refuse(format!("microVM {id}: its changes could not all be read")),
+            Err(e) => refuse(format!("microVM {id}: reading its changes: {e}")),
         }
     }
 
@@ -1972,7 +1990,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
                             let ended = matches!((&gone.told).read(&mut byte), Ok(1));
                             if !ended {
                                 super::log(format!(
-                                    "container {}: no end heard {LAST_WAIT:?} after its microVM was killed: {}",
+                                    "microVM {}: no end heard {LAST_WAIT:?} after it was killed: {}",
                                     gone.id,
                                     self.unheard(&gone.id)
                                 ));

@@ -60,7 +60,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
         };
         let store = match self.store() {
             Ok(Some(store)) => store,
-            Ok(None) => return refuse(format!("container {id}: its image is not here")),
+            Ok(None) => return refuse(format!("microVM {id}: its image is not here")),
             Err(e) => return refuse(e),
         };
         // Its image: the manifest and config it was made from.
@@ -72,14 +72,14 @@ impl<D: crate::containers::Disk> Daemon<D> {
                 .find(|i| i.id.to_string() == want)
         });
         let Some(base) = base else {
-            return refuse(format!("container {id}: the image it was made from is gone"));
+            return refuse(format!("microVM {id}: the image it was made from is gone"));
         };
         let base_manifest: serde_json::Value = match std::fs::read(store.blob_path(&base.manifest))
             .ok()
             .and_then(|b| serde_json::from_slice(&b).ok())
         {
             Some(m) => m,
-            None => return refuse(format!("container {id}: its image's manifest is not here")),
+            None => return refuse(format!("microVM {id}: its image's manifest is not here")),
         };
         // Its image's config as moby's commit reads it (daemon/containerd
         // image_commit.go), a DockerOCIImage, failing as that fails, and written again as
@@ -122,7 +122,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
             if running {
                 if lock(&self.paused).contains(&id) {
                     return refuse(format!(
-                        "container {id} is paused: its files can be committed once it is unpaused"
+                        "microVM {id} is paused: its files can be committed once it is unpaused"
                     ));
                 }
                 // `--pause`, deprecated, says it where given (commit.go).
@@ -231,6 +231,10 @@ impl<D: crate::containers::Disk> Daemon<D> {
                 ),
             ],
         );
+        // The microVM a named commit makes, in the machine's local image store (D216).
+        if let Some(r) = &named {
+            crate::pull::publish_name(&self.home, &r.to_string(), &asker.registry_env);
+        }
         reply.out(&image_id);
         0
     }

@@ -467,6 +467,9 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
             } else {
                 reply.out(&format!("Loaded image: {}", image.shown));
             }
+            if !image.dangling {
+                image.publish(&self.home, &image.name, &asker.registry_env);
+            }
             if let Some(Err(e)) = image.unpacked {
                 reply.out(&format!("Error unpacking image {}: {e}", image.shown));
             }
@@ -559,6 +562,21 @@ pub(super) struct Loaded {
     /// Its microVM, made (its disk and config), or why not; none where no manifest of
     /// it is for this host's guests.
     pub unpacked: Option<Result<shards_registry::pull::Pulled, String>>,
+}
+
+impl Loaded {
+    /// Its microVM, in the machine's local image store under `name` as a pull's is
+    /// (D216): the store the client's `env` names, else the daemon's own. Nothing for one
+    /// no guest here runs.
+    pub(super) fn publish(&self, home: &std::path::Path, name: &str, env: &[String]) {
+        if let (Some(Ok(pulled)), Ok(reference)) = (&self.unpacked, Reference::parse(name))
+            && let Some(disk) = &pulled.rootfs
+        {
+            crate::pull::publish(home, &reference, &pulled.id, &pulled.config, disk, &|k| {
+                shards_ipc::env_value(env, k)
+            });
+        }
+    }
 }
 
 #[cfg(test)]

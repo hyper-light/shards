@@ -12900,6 +12900,62 @@ fn import_makes_images_of_tarballs() {
         &["stat", "/proc/self/environ"],
     );
     assert!(ran.stdout.contains("IMPORTED=yes"), "{ran}");
+    // A container is an image to make a microVM of: a shards microVM asked to run as one is
+    // refused, saying how it runs (D216); as a microVM, it runs; Docker's order runs it too.
+    // As each refuses what the daemon refuses: a run with its usage's pointer, as the CLI's
+    // run does, a create without.
+    for (action, does, status, after) in [
+        (
+            "run",
+            "runs",
+            125,
+            "\nRun 'shards run --help' for more information\n",
+        ),
+        ("create", "makes", 1, ""),
+    ] {
+        let refused = shards(&[
+            action,
+            "container",
+            "--pull",
+            "never",
+            "from-microvm:1",
+            "stat",
+            "/proc/self/environ",
+        ]);
+        let said = format!(
+            "shards: from-microvm:1 is a shards microVM, not a container image: it has no container's layers to make one of. `shards {action} vm from-microvm:1` {does} it as the microVM it is\n{after}"
+        );
+        assert_eq!(
+            (refused.status, refused.stderr.as_str()),
+            (Some(status), said.as_str()),
+            "{action}: {refused}"
+        );
+    }
+    for form in [&["run", "vm"][..], &["container", "run"]] {
+        let mut args = form.to_vec();
+        args.extend([
+            "--pull",
+            "never",
+            "--rm",
+            "from-microvm:1",
+            "stat",
+            "/proc/self/environ",
+        ]);
+        let ran = shards(&args);
+        assert!(ran.stdout.contains("IMPORTED=yes"), "{form:?}: {ran}");
+    }
+    // An image a container's files made is a container image: `run container` runs it.
+    let ran = shards(&[
+        "run",
+        "container",
+        "--pull",
+        "never",
+        "--rm",
+        "imported:1",
+        "stat",
+        "/proc/self/environ",
+    ]);
+    assert!(ran.stdout.contains("IMPORTED=yes"), "{ran}");
     // An image archive: its images, each made a microVM, the one it holds named too.
     let saved = home.join("saved.tar");
     let out = shards(&["save", "-o", saved.to_str().unwrap(), "imported:1"]);
@@ -12930,6 +12986,242 @@ fn import_makes_images_of_tarballs() {
         let out = shards(args);
         assert_eq!((out.status, out.stderr.as_str()), (Some(1), said), "{args:?}");
     }
+}
+
+/// shards' own grammar on real microVMs (D216): `vm ACTION` read turned round, as
+/// Docker's management form is; `update vm`; an image's name reaching the microVMs running
+/// from it, for `restart` and `wait` as for `stop`; `remove vm`.
+#[test]
+fn microvms_are_reached_in_shards_grammar_by_their_names_and_their_images() {
+    let Some((home, image)) = home("containers-grammar") else {
+        return;
+    };
+    let shards = |args: &[&str]| shards_in(&home, args);
+    let ran = shards(&[
+        "run", "vm", "-d", "--pull", "never", "--name", "web", &image, "sleep",
+    ]);
+    assert_eq!(ran.status, Some(0), "{ran}");
+    for listed in [
+        shards(&["vm", "ls", "--format", "{{.Names}}"]),
+        shards(&["list", "vms", "--format", "{{.Names}}"]),
+        shards(&["microvm", "list", "--format", "{{.Names}}"]),
+    ] {
+        assert_eq!(listed.stdout, "web\n", "{listed}");
+    }
+    let ran = shards(&["vm", "exec", "web", "/bin/testguest", "exit", "3"]);
+    assert_eq!(ran.status, Some(3), "{ran}");
+    let ran = shards(&["exec", "vm", "web", "/bin/testguest", "exit", "0"]);
+    assert_eq!(ran.status, Some(0), "{ran}");
+    let updated = shards(&["update", "vm", "--cpus", "1", "web"]);
+    assert_eq!(updated.stdout, "web\n", "{updated}");
+    assert_eq!(
+        shards(&["inspect", "vm", "-f", "{{.HostConfig.NanoCpus}}", "web"]).stdout,
+        "1000000000\n"
+    );
+    // By its image's name: the one microVM running from it, restarted as itself.
+    let started = |name: &str| shards(&["inspect", "-f", "{{.State.StartedAt}}", name]).stdout;
+    let before = started("web");
+    let restarted = shards(&["restart", "vm", "-t", "0", &image]);
+    assert_eq!(
+        (restarted.status, restarted.stdout.as_str()),
+        (Some(0), "web\n"),
+        "{restarted}"
+    );
+    assert_ne!(started("web"), before);
+    assert_eq!(
+        shards(&["inspect", "-f", "{{.State.Running}}", "web"]).stdout,
+        "true\n"
+    );
+    // A name of neither fails as a name does.
+    let neither = shards(&["restart", "vm", "nosuch:1"]);
+    assert!(
+        neither.status == Some(1) && neither.stderr.contains("No such container: nosuch:1"),
+        "{neither}"
+    );
+    let stopped = shards(&["stop", "vm", "-t", "0", &image]);
+    assert_eq!(stopped.status, Some(0), "{stopped}");
+    // Waited for by its image's name: the one running from it, whose command ends by
+    // itself, its status said once it does.
+    let ran = shards(&[
+        "run",
+        "vm",
+        "-d",
+        "--pull",
+        "never",
+        "--name",
+        "brief",
+        &image,
+        "sleep-for",
+        "20000",
+    ]);
+    assert_eq!(ran.status, Some(0), "{ran}");
+    let waited = shards_in_within(&home, &["wait", "vm", &image], Duration::from_secs(120));
+    assert_eq!(
+        (waited.status, waited.stdout.as_str()),
+        (Some(0), "0\n"),
+        "{waited}"
+    );
+    // Its record of processes (D123), files of its own in the home that outlive its run and
+    // the daemon, read in the grammar's words, as the microVM is removed with it.
+    let execs = |read: &str| {
+        read.lines()
+            .filter(|l| l.contains(" exec ") && l.contains("/bin/testguest sleep-for 20000"))
+            .count()
+    };
+    let read = shards(&["read", "processes", "brief"]);
+    assert_eq!((read.status, execs(&read.stdout)), (Some(0), 1), "{read}");
+    let id = shards(&["inspect", "-f", "{{.Id}}", "brief"])
+        .stdout
+        .trim()
+        .to_string();
+    let record = home.join("containers").join(&id);
+    let segments = || {
+        std::fs::read_dir(&record)
+            .map(|d| {
+                d.flatten()
+                    .filter(|e| e.file_name().to_string_lossy().starts_with("processes."))
+                    .count()
+            })
+            .unwrap_or(0)
+    };
+    assert!(segments() > 0, "no record in {}", record.display());
+    let stopped = shards(&["stop", "daemon"]);
+    assert_eq!(stopped.status, Some(0), "{stopped}");
+    let again = shards(&["read", "processes", "brief"]);
+    assert_eq!(again.stdout, read.stdout, "{again}");
+    // Removed by the turned-round form, and gone, its record with it.
+    let removed = shards(&["vm", "rm", "web", "brief"]);
+    assert_eq!(removed.status, Some(0), "{removed}");
+    assert_eq!(shards(&["vm", "ls", "-aq"]).stdout, "");
+    assert!(!record.exists(), "{} outlived its microVM", record.display());
+}
+
+/// A test's own local image store: an engine on `socket` that holds no microVM, so that
+/// each published one is sent whole, and keeps each load sent it, the request's head and
+/// its body. Its thread serves until the test process ends.
+fn engine_at(socket: &Path) -> std::sync::mpsc::Receiver<(String, Vec<u8>)> {
+    use std::io::{Read as _, Write as _};
+    let _ = std::fs::remove_file(socket);
+    let engine = shards_vmm::platform::UnixListener::bind(socket).unwrap();
+    let (sent, served) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        while let Ok((stream, _)) = engine.accept() {
+            let sent = sent.clone();
+            std::thread::spawn(move || {
+                let mut stream = stream;
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let (mut line, mut request) = (String::new(), String::new());
+                while reader.read_line(&mut line).unwrap_or(0) > 0 && line != "\r\n" {
+                    request.push_str(&line);
+                    line.clear();
+                }
+                if !request.starts_with("POST ") {
+                    let _ = stream.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n");
+                    return;
+                }
+                let mut body = Vec::new();
+                loop {
+                    line.clear();
+                    if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                        return;
+                    }
+                    let n = usize::from_str_radix(line.trim(), 16).unwrap();
+                    let mut chunk = vec![0; n + 2];
+                    reader.read_exact(&mut chunk).unwrap();
+                    if n == 0 {
+                        break;
+                    }
+                    body.extend_from_slice(&chunk[..n]);
+                }
+                let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}");
+                let _ = sent.send((request, body));
+            });
+        }
+    });
+    served
+}
+
+/// What shards makes are microVMs in the machine's local image store, as a pull's are
+/// (D216): a tag's new name, a named commit, a build's name, and the image a run pulls; here
+/// an engine the test serves.
+#[test]
+fn created_microvms_are_published_to_the_local_store() {
+    let Some((home, image)) = home("containers-published") else {
+        return;
+    };
+    // Removed however the test ends.
+    struct Socket(std::path::PathBuf);
+    impl Drop for Socket {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+    // Short on Unix, where a socket's path fits sun_path: the home's is long on macOS.
+    let socket = Socket(if cfg!(windows) {
+        home.join("engine.sock")
+    } else {
+        format!("/tmp/shards-made-{}.sock", std::process::id()).into()
+    });
+    let served = engine_at(&socket.0);
+    let host = std::ffi::OsString::from(format!("unix://{}", socket.0.display()));
+    let (kernel, init) = (kernel(), guest_init());
+    let publishing = |home: &Path, args: &[&str]| {
+        let env: [(&str, &OsStr); 5] = [
+            ("SHARDS_HOME", home.as_os_str()),
+            ("SHARDS_KERNEL", kernel.as_os_str()),
+            ("SHARDS_INIT", init.as_os_str()),
+            ("SHARDS_LOCAL_STORE", OsStr::new("")),
+            ("DOCKER_HOST", host.as_os_str()),
+        ];
+        run_shards_env(&[], args, &env, Duration::from_secs(120))
+    };
+    let mut loads: Vec<String> = Vec::new();
+    let mut published = |name: &str| {
+        let wanted = format!("shards.local/{name}");
+        let gave_up = Instant::now() + Duration::from_secs(120);
+        while !loads.iter().any(|l| l.contains(&wanted)) {
+            let left = gave_up.saturating_duration_since(Instant::now());
+            let (request, body) = served.recv_timeout(left).unwrap_or_else(|e| {
+                let log = std::fs::read_to_string(home.join("daemon.log")).unwrap_or_default();
+                let tail: Vec<&str> = log.lines().rev().take(60).collect();
+                panic!("{wanted} was not published: {e:?}; the daemon's log, last first: {tail:#?}")
+            });
+            assert!(request.starts_with("POST /images/load"), "{request}");
+            let artifact = String::from_utf8_lossy(&body).into_owned();
+            assert!(
+                artifact.contains("application/vnd.shards.microvm.v1"),
+                "not a microVM"
+            );
+            loads.push(artifact);
+        }
+    };
+    let tagged = publishing(&home, &["tag", "image", &image, "tagged:1"]);
+    assert_eq!(tagged.status, Some(0), "{tagged}");
+    published("tagged:1");
+    let ran = publishing(
+        &home,
+        &[
+            "run", "vm", "-d", "--pull", "never", "--name", "src", &image, "sleep",
+        ],
+    );
+    assert_eq!(ran.status, Some(0), "{ran}");
+    let committed = publishing(&home, &["commit", "vm", "src", "committed:1"]);
+    assert_eq!(committed.status, Some(0), "{committed}");
+    published("committed:1");
+    assert_eq!(shards_in(&home, &["rm", "-f", "src"]).status, Some(0));
+    let ctx = TempDir::new("containers-published-ctx");
+    std::fs::write(ctx.join("Dockerfile"), format!("FROM {image}\nLABEL built=yes\n")).unwrap();
+    let built = publishing(
+        &home,
+        &["build", "image", "-q", "-t", "built:1", ctx.to_str().unwrap()],
+    );
+    assert_eq!(built.status, Some(0), "{built}");
+    published("built:1");
+    // A run of an image not here yet: pulled, made a microVM and published, as a pull is.
+    let fresh = TempDir::new("containers-published-run");
+    let ran = publishing(&fresh, &["run", "vm", "--rm", &image, "exit", "0"]);
+    assert_eq!(ran.status, Some(0), "{ran}");
+    published(&image);
 }
 
 /// A run that ends while its container is inspected: the end holds the run's inbox while

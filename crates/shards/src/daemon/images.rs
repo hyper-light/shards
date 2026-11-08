@@ -661,7 +661,13 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
 
     /// `shards tag SOURCE TARGET` (moby client ImageTag, then the daemon's postImagesTag):
     /// TARGET, with `latest` if it names no tag, names what SOURCE does.
-    pub(super) fn tag(&self, args: &[String], styled: bool, reply: &super::commands::Reply<'_>) -> u8 {
+    pub(super) fn tag(
+        &self,
+        args: &[String],
+        styled: bool,
+        env: &[String],
+        reply: &super::commands::Reply<'_>,
+    ) -> u8 {
         use shards_image::reference::{AnyReference, Reference};
         let (Some(source), Some(target)) = (args.first(), args.get(1)) else {
             return 1;
@@ -718,6 +724,8 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
             Ok(id) => {
                 // moby daemon/containerd/image_tag.go: the image's digest, named as tagged.
                 self.image_event(&id, &tagged.familiar(), "tag");
+                // Its microVM, by its new name, in the machine's local image store (D216).
+                crate::pull::publish_name(&self.home, &tagged.to_string(), env);
                 if styled {
                     let mut sheet = shards_ipc::Sheet::new("tag");
                     sheet.record(&[

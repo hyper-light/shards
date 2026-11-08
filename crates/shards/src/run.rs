@@ -617,6 +617,16 @@ pub fn find_image(
                 "Downloaded newer image for"
             };
             say(&format!("Status: {status} {}", reference.familiar()));
+            // The microVM made, in the machine's local image store as a pull puts it there
+            // (D216): but for the emulator a run of another CPU's image takes, which is
+            // shards' own part, no image of the user's.
+            if let Some(disk) = &pulled.rootfs
+                && name != crate::build::EMULATOR_IMAGE
+            {
+                crate::pull::publish(home, &reference, &pulled.id, &pulled.config, disk, &|k| {
+                    shards_ipc::env_value(registry_env, k)
+                });
+            }
             // A lone manifest is pulled whatever its platform, the registry having no other;
             // a run that asked another platform of it is refused (D179).
             if let Some(asked) = targets.first()
@@ -630,6 +640,18 @@ pub fn find_image(
         }
     };
     Ok((image, lease))
+}
+
+/// Whether the manifest `manifest` in `home`'s store is a shards microVM's, an artifact of
+/// [`shards_image::save::MICROVM`], rather than a container image's.
+fn is_microvm(home: &Path, manifest: &shards_image::reference::Digest) -> bool {
+    let Ok(store) = crate::pull::store(home) else {
+        return false;
+    };
+    std::fs::read(store.blob_path(manifest))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        .is_some_and(|m| m.get("artifactType").and_then(|t| t.as_str()) == Some(shards_image::save::MICROVM))
 }
 
 /// The image here `given` names by its ID (`sha256:` and 64 hex digits, or 4 to 64 of
@@ -797,6 +819,19 @@ pub fn prepare(
         say,
         cancel,
     )?;
+    // `run container IMAGE` (D216): a container image is made a microVM as it runs; an
+    // image that is a shards microVM already is one, and is said to be run as one.
+    if request.container_image && is_microvm(home, &image.manifest) {
+        let name = Reference::parse(&request.image).map_or_else(|_| request.image.clone(), |r| r.familiar());
+        let (action, does) = if request.create {
+            ("create", "makes")
+        } else {
+            ("run", "runs")
+        };
+        return Err(format!(
+            "{name} is a shards microVM, not a container image: it has no container's layers to make one of. `shards {action} vm {name}` {does} it as the microVM it is"
+        ));
+    }
     // Its config, read as a run reads it (moby daemon/containerd GetImage): one that does
     // not read runs nothing.
     if let Some(e) = &image.config.run_error {
