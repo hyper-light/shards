@@ -18985,11 +18985,31 @@ revision before comparing a changed API/implementation.
   `mark_growth`, in the page init shares with its grower and builtins), and a give-back
   that finds a mark within the window the host's pressure is measured over (2 s,
   `shards_abi::PRESSURE_WINDOW_US`, the PSI trigger's window, D188) keeps all it has. 0 of
-  2,000 raised allocations killed, against 15 of 74 (under 3 in 2,000 at 95%). Open: 6 of
-  the 2,000 took 5.1 to 5.4 s, the grower's `STALLED` (5 s) and its second ask, as 3 and 4
-  of two runs of 1,000 did at 49ee67a5 with an ask and a give-back's request serialized besides (a lock
-  in the shared page): that lock changed nothing, and is not kept; the stall's cause is
-  not yet found.
+  2,000 raised allocations killed, against 15 of 74 (under 3 in 2,000 at 95%).
+- **The rest, a tail.** 6 of the 2,000 took 5.1 to 5.4 s, the grower's `STALLED` (5 s) and
+  its second ask, as 3 and 4 of two runs of 1,000 did at 49ee67a5 with an ask and a
+  give-back's request serialized besides (a lock in the shared page, which changed nothing
+  and is not kept), and 5 of 1,992 rounds of a privileged run (whose exec may read its
+  guest's kernel log), all five after the host's free memory fell to 5 to 8 GB of 64
+  under other agents' work. The guest's kernel said why, at the grower's second ask:
+  `943718400 bytes asked for, 354418688 came in 5 s; ... requested size: 0x38400000;
+  plugged size: 0x30000000; requested size: 0x2e00000`, then `plugged size: 0x15200000,
+  requested size: 0x38400000`. The round before had ended lowering the run to `-m 256m`,
+  its device's request to 46 MiB (0x2e00000, what is pluggable under 256 MiB); its driver
+  was still unplugging 768 MiB down to it when the raise's ask for 900 MiB came, and went
+  on unplugging (to 338 MiB) for the 5 s before the second ask. Linux's driver stops for a
+  changed request between its requests to the device and between its tries to take a
+  range (drivers/virtio/virtio_mem.c `virtio_mem_send_unplug_request`,
+  `virtio_mem_fake_offline`: `config_changed`, then `-EAGAIN` back to
+  `virtio_mem_run_wq`), but not inside one: a memory block it offlines whole
+  (`offline_and_remove_memory`) migrates every page of it, and `offline_pages`
+  (mm/memory_hotplug.c) retries until it is done or its thread has a signal pending, which
+  a kworker never has; a guest at its hold, allocating, has little free memory to migrate
+  to, and a host short of memory runs it slowly. Read in Linux 7.2-rc4's source, not
+  checked against the pinned 6.18.48's; where in its unplug the driver was is not
+  recorded. Nothing of shards' asks is lost: the grow waits on the unplug before it. Not
+  fixed here: an unplug that gives way to a grow is a change to the guest kernel's
+  driver, and a new kernel pin (D148's patches).
 
 ### M495. A start on a contended Windows host: WHP's vCPUs at THREAD_PRIORITY_ABOVE_NORMAL (D191)
 
@@ -19138,3 +19158,55 @@ revision before comparing a changed API/implementation.
   macOS and Windows, each held to its own table by `a_restart_goes_over_from_where_packing_costs_more`
   (the macOS run "n 40 again" and Windows' quiet run above). The two D190 E2E tests write
   8 MiB, past both. Harness: `layer-kept/ab.py`, `pack.patch`, `over.patch`.
+
+### M468. Flakes: the CLI killed at launch, as a home's first client, 100,000 launches on an M3 Ultra (the flakes goal, M322)
+
+- **Question.** The one `shards pull` ended by a signal in 17 ms (2026-10-06) was a test's
+  first command in its home, the client that starts the home's daemon; M322 launched the
+  CLI 200,000 times, but as a home's first client only 8 times, each other launch a client
+  of a daemon already serving. Does a first client, starting its daemon, or the `shards
+  stop daemon` that ends it, end by a signal on a loaded Mac?
+- **Method.** docs/research/measurements/launch-stress/launch.rs's `fresh` mode (added
+  here): each launch the first client of a home of its own (`ps -q`, `images -q` or `ps
+  -aq`; its daemon started by it, D26), then `shards stop daemon` in that home, the home
+  removed after; each ending counted. 50,000 such pairs from 8 threads, the copy of
+  `shards` placed as the tests place theirs (written beside, renamed into place), beside
+  the grant-stall campaign's fleet rounds (M469) and 16 busy loops, another agent's E2E
+  tests on the same host besides (load 30 to 88), on an Apple M3 Ultra (32 CPUs, 96 GiB,
+  macOS 26.4, 25E246) at a8c4602f, 2026-11-08.
+- **Results.** 50,000 first clients exited 0 and 50,000 stops exited 0; none ended by a
+  signal, none exited otherwise. A first client's launch, its daemon's start in it: n
+  50,000, p50 22.95, p90 31.72, p99 45.27, max 172.20 ms.
+- **Consequence.** None found: with M322, no launch of 300,000 ended by a signal, 100,000
+  of them a home's first client or its daemon's stop (under 3 in 100,000 at 95% for
+  those). Its cause is not found, nor ruled out on 2026-10-06's tree: since then every
+  child the daemon makes comes from its spawner (M158), and a pid it holds is not
+  signalled once the spawner that made it has gone (`shards_ipc` `Child::kill`), which
+  keeps the daemon from signalling a pid another process has taken; no failed test since
+  has recorded a killing signal (`Run::signal`).
+
+### M469. Flakes: the macOS VM grant stall, none in 31,200 runs on an M3 Ultra (D30, M326)
+
+- **Question.** M326 found no grant stall in 115,440 runs on an M5 Max beside full gates.
+  Does a VM process stall before or between its asks on other Apple silicon, loaded
+  otherwise?
+- **Method.** docs/research/measurements/vm-grant-stall/campaign.sh, 30 rounds of the fleet
+  (FLEET_SIZES=10 FLEET_BURST=16 FLEET_ROUNDS=60, 1,040 runs a round), each round's daemon
+  saying the VMs it saw stall (it samples one that has asked nothing for 10 s), beside 16
+  busy loops, M468's 100,000 launches for its first 4 minutes and another agent's E2E
+  tests (load 30 to 88), on the M3 Ultra of M468 (32 CPUs, macOS 26.4) at a8c4602f,
+  2026-11-08, its tests run from a kiln runner's session.
+- **Results.** 30 rounds, 31,200 runs: no stall said, none failed. Starts, the median of
+  the rounds' own figures and the most of them, ms:
+
+  | runs | a round | p50 | p90 | p99 | max |
+  |---|---|---|---|---|---|
+  | first (pull, boot, save) | 10 | 384.6 | 406.6 | 454.4 (most 1,256.8) | 1,256.8 |
+  | second (restore) | 10 | 20.2 | 27.6 | 33.2 (most 40.2) | 40.2 |
+  | one at a time | 60 | 18.4 | 23.6 | 26.9 (most 153.6) | 232.3 |
+  | bursts of 16 | 960 | 76.0 | 130.8 | 220.8 (most 615.4) | 638.2 |
+
+- **Consequence.** None in the code: with M326, no stall in 146,640 runs on two Macs (under
+  3 in 146,640, one in 48,880, at 95%). The stall was never caught with its stacks; its
+  two suspects' fixes (M315's held templates, M317's governor) came before every run since
+  and of either, which ended it is not shown.
