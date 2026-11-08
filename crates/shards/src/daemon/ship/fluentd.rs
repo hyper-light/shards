@@ -6,8 +6,20 @@
 //! fluent-logger-golang gives the event up. Without acks, an event is held until its
 //! receiver's TCP has it, and written again on the next connection should one end first
 //! (stream.rs), where fluent-logger-golang's are lost.
+//!
+//! The forward protocol states no bound on an event, so one is held to what its
+//! destination has shown it takes (learned.rs, D163): Fluent Bit's documented
+//! `buffer_max_size` at first, then what it refuses. With acks, an event written whole on
+//! two connections in a row and acked on neither, longer than the destination has taken,
+//! is refused, and the shipper cuts it shorter (`ErrorKind::FileTooLarge`): Fluentd's
+//! `in_forward` drops an event past its `chunk_size_limit` unacked, Fluent Bit ends the
+//! connection. Without acks, an event its receiver ends connections on (stream.rs
+//! `suspect`) is learned so and sent again cut, its pieces a line of their own, with an ID
+//! of their own.
 
+use std::collections::VecDeque;
 use std::io::{self, Read};
+use std::path::Path;
 use std::time::Duration;
 
 use base64::Engine as _;
@@ -20,7 +32,8 @@ use crate::logging::fluentd::{self, Config, From, To};
 const MOST_WAIT: Duration = Duration::from_secs(60);
 /// The longest string an ack's map may hold: its key and its ID, 24 bytes of base64.
 const ACK_MOST: usize = 1024;
-/// The most of an event's bytes a receiver of Fluentd's forward protocol takes: Fluent Bit's
+/// The most of an event's bytes a receiver of Fluentd's forward protocol takes unless set
+/// otherwise, where a destination's own bound starts (learned.rs): Fluent Bit's
 /// `buffer_max_size`, "the maximum buffer memory size used to receive a Forward message",
 /// 6144000 by default, past which a payload is "rejected and the connection is closed"
 /// (Fluent Bit's documentation, pipeline/inputs/forward.md, fluent-bit-docs b6e1c922).
@@ -34,10 +47,24 @@ pub(super) struct Fluentd {
     stream: Stream,
     /// The most of a line one event carries: [`FORWARD_MOST`] less the rest of its event.
     part: usize,
+    /// What its destination has shown it takes of an event.
+    learned: super::learned::Learned,
+    /// Without acks, the line of each event the stream holds, its part's place, and its
+    /// event's length, to cut it again.
+    held: VecDeque<Held>,
 }
 
+/// An event a stream holds: its stream, time, line, part's place, and length.
+type Held = (u8, u64, Vec<u8>, Option<(String, u32, bool)>, usize);
+
 impl Fluentd {
-    pub(super) fn new(config: Config, from: From) -> Result<Fluentd, String> {
+    /// The driver `config` says, from what `home` keeps of its destination.
+    pub(super) fn new(config: Config, from: From, home: &Path) -> Result<Fluentd, String> {
+        let address = match &config.to {
+            To::Tcp(a) | To::Tls(a) => a.clone(),
+            To::Unix(path) => path.display().to_string(),
+        };
+        let learned = super::learned::Learned::open(home, "fluentd", &address, FORWARD_MOST);
         let to = match &config.to {
             To::Tcp(address) => stream::To::Tcp(address.clone()),
             // The platform's roots, as fluent-logger-golang's tls.Dial verifies.
@@ -54,12 +81,84 @@ impl Fluentd {
             from,
             stream,
             part,
+            learned,
+            held: VecDeque::new(),
         })
     }
 
-    /// Writes `event`, and where `chunk` is given, reads its ack.
-    fn try_send(&mut self, event: &[u8], chunk: Option<&str>) -> io::Result<()> {
+    /// The length of `m`'s event, its chunk's ID at its length where acks are asked for.
+    fn event_len(&self, m: &Message<'_>) -> usize {
+        let chunk = self.config.ack.then(|| "A".repeat(24));
+        fluentd::event(
+            &self.config,
+            &self.from,
+            m.stream,
+            m.at,
+            m.line,
+            m.part,
+            chunk.as_deref(),
+        )
+        .len()
+    }
+
+    /// Without acks, follows what the destination shows (as gelf.rs `follow`): the events
+    /// the stream no longer holds it has; one it points at as refused is learned so, and
+    /// its line put back cut, its pieces a line of their own.
+    fn follow(&mut self) -> io::Result<()> {
+        if self.config.ack {
+            return Ok(());
+        }
+        while self.held.len() > self.stream.held() {
+            if let Some((.., len)) = self.held.pop_front() {
+                self.learned.taken(len);
+            }
+        }
+        let Some(i) = self.stream.suspect(self.learned.took()) else {
+            return Ok(());
+        };
+        let Some((st, at, line, _, len)) = self.held.get(i).cloned() else {
+            return Ok(());
+        };
+        self.learned.refused(len);
+        let (config, from, most) = (&self.config, &self.from, self.learned.most());
+        let id = super::partial_id()?;
+        let event = |l: &[u8], ordinal: u32, last: bool| {
+            fluentd::event(
+                config,
+                from,
+                st,
+                at,
+                l,
+                Some(fluentd::Part {
+                    id: &id,
+                    ordinal,
+                    last,
+                }),
+                None,
+            )
+        };
+        let pieces = super::halves(&line, &|l| event(l, u32::MAX, false).len() <= most);
+        let count = pieces.len();
+        let mut events = Vec::with_capacity(count);
+        let mut entries = Vec::with_capacity(count);
+        for (k, l) in pieces.into_iter().enumerate() {
+            let (ordinal, last) = (u32::try_from(k + 1).unwrap_or(u32::MAX), k + 1 == count);
+            let e = event(&l, ordinal, last);
+            entries.push((st, at, l, Some((id.clone(), ordinal, last)), e.len()));
+            events.push(e);
+        }
+        self.stream.replace(i, events);
+        let rest = self.held.split_off(i);
+        self.held.extend(entries);
+        self.held.extend(rest.into_iter().skip(1));
+        Ok(())
+    }
+
+    /// Writes `event`, and where `chunk` is given, reads its ack; `written` says whether
+    /// it was written whole.
+    fn try_send(&mut self, event: &[u8], chunk: Option<&str>, written: &mut bool) -> io::Result<()> {
         self.stream.send(event)?;
+        *written = true;
         if let Some(chunk) = chunk {
             let ack = read_ack(&mut self.stream)?;
             if ack != chunk.as_bytes() {
@@ -167,6 +266,11 @@ impl Driver for Fluentd {
         self.part
     }
 
+    /// Within what its destination has shown it takes (learned.rs).
+    fn fits(&mut self, m: &Message<'_>) -> io::Result<bool> {
+        Ok(self.event_len(m) <= self.learned.most())
+    }
+
     fn send(&mut self, m: &Message<'_>, wait: &Wait<'_>) -> io::Result<()> {
         let chunk = if self.config.ack {
             Some(unique_id(m.at)?)
@@ -182,12 +286,44 @@ impl Driver for Fluentd {
             m.part,
             chunk.as_deref(),
         );
+        self.follow()?;
         let mut pause = self.config.retry_wait;
         let mut tries = 0u32;
+        // Tries in a row on which the event was written whole and not acked.
+        let mut unacked = 0u32;
         loop {
-            match self.try_send(&event, chunk.as_deref()) {
-                Ok(()) => return Ok(()),
+            let mut written = false;
+            match self.try_send(&event, chunk.as_deref(), &mut written) {
+                Ok(()) => {
+                    if chunk.is_some() {
+                        self.learned.taken(event.len());
+                    } else {
+                        let part = m.part.map(|p| (p.id.to_string(), p.ordinal, p.last));
+                        self.held
+                            .push_back((m.stream, m.at, m.line.to_vec(), part, event.len()));
+                    }
+                    return Ok(());
+                }
                 Err(e) => {
+                    if chunk.is_some() && written {
+                        unacked += 1;
+                        // Each try a connection of its own, the event its first: one never
+                        // acked, longer than any the destination took, is past its bound.
+                        if unacked >= 2 && event.len() > self.learned.took() && m.line.len() > 1 {
+                            self.learned.refused(event.len());
+                            self.stream.drop_connection();
+                            self.stream.let_go();
+                            return Err(io::Error::new(
+                                io::ErrorKind::FileTooLarge,
+                                format!(
+                                    "an event of {} bytes its receiver did not ack on two connections: {e}",
+                                    event.len()
+                                ),
+                            ));
+                        }
+                    } else {
+                        unacked = 0;
+                    }
                     // An ack not read leaves its connection's state unknown; the event,
                     // held, is this loop's to send again.
                     if chunk.is_some() {
@@ -208,10 +344,101 @@ impl Driver for Fluentd {
     }
 
     fn undelivered(&mut self) -> usize {
-        self.stream.undelivered()
+        let n = self.stream.undelivered();
+        if self.follow().is_err() {
+            return n;
+        }
+        self.stream.held()
     }
 
     fn close(&mut self, wait: &Wait<'_>) -> io::Result<()> {
+        self.follow()?;
         self.stream.close(wait)
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::indexing_slicing)]
+mod tests {
+    use super::*;
+    use std::io::Write as _;
+    use std::net::TcpListener;
+
+    /// Do: with acks, send to a receiver of the forward protocol that acks each event of at
+    /// most 2,000 bytes and ends its connection, unacked, on reading more, as Fluent Bit's
+    /// input ends one past its `buffer_max_size`: a short line, then one of 5,000 bytes,
+    /// then its halves. Expect the short one acked; the long one, written on two
+    /// connections and acked on neither, refused as too long (`FileTooLarge`), the shipper's
+    /// to cut, the destination's bound learned below it so that it no longer fits; its
+    /// halves then acked.
+    #[test]
+    fn an_event_acked_on_no_connection_is_refused_as_too_long() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap().to_string();
+        std::thread::spawn(move || {
+            const CHUNK: &[u8] = b"\xa5chunk\xb8";
+            for conn in listener.incoming() {
+                let Ok(mut conn) = conn else { return };
+                let mut held: Vec<u8> = Vec::new();
+                let mut buf = [0u8; 4096];
+                while let Ok(n) = conn.read(&mut buf) {
+                    if n == 0 {
+                        break;
+                    }
+                    held.extend_from_slice(&buf[..n]);
+                    if held.len() > 2000 {
+                        break;
+                    }
+                    let Some(at) = held.windows(CHUNK.len()).position(|w| w == CHUNK) else {
+                        continue;
+                    };
+                    let Some(id) = held.get(at + CHUNK.len()..at + CHUNK.len() + 24) else {
+                        continue;
+                    };
+                    let mut ack = vec![0x81, 0xa3, b'a', b'c', b'k', 0xb8];
+                    ack.extend_from_slice(id);
+                    held.clear();
+                    if conn.write_all(&ack).is_err() {
+                        break;
+                    }
+                }
+            }
+        });
+        let home = shards_testdir::TempDir::new("fluentd-ack").unwrap();
+        let config = Config {
+            to: To::Tcp(address),
+            sub_second: false,
+            ack: true,
+            retry_wait: Duration::from_millis(10),
+            max_retries: 3,
+            write_timeout: Some(Duration::from_secs(10)),
+            read_timeout: Some(Duration::from_secs(10)),
+        };
+        let from = From {
+            tag: "t".into(),
+            id: "0123".into(),
+            name: "/n".into(),
+            extra: std::collections::BTreeMap::new(),
+        };
+        let mut f = Fluentd::new(config, from, &home).unwrap();
+        let (_stop, stopped) = shards_ipc::Stream::pair().unwrap();
+        let wait = Wait(&stopped);
+        fn m(line: &[u8]) -> Message<'_> {
+            Message {
+                stream: crate::spec::LOG_STDOUT,
+                at: 1_000_000_000,
+                line,
+                part: None,
+            }
+        }
+        f.send(&m(b"short"), &wait).unwrap();
+        let long = vec![b'x'; 5000];
+        let e = f.send(&m(&long), &wait).unwrap_err();
+        assert_eq!(e.kind(), io::ErrorKind::FileTooLarge, "{e}");
+        assert!(!f.fits(&m(&long)).unwrap());
+        for half in long.chunks(2500) {
+            assert!(f.fits(&m(&half[..1500])).unwrap());
+            f.send(&m(&half[..1500]), &wait).unwrap();
+        }
     }
 }

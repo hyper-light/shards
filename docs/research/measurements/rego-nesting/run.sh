@@ -50,9 +50,11 @@ for c in every-unused:1000 every-unused:5000 every-unused:20000 every-unused:999
 	every-used:24 every-used:1000 every-used:4000 every-used:99990 every-printing:16 \
 	every-printing:4000 template-failing:5 template-failing:20 template-failing:30 \
 	else-chain:10000 else-chain:100000 rule-chain:2000 rule-chain:10000 rule-wrap:2000 \
-	rule-wrap:10000 comprehension-nested:10 comprehension-nested:12 \
+	rule-wrap:10000 rule-wrap:50000 comprehension-nested:10 comprehension-nested:12 \
 	every-comprehension-alternating:16 every-comprehension-alternating:20 \
-	every-declaring-after:1000 every-declaring-after:2000 prints-wide:500 prints-wide:1000 \
+	every-comprehension-alternating:60 every-comprehension-alternating:1000 \
+	every-declaring-after:1000 every-declaring-after:2000 every-declaring-after:20000 \
+	every-declaring-after:99990 prints-wide:500 prints-wide:1000 \
 	closures-wide:500 closures-wide:1000 glob-terms:500 glob-terms:1000 glob-terms:1500; do
 	want "${c%%:*}" || continue
 	cargo bench -p shards-rego --bench nesting -- --shape "${c%%:*}" --depth "${c#*:}" --n "$n" 2>/dev/null |

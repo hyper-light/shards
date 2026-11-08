@@ -3,22 +3,21 @@
 //! where the path is new, doubling, and straight to what the path needs in flight once its
 //! answers say so, its bandwidth-delay product over what one transfer holds; never past
 //! the host's cores. A doubling is kept only where it carried more than the path's own
-//! noise: the gain between the two counts' per-second samples past their pooled standard
+//! noise: the gain between the two counts' windows' samples past their pooled standard
 //! deviation (Welford's running variance). A doubling that does not pay goes back to the
 //! count before, and that is kept. What a path converged to is learned (crate::links), and
-//! the next transfer over it starts there, until its samples say the path changed.
+//! the next transfer over it starts there, until its samples say the path changed. Each
+//! sample is a [`Window`]'s: as many of the path's answer times as its rate needs to be
+//! told from none.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-/// How long each count is measured, after as long again to settle. Not derived: the
-/// period M114 measured over, kept (D226's table).
-pub(crate) const WINDOW: Duration = Duration::from_secs(1);
-
-/// Samples at a count before it is judged: the fewest that have a variance.
+/// Samples at a count before it is judged, and of a window before it ends: the fewest
+/// that have a variance.
 const SAMPLES: u64 = 2;
 
 /// A running mean and variance, Welford's (Technometrics 4(3), 1962; Knuth TAOCP vol. 2
-/// §4.2.2): what a count's per-second samples carried, and how much they spread.
+/// §4.2.2): what a count's windows carried a second, and how much they spread.
 #[derive(Debug, Clone, Copy, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Spread {
     pub n: u64,
@@ -38,6 +37,90 @@ impl Spread {
     /// The samples' variance, once there are two.
     pub(crate) fn variance(&self) -> Option<f64> {
         (self.n >= SAMPLES).then(|| self.m2 / (self.n - 1) as f64)
+    }
+
+    /// The standard error of their mean, s/√n (Student, "The probable error of a mean",
+    /// Biometrika 6(1), 1908), once there are two.
+    pub(crate) fn error(&self) -> Option<f64> {
+        Some((self.variance()? / self.n as f64).sqrt())
+    }
+
+    /// `self`'s samples and `other`'s as one: Chan, Golub and LeVeque's pairwise
+    /// combination ("Updating formulae and a pairwise algorithm for computing sample
+    /// variances", Stanford STAN-CS-79-773, 1979): n = nₐ + n_b, δ = mean_b − meanₐ,
+    /// mean = meanₐ + δ·n_b/n, M2 = M2ₐ + M2_b + δ²·nₐ·n_b/n; what Welford's running
+    /// update over all of them would give.
+    pub(crate) fn combined(&self, other: &Spread) -> Spread {
+        let n = self.n.saturating_add(other.n);
+        if n == 0 {
+            return Spread::default();
+        }
+        let (na, nb, all) = (self.n as f64, other.n as f64, n as f64);
+        let d = other.mean - self.mean;
+        Spread {
+            n,
+            mean: self.mean + d * nb / all,
+            m2: self.m2 + other.m2 + d * d * na * nb / all,
+        }
+    }
+}
+
+/// How often a window samples what the transfers carried: once each of the path's
+/// answer times, the least a request took to answer (as BBR takes the least round trip
+/// for the path's delay: Cardwell et al., ACM Queue 14(5), 2016), RFC 6298's first round
+/// trip (§2.1, a second) where none is known yet: a sample shorter than a round trip can
+/// see none of what a transfer's answer brings.
+pub(crate) fn period(answer: Option<Duration>) -> Duration {
+    // An answer under the record's microsecond is no measurement of one.
+    answer.filter(|a| !a.is_zero()).unwrap_or(crate::patience::FIRST)
+}
+
+/// A window of a count's measurement: a sample of what the transfers carried each
+/// [`period`], until the samples tell their rate from none, their mean's standard error
+/// under the mean, the one-standard-deviation line every test of the climb draws. A
+/// doubling that pays in full adds the count's own rate (twice the transfers, twice the
+/// bytes), so a window that resolves its rate resolves the gain the climb looks for: as
+/// many answer times as the samples need, at least two (the fewest with a variance). One
+/// whose transfers carry nothing never ends; nothing it would say is a rate.
+#[derive(Debug)]
+pub(crate) struct Window {
+    /// When it began and the bytes carried then; when it was last sampled, and theirs.
+    began: (Instant, u64),
+    last: (Instant, u64),
+    samples: Spread,
+}
+
+impl Window {
+    pub(crate) fn new(now: Instant, bytes: u64) -> Window {
+        Window {
+            began: (now, bytes),
+            last: (now, bytes),
+            samples: Spread::default(),
+        }
+    }
+
+    /// How long until it is next sampled, over a path whose answers take `answer`.
+    pub(crate) fn due(&self, answer: Option<Duration>) -> Duration {
+        period(answer).saturating_sub(self.last.0.elapsed())
+    }
+
+    /// A sample at `now`, `bytes` carried by then: once the samples resolve their rate,
+    /// what the window carried a second, and the next window begun.
+    pub(crate) fn sample(&mut self, now: Instant, bytes: u64) -> Option<f64> {
+        let secs = now.checked_duration_since(self.last.0)?.as_secs_f64();
+        if secs <= 0.0 {
+            return None;
+        }
+        self.samples.add(bytes.saturating_sub(self.last.1) as f64 / secs);
+        self.last = (now, bytes);
+        let resolved = self.samples.error().is_some_and(|e| e < self.samples.mean);
+        if !resolved {
+            return None;
+        }
+        let whole = now.checked_duration_since(self.began.0)?.as_secs_f64();
+        let rate = bytes.saturating_sub(self.began.1) as f64 / whole;
+        *self = Window::new(now, bytes);
+        Some(rate)
     }
 }
 
@@ -104,6 +187,11 @@ impl Climb {
 
     pub(crate) fn target(&self) -> usize {
         self.target
+    }
+
+    /// Whether the count is kept for the rest of the transfer: no window measures more.
+    pub(crate) fn settled(&self) -> bool {
+        self.settled
     }
 
     /// A request answered in `took`: the least is the path's delay.
@@ -289,6 +377,74 @@ mod tests {
             Some(1),
             "a changed path is learned again"
         );
+    }
+
+    /// Chan, Golub and LeVeque's combination of two spreads is the spread of all their
+    /// samples, as Welford's update over them all makes it; with nothing, the other.
+    #[test]
+    fn two_spreads_combine_as_their_samples_do() {
+        let (a, b) = ([10.0, 12.0, 9.0], [20.0, 22.5, 19.0, 21.0]);
+        let all: Vec<f64> = a.iter().chain(&b).copied().collect();
+        let (whole, combined) = (spread(&all), spread(&a).combined(&spread(&b)));
+        assert_eq!(combined.n, 7);
+        assert!((combined.mean - whole.mean).abs() < 1e-12);
+        assert!((combined.m2 - whole.m2).abs() < 1e-9);
+        assert_eq!(Spread::default().combined(&spread(&b)), spread(&b));
+        assert_eq!(spread(&a).combined(&Spread::default()), spread(&a));
+    }
+
+    /// A sample a period: the path's least answer, a second where none is known (and a
+    /// zero answer is none).
+    #[test]
+    fn a_window_samples_once_an_answer_time() {
+        assert_eq!(period(None), crate::patience::FIRST);
+        assert_eq!(period(Some(Duration::ZERO)), crate::patience::FIRST);
+        let answer = Duration::from_millis(40);
+        assert_eq!(period(Some(answer)), answer);
+        let w = Window::new(Instant::now(), 0);
+        assert!(w.due(Some(answer)) <= answer);
+        assert!(w.due(Some(answer)) > Duration::from_millis(30));
+    }
+
+    /// A window ends once its samples' mean is past their standard error: a steady rate
+    /// at its second sample, a bursty one only once enough have come, one that carries
+    /// nothing never; and its rate is what it carried over all of it.
+    #[test]
+    fn a_window_lasts_until_its_rate_is_resolved() {
+        let t = Instant::now();
+        let at = |ms: u64| t + Duration::from_millis(ms);
+        let mut steady = Window::new(t, 0);
+        assert_eq!(steady.sample(at(100), 1000), None, "one sample has no error");
+        let rate = steady.sample(at(200), 2100).unwrap();
+        assert!((rate - 10_500.0).abs() < 1e-6, "{rate}");
+        // Started again where it ended.
+        assert_eq!(steady.sample(at(300), 3100), None);
+        // Bursts: four periods' bytes in one sample of four. A burst alone among nothing
+        // is at the line (one nonzero sample of n: mean x/n, error x/n), so not told from
+        // none; the second burst, at the fifth sample, is past it (mean 0.4x, error
+        // 0.245x).
+        let mut bursty = Window::new(t, 0);
+        let mut bytes = 0;
+        let mut ended = None;
+        for i in 1..=16u64 {
+            if i % 4 == 1 {
+                bytes += 4000;
+            }
+            if let Some(rate) = bursty.sample(at(i * 100), bytes) {
+                ended = Some((i, rate));
+                break;
+            }
+        }
+        let (n, rate) = ended.unwrap();
+        assert!(
+            (3..=5).contains(&n),
+            "a bursty window needs more samples: ended at {n}"
+        );
+        assert!((rate - bytes as f64 / (n as f64 / 10.0)).abs() < 1e-6);
+        let mut stalled = Window::new(t, 7);
+        for i in 1..=50u64 {
+            assert_eq!(stalled.sample(at(i * 100), 7), None, "nothing carried");
+        }
     }
 
     /// At its most a count is kept.
