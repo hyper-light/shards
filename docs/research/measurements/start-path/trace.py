@@ -114,7 +114,13 @@ def one():
         last = us
     row["usable"] = (markers[STARTED] - spawn) / 1000 if markers.get(STARTED) else None
     row["wall"] = (reap - spawn) / 1000
-    row["taken_after_hand"] = (steps["run_taken"] - t["request_us"]) / 1000 if "run_taken" in steps else None
+    # The hand-over's own steps: the run sent, the VM's read of it, its taking, its
+    # TAKEN read by the daemon, and the rest of its preparing (the `hand` step's end).
+    within = [("run_told_net", "h_send", "run_sent"), ("run_sent", "h_vm_read", "vm_recv"),
+              ("vm_recv", "h_vm_decode", "vm_taking"), ("vm_taking", "h_taken_read", "run_taken")]
+    for begin, name, end in within:
+        row[name] = (steps[end] - steps[begin]) / 1000 if begin in steps and end in steps else None
+    row["h_vm_prepare"] = (t["request_us"] - steps["vm_taking"]) / 1000 if "vm_taking" in steps else None
     return row
 
 

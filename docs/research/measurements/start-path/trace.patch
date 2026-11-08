@@ -30,7 +30,7 @@ index 3f83936a..3b78c10d 100644
      }
  }
 diff --git a/crates/shards/src/daemon.rs b/crates/shards/src/daemon.rs
-index 2ff34e8e..f828a1ac 100644
+index 2ff34e8e..17ed9e9a 100644
 --- a/crates/shards/src/daemon.rs
 +++ b/crates/shards/src/daemon.rs
 @@ -2609,7 +2609,10 @@ impl<D: Disk> Daemon<D> {
@@ -65,6 +65,14 @@ index 2ff34e8e..f828a1ac 100644
              // Only now, so that starting its successor delays no run: on the refiller's
              // thread.
              self.refill_soon(threads, ready.pool.as_ref());
+@@ -8356,6 +8363,7 @@ fn hand_over(
+     }
+     // A request cut short is no request: the VM never had all of it.
+     shards_ipc::send(vm, kind::RUN, payload, fds).map_err(|e| Untaken::Surely(e.to_string()))?;
++    shards_vmm::log::trace("run_sent");
+     // MAX_FDS a message at most; the VM takes the run only once it has them all.
+     for batch in ends.chunks(shards_ipc::MAX_FDS) {
+         shards_ipc::send(vm, kind::SHARE_ENDS, &[], batch).map_err(|e| Untaken::Surely(e.to_string()))?;
 diff --git a/crates/shards/src/daemon/slots.rs b/crates/shards/src/daemon/slots.rs
 index 42d7f612..ba15f6b4 100644
 --- a/crates/shards/src/daemon/slots.rs
@@ -95,6 +103,30 @@ index 42d7f612..ba15f6b4 100644
                  if living.answer(&answer, m.kind, &m.payload).is_err() {
                      break;
                  }
+diff --git a/crates/shards/src/warm.rs b/crates/shards/src/warm.rs
+index a0cc6592..1565af7e 100644
+--- a/crates/shards/src/warm.rs
++++ b/crates/shards/src/warm.rs
+@@ -436,9 +436,11 @@ pub fn receive(
+     let daemon_relay = Relay::start("daemon-signals", to)?;
+     let client_relay = Relay::start("client-signals", to)?;
+     to_daemon(daemon, kind::READY, &[], &[]).map_err(|e| format!("telling the daemon: {e}"))?;
++    shards_vmm::log::trace("vm_ready");
+     let request = shards_ipc::recv(daemon)
+         .map_err(|e| format!("waiting for a request: {e}"))?
+         .ok_or("the daemon closed without a request")?;
++    shards_vmm::log::trace("vm_recv");
+     if request.kind != kind::RUN {
+         return Err(format!("expected a request, got message kind {}", request.kind));
+     }
+@@ -536,6 +538,7 @@ pub fn receive(
+     // What must hold for this VM to take a run, checked while the daemon may still give
+     // it to another.
+     may_take()?;
++    shards_vmm::log::trace("vm_taking");
+     // TAKEN before anything of the client's is touched or anything starts: a VM that ends
+     // without it never started the run, which the daemon may then hand to another VM
+     // (daemon.rs, hand_over). A daemon gone by now has no copies left to close, and hands
 diff --git a/crates/vmm/src/log.rs b/crates/vmm/src/log.rs
 index 079dac8c..70357dfe 100644
 --- a/crates/vmm/src/log.rs
