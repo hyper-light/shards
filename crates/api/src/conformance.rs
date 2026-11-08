@@ -288,7 +288,7 @@ pub const UNSERVED_PATIENCE: Duration = Duration::from_millis(200);
 
 /// How long past its patience an unserved port's refusal may come (`record::Learned`).
 /// Recorded: macOS-HVF's slowest, 150.85425 ms, the simulator's, its timer leeway on a 200
-/// ms wait (`docs/research/platform-measurements.md` M462, above M463's real guests' 138.7
+/// ms wait (`docs/research/platform-measurements.md` M515, above M463's real guests' 138.7
 /// ms).
 pub static OVERSHOOT: Learned =
     Learned::new("OVERSHOOT", &[("macOS-HVF", Duration::from_nanos(150_854_250))]);

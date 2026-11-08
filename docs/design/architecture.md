@@ -20198,7 +20198,8 @@ that socket (`CONNECT <port>` / `OK <host port>`, firecracker `docs/vsock.md`, m
   runs are its hypervisor's, and shards' own refusal comes back as `Refusal::Bounds`. Its
   waits wait on facts: the VM process's exit (reaped by its watcher), its output read to an
   end mark written after that exit, `Duration::MAX` as no clock. What remains timed is
-  twice the slowest recorded run on the host class (`shards_api::record`, PM M462-M464);
+  twice the slowest recorded run on the host class (`shards_api::record`, PM M463, M464,
+  M515);
   a class without a record has no bound, and its timed tests fail naming the record due.
 - `stop` kills the VM's process at once: the VMM has no host-to-guest power-off
   (vm/runtime.rs), so the page cache a guest held is lost, and a clean stop is the
@@ -20206,7 +20207,7 @@ that socket (`CONNECT <port>` / `OK <host port>`, firecracker `docs/vsock.md`, m
 - A stream is non-blocking, each read and write waiting in poll(2) to its timeout; its
   `buffer_sizes` are the OS's SO_SNDBUF/SO_RCVBUF.
 
-**Evidence.** PM M462 (an unserved port's refusal past its patience), M463 (the waits
+**Evidence.** PM M515 (an unserved port's refusal past its patience), M463 (the waits
 the bounds hold), M464 (what a refused dial costs, the pacing's `c`); the conformance
 suite and E2E on HVF.
 

@@ -20354,7 +20354,7 @@ revision before comparing a changed API/implementation.
   FIXUPS` at minimum macOS 15: 27,727 fixups in `__DATA_CONST,__const`, 33 pages of 16
   KiB); Windows', whose loader applies PE base relocations, unmeasured.
 
-### M462. How long past its patience shards-api's refusal of an unserved port comes
+### M515. How long past its patience shards-api's refusal of an unserved port comes
 
 - **Question.** `shards-api`'s conformance case "an unserved port is refused" holds a
   refusal to its patience: not before it, and not long after. How long after does it come,
@@ -20384,7 +20384,7 @@ revision before comparing a changed API/implementation.
 ### M463. The waits shards-api's bounds hold, on HVF
 
 - **Question.** Each shards-api bound on a wait that can't wait on a fact alone is twice (the
-  margin) the slowest recorded run of that wait: conformance's `OVERSHOOT` (M462) and the
+  margin) the slowest recorded run of that wait: conformance's `OVERSHOOT` (M515) and the
   tests' hang guards. (`STOP_GRACE`, which this measured too, is gone: the VMM has no
   host-to-guest power-off, so `stop` kills at once.) How long do those waits take?
 - **Method.** `docs/research/measurements/shards-api-waits/run.sh` (release harness): tests/sim.rs
@@ -20417,7 +20417,7 @@ revision before comparing a changed API/implementation.
   2's load, was slower than their records, and its numbers are the records now. The bounds,
   each twice (the margin) its slowest record: tests/sim.rs `PATIENCE` 2 × 4.402617625 s;
   `REFUSED_AFTER_END` 2 × 4.277875 ms; tests/real.rs's patience 2 × 248.467 ms (the slowest
-  of the waits it bounds); `OVERSHOOT` 2 × 150.85425 ms (M462), above this
+  of the waits it bounds); `OVERSHOOT` 2 × 150.85425 ms (M515), above this
   record's real 138.7 ms. The VMM was the debug build this Mac had; a release build's runs,
   and KVM's and WHP's, go beside these when recorded: until then those classes have no bound
   (`shards_api::record`). What would falsify a bound: a run slower than its record, which is
