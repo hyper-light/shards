@@ -9078,26 +9078,43 @@ estimator's of what was measured (the table below).
 - **A window lasts as long as its rate needs** (`climb::Window`): it samples what the
   transfers carried once each of the path's answer times, the least a request took to
   answer (BBR's delay estimate; RFC 6298 §2.1's first second where none is known yet,
-  as a round trip assumed before one is measured), and ends once its samples' mean is
-  past its standard error, s/√n (Student, "The probable error of a mean", Biometrika
-  6(1), 1908): its rate told from none, at the one-standard-deviation line every test
-  here draws, and at least two samples, the fewest with a variance. A doubling that pays
-  in full adds the count's own rate (twice the transfers carry twice the bytes), so a
-  window that resolves its rate resolves the gain the climb looks for. A steady path's
-  window is two answer times; a bursty one's as many as its bursts need (a burst alone
-  among empty samples sits at the line, mean and error both x/n, and is not enough); one
-  whose transfers carry nothing never ends, as nothing it says is a rate. Once the count
-  is kept, nothing more is sampled. Before, a window was a second, M114's period, chosen.
+  as a round trip assumed before one is measured), and ends once its samples' standard
+  error, s/√n (Student, "The probable error of a mean", Biometrika 6(1), 1908), is under
+  its mean by as much as `pays` needs (`climb::resolving`), with at least two samples,
+  the fewest with a variance. A doubling that pays in full gains the count's own rate m
+  (twice the transfers carry twice the bytes); `pays` keeps a gain past the windows'
+  pooled standard deviation s, and the gain measured between two counts' means of two
+  windows each has the standard error s·√(1/2 + 1/2) (the difference of two means,
+  Welch, Biometrika 34(1/2), 1947). Past the line by one of its own standard errors, the
+  one-standard-deviation line every test here draws, that is m ≥ s·(1 + √(2/2)) = 2s; a
+  window's samples spread as its rate does between windows, so a window ends once twice
+  its error is under its mean. A steady path's window is two answer times; a bursty
+  one's as many as its bursts need (a burst of four periods' bytes in one sample of four:
+  thirteen samples); one whose transfers carry nothing never ends, as nothing it says is
+  a rate. Once the count is kept, nothing more is sampled. Before, a window was a second,
+  M114's period, chosen. Its first version (2026-11-08) ended a window once the error
+  was under the mean alone, the rate told from none: windows so noisy that a doubling
+  paying in full read as no gain, and `shards push image` of forty 2 MiB layers at 4
+  MiB/s an upload converged at two where every doubling paid (containers.rs'
+  `a_push_climbs_from_one_and_the_next_starts_where_it_got` on KVM; simulated over 300
+  seeds in `climb::simulated`, 217 settled under four; with the power above, none).
 - **A doubling pays only past the path's own noise**: each count is measured over two
   windows after one that settles (two, the fewest that have a variance), and a doubling
   is kept where its mean is above the count before's by more than the two counts' pooled
   standard deviation; one that is not goes back to the count before, kept for the rest of
   the transfer. A lossy path, where more streams lose more, keeps fewer that way.
 - **A learned path starts where it converged**, held to the cores; its first two windows
-  are judged against the record: where their mean is apart from the record's by more than
-  the pooled standard deviation, the path changed, and is learned again from one. That is
-  its aging: a record is believed as long as the path still measures as it did, never for
-  a time chosen. A path's failures age the same way: this transfer's count is added to
+  are judged against the record: where their mean is under the record's by more than the
+  pooled standard deviation, the path got worse, and its count is halved, as TCP halves
+  its window on a congestion signal (RFC 5681 §3.1, equation 4, the inverse of the
+  climb's own doubling), then climbs again from there; one that measures better goes on
+  doubling while that pays, as it would. That is its aging: a record is believed as long
+  as the path still measures as it did, never for a time chosen. Before (2026-11-08), any
+  change either way learned it again from one: a two-sided test at the pooled standard
+  deviation, which a path that had not changed failed about one transfer in six (the
+  difference of the means has a standard error of about s/√2 against the record's many
+  samples, so |Δ| > s is 1.4 of them), each then relearned from one (`climb::simulated`:
+  78 of 300 second pushes back to one; halved and one-sided, none). A path's failures age the same way: this transfer's count is added to
   the record's where it is within a Poisson count's spread (the root of its mean) of what
   the record's rate expected for the bytes sent, and replaces it where not.
 - **A push's chunk is the size that costs least a byte** (`links::optimum`): a chunk of c
@@ -9164,7 +9181,8 @@ estimator's of what was measured (the table below).
 | midpoint of took and refused | `Registry::chunk` | bisection |
 | `0-0` taken as nothing | `Registry::status` | distribution `blobupload.go`: an upload of 0 or 1 bytes says `0-0` |
 | a sample each answer time | `climb::period` | the path's least answer (BBR's delay estimate); RFC 6298 §2.1's 1 s where none is known |
-| a window ends: s/√n < mean, n ≥ 2 | `climb::Window` | the standard error of the mean (Student 1908), at the one-sd line of `pays` and `same`; n − 1 ≥ 1 |
+| a window ends: s/√n · (1 + √(2/2)) < mean, n ≥ 2 | `climb::Window`, `climb::resolving` | the standard error of the mean (Student 1908); a full doubling's gain past `pays`' line by one standard error of a difference of two means of two windows (Welch 1947); n − 1 ≥ 1 |
+| worse: record's mean − now's > pooled sd; halved | `Climb::window`, `worse` | the pooled sd, one-sided; RFC 5681 §3.1 eq. 4's halving |
 | no sample once kept | `Climb::settled` | a kept count measures nothing more |
 | record changed under `links/.lock` | `links::update` | the image store's `Locked` (flock(2), `LockFileEx`; unlocked before close, PM M244) |
 | samples combined: n, mean, M2 | `Spread::combined`, `Learned::merge` | Chan, Golub and LeVeque 1979's pairwise formulae |
@@ -9184,7 +9202,12 @@ estimator's of what was measured (the table below).
   `a_spread_is_its_samples_mean_and_variance`, `a_doubling_pays_past_the_noise_measured`
   (1.41 within a √2 spread, 1.42 past it), `a_new_path_starts_at_one_and_doubles_while_it_pays`,
   `a_count_jumps_to_the_paths_bandwidth_delay_product` (10 MB/s, 300 ms, 256 KiB: 12),
-  `a_learned_path_starts_where_it_converged_until_it_changed`, `a_count_stops_at_its_most`;
+  `a_learned_path_starts_where_it_converged_until_it_changed` (worse: halved, then climbs;
+  better: climbs on), `a_count_stops_at_its_most`; `climb::simulated`'s
+  `a_second_push_starts_where_a_noisy_first_converged` (containers.rs' pacing registry
+  simulated, 32 seeds: the first at four or more, the record its count, the second
+  starting there and never back to one; mutation-checked: without the power the first
+  settles at two, with the two-sided reset the second goes from 16 to one);
   `links`' `a_paths_record_is_kept_by_its_path` (another route, another record),
   `a_chunk_is_the_least_time_a_byte`, `failures_age_by_the_change_measured` (100 expected:
   110 kept, 111 and 89 replace it), `a_links_chunk_follows_its_failures` (1 MB/s, 20 ms,

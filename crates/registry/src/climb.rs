@@ -65,6 +65,20 @@ impl Spread {
     }
 }
 
+/// How many of its own standard errors a window's rate must be to resolve a doubling that
+/// pays in full: `pays` keeps a gain past the pooled standard deviation s of the windows,
+/// and a doubling that pays in full gains the count's own rate m (twice the transfers,
+/// twice the bytes). The gain measured between two counts' means of [`SAMPLES`] windows
+/// each has the standard error s·√(1/SAMPLES + 1/SAMPLES) (the difference of two means,
+/// Welch, "The generalization of 'Student's' problem when several different population
+/// variances are involved", Biometrika 34(1/2), 1947), so it is past the line by one of
+/// its own standard errors, the one-standard-deviation line every test here draws, where
+/// m ≥ s·(1 + √(2/SAMPLES)). A window's samples spread as its rate would between windows
+/// (s, its standard error), so a window ends once its error times this is under its mean.
+fn resolving() -> f64 {
+    1.0 + (2.0 / SAMPLES as f64).sqrt()
+}
+
 /// How often a window samples what the transfers carried: once each of the path's
 /// answer times, the least a request took to answer (as BBR takes the least round trip
 /// for the path's delay: Cardwell et al., ACM Queue 14(5), 2016), RFC 6298's first round
@@ -113,7 +127,10 @@ impl Window {
         }
         self.samples.add(bytes.saturating_sub(self.last.1) as f64 / secs);
         self.last = (now, bytes);
-        let resolved = self.samples.error().is_some_and(|e| e < self.samples.mean);
+        let resolved = self
+            .samples
+            .error()
+            .is_some_and(|e| e * resolving() < self.samples.mean);
         if !resolved {
             return None;
         }
@@ -139,6 +156,12 @@ pub(crate) fn pays(before: &Spread, after: &Spread) -> bool {
 /// Whether `now` is the path `then` was: the two means apart by no more than their noise.
 pub(crate) fn same(then: &Spread, now: &Spread) -> bool {
     pooled(then, now).is_none_or(|s| (now.mean - then.mean).abs() <= s)
+}
+
+/// Whether `now` carries less than `then` did by more than their noise: the path got
+/// worse at the count it was learned at.
+fn worse(then: &Spread, now: &Spread) -> bool {
+    pooled(then, now).is_some_and(|s| then.mean - now.mean > s)
 }
 
 /// The cores this process may run on: transfers past them only contend for the hashing,
@@ -224,10 +247,12 @@ impl Climb {
             return None;
         }
         if let Some(then) = self.learned.take()
-            && !same(&then, &self.here)
+            && worse(&then, &self.here)
         {
-            // The path changed since it was learned: learned again, from one.
-            return self.go(1, None);
+            // The path got worse since it was learned: halved, as TCP's window is on a
+            // congestion signal (RFC 5681 §3.1, equation 4), and climbed again from
+            // there. One better than it was goes on doubling as it pays.
+            return self.go((self.target / 2).max(1), None);
         }
         if let Some((count, before)) = self.before
             && !pays(&before, &self.here)
@@ -359,7 +384,8 @@ mod tests {
     }
 
     /// A learned path starts where it converged, held to the most; one whose samples are
-    /// what it was learned at climbs on from there, and one that changed starts at one.
+    /// what it was learned at, or better, climbs on from there, and one that got worse is
+    /// halved and climbs again from there.
     #[test]
     fn a_learned_path_starts_where_it_converged_until_it_changed() {
         let then = spread(&[100.0, 104.0]);
@@ -374,8 +400,19 @@ mod tests {
         c.window(50.0, true, 1.0);
         assert_eq!(
             c.window(52.0, true, 1.0),
-            Some(1),
-            "a changed path is learned again"
+            Some(4),
+            "a path that got worse is halved"
+        );
+        assert_eq!(c.window(0.0, true, 1.0), None, "and measured there");
+        c.window(50.0, true, 1.0);
+        assert_eq!(c.window(51.0, true, 1.0), Some(8), "climbing again from it");
+        let mut c = Climb::new(Some((8, then)), 64);
+        c.window(0.0, true, 1.0);
+        c.window(200.0, true, 1.0);
+        assert_eq!(
+            c.window(204.0, true, 1.0),
+            Some(16),
+            "a better one climbs on from where it was"
         );
     }
 
@@ -419,10 +456,10 @@ mod tests {
         assert!((rate - 10_500.0).abs() < 1e-6, "{rate}");
         // Started again where it ended.
         assert_eq!(steady.sample(at(300), 3100), None);
-        // Bursts: four periods' bytes in one sample of four. A burst alone among nothing
-        // is at the line (one nonzero sample of n: mean x/n, error x/n), so not told from
-        // none; the second burst, at the fifth sample, is past it (mean 0.4x, error
-        // 0.245x).
+        // Bursts: four periods' bytes in one sample of four. The error must be under half
+        // the mean ([`resolving`]: 1 + √(2/2)): five samples (mean 0.4x, error 0.245x) are
+        // not, nine are at the line (mean and twice the error both x/3), thirteen past it
+        // (mean 0.308x, twice the error 0.266x).
         let mut bursty = Window::new(t, 0);
         let mut bytes = 0;
         let mut ended = None;
@@ -437,7 +474,7 @@ mod tests {
         }
         let (n, rate) = ended.unwrap();
         assert!(
-            (3..=5).contains(&n),
+            (9..=13).contains(&n),
             "a bursty window needs more samples: ended at {n}"
         );
         assert!((rate - bytes as f64 / (n as f64 / 10.0)).abs() < 1e-6);
@@ -456,5 +493,135 @@ mod tests {
         assert_eq!(c.window(1.1, true, 1.0), None, "at its most");
         assert_eq!(c.window(100.0, true, 1.0), None, "kept there");
         assert_eq!(c.learned().map(|(n, _)| n), Some(4));
+    }
+}
+
+#[cfg(test)]
+mod simulated {
+    //! A push simulated over a path like containers.rs' pacing registry's: each upload
+    //! taken at 4 MiB a second in 64 KiB pieces, a blob of 2 MiB, the client a socket
+    //! buffer ahead, answers on loopback; the climb and its windows as push.rs drives them.
+    use super::*;
+    use crate::links::Learned;
+
+    const PIECE: u64 = 64 << 10;
+    const BLOB: u64 = 2 << 20;
+    /// 4 MiB a second: a piece every 15.625 ms.
+    const PIECE_US: u64 = 15_625;
+    const GAP_US: u64 = 300;
+    const ANSWER_US: u64 = 100;
+
+    struct Rng(u64);
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            self.0
+        }
+    }
+
+    /// Pushes `blobs` from `learned`, at most `most` at once, sockets `buffer` bytes ahead;
+    /// what it learned, the count it started at, and the counts it went to.
+    fn push(
+        rng: &mut Rng,
+        learned: Option<&Learned>,
+        blobs: u64,
+        most: usize,
+        buffer: u64,
+    ) -> (Learned, usize, Vec<usize>) {
+        let base = Instant::now();
+        let at = |us: u64| base + Duration::from_micros(us);
+        let mut climb = Climb::new(learned.and_then(Learned::climb), most);
+        climb.answered(Duration::from_micros(ANSWER_US));
+        let first = climb.target();
+        let mut went = vec![first];
+        // Each upload's blob: when it began.
+        let mut slots: Vec<Option<u64>> = vec![None; most];
+        let (mut next, mut done, mut bytes_done) = (0u64, 0u64, 0u64);
+        let mut t = 0u64;
+        let mut window = Window::new(at(0), 0);
+        let mut target = first;
+        while done < blobs {
+            let mut sent = bytes_done;
+            let mut busy = 0;
+            for (i, slot) in slots.iter_mut().enumerate() {
+                loop {
+                    match *slot {
+                        Some(began) => {
+                            let end = began + (BLOB / PIECE) * PIECE_US;
+                            if t >= end {
+                                done += 1;
+                                bytes_done += BLOB;
+                                sent += BLOB;
+                                *slot = (i < target && next < blobs).then(|| {
+                                    next += 1;
+                                    end + GAP_US
+                                });
+                                continue;
+                            }
+                            if t >= began {
+                                let taken = PIECE * ((t - began) / PIECE_US + 1);
+                                sent += (taken + buffer).min(BLOB);
+                            }
+                            busy += 1;
+                        }
+                        None if i < target && next < blobs => {
+                            next += 1;
+                            *slot = Some(t);
+                            continue;
+                        }
+                        None => {}
+                    }
+                    break;
+                }
+            }
+            if !climb.settled()
+                && let Some(rate) = window.sample(at(t), sent)
+                && let Some(to) = climb.window(rate, busy >= target, BLOB as f64)
+            {
+                target = to;
+                went.push(to);
+            }
+            // A wait of one answer time, as a condvar's timeout gives it: up to 60 µs late.
+            t += ANSWER_US + rng.next() % 60;
+        }
+        let (count, rate) = climb.learned().unwrap_or_default();
+        let own = Learned {
+            count,
+            rate,
+            answer_us: Some(ANSWER_US),
+            ..Learned::default()
+        };
+        (own, first, went)
+    }
+
+    fn rng(seed: u64) -> Rng {
+        Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1)
+    }
+
+    /// Two pushes over one path whose windows are as noisy as containers.rs' pacing
+    /// registry makes them (pieces of 64 KiB every 15.6 ms an upload, a socket buffer
+    /// ahead, samples a loopback answer apart and up to 60 µs late), each upload carrying
+    /// its own, so every doubling pays: for each seed the first climbs to at least four,
+    /// its count is what the record keeps, and the second starts at that count and never
+    /// goes back to one.
+    #[test]
+    fn a_second_push_starts_where_a_noisy_first_converged() {
+        for seed in 0..32 {
+            let mut r = rng(seed);
+            let mut record = Learned::default();
+            let (own, first, went) = push(&mut r, None, 41, 16, 256 << 10);
+            assert_eq!(first, 1, "seed {seed}: a new path starts at one");
+            assert!(own.count >= 4, "seed {seed}: settled at {}: {went:?}", own.count);
+            record.merge(&own);
+            assert_eq!(record.count, own.count, "seed {seed}");
+            let (_, first, again) = push(&mut r, Some(&record), 41, 16, 256 << 10);
+            assert_eq!(first, record.count, "seed {seed}: {again:?}");
+            assert!(
+                !again.contains(&1),
+                "seed {seed}: back to one: {went:?} then {again:?}"
+            );
+        }
     }
 }
