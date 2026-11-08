@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Condvar, Mutex, PoisonError};
 
 #[cfg(any(target_os = "macos", windows))]
-use super::{Daemon, TAKE_TIMEOUT, Threads, lock, log};
+use super::{Daemon, Threads, lock, log};
 #[cfg(any(target_os = "macos", windows))]
 use crate::containers::Disk;
 
@@ -448,7 +448,7 @@ impl<D: Disk> Daemon<D> {
         let signed = |b: u64| i64::try_from(b).unwrap_or(i64::MAX);
         let room = signed(limit).saturating_sub(signed(current));
         for m in members {
-            self.tell_group_room(&m.id, room);
+            self.tell_group_room(&m.id, m.pid, room);
         }
         if room >= 0 {
             if short.remove(name) {
@@ -470,9 +470,9 @@ impl<D: Disk> Daemon<D> {
         }
         let (mut freed, mut unplugging) = (0u64, 0u64);
         for m in members {
-            // By the clock: its pass is one member after another, and shards' groups hold
-            // their microVMs by counting, with no kernel to slow them (macOS, Windows).
-            if let Some(gave) = self.give_back_of(&m.id, super::health::Wait::For(TAKE_TIMEOUT)) {
+            // Waited on while its VM process runs, as a budget's slice is (D209, PM M467):
+            // a host short of CPU slows a member as much here as Linux's throttle does there.
+            if let Some(gave) = self.give_back_of(&m.id, super::health::Wait::WhileRuns(m.pid)) {
                 freed = freed.saturating_add(gave.freed);
                 unplugging = unplugging.saturating_add(gave.unplugging);
             }
@@ -515,13 +515,13 @@ impl<D: Disk> Daemon<D> {
 
     /// Tells run `id`'s guest the room its group's budget leaves it (init's `ROOM`, D188):
     /// past what its run uses, the least room a run goes on in, as a slice's is told.
-    fn tell_group_room(&self, id: &str, room: i64) {
+    fn tell_group_room(&self, id: &str, pid: u32, room: i64) {
         let spec = shards_abi::run::Spec {
             builtin: shards_abi::run::builtin::ROOM,
             argv: vec![room.to_string().into_bytes()],
             ..Default::default()
         };
-        match self.exec_quietly(id, &spec, None, 1 << 12, TAKE_TIMEOUT) {
+        match self.exec_waiting(id, &spec, None, 1 << 12, super::health::Wait::WhileRuns(pid)) {
             Ok(q) if q.status == Some(0) && !q.timed_out => {}
             Ok(q) => log(format!(
                 "container {id}: telling its microVM its group's room: {}",
