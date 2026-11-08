@@ -19276,3 +19276,20 @@ revision before comparing a changed API/implementation.
   READY. Tested: daemon.rs `a_warm_vms_run_starts_without_growing_its_descriptor_table`
   (a pool's VM's `FDSize` the same as its run starts as while it waited, Linux), on
   Fedora. Harness: start-path/trace.py and trace.patch.
+
+### M497. A build step's device cgroup, and the ports' chooser's round trip (D44, D122)
+
+- **Question.** D44 starts every `RUN` step in a cgroup of its own (mkdir, CLONE_INTO_CGROUP,
+  rmdir; a step of rules of its own also loads and attaches its device program), where a
+  step without limits had none. D122's chooser answers each bind(2) and listen(2) of a
+  candidate domain (seccomp_unotify), and makes a contested TCP socket's listen itself.
+  What does each cost a step's start and a candidate's call?
+- **Method.** `docs/research/measurements/step-devices/chooser.sh [STEPS_N] [ROUNDS]
+  [CHOOSER_N]`, release builds: build.rs `chooser_round_trip_costs` (ignored; the test
+  guest's `confined listencost`, from the agent's side: a contested port, an uncontested
+  port in a candidate, and a domain under no chooser filter, bind and listen each in ns),
+  then `step-devices/run.py` (the test guest's `stepcgroup` mode as PID 1: `fork`,
+  `steps`, `devices` and `confine` arms, interleaved, µs per start). Reports n, p50, p90,
+  p99 and max with host, OS and revision. On macOS through
+  `docs/research/measurements/macos-sched/launchd-run.sh`.
+- **Results.** Not yet measured.
