@@ -6705,6 +6705,22 @@ host (PM M267), where a container's page cache is its host's to drop. Free page 
   same build held under a budget that presses nothing: a build under a budget hands its
   own writes to its writer (below), so a free build's peak, which counts them, left a
   held build room it never filled (c3ce85e).
+  A builder's room counts the file pages its processes map only where they are charged to
+  the budget (`daemon::budget::charged_room`), where a run's counts them wherever charged
+  (above). A builder boots cold, its guest's RAM its VM process's own memory, charged to
+  the budget; what it maps charged elsewhere is its bases' images on its pmem devices and
+  its VM process's program, page cache an earlier build or run read, which no reclaim of
+  the budget takes (mm/vmscan.c `shrink_node_memcgs` scans the budget's own memcgs) and
+  which, taken back by another's and read again, comes back charged to it and counted
+  then; a run's guest maps its own RAM from its template (PM M309). Counted wherever
+  charged, they made a held build's count exceed its scope's `memory.current` by exactly
+  them at every held peak on CI's runners (13 to 14 MiB for npm, 55 to 64 for apt, 99 to
+  100 for rust over rust:1-slim; d9c42120, PM M442), and a budget short of the build's
+  charge by what its builder held cold told its guest it was short by them besides, which
+  holds its build at what it uses (init's `ROOM`): builds of 10 s took 246 to 622 s
+  (573e4bf8). The harness now holds each build to its held arms' own peak in that count
+  less what its builder held cold, so that every held build is pressed; measured at the
+  commit that has it (PM M442).
   Before the writer (2d168658), held builds on CI's runners were 0.4 to 16 s slower in the
   steps that write to the host's disk, which the memory controller holds to the budget's
   share of dirty pages (`balance_dirty_pages`): the builder, held within room it never

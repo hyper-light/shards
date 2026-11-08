@@ -33,13 +33,43 @@ pub(crate) fn room(
     root: &Path,
     evicted: &mut dyn FnMut(&Mapped) -> u64,
 ) -> Option<(i64, PathBuf)> {
+    least_room(dir, root, &mut |at, held| {
+        let mapped = mapped_under(at);
+        let files = mapped.iter().fold(0u64, |sum, &(_, b)| sum.saturating_add(b));
+        held.room_with(files, evicted(&mapped))
+    })
+}
+
+/// What the budget over the cgroup `dir` leaves a build's builders (D188's builders), and
+/// which cgroup that is: as [`room`], but of the file pages their processes map only those
+/// charged to it ([`Holding::charged_room`]). A builder boots cold, its guest's RAM its VM
+/// process's own memory, charged to the budget; what it maps charged elsewhere is its
+/// bases' images on its pmem devices and its VM process's program, page cache an earlier
+/// build or run read, which no reclaim of this budget takes (mm/vmscan.c
+/// `shrink_node_memcgs` scans the budget's own memcgs alone), and which, once taken back
+/// by another's and read again, comes back charged to it and counted then. Counted as held,
+/// they told a held build's builders a room short of the budget's by them, 13 to 100 MiB on
+/// CI's runners (100 a rust build's, its base rust:1-slim; PM M442), where a guest told it
+/// is short holds its build at what it uses (init's `ROOM`, `plug::hold_within`): under a
+/// budget of what its kernel charged less what its builder held cold, builds of 10 s took
+/// 246 to 622 s, their builders held at what they used (573e4bf8, run 41738284986). A run's guest maps its own RAM from its template, whose pages charged
+/// elsewhere it reads again once its host takes them back (PM M309): [`room`] holds those.
+pub(crate) fn charged_room(dir: &Path, root: &Path) -> Option<(i64, PathBuf)> {
+    least_room(dir, root, &mut |_, held| held.charged_room())
+}
+
+/// The least `room_of` says, of `dir` and each cgroup above it below `root` held to a
+/// budget, and which cgroup that is: none where none is.
+fn least_room(
+    dir: &Path,
+    root: &Path,
+    room_of: &mut dyn FnMut(&Path, &Holding) -> i64,
+) -> Option<(i64, PathBuf)> {
     let mut least: Option<(i64, PathBuf)> = None;
     let mut at = dir;
     while at.starts_with(root) && at != root {
         if let Some(held) = held_at(at) {
-            let mapped = mapped_under(at);
-            let files = mapped.iter().fold(0u64, |sum, &(_, b)| sum.saturating_add(b));
-            let room = held.room_with(files, evicted(&mapped));
+            let room = room_of(at, &held);
             if least.as_ref().is_none_or(|(l, _)| room < *l) {
                 least = Some((room, at.to_path_buf()));
             }
@@ -84,6 +114,12 @@ impl Holding {
             .max(self.floor)
             .min(self.current);
         charged.saturating_add(files.saturating_sub(self.mapped))
+    }
+
+    /// Its [`room`](Self::room) with no files mapped past those charged to it: what its
+    /// budget leaves as its kernel charges it ([`charged_room`]).
+    pub fn charged_room(&self) -> i64 {
+        self.room_with(self.mapped, 0)
     }
 
     /// The bytes of its budget not [`held`](Self::held), less the inactive pages its kernel
@@ -1088,6 +1124,63 @@ mod tests {
             std::fs::write(scope.join("cgroup.procs"), format!("{}\n", std::process::id())).unwrap();
             assert!(mapped_under(&tmp).iter().any(|&(_, b)| b > 0));
         }
+    }
+
+    /// A builder's room holds only the file pages its processes map that are charged to its
+    /// budget: those charged elsewhere (its bases' images an earlier build read, its VM
+    /// process's program) no reclaim of the budget takes, and counted they told a builder
+    /// the budget short where its kernel had room (573e4bf8, PM M442); a run's room holds
+    /// them, its guest's RAM its template's pages (PM M309).
+    #[test]
+    fn a_builders_room_holds_only_what_its_budget_is_charged() {
+        let held = Holding {
+            budget: 384 * MIB,
+            own: 145 * MIB,
+            mapped: 16 * MIB,
+            current: 383 * MIB,
+            floor: 168 * MIB,
+        };
+        // 83 MiB mapped, 67 of them charged elsewhere: a run's room holds them, a builder's
+        // does not.
+        assert_eq!(held.room(83 * MIB), 133 * MIB as i64);
+        assert_eq!(held.charged_room(), 200 * MIB as i64);
+        // Short as its kernel charges it, short still: its 16 MiB of inactive pages beside
+        // its mapped ones kept, as a run's are.
+        let short = Holding {
+            budget: 160 * MIB,
+            ..held
+        };
+        assert_eq!(short.charged_room(), -24 * MIB as i64);
+        // The least of every cgroup over the build, as a run's: a process of the scope
+        // maps files charged elsewhere (this test's own program, its pages charged to no
+        // cgroup of this fake hierarchy), which a run's room holds and a builder's does
+        // not, on a host whose processes have /proc entries.
+        let tmp = shards_testdir::TempDir::new("budget-charged").unwrap();
+        let root = tmp.join("cg");
+        let slice = root.join("user.slice");
+        let scope = slice.join("run-1.scope");
+        let stat = "anon 100000000\nfile 0\nkernel 0\nfile_mapped 0\nshmem 0\n";
+        cgroup(&slice, Some(384 * MIB), None, 100_000_000, stat);
+        cgroup(&scope, Some(350 * MIB), None, 100_000_000, stat);
+        assert_eq!(
+            charged_room(&scope, &root),
+            Some((350 * MIB as i64 - 100_000_000, scope.clone()))
+        );
+        if std::path::Path::new("/proc/self/smaps_rollup").exists() {
+            std::fs::write(scope.join("cgroup.procs"), format!("{}\n", std::process::id())).unwrap();
+            let mine = mapped_by(std::process::id()).unwrap();
+            assert!(mine > 0);
+            let run = room(&scope, &root, &mut |_| 0).unwrap();
+            assert_eq!(run.1, scope);
+            // Its program's pages mapped as this reads them, which can move a little.
+            assert!(run.0 < 350 * MIB as i64 - 100_000_000);
+            assert_eq!(
+                charged_room(&scope, &root),
+                Some((350 * MIB as i64 - 100_000_000, scope.clone()))
+            );
+        }
+        // The root itself holds nothing to a budget.
+        assert_eq!(charged_room(&root, &root), None);
     }
 
     /// A guest's RAM its host took back under a budget is no room: a lone microVM's 71 MiB

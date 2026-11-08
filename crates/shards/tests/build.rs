@@ -1129,8 +1129,8 @@ fn a_held_builds_caches_go_through_its_writer() {
             }
             cmd.arg(ctx.as_os_str())
                 .env("SHARDS_HOME", home.as_os_str())
-                .env("SHARDS_KERNEL", &kernel)
-                .env("SHARDS_INIT", &init);
+                .env("SHARDS_KERNEL", kernel)
+                .env("SHARDS_INIT", init);
             common::as_tests_run(&mut cmd);
             let done = cmd.output().unwrap();
             assert!(
