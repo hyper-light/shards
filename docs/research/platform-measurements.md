@@ -18805,8 +18805,8 @@ revision before comparing a changed API/implementation.
     fit asked; and in the longest GELF UDP messages that 128 chunks carry (the driver's
     part, each asked to fit), uncompressed and by gzip, of one byte repeated and of random
     bytes. The time of a line, n, p50, p90, p99, max. On kiln-a094a12d (Fedora 44, Linux
-    6.19.10, x86_64, 32 CPUs, 62 GiB; load average 15 beside CI jobs) and on
-    adas-mac-studio-2 (Apple M4 Max, macOS 26), the tree of this entry's commit.
+    6.19.10, x86_64, 32 CPUs, 62 GiB; load average 15 beside CI jobs), 2026-11-08, the
+    tree of this entry's commit.
   - `docs/research/measurements/journald-parts/run.py` on kiln-a094a12d (systemd 259,
     LineMax as shipped, `#LineMax=48K`): a 100,000-byte line written to the journal as a
     program's output (systemd-cat), and native entries (a datagram each, as the driver
@@ -18823,7 +18823,6 @@ revision before comparing a changed API/implementation.
     | gelf udp, none, one byte | Fedora | 6 | 3.54 | 3.67 | 5.54 | 5.54 |
     | gelf udp, gzip, one byte | Fedora | 6 | 3.73 | 3.81 | 3.84 | 3.84 |
     | gelf udp, gzip, random | Fedora | 9 | 483 | 554 | 597 | 597 |
-    MACROWS
   - A part that fits as its driver's part says costs one ask, a message written once, as
     moby's are. One that does not (bytes gzip cannot shrink, a line JSON escapes at length)
     is found by halves, its message written about 18 times: 0.48 s of the shipper's CPU a
