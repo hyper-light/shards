@@ -57,8 +57,8 @@ performance and resource usage.
 | D10 | Pin the guest's CPU view explicitly: MPIDR, PARange clamped to the IPA, SME exposure decided per image. Don't inherit defaults. | Defaults show PARange 40 on a 36-bit IPA and expose SME2 [PM M12] |
 | D11 | GPUs are zero-cost when unused. GPU VMs are a separate class assigned from a warm pool (VFIO via iommufd on Linux; virtio-gpu/Venus plus a remoting broker on macOS). | Assigned devices pin all RAM and break CoW; FLR ≥ 100 ms; CUDA init takes seconds [GPU §2.3, R1–R6] |
 | D12 | vsock is the host↔guest control plane (exec, stdio, lifecycle, engine API). Built (a7b32ab): guest ports map to host Unix sockets as in Firecracker (`CONNECT <port>`; the guest reaches `<path>_P`). Unlike Firecracker, host EOF is a half-close, so a guest can answer after stdin ends. Each restored copy binds its own socket, where it is given a path; the ports its own process serves (the run's) take no socket file (D30). A snapshot keeps the streams the device held. The restored device resets each of them with an RST on its RX queue, ahead of every other packet, and continues host port allocation past the snapshot's, never reusing a held port. It posts no TRANSPORT_RESET: Linux handles that event in a work item apart from RX, and on one interrupt it visits RX first. So a connection made right after the restore could be established and then reset (13 of 350 restores under CPU load). The guest's dials of the host wait for its answer however long it takes: Linux gives a connection 2 s and then resets it, though its host may have taken it already, and a loaded host's VM process had told its daemon its VM was ready on such a connection, whose run then found it gone as init powered off (2 runs of 13 rounds, PM M346). | Rootless and portable; Firecracker's AF_UNIX mapping [VIO R7]; macOS poll reports POLLHUP on a half-close, so the device waits with kqueue there; restores [PM M20]: Linux 7.2 net/vmw_vsock/virtio_transport.c (`event_work`, `rx_work` handles RX in order), drivers/virtio/virtio_mmio.c `vm_interrupt` over queues in setup order (virtio_ring.c `list_add_tail`); a REQUEST matching a closing socket is dropped (virtio_transport_common.c `virtio_transport_recv_disconnecting`); dials: net/vmw_vsock/af_vsock.c `vsock_connect` (VSOCK_DEFAULT_CONNECT_TIMEOUT, 2·HZ; "VIRTIO_VSOCK_OP_RST will follow") and SO_VM_SOCKETS_CONNECT_TIMEOUT [PM M346] |
-| D26 | `shards run` is served by a per-user daemon that hands each request to a warm VM process of the image's template: resumed, connected, waiting for its command. The client's stdio and connection pass by `SCM_RIGHTS`, and the daemon keeps its copies until the warm VM has taken them. The CLI is a thin binary. | Handoff 31 µs p50; warm VM 12.3 MiB, no CPU; a thin client costs 1.4 ms against 3.5 ms for a binary linking the VMM's frameworks [PM M23]; XNU flushes a socket in flight that no process holds [PM M24]; a pooled run takes 3.4 ms at p50 and 3.9 ms at p99 with the thin client [PM M26]; pre-created VM shells [Manco17 §5.2; Wanninger22 §5.2] |
-| D27 | Every `shards run` is a container, as `docker run`'s is: an ID and a name, running until its command ends, then exited until `shards rm` or `--rm` removes it. Command lines are read as the Docker CLI reads them, by one crate (`shards-cmdline`) in the client and the daemon: the client answers `--help` and usage mistakes itself, and the daemon keeps the records and answers `ps`, `wait`, `logs`, `stop`, `kill` and `rm`. | The Docker CLI's own answers: a differential test against docker/cli v29.8.1's command tree [scripts/docker-cli]; dockerd's names, IDs, start failures and stop semantics [moby daemon/names.go, daemon/errors.go, daemon/stop.go, daemon/kill.go @ docker-v29.8.1]; docs/research/container-lifecycle-cli.md; a record costs no run anything it waits for (a spare container made ahead) |
+| D26 | `shards run vm` is served by a per-user daemon that hands each request to a warm VM process of the image's template: resumed, connected, waiting for its command. The client's stdio and connection pass by `SCM_RIGHTS`, and the daemon keeps its copies until the warm VM has taken them. The CLI is a thin binary. | Handoff 31 µs p50; warm VM 12.3 MiB, no CPU; a thin client costs 1.4 ms against 3.5 ms for a binary linking the VMM's frameworks [PM M23]; XNU flushes a socket in flight that no process holds [PM M24]; a pooled run takes 3.4 ms at p50 and 3.9 ms at p99 with the thin client [PM M26]; pre-created VM shells [Manco17 §5.2; Wanninger22 §5.2] |
+| D27 | Every `shards run vm` is a container, as `docker run`'s is: an ID and a name, running until its command ends, then exited until `shards remove vm` or `--rm` removes it. Command lines are read as the Docker CLI reads them, by one crate (`shards-cmdline`) in the client and the daemon: the client answers `--help` and usage mistakes itself, and the daemon keeps the records and answers `ps`, `wait`, `logs`, `stop`, `kill` and `rm`. | The Docker CLI's own answers: a differential test against docker/cli v29.8.1's command tree [scripts/docker-cli]; dockerd's names, IDs, start failures and stop semantics [moby daemon/names.go, daemon/errors.go, daemon/stop.go, daemon/kill.go @ docker-v29.8.1]; docs/research/container-lifecycle-cli.md; a record costs no run anything it waits for (a spare container made ahead) |
 | D115 | A run of an Agentfile's image gives its own command no reach into the image's agents and harnesses, whatever the CLI asks. The command is PID 1 of a PID namespace of its own, as a container's command is (under `--init` a reaper is, in docker-init's place), so it sees none of their processes; and the daemon, its init, and the build refuse — in Docker's words where Docker defines the flag, shards' otherwise — `--privileged`, the capabilities that would cross into a domain, `systempaths=unconfined`, a `net.*` sysctl where the domains' flows cross the command's network namespace, a uid or gid of the domains' or their servers', `--pid host`, `--network none` where the Agentfile grants egress, and `--volumes-from` or a named-volume mount that would take a scoped volume; Docker's default `CAP_NET_RAW`, withheld there, is said to be. | Docker's default capabilities include CAP_KILL [moby oci/caps/defaults.go]; a shared PID namespace lets the workload signal, `/proc/<pid>/root`- and ptrace-reach the domains [Linux 6.18 kernel/signal.c check_kill_permission, fs/proc, kernel/ptrace.c ptrace_may_access]; the kernel ends a PID namespace's processes with its init, which hears only the signals it handles [pid_namespaces(7)]; Docker 29.3.1's own answers [PM M145]; every check twice (D109): [[feedback-runtime-and-buildtime-checks]] |
 
 ### Snapshots (D14)
@@ -227,7 +227,7 @@ SPIs of the GICv2m frame the VMM keeps (D154).
 
 | Feature | Linux amd64 | Linux arm64 | macOS arm64 | Windows amd64 |
 |---|---|---|---|---|
-| Boot, `run --kernel`, `shards run IMAGE`, builds (D16, D33) | yes | yes | yes | yes (D140, D141) |
+| Boot, `run --kernel`, `shards run vm IMAGE`, builds (D16, D33) | yes | yes | yes | yes (D140, D141) |
 | The daemon, containers and every command, the CLI's client, Engine API, compose, events (D26, D27, D170) | yes | yes | yes | yes (D195) |
 | Snapshots, restores, templates, warm pools (D14, D25, D26) | yes | yes (D154) | yes | yes (D196) |
 | A restore's working set recorded and mapped ahead (D29) | yes | yes (D154) | yes | yes (D196, PM M415, M421) |
@@ -322,7 +322,7 @@ virtio-pmem with DAX ([image-storage](../research/image-storage.md) R1, R2). The
 
 ### Running a workload (D16)
 
-`shards run --rootfs IMAGE -- COMMAND` boots into an image and runs a command there as
+`shards run vm --rootfs IMAGE -- COMMAND` boots into an image and runs a command there as
 `docker run` does. The guest side is `crates/init/src/run.rs`; the host side is
 `crates/shards/src/workload.rs`.
 
@@ -410,7 +410,7 @@ virtio-pmem with DAX ([image-storage](../research/image-storage.md) R1, R2). The
     (`a_client_waiting_for_its_daemon_ends_on_sigterm`, mutation-checked: the thread
     started after the request, the client waited past SIGTERM).
   - A signal shards was started ignoring is forwarded too: what is sent to the client is
-    for its command. A script's `shards run ... &` starts with SIGINT and SIGQUIT ignored,
+    for its command. A script's `shards run vm ... &` starts with SIGINT and SIGQUIT ignored,
     as a shell starts a background job, and a script that signals its job expects the
     command to get it, as the Docker CLI gives it; macOS drops an ignored signal even for a
     thread in `sigwait` [PM M28].
@@ -419,7 +419,7 @@ virtio-pmem with DAX ([image-storage](../research/image-storage.md) R1, R2). The
     own keys are its signals (docker/cli container/start.go), and attaches its stdin
     only where `-i` asks and the container keeps one open. `create`, `restart` and a
     detached `start` pass none on, where they did once their container was made: a
-    SIGINT to `shards restart` reached the container it restarted
+    SIGINT to `shards restart vm` reached the container it restarted
     (`start_attached_passes_signals_on`, mutation-checked: passed
     to a container with a terminal, its command heard it).
   - Deliberately unlike docker/cli: a command that passes no signal on is ended by
@@ -823,7 +823,7 @@ A pull resolves, fetches and checks as containerd v2.4.1 does
   - stored documents changed under their digests, and every check a pull makes,
     refused when the image is found again too.
 
-### Credentials, certificates and `shards pull` (D23)
+### Credentials, certificates and `shards pull image` (D23)
 
 `docker login` state and Docker's certificates work unchanged
 ([registry-pull](../research/registry-pull.md) §3.3, §6.3, R5). The code is
@@ -854,7 +854,7 @@ A pull resolves, fetches and checks as containerd v2.4.1 does
   - `$XDG_DATA_HOME` or `~/.local/share` elsewhere on Unix;
   - `%LOCALAPPDATA%` on Windows.
   - It is created 0700: it is its user's alone.
-- **`shards pull`** prints `docker pull`'s lines: the default tag, `Already exists` or
+- **`shards pull image`** prints `docker pull`'s lines: the default tag, `Already exists` or
   `Download complete` per layer, `Digest:` and `Status:`.
 - **Checked against real registries** (2026-09-28, from the M5 Max):
   - Docker Hub (`alpine`, and by digest), GHCR (`ghcr.io/containerd/busybox:1.36`) and
@@ -866,9 +866,9 @@ A pull resolves, fetches and checks as containerd v2.4.1 does
   - `DOCKER_AUTH_CONFIG` and its fallback;
   - `certs.d` CAs, and a mutual-TLS handshake with and without its client certificate.
 
-### `shards run IMAGE` (D24)
+### `shards run vm IMAGE` (D24)
 
-`shards run [OPTIONS] IMAGE [COMMAND] [ARG...]` runs a command in a new microVM booted
+`shards run vm [OPTIONS] IMAGE [COMMAND] [ARG...]` runs a command in a new microVM booted
 into an image, as `docker run` runs one in a new container. The code is
 `crates/shards/src/run.rs`. The VM and the workload are D16's.
 
@@ -892,7 +892,7 @@ into an image, as `docker run` runs one in a new container. The code is
     environment apply. A second run uses the stored image, fetches nothing, and the
     command line wins.
 
-### Templates for `shards run` (D25)
+### Templates for `shards run vm` (D25)
 
 Repeated runs of an image restore a template of it instead of booting (D2, D14). The code
 is `crates/shards/src/run.rs` and `crates/shards/src/guest.rs`.
@@ -1005,14 +1005,14 @@ is `crates/shards/src/run.rs` and `crates/shards/src/guest.rs`.
 
 ### Warm pool (D26, in progress)
 
-A per-user daemon hands each `shards run` to a **warm VM**: a VMM process that has already
+A per-user daemon hands each `shards run vm` to a **warm VM**: a VMM process that has already
 restored the image's template, resumed the guest and let it connect, and now waits only
 for a command (D2). The client asks the daemon for a run, passes it its stdio, and waits
 for the exit status.
 
 - **Built: warm VMs** (`crates/shards/src/warm.rs`; messages in `crates/ipc`).
   - `shards restore DIR --warm FD` is one, where FD is its socket to the daemon.
-    `shards run … --rootfs R [--snapshot-dir D] --warm FD` boots one instead, saving a
+    `shards run vm … --rootfs R [--snapshot-dir D] --warm FD` boots one instead, saving a
     template on the way if asked.
   - It says `READY` once the guest waits for its command.
   - The daemon answers with `RUN`: the command, plus four descriptors passed by
@@ -1044,9 +1044,9 @@ for the exit status.
     another's bytes in it, refused, and the stream broken, the daemon taking the VM for
     ended: 1 of 511 sets taken on CI's runners (PM M319).
   - The warm VM serves one request, then exits.
-- **Built: the daemon** (`crates/shards/src/daemon.rs`), with `shards run` as its client
+- **Built: the daemon** (`crates/shards/src/daemon.rs`), with `shards run vm` as its client
   (`client.rs`).
-  - One serves each SHARDS_HOME, holding its `daemon.lock`. `shards run` starts it when
+  - One serves each SHARDS_HOME, holding its `daemon.lock`. `shards run vm` starts it when
     none offers its request slots, in the home's `requests/` (D185; a socket,
     `daemon.sock`, before), through `shards daemon --detached`, which starts it in a session of its own and exits: init adopts the
     daemon and reaps it when it exits (APUE §13.3). Left the child of the client that
@@ -1459,7 +1459,7 @@ removes it; `--rm` removes it once it ends.
     holds the container's lock throughout).
   - *Tracked*: taken, and followed until it ends, registered before the client stops
     counting as busy, so shutdown always sees one or the other.
-  - `stop` and `kill` of a container still starting act once it runs: `shards run -d`
+  - `stop` and `kill` of a container still starting act once it runs: `shards run vm -d`
     prints the ID before the start, where `docker run -d` prints it after, so a script
     that stops what `run -d` printed stops a running command in both.
   - `stop`, `kill` and `rm -f` end every container they name at once, from one loop over
@@ -1746,7 +1746,7 @@ removes it; `--rm` removes it once it ends.
   `--cpuset-mems` is checked against the guest's memory nodes, where dockerd checks it
   against the host's CPUs (its cgroup2 sysinfo parses `Cpus` into `MemSets`) and runc then
   fails at the start; and a limit above the host's memory gives a VM of the host's
-  memory, past which it limits nothing. `shards create`'s refusals are said alone, exit 1,
+  memory, past which it limits nothing. `shards create vm`'s refusals are said alone, exit 1,
   in the words scripts read from `docker create` (runCreate returns them unwrapped). Test:
   `run_limits_a_microvms_resources`.
 - **Mounts, rlimits and sysctls** (`setup.rs`; init `setup.rs`, `isolate`). `run` and
@@ -1785,7 +1785,7 @@ removes it; `--rm` removes it once it ends.
   default seccomp profile, which shards' guest does not apply (`--security-opt`, with it).
 ### Shipping the guest (D28)
 
-`shards run IMAGE` works on first use: with no guest recorded and none named, a run boots
+`shards run vm IMAGE` works on first use: with no guest recorded and none named, a run boots
 shards' pinned kernel and the shards-init that `shardsd` carries. The evidence is in
 docs/research/shipping-the-guest.md; the code is `crates/shards/build.rs`,
 `src/kernel.rs` and `src/guest.rs`.
@@ -2029,7 +2029,7 @@ audit's "Security and test coverage").
   - It fails closed: a VM process not in App Sandbox, or given nothing to ask, starts no
     VM. Its spawner keeps each descriptor it sends until the VM's next message, as XNU
     flushes a socket in flight that no process holds [PM M24].
-  - The daemon answers its own VMs, on the thread that watches each. `shards run --kernel`, which
+  - The daemon answers its own VMs, on the thread that watches each. `shards run vm --kernel`, which
     becomes the VM by exec, starts a broker, `shardsd grants`, that answers and exits. A
     broker per VM would cost each warm VM's start 3.9 ms, 95% [3.8, 4.1], all of it a
     directory's bookmark made in a fresh process, where the daemon makes one in 0.4 ms;
@@ -2058,7 +2058,7 @@ audit's "Security and test coverage").
   process bound `<path>_<port>` in a private directory and its own device dialled it:
   - any process that could reach a `--vsock` directory could dial the run's port first
     and be sent the command, its environment and stdin; a pair has no name to dial;
-  - neither Landlock nor App Sandbox has anything to grant for a warm VM or `shards run`,
+  - neither Landlock nor App Sandbox has anything to grant for a warm VM or `shards run vm`,
     whose VMs now make no socket file at all; App Sandbox refuses Unix sockets outside
     its container even in a granted directory (macos-confinement.md §2);
   - a `socketpair` is allowed by the seccomp filter already (Unix sockets only);
@@ -2086,7 +2086,7 @@ audit's "Security and test coverage").
     windows-2022's WHP sets up no partition in a process that forbids it [PM M201, M202].
   - It fails closed: a VM process outside an AppContainer starts no VM.
   - A profile costs 4.4 / 5.7 ms to make at p50 and 1.8 / 2.1 ms to delete [PM M201], on
-    `shards run --kernel`'s path; a dial through the spawner 100-111 µs at p50, where the
+    `shards run vm --kernel`'s path; a dial through the spawner 100-111 µs at p50, where the
     spawner's own costs 38-41 [PM M203]. A profile is recorded while it lives, in a file
     its spawner holds open, so that the next spawner deletes what a killed one left.
   - Its connections end shut down, then closed: on Windows an exit that closes a socket's
@@ -2169,7 +2169,7 @@ stack inside the VMM, is superseded by it.
   (networking.md R3; [RFC 2131 §4.4.1; RFC 4862 §5.4]) and no datagram waits in the guest
   on ARP's answer (PM M180); each run's own address, MAC and IPv6 address keep it. A VM
   with no network gets no device (networking.md R7: absent device, no attack surface).
-- **Built so far.** Builds' `RUN` steps and `shards run` are on Docker's default bridge,
+- **Built so far.** Builds' `RUN` steps and `shards run vm` are on Docker's default bridge,
   on the subnet dockerd would make it on this host (moby docker-v29.9.0
   daemon_unix.go initBridgeDriver): the first of dockerd's default pools (libnetwork
   ipamutils: 172.17.0.0/16, 172.18 and 172.19, the /16s of 172.20/14, 172.24/14 and
@@ -2333,9 +2333,9 @@ Docker's own microVMs, Docker Sandboxes, are not a Docker runtime either. shards
 OCI citizen where that costs nothing: registries, the Agentfile's BuildKit frontend, and
 Compose files that shards reads. Evidence: docs/research/oci-engines.md.
 
-### Building images: `shards build` (D33)
+### Building images: `shards build image` (D33)
 
-`shards build` is a drop-in for `docker build`: the same Dockerfiles accepted, the same
+`shards build image` is a drop-in for `docker build`: the same Dockerfiles accepted, the same
 image config and history, the same steps cached. RUN steps run in microVMs, not
 containers. Evidence: docs/research/image-build.md (§3 ranks the choices below).
 
@@ -2367,14 +2367,14 @@ containers. Evidence: docs/research/image-build.md (§3 ranks the choices below)
   normalization follow `exporter/containerimage/writer.go`.
 - **Order of work** (§3.13):
   1. The frontend and its oracle. Done.
-  2. Metadata-only builds and host file operations, written to the store so `shards run`
+  2. Metadata-only builds and host file operations, written to the store so `shards run vm`
      boots them. buildx's command line, held to buildx's own command tree as D27's
      commands are held to docker/cli's.
      - Done: buildx's `build` command line (36 answers of buildx v0.37.1's own tree), the
        exporter (512 configs and manifests of BuildKit's own functions), and builds of
-       base images and settings, end to end. An image `shards build` wrote has the config
+       base images and settings, end to end. An image `shards build image` wrote has the config
        Docker Desktop's BuildKit wrote for the same Dockerfile, byte for byte (the same
-       digest, checked 2026-10-01), and `shards run` boots it (`tests/build.rs`).
+       digest, checked 2026-10-01), and `shards run vm` boots it (`tests/build.rs`).
      - Done: file operations and their layers (`crates/build`). BuildKit's mkdir, mkfile
        and copy actions (fsutil's copy, its chmod strings, `--chown` names from the
        image's /etc/passwd and /etc/group) run on an in-memory tree that changes as Linux
@@ -2390,7 +2390,7 @@ containers. Evidence: docs/research/image-build.md (§3 ranks the choices below)
        fsutil's own walk on this host), and written byte for byte BuildKit's receiver's
        (five COPYs from contexts sent and received by fsutil itself, in the overlayfs
        oracle).
-     - Done: the executor. `shards build` runs WORKDIR, COPY (with `--chown`, `--chmod`,
+     - Done: the executor. `shards build image` runs WORKDIR, COPY (with `--chown`, `--chmod`,
        `--link`, heredocs, `.dockerignore`) and merges as FileOpSolver runs them: a mount
        per action chain, committed to a layer when it is an output or read twice; a
        merge stacks its inputs' layers. `tests/build.rs` boots such an image in a VM and
@@ -2706,7 +2706,7 @@ gone with the VM. So a container that stays (not `--rm`) keeps it on the host:
   and a 4 MiB one 155 ms; told first, the empty layer costs nothing measurable and the
   4 MiB one 6.5 ms at p50, from the save running beside the next run [PM M115]. Only what
   reads the layer waits for it (`start`, until the daemon has it settled).
-- **Put back as it starts.** `shards start` sends the request the container was made by
+- **Put back as it starts.** `shards start vm` sends the request the container was made by
   (kept as `request` beside its log), and the daemon hands the VM its layer
   (`RUN_LAYER_IN`), which init applies over the image's root before the command, as
   go-archive's ApplyLayer does; its log goes on from its newest segment. `restart` stops
@@ -2758,7 +2758,7 @@ specifies (§4, with the review's answers of §12): `AGENT`, `HARNESS`, `SKILL`,
 `NETWORK`, `CONNECT`, `ATTACH`, and `EXPOSE … AS/FOR` and `VOLUME` with options, a name
 and `FOR`.
 
-- **Read as one or the other.** `shards build` reads a file as an Agentfile where it is
+- **Read as one or the other.** `shards build image` reads a file as an Agentfile where it is
   named as one, by a Dockerfile's conventions, which its users know (`Agentfile`,
   `*.Agentfile`, `Agentfile.*`),
   and without `-f` finds the context's `Agentfile` before its `Dockerfile`. A Dockerfile is
@@ -2828,7 +2828,7 @@ microVM as virtio-fs shares (virtio 1.3 §5.11; Linux fs/fuse/virtio_fs.c):
   restored ahead of its run has its devices (`shards{i}`), empty slots its run fills:
   a template is made for each number of shares (`run::template`). A guest that mounts
   a share before its run has one is told ENODEV.
-- **A share another server serves** (`shards run --kernel … --slates-fs-fd N`): a direct
+- **A share another server serves** (`shards run vm --kernel … --slates-fs-fd N`): a direct
   run's share slot (`shards{i}`, after any of its own) given a connected socket its spawner
   hands it, which a server answers in this device's framing, as `slates shards VOLUME --fd
   N -- shards run …` hands it one the slates daemon serves a volume on (slates' A-161). The
@@ -2840,7 +2840,7 @@ microVM as virtio-fs shares (virtio 1.3 §5.11; Linux fs/fuse/virtio_fs.c):
   (tests/slates_fs.rs, where `SLATES_BIN` names a slates binary): a guest mounts, reads and
   writes a slates volume, and one maps a slates file through its window, its fsynced
   stores in the volume at slates' first read and slates' write of the file in its map.
-  - **On Windows** (`shards run --kernel … --slates-fs-handle V`): the stream is a duplex
+  - **On Windows** (`shards run vm --kernel … --slates-fs-handle V`): the stream is a duplex
     named pipe, since AF_UNIX makes no pair without a socket file and the pipe loses
     nothing at its writer's exit (PM M340).
     - **Handing it in.** V is a handle the spawner inherited from the server. It checks V
@@ -3108,7 +3108,7 @@ is kept with the container. Each policy means what Docker's clients rely on it t
   as any start is.
 - **Meanwhile.** The container is restarting: running to `ps` (listed without `-a`,
   `Restarting (CODE) X ago`), to inspect (`Status` restarting, `Running` and `Restarting`
-  true) and to `wait`, which waits on; `RestartCount` counts, and `shards start` starts it
+  true) and to `wait`, which waits on; `RestartCount` counts, and `shards start vm` starts it
   over. `stop` and `kill` stop it there; `rm` refuses it without `-f`, as it refuses one
   running.
 - **As the daemon starts**, the containers its stop ended start again where their policy
@@ -3272,7 +3272,7 @@ Engine 29.3.1's words and to what its containers see (`security_opt_confines_the
 
 ### stats (D43)
 
-`shards stats` reads each running container's guest as dockerd's collector reads a
+`shards watch vms` reads each running container's guest as dockerd's collector reads a
 container's cgroup (moby daemon/stats/collector_unix.go): shards-init's STATS built-in
 says the workload cgroup's CPU time, memory in use and its inactive file pages, its
 limit (memory.max, else the VM's memory), its processes and its block devices' bytes,
@@ -3339,10 +3339,10 @@ Improvements over Docker, each measured or tested:
   container read, write and make every device. shards reads one that is not `a *:* rwm`
   as a block and a char rule of its numbers and access (tested: `a *:* r` reads a loop
   device and cannot write it).
-- `shards start` of a microVM that cannot start says why as `docker start` does, without
+- `shards start vm` of a microVM that cannot start says why as `docker start` does, without
   run's help (it said run's before, for every start that failed).
 
-Open: BuildKit's RUN steps run under containerd's default device rules; `shards build`'s
+Open: BuildKit's RUN steps run under containerd's default device rules; `shards build image`'s
 steps are to be held to them.
 
 ### attach (D45)
@@ -3689,7 +3689,7 @@ the capabilities and the exec that follow run under it. Tested in
 
 ### The build cache (D50)
 
-A step `shards build` has run before, from the same definition and inputs, is not run
+A step `shards build image` has run before, from the same definition and inputs, is not run
 again: its result is the layers it made then, and its progress says so in BuildKit's
 words (`#N CACHED`, tests/build.rs), which CI logs and tools read.
 
@@ -4041,7 +4041,7 @@ nothing; a local MCP server joining no one; every agent reaching the world refus
 a harness driving a world-reaching agent allowed), mutation-checked three ways: a search
 that follows no edge, every domain taken as internal-only, and none. End to end (§9.10),
 `an_internal_agent_reaches_the_world_through_nothing`: each of those paths refused by
-`shards build`, the path named; and at run, an image whose own normalized Agentfile joins
+`shards build image`, the path named; and at run, an image whose own normalized Agentfile joins
 b to a (a commit of the Agentfile changed, its digest relabelled, as no build of shards'
 would make it) refused as the daemon reads it (D109), as built it runs. Mutation-checked:
 the build's check dropped, and the run's.
@@ -5798,7 +5798,7 @@ Decided by the user on 2026-10-14 ("so long as they apply appropriately to micro
 
 ### D184. A credential helper is asked at once and waited for only where its registry asks (built)
 
-**Found.** `shards pull alpine:3.22` with a user's own Docker config (2026-10-17) waited
+**Found.** `shards pull image alpine:3.22` with a user's own Docker config (2026-10-17) waited
 12 minutes and more on `docker-credential-desktop get`, Docker Desktop's backend not
 answering: sampled, the daemon's thread read the helper's output (credentials.rs
 `run_helper`). The client's Ctrl-C ended the client alone: the lookup took no cancel, so
@@ -6401,7 +6401,7 @@ host (PM M267), where a container's page cache is its host's to drop. Free page 
   then a thread blocked in poll(2) on Linux 6.4 and later and on macOS; on an older Linux,
   a read of the host's average every ten seconds.
 - **A build's builders give back as runs do** (D133's builders; PM M442). A build's
-  builders are its own process's, not the daemon's (`shards build`), so the build watches
+  builders are its own process's, not the daemon's (`shards build image`), so the build watches
   its host's memory pressure as the daemon does, the same words on every host (PSI on its
   own cgroup on Linux, libdispatch's source on macOS, the low memory notification on
   Windows, `SHARDS_BUILD_PRESSURE` a test's), and a write to a budget over it (inotify on
@@ -7512,7 +7512,7 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
   process's page faults now on every host). An idle or stalled microVM is said nothing
   of: a test's client past its deadline (`common::Said`) is waited on while its microVM
   runs, and given up on a minute after it last ran, as before. Where a microVM is the
-  client's own, no daemon's (`shards run --kernel`, `shards restore`, `shards build`'s
+  client's own, no daemon's (`shards run vm --kernel`, `shards restore vm`, `shards build image`'s
   builders), the test judges the VM processes under its client itself, by the same basis
   and slice (`common::Ran`), while they start. Detached runs are not looked at:
   a busy server run with `-d` logs nothing. Not caught, as of a start: a guest that spins
@@ -8396,7 +8396,7 @@ prints.
   HTTPS in plain HTTP: asked in HTTPS alone unnamed, in HTTPS once and then in plain HTTP
   named, its credentials refused there and never sent; where each kind of registry is
   asked in plain HTTP); `info`'s text and JSON; and `images`'
-  `a_registry_daemon_json_names_insecure_is_pulled_from_in_plain_http`: `shards pull` from
+  `a_registry_daemon_json_names_insecure_is_pulled_from_in_plain_http`: `shards pull image` from
   such a registry fails, then pulls once the rootless engine's file names it, then fails
   again, naming the file, once it holds what dockerd refuses. The fallback and the
   credentials' refusal are mutation-checked.
@@ -9289,7 +9289,7 @@ stays; a load of the other alone from an archive of both, run emulated.
 
 ### D178. A microVM's I/O limits, kept outside it
 
-`--io-maxbandwidth BYTES` and `--io-maxiops N`, on `shards run` and `create` and in the
+`--io-maxbandwidth BYTES` and `--io-maxiops N`, on `shards run vm` and `create` and in the
 Engine API's `HostConfig.IOMaximumBandwidth` and `IOMaximumIOps`, are the most bytes and
 requests a second of a microVM's I/O to the host's storage: its volumes (virtio-fs) and its
 disks (virtio-blk). Docker takes them for its Windows containers' system drive alone:
@@ -9342,7 +9342,7 @@ oracle (`MICROVM_FLAGS`), the API's by its create bodies.
 
 ### D177. `build --squash`: a build's layers as one
 
-`shards build --squash`, and the Engine API's `POST /build?squash=1` (docker-py's
+`shards build image --squash`, and the Engine API's `POST /build?squash=1` (docker-py's
 `build(squash=True)`, the docker CLI's legacy builder's `--squash`), make the layers a
 build adds past its base's one layer: the base's layers as they were, then one that makes
 the build's tree of the base's. What a later step removed is in no layer, so it is neither
@@ -9532,7 +9532,7 @@ the M5 Max): a save left running parks the guest's vCPUs for 17 ms at p50 and 46
 most on a loaded host, its going quiet first under 0.2 ms at p90; its caller waits 92 ms
 at p50 quiet, the commit's sync among it, and a restore 18 ms at p50. `shards list snapshots NAME` lists a
 microVM's snapshots, newest first, when each was saved and the disk it takes; `shards
-remove snapshot NAME SNAPSHOT...` removes them, and `shards rm` with the microVM. A run on
+remove snapshot NAME SNAPSHOT...` removes them, and `shards remove vm` with the microVM. A run on
 the host's network (D124) is not saved: its guest's sockets are the host's, which no
 snapshot keeps.
 
@@ -9621,7 +9621,7 @@ itself), and by docker/cli's own answers to the command lines (oracle_test.go).
 moves a microVM to the machine a context reaches (D180): saved whole here, as `save vm`
 saves it, and resumed there where it was saved. The context is the fleet: each machine's
 daemon serves the clients it enrolled, and the move is a client of both, asking each for
-its steps as `shards cp` asks for its own (cli/moves.rs; daemon/moves.rs: `save`, `ready`,
+its steps as `shards copy vm` asks for its own (cli/moves.rs; daemon/moves.rs: `save`, `ready`,
 `export`, `import`, through the context's `MOVE_STEP` as its copy steps go), its stream
 from the one daemon to the other through no file. Nothing of the one machine is the
 other's but what the move sends, and what the other takes by content:
@@ -9997,7 +9997,7 @@ documents, and says of each whether it runs here and what its pull takes. `GET
   - Any other registry's comes from the tag's index or manifest, and a lone manifest's from
     its config.
   - A repository without `latest` says so. 11 of the 25 results of a search for `python`
-    had none (PM M234), and a `shards run` of one would fail.
+    had none (PM M234), and a `shards run vm` of one would fail.
   - Lookups go four at once, the most measured with none throttled by Docker Hub; 25 at
     once was throttled (PM M234). Each is its own, so a slow one holds up no other.
 - **Across registries, through what each documents.**
@@ -10282,7 +10282,7 @@ unchanged (`DOCKER_HOST=unix://HOME/engine.sock`). What they gain, each for the 
   from Dockerfiles among them), and the docker CLI's legacy builder. Each RUN step runs
   in a microVM, never a container on the host's kernel, by BuildKit's plan and cache,
   where dockerd answers the API's first version, which those clients ask for, with its
-  legacy builder. The build is a `shards build` process of its own, each option the flag
+  legacy builder. The build is a `shards build image` process of its own, each option the flag
   it takes it by; each line it says is a `stream` message, then the image's ID (`aux`,
   from API 1.30) and the "Successfully built" and "tagged" lines docker-py finds an
   image by; with `q`, the ID alone. Its client's registry credentials
@@ -11594,7 +11594,7 @@ one. So both, in that order.
   another (__iommu_group_set_domain), and each MAP and UNMAP of the domain it shows
   reaches it once. A guest that kept the endpoints in domains apart would have the last
   one's view for all of them: of its own RAM still, all a container is given.
-- **A run given a host's VFIO group** (`shards run --device /dev/vfio/N`, Linux, as
+- **A run given a host's VFIO group** (`shards run vm --device /dev/vfio/N`, Linux, as
   Docker's is given a VFIO group's node; `/dev/vfio` gives each group in it, as
   DevicesFromPath walks it). The daemon finds the group's functions the host gave
   vfio-pci or another of VFIO's PCI drivers (/sys/kernel/iommu_groups/N/devices; its PCI
@@ -12404,7 +12404,7 @@ to test on, where no CI runner has a GPU behind an IOMMU.
   50-udev-default.rules.in, `KERNEL=="renderD*"`, group-render-mode's default), where the
   guest's devtmpfs gives 0600, so a run's user other than root has the GPU, and a step's
   node where its CDI spec gives no mode; verified (`--user 1000`), mutation-checked.
-- **Verified on this Mac** (tests/gpu.rs): `shards run --rm --gpus all` of an image with
+- **Verified on this Mac** (tests/gpu.rs): `shards run vm --rm --gpus all` of an image with
   Mesa's Venus finds "Virtio-GPU Venus (Apple M5 Max)", conformance 1.3; the guest's
   driver negotiates VIRGL, RESOURCE_BLOB, CONTEXT_INIT and BLOB_ALIGNMENT.
 - **Built by CI and releases:** the macOS arm64 jobs run scripts/gpu-libs, so `shards`
@@ -12526,7 +12526,7 @@ was built on [PM M200-M203]:
 - **Grants as macOS's, over a pipe each way.** Files by DuplicateHandle, each with the path
   its spawner found it at (GetFinalPathNameByHandleW refuses an AppContainer [PM M203]);
   sockets by WSADuplicateSocketW, as Winsock documents, 6-10 µs more a dial than
-  DuplicateHandle at p50 [PM M203]. The spawner of `shards run --kernel` answers in its own
+  DuplicateHandle at p50 [PM M203]. The spawner of `shards run vm --kernel` answers in its own
   process, since Windows has no exec: the VM is its child, which shares its console, one
   with a window or one without, as a CI runner's is (counted by GetConsoleProcessList, where
   GetConsoleWindow answers none for one without: its VM was made detached there, and heard
@@ -12757,7 +12757,7 @@ revision's header unchecked, 2025-11-25 not spoken: each fails a test.
 CI run 38198639601 (dev fd9da553, x86_64 Linux): `a_builders_memory_is_plugged_as_its_
 build_needs_it`'s first build ran past its 120 s, where it takes about 33 s (runs
 38197041559 and 38189388050), and what it said was lost, its pipes held open by its builder,
-which outlived the `shards build` the test killed. Three faults, each fixed here; the
+which outlived the `shards build image` the test killed. Three faults, each fixed here; the
 cause of that build's stall left no evidence, so what the next one leaves is fixed too.
 
 - **Memory that stopped coming held the build** (D133). A build past its `memory.high` is
@@ -12803,7 +12803,7 @@ cause of that build's stall left no evidence, so what the next one leaves is fix
     grower says no kill. Mutation-checked: the runner saying none fails the test every
     time.
 - **A killed build left its builder running.** A builder's VM ended as its build dropped
-  it, or as its guest powered off on its connection closing: a killed `shards build` drops
+  it, or as its guest powered off on its connection closing: a killed `shards build image` drops
   nothing, and a guest held at its memory hears nothing. The VM now ends as its `--attach`
   socket closes, which the build holds for as long as it holds the VM, killed or not; its
   network process goes with it, as it goes with every VM (D31).
@@ -12973,7 +12973,7 @@ changes.
   cache from something (`from=`) written on the host from its source's snapshot, or
   layers merged. Version 1's records go at the next collection, as the store drops a
   layout it no longer reads.
-- **The builder's join disk takes writes** (D119's, `shards run --kernel --attach FD`): the
+- **The builder's join disk takes writes** (D119's, `shards run vm --kernel --attach FD`): the
   host attaches each layer's file to it, read-only, once for the builder's life, and for
   each cache a step writes, a file of its own for the changes, as large as the store has
   room for (`SHARDS_MAX_IMAGE_BYTES`, within what the disk has free past
@@ -13126,7 +13126,7 @@ given the rest as its build needs it, up to what it may have.
   kept the builder's kernel's own, 1024 of 4096 files).
 - **No snapshot.** Memory plugged is not saved, so a snapshot of a VM with memory to plug
   is refused, and `--memory-max` with `--snapshot-dir` up front.
-- **`shards run --kernel K --memory M --memory-max N`** boots a guest with M MiB that may
+- **`shards run vm --kernel K --memory M --memory-max N`** boots a guest with M MiB that may
   have N in all.
 - **Measured** (PM M193): against a builder booted with all it may have, half the host's
   (64 GiB), M82's three RUNs end 199 ms sooner at the median ([-223, -158]), the builder
@@ -13162,7 +13162,7 @@ given the rest as its build needs it, up to what it may have.
 D13 plans KVM on arm64 Linux hosts. GitHub's arm64 runners give no nested
 virtualization, so the record's test path is a guest booted at EL2 by shards' own HVF
 backend, its kernel a KVM host (docs/research/measurements/nested-kvm). That path now
-works: `shards run --kernel K --nested` boots a guest at EL2 on a Mac that gives one (an
+works: `shards run vm --kernel K --nested` boots a guest at EL2 on a Mac that gives one (an
 M3 or later on macOS 15), and its KVM comes up as a hypervisor.
 
 - **The VM.** `hv_vm_config_set_el2_enabled` (macOS 15), bound on first use as every
@@ -13330,7 +13330,7 @@ builder does.
     target (a stage `BUILDKIT_SBOM_SCAN_STAGE` names, the context with
     `BUILDKIT_SBOM_SCAN_CONTEXT`) beside it, `/tmp` a tmpfs and `/run/out` its output.
   - It asks no cache where the target asks none. `Plan.ignore_cache` now says so, and
-    `shards build`'s own scan (D81) heeds it too.
+    `shards build image`'s own scan (D81) heeds it too.
   - The scanner's source is `llb.Image`'s: unnamed and pinned by no digest.
     `sbom::plan` takes both as arguments; shards build keeps its named, pinned source.
 - **The attestation**: each platform's scan output, a `Bundle` with `reason=sbom`,
@@ -13351,7 +13351,7 @@ builder does.
 
 ### D128. Build policies over OCI layouts, and a policy's own errors, as buildx ends a build
 
-Found while D127 measured OCI layout contexts: `shards build` asked its policies (D101) of
+Found while D127 measured OCI layout contexts: `shards build image` asked its policies (D101) of
 an OCI layout as if it were a registry's image, and it said a policy's own errors as
 BuildKit says a denial. Both now go as buildx v0.37.1 on BuildKit v0.28.1 has them (PM
 M186).
@@ -13361,7 +13361,7 @@ M186).
     supported yet", policy/validate.go). A build under any policy with an OCI layout named
     context fails: "failed to solve: failed to build policy input: unsupported source
     scheme: oci-layout".
-  - `shards build` asked of the layout's image as `docker-image://docker.io/library/NAME@DIGEST`,
+  - `shards build image` asked of the layout's image as `docker-image://docker.io/library/NAME@DIGEST`,
     the stand-in name dockerui gives a layout, NAME being the context's. A policy that
     allows `alpine` by name allowed a layout named `alpine`, whatever it held.
   - It now asks of the layout as itself and is refused as buildx is (build.rs
@@ -13390,7 +13390,7 @@ M186).
 
 docker/dockerfile:1.27.1 lets SOURCE_DATE_EPOCH name where a build's time comes from,
 not only give it in seconds (epoch.go): `context`, a named context, or a stage whose one
-remote ADD is the source. `shards build` took a stage's Git or HTTP source's time and
+remote ADD is the source. `shards build image` took a stage's Git or HTTP source's time and
 gave `context` none, whatever the context was; shards' frontend (D113) refused every
 name. Both now take each as that frontend takes it, held to it in `shards-dind` (PM M185).
 
@@ -13429,7 +13429,7 @@ name. Both now take each as that frontend takes it, held to it in `shards-dind` 
   SOURCE_DATE_EPOCH that is no number before a frontend runs ("failed to solve: invalid
   source-date-epoch: strconv.ParseInt: parsing "src": invalid syntax: ..."); v0.33.0
   leaves it to the frontend. shards' frontend, run by either, does as dockerfile's does
-  there. `shards build` takes the value as v0.33.0 does: an input Docker 29.3.1 refuses
+  there. `shards build image` takes the value as v0.33.0 does: an input Docker 29.3.1 refuses
   and newer BuildKit builds.
 - **Where shards does better.** The time is resolved once a build, in both. dockerfile's
   frontend resolves it again for each platform, all at once, so buildx shows the steps
@@ -13445,7 +13445,7 @@ name. Both now take each as that frontend takes it, held to it in `shards-dind` 
     byte for byte. The cases: the context (a Git URL, and a local directory, which says
     none); a stage's Git source, HTTP Last-Modified and an archive's newest file; a named
     Git context, image and OCI layout; a name refused; two platforms; v0.28.1's refusal.
-  - `source_date_epoch_is_taken_from_a_named_or_remote_context` (`shards build`):
+  - `source_date_epoch_is_taken_from_a_named_or_remote_context` (`shards build image`):
     - a named HTTP context before the stage of its name;
     - the refusal;
     - a named image's one step (mutation-checked);
@@ -14265,7 +14265,7 @@ from the registry layer up to the build's policies.
     - Signing follows sigstore's default for each key type: ECDSA P-256, P-384 and P-521,
       Ed25519ph (as cosign signs Ed25519 keys), and RSA PKCS #1 v1.5.
     - The password is `COSIGN_PASSWORD`'s, else asked on the terminal, not echoed.
-  - The signature is kept with the name and pushed by `shards push`.
+  - The signature is kept with the name and pushed by `shards push image`.
   - A key's signature is uploaded to no transparency log, as cosign signs with a signing
     config naming none; cosign then verifies with `--insecure-ignore-tlog`, as M135
     measured. Keyless signing came with D126.
@@ -14304,7 +14304,7 @@ from the registry layer up to the build's policies.
   - It is asked by name before it is taken, as a base is before its metadata, then
     pinned with the definition. A pin of one is refused in BuildKit's words (D116).
   - `shards buildx policy eval osi-artifact://NAME` asks the same of an artifact on its
-    own, before or after `shards pull`, its kind read from its manifest.
+    own, before or after `shards pull image`, its kind read from its manifest.
 - **At run** (the standing rule's twin). The brief assumed the normalized Agentfile names
   each artifact by digest; it names it as written.
   - A run re-verifies nothing per start. Signatures need the registry and the build's
@@ -14681,7 +14681,7 @@ and BuildKit build an Agentfile, no shards installed. The frontend is `shards` i
   since D130, subrequests, named contexts, Git query strings, zstd contexts); a test holds
   it to `frontend::CAPS`.
 - **Named** `ghcr.io/hyper-light/shards:<version>`, under the project's own GitHub
-  organization, where its releases are (`release.yml`). `shards build` takes an Agentfile
+  organization, where its releases are (`release.yml`). `shards build image` takes an Agentfile
   whose `# syntax=` names it, at any tag, as its own (`plan::SHARDS_FRONTEND`). Publishing
   waits on the user's approval: nothing is pushed anywhere public, and no credential is
   written. Tests build the image in `shards-dind` and push it only to a registry
@@ -14726,21 +14726,21 @@ and BuildKit build an Agentfile, no shards installed. The frontend is `shards` i
     the frontend's wrapping). Each location gets an `errdefs.Source+json` detail,
     encoding/json of the Dockerfile and its definition, byte for byte.
   - The checks' warnings are sent as they are found, between the other calls.
-- **What the planner gained**, for `shards build` too where it applies:
+- **What the planner gained**, for `shards build image` too where it applies:
   - local sources name the build's session;
   - steps needing a capability the worker lacks are planned without it, as Dockerfile2LLB
     plans them;
   - no `--platform` is an implicit target, so the image keeps its base's platform; this
-    changes `shards build` too;
+    changes `shards build image` too;
   - the target's base image as resolved;
-  - Git contexts' `git.mtime` and `git.advice`, missing before, for `shards build`'s
+  - Git contexts' `git.mtime` and `git.advice`, missing before, for `shards build image`'s
     remote contexts too;
   - zstd archives are read as archives;
   - local named contexts' own `.dockerignore`;
   - OCI layout contexts read from the client's store.
 - **Agentfiles.**
   - shards' own skills step has no BuildKit op. Its tree is solved and read through the
-    gateway (ReadDir, ReadFile), checked by the same code `shards build` uses
+    gateway (ReadDir, ReadFile), checked by the same code `shards build image` uses
     (`build::skills::Fetched`), and laid out as a file op.
   - D55's isolation checks cannot go through the gateway. Its ReadDir walks one directory
     a call, and fsutil's Stat carries no inode, so a hard link across two domains is
@@ -14751,7 +14751,7 @@ and BuildKit build an Agentfile, no shards installed. The frontend is `shards` i
     as BuildKit runs any step (D113: under Docker's BuildKit), as root in its sandbox, because it reads every file
     whatever its owner and mode, but with no network and every tree read-only, its report
     alone written. The checks are solved at once, before the build, and refuse in
-    `shards build`'s words.
+    `shards build image`'s words.
   - D57's manifest annotations are returned as `annotation-manifest` metadata, which
     BuildKit's exporter takes.
 - **Deliberately unlike docker/dockerfile, recorded:**
@@ -14778,7 +14778,7 @@ and BuildKit build an Agentfile, no shards installed. The frontend is `shards` i
   - Read in the source, not run: BuildKit v0.34.0, the latest release (2026-10-07), and
     master (325ea68, 2026-10-09) hold the same code, at lines 235–236 and 294–295.
   - shards' frontend asks BuildKit for no attestation chain.
-  - `shards build`, asked by a policy for a one-manifest image's chain, answers with a
+  - `shards build image`, asked by a policy for a one-manifest image's chain, answers with a
     chain of that manifest alone, rooted at its digest: no provenance and no signatures,
     and the policy decides. buildx's policy, given no chain, asks again until "too many
     policy requests"; so did shards build before this.
@@ -14801,7 +14801,7 @@ and BuildKit build an Agentfile, no shards installed. The frontend is `shards` i
       finds BuildKit's cache and synced context as the other left them.
     - Mutation-checked: a warning's line number left off is caught.
   - The Agentfiles of `scripts/frontend/agentfile-cases` were each built in `shards-dind`
-    by BuildKit through the frontend and on this host by `shards build`
+    by BuildKit through the frontend and on this host by `shards build image`
     (`scripts/frontend/agentfiles`). They cover every directive that brings files (AGENT,
     HARNESS, MCP local and remote, SKILL for one and for all, ATTACH), a COPY into an
     agent's domain, a symlink out of one, a skill the reference refuses, and an
@@ -14866,7 +14866,7 @@ and BuildKit build an Agentfile, no shards installed. The frontend is `shards` i
   How it goes:
   - `AGENT main FROM REF` (HARNESS, MCP alike) takes the context named REF, keyed as a
     FROM's is (familiar form, `:latest` dropped, with or without `::os/arch`), in the
-    planner, so `shards build` takes it too, with no registry asked.
+    planner, so `shards build image` takes it too, with no registry asked.
   - A context of another kind is refused: "the build context REF for the OSI artifact REF
     is …: an artifact's context is an OCI layout, oci-layout://DIR[:TAG]".
   - Where REF pins a digest, the context must name it, or the build is refused in the
@@ -14878,14 +14878,14 @@ and BuildKit build an Agentfile, no shards installed. The frontend is `shards` i
       §12.17), and its kind the directive's;
     - the config, as an artifact's config is parsed.
 
-    The checks and their words are `shards build`'s own (`agent::check_manifest`,
+    The checks and their words are `shards build image`'s own (`agent::check_manifest`,
     `not_the_kind`, `Config::parse`).
   - The content is laid out by an exec step of the frontend's own image, with no network
     (`shards frontend osi`, osi.rs): each layer blob mounted, held to its digest and to
     what an artifact's layer may hold (`agent::check_layer`, §9.2), then applied in order
-    as an image's layers are. Its tree's root is at the epoch, as `shards build` gives an
+    as an image's layers are. Its tree's root is at the epoch, as `shards build image` gives an
     artifact's, since a COPY of the tree takes its root's time for where it goes. A
-    refusal fails the build in `shards build`'s words.
+    refusal fails the build in `shards build image`'s words.
   - That step takes the planner's `osi-artifact://` source's place in the definition, its
     inputs inserted before it.
   - With no context, the artifact is refused by name, saying what to give:
@@ -14901,11 +14901,11 @@ and BuildKit build an Agentfile, no shards installed. The frontend is `shards` i
     - the frontend's reads, checks, layout step and the definition it makes, which
       marshals, through a fake gateway;
     - the layout step over real layers (osi.rs);
-    - `shards build` from a layout, no registry reachable, pinned, mismatched and of
+    - `shards build image` from a layout, no registry reachable, pinned, mismatched and of
       another kind (`agents_come_from_the_oci_layouts_build_contexts_give`, real
       microVMs);
     - in `shards-dind`, an agent pushed, copied into a layout by oras, and built through
-      BuildKit and the frontend: its image is equal byte for byte to `shards build`'s from
+      BuildKit and the frontend: its image is equal byte for byte to `shards build image`'s from
       the same layout, and both run it confined on a microVM, saying the same.
 
     Mutation-checked, each mutant killed: the pinned digest, the frontend's and the
@@ -15895,7 +15895,7 @@ Tested:
 
 ### D101. Build policies: `--policy` and `Dockerfile.rego`, asked of every source
 
-`shards build` heeds build policies as buildx v0.37.1 sets them up (build/opt.go
+`shards build image` heeds build policies as buildx v0.37.1 sets them up (build/opt.go
 configureSourcePolicy, build/policy_loader.go, policy/validate.go) and BuildKit v0.28.1
 heeds them (solver/llbsolver/policy.go, bridge.go resolveSourceMetadata). Each policy is
 a set of Rego modules, evaluated by shards' own OPA (D98) and asked `data.docker.decision`
@@ -16224,7 +16224,7 @@ brackets, and one learned from AAAA, at their ports alone),
 
 ### D98. Rego as OPA evaluates it, for buildx's build policies
 
-`shards build --policy` (buildx v0.37.1's, in progress) needs OPA v1.14.1's Rego, with
+`shards build image --policy` (buildx v0.37.1's, in progress) needs OPA v1.14.1's Rego, with
 OPA's answers. `crates/rego` is shards' own implementation of that Rego, not a binding.
 OPA is Go, and linking it would put a second runtime beside `shards` (rule: one binary).
 Its parts:
@@ -16286,7 +16286,7 @@ Evidence:
   and `artifactType` of each entry.
 - BuildKit v0.28.1's local exporter: with several platforms it writes each one's files
   under `<os>_<arch>[_<variant>]`, so that is how a directory lays out per-platform content.
-- `--platform` is read as `shards build` reads it (`build::target_platforms`, which
+- `--platform` is read as `shards build image` reads it (`build::target_platforms`, which
   normalizes names as containerd does (D97)).
 
 What it does:
@@ -16296,7 +16296,7 @@ What it does:
   is refused.
 - The index carries the artifact type, at the top and on every entry.
 - The name resolves to the index, and is tagged to this host's manifest (else the first).
-- `shards push` sends the index together with every platform's manifest.
+- `shards push image` sends the index together with every platform's manifest.
 - `AGENT … FROM` (and `shards pull agent`) takes the guest's manifest out of an index.
   Before this, an index was refused.
 
@@ -16494,7 +16494,7 @@ Tested:
 
 ### D91. Remote build contexts: Git, HTTP(S) and stdin
 
-`shards build` takes every context `docker build` takes:
+`shards build image` takes every context `docker build` takes:
 - a directory;
 - a Git URL;
 - an HTTP(S) URL;
@@ -17153,7 +17153,7 @@ A build finds an image pinned by digest in the store whatever it is named there
 content finds it, and resolves it to the digest asked, (D78), as BuildKit resolves a pinned
 reference; before, a pinned reference to an image built here and never pushed was pulled.
 Linux images alone (`os` other than linux refused, named). Taking in OCI layouts and
-`docker save` archives is `shards load`'s (D41); Compose files and rebuildable `RUN`
+`docker save` archives is `shards load image`'s (D41); Compose files and rebuildable `RUN`
 history are later work (§12.16).
 
 Tested: `an_agentfile_made_from_an_image_builds_its_config` (an image of every setting,
@@ -17168,7 +17168,7 @@ commit (f0c0ec2e, 2026-10-04), and nothing read it: a pull that named it wrote n
 and said nothing of it. It is served: once the pull is through, the Agentfile of the image
 it pulled, of the platform it pulled (a lone manifest whatever its platform, as the pull
 takes one: `local_base`), is written to the file named, or as `Agentfile` in a directory
-named, where `shards build DIR` finds one; its file is made before the pull, so that a path
+named, where `shards build image DIR` finds one; its file is made before the pull, so that a path
 it cannot write fails first, and is written whole or not at all, as `save -o` writes an
 archive (D180 part 3a): a pull that fails leaves nothing. `-a`, which names no one image,
 is refused with it before anything is pulled. `make agentfile` takes `--platform`, read as
@@ -17739,7 +17739,7 @@ and no `containerimage.config.digest`; for files (`local`, `tar`), none.
 Found with it, and fixed: `build -q`, `--iidfile` and the `writing image` line gave the
 config's digest, which moby's classic store names an image by (BuildKit's image exporter
 answers it, and buildx's `getImageID` prefers it), while shards' store names it by its
-manifest's digest: `shards run $(shards build -q .)` found no such image. Now each gives
+manifest's digest: `shards run vm $(shards build -q .)` found no such image. Now each gives
 the manifest's digest, (D63), as Docker with its containerd store gives its image's
 (`a_build_given_no_name_is_kept_dangling` runs the image by the ID `-q` printed). `buildx.build.ref` is
 `shards/shards/` and an ID made as BuildKit's `identity.NewID` makes one (D63).
@@ -18178,7 +18178,7 @@ Part six, ingress:
 
 - **What is let in.** A port is let in past the microVM where both boundaries open it
   inward: the network's own grant (`--ingress`, `--expose`) and the microVM's for it
-  (`EXPOSE … FOR` it, both ways or `AS ingress`). `shards run -p` publishes it as any
+  (`EXPOSE … FOR` it, both ways or `AS ingress`). `shards run vm -p` publishes it as any
   port; `EXPOSE … AS egress` stays out of the image's exposed ports, so `-P` does not.
 - **To whom.** To the network's member. Which of several members a connection is for, no
   directive says yet, so the build refuses a network with such ports and more than one
@@ -18548,10 +18548,10 @@ Each phase ends with committed E2E tests and benchmarks that run real VMs.
    - Exit: measured request → guest-running ≤ 1 ms p50 on the M5 Max.
 3. **Guest stack v0.**
    - Scope: `shards-init`; tuned kernel built in a shards builder VM; OCI pull →
-     rootfs image; `shards run IMAGE CMD`.
+     rootfs image; `shards run vm IMAGE CMD`.
    - Built: our kernel (CI releases); virtio-pmem; the EROFS writer; layers → one EROFS
      image (D15); booting into an image to run a command (D16); the image store (D18);
-     registry TLS, HTTP and auth (D19–D21); pulls (D22); `shards pull` (D23); `shards run
+     registry TLS, HTTP and auth (D19–D21); pulls (D22); `shards pull image` (D23); `shards run vm
      IMAGE` (D24); terminals (D16, D27); the kernel and shards-init shipped with shards
      (D28).
 4. **In-VM engine.**
