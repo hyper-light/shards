@@ -529,7 +529,12 @@ on jupiter too.
 - Row 18: both D190 E2E tests on a Mac's real microVMs; macOS's and Windows' restarts
   measured against packing (PM M496), `OVER_FROM` 7 MiB there, 5 on Linux.
 
-platform-parity.py over crates/ finds 0 items alone (2026-11-08, p/parity-step14).
+platform-parity.py over crates/ finds 0 items alone (2026-11-08, p/parity-step14), once
+platform-parity.tsv stands the 7 that integrate's merges brought with their reasons:
+block.rs's `Through` and its four (D188's writer outside a build's budget, needed where a
+cgroup charges page cache, Linux's; Windows' job limits commit alone) and warm.rs's
+`RUN_DESCRIPTORS` and `reserve_descriptors` (Linux's RCU wait as a shared descriptor table
+grows; macOS's and Windows' hand-over not measured for it).
 
 Open, each waiting on what this step cannot give it:
 
