@@ -1,4 +1,4 @@
-//! A client's binds through its context (D215): `-v DIR:PATH` and `--mount type=bind` on
+//! A client's binds through its context (D228): `-v DIR:PATH` and `--mount type=bind` on
 //! this machine, for a run on another, name this machine's directories, as a path names the
 //! files where its user typed it. Each is served from here, by a share server of this
 //! process's own over its own QUIC connection to the machine, whose run's share passes the
@@ -81,6 +81,64 @@ pub(crate) fn here_binds(words: Vec<String>) -> Result<Bound, (bool, String)> {
     }
     let apart = !run || parsed.bool("detach");
     Ok((head.into_iter().chain(rest).collect(), served, apart))
+}
+
+/// `words` with the source of a `plug volume MICROVM SOURCE:PATH[:ro]` that names a
+/// directory of this client's sent as the relay that serves it from here (D228), and what
+/// is served, for as long as it is plugged in: its microVM lets it go as it is unplugged or
+/// ends. A named volume, and any other command, goes as it is.
+pub(crate) fn here_plug(words: Vec<String>) -> Result<(Vec<String>, Vec<Served>), String> {
+    use shards_cmdline::flags::{self, Outcome};
+    let said = shards_cmdline::grammar::rewrite(&words).unwrap_or_else(|| words.clone());
+    let refs: Vec<&str> = said.iter().map(String::as_str).collect();
+    let Some((command, path, n)) = shards_cmdline::commands::find(&refs) else {
+        return Ok((words, Vec::new()));
+    };
+    if !std::ptr::eq(command, &shards_cmdline::commands::PLUG_VOLUME) {
+        return Ok((words, Vec::new()));
+    }
+    let mut rest = said.get(n..).map(<[String]>::to_vec).unwrap_or_default();
+    let Outcome::Run(parsed) = flags::parse(command, path, &rest, &|_, value| Ok(value.to_string())) else {
+        return Ok((words, Vec::new()));
+    };
+    let Some(&at) = parsed.arg_words.get(1) else {
+        return Ok((words, Vec::new()));
+    };
+    let Some(spec) = rest.get(at).cloned() else {
+        return Ok((words, Vec::new()));
+    };
+    // `SOURCE:PATH[:ro|:rw]`, its path the guest's, absolute, as the daemon splits it.
+    let (head, mode) = match spec.rsplit_once(':') {
+        Some((head, m @ ("ro" | "rw"))) => (head, Some(m)),
+        _ => (spec.as_str(), None),
+    };
+    let Some((source, target)) = head.rsplit_once(":/") else {
+        return Ok((words, Vec::new()));
+    };
+    if !Path::new(source).is_absolute() && !source.starts_with('.') {
+        return Ok((words, Vec::new()));
+    }
+    let cwd = std::env::current_dir().map_err(|e| format!("the working directory: {e}"))?;
+    let here = cwd.join(source);
+    let meta = std::fs::metadata(&here).map_err(|e| format!("{}: {e}", here.display()))?;
+    if !meta.is_dir() {
+        return Err(format!("{}: not a directory", here.display()));
+    }
+    let relay = relayed(&here)?;
+    let mut sent = format!("{}:/{target}", relay.source());
+    if let Some(m) = mode {
+        sent.push(':');
+        sent.push_str(m);
+    }
+    if let Some(word) = rest.get_mut(at) {
+        *word = sent;
+    }
+    let head = said.get(..n).map(<[String]>::to_vec).unwrap_or_default();
+    let served = vec![Served {
+        relay,
+        read_only: mode == Some("ro"),
+    }];
+    Ok((head.into_iter().chain(rest).collect(), served))
 }
 
 /// A `-v` value as it is sent, where it binds a path of this client's: its source the relay
@@ -352,9 +410,11 @@ impl io::Write for Said {
 pub(crate) const SERVE_APART: &str = "bind-server";
 
 /// Starts a process of this binary's that serves `served` for a microVM of `context`'s
-/// that runs on without its command (`run -d`, `create`), until each relay ends as the run
-/// that took it does, and waits until it says each is kept there, or why not.
-pub(crate) fn start_apart(context: &str, served: &[Served]) -> Result<(), String> {
+/// that runs on without its command (`run -d`, `create`, `plug volume`), until each relay
+/// ends as the run that took it does, and waits until it says each is kept there, or why
+/// not: the process, which its starter ends where its command fails, as then no run takes
+/// what it serves.
+pub(crate) fn start_apart(context: &str, served: &[Served]) -> Result<shards_ipc::Child, String> {
     let exe = std::env::current_exe().map_err(|e| format!("this binary: {e}"))?;
     let mut args: Vec<String> = vec![SERVE_APART.into(), context.into()];
     for s in served {
@@ -363,20 +423,19 @@ pub(crate) fn start_apart(context: &str, served: &[Served]) -> Result<(), String
     }
     let (mut said, says) = io::pipe().map_err(|e| format!("a pipe for the binds' server: {e}"))?;
     let argv: Vec<&std::ffi::OsStr> = args.iter().map(std::ffi::OsStr::new).collect();
-    {
+    let child = {
         use shards_ipc::fd::AsFd as _;
         let fds = [(says.as_fd(), 1)];
         // Left to run on its own: it ends as its relays do.
-        let _ = shards_ipc::spawn(&exe, &argv, &fds, true)
-            .map_err(|e| format!("starting the binds' server: {e}"))?;
-    }
+        shards_ipc::spawn(&exe, &argv, &fds, true).map_err(|e| format!("starting the binds' server: {e}"))?
+    };
     drop(says);
     // Its first line: it holds its stdout open as long as it serves.
     let mut answer = String::new();
     io::BufRead::read_line(&mut io::BufReader::new(&mut said), &mut answer)
         .map_err(|e| format!("the binds' server: {e}"))?;
     match answer.trim_end() {
-        "ok" => Ok(()),
+        "ok" => Ok(child),
         "" => Err("the binds' server ended before it served them".into()),
         why => Err(why.to_string()),
     }
@@ -430,7 +489,7 @@ pub(crate) fn serve_apart(args: impl Iterator<Item = std::ffi::OsString>) -> std
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
@@ -504,5 +563,37 @@ mod tests {
         );
         let (sent, served, _) = here_binds(w(&["ps", "-a"])).unwrap();
         assert!(served.is_empty() && sent == w(&["ps", "-a"]));
+    }
+
+    /// A directory of this client's plugged in is sent as the relay that serves it, its
+    /// path in the microVM and its mode kept; a named volume goes as it is; a file is no
+    /// volume.
+    #[cfg(unix)]
+    #[test]
+    fn a_plugged_directory_of_the_clients_is_served_from_it() {
+        let at = shards_testdir::TempDir::new("client-plug").unwrap();
+        let dir = at.join("src");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(at.join("f"), b"x").unwrap();
+        let w = |words: &[&str]| words.iter().map(|w| w.to_string()).collect::<Vec<_>>();
+        let spec = format!("{}:/in/here:ro", dir.display());
+        let (sent, served) = here_plug(w(&["plug", "volume", "web", &spec])).unwrap();
+        assert_eq!(served.len(), 1);
+        assert!(served[0].read_only && !served[0].relay.file);
+        assert_eq!(
+            sent,
+            w(&[
+                "plug",
+                "volume",
+                "web",
+                &format!("{}:/in/here:ro", served[0].relay.source())
+            ])
+        );
+        let (sent, served) = here_plug(w(&["plug", "volume", "web", "data:/d"])).unwrap();
+        assert!(served.is_empty() && sent == w(&["plug", "volume", "web", "data:/d"]));
+        let file = format!("{}:/f", at.join("f").display());
+        assert!(here_plug(w(&["plug", "volume", "web", &file])).is_err());
+        let (_, served) = here_plug(w(&["plug", "disk", "web", &spec])).unwrap();
+        assert!(served.is_empty());
     }
 }

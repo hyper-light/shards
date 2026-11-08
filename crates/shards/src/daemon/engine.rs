@@ -58,12 +58,12 @@ pub(super) const MIN_VERSION: &str = crate::cli::version::ENGINE_API.1;
 const BODY_MOST: u64 = 8 * shards_ipc::MAX_PAYLOAD as u64;
 
 thread_local! {
-    /// The client of another machine's whose connection this thread serves (D215), through
+    /// The client of another machine's whose connection this thread serves (D228), through
     /// its context's engine (D180 part 4): empty for this machine's own user's.
     static CLIENT: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
 }
 
-/// The client whose Engine API connection this thread serves (D215), empty for this
+/// The client whose Engine API connection this thread serves (D228), empty for this
 /// machine's own user's: what a create or a volume made through it is judged by.
 pub(super) fn engine_client() -> String {
     CLIENT.with(|c| c.borrow().clone())
@@ -551,7 +551,7 @@ impl<D: Disk> Daemon<D> {
         let spawned = std::thread::Builder::new()
             .name("engine".into())
             .spawn_scoped(threads, move || {
-                // A client's of another machine's (D215): what its calls make is its.
+                // A client's of another machine's (D228): what its calls make is its.
                 CLIENT.with(|c| *c.borrow_mut() = client.unwrap_or_default());
                 self.engine_connection(threads, &conn, scope.as_ref());
                 done(&theirs);

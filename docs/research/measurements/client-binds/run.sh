@@ -1,5 +1,5 @@
 #!/bin/sh
-# D215 (docs/research/platform-measurements.md, PM M463): what a client's bind through its
+# D228 (docs/research/platform-measurements.md, PM M495): what a client's bind through its
 # context costs its guest against the machine's own bind of the same files. Two homes on
 # this host, the client's context over loopback QUIC; each round, in turns, the owner's run
 # and the client's, each timing 2,000 opens of a 4 KiB read and a 64 MiB file read and

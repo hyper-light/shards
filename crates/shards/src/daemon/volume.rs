@@ -72,7 +72,7 @@ impl<D: Disk> Daemon<D> {
             return 1;
         }
         // A client's: a volume of a directory of this machine's only where its owner granted
-        // it (D215).
+        // it (D228).
         if !whose.is_empty() {
             let grants = crate::client_grants::load(&self.home, whose);
             if let Err(e) = crate::volumes::refuse_options(&options, &name, whose, &grants) {

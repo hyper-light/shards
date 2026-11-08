@@ -2674,7 +2674,7 @@ pub(crate) fn forward(home: &Path, context: &Context, args: Vec<OsString>) -> Ex
         }
     };
     // A run's binds of this client's paths are of its files, served from here while the
-    // run there has them (D215); a run that goes on without its command, by a process of
+    // run there has them (D228); a run that goes on without its command, by a process of
     // their own.
     let (words, served, apart) = match crate::client_binds::here_binds(words) {
         Ok(rewritten) => rewritten,
@@ -2684,10 +2684,25 @@ pub(crate) fn forward(home: &Path, context: &Context, args: Vec<OsString>) -> Ex
             return ExitCode::from(status);
         }
     };
+    // A directory of this client's plugged into a microVM there is served apart, for as long
+    // as it is plugged in (D228).
+    let (words, plugged) = match crate::client_binds::here_plug(words) {
+        Ok(rewritten) => rewritten,
+        Err(why) => return fail(why),
+    };
+    let (served, apart) = if plugged.is_empty() {
+        (served, apart)
+    } else {
+        (plugged, true)
+    };
+    let mut serving_apart = None;
     let _relays = match (served.is_empty(), apart) {
         (true, _) => None,
         (false, true) => match crate::client_binds::start_apart(&context.name, &served) {
-            Ok(()) => None,
+            Ok(child) => {
+                serving_apart = Some(child);
+                None
+            }
             Err(e) => return fail(e),
         },
         (false, false) => match crate::client_binds::Relays::start(home, context.remote(), &served) {
@@ -2936,6 +2951,12 @@ pub(crate) fn forward(home: &Path, context: &Context, args: Vec<OsString>) -> Ex
         made,
     );
     crate::cli::terminal::restore();
+    // A command that failed took none of what was served apart for it (D228).
+    if let Some(child) = serving_apart
+        && !matches!(ran, Ok(Ok(0)))
+    {
+        let _ = child.kill(shards_ipc::signal::SIGKILL);
+    }
     if let Some((said, status)) = unwritten {
         let _ = writeln!(io::stderr(), "{said}");
         return ExitCode::from(status);
@@ -3410,7 +3431,7 @@ pub(crate) fn admin(thing: &str, args: &[OsString]) -> ExitCode {
                 return Err(format!("no client {name:?}"));
             }
             fs::remove_file(&path).map_err(at(&path))?;
-            // What its owner granted it goes with it (D215).
+            // What its owner granted it goes with it (D228).
             crate::client_grants::remove(&home, name)?;
             // The copies of its build contexts this machine kept go with it (crate::synced).
             let copies = home.join("synced").join(name);
@@ -3434,7 +3455,7 @@ pub(crate) fn admin(thing: &str, args: &[OsString]) -> ExitCode {
                     return Err(format!("no invitation {name:?}"));
                 }
                 redeem(&home, name)?;
-                // What it would have granted, where it enrolled no client (D215).
+                // What it would have granted, where it enrolled no client (D228).
                 if !clients(&home).iter().any(|c| c.name == *name) {
                     crate::client_grants::remove(&home, name)?;
                 }
@@ -3468,7 +3489,7 @@ const ADMIN_USAGE: &str =
   name; --gpus this machine's GPUs. Its own directories it binds are its own, served from
   it.";
 
-/// `shards grant client NAME ...`, or `revoke` where not `adding` (D215): what client NAME
+/// `shards grant client NAME ...`, or `revoke` where not `adding` (D228): what client NAME
 /// may reach of this machine, said once it is kept.
 fn grant_client(home: &Path, name: &str, rest: &[&str], adding: bool) -> Result<(), String> {
     if !clients(home).iter().any(|c| c.name == name) {
@@ -3523,7 +3544,7 @@ fn show_grants(name: &str, grants: &crate::client_grants::Grants) {
 fn invite_client(home: &Path, rest: &[&str]) -> Result<(), String> {
     let mut name = None;
     let mut output = None;
-    // What the client it enrolls may reach of this machine (D215), none unless named.
+    // What the client it enrolls may reach of this machine (D228), none unless named.
     let mut asked = crate::client_grants::Asked::default();
     let mut i = 0;
     while let Some(word) = rest.get(i) {

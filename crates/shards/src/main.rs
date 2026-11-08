@@ -98,7 +98,7 @@ pub(crate) fn shardsd(args: Vec<std::ffi::OsString>) -> ExitCode {
         // a run's share process (D38), which the daemon starts: not for people to run.
         Some("share") => share::share(args),
         // what serves a client's binds for a run through its context that goes on without
-        // its command (D215): not for people to run.
+        // its command (D228): not for people to run.
         Some(client_binds::SERVE_APART) => client_binds::serve_apart(args),
         // the daemon's spawner (shards_ipc::start_spawner, PM M158): not for people to run.
         #[cfg(unix)]

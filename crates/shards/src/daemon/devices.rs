@@ -27,7 +27,7 @@ use super::commands::Reply;
 use super::{Daemon, RunState, Threads, lock};
 use crate::containers::Disk;
 
-/// The client a device command is asked for, and what its owner granted it (D215); none
+/// The client a device command is asked for, and what its owner granted it (D228); none
 /// for this machine's own user.
 type Whom<'a> = Option<(&'a str, &'a crate::client_grants::Grants)>;
 
@@ -220,7 +220,7 @@ impl<D: Disk> Daemon<D> {
         };
         self.settle();
         // A client's, through its context: what it plugs in of this machine is what its
-        // owner granted it (D215).
+        // owner granted it (D228).
         let grants = (!whose.is_empty()).then(|| crate::client_grants::load(&self.home, whose));
         let whom = grants.as_ref().map(|g| (whose, g));
         Some(if std::ptr::eq(command, &PLUG_DISK) {
@@ -379,7 +379,7 @@ impl<D: Disk> Daemon<D> {
                     return Err(format!("{source}: a disk's file is given by its absolute path"));
                 }
                 // A client's: a file of this machine's only in a directory its owner granted
-                // it, judged before it is made and again as it is open (D215).
+                // it, judged before it is made and again as it is open (D228).
                 let shown = format!("plug disk {source}");
                 if let Some((client, grants)) = whom {
                     crate::client_grants::refuse_path(client, grants, &shown, &file, !read_only)?;
@@ -456,14 +456,23 @@ impl<D: Disk> Daemon<D> {
         whom: Whom<'_>,
     ) -> Result<String, String> {
         use shards_ipc::fd::AsFd as _;
-        // A client's directory is its own, which a run's bind serves from it (D215); one
-        // plugged into a running microVM is not served so yet.
-        if let Some((client, _)) = whom
-            && Path::new(source).is_absolute()
-        {
-            return Err(format!(
-                "{source}: client {client}'s directory is its own, which a context serves to a run's bind (-v) alone yet: plug a volume"
-            ));
+        // A client's directory is its own, served from it (D228): the VM is given the stream
+        // its client serves it on, as a run's share of it is, and no share process serves it
+        // here. A path of this machine's a client names is the client's, never this one's.
+        let client = whom.map_or("", |(client, _)| client);
+        if Path::new(source).is_absolute() || source.starts_with(crate::client_grants::RELAYED) {
+            crate::client_grants::refuse_bind(client, source)?;
+        }
+        if let Some(relay) = crate::client_grants::relay_of(source) {
+            if relay.file {
+                return Err(format!("{}: a file is no volume: plug its directory", relay.here));
+            }
+            let end = super::remote::take_relay(client, &relay.token)?;
+            let step = [&[device::SHARE][..], tag.as_bytes()].concat();
+            // Its share is the client's to make read-only, its server told so; the guest
+            // mounts it as asked too.
+            let _ = read_only;
+            return self.ask_device(id, &step, &[end.as_fd()]);
         }
         let dir = if Path::new(source).is_absolute() {
             PathBuf::from(source)
@@ -480,7 +489,7 @@ impl<D: Disk> Daemon<D> {
             return Err(format!("{}: not a directory", dir.display()));
         }
         // A volume a client plugs in is the store's, or a directory of this machine's its
-        // owner granted it, judged as it is open (D215).
+        // owner granted it, judged as it is open (D228).
         if let Some((client, grants)) = whom
             && store_dir_of(&self.home, source) != Some(dir.clone())
         {
@@ -499,10 +508,13 @@ impl<D: Disk> Daemon<D> {
         )];
         let parent = self.parent_of(id).unwrap_or_default();
         let (ends, child) = self.started_shares(threads, &dirs, &parent, false)?;
+        // On Windows none where the share is a client's; this one is the machine's.
+        #[cfg(unix)]
+        let child = Some(child);
         lock(&self.shared_by)
             .entry(id.to_string())
             .or_default()
-            .push(child);
+            .extend(child);
         let step = [&[device::SHARE][..], tag.as_bytes()].concat();
         #[cfg(unix)]
         {

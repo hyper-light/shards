@@ -176,6 +176,17 @@ type JoinDoor = UnixStream;
 #[cfg(windows)]
 type JoinDoor = (UnixStream, std::os::windows::io::OwnedHandle);
 
+/// Whether `handle` is a pipe's (GetFileType): on Windows, a share's that a client serves
+/// (D228), where every other share's is its directory's.
+#[cfg(windows)]
+fn is_pipe(handle: &OwnedFd) -> bool {
+    use std::os::windows::io::AsRawHandle as _;
+    use windows_sys::Win32::Storage::FileSystem::{FILE_TYPE_PIPE, GetFileType};
+    // SAFETY: GetFileType reads an open handle's type, which this borrows, and touches no
+    // memory.
+    unsafe { GetFileType(handle.as_raw_handle()) == FILE_TYPE_PIPE }
+}
+
 /// A new, empty swap file of `bytes` at `at`, sparse (PM M349), in place of any before it:
 /// only this user's.
 fn open_swap(at: &Path, bytes: u64) -> std::io::Result<std::fs::File> {
@@ -2155,7 +2166,7 @@ impl<D: Disk> Daemon<D> {
             for (provider, conn) in self.engine.take_arrived() {
                 self.take_engine(threads, conn, Some(engine::Scope { provider }), None);
             }
-            // Clients' of other machines', through their contexts' engines (D215).
+            // Clients' of other machines', through their contexts' engines (D228).
             for (client, conn) in remote::take_engine_clients() {
                 self.take_engine(threads, conn, None, Some(client));
             }
@@ -3449,7 +3460,7 @@ impl<D: Disk> Daemon<D> {
         let shared = cdi_points
             .and_then(|more| {
                 points.extend(more);
-                // A client's (D215): judged by what its owner granted it, and its own
+                // A client's (D228): judged by what its owner granted it, and its own
                 // directories served by the relays its client opened for them.
                 let grants =
                     (!run.client.is_empty()).then(|| crate::client_grants::load(&self.home, &run.client));
@@ -3659,6 +3670,11 @@ impl<D: Disk> Daemon<D> {
                 }
                 // A joiner's are volumes of its microVM's join share, each named so that no
                 // other microVM can guess it (D119), as no run's own shares are its.
+                if joining && points.iter().any(|p| !p.relay.is_empty()) {
+                    return Err(
+                        "a client's own directory is served to a run of a microVM of its own: a run joining another's network (--network container:NAME) takes none".into(),
+                    );
+                }
                 if joining {
                     let names = opened
                         .dirs
@@ -4422,10 +4438,13 @@ impl<D: Disk> Daemon<D> {
             return Ok(None);
         }
         let (ends, child) = self.started_shares(threads, dirs, parent, moved)?;
+        // On Windows none where every share is a client's, served from it (D228).
+        #[cfg(unix)]
+        let child = Some(child);
         let mut shared = lock(&self.shared_by);
         let children = shared.entry(id.to_string()).or_default();
         children.retain(|c| !c.has_ended());
-        children.push(child);
+        children.extend(child);
         Ok(Some(ends))
     }
 
@@ -4447,7 +4466,10 @@ impl<D: Disk> Daemon<D> {
     /// child's mitigations: it is shards' own binary, which no Win32k-less process loads
     /// (STATUS_DLL_INIT_FAILED, jupiter), and it sets reparse points, which are FSCTLs. Given
     /// each share's directory at 4 + i, the home's private directory at 4 + n and each share's
-    /// end of its stream at 5 + n + i, as its Unix twin is numbered (share.rs).
+    /// end of its stream at 5 + n + i, as its Unix twin is numbered (share.rs). A client's
+    /// directory (D228) comes as the VM's end of the pipe its client serves it on, which
+    /// the VM is handed as it is, in its place, and the share process serves none of; none
+    /// is started where every share is a client's.
     #[cfg(windows)]
     fn started_shares<'s, 'e>(
         &'s self,
@@ -4455,14 +4477,30 @@ impl<D: Disk> Daemon<D> {
         dirs: &[(OwnedFd, bool, OsString)],
         parent: &str,
         moved: bool,
-    ) -> Result<(ShareEnds, Arc<shards_ipc::Child>), String> {
+    ) -> Result<(ShareEnds, Option<Arc<shards_ipc::Child>>), String> {
         let exe = std::env::current_exe().map_err(|e| format!("this binary: {e}"))?;
+        // Each share's VM end, in order: a client's its relay's, the rest made below.
+        let mut ends: Vec<Option<OwnedFd>> = Vec::with_capacity(dirs.len());
+        let mut served = Vec::new();
+        for (dir, read_only, only) in dirs {
+            if is_pipe(dir) {
+                ends.push(Some(
+                    dir.try_clone().map_err(|e| format!("a client's share: {e}"))?,
+                ));
+            } else {
+                ends.push(None);
+                served.push((dir, *read_only, only));
+            }
+        }
+        if served.is_empty() {
+            return Ok((ends.into_iter().flatten().collect(), None));
+        }
         let group = if parent.is_empty() {
             None
         } else {
             Some(self.group_job(parent)?)
         };
-        let streams = dirs
+        let streams = served
             .iter()
             .map(|_| shards_ipc::byte_pair())
             .collect::<io::Result<Vec<_>>>()
@@ -4471,17 +4509,17 @@ impl<D: Disk> Daemon<D> {
         if moved {
             args.push(OsStr::new(crate::share::MOVED));
         }
-        for (_, read_only, only) in dirs {
+        for (_, read_only, only) in &served {
             args.push(OsStr::new(if *read_only { "ro" } else { "rw" }));
             args.push(only.as_os_str());
         }
-        let n = dirs.len();
+        let n = served.len();
         let number = |at: usize| i32::try_from(at).map_err(|_| "too many shares".to_string());
         // What it says of its failures, the daemon's log.
         let err = io::stderr();
         let ghosts = self.private_dir()?;
         let mut fds = vec![(err.as_fd(), 2), (ghosts.as_fd(), number(4 + n)?)];
-        for (i, ((dir, _, _), (server, _))) in dirs.iter().zip(&streams).enumerate() {
+        for (i, ((dir, _, _), (server, _))) in served.iter().zip(&streams).enumerate() {
             fds.push((dir.as_fd(), number(4 + i)?));
             fds.push((server.as_fd(), number(5 + n + i)?));
         }
@@ -4495,7 +4533,13 @@ impl<D: Disk> Daemon<D> {
         )
         .map_err(|e| format!("starting the share process: {e}"))?;
         let child = self.follow_share(threads, child);
-        Ok((streams.into_iter().map(|(_, vm)| vm).collect(), child))
+        let mut made = streams.into_iter().map(|(_, vm)| vm);
+        let ends = ends
+            .into_iter()
+            .map(|end| end.or_else(|| made.next()))
+            .collect::<Option<Vec<_>>>()
+            .ok_or("a share's stream was not made")?;
+        Ok((ends, Some(child)))
     }
 
     /// [`start_shares`](Self::start_shares)'s process, for `dirs`, some.
@@ -4591,7 +4635,7 @@ impl<D: Disk> Daemon<D> {
         crate::setup::verify(run)?;
         validate_restart_policy(&run.restart_policy)?;
         // A client's, through its context: what it reaches of this machine is what its owner
-        // granted it (D215), its devices judged here, its mounts' directories below.
+        // granted it (D228), its devices judged here, its mounts' directories below.
         let grants = (!run.client.is_empty()).then(|| crate::client_grants::load(&self.home, &run.client));
         if let Some(grants) = &grants {
             crate::client_grants::refuse_devices(run, &run.client, grants)?;
