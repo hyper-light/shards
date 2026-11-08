@@ -234,11 +234,11 @@ SPIs of the GICv2m frame the VMM keeps (D154).
 | A restore's working set recorded and mapped ahead (D29) | yes | yes (D154) | yes | yes (D196, PM M415, M421) |
 | Networks, published ports, default deny, IPv6 on networks and past the microVM (D46, D59, D99) | yes | yes | yes | yes (D142, D143) |
 | Volumes and binds, a bind's host-made files its run's user's, DAX windows (D38, D189) | yes | yes | yes | yes (D197, D207, PM M412, M413) |
-| A run's writable layer, ext4 over pmem, restarts over the kept layer, freed blocks given back (D190) | yes | yes | yes; restarts over the kept layer on real microVMs, going over from 7 MiB held, where its restarts cross (PM M463) | yes; restarts over the kept layer, a view placed where the template's was (placeholders), on real microVMs (CI's windows-2025 and windows-2022, jupiter), going over from 7 MiB held, where its restarts cross (PM M463) |
+| A run's writable layer, ext4 over pmem, restarts over the kept layer, freed blocks given back (D190) | yes | yes | yes; restarts over the kept layer on real microVMs, going over from 7 MiB held, where its restarts cross (PM M464) | yes; restarts over the kept layer, a view placed where the template's was (placeholders), on real microVMs (CI's windows-2025 and windows-2022, jupiter), going over from 7 MiB held, where its restarts cross (PM M464) |
 | Memory given back: free page reporting, budgets, the host's word, for runs and builders (D148, D151, D188) | yes | yes | yes | yes (PM M371, M375, M391) |
 | A budgeted build's writes made outside its budget (D188, PM M442) | yes | yes | needs none: no kernel charges its page cache to a group shards keeps | needs none: a job's limit is its commit, never its cache |
 | `--cgroup-parent` (D183) | a slice of the user's manager, or a cgroup delegated to the user (slices 1, 2) | as amd64 | groups shards keeps (slice 3, PM M355) | groups shards keeps, each a job its VM and network processes are made in (slice 3, PM M359, M361) |
-| vCPUs of every host CPU, the workload's CPUs held to its limits (D191) | yes, vCPUs at the fair scheduler's shortest slice (PM M440, M441) | yes | yes, vCPUs at the real-time policy (PM M8, M10) | yes, vCPUs a step above normal priority (PM M462); a held daemon's microVMs the CPUs of its affinity mask |
+| vCPUs of every host CPU, the workload's CPUs held to its limits (D191) | yes, vCPUs at the fair scheduler's shortest slice (PM M440, M441) | yes | yes, vCPUs at the real-time policy (PM M8, M10) | yes, vCPUs a step above normal priority (PM M463); a held daemon's microVMs the CPUs of its affinity mask |
 | Log drivers (D163, D198, D199) | every driver, journald its own | as amd64 | every driver but journald, macOS's own log (`oslog`) its counterpart | every driver but journald, `etwlogs` its counterpart |
 | A GPU (D144, Venus) | yes, glibc and musl, NVIDIA's, AMD's and Intel's GPUs (D201, D208); open: the GPU desktop's run of D208's build, waiting for its owner's go | built and linted, untested on a GPU (none here) | yes | yes (D202) |
 | Devices plugged into a running microVM, disks grown (D214) | yes | yes (nested, its MSIs through the GIC's ITS) | yes | yes: in the VMM, its shared directory over a duplex pipe (tests/hotplug.rs), and through the CLI a disk and a volume, its share process's stream given the VM as a run's are (tests/plug.rs), on CI's windows-2025 and windows-2022 and on jupiter |
@@ -8583,7 +8583,7 @@ the user told).
   `a_held_vcpu_goes_on_at_its_periods_end_without_its_governor`, its other tests as
   before.
 - **Windows: its vCPUs a step above normal priority** (2026-11-04, measured and kept
-  2026-11-08, PM M462). Whether WHP's vCPU threads waited on a contended host as Linux's did
+  2026-11-08, PM M463). Whether WHP's vCPU threads waited on a contended host as Linux's did
   was unmeasured (jupiter's runs were then held to a few thousandths of a core by its
   headroom guard). On a Windows client the hypervisor
   leaves guests' virtual processors to the root's NT scheduler (the root scheduler, clients'
@@ -8622,7 +8622,7 @@ the user told).
   HIGHEST (10). Tested: platform's `a_thread_run_long_goes_back_to_normal_and_is_raised_again_as_it_waits`,
   `a_thread_that_waits_between_its_runs_stays_raised`,
   `credit_carries_a_thread_that_waits_across_its_clocks_steps` and
-  `a_thread_set_otherwise_is_left_as_it_is`. Measured as PM M440 was (PM M462, n 100 a side,
+  `a_thread_set_otherwise_is_left_as_it_is`. Measured as PM M440 was (PM M463, n 100 a side,
   interleaved, `cpu-elastic/phases.py` against `winnone.patch`, which leaves the threads as
   they start): on windows-2025's 4 CPUs that 4 busy loops held, the guest's part of a
   `--cpus 1` start took 217 and 337 ms at p50 with the vCPUs at their starting priority and
@@ -8941,7 +8941,7 @@ the guest keeps their metadata alone.
   (`a_stopped_microvms_next_run_goes_on_over_its_kept_file`,
   `a_restored_microvm_goes_on_over_a_stopped_containers_kept_file`, on an M3 Ultra with
   macOS 26.4, at 8a13e492 3 of 3 and 4 of 4, 2026-11-07). macOS's and Windows' restarts
-  cross later than Linux's (PM M463): going over costs a restart more there whatever the
+  cross later than Linux's (PM M464): going over costs a restart more there whatever the
   layer holds (an empty layer's 7.5 to 8.7 ms more than its packing at p50 on macOS, 233 on
   Windows), packing growing with what it holds as on Linux, the lines meeting at 6.8 to 7.9
   MiB on macOS (three runs, n 20 and 40) and 7.95 on Windows (jupiter, n 20). So
@@ -8975,7 +8975,7 @@ the guest keeps their metadata alone.
   file's identity its volume's serial and file index (GetFileInformationByHandle). Both
   pass on WHP, on CI's windows-2025 and windows-2022, with every VM test required to run
   there (CI 42070454222 at 90de623f, 42134267973 at b8270370), and on jupiter. Against
-  packing (PM M463, n 20 a side, interleaved), `start` at p50: 0 B 321.55 ms gone over
+  packing (PM M464, n 20 a side, interleaved), `start` at p50: 0 B 321.55 ms gone over
   against 88.66 packed, 4 MiB 652.89 against 494.89, 8 MiB 822.56 against 824.35, 16 MiB
   1,344.67 against 1,612.55, 32 MiB 2,205.23 against 3,126.39: Windows' restarts cross at
   7.95 MiB, and it goes over from 7 (`OVER_FROM`).
@@ -8999,7 +8999,7 @@ the guest keeps their metadata alone.
 - Visits and joiners' runs over the kept file too.
 - Going over's fixed cost below packing's, so that a layer holding under `OVER_FROM` goes
   over too: the mount of the container's file system and its one host flush, and the root's
-  two moves (PM M443); on Windows its 233 ms, unmeasured step by step (PM M463).
+  two moves (PM M443); on Windows its 233 ms, unmeasured step by step (PM M464).
 - Joiners' layers (D119) on the microVM's own, rather than tmpfs.
 - The head's boot: a 2 MiB block a section for the guest to write as it probes, on KVM
   1.9 ms a GiB when the host has huge pages free and up to 19 ms a GiB when it compacts

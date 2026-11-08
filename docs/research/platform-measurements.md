@@ -18446,7 +18446,7 @@ revision before comparing a changed API/implementation.
   session), which alone says whether Hyper-V's SGIs and timers hold across a 64-vCPU
   snapshot at a native host's timing.
 
-### M462. A start on a contended Windows host: WHP's vCPUs at THREAD_PRIORITY_ABOVE_NORMAL (D191)
+### M463. A start on a contended Windows host: WHP's vCPUs at THREAD_PRIORITY_ABOVE_NORMAL (D191)
 
 - **Question.** D191's Windows candidate (`platform::windows_thread`) runs each vCPU thread
   and device worker a step above normal priority, base 9 against the host's threads' 8,
@@ -18521,7 +18521,7 @@ revision before comparing a changed API/implementation.
   as on Linux (D125, e2820ce9). Harness: `cpu-elastic/phases.py`, `winslice.py`,
   `winnone.patch`, `.github/workflows/windows-wake.yml`.
 
-### M463. A restart over the kept layer against packing it, on macOS and Windows (D190)
+### M464. A restart over the kept layer against packing it, on macOS and Windows (D190)
 
 - **Question.** D190's restart goes over a stopped container's kept layer file where it
   holds 5 MiB or more and packs and puts it back below, where Linux's two restarts cross
@@ -18536,7 +18536,7 @@ revision before comparing a changed API/implementation.
   - Windows: jupiter (AMD Ryzen AI Max+ 395, 32 CPUs, Windows 11 Pro 10.0.26200, NTFS),
     e2820ce9, 2026-11-08, its kernel quiet (the System process 0 to 0.08 cores, the
     processor queue 0 at the start and the end); and a first run at 8a13e492 on 2026-11-07
-    while its kernel took 21 to 29 of its 32 CPUs (M462), cut off after 8 MiB.
+    while its kernel took 21 to 29 of its 32 CPUs (M463), cut off after 8 MiB.
 - **Found** (`start -a` ms at p50 (p90), OLD → NEW, NEW less OLD at p50):
 
   | written | macOS, n 20 | macOS, n 40 | macOS, n 40 again | Windows quiet, n 20 | Windows, kernel busy, n 20 |

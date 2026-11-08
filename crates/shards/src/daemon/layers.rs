@@ -253,7 +253,7 @@ pub(super) fn open_kept(at: &Path) -> Result<std::fs::File, String> {
 #[cfg(target_os = "linux")]
 pub(super) const OVER_FROM: u64 = 5 << 20;
 
-/// [`OVER_FROM`] on macOS and Windows, 7 MiB, where their restarts cross (PM M463): going
+/// [`OVER_FROM`] on macOS and Windows, 7 MiB, where their restarts cross (PM M464): going
 /// over costs more there than on Linux whatever the layer holds (an empty layer's restart 7
 /// to 9 ms more than its packing at p50 on macOS, 233 on Windows), and packing grows with
 /// what it holds as on Linux.
@@ -275,7 +275,7 @@ const CROSSOVER_BASIS: [(u64, f64, f64); 7] = [
     (32 << 20, 396.48, 286.21),
 ];
 
-/// PM M463's macOS restarts, as [`CROSSOVER_BASIS`] on Linux, n = 40 a side (an M3 Ultra,
+/// PM M464's macOS restarts, as [`CROSSOVER_BASIS`] on Linux, n = 40 a side (an M3 Ultra,
 /// macOS 26.4, APFS): packing quicker up to 6 MiB, going over from 8.
 #[cfg(all(test, target_os = "macos"))]
 const CROSSOVER_BASIS: [(u64, f64, f64); 6] = [
@@ -287,7 +287,7 @@ const CROSSOVER_BASIS: [(u64, f64, f64); 6] = [
     (16 << 20, 124.28, 113.45),
 ];
 
-/// PM M463's Windows restarts, as [`CROSSOVER_BASIS`] on Linux, n = 20 a side (jupiter,
+/// PM M464's Windows restarts, as [`CROSSOVER_BASIS`] on Linux, n = 20 a side (jupiter,
 /// Windows 11 10.0.26200, NTFS): packing quicker up to 4 MiB, going over from 8.
 #[cfg(all(test, windows))]
 const CROSSOVER_BASIS: [(u64, f64, f64); 7] = [
@@ -709,7 +709,7 @@ mod tests {
     /// A restart goes over its kept file from where the measured restarts cross: below the
     /// first size whose restart went over quicker, past the last whose packing was quicker,
     /// within a MiB of where the two lines between them meet, on each host's kind its own
-    /// (PM M443, M463).
+    /// (PM M443, M464).
     #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     #[test]
     fn a_restart_goes_over_from_where_packing_costs_more() {

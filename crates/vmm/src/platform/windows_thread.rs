@@ -1,7 +1,7 @@
 //! vCPU and device thread priority on Windows (D191), measured on a contended host as Linux's
 //! slice was (PM M440) and kept for what it showed: on windows-2025's 4 CPUs that 4 busy
 //! loops held, a run's start reached its command 8.2 ms after its request at p50 where 217
-//! without it, and 10.1 where 337 again (PM M462).
+//! without it, and 10.1 where 337 again (PM M463).
 //!
 //! Windows runs the ready threads of the highest priority, in turn, a time slice each; "if a
 //! higher-priority thread becomes available to run, the system ceases to execute the
@@ -12,7 +12,7 @@
 //! as the thread that runs it does. A vCPU another wakes, at the priority of the host's
 //! busy threads, may wait for one to finish its slice, as Linux's waited (PM M440), unless
 //! the boost Windows gives a thread whose wait is satisfied (Microsoft, Priority Boosts)
-//! lifts it past them already: it does not (PM M462).
+//! lifts it past them already: it does not (PM M463).
 //!
 //! So each such thread runs at THREAD_PRIORITY_ABOVE_NORMAL: base priority 9 in a
 //! NORMAL_PRIORITY_CLASS process, against its host's threads' 8, the least step above them,

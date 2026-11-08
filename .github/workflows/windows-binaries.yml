@@ -40,7 +40,7 @@ env:
   TARGET: ${{ github.event.inputs.target || 'C:\Users\corph\g121-parity-target' }}
   # Raised to build again: the parity audit's step 14, D191's Windows wake policy and D190's
   # restarts measured on jupiter, and its moves, plugs and restarts run there; 4, a microVM
-  # given the CPUs of its daemon's affinity (PM M462).
+  # given the CPUs of its daemon's affinity (PM M463).
   BUILD: 4
 
 jobs:
