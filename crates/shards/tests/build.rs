@@ -10912,10 +10912,19 @@ fn agents_answer_what_their_networks_let_in() {
         ),
     )
     .unwrap();
-    let built = shards(&["build", "-t", "ingress:1", ctx.to_str().unwrap()]);
+    let built = shards(&["build", "image", "-t", "ingress:1", ctx.to_str().unwrap()]);
     assert_eq!(built.status, Some(0), "{}", built.stderr);
     // A port declared AS egress is a destination: publishing it is refused (§12 answer 6).
-    let refused = shards(&["run", "--rm", "-p", "127.0.0.1::9443", "ingress:1", "exit", "0"]);
+    let refused = shards(&[
+        "run",
+        "vm",
+        "--rm",
+        "-p",
+        "127.0.0.1::9443",
+        "ingress:1",
+        "exit",
+        "0",
+    ]);
     assert_ne!(refused.status, Some(0), "{}", refused.stdout);
     assert!(
         refused
@@ -10926,6 +10935,7 @@ fn agents_answer_what_their_networks_let_in() {
     );
     let ran = shards(&[
         "run",
+        "vm",
         "-d",
         "--name",
         "front",
@@ -10937,14 +10947,15 @@ fn agents_answer_what_their_networks_let_in() {
         "sleep",
     ]);
     assert_eq!(ran.status, Some(0), "{}{}", ran.stdout, ran.stderr);
-    let listed = shards(&["port", "front"]);
+    let listed = shards(&["read", "ports", "front"]);
     assert_eq!(listed.status, Some(0), "{}", listed.stderr);
     let host_port = |container: &str| -> u16 {
         listed
             .stdout
             .lines()
             .find(|l| l.starts_with(&format!("{container}/tcp")))
-            .and_then(|l| l.rsplit(':').next())
+            .and_then(|l| l.split_whitespace().nth(1))
+            .and_then(|at| at.rsplit(':').next())
             .and_then(|p| p.parse().ok())
             .unwrap_or_else(|| panic!("no {container} in {}", listed.stdout))
     };
@@ -10972,7 +10983,7 @@ fn agents_answer_what_their_networks_let_in() {
     assert_eq!(said, "hello from agent-a\n", "the published ingress port");
     // No grant lets 7200 in: the agent listens on it, and is not reached.
     assert!(!read(other).contains("agent-a"), "port 7200 reached the agent");
-    let _ = shards(&["rm", "-f", "front"]);
+    let _ = shards(&["remove", "vm", "-f", "front"]);
 }
 
 /// Each member of a network answers the port its `EXPOSE` names it for (D122): two agents
@@ -11024,7 +11035,7 @@ fn each_agent_answers_the_port_its_expose_names() {
     .unwrap();
     // Named none: both its members, the one listening taking each connection (the user's
     // decision, 2026-11-08; a_port_comes_in_to_the_member_listening_on_it).
-    let built = shards(&["build", "-t", "members:0", ctx.to_str().unwrap()]);
+    let built = shards(&["build", "image", "-t", "members:0", ctx.to_str().unwrap()]);
     assert_eq!(built.status, Some(0), "{}", built.stderr);
     std::fs::write(
         ctx.join("Agentfile"),
@@ -11033,10 +11044,11 @@ fn each_agent_answers_the_port_its_expose_names() {
         ),
     )
     .unwrap();
-    let built = shards(&["build", "-t", "members:1", ctx.to_str().unwrap()]);
+    let built = shards(&["build", "image", "-t", "members:1", ctx.to_str().unwrap()]);
     assert_eq!(built.status, Some(0), "{}", built.stderr);
     let ran = shards(&[
         "run",
+        "vm",
         "-d",
         "--name",
         "pair",
@@ -11048,14 +11060,15 @@ fn each_agent_answers_the_port_its_expose_names() {
         "sleep",
     ]);
     assert_eq!(ran.status, Some(0), "{}{}", ran.stdout, ran.stderr);
-    let listed = shards(&["port", "pair"]);
+    let listed = shards(&["read", "ports", "pair"]);
     assert_eq!(listed.status, Some(0), "{}", listed.stderr);
     let host_port = |container: &str| -> u16 {
         listed
             .stdout
             .lines()
             .find(|l| l.starts_with(&format!("{container}/tcp")))
-            .and_then(|l| l.rsplit(':').next())
+            .and_then(|l| l.split_whitespace().nth(1))
+            .and_then(|at| at.rsplit(':').next())
             .and_then(|p| p.parse().ok())
             .unwrap_or_else(|| panic!("no {container} in {}", listed.stdout))
     };
@@ -11092,7 +11105,7 @@ fn each_agent_answers_the_port_its_expose_names() {
             "PUBLISHED"
         )
     );
-    let _ = shards(&["rm", "-f", "pair"]);
+    let _ = shards(&["remove", "vm", "-f", "pair"]);
 }
 
 /// A port coming in to several members goes to the member listening on it (the user's
@@ -11145,9 +11158,9 @@ fn a_port_comes_in_to_the_member_listening_on_it() {
         ),
     )
     .unwrap();
-    let built = shards(&["build", "-t", "listening:1", ctx.to_str().unwrap()]);
+    let built = shards(&["build", "image", "-t", "listening:1", ctx.to_str().unwrap()]);
     assert_eq!(built.status, Some(0), "{}", built.stderr);
-    let mut run = vec!["run", "-d", "--name", "listening"];
+    let mut run = vec!["run", "vm", "-d", "--name", "listening"];
     for p in [
         "127.0.0.1::7100",
         "127.0.0.1::7200",
@@ -11159,14 +11172,15 @@ fn a_port_comes_in_to_the_member_listening_on_it() {
     run.extend(["listening:1", "sleep"]);
     let ran = shards(&run);
     assert_eq!(ran.status, Some(0), "{}{}", ran.stdout, ran.stderr);
-    let listed = shards(&["port", "listening"]);
+    let listed = shards(&["read", "ports", "listening"]);
     assert_eq!(listed.status, Some(0), "{}", listed.stderr);
     let host_port = |container: &str| -> u16 {
         listed
             .stdout
             .lines()
             .find(|l| l.starts_with(&format!("{container}/tcp")))
-            .and_then(|l| l.rsplit(':').next())
+            .and_then(|l| l.split_whitespace().nth(1))
+            .and_then(|at| at.rsplit(':').next())
             .and_then(|p| p.parse().ok())
             .unwrap_or_else(|| panic!("no {container} in {}", listed.stdout))
     };
@@ -11192,7 +11206,7 @@ fn a_port_comes_in_to_the_member_listening_on_it() {
     };
     // What the run and its agents said, where a port reached no one.
     let said = || {
-        let logs = shards(&["logs", "listening"]);
+        let logs = shards(&["read", "logs", "listening"]);
         format!("--- logs\n{}{}", logs.stdout, logs.stderr)
     };
     for (p, who) in [("7100", "web"), ("7200", "api"), ("7300", "ops")] {
@@ -11218,7 +11232,7 @@ fn a_port_comes_in_to_the_member_listening_on_it() {
         "{}",
         shown.stdout
     );
-    let _ = shards(&["rm", "-f", "listening"]);
+    let _ = shards(&["remove", "vm", "-f", "listening"]);
 }
 
 /// PM M498 (D122): what the chooser costs a candidate's bind(2) and listen(2), from the
@@ -11279,20 +11293,22 @@ fn chooser_round_trip_costs() {
         ),
     )
     .unwrap();
-    let built = shards(&["build", "-t", "chooser:1", ctx.to_str().unwrap()]);
+    let built = shards(&["build", "image", "-t", "chooser:1", ctx.to_str().unwrap()]);
     assert_eq!(built.status, Some(0), "{}", built.stderr);
-    let ran = shards(&["run", "-d", "--name", "chooser", "chooser:1", "sleep"]);
+    let ran = shards(&["run", "vm", "-d", "--name", "chooser", "chooser:1", "sleep"]);
     assert_eq!(ran.status, Some(0), "{}{}", ran.stdout, ran.stderr);
     let deadline = std::time::Instant::now() + TIMEOUT;
     let mut said = String::new();
     while std::time::Instant::now() < deadline {
-        said = shards(&["logs", "chooser"]).stdout;
+        // Agents say theirs on the run's stderr, each line `[agent NAME] `.
+        let logs = shards(&["read", "logs", "chooser"]);
+        said = logs.stdout + &logs.stderr;
         if said.matches("confined listencost").count() == 3 {
             break;
         }
         std::thread::sleep(std::time::Duration::from_secs(1));
     }
-    let _ = shards(&["rm", "-f", "chooser"]);
+    let _ = shards(&["remove", "vm", "-f", "chooser"]);
     for line in said.lines().filter(|l| l.contains("listencost")) {
         println!("{line}");
     }
@@ -11346,10 +11362,11 @@ fn a_udp_flow_goes_to_its_ports_next_holder() {
         ),
     )
     .unwrap();
-    let built = shards(&["build", "-t", "udpholder:1", ctx.to_str().unwrap()]);
+    let built = shards(&["build", "image", "-t", "udpholder:1", ctx.to_str().unwrap()]);
     assert_eq!(built.status, Some(0), "{}", built.stderr);
     let ran = shards(&[
         "run",
+        "vm",
         "-d",
         "--name",
         "udpholder",
@@ -11359,12 +11376,13 @@ fn a_udp_flow_goes_to_its_ports_next_holder() {
         "sleep",
     ]);
     assert_eq!(ran.status, Some(0), "{}{}", ran.stdout, ran.stderr);
-    let listed = shards(&["port", "udpholder"]);
+    let listed = shards(&["read", "ports", "udpholder"]);
     let host_port: u16 = listed
         .stdout
         .lines()
         .find(|l| l.starts_with("7500/udp"))
-        .and_then(|l| l.rsplit(':').next())
+        .and_then(|l| l.split_whitespace().nth(1))
+        .and_then(|at| at.rsplit(':').next())
         .and_then(|p| p.trim().parse().ok())
         .unwrap_or_else(|| panic!("no 7500/udp in {}", listed.stdout));
     // One socket, one flow: a datagram every 200 ms, each answer kept as it changes.
@@ -11386,10 +11404,11 @@ fn a_udp_flow_goes_to_its_ports_next_holder() {
             }
         }
     }
-    let logs = shards(&["logs", "udpholder"]);
+    let logs = shards(&["read", "logs", "udpholder"]);
     // The flows init tracks, where they went.
     let tracked = shards(&[
         "exec",
+        "vm",
         "--privileged",
         "-u",
         "0",
@@ -11407,7 +11426,7 @@ fn a_udp_flow_goes_to_its_ports_next_holder() {
         tracked.stdout,
         tracked.stderr
     );
-    let _ = shards(&["rm", "-f", "udpholder"]);
+    let _ = shards(&["remove", "vm", "-f", "udpholder"]);
 }
 
 /// A TCP listener on a port of its own at every IPv4 address; where the host has none to
