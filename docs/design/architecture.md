@@ -1037,6 +1037,10 @@ for the exit status.
     before the status, so a pipeline reading it ends with the client, and again when the
     client hangs up, so a command outliving its client writes nowhere. A container's
     output likewise stops reaching a `docker run` that has gone.
+  - Before `READY` it makes room in its descriptor table for what a run brings and opens
+    (warm.rs `reserve_descriptors`): Linux grows a table its threads share only after an
+    RCU grace period, which held a run's hand-over 8 to 15 ms on a 32-CPU host whose warm
+    VMs' 64 descriptors filled their first table (PM M470).
   - Each message to the daemon goes whole, under one lock (warm.rs `to_daemon`), as the
     daemon's to a VM do (`RunSocket`): the VM's threads send on its connection and on
     clones of it (the run's end and its working set, its processes' records, its log's
@@ -10300,12 +10304,15 @@ peer", each going on here as it should. What changed for them:
   it neither says nor lets a VMM set (PM M460, `feature_register`). On arm64 only: x86_64's
   CPUID has `covers` and no meet yet, and `configure cpu` says so there.
 
-Not yet measured: the moves on that link with this build, between two machines of one
-macOS (two M4 Max Studios), cold and live, n 20, and tests/moved.rs's tests of another
-machine run across two: on 2026-11-08 the Studios' link carried 193 kB/s and their kiln
-runners restarted within the hour, each ending the listening daemon its run held (PM
-M462). Then the levels packing settles at on a slow link, and the longest silence each
-connection lived through, which says whether 100 s is enough there.
+Between two machines on a wired gigabit link (two AMD Ryzen 9 9950X3D2 hosts, Linux 7.3.3
+to 7.2.9, KVM), n 20 cold: a move took 0.95 s at p50, 1.16 at p90 and 9.99 at most, and
+ran nowhere 0.91 s at p50, 1.12 at p90 and 9.89 at most, the most the fresh home's first,
+its image fetched as it readied, moves 2 to 20 at 1.26 s at most; its stream of about 81
+MB sent as 33 to 76 MB at up to 110 MB/s; and tests/moved.rs's two tests of another
+machine passed across them (PM M497). Not yet measured: the Studios' slow Wi-Fi with this
+build (193 kB/s on 2026-11-08, their kiln runners restarting within the hour, each ending
+the listening daemon its run held, PM M462), the levels packing settles at there, and the
+longest silence each connection lived through, which says whether 100 s is enough.
 
 **Moved live** (part 7, roadmap item 7b). `shards move vm --live NAME CONTEXT` moves it as
 it runs, by pre-copy (Clark et al., "Live Migration of Virtual Machines", NSDI 2005): its
@@ -10340,8 +10347,11 @@ page by page as each came; resumed there; and stopped here once it runs there.
   Studio with this build, n 20, that guest's rounds numbered 4 at p50 and 6 at most, round 0
   about 60 MB and each later one 9 to 19 MB, 12 ending with little left and 8 as they
   stopped shrinking; it ran nowhere 0.28 s at p50, 0.37 at p90 and 0.42 at most, its last
-  save 83 to 228 ms of it (PM M462). Not yet measured: that move between two machines, its
-  rounds over a slow link and the time it runs nowhere there.
+  save 83 to 228 ms of it (PM M462). Between two wired machines (PM M497), n 20: it took
+  0.71 s at p50 and 1.03 at most, and ran nowhere 0.21 s at p50, 0.28 at p90, 0.35 at p99
+  and at most, in 2 or 3 rounds, each ending with little left, its last save 51 to 161 ms
+  and its last stream 9 to 41 ms of it. Not yet measured: its rounds over a slow link and
+  the time it runs nowhere there.
 - **Its rounds told as they go** (`Precopying`, `kind::PRECOPYING`): the VM tells its
   daemon each round as it ends, and within a round each further 8 MiB (the bytes a last
   round may send, at least a record's 1 MiB) its stream's carrier has taken, counted as it
@@ -19226,15 +19236,42 @@ config refused in their words), the listing check mutation-checked.
 
 ## 4. Start path (≤ 5 ms budget)
 
+The target: a user's `shards run IMAGE COMMAND` to its command executing in its microVM
+(usable), under 5 ms, boot included. A pooled run's VM restored its image's template,
+resumed and connected before the request (D25, D26): what a restore costs is paid ahead
+(restore below). Measured from the user's side: the client's spawn to the guest's
+WORKLOAD_STARTED marker, on one clock across every process (`docs/research/measurements/
+start-path`, PM M470), and by the image bench's `template_usable` (benches/image.rs).
+
+Each step of a pooled run, Fedora (KVM, Intel Core i9-14900HX, 32 CPUs, a vCPU per host
+CPU, Linux 6.19), alpine `true`, n 100, after PM M470, the host at load 20 to 30 from other
+work (p50):
+
 | Step | Cost | Evidence |
 |---|---|---|
-| Daemon receives request; resolves template; claims warm VMM | ~10–50 µs of IPC (to be measured) | — |
-| `hv_vm_create` + `hv_gic_create` + sequential vCPU creation | ~11 + 2 + 7·n µs; can be done ahead in the warm process | [PM M2] |
+| The client's launch: spawn to `main` of the 160 MB PIE `shards` (0.57 for `/usr/bin/true`; 180 more page faults, 125 of them its relocated read-only data) | 1.5–1.6 ms | [PM M470] |
+| The client: its request written to its slot | 0.37 ms | [PM M470] |
+| The daemon's slot thread reads it, bridges it to its handling | 0.18 ms | [PM M470, D185] |
+| The daemon prepares the run (image, spec), makes its container, keeps its request, sets it up | 1.1 ms (0.55, 0.19, 0.13, 0.20) | [PM M470] |
+| Its network process told (E1) | 0.07 ms | [PM M470] |
+| The hand-over to the warm VM, TAKEN (13.5 ms before its descriptor room, M470) | 0.14–0.17 ms | [PM M470] |
+| The guest starts the command: init takes the request 0.49, its names' files 0.48, the standby woken and set up 0.55, the exec until init hears it 1.67 | 2.5–3.5 ms | [PM M470, M292, M440] |
+| **Spawn to usable** | **5.8 ms at load 20–26 (p90 7.3); 7.2 at load 30** | [PM M470, M471] |
+
+Before the request, off its path: the restore itself (`to_beat`, a fresh VM process to its
+guest running again: 9.1 ms on Fedora at load 15, against Firecracker's 10.4, PM M471),
+and on HVF:
+
+| Step | Cost | Evidence |
+|---|---|---|
+| `hv_vm_create` + `hv_gic_create` + sequential vCPU creation | ~11 + 2 + 7·n µs | [PM M2] |
 | `mmap` snapshot memory `MAP_PRIVATE` + `hv_vm_map` | ~1–10 µs | [PM M3] |
-| GIC restore (`hv_gic_set_state`; its registers alone, 20–30 µs, lose interrupts in flight) | ~1.2–1.3 ms; paid by a warm VM before the request | [PM M14, M45] |
+| GIC restore (`hv_gic_set_state`; its registers alone, 20–30 µs, lose interrupts in flight) | ~1.2–1.3 ms | [PM M14, M45] |
 | vCPU register restore | ~0.5 µs per vCPU | [PM M14] |
-| Resume; guest faults in its working set | ~64 µs per MiB (1 vCPU), ~2.2× less with prefetch vCPUs; a warm VM prefetches it before the request | [PM M5, M6, M30] |
-| Engine starts the workload, reports ready over vsock | to be measured | pending |
+| Resume; guest faults in its working set | ~64 µs per MiB (1 vCPU), ~2.2× less with prefetch vCPUs; prefetched | [PM M5, M6, M30] |
+
+Not met yet on Fedora: the guest's start of the command and the client's launch are most
+of what is left.
 
 Clone correctness hazards (RNG reseed via vmgenid, clock via vtimer offset, network
 identity) are **pending** the snapshot research.
