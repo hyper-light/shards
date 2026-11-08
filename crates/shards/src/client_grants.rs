@@ -515,9 +515,14 @@ pub(crate) fn refuse_words(args: &[String], cidfile_marker: &str) -> Option<Stri
         ))
     };
     match refs.as_slice() {
-        ["run", "--kernel", ..] | ["restore", ..] => {
-            return files("a kernel booted directly, or a snapshot resumed");
+        // A stopped microVM's own snapshot (`restore NAME`, D176: a move's resume there) is
+        // the daemon's, of no path; a snapshot's directory (`restore DIR`) is this machine's
+        // files, read as the command line reads them.
+        ["run", "--kernel", ..] => return files("a kernel booted directly"),
+        ["restore", target, ..] if !crate::cli::names_a_microvm(target) => {
+            return files("a snapshot's directory resumed");
         }
+        ["restore"] => return files("a snapshot's directory resumed"),
         ["build" | "cp", ..]
         | ["image" | "builder" | "buildx", "build", ..]
         | ["agent" | "harness" | "mcp", "build" | "sign", ..]
@@ -740,6 +745,9 @@ mod tests {
             "logs -f web",
             r#"run --security-opt seccomp={"defaultAction":"SCMP_ACT_ALLOW"} alpine"#,
             "run --security-opt seccomp=unconfined alpine",
+            // A move's resume there: the stopped microVM's own snapshot (D176), no path.
+            "restore counter sha256-0a1b",
+            "restore vm counter sha256-0a1b",
         ] {
             assert_eq!(refuse_words(&w(sent), marker), None, "{sent}");
         }

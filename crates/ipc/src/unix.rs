@@ -1390,6 +1390,51 @@ fn spawn_env(
     spawn_here(program, args, fds, detach, env)
 }
 
+/// Every descriptor this process holds above stdio made close-on-exec, once, before its
+/// first child: what it was given open by whoever started it (a shell's, an IDE's, a CI
+/// runner's: adacachy's kiln runs inherit perf_event descriptors) is no child's. macOS's
+/// spawn closes all but those named (`POSIX_SPAWN_CLOEXEC_DEFAULT`); Linux's has no such
+/// flag, so its children would hold them. Each child's own are placed by dup2, which
+/// clears the flag on the copy (dup2(2)), so none it is given is lost. `close_range(2)`'s
+/// CLOSE_RANGE_CLOEXEC (Linux 5.11) marks them at once; a kernel without it has each
+/// marked as /proc/self/fd lists it.
+#[cfg(target_os = "linux")]
+fn cloexec_inherited() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        // SAFETY: close_range(2) setting a flag on descriptors this process holds; it
+        // closes none.
+        let rc = unsafe {
+            libc::syscall(
+                libc::SYS_close_range,
+                3 as libc::c_uint,
+                libc::c_uint::MAX,
+                libc::CLOSE_RANGE_CLOEXEC,
+            )
+        };
+        if rc == 0 {
+            return;
+        }
+        let Ok(listed) = std::fs::read_dir("/proc/self/fd") else {
+            return;
+        };
+        for fd in listed
+            .flatten()
+            .filter_map(|e| e.file_name().to_str()?.parse::<RawFd>().ok())
+            .filter(|&fd| fd > 2)
+        {
+            // SAFETY: fcntl(2) adding close-on-exec to a descriptor of this process's; one
+            // the listing itself held and has closed fails harmlessly.
+            unsafe {
+                let flags = libc::fcntl(fd, libc::F_GETFD);
+                if flags >= 0 {
+                    libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC);
+                }
+            }
+        }
+    });
+}
+
 /// [`spawn`]'s child, made by this process.
 pub(crate) fn spawn_here(
     program: &Path,
@@ -1398,6 +1443,8 @@ pub(crate) fn spawn_here(
     detach: bool,
     env: Vec<(std::ffi::OsString, std::ffi::OsString)>,
 ) -> io::Result<Child> {
+    #[cfg(target_os = "linux")]
+    cloexec_inherited();
     let cstring = |s: &OsStr| {
         CString::new(s.as_bytes())
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "NUL in an argument"))

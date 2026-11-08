@@ -275,7 +275,7 @@ fn dispatch(args: Vec<OsString>) -> ExitCode {
 /// microVM may have, and so no path, and no directory of that name here holding a
 /// snapshot's pointer, damaged or not. A path is always a directory's, whose restore says
 /// what is wrong with it.
-fn names_a_microvm(target: &str) -> bool {
+pub(crate) fn names_a_microvm(target: &str) -> bool {
     // As a container's name is (moby daemon/names/names.go): `[a-zA-Z0-9][a-zA-Z0-9_.-]+`.
     let name = target.as_bytes();
     let named = name.len() > 1
