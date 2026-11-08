@@ -7793,10 +7793,12 @@ its release's name (.github/workflows/kernel.yml), so its words stay as they wer
 
 **What it gives** (PM M489, p50): a syscall the default profile's filter runs on costs
 10.5 ns over no filter where it cost 30.6 (KVM x86_64), 20.9 where it cost 36.5
-(Hypervisor.framework, M3 Ultra), and on KVM its p99 falls from 209 to 89 ns; the device
-filter, an eBPF program, costs an open nothing measurable where it cost 11 ns (KVM) and 2.6
-where it cost 18.2 (HVF); on KVM a run from a template answers 533 µs sooner on the VM's
-clock (the quietest segment; 873 pooled). And no workload's guest holds an interpreter.
+(Hypervisor.framework, M3 Ultra), 62.5 where it cost 262.5 (WHP, the hyperv variant), and
+on KVM its p99 falls from 209 to 89 ns; the device filter, an eBPF program, costs an open
+nothing measurable where it cost 11 ns (KVM), 2.6 where it cost 18.2 (HVF) and 25 where it
+cost 200 (WHP); a run from a template answers 533 µs sooner on KVM's VM clock (the quietest
+segment; 873 pooled) and 667 µs sooner on WHP's. And no workload's guest holds an
+interpreter.
 
 - kernel/bpf/Kconfig (v6.18): BPF_JIT "allows the kernel to generate native code when a
   program is loaded into the kernel. This will significantly speed-up processing of BPF
@@ -7852,16 +7854,30 @@ latency.sh, the kernel pinned before against this one, interleaved):
   filter; on the M3 Ultra a filter loaded with no_new_privs costs a call what one loaded
   with CAP_SYS_ADMIN does (M489, `nnp/*`).
 - **Each start compiles its filter.** A seccomp(2) load takes 59.5 µs where it took 40.0
-  (KVM), 42.0 where it took 30.8 (HVF). On HVF a run from a template answers 206 µs later
-  on the VM's clock (1,197 to 1,404 µs), every template's interval above 0; which of its
-  writes after the restore cost it is not split.
+  (KVM), 42.0 where it took 30.8 (HVF), 65.8 where it took 46.3 (WHP). On HVF a run from
+  a template answers 206 µs later on the VM's clock (1,197 to 1,404 µs), every template's
+  interval above 0; on KVM and WHP sooner (533 and 667 µs). The HVF run's restored guest
+  writes 45 more 16 KiB host pages than the interpreter's, 29 of them memory its template
+  held free, one the pack's (M489, written.py): what a compile allocates, placed at random
+  by the guest's allocators (SHUFFLE_PAGE_ALLOCATOR, SLAB_FREELIST_RANDOM), not the pack.
+- **The JIT warmed in every template** (built; measurement owed, M489). Before a
+  template's snapshot, init compiles one classic program of a run's filter's size (512
+  instructions, past the default profile's 252 on arm64 and 397 on x86_64) in a child
+  that sets no_new_privs, loads it and ends (crates/init/src/jit.rs, `warm`), so that
+  what a compile allocates is in the template, freed, for every restored run's compiles
+  to take again: the work moved before the snapshot, as D44 moved the device filter's
+  load. The guest's code, for every host: KVM's and WHP's runs paid nothing measurable
+  for their compiles (M489), and take the same template step, one compile, once a
+  template; a failed warm-up is said on init's stderr and the template is saved without
+  it, as one is without a JIT.
 - **Code made for the boot CPU.** The JIT chooses instructions by the CPU the guest booted
   on, as the kernel's alternatives choose its own; a microVM moved to another machine is
   checked for the CPU features its guest may use already (D176, PM M460).
 
-Open: M489's numbers on WHP (the hyperv variant); what of HVF's 206 µs and 432 KiB a run
-pays its filter's compile after a restore could be paid before the template's snapshot;
-whether unprivileged loads should be blinded (`bpf_jit_harden=1`, which blinds the
+Open: the warm-up's measurement on HVF (written.py, fleet.py, latency.sh against the
+interpreter: done when a restored run's footprint and latency are within the
+interpreter's spread), and on KVM and WHP that it costs their runs nothing; whether
+unprivileged loads should be blinded (`bpf_jit_harden=1`, which blinds the
 constants of a program a task without CAP_BPF loads, a seccomp filter's among them) is not
 decided.
 

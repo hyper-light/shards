@@ -173,6 +173,12 @@ pub fn main(device: &str, template: bool) -> ! {
         .and_then(|()| Standby::fork(Born::Own));
     if template && standby.is_ok() {
         await_crypto_selftests();
+        // What the BPF JIT allocates for a run's filters, in the template and freed, for
+        // every restored run's own to take (D227, PM M489); before the reports, which give
+        // the host what it freed.
+        if let Err(e) = crate::jit::warm() {
+            let _ = writeln!(io::stderr(), "shards-init: warming the BPF JIT: {e}");
+        }
         flush_page_reports();
         if let Err(e) = crate::linux::control_write(control::SNAPSHOT, control::SNAPSHOT_NOW) {
             let _ = writeln!(io::stderr(), "shards-init: requesting a snapshot: {e}");

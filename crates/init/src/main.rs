@@ -33,6 +33,8 @@ mod hotplug;
 #[cfg(target_os = "linux")]
 mod inroot;
 #[cfg(target_os = "linux")]
+mod jit;
+#[cfg(target_os = "linux")]
 mod join;
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 mod json;

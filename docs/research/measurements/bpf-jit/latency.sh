@@ -1,8 +1,9 @@
 #!/bin/bash
 # PM M489 (D227): start latency, request to status, through each home's pools
-# (build-ab/ab.py, `run --rm IMAGE true`), over SEGMENTS templates an arm: each segment's
-# daemons stopped and templates removed first, so that each restores a template of its own
-# (restore costs differ from template to template, PM M29).
+# (build-ab/ab.py's paired runs of `run vm --rm IMAGE true`, its AB_FLAGS putting `vm --rm`
+# after its `run`), over SEGMENTS templates an arm: each segment's daemons stopped and
+# templates removed first, so that each restores a template of its own (restore costs
+# differ from template to template, PM M29).
 #
 #     latency.sh SHARDS HOMES OUT [N] [SEGMENTS]
 #
@@ -16,6 +17,9 @@ mkdir -p "$dirs/cfg"
 for arm in A B; do
   mkdir -p "$dirs/$arm"
   ln -s "$shards" "$dirs/$arm/shards"
+  # Windows starts `shards` as shards.exe (CreateProcess adds the extension). Run there with
+  # MSYS=winsymlinks:nativestrict, or Git's ln copies the home.
+  case $shards in *.exe) ln -s "$shards" "$dirs/$arm/shards.exe" ;; esac
   ln -s "$(cd "$homes/$arm" && pwd)" "$dirs/$arm/home"
 done
 image=alpine@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6
@@ -28,7 +32,7 @@ for s in $(seq 1 "$segments"); do
   stop
   for arm in A B; do rm -rf "$dirs/$arm/home/templates"; done
   echo "segment $s"
-  DOCKER_CONFIG=$dirs/cfg AB_FLAGS=--rm AB_DUMP=$out.$s.json python3 "$ab" "$dirs/A" "$dirs/B" "$image" "$n" true
+  DOCKER_CONFIG=$dirs/cfg AB_FLAGS="vm --rm" AB_DUMP=$out.$s.json python3 "$ab" "$dirs/A" "$dirs/B" "$image" "$n" true
 done
 stop
 rm -rf "$dirs"
