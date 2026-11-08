@@ -239,7 +239,7 @@ SPIs of the GICv2m frame the VMM keeps (D154).
 | `--cgroup-parent` (D183) | a slice of the user's manager, or a cgroup delegated to the user (slices 1, 2) | as amd64 | groups shards keeps (slice 3, PM M355) | groups shards keeps, each a job its VM and network processes are made in (slice 3, PM M359, M361) |
 | vCPUs of every host CPU, the workload's CPUs held to its limits (D191) | yes, vCPUs at the fair scheduler's shortest slice (PM M440, M441) | yes | yes, vCPUs at the real-time policy (PM M8, M10) | yes; open: its vCPUs' wake policy on a busy host, a candidate pending its measurement (D191) |
 | Log drivers (D163, D198, D199) | every driver, journald its own | as amd64 | every driver but journald, macOS's own log (`oslog`) its counterpart | every driver but journald, `etwlogs` its counterpart |
-| A GPU (D144, Venus) | yes, glibc and musl, NVIDIA's, AMD's and Intel's GPUs (D201, D208); open: the GPU desktop's run of D208's build, waiting for its owner's go | built and linted, untested on a GPU (none here) | yes | yes (D202) |
+| A GPU (D144, Venus) | yes, glibc and musl, NVIDIA's, AMD's and Intel's GPUs (D201, D208; the GPU desktop's RTX 5060 Ti and Radeon 610M again at cf36cf42) | built and linted, untested on a GPU (none here) | yes | yes (D202) |
 | Devices plugged into a running microVM, disks grown (D214) | yes | yes (nested, its MSIs through the GIC's ITS) | yes | yes: in the VMM, its shared directory over a duplex pipe (tests/hotplug.rs), and through the CLI a disk and a volume, its share process's stream given the VM as a run's are (tests/plug.rs), on CI's windows-2025 and windows-2022 |
 | A host's PCI function given a microVM, at its start or plugged in (D154, D214) | built, VFIO; not yet tested on hardware, no x86_64 host here having a function to spare (D214's Not yet) | yes, nested, on QEMU's edu function (D154, D214), plugged into a run's workload too, as a user not root, by group and by device node (D214, at 8928fbe4) | refused: its APIs assign no PCI function, Virtualization's one passthrough a USB device's (D154, PM M403) | at its start, given the VM's kernel: built where the hypervisor assigns devices (Discrete Device Assignment, D154, d3029698), its E2E waiting on a Windows Server host that assigns one; refused with the hypervisor's own answer where it assigns none (PM M401, M402). A workload's, at its start or plugged in behind the guest's IOMMU: refused with WHP's limit, no I/O address space of the guest's (D154). Plugged in outside the IOMMU (D214's VMM path): refused, Windows documenting a function given a VM as it starts alone (`WHP_NO_PLUG`, D214) |
 | A running microVM saved whole, and resumed (D176 parts 1-5) | yes | yes | yes | yes |
@@ -7394,10 +7394,30 @@ built without one. What every Linux host has now:
   GPU's runs restore templates of their own (D150). The same day, a run's /dev/shm half
   its microVM's memory (D156) on fedora:
   `a_microvm_takes_its_ipc_hostname_cgroups_umask_and_writable_layer` passes (71.5 s).
-- **Not yet:** the GPU desktop's run of this build (its NVIDIA GeForce RTX 5060 Ti on
-  NVIDIA's driver and Radeon 610M, D201's) waits for its owner's go; a musl host gives a
-  run Mesa's drivers alone (Intel's, AMD's, NVK), NVIDIA shipping no driver for musl; and
-  arm64 musl hosts are built for as x86_64's are, untested on a GPU.
+- **Tested again at cf36cf42** (2026-11-08, the tree of p/integrate-1107, glibc's build,
+  `docs/research/measurements/gpu-linux/tests.sh`, which builds the renderer, records the
+  host and runs tests/gpu.rs and the /dev/shm test with `SHARDS_REQUIRE_VMS=1`, so that
+  none skips):
+  - The GPU desktop (adacachy2: Ryzen 9 9950X3D2, CachyOS on Linux 7.3.3-1-cachyos,
+    NVIDIA's open kernel modules 620.70.06 from CachyOS's prebuilt
+    `linux-cachyos-nvidia-open`, with `nvidia-utils` 620.70.06, and Mesa 26.2.6's RADV,
+    the host's own vulkaninfo listing both GPUs; host load average under
+    2.5): tests/gpu.rs passes, 3 runs of 3, 96.3, 31.5 and 17.2 s (the first building the
+    image); a run given `--gpus all` finds
+    `Virtio-GPU Venus (NVIDIA GeForce RTX 5060 Ti)` and
+    `Virtio-GPU Venus (AMD Ryzen 9 9950X3D2 16-Core Processor (RADV RAPHAEL_MENDOCINO))`,
+    its Radeon 610M, beside the guest's own llvmpipe. The /dev/shm test passes, 3 of 3,
+    30.2, 11.3 and 11.2 s.
+  - fedora (D208's host above, Linux 6.19.10, Mesa 26.0.3, load average 11 to 15):
+    tests/gpu.rs passes, 2 of 2, 24.2 and 24.8 s, finding its Intel UHD Graphics, its RTX
+    4070 through NVK and the host's llvmpipe through Venus; the /dev/shm test 2 of 2, 10.0
+    and 9.0 s.
+  - A Mac Studio (M4 Max, macOS 26.2, HVF): the /dev/shm test, the build steps' and the
+    agents' (`run_steps_take_the_builds_hosts_shm_and_limits`,
+    `agents_run_in_their_domains`) pass, 3 runs of 3 each, 2.1 to 2.8 s.
+- **Not yet:** a musl host gives a run Mesa's drivers alone (Intel's, AMD's, NVK), NVIDIA
+  shipping no driver for musl; and arm64 Linux hosts, glibc's and musl's, are built for as
+  x86_64's are, untested on a GPU (none here).
 ### D209. microVMs on arm64 Windows hosts: WHP's arm64 backend (boot measured, E2E pending)
 
 **Why.** The platform parity plan's step 10 (docs/audit/2026-10-27_platform-parity.md): WHP
