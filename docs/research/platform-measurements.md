@@ -18631,6 +18631,142 @@ revision before comparing a changed API/implementation.
   26.4), cold and live, n 20, and tests/moved.rs's two tests of another machine, over a
   link and runners that hold for the length of the series; the 117 s seen once before a
   fresh home's live rounds.
+
+### M489. What a guest's seccomp and device filters cost, interpreted against JIT-compiled (D227, D42, D44)
+
+- **Question.** The pinned guest kernel runs BPF interpreted (Firecracker's configs leave
+  BPF_JIT unset); D227 builds it with BPF_JIT and BPF_JIT_ALWAYS_ON. What does each cost a
+  workload's syscall under Docker's default seccomp profile (D42), a device open under the
+  default device filter (D44), each filter's load, and the guest's memory, either way?
+- **Method.** docs/research/measurements/bpf-jit/ab.py, the test guest's `bpf` mode
+  (crates/testguest/src/linux.rs `bpf_costs`) as PID 1 of `shards run --kernel K --init
+  TESTGUEST --cpus 1 --memory 512 --disk RECORD`, A the kernel pinned before
+  (kernel-6.18.48-64a9427a8997) and B the D227 kernel, booted in turn A B, B A, ... for 10
+  rounds after one boot of each. Each round, in children of PID 1: Docker's default profile
+  compiled by shards_seccomp for a container's default capabilities and the running
+  kernel's version, loaded as shards-init loads it, with init's capabilities (`root`) or as
+  user 65534 with no_new_privs (`nnp`); 10,000 batches of 16 calls of getppid(2) (allowed
+  whatever its arguments: seccomp's action cache), personality(0xffffffff) (allowed by its
+  argument: the filter runs) and acct(NULL) (refused: the filter's whole path), with no
+  filter too, and an empty batch for the clock's own cost; open(2)+close(2) of /dev/null
+  in a cgroup with Docker's default device filter (shards_devcgroup, attached as init
+  attaches it) and in one without; 10,000 seccomp(2) loads each way, each into a fresh
+  child; the device filter's load and attach once a boot; MemAvailable at boot, after the
+  device filter, after the arms and at the end; the JIT's vmalloc areas. n, p50, p90, p99
+  and max in ns per call, pooled over the rounds, and the spread of the rounds' p50s. The
+  test guest is built as
+  the tests build it (`common::guest_cargo`):
+  `CC_<arch>_unknown_linux_musl=scripts/zig-cc AR_<arch>_unknown_linux_musl=scripts/zig-ar
+  ZIG_TARGET=<arch>-linux-musl CARGO_TARGET_<ARCH>_UNKNOWN_LINUX_MUSL_LINKER=rust-lld cargo
+  build -p shards-testguest --profile guest --target <arch>-unknown-linux-musl`. B is
+  kernel-6.18.48-fa4edcc82303 (built at 36e47536); the two releases' configs differ in
+  three lines on each architecture, `CONFIG_BPF_JIT`, `CONFIG_BPF_JIT_ALWAYS_ON` and
+  `CONFIG_BPF_JIT_DEFAULT_ON` (diff of their config-6.18.48-{x86_64,aarch64} assets), so
+  every difference below is the JIT's.
+  - A fleet's memory and runs: docs/research/measurements/bpf-jit/fleet.py, one release
+    `shards`, two homes, each with alpine (sha256:294b683c…) and a guest recorded
+    (`configure guest --kernel K --init` shards-init), rounds alternating which goes first.
+    Each round, in each home: the daemon stopped and its templates removed; 10 `run -d
+    alpine sleep`, the first booting the guest and saving the template (init attaches the
+    device filter before the save, D44), the other 9 served from the pool's VMs restored
+    from it; once the home's VM processes stay the same for 5 s, each one's memory (Linux:
+    smaps_rollup Rss, Pss, Anonymous; macOS: proc_pid_rusage's physical footprint and
+    resident size), the booted run, the restored runs (State.Pid) and the pool's warm VMs
+    apart; the template's disk blocks (du). 10 rounds after 1.
+  - Start latency: docs/research/measurements/bpf-jit/latency.sh, build-ab/ab.py's paired
+    runs over fleet.py's two homes, `run --rm alpine true` one at a time, 4 segments of 100
+    pairs, each segment with templates of its own (PM M29). `command` is request to status
+    on the VM's clock (SHARDS_TIMING), `wall` the client's spawn to reap.
+- **Found.** KVM: fedora-2, x86_64, Fedora 44, Linux 6.19.10-300.fc44, host load 6 to 45
+  from other agents' work (each run's own `uptime`), revisions dd3e96a1 (ab.py),
+  9a121863 (fleet.py), f8eb2a5d (latency.sh). Hypervisor.framework: Mac Studio, M3 Ultra,
+  macOS 26.4, through kiln's runner (nice 10, priority 20) beside another agent's fleet test
+  (load 20 to 25), revision c6367f8. ns per call, p50 (p99); n 100,000 an arm and kernel, 10
+  rounds; loads n 100,000, device load n 10.
+
+  | arm | KVM A | KVM B | HVF A | HVF B |
+  |---|---|---|---|---|
+  | none/personality (no filter) | 56.8 (147.2) | 57.6 (72.5) | 91.1 (101.6) | 91.1 (93.8) |
+  | root/getppid (action cache) | 68.4 (165.9) | 70.8 (91.3) | 112.0 (119.8) | 112.0 (119.8) |
+  | root/personality (filter runs) | 87.4 (209.4) | 68.1 (89.2) | 127.6 (132.8) | 112.0 (117.2) |
+  | root/denied (whole path) | 84.1 (132.2) | 68.5 (90.8) | 114.6 (117.2) | 104.1 (106.8) |
+  | nnp/personality | 88.6 (212.8) | 67.2 (88.0) | 127.6 (132.8) | 114.6 (117.2) |
+  | nnp/denied | 86.4 (208.8) | 68.1 (92.6) | 112.0 (117.2) | 101.6 (106.8) |
+  | dev/open (device filter) | 506.6 (903.9) | 481.8 (919.4) | 487.0 (695.3) | 479.2 (739.6) |
+  | nodev/open | 495.6 (935.7) | 483.9 (816.9) | 468.8 (648.4) | 476.6 (721.3) |
+  | root/load | 40,006 (99,963) | 59,503 (122,774) | 30,834 (53,917) | 42,042 (63,500) |
+  | nnp/load | 40,204 (113,078) | 58,076 (127,181) | 30,709 (56,667) | 42,000 (71,375) |
+  | device/load | 144,944 (813,248) | 153,802 (219,187) | 99,125 (114,792) | 95,959 (116,042) |
+
+  The JIT's vmalloc areas in B: one of 2,101,248 bytes (`execmem_alloc` on x86_64,
+  `bpf_jit_alloc_exec` on arm64: the 2 MiB pack and its guard page), beside the 16 KiB
+  `bpf_prog_alloc_no_stats` area both kernels have. Guest MemAvailable, KiB, p50 (boot /
+  device filter / arms / end): KVM A 461,404 / 461,308 / 461,308 / 465,736, B 464,032 /
+  463,844 / 463,844 / 462,580; HVF A 472,836 / 472,616 / 472,504 / 470,096, B 470,540 /
+  470,460 / 470,460 / 468,056.
+
+  The fleet, KiB a VM process, p50 (p90) over 10 rounds:
+
+  | | KVM A | KVM B | HVF A | HVF B |
+  |---|---|---|---|---|
+  | booted run (anon; footprint) | 87,272 (88,968) | 90,140 (91,048) | 105,026 (106,050) | 107,474 (108,546) |
+  | restored run, n 90 (anon; footprint) | 9,756 (10,384) | 9,164 (9,948) | 22,306 (22,594) | 22,738 (23,218) |
+  | restored run Pss (KVM) | 10,753 (11,402) | 10,069 (10,842) | | |
+  | warm VM, n 20 (anon; footprint) | 6,380 (6,784) | 6,132 (6,600) | 18,034 (18,386) | 17,954 (18,178) |
+  | all 12 VMs a VM (Pss; footprint) | 16,676 (16,984) | 16,326 (17,003) | 28,485 (28,673) | 29,027 (29,378) |
+  | template on disk (du) | 77,284 (78,704) | 79,800 (80,996) | 79,080 (93,784) | 80,600 (80,680) |
+
+  On HVF every round's p50 of a restored run's footprint was higher in B (B's rounds 22,546
+  to 23,250, A's 22,018 to 22,594). On KVM, two earlier fleet runs (revisions dd3e96a1,
+  f8eb2a5d, the restored runs and warm VMs not yet apart) put the booted run's anonymous
+  memory 2,184 and 3,608 KiB higher in B, the restored VMs' p50 48 and 132 KiB lower, their
+  p90 1,304 and 1,124 KiB higher, and the template 2,016 and 3,060 KiB larger: on KVM the
+  restored VMs' tails go either way from run to run, their p50 never higher in B.
+
+  Start latency, µs, p50 (p99), n 400 an arm (4 templates), and the paired difference's
+  median, B less A: KVM `command` A 6,583 (38,140), B 4,664 (31,458), -873; its first
+  segment, at load 15.7 (the others at 27 to 45), 3,346 against 2,829, -533 (95% interval
+  -661 to -442), every segment's below 0. `wall` A 28,096, B 25,914, -1,592. HVF `command`
+  A 1,197 (1,962), B 1,404 (2,124), +206, every segment's interval above 0 (+161 to +286);
+  `wall` A 8,817 (34,797), B 9,176 (34,583), +235, every segment's interval holding 0.
+- **Reading.**
+  - A filter that runs costs a syscall 30.6 ns over none interpreted and 10.5 ns compiled
+    on KVM (personality, p50; the refused path 27 against 11), 36.5 against 20.9 ns on HVF:
+    compiled, it costs a third of what it did on KVM and 57 % on HVF, and on KVM the call's
+    p99 falls from 209 to 89 ns. What
+    the action cache answers (getppid) costs the same either way. A filter loaded by a task
+    without CAP_SYS_ADMIN (nnp) costs what one loaded with it does on both: the arm64 BHB
+    epilogue (D227) is not measurable here, the guest seeing its CPU as needing none
+    (`spectre_v2: CSV2, but not BHB`, no firmware call: arch/aarch64/psci.rs).
+  - The device filter, an eBPF program, costs an open 11.0 ns interpreted and nothing
+    measurable compiled on KVM (B's dev/open below its nodev/open), 18.2 against 2.6 ns on
+    HVF: 7 times less.
+  - Each load compiles: +19.5 µs a seccomp(2) load on KVM (40.0 to 59.5), +11.2 µs on HVF
+    (30.8 to 42.0); the device filter's load is the same either way.
+  - The pack is allocated once, at the first program a guest compiles (kernel/bpf/core.c at
+    v6.18, `bpf_prog_pack_alloc`: a new pack only when no pack on `pack_list` has room),
+    and filled whole with trapping instructions (`alloc_new_pack`, `bpf_fill_ill_insns`
+    over `BPF_PROG_PACK_SIZE`, `SZ_2M * num_possible_nodes()`, one node in a microVM); every
+    later program takes 64-byte chunks of it (`BPF_PROG_CHUNK_SIZE`), and it is freed only
+    when its last program goes (`bpf_prog_pack_free`). It is lazy already: no program, no
+    pack. Init's device filter is the first program, at boot, so the pack is written into
+    the booted VM (+2.2 to 3.6 MiB anonymous on KVM, +2.4 MiB footprint on HVF) and into
+    the template (+1.5 to 3.1 MiB on disk), where every VM restored from it maps it from
+    the template's file as it maps the rest: the warm VMs, which compiled nothing since
+    their restore, hold what they held interpreted on both hosts. Making the fill lazier
+    would leave the pack's unused chunks without their trapping instructions, which is what
+    the fill is for: not done.
+  - A restored VM that starts a workload compiles its filter after the restore: on HVF that
+    run holds 432 KiB more footprint (p50; 1.9 % of its 22.3 MiB) and its start takes 206
+    µs more on the VM's clock (1,197 to 1,404 µs); on KVM it holds no more (its p50 592 KiB
+    less) and starts 533 µs sooner at the quietest load, 873 µs pooled. Which pages the HVF
+    run writes, and what of the KVM run's path the JIT speeds, are not split here.
+- **Consequence.** D227 kept: kernel-6.18.48-fa4edcc82303 pinned (crates/shards/src/
+  kernel.rs, tests/common, README). Its costs, recorded in D227: one 2 MiB pack per booted
+  guest and template, 11 to 20 µs a filter load, and on Hypervisor.framework 0.43 MiB and
+  0.2 ms a run started from a template. Not measured: WHP's hyperv variant; whether
+  unprivileged filters are blinded stays D227's open question.
+
 ### M422. Whether a Hypervisor.framework guest given EL2 has VHE (the parity plan's step 10)
 
 - **Question.** Step 10's host is to be Windows 11 arm64 under QEMU on this Mac, given EL2
