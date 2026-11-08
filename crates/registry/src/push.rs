@@ -63,6 +63,7 @@ fn pushed(
     from: Option<&str>,
     report: &(dyn Fn(&Digest, Layer) + Sync),
 ) -> Result<(), Error> {
+    registry.keep_in(store);
     let bytes = document(store, target)?;
     if let Document::Index(index) = oci::parse_document(&bytes, &target.media_type)? {
         // Every child first: an index whose content is not all here is not pushed.
@@ -127,7 +128,7 @@ fn push_manifest(
     let blobs: Vec<&Descriptor> = std::iter::once(&manifest.config)
         .chain(&manifest.layers)
         .collect();
-    let record = registry.record(store, "push");
+    let record = registry.record(store, links::Direction::Push);
     upload_all(
         &blobs,
         &|desc, link| blob(registry, store, desc, from, link),
@@ -653,7 +654,7 @@ mod tests {
     #[test]
     fn uploads_climb_from_one_and_the_next_push_starts_where_they_got() {
         let dir = shards_testdir::TempDir::new("push-climb").unwrap();
-        let record = Record::of(&dir, "push", "127.0.0.1", 1, None);
+        let record = Record::of(&dir, links::Direction::Push, "127.0.0.1", 1, None);
         let began = uploaded(120, &record);
         assert_eq!(began[0], 1, "a new path starts at one: {began:?}");
         let most = began.iter().copied().max().unwrap();

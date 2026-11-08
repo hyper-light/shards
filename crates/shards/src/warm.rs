@@ -433,7 +433,8 @@ const RUN_DESCRIPTORS: usize = 2 * shards_ipc::MAX_FDS;
 /// after an RCU grace period (fs/file.c, `expand_fdtable`: `synchronize_rcu`), which held
 /// a run's hand-over 8 to 15 ms on a 32-CPU host whose warm VMs held 64 descriptors, its
 /// first table's all (PM M470). Each lowest free descriptor taken in turn, then all let go:
-/// a table never shrinks.
+/// a table never shrinks. Linux's alone: macOS's and Windows' tables grow with no wait of
+/// the kind, their slowest duplicate tens of µs where Linux's took 14 ms (PM M512).
 #[cfg(target_os = "linux")]
 fn reserve_descriptors(daemon: &UnixStream) -> Result<(), String> {
     let taken = (0..RUN_DESCRIPTORS)

@@ -103,6 +103,7 @@ pub(crate) fn layers(
     here: &(dyn Fn(usize) + Sync),
     fresh: bool,
 ) -> Result<(), Error> {
+    registry.keep_in(store);
     let mut layers = Vec::with_capacity(manifest.layers.len());
     for desc in &manifest.layers {
         layers.push(Layer {
@@ -134,7 +135,7 @@ pub(crate) fn layers(
         answer: AtomicU64::new(0),
         failed: Mutex::new(None),
     };
-    let record = registry.record(store, "pull");
+    let record = registry.record(store, crate::links::Direction::Pull);
     let learned = record.read();
     std::thread::scope(|scope| {
         let mut started = 0;
@@ -488,13 +489,13 @@ impl<'a> Flows<'a> {
                     return Err(short(&layer.digest, now, layer.desc.size));
                 }
                 if now > before || now >= end {
-                    trouble.over();
+                    self.registry.over(&mut trouble, url);
                     continue;
                 }
             }
             drop(response);
-            // It brought nothing: asked again while that lasts a moment (D222).
-            match trouble.wait(asked, self.registry.moment(), None) {
+            // It brought nothing: asked again while that lasts its path's budget (D222).
+            match trouble.wait(asked, self.registry.budget(url), None) {
                 Some(wait) => self.registry.pause(wait)?,
                 None => return Err(stalled(&layer.digest, trouble.lasted())),
             }
@@ -741,9 +742,15 @@ mod tests {
             ..Learned::default()
         };
         let from = Some(std::net::IpAddr::from([127, 0, 0, 1]));
-        crate::links::Record::of(store.root(), "pull", "127.0.0.1", fake.registry.port, from)
-            .write(&learned)
-            .unwrap();
+        crate::links::Record::of(
+            store.root(),
+            crate::links::Direction::Pull,
+            "127.0.0.1",
+            fake.registry.port,
+            from,
+        )
+        .write(&learned)
+        .unwrap();
     }
 
     fn store(name: &str) -> (Store, shards_testdir::TempDir) {

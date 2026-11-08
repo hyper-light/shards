@@ -13,6 +13,7 @@ pub mod credentials;
 mod fetch;
 pub mod http;
 pub mod links;
+mod patience;
 pub mod proxy;
 pub mod pull;
 pub mod push;

@@ -2,9 +2,10 @@
 //! each push's, by the path it went over (this host's address on its route to the
 //! registry, as a connection there is given it, and the registry's host and port), the
 //! count of transfers it converged to, what each second at that count carried, the least
-//! a request took to answer, and how often a send failed. A file of its own each, `links/<pull|push>/<registry>@<address>`
-//! in the image store, written whole by a rename, so a reader never sees half of one and
-//! two transfers that end together leave one of theirs.
+//! a request took to answer, and how often a send failed. One file a path,
+//! `links/<registry>@<address>` in the image store, which holds D222's waits and troubles
+//! of the path too (crate::patience), written whole by a rename, so a reader never sees
+//! half of one.
 //!
 //! A push's chunk size is solved from them ([`optimum`]): a chunk costs a request's
 //! answer, and a send that fails loses what of its chunk was sent, so the chunk that costs
@@ -37,50 +38,104 @@ impl Learned {
     }
 }
 
-/// A path's record.
+/// A path's one record: what its requests showed of its waits and troubles (D222,
+/// crate::patience) and what its pulls and its pushes learned (D226), each kept as it is
+/// learned, the rest of the file as it was.
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct PathRecord {
+    #[serde(default)]
+    pub shown: crate::patience::Shown,
+    #[serde(default)]
+    pub pull: Learned,
+    #[serde(default)]
+    pub push: Learned,
+}
+
+/// The file of the path to `key` (`host:port`, crate::patience `path_of`) from `from`
+/// (this host's address on its route there, where known), under `root` (the image
+/// store's directory): `links/<host:port>@<address>`.
+pub(crate) fn file(root: &Path, key: &str, from: Option<IpAddr>) -> PathBuf {
+    let from = from.map_or_else(|| "unrouted".to_string(), |ip| ip.to_string());
+    root.join("links")
+        .join(format!("{}@{}", encode(key), encode(&from)))
+}
+
+/// What `file` holds, where it holds a record this build reads.
+pub(crate) fn read(file: &Path) -> Option<PathRecord> {
+    serde_json::from_slice(&std::fs::read(file).ok()?).ok()
+}
+
+/// Changes `file`'s record by `change`, written whole by a rename: a reader never sees half
+/// of one. Two that change it at once leave one's change, as either learns it again.
+pub(crate) fn update(file: &Path, change: impl FnOnce(&mut PathRecord)) -> std::io::Result<()> {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let dir = file
+        .parent()
+        .ok_or_else(|| std::io::Error::other("no directory"))?;
+    std::fs::create_dir_all(dir)?;
+    let mut record = read(file).unwrap_or_default();
+    change(&mut record);
+    let bytes = serde_json::to_vec(&record).map_err(std::io::Error::other)?;
+    let n = NEXT.fetch_add(1, Ordering::Relaxed);
+    let tmp = dir.join(format!(".{}.{n}", std::process::id()));
+    std::fs::write(&tmp, bytes)?;
+    std::fs::rename(&tmp, file).inspect_err(|_| {
+        let _ = std::fs::remove_file(&tmp);
+    })
+}
+
+/// Which of a path's transfers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Direction {
+    Pull,
+    Push,
+}
+
+/// What a path's pulls or pushes learned, in its record.
 #[derive(Debug)]
 pub(crate) struct Record {
     file: PathBuf,
+    direction: Direction,
 }
 
 impl Record {
-    /// The record of `direction` ("pull", "push") over the path to `host`:`port` from
-    /// `from` (this host's address on its route there), kept under `root` (the image
-    /// store's directory).
-    pub(crate) fn of(root: &Path, direction: &str, host: &str, port: u16, from: Option<IpAddr>) -> Record {
-        let from = from.map_or_else(|| "unrouted".to_string(), |ip| ip.to_string());
-        let name = format!("{}@{}", encode(&format!("{host}:{port}")), encode(&from));
+    /// The `direction`'s part of the record of the path to `host`:`port` from `from`, under
+    /// `root`.
+    pub(crate) fn of(
+        root: &Path,
+        direction: Direction,
+        host: &str,
+        port: u16,
+        from: Option<IpAddr>,
+    ) -> Record {
         Record {
-            file: root.join("links").join(direction).join(name),
+            file: file(root, &format!("{host}:{port}"), from),
+            direction,
         }
     }
 
-    /// What it holds, where it holds a record this build reads.
+    /// What it holds, where it learned anything.
     pub(crate) fn read(&self) -> Option<Learned> {
-        serde_json::from_slice(&std::fs::read(&self.file).ok()?).ok()
+        let record = read(&self.file)?;
+        let learned = match self.direction {
+            Direction::Pull => record.pull,
+            Direction::Push => record.push,
+        };
+        (learned != Learned::default()).then_some(learned)
     }
 
-    /// Keeps `learned`, whole.
+    /// Keeps `learned` as its own.
     pub(crate) fn write(&self, learned: &Learned) -> std::io::Result<()> {
-        static NEXT: AtomicU64 = AtomicU64::new(0);
-        let dir = self
-            .file
-            .parent()
-            .ok_or_else(|| std::io::Error::other("no directory"))?;
-        std::fs::create_dir_all(dir)?;
-        let bytes = serde_json::to_vec(learned).map_err(std::io::Error::other)?;
-        let n = NEXT.fetch_add(1, Ordering::Relaxed);
-        let tmp = dir.join(format!(".{}.{n}", std::process::id()));
-        std::fs::write(&tmp, bytes)?;
-        std::fs::rename(&tmp, &self.file).inspect_err(|_| {
-            let _ = std::fs::remove_file(&tmp);
+        update(&self.file, |record| match self.direction {
+            Direction::Pull => record.pull = learned.clone(),
+            Direction::Push => record.push = learned.clone(),
         })
     }
 }
 
 /// `s` as a file's name on every host: letters, digits, `.` and `-` as they are, every
 /// other byte `%XX`, so that no two names are one.
-fn encode(s: &str) -> String {
+pub(crate) fn encode(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for b in s.bytes() {
         if b.is_ascii_alphanumeric() || b == b'.' || b == b'-' {
@@ -209,7 +264,7 @@ mod tests {
     fn a_paths_record_is_kept_by_its_path() {
         let dir = shards_testdir::TempDir::new("links").unwrap();
         let loopback = Some(IpAddr::from([127, 0, 0, 1]));
-        let record = Record::of(&dir, "push", "127.0.0.1", 5000, loopback);
+        let record = Record::of(&dir, Direction::Push, "127.0.0.1", 5000, loopback);
         assert!(record.read().is_none());
         let mut rate = Spread::default();
         rate.add(10.0);
@@ -226,14 +281,23 @@ mod tests {
         assert_eq!(learned.climb(), Some((8, rate)));
         let name = record.file.file_name().unwrap().to_str().unwrap().to_string();
         assert_eq!(name, "127.0.0.1%3A5000@127.0.0.1");
-        assert!(
-            Record::of(&dir, "pull", "127.0.0.1", 5000, loopback)
-                .read()
-                .is_none()
+        let pull = Record::of(&dir, Direction::Pull, "127.0.0.1", 5000, loopback);
+        assert!(pull.read().is_none(), "the path's pulls learned nothing");
+        pull.write(&learned).unwrap();
+        assert_eq!(
+            record.read(),
+            Some(learned.clone()),
+            "one file, each its own part"
+        );
+        assert_eq!(
+            read(&record.file).unwrap().shown,
+            crate::patience::Shown::default()
         );
         let wifi = Some(IpAddr::from([192, 168, 1, 72]));
         assert!(
-            Record::of(&dir, "push", "127.0.0.1", 5000, wifi).read().is_none(),
+            Record::of(&dir, Direction::Push, "127.0.0.1", 5000, wifi)
+                .read()
+                .is_none(),
             "another route is another path"
         );
         assert_eq!(encode("[::1]:5000"), "%5B%3A%3A1%5D%3A5000");

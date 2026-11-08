@@ -812,9 +812,8 @@ A pull resolves, fetches and checks as containerd v2.4.1 does
   - A cut download resumes with `Range: bytes=<offset>-`, after the bytes already there
     are hashed again.
   - A server that ignores the range sends the whole blob, and the download starts
-    over. Three stops without progress fail it (containerd's `httpReadSeeker`'s count,
-    open in docs/audit/2026-10-16_docker-framing.md: what a stalling server costs, to
-    derive it from).
+    over. A download silent past what its path's silences say is cut and resumed, and
+    one that brings nothing is resumed within its path's budget, then fails (D222).
 - **Tests:** a fake registry answers behind a bearer token, and redirects blobs to a
   CDN on another origin that must never see the token. One layer's first download is
   cut in half. They check:
@@ -9023,9 +9022,11 @@ network: every value is now a protocol's, measured on the path as shards runs, o
 estimator's of what was measured (the table below).
 
 **Decided.**
-- **A path is learned, and kept in the home** (`crate::links`): each pull's and push's
-  record is a file of its own, `images/links/<pull|push>/<registry host:port>@<address>`,
-  the address this host's on its route to the registry: the local address of a TCP
+- **A path is learned, and kept in the home** (`crate::links`): one record a path,
+  `images/links/<registry host:port>@<address>`, which its pulls and its pushes learn
+  into, each its own part, beside D222's waits and troubles of the path (patience.rs,
+  `#[serde(default)]` each part, so a record of one part is read whole); the address
+  this host's on its route to the registry: the local address of a TCP
   connection dialled there as the client dials its own (to its proxy, where one is used),
   then let go, one handshake. Over Wi-Fi and over a wire a host has two addresses, so the
   same registry is learned apart over each; two networks that lease the host the same
@@ -9033,8 +9034,9 @@ estimator's of what was measured (the table below).
   count of transfers the path converged to, Welford's mean and variance of what each
   second at that count carried, the least a request took to answer, and the bytes of
   bodies sent and the sends that failed. It is written whole by a rename, so a reader
-  never sees half of one. Pulls and pushes are kept apart: a home's uplink and downlink
-  differ (M114 pulled at 98 MB/s where M488 pushed to ttl.sh at 4.5).
+  never sees half of one; two that change it at once leave one's change, which the other
+  learns again. A path's pulls and pushes are learned apart within it: a home's uplink
+  and downlink differ (M114 pulled at 98 MB/s where M488 pushed to ttl.sh at 4.5).
 - **A path never seen starts at one transfer and doubles while a doubling pays**
   (`crate::climb`, for push.rs's uploads and fetch.rs's connections alike): TCP's slow
   start (RFC 5681 §3.1), one transfer the least window. Once its requests have answered
@@ -14247,6 +14249,77 @@ counted over a minute is a crowd's, and ends within that minute.
   pull): six throttles, one past the schedule, pulled under a minute's window, and not
   under an hour's or where none is named. The refusal still says the registry's words.
   Mutation-checked: the window, its one-minute bound, the GET and the read-ahead.
+
+### D222. How long shards waits on a registry: what that registry's path has shown (built)
+
+**Found.** A registry's request was tried five times, 50 ms apart, and a 500, 502, 503 or
+504 once more unless it repeated (containerd's `maxAttempts` and pause); a download that
+stopped three times in a row without progress failed (containerd's `httpReadSeeker`); a
+request waited 30 s for its answer and a download 30 s for its next byte (Go's
+transport's figures). Each was a figure of someone else's machinery, open in the
+de-Dockerify audit, and wrong both ways: Docker Hub's token server answered 502 twice
+within 50 ms and a CI build failed (job 117733752147, 2026-10-18), where a moment more
+would have passed it; and a request that is never answered held its pull 30 s. Measured
+(M486): over two hours of 39,260 requests to eleven registries' endpoints from Fedora, no
+endpoint answered 5xx or 429, and 25 requests (0.064%) were never answered at all, each
+at a different moment, the next asking of the same endpoint answered in the endpoint's
+usual time: a stuck request, not a registry down. Healthy answers took 61 to 272 ms at p50
+and up to 7.1 s at most, by endpoint; a healthy download's longest silence was 1.2 s in
+32 of 3.4 GB. A figure measured on these machines would be as arbitrary on anyone else's
+network as containerd's: so each wait is learned from the path it is on, as shards runs.
+
+**Decided** (crates/registry `patience.rs`, `http.rs`, `registry.rs` `Trouble`):
+- **A request without a body waits for its answer as long as its path answers**, and a
+  download for its next byte as long as its silences go: each estimated as TCP estimates
+  its retransmission timeout (RFC 6298 §2, after Jacobson, "Congestion Avoidance and
+  Control", SIGCOMM 1988), the smoothed wait and four smoothed deviations, at least a
+  second (§2.4), a second before the path has shown any (§2.1, the cold start), and
+  doubled for each timeout in a row (§5.5) until one is answered. An answer or a byte
+  overdue is cut and asked again (a download resumed where it was), on a fresh
+  connection. Replayed on M486's own answers, the learned waits cut 73 healthy answers in
+  39,235 (0.19%), each asked again, and lost 120 s in all where 30 s waits lost 752 s.
+  A request with a body waits on its server's work with it (a blob's digest checked as
+  its upload ends), as long as its patience says (D226's).
+- **A trouble is ridden out within its path's budget**: a passing failure (a 502, 503,
+  504 or 408, RFC 9110 §15.5.9, §15.6.3 to §15.6.5; a timeout, a reset or a cut answer),
+  or a download that brings nothing, is asked again after a random share of how long the
+  trouble has lasted so far (full jitter: the time lost past its end at most what it had
+  lasted, and a crowd's askings not back together), at least what `Retry-After` names
+  (RFC 9110 §10.2.3), with no count: a gateway's many quick failures are ridden out as a
+  timeout's few slow ones, for as long. The budget is twice the longest trouble the path
+  has passed (a doubling search past what is known, Baeza-Yates, Culberson and Rawlins,
+  "Searching in the plane", Inf. Comput. 106(2), 1993), and never less than the 100 s
+  TCP itself retransmits to a peer that does not answer before it gives up (RFC 1122
+  §4.2.3.5, R2): all a path that has passed none is given. A wait named past the budget,
+  or a trouble past it, is said as the registry's failure. A 500, which RFC 9110 §15.6.1
+  does not say passes, is asked again once, and a repeat is the request's own answer.
+  A cancel ends a wait at once.
+- **Kept in the home, by path**: what each path showed (its answers' and silences'
+  estimators, the longest trouble it passed and how many) is kept in the path's one
+  record under the image store's `links/`, named by its host and port and this host's
+  address on its route there (D226), with what transfers learn of the path; written
+  whole by a rename as the pull or push lets its client go, read as a client first asks
+  the path, and again once a connection says its route. A pull's registry, its token server
+  and its CDN are three paths, each learned for itself.
+- **A stuck item is isolated**: a layer whose request goes unanswered holds no other: the
+  pull's connections take the layers after it (fetch.rs), and its own is asked again as
+  its answer is overdue.
+- **A registry's own answer is not a trouble**: a blob whose answer ends as its framing
+  says, short of its descriptor's size, fails at once, saying so (before, a CDN that
+  ignores ranges was asked again forever).
+- **Unlike Docker, recorded:** containerd gives a request five attempts 50 ms apart and a
+  download three stalls; Go's transport, 30 s for an answer and none for a body's silence
+  unless set. shards learns each from the path.
+- **Tested:** patience.rs (RFC 6298's arithmetic; a path's budget, backoff and record,
+  kept and read back by the next client); registry.rs (a gateway's 502, 503, 504, 408 or
+  cut connections ridden out for as long as they last and no longer than their length
+  again; past the budget the registry's answer; a named wait waited, one past the budget
+  not; a cancel ends a wait; a path whose answers come 1.5 s late cut once, then waited
+  for; a download silent 1.5 s cut and resumed where it was; a blob short of its size
+  failing at once); fetch.rs (a stuck layer keeps no other waiting; a blob shorter than
+  its descriptor fails at once, with ranges and without); auth.rs (a token server's
+  gateway failures ridden out). Mutation-checked: the budget, the riding, the short blob.
+  A real pull from ghcr.io on Fedora kept ghcr.io's and its CDN's paths in the home.
 
 ### D130. Frontend inputs, as docker/dockerfile:1.27.1 reads them
 

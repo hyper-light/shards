@@ -18,17 +18,10 @@ use shards_image::store::{Download, Held, Limits, Store};
 use crate::auth::{Authorizer, Credentials, loopback};
 use crate::credentials::Found;
 use crate::http::{Client, Redirects, Request, Response};
-use crate::links::{Link, Record};
+use crate::links::{Direction, Link, Record};
 use crate::url::{Scheme, Url};
 use crate::{Error, ErrorKind, Said, printable};
 
-/// How long a registry's trouble is ridden out before it is said as the registry's
-/// failure (D222): a failure the registry or its connection says is passing (a 502, 503,
-/// 504 or 408, a timeout, a reset, a cut answer, RFC 9110 §15.6.3 to §15.6.5, §9.2.2), or
-/// a download that brings nothing. The minute a throttle is waited out within ([`WINDOW_MOST`],
-/// D131): a moment's trouble, where a registry down for longer is down, and said so.
-/// Every failure measured passed well within it (PM M486).
-pub(crate) const MOMENT: Duration = WINDOW_MOST;
 /// The longest of the waits before asking a throttling registry again: up to 50 ms,
 /// then 100, 200, 400 and 800, each a random share of it. ECR Public throttles
 /// anonymous requests at random, at 1 a second already, and less the slower they come
@@ -261,7 +254,7 @@ impl Registry {
 
     /// The record of `direction` over the path to this registry (crate::links): by its host
     /// and port, and this host's address on its route there.
-    pub(crate) fn record(&self, store: &Store, direction: &str) -> Record {
+    pub(crate) fn record(&self, store: &Store, direction: Direction) -> Record {
         let host = self.base.host().trim_start_matches('[').trim_end_matches(']');
         Record::of(
             store.root(),
@@ -301,7 +294,7 @@ impl Registry {
             Begun::Open(at, least) => (at, least),
         };
         // What the registry has taken, and what it had when a send last failed; and the
-        // trouble since it last took more, ridden out for a moment (D222).
+        // trouble since it last took more, ridden out for its path's budget (D222).
         let (mut done, mut mark, mut trouble) = (0u64, 0u64, Trouble::default());
         loop {
             let asked = Instant::now();
@@ -332,10 +325,10 @@ impl Registry {
                         link.failed();
                     }
                     if done > mark {
-                        trouble.over();
+                        trouble.over(&self.http, &at);
                     }
                     mark = done;
-                    match trouble.wait(asked, self.http.moment(), None) {
+                    match trouble.wait(asked, self.http.budget(&at), None) {
                         Some(wait) => self.http.pause(wait)?,
                         None => {
                             return Err(e.context(format!(
@@ -382,7 +375,7 @@ impl Registry {
                     self.refused.fetch_min(len, Ordering::Relaxed);
                 }
                 // Not where the registry is: asked where that is, for a moment at most.
-                416 if trouble.wait(asked, self.http.moment(), None).is_some() => {
+                416 if trouble.wait(asked, self.http.budget(&at), None).is_some() => {
                     drop(response);
                     match self.status(&at, size)? {
                         Some((url, had)) => (at, done) = (url, had),
@@ -624,7 +617,8 @@ impl Registry {
         };
         Ok(Registry {
             auth,
-            http,
+            // Its waits are what its paths show (D222).
+            http: http.learning(),
             base,
             plain,
             scopes,
@@ -814,7 +808,7 @@ impl Registry {
                 // A timeout, a reset or a cut answer: ridden out while it lasts a moment. A
                 // file's body is resumed by its upload instead, from what the registry has.
                 Err(e) if e.kind() == ErrorKind::Transient && file.is_none() => {
-                    match trouble.wait(asked, self.http.moment(), None) {
+                    match trouble.wait(asked, self.http.budget(url), None) {
                         Some(wait) => {
                             self.http.pause(wait)?;
                             continue;
@@ -855,14 +849,15 @@ impl Registry {
                 // What the registry or its gateway says is passing (RFC 9110 §15.5.9,
                 // §15.6.3 to §15.6.5): ridden out while it lasts a moment, waited as long
                 // as it names.
-                408 | 502 | 503 | 504 => trouble.wait(asked, self.http.moment(), retry_after(&response)),
+                408 | 502 | 503 | 504 => trouble.wait(asked, self.http.budget(url), retry_after(&response)),
                 // An unexpected condition, which RFC 9110 §15.6.1 does not say passes:
                 // asked again once, as it may have been the moment's, but not past a
                 // repeat, which is the request's own.
-                500 if !repeated => trouble.wait(asked, self.http.moment(), retry_after(&response)),
+                500 if !repeated => trouble.wait(asked, self.http.budget(url), retry_after(&response)),
                 _ => None,
             };
             let Some(wait) = wait else {
+                trouble.over(&self.http, url);
                 return Ok((response, method));
             };
             // Read what little a refusal carries, so its connection can be used again.
@@ -1269,6 +1264,7 @@ impl Registry {
         progress: &dyn Fn(u64),
         again: bool,
     ) -> Result<(), Error> {
+        self.keep_in(store);
         let digest = desc.digest().map_err(|e| Error::new(e.to_string()))?;
         let size = desc.size().map_err(|e| Error::new(e.to_string()))?;
         let started = if again {
@@ -1331,11 +1327,11 @@ impl Registry {
                 return Err(short(&digest, download.offset(), desc.size));
             }
             if download.offset() > before {
-                trouble.over();
+                trouble.over(&self.http, &url);
                 continue;
             }
-            // It brought nothing: resumed while that lasts a moment.
-            match trouble.wait(asked, self.http.moment(), None) {
+            // It brought nothing: resumed while that lasts its path's budget.
+            match trouble.wait(asked, self.http.budget(&url), None) {
                 Some(wait) => self.http.pause(wait)?,
                 None => return Err(stalled(&digest, trouble.lasted())),
             }
@@ -1348,13 +1344,24 @@ impl Registry {
         self.http.pause(wait)
     }
 
-    /// How long a trouble of this registry's is ridden out.
-    pub(crate) fn moment(&self) -> Duration {
-        self.http.moment()
+    /// Keeps what the paths this registry's requests go over show in `store` (D222), and
+    /// starts them from what they showed before.
+    pub(crate) fn keep_in(&self, store: &Store) {
+        self.http.keep_in(store.root());
+    }
+
+    /// How long a trouble of `url`'s server is ridden out.
+    pub(crate) fn budget(&self, url: &Url) -> Duration {
+        self.http.budget(url)
+    }
+
+    /// A trouble of `url`'s server ended, the asking of `url` answered.
+    pub(crate) fn over(&self, trouble: &mut Trouble, url: &Url) {
+        trouble.over(&self.http, url);
     }
 }
 
-/// A download that brought nothing for a moment (D222).
+/// A download that brought nothing for its path's budget (D222).
 pub(crate) fn stalled(digest: &Digest, lasted: Duration) -> Error {
     Error::of(
         ErrorKind::Transient,
@@ -1740,7 +1747,8 @@ fn allowance_window(response: &Response, said: &[u8]) -> Option<Duration> {
 /// lasted so far (full jitter: a share of the failure's own length, so that the time lost
 /// past its end is at most what it had already lasted, and a crowd's asks do not come back
 /// together), at least what the registry names in `Retry-After` (RFC 9110 §10.2.3); until
-/// it has lasted [`MOMENT`] in all, or a wait it names would end past it. No count: a
+/// it has lasted its path's budget in all (crate::patience: twice the longest trouble the
+/// path passed, at least TCP's R2), or a wait it names would end past it. No count: a
 /// trouble of many quick failures (a gateway's cut connections) is ridden out as one of a
 /// few slow ones (a timeout's), for as long.
 #[derive(Debug, Default)]
@@ -1750,9 +1758,12 @@ pub(crate) struct Trouble {
 }
 
 impl Trouble {
-    /// The trouble is over: what fails next begins another.
-    pub(crate) fn over(&mut self) {
-        self.began = None;
+    /// The trouble is over, the asking of `url` answered: what fails next begins another.
+    /// One that had begun passed, and its path learns how long it lasted (D222).
+    pub(crate) fn over(&mut self, http: &Client, url: &Url) {
+        if let Some(began) = self.began.take() {
+            http.passed(url, began.elapsed());
+        }
     }
 
     /// How long it has lasted.
@@ -1761,17 +1772,17 @@ impl Trouble {
     }
 
     /// After an attempt begun at `attempt` failed: how long to wait before asking again,
-    /// or `None` where the trouble has lasted `moment`, or the registry names a wait
+    /// or `None` where the trouble has lasted `budget`, or the registry names a wait
     /// (`after`) past it.
     pub(crate) fn wait(
         &mut self,
         attempt: Instant,
-        moment: Duration,
+        budget: Duration,
         after: Option<Duration>,
     ) -> Option<Duration> {
         let began = *self.began.get_or_insert(attempt);
         let lasted = began.elapsed();
-        let left = moment.checked_sub(lasted).filter(|l| !l.is_zero())?;
+        let left = budget.checked_sub(lasted).filter(|l| !l.is_zero())?;
         let share = lasted.mul_f64(jitter());
         match after {
             Some(after) if after > left => None,
@@ -3147,12 +3158,20 @@ mod tests {
         );
         // Lasted the moment: given up on.
         assert_eq!(Trouble::default().wait(ago(moment), moment, None), None);
-        // Over: what fails next begins another.
-        trouble.over();
+        // Over: what fails next begins another, and the path learns how long it lasted.
+        let http = Client::new(
+            Box::new(|_| crate::tls::client_config(Vec::new(), None)),
+            "shards-test",
+        );
+        let url = Url::parse("https://r.example/v2/").unwrap();
+        trouble.over(&http, &url);
         assert!(trouble.lasted().is_zero());
-        // The moment ridden out is the minute a throttle is waited out within (D131).
-        assert_eq!(MOMENT, Duration::from_secs(60));
-        assert_eq!(MOMENT, WINDOW_MOST);
+        let shown = http.shown("r.example", 443);
+        assert_eq!(shown.troubles, 1);
+        assert!(shown.trouble_us >= 2_000_000, "{shown:?}");
+        // One not begun passed nothing.
+        Trouble::default().over(&http, &url);
+        assert_eq!(http.shown("r.example", 443).troubles, 1);
     }
 
     /// What the round trips of a test of riding out a trouble may take beyond the waits
@@ -3344,6 +3363,115 @@ mod tests {
             "{e}"
         );
         assert!(took >= short && took < short * 2 + SLACK, "{took:?}");
+    }
+
+    /// A path whose answers come 1.5 s late: its first, past the second a path starts with
+    /// (RFC 6298 §2.1), is cut and asked again with the wait doubled (§5.5), and answered;
+    /// its pace learned, the next is waited for, asked once (D222).
+    #[test]
+    fn a_paths_answers_are_waited_for_as_long_as_it_shows() {
+        // Every answer 1.5 s late.
+        let server = route(None, move |_| {
+            std::thread::sleep(Duration::from_millis(1500));
+            Some((http("200 OK", &[]), After::Keep))
+        });
+        let reference = Reference::parse(&format!("127.0.0.1:{}/test/image:v1", server.port)).unwrap();
+        let http = Client::new(
+            Box::new(|_| crate::tls::client_config(Vec::new(), None)),
+            "shards-test",
+        );
+        let registry = Registry::new(http, &reference, Credentials::Anonymous).unwrap();
+        let url = registry.base().join("manifests/v1").unwrap();
+        let (response, _) = registry.request("GET", &url, &[]).unwrap();
+        assert_eq!(response.status, 200);
+        drop(response);
+        assert_eq!(server.requests().len(), 2, "cut at a second, asked again");
+        let shown = registry.http.shown("127.0.0.1", server.port);
+        assert_eq!(shown.answer.n, 1, "{shown:?}");
+        assert!(shown.answer.srtt_us >= 1_000_000, "{shown:?}");
+        // What it showed is waited for: the same answer again, asked once.
+        let (response, _) = registry.request("GET", &url, &[]).unwrap();
+        drop(response);
+        assert_eq!(server.requests().len(), 3);
+    }
+
+    /// A download silent past its path's patience is cut and resumed where it was, and
+    /// its silences learned: one that pauses 1.5 s, past the second a path starts with, is
+    /// fetched whole over two connections, and its path waits longer after (D222).
+    #[test]
+    fn a_silent_download_is_cut_and_resumed_and_its_silence_learned() {
+        use std::io::{BufRead, BufReader, Write};
+        let blob: Vec<u8> = (0..200_000u32).map(|i| (i % 249) as u8).collect();
+        let digest = Digest::from_hash(Algorithm::Sha256, &Sha256::digest(&blob[..]));
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let body = blob.clone();
+        let served = std::thread::spawn(move || {
+            let mut ranges = Vec::new();
+            while ranges.len() < 2 {
+                let n = ranges.len();
+                let (mut tcp, _) = listener.accept().unwrap();
+                // Asked in TLS first, it answers as a plain registry does (testing.rs).
+                let mut first = [0u8; 1];
+                if tcp.peek(&mut first).is_ok_and(|n| n == 1) && first[0] == 0x16 {
+                    let _ = tcp.write_all(crate::testing::GO_BAD_REQUEST);
+                    continue;
+                }
+                let mut reader = BufReader::new(tcp.try_clone().unwrap());
+                let mut from = 0usize;
+                loop {
+                    let mut line = String::new();
+                    reader.read_line(&mut line).unwrap();
+                    if let Some(r) = line.to_ascii_lowercase().strip_prefix("range: bytes=") {
+                        from = r.trim().trim_end_matches('-').parse().unwrap();
+                    }
+                    if line == "\r\n" {
+                        break;
+                    }
+                }
+                ranges.push(from);
+                let rest = &body[from..];
+                let status = if from == 0 {
+                    "200 OK"
+                } else {
+                    "206 Partial Content"
+                };
+                let _ = write!(tcp, "HTTP/1.1 {status}\r\nContent-Length: {}\r\n\r\n", rest.len());
+                if n == 0 {
+                    // Half, then silence past a second, then the rest, which no one reads.
+                    let _ = tcp.write_all(&rest[..100_000]);
+                    std::thread::sleep(Duration::from_millis(1500));
+                    let _ = tcp.write_all(&rest[100_000..]);
+                } else {
+                    let _ = tcp.write_all(rest);
+                }
+            }
+            ranges
+        });
+        let dir = shards_testdir::TempDir::new(&format!("silent-{port}")).unwrap();
+        let store = Store::open(&dir).unwrap();
+        let reference = Reference::parse(&format!("127.0.0.1:{port}/test/image:v1")).unwrap();
+        let http = Client::new(
+            Box::new(|_| crate::tls::client_config(Vec::new(), None)),
+            "shards-test",
+        );
+        let registry = Registry::new(http, &reference, Credentials::Anonymous).unwrap();
+        let desc = Descriptor {
+            media_type: "application/vnd.oci.image.layer.v1.tar".into(),
+            digest: digest.to_string(),
+            size: 200_000,
+            platform: None,
+            annotations: Default::default(),
+        };
+        registry
+            .fetch_blob(&store, &desc, &Limits::none(), &|_| {})
+            .unwrap();
+        assert_eq!(std::fs::read(store.blob_path(&digest)).unwrap(), blob);
+        let ranges = served.join().unwrap();
+        assert_eq!(ranges[0], 0);
+        assert!(ranges[1] > 0, "resumed where it was cut: {ranges:?}");
+        let shown = registry.http.shown("127.0.0.1", port);
+        assert!(shown.silence.n > 0, "{shown:?}");
     }
 
     /// A whole blob whose answer ends as its framing says, short of its descriptor's size,

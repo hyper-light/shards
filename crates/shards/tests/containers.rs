@@ -11751,15 +11751,14 @@ fn a_push_climbs_from_one_and_the_next_starts_where_it_got() {
     assert_eq!(first.first(), Some(&1), "a new path starts at one: {first:?}");
     let most = first.iter().copied().max().unwrap_or(0);
     assert!(most >= 4.min(cores), "at most {most} uploads at once: {first:?}");
-    // What it got to, kept in the home by its path.
-    let dir = home.join("images").join("links").join("push");
-    let records: Vec<_> = std::fs::read_dir(&dir)
-        .unwrap()
-        .map(|e| e.unwrap().path())
-        .collect();
-    assert_eq!(records.len(), 1, "{records:?}");
-    let record: serde_json::Value = serde_json::from_slice(&std::fs::read(&records[0]).unwrap()).unwrap();
-    let count = record["count"].as_u64().unwrap() as usize;
+    // What it got to, kept in the home in its path's one record: the registry's host and
+    // port, and the route's address, loopback's.
+    let file = home
+        .join("images")
+        .join("links")
+        .join(format!("127.0.0.1%3A{port}@127.0.0.1"));
+    let record: serde_json::Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+    let count = record["push"]["count"].as_u64().unwrap() as usize;
     assert!(count >= 2.min(cores), "{record}");
     let again = format!("127.0.0.1:{port}/team/app:2");
     assert_eq!(shards(&["tag", "image", &source, &again]).status, Some(0));
