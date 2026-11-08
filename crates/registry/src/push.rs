@@ -21,7 +21,7 @@ use shards_image::oci::{self, Descriptor, Document};
 use shards_image::reference::Digest;
 use shards_image::store::{Held, Store};
 
-use crate::climb::{Climb, WINDOW, cores};
+use crate::climb::{Climb, Window, cores};
 use crate::links::{self, Learned, Link, Record};
 use crate::registry::Registry;
 use crate::{Error, ErrorKind};
@@ -219,23 +219,21 @@ fn upload_all(
         .unwrap_or_else(PoisonError::into_inner);
     if let Some(record) = record {
         let sent = link.sent().load(Ordering::Relaxed);
-        let (count, rate) = climb
-            .learned()
-            .or_else(|| learned.as_ref().and_then(Learned::climb))
-            .unwrap_or_default();
-        let (bytes, failures) = links::aged(learned.as_ref(), sent, link.failures());
-        let kept = Learned {
+        // This push's own: added to what the record holds as it is kept, others' since
+        // it was read included (Learned::merge).
+        let (count, rate) = climb.learned().unwrap_or_default();
+        let own = Learned {
             count,
             rate,
             answer_us: link
                 .answer()
                 .map(|a| u64::try_from(a.as_micros()).unwrap_or(u64::MAX)),
-            bytes,
-            failures,
+            bytes: sent,
+            failures: link.failures(),
         };
         // What is learned only helps the next push: one not kept costs this one nothing.
         if sent > 0 {
-            let _ = record.write(&kept);
+            let _ = record.add(&own);
         }
     }
     match failed {
@@ -327,13 +325,21 @@ impl Uploads<'_> {
     /// count, and says how many have started.
     fn adapt(&self, climb: &mut Climb, unit: f64, start: &mut impl FnMut(usize) -> usize) {
         let sent = self.link.sent();
-        let mut since = (Instant::now(), sent.load(Ordering::Relaxed));
+        let mut window = Window::new(Instant::now(), sent.load(Ordering::Relaxed));
         let mut work = self.work();
         loop {
             if work.left == 0 || self.stopped() {
                 return;
             }
-            let wait = WINDOW.saturating_sub(since.0.elapsed());
+            // Kept for the rest of the push: woken only as an upload ends or fails.
+            if climb.settled() {
+                work = self.changed.wait(work).unwrap_or_else(PoisonError::into_inner);
+                continue;
+            }
+            if let Some(answer) = self.link.answer() {
+                climb.answered(answer);
+            }
+            let wait = window.due(climb.answer());
             if !wait.is_zero() {
                 work = self
                     .changed
@@ -342,12 +348,9 @@ impl Uploads<'_> {
                     .0;
                 continue;
             }
-            let now = (Instant::now(), sent.load(Ordering::Relaxed));
-            let rate = now.1.saturating_sub(since.1) as f64 / now.0.duration_since(since.0).as_secs_f64();
-            since = now;
-            if let Some(answer) = self.link.answer() {
-                climb.answered(answer);
-            }
+            let Some(rate) = window.sample(Instant::now(), sent.load(Ordering::Relaxed)) else {
+                continue;
+            };
             let target = self.target.load(Ordering::Relaxed);
             // Measured only while every upload has a blob: with fewer blobs left than
             // uploads, more would show nothing.
@@ -625,8 +628,8 @@ mod tests {
     }
 
     /// `blobs` uploads through [`upload_all`], learned in `record`, each of ten steps of
-    /// a MiB, each step 10 ms: 100 MiB a second each, whatever the others do. How many
-    /// uploads were under way as each began, in order.
+    /// a MiB, each step 10 ms and answered in as long: 100 MiB a second each, whatever the
+    /// others do. How many uploads were under way as each began, in order.
     fn uploaded(blobs: usize, record: &Record) -> Vec<usize> {
         let descs: Vec<Descriptor> = (0..blobs)
             .map(|i| described("application/octet-stream", format!("blob {i}").as_bytes()))
@@ -640,6 +643,7 @@ mod tests {
             for _ in 0..10 {
                 std::thread::sleep(Duration::from_millis(10));
                 link.sent().fetch_add(1 << 20, Ordering::Relaxed);
+                link.answered(Duration::from_millis(10));
             }
             now.fetch_sub(1, Ordering::SeqCst);
             Ok(Layer::Pushed)

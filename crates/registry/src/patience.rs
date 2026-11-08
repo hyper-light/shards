@@ -1,8 +1,9 @@
 //! How long shards waits on a registry, learned from that registry's own path as shards
 //! runs (D222), never a figure measured on one network and frozen:
-//! - how long a request without a body waits for its answer, and how long a download goes
-//!   without a byte before it is cut and resumed: each the path's own pace, the waits it
-//!   has shown, estimated as TCP estimates a retransmission timeout (RFC 6298 §2, after
+//! - how long a connection takes to make (its name's lookup included), its TLS
+//!   handshake, a request without a body's answer, and how long a download goes without
+//!   a byte before it is cut and resumed: each the path's own pace, the waits it has
+//!   shown, estimated as TCP estimates a retransmission timeout (RFC 6298 §2, after
 //!   Jacobson, "Congestion Avoidance and Control", SIGCOMM 1988): the smoothed wait and
 //!   four times its smoothed deviation, at least a second, a second before any wait is
 //!   measured, and doubled for each timeout in a row (§5.5) until one is answered;
@@ -16,27 +17,31 @@
 //! What a path showed is kept in the home, in the image store's `links/`, in the one
 //! record of the path that its transfers learn into too (D226, crate::links): by its host
 //! and port and this host's address on its route there (as a connection there is given
-//! it), written whole by a rename as the client that learned it is let go of, read as a
+//! it), merged into the record as the client that learned it is let go of (each wait's
+//! estimator its newer sample's, the troubles passed added: [`Shown::merged`]), read as a
 //! client first asks the path, and again once it knows the route, so the next pull or push
 //! over it starts from what the last showed.
 
 use std::collections::HashMap;
 use std::path::{Path as FsPath, PathBuf};
 use std::sync::{Mutex, OnceLock, PoisonError};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 /// The wait before any is measured, and the least: RFC 6298 §2.1 and §2.4.
 pub(crate) const FIRST: Duration = Duration::from_secs(1);
 /// The least a trouble is ridden out: TCP's R2 (RFC 1122 §4.2.3.5).
 pub(crate) const R2: Duration = Duration::from_secs(100);
 
-/// A wait's estimator: RFC 6298 §2's SRTT and RTTVAR, in µs, and how many waits it has
-/// seen.
+/// A wait's estimator: RFC 6298 §2's SRTT and RTTVAR, in µs, how many waits it has seen,
+/// and when the last was seen, in µs since the Unix epoch (0 where never, or a record of
+/// before it was kept), by which two clients' estimators of a path are told apart.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub(crate) struct Pace {
     pub srtt_us: u64,
     pub rttvar_us: u64,
     pub n: u64,
+    pub at_us: u64,
 }
 
 impl Pace {
@@ -64,6 +69,26 @@ impl Pace {
         let us = self.srtt_us.saturating_add(self.rttvar_us.saturating_mul(4));
         Duration::from_micros(us).max(FIRST)
     }
+
+    /// The estimator a record keeps of `kept`, as it holds it now, and `own`, a client's,
+    /// which started from `base`: the one of the newer sample, whole. RFC 6298's SRTT and
+    /// RTTVAR are its latest samples' (each moves them by an eighth and a quarter, §2.3),
+    /// so the newer estimator holds the path as it is now; the waits seen are both
+    /// clients' own.
+    fn merged(kept: Pace, base: Pace, own: Pace) -> Pace {
+        let added = own.n.saturating_sub(base.n);
+        let mut out = if own.at_us > kept.at_us { own } else { kept };
+        out.n = kept.n.saturating_add(added);
+        out
+    }
+}
+
+/// Now, in µs since the Unix epoch: when a wait was seen, which is compared across
+/// processes; 0 where the clock says a time before it.
+fn now_us() -> u64 {
+    SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map_or(0, |d| u64::try_from(d.as_micros()).unwrap_or(u64::MAX))
 }
 
 /// `timeout` doubled for each of `timeouts` in a row (RFC 6298 §5.5).
@@ -73,11 +98,16 @@ pub(crate) fn backed_off(timeout: Duration, timeouts: u32) -> Duration {
 
 /// What a path has shown, as kept.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub(crate) struct Shown {
     /// Its answers' waits, of requests without a body.
     pub answer: Pace,
     /// Its downloads' silences: the waits between a body's reads.
     pub silence: Pace,
+    /// Its connections' waits: a TCP connection's, its name's lookup included, and its
+    /// TLS handshake's.
+    pub connect: Pace,
+    pub handshake: Pace,
     /// The longest trouble it passed, in µs, and how many it passed.
     pub trouble_us: u64,
     pub troubles: u64,
@@ -88,16 +118,60 @@ impl Shown {
     pub(crate) fn budget(&self) -> Duration {
         Duration::from_micros(self.trouble_us).saturating_mul(2).max(R2)
     }
+
+    /// What a record keeps of `self`, as it holds it now (which other clients may have
+    /// merged into since it was read), and `own`, a client's, which started from `base`,
+    /// what it read: each wait's estimator the newer sample's ([`Pace::merged`]); the
+    /// longest trouble the longer; the troubles passed the record's and those the client
+    /// passed itself.
+    pub(crate) fn merged(self, base: &Shown, own: &Shown) -> Shown {
+        Shown {
+            answer: Pace::merged(self.answer, base.answer, own.answer),
+            silence: Pace::merged(self.silence, base.silence, own.silence),
+            connect: Pace::merged(self.connect, base.connect, own.connect),
+            handshake: Pace::merged(self.handshake, base.handshake, own.handshake),
+            trouble_us: self.trouble_us.max(own.trouble_us),
+            troubles: self
+                .troubles
+                .saturating_add(own.troubles.saturating_sub(base.troubles)),
+        }
+    }
 }
 
-/// A path's state while shards runs: what it has shown, the timeouts in a row of its
-/// answers and of its silences, and whether it has shown anything since it was read.
+/// Which of a path's waits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Wait {
+    /// A request without a body's, for its answer.
+    Answer,
+    /// A connection's, its name's lookup included.
+    Connect,
+    /// A TLS handshake's.
+    Handshake,
+}
+
+/// A path's state while shards runs: what it has shown, and what it held when it was
+/// read; the timeouts in a row of each of its waits and of its silences; and whether it
+/// has shown anything since it was read.
 #[derive(Debug, Clone, Copy, Default)]
 struct Path {
     shown: Shown,
+    base: Shown,
     answer_timeouts: u32,
+    connect_timeouts: u32,
+    handshake_timeouts: u32,
     silence_timeouts: u32,
     changed: bool,
+}
+
+impl Path {
+    /// `wait`'s estimator, and its timeouts in a row.
+    fn wait(&mut self, wait: Wait) -> (&mut Pace, &mut u32) {
+        match wait {
+            Wait::Answer => (&mut self.shown.answer, &mut self.answer_timeouts),
+            Wait::Connect => (&mut self.shown.connect, &mut self.connect_timeouts),
+            Wait::Handshake => (&mut self.shown.handshake, &mut self.handshake_timeouts),
+        }
+    }
 }
 
 /// A URL's path's name: its host, without an IPv6 address's brackets, and port, as
@@ -123,9 +197,13 @@ pub(crate) struct Paths {
 impl Paths {
     fn with<T>(&self, key: &str, f: impl FnOnce(&mut Path) -> T) -> T {
         let mut paths = self.paths.lock().unwrap_or_else(PoisonError::into_inner);
-        let path = paths.entry(key.to_string()).or_insert_with(|| Path {
-            shown: self.read(key).unwrap_or_default(),
-            ..Path::default()
+        let path = paths.entry(key.to_string()).or_insert_with(|| {
+            let shown = self.read(key).unwrap_or_default();
+            Path {
+                shown,
+                base: shown,
+                ..Path::default()
+            }
         });
         f(path)
     }
@@ -180,12 +258,14 @@ impl Paths {
         Some(crate::links::read(&self.file(key)?)?.shown)
     }
 
-    /// Keeps `shown` as `key`'s, in its record.
-    fn write(&self, key: &str, shown: &Shown) -> std::io::Result<()> {
+    /// Merges `shown`, what `key` has shown since it held `base`, into its record.
+    fn write(&self, key: &str, base: &Shown, shown: &Shown) -> std::io::Result<()> {
         let Some(file) = self.file(key) else {
             return Ok(());
         };
-        crate::links::update(&file, |record| record.shown = *shown)
+        crate::links::update(&file, |record| {
+            record.shown = record.shown.merged(base, shown);
+        })
     }
 
     /// What the path has shown.
@@ -200,27 +280,37 @@ impl Paths {
         self.with(key, |p| {
             if !p.changed {
                 p.shown = shown;
+                p.base = shown;
             }
         });
     }
 
-    /// How long a request without a body waits for its answer.
-    pub(crate) fn answer_timeout(&self, key: &str) -> Duration {
-        self.with(key, |p| backed_off(p.shown.answer.timeout(), p.answer_timeouts))
+    /// How long `key`'s `wait` goes before it is cut: RFC 6298's timeout of its
+    /// estimator, doubled for each timeout in a row (§5.5).
+    pub(crate) fn timeout(&self, key: &str, wait: Wait) -> Duration {
+        self.with(key, |p| {
+            let (pace, timeouts) = p.wait(wait);
+            backed_off(pace.timeout(), *timeouts)
+        })
     }
 
-    /// An answer came after `wait`.
-    pub(crate) fn answered(&self, key: &str, wait: Duration) {
+    /// `key`'s `wait` ended after `took`, in time.
+    pub(crate) fn waited(&self, key: &str, wait: Wait, took: Duration) {
         self.with(key, |p| {
-            p.shown.answer.add(wait);
-            p.answer_timeouts = 0;
+            let (pace, timeouts) = p.wait(wait);
+            pace.add(took);
+            pace.at_us = now_us();
+            *timeouts = 0;
             p.changed = true;
         });
     }
 
-    /// An answer did not come in time.
-    pub(crate) fn answer_timed_out(&self, key: &str) {
-        self.with(key, |p| p.answer_timeouts = p.answer_timeouts.saturating_add(1));
+    /// `key`'s `wait` was cut, its time out.
+    pub(crate) fn timed_out(&self, key: &str, wait: Wait) {
+        self.with(key, |p| {
+            let (_, timeouts) = p.wait(wait);
+            *timeouts = timeouts.saturating_add(1);
+        });
     }
 
     /// How long a download goes without a byte before it is cut, and the silences a
@@ -238,8 +328,13 @@ impl Paths {
     /// last timeout.
     pub(crate) fn silenced(&self, key: &str, silence: Pace, timed_out: Option<bool>) {
         self.with(key, |p| {
-            p.changed |= p.shown.silence != silence;
-            p.shown.silence = silence;
+            if p.shown.silence != silence {
+                p.changed = true;
+                p.shown.silence = Pace {
+                    at_us: now_us(),
+                    ..silence
+                };
+            }
             match timed_out {
                 Some(true) => p.silence_timeouts = p.silence_timeouts.saturating_add(1),
                 Some(false) => p.silence_timeouts = 0,
@@ -271,7 +366,7 @@ impl Drop for Paths {
         let paths = std::mem::take(self.paths.get_mut().unwrap_or_else(PoisonError::into_inner));
         for (key, path) in paths {
             if path.changed {
-                let _ = self.write(&key, &path.shown);
+                let _ = self.write(&key, &path.base, &path.shown);
             }
         }
     }
@@ -314,13 +409,20 @@ mod tests {
         paths.passed("r:443", Duration::from_secs(80));
         assert_eq!(paths.budget("r:443"), Duration::from_secs(160));
         assert_eq!(paths.shown("r:443").troubles, 2);
-        assert_eq!(paths.answer_timeout("s:443"), FIRST);
-        paths.answer_timed_out("s:443");
-        paths.answer_timed_out("s:443");
-        assert_eq!(paths.answer_timeout("s:443"), FIRST * 4);
-        paths.answered("s:443", Duration::from_secs(3));
-        // 3 + 4·1.5 s.
-        assert_eq!(paths.answer_timeout("s:443"), Duration::from_secs(9));
+        for wait in [Wait::Answer, Wait::Connect, Wait::Handshake] {
+            assert_eq!(paths.timeout("s:443", wait), FIRST, "{wait:?}");
+            paths.timed_out("s:443", wait);
+            paths.timed_out("s:443", wait);
+            assert_eq!(paths.timeout("s:443", wait), FIRST * 4, "{wait:?}");
+            paths.waited("s:443", wait, Duration::from_secs(3));
+            // 3 + 4·1.5 s.
+            assert_eq!(paths.timeout("s:443", wait), Duration::from_secs(9), "{wait:?}");
+        }
+        // Each wait its own: a connect's timeouts are not an answer's.
+        paths.timed_out("v:443", Wait::Connect);
+        assert_eq!(paths.timeout("v:443", Wait::Connect), FIRST * 2);
+        assert_eq!(paths.timeout("v:443", Wait::Answer), FIRST);
+        assert_eq!(paths.timeout("v:443", Wait::Handshake), FIRST);
         let kept = Shown {
             trouble_us: 200_000_000,
             ..Shown::default()
@@ -345,7 +447,7 @@ mod tests {
         let dir = shards_testdir::TempDir::new("paths").unwrap();
         let paths = Paths::default();
         paths.passed("r:443", Duration::from_secs(150));
-        paths.answered("[::1]:5000", Duration::from_secs(2));
+        paths.waited("[::1]:5000", Wait::Answer, Duration::from_secs(2));
         let _ = paths.budget("quiet:443");
         paths.keep_in(&dir);
         drop(paths);
@@ -353,6 +455,7 @@ mod tests {
         let mut names: Vec<String> = std::fs::read_dir(&kept)
             .unwrap()
             .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .filter(|name| name != ".lock")
             .collect();
         names.sort();
         assert_eq!(names, ["%5B%3A%3A1%5D%3A5000@unrouted", "r%3A443@unrouted"]);
@@ -365,6 +468,62 @@ mod tests {
             "asked before it knew where"
         );
         assert_eq!(next.shown("[::1]:5000").answer.n, 1, "asked after");
+    }
+
+    /// Two clients that asked one path at once, each from what its record held, both
+    /// keep what they showed as they are let go: the troubles each passed added, the
+    /// longest kept, and each wait's estimator the one of the newer sample, its waits
+    /// both clients' own.
+    #[test]
+    fn clients_at_once_both_keep_what_they_showed() {
+        let dir = shards_testdir::TempDir::new("paths-merge").unwrap();
+        let before = Paths::default();
+        before.keep_in(&dir);
+        before.passed("r:443", Duration::from_secs(10));
+        before.waited("r:443", Wait::Connect, Duration::from_millis(40));
+        drop(before);
+        let (first, second) = (Paths::default(), Paths::default());
+        first.keep_in(&dir);
+        second.keep_in(&dir);
+        assert_eq!(first.shown("r:443").troubles, 1);
+        assert_eq!(second.shown("r:443").troubles, 1);
+        first.passed("r:443", Duration::from_secs(150));
+        first.waited("r:443", Wait::Answer, Duration::from_millis(200));
+        second.passed("r:443", Duration::from_secs(30));
+        second.passed("r:443", Duration::from_secs(20));
+        second.waited("r:443", Wait::Connect, Duration::from_millis(80));
+        // The second's connect seen after the first's answer, in the clock's µs.
+        std::thread::sleep(Duration::from_millis(2));
+        second.waited("r:443", Wait::Answer, Duration::from_millis(600));
+        let newer = second.shown("r:443").answer;
+        // Let go the other way round: the newer answer is kept whatever the order.
+        drop(second);
+        drop(first);
+        let kept = crate::links::read(&crate::links::file(&dir, "r:443", None))
+            .unwrap()
+            .shown;
+        assert_eq!(
+            kept.troubles, 4,
+            "one before, one of the first's, two of the second's"
+        );
+        assert_eq!(kept.trouble_us, 150_000_000);
+        assert_eq!(
+            (kept.answer.srtt_us, kept.answer.at_us),
+            (newer.srtt_us, newer.at_us)
+        );
+        assert_eq!(kept.answer.n, 2, "each client's answer");
+        assert_eq!(kept.connect.n, 2, "the one before and the second's");
+        assert_eq!(kept.connect.srtt_us, (7 * 40_000 + 80_000) / 8);
+    }
+
+    /// A record of before connects and handshakes were kept is read whole.
+    #[test]
+    fn an_older_record_is_read() {
+        let old = br#"{"shown":{"answer":{"srtt_us":5,"rttvar_us":2,"n":1},"silence":{"srtt_us":0,"rttvar_us":0,"n":0},"trouble_us":7,"troubles":1}}"#;
+        let record: crate::links::PathRecord = serde_json::from_slice(old).unwrap();
+        assert_eq!((record.shown.answer.srtt_us, record.shown.answer.at_us), (5, 0));
+        assert_eq!(record.shown.connect, Pace::default());
+        assert_eq!(record.shown.trouble_us, 7);
     }
 
     /// A path's record is its route's: one asked before its route was known starts from

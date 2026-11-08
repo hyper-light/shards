@@ -3389,6 +3389,8 @@ mod tests {
         let shown = registry.http.shown("127.0.0.1", server.port);
         assert_eq!(shown.answer.n, 1, "{shown:?}");
         assert!(shown.answer.srtt_us >= 1_000_000, "{shown:?}");
+        // Its connections, the cut one's and the one after, each made in time.
+        assert!(shown.connect.n >= 2, "{shown:?}");
         // What it showed is waited for: the same answer again, asked once.
         let (response, _) = registry.request("GET", &url, &[]).unwrap();
         drop(response);

@@ -1,11 +1,13 @@
 //! What transfers learn of their network path, kept in the home (D226): each pull's and
 //! each push's, by the path it went over (this host's address on its route to the
 //! registry, as a connection there is given it, and the registry's host and port), the
-//! count of transfers it converged to, what each second at that count carried, the least
+//! count of transfers it converged to, what each window at that count carried a second, the least
 //! a request took to answer, and how often a send failed. One file a path,
 //! `links/<registry>@<address>` in the image store, which holds D222's waits and troubles
 //! of the path too (crate::patience), written whole by a rename, so a reader never sees
-//! half of one.
+//! half of one; and changed only under `links/.lock`, each change read, merged and
+//! written while it is held, so two transfers that change one record at once both keep
+//! what they learned.
 //!
 //! A push's chunk size is solved from them ([`optimum`]): a chunk costs a request's
 //! answer, and a send that fails loses what of its chunk was sent, so the chunk that costs
@@ -16,12 +18,15 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
+use shards_image::store::Locked;
+
 use crate::climb::Spread;
 
 /// What a transfer learned of its path.
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Learned {
-    /// The transfers at once it converged to, and what each second at that count carried.
+    /// The transfers at once it converged to, and what each window at that count carried a
+    /// second.
     pub count: usize,
     pub rate: Spread,
     /// The least a request took to answer, in µs.
@@ -35,6 +40,34 @@ impl Learned {
     /// Its count and samples, for [`crate::climb::Climb::new`], where it has both.
     pub(crate) fn climb(&self) -> Option<(usize, Spread)> {
         (self.count > 0 && self.rate.variance().is_some()).then_some((self.count, self.rate))
+    }
+
+    /// Adds `own`, what one transfer learned itself, to what the record holds now, which
+    /// other transfers may have added to since this one read it:
+    /// - its samples, where they are of the count the record holds and the path the
+    ///   record's are (their means within the pooled standard deviation, `climb::same`),
+    ///   combined with the record's ([`Spread::combined`], Chan, Golub and LeVeque 1979);
+    ///   samples of another count, or of a path that changed, measure something else, and
+    ///   replace them, as the climb itself goes on from them;
+    /// - the least answer, the least of the two;
+    /// - its bytes and failures, added to the record's where the failures are what the
+    ///   record's rate expected, else in its place ([`aged`]).
+    pub(crate) fn merge(&mut self, own: &Learned) {
+        if own.count > 0 && own.rate.n > 0 {
+            if own.count == self.count && crate::climb::same(&self.rate, &own.rate) {
+                self.rate = self.rate.combined(&own.rate);
+            } else {
+                self.count = own.count;
+                self.rate = own.rate;
+            }
+        }
+        self.answer_us = match (self.answer_us, own.answer_us) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
+        let (bytes, failures) = aged(Some(self), own.bytes, own.failures);
+        self.bytes = bytes;
+        self.failures = failures;
     }
 }
 
@@ -65,14 +98,18 @@ pub(crate) fn read(file: &Path) -> Option<PathRecord> {
     serde_json::from_slice(&std::fs::read(file).ok()?).ok()
 }
 
-/// Changes `file`'s record by `change`, written whole by a rename: a reader never sees half
-/// of one. Two that change it at once leave one's change, as either learns it again.
+/// Changes `file`'s record by `change`: read, changed and written whole by a rename (a
+/// reader never sees half of one), all under the lock of the records' directory, the
+/// image store's own (`Locked`: flock(2), `LockFileEx` on Windows, let go before its file
+/// closes, PM M244), which every process and thread changing a record takes: so a change
+/// is made to what the last left, and none is lost.
 pub(crate) fn update(file: &Path, change: impl FnOnce(&mut PathRecord)) -> std::io::Result<()> {
     static NEXT: AtomicU64 = AtomicU64::new(0);
     let dir = file
         .parent()
         .ok_or_else(|| std::io::Error::other("no directory"))?;
     std::fs::create_dir_all(dir)?;
+    let _held = Locked::exclusive(&dir.join(LOCK))?;
     let mut record = read(file).unwrap_or_default();
     change(&mut record);
     let bytes = serde_json::to_vec(&record).map_err(std::io::Error::other)?;
@@ -83,6 +120,10 @@ pub(crate) fn update(file: &Path, change: impl FnOnce(&mut PathRecord)) -> std::
         let _ = std::fs::remove_file(&tmp);
     })
 }
+
+/// The file whose lock a record's change holds, beside the records, a name no record has
+/// (each holds its port's `%3A` and an `@`).
+const LOCK: &str = ".lock";
 
 /// Which of a path's transfers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -124,11 +165,11 @@ impl Record {
         (learned != Learned::default()).then_some(learned)
     }
 
-    /// Keeps `learned` as its own.
-    pub(crate) fn write(&self, learned: &Learned) -> std::io::Result<()> {
+    /// Adds `own`, what one transfer learned itself, to its part ([`Learned::merge`]).
+    pub(crate) fn add(&self, own: &Learned) -> std::io::Result<()> {
         update(&self.file, |record| match self.direction {
-            Direction::Pull => record.pull = learned.clone(),
-            Direction::Push => record.push = learned.clone(),
+            Direction::Pull => record.pull.merge(own),
+            Direction::Push => record.push.merge(own),
         })
     }
 }
@@ -276,14 +317,14 @@ mod tests {
             bytes: 1 << 30,
             failures: 3,
         };
-        record.write(&learned).unwrap();
+        record.add(&learned).unwrap();
         assert_eq!(record.read(), Some(learned.clone()));
         assert_eq!(learned.climb(), Some((8, rate)));
         let name = record.file.file_name().unwrap().to_str().unwrap().to_string();
         assert_eq!(name, "127.0.0.1%3A5000@127.0.0.1");
         let pull = Record::of(&dir, Direction::Pull, "127.0.0.1", 5000, loopback);
         assert!(pull.read().is_none(), "the path's pulls learned nothing");
-        pull.write(&learned).unwrap();
+        pull.add(&learned).unwrap();
         assert_eq!(
             record.read(),
             Some(learned.clone()),
@@ -301,6 +342,98 @@ mod tests {
             "another route is another path"
         );
         assert_eq!(encode("[::1]:5000"), "%5B%3A%3A1%5D%3A5000");
+    }
+
+    /// A transfer's own is added to what the record holds: samples of the same count and
+    /// path combined, of another count or a changed path in their place; the least
+    /// answer kept; bytes and failures added where the failures are the path's.
+    #[test]
+    fn a_transfers_own_is_merged_into_the_record() {
+        let spread = |xs: &[f64]| {
+            let mut s = Spread::default();
+            xs.iter().for_each(|&x| s.add(x));
+            s
+        };
+        let mut record = Learned {
+            count: 4,
+            rate: spread(&[100.0, 104.0]),
+            answer_us: Some(2000),
+            bytes: 1_000_000,
+            failures: 100,
+        };
+        record.merge(&Learned {
+            count: 4,
+            rate: spread(&[101.0, 103.0]),
+            answer_us: Some(3000),
+            bytes: 1_000_000,
+            failures: 105,
+        });
+        // All four samples: mean 102, squared differences 4 + 4 + 1 + 1.
+        assert_eq!(record.rate.n, 4);
+        assert!((record.rate.mean - 102.0).abs() < 1e-12 && (record.rate.m2 - 10.0).abs() < 1e-9);
+        assert_eq!((record.count, record.answer_us), (4, Some(2000)));
+        assert_eq!((record.bytes, record.failures), (2_000_000, 205));
+        let mut changed = record.clone();
+        changed.merge(&Learned {
+            count: 4,
+            rate: spread(&[50.0, 52.0]),
+            ..Learned::default()
+        });
+        assert_eq!(changed.rate, spread(&[50.0, 52.0]), "a changed path");
+        assert_eq!((changed.bytes, changed.failures), (2_000_000, 205));
+        let mut other = record.clone();
+        other.merge(&Learned {
+            count: 8,
+            rate: spread(&[101.0, 103.0]),
+            answer_us: Some(900),
+            ..Learned::default()
+        });
+        assert_eq!((other.count, other.rate.n, other.answer_us), (8, 2, Some(900)));
+        let mut none = record.clone();
+        none.merge(&Learned::default());
+        assert_eq!(none, record, "a transfer that learned nothing changes nothing");
+    }
+
+    /// Transfers that add to one record at once, from threads as from processes, each
+    /// under the records' lock, all keep what they learned: every sample, byte and
+    /// failure is in the record after.
+    #[test]
+    fn transfers_at_once_keep_every_sample() {
+        let dir = shards_testdir::TempDir::new("links-merge").unwrap();
+        let record = Record::of(&dir, Direction::Push, "127.0.0.1", 5000, None);
+        let own = |i: u32| {
+            let mut rate = Spread::default();
+            rate.add(100.0);
+            rate.add(102.0);
+            Learned {
+                count: 4,
+                rate,
+                answer_us: Some(1000 + u64::from(i)),
+                bytes: 1000,
+                failures: 1,
+            }
+        };
+        let (threads, each) = (8u32, 25u32);
+        std::thread::scope(|s| {
+            for t in 0..threads {
+                let (record, own) = (&record, &own);
+                s.spawn(move || {
+                    for i in 0..each {
+                        record.add(&own(t * each + i)).unwrap();
+                    }
+                });
+            }
+        });
+        let all = u64::from(threads * each);
+        let kept = record.read().unwrap();
+        assert_eq!(kept.rate.n, 2 * all, "a sample lost");
+        assert_eq!((kept.bytes, kept.failures), (1000 * all, all));
+        assert_eq!((kept.count, kept.answer_us), (4, Some(1000)));
+        let names: Vec<String> = std::fs::read_dir(dir.join("links"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        assert_eq!(names.len(), 2, "the record and its lock: {names:?}");
     }
 
     /// Young's optimum is the least of the time a byte: smaller chunks and larger both

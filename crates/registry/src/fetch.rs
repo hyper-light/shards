@@ -27,7 +27,7 @@ use shards_image::oci::{Descriptor, Manifest};
 use shards_image::reference::Digest;
 use shards_image::store::{Limits, Ranged, Store};
 
-use crate::climb::{Climb, WINDOW, cores};
+use crate::climb::{Climb, Window, cores};
 use crate::links::Learned;
 use crate::pull::Event;
 use crate::registry::{CHUNK, Registry, Trouble, not_fetched, short, stalled};
@@ -180,7 +180,7 @@ pub(crate) fn layers(
                 ..Learned::default()
             };
             // What is learned only helps the next pull: one not kept costs this one nothing.
-            let _ = record.write(&kept);
+            let _ = record.add(&kept);
         }
     });
     match flows.failed.into_inner().unwrap_or_else(PoisonError::into_inner) {
@@ -215,13 +215,22 @@ impl<'a> Flows<'a> {
         // The mean layer: what one connection holds in flight.
         let unit = self.layers.iter().filter_map(|l| l.desc.size().ok()).sum::<u64>() as f64
             / self.layers.len().max(1) as f64;
-        let mut since = (Instant::now(), self.bytes.load(Ordering::Relaxed));
+        let mut window = Window::new(Instant::now(), self.bytes.load(Ordering::Relaxed));
         let mut work = self.work();
         loop {
             if work.left == 0 || self.stopped() {
                 return;
             }
-            let wait = WINDOW.saturating_sub(since.0.elapsed());
+            // Kept for the rest of the pull: woken only as a layer ends or one fails.
+            if climb.settled() {
+                work = self.changed.wait(work).unwrap_or_else(PoisonError::into_inner);
+                continue;
+            }
+            let answer = self.answer.load(Ordering::Relaxed);
+            if answer > 0 {
+                climb.answered(Duration::from_micros(answer));
+            }
+            let wait = window.due(climb.answer());
             if !wait.is_zero() {
                 work = self
                     .changed
@@ -230,14 +239,10 @@ impl<'a> Flows<'a> {
                     .0;
                 continue;
             }
-            let now = (Instant::now(), self.bytes.load(Ordering::Relaxed));
-            let rate = (now.1 - since.1) as f64 / now.0.duration_since(since.0).as_secs_f64();
-            since = now;
+            let Some(rate) = window.sample(Instant::now(), self.bytes.load(Ordering::Relaxed)) else {
+                continue;
+            };
             let target = self.target.load(Ordering::Relaxed);
-            let answer = self.answer.load(Ordering::Relaxed);
-            if answer > 0 {
-                climb.answered(Duration::from_micros(answer));
-            }
             // Measured only while every connection has work.
             let Some(to) = climb.window(rate, work.busy >= target, unit) else {
                 continue;
@@ -749,7 +754,7 @@ mod tests {
             fake.registry.port,
             from,
         )
-        .write(&learned)
+        .add(&learned)
         .unwrap();
     }
 

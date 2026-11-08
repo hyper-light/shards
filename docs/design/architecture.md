@@ -9048,20 +9048,46 @@ estimator's of what was measured (the table below).
   same registry is learned apart over each; two networks that lease the host the same
   address are one path until its samples say otherwise (the aging below). A record holds the
   count of transfers the path converged to, Welford's mean and variance of what each
-  second at that count carried, the least a request took to answer, and the bytes of
+  window at that count carried, the least a request took to answer, and the bytes of
   bodies sent and the sends that failed. It is written whole by a rename, so a reader
-  never sees half of one; two that change it at once leave one's change, which the other
-  learns again. A path's pulls and pushes are learned apart within it: a home's uplink
-  and downlink differ (M114 pulled at 98 MB/s where M488 pushed to ttl.sh at 4.5).
+  never sees half of one, and changed only under `links/.lock`, the image store's own
+  lock (`Locked`: flock(2), `LockFileEx` on Windows, unlocked before its file closes, PM
+  M244): each change reads the record, merges into it what its transfer learned itself,
+  and writes it, the lock held throughout, so transfers that end at once, in threads or
+  processes, all keep theirs (before, two at once left one's change). The merge
+  (`Learned::merge`): samples of the record's count and of the same path (means within
+  the pooled standard deviation) are combined by Chan, Golub and LeVeque's pairwise
+  formulae (n = nₐ + n_b, δ = mean_b − meanₐ, mean = meanₐ + δ·n_b/n, M2 = M2ₐ + M2_b +
+  δ²·nₐ·n_b/n; "Updating formulae and a pairwise algorithm for computing sample
+  variances", Stanford STAN-CS-79-773, 1979), exactly what Welford's update over them all
+  gives; samples of another count, or of a path that changed, measure another thing and
+  replace them, as the climb itself goes on from them; the least answer is the least of
+  the two; bytes and failures are summed where the failures are the path's, by the
+  aging below. D222's waits merge into the same record (D222). A path's pulls and pushes
+  are learned apart within it: a home's uplink and downlink differ (M114 pulled at 98
+  MB/s where M488 pushed to ttl.sh at 4.5).
 - **A path never seen starts at one transfer and doubles while a doubling pays**
   (`crate::climb`, for push.rs's uploads and fetch.rs's connections alike): TCP's slow
   start (RFC 5681 §3.1), one transfer the least window. Once its requests have answered
   and a count has carried something, it goes straight to what the path needs in flight
   where that is past a doubling: the bandwidth-delay product over the mean blob or layer a
-  transfer holds, the bandwidth the most a second carried and the delay the least a
+  transfer holds, the bandwidth the most a window carried a second and the delay the least a
   request took to answer, as BBR estimates both (Cardwell et al., ACM Queue 14(5), 2016).
   Never past the cores this process may run on (`available_parallelism`): each transfer
   hashes, runs TLS, and a pull's decompresses, and more contend. Nor past a push's blobs.
+- **A window lasts as long as its rate needs** (`climb::Window`): it samples what the
+  transfers carried once each of the path's answer times, the least a request took to
+  answer (BBR's delay estimate; RFC 6298 §2.1's first second where none is known yet,
+  as a round trip assumed before one is measured), and ends once its samples' mean is
+  past its standard error, s/√n (Student, "The probable error of a mean", Biometrika
+  6(1), 1908): its rate told from none, at the one-standard-deviation line every test
+  here draws, and at least two samples, the fewest with a variance. A doubling that pays
+  in full adds the count's own rate (twice the transfers carry twice the bytes), so a
+  window that resolves its rate resolves the gain the climb looks for. A steady path's
+  window is two answer times; a bursty one's as many as its bursts need (a burst alone
+  among empty samples sits at the line, mean and error both x/n, and is not enough); one
+  whose transfers carry nothing never ends, as nothing it says is a rate. Once the count
+  is kept, nothing more is sampled. Before, a window was a second, M114's period, chosen.
 - **A doubling pays only past the path's own noise**: each count is measured over two
   windows after one that settles (two, the fewest that have a variance), and a doubling
   is kept where its mean is above the count before's by more than the two counts' pooled
@@ -9137,11 +9163,24 @@ estimator's of what was measured (the table below).
 | chunk ≥ `OCI-Chunk-Min-Length`, none where unstated | `Registry::begin` | distribution-spec v1.1.1 |
 | midpoint of took and refused | `Registry::chunk` | bisection |
 | `0-0` taken as nothing | `Registry::status` | distribution `blobupload.go`: an upload of 0 or 1 bytes says `0-0` |
-| 1 s a window | `climb::WINDOW` | **not derived**: M114's measuring period, kept |
+| a sample each answer time | `climb::period` | the path's least answer (BBR's delay estimate); RFC 6298 §2.1's 1 s where none is known |
+| a window ends: s/√n < mean, n ≥ 2 | `climb::Window` | the standard error of the mean (Student 1908), at the one-sd line of `pays` and `same`; n − 1 ≥ 1 |
+| no sample once kept | `Climb::settled` | a kept count measures nothing more |
+| record changed under `links/.lock` | `links::update` | the image store's `Locked` (flock(2), `LockFileEx`; unlocked before close, PM M244) |
+| samples combined: n, mean, M2 | `Spread::combined`, `Learned::merge` | Chan, Golub and LeVeque 1979's pairwise formulae |
+| combined only at the same count and path | `Learned::merge` | `climb::same`, the pooled sd; else another count's samples, which replace |
+| least answer: min of the two | `Learned::merge` | the least is the delay estimate (BBR) |
+| bytes, failures summed | `Learned::merge` | `links::aged`, a Poisson count's spread |
 | failures without progress, for the path's budget | `Trouble`, `Client::budget` | D222's: twice the longest trouble the path passed (doubling search), at least RFC 1122's R2 |
-| 30 s to look the route up | `http::CONNECT` | **not derived**: Go's dial timeout, kept from before |
+| the connection that looks the route up, made within the path's connect wait | `Client::route`, `Client::dial` | D222's learned connect: RFC 6298 over the path's connects |
 
-- **Tested** (Fedora, x86_64): `climb`'s
+- **Tested** (Fedora, x86_64; the merge and the window on macOS arm64 too, 2026-11-08):
+  `climb`'s `two_spreads_combine_as_their_samples_do` (Chan et al.'s against Welford's
+  over all), `a_window_samples_once_an_answer_time`, `a_window_lasts_until_its_rate_is_resolved`
+  (steady: two samples; bursts of one in four: more; nothing carried: never);
+  `links`' `a_transfers_own_is_merged_into_the_record` and
+  `transfers_at_once_keep_every_sample` (eight threads, 200 adds to one record: every
+  sample, byte and failure kept); `climb`'s
   `a_spread_is_its_samples_mean_and_variance`, `a_doubling_pays_past_the_noise_measured`
   (1.41 within a √2 spread, 1.42 past it), `a_new_path_starts_at_one_and_doubles_while_it_pays`,
   `a_count_jumps_to_the_paths_bandwidth_delay_product` (10 MB/s, 300 ms, 256 KiB: 12),
@@ -9160,7 +9199,10 @@ estimator's of what was measured (the table below).
   cores and at most 16 transfers, so none was bound by the CPU: one host's rose to 16 (the
   blobs), the LAN's and ttl.sh's were bound by the link. The adaptive push's and pull's own
   numbers, cold and warm, over the wired pair (adacachy, adacachy2), the Mac Studios' Wi-Fi,
-  and tc-netem's induced loss and delay, are owed (M488's list).
+  and tc-netem's induced loss and delay, are owed (M488's list), as is what the derived
+  window does to them against the second it replaced: where a new connection's slow start
+  outlasts a settling window of a few answer times, the windows after it see it still
+  climbing (owed with M488's).
 
 ### D193. A run past its pids limit says so: a `pids-limit` event (built)
 
@@ -14299,6 +14341,23 @@ network as containerd's: so each wait is learned from the path it is on, as shar
   39,235 (0.19%), each asked again, and lost 120 s in all where 30 s waits lost 752 s.
   A request with a body waits on its server's work with it (a blob's digest checked as
   its upload ends), as long as its patience says (D226's).
+- **A connection is made, and its TLS handshake done, as fast as its path's are**
+  (`Wait::Connect`, `Wait::Handshake`): each the same estimator over the path's own
+  connects (the name's lookup included, as Go's dialer counts it, and the race of RFC
+  8305's addresses) and handshakes, a second before any (RFC 6298 §2.1), doubled for each
+  timeout in a row (§5.5); a connect or handshake overdue fails as a passing failure and
+  is ridden out as any trouble (below). Before, every connect was given 30 s (Go's dialer
+  as containerd sets it) and every handshake 10 s (Go's `TLSHandshakeTimeout`): figures of
+  someone else's machinery, which clients that do not learn their waits (the log
+  shippers', clouds' metadata, a build's proxy) keep as Go's.
+- **An idle connection is not a wait** (`http::IDLE`): nothing waits on it, and how long
+  a server keeps one is the server's ("The use of persistent connections places no
+  requirements on the length (or existence) of this timeout", RFC 9112 §9.5). A server's
+  close is seen as the connection is taken (`Conn::quiet`, a peek that finds the close or
+  bytes nobody asked for), so it is kept until then, or until 2 h 4 min, the least a NAT
+  keeps an idle TCP connection's mapping for (RFC 5382 §5, REQ-5): past it a NAT may drop
+  the mapping without a word, and a request on it would wait for an answer that never
+  comes. Before, 30 s, containerd's.
 - **A trouble is ridden out within its path's budget**: a passing failure (a 502, 503,
   504 or 408, RFC 9110 §15.5.9, §15.6.3 to §15.6.5; a timeout, a reset or a cut answer),
   or a download that brings nothing, is asked again after a random share of how long the
@@ -14313,13 +14372,20 @@ network as containerd's: so each wait is learned from the path it is on, as shar
   or a trouble past it, is said as the registry's failure. A 500, which RFC 9110 §15.6.1
   does not say passes, is asked again once, and a repeat is the request's own answer.
   A cancel ends a wait at once.
-- **Kept in the home, by path**: what each path showed (its answers' and silences'
-  estimators, the longest trouble it passed and how many) is kept in the path's one
-  record under the image store's `links/`, named by its host and port and this host's
-  address on its route there (D226), with what transfers learn of the path; written
-  whole by a rename as the pull or push lets its client go, read as a client first asks
-  the path, and again once a connection says its route. A pull's registry, its token server
-  and its CDN are three paths, each learned for itself.
+- **Kept in the home, by path**: what each path showed (its answers', silences',
+  connects' and handshakes' estimators, the longest trouble it passed and how many) is
+  kept in the path's one record under the image store's `links/`, named by its host and
+  port and this host's address on its route there (D226), with what transfers learn of
+  the path; merged into the record as the pull or push lets its client go, under the
+  records' lock (D226), and read as a client first asks the path, and again once a
+  connection says its route. Clients that asked one path at once all keep theirs
+  (`Shown::merged`, three ways: the record as it is now, what the client read, what it
+  holds): each wait's estimator is the one whose last sample is the newer, whole, for
+  RFC 6298's SRTT and RTTVAR are their latest samples' (each moves them an eighth and a
+  quarter, §2.3), with the count of waits both clients'; the longest trouble the longer;
+  the troubles passed the record's and each client's own. Each estimator keeps when its
+  last wait was seen (`at_us`, the wall clock, compared across processes). A pull's
+  registry, its token server and its CDN are three paths, each learned for itself.
 - **A stuck item is isolated**: a layer whose request goes unanswered holds no other: the
   pull's connections take the layers after it (fetch.rs), and its own is asked again as
   its answer is overdue.
@@ -14327,10 +14393,31 @@ network as containerd's: so each wait is learned from the path it is on, as shar
   says, short of its descriptor's size, fails at once, saying so (before, a CDN that
   ignores ranges was asked again forever).
 - **Unlike Docker, recorded:** containerd gives a request five attempts 50 ms apart and a
-  download three stalls; Go's transport, 30 s for an answer and none for a body's silence
-  unless set. shards learns each from the path.
+  download three stalls; Go's transport, 30 s to connect, 10 s for a handshake, 30 s for
+  an answer and none for a body's silence unless set, and containerd's keeps an idle
+  connection 30 s. shards learns each wait from the path, and keeps an idle connection
+  as long as its server and RFC 5382's NATs do.
+- **Every value, and where it comes from:**
+
+  | Value | Where | Source |
+  |---|---|---|
+  | timeout = SRTT + 4·RTTVAR, α = 1/8, β = 1/4, first: R, R/2 | `Pace` | RFC 6298 §2.2, §2.3 |
+  | 1 s before any wait, and the least | `patience::FIRST` | RFC 6298 §2.1, §2.4 |
+  | ×2 a timeout in a row | `backed_off` | RFC 6298 §5.5 |
+  | answers, silences, connects, handshakes each learned | `Wait`, `Paths::timeout` | the same estimator over each one's own waits |
+  | budget: 2 × the longest trouble passed | `Shown::budget` | doubling search (Baeza-Yates, Culberson and Rawlins 1993) |
+  | budget at least 100 s | `patience::R2` | RFC 1122 §4.2.3.5, R2 |
+  | a random share of the trouble so far | `Trouble` | full jitter, bounded by the trouble's own length |
+  | at least `Retry-After` | `Trouble` | RFC 9110 §10.2.3 |
+  | 502, 503, 504, 408 pass; a 500 asked once more | `Trouble` | RFC 9110 §15.5.9, §15.6.1, §15.6.3 to §15.6.5 |
+  | merged: the newer sample's estimator, waits and troubles summed, the longest kept | `Shown::merged` | RFC 6298 §2.3 (SRTT, RTTVAR follow their latest samples) |
+  | an idle connection kept 2 h 4 min at most | `http::IDLE` | not a wait (RFC 9112 §9.5); RFC 5382 §5 REQ-5 |
+  | 30 s to connect, 10 s a handshake: clients that do not learn | `http::CONNECT`, `http::HANDSHAKE` | Go's dialer and `TLSHandshakeTimeout`, as containerd sets them |
 - **Tested:** patience.rs (RFC 6298's arithmetic; a path's budget, backoff and record,
-  kept and read back by the next client); registry.rs (a gateway's 502, 503, 504, 408 or
+  kept and read back by the next client; each wait's backoff its own; two clients at
+  once both kept, `clients_at_once_both_keep_what_they_showed`; a record of before
+  connects were kept read whole); http.rs (`a_learning_client_learns_its_connects_and_handshakes`:
+  one connect, one handshake, two answers over a connection used twice); registry.rs (a gateway's 502, 503, 504, 408 or
   cut connections ridden out for as long as they last and no longer than their length
   again; past the budget the registry's answer; a named wait waited, one past the budget
   not; a cancel ends a wait; a path whose answers come 1.5 s late cut once, then waited
