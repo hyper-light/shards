@@ -1037,6 +1037,10 @@ for the exit status.
     before the status, so a pipeline reading it ends with the client, and again when the
     client hangs up, so a command outliving its client writes nowhere. A container's
     output likewise stops reaching a `docker run` that has gone.
+  - Before `READY` it makes room in its descriptor table for what a run brings and opens
+    (warm.rs `reserve_descriptors`): Linux grows a table its threads share only after an
+    RCU grace period, which held a run's hand-over 8 to 15 ms on a 32-CPU host whose warm
+    VMs' 64 descriptors filled their first table (PM M470).
   - Each message to the daemon goes whole, under one lock (warm.rs `to_daemon`), as the
     daemon's to a VM do (`RunSocket`): the VM's threads send on its connection and on
     clones of it (the run's end and its working set, its processes' records, its log's
@@ -2600,9 +2604,9 @@ rather than a container on the build host's kernel.
   Dockerfile2LLB's AddUlimit gives them, the run alone.
 - **Not yet as BuildKit:** a step's network is its own loopback until the guest has a
   network (D31); BuildKit's seccomp profile; caches kept past one build; ssh from the
-  client. Each is an item of AGENTFILE_ARCH.md §11. A builder may have half the host's
-  memory, as Docker Desktop's VM has, but boots with little and is given the rest as its
-  build needs it (D133): a builder paid about 21 MiB and 4 ms per GiB it booted with
+  client. Each is an item of AGENTFILE_ARCH.md §11. A builder may have what its host has
+  available and what its home's builds have needed (D133), but boots with little and is
+  given the rest as its build needs it: a builder paid about 21 MiB and 4 ms per GiB it booted with
   (PM M82).
 
 ### One binary (D36)
@@ -2829,6 +2833,24 @@ microVM as virtio-fs shares (virtio 1.3 §5.11; Linux fs/fuse/virtio_fs.c):
   restored ahead of its run has its devices (`shards{i}`), empty slots its run fills:
   a template is made for each number of shares (`run::template`). A guest that mounts
   a share before its run has one is told ENODEV.
+- **A direct boot's own shares** (`shards run vm --kernel … --share DIR[:ro]`, repeatable):
+  the i-th is `shards{i}`, fixed at boot, for programs that boot their own PID 1 (shards-api,
+  `crates/api`, whose `GuestSpec::shares` map onto it one to one). The `run --kernel`
+  process takes the daemon's part for them before it becomes the VM (`cli/shares.rs`): it
+  opens each directory, starts the share process as the daemon does (`shards share` with
+  the VM's connection at 3, each directory at 4 + i and the home's private directory after
+  them; on Windows each share's duplex pipe at 5 + n + i, D197), takes its `SHARE_ENDS` and
+  says `TAKEN` (M24), and hands each connection on as a share another server serves
+  (`--slates-fs-fd`, on Windows `--slates-fs share-{i}` through its grants). Why there and
+  not in the VM process: the VM opens no directory. On macOS it is in App Sandbox from its
+  first instruction and opens only what its broker grants (D30); on Linux Landlock and
+  seccomp confine it before it runs a guest; on Windows its AppContainer reaches none of its
+  user's files (D141). So only a process outside that confinement can open the directories,
+  and it must do so before the VM starts. The server and its path rules are the daemon's
+  run's, unchanged (`fs::server::Server`, `fs::answer`); `:ro` is its read-only mode, and
+  any other suffix is refused. Test: boot.rs
+  `a_direct_boot_writes_through_a_share_and_not_through_a_read_only_one`; shards-api's
+  conformance suite on real guests, boot.rs `shards_api_conforms_on_real_guests`.
 - **A share another server serves** (`shards run vm --kernel … --slates-fs-fd N`): a direct
   run's share slot (`shards{i}`, after any of its own) given a connected socket its spawner
   hands it, which a server answers in this device's framing, as `slates shards VOLUME --fd
@@ -3865,6 +3887,24 @@ the words BuildKit's users read.
   agent (readOnlyAgent): keys and signatures, no adding, removing, locking or extensions.
   The host relays an agent request only if it is one of those (identities, sign, unlock)
   and answers any other SSH_AGENT_FAILURE, each message bounded by OpenSSH's 256 KiB.
+- **On Windows, an agent's pipe is waited on while it frees instances** (PM M493). OpenSSH
+  for Windows' agent keeps one instance of its pipe listening, and makes the next only
+  once it has started a worker process for the last connection; a client that dials
+  meanwhile is told the pipe is busy. A build dials once for each connection a step
+  makes. go-winio, which BuildKit dials with, waits 2 s in all: with 128 clients at once
+  on jupiter, 6 of 6,146 busy dials waited longer (2.80 s at most), while the agent freed
+  an instance every 1.35 ms at the median and 8.6 ms at most; a dial's whole wait grows
+  with the clients ahead of it, an instance's does not. So a dial follows the agent, with
+  no time of shards': it dials again each time an instance is freed (WaitNamedPipe),
+  another client may take it first, each wait the one the agent's pipe says
+  (NMPWAIT_USE_DEFAULT_WAIT, its CreateNamedPipe timeout) before the pipe is looked for
+  again; it ends as the agent serves it, or as the agent goes, its pipe gone. An agent that
+  holds its instances and serves none is waited on as a read of it would be, until the
+  build is stopped. The first dial is as any other. The measurement shows the method's
+  need, not a number shards keeps. `a_dial_waits_while_its_agent_serves_the_clients_ahead`
+  holds a dial waiting past 2 s through an agent-like server that frees each instance
+  150 ms after the last; `a_dial_ends_as_its_agent_does` a dial still waiting while the
+  agent holds its instance, and ended as the agent goes.
 - **Tested** on real microVMs against a real ssh-agent holding a key ssh-keygen made
   (`run_steps_reach_the_clients_ssh_agent`): the step lists the key and has the agent sign,
   its request to forget the keys is refused and the agent keeps them, a rogue dial is
@@ -6587,7 +6627,12 @@ host (PM M267), where a container's page cache is its host's to drop. Free page 
   256 MiB at an answer, and held builds took no longer than unbudgeted beyond their rounds'
   spread in 23 of the 24 runner and build pairs: apt on the Xeon 6973P-C was 0.1 s slower,
   its build reading again 58 MiB at p50 of the cache layers it merges, whose page cache its
-  budget had taken back, not slowed by its builder. On Fedora (i9-14900HX, NVMe, Btrfs) at
+  budget had taken back, not slowed by its builder. Since d9c42120 a held build's caches
+  are read and written for its guest by its writer, outside the budget (below), and on
+  eight of CI's runners (EPYC 7763 and 9V74, Xeon Platinum 8573C and 6973P-C) and Fedora
+  held builds took no longer than unbudgeted beyond their rounds' spread in all 27 host
+  and build pairs, apt on the Xeon 6973P-C among them (held's fastest 28.0 s, free's
+  slowest 28.2), no held build reading its caches again. On Fedora (i9-14900HX, NVMe, Btrfs) at
   b8c98e7f and 2f82adb6, the same builder, every build held answered (0 to 5 ms at p50,
   318 ms at most), an apt builder giving back 55 and 80 MiB of its files a build at p50,
   none slower beyond the spread. On an M3 Ultra at 9f2520c2, its builds told every 2 s that their host was short
@@ -6656,7 +6701,19 @@ host (PM M267), where a container's page cache is its host's to drop. Free page 
   next. So at b8c98e7f and after, the writer outside in every held build (150 on Fedora
   and eight of CI's runners), held builds took no longer than unbudgeted beyond their
   rounds' spread but apt's on one runner by 0.1 s, which read again what its budget took
-  of its cache layers' page cache (above).
+  of its cache layers' page cache (above). Those were the scope's: its VM process read and
+  wrote the caches' ranges of the join disk, and a page cache folio is charged to the task
+  that adds it (mm/filemap.c `filemap_add_folio`, `mem_cgroup_charge`); over
+  `memory.high` the kernel reclaims from the scope's own memcgs alone (mm/memcontrol.c
+  `reclaim_high`; mm/vmscan.c `shrink_node_memcgs`) and, with no swap, from its file pages
+  alone (`get_scan_count`, `SCAN_FILE`), the unmapped first. So where the writer is outside
+  the budget, each of a builder's cache ranges is read and written for its guest by the
+  writer, over a connection of its own, a request a round trip (`block::Through`,
+  build/outside.rs `serve_range`), and the guest writes a cache's changes past its own page
+  cache (O_DIRECT, init `caches.rs`): their page cache is the writer's, which no reclaim of
+  the budget scans. With a round trip for each 4 KiB of a request (e0e430d5), apt's step
+  end on CI took 0.31 to 1.00 s held against 0.10 to 0.54 free; in one (d9c42120), 0.09 to
+  0.61 against 0.09 to 0.63, and no pair is slower held beyond the spread (PM M442).
 - **An image's root filesystem over its base's** (PM M442; built and measured). An
   export wrote its image's whole root filesystem, rust:1-slim's 850 MiB again for a build
   that added 7 MiB; over its base's on Fedora's Btrfs, that export takes 0.1 s at p50
@@ -8168,7 +8225,7 @@ refusal. A unit test holds the parts to os_log's bound and to characters' bounda
 lines go to the host's own event tracing, as Docker's Windows driver sends them. Sent as
 every driver's are, from shards' store, by the daemon's shipper (D163).
 
-- **Docker's provider and words.** Each line, and each 16 KiB part of a longer one, is an
+- **Docker's provider and words.** Each line, and each part of a longer one (D163), is an
   event of moby's provider, `{a3693192-9ed6-46d2-a981-f8226c8363bd}`, written by
   EventWriteString at level 0 and keyword 0, its string moby's createLogMessage's:
   `container_name: NAME, image_name: IMAGE, container_id: ID, image_id: IMAGE_ID, source:
@@ -10304,12 +10361,15 @@ peer", each going on here as it should. What changed for them:
   it neither says nor lets a VMM set (PM M460, `feature_register`). On arm64 only: x86_64's
   CPUID has `covers` and no meet yet, and `configure cpu` says so there.
 
-Not yet measured: the moves on that link with this build, between two machines of one
-macOS (two M4 Max Studios), cold and live, n 20, and tests/moved.rs's tests of another
-machine run across two: on 2026-11-08 the Studios' link carried 193 kB/s and their kiln
-runners restarted within the hour, each ending the listening daemon its run held (PM
-M462). Then the levels packing settles at on a slow link, and the longest silence each
-connection lived through, which says whether 100 s is enough there.
+Between two machines on a wired gigabit link (two AMD Ryzen 9 9950X3D2 hosts, Linux 7.3.3
+to 7.2.9, KVM), n 20 cold: a move took 0.95 s at p50, 1.16 at p90 and 9.99 at most, and
+ran nowhere 0.91 s at p50, 1.12 at p90 and 9.89 at most, the most the fresh home's first,
+its image fetched as it readied, moves 2 to 20 at 1.26 s at most; its stream of about 81
+MB sent as 33 to 76 MB at up to 110 MB/s; and tests/moved.rs's two tests of another
+machine passed across them (PM M497). Not yet measured: the Studios' slow Wi-Fi with this
+build (193 kB/s on 2026-11-08, their kiln runners restarting within the hour, each ending
+the listening daemon its run held, PM M462), the levels packing settles at there, and the
+longest silence each connection lived through, which says whether 100 s is enough.
 
 **Moved live** (part 7, roadmap item 7b). `shards move vm --live NAME CONTEXT` moves it as
 it runs, by pre-copy (Clark et al., "Live Migration of Virtual Machines", NSDI 2005): its
@@ -10344,8 +10404,11 @@ page by page as each came; resumed there; and stopped here once it runs there.
   Studio with this build, n 20, that guest's rounds numbered 4 at p50 and 6 at most, round 0
   about 60 MB and each later one 9 to 19 MB, 12 ending with little left and 8 as they
   stopped shrinking; it ran nowhere 0.28 s at p50, 0.37 at p90 and 0.42 at most, its last
-  save 83 to 228 ms of it (PM M462). Not yet measured: that move between two machines, its
-  rounds over a slow link and the time it runs nowhere there.
+  save 83 to 228 ms of it (PM M462). Between two wired machines (PM M497), n 20: it took
+  0.71 s at p50 and 1.03 at most, and ran nowhere 0.21 s at p50, 0.28 at p90, 0.35 at p99
+  and at most, in 2 or 3 rounds, each ending with little left, its last save 51 to 161 ms
+  and its last stream 9 to 41 ms of it. Not yet measured: its rounds over a slow link and
+  the time it runs nowhere there.
 - **Its rounds told as they go** (`Precopying`, `kind::PRECOPYING`): the VM tells its
   daemon each round as it ends, and within a round each further 8 MiB (the bytes a last
   round may send, at least a record's 1 MiB) its stream's carrier has taken, counted as it
@@ -11077,9 +11140,11 @@ daemon's shipper, never by the microVM, to CloudWatch Logs' JSON 1.1 API
   `AWS_ENDPOINT_URL`, the profile's services section), which dockerd's client discards,
   else the partition's own by the SDK's endpoint rules, FIPS's and dual-stack's where asked.
 - **Events.** Each line is an event at its output's time in milliseconds. A line of up to
-  262,118 bytes, as CloudWatch counts them (a byte that is not UTF-8 counted as U+FFFD's
-  three), is whole: the shipper cuts this driver's lines in parts of that length
-  (`Driver::part`), not 16 KiB. A longer one is cut where no character is. With
+  1,048,550 bytes, as CloudWatch counts them (a byte that is not UTF-8 counted as U+FFFD's
+  three), is whole, a put's 1,048,576 less its 26 bytes an event ("Each log event can be
+  no larger than 1 MB", PutLogEvents): the shipper cuts this driver's lines in parts of
+  that length (`Driver::part`, D163), not 16 KiB; moby's cuts at the 256 KiB CloudWatch
+  took before. A longer one is cut where no character is. With
   `awslogs-multiline-pattern`, or `awslogs-datetime-format` made a pattern by its strftime
   table, lines are joined, each followed by a newline, until one matches. Lines held wait
   `awslogs-force-flush-interval-seconds` (5 s) for more, the shipper woken for them
@@ -11229,7 +11294,7 @@ store, by the daemon's shipper.
     - CONTAINER_LOG_EPOCH, an ID each shipper makes as it starts;
     - CONTAINER_LOG_ORDINAL, the entry's place from 1;
   - SYSLOG_TIMESTAMP, its output's time, RFC 3339 to the nanosecond;
-  - a part's place where a line is longer than 16 KiB: CONTAINER_PARTIAL_ID, _ORDINAL
+  - a part's place where a line is longer than the journal's LineMax (D163): CONTAINER_PARTIAL_ID, _ORDINAL
     and _LAST, and before the last, CONTAINER_PARTIAL_MESSAGE;
   - the attributes asked for, named as journal queries for Docker's runs name them (moby's
     sanitizeKeyMod): letters in
@@ -11309,7 +11374,7 @@ daemon's shipper.
     `source`, `log`, the attributes asked for (an attribute named as one of those is
     left out: D166), and a part's place over all
     (`partial_message`, `partial_id`, `partial_ordinal`, `partial_last`) where a line is
-    longer than 16 KiB. Its members are sorted, where Go writes a map in no order.
+    longer than a forward input takes (D163). Its members are sorted, where Go writes a map in no order.
   - Held to Docker 29.3.1's (`scripts/logdrivers/generate`): over TCP in whole seconds
     and to the nanosecond, over a unix socket, and 26 cases of which options Docker
     takes.
@@ -11409,10 +11474,41 @@ and the way every later one sends.
     daemon's restarts: the shipper keeps its place beside the log (`ship`), and the next
     daemon sends what is left. Docker sends from the run's copier and loses what it had
     not sent.
-- **Lines cut where Docker's are** (logging/testdata/gelf.json), so that a receiver that joins
-  Docker's parts joins shards'. Each line is a message, cut as moby's copier cuts it (the size
-  open in docs/audit/2026-10-16_docker-framing.md): past
-  16 KiB, in parts of 16 KiB, then the rest.
+- **Lines cut where each receiver bounds a message** (PM M492, M494). Each line is a
+  message; a longer one than its receiver takes whole goes in parts, each the longest one
+  message carries, with the fields receivers join parts by (an ID in common, its place,
+  the last saying so), never a character of UTF-8 in two. Each driver says the most of a
+  line one message carries (`Driver::part`), from its receiver's own bound, and, where the
+  receiver bounds the message as written (escaped JSON, UTF-16, the fields beside its
+  line), whether a part fits (`Driver::fits`), the shipper cutting by halves the longest
+  that does:
+
+  | driver | a message's bound | its source |
+  |---|---|---|
+  | syslog | 8,192 octets over a stream, 2,048 over UDP, header and newline counted | the protocol: RFC 5425 4.3.1, RFC 5426 3.2; a local datagram refused as too long sent again in halves |
+  | gelf | 128 chunks over UDP, compressed as asked | the protocol: GELF's "MUST NOT consist of more than 128 chunks" |
+  | gelf over TCP | 2 MiB | Graylog's `max_message_size` default: GELF states none (open) |
+  | fluentd | 6,144,000 bytes of event | Fluent Bit's forward `buffer_max_size` default: the forward protocol states none (open) |
+  | journald | the host's journal's LineMax | its configuration as journald reads it, as shards runs; journald.conf(5)'s 48K where none sets it |
+  | splunk | 838,860,800 bytes over a batch of events | HEC's `max_content_length` default (open: HEC says 413 past it) |
+  | awslogs | 1,048,550 bytes as CloudWatch counts them | the API: PutLogEvents' 1 MB event |
+  | gcplogs | 256 KiB of entry, as JSON | the API: Cloud Logging's LogEntry size |
+  | oslog | 1,015 bytes | os/log.h states a 1,024-byte cap on dynamic content; the 1,015 it keeps whole is measured (M374, M494; open) |
+  | etwlogs | the listening sessions' | their answers as shards runs (ERROR_MORE_DATA, ERROR_ARITHMETIC_OVERFLOW): first ETW's stated 64 KB less an EVENT_HEADER, then narrowed between the longest all took and the shortest refused; a line no session took sent again in halves |
+
+  A bound the measurements show (M492, M494) validates the method; none is kept as a
+  number. The rows marked open take a receiver's documented default where the protocol
+  states no bound, until the destination's own refusals are followed.
+
+  moby's copier cuts every line past 16 KiB whatever its receiver takes (copier.go,
+  defaultBufSize), a character in two among them: a syslog receiver that takes 8,192
+  octets cuts its parts short, an ETW session of logman's default buffers loses each
+  whole, and Fluent Bit's, journald's and CloudWatch's take lines whole that Docker cut.
+  A receiver that joins Docker's parts by their fields joins shards'. Cutting costs the
+  shipper (M494): a part that fits as its driver's part says is written once, as moby's
+  are (a 1 MiB line in 3.5 ms over gelf's UDP, 0.85 ms in 16 KiB parts); one that does not
+  is found by halves, its message written about 18 times (0.48 s a MiB of random bytes over
+  gelf's UDP and gzip), on the shipper's thread, its store holding what waits.
 - **Delivered, not written** (`daemon/ship/stream.rs`, PM M233). Over TCP, TLS or a unix
   stream socket, a message counts as sent only once its receiver has it.
   - Over TCP, that is once its receiver's TCP has acknowledged its last byte, as the
@@ -13682,11 +13778,40 @@ changes.
 
 ### D133. A builder's memory, plugged as its build needs it (virtio-mem)
 
-A builder may have half the host's memory, Docker Desktop's VM's share (a default open in
-docs/audit/2026-10-16_docker-framing.md, to derive from what the host can give), but the memory a
-guest boots with costs it its page structures as it boots: about 21 MiB and 4 ms per GiB, a
+A builder may have what its host can give and its home's builds have needed, but the memory
+a guest boots with costs it its page structures as it boots: about 21 MiB and 4 ms per GiB, a
 builder of 64 GiB 1.4 GiB and 434 ms (PM M82). A builder now boots with 512 MiB, and is
 given the rest as its build needs it, up to what it may have.
+
+- **What it may have** (`build::builder_most`), in whole blocks, from the host it runs
+  on and what its home's builds have needed, never a figure of ours: `SHARDS_BUILD_MEMORY`
+  MiB where the user sets it; else
+  - **the cold start**, a home with no build recorded: what the host has available as the
+    builder starts, what its kernel says a new program may have without taking from what
+    runs (Linux's `MemAvailable`, proc_meminfo(5); macOS's `kern.memorystatus_level`, the
+    share of its pages its pressure thread counts available, osfmk/vm/vm_pageout.c
+    `vm_pressure_response`; Windows' `ullAvailPhys`, MEMORYSTATUSEX);
+  - past it, **the most a build of the home needed**, where that is more: the host gave
+    it once. Each builder's guest says, as its build ends (`kind::NEEDS`, `NEEDED`), the
+    least memory whose hold keeps its build's peak (`memory.peak` of its cgroup, with the
+    reserve its kernel keeps beside it, `plug::needed`), and the build's process adds it to
+    the home's `builder-memory` under its lock, the most kept;
+  - and **all the host's memory**, as a run with no limit may have (D148), once a build
+    of the home was ended short of memory (its cgroup's `memory.events` `oom_kill`): its
+    builder had all it could be given and the build needed more;
+  - never more than the host's memory nor less than a builder boots with; all of it where
+    what is available cannot be read, 512 MiB where the host's memory cannot be.
+
+  It was half the host's, the share Docker Desktop's VM takes, a figure of that VM's and
+  of no builder's (the de-Dockerify audit): a step that needed more was ended with memory
+  to spare on its host. Nothing is paid for a ceiling a build never reaches: its region to
+  plug is address space, its page structures made only as blocks come online (PM M490).
+  The cold start holds a build that runs away to what its host could spare, not all its
+  host's memory; a build ended there says so in the home, and its next builder may have
+  the rest. What a builder holds is held back where its host runs short as a run's is: it
+  gives back what it holds cold and unplugs what it holds past twice its use at its host's
+  word (D188's builders), and a budget over the build (a `MemoryHigh` or `MemoryMax` of
+  the user's manager on Linux) is the room it holds its build within.
 
 - **The device.** A virtio-mem device (VIRTIO 1.3 §5.15, device 24), the machine's last,
   so no other device's window moves for it: its region at the first GiB boundary after RAM
@@ -13741,7 +13866,9 @@ given the rest as its build needs it, up to what it may have.
   1,152 MiB, every builder answered 0 to 84 ms after its build's word at p50 on Fedora,
   eight of CI's runners and an M3 Ultra, and the build took no longer than with no budget
   beyond its rounds' spread in 32 of 33 host and build pairs, the other 0.1 s longer as it
-  read again what its budget took of its own files' page cache (PM M442). The build's
+  read again what its budget took of its own files' page cache; since its caches are read
+  and written outside the budget, by its writer (d9c42120), in all 27 pairs of eight of
+  CI's runners and Fedora (PM M442). The build's
   process asks, not the daemon: a builder is its build's, not a run of the daemon's.
 - **What the kernel sized by the memory it booted with** is raised to what it sizes by all
   of it, so that a step sees what it saw in a builder booted with all its memory: the
@@ -19197,15 +19324,42 @@ config refused in their words), the listing check mutation-checked.
 
 ## 4. Start path (≤ 5 ms budget)
 
+The target: a user's `shards run IMAGE COMMAND` to its command executing in its microVM
+(usable), under 5 ms, boot included. A pooled run's VM restored its image's template,
+resumed and connected before the request (D25, D26): what a restore costs is paid ahead
+(restore below). Measured from the user's side: the client's spawn to the guest's
+WORKLOAD_STARTED marker, on one clock across every process (`docs/research/measurements/
+start-path`, PM M470), and by the image bench's `template_usable` (benches/image.rs).
+
+Each step of a pooled run, Fedora (KVM, Intel Core i9-14900HX, 32 CPUs, a vCPU per host
+CPU, Linux 6.19), alpine `true`, n 100, after PM M470, the host at load 20 to 30 from other
+work (p50):
+
 | Step | Cost | Evidence |
 |---|---|---|
-| Daemon receives request; resolves template; claims warm VMM | ~10–50 µs of IPC (to be measured) | — |
-| `hv_vm_create` + `hv_gic_create` + sequential vCPU creation | ~11 + 2 + 7·n µs; can be done ahead in the warm process | [PM M2] |
+| The client's launch: spawn to `main` of the 160 MB PIE `shards` (0.57 for `/usr/bin/true`; 180 more page faults, 125 of them its relocated read-only data) | 1.5–1.6 ms | [PM M470] |
+| The client: its request written to its slot | 0.37 ms | [PM M470] |
+| The daemon's slot thread reads it, bridges it to its handling | 0.18 ms | [PM M470, D185] |
+| The daemon prepares the run (image, spec), makes its container, keeps its request, sets it up | 1.1 ms (0.55, 0.19, 0.13, 0.20) | [PM M470] |
+| Its network process told (E1) | 0.07 ms | [PM M470] |
+| The hand-over to the warm VM, TAKEN (13.5 ms before its descriptor room, M470) | 0.14–0.17 ms | [PM M470] |
+| The guest starts the command: init takes the request 0.49, its names' files 0.48, the standby woken and set up 0.55, the exec until init hears it 1.67 | 2.5–3.5 ms | [PM M470, M292, M440] |
+| **Spawn to usable** | **5.8 ms at load 20–26 (p90 7.3); 7.2 at load 30** | [PM M470, M471] |
+
+Before the request, off its path: the restore itself (`to_beat`, a fresh VM process to its
+guest running again: 9.1 ms on Fedora at load 15, against Firecracker's 10.4, PM M471),
+and on HVF:
+
+| Step | Cost | Evidence |
+|---|---|---|
+| `hv_vm_create` + `hv_gic_create` + sequential vCPU creation | ~11 + 2 + 7·n µs | [PM M2] |
 | `mmap` snapshot memory `MAP_PRIVATE` + `hv_vm_map` | ~1–10 µs | [PM M3] |
-| GIC restore (`hv_gic_set_state`; its registers alone, 20–30 µs, lose interrupts in flight) | ~1.2–1.3 ms; paid by a warm VM before the request | [PM M14, M45] |
+| GIC restore (`hv_gic_set_state`; its registers alone, 20–30 µs, lose interrupts in flight) | ~1.2–1.3 ms | [PM M14, M45] |
 | vCPU register restore | ~0.5 µs per vCPU | [PM M14] |
-| Resume; guest faults in its working set | ~64 µs per MiB (1 vCPU), ~2.2× less with prefetch vCPUs; a warm VM prefetches it before the request | [PM M5, M6, M30] |
-| Engine starts the workload, reports ready over vsock | to be measured | pending |
+| Resume; guest faults in its working set | ~64 µs per MiB (1 vCPU), ~2.2× less with prefetch vCPUs; prefetched | [PM M5, M6, M30] |
+
+Not met yet on Fedora: the guest's start of the command and the client's launch are most
+of what is left.
 
 Clone correctness hazards (RNG reseed via vmgenid, clock via vtimer offset, network
 identity) are **pending** the snapshot research.

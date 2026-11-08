@@ -51,8 +51,16 @@ pub const OPTIONS: [&str; 5] = [
 /// many there are.
 pub const CHUNK: usize = 1420;
 const CHUNK_HEAD: usize = 12;
-/// The most chunks a message is cut into (go-gelf's limit).
+/// The most chunks a message is cut into (go-gelf's limit), which is a GELF input's:
+/// Graylog drops a message of more (GelfChunkAggregator.java `MAX_CHUNKS`, 128,
+/// graylog2-server 3d2aea59).
 pub const CHUNKS: usize = 128;
+/// The most of a UDP message's data, compressed as asked, that [`CHUNKS`] chunks carry.
+pub const UDP_MOST: usize = CHUNKS * (CHUNK - CHUNK_HEAD);
+/// The most of a message's bytes a GELF TCP input takes, its NUL not counted: Graylog's
+/// `max_message_size`, 2 MiB unless set (TcpTransport.java `DEFAULT_MAX_FRAME_LENGTH`,
+/// graylog2-server 3d2aea59), past which its frame decoder drops the frame.
+pub const TCP_MOST: usize = 2 * 1024 * 1024;
 
 /// The driver `opts` asks for, or why not, in shards' words.
 pub fn config(opts: &BTreeMap<String, String>) -> Result<Config, String> {
@@ -208,6 +216,34 @@ pub fn compress(compression: Compression, level: i32, message: &[u8]) -> std::io
             e.write_all(message)?;
             e.finish()
         }
+    }
+}
+
+impl Config {
+    /// The most of a line one message carries (D163): over TCP, what its input takes of a
+    /// message; over UDP, what [`CHUNKS`] chunks carry; each less the rest of `from`'s
+    /// message, its time at its widest. A line's bytes are no fewer in its message, and its
+    /// compression is never assured to fit more. Graylog's limit on a message decompressed
+    /// (GelfCodec.java `DEFAULT_DECOMPRESS_SIZE_LIMIT`, 8 MiB) is past any such line's
+    /// message, every byte of it escaped. go-gelf cuts nothing: moby's 16 KiB parts are
+    /// what it sends.
+    pub fn part(&self, from: &From) -> usize {
+        let rest = message(from, crate::spec::LOG_STDERR, u64::MAX, b"").len();
+        match self.to {
+            To::Tcp(_) => TCP_MOST,
+            To::Udp(_) => UDP_MOST,
+        }
+        .saturating_sub(rest)
+        .max(1)
+    }
+
+    /// Whether `message`, as [`message`] makes it, goes whole to its receiver: over TCP
+    /// within [`TCP_MOST`], over UDP compressed as asked within [`CHUNKS`] chunks.
+    pub fn fits(&self, message: &[u8]) -> std::io::Result<bool> {
+        Ok(match self.to {
+            To::Tcp(_) => message.len() <= TCP_MOST,
+            To::Udp(_) => compress(self.compression, self.level, message)?.len() <= UDP_MOST,
+        })
     }
 }
 
@@ -367,6 +403,43 @@ mod tests {
             extra(&[("_container_id", "mine".to_string())], &attributes),
             r#""_container_id":"mine","_team":"logs""#
         );
+    }
+
+    #[test]
+    fn a_message_fits_as_its_input_takes_it() {
+        let from = From {
+            host: "h".into(),
+            extra: String::new(),
+        };
+        let config = |to, compression| Config {
+            to,
+            compression,
+            level: 1,
+            reconnects: 3,
+            delay: 1,
+        };
+        let m = |n: usize| message(&from, crate::spec::LOG_STDOUT, 0, &vec![b'x'; n]);
+        let rest = m(0).len();
+        // Over UDP as it is: a message of 128 chunks fits, a byte more does not.
+        let udp = config(To::Udp("h:1".into()), Compression::None);
+        // A part leaves its message within 128 chunks at the widest time.
+        let part = udp.part(&from);
+        assert!(part < UDP_MOST - rest, "{part}");
+        let widest = message(&from, crate::spec::LOG_STDERR, u64::MAX, &vec![b'x'; part]);
+        assert!(udp.fits(&widest).unwrap() && chunks(&widest, [0; 8]).is_some());
+        assert!(udp.fits(&m(UDP_MOST - rest)).unwrap());
+        assert_eq!(chunks(&m(UDP_MOST - rest), [0; 8]).unwrap().len(), CHUNKS);
+        assert!(!udp.fits(&m(UDP_MOST - rest + 1)).unwrap());
+        assert!(chunks(&m(UDP_MOST - rest + 1), [0; 8]).is_none());
+        // Compressed, a line of the part's length fits where its data does.
+        let gzip = config(To::Udp("h:1".into()), Compression::Gzip);
+        assert!(gzip.fits(&m(gzip.part(&from))).unwrap());
+        // A line of the part's length fits as it is, at any time.
+        assert!(udp.fits(&m(udp.part(&from))).unwrap());
+        // Over TCP: 2 MiB of message, its NUL not counted.
+        let tcp = config(To::Tcp("h:1".into()), Compression::None);
+        assert!(tcp.fits(&m(TCP_MOST - rest)).unwrap());
+        assert!(!tcp.fits(&m(TCP_MOST - rest + 1)).unwrap());
     }
 
     #[test]

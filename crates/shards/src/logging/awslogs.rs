@@ -1,6 +1,6 @@
 //! The awslogs driver's options and events (D168), as moby's awslogs driver
 //! (daemon/logger/awslogs) takes and makes them for CloudWatch Logs' PutLogEvents: each
-//! line an event, of at most 262,118 bytes as CloudWatch counts them (its UTF-8, a byte
+//! line an event, of at most 1,048,550 bytes as CloudWatch counts them (its UTF-8, a byte
 //! that is not UTF-8 counted as U+FFFD's three), a longer one cut where no character is;
 //! or, with `awslogs-multiline-pattern` (or `awslogs-datetime-format`, its strftime made a
 //! pattern), lines joined, each followed by a newline, until one matches the pattern. A
@@ -33,9 +33,13 @@ pub const OPTIONS: [&str; 15] = [
 
 /// What an event costs a put besides its message (perEventBytes).
 pub const PER_EVENT: usize = 26;
-/// The most of an event's bytes, as CloudWatch counts them (maximumBytesPerEvent): the
-/// longest part of a line its shipper cuts (D168).
-pub const EVENT: usize = 262_144 - PER_EVENT;
+/// The most of an event's bytes, as CloudWatch counts them: what a put of that one event
+/// takes ("Each log event can be no larger than 1 MB", the batch "1,048,576 bytes ... the
+/// sum of all event messages in UTF-8, plus 26 bytes for each log event": PutLogEvents,
+/// CloudWatch Logs API Reference, read 2026-11-07; the quotas' "Event size: 1,024
+/// Kilobytes"), the longest part of a line its shipper cuts (D168). moby's driver still cuts
+/// at the 256 KiB CloudWatch took before (maximumBytesPerEvent, 262,118).
+pub const EVENT: usize = PUT_BYTES - PER_EVENT;
 /// The most of a put's bytes, each event's counted with [`PER_EVENT`] (maximumBytesPerPut).
 pub const PUT_BYTES: usize = 1_048_576;
 /// The most of a put's events (maximumLogEventsPerPut).
@@ -1055,6 +1059,12 @@ mod tests {
         let mut b = Batch::default();
         b.add(e(0, PUT_BYTES - 2 * PER_EVENT - 10));
         assert!(b.fits(&e(0, 10)) && !b.fits(&e(0, 11)));
+        // An event as long as one may be fills a put alone (PutLogEvents' bounds).
+        let mut b = Batch::default();
+        assert!(b.fits(&e(0, EVENT)));
+        b.add(e(0, EVENT));
+        assert!(!b.fits(&e(0, 1)));
+        assert_eq!(EVENT + PER_EVENT, PUT_BYTES);
         let mut b = Batch::default();
         b.add(e(1000, 1));
         assert!(b.fits(&e(1000 + SPAN_MS - 1, 1)) && !b.fits(&e(1000 + SPAN_MS, 1)));

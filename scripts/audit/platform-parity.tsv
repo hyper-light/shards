@@ -481,3 +481,5 @@ crates/vmm/src/devices/virtio/block.rs	fn goes_through	-	none: windows	as Throug
 crates/vmm/src/devices/virtio/block.rs	fn through_request	-	none: windows	as Through: a request to a range given one
 crates/shards/src/warm.rs	const RUN_DESCRIPTORS	-	none: macos,windows	room made in a warm VM's descriptor table before its run: Linux grows a table its threads share only after an RCU grace period (fs/file.c, expand_fdtable's synchronize_rcu, PM M470); Linux's alone measured (warm.rs); a macOS or Windows warm VM's hand-over not measured for it
 crates/shards/src/warm.rs	fn reserve_descriptors	-	none: macos,windows	as RUN_DESCRIPTORS
+crates/api/src/stream.rs	mod unix	crates/api/src/stream.rs	impl Socket [windows]	a guest connection's socket and its waits: Unix's stream socket, its timeouts and reads in poll(2) (PM M236); Windows' AF_UNIX socket (shards_afunix), which polls them itself
+crates/api/src/stream.rs	impl Socket	crates/api/src/stream.rs	mod unix [linux,macos]	as mod unix: Windows' AF_UNIX socket, Unix's stream socket

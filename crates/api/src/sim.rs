@@ -1,0 +1,214 @@
+//! A simulator of [`Guests`]: its "guest" is a closure a test gives, run on a thread of its
+//! own as PID 1 would be, serving vsock ports over in-process socket pairs. It refuses what
+//! [`Shards`](crate::Shards) refuses (the same [`check`] and allowlist), and ends as a guest
+//! does: as its closure returns, or as it is stopped.
+
+use std::collections::{BTreeSet, VecDeque};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
+use std::time::{Duration, Instant};
+
+use crate::stream::{self, Socket};
+use crate::{End, Guest, GuestSpec, Guests, MAX_PORTS, Refusal, Stream, allowed, backend, check};
+
+/// A guest's program: given its side of the guest, it returns how the guest ends
+/// ([`End::PowerOff`], say).
+pub type Program = dyn Fn(&SimHost) -> End + Send + Sync;
+
+/// Guests whose PID 1 is `program`.
+pub struct SimGuests {
+    program: Arc<Program>,
+}
+
+impl std::fmt::Debug for SimGuests {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SimGuests").finish_non_exhaustive()
+    }
+}
+
+impl SimGuests {
+    pub fn new(program: impl Fn(&SimHost) -> End + Send + Sync + 'static) -> SimGuests {
+        SimGuests {
+            program: Arc::new(program),
+        }
+    }
+}
+
+/// The guest's side: what it was booted with, the ports it listens on, and the
+/// connections that come to them.
+#[derive(Debug)]
+pub struct SimHost {
+    spec: GuestSpec,
+    shared: Arc<Shared>,
+}
+
+#[derive(Debug)]
+struct Shared {
+    state: Mutex<State>,
+    changed: Condvar,
+}
+
+#[derive(Debug, Default)]
+struct State {
+    listening: BTreeSet<u32>,
+    /// Connections made and not yet accepted, at most [`MAX_PORTS`] (the muxer's bound on
+    /// pending and open connections).
+    pending: VecDeque<(u32, Socket)>,
+    end: Option<End>,
+}
+
+fn lock(shared: &Shared) -> MutexGuard<'_, State> {
+    shared.state.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+impl SimHost {
+    /// The spec the guest was booted with.
+    pub fn spec(&self) -> &GuestSpec {
+        &self.spec
+    }
+
+    /// Listens on `port`: connections to it are made from now on.
+    pub fn listen(&self, port: u32) {
+        lock(&self.shared).listening.insert(port);
+        self.shared.changed.notify_all();
+    }
+
+    /// The next connection, and its port; `None` once the guest has ended.
+    pub fn accept(&self) -> Option<(u32, Box<dyn Stream>)> {
+        let mut state = lock(&self.shared);
+        loop {
+            if state.end.is_some() {
+                return None;
+            }
+            if let Some((port, s)) = state.pending.pop_front() {
+                return Some((port, Box::new(s)));
+            }
+            state = self
+                .shared
+                .changed
+                .wait(state)
+                .unwrap_or_else(PoisonError::into_inner);
+        }
+    }
+
+    /// Whether the guest has ended (stopped, say).
+    pub fn ended(&self) -> bool {
+        lock(&self.shared).end.is_some()
+    }
+}
+
+impl Guests for SimGuests {
+    fn backend(&self) -> Result<crate::Backend, Refusal> {
+        backend()
+    }
+
+    fn boot(&self, spec: &GuestSpec) -> Result<Box<dyn Guest>, Refusal> {
+        check(spec)?;
+        backend()?;
+        let shared = Arc::new(Shared {
+            state: Mutex::new(State::default()),
+            changed: Condvar::new(),
+        });
+        let host = SimHost {
+            spec: spec.clone(),
+            shared: shared.clone(),
+        };
+        let program = self.program.clone();
+        std::thread::Builder::new()
+            .name("shards-api-sim".into())
+            .spawn(move || {
+                let end = program(&host);
+                let mut state = lock(&host.shared);
+                state.end.get_or_insert(end);
+                host.shared.changed.notify_all();
+            })
+            .map_err(|e| Refusal::Boot(format!("the simulated guest's thread: {e}")))?;
+        Ok(Box::new(SimGuest {
+            ports: spec.ports.clone(),
+            shared,
+        }))
+    }
+}
+
+/// A simulated guest.
+#[derive(Debug)]
+struct SimGuest {
+    ports: Vec<u32>,
+    shared: Arc<Shared>,
+}
+
+impl Guest for SimGuest {
+    fn connect(&self, port: u32, patience: Duration) -> Result<Box<dyn Stream>, Refusal> {
+        allowed(&self.ports, port)?;
+        let deadline = Instant::now().checked_add(patience);
+        let mut state = lock(&self.shared);
+        loop {
+            if let Some(end) = &state.end {
+                return Err(Refusal::Ended(end.clone()));
+            }
+            if state.listening.contains(&port) {
+                if state.pending.len() >= MAX_PORTS {
+                    return Err(Refusal::Channel {
+                        port,
+                        why: format!("{MAX_PORTS} connections wait to be accepted"),
+                    });
+                }
+                let (ours, theirs) = stream::pair().map_err(|e| Refusal::Channel {
+                    port,
+                    why: format!("a socket pair: {e}"),
+                })?;
+                state.pending.push_back((port, theirs));
+                self.shared.changed.notify_all();
+                return Ok(Box::new(ours));
+            }
+            let left = deadline.map_or(Duration::ZERO, |d| d.saturating_duration_since(Instant::now()));
+            if left.is_zero() {
+                return Err(Refusal::Channel {
+                    port,
+                    why: format!("no OK within {patience:?}: the guest does not listen there"),
+                });
+            }
+            state = self
+                .shared
+                .changed
+                .wait_timeout(state, left)
+                .unwrap_or_else(PoisonError::into_inner)
+                .0;
+        }
+    }
+
+    fn stop(&self) -> Result<(), Refusal> {
+        let mut state = lock(&self.shared);
+        state.end.get_or_insert(End::Stopped);
+        // Connections not yet accepted close, as a stopped guest's do.
+        state.pending.clear();
+        self.shared.changed.notify_all();
+        Ok(())
+    }
+
+    fn wait_for(&self, timeout: Duration) -> Result<Option<End>, Refusal> {
+        let deadline = Instant::now().checked_add(timeout);
+        let mut state = lock(&self.shared);
+        loop {
+            if let Some(end) = &state.end {
+                return Ok(Some(end.clone()));
+            }
+            let left = deadline.map_or(Duration::ZERO, |d| d.saturating_duration_since(Instant::now()));
+            if left.is_zero() {
+                return Ok(None);
+            }
+            state = self
+                .shared
+                .changed
+                .wait_timeout(state, left)
+                .unwrap_or_else(PoisonError::into_inner)
+                .0;
+        }
+    }
+}
+
+impl Drop for SimGuest {
+    /// Ends the guest, as dropping a real one does.
+    fn drop(&mut self) {
+        let _ = self.stop();
+    }
+}

@@ -221,7 +221,7 @@ const TAKE_TIMEOUT: Duration = Duration::from_secs(10);
 const JOIN_ROOT: &str = "join-root";
 /// The home's private directory, 0700: a build's ID file, and what a share process keeps of
 /// a restored guest's files that no path reaches (D176).
-const PRIVATE: &str = "tmp";
+pub(crate) const PRIVATE: &str = "tmp";
 /// How long a daemon waits for the lock of one that neither listens nor ends its runs
 /// (shards_ipc::exiting): one started at the same moment, which listens as soon as it
 /// has the lock. One ending its runs is waited for as long as it takes.
