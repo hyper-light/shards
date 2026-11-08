@@ -18724,3 +18724,93 @@ revision before comparing a changed API/implementation.
   change, and on a native arm64 Windows host with WHP (a Snapdragon X machine, as a user
   session), which alone says whether Hyper-V's SGIs and timers hold across a 64-vCPU
   snapshot at a native host's timing.
+
+### M480. What a SIGKILL's end costs a microVM by what its command holds (D217)
+
+- **Question.** A SIGKILLed command's VM was killed 10 s after the SIGKILL, moby's
+  kill.go figure (`KILL_WAIT`), and a shutting-down daemon's 5 s past the stop timeout
+  (`SHUTDOWN_KILL`). How long does a guest take to tear a killed command down, by what it
+  holds and how its host is loaded, and is that work its VM process runs, so that the wait
+  can follow it (D209)?
+- **Method.** containers.rs `kills_cost_by_what_the_command_holds` (ignored;
+  docs/research/measurements/kill-waits/run.sh): for 64, 1,024, 4,096 and 16,384 MiB and
+  three shapes, one process of one thread (`one`), one of 64 threads (`threads`) and 16
+  processes of 4 threads under the command (`tree`), 5 runs of the test guest's `held`
+  each hold that much, every page touched, and are killed by `shards kill`, which waits
+  for the end its guest says: each kill's time, and per GiB its VM process held (resident
+  or footprint, the more). With nothing beside it, then beside as many threads spinning
+  on the host as it has CPUs. n, p50, p90, p99 and max (nearest rank), ms.
+- **Found, Fedora** (Intel Core i9-14900HX, 32 CPUs, Linux 6.19.10-300.fc44, KVM;
+  7f4e8e46's tree; the host's own load 11 to 26 beside the measurement, other agents'):
+  - quiet: 64 MiB, its VM process 0.31 GiB: `threads` p50 8.6, max 14.8; `tree` p50 8.6,
+    max 12.7. 1,024 MiB (1.3 GiB): `one` p50 27.1, max 41.6; `threads` p50 50.6, max
+    103.5; `tree` p50 82.8, max 140.5. 4,096 MiB (4.4 GiB): p50 99.3 to 181.8, max 146.5
+    to 394.1. 16,384 MiB (16.8 GiB): `one` p50 723.8, max 773.0; `threads` p50 798.6, max
+    846.6; `tree` p50 307.8, max 936.7. Per GiB held, 18 to 64 ms at p50, 110 at most.
+  - beside 32 spinning threads: 64 MiB p50 23.0 to 34.4, max 381.2; 1,024 MiB p50 73.5
+    to 110.6, max 135.0; 4,096 MiB p50 204.5 to 355.7, max 446.6; 16,384 MiB `one` p50
+    1,255.2, max 1,551.9; `threads` p50 1,458.0, max 2,107.2; `tree` p50 1,111.7, max
+    5,612.4. Per GiB, 45 to 111 ms at p50, 1,211 at most (a 0.32 GiB run's 381 ms).
+  - Every kill ended: none was cut, the most 5.6 s.
+- **Found, a Mac Studio** (Apple M3 Ultra, 32 CPUs, macOS 26.4, Hypervisor.framework;
+  7f4e8e46; the host's own load 21 to 26 before the measurement and 56 to 66 at its end,
+  other agents'):
+  - quiet: 64 MiB (0.32 GiB) p50 19.2 to 19.5, max 24.3; 1,024 MiB p50 26.1 to 35.7, max
+    70.1; 4,096 MiB p50 84.3 to 111.2, max 339.2; 16,384 MiB (16.8 GiB) p50 187.0 to
+    296.8, max 392.6. Per GiB, 11 to 60 ms at p50, 77 at most.
+  - beside 32 spinning threads, `one` and `threads`: 64 MiB p50 14.1 to 18.7, max 23.3;
+    1,024 MiB p50 27.5 to 31.7, max 45.2; 4,096 MiB p50 79.9 to 94.3, max 122.7; 16,384
+    MiB p50 285.4 to 301.9, max 554.3.
+  - beside 32 spinning threads, `tree` (16 processes): 1,024 MiB p50 31.1, max 1,189.2;
+    4,096 MiB p50 2,952.3, p90 59,529.2, max 59,529.2; 16,384 MiB p50 48,256.4, p90 and max
+    121,856.5: at least 4 of these 10 outlived moby's 10 s.
+- **Reading.** A teardown is work that grows with what the command holds, by 11 to 110
+  ms a GiB on a quiet host, more on a loaded one: on the Mac a tree of 16 processes beside
+  a host whose every CPU was busy took 2 minutes for 16.8 GiB. A fixed wait is short for
+  a microVM holding GiB on a busy host and long for a small one on a quiet host, and no
+  figure from one host holds on another. Its
+  work is the guest kernel's freeing, on the VM's vCPUs, which its VM process's CPU time
+  counts (proc(5): `utime` includes `guest_time`, the time a virtual CPU ran), so following that time tells a teardown going on from a guest that has stalled.
+- **Consequence.** D217: a teardown is followed while its VM process runs or frees, its
+  VM killed only after a slice with neither; the slice is the slowest end the host has
+  shown (the home's `ends`), never less than `Progress`'s window. These numbers validate
+  that method on this host; no constant is taken from them.
+
+### M481. What a killed VM process's end costs, by what it held (D217)
+
+- **Question.** Once a VM was killed, its end was given up on 2 s later (`LAST_WAIT`,
+  moby's). How long does a host take to end a killed VM process, by what it holds?
+- **Method.** containers.rs `kills_cost_by_what_the_command_holds`, after each size's
+  kills: 5 runs holding that much (`held` of one thread) whose VM processes are killed
+  outright (SIGKILL), each's end, as no longer alive, after its kill; quiet, then beside
+  the spinning threads. n, p50, p90, p99 and max, ms.
+- **Found, Fedora** (as M480): quiet, 0.31 GiB p50 40.9, max 45.1; 1.3 GiB p50 82.0, max
+  109.0; 4.4 GiB p50 279.6, max 685.1; 16.8 GiB p50 524.9, max 1,431.5. Beside 32 spinning
+  threads, 0.31 GiB p50 128.2, max 277.2; 1.3 GiB p50 43.6, max 61.0; 4.4 GiB p50 80.8, max
+  88.2; 16.8 GiB p50 779.2, max 1,047.9.
+- **Reading.** A killed VM process's end is its host freeing what it held, which its
+  resident memory shows falling as it goes: the killed microVM is followed by that, as its
+  teardown is by its CPU (D217).
+
+### M482. How long a joiner's freeze takes by what it does (D217)
+
+- **Question.** A joiner's pause (D119: its cgroup frozen in its provider's guest) gave up
+  after 10 s, runc's `waitFrozen`. How long does a freeze take a busy joiner, and does what
+  it waits for end as the joiner's own work does?
+- **Method.** containers.rs `freezes_cost_by_what_a_joiner_does` (ignored; run.sh): a
+  provider and, joined to it in turn, the test guest's `busy spin 64` (64 threads
+  spinning), `busy procs 64` (64 processes spinning) and `busy write 8` (8 threads each
+  writing a MiB to a file and syncing it, over and over) to its `/tmp` and to a volume,
+  `/v`, whose writes wait on the host's share server; 20 `shards pause` each, each
+  unpaused before the next, quiet, then beside the spinning threads. n, p50, p90, p99 and
+  max, ms. Its first run, at 8501f093, waited 13 h for a `write` joiner that never said it
+  was at work, its writes to the root failing unsaid: the guest's workers now say a
+  failure and end, and write to `/tmp`.
+- **Found, Fedora** (as M480): quiet, `spin` p50 23.4, max 35.4; `procs` p50 25.1, max
+  227.4; `write /tmp` p50 12.7, max 24.1; `write /v` p50 16.7, max 35.3. Beside 32 spinning
+  threads, `spin` p50 38.6, max 62.4; `procs` p50 56.6, max 135.3; `write /tmp` p50 24.3,
+  max 42.7; `write /v` p50 29.5, max 51.9.
+- **Reading.** A freeze takes what its processes' way out of the kernel takes, a volume's
+  write its share server's answer, tens of ms; nothing a deadline guards ends it sooner,
+  and a freeze given up on leaves the cgroup freezing. D217: no deadline, a joiner whose
+  work cannot end ended by its kill.

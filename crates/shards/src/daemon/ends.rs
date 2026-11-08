@@ -1,86 +1,150 @@
 //! How long the daemon waits for a microVM's command to end once it has sent it SIGKILL,
 //! and for a VM process to end once it has killed it (`stop`, `kill`, `rm -f`, `restart`
-//! and the daemon's own stop; D27, D26, D217).
+//! and the daemon's own stop; D27, D26, D217): as long as the work goes on, by what this
+//! host has shown, with no figure of shards' own.
 //!
 //! A SIGKILLed command ends as its guest's kernel tears it down: each of its processes'
 //! memory freed, its threads reaped, the rest of its PID namespace with it, its output
-//! drained, and then its end said to the host (init's EXIT). Its VM ended sooner loses what
-//! its guest had yet to write back (its writable layer's metadata not yet committed, a
-//! joiner's layer kept in its memory, D119); ended later, it keeps its user waiting on a
-//! command that will not end. So the wait is what that teardown costs this microVM, then
-//! as long as it goes on: a fixed part, the slowest end measured of a command holding
-//! little, and a part for each GiB its VM process holds as it is told, the slowest rate
-//! measured (PM M480), so that one that holds 40 GiB is given the time its guest needs to
-//! free them and one that holds 200 MiB is not kept a fixed 10 s; and past that, a slice
-//! more each time its VM process is seen to have run what a teardown does, as a start is
-//! waited for as it runs (D209). Only a VM that has run nothing of its teardown for a
-//! slice is killed. What its VM process holds bounds what its guest can free: a guest's
-//! pages are its VM process's (its resident memory, or macOS's footprint, which counts the
-//! pages a guest holds). The same for a killed VM process, whose host frees what it held
-//! (PM M481).
+//! drained, and then its end said to the host (init's EXIT), work its VM process runs.
+//! Its VM ended sooner loses what its guest had yet to write back (its writable layer's
+//! metadata not yet committed, a joiner's layer kept in its memory, D119); a VM never ended
+//! keeps its user waiting on a guest that cannot end it. So the teardown is followed as a
+//! start is (D209): looked at once a slice has passed, and each slice after while its VM
+//! process is seen to have run more than an idle microVM does, and its VM killed only once
+//! it has run nothing for a slice. A killed VM process is followed the same way, by what
+//! its host still frees of it.
+//!
+//! The slice is this host's own: the slowest end this home's daemons have heard of either
+//! kind (the home's [`RECORD`]), kept as each is heard, so that a host whose guests stall
+//! on its disk for 9 s before they end (PM M419) gives its teardowns that long; and never
+//! less than the window over which [`Progress`] tells a microVM that runs from one that
+//! runs nothing ([`IDLE_VM_CPU`]), which a home with no record yet takes alone.
 
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::time::Duration;
 
 use shards_vmm::platform::{IDLE_VM_CPU, Look, Progress};
 
-/// The slowest end measured of a SIGKILLed command holding little: PM M419's `sleep`,
-/// whose SIGKILL was heard 9.4 s after it was sent, beside a gigabyte build on CI's
-/// windows-2022 runner, past every end of M480's.
-const END_FIXED: Duration = Duration::from_millis(9_400);
-/// The slowest a guest tore a SIGKILLed command's memory down, for each GiB its VM process
-/// held, of every shape and size measured, quiet and beside spinning threads (PM M480).
-const END_PER_GIB: Duration = Duration::from_millis(1_000);
-/// The slowest end measured of a VM process killed outright holding little (PM M419: 1.4 ms
-/// beside the gigabyte build; M481).
-const EXIT_FIXED: Duration = Duration::from_millis(100);
-/// The slowest a host freed what a killed VM process held, for each GiB (PM M481).
-const EXIT_PER_GIB: Duration = Duration::from_millis(1_000);
+use super::lock;
 
-/// How long a teardown is given each time its VM process is seen to run past its wait:
-/// the window an idle microVM's CPU was measured over ([`IDLE_VM_CPU`]), by which
-/// [`Progress`] tells a VM that runs from one that runs nothing.
-pub(super) const END_SLICE: Duration = IDLE_VM_CPU.1;
+/// The home's record of this host's ends: `teardown MS` and `exit MS`, the slowest a
+/// SIGKILLed command's end was heard after its SIGKILL and a killed VM process's after its
+/// kill, in milliseconds, each line there once one has been heard.
+pub(super) const RECORD: &str = "ends";
 
-/// `fixed` and `per_gib` for each GiB of `held` bytes.
-fn scaled(fixed: Duration, per_gib: Duration, held: u64) -> Duration {
-    let extra = per_gib.as_nanos().saturating_mul(u128::from(held)) >> 30;
-    fixed.saturating_add(Duration::from_nanos(u64::try_from(extra).unwrap_or(u64::MAX)))
+/// The least slice: the window [`Progress`] judges a microVM's run over, the one its idle
+/// microVMs were measured over (PM M357). A shorter one would take a tick of CPU time for
+/// a run, or none for a stall.
+const LEAST_SLICE: Duration = IDLE_VM_CPU.1;
+
+/// Which end was heard.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum End {
+    /// A SIGKILLed command's.
+    Teardown,
+    /// A killed VM process's.
+    Exit,
 }
 
-/// How long a command whose VM process holds `held` bytes is given to end after SIGKILL
-/// before its teardown is looked at ([`Teardown`]).
-pub(super) fn end_wait(held: u64) -> Duration {
-    scaled(END_FIXED, END_PER_GIB, held)
+/// This host's ends as a home keeps them ([`RECORD`]).
+pub(super) struct Ends {
+    path: PathBuf,
+    /// The slowest of each heard: a teardown's and an exit's.
+    slowest: Mutex<Slowest>,
 }
 
-/// How long a killed VM process that held `held` bytes is given to end, before its end
-/// is given up on.
-pub(super) fn exit_wait(held: u64) -> Duration {
-    scaled(EXIT_FIXED, EXIT_PER_GIB, held)
+/// The slowest end of each kind heard.
+#[derive(Clone, Copy, Default)]
+struct Slowest {
+    teardown: Duration,
+    exit: Duration,
 }
 
-/// What VM process `pid` holds now, its guest's pages among them: its resident memory or
-/// its footprint, the more; none where it cannot be read (one that has ended).
-pub(super) fn held(pid: u32) -> u64 {
-    shards_vmm::platform::process_usage(pid).map_or(0, |u| u.resident.max(u.footprint))
+impl Slowest {
+    fn of(&mut self, kind: End) -> &mut Duration {
+        match kind {
+            End::Teardown => &mut self.teardown,
+            End::Exit => &mut self.exit,
+        }
+    }
 }
 
-/// A SIGKILLed command's teardown in its own microVM, followed by what its VM process runs
-/// from the SIGKILL on; none for a joiner (D119), whose VM is its provider's and runs the
-/// provider's command too, so that it is held to its wait alone.
-pub(super) struct Teardown(Option<Progress>);
-
-impl Teardown {
-    /// The teardown of a command told SIGKILL now, in the microVM of VM process `pid`.
-    pub(super) fn of(pid: Option<u32>) -> Teardown {
-        Teardown(pid.map(Progress::of))
+impl Ends {
+    /// The record kept in `home`, read now: none of either where it is not there or not
+    /// read.
+    pub(super) fn kept_in(home: &Path) -> Ends {
+        let path = home.join(RECORD);
+        let mut slowest = Slowest::default();
+        for line in std::fs::read_to_string(&path).unwrap_or_default().lines() {
+            let (name, ms) = line.split_once(' ').unwrap_or((line, ""));
+            let Ok(ms) = ms.trim().parse::<u64>() else {
+                continue;
+            };
+            match name {
+                "teardown" => slowest.teardown = Duration::from_millis(ms),
+                "exit" => slowest.exit = Duration::from_millis(ms),
+                _ => {}
+            }
+        }
+        Ends {
+            path,
+            slowest: Mutex::new(slowest),
+        }
     }
 
-    /// Whether its VM process ran a teardown's work since it was last looked at, and what
-    /// it ran, for the log: once its wait is up, it is waited on for another [`END_SLICE`]
-    /// if so, and its VM killed if not.
-    pub(super) fn runs(&mut self) -> Option<Look> {
-        self.0.as_mut().map(Progress::look).filter(|look| look.ran)
+    /// How long an end of `kind` is given before its work is looked at, and again each
+    /// time it is seen to go on: the slowest of its kind this host has shown, never less
+    /// than [`LEAST_SLICE`].
+    pub(super) fn slice(&self, kind: End) -> Duration {
+        (*lock(&self.slowest).of(kind)).max(LEAST_SLICE)
+    }
+
+    /// An end of `kind` heard `took` after its signal: kept where it is the slowest yet,
+    /// in memory and in the home (written whole, then renamed over the record, so that a
+    /// reader finds the old record or the new). A record that cannot be written leaves
+    /// this daemon's own.
+    pub(super) fn heard(&self, kind: End, took: Duration) {
+        let mut slowest = lock(&self.slowest);
+        let was = slowest.of(kind);
+        if took <= *was {
+            return;
+        }
+        *was = took;
+        let text = format!(
+            "teardown {}\nexit {}\n",
+            slowest.teardown.as_millis(),
+            slowest.exit.as_millis()
+        );
+        let new = self.path.with_extension("new");
+        if let Err(e) = std::fs::write(&new, text).and_then(|()| std::fs::rename(&new, &self.path)) {
+            super::log(format!(
+                "keeping this host's ends in {}: {e}",
+                self.path.display()
+            ));
+        }
+    }
+}
+
+/// A SIGKILLed command's teardown in its own microVM, or a killed VM process's end,
+/// followed by what its VM process runs and frees from then on; none for a joiner (D119),
+/// whose VM is its provider's and runs the provider's command too, so that it is held to
+/// one slice.
+pub(super) struct Followed(Option<Progress>);
+
+impl Followed {
+    /// The end, from now, of VM process `pid`'s work.
+    pub(super) fn of(pid: Option<u32>) -> Followed {
+        Followed(pid.map(Progress::of))
+    }
+
+    /// Whether its VM process went on with its end since it was last looked at: ran more
+    /// than an idle microVM does, or held less than it did, its host freeing it; and what
+    /// it did, for the log. Waited on for another slice if so; given up on if not.
+    pub(super) fn goes_on(&mut self) -> Option<Look> {
+        let look = self.0.as_mut()?.look();
+        let freed = matches!((look.before, look.now), (Some(b), Some(n)) if n.resident < b.resident);
+        (look.ran || freed).then_some(look)
     }
 }
 
@@ -88,41 +152,48 @@ impl Teardown {
 mod tests {
     use super::*;
 
-    /// The waits rest on what was measured: a microVM that holds nothing is given at least
-    /// the slowest end measured of a command holding little beside the heaviest load
-    /// (M419), and each GiB more the slowest teardown measured of a GiB (M480, M481), so
-    /// that no measured end would have been cut short; and a teardown past its wait is
-    /// looked at over the window idle microVMs were measured over.
+    /// A home with no record gives each end the least slice, the window its progress is
+    /// judged over; each end heard slower than the slowest is kept, in the home too, and
+    /// read back by the next daemon; a faster one changes nothing.
     #[test]
-    fn waits_are_the_measured_ends_of_what_a_microvm_holds() {
-        const GIB: u64 = 1 << 30;
-        assert_eq!(end_wait(0), END_FIXED);
-        assert_eq!(end_wait(GIB), END_FIXED + END_PER_GIB);
-        assert_eq!(end_wait(64 * GIB), END_FIXED + END_PER_GIB * 64);
-        assert_eq!(end_wait(GIB / 2), END_FIXED + END_PER_GIB / 2);
-        assert_eq!(exit_wait(0), EXIT_FIXED);
-        assert_eq!(exit_wait(16 * GIB), EXIT_FIXED + EXIT_PER_GIB * 16);
-        // M419's slowest end of a `sleep` heard, beside the gigabyte build.
-        assert!(end_wait(0) >= Duration::from_millis(9_400));
-        assert_eq!(END_SLICE, Duration::from_secs(10));
-        // Nothing overflows: a host's whole address space held.
-        assert!(end_wait(u64::MAX) > end_wait(GIB));
-        assert!(exit_wait(u64::MAX) > exit_wait(GIB));
+    fn a_hosts_ends_are_learned_and_kept_in_its_home() {
+        let home = shards_testdir::TempDir::new("ends").unwrap();
+        let ends = Ends::kept_in(&home);
+        assert_eq!(LEAST_SLICE, Duration::from_secs(10));
+        assert_eq!(ends.slice(End::Teardown), LEAST_SLICE);
+        assert_eq!(ends.slice(End::Exit), LEAST_SLICE);
+        assert!(!home.join(RECORD).exists());
+        ends.heard(End::Teardown, Duration::from_millis(900));
+        assert_eq!(ends.slice(End::Teardown), LEAST_SLICE, "below the least slice");
+        ends.heard(End::Teardown, Duration::from_millis(19_383));
+        ends.heard(End::Teardown, Duration::from_millis(12_000));
+        ends.heard(End::Exit, Duration::from_millis(1_400));
+        assert_eq!(ends.slice(End::Teardown), Duration::from_millis(19_383));
+        assert_eq!(
+            std::fs::read_to_string(home.join(RECORD)).unwrap(),
+            "teardown 19383\nexit 1400\n"
+        );
+        let next = Ends::kept_in(&home);
+        assert_eq!(next.slice(End::Teardown), Duration::from_millis(19_383));
+        assert_eq!(next.slice(End::Exit), LEAST_SLICE);
+        // A record it cannot read is no record.
+        std::fs::write(home.join(RECORD), "teardown many\n").unwrap();
+        assert_eq!(Ends::kept_in(&home).slice(End::Teardown), LEAST_SLICE);
     }
 
-    /// A teardown is waited on past its wait while its VM process runs: this process
-    /// spinning a CPU is seen to run (one that sleeps is not: the daemon's
+    /// An end is waited on past its slice while its VM process runs: this process
+    /// spinning a CPU is seen to go on (one that sleeps is not: the daemon's
     /// `a_sleeping_process_runs_nothing_a_boot_does_and_a_busy_one_runs`), and a joiner's,
     /// which has no VM of its own to follow, never is.
     #[test]
-    fn a_teardown_is_followed_while_its_vm_process_runs() {
-        let mut busy = Teardown::of(Some(std::process::id()));
+    fn an_end_is_followed_while_its_vm_process_runs() {
+        let mut busy = Followed::of(Some(std::process::id()));
         let t0 = std::time::Instant::now();
         let mut x = 0u64;
         while t0.elapsed() < Duration::from_millis(300) {
             x = std::hint::black_box(x.wrapping_add(1));
         }
-        assert!(busy.runs().is_some());
-        assert!(Teardown::of(None).runs().is_none());
+        assert!(busy.goes_on().is_some());
+        assert!(Followed::of(None).goes_on().is_none());
     }
 }

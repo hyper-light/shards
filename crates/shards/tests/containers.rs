@@ -14694,15 +14694,41 @@ fn spread(sorted: &[f64]) -> String {
     )
 }
 
+/// D217: a SIGKILLed command's end, once heard, is this host's: kept in the home's `ends`,
+/// the record each later kill's slice is read from, and its microVM was not killed under
+/// it, its teardown run to its end.
+#[test]
+fn a_kills_end_is_kept_as_this_hosts_in_its_home() {
+    let Some((home, image)) = home("containers-ends") else {
+        return;
+    };
+    let mut run = start(&home, &image, &["--name", "e1"], &["held", "256", "4", "2"]);
+    let killed = shards_in(&home, &["kill", "e1"]);
+    assert_eq!(killed.status, Some(0), "{killed}");
+    let _ = exit(&mut run, &home);
+    let record = std::fs::read_to_string(home.join("ends")).unwrap();
+    let ms: u64 = record
+        .lines()
+        .find_map(|l| l.strip_prefix("teardown "))
+        .and_then(|ms| ms.parse().ok())
+        .unwrap_or_else(|| panic!("no teardown kept: {record:?}"));
+    assert!(ms > 0, "{record:?}");
+    let log = std::fs::read_to_string(home.join("daemon.log")).unwrap();
+    assert!(!log.contains("its microVM killed"), "{log}");
+}
+
 /// PM M480, M481: what a SIGKILL's end costs a microVM by what its command holds, and what
 /// a VM process's end costs once it is killed. For each size of `KILLS_MIB` (MiB, default
 /// 64,1024,4096,16384) and each shape (one process of one thread; one of 64 threads; 16
 /// processes of 4 threads, a tree under the command, which is its PID namespace's first),
 /// `KILLS_ROUNDS` runs (5) hold that much, every page touched (`held`), and are killed by
-/// `shards kill`, which waits for the end its guest says: each kill's time. Then runs of
+/// `shards kill`, which waits for the end its guest says: each kill's time, its VM
+/// process's CPU over it where it can still be read, and what the daemon's log says of the
+/// kills (D217: teardowns followed past a slice, microVMs killed under them). Then runs of
 /// each size whose VM processes are killed outright: each's end after its kill. All of it
-/// with nothing beside it, then beside `KILLS_LOAD` threads spinning on the host (twice
-/// its CPUs). Each as n, p50, p90, p99 and max (nearest rank).
+/// with nothing beside it (unless `KILLS_QUIET=0`), then beside `KILLS_LOAD` threads
+/// spinning on the host (twice its CPUs); `KILLS_SHAPES` picks shapes (`one,threads,tree`).
+/// Each as n, p50, p90, p99 and max (nearest rank).
 #[test]
 #[ignore = "a measurement: docs/research/measurements/kill-waits/run.sh"]
 fn kills_cost_by_what_the_command_holds() {
@@ -14719,15 +14745,34 @@ fn kills_cost_by_what_the_command_holds() {
     let rounds: usize = env("KILLS_ROUNDS").and_then(|v| v.parse().ok()).unwrap_or(5);
     let cpus = std::thread::available_parallelism().map_or(1, usize::from);
     let load: usize = env("KILLS_LOAD").and_then(|v| v.parse().ok()).unwrap_or(2 * cpus);
-    let shapes = [("one", 1, 1), ("threads", 64, 1), ("tree", 4, 16)];
+    let picked = env("KILLS_SHAPES").unwrap_or_else(|| "one,threads,tree".into());
+    let shapes: Vec<_> = [("one", 1, 1), ("threads", 64, 1), ("tree", 4, 16)]
+        .into_iter()
+        .filter(|(shape, _, _)| picked.split(',').any(|p| p == *shape))
+        .collect();
     let timeout = Duration::from_secs(600);
+    // What the daemon's log says of kills so far: teardowns followed past a slice, and
+    // microVMs killed under them (D217).
+    let said = || {
+        let log = std::fs::read_to_string(home.join("daemon.log")).unwrap_or_default();
+        (
+            log.matches("after SIGKILL, its microVM going on with its end")
+                .count(),
+            log.matches("its microVM killed").count(),
+        )
+    };
     let n = std::sync::atomic::AtomicUsize::new(0);
     // A run of `held` started: its name, its client, its VM process and the most of its
     // resident memory and footprint (shards_vmm::platform::process_usage), in GiB.
     let held = |mib: usize, threads: usize, procs: usize| {
         let name = format!("m480-{}", n.fetch_add(1, Ordering::Relaxed));
         let (mib, threads, procs) = (mib.to_string(), threads.to_string(), procs.to_string());
-        let run = start(&home, &image, &["--name", &name], &["held", &mib, &threads, &procs]);
+        let run = start(
+            &home,
+            &image,
+            &["--name", &name],
+            &["held", &mib, &threads, &procs],
+        );
         let vm = shards_in(&home, &["inspect", "-f", "{{.State.Pid}}", &name]);
         let vm: u32 = vm.stdout.trim().parse().unwrap();
         let usage = shards_vmm::platform::process_usage(vm).unwrap();
@@ -14738,11 +14783,17 @@ fn kills_cost_by_what_the_command_holds() {
         for &mib in &sizes {
             for &(shape, threads, procs) in &shapes {
                 let (mut took, mut per_gib, mut most) = (Vec::new(), Vec::new(), 0f64);
+                let (mut ran, before) = (Vec::new(), said());
                 for _ in 0..rounds {
-                    let (name, mut run, _, gib) = held(mib, threads, procs);
-                    let t0 = Instant::now();
+                    let (name, mut run, vm, gib) = held(mib, threads, procs);
+                    let cpu = || shards_vmm::platform::process_usage(vm).ok().map(|u| u.cpu_ns);
+                    let (cpu0, t0) = (cpu(), Instant::now());
                     let killed = shards_in_within(&home, &["kill", &name], timeout);
                     let ms = t0.elapsed().as_secs_f64() * 1e3;
+                    // Its VM process's CPU over the teardown, where it is still there to read.
+                    if let (Some(a), Some(b)) = (cpu0, cpu()) {
+                        ran.push(b.saturating_sub(a) as f64 / 1e6 / ms.max(f64::MIN_POSITIVE));
+                    }
                     assert_eq!(killed.status, Some(0), "{killed}");
                     took.push(ms);
                     per_gib.push(ms / gib.max(f64::MIN_POSITIVE));
@@ -14752,10 +14803,15 @@ fn kills_cost_by_what_the_command_holds() {
                 }
                 took.sort_by(f64::total_cmp);
                 per_gib.sort_by(f64::total_cmp);
+                ran.sort_by(f64::total_cmp);
+                let after = said();
                 eprintln!(
-                    "M480 {label} {mib} MiB {shape}, its VM process holding {most:.2} GiB at most: {}; per GiB it held: {}",
+                    "M480 {label} {mib} MiB {shape}, its VM process holding {most:.2} GiB at most: {}; per GiB it held: {}; its VM process's CPUs busy over it (CPU ms per ms): {}; followed past a slice {} times, microVMs killed under it {}",
                     spread(&took),
-                    spread(&per_gib)
+                    spread(&per_gib),
+                    spread(&ran).replace(" ms", ""),
+                    after.0 - before.0,
+                    after.1 - before.1
                 );
             }
             let (mut ended, mut most) = (Vec::new(), 0f64);
@@ -14779,7 +14835,9 @@ fn kills_cost_by_what_the_command_holds() {
             );
         }
     };
-    measure("quiet");
+    if env("KILLS_QUIET").as_deref() != Some("0") {
+        measure("quiet");
+    }
     let done = AtomicBool::new(false);
     std::thread::scope(|s| {
         spinning(s, load, &done);

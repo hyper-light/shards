@@ -143,9 +143,10 @@ Reviewed feature by feature, each D-entry's design against what it took from Doc
   - A restart's wait (100 ms doubling to a minute, from scratch after a run of 10 s), dockerd's
     restart manager's figures: open, to derive from what a microVM's restart costs, so that
     a crash loop's restarts take a bounded share of a core.
-  - A daemon's shutdown ends a VM whose command outlives its stop timeout by 5 s (dockerd's
-    `ShutdownTimeout` grace): open, to derive from how long a guest takes to say a killed
-    command's end, measured.
+  - A daemon's shutdown ended a VM whose command outlived its stop timeout by 5 s (dockerd's
+    `ShutdownTimeout` grace). Done (D217): its teardown is followed as long as its microVM
+    goes on ending it, each slice the slowest end its host has shown (the home's `ends`),
+    PM M480 and M481 validating the method.
   - The build cache's other rules were still dockerd's: the temporary share of the
     reserve (e·π·φ %, 512 MB at least) that what is easiest to make again might take, the
     ages at which records went (two days for those, 60 for any), and 2 GB reserved where
@@ -178,11 +179,15 @@ Reviewed feature by feature, each D-entry's design against what it took from Doc
       history a log's, `configure disk --events-history` (D187).
     - A microVM's image pushed: 5 blobs at once, dockerd's `max-concurrent-uploads`, where a
       pull's fetcher measures and adapts (PM M114). To adapt as the fetcher does, measured.
-    - A microVM whose command outlives its SIGKILL: its VM ended 10 s later, and a signal
-      that could not be sent waited out 2 s, moby's kill.go and stop.go. To derive from how
-      long a guest takes to say a killed command's end, with the shutdown's 5 s above.
+    - A microVM whose command outlives its SIGKILL: its VM ended 10 s later, its end given
+      up 2 s after, and a signal that could not be sent waited out 2 s, moby's kill.go and
+      stop.go. Done (D217): followed as the shutdown's above, its killed VM process too; a
+      signal that cannot be sent kills its VM at once, nothing being able to come. A run's
+      stop timeout of 10 s where it sets none stays: the input's meaning (Compose's
+      `stop_grace_period`), not a wait on work.
     - A microVM paused: its cgroup waited for 10 s to say it is frozen, runc's `waitFrozen`.
-      To derive from how long a freeze takes a busy microVM, measured.
+      Done (D217): waited for to its end, which comes as its processes leave the kernel
+      work they were in (PM M482: 0.23 s at most), its kill ending one that cannot.
     - A builder's cache mount whose records are all held: its taker looked again every
       100 ms, BuildKit's mount.go, a timer where the lock's release could wake it. Done
       (2026-11-03): a `locked` taker waits on the held record's lock, and is woken as its

@@ -3,7 +3,8 @@
 # VM process's end costs once killed, and what a joiner's freeze costs by what it does
 # (the ignored tests `kills_cost_by_what_the_command_holds` and
 # `freezes_cost_by_what_a_joiner_does`), quiet and beside threads spinning on the host;
-# with this host, its OS and the revision.
+# with this host, its OS and the revision. They validate D217's method (ends followed, each
+# slice the host's own, kept in its home) and are no figure of it.
 #
 #   docs/research/measurements/kill-waits/run.sh
 #

@@ -6214,6 +6214,59 @@ builds that ran steps did. `a_builds_cache_is_kept_as_its_user_set` (D186): a ch
 policy collected at the next build, which grew nothing. Measured: PM M426's harness,
 `build::gc::tests::a_collections_cost_by_records`.
 
+### D217. A kill waits as long as its microVM goes on ending, by what its host has shown; a freeze, to its end (built)
+
+**Found.** The audit of what was taken from Docker (docs/audit/2026-10-16_docker-framing.md):
+a microVM whose command outlived its SIGKILL had its VM killed 10 s later and its end given
+up 2 s after that (moby daemon/kill.go), a signal that could not be sent waited out 2 s
+(daemon/stop.go), a daemon's shutdown killed a VM whose command outlived its stop timeout
+by 5 s (daemon.go `ShutdownTimeout`), and a joiner's freeze (D119) gave up after 10 s
+(runc libcontainer cgroups/fs2/freezer.go `waitFrozen`). Each is a clock on work that ends
+as it ends: a SIGKILLed command ends as its guest's kernel frees what it held, which grows
+with it, 0.3 s for 16 GiB at p50 and 5.6 s beside a host's every CPU busy (PM M480), so
+that a microVM holding a few tens of GiB on a busy host outlives 10 s with nothing wrong;
+and a VM ended first loses what its guest had yet to write back (D119's joiner layers, a
+writable layer's metadata). A figure measured on shards' machines is as arbitrary on a
+user's host as Docker's.
+
+**Decided.**
+- **A teardown is followed, not timed** (daemon/ends.rs), as a start is (D209): once
+  SIGKILL is sent, by `stop`, `kill`, `rm -f`, `restart` or the daemon's own stop, its VM
+  process is looked at after a slice and each slice after, and waited on while it has run
+  more than an idle microVM does or held less than it did (`Progress`, PM M357's idle
+  CPU); its VM is killed only once it has gone on with nothing of its end for a whole
+  slice. A killed VM process is followed the same way, its host freeing it, before its end
+  is given up on. A joiner's VM is its provider's, which runs the provider's command too:
+  a joiner is held to one slice, then sent SIGKILL again, as before.
+- **The slice is the host's own.** Each end heard is kept in the home (`ends`: `teardown
+  MS`, `exit MS`, the slowest of each this home's daemons have heard, written whole and
+  renamed over), and a slice is the slowest of its kind there, so that a host whose guests
+  stall on its disk for 9 s before they end (PM M419) gives its teardowns that long, and
+  never less than the window over which `Progress` tells a microVM that runs from one
+  that runs nothing (`IDLE_VM_CPU`'s 10 s), which a home with no record yet takes alone:
+  below it a tick of CPU time reads as a run, and a pause of the host's as a stall.
+- **A signal that cannot be sent kills its VM at once:** the run's connection to its VM
+  is gone, the one its guest says its end on, so nothing it could wait for can come.
+- **A joiner's freeze has no deadline** (init's `freeze`): once `cgroup.freeze` is
+  written no process of the cgroup runs another instruction of its own, and `frozen 1`
+  comes as each leaves the kernel work it was in (cgroup-v2.rst), a volume's write as its
+  host's share server answers. A freeze given up on left the cgroup freezing while its
+  pause said it had failed. One whose work cannot end is ended by the joiner's own kill.
+  Measured, every freeze came within 0.23 s (PM M482).
+- **Kept: the stop timeout of 10 s** where a run sets none. It is the input's meaning, not
+  a wait on work: a Compose file's `stop_grace_period` left out is "10 seconds for the
+  container to exit before sending SIGKILL" (the Compose file reference), and a run's
+  `--stop-timeout` left out is read the same, the time its author gave its command to end
+  on its own.
+
+**Tested.** Unit tests (daemon/ends.rs): a home with no record gives each end the least
+slice; each slower end heard is kept, in the home too, and read back by the next daemon; a
+record it cannot read is none; an end is followed while its VM process runs, a joiner's
+never. On real microVMs, tests/containers.rs `a_kills_end_is_kept_as_this_hosts_in_its_home`:
+a kill's end kept in the home, its VM not killed under it; the stop, kill, pause and
+daemon-stop tests as before. Measured: PM M480 to M482, which validate the method (every
+teardown and freeze measured ends while it is followed) and are no figure of it.
+
 ### D188. A host short of memory gets back what its microVMs hold cold of their files (built)
 
 **Found.** The user's plan, item 4: memory that tracks the working set, reclaimed at the
