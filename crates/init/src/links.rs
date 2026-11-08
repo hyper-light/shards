@@ -266,6 +266,64 @@ pub(crate) fn netlink_socket(protocol: libc::c_int) -> io::Result<OwnedFd> {
     Ok(unsafe { OwnedFd::from_raw_fd(fd) })
 }
 
+/// Init's own network namespace's netfilter socket, kept for init's life once opened:
+/// closing one after a commit waits out an RCU grace period (netlink_release's
+/// NETLINK_URELEASE, on which nft_rcv_nl_event flushes the commits' destroy work, which
+/// waits in synchronize_rcu: nf_tables_api.c at Linux 6.18.48; PM M513), and the tables a
+/// run's start programs there (its confinement, the host's loopback, its agents' way past
+/// the microVM) are on its path to its command.
+/// Kept with the process and the network namespace it was opened in: a socket's namespace
+/// is its creator's (net/socket.c), and a process init forks inherits the descriptor, whose
+/// acknowledgments two processes reading one socket would take from each other. A caller of
+/// another process or namespace opens its own, as each caller did before.
+static INIT_NFT: std::sync::Mutex<Option<(Opener, OwnedFd)>> = std::sync::Mutex::new(None);
+
+/// Who opened a kept socket: its process, and its network namespace's inode.
+type Opener = (u32, u64);
+
+/// The calling thread's process and network namespace.
+fn opener() -> io::Result<Opener> {
+    use std::os::unix::fs::MetadataExt as _;
+    Ok((
+        std::process::id(),
+        std::fs::metadata("/proc/thread-self/ns/net")?.ino(),
+    ))
+}
+
+/// Runs `f` on init's own namespace's netfilter socket ([`INIT_NFT`]), opened on first use
+/// by its caller, and kept for callers of the same process and namespace; a caller of
+/// another opens its own, kept in its place. One whose exchange failed is let go, and the
+/// next opens another, as the chooser's.
+pub(crate) fn on_init_nft<T>(f: impl FnOnce(&OwnedFd) -> io::Result<T>) -> io::Result<T> {
+    // A caller that cannot say which namespace it is in (a process whose mount namespace has
+    // no /proc, as a member's may be as it is set up) is no opener's: its own socket, let go.
+    let Ok(here) = opener() else {
+        return f(&netlink_socket(libc::NETLINK_NETFILTER)?);
+    };
+    let mut kept = INIT_NFT.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut sock = kept.take().filter(|(by, _)| *by == here).map(|(_, sock)| sock);
+    let done = kept_socket(&mut sock, || netlink_socket(libc::NETLINK_NETFILTER), f);
+    *kept = sock.map(|sock| (here, sock));
+    done
+}
+
+/// `f` on the socket `kept` holds, or on one `open` makes, kept again where `f` succeeds.
+fn kept_socket<T>(
+    kept: &mut Option<OwnedFd>,
+    open: impl FnOnce() -> io::Result<OwnedFd>,
+    f: impl FnOnce(&OwnedFd) -> io::Result<T>,
+) -> io::Result<T> {
+    let sock = match kept.take() {
+        Some(sock) => sock,
+        None => open()?,
+    };
+    let done = f(&sock);
+    if done.is_ok() {
+        *kept = Some(sock);
+    }
+    done
+}
+
 /// Sends netlink messages, each `(type, flags, payload)`, as one write, and reads their
 /// acknowledgments: the kernel answers a request in the send itself, so every answer is
 /// there when it returns. The first error the kernel gave, if any.
@@ -720,7 +778,7 @@ impl Switch {
         if eth0 == 0 {
             return Err(io::Error::other("the microVM has no eth0 for its agents' egress"));
         }
-        outside(&netlink_socket(libc::NETLINK_NETFILTER)?, eth0, u, &c.members)
+        on_init_nft(|nft| outside(nft, eth0, u, &c.members))
     }
 
     /// The link past the microVM: `agents0` in init's namespace, `up0` in the switch's,
@@ -834,7 +892,7 @@ impl Switch {
             ));
         }
         exchange(&self.here, &here)?;
-        outside6(&netlink_socket(libc::NETLINK_NETFILTER)?, eth0, six)?;
+        on_init_nft(|nft| outside6(nft, eth0, six))?;
         crate::setup::write_sysctl("net.ipv6.conf.all.forwarding", "1").map_err(io::Error::other)
     }
 
@@ -2362,9 +2420,8 @@ pub fn confine_eth0() -> io::Result<()> {
     if eth0 == 0 {
         return Err(io::Error::other("no eth0 to confine"));
     }
-    let sock = netlink_socket(libc::NETLINK_NETFILTER)?;
     // Answers, then the subnet's own, then nothing else out eth0.
-    let out = |family: u8, at: u32, subnet: &[u8], mask: &[u8]| -> io::Result<()> {
+    let out = |sock: &OwnedFd, family: u8, at: u32, subnet: &[u8], mask: &[u8]| -> io::Result<()> {
         let mut b = Batch::of(family);
         b.chain(b"out\0", b"filter\0", nft::NF_INET_LOCAL_OUT, 0, nft::NF_ACCEPT);
         b.rule(b"out\0", answers());
@@ -2391,27 +2448,31 @@ pub fn confine_eth0() -> io::Result<()> {
         compare(&mut e, nft::NFT_CMP_EQ, &eth0.to_ne_bytes());
         drop_verdict(&mut e);
         b.rule(b"out\0", e);
-        b.commit(&sock)
+        b.commit(sock)
     };
     let (addr, prefix, _) = crate::net::current().ok_or_else(|| io::Error::other("eth0 has no address"))?;
     let mask = u32::MAX.checked_shl(32 - u32::from(prefix)).unwrap_or(0);
-    // The destination address: at offset 16 of IPv4's header, 24 of IPv6's.
-    out(
-        nft::NFPROTO_IPV4,
-        DESTINATION,
-        &Ipv4Addr::from(u32::from(addr) & mask).octets(),
-        &mask.to_be_bytes(),
-    )?;
-    if let Some((addr6, prefix6, _)) = crate::net::current6() {
-        let mask6 = u128::MAX.checked_shl(128 - u32::from(prefix6)).unwrap_or(0);
+    on_init_nft(|sock| {
+        // The destination address: at offset 16 of IPv4's header, 24 of IPv6's.
         out(
-            nft::NFPROTO_IPV6,
-            24,
-            &std::net::Ipv6Addr::from(u128::from(addr6) & mask6).octets(),
-            &mask6.to_be_bytes(),
+            sock,
+            nft::NFPROTO_IPV4,
+            DESTINATION,
+            &Ipv4Addr::from(u32::from(addr) & mask).octets(),
+            &mask.to_be_bytes(),
         )?;
-    }
-    Ok(())
+        if let Some((addr6, prefix6, _)) = crate::net::current6() {
+            let mask6 = u128::MAX.checked_shl(128 - u32::from(prefix6)).unwrap_or(0);
+            out(
+                sock,
+                nft::NFPROTO_IPV6,
+                24,
+                &std::net::Ipv6Addr::from(u128::from(addr6) & mask6).octets(),
+                &mask6.to_be_bytes(),
+            )?;
+        }
+        Ok(())
+    })
 }
 
 #[cfg(test)]
@@ -2458,5 +2519,48 @@ mod tests {
             )
         };
         assert_eq!(left, -1, "an answer was left");
+    }
+
+    /// Init's commits at a run's start share one socket, opened once and never closed
+    /// between them (closing one waits out a grace period, PM M513): each exchange on it
+    /// counts its own answers, and one that fails lets it go, so that the next opens
+    /// another.
+    #[test]
+    fn a_runs_start_commits_on_one_kept_socket() {
+        let kernels = std::cell::RefCell::new(Vec::new());
+        let open = || {
+            let (ours, kernel) = std::os::unix::net::UnixDatagram::pair()?;
+            kernels.borrow_mut().push(kernel);
+            Ok(OwnedFd::from(ours))
+        };
+        let answer = |codes: &[i32]| {
+            for &code in codes {
+                kernels.borrow().last().unwrap().send(&ack(code)).unwrap();
+            }
+        };
+        let asked = vec![(0u16, NLM_F_REQUEST | NLM_F_ACK, Vec::new()); 2];
+        let mut kept = None;
+        // The first commit opens it, and the ones after use it.
+        let first = kept_socket(&mut kept, open, |s| Ok(s.as_raw_fd())).unwrap();
+        for _ in 0..3 {
+            answer(&[0, 0]);
+            let fd = kept_socket(&mut kept, open, |s| {
+                exchange(s, &asked)?;
+                Ok(s.as_raw_fd())
+            })
+            .unwrap();
+            assert_eq!(fd, first);
+        }
+        assert_eq!(kernels.borrow().len(), 1);
+        // A refused commit lets it go; the next opens another, on which it succeeds.
+        answer(&[0, -libc::EEXIST]);
+        let e = kept_socket(&mut kept, open, |s| exchange(s, &asked)).unwrap_err();
+        assert_eq!(e.raw_os_error(), Some(libc::EEXIST));
+        assert!(kept.is_none());
+        kept_socket(&mut kept, open, |_| Ok(())).unwrap();
+        answer(&[0, 0]);
+        kept_socket(&mut kept, open, |s| exchange(s, &asked)).unwrap();
+        assert_eq!(kernels.borrow().len(), 2);
+        assert!(kept.is_some());
     }
 }
