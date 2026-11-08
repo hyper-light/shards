@@ -10129,7 +10129,9 @@ fn agents_reach_past_the_microvm_by_ipv6_what_their_networks_grant() {
     let (granted, other, mcp, literal) = (serve(), serve(), serve(), serve());
     // The host's resolver: mcp6.example is this host at its IPv6 address alone (AAAA), and
     // has no IPv4 address.
-    let resolver = std::net::UdpSocket::bind("0.0.0.0:0").unwrap();
+    // Bound to the address it is asked at, so its answers come from it on a host of several
+    // addresses, as a resolver's must (RFC 5452 §9.1).
+    let resolver = std::net::UdpSocket::bind((*host4.ip(), 0)).unwrap();
     let resolver_at = format!("{}:{}", host4.ip(), resolver.local_addr().unwrap().port());
     std::thread::spawn(move || {
         let mut buf = [0u8; 512];
@@ -10663,7 +10665,9 @@ fn agents_reach_past_the_microvm_what_their_networks_grant() {
     };
     let (granted, other) = (serve(), serve());
     // And one answering UDP, which only e's network grants.
-    let echo = std::net::UdpSocket::bind("0.0.0.0:0").unwrap();
+    // At the address the guest sends to, so that its answers come back from it on a host of
+    // several addresses, the flow's own reverse.
+    let echo = std::net::UdpSocket::bind((host, 0)).unwrap();
     let echoed = echo.local_addr().unwrap().port();
     std::thread::spawn(move || {
         let mut buf = [0u8; 64];
@@ -10673,7 +10677,9 @@ fn agents_reach_past_the_microvm_what_their_networks_grant() {
     });
     // The host's resolver, as the daemon is told to ask (SHARDS_DNS): `api.example` is
     // this host; any other question has no answer.
-    let resolver = std::net::UdpSocket::bind("0.0.0.0:0").unwrap();
+    // Bound to the address it is asked at, as a resolver's answers must come from it (RFC
+    // 5452 §9.1), on a host of several addresses too.
+    let resolver = std::net::UdpSocket::bind((host, 0)).unwrap();
     let resolver_at = format!("{host}:{}", resolver.local_addr().unwrap().port());
     let address = match host {
         std::net::IpAddr::V4(a) => a.octets(),
@@ -11475,7 +11481,8 @@ fn a_remote_mcp_server_is_a_grant_of_that_server_alone() {
     // so that a name refused is shards' refusal, not the resolver's; big.example has an
     // answer too long for UDP, which comes truncated by UDP (RFC 1035 §4.2.1) and whole by
     // TCP.
-    // A number free in TCP and UDP both. Windows keeps blocks of its dynamic ports from
+    // At the address it is asked at, so its answers come from it on a host of several
+    // addresses (RFC 5452 §9.1). A number free in TCP and UDP both. Windows keeps blocks of its dynamic ports from
     // each protocol apart (Hyper-V's and WinNAT's, 100 ports a block and blocks side by
     // side: `netsh int ipv4 show excludedportrange protocol=udp` on jupiter lists
     // 58847-59346 as five), and gives the ports it binds at 0 near one another, so a port
@@ -11489,9 +11496,9 @@ fn a_remote_mcp_server_is_a_grant_of_that_server_alone() {
         (0..1024)
             .find_map(|n| {
                 if n % 2 == 0 {
-                    let tcp = std::net::TcpListener::bind("0.0.0.0:0").unwrap();
+                    let tcp = std::net::TcpListener::bind((address, 0)).unwrap();
                     let port = tcp.local_addr().unwrap().port();
-                    match std::net::UdpSocket::bind(("0.0.0.0", port)) {
+                    match std::net::UdpSocket::bind((address, port)) {
                         Ok(udp) => Some((udp, tcp)),
                         Err(e) => {
                             refused.push(format!("{port}/udp: {e}"));
@@ -11500,9 +11507,9 @@ fn a_remote_mcp_server_is_a_grant_of_that_server_alone() {
                         }
                     }
                 } else {
-                    let udp = std::net::UdpSocket::bind("0.0.0.0:0").unwrap();
+                    let udp = std::net::UdpSocket::bind((address, 0)).unwrap();
                     let port = udp.local_addr().unwrap().port();
-                    match std::net::TcpListener::bind(("0.0.0.0", port)) {
+                    match std::net::TcpListener::bind((address, port)) {
                         Ok(tcp) => Some((udp, tcp)),
                         Err(e) => {
                             refused.push(format!("{port}/tcp: {e}"));
