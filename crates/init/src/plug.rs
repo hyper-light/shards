@@ -721,7 +721,8 @@ fn within(used: u64, room: i64, least: u64, was: u64) -> u64 {
 /// its hold again at each of its run's events, each a reclaim the kernel makes at once.
 fn set_cap(bytes: u64) {
     if let Some(s) = CAP.get() {
-        s.cap.store(in_pages(bytes, page_size()), std::sync::atomic::Ordering::SeqCst);
+        s.cap
+            .store(in_pages(bytes, page_size()), std::sync::atomic::Ordering::SeqCst);
     }
 }
 

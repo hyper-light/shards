@@ -12733,7 +12733,10 @@ fn update_under_pressure_stress() {
         return;
     }
     let setting = |name: &str, default: u64| -> u64 {
-        std::env::var(name).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
+        std::env::var(name)
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(default)
     };
     let (rounds, every) = (
         setting("SHARDS_STRESS_N", 40),
