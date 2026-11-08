@@ -1119,6 +1119,22 @@ mod tests {
         assert_eq!(before.room_with(123 * MIB, 0), short);
     }
 
+    /// What its host's pressure had a microVM give back is counted for its budget's next
+    /// word, each give-back's added, and a microVM held to none counts nothing (PM M467).
+    #[test]
+    fn what_its_hosts_pressure_had_it_give_back_is_counted_for_its_word() {
+        use super::super::reclaim::Gave;
+        let budgets = Budgets::default();
+        lock(&budgets.held).insert(7, Held::of(PathBuf::from("/sys/fs/cgroup/a.slice"), 0));
+        let gave = |freed, unplugging| Gave { freed, unplugging };
+        budgets.gave_at_pressure(7, gave(100 * MIB, 0));
+        budgets.gave_at_pressure(7, gave(20 * MIB, 128 * MIB));
+        budgets.gave_at_pressure(8, gave(MIB, MIB));
+        let pressed = lock(&budgets.held).get(&7).map(|h| h.pressed).unwrap();
+        assert_eq!((pressed.freed, pressed.unplugging), (120 * MIB, 128 * MIB));
+        assert!(!lock(&budgets.held).contains_key(&8));
+    }
+
     /// The most a microVM followed has held resident is kept as what it holds falls, raised
     /// as it rises, and lowered by what it gives back; a process not followed counts
     /// nothing.

@@ -3039,14 +3039,16 @@ fn a_microvm_held_to_a_budget_gives_back_what_it_holds_cold() {
             break word;
         }
         tries += 1;
-        // Its host's pressure having taken first, said with the word, or by the host's own
-        // word, which comes once a minute at most (PM M467).
-        let host_took = word.contains("its host's pressure having had it give back ")
-            && mib_after(&word, "its host's pressure having had it give back ") > 0
-            || said().get(counting..).unwrap_or_default().lines().any(|l| {
-                l.contains("the host is short of memory: its microVMs gave back ")
-                    && mib_after(l, "gave back ") > 0
-            });
+        // Its host's pressure having taken first, said with its budget's words since, or by
+        // the host's own word, which comes once a minute at most (PM M467): what it gave back
+        // of its files, or what it asked to unplug, which takes their pages with it.
+        let pressed = "its host's pressure having had it give back ";
+        let host_took = said().get(counting..).unwrap_or_default().lines().any(|l| {
+            l.contains("the host is short of memory: its microVMs gave back ")
+                && mib_after(l, "gave back ") > 0
+                || l.contains(pressed)
+                    && (mib_after(l, pressed) > 0 || mib_after(l, "and ask to unplug ") > 0)
+        });
         assert!(
             tries < 5 && (word.contains("held within its budget") || host_took),
             "nothing given back said, try {tries}: {word}\nits guest's kernel counting as its budget came:\n{}\n{}",
