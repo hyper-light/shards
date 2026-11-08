@@ -11071,6 +11071,195 @@ fn a_port_comes_in_to_the_member_listening_on_it() {
     let _ = shards(&["rm", "-f", "listening"]);
 }
 
+/// PM M497 (D122): what the chooser costs a candidate's bind(2) and listen(2), from the
+/// agent's side, `SHARDS_CHOOSER_N` of each (2,000 by default): `cand`, one of two members
+/// a port is given, listens on that port (the chooser makes the listen) and on one no one
+/// contests (its notification let through); `solo`, a member no port is contested for,
+/// listens under no filter. Prints each agent's `listencost` lines; run by
+/// docs/research/measurements/step-devices/chooser.sh.
+#[test]
+#[ignore = "a measurement (PM M497): run by docs/research/measurements/step-devices/chooser.sh"]
+fn chooser_round_trip_costs() {
+    if cannot_run_vms() {
+        return;
+    }
+    let n: usize = std::env::var("SHARDS_CHOOSER_N")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(2000);
+    let (image, _) = served();
+    let (port, _repos) = common::writable_registry();
+    let home = TempDir::new("chooser-home");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let mut agents = String::new();
+    let ops = [
+        ("cand", format!(r#""listencost","{n}:7600","{n}:7700""#)),
+        ("other", String::new()),
+        ("solo", format!(r#""listencost","{n}:7700""#)),
+    ];
+    for (name, op) in &ops {
+        let dir = TempDir::new(&format!("chooser-{name}"));
+        std::fs::create_dir_all(dir.join("bin")).unwrap();
+        std::fs::copy(common::test_guest(), dir.join("bin/testguest")).unwrap();
+        let sep = if op.is_empty() { "" } else { "," };
+        std::fs::write(
+            dir.join("agent.json"),
+            format!(r#"{{"name":"{name}","run":{{"command":["bin/testguest","confined"{sep}{op}]}}}}"#),
+        )
+        .unwrap();
+        let tag = format!("127.0.0.1:{port}/team/chooser-{name}:1");
+        let made = shards(&["build", "agent", dir.to_str().unwrap(), "-t", &tag]);
+        assert_eq!(made.status, Some(0), "{}", made.stderr);
+        let pushed = shards(&["push", "agent", &tag]);
+        assert_eq!(pushed.status, Some(0), "{}", pushed.stderr);
+        agents.push_str(&format!("AGENT {name} FROM {tag}\n"));
+    }
+    let ctx = context("chooser-ctx", &format!("FROM {image}\n"));
+    std::fs::write(
+        ctx.join("Agentfile"),
+        format!(
+            "FROM {image}\n{agents}NETWORK --ingress=7600-7700 front\nNETWORK --ingress=7600-7700 side\n\
+             CONNECT cand WITH cand ON front\nCONNECT other WITH other ON front\nCONNECT solo WITH solo ON side\n\
+             EXPOSE 7600 AS ingress FOR front\nEXPOSE 7700 AS ingress FOR solo\n"
+        ),
+    )
+    .unwrap();
+    let built = shards(&["build", "-t", "chooser:1", ctx.to_str().unwrap()]);
+    assert_eq!(built.status, Some(0), "{}", built.stderr);
+    let ran = shards(&["run", "-d", "--name", "chooser", "chooser:1", "sleep"]);
+    assert_eq!(ran.status, Some(0), "{}{}", ran.stdout, ran.stderr);
+    let deadline = std::time::Instant::now() + TIMEOUT;
+    let mut said = String::new();
+    while std::time::Instant::now() < deadline {
+        said = shards(&["logs", "chooser"]).stdout;
+        if said.matches("confined listencost").count() == 3 {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_secs(1));
+    }
+    let _ = shards(&["rm", "-f", "chooser"]);
+    for line in said.lines().filter(|l| l.contains("listencost")) {
+        println!("{line}");
+    }
+    assert_eq!(said.matches("confined listencost").count(), 3, "{said}");
+}
+
+/// A UDP flow follows its port's holder (D122): web answers on 7500 for 20 s and closes
+/// its socket, api binds 7500 at 25 s; one client socket, sending all along, is answered by
+/// web, then by api, its flow moved to the new holder where Linux would keep it bound to
+/// the old one for as long as it streams.
+#[test]
+fn a_udp_flow_goes_to_its_ports_next_holder() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let (port, _repos) = common::writable_registry();
+    let home = TempDir::new("udpholder-home");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let mut agents = String::new();
+    for (name, spec) in [("web", "7500:0:20000"), ("api", "7500:25000:0")] {
+        let dir = TempDir::new(&format!("udpholder-{name}"));
+        std::fs::create_dir_all(dir.join("bin")).unwrap();
+        std::fs::copy(common::test_guest(), dir.join("bin/testguest")).unwrap();
+        std::fs::write(
+            dir.join("agent.json"),
+            format!(
+                r#"{{"name":"{name}","run":{{"command":["bin/testguest","confined","udpserve","{spec}"]}}}}"#
+            ),
+        )
+        .unwrap();
+        let tag = format!("127.0.0.1:{port}/team/udpholder-{name}:1");
+        let made = shards(&["build", "agent", dir.to_str().unwrap(), "-t", &tag]);
+        assert_eq!(made.status, Some(0), "{}", made.stderr);
+        let pushed = shards(&["push", "agent", &tag]);
+        assert_eq!(pushed.status, Some(0), "{}", pushed.stderr);
+        agents.push_str(&format!("AGENT {name} FROM {tag}\n"));
+    }
+    let ctx = context("udpholder-ctx", &format!("FROM {image}\n"));
+    std::fs::write(
+        ctx.join("Agentfile"),
+        format!(
+            "FROM {image}\n{agents}NETWORK --ingress=7500/udp front\n\
+             CONNECT web WITH web ON front\nCONNECT api WITH api ON front\n\
+             EXPOSE 7500/udp AS ingress FOR front\n"
+        ),
+    )
+    .unwrap();
+    let built = shards(&["build", "-t", "udpholder:1", ctx.to_str().unwrap()]);
+    assert_eq!(built.status, Some(0), "{}", built.stderr);
+    let ran = shards(&[
+        "run",
+        "-d",
+        "--name",
+        "udpholder",
+        "-p",
+        "127.0.0.1::7500/udp",
+        "udpholder:1",
+        "sleep",
+    ]);
+    assert_eq!(ran.status, Some(0), "{}{}", ran.stdout, ran.stderr);
+    let listed = shards(&["port", "udpholder"]);
+    let host_port: u16 = listed
+        .stdout
+        .lines()
+        .find(|l| l.starts_with("7500/udp"))
+        .and_then(|l| l.rsplit(':').next())
+        .and_then(|p| p.trim().parse().ok())
+        .unwrap_or_else(|| panic!("no 7500/udp in {}", listed.stdout));
+    // One socket, one flow: a datagram every 200 ms, each answer kept as it changes.
+    let sock = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    sock.connect(("127.0.0.1", host_port)).unwrap();
+    sock.set_read_timeout(Some(std::time::Duration::from_millis(200)))
+        .unwrap();
+    let mut heard: Vec<String> = Vec::new();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(90);
+    let mut buf = [0u8; 512];
+    while std::time::Instant::now() < deadline
+        && heard.last().map(String::as_str) != Some("hello from agent-api\n")
+    {
+        let _ = sock.send(b"who");
+        if let Ok(n) = sock.recv(&mut buf) {
+            let said = String::from_utf8_lossy(&buf[..n]).into_owned();
+            if heard.last() != Some(&said) {
+                heard.push(said);
+            }
+        }
+    }
+    let logs = shards(&["logs", "udpholder"]);
+    // The flows init tracks, where they went.
+    let tracked = shards(&[
+        "exec",
+        "--privileged",
+        "-u",
+        "0",
+        "udpholder",
+        "/bin/testguest",
+        "fs",
+        "print:/proc/net/nf_conntrack",
+    ]);
+    assert_eq!(
+        heard,
+        ["hello from agent-web\n", "hello from agent-api\n"],
+        "--- logs\n{}{}--- conntrack\n{}{}",
+        logs.stdout,
+        logs.stderr,
+        tracked.stdout,
+        tracked.stderr
+    );
+    let _ = shards(&["rm", "-f", "udpholder"]);
+}
+
 /// A TCP listener on a port of its own at every IPv4 address; where the host has none to
 /// give, what its ports are held by: CI saw AddrInUse once, which bind(2) of port 0 says
 /// when the ephemeral range is spent, TIME_WAIT's sockets among what holds it.
