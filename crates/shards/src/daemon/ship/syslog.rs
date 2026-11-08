@@ -115,12 +115,12 @@ impl Syslog {
     }
 
     /// Writes `bytes` as a message: on its stream, or as a datagram.
-    fn write_once(&mut self, bytes: &[u8]) -> io::Result<()> {
+    fn write_once(&mut self, bytes: &[u8], wait: &Wait<'_>) -> io::Result<()> {
         if self.stream.is_none() && self.datagrams.is_none() {
             self.open()?;
         }
         if let Some(stream) = &mut self.stream {
-            return stream.send(bytes);
+            return stream.send(bytes, wait);
         }
         let sent = match &self.datagrams {
             Some(Datagrams::Udp(s)) => super::sockets::send_datagram(s, bytes),
@@ -137,9 +137,9 @@ impl Syslog {
     /// Writes `bytes`, once more on a new connection where that fails, as srslog's
     /// writeAndRetry does; a datagram its receiver takes none so long of is not tried
     /// again whole.
-    fn write(&mut self, bytes: &[u8]) -> io::Result<()> {
-        match self.write_once(bytes) {
-            Err(e) if !super::sockets::too_large(&e) => self.write_once(bytes),
+    fn write(&mut self, bytes: &[u8], wait: &Wait<'_>) -> io::Result<()> {
+        match self.write_once(bytes, wait) {
+            Err(e) if !super::sockets::too_large(&e) => self.write_once(bytes, wait),
             written => written,
         }
     }
@@ -150,13 +150,20 @@ impl Syslog {
     /// each a message of its own, down to what every receiver takes: none of it lost, and
     /// none left waiting for a receiver that never takes it. moby's driver drops one
     /// refused.
-    fn send_line(&mut self, stream: u8, at: u64, zone: &Local, line: &[u8]) -> io::Result<()> {
+    fn send_line(
+        &mut self,
+        stream: u8,
+        at: u64,
+        zone: &Local,
+        line: &[u8],
+        wait: &Wait<'_>,
+    ) -> io::Result<()> {
         let bytes = self.config.message(&self.from, stream, at, zone, line);
-        match self.write(&bytes) {
+        match self.write(&bytes, wait) {
             Err(e) if super::sockets::too_large(&e) && bytes.len() > EVERY_RECEIVER && line.len() > 1 => {
                 let (first, rest) = line.split_at(line.len() / 2);
-                self.send_line(stream, at, zone, first)?;
-                self.send_line(stream, at, zone, rest)
+                self.send_line(stream, at, zone, first, wait)?;
+                self.send_line(stream, at, zone, rest, wait)
             }
             written => written,
         }
@@ -171,13 +178,13 @@ impl Driver for Syslog {
         self.config.part(&self.from)
     }
 
-    fn send(&mut self, m: &Message<'_>, _wait: &Wait<'_>) -> io::Result<()> {
+    fn send(&mut self, m: &Message<'_>, wait: &Wait<'_>) -> io::Result<()> {
         // moby's syslogger sends no empty line.
         if m.line.is_empty() {
             return Ok(());
         }
         let zone = Local::of(m.at).ok_or_else(|| io::Error::other("a time localtime(3) cannot give"))?;
-        self.send_line(m.stream, m.at, &zone, m.line)
+        self.send_line(m.stream, m.at, &zone, m.line, wait)
     }
 
     fn undelivered(&mut self) -> usize {

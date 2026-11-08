@@ -143,7 +143,7 @@ impl Gelf {
             let Some(stream) = &mut self.tcp else {
                 return Err(io::Error::from(io::ErrorKind::NotConnected));
             };
-            let Err(e) = stream.send(&framed) else {
+            let Err(e) = stream.send(&framed, wait) else {
                 self.held
                     .push_back((m.stream, m.at, m.line.to_vec(), message.len()));
                 return Ok(());
@@ -273,7 +273,8 @@ pub(super) mod tests {
             assert!(started.elapsed() < Duration::from_secs(30), "{lines:?}");
             std::thread::sleep(Duration::from_millis(20));
             g.undelivered();
-            g.send(&m(format!("tick{i}").as_bytes()), &wait).unwrap();
+            // Its receiver ending connections says so; the tick is the shipper's to give again.
+            let _ = g.send(&m(format!("tick{i}").as_bytes()), &wait);
             i += 1;
             for f in frames.try_iter() {
                 assert!(f.len() <= 2000, "{}", f.len());

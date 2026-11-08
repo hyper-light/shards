@@ -11825,10 +11825,37 @@ and the way every later one sends.
   refused) is kept in the home, a file a destination in `log-bounds/`
   (`daemon/ship/learned.rs`), so that a daemon started again starts from it; only a
   refusal narrows it, the next message's most halfway between the two, and the file,
-  removed, starts it again. A receiver that ends connections is read as refusing only
-  where two in a row ended with a message held that is longer than any it took (a
-  receiver's restart or a network's drop ends connections whatever their messages). Its
-  end is its FIN, a reset, or over TLS its close_notify, read from the records as they
+  removed, starts it again.
+
+  A receiver's end of a connection says nothing alone of what it took. Some end one on a
+  message they will not take (Graylog's GELF input, Fluent Bit's forward input past its
+  `buffer_max_size`), Fluentd's in_forward with `deny_keepalive` after every message it
+  handles, taken or dropped ("conn.close", fluentd v1.19.0 in_forward.rb
+  `handle_connection`; one past its `chunk_size_limit` is dropped and the connection closed
+  alike), and a restart or a network's drop ends them whatever their messages. So the
+  stream asks, by evidence, once a connection ends with messages held (stream.rs
+  `Asking`), each answer a message alone on a connection of its own:
+  - fluentd's first: a Forward-mode message of no events, `[tag, []]` (Forward Protocol
+    Specification v1, Forward Mode), which no bound refuses, in_forward emits as a stream
+    of nothing and Fluent Bit ingests as no entries. Its connection ended cleanly after it
+    shows a receiver that ends one after every message: the oldest held, where it was the
+    ended connection's first, it took, and from then on each message goes alone on a
+    connection of its own, its clean end after it delivering it (a reset does not), until a
+    connection is found open after one. Without acks nothing shows such a receiver refuse
+    a message, and none is cut. Its connection open after it, the receiver ends none after
+    every message;
+  - then the oldest held, resent unchanged: had and not ended on, it is delivered and
+    messages go together again; ended on twice, longer than any the destination took,
+    while a shorter message (the message of nothing, or one delivered) was had and not
+    ended on, it is refused, and cut. gelf and syslog have no message of nothing: there a
+    shorter one delivered shows it, and where none has gone the two ends alone do;
+  - with acks, fluentd's ack is the evidence: an event is refused only where it went first
+    on two connections of its own and neither acked it, a missing ack on a connection its
+    receiver may have ended after its last ack sending it again at once on one of its own.
+
+  Messages wait to be written, one at a time, while it is asked, the sender waiting on the
+  answer, so that none waits in memory past what its receiver has. The ends are a FIN, a
+  reset, or over TLS its close_notify, read from the records as they
   come (RFC 8446 §6.1: its sender "will not send any more messages on this connection"),
   which comes before its FIN and which a peek at the TCP socket read as bytes sent; and
   over a unix socket as over TCP. A message the shipper has not yet given up is cut again
@@ -11990,6 +12017,12 @@ Unit tests cover:
   close and one refused before its last part is sent: every part within the receiver's
   bound, the line rebuilt whole by its places under its one ID (mutation-checked: pieces
   under an ID of their own leave it a part short).
+- fluentd over TCP, TLS and a unix socket without acks, and over TCP with them, to a
+  receiver that ends a connection after every message it takes (in_forward's
+  `deny_keepalive`, its ack written first): whole lines and a line's three parts, one of
+  3,000 bytes, all received as sent, nothing cut and nothing learned refused, the
+  receiver found to end one after each message (mutation-checked: without the message of
+  nothing, the ends are never told from refusals and the close never ends).
 
 ### D162. A run's rotated log segments compressed, seekably; a log that never holds up its run
 
