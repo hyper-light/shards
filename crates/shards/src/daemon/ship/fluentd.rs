@@ -20,11 +20,20 @@ use crate::logging::fluentd::{self, Config, From, To};
 const MOST_WAIT: Duration = Duration::from_secs(60);
 /// The longest string an ack's map may hold: its key and its ID, 24 bytes of base64.
 const ACK_MOST: usize = 1024;
+/// The most of an event's bytes a receiver of Fluentd's forward protocol takes: Fluent Bit's
+/// `buffer_max_size`, "the maximum buffer memory size used to receive a Forward message",
+/// 6144000 by default, past which a payload is "rejected and the connection is closed"
+/// (Fluent Bit's documentation, pipeline/inputs/forward.md, fluent-bit-docs b6e1c922).
+/// Fluentd's own `in_forward` bounds none by default (`chunk_size_limit`, nil: fluentd
+/// v1.19.0 lib/fluent/plugin/in_forward.rb).
+const FORWARD_MOST: usize = 6_144_000;
 
 pub(super) struct Fluentd {
     config: Config,
     from: From,
     stream: Stream,
+    /// The most of a line one event carries: [`FORWARD_MOST`] less the rest of its event.
+    part: usize,
 }
 
 impl Fluentd {
@@ -39,7 +48,13 @@ impl Fluentd {
             To::Unix(path) => stream::To::Unix(path.clone()),
         };
         let stream = Stream::new(to, [config.write_timeout, config.read_timeout]);
-        Ok(Fluentd { config, from, stream })
+        let part = part(&config, &from);
+        Ok(Fluentd {
+            config,
+            from,
+            stream,
+            part,
+        })
     }
 
     /// Writes `event`, and where `chunk` is given, reads its ack.
@@ -58,6 +73,31 @@ impl Fluentd {
         }
         Ok(())
     }
+}
+
+/// The most of a line one event carries: what [`FORWARD_MOST`] leaves past the rest of the
+/// longest event this run's lines make: a part's place at its widest (its ID, the largest
+/// ordinal, not its last), its time at its widest, its chunk's ID where acks are asked for,
+/// and the line's string header at its widest (MessagePack's str 32, 5 bytes, where an
+/// empty one takes 1).
+fn part(config: &Config, from: &From) -> usize {
+    let id = "f".repeat(64);
+    let chunk = config.ack.then(|| "A".repeat(24));
+    let rest = fluentd::event(
+        config,
+        from,
+        crate::spec::LOG_STDERR,
+        u64::MAX,
+        b"",
+        Some(fluentd::Part {
+            id: &id,
+            ordinal: u32::MAX,
+            last: false,
+        }),
+        chunk.as_deref(),
+    )
+    .len();
+    FORWARD_MOST.saturating_sub(rest + 4).max(1)
 }
 
 /// An event's chunk ID, as fluent-logger-golang's getUniqueID makes one: its time's
@@ -123,6 +163,10 @@ fn read_string(conn: &mut impl Read) -> io::Result<Vec<u8>> {
 }
 
 impl Driver for Fluentd {
+    fn part(&self) -> usize {
+        self.part
+    }
+
     fn send(&mut self, m: &Message<'_>, wait: &Wait<'_>) -> io::Result<()> {
         let chunk = if self.config.ack {
             Some(unique_id(m.at)?)

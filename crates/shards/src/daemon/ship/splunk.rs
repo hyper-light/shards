@@ -29,6 +29,10 @@ const POST: Duration = Duration::from_secs(30);
 const UNACKNOWLEDGED: Duration = Duration::from_secs(5 * 60);
 /// The most of an answer's body a refusal quotes (moby's maxResponseSize).
 const QUOTED: usize = 1024;
+/// The most of a post's content HEC takes: `max_content_length`, "the maximum length, in
+/// bytes, of HTTP request content that is accepted by the HTTP Event Collector server",
+/// 838,860,800 unless set (Splunk Enterprise 10.0 limits.conf, `[http_input]`).
+const CONTENT_MOST: usize = 838_860_800;
 
 pub(super) struct Splunk {
     config: Config,
@@ -88,6 +92,12 @@ impl Splunk {
             waiting: Vec::new(),
             unacknowledged: UNACKNOWLEDGED,
         })
+    }
+
+    /// The most of an event's bytes: its share of a post of `batch_size` events within
+    /// what HEC takes of a post ([`CONTENT_MOST`]).
+    fn event_most(&self) -> usize {
+        CONTENT_MOST / self.batch_size.max(1)
     }
 
     /// Posts the batch, in posts of `batch_size` events, the oldest first.
@@ -182,6 +192,21 @@ impl Splunk {
 }
 
 impl Driver for Splunk {
+    /// The most of a line one event carries: an event's share of a post of `batch_size`
+    /// events, each as long, within what HEC takes of a post ([`CONTENT_MOST`]),
+    /// uncompressed, less the rest of an event, its time at its widest. A line's bytes are
+    /// no fewer in its event.
+    fn part(&self) -> usize {
+        let rest = splunk::event(&self.config, &self.from, crate::spec::LOG_STDERR, u64::MAX, b"x")
+            .map_or(0, |e| e.len().saturating_sub(1));
+        self.event_most().saturating_sub(rest).max(1)
+    }
+
+    fn fits(&mut self, m: &Message<'_>) -> io::Result<bool> {
+        Ok(splunk::event(&self.config, &self.from, m.stream, m.at, m.line)
+            .is_none_or(|e| e.len() <= self.event_most()))
+    }
+
     fn send(&mut self, m: &Message<'_>, _wait: &Wait<'_>) -> io::Result<()> {
         // A full batch goes first: a message is taken only where there is room for it.
         if self.batch.len() >= self.batch_size {
@@ -362,6 +387,24 @@ mod tests {
             line,
             part: None,
         }
+    }
+
+    /// A line as long as the driver's part leaves its event, and a post of a batch of such
+    /// events, within what HEC takes of a post; a byte more of the line's escaped JSON does
+    /// not fit; and a smaller batch's events may be longer.
+    #[test]
+    fn an_event_leaves_a_full_post_within_what_hec_takes() {
+        let mut s = splunk(1, &[]);
+        let part = s.part();
+        let line = vec![b'x'; part];
+        let event = splunk::event(&s.config, &s.from, crate::spec::LOG_STDOUT, u64::MAX, &line).unwrap();
+        assert!(event.len() * BATCH <= CONTENT_MOST, "{}", event.len());
+        assert!(s.fits(&message(&line)).unwrap());
+        // A quote is two bytes of JSON: an event past its share.
+        let over = vec![b'"'; s.event_most() / 2];
+        assert!(!s.fits(&message(&over)).unwrap());
+        s.batch_size = 10;
+        assert!(s.part() > part * 99);
     }
 
     /// The lines of a post's events.

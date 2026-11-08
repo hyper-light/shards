@@ -24,6 +24,11 @@ use crate::logging::gcplogs::{Config, From, Instance, SCOPE};
 /// A batch's most entries and bytes (DefaultEntryCountThreshold, DefaultEntryByteThreshold).
 const ENTRIES: usize = 1000;
 const BYTES: usize = 8 << 20;
+/// The most of an entry's bytes Cloud Logging takes: "Size of a LogEntry 256 KiB ...
+/// approximate and ... based on internal data sizes, not the actual REST API request size"
+/// (Cloud Logging, Quotas and limits, read 2026-11-08). An entry is held to it as written,
+/// its JSON, which spells each of its fields at least as long as their internal form.
+const ENTRY_MOST: usize = 256 * 1024;
 /// How long before it expires a token is asked for again.
 const RENEW: Duration = Duration::from_secs(5 * 60);
 
@@ -242,6 +247,16 @@ fn refused(answer: &[u8]) -> Option<Vec<(String, String)>> {
 }
 
 impl Driver for Gcplogs {
+    /// What Cloud Logging takes of an entry ([`ENTRY_MOST`]): a line is no longer than its
+    /// entry. moby's driver sends its 16 KiB parts, each an entry of its own.
+    fn part(&self) -> usize {
+        ENTRY_MOST
+    }
+
+    fn fits(&mut self, m: &Message<'_>) -> io::Result<bool> {
+        Ok(self.from()?.entry(m.stream, m.at, m.line).len() <= ENTRY_MOST)
+    }
+
     fn send(&mut self, m: &Message<'_>, _wait: &Wait<'_>) -> io::Result<()> {
         // A full batch goes first: a message is taken only where there is room for it.
         if self.batch.len() >= ENTRIES || self.bytes >= BYTES {
