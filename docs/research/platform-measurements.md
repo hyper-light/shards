@@ -19138,3 +19138,69 @@ revision before comparing a changed API/implementation.
   macOS and Windows, each held to its own table by `a_restart_goes_over_from_where_packing_costs_more`
   (the macOS run "n 40 again" and Windows' quiet run above). The two D190 E2E tests write
   8 MiB, past both. Harness: `layer-kept/ab.py`, `pack.patch`, `over.patch`.
+
+### M470. A pooled run's hand-over held by its warm VM's descriptor table growing (D26)
+
+- **Question.** The start target is a request to a usable microVM in under 5 ms. On Fedora
+  the image bench's pooled run (`run_template`, `exit 0` from the E2E image) took 22.3 ms at
+  p50 (n 100 over 5 templates, at 2d2a783a, load 15), and its guest's own part
+  (`template_start`, the request to the command executing) 5.6 ms of it. Where does the
+  rest go?
+- **Method.** `docs/research/measurements/start-path`: `trace.patch` makes every process's
+  timing clock the host's monotonic clock and has the client, the daemon's slot and
+  handling threads and the warm VM write each step of a run (its request written, read
+  whole, handled, a VM acquired, its network process told, the run sent, read by the VM,
+  TAKEN); `trace.py` spawns pooled `shards run --pull never alpine true`, n 100 after 5
+  warm-ups, a 0.3 s pause after each, and splits each from its client's spawn to its reap.
+  Then the warm VM's threads sampled through the hand-over (`/proc/PID/task/*/stat` and
+  `wchan`, every few tens of µs; `schedstat`), and its `FDSize` idle and during a run.
+  Fedora 44, Linux 6.19.10-300.fc44 (M258's Intel Core i9-14900HX, 32 CPUs, THP
+  `madvise`), other agents' builds and VMs running throughout, 2026-11-08. Each microVM
+  has a vCPU per host CPU (D191): 32.
+- **Found.** The hand-over (the daemon's send of the run to the warm VM's read of it) took
+  13.4 ms at p50: the VM's thread that reads the run sat in `__wait_rcu_gp` (state D) 8.1
+  to 12.8 ms of it, and was on a run queue for at most 35 µs (`schedstat`). An idle warm VM
+  held 64 descriptors, its first table's all (`FDSize: 64`); its run's brought it to 73
+  (`FDSize: 128`), in 3 of 4 VMs looked at, the fourth's table at 128 already, whose
+  hand-over took 30 µs. Linux grows the descriptor table of a process whose threads share
+  it only after an RCU grace period (fs/file.c `expand_fdtable`: `synchronize_rcu()` when
+  `files->count > 1`), which on this host took the time above.
+- **The change.** Each warm VM takes and lets go of `2 × shards_ipc::MAX_FDS` descriptors
+  (as many again as a run's message brings at most, for the clones and connections its
+  start makes) before it says READY (warm.rs `reserve_descriptors`): its table grows while
+  it idles, and never shrinks.
+- **Results.** trace.py, baad0965 (before) against 48c8ad1d (the change), each with
+  trace.patch, one after the other on one home, load 20 to 26; ms:
+
+  | step | before p50 | p90 | p99 | max | after p50 | p90 | p99 | max |
+  |---|---|---|---|---|---|---|---|---|
+  | hand-over | 13.53 | 18.93 | 24.51 | 24.51 | 0.14 | 0.17 | 0.27 | 0.27 |
+  | its read by the VM | 13.44 | 18.75 | 24.41 | 24.41 | 0.04 | 0.07 | 0.11 | 0.11 |
+  | spawn to usable | 19.17 | 24.85 | 29.69 | 29.69 | 5.82 | 7.29 | 66.91 | 66.91 |
+  | spawn to reap | 21.11 | 26.89 | 36.94 | 36.94 | 7.82 | 9.94 | 69.26 | 69.26 |
+
+  `build-ab/ab.py`, release builds, 2d2a783a against 86e41c99 (the change and the
+  integration's work since), each its own home, pooled `run --rm alpine true`, both in
+  turn, n 150 pairs, the host's load 64 throughout: wall 33.9 (p90 53.6, p99 373.5, max
+  380.2) against 18.9 ms (39.8, 205.0, 871.0), paired median −15.1 ms [95% −16.1, −13.0];
+  outside the guest −14.8 [−15.5, −13.7]; the command's own time +0.6 [−0.6, +1.5], tied.
+  The 66.9 and 69.3 ms maxima after are one run whose daemon took 61 ms from its handling's
+  start to a VM in hand.
+- **Where the rest goes** (after the change, with cpu-elastic/markers.patch too, n 100,
+  load 30; p50, ms): the client's launch, spawn to its `main` 1.57 (a 160 MB PIE binary's:
+  `/usr/bin/true` spawns and exits in 0.57, a small Rust program in 0.71, `shards
+  --version` 1.53, with 180 more page faults, 125 of them its 500 KB of relocated
+  read-only data copied); the client to its request written 0.37; the slot's read and
+  bridge 0.18; the daemon's handling to a VM 1.14 (the run prepared 0.55, its container
+  made 0.19, its request kept 0.13, the rest 0.20); its network told 0.07; the hand-over
+  0.17; the guest's start of the command 3.53: init's taking of the request 0.49, the
+  hostname's files 0.35 and 0.13, the standby woken 0.39 and its setup 0.16, and the
+  command's exec until init hears it 1.67 (`m16`).
+- **Reading.** Most of a pooled run's time on this host was one RCU grace period in its warm
+  VM, from a table one descriptor short. Without it a run is usable 5.8 ms after the
+  user's request at p50 on a host at load 20 to 30, the start target's 5 ms not yet met:
+  the guest's start of the command (3.5) and the client's launch (1.6) are most of it.
+- **Consequence.** D26: a warm VM makes room in its descriptor table for its run before
+  READY. Tested: daemon.rs `a_warm_vms_run_starts_without_growing_its_descriptor_table`
+  (a pool's VM's `FDSize` the same as its run starts as while it waited, Linux), on
+  Fedora. Harness: start-path/trace.py and trace.patch.
