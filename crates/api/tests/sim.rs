@@ -156,12 +156,12 @@ mod client {
 
     /// How soon after shards' end its refusal comes, with a child holding shards' output
     /// (`record::Learned`). Recorded, the slowest (M463): macOS-HVF 4.277875 ms, Linux-KVM
-    /// 205.294 µs.
+    /// 299.915 µs (beside the whole shards-api suite).
     static REFUSED_AFTER_END: Learned = Learned::new(
         "REFUSED_AFTER_END",
         &[
             ("macOS-HVF", Duration::from_nanos(4_277_875)),
-            ("Linux-KVM", Duration::from_nanos(205_294)),
+            ("Linux-KVM", Duration::from_nanos(299_915)),
         ],
     );
 

@@ -20448,6 +20448,15 @@ revision before comparing a changed API/implementation.
   the fix) and 2 × 478.557376 ms (KVM's power-off). A class with none (WHP, yet) seeds
   from the slowest of any, and each rises with what its node sees (`record::Learned`).
 
+  `REFUSED_AFTER_END`'s Linux-KVM row, re-taken: the bound it gave, 410.6 µs, failed once on
+  fedora under load (a held output refused 456.864 µs after shards' end, Hex's c-route,
+  2026-11-08), so the 205.294 µs above was not this wait's slowest under real load. The same
+  `the_waits_of_these_tests` (n 40), at b3fe182f, fedora 2026-11-08T02:29Z, load 6.8-8.6,
+  three rounds and a fourth beside the whole shards-api suite (as CI runs it, the suite
+  passing): p50 / max 133.9 / 223.8 µs, 154.5 / 289.1 µs, 130.2 / 209.3 µs, and beside the
+  suite 145.4 / 299.915 µs. Every round passed the old row; the slowest is beside the suite,
+  and the bound is now 2 × 299.915 µs, 599.8 µs.
+
 ### M464. What a refused dial costs shards-api, on HVF (`pause`'s `c`)
 
 - **Question.** `pause` waits `sqrt(2 c w)` between dials, `c` what the last refused dial
