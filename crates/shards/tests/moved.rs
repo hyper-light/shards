@@ -747,6 +747,13 @@ fn a_cpu_baseline_is_all_its_guest_finds_and_goes_with_it() {
     start("host");
     let hosts = features(&cpu(&here, "host"));
     assert_eq!(shards_in(&here, &["rm", "-f", "host"]).status, Some(0));
+    // Hypervisor.framework shows a guest no WFxT or RPRES, ID_AA64ISAR2_EL1's, whatever
+    // macOS names (PM M498): a move checks neither by name (daemon/moves.rs `host_cpu`).
+    if cfg!(target_os = "macos") {
+        for hidden in ["wfxt", "rpres"] {
+            assert!(!hosts.iter().any(|f| f == hidden), "{hidden}: {hosts:?}");
+        }
+    }
 
     std::fs::write(here.join("cpu-baseline"), "c021=0000000000000000\nlab\n").unwrap();
     let inspected = field(&here, &["inspect", "cpu"]);
