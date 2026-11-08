@@ -11,11 +11,12 @@ template's memory file holds there before the restore:
     zero    all zeros (free memory)
     other   anything else
 
-    written.py GENERATION...
+    written.py [--list] GENERATION...
 
 GENERATION is a template's generation directory (templates/KEY/g-...), holding `memory`
 and `working-set`. Prints, per generation, the pages touched and written, by class, in
-pages of the working set's page size, and in KiB.
+pages of the working set's page size, and in KiB; with --list, each written page's
+address and class, in the order of first touch.
 """
 import os, struct, sys
 
@@ -48,7 +49,8 @@ def kind(data, arch):
     return "brk" if fill >= 0.5 else "other"
 
 
-for gen in sys.argv[1:]:
+listing = "--list" in sys.argv[1:]
+for gen in [g for g in sys.argv[1:] if g != "--list"]:
     version, arch, page, pages = decode(os.path.join(gen, "working-set"))
     base = DRAM_BASE[arch]
     counts = {}
@@ -57,6 +59,8 @@ for gen in sys.argv[1:]:
             mem.seek(gpa - base)
             k = kind(mem.read(page), arch)
             key = ("written" if written else "read", k)
+            if listing and written:
+                print(f"   {gpa:#x} {k}")
             counts[key] = counts.get(key, 0) + 1
     total_w = sum(v for (w, _), v in counts.items() if w == "written")
     print(f"{gen}: {arch}, {page // 1024} KiB pages, {len(pages)} touched, {total_w} written "
