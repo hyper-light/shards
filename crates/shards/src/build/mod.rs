@@ -770,12 +770,10 @@ fn builder_cpus() -> u32 {
     std::thread::available_parallelism().map_or(1, |n| u32::try_from(n.get()).unwrap_or(u32::MAX))
 }
 
-/// The most memory a builder may have, in MiB: `SHARDS_BUILD_MEMORY` if set, else half the
-/// host's, as Docker Desktop's VM has on macOS (64 GiB of this host's 128, measured
-/// 2026-10-02), so that a build has what it would have under Docker. Its steps and its
-/// layers share it. It boots with little of it, and the rest is plugged as the build needs
-/// it (builder::BOOT_MEMORY_MIB, D133): what it costs at boot grows with what it boots with
-/// (PM M82).
+/// The most memory a builder may have, in MiB: `SHARDS_BUILD_MEMORY` if set, else
+/// [`builder_most`] of the host's. Its steps and its layers share it. It boots with little of
+/// it, and the rest is plugged as the build needs it (builder::BOOT_MEMORY_MIB, D133): what
+/// it costs at boot grows with what it boots with (PM M82), not with what it may have.
 fn builder_memory_mib() -> u64 {
     if let Some(m) = std::env::var("SHARDS_BUILD_MEMORY")
         .ok()
@@ -783,7 +781,17 @@ fn builder_memory_mib() -> u64 {
     {
         return whole_blocks(m);
     }
-    whole_blocks(host_memory().map_or(512, |bytes| (bytes / 2 / (1 << 20)).max(512)))
+    builder_most(host_memory())
+}
+
+/// The most memory a builder may have on a host of `host` bytes, in MiB: all of it, in whole
+/// blocks, as a run with no limit may have (`run::sizes`, D148), a build's steps being runs
+/// of its own. What the host can give it is what it has: a builder holds only what its build
+/// asks for (D133), gives back what it holds cold as its host runs short (D188), and is held
+/// within the room a budget over its build leaves it (D188's builders). 512 MiB, what a
+/// builder boots with, where the host's memory cannot be read.
+fn builder_most(host: Option<u64>) -> u64 {
+    whole_blocks(host.map_or(512, |bytes| (bytes >> 20).max(512)))
 }
 
 /// `mib` down to whole blocks of what a builder's memory is plugged in (virtio-mem's,
@@ -6227,9 +6235,28 @@ fn redact_credentials(url: &str) -> String {
 
 #[cfg(test)]
 mod memory_tests {
-    /// A builder's memory is whole blocks of what it is plugged in, whatever half the host's
-    /// memory comes to: a VM refuses a builder of an odd number of MiB (CI run 38274751000,
-    /// a Windows runner's 16 GiB less what Windows keeps back).
+    /// A builder may have what a run with no limit may have, all its host's memory (D148),
+    /// in the whole blocks it is plugged in, which a VM refuses anything but (CI run
+    /// 38274751000, a Windows runner's 16 GiB less what Windows keeps back); what a builder
+    /// boots with where the host's memory cannot be read.
+    #[test]
+    fn a_builder_may_have_what_a_run_with_no_limit_may_have() {
+        let block = shards_vmm::devices::virtio::mem::BLOCK >> 20;
+        let unlimited = shards_ipc::Resources::default();
+        // A Windows runner's 16 GiB less what Windows keeps back, CI's runners, a Mac
+        // Studio's, Fedora's, this Mac's, and a size of no whole MiB.
+        let hosts = [16_368u64 << 20, 7 << 30, 16 << 30, 36 << 30, 64 << 30, 128 << 30, (64 << 30) + 4096];
+        for host in hosts {
+            let most = super::builder_most(Some(host));
+            let run = crate::run::sizes(&unlimited, Some(host)).2;
+            assert_eq!(most, super::whole_blocks(run), "{host}");
+            assert!(most > (host >> 20) / 2, "{host}: no more than half the host's");
+            assert!(most << 20 <= host && (host >> 20) - most < block, "{host}");
+        }
+        assert_eq!(super::builder_most(None), 512);
+    }
+
+    /// A builder's memory is whole blocks of what it is plugged in.
     #[test]
     fn a_builders_memory_is_whole_blocks() {
         let block = shards_vmm::devices::virtio::mem::BLOCK >> 20;

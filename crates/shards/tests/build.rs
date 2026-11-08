@@ -451,6 +451,53 @@ fn a_builders_steps_see_the_memory_it_may_have() {
     assert!(once.stderr.contains("allocated 1536 at once"), "{shown}");
 }
 
+/// A builder given no memory of its own may have all its host's, as a run with no limit may
+/// (D133, D148): its steps see `MemTotal` of the host's memory less no more than what the
+/// builder boots with (512 MiB, whose kernel and reserves are its own), past the half of it
+/// a builder was held to before (PM M490).
+#[test]
+fn a_builder_may_have_all_its_hosts_memory() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let home = TempDir::new("build-host-home");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let ctx = context(
+        "build-host-ctx",
+        &format!(
+            "FROM {image}\nRUN [\"/bin/testguest\", \"stat\", \"/proc/sys/vm/pluggable_kbytes\", \"/proc/meminfo\"]\n"
+        ),
+    );
+    let seen = run_shards_env(
+        &["build"],
+        &["--progress=plain", "--no-cache", ctx.to_str().unwrap()],
+        &env,
+        TIMEOUT,
+    );
+    let shown = format!("--- stdout\n{}\n--- stderr\n{}", seen.stdout, seen.stderr);
+    if seen.stderr.contains("/proc/sys/vm/pluggable_kbytes missing") {
+        println!("SKIP: this guest kernel reports none of the memory it may plug (D149)");
+        return;
+    }
+    assert_eq!(seen.status, Some(0), "{shown}");
+    let total_kib: u64 = seen
+        .stderr
+        .split_once("MemTotal:")
+        .and_then(|(_, after)| after.split_whitespace().next())
+        .and_then(|n| n.parse().ok())
+        .unwrap_or_else(|| panic!("no MemTotal: {shown}"));
+    let host_kib = common::host_memory() >> 10;
+    assert!(
+        total_kib <= host_kib && total_kib + (512 << 10) > host_kib,
+        "MemTotal {total_kib} kB of a builder on a host of {host_kib} kB: {shown}"
+    );
+}
+
 /// A builder boots with little memory and is given more as its build needs it (D133): a
 /// step that touches three times what it booted with succeeds, and so does a layer twice
 /// as large; its steps' limits, those the kernel sizes by its memory, are at least a guest's

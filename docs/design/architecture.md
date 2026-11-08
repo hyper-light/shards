@@ -2599,8 +2599,8 @@ rather than a container on the build host's kernel.
   Dockerfile2LLB's AddUlimit gives them, the run alone.
 - **Not yet as BuildKit:** a step's network is its own loopback until the guest has a
   network (D31); BuildKit's seccomp profile; caches kept past one build; ssh from the
-  client. Each is an item of AGENTFILE_ARCH.md §11. A builder may have half the host's
-  memory, as Docker Desktop's VM has, but boots with little and is given the rest as its
+  client. Each is an item of AGENTFILE_ARCH.md §11. A builder may have all its host's
+  memory, as a run with no limit may, but boots with little and is given the rest as its
   build needs it (D133): a builder paid about 21 MiB and 4 ms per GiB it booted with
   (PM M82).
 
@@ -13053,11 +13053,23 @@ changes.
 
 ### D133. A builder's memory, plugged as its build needs it (virtio-mem)
 
-A builder may have half the host's memory, Docker Desktop's VM's share (a default open in
-docs/audit/2026-10-16_docker-framing.md, to derive from what the host can give), but the memory a
-guest boots with costs it its page structures as it boots: about 21 MiB and 4 ms per GiB, a
+A builder may have all its host's memory, as a run with no limit may (D148), but the memory
+a guest boots with costs it its page structures as it boots: about 21 MiB and 4 ms per GiB, a
 builder of 64 GiB 1.4 GiB and 434 ms (PM M82). A builder now boots with 512 MiB, and is
 given the rest as its build needs it, up to what it may have.
+
+- **What it may have** (`build::builder_most`): the host's memory, in whole blocks, what a
+  run with no limit may grow to (`run::sizes`), a build's steps being runs of its own; or
+  `SHARDS_BUILD_MEMORY` MiB. It was half the host's, the share Docker Desktop's VM takes,
+  a figure of that VM's and of no builder's (the de-Dockerify audit): a step that needed
+  more was ended with memory to spare on its host. What a builder holds is what its build
+  asks for, and nothing is paid for a ceiling it never reaches: its region to plug is
+  address space, its page structures made only as blocks come online (PM M490). Its
+  host's memory is held back where it is short as a run's is: the builder gives back what
+  it holds cold and unplugs what it holds past twice its use at its host's word (D188's
+  builders), and a budget over the build (a `MemoryHigh` or `MemoryMax` of the user's
+  manager on Linux) is the room it holds its build within; past what the host has, a step
+  is ended by its guest's kernel as one past a builder's memory always was.
 
 - **The device.** A virtio-mem device (VIRTIO 1.3 §5.15, device 24), the machine's last,
   so no other device's window moves for it: its region at the first GiB boundary after RAM
