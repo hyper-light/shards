@@ -369,6 +369,53 @@ mod tests {
         );
     }
 
+    /// Set in the child `a_write_to_a_gone_peer_fails_epipe_where_sigpipe_kills` runs.
+    #[cfg(unix)]
+    const SIGPIPE_CHILD: &str = "SHARDS_API_SIGPIPE_CHILD";
+
+    /// A write to a peer that has gone fails EPIPE, never SIGPIPE, in a process whose
+    /// SIGPIPE is its default, which ends it: a library's write never ends the program that
+    /// links it, whatever that program does with SIGPIPE (integrate's 80078b00 sent with
+    /// MSG_NOSIGNAL). Both kinds of stream: a pair (the simulator's) and one connected to a
+    /// listener (the client's). Run in a child of this test binary, as the default would end
+    /// every test beside it, which says it ran each.
+    #[cfg(unix)]
+    #[test]
+    fn a_write_to_a_gone_peer_fails_epipe_where_sigpipe_kills() {
+        const NAME: &str = "stream::tests::a_write_to_a_gone_peer_fails_epipe_where_sigpipe_kills";
+        const RAN: &str = "sigpipe child: EPIPE from a pair and a connection";
+        if std::env::var_os(SIGPIPE_CHILD).is_some() {
+            // SAFETY: signal(2) setting SIGPIPE back to its default, in this child alone,
+            // which runs this test and nothing else.
+            unsafe { libc::signal(libc::SIGPIPE, libc::SIG_DFL) };
+            let (mut paired, peer) = pair().unwrap();
+            drop(peer);
+            let dir = shards_testdir::TempDir::new("sp").unwrap();
+            let at = dir.path().join("s");
+            let listener = std::os::unix::net::UnixListener::bind(&at).unwrap();
+            let mut connected = connect(&at).unwrap();
+            drop(listener.accept().unwrap());
+            for (what, s) in [("a pair", &mut paired), ("a connection", &mut connected)] {
+                let e = s.write(b"x").unwrap_err();
+                assert_eq!(e.raw_os_error(), Some(libc::EPIPE), "{what}: {e:?}");
+            }
+            println!("{RAN}");
+            return;
+        }
+        let child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", NAME, "--test-threads=1", "--nocapture"])
+            .env(SIGPIPE_CHILD, "1")
+            .output()
+            .unwrap();
+        let said = String::from_utf8_lossy(&child.stdout);
+        assert!(
+            child.status.success() && said.contains(RAN),
+            "{:?}\n{said}{}",
+            child.status,
+            String::from_utf8_lossy(&child.stderr)
+        );
+    }
+
     /// Two clones reading one byte: one reads it, the other fails at its timeout rather
     /// than blocking after a poll said the byte was there (Hex HEX-GUEST-9; review B3).
     #[test]
