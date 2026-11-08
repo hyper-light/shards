@@ -7,7 +7,8 @@
 #            ADDR, this machine's address on its default route and port 7443 unless given;
 #            an invitation for the other written, and printed base64 on its last line; then,
 #            where HOLD is given, it holds the daemon up to HOLD seconds, or until `stop`
-#            removes its home, and stops it)
+#            removes its home, and stops it; AGENT=1 on macOS runs the daemon as a launchd
+#            user agent instead, which a runner's restart does not end, and `stop` removes)
 #   invite.  On the machine moved to, listening: another invitation, printed base64 on the
 #            last line. One enrolls one client: each run of `e2e` joins with a home of its own,
 #            so each needs one.
@@ -27,7 +28,8 @@
 #            gone, say), the moves before it counted with the rest.
 #            Results also go to $OUT, $HOME_HERE/results.txt unless given, headed by both
 #            machines: this one's, and the other's as THERE says it (listen's `listening at`
-#            line), where given. On macOS it runs itself as a launchd job
+#            line), where given. BASELINE=1 tells its microVMs the CPU the two machines
+#            share (`shards configure cpu --baseline lab`, D176 part 6). On macOS it runs itself as a launchd job
 #            (macos-sched/launchd-run.sh), free of an agent session's QoS clamp, as a user's
 #            program runs (PM M317); UNCLAMP=0 runs it in place. On macOS each machine's
 #            line says the priority its daemon runs at, which its microVMs' threads start
@@ -84,6 +86,8 @@ HOME_HERE=${HOME_HERE:-$HOME/.cache/shards-move-here}
 IMAGE=${IMAGE:-alpine:3.20}
 N=${N:-20}
 FIRST=${FIRST:-1}
+AGENT_LABEL=dev.shards.two-hosts
+AGENT_PLIST=$HOME/Library/LaunchAgents/$AGENT_LABEL.plist
 MODE=${MODE:-cold live}
 OUT=${OUT:-$HOME_HERE/results.txt}
 export DOCKER_CONFIG=${DOCKER_CONFIG:-$(mktemp -d)}
@@ -232,12 +236,50 @@ record() {
 	echo "stream ${raw:-?} B, sent ${sent:-?} B at ${rate:-?} B/s, longest silence ${silence:-?} us$(echo "$out" | sed -n 's/^move: rounds \(.*\)$/, rounds \1/p' | tail -1)"
 }
 
+# macOS: the listening daemon as a launchd user agent, in foreground under launchd, its log
+# the home's: no child of the runner that asked for it, which ends what its runs started as
+# it restarts. `stop` removes it.
+agent_start() {
+	mkdir -p "$HOME/Library/LaunchAgents"
+	rm -f "$HOME_THERE/listening"
+	cat > "$AGENT_PLIST" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>Label</key><string>$AGENT_LABEL</string>
+<key>ProgramArguments</key><array>
+<string>$SHARDS</string><string>run</string><string>daemon</string><string>--listen</string><string>$ADDR</string>
+</array>
+<key>EnvironmentVariables</key><dict>
+<key>SHARDS_HOME</key><string>$HOME_THERE</string>
+<key>DOCKER_CONFIG</key><string>$DOCKER_CONFIG</string>
+</dict>
+<key>RunAtLoad</key><true/>
+<key>KeepAlive</key><false/>
+<key>ProcessType</key><string>Interactive</string>
+<key>StandardErrorPath</key><string>$HOME_THERE/daemon.log</string>
+<key>StandardOutPath</key><string>$HOME_THERE/daemon.log</string>
+</dict></plist>
+PLIST
+	launchctl bootout "gui/$(id -u)/$AGENT_LABEL" 2>/dev/null || true
+	launchctl bootstrap "gui/$(id -u)" "$AGENT_PLIST"
+	local deadline=$(($(date +%s) + 60))
+	until [ -f "$HOME_THERE/listening" ]; do
+		[ "$(date +%s)" -lt "$deadline" ] || { echo "the agent is not listening in a minute: $(tail -5 "$HOME_THERE/daemon.log" 2>&1)" >&2; exit 1; }
+		sleep 0.5
+	done
+}
+
 case "${1:-}" in
 listen)
 	: "${SHARDS:?the shards binary to run}"
 	ADDR=${ADDR:-$(lan):7443}
 	mkdir -p "$HOME_THERE"
-	there run daemon --detached --listen "$ADDR"
+	if [ "${AGENT:-0}" = 1 ]; then
+		agent_start
+	else
+		there run daemon --detached --listen "$ADDR"
+	fi
 	there invite client --name mover --output "$HOME_THERE/mover.invite"
 	echo "listening at $ADDR: $(machine "$HOME_THERE"), shards $(there version 2>/dev/null | head -1)"
 	base64 < "$HOME_THERE/mover.invite" | tr -d '\n'
@@ -262,6 +304,10 @@ invite)
 stop)
 	: "${SHARDS:?the shards binary to run}"
 	there stop daemon || true
+	if [ -f "$AGENT_PLIST" ]; then
+		launchctl bootout "gui/$(id -u)/$AGENT_LABEL" 2>/dev/null || true
+		rm -f "$AGENT_PLIST"
+	fi
 	if [ -n "${KEEP_LOG:-}" ]; then cp "$HOME_THERE/daemon.log" "$KEEP_LOG" 2>/dev/null || true; fi
 	rm -rf "$HOME_THERE"
 	;;
@@ -271,7 +317,7 @@ move)
 	if [ "$(uname -s)" = Darwin ] && [ -z "${TWO_HOSTS_UNCLAMPED:-}" ] && [ "${UNCLAMP:-1}" = 1 ]; then
 		job=$(mktemp -d)/move
 		pass=(TWO_HOSTS_UNCLAMPED=1)
-		for v in SHARDS INVITE THERE N FIRST MODE IMAGE HOME_HERE HOME_THERE OUT REVISION DOCKER_CONFIG; do
+		for v in SHARDS INVITE THERE N FIRST BASELINE MODE IMAGE HOME_HERE HOME_THERE OUT REVISION DOCKER_CONFIG; do
 			if [ -n "${!v+x}" ]; then pass+=("$v=${!v}"); fi
 		done
 		status=0
@@ -284,6 +330,9 @@ move)
 	# Joined once: an invitation enrolls one client, which stays enrolled.
 	here inspect context lab >/dev/null 2>&1 || here create context lab --invite-file "$HOME_HERE/lab.invite"
 	here pull -q "$IMAGE" >/dev/null
+	# The CPU this machine and the other share, told its microVMs (D176 part 6), where the
+	# two differ (PM M462).
+	if [ -n "${BASELINE:-}" ] && [ "$FIRST" = 1 ]; then here configure cpu --baseline lab; fi
 	{
 		echo "== $(date -u +%FT%TZ): moving from $(machine "$HOME_HERE"), revision ${REVISION:-$(git -C "$root" rev-parse --short HEAD 2>/dev/null || echo unknown)}, image $IMAGE, n $N, from move $FIRST"
 		echo "   to: ${THERE:-$(here --context lab info --format '{{.Name}} {{.OperatingSystem}} {{.Architecture}}' 2>/dev/null || echo unknown)}"

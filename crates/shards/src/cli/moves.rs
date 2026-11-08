@@ -89,6 +89,105 @@ pub(crate) fn move_vm(parsed: &Parsed, home: &Path, ask: &Ask<'_>) -> ExitCode {
     }
 }
 
+/// What a home keeps the CPU baseline its microVMs are told in (D176 part 6): the ID
+/// registers on its first line, as `cpu::encode` writes them, and the contexts it is every
+/// machine's of on its second. Its daemon reads it at each run (daemon/moves.rs).
+pub(crate) const BASELINE: &str = "cpu-baseline";
+
+/// `shards configure cpu --baseline CONTEXT[,CONTEXT...]` (`cpu configure`): the CPU every
+/// machine the contexts reach and this one share, as each one's hypervisor shows a guest
+/// (D176 part 6), told every microVM this home starts from then on, so that a move to any
+/// of them finds nothing its guest may use lacking; `--none` takes it away. `shards inspect
+/// cpu` (`cpu`) says it.
+pub(crate) fn cpu(args: &[std::ffi::OsString]) -> ExitCode {
+    let words: Vec<String> = args.iter().map(|a| a.to_string_lossy().into_owned()).collect();
+    let home = match shards_ipc::home() {
+        Ok(home) => home,
+        Err(e) => return failed(&format!("shards: {e}")),
+    };
+    let at = home.join(BASELINE);
+    let done = match words.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
+        [] => match std::fs::read_to_string(&at) {
+            Ok(text) => {
+                let mut lines = text.lines();
+                let regs = lines.next().unwrap_or_default();
+                let of = lines.next().unwrap_or_default();
+                let _ = writeln!(io::stdout(), "baseline of this machine and {of}: {regs}");
+                Ok(())
+            }
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                let _ = writeln!(io::stdout(), "none: microVMs are told this machine's own CPU");
+                Ok(())
+            }
+            Err(e) => Err(format!("{}: {e}", at.display())),
+        },
+        ["configure", "--none"] => match std::fs::remove_file(&at) {
+            Err(e) if e.kind() != io::ErrorKind::NotFound => Err(format!("{}: {e}", at.display())),
+            _ => Ok(()),
+        },
+        ["configure", "--baseline", contexts] => baseline_of(&home, contexts).and_then(|regs| {
+            let text = format!("{}\n{contexts}\n", shards_vmm::arch::aarch64::cpu::encode(&regs));
+            std::fs::write(&at, text).map_err(|e| format!("{}: {e}", at.display()))
+        }),
+        _ => Err("usage: shards configure cpu --baseline CONTEXT[,CONTEXT...] | --none".into()),
+    };
+    match done {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => failed(&format!("shards: {e}")),
+    }
+}
+
+/// The CPU this machine and every one `contexts` (comma-separated) reach share: each
+/// one's, as its daemon asks its hypervisor (`move step cpu`), met field by field.
+fn baseline_of(home: &Path, contexts: &str) -> Result<Vec<(u16, u64)>, String> {
+    let step = || vec![shards_ipc::MOVE_STEP.to_string(), "cpu".to_string()];
+    let read = |what: &str, (status, out, err): There| -> Result<Vec<(u16, u64)>, String> {
+        if status != 0 {
+            return Err(format!("{what}: {}", String::from_utf8_lossy(&err).trim()));
+        }
+        shards_vmm::arch::aarch64::cpu::decode(String::from_utf8_lossy(&out).trim())
+    };
+    let daemon = super::shardsd()?;
+    let command = shards_ipc::Command {
+        argv: step(),
+        daemon: shards_ipc::Identity::of_build(&daemon).map_err(|e| format!("{}: {e}", daemon.display()))?,
+        ..shards_ipc::Command::default()
+    };
+    let mut cpus = vec![read(
+        "this machine's CPU",
+        super::client::ask(home, &daemon, &command, &[])?,
+    )?];
+    let identity = crate::context::identity(home)?;
+    for name in contexts.split(',').map(str::trim).filter(|n| !n.is_empty()) {
+        let context = crate::context::load(home, name)?.ok_or_else(|| format!("no context named {name}"))?;
+        let (out_tx, out_rx) = std::sync::mpsc::channel();
+        let (err_tx, err_rx) = std::sync::mpsc::channel();
+        let request = Request {
+            args: step().into_iter().map(String::into_bytes).collect(),
+            env: Vec::new(),
+            terminal: None,
+        };
+        let (ran, _) = shards_remote::client::exec_seen(
+            &identity,
+            context.remote(),
+            request,
+            None,
+            Taken(out_tx),
+            Taken(err_tx),
+        );
+        let there = match ran {
+            Ok(Ok(status)) => (u8::try_from(status).unwrap_or(1), taken(&out_rx), taken(&err_rx)),
+            Ok(Err(refused)) => return Err(format!("{name}: {refused}")),
+            Err(e) => return Err(format!("{name}: {e}")),
+        };
+        cpus.push(read(&format!("{name}'s CPU"), there)?);
+    }
+    if cpus.len() < 2 {
+        return Err("a baseline names the contexts of the machines it is every one's of".into());
+    }
+    Ok(shards_vmm::arch::aarch64::cpu::baseline(&cpus))
+}
+
 fn failed(said: &str) -> ExitCode {
     let _ = writeln!(io::stderr(), "{said}");
     ExitCode::FAILURE
