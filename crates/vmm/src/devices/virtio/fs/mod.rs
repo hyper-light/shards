@@ -2125,6 +2125,7 @@ mod tests {
 mod descriptor_on_windows {
     //! The DAX window's ask on Windows (D189, PM M343) over a real pipe pair, its server played
     //! here: the 38 bytes it sends, and what it makes of each answer.
+    use std::io::Write as _;
     use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle};
 
     use windows_sys::Win32::Foundation::{GetHandleInformation, INVALID_HANDLE_VALUE};
