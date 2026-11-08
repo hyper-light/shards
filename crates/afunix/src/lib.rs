@@ -534,6 +534,14 @@ impl From<std::os::windows::io::OwnedSocket> for UnixStream {
     }
 }
 
+impl std::os::windows::io::AsSocket for UnixStream {
+    /// The socket, borrowed for as long as the stream lives, for an event loop to wait on.
+    fn as_socket(&self) -> std::os::windows::io::BorrowedSocket<'_> {
+        // SAFETY: the stream owns this socket open until it drops, and the borrow ends first.
+        unsafe { std::os::windows::io::BorrowedSocket::borrow_raw(self.socket.0 as u64) }
+    }
+}
+
 impl From<UnixStream> for std::os::windows::io::OwnedSocket {
     /// The connection's socket, to hand to another process (WSADuplicateSocketW) or keep.
     fn from(stream: UnixStream) -> std::os::windows::io::OwnedSocket {

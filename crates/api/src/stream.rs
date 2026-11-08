@@ -283,12 +283,11 @@ impl Stream for Socket {
         }))
     }
 
-    fn handle(&self) -> crate::Handle {
+    fn handle(&self) -> crate::Handle<'_> {
         #[cfg(unix)]
-        return std::os::fd::AsRawFd::as_raw_fd(&self.inner);
-        // A Winsock SOCKET is a pointer-sized integer; std's RawSocket is its u64.
+        return std::os::fd::AsFd::as_fd(&self.inner);
         #[cfg(windows)]
-        u64::try_from(self.inner.raw()).unwrap_or(u64::MAX)
+        std::os::windows::io::AsSocket::as_socket(&self.inner)
     }
 
     fn set_nonblocking(&self, on: bool) -> io::Result<()> {
@@ -540,7 +539,7 @@ mod tests {
         #[cfg(unix)]
         {
             let mut fd = libc::pollfd {
-                fd: Stream::handle(&a),
+                fd: std::os::fd::AsRawFd::as_raw_fd(&Stream::handle(&a)),
                 events: libc::POLLIN,
                 revents: 0,
             };
