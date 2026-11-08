@@ -123,9 +123,14 @@ mod unix {
     use super::waits::READ;
 
     impl Socket {
-        /// Its socket made non-blocking, its waits this value's (`waits`).
+        /// Its socket made non-blocking, its waits this value's (`waits`); and on macOS a
+        /// write to a peer that has gone made to fail EPIPE, never to raise SIGPIPE, which
+        /// ends a process that leaves it at its default: SO_NOSIGPIPE, which std sets on a
+        /// socket it connects but not on a pair. Linux's std sends with MSG_NOSIGNAL.
         pub(super) fn new(inner: std::os::unix::net::UnixStream) -> io::Result<Socket> {
             inner.set_nonblocking(true)?;
+            #[cfg(target_vendor = "apple")]
+            no_sigpipe(&inner)?;
             Ok(Socket {
                 inner,
                 waits: std::sync::Arc::default(),
@@ -154,6 +159,30 @@ mod unix {
             }
             Ok(())
         }
+    }
+
+    /// Sets SO_NOSIGPIPE on `s` (setsockopt(2); the macOS SDK's `sys/socket.h`: "No SIGPIPE
+    /// on EPIPE"), so that a write to a gone peer fails EPIPE.
+    #[cfg(target_vendor = "apple")]
+    fn no_sigpipe(s: &std::os::unix::net::UnixStream) -> io::Result<()> {
+        let on: libc::c_int = 1;
+        let size = std::mem::size_of::<libc::c_int>();
+        let len = libc::socklen_t::try_from(size).map_err(io::Error::other)?;
+        // SAFETY: setsockopt(2) of a socket `s` holds open, from a c_int of ours, its length
+        // given in `len`.
+        let r = unsafe {
+            libc::setsockopt(
+                s.as_raw_fd(),
+                libc::SOL_SOCKET,
+                libc::SO_NOSIGPIPE,
+                (&raw const on).cast(),
+                len,
+            )
+        };
+        if r != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
     }
 
     /// A buffer size getsockopt(2) reported, `what` naming it: zero or less is an error,
