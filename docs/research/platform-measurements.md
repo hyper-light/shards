@@ -18776,10 +18776,10 @@ revision before comparing a changed API/implementation.
   session), which alone says whether Hyper-V's SGIs and timers hold across a 64-vCPU
   snapshot at a native host's timing.
 
-### M463. What a client's bind through its context costs its guest (D215)
+### M495. What a client's bind through its context costs its guest (D228)
 
 - **Question.** A client's bind is its own directory, each FUSE request its microVM's share
-  makes relayed over the context's QUIC to the client's share server (D215). What does that
+  makes relayed over the context's QUIC to the client's share server (D228). What does that
   cost a guest's opens, reads and writes against the machine's own bind of the same files?
 - **Method.** docs/research/measurements/client-binds/run.sh 10 (`what_a_clients_bind_costs`,
   tests/context.rs) at 703c6a06 on adacachy2 (the GPU desktop: x86_64, 32 cores, CachyOS,
@@ -18807,6 +18807,6 @@ revision before comparing a changed API/implementation.
   430 µs. With the machine's DAX window on, its own bind's opens cost 513 µs at p50 and its
   64 MiB read 9.5 MiB/s on this host, slower than the relay's: every file of 1 MiB or more is
   mapped (DAX_SMALLEST), and on this host a mapped read is far slower than FUSE's; not
-  D215's, and open (D189's to explain on this kernel).
+  D228's, and open (D189's to explain on this kernel).
 - **Not measured.** Two machines apart (Mac Studios on one network: their runners did not
   take this run on 2026-11-08); a Mac's own; latency under a lossy link.

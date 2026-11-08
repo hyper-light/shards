@@ -658,7 +658,7 @@ pub fn answer(server: &server::Server, mut conn: Stream) -> io::Result<()> {
 }
 
 /// Answers the requests a guest on another machine sends `server` on `from`, relayed
-/// there from its VM's connection, on `to`, until `from` ends (D215): as [`answer`] answers
+/// there from its VM's connection, on `to`, until `from` ends (D228): as [`answer`] answers
 /// a share process's, but a mapping's descriptor, which no relay carries, asked of none
 /// (`Server::serves_afar`): an ask for one is refused EINVAL, as a shards_ipc message of
 /// kind 1 and its errno, which is what the VM reads of a refusal.

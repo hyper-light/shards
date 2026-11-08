@@ -2155,7 +2155,7 @@ impl<D: Disk> Daemon<D> {
             for (provider, conn) in self.engine.take_arrived() {
                 self.take_engine(threads, conn, Some(engine::Scope { provider }), None);
             }
-            // Clients' of other machines', through their contexts' engines (D215).
+            // Clients' of other machines', through their contexts' engines (D228).
             for (client, conn) in remote::take_engine_clients() {
                 self.take_engine(threads, conn, None, Some(client));
             }
@@ -3449,7 +3449,7 @@ impl<D: Disk> Daemon<D> {
         let shared = cdi_points
             .and_then(|more| {
                 points.extend(more);
-                // A client's (D215): judged by what its owner granted it, and its own
+                // A client's (D228): judged by what its owner granted it, and its own
                 // directories served by the relays its client opened for them.
                 let grants =
                     (!run.client.is_empty()).then(|| crate::client_grants::load(&self.home, &run.client));
@@ -4573,7 +4573,7 @@ impl<D: Disk> Daemon<D> {
         crate::setup::verify(run)?;
         validate_restart_policy(&run.restart_policy)?;
         // A client's, through its context: what it reaches of this machine is what its owner
-        // granted it (D215), its devices judged here, its mounts' directories below.
+        // granted it (D228), its devices judged here, its mounts' directories below.
         let grants = (!run.client.is_empty()).then(|| crate::client_grants::load(&self.home, &run.client));
         if let Some(grants) = &grants {
             crate::client_grants::refuse_devices(run, &run.client, grants)?;

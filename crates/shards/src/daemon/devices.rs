@@ -27,7 +27,7 @@ use super::commands::Reply;
 use super::{Daemon, RunState, Threads, lock};
 use crate::containers::Disk;
 
-/// The client a device command is asked for, and what its owner granted it (D215); none
+/// The client a device command is asked for, and what its owner granted it (D228); none
 /// for this machine's own user.
 type Whom<'a> = Option<(&'a str, &'a crate::client_grants::Grants)>;
 
@@ -220,7 +220,7 @@ impl<D: Disk> Daemon<D> {
         };
         self.settle();
         // A client's, through its context: what it plugs in of this machine is what its
-        // owner granted it (D215).
+        // owner granted it (D228).
         let grants = (!whose.is_empty()).then(|| crate::client_grants::load(&self.home, whose));
         let whom = grants.as_ref().map(|g| (whose, g));
         Some(if std::ptr::eq(command, &PLUG_DISK) {
@@ -379,7 +379,7 @@ impl<D: Disk> Daemon<D> {
                     return Err(format!("{source}: a disk's file is given by its absolute path"));
                 }
                 // A client's: a file of this machine's only in a directory its owner granted
-                // it, judged before it is made and again as it is open (D215).
+                // it, judged before it is made and again as it is open (D228).
                 let shown = format!("plug disk {source}");
                 if let Some((client, grants)) = whom {
                     crate::client_grants::refuse_path(client, grants, &shown, &file, !read_only)?;
@@ -456,7 +456,7 @@ impl<D: Disk> Daemon<D> {
         whom: Whom<'_>,
     ) -> Result<String, String> {
         use shards_ipc::fd::AsFd as _;
-        // A client's directory is its own, which a run's bind serves from it (D215); one
+        // A client's directory is its own, which a run's bind serves from it (D228); one
         // plugged into a running microVM is not served so yet.
         if let Some((client, _)) = whom
             && Path::new(source).is_absolute()
@@ -480,7 +480,7 @@ impl<D: Disk> Daemon<D> {
             return Err(format!("{}: not a directory", dir.display()));
         }
         // A volume a client plugs in is the store's, or a directory of this machine's its
-        // owner granted it, judged as it is open (D215).
+        // owner granted it, judged as it is open (D228).
         if let Some((client, grants)) = whom
             && store_dir_of(&self.home, source) != Some(dir.clone())
         {

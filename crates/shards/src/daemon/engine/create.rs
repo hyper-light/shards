@@ -103,7 +103,7 @@ pub fn run_of(
         env.retain(|e| e != CLI_CREDENTIALS_ENV);
     }
     Ok(Run {
-        // The client whose connection asks for it (D215).
+        // The client whose connection asks for it (D228).
         client: super::engine_client(),
         image,
         cmd,

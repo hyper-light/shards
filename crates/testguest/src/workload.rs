@@ -208,7 +208,7 @@ pub fn main() -> ! {
         // Reads each file named through, a megabyte at a time, and says how much: what it
         // read stays in the page cache, the reader's own memory one megabyte.
         "read" => read_through(args.get(1..).unwrap_or_default()),
-        // What a share costs its guest (D215's relay): N opens of FILE, each reading its
+        // What a share costs its guest (D228's relay): N opens of FILE, each reading its
         // first 4 KiB and closing it, timed one by one, said as their n, p50, p90, p99 and
         // max in µs; then FILE read through and a copy of it written and synced beside it,
         // each said as MiB/s.

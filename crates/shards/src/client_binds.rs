@@ -1,4 +1,4 @@
-//! A client's binds through its context (D215): `-v DIR:PATH` and `--mount type=bind` on
+//! A client's binds through its context (D228): `-v DIR:PATH` and `--mount type=bind` on
 //! this machine, for a run on another, name this machine's directories, as a path names the
 //! files where its user typed it. Each is served from here, by a share server of this
 //! process's own over its own QUIC connection to the machine, whose run's share passes the

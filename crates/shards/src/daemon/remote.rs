@@ -111,7 +111,7 @@ impl Host for Machine {
         if args.first().map(String::as_str) == Some(crate::context::ENGINE_STEP) {
             return self.engine_step(client);
         }
-        // A directory of the client's, which it serves for a run of its own (D215).
+        // A directory of the client's, which it serves for a run of its own (D228).
         if args.first().map(String::as_str) == Some(crate::client_grants::BIND_STEP) {
             return bind_step(client, args.get(1).map(String::as_str).unwrap_or_default());
         }
@@ -143,7 +143,7 @@ impl Host for Machine {
             return self.sign_step(args);
         }
         // Words its shards never sends, which would have this machine's files read or
-        // written for the client (D215).
+        // written for the client (D228).
         if let Some(why) = crate::client_grants::refuse_words(&args, crate::context::CIDFILE) {
             super::log(format!("client {client}: refused {}: {why}", args.join(" ")));
             return Err(Error::new(why));
@@ -489,7 +489,7 @@ impl Machine {
     fn engine_step(&self, client: &str) -> Result<Running, Error> {
         let reached = |e: std::io::Error| Error::new(format!("this machine's Engine API: {e}"));
         // A connection of the daemon's own making, its other end the API's to serve as the
-        // client's (D215), so that what its calls make is judged by what the client holds.
+        // client's (D228), so that what its calls make is judged by what the client holds.
         #[cfg(unix)]
         let (conn, theirs) = shards_ipc::Stream::pair().map_err(reached)?;
         #[cfg(windows)]
@@ -546,7 +546,7 @@ impl Machine {
                 .filter_map(|(k, v)| String::from_utf8(v).ok().map(|v| (k, OsString::from(v)))),
         );
         // Whom the command runs for, last, so that what it asks of the daemon is judged by
-        // what this machine's owner granted that client (D215).
+        // what this machine's owner granted that client (D228).
         env.retain(|(k, _)| !k.eq_ignore_ascii_case(crate::client_grants::CLIENT_VAR));
         env.push((
             crate::client_grants::CLIENT_VAR.to_string(),
@@ -996,7 +996,7 @@ impl Machine {
     }
 }
 
-/// Clients' connections to this machine's Engine API through their contexts (D215), by
+/// Clients' connections to this machine's Engine API through their contexts (D228), by
 /// client, for the daemon's listener to take ([`take_engine_clients`]).
 static ENGINE_CLIENTS: std::sync::Mutex<Vec<(String, shards_ipc::Stream)>> =
     std::sync::Mutex::new(Vec::new());
@@ -1005,17 +1005,17 @@ static ENGINE_CLIENTS: std::sync::Mutex<Vec<(String, shards_ipc::Stream)>> =
 static LISTENER: std::sync::OnceLock<Box<dyn Fn() + Send + Sync>> = std::sync::OnceLock::new();
 
 /// The connections clients made to the Engine API through their contexts since the last
-/// look, each with its client (D215).
+/// look, each with its client (D228).
 pub(super) fn take_engine_clients() -> Vec<(String, shards_ipc::Stream)> {
     std::mem::take(&mut *super::lock(&ENGINE_CLIENTS))
 }
 
-/// The directories clients serve for their runs here (D215), by client and token: the VM's
+/// The directories clients serve for their runs here (D228), by client and token: the VM's
 /// end of the stream each is served on, until its run's start takes it ([`take_relay`]).
 static RELAYS: std::sync::Mutex<std::collections::BTreeMap<(String, String), shards_ipc::Stream>> =
     std::sync::Mutex::new(std::collections::BTreeMap::new());
 
-/// The stream on which client `client` serves a directory of its own as `token` (D215), its
+/// The stream on which client `client` serves a directory of its own as `token` (D228), its
 /// relay: one end kept for the run that names the token to take, which its share gives
 /// its VM as it is (share.rs), the other the step's, so that what the VM asks reaches the
 /// client and what the client answers reaches the VM, byte for byte. Let go of as the
@@ -1062,7 +1062,7 @@ fn bind_step(_client: &str, _token: &str) -> Result<Running, Error> {
 }
 
 /// The VM's end of the stream client `client` serves its directory `token` on, for its
-/// run's start (D215): taken once.
+/// run's start (D228): taken once.
 pub(super) fn take_relay(client: &str, token: &str) -> Result<OwnedFd, String> {
     let taken = super::lock(&RELAYS).remove(&(client.to_string(), token.to_string()));
     let stream = taken.ok_or_else(|| {

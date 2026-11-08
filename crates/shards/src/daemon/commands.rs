@@ -3588,7 +3588,7 @@ pub(super) struct Asker {
     pub color: bool,
     /// What they sent to be written: `save`'s archive's destination.
     pub files: Vec<OwnedFd>,
-    /// The client of another machine's they ask for through its context (D215), empty for
+    /// The client of another machine's they ask for through its context (D228), empty for
     /// this machine's own user: what it reaches of this machine its owner granted it.
     pub whose: String,
 }

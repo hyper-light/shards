@@ -118,7 +118,7 @@ pub(crate) const INTERNAL: [&str; 7] = [
     // The daemon's spawner (PM M158).
     "spawner",
     // What serves a client's binds for a run through its context that goes on without
-    // its command (D215).
+    // its command (D228).
     crate::client_binds::SERVE_APART,
 ];
 

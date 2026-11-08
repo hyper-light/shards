@@ -737,7 +737,7 @@ fn a_contexts_engine_is_its_machines() {
     assert_eq!(status, 200, "{there}");
     assert!(there.contains("\"/relayed\""), "{there}");
     // A bind through the context's engine names a path, which is the client's, and Docker's
-    // API carries no more of it than its path (D215): no directory of the machine's is bound
+    // API carries no more of it than its path (D228): no directory of the machine's is bound
     // for the client, its home here among them.
     {
         use std::io::{Read as _, Write as _};
@@ -2523,7 +2523,7 @@ fn a_cidfile_through_a_context_is_the_clients() {
     assert!(!laptop.join("never.id").exists(), "{missing}");
 }
 
-/// A client's binds through its context are its own files (D215): `-v DIR:PATH` on the
+/// A client's binds through its context are its own files (D228): `-v DIR:PATH` on the
 /// laptop shows the microVM there the laptop's directory, and what the microVM writes
 /// lands on the laptop, read-only where asked, a file bound alone, a detached run's too;
 /// nothing of the machine's is bound or written. The machine's own directories are its
@@ -2662,12 +2662,12 @@ fn a_clients_binds_are_its_own_files_and_the_machines_its_owners_to_grant() {
 }
 
 /// What a client's bind costs its guest against the machine's own bind of the same files
-/// (D215): each round, in turns, a run of the owner's binding a directory of the machine's
+/// (D228): each round, in turns, a run of the owner's binding a directory of the machine's
 /// and a client's binding its own, each timing 2,000 opens of a 4 KiB read and its file's
 /// 64 MiB read and written through (the test guest's `share-cost`). A measurement, run by
 /// docs/research/measurements/client-binds/run.sh.
 #[test]
-#[ignore = "a measurement (D215): docs/research/measurements/client-binds/run.sh"]
+#[ignore = "a measurement (D228): docs/research/measurements/client-binds/run.sh"]
 fn what_a_clients_bind_costs() {
     let Some((machine, _listening, laptop, image)) = joined("ctx-bind-cost") else {
         return;

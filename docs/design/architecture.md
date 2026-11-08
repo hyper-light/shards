@@ -7447,7 +7447,7 @@ share made ahead), and a disk's capacity was fixed when its file was opened.
   has a spare one bound to vfio-pci: tested nested, on QEMU edu's model); the guest's
   remove's 29 ms on KVM x86_64, not yet split (PM M430).
 
-### D215. A client's paths are its own; the machine's are its owner's to grant (built)
+### D228. A client's paths are its own; the machine's are its owner's to grant (built)
 
 **The need.** Through a context (D180) a laptop runs microVMs on a GPU or x86_64 machine.
 Until now a command it sent ran as that machine's CLI, so `-v /home/me/src:/src` bound the
@@ -7494,7 +7494,7 @@ its owner's grant, default deny, as shards' networks are.
   second (`VALID_S`), as a local share's are. Only the cost differs, each request a round
   trip to the client: over loopback on the GPU desktop an open, a 4 KiB read and a close
   took 251 µs at p50 and 399 at p99 against the machine's own bind's 136 and 206, a 64 MiB
-  read 458 MiB/s against 468, a write 572 MiB/s against 2,157 (PM M463). No DAX window: a mapping maps a file of the host the
+  read 458 MiB/s against 468, a write 572 MiB/s against 2,157 (PM M495). No DAX window: a mapping maps a file of the host the
   guest is on, so the client's server tells its guest to map nothing (`serves_afar`: no
   `FUSE_HAS_INODE_DAX`, no `FUSE_ATTR_DAX`) and refuses a mapping's descriptor (EINVAL,
   `answer_afar`).
@@ -7559,7 +7559,7 @@ directory of the machine's refused.
 **Not yet.** A Windows machine serves no client's directory (its shares' streams are pipes
 its daemon makes, D197): refused, said so. Docker's CLI through a context serves none of
 its client's directories, as its API names a path alone. `plug volume` of a client's own
-directory. A context's relays measured across two machines (PM M463 has loopback alone).
+directory. A context's relays measured across two machines (PM M495 has loopback alone).
 
 ### D208. A GPU on every Linux host: musl's GPU VM process, and Intel's GPUs (built)
 

@@ -640,7 +640,7 @@ pub struct Command {
     pub width: u16,
     pub color: bool,
     pub daemon: Identity,
-    /// The client of another machine's that asked for it through its context (D215), as
+    /// The client of another machine's that asked for it through its context (D228), as
     /// [`Run::client`]; empty for this machine's own user.
     pub client: String,
 }
@@ -943,7 +943,7 @@ pub struct Run {
     /// says none.
     pub terms: Vec<String>,
     /// The client of another machine's this one's daemon enrolled that asked for the run
-    /// through its context (D215): what it may reach of this machine is what its owner
+    /// through its context (D228): what it may reach of this machine is what its owner
     /// granted it. Empty for this machine's own user's runs.
     pub client: String,
 }

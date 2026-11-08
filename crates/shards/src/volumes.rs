@@ -59,14 +59,14 @@ pub struct MountPoint {
     #[serde(skip)]
     pub flags: Vec<String>,
     /// A client's bind of its own directory, or of a file alone, through its context
-    /// (D215): its relay's token, by which the run's start finds the stream the client
+    /// (D228): its relay's token, by which the run's start finds the stream the client
     /// serves it on, its `source` the client's path. Not Docker's: inspect leaves it out.
     #[serde(rename = "ShardsRelay", default, skip_serializing_if = "String::is_empty")]
     pub relay: String,
     /// A file a client binds alone: its one name, which its relay serves of its directory.
     #[serde(rename = "ShardsRelayOnly", default, skip_serializing_if = "String::is_empty")]
     pub relay_only: String,
-    /// One of CDI's (D146): its host's path is its device's, granted with it (D215).
+    /// One of CDI's (D146): its host's path is its device's, granted with it (D228).
     #[serde(skip)]
     pub cdi: bool,
 }
@@ -902,7 +902,7 @@ pub fn register(
 }
 
 /// A bind's mount point `mp` of a run of `client` (empty for this machine's own user's), as
-/// it crosses (D215): a client's directory, served from it by the relay its source names,
+/// it crosses (D228): a client's directory, served from it by the relay its source names,
 /// its source then the client's path; refused where it is no client's of its own, or
 /// where a relay comes from no client.
 fn relay(mp: &mut MountPoint, client: &str) -> Result<(), String> {
@@ -917,7 +917,7 @@ fn relay(mp: &mut MountPoint, client: &str) -> Result<(), String> {
 }
 
 /// Why client `client`, holding `grants`, may not have `points` mounted, judged by their
-/// paths before anything is opened, as its run is made (D215): a bind of this machine's
+/// paths before anything is opened, as its run is made (D228): a bind of this machine's
 /// (one `--volumes-from` took of another run) or a volume of a directory of this
 /// machine's (`o=bind`) only where a grant holds it, a CDI device's own mounts with their
 /// device; and another client's bind of its directory never, as its client serves it to
@@ -967,7 +967,7 @@ fn bound_device(store: &Store, name: &str) -> Option<String> {
     bound.then(|| options.get("device").cloned().unwrap_or_default())
 }
 
-/// Why client `client`, holding `grants`, may not make a volume of `options` (D215): one of
+/// Why client `client`, holding `grants`, may not make a volume of `options` (D228): one of
 /// a host directory (`o=bind`, its `device`) is of this machine's, which a grant must hold.
 pub fn refuse_options(
     options: &BTreeMap<String, String>,
@@ -1032,7 +1032,7 @@ fn register_into(
                 ));
             }
             // A client's bind of its own directory is served to the run that named it
-            // alone, by that client (D215).
+            // alone, by that client (D228).
             if !m.relay.is_empty() {
                 return Err(format!(
                     "cannot take the volumes of {id}: its bind at {} is a directory of its client's, {}, which that client serves to that run alone",
@@ -1196,7 +1196,7 @@ pub fn open(points: &[MountPoint], first: bool, store: &Store) -> Result<Opened,
     open_for(points, first, store, &Access::default())
 }
 
-/// Whose run's mount points are opened (D215): a client's, what its owner granted it, by
+/// Whose run's mount points are opened (D228): a client's, what its owner granted it, by
 /// which each directory of this machine's is judged once it is open; and where its own
 /// directories' relays are taken from, by their tokens. None for this machine's own user's.
 #[derive(Default)]
@@ -1208,7 +1208,7 @@ pub struct Access<'a> {
 }
 
 /// Where a run's start takes the VM's end of the stream a client serves a directory on, by
-/// its relay's token (D215).
+/// its relay's token (D228).
 pub type Relay<'a> = &'a dyn Fn(&str) -> Result<shards_ipc::fd::OwnedFd, String>;
 
 /// [`open`] of the mount points of a run `access` says whose.
@@ -1222,7 +1222,7 @@ pub fn open_for(
     let mut opened = Opened::default();
     for p in points {
         let dest = &p.destination;
-        // A client's own directory, served from it (D215): the stream its relay is, which
+        // A client's own directory, served from it (D228): the stream its relay is, which
         // its share passes to the VM as it is.
         if !p.relay.is_empty() {
             let Some(take) = access.relay else {
@@ -1278,7 +1278,7 @@ pub fn open_for(
             _ => Path::new(&p.source),
         };
         // A client's: nothing of this machine's looked at, or made, beyond its grants
-        // (D215); what is open is judged again below.
+        // (D228); what is open is judged again below.
         let host_path = !p.cdi && (p.kind == "bind" || source != Path::new(&p.source));
         let shown = if p.kind == "bind" {
             format!("bind {}", p.source)
@@ -1329,7 +1329,7 @@ pub fn open_for(
         let file = shards_vmm::platform::open_dir(dir)
             .map_err(|e| format!("error mounting \"{}\" to rootfs at \"{dest}\": {e}", p.source))?;
         // A client's: a directory of this machine's only where its owner granted it, judged
-        // by the directory open, which is what is shared (D215).
+        // by the directory open, which is what is shared (D228).
         if let Some((client, grants)) = access.client
             && host_path
         {
