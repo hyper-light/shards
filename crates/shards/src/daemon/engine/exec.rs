@@ -1,4 +1,4 @@
-//! Execs' calls (D170): a command made to run in a running container, then started as
+//! Execs' calls (D170): a command made to run in a running microVM, then started as
 //! `shards exec` runs one, and its end kept for its client to read.
 
 use std::fs::File;
@@ -18,7 +18,7 @@ use crate::daemon::{Daemon, Threads, lock};
 
 /// An exec made: what it runs, where, and how it ended.
 pub(in crate::daemon) struct Instance {
-    /// Its container's ID.
+    /// Its microVM's ID.
     container: String,
     request: shards_ipc::Exec,
     /// The streams it attaches: stdin, stdout, stderr.
@@ -57,12 +57,12 @@ fn console(v: &Value) -> (u16, u16) {
 }
 
 impl<D: Disk> Daemon<D> {
-    /// The container exec `exec_id` runs in, where there is such an exec.
+    /// The microVM exec `exec_id` runs in, where there is such an exec.
     pub(super) fn exec_container(&self, exec_id: &str) -> Option<String> {
         lock(&self.engine.execs).get(exec_id).map(|i| i.container.clone())
     }
 
-    /// `POST /containers/{id}/exec`: an exec made, in a container that runs, to start
+    /// `POST /containers/{id}/exec`: an exec made, in a microVM that runs, to start
     /// later.
     pub(super) fn engine_exec_create(&self, given: &str, call: &Call<'_>) -> Answer {
         let body: Value = match serde_json::from_slice(&call.body) {
@@ -107,7 +107,7 @@ impl<D: Disk> Daemon<D> {
             daemon: self.identity,
             ..shards_ipc::Exec::default()
         };
-        // What it ends keeps no exec of a container that has gone.
+        // What it ends keeps no exec of a microVM that has gone.
         self.forget_execs();
         let exec_id = match crate::containers::new_id() {
             Ok(exec_id) => exec_id,
@@ -345,7 +345,7 @@ impl<D: Disk> Daemon<D> {
         )
     }
 
-    /// Forgets the execs of containers that are gone.
+    /// Forgets the execs of microVMs that are gone.
     fn forget_execs(&self) {
         let registry = lock(&self.containers);
         lock(&self.engine.execs).retain(|_, i| registry.made(&i.container).is_some());
