@@ -12,6 +12,7 @@ mod climb;
 pub mod credentials;
 mod fetch;
 pub mod http;
+mod patience;
 pub mod proxy;
 pub mod pull;
 pub mod push;

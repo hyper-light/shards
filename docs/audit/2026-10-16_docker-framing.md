@@ -116,7 +116,9 @@ Reviewed feature by feature, each D-entry's design against what it took from Doc
   - (Done, the same item as the constants' `TERM=xterm` below: the client's own terminal
     type where the run's root describes it, D16, PM M263.)
   - A download that stops without progress fails after three (containerd's
-    `httpReadSeeker`'s count): open, to derive from what a stalling server costs.
+    `httpReadSeeker`'s count): done (D222). A download silent past what its path's own
+    silences say (RFC 6298's estimator, kept in the home by path) is cut and resumed, and
+    one that brings nothing is resumed within its path's budget.
   - Splunk's batch of 1,000 events. Kept, decided (2026-11-03): it is the documented
     meaning of `SPLUNK_LOGGING_DRIVER_POST_MESSAGES_BATCH_SIZE` unset (docker/docs
     content/manuals/engine/logging/drivers/splunk.md), the knob a collector's operator
@@ -134,9 +136,12 @@ Reviewed feature by feature, each D-entry's design against what it took from Doc
     receiver-led size is measured.
   - A registry's request tried 5 times, 50 ms apart, and a 500, 502, 503 or 504 tried again
     only once unless it changes (containerd's `maxAttempts` and pause, crates/registry
-    `ATTEMPTS`, `PAUSE`): open. Docker Hub's token server answered 502 twice within the
-    pause and a CI build failed (job 117733752147, 2026-10-18). To derive from how long a
-    registry's 5xx last, measured.
+    `ATTEMPTS`, `PAUSE`): done (D222). Docker Hub's token server answered 502 twice within
+    the pause and a CI build failed (job 117733752147, 2026-10-18). A trouble is ridden out
+    with no count, within twice the longest its path has passed and never less than TCP's
+    R2 (RFC 1122), and a request's answer waited for as long as its path's answers say;
+    each learned from the path as shards runs, kept in the home, PM M486 the method's
+    check, not its number.
   - A builder's ceiling of half the host's memory (Docker Desktop's VM's share, which
     `builder_memory_mib` took): open. Its memory is plugged as its build needs it (D133),
     so the ceiling can come from what the host can give as the build asks, measured.

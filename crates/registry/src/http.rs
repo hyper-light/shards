@@ -29,6 +29,7 @@ use std::time::{Duration, Instant};
 use rustls::pki_types::ServerName;
 use rustls::{ClientConfig, ClientConnection};
 
+use crate::patience::{Pace, Paths, path_of};
 use crate::proxy::{Proxies, Proxy};
 use crate::registries::Registries;
 use crate::url::{Scheme, Url};
@@ -73,10 +74,14 @@ pub struct Client {
     /// What Docker's daemon configuration says of registries, for the registries it asks
     /// (D194).
     registries: Registries,
-    /// How long a registry's trouble is ridden out (registry.rs [`MOMENT`]).
-    ///
-    /// [`MOMENT`]: crate::registry::MOMENT
-    moment: Duration,
+    /// Whether its waits on a server are what that server's path has shown (D222,
+    /// crate::patience), where the patience it was given bounds them: a registry's.
+    learning: bool,
+    /// What each path it asked has shown.
+    paths: Paths,
+    /// How long a trouble is ridden out, where a test says, in place of what its path has
+    /// shown.
+    moment: Option<Duration>,
 }
 
 /// How long a request waits on its server: to connect, its name's lookup included; for
@@ -412,21 +417,48 @@ impl Client {
             reach: None,
             server_name: None,
             registries: Registries::default(),
-            moment: crate::registry::MOMENT,
+            learning: false,
+            paths: Paths::default(),
+            moment: None,
         }
     }
 
-    /// How long a registry's trouble is ridden out before it is said as the registry's
-    /// failure (registry.rs `Trouble`).
-    pub(crate) fn moment(&self) -> Duration {
-        self.moment
+    /// This client, its waits on each server the ones that server's path has shown
+    /// (D222), within its patience: an answer to a request without a body waited for as
+    /// long as the path's answers say, and a body's silence as long as its silences say.
+    pub(crate) fn learning(mut self) -> Client {
+        self.learning = true;
+        self
+    }
+
+    /// How long a trouble of `url`'s server is ridden out before it is said as the
+    /// server's failure (registry.rs `Trouble`): as long as its path's troubles say.
+    pub(crate) fn budget(&self, url: &Url) -> Duration {
+        self.moment.unwrap_or_else(|| self.paths.budget(&path_of(url)))
+    }
+
+    /// A trouble of `url`'s server that lasted `lasted` passed.
+    pub(crate) fn passed(&self, url: &Url, lasted: Duration) {
+        self.paths.passed(&path_of(url), lasted);
+    }
+
+    /// What the path to `host`:`port` has shown.
+    #[cfg(test)]
+    pub(crate) fn shown(&self, host: &str, port: u16) -> crate::patience::Shown {
+        self.paths.shown(&format!("{host}:{port}"))
+    }
+
+    /// Keeps what its paths show in `root`, an image store's directory, and starts them
+    /// from what they showed before there (crate::patience).
+    pub(crate) fn keep_in(&self, root: &std::path::Path) {
+        self.paths.keep_in(root);
     }
 
     /// This client, riding out a registry's trouble for `moment`: tests of a registry
     /// that stays down, ended within it.
     #[cfg(test)]
     pub(crate) fn with_moment(mut self, moment: Duration) -> Client {
-        self.moment = moment;
+        self.moment = Some(moment);
         self
     }
 
@@ -670,15 +702,36 @@ impl Client {
         head: &[u8],
         sent: Option<&AtomicU64>,
     ) -> Result<Response<'_>, Failure> {
+        let path = path_of(req.url);
+        // A request without a body is answered as fast as its path answers: one with a
+        // body waits on its server's work with it, as long as its patience says.
+        let bodiless = req.file.is_none() && req.body.is_empty();
+        let answer = match self.patience.head {
+            Some(_) if self.learning && bodiless => Some(self.paths.answer_timeout(&path)),
+            patience => patience,
+        };
         let written = conn.io.get_mut().write_all(head).and_then(|()| match req.file {
             Some((file, from, len)) => send_body(&mut conn, file, from, len, self.patience.stall, sent),
             None => conn.io.get_mut().flush().map(|()| true),
         });
+        let asked = Instant::now();
+        let learned = |read: Result<Head, Failure>| {
+            if self.learning && bodiless {
+                match &read {
+                    Ok(_) => self.paths.answered(&path, asked.elapsed()),
+                    Err(_) if answer.is_some_and(|a| asked.elapsed() >= a) => {
+                        self.paths.answer_timed_out(&path)
+                    }
+                    Err(_) => {}
+                }
+            }
+            read
+        };
         // A server may answer before it has read the whole request, then close: a 413 or a
         // 401 to an upload. Its answer is taken as it comes (`send_body`), or where a
         // write fails as the server leaves, from what it left.
         let (head, early) = match written {
-            Ok(whole) => (read_head(&mut conn, req.url, self.patience.head)?, !whole),
+            Ok(whole) => (learned(read_head(&mut conn, req.url, answer))?, !whole),
             Err(e) => {
                 let left = matches!(
                     e.kind(),
@@ -691,7 +744,7 @@ impl Client {
                     return Err(sending());
                 }
                 (
-                    read_head(&mut conn, req.url, self.patience.head).map_err(|_| sending())?,
+                    learned(read_head(&mut conn, req.url, answer)).map_err(|_| sending())?,
                     true,
                 )
             }
@@ -716,10 +769,26 @@ impl Client {
             && headers
                 .iter()
                 .any(|(n, _)| n.eq_ignore_ascii_case("content-length"));
-        conn.stall(self.patience.stall)
+        // A body's silence is cut where its path's silences say it has gone on too long.
+        let paced = match self.patience.stall {
+            Some(_) if self.learning => {
+                let (timeout, silence) = self.paths.silence(&path);
+                Some(Paced {
+                    paths: &self.paths,
+                    path,
+                    silence,
+                    timeout,
+                    last: Instant::now(),
+                    timed_out: None,
+                })
+            }
+            _ => None,
+        };
+        conn.stall(paced.as_ref().map_or(self.patience.stall, |p| Some(p.timeout)))
             .map_err(|e| Failure::Other(e.into()))?;
         let mut body = Body {
             conn: Some(conn),
+            paced,
             framing,
             // A 408's server stopped waiting for a request there, and may hold part of
             // one: where it ends is lost (RFC 9110 §15.5.9).
@@ -1350,7 +1419,10 @@ fn read_head(conn: &mut Conn, url: &Url, patience: Option<Duration>) -> Result<H
                         .ok_or_else(|| {
                             Failure::Other(Error::of(
                                 ErrorKind::Transient,
-                                format!("{url}: no response within 30 s"),
+                                format!(
+                                    "{url}: no response within {:.1} s",
+                                    patience.unwrap_or_default().as_secs_f64()
+                                ),
                             ))
                         })?,
                 ),
@@ -1533,9 +1605,33 @@ struct Chunked {
 #[derive(Debug)]
 struct Body<'c> {
     conn: Option<Conn>,
+    /// Its silences, where they are its path's to learn (D222).
+    paced: Option<Paced<'c>>,
     framing: Framing,
     reuse: bool,
     pool: &'c Pool,
+}
+
+/// A body's silences, the waits between its reads that brought bytes, added to its path's
+/// as it goes ([`Pace`]), and kept as the body is let go of.
+#[derive(Debug)]
+struct Paced<'c> {
+    paths: &'c Paths,
+    path: String,
+    silence: Pace,
+    /// How long a read may wait.
+    timeout: Duration,
+    /// When the last read that brought bytes returned, or the body began.
+    last: Instant,
+    /// Whether a read timed out (`Some(true)`), or brought bytes after one or from the
+    /// start (`Some(false)`).
+    timed_out: Option<bool>,
+}
+
+impl Drop for Paced<'_> {
+    fn drop(&mut self) {
+        self.paths.silenced(&self.path, self.silence, self.timed_out);
+    }
 }
 
 impl Body<'_> {
@@ -1558,6 +1654,25 @@ impl Body<'_> {
     }
 
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let read = self.read_framed(buf);
+        if let Some(p) = self.paced.as_mut() {
+            match &read {
+                Ok(n) if *n > 0 => {
+                    let now = Instant::now();
+                    p.silence.add(now.duration_since(p.last));
+                    p.last = now;
+                    p.timed_out = Some(false);
+                }
+                Err(e) if matches!(e.kind(), io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock) => {
+                    p.timed_out = Some(true);
+                }
+                _ => {}
+            }
+        }
+        read
+    }
+
+    fn read_framed(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         let Some(conn) = self.conn.as_mut() else {
             return Ok(0);
         };

@@ -4004,6 +4004,85 @@ revision before comparing a changed API/implementation.
   1 MiB, across the LAN 7 to 18%, and across the Internet less than its noise: a blob goes whole, in chunks only once its registry refused
   a request so long, each half the least refused.
 
+### M486. How real registries fail a request, how long a healthy download goes silent, and what learned waits make of it (D222)
+
+- **Question.** shards tried a registry's request five times 50 ms apart, gave a download
+  three stalls, and waited 30 s for an answer and 30 s for a byte: containerd's and Go's
+  figures. How do real registries fail, how long, and how long do healthy answers and
+  downloads go quiet? And does a wait learned from the path (RFC 6298's estimator, D222)
+  do better than a fixed one, on these hosts' own records? The numbers check the method;
+  none of them is shards' wait, which each path learns.
+- **Method.** `docs/research/measurements/registry-failures/`:
+  - `probe.py`: eleven endpoints that pull nothing (Docker Hub's token server and
+    `/v2/`, ghcr.io's token and `/v2/`, quay.io, ECR Public's token, gcr.io, Artifact
+    Registry, registry.k8s.io, mcr.microsoft.com, registry.gitlab.com), each asked every
+    2 s on a connection of its own, 30 s allowed, for 2 h; a failure (5xx, 429, timeout,
+    reset, refused) asked again every 50 ms to its first answer. `episodes.py`: answers'
+    times by endpoint (n, p50, p90, p99, max) and each failure's episode, from its first
+    failed request's start to the answer, with its askings and when it began.
+  - `replay.py`: each endpoint's answers, in order, through patience.rs's estimator (the
+    smoothed wait and four deviations, at least 1 s, 1 s before any, doubled per timeout
+    in a row): the healthy answers it would have cut and asked again, and the time lost,
+    against 30 s waits.
+  - `silences.py`: the four largest layers of ghcr.io/actions/actions-runner:latest and
+    of Docker Hub's library/python:3.13 (linux/amd64), downloaded four at once, 4 rounds
+    each, following the redirect to the CDN; each download's head times and its longest
+    silence between reads of up to 64 KiB. Docker Hub counts its two manifest asks a run.
+  - fedora-2 (kiln-a094a12d: Intel Core i9-14900HX, 32 CPUs, Fedora 44, Linux 6.19.10, on
+    Wi-Fi, home broadband), load average 13 to 30 from CI jobs and other agents' builds
+    throughout, 2026-11-08, revision 706e6870 (the harness) and 08b4a1c5 (the replay's
+    estimator).
+- **Found on fedora-2.** 39,260 requests over 2.00 h. No endpoint answered a 5xx or a 429.
+  25 requests (0.064%) were never answered within 30 s, spread over the two hours (two
+  pairs together, ghcr.io's token and `/v2/` at the same moment), and each next asking of
+  the endpoint was answered at once, in its usual time: stuck requests, not registries
+  down. Answers (ms):
+
+  | endpoint | n | p50 | p90 | p99 | max | never answered |
+  |---|---|---|---|---|---|---|
+  | auth.docker.io/token | 3,561 | 150 | 204 | 355 | 1,764 | 3 |
+  | registry-1.docker.io/v2/ | 3,573 | 216 | 259 | 417 | 1,670 | 2 |
+  | ghcr.io/token | 3,556 | 200 | 239 | 561 | 7,129 | 3 |
+  | ghcr.io/v2/ | 3,559 | 196 | 241 | 556 | 5,162 | 3 |
+  | quay.io/v2/ | 3,598 | 218 | 264 | 457 | 5,406 | 0 |
+  | public.ecr.aws/token/ | 3,548 | 61 | 98 | 259 | 1,467 | 4 |
+  | gcr.io/v2/ | 3,586 | 261 | 357 | 523 | 1,051 | 1 |
+  | us-docker.pkg.dev/v2/ | 3,547 | 266 | 335 | 556 | 1,071 | 4 |
+  | registry.k8s.io/v2/ | 3,574 | 129 | 160 | 363 | 1,626 | 2 |
+  | mcr.microsoft.com/v2/ | 3,585 | 90 | 152 | 362 | 5,289 | 1 |
+  | registry.gitlab.com/v2/ | 3,573 | 272 | 309 | 684 | 1,574 | 2 |
+
+  Replayed: the learned waits stayed at their 1 s floor at p50 on every endpoint, rising
+  to 2.0 to 8.1 s at most after slow answers; they would have cut 73 of 39,235 healthy
+  answers (0.19%, 0.03% to 0.53% by endpoint, most on ghcr.io and quay.io, whose answers
+  run longest), each asked again, and lost 120 s in all, where 30 s waits lost 752 s to
+  the 25 stuck requests.
+
+  Downloads (16 a registry, 3.4 GB; longest silence and head times in ms):
+
+  | | n | p50 | p90 | p99 | max |
+  |---|---|---|---|---|---|
+  | ghcr.io: longest silence | 16 | 47.7 | 216.4 | 1,213.2 | 1,213.2 |
+  | ghcr.io: registry's head (the redirect) | 16 | 126.4 | 191.3 | 215.5 | 215.5 |
+  | ghcr.io: CDN's head | 16 | 52.6 | 112.6 | 128.3 | 128.3 |
+  | Docker Hub: longest silence | 16 | 94.0 | 127.5 | 167.8 | 167.8 |
+  | Docker Hub: registry's head | 16 | 218.0 | 227.1 | 228.9 | 228.9 |
+  | Docker Hub: CDN's head | 16 | 91.0 | 166.4 | 177.2 | 177.2 |
+
+  ghcr.io's CDN carried 4.6 MB/s a download, one of 324 MB taking 356 s; Docker Hub's
+  30.6 MB/s. One silence passed a second (1.2 s, ghcr.io), which a learned wait at its
+  floor cuts and resumes for a request's answer (its CDN's head, 53 ms at p50). In a
+  trial run before, one ghcr.io download of 324 MB ended 19.6 MB short after 546 s,
+  progressing at 0.56 MB/s: a transfer a deadline would have cut, and one a resume
+  finishes.
+- **Consequence.** What fails is a request that is never answered, at random and rarely,
+  where its next asking answers: waiting a fixed 30 s for it loses most of the time lost,
+  and a wait learned from the path's own answers loses a sixth of it, at the cost of a
+  second asking of one healthy answer in five hundred. No registry here was down or
+  answered 5xx within two hours, so how long a trouble lasts is learned where troubles
+  happen (D222's budget), from what each path passes. Healthy silences reach a second:
+  a learned wait at its floor cuts a rare one, and a resume costs a request.
+
 ### M115. What keeping a container's writable layer costs a run
 
 - **Question.** A container that stays keeps its writable layer once its microVM stops

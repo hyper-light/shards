@@ -679,7 +679,7 @@ impl Bearer {
 
     /// containerd's `doBearerAuth`, tried again as the registry's own requests are
     /// (registry.rs `send_here`, D222): a timeout, a cut connection, a 408, 502, 503 or
-    /// 504 ridden out while the trouble lasts a moment, and a 500 asked again once, unless
+    /// 504 ridden out within the token server's budget (crate::patience), and a 500 asked again once, unless
     /// it repeats. Docker Hub's token server answered a pull with a 502, which the next
     /// asking passed (dev 3c2e3cd3's CI), and twice within 50 ms, which failed a build of
     /// CI's job 117733752147 (2026-10-18) past the five quick attempts this took before.
@@ -689,7 +689,10 @@ impl Bearer {
         loop {
             let asked = std::time::Instant::now();
             let failed = match self.fetch_once(http, scopes) {
-                Ok(token) => return Ok(token),
+                Ok(token) => {
+                    trouble.over(http, &self.realm);
+                    return Ok(token);
+                }
                 Err(failed) => failed,
             };
             let passing = match failed.status {
@@ -699,7 +702,7 @@ impl Bearer {
                 Some(_) => false,
             };
             let wait = passing
-                .then(|| trouble.wait(asked, http.moment(), None))
+                .then(|| trouble.wait(asked, http.budget(&self.realm), None))
                 .flatten();
             let Some(wait) = wait else {
                 // The credentials' refusal stays one, for a login to say so; anything else
