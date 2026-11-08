@@ -7567,8 +7567,8 @@ machine; a client's volume of the machine's directory refused, the owner's refus
 client until granted read-only, then refused read-write, and refused again once revoked; a
 named volume the client's; `--gpus` refused without a grant; and a directory of the
 laptop's plugged into a running microVM there, read and written there, gone once unplugged. On
-adacachy2 (Linux 7.3, KVM) and Fedora at 34408c9d, and with the plugged directory at
-ea34aa23 on adacachy2 and on jupiter (Windows 11, WHP; the machine's side a Windows
+adacachy2 (Linux 7.3, KVM) and Fedora at 34408c9d, and with the plugged directory on
+adacachy2 and on jupiter (Windows 11, WHP; the machine's side a Windows
 daemon's, the relay its pipe pair). And
 `a_contexts_engine_is_its_machines`: a create through the context's engine binding a
 directory of the machine's refused.
