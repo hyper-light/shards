@@ -106,6 +106,7 @@ pub(crate) fn layers(
     here: &(dyn Fn(usize) + Sync),
     fresh: bool,
 ) -> Result<(), Error> {
+    registry.keep_in(store);
     let mut layers = Vec::with_capacity(manifest.layers.len());
     for desc in &manifest.layers {
         layers.push(Layer {
@@ -461,13 +462,13 @@ impl<'a> Flows<'a> {
                     return Err(short(&layer.digest, now, layer.desc.size));
                 }
                 if now > before || now >= end {
-                    trouble.over();
+                    self.registry.over(&mut trouble, url);
                     continue;
                 }
             }
             drop(response);
-            // It brought nothing: asked again while that lasts a moment (D222).
-            match trouble.wait(asked, self.registry.moment(), None) {
+            // It brought nothing: asked again while that lasts its path's budget (D222).
+            match trouble.wait(asked, self.registry.budget(url), None) {
                 Some(wait) => self.registry.pause(wait)?,
                 None => return Err(stalled(&layer.digest, trouble.lasted())),
             }

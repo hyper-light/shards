@@ -113,6 +113,7 @@ fn pull_as(
     report: &(dyn Fn(Event<'_>) + Sync),
     fresh: bool,
 ) -> Result<Pulled, Error> {
+    registry.keep_in(store);
     let pull = || pulled(registry, store, reference, targets, limits, report, fresh);
     registry
         .saying_waits(&|notice| report(Event::Waiting(notice)), pull)
@@ -383,6 +384,7 @@ fn config_for(
     targets: &[Target],
     limits: &Limits,
 ) -> Result<(Digest, Descriptor, Manifest, Vec<u8>), Error> {
+    registry.keep_in(store);
     let name = reference.familiar();
     let top = registry
         .resolve(store, reference)

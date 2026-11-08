@@ -65,6 +65,7 @@ fn pushed(
     from: Option<&str>,
     report: &(dyn Fn(&Digest, Layer) + Sync),
 ) -> Result<(), Error> {
+    registry.keep_in(store);
     let bytes = document(store, target)?;
     if let Document::Index(index) = oci::parse_document(&bytes, &target.media_type)? {
         // Every child first: an index whose content is not all here is not pushed.
