@@ -1,6 +1,6 @@
 //! A microVM moved to another machine (D176 part 6): `shards move vm NAME CONTEXT`, whose
 //! client asks this daemon and the other machine's, through its context (D180), for its
-//! steps one at a time (cli/moves.rs), as `shards cp` asks for its own.
+//! steps one at a time (cli/moves.rs), as `shards copy vm` asks for its own.
 //!
 //! - `save NAME`: the microVM saved whole and stopped (D176), or the snapshot a save
 //!   stopped it as; its [`Plan`], on stdout: what the other machine needs of it.
@@ -1048,7 +1048,7 @@ impl<D: Disk> Daemon<D> {
         Ok(String::new())
     }
 
-    /// What another machine needs of container `id`, saved as `snapshot`, to take it.
+    /// What another machine needs of microVM `id`, saved as `snapshot`, to take it.
     fn plan(&self, id: &str, snapshot: &str) -> Result<Plan, String> {
         let c = lock(&self.containers)
             .get(id)
@@ -1241,7 +1241,7 @@ impl<D: Disk> Daemon<D> {
         .map(|_| ())
     }
 
-    /// `export NAME SNAPSHOT [FILE...]`: container NAME's directory but its other snapshots,
+    /// `export NAME SNAPSHOT [FILE...]`: microVM NAME's directory but its other snapshots,
     /// its named volumes, and the files of the home named, written as a move's stream to the
     /// client's descriptor.
     fn move_export(&self, args: &[String], asker: &Asker) -> Result<String, String> {
@@ -1896,7 +1896,7 @@ mod tests {
         guest::set(&root, &meta(guest::S_IFDIR | 0o755, None)).unwrap();
     }
 
-    /// A stream may put nothing past what its plan names: another container's directory,
+    /// A stream may put nothing past what its plan names: another microVM's directory,
     /// a name reaching out of the home, or a file its plan did not say was needed.
     #[test]
     fn a_stream_puts_only_what_its_plan_names() {

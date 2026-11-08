@@ -1,7 +1,7 @@
 //! ext4 file systems read on the host as Linux 6.18 reads them (fs/ext4/super.c, inode.c,
 //! extents.c, dir.c, namei.c, xattr.c and acl.c, at v6.18.48): a run's writable layer as
 //! its guest left it (D190), read without a VM by `commit`, `diff`, `export` and `cp` of a
-//! stopped container, and to put its files back as it starts again.
+//! stopped microVM, and to put its files back as it starts again.
 //!
 //! Its bytes are its guest's, which no host trusts: every number is checked against the
 //! file system before it is used, every structure that carries a checksum against it

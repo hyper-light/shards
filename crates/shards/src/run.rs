@@ -1,4 +1,4 @@
-//! `shards run`, the daemon's half (daemon.rs): a request (`shards_ipc::Run`) made ready
+//! `shards run vm`, the daemon's half (daemon.rs): a request (`shards_ipc::Run`) made ready
 //! to run, as `docker run` runs one in a new container (docs/design/architecture.md D16,
 //! D24–D26). The image's entrypoint, command, environment, working directory and user
 //! apply unless the command line gave its own, merged as dockerd merges them. With the
@@ -229,10 +229,11 @@ pub fn vfio_groups<'a>(paths: impl IntoIterator<Item = &'a str>) -> Result<Vec<V
 
 /// Whether a run's devices' and CDI nodes' host paths, `paths`, ask for VFIO's own nodes,
 /// its container (`/dev/vfio/vfio`) or iommufd (`/dev/iommu`), which name no function but
-/// are what a workload takes a host's function through, as Docker's users give them beside
-/// a group's node: its microVM is then booted to take host functions plugged in as it runs
-/// (`shards plug function`, D214), with VFIO, its slots behind its IOMMU. Linux's alone;
-/// elsewhere [`vfio_groups`] refuses VFIO's nodes with the host's own limit.
+/// are what a workload takes a host's function through, given beside a group's node
+/// (Linux's Documentation/driver-api/vfio.rst, "VFIO Usage Example"): its microVM is then
+/// booted to take host functions plugged in as it runs (`shards plug function`, D214), with
+/// VFIO, its slots behind its IOMMU. Linux's alone; elsewhere [`vfio_groups`] refuses
+/// VFIO's nodes with the host's own limit.
 pub fn takes_functions<'a>(paths: impl IntoIterator<Item = &'a str>) -> bool {
     cfg!(target_os = "linux")
         && paths
@@ -373,7 +374,7 @@ pub struct Prepared {
     pub lease: Option<Lease>,
     /// The signal `stop` sends unless told: the run's, else its image's.
     pub stop_signal: Option<String>,
-    /// What the run was composed of: the base of each `exec` in its container.
+    /// What the run was composed of: the base of each `exec` in its microVM.
     pub options: crate::spec::Options,
     /// Its health check: the run's merged with its image's.
     pub health: Option<shards_ipc::Health>,
@@ -492,7 +493,7 @@ fn emulator_for(
     })
 }
 
-/// The health check a run's container has, as dockerd merges the run's with its image's
+/// The health check a run's microVM has, as dockerd merges the run's with its image's
 /// (moby daemon/commit.go, merge): the run's, or the image's where the run gives none; a
 /// run's test that is empty, and each of its durations and retries that is 0, the
 /// image's.

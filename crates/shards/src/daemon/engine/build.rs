@@ -1,7 +1,7 @@
 //! Building images through the API (D170): `shards build image`, for the programs that
 //! make their sandboxes' images (docker-py's build, docker-java's, which Testcontainers'
 //! images from Dockerfiles use). Their context, the call's body or a URL, is built by
-//! shards' builder in a process of its own, as `shards build -` builds one: each RUN step
+//! shards' builder in a process of its own, as `shards build image -` builds one: each RUN step
 //! in a microVM, never a container on the host's kernel, by BuildKit's plan and cache,
 //! where dockerd answers the API's first version, which those clients ask for, with its
 //! legacy builder.
@@ -302,7 +302,7 @@ impl<D: Disk> Daemon<D> {
         built
     }
 
-    /// Runs `shards build` with `args` and `env`, the body its stdin, and answers as
+    /// Runs `shards build image` with `args` and `env`, the body its stdin, and answers as
     /// [`engine_build`](Self::engine_build) says.
     fn build_in_child<R: BufRead>(
         &self,

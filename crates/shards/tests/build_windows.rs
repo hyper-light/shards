@@ -1,7 +1,7 @@
-//! `shards build`'s `RUN` steps on Windows hosts (D143), end to end: over a base a loopback
+//! `shards build image`'s `RUN` steps on Windows hosts (D143), end to end: over a base a loopback
 //! registry serves, each step run in a builder microVM confined as D141 confines a VM
 //! process, its network the network process's (D142); what the steps made exported to a
-//! directory of this host (`--output type=local`). tests/build.rs holds `shards build`'s
+//! directory of this host (`--output type=local`). tests/build.rs holds `shards build image`'s
 //! on every host, Windows' too; these came first, and hold what only Windows has (a
 //! builder's word and the client's agent over named pipes).
 

@@ -54,7 +54,7 @@ pub const EMF: &str = "json/emf";
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
     pub group: String,
-    /// `awslogs-stream`, where given; else the run's tag, by default its container's ID.
+    /// `awslogs-stream`, where given; else the run's tag, by default its microVM's ID.
     pub stream: Option<String>,
     pub create_group: bool,
     pub create_stream: bool,

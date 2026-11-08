@@ -1,4 +1,4 @@
-//! Images from a registry, end to end: `shards run IMAGE` pulls the image from a registry
+//! Images from a registry, end to end: `shards run vm IMAGE` pulls the image from a registry
 //! (a loopback one here, which containerd's rules reach over plain HTTP), builds its root
 //! filesystem, boots a real VM into it, and runs the image's command as `docker run`
 //! would, through the daemon each test's first run starts. The image's program is the

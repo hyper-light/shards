@@ -1,4 +1,4 @@
-//! `shards images` as the Docker CLI prints `docker images` (docker/cli v29.8.1
+//! `shards list images` as the Docker CLI prints `docker images` (docker/cli v29.8.1
 //! cli/command/image/list.go, tree.go; formatter/image.go): the tree view by default,
 //! folded, or expanded with `--tree`, laid out for the client's terminal, coloured unless
 //! it is not one or `NO_COLOR` is set; and the table with `-q`, `--no-trunc` or
@@ -118,7 +118,7 @@ pub(super) fn truncate_id(id: &str) -> &str {
 }
 
 impl<D: crate::containers::Disk> super::Daemon<D> {
-    /// `shards images [REPOSITORY[:TAG]]` (list.go, runImages): the store's images, newest
+    /// `shards list images [REPOSITORY[:TAG]]` (list.go, runImages): the store's images, newest
     /// first, those `REPOSITORY[:TAG]` names alone if given, in the tree view unless a
     /// flag asks for the table.
     pub(super) fn images(
@@ -313,7 +313,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                 .filter_map(|n| n.parent.as_ref().map(ToString::to_string))
                 .collect()
         };
-        // Each container's image, counted by ID.
+        // Each microVM's image, counted by ID.
         let mut users: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
         for c in super::lock(&self.containers).all() {
             if let Some(id) = &c.image_id {
@@ -659,7 +659,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
             .map_err(|e| e.to_string())
     }
 
-    /// `shards tag SOURCE TARGET` (moby client ImageTag, then the daemon's postImagesTag):
+    /// `shards tag image SOURCE TARGET` (moby client ImageTag, then the daemon's postImagesTag):
     /// TARGET, with `latest` if it names no tag, names what SOURCE does.
     pub(super) fn tag(&self, args: &[String], styled: bool, reply: &super::commands::Reply<'_>) -> u8 {
         use shards_image::reference::{AnyReference, Reference};
@@ -735,7 +735,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
 }
 
 impl<D: crate::containers::Disk> super::Daemon<D> {
-    /// `shards rmi IMAGE...` (docker/cli remove.go, runRemove): each image removed as
+    /// `shards remove image IMAGE...` (docker/cli remove.go, runRemove): each image removed as
     /// dockerd removes it, its lines as it goes, the errors after; with `-f`, those of
     /// images not found forgiven.
     pub(super) fn rmi(
@@ -920,8 +920,8 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
 }
 
 impl<D: crate::containers::Disk> super::Daemon<D> {
-    /// What `shards rmi --platform P... IMAGE` takes of the image `given` names (D179): the
-    /// microVMs of the platforms `targets` names, and nothing else of it. Its other
+    /// What `shards remove image --platform P... IMAGE` takes of the image `given` names
+    /// (D179): the microVMs of the platforms `targets` names, and nothing else of it. Its other
     /// platforms stay, and its names; a name that named a platform taken comes to name the
     /// best left for this host's microVMs, or the image's index, with none left, which a
     /// run pulls again. What it alone held, its root filesystem and the templates of its
@@ -1129,7 +1129,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
         })
     }
 
-    /// `shards history IMAGE` (docker/cli history.go): each step of the image's config
+    /// `shards read history IMAGE` (docker/cli history.go): each step of the image's config
     /// history, newest first: the image's ID on the newest, `<missing>` on the rest, as
     /// dockerd's containerd store has it; when, by what, the size of the layer it made, and
     /// its comment.
@@ -1330,7 +1330,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
         )
         .unwrap_or(i64::MAX);
         // Local volumes, each its size and references (LocalVolumesSize): in use where
-        // any container mounts it, reclaimable where none does.
+        // any microVM mounts it, reclaimable where none does.
         let volumes = self.volume_usage();
         let v_total = volumes.len();
         let v_active = volumes.iter().filter(|(_, _, refs)| *refs > 0).count();
@@ -1630,7 +1630,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                 }
             }
         }
-        // filterImagesUsedByContainers: a container's dangling image and the name it
+        // filterImagesUsedByContainers: a microVM's dangling image and the name it
         // was made by stay, and an image it named by ID or digest is used.
         let mut used: std::collections::HashSet<String> = std::collections::HashSet::new();
         for c in super::lock(&self.containers).all() {
@@ -1690,7 +1690,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
     /// ImagePrune): the stopped microVMs `--filter` keeps, with `containers`; the image
     /// names it keeps, dangling ones only unless `all`, with `images`; then what was
     /// reclaimed, as the CLI says it. Where dockerd would delete the last name of an
-    /// image a stopped container was made from by a name since given to another, shards
+    /// image a stopped microVM was made from by a name since given to another, shards
     /// keeps it: a stopped microVM starts again from its image (D37).
     pub(super) fn prune(
         &self,
@@ -1718,7 +1718,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
             }
         }
         // `system prune`: the user networks no microVM is on, after the microVMs that were
-        // (pruner.pruneOrder: containers, networks, volumes, images).
+        // (pruner.pruneOrder: microVMs, networks, volumes, images).
         let mut removed_networks: Vec<String> = Vec::new();
         if images && containers {
             match self.prune_networks(given, now, offset) {
@@ -1726,8 +1726,8 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                 Err(e) => return refuse(e),
             }
         }
-        // `system prune --volumes`: the anonymous volumes no container mounts, after the
-        // containers that mounted them (pruner.pruneOrder).
+        // `system prune --volumes`: the anonymous volumes no microVM mounts, after the
+        // microVMs that mounted them (pruner.pruneOrder).
         let mut removed_volumes: Vec<String> = Vec::new();
         if images && containers && parsed.bool("volumes") {
             match self.prune_volumes(given, false) {
@@ -2471,7 +2471,7 @@ mod tests {
         assert!(reference_matches(&["alpine", "["], &r));
     }
 
-    /// A manifest is in use while a container runs it, and a run uses the image's
+    /// A manifest is in use while a microVM runs it, and a run uses the image's
     /// manifest for our platform: not every manifest here, so that the others can go
     /// while it runs.
     #[test]

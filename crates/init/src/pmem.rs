@@ -16,11 +16,11 @@ use std::path::Path;
 use std::sync::OnceLock;
 
 /// The run's writable layer as it was mounted (D190): its root, opened, for its checkpoint.
-/// One descriptor for the microVM's life, whose number stays as a stopped container's
+/// One descriptor for the microVM's life, whose number stays as a stopped microVM's
 /// layer takes the template's place (over.rs).
 static LAYER: OnceLock<OwnedFd> = OnceLock::new();
 
-/// The layer's block device's number (D190), for a stopped container's layer mounted on it
+/// The layer's block device's number (D190), for a stopped microVM's layer mounted on it
 /// in the template's place (over.rs).
 static DEVICE: OnceLock<libc::dev_t> = OnceLock::new();
 

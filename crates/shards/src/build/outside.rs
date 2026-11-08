@@ -24,9 +24,9 @@
 //! scope is not under the budget it writes what the build gives it, each write to the
 //! build's own open file (passed with it, SCM_RIGHTS), at that file's offset, as the build
 //! would have (`shards_image::through`). The page cache they dirty is charged to it, and
-//! paced by the host's dirty limit alone, as BuildKit's own writes are made by buildkitd,
-//! never in the cgroup its `RUN` steps are given (docker build `--cgroup-parent`: "the
-//! parent cgroup for the RUN instructions"). The builder's VM process, whose memory the
+//! paced by the host's dirty limit alone: a build's writes are the builder's, never those
+//! of the cgroup its `RUN` steps are given (docker build `--cgroup-parent`: "the parent
+//! cgroup for the RUN instructions", D188). The builder's VM process, whose memory the
 //! budget holds, stays in it. Where nothing places it there (no user manager), the build
 //! writes its files itself.
 //!

@@ -69,13 +69,13 @@ pub(super) struct Engine {
     /// half-closes it there, and a stream there may outlast that.
     relayed: Mutex<HashMap<u64, shards_remote::client::Controls>>,
     next: AtomicU64,
-    /// Attaches waiting for their container's start, by its ID: its start's output goes
+    /// Attaches waiting for their microVM's start, by its ID: its start's output goes
     /// to them (`docker run` attaches before it starts).
     waiting: Mutex<HashMap<String, Vec<containers::Waiting>>>,
-    /// Exec instances made, by ID, until their container goes.
+    /// Exec instances made, by ID, until their microVM goes.
     execs: Mutex<HashMap<String, exec::Instance>>,
     /// The connections terminals are resized through while a client is attached to them,
-    /// by the ID of the container or exec whose they are.
+    /// by the ID of the microVM or exec whose they are.
     terminals: Mutex<HashMap<String, UnixStream>>,
     /// Runs' stdins their attached client detached from, kept open until the run ends: a
     /// detach leaves a command's stdin as it was.
@@ -85,7 +85,7 @@ pub(super) struct Engine {
     arrived: Mutex<Vec<(String, UnixStream)>>,
     /// How many connections each microVM's own engine holds open (D181), by its run's ID.
     scoped: Mutex<HashMap<String, usize>>,
-    /// The relays of runs' output to their attaches under way, by the run's container ID,
+    /// The relays of runs' output to their attaches under way, by the run's microVM ID,
     /// and what waits for them ([`Relaying`]).
     pub(super) relays: Mutex<HashMap<String, Relays>>,
 }
@@ -102,7 +102,7 @@ const RELAY_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
 pub(super) struct Relays {
     count: usize,
     pub(super) ended: Option<super::Ended>,
-    /// An exec's end, where the relay is of an exec's output: its container's ID and its
+    /// An exec's end, where the relay is of an exec's output: its microVM's ID and its
     /// status, for its `exec_die`.
     exec_died: Option<(String, u8)>,
 }
@@ -175,7 +175,7 @@ impl<D: Disk> Daemon<D> {
         self.tell_end(id, ended);
     }
 
-    /// Says exec `exec_id` of container `id` ended with `status` (`exec_die`) now, or once
+    /// Says exec `exec_id` of microVM `id` ended with `status` (`exec_die`) now, or once
     /// the relays of its output under way have ended.
     pub(in crate::daemon) fn exec_died_after_relays(&self, id: &str, exec_id: &str, status: u8) {
         {
@@ -190,7 +190,7 @@ impl<D: Disk> Daemon<D> {
         self.exec_died(id, exec_id, status);
     }
 
-    /// `exec_die` of exec `exec_id` of container `id`, ended with `status` (moby
+    /// `exec_die` of exec `exec_id` of microVM `id`, ended with `status` (moby
     /// daemon/monitor.go, ProcessEvent's exit of an exec).
     fn exec_died(&self, id: &str, exec_id: &str, status: u8) {
         self.container_event(
@@ -464,7 +464,7 @@ enum Done {
 struct RunAnswer {
     /// Its status, `EXIT`'s.
     status: u8,
-    /// Its container, once made (`CREATED`).
+    /// Its microVM, once made (`CREATED`).
     id: Option<String>,
     /// What it said on the run's stderr: warnings, or why it did not run.
     said: String,
@@ -831,7 +831,7 @@ impl<D: Disk> Daemon<D> {
         Ok(ours)
     }
 
-    /// Puts container command `argv` to the daemon as the CLI puts it (`shards ARGV`), and
+    /// Puts command `argv` on microVMs to the daemon as the CLI puts it (`shards ARGV`), and
     /// takes its answer whole: its status, and what it said on stdout and on stderr.
     fn ask_command<'s, 'e>(
         &'s self,
@@ -911,7 +911,7 @@ impl<D: Disk> Daemon<D> {
         }
     }
 
-    /// The connection on which the daemon answers container command `argv`, put as the CLI
+    /// The connection on which the daemon answers command `argv` on microVMs, put as the CLI
     /// puts it.
     fn command_conn<'s, 'e>(
         &'s self,
@@ -1034,7 +1034,7 @@ fn ping(method: &str) -> Answer {
 }
 
 /// `version`: shards' server half, as `shards version` gives it (cli/version.rs), the
-/// platform its containers are: Linux, its guests' kernel's, which clients go by as they
+/// platform its microVMs are: Linux, its guests' kernel's, which clients go by as they
 /// go by a server's.
 fn version() -> Answer {
     let (_, mut server) = crate::cli::version::info();

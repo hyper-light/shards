@@ -1,4 +1,4 @@
-//! What a container is given by default, the same in a `docker run` and in a BuildKit
+//! What a workload is given by default, a container's in a `docker run` and in a BuildKit
 //! step (moby docker-v29.3.1 daemon/pkg/oci/defaults.go, caps/defaults.go; runc
 //! libcontainer/rootfs_linux.go; docs/research/buildkit-run.md §3–4), and measured in both
 //! (Docker Desktop's dockerd 29.3.1 and BuildKit v0.28, 2026-10-02): its capabilities,
@@ -43,7 +43,7 @@ pub const DEVICES: [(&str, u32, u32); 6] = [
 ];
 
 /// The links /dev holds, by target and name: runc's (setupDevSymlinks), and the
-/// container's own devpts's ptmx. `core`, to /proc/kcore, where that exists.
+/// workload's own devpts's ptmx. `core`, to /proc/kcore, where that exists.
 pub const LINKS: [(&str, &str); 5] = [
     ("/proc/self/fd", "fd"),
     ("/proc/self/fd/0", "stdin"),

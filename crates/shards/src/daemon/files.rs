@@ -18,7 +18,7 @@ use crate::containers::Disk;
 
 /// A file to make.
 pub(super) enum Job {
-    /// Log segment `seq` of the container in `dir`, the oldest past those its log keeps
+    /// Log segment `seq` of the microVM in `dir`, the oldest past those its log keeps
     /// removed, its descriptors sent to the run's VM on `socket`; none where it cannot be
     /// made, and the VM then keeps no more output (workload.rs, `Logger`).
     Segment {

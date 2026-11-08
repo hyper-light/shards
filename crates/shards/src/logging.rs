@@ -295,12 +295,12 @@ fn remote_config(name: &str, opts: &BTreeMap<String, String>) -> Result<Option<R
 }
 
 /// `run`'s tag (`--log-opt tag`): its template run against `info`, or, where it gives
-/// none, the container's short ID (moby loggerutils.ParseLogTag, DefaultTemplate).
+/// none, the microVM's short ID (moby loggerutils.ParseLogTag, DefaultTemplate).
 pub fn tag(run: &Run, info: &Info<'_>) -> Result<String, String> {
     tag_or(run, info, "{{.ID}}")
 }
 
-/// `run`'s tag, `default` the template where `tag` gives none: awslogs' is the container's
+/// `run`'s tag, `default` the template where `tag` gives none: awslogs' is the microVM's
 /// whole ID.
 pub fn tag_or(run: &Run, info: &Info<'_>, default: &str) -> Result<String, String> {
     let opts = options(run);
@@ -320,7 +320,7 @@ fn go_bool(s: &str) -> Option<bool> {
     }
 }
 
-/// What a run's container is, owned, as `inspect` says it: for its log's tag and
+/// What a run's microVM is, owned, as `inspect` says it: for its log's tag and
 /// attributes ([`Info`]).
 #[derive(Debug, Clone, Default)]
 pub struct Details {
@@ -362,7 +362,7 @@ impl Details {
     }
 }
 
-/// What a run's container is, for its log's tag and attributes.
+/// What a run's microVM is, for its log's tag and attributes.
 pub struct Info<'a> {
     pub id: &'a str,
     pub name: &'a str,
@@ -433,7 +433,7 @@ pub fn extra(run: &Run, info: &Info<'_>) -> Result<BTreeMap<String, String>, Str
     Ok(extra)
 }
 
-/// `tag`'s template, run against the container's details (moby loggerutils.ParseLogTag).
+/// `tag`'s template, run against the microVM's details (moby loggerutils.ParseLogTag).
 fn render_tag(text: &str, info: &Info<'_>, opts: &BTreeMap<String, String>) -> Result<String, String> {
     let t = shards_template::Template::parse("log-tag", text)?;
     let data = shards_template::Value::object(TagData {
@@ -443,7 +443,7 @@ fn render_tag(text: &str, info: &Info<'_>, opts: &BTreeMap<String, String>) -> R
     t.execute(&data)
 }
 
-/// A container's details, owned for a template's object.
+/// A microVM's details, owned for a template's object.
 #[derive(Debug, Clone)]
 struct Owned {
     id: String,

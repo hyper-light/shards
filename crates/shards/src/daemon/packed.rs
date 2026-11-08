@@ -1,4 +1,4 @@
-//! A container log's rotated segments, compressed (D162). Once a segment's writer has
+//! A run's log's rotated segments, compressed (D162). Once a segment's writer has
 //! gone on to the next, its log is written again as zstd frames of [`FRAME`] bytes of it,
 //! each compressed alone, then their seek table, as zstd's seekable format lays them out
 //! (facebook/zstd contrib/seekable_format, v0.1.0): a reader reads any record of it by
@@ -330,9 +330,9 @@ impl Packed {
 
 /// A compression to do.
 pub(super) enum Job {
-    /// Rotated segment `seq` of container `id`'s log, in `dir`.
+    /// Rotated segment `seq` of microVM `id`'s log, in `dir`.
     Segment { id: String, dir: PathBuf, seq: u64 },
-    /// Each rotated segment of container `id`'s log not yet compressed, in `dir`: what a
+    /// Each rotated segment of microVM `id`'s log not yet compressed, in `dir`: what a
     /// daemon before this one left as it ended.
     Rotated { id: String, dir: PathBuf },
 }
@@ -386,7 +386,7 @@ impl<D: Disk> Daemon<D> {
     }
 
     /// Has the rotated segments compressed that a daemon before this one left as they
-    /// were written: those of each container whose log compresses them.
+    /// were written: those of each microVM whose log compresses them.
     pub(super) fn pack_left(&self) {
         let left: Vec<(String, PathBuf)> = {
             let registry = lock(&self.containers);

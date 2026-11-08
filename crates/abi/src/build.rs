@@ -1,4 +1,4 @@
-//! The build protocol: how `shards build` runs `RUN` steps in a builder guest
+//! The build protocol: how `shards build image` runs `RUN` steps in a builder guest
 //! (docs/design/architecture.md D34). The guest dials the host on [`PORT`] once it is up,
 //! and the one connection carries everything, in the run protocol's frames
 //! ([`crate::run::header`]).

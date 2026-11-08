@@ -7,7 +7,7 @@
 //! a skill's directory. Anything else is refused, naming each skill and what is wrong
 //! with it.
 //!
-//! The tree is read through [`Fetched`]: `shards build`'s own snapshot, or what BuildKit's
+//! The tree is read through [`Fetched`]: `shards build image`'s own snapshot, or what BuildKit's
 //! gateway answers of a solved one (the frontend, D113), the check the same for both.
 
 use shards_agentfile::llb::{OpAction, OpActionKind};
@@ -42,7 +42,7 @@ pub trait Fetched {
     fn lookup(&mut self, path: &[u8]) -> Result<Found, String>;
 }
 
-/// `shards build`'s snapshot of the tree.
+/// `shards build image`'s snapshot of the tree.
 struct Snapshot<'a> {
     tree: &'a Tree,
     sources: &'a mut Sources,

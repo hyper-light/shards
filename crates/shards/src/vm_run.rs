@@ -1,4 +1,4 @@
-//! `shards run` boots a kernel directly in a microVM; `shards restore` resumes one
+//! `shards run vm` boots a kernel directly in a microVM; `shards restore vm` resumes one
 //! from a snapshot. Either can run a command in an image as `docker run` does
 //! (workload.rs): `vm run --rootfs IMAGE -- COMMAND` boots into the image for it, and
 //! `vm run --rootfs IMAGE --snapshot-dir DIR` saves a template, booted and mounted, that
@@ -402,11 +402,11 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
                 );
             }
             // The same on Windows (PM M340): the name its spawner gave a pipe it duplicated
-            // into this process from `shards run … --slates-fs-handle V`, as `--net`'s are
+            // into this process from `shards run vm … --slates-fs-handle V`, as `--net`'s are
             // given; no handle's value crosses as a flag. Taken once its flags are all read.
             #[cfg(windows)]
             "--slates-fs" => served.push(text(value("--slates-fs")?)?),
-            // A join disk, empty until a container joins the VM's network (D119).
+            // A join disk, empty until a joiner joins the VM's network (D119).
             "--join" => cfg.join = Some(give_join_disk()),
             // A DAX window of this many MiB for each shared directory (D189).
             "--share-window" => {
@@ -681,7 +681,7 @@ pub fn layered() -> bool {
 pub static SHARES: std::sync::OnceLock<Vec<shards_vmm::devices::virtio::fs::Share>> =
     std::sync::OnceLock::new();
 
-/// This VM's join disk, which containers joining its network are given ranges of (D119):
+/// This VM's join disk, which joiners of its network are given ranges of (D119):
 /// one VM a process, so one disk, a `static` its device and its join requests both reach.
 static JOIN: shards_vmm::devices::virtio::block::Join = shards_vmm::devices::virtio::block::Join::new();
 /// This VM's I/O limits (D178), which its disks and shared directories charge: one VM a
@@ -1004,7 +1004,7 @@ pub fn join_disk() -> Option<&'static shards_vmm::devices::virtio::block::Join> 
         .then_some(&JOIN)
 }
 
-/// This VM's join share (D119): served by none until a container joining its network brings
+/// This VM's join share (D119): served by none until a joiner of its network brings
 /// volumes; one VM a process, so one share, a `static` its device and its joiners reach.
 static JOIN_SHARE: shards_vmm::devices::virtio::fs::Slot = shards_vmm::devices::virtio::fs::Slot::new();
 /// Whether this VM has [`JOIN_SHARE`]: its device given it.
@@ -1620,7 +1620,7 @@ fn serve_workload(
                             // command starts.
                             // A run restored from a save of it maps back a copy of the swap its
                             // save kept, which its guest swaps to already (D176).
-                            // Its container's layer kept in its file (D190), readied to go
+                            // Its microVM's layer kept in its file (D190), readied to go
                             // under its layer device before its guest hears of the run, which
                             // lets go of its template's layer and asks for it
                             // (`run::kind::OVER`).
@@ -1871,7 +1871,7 @@ fn max_rss_kib() -> u64 {
 
 /// Starts the VM `cfg` describes, once this process is confined to the files it names, the
 /// snapshot directory it saves to and its vsock socket: on Linux by Landlock, on macOS by
-/// what its spawner grants it (D30). A warm VM's container log comes open from its daemon.
+/// what its spawner grants it (D30). A warm VM's run log comes open from its daemon.
 fn start(cfg: &Config) -> Result<(Handle, Running), String> {
     // Whole paths: grants and Landlock's rules name each file whole, a VM on macOS runs in
     // its sandbox's container rather than the caller's directory, and a snapshot records

@@ -577,7 +577,7 @@ pub const MAPPED_HIDES_HOLES: bool = false;
 
 /// Maps `len` bytes of `file`, opened for writing, shared and writable at `at`, in place of
 /// the view [`map_file_shared`] (or this) placed there, as unix.rs's `mmap(MAP_FIXED)` does: a
-/// container's kept layer under its microVM's layer device where its template's was (D190).
+/// stopped microVM's kept layer under its microVM's layer device where its template's was (D190).
 /// The view there is unmapped back to its placeholder (UnmapViewOfFile2,
 /// MEM_PRESERVE_PLACEHOLDER), which holds the range so that no other thread's allocation
 /// takes it, and the file's view replaces the placeholder (MapViewOfFile3,
@@ -1821,7 +1821,7 @@ mod shared {
         f
     }
 
-    /// A file's view goes in place of another's at its address, as a container's kept layer
+    /// A file's view goes in place of another's at its address, as a stopped microVM's kept layer
     /// goes under its microVM's layer device where its template's was (D190): what the view
     /// holds is the new file's both ways, and what was written through the view before stays
     /// its own file's. One that cannot be placed (an empty file, which has no section) leaves
