@@ -159,7 +159,7 @@ fn unmasked(ran_on: &[String], baseline: &[(u16, u64)]) -> Vec<String> {
 /// an M5's and not an M4's, which Hypervisor.framework neither says nor lets a VMM set, PM
 /// M460), a program that used it would fault there. Not FEAT_WFxT and FEAT_RPRES, of that
 /// register too, which the framework shows no guest where macOS names them (an M4 Max's
-/// guest finds no `wfxt` and an M3 Ultra's or M4 Max's no `rpres`, PM M498; tests/moved.rs
+/// guest finds no `wfxt` and an M3 Ultra's or M4 Max's no `rpres`, PM M499; tests/moved.rs
 /// `a_cpu_baseline_is_all_its_guest_finds_and_goes_with_it` holds it on each Mac it runs).
 pub(crate) fn host_cpu() -> Vec<String> {
     #[cfg(target_os = "macos")]

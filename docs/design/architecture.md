@@ -9812,7 +9812,7 @@ peer", each going on here as it should. What changed for them:
   Hypervisor.framework ID_AA64ISAR2_EL1's, which it neither says nor lets a VMM set (PM
   M460, `feature_register`): FEAT_CSSC and FEAT_HBC. Its FEAT_WFxT and FEAT_RPRES the
   framework shows no guest where macOS names them (an M4 Max's guest finds no `wfxt`, an M3
-  Ultra's and an M4 Max's no `rpres`, PM M498), so no move checks them, and the baseline
+  Ultra's and an M4 Max's no `rpres`, PM M499), so no move checks them, and the baseline
   test holds it on each Mac it runs on. A guest is shown less than the features macOS
   names in registers the framework does say too (an M4 Max's finds no `i8mm`, ISAR1's),
   which a baseline's fields, the hypervisors' own views, take in. On
@@ -9822,12 +9822,12 @@ peer", each going on here as it should. What changed for them:
 - **A listener that outlives its runner's restarts** (two-hosts.sh, the harness of these
   measurements). A runner that restarts ends what its runs started, the listening daemon
   among them, and kiln's ends a launchd job a session starts within seconds (3 s on the M3
-  Ultra, PM M498), so no process of a run outlives it there. What does is the listening
+  Ultra, PM M499), so no process of a run outlives it there. What does is the listening
   home: `listen` run again on it listens as the same daemon, its key and the clients it
   enrolled kept, inviting none, and the mover's series waits for it (`WAIT_PEER`), moving
   again a move whose error says the daemon was gone (`PEER_GONE`), counted apart from the
   failures; a hold restarts a daemon that ends while it lives. `two-hosts.sh restart` holds
-  it on one machine (PM M498).
+  it on one machine (PM M499).
 
 Between two machines on a wired gigabit link (two AMD Ryzen 9 9950X3D2 hosts, Linux 7.3.3
 to 7.2.9, KVM), n 20 cold: a move took 0.95 s at p50, 1.16 at p90 and 9.99 at most, and

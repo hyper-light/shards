@@ -18463,7 +18463,7 @@ revision before comparing a changed API/implementation.
 - **Consequence.** D176 parts 6 and 7 record these as the two-machine numbers. Still to
   measure: the M3 Ultra and an M4 Max with a baseline, both ways, and the Studios' Wi-Fi.
 
-### M498. What a Hypervisor.framework guest is shown of its host's CPU, and a listener that outlives its runner (D176 part 6)
+### M499. What a Hypervisor.framework guest is shown of its host's CPU, and a listener that outlives its runner (D176 part 6)
 
 - **Question.** A move between Macs is checked by the features macOS names
   (`hw.optional.arm.FEAT_*`): does a guest find them? And can the listening end of a
