@@ -678,27 +678,30 @@ impl Bearer {
     }
 
     /// containerd's `doBearerAuth`, tried again as the registry's own requests are
-    /// (registry.rs `send`): a timeout or a cut connection after a pause, a 408, and a
-    /// 500, 502, 503 or 504 once, unless it repeats, up to its attempts. containerd tries
-    /// no token fetch again: Docker Hub's token server answered a pull with a 502, which
-    /// the next asking passed (dev 3c2e3cd3's CI), and the pull failed.
+    /// (registry.rs `send_here`, D222): a timeout, a cut connection, a 408, 502, 503 or
+    /// 504 ridden out while the trouble lasts a moment, and a 500 asked again once, unless
+    /// it repeats. Docker Hub's token server answered a pull with a 502, which the next
+    /// asking passed (dev 3c2e3cd3's CI), and twice within 50 ms, which failed a build of
+    /// CI's job 117733752147 (2026-10-18) past the five quick attempts this took before.
     fn fetch(&self, http: &Client, scopes: &[String]) -> Result<Token, Error> {
         let mut last: Option<u16> = None;
-        let mut attempt = 0;
+        let mut trouble = crate::registry::Trouble::default();
         loop {
-            attempt += 1;
+            let asked = std::time::Instant::now();
             let failed = match self.fetch_once(http, scopes) {
                 Ok(token) => return Ok(token),
                 Err(failed) => failed,
             };
-            let again = attempt < crate::registry::ATTEMPTS
-                && match failed.status {
-                    None => failed.error.kind() == ErrorKind::Transient,
-                    Some(408) => true,
-                    Some(s @ (500 | 502 | 503 | 504)) => last != Some(s),
-                    Some(_) => false,
-                };
-            if !again {
+            let passing = match failed.status {
+                None => failed.error.kind() == ErrorKind::Transient,
+                Some(408 | 502 | 503 | 504) => true,
+                Some(500) => last != Some(500),
+                Some(_) => false,
+            };
+            let wait = passing
+                .then(|| trouble.wait(asked, http.moment(), None))
+                .flatten();
+            let Some(wait) = wait else {
                 // The credentials' refusal stays one, for a login to say so; anything else
                 // is tried no more, as before.
                 let kind = match failed.error.kind() {
@@ -709,9 +712,9 @@ impl Bearer {
                     kind,
                     format!("fetching a token from {}: {}", self.realm, failed.error),
                 ));
-            }
+            };
             last = failed.status;
-            std::thread::sleep(crate::registry::PAUSE);
+            http.pause(wait)?;
         }
     }
 
@@ -1402,8 +1405,9 @@ mod tests {
         assert!(auth.authorization(&plain(), &registry(), &pull("a/b")).is_err());
     }
 
-    /// A token server's 502, 503 or 504 is asked again, as a registry's own are, unless it
-    /// repeats, and its 400 is not: a token fetched past a gateway's failure.
+    /// A token server's 502, 503 or 504 is ridden out, as a registry's own are (D222), its
+    /// 500 asked again once unless it repeats, and its 400 not: a token fetched past a
+    /// gateway's failure.
     #[test]
     fn a_token_servers_passing_failure_is_asked_again() {
         let answers = |statuses: &[&str]| -> Vec<(Vec<u8>, After)> {
@@ -1429,7 +1433,17 @@ mod tests {
                 &["408 Request Timeout", "408 Request Timeout", "200 OK"][..],
                 true,
             ),
-            (&["502 Bad Gateway", "502 Bad Gateway", "200 OK"][..], false),
+            // A gateway's failure, however many times in a row, within a moment (D222):
+            // Docker Hub's token server answered 502 twice within 50 ms (job 117733752147).
+            (
+                &["502 Bad Gateway", "502 Bad Gateway", "504 Gateway Timeout", "502 Bad Gateway", "200 OK"][..],
+                true,
+            ),
+            (&["500 Internal Server Error", "200 OK"][..], true),
+            (
+                &["500 Internal Server Error", "500 Internal Server Error", "200 OK"][..],
+                false,
+            ),
             (&["400 Bad Request", "200 OK"][..], false),
         ] {
             let tokens = serve(None, answers(statuses));

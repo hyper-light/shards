@@ -27,7 +27,7 @@ use shards_image::reference::Digest;
 use shards_image::store::{Limits, Ranged, Store};
 
 use crate::pull::Event;
-use crate::registry::{CHUNK, MAX_STALLS, Registry, not_fetched};
+use crate::registry::{CHUNK, Registry, Trouble, not_fetched, short, stalled};
 use crate::url::Url;
 use crate::{Error, ErrorKind};
 
@@ -417,7 +417,7 @@ impl<'a> Flows<'a> {
             .as_ref()
             .ok_or_else(|| Error::new("a range of a layer not started"))?;
         let blob = self.registry.blob_url(&layer.digest)?;
-        let mut stalls = 0;
+        let mut trouble = Trouble::default();
         loop {
             let Span { pos, end, .. } = *lock(slot);
             if pos >= end {
@@ -427,6 +427,8 @@ impl<'a> Flows<'a> {
             let url = redirected.as_ref().unwrap_or(&blob);
             let asked = Instant::now();
             let mut response = self.registry.get_range(url, &layer.desc.media_type, pos, end)?;
+            let mut cut = false;
+            let whole = response.status == 200;
             match response.status {
                 206 => {
                     if redirected.is_none() && response.url() != &blob {
@@ -450,13 +452,12 @@ impl<'a> Flows<'a> {
                             layer.digest
                         )));
                     }
-                    let passed = std::io::copy(&mut (&mut response).take(pos), &mut std::io::sink());
-                    if !passed.is_ok_and(|p| p == pos) {
-                        stalls += 1;
-                        if stalls >= MAX_STALLS {
-                            return Err(stalled(&layer.digest));
-                        }
-                        continue;
+                    match std::io::copy(&mut (&mut response).take(pos), &mut std::io::sink()) {
+                        Ok(p) if p == pos => {}
+                        // Ended as its framing said, before the range began: the blob is
+                        // shorter than its descriptor, which no asking again changes.
+                        Ok(p) => return Err(short(&layer.digest, p, layer.desc.size)),
+                        Err(_) => cut = true,
                     }
                 }
                 _ if redirected.is_some() => {
@@ -467,20 +468,32 @@ impl<'a> Flows<'a> {
                 }
                 _ => return Err(not_fetched(response, url).context(&layer.digest)),
             }
-            let before = lock(slot).pos;
-            let copied = self.copy(&mut response, slot, ranged, &layer.digest, buf);
-            match copied {
-                Ok(()) => {}
-                Err(e) if e.kind() == ErrorKind::Transient => {}
-                Err(e) => return Err(e.context(&layer.digest)),
-            }
-            if lock(slot).pos > before {
-                stalls = 0;
-            } else {
-                stalls += 1;
-                if stalls >= MAX_STALLS {
-                    return Err(stalled(&layer.digest));
+            // A whole blob cut before the range began brought none of it.
+            if !cut {
+                let before = lock(slot).pos;
+                let copied = self.copy(&mut response, slot, ranged, &layer.digest, buf);
+                let ended = match copied {
+                    Ok(()) => true,
+                    Err(e) if e.kind() == ErrorKind::Transient => false,
+                    Err(e) => return Err(e.context(&layer.digest)),
+                };
+                let Span { pos: now, end, .. } = *lock(slot);
+                // An answer that ended as its framing said is the registry's own, not a
+                // passing trouble: the whole blob, ended short of the range, is shorter
+                // than its descriptor; a range that brought nothing will bring nothing.
+                if ended && now < end && (whole || now == before) {
+                    return Err(short(&layer.digest, now, layer.desc.size));
                 }
+                if now > before || now >= end {
+                    trouble.over();
+                    continue;
+                }
+            }
+            drop(response);
+            // It brought nothing: asked again while that lasts a moment (D222).
+            match trouble.wait(asked, self.registry.moment(), None) {
+                Some(wait) => self.registry.pause(wait)?,
+                None => return Err(stalled(&layer.digest, trouble.lasted())),
             }
         }
         drop(held);
@@ -570,13 +583,6 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-fn stalled(digest: &Digest) -> Error {
-    Error::of(
-        ErrorKind::Transient,
-        format!("{digest}: the download stopped {MAX_STALLS} times without progress"),
-    )
-}
-
 /// Whether a layer of `media_type` is compressed: gzip or zstd, which no registry
 /// compresses again for the transfer.
 fn compressed(media_type: &str) -> bool {
@@ -625,12 +631,22 @@ mod tests {
     }
 
     fn fake(blobs: Vec<Vec<u8>>, cdn: Cdn) -> Fake {
+        fake_stuck(blobs, cdn, None)
+    }
+
+    /// [`fake`], whose CDN holds the first request for blob `stuck` unanswered for 5 s.
+    fn fake_stuck(blobs: Vec<Vec<u8>>, cdn: Cdn, stuck: Option<Digest>) -> Fake {
         let by_digest: std::collections::HashMap<String, Vec<u8>> =
             blobs.into_iter().map(|b| (digest(&b).to_string(), b)).collect();
         let used = Mutex::new(std::collections::HashSet::new());
+        let held = AtomicBool::new(false);
         let served = route(None, move |req: &Seen| {
             let (path, query) = req.target.split_once('?').unwrap_or((&req.target, ""));
-            let bytes = by_digest.get(path.strip_prefix("/cdn/")?)?;
+            let name = path.strip_prefix("/cdn/")?;
+            let bytes = by_digest.get(name)?;
+            if stuck.as_ref().is_some_and(|d| d.to_string() == name) && !held.swap(true, Ordering::SeqCst) {
+                std::thread::sleep(Duration::from_secs(5));
+            }
             if cdn.once && !used.lock().unwrap().insert(query.to_string()) {
                 return Some((http("403 Forbidden", &[], b"expired"), After::Keep));
             }
@@ -641,7 +657,17 @@ mod tests {
                 Some((from.parse::<usize>().ok()?, last.parse::<usize>().ok()?))
             });
             Some(match range {
+                // Past the blob's end: none of it (RFC 9110 §15.5.17).
+                Some((from, _)) if from >= bytes.len() => (
+                    http(
+                        "416 Range Not Satisfiable",
+                        &[("Content-Range", format!("bytes */{}", bytes.len()))],
+                        b"",
+                    ),
+                    After::Keep,
+                ),
                 Some((from, last)) => {
+                    let last = last.min(bytes.len() - 1);
                     let range = format!("bytes {from}-{last}/{}", bytes.len());
                     (
                         http(
@@ -836,6 +862,97 @@ mod tests {
         assert_eq!(std::fs::read(store.blob_path(&digest(&big))).unwrap(), big);
         assert_eq!(fake.cdn.requests().len(), 1);
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A stuck item is isolated: a layer whose first request its CDN holds unanswered
+    /// keeps no other layer waiting, and is itself asked again once its answer is overdue,
+    /// and fetched (D222).
+    #[test]
+    fn a_stuck_layer_keeps_no_other_waiting() {
+        // Each its own: a seed changes no byte `blob` keeps, a length does.
+        let stuck = blob(1 << 20, 6);
+        let others: Vec<Vec<u8>> = (1..4).map(|n| blob((1 << 20) + n, 6)).collect();
+        let mut all = vec![stuck.clone()];
+        all.extend(others.iter().cloned());
+        let fake = fake_stuck(
+            all.clone(),
+            Cdn {
+                ranges: true,
+                once: false,
+            },
+            Some(digest(&stuck)),
+        );
+        let reference = Reference::parse(&format!("127.0.0.1:{}/test/image:v1", fake.registry.port)).unwrap();
+        // An answer's head overdue after 1 s, where the CDN holds the stuck one 5 s.
+        let client = Client::new(
+            Box::new(|_| crate::tls::client_config(Vec::new(), None)),
+            "shards-test",
+        )
+        .with_patience(crate::http::Patience {
+            connect: Duration::from_secs(30),
+            head: Some(Duration::from_secs(1)),
+            stall: Some(Duration::from_secs(1)),
+        });
+        let registry = Registry::new(client, &reference, Credentials::Anonymous).unwrap();
+        let (store, root) = store("stuck");
+        let t0 = Instant::now();
+        let here = Mutex::new(Vec::new());
+        let layered: Vec<(&str, &[u8])> = all.iter().map(|b| (GZIP, &b[..])).collect();
+        layers(
+            &registry,
+            &store,
+            &manifest(&layered),
+            &Limits::none(),
+            &|_| {},
+            &|i| here.lock().unwrap().push((i, t0.elapsed())),
+            false,
+        )
+        .unwrap();
+        for b in &all {
+            assert_eq!(&std::fs::read(store.blob_path(&digest(b))).unwrap(), b);
+        }
+        let here = here.into_inner().unwrap();
+        // The others, stored while the stuck one waited on its overdue answer.
+        let when = |i: usize| here.iter().find(|(n, _)| *n == i).unwrap().1;
+        for i in 1..all.len() {
+            assert!(when(i) < Duration::from_secs(1), "layer {i}: {here:?}");
+        }
+        // The stuck one, asked again past its overdue answer, not after the CDN's 5 s.
+        assert!(when(0) >= Duration::from_secs(1), "{here:?}");
+        assert!(when(0) < Duration::from_secs(4), "{here:?}");
+        assert!(ranges_asked(&fake.cdn, &digest(&stuck)).len() >= 2);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A blob that ends, its answers whole, short of what its descriptor says fails at
+    /// once, saying so: the registry's own answer, not a trouble to ride out (D222), which
+    /// asked again forever where the CDN sends the whole blob each time.
+    #[test]
+    fn a_blob_shorter_than_its_descriptor_fails_at_once() {
+        for ranges in [false, true] {
+            let short = blob(1 << 20, 5);
+            let fake = fake(vec![short.clone()], Cdn { ranges, once: false });
+            let (store, root) = store(if ranges { "short-r" } else { "short-w" });
+            let mut manifest = manifest(&[(GZIP, &short)]);
+            manifest.layers[0].size = (2 << 20) as i64;
+            let t0 = Instant::now();
+            let e = layers(
+                &registry(&fake),
+                &store,
+                &manifest,
+                &Limits::none(),
+                &|_| {},
+                &|_| {},
+                false,
+            )
+            .unwrap_err();
+            // Without ranges, the whole blob ended short; with them, the range past its
+            // end is refused (416).
+            let said = if ranges { "416" } else { "the registry's blob ends at" };
+            assert!(e.to_string().contains(said), "{ranges}: {e}");
+            assert!(t0.elapsed() < Duration::from_secs(10), "{ranges}: {:?}", t0.elapsed());
+            let _ = std::fs::remove_dir_all(&root);
+        }
     }
 
     #[test]
