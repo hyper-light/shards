@@ -223,8 +223,14 @@ pub fn restart(path: &str, args: &[OsString]) -> ExitCode {
     }
     let signal = parsed.string("signal");
     let timeout = (parsed.changed("timeout") || parsed.changed("time")).then(|| parsed.int("timeout"));
+    // A name of no microVM but of an image reaches the microVMs running from it, as `stop`
+    // does (D216).
+    let named = match reached(&parsed.args) {
+        Ok(named) => named,
+        Err(e) => return crate::cli::failed(&e),
+    };
     let mut status = ExitCode::SUCCESS;
-    for container in &parsed.args {
+    for container in &named {
         let mut request = Run {
             again: Some(container.clone()),
             restart: true,
@@ -355,6 +361,59 @@ fn inspected(container: &str) -> Result<(PathBuf, PathBuf, Identity, bool, bool)
         }
         Ok(_) => Err(refuse(&format!("shards: No such container: {container}"))),
         Err(e) => Err(crate::cli::failed(&e)),
+    }
+}
+
+/// The microVMs `names` reach, as the daemon says (`NAMES_STEP`): each name of a microVM
+/// itself, and each name of an image the microVMs running from it; a name of neither is
+/// itself, to fail as a name does.
+fn reached(names: &[String]) -> Result<Vec<String>, String> {
+    let daemon = crate::cli::shardsd()?;
+    let identity = Identity::of_build(&daemon).map_err(|e| format!("{}: {e}", daemon.display()))?;
+    let home = shards_ipc::home()?;
+    let command = shards_ipc::Command {
+        argv: std::iter::once(shards_ipc::NAMES_STEP.to_string())
+            .chain(names.iter().cloned())
+            .collect(),
+        daemon: identity,
+        ..shards_ipc::Command::default()
+    };
+    match crate::cli::client::ask(&home, &daemon, &command, &[])? {
+        (0, out, _) => Ok(String::from_utf8_lossy(&out)
+            .lines()
+            .map(str::to_string)
+            .collect()),
+        (_, _, err) => Err(String::from_utf8_lossy(&err).trim().to_string()),
+    }
+}
+
+/// Asks the daemon to put the microVMs a build named `names` in the machine's local image
+/// store, as a pull's are (D216): its publisher outlives the build, which so neither waits
+/// for an upload nor cuts one off by ending. Nothing is asked where nothing would be
+/// published (`SHARDS_LOCAL_STORE=none`, or no local store here), so no daemon is started
+/// for it then.
+pub(crate) fn publish_built(names: &[String]) -> Result<(), String> {
+    let env = |k: &str| std::env::var(k).ok();
+    if names.is_empty()
+        || env("SHARDS_LOCAL_STORE").is_some_and(|v| v == "none")
+        || crate::local_store::engine(&env).is_none()
+    {
+        return Ok(());
+    }
+    let daemon = crate::cli::shardsd()?;
+    let identity = Identity::of_build(&daemon).map_err(|e| format!("{}: {e}", daemon.display()))?;
+    let home = shards_ipc::home()?;
+    let command = shards_ipc::Command {
+        argv: std::iter::once(shards_ipc::PUBLISH_STEP.to_string())
+            .chain(names.iter().cloned())
+            .collect(),
+        registry_env: shards_ipc::registry_env(),
+        daemon: identity,
+        ..shards_ipc::Command::default()
+    };
+    match crate::cli::client::ask(&home, &daemon, &command, &[])? {
+        (0, _, _) => Ok(()),
+        (_, _, err) => Err(String::from_utf8_lossy(&err).trim().to_string()),
     }
 }
 
@@ -696,6 +755,7 @@ fn request(parsed: &Parsed) -> Result<Run, String> {
         oom_score_adj: parsed.int("oom-score-adj"),
         privileged: parsed.bool("privileged"),
         use_api_socket: parsed.bool("use-api-socket"),
+        container_image: parsed.bool("container-image"),
         binds,
         volumes,
         mounts,

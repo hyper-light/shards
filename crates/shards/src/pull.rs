@@ -238,7 +238,11 @@ pub(crate) fn publish(
 ) {
     // The client's, where it says, else the daemon's own.
     let env = |k: &str| env(k).or_else(|| std::env::var(k).ok());
-    if env("SHARDS_LOCAL_STORE").is_some_and(|v| v == "none") {
+    // A name of the local store's own (`shards.local/NAME`, an archive of it brought back)
+    // is the store's already: published again, it would be `shards.local/shards.local/NAME`.
+    if env("SHARDS_LOCAL_STORE").is_some_and(|v| v == "none")
+        || reference.domain == crate::local_store::DOMAIN
+    {
         return;
     }
     let Some(socket) = crate::local_store::engine(&env) else {
@@ -270,6 +274,59 @@ pub(crate) fn publish(
         disk: disk.to_path_buf(),
         config: config_bytes,
     });
+}
+
+/// The microVM the name `name` gives an image here, put in the machine's local image store
+/// as [`publish`] puts a pull's (D216): what a tag, a commit, a load or a build names. On a
+/// thread of its own, so that what asked never waits for it, as the image is read (and its
+/// microVM made, where it is not yet one) first; nothing where it names no image this
+/// host's microVMs run.
+pub(crate) fn publish_name(home: &Path, name: &str, env: &[String]) {
+    {
+        let env_of = |k: &str| shards_ipc::env_value(env, k).or_else(|| std::env::var(k).ok());
+        // Nothing to read where nothing would be published.
+        if env_of("SHARDS_LOCAL_STORE").is_some_and(|v| v == "none")
+            || crate::local_store::engine(&env_of).is_none()
+        {
+            return;
+        }
+    }
+    let Ok(reference) = Reference::parse(name) else {
+        return;
+    };
+    let (home, env) = (home.to_path_buf(), env.to_vec());
+    let spawned = std::thread::Builder::new()
+        .name("shards-publish-name".into())
+        .spawn(move || {
+            let found = store(&home).and_then(|store| {
+                let limits = limits()?;
+                pull::local(&store, &reference, &image_platform::guest(), &limits).map_err(|e| e.to_string())
+            });
+            match found {
+                Ok(Some(pulled)) => {
+                    if let Some(disk) = &pulled.rootfs {
+                        publish(&home, &reference, &pulled.id, &pulled.config, disk, &|k| {
+                            shards_ipc::env_value(&env, k)
+                        });
+                    }
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    let _ = writeln!(
+                        std::io::stderr(),
+                        "shards daemon {}: {reference}: not published: {e}",
+                        std::process::id()
+                    );
+                }
+            }
+        });
+    if let Err(e) = spawned {
+        let _ = writeln!(
+            std::io::stderr(),
+            "shards daemon {}: {name}: not published: {e}",
+            std::process::id()
+        );
+    }
 }
 
 /// What there is to know of `pulled`, for a client on a terminal to show: its names,

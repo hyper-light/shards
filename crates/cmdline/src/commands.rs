@@ -362,6 +362,15 @@ pub static RUN: Command = Command {
             None,
             "Bind mount Docker API socket and required auth",
         ),
+        // shards' grammar's `run container` and `create container`: IMAGE is to be a
+        // container image, made a microVM as it runs; a shards microVM is refused.
+        Flag::bool(
+            "container-image",
+            None,
+            "Refuse an image that is a shards microVM already",
+        )
+        .extension()
+        .hidden(),
         Flag::value(
             "blkio-weight",
             None,
@@ -776,6 +785,15 @@ pub static CREATE: Command = Command {
             None,
             "Bind mount Docker API socket and required auth",
         ),
+        // shards' grammar's `run container` and `create container`: IMAGE is to be a
+        // container image, made a microVM as it runs; a shards microVM is refused.
+        Flag::bool(
+            "container-image",
+            None,
+            "Refuse an image that is a shards microVM already",
+        )
+        .extension()
+        .hidden(),
         Flag::value(
             "blkio-weight",
             None,

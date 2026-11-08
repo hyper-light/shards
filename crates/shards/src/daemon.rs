@@ -6013,9 +6013,8 @@ impl<D: Disk> Daemon<D> {
             }
             None => {
                 log(format!("VM {pid} ended before its command started"));
-                let (said, code) = shards_cmdline::commands::start_failed(
-                    "the container's microVM stopped before its command started",
-                );
+                let (said, code) =
+                    shards_cmdline::commands::start_failed("the microVM stopped before its command started");
                 (code, Some(said))
             }
         };
@@ -6465,7 +6464,7 @@ impl<D: Disk> Daemon<D> {
             let run = std::fs::read(dir.join(REQUEST))
                 .ok()
                 .and_then(|b| Run::decode(&b))
-                .ok_or_else(|| format!("container {at}: its request is lost"))?;
+                .ok_or_else(|| format!("microVM {at}: its request is lost"))?;
             if run.pid == "host" {
                 return Ok(b"pid=host".to_vec());
             }
@@ -6476,11 +6475,11 @@ impl<D: Disk> Daemon<D> {
                     let guest = self.inbox_of(&at).and_then(|inbox| lock(&inbox).guest);
                     return guest
                         .map(|g| format!("pid=joiner={g}").into_bytes())
-                        .ok_or_else(|| format!("container {at} is not running"));
+                        .ok_or_else(|| format!("microVM {at} is not running"));
                 }
             }
         }
-        Err(format!("container {id}: its PID namespace is too far removed"))
+        Err(format!("microVM {id}: its PID namespace is too far removed"))
     }
 
     /// The network namespace of microVM `id` as another's `--network container:` takes it
@@ -6495,7 +6494,7 @@ impl<D: Disk> Daemon<D> {
             let run = std::fs::read(dir.join(REQUEST))
                 .ok()
                 .and_then(|b| Run::decode(&b))
-                .ok_or_else(|| format!("container {at}: its request is lost"))?;
+                .ok_or_else(|| format!("microVM {at}: its request is lost"))?;
             if run.engine_made.is_none() {
                 return Ok(None);
             }
@@ -6503,16 +6502,14 @@ impl<D: Disk> Daemon<D> {
                 let guest = self.inbox_of(&at).and_then(|inbox| lock(&inbox).guest);
                 return guest
                     .map(|g| Some(format!("net=joiner={g}").into_bytes()))
-                    .ok_or_else(|| format!("container {at} is not running"));
+                    .ok_or_else(|| format!("microVM {at} is not running"));
             }
             match run.network.strip_prefix("container:") {
                 Some(other) => at = other.to_string(),
                 None => return Ok(None),
             }
         }
-        Err(format!(
-            "container {id}: its network namespace is too far removed"
-        ))
+        Err(format!("microVM {id}: its network namespace is too far removed"))
     }
 
     /// `--ipc container:NAME` (D156): a run shares another's IPC namespace and /dev/shm
@@ -6610,13 +6607,13 @@ impl<D: Disk> Daemon<D> {
             let run = std::fs::read(dir.join(REQUEST))
                 .ok()
                 .and_then(|b| Run::decode(&b))
-                .ok_or_else(|| format!("container {at}: its request is lost"))?;
+                .ok_or_else(|| format!("microVM {at}: its request is lost"))?;
             match run.network.strip_prefix("container:") {
                 Some(provider) => at = self.resolve(provider)?,
                 None => return Ok(at),
             }
         }
-        Err(format!("container {id}: its microVM is too far removed"))
+        Err(format!("microVM {id} is too far removed"))
     }
 
     /// Whose IPC namespace a run sharing `id`'s takes (D156), as a setup entry: the
@@ -6628,7 +6625,7 @@ impl<D: Disk> Daemon<D> {
             let run = std::fs::read(dir.join(REQUEST))
                 .ok()
                 .and_then(|b| Run::decode(&b))
-                .ok_or_else(|| format!("container {at}: its request is lost"))?;
+                .ok_or_else(|| format!("microVM {at}: its request is lost"))?;
             if run.ipc == "host" {
                 return Ok(b"ipc=host".to_vec());
             }
@@ -6642,9 +6639,9 @@ impl<D: Disk> Daemon<D> {
             let guest = self.inbox_of(&at).and_then(|inbox| lock(&inbox).guest);
             return guest
                 .map(|g| format!("ipc=joiner={g}").into_bytes())
-                .ok_or_else(|| format!("container {at} is not running"));
+                .ok_or_else(|| format!("microVM {at} is not running"));
         }
-        Err(format!("container {id}: its IPC namespace is too far removed"))
+        Err(format!("microVM {id}: its IPC namespace is too far removed"))
     }
 
     /// The hostname and domain name of the microVM `name` names, as its run gave them

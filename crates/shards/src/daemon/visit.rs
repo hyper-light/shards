@@ -128,7 +128,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
         let stored = std::fs::read(dir.join(REQUEST))
             .ok()
             .and_then(|b| Run::decode(&b))
-            .ok_or_else(|| format!("container {id} was not made to be started again"))?;
+            .ok_or_else(|| format!("microVM {id} was not made to be started again"))?;
         let cancel = shards_registry::http::Cancel::new();
         let mut prepared = crate::run::prepare(&stored, &self.home, &|_| {}, &cancel)?;
         // Its files as its runs see them, init's own included (handle()), and its limits.

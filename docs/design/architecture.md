@@ -3586,6 +3586,85 @@ options in each command's help). Tested in `images.rs`
 (`actions_on_an_image_not_here_convert_it_first`, on real microVMs, and that neither
 Docker's order nor removal fetches anything) and in the grammar's unit tests.
 
+### D216. Commands on microVMs: the user's list, closed (built)
+
+The user's list of 2026-10-04 asked that every command work on microVMs, in shards' own
+grammar, `shards ACTION THING [NAME]` (`crates/cmdline/src/grammar.rs`), with Docker's own
+spellings still read as Docker's scripts write them. Each item's state:
+
+1. **shards' own words say microVM.** Docker's byte-exact texts (help from the oracle
+   tables, docker/cli's and dockerd's refusals) keep `container` where scripts parse them,
+   and `look::ours` rewords them on a terminal; every form's page says microVM
+   (`every_form_of_shards_grammar_answers_help_with_its_own_page`). The refusals shards
+   wrote itself in container's words now say microVM: a paused microVM's files, changes and
+   commit, a copy or a read of changes that failed, a commit whose image is gone, a
+   snapshot of one not running, a join (`--pid`, `--network`, `--ipc` of `container:NAME`)
+   of one whose request is lost or too far removed, a microVM that stopped before its
+   command started, a health check its microVM ended.
+2. **`shards vm ls`.** `list vm` was the form; `vm ls`, `vm rm`, `vm exec` and every other
+   action said after `vm` (or `microvm`) are now read turned round, as Docker's
+   management form `image ls` is (`vm ls` is `list vm`), keeping shards' own options
+   (`vm inspect IMAGE` converts the image, which `container inspect`, Docker's, does not).
+   Pulled and converted images are listed by `list image` (D25).
+3. **`remove image` frees the image.** It takes the image's stopped microVMs, unpublishes
+   it from the local store, and its blobs go with the daemon's next collection
+   (`rmi_removes_images`).
+4. **`remove vm` removes the microVM**, its writable layer, log and snapshots
+   (`names_are_unique_and_rm_leaves_nothing`).
+5. **`shards vm rm`**: item 2's turned-round form; `remove vm` is the documented one.
+6. **The container image a microVM is made of** is kept but not shown: listings show the
+   microVM, `push` and `save` stay byte for byte the image's, and `remove image` frees both
+   (the user's call, 2026-10-04).
+7. **`exec vm NAME COMMAND`** runs in a running microVM, by its name or, as item 10, an
+   image's.
+8. **A form for each command a microVM needs.** Added now: `attach vm NAME` (D45),
+   `update vm NAME` (D40), `import vm|image FILE|URL|- [NAME]` (D41: a shards microVM
+   brought in whole, or one made of a tarball's files or an image archive), and `wait vm
+   NAME` in the help (it was read but not listed). The others were there: `copy vm`,
+   `create vm`, `read changes`, `watch system`, `export vm`, `read history`, `inspect`,
+   `kill vm`, `load image`, `read logs`, `pause vm`, `read ports`, `list vm`, `rename vm`,
+   `restart vm`, `remove image`, `save image`, `tag image`, `read processes`, `unpause vm`,
+   `inspect system`, `prune system`, `inspect disk`.
+9. **The microVMs shards makes appear in the machine's local image store**, as
+   `shards.local/NAME` (D41's publisher): a pull already, and an import; now also the image a
+   run, `create` or an action's `--convert` pulls, a tag's new name, a named commit, each
+   named image a load or an imported archive holds, and a build's `-t` names. A build ends
+   before an upload would, and a publish cut off part way leaves Docker's content locked
+   (D41), so a build asks its daemon to publish (`shards_ipc::PUBLISH_STEP`), whose
+   publisher outlives it; it asks only where a local store is there to publish to, so no
+   daemon starts for it otherwise. A name already of `shards.local/` (an archive of one
+   brought back) is not published again under `shards.local/shards.local/`. The emulator a
+   run of another CPU's image pulls is shards' own part and is not published.
+10. **An image's name reaches the microVMs made from it**: `stop`, `kill`, `pause`,
+    `unpause` and `remove` already; now `wait` and `restart` too, which reach the running
+    ones (`restart` asks its daemon which, `shards_ipc::NAMES_STEP`, as it restarts each
+    by its own request). A name of a microVM is that microVM first.
+11. **`shards vm run` folded into `run vm`**: a kernel booted with `run vm --kernel`, a
+    snapshot resumed with `restore vm DIR` (since 2026-10-04).
+12. **Verb, then noun**: `stop vm NAME`, `stop container NAME`, `remove vm|container|image
+    NAME`, with Docker's `rm`, `rmi` and `stop NAME` still read.
+13. **`run container X` where X is a shards microVM** is refused, and says why: `X is a
+    shards microVM, not a container image: it has no container's layers to make one of.
+    shards run vm X runs it as the microVM it is` (`create container` the same, `shards
+    create vm X` making it). A container
+    image is converted as it runs, as `run vm` converts it. The grammar says it with the
+    hidden option `--container-image`, which Docker's order (`container run`) goes
+    without: a Docker script's `container run` of a microVM runs it.
+
+**A microVM's record of processes** (the user's call, 2026-11-08: keep it, and show it in
+shards' grammar): D123's record is it, kept as files of the microVM's own in the home
+(`containers/ID/processes.N`, segments as its log's), read with `read processes NAME` and
+followed with `watch processes NAME`; it outlives the run and the daemon, and goes with
+the microVM's removal. No flag or subcommand of Docker's shape carries it.
+
+Tested: the grammar's unit tests (`actions_on_things_are_said_as_shards_runs_them`, every
+form above), and on real microVMs (`tests/containers.rs`
+`microvms_are_reached_in_shards_grammar_by_their_names_and_their_images`: `vm ls`, `vm
+exec`, `wait vm` and `restart vm` by an image's name, `update vm`, `read processes` the same before and after the daemon stops, `vm rm` taking the record;
+`import_makes_images_of_tarballs`: `run container` of an imported microVM refused, `run vm`
+of it run; `created_microvms_are_published_to_the_local_store`: a tag's, a commit's and a
+run's pull's microVMs sent to an engine the test serves).
+
 ### ADD of Git repositories: shards' own client (D48)
 
 `ADD <git URL> DEST` builds as BuildKit's git source builds it (moby/buildkit v0.28.1

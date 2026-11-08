@@ -137,6 +137,18 @@ pub fn build(args: impl Iterator<Item = OsString>) -> ExitCode {
     if let Some(s) = stdin {
         let _ = std::fs::remove_file(&s.path);
     }
+    // The microVMs it named, in the machine's local image store (D216): a name the build
+    // kept no image under (an output elsewhere) the daemon finds none of, and publishes
+    // nothing. Its failure is no build's, and is said.
+    if r.is_ok()
+        && status.get() == 0
+        && let Err(e) = crate::cli::request::publish_built(parsed.many("tag"))
+    {
+        let _ = writeln!(
+            std::io::stderr(),
+            "WARNING: the image was not put in the local image store: {e}"
+        );
+    }
     match r {
         Ok(()) if status.get() != 0 => ExitCode::from(status.get()),
         Ok(()) => ExitCode::SUCCESS,
