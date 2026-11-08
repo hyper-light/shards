@@ -81,7 +81,7 @@ pub fn archive(path: &[u8], out: &mut impl Write) -> Result<(), Failed> {
 
 /// Unpacks the archive on `input` into directory `path` (containerExtractToDir): one
 /// whose path, its links followed, is not a directory is refused; the archive's owners
-/// kept as root unpacks them, or, with `user`, every entry the container user's
+/// kept as root unpacks them, or, with `user`, every entry the run's user's
 /// (`docker cp -a`); a directory replaced by a file, or the reverse, only if `overwrite`.
 pub fn extract(
     path: &[u8],
@@ -110,7 +110,7 @@ pub fn extract(
 
 /// Refuses unpacking into directory `dir`, its links followed, where what it is on is
 /// mounted read-only, in dockerd's words (archive_unix.go, checkIfPathIsInAVolume): the
-/// container's root (`--read-only`), or a volume mounted read-only. Its mounts are the
+/// microVM's root (`--read-only`), or a volume mounted read-only. Its mounts are the
 /// ones its command sees, so a writable volume of a read-only root takes files, and one
 /// that only looks like a volume's path, a link back into the root, does not.
 fn writable(dir: &Path) -> Result<(), Failed> {
@@ -137,7 +137,7 @@ fn writable(dir: &Path) -> Result<(), Failed> {
     ))
 }
 
-/// FollowSymlinkInScope(path, "/") in a root that is the container's: each link on the
+/// FollowSymlinkInScope(path, "/") in a root that is the microVM's: each link on the
 /// way followed, to at most 255, what is not there taken as it is.
 fn follow_in_scope(path: &Path) -> Result<PathBuf, Failed> {
     let mut pending: Vec<PathBuf> = vec![clean(&Path::new("/").join(path))];
@@ -199,9 +199,9 @@ pub(crate) fn clean(path: &Path) -> PathBuf {
     out
 }
 
-/// The container user `spec`'s IDs as dockerd reads them for `cp -a`
+/// The run's user `spec`'s IDs as dockerd reads them for `cp -a`
 /// (archive_tarcopyoptions_unix.go, getUIDGID): a name or ID, then perhaps `:` and a
-/// group's; names from the container's own databases.
+/// group's; names from the microVM's own databases.
 fn uid_gid(spec: &[u8]) -> Result<(i64, i64), String> {
     let spec = String::from_utf8_lossy(spec).into_owned();
     let (user, group) = spec.split_once(':').unwrap_or((&spec, ""));
