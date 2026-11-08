@@ -18810,3 +18810,47 @@ revision before comparing a changed API/implementation.
   D215's, and open (D189's to explain on this kernel).
 - **Not measured.** Two machines apart (Mac Studios on one network: their runners did not
   take this run on 2026-11-08); a Mac's own; latency under a lossy link.
+
+### M466. Flakes: a raised run's allocation killed as its host stays short of memory (D148, D188)
+
+- **Question.** `update_moves_a_microvms_memory_both_ways` once had its `alloc 512`, after
+  `update -m 1g` raised a run of 256 MiB, killed for want of memory (137) on a full suite's
+  Fedora, and passed alone (600 of 600 on CI, M325). What kills it?
+- **Method.** `update_under_pressure_stress` (tests/containers.rs, ignored): one run of
+  `-m 256m --memory-swap 256m`; each round its `alloc 512` killed at 256 MiB, the run
+  raised to `1g`, `alloc 512` again while its daemon is told its host is short of memory
+  every 50 ms (`SHARDS_PRESSURE`, as a whole suite's host says it each window), then
+  lowered; the raised allocation's time and status each round. On adacachy2 (AMD Ryzen 9
+  9950X3D2, 16 cores, 32 threads, 64 GB, CachyOS, Linux 7.3.3), the test pinned to 15 of
+  its threads (`taskset`), the host loaded by other agents' work (load 9 to 37), at
+  8501f093 (the tree) and at 49ee67a5 with the change below, 2026-11-08.
+- **Results.** Raised allocations, ms:
+
+  | build | n | killed | p50 | p90 | p99 | max |
+  |---|---|---|---|---|---|---|
+  | 8501f093 | 74 | 15 | 125 | 807,303 | 2,461,830 | 2,516,060 |
+  | the change, run 1 | 1,000 | 0 | 119 | 171 | 1,035 | 5,393 |
+  | the change, run 2 | 1,000 | 0 | 113 | 129 | 144 | 5,117 |
+
+  On the tree an allocation that went wrong never recovered quickly: 32 of 74 took over 5
+  s, up to 42 minutes, and 15 were killed by the guest's own OOM killer (`memory.events`
+  `oom 0 oom_kill 1` of its cgroup, the kernel's `testguest invoked oom-killer`, its
+  `memory.peak` 541 MB of a `memory.max` of 1 GiB). A give-back's keep is twice what the
+  run uses (`memory.current`) past what its microVM booted with, in 128 MiB blocks, and
+  its peak since the pass before; the grower asks for twice what its guest has (MemTotal),
+  which counts the kernel's own and init's memory besides the run's. Raised to 1 GiB and
+  held at its hold, the run had the grower plug 128 MiB for the allocation; a pass of the
+  host's pressure between its coming and the allocation's touching it found the run's use
+  where it had been and its keep a block short, took the block back and held the run at
+  what it would have after; the run grew into its hold, the grower plugged the block again,
+  and the next pass, 50 ms on, took it again, until an unplug left the guest's kernel
+  without free memory as the allocation faulted, and its OOM killer ended it.
+- **Consequence (D188).** The grower marks each ask and each block that comes (init plug.rs
+  `mark_growth`, in the page init shares with its grower and builtins), and a give-back
+  that finds a mark within the window the host's pressure is measured over (2 s,
+  `shards_abi::PRESSURE_WINDOW_US`, the PSI trigger's window, D188) keeps all it has. 0 of
+  2,000 raised allocations killed, against 15 of 74 (under 3 in 2,000 at 95%). Open: 6 of
+  the 2,000 took 5.1 to 5.4 s, the grower's `STALLED` (5 s) and its second ask, as 3 and 4
+  of two runs of 1,000 did at 49ee67a5 with an ask and a give-back's request serialized besides (a lock
+  in the shared page): that lock changed nothing, and is not kept; the stall's cause is
+  not yet found.

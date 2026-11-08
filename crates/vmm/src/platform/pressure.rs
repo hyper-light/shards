@@ -20,7 +20,7 @@ use std::time::Duration;
 /// The stall that is pressure, and the window it is measured over.
 #[cfg(target_os = "linux")]
 const STALL_US: u64 = 140_000;
-const WINDOW_US: u64 = 2_000_000;
+const WINDOW_US: u64 = shards_abi::PRESSURE_WINDOW_US;
 
 /// The window the host's memory pressure is measured over (D188), as long as a pressure
 /// that goes on waits between triggers: as often as a microVM held short of its budget is

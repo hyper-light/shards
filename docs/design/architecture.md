@@ -6487,7 +6487,17 @@ host (PM M267), where a container's page cache is its host's to drop. Free page 
   allocation past it but cannot refuse one with no swap, and a run that grew faster than
   its memory came back took the kernel's own and met its OOM killer: 3 of 30 runs of the
   benchmark with DAX windows, whose guests hold no page cache of the files they map and so
-  keep less; none of 60 since, the host as short of memory and as much given back.
+  keep less; none of 60 since, the host as short of memory and as much given back. Nor
+  from one that grew within the window its host's pressure is measured over (2 s,
+  `shards_abi::PRESSURE_WINDOW_US`; PM M466): the grower marks each ask and each block
+  that comes in a page init, its grower and its builtins share, and a give-back that finds
+  a mark within the window keeps all it has. Its keep counts from what the run uses
+  (twice its `memory.current`), the grower's ask from what the guest has (twice its
+  MemTotal), and a run raised to more (`update -m`) that had just had 128 MiB plugged for
+  an allocation not yet touched was cut back to its keep, held there, grew, and was cut
+  back again pass after pass of a host that stayed short, until its guest ran out of
+  memory and killed what grew: 15 of 74 raised allocations in `update_under_pressure_stress`
+  (the host's word every 50 ms), the slowest 42 minutes; none of 2,000 since.
 - **No hold counts what goes** (PM M324): every hold init sets counts out the memory
   still plugged past its device's request, which goes as its driver unplugs it, free or
   not, as the give-back's own hold does; and what is plugged, for a run held at its cap or
