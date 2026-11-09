@@ -174,6 +174,8 @@ pub struct Muxer {
     /// How many [`stray_rsts`](Muxer::stray_rsts) may be owed: [`stray_rsts_bound`] of the
     /// guest's rings ([`Muxer::set_rings`]), of the largest it may negotiate until then.
     max_stray_rsts: usize,
+    /// Open connections and pending handshakes together, at most.
+    slots: usize,
     local_ports: HashSet<u32>,
     last_local_port: u32,
 }
@@ -213,6 +215,7 @@ impl Muxer {
             rxq: VecDeque::new(),
             stray_rsts: VecDeque::new(),
             max_stray_rsts: MAX_STRAY_RSTS,
+            slots: MAX_CONNECTIONS,
             local_ports: HashSet::new(),
             last_local_port: LOCAL_PORT_BASE - 1,
         })
@@ -272,7 +275,7 @@ impl Muxer {
     /// Where every slot is taken, frees one for a newcomer: the pending handshake silent
     /// longest gives its slot up (the client sees its socket close).
     fn make_room(&mut self) {
-        self.make_room_within(MAX_CONNECTIONS);
+        self.make_room_within(self.slots);
     }
 
     /// [`make_room`](Muxer::make_room) where `slots` are all there are.
@@ -357,7 +360,7 @@ impl Muxer {
     /// The guest connects to host port `key.local_port`: one this process serves, or the
     /// socket `<path>_<port>`.
     fn guest_connect(&mut self, key: Key, request: &Header) {
-        if self.open() >= MAX_CONNECTIONS {
+        if self.open() >= self.slots {
             debug!(
                 "vsock: connection limit reached; refusing guest port {}",
                 key.peer_port
@@ -451,7 +454,7 @@ impl Muxer {
             });
         };
         if let Some((_, listener)) = &self.listener
-            && self.open() < MAX_CONNECTIONS
+            && self.open() < self.slots
         {
             add(listener.raw_socket(), true, false, Token::Listener);
         }
@@ -522,7 +525,7 @@ impl Muxer {
         let Some((_, listener)) = &self.listener else {
             return;
         };
-        while self.handshakes.len() + self.conns.len() < MAX_CONNECTIONS {
+        while self.handshakes.len() + self.conns.len() < self.slots {
             match listener.accept() {
                 Ok((stream, _)) => {
                     if let Err(e) = stream.set_nonblocking(true) {
@@ -835,6 +838,49 @@ mod tests {
         assert_eq!(unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &raw const was) }, 0);
         assert!(ends.iter().all(|e| e == "closed"), "{ends:?}");
         println!("{REFUSED}");
+    }
+
+    /// Past its slots, every one a connection's, a host's dial is refused at once, its
+    /// connection closed, as Firecracker's muxer refuses one past its MAX_CONNECTIONS: not
+    /// left in the listener's queue until a connection ends (D12; review: connections
+    /// derived, refused typed past them).
+    #[test]
+    fn past_its_slots_a_dial_is_refused_at_once() {
+        let dir_guard = shards_testdir::TempDir::new("vsock-full").unwrap();
+        let dir = dir_guard.join("v");
+        let (sender, _arrived) = std::sync::mpsc::channel();
+        let host = VsockHost {
+            path: Some(dir.clone()),
+            ports: Vec::new(),
+            every: vec![(54, sender)],
+        };
+        let mut m = Muxer::new(host, 3).unwrap();
+        // An input: one slot, which the guest's connection holds.
+        m.slots = 1;
+        let mem = GuestMemory::anonymous(&[(0x8000_0000, 1 << 16)]).unwrap();
+        m.on_guest_packet(&request(54, 49_152), &[], &mem);
+        assert_eq!(m.conns.len(), 1);
+        let mut client = UnixStream::connect(&dir).unwrap();
+        // What the device polls is what the muxer asks for, and the listener is ready.
+        let mut interests = Vec::new();
+        m.interests(&mut interests);
+        let ready: Vec<Ready<Option<Token>>> = interests
+            .iter()
+            .filter(|i| matches!(i.token, Some(Token::Listener)))
+            .map(|i| Ready {
+                token: i.token,
+                read: true,
+                write: false,
+            })
+            .collect();
+        m.on_events(&ready);
+        client.set_nonblocking(true).unwrap();
+        let end = client.read(&mut [0u8; 1]);
+        assert!(
+            matches!(&end, Ok(0)) || end.as_ref().is_err_and(|e| e.kind() == io::ErrorKind::ConnectionReset),
+            "a dial past its slots: {end:?}"
+        );
+        assert_eq!(m.conns.len(), 1, "the guest's connection kept");
     }
 
     /// A pending handshake waits on no clock: it outlives any deadline, and gives its slot
